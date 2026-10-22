@@ -875,11 +875,20 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
 - `fetch_concurrency` 1 vs 4 for `gsw-canvas` at cold 60.
 - `constrained` at 60 for each browser.
 - Window 2 at 60 for each kind, if F1 is approved.
-- **Device rows**, for each phone, the g31 first: `pace`, `scene` and `hd` at 60, windows 1 and 2,
-  for `web-export` and `gsw-canvas`. Each has its desktop control row beside it, plus the soak and
-  startup summaries. G7v's run on the same build supplies them. If the build has moved since, G7p
-  re-runs the g31's rows (unattended, if it is attached) and re-runs the g86's only in an attended
-  session. Rows it cannot re-run are omitted and named (D28).
+- **Device rows**, for the g31: `pace`, `scene` and `hd` at 60, windows 1 and 2, for `web-export`
+  and `gsw-canvas`. Each has its desktop control row beside it, plus the soak and startup
+  summaries. G7v's run on the same build supplies them. If the build has moved since, G7p re-runs
+  the g31's rows (unattended, if it is attached). Rows it cannot re-run are omitted and named
+  (D28). **The g86 is descoped (user, 2026-10-22): it has no rows and nothing is pending for it.**
+
+**As built (G7p, 2026-10-22; [results/gate7/g7p.md](../results/gate7/g7p.md)).** One report per receiver
+kind, built by `report-gate7.ts` from `run-gate7.sh --live --legs g7-p` (G6p's group with
+`G7P_MATRIX=1`, a run per kind and credit window). `fetch_concurrency` 4 was not run: GSW's fetcher
+is one `fetch` at a time, and adding the option would move the bundle the g31 rows were measured on
+(D28). The matrix legs fill the browser stages the evidence carries (`recv_raf_interval_us`,
+`recv_raf_after_submit_us`, `recv_gpu_complete_us`, `recv_hold_us`); the browser memory fields, the
+per-repeat `startup` block and `recv_preflight_us` are G7k's, G7v's, or the constrained leg's proxy
+statistics and are `unavailable` or `null` in a matrix repeat. The g86 has no rows (descoped).
 
 Derived: per receiver, apply, upload, GPU and frame costs; maximum sustained rate with `limited_by`;
 cold−warm startup; preflight cost per fetch; and memory by process. For the device rows, also the
@@ -1623,7 +1632,7 @@ Each increment's design detail and "As built" notes live in its own `gate7/<id>.
 | [G7k](gate7/g7k.md) | sonnet | 6 | no | G7g, G7u, G6s |
 | [G7q](gate7/g7q.md) | opus | 7 | no; F1 approved 2026-10-14 (opt-in) | G7r |
 | [G7v](../results/gate7/g7v.md) | opus | 8 | no. g31 device arms unattended while it is attached; g86 descoped by the user (2026-10-22); control arms unattended | G7r, G7wf, G7k, G7q, G7d, G7x; G7xw if it landed (the web export's arms otherwise run GDScript) |
-| [G7p](gate7/g7p.md) | sonnet | 9 | no | G7r, G7k, G7v, G6p (G7q if approved) |
+| [G7p](../results/gate7/g7p.md) | sonnet (rs-increment agent) | 9 | no (the g31 rows come from G7v, or an unattended re-run) | G7r, G7k, G7v, G6p (G7q if approved) |
 | [G7z](gate7/g7z.md) | sonnet | 10 | no | G7p, G6z (and everything before) |
 
 G7t and G7s both touch `rs-core`'s applier and the `canvas-items` executor (or

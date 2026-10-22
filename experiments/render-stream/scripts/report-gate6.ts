@@ -43,7 +43,7 @@ import {
   validate,
 } from "./lib/render-stream-report";
 
-async function readJson<T>(path: string): Promise<T> {
+export async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T;
 }
 
@@ -69,7 +69,7 @@ async function buildProvenance(dir: string): Promise<ReportProvenance> {
   };
 }
 
-async function buildScenario(
+export async function buildScenario(
   dir: string,
   id: string,
   count: 1 | 5,

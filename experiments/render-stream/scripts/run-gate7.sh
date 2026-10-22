@@ -149,6 +149,17 @@
 #             after), so no Chromium start-up lands in a timed window. check-gate7.ts --live judges
 #             them (lib/gate7r-checks.ts). Timing legs: each holds the quiet lock exclusive.
 #
+# Group landed (G7p, protocol/gate7/g7p.md, gate7-design.md Q12 "Matrix (G7p)"; `--live` only): the
+#   g7-p      measurement matrix. G6p's group is reused unforked (lib/gate6p-legs.sh run_g7p):
+#             run-gate6.sh --legs g6p runs once per receiver kind and credit window (G7P_WINDOWS,
+#             default "1 2") with G7P_MATRIX=1, into <out>/gate6/matrix-<kind>-w<window>/. Window 1:
+#             scene-rate-15/30/60/uncapped-host60 and scene-rate-60-cold on every kind, plus
+#             hd-native-rate-60, hd-half-rate-60 and scene-constrained-60 on the browsers; window 2
+#             (opt-in) scene-rate-60 only. G7P_SCENARIOS (a CSV) replaces the list. Each is a warmup
+#             plus five repeats; check-gate7.ts --live builds and judges one render-stream-report/2
+#             per kind (lib/gate7p-checks.ts, report-gate7.ts) and, with G7P_DEVICE_EVIDENCE (a CSV of
+#             G7v run directories), the g31 rows from G7v's run.
+#
 # --credit-window 1|2 (G7q, protocol/gate7/g7q.md; fork F1, opt-in; `--live` only): exports
 # GATE7_CREDIT_WINDOW to the gate runners, so every live host's GRC_LIVE_CREDIT_WINDOW_MAX and
 # every live browser receiver's hello ask for that window (lib/gamescope.sh, lib/legs.sh), and
@@ -235,8 +246,8 @@ FIXTURE_DIR="$PACE_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
-KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench)
+KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
 
 # G7u: each browser kind's lifecycle legs (run-gate6.sh G7U_LEGS), desktop (simulated suspension)
 # and device (real hidden/frozen). G7U_LEGS in the environment replaces every kind's list.
@@ -621,8 +632,8 @@ if [ "$LIVE" = "1" ]; then
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
-	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc && ! has_group g7-k && ! has_group g7-dev; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-lc, g7-r, g7-k, g7-dev in --legs" >&2
+	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc && ! has_group g7-k && ! has_group g7-dev && ! has_group g7-p; then
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-lc, g7-r, g7-k, g7-dev, g7-p in --legs" >&2
 		exit 2
 	fi
 	if [ "$RECEIVER" = "native" ] && [ "${#LIVE_RUNS[@]}" -gt 0 ]; then
@@ -717,6 +728,45 @@ if [ "$LIVE" = "1" ]; then
 			g7r_exit=$?
 			set -e
 			echo "run-gate7: g7-r run-gate6.sh @$kind exit=$g7r_exit (check-gate7.ts --live judges it)" >&2
+		done
+	fi
+	# G7p: run-gate6.sh --legs g6p once per receiver kind and credit window with G7P_MATRIX=1
+	# (lib/gate6p-legs.sh run_g7p), into <out>/gate6/matrix-<kind>-w<window>/. Window 2 is opt-in
+	# (F1) and runs scene-rate-60 only.
+	if has_group g7-p; then
+		G7P_KINDS=()
+		if [ -z "$RECEIVER" ] || [ "$RECEIVER" = "native" ]; then
+			G7P_KINDS+=("native:")
+		fi
+		G7P_KINDS+=(${LIVE_KINDS[@]+"${LIVE_KINDS[@]}"})
+		if [ ! -f "$EXPERIMENT_DIR/receiver/ext/build/librs_core_ext.so" ]; then
+			bash "$SCRIPT_DIR/build-rs-core-ext.sh" --no-test >"$OUT/build-rs-core-ext.log" 2>&1 || {
+				echo "run-gate7: build-rs-core-ext.sh failed, see $OUT/build-rs-core-ext.log" >&2
+				exit 1
+			}
+		fi
+		mkdir -p "$OUT/gate6"
+		for g7p_w in ${G7P_WINDOWS:-1 2}; do
+			for kb in "${G7P_KINDS[@]}"; do
+				kind="${kb%%:*}"
+				bundle_dir="${kb#*:}"
+				run_dir="$OUT/gate6/matrix-$kind-w$g7p_w"
+				echo "run-gate7: g7-p @$kind window $g7p_w: run-gate6.sh --legs g6p (G7P_MATRIX=1) into $run_dir" >&2
+				set +e
+				if [ "$kind" = native ]; then
+					G7P_MATRIX=1 GATE7_CREDIT_WINDOW="$g7p_w" \
+						bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+						--binary "$BINARY" --out "$run_dir" --legs g6p >"$OUT/gate6/matrix-$kind-w$g7p_w.log" 2>&1
+				else
+					G7P_MATRIX=1 GATE7_CREDIT_WINDOW="$g7p_w" GATE7_LIVE_KIND="$kind" GATE7_BUNDLE_DIR="$bundle_dir" \
+						GATE7_WEB_FETCH="$WEB_FETCH" GATE7_BROWSER_SPARE=after \
+						bash "$SCRIPT_DIR/run-gate6.sh" --extension "$EXTENSION" --calibration "$CALIBRATION" \
+						--binary "$BINARY" --out "$run_dir" --legs g6p >"$OUT/gate6/matrix-$kind-w$g7p_w.log" 2>&1
+				fi
+				g7p_exit=$?
+				set -e
+				echo "run-gate7: g7-p run-gate6.sh @$kind window $g7p_w exit=$g7p_exit (check-gate7.ts --live judges it)" >&2
+			done
 		done
 	fi
 	# G7u: run-gate6.sh --legs g6l once per browser kind with G7U_LEGS (header "Group landed (G7u)").
@@ -864,7 +914,9 @@ if [ "$LIVE" = "1" ]; then
 	set +e
 	gate7_checker mise exec -- pnpm exec tsx --conditions=development \
 		"$SCRIPT_DIR/check-gate7.ts" --out "$OUT" --legs "$LEGS_ARG" --live \
-		--web-fetch "$WEB_FETCH" ${RECEIVER:+--receiver "$RECEIVER"}
+		--web-fetch "$WEB_FETCH" ${RECEIVER:+--receiver "$RECEIVER"} \
+		${G7P_DEVICE_EVIDENCE:+--device-evidence "$G7P_DEVICE_EVIDENCE"} ${G7P_WINDOWS:+--g7p-windows "${G7P_WINDOWS// /,}"} \
+		${G7P_DECLARED:+--g7p-scenarios "$G7P_DECLARED"}
 	exit $?
 fi
 

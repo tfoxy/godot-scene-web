@@ -95,6 +95,9 @@ G6P_SCN_TRANSPORT="loopback"
 G6P_SCN_ROOT_SIZE="enforce-min-size"
 G6P_SCN_RESOLUTION_ARGS=()
 G6P_SCN_REFERENCE_ARGS=()
+# G7p: env words appended to every streaming receiver's G6C_RECEIVER_ENV (e.g. the native
+# receiver's explicit render-stream/7 at credit window 1); set by run_g7p, empty for a gate 6 run.
+G6P_RECEIVER_EXTRA_ENV=()
 g6p_run_scenario() {
 	local id="$G6P_SCN_ID" fixture="$G6P_SCN_FIXTURE" host_fps="$G6P_SCN_HOST_FPS" \
 		target="$G6P_SCN_TARGET_FPS" recv_fps="$G6P_SCN_RECV_FPS" dual="$G6P_SCN_DUAL" \
@@ -118,6 +121,10 @@ g6p_run_scenario() {
 
 	echo "run-gate6: g6p: $id (warmup + 5 repeats, cache $cache, hook log $hook, transport $transport)"
 	shared_cache="$G6P/$id/shared-cache"
+	# G7p: a warm browser leg starts on a copy of the cold leg's browser profile, found as
+	# dirname(RS_RECEIVER_CACHE_DIR) (lib/gate7-live-legs.ts warmFrom), so a browser's "shared cache"
+	# lives in the warmup's receiver directory: its HTTP cache is the web's disk cache (Q4).
+	[ -n "${GATE7_LIVE_KIND:-}" ] && shared_cache="$G6P/$id/warmup/receiver/cache"
 	for label in warmup 1 2 3 4 5; do
 		D="$G6P/$id/$label"
 		local -a host_env=(RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=rate GRC_ROOT_SIZE="$root_size")
@@ -151,6 +158,9 @@ g6p_run_scenario() {
 		elif [ -n "$recv_fps" ]; then
 			if [ "$cache" = "warm" ]; then
 				G6C_RECEIVER_ENV=(RS_RECEIVER_CACHE_DIR="$shared_cache" "${warm_mode_env[@]}")
+			fi
+			if [ "${#G6P_RECEIVER_EXTRA_ENV[@]}" -gt 0 ]; then
+				G6C_RECEIVER_ENV+=("${G6P_RECEIVER_EXTRA_ENV[@]}")
 			fi
 			g6c_start_receiver "$D/receiver" "$port" "$recv_fps" "${resolution_args[@]}"
 			g6c_wait_receiver "$D/receiver" "$G6C_RECEIVER_PID"
@@ -323,4 +333,113 @@ run_g6p() {
 
 	gs_teardown "$OUT/gamescope-g6p-hd-half"
 	GS_RUN_DIR=""
+}
+
+# ---------------------------------------------------------------------------------------------
+# G7p (protocol/gate7/g7p.md, gate7-design.md Q12 "Matrix (G7p)"): the same matrix machinery on a
+# browser receiver or the native receiver speaking render-stream/7, selected by the runner
+# (run-gate7.sh --live --legs g7-p sets G7P_MATRIX=1, GATE7_LIVE_KIND=web|gsw or unset for native,
+# GATE7_CREDIT_WINDOW=1|2). Scenario ids are g6p's own; G7P_SCENARIOS (a CSV) replaces the kind's
+# default list (development, and the smoke tier's one-scenario run).
+#
+#   window 1  scene-rate-15 -30 -60 -uncapped-host60 and scene-rate-60-cold for every kind; the
+#             browsers add hd-native-rate-60, hd-half-rate-60 and scene-constrained-60
+#   window 2  scene-rate-60 only (opt-in credit window 2, F1), every kind
+#
+# `fetch_concurrency` 4 for gsw (Q12) is not run: GSW's fetcher is one `fetch` at a time and has
+# no such option (adding one would move the bundle the g31 rows were measured on, D28).
+# ---------------------------------------------------------------------------------------------
+G7P_DEFAULT_COMMON="scene-rate-15,scene-rate-30,scene-rate-60,scene-rate-uncapped-host60,scene-rate-60-cold"
+G7P_DEFAULT_BROWSER_EXTRA="hd-native-rate-60,hd-half-rate-60,scene-constrained-60"
+
+g7p_wanted() {
+	case ",$G7P_LIST," in
+	*",$1,"*) return 0 ;;
+	esac
+	return 1
+}
+
+# run_g7p: g6p's gamescope sessions and g6p_run_scenario, for the wanted scenarios only.
+run_g7p() {
+	local kind="${GATE7_LIVE_KIND:-native}" window="${GATE7_CREDIT_WINDOW:-1}" dflt
+	if [ "$window" = 2 ]; then
+		dflt="scene-rate-60"
+	else
+		dflt="$G7P_DEFAULT_COMMON"
+		[ "$kind" != native ] && dflt="$dflt,$G7P_DEFAULT_BROWSER_EXTRA"
+	fi
+	G7P_LIST="${G7P_SCENARIOS:-$dflt}"
+	G6P="$OUT/$G6P_DIR_NAME"
+	mkdir -p "$G6P/import"
+	echo "run-gate6: g7p @$kind window $window: $G7P_LIST"
+	LEG_ENV=()
+	run_headless "$G6P/import/fixture" none -- mise exec -- godot --headless --path "$SCENE_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$G6P/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	LEG_ENV=()
+	run_headless "$G6P/import/hd-fixture" none -- mise exec -- godot --headless --path "$HD_FIXTURE_DIR" --import
+	local which
+	for which in fixture receiver hd-fixture; do
+		if [ "$(cat "$G6P/import/$which/exit-code.txt")" != "0" ]; then
+			echo "run-gate6: g7p: import $which failed, see $G6P/import/$which/stdout.log" >&2
+			exit 1
+		fi
+	done
+	g6p_provenance_input
+	printf '{"kind":"%s","credit_window":%s,"scenarios":"%s"}\n' "$kind" "$window" "$G7P_LIST" >"$G6P/g7p.json"
+	G6P_RECEIVER_EXTRA_ENV=()
+	[ "$kind" = native ] && [ "$window" = 1 ] && G6P_RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=7 RS_RECEIVER_CREDIT_WINDOW=1)
+
+	local id
+	if g7p_wanted scene-rate-15 || g7p_wanted scene-rate-30 || g7p_wanted scene-rate-60 ||
+		g7p_wanted scene-rate-uncapped-host60 || g7p_wanted scene-rate-60-cold || g7p_wanted scene-constrained-60; then
+		echo "run-gate6: bringing up private gamescope 640x360 for g7p gate6-scene scenarios"
+		gs_start 640 360 "$OUT/gamescope-g7p-scene"
+		g6c_session_display_proof "$G6P/display-socket-proof-640x360.json"
+		for id in scene-rate-15:15 scene-rate-30:30 scene-rate-60:60 scene-rate-uncapped-host60: scene-rate-60-cold:60:cold scene-constrained-60:60:constrained; do
+			IFS=: read -r sid target mode <<<"$id"
+			g7p_wanted "$sid" || continue
+			G6P_SCN_ID="$sid"
+			G6P_SCN_FIXTURE="$SCENE_FIXTURE_DIR"
+			G6P_SCN_TARGET_FPS="$target"
+			G6P_SCN_RECV_FPS="$G6C_RECV60"
+			[ "$mode" = cold ] && G6P_SCN_CACHE=cold
+			[ "$mode" = constrained ] && G6P_SCN_TRANSPORT=constrained
+			g6p_run_scenario
+		done
+		gs_teardown "$OUT/gamescope-g7p-scene"
+		GS_RUN_DIR=""
+	fi
+
+	if g7p_wanted hd-native-rate-60; then
+		echo "run-gate6: bringing up private gamescope 1920x1080 for g7p hd-native-rate-60"
+		gs_start 1920 1080 "$OUT/gamescope-g7p-hd-native"
+		g6c_session_display_proof "$G6P/display-socket-proof-1920x1080.json"
+		G6P_SCN_ID=hd-native-rate-60
+		G6P_SCN_FIXTURE="$HD_FIXTURE_DIR"
+		G6P_SCN_TARGET_FPS=60
+		G6P_SCN_RECV_FPS="$G6C_RECV60"
+		G6P_SCN_RESOLUTION_ARGS=(--resolution 1920x1080)
+		G6P_SCN_REFERENCE_ARGS=(--resolution 1920x1080)
+		g6p_run_scenario
+		gs_teardown "$OUT/gamescope-g7p-hd-native"
+		GS_RUN_DIR=""
+	fi
+
+	if g7p_wanted hd-half-rate-60; then
+		echo "run-gate6: bringing up private gamescope 960x540 for g7p hd-half-rate-60"
+		gs_start 960 540 "$OUT/gamescope-g7p-hd-half"
+		g6c_session_display_proof "$G6P/display-socket-proof-960x540.json"
+		G6P_SCN_ID=hd-half-rate-60
+		G6P_SCN_FIXTURE="$HD_FIXTURE_DIR"
+		G6P_SCN_TARGET_FPS=60
+		G6P_SCN_RECV_FPS="$G6C_RECV60"
+		G6P_SCN_ROOT_SIZE="presentation:960x540"
+		G6P_SCN_RESOLUTION_ARGS=(--resolution 960x540)
+		G6P_SCN_REFERENCE_ARGS=(--resolution 960x540)
+		g6p_run_scenario
+		gs_teardown "$OUT/gamescope-g7p-hd-half"
+		GS_RUN_DIR=""
+	fi
+	G6P_RECEIVER_EXTRA_ENV=()
 }

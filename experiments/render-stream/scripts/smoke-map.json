@@ -97,6 +97,14 @@
       "reach": ["pure"]
     },
     {
+      "why": "G7p's report/2 generator, matrix checker and device-row loader: read only by check-gate7.ts --live --legs g7-p (a measurement campaign judged by its own self-test and a real run, not a validate-increment target) and the pure self-test",
+      "paths": [
+        "experiments/render-stream/scripts/report-gate7.ts",
+        "experiments/render-stream/scripts/lib/gate7p-*.ts"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "the quiet lock: its own self-tests (scheduling only; no leg's output depends on it)",
       "paths": [
         "experiments/render-stream/scripts/lib/quiet.sh",

@@ -75,6 +75,7 @@ import {
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
 import { checkG7kKind, type G7kKindResult } from "./lib/gate7k-checks";
+import { checkG7pKind, G7P_KINDS, type G7pKindResult } from "./lib/gate7p-checks";
 import {
   checkDevRun,
   type DevRunResult,
@@ -119,6 +120,7 @@ export const ALL_GROUPS = [
   "g7-k",
   "g7-dev",
   "g7-bench",
+  "g7-p",
 ] as const;
 export const LANDED_GROUPS: readonly string[] = [
   "g7-0",
@@ -134,6 +136,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-k",
   "g7-dev",
   "g7-bench",
+  "g7-p",
 ];
 /** G7a: the groups with gsw legs (G7b adds the web half of g7-1..g7-6 and g7-55; G7t and G7s
  * the gsw half of g7-4, g7-5 and g7-55). */
@@ -191,6 +194,7 @@ export interface Gate7Report {
     | G7uRunResult
     | G7kKindResult
     | DevRunResult
+    | G7pKindResult
   )[];
 }
 
@@ -209,6 +213,12 @@ interface Args {
   live: boolean;
   /** G7wf: the web export's expected payload GET mechanism on a live run (`--web-fetch`). */
   webFetch: "fetch" | "httpclient";
+  /** G7p: G7v run directories holding the g31's device rows (`--device-evidence a,b,c`). */
+  deviceEvidence: string[];
+  /** G7p: the credit windows the matrix ran (`--g7p-windows 1,2`). */
+  g7pWindows: (1 | 2)[];
+  /** G7p: report ids the run declares it ran (`--g7p-scenarios a,b`); unset: the full matrix. */
+  g7pScenarios: string[] | undefined;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -217,6 +227,9 @@ function parseArgs(argv: string[]): Args {
   const sources: Record<string, string> = {};
   let bundle: string | undefined;
   let gswBundle: string | undefined;
+  let deviceEvidence: string[] = [];
+  let g7pWindows: (1 | 2)[] = [1, 2];
+  let g7pScenarios: string[] | undefined;
   let extension: string | undefined;
   let calibration: string | undefined;
   let receiver: string | undefined;
@@ -250,6 +263,18 @@ function parseArgs(argv: string[]): Args {
         throw new Error(
           `check-gate7: --web-core is rust, not ${v} (G7gd removed the GDScript core)`,
         );
+    } else if (argv[i] === "--device-evidence") {
+      deviceEvidence = (argv[++i] ?? "")
+        .split(",")
+        .filter(Boolean)
+        .map((d) => resolve(d));
+    } else if (argv[i] === "--g7p-scenarios") {
+      g7pScenarios = (argv[++i] ?? "").split(",").filter(Boolean);
+    } else if (argv[i] === "--g7p-windows") {
+      g7pWindows = (argv[++i] ?? "")
+        .split(",")
+        .filter(Boolean)
+        .map((w) => (w === "2" ? 2 : 1));
     } else if (argv[i] === "--web-fetch") {
       const v = argv[++i];
       if (v !== "fetch" && v !== "httpclient")
@@ -275,6 +300,9 @@ function parseArgs(argv: string[]): Args {
     receiver,
     live,
     webFetch,
+    deviceEvidence,
+    g7pWindows,
+    g7pScenarios,
   };
 }
 
@@ -370,6 +398,7 @@ async function gateChecker(
 }
 
 async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2));
   const {
     out,
     legs,
@@ -381,7 +410,7 @@ async function main(): Promise<void> {
     receiver,
     live,
     webFetch,
-  } = parseArgs(process.argv.slice(2));
+  } = args;
 
   for (const g of legs) {
     if (!(ALL_GROUPS as readonly string[]).includes(g)) {
@@ -432,6 +461,7 @@ async function main(): Promise<void> {
     | G7uRunResult
     | G7kKindResult
     | DevRunResult
+    | G7pKindResult
   )[] = [];
   // G7l: `--live` judges only the live runs (lib/gate7-live.ts), never the file legs' sources.
   const wantWeb =
@@ -482,6 +512,31 @@ async function main(): Promise<void> {
         throw new Error(
           "check-gate7: --live g7-r: no <out>/gate6/rates-<kind>/",
         );
+    }
+    // G7p: one render-stream-report/2 and one result per receiver kind that ran
+    // (run-gate7.sh --live --legs g7-p).
+    if (legs.includes("g7-p")) {
+      for (const kind of G7P_KINDS) {
+        if (receiver && receiver !== kind) continue;
+        const ran = args.g7pWindows.some((w) =>
+          existsSync(join(out, "gate6", `matrix-${kind}-w${w}`)),
+        );
+        if (!ran) {
+          if (receiver === kind)
+            throw new Error(`check-gate7: --live g7-p@${kind}: no <out>/gate6/matrix-${kind}-w<N>/`);
+          continue;
+        }
+        console.log(`check-gate7: judging g7-p @${kind}`);
+        results.push(
+          await checkG7pKind(out, kind, {
+            windows: args.g7pWindows,
+            deviceEvidence: args.deviceEvidence,
+            declared: args.g7pScenarios,
+          }),
+        );
+      }
+      if (!results.some((r) => r.group === "g7-p"))
+        throw new Error("check-gate7: --live g7-p: no <out>/gate6/matrix-<kind>-w<N>/");
     }
     // G7u: one result per receiver kind and environment that ran (run-gate7.sh --live --legs
     // g7-lc), plus each kind's real legs typed `unavailable` when no device run exists.
