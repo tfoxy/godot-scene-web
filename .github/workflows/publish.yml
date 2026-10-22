@@ -31,6 +31,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # `tsc` is TypeScript 7; consumers alias this repo's source and typecheck it with TS 6.
+      - run: pnpm typecheck:ts6
       - run: pnpm test
       - run: pnpm build
       - run: pnpm release:check-tag "${{ github.ref_name }}"

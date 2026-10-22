@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import ts from "@typescript/typescript6";
 import * as esbuild from "esbuild";
-import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
