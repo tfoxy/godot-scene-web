@@ -125,6 +125,8 @@ jobs:
           swrast: ${{ startsWith(matrix.id, 'native-') }}
           rs-core-ext: ${{ startsWith(matrix.id, 'native-') }}
           apt: ${{ startsWith(matrix.id, 'native-') }}
+          # gate 4's i18n fixtures read the engine's thirdparty/fonts (fonts.lock.json)
+          fonts: ${{ matrix.id == 'native-rust-gate4' }}
           # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input
           godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') }}
           templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') }}
@@ -152,6 +154,11 @@ jobs:
           CHANGED_PATHS: ${{ inputs.paths }}
           REPEAT: ${{ matrix.repeat }}
           LABEL: ${{ matrix.label }}
+          # native gates (R2): 4 vCPU run two legs at once. The timing groups inside the correctness
+          # gates (g1c-rate, g1d, g2c-pins, g5f, g55f) are wall-clock legs a shared VM would only make
+          # noisy: they are skipped here (skipped-remote.txt) and stay local. Never set locally.
+          RS_LEG_SHARDS: ${{ startsWith(matrix.id, 'native-') && '2' || '' }}
+          RS_SKIP_TIMING_GROUPS: ${{ startsWith(matrix.id, 'native-') && '1' || '' }}
         run: |
           # the planner's default base is `main`; point it at the merge-base the wrapper computed
           git update-ref refs/heads/main "$BASE"
@@ -264,12 +271,32 @@ jobs:
       - name: Compare repeats
         run: |
           pnpm install --frozen-lockfile >/dev/null
-          mkdir -p out
-          dirs=(det/*/r*/)
+          mkdir -p out/gates
+          # one comparison per run id: det/<id>-det<k>x<repeats>/r<n>/ of every job of that id (runs of
+          # different gates are not a sample of each other)
           rc=0
-          pnpm exec tsx --conditions=development experiments/render-stream/scripts/lib/remote-determinism.ts \
-            --out out/determinism.json "${dirs[@]}" || rc=$?
-          cp det/*/swrast-provenance.json out/ 2>/dev/null || true
+          for id in $(ls det | sed 's/-det[0-9]*x[0-9]*$//' | sort -u); do
+            dirs=(det/"$id"-det*/r*/)
+            pnpm exec tsx --conditions=development experiments/render-stream/scripts/lib/remote-determinism.ts \
+              --out "out/gates/$id.json" "${dirs[@]}" || rc=$?
+          done
+          python3 - <<'PY'
+          import glob, json, os
+          g = {os.path.basename(f)[:-5]: json.load(open(f)) for f in sorted(glob.glob("out/gates/*.json"))}
+          tot = lambda k, f: sum(r[k][f] for r in g.values())
+          json.dump({
+              "schema": "render-stream-remote-determinism/1", "per_gate": True,
+              "ok": bool(g) and all(r["ok"] for r in g.values()),
+              "runs": sum(r["runs"] for r in g.values()),
+              "shots": {"total": tot("shots", "total"), "agree": tot("shots", "agree")},
+              "dumps": {"total": tot("dumps", "total"), "agree": tot("dumps", "agree")},
+              "live_sets": sum(len(r.get("live_sets", [])) for r in g.values()),
+              "gates": {k: {"ok": r["ok"], "runs": r["runs"], "shots": r["shots"]["agree"], "shots_total": r["shots"]["total"],
+                            "dumps": r["dumps"]["agree"], "dumps_total": r["dumps"]["total"],
+                            "live_sets": len(r.get("live_sets", [])), "live_timed": len(r.get("live_timed", [])),
+                            "provenance_agree": r["provenance_agree"]} for k, r in g.items()},
+          }, open("out/determinism.json", "w"), indent=2)
+          PY
           for f in det/*/swrast-provenance.json; do [ -f "$f" ] && cp "$f" "out/provenance-$(basename "$(dirname "$f")").json"; done
           echo "determinism rc=$rc"
 

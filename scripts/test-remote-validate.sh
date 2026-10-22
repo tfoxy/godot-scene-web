@@ -59,7 +59,7 @@ case "$1 $2" in
 	mkdir -p "$dir"
 	if [ "$name" = summary ]; then
 		f="${FAKE_GH_FAILED:-0}"
-		printf '{"schema":"render-stream-validate-summary/2","wall_s":1.0,"failed":%s,"runs":[{"id":"pure","phase":"setup","rc":"0","wall_s":1.0}],"remote":{"run_url":"u","setup_s":[3.0],"refused":[],"determinism":"%s"}}\n' "$f" "${FAKE_GH_DET_REQ:-}" >"$dir/validate-summary.json"
+		printf '{"schema":"render-stream-validate-summary/2","wall_s":1.0,"failed":%s,"runs":[{"id":"pure","phase":"setup","rc":"0","wall_s":1.0%s}],"remote":{"run_url":"u","setup_s":[3.0],"refused":[],"determinism":"%s"}}\n' "$f" "${FAKE_GH_SKIPPED:+,\"skipped_remote_groups\":[\"$FAKE_GH_SKIPPED\"]}" "${FAKE_GH_DET_REQ:-}" >"$dir/validate-summary.json"
 		[ -n "${FAKE_GH_DET:-}" ] && printf '{"ok":%s,"runs":4,"shots":{"agree":3,"total":3},"dumps":{"agree":2,"total":2}}\n' "$FAKE_GH_DET" >"$dir/determinism.json"
 	else
 		[ "${FAKE_GH_FAILED:-0}" = 1 ] && echo x >"$dir/pure-evidence.txt"
@@ -97,6 +97,7 @@ cat >"$out/plan.json" <<'JSON'
  {"id":"native-rust-gate0","kind":"native","phase":"native","gate":"gate0"},
  {"id":"native-rust-gate1","kind":"native","phase":"native","gate":"gate1"},
  {"id":"native-rust-gate6","kind":"native","phase":"timing","gate":"gate6"},
+ {"id":"g7-gsw","kind":"g7","phase":"g7","groups":["g7-1"]},
  {"id":"g7live-gsw-device","kind":"g7live","phase":"g7","groups":["g7-lc-device"]},
  {"id":"g7x","kind":"g7x","phase":"g7","groups":["g7-bench"]}]}
 JSON
@@ -110,16 +111,18 @@ remote_branches() { git --git-dir="$BARE" for-each-ref --format='%(refname)' ref
 # ---- refusals (dry run) -------------------------------------------------------------------------------
 ( cd "$CLONE" && bash "$WRAP" --dry-run ) >"$TMP/dry.out" 2>&1
 check "dry run exits 0" grep -q 'dry run: would snapshot' "$TMP/dry.out"
-check "remote-capable runs are pure, cargo-*, pnpm-test, native-rust-gate0 only" grep -q 'remote runs: pure,cargo-rs-core,pnpm-test,native-rust-gate0$' "$TMP/dry.out"
+check "remote-capable runs are pure, cargo-*, pnpm-test and the native gates only" grep -q 'remote runs: pure,cargo-rs-core,pnpm-test,native-rust-gate0,native-rust-gate1$' "$TMP/dry.out"
 check "timing run refused" grep -q 'refused native-rust-gate6: timing run' "$TMP/dry.out"
 check "lock-tests refused" grep -q 'refused lock-tests: lock self-tests' "$TMP/dry.out"
 check "g7x refused" grep -q 'refused g7x:' "$TMP/dry.out"
 check "device run refused" grep -q 'refused g7live-gsw-device: device-related' "$TMP/dry.out"
-check "not-yet-capable run refused with its reason" grep -q 'refused native-rust-gate1: not yet remote-capable' "$TMP/dry.out"
+check "not-yet-capable run refused with its reason" grep -q 'refused g7-gsw: not yet remote-capable' "$TMP/dry.out"
 check "--determinism rejects a non-count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 3,x >/dev/null 2>&1; test \$? = 2"
 check "--determinism rejects a zero count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 0 >/dev/null 2>&1; test \$? = 2"
 check "--determinism is shown in the dry run's inputs" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only native-rust-gate0 --determinism 3,1 2>&1 | grep -q 'runs=\[\"native-rust-gate0\"\] determinism=3,1\$'"
 check "--only narrows the plan" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only pure 2>&1 | grep -q 'remote runs: pure\$'"
+check "--only an id the plan does not contain fails loudly (rc 2) and names it" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only native-rust-gate9 >'$TMP/unplanned.out' 2>&1; test \$? = 2 && grep -q 'only native-rust-gate9: not in this plan' '$TMP/unplanned.out' && grep -q -- '--paths' '$TMP/unplanned.out' && grep -q -- '--milestone' '$TMP/unplanned.out'"
+check "--only with one planned and one unplanned id still fails" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only pure,nope >/dev/null 2>&1; test \$? = 2"
 check "--toolchain-smoke plans exactly the toolchain-smoke run" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --toolchain-smoke 2>&1 | grep -q 'remote runs: toolchain-smoke\$'"
 check "dry run pushed nothing" test -z "$(remote_branches)"
 
@@ -143,7 +146,7 @@ check "snapshot omits the ignored file" bash -c "! grep -q '^ign/' '$TMP/snapsho
 check "only main and the run branch exist on origin at dispatch" bash -c \
 	"[ \"\$(grep -vc '^refs/heads/remote-run/${CLONE##*/}-' '$TMP/refs-at-dispatch.txt')\" = 1 ] && grep -qx refs/heads/main '$TMP/refs-at-dispatch.txt'"
 check "dispatch carried run_key, sha, base, tier and the run list" bash -c \
-	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
+	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no determinism input" bash -c "! grep -q 'determinism=' '$FAKE_GH_LOG'"
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"
@@ -151,6 +154,9 @@ check "the output names the results directory" grep -q 'results in .*artifacts/r
 FAKE_GH_FAILED=1 FAKE_GH_MODE=ok bash "$WRAP" >"$TMP/red.out" 2>&1; rc=$?
 check "a summary with failed > 0 exits non-zero" test "$rc" != 0
 check "failing evidence is downloaded" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/failing-evidence/pure-evidence.txt"
+
+FAKE_GH_MODE=ok FAKE_GH_SKIPPED=g1d bash "$WRAP" >"$TMP/skipped.out" 2>&1
+check "skipped timing groups are printed with how to run them locally" grep -q 'skipped timing group g1d (pure), run it locally: bash experiments/render-stream/scripts/run-gate1.sh --legs g1a,g1d' "$TMP/skipped.out"
 
 FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 FAKE_GH_DET=true bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
 check "an agreeing determinism run exits 0 and says so" bash -c "test $rc = 0 && grep -q 'determinism AGREES over 4 runs: 3/3 shots, 2/2 dumps' '$TMP/det.out'"
@@ -270,6 +276,19 @@ assert sorted(r["setup_s"]) == [41.0, 55.0] and r["refused"][0]["id"] == "g7x"
 PY
 python3 "$VS" --merge --out "$TMP/merged2" --expect pure "$TMP/jobs/job-pure" >/dev/null 2>&1
 check "an all-green merge exits 0 with failed 0" bash -c "[ \$? = 0 ] && python3 -c 'import json,sys; sys.exit(json.load(open(\"$TMP/merged2/validate-summary.json\"))[\"failed\"])'"
+
+# a job whose validate-increment ran nothing (an --only id the plan did not reach: "0/0 pass") writes a
+# summary with zero rows; the merge must still fail that expected run, never report a pass for it
+mkdir -p "$TMP/jobs0/job-native"
+printf '{"schema":"render-stream-validate-summary/2","wall_s":0.1,"runs":[],"phases":{},"milestone":null,"base":"abc","sabotage":{"run":false,"why":[]},"skipped_targets":9,"failed":0}\n' >"$TMP/jobs0/job-native/validate-summary.json"
+python3 "$VS" --merge --out "$TMP/merged0" --expect native-rust-gate1 "$TMP/jobs0"/*/ >/dev/null 2>&1; rc=$?
+check "a job that executed no run (0/0 pass) merges as a missing, failed run" bash -c "[ $rc = 1 ] && python3 - '$TMP/merged0/validate-summary.json' <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s['failed'] == 1 and s['runs'][0]['id'] == 'native-rust-gate1' and s['runs'][0]['rc'] == 'missing'
+PY"
+python3 "$VS" --merge --out "$TMP/merged00" --expect native-rust-gate1 >/dev/null 2>&1; rc=$?
+check "no job summary at all (every job died) is still a failed run, never an empty pass" bash -c "[ $rc = 1 ]"
 
 # ---- pure shards: the fold in --merge ------------------------------------------------------------------------------------------------
 mkdir -p "$TMP/sh"

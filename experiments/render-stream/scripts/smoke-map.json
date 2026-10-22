@@ -56,7 +56,7 @@
   "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
-    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "native-rust-gate0"],
+    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55"],
     "refuse": {
       "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
       "ids": {

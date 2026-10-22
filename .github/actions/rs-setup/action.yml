@@ -356,6 +356,14 @@ runs:
         path: experiments/render-stream/receiver/ext/build
         key: ${{ steps.rs-core-ext-cache.outputs.cache-primary-key }}
 
+    # The receiver project's .godot import cache: every native receiver launch needs it (a fresh local
+    # worktree runs the same `--import` once; gate 4's g4b legs launch the receiver before any gate-owned
+    # import, and without it every one fails "Failed to load script").
+    - name: Receiver project import
+      if: inputs.rs-core-ext == 'true' && inputs.godot == 'true'
+      shell: bash
+      run: mise exec -- godot --headless --path experiments/render-stream/receiver --import
+
     # Software rasterizer (R1, docs/remote-compute.md). The runner has no GPU and no /dev/dri, so the
     # rendered legs use lib/gamescope.sh's CI-only RS_DISPLAY_MODE=xvfb-llvmpipe: Xvfb, with Godot's
     # opengl3 on Mesa llvmpipe. gamescope itself cannot run here: on lavapipe (the only Vulkan device)

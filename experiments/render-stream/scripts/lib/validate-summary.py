@@ -65,6 +65,8 @@ def collect_rows(out, plan):
                      "lock_hold_s": round(lock["shared"]["hold_s"] + lock["exclusive"]["hold_s"], 1),
                      "lock": lock, "lock_summaries": files,
                      "skipped_by_tier": len(tier.get("skipped_by_tier", [])),
+                     "skipped_remote": tier.get("skipped_remote", []),
+                     "skipped_remote_groups": tier.get("skipped_remote_groups", []),
                      "unavailable": tier.get("unavailable", []), "failing": tier.get("failing", [])})
         failed += rc != "0"
     return rows, failed
@@ -118,10 +120,10 @@ def fold_shards(rows, expected):
         f["lock"] = {m: {k: round(sum(r["lock"].get(m, {}).get(k, 0) for r in g), 1) for k in ("holds", "wait_s", "hold_s")}
                      for m in ("shared", "exclusive")} if any(r["lock"] for r in g) else {}
         f["skipped_by_tier"] = sum(r["skipped_by_tier"] for r in g)
-        for k in ("unavailable", "failing"):
+        for k in ("unavailable", "failing", "skipped_remote", "skipped_remote_groups"):
             seen = []
             for r in g:
-                seen += [x for x in r[k] if x not in seen]
+                seen += [x for x in r.get(k, []) if x not in seen]
             f[k] = seen
         f["shards"] = [{"rc": r["rc"], "wall_s": r["wall_s"]} for r in g]
         out.append(f)
@@ -134,7 +136,9 @@ def emit(out, summary, rows, failed, t0, t1, n_skipped):
         print(f"  {x['id']:<28} [{str(x['phase']):<6}] rc={x['rc']:<3} {x['wall_s'] or 0:>8.1f} s  lock wait {x['lock_wait_s']:>7.1f} s"
               f"  hold {x['lock_hold_s']:>7.1f} s"
               + (f"  skipped-by-tier {x['skipped_by_tier']}" if x["skipped_by_tier"] else "")
-              + (f"  unavailable {len(x['unavailable'])}" if x["unavailable"] else ""))
+              + (f"  unavailable {len(x['unavailable'])}" if x["unavailable"] else "")
+              + (f"  skipped-remote {','.join(x['skipped_remote_groups']) or len(x['skipped_remote'])}"
+                 if x.get("skipped_remote") else ""))
     print(f"validate-increment: {len(rows) - failed}/{len(rows)} runs pass in {t1 - t0:.0f} s; "
           f"{n_skipped} targets out of reach; summary {out}/validate-summary.json")
     return 1 if failed else 0
@@ -191,7 +195,7 @@ def merge_mode(argv):
         if i not in have:
             rows.append({"id": i, "phase": None, "rc": "missing", "wall_s": None, "lock_wait_s": 0.0,
                          "lock_hold_s": 0.0, "lock": {}, "lock_summaries": 0, "skipped_by_tier": 0,
-                         "unavailable": [], "failing": []})
+                         "skipped_remote": [], "skipped_remote_groups": [], "unavailable": [], "failing": []})
     if expect:
         order = {i: n for n, i in enumerate(expect)}
         rows.sort(key=lambda r: (PHASE_ORDER.get(r["phase"], 9), order.get(r["id"], 1 << 30)))

@@ -215,6 +215,77 @@ try {
     "runs on different rasterizers are not a determinism sample",
   );
 
+  // Live legs: the wire seq a settle shot lands at follows the credit loop's timing, so the file
+  // names differ per run; the content set (and the masked state set) must agree, and the leg's
+  // applied.json (it has a `live` object) is not compared.
+  async function liveScenario(
+    runs: Array<{ seqs: number[]; pokeLast?: boolean; txs?: number }>,
+  ) {
+    const dirs: string[] = [];
+    for (const [i, r] of runs.entries()) {
+      const d = join(tmp, `live${n}`, `r${i + 1}`);
+      await makeRun(d, { session: `s${i}`, root: `/runner/v${i}` });
+      for (const [k, seq] of r.seqs.entries()) {
+        const bad = r.pokeLast && k === r.seqs.length - 1;
+        // image k is the same in every run (distinct per k), only its seq name moves
+        const px = Buffer.alloc(W * H * 4);
+        for (let q = 0; q < W * H; q++)
+          px.set([k * 20, bad ? 99 : 80, 120, 255], q * 4);
+        await put(
+          join(d, `live/receiver/shots/seq-${seq}.png`),
+          await sharp(px, { raw: { width: W, height: H, channels: 4 } })
+            .png()
+            .toBuffer(),
+        );
+        await put(
+          join(d, `live/receiver/state/seq-${seq}.json`),
+          JSON.stringify({ step: k, session_id: `s${i}` }),
+        );
+      }
+      await put(
+        join(d, "live/receiver/applied.json"),
+        JSON.stringify({
+          live: { acks: r.seqs.length },
+          transactions: Array.from({ length: r.txs ?? 1 }, (_, t) => ({ t })),
+        }),
+      );
+      dirs.push(d);
+    }
+    n++;
+    return compareRuns(dirs);
+  }
+  const live = await liveScenario([
+    { seqs: [10, 20, 30], txs: 3 },
+    { seqs: [11, 19, 33], txs: 4 },
+    { seqs: [12, 21, 30], txs: 2 },
+  ]);
+  expect(
+    live.ok &&
+      live.live_sets.length === 2 &&
+      live.live_sets.every((x) => x.agree && x.distinct.join() === "3,3,3") &&
+      live.live_timed.includes("live/receiver/applied.json"),
+    "live legs: the same images at different wire seqs agree as a content set; the live applied.json is listed, not compared",
+  );
+  const liveBad = await liveScenario([
+    { seqs: [10, 20, 30] },
+    { seqs: [11, 19, 33], pokeLast: true },
+  ]);
+  expect(
+    !liveBad.ok && liveBad.live_sets.some((x) => !x.agree),
+    "live legs: a different image in one run disagrees",
+  );
+  const liveFewer = await liveScenario([
+    { seqs: [10, 20, 30] },
+    { seqs: [11, 19] },
+  ]);
+  expect(!liveFewer.ok, "live legs: a missing image disagrees");
+  const embedded = mask({ failure: { detail: "/x/_temp/v2/native/run/a" } });
+  expect(
+    JSON.stringify(embedded) ===
+      JSON.stringify({ failure: { detail: "/x/_temp/v/native/run/a" } }),
+    "an evidence path embedded in a string is normalised across the repeat dirs",
+  );
+
   const one = await scenario([{}]);
   expect(!one.ok, "a single run proves nothing");
 } finally {

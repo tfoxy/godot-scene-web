@@ -60,6 +60,10 @@ export function isDump(rel: string): boolean {
 /** The value with every VOLATILE_KEYS member (at any depth) replaced by a fixed marker. */
 export function mask(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(mask);
+  // an absolute evidence path embedded in a string (a failure detail): the repeats of one runner use
+  // $RUNNER_TEMP/v, v2, v3...
+  if (typeof value === "string")
+    return value.replace(/_temp\/v\d*\//g, "_temp/v/");
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>))
@@ -198,6 +202,15 @@ export interface DeterminismReport {
   provenance_agree: boolean;
   shots: { total: number; agree: number; disagree: string[] };
   dumps: { total: number; agree: number; disagree: string[] };
+  /** Live legs (R2): wire-seq-keyed shots and states, compared as content sets, see liveSetDirs. */
+  live_sets: Array<{
+    dir: string;
+    kind: "shots" | "states";
+    distinct: number[]; // per run: distinct images (or masked states)
+    agree: boolean;
+  }>;
+  /** applied.json of a live-set leg: transaction boundaries follow the credit loop, not compared. */
+  live_timed: string[];
   shot_rows: Array<{
     path: string;
     agree: boolean;
@@ -225,8 +238,92 @@ export async function compareRuns(runs: string[]): Promise<DeterminismReport> {
       p.vulkan_device === provenance[0].vulkan_device,
   );
 
+  // Live legs (R2). A live leg's shots are named by the WIRE seq they landed at (`<dir>/shots/seq-N.png`,
+  // `<dir>/state/seq-N.json`), and which seq a settle shot lands at follows the credit loop's timing: it
+  // differs run to run on any machine, local NVIDIA included. That is delivery timing, not rendering, so
+  // when the runs name different seqs (every run having some) the directory is compared as a CONTENT
+  // SET: the distinct images (and masked states) must be equal across runs. Names that agree in every
+  // run are still compared file by file. A live receiver's applied.json (it has a `live` object; or it
+  // sits beside a set-compared shots dir): transaction boundaries, acks and counters follow the credit
+  // loop, so it is not compared: listed in live_timed.
+  const liveSets: DeterminismReport["live_sets"] = [];
+  const liveTimed: string[] = [];
+  const setDirs = new Set<string>(); // the leg dir D whose D/shots/seq-*.png ran as a set
+  const inSet = new Set<string>();
+  const seqIn = (re: RegExp) => {
+    const byDir = new Map<string, Array<Set<string>>>();
+    for (const f of all.filter((x) => re.test(x))) {
+      const d = f.slice(0, f.lastIndexOf("/"));
+      if (!byDir.has(d))
+        byDir.set(
+          d,
+          runs.map(() => new Set<string>()),
+        );
+      runs.forEach((_, i) => {
+        if (has[i].has(f)) byDir.get(d)?.[i].add(f);
+      });
+    }
+    return byDir;
+  };
+  for (const [kind, re] of [
+    ["shots", /(^|\/)shots\/(stream-\d+-)?seq-\d+\.png$/],
+    ["states", /(^|\/)state\/(stream-\d+-)?seq-\d+\.json$/],
+  ] as const) {
+    for (const [dir, perRun] of seqIn(re)) {
+      const names = perRun.map((x) => [...x].sort().join("\n"));
+      const differ = names.some((n) => n !== names[0]);
+      if (!differ || perRun.some((x) => x.size === 0)) continue;
+      const sets = await Promise.all(
+        perRun.map(async (files, i) => {
+          const out = new Set<string>();
+          for (const f of files) {
+            const buf = await readFile(join(runs[i], f));
+            out.add(
+              kind === "shots"
+                ? createHash("sha256").update(buf).digest("hex")
+                : JSON.stringify(
+                    sortKeys(mask(JSON.parse(buf.toString("utf8")))),
+                  ),
+            );
+          }
+          return out;
+        }),
+      );
+      const agree = sets.every(
+        (x) => x.size === sets[0].size && [...x].every((h) => sets[0].has(h)),
+      );
+      liveSets.push({
+        dir,
+        kind,
+        distinct: sets.map((x) => x.size),
+        agree,
+      });
+      for (const files of perRun) for (const f of files) inSet.add(f);
+      setDirs.add(dir.replace(/\/(shots|state)$/, ""));
+    }
+  }
+  for (const rel of all.filter((f) => /(^|\/)applied\.json$/.test(f))) {
+    const d = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+    let live = setDirs.has(d);
+    for (let i = 0; i < runs.length && !live; i++) {
+      if (!has[i].has(rel)) continue;
+      try {
+        const j = JSON.parse(await readFile(join(runs[i], rel), "utf8")) as {
+          live?: unknown;
+        };
+        live = j.live !== undefined && j.live !== null;
+      } catch {
+        // unparseable: compared (and reported) as a dump
+      }
+    }
+    if (live) {
+      inSet.add(rel);
+      liveTimed.push(rel);
+    }
+  }
+
   const shotRows: DeterminismReport["shot_rows"] = [];
-  for (const rel of all.filter((f) => f.endsWith(".png"))) {
+  for (const rel of all.filter((f) => f.endsWith(".png") && !inSet.has(f))) {
     const bufs = await Promise.all(
       runs.map((r, i) =>
         has[i].has(rel) ? readFile(join(r, rel)) : Promise.resolve(null),
@@ -252,7 +349,7 @@ export async function compareRuns(runs: string[]): Promise<DeterminismReport> {
   }
 
   const dumpRows: DeterminismReport["dump_rows"] = [];
-  for (const rel of all.filter(isDump)) {
+  for (const rel of all.filter((f) => isDump(f) && !inSet.has(f))) {
     const missing: number[] = [];
     const vals: unknown[] = [];
     for (let i = 0; i < runs.length; i++) {
@@ -297,7 +394,8 @@ export async function compareRuns(runs: string[]): Promise<DeterminismReport> {
       shotRows.length > 0 &&
       provenanceAgree &&
       shotsBad.length === 0 &&
-      dumpsBad.length === 0,
+      dumpsBad.length === 0 &&
+      liveSets.every((x) => x.agree),
     provenance,
     provenance_agree: provenanceAgree,
     shots: {
@@ -310,9 +408,22 @@ export async function compareRuns(runs: string[]): Promise<DeterminismReport> {
       agree: dumpRows.length - dumpsBad.length,
       disagree: dumpsBad,
     },
+    live_sets: liveSets,
+    live_timed: liveTimed,
     shot_rows: shotRows,
     dump_rows: dumpRows,
   };
+}
+
+function sortKeys(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(sortKeys);
+  if (v !== null && typeof v === "object")
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([k, x]) => [k, sortKeys(x)]),
+    );
+  return v;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -345,6 +456,14 @@ async function main(argv: string[]): Promise<number> {
   for (const row of r.dump_rows.filter((x) => !x.agree))
     console.log(
       `DIFF dump ${row.path}: missing in ${JSON.stringify(row.missing)}, differs in ${JSON.stringify(row.differs_from_run1)}`,
+    );
+  for (const ls of r.live_sets)
+    console.log(
+      `${ls.agree ? "live set ok" : "DIFF live set"} ${ls.dir} (${ls.kind}): distinct per run ${JSON.stringify(ls.distinct)}`,
+    );
+  if (r.live_timed.length)
+    console.log(
+      `live-timed (applied.json, not compared): ${r.live_timed.length}`,
     );
   console.log(
     `remote-determinism: ${r.ok ? "AGREE" : "DISAGREE"} over ${r.runs} runs: shots ${r.shots.agree}/${r.shots.total}, ` +
