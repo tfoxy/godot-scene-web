@@ -240,10 +240,18 @@ struct ConnSpec {
   std::uint64_t close_frame = 0;  // the receiver closes at this frame (0: at the end)
 };
 
+// G7wd: LiveConfig's credit_window_max defaults to 2 now; the scenarios (the window-1 transcripts)
+// pin window 1 explicitly, so none of their hubs changes.
+LiveConfig window1_config() {
+  LiveConfig config;
+  config.credit_window_max = 1;
+  return config;
+}
+
 struct Scenario {
   std::string name;
   std::uint64_t seed = 1;
-  LiveConfig config;
+  LiveConfig config = window1_config();
   ProtocolVersion template_version = ProtocolVersion::V2;
   Delivery delivery = Delivery::OutOfBand;
   bool payloads = false;
@@ -567,7 +575,7 @@ std::vector<Scenario> window1_scenarios() {
     out.push_back(s);
   }
   {
-    // /6 and /7 on one hub, each at window 1: the /7 one asks for 2 under the default
+    // /6 and /7 on one hub, each at window 1: the /7 one asks for 2 under an explicit
     // GRC_LIVE_CREDIT_WINDOW_MAX=1 (granted 1), and a second /7 asks for 1.
     Scenario s;
     s.name = "v6-v7-window1";

@@ -121,7 +121,7 @@
 // request carrying any other Origin gets 403 on every route, logged to stdout.log as
 // `live: 403 origin <origin> ...` (an OriginRejected event), and an allowed origin's resource
 // GETs and preflights speak CORS. A preflight is an http-get hook-log line with
-// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 1) caps the hello's window
+// "method":"OPTIONS". GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2) caps the hello's window
 // (G7q implements window 2, fork F1, opt-in). Listener sabotages (GRC_SABOTAGE, all need
 // GRC_LIVE_LISTEN): no-cors (no Access-Control-* header at all), accept-any-origin (the
 // allowlist is ignored), token-ignored (a wrong /7 hello token is not refused; needs
@@ -271,7 +271,7 @@ struct Live {
   // listener sabotage (no-cors | accept-any-origin | token-ignored | window-overrun; empty when
   // none).
   std::vector<std::string> allowed_origins;
-  uint64_t credit_window_max = 1;
+  uint64_t credit_window_max = 2;
   std::string listener_sabotage;
 };
 
@@ -1314,7 +1314,7 @@ void stream_start() {
       // G7n (gate7-design.md Q3): an allowlist entry that is not an exact origin refuses.
       live_ok = false;
       why = "origin-config-invalid: GRC_LIVE_ALLOWED_ORIGINS " + why;
-    } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", 1, &live_config.credit_window_max) ||
+    } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", 2, &live_config.credit_window_max) ||
                live_config.credit_window_max > 2) {
       live_ok = false;
       why = "invalid GRC_LIVE_CREDIT_WINDOW_MAX (1 or 2)";

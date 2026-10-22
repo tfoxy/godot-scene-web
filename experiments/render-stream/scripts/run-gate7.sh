@@ -160,13 +160,15 @@
 #             per kind (lib/gate7p-checks.ts, report-gate7.ts) and, with G7P_DEVICE_EVIDENCE (a CSV of
 #             G7v run directories), the g31 rows from G7v's run.
 #
-# --credit-window 1|2 (G7q, protocol/gate7/g7q.md; fork F1, opt-in; `--live` only): exports
+# --credit-window 1|2 (G7q, protocol/gate7/g7q.md; fork F1 resolved 2026-10-22: the default is 2,
+# window 1 is explicit; `--live` only): exports
 # GATE7_CREDIT_WINDOW to the gate runners, so every live host's GRC_LIVE_CREDIT_WINDOW_MAX and
 # every live browser receiver's hello ask for that window (lib/gamescope.sh, lib/legs.sh), and
 # g6c's native receivers speak /7 at it (lib/gate6c-legs.sh). With g7-r, each kind runs the
 # window-2 list instead (G7R_W2_LEGS_<kind>: rate-baseline, phase-60 x5, then constrained for a
 # browser or the window-overrun sabotage natively), judged by g7rLegs(kind, 2) and its
-# phase-window2-rate check. Default 1: every run is what it was.
+# phase-window2-rate check. G7wd: without the flag a `--live` run is at window 2 (so g7-r's
+# default list is the window-2 one; `--credit-window 1` runs the window-1 list, G7R_LEGS_<kind>).
 #
 # Group landed (G7u, protocol/gate7/g7u.md, g7u-as-built.md, D14; `--live` only): suspension
 #   g7-lc     and lifecycle in both browser receivers. G6l's group is reused: run-gate6.sh --legs
@@ -379,7 +381,7 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	--credit-window)
-		# G7q (fork F1, opt-in): every live leg at credit window 2 (lib/gamescope.sh).
+		# G7q/G7wd (fork F1): every live leg at this credit window (lib/gamescope.sh).
 		export GATE7_CREDIT_WINDOW="$2"
 		shift 2
 		;;
@@ -418,6 +420,9 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+# G7wd (fork F1 resolved): a live run is at credit window 2 unless --credit-window 1 says otherwise.
+[ "$LIVE" = 1 ] && export GATE7_CREDIT_WINDOW="${GATE7_CREDIT_WINDOW:-2}"
+
 
 tool() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-phone-tool.ts" "$@")
@@ -710,7 +715,7 @@ if [ "$LIVE" = "1" ]; then
 			kind="${kb%%:*}"
 			bundle_dir="${kb#*:}"
 			legs_var="G7R_LEGS_$kind"
-			[ "${GATE7_CREDIT_WINDOW:-1}" = 2 ] && legs_var="G7R_W2_LEGS_$kind"
+			[ "${GATE7_CREDIT_WINDOW:-2}" = 2 ] && legs_var="G7R_W2_LEGS_$kind"
 			g7r_legs="${G7R_LEGS:-${!legs_var}}"
 			run_dir="$OUT/gate6/rates-$kind"
 			echo "run-gate7: g7-r @$kind: run-gate6.sh --legs g6c (G6C_LEGS=$g7r_legs) into $run_dir" >&2
