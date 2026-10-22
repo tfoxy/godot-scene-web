@@ -450,8 +450,25 @@ export async function runGate7DevChecks(
 export const G6C_REPLAY = {
   decode_means_us: [6193, 6479, 6247, 6212],
   apply_means_us: [885, 898, 897, 878],
-  tolerance: 0.15,
 };
+
+/** Since G7xd the native arm runs the Rust core (G7gd removed the GDScript one), so G6c's GDScript
+ * means can no longer be matched: `bench-matches-g6c` bounds the Rust core's scene-full means at a
+ * tenth (decode) and a quarter (apply) of them instead. G7xn measured 40x and 11x at p95, so this
+ * holds at twice that cost and fails a bench that lost the Rust core or its transactions. */
+export const G6C_RUST_MAX_FRACTION = { decode: 0.1, apply: 0.25 };
+
+/** The leg directories gate7-bench.ts writes for one planned arm-leg (gate7-dev-legs.ts names the
+ * plan): the planned name, then the arm renames since G7d planned them. G7a named the TypeScript arm
+ * `-gsw-ts`; G7xd's Rust default names native legs `native-rs-bench-*` and web legs `-web-rs`. */
+export function benchLegNames(planned: string): string[] {
+  return [
+    planned,
+    planned.replace(/^native-bench-/, "native-rs-bench-"),
+    planned.replace(/-gsw(-|$)/, "-gsw-ts$1"),
+    planned.replace(/-web(-|$)/, "-web-rs$1"),
+  ];
+}
 
 export interface BenchLegJson {
   leg: string;
@@ -503,7 +520,7 @@ export async function loadBenchLegs(out: string): Promise<BenchLegJson[]> {
   if (!existsSync(B)) return [];
   const legs: BenchLegJson[] = [];
   for (const name of (await readdir(B)).sort()) {
-    if (!/^(native|ctl|dev)-bench-/.test(name)) continue;
+    if (!/^(native|native-rs|ctl|dev)-bench-/.test(name)) continue;
     const json = await readJson<BenchLegJson>(join(B, name, "summary.json"));
     if (json) legs.push(json);
   }
@@ -534,8 +551,12 @@ export async function runGate7BenchChecks(
         : wanted.every((l) => l.arm === "dev")),
     detail: `${wanted.length} arm-legs planned${device ? ` on ${device}` : " (desktop)"}${receiver ? ` for ${receiver}` : ""}`,
   });
+  const lookup = (planned: string) =>
+    benchLegNames(planned)
+      .map((n) => byName.get(n))
+      .find((l) => l !== undefined);
   for (const p of wanted) {
-    const leg = byName.get(p.name);
+    const leg = lookup(p.name);
     const s = leg?.summary;
     const valid = s?.repeats.filter((r) => r.valid).length ?? 0;
     checks.push({
@@ -547,19 +568,21 @@ export async function runGate7BenchChecks(
         : `no summary (${leg?.status ?? "missing"})`,
     });
   }
-  const native = byName.get("native-bench-scene-full");
+  const native = lookup("native-bench-scene-full");
   if (device === null && (!receiver || receiver === "native")) {
     const ph = native?.summary?.phases;
     const ref = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
     const dRef = ref(G6C_REPLAY.decode_means_us);
     const aRef = ref(G6C_REPLAY.apply_means_us);
-    const within = (v: number | undefined, r: number) =>
-      v !== undefined && Math.abs(v - r) <= G6C_REPLAY.tolerance * r;
+    const dMax = G6C_RUST_MAX_FRACTION.decode * dRef;
+    const aMax = G6C_RUST_MAX_FRACTION.apply * aRef;
+    const under = (v: number | undefined, max: number) =>
+      v !== undefined && v > 0 && v <= max;
     checks.push({
       id: "bench-matches-g6c",
-      ok: within(ph?.decode?.mean_us, dRef) && within(ph?.apply?.mean_us, aRef),
+      ok: under(ph?.decode?.mean_us, dMax) && under(ph?.apply?.mean_us, aMax),
       detail: ph
-        ? `scene-full decode mean ${ph.decode?.mean_us.toFixed(0)} us (G6c ${dRef.toFixed(0)} +-15 %), apply mean ${ph.apply?.mean_us.toFixed(0)} us (G6c ${aRef.toFixed(0)} +-15 %)`
+        ? `rust scene-full decode mean ${ph.decode?.mean_us.toFixed(0)} us (<= ${dMax.toFixed(0)}: G6c's GDScript ${dRef.toFixed(0)} / 10), apply mean ${ph.apply?.mean_us.toFixed(0)} us (<= ${aMax.toFixed(0)}: G6c ${aRef.toFixed(0)} / 4)`
         : "no native scene-full summary",
     });
   }
