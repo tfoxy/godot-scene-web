@@ -5,3 +5,9 @@ packages:
 onlyBuiltDependencies:
   - esbuild
   - sharp
+
+peerDependencyRules:
+  allowedVersions:
+    # tsdown only lists `typescript` as a peer; its `.d.ts` work goes through rolldown-plugin-dts,
+    # which .pnpmfile.cjs pins to TypeScript 6.
+    tsdown>typescript: 7.1.0-beta
