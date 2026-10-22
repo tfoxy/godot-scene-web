@@ -54,6 +54,19 @@
   },
   "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
   "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
+  "remote": {
+    "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
+    "capable": ["pure", "pnpm-test", "cargo-*"],
+    "refuse": {
+      "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
+      "ids": {
+        "lock-tests": "lock self-tests need this machine's quiet lock",
+        "g7x": "g7x drives the attached phone and timing benches"
+      },
+      "match": { "(?i)device|g31|phone|adb": "device-related: the attached phone is local" }
+    },
+    "default_reason": "not yet remote-capable"
+  },
   "rules": [
     {
       "why": "docs: no leg reads them",

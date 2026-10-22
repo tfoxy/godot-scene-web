@@ -1,0 +1,109 @@
+name: rs-setup
+description: >-
+  Toolchain for remote render-stream validation runs (docs/remote-compute.md). R0a provides only
+  what the `pure`, `pnpm-test` and `cargo-*` runs need: mise (node and pnpm from mise.toml),
+  `pnpm install --frozen-lockfile` with a store cache, Rust 1.95.0 and `cargo fetch` for the
+  render-stream crates (their `cargo test` runs --offline) with a registry cache. The later-rung
+  inputs below exist so workflows can already name them; enabling one fails loudly until its rung
+  implements it.
+
+inputs:
+  rust-version:
+    description: Rust toolchain for the cargo-* runs (matches the local stable)
+    default: 1.95.0
+  # ---- later rungs: disabled by default, not implemented at R0a ---------------------------------
+  godot:
+    description: "R0b: mise Godot editor (asdf-godot plugin), sha-verified"
+    default: "false"
+  templates:
+    description: "R0b: 4.5.1 linux_release.x86_64 + web_dlink_nothreads_release.zip from the .tpz, sha-verified"
+    default: "false"
+  emsdk:
+    description: "R0b: emsdk 4.0.11"
+    default: "false"
+  nightly:
+    description: "R0b: Rust nightly-2025-10-15 with rust-src (-Zbuild-std)"
+    default: "false"
+  wasm-bindgen:
+    description: "R0b: wasm-bindgen-cli 0.2.129"
+    default: "false"
+  chromium:
+    description: "R3: Playwright 1.60.0 Chromium rev 1223 installed on the runner, sha-checked"
+    default: "false"
+  gamescope:
+    description: "R1: apt gamescope/xvfb/mesa-vulkan-drivers/strace for rendered legs"
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse rungs that are not implemented yet
+      shell: bash
+      env:
+        GODOT: ${{ inputs.godot }}
+        TEMPLATES: ${{ inputs.templates }}
+        EMSDK: ${{ inputs.emsdk }}
+        NIGHTLY: ${{ inputs.nightly }}
+        WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
+        CHROMIUM: ${{ inputs.chromium }}
+        GAMESCOPE: ${{ inputs.gamescope }}
+      run: |
+        for pair in godot:"$GODOT" templates:"$TEMPLATES" emsdk:"$EMSDK" nightly:"$NIGHTLY" \
+          wasm-bindgen:"$WASM_BINDGEN" chromium:"$CHROMIUM" gamescope:"$GAMESCOPE"; do
+          if [ "${pair#*:}" = "true" ]; then
+            echo "::error::rs-setup input '${pair%%:*}' is not implemented at R0a"
+            exit 1
+          fi
+        done
+
+    # mise.toml also pins godot; install only the two tools R0a needs and keep `mise exec` from
+    # trying to fetch the editor.
+    - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+      with:
+        install_args: node pnpm
+      env:
+        MISE_DISABLE_TOOLS: godot
+
+    - name: pnpm store path
+      id: pnpm-store
+      shell: bash
+      env:
+        MISE_DISABLE_TOOLS: godot
+      run: echo "path=$(mise exec -- pnpm store path --silent)" >>"$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pnpm-store.outputs.path }}
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-
+
+    - name: pnpm install
+      shell: bash
+      env:
+        MISE_DISABLE_TOOLS: godot
+      run: mise exec -- pnpm install --frozen-lockfile
+
+    - name: Rust toolchain
+      shell: bash
+      env:
+        RUST_VERSION: ${{ inputs.rust-version }}
+      run: |
+        rustup toolchain install "$RUST_VERSION" --profile minimal
+        rustup default "$RUST_VERSION"
+        rustc --version
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('experiments/render-stream/*/Cargo.lock', 'experiments/render-stream/web/*/Cargo.lock') }}
+        restore-keys: cargo-registry-${{ runner.os }}-
+
+    - name: cargo fetch
+      shell: bash
+      run: |
+        for lock in experiments/render-stream/*/Cargo.lock experiments/render-stream/web/*/Cargo.lock; do
+          [ -f "$lock" ] || continue
+          (cd "$(dirname "$lock")" && cargo fetch --locked)
+        done
