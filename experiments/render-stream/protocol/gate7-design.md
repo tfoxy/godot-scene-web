@@ -1259,7 +1259,8 @@ explained from Q13c before G7z (D25). F3 decides what gate 7 itself requires.
   `hash_us` split out. The applier does not exist before G7a. Its cost is bounded by what remains
   of the budget, and G7v measures it.
 - Arms:
-  - native headless (`bench-matches-g6c`: within ±15 % of G6c's unloaded replay means);
+  - native headless (`bench-matches-g6c`: within ±15 % of G6c's unloaded replay means; since G7xd
+    the Rust core, bounded at a tenth (decode) and a quarter (apply) of them);
   - desktop headless Chromium on D9's harness, both receivers, unattended;
   - **the g31 first**, both receivers, unattended while it is attached (D28);
   - then the g86, both receivers, attended.
