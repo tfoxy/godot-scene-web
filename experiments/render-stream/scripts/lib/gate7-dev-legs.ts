@@ -6,9 +6,10 @@
 //   - every device leg has an unattended desktop control arm `ctl-<same name>` (report-only);
 //   - g7-bench's arms: native-bench-<input> (desktop native, headless), ctl-bench-<input>-<kind>
 //     (desktop Chromium) and dev-bench-<input>-<kind>-<id> (the phone).
-// Live legs are planned with what they still need: every dev/ctl rate, soak, startup and headroom
-// leg needs the browser receivers (G7a, G7e), the /7 listener (G7n) and live browser legs (G7l);
-// window 2 needs G7q, soak and startup need G7k. G7v runs them. Until then they are `not-run`.
+// Live legs were planned with what they still needed: the browser receivers (G7a, G7e), the /7
+// listener (G7n), live browser legs (G7l), window 2 (G7q), soak and startup (G7k). All of them have
+// landed, so since G7v every leg's `needs` is empty: run-gate7.sh --live --legs g7-dev runs them
+// (lib/gate6c-legs.sh "G7v") and check-gate7.ts judges them (lib/gate7v-checks.ts).
 
 export type Workload = "pace" | "scene" | "hd";
 export type Kind = "web" | "gsw";
@@ -36,10 +37,7 @@ export interface DevicePlanEntry {
 
 type PlannedBase = Omit<PlannedLeg, "arm" | "name"> & { base: string };
 
-const LIVE_NEEDS: Record<Kind, string[]> = {
-  web: ["G7e", "G7n", "G7l"],
-  gsw: ["G7a", "G7n", "G7l"],
-};
+const LIVE_NEEDS: Record<Kind, string[]> = { web: [], gsw: [] };
 
 function devLegs(id: string, entry: DevicePlanEntry): PlannedBase[] {
   const out: PlannedBase[] = [];
@@ -54,7 +52,7 @@ function devLegs(id: string, entry: DevicePlanEntry): PlannedBase[] {
           kind,
           required: isRequired(w),
           report_only: false,
-          needs: [...LIVE_NEEDS[kind], ...(win === 2 ? ["G7q"] : [])],
+          needs: [...LIVE_NEEDS[kind]],
           condition: null,
         });
   for (const w of ["pace", "scene", "hd"] as Workload[])
@@ -78,7 +76,7 @@ function devLegs(id: string, entry: DevicePlanEntry): PlannedBase[] {
       kind,
       required: true,
       report_only: false,
-      needs: [...LIVE_NEEDS[kind], "G7k"],
+      needs: [...LIVE_NEEDS[kind]],
       condition: null,
     });
     if (entry.stretch_workloads.includes("hd"))
@@ -89,7 +87,7 @@ function devLegs(id: string, entry: DevicePlanEntry): PlannedBase[] {
         kind,
         required: false,
         report_only: true,
-        needs: [...LIVE_NEEDS[kind], "G7k"],
+        needs: [...LIVE_NEEDS[kind]],
         condition: `only if ${kind} passed this phone's hd rate leg`,
       });
   }
@@ -102,7 +100,7 @@ function devLegs(id: string, entry: DevicePlanEntry): PlannedBase[] {
         kind,
         required: temp === "warm",
         report_only: temp === "cold",
-        needs: [...LIVE_NEEDS[kind], "G7k"],
+        needs: [...LIVE_NEEDS[kind]],
         condition: null,
       });
   out.push({
@@ -128,7 +126,7 @@ function devLegs(id: string, entry: DevicePlanEntry): PlannedBase[] {
           kind,
           required: false,
           report_only: true,
-          needs: [...LIVE_NEEDS[kind], ...(win === 2 ? ["G7q"] : [])],
+          needs: [...LIVE_NEEDS[kind]],
           condition: `only if the user switches the panel to ${hz} Hz`,
         });
   return out;

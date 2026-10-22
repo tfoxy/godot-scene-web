@@ -66,6 +66,7 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   type BrowserContext,
@@ -172,7 +173,32 @@ export interface MappedBrowserLeg {
   lifecycle: LifecycleSpec | null;
   /** G7u: RS_RECEIVER_SHELL_SABOTAGE (a harness word): the page config's `sabotage`. */
   shellSabotage: "css-opacity" | null;
+  /** G7v: RS_RECEIVER_DEV_PROBE (a harness word, `1` or `fit`): inject
+   * browser-probes/dev-probe.js before any page script (`fit` also applies the keep-rule CSS
+   * fit; device legs only). null on every other leg. */
+  devProbe: "plain" | "fit" | null;
+  /** G7v: RS_RECEIVER_DEV_SAMPLE (a harness word, device legs): `light` samples the phone's
+   * conditions and CPU caps every 30 s; `soak` adds renderer/GPU PSS (0.2 Hz), gfxinfo GPU memory
+   * and the CDP JS heap (Q13b "Samplers"). null: none. */
+  devSample: "light" | "soak" | null;
+  /** G7v device startup-warm (harness words RS_RECEIVER_DEV_KEEP_TAB / RS_RECEIVER_DEV_WARM, both
+   * `1`): keep this leg's tab open for the next leg / navigate the tab the previous leg kept (the
+   * same browser context, so its HTTP and code caches are warm). Device only. */
+  devTab: { keep: boolean; warm: boolean };
 }
+
+/** G7v: browser-probes/dev-probe.js with its FIT switch set. */
+export function devProbeScript(mode: "plain" | "fit"): string {
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "browser-probes", "dev-probe.js"),
+    "utf8",
+  );
+  return src.replace("/*FIT*/ false", mode === "fit" ? "true" : "false");
+}
+
+/** G7v: the page expression the harness reads dev-probe.json from (null without the probe). */
+export const DEV_PROBE_REPORT_EXPRESSION =
+  "window.__rsDevProbe ? window.__rsDevProbe.report() : null";
 
 const DEFAULT_CANVAS: [number, number] = [640, 360];
 const FIXED_ARGS_WITH_VALUE = new Set([
@@ -216,6 +242,9 @@ export function mapBrowserLeg(
   let cacheDir = "";
   let lifecycle: LifecycleSpec | null = null;
   let shellSabotage: "css-opacity" | null = null;
+  let devProbe: "plain" | "fit" | null = null;
+  let devSample: "light" | "soak" | null = null;
+  const devTab = { keep: false, warm: false };
   for (const [name, value] of nativeEnv) {
     if (!name.startsWith("RS_RECEIVER_")) {
       dropped.push(name);
@@ -234,6 +263,32 @@ export function mapBrowserLeg(
           `RS_RECEIVER_SHELL_SABOTAGE must be css-opacity (got ${JSON.stringify(value)})`,
         );
       shellSabotage = value;
+      continue;
+    }
+    if (name === "RS_RECEIVER_DEV_PROBE") {
+      dropped.push(name);
+      if (value !== "1" && value !== "fit")
+        throw new Error(
+          `RS_RECEIVER_DEV_PROBE must be 1 or fit (got ${JSON.stringify(value)})`,
+        );
+      devProbe = value === "fit" ? "fit" : "plain";
+      continue;
+    }
+    if (name === "RS_RECEIVER_DEV_KEEP_TAB" || name === "RS_RECEIVER_DEV_WARM") {
+      dropped.push(name);
+      if (value !== "1")
+        throw new Error(`${name} must be 1 (got ${JSON.stringify(value)})`);
+      if (name === "RS_RECEIVER_DEV_KEEP_TAB") devTab.keep = true;
+      else devTab.warm = true;
+      continue;
+    }
+    if (name === "RS_RECEIVER_DEV_SAMPLE") {
+      dropped.push(name);
+      if (value !== "light" && value !== "soak")
+        throw new Error(
+          `RS_RECEIVER_DEV_SAMPLE must be light or soak (got ${JSON.stringify(value)})`,
+        );
+      devSample = value;
       continue;
     }
     if (name === "RS_RECEIVER_CACHE_DIR") {
@@ -303,6 +358,9 @@ export function mapBrowserLeg(
     warmFrom,
     lifecycle,
     shellSabotage,
+    devProbe,
+    devSample,
+    devTab,
   };
 }
 
@@ -673,6 +731,9 @@ export function runBrowserLeg(
     // G7u: a lifecycle leg gets the shim before any page script (it survives a reload).
     if (lifecycle)
       await page.addInitScript({ content: lifecycle.initScript() });
+    // G7v: the dev probe (timing only; never on a leg that does not ask).
+    if (mapped.devProbe)
+      await page.addInitScript({ content: devProbeScript(mapped.devProbe) });
     await page.goto(navigateTo);
     // G7k: started after the navigation (so provenance's own about:blank page from
     // `checkProvenanceOf` is never sampled) and before the leg's own work, so a startup leg's
@@ -746,6 +807,15 @@ export function runBrowserLeg(
       if (aborted) return exitCode;
     }
     if (!lifecycle?.closed) state = await readState();
+    if (mapped.devProbe) {
+      const probe = await page
+        .evaluate(DEV_PROBE_REPORT_EXPRESSION)
+        .catch(() => null);
+      await writeFile(
+        join(dir, "dev-probe.json"),
+        `${JSON.stringify(probe ?? { schema: "render-stream-gate7-dev-probe/1", error: "no report" })}\n`,
+      );
+    }
     if (state && token !== "") {
       // Defence in depth: the receiver never prints the token, but nothing written here may.
       state.lines = state.lines.map((l) => ({ ...l, line: scrub(l.line) }));

@@ -1242,6 +1242,13 @@ if [ -n "$G7K_STARTUP_LEGS" ] && [ "${GROUPS_RUN[*]}" = "g6l" ]; then
 	exit 0
 fi
 
+# G7v: a g7-dev run (G6C_LEGS naming only dev-* legs, --legs g6c) has none of g6c's own legs;
+# check-gate7.ts --live --legs g7-dev judges it.
+if [ -n "${G6C_LEGS:-}" ] && [ "${GROUPS_RUN[*]}" = "g6c" ] && ! printf '%s\n' ${G6C_LEGS//,/ } | grep -qv '^dev-'; then
+	echo "run-gate6: G6C_LEGS: dev legs only; check-gate6 skipped (check-gate7.ts --live --legs g7-dev judges them)"
+	legs_quiet_summary
+	exit 0
+fi
 # Checker: writes $OUT/result.json and exits non-zero unless gate_passed.
 echo "run-gate6: running checker"
 cd "$REPO_ROOT"

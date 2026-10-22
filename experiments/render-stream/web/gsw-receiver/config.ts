@@ -61,6 +61,10 @@ export interface LiveConfig {
   shotFinal: boolean;
   /** URL path of the received tap (default <dirname(out)>/received.rs7). */
   receivedOut: string;
+  /** RS_RECEIVER_RECEIVED_MAX_BYTES (receiver.gd's G7k cap, honoured here since G7v): store at
+   * most this many received bytes in the tap; later messages are counted, not stored, and the
+   * stream report says `received_truncated` (null: no cap, the default). */
+  receivedMaxBytes: number | null;
   inboundBytes: number;
   connectTimeoutMs: number;
   creditStage: "submitted" | "applied";
@@ -77,6 +81,10 @@ export interface LiveConfig {
   maxFps: number;
   /** The bearer token from the fragment, or null. Never logged or written. */
   token: string | null;
+  /** RS_RECEIVER_DRAW_REPEAT (G7v, gate7-design.md Q13d `dev-gpu-headroom`): each drawing callback
+   * draws the frame this many times into the stage target, every draw but the last overwritten
+   * (default 1). The headroom leg's GPU load with no GPU counter. */
+  drawRepeat: number;
 }
 
 export class UsageError extends Error {}
@@ -256,6 +264,10 @@ function readLive(
     windows,
     shotFinal: shotFinal === "1",
     receivedOut,
+    receivedMaxBytes: nonNegative(
+      "RS_RECEIVER_RECEIVED_MAX_BYTES",
+      env.RS_RECEIVER_RECEIVED_MAX_BYTES,
+    ),
     inboundBytes: positive(
       "RS_RECEIVER_INBOUND_BYTES",
       env.RS_RECEIVER_INBOUND_BYTES,
@@ -280,6 +292,11 @@ function readLive(
       ) ?? 10000,
     maxFps,
     token,
+    drawRepeat: positive(
+      "RS_RECEIVER_DRAW_REPEAT",
+      env.RS_RECEIVER_DRAW_REPEAT,
+      1,
+    ),
   };
 }
 

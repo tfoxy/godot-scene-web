@@ -47,7 +47,10 @@ import {
   type LifecycleState,
   lifecycleEnvOf,
 } from "./gate7-lifecycle";
+import { DeviceSampler, type SamplerTimeline } from "./device-sampler";
 import {
+  DEV_PROBE_REPORT_EXPRESSION,
+  devProbeScript,
   type BrowserLegRequest,
   type BrowserRunContext,
   webPageEnv,
@@ -63,6 +66,8 @@ export interface DeviceRig {
   pagePort: number;
   hostPort: number;
   /** The running leg's CDP event sink (filtered by its session), or null between legs. */
+  /** G7v: the tab a startup-warm leg kept open for the next one (RS_RECEIVER_DEV_KEEP_TAB). */
+  keptTab: PreparedDeviceTab | null;
   sink: {
     sessionId: string;
     console: (params: Record<string, unknown>) => void;
@@ -107,6 +112,7 @@ export async function openDeviceRig(
     harness,
     pagePort,
     hostPort,
+    keptTab: null,
     sink: null,
   };
   const client = harness.browser.client;
@@ -300,14 +306,33 @@ export function runDeviceBrowserLeg(
   let lease: TargetLease | null = null;
   let leaseReleased = false;
   let lifecycle: LifecycleDriver | null = null;
+  // G7v: a g7-dev leg's probe mode, its report, and the phone's samplers for the leg.
+  let devProbe: "plain" | "fit" | null = null;
+  let devProbeReport: unknown = null;
+  let devSampler: DevSamplerHandle | null = null;
+  const readDevProbe = async (): Promise<void> => {
+    if (!devProbe || devProbeReport !== null) return;
+    devProbeReport = await client
+      .evaluate<unknown>(DEV_PROBE_REPORT_EXPRESSION, { timeoutMs: 30_000 })
+      .catch((err: unknown) => ({
+        schema: "render-stream-gate7-dev-probe/1",
+        error: `no report: ${String(err)}`,
+      }));
+  };
   let preparedMs = 0;
   let conditionsBefore: unknown = null;
   const scrub = (text: string): string =>
     token !== "" ? text.split(token).join("<token>") : text;
+  // G7v: keep this leg's tab for the next (startup-warm) leg instead of closing it.
+  let keepTab: PreparedDeviceTab | null = null;
   const releaseTab = async (): Promise<void> => {
     if (!lease || leaseReleased) return;
     leaseReleased = true;
     rig.sink = null;
+    if (keepTab && !aborted) {
+      rig.keptTab = keepTab;
+      return;
+    }
     await lease.release().catch(() => {});
   };
 
@@ -328,6 +353,33 @@ export function runDeviceBrowserLeg(
         .map((l) => (l.stream === "err" ? `[stderr] ${l.line}` : l.line))
         .join("\n")}\n`,
     );
+    if (devProbe)
+      await writeFile(
+        join(dir, "dev-probe.json"),
+        `${JSON.stringify(devProbeReport ?? { schema: "render-stream-gate7-dev-probe/1", error: "no report" })}\n`,
+      );
+    if (!lifecycle && devProbe) {
+      const samples = devSampler ? await devSampler.stop() : null;
+      const conditionsAfter = await browser.conditions().catch(() => null);
+      await writeFile(
+        join(dir, "device.json"),
+        `${JSON.stringify(
+          {
+            schema: "render-stream-gate7-dev-device/1",
+            id: rig.id,
+            serial: rig.harness.entry.serial,
+            model: browser.props.model,
+            chrome: browser.chromeVersion,
+            isolation: browser.targets.isolation,
+            conditions_before: conditionsBefore,
+            conditions_after: conditionsAfter,
+            samples,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    }
     if (lifecycle) {
       const conditionsAfter = await browser.conditions().catch(() => null);
       lifecycle.device = {
@@ -365,9 +417,10 @@ export function runDeviceBrowserLeg(
       .filter((l) => l !== "");
     const mapped = mapBrowserLeg(staticRoot, nativeEnv, nativeArgv);
     token = mapped.token;
-    if (!mapped.lifecycle)
+    // G7v: a leg with neither a lifecycle spec nor the dev probe is not a device leg.
+    if (!mapped.lifecycle && !mapped.devProbe)
       throw new Error(
-        `lifecycle: ${dir}: the device daemon runs lifecycle legs only (no RS_RECEIVER_LIFECYCLE)`,
+        `device: ${dir}: the device daemon runs lifecycle legs (RS_RECEIVER_LIFECYCLE) and g7-dev legs (RS_RECEIVER_DEV_PROBE) only`,
       );
     if (mapped.warmFrom)
       throw new Error(
@@ -404,20 +457,34 @@ export function runDeviceBrowserLeg(
       canvas: mapped.canvas,
       sabotage: mapped.shellSabotage,
     };
-    const lc = new LifecycleDriver(
-      mapped.lifecycle,
-      "device",
-      ctx.kind,
-      dir,
-      mapped.canvas,
-    );
+    const lc = mapped.lifecycle
+      ? new LifecycleDriver(
+          mapped.lifecycle,
+          "device",
+          ctx.kind,
+          dir,
+          mapped.canvas,
+        )
+      : null;
     lifecycle = lc;
+    devProbe = mapped.devProbe;
     const url = `${origin}/${bundleName}/receiver.html?env=${base64url(JSON.stringify(pageConfig))}`;
     const navigateTo =
       mapped.token !== "" ? `${url}#token=${mapped.token}` : url;
 
-    // The leg's tab (prepared before the leg was asked for: prepareDeviceTab).
-    const tab = await prepared;
+    // The leg's tab (prepared before the leg was asked for: prepareDeviceTab), or, for a G7v
+    // startup-warm leg, the tab the previous leg kept (the spare is closed unused).
+    let tab: PreparedDeviceTab;
+    if (mapped.devTab.warm && rig.keptTab) {
+      tab = rig.keptTab;
+      rig.keptTab = null;
+      void prepared.then((t) => t.lease.release()).catch(() => {});
+    } else {
+      if (mapped.devTab.warm)
+        throw new Error(`${dir}: RS_RECEIVER_DEV_WARM, but no earlier leg kept a tab`);
+      tab = await prepared;
+    }
+    if (mapped.devTab.keep) keepTab = tab;
     lease = tab.lease;
     conditionsBefore = tab.conditionsBefore;
     preparedMs = tab.preparedMs;
@@ -443,12 +510,22 @@ export function runDeviceBrowserLeg(
           provenance_checked: "before",
           ...pageConfig,
           dropped: mapped.dropped,
-          lifecycle: {
-            spec: mapped.lifecycle,
-            env: "device",
-            injected:
-              "Page.addScriptToEvaluateOnNewDocument(lifecycle-shim.js)",
-          },
+          lifecycle: mapped.lifecycle
+            ? {
+                spec: mapped.lifecycle,
+                env: "device",
+                injected:
+                  "Page.addScriptToEvaluateOnNewDocument(lifecycle-shim.js)",
+              }
+            : null,
+          dev_probe: mapped.devProbe
+            ? {
+                mode: mapped.devProbe,
+                sample: mapped.devSample,
+                injected:
+                  "Page.addScriptToEvaluateOnNewDocument(dev-probe.js)",
+              }
+            : null,
           device: {
             id: rig.id,
             serial: entry.serial,
@@ -524,10 +601,44 @@ export function runDeviceBrowserLeg(
     await client.send("Runtime.enable");
     await client.send("Page.enable");
     // The shim before any page script (it survives a reload).
-    await client.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: lc.initScript(),
-    });
+    if (lc)
+      await client.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: lc.initScript(),
+      });
+    // G7v: the dev probe, likewise (timing only).
+    if (mapped.devProbe)
+      await client.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: devProbeScript(mapped.devProbe),
+      });
+    if (mapped.devSample) devSampler = await startDevSampler(rig, mapped.devSample);
     await client.send("Page.navigate", { url: navigateTo });
+    if (!lc) {
+      // G7v: a plain leg (no lifecycle): the desktop leg's exit poll.
+      const deadline = Date.now() + req.timeoutMs;
+      while (Date.now() < deadline && !aborted) {
+        const snap = await client
+          .evaluate<{ exit: { code: number } | null; error: string | null }>(
+            `(() => ({ exit: (window.__rsShell && window.__rsShell.exit) || null, error: (window.__rsShell && window.__rsShell.error) || null }))()`,
+            { timeoutMs: 5000 },
+          )
+          .catch(() => null);
+        if (snap?.exit) {
+          exitCode = snap.exit.code;
+          break;
+        }
+        if (snap?.error) break;
+        await sleep(250);
+      }
+      if (aborted) return exitCode;
+      state = await client
+        .evaluate<DevicePageState>(READ_STATE_EXPRESSION, { timeoutMs: 20_000 })
+        .catch(() => null);
+      if (state && token !== "")
+        state.lines = state.lines.map((l) => ({ ...l, line: scrub(l.line) }));
+      await readDevProbe();
+      await releaseTab();
+      return exitCode;
+    }
 
     const actions = deviceLifecycleActions({
       serial: entry.serial,
@@ -750,6 +861,9 @@ export async function serveDeviceBrowserDaemon(
     const s = spare;
     spare = null;
     if (s) await s.then((t) => t.lease.release()).catch(() => {});
+    const kept = rig.keptTab;
+    rig.keptTab = null;
+    if (kept) await kept.lease.release().catch(() => {});
     const settings = await rig.harness.close().catch((err) => {
       log(`browser-daemon: device close failed: ${String(err)}`);
       return null;
@@ -769,4 +883,70 @@ export async function serveDeviceBrowserDaemon(
     }
   }, 1000).unref();
   await new Promise<never>(() => {});
+}
+
+/** G7v: the phone's samplers for one g7-dev leg (Q13b "Samplers"): conditions and CPU caps every
+ * 30 s; `soak` adds renderer/GPU/browser PSS every 5 s (dumpsys meminfo), gfxinfo GPU memory
+ * (with the 30-s sample) and the leg tab's CDP JS heap every 10 s. Stopped when the leg ends. */
+export interface DevSamplerHandle {
+  stop(): Promise<{
+    device: SamplerTimeline;
+    js_heap: { t_ms: number; used_bytes: number | null }[];
+  }>;
+}
+
+export async function startDevSampler(
+  rig: DeviceRig,
+  mode: "light" | "soak",
+): Promise<DevSamplerHandle> {
+  const browser = rig.harness.browser;
+  const entry = rig.harness.entry;
+  const chromePackage = entry.chrome_package;
+  const processInfo = await browser.client
+    .send<{ processInfo: { type: string; id: number }[] }>(
+      "SystemInfo.getProcessInfo",
+      {},
+      { flat: true, timeoutMs: 10_000 },
+    )
+    .then((r) => r.processInfo ?? [])
+    .catch(() => [] as { type: string; id: number }[]);
+  const ids = processInfo
+    .filter((p) => p.type === "renderer" || p.type === "GPU" || p.type === "browser")
+    .map((p) => p.id)
+    .filter((pid) => pid > 0);
+  const sampler = new DeviceSampler(browser.adb, {
+    chromePackage,
+    clusters: entry.cpu_clusters,
+    pids: () => (mode === "soak" ? ids : []),
+    conditionsMs: 30_000,
+    memoryMs: mode === "soak" ? 5_000 : 3_600_000,
+  });
+  sampler.start();
+  const t0 = Date.now();
+  const jsHeap: { t_ms: number; used_bytes: number | null }[] = [];
+  let timer: ReturnType<typeof setInterval> | null = null;
+  if (mode === "soak") {
+    await browser.client
+      .send("Performance.enable", {})
+      .catch(() => {});
+    timer = setInterval(() => {
+      void browser.client
+        .send<{ metrics: { name: string; value: number }[] }>(
+          "Performance.getMetrics",
+          {},
+        )
+        .then((r) => {
+          const m = r.metrics.find((x) => x.name === "JSHeapUsedSize");
+          jsHeap.push({ t_ms: Date.now() - t0, used_bytes: m ? m.value : null });
+        })
+        .catch(() => jsHeap.push({ t_ms: Date.now() - t0, used_bytes: null }));
+    }, 10_000);
+  }
+  return {
+    stop: async () => {
+      if (timer) clearInterval(timer);
+      const device = await sampler.stop();
+      return { device, js_heap: jsHeap };
+    },
+  };
 }

@@ -379,6 +379,7 @@
         "experiments/render-stream/scripts/lib/gate7-dev*.ts",
         "experiments/render-stream/scripts/lib/gate7-device-legs.ts",
         "experiments/render-stream/scripts/lib/gate7d-checks.ts",
+        "experiments/render-stream/scripts/lib/gate7v-checks.ts",
         "experiments/render-stream/scripts/lib/device-*.ts",
         "experiments/render-stream/fixtures/gate7-*",
         "experiments/render-stream/fixtures/gate7-*/**"

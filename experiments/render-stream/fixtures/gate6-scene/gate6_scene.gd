@@ -21,6 +21,9 @@ extends Node
 ##                           exit 2, when a GRC_* capture variable is set)
 ##   RS_FIXTURE_QUIT_TIME    rate and soak only: seconds of game time to quit at, at least the
 ##                           timeline's own (30 / 370); G6c's constrained sabotage drains a backlog
+##   RS_FIXTURE_TIME_OFFSET_S rate and soak only (G7v): seconds >= 0 added to every step time and
+##                           to the quit time, so the timeline starts later and the scene animates
+##                           unchanged until then (default 0: the timeline as Q6c defines it)
 ##   RS_FIXTURE_FREEZE_STATE a JSON array with one builder `freeze_state()` object (G6c): applied
 ##                           right after step 11, so a reference ends in a realtime host's exact
 ##                           frozen state. Rate and soak step logs carry `freeze` at step 11
@@ -70,6 +73,8 @@ var _next_step: int = 1
 ## Time-indexed timelines: the frame at which each applied step settles (-1 until applied).
 var _settle_at: Dictionary[int, int] = {}
 var _quit_time: float = 0.0
+## G7v: RS_FIXTURE_TIME_OFFSET_S (rate and soak timelines).
+var _time_offset: float = 0.0
 ## G6c: the frozen leftovers to apply after step 11 (empty: none).
 var _freeze_override: Dictionary = {}
 
@@ -159,8 +164,8 @@ func _settle_step(frame: int) -> int:
 
 func _step_time(step: int) -> float:
 	if step == LAST_STEP:
-		return RATE_STEP11 if _timeline == "rate" else SOAK_STEP11
-	return RATE_FIRST + float(step)
+		return _time_offset + (RATE_STEP11 if _timeline == "rate" else SOAK_STEP11)
+	return _time_offset + RATE_FIRST + float(step)
 
 
 func _quit_due() -> bool:
@@ -216,6 +221,13 @@ func _read_environment() -> bool:
 			_error("RS_FIXTURE_QUIT_TIME needs the rate or soak timeline and seconds >= %s (got %s)" % [_quit_time, JSON.stringify(quit_text)])
 			return false
 		_quit_time = quit_text.to_float()
+	if OS.has_environment("RS_FIXTURE_TIME_OFFSET_S"):
+		var offset_text: String = OS.get_environment("RS_FIXTURE_TIME_OFFSET_S").strip_edges()
+		if _frame_indexed() or not offset_text.is_valid_float() or offset_text.to_float() < 0.0:
+			_error("RS_FIXTURE_TIME_OFFSET_S needs the rate or soak timeline and seconds >= 0 (got %s)" % JSON.stringify(offset_text))
+			return false
+		_time_offset = offset_text.to_float()
+		_quit_time += _time_offset
 	if OS.has_environment("RS_FIXTURE_FREEZE_STATE"):
 		var parsed: Variant = JSON.parse_string(OS.get_environment("RS_FIXTURE_FREEZE_STATE"))
 		var ok: bool = parsed is Array
