@@ -1,7 +1,7 @@
 name: rs-setup
 description: >-
   Toolchain for remote render-stream validation runs (docs/remote-compute.md). R0a provides only
-  what the `pure`, `pnpm-test` and `cargo-*` runs need: mise (node and pnpm from mise.toml),
+  what the `pure`, `pnpm-test` and `cargo-*` runs need: node and pnpm (versions from mise.toml),
   `pnpm install --frozen-lockfile` with a store cache, Rust 1.95.0 and `cargo fetch` for the
   render-stream crates (their `cargo test` runs --offline) with a registry cache. The later-rung
   inputs below exist so workflows can already name them; enabling one fails loudly until its rung
@@ -28,7 +28,9 @@ inputs:
     description: "R0b: wasm-bindgen-cli 0.2.129"
     default: "false"
   chromium:
-    description: "R3: Playwright 1.60.0 Chromium rev 1223 installed on the runner, sha-checked"
+    description: >-
+      Playwright's Chromium (the repo's pinned @playwright/test version) installed on the runner,
+      for pnpm-test's browser tests. R3 adds the sha check against the pinned build.
     default: "false"
   gamescope:
     description: "R1: apt gamescope/xvfb/mesa-vulkan-drivers/strace for rendered legs"
@@ -45,43 +47,45 @@ runs:
         EMSDK: ${{ inputs.emsdk }}
         NIGHTLY: ${{ inputs.nightly }}
         WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
-        CHROMIUM: ${{ inputs.chromium }}
         GAMESCOPE: ${{ inputs.gamescope }}
       run: |
         for pair in godot:"$GODOT" templates:"$TEMPLATES" emsdk:"$EMSDK" nightly:"$NIGHTLY" \
-          wasm-bindgen:"$WASM_BINDGEN" chromium:"$CHROMIUM" gamescope:"$GAMESCOPE"; do
+          wasm-bindgen:"$WASM_BINDGEN" gamescope:"$GAMESCOPE"; do
           if [ "${pair#*:}" = "true" ]; then
             echo "::error::rs-setup input '${pair%%:*}' is not implemented at R0a"
             exit 1
           fi
         done
 
-    # mise.toml also pins godot; install only the two tools R0a needs and keep `mise exec` from
-    # trying to fetch the editor.
-    - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
+    # The repo only allows actions owned by GitHub, the owner, or pnpm/action-setup, so node and pnpm
+    # come the way publish.yml gets them (versions equal mise.toml's), not through jdx/mise-action.
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       with:
-        install_args: node pnpm
-      env:
-        MISE_DISABLE_TOOLS: godot
+        version: 10.26.0
 
-    - name: pnpm store path
-      id: pnpm-store
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24.12.0
+        cache: pnpm
+
+    # validate-increment's pnpm-test run calls `mise exec -- pnpm test`. A mise stand-in that just
+    # execs the command keeps the runner scripts identical to local (no mise download here).
+    - name: mise stand-in
       shell: bash
-      env:
-        MISE_DISABLE_TOOLS: godot
-      run: echo "path=$(mise exec -- pnpm store path --silent)" >>"$GITHUB_OUTPUT"
-
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.pnpm-store.outputs.path }}
-        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-        restore-keys: pnpm-store-${{ runner.os }}-
+      run: |
+        mkdir -p "$RUNNER_TEMP/shim"
+        printf '#!/usr/bin/env bash\n[ "$1" = exec ] && shift\n[ "$1" = -- ] && shift\nexec "$@"\n' >"$RUNNER_TEMP/shim/mise"
+        chmod +x "$RUNNER_TEMP/shim/mise"
+        echo "$RUNNER_TEMP/shim" >>"$GITHUB_PATH"
 
     - name: pnpm install
       shell: bash
-      env:
-        MISE_DISABLE_TOOLS: godot
-      run: mise exec -- pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile
+
+    - name: Playwright Chromium
+      if: inputs.chromium == 'true'
+      shell: bash
+      run: pnpm exec playwright install --with-deps chromium
 
     - name: Rust toolchain
       shell: bash
