@@ -20,7 +20,9 @@ extends Node
 ##                          frames 1..400)
 ##   RS_FIXTURE_QUIT_TIME   realtime: seconds of game time to quit at, >= 1 (default 30)
 ##   RS_FIXTURE_STEP_LOG    absolute path: one JSONL line per shot point (`step` k at its frame,
-##                          applied_frame == settle_frame: nothing settles here)
+##                          applied_frame == settle_frame: nothing settles here); realtime (G7v):
+##                          one `final` line at the quit frame with the square's last position, the
+##                          presence and freshness marker of a live leg's final readback
 ##   RS_FIXTURE_SHOT_DIR    absolute dir: step-<k>.png at each shot frame (rendered runs only)
 
 const X0: int = 300
@@ -88,6 +90,9 @@ func _process(delta: float) -> void:
 			print("[fixture] quitting frame=%d time=%.3f" % [_frame, _game_time])
 			get_tree().quit(0)
 	elif _game_time >= _quit_time:
+		if _step_log_file != null:
+			_step_log_file.store_line(JSON.stringify({"final": true, "frame": _frame, "index": index, "x": x_at(index), "y": Y, "size": SIZE}))
+			_step_log_file.flush()
 		print("[fixture] quitting frame=%d time=%.3f index=%d" % [_frame, _game_time, index])
 		get_tree().quit(0)
 

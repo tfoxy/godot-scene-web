@@ -213,6 +213,8 @@ class LiveReceiver {
     path: string;
     chunks: ArrayBuffer[];
     bytes: number;
+    /** bytes in `chunks` (less than `bytes` once RS_RECEIVER_RECEIVED_MAX_BYTES is reached) */
+    stored: number;
   }[] = [];
   private readonly sabotage: Set<string>;
 
@@ -286,7 +288,7 @@ class LiveReceiver {
     this.keepLog = cfg.log === "full";
     this.sabotage = new Set(cfg.sabotage);
     this.streamReport = this.newStreamReport(L.receivedOut);
-    this.taps.push({ path: L.receivedOut, chunks: [], bytes: 0 });
+    this.taps.push({ path: L.receivedOut, chunks: [], bytes: 0, stored: 0 });
     this.liveBlock = {
       url: L.url,
       credit_stage: L.creditStage,
@@ -300,6 +302,8 @@ class LiveReceiver {
       gsw: {
         credit_window_requested: L.creditWindow,
         max_fps: L.maxFps,
+        // G7v: RS_RECEIVER_DRAW_REPEAT (1 unless the headroom leg asks for more).
+        draw_repeat: L.drawRepeat,
         raf_callbacks: 0,
         raf_skipped: 0,
         drawn_rafs: 0,
@@ -563,7 +567,12 @@ class LiveReceiver {
     const mem = this.mem as WebAssembly.Memory;
     const now = us();
     const tap = this.taps[this.taps.length - 1];
-    tap.chunks.push(buf);
+    // receiver.gd's RS_RECEIVER_RECEIVED_MAX_BYTES: past the cap a message is counted, not stored.
+    const cap = this.L.receivedMaxBytes;
+    if (cap === null || tap.stored + buf.byteLength <= cap) {
+      tap.chunks.push(buf);
+      tap.stored += buf.byteLength;
+    } else this.streamReport.received_truncated = true;
     tap.bytes += buf.byteLength;
     this.streamReport.received_bytes = tap.bytes;
     const len = buf.byteLength;
@@ -1326,6 +1335,10 @@ class LiveReceiver {
     }
     // Draw and blit (Q14c step 4); GSW draws only in a callback that applied a transaction.
     const d0 = performance.now();
+    // G7v `dev-gpu-headroom`: RS_RECEIVER_DRAW_REPEAT draws the same frame N times; each draw
+    // clears and fills the stage target and blits it, so only the last one is seen.
+    for (let r = 1; r < this.L.drawRepeat; r++)
+      if (g.draw() < 0) throw failWith(seq, g.error());
     if (g.draw() < 0) throw failWith(seq, g.error());
     const d1 = performance.now();
     this.fenceDrawEnd = d1;
@@ -1825,7 +1838,7 @@ class LiveReceiver {
       dot > base.lastIndexOf("/")
         ? `${base.slice(0, dot)}-${this.connIndex}${base.slice(dot)}`
         : `${base}-${this.connIndex}`;
-    this.taps.push({ path, chunks: [], bytes: 0 });
+    this.taps.push({ path, chunks: [], bytes: 0, stored: 0 });
     this.fetcher?.cancel();
     this.pending = null;
     this.queue = [];
@@ -1923,7 +1936,7 @@ class LiveReceiver {
           this.report.recording = {
             path: tap.path,
             sha256: sha,
-            bytes: tap.bytes,
+            bytes: tap.stored,
           };
       }
       if (g) {

@@ -41,6 +41,30 @@
 #                                  (RS_RECEIVER_SABOTAGE=ack-on-receipt)
 #   - `constrained` under GATE7_LIVE_KIND has bearer authorization (GRC_LIVE_AUTH=token), so the
 #     browser's payload GETs are preflighted and the proxy can time the preflights.
+#
+# G7v (protocol/gate7/g7v.md, gate7-design.md Q13d; run-gate7.sh --live --legs g7-dev): the phone
+# legs `dev-<base>-r<N>` (r0 the discarded warmup), named only in G6C_LEGS, one receiver kind and
+# one credit window per run (GATE7_LIVE_KIND, GATE7_CREDIT_WINDOW). <base>:
+#   pace | scene | hd                  the Q13d workloads: fixtures/gate7-pace (realtime), gate6-scene
+#                                      and gate6-hd (animate, `rate` timeline), GRC_PUBLISH_FPS=60,
+#                                      host --max-fps 60, receiver --max-fps 0 (hd: 1920x1080)
+#   gpu-headroom-<workload>            the same with RS_RECEIVER_DRAW_REPEAT=2 (gsw)
+#   maxfps60-scene                     scene with the receiver at --max-fps 60 (web, report-only)
+#   sabotage-ack-on-receipt-scene      scene, RS_RECEIVER_SABOTAGE=ack-on-receipt (gsw)
+#   sabotage-draw-repeat-8-<workload>  RS_RECEIVER_DRAW_REPEAT=8 (gsw)
+#   soak-<workload>                    G7V_SOAK_S (600) of the workload after a 60-s warmup
+#   sabotage-soak-leak-gl-textures-<workload>  the soak with RS_RECEIVER_SABOTAGE=leak-gl-textures
+#   startup-cold | startup-warm        scene from a fresh tab / the same tab again (device:
+#                                      RS_RECEIVER_DEV_KEEP_TAB/RS_RECEIVER_DEV_WARM; desktop:
+#                                      G7k's profile copy, RS_RECEIVER_CACHE_MODE=warm)
+# Every scene and hd timeline is shifted G7V_TIME_OFFSET_S (default 12) later
+# (RS_FIXTURE_TIME_OFFSET_S), and pace quits at 30 + that, so a receiver that connects late (the
+# web export needs ~10 s on the g31) still streams the whole measured window, which check-gate7.ts
+# places at the connection's first host timeline line + 6 s (20 s; a soak 60 s + G7V_SOAK_S). The
+# receiver gets the harness words RS_RECEIVER_DEV_PROBE (`1`, or `fit` under G7V_ENV=device: the
+# keep-rule CSS fit, Q13a) and, on the device, RS_RECEIVER_DEV_SAMPLE (`light`; a soak `soak`).
+# Scene and hd legs get G6c's rendered reference of the host's step-11 freeze state afterwards
+# (dev-presence); pace's step log carries its final position instead.
 
 G6C_DIR_NAME="rates"
 # Q6c's rate timeline runs 30 s of game time; a host gets this long to quit.
@@ -74,11 +98,125 @@ G6C_G7R_LEGS+=(dual-native sabotage-ack-on-receipt)
 # G7q (gate7/g7q.md "Sabotage"): G6c's constrained sabotage with GRC_SABOTAGE=window-overrun at
 # credit window 2 (GATE7_CREDIT_WINDOW=2; run-gate7.sh --credit-window 2 --receiver native).
 G6C_G7R_LEGS+=(sabotage-constrained-window-overrun)
+G7V_PACE_DIR="$(cd "$SCENE_FIXTURE_DIR/../gate7-pace" && pwd)"
+G7V_TIME_OFFSET_S="${G7V_TIME_OFFSET_S:-12}"
+G7V_SOAK_S="${G7V_SOAK_S:-600}"
 # The receiver's --max-fps where G6c's native receiver runs at 60: rAF-bound in a browser (Q9).
 G6C_RECV60=60
 [ -n "${GATE7_LIVE_KIND:-}" ] && G6C_RECV60=0
 # Under GATE7_LIVE_KIND: the next g6c_start_receiver stays native (reset by it).
 G6C_RECEIVER_NATIVE=0
+
+# g6c_dev_legs: the dev-* legs G6C_LEGS names, in its order.
+g6c_dev_legs() {
+	local leg
+	[ -n "${G6C_LEGS:-}" ] || return 0
+	for leg in ${G6C_LEGS//,/ }; do
+		case "$leg" in
+		dev-*) echo "$leg" ;;
+		esac
+	done
+}
+
+# g6c_dev_leg <leg>: one G7v leg (header). Sets G6C_DEV_REF_<n> for the references pass.
+G6C_DEV_REFS=()
+g6c_dev_leg() {
+	local leg="$1" base workload offset="$G7V_TIME_OFFSET_S" recv_fps="$G6C_RECV60" fixture D port
+	local probe=1 sample="" soak=0 timeout_save="$G6C_HOST_TIMEOUT_S" recv_timeout_save="$G6C_RECEIVER_TIMEOUT_S"
+	local rendered_save="$RENDERED_TIMEOUT_S" run
+	local -a host_env=() recv_env=() recv_args=()
+	base="${leg#dev-}"
+	run="${base##*-r}"
+	base="${base%-r[0-9]}"
+	if [ "${G7V_ENV:-desktop}" = device ]; then
+		probe=fit
+		sample=light
+	fi
+	case "$base" in
+	pace | scene | hd) workload="$base" ;;
+	gpu-headroom-*)
+		workload="${base#gpu-headroom-}"
+		recv_env+=(RS_RECEIVER_DRAW_REPEAT=2)
+		;;
+	maxfps60-scene)
+		workload=scene
+		recv_fps=60
+		;;
+	sabotage-ack-on-receipt-scene)
+		workload=scene
+		recv_env+=(RS_RECEIVER_SABOTAGE=ack-on-receipt)
+		;;
+	sabotage-draw-repeat-8-*)
+		workload="${base#sabotage-draw-repeat-8-}"
+		recv_env+=(RS_RECEIVER_DRAW_REPEAT=8)
+		;;
+	soak-* | sabotage-soak-leak-gl-textures-*)
+		workload="${base##*-}"
+		soak=1
+		offset=$((G7V_SOAK_S + 90))
+		[ -n "$sample" ] && sample=soak
+		case "$base" in sabotage-*) recv_env+=(RS_RECEIVER_SABOTAGE=leak-gl-textures) ;; esac
+		;;
+	startup-cold | startup-warm)
+		workload=scene
+		offset=0
+		if [ "$base" = startup-warm ]; then
+			if [ "${G7V_ENV:-desktop}" = device ]; then
+				[ "$run" != 0 ] && recv_env+=(RS_RECEIVER_DEV_WARM=1)
+				[ "$run" != 5 ] && recv_env+=(RS_RECEIVER_DEV_KEEP_TAB=1)
+			elif [ "$run" != 0 ]; then
+				recv_env+=(RS_RECEIVER_CACHE_DIR="$G6C/dev-startup-warm-r0/receiver/cache" RS_RECEIVER_CACHE_MODE=warm)
+			fi
+		fi
+		;;
+	*)
+		echo "run-gate6: g6c: unknown G7v leg $leg" >&2
+		return 0
+		;;
+	esac
+	case "$workload" in
+	pace)
+		fixture="$G7V_PACE_DIR"
+		host_env=(RS_FIXTURE_TIME=realtime RS_FIXTURE_QUIT_TIME=$((30 + offset)))
+		;;
+	scene)
+		fixture="$SCENE_FIXTURE_DIR"
+		host_env=(RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=rate RS_FIXTURE_TIME_OFFSET_S="$offset")
+		;;
+	hd)
+		fixture="$HD_FIXTURE_DIR"
+		host_env=(RS_FIXTURE_VARIANT=animate RS_FIXTURE_TIMELINE=rate RS_FIXTURE_TIME_OFFSET_S="$offset")
+		recv_args=(--resolution 1920x1080)
+		;;
+	*)
+		echo "run-gate6: g6c: $leg: unknown workload $workload" >&2
+		return 0
+		;;
+	esac
+	recv_env+=(RS_RECEIVER_DEV_PROBE="$probe")
+	# G7k's soak cap on the received tap (both receivers): a phone's browser cannot hold an hd or
+	# soak leg's whole tap (GSW's blob read failed at ~30 MB on the g31), and no dev check reads it.
+	recv_env+=(RS_RECEIVER_RECEIVED_MAX_BYTES=1048576)
+	[ -n "$sample" ] && recv_env+=(RS_RECEIVER_DEV_SAMPLE="$sample")
+	G6C_HOST_TIMEOUT_S=$((offset + 120))
+	G6C_RECEIVER_TIMEOUT_S=$((offset + 150))
+	RENDERED_TIMEOUT_S=$((offset + 150))
+	D="$G6C/$leg"
+	echo "run-gate6: g6c: $leg ($workload, offset ${offset} s, receiver --max-fps $recv_fps${recv_env[*]:+, ${recv_env[*]}})"
+	g6c_start_host "$D/host" "$fixture" 60 GRC_PUBLISH_FPS=60 "${host_env[@]}"
+	port="$G6C_PORT"
+	G6C_RECEIVER_ENV=("${recv_env[@]}")
+	g6c_start_receiver "$D/receiver" "$port" "$recv_fps" ${recv_args[@]+"${recv_args[@]}"}
+	g6c_wait_receiver "$D/receiver" "$G6C_RECEIVER_PID"
+	g6c_finish_host "$D/host"
+	printf '{"leg":"%s","base":"%s","run":%s,"workload":"%s","time_offset_s":%s,"soak":%s,"soak_s":%s,"receiver_max_fps":%s,"env":"%s","receiver_words":"%s"}\n' \
+		"$leg" "$base" "$run" "$workload" "$offset" "$([ "$soak" = 1 ] && echo true || echo false)" "$G7V_SOAK_S" \
+		"$recv_fps" "${G7V_ENV:-desktop}" "${recv_env[*]}" >"$D/dev-leg.json"
+	[ "$workload" != pace ] && G6C_DEV_REFS+=("$leg:$workload")
+	G6C_HOST_TIMEOUT_S="$timeout_save"
+	G6C_RECEIVER_TIMEOUT_S="$recv_timeout_save"
+	RENDERED_TIMEOUT_S="$rendered_save"
+}
 
 g6c_wanted() {
 	if [ -z "${G6C_LEGS:-}" ]; then
@@ -487,11 +625,15 @@ run_g6c() {
 	done
 	g6c_provenance_input
 	: >"$G6C/legs-run.txt"
-	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}"; do
+	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}" $(g6c_dev_legs); do
 		if g6c_wanted "$leg"; then
 			echo "$leg" >>"$G6C/legs-run.txt"
 		fi
 	done
+	if g6c_dev_legs | grep -q '^dev-pace'; then
+		LEG_ENV=()
+		run_headless "$G6C/import/pace-fixture" none -- mise exec -- godot --headless --path "$G7V_PACE_DIR" --import
+	fi
 	# G7r: which receiver ran the legs (lib/gate7r-checks.ts reads it).
 	# G7q: a --credit-window 2 run records its window (absent at 1: the file is what it was).
 	g6c_window_json=""
@@ -635,6 +777,17 @@ run_g6c() {
 		g6c_leg sabotage-constrained-window-overrun 60 60
 	fi
 
+	# G7v: the dev legs, in G6C_LEGS order, then their scene references (hd: below).
+	for leg in $(g6c_dev_legs); do
+		g6c_dev_leg "$leg"
+	done
+	local dev_ref
+	for dev_ref in ${G6C_DEV_REFS[@]+"${G6C_DEV_REFS[@]}"}; do
+		[ "${dev_ref#*:}" = scene ] || continue
+		echo "run-gate6: g6c: ${dev_ref%%:*}/reference (the host's step-11 freeze state, file timeline)"
+		g6c_reference "$G6C/${dev_ref%%:*}" "$SCENE_FIXTURE_DIR" RS_FIXTURE_VARIANT=animate
+	done
+
 	for leg in "${G6C_ALL_LEGS[@]}" "${G6C_G7R_LEGS[@]}"; do
 		case "$leg" in
 		rate-baseline | gpu-heavy) continue ;;
@@ -645,6 +798,20 @@ run_g6c() {
 	done
 	gs_teardown "$OUT/gamescope-g6c"
 	GS_RUN_DIR=""
+
+	if printf '%s\n' ${G6C_DEV_REFS[@]+"${G6C_DEV_REFS[@]}"} | grep -q ':hd$'; then
+		echo "run-gate6: bringing up private gamescope 1920x1080 for the G7v hd references"
+		gs_start 1920 1080 "$OUT/gamescope-g6c-dev-hd"
+		g6c_session_display_proof "$G6C/display-socket-proof-dev-1920x1080.json"
+		for dev_ref in "${G6C_DEV_REFS[@]}"; do
+			[ "${dev_ref#*:}" = hd ] || continue
+			echo "run-gate6: g6c: ${dev_ref%%:*}/reference (gate6-hd animate, the host's step-11 freeze state)"
+			G6C_REFERENCE_ARGS=(--resolution 1920x1080)
+			g6c_reference "$G6C/${dev_ref%%:*}" "$HD_FIXTURE_DIR" RS_FIXTURE_VARIANT=animate
+		done
+		gs_teardown "$OUT/gamescope-g6c-dev-hd"
+		GS_RUN_DIR=""
+	fi
 
 	if g6c_wanted gpu-heavy; then
 		echo "run-gate6: bringing up private gamescope 1920x1080 for g6c gpu-heavy"

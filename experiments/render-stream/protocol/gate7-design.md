@@ -1622,7 +1622,7 @@ Each increment's design detail and "As built" notes live in its own `gate7/<id>.
 | [G7o4](../results/gate7/g7o4.md) | opus (rs-increment agent) | 6 | yes (rs-core, the `canvas-items` executor and a draw-list flag; its g31 runs unattended) | G7o3 (landed) |
 | [G7k](gate7/g7k.md) | sonnet | 6 | no | G7g, G7u, G6s |
 | [G7q](gate7/g7q.md) | opus | 7 | no; F1 approved 2026-10-14 (opt-in) | G7r |
-| [G7v](gate7/g7v.md) | opus | 8 | no. g31 device arms unattended while it is attached; **g86 device arms operator-attended**; control arms unattended | G7r, G7wf, G7k, G7q, G7d, G7x; G7xw if it landed (the web export's arms otherwise run GDScript) |
+| [G7v](../results/gate7/g7v.md) | opus | 8 | no. g31 device arms unattended while it is attached; g86 descoped by the user (2026-10-22); control arms unattended | G7r, G7wf, G7k, G7q, G7d, G7x; G7xw if it landed (the web export's arms otherwise run GDScript) |
 | [G7p](gate7/g7p.md) | sonnet | 9 | no | G7r, G7k, G7v, G6p (G7q if approved) |
 | [G7z](gate7/g7z.md) | sonnet | 10 | no | G7p, G6z (and everything before) |
 

@@ -30,7 +30,7 @@
 
 // GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
 import "./lib/node-hash";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -75,6 +75,12 @@ import {
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
 import { checkG7kKind, type G7kKindResult } from "./lib/gate7k-checks";
+import {
+  checkDevRun,
+  type DevRunResult,
+  writeDevSummary,
+} from "./lib/gate7v-checks";
+import { loadDeviceTable } from "./lib/browser-harness";
 import {
   checkG7rKind,
   G7R_KINDS,
@@ -184,6 +190,7 @@ export interface Gate7Report {
     | G7rKindResult
     | G7uRunResult
     | G7kKindResult
+    | DevRunResult
   )[];
 }
 
@@ -409,7 +416,8 @@ async function main(): Promise<void> {
   const device = env?.env === "device" ? env.device : null;
   const groupChecks: Record<string, Gate7Check[]> = {};
   let benchTable: BenchTableRow[] = [];
-  if (legs.includes("g7-dev"))
+  // G7d's pace and plan checks (file legs); `--live` g7-dev is G7v's (below).
+  if (legs.includes("g7-dev") && !live)
     groupChecks["g7-dev"] = await runGate7DevChecks(out, device);
   if (legs.includes("g7-bench")) {
     const bench = await runGate7BenchChecks(out, device, env?.receiver ?? null);
@@ -423,6 +431,7 @@ async function main(): Promise<void> {
     | G7rKindResult
     | G7uRunResult
     | G7kKindResult
+    | DevRunResult
   )[] = [];
   // G7l: `--live` judges only the live runs (lib/gate7-live.ts), never the file legs' sources.
   const wantWeb =
@@ -509,6 +518,46 @@ async function main(): Promise<void> {
       }
       if (!results.some((r) => r.group === "g7-k"))
         throw new Error("check-gate7: --live g7-k: no <out>/gate6/g6s-<kind>/");
+    }
+    // G7v: one result per <arm>-<kind>-w<window> run (run-gate7.sh --live --legs g7-dev).
+    if (legs.includes("g7-dev")) {
+      const table = loadDeviceTable();
+      const runs = existsSync(join(out, "gate6"))
+        ? readdirSync(join(out, "gate6")).filter((d) =>
+            /^(ctl|dev-[a-z0-9]+)-(web|gsw)-w[12]$/.test(d),
+          )
+        : [];
+      const devResults: DevRunResult[] = [];
+      for (const name of runs.sort()) {
+        const m = /^(ctl|dev-([a-z0-9]+))-(web|gsw)-w([12])$/.exec(name);
+        if (!m) continue;
+        const kind = m[3] as "web" | "gsw";
+        if (receiver && receiver !== kind) continue;
+        const dev = m[2] ?? null;
+        const entry = table[(dev ?? "g31") as keyof typeof table];
+        console.log(`check-gate7: judging g7-dev ${name}`);
+        const r = await checkDevRun(
+          join(out, "gate6", name),
+          kind,
+          Number(m[4]),
+          m[1],
+          dev,
+          entry?.required_workloads ?? ["pace", "scene"],
+        );
+        devResults.push(r);
+        results.push(r);
+      }
+      if (devResults.length === 0)
+        throw new Error(
+          "check-gate7: --live g7-dev: no <out>/gate6/<ctl|dev-<id>>-<kind>-w<w>/",
+        );
+      const firstDev = devResults.find((r) => r.device !== null)?.device ?? "g31";
+      await writeDevSummary(
+        out,
+        devResults,
+        table[firstDev as keyof typeof table]?.required_workloads ?? ["pace", "scene"],
+      );
+      console.log(`check-gate7: wrote ${join(out, "g7v-summary.json")}`);
     }
   }
   if (legs.includes("g7-0") && wantWeb) {
