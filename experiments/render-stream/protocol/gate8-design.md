@@ -5,7 +5,9 @@ Status: contract for gate 8, written 2026-10-22/23. G8w (the /8 wire, policy par
 G8t (host decode of block-compressed textures, the `gate8-tex` fixture and the gate 8 runner) is
 landed: Q3 "As built (G8t)", [results/gate8/g8t.md](../results/gate8/g8t.md). G8a (arm-time adoption
 of canvases, layers and items, the `gate8-adopt` fixture) is landed: Q2 "As built (G8a)",
-[results/gate8/g8a.md](../results/gate8/g8a.md). Nothing else here is implemented. The user decided on
+[results/gate8/g8a.md](../results/gate8/g8a.md). G8sha (the capture's SHA-256 on SHA-NI, 5.7x, output
+unchanged) is landed: [results/gate8/g8sha.md](../results/gate8/g8sha.md). Nothing else here is
+implemented. The user decided on
 2026-10-22 that public release needs the gate 8 blockers first (memory g31-good-enough-release-first).
 Gate 8 is "integrate behind couch-coop's instance rules, with the streaming seat opting out of the
 headless visual freeze/suspender" (`docs/handoff-headless-render-stream.md`, gate table). The single
@@ -360,7 +362,9 @@ Decisions taken where this section left room, each the long-term option:
 - **Measured on this host** (results/gate8/g8t.md): the hardware-sampled reference differs from the
   CPU-decoded one by 23,827 px (max channel delta 5) on the S3TC/BPTC step and by 0 px on the
   ETC2/ASTC step (desktop GLES3 decodes those on the CPU itself). The hook's cost on a 2048² texture
-  is dominated by the SHA-256 of the 16 MiB payload, not the decode, except for ASTC.
+  is dominated by the SHA-256 of the 16 MiB payload, not the decode, except for ASTC. G8sha
+  (results/gate8/g8sha.md) moved the hash to SHA-NI: ~48.5 -> ~8.4 ms, now the smallest of
+  decode, copy and hash for every format.
 
 ## Q4. Host size at a late arm (blocker 3)
 
@@ -477,6 +481,7 @@ needs a real `Changelog:` line). Times are writing plus validation at the map's 
 | -- | ------- | ----- | -------------------------------- | ----------- | ---------- |
 | G8w | render-stream/8 codecs and validators, `golden-8/`, `render-stream.8` subprotocol, `GRC_STREAM_VERSION`, policy parsing and refusals (D2), empty adoption/decode seams | `protocol/render-stream-8.md`, `protocol/golden-8/`, `capture/src/rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `entry.cpp`, `scripts/lib/render-stream-2.ts`, `rs-core/src/{wire,validate,meta}.rs`, self-tests | `*` (capture, decoders, goldens): `pure`, `capture-build`, `cargo:rs-core`, `cargo:rs-core-capi`, `native:*@rust`, `g7:*@*`, `g7live:*@*`, `bench-instr` | sonnet, 3 h + full tier | G7z landed |
 | G8t | Host decode of block-compressed textures (D8), `gate8-tex` fixture and its decode legs, `decode-cost` measured on the template; gate 8 runner, checker and smoke-map entries | `capture/src/rs_texture_payload.cpp`, `hooks.cpp` copy path, `fixtures/gate8-tex/`, `run-gate8.sh`, `check-gate8.ts`, `lib/gate8-tex*.ts`, `smoke-map.json` | `*` (capture); narrow rule if the seams hold | opus, 4 h + full tier | G8w |
+| G8sha | The capture's SHA-256 on x86 SHA-NI with runtime CPUID dispatch and the portable fallback, one implementation (calib.cpp's copy removed), bit-identical output; landed | `capture/src/rs_sha256.*`, `calib.cpp`, `capture/test/rs_sha256_{test,bench}.cpp`, `build-capture.sh` | `*` (capture) | opus, 3 h + full tier | G8t |
 | G8a | Adoption of canvases, layers and items (D3-D5, D13), `gate8-adopt` fixture, `born`/`late` equivalence | `capture/src/rs_adopt.*`, `rs_mirror.*`, `entry.cpp`, `fixtures/gate8-adopt/`, `lib/gate8-adopt*.ts` | `*` (mirror) | opus, 6 h + full tier | G8w |
 | G8h | `presentation:` at a late arm (D10), `gate8-size` fixture | `capture/src/entry.cpp`, `rs_root_query.cpp`, `fixtures/gate8-size/`, `lib/gate8-size*.ts` | `*` (capture); narrow if `entry.cpp` is untouched beyond order | sonnet, 3 h + full tier | G8a |
 | G8f | Float payload formats end to end (D9): capture size table and default formats, rs-core validation and RGBA8 quantization, rs-core-capi format codes; `gate8-tex` float legs | `capture/src/rs_texture_payload.cpp`, `rs-core/src/{payload.rs,apply/payloads.rs}`, `rs-core-capi/src/ops.rs`, `receiver/ext/rs_core_ext.cpp`, `fixtures/gate8-tex/` | `*` (capture, rs-core, receiver): includes `native:*@rust`, `g7:*@gsw`, `g7:*@web/rust`, `cargo:*` | sonnet, 4 h + full tier | G8t |
