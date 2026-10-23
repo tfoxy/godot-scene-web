@@ -1056,7 +1056,10 @@ g6s_receiver() {
 	# G7k: the web export mirrors the received bytes in MEMFS and PUTs them at exit; for a 300-s
 	# soak that is ~420 MB and ~20 minutes (the process outlived its work and the shots PUT after it
 	# never arrived). A 1 MiB cap keeps the file a stream prefix; the soak judges shots and perf.
-	if [ "$GATE7_LIVE_KIND" = "web" ]; then
+	# G7kh: GSW's tap holds every received message as an ArrayBuffer until exit (218 MB at credit
+	# window 2, one JS wrapper per record: ~210 KB/min of the JS heap the soak judges), so it gets
+	# the same cap. Native gate 6 never sets GATE7_LIVE_KIND.
+	if [ "$GATE7_LIVE_KIND" = "web" ] || [ "$GATE7_LIVE_KIND" = "gsw" ]; then
 		LEG_ENV+=(RS_RECEIVER_RECEIVED_MAX_BYTES=1048576)
 	fi
 	RENDERED_EXTRA_ARGS=(--max-fps 60)

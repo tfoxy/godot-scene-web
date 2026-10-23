@@ -203,7 +203,12 @@ class LiveReceiver {
   private readonly liveBlock: Record<string, unknown>;
   private readonly acks = { received: 0, applied: 0, submitted: 0 };
   private readonly entries: LiveEntry[] = [];
+  /** RS_RECEIVER_LOG=full. A summary log keeps no per-transaction state (G7kh): no entries, no
+   * fetch log, no shell facts and no per-fold lines, so a long live run's JS heap stays bounded
+   * whatever the credit window's fold rate. */
   private readonly keepLog: boolean;
+  /** G7kh: transactions folded into a later apply (credit window 2), reported once at the end. */
+  private foldedCount = 0;
   private readonly fetchLog: Record<string, unknown>[] = [];
   private readonly fetchedHashes = new Set<string>();
   private readonly puts: Promise<void>[] = [];
@@ -1009,9 +1014,12 @@ class LiveReceiver {
         );
       this.fetcher.extend(misses);
     }
-    log(
-      `seq ${old.seq} folds into seq ${next.entry.seq} while its payloads were pending (${misses.length} more to fetch)`,
-    );
+    // G7kh: one line per fold only in a full log; the page keeps every log line (shell.lines),
+    // and at window 2 a fold happens on about every other transaction.
+    if (this.keepLog)
+      log(
+        `seq ${old.seq} folds into seq ${next.entry.seq} while its payloads were pending (${misses.length} more to fetch)`,
+      );
   }
 
   /** The newest queued transaction becomes the one to apply (receiver.gd `_apply_newest`). */
@@ -1295,7 +1303,8 @@ class LiveReceiver {
     p.tx.process_frame = this.processFrames;
     p.tx.inline_received = this.inlineSinceApplied;
     this.inlineSinceApplied = 0;
-    this.report.shell.set(`${entry.stream}:${seq}`, p.tx);
+    // Only a full log writes per-transaction facts (appliedJson's `transactions` is null otherwise).
+    if (this.keepLog) this.report.shell.set(`${entry.stream}:${seq}`, p.tx);
     // G7q: the transactions folded into this apply are applied with it, acked first, in order.
     const folded = this.coalesced;
     this.coalesced = [];
@@ -1308,7 +1317,8 @@ class LiveReceiver {
       this.connApplied++;
       this.ack(f.seq, "applied", appliedUs);
     }
-    if (folded.length > 0)
+    this.foldedCount += folded.length;
+    if (folded.length > 0 && this.keepLog)
       log(
         `seq ${seq} applied with ${folded.map((f) => f.seq).join(",")} (credit window 2)`,
       );
@@ -1881,7 +1891,7 @@ class LiveReceiver {
     this.report.status = "ok";
     const code = await this.writeReport(0);
     log(
-      `ok: ${this.entries.length} transactions received, ${this.report.shots.length} shots, ${this.report.shotsMissed.length} missed windows, acks ${JSON.stringify(this.acks)}, closed by ${this.streamReport.closed_by} (${this.streamReport.close_code})`,
+      `ok: ${this.entries.length} transactions received, ${this.foldedCount} folded, ${this.report.shots.length} shots, ${this.report.shotsMissed.length} missed windows, acks ${JSON.stringify(this.acks)}, closed by ${this.streamReport.closed_by} (${this.streamReport.close_code})`,
     );
     this.exit(code);
   }
