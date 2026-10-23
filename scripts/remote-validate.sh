@@ -134,6 +134,15 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 for x in s["runs"]:
     print(f"  {x['id']:<28} [{str(x['phase']):<6}] rc={x['rc']:<3} {x['wall_s'] or 0:>8.1f} s")
+for x in s["runs"]:
+    bi = x.get("bench_instr")
+    for c in (bi or {}).get("cases", []):
+        if c.get("ir") is None:
+            print(f"  bench-instr: {c['case']} {c.get('status')} (no count)")
+            continue
+        vs = f"{c['delta_pct']:+.2f}% vs baseline" if c.get("delta_pct") is not None else "no baseline"
+        print(f"  bench-instr: {c['case']} Ir {c['ir']:,} ({vs}, cpu {bi.get('cpu_model')})"
+              + ("" if c.get("status") in ("ok", "improvement") else f" {str(c.get('status')).upper()}"))
 r = s.get("remote", {})
 for x in r.get("refused", []):
     print(f"  refused {x['id']:<24} {x['reason']}")

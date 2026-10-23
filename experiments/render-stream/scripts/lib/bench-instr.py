@@ -63,10 +63,23 @@ def compare(results, baseline, threshold=None):
     return rows
 
 
-def result_json(rows):
-    return {"schema": "render-stream-instr-result/1",
-            "checks": [{"id": f"bench-instr-{r['case']}", "passed": r["passed"], "status": r["status"],
-                        "detail": r["detail"]} for r in rows]}
+def result_json(rows, results=None, baseline=None):
+    """tier-verdict.py reads id/passed/detail and ignores the rest. The counts ride along (additive)
+    so validate-summary.py can report them for passing runs; cpu_model and baseline_cpu_model are
+    top-level and only written when the inputs carry them."""
+    checks = []
+    for r in rows:
+        c = {"id": f"bench-instr-{r['case']}", "passed": r["passed"], "status": r["status"], "detail": r["detail"]}
+        for k in ("ir", "baseline_ir", "delta_pct", "threshold_pct"):
+            if k in r:
+                c[k] = r[k]
+        checks.append(c)
+    out = {"schema": "render-stream-instr-result/1", "checks": checks}
+    if results and results.get("cpu_model"):
+        out["cpu_model"] = results["cpu_model"]
+    if baseline and baseline.get("cpu_model"):
+        out["baseline_cpu_model"] = baseline["cpu_model"]
+    return out
 
 
 def main(argv):
@@ -84,7 +97,7 @@ def main(argv):
         for r in rows:
             print(f"  {r['status']:<16} {r['case']:<28} {r['detail']}")
         if "--result-json" in a:
-            json.dump(result_json(rows), open(a["--result-json"], "w"), indent=2)
+            json.dump(result_json(rows, results, baseline), open(a["--result-json"], "w"), indent=2)
         bad = [r for r in rows if not r["passed"]]
         better = [r for r in rows if r["status"] == "improvement"]
         if better:
@@ -134,6 +147,13 @@ def self_test():
     check("a baselined case without a result fails", rows["gone"]["status"] == "missing-result")
     rj = result_json(list(rows.values()))
     check("one check per case, id-prefixed", sorted(c["id"] for c in rj["checks"]) == ["bench-instr-a", "bench-instr-gone", "bench-instr-z"])
+    check("counts ride on each check", all(c.get("ir") is not None for c in rj["checks"] if c["status"] != "missing-result")
+          and {c["id"]: c for c in rj["checks"]}["bench-instr-z"].get("baseline_ir") is None)
+    ok = result_json(compare({"cases": {"a": {"ir": 1005}}, "cpu_model": "X"}, {"cases": {"a": {"ir": 1000}}, "cpu_model": "Y"}),
+                     {"cpu_model": "X"}, {"cpu_model": "Y"})
+    c = ok["checks"][0]
+    check("check keeps ir, baseline_ir, delta_pct, threshold_pct", (c["ir"], c["baseline_ir"], c["delta_pct"], c["threshold_pct"]) == (1005, 1000, 0.5, 1.0))
+    check("cpu models are top-level", ok["cpu_model"] == "X" and ok["baseline_cpu_model"] == "Y")
     print(f"bench-instr.py self-test: {n} checks passed")
     return 0
 
