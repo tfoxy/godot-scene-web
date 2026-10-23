@@ -19,6 +19,9 @@
 #   --determinism R,R  repeat every run R times in each of len(R,R) jobs (e.g. 3,1: 3x on one runner,
 #                    1x on another); lib/remote-determinism.ts compares all repeats' shots and dumps,
 #                    and a disagreement fails the wrapper like a failed run
+#   --browser-renderer lavapipe
+#                    the CI-only software renderer gate 7's browser legs declare (RS_BROWSER_PROVENANCE,
+#                    lib/browser-renderer.ts); lavapipe, the workflow's default, is the only one
 #   --dry-run        plan and print what would be pushed and dispatched; touch nothing
 #
 # Cleanup: a failed push or dispatch, SIGINT/SIGTERM and a normal finish (unless --no-wait) cancel the
@@ -36,7 +39,7 @@ POLL_S="${RV_POLL_S:-4}"
 FIND_TRIES="${RV_FIND_TRIES:-30}"
 WORKFLOW=remote-validate.yml
 
-BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0 DETERMINISM=""
+BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0 DETERMINISM="" BROWSER_RENDERER=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--base) BASE="$2" && BASE_SET=1 && shift 2 ;;
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
 	--dry-run) DRY=1 && shift ;;
 	--toolchain-smoke) TSMOKE=1 && shift ;;
 	--determinism) DETERMINISM="$2" && shift 2 ;;
+	--browser-renderer) BROWSER_RENDERER="$2" && shift 2 ;;
 	*) echo "remote-validate: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
@@ -58,6 +62,11 @@ if [ -n "$DETERMINISM" ] && ! [[ "$DETERMINISM" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ 
 	echo "remote-validate: --determinism wants comma-separated repeat counts (e.g. 3,1), got $DETERMINISM" >&2
 	exit 2
 fi
+
+case "$BROWSER_RENDERER" in
+"" | lavapipe) ;;
+*) echo "remote-validate: --browser-renderer wants lavapipe, got $BROWSER_RENDERER" >&2 && exit 2 ;;
+esac
 
 TMP="$(mktemp -d)"
 BRANCH="" PUSHED=0 DISPATCHED=0 KEEP_BRANCH=0 RUN_ID="" RUN_KEY="" INTERRUPTED=0 CLEANED=0
@@ -152,7 +161,9 @@ if d is not None:
     for k, g in sorted((d.get("gates") or {}).items()):
         print(f"  determinism {k:<26} {'agrees' if g.get('ok') else 'DISAGREES'} over {g.get('runs')} runs: "
               f"{g.get('shots')}/{g.get('shots_total')} shots, {g.get('dumps')}/{g.get('dumps_total')} dumps"
-              + (f", {g.get('live_sets')} live content sets" if g.get("live_sets") else ""))
+              + (f", {g.get('live_sets')} live content sets" if g.get("live_sets") else "")
+              + (", web pck sha256 drifts (export order; content agrees)" if g.get("build_raw_drift") and g.get("build_content_agree") else "")
+              + (", web pck CONTENT differs" if g.get("build_content_agree") is False else ""))
     bad = bad or (0 if d.get("ok") else 1)
 elif r.get("determinism"):
     print("remote-validate: determinism was requested but no determinism.json came back")
@@ -213,24 +224,51 @@ for r in plan["runs"]:
         why = next((w for pat, w in ref.get("match", {}).items() if re.search(pat, blob)), None)
     if not why and not any(fnmatch.fnmatch(r["id"], g) for g in cap):
         why = rem.get("default_reason", "not yet remote-capable")
+    # R3: refuse.groups {<id glob>: {<group>: why}} refuses single groups of a gate 7 run (a check that
+    # is load-sensitive on a runner): the run keeps its other groups remotely, and is refused
+    # whole when none is left. A partial refusal is listed with its groups (run them locally with
+    # RS_VALIDATE_GROUPS, as --and-local does).
+    gw = {}
+    if not why and r.get("kind") in ("g7", "g7live"):
+        for pat, by_group in ref.get("groups", {}).items():
+            if fnmatch.fnmatch(r["id"], pat):
+                gw.update({g: by_group[g] for g in (r.get("groups") or []) if g in by_group})
+        keep = [g for g in (r.get("groups") or []) if g not in gw]
+        if gw and not keep:
+            why = "; ".join(f"{g}: {w}" for g, w in gw.items())
+        elif gw:
+            r["groups"] = keep
+            refused.append({"id": r["id"], "groups": sorted(gw), "reason": "; ".join(f"{g}: {w}" for g, w in gw.items())})
     (refused.append({"id": r["id"], "reason": why}) if why else remote.append(r["id"]))
-json.dump({"remote": remote, "refused": refused}, sys.stdout)
+# R3: a gate 7 run of several groups becomes one job per group (receiver x group); the workflow's
+# merge folds them back into the run's one row. A run left with one group by a group refusal still
+# names it, so the job runs only that group.
+partial = {x["id"] for x in refused if x.get("groups")}
+groups = {r["id"]: r["groups"] for r in plan["runs"]
+          if r["id"] in remote and r.get("kind") in ("g7", "g7live")
+          and (len(r.get("groups") or []) > 1 or r["id"] in partial)}
+json.dump({"remote": remote, "refused": refused, "groups": groups}, sys.stdout)
 PY
 if [ "$TSMOKE" = 1 ]; then
 	# R0b: not a planned run. Builds the four toolchain outputs on a runner (scripts/remote-toolchain-smoke.sh)
 	echo '{"remote":["toolchain-smoke"],"refused":[]}' >"$TMP/split.json"
 fi
 REMOTE_IDS="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"
-REFUSED_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"]))' "$TMP/split.json")"
+REFUSED_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"] if not x.get("groups")))' "$TMP/split.json")"
+# R3: runs refused only in some groups: their ids, and the union of those groups (RS_VALIDATE_GROUPS)
+PARTIAL_IDS="$(python3 -c 'import json,sys; print(",".join(x["id"] for x in json.load(open(sys.argv[1]))["refused"] if x.get("groups")))' "$TMP/split.json")"
+PARTIAL_GROUPS="$(python3 -c 'import json,sys; print(",".join(sorted({g for x in json.load(open(sys.argv[1]))["refused"] for g in x.get("groups") or []})))' "$TMP/split.json")"
 RUNS_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["remote"]))' "$TMP/split.json")"
 REFUSED_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["refused"]))' "$TMP/split.json")"
+GROUPS_JSON="$(python3 -c 'import json,sys; g=json.load(open(sys.argv[1])).get("groups") or {}; print(json.dumps(g) if g else "")' "$TMP/split.json")"
 
 WT="$(basename "$REPO" | sed 's/[^A-Za-z0-9._-]/-/g')"
 echo "remote-validate: remote runs: ${REMOTE_IDS:-none}"
 python3 -c '
 import json, sys
 for x in json.load(open(sys.argv[1]))["refused"]:
-    print("remote-validate: refused %s: %s" % (x["id"], x["reason"]))' "$TMP/split.json"
+    g = " groups " + ",".join(x["groups"]) if x.get("groups") else ""
+    print("remote-validate: refused %s%s: %s" % (x["id"], g, x["reason"]))' "$TMP/split.json"
 
 if [ -z "$REMOTE_IDS" ]; then
 	echo "remote-validate: nothing remote-capable in this plan" >&2
@@ -262,7 +300,7 @@ snapshot() {
 
 if [ "$DRY" = 1 ]; then
 	echo "remote-validate: dry run: would snapshot $WT at ${HEAD_SHA:0:12}, push refs/heads/remote-run/$WT-<shortsha>, dispatch $WORKFLOW"
-	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}"
+	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}${BROWSER_RENDERER:+ browser_renderer=$BROWSER_RENDERER}${GROUPS_JSON:+ run_groups=$GROUPS_JSON}"
 	exit 0
 fi
 
@@ -282,7 +320,9 @@ if [ "$MILESTONE" = 1 ]; then milestone_in=complete && [ "$BASE_SET" = 1 ] && mi
 if ! gh workflow run "$WORKFLOW" --ref "$BRANCH" \
 	-f "run_key=$RUN_KEY" -f "worktree=$WT" -f "sha=$SHA" -f "base=$BASE_SHA" -f "tier=$TIER" \
 	-f "runs=$RUNS_JSON" -f "milestone=$milestone_in" -f "paths=$PATHS" -f "refused=$REFUSED_JSON" \
-	${DETERMINISM:+-f "determinism=$DETERMINISM"} >"$TMP/dispatch.log" 2>&1; then
+	${DETERMINISM:+-f "determinism=$DETERMINISM"} ${BROWSER_RENDERER:+-f "browser_renderer=$BROWSER_RENDERER"} \
+	${GROUPS_JSON:+-f "run_groups=$GROUPS_JSON"} \
+	>"$TMP/dispatch.log" 2>&1; then
 	echo "remote-validate: dispatch failed:" >&2
 	cat "$TMP/dispatch.log" >&2
 	exit 1
@@ -308,13 +348,23 @@ echo "remote-validate: run $RUN_ID $RUN_URL"
 OUTDIR="$REPO/artifacts/render-stream/remote/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUTDIR"
 
-if [ "$AND_LOCAL" = 1 ] && [ -n "$REFUSED_IDS" ]; then
-	LOCAL_ARGS=(--only "$REFUSED_IDS" --tier "$TIER" --base "$BASE_SHA" --out "$OUTDIR/local")
+if [ "$AND_LOCAL" = 1 ] && { [ -n "$REFUSED_IDS" ] || [ -n "$PARTIAL_IDS" ]; }; then
+	LOCAL_ARGS=(--tier "$TIER" --base "$BASE_SHA")
 	[ -n "$PATHS" ] && LOCAL_ARGS+=(--paths "$PATHS")
 	[ "$MILESTONE" = 1 ] && LOCAL_ARGS+=(--milestone)
-	bash "$PLANNER" "${LOCAL_ARGS[@]}" >"$OUTDIR/local.log" 2>&1 &
+	(
+		rc=0
+		if [ -n "$REFUSED_IDS" ]; then
+			bash "$PLANNER" --only "$REFUSED_IDS" --out "$OUTDIR/local" "${LOCAL_ARGS[@]}" || rc=1
+		fi
+		# the refused groups of partly remote runs, on their own (validate-increment RS_VALIDATE_GROUPS)
+		if [ -n "$PARTIAL_IDS" ]; then
+			RS_VALIDATE_GROUPS="$PARTIAL_GROUPS" bash "$PLANNER" --only "$PARTIAL_IDS" --out "$OUTDIR/local-groups" "${LOCAL_ARGS[@]}" || rc=1
+		fi
+		exit "$rc"
+	) >"$OUTDIR/local.log" 2>&1 &
 	LOCAL_PID=$!
-	echo "remote-validate: local runs (${REFUSED_IDS}) started, log $OUTDIR/local.log"
+	echo "remote-validate: local runs (${REFUSED_IDS}${PARTIAL_IDS:+${REFUSED_IDS:+, }$PARTIAL_IDS groups $PARTIAL_GROUPS}) started, log $OUTDIR/local.log"
 fi
 
 if [ "$NO_WAIT" = 1 ]; then

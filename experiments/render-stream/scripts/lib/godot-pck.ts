@@ -11,6 +11,8 @@
 // Only an unencrypted directory at the start of the file is read: the web export writes a
 // standalone `<name>.pck`, never an embedded one, and this receiver is never encrypted.
 
+import { createHash } from "node:crypto";
+
 export interface PckEntry {
   path: string;
   offset: number;
@@ -23,6 +25,8 @@ export interface PckListing {
   formatVersion: number;
   engine: string;
   packFlags: number;
+  /** absolute offset of the file data (an entry's bytes start at fileBase + offset) */
+  fileBase: number;
   files: PckEntry[];
 }
 
@@ -50,7 +54,7 @@ export function listPck(bytes: Uint8Array): PckListing {
   const engine = `${u32()}.${u32()}.${u32()}`;
   const packFlags = u32();
   if (packFlags & 1) throw new Error("pck: encrypted directory");
-  u64(); // file base
+  const fileBase = u64(); // standalone pack: relative-to-pack == absolute
   if (formatVersion === 3) {
     at = u64();
   } else {
@@ -72,5 +76,36 @@ export function listPck(bytes: Uint8Array): PckListing {
     const flags = u32();
     files.push({ path, offset, size, md5, flags });
   }
-  return { formatVersion, engine, packFlags, files };
+  return { formatVersion, engine, packFlags, fileBase, files };
+}
+
+/** The bytes of one entry (an unencrypted standalone pack's data is stored uncompressed). */
+export function pckEntryBytes(
+  bytes: Uint8Array,
+  listing: PckListing,
+  entry: PckEntry,
+): Uint8Array {
+  const start = listing.fileBase + entry.offset;
+  if (start + entry.size > bytes.length)
+    throw new Error(`pck: ${entry.path} runs past the end of the pack`);
+  return bytes.subarray(start, start + entry.size);
+}
+
+/** The pack's CONTENT digest (R3): sha256 over its entries sorted by path, one
+ * `<path>\t<size>\t<md5>\n` line each (md5 is Godot's own per-entry digest of the entry's bytes,
+ * which web-build-json.ts verifies against the data).
+ *
+ * Why not the pack's own sha256: Godot 4.5.1's web export writes the same entries with the same
+ * bytes, but the DATA ORDER of some entries is nondeterministic across machines (measured: four
+ * class_name scripts written right after ext/rs_core.gdextension came out in three different orders
+ * over 16 remote builds and the local one, from identical inputs; the directory is sorted, the data
+ * layout is not). So the raw `.pck` sha256 is build identity that drifts with no content change; the
+ * content digest is what two builds must agree on. Order-independent by construction (sorted). */
+export function pckContentDigest(
+  files: ReadonlyArray<{ path: string; size: number; md5: string }>,
+): string {
+  const lines = files
+    .map((f) => `${f.path}\t${f.size}\t${f.md5}\n`)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash("sha256").update(lines.join("")).digest("hex");
 }

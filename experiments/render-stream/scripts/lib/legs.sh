@@ -209,6 +209,13 @@ if [ -n "$GATE7_LIVE_KIND" ]; then
 	if [ "${GATE7_LIFECYCLE_ENV:-desktop}" = device ]; then
 		gate7_daemon_env=(GATE7_HARNESS_PORT="$GATE7_HARNESS_PORT" GATE7_HOST_PORT="$GATE7_HOST_PORT")
 	fi
+	# R3: the CI-only software-renderer allowance (lib/browser-renderer.ts) is an RS_ name, which
+	# gs_strip_env_args strips; the daemon launches the browsers, so it needs it back (without it a
+	# hosted runner's live legs launched with the NVIDIA flags and got no WebGL2). Off a hosted
+	# runner a set RS_BROWSER_PROVENANCE makes the daemon refuse at load, as everywhere else.
+	if [ -n "${RS_BROWSER_PROVENANCE:-}" ]; then
+		gate7_daemon_env+=(RS_BROWSER_PROVENANCE="$RS_BROWSER_PROVENANCE")
+	fi
 	env -C "$REPO_ROOT" -u DISPLAY -u WAYLAND_DISPLAY "${GS_STRIP_ARGS[@]}" ${gate7_daemon_env[@]+"${gate7_daemon_env[@]}"} \
 		mise exec -- node --conditions=development --import tsx "$SCRIPT_DIR/gate7-tool.ts" browser-daemon \
 		--ready-file "$gate7_daemon_dir/daemon.json" --parent "$$" --kind "$GATE7_LIVE_KIND" \
@@ -886,17 +893,21 @@ legs_sabotage_skipped() {
 # only make noisy). Each leg dir gets skipped-remote.txt instead of evidence; lib/tier-verdict.py
 # excuses the checks that name those legs like skipped-by-tier, and lists them (and the group) as
 # skipped_remote[] in the run's verdict and validate-summary.json. Returns 0 when the group is
-# skipped (the caller does not run it), 1 otherwise: unset, it changes nothing.
+# skipped (the caller does not run it), 1 otherwise: unset, it changes nothing. R3: the value may
+# instead be a comma-separated list of groups, skipping only those (gate 7's live jobs pass
+# g1c-rate: g1d, g2c-pins, g5f and g55f are frame-counted under fast frames, RS_FAST_ALLOW_LEGS
+# above, and are those groups' only correctness legs on a browser).
 legs_skip_group() {
-	[ "${RS_SKIP_TIMING_GROUPS:-}" = 1 ] || return 1
-	local group="$1" d
+	local want="${RS_SKIP_TIMING_GROUPS:-}" group="$1" d
+	[ -n "$want" ] || return 1
+	[ "$want" = 1 ] || [[ ",$want," == *",$group,"* ]] || return 1
 	shift
 	for d in "$@"; do
 		mkdir -p "$d"
-		echo "skipped-remote: RS_SKIP_TIMING_GROUPS=1 (timing group $group: wall-clock legs stay local)" \
+		echo "skipped-remote: RS_SKIP_TIMING_GROUPS=$want (timing group $group: wall-clock legs stay local)" \
 			>"$d/skipped-remote.txt"
 	done
-	echo "$LEGS_LOG: timing group $group skipped on this runner (RS_SKIP_TIMING_GROUPS=1): ${*#"$OUT"/}" >&2
+	echo "$LEGS_LOG: timing group $group skipped on this runner (RS_SKIP_TIMING_GROUPS=$want): ${*#"$OUT"/}" >&2
 	return 0
 }
 

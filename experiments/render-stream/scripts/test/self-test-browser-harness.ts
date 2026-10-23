@@ -28,6 +28,7 @@ import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-
 import {
   BACKGROUND_THROTTLING_ARGS,
   BROWSER_LAUNCH_ARGS,
+  CI_RENDERER_ALLOWANCE,
   checkBrowserProvenance,
   EXPECTED_CHROMIUM_SHA256,
   EXPECTED_CHROMIUM_VERSION,
@@ -476,7 +477,9 @@ async function main(): Promise<void> {
     detail: `allowed-nonce PUT -> ${goodPutRes}`,
   });
 
-  // Sabotage: --use-angle=swiftshader must make browser-provenance refuse.
+  // Sabotage: --use-angle=swiftshader must make browser-provenance refuse. Under the CI-only
+  // lavapipe allowance (R3, lib/browser-renderer.ts) the same SwiftShader browser is judged by the
+  // lavapipe rule, which refuses it as an undeclared renderer; locally it is the NVIDIA default.
   const sabotageLaunched = await launchHarnessBrowser({
     args: [...SABOTAGE_SWIFTSHADER_ARGS],
   });
@@ -497,14 +500,16 @@ async function main(): Promise<void> {
     sabotageLaunched,
     SABOTAGE_SWIFTSHADER_ARGS,
     { DISPLAY: undefined, WAYLAND_DISPLAY: undefined },
+    CI_RENDERER_ALLOWANCE,
   );
   report.sabotage_swiftshader = sabotageProvenance;
   checks.push({
     id: "sabotage-swiftshader-refused",
     ok: sabotageProvenance.ok === false,
-    detail: sabotageProvenance.ok
-      ? "DID NOT REFUSE -- sabotage case failed to trip the guard"
-      : sabotageProvenance.reasons.join("; "),
+    detail:
+      sabotageProvenance.ok !== false
+        ? "DID NOT REFUSE -- sabotage case failed to trip the guard"
+        : sabotageProvenance.reasons.join("; "),
   });
   await sabotageLaunched.browser.close();
 
@@ -559,5 +564,7 @@ declare global {
 
 main().catch((err) => {
   console.error(err);
-  process.exitCode = 1;
+  // exit now: a launched Chromium and the servers keep the event loop alive, so setting exitCode
+  // alone hung the runner until its timeout (R3 run 39791880071, a probe page with no WebGL2)
+  process.exit(1);
 });

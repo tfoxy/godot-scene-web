@@ -225,6 +225,19 @@ run_one() {
 		local recv groups
 		recv="$(field receiver)"
 		groups="$(field groups)"
+		# R3: a remote job runs one group of a multi-group gate 7 run (remote-validate.yml's matrix,
+		# RS_VALIDATE_GROUPS; never set locally): the run keeps its id, the merge folds the jobs
+		if [ -n "${RS_VALIDATE_GROUPS:-}" ]; then
+			groups="$(python3 -c 'import sys; w=set(sys.argv[2].split(",")); print(",".join(g for g in sys.argv[1].split(",") if g in w))' \
+				"$groups" "$RS_VALIDATE_GROUPS")"
+			if [ -z "$groups" ]; then
+				echo "validate-increment: $id has none of RS_VALIDATE_GROUPS=$RS_VALIDATE_GROUPS" >"$dir/run.log"
+				echo 2 >"$dir/rc"
+				echo 0 >"$dir/wall_s"
+				echo "validate-increment: $id rc=2 (no group of RS_VALIDATE_GROUPS)"
+				return
+			fi
+		fi
 		local -a args=(--legs "$groups" --out "$dir/run" --extension "$EXT" --calibration "$CAL")
 		[ "$kind" = g7 ] && args+=(--make-sources)
 		[ "$kind" = g7live ] && args+=(--live)
@@ -258,6 +271,11 @@ run_one() {
 	if [ "$judged" = 0 ] && [ "$rc" = 1 ] && [ -f "$dir/run/result.json" ]; then
 		python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "$dir/run" --runner-rc "$rc" \
 			>"$dir/tier-verdict.json" 2>&1 && rc=0 || rc=1
+	elif [ "$judged" = 0 ] && [ "$rc" = 0 ] && [ -n "${RS_SKIP_TIMING_GROUPS:-}" ] && [ -f "$dir/run/result.json" ]; then
+		# R3: a remote run that passed still lists the timing groups it skipped (a gate 7 run's
+		# sources excuse theirs inside source-run-valid, so its runner exits 0): the verdict is
+		# recorded for the summary's skipped_remote[], never to change the runner's pass
+		python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "$dir/run" --runner-rc 0 >"$dir/tier-verdict.json" 2>&1 || true
 	fi
 	echo "$rc" >"$dir/rc"
 	python3 -c "import sys; print(round(float(sys.argv[2].replace(',','.')) - float(sys.argv[1].replace(',','.')), 1))" \

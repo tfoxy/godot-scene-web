@@ -20,7 +20,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listPck } from "./lib/godot-pck";
+import { listPck, pckContentDigest, pckEntryBytes } from "./lib/godot-pck";
 
 export const WEB_BUILD_SCHEMA = "render-stream-web-build/1";
 
@@ -74,6 +74,17 @@ function main(): void {
   }
   const pckBytes = readFileSync(join(bundle, "receiver.pck"));
   const pck = listPck(pckBytes);
+  // R3: each entry's md5 checked against its bytes, so the content digest (godot-pck.ts
+  // pckContentDigest: sorted path/size/md5) stands for the entries' contents.
+  const pckFiles = pck.files.map((f) => {
+    const data = pckEntryBytes(pckBytes, pck, f);
+    const md5 = createHash("md5").update(data).digest("hex");
+    if (md5 !== f.md5)
+      throw new Error(
+        `web-build-json: pck entry ${f.path} has md5 ${md5}, its directory says ${f.md5}`,
+      );
+    return { path: f.path, size: f.size, md5: f.md5, sha256: sha256(data) };
+  });
   const committedPreset = readFileSync(
     join(
       dirname(fileURLToPath(import.meta.url)),
@@ -117,10 +128,13 @@ function main(): void {
     total_bytes: totalBytes,
     files,
     pck: {
+      // build identity: varies across machines with no content change (pckContentDigest's comment)
       sha256: sha256(pckBytes),
+      // what two builds must agree on: the sorted entry list (lib/remote-determinism.ts compares it)
+      content_sha256: pckContentDigest(pckFiles),
       format_version: pck.formatVersion,
       engine: pck.engine,
-      files: pck.files.map((f) => ({ path: f.path, size: f.size, md5: f.md5 })),
+      files: pckFiles,
     },
   };
   writeFileSync(

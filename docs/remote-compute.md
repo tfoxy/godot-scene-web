@@ -1,7 +1,8 @@
 # Remote compute for long validation runs
 
 Status: assessed 2026-10-22 at `24ec89be`. R0 (GPU-free runs), R1 (gate 0 on a software
-rasterizer) and R2 (native gates −1, 1, 2, 3, 4, 5 and 5.5 on it) are implemented.
+rasterizer), R2 (native gates −1, 1, 2, 3, 4, 5 and 5.5 on it) and R3 (gate 7's browser correctness
+on lavapipe) are implemented.
 
 ## Goal
 
@@ -87,7 +88,7 @@ It would not have applied to public repos either way, and self-hosting needs har
 | --- | --- | --- |
 | Pure self-tests, cargo crates, builds, `pnpm test` | **Yes, now** | Toolchain setup plus a cache of the pinned inputs |
 | Native gates −1..5.5 correctness | **Maybe** | A determinism spike on a software rasterizer, then a separate `swrast` baseline set |
-| Gate 7 file/live correctness (browser) | **Maybe** | A SwiftShader/lavapipe provenance mode with its own baselines. The NVIDIA track stays authoritative. |
+| Gate 7 file/live correctness (browser) | **Yes (R3)** | Chromium on ANGLE-Vulkan over lavapipe, a CI-only provenance mode; no own baselines were needed. Live g7-1/g7-2 stay local. The NVIDIA track stays authoritative. |
 | Gate 6 and gate 7 timing legs, perf benches | **No** (wall-clock) | Stay local; see below |
 | Phone legs (g31) | **No** | The device is attached to this machine |
 | STS2 game, recovered project, spirectl fonts | **Never** | Proprietary |
@@ -145,6 +146,54 @@ with the receiver project's `--import`).
   boundaries; file-mode legs stay compared file by file. All 12 gate 2 and 6 gate 1 live sets matched.
 - **`--only X` when the plan does not reach X:** `validate-increment.sh` warns, `remote-validate.sh`
   fails (rc 2) naming `--paths` and `--milestone`; a job whose run never executed merges as `missing`.
+
+## Gate 7 browser correctness on lavapipe (R3, 2026-10-22)
+
+- **Decision 10, the renderer allowance:** `RS_BROWSER_PROVENANCE=lavapipe` (`lib/browser-renderer.ts`)
+  lets a browser leg render on Chromium's ANGLE-Vulkan over Mesa lavapipe, with
+  `--ignore-gpu-blocklist` (without it the page gets no WebGL2).
+  - It applies only on a GitHub-hosted runner (`GITHUB_ACTIONS=true`,
+    `RUNNER_ENVIRONMENT=github-hosted`). Set anywhere else, it is a hard error.
+  - Every leg's `provenance.json` records it. Locally every leg must still be ANGLE + NVIDIA +
+    Vulkan, and the SwiftShader sabotage is refused under both rules.
+  - SwiftShader was tried and rejected: it is deterministic, but it misses the gsw AA/MSDF bands and
+    the web line edges.
+- **No baselines of its own.** The NVIDIA checker models hold unchanged, because the native sources
+  render on the same llvmpipe (R2). The file groups g7-0..g7-6 pass for both receivers (gsw, web-rust)
+  with their sources' timing groups skipped.
+- **Determinism:** `--determinism 2,1` runs each group three times on two runners.
+  - gsw: every file group agreed over three runs (2,506 shots and every dump, run 39852773945).
+  - web: every file group agreed (1,762 shots, run 39842615880) once a web pck is compared by content.
+    Godot 4.5.1's web export writes the same 17 entries but in a data order that varies by machine,
+    so `receiver.pck`'s sha256 (the dumps' `receiver.build_sha256`) drifts with no content change.
+    `lib/remote-determinism.ts` maps each raw digest to the pck's content digest
+    (`godot-pck.ts pckContentDigest`: sorted path, size, md5, recorded in `build.json` as
+    `pck.content_sha256`). It reports raw drift as information; a content difference still fails.
+  - Live g7-5 and g7-55: an animated leg (g5f's live-mesh, g55f's live-shader, g2c's live-animate)
+    catches a different animation frame per settle in each run, so its images and states differ
+    together. Such a set is compared as a function from state to image: every state applied in two
+    runs must render the same.
+- **Live groups.** g7-5 and g7-55 run remotely (their rate group g1c-rate skipped).
+  - g7-1 and g7-2 stay local (`smoke-map.json` `remote.refuse.groups`). Each failed a check
+    intermittently at credit window 2 on 4 vCPU, and neither check is loosened:
+    - g7-2: the drop-resource and no-cors failure seq. Two transactions arrived in one poll and were
+      folded, so the failure landed at the other seq. Seen only on runners: load-sensitive.
+    - g7-1: `resync-full`. A patch was already in flight when the host logged the resync. This also
+      failed once on local NVIDIA at main 2431d26f's code, so it is a G7wd model gap for main to
+      fix, not a runner artifact.
+  - A full-tier `g7live-*` run keeps its other groups remotely. `--and-local` runs the refused
+    groups locally with `RS_VALIDATE_GROUPS`.
+- **Environment fixes:**
+  - the browser daemon gets `RS_BROWSER_PROVENANCE` back after `gs_strip_env_args`;
+  - Chromium's system libraries survive a broken third-party apt source;
+  - every failing repeat's evidence is uploaded.
+- **gsw g7-5 `receiver-vs-reference`:** gate 5 reports that id twice (g5d's file legs, then g5f's live
+  legs). The gsw fold now judges the gate's own first check (`gate7-gsw.ts judgedCheck`), so the gsw
+  file-leg comparison is gated. Before, g5f's check shadowed it, which also forced a remote run to
+  excuse the whole check.
+- **Known, pre-existing:** on NVIDIA, gsw g7-5's non-gating `gsw-vs-native@gsw` (2478 px, max delta 1
+  on every mesh shot) and `compositor-equals-readback-g5-mesh@gsw` fail identically on main and in
+  every gsw g7-5 run since G7t (2026-10-15).
 
 ## Consistent benchmarks
 
