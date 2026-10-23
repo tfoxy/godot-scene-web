@@ -81,6 +81,8 @@ result under `results/gate7/`; the rest link to their design section under `prot
 - Feature manifests: `protocol/features/`. Golden vectors: `protocol/golden/` through
   `protocol/golden-7/`.
 - Topical notes: `protocol/canvas-texture-headless.md`, `protocol/unknown-item-skip.md`.
+- Gate 8 (the STS2 blockers' generic halves: late-join adoption, compressed textures, host size,
+  pre-arm materials): [protocol/gate8-design.md](protocol/gate8-design.md).
 
 ## Where things are
 
