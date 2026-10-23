@@ -67,7 +67,7 @@
       "match": { "(?i)device|g31|phone|adb": "device-related: the attached phone is local" },
       "groups": {
         "g7live-*": {
-          "g7-1": "R3: resync-full fails intermittently at credit window 2 (a patch already in flight when the host logs the resync; runs 39861745131, 39867385871, and once on local NVIDIA at 2431d26f's code): G7wd's model gap, not runner-only, so local-only until main fixes it",
+          "g7-1": "FU1: the resync-full window-2 in-flight model landed (a patch sent before the host logs the resync; gate1-g1d-checks.ts checkResyncFull), but web-rust still fails it when the forced full arrives folded with the next patch (run 39893185658: 2 of 3 repeats; local NVIDIA 1 of 5): receiver.gd _apply_newest tests only the newest (a patch) for the awaited full, so it refuses the full too (_refuse_coalesced), the host credits both resyncs and forces another full, a cascade (4 fulls, 3-5 resyncs). A receiver bug the check rightly catches: local-only until it is fixed",
           "g7-2": "R3: load-sensitive at credit window 2 on a 4-vCPU runner, local-only: drop-resource / no-cors-withheld failed intermittently (runs 39861745131, 39867385871; two transactions folded in one poll, the failure at the other seq)"
         }
       }
