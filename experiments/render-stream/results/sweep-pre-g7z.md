@@ -173,3 +173,18 @@ intermittency running the other way.
 - `pure`'s and `lock-tests`' load-sensitive rows passed first time on this sweep; no rerun was
   needed.
 - Nothing was out of reach of the plan: it escalated to every target.
+
+## Addendum: window-1 `g7-r` on gsw and web (G7w2c)
+
+The two runs the sweep did not finish, at 23b0e212 plus the G7w2c checker diff (landing commit
+recorded in [gate7/g7w2c.md](gate7/g7w2c.md)), real time, `run-gate7.sh --live --legs g7-r
+--credit-window 1`:
+
+| Receiver | Result |
+| --- | --- |
+| gsw | `gate_passed=true`, 61 PASS, 0 FAIL (dual-native, `sabotage-ack-on-receipt`, phase legs) |
+| web (rust) | `gate_passed=true`, 81 PASS, 0 FAIL (late-poll legs included) |
+
+With native's 44/44, the window-1 `g7-r` list is now confirmed on every receiver. The g7-1
+`resync-full` finding above is traced to a receiver bug on both browser receivers in
+[gate7/g7w2c.md](gate7/g7w2c.md).

@@ -1353,8 +1353,13 @@ export function checkLiveAcksStaged(evals: Evals): G2bCheck {
       const sent = c.summary?.sent ?? 0;
       const early =
         c.summary?.closed_by === "receiver" && c.summary?.end_sent === false;
-      if (sent !== n && !(early && sent - n <= 1))
-        problems.push(`${leg}#${c.n}: ${sent} sent, ${n} read`);
+      // G7w2c: a receiver that closes first may leave up to the granted credit window of sends it
+      // never read (G7q: in-flight counts are bounded by the window, not by 1).
+      const window = deliveryReport(c.host).window;
+      if (sent !== n && !(early && sent - n <= window))
+        problems.push(
+          `${leg}#${c.n}: ${sent} sent, ${n} read${early ? ` (the receiver closed first; credit window ${window} allows ${window} unread)` : ""}`,
+        );
     });
     if (a.live?.presented !== "unavailable")
       problems.push(`${leg}: presented ${JSON.stringify(a.live?.presented)}`);
@@ -1362,7 +1367,7 @@ export function checkLiveAcksStaged(evals: Evals): G2bCheck {
   }
   return check(
     "live-acks-staged",
-    'per seq on every g2c live leg that must succeed, received_us <= applied_us <= submitted_us (submitted null headless); on every connection the host saw received, applied and (rendered) submitted acks for exactly the transactions the receiver read, and sent no more (one more only when the receiver closed first); presented is "unavailable"',
+    'per seq on every g2c live leg that must succeed, received_us <= applied_us <= submitted_us (submitted null headless); on every connection the host saw received, applied and (rendered) submitted acks for exactly the transactions the receiver read, and sent no more (only when the receiver closed first, up to the granted credit window more: the sends in flight); presented is "unavailable"',
     problems,
     `transactions per leg: ${notes.join(", ")}`,
     G2C_GOOD.map((l) => join(evals.get(l)?.e.receiverDir ?? l, "applied.json")),

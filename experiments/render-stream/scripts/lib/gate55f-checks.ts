@@ -56,6 +56,7 @@ import { diffRgba, readExitCode } from "./gate0-checks";
 import {
   type G1dShot,
   parseStall,
+  postStallStepOf,
   type ShotWindow,
   type StallReport,
   stallReport,
@@ -523,10 +524,7 @@ export function g55fStallReport(
   );
   const recoveryFrame = report.recovery?.frame ?? null;
   const postStallStep =
-    recoveryFrame === null
-      ? null
-      : (windows.find((w) => recoveryFrame >= w.from && recoveryFrame <= w.to)
-          ?.step ?? null);
+    recoveryFrame === null ? null : postStallStepOf(windows, recoveryFrame);
   return { report, postStallStep };
 }
 
