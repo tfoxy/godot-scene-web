@@ -65,6 +65,12 @@ import {
   openDeviceBrowser,
   reverseServerPort,
 } from "../../../../packages/perf-harness/src/device";
+import {
+  ciRendererAllowance,
+  launchArgsFor,
+  type RendererAllowance,
+  rendererRefusal,
+} from "./browser-renderer";
 
 // ---------------------------------------------------------------------------------------------
 // D9: launch flags. These are the ONLY flags that change what Chromium renders with or into --
@@ -74,13 +80,26 @@ import {
 /** D9's always-on flags: real GPU (RTX 2060) through ANGLE/Vulkan, no window, DPR 1, sRGB. Never
  * `--enable-features=Vulkan` (memory webgpu-parity-findings: that one breaks WebGL canvases here
  * by moving the whole GPU process -- `--use-angle=vulkan` is the narrow, correct flag). */
-export const BROWSER_LAUNCH_ARGS = [
+export const D9_LAUNCH_ARGS = [
   "--headless=new",
   "--enable-gpu",
   "--use-angle=vulkan",
   "--force-device-scale-factor=1",
   "--force-color-profile=srgb",
 ] as const;
+
+/** R3 (docs/remote-compute.md, Decision 10; lib/browser-renderer.ts): the CI-only software-renderer
+ * allowance, or null -- the default everywhere but a GitHub-hosted runner that sets
+ * RS_BROWSER_PROVENANCE. Set anywhere else, RS_BROWSER_PROVENANCE throws here, at load. */
+export const CI_RENDERER_ALLOWANCE: RendererAllowance | null =
+  ciRendererAllowance();
+
+/** The flags every leg launches with: D9's, plus `--ignore-gpu-blocklist` under the CI lavapipe
+ * allowance (lib/browser-renderer.ts launchArgsFor). */
+export const BROWSER_LAUNCH_ARGS: readonly string[] = launchArgsFor(
+  D9_LAUNCH_ARGS,
+  CI_RENDERER_ALLOWANCE,
+);
 
 /** D9: layered on for every leg EXCEPT suspension legs, which need Chromium's REAL throttling
  * heuristics active to be worth measuring. */
@@ -341,6 +360,8 @@ export interface BrowserProvenance {
   displayEnvUnset: boolean;
   processes: ChromiumProcessInfo[];
   totalWaylandFds: number;
+  /** R3: present only when the leg ran under the CI-only software-renderer allowance. */
+  ci_renderer_allowance?: RendererAllowance;
 }
 
 /**
@@ -349,13 +370,17 @@ export interface BrowserProvenance {
  * zygote) holds a Wayland FD; `DISPLAY`/`WAYLAND_DISPLAY` were unset in the launch environment;
  * and the binary sha256 matches `EXPECTED_CHROMIUM_SHA256`. Must be run against a page that has
  * already loaded `browser-probes/index.html` (or any page with a WebGL2 context), because the
- * renderer string is read from `WEBGL_debug_renderer_info`, never merely logged.
+ * renderer string is read from `WEBGL_debug_renderer_info`, never merely logged. Under the CI-only
+ * allowance (CI_RENDERER_ALLOWANCE, GitHub-hosted runners only) the renderer must instead name
+ * ANGLE on Vulkan on the DECLARED software renderer; every other condition is unchanged.
  */
 export async function checkBrowserProvenance(
   page: Page,
   launched: LaunchedBrowser,
   launchArgs: readonly string[],
   launchEnv: Record<string, string | undefined>,
+  /** The renderer rule: the process's allowance; the self-test's sabotage passes others. */
+  allowance: RendererAllowance | null = CI_RENDERER_ALLOWANCE,
 ): Promise<BrowserProvenance> {
   const reasons: string[] = [];
   const glInfo = await page.evaluate(() => {
@@ -380,14 +405,9 @@ export async function checkBrowserProvenance(
     reasons.push("no-webgl2: the probe page has no WebGL2 context");
   } else if (!renderer) {
     reasons.push("WEBGL_debug_renderer_info reported no renderer string");
-  } else if (
-    !/ANGLE/i.test(renderer) ||
-    !/NVIDIA/i.test(renderer) ||
-    !/Vulkan/i.test(renderer)
-  ) {
-    reasons.push(
-      `renderer "${renderer}" does not name ANGLE, NVIDIA and Vulkan together (SwiftShader or another backend may have been selected)`,
-    );
+  } else {
+    const refusal = rendererRefusal(renderer, allowance);
+    if (refusal) reasons.push(refusal);
   }
 
   const binarySha256 = sha256File(launched.executablePath);
@@ -431,6 +451,8 @@ export async function checkBrowserProvenance(
     displayEnvUnset,
     processes,
     totalWaylandFds,
+    // only under the CI-only allowance: the NVIDIA provenance.json is unchanged
+    ...(allowance ? { ci_renderer_allowance: allowance } : {}),
   };
 }
 

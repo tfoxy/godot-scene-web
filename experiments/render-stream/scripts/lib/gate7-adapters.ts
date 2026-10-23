@@ -23,6 +23,13 @@ import {
 } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import {
+  ciRendererAllowance,
+  type LegProvenance,
+  legProvenanceProblems,
+  provenanceCriterion,
+  provenancePassDetail,
+} from "./browser-renderer";
 import { decodePngRgba } from "./gate-minus1-checks";
 import {
   diffRgba,
@@ -35,6 +42,9 @@ import {
 } from "./gate0-checks";
 import type { WebLegSpec } from "./gate7-web-legs";
 import { type SourceKeyInputs, sourceKey } from "./source-key";
+
+/** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
+const ciAllowance = ciRendererAllowance();
 
 export interface Gate7Check {
   id: string;
@@ -548,15 +558,11 @@ export async function checkGate0Web(
   const pw1 = { shots: 0, identical: 0, differing: [] as string[] };
   const startup: Record<string, unknown>[] = [];
   for (const spec of specs) {
-    const p = await readJson<{
-      ok?: boolean;
-      reasons?: string[];
-      renderer?: string;
-    }>(join(spec.webDir, "provenance.json"));
-    if (!p?.ok)
-      prov.push(
-        `${spec.leg}: ${p?.reasons?.join(", ") ?? "no provenance.json"}`,
-      );
+    const p = await readJson<LegProvenance>(
+      join(spec.webDir, "provenance.json"),
+    );
+    const pp = legProvenanceProblems(p, ciAllowance);
+    if (pp.length) prov.push(`${spec.leg}: ${pp.join(", ")}`);
     let consoleText = "";
     try {
       consoleText = readFileSync(join(spec.webDir, "console.jsonl"), "utf8");
@@ -655,9 +661,9 @@ export async function checkGate0Web(
   checks.push(
     mk(
       "browser-provenance@web",
-      "Q6/D9: every web leg's browser names ANGLE, NVIDIA and Vulkan, holds no Wayland fd, had DISPLAY/WAYLAND_DISPLAY unset and is the recorded chromium-1223 binary",
+      provenanceCriterion("web", ciAllowance),
       prov,
-      `${specs.length} legs on the pinned hardware Chromium`,
+      provenancePassDetail(specs.length, ciAllowance),
     ),
   );
   checks.push(

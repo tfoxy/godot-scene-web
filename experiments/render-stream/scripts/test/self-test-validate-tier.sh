@@ -205,6 +205,26 @@ import json, sys
 r = json.load(open(sys.argv[1]))['runs'][0]
 sys.exit(0 if r['skipped_remote'] == ['live-stall/host'] and r['skipped_remote_groups'] == ['g1d'] else 1)
 PY"
+# R3: a remote run whose runner passed (gate 7: its sources excuse their skipped timing checks in
+# source-run-valid) still lists the skipped groups in the summary, and stays a pass.
+cat >"$TMP/stub-remote-pass.sh" <<'STUB'
+d="$RS_VALIDATE_DIR"
+mkdir -p "$d/run/sources-made/gate1/live-stall" "$d/run/gate1/gsw/receiver"
+echo '{}' >"$d/run/gate1/gsw/receiver/applied.json"
+echo '{"gate_passed": true, "checks": [{"id": "source-run-valid@gsw", "passed": true}]}' >"$d/run/result.json"
+echo "skipped-remote: RS_SKIP_TIMING_GROUPS=1 (timing group g1d: wall-clock legs stay local)" >"$d/run/sources-made/gate1/live-stall/skipped-remote.txt"
+exit 0
+STUB
+env RS_SKIP_TIMING_GROUPS=1 RS_VALIDATE_STUB="$TMP/stub-remote-pass.sh" \
+	bash "$SCRIPT_DIR/validate-increment.sh" --milestone --only native-rust-gate1 --out "$TMP/remote-pass" \
+	--paths experiments/render-stream/scripts/lib/gate3-checks.ts >"$TMP/remote-pass.log" 2>&1
+echo $? >"$TMP/remote-pass.rc"
+check "a passing remote run lists its skipped timing groups and stays a pass" "python3 - '$TMP/remote-pass' <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1] + '/validate-summary.json'))['runs'][0]
+rc = open(sys.argv[1] + '.rc').read().strip()
+sys.exit(0 if rc == '0' and r['rc'] == '0' and r['skipped_remote_groups'] == ['g1d'] else 1)
+PY"
 check "a different failing check stays real beside a skipped-remote leg" "python3 - '$SCRIPT_DIR' <<'PY'
 import importlib.util, json, os, sys, tempfile
 spec = importlib.util.spec_from_file_location('tv', sys.argv[1] + '/lib/tier-verdict.py')

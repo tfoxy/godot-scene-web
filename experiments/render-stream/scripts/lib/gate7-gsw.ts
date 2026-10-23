@@ -28,7 +28,13 @@ import {
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import {
+  ciRendererAllowance,
+  type LegProvenance,
+  legProvenanceProblems,
+  provenanceCriterion,
+  provenancePassDetail,
+} from "./browser-renderer";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { loadRecording, RECORDING_NAME } from "./gate0-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
@@ -61,6 +67,9 @@ import {
 } from "./gate7-gsw-g45";
 import { buildQ7View, stepsOf } from "./gate7-q7";
 import type { WebLegSpec } from "./gate7-web-legs";
+
+/** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
+const ciAllowance = ciRendererAllowance();
 
 export type GswGate =
   | "gate0"
@@ -430,6 +439,28 @@ function filesUnder(root: string, prefix = ""): string[] {
   return out.sort();
 }
 
+/** tier-verdict.py's verdict on a source run (run-gate7.sh writes it as remote-skip-verdict.json). */
+export interface RemoteSkipVerdict {
+  verdict?: string;
+  skipped_by_tier?: string[];
+  skipped_remote_groups?: string[];
+}
+
+/** R3: which of a source run's failing check ids its remote timing-group skip excuses. Only under
+ * RS_SKIP_TIMING_GROUPS (a remote run), only when tier-verdict.py passed the source with at least
+ * one group skipped remotely, and only the ids it excused by those skipped legs: anything else
+ * stays failing. Empty locally, so the local source-run-valid is unchanged. */
+export function remoteSkipExcused(
+  failing: readonly string[],
+  verdict: RemoteSkipVerdict | null | undefined,
+  skipEnv: string | undefined,
+): Set<string> {
+  if (!skipEnv || verdict?.verdict !== "pass") return new Set();
+  if ((verdict.skipped_remote_groups ?? []).length === 0) return new Set();
+  const excused = new Set(verdict.skipped_by_tier ?? []);
+  return new Set(failing.filter((id) => excused.has(id)));
+}
+
 export function mk(
   id: string,
   criterion: string,
@@ -542,6 +573,22 @@ export interface GswGroupResult {
   >;
 }
 
+/** The report check a gsw `judged` id stands for (R3). A gate's checker can report one id twice:
+ * gate 5 pushes g5d's file-leg `receiver-vs-reference` (receiver, receiver-patch) and then folds in
+ * g5f's live `receiver-vs-reference` (live-mesh, live-mesh-warm, live-mesh-stall). The judged lists
+ * mean the gate's own (first) check: the later one is a sub-gate's check of legs the gsw group does
+ * not run (G45_NOT_APPLICABLE: g5f is G7l's, judged by the g7-5 live group), whose evidence in the
+ * view is the native source's. A last-wins map used to judge g5f's check in its place, so gsw's
+ * file-leg comparison was never reported, and a remote run (g5f skipped, RS_SKIP_TIMING_GROUPS)
+ * had to excuse the whole check. */
+export function judgedCheck<C extends { id: string }>(
+  checks: readonly C[],
+  id: string,
+): { check: C | undefined; shadowed: number } {
+  const same = checks.filter((c) => c.id === id);
+  return { check: same[0], shadowed: Math.max(0, same.length - 1) };
+}
+
 /** Gate 7's checks for one gate's gsw legs (Q8). */
 export async function checkGswGroup(
   input: GswGroupInput,
@@ -614,11 +661,10 @@ export async function checkGswGroup(
     join(input.viewDir, "result.json"),
     `${JSON.stringify(report, null, 2)}\n`,
   );
-  const byId = new Map(report.checks.map((c) => [c.id, c]));
   const checks: Gate7Check[] = [];
   const spec = GSW_RECEIVER_CHECKS[gate];
   for (const id of spec.judged) {
-    const c = byId.get(id);
+    const { check: c, shadowed } = judgedCheck(report.checks, id);
     checks.push(
       c
         ? {
@@ -626,7 +672,10 @@ export async function checkGswGroup(
             criterion: c.criterion,
             passed: c.passed,
             gating: true,
-            detail: c.detail,
+            detail:
+              shadowed > 0
+                ? `${c.detail} (the gate's own ${id}; ${shadowed} later same-id sub-gate check${shadowed > 1 ? "s" : ""} not judged here)`
+                : c.detail,
           }
         : {
             id: `${id}@gsw`,
@@ -699,9 +748,25 @@ export async function checkGswGroup(
     // G7s: a source made with only some leg groups (G7b's file-leg sources, gate 5.5 without its
     // live g55f) is valid when every check of the groups it ran passed: only `not-run` group
     // checks may fail.
-    const failing = (result?.checks ?? []).filter(
+    let failing = (result?.checks ?? []).filter(
       (c) => c.passed !== true && c.status !== "not-run",
     );
+    // R3: a remote source run skips its timing groups (RS_SKIP_TIMING_GROUPS, lib/legs.sh), so no
+    // wall-clock check gates a gate 7 verdict on a shared VM. Only the checks tier-verdict.py
+    // excuses by those skipped legs are dropped here (run-gate7.sh writes its verdict beside the
+    // source); every other failing check still fails the source.
+    let excusedTiming: string[] = [];
+    if (result && failing.length > 0) {
+      const ex = remoteSkipExcused(
+        failing.map((c) => c.id),
+        await readJson<RemoteSkipVerdict>(
+          join(input.sourceDir, "remote-skip-verdict.json"),
+        ),
+        process.env.RS_SKIP_TIMING_GROUPS,
+      );
+      excusedTiming = failing.filter((c) => ex.has(c.id)).map((c) => c.id);
+      failing = failing.filter((c) => !ex.has(c.id));
+    }
     if (!result) problems.push("source result.json missing");
     else if (result.gate_passed !== true && failing.length > 0)
       problems.push(
@@ -720,7 +785,9 @@ export async function checkGswGroup(
         "source-run-valid@gsw",
         `D21: the source ${gate} run passed and was made on this build`,
         problems,
-        "source run valid, same build",
+        excusedTiming.length > 0
+          ? `source run valid, same build; ${excusedTiming.length} checks of its remote-skipped timing groups excused (RS_SKIP_TIMING_GROUPS=${process.env.RS_SKIP_TIMING_GROUPS})`
+          : "source run valid, same build",
       ),
     );
   }
@@ -730,11 +797,9 @@ export async function checkGswGroup(
   const consoleBad: string[] = [];
   const missing: string[] = [];
   for (const s of specs) {
-    const p = await readJson<{ ok?: boolean; reasons?: string[] }>(
-      join(s.webDir, "provenance.json"),
-    );
-    if (!p?.ok)
-      prov.push(`${s.leg}: ${p?.reasons?.join(", ") ?? "no provenance.json"}`);
+    const p = await readJson<LegProvenance>(join(s.webDir, "provenance.json"));
+    const pp = legProvenanceProblems(p, ciAllowance);
+    if (pp.length) prov.push(`${s.leg}: ${pp.join(", ")}`);
     let text = "";
     try {
       text = readFileSync(join(s.webDir, "console.jsonl"), "utf8");
@@ -752,9 +817,9 @@ export async function checkGswGroup(
   checks.push(
     mk(
       "browser-provenance@gsw",
-      "Q6/D9: every gsw leg's browser names ANGLE, NVIDIA and Vulkan, holds no Wayland fd, had DISPLAY/WAYLAND_DISPLAY unset and is the recorded chromium-1223 binary",
+      provenanceCriterion("gsw", ciAllowance),
       prov,
-      `${specs.length} legs on the pinned hardware Chromium`,
+      provenancePassDetail(specs.length, ciAllowance),
     ),
   );
   checks.push(

@@ -972,6 +972,13 @@ for g in "${SOURCE_GATES[@]}"; do
 		set -e
 		echo "run-gate7: run-gate$g.sh exit=$gate_exit (source-run-valid judges it)" >&2
 		SOURCES[gate$g]="$OUT/sources-made/gate$g"
+		# R3: a remote run skips the full source's timing groups (RS_SKIP_TIMING_GROUPS, lib/legs.sh:
+		# g1c-rate, g1d, g2c-pins, g5f); their checks fail for want of evidence. tier-verdict.py's
+		# verdict on the source is what source-run-valid@gsw excuses exactly those by (gate7-gsw.ts).
+		if [ -n "${RS_SKIP_TIMING_GROUPS:-}" ]; then
+			python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "${SOURCES[gate$g]}" \
+				>"${SOURCES[gate$g]}/remote-skip-verdict.json" || true
+		fi
 		g7tool source-provenance --extension "$EXTENSION" --calibration "$(realpath -m "$CALIBRATION")" \
 			--out "${SOURCES[gate$g]}/gate7-source.json"
 		source_cache_publish "gate$g" "$cache_legs"

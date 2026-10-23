@@ -40,7 +40,13 @@ import {
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import {
+  ciRendererAllowance,
+  type LegProvenance,
+  legProvenanceProblems,
+  provenanceCriterion,
+  provenancePassDetail,
+} from "./browser-renderer";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { diffRgba } from "./gate0-checks";
 import {
@@ -60,6 +66,9 @@ import {
 } from "./gate7-adapters";
 import type { WebLegSpec } from "./gate7-web-legs";
 import { resolveRecording, statesEqual } from "./render-stream-2";
+
+/** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
+const ciAllowance = ciRendererAllowance();
 
 const SCRIPT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..");
@@ -919,13 +928,11 @@ export async function checkGateWeb(
   const compositorNotes: string[] = [];
   let compositorApplied = 0;
   for (const spec of specs) {
-    const p = await readJson<{ ok?: boolean; reasons?: string[] }>(
+    const p = await readJson<LegProvenance>(
       join(spec.webDir, "provenance.json"),
     );
-    if (!p?.ok)
-      prov.push(
-        `${spec.leg}: ${p?.reasons?.join(", ") ?? "no provenance.json"}`,
-      );
+    const pp = legProvenanceProblems(p, ciAllowance);
+    if (pp.length) prov.push(`${spec.leg}: ${pp.join(", ")}`);
     let consoleText = "";
     try {
       consoleText = readFileSync(join(spec.webDir, "console.jsonl"), "utf8");
@@ -1032,9 +1039,9 @@ export async function checkGateWeb(
   checks.push(
     mk(
       "browser-provenance@web",
-      "Q6/D9: every web leg's browser names ANGLE, NVIDIA and Vulkan, holds no Wayland fd, had DISPLAY/WAYLAND_DISPLAY unset and is the recorded chromium-1223 binary",
+      provenanceCriterion("web", ciAllowance),
       prov,
-      `${specs.length} legs on the pinned hardware Chromium`,
+      provenancePassDetail(specs.length, ciAllowance),
     ),
   );
   checks.push(

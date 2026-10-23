@@ -97,9 +97,13 @@ cat >"$out/plan.json" <<'JSON'
  {"id":"native-rust-gate0","kind":"native","phase":"native","gate":"gate0"},
  {"id":"native-rust-gate1","kind":"native","phase":"native","gate":"gate1"},
  {"id":"native-rust-gate6","kind":"native","phase":"timing","gate":"gate6"},
- {"id":"g7-gsw","kind":"g7","phase":"g7","groups":["g7-1"]},
+ {"id":"g7-gsw","kind":"g7","phase":"g7","groups":["g7-1","g7-2"]},
+ {"id":"g7live-gsw-timing","kind":"g7live","phase":"timing","groups":["g7-6"]},
+ {"id":"g7-future","kind":"g7","phase":"g7","groups":["g7-9"]},
  {"id":"g7live-gsw-device","kind":"g7live","phase":"g7","groups":["g7-lc-device"]},
- {"id":"g7x","kind":"g7x","phase":"g7","groups":["g7-bench"]}]}
+ {"id":"g7x","kind":"g7x","phase":"g7","groups":["g7-bench"]},
+ {"id":"g7live-gsw","kind":"g7live","phase":"g7","groups":["g7-1","g7-2","g7-5"]},
+ {"id":"g7live-web-rust-g7-1","kind":"g7live","phase":"g7","groups":["g7-1"]}]}
 JSON
 PL
 echo '{}' >"$TMP/dummy"
@@ -111,12 +115,21 @@ remote_branches() { git --git-dir="$BARE" for-each-ref --format='%(refname)' ref
 # ---- refusals (dry run) -------------------------------------------------------------------------------
 ( cd "$CLONE" && bash "$WRAP" --dry-run ) >"$TMP/dry.out" 2>&1
 check "dry run exits 0" grep -q 'dry run: would snapshot' "$TMP/dry.out"
-check "remote-capable runs are pure, cargo-*, pnpm-test and the native gates only" grep -q 'remote runs: pure,cargo-rs-core,pnpm-test,native-rust-gate0,native-rust-gate1$' "$TMP/dry.out"
+check "remote-capable runs are pure, cargo-*, pnpm-test, the native gates and gate 7's browser correctness runs only" grep -q 'remote runs: pure,cargo-rs-core,pnpm-test,native-rust-gate0,native-rust-gate1,g7-gsw,g7live-gsw$' "$TMP/dry.out"
+check "a gate 7 timing run refused" grep -q 'refused g7live-gsw-timing: timing run' "$TMP/dry.out"
 check "timing run refused" grep -q 'refused native-rust-gate6: timing run' "$TMP/dry.out"
 check "lock-tests refused" grep -q 'refused lock-tests: lock self-tests' "$TMP/dry.out"
 check "g7x refused" grep -q 'refused g7x:' "$TMP/dry.out"
 check "device run refused" grep -q 'refused g7live-gsw-device: device-related' "$TMP/dry.out"
-check "not-yet-capable run refused with its reason" grep -q 'refused g7-gsw: not yet remote-capable' "$TMP/dry.out"
+check "not-yet-capable run refused with its reason" grep -q 'refused g7-future: not yet remote-capable' "$TMP/dry.out"
+check "refuse.groups: a live run's intermittent groups are refused, with their reason" grep -q 'refused g7live-gsw groups g7-1,g7-2: g7-1: R3: resync-full fails intermittently' "$TMP/dry.out"
+check "refuse.groups: the run keeps its other groups remotely" grep -qF '"g7live-gsw": ["g7-5"]' "$TMP/dry.out"
+check "refuse.groups: a run with no group left is refused whole" grep -q 'refused g7live-web-rust-g7-1: g7-1: R3: resync-full fails intermittently' "$TMP/dry.out"
+( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer lavapipe ) >"$TMP/dry-br.out" 2>&1
+check "--browser-renderer reaches the dispatch inputs" grep -q 'browser_renderer=lavapipe' "$TMP/dry-br.out"
+( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer nvidia ) >"$TMP/dry-br2.out" 2>&1
+check "--browser-renderer refuses an unknown renderer (exit 2)" test "$?" = 2
+check "--browser-renderer refuses swiftshader, dropped in R3 (exit 2)" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --browser-renderer swiftshader >/dev/null 2>&1; test \$? = 2"
 check "--determinism rejects a non-count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 3,x >/dev/null 2>&1; test \$? = 2"
 check "--determinism rejects a zero count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 0 >/dev/null 2>&1; test \$? = 2"
 check "--determinism is shown in the dry run's inputs" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only native-rust-gate0 --determinism 3,1 2>&1 | grep -q 'runs=\[\"native-rust-gate0\"\] determinism=3,1\$'"
@@ -146,8 +159,10 @@ check "snapshot omits the ignored file" bash -c "! grep -q '^ign/' '$TMP/snapsho
 check "only main and the run branch exist on origin at dispatch" bash -c \
 	"[ \"\$(grep -vc '^refs/heads/remote-run/${CLONE##*/}-' '$TMP/refs-at-dispatch.txt')\" = 1 ] && grep -qx refs/heads/main '$TMP/refs-at-dispatch.txt'"
 check "dispatch carried run_key, sha, base, tier and the run list" bash -c \
-	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
+	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\", \"g7-gsw\", \"g7live-gsw\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no determinism input" bash -c "! grep -q 'determinism=' '$FAKE_GH_LOG'"
+check "a plain dispatch carries no browser_renderer input (the workflow default)" bash -c "! grep -q 'browser_renderer=' '$FAKE_GH_LOG'"
+check "a multi-group gate 7 run is dispatched with its groups (one job per group)" grep -qF 'run_groups={"g7-gsw": ["g7-1", "g7-2"], "g7live-gsw": ["g7-5"]}' "$FAKE_GH_LOG"
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"
 check "the output names the results directory" grep -q 'results in .*artifacts/render-stream/remote/' "$TMP/ok.out"

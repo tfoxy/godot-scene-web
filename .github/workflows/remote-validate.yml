@@ -43,6 +43,18 @@ on:
           that many times per job and lib/remote-determinism.ts compares all repeats' shots and dumps
         required: false
         default: ""
+      run_groups:
+        description: >-
+          JSON {run id: [groups]} for the gate 7 runs of several groups (R3): one job per group, each
+          with RS_VALIDATE_GROUPS; the merge folds them into the run's one row
+        required: false
+        default: "{}"
+      browser_renderer:
+        description: >-
+          gate 7 browser legs' CI-only software renderer (RS_BROWSER_PROVENANCE, lib/browser-renderer.ts):
+          lavapipe, ANGLE-Vulkan on the llvmpipe the native sources render on (the only one, R3)
+        required: false
+        default: lavapipe
 
 permissions:
   contents: read
@@ -57,6 +69,9 @@ env:
   PURE_SHARDS: "6"
   # build-capture.sh defaults to /snap/bin/cmake
   CMAKE: cmake
+  # R3 watchdog: minutes per validate-increment invocation (about 2x the longest observed one, a
+  # 16 min gate 7 group), well under the job's 120, so a hang leaves evidence and a failing row
+  WATCHDOG_MIN: "35"
 
 jobs:
   plan:
@@ -69,17 +84,26 @@ jobs:
         env:
           RUNS: ${{ inputs.runs }}
           DETERMINISM: ${{ inputs.determinism }}
+          RUN_GROUPS: ${{ inputs.run_groups }}
         run: |
           python3 - <<'PY'
           import json, os
           n = int(os.environ["PURE_SHARDS"])
           det = [int(x) for x in os.environ["DETERMINISM"].split(",") if x.strip()]
+          rg = json.loads(os.environ.get("RUN_GROUPS") or "{}")
           include, shards = [], {}
           for i in json.loads(os.environ["RUNS"]):
+              # R3: a gate 7 run of several groups is one job per group (label <id>@<group>); with
+              # --determinism, one job per group and repeat count. The merge folds them into one row.
+              gs = rg.get(i) or [""]
               if det:
                   # one job per repeat count, each on its own runner; the merge folds them into one row
-                  shards[i] = len(det)
-                  include += [{"id": i, "shard": "", "repeat": r, "label": f"{i}-det{k}x{r}"} for k, r in enumerate(det, 1)]
+                  shards[i] = len(det) * len(gs)
+                  include += [{"id": i, "shard": "", "group": g, "repeat": r, "label": f"{i}{'@' + g if g else ''}-det{k}x{r}"}
+                              for g in gs for k, r in enumerate(det, 1)]
+              elif gs != [""]:
+                  shards[i] = len(gs)
+                  include += [{"id": i, "shard": "", "group": g, "label": f"{i}@{g}"} for g in gs]
               elif i == "pure" and n > 1:
                   shards[i] = n
                   include += [{"id": i, "shard": f"{k}/{n}", "label": f"{i}-{k}of{n}"} for k in range(1, n + 1)]
@@ -115,24 +139,31 @@ jobs:
 
       - uses: ./.github/actions/rs-setup
         with:
-          chromium: ${{ matrix.id == 'pnpm-test' }}
+          # pnpm-test's browser tests use Playwright's own install; gate 7 (R3) needs the pinned
+          # chromium-1223, sha-checked against browser-harness.ts's EXPECTED_CHROMIUM_SHA256
+          chromium: ${{ matrix.id == 'pnpm-test' || startsWith(matrix.id, 'g7') }}
+          chromium-pinned: ${{ startsWith(matrix.id, 'g7') }}
+          browser-renderer: ${{ startsWith(matrix.id, 'g7') && inputs.browser_renderer || '' }}
           # the pure self-tests include rs-ws, which runs the capture build's rs_ws_echo (a local
           # worktree runs build-capture.sh once for the same reason): restored from the seeded cache.
-          # A native gate needs the capture extension too.
-          capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') }}
+          # A native gate needs the capture extension too, and so does every gate 7 run: its sources
+          # (--make-sources) and live hosts are native gate runs.
+          capture-build: ${{ matrix.id == 'pure' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           # native-* runs (R1): rendered legs on Xvfb + llvmpipe, the rs-core GDExtension, the
           # release template, the editor (imports, receiver self-test) and strace
-          swrast: ${{ startsWith(matrix.id, 'native-') }}
-          rs-core-ext: ${{ startsWith(matrix.id, 'native-') }}
-          apt: ${{ startsWith(matrix.id, 'native-') }}
-          # gate 4's i18n fixtures read the engine's thirdparty/fonts (fonts.lock.json)
-          fonts: ${{ matrix.id == 'native-rust-gate4' }}
-          # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input
-          godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') }}
-          templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') }}
-          emsdk: ${{ matrix.id == 'toolchain-smoke' }}
-          rust-nightly: ${{ matrix.id == 'toolchain-smoke' }}
-          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' }}
+          swrast: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          rs-core-ext: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          apt: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          # gate 4's i18n fixtures read the engine's thirdparty/fonts (fonts.lock.json); g7-4's
+          # source is a gate 4 run
+          fonts: ${{ matrix.id == 'native-rust-gate4' || startsWith(matrix.id, 'g7-') }}
+          # toolchain-smoke (remote-validate.sh --toolchain-smoke) builds with every pinned input;
+          # gate 7 builds the web receiver (web-rust) or the gsw bundle (build-rs-core.sh)
+          godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          emsdk: ${{ matrix.id == 'toolchain-smoke' || (startsWith(matrix.id, 'g7') && contains(matrix.id, 'web-rust')) }}
+          rust-nightly: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') }}
+          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') }}
 
       - name: Record setup time
         run: |
@@ -154,11 +185,22 @@ jobs:
           CHANGED_PATHS: ${{ inputs.paths }}
           REPEAT: ${{ matrix.repeat }}
           LABEL: ${{ matrix.label }}
+          RS_VALIDATE_GROUPS: ${{ matrix.group }}
           # native gates (R2): 4 vCPU run two legs at once. The timing groups inside the correctness
           # gates (g1c-rate, g1d, g2c-pins, g5f, g55f) are wall-clock legs a shared VM would only make
           # noisy: they are skipped here (skipped-remote.txt) and stay local. Never set locally.
-          RS_LEG_SHARDS: ${{ startsWith(matrix.id, 'native-') && '2' || '' }}
-          RS_SKIP_TIMING_GROUPS: ${{ startsWith(matrix.id, 'native-') && '1' || '' }}
+          RS_LEG_SHARDS: ${{ (startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7')) && '2' || '' }}
+          # gate 7 (R3): a file run (g7-gsw, g7-web-rust) skips every timing group too: the gsw half
+          # makes FULL native sources (run-gate7.sh --make-sources: gates 1, 2 and 5 carry g1c-rate,
+          # g1d, g2c-pins, g5f), and source-run-valid@gsw excuses exactly those by tier-verdict.py
+          # (gate7-gsw.ts remoteSkipExcused); the web half's sources are file legs only. A live
+          # correctness run (g7-1/g7-2/g7-5/g7-55) skips only g1c-rate, its one rate leg -- g1d,
+          # g2c-pins, g5f and g55f are frame-counted under fast frames (lib/legs.sh
+          # RS_FAST_ALLOW_LEGS) and are the browser's live correctness legs. The timing groups
+          # (g7-6, g7-lc, g7-r, g7-k) are -timing runs, refused by phase.
+          RS_SKIP_TIMING_GROUPS: ${{ (startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7-')) && '1' || (startsWith(matrix.id, 'g7live-') && 'g1c-rate' || '') }}
+          # the CI-only browser allowance (lib/browser-renderer.ts; Decision 10): only here
+          RS_BROWSER_PROVENANCE: ${{ startsWith(matrix.id, 'g7') && inputs.browser_renderer || '' }}
         run: |
           # the planner's default base is `main`; point it at the merge-base the wrapper computed
           git update-ref refs/heads/main "$BASE"
@@ -170,22 +212,73 @@ jobs:
           esac
           [ -n "$CHANGED_PATHS" ] && args+=(--paths "$CHANGED_PATHS")
           mkdir -p "$RS_QUIET_LOCK_DIR"
+          # vi OUT ARGS...: validate-increment under the watchdog (R3: a gsw g7-2 job hung past 90 min
+          # and was cancelled with no log, run 39815482313). 45 s before the deadline it snapshots
+          # the process tree and the quiet lock; on the deadline timeout kills the run's process
+          # group, and the newest logs' tails go to $RUNNER_TEMP/watchdog (Trim artifact uploads it).
+          # The run's row then fails (rc missing) instead of the job dying silent.
+          vi() {
+            local out="$1" s=$((WATCHDOG_MIN * 60)) rc wd w="$RUNNER_TEMP/watchdog"
+            shift
+            ( sleep $((s - 45)) && mkdir -p "$w" && {
+                date -u; uptime; ps -eo pid,ppid,etimes,pcpu,rss,args --forest
+                bash experiments/render-stream/scripts/lib/quiet.sh status
+              } >"$w/ps-$(basename "$out").txt" 2>&1 ) &
+            wd=$!
+            timeout -k 60 "$s" bash experiments/render-stream/scripts/validate-increment.sh "$@"
+            rc=$?
+            kill "$wd" 2>/dev/null
+            if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+              echo "::error::watchdog: validate-increment ($out) exceeded $WATCHDOG_MIN min and was killed"
+              mkdir -p "$w/logs-$(basename "$out")"
+              find "$out" -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -30 |
+                cut -d' ' -f2- | while read -r f; do
+                  r="${f#"$out"/}"
+                  tail -c 20000 "$f" >"$w/logs-$(basename "$out")/${r//\//__}"
+                done
+            fi
+            return "$rc"
+          }
           if [ -z "$REPEAT" ]; then
-            bash experiments/render-stream/scripts/validate-increment.sh "${args[@]}"
+            vi "$RUNNER_TEMP/v" "${args[@]}"
             exit $?
           fi
           # determinism mode: REPEAT runs on this runner, $RUNNER_TEMP/v (the first) then v2..vN; the
-          # job's summary folds them into one row, and every repeat's run dir becomes det-<label>
+          # job's summary folds them into one row, and every repeat's digest goes to det-<label>
           rc=0 outs=()
           for k in $(seq 1 "$REPEAT"); do
             o="$RUNNER_TEMP/v"; [ "$k" = 1 ] || o="$RUNNER_TEMP/v$k"
             args[5]="$o" # --out's value
-            bash experiments/render-stream/scripts/validate-increment.sh "${args[@]}" || rc=1
+            vi "$o" "${args[@]}" || rc=1
             outs+=("$o/")
-            d="$RUNNER_TEMP/det/$LABEL/r$k"
-            mkdir -p "$d" && cp -a "$o/$ID/run/." "$d/" 2>/dev/null
+            # R3: only a digest of each repeat travels (every shot's sha256, every masked dump's
+            # canonical hash, the live-set keys, the provenance): a gate 7 run dir is GBs
+            mkdir -p "$RUNNER_TEMP/det/$LABEL"
+            # the web builds' records: a web pck's build_sha256 is compared by content (its export
+            # order varies across runners, its entries do not; remote-determinism.ts buildContentMap)
+            brec=()
+            for r in artifacts/render-stream/web-receiver/*/bundle/build.json; do [ -f "$r" ] && brec+=(--build-record "$r"); done
+            [ -d "$o/$ID/run" ] && pnpm exec tsx --conditions=development experiments/render-stream/scripts/lib/remote-determinism.ts \
+              --digest "$o/$ID/run" --out "$RUNNER_TEMP/det/$LABEL/r$k.digest.json" "${brec[@]}" || true
           done
-          cp "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/det/$LABEL/" 2>/dev/null
+          # this runner's repeats are compared here too, as directories: a disagreement gets its pixel
+          # report (count, bbox, channel deltas), which digests alone cannot give
+          runs=()
+          for o in "${outs[@]}"; do [ -d "$o$ID/run" ] && runs+=("$o$ID/run"); done
+          [ "${#runs[@]}" -ge 2 ] && pnpm exec tsx --conditions=development experiments/render-stream/scripts/lib/remote-determinism.ts \
+            --out "$RUNNER_TEMP/det/$LABEL/same-runner.json" "${brec[@]}" "${runs[@]}" | grep -v '^  \(GL\|Vulkan\)' | tail -40 || true
+          cp "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/det/$LABEL/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/browser-provenance.json" "$RUNNER_TEMP/det/$LABEL/" 2>/dev/null || true
+          # gate 7: the builds the repeats used (web build.json + pck, gsw bundle record), beside r1..rN:
+          # not compared, but a build that differs across runners is diagnosed from them
+          for b in artifacts/render-stream/web-receiver/*/bundle; do
+            [ -d "$b" ] || continue
+            w="$RUNNER_TEMP/det/$LABEL/builds/web-$(basename "$(dirname "$b")")"
+            mkdir -p "$w" && cp "$b"/build.json "$b"/*.pck "$w/" 2>/dev/null || true
+          done
+          for b in "$RUNNER_TEMP"/v*/"$ID"/run/gsw-bundle; do
+            [ -f "$b/build.json" ] && mkdir -p "$RUNNER_TEMP/det/$LABEL/builds" && cp "$b/build.json" "$RUNNER_TEMP/det/$LABEL/builds/gsw-build.json" || true
+          done
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out "$RUNNER_TEMP/vmerged" \
             --expect "$ID" "${outs[@]}" || true
           cp "$RUNNER_TEMP/vmerged/validate-summary.json" "$RUNNER_TEMP/v/validate-summary.json"
@@ -204,26 +297,48 @@ jobs:
           # per-test seconds of a pure shard (a few KB): the input to pure-shard-weights.json
           [ -f "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" ] && cp "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" "$art/timings-$LABEL.jsonl"
+          # the watchdog's snapshot and log tails (R3), when it fired or got close
+          [ -d "$RUNNER_TEMP/watchdog" ] && cp -r "$RUNNER_TEMP/watchdog" "$art/watchdog"
           # swrast provenance plus the GL renderer string the run's Godot printed (OpenGL API ... llvmpipe)
           [ -f "$RUNNER_TEMP/swrast-provenance.json" ] && python3 -I - "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/v/$ID/run" "$art/swrast-provenance.json" <<'PY'
-          import glob, json, re, sys
+          import glob, json, os, re, sys
           p = json.load(open(sys.argv[1]))
           for f in sorted(glob.glob(sys.argv[2] + "/**/stdout.log", recursive=True)):
               m = re.search(r"^OpenGL API .*$", open(f, errors="replace").read(), re.M)
               if m:
                   p["godot_gl"] = m.group(0)
                   break
+          # gate 7 (R3): the browser's WebGL renderer as a leg recorded it (browser-harness.ts
+          # checkBrowserProvenance), and the runner's Vulkan/Chromium facts (rs-setup)
+          b = os.path.join(os.environ["RUNNER_TEMP"], "browser-provenance.json")
+          if os.path.isfile(b):
+              p["browser_setup"] = json.load(open(b))
+          for f in sorted(glob.glob(sys.argv[2] + "/**/provenance.json", recursive=True)):
+              try:
+                  j = json.load(open(f))
+              except ValueError:
+                  continue
+              if isinstance(j.get("renderer"), str):
+                  p["browser"] = {k: j.get(k) for k in ("renderer", "vendor", "version", "args", "binarySha256", "ok", "ci_renderer_allowance")}
+                  break
           json.dump(p, open(sys.argv[3], "w"), indent=2)
           PY
-          run="$RUNNER_TEMP/v/$ID"
-          rc="$(cat "$run/rc" 2>/dev/null || echo missing)"
-          if [ "$rc" != 0 ]; then
-            ev="$art/evidence/$LABEL"
+          # determinism mode: the enriched provenance (browser renderer included) beside the repeats
+          [ -d "$RUNNER_TEMP/det/$LABEL" ] && [ -f "$art/swrast-provenance.json" ] && cp "$art/swrast-provenance.json" "$RUNNER_TEMP/det/$LABEL/"
+          # every failing repeat's evidence (determinism mode runs v, v2, ...; R3: a repeat-2 failure
+          # used to come back with no evidence): evidence/<label> for v, evidence/<label>-r<k> after
+          for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
+            run="$o/$ID"
+            [ -d "$run" ] || continue
+            rc="$(cat "$run/rc" 2>/dev/null || echo missing)"
+            [ "$rc" != 0 ] || continue
+            k="${o##*/v}"
+            ev="$art/evidence/$LABEL${k:+-r$k}"
             mkdir -p "$ev/run"
             for f in command.txt run.log tier-verdict.json; do [ -f "$run/$f" ] && cp "$run/$f" "$ev/"; done
             [ -f "$run/run/result.json" ] && cp "$run/run/result.json" "$ev/run/"
             cp "$run"/*.log "$ev/" 2>/dev/null
-          fi
+          done
           true
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -234,7 +349,7 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      # determinism mode: every repeat's run dir (gate 0 is ~5 MB), for the determinism job
+      # determinism mode: every repeat's digest (plus provenance, builds, this runner's pixel report)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && matrix.repeat
         with:
@@ -276,7 +391,9 @@ jobs:
           # different gates are not a sample of each other)
           rc=0
           for id in $(ls det | sed 's/-det[0-9]*x[0-9]*$//' | sort -u); do
-            dirs=(det/"$id"-det*/r*/)
+            dirs=(det/"$id"-det*/r*.digest.json)
+            # each runner's own pixel report, beside the cross-runner one
+            for f in det/"$id"-det*/same-runner.json; do [ -f "$f" ] && mkdir -p out/same-runner && cp "$f" "out/same-runner/$(basename "$(dirname "$f")").json"; done
             pnpm exec tsx --conditions=development experiments/render-stream/scripts/lib/remote-determinism.ts \
               --out "out/gates/$id.json" "${dirs[@]}" || rc=$?
           done
@@ -294,7 +411,11 @@ jobs:
               "gates": {k: {"ok": r["ok"], "runs": r["runs"], "shots": r["shots"]["agree"], "shots_total": r["shots"]["total"],
                             "dumps": r["dumps"]["agree"], "dumps_total": r["dumps"]["total"],
                             "live_sets": len(r.get("live_sets", [])), "live_timed": len(r.get("live_timed", [])),
-                            "provenance_agree": r["provenance_agree"]} for k, r in g.items()},
+                            "provenance_agree": r["provenance_agree"],
+                            # web pck: raw sha256 drift is export order (info), content must agree
+                            "build_raw_drift": (r.get("build_identity") or {}).get("raw_drift"),
+                            "build_content_agree": (r.get("build_identity") or {}).get("content_agree"),
+                            "provenance": (r.get("provenance") or [None])[0]} for k, r in g.items()},
           }, open("out/determinism.json", "w"), indent=2)
           PY
           for f in det/*/swrast-provenance.json; do [ -f "$f" ] && cp "$f" "out/provenance-$(basename "$(dirname "$f")").json"; done

@@ -37,7 +37,11 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 
 import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/index.js";
-
+import {
+  allowanceProblems,
+  ciRendererAllowance,
+  type LegProvenance,
+} from "./browser-renderer";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { filesUnder, type Gate7Check, mk, readJson } from "./gate7-adapters";
 import { presentationCheck } from "./gate7-g6-checks";
@@ -48,6 +52,9 @@ import {
   type GateDef,
   runChecker,
 } from "./gate7b-adapters";
+
+/** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
+const liveCiAllowance = ciRendererAllowance();
 
 export interface LiveGateDef {
   gate: string;
@@ -233,13 +240,14 @@ export async function browserLegProblems(
 ): Promise<{ provenance: string[]; console: string[] }> {
   const provenance: string[] = [];
   const consoleBad: string[] = [];
-  const p = await readJson<{ ok?: boolean; reasons?: string[] }>(
-    join(dir, "provenance.json"),
-  );
+  const p = await readJson<LegProvenance>(join(dir, "provenance.json"));
   if (!p?.ok)
     provenance.push(
       `${leg}: ${p ? (p.reasons ?? []).join("; ") : "provenance.json missing"}`,
     );
+  // R3: the CI-only software-renderer allowance (nothing on the NVIDIA default)
+  for (const x of allowanceProblems(p, liveCiAllowance))
+    provenance.push(`${leg}: ${x}`);
   let consoleText = "";
   try {
     consoleText = readFileSync(join(dir, "console.jsonl"), "utf8");

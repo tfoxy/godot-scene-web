@@ -45,6 +45,17 @@ inputs:
       Playwright's Chromium (the repo's pinned @playwright/test version) installed on the runner,
       for pnpm-test's browser tests. R3 adds the sha check against the pinned build.
     default: "false"
+  chromium-pinned:
+    description: >-
+      Gate 7 (R3): install only the full chromium-1223 (no headless shell) and verify its `chrome`
+      against browser-harness.ts's EXPECTED_CHROMIUM_SHA256 (148.0.7778.96); a mismatch fails setup
+    default: "false"
+  browser-renderer:
+    description: >-
+      Gate 7 (R3): the CI-only software renderer the browser legs declare (RS_BROWSER_PROVENANCE,
+      lib/browser-renderer.ts): lavapipe (Mesa's Vulkan driver, mesa-vulkan-drivers), the only one.
+      Writes $RUNNER_TEMP/browser-provenance.json.
+    default: ""
   swrast:
     description: >-
       Rendered legs on a software rasterizer (R1): Xvfb and Mesa llvmpipe, selected by
@@ -117,9 +128,38 @@ runs:
         key: ${{ steps.pnpm-cache.outputs.cache-primary-key }}
 
     - name: Playwright Chromium
-      if: inputs.chromium == 'true'
+      if: inputs.chromium == 'true' && inputs.chromium-pinned != 'true'
       shell: bash
       run: pnpm exec playwright install --with-deps chromium
+
+    # Gate 7 (R3): the repo's pinned @playwright/test (1.60.0, browsers.json revision 1223) installs
+    # Chrome for Testing 148.0.7778.96 on the runner, and its binary must match the pin the harness
+    # launches against (it refuses any other build). A developer box never runs this: there the
+    # harness seeds its private copy from an existing cache and never downloads.
+    - name: Pinned Chromium (chromium-1223)
+      if: inputs.chromium-pinned == 'true'
+      shell: bash
+      run: |
+        pnpm exec playwright install --no-shell chromium
+        # Its system libraries: install-deps runs apt-get update over every configured source, and a
+        # third-party one on the runner image (packages.microsoft.com answered 403, run 39867385871)
+        # failed the whole job. Retry once, then once more with the non-Ubuntu sources set aside
+        # (Chromium's libraries all come from Ubuntu's archive).
+        for try in 1 2 3; do
+          if [ "$try" = 3 ]; then
+            sudo find /etc/apt/sources.list.d -maxdepth 1 -type f ! -name 'ubuntu*' -print -exec sudo mv {} {}.disabled \;
+          fi
+          pnpm exec playwright install-deps chromium && break
+          [ "$try" != 3 ] || { echo "::error::playwright install-deps chromium failed 3 times"; exit 1; }
+          sleep 15
+        done
+        pin="$(grep -A1 '^export const EXPECTED_CHROMIUM_SHA256 =' experiments/render-stream/scripts/lib/browser-harness.ts |
+          sed -n 's/^ *"\([0-9a-f]\{64\}\)";$/\1/p')"
+        exe="$(pnpm exec node -e 'console.log(require("@playwright/test").chromium.executablePath())')"
+        [ -n "$pin" ] || { echo "::error::no EXPECTED_CHROMIUM_SHA256 in browser-harness.ts"; exit 1; }
+        case "$exe" in */chromium-1223/*) ;; *) echo "::error::Playwright resolved $exe, not chromium-1223"; exit 1 ;; esac
+        echo "$pin  $exe" | sha256sum -c -
+        "$exe" --version
 
     - name: Rust toolchain
       shell: bash
@@ -363,6 +403,46 @@ runs:
       if: inputs.rs-core-ext == 'true' && inputs.godot == 'true'
       shell: bash
       run: mise exec -- godot --headless --path experiments/render-stream/receiver --import
+
+    # Gate 7's browser renderer (R3, docs/remote-compute.md): ANGLE's Vulkan backend on Mesa's
+    # lavapipe (--use-angle=vulkan with mesa-vulkan-drivers, the only Vulkan device on a GPU-less
+    # runner), the same llvmpipe rasterizer the native sources render on.
+    - name: Browser renderer
+      if: inputs.browser-renderer != ''
+      shell: bash
+      env:
+        RENDERER: ${{ inputs.browser-renderer }}
+      run: |
+        case "$RENDERER" in
+          lavapipe)
+            pk=(mesa-vulkan-drivers vulkan-tools)
+            sudo apt-get install -y --no-install-recommends "${pk[@]}" >/dev/null 2>&1 ||
+              { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends "${pk[@]}"; }
+            ;;
+          *) echo "::error::browser-renderer must be lavapipe, got $RENDERER"; exit 1 ;;
+        esac
+        python3 -I - "$RUNNER_TEMP" "$RENDERER" <<'PY'
+        import json, os, subprocess, sys
+        tmp, renderer = sys.argv[1], sys.argv[2]
+        def sh(*a):
+            try:
+                r = subprocess.run(a, capture_output=True, text=True, timeout=60)
+                return (r.stdout + r.stderr).strip()
+            except Exception as e:
+                return f"error: {e}"
+        pk = {}
+        for line in sh("dpkg-query", "-W", "-f", "${Package}\t${Version}\n", "mesa-vulkan-drivers", "libvulkan1").splitlines():
+            n, _, v = line.partition("\t")
+            if v and not v.startswith("dpkg-query"):
+                pk[n] = v
+        json.dump({
+            "schema": "render-stream-browser-provenance/1",
+            "renderer": renderer,
+            "packages": pk,
+            "vulkaninfo": sh("vulkaninfo", "--summary")[-2000:],
+        }, open(os.path.join(tmp, "browser-provenance.json"), "w"), indent=2)
+        PY
+        cat "$RUNNER_TEMP/browser-provenance.json"
 
     # Software rasterizer (R1, docs/remote-compute.md). The runner has no GPU and no /dev/dri, so the
     # rendered legs use lib/gamescope.sh's CI-only RS_DISPLAY_MODE=xvfb-llvmpipe: Xvfb, with Godot's
