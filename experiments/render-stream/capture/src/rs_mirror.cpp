@@ -1175,6 +1175,11 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
   if (texture.status == TextureStatus::Ok) {
     out.has_hash = true;
     out.hash = copy.hash;
+    // G8t (render-stream-8.md "Resource tables"): a host decode names its source format; the
+    // codec writes the key at /8 only, and D2 keeps a decode policy off every other version.
+    const char *source = copy.source_format >= 0 ? image_format_name(copy.source_format) : nullptr;
+    out.has_source_format = source != nullptr;
+    out.source_format = source != nullptr ? source : "";
     out.payload_bytes = static_cast<std::uint64_t>(std::max<std::int64_t>(copy.payload_bytes, 0));
   } else {
     out.has_reason = texture.has_reason;

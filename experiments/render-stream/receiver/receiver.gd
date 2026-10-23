@@ -486,6 +486,12 @@ func _ready() -> void:
 		_wire_version = 7
 		var receiver_block: Dictionary = _report["receiver"]
 		receiver_block["protocol"] = RsWire.PROTOCOL_V7
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
+		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
+		# additions to the tables, so it draws exactly as a /6 recording would.
+		_wire_version = 8
+		var receiver_block_v8: Dictionary = _report["receiver"]
+		receiver_block_v8["protocol"] = "render-stream/8"
 	var sha256: String = RsWire.sha256_hex(_data)
 	_report["recording"] = {"path": _recording_path, "sha256": sha256, "bytes": _data.size()}
 	_stream_report = {

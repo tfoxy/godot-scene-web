@@ -133,7 +133,7 @@ void test_seams() {
   check(grc::rs::texture_decode_enabled(), "texture decode can be enabled");
   grc::rs::DecodeRequest request;
   request.format = 17;  // DXT1
-  check(!grc::rs::texture_decode(request).handled, "the empty decode seam declines");
+  check(!grc::rs::texture_decode(request).handled, "with no engine the decode seam declines");
   grc::rs::texture_decode_set_enabled(false);
 }
 

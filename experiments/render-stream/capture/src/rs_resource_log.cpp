@@ -283,7 +283,12 @@ void ResourceLog::emit(const Line &l) {
   key("n");
   i64_or_null(l.has_n, l.n);
   key("decode_ns");
-  i64_or_null(l.has_decode_ns, l.decode_ns);
+  if (p != nullptr) {
+    // G8t: a texture line's host-decode time (null unless a decode was tried).
+    i64_or_null(p->decode_ns >= 0, p->decode_ns);
+  } else {
+    i64_or_null(l.has_decode_ns, l.decode_ns);
+  }
   // G6k (gate6-design.md Q2): canvas trailing columns, null on every other line.
   key("sublayer");
   i64_or_null(l.has_sublayer, l.sublayer);
@@ -327,6 +332,13 @@ void ResourceLog::emit(const Line &l) {
     o += "]";
   } else {
     o += "null";
+  }
+  // G8t (gate8-design.md D8): present only on a host-decoded texture's line, the format the
+  // payload was decoded from (`format` is the payload's).
+  if (p != nullptr && p->source_format >= 0) {
+    o += ",\"source_format\":";
+    const char *source = image_format_name(p->source_format);
+    append_string(&o, source != nullptr ? source : "");
   }
   // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
   // op the omit-op sabotage left out of the registry, `omitted`).

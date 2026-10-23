@@ -245,3 +245,20 @@ format is a new version.
 - **The Rust core's resolved state** carries `origin`, `adopted_content` and `source_format` as
   fields; its apply layer, `rs-core-capi` and every receiver ignore them (an adopted entry draws
   like any other, gate8-design.md Q2 "Impact"). The capi pin (`/6` or `/7`) is unchanged.
+
+## As built (G8t)
+
+- **`source_format` is produced.** Under `GRC_TEXTURE_DECODE=engine` the capture decodes DXT1, DXT3,
+  DXT5, BPTC_RGBA, ETC, ETC2_R11, ETC2_RG11, ETC2_RGB8, ETC2_RGBA8, ASTC_4x4 and ASTC_8x8 to RGBA8,
+  RGTC_R to R8 and RGTC_RG to RG8 (the engine's own `Image::decompress` on a duplicate,
+  gate8-design.md D8 and "As built (G8t)"); the entry's `format` is the payload's and
+  `source_format` the hooked image's. Every other format keeps its /6 refusal: `unsupported` with
+  reason `unsupported-format`, `format` the source format, `source_format` null. No wire change:
+  G8w's validators already held D8's invariants (`decode-entry`).
+- **The hook log** (`evidence/resources.jsonl`, not a wire format) fills the existing `decode_ns`
+  column on a texture line whose decode was tried, and appends a trailing `source_format` key only
+  on a host-decoded texture's line, so every log without a decode is byte-for-byte as before.
+- **The native receiver reads /8 files.** `receiver.gd` replays a GRS8 recording at /8 and
+  `rs-core-capi` accepts `version` 8 (`VERSIONS = [6, 7, 8]`); the apply layer ignores /8's
+  additions, so a /8 recording draws exactly as the /6 one of the same scene would. The live hello
+  still offers `.6`/`.7` only, and the browser receivers' gate 8 legs are G8g's.

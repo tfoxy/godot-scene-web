@@ -1,0 +1,59 @@
+{
+  "schema": "render-stream-gate8-tex-expected/1",
+  "doc": "Hand-derived from the 4.5.1 importer and decoders, not measured (README.md 'Expected'). Per drawn/created texture and family: the format CompressedTexture2D hands texture_2d_create (source_format; null for the lossless control) and the payload format the host decode publishes (format), or the typed refusal. The desktop family is created at frame 1 (step 0), the mobile family at S+N (step 1); cost textures only in the cost variant (frames 2..5).",
+  "start_frame": 1,
+  "step_frames": 10,
+  "settle_offset": 7,
+  "steps": [
+    { "step": 0, "family": "desktop" },
+    { "step": 1, "family": "mobile" }
+  ],
+  "textures": {
+    "opaque": { "width": 64, "height": 64, "mipmaps": false, "drawn": true,
+      "desktop": { "source_format": "DXT1", "format": "RGBA8" },
+      "mobile": { "source_format": "ETC2_RGB8", "format": "RGBA8" } },
+    "alpha": { "width": 64, "height": 64, "mipmaps": false, "drawn": true,
+      "desktop": { "source_format": "DXT5", "format": "RGBA8" },
+      "mobile": { "source_format": "ETC2_RGBA8", "format": "RGBA8" } },
+    "alpha_mip": { "width": 64, "height": 64, "mipmaps": true, "drawn": true,
+      "desktop": { "source_format": "DXT5", "format": "RGBA8" },
+      "mobile": { "source_format": "ETC2_RGBA8", "format": "RGBA8" } },
+    "hq": { "width": 64, "height": 64, "mipmaps": false, "drawn": true,
+      "desktop": { "source_format": "BPTC_RGBA", "format": "RGBA8" },
+      "mobile": { "source_format": "ASTC_4x4", "format": "RGBA8" } },
+    "mask_r": { "width": 64, "height": 64, "mipmaps": false, "drawn": true,
+      "desktop": { "source_format": "RGTC_R", "format": "R8" },
+      "mobile": { "source_format": "ETC2_R11", "format": "RGBA8" } },
+    "mask_rg": { "width": 64, "height": 64, "mipmaps": false, "drawn": true,
+      "desktop": { "source_format": "RGTC_RG", "format": "RG8" },
+      "mobile": { "source_format": "ETC2_RG11", "format": "RGBA8" } },
+    "control": { "width": 64, "height": 64, "mipmaps": false, "drawn": true,
+      "desktop": { "source_format": null, "format": "RGBA8" },
+      "mobile": { "source_format": null, "format": "RGBA8" } },
+    "hdr": { "width": 16, "height": 16, "mipmaps": false, "drawn": false,
+      "desktop": { "source_format": "BPTC_RGBFU", "refused": "unsupported-format" },
+      "mobile": { "source_format": "ASTC_4x4_HDR", "refused": "unsupported-format" } }
+  },
+  "cost": {
+    "cost_rgb": { "width": 2048, "height": 2048, "mipmaps": false,
+      "desktop": { "source_format": "DXT1", "format": "RGBA8" },
+      "mobile": { "source_format": "ETC2_RGB8", "format": "RGBA8" } },
+    "cost_rgba": { "width": 2048, "height": 2048, "mipmaps": false,
+      "desktop": { "source_format": "DXT5", "format": "RGBA8" },
+      "mobile": { "source_format": "ETC2_RGBA8", "format": "RGBA8" } },
+    "cost_hq": { "width": 2048, "height": 2048, "mipmaps": false,
+      "desktop": { "source_format": "BPTC_RGBA", "format": "RGBA8" },
+      "mobile": { "source_format": "ASTC_4x4", "format": "RGBA8" } }
+  },
+  "design_cost": {
+    "doc": "gate8-design.md Q3 'Cost of A, measured' (2026-10-22, editor binary, one Image.decompress of a synthetic 2048x2048 image, best of 3)",
+    "DXT5": { "ms": 6.8, "mpx_per_s": 618 },
+    "BPTC_RGBA": { "ms": 35.6, "mpx_per_s": 118 },
+    "ETC2_RGBA8": { "ms": 10.7, "mpx_per_s": 392 },
+    "ASTC_4x4": { "ms": 73.1, "mpx_per_s": 57 }
+  },
+  "engine_textures": [
+    { "format": "RGBA8", "width": 800, "height": 6, "why": "the default theme's ColorPicker hue strip (memory rs-g2a-texture-census-facts)" }
+  ],
+  "perturb_from_step": 1
+}
