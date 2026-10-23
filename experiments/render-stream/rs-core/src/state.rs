@@ -73,6 +73,8 @@ macro_rules! wire_enum {
 }
 
 wire_enum!(Origin { Created = "created", RootQuery = "root-query", Adopted = "adopted" });
+// render-stream-8.md "Resource tables": where an adopted texture's or mesh's content came from.
+wire_enum!(AdoptedContent { Current = "current", Creation = "creation" });
 wire_enum!(ParentKind { Canvas = "canvas", Item = "item" });
 wire_enum!(Encoding { Full = "full", Patch = "patch" });
 wire_enum!(TxStatus { Ok = "ok", CaptureFailure = "capture-failure" });
@@ -443,6 +445,10 @@ pub struct CanvasTexture {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Texture {
     pub id: Id,
+    /// `created` below /8; `created` or `adopted` at /8 (render-stream-8.md "Resource tables").
+    pub origin: Origin,
+    /// /8 only: non-null exactly when `origin` is `adopted`.
+    pub adopted_content: Option<AdoptedContent>,
     pub kind: TextureKind,
     pub status: EntryStatus,
     /// The wire's texture reason spelling (render-stream-2.md "Texture reasons").
@@ -451,6 +457,8 @@ pub struct Texture {
     pub hash: Option<Hash>,
     /// An `Image.Format` name (any string the wire carried).
     pub format: Option<Box<str>>,
+    /// /8 only: the format a host decode started from; non-null exactly for a host decode.
+    pub source_format: Option<Box<str>>,
     pub width: i64,
     pub height: i64,
     pub mipmaps: bool,
@@ -472,6 +480,9 @@ pub struct MeshSurface {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Mesh {
     pub id: Id,
+    pub origin: Origin,
+    /// /8 only: non-null exactly when `origin` is `adopted`.
+    pub adopted_content: Option<AdoptedContent>,
     pub status: EntryStatus,
     /// The wire's mesh reason spelling.
     pub reason: Option<&'static str>,
@@ -497,6 +508,7 @@ pub struct DefaultTexture {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Shader {
     pub id: Id,
+    pub origin: Origin,
     /// `Ok` or `Unsupported` (no tombstones).
     pub status: EntryStatus,
     pub reason: Option<&'static str>,
@@ -513,6 +525,7 @@ pub struct Shader {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Material {
     pub id: Id,
+    pub origin: Origin,
     pub status: EntryStatus,
     pub reason: Option<&'static str>,
     pub version: i64,
@@ -547,7 +560,7 @@ pub struct UnknownItems {
 /// transaction's complete, never-patched fields.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ResolvedState {
-    /// The protocol version the state was decoded at (2 to 6): it selects which keys the resolved
+    /// The protocol version the state was decoded at (2 to 8): it selects which keys the resolved
     /// form carries (meshes from 4, shaders/materials/canvas modulate/item material from 5, canvas
     /// layer from 6).
     pub version: u8,

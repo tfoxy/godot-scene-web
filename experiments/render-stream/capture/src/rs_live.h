@@ -201,7 +201,7 @@ struct ControlMessage {
 // `version` (G4e2) selects the hello protocol a receiver must announce: "render-stream/2" (the
 // default, golden-2's control vectors), "render-stream/3" (render-stream-3.md "Live transport")
 // or "render-stream/4" (render-stream-4.md "Live transport"; what the capture speaks since G5d).
-// At ProtocolVersion::V7 the hello has nine more keys (render-stream-7.md "Hello", gate7-design.md
+// At ProtocolVersion::V7 (and V8, whose live transport is /7's) the hello has nine more keys (render-stream-7.md "Hello", gate7-design.md
 // Q2): `receiver_kind`, `credit_window`, `token`, `manifest_sha256` and five presentation
 // integers; `token`/`manifest_sha256` may be JSON `null`, the only place this parser accepts it.
 bool parse_control(const std::string &text, ControlMessage *out, std::string *error,
@@ -246,6 +246,9 @@ inline constexpr std::uint64_t kHostCreditWindow = 2;
 
 // The subprotocol that makes a connection /7 (render-stream-7.md "Live transport").
 inline constexpr const char *kSubprotocolV7 = "render-stream.7";
+// The subprotocol that makes a connection /8 (render-stream-8.md "Live transport", gate8-design.md
+// D2): /7's live transport with /8's session and tables. Opt-in; no receiver offers it by default.
+inline constexpr const char *kSubprotocolV8 = "render-stream.8";
 
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES

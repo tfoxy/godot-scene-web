@@ -38,7 +38,9 @@ add_library(render_stream_capture SHARED
   src/report.cpp
   src/rs2_codec.cpp
   src/rs2_diff.cpp
+  src/rs_adopt.cpp
   src/rs_canvas_texture_shim.cpp
+  src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_mirror.cpp
@@ -50,6 +52,7 @@ add_library(render_stream_capture SHARED
   src/rs_sha1.cpp
   src/rs_sha256.cpp
   src/rs_shader_payload.cpp
+  src/rs_texture_decode.cpp
   src/rs_texture_payload.cpp
   src/rs_variant.cpp
   src/rs_ws.cpp
@@ -271,6 +274,25 @@ target_link_libraries(rs7_codec_test PRIVATE grc_warnings)
 target_compile_definitions(rs7_codec_test PRIVATE
   GRC_GOLDEN7_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-7")
 add_test(NAME rs7_codec COMMAND rs7_codec_test)
+
+# Gate 8 (G8w): render-stream/8 is a protocol-version switch on the SAME /2 codec modules, proven
+# byte-identical to protocol/golden-8/{full,patch,inline,off}.rs8 (the session's adoption and
+# resources.decode keys, adopted resource-table origins, adopted_content, source_format).
+add_executable(rs8_codec_test test/rs8_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs8_codec_test PRIVATE src test)
+target_link_libraries(rs8_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs8_codec_test PRIVATE
+  GRC_GOLDEN8_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-8")
+add_test(NAME rs8_codec COMMAND rs8_codec_test)
+
+# Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
+# the live listener's subprotocol offer, plus the two empty seams.
+add_executable(rs_gate8_policy_test
+  test/rs_gate8_policy_test.cpp src/rs_gate8_policy.cpp src/rs_adopt.cpp
+  src/rs_texture_decode.cpp)
+target_include_directories(rs_gate8_policy_test PRIVATE src)
+target_link_libraries(rs_gate8_policy_test PRIVATE grc_warnings)
+add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
 
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).

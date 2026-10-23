@@ -337,6 +337,11 @@ def self_test(m):
     check("rs-core without sabotage content skips the sabotage legs", not d["sabotage"]["run"])
     f = P("experiments/render-stream/capture/src/hooks.cpp")
     check("the capture library reaches everything", set(f["targets"]) == uni)
+    seam = P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/rs_texture_decode.h")
+    check("the gate 8 seams reach the build, the pure tests and gate 0 only (G8w)",
+          set(seam["targets"]) == {"capture-build", "pure", "native:gate0@rust"})
+    check("a shared capture file next to a seam still reaches everything",
+          set(P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/entry.cpp")["targets"]) == uni)
     g = P("experiments/render-stream/scripts/lib/gate5-checks.ts")
     check("gate5-* does not reach gate 5.5", "native:gate55@rust" not in g["targets"])
     h = P("experiments/render-stream/scripts/lib/gate55d-checks.ts")

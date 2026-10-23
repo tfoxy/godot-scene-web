@@ -99,7 +99,25 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV7 = {0x47, 0x52, 0x53, 0x37,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV7 = "render-stream/7";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7 };
+// render-stream/8 (G8w, render-stream-8.md, gate8-design.md D1/Q6): /7 plus the late-join and
+// compressed-texture wire delta: the session keys `adoption` and `resources.decode`, "adopted"
+// origins in the texture/mesh/shader/material tables, `adopted_content` on texture and mesh
+// entries, `source_format` on texture entries, the eight float payload formats and seven sabotage
+// kinds. As with /3 to /7 it is a protocol-version switch on Session, not a fork, and it is
+// opt-in: file sinks and the live listener speak it only when asked (GRC_STREAM_VERSION=8, a
+// gate 8 policy, or a client offering render-stream.8).
+inline constexpr std::array<std::uint8_t, 8> kMagicV8 = {0x47, 0x52, 0x53, 0x38,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV8 = "render-stream/8";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8 };
+
+// True for /7 and /8, the versions whose live transport is the /7 one (token hello, credit
+// window, CORS). /8 is /7 plus render-stream-8.md's list, so every "V7" cascade means "V7 or
+// later".
+inline constexpr bool is_v7_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V7 || v == ProtocolVersion::V8;
+}
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -146,6 +164,13 @@ inline constexpr Rect4 kZeroRect = {0.0f, 0.0f, 0.0f, 0.0f};
 // verified history").
 
 enum class Origin : std::uint8_t { Created, RootQuery, Adopted };
+
+// render-stream-8.md "Resource tables": where an adopted texture's or mesh's content came from.
+// None encodes as null (a created entry).
+enum class AdoptedContent : std::uint8_t { None, Current, Creation };
+
+// render-stream-8.md "Session": resources.decode, the declared host texture-decode policy.
+enum class TextureDecode : std::uint8_t { Off, Engine };
 
 enum class CanvasRole : std::uint8_t { None, Root };  // None -> JSON null
 
@@ -237,6 +262,15 @@ enum class SabotageKind : std::uint8_t {
   PerturbShader,           // new at /5 (G55w, render-stream-5.md; gate5_5-design.md Q3c)
   RetainSuperseded,        // G6s (gate6-design.md Q5, Q6h): ServedResources.retire() never retires
                            // a superseded hash, so the host's retained set grows unboundedly
+  // New at /8 (G8w, gate8-design.md Q2-Q5; render-stream-8.md "Sabotage kinds"). Declared on the
+  // wire only in a /8 session; the behaviours land with G8a/G8t/G8h/G8m.
+  AdoptSkipState,          // Q2: adoption declares structure without transforms or modulate
+  AdoptNoRedraw,           // Q2: adoption does not queue the items' redraw
+  AdoptSkipLayers,         // Q2: adoption leaves canvas layers unknown
+  PerturbDecode,           // Q3: one texel flipped after a host decode, before hashing
+  SizeBeforeAdopt,         // Q4: the presentation size is applied before the adoption walk
+  AdoptRawShaderCode,      // Q5: an adopted shader publishes get_code() unpreprocessed
+  AdoptSkipParams,         // Q5: adopted materials/shaders publish without their parameters
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -420,6 +454,13 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::PerturbVertex: return "perturb-vertex";
   case SabotageKind::PerturbShader: return "perturb-shader";
   case SabotageKind::RetainSuperseded: return "retain-superseded";
+  case SabotageKind::AdoptSkipState: return "adopt-skip-state";
+  case SabotageKind::AdoptNoRedraw: return "adopt-no-redraw";
+  case SabotageKind::AdoptSkipLayers: return "adopt-skip-layers";
+  case SabotageKind::PerturbDecode: return "perturb-decode";
+  case SabotageKind::SizeBeforeAdopt: return "size-before-adopt";
+  case SabotageKind::AdoptRawShaderCode: return "adopt-raw-shader-code";
+  case SabotageKind::AdoptSkipParams: return "adopt-skip-params";
   }
   return "";
 }
@@ -527,6 +568,7 @@ inline const char *to_wire(Fetch v) {
   return "none";
 }
 inline const char *to_wire(Auth v) { return v == Auth::Bearer ? "bearer" : "none"; }
+inline const char *to_wire(TextureDecode v) { return v == TextureDecode::Engine ? "engine" : "off"; }
 inline const char *to_wire(AxisStretchMode v) {
   switch (v) {
   case AxisStretchMode::Stretch: return "stretch";
@@ -795,6 +837,16 @@ struct ResourcesInfo {
   bool has_http_path = false;  // non-null exactly for fetch == Http
   std::string http_path;
   Auth auth = Auth::None;
+  // render-stream-8.md "Session": the host's declared texture-decode policy (gate8-design.md D8),
+  // encoded as resources.decode at /8 only; Off at every earlier version.
+  TextureDecode decode = TextureDecode::Off;
+};
+
+// render-stream-8.md "Session": adoption is null (off) or {"mode":"arm","frame":<int >= 1>}, the
+// arm-time late-join adoption declaration (gate8-design.md D4). Encoded at /8 only.
+struct AdoptionInfo {
+  bool present = false;  // false -> "adoption": null
+  std::int32_t frame = 1;
 };
 
 // render-stream-2.md session "features.unsupported_resources" (G2d): a resource kind this host
@@ -849,6 +901,9 @@ struct Session {
   // /4 and /5 only); Strict adds nothing, so a strict session is byte-identical to one encoded
   // before the policy existed.
   UnknownItemPolicy unknown_item_policy = UnknownItemPolicy::Strict;
+  // render-stream-8.md "Session": always encoded at /8, right after unknown_item_policy (or after
+  // sabotage when that key is absent); never encoded below /8.
+  AdoptionInfo adoption;
   Color4 clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
   Xform root_canvas_xform = kIdentityXform;
   Rect4 host_visible_rect = kZeroRect;
@@ -965,6 +1020,7 @@ struct DefaultTextureRef {
 // before any `shader_set_code`); `payload_bytes` is 0 in that case too.
 struct ShaderEntry {
   std::uint32_t id = 0;
+  Origin origin = Origin::Created;  // new at /8: Created or Adopted
   ShaderStatus status = ShaderStatus::Ok;
   bool has_reason = false;
   ShaderReason reason = ShaderReason::ShaderMode;
@@ -988,6 +1044,7 @@ struct ShaderEntry {
 // shader bound (a fresh `material_create()`, or after `material_set_shader(RID())`).
 struct MaterialEntry {
   std::uint32_t id = 0;
+  Origin origin = Origin::Created;  // new at /8: Created or Adopted
   MaterialStatus status = MaterialStatus::Ok;
   bool has_reason = false;
   MaterialReason reason = MaterialReason::UnknownShader;
@@ -1055,6 +1112,10 @@ struct CanvasTextureInfo {
 // (for building invalid golden vectors), since it performs no validation itself.
 struct TextureEntry {
   std::uint32_t id = 0;
+  // new at /8 (render-stream-8.md "Resource tables"): origin is "created" below /8; adopted_content
+  // is non-None exactly when origin is Adopted.
+  Origin origin = Origin::Created;
+  AdoptedContent adopted_content = AdoptedContent::None;
   TextureKind kind = TextureKind::Image;
   TextureStatus status = TextureStatus::Ok;
   bool has_reason = false;
@@ -1064,6 +1125,9 @@ struct TextureEntry {
   std::string hash;       // 64 lowercase hex
   bool has_format = false;  // false -> "format": null
   std::string format;
+  // new at /8: the format a host decode started from (gate8-design.md D8); null otherwise.
+  bool has_source_format = false;
+  std::string source_format;
   std::int32_t width = 0;
   std::int32_t height = 0;
   bool mipmaps = false;
@@ -1092,6 +1156,8 @@ struct MeshSurface {
 // meaning "no custom AABB set".
 struct MeshEntry {
   std::uint32_t id = 0;
+  Origin origin = Origin::Created;                         // new at /8: Created or Adopted
+  AdoptedContent adopted_content = AdoptedContent::None;  // new at /8
   MeshStatus status = MeshStatus::Ok;
   bool has_reason = false;
   MeshReason reason = MeshReason::MeshFormat;

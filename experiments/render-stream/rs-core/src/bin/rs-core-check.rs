@@ -4,7 +4,7 @@
 //!                         [--sabotage skip-payload-hash]
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]
-//!   rs-core-check validate <recording>... [--version 2..7] [--recover]
+//!   rs-core-check validate <recording>... [--version 2..8] [--recover]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
@@ -12,7 +12,7 @@
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!
-//! `goldens` runs golden-2 ... golden-7 (exits non-zero on any failing check). `diff` feeds every
+//! `goldens` runs golden-2 ... golden-8 (exits non-zero on any failing check). `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
 //! and per transaction its seq, the sha256 of its canonical resolved JSON and its unsupported list),
 //! the native side of `scripts/test/self-test-rs-core.ts`. `bench` times `accept` per record.
@@ -58,10 +58,10 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..7>] [--sabotage skip-payload-hash]\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..8>] [--sabotage skip-payload-hash]\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
-         rs-core-check validate <recording>... [--version 2..6]"
+         rs-core-check validate <recording>... [--version 2..8]"
     );
     ExitCode::from(2)
 }
@@ -134,7 +134,7 @@ fn cmd_goldens(args: &Args) -> ExitCode {
     );
     let only = match args.get("only").map(|s| s.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=7).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=8).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     let opts = match args.get("sabotage") {
@@ -295,7 +295,7 @@ fn cmd_diff(args: &Args) -> ExitCode {
         };
         let Some(version) = wire::version_of_magic(&data) else {
             eprintln!(
-                "rs-core-check diff: {}: not a render-stream/2..6 recording",
+                "rs-core-check diff: {}: not a render-stream/2..8 recording",
                 input.recording.display()
             );
             failed = true;
@@ -395,7 +395,7 @@ fn bench_one(
     digest: DigestPolicy,
 ) -> Result<(), wire::Error> {
     let version = wire::version_of_magic(data)
-        .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream/2..6 recording"))?;
+        .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream/2..8 recording"))?;
     let records = wire::split_records(data, version)?;
     let first = records
         .first()
@@ -508,7 +508,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
 fn cmd_validate(args: &Args) -> ExitCode {
     let forced = match args.get("version").map(|v| v.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=7).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=8).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     if args.positional.is_empty() {

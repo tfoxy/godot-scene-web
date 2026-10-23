@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -61,6 +61,16 @@ import { type HashFn, sha256Hex } from "./sha256";
 // --------------------------------------------------------------------------------------- wire types
 
 export type Origin = "created" | "root-query" | "adopted";
+// render-stream-8.md "Resource tables": the texture, mesh, shader and material tables accept
+// "adopted" beside "created" at /8 (items and canvases have accepted it since /0).
+export type TableOrigin = "created" | "adopted";
+/** render-stream-8.md "Resource tables": where an adopted texture or mesh's content came from. */
+export type AdoptedContent = "current" | "creation";
+/** render-stream-8.md "Session": the late-join adoption declaration (null when off). */
+export interface AdoptionDeclaration {
+  mode: "arm";
+  frame: number;
+}
 export type CanvasRole = "root" | null;
 export type ParentKind = "canvas" | "item";
 export type TransactionStatus = "ok" | "capture-failure";
@@ -117,7 +127,15 @@ export type SabotageKind =
   | "perturb-glyph"
   | "perturb-vertex"
   | "perturb-shader"
-  | "retain-superseded";
+  | "retain-superseded"
+  // new at /8 (gate8-design.md Q2-Q5; render-stream-8.md "Sabotage kinds")
+  | "adopt-skip-state"
+  | "adopt-no-redraw"
+  | "adopt-skip-layers"
+  | "perturb-decode"
+  | "size-before-adopt"
+  | "adopt-raw-shader-code"
+  | "adopt-skip-params";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -275,7 +293,7 @@ export interface TransactionParam {
 
 export interface TransactionShader {
   id: number;
-  origin: "created";
+  origin: TableOrigin;
   status: ShaderStatus;
   reason: ShaderReason | null;
   version: number;
@@ -290,7 +308,7 @@ export interface TransactionShader {
 
 export interface TransactionMaterial {
   id: number;
-  origin: "created";
+  origin: TableOrigin;
   status: MaterialStatus;
   reason: MaterialReason | null;
   version: number;
@@ -321,6 +339,8 @@ export interface ResourcesMeta {
   fetch: Fetch;
   http_path: string | null;
   auth: Auth;
+  /** new at /8 (render-stream-8.md "Session"): the host's declared texture-decode policy. */
+  decode?: "off" | "engine";
 }
 
 /** render-stream-5.md "Session": a new "materials" session key, right after "resources". */
@@ -401,6 +421,9 @@ export interface SessionMeta {
   /** protocol/unknown-item-skip.md: present (always "skip") only in a session that opted into
    * skipping unknown canvas/item RIDs, right after `sabotage`, at /4 and /5. Absent = strict. */
   unknown_item_policy?: "skip";
+  /** render-stream-8.md "Session": always present at /8 (null = adoption off), right after
+   * `unknown_item_policy`/`sabotage`; absent below /8. */
+  adoption?: AdoptionDeclaration | null;
   blocks: BlockDescriptor[];
 }
 
@@ -594,13 +617,17 @@ export interface CanvasTextureMeta {
 
 export interface TransactionTexture {
   id: number;
-  origin: "created";
+  origin: TableOrigin;
+  /** new at /8: non-null exactly when origin is "adopted"; present only in a /8 stream. */
+  adopted_content?: AdoptedContent | null;
   kind: TextureKind;
   status: TextureStatus;
   reason: TextureReason | null;
   version: number;
   hash: string | null;
   format: string | null;
+  /** new at /8: the format a host decode started from; non-null exactly for a host decode. */
+  source_format?: string | null;
   width: number;
   height: number;
   mipmaps: boolean;
@@ -619,7 +646,9 @@ export interface TransactionMeshSurface {
 }
 export interface TransactionMesh {
   id: number;
-  origin: "created";
+  origin: TableOrigin;
+  /** new at /8: non-null exactly when origin is "adopted"; present only in a /8 stream. */
+  adopted_content?: AdoptedContent | null;
   status: MeshStatus;
   reason: MeshReason | null;
   version: number;
@@ -719,14 +748,24 @@ export const MAGIC_V6: Uint8Array = new Uint8Array([
 export const MAGIC_V7: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x37, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-8.md: the GRS8 magic, selected by `version: 8` (golden-8/; opt-in, never the
+// default: G8w keeps the capture's file sinks and every receiver on /6 and /7).
+export const MAGIC_V8: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x38, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
- * received.rs7, or a /7 connection's host tap), else 6 -- so every other magic still meets the
- * /6 decoder's own refusal, exactly as before. */
-export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 {
+ * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), else 6 -- so
+ * every other magic still meets the /6 decoder's own refusal, exactly as before. */
+export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 | 8 {
   if (!data || data.length < MAGIC_V7.length) return 6;
-  for (let i = 0; i < MAGIC_V7.length; i++)
-    if (data[i] !== MAGIC_V7[i]) return 6;
-  return 7;
+  const startsWith = (magic: Uint8Array) => {
+    for (let i = 0; i < magic.length; i++)
+      if (data[i] !== magic[i]) return false;
+    return true;
+  };
+  if (startsWith(MAGIC_V7)) return 7;
+  if (startsWith(MAGIC_V8)) return 8;
+  return 6;
 }
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -842,6 +881,8 @@ const RESOURCES_KEYS_V4 = [
   "http_path",
   "auth",
 ];
+// render-stream-8.md "Session": "decode" (the declared host texture-decode policy) after "auth".
+const RESOURCES_KEYS_V8 = [...RESOURCES_KEYS_V4, "decode"];
 const FEATURES_KEYS = [
   "ops",
   "item_state",
@@ -882,7 +923,24 @@ const SABOTAGE_KINDS = [
   "perturb-vertex",
   "perturb-shader",
   "retain-superseded",
+  // new at /8 (gate8-design.md Q2-Q5): legal in a /8 session only (checkSessionSchema).
+  "adopt-skip-state",
+  "adopt-no-redraw",
+  "adopt-skip-layers",
+  "perturb-decode",
+  "size-before-adopt",
+  "adopt-raw-shader-code",
+  "adopt-skip-params",
 ] as const;
+const SABOTAGE_KINDS_V8_ONLY: readonly string[] = [
+  "adopt-skip-state",
+  "adopt-no-redraw",
+  "adopt-skip-layers",
+  "perturb-decode",
+  "size-before-adopt",
+  "adopt-raw-shader-code",
+  "adopt-skip-params",
+];
 
 const TRANSACTION_KEYS = [
   "type",
@@ -956,6 +1014,9 @@ const FAILURE_KEYS = ["reason", "detail"];
 // protocol/unknown-item-skip.md: the session key (after "sabotage") and the transaction key
 // (after "unsupported") a skip session adds, at /4 and /5 only.
 const UNKNOWN_ITEM_POLICY_KEY = "unknown_item_policy";
+// render-stream-8.md "Session": the late-join adoption declaration, at /8 only.
+const ADOPTION_KEY = "adoption";
+const ADOPTION_KEYS = ["mode", "frame"];
 const UNKNOWN_ITEMS_KEY = "unknown_items";
 const UNKNOWN_ITEMS_KEYS = [
   "unknown_rids",
@@ -1077,11 +1138,40 @@ const TEXTURE_KEYS = [
   "payload_bytes",
   "canvas",
 ];
+// render-stream-8.md "Resource tables": adopted_content right after origin, source_format right
+// after format (texture), adopted_content right after origin (mesh).
+const TEXTURE_KEYS_V8 = [
+  "id",
+  "origin",
+  "adopted_content",
+  "kind",
+  "status",
+  "reason",
+  "version",
+  "hash",
+  "format",
+  "source_format",
+  "width",
+  "height",
+  "mipmaps",
+  "payload_bytes",
+  "canvas",
+];
 const CANVAS_TEXTURE_KEYS = ["diffuse", "filter", "repeat"];
 // render-stream-4.md "Mesh table" (new at /4).
 const MESH_KEYS = [
   "id",
   "origin",
+  "status",
+  "reason",
+  "version",
+  "f",
+  "surfaces",
+];
+const MESH_KEYS_V8 = [
+  "id",
+  "origin",
+  "adopted_content",
   "status",
   "reason",
   "version",
@@ -1401,6 +1491,53 @@ const MATERIAL_REASONS = [
   "param-range",
 ] as const;
 const SHADER_POLICIES = ["source", "params", "exclude"] as const;
+// render-stream-8.md "Session": resources.decode, the host's declared texture-decode policy.
+const TEXTURE_DECODES = ["off", "engine"] as const;
+// render-stream-8.md "Resource tables": the adopted_content values.
+const ADOPTED_CONTENTS = ["current", "creation"] as const;
+// render-stream-2.md "Texture payload": every Image.Format name, in enum order. A texture entry's
+// source_format must be one of these.
+const IMAGE_FORMAT_NAMES: readonly string[] = [
+  "L8",
+  "LA8",
+  "R8",
+  "RG8",
+  "RGB8",
+  "RGBA8",
+  "RGBA4444",
+  "RGB565",
+  "RF",
+  "RGF",
+  "RGBF",
+  "RGBAF",
+  "RH",
+  "RGH",
+  "RGBH",
+  "RGBAH",
+  "RGBE9995",
+  "DXT1",
+  "DXT3",
+  "DXT5",
+  "RGTC_R",
+  "RGTC_RG",
+  "BPTC_RGBA",
+  "BPTC_RGBF",
+  "BPTC_RGBFU",
+  "ETC",
+  "ETC2_R11",
+  "ETC2_R11S",
+  "ETC2_RG11",
+  "ETC2_RG11S",
+  "ETC2_RGB8",
+  "ETC2_RGBA8",
+  "ETC2_RGB8A1",
+  "ETC2_RA_AS_RG",
+  "DXT5_RA_AS_RG",
+  "ASTC_4x4",
+  "ASTC_4x4_HDR",
+  "ASTC_8x8",
+  "ASTC_8x8_HDR",
+];
 
 // render-stream-2.md "Texture payload": pixel size (bytes/texel) of the permitted uncompressed
 // formats. Only these ever have an expected size computed.
@@ -1411,6 +1548,18 @@ const PIXEL_SIZES: Record<string, number> = {
   RG8: 2,
   RGB8: 3,
   RGBA8: 4,
+};
+// render-stream-8.md "Texture payload" (D9): the float formats, legal at /8 only, with Godot's
+// pixel sizes (RF 4, RGF 8, RGBF 12, RGBAF 16, RH 2, RGH 4, RGBH 6, RGBAH 8).
+const FLOAT_PIXEL_SIZES: Record<string, number> = {
+  RF: 4,
+  RGF: 8,
+  RGBF: 12,
+  RGBAF: 16,
+  RH: 2,
+  RGH: 4,
+  RGBH: 6,
+  RGBAH: 8,
 };
 
 // --------------------------------------------------------------------------------------- small helpers
@@ -1577,14 +1726,23 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
   ];
   const isV4OrLater =
-    version === 4 || version === 5 || version === 6 || version === 7;
-  const keys = isV4OrLater ? RESOURCES_KEYS_V4 : RESOURCES_KEYS;
+    version === 4 ||
+    version === 5 ||
+    version === 6 ||
+    version === 7 ||
+    version === 8;
+  const keys =
+    version === 8
+      ? RESOURCES_KEYS_V8
+      : isV4OrLater
+        ? RESOURCES_KEYS_V4
+        : RESOURCES_KEYS;
   if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
   }
@@ -1623,6 +1781,9 @@ function checkResourcesSchema(
     return err('"http_path" must be non-null exactly for fetch "http"');
   }
   if (!isOneOf(resources.auth, AUTHS)) return err("has an invalid auth");
+  if (version === 8 && !isOneOf(resources.decode, TEXTURE_DECODES)) {
+    return err('"decode" must be "off" or "engine"');
+  }
   const expectedDelivery: Delivery =
     resources.inline_max_bytes === 0
       ? "out-of-band"
@@ -1643,12 +1804,15 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV7 = version === 7;
+  const isV8 = version === 8;
+  // isV7 means "V7 or later": /8 is /7 plus exactly render-stream-8.md's list, so it keeps the
+  // publication credit_window.
+  const isV7 = version === 7 || isV8;
   // isV6 means "V6 or later": /7 is a delta on /6 that keeps everything /6 added (presentation
   // stretch declarations, the top-level publication key, canvas layer/sublayer) unless
   // render-stream-7.md says otherwise.
@@ -1665,28 +1829,35 @@ function checkSessionSchema(
     : isV5
       ? SESSION_KEYS_V5
       : SESSION_KEYS;
-  if (
-    !hasExactKeys(
-      meta,
-      skipDeclared
-        ? keysWith(sessionKeys, "sabotage", UNKNOWN_ITEM_POLICY_KEY)
-        : sessionKeys,
-    )
-  )
+  // render-stream-8.md "Session": "adoption" is always present at /8, right after
+  // "unknown_item_policy" (or after "sabotage" when the policy key is absent).
+  let expectedKeys: string[] = skipDeclared
+    ? keysWith(sessionKeys, "sabotage", UNKNOWN_ITEM_POLICY_KEY)
+    : [...sessionKeys];
+  if (isV8) {
+    expectedKeys = keysWith(
+      expectedKeys,
+      skipDeclared ? UNKNOWN_ITEM_POLICY_KEY : "sabotage",
+      ADOPTION_KEY,
+    );
+  }
+  if (!hasExactKeys(meta, expectedKeys))
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV7
-    ? "render-stream/7"
-    : isV6
-      ? "render-stream/6"
-      : isV5
-        ? "render-stream/5"
-        : version === 4
-          ? "render-stream/4"
-          : version === 3
-            ? "render-stream/3"
-            : "render-stream/2";
+  const expectedProtocol = isV8
+    ? "render-stream/8"
+    : isV7
+      ? "render-stream/7"
+      : isV6
+        ? "render-stream/6"
+        : isV5
+          ? "render-stream/5"
+          : version === 4
+            ? "render-stream/4"
+            : version === 3
+              ? "render-stream/3"
+              : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -1931,6 +2102,31 @@ function checkSessionSchema(
     if ((sabotage.kind === "omit-op") !== (sabotage.op !== null)) {
       return err('"sabotage.op" must be non-null exactly for kind "omit-op"');
     }
+    if (!isV8 && SABOTAGE_KINDS_V8_ONLY.includes(sabotage.kind)) {
+      return err(`"sabotage.kind" "${sabotage.kind}" is legal only at /8`);
+    }
+  }
+
+  if (isV8) {
+    // render-stream-8.md "Session": adoption is null (off) or {"mode":"arm","frame":<int >= 1>}.
+    const adoption = meta[ADOPTION_KEY];
+    if (adoption !== null) {
+      if (
+        !isPlainObject(adoption) ||
+        !hasExactKeys(adoption, ADOPTION_KEYS) ||
+        adoption.mode !== "arm" ||
+        !isInt(adoption.frame)
+      ) {
+        return [
+          `adoption-entry: record at offset ${offset}: "adoption" is neither null nor {"mode":"arm","frame":<integer>}`,
+        ];
+      }
+      if (adoption.frame < 1) {
+        return [
+          `adoption-entry: record at offset ${offset}: adoption.frame is ${adoption.frame}, not >= 1`,
+        ];
+      }
+    }
   }
 
   const blocksError = checkBlocksField(meta.blocks, offset);
@@ -1952,15 +2148,71 @@ function checkSessionSchema(
   return [];
 }
 
-function checkTextureEntrySchema(t: unknown, offset: number): string[] {
+// render-stream-8.md "Resource tables": the origin check shared by the four resource tables. At
+// <8 only "created" is legal; at /8 "adopted" too (D1).
+function checkTableOrigin(origin: unknown, version: number): string | null {
+  if (version >= 8) {
+    return origin === "created" || origin === "adopted"
+      ? null
+      : '"origin" must be "created" or "adopted"';
+  }
+  return origin === "created" ? null : '"origin" must be "created"';
+}
+
+// render-stream-8.md "Resource tables": adopted_content is non-null exactly when origin is
+// "adopted" (texture and mesh entries, /8 only).
+function checkAdoptedContent(
+  e: Record<string, unknown>,
+  offset: number,
+  what: string,
+): string[] {
+  if (
+    !(
+      e.adopted_content === null || isOneOf(e.adopted_content, ADOPTED_CONTENTS)
+    )
+  ) {
+    return [
+      `meta-schema: record at offset ${offset}: a ${what} entry's "adopted_content" is neither null nor "current"/"creation"`,
+    ];
+  }
+  if ((e.origin === "adopted") !== (e.adopted_content !== null)) {
+    return [
+      `adoption-entry: record at offset ${offset}: a ${what} entry's "adopted_content" must be non-null exactly when "origin" is "adopted"`,
+    ];
+  }
+  return [];
+}
+
+function checkTextureEntrySchema(
+  t: unknown,
+  offset: number,
+  version: number,
+): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: a textures[] entry ${detail}`,
   ];
-  if (!isPlainObject(t) || !hasExactKeys(t, TEXTURE_KEYS)) {
+  if (
+    !isPlainObject(t) ||
+    !hasExactKeys(t, version >= 8 ? TEXTURE_KEYS_V8 : TEXTURE_KEYS)
+  ) {
     return err("has the wrong keys");
   }
   if (!isInt(t.id) || t.id < 1) return err('"id" is not an integer >= 1');
-  if (t.origin !== "created") return err('"origin" must be "created"');
+  const originError = checkTableOrigin(t.origin, version);
+  if (originError !== null) return err(originError);
+  if (version >= 8) {
+    const contentError = checkAdoptedContent(t, offset, "textures[]");
+    if (contentError.length > 0) return contentError;
+    if (
+      !(
+        t.source_format === null ||
+        (typeof t.source_format === "string" &&
+          IMAGE_FORMAT_NAMES.includes(t.source_format))
+      )
+    ) {
+      return err('"source_format" is neither null nor an Image format name');
+    }
+  }
   if (!isOneOf(t.kind, TEXTURE_KINDS)) return err("has an invalid kind");
   if (!isOneOf(t.status, TEXTURE_STATUSES)) return err("has an invalid status");
   if (!(t.reason === null || isOneOf(t.reason, TEXTURE_REASONS))) {
@@ -2029,15 +2281,27 @@ function checkMeshSurfaceSchema(s: unknown, offset: number): string[] {
   return [];
 }
 
-function checkMeshEntrySchema(m: unknown, offset: number): string[] {
+function checkMeshEntrySchema(
+  m: unknown,
+  offset: number,
+  version: number,
+): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: a meshes[] entry ${detail}`,
   ];
-  if (!isPlainObject(m) || !hasExactKeys(m, MESH_KEYS)) {
+  if (
+    !isPlainObject(m) ||
+    !hasExactKeys(m, version >= 8 ? MESH_KEYS_V8 : MESH_KEYS)
+  ) {
     return err("has the wrong keys");
   }
   if (!isInt(m.id) || m.id < 1) return err('"id" is not an integer >= 1');
-  if (m.origin !== "created") return err('"origin" must be "created"');
+  const originError = checkTableOrigin(m.origin, version);
+  if (originError !== null) return err(originError);
+  if (version >= 8) {
+    const contentError = checkAdoptedContent(m, offset, "meshes[]");
+    if (contentError.length > 0) return contentError;
+  }
   if (!isOneOf(m.status, MESH_STATUSES)) return err("has an invalid status");
   if (!(m.reason === null || isOneOf(m.reason, MESH_REASONS))) {
     return err('"reason" is neither null nor a valid mesh reason');
@@ -2083,7 +2347,11 @@ function checkParamEntrySchema(
   return [];
 }
 
-function checkShaderEntrySchema(s: unknown, offset: number): string[] {
+function checkShaderEntrySchema(
+  s: unknown,
+  offset: number,
+  version: number,
+): string[] {
   const err = (detail: string) => [
     `shader-entry: record at offset ${offset}: a shaders[] entry ${detail}`,
   ];
@@ -2091,7 +2359,10 @@ function checkShaderEntrySchema(s: unknown, offset: number): string[] {
     return err("has the wrong keys");
   }
   if (!isInt(s.id) || s.id < 1) return err('"id" is not an integer >= 1');
-  if (s.origin !== "created") return err('"origin" must be "created"');
+  {
+    const originError = checkTableOrigin(s.origin, version);
+    if (originError !== null) return err(originError);
+  }
   if (!isOneOf(s.status, SHADER_STATUSES)) return err("has an invalid status");
   if (!(s.reason === null || isOneOf(s.reason, SHADER_REASONS))) {
     return err('"reason" is neither null nor a valid shader reason');
@@ -2172,7 +2443,11 @@ function checkShaderEntrySchema(s: unknown, offset: number): string[] {
   return [];
 }
 
-function checkMaterialEntrySchema(m: unknown, offset: number): string[] {
+function checkMaterialEntrySchema(
+  m: unknown,
+  offset: number,
+  version: number,
+): string[] {
   const err = (detail: string) => [
     `material-entry: record at offset ${offset}: a materials[] entry ${detail}`,
   ];
@@ -2180,7 +2455,10 @@ function checkMaterialEntrySchema(m: unknown, offset: number): string[] {
     return err("has the wrong keys");
   }
   if (!isInt(m.id) || m.id < 1) return err('"id" is not an integer >= 1');
-  if (m.origin !== "created") return err('"origin" must be "created"');
+  {
+    const originError = checkTableOrigin(m.origin, version);
+    if (originError !== null) return err(originError);
+  }
   if (!isOneOf(m.status, MATERIAL_STATUSES))
     return err("has an invalid status");
   if (!(m.reason === null || isOneOf(m.reason, MATERIAL_REASONS))) {
@@ -2212,13 +2490,13 @@ function checkMaterialEntrySchema(m: unknown, offset: number): string[] {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
   // isV6 means "V6 or later" (render-stream-7.md: transactions are byte-identical to /6).
-  const isV6 = version === 6 || version === 7;
+  const isV6 = version === 6 || version === 7 || version === 8;
   // isV5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
   const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
@@ -2592,14 +2870,14 @@ function checkTransactionSchema(
 
   if (!Array.isArray(meta.textures)) return err('"textures" is not an array');
   for (const t of meta.textures) {
-    const texErr = checkTextureEntrySchema(t, offset);
+    const texErr = checkTextureEntrySchema(t, offset, version);
     if (texErr.length > 0) return texErr;
   }
 
   if (isV4) {
     if (!Array.isArray(meta.meshes)) return err('"meshes" is not an array');
     for (const m of meta.meshes) {
-      const meshErr = checkMeshEntrySchema(m, offset);
+      const meshErr = checkMeshEntrySchema(m, offset, version);
       if (meshErr.length > 0) return meshErr;
     }
   }
@@ -2607,13 +2885,13 @@ function checkTransactionSchema(
   if (isV5) {
     if (!Array.isArray(meta.shaders)) return err('"shaders" is not an array');
     for (const s of meta.shaders) {
-      const shaderErr = checkShaderEntrySchema(s, offset);
+      const shaderErr = checkShaderEntrySchema(s, offset, version);
       if (shaderErr.length > 0) return shaderErr;
     }
     if (!Array.isArray(meta.materials))
       return err('"materials" is not an array');
     for (const m of meta.materials) {
-      const materialErr = checkMaterialEntrySchema(m, offset);
+      const materialErr = checkMaterialEntrySchema(m, offset, version);
       if (materialErr.length > 0) return materialErr;
     }
   }
@@ -2711,7 +2989,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -2737,23 +3015,25 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 7
-      ? MAGIC_V7
-      : version === 6
-        ? MAGIC_V6
-        : version === 5
-          ? MAGIC_V5
-          : version === 4
-            ? MAGIC_V4
-            : version === 3
-              ? MAGIC_V3
-              : MAGIC;
+    version === 8
+      ? MAGIC_V8
+      : version === 7
+        ? MAGIC_V7
+        : version === 6
+          ? MAGIC_V6
+          : version === 5
+            ? MAGIC_V5
+            : version === 4
+              ? MAGIC_V4
+              : version === 3
+                ? MAGIC_V3
+                : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -2854,7 +3134,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -2873,7 +3153,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -3029,7 +3309,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -3037,7 +3317,8 @@ export function decodeRecording(
     | "render-stream-4-decoded/1"
     | "render-stream-5-decoded/1"
     | "render-stream-6-decoded/1"
-    | "render-stream-7-decoded/1";
+    | "render-stream-7-decoded/1"
+    | "render-stream-8-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -3055,30 +3336,34 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 7
-      ? MAGIC_V7
-      : version === 6
-        ? MAGIC_V6
-        : version === 5
-          ? MAGIC_V5
-          : version === 4
-            ? MAGIC_V4
-            : version === 3
-              ? MAGIC_V3
-              : MAGIC;
+    version === 8
+      ? MAGIC_V8
+      : version === 7
+        ? MAGIC_V7
+        : version === 6
+          ? MAGIC_V6
+          : version === 5
+            ? MAGIC_V5
+            : version === 4
+              ? MAGIC_V4
+              : version === 3
+                ? MAGIC_V3
+                : MAGIC;
   return {
     schema:
-      version === 7
-        ? "render-stream-7-decoded/1"
-        : version === 6
-          ? "render-stream-6-decoded/1"
-          : version === 5
-            ? "render-stream-5-decoded/1"
-            : version === 4
-              ? "render-stream-4-decoded/1"
-              : version === 3
-                ? "render-stream-3-decoded/1"
-                : "render-stream-2-decoded/1",
+      version === 8
+        ? "render-stream-8-decoded/1"
+        : version === 7
+          ? "render-stream-7-decoded/1"
+          : version === 6
+            ? "render-stream-6-decoded/1"
+            : version === 5
+              ? "render-stream-5-decoded/1"
+              : version === 4
+                ? "render-stream-4-decoded/1"
+                : version === 3
+                  ? "render-stream-3-decoded/1"
+                  : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -3097,7 +3382,10 @@ export interface DecodedTexturePayload {
 // render-stream-2.md "Texture payload": GRT1 magic, u32 meta_len, canonical JSON meta, u32
 // data_len (== meta.data_bytes), raw data. Throws "<code>: <detail>" on any decode failure
 // (payload-magic, payload-meta, payload-length, payload-size).
-export function decodeTexturePayload(bytes: Uint8Array): DecodedTexturePayload {
+export function decodeTexturePayload(
+  bytes: Uint8Array,
+  version: number = 6,
+): DecodedTexturePayload {
   if (bytes.length < 16 || !bytesEqual(bytes.subarray(0, 8), GRT1_MAGIC)) {
     throw new Error("payload-magic: the first 8 bytes are not the GRT1 magic");
   }
@@ -3160,6 +3448,7 @@ export function decodeTexturePayload(bytes: Uint8Array): DecodedTexturePayload {
     meta.width,
     meta.height,
     meta.mipmaps,
+    version,
   );
   if (expected !== null && expected !== dataLen) {
     throw new Error(
@@ -3222,12 +3511,23 @@ export function expectedDataBytes(
   width: number,
   height: number,
   mipmaps: boolean,
+  version: number = 6,
 ): number {
-  const pixelSize = PIXEL_SIZES[format];
+  const pixelSize = pixelSizeOf(format, version);
   if (pixelSize === undefined) {
     throw new Error(`expectedDataBytes: "${format}" is not a permitted format`);
   }
   return pixelSize * mipChainTexelCount(width, height, mipmaps);
+}
+
+// The pixel size of a payload format, or undefined when none is computed: the six permitted
+// uncompressed formats at every version, the eight float formats at /8 and later only
+// (render-stream-8.md "Texture payload"; below /8 they stay unsized, exactly as before).
+function pixelSizeOf(format: string, version: number): number | undefined {
+  return (
+    PIXEL_SIZES[format] ??
+    (version >= 8 ? FLOAT_PIXEL_SIZES[format] : undefined)
+  );
 }
 
 function expectedDataBytesOrNull(
@@ -3235,8 +3535,9 @@ function expectedDataBytesOrNull(
   width: number,
   height: number,
   mipmaps: boolean,
+  version: number = 6,
 ): number | null {
-  const pixelSize = PIXEL_SIZES[format];
+  const pixelSize = pixelSizeOf(format, version);
   if (pixelSize === undefined) return null;
   return pixelSize * mipChainTexelCount(width, height, mipmaps);
 }
@@ -3355,7 +3656,9 @@ export type ResolvedTexture = TransactionTexture;
  * lifted custom AABB. */
 export interface ResolvedMesh {
   id: number;
-  origin: "created";
+  origin: TableOrigin;
+  /** new at /8 (render-stream-8.md "Decoded and resolved forms"): right after origin. */
+  adopted_content?: AdoptedContent | null;
   status: MeshStatus;
   reason: MeshReason | null;
   version: number;
@@ -3369,7 +3672,7 @@ export type ResolvedShader = TransactionShader;
 /** new at /5: a material-table entry with its params resolved to {"name","type","value"}. */
 export interface ResolvedMaterial {
   id: number;
-  origin: "created";
+  origin: TableOrigin;
   status: MaterialStatus;
   reason: MaterialReason | null;
   version: number;
@@ -3833,6 +4136,9 @@ function liftMesh(m: TransactionMesh, meshF32: number[]): ResolvedMesh {
   return {
     id: m.id,
     origin: m.origin,
+    ...(m.adopted_content !== undefined
+      ? { adopted_content: m.adopted_content }
+      : {}),
     status: m.status,
     reason: m.reason,
     version: m.version,
@@ -4217,6 +4523,57 @@ function materialVersionRegressed(
   if (current.version < previous.version) return true;
   if (current.version > previous.version) return false;
   return !statesEqual(previous, current);
+}
+
+// render-stream-8.md "Resource tables" ("adoption-entry", "decode-entry"): the /8 rules that cross
+// the session and the resolved tables. An "adopted" origin on any canvas, item, texture, mesh,
+// shader or material needs a session that declares `adoption`; a texture's `source_format` is
+// non-null only on an ok image whose payload format differs from it, in a session whose
+// `resources.decode` is "engine".
+function checkAdoptionInvariants(
+  state: ResolvedState,
+  adoptionDeclared: boolean,
+  decodeEngine: boolean,
+  offset: number,
+): string[] {
+  if (!adoptionDeclared) {
+    const tables: Array<[string, Iterable<{ id: number; origin: string }>]> = [
+      ["canvas", state.canvases.values()],
+      ["item", state.items.values()],
+      ["texture", state.textures.values()],
+      ["mesh", state.meshes.values()],
+      ["shader", state.shaders.values()],
+      ["material", state.materials.values()],
+    ];
+    for (const [what, entries] of tables) {
+      for (const e of entries) {
+        if (e.origin === "adopted") {
+          return [
+            `adoption-entry: record at offset ${offset}: ${what} ${e.id} has origin "adopted", but the session declares no adoption`,
+          ];
+        }
+      }
+    }
+  }
+  for (const t of state.textures.values()) {
+    if (t.source_format === undefined || t.source_format === null) continue;
+    if (t.kind !== "image" || t.status !== "ok") {
+      return [
+        `decode-entry: record at offset ${offset}: texture ${t.id}: source_format needs an "ok" image entry`,
+      ];
+    }
+    if (t.source_format === t.format) {
+      return [
+        `decode-entry: record at offset ${offset}: texture ${t.id}: source_format equals the payload format ${t.format}`,
+      ];
+    }
+    if (!decodeEngine) {
+      return [
+        `decode-entry: record at offset ${offset}: texture ${t.id} declares source_format ${t.source_format}, but the session's resources.decode is not "engine"`,
+      ];
+    }
+  }
+  return [];
 }
 
 function checkResolvedInvariants(
@@ -4906,7 +5263,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
   options?: DecodeRecordOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -4919,7 +5276,8 @@ export function createRecordingValidator(
   });
   // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
   // byte-identical to /6).
-  const isV7 = version === 7;
+  const isV8 = version === 8;
+  const isV7 = version === 7 || isV8;
   const isV6 = isV7 || version === 6;
   // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
   // to /5).
@@ -5088,7 +5446,7 @@ export function createRecordingValidator(
       } else {
         let decodedPayload: DecodedTexturePayload;
         try {
-          decodedPayload = decodeTexturePayload(rawPayload);
+          decodedPayload = decodeTexturePayload(rawPayload, version);
         } catch (e) {
           return [(e as Error).message];
         }
@@ -5347,6 +5705,15 @@ export function createRecordingValidator(
         snapDeclared,
       );
       if (resolvedErrors.length > 0) return resolvedErrors;
+      if (version === 8) {
+        const adoptionErrors = checkAdoptionInvariants(
+          nextState,
+          sessionMeta.adoption !== null && sessionMeta.adoption !== undefined,
+          sessionMeta.resources.decode === "engine",
+          offset,
+        );
+        if (adoptionErrors.length > 0) return adoptionErrors;
+      }
 
       // texture-version / mesh-version, across the whole stream so far.
       for (const t of meta.textures) {
@@ -5570,7 +5937,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
 ): string[] {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
@@ -5813,7 +6180,8 @@ export interface ResolvedRecording {
     | "render-stream-4-resolved/1"
     | "render-stream-5-resolved/1"
     | "render-stream-6-resolved/1"
-    | "render-stream-7-resolved/1";
+    | "render-stream-7-resolved/1"
+    | "render-stream-8-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -5822,7 +6190,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -5859,10 +6227,8 @@ export function resolveRecording(
         canvases: sortedResolvedCanvases(state),
         items: internItems(sortedResolvedItems(state), lastItems),
         textures: sortedResolvedTextures(state),
-        ...(version === 4 || version === 5 || version === 6 || version === 7
-          ? { meshes: sortedResolvedMeshes(state) }
-          : {}),
-        ...(version === 5 || version === 6 || version === 7
+        ...(version >= 4 ? { meshes: sortedResolvedMeshes(state) } : {}),
+        ...(version >= 5
           ? {
               shaders: sortedResolvedShaders(state),
               materials: sortedResolvedMaterials(state),
@@ -5873,17 +6239,19 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 7
-        ? "render-stream-7-resolved/1"
-        : version === 6
-          ? "render-stream-6-resolved/1"
-          : version === 5
-            ? "render-stream-5-resolved/1"
-            : version === 4
-              ? "render-stream-4-resolved/1"
-              : version === 3
-                ? "render-stream-3-resolved/1"
-                : "render-stream-2-resolved/1",
+      version === 8
+        ? "render-stream-8-resolved/1"
+        : version === 7
+          ? "render-stream-7-resolved/1"
+          : version === 6
+            ? "render-stream-6-resolved/1"
+            : version === 5
+              ? "render-stream-5-resolved/1"
+              : version === 4
+                ? "render-stream-4-resolved/1"
+                : version === 3
+                  ? "render-stream-3-resolved/1"
+                  : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

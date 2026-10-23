@@ -143,6 +143,8 @@ std::string generate_id();
 // canvas_light_attach_to_canvas, and unobserved loses the instance-parameter and canvas-modulate
 // setters and gains D16's names. The capture publishes V5 since G55d (V4 from G5d, V3 from
 // G4e2); V2-V4 remain for golden-shaped tests.
+// `version` selects the feature lists of /2 to /6; /7 and /8 change none of them (render-stream-7.md,
+// render-stream-8.md), so a caller speaking either asks for V6's.
 Features gate2_features(bool headless_host = false, ProtocolVersion version = ProtocolVersion::V2);
 
 // The resource policy a capture publishes under (GRC_RESOURCE_*).
@@ -150,6 +152,9 @@ struct ResourcePolicy {
   std::vector<std::string> permitted_formats;  // sorted ascending (byte order)
   std::uint64_t max_payload_bytes = 1;
   std::uint64_t inline_max_bytes = 0;
+  // render-stream-8.md "Session": the declared host texture-decode policy (GRC_TEXTURE_DECODE),
+  // encoded as resources.decode at /8 only.
+  TextureDecode decode = TextureDecode::Off;
 };
 
 // The session's `resources` object (render-stream-2.md "Session record"). `delivery` follows from
@@ -243,6 +248,7 @@ class Publisher {
   ResourceEventFn events_;
   std::string error_;
   std::uint64_t next_seq_ = 1;
+  bool stamp_v8_ = false;  // G8w: the session template speaks /8 (start())
   bool finished_ = false;
   // The previous published snapshot: the patch sink's base and last_published().
   rs::Captured previous_;

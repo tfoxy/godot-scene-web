@@ -120,6 +120,21 @@ const RESOURCES_KEYS_V4: &[&str] = &[
     "http_path",
     "auth",
 ];
+// render-stream-8.md "Session": "decode" after "auth" (the end of the resources object).
+const RESOURCES_KEYS_V8: &[&str] = &[
+    "hash",
+    "payloads",
+    "delivery",
+    "inline_max_bytes",
+    "max_payload_bytes",
+    "permitted_formats",
+    "fetch",
+    "http_path",
+    "auth",
+    "decode",
+];
+const TEXTURE_DECODES: &[&str] = &["off", "engine"];
+const ADOPTION_KEYS: &[&str] = &["mode", "frame"];
 const FEATURES_KEYS: &[&str] = &[
     "ops",
     "item_state",
@@ -159,6 +174,23 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     "perturb-vertex",
     "perturb-shader",
     "retain-superseded",
+    // New at /8 (gate8-design.md Q2-Q5): legal in a /8 session only.
+    "adopt-skip-state",
+    "adopt-no-redraw",
+    "adopt-skip-layers",
+    "perturb-decode",
+    "size-before-adopt",
+    "adopt-raw-shader-code",
+    "adopt-skip-params",
+];
+const SABOTAGE_V8_ONLY: &[&str] = &[
+    "adopt-skip-state",
+    "adopt-no-redraw",
+    "adopt-skip-layers",
+    "perturb-decode",
+    "size-before-adopt",
+    "adopt-raw-shader-code",
+    "adopt-skip-params",
 ];
 const TRANSACTION_KEYS: &[&str] = &[
     "type",
@@ -308,9 +340,38 @@ const TEXTURE_KEYS: &[&str] = &[
     "payload_bytes",
     "canvas",
 ];
+// render-stream-8.md "Resource tables": adopted_content right after origin, source_format right
+// after format (texture); adopted_content right after origin (mesh).
+const TEXTURE_KEYS_V8: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "kind",
+    "status",
+    "reason",
+    "version",
+    "hash",
+    "format",
+    "source_format",
+    "width",
+    "height",
+    "mipmaps",
+    "payload_bytes",
+    "canvas",
+];
 const CANVAS_TEXTURE_KEYS: &[&str] = &["diffuse", "filter", "repeat"];
 const MESH_KEYS: &[&str] = &[
     "id", "origin", "status", "reason", "version", "f", "surfaces",
+];
+const MESH_KEYS_V8: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "status",
+    "reason",
+    "version",
+    "f",
+    "surfaces",
 ];
 const MESH_SURFACE_KEYS: &[&str] = &[
     "hash",
@@ -854,6 +915,15 @@ pub struct Resources {
     pub http_path: Option<String>,
     /// "none" or "bearer".
     pub auth: &'static str,
+    /// /8 only (render-stream-8.md "Session"): "off" or "engine".
+    pub decode: Option<&'static str>,
+}
+
+/// /8 only (render-stream-8.md "Session"): the late-join adoption declaration,
+/// `{"mode":"arm","frame":<int >= 1>}`; absent when the session says null (or below /8).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Adoption {
+    pub frame: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -902,6 +972,8 @@ pub struct Session {
     /// /6 only (the top-level key, not `features.publication`).
     pub publication: Option<Publication>,
     pub sabotage: Option<Sabotage>,
+    /// /8 only: `Some` when the session declares adoption (null otherwise, and below /8).
+    pub adoption: Option<Adoption>,
     /// protocol/unknown-item-skip.md: the session declared `unknown_item_policy: "skip"`.
     pub unknown_item_skip: bool,
     pub clear_color: [f32; 4],
@@ -916,7 +988,9 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
     let v4 = version >= 4;
     let Some(f) = ck.fields(
         v,
-        if v4 {
+        if version >= 8 {
+            RESOURCES_KEYS_V8
+        } else if v4 {
             RESOURCES_KEYS_V4
         } else {
             RESOURCES_KEYS
@@ -977,6 +1051,14 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
     let Some(auth) = ck.one_of_str(f.at(8), AUTHS) else {
         return Err(err(ck, "has an invalid auth"));
     };
+    let decode = if version >= 8 {
+        match ck.one_of_str(f.at(9), TEXTURE_DECODES) {
+            Some(d) => Some(d),
+            None => return Err(err(ck, "\"decode\" must be \"off\" or \"engine\"")),
+        }
+    } else {
+        None
+    };
     let expected = if inline_max_bytes == 0 {
         "out-of-band"
     } else if inline_max_bytes >= max_payload_bytes {
@@ -1006,6 +1088,7 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
         fetch,
         http_path,
         auth,
+        decode,
     })
 }
 
@@ -1038,6 +1121,17 @@ fn check_session(
     if skip_declared {
         let at = keys.iter().position(|&k| k == "sabotage").unwrap() + 1;
         keys.insert(at, "unknown_item_policy");
+    }
+    if version >= 8 {
+        // render-stream-8.md "Session": "adoption" is always present, right after
+        // "unknown_item_policy" (or after "sabotage" when that key is absent).
+        let after = if skip_declared {
+            "unknown_item_policy"
+        } else {
+            "sabotage"
+        };
+        let at = keys.iter().position(|&k| k == after).unwrap() + 1;
+        keys.insert(at, "adoption");
     }
     let Some(f) = ck.fields(meta, &keys) else {
         return Err(ck.schema("session has the wrong top-level keys or order"));
@@ -1347,7 +1441,41 @@ fn check_session(
         if (s.kind == "omit-op") != s.op.is_some() {
             return Err(ck.schema("\"sabotage.op\" must be non-null exactly for kind \"omit-op\""));
         }
+        if version < 8 && SABOTAGE_V8_ONLY.contains(&s.kind) {
+            return Err(ck.schema(format!(
+                "\"sabotage.kind\" \"{}\" is legal only at /8",
+                s.kind
+            )));
+        }
         sabotage = Some(s);
+    }
+
+    let mut adoption = None;
+    if version >= 8 {
+        // render-stream-8.md "Session": null, or {"mode":"arm","frame":<int >= 1>}.
+        let av = at("adoption");
+        if !ck.null(av) {
+            let a = (|| {
+                let a = ck.fields(av, ADOPTION_KEYS)?;
+                if ck.string(a.at(0)) != Some(b"arm") {
+                    return None;
+                }
+                ck.int(a.at(1))
+            })();
+            let Some(frame) = a else {
+                return Err(ck.err(
+                    "adoption-entry",
+                    "\"adoption\" is neither null nor {\"mode\":\"arm\",\"frame\":<integer>}",
+                ));
+            };
+            if frame < 1 {
+                return Err(ck.err(
+                    "adoption-entry",
+                    format!("adoption.frame is {frame}, not >= 1"),
+                ));
+            }
+            adoption = Some(Adoption { frame });
+        }
     }
 
     ck.blocks(at("blocks"), SESSION_BLOCK_NAMES, None, blocks)?;
@@ -1384,6 +1512,7 @@ fn check_session(
         features,
         publication,
         sabotage,
+        adoption,
         unknown_item_skip: skip_declared,
         clear_color: [0.0; 4],
         root_canvas_xform: [0.0; 6],
@@ -1577,6 +1706,8 @@ pub struct ItemMeta {
 #[derive(Clone, Debug)]
 pub struct MeshMeta {
     pub id: Id,
+    pub origin: Origin,
+    pub adopted_content: Option<AdoptedContent>,
     pub status: EntryStatus,
     pub reason: Option<&'static str>,
     pub version: i64,
@@ -1587,6 +1718,7 @@ pub struct MeshMeta {
 #[derive(Clone, Debug)]
 pub struct MaterialMeta {
     pub id: Id,
+    pub origin: Origin,
     pub status: EntryStatus,
     pub reason: Option<&'static str>,
     pub version: i64,
@@ -1724,27 +1856,106 @@ fn check_param(ck: &mut Ck, p: Value, wherein: &str) -> Result<ParamMeta, Error>
     })
 }
 
+/// The origin of a resource-table entry: "created" below /8, "created" or "adopted" from /8
+/// (render-stream-8.md "Resource tables").
+fn table_origin(ck: &Ck, v: Value, version: u8) -> Option<Origin> {
+    match ck.string(v)? {
+        b"created" => Some(Origin::Created),
+        b"adopted" if version >= 8 => Some(Origin::Adopted),
+        _ => None,
+    }
+}
+
+fn table_origin_message(version: u8) -> &'static str {
+    if version >= 8 {
+        "\"origin\" must be \"created\" or \"adopted\""
+    } else {
+        "\"origin\" must be \"created\""
+    }
+}
+
+/// `adopted_content` of a /8 texture or mesh entry: null or "current"/"creation", non-null exactly
+/// when `origin` is "adopted" (self-coded `adoption-entry`).
+fn check_adopted_content(
+    ck: &Ck,
+    v: Value,
+    origin: Origin,
+    what: &str,
+) -> Result<Option<AdoptedContent>, Error> {
+    let content = if ck.null(v) {
+        None
+    } else if let Some(i) = ck.one_of(v, &["current", "creation"]) {
+        Some(AdoptedContent::ALL[i])
+    } else {
+        return Err(ck.schema(format!(
+            "a {what} entry's \"adopted_content\" is neither null nor \"current\"/\"creation\""
+        )));
+    };
+    if (origin == Origin::Adopted) != content.is_some() {
+        return Err(ck.err(
+            "adoption-entry",
+            format!(
+                "a {what} entry's \"adopted_content\" must be non-null exactly when \"origin\" is \"adopted\""
+            ),
+        ));
+    }
+    Ok(content)
+}
+
+/// Every `Image.Format` name (render-stream-2.md "Texture payload"): a /8 texture entry's
+/// `source_format` must be one of them.
+const IMAGE_FORMAT_NAMES: &[&str] = &[
+    "L8", "LA8", "R8", "RG8", "RGB8", "RGBA8", "RGBA4444", "RGB565", "RF", "RGF", "RGBF", "RGBAF",
+    "RH", "RGH", "RGBH", "RGBAH", "RGBE9995", "DXT1", "DXT3", "DXT5", "RGTC_R", "RGTC_RG",
+    "BPTC_RGBA", "BPTC_RGBF", "BPTC_RGBFU", "ETC", "ETC2_R11", "ETC2_R11S", "ETC2_RG11",
+    "ETC2_RG11S", "ETC2_RGB8", "ETC2_RGBA8", "ETC2_RGB8A1", "ETC2_RA_AS_RG", "DXT5_RA_AS_RG",
+    "ASTC_4x4", "ASTC_4x4_HDR", "ASTC_8x8", "ASTC_8x8_HDR",
+];
+
 /// `checkTextureEntrySchema`.
-fn check_texture(ck: &mut Ck, t: Value) -> Result<Texture, Error> {
+fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     let err = |ck: &Ck, d: &str| ck.schema(format!("a textures[] entry {d}"));
-    let Some(f) = ck.fields(t, TEXTURE_KEYS) else {
+    // render-stream-8.md "Resource tables": at /8 `adopted_content` follows `origin` and
+    // `source_format` follows `format`, so the later keys shift by one, then two.
+    let v8 = version >= 8;
+    let (s1, s2) = if v8 { (1, 2) } else { (0, 0) };
+    let Some(f) = ck.fields(t, if v8 { TEXTURE_KEYS_V8 } else { TEXTURE_KEYS }) else {
         return Err(err(ck, "has the wrong keys"));
     };
     let Some(id) = ck.id1(f.at(0)) else {
         return Err(err(ck, "\"id\" is not an integer >= 1"));
     };
-    if ck.string(f.at(1)) != Some(b"created") {
-        return Err(err(ck, "\"origin\" must be \"created\""));
+    let origin = table_origin(ck, f.at(1), version).ok_or_else(|| {
+        err(
+            ck,
+            if v8 {
+                "\"origin\" must be \"created\" or \"adopted\""
+            } else {
+                "\"origin\" must be \"created\""
+            },
+        )
+    })?;
+    let mut adopted_content = None;
+    let mut source_format = None;
+    if v8 {
+        adopted_content = check_adopted_content(ck, f.at(2), origin, "textures[]")?;
+        source_format = if ck.null(f.at(9)) {
+            None
+        } else if let Some(name) = ck.owned(f.at(9)).filter(|n| IMAGE_FORMAT_NAMES.contains(&&**n)) {
+            Some(name)
+        } else {
+            return Err(err(ck, "\"source_format\" is neither null nor an Image format name"));
+        };
     }
-    let Some(kind) = enum_of(ck, f.at(2), TextureKind::ALL, TextureKind::as_str) else {
+    let Some(kind) = enum_of(ck, f.at(2 + s1), TextureKind::ALL, TextureKind::as_str) else {
         return Err(err(ck, "has an invalid kind"));
     };
-    let Some(status) = enum_of(ck, f.at(3), EntryStatus::ALL, EntryStatus::as_str) else {
+    let Some(status) = enum_of(ck, f.at(3 + s1), EntryStatus::ALL, EntryStatus::as_str) else {
         return Err(err(ck, "has an invalid status"));
     };
-    let reason = if ck.null(f.at(4)) {
+    let reason = if ck.null(f.at(4 + s1)) {
         None
-    } else if let Some(r) = ck.one_of_str(f.at(4), TEXTURE_REASONS) {
+    } else if let Some(r) = ck.one_of_str(f.at(4 + s1), TEXTURE_REASONS) {
         Some(r)
     } else {
         return Err(err(
@@ -1752,12 +1963,12 @@ fn check_texture(ck: &mut Ck, t: Value) -> Result<Texture, Error> {
             "\"reason\" is neither null nor a valid texture reason",
         ));
     };
-    let Some(version) = ck.int_ge(f.at(5), 1) else {
+    let Some(version) = ck.int_ge(f.at(5 + s1), 1) else {
         return Err(err(ck, "\"version\" is not an integer >= 1"));
     };
-    let hash = if ck.null(f.at(6)) {
+    let hash = if ck.null(f.at(6 + s1)) {
         None
-    } else if let Some(h) = ck.hash(f.at(6)) {
+    } else if let Some(h) = ck.hash(f.at(6 + s1)) {
         Some(h)
     } else {
         return Err(err(
@@ -1765,29 +1976,29 @@ fn check_texture(ck: &mut Ck, t: Value) -> Result<Texture, Error> {
             "\"hash\" is neither null nor 64 lowercase hex digits",
         ));
     };
-    let format = if ck.null(f.at(7)) {
+    let format = if ck.null(f.at(7 + s1)) {
         None
-    } else if let Some(s) = ck.owned(f.at(7)) {
+    } else if let Some(s) = ck.owned(f.at(7 + s1)) {
         Some(s)
     } else {
         return Err(err(ck, "\"format\" is neither null nor a string"));
     };
-    let Some(width) = ck.int_ge(f.at(8), 0) else {
+    let Some(width) = ck.int_ge(f.at(8 + s2), 0) else {
         return Err(err(ck, "\"width\" is not a non-negative integer"));
     };
-    let Some(height) = ck.int_ge(f.at(9), 0) else {
+    let Some(height) = ck.int_ge(f.at(9 + s2), 0) else {
         return Err(err(ck, "\"height\" is not a non-negative integer"));
     };
-    let Some(mipmaps) = ck.boolean(f.at(10)) else {
+    let Some(mipmaps) = ck.boolean(f.at(10 + s2)) else {
         return Err(err(ck, "\"mipmaps\" is not a boolean"));
     };
-    let Some(payload_bytes) = ck.int_ge(f.at(11), 0) else {
+    let Some(payload_bytes) = ck.int_ge(f.at(11 + s2), 0) else {
         return Err(err(ck, "\"payload_bytes\" is not a non-negative integer"));
     };
-    let canvas = if ck.null(f.at(12)) {
+    let canvas = if ck.null(f.at(12 + s2)) {
         None
     } else {
-        let Some(c) = ck.fields(f.at(12), CANVAS_TEXTURE_KEYS) else {
+        let Some(c) = ck.fields(f.at(12 + s2), CANVAS_TEXTURE_KEYS) else {
             return Err(err(ck, "\"canvas\" has the wrong keys"));
         };
         let Some(diffuse) = ck.opt_id1(c.at(0)) else {
@@ -1810,12 +2021,15 @@ fn check_texture(ck: &mut Ck, t: Value) -> Result<Texture, Error> {
     };
     Ok(Texture {
         id,
+        origin,
+        adopted_content,
         kind,
         status,
         reason,
         version,
         hash,
         format,
+        source_format,
         width,
         height,
         mipmaps,
@@ -1825,23 +2039,37 @@ fn check_texture(ck: &mut Ck, t: Value) -> Result<Texture, Error> {
 }
 
 /// `checkMeshEntrySchema` (with `checkMeshSurfaceSchema`).
-fn check_mesh(ck: &mut Ck, m: Value) -> Result<MeshMeta, Error> {
+fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
     let err = |ck: &Ck, d: &str| ck.schema(format!("a meshes[] entry {d}"));
-    let Some(f) = ck.fields(m, MESH_KEYS) else {
+    let v8 = version >= 8;
+    let s1 = if v8 { 1 } else { 0 };
+    let Some(f) = ck.fields(m, if v8 { MESH_KEYS_V8 } else { MESH_KEYS }) else {
         return Err(err(ck, "has the wrong keys"));
     };
     let Some(id) = ck.id1(f.at(0)) else {
         return Err(err(ck, "\"id\" is not an integer >= 1"));
     };
-    if ck.string(f.at(1)) != Some(b"created") {
-        return Err(err(ck, "\"origin\" must be \"created\""));
-    }
-    let Some(status) = enum_of(ck, f.at(2), EntryStatus::ALL, EntryStatus::as_str) else {
+    let origin = table_origin(ck, f.at(1), version).ok_or_else(|| {
+        err(
+            ck,
+            if v8 {
+                "\"origin\" must be \"created\" or \"adopted\""
+            } else {
+                "\"origin\" must be \"created\""
+            },
+        )
+    })?;
+    let adopted_content = if v8 {
+        check_adopted_content(ck, f.at(2), origin, "meshes[]")?
+    } else {
+        None
+    };
+    let Some(status) = enum_of(ck, f.at(2 + s1), EntryStatus::ALL, EntryStatus::as_str) else {
         return Err(err(ck, "has an invalid status"));
     };
-    let reason = if ck.null(f.at(3)) {
+    let reason = if ck.null(f.at(3 + s1)) {
         None
-    } else if let Some(r) = ck.one_of_str(f.at(3), MESH_REASONS) {
+    } else if let Some(r) = ck.one_of_str(f.at(3 + s1), MESH_REASONS) {
         Some(r)
     } else {
         return Err(err(
@@ -1849,17 +2077,17 @@ fn check_mesh(ck: &mut Ck, m: Value) -> Result<MeshMeta, Error> {
             "\"reason\" is neither null nor a valid mesh reason",
         ));
     };
-    let Some(version) = ck.int_ge(f.at(4), 1) else {
+    let Some(version) = ck.int_ge(f.at(4 + s1), 1) else {
         return Err(err(ck, "\"version\" is not an integer >= 1"));
     };
-    let fo = if ck.null(f.at(5)) {
+    let fo = if ck.null(f.at(5 + s1)) {
         None
-    } else if let Some(x) = ck.uint(f.at(5)) {
+    } else if let Some(x) = ck.uint(f.at(5 + s1)) {
         Some(x)
     } else {
         return Err(err(ck, "\"f\" is neither null nor a non-negative integer"));
     };
-    let Some(surfs) = ck.arr(f.at(6)) else {
+    let Some(surfs) = ck.arr(f.at(6 + s1)) else {
         return Err(err(ck, "\"surfaces\" is not an array"));
     };
     let mut surfaces = Vec::with_capacity(surfs.len());
@@ -1897,6 +2125,8 @@ fn check_mesh(ck: &mut Ck, m: Value) -> Result<MeshMeta, Error> {
     }
     Ok(MeshMeta {
         id,
+        origin,
+        adopted_content,
         status,
         reason,
         version,
@@ -1906,7 +2136,7 @@ fn check_mesh(ck: &mut Ck, m: Value) -> Result<MeshMeta, Error> {
 }
 
 /// `checkShaderEntrySchema` (self-coded `shader-entry`).
-fn check_shader(ck: &mut Ck, s: Value) -> Result<Shader, Error> {
+fn check_shader(ck: &mut Ck, s: Value, version: u8) -> Result<Shader, Error> {
     let err = |ck: &Ck, d: &str| ck.err("shader-entry", format!("a shaders[] entry {d}"));
     let Some(f) = ck.fields(s, SHADER_KEYS) else {
         return Err(err(ck, "has the wrong keys"));
@@ -1914,9 +2144,9 @@ fn check_shader(ck: &mut Ck, s: Value) -> Result<Shader, Error> {
     let Some(id) = ck.id1(f.at(0)) else {
         return Err(err(ck, "\"id\" is not an integer >= 1"));
     };
-    if ck.string(f.at(1)) != Some(b"created") {
-        return Err(err(ck, "\"origin\" must be \"created\""));
-    }
+    let Some(origin) = table_origin(ck, f.at(1), version) else {
+        return Err(err(ck, table_origin_message(version)));
+    };
     let Some(status) = ck.one_of(f.at(2), &["ok", "unsupported"]) else {
         return Err(err(ck, "has an invalid status"));
     };
@@ -2050,6 +2280,7 @@ fn check_shader(ck: &mut Ck, s: Value) -> Result<Shader, Error> {
     }
     Ok(Shader {
         id,
+        origin,
         status,
         reason,
         version,
@@ -2068,6 +2299,7 @@ fn check_material(
     ck: &mut Ck,
     m: Value,
     params: &mut Vec<ParamMeta>,
+    version: u8,
 ) -> Result<MaterialMeta, Error> {
     let err = |ck: &Ck, d: &str| ck.err("material-entry", format!("a materials[] entry {d}"));
     let Some(f) = ck.fields(m, MATERIAL_KEYS) else {
@@ -2076,9 +2308,9 @@ fn check_material(
     let Some(id) = ck.id1(f.at(0)) else {
         return Err(err(ck, "\"id\" is not an integer >= 1"));
     };
-    if ck.string(f.at(1)) != Some(b"created") {
-        return Err(err(ck, "\"origin\" must be \"created\""));
-    }
+    let Some(origin) = table_origin(ck, f.at(1), version) else {
+        return Err(err(ck, table_origin_message(version)));
+    };
     let Some(status) = ck.one_of(f.at(2), &["ok", "unsupported"]) else {
         return Err(err(ck, "has an invalid status"));
     };
@@ -2124,6 +2356,7 @@ fn check_material(
     }
     Ok(MaterialMeta {
         id,
+        origin,
         status,
         reason,
         version,
@@ -2614,7 +2847,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         return Err(ck.schema("\"textures\" is not an array"));
     };
     for &t in textures {
-        let t = check_texture(ck, t)?;
+        let t = check_texture(ck, t, version)?;
         tx.textures.push(t);
     }
     if v4 {
@@ -2622,7 +2855,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             return Err(ck.schema("\"meshes\" is not an array"));
         };
         for &m in meshes {
-            let m = check_mesh(ck, m)?;
+            let m = check_mesh(ck, m, version)?;
             tx.meshes.push(m);
         }
     }
@@ -2631,14 +2864,14 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             return Err(ck.schema("\"shaders\" is not an array"));
         };
         for &s in shaders {
-            let s = check_shader(ck, s)?;
+            let s = check_shader(ck, s, version)?;
             tx.shaders.push(s);
         }
         let Some(materials) = ck.arr(f.at(pos("materials"))) else {
             return Err(ck.schema("\"materials\" is not an array"));
         };
         for &m in materials {
-            let m = check_material(ck, m, &mut tx.params)?;
+            let m = check_material(ck, m, &mut tx.params, version)?;
             tx.materials.push(m);
         }
     }
