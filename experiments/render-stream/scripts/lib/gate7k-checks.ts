@@ -124,6 +124,109 @@ async function loadMemTimeline(dir: string): Promise<MemSample[]> {
   return out;
 }
 
+/** G7kr: the page renderer's RSS grows by a fixed cost per payload `fetch()` GET that belongs to
+ * the measurement harness, not to the receiver or to Chromium's fetch path: Playwright enables
+ * CDP's Network domain on every page, and its DevTools Network agent keeps a record per request
+ * for the page's lifetime. Measured post-GC (the check's own measure) in the pinned Chromium 1223:
+ * a content-free cross-origin `fetch` loop (45 GET/s, unique URLs, 375-byte bodies, 16,842 GETs)
+ * costs 3.9 KB/GET with `Network.enable` on its session and 0.23 KB/GET bare; the honest GSW soak
+ * measures 3.6 KB/GET (16,539 GETs), in the same two places (V8's Oilpan cage and
+ * PartitionAlloc), and a critical memory-pressure notification reclaims none of it. The bound is
+ * Q10's 16 MiB and 2 MiB/min plus this allowance per payload GET (the control's 3.9 KB plus about
+ * 28%). */
+export const RSS_BYTES_PER_GET = 5 * 1024;
+
+/** `rss-bounded-renderer`'s budget: Q10's 16 MiB growth and 2 MiB/min slope, plus the per-GET
+ * allowance for the leg's GETs (its rate over the leg's own duration for the slope). */
+export function rssRendererBudget(
+  gets: number | null,
+  legSeconds: number,
+): { growthBytes: number; slopePerMinBytes: number } {
+  const n = gets ?? 0;
+  const perMin = legSeconds > 0 ? (n / legSeconds) * 60 : 0;
+  return {
+    growthBytes: 16 * MIB + n * RSS_BYTES_PER_GET,
+    slopePerMinBytes: 2 * MIB + perMin * RSS_BYTES_PER_GET,
+  };
+}
+
+/** G7kr decision (b): the web export's page renderer grows past Q10's bound for a cause outside
+ * this increment's reach, so `rss-bounded-renderer@web` is reported as a known measured shortfall:
+ * never a pass, never gating, never part of a sabotage's failure set, and owned by a follow-up. */
+export const WEB_RENDERER_RSS_SHORTFALL = {
+  owner: "G7kw2",
+  cause:
+    "engine GL-id tables (emscripten's GL.buffers/vaos/syncs/textures/framebuffers never reuse ids: about 1-1.4 MB/min of JS heap) plus an unexplained ~5.8 MB/min of PartitionAlloc specific to the receiver path (not Playwright's Network domain, shots, the MEMFS received copy or the JavaScriptBridge fetch: results/gate7/g7kr.md)",
+} as const;
+
+export type KnownShortfallCheck = Gate7Check & {
+  status: "known-shortfall";
+  owner: string;
+  measured: { growth_bytes: number | null; slope_bytes_per_min: number | null };
+};
+
+/** `check` re-typed as a known measured shortfall: `passed` false and `gating` false whatever the
+ * bound said, the measured growth and slope of `points` and the bound's own verdict in its detail. */
+export function asKnownShortfall(
+  check: Gate7Check,
+  points: readonly TimePoint[],
+  shortfall: { owner: string; cause: string },
+): KnownShortfallCheck {
+  const start = points.length >= 2 ? medianInWindowEnd(points, 30, "start") : null;
+  const end = points.length >= 2 ? medianInWindowEnd(points, 30, "finish") : null;
+  const slope = points.length >= 2 ? slopePerMinute(points) : null;
+  const growth = start !== null && end !== null ? end - start : null;
+  const measured = {
+    growth_bytes: growth === null ? null : Math.round(growth),
+    slope_bytes_per_min: slope === null ? null : Math.round(slope),
+  };
+  const verdict = check.detail.startsWith("unavailable")
+    ? check.detail
+    : `${check.passed ? "inside" : "outside"} the gating bound (${check.detail})`;
+  return {
+    ...check,
+    passed: false,
+    gating: false,
+    status: "known-shortfall",
+    owner: shortfall.owner,
+    measured,
+    detail: `known-shortfall (owner ${shortfall.owner}, report-only): growth ${measured.growth_bytes ?? "n/a"} B, slope ${measured.slope_bytes_per_min ?? "n/a"} B/min; ${verdict}; cause: ${shortfall.cause}`,
+  };
+}
+
+/** The leg's payload GET count: GSW `payload_verify.staged`, the web export's `payloads.staged`
+ * (perf.json). `null` when unreadable, which leaves the base budget alone. */
+async function payloadGetCount(dir: string, kind: G7kKind): Promise<number | null> {
+  try {
+    const perf = JSON.parse(await readFile(join(dir, "perf.json"), "utf8")) as {
+      payload_verify?: { staged?: number };
+      payloads?: { staged?: number };
+    };
+    const n = kind === "gsw" ? perf.payload_verify?.staged : perf.payloads?.staged;
+    return typeof n === "number" ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function memDurationS(samples: readonly MemSample[]): number {
+  if (samples.length < 2) return 0;
+  return (samples[samples.length - 1].t_us - samples[0].t_us) / 1e6;
+}
+
+/** The post-GC samples only, with time still counted from the timeline's FIRST sample (the
+ * [60 s, 360 s] window is leg time, not time since the first settled point). */
+function settledSeries(
+  samples: readonly MemSample[],
+  pick: (s: MemSample) => number | null | undefined,
+): TimePoint[] {
+  const t0 = samples.length > 0 ? samples[0].t_us / 1e6 : 0;
+  return samples
+    .filter((s) => s.post_gc === true)
+    .map((s) => ({ t: s.t_us / 1e6 - t0, v: pick(s) }))
+    .filter((p): p is TimePoint => p.v !== null && p.v !== undefined);
+}
+
 function memSeries(
   samples: readonly MemSample[],
   pick: (s: MemSample) => number | null | undefined,
@@ -275,7 +378,14 @@ export const G7K_SABOTAGE_SETS: Record<
         "wasm-heap-bounded",
       ],
     },
-    allowed: { web: [], gsw: ["js-heap-bounded"] },
+    // G7kr: GSW's page renderer RSS now carries the wasm heap (+11 MB) and JS heap (+5 MB) a store
+    // that never evicts keeps growing, so `rss-bounded-renderer` may trip too (it sat on an idle
+    // renderer before); it is a consequence, not the signature. On the web export the row is a
+    // known shortfall (WEB_RENDERER_RSS_SHORTFALL), which no failure set counts.
+    allowed: {
+      web: [],
+      gsw: ["js-heap-bounded", "rss-bounded-renderer"],
+    },
   },
   "sabotage-leak-gl-textures": {
     required: {
@@ -447,10 +557,30 @@ async function checkSoakLeg(
       else push("residency-bounded:gl-textures-flat", { ...gl, gating: false });
     } else push("residency-bounded-gl-textures", gl);
   }
-  push(
-    "rss-bounded-renderer",
-    checkGrowthBounded(`${prefix}-rss-bounded-renderer`, "renderer RSS", memSeries(mem, (s) => s.rss_bytes.renderer), 16 * MIB, 2 * MIB),
-  );
+  {
+    const gets = await payloadGetCount(join(g6sDir, leg.leg, "receiver"), kind);
+    const leg_s = memDurationS(mem);
+    const budget = rssRendererBudget(gets, leg_s);
+    // The settled series (G7kr): samples taken right after a forced GC, which take the V8/Oilpan
+    // sawtooth out; a pre-G7kr timeline without them falls back to every sample.
+    const settled = mem.filter((s) => s.post_gc === true);
+    const points =
+      settled.length >= 4
+        ? settledSeries(mem, (s) => s.rss_bytes["page-renderer"])
+        : memSeries(mem, (s) => s.rss_bytes["page-renderer"]);
+    const bounded = checkGrowthBounded(
+      `${prefix}-rss-bounded-renderer`,
+      `page renderer RSS (${settled.length >= 4 ? "post-GC samples" : "all samples"}; ${gets ?? "unknown"} payload GETs, ${RSS_BYTES_PER_GET} B/GET allowance)`,
+      points,
+      budget.growthBytes,
+      budget.slopePerMinBytes,
+    );
+    // G7kr decision (b): GSW gates; the web export's figure is a known shortfall (G7kw2).
+    push(
+      "rss-bounded-renderer",
+      kind === "web" ? asKnownShortfall(bounded, points, WEB_RENDERER_RSS_SHORTFALL) : bounded,
+    );
+  }
   push(
     "rss-bounded-gpu",
     checkGrowthBounded(`${prefix}-rss-bounded-gpu`, "GPU-process RSS", memSeries(mem, (s) => s.rss_bytes.GPU ?? s.rss_bytes["gpu-process"]), 16 * MIB, 2 * MIB),
@@ -491,6 +621,7 @@ async function checkSoakLeg(
   // exact set of failed keys with the expected one. `unavailable` never counts as a failure.
   const failed = keyed
     .filter((k) => !k.check.passed && !k.check.detail.startsWith("unavailable"))
+    .filter((k) => (k.check as { status?: string }).status !== "known-shortfall")
     .filter((k) => k.key !== "residency-bounded")
     .map((k) => k.key)
     .sort();

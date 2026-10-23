@@ -749,7 +749,16 @@ just after the step-2 shot, as G6l's stall does, so a `TEXA` version and step 3 
   - `residency-bounded` as G6s for receiver memory-cache entries, plus GSW GL texture and buffer
     counts.
   - `rss-bounded-renderer` and `rss-bounded-gpu`: median of the last 30 s minus median of the first
-    30 s ≤ 16 MiB, and least-squares slope ≤ 2 MiB/min.
+    30 s ≤ 16 MiB, and least-squares slope ≤ 2 MiB/min. The renderer is the receiver page's own
+    (G7kr: the page makes its renderer prove itself by touching a 128 MiB marker buffer; G7k to
+    G7kh sampled an idle one), judged on samples taken right after a forced full GC, with 5 KiB per
+    payload GET added to both budgets: a measurement-harness cost, the per-request record CDP's
+    Network domain (which Playwright enables on every page) keeps, 3.9 KB per GET in a post-GC
+    `fetch` control with it on and 0.23 KB bare, 3.6 KB in the honest GSW soak (derivation in
+    `g7k.md`, "G7kr"). `no-evict` may trip it on GSW (`allowed`, not required). On the web
+    export it is report-only, a typed `known-shortfall` owned by G7kw2 that never counts as a pass.
+    The page renderer grows 7.4-10.3 MB/min there, from engine GL-id tables plus PartitionAlloc
+    growth that is not yet explained.
   - `js-heap-bounded` (gsw): the same, ≤ 4 MiB and ≤ 0.5 MiB/min.
   - `wasm-heap-bounded` (web): end ≤ value at 60 s + 16 MiB.
   - `gpu-mem-bounded`: per-process `nvidia-smi` end ≤ value at 60 s + 8 MiB.

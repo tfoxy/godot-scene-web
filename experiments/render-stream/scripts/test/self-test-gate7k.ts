@@ -8,9 +8,12 @@
 //  4. failureSetProblems: exact sets pass; a missing and an extra failure each fail.
 //  5. checkStartupComplete / checkStartupWarmFetches: ordering, missing marks, cache refetches
 //     (evidence PUTs are not bundle loads).
+//  6. (G7kr) rssRendererBudget's per-GET allowance, and asKnownShortfall: the web export's
+//     `rss-bounded-renderer` is report-only, never a pass, with its measured slope and an owner.
 
 import type { G6sLegEvidence } from "../lib/gate6s-checks";
 import {
+  asKnownShortfall,
   checkEndVsSixtySecondValue,
   checkGrowthBounded,
   checkStartupComplete,
@@ -18,7 +21,9 @@ import {
   failureSetProblems,
   G7K_SABOTAGE_SETS,
   gswBudgetAdjusted,
+  rssRendererBudget,
   type TimingsJson,
+  WEB_RENDERER_RSS_SHORTFALL,
 } from "../lib/gate7k-checks";
 
 let failures = 0;
@@ -71,6 +76,32 @@ expect("sets: exact", failureSetProblems(ne.required.gsw, ne.required.gsw, ne.al
 expect("sets: allowed consequence", failureSetProblems([...ne.required.gsw, "js-heap-bounded"], ne.required.gsw, ne.allowed.gsw).length === 0);
 expect("sets: missing", failureSetProblems(["wasm-heap-bounded"], ne.required.gsw, ne.allowed.gsw).some((p) => /did not/.test(p)));
 expect("sets: extra", failureSetProblems([...ne.required.gsw, "soak-pixels"], ne.required.gsw, ne.allowed.gsw).some((p) => /also failed: soak-pixels/.test(p)));
+
+// 6 (G7kr): the page renderer's budget carries a per-GET allowance
+const hb = rssRendererBudget(16475, 385);
+// the honest GSW soak measured +48.5..50.1 MB and 10.8..10.9 MB/min with 16,475 GETs
+expect("rss budget: honest GSW growth fits", 50.1e6 < hb.growthBytes && 10.9e6 < hb.slopePerMinBytes, JSON.stringify(hb));
+expect("rss budget: honest GSW slope is within 2x of the budget", hb.slopePerMinBytes < 2 * 10.9e6, JSON.stringify(hb));
+const nb = rssRendererBudget(130, 385);
+expect("rss budget: few GETs keep about Q10's base", nb.growthBytes < 17.5 * MIB && nb.slopePerMinBytes < 2.2 * MIB, JSON.stringify(nb));
+expect("rss budget: no count keeps Q10's base", rssRendererBudget(null, 0).growthBytes === 16 * MIB);
+const leak = (rate: number) => series((t) => 180 * MIB + (t * rate * MIB) / 60);
+expect("rss: honest-GSW-shaped growth passes with its GET budget", checkGrowthBounded("a", "x", leak(10.9 / 1.048576), hb.growthBytes, hb.slopePerMinBytes).passed);
+expect("rss: the same growth with 130 GETs fails (a leak with no GET to blame)", !checkGrowthBounded("a", "x", leak(10.9 / 1.048576), nb.growthBytes, nb.slopePerMinBytes).passed);
+expect("rss: 2x the honest rate fails with the GET budget", !checkGrowthBounded("a", "x", leak(2 * 10.9 / 1.048576), hb.growthBytes, hb.slopePerMinBytes).passed);
+
+// 6b (G7kr decision b): the web row is a known shortfall whatever the bound says
+const webLike = series((t) => 400 * MIB + (t * 8 * MIB) / 60);
+for (const [name, pts] of [["a leak", webLike], ["flat", series(() => 400 * MIB)]] as const) {
+  const k = asKnownShortfall(checkGrowthBounded("w", "x", pts, 16 * MIB, 2 * MIB), pts, WEB_RENDERER_RSS_SHORTFALL);
+  expect(`shortfall (${name}): never a pass, never gating`, !k.passed && !k.gating && k.status === "known-shortfall", JSON.stringify(k));
+  expect(`shortfall (${name}): owner and cause in the row`, k.owner === "G7kw2" && /owner G7kw2/.test(k.detail) && /PartitionAlloc/.test(k.detail), k.detail);
+}
+const ks = asKnownShortfall(checkGrowthBounded("w", "x", webLike, 16 * MIB, 2 * MIB), webLike, WEB_RENDERER_RSS_SHORTFALL);
+expect("shortfall: carries the measured slope", Math.abs((ks.measured.slope_bytes_per_min ?? 0) - 8 * MIB) < 0.01 * MIB && /outside the gating bound/.test(ks.detail), JSON.stringify(ks.measured));
+const ku = asKnownShortfall(checkGrowthBounded("w", "x", [], 16 * MIB, 2 * MIB), [], WEB_RENDERER_RSS_SHORTFALL);
+expect("shortfall: no samples stays unavailable inside, never a pass", !ku.passed && ku.measured.slope_bytes_per_min === null && /unavailable/.test(ku.detail));
+expect("sets: web no-evict allows nothing (a known shortfall is in no failure set)", G7K_SABOTAGE_SETS["sabotage-soak-no-evict"].allowed.web.length === 0);
 
 // 5
 const timings = (marks: [string, number][], resources: TimingsJson["resources"] = []): TimingsJson => ({
