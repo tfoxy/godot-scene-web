@@ -312,8 +312,10 @@ Pushing is acceptable here only if the branches clean themselves up. Three layer
 
 A deleted run commit survives only as an unreachable object on GitHub. Run branches cannot publish
 anything, because `publish.yml` fires only on `v*` tags. The no-push rule is policy (CLAUDE.md), not
-enforced by `scripts/claude-guard-bash.sh`. The wrapper is the one sanctioned push path; the guard
-does not yet warn on other `git push` calls.
+blocked by `scripts/claude-guard-bash.sh`. The wrapper is the one sanctioned push path, and it pushes
+as a child process the guard never sees, so the guard warns (never blocks) on any literal `git push`,
+with stronger text for main, tags, force and bare pushes. Codex users re-trust the hook via `/hooks`
+after a guard edit.
 
 All three layers were seen working on real runs (R0):
 - the cleanup job deleted every run branch;
@@ -399,7 +401,6 @@ Risks that remain:
 
 Possible next steps (not started):
 - fix g7-1's window-2 model on `main`, then move g7-1 remote;
-- a guard warning on `git push` outside the wrapper;
 - per-case `Ir` in the summary of passing `bench-instr` runs.
 
 ## Sources

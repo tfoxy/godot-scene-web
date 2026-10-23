@@ -138,8 +138,11 @@ Committed agent config lives at [`agents/`](agents/) and [`skills/`](skills/) (`
 `.codex/` are gitignored). Run `scripts/install-agent-config.sh` after cloning and in every new worktree: it
 links them in for Claude Code, generates the Codex CLI config under `.codex/`, and registers the PreToolUse
 guard for both — `scripts/claude-guard-bash.sh`, self-tested by `scripts/test-claude-guard.sh`, which blocks
-nested `xvfb-run` and warns on a `tsx` call missing `--conditions=development` (that one silently tests
-`dist/` instead of your edit). Add `--user` to mirror home-level config into `~/.codex/`.
+nested `xvfb-run` and warns on: any `git push` outside `scripts/remote-validate.sh` (stronger text for
+main, tags, force, `--all`/`--mirror`, or a bare push); a `tsx` call missing `--conditions=development`
+(that one silently tests `dist/` instead of your edit); and a package manager run from outside the repo
+root. Codex trust is per-hash: re-trust the hook via `/hooks` after every guard edit. Add `--user` to
+mirror home-level config into `~/.codex/`.
 
 Project memory is `.agents/memory/MEMORY.md` (in a worktree, a symlink to the main checkout's store). Read
 that index before non-trivial work; record what you learn with the `project-memory` skill.
