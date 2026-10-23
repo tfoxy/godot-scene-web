@@ -3,8 +3,9 @@
 Status: contract for gate 8, written 2026-10-22/23. G8w (the /8 wire, policy parsing and empty seams,
 2026-10-23) is landed: [render-stream-8.md](render-stream-8.md), [results/gate8/g8w.md](../results/gate8/g8w.md).
 G8t (host decode of block-compressed textures, the `gate8-tex` fixture and the gate 8 runner) is
-landed: Q3 "As built (G8t)", [results/gate8/g8t.md](../results/gate8/g8t.md). Nothing else here is
-implemented. The user decided on
+landed: Q3 "As built (G8t)", [results/gate8/g8t.md](../results/gate8/g8t.md). G8a (arm-time adoption
+of canvases, layers and items, the `gate8-adopt` fixture) is landed: Q2 "As built (G8a)",
+[results/gate8/g8a.md](../results/gate8/g8a.md). Nothing else here is implemented. The user decided on
 2026-10-22 that public release needs the gate 8 blockers first (memory g31-good-enough-release-first).
 Gate 8 is "integrate behind couch-coop's instance rules, with the streaming seat opting out of the
 headless visual freeze/suspender" (`docs/handoff-headless-render-stream.md`, gate table). The single
@@ -185,6 +186,70 @@ account.
 **Stays unsupported, typed.** RS-only items, canvases and layers with no node (counted, withheld
 under `skip`); a `_draw` that depends on state changed since its last redraw (it redraws with the
 current state; documented, not detectable); non-root viewports; everything the hooks already type.
+
+### As built (G8a)
+
+Decisions taken where Q2 and D3-D5 left room, each the long-term option:
+
+- **Two halves.** `rs_adopt.cpp` walks the tree into an `AdoptPlan` (read-only ptrcall binds, 41
+  pinned at their 4.5.1 hashes) and applies it with an engine-free `apply_adopt_plan`, which drives
+  the mirror through the hooks' own setters (`Mirror::adopt_canvas`/`adopt_item`, then
+  `set_parent`, `set_visible`, ...). D5's rule ("adoption declares exactly what the hooks would
+  have declared") therefore holds by construction, and `test/rs_adopt_test.cpp` drives a
+  born-armed hook sequence and the equivalent plan into two mirrors and compares them.
+- **Which calls.** Every item gets what `NOTIFICATION_ENTER_TREE` sends (parent, visibility layer,
+  visible = `is_visible_in_tree()`, filter and repeat resolved through the parent chain as
+  `_refresh_texture_filter_cache` does) and a child item its deferred draw index (`get_index(true)`);
+  transform, modulate, self-modulate, z, z-relative, behind-parent, material and use-parent-material
+  only where they differ from the server default, as the setters only call the server on a change.
+  A layer gets attach, canvas transform, follow-viewport parent and stacking `(layer, get_index())`;
+  a canvas its first visible-in-tree `CanvasModulate` in tree order (the engine's "active" one is
+  whichever became visible first; with one per canvas, as the engine's configuration warning asks,
+  they agree). Node-specific state the hooks type is declared too: a `Light2D`'s canvas light
+  (`canvas-light`), a `ParallaxLayer`'s mirroring and a `Parallax2D`'s repeat (`canvas-repeat`). The
+  walk includes internal children and does not descend into a non-root viewport (counted).
+- **The re-raise is synchronous.** D3 names a deferred `call_group_flags(UNIQUE|DEFERRED,
+  "_root_canvas<id>", "_top_level_raise_self")`. G8a calls the bound `_top_level_raise_self` itself
+  on every canvas-group member, per canvas, in tree order, right after applying the plan: the same
+  calls in the same order the group call makes, through the hooks, without building Variant
+  arguments for a vararg bind (and without the one-iteration group-call lag of memory
+  gate1-top-level-draw-index-lag). The bind is omitted from `--dump-extension-api` (a leading
+  underscore) but resolves: a hash covers the signature only, so it is `queue_redraw`'s.
+  `queue_redraw` stays deferred, so commands, a Control's transform, custom rect and clip arrive in
+  the arm iteration's MessageQueue flush, before the frame callback publishes.
+- **Frames.** Under `GRC_ADOPT=arm` the capture aligns its frame counter with
+  `Engine.get_process_frames()` at arm (the 0-based index of the iteration running; it advances
+  after the frame callback, `main.cpp:4852`). A runtime-loaded capture otherwise counted from its
+  load, so `adoption.frame`, every hook stamp, transaction frame and `GRC_SABOTAGE_FRAME` are now
+  the host's main-loop iteration, as they already were for a capture loaded at startup.
+  `adoption.frame` is the iteration the walk ran in (G8w's "may refine").
+- **Refusals.** `adopt-thread` (the caller is not `OS.get_main_thread_id()`) and
+  `adopt-unavailable` (a bind is missing at its hash) refuse the stream before anything is
+  published (`stream.status` `refused`); the three walk sabotages refuse without `GRC_ADOPT=arm`.
+- **Caps (D13).** `GRC_MIRROR_MAX_ITEMS` and `GRC_MIRROR_MAX_COMMANDS`, integers 1..1048576,
+  defaults 4096 and 1024; an invalid value refuses the stream. The canvas cap is the item cap, as
+  before.
+- **Accounting.** `result.json`'s `stream.gate8.adopt_stats` gains `error`, `hidden`, `top_level`,
+  `redraws`, `canvas_modulates`, `lights`, `materials`, `non_root_viewports`, the walk, apply,
+  engine and total times, and the caps. `residue` is discovered, not walked: under skip it is the
+  mirror's distinct unknown canvas/item RIDs named after arm; under strict it is null (the first
+  one is the sticky `pre-existing-object`).
+- **Exceptions as checked.** `adopt-equivalence` applies Q2's list with one precision: an item not
+  visible in tree in either capture is exempt from its *draw-derived* state, which is its commands
+  and, for a Control, the custom rect and clip its `NOTIFICATION_DRAW` sends (a hidden Control's
+  redraw sends neither). Texture references compare through payload hashes (a born capture also
+  sees the engine's frame-1 default-theme texture). The bijection is per container in draw order;
+  the residue is the born-only trailing commandless item.
+- **Fixture.** As specified, plus a `born-adopt` capture (adoption at birth adopts nothing and
+  publishes born's states exactly: `adopt-noop-at-birth`), a `late-thread` capture (the loader
+  loads the extension from a worker `Thread`: `adopt-thread-refused`), a Control inside the hidden subtree, an
+  adopted item freed after arm and a post-arm item added; the residue sits at draw index 1000 so the
+  bijection meets it last. `adopt-no-scene-mutation` also counts the arm's `draw` signals (one per
+  item visible in tree).
+- **Stays unsupported, typed, beyond Q2's list.** Instance shader parameters of adopted items
+  (G8m reads them with the materials); Polygon2D skeletons (`attach_skeleton` is not re-sent);
+  `canvas_item_set_use_identity_transform` items (no getter: their transform is read as the node's);
+  RS state a script set directly on a node's own canvas item (read as the node's state).
 
 ## Q3. Compressed and float textures (blocker 2)
 

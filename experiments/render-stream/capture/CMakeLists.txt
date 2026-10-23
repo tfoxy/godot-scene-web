@@ -288,11 +288,21 @@ add_test(NAME rs8_codec COMMAND rs8_codec_test)
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test
-  test/rs_gate8_policy_test.cpp src/rs_gate8_policy.cpp src/rs_adopt.cpp
+  test/rs_gate8_policy_test.cpp src/rs_gate8_policy.cpp
   src/rs_texture_decode.cpp src/iface.cpp)
 target_include_directories(rs_gate8_policy_test PRIVATE src vendor)
 target_link_libraries(rs_gate8_policy_test PRIVATE grc_warnings)
 add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
+
+# G8a: the arm-time adoption pass (gate8-design.md D3-D5, D13): a born-armed hook sequence and the
+# walk's AdoptPlan give the same mirror state but for origin; the walk sabotages; the residue under
+# strict and skip; the configurable caps. The walk itself runs only inside Godot (run-gate8.sh g8a).
+add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/iface.cpp
+  src/rs_mirror.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
+  src/rs_sha256.cpp src/rs2_diff.cpp)
+target_include_directories(rs_adopt_test PRIVATE src vendor)
+target_link_libraries(rs_adopt_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_adopt COMMAND rs_adopt_test)
 
 # G8t: the host-decode seam (gate8-design.md D8, Q3): the decode table, the result check that
 # refuses an engine decode of the wrong format or shape, perturb-decode and the totals, against a

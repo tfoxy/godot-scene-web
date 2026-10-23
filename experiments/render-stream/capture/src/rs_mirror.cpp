@@ -55,6 +55,8 @@ void Mirror::reset() {
   canvas_texture_headless_ = false;
   canvas_texture_created_ = false;
   unknown_policy_ = UnknownItemPolicy::Strict;
+  max_items_ = kMaxLiveItems;
+  max_commands_ = kMaxCommandsPerItem;
   unknown_rids_.clear();
   next_canvas_id_ = kRootCanvasId + 1;
   next_item_id_ = 1;
@@ -415,44 +417,66 @@ bool Mirror::forget_unknown(std::uint64_t rid) {
 // --- identity -------------------------------------------------------------------
 
 void Mirror::canvas_create(std::uint64_t rid, std::uint64_t frame) {
+  create_canvas(rid, frame, Origin::Created);
+}
+
+void Mirror::canvas_item_create(std::uint64_t rid, std::uint64_t frame) {
+  create_item(rid, frame, Origin::Created);
+}
+
+void Mirror::adopt_canvas(std::uint64_t rid, std::uint64_t frame) {
+  create_canvas(rid, frame, Origin::Adopted);
+}
+
+void Mirror::adopt_item(std::uint64_t rid, std::uint64_t frame) {
+  create_item(rid, frame, Origin::Adopted);
+}
+
+void Mirror::set_caps(std::size_t max_items, std::size_t max_commands) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  max_items_ = max_items;
+  max_commands_ = max_commands;
+}
+
+void Mirror::create_canvas(std::uint64_t rid, std::uint64_t frame, Origin origin) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (rid == 0 || dropped_identity("canvas_create", frame)) {
     return;
   }
-  if (canvases_.size() >= kMaxLiveItems) {
+  if (canvases_.size() >= max_items_) {
     ++stats_.dropped_capacity;
     fail(FailureReason::MirrorCapacity,
-         "live canvases > " + u64(kMaxLiveItems) + " rid=" + u64(rid) + " frame=" + u64(frame));
+         "live canvases > " + u64(max_items_) + " rid=" + u64(rid) + " frame=" + u64(frame));
     return;
   }
   forget_unknown(rid);  // Skip: a recycled RID value is a new object
   Canvas canvas;
   canvas.rid = rid;
   canvas.state.id = next_canvas_id_++;
-  canvas.state.origin = Origin::Created;
+  canvas.state.origin = origin;
   canvas.state.role = CanvasRole::None;
   canvas.state.attached = false;
   canvas_by_rid_[rid] = canvas.state.id;
   canvases_.emplace(canvas.state.id, std::move(canvas));
 }
 
-void Mirror::canvas_item_create(std::uint64_t rid, std::uint64_t frame) {
+void Mirror::create_item(std::uint64_t rid, std::uint64_t frame, Origin origin) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (rid == 0 || dropped_identity("canvas_item_create", frame)) {
     return;
   }
-  if (items_.size() >= kMaxLiveItems) {
+  if (items_.size() >= max_items_) {
     ++stats_.dropped_capacity;
     untracked_items_.insert(rid);
     fail(FailureReason::MirrorCapacity,
-         "live items > " + u64(kMaxLiveItems) + " rid=" + u64(rid) + " frame=" + u64(frame));
+         "live items > " + u64(max_items_) + " rid=" + u64(rid) + " frame=" + u64(frame));
     return;
   }
   forget_unknown(rid);  // Skip: a recycled RID value is a new object
   Item item;
   item.rid = rid;
   item.state.id = next_item_id_++;
-  item.state.origin = Origin::Created;
+  item.state.origin = origin;
   item_by_rid_[rid] = item.state.id;
   items_.emplace(item.state.id, std::move(item));
 }
@@ -949,9 +973,9 @@ void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t fr
 }
 
 void Mirror::push_command(Item *item, Command command, std::uint64_t frame) {
-  if (item->state.commands.size() >= kMaxCommandsPerItem) {
+  if (item->state.commands.size() >= max_commands_) {
     ++stats_.dropped_capacity;
-    fail(FailureReason::MirrorCapacity, "commands > " + u64(kMaxCommandsPerItem) +
+    fail(FailureReason::MirrorCapacity, "commands > " + u64(max_commands_) +
                                             " item=" + u64(item->state.id) + " frame=" + u64(frame));
     return;
   }
@@ -3214,6 +3238,10 @@ void mirror_set_canvas_texture_headless(bool on) {
 
 void mirror_set_unknown_item_policy(UnknownItemPolicy policy) {
   mirror_instance().set_unknown_item_policy(policy);
+}
+
+void mirror_set_caps(std::size_t max_items, std::size_t max_commands) {
+  mirror_instance().set_caps(max_items, max_commands);
 }
 
 void mirror_set_drop_frame(std::uint64_t frame) { mirror_instance().set_drop_frame(frame); }

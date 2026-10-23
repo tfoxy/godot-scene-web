@@ -1,10 +1,9 @@
-// Unit tests for the gate 8 policy parsing, the D2 refusal, the live subprotocol offer and the two
-// empty seams (src/rs_gate8_policy.*, rs_adopt.*, rs_texture_decode.*; G8w).
+// Unit tests for the gate 8 policy parsing, the D2 refusal, the live subprotocol offer and the
+// decode seam (src/rs_gate8_policy.*, rs_texture_decode.*; G8w; the adoption seam is rs_adopt_test).
 
 #include <cstdio>
 #include <string>
 
-#include "rs_adopt.h"
 #include "rs_gate8_policy.h"
 #include "rs_texture_decode.h"
 
@@ -122,12 +121,6 @@ void test_subprotocols() {
 }
 
 void test_seams() {
-  grc::rs::AdoptConfig config;
-  config.arm_frame = 3;
-  const grc::rs::AdoptStats stats = grc::rs::adopt_at_arm(config);
-  check(stats.ran && stats.canvases == 0 && stats.layers == 0 && stats.items == 0 &&
-            stats.residue == 0,
-        "the empty adoption seam runs and adopts nothing");
   check(!grc::rs::texture_decode_enabled(), "texture decode is off by default");
   grc::rs::texture_decode_set_enabled(true);
   check(grc::rs::texture_decode_enabled(), "texture decode can be enabled");

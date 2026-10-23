@@ -3350,24 +3350,31 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t)
+## Gate 8 files (g8t, G8t; g8a, G8a)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
   --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
   --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
-  [--legs g8t]
+  [--legs g8t,g8a]
 ```
 
 - `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
-  `run_reference_g8t`; G8a, G8h, G8f, G8r and G8m add their groups).
+  `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`; G8h, G8f, G8r and
+  G8m add their groups).
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
-  and the informative `hardware_band`).
+  and the informative `hardware_band`; under `g8a` the legs, the adoption `cost`, the
+  `equivalence` summary, the per-checkpoint `pixels` diffs and the `sabotages`).
 - `lib/gate8-tex-checks.ts`: the g8t checks (`runG8t`) and their pure helpers (`pairTextures`,
   `censusProblems`, `oracleProblems`).
 - `test/self-test-gate8.ts`: the helpers on `fixtures/gate8-tex/expected.json` and synthetic hook,
   fixture and oracle lines, each with a passing and a failing case.
+- `lib/gate8-adopt-checks.ts`: the g8a checks (`runG8a`) and their pure helpers (`canonicalState`,
+  `compareStates`, `equivalence`, `censusProblems`): born-armed equivalence through an id
+  bijection built per container in draw order, with exactly Q2's exceptions.
+- `test/self-test-gate8-adopt.ts`: those helpers on `fixtures/gate8-adopt/expected.json` and
+  synthetic resolved states.
 
 ## Gate 8 legs and evidence under `--out` (g8t)
 
@@ -3382,6 +3389,27 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `reference-hw` | rendered, the `.ctex` itself (GPU-sampled, or GLES3's own CPU fallback): informative |
 | `receiver`, `receiver-patch` | the native receiver on `capture`'s full and patch sinks |
 | `decode-cost/oracle-timing`, `decode-cost/capture` | timing group `decode-cost` (`timing_leg`, real time, skipped on hosted runners): best-of-3 `Image.decompress` of the 2048×2048 cost textures, and the hook's own decode, copy and hash times on them (`RS_FIXTURE_VARIANT=cost`) |
+
+## Gate 8 legs and evidence under `--out/g8a` (g8a)
+
+| leg | what |
+| --- | ---- |
+| `import/fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-adopt` and of the receiver |
+| `born/capture` | headless, `GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip`, main scene `res://born.tscn`, armed in the loader's `_enter_tree`: every object created armed; both sinks, store, `steps.jsonl`, `probe.jsonl` |
+| `born-adopt/capture` | `born` with `GRC_ADOPT=arm`: adoption at birth, nothing to adopt |
+| `late/capture` | `adopt.tscn` as the main scene, armed at frame K=12 with `GRC_ADOPT=arm` |
+| `late-strict/capture` | `late` without `GRC_UNKNOWN_ITEM=skip`: the residue's first call fails `pre-existing-object` |
+| `late-thread/capture` | `late`, the extension loaded from a worker thread (`RS_FIXTURE_ARM=thread`): the stream refuses `adopt-thread` |
+| `sabotage-adopt-{skip-state,no-redraw,skip-layers}/{capture,receiver}` | `late` with the walk sabotage, and the native receiver on it |
+| `reference` | rendered, unarmed: shots `step-<k>.png` at the four checkpoints |
+| `born/receiver`, `late/receiver`, `late/receiver-patch` | the native receiver on born's and late's full sink and late's patch sink |
+
+## Gate 8 criteria (g8a)
+
+`g8a-legs`, `adopt-wire`, `adopt-equivalence`, `adopt-noop-at-birth`, `adopt-account`,
+`adopt-thread-refused`, `adopt-no-scene-mutation`, `adopt-reference` (exact) and the three `sabotage-adopt-*` checks; each
+criterion is spelled out in `lib/gate8-adopt-checks.ts` and
+[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q2 "As built (G8a)".
 
 ## Gate 8 criteria (g8t)
 

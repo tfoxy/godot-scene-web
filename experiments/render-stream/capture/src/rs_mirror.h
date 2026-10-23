@@ -208,6 +208,18 @@ class Mirror {
   void canvas_item_create(std::uint64_t rid, std::uint64_t frame);
   void free_rid(std::uint64_t rid, std::uint64_t frame);
 
+  // G8a (gate8-design.md D3-D5): the arm-time adoption walk's entry points. Each registers an
+  // object that already existed when the capture armed, exactly as canvas_create /
+  // canvas_item_create would, but with origin `adopted`; its state then arrives through the same
+  // setters the hooks call (rs_adopt.cpp), so adoption declares exactly what the hooks would have.
+  void adopt_canvas(std::uint64_t rid, std::uint64_t frame);
+  void adopt_item(std::uint64_t rid, std::uint64_t frame);
+
+  // D13: the live-item and per-item command caps (GRC_MIRROR_MAX_ITEMS, GRC_MIRROR_MAX_COMMANDS;
+  // defaults rs2::kMaxLiveItems and rs2::kMaxCommandsPerItem). reset() restores the defaults;
+  // set once at arm, before the root query.
+  void set_caps(std::size_t max_items, std::size_t max_commands);
+
   void viewport_attach_canvas(std::uint64_t viewport, std::uint64_t canvas, std::uint64_t frame);
   void viewport_set_canvas_transform(std::uint64_t viewport, std::uint64_t canvas,
                                      const rs2::Xform &xform, std::uint64_t frame);
@@ -641,6 +653,8 @@ class Mirror {
 
   // All private helpers expect mutex_ held.
   // Identity taps: only omit-op applies. Advances the epoch when not dropped.
+  void create_canvas(std::uint64_t rid, std::uint64_t frame, rs2::Origin origin);
+  void create_item(std::uint64_t rid, std::uint64_t frame, rs2::Origin origin);
   bool dropped_identity(const char *op, std::uint64_t frame);
   // Mutation taps: omit-op, then omit-update. Advances the epoch when not dropped.
   bool dropped(const char *op, std::uint64_t frame);
@@ -738,6 +752,8 @@ class Mirror {
   // (a rendered host, or the opt-in headless shim's private RID) does not set it.
   bool canvas_texture_created_ = false;
   rs2::UnknownItemPolicy unknown_policy_ = rs2::UnknownItemPolicy::Strict;
+  std::size_t max_items_ = rs2::kMaxLiveItems;
+  std::size_t max_commands_ = rs2::kMaxCommandsPerItem;
   std::unordered_set<std::uint64_t> unknown_rids_;  // Skip: named, not yet freed
   std::uint32_t next_canvas_id_ = rs2::kRootCanvasId + 1;
   std::uint32_t next_item_id_ = 1;
@@ -782,6 +798,7 @@ void mirror_fail_root_size_enforce(const std::string &detail);
 void mirror_set_degenerate_host_size(bool on);
 void mirror_set_canvas_texture_headless(bool on);
 void mirror_set_unknown_item_policy(rs2::UnknownItemPolicy policy);
+void mirror_set_caps(std::size_t max_items, std::size_t max_commands);
 void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 void mirror_set_perturb_glyph(std::uint64_t from_frame);
