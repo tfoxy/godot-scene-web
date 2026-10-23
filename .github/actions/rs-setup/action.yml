@@ -37,6 +37,9 @@ inputs:
   apt:
     description: strace (cmake ships on the runner image)
     default: "false"
+  valgrind:
+    description: valgrind from the runner image's apt archive (R4's bench-instr, cachegrind Ir counts)
+    default: "false"
   capture-build:
     description: Restore (or build) the capture library build tree that the pure self-tests need (rs_ws_echo)
     default: "false"
@@ -203,6 +206,13 @@ runs:
       run: |
         sudo apt-get install -y --no-install-recommends strace || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace; }
         cmake --version | head -1 # build-capture.sh defaults to /snap/bin/cmake; the workflows pass CMAKE=cmake
+
+    - name: valgrind
+      if: inputs.valgrind == 'true'
+      shell: bash
+      run: |
+        sudo apt-get install -y --no-install-recommends valgrind || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends valgrind; }
+        valgrind --version
 
     # Editor: the sha pin is build-web-receiver.sh's (of the extracted binary); the release API's zip
     # digest is pinned here as well.

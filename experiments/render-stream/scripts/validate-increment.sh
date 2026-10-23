@@ -190,6 +190,11 @@ run_one() {
 		launch "$dir" -- bash "$Q" shared --label "validate:cargo:$(basename "$crate")" -- \
 			bash -c "cd '$REPO_ROOT/$crate' && cargo test --offline --release" >"$dir/run.log" 2>&1 || rc=$?
 		;;
+	bench-instr)
+		# R4: instruction counts, so load cannot disturb them: no timing lock, a shared one for the build
+		launch "$dir" -- bash "$Q" shared --label validate:bench-instr -- \
+			bash "$SCRIPT_DIR/bench-instr.sh" --out "$dir/run" >"$dir/run.log" 2>&1 || rc=$?
+		;;
 	pnpm-test)
 		launch "$dir" -- bash "$Q" shared --label validate:pnpm-test -- bash -c "cd '$REPO_ROOT' && mise exec -- pnpm test" \
 			>"$dir/run.log" 2>&1 || rc=$?

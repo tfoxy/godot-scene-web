@@ -66,7 +66,7 @@ for f in "$SCRIPT_DIR"/test/self-test-*.ts; do
 done
 # GRT2b and GRT4a pure bash self-tests: stub launches, a private lock dir, a private source cache.
 # self-test-socket-owners.sh is not here, because its old-scan half walks every /proc fd (~1 min).
-for b in self-test-par-legs.sh self-test-fast-frames.sh self-test-validate-tier.sh self-test-source-cache.sh; do
+for b in self-test-par-legs.sh self-test-fast-frames.sh self-test-validate-tier.sh self-test-source-cache.sh self-test-bench-instr.sh; do
 	NAMES+=("${b%.sh}")
 	CMDS+=("bash '$SCRIPT_DIR/test/$b'")
 done
