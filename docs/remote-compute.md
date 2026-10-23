@@ -1,8 +1,18 @@
 # Remote compute for long validation runs
 
-Status: assessed 2026-10-22 at `24ec89be`. R0 (GPU-free runs), R1 (gate 0 on a software
-rasterizer), R2 (native gates −1, 1, 2, 3, 4, 5 and 5.5 on it) and R3 (gate 7's browser correctness
-on lavapipe) are implemented.
+Status: **implemented**, 2026-10-23. The rungs R0–R4 landed on `main`:
+
+| Rung | What it moved | Commits |
+| --- | --- | --- |
+| R0 | Pure self-tests, cargo crates, `capture-build`, `pnpm test`, toolchain builds | 0230907c, 40021ac1, d6ffe1a8, 0e11f3fc |
+| R1 | Gate 0 on a software rasterizer | 3489dd79 |
+| R2 | Native gates −1, 1, 2, 3, 4, 5 and 5.5 | c78ea103 |
+| R3 | Gate 7 browser correctness | 88019d65 |
+| R4 | Instruction-count benches for the Rust core | 1dc35f80 |
+
+See [Status and what stays local](#status-and-what-stays-local) for measured times and limits.
+The assessment below dates from 2026-10-22 (`24ec89be`). The R1–R4 sections record what each rung
+found.
 
 ## Goal
 
@@ -50,6 +60,10 @@ It would not have applied to public repos either way, and self-hosting needs har
 
 ## Why the sweep cannot simply move
 
+This was the assessment before R1–R3. The GPU parts are now handled by the CI-only
+software-renderer modes described below. The NVIDIA track stays the local default and the pixel
+authority.
+
 - **Browser legs need a real NVIDIA GPU.**
   - `experiments/render-stream/scripts/lib/browser-harness.ts:389` refuses any renderer that does
     not name ANGLE, NVIDIA and Vulkan together, and `:1335` fails on SwiftShader, llvmpipe or other
@@ -86,8 +100,9 @@ It would not have applied to public repos either way, and self-hosting needs har
 
 | Family | Remote? | What it takes |
 | --- | --- | --- |
-| Pure self-tests, cargo crates, builds, `pnpm test` | **Yes, now** | Toolchain setup plus a cache of the pinned inputs |
-| Native gates −1..5.5 correctness | **Maybe** | A determinism spike on a software rasterizer, then a separate `swrast` baseline set |
+| Pure self-tests, cargo crates, builds, `pnpm test` | **Yes (R0)** | Toolchain setup plus a cache of the pinned inputs; `pure` is sharded 6 ways |
+| Native gates −1..5.5 correctness | **Yes (R1, R2)** | CI-only Xvfb + llvmpipe; no own baselines were needed. Their timing groups (g1c-rate, g1d, g2c-pins, g5f, g55f) stay local |
+| Rust core instruction counts | **Yes (R4)** | cachegrind `Ir` against a committed baseline, 1% threshold |
 | Gate 7 file/live correctness (browser) | **Yes (R3)** | Chromium on ANGLE-Vulkan over lavapipe, a CI-only provenance mode; no own baselines were needed. Live g7-1/g7-2 stay local. The NVIDIA track stays authoritative. |
 | Gate 6 and gate 7 timing legs, perf benches | **No** (wall-clock) | Stay local; see below |
 | Phone legs (g31) | **No** | The device is attached to this machine |
@@ -241,33 +256,51 @@ quiet machine (`uptime`), as today.
 
 ## Agent-callable interface
 
-The primary consumer is a worker agent (e.g. `rs-increment`) mid-task. The proposed shape:
+The primary consumer is a worker agent (e.g. `rs-increment`) mid-task. It takes the same planning
+flags as `validate-increment.sh`; the full list is in the script header:
 
 ```bash
-scripts/remote-validate.sh --legs g7-1,g0 [--tier smoke|full] [--wait]
+scripts/remote-validate.sh [--base main] [--tier smoke|full] [--only id,id] [--paths p1,p2] \
+  [--milestone] [--and-local] [--determinism 3,1] [--no-wait | --collect RUN_KEY] [--dry-run]
 ```
 
-It mirrors `validate-increment.sh` and does four things:
-
-1. **Snapshots** the worktree state, uncommitted edits included, as a throwaway commit built with a
+1. **Plans locally** with `validate-increment.sh --plan`, then splits the runs.
+   - Remote-capable runs come from the `smoke-map.json` `remote` table.
+   - Always refused: timing-phase runs, `lock-tests`, `g7x` and device legs. The live groups g7-1
+     and g7-2 are refused per group.
+   - `--and-local` runs the refused ones through local `validate-increment.sh` while the remote run
+     is in flight.
+   - A requested `--only` id that the plan does not reach is an error (rc 2), not a silent pass.
+2. **Snapshots** the worktree state, uncommitted edits included, as a throwaway commit built with a
    temporary `GIT_INDEX_FILE`. The worktree's branch, HEAD and index stay untouched.
-2. **Pushes** only `HEAD:refs/heads/remote-run/<worktree>-<shortsha>`.
-3. **Dispatches** the remote workflow from `main` with `gh workflow run`, passing `sha`, `run-id`
-   and the leg list as inputs. The workflow fans out one matrix job per gate, leg group, receiver or
-   shard.
-4. **Waits** with `gh run watch`, which works under a background Bash call. Then it runs
-   `gh run download` for only the verdict JSON and failing-leg evidence, and writes the same
-   `validate-summary.json` shape so `lib/tier-verdict.py` and agents read it unchanged.
+3. **Pushes** only `<sha>:refs/heads/remote-run/<worktree>-<shortsha>`.
+4. **Dispatches** `.github/workflows/remote-validate.yml` **on that run branch**. GitHub only
+   requires the workflow file to exist on `main`; the definition that runs is the snapshot's own.
+   The workflow fans out one matrix job per run id, with `pure` in 6 shards and gate 7 one job per
+   group. Each job calls `validate-increment.sh --only <id>` with the same base and tier.
+5. **Waits** with `gh run watch`, which works under a background Bash call. It then downloads only
+   the merged `validate-summary.json` and the failing runs' evidence into
+   `artifacts/render-stream/remote/<UTC>/`, and exits non-zero when any run failed.
+   - The summary has the local shape plus a `remote{run_url, sha, run_key, setup_s, refused,
+     skipped_remote}` block, built by the same `lib/validate-summary.py`.
 
 Rules:
 
-- **Workflow definition from `main`:** a worktree cannot change the runner logic. Changes to the
-  remote workflow itself land on `main` first.
+- **The runner logic travels with the snapshot.** A worktree can change the workflow by dispatching
+  its own run branch. Changes only need `main` (and a push) when the janitor, the seed workflow or
+  an action allow-list entry must change.
 - **Timing legs are refused** or handed to local `validate-increment.sh`, so no agent gets a
   noisy-VM timing number without noticing.
-- **Contention:** the 20 concurrent jobs are shared by all agents. Each worktree gets one
-  `concurrency` group, where a new run cancels the old one. Expect queueing when several agents fan
-  out at once.
+- **Contention:** the 20 concurrent jobs are shared by all agents, and one dispatch uses at most
+  10 (`max-parallel`). Each worktree gets one `concurrency` group, so a new dispatch from the same
+  worktree cancels its previous one. Two parallel dispatches from one worktree therefore don't work;
+  run them one at a time.
+- **Allowed actions:** the repo allows only GitHub-owned, owner-owned and `pnpm/action-setup`
+  actions. Every other tool is installed by a shell step with a sha check in
+  `.github/actions/rs-setup`.
+- **Caches are saved only from `main`.** An Actions cache saved on a run branch is invisible to
+  every other branch. `remote-cache-seed.yml` (dispatch and weekly) saves them; run branches only
+  restore.
 
 ### Run branches never accumulate
 
@@ -279,8 +312,15 @@ Pushing is acceptable here only if the branches clean themselves up. Three layer
 
 A deleted run commit survives only as an unreachable object on GitHub. Run branches cannot publish
 anything, because `publish.yml` fires only on `v*` tags. The no-push rule is policy (CLAUDE.md), not
-enforced by `scripts/claude-guard-bash.sh`. The wrapper becomes the one sanctioned push path, and the
-guard could be taught to warn on any other `git push`.
+enforced by `scripts/claude-guard-bash.sh`. The wrapper is the one sanctioned push path; the guard
+does not yet warn on other `git push` calls.
+
+All three layers were seen working on real runs (R0):
+- the cleanup job deleted every run branch;
+- SIGINT on the wrapper cancelled the run (rc 130) and deleted its branch;
+- a janitor dispatch deleted a ref aged 3 days and nothing else.
+
+The logic is covered synthetically by `scripts/test-remote-validate.sh` (107 checks).
 
 Rejected transports:
 
@@ -302,31 +342,65 @@ Rejected transports:
 
 GitHub Actions is the best free option, and none of these changes the GPU or phone constraints.
 
-## Recommended path
+## Status and what stays local
 
-1. **Remote tier for GPU-free families.** Low effort. One `workflow_dispatch` workflow plus
-   `scripts/remote-validate.sh` with its cleanup layers, running the pure self-tests, cargo crates,
-   builds and `pnpm test`. Pinned inputs are cached by sha (extracted files only, not the `.tpz`).
-   - Payoff: that CPU load leaves this machine and the run plumbing gets proven on cheap legs.
-2. **Software-raster spike,** about a day.
-   - Run gate 0 on a hosted runner under lavapipe: gamescope if it starts, otherwise a CI-only
-     Xvfb + llvmpipe display.
-   - Do three runs on one runner and one on another.
-   - Accept only if the dumps match canonically (`g7xd-rust-default-facts`) and the shots are
-     byte-stable run to run.
-3. **`swrast` baselines and the matrix,** only if step 2 passes.
-   - Add a provenance mode beside the NVIDIA one, with its own expected shots.
-   - Use one matrix job per gate, leg group, receiver or shard.
-   - Estimate: the correctness legs are roughly 70% of a sweep (~13.8 ks of 20 ks, lock wait
-     included). They could finish in tens of minutes of wall time, leaving the ~1.7 h timing phase
-     local.
-4. **Instruction-count benches** for the Rust core, so CPU regressions can be judged remotely.
+Measured 2026-10-22/23. Remote and local runs were at the same sha and agreed on pass/fail for
+every run. Local times include quiet-lock waits behind other agents' timing legs. The machine load
+is given for each.
 
-Risks:
-- A second baseline set is ongoing maintenance.
-- A software rasterizer may expose nondeterminism that the GPU hides.
-- Per-job setup costs minutes, and is bounded by the 10 GB cache.
-- Queueing when several agents fan out at once.
+| Run set | Remote (dispatch → summary) | Local |
+| --- | --- | --- |
+| pure, pnpm-test, cargo-*, capture-build (R0b) | ~225 s | 2,475 s (load 7→16) |
+| Same set before sharding `pure` (R0a) | 1,008 s | 1,319 s (load 8–10) |
+| Toolchain builds: rs-core-ext, gsw wasm, rs-core web, web receiver | 177 s | 626 s |
+| Native gates −1..5.5 (R2) | 676 s | 4,215 s (load 14) |
+| Gate 0 alone (R1) | 40–60 s per run | ~2 min + lock wait |
+| Gate 7 file groups + live g7-5/g7-55 (R3) | slowest job 867 s (gsw), 1,160 s (web); plain live dispatch 552 s | 4,666 s at `-j 2` (load 3.7–14) |
+| bench-instr (R4) | ~37 s per run | no valgrind here |
+
+A `--determinism 2,1` dispatch of all of gate 7 takes 22–70 min, because it runs every group three
+times through 10 parallel slots. Use it once per change to the renderer or the checkers, not while
+iterating.
+
+**Setup overhead per job:**
+- warm caches: 21–34 s;
+- native and gate 7 jobs: 44–97 s, because they also install Mesa/Xvfb and import the project;
+- the first run after a seed misses: up to ~270 s.
+
+**Cache:** ~810 MB of the 10 GB, 7 entries, all saved on `main`:
+
+| Entry | Size |
+| --- | --- |
+| emsdk | 492 MB |
+| pnpm store | 144 MB |
+| capture build | 111 MB |
+| godot templates (the two extracted files, never the `.tpz`) | 34 MB |
+| cargo registry | 19 MB |
+| rs-core-ext | 3 MB |
+| wasm-bindgen | 2 MB |
+
+**Stays local, and why:**
+
+| What | Why |
+| --- | --- |
+| Gate 6 and the gate 7 timing legs (g6l, g6s, g6c, g6p, g7-6 timing, g7-lc, g7-r, g7-k, g7-bench) and the lock self-tests | Wall-clock measurements; hosted VMs are noisier than this machine |
+| The timing groups inside correctness gates (g1c-rate, g1d, g2c-pins, g5f, g55f) | Same reason. They are skipped remotely, and the wrapper prints their local commands |
+| Live g7-2 | Load-sensitive on 4 vCPU runners: two transactions folded into one poll |
+| Live g7-1 | Its `resync-full` check fails intermittently at credit window 2 on NVIDIA as well, since G7wd (2431d26f). That is a model gap on `main` to fix first |
+| Phone legs (g31) | The device is attached to this machine |
+| NVIDIA pixel authority | A remote green on llvmpipe/lavapipe means "safe to spend a local GPU run on", not "landed". Llvmpipe has matched the RTX 2060 byte for byte so far, but that is evidence, not the contract |
+
+Risks that remain:
+- **Runner image updates** can change Mesa, so each run records its `swrast-provenance.json` /
+  `provenance.json`. Read those first if a remote-only pixel failure appears.
+- **The Godot 4.5.1 web export is not byte-reproducible across machines.** Packs are compared by
+  content digest.
+- **Queueing** when several agents dispatch at once.
+
+Possible next steps (not started):
+- fix g7-1's window-2 model on `main`, then move g7-1 remote;
+- a guard warning on `git push` outside the wrapper;
+- per-case `Ir` in the summary of passing `bench-instr` runs.
 
 ## Sources
 
