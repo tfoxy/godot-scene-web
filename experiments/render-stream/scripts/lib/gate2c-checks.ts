@@ -192,6 +192,12 @@ export interface G2cFetch {
   verified?: boolean;
   delay_us?: number;
   headers?: Record<string, string>;
+  /** G8kz: the body's length as it crossed the wire (the coded length), the coding the native
+   * receiver decoded ("identity" when none; "unknown" for a browser, which decodes itself), and
+   * the decode time. `bytes` is the identity length. */
+  wire_bytes?: number;
+  content_encoding?: string;
+  decode_us?: number;
 }
 
 export interface G2cTransaction {
@@ -726,8 +732,19 @@ export function getsVsFetches(
     seen.set(f.hash ?? "", (seen.get(f.hash ?? "") ?? 0) + 1);
   for (const [h, n] of seen)
     if (n > 1) out.push(`${h.slice(0, 12)} fetched ${n} times in one process`);
+  // G8kz: the host's own account of each hash's response (the coding and the Content-Length it
+  // sent). A host that offers no coding logs neither, and the response is the identity bytes.
+  const sent = new Map<string, { coding: string; coded: number }>();
+  for (const g of gets)
+    if (g.http_status === 200 && typeof g.hash === "string")
+      sent.set(g.hash, {
+        coding: g.coding ?? "identity",
+        coded: g.coded_bytes ?? g.payload_bytes ?? -1,
+      });
   for (const f of http) {
     const h = f.headers ?? {};
+    const s = sent.get(f.hash ?? "");
+    const coding = s?.coding ?? "identity";
     if (f.status !== 200) {
       out.push(`${f.hash?.slice(0, 12)}: HTTP ${f.status}`);
       continue;
@@ -737,11 +754,33 @@ export function getsVsFetches(
       out.push(`${f.hash?.slice(0, 12)}: Content-Type ${h["Content-Type"]}`);
     if (h["Cache-Control"] !== CACHE_CONTROL)
       out.push(`${f.hash?.slice(0, 12)}: Cache-Control ${h["Cache-Control"]}`);
-    if (httpCache ? h.ETag !== undefined : h.ETag !== `"${f.hash}"`)
-      out.push(`${f.hash?.slice(0, 12)}: ETag ${h.ETag}`);
-    if (h["Content-Length"] !== String(f.bytes))
+    // G8kz: a coded body's ETag is "<hash>-<coding>" (RFC 9110: validators differ by coding).
+    const etag =
+      coding === "identity" ? `"${f.hash}"` : `"${f.hash}-${coding}"`;
+    if (httpCache ? h.ETag !== undefined : h.ETag !== etag)
+      out.push(`${f.hash?.slice(0, 12)}: ETag ${h.ETag}, expected ${etag}`);
+    // Content-Length is the coded length (the host's `coded_bytes`); for an identity body it is
+    // the body. The receiver's `bytes` is the identity length either way.
+    const expectedLength = s !== undefined ? s.coded : (f.bytes ?? -1);
+    if (h["Content-Length"] !== String(expectedLength))
       out.push(
-        `${f.hash?.slice(0, 12)}: Content-Length ${h["Content-Length"]} for ${f.bytes} B`,
+        `${f.hash?.slice(0, 12)}: Content-Length ${h["Content-Length"]} for ${coding} body of ${expectedLength} B (${f.bytes} B decoded)`,
+      );
+    if (
+      f.wire_bytes !== undefined &&
+      s !== undefined &&
+      f.wire_bytes !== s.coded
+    )
+      out.push(
+        `${f.hash?.slice(0, 12)}: the receiver read ${f.wire_bytes} B off the wire, the host sent ${s.coded} B`,
+      );
+    if (
+      f.content_encoding !== undefined &&
+      f.content_encoding !== "unknown" &&
+      f.content_encoding !== coding
+    )
+      out.push(
+        `${f.hash?.slice(0, 12)}: the receiver saw Content-Encoding ${f.content_encoding}, the host sent ${coding}`,
       );
   }
   return out;
@@ -1509,7 +1548,7 @@ export function checkHttpGetsMatchFetches(evals: Evals): G2bCheck {
   }
   return check(
     "http-gets-match-fetches",
-    "on every g2c live leg that must succeed, the host's GET log (http-get lines) equals the receiver's http fetch list hash for hash and byte for byte, in order; every hash is fetched at most once per receiver process; every fetch is a verified 200 with Content-Type application/octet-stream, Cache-Control private, max-age=31536000, immutable, ETag \"<hash>\" and the right Content-Length; the summary counts the same GETs",
+    'on every g2c live leg that must succeed, the host\'s GET log (http-get lines) equals the receiver\'s http fetch list hash for hash and byte for byte, in order; every hash is fetched at most once per receiver process; every fetch is a verified 200 with Content-Type application/octet-stream, Cache-Control private, max-age=31536000, immutable, ETag "<hash>" ("<hash>-zstd" or "-gzip" for a coded body, G8kz) and the right Content-Length (the host\'s coded_bytes for a coded body); the summary counts the same GETs',
     problems,
     `GETs per leg: ${notes.join(", ")}`,
     G2C_GOOD.map((l) =>

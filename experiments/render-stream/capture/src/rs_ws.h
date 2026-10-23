@@ -135,6 +135,17 @@
 namespace grc {
 namespace live {
 
+// G8kz (texture-delivery-design.md D2, render-stream-2.md "HTTP (live)"): an HTTP content coding a
+// resource GET may be answered with.
+enum class Coding : std::uint8_t { Identity, Zstd, Gzip };
+const char *coding_token(Coding coding);  // "identity", "zstd" or "gzip"
+
+// Picks the coding for an `Accept-Encoding` header value (RFC 9110 12.5.3: comma list of
+// `token[;q=x]`, `*`, `q=0` refuses a token) from `offered`, the host's codings in its own
+// preference order. Identity when none is acceptable or `offered` is empty. An absent header is
+// passed as "".
+Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Coding> &offered);
+
 struct ServerConfig {
   std::string host = "127.0.0.1";
   std::uint16_t port = 0;  // 0 = ephemeral; Server::port() reports the bound one.
@@ -154,6 +165,14 @@ struct ServerConfig {
   std::vector<std::string> allowed_origins;
   bool enforce_origins = true;  // false: accept-any-origin sabotage (the allowlist is ignored).
   bool cors_headers = true;     // false: no-cors sabotage (no Access-Control-* header at all).
+  // G8kz: the content codings a 200 may carry, most preferred first (empty: identity only, today's
+  // bytes exactly). With any coding offered every 200 and 304 on the resource route adds
+  // `Vary: Accept-Encoding`, and a coded body's ETag is `"<hash>-<coding>"`.
+  std::vector<Coding> codings;
+  // G8kz sabotage corrupt-coded-body: every coded body is sent with one byte of its middle
+  // flipped (the identity bytes and the ETag stay right); a receiver that decodes and verifies
+  // must refuse it.
+  bool corrupt_coded_body = false;
 };
 
 // True iff `a` and `b` hold the same bytes, compared in time that depends only on
@@ -184,6 +203,17 @@ class ResourceSource {
   // every other connection, WebSocket included, from the same poll() loop.
   // Returns the payload bytes, or null to answer 404.
   virtual std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) = 0;
+
+  // G8kz: the body of `hash` coded with `coding` (never Identity), computed once and kept, or
+  // null when the identity body is to be served instead (not a payload the coding applies to, or
+  // no smaller). Same threading rules as lookup(); the first call per (hash, coding) compresses
+  // on the I/O thread.
+  virtual std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+                                                                        Coding coding) {
+    (void)hash;
+    (void)coding;
+    return nullptr;
+  }
 };
 
 struct Event {
@@ -204,7 +234,11 @@ struct Event {
                              // may be malformed -- that is part of what the 400/405 cases report).
   // Kind::HttpGet: the status sent (200, 204, 304, 400, 401, 404, 405, 503); OriginRejected: 403.
   std::uint16_t http_status = 0;
-  std::uint64_t bytes = 0;        // Kind::HttpGet only: the response body size (0 unless 200).
+  std::uint64_t bytes = 0;        // Kind::HttpGet only: the identity body size (0 unless 200).
+  // G8kz, Kind::HttpGet 200 only: the coding the body went out with ("identity", "zstd" or
+  // "gzip") and the bytes that crossed the wire (Content-Length).
+  std::string coding;
+  std::uint64_t coded_bytes = 0;
   // G7n. Kind::Opened: the subprotocol the upgrade chose. Opened, HttpGet and OriginRejected: the
   // request's Origin header ("" when absent). HttpGet and OriginRejected: the request method
   // ("GET", "OPTIONS", ...). OriginRejected: the route, "upgrade" or "resource".

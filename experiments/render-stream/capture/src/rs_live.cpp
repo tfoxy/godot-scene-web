@@ -1817,6 +1817,14 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
     json.key("resources").object_begin();
     json.field("http_gets", static_cast<int64_t>(resources->http_gets));
     json.field("http_bytes", static_cast<int64_t>(resources->http_bytes));
+    json.field("http_coded_bytes", static_cast<int64_t>(resources->http_coded_bytes));
+    json.field("http_encoding", resources->http_encoding);
+    json.field("http_gets_zstd", static_cast<int64_t>(resources->http_gets_zstd));
+    json.field("http_gets_gzip", static_cast<int64_t>(resources->http_gets_gzip));
+    json.field("coded_made", static_cast<int64_t>(resources->coded_made));
+    json.field("coded_in_bytes", static_cast<int64_t>(resources->coded_in_bytes));
+    json.field("coded_out_bytes", static_cast<int64_t>(resources->coded_out_bytes));
+    json.field("coded_ns", static_cast<int64_t>(resources->coded_ns));
     json.field("http_errors", static_cast<int64_t>(resources->http_errors));
     json.field("preflights", static_cast<int64_t>(resources->preflights));
     json.field("origin_rejected", static_cast<int64_t>(resources->origin_rejected));

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(render_stream_capture LANGUAGES CXX)
+project(render_stream_capture LANGUAGES C CXX)
 
 # Gate -1 of docs/handoff-headless-render-stream.md: a RenderingServer capture
 # seam for an unmodified official Godot Linux x86-64 template. The library
@@ -29,6 +29,24 @@ add_compile_options("-ffile-prefix-map=${GRC_REPO_ROOT}/=")
 
 add_library(grc_warnings INTERFACE)
 target_compile_options(grc_warnings INTERFACE -Wall -Wextra -Werror)
+
+# G8kz: HTTP content coding (render-stream-2.md "HTTP (live)"). zstd 1.5.7 and zlib 1.3.1, the
+# copies Godot 4.5.1 vendors (vendor/PROVENANCE.md), built as one hidden-visibility static library
+# so the host engine's own copies are never interposed.
+file(GLOB GRC_ZSTD_SOURCES CONFIGURE_DEPENDS
+  vendor/zstd/common/*.c vendor/zstd/compress/*.c vendor/zstd/decompress/*.c)
+add_library(grc_codecs STATIC
+  ${GRC_ZSTD_SOURCES}
+  vendor/zlib/adler32.c vendor/zlib/crc32.c vendor/zlib/deflate.c vendor/zlib/inffast.c
+  vendor/zlib/inflate.c vendor/zlib/inftrees.c vendor/zlib/trees.c vendor/zlib/zutil.c
+  src/rs_http_coding.cpp)
+target_include_directories(grc_codecs PUBLIC vendor/zstd vendor/zlib src)
+target_compile_definitions(grc_codecs PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0)
+target_compile_options(grc_codecs PRIVATE -w -O2)
+set_source_files_properties(src/rs_http_coding.cpp PROPERTIES
+  COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
+set_target_properties(grc_codecs PROPERTIES
+  POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
 
 add_library(render_stream_capture SHARED
   src/calib.cpp
@@ -60,7 +78,7 @@ add_library(render_stream_capture SHARED
   src/vtable.cpp
 )
 target_include_directories(render_stream_capture PRIVATE src vendor)
-target_link_libraries(render_stream_capture PRIVATE grc_warnings)
+target_link_libraries(render_stream_capture PRIVATE grc_warnings grc_codecs)
 set_target_properties(render_stream_capture PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
@@ -114,7 +132,7 @@ add_executable(rs_publish_test
   src/report.cpp
 )
 target_include_directories(rs_publish_test PRIVATE src test)
-target_link_libraries(rs_publish_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_publish_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 target_compile_definitions(rs_publish_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_publish_test_tmp")
@@ -125,7 +143,7 @@ add_test(NAME rs_publish COMMAND rs_publish_test)
 # Linked into render_stream_capture since G1c2 (GRC_LIVE_LISTEN, src/rs1_live.*).
 add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp)
 target_include_directories(rs_ws_test PRIVATE src)
-target_link_libraries(rs_ws_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_ws_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_ws COMMAND rs_ws_test)
 
 # Test-only echo server for the Node and Godot interop self-tests
@@ -154,7 +172,7 @@ add_executable(rs_live_test
   src/rs_ws.cpp
 )
 target_include_directories(rs_live_test PRIVATE src test)
-target_link_libraries(rs_live_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_live_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN2_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-2"
   GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3"
@@ -180,7 +198,7 @@ add_executable(rs_live_window_test
   src/rs_ws.cpp
 )
 target_include_directories(rs_live_window_test PRIVATE src test)
-target_link_libraries(rs_live_window_test PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_live_window_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 target_compile_definitions(rs_live_window_test PRIVATE
   GRC_WINDOW1_TRANSCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/test/golden/live-window1-transcripts.txt"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_window_test_tmp")
@@ -203,7 +221,7 @@ add_executable(rs_live_host
   src/rs_ws.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)
-target_link_libraries(rs_live_host PRIVATE grc_warnings Threads::Threads)
+target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads)
 
 # Gate 2 (G2b1): the /2 codec is byte-identical to protocol/golden-2/{full,patch,inline}.rs2.
 # Linked into render_stream_capture since G2b2 (rs_publish, rs_live).

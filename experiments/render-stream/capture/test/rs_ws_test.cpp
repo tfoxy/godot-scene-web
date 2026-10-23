@@ -54,6 +54,7 @@
 #include <thread>
 #include <vector>
 
+#include "rs_http_coding.h"
 #include "rs_sha1.h"
 #include "rs_ws.h"
 
@@ -284,6 +285,24 @@ class FakeResourceSource : public grc::live::ResourceSource {
 
  private:
   std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> bodies_;
+};
+
+// G8kz: a source that also codes (what ServedResources does), counting its compressions.
+class CodedResourceSource : public FakeResourceSource {
+ public:
+  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+                                                                grc::live::Coding coding) override {
+    const auto identity = lookup(hash);
+    if (identity == nullptr) return nullptr;
+    std::vector<std::uint8_t> out;
+    const bool ok = coding == grc::live::Coding::Zstd
+                        ? grc::rs::http_coding::zstd_compress(identity->data(), identity->size(), &out)
+                        : grc::rs::http_coding::gzip_compress(identity->data(), identity->size(), &out);
+    ++compressions;
+    if (!ok || out.size() >= identity->size()) return nullptr;
+    return std::make_shared<const std::vector<std::uint8_t>>(std::move(out));
+  }
+  int compressions = 0;
 };
 
 std::string plain_http_request(const std::string &method, const std::string &path,
@@ -820,6 +839,168 @@ void test_http_405_wrong_method() {
         "405 is also reported as an HttpGet event naming the attempted hash");
   ::close(fd);
   server.stop(1000);
+}
+
+// --- G8kz: HTTP content coding (texture-delivery-design.md D2, Q5). ---
+
+void test_negotiate_coding() {
+  using grc::live::Coding;
+  using grc::live::negotiate_coding;
+  const std::vector<Coding> both = {Coding::Zstd, Coding::Gzip};
+  check(negotiate_coding("", both) == Coding::Identity, "no header: identity");
+  check(negotiate_coding("zstd", {}) == Coding::Identity, "nothing offered: identity");
+  check(negotiate_coding("zstd", both) == Coding::Zstd, "zstd");
+  check(negotiate_coding("gzip, deflate, br, zstd", both) == Coding::Zstd, "a browser header: the host's order wins");
+  check(negotiate_coding("gzip, deflate", both) == Coding::Gzip, "gzip only");
+  check(negotiate_coding("br", both) == Coding::Identity, "an unknown coding only");
+  check(negotiate_coding("zstd;q=0, gzip", both) == Coding::Gzip, "q=0 refuses zstd");
+  check(negotiate_coding("zstd;q=0.5, gzip;q=0.9", {Coding::Zstd}) == Coding::Zstd, "a positive q is acceptable");
+  check(negotiate_coding("*", both) == Coding::Zstd, "* accepts the first offered");
+  check(negotiate_coding("*;q=0", both) == Coding::Identity, "*;q=0 refuses all");
+  check(negotiate_coding("gzip;q=0, *", both) == Coding::Zstd, "* covers the unnamed zstd");
+  check(negotiate_coding("ZSTD , GZIP", {Coding::Gzip}) == Coding::Gzip, "case and spaces");
+  check(negotiate_coding("identity", both) == Coding::Identity, "identity only");
+}
+
+std::vector<std::uint8_t> compressible_bytes(std::size_t len) {
+  std::vector<std::uint8_t> out(len);
+  for (std::size_t i = 0; i < len; ++i) out[i] = static_cast<std::uint8_t>((i / 64) % 7);
+  return out;
+}
+
+void test_http_content_coding() {
+  CodedResourceSource source;
+  const std::string hash = make_hash('a');
+  const std::vector<std::uint8_t> identity = compressible_bytes(100000);
+  source.set(hash, identity);
+  const std::string tiny = make_hash('b');
+  source.set(tiny, pattern_bytes(40, 3));  // random-ish: never smaller coded
+
+  grc::live::Server server;
+  grc::live::ServerConfig config;
+  config.codings = {grc::live::Coding::Zstd};
+  std::string error;
+  check(server.start(config, &source, &error), "server starts: " + error);
+  const std::string path = config.resource_prefix + hash;
+
+  const int fd = connect_loopback(server.port());
+  // 1. zstd negotiated.
+  std::string req = plain_http_request("GET", path, {{"Accept-Encoding", "gzip, zstd"}});
+  ::send(fd, req.data(), req.size(), 0);
+  HttpResponse resp = read_http_response(fd);
+  check(resp.ok && resp.status == 200, "coded GET is 200");
+  check(resp.headers.at("content-encoding") == "zstd", "Content-Encoding zstd");
+  check(resp.headers.at("vary") == "Accept-Encoding", "Vary: Accept-Encoding");
+  check(resp.headers.at("etag") == "\"" + hash + "-zstd\"", "per-coding ETag, got " + resp.headers.at("etag"));
+  check(resp.headers.at("content-length") == std::to_string(resp.body.size()), "Content-Length is the coded length");
+  check(resp.body.size() < identity.size() / 10, "the body is coded (smaller)");
+  std::vector<std::uint8_t> decoded;
+  check(grc::rs::http_coding::zstd_decompress(resp.body.data(), resp.body.size(), &decoded) && decoded == identity,
+        "the coded body decodes to the identity bytes");
+  const std::size_t coded_size = resp.body.size();
+  // 2. No Accept-Encoding: identity, still Vary.
+  req = plain_http_request("GET", path);
+  ::send(fd, req.data(), req.size(), 0);
+  resp = read_http_response(fd);
+  check(resp.ok && resp.status == 200 && resp.body == identity, "no Accept-Encoding: identity bytes");
+  check(resp.headers.count("content-encoding") == 0, "no Content-Encoding on identity");
+  check(resp.headers.at("etag") == "\"" + hash + "\"" && resp.headers.at("vary") == "Accept-Encoding",
+        "identity ETag and Vary");
+  // 3. gzip is not offered by this host.
+  req = plain_http_request("GET", path, {{"Accept-Encoding", "gzip"}});
+  ::send(fd, req.data(), req.size(), 0);
+  resp = read_http_response(fd);
+  check(resp.ok && resp.body == identity && resp.headers.count("content-encoding") == 0,
+        "a coding the host does not offer is identity");
+  // 4. If-None-Match: identity and either coding's validator match; 304 carries the matched one.
+  for (const std::string &tag : {"\"" + hash + "\"", "\"" + hash + "-zstd\"", "\"" + hash + "-gzip\""}) {
+    req = plain_http_request("GET", path, {{"Accept-Encoding", "zstd"}, {"If-None-Match", "\"x\", " + tag}});
+    ::send(fd, req.data(), req.size(), 0);
+    resp = read_http_response(fd);
+    check(resp.ok && resp.status == 304 && resp.body.empty() && resp.headers.at("etag") == tag &&
+              resp.headers.at("vary") == "Accept-Encoding",
+          "304 for " + tag);
+  }
+  // 5. A body that is not smaller is served as identity.
+  req = plain_http_request("GET", config.resource_prefix + tiny, {{"Accept-Encoding", "zstd"}});
+  ::send(fd, req.data(), req.size(), 0);
+  resp = read_http_response(fd);
+  check(resp.ok && resp.status == 200 && resp.headers.count("content-encoding") == 0 &&
+            resp.headers.at("etag") == "\"" + tiny + "\"",
+        "an incompressible body falls back to identity");
+  ::close(fd);
+  // 6. Events: coding and coded bytes.
+  const auto events = wait_events(server, 8, 2000);
+  int coded_events = 0;
+  for (const auto &e : events) {
+    if (e.kind == grc::live::Event::HttpGet && e.http_status == 200 && e.coding == "zstd") {
+      ++coded_events;
+      check(e.bytes == identity.size() && e.coded_bytes == coded_size, "event: identity and coded bytes");
+    }
+  }
+  check(coded_events == 1, "exactly one zstd 200 event");
+  server.stop(1000);
+}
+
+void test_http_gzip_and_off_and_sabotage() {
+  CodedResourceSource source;
+  const std::string hash = make_hash('c');
+  const std::vector<std::uint8_t> identity = compressible_bytes(50000);
+  source.set(hash, identity);
+  {
+    grc::live::Server server;
+    grc::live::ServerConfig config;
+    config.codings = {grc::live::Coding::Gzip};
+    std::string error;
+    check(server.start(config, &source, &error), "gzip server starts: " + error);
+    const int fd = connect_loopback(server.port());
+    const std::string req = plain_http_request("GET", config.resource_prefix + hash,
+                                               {{"Accept-Encoding", "gzip, deflate, br, zstd"}});
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse resp = read_http_response(fd);
+    check(resp.ok && resp.headers.at("content-encoding") == "gzip" &&
+              resp.headers.at("etag") == "\"" + hash + "-gzip\"",
+          "gzip negotiated");
+    std::vector<std::uint8_t> decoded;
+    check(grc::rs::http_coding::gzip_decompress(resp.body.data(), resp.body.size(), &decoded) && decoded == identity,
+          "gzip body decodes to identity");
+    check(resp.body.size() >= 2 && resp.body[0] == 0x1f && resp.body[1] == 0x8b, "a real gzip header");
+    ::close(fd);
+    server.stop(1000);
+  }
+  {
+    grc::live::Server server;  // codings empty: today's bytes exactly, even for a client that asks
+    grc::live::ServerConfig config;
+    std::string error;
+    check(server.start(config, &source, &error), "off server starts: " + error);
+    const int fd = connect_loopback(server.port());
+    const std::string req = plain_http_request("GET", config.resource_prefix + hash, {{"Accept-Encoding", "zstd"}});
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse resp = read_http_response(fd);
+    check(resp.ok && resp.body == identity && resp.headers.count("content-encoding") == 0 &&
+              resp.headers.count("vary") == 0 && resp.headers.at("etag") == "\"" + hash + "\"",
+          "off: identity, no Vary, plain ETag");
+    ::close(fd);
+    server.stop(1000);
+  }
+  {
+    grc::live::Server server;
+    grc::live::ServerConfig config;
+    config.codings = {grc::live::Coding::Zstd};
+    config.corrupt_coded_body = true;
+    std::string error;
+    check(server.start(config, &source, &error), "sabotage server starts: " + error);
+    const int fd = connect_loopback(server.port());
+    const std::string req = plain_http_request("GET", config.resource_prefix + hash, {{"Accept-Encoding", "zstd"}});
+    ::send(fd, req.data(), req.size(), 0);
+    const HttpResponse resp = read_http_response(fd);
+    std::vector<std::uint8_t> decoded;
+    const bool ok = grc::rs::http_coding::zstd_decompress(resp.body.data(), resp.body.size(), &decoded);
+    check(resp.ok && resp.headers.at("content-encoding") == "zstd" && (!ok || decoded != identity),
+          "corrupt-coded-body: the coded body no longer decodes to the identity bytes");
+    ::close(fd);
+    server.stop(1000);
+  }
 }
 
 void test_http_if_none_match_304() {
@@ -1423,6 +1604,9 @@ int main() {
   test_http_400_malformed_hash();
   test_http_405_wrong_method();
   test_http_if_none_match_304();
+  test_negotiate_coding();
+  test_http_content_coding();
+  test_http_gzip_and_off_and_sabotage();
   test_http_keep_alive_two_requests_one_connection();
   test_http_connection_close_honoured();
   test_http_max_http_clients_503();

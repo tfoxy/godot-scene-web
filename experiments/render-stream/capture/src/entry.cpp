@@ -288,7 +288,27 @@ struct Live {
   std::vector<std::string> allowed_origins;
   uint64_t credit_window_max = 2;
   std::string listener_sabotage;
+  // G8kz: GRC_HTTP_ENCODING (default zstd): the codings the host offers on resource GETs.
+  std::vector<live::Coding> http_codings;
+  bool http_coding_on = false;
 };
+
+// G8kz (texture-delivery-design.md D2): GRC_HTTP_ENCODING = off | zstd | gzip, default zstd (the
+// default is safe because the coding is negotiated per request: a client that sends no
+// Accept-Encoding gets today's identity bytes).
+bool parse_http_encoding(const char *text, std::vector<live::Coding> *out, std::string *error) {
+  const std::string value = text != nullptr ? std::string(text) : std::string();
+  out->clear();
+  if (value.empty() || value == "zstd") {
+    out->push_back(live::Coding::Zstd);
+  } else if (value == "gzip") {
+    out->push_back(live::Coding::Gzip);
+  } else if (value != "off") {
+    *error = "invalid GRC_HTTP_ENCODING=" + value + " (off, zstd or gzip)";
+    return false;
+  }
+  return true;
+}
 
 // G7n: the GRC_SABOTAGE kinds that act on the listener only (see the header comment).
 bool is_listener_sabotage(const char *kind) {
@@ -297,7 +317,7 @@ bool is_listener_sabotage(const char *kind) {
   }
   const std::string text(kind);
   return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored" ||
-         text == "window-overrun";
+         text == "window-overrun" || text == "corrupt-coded-body";
 }
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
@@ -1204,6 +1224,7 @@ std::string live_json() {
   json.array_end();
   json.field("credit_window_max", static_cast<int64_t>(g_live.credit_window_max));
   json.field_or_null("listener_sabotage", g_live.listener_sabotage);
+  json.field("http_encoding", g_live.serving.http_encoding);
   json.object_end();
   return json.take();
 }
@@ -1504,6 +1525,12 @@ void stream_start() {
                live_config.credit_window_max > 2) {
       live_ok = false;
       why = "invalid GRC_LIVE_CREDIT_WINDOW_MAX (1 or 2)";
+    } else if (!parse_http_encoding(std::getenv("GRC_HTTP_ENCODING"), &g_live.http_codings,
+                                    &why)) {
+      live_ok = false;
+    } else if (g_live.listener_sabotage == "corrupt-coded-body" && g_live.http_codings.empty()) {
+      live_ok = false;
+      why = "sabotage corrupt-coded-body needs GRC_HTTP_ENCODING=zstd or gzip";
     } else if (g_live.listener_sabotage == "token-ignored" && auth_mode != "token") {
       live_ok = false;
       why = "sabotage token-ignored needs GRC_LIVE_AUTH=token";
@@ -1514,6 +1541,8 @@ void stream_start() {
       why = "sabotage window-overrun: invalid GRC_SABOTAGE_FRAME (a positive frame)";
     }
     g_live.credit_window_max = live_config.credit_window_max;
+    g_live.serving.http_encoding =
+        g_live.http_codings.empty() ? "off" : live::coding_token(g_live.http_codings[0]);
     // G2e: generated only once every other live setting is known good, so a usage error never
     // burns a token or writes evidence/live-token for a listener that will not actually start.
     if (live_ok && auth_mode == "token") {
@@ -1926,6 +1955,9 @@ void stream_start() {
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";
     server_config.cors_headers = g_live.listener_sabotage != "no-cors";
+    server_config.codings = g_live.http_codings;  // G8kz
+    server_config.corrupt_coded_body = g_live.listener_sabotage == "corrupt-coded-body";
+    g_live.http_coding_on = !g_live.http_codings.empty();
     g_live.address = live_host;
     g_live.server = std::make_unique<live::Server>();
     std::string error;
@@ -2019,6 +2051,9 @@ void live_drain(uint64_t frame) {
       ++g_live.serving.http_gets;
       if (event.http_status == 200) {
         g_live.serving.http_bytes += event.bytes;
+        g_live.serving.http_coded_bytes += event.coded_bytes;
+        if (event.coding == "zstd") ++g_live.serving.http_gets_zstd;
+        if (event.coding == "gzip") ++g_live.serving.http_gets_gzip;
       } else {
         ++g_live.serving.http_errors;
       }
@@ -2029,7 +2064,11 @@ void live_drain(uint64_t frame) {
       ctx.t_ns = event.t_ns;
       ctx.main_thread = false;
       rs::resource_log().serve_event(ctx, "http-get", is_lower_hex64(event.hash) ? event.hash : "",
-                                     event.bytes, nullptr, conn, event.http_status, false);
+                                     event.bytes, nullptr, conn, event.http_status, false, nullptr,
+                                     event.http_status == 200 && g_live.http_coding_on
+                                         ? event.coding.c_str()
+                                         : nullptr,
+                                     event.coded_bytes);
       continue;
     }
     if (event.kind == live::Event::AuthRejected) {
@@ -2066,11 +2105,16 @@ void live_close_and_stop() {
     g_live.serving.retained_bytes_max = totals.retained_bytes_max;
     g_live.serving.retained_end = g_live.served->retained();
     g_live.serving.retained_bytes_end = g_live.served->retained_bytes();
+    g_live.serving.coded_made = totals.coded_made;
+    g_live.serving.coded_in_bytes = totals.coded_in_bytes;
+    g_live.serving.coded_out_bytes = totals.coded_out_bytes;
+    g_live.serving.coded_ns = totals.coded_ns;
     g_live.serving.dropped_hash = g_live.served->dropped_hash();
     g_live.serving.corrupted_hash =
         g_stream.store != nullptr ? g_stream.store->corrupted_hash() : std::string();
     log_line("live: resources http_gets=" + std::to_string(g_live.serving.http_gets) +
              " http_bytes=" + std::to_string(g_live.serving.http_bytes) +
+             " http_coded_bytes=" + std::to_string(g_live.serving.http_coded_bytes) +
              " http_errors=" + std::to_string(g_live.serving.http_errors) +
              " pinned=" + std::to_string(totals.pinned) + " retired=" +
              std::to_string(totals.retired) + " (unpin " +

@@ -3,10 +3,12 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
 #include <cstring>
 
 #include "report.h"
+#include "rs_http_coding.h"
 
 namespace grc {
 namespace rs {
@@ -178,6 +180,7 @@ void ServedResources::corrupt(const std::string &hash) {
     return;
   }
   corrupt_ = hash;
+  coded_.erase(hash);
   const auto it = served_.find(hash);
   if (it != served_.end() && it->second != nullptr) {
     it->second = corrupted_copy(it->second);
@@ -275,6 +278,7 @@ void ServedResources::retire(const PayloadMap &current,
     if (events != nullptr) {
       events->push_back(std::move(event));
     }
+    coded_.erase(it->first);
     it = served_.erase(it);
   }
 }
@@ -286,6 +290,60 @@ std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::st
     return nullptr;
   }
   return it->second;
+}
+
+std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup_coded(
+    std::string_view hash, live::Coding coding) {
+  if (coding == live::Coding::Identity) {
+    return nullptr;
+  }
+  const std::size_t slot = static_cast<std::size_t>(coding);
+  PayloadPtr identity;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = served_.find(std::string(hash));
+    if (it == served_.end() || it->first == dropped_ || it->second == nullptr) {
+      return nullptr;
+    }
+    const auto coded = coded_.find(it->first);
+    if (coded != coded_.end() && coded->second.tried[slot]) {
+      return coded->second.body[slot];
+    }
+    identity = it->second;
+  }
+  // Texture payloads only (render-stream-2.md "HTTP (live)": a mesh or shader payload, and any
+  // short body, is served as is).
+  static const std::uint8_t kGrt1[8] = {0x47, 0x52, 0x54, 0x31, 0x0D, 0x0A, 0x1A, 0x0A};
+  PayloadPtr result;
+  std::uint64_t spent_ns = 0;
+  if (identity->size() > sizeof(kGrt1) + 64 && std::equal(kGrt1, kGrt1 + 8, identity->begin())) {
+    std::vector<std::uint8_t> out;
+    const auto start = std::chrono::steady_clock::now();
+    const bool ok = coding == live::Coding::Zstd
+                        ? http_coding::zstd_compress(identity->data(), identity->size(), &out)
+                        : http_coding::gzip_compress(identity->data(), identity->size(), &out);
+    spent_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+            .count());
+    if (ok && out.size() < identity->size()) {
+      result = std::make_shared<const std::vector<std::uint8_t>>(std::move(out));
+    }
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = served_.find(std::string(hash));
+  if (it == served_.end() || it->second != identity) {
+    return result;  // retired or replaced while compressing: serve this once, keep nothing
+  }
+  CodedBodies &kept = coded_[it->first];
+  kept.tried[slot] = true;
+  kept.body[slot] = result;
+  if (result != nullptr) {
+    ++totals_.coded_made;
+    totals_.coded_in_bytes += identity->size();
+    totals_.coded_out_bytes += result->size();
+  }
+  totals_.coded_ns += spent_ns;
+  return result;
 }
 
 std::uint64_t ServedResources::retained() const {

@@ -39,7 +39,10 @@
 // connection streaming at that time or null, `t_us` the I/O thread's time). A
 // drop-resource pin line carries "sabotage":true. G7n (gate7-design.md Q3): an http-get line
 // for a CORS preflight ends with "method":"OPTIONS", the only line that carries `method` (a GET
-// line is unchanged), so a host's preflights are counted from its hook log.
+// line is unchanged), so a host's preflights are counted from its hook log. G8kz: when the host
+// offers a content coding (GRC_HTTP_ENCODING), a 200 http-get line ends with "coding"
+// ("identity", "zstd" or "gzip") and "coded_bytes" (the Content-Length that crossed the wire;
+// `payload_bytes` stays the identity size).
 //
 // G55a (gate5_5-design.md Q3d) adds `kind: "shader"` lines (shader_create, shader_create_from_
 // code, shader_set_code, shader_set_default_texture_parameter, free) and `kind: "material"`
@@ -242,7 +245,8 @@ class ResourceLog {
   // header comment). `http_status` < 0 is null; `conn` 0 is null.
   void serve_event(const TapContext &ctx, const char *op, const std::string &hash,
                    std::uint64_t payload_bytes, const char *reason, std::uint64_t conn,
-                   std::int64_t http_status, bool sabotage, const char *method = nullptr);
+                   std::int64_t http_status, bool sabotage, const char *method = nullptr,
+                   const char *coding = nullptr, std::uint64_t coded_bytes = 0);
   // `omitted` (G2d, as the other texture taps): the omit-op sabotage dropped this call; the
   // registry is left unchanged and the line is marked "sabotage":true,"omitted":true.
   // A create returning RID(), or a set_* on RID() (a headless host, whose dummy storage never

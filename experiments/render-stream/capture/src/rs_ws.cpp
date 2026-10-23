@@ -44,6 +44,21 @@ std::string trim(const std::string &s) {
   return s.substr(begin, end - begin + 1);
 }
 
+// The trimmed non-empty elements of a comma-separated header value.
+std::vector<std::string> split_commas(const std::string &value) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (start <= value.size()) {
+    const std::size_t comma = value.find(',', start);
+    const std::string piece =
+        trim(value.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+    if (!piece.empty()) out.push_back(piece);
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return out;
+}
+
 // True if `value` (an RFC 7230 comma-separated header value) contains
 // `token_lower`, compared case-insensitively, after trimming each piece.
 bool token_list_contains(const std::string &value, const std::string &token_lower) {
@@ -81,6 +96,27 @@ bool is_sha256_hex(const std::string &s) {
 std::string unquote(const std::string &s) {
   if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
   return s;
+}
+
+// `q` of one Accept-Encoding element's parameters (the text after the first ';'), default 1000
+// (thousandths). A malformed q counts as 1000, which only ever errs toward the coding the
+// client named.
+int parse_qvalue(std::string_view params) {
+  const std::size_t at = params.find("q=");
+  if (at == std::string_view::npos) return 1000;
+  std::size_t i = at + 2;
+  int whole = 0;
+  while (i < params.size() && params[i] >= '0' && params[i] <= '9') whole = whole * 10 + (params[i++] - '0');
+  int frac = 0;
+  int scale = 100;
+  if (i < params.size() && params[i] == '.') {
+    ++i;
+    while (i < params.size() && params[i] >= '0' && params[i] <= '9' && scale > 0) {
+      frac += (params[i++] - '0') * scale;
+      scale /= 10;
+    }
+  }
+  return whole * 1000 + frac;
 }
 
 std::string base64_encode(const std::uint8_t *data, std::size_t len) {
@@ -266,6 +302,40 @@ bool request_wants_close(const ParsedRequest &req) {
 }
 
 }  // namespace
+
+const char *coding_token(Coding coding) {
+  switch (coding) {
+    case Coding::Zstd: return "zstd";
+    case Coding::Gzip: return "gzip";
+    case Coding::Identity: break;
+  }
+  return "identity";
+}
+
+Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Coding> &offered) {
+  if (offered.empty() || accept_encoding.empty()) return Coding::Identity;
+  int q_zstd = -1, q_gzip = -1, q_star = -1;  // -1: not named
+  std::size_t start = 0;
+  while (start <= accept_encoding.size()) {
+    std::size_t comma = accept_encoding.find(',', start);
+    if (comma == std::string_view::npos) comma = accept_encoding.size();
+    const std::string element = trim(std::string(accept_encoding.substr(start, comma - start)));
+    start = comma + 1;
+    if (element.empty()) continue;
+    const std::size_t semi = element.find(';');
+    const std::string token = to_lower(trim(element.substr(0, semi)));
+    const int q = semi == std::string::npos ? 1000 : parse_qvalue(element.substr(semi + 1));
+    if (token == "zstd") q_zstd = q;
+    else if (token == "gzip" || token == "x-gzip") q_gzip = q;
+    else if (token == "*") q_star = q;
+  }
+  for (Coding coding : offered) {
+    const int q = coding == Coding::Zstd ? (q_zstd >= 0 ? q_zstd : q_star)
+                  : coding == Coding::Gzip ? (q_gzip >= 0 ? q_gzip : q_star) : -1;
+    if (q > 0) return coding;
+  }
+  return Coding::Identity;
+}
 
 // Defined outside the anonymous namespace: declared in rs_ws.h so its own unit test (and nothing
 // else) can call it directly.
@@ -674,14 +744,18 @@ struct Server::Impl {
     }
   }
 
-  // 200 OK with a body (render-stream-2.md "HTTP (live)").
+  // 200 OK with a body (render-stream-2.md "HTTP (live)"). `coding` (G8kz) is the content coding
+  // `body` is already in: a coded body carries Content-Encoding and the per-coding ETag.
   void send_http_ok(Conn &c, const std::string &hash, const std::vector<std::uint8_t> &body, bool keep_alive,
-                    const std::vector<std::pair<std::string, std::string>> &cors) {
+                    const std::vector<std::pair<std::string, std::string>> &cors,
+                    Coding coding = Coding::Identity) {
     std::string resp = "HTTP/1.1 200 OK\r\n";
     resp += "Content-Type: application/octet-stream\r\n";
+    if (coding != Coding::Identity) resp += std::string("Content-Encoding: ") + coding_token(coding) + "\r\n";
     resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     resp += "Cache-Control: private, max-age=31536000, immutable\r\n";
-    resp += "ETag: \"" + hash + "\"\r\n";
+    resp += "ETag: " + etag_for(hash, coding) + "\r\n";
+    if (!config.codings.empty()) resp += "Vary: Accept-Encoding\r\n";
     for (const auto &h : cors) resp += h.first + ": " + h.second + "\r\n";
     resp += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     resp += "\r\n";
@@ -694,13 +768,21 @@ struct Server::Impl {
     }
   }
 
-  // 304 Not Modified: the same cache headers as 200, no body (render-stream-2.md).
-  void send_http_not_modified(Conn &c, const std::string &hash, bool keep_alive,
+  // The quoted strong validator of one representation: `"<hash>"` for identity, `"<hash>-zstd"`
+  // or `"<hash>-gzip"` per coding (RFC 9110 8.8.3.3: validators differ by content coding).
+  static std::string etag_for(const std::string &hash, Coding coding) {
+    return coding == Coding::Identity ? "\"" + hash + "\""
+                                      : "\"" + hash + "-" + coding_token(coding) + "\"";
+  }
+
+  // 304 Not Modified: the same cache headers as 200, no body (render-stream-2.md). `etag` is the
+  // validator the client matched.
+  void send_http_not_modified(Conn &c, const std::string &etag, bool keep_alive,
                               const std::vector<std::pair<std::string, std::string>> &cors) {
-    send_http_status(c, 304,
-                      with(cors, {{"Cache-Control", "private, max-age=31536000, immutable"},
-                                  {"ETag", "\"" + hash + "\""}}),
-                      keep_alive);
+    std::vector<std::pair<std::string, std::string>> extra = {
+        {"Cache-Control", "private, max-age=31536000, immutable"}, {"ETag", etag}};
+    if (!config.codings.empty()) extra.emplace_back("Vary", "Accept-Encoding");
+    send_http_status(c, 304, with(cors, std::move(extra)), keep_alive);
   }
 
   // `extra` followed by `cors` (G7n: the CORS headers go last on every response).
@@ -789,14 +871,38 @@ struct Server::Impl {
       push_event_locked(make_http_get_event(c.id, hash, 404, 0, req));
       return;
     }
-    const std::string if_none_match = unquote(trim(header_value(req, "if-none-match")));
-    if (if_none_match == hash) {
-      send_http_not_modified(c, hash, keep_alive, cors);
-      push_event_locked(make_http_get_event(c.id, hash, 304, 0, req));
-      return;
+    const Coding coding = negotiate_coding(header_value(req, "accept-encoding"), config.codings);
+    std::shared_ptr<const std::vector<std::uint8_t>> coded;
+    Coding used = Coding::Identity;
+    if (coding != Coding::Identity && resource_source != nullptr) {
+      coded = resource_source->lookup_coded(hash, coding);
+      if (coded != nullptr) used = coding;
     }
-    send_http_ok(c, hash, *payload, keep_alive, cors);
-    push_event_locked(make_http_get_event(c.id, hash, 200, payload->size(), req));
+    // If-None-Match: any validator of this hash (identity or either coding) matches, and the 304
+    // carries the one that matched.
+    for (const std::string &candidate : split_commas(header_value(req, "if-none-match"))) {
+      const std::string tag = unquote(candidate);
+      if (tag == hash || (!config.codings.empty() && (tag == hash + "-zstd" || tag == hash + "-gzip"))) {
+        send_http_not_modified(c, "\"" + tag + "\"", keep_alive, cors);
+        push_event_locked(make_http_get_event(c.id, hash, 304, 0, req));
+        return;
+      }
+    }
+    std::vector<std::uint8_t> sabotaged;
+    const std::vector<std::uint8_t> *body = payload.get();
+    if (used != Coding::Identity) {
+      body = coded.get();
+      if (config.corrupt_coded_body && !coded->empty()) {
+        sabotaged = *coded;
+        sabotaged[sabotaged.size() / 2] ^= 0x5a;
+        body = &sabotaged;
+      }
+    }
+    send_http_ok(c, hash, *body, keep_alive, cors, used);
+    Event event = make_http_get_event(c.id, hash, 200, payload->size(), req);
+    event.coding = coding_token(used);
+    event.coded_bytes = body->size();
+    push_event_locked(std::move(event));
   }
 
   void dispatch_ws_upgrade(Conn &c, const ParsedRequest &req) {

@@ -10,7 +10,11 @@ extends SceneTree
 ##   2. RsWire.split_records() frames every valid golden recording exactly as its *.decoded.json
 ##      lists the records (offset, byte_length), for golden-2 to golden-7;
 ##   3. every golden invalid/ vector whose index.json code is a framing code (bad-magic, truncated,
-##      record-length) fails framing with that code.
+##      record-length) fails framing with that code;
+##   4. (G8kz) RsResourceFetcher decodes a zstd and a gzip Content-Encoding body (frames made by
+##      the zstd CLI and gzip, the same format the host's vendored zstd/zlib write) to the exact
+##      identity bytes, and refuses a corrupted, content-size-less or unasked-for coding with
+##      resource-invalid.
 ##
 ## Decoding, validation and resolution of the golden vectors are the Rust core's (rs-core's cargo
 ## tests) and the TypeScript checker decoder's (scripts/test/self-test-rs*.ts); G7gd removed the
@@ -28,6 +32,7 @@ var _checked: int = 0
 
 func _init() -> void:
 	_check_scripts()
+	_check_fetcher_coding()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
@@ -46,6 +51,81 @@ func _init() -> void:
 
 func _fail(text: String) -> void:
 	_failures.append(text)
+
+
+const CODING_ZSTD_HEX: String = "28b52ffd64010a050100c0475254312d697368207061796c6f616420000102030405060100984b7e19031d82c33f"
+const CODING_ZSTD_NO_SIZE_HEX: String = "28b52ffd0458050100c0475254312d697368207061796c6f616420000102030405060100984b7e19031d82c33f"
+const CODING_GZIP_HEX: String = "1f8b0800000000000003730f0a31d4cd2cce502848acccc94f4c51606064626661651ba546a9516a941aa546a9516a941aa546a9614901001f7a420a010b0000"
+
+
+## The identity bytes the three fixture bodies above decode to.
+func _coding_plain() -> PackedByteArray:
+	var plain: PackedByteArray = "GRT1-ish payload ".to_utf8_buffer()
+	for _i: int in 400:
+		plain.append_array(PackedByteArray([0, 1, 2, 3, 4, 5, 6]))
+	return plain
+
+
+func _coded_current(coding: String, body: PackedByteArray) -> Dictionary:
+	return {
+		"hash": "ab", "status": 200, "bytes": body.size(), "data": body, "start_us": 0, "end_us": 0,
+		"delay_us": 0, "headers": {"Content-Encoding": coding}, "error": "", "wire_bytes": body.size(),
+		"content_encoding": "identity", "decode_us": 0,
+	}
+
+
+func _check_fetcher_coding() -> void:
+	var plain: PackedByteArray = _coding_plain()
+	var zstd_body: PackedByteArray = CODING_ZSTD_HEX.hex_decode()
+	var gzip_body: PackedByteArray = CODING_GZIP_HEX.hex_decode()
+	_checked += 1
+	if RsResourceFetcher.zstd_content_size(zstd_body) != plain.size():
+		_fail("zstd_content_size of the CLI frame is %d, not %d" % [RsResourceFetcher.zstd_content_size(zstd_body), plain.size()])
+	if RsResourceFetcher.zstd_content_size(CODING_ZSTD_NO_SIZE_HEX.hex_decode()) != -1:
+		_fail("a frame without a content size must report -1")
+	if RsResourceFetcher.zstd_content_size(PackedByteArray([1, 2, 3, 4, 5, 6])) != -1:
+		_fail("a non-zstd body must report -1")
+	var cases: Array[Array] = [
+		# [name, coding, body, accept, expect_ok]
+		["zstd", "zstd", zstd_body, "zstd, gzip", true],
+		["gzip", "gzip", gzip_body, "zstd, gzip", true],
+		["zstd upper case", "ZSTD", zstd_body, "zstd", true],
+		["identity named", "identity", plain, "zstd, gzip", true],
+		["zstd not asked for", "zstd", zstd_body, "gzip", false],
+		["gzip not asked for", "gzip", gzip_body, "zstd", false],
+		["br is never asked for", "br", zstd_body, "zstd, gzip", false],
+		["zstd frame without a content size", "zstd", CODING_ZSTD_NO_SIZE_HEX.hex_decode(), "zstd", false],
+		["zstd body that is gzip", "zstd", gzip_body, "zstd", false],
+		["gzip body that is zstd", "gzip", zstd_body, "gzip", false],
+	]
+	for item: Array in cases:
+		_checked += 1
+		var fetcher := RsResourceFetcher.new("127.0.0.1", 1, "/resources/sha256/", 10000, 0)
+		fetcher.accept_encoding = str(item[3])
+		var case_body: PackedByteArray = item[2]
+		var expect_ok: bool = item[4]
+		fetcher._current = _coded_current(str(item[1]), case_body)
+		var ok: bool = fetcher._decode_content_encoding()
+		if ok != expect_ok:
+			_fail("fetcher decode '%s': ok %s, expected %s" % [item[0], ok, expect_ok])
+			continue
+		if ok:
+			var data: PackedByteArray = fetcher._current["data"]
+			if data != plain or fetcher._current["bytes"] != plain.size():
+				_fail("fetcher decode '%s': the decoded bytes are not the identity bytes" % item[0])
+		elif not fetcher.error.begins_with("resource-invalid"):
+			_fail("fetcher decode '%s': error '%s' is not resource-invalid" % [item[0], fetcher.error])
+	# A flipped byte in the middle of a coded body: refused, or decoded to bytes that are not the identity.
+	for corrupt_case: Array in [["zstd", zstd_body, "zstd"], ["gzip", gzip_body, "gzip"]]:
+		_checked += 1
+		var body: PackedByteArray = corrupt_case[1]
+		body[body.size() / 2] ^= 0x5A
+		var fetcher := RsResourceFetcher.new("127.0.0.1", 1, "/resources/sha256/", 10000, 0)
+		fetcher._current = _coded_current(str(corrupt_case[0]), body)
+		if fetcher._decode_content_encoding():
+			var data: PackedByteArray = fetcher._current["data"]
+			if data == plain:
+				_fail("a corrupted %s body decoded to the identity bytes" % corrupt_case[0])
 
 
 func _check_scripts() -> void:

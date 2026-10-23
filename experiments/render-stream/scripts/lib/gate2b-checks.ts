@@ -142,6 +142,11 @@ export interface HookLine {
   conn: number | null;
   /** G2c2 http-get lines: the status the server answered */
   http_status?: number | null;
+  /** G7n: "OPTIONS" on a preflight's http-get line only */
+  method?: string;
+  /** G8kz: a 200 http-get line's content coding and wire bytes (host offers a coding) */
+  coding?: string;
+  coded_bytes?: number;
   target: string | null;
   sabotage?: boolean;
   omitted?: boolean;

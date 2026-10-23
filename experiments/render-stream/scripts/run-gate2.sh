@@ -696,6 +696,36 @@ run_g2e() {
 		LIVE_HOST_PID=""
 	fi
 
+	# G8kz (texture-delivery-design.md D2): the HTTP content-coding legs. live-auth above is the
+	# default host (GRC_HTTP_ENCODING unset = zstd); these pin the others. Headless receivers: the
+	# coding is on the wire, not in the pixels. coding-receiver-off is native only (a browser
+	# always sends Accept-Encoding).
+	echo "run-gate2: coding-gzip (GRC_HTTP_ENCODING=gzip)"
+	start_live_host "$OUT/coding-gzip/host" GRC_HTTP_ENCODING=gzip
+	g2c_receiver "$OUT/coding-gzip" headless
+	finish_bg "$OUT/coding-gzip/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+
+	echo "run-gate2: coding-off (GRC_HTTP_ENCODING=off)"
+	start_live_host "$OUT/coding-off/host" GRC_HTTP_ENCODING=off
+	g2c_receiver "$OUT/coding-off" headless
+	finish_bg "$OUT/coding-off/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+
+	if [ -z "$GATE7_LIVE_KIND" ]; then
+		echo "run-gate2: coding-receiver-off (RS_RECEIVER_ACCEPT_ENCODING=off)"
+		start_live_host "$OUT/coding-receiver-off/host"
+		g2c_receiver "$OUT/coding-receiver-off" headless RS_RECEIVER_ACCEPT_ENCODING=off
+		finish_bg "$OUT/coding-receiver-off/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+		LIVE_HOST_PID=""
+	fi
+
+	echo "run-gate2: sabotage-corrupt-coded-body (every coded body has a byte flipped)"
+	start_live_host "$OUT/sabotage-corrupt-coded-body/host" GRC_SABOTAGE=corrupt-coded-body
+	g2c_receiver "$OUT/sabotage-corrupt-coded-body" headless
+	finish_bg "$OUT/sabotage-corrupt-coded-body/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+
 	echo "run-gate2: bringing up private gamescope for the g2e rendered leg"
 	gs_start 640 360 "$OUT/gamescope-g2e"
 

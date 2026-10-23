@@ -43,6 +43,7 @@ import {
   type ReceiverEvidence,
   textureLogDivergence,
 } from "./gate2b-checks";
+import { type G2cFetch, getsVsFetches, httpGets } from "./gate2c-checks";
 
 /** run-gate2.sh's live timeline: S = 300, N = 60, quit S + N*11 + 11 (steps 0..11; as
  * gate2b-checks.ts's live-inline leg and gate2c-checks.ts's live legs). */
@@ -74,6 +75,8 @@ export interface G2eLegExpectation {
   expected_class: G2bClass;
   /** some reason of the expected class must contain this text */
   reason?: string;
+  /** G8kz: or one of these texts (a refusal that has more than one right code) */
+  reason_any?: readonly string[];
 }
 
 export const G2E_LEGS: readonly G2eLegExpectation[] = [
@@ -87,6 +90,28 @@ export const G2E_LEGS: readonly G2eLegExpectation[] = [
     leg: "sabotage-bad-http-token",
     expected_class: "replay-failure",
     reason: "resource-unavailable",
+  },
+];
+
+/** G8kz (texture-delivery-design.md D2): the HTTP content-coding legs, each a fresh live host and
+ * a headless receiver on the live timeline. `coding-gzip`: GRC_HTTP_ENCODING=gzip. `coding-off`:
+ * GRC_HTTP_ENCODING=off. `coding-receiver-off` (native receivers only; a browser always asks):
+ * the default host, and a native receiver with RS_RECEIVER_ACCEPT_ENCODING=off.
+ * `sabotage-corrupt-coded-body`: the host flips one byte of every coded body it sends, and the
+ * receiver must refuse it (the body no longer decodes, or decodes to bytes whose SHA-256 is not
+ * the hash), never apply it. The default host (zstd) is judged on live-auth. */
+export const G2E_CODING_LEGS: readonly G2eLegExpectation[] = [
+  { leg: "coding-gzip", expected_class: "success" },
+  { leg: "coding-off", expected_class: "success" },
+  { leg: "coding-receiver-off", expected_class: "success" },
+  {
+    leg: "sabotage-corrupt-coded-body",
+    expected_class: "replay-failure",
+    reason_any: [
+      "resource-invalid",
+      "resource-hash-mismatch",
+      "resource-unavailable",
+    ],
   },
 ];
 
@@ -160,9 +185,20 @@ export function checkG2eLegClass(
     )
   )
     problems.push(`no ${e.expected_class} reason mentions ${e.reason}`);
+  if (
+    e.reason_any &&
+    !c.reasons.some(
+      (r) =>
+        r.startsWith(`${e.expected_class}:`) &&
+        (e.reason_any as readonly string[]).some((t) => r.includes(t)),
+    )
+  )
+    problems.push(
+      `no ${e.expected_class} reason mentions any of ${e.reason_any.join(", ")}`,
+    );
   return check(
     `leg-class-${e.leg}`,
-    `${e.leg} classifies as ${e.expected_class}${e.reason ? ` (${e.reason})` : ""}`,
+    `${e.leg} classifies as ${e.expected_class}${e.reason ? ` (${e.reason})` : ""}${e.reason_any ? ` (${e.reason_any.join(" or ")})` : ""}`,
     problems,
     `${c.result_class}: ${c.reasons[0] ?? "no reason fired"}`,
     evidence,
@@ -546,6 +582,235 @@ export async function checkNoCors(outDir: string): Promise<G2bCheck> {
   );
 }
 
+// ---------------------------------------------------------------------------------------------
+// G8kz: HTTP content coding
+// ---------------------------------------------------------------------------------------------
+
+interface CodingLegEvidence {
+  gets: ReturnType<typeof httpGets>;
+  httpEncoding: string | null;
+  listenerSabotage: string | null;
+  summary: {
+    http_gets?: number;
+    http_bytes?: number;
+    http_coded_bytes?: number;
+    http_encoding?: string;
+    coded_made?: number;
+  } | null;
+  fetches: G2cFetch[];
+  cacheMode: string | null;
+  failure: { seq: number | null; reason: string } | null | undefined;
+  hostDir: string;
+  receiverDir: string;
+}
+
+async function loadCodingLeg(
+  outDir: string,
+  leg: string,
+): Promise<CodingLegEvidence> {
+  const hostDir = join(outDir, leg, "host");
+  const receiverDir = join(outDir, leg, "receiver");
+  const host = await loadCapture(
+    outDir,
+    leg,
+    join(leg, "host"),
+    LIVE_QUIT_FRAME,
+  );
+  const live = JSON.parse(
+    (await readTextOrUndefined(join(hostDir, "evidence", "live.json"))) ??
+      "null",
+  ) as { http_encoding?: string; listener_sabotage?: string | null } | null;
+  const summary = JSON.parse(
+    (await readTextOrUndefined(
+      join(hostDir, "evidence", "live-summary.json"),
+    )) ?? "null",
+  ) as { resources?: CodingLegEvidence["summary"] } | null;
+  const applied = JSON.parse(
+    (await readTextOrUndefined(join(receiverDir, "applied.json"))) ?? "null",
+  ) as {
+    fetches?: G2cFetch[];
+    cache?: { mode?: string };
+    failure?: { seq: number | null; reason: string } | null;
+  } | null;
+  return {
+    gets: httpGets(host.hook.lines).filter((l) => l.method === undefined),
+    httpEncoding: live?.http_encoding ?? null,
+    listenerSabotage: live?.listener_sabotage ?? null,
+    summary: summary?.resources ?? null,
+    fetches: applied?.fetches ?? [],
+    cacheMode: applied?.cache?.mode ?? null,
+    failure: applied?.failure,
+    hostDir,
+    receiverDir,
+  };
+}
+
+/** What one leg's 200 GETs must look like for the host's coding `want` ("zstd", "gzip", "off") or
+ * a receiver that asked for none (`identityOnly`). A coded line is strictly smaller than the
+ * identity body (the host otherwise serves identity); every line carries the pair of fields when
+ * the host offers a coding, and none when it is off. */
+function codingProblems(
+  leg: string,
+  e: CodingLegEvidence,
+  want: "zstd" | "gzip" | "off",
+  identityOnly: boolean,
+): { problems: string[]; note: string } {
+  const problems: string[] = [];
+  const served = e.gets.filter((g) => g.http_status === 200);
+  if (e.httpEncoding !== want)
+    problems.push(
+      `${leg}: live.json http_encoding is ${e.httpEncoding}, expected ${want}`,
+    );
+  if (served.length < 1) problems.push(`${leg}: the host served no GET`);
+  let coded = 0;
+  let savedIdentity = 0;
+  let savedCoded = 0;
+  for (const g of served) {
+    const id = (g.hash ?? "").slice(0, 12);
+    if (want === "off") {
+      if (g.coding !== undefined || g.coded_bytes !== undefined)
+        problems.push(`${leg}: ${id} carries a coding though the host is off`);
+      continue;
+    }
+    if (g.coding === undefined || g.coded_bytes === undefined) {
+      problems.push(`${leg}: ${id} has no coding/coded_bytes`);
+      continue;
+    }
+    if (identityOnly || g.coding === "identity") {
+      if (g.coding !== "identity" || g.coded_bytes !== g.payload_bytes)
+        problems.push(
+          `${leg}: ${id} was ${g.coding} (${g.coded_bytes} of ${g.payload_bytes} B), expected identity`,
+        );
+    } else {
+      coded++;
+      savedIdentity += g.payload_bytes ?? 0;
+      savedCoded += g.coded_bytes;
+      if (g.coding !== want)
+        problems.push(`${leg}: ${id} was ${g.coding}, expected ${want}`);
+      if (g.coded_bytes >= (g.payload_bytes ?? 0))
+        problems.push(
+          `${leg}: ${id} coded ${g.coded_bytes} B is not smaller than ${g.payload_bytes} B`,
+        );
+    }
+  }
+  if (!identityOnly && want !== "off" && coded < 1)
+    problems.push(`${leg}: no GET went out ${want}-coded`);
+  const s = e.summary;
+  const sumCoded = served.reduce((n, g) => n + (g.coded_bytes ?? 0), 0);
+  if (want !== "off" && s?.http_coded_bytes !== sumCoded)
+    problems.push(
+      `${leg}: live-summary http_coded_bytes ${s?.http_coded_bytes} != the log's ${sumCoded}`,
+    );
+  if (want === "off" && s?.http_coded_bytes !== s?.http_bytes)
+    problems.push(
+      `${leg}: live-summary http_coded_bytes ${s?.http_coded_bytes} != http_bytes ${s?.http_bytes} while off`,
+    );
+  // The receiver side: every fetch matches the host's account (Content-Length, ETag, coding),
+  // and was verified after decoding (getsVsFetches' `verified`).
+  if (e.failure === null || e.failure === undefined)
+    problems.push(
+      ...getsVsFetches(
+        e.gets.filter((g) => g.http_status === 200),
+        e.fetches,
+        e.cacheMode,
+      ).map((p) => `${leg}: ${p}`),
+    );
+  return {
+    problems,
+    note: `${leg}: ${served.length} GETs, ${coded} ${want}-coded (${savedIdentity} B -> ${savedCoded} B), ${e.fetches.length} receiver fetches`,
+  };
+}
+
+/** http-content-coding (G8kz): the default host (live-auth) offers zstd and codes the compressible
+ * payloads smaller; gzip and off hosts do the same for their codings and nothing; a native
+ * receiver that asks for none gets identity; every receiver fetch matches the host's account
+ * byte for byte and is verified on the decoded bytes. */
+export async function checkHttpContentCoding(
+  outDir: string,
+  native: boolean,
+): Promise<G2bCheck> {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  const cases: Array<[string, "zstd" | "gzip" | "off", boolean]> = [
+    ["live-auth", "zstd", false],
+    ["coding-gzip", "gzip", false],
+    ["coding-off", "off", false],
+  ];
+  if (native) cases.push(["coding-receiver-off", "zstd", true]);
+  for (const [leg, want, identityOnly] of cases) {
+    const r = codingProblems(
+      leg,
+      await loadCodingLeg(outDir, leg),
+      want,
+      identityOnly,
+    );
+    problems.push(...r.problems);
+    notes.push(r.note);
+  }
+  return check(
+    "http-content-coding",
+    "HTTP content coding (G8kz, texture-delivery-design.md D2): the default host (live-auth) answers GRT1 payloads zstd-coded, smaller than the identity body, with per-coding ETags and Content-Length = the logged coded_bytes; GRC_HTTP_ENCODING=gzip codes with gzip and =off logs no coding at all; a native receiver with RS_RECEIVER_ACCEPT_ENCODING=off gets identity; on every one the receiver's fetches match the host's GET log (coding, wire bytes, Content-Length, ETag) and are verified against their hash on the decoded bytes",
+    problems,
+    notes.join("; "),
+    cases.map(([leg]) =>
+      join(outDir, leg, "host", "evidence", "resources.jsonl"),
+    ),
+  );
+}
+
+/** corrupt-coded-body (G8kz): the host sent coded bodies with a byte flipped (hook log: coded
+ * GETs, the sabotage in live.json) and the receiver refused with one of the typed failures,
+ * never applying past the first coded GET. */
+export async function checkCorruptCodedBody(outDir: string): Promise<G2bCheck> {
+  const leg = "sabotage-corrupt-coded-body";
+  const e = await loadCodingLeg(outDir, leg);
+  const problems: string[] = [];
+  const coded = e.gets.filter(
+    (g) =>
+      g.http_status === 200 &&
+      g.coding !== undefined &&
+      g.coding !== "identity",
+  );
+  if (e.listenerSabotage !== "corrupt-coded-body")
+    problems.push(
+      `live.json listener_sabotage is ${e.listenerSabotage}, expected corrupt-coded-body`,
+    );
+  if (coded.length < 1)
+    problems.push("the host sent no coded body, so nothing was corrupted");
+  const reason = e.failure?.reason ?? "";
+  if (
+    ![
+      "resource-invalid",
+      "resource-hash-mismatch",
+      "resource-unavailable",
+    ].includes(reason)
+  )
+    problems.push(
+      `the receiver's failure is ${JSON.stringify(e.failure ?? null)}, expected a typed refusal of the body`,
+    );
+  const verified = e.fetches.filter(
+    (f) => f.verified === true && f.status === 200,
+  );
+  const corruptedHashes = new Set<string | null | undefined>(
+    coded.map((g) => g.hash),
+  );
+  for (const f of verified)
+    if (corruptedHashes.has(f.hash) && f.content_encoding !== "unknown")
+      problems.push(
+        `${f.hash?.slice(0, 12)}: a corrupted coded body was verified`,
+      );
+  return check(
+    "corrupt-coded-body",
+    "sabotage corrupt-coded-body (G8kz): the host flips one byte of every coded body it sends (identity bytes, hash and ETag stay right), and the receiver refuses it with resource-invalid (the body does not decode), resource-hash-mismatch (it decodes to other bytes) or resource-unavailable (a browser's fetch failed to decode it) instead of applying it",
+    problems,
+    `${coded.length} coded GET(s) sent corrupted; receiver ${reason} at seq ${e.failure?.seq}`,
+    [
+      join(e.hostDir, "evidence", "resources.jsonl"),
+      join(e.receiverDir, "applied.json"),
+    ],
+  );
+}
+
 export async function runG2e(
   outDir: string,
   expected: Gate2Expected,
@@ -553,7 +818,13 @@ export async function runG2e(
   const checks: G2bCheck[] = [];
   const legs: Record<string, G2eLegReport> = {};
   const v7 = isV7(await hostAuthEvidence(outDir, "live-auth"));
-  for (const e of v7 ? [...G2E_LEGS, ...G2E_V7_LEGS] : G2E_LEGS) {
+  const codingLegs = G2E_CODING_LEGS.filter(
+    (l) => !(v7 && l.leg === "coding-receiver-off"),
+  );
+  for (const e of [
+    ...(v7 ? [...G2E_LEGS, ...G2E_V7_LEGS] : G2E_LEGS),
+    ...codingLegs,
+  ]) {
     const host = await loadCapture(
       outDir,
       e.leg,
@@ -586,6 +857,8 @@ export async function runG2e(
   }
   checks.push(await checkAuthRequired(outDir));
   checks.push(await checkTokenNotLogged(outDir));
+  checks.push(await checkHttpContentCoding(outDir, !v7));
+  checks.push(await checkCorruptCodedBody(outDir));
   if (v7) {
     checks.push(await checkOriginRefused(outDir));
     checks.push(await checkNoCors(outDir));

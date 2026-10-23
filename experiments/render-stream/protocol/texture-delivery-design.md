@@ -36,7 +36,7 @@ Generic parts land here on stock-template fixtures. Applying them to STS2 is cou
 | #  | Topic | Decision |
 | -- | ----- | -------- |
 | D1 | Modes | **`GRC_TEXTURE_DELIVERY=rgba\|passthrough\|basis-uastc\|basis-etc1s`**, a host/session setting, default `rgba` (today's behavior). Each mode names the **variants the host offers** per texture (Q3). `rgba` = `decoded` only. `passthrough` = `decoded` + `block`. `basis-uastc` (LAN) = `decoded` + `block` + `uastc`. `basis-etc1s` (internet) = `decoded` + `etc1s`. `decoded` is the /8 payload (G8t's RGBA8/R8/RG8, or the uncompressed source); it is always offered, so every receiver has a fallback. |
-| D2 | HTTP content coding | **`GRC_HTTP_ENCODING=off\|zstd\|gzip`** (default `off`), orthogonal to D1 and **valid at every live version ≥ /2**. It is plain HTTP negotiation (`Accept-Encoding` → `Content-Encoding`), not a change to framing, keys or payload format, so no wire version. It applies to GRT1 bodies only. KTX2 bodies are already entropy-coded (Q5). It lands first (G8kz). |
+| D2 | HTTP content coding | **`GRC_HTTP_ENCODING=off\|zstd\|gzip`** (default `zstd` since G8kz, see "As built (G8kz)"), orthogonal to D1 and **valid at every live version ≥ /2**. It is plain HTTP negotiation (`Accept-Encoding` → `Content-Encoding`), not a change to framing, keys or payload format, so no wire version. It applies to GRT1 bodies only. KTX2 bodies are already entropy-coded (Q5). It lands first (G8kz). |
 | D3 | Who picks a variant | **The receiver**, from the variants listed in the texture entry, by a fixed rule. The rule is the first encoding in its own hello `texture_encodings` that the entry lists. `block` counts only if the variant's format family is in its `gpu_formats`, and `decoded` is always last. The host uses the hellos only to decide which variants are worth preparing lazily (Q4). It never rewrites a transaction per connection, so file recordings, stores and every connection share one stream. |
 | D4 | Wire | **`render-stream/9`, on the version-switch pattern** (`V9` in `rs2_codec.*`/`rs2_diff.*`, `version: … \| 9` in `render-stream-2.ts`, rs-core and capi). Changes against /8: texture entries gain `variants`; a `render-stream-texture/ktx2` payload profile; GRT1 may carry the BC/ETC2/ASTC source formats as a `block` variant; the session gains `resources.delivery`; the hello gains `texture_encodings` and `gpu_formats`; the texture reason `delivery-pending` (Q5). A /8 or older connection sees exactly /8, the `decoded` payload, so no refusal is needed. |
 | D5 | Base entry stays /8 | **`hash`, `format`, `payload_bytes` and `source_format` keep their /8 meaning: the `decoded` variant.** `variants` only adds alternatives. Every /8 rule (`decode-entry`, `texture-version`, the oracle) holds unchanged, and a receiver that ignores `variants` is a correct /8 receiver. |
@@ -251,7 +251,7 @@ allows it and the host enables it:
     requires strong validators to differ by content coding. `If-None-Match` accepts either.
 - **Verification:** receivers check the hash on the identity bytes after decoding. Browsers decode
   transparently (Chrome has zstd since 123); the native receiver sends `Accept-Encoding: zstd` and
-  calls `PackedByteArray.decompress_dynamic(-1, FileAccess.COMPRESSION_ZSTD)`.
+  decodes it itself (G8kz: `decompress_dynamic` has no zstd, so it is `PackedByteArray.decompress` with the frame's content size; gzip uses `decompress_dynamic`).
 - **Default:** a host or receiver that never sends or accepts it behaves exactly as today. That
   is why no version is needed.
 
@@ -541,3 +541,67 @@ So the release sequence is:
   cache would sit outside every repository.
   - **Default:** no. The persisted cache warms from live sessions (lazy path), and reading the pack
     stays an explicit operator command that you approve once.
+
+## As built (G8kz)
+
+Landed as one commit; the spec is `render-stream-2.md` "HTTP (live)" > "Content coding (G8kz)".
+
+**Decisions taken where the design was ambiguous or wrong.**
+
+- **Default is `zstd`, not `off`.** The coding is negotiated per request, so a client that sends no
+  `Accept-Encoding` (an old receiver, curl, a hand-written test) gets today's identity bytes and
+  needs no version. Defaulting it off would leave the 11x unused by every deployment that does not
+  know the variable. Every browser sends zstd already, so `off` is the only way to see the old
+  bytes there. `GRC_HTTP_ENCODING=off` stays the opt-out (it ignores `Accept-Encoding` and sends no
+  `Content-Encoding` or `Vary`); a native receiver opts out with `RS_RECEIVER_ACCEPT_ENCODING=off`.
+- **Native zstd decode is `PackedByteArray.decompress(size, COMPRESSION_ZSTD)`, not
+  `decompress_dynamic`.** Q5 named `decompress_dynamic`, but `Compression::decompress_dynamic`
+  supports only gzip, deflate and brotli (`core/io/compression.cpp:229-295`; other modes hit
+  `ERR_FAIL_COND_V`). The fetcher reads the size from the zstd frame header (the host's
+  `ZSTD_compress` always writes it) and refuses a frame without one or above 1 GiB. gzip uses
+  `decompress_dynamic`. Godot's `HTTPClient` decodes nothing, and `HTTPRequest` only gzip/deflate.
+- **zstd and zlib are vendored** from `../godot-4.5.1-stable/thirdparty` (zstd 1.5.7 common,
+  compress, decompress, no asm; zlib 1.3.1 minus `compress.c`/`uncompr.c`) into `capture/vendor/`,
+  built as a hidden-visibility static library, so nothing is downloaded and the engine's own
+  copies are never interposed. The system `libzstd`/`libz` were not used: the capture's contract is
+  libc and libstdc++ only. D15's basisu copy will join them in `third_party/` as designed; these two
+  are the capture's own and stay under `capture/vendor/`.
+- **Compression runs on the HTTP I/O thread, not a worker.** D11's pool does not exist yet
+  (G8kw). `ServedResources::lookup_coded` compresses outside its mutex on the I/O thread on the
+  first GET of a hash per coding and keeps the body until the hash retires (a `wrong-hash`
+  corruption drops it). It never runs on the RenderingServer caller. The cost is one blocking
+  compression per hash on that thread: the gate 6 scene spent 4.4 ms (zstd) and 10.6 ms (gzip) in
+  total for 35 bodies of 1.48 MB. A 16 MiB payload is about 30 ms at zstd 3, which delays other
+  GETs on the same I/O thread while it runs; G8kw's pool is where that moves off it. `coded_ns` in
+  `live-summary.json` records it.
+- **Only GRT1 bodies over 72 bytes, and only if strictly smaller.** Mesh and shader payloads are
+  small and already structured; D2 says GRT1 only. An incompressible texture is sent as identity.
+- **Browsers: no `Access-Control-Expose-Headers`.** `Content-Encoding` and `ETag` are not
+  CORS-safelisted, so a cross-origin page sees only `Content-Length` (the coded length); g7l's
+  check that ETag is absent cross-origin therefore still holds. The coding adds no preflight
+  because `Accept-Encoding` is a forbidden request header the browser sets itself. Receivers verify
+  the hash on the decoded bytes the browser hands over, as for identity.
+
+**Evidence.** Hook-log `http-get` 200 lines end with `coding` and `coded_bytes` when the host offers
+a coding; `live-summary.json` `resources` gains `http_coded_bytes`, `http_encoding`, per-coding GET
+counts and `coded_made/in/out/ns`; the native fetcher's fetch records gain `wire_bytes`,
+`content_encoding` and `decode_us` (`bytes` stays the identity length).
+
+**Checks** (gate 2 g2e; also run under g7-2 for GSW and the web export): `http-content-coding`
+(the default host zstd-codes smaller bodies, gzip and off hosts, a native receiver that asks for
+none gets identity, every fetch matches the host's account byte for byte and is verified after
+decoding), `corrupt-coded-body` (the host flips a byte of every coded body: refused as
+`resource-invalid`, `resource-hash-mismatch`, or for a browser `resource-unavailable`), and
+`http-gets-match-fetches` now expects the per-coding ETag and the coded Content-Length.
+Receiver-side decode: `receiver/tests/receiver_selftest.gd`.
+
+**Measured bytes** (single client, distinct and repeated GETs as the leg made them):
+
+| scene | identity | zstd 3 | gzip 6 |
+| ----- | -------- | ------ | ------ |
+| gate 6 `animate`, live, native receiver (128 GETs) | 1,525,360 B | 70,380 B (21.7x) | 73,498 B (20.8x) |
+| `gate8-tex`, offline over the host's 14 stored payloads | 224,191 B | 118,273 B (1.9x) | 105,828 B (2.1x) |
+
+The gate 6 scene is flat colour and gradients, so its ratio is the optimistic end of Q8's range;
+`gate8-tex` is procedural noise-like content, the pessimistic end. STS2's measured 11x sits
+between them.

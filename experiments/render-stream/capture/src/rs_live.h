@@ -397,6 +397,16 @@ struct ConnectionSummary {
 struct ServingSummary {
   std::uint64_t http_gets = 0;
   std::uint64_t http_bytes = 0;
+  // G8kz: the bytes that crossed the wire for the same 200s, the coding the host offered
+  // ("off", "zstd" or "gzip"), GETs per coding, and the ServedResources coded-body totals.
+  std::uint64_t http_coded_bytes = 0;
+  std::string http_encoding = "off";
+  std::uint64_t http_gets_zstd = 0;
+  std::uint64_t http_gets_gzip = 0;
+  std::uint64_t coded_made = 0;
+  std::uint64_t coded_in_bytes = 0;
+  std::uint64_t coded_out_bytes = 0;
+  std::uint64_t coded_ns = 0;
   std::uint64_t http_errors = 0;
   std::uint64_t preflights = 0;       // G7n: OPTIONS answered 204 (not counted in http_gets)
   std::uint64_t origin_rejected = 0;  // G7n: 403s for a foreign Origin, every route
