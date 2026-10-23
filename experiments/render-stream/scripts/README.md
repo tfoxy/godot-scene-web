@@ -3360,7 +3360,7 @@ mise exec -- pnpm render-stream:gate8 -- \
 ```
 
 - `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
-  `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`; G8h, G8f, G8r and
+  `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`; `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f, G8r and
   G8m add their groups).
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
@@ -3375,6 +3375,10 @@ mise exec -- pnpm render-stream:gate8 -- \
   bijection built per container in draw order, with exactly Q2's exceptions.
 - `test/self-test-gate8-adopt.ts`: those helpers on `fixtures/gate8-adopt/expected.json` and
   synthetic resolved states.
+- `lib/gate8-size-checks.ts`: the g8h checks (`runG8h`) and their pure helpers (`sizeProblems`,
+  `probeProblems`, `atlasProblems`, `accountProblems`); it reuses g8a's `equivalence`.
+- `test/self-test-gate8-size.ts`: those helpers on `fixtures/gate8-size/expected.json` and
+  synthetic sessions, probes and recordings.
 
 ## Gate 8 legs and evidence under `--out` (g8t)
 
@@ -3403,6 +3407,25 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `sabotage-adopt-{skip-state,no-redraw,skip-layers}/{capture,receiver}` | `late` with the walk sabotage, and the native receiver on it |
 | `reference` | rendered, unarmed: shots `step-<k>.png` at the four checkpoints |
 | `born/receiver`, `late/receiver`, `late/receiver-patch` | the native receiver on born's and late's full sink and late's patch sink |
+
+## Gate 8 legs and evidence under `--out/g8h` (g8h)
+
+| leg | what |
+| --- | ---- |
+| `import/fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-size` and of the receiver |
+| `born/capture` | headless (the 64x64 host), `GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip GRC_ROOT_SIZE=presentation:640x360`, main scene `res://born.tscn`, armed at birth |
+| `late/capture` | `size.tscn` as the main scene, armed at frame K=12 with `GRC_ADOPT=arm` and the same policy; `size.jsonl` is the fixture's own read of the engine at K-1 and K+1 |
+| `late-observe/capture` | `late` without the policy: the degenerate control |
+| `sabotage-size-before-adopt/{capture,receiver}`, `sabotage-size-before-adopt-strict/capture` | `GRC_SABOTAGE=size-before-adopt` under skip (and the receiver on it) and under strict |
+| `reference` | rendered at 640x360, unarmed: shots `step-<k>.png` at the three checkpoints |
+| `born/receiver`, `late/receiver`, `late/receiver-patch`, `late-observe/receiver` | the native receiver on born's and late's full sink, late's patch sink and the control |
+
+## Gate 8 criteria (g8h)
+
+`g8h-legs`, `late-size-match`, `late-size-reference` (exact), `late-size-needed`,
+`late-size-equivalence`, `late-size-atlas`, `late-size-account`, `sabotage-size-before-adopt` and
+`sabotage-size-before-adopt-strict`; each criterion is spelled out in `lib/gate8-size-checks.ts` and
+[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q4 "As built (G8h)".
 
 ## Gate 8 criteria (g8a)
 

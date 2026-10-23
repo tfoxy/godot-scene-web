@@ -393,10 +393,49 @@ page drawn after arm is a post-arm create or a D7 readback).
 
 **Sabotage.** `size-before-adopt` (apply the size before the walk): strict gives
 `pre-existing-object`, `skip` loses the relayout of every adopted control; both must fail.
+(As built: under skip the walk's node reads recover the state, so detection is by the account, see
+"As built (G8h)".)
 
 **Stays unsupported.** A presentation aspect other than the logical one under `expand`/`keep_*`
 (`root-size-enforce-failed`, as gate 6); several or negotiated presentation sizes; stretch mode
 `viewport` (gate 6's census).
+
+### As built (G8h)
+
+G8h needed almost no capture code: G8a had already put D10's order into `entry.cpp` (root query,
+adoption walk, then the size policy), so the late presentation is one `Window.set_min_size` call
+the arm makes after the walk. What it adds is the fixture, the checks, and the sabotage.
+
+- **What the policy does at a late arm.** The headless host is the 64x64 SceneTree minimum, so a
+  `canvas_items`/`expand` scene is at stretch scale 0.1, visible rect 640x640, oversampling 0.1
+  (measured, `fixtures/gate8-size/expected.json`). After adoption `set_min_size(640,360)` makes the
+  window the logical size: scale 1, visible 640x360, oversampling 1, `host_size_status` `match`.
+  The relayout, stretch and oversampling are synchronous inside the call; the Controls' re-layout
+  and the Labels' redraw reach the hooks as ordinary calls on adopted items, before the first
+  transaction (the arm frame).
+- **Q4's `late-size-atlas` holds without D7.** After the resize every Label draws from oversampling-1
+  caches that did not exist before the arm, so their glyph pages are created under the hooks. The
+  check asks that every texture drawn from the arm on is `origin:"created"` and no `unknown-texture`
+  is reported. It does not need the TextServer readback; a scene whose text was already drawn at
+  oversampling 1 before the arm is G8r's.
+- **`size-before-adopt` under skip is detected by the account, not by state or pixels.** The design
+  predicted skip "loses the relayout of every adopted control". It does not: the walk reads the
+  nodes (D3), so it reads them after the resize, and its `queue_redraw` re-sends every command.
+  The capture's state equals `born` and the receiver's pixels equal the reference (0 problems, 0 px).
+  What the sabotage does leave is the account: the relayout's calls named RIDs nothing had adopted,
+  counted as `unknown_calls` (2 in the fixture; 0 in the honest capture). `late-size-account`
+  asserts 0, and the sabotage check asserts that it would fail on the sabotaged capture. Under
+  strict the first such call is the sticky `pre-existing-object`, as predicted. This makes the
+  ordering rule of D10 a rule about the account and the strict policy, not about pixels: a product
+  on skip that applied the size first would still render right.
+- **Controls.** `born` (presentation armed at birth) is the equivalence control; `late-observe`
+  (late arm, adoption, no `presentation:`) records `degenerate-visible` at oversampling 0.1 and its
+  receiver differs from the reference (146,297 px over three checkpoints), so `late-size-reference`
+  has teeth. The fixture also logs the engine's own window, visible rect, stretch and oversampling
+  at K-1 and K+1 (`RS_FIXTURE_SIZE_LOG`), an independent read for `late-size-match`.
+- **Sabotage wiring.** `GRC_SABOTAGE=size-before-adopt` (G8w's kind) refuses unless `GRC_ADOPT=arm`
+  and `GRC_ROOT_SIZE=presentation:` are both set; it writes the size ahead of the walk and skips the
+  second write.
 
 ## Q5. Pre-arm materials and shaders (blocker 4)
 

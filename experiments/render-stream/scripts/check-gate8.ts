@@ -7,7 +7,7 @@
 //     experiments/render-stream/scripts/check-gate8.ts --out <evidence dir>
 //
 // The checks live in lib/gate8-*-checks.ts (G8t: lib/gate8-tex-checks.ts, G8a:
-// lib/gate8-adopt-checks.ts), which
+// lib/gate8-adopt-checks.ts, G8h: lib/gate8-size-checks.ts), which
 // scripts/test/self-test-gate8*.ts drive against fabricated evidence.
 
 // GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
@@ -17,11 +17,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type G8aExpected, runG8a } from "./lib/gate8-adopt-checks";
+import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -66,6 +67,14 @@ async function main(): Promise<void> {
     const g8a = await runG8a(out, expected);
     checks.push(...g8a.checks);
     report.g8a = g8a.report;
+  }
+  if (run.includes("g8h")) {
+    const expected = JSON.parse(
+      await readFile(join(EXPERIMENT_DIR, "fixtures", "gate8-size", "expected.json"), "utf8"),
+    ) as G8hExpected;
+    const g8h = await runG8h(out, expected);
+    checks.push(...g8h.checks);
+    report.g8h = g8h.report;
   }
   const gating = checks.filter((c) => c.gating !== false);
   report.gate_passed = gating.length > 0 && gating.every((c) => c.passed);

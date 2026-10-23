@@ -33,6 +33,13 @@
 #       sabotages (adopt-skip-state, adopt-no-redraw, adopt-skip-layers); then, rendered, the
 #       unarmed `reference` and the native receiver on born, late (full and patch sinks) and each
 #       sabotage capture, shooting the four checkpoints.
+#   g8h (G8h, Q4: the presentation size at a late arm, fixtures/gate8-size; every leg under g8h/):
+#       the fixture and receiver imports; headless /8 captures under GRC_UNKNOWN_ITEM=skip of `born`
+#       (armed at birth, GRC_ROOT_SIZE=presentation:640x360), `late` (armed at frame K=12 with
+#       GRC_ADOPT=arm and the same policy: the 64x64 host is resized after adoption),
+#       `late-observe` (late without the policy: the degenerate control) and the sabotage
+#       size-before-adopt under skip and under strict; then, rendered at 640x360, the unarmed
+#       `reference` the native receiver on born, late (full and patch sinks), the sabotage and the observe control.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -53,9 +60,9 @@ set -euo pipefail
 
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
-# Groups whose increment has landed, in run order (G8a, G8h, G8f, G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a)
-KNOWN_GROUPS=(g8t g8a)
+# Groups whose increment has landed, in run order (G8f, G8r, G8m add theirs).
+LANDED_GROUPS=(g8t g8a g8h)
+KNOWN_GROUPS=(g8t g8a g8h)
 
 EXTENSION=""
 CALIBRATION=""
@@ -393,10 +400,82 @@ run_g8a() {
 	GS_RUN_DIR=""
 }
 
+# ------------------------------------------------------------------------------------- g8h
+G8H_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-size"
+# The fixture's arm frame K (fixtures/gate8-size/loader.gd, expected.json arm_frame).
+G8H_ARM_FRAME=12
+G8H_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip GRC_ROOT_SIZE=presentation:640x360)
+
+run_import_g8h() {
+	echo "run-gate8: g8h import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8h/import/fixture" none -- mise exec -- godot --headless --path "$G8H_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8h/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in fixture receiver; do
+		if [ "$(cat "$OUT/g8h/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8h import ($leg) failed, see $OUT/g8h/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8h <dir> <born|late> <env word...>: a headless capture of the fixture (64x64 host
+# window), armed at birth (main scene res://born.tscn) or late (size.tscn at frame K), with the
+# fixture's own size probe beside it.
+run_capture_g8h() {
+	local dir="$1" arm="$2" scene=""
+	shift 2
+	[ "$arm" = born ] && scene="res://born.tscn"
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8H_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_ARM="$arm" RS_FIXTURE_ARM_FRAME="$G8H_ARM_FRAME"
+		RS_FIXTURE_SIZE_LOG="$dir/size.jsonl")
+	run_capture "$dir" "" none "$scene"
+}
+
+run_g8h() {
+	run_import_g8h
+	echo "run-gate8: g8h born (presentation: armed at birth)"
+	run_capture_g8h "$OUT/g8h/born/capture" born "${G8H_ENV[@]}"
+	echo "run-gate8: g8h late (armed at frame $G8H_ARM_FRAME, GRC_ADOPT=arm, presentation:)"
+	run_capture_g8h "$OUT/g8h/late/capture" late "${G8H_ENV[@]}" GRC_ADOPT=arm
+	echo "run-gate8: g8h late-observe (late, no presentation policy: the degenerate control)"
+	run_capture_g8h "$OUT/g8h/late-observe/capture" late GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip GRC_ADOPT=arm
+	echo "run-gate8: g8h sabotage-size-before-adopt (skip)"
+	run_capture_g8h "$OUT/g8h/sabotage-size-before-adopt/capture" late "${G8H_ENV[@]}" GRC_ADOPT=arm \
+		GRC_SABOTAGE=size-before-adopt GRC_SABOTAGE_FRAME="$G8H_ARM_FRAME"
+	echo "run-gate8: g8h sabotage-size-before-adopt-strict"
+	run_capture_g8h "$OUT/g8h/sabotage-size-before-adopt-strict/capture" late GRC_STREAM_VERSION=8 \
+		GRC_ROOT_SIZE=presentation:640x360 GRC_ADOPT=arm \
+		GRC_SABOTAGE=size-before-adopt GRC_SABOTAGE_FRAME="$G8H_ARM_FRAME"
+
+	echo "run-gate8: bringing up private gamescope for g8h's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8h"
+	legs_par_begin
+	echo "run-gate8: g8h reference (unarmed, rendered at 640x360)"
+	mkdir -p "$OUT/g8h/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8h/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8h/reference/steps.jsonl"
+		RS_FIXTURE_ARM_FRAME="$G8H_ARM_FRAME")
+	run_rendered "$OUT/g8h/reference" "$G8H_FIXTURE_DIR"
+	echo "run-gate8: g8h receivers (born, late, late patch sink, sabotage, observe control)"
+	run_rendered_receiver "$OUT/g8h/born/capture" "$OUT/g8h/born/receiver"
+	run_rendered_receiver "$OUT/g8h/late/capture" "$OUT/g8h/late/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8h/late/capture" "$OUT/g8h/late/receiver-patch"
+	run_rendered_receiver "$OUT/g8h/sabotage-size-before-adopt/capture" "$OUT/g8h/sabotage-size-before-adopt/receiver"
+	run_rendered_receiver "$OUT/g8h/late-observe/capture" "$OUT/g8h/late-observe/receiver"
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8h"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8t) run_g8t ;;
 	g8a) run_g8a ;;
+	g8h) run_g8h ;;
 	esac
 done
 
