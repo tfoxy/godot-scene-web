@@ -133,6 +133,11 @@ struct PayloadCopy {
   std::string hash;      // lowercase hex SHA-256 of the payload, empty unless ok
   std::int64_t copy_ns = -1;  // -1 when nothing was copied
   std::int64_t hash_ns = -1;
+  // G8t (gate8-design.md D8): a host decode. `source_format` is the Image::Format the payload was
+  // decoded from (-1 unless the copy is an ok decode; `format` is then the payload's); `decode_ns`
+  // the seam's duplicate + decompress time, also on a decode that was tried and refused.
+  std::int64_t source_format = -1;
+  std::int64_t decode_ns = -1;
 };
 
 // Where and when a tap ran.

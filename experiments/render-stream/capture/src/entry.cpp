@@ -548,6 +548,16 @@ std::string result_json() {
     json.field("items", static_cast<int64_t>(g_stream.adopt_stats.items));
     json.field("residue", static_cast<int64_t>(g_stream.adopt_stats.residue));
     json.object_end();
+    // G8t (gate8-design.md Q3 `decode-cost`): the decode seam's totals since arm (per-texture
+    // times are the hook log's `decode_ns`).
+    const rs::DecodeStats decode = rs::texture_decode_stats();
+    json.key("decode_stats").object_begin();
+    json.field("decoded", decode.decoded);
+    json.field("declined", decode.declined);
+    json.field("decoded_bytes", decode.decoded_bytes);
+    json.field("decode_ns_total", decode.decode_ns_total);
+    json.field("decode_ns_max", decode.decode_ns_max);
+    json.object_end();
     json.object_end();
   }
   json.object_end();
@@ -1437,6 +1447,9 @@ void stream_start() {
     } else if (kind == rs2::SabotageKind::WrongHash &&
                (!files || g_stream.store_dir.empty())) {
       why = "wrong-hash acts on the resource store; set a file sink and GRC_RESOURCE_STORE_DIR";
+    } else if (kind == rs2::SabotageKind::PerturbDecode && !g_stream.gate8.decode_engine) {
+      // G8t (gate8-design.md Q3 "Sabotages"): it perturbs host-decoded payloads only.
+      why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";
     }
     if (!why.empty()) {
       log_line("stream: refused sabotage (" + why + ")");
@@ -1637,6 +1650,9 @@ void stream_start() {
   } else if (sabotage.config.kind == rs2::SabotageKind::PerturbShader) {
     rs::mirror_set_perturb_shader(sabotage.config.frame);
   }
+  // G8t (gate8-design.md Q3): perturb-decode acts in the decode seam, before the hook hashes.
+  rs::texture_decode_set_perturb(
+      sabotage.config.kind == rs2::SabotageKind::PerturbDecode ? sabotage.config.frame : 0);
   // G55d (gate5_5-design.md D4): the declared shader-source policy.
   rs::mirror_set_shader_policy(g_stream.shader_policy);
   if (g_stream.shader_policy != rs2::ShaderPolicy::Source) {

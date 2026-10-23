@@ -988,6 +988,54 @@ rs::TapContext tap_context() {
 
 rs::ResourceLog &resources() { return rs::resource_log(); }
 
+// G8t (gate8-design.md D8, Q3): the payload of a host-decoded image. `copy` holds the source's
+// facts; on success it becomes the decoded payload's (format, size), with `source_format` the
+// format the host decoded from and `decode_ns` the seam's duplicate + decompress time. A decoded
+// payload the policy still refuses (its format outside GRC_RESOURCE_FORMATS, or over
+// GRC_RESOURCE_MAX_PAYLOAD_BYTES) keeps the source's facts, as the refusal it would otherwise be.
+rs::PayloadCopy copy_decoded(rs::PayloadCopy copy, const rs::DecodeResult &decoded,
+                             rs::PayloadPtr *bytes) {
+  copy.decode_ns = decoded.decode_ns;
+  if (decoded.format < 0 || decoded.format >= rs::kImageFormatCount ||
+      !g_resource_policy.formats.permitted[decoded.format]) {
+    copy.reason = "unsupported-format";
+    return copy;
+  }
+  const int64_t expected = rs::expected_data_bytes(decoded.format, decoded.width, decoded.height,
+                                                   decoded.mipmaps);
+  if (expected < 0 || expected != decoded.data_size || decoded.data == nullptr) {
+    copy.reason = "payload-unavailable";
+    return copy;
+  }
+  const std::string meta =
+      rs::payload_meta(rs::image_format_name(decoded.format), decoded.width, decoded.height,
+                       decoded.mipmaps, decoded.data_size);
+  if (rs::payload_size(meta, static_cast<uint64_t>(decoded.data_size)) >
+      g_resource_policy.max_payload_bytes) {
+    copy.reason = "payload-too-large";
+    return copy;
+  }
+  const uint64_t t0 = now_ns();
+  auto payload = std::make_shared<rs::PayloadBytes>();
+  rs::payload_header(meta, static_cast<uint64_t>(decoded.data_size), payload.get());
+  payload->insert(payload->end(), decoded.data, decoded.data + decoded.data_size);
+  const uint64_t t1 = now_ns();
+  copy.hash = sha256_hex(payload->data(), payload->size());
+  const uint64_t t2 = now_ns();
+  copy.source_format = copy.format;
+  copy.format = decoded.format;
+  copy.width = decoded.width;
+  copy.height = decoded.height;
+  copy.mipmaps = decoded.mipmaps;
+  copy.data_bytes = decoded.data_size;
+  copy.status = "ok";
+  copy.payload_bytes = static_cast<int64_t>(payload->size());
+  copy.copy_ns = static_cast<int64_t>(t1 - t0);
+  copy.hash_ns = static_cast<int64_t>(t2 - t1);
+  *bytes = std::move(payload);
+  return copy;
+}
+
 // Q3 "Copy", steps 1-3. Nothing is copied for an unreadable Image, a format
 // outside GRC_RESOURCE_FORMATS or a payload over GRC_RESOURCE_MAX_PAYLOAD_BYTES.
 // The GRT1 bytes go to `bytes` (G2b2: the texture mirror keeps them); null
@@ -1008,18 +1056,21 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
   if (facts.format < 0 || facts.format >= rs::kImageFormatCount ||
       !g_resource_policy.formats.permitted[facts.format]) {
     if (rs::texture_decode_enabled() && facts.format >= 0 && facts.format < rs::kImageFormatCount) {
-      // G8w (gate8-design.md D8): the host-decode seam, asked only under GRC_TEXTURE_DECODE=engine.
-      // It declines every request until G8t fills rs_texture_decode.cpp, which will hand back a
-      // payload-ready image here; until then the refusal below stands.
+      // G8t (gate8-design.md D8): under GRC_TEXTURE_DECODE=engine the host-decode seam
+      // (rs_texture_decode.cpp) turns a block-compressed image into an RGBA8/R8/RG8 payload with
+      // the engine's own Image::decompress, on a duplicate; it declines everything else.
       rs::DecodeRequest request;
       request.format = facts.format;
       request.width = static_cast<int32_t>(facts.width);
       request.height = static_cast<int32_t>(facts.height);
       request.mipmaps = facts.mipmaps;
-      request.data = g_iface.image_ptr(image->object);
-      request.data_size = facts.data_size;
+      request.image = image->object;
+      request.frame = current_frame();
       const rs::DecodeResult decoded = rs::texture_decode(request);
-      (void)decoded;
+      if (decoded.handled) {
+        return copy_decoded(copy, decoded, bytes);
+      }
+      copy.decode_ns = decoded.decode_ns;  // the cost of a decode that was tried and refused
     }
     copy.reason = "unsupported-format";
     return copy;

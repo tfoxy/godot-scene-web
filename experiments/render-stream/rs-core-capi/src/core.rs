@@ -23,8 +23,11 @@ pub const VERSION: u8 = 6;
 /// The versions a receiver stream may be at (G7xwl): render-stream/6 (files, and native live by
 /// default) and render-stream/7 (live-transport-only). A /7 stream's records are /6's byte for
 /// byte; only the magic, the protocol string and `publication.credit_window` differ
-/// (render-stream-7.md), and rs-core's validator already gates all three on `version`.
-pub const VERSIONS: [u8; 2] = [6, 7];
+/// (render-stream-7.md), and rs-core's validator already gates all three on `version`. G8t adds
+/// render-stream/8 files (gate 8 recordings, render-stream-8.md): rs-core validates and resolves
+/// /8 since G8w, and the apply layer ignores /8's additions (`origin`, `adopted_content`,
+/// `source_format`), so a /8 stream applies like a /6 one. The live hello still offers .6/.7 only.
+pub const VERSIONS: [u8; 3] = [6, 7, 8];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -169,7 +172,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6 and /7, not /{version}"),
+                format!("the receiver core speaks render-stream/6, /7 and /8, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;

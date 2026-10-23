@@ -149,7 +149,7 @@ for x in r.get("refused", []):
 # Timing groups inside a correctness gate are never run on a hosted runner (RS_SKIP_TIMING_GROUPS=1):
 # say which, and how to run each locally (quiet machine, `uptime` first).
 LOCAL = {"g1c-rate": ("gate1", "g1a,g1c"), "g1d": ("gate1", "g1a,g1d"), "g2c-pins": ("gate2", "g2a,g2c"),
-         "g5f": ("gate5", "g5f"), "g55f": ("gate55", "g55f")}
+         "g5f": ("gate5", "g5f"), "g55f": ("gate55", "g55f"), "decode-cost": ("gate8", "g8t")}
 for x in s["runs"]:
     for g in x.get("skipped_remote_groups", []):
         gate, legs = LOCAL.get(g, (None, None))

@@ -11,7 +11,7 @@ extends RefCounted
 ## JSON.parse returns every number as a float. Every wire integer is below 2^53, so an integer is
 ## accepted only when it is finite, integral and within +-(2^53 - 1), then converted with int().
 
-## The GRS2 to GRS7 magics (render-stream-2.md to render-stream-7.md), by wire version.
+## The GRS2 to GRS8 magics (render-stream-2.md to render-stream-7.md), by wire version.
 const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	2: "475253320d0a1a0a",
 	3: "475253330d0a1a0a",
@@ -19,8 +19,11 @@ const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	5: "475253350d0a1a0a",
 	6: "475253360d0a1a0a",
 	7: "475253370d0a1a0a",
+	8: "475253380d0a1a0a",
 }
 const MAGIC_V7_HEX: String = "475253370d0a1a0a"
+## G8t: render-stream/8 files (gate 8 recordings, render-stream-8.md) replay at /8.
+const MAGIC_V8_HEX: String = "475253380d0a1a0a"
 const PROTOCOL_V7: String = "render-stream/7"
 const MAX_SAFE_INT: float = 9007199254740991.0
 

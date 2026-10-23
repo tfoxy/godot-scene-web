@@ -225,7 +225,12 @@ fn the_session_is_at_the_streams_version() {
     // The protocol string is the version's: a /6 session read as /7 and the reverse are refused.
     assert_eq!(session_at(&rs6, 7).0, KIND_ERROR);
     assert_eq!(session_at(&rs7, 6).0, KIND_ERROR);
-    // Only 6 and 7: an older version is not a receiver stream.
+    // G8t: a /8 file (golden-8's full sink) opens at /8 and only at /8.
+    let rs8 = golden7().join("../golden-8/full.rs8");
+    assert_eq!(session_at(&rs8, 8).0, KIND_SESSION);
+    assert_eq!(session_at(&rs8, 6).0, KIND_ERROR);
+    assert_eq!(session_at(&rs6, 8).0, KIND_ERROR);
+    // Only 6, 7 and 8: an older version is not a receiver stream.
     let (kind, vt) = session_at(&rs6, 5);
     assert_eq!(kind, KIND_ERROR);
     assert!(mentions(&vt, "bad-magic"));

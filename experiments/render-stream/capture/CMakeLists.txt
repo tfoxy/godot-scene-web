@@ -289,10 +289,19 @@ add_test(NAME rs8_codec COMMAND rs8_codec_test)
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test
   test/rs_gate8_policy_test.cpp src/rs_gate8_policy.cpp src/rs_adopt.cpp
-  src/rs_texture_decode.cpp)
-target_include_directories(rs_gate8_policy_test PRIVATE src)
+  src/rs_texture_decode.cpp src/iface.cpp)
+target_include_directories(rs_gate8_policy_test PRIVATE src vendor)
 target_link_libraries(rs_gate8_policy_test PRIVATE grc_warnings)
 add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
+
+# G8t: the host-decode seam (gate8-design.md D8, Q3): the decode table, the result check that
+# refuses an engine decode of the wrong format or shape, perturb-decode and the totals, against a
+# fake backend (the engine backend itself runs only inside Godot: run-gate8.sh's g8t legs).
+add_executable(rs_texture_decode_test
+  test/rs_texture_decode_test.cpp src/rs_texture_decode.cpp src/iface.cpp)
+target_include_directories(rs_texture_decode_test PRIVATE src vendor)
+target_link_libraries(rs_texture_decode_test PRIVATE grc_warnings)
+add_test(NAME rs_texture_decode COMMAND rs_texture_decode_test)
 
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).

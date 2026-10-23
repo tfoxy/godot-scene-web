@@ -43,6 +43,7 @@
     "render-stream:gate55": "bash experiments/render-stream/scripts/run-gate55.sh",
     "render-stream:gate6": "bash experiments/render-stream/scripts/run-gate6.sh",
     "render-stream:gate7": "bash experiments/render-stream/scripts/run-gate7.sh",
+    "render-stream:gate8": "bash experiments/render-stream/scripts/run-gate8.sh",
     "render-stream:report": "tsx --conditions=development experiments/render-stream/scripts/report-gate6.ts",
     "render-stream:report2": "tsx --conditions=development experiments/render-stream/scripts/report-gate7.ts",
     "render-stream:features": "tsx --conditions=development experiments/render-stream/scripts/make-features.ts",

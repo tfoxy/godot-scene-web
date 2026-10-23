@@ -3349,3 +3349,43 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
 - On the browser path each applied.json `fetches[]` entry gains `browser`: `headers_ms`,
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
+
+## Gate 8 files (g8t, G8t)
+
+```bash
+mise exec -- pnpm render-stream:gate8 -- \
+  --extension "$PWD/experiments/render-stream/capture/build/render_stream_capture.gdextension" \
+  --calibration "$PWD/experiments/render-stream/calibration/godot-4.5.1-stable-linux-release.json" \
+  [--legs g8t]
+```
+
+- `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
+  `run_reference_g8t`; G8a, G8h, G8f, G8r and G8m add their groups).
+- `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
+  `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
+  and the informative `hardware_band`).
+- `lib/gate8-tex-checks.ts`: the g8t checks (`runG8t`) and their pure helpers (`pairTextures`,
+  `censusProblems`, `oracleProblems`).
+- `test/self-test-gate8.ts`: the helpers on `fixtures/gate8-tex/expected.json` and synthetic hook,
+  fixture and oracle lines, each with a passing and a failing case.
+
+## Gate 8 legs and evidence under `--out` (g8t)
+
+| leg | what |
+| --- | ---- |
+| `import/sources`, `import/fixture`, `import/receiver` | the editor: `make_sources.gd` (synthetic sources and `.import` settings into the fixture's ignored `tex/`), `--import` (S3TC/BPTC and ETC2/ASTC variants), the receiver's import |
+| `oracle` | `oracle.gd` on the template, headless: `oracle.json` (per `.ctex`: source format, `Image.decompress` result, GRT1 payload SHA-256) and `<name>.<family>.grt1` |
+| `capture` | headless, `GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=engine`, both sinks (`recording.rs8`, `recording-patch.rs8`), store, `textures.jsonl` |
+| `decode-off/capture` | headless, no gate 8 policy (the default /6 sink, `recording.rs2`): today's refusals |
+| `sabotage-perturb-decode/{capture,receiver}` | `GRC_SABOTAGE=perturb-decode` from frame 11 (step 1), and the native receiver on it |
+| `reference` | rendered, `RS_FIXTURE_SOURCE=decoded`: the oracle's payloads drawn as plain textures |
+| `reference-hw` | rendered, the `.ctex` itself (GPU-sampled, or GLES3's own CPU fallback): informative |
+| `receiver`, `receiver-patch` | the native receiver on `capture`'s full and patch sinks |
+| `decode-cost/oracle-timing`, `decode-cost/capture` | timing group `decode-cost` (`timing_leg`, real time, skipped on hosted runners): best-of-3 `Image.decompress` of the 2048×2048 cost textures, and the hook's own decode, copy and hash times on them (`RS_FIXTURE_VARIANT=cost`) |
+
+## Gate 8 criteria (g8t)
+
+`g8t-import`, `decode-census`, `decode-oracle`, `decode-wire`, `decode-off`, `decode-reference`
+(exact), `sabotage-perturb-decode`, `decode-cost` (measured, no budget) and the informative,
+non-gating `decode-hardware-band`; each criterion is spelled out in `lib/gate8-tex-checks.ts` and
+[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q3 "As built (G8t)".
