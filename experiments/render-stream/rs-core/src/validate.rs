@@ -433,6 +433,9 @@ fn feq(a: &[f32], b: &[f32]) -> bool {
 
 fn texture_states_equal(a: &Texture, b: &Texture) -> bool {
     ieq(a.id as i64, b.id as i64)
+        && a.origin == b.origin
+        && a.adopted_content == b.adopted_content
+        && a.source_format == b.source_format
         && a.kind == b.kind
         && a.status == b.status
         && a.reason == b.reason
@@ -460,6 +463,8 @@ fn texture_states_equal(a: &Texture, b: &Texture) -> bool {
 
 fn mesh_states_equal(a: &Mesh, b: &Mesh) -> bool {
     ieq(a.id as i64, b.id as i64)
+        && a.origin == b.origin
+        && a.adopted_content == b.adopted_content
         && a.status == b.status
         && a.reason == b.reason
         && ieq(a.version, b.version)
@@ -485,6 +490,7 @@ fn opt_id_eq(a: Option<Id>, b: Option<Id>) -> bool {
 
 fn shader_states_equal(a: &Shader, b: &Shader) -> bool {
     ieq(a.id as i64, b.id as i64)
+        && a.origin == b.origin
         && a.status == b.status
         && a.reason == b.reason
         && ieq(a.version, b.version)
@@ -532,6 +538,7 @@ fn param_value_eq(a: &ParamValue, b: &ParamValue) -> bool {
 
 fn material_states_equal(a: &Material, b: &Material) -> bool {
     ieq(a.id as i64, b.id as i64)
+        && a.origin == b.origin
         && a.status == b.status
         && a.reason == b.reason
         && ieq(a.version, b.version)
@@ -935,6 +942,7 @@ fn params_identical(a: &[Param], b: &[Param]) -> bool {
 
 fn material_identical(a: &Material, b: &Material) -> bool {
     a.id == b.id
+        && a.origin == b.origin
         && a.status == b.status
         && a.reason == b.reason
         && a.version == b.version
@@ -1236,8 +1244,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=7).contains(&opts.version),
-            "render-stream version 2..=7"
+            (2..=8).contains(&opts.version),
+            "render-stream version 2..=8"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1453,7 +1461,7 @@ impl Validator {
                 }
             }
             PayloadKind::Texture => {
-                let t = payload::decode_texture(bytes)?;
+                let t = payload::decode_texture_v(bytes, self.opts.version)?;
                 Carried::Texture {
                     format: t.format,
                     width: t.width,
@@ -2047,6 +2055,7 @@ impl Validator {
             for m in &tx.materials {
                 let mat = Material {
                     id: m.id,
+                    origin: m.origin,
                     status: m.status,
                     reason: m.reason,
                     version: m.version,
@@ -2169,7 +2178,9 @@ impl Validator {
             for m in &tx.meshes {
                 let custom_aabb = m.f.map(|f| mesh_f32.arr(f as usize)).unwrap_or([0.0; 6]);
                 if st.meshes.get(&m.id).is_some_and(|old| {
-                    old.status == m.status
+                    old.origin == m.origin
+                        && old.adopted_content == m.adopted_content
+                        && old.status == m.status
                         && old.reason == m.reason
                         && old.version == m.version
                         && bits_eq(&old.custom_aabb, &custom_aabb)
@@ -2180,6 +2191,8 @@ impl Validator {
                 }
                 let mesh = Mesh {
                     id: m.id,
+                    origin: m.origin,
+                    adopted_content: m.adopted_content,
                     status: m.status,
                     reason: m.reason,
                     version: m.version,
@@ -2695,9 +2708,95 @@ impl Validator {
     /// Everything `accept` checks after `applyTransaction`, in order.
     fn post_checks(&mut self, offset: usize) -> Result<(), Error> {
         self.check_invariants()?;
+        self.check_adoption(offset)?;
         self.check_versions(offset)?;
         self.check_resources(offset)?;
         self.check_id_reuse(offset)
+    }
+
+    /// `checkAdoptionInvariants` (render-stream-8.md "Resource tables"; `adoption-entry`,
+    /// `decode-entry`), over what the transaction carries: an "adopted" origin on any canvas, item,
+    /// texture, mesh, shader or material needs a session that declares `adoption`, and a texture's
+    /// `source_format` is non-null only on an "ok" image whose payload format differs from it, in
+    /// a session whose `resources.decode` is "engine". Any entry an earlier transaction carried
+    /// was checked then, so this is the whole-state check TypeScript runs.
+    fn check_adoption(&self, offset: usize) -> Result<(), Error> {
+        if self.opts.version < 8 {
+            return Ok(());
+        }
+        let tx = &self.tx;
+        let e = |code: &'static str, msg: String| {
+            Error::new(code, format!("record at offset {offset}: {msg}"))
+        };
+        if self.session.adoption.is_none() {
+            let adopted = |what: &str, id: Id| {
+                e(
+                    "adoption-entry",
+                    format!("{what} {id} has origin \"adopted\", but the session declares no adoption"),
+                )
+            };
+            for c in &tx.canvases {
+                if c.origin == Origin::Adopted {
+                    return Err(adopted("canvas", c.id));
+                }
+            }
+            for i in &tx.items {
+                if i.origin == Origin::Adopted {
+                    return Err(adopted("item", i.id));
+                }
+            }
+            for t in &tx.textures {
+                if t.origin == Origin::Adopted {
+                    return Err(adopted("texture", t.id));
+                }
+            }
+            for m in &tx.meshes {
+                if m.origin == Origin::Adopted {
+                    return Err(adopted("mesh", m.id));
+                }
+            }
+            for s in &tx.shaders {
+                if s.origin == Origin::Adopted {
+                    return Err(adopted("shader", s.id));
+                }
+            }
+            for m in &tx.materials {
+                if m.origin == Origin::Adopted {
+                    return Err(adopted("material", m.id));
+                }
+            }
+        }
+        let decode_engine = self.session.resources.decode == Some("engine");
+        for t in &tx.textures {
+            let Some(source) = &t.source_format else {
+                continue;
+            };
+            if t.kind != TextureKind::Image || t.status != EntryStatus::Ok {
+                return Err(e(
+                    "decode-entry",
+                    format!("texture {}: source_format needs an \"ok\" image entry", t.id),
+                ));
+            }
+            if t.format.as_deref() == Some(&**source) {
+                return Err(e(
+                    "decode-entry",
+                    format!(
+                        "texture {}: source_format equals the payload format {source}",
+                        t.id
+                    ),
+                ));
+            }
+            if !decode_engine {
+                return Err(e(
+                    "decode-entry",
+                    format!(
+                        "texture {} declares source_format {source}, but the session's resources.decode is not \"engine\"",
+                        t.id
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// `checkResolvedInvariants`, over what the transaction touched.

@@ -56,6 +56,22 @@ pub fn pixel_size(format: &str) -> Option<u64> {
     })
 }
 
+/// The eight float payload formats' pixel sizes, legal at /8 only (render-stream-8.md "Texture
+/// payload", gate8-design.md D9).
+pub fn float_pixel_size(format: &str) -> Option<u64> {
+    Some(match format {
+        "RF" => 4,
+        "RGF" => 8,
+        "RGBF" => 12,
+        "RGBAF" => 16,
+        "RH" => 2,
+        "RGH" => 4,
+        "RGBH" => 6,
+        "RGBAH" => 8,
+        _ => return None,
+    })
+}
+
 fn mip_chain_texels(width: u64, height: u64, mipmaps: bool) -> u128 {
     let (mut w, mut h) = (width as u128, height as u128);
     let mut total = w * h;
@@ -71,7 +87,26 @@ fn mip_chain_texels(width: u64, height: u64, mipmaps: bool) -> u128 {
 
 /// `expectedDataBytes()`: None when the format has no known pixel size.
 pub fn expected_data_bytes(format: &str, width: u64, height: u64, mipmaps: bool) -> Option<u128> {
-    Some(pixel_size(format)? as u128 * mip_chain_texels(width, height, mipmaps))
+    expected_data_bytes_v(format, width, height, mipmaps, 6)
+}
+
+/// [`expected_data_bytes`] at a protocol `version`: from /8 the float formats are sized too (below
+/// /8 they stay unsized, as before).
+pub fn expected_data_bytes_v(
+    format: &str,
+    width: u64,
+    height: u64,
+    mipmaps: bool,
+    version: u8,
+) -> Option<u128> {
+    let size = pixel_size(format).or_else(|| {
+        if version >= 8 {
+            float_pixel_size(format)
+        } else {
+            None
+        }
+    })?;
+    Some(size as u128 * mip_chain_texels(width, height, mipmaps))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,8 +118,13 @@ pub struct TexturePayload<'a> {
     pub data: &'a [u8],
 }
 
-/// `decodeTexturePayload()`.
+/// `decodeTexturePayload()` (at /6).
 pub fn decode_texture(bytes: &[u8]) -> Result<TexturePayload<'_>, Error> {
+    decode_texture_v(bytes, 6)
+}
+
+/// `decodeTexturePayload()` at a protocol `version` (the float formats are sized from /8).
+pub fn decode_texture_v(bytes: &[u8], version: u8) -> Result<TexturePayload<'_>, Error> {
     if bytes.len() < 16 || bytes[..8] != GRT1_MAGIC {
         return Err(err(
             "payload-magic",
@@ -135,7 +175,9 @@ pub fn decode_texture(bytes: &[u8]) -> Result<TexturePayload<'_>, Error> {
             "the trailing bytes do not equal data_len",
         ));
     }
-    if let Some(expected) = expected_data_bytes(&format, width as u64, height as u64, mipmaps) {
+    if let Some(expected) =
+        expected_data_bytes_v(&format, width as u64, height as u64, mipmaps, version)
+    {
         if expected != data_len as u128 {
             return Err(err(
                 "payload-size",

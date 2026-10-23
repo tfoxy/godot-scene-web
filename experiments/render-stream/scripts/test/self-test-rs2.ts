@@ -65,6 +65,7 @@ import {
   resolveRecording,
   statesEqual,
   validateRecording,
+  wireVersionOf,
 } from "../lib/render-stream-2";
 import {
   decodeMeshPayload,
@@ -83,6 +84,7 @@ const GOLDEN4_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-4");
 const GOLDEN5_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-5");
 const GOLDEN6_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-6");
 const GOLDEN7_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-7");
+const GOLDEN8_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-8");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -134,6 +136,9 @@ interface GoldenIndex {
   // golden-7 only (render-stream-7.md "Golden vectors", gate7-design.md Q2): window2.rs7, the
   // credit_window-2 leg with two chained patches.
   window2_leg?: IndependentLeg;
+  // golden-8 only (render-stream-8.md "Golden vectors"): off.rs8, the adoption-null,
+  // decode-off leg with a /8 sabotage declaration.
+  off_leg?: IndependentLeg;
 }
 
 interface IndependentLeg {
@@ -185,19 +190,21 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-7")
-    ? "golden-7"
-    : goldenDir.endsWith("golden-6")
-      ? "golden-6"
-      : goldenDir.endsWith("golden-5")
-        ? "golden-5"
-        : goldenDir.endsWith("golden-4")
-          ? "golden-4"
-          : goldenDir.endsWith("golden-3")
-            ? "golden-3"
-            : "golden-2";
+  const label = goldenDir.endsWith("golden-8")
+    ? "golden-8"
+    : goldenDir.endsWith("golden-7")
+      ? "golden-7"
+      : goldenDir.endsWith("golden-6")
+        ? "golden-6"
+        : goldenDir.endsWith("golden-5")
+          ? "golden-5"
+          : goldenDir.endsWith("golden-4")
+            ? "golden-4"
+            : goldenDir.endsWith("golden-3")
+              ? "golden-3"
+              : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -319,7 +326,7 @@ async function runSuite(
       payloadSha256(bytes) === entry.hash,
       `${label}: payloadSha256(${entry.file}) equals its listed hash`,
     );
-    const decoded = decodeTexturePayload(bytes);
+    const decoded = decodeTexturePayload(bytes, version);
     ok(
       decoded.format === entry.format &&
         decoded.width === entry.width &&
@@ -337,6 +344,7 @@ async function runSuite(
         entry.width,
         entry.height,
         entry.mipmaps,
+        version,
       ) === decoded.data.length,
       `${label}: expectedDataBytes() agrees with ${entry.file}'s actual data length`,
     );
@@ -391,6 +399,7 @@ async function runSuite(
     index.snap_leg,
     index.rate_leg,
     index.window2_leg,
+    index.off_leg,
   ]) {
     if (legEntry === undefined) continue;
     const bytes = await readBytes(goldenDir, legEntry.file);
@@ -446,6 +455,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN5_DIR, 5);
   await runSuite(GOLDEN6_DIR, 6);
   await runSuite(GOLDEN7_DIR, 7);
+  await runSuite(GOLDEN8_DIR, 8);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -501,6 +511,24 @@ async function main(): Promise<void> {
     "golden-6/rate.rs6 decoded as version 7 is rejected with bad-magic",
   );
 
+  // a /8 decode refuses /7 and a /7 decode refuses /8 (same rule, render-stream-8.md).
+  const full8 = await readBytes(GOLDEN8_DIR, "full.rs8");
+  ok(
+    validateRecording(rate7, 8)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-7/rate.rs7 decoded as version 8 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full8, 7)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-8/full.rs8 decoded as version 7 is rejected with bad-magic",
+  );
+  ok(
+    wireVersionOf(full8) === 8 &&
+      wireVersionOf(rate7) === 7 &&
+      wireVersionOf(full6) === 6,
+    "wireVersionOf() reads GRS8 as 8, GRS7 as 7 and every other magic as 6",
+  );
+  await version8Cases(full8, rate7);
+
   unknownItemCases();
   await helloCases();
 
@@ -510,6 +538,94 @@ async function main(): Promise<void> {
   if (failures > 0) {
     process.exitCode = 1;
   }
+}
+
+// Re-frames the session record (the first one) of a recording with a mutated meta object:
+// recomputes meta_len and the record length, leaves every block untouched.
+function reframeSession(
+  bytes: Uint8Array,
+  mutate: (meta: Record<string, unknown>) => void,
+): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const recordLen = view.getUint32(8, true);
+  const metaLen = view.getUint32(12, true);
+  const metaText = Buffer.from(bytes.subarray(16, 16 + metaLen)).toString(
+    "ascii",
+  );
+  const meta = JSON.parse(metaText) as Record<string, unknown>;
+  mutate(meta);
+  const newMeta = Buffer.from(JSON.stringify(meta), "ascii");
+  const tail = bytes.subarray(16 + metaLen, 12 + recordLen);
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(4 + newMeta.length + tail.length, 0);
+  head.writeUInt32LE(newMeta.length, 4);
+  return new Uint8Array(
+    Buffer.concat([
+      Buffer.from(bytes.subarray(0, 8)),
+      head,
+      newMeta,
+      Buffer.from(tail),
+      Buffer.from(bytes.subarray(12 + recordLen)),
+    ]),
+  );
+}
+
+// render-stream-8.md: the version gates the golden vectors cannot show (a /7 stream carrying a /8
+// field), mutated from real recordings, plus the float payload sizes' version gate.
+async function version8Cases(
+  full8: Uint8Array,
+  rate7: Uint8Array,
+): Promise<void> {
+  const first = (bytes: Uint8Array, version: 7 | 8) =>
+    validateRecording(bytes, version)[0] ?? "";
+  // Sanity: re-framing without a change reproduces the recording byte for byte.
+  const same = reframeSession(full8, () => undefined);
+  ok(
+    Buffer.compare(Buffer.from(same), Buffer.from(full8)) === 0,
+    "reframeSession() without a mutation reproduces golden-8/full.rs8 exactly",
+  );
+  const withAdoption = reframeSession(rate7, (meta) => {
+    meta.adoption = null;
+  });
+  ok(
+    first(withAdoption, 7).startsWith("meta-schema: "),
+    "a /7 session carrying the /8 key adoption is rejected (meta-schema)",
+  );
+  const withKind = reframeSession(rate7, (meta) => {
+    meta.sabotage = { kind: "perturb-decode", frame: 1, op: null };
+  });
+  ok(
+    first(withKind, 7).startsWith("meta-schema: "),
+    "a /7 session declaring the /8-only sabotage kind perturb-decode is rejected (meta-schema)",
+  );
+  const noAdoption = reframeSession(full8, (meta) => {
+    delete meta.adoption;
+  });
+  ok(
+    first(noAdoption, 8).startsWith("meta-schema: "),
+    "a /8 session without the adoption key is rejected (meta-schema)",
+  );
+  const noDecode = reframeSession(full8, (meta) => {
+    delete (meta.resources as Record<string, unknown>).decode;
+  });
+  ok(
+    first(noDecode, 8).startsWith("meta-schema: "),
+    "a /8 session without resources.decode is rejected (meta-schema)",
+  );
+  // Float payload formats are sized at /8 only (D9); below /8 they stay unsized, as before.
+  ok(
+    expectedDataBytes("RGBAF", 2, 2, false, 8) === 64 &&
+      expectedDataBytes("RGF", 3, 2, true, 8) === 56 &&
+      expectedDataBytes("RGBH", 4, 4, false, 8) === 96,
+    "expectedDataBytes() sizes RGBAF/RGF/RGBH at /8",
+  );
+  let threw = false;
+  try {
+    expectedDataBytes("RGBAF", 2, 2, false, 7);
+  } catch {
+    threw = true;
+  }
+  ok(threw, "expectedDataBytes() refuses RGBAF below /8");
 }
 
 // protocol/unknown-item-skip.md "Session"/"Transaction": the two optional keys, at /6 (the test encoder speaks /6 since G6b).

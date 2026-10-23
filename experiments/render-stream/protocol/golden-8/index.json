@@ -1,0 +1,238 @@
+{
+  "schema": "render-stream-8-golden-index/1",
+  "protocol": "render-stream/8",
+  "valid": [
+    {
+      "file": "full.rs8",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "2a373a3256c29126daa1d07d7ed9c6329cbace0a331d2197a36b37f24fca4049"
+    },
+    {
+      "file": "patch.rs8",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "52ad9292fcf611a282d92bc4d0fada026e262a85985cb3df7787c4fe55547960"
+    },
+    {
+      "file": "inline.rs8",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "7892716529e888135ee8572aa478d11d87689d9e7d40c7c4bc65bf961c4c74a9"
+    }
+  ],
+  "resolved": "resolved.json",
+  "off_leg": {
+    "file": "off.rs8",
+    "hex": "off.hex",
+    "decoded": "off.decoded.json",
+    "sha256": "dd078a1121e93699544c9054b009d96c948b2034fb75ee25f742f373e61a3283",
+    "resolved": "resolved-off.json"
+  },
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5
+    },
+    {
+      "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+      "bytes": 171,
+      "record_index": 7
+    },
+    {
+      "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+      "bytes": 171,
+      "record_index": 8
+    },
+    {
+      "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+      "bytes": 117,
+      "record_index": 9
+    },
+    {
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "bytes": 256,
+      "record_index": 10
+    },
+    {
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157,
+      "record_index": 11
+    },
+    {
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "bytes": 297,
+      "record_index": 13
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs8",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs8 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs8",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '7' (GRS7), not '8'"
+    },
+    {
+      "file": "invalid/adoption-undeclared.rs8",
+      "code": "adoption-entry",
+      "description": "texture 1 has origin \"adopted\", but the session declares no adoption"
+    },
+    {
+      "file": "invalid/adopted-content-missing.rs8",
+      "code": "adoption-entry",
+      "description": "an adopted texture entry carries adopted_content null"
+    },
+    {
+      "file": "invalid/adopted-content-on-created.rs8",
+      "code": "adoption-entry",
+      "description": "a created texture entry carries adopted_content \"current\""
+    },
+    {
+      "file": "invalid/adopted-content-value.rs8",
+      "code": "meta-schema",
+      "description": "adopted_content is \"stale\", neither null, \"current\" nor \"creation\""
+    },
+    {
+      "file": "invalid/adoption-frame.rs8",
+      "code": "adoption-entry",
+      "description": "adoption.frame is 0, not >= 1"
+    },
+    {
+      "file": "invalid/adoption-mode.rs8",
+      "code": "adoption-entry",
+      "description": "adoption.mode is \"replay\", not \"arm\""
+    },
+    {
+      "file": "invalid/decode-undeclared.rs8",
+      "code": "decode-entry",
+      "description": "texture 1 declares source_format DXT1, but resources.decode is \"off\""
+    },
+    {
+      "file": "invalid/decode-same-format.rs8",
+      "code": "decode-entry",
+      "description": "source_format equals the payload format RGBA8"
+    },
+    {
+      "file": "invalid/decode-source-name.rs8",
+      "code": "meta-schema",
+      "description": "source_format DXT9 is not an Image format name"
+    },
+    {
+      "file": "invalid/decode-freed.rs8",
+      "code": "decode-entry",
+      "description": "a freed texture entry carries source_format DXT1"
+    },
+    {
+      "file": "invalid/decode-policy.rs8",
+      "code": "meta-schema",
+      "description": "resources.decode is \"gpu\", neither \"off\" nor \"engine\""
+    },
+    {
+      "file": "invalid/float-payload-size.rs8",
+      "code": "payload-size",
+      "description": "RGBAF 2x2 needs 64 data bytes, the payload carries 60"
+    }
+  ],
+  "payloads": [
+    {
+      "file": "payloads/a1.grt",
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/a2.grt",
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/f.grt",
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "format": "LA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 137
+    },
+    {
+      "file": "payloads/dec.grt",
+      "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+      "format": "RGBA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 171
+    },
+    {
+      "file": "payloads/rgbaf.grt",
+      "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+      "format": "RGBAF",
+      "width": 2,
+      "height": 2,
+      "mipmaps": false,
+      "bytes": 171
+    },
+    {
+      "file": "payloads/rh.grt",
+      "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+      "format": "RH",
+      "width": 3,
+      "height": 2,
+      "mipmaps": true,
+      "bytes": 117
+    }
+  ],
+  "mesh_payloads": [
+    {
+      "file": "payloads/mesh1-a.grm",
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "primitive": "triangles",
+      "format": 33554440,
+      "vertex_count": 3,
+      "index_count": 0,
+      "bytes": 256
+    },
+    {
+      "file": "payloads/mesh1-b.grm",
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "primitive": "triangles",
+      "format": 33558544,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 297
+    }
+  ],
+  "shader_payloads": [
+    {
+      "file": "payloads/shader2-tint-v1.grp",
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157
+    }
+  ]
+}

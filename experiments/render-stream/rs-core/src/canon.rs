@@ -616,11 +616,28 @@ fn item(w: &mut W, it: &Item, v: u8) {
     w.raw("]}");
 }
 
-fn texture(w: &mut W, t: &Texture) {
+/// The table entries' `origin` (and, at /8, `adopted_content`), right after `id`: "created" below
+/// /8, the entry's own origin from /8 (render-stream-8.md "Resource tables").
+fn table_origin(w: &mut W, origin: Origin, adopted: Option<Option<AdoptedContent>>, v: u8) {
+    if v < 8 {
+        w.raw(",\"origin\":\"created\",");
+        return;
+    }
+    w.raw(",\"origin\":\"");
+    w.raw(origin.as_str());
+    w.raw("\",");
+    if let Some(content) = adopted {
+        w.key("adopted_content");
+        w.opt_str(content.map(|c| c.as_str()));
+        w.raw(",");
+    }
+}
+
+fn texture(w: &mut W, t: &Texture, v: u8) {
     w.raw("{");
     w.key("id");
     w.int(t.id as i64);
-    w.raw(",\"origin\":\"created\",");
+    table_origin(w, t.origin, Some(t.adopted_content), v);
     w.key("kind");
     w.str(t.kind.as_str());
     w.raw(",");
@@ -639,6 +656,11 @@ fn texture(w: &mut W, t: &Texture) {
     w.key("format");
     w.opt_str(t.format.as_deref());
     w.raw(",");
+    if v >= 8 {
+        w.key("source_format");
+        w.opt_str(t.source_format.as_deref());
+        w.raw(",");
+    }
     w.key("width");
     w.int(t.width);
     w.raw(",");
@@ -670,11 +692,11 @@ fn texture(w: &mut W, t: &Texture) {
     w.raw("}");
 }
 
-fn mesh(w: &mut W, m: &Mesh) {
+fn mesh(w: &mut W, m: &Mesh, v: u8) {
     w.raw("{");
     w.key("id");
     w.int(m.id as i64);
-    w.raw(",\"origin\":\"created\",");
+    table_origin(w, m.origin, Some(m.adopted_content), v);
     w.key("status");
     w.str(m.status.as_str());
     w.raw(",");
@@ -716,11 +738,11 @@ fn mesh(w: &mut W, m: &Mesh) {
     w.raw("]}");
 }
 
-fn shader(w: &mut W, s: &Shader) {
+fn shader(w: &mut W, s: &Shader, v: u8) {
     w.raw("{");
     w.key("id");
     w.int(s.id as i64);
-    w.raw(",\"origin\":\"created\",");
+    table_origin(w, s.origin, None, v);
     w.key("status");
     w.str(s.status.as_str());
     w.raw(",");
@@ -788,11 +810,11 @@ fn shader(w: &mut W, s: &Shader) {
     w.raw("]}");
 }
 
-fn material(w: &mut W, m: &Material) {
+fn material(w: &mut W, m: &Material, v: u8) {
     w.raw("{");
     w.key("id");
     w.int(m.id as i64);
-    w.raw(",\"origin\":\"created\",");
+    table_origin(w, m.origin, None, v);
     w.key("status");
     w.str(m.status.as_str());
     w.raw(",");
@@ -896,19 +918,19 @@ fn write_state_as(out: &mut Vec<u8>, st: &ResolvedState, godot: bool) {
     list(w, st.items.values(), |w, i| item(w, i, v));
     w.raw(",");
     w.key("textures");
-    list(w, st.textures.values(), texture);
+    list(w, st.textures.values(), |w, t| texture(w, t, v));
     if v >= 4 {
         w.raw(",");
         w.key("meshes");
-        list(w, st.meshes.values(), mesh);
+        list(w, st.meshes.values(), |w, m| mesh(w, m, v));
     }
     if v >= 5 {
         w.raw(",");
         w.key("shaders");
-        list(w, st.shaders.values(), shader);
+        list(w, st.shaders.values(), |w, s| shader(w, s, v));
         w.raw(",");
         w.key("materials");
-        list(w, st.materials.values(), material);
+        list(w, st.materials.values(), |w, m| material(w, m, v));
     }
     w.raw("}");
 }

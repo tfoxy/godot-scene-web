@@ -401,6 +401,8 @@ fn mesh_state(surfaces: &[(u8, usize)]) -> ResolvedState {
         5,
         Mesh {
             id: 5,
+            origin: Origin::Created,
+            adopted_content: None,
             status: EntryStatus::Ok,
             reason: None,
             version: 1,

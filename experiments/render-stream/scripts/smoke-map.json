@@ -141,6 +141,18 @@
       "reach": ["g7:g7-0@gsw", "g7:g7-0@web/rust"]
     },
     {
+      "why": "gate 8 opt-in seams (G8w): the adoption and texture-decode seams, the gate 8 policy parser and their ctests. Their call sites in entry.cpp and hooks.cpp are shared capture files and still reach '*'; a change confined to these files cannot move a /2-/7 run, so the build, the pure self-tests and the default gate 0 leg are enough. G8t adds native:gate8@* here",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_adopt.*",
+        "experiments/render-stream/capture/src/rs_texture_decode.*",
+        "experiments/render-stream/capture/src/rs_gate8_policy.*",
+        "experiments/render-stream/capture/test/rs_gate8_policy_test.cpp",
+        "experiments/render-stream/capture/test/rs8_codec_test.cpp"
+      ],
+      "reach": ["capture-build", "pure", "native:gate0@*"],
+      "exclusive": true
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",

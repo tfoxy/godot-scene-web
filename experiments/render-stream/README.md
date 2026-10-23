@@ -77,9 +77,11 @@ result under `results/gate7/`; the rest link to their design section under `prot
   `protocol/gate5_5-design.md`, [protocol/gate7-design.md](protocol/gate7-design.md).
 - Wire formats: `protocol/render-stream-0.md` through
   [protocol/render-stream-7.md](protocol/render-stream-7.md) (each version supersedes the last;
-  `/7` is live-transport-only).
+  `/7` is live-transport-only), and the opt-in
+  [protocol/render-stream-8.md](protocol/render-stream-8.md) (G8w: adoption, decode and float
+  payloads on the wire; file sinks stay on `/6` unless `GRC_STREAM_VERSION=8`).
 - Feature manifests: `protocol/features/`. Golden vectors: `protocol/golden/` through
-  `protocol/golden-7/`.
+  `protocol/golden-8/`.
 - Topical notes: `protocol/canvas-texture-headless.md`, `protocol/unknown-item-skip.md`.
 - Gate 8 (the STS2 blockers' generic halves: late-join adoption, compressed textures, host size,
   pre-arm materials): [protocol/gate8-design.md](protocol/gate8-design.md).

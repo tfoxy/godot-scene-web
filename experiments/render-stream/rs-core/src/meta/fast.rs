@@ -398,12 +398,15 @@ fn texture(c: &mut Cur) -> O<Texture> {
     c.lit(b"}")?;
     Some(Texture {
         id,
+        origin: Origin::Created,
+        adopted_content: None,
         kind,
         status,
         reason,
         version,
         hash,
         format,
+        source_format: None,
         width,
         height,
         mipmaps,
@@ -456,6 +459,8 @@ fn mesh(c: &mut Cur) -> O<MeshMeta> {
     c.lit(b"}")?;
     Some(MeshMeta {
         id,
+        origin: Origin::Created,
+        adopted_content: None,
         status,
         reason,
         version,
@@ -550,6 +555,7 @@ fn shader(c: &mut Cur) -> O<Shader> {
     c.lit(b"}")?;
     Some(Shader {
         id,
+        origin: Origin::Created,
         status,
         reason,
         version,
@@ -590,6 +596,7 @@ fn material(c: &mut Cur, params: &mut Vec<ParamMeta>) -> O<MaterialMeta> {
     c.lit(b"}")?;
     Some(MaterialMeta {
         id,
+        origin: Origin::Created,
         status,
         reason,
         version,

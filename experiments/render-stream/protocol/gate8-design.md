@@ -1,6 +1,8 @@
 # Gate 8 design: the STS2 blockers, generic halves
 
-Status: contract for gate 8, written 2026-10-22/23. Nothing here is implemented. The user decided on
+Status: contract for gate 8, written 2026-10-22/23. G8w (the /8 wire, policy parsing and empty seams,
+2026-10-23) is landed: [render-stream-8.md](render-stream-8.md), [results/gate8/g8w.md](../results/gate8/g8w.md).
+Nothing else here is implemented. The user decided on
 2026-10-22 that public release needs the gate 8 blockers first (memory g31-good-enough-release-first).
 Gate 8 is "integrate behind couch-coop's instance rules, with the streaming seat opting out of the
 headless visual freeze/suspender" (`docs/handoff-headless-render-stream.md`, gate table). The single

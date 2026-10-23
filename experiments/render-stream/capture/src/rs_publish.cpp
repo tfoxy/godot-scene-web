@@ -147,6 +147,15 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"perturb-vertex", SabotageKind::PerturbVertex},
       {"perturb-shader", SabotageKind::PerturbShader},
       {"retain-superseded", SabotageKind::RetainSuperseded},
+      // New at /8 (G8w, gate8-design.md Q2-Q5); declared on the wire here, acted on by G8a/G8t/
+      // G8h/G8m (they need a /8 sink: rs_gate8_policy.h).
+      {"adopt-skip-state", SabotageKind::AdoptSkipState},
+      {"adopt-no-redraw", SabotageKind::AdoptNoRedraw},
+      {"adopt-skip-layers", SabotageKind::AdoptSkipLayers},
+      {"perturb-decode", SabotageKind::PerturbDecode},
+      {"size-before-adopt", SabotageKind::SizeBeforeAdopt},
+      {"adopt-raw-shader-code", SabotageKind::AdoptRawShaderCode},
+      {"adopt-skip-params", SabotageKind::AdoptSkipParams},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -392,6 +401,7 @@ ResourcesInfo resources_info(const ResourcePolicy &policy, Fetch out_of_band_fet
   info.has_http_path = info.fetch == Fetch::Http;
   info.http_path = info.has_http_path ? "/resources/sha256/" : "";
   info.auth = Auth::None;
+  info.decode = policy.decode;
   return info;
 }
 
@@ -415,6 +425,8 @@ bool Publisher::start(const Session &tmpl) {
   }
   bool ok = true;
   const std::vector<std::uint8_t> magic_bytes = magic(tmpl.version);
+  // G8w: a /8 file sink publishes /8 transactions (the mirror stamps its snapshots V6).
+  stamp_v8_ = tmpl.version == ProtocolVersion::V8;
   for (Lane &lane : lanes_) {
     if (lane.sink == nullptr) {
       continue;
@@ -634,6 +646,9 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
   }
   published.state.seq = next_seq_++;
   published.state.frame = frame;
+  if (stamp_v8_) {
+    published.state.version = ProtocolVersion::V8;
+  }
 
   // Out of band first: every payload the transactions below name is in the store before any
   // sink can be read (gate2-design.md Q4 "File sinks").

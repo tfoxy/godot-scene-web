@@ -343,7 +343,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V7   ? kProtocolV7
+  return version == ProtocolVersion::V8   ? kProtocolV8
+         : version == ProtocolVersion::V7 ? kProtocolV7
          : version == ProtocolVersion::V6 ? kProtocolV6
          : version == ProtocolVersion::V5 ? kProtocolV5
          : version == ProtocolVersion::V4 ? kProtocolV4
@@ -399,7 +400,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   ControlMessage message;
   if (type->text == "hello") {
     message.type = ControlType::Hello;
-    if (version == ProtocolVersion::V7) {
+    if (is_v7_or_later(version)) {
       // render-stream-7.md "Hello": /6's five keys plus receiver_kind, credit_window, token,
       // manifest_sha256 and five presentation integers (gate7-design.md Q2).
       keys = {"type",
@@ -472,7 +473,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
       } else {
         return fail("credit_stage \"" + stage + "\" is not submitted or applied");
       }
-      if (version == ProtocolVersion::V7) {
+      if (is_v7_or_later(version)) {
         if (!str("receiver_kind", &message.receiver_kind)) {
           return false;
         }
@@ -794,10 +795,14 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       c.s.stream_id = generate_id();
       c.opened_ns = event.t_ns;
       // G7n: the subprotocol decides the connection's version (render-stream.7 -> /7).
-      c.version = event.subprotocol == kSubprotocolV7 ? ProtocolVersion::V7 : template_.version;
+      // G8w: render-stream.8 -> /8 (render-stream-8.md "Live transport").
+      c.version = event.subprotocol == kSubprotocolV8   ? ProtocolVersion::V8
+                  : event.subprotocol == kSubprotocolV7 ? ProtocolVersion::V7
+                  : template_.version == ProtocolVersion::V8 ? ProtocolVersion::V6
+                                                             : template_.version;
       c.s.version = version_number(c.version);
       c.s.origin = event.origin;
-      if (!config_.auth_token.empty() && c.version != ProtocolVersion::V7) {
+      if (!config_.auth_token.empty() && !is_v7_or_later(c.version)) {
         // Below /7 the token is the upgrade's bearer header, checked by the transport before the
         // connection ever opened (rs_ws.h); an open connection passed it.
         c.s.token_checked = true;
@@ -891,7 +896,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
           .num("inbound_buffer_bytes", message.inbound_buffer_bytes)
           .num("max_message_bytes", c.s.max_message_bytes);
       bool refuse = false;
-      if (c.version == ProtocolVersion::V7) {
+      if (is_v7_or_later(c.version)) {
         // render-stream-7.md "Hello" (gate7-design.md Q2, Q3): record every key but `token`.
         c.s.has_hello7 = true;
         c.s.receiver_kind = message.receiver_kind;
@@ -1200,8 +1205,10 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
                     .take());
   }
   Snapshot cur = snapshot.state;
-  if (c.version == ProtocolVersion::V7) {
-    cur.version = ProtocolVersion::V7;  // byte-identical to /6 (render-stream-7.md), but faithful
+  if (is_v7_or_later(c.version)) {
+    // /7 is byte-identical to /6 (render-stream-7.md) but faithful; /8 carries the new table
+    // fields (render-stream-8.md).
+    cur.version = c.version;
   }
   cur.seq = c.next_seq;
   cur.frame = frame;

@@ -152,7 +152,9 @@
 #include "hooks.h"
 #include "iface.h"
 #include "report.h"
+#include "rs_adopt.h"
 #include "rs_canvas_texture_shim.h"
+#include "rs_gate8_policy.h"
 #include "rs_histogram.h"
 #include "rs_live.h"
 #include "rs_mirror.h"
@@ -160,6 +162,7 @@
 #include "rs_resource_log.h"
 #include "rs_resource_store.h"
 #include "rs_root_query.h"
+#include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
 #include "rs_ws.h"
 #include "vtable.h"
@@ -223,6 +226,10 @@ struct Stream {
   rs2::UnknownItemPolicy unknown_item_policy = rs2::UnknownItemPolicy::Strict;
   // gate5_5-design.md D4: GRC_SHADER_POLICY, read at arm (source | params | exclude).
   rs2::ShaderPolicy shader_policy = rs2::ShaderPolicy::Source;
+  // gate8-design.md D2: GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and the float-format
+  // request, read at arm; and what the adoption seam reported (G8w: nothing).
+  rs::Gate8Policy gate8;
+  rs::AdoptStats adopt_stats;
   std::unique_ptr<rs2::FileRecordSink> full_sink;
   std::unique_ptr<rs2::FileRecordSink> patch_sink;
   std::unique_ptr<rs2::Publisher> publisher;
@@ -524,6 +531,24 @@ std::string result_json() {
     json.object_end();
   } else {
     json.field_null("unknown_items");
+  }
+  // Additive (G8w, gate8-design.md D2): present only when a /8 sink or a gate 8 policy is in play,
+  // so every run without them keeps its result.json unchanged.
+  if (g_stream.gate8.speaks_v8()) {
+    json.key("gate8").object_begin();
+    json.field("file_stream_version", static_cast<int64_t>(
+                   g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6));
+    json.field("adopt", std::string(g_stream.gate8.adopt ? "arm" : "off"));
+    json.field("texture_decode", std::string(g_stream.gate8.decode_engine ? "engine" : "off"));
+    json.field("float_formats", g_stream.gate8.float_formats);
+    json.key("adopt_stats").object_begin();
+    json.field("ran", g_stream.adopt_stats.ran);
+    json.field("canvases", static_cast<int64_t>(g_stream.adopt_stats.canvases));
+    json.field("layers", static_cast<int64_t>(g_stream.adopt_stats.layers));
+    json.field("items", static_cast<int64_t>(g_stream.adopt_stats.items));
+    json.field("residue", static_cast<int64_t>(g_stream.adopt_stats.residue));
+    json.object_end();
+    json.object_end();
   }
   json.object_end();
   // Additive (G1c2).
@@ -1185,6 +1210,28 @@ void stream_start() {
     }
     return;
   }
+  // G8w (gate8-design.md D2): GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and a float format
+  // in GRC_RESOURCE_FORMATS. A gate 8 policy needs /8, so a file sink that is not /8 refuses.
+  {
+    rs::Gate8Policy gate8;
+    std::string error;
+    const bool parsed = rs::parse_gate8_policy(
+        std::getenv("GRC_STREAM_VERSION"), std::getenv("GRC_ADOPT"),
+        std::getenv("GRC_TEXTURE_DECODE"), std::getenv("GRC_RESOURCE_FORMATS"), &gate8, &error);
+    gate8.v8_sabotage = parsed && sabotage.ok && rs::sabotage_needs_v8(sabotage.config.kind);
+    if (!parsed || !rs::gate8_policy_allows(gate8, files, &error)) {
+      log_line("stream: refused gate 8 policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    g_stream.gate8 = gate8;
+    g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
+    rs::texture_decode_set_enabled(gate8.decode_engine);
+  }
   // GRC_HOOK_LOG (Q3d, G6r): on|off, default on.
   const std::string hook_log = env_string("GRC_HOOK_LOG");
   if (!hook_log.empty() && hook_log != "on" && hook_log != "off") {
@@ -1425,7 +1472,9 @@ void stream_start() {
   rs2::Session session;
   // G6b (gate6-design.md D1, render-stream-6.md): the capture speaks render-stream/6 (/5 from
   // G55d, /4 from G5d, /3 from G4e2). The mirror stamps its snapshots V6 to match.
-  session.version = rs2::ProtocolVersion::V6;
+  // G8w (gate8-design.md D2): /8 only when a file sink asked for it (GRC_STREAM_VERSION=8) or a
+  // gate 8 policy needs it; /6 otherwise, and every /2-/7 byte stays as it was.
+  session.version = g_stream.gate8.speaks_v8() ? rs2::ProtocolVersion::V8 : rs2::ProtocolVersion::V6;
   session.materials.shader_policy = g_stream.shader_policy;
   session.session_id = rs2::generate_id();
   session.engine.version_string = g_state.fp.version_string;
@@ -1445,7 +1494,8 @@ void stream_start() {
   // on a headless host (a CanvasTexture created before arming, or no texture).
   const bool headless_host = g_state.display_server == "headless";
   const bool ct_synthesized = rs::canvas_texture_shim().armed();
-  session.features = rs2::gate2_features(headless_host && !ct_synthesized, session.version);
+  // /7 and /8 change no feature list (render-stream-7.md, render-stream-8.md): ask for /6's.
+  session.features = rs2::gate2_features(headless_host && !ct_synthesized, rs2::ProtocolVersion::V6);
   if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
     session.sabotage.frame = sabotage.config.frame;
@@ -1486,6 +1536,16 @@ void stream_start() {
   // min-size write causes is attributed to the root. A failure becomes the
   // sticky root-query-failed.
   rs::root_query_apply(before);
+  // G8w (gate8-design.md D4): adoption runs here, after the root query and before the size policy,
+  // because the policy's relayout reaches the hooks as ordinary calls on adopted items. The seam
+  // is empty until G8a; the session still declares `adoption` so the wire is honest about intent.
+  if (g_stream.gate8.adopt) {
+    rs::AdoptConfig adopt_config;
+    adopt_config.arm_frame = std::max<uint64_t>(1, g_state.frames_total);
+    g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
+    session.adoption.present = true;
+    session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
+  }
   rs::RootInfo after = before;
   bool enforce_called = false;
   bool enforce_ok = true;
@@ -1652,8 +1712,11 @@ void stream_start() {
     server_config.max_clients = static_cast<std::size_t>(live_max_connections);
     // G7n (gate7-design.md D2, Q3): /7 preferred when both are offered; the /7 token travels in
     // the hello (rs_live.h), so its upgrade is not bearer-checked.
-    server_config.subprotocols = {rs2::kSubprotocolV7, "render-stream.6"};
-    server_config.hello_token_subprotocols = {rs2::kSubprotocolV7};
+    // G8w (gate8-design.md D2): render-stream.8 is offered last by default (the default stays /7),
+    // first under GRC_STREAM_VERSION=8, and alone under a gate 8 policy. A /8 upgrade carries the
+    // token in the hello like /7's.
+    server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
+    server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";

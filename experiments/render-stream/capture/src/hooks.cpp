@@ -17,6 +17,7 @@
 #include "rs_resource_log.h"
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
+#include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
 #include "rs_variant.h"
 
@@ -1006,6 +1007,20 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
   }
   if (facts.format < 0 || facts.format >= rs::kImageFormatCount ||
       !g_resource_policy.formats.permitted[facts.format]) {
+    if (rs::texture_decode_enabled() && facts.format >= 0 && facts.format < rs::kImageFormatCount) {
+      // G8w (gate8-design.md D8): the host-decode seam, asked only under GRC_TEXTURE_DECODE=engine.
+      // It declines every request until G8t fills rs_texture_decode.cpp, which will hand back a
+      // payload-ready image here; until then the refusal below stands.
+      rs::DecodeRequest request;
+      request.format = facts.format;
+      request.width = static_cast<int32_t>(facts.width);
+      request.height = static_cast<int32_t>(facts.height);
+      request.mipmaps = facts.mipmaps;
+      request.data = g_iface.image_ptr(image->object);
+      request.data_size = facts.data_size;
+      const rs::DecodeResult decoded = rs::texture_decode(request);
+      (void)decoded;
+    }
     copy.reason = "unsupported-format";
     return copy;
   }

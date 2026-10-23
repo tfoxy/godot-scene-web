@@ -317,7 +317,7 @@ impl Suite<'_> {
             let got = match self.version {
                 5 => payload::decode_shader(&bytes).err(),
                 4 => payload::decode_mesh(&bytes).err(),
-                _ => payload::decode_texture(&bytes).err(),
+                _ => payload::decode_texture_v(&bytes, self.version).err(),
             };
             self.ok(
                 got.as_ref().is_some_and(|e| e.code == code),
@@ -337,7 +337,7 @@ impl Suite<'_> {
                 format!("payloadSha256({file}) equals its listed hash"),
                 "",
             );
-            match payload::decode_texture(&bytes) {
+            match payload::decode_texture_v(&bytes, self.version) {
                 Ok(t) => {
                     let shape = t.format == s(&entry, "format")
                         && Some(t.width) == entry.get("width").and_then(|v| v.as_i64())
@@ -348,7 +348,7 @@ impl Suite<'_> {
                         format!("decodeTexturePayload({file}) decodes to its listed shape"),
                         "",
                     );
-                    let expected = payload::expected_data_bytes(
+                    let expected = payload::expected_data_bytes_v(
                         &s(&entry, "format"),
                         entry.get("width").and_then(|v| v.as_u64()).unwrap_or(0),
                         entry.get("height").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -356,6 +356,7 @@ impl Suite<'_> {
                             .get("mipmaps")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
+                        self.version,
                     );
                     self.ok(
                         expected == Some(t.data.len() as u128),
@@ -477,7 +478,13 @@ impl Suite<'_> {
                 }
             }
         }
-        for key in ["params_leg", "presentation_leg", "snap_leg", "rate_leg"] {
+        for key in [
+            "params_leg",
+            "presentation_leg",
+            "snap_leg",
+            "rate_leg",
+            "off_leg",
+        ] {
             let Some(leg) = index.get(key).cloned() else {
                 continue;
             };
@@ -523,10 +530,10 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-7 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-8 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=7u8 {
+    for v in 2..=8u8 {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -542,6 +549,7 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (6, 5),
         (5, 6),
         (6, 7),
+        (8, 7),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

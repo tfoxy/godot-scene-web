@@ -142,6 +142,9 @@ bool mesh_surface_equal(const MeshSurface &a, const MeshSurface &b) {
 // render-stream-4.md "Mesh table": "exactly the texture table's full/patch/resolve semantics",
 // so every JSON field participates (no content_version-style exemption, same as textures).
 bool mesh_entry_equal(const MeshEntry &a, const MeshEntry &b) {
+  if (a.origin != b.origin || a.adopted_content != b.adopted_content) {
+    return false;
+  }
   if (a.status != b.status || a.has_reason != b.has_reason) {
     return false;
   }
@@ -177,6 +180,9 @@ bool builtin_cim_equal(const BuiltinCanvasItemMaterial &a, const BuiltinCanvasIt
 }
 
 bool shader_entry_equal(const ShaderEntry &a, const ShaderEntry &b) {
+  if (a.origin != b.origin) {
+    return false;
+  }
   if (a.status != b.status || a.has_reason != b.has_reason) {
     return false;
   }
@@ -222,6 +228,9 @@ bool shader_entry_equal(const ShaderEntry &a, const ShaderEntry &b) {
 }
 
 bool material_entry_equal(const MaterialEntry &a, const MaterialEntry &b) {
+  if (a.origin != b.origin) {
+    return false;
+  }
   if (a.status != b.status || a.has_reason != b.has_reason) {
     return false;
   }
@@ -238,6 +247,13 @@ bool material_entry_equal(const MaterialEntry &a, const MaterialEntry &b) {
 }
 
 bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
+  // new at /8: origin, adopted_content and source_format participate in the entry's identity
+  // (they are defaults below /8, so every earlier comparison is unchanged).
+  if (a.origin != b.origin || a.adopted_content != b.adopted_content ||
+      a.has_source_format != b.has_source_format ||
+      (a.has_source_format && a.source_format != b.source_format)) {
+    return false;
+  }
   if (a.kind != b.kind || a.status != b.status || a.has_reason != b.has_reason) {
     return false;
   }
@@ -290,11 +306,12 @@ Transaction make_full(const Snapshot &cur) {
   t.canvases = cur.canvases;
   t.textures = cur.textures;
   if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5 ||
-      cur.version == ProtocolVersion::V6 || cur.version == ProtocolVersion::V7) {
+      cur.version == ProtocolVersion::V6 || cur.version == ProtocolVersion::V7 ||
+      cur.version == ProtocolVersion::V8) {
     t.meshes = cur.meshes;
   }
   if (cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
-      cur.version == ProtocolVersion::V7) {
+      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -388,7 +405,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
   // its shader/material tables and mesh table forward unchanged).
   const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
-                      cur.version == ProtocolVersion::V7;
+                      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8;
   const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     for (const auto &[id, ptr] : base_meshes) {
@@ -488,7 +505,7 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
 
   // is_v5 means "V5 or later" (see make_patch()'s comment above).
   const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6 ||
-                      txn.version == ProtocolVersion::V7;
+                      txn.version == ProtocolVersion::V7 || txn.version == ProtocolVersion::V8;
   const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
 
   if (txn.encoding == Encoding::Full) {

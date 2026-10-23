@@ -245,6 +245,16 @@ void append_blocks_descriptor(
   out += "]";
 }
 
+// render-stream-8.md "Resource tables": adopted_content is null for a created entry.
+void append_json_adopted_content(std::string &out, AdoptedContent v) {
+  switch (v) {
+  case AdoptedContent::None: out += "null"; return;
+  case AdoptedContent::Current: out += "\"current\""; return;
+  case AdoptedContent::Creation: out += "\"creation\""; return;
+  }
+  out += "null";
+}
+
 void append_canvas_texture(std::string &out, const TextureEntry &t) {
   out += ",\"canvas\":";
   if (!t.has_canvas) {
@@ -268,10 +278,19 @@ void append_canvas_texture(std::string &out, const TextureEntry &t) {
 // present) onto `mesh_f32` and recording the resulting offset as "f" -- the same running-offset
 // pattern cmd_f32/"f" uses for commands, except here the stride is fixed (0 or 6 floats) rather
 // than kind-dependent.
-void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<float> &mesh_f32) {
+void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<float> &mesh_f32,
+                       bool v8) {
   out += "{\"id\":";
   append_json_int(out, mesh.id);
-  out += ",\"origin\":\"created\"";
+  if (v8) {
+    // render-stream-8.md "Resource tables": origin may be "adopted"; adopted_content follows it.
+    out += ",\"origin\":";
+    append_json_string(out, to_wire(mesh.origin));
+    out += ",\"adopted_content\":";
+    append_json_adopted_content(out, mesh.adopted_content);
+  } else {
+    out += ",\"origin\":\"created\"";
+  }
   out += ",\"status\":";
   append_json_string(out, to_wire(mesh.status));
   out += ",\"reason\":";
@@ -312,10 +331,17 @@ void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<floa
   out += "]}";
 }
 
-void append_texture_entry(std::string &out, const TextureEntry &t) {
+void append_texture_entry(std::string &out, const TextureEntry &t, bool v8) {
   out += "{\"id\":";
   append_json_int(out, t.id);
-  out += ",\"origin\":\"created\"";
+  if (v8) {
+    out += ",\"origin\":";
+    append_json_string(out, to_wire(t.origin));
+    out += ",\"adopted_content\":";
+    append_json_adopted_content(out, t.adopted_content);
+  } else {
+    out += ",\"origin\":\"created\"";
+  }
   out += ",\"kind\":";
   append_json_string(out, to_wire(t.kind));
   out += ",\"status\":";
@@ -332,6 +358,11 @@ void append_texture_entry(std::string &out, const TextureEntry &t) {
   append_json_optional_string(out, t.has_hash, t.hash);
   out += ",\"format\":";
   append_json_optional_string(out, t.has_format, t.format);
+  if (v8) {
+    // render-stream-8.md "Resource tables": source_format, right after format.
+    out += ",\"source_format\":";
+    append_json_optional_string(out, t.has_source_format, t.source_format);
+  }
   out += ",\"width\":";
   append_json_int(out, t.width);
   out += ",\"height\":";
@@ -369,10 +400,15 @@ void append_param_entry(std::string &out, const Param &p, std::vector<double> &p
 }
 
 // render-stream-5.md "Shader table".
-void append_shader_entry(std::string &out, const ShaderEntry &s) {
+void append_shader_entry(std::string &out, const ShaderEntry &s, bool v8) {
   out += "{\"id\":";
   append_json_int(out, s.id);
-  out += ",\"origin\":\"created\"";
+  if (v8) {
+    out += ",\"origin\":";
+    append_json_string(out, to_wire(s.origin));
+  } else {
+    out += ",\"origin\":\"created\"";
+  }
   out += ",\"status\":";
   append_json_string(out, to_wire(s.status));
   out += ",\"reason\":";
@@ -437,10 +473,16 @@ void append_shader_entry(std::string &out, const ShaderEntry &s) {
 }
 
 // render-stream-5.md "Material table".
-void append_material_entry(std::string &out, const MaterialEntry &m, std::vector<double> &param_f64) {
+void append_material_entry(std::string &out, const MaterialEntry &m, std::vector<double> &param_f64,
+                           bool v8) {
   out += "{\"id\":";
   append_json_int(out, m.id);
-  out += ",\"origin\":\"created\"";
+  if (v8) {
+    out += ",\"origin\":";
+    append_json_string(out, to_wire(m.origin));
+  } else {
+    out += ",\"origin\":\"created\"";
+  }
   out += ",\"status\":";
   append_json_string(out, to_wire(m.status));
   out += ",\"reason\":";
@@ -474,6 +516,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V8) {
+    return std::vector<std::uint8_t>(kMagicV8.begin(), kMagicV8.end());
+  }
   if (version == ProtocolVersion::V7) {
     return std::vector<std::uint8_t>(kMagicV7.begin(), kMagicV7.end());
   }
@@ -495,7 +540,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V7
+      session.version == ProtocolVersion::V8
+          ? kProtocolV8
+          : session.version == ProtocolVersion::V7
           ? kProtocolV7
           : (session.version == ProtocolVersion::V6
                  ? kProtocolV6
@@ -543,7 +590,10 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string_array(m, sorted_copy(session.capture.hooks_omitted));
   m += "}";
 
-  const bool is_v7 = session.version == ProtocolVersion::V7;
+  const bool is_v8 = session.version == ProtocolVersion::V8;
+  // is_v7 means "V7 or later": /8 is /7 plus render-stream-8.md's list, so it keeps the
+  // publication credit_window.
+  const bool is_v7 = is_v8 || session.version == ProtocolVersion::V7;
   // is_v6 means "V6 or later": /7 is a delta on /6 that keeps everything /6 added (presentation
   // stretch declarations, the top-level publication key, canvas layer/sublayer) unless
   // render-stream-7.md says otherwise.
@@ -629,6 +679,11 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_optional_string(m, session.resources.has_http_path, session.resources.http_path);
   m += ",\"auth\":";
   append_json_string(m, to_wire(session.resources.auth));
+  if (is_v8) {
+    // render-stream-8.md "Session": decode, after auth (the end of the resources object).
+    m += ",\"decode\":";
+    append_json_string(m, to_wire(session.resources.decode));
+  }
   m += "}";
 
   if (is_v5) {
@@ -707,6 +762,18 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   if (session.unknown_item_policy == UnknownItemPolicy::Skip && is_v4_or_later) {
     m += ",\"unknown_item_policy\":\"skip\"";
   }
+  if (is_v8) {
+    // render-stream-8.md "Session": adoption, always present at /8, right after
+    // unknown_item_policy (or after sabotage when that key is absent).
+    m += ",\"adoption\":";
+    if (session.adoption.present) {
+      m += "{\"mode\":\"arm\",\"frame\":";
+      append_json_int(m, session.adoption.frame);
+      m += "}";
+    } else {
+      m += "null";
+    }
+  }
   m += ",";
   append_blocks_descriptor(m, {{"clear_color", "f32", 4},
                                 {"root_canvas_xform", "f32", 6},
@@ -729,8 +796,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   // render-stream-7.md: transactions are byte-identical to /6 (gate7-design.md D2), so is_v6
   // (meaning "V6 or later") is only needed for the unknown_items version gate below and the
   // canvas layer/sublayer keys /6 added.
+  const bool v8 = transaction.version == ProtocolVersion::V8;
   const bool is_v6 = transaction.version == ProtocolVersion::V6 ||
-                      transaction.version == ProtocolVersion::V7;
+                      transaction.version == ProtocolVersion::V7 || v8;
   std::string m;
   m += "{\"type\":\"transaction\",\"seq\":";
   append_json_int(m, transaction.seq);
@@ -882,7 +950,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
       if (i != 0) {
         materials_json += ",";
       }
-      append_material_entry(materials_json, transaction.materials[i], param_f64);
+      append_material_entry(materials_json, transaction.materials[i], param_f64, v8);
     }
     materials_json += "]";
   }
@@ -1214,7 +1282,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (i != 0) {
       m += ",";
     }
-    append_texture_entry(m, transaction.textures[i]);
+    append_texture_entry(m, transaction.textures[i], v8);
   }
   m += "]";
 
@@ -1225,7 +1293,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
       if (i != 0) {
         m += ",";
       }
-      append_mesh_entry(m, transaction.meshes[i], mesh_f32);
+      append_mesh_entry(m, transaction.meshes[i], mesh_f32, v8);
     }
     m += "]";
   }
@@ -1237,7 +1305,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
       if (i != 0) {
         m += ",";
       }
-      append_shader_entry(m, transaction.shaders[i]);
+      append_shader_entry(m, transaction.shaders[i], v8);
     }
     m += "]";
     m += materials_json;

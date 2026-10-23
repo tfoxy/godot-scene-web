@@ -1659,6 +1659,87 @@ void test_v6_and_v7_on_one_hub() {
   }
 }
 
+// G8w (gate8-design.md D2, render-stream-8.md "Live transport"): render-stream.8 makes a connection
+// /8 -- the GRS8 magic, the /8 session (adoption, resources.decode) and /7's hello shape under the
+// protocol string render-stream/8. A /6 connection on a /8-templated hub still speaks /6, and each
+// version's hello is a protocol error on the other's connection.
+void test_v8_connection() {
+  Session tmpl = template_v6();
+  tmpl.version = ProtocolVersion::V8;
+  tmpl.adoption.present = true;
+  tmpl.adoption.frame = 7;
+  tmpl.resources.decode = TextureDecode::Engine;
+  FakeTransport transport;
+  LiveConfig config;
+  config.credit_window_max = 2;
+  Hub hub(&transport, config, tmpl);
+  hub.on_event(opened_with(1, "render-stream.6"), 0);
+  hub.on_event(opened_with(2, "render-stream.8", "http://127.0.0.1:5173"), 0);
+  hub.on_event(opened_with(3, "render-stream.7"), 0);
+  const auto hello8 = [](const std::string &token, int window) {
+    std::string text = hello7(token, window);
+    const std::string from = "render-stream/7";
+    text.replace(text.find(from), from.size(), "render-stream/8");
+    return text;
+  };
+  hub.on_event(text(1, kHello6), 0);
+  hub.on_event(text(2, hello8("null", 2)), 0);
+  hub.on_event(text(3, hello7("null", 1)), 0);
+  Captured snapshot = captured_v6();
+  hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1, 16000000ULL) ? &snapshot : nullptr, 1, 1000);
+  const std::vector<Sent> b6 = of_conn(transport, Sent::Binary, 1);
+  const std::vector<Sent> b8 = of_conn(transport, Sent::Binary, 2);
+  const std::vector<Sent> b7 = of_conn(transport, Sent::Binary, 3);
+  check(b6.size() == 2 && b8.size() == 2 && b7.size() == 2, "all three versions got session + seq 1");
+  if (b6.size() == 2 && b8.size() == 2 && b7.size() == 2) {
+    const std::vector<std::uint8_t> m8 = magic(ProtocolVersion::V8);
+    check(std::equal(m8.begin(), m8.end(), b8[0].bytes.begin()), "the /8 connection starts GRS8");
+    const std::string s6 = meta_at(b6[0].bytes, 8);
+    const std::string s7 = meta_at(b7[0].bytes, 8);
+    const std::string s8 = meta_at(b8[0].bytes, 8);
+    check(has(s8, "\"protocol\":\"render-stream/8\"") &&
+              has(s8, "\"adoption\":{\"mode\":\"arm\",\"frame\":7}") &&
+              has(s8, "\"decode\":\"engine\"") &&
+              has(s8, "\"credit_window\":2"),
+          "the /8 session declares adoption, decode and the granted window: " + s8.substr(0, 60));
+    check(has(s6, "\"protocol\":\"render-stream/6\"") && !has(s6, "adoption") && !has(s6, "decode"),
+          "a /6 connection on a /8 template still speaks /6, with no /8 key");
+    check(has(s7, "\"protocol\":\"render-stream/7\"") && !has(s7, "adoption") && !has(s7, "decode"),
+          "a /7 connection on a /8 template still speaks /7, with no /8 key");
+    check(b8[1].bytes.size() > 8 && has(meta_at(b8[1].bytes, 0), "\"type\":\"transaction\""),
+          "the /8 connection's seq 1 is a transaction");
+  }
+  const std::vector<ConnectionSummary> sums = hub.summaries();
+  check(sums.size() == 3 && sums[0].version == 6 && sums[1].version == 8 && sums[2].version == 7,
+        "versions 6, 8 and 7");
+  if (sums.size() == 3) {
+    check(sums[1].has_hello7 && sums[1].credit_window == 2 && sums[1].receiver_kind == "gsw-canvas",
+          "a /8 summary records /7's hello fields");
+  }
+  {
+    FakeTransport t2;
+    Hub h2(&t2, LiveConfig(), tmpl);
+    h2.on_event(opened_with(1, "render-stream.8"), 0);
+    h2.on_event(text(1, hello7("null")), 0);
+    const std::vector<Sent> closes = t2.of(Sent::Close);
+    check(closes.size() == 1 && closes[0].code == 1002 && t2.of(Sent::Binary).empty(),
+          "a /7 hello on a /8 connection closes 1002 with nothing streamed");
+  }
+  {
+    // A /8 hello is refused by the V7 parser, as a /7 hello is by the V8 parser.
+    ControlMessage m;
+    std::string h8 = hello7("null");
+    const std::string from = "render-stream/7";
+    h8.replace(h8.find(from), from.size(), "render-stream/8");
+    check(parse_control(h8, &m, nullptr, ProtocolVersion::V8) &&
+              m.protocol == "render-stream/8" && m.receiver_kind == "gsw-canvas",
+          "parse_control(V8) accepts a /8 hello");
+    check(!parse_control(h8, &m, nullptr, ProtocolVersion::V7), "parse_control(V7) refuses a /8 hello");
+    check(!parse_control(hello7("null"), &m, nullptr, ProtocolVersion::V8),
+          "parse_control(V8) refuses a /7 hello");
+  }
+}
+
 // gate7-design.md D3, Q2 "Host behaviour on the hello": on a bearer session a /7 hello whose
 // token is null or wrong is `error` unauthorized + close 1008 "unauthorized", with nothing sent
 // before or after; the right token streams. token-ignored lets the wrong one through but still
@@ -1772,6 +1853,7 @@ void test_preflight_attribution() {
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
+  test_v8_connection();
   test_v7_hello_token();
   test_preflight_attribution();
   test_control_parser();
