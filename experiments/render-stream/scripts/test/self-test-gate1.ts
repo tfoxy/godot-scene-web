@@ -1989,6 +1989,8 @@ interface SimConn {
   shots: Map<number, number>;
   stalled: number | null;
   refused: number | null;
+  /** credit window 2: the seqs sent after `refused` before its resync reached the host */
+  refusedLate: number[];
   ended: boolean;
   closeCode: number;
   closeReason: string;
@@ -2018,6 +2020,15 @@ interface SimOptions {
   resyncStep?: number;
   /** the host does not answer the resync with a full transaction (a broken host) */
   resyncNoFull?: boolean;
+  /** the host hello's credit_window_granted (unset: no grant in the hello, i.e. window 1) */
+  creditWindow?: number;
+  /** patches the host sends after the refused seq before its resync arrives (in flight: honest
+   * at window 2 for one, a broken host for more, or for any at window 1) */
+  resyncInFlight?: number;
+  /** the first in-flight transaction is the full one and the resync is answered with a patch */
+  inFlightFull?: boolean;
+  /** the credited resync line does not list the slots it freed (`discarded`) */
+  noDiscarded?: boolean;
   ignoreFrom?: number;
   staleFrom?: number;
   /** the receiver closes (1000) after this step's shot and its credit */
@@ -2048,6 +2059,7 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
     shots: new Map(),
     stalled: null,
     refused: null,
+    refusedLate: [],
     ended: false,
     closeCode: 1000,
     closeReason: "end seen",
@@ -2093,6 +2105,9 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
     credit_stage: "submitted",
     inbound_buffer_bytes: 16777216,
     max_message_bytes: 16777216,
+    ...(o.creditWindow !== undefined
+      ? { credit_window_granted: o.creditWindow }
+      : {}),
   });
   const due = new Map<number, { seq: number; kind: "ack" | "refuse" }[]>();
   const schedule = (
@@ -2109,6 +2124,8 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
   let stale: number | null = null;
   let resyncDue = false;
   let resyncDone = false;
+  // credit window 2: in-flight sends still due after the refused one (before its resync arrives)
+  let extraDue = 0;
   let closeAt: number | null = null;
   let readThrough: number | null = null;
   const drain = (
@@ -2142,11 +2159,16 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
         stream_id: o.streamId,
         reason: "injected",
         credited: credits,
+        ...(credits && c.refusedLate.length > 0 && !o.noDiscarded
+          ? { discarded: [...c.refusedLate] }
+          : {}),
         ignored: credits ? null : "stale",
       });
       if (credits) {
         k.resyncs++;
         resyncDue = true;
+        // rs_live.cpp: a resync frees every later in-flight slot with its own
+        for (const late of c.refusedLate) outstanding.delete(late);
       }
     }
     outstanding.delete(ev.seq);
@@ -2167,9 +2189,31 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
     const changed =
       sentFrame >= 1 && !sameState(states[frame - 1], states[sentFrame - 1]);
     let sent: SimSentJson | null = null;
-    if (credit || ignore) {
+    let lineCredit = creditBefore;
+    if (!credit && !ignore && extraDue > 0) {
+      // credit window 2: a send into the second slot while the refused seq still holds the first
+      // (rs_live.cpp: `c.credit = c.window.size() < c.window_slots`); the receiver, awaiting the
+      // full transaction, refuses it too (a received ack and a resync the host finds stale).
+      const first = extraDue === (o.resyncInFlight ?? 0);
+      extraDue--;
       seq++;
-      const full = seq === 1 || (resyncDue && !o.resyncNoFull);
+      const encoding = o.inFlightFull && first ? "full" : "patch";
+      sent = { seq, encoding, bytes: 0 };
+      c.sends.push({ seq, frame, encoding, stateFrame: frame, json: sent });
+      c.refusedLate.push(seq);
+      outstanding.add(seq);
+      k.maxInFlight = Math.max(k.maxInFlight, outstanding.size);
+      lineCredit = (o.creditWindow ?? 1) >= 2;
+      if (!lineCredit) k.sentWithoutCredit++;
+      if (pendingSince !== null)
+        k.maxPendingFrames = Math.max(k.maxPendingFrames, frame - pendingSince);
+      pendingSince = null;
+      sentFrame = frame;
+      schedule(frame + G1D_ACK_LAG, { seq, kind: "refuse" });
+    } else if (credit || ignore) {
+      seq++;
+      const full =
+        seq === 1 || (resyncDue && !o.resyncNoFull && !o.inFlightFull);
       resyncDue = false;
       let stateFrame = frame;
       if (credit && stale !== null) {
@@ -2210,7 +2254,12 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
       if (w && o.resyncStep === w.step && !resyncDone) {
         resyncDone = true;
         c.refused = seq;
-        schedule(frame + G1D_ACK_LAG, { seq, kind: "refuse" });
+        // the resync reaches the host after every in-flight send (resyncInFlight) went out
+        extraDue = o.resyncInFlight ?? 0;
+        schedule(frame + Math.max(G1D_ACK_LAG, extraDue + 1), {
+          seq,
+          kind: "refuse",
+        });
       } else {
         let lag = G1D_ACK_LAG;
         if (w) {
@@ -2242,7 +2291,7 @@ function simulateConn(o: SimOptions, states: TState[]): SimConn {
       frame,
       t_us: at(),
       state: "streaming",
-      credit: creditBefore,
+      credit: lineCredit,
       in_flight: inFlight,
       pending: pendingSince !== null,
       pending_since: pendingSince,
@@ -2381,6 +2430,13 @@ interface G1dLegOptions {
   reconnect?: boolean;
   resync?: boolean;
   resyncNoFull?: boolean;
+  /** credit window 2 (simulateConn's options of the same names) */
+  creditWindow?: number;
+  resyncInFlight?: number;
+  inFlightFull?: boolean;
+  noDiscarded?: boolean;
+  /** the receiver applies the in-flight transactions instead of refusing them */
+  inFlightApplied?: boolean;
   ignoreFrom?: number;
   staleFrom?: number;
   /** connection 2 reuses connection 1's stream_id */
@@ -2413,6 +2469,10 @@ async function writeG1dLeg(
       stallFrames: o.stallFrames ?? G1D_STALL_FRAMES,
       resyncStep: o.resync ? G1D_RESYNC_STEP : undefined,
       resyncNoFull: o.resyncNoFull,
+      creditWindow: o.creditWindow,
+      resyncInFlight: o.resyncInFlight,
+      inFlightFull: o.inFlightFull,
+      noDiscarded: o.noDiscarded,
       ignoreFrom: o.ignoreFrom,
       staleFrom: o.staleFrom,
       closeAfterStep: o.reconnect ? G1D_RECONNECT_STEP : undefined,
@@ -2498,7 +2558,9 @@ async function writeG1dLeg(
       new Uint8Array(streams[i].received),
     );
     for (const tx of summary.transactions) {
-      const refused = tx.meta.seq === c.refused;
+      const refused =
+        tx.meta.seq === c.refused ||
+        (!o.inFlightApplied && c.refusedLate.includes(tx.meta.seq));
       us += 1000;
       txs.push({
         stream: c.connection,
@@ -4044,6 +4106,74 @@ const g1dScenarios: Scenario[] = [
       }),
     checks: { "resync-full": false },
   },
+  // Credit window 2 (G7wd's default): a patch may already be in flight when the host logs the
+  // resync (gate1-g1d-checks.ts checkResyncFull's semantics block). One honest case, then one
+  // mutation per way the window-2 model could be wrong; each names the problem it must report.
+  {
+    name: "g1d: window 2, one patch in flight at the resync (refused, discarded), then the full: resync-full passes",
+    mutate: (out, projects) =>
+      writeG1dLeg(out, projects, "live-resync", {
+        resync: true,
+        creditWindow: 2,
+        resyncInFlight: 1,
+      }),
+    checks: { "resync-full": true, "leg-class-live-resync": true },
+    classes: { "live-resync": "success" },
+  },
+  ...(
+    [
+      [
+        "a host that answers the resync with a patch",
+        { resyncNoFull: true },
+        "expected full with base null",
+      ],
+      [
+        "an in-flight patch the receiver applied",
+        { inFlightApplied: true },
+        "did not refuse it unapplied",
+      ],
+      [
+        "the full one sent before the resync (the in-flight seq) and a patch after it",
+        { inFlightFull: true },
+        "after 1 in flight) is patch",
+      ],
+      [
+        "two patches in flight",
+        { resyncInFlight: 2 },
+        "more than credit window 2 leaves room for",
+      ],
+      [
+        "a resync line that does not list the slot it freed",
+        { noDiscarded: true },
+        "lists discarded []",
+      ],
+      [
+        "a window-1 host with a patch in flight",
+        { creditWindow: undefined },
+        "more than credit window 1 leaves room for",
+      ],
+    ] as const
+  ).map(
+    ([what, o, problem]): Scenario => ({
+      name: `g1d: window 2 mutation, ${what}, fails resync-full`,
+      mutate: (out, projects) =>
+        writeG1dLeg(out, projects, "live-resync", {
+          resync: true,
+          creditWindow: 2,
+          resyncInFlight: 1,
+          ...o,
+        }),
+      checks: { "resync-full": false },
+      report: (r) => {
+        const c = r.checks.find((x) => x.id === "resync-full");
+        assert(
+          `g1d window 2 mutation, ${what}: resync-full names "${problem}"`,
+          c?.detail.includes(problem) === true,
+          c?.detail ?? "check not produced",
+        );
+      },
+    }),
+  ),
   {
     name: "g1d: a killed receiver whose host never reached its quit frame fails host-survives-receiver-loss",
     mutate: (out, projects) =>

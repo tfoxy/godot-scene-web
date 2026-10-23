@@ -193,9 +193,20 @@ with the receiver project's `--import`).
     intermittently at credit window 2 on 4 vCPU, and neither check is loosened:
     - g7-2: the drop-resource and no-cors failure seq. Two transactions arrived in one poll and were
       folded, so the failure landed at the other seq. Seen only on runners: load-sensitive.
-    - g7-1: `resync-full`. A patch was already in flight when the host logged the resync. This also
-      failed once on local NVIDIA at main 2431d26f's code, so it is a G7wd model gap for main to
-      fix, not a runner artifact.
+    - g7-1: `resync-full`, in two ways.
+      - A patch was already in flight when the host logged the resync, so the full one was
+        refused + 2. That also failed on local NVIDIA, so it was a G7wd checker-model gap. FU1
+        fixed it in `gate1-g1d-checks.ts checkResyncFull`: in flight = the seqs sent after the
+        refused one before its resync. There may be at most w − 1 of them (none at window 1), they
+        must equal the resync line's `discarded`, and each must be refused unapplied. The full one
+        is then the next seq.
+      - Still open, a receiver.gd bug the check rightly catches: the forced full arrives folded
+        with the next patch. The raw log shows it on local NVIDIA web-rust (1 of 5). Run
+        39893185658's web-rust failures (2 of 3 repeats) have the same signature. `_apply_newest` tests only the newest (a patch) for the awaited full, so
+        it refuses the full too (`_refuse_coalesced`). Both resyncs are credited, because both
+        seqs are still in the host's window, and each forces another full: 4 fulls, 3 to 5
+        resyncs. gsw passed 3 of 3 remotely with determinism agreeing, but GSW's `refuseForResync`
+        also tests only the newest. g7-1 stays refused until the receiver is fixed.
   - A full-tier `g7live-*` run keeps its other groups remotely. `--and-local` runs the refused
     groups locally with `RS_VALIDATE_GROUPS`.
 - **Environment fixes:**
@@ -397,7 +408,7 @@ iterating.
 | Gate 6 and the gate 7 timing legs (g6l, g6s, g6c, g6p, g7-6 timing, g7-lc, g7-r, g7-k, g7-bench) and the lock self-tests | Wall-clock measurements; hosted VMs are noisier than this machine |
 | The timing groups inside correctness gates (g1c-rate, g1d, g2c-pins, g5f, g55f) | Same reason. They are skipped remotely, and the wrapper prints their local commands |
 | Live g7-2 | Load-sensitive on 4 vCPU runners: two transactions folded into one poll |
-| Live g7-1 | Its `resync-full` check fails intermittently at credit window 2 on NVIDIA as well, since G7wd (2431d26f). That is a model gap on `main` to fix first |
+| Live g7-1 | Web-rust `resync-full` fails when the forced full arrives folded with the next patch: receiver.gd refuses both and the host credits both resyncs. That is a receiver bug, 2 of 3 remotely and 1 of 5 locally. FU1 fixed the in-flight model gap |
 | Phone legs (g31) | The device is attached to this machine |
 | NVIDIA pixel authority | A remote green on llvmpipe/lavapipe means "safe to spend a local GPU run on", not "landed". Llvmpipe has matched the RTX 2060 byte for byte so far, but that is evidence, not the contract |
 
@@ -409,7 +420,12 @@ Risks that remain:
 - **Queueing** when several agents dispatch at once.
 
 Possible next steps (not started):
-- fix g7-1's window-2 model on `main`, then move g7-1 remote.
+- move g7-1 remote once the receivers' resync-at-fold is fixed. While awaiting the full, a fold
+  that holds it should end the wait and apply (receiver.gd `_apply_newest` / `_refuse_for_resync`,
+  GSW `takeQueued` / `refuseForResync`). Then confirm `resync-full` with one `--determinism 2,1`
+  dispatch.
+- g7-2 fold-seq model (archive d86ca3f4/7abbfcbd foldSeqs) needs a rewrite onto main if g7-2 ever
+  goes remote.
 
 ## Sources
 

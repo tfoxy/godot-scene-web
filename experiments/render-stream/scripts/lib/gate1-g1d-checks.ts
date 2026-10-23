@@ -1145,6 +1145,41 @@ export function checkReconnectCleanSlate(evals: Evals): Gate1Check {
   );
 }
 
+/** The seqs after `refused` the host sent before it logged the receiver's resync for it (in log
+ * order): in flight when the resync reached the host. Possible only at credit window >= 2; at
+ * window 1 the refused seq holds the only slot, so nothing later can be sent before its resync
+ * (checkResyncFull's semantics block). Run 39867385871's web live-resync refused seq 470 while
+ * 471, a patch on it, was already sent. */
+export function resyncInFlight(
+  log: readonly LiveLogLine[],
+  refused: number,
+): number[] {
+  const at = log.findIndex((l) => l.event === "resync" && l.seq === refused);
+  if (at < 0) return [];
+  const out: number[] = [];
+  for (const l of log.slice(0, at))
+    if (l.sent && l.sent.seq > refused) out.push(l.sent.seq);
+  return out.sort((a, b) => a - b);
+}
+
+// resync-full at credit window w (render-stream-7.md "Credit with window w"; G7wd made w = 2 the
+// default). Why seq + 1 is no longer always the full one, from the code on both ends:
+//   host, capture/src/rs_live.cpp: a send takes a window slot and needs a free one
+//     (`c.credit = c.window.size() < c.window_slots`, the send path's `c.window.push_back(seq)`),
+//     so at w = 2 the host may send R + 1, a patch on R, before R's answer arrives. The control
+//     handler (`case ControlType::Resync`) credits R's slot, frees every later slot and lists them
+//     in the resync line's `discarded` ("never at window 1: nothing is later"), and sets
+//     `c.resync`; the next send is full (`const bool full = !c.has_base || c.resync`). The late
+//     in-flight seqs' own resyncs then find no slot and are logged credited:false, ignored:"stale".
+//   receiver, receiver/receiver.gd `_refuse_for_resync` and web/gsw-receiver/live.ts
+//     `refuseForResync`: the first transaction in the resync step's window is refused, and while
+//     awaiting the full one every patch is refused the same way (skipped "resync", unapplied, a
+//     resync message instead of the applied ack) until a full transaction arrives.
+// So the model is exact, not a wider seq set: in flight = the seqs the host sent after R before it
+// logged R's resync (resyncInFlight); there are at most w - 1 of them (none at window 1, where
+// any is a failure), they equal the host's own `discarded` list, each is refused unapplied and
+// never acked past received, and the full is the first seq sent after the resync: R + 1 + their
+// count. Exactly two fulls (seq 1 and that one) and one counted resync, as before.
 export function checkResyncFull(evals: Evals): Gate1Check {
   const problems: string[] = [];
   const e = evals.get("live-resync");
@@ -1177,13 +1212,48 @@ export function checkResyncFull(evals: Evals): Gate1Check {
       )
     )
       problems.push(`seq ${rs.seq} was acked past received`);
+    // credit window w (the semantics block above): up to w - 1 seqs in flight at the resync.
+    // The window the host granted (G7q: its hello line), as deliveryReport reads it.
+    const window =
+      log.find((l) => l.event === "hello")?.credit_window_granted ?? 1;
+    const inFlight = resyncInFlight(log, rs.seq as number);
+    if (inFlight.length > Math.max(0, window - 1))
+      problems.push(
+        `${inFlight.length} transactions after seq ${rs.seq} were sent before the host logged the resync, more than credit window ${window} leaves room for`,
+      );
+    // the host's own record of the slots this resync freed (rs_live.cpp `discarded`)
+    const discarded = ev?.discarded ?? [];
+    if (discarded.join(",") !== inFlight.join(","))
+      problems.push(
+        `the resync line for seq ${rs.seq} lists discarded [${discarded.join(",")}], the seqs sent after it before the resync are [${inFlight.join(",")}]`,
+      );
+    for (const seq of inFlight) {
+      if (
+        log.some(
+          (l) => l.event === "ack" && l.seq === seq && l.stage !== "received",
+        )
+      )
+        problems.push(
+          `seq ${seq} was in flight at the resync and acked past received`,
+        );
+      const t = arr<{
+        seq?: number;
+        skipped?: string | null;
+        applied_us?: number | null;
+      }>(e.applied?.transactions).find((x) => x.seq === seq);
+      if (t?.skipped !== "resync" || t?.applied_us !== null)
+        problems.push(
+          `seq ${seq} was in flight when the host logged the resync, and the receiver did not refuse it unapplied`,
+        );
+    }
+    const fullSeq = (rs.seq as number) + 1 + inFlight.length;
     const next = e.hosts[0].tap.transactions.find(
-      (t) => t.meta.seq === (rs.seq as number) + 1,
+      (t) => t.meta.seq === fullSeq,
     );
     nextSeq = next?.meta.seq ?? null;
     if (next?.meta.encoding !== "full" || next.meta.base_seq !== null)
       problems.push(
-        `the next transaction (seq ${(rs.seq as number) + 1}) is ${next?.meta.encoding} with base ${next?.meta.base_seq}, expected full with base null`,
+        `the next transaction (seq ${fullSeq}${inFlight.length ? `, after ${inFlight.length} in flight` : ""}) is ${next?.meta.encoding} with base ${next?.meta.base_seq}, expected full with base null`,
       );
     const later = e.hosts[0].summary?.connections?.[0]?.full ?? 0;
     if (later !== 2)
@@ -1200,7 +1270,7 @@ export function checkResyncFull(evals: Evals): Gate1Check {
   }
   return check(
     "resync-full",
-    'live-resync: the receiver refused the first transaction of step 6\'s window unapplied (skipped "resync", never acked past received) and sent resync; the host logged it as the credit, and the next transaction is full with base_seq null (the only full one after seq 1); the shots from step 6 on equal the reference',
+    'live-resync: the receiver refused the first transaction of step 6\'s window unapplied (skipped "resync", never acked past received) and sent resync; the host logged it as the credit, and the next transaction is full with base_seq null (the only full one after seq 1; at credit window w, the first one the host sent after the resync: the at most w - 1 sent before it, the discarded list of its resync line, refused unapplied too); the shots from step 6 on equal the reference',
     problems,
     rs
       ? `seq ${rs.seq} refused at frame ${rs.frame}; seq ${nextSeq} full; later shots match`

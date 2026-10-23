@@ -122,9 +122,9 @@ check "lock-tests refused" grep -q 'refused lock-tests: lock self-tests' "$TMP/d
 check "g7x refused" grep -q 'refused g7x:' "$TMP/dry.out"
 check "device run refused" grep -q 'refused g7live-gsw-device: device-related' "$TMP/dry.out"
 check "not-yet-capable run refused with its reason" grep -q 'refused g7-future: not yet remote-capable' "$TMP/dry.out"
-check "refuse.groups: a live run's intermittent groups are refused, with their reason" grep -q 'refused g7live-gsw groups g7-1,g7-2: g7-1: R3: resync-full fails intermittently' "$TMP/dry.out"
+check "refuse.groups: a live run's intermittent groups are refused, with their reason" grep -q 'refused g7live-gsw groups g7-1,g7-2: g7-1: FU1: the resync-full window-2 in-flight model landed' "$TMP/dry.out"
 check "refuse.groups: the run keeps its other groups remotely" grep -qF '"g7live-gsw": ["g7-5"]' "$TMP/dry.out"
-check "refuse.groups: a run with no group left is refused whole" grep -q 'refused g7live-web-rust-g7-1: g7-1: R3: resync-full fails intermittently' "$TMP/dry.out"
+check "refuse.groups: a run with no group left is refused whole" grep -q 'refused g7live-web-rust-g7-1: g7-1: FU1: the resync-full window-2 in-flight model landed' "$TMP/dry.out"
 ( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer lavapipe ) >"$TMP/dry-br.out" 2>&1
 check "--browser-renderer reaches the dispatch inputs" grep -q 'browser_renderer=lavapipe' "$TMP/dry-br.out"
 ( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer nvidia ) >"$TMP/dry-br2.out" 2>&1
