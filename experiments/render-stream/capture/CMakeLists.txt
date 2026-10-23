@@ -315,10 +315,18 @@ add_test(NAME rs_texture_decode COMMAND rs_texture_decode_test)
 
 # Gate 2 (G2a): SHA-256 on the FIPS 180-4 vectors, the GRT1 texture payload on the four shapes the
 # golden-2 vectors use (literal bytes), and the texture hook log (evidence/resources.jsonl).
+# G8sha: the vectors on each path forced (portable, and SHA-NI when the CPU has it), SHA-NI against
+# portable on every length 0..10000 and on 16 MiB, and the dispatch choice.
 add_executable(rs_sha256_test test/rs_sha256_test.cpp src/rs_sha256.cpp)
 target_include_directories(rs_sha256_test PRIVATE src)
 target_link_libraries(rs_sha256_test PRIVATE grc_warnings)
 add_test(NAME rs_sha256 COMMAND rs_sha256_test)
+
+# G8sha: the SHA-256 throughput microbench (MB/s per path on 64 B..4 KiB and 16 MiB). Built, never
+# run by ctest: it measures, it does not judge (results/gate8/g8sha.md).
+add_executable(rs_sha256_bench test/rs_sha256_bench.cpp src/rs_sha256.cpp)
+target_include_directories(rs_sha256_bench PRIVATE src)
+target_link_libraries(rs_sha256_bench PRIVATE grc_warnings)
 
 # Gate 6 (G6r): the fixed-size log-linear histogram (bucket boundaries, the 6.25% relative-error
 # bound, exact aggregates, percentile, JSON shape).

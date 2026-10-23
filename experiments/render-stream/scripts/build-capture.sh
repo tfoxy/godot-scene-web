@@ -19,6 +19,8 @@ CAPTURE="$(cd "${HERE}/../capture" && pwd)"
 "${CMAKE}" -S "${CAPTURE}" -B "${CAPTURE}/build" -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
 "${CMAKE}" --build "${CAPTURE}/build" -j"$(nproc)"
 (cd "${CAPTURE}/build" && ctest --output-on-failure)
+# G8sha: which SHA-256 path this CPU dispatches to (payload hashes are bit-identical on both).
+"${CAPTURE}/build/rs_sha256_bench" --which
 
 echo
 echo "library:      ${CAPTURE}/build/librender_stream_capture.so"
