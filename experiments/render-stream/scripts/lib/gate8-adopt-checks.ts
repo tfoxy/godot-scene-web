@@ -280,7 +280,7 @@ export function equivalence(
 
 // ------------------------------------------------------------------------------- evidence
 
-async function readText(path: string): Promise<string | undefined> {
+export async function readText(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf8");
   } catch {
@@ -288,7 +288,7 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
-async function readJson<T>(path: string): Promise<T | undefined> {
+export async function readJson<T>(path: string): Promise<T | undefined> {
   const t = await readText(path);
   if (t === undefined) return undefined;
   try {
@@ -298,7 +298,7 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   }
 }
 
-function jsonl<T>(text: string | undefined): T[] {
+export function jsonl<T>(text: string | undefined): T[] {
   if (!text) return [];
   return text
     .split("\n")
@@ -306,18 +306,18 @@ function jsonl<T>(text: string | undefined): T[] {
     .map((l) => JSON.parse(l) as T);
 }
 
-async function exitCode(dir: string): Promise<string | null> {
+export async function exitCode(dir: string): Promise<string | null> {
   const t = await readText(join(dir, "exit-code.txt"));
   return t === undefined ? null : t.trim();
 }
 
-function skipped(dir: string): string | null {
+export function skipped(dir: string): string | null {
   if (existsSync(join(dir, "skipped-by-tier.txt"))) return "skipped-by-tier";
   if (existsSync(join(dir, "skipped-remote.txt"))) return "skipped-remote";
   return null;
 }
 
-async function loadRecording(dir: string): Promise<{ bytes?: Uint8Array; rec?: ResolvedRecording; error?: string }> {
+export async function loadRecording(dir: string): Promise<{ bytes?: Uint8Array; rec?: ResolvedRecording; error?: string }> {
   const path = join(dir, "recording.rs8");
   if (!existsSync(path)) return { error: `${path} missing` };
   const bytes = new Uint8Array(await readFile(path));
@@ -372,7 +372,7 @@ export async function shotDiff(
   return out;
 }
 
-function check(
+export function check(
   id: string,
   criterion: string,
   problems: string[] | null,

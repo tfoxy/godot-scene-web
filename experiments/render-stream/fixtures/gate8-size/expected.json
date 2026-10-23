@@ -1,0 +1,17 @@
+{
+  "schema": "render-stream-gate8-size-expected/1",
+  "doc": "Hand-derived from size.tscn and the engine's stretch rules, not measured (README.md 'Expected'). pre_arm: the headless root window is the 64x64 SceneTree minimum (scene_tree.cpp:2035); under canvas_items/expand the stretch scale is min(64/640, 64/360) = 0.1, so the visible rect is the 64x64 window's aspect at logical width, 640x640, and font oversampling is 0.1 (viewport.cpp:1064-1101). post_arm: Window.set_min_size(640,360) makes the window the logical size: scale 1, visible 640x360, oversampling 1. items: Size, Back, Corner, Edge, Title, Note, all adopted. strict: size-before-adopt under strict is the pre-existing-object failure of the first hooked call that names an unadopted RID.",
+  "arm_frame": 12,
+  "logical_size": [640, 360],
+  "pre_arm": { "window": [64, 64], "visible": [640, 640], "oversampling": 0.1 },
+  "post_arm": { "window": [640, 360], "visible": [640, 360], "oversampling": 1 },
+  "settle_frames": 2,
+  "checkpoints": [
+    { "step": 0, "applied": 0, "settle": 2 },
+    { "step": 1, "applied": 4, "settle": 11 },
+    { "step": 2, "applied": 14, "settle": 21 }
+  ],
+  "items": 6,
+  "adopted": 6,
+  "strict": { "reason": "pre-existing-object" }
+}

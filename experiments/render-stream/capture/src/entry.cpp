@@ -1527,7 +1527,12 @@ void stream_start() {
       why = "wrong-hash acts on the resource store; set a file sink and GRC_RESOURCE_STORE_DIR";
     } else if (kind == rs2::SabotageKind::PerturbDecode && !g_stream.gate8.decode_engine) {
       // G8t (gate8-design.md Q3 "Sabotages"): it perturbs host-decoded payloads only.
-      why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";    } else if ((kind == rs2::SabotageKind::AdoptSkipState ||
+      why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";    } else if (kind == rs2::SabotageKind::SizeBeforeAdopt &&
+               (!g_stream.gate8.adopt || policy != RootSizePolicy::Presentation)) {
+      // G8h (gate8-design.md Q4 "Sabotage"): it reorders the late presentation against adoption.
+      why = "size-before-adopt orders the presentation size against adoption; set GRC_ADOPT=arm "
+            "and GRC_ROOT_SIZE=presentation:<W>x<H>";
+    } else if ((kind == rs2::SabotageKind::AdoptSkipState ||
                 kind == rs2::SabotageKind::AdoptNoRedraw ||
                 kind == rs2::SabotageKind::AdoptSkipLayers) &&
                !g_stream.gate8.adopt) {
@@ -1636,6 +1641,7 @@ void stream_start() {
   // G8w (gate8-design.md D4): adoption runs here, after the root query and before the size policy,
   // because the policy's relayout reaches the hooks as ordinary calls on adopted items. The seam
   // is empty until G8a; the session still declares `adoption` so the wire is honest about intent.
+  bool size_applied_early = false;
   if (g_stream.gate8.adopt) {
     // G8a: date every frame of an adopting session in the host's own main-loop iterations. A
     // library loaded at runtime (Q1a) would otherwise count from its load, so frame 1 would be the
@@ -1654,6 +1660,14 @@ void stream_start() {
     case rs2::SabotageKind::AdoptNoRedraw: adopt_config.sabotage = rs::AdoptSabotage::NoRedraw; break;
     case rs2::SabotageKind::AdoptSkipLayers: adopt_config.sabotage = rs::AdoptSabotage::SkipLayers; break;
     default: break;
+    }
+    // G8h (gate8-design.md Q4 "Sabotage"): size-before-adopt applies the presentation size ahead of
+    // the walk, so the relayout, stretch and oversampling it causes name RIDs nothing has adopted.
+    if (sabotage.config.kind == rs2::SabotageKind::SizeBeforeAdopt) {
+      std::string early_detail;
+      size_applied_early =
+          rs::root_set_min_size(before, presentation_wh[0], presentation_wh[1], &early_detail);
+      log_line("sabotage: size-before-adopt applied the presentation size before adoption");
     }
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
@@ -1680,8 +1694,10 @@ void stream_start() {
   }
   if (policy == RootSizePolicy::EnforceMinSize || policy == RootSizePolicy::Presentation) {
     enforce_called = true;
+    // size-before-adopt (G8h) already wrote it, ahead of the walk.
     const bool written =
-        policy == RootSizePolicy::Presentation
+        size_applied_early ? true
+        : policy == RootSizePolicy::Presentation
             ? rs::root_set_min_size(before, presentation_wh[0], presentation_wh[1],
                                     &enforce_detail)
             : rs::root_enforce_min_size(before, &enforce_detail);
