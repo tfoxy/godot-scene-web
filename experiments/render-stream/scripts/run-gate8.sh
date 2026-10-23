@@ -23,6 +23,10 @@
 #       on the sabotage capture; last the decode-cost timing group (decode-cost/oracle-timing:
 #       best-of-3 Image.decompress of the 2048x2048 cost textures; decode-cost/capture: the hook's
 #       own decode/copy/hash times on them), each under the exclusive quiet lock (timing_leg).
+#       G8kw adds, headless: workers/capture (capture/ again under GRC_TEXTURE_WORKERS=2 with every
+#       copy on a worker and each job delayed, so publication is held back) and its fault leg
+#       workers/sabotage-publish-before-ready/capture; and, in the timing group,
+#       decode-cost/capture-workers (the cost textures at 2 workers: the calling thread's hook_ns).
 #   g8a (G8a, Q2: arm-time adoption of canvases, layers and items, fixtures/gate8-adopt; every leg
 #       under g8a/): the editor import of the fixture and the receiver; headless /8 captures under
 #       GRC_UNKNOWN_ITEM=skip of `born` (main scene born.tscn, armed in the loader's _enter_tree:
@@ -213,6 +217,11 @@ source "$SCRIPT_DIR/lib/legs.sh"
 
 # The decode policy every g8t capture but decode-off runs with.
 G8T_DECODE_ENV=(GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=engine)
+# G8kw (texture-delivery-design.md D11, Q7): the workers legs. Two workers take every copy
+# (MIN_BYTES=0: the fixture's textures are 64x64), each job delayed so publication is held back
+# for several frames whatever the machine's speed; worker-states-equal compares the result with
+# capture/, frame by frame. The cost leg keeps the default threshold (its textures are 2048x2048).
+G8T_WORKERS_ENV=(GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0 GRC_TEXTURE_WORKER_DELAY_MS=8)
 
 # run_import_g8t: the editor writes the sources (make_sources.gd) and imports them; the receiver
 # project is imported too (the release template cannot load a loose project before that).
@@ -258,6 +267,19 @@ run_cost_capture() {
 	CAPTURE_WITH_PATCH=1
 }
 
+# run_cost_capture_workers <dir>: the decode-cost capture at GRC_TEXTURE_WORKERS=2 (G8kw): the
+# hook log's hook_ns is the calling thread's whole share, decode/copy/hash the worker's.
+run_cost_capture_workers() {
+	local dir="$1"
+	mkdir -p "$dir"
+	cat /proc/loadavg >"$dir/loadavg.txt" 2>/dev/null || true
+	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" GRC_TEXTURE_WORKERS=2 RS_FIXTURE_VARIANT=cost
+		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl")
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "" none
+	CAPTURE_WITH_PATCH=1
+}
+
 # run_reference_g8t <dir> <ctex|decoded>: a rendered fixture run, shots step-<k> at the settle frames.
 run_reference_g8t() {
 	local dir="$1" source="$2"
@@ -292,6 +314,17 @@ run_g8t() {
 		RS_FIXTURE_TEXTURE_LOG="$OUT/sabotage-perturb-decode/capture/textures.jsonl")
 	run_capture "$OUT/sabotage-perturb-decode/capture" "" none
 
+	echo "run-gate8: workers/capture (GRC_TEXTURE_WORKERS=2, every copy on a worker, held back)"
+	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" "${G8T_WORKERS_ENV[@]}"
+		RS_FIXTURE_TEXTURE_LOG="$OUT/workers/capture/textures.jsonl")
+	run_capture "$OUT/workers/capture" "" none
+
+	echo "run-gate8: workers/sabotage-publish-before-ready (capture, the hold-back's fault knob)"
+	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" "${G8T_WORKERS_ENV[@]}"
+		GRC_TEXTURE_WORKER_FAULT=publish-before-ready
+		RS_FIXTURE_TEXTURE_LOG="$OUT/workers/sabotage-publish-before-ready/capture/textures.jsonl")
+	run_capture "$OUT/workers/sabotage-publish-before-ready/capture" "" none
+
 	echo "run-gate8: bringing up private gamescope for g8t's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8t"
 	legs_par_begin
@@ -314,11 +347,14 @@ run_g8t() {
 	GS_RUN_DIR=""
 
 	# decode-cost (Q3, a timing group): real time, each leg under the exclusive quiet lock.
-	if ! legs_skip_group decode-cost "$OUT/decode-cost/oracle-timing" "$OUT/decode-cost/capture"; then
+	if ! legs_skip_group decode-cost "$OUT/decode-cost/oracle-timing" "$OUT/decode-cost/capture" \
+		"$OUT/decode-cost/capture-workers"; then
 		echo "run-gate8: decode-cost/oracle-timing (best-of-3 Image.decompress, 2048x2048)"
 		timing_leg g8t-decode-cost-oracle run_oracle "$OUT/decode-cost/oracle-timing" 1
 		echo "run-gate8: decode-cost/capture (the hook's decode, copy and hash on the cost textures)"
 		timing_leg g8t-decode-cost-capture run_cost_capture "$OUT/decode-cost/capture"
+		echo "run-gate8: decode-cost/capture-workers (the same at GRC_TEXTURE_WORKERS=2: hook_ns)"
+		timing_leg g8t-decode-cost-workers run_cost_capture_workers "$OUT/decode-cost/capture-workers"
 	fi
 }
 

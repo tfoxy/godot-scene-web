@@ -111,6 +111,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -138,7 +139,16 @@ struct PayloadCopy {
   // the seam's duplicate + decompress time, also on a decode that was tried and refused.
   std::int64_t source_format = -1;
   std::int64_t decode_ns = -1;
+  // G8kw (rs_texture_worker.h): set on a copy a texture worker made. `copy_ns`/`hash_ns`/`decode_ns`
+  // are then the worker's times; `hook_ns` is the hook's own time on the calling thread (facts,
+  // prediction, duplicate, hand-off, mirror) and `dup_ns` the copy-on-write duplicate within it.
+  // Logged as trailing keys only on such a line, so a synchronous log is unchanged.
+  bool worker = false;
+  std::int64_t hook_ns = -1;
+  std::int64_t dup_ns = -1;
 };
+
+class TextureJob;  // rs_texture_worker.h
 
 // Where and when a tap ran.
 struct TapContext {
@@ -207,10 +217,12 @@ class ResourceLog {
   // The line is still written, marked "sabotage":true,"omitted":true, with the
   // registry's unchanged id and version, and the registry is not changed, so
   // it keeps agreeing with the mirror (which dropped the call too).
+  // G8kw: with a `job` (rs_texture_worker.h) the copy is the hook's prediction; the line, and
+  // every line logged after it, is held until the job delivers the hash (take_lines()).
   void texture_2d_create(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy,
-                         bool omitted = false);
+                         bool omitted = false, std::shared_ptr<TextureJob> job = nullptr);
   void texture_2d_update(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy,
-                         int layer, bool omitted = false);
+                         int layer, bool omitted = false, std::shared_ptr<TextureJob> job = nullptr);
   void texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid,
                                      bool omitted = false);
   void texture_replace(const TapContext &ctx, std::uint64_t texture, std::uint64_t by_texture,
@@ -365,8 +377,10 @@ class ResourceLog {
   std::uint64_t material_id(std::uint64_t rid) const;
 
   // Takes every line buffered since the last call ("" when none), each ending
-  // in '\n'.
+  // in '\n'. G8kw: stops before the first line still waiting for a texture worker's hash.
   std::string take_lines();
+  // Lines held for a texture worker (G8kw), 0 when synchronous.
+  std::size_t deferred_lines() const;
 
   // texture_2d_update calls whose RID was never seen created.
   std::uint64_t update_unknown() const;
@@ -382,12 +396,19 @@ class ResourceLog {
     std::string status = "ok";
     std::string reason;
     PayloadCopy payload;  // kind image
+    std::shared_ptr<TextureJob> job;  // G8kw: delivers payload.hash (null once settled)
     std::int32_t filter = 0;  // kind canvas
     std::int32_t repeat = 0;
     std::map<std::int32_t, std::uint64_t> channels;
   };
 
-  void emit(const Line &line);
+  // Formats `line` into the buffer, or (G8kw) holds it behind a pending `job` or behind an
+  // earlier held line. Caller holds the mutex.
+  void emit(const Line &line, const std::shared_ptr<TextureJob> &job = nullptr);
+  void format(std::string *out, const Line &line) const;
+  // G8kw: a finished job's hash moves into the registry entry. Caller holds the mutex.
+  static void settle(Entry *entry);
+  struct Deferred;  // a held line (rs_resource_log.cpp)
   // G2d: a canvas_texture_* call on RID() (a headless host) -- status unsupported, reason
   // canvas-texture-headless, no id. Caller holds the mutex.
   void null_canvas_texture(Line *line);
@@ -457,6 +478,7 @@ class ResourceLog {
   std::uint64_t next_material_id_ = 1;
   std::map<std::uint64_t, MaterialEntry> material_by_rid_;
   std::string pending_;
+  std::vector<std::shared_ptr<Deferred>> deferred_;  // G8kw, in log order
   std::uint64_t update_unknown_ = 0;
 };
 

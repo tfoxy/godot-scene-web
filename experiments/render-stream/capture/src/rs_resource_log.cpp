@@ -1,5 +1,7 @@
 #include "rs_resource_log.h"
 
+#include "rs_texture_worker.h"
+
 #include <cstdio>
 
 #include "rs_mesh_payload.h"
@@ -103,8 +105,63 @@ struct ResourceLog::Line {
   std::int32_t repeat_times = 0;
 };
 
-void ResourceLog::emit(const Line &l) {
-  std::string &o = pending_;
+// G8kw: a line held for a texture worker's hash (`job` set; `payload` is the line's own copy,
+// filled when the job finishes), or plain text logged behind such a line (`job` null).
+struct ResourceLog::Deferred {
+  Line line;
+  PayloadCopy payload;
+  std::shared_ptr<TextureJob> job;
+  std::string text;
+};
+
+void ResourceLog::settle(Entry *entry) {
+  if (entry->job == nullptr || !entry->job->done() || entry->job->mispredict()) {
+    return;
+  }
+  entry->job->fill(&entry->payload);
+  entry->job.reset();
+}
+
+void ResourceLog::emit(const Line &l, const std::shared_ptr<TextureJob> &job) {
+  const bool waits = job != nullptr && !job->done() && l.payload != nullptr;
+  if (!waits && deferred_.empty()) {
+    if (job != nullptr && l.payload != nullptr) {
+      PayloadCopy filled = *l.payload;
+      job->fill(&filled);
+      Line copy = l;
+      copy.payload = &filled;
+      format(&pending_, copy);
+      return;
+    }
+    format(&pending_, l);
+    return;
+  }
+  if (waits) {
+    auto held = std::make_shared<Deferred>();
+    held->line = l;
+    held->payload = *l.payload;
+    held->job = job;
+    deferred_.push_back(std::move(held));
+    return;
+  }
+  // Behind a held line: formatted now (its own values are final), released in order.
+  if (deferred_.back()->job != nullptr) {
+    deferred_.push_back(std::make_shared<Deferred>());
+  }
+  std::string &text = deferred_.back()->text;
+  if (job != nullptr && l.payload != nullptr) {
+    PayloadCopy filled = *l.payload;
+    job->fill(&filled);
+    Line copy = l;
+    copy.payload = &filled;
+    format(&text, copy);
+  } else {
+    format(&text, l);
+  }
+}
+
+void ResourceLog::format(std::string *out, const Line &l) const {
+  std::string &o = *out;
   const auto key = [&o](const char *name) {
     o.push_back(',');
     o.push_back('"');
@@ -340,6 +397,13 @@ void ResourceLog::emit(const Line &l) {
     const char *source = image_format_name(p->source_format);
     append_string(&o, source != nullptr ? source : "");
   }
+  // G8kw (rs_texture_worker.h): present only on a line whose copy a texture worker made.
+  if (p != nullptr && p->worker) {
+    o += ",\"worker\":true,\"hook_ns\":";
+    o += std::to_string(p->hook_ns);
+    o += ",\"dup_ns\":";
+    o += std::to_string(p->dup_ns);
+  }
   // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
   // op the omit-op sabotage left out of the registry, `omitted`).
   if (l.sabotage) {
@@ -374,6 +438,7 @@ void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid) {
   next_material_id_ = 1;
   material_by_rid_.clear();
   pending_.clear();
+  deferred_.clear();
   update_unknown_ = 0;
 }
 
@@ -407,7 +472,8 @@ bool same_shape(const PayloadCopy &a, const PayloadCopy &b) {
 }  // namespace
 
 void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
-                                    const PayloadCopy &copy, bool omitted) {
+                                    const PayloadCopy &copy, bool omitted,
+                                    std::shared_ptr<TextureJob> job) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -418,7 +484,7 @@ void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
     line.payload = &copy;
     line.sabotage = true;
     line.omitted = true;
-    emit(line);
+    emit(line, job);
     return;
   }
   Entry entry;
@@ -428,6 +494,7 @@ void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
   entry.status = copy.status;
   entry.reason = copy.reason;
   entry.payload = copy;
+  entry.job = job;
   by_rid_[rid] = entry;
   Line line = base_line(ctx, "texture_2d_create");
   line.id = entry.id;
@@ -437,11 +504,12 @@ void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
   line.status = entry.status;
   line.reason = entry.reason;
   line.payload = &copy;
-  emit(line);
+  emit(line, job);
 }
 
 void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
-                                    const PayloadCopy &copy, int layer, bool omitted) {
+                                    const PayloadCopy &copy, int layer, bool omitted,
+                                    std::shared_ptr<TextureJob> job) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
     return;
@@ -462,7 +530,7 @@ void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
       line.status = entry->status;
       line.reason = entry->reason;
     }
-    emit(line);
+    emit(line, job);
     return;
   }
   if (entry == nullptr) {
@@ -470,10 +538,11 @@ void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
     // stream shows (Q3); it is counted and logged with a null id.
     ++update_unknown_;
     line.reason = "unknown-texture";
-    emit(line);
+    emit(line, job);
     return;
   }
   entry->version += 1;
+  entry->job.reset();  // G8kw: superseded (the shape below is the hook's, known either way)
   if (layer != 0) {
     entry->status = "unsupported";
     entry->reason = "layered-update";
@@ -484,13 +553,14 @@ void ResourceLog::texture_2d_update(const TapContext &ctx, std::uint64_t rid,
     entry->status = copy.status;
     entry->reason = copy.reason;
     entry->payload = copy;
+    entry->job = job;
   }
   line.id = entry->id;
   line.version = entry->version;
   line.kind = entry->kind;
   line.status = entry->status;
   line.reason = entry->reason;
-  emit(line);
+  emit(line, job);
 }
 
 void ResourceLog::texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid,
@@ -561,20 +631,25 @@ void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
     emit(line);
     return;
   }
+  std::shared_ptr<TextureJob> replaced_job;  // G8kw: b's pending payload, now t's
   if (t != nullptr) {
     t->version += 1;
     if (b != nullptr) {
+      settle(b);
       t->kind = b->kind;
       t->status = b->status;
       t->reason = b->reason;
       t->payload = b->payload;
+      t->job = b->job;  // G8kw: still pending: the line below waits for it
       t->filter = b->filter;
       t->repeat = b->repeat;
       t->channels = b->channels;
       line.payload = &t->payload;
+      replaced_job = t->job;
     } else {
       t->status = "unsupported";
       t->reason = "unknown-texture";
+      t->job.reset();
     }
     line.id = t->id;
     line.version = t->version;
@@ -587,7 +662,7 @@ void ResourceLog::texture_replace(const TapContext &ctx, std::uint64_t texture,
   if (b != nullptr) {
     by_rid_.erase(by_texture);
   }
-  emit(line);
+  emit(line, replaced_job);
 }
 
 void ResourceLog::free_rid(const TapContext &ctx, std::uint64_t rid, bool omitted) {
@@ -714,6 +789,7 @@ void ResourceLog::spurious_update(const TapContext &ctx, std::uint64_t rid) {
     return;
   }
   // The same bytes again at a new version (gate2-design.md G2b2 spurious-texture-update).
+  settle(entry);
   entry->version += 1;
   Line line = base_line(ctx, "texture_2d_update");
   line.id = entry->id;
@@ -726,7 +802,7 @@ void ResourceLog::spurious_update(const TapContext &ctx, std::uint64_t rid) {
   line.has_layer = true;
   line.layer = 0;
   line.sabotage = true;
-  emit(line);
+  emit(line, entry->job);
 }
 
 void ResourceLog::resource_event(const TapContext &ctx, const char *op, const std::string &hash,
@@ -1880,7 +1956,28 @@ std::string ResourceLog::take_lines() {
   std::lock_guard<std::mutex> lock(mutex_);
   std::string out;
   out.swap(pending_);
+  // G8kw: held lines leave in log order, each once its job delivered the hash.
+  std::size_t taken = 0;
+  for (; taken < deferred_.size(); ++taken) {
+    Deferred &d = *deferred_[taken];
+    if (d.job != nullptr) {
+      if (!d.job->done()) {
+        break;
+      }
+      d.job->fill(&d.payload);
+      d.line.payload = &d.payload;
+      format(&out, d.line);
+    } else {
+      out += d.text;
+    }
+  }
+  deferred_.erase(deferred_.begin(), deferred_.begin() + static_cast<std::ptrdiff_t>(taken));
   return out;
+}
+
+std::size_t ResourceLog::deferred_lines() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return deferred_.size();
 }
 
 std::uint64_t ResourceLog::update_unknown() const {

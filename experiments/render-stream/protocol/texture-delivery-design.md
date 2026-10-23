@@ -1,6 +1,8 @@
 # Texture delivery design (G8k): HTTP compression, pass-through and KTX2/Basis tiers
 
-Status: design only, written 2026-10-23 (increment G8k). Nothing here is implemented. This doc
+Status: design written 2026-10-23 (increment G8k). G8kw (the texture worker pool and the
+publication hold-back, D11/Q7) is landed: Q7 "As built (G8kw)", [results/gate8/g8kw.md](../results/gate8/g8kw.md).
+Nothing else here is implemented. This doc
 follows [gate8-design.md](gate8-design.md) and replaces its deferred "Route C" (gate8-design Q3,
 "Deferred") and fork F3. User decisions of 2026-10-23 (memory texture-delivery-direction):
 
@@ -343,6 +345,74 @@ small textures off Basis.
   the hash and regenerates the bytes on a GET (D8), which saves up to ~692 MB of host RAM on the
   census. Encoded variants stay in memory under `GRC_TEXTURE_CACHE_MAX_BYTES` and on disk.
 
+### As built (G8kw)
+
+Decisions taken where the design left room, each the long-term option:
+
+- **Default `sync`, not D11's 2.** `GRC_TEXTURE_WORKERS=sync|1..16` defaults to `sync`, which is
+  byte for byte the pre-G8kw capture (no worker code runs; recordings, hook logs and goldens are
+  unchanged, results/gate8/g8kw.md "Byte identity"). At N the transaction set depends on worker
+  timing: a file recording is a frame-for-frame subset of the synchronous one (proven per run by
+  `worker-states-equal`) but no longer reproducible, so every frame-exact leg (seq-keyed shots,
+  window-1 transcripts, goldens) would need `sync` pinned. The capture's other product policies
+  (`GRC_STREAM_VERSION=8`, `GRC_TEXTURE_DECODE=engine`, `GRC_ADOPT=arm`) are opt-in the same way,
+  and the product launch sets them: **D11's 2 is the product value**, set by couch-coop's
+  streaming seat. Flipping the capture default needs every native gate rerun at N; it joins
+  gate8-design's "switch the defaults to /8" cleanup after release.
+- **Facts at the hook, content on the worker.** The hook keeps every fact-based decision of the
+  synchronous copy (status, reason, format, shape, `payload_bytes`; for a host decode the D8 table's
+  output format), so the mirror's and the hook log's registries, ids, versions and
+  `update-shape-mismatch` decisions are made at the hook exactly as before. Only the payload bytes
+  and the SHA-256 (and the decode) are a worker's. The worker re-derives the facts from its own
+  copy; if they disagree with the prediction (only possible when an engine decoder fails on a table
+  format) the stream ends with the typed `texture-worker-mispredict`, never a guess. A decoded
+  payload the policy would refuse, an image smaller than `GRC_TEXTURE_WORKER_MIN_BYTES` (default
+  64 KiB: a hand-off costs more than hashing it) and any call while the pool is not running stay
+  synchronous.
+- **Engine safety.** The hook takes `Resource.duplicate(false)` on the calling thread
+  (`Image::_duplicate` shares the CowData; 1-2 µs, the `dup_ns` column) before the engine sees the
+  call, so the engine may free or rewrite its Image at once (it then copies on write). The worker
+  reads the duplicate through the const `image_ptr` (no copy-on-write), decodes a second duplicate
+  of it (G8t's seam, unchanged), and drops the duplicate on its own thread before the job is
+  visible as done. Workers never call the RenderingServer, never touch the mirror's or the log's
+  state except through the job, and never write a sink.
+- **Hold-back.** The mirror keeps a pending entry's job; a snapshot carries every `ok` image entry
+  whose job is unfinished in `Captured::pending` (the entry complete but for its hash). The frame
+  callback offers each snapshot to `HoldBack`, which publishes the **newest held snapshot whose jobs
+  are all done** (older ones coalesced into it), else nothing; at most 64 are held (the oldest is
+  dropped first: newer ones contain it). A file sink stamps the snapshot's own frame, so the async
+  recording's transactions are the synchronous recording's at the same frames; the live hub gets it
+  at the callback that publishes (stamped by the hub with that callback, as it always stamps),
+  with the snapshot's own mutation epoch, and a held callback calls the hub with no snapshot, as a
+  stall does. At stream end the pool drains first (before `resources_finish`, `Hub::finish` and
+  the sinks' end records), then the newest held snapshot is published to the file sinks, so both
+  modes end on the same state. A texture freed, replaced or updated while pending carries its job
+  along or supersedes it; nothing the engine does to its own Image afterwards reaches the job.
+- **Hook log.** A line that needs a pending hash, and every line logged after it, is held and
+  released in order once the hash is there (`take_lines`), so the log's order and facts are the
+  synchronous log's; the worker's line gains trailing `"worker":true,"hook_ns":…,"dup_ns":…`
+  keys, where `copy_ns`/`hash_ns`/`decode_ns` are then the worker's. Store/inline lines move to
+  the callback that published.
+- **Pool.** Capture-owned `std::thread`s at nice +10, started before the mirror is enabled and
+  stopped (drain, then join) at the start of `stream_finish`, and again at shutdown and
+  deinitialize, so no job (each holds an engine Image) outlives the stream. A hook racing the stop
+  is refused by the pool and copies synchronously.
+- **Sabotage.** `publish-before-ready` is a capture fault knob, `GRC_TEXTURE_WORKER_FAULT`, not a
+  `GRC_SABOTAGE` kind: a new kind is a wire change in three validators (render-stream-8.md,
+  `render-stream-2.ts`, rs-core `meta.rs`), and the bug it models would not declare itself either.
+  It publishes a pending entry at once with 64 zero hex digits and no payload; the publisher then
+  refuses the hash it has no payload for and the recording diverges from the synchronous one.
+- **Test knob.** `GRC_TEXTURE_WORKER_DELAY_MS` delays each job, so the gate leg holds publication
+  back on any machine (the g8t `workers` legs use 8 ms, every copy on a worker).
+- **Measured** (results/gate8/g8kw.md): the calling thread's share of a 2048² create falls from
+  31-112 ms (decode + copy + hash) to 6-16 µs on every format; the work itself (34-94 ms) moves to
+  a worker unchanged.
+- **Budget.** `GRC_RESOURCE_BUDGET_BYTES` is checked on the snapshot that publishes; payloads held
+  only by a held snapshot (a few frames' worth) are not counted until then.
+- **Not covered here:** a live leg at N (the hub path is the stall path it reuses; G8r's and the
+  product's live legs run it), G8r's pre-arm adoption through the same path, and per-variant
+  encodes (G8ku).
+
 ## Q8. Bandwidth for STS2
 
 The **census** is the 2026-10-10 leg's 1,437 creates:
@@ -399,7 +469,7 @@ Shared call sites still reach `*`.
 | Id | Outcome | Files | Re-run scope | Model, time | Depends on |
 | -- | ------- | ----- | ------------ | ----------- | ---------- |
 | G8kz | HTTP `Content-Encoding` zstd/gzip for payload GETs at /2+ (D2, Q5): precompressed per hash on the HTTP thread, `Vary`, per-coding ETag, the native receiver's `Accept-Encoding` + decompress; checks: identity hash after decode, coded bytes logged per GET, `corrupt-coded-body` sabotage (receiver must refuse) | `capture/src/rs_live.*`, `rs_resource_store.*`, `receiver/` fetcher, `scripts/lib/gate2-*`/`gate8-*` checks, `render-stream-2.md` "HTTP" | `*` (capture) | sonnet, 3 h + full tier | G8w |
-| G8kw | Worker pool for copy/decode/hash (D11), publication hold-back at /6-/8, `GRC_TEXTURE_WORKERS=sync\|N`; checks: sync and async recordings resolve to equal states at every checkpoint, main-thread hook time ≤ 2 ms per create at 2048², `decode-cost` re-measured | `capture/src/rs_texture_worker.*` (new), `hooks.cpp` copy path, `rs_publish.*`, `smoke-map.json` narrow rule | `*`, then narrow | opus, 5 h + full tier | G8t; before G8r (which reuses the path) |
+| G8kw | **Landed** (Q7 "As built (G8kw)"). Worker pool for copy/decode/hash (D11), publication hold-back at /6-/8, `GRC_TEXTURE_WORKERS=sync\|N`; checks: sync and async recordings resolve to equal states at every checkpoint, main-thread hook time ≤ 2 ms per create at 2048², `decode-cost` re-measured | `capture/src/rs_texture_worker.*` (new), `hooks.cpp` copy path, `rs_mirror.*`, `rs_resource_log.*`, `entry.cpp` (the hold-back lives in `rs_texture_worker.*`, not `rs_publish.*`), `smoke-map.json` narrow rule | `*`, then narrow | opus, 5 h + full tier | G8t; before G8r (which reuses the path) |
 | G8k9 | render-stream/9 codecs and validators (Q5): `variants`, `ktx2` and `block` payloads, `resources.delivery`, hello keys, `delivery-pending`, `golden-9/`; empty delivery seam; no receiver offers .9 yet | `protocol/render-stream-9.md`, `protocol/golden-9/`, `rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `render-stream-2.ts`, `rs-core/src/{wire,validate,meta,payload}.rs`, capi pin | `*` | sonnet, 4 h + full tier | G8w (parallel with G8kz/G8kw) |
 | G8kp | `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
 | G8ku | `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |

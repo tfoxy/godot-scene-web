@@ -574,8 +574,9 @@ because STS2's float textures are shader inputs. G8m last among capture work: it
 ## Deferred, with owners
 
 - **Route C (compressed passthrough with host-decoded variants)**: after P3's numbers (F3).
-- **Hash off the calling thread** for large decoded payloads: if `decode-cost` or P3 shows the
-  main-thread hitch matters.
+- **Hash off the calling thread**: landed as G8kw (texture-delivery-design.md Q7 "As built
+  (G8kw)"), opt-in `GRC_TEXTURE_WORKERS=<N>`: copy, decode and hash on a worker, publication held
+  back until the hash is ready.
 - **Arm on subscribe** (gate1-design D6): after gate 8; re-arming re-runs the walk.
 - **Several presentation sizes, size negotiation**: after release, with gate 7's hello data.
 - **`viewport` stretch, `follow_viewport`, parallax repeat, snap-to-pixel, script-set global canvas

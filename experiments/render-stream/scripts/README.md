@@ -3392,7 +3392,9 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `reference` | rendered, `RS_FIXTURE_SOURCE=decoded`: the oracle's payloads drawn as plain textures |
 | `reference-hw` | rendered, the `.ctex` itself (GPU-sampled, or GLES3's own CPU fallback): informative |
 | `receiver`, `receiver-patch` | the native receiver on `capture`'s full and patch sinks |
-| `decode-cost/oracle-timing`, `decode-cost/capture` | timing group `decode-cost` (`timing_leg`, real time, skipped on hosted runners): best-of-3 `Image.decompress` of the 2048×2048 cost textures, and the hook's own decode, copy and hash times on them (`RS_FIXTURE_VARIANT=cost`) |
+| `workers/capture` | G8kw: `capture` again under `GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0 GRC_TEXTURE_WORKER_DELAY_MS=8` (every copy, decode and hash on a worker, each job delayed so publication is held back) |
+| `workers/sabotage-publish-before-ready/capture` | the same with `GRC_TEXTURE_WORKER_FAULT=publish-before-ready` (a pending texture published at once, hash all zeros) |
+| `decode-cost/oracle-timing`, `decode-cost/capture`, `decode-cost/capture-workers` | timing group `decode-cost` (`timing_leg`, real time, skipped on hosted runners): best-of-3 `Image.decompress` of the 2048×2048 cost textures, the hook's own decode, copy and hash times on them (`RS_FIXTURE_VARIANT=cost`), and (G8kw) the same creates at `GRC_TEXTURE_WORKERS=2`: the calling thread's `hook_ns` |
 
 ## Gate 8 legs and evidence under `--out/g8a` (g8a)
 
@@ -3439,4 +3441,7 @@ criterion is spelled out in `lib/gate8-adopt-checks.ts` and
 `g8t-import`, `decode-census`, `decode-oracle`, `decode-wire`, `decode-off`, `decode-reference`
 (exact), `sabotage-perturb-decode`, `decode-cost` (measured, no budget) and the informative,
 non-gating `decode-hardware-band`; each criterion is spelled out in `lib/gate8-tex-checks.ts` and
-[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q3 "As built (G8t)".
+[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q3 "As built (G8t)". G8kw adds
+`worker-states-equal`, `worker-hook-log`, `sabotage-publish-before-ready` and the timing check
+`worker-hook-time` (≤ 2 ms on the calling thread per 2048² create);
+[`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8kw)".

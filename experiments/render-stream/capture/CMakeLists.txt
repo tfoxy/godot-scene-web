@@ -54,6 +54,7 @@ add_library(render_stream_capture SHARED
   src/rs_shader_payload.cpp
   src/rs_texture_decode.cpp
   src/rs_texture_payload.cpp
+  src/rs_texture_worker.cpp
   src/rs_variant.cpp
   src/rs_ws.cpp
   src/vtable.cpp
@@ -293,6 +294,17 @@ add_executable(rs_gate8_policy_test
 target_include_directories(rs_gate8_policy_test PRIVATE src vendor)
 target_link_libraries(rs_gate8_policy_test PRIVATE grc_warnings)
 add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
+
+# G8kw: the texture worker pool, the publication hold-back and the held hook-log lines
+# (texture-delivery-design.md D11, Q7): async predictions plus jobs resolve to the synchronous
+# snapshots (full-transaction bytes) and log lines; stop/drain/refusal, mispredict, the fault knob.
+add_executable(rs_texture_worker_test
+  test/rs_texture_worker_test.cpp src/rs_texture_worker.cpp src/rs_mirror.cpp
+  src/rs_resource_log.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp
+  src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs_texture_worker_test PRIVATE src)
+target_link_libraries(rs_texture_worker_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 
 # G8a: the arm-time adoption pass (gate8-design.md D3-D5, D13): a born-armed hook sequence and the
 # walk's AdoptPlan give the same mirror state but for origin; the walk sabotages; the residue under
