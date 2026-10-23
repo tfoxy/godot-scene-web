@@ -473,6 +473,11 @@ stays the independent oracle for rs-core (memory rust-core-direction).
 
 ## Increments
 
+Texture delivery (HTTP zstd, BC pass-through, KTX2/Basis tiers and the host cache, which replace
+"Route C" below and fork F3) has its own increments, G8kz, G8kw, G8k9, G8kp, G8ku, G8kb, G8kc and
+G8ke, and their place in this order: [texture-delivery-design.md](texture-delivery-design.md)
+"Increments".
+
 Each is one commit on `main`, `feat(render-stream): …` or `test(render-stream): …` with
 `Changelog: none` (G8f's GSW change stays inside `experiments/`; if it reaches `packages/canvas` it
 needs a real `Changelog:` line). Times are writing plus validation at the map's reach.
