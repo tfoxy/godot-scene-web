@@ -545,6 +545,57 @@ async function scenario(
   await rm(out, { recursive: true, force: true });
 }
 
+/** G7w2c: a perturbed copy that must keep passing `ids` (and every other check). */
+async function passScenario(
+  root: string,
+  good: string,
+  name: string,
+  perturb: (out: string) => Promise<void>,
+  ids: string[],
+): Promise<void> {
+  if (!inShard(scenarioPosition++)) return;
+  const out = join(root, name);
+  await cp(good, out, { recursive: true });
+  await perturb(out);
+  const report = await run(out);
+  const v = verdicts(report);
+  for (const id of ids)
+    assert(
+      `${name}: ${id} passes`,
+      v.get(id) === "pass",
+      report.checks.find((x) => x.id === id)?.detail,
+    );
+  const unexpected = report.checks.filter((c) => c.status !== "pass");
+  assert(
+    `${name}: every check passes`,
+    unexpected.length === 0,
+    unexpected.map((c) => `${c.id}: ${c.detail}`).join(" | "),
+  );
+  await rm(out, { recursive: true, force: true });
+}
+
+/** live-reconnect's first connection closes with one send the receiver never read; give it `extra`
+ * more, under a hello that granted `window`. */
+async function unreadSends(
+  out: string,
+  window: number,
+  extra: number,
+): Promise<void> {
+  const host = join(out, "live-reconnect", "host");
+  await editJson<{ connections: { sent: number }[] }>(
+    join(host, "evidence", "live-summary.json"),
+    (j) => {
+      j.connections[0].sent += extra;
+    },
+  );
+  await editText(join(host, "tap", "live-1.jsonl"), (t) =>
+    t.replace(
+      '"event":"hello"',
+      `"event":"hello","credit_window_granted":${window}`,
+    ),
+  );
+}
+
 async function main(): Promise<void> {
   EXPECTED = JSON.parse(
     await readFile(
@@ -1658,6 +1709,28 @@ async function main(): Promise<void> {
           t.applied_us = (t.received_us ?? 0) - 1;
         });
       },
+      ["live-acks-staged"],
+    );
+    // G7w2c: a receiver that closes first may leave up to the granted window of sends unread
+    await scenario(
+      root,
+      good,
+      "live-unread-sends-beyond-window-1",
+      (out) => unreadSends(out, 1, 1),
+      ["live-acks-staged"],
+    );
+    await passScenario(
+      root,
+      good,
+      "live-unread-sends-within-window-2",
+      (out) => unreadSends(out, 2, 1),
+      ["live-acks-staged"],
+    );
+    await scenario(
+      root,
+      good,
+      "live-unread-sends-beyond-window-2",
+      (out) => unreadSends(out, 2, 2),
       ["live-acks-staged"],
     );
     await scenario(

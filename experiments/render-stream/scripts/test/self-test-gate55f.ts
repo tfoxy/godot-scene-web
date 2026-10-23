@@ -45,6 +45,7 @@ import {
   type G55fCheckpoint,
   type G55fEvaluation,
   type G55fLegEvidence,
+  g55fStallReport,
   g55fWindows,
   mismatchingRegionNames,
   staleFromOfSeq,
@@ -693,6 +694,64 @@ function fakeEval(
     checkReceiverVsReferenceShader(evalsWith("live-shader", staleCp)),
     false,
     "checkReceiverVsReferenceShader: a stale_exact shot on a good leg fails (no sabotage there)",
+  );
+}
+
+// ------------------------------------------------------------------------------------------- 10
+// G7w2c: the post-stall step when the recovery frame falls in the 7-frame gap between two windows
+// (step 3's window starts at 487; a runner slower than 60 frames/s recovers at 480-486). It used
+// to be null ("no stall recovery evidence"); it is the next window's step.
+{
+  const stallHost = (
+    recoveryFrame: number,
+  ): G2cHost["connections"][number]["host"] => {
+    const log: Record<string, unknown>[] = [];
+    for (let f = 367; f <= recoveryFrame + 2; f++)
+      log.push({
+        frame: f,
+        t_us: f * 16667,
+        state: "x",
+        ...(f === 367 ? { sent: { seq: 10 } } : {}),
+        ...(f === recoveryFrame ? { sent: { seq: 11 } } : {}),
+      });
+    log.push({ event: "ack", seq: 10, credited: true, frame: recoveryFrame });
+    return {
+      log,
+      tap: { transactions: [] },
+      full: { transactions: [] },
+    } as unknown as G2cHost["connections"][number]["host"];
+  };
+  const applied = {
+    live: { stall: { after_seq: 10, step: 1, ms: 2000 } },
+  } as unknown as G55fApplied;
+  const stepAt = (frame: number): number | null =>
+    g55fStallReport(stallHost(frame), applied, undefined).postStallStep;
+  assertEqual(
+    stepAt(489),
+    3,
+    "recovery at 489 (inside step 3's window): step 3",
+  );
+  assertEqual(
+    stepAt(487),
+    3,
+    "recovery at 487 (the window's first frame): step 3",
+  );
+  assertEqual(
+    stepAt(484),
+    3,
+    "recovery at 484 (in the gap before step 3): step 3, not null",
+  );
+  assertEqual(
+    stepAt(480),
+    3,
+    "recovery at 480 (the gap's first frame): step 3",
+  );
+  assertEqual(stepAt(479), 2, "recovery at 479 (step 2's last frame): step 2");
+  assertEqual(
+    g55fStallReport(stallHost(484), applied, undefined).report
+      .expected_missed_steps,
+    [2],
+    "recovery at 484: step 2's whole window lay inside the stall",
   );
 }
 

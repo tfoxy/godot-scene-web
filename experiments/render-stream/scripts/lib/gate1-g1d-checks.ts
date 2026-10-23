@@ -278,6 +278,22 @@ function frameLines(log: LiveLogLine[] | undefined): Map<number, LiveLogLine> {
   return out;
 }
 
+/** The step of the first shot after a stall's recovery send: the window that holds the recovery
+ * frame, or, when it fell in the gap between two windows, the next one. The stall is wall-clock
+ * (RS_RECEIVER_STALL ms) and a window gap is 7 frames, so the recovery frame is 487-497 against
+ * step 3's window starting at 487: a runner a few percent slower than 60 frames/s lands it in the
+ * gap (G7w2c; g7-55 `native-legs@web` "no stall recovery evidence" on hosted runners). */
+export function postStallStepOf(
+  windows: readonly ShotWindow[],
+  recoveryFrame: number,
+): number | null {
+  return (
+    windows
+      .filter((w) => recoveryFrame <= w.to)
+      .sort((a, b) => a.from - b.from)[0]?.step ?? null
+  );
+}
+
 /** The stall as the host saw it, from the receiver's `live.stall` and the host's log (pure). */
 export function stallReport(
   host: LiveHostEvidence,
