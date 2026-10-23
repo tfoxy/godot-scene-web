@@ -478,8 +478,10 @@ class Mirror {
 
   // texture_2d_create: a new id, kind image, version 1, status from the copy
   // (`bytes` is the GRT1 payload when copy.status is "ok", null otherwise).
+  // G8kw (rs_texture_worker.h): with a `job`, an "ok" copy is a hook-time prediction whose hash
+  // and bytes the job delivers; the entry is `ok` and pending until a snapshot settles it.
   void texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
-                         std::uint64_t frame);
+                         std::uint64_t frame, std::shared_ptr<TextureJob> job = nullptr);
   // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
   void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
   // texture_2d_update: a known id gets version + 1 and, when the layer is 0 and
@@ -487,7 +489,7 @@ class Mirror {
   // `unsupported` (`layered-update`, `update-shape-mismatch`). An unknown RID is
   // counted (texture_update_unknown) and changes nothing.
   void texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes, int layer,
-                         std::uint64_t frame);
+                         std::uint64_t frame, std::shared_ptr<TextureJob> job = nullptr);
   // texture_replace(t, b): t takes b's kind, status, reason and payload at
   // version + 1, and b's id leaves the table (the storage frees b itself, with
   // no free call). b unknown: t becomes `unsupported` (`unknown-texture`). t
@@ -585,6 +587,8 @@ class Mirror {
     // whether an update is accepted, as in the hook log.
     PayloadCopy copy;
     PayloadPtr bytes;  // the payload while status is ok and kind image
+    // G8kw: the worker delivering `copy.hash` and `bytes` (null once settled, or when synchronous).
+    std::shared_ptr<TextureJob> job;
     // Canvas fields (kind == Canvas only; gate2-design.md Q3, G2d).
     bool has_diffuse = false;
     std::uint32_t diffuse_id = 0;
@@ -699,6 +703,8 @@ class Mirror {
   // gone otherwise.
   void retire_texture(std::uint32_t id);
   static rs2::TextureEntry wire_entry(const Texture &texture);
+  // G8kw: a finished job's hash and bytes move into the entry (no-op without one).
+  static void settle(Texture *texture);
   // Meshes (G5e).
   Mesh *find_mesh(std::uint64_t rid);
   // A mesh tap's prologue: omit-op (and the epoch), then the entry, or nullptr (counted unknown).

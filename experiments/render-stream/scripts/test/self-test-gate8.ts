@@ -24,13 +24,16 @@ import { fileURLToPath } from "node:url";
 
 import {
   censusProblems,
+  compareWorkerRecordings,
   type FixtureTextureLine,
   type G8tExpected,
   type HookTextureLine,
+  maskedHookLog,
   type OracleReport,
   oracleProblems,
   pairTextures,
 } from "../lib/gate8-tex-checks";
+import type { ResolvedRecording, ResolvedTransaction } from "../lib/render-stream-2";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..", "..");
@@ -197,6 +200,73 @@ function oracleCases(): void {
   assert(oracleProblems(pair({}), oracle([])).length > 0, "oracle: a missing oracle entry fails");
 }
 
+// G8kw: the hold-back's contract on synthetic resolved recordings.
+function recording(frames: [number, string][]): ResolvedRecording {
+  return {
+    schema: "render-stream-8-resolved/1",
+    session_id: "s",
+    stream_id: "t",
+    resources: [],
+    transactions: frames.map(
+      ([frame, hash], i) =>
+        ({
+          seq: i + 1,
+          frame,
+          encoding: "full",
+          state: { textures: [{ id: 1, hash }] },
+        }) as unknown as ResolvedTransaction,
+    ),
+  };
+}
+
+function workerCases(): void {
+  const sync = recording([[1, HASH_A], [2, HASH_A], [3, HASH_B], [4, HASH_B]]);
+  const held = compareWorkerRecordings(sync, recording([[2, HASH_A], [4, HASH_B]]));
+  assert(
+    held.problems.length === 0 && JSON.stringify(held.held_frames) === "[1,3]",
+    "workers: a recording missing held frames but equal on every published one passes",
+  );
+  assert(
+    compareWorkerRecordings(sync, recording([[2, HASH_A], [3, "0".repeat(64)], [4, HASH_B]])).problems
+      .some((p) => p.startsWith("frame 3")),
+    "workers: a frame published before its hash was ready (zero hash) fails",
+  );
+  assert(
+    compareWorkerRecordings(sync, recording([[2, HASH_A], [3, HASH_B]])).problems.some((p) =>
+      p.includes("ends at frame 3"),
+    ),
+    "workers: a recording that never publishes the last state fails",
+  );
+  assert(
+    compareWorkerRecordings(sync, recording([[2, HASH_A], [5, HASH_B]])).problems.some((p) =>
+      p.includes("never published"),
+    ),
+    "workers: a frame the synchronous recording never had fails",
+  );
+  assert(
+    compareWorkerRecordings(sync, recording([])).problems.includes("the async recording has no transaction"),
+    "workers: an empty recording fails",
+  );
+  const syncLog = [
+    `{"frame":1,"t_us":5,"op":"texture_2d_create","id":1,"hash":"${HASH_A}","copy_ns":9,"hash_ns":3}`,
+    `{"frame":2,"t_us":7,"op":"store","hash":"${HASH_A}"}`,
+  ].join("\n");
+  const asyncLog = [
+    `{"frame":1,"t_us":6,"op":"texture_2d_create","id":1,"hash":"${HASH_A}","copy_ns":8,"hash_ns":4,"worker":true,"hook_ns":12,"dup_ns":2}`,
+    `{"frame":4,"t_us":9,"op":"store","hash":"${HASH_A}"}`,
+  ].join("\n");
+  const a = maskedHookLog(syncLog);
+  const b = maskedHookLog(asyncLog);
+  assert(
+    JSON.stringify(a) === JSON.stringify(b),
+    "workers: hook logs equal but for cost columns, worker keys and the store line's frame",
+  );
+  assert(
+    JSON.stringify(maskedHookLog(asyncLog.replace(`"id":1`, `"id":2`)).texture) !== JSON.stringify(a.texture),
+    "workers: a differing fact in a texture line is seen",
+  );
+}
+
 async function main(): Promise<void> {
   const expected = JSON.parse(
     await readFile(join(EXPERIMENT_DIR, "fixtures", "gate8-tex", "expected.json"), "utf8"),
@@ -205,6 +275,7 @@ async function main(): Promise<void> {
   pairCases();
   censusCases();
   oracleCases();
+  workerCases();
   console.log(`\nself-test-gate8: ${assertions - failures}/${assertions} assertions passed`);
   if (failures > 0) process.exitCode = 1;
 }

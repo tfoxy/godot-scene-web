@@ -58,6 +58,7 @@ async function main(): Promise<void> {
       decode_cost: g8t.decode_cost,
       hitch: g8t.hitch,
       hardware_band: g8t.hardware_band,
+      workers: g8t.workers,
     };
   }
   if (run.includes("g8a")) {

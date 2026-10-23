@@ -11,6 +11,10 @@
 //   reference/ reference-hw/             rendered: shots/step-<k>.png
 //   receiver/ receiver-patch/            native receiver on capture/'s full and patch sinks
 //   decode-cost/{oracle-timing,capture}/ the timing group (real time, exclusive lock)
+//   workers/capture/                     G8kw: capture/ again under GRC_TEXTURE_WORKERS=2 (every
+//                                        copy on a worker, a per-job delay forcing the hold-back)
+//   workers/sabotage-publish-before-ready/capture/  the same with the publish-before-ready fault
+//   decode-cost/capture-workers/         G8kw timing: the cost textures at GRC_TEXTURE_WORKERS=2
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -19,6 +23,8 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import {
   decodeRecording,
+  type ResolvedRecording,
+  resolveRecording,
   validateRecording,
   wireVersionOf,
 } from "./render-stream-2";
@@ -78,6 +84,10 @@ export interface HookTextureLine {
   copy_ns: number | null;
   hash_ns: number | null;
   decode_ns: number | null;
+  /** G8kw: present only on a copy a texture worker made (the *_ns above are then the worker's). */
+  worker?: boolean;
+  hook_ns?: number;
+  dup_ns?: number;
 }
 
 /** One line of the fixture's textures.jsonl. */
@@ -137,6 +147,11 @@ export interface CostRow {
   thread: string | null;
   design_ms: number | null;
   design_mpx_per_s: number | null;
+  /** G8kw: the same create at GRC_TEXTURE_WORKERS=2 (decode-cost/capture-workers): the hook's own
+   * calling-thread time, the copy-on-write duplicate within it, and the worker's decode/copy/hash. */
+  workers_hook_ms?: number | null;
+  workers_dup_ms?: number | null;
+  workers_job_ms?: number | null;
 }
 
 export interface ShotDiff {
@@ -148,10 +163,22 @@ export interface ShotDiff {
   max_delta: number;
 }
 
+/** G8kw: what the workers capture's result.json says about its pool and hold-back. */
+export interface WorkerStats {
+  workers: number;
+  jobs: number;
+  completed: number;
+  held_callbacks: number;
+  published_late: number;
+  coalesced: number;
+  max_lag_frames: number;
+}
+
 export interface G8tReport {
   checks: G8tCheck[];
   legs: Record<string, { exit_code: string | null; skipped: string | null }>;
   decode_cost: CostRow[];
+  workers?: { full: WorkerCompare | null; patch: WorkerCompare | null; stats: WorkerStats | null };
   hitch: { name: string; source_format: string; total_ms: number } | null;
   hardware_band: ShotDiff[];
 }
@@ -212,6 +239,76 @@ function skipped(dir: string): string | null {
 }
 
 // ------------------------------------------------------------------------------- pure helpers
+
+/** G8kw: how an async (texture worker) recording compares with the synchronous one. */
+export interface WorkerCompare {
+  sync_transactions: number;
+  async_transactions: number;
+  /** frames the synchronous recording published and the async one held back */
+  held_frames: number[];
+  problems: string[];
+}
+
+/**
+ * G8kw (texture-delivery-design.md Q7): the hold-back's contract against the synchronous
+ * recording of the same run. Every async transaction is the synchronous transaction of the same
+ * frame, state for state (seq aside: a held frame takes none); the last frames and states agree;
+ * and both resolve. Pure, for the self-test.
+ */
+export function compareWorkerRecordings(sync: ResolvedRecording, workers: ResolvedRecording): WorkerCompare {
+  const problems: string[] = [];
+  const byFrame = new Map(sync.transactions.map((t) => [t.frame, t]));
+  const asyncFrames = new Set(workers.transactions.map((t) => t.frame));
+  let previous = -1;
+  for (const t of workers.transactions) {
+    if (t.frame <= previous) problems.push(`async frame ${t.frame} after ${previous}`);
+    previous = t.frame;
+    const s = byFrame.get(t.frame);
+    if (!s) {
+      problems.push(`async seq ${t.seq} is frame ${t.frame}, which the synchronous recording never published`);
+      continue;
+    }
+    if (JSON.stringify(s.state) !== JSON.stringify(t.state)) {
+      const parts = Object.keys(s.state).filter(
+        (k) =>
+          JSON.stringify((s.state as Record<string, unknown>)[k]) !==
+          JSON.stringify((t.state as Record<string, unknown>)[k]),
+      );
+      problems.push(`frame ${t.frame}: the async state differs from the synchronous one in ${parts.join(", ")}`);
+    }
+  }
+  const lastSync = sync.transactions.at(-1);
+  const lastAsync = workers.transactions.at(-1);
+  if (!lastAsync) problems.push("the async recording has no transaction");
+  else if (lastSync && lastSync.frame !== lastAsync.frame)
+    problems.push(`the async recording ends at frame ${lastAsync.frame}, the synchronous one at ${lastSync.frame}`);
+  return {
+    sync_transactions: sync.transactions.length,
+    async_transactions: workers.transactions.length,
+    held_frames: sync.transactions.map((t) => t.frame).filter((f) => !asyncFrames.has(f)),
+    problems,
+  };
+}
+
+/** G8kw: a hook log's texture lines with the cost columns and the worker keys dropped (their
+ * order and every fact must match the synchronous log); store/inline/serve lines are listed apart,
+ * as a hold-back moves them to the frame that published. */
+export function maskedHookLog(text: string | undefined): { texture: string[]; stores: string[] } {
+  const texture: string[] = [];
+  const stores: string[] = [];
+  for (const l of jsonl<Record<string, unknown>>(text)) {
+    const op = String(l.op);
+    if (op === "store" || op === "inline" || op.startsWith("http") || op.startsWith("serve")) {
+      stores.push(`${op} ${l.hash}`);
+      continue;
+    }
+    const m = { ...l };
+    for (const k of ["t_us", "copy_ns", "hash_ns", "decode_ns", "worker", "hook_ns", "dup_ns"]) delete m[k];
+    texture.push(JSON.stringify(m));
+  }
+  stores.sort();
+  return { texture, stores };
+}
 
 /** The format the hook saw at texture_2d_create: a decode's source_format, else its format. */
 export function hookSourceFormat(l: HookTextureLine): string | null {
@@ -392,6 +489,9 @@ export async function runG8t(
     "sabotage-perturb-decode/receiver",
     "decode-cost/oracle-timing",
     "decode-cost/capture",
+    "workers/capture",
+    "workers/sabotage-publish-before-ready/capture",
+    "decode-cost/capture-workers",
   ];
   const legs: G8tReport["legs"] = {};
   for (const l of legDirs)
@@ -657,6 +757,118 @@ export async function runG8t(
     );
   }
 
+  // --- G8kw: texture workers (texture-delivery-design.md D11, Q7) ----------------------------
+  const resolved = async (dir: string, name: string): Promise<{ rec?: ResolvedRecording; error?: string }> => {
+    const path = join(dir, name);
+    if (!existsSync(path)) return { error: `${name} missing` };
+    const bytes = new Uint8Array(await readFile(path));
+    const errors = validateRecording(bytes, 8);
+    if (errors.length > 0) return { error: `invalid /8 ${name}: ${errors[0]}` };
+    try {
+      return { rec: resolveRecording(bytes, 8) };
+    } catch (e) {
+      return { error: `${name} does not resolve: ${(e as Error).message}` };
+    }
+  };
+  const workerStats = async (dir: string): Promise<WorkerStats | null> => {
+    const r = await readJson<{ stream?: { texture_workers?: WorkerStats; reason?: string | null } }>(
+      join(dir, "evidence", "result.json"),
+    );
+    return r?.stream?.texture_workers ?? null;
+  };
+  const workersDir = join(out, "workers", "capture");
+  let workersReport: G8tReport["workers"];
+  {
+    // worker-states-equal: the async recordings against the synchronous capture/ of the same run
+    const problems: string[] = [];
+    const cmp: { full: WorkerCompare | null; patch: WorkerCompare | null } = { full: null, patch: null };
+    if (legs["workers/capture"].exit_code !== "0") problems.push(`workers/capture exit ${legs["workers/capture"].exit_code}`);
+    for (const [key, name] of [["full", "recording.rs8"], ["patch", "recording-patch.rs8"]] as const) {
+      const a = await resolved(capDir, name);
+      const b = await resolved(workersDir, name);
+      if (a.error || !a.rec) problems.push(`capture/${a.error}`);
+      if (b.error || !b.rec) problems.push(`workers/capture/${b.error}`);
+      if (!a.rec || !b.rec) continue;
+      const c = compareWorkerRecordings(a.rec, b.rec);
+      cmp[key] = c;
+      problems.push(...c.problems.map((p) => `${name}: ${p}`));
+    }
+    const stats = await workerStats(workersDir);
+    if (!stats) problems.push("workers/capture result.json has no stream.texture_workers");
+    else {
+      if (stats.workers !== 2) problems.push(`${stats.workers} workers, expected 2`);
+      if (stats.jobs === 0 || stats.completed !== stats.jobs)
+        problems.push(`${stats.completed}/${stats.jobs} jobs completed`);
+      if (stats.held_callbacks === 0)
+        problems.push("no callback was held back: the hold-back was never exercised");
+    }
+    if (cmp.full && cmp.full.held_frames.length === 0)
+      problems.push("the async full recording held no frame back");
+    workersReport = { ...cmp, stats };
+    checks.push(
+      check(
+        "worker-states-equal",
+        "G8kw: under GRC_TEXTURE_WORKERS=2 (every copy, decode and hash on a worker, each job delayed so publication must wait), both /8 sinks validate, every transaction equals the synchronous capture's transaction of the same frame state for state, held frames are only missing (never published early), and both end on the same frame and state",
+        ran("workers/capture") && ran("capture") ? problems : null,
+        `full: ${cmp.full?.async_transactions}/${cmp.full?.sync_transactions} transactions, ${cmp.full?.held_frames.length} frames held; patch: ${cmp.patch?.async_transactions}/${cmp.patch?.sync_transactions}; ${stats?.jobs} jobs, ${stats?.held_callbacks} held callbacks, lag <= ${stats?.max_lag_frames} frames`,
+        "workers/capture",
+      ),
+    );
+  }
+  {
+    // worker-hook-log: the hook log's texture lines are the synchronous ones, in order
+    const problems: string[] = [];
+    const a = maskedHookLog(await readText(join(capDir, "evidence", "resources.jsonl")));
+    const b = maskedHookLog(await readText(join(workersDir, "evidence", "resources.jsonl")));
+    if (a.texture.length === 0) problems.push("capture/ hook log has no lines");
+    if (a.texture.length !== b.texture.length)
+      problems.push(`${b.texture.length} texture lines, the synchronous log has ${a.texture.length}`);
+    for (let i = 0; i < Math.min(a.texture.length, b.texture.length); i++)
+      if (a.texture[i] !== b.texture[i]) {
+        problems.push(`line ${i + 1} differs: ${b.texture[i].slice(0, 160)} vs ${a.texture[i].slice(0, 160)}`);
+        break;
+      }
+    if (JSON.stringify(a.stores) !== JSON.stringify(b.stores))
+      problems.push(`the stored hashes differ (${b.stores.length} vs ${a.stores.length})`);
+    const creates = (await hookTextureCreates(workersDir)).filter((h) => h.status === "ok");
+    const onWorker = creates.filter((h) => h.worker === true && typeof h.hook_ns === "number");
+    if (onWorker.length !== creates.length)
+      problems.push(`${creates.length - onWorker.length} of ${creates.length} ok creates were not worker copies`);
+    checks.push(
+      check(
+        "worker-hook-log",
+        "G8kw: the workers capture's hook log has the synchronous log's texture lines in the same order with the same facts and hashes (cost columns and the worker keys aside), the same stored payloads, and every ok create marked as a worker copy with its hook time",
+        ran("workers/capture") && ran("capture") ? problems : null,
+        `${b.texture.length} lines, ${onWorker.length} worker creates`,
+        "workers/capture",
+      ),
+    );
+  }
+  {
+    // sabotage-publish-before-ready: publishing without waiting must be caught
+    const dir = join(out, "workers", "sabotage-publish-before-ready", "capture");
+    const caught: string[] = [];
+    const a = await resolved(capDir, "recording.rs8");
+    const b = await resolved(dir, "recording.rs8");
+    if (b.error) caught.push(b.error);
+    if (a.rec && b.rec) caught.push(...compareWorkerRecordings(a.rec, b.rec).problems);
+    const r = await readJson<{ stream?: { reason?: string | null } }>(join(dir, "evidence", "result.json"));
+    if (r?.stream?.reason) caught.push(`stream: ${r.stream.reason}`);
+    checks.push(
+      check(
+        "sabotage-publish-before-ready",
+        "G8kw: the publish-before-ready fault (a snapshot naming a pending texture published at once, its hash all zeros) is caught: the recording no longer matches the synchronous one, or the publisher refuses the hash it has no payload for",
+        ran("workers/sabotage-publish-before-ready/capture") && ran("capture")
+          ? caught.length > 0
+            ? []
+            : ["the fault went unnoticed: the recording equals the synchronous one"]
+          : null,
+        `caught: ${caught.slice(0, 2).join("; ")}`,
+        "workers/sabotage-publish-before-ready/capture",
+      ),
+    );
+  }
+
   // --- decode-cost (timing group; measured, no budget) -------------------------------------
   const decode_cost: CostRow[] = [];
   let hitch: G8tReport["hitch"] = null;
@@ -666,6 +878,9 @@ export async function runG8t(
     );
     const dir = join(out, "decode-cost", "capture");
     const pairs = pairTextures(await fixtureTextures(dir), await hookTextureCreates(dir));
+    const wdir = join(out, "decode-cost", "capture-workers");
+    const workerPairs = pairTextures(await fixtureTextures(wdir), await hookTextureCreates(wdir));
+    const workerProblems: string[] = [];
     const problems: string[] = [];
     for (const [name, tex] of Object.entries(expected.cost))
       for (const family of ["desktop", "mobile"] as const) {
@@ -700,6 +915,23 @@ export async function runG8t(
           problems.push(`${name}/${family}: ${oracleProblems(p, timing)[0]}`);
         if (row.hook_total_ms !== null && row.thread === "main" && (hitch === null || row.hook_total_ms > hitch.total_ms))
           hitch = { name, source_format: row.source_format, total_ms: row.hook_total_ms };
+        const w = workerPairs.find((x) => x.fixture.name === name && x.fixture.family === family)?.hook;
+        row.workers_hook_ms = ms(w?.hook_ns);
+        row.workers_dup_ms = ms(w?.dup_ns);
+        row.workers_job_ms =
+          ms(w?.copy_ns) !== null && ms(w?.hash_ns) !== null
+            ? (ms(w?.copy_ns) ?? 0) + (ms(w?.hash_ns) ?? 0) + (ms(w?.decode_ns) ?? 0)
+            : null;
+        if (ran("decode-cost/capture-workers")) {
+          if (!w) workerProblems.push(`${name}/${family}: no create in decode-cost/capture-workers`);
+          else if (w.worker !== true || row.workers_hook_ms === null)
+            workerProblems.push(`${name}/${family}: not a worker copy`);
+          else if (w.thread !== "main") workerProblems.push(`${name}/${family}: created on ${w.thread}`);
+          else if (row.workers_hook_ms > 2)
+            workerProblems.push(`${name}/${family}: ${row.workers_hook_ms.toFixed(2)} ms on the calling thread (budget 2 ms)`);
+          else if (w.hash !== p?.hook?.hash)
+            workerProblems.push(`${name}/${family}: the worker's hash differs from the synchronous one`);
+        }
         decode_cost.push(row);
       }
     checks.push(
@@ -712,6 +944,17 @@ export async function runG8t(
           .join("; "),
       ),
     );
+    checks.push(
+      check(
+        "worker-hook-time",
+        "G8kw (texture-delivery-design.md G8kw row): at GRC_TEXTURE_WORKERS=2 every 2048x2048 cost create costs the calling (main) thread at most 2 ms (facts, prediction, copy-on-write duplicate, hand-off, mirror), its decode/copy/hash run on a worker, and the worker's hash equals the synchronous capture's",
+        ran("decode-cost/capture-workers") && ran("decode-cost/capture") ? workerProblems : null,
+        decode_cost
+          .map((r) => `${r.source_format} ${r.workers_hook_ms?.toFixed(3)} ms (dup ${r.workers_dup_ms?.toFixed(3)}; worker ${r.workers_job_ms?.toFixed(1)} ms)`)
+          .join("; "),
+        "decode-cost/capture-workers",
+      ),
+    );
   }
-  return { checks, legs, decode_cost, hitch, hardware_band };
+  return { checks, legs, decode_cost, hitch, hardware_band, workers: workersReport };
 }

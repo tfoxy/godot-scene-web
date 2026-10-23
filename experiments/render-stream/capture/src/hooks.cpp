@@ -19,6 +19,7 @@
 #include "rs_shader_payload.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
+#include "rs_texture_worker.h"
 #include "rs_variant.h"
 
 namespace grc {
@@ -902,6 +903,8 @@ struct ImageBinds {
   // Gate 2 (G2a): the payload copy also needs has_mipmaps and image_ptr.
   GDExtensionMethodBindPtr has_mipmaps = nullptr;
   bool payload_available = false;
+  // G8kw: Resource.duplicate(bool), the copy-on-write duplicate a texture worker reads.
+  GDExtensionMethodBindPtr duplicate = nullptr;
 };
 
 ImageBinds g_image_binds;
@@ -971,6 +974,11 @@ struct ResourcePolicy {
 
 ResourcePolicy g_resource_policy;
 std::thread::id g_main_thread;
+// G8kw (rs_texture_worker.h): GRC_TEXTURE_WORKERS's worker count (0: sync, the default) and
+// GRC_TEXTURE_WORKER_MIN_BYTES, set at arm and cleared at stream finish by the main thread while
+// loader threads may be inside a texture hook, hence atomics.
+std::atomic<int> g_texture_workers{0};
+std::atomic<uint64_t> g_texture_worker_min_bytes{0};
 
 uint64_t now_ns() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -987,6 +995,23 @@ rs::TapContext tap_context() {
 }
 
 rs::ResourceLog &resources() { return rs::resource_log(); }
+
+// Q3 "Copy", steps 2-3: the GRT1 payload of `size` data bytes and its SHA-256, timed separately.
+void build_payload(const std::string &meta, const uint8_t *data, int64_t size,
+                   rs::PayloadCopy *copy, rs::PayloadPtr *bytes) {
+  const uint64_t t0 = now_ns();
+  auto payload = std::make_shared<rs::PayloadBytes>();
+  rs::payload_header(meta, static_cast<uint64_t>(size), payload.get());
+  payload->insert(payload->end(), data, data + size);
+  const uint64_t t1 = now_ns();
+  copy->hash = sha256_hex(payload->data(), payload->size());
+  const uint64_t t2 = now_ns();
+  copy->status = "ok";
+  copy->payload_bytes = static_cast<int64_t>(payload->size());
+  copy->copy_ns = static_cast<int64_t>(t1 - t0);
+  copy->hash_ns = static_cast<int64_t>(t2 - t1);
+  *bytes = std::move(payload);
+}
 
 // G8t (gate8-design.md D8, Q3): the payload of a host-decoded image. `copy` holds the source's
 // facts; on success it becomes the decoded payload's (format, size), with `source_format` the
@@ -1015,33 +1040,114 @@ rs::PayloadCopy copy_decoded(rs::PayloadCopy copy, const rs::DecodeResult &decod
     copy.reason = "payload-too-large";
     return copy;
   }
-  const uint64_t t0 = now_ns();
-  auto payload = std::make_shared<rs::PayloadBytes>();
-  rs::payload_header(meta, static_cast<uint64_t>(decoded.data_size), payload.get());
-  payload->insert(payload->end(), decoded.data, decoded.data + decoded.data_size);
-  const uint64_t t1 = now_ns();
-  copy.hash = sha256_hex(payload->data(), payload->size());
-  const uint64_t t2 = now_ns();
+  build_payload(meta, decoded.data, decoded.data_size, &copy, bytes);
   copy.source_format = copy.format;
   copy.format = decoded.format;
   copy.width = decoded.width;
   copy.height = decoded.height;
   copy.mipmaps = decoded.mipmaps;
   copy.data_bytes = decoded.data_size;
-  copy.status = "ok";
-  copy.payload_bytes = static_cast<int64_t>(payload->size());
-  copy.copy_ns = static_cast<int64_t>(t1 - t0);
-  copy.hash_ns = static_cast<int64_t>(t2 - t1);
-  *bytes = std::move(payload);
   return copy;
+}
+
+// --- G8kw: the texture worker path (texture-delivery-design.md D11, rs_texture_worker.h) -------
+//
+// The hook keeps every fact-based decision of copy_payload (status, reason, shape, payload size)
+// and hands only the content -- copy, decode, hash -- to a worker, on a copy-on-write duplicate of
+// the Image (Image::_duplicate shares the engine's bytes; the engine copies on its next write).
+
+// The duplicate's Ref slot; dropping it releases the duplicate on whichever thread does so.
+struct ImageDuplicate {
+  void *slot = nullptr;
+  void *object = nullptr;
+  ~ImageDuplicate() {
+    if (slot != nullptr && g_iface.ref_set_object != nullptr) {
+      g_iface.ref_set_object(&slot, nullptr);
+    }
+  }
+};
+
+std::shared_ptr<ImageDuplicate> duplicate_image(void *image) {
+  if (image == nullptr || g_image_binds.duplicate == nullptr ||
+      g_iface.object_method_bind_ptrcall == nullptr || g_iface.ref_get_object == nullptr ||
+      g_iface.ref_set_object == nullptr) {
+    return nullptr;
+  }
+  auto dup = std::make_shared<ImageDuplicate>();
+  const uint8_t deep = 0;  // GDExtensionBool: duplicate(false)
+  const void *args[] = {&deep};
+  g_iface.object_method_bind_ptrcall(g_image_binds.duplicate, image, args, &dup->slot);
+  dup->object = g_iface.ref_get_object(&dup->slot);
+  return dup->object != nullptr ? dup : nullptr;
+}
+
+// Whether this copy goes to a worker: N workers, a running pool, a payload of at least min_bytes.
+bool worker_copy(int64_t data_bytes) {
+  return g_texture_workers.load(std::memory_order_acquire) > 0 && data_bytes >= 0 &&
+         static_cast<uint64_t>(data_bytes) >=
+             g_texture_worker_min_bytes.load(std::memory_order_acquire) &&
+         rs::texture_worker_pool().running();
+}
+
+// The worker side: exactly copy_payload's copy (or copy_decoded's decode) on the duplicate.
+void run_texture_job(const rs::TextureJobPtr &job, std::shared_ptr<ImageDuplicate> dup,
+                     rs::PayloadCopy base, bool decode, rs::DecodeRequest request,
+                     const std::string &meta) {
+  rs::PayloadPtr bytes;
+  rs::PayloadCopy actual = base;
+  if (decode) {
+    request.image = dup->object;
+    const rs::DecodeResult decoded = rs::texture_decode(request);
+    if (decoded.handled) {
+      actual = copy_decoded(base, decoded, &bytes);
+    } else {
+      actual.decode_ns = decoded.decode_ns;
+      actual.reason = "unsupported-format";
+    }
+  } else {
+    const uint8_t *data = g_iface.image_ptr(dup->object);  // const: never a copy-on-write
+    if (data == nullptr) {
+      actual.reason = "payload-unavailable";
+    } else {
+      build_payload(meta, data, base.data_bytes, &actual, &bytes);
+    }
+  }
+  dup.reset();  // the duplicate dies here, before the job is visible as done
+  job->finish(actual, std::move(bytes));
+}
+
+// Hands `predicted`'s content to a worker. False (nothing submitted) when the duplicate or the
+// pool is unavailable: the caller then copies synchronously.
+bool submit_texture_job(rs::PayloadCopy *predicted, const rs::PayloadCopy &base, const Ref *image,
+                        bool decode, const rs::DecodeRequest &request, const std::string &meta,
+                        rs::TextureJobPtr *job_out) {
+  const uint64_t t0 = now_ns();
+  std::shared_ptr<ImageDuplicate> dup = duplicate_image(image->object);
+  const uint64_t t1 = now_ns();
+  if (dup == nullptr) {
+    return false;
+  }
+  auto job = std::make_shared<rs::TextureJob>(*predicted);
+  if (!rs::texture_worker_pool().submit([job, dup, base, decode, request, meta]() mutable {
+        run_texture_job(job, std::move(dup), base, decode, request, meta);
+      })) {
+    return false;
+  }
+  predicted->worker = true;
+  predicted->dup_ns = static_cast<int64_t>(t1 - t0);
+  *job_out = std::move(job);
+  return true;
 }
 
 // Q3 "Copy", steps 1-3. Nothing is copied for an unreadable Image, a format
 // outside GRC_RESOURCE_FORMATS or a payload over GRC_RESOURCE_MAX_PAYLOAD_BYTES.
 // The GRT1 bytes go to `bytes` (G2b2: the texture mirror keeps them); null
-// unless the copy is "ok".
-rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::PayloadPtr *bytes) {
+// unless the copy is "ok". G8kw: under GRC_TEXTURE_WORKERS=<N> an "ok" copy may instead be a
+// prediction whose content `*job` delivers (`bytes` then stays null).
+rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::PayloadPtr *bytes,
+                             rs::TextureJobPtr *job) {
   bytes->reset();
+  job->reset();
   rs::PayloadCopy copy;
   copy.format = facts.format;
   copy.width = facts.width;
@@ -1066,6 +1172,34 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
       request.mipmaps = facts.mipmaps;
       request.image = image->object;
       request.frame = current_frame();
+      const int64_t target = rs::decode_target_format(facts.format);
+      if (target >= 0 && g_texture_workers.load(std::memory_order_acquire) > 0) {
+        // G8kw: the decode's outcome predicted from the D8 table, its content left to a worker. A
+        // decoded payload the policy would refuse stays synchronous (the refusal keeps the
+        // source's facts and a measured decode_ns, as before).
+        const int64_t expected =
+            rs::expected_data_bytes(target, facts.width, facts.height, facts.mipmaps);
+        const std::string meta =
+            expected >= 0 ? rs::payload_meta(rs::image_format_name(target), facts.width,
+                                             facts.height, facts.mipmaps, expected)
+                          : std::string();
+        if (expected >= 0 && target < rs::kImageFormatCount &&
+            g_resource_policy.formats.permitted[target] &&
+            rs::payload_size(meta, static_cast<uint64_t>(expected)) <=
+                g_resource_policy.max_payload_bytes &&
+            worker_copy(expected)) {
+          rs::PayloadCopy predicted = copy;
+          predicted.source_format = copy.format;
+          predicted.format = target;
+          predicted.data_bytes = expected;
+          predicted.status = "ok";
+          predicted.payload_bytes =
+              static_cast<int64_t>(rs::payload_size(meta, static_cast<uint64_t>(expected)));
+          if (submit_texture_job(&predicted, copy, image, true, request, meta, job)) {
+            return predicted;
+          }
+        }
+      }
       const rs::DecodeResult decoded = rs::texture_decode(request);
       if (decoded.handled) {
         return copy_decoded(copy, decoded, bytes);
@@ -1089,23 +1223,22 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
     copy.reason = "payload-too-large";
     return copy;
   }
+  if (worker_copy(facts.data_size)) {
+    // G8kw: the shape and size are final here; only the bytes and their hash are the worker's.
+    rs::PayloadCopy predicted = copy;
+    predicted.status = "ok";
+    predicted.payload_bytes =
+        static_cast<int64_t>(rs::payload_size(meta, static_cast<uint64_t>(facts.data_size)));
+    if (submit_texture_job(&predicted, copy, image, false, rs::DecodeRequest(), meta, job)) {
+      return predicted;
+    }
+  }
   const uint8_t *data = g_iface.image_ptr(image->object);
   if (data == nullptr) {
     copy.reason = "payload-unavailable";
     return copy;
   }
-  const uint64_t t0 = now_ns();
-  auto payload = std::make_shared<rs::PayloadBytes>();
-  rs::payload_header(meta, static_cast<uint64_t>(facts.data_size), payload.get());
-  payload->insert(payload->end(), data, data + facts.data_size);
-  const uint64_t t1 = now_ns();
-  copy.hash = sha256_hex(payload->data(), payload->size());
-  const uint64_t t2 = now_ns();
-  copy.status = "ok";
-  copy.payload_bytes = static_cast<int64_t>(payload->size());
-  copy.copy_ns = static_cast<int64_t>(t1 - t0);
-  copy.hash_ns = static_cast<int64_t>(t2 - t1);
-  *bytes = std::move(payload);
+  build_payload(meta, data, facts.data_size, &copy, bytes);
   return copy;
 }
 
@@ -1467,15 +1600,20 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
 
 RID hook_texture_2d_create(void *self, const Ref *image) {
   bump(kTexture2dCreate);
+  const uint64_t t_hook = now_ns();
   const ImageFacts facts = read_image(image);
   ImageCapture capture = describe_image(facts, 0, -1);
   // D3: the bytes are copied and hashed here, on the calling thread, before the
   // engine sees the call (a worker-thread create is initialized later, from
-  // whatever the Image then holds).
+  // whatever the Image then holds). G8kw: or, under GRC_TEXTURE_WORKERS=<N>, a copy-on-write
+  // duplicate taken here is copied and hashed by a worker.
   const bool logging = resources().active();
   rs::PayloadPtr bytes;
-  const rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes) : rs::PayloadCopy();
+  rs::TextureJobPtr job;
+  rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes, &job) : rs::PayloadCopy();
+  const uint64_t t_forward = now_ns();
   const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, image);
+  const uint64_t forward_ns = now_ns() - t_forward;
   capture.rid = result.id;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -1487,15 +1625,19 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("texture_2d_create");
     if (streaming() && !omit) {
-      mirror().texture_2d_create(result.id, copy, std::move(bytes), current_frame());
+      mirror().texture_2d_create(result.id, copy, std::move(bytes), current_frame(), job);
     }
-    resources().texture_2d_create(tap_context(), result.id, copy, omit);
+    if (job != nullptr) {
+      copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook - forward_ns);
+    }
+    resources().texture_2d_create(tap_context(), result.id, copy, omit, job);
   }
   return result;
 }
 
 void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer) {
   bump(kTexture2dUpdate);
+  const uint64_t t_hook = now_ns();
   const ImageFacts facts = read_image(image);
   {
     ImageCapture capture = describe_image(facts, texture.id, layer);
@@ -1506,15 +1648,21 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
   }
   const bool logging = resources().active();
   rs::PayloadPtr bytes;
-  const rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes) : rs::PayloadCopy();
+  rs::TextureJobPtr job;
+  rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes, &job) : rs::PayloadCopy();
+  const uint64_t t_forward = now_ns();
   original<FnTexture2dUpdate>(kTexture2dUpdate)(self, texture, image, layer);
+  const uint64_t forward_ns = now_ns() - t_forward;
   if (logging) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("texture_2d_update");
     if (streaming() && !omit) {
-      mirror().texture_2d_update(texture.id, copy, std::move(bytes), layer, current_frame());
+      mirror().texture_2d_update(texture.id, copy, std::move(bytes), layer, current_frame(), job);
     }
-    resources().texture_2d_update(tap_context(), texture.id, copy, layer, omit);
+    if (job != nullptr) {
+      copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook - forward_ns);
+    }
+    resources().texture_2d_update(tap_context(), texture.id, copy, layer, omit, job);
   }
 }
 
@@ -3250,6 +3398,8 @@ void hooks_init_image_binds() {
   // Gate 2 (G2a): has_mipmaps (hash from the same dump) and the image_ptr
   // interface function complete what a payload copy needs.
   g_image_binds.has_mipmaps = method_bind("Image", "has_mipmaps", 36873697LL);
+  // G8kw: optional; without it a texture worker is never used (the copy stays synchronous).
+  g_image_binds.duplicate = method_bind("Resource", "duplicate", 482882304LL);
   g_image_binds.payload_available = g_image_binds.available &&
                                     g_image_binds.has_mipmaps != nullptr &&
                                     g_iface.image_ptr != nullptr;
@@ -3264,6 +3414,11 @@ void hooks_set_main_thread() { g_main_thread = std::this_thread::get_id(); }
 void hooks_set_resource_policy(const rs::FormatPolicy &formats, uint64_t max_payload_bytes) {
   g_resource_policy.formats = formats;
   g_resource_policy.max_payload_bytes = max_payload_bytes;
+}
+
+void hooks_set_texture_workers(const rs::TextureWorkerConfig &config) {
+  g_texture_worker_min_bytes.store(config.min_bytes, std::memory_order_release);
+  g_texture_workers.store(config.workers, std::memory_order_release);
 }
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }

@@ -32,12 +32,24 @@ using PayloadPtr = std::shared_ptr<const PayloadBytes>;
 // render-stream-mesh/1 payload.
 using PayloadMap = std::map<std::string, PayloadPtr>;
 
+class TextureJob;  // rs_texture_worker.h
+
+// G8kw (texture-delivery-design.md D11): one `ok` image entry of `state.textures` whose hash and
+// payload a texture worker has not delivered yet. Its entry carries an empty hash until
+// resolve_captured() (rs_texture_worker.h) fills it.
+struct PendingTexture {
+  std::size_t index = 0;  // into state.textures
+  std::shared_ptr<TextureJob> job;
+};
+
 struct Captured {
   rs2::Snapshot state;
   // Exactly the hashes payload_refs(state) names: the `ok` image entries in `state.textures`,
   // the surfaces of the `ok` entries in `state.meshes` and the `ok` payload-source shaders in
-  // `state.shaders`.
+  // `state.shaders` -- except the entries listed in `pending` (G8kw), which are not ready yet.
   PayloadMap payloads;
+  // Empty unless GRC_TEXTURE_WORKERS=<N> left a texture's content to a worker (G8kw).
+  std::vector<PendingTexture> pending;
 };
 
 // One payload a snapshot names (G5e): an `ok` image entry, or one surface of an `ok` mesh entry.

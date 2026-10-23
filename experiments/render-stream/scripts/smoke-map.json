@@ -155,6 +155,15 @@
       "exclusive": true
     },
     {
+      "why": "texture workers (G8kw, texture-delivery-design.md D11, Q7): the pool, the publication hold-back and their ctest. Off unless GRC_TEXTURE_WORKERS=<N>, which only gate 8's g8t workers legs set, so a change confined to these files moves no /2-/7 run and no synchronous capture: the build (whose ctests drive this code), the pure self-tests, the default gate 0 leg and gate 8 are enough. Their call sites in hooks.cpp, rs_mirror.cpp, rs_resource_log.cpp and entry.cpp are shared capture files and still reach '*'",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_texture_worker.*",
+        "experiments/render-stream/capture/test/rs_texture_worker_test.cpp"
+      ],
+      "reach": ["capture-build", "pure", "native:gate0@*", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",

@@ -230,6 +230,11 @@ struct Stream {
   // request, read at arm; and what the adoption seam reported (G8w: nothing).
   rs::Gate8Policy gate8;
   rs::AdoptStats adopt_stats;
+  // G8kw (texture-delivery-design.md D11, Q7): GRC_TEXTURE_WORKERS and its knobs, read at arm,
+  // and the publication hold-back that waits for the workers' hashes (unused when sync).
+  rs::TextureWorkerConfig workers;
+  rs::HoldBack holdback;
+  bool workers_started = false;
   // G8a (D13): GRC_MIRROR_MAX_ITEMS / GRC_MIRROR_MAX_COMMANDS, read at arm.
   size_t max_items = rs2::kMaxLiveItems;
   size_t max_commands = rs2::kMaxCommandsPerItem;
@@ -587,6 +592,31 @@ std::string result_json() {
     json.field("decode_ns_total", decode.decode_ns_total);
     json.field("decode_ns_max", decode.decode_ns_max);
     json.object_end();
+    json.object_end();
+  }
+  // Additive (G8kw): present only under GRC_TEXTURE_WORKERS=<N>.
+  if (g_stream.workers.async()) {
+    const rs::TextureWorkerPool::Stats pool = rs::texture_worker_pool().stats();
+    const rs::HoldBack::Stats &hold = g_stream.holdback.stats();
+    json.key("texture_workers").object_begin();
+    json.field("workers", static_cast<int64_t>(g_stream.workers.workers));
+    json.field("min_bytes", static_cast<int64_t>(g_stream.workers.min_bytes));
+    json.field("delay_ms", static_cast<int64_t>(g_stream.workers.delay_ms));
+    json.field("fault", std::string(g_stream.workers.fault_publish_before_ready
+                                        ? "publish-before-ready"
+                                        : "none"));
+    json.field("jobs", static_cast<int64_t>(pool.submitted));
+    json.field("completed", static_cast<int64_t>(pool.completed));
+    json.field("max_queued", static_cast<int64_t>(pool.max_queued));
+    json.field("busy_ns", static_cast<int64_t>(pool.busy_ns));
+    json.field("max_job_ns", static_cast<int64_t>(pool.max_job_ns));
+    json.field("snapshots_offered", static_cast<int64_t>(hold.offered));
+    json.field("held_callbacks", static_cast<int64_t>(hold.held_callbacks));
+    json.field("published_late", static_cast<int64_t>(hold.published_late));
+    json.field("coalesced", static_cast<int64_t>(hold.coalesced));
+    json.field("evicted", static_cast<int64_t>(hold.evicted));
+    json.field("max_lag_frames", static_cast<int64_t>(hold.max_lag_frames));
+    json.field("max_held", static_cast<int64_t>(hold.max_held));
     json.object_end();
   }
   json.object_end();
@@ -1271,6 +1301,27 @@ void stream_start() {
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
   }
+  // G8kw (texture-delivery-design.md D11): GRC_TEXTURE_WORKERS, valid at every version (the
+  // hold-back changes when a frame is published, never what a transaction says).
+  {
+    rs::TextureWorkerConfig workers;
+    std::string error;
+    if (!rs::parse_texture_workers(std::getenv("GRC_TEXTURE_WORKERS"),
+                                   std::getenv("GRC_TEXTURE_WORKER_MIN_BYTES"),
+                                   std::getenv("GRC_TEXTURE_WORKER_DELAY_MS"),
+                                   std::getenv("GRC_TEXTURE_WORKER_FAULT"), &workers, &error)) {
+      log_line("stream: refused texture workers (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    g_stream.workers = workers;
+    g_stream.holdback = rs::HoldBack();
+    hooks_set_texture_workers(rs::TextureWorkerConfig());  // sync until the pool runs
+  }
   // G8a (gate8-design.md D13): the mirror's caps are configuration. No wire change: a cap that is
   // hit is the existing `mirror-capacity` failure. Defaults keep every other session unchanged.
   {
@@ -1626,6 +1677,20 @@ void stream_start() {
     }
   }
 
+  // G8kw: the pool runs before the mirror sees any call, and until stream_finish() drained it.
+  if (g_stream.workers.async()) {
+    g_stream.workers_started =
+        rs::texture_worker_pool().start(g_stream.workers.workers, g_stream.workers.delay_ms);
+    hooks_set_texture_workers(g_stream.workers);
+    log_line("stream: texture_workers=" + rs::texture_workers_name(g_stream.workers) +
+             " min_bytes=" + std::to_string(g_stream.workers.min_bytes) +
+             (g_stream.workers.delay_ms != 0
+                  ? " delay_ms=" + std::to_string(g_stream.workers.delay_ms)
+                  : std::string()) +
+             (g_stream.workers.fault_publish_before_ready ? " fault=publish-before-ready"
+                                                          : "") +
+             (g_stream.workers_started ? "" : " (pool failed to start: copies stay synchronous)"));
+  }
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
   // Before the root query, so every hook call the session sees is under the declared policy.
   rs::mirror_set_unknown_item_policy(g_stream.unknown_item_policy);
@@ -2066,10 +2131,42 @@ void live_finish(rs2::EndReason reason, bool blocking) {
 // Writes each sink's end record and closes the recordings. Only the first call
 // while the stream is open does anything, so disarm, shutdown and deinitialize
 // can all call it.
+// G8kw: drains and stops the texture workers (no job may outlive the stream: each holds an engine
+// Image), then publishes the newest held snapshot to the file sinks, so an async recording ends on
+// the same state as a synchronous one. Runs before anything is closed. Every later texture call
+// copies synchronously (the pool refuses work once stopping).
+void workers_finish() {
+  if (!g_stream.workers_started) {
+    return;
+  }
+  rs::texture_worker_pool().stop();
+  g_stream.workers_started = false;
+  hooks_set_texture_workers(rs::TextureWorkerConfig());
+  rs::HeldSnapshot last;
+  std::string error;
+  const bool have = g_stream.holdback.take_newest(&last, &error);
+  if (!error.empty()) {
+    log_line("stream: " + error);
+    if (g_stream.reason.empty()) {
+      g_stream.reason = error;
+    }
+    return;
+  }
+  if (have && g_stream.publisher != nullptr && g_stream.reason.empty()) {
+    log_line("stream: publishing the held snapshot of frame " + std::to_string(last.frame) +
+             " at stream end");
+    if (!g_stream.publisher->publish(std::move(last.snapshot), last.frame, last.snapshot_ns)) {
+      const std::string why = g_stream.publisher->error();
+      g_stream.reason = why.empty() ? std::string("transaction write failed") : why;
+    }
+  }
+}
+
 void stream_finish(rs2::EndReason reason) {
   if (g_stream.status != "open") {
     return;
   }
+  workers_finish();
   rs::mirror_enable(false);
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
   resources_finish();
@@ -2208,9 +2305,42 @@ void stream_publish(uint64_t frame) {
   }
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
-  const uint64_t snapshot_ns = monotonic_ns() - t0;
+  uint64_t snapshot_ns = monotonic_ns() - t0;
   if (g_state.evidence_ready) {
     g_perf.snapshot_us.add(snapshot_ns / 1000);  // Q3d snapshot_us (G6r)
+  }
+  // G8kw (texture-delivery-design.md Q7): the publication hold-back. A snapshot naming a texture
+  // whose worker has not delivered its hash is held; the newest ready one is published, stamped
+  // with its own frame for the file sinks, and the live hub gets it as this callback's state.
+  uint64_t publish_frame = frame;
+  uint64_t publish_epoch = epoch;
+  if (g_stream.workers_started) {
+    rs::HeldSnapshot offered;
+    offered.snapshot = std::move(snapshot);
+    offered.frame = frame;
+    offered.epoch = epoch;
+    offered.snapshot_ns = snapshot_ns;
+    rs::HeldSnapshot ready;
+    bool publish = false;
+    std::string error;
+    if (!g_stream.holdback.offer(std::move(offered), frame,
+                                 g_stream.workers.fault_publish_before_ready, &ready, &publish,
+                                 &error)) {
+      log_line("stream: " + error + " at frame " + std::to_string(frame));
+      g_stream.reason = error;
+      stream_finish(rs2::EndReason::Shutdown);
+      return;
+    }
+    if (!publish) {
+      if (g_live.hub != nullptr) {
+        g_live.hub->on_frame(frame, monotonic_ns(), nullptr, epoch, 0);
+      }
+      return;
+    }
+    snapshot = std::move(ready.snapshot);
+    publish_frame = ready.frame;
+    publish_epoch = ready.epoch;
+    snapshot_ns = ready.snapshot_ns;
   }
   // gate2-design.md Q3: the retained payloads -- the mirror's current ones, those the previous
   // publication still pins and (G2c2) those still servable over HTTP -- stay within
@@ -2238,7 +2368,7 @@ void stream_publish(uint64_t frame) {
   }
   const rs::Captured *published = &snapshot;
   if (g_stream.publisher != nullptr) {
-    if (!g_stream.publisher->publish(std::move(snapshot), frame, snapshot_ns)) {
+    if (!g_stream.publisher->publish(std::move(snapshot), publish_frame, snapshot_ns)) {
       const std::string error = g_stream.publisher->error();
       log_line("stream: write failed at frame " + std::to_string(frame) +
                (error.empty() ? std::string() : " (" + error + ")"));
@@ -2248,7 +2378,7 @@ void stream_publish(uint64_t frame) {
     }
     published = g_stream.publisher->last_published();
   } else {
-    snapshot.state.frame = frame;
+    snapshot.state.frame = publish_frame;
   }
   if (g_live.hub != nullptr) {
     std::vector<rs::ServeEvent> events;
@@ -2262,7 +2392,7 @@ void stream_publish(uint64_t frame) {
       sendable.insert(sendable.begin(), &published->payloads);
       g_live.served->pin(sendable, frame, &events);
     }
-    g_live.hub->on_frame(frame, monotonic_ns(), live_wants ? published : nullptr, epoch,
+    g_live.hub->on_frame(frame, monotonic_ns(), live_wants ? published : nullptr, publish_epoch,
                          snapshot_ns);
     if (serving) {
       // Phase 2: retained := current ∪ every connection's base; the rest is retired.
@@ -2476,6 +2606,7 @@ void on_frame() {
 
 void on_shutdown() {
   stream_finish(rs2::EndReason::Shutdown);
+  rs::texture_worker_pool().stop();  // G8kw: also when the stream never opened after the pool ran
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
@@ -2555,6 +2686,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   // The shutdown callback normally gets here first; this is the backstop for an
   // unload that happens without it.
   stream_finish(rs2::EndReason::Shutdown);
+  rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
   live_linger(true);
   do_disarm("deinitialize");
 }

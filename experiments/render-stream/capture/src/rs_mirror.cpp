@@ -1,5 +1,7 @@
 #include "rs_mirror.h"
 
+#include "rs_texture_worker.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -1058,8 +1060,8 @@ bool same_shape(const PayloadCopy &a, const PayloadCopy &b) {
 
 // The status and payload a copy gives an image texture.
 void take_copy(const PayloadCopy &copy, PayloadPtr bytes, TextureStatus *status, bool *has_reason,
-               TextureReason *reason, PayloadPtr *held) {
-  if (copy.status == "ok" && bytes != nullptr) {
+               TextureReason *reason, PayloadPtr *held, bool pending = false) {
+  if (copy.status == "ok" && (bytes != nullptr || pending)) {
     *status = TextureStatus::Ok;
     *has_reason = false;
     *held = std::move(bytes);
@@ -1161,6 +1163,17 @@ void Mirror::retire_texture(std::uint32_t id) {
   texture.status = TextureStatus::Freed;
   texture.has_reason = false;
   texture.bytes.reset();
+  texture.job.reset();
+}
+
+void Mirror::settle(Texture *texture) {
+  // A mispredicted job stays pending, so the snapshot's resolve_captured() reports it.
+  if (texture->job == nullptr || !texture->job->done() || texture->job->mispredict()) {
+    return;
+  }
+  texture->job->fill(&texture->copy);
+  texture->bytes = texture->job->bytes();
+  texture->job.reset();
 }
 
 TextureEntry Mirror::wire_entry(const Texture &texture) {
@@ -1874,7 +1887,7 @@ void Mirror::viewport_set_texture_repeat(std::uint64_t viewport, std::int32_t re
 }
 
 void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
-                               std::uint64_t frame) {
+                               std::uint64_t frame, std::shared_ptr<TextureJob> job) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (rid == 0 || dropped_identity("texture_2d_create", frame)) {
     return;
@@ -1890,7 +1903,10 @@ void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, Paylo
   texture.version = 1;
   texture.copy = copy;
   take_copy(copy, std::move(bytes), &texture.status, &texture.has_reason, &texture.reason,
-            &texture.bytes);
+            &texture.bytes, job != nullptr);
+  if (texture.status == TextureStatus::Ok && job != nullptr) {
+    texture.job = std::move(job);
+  }
   texture_by_rid_[rid] = texture.id;
   textures_.emplace(texture.id, std::move(texture));
 }
@@ -1915,7 +1931,7 @@ void Mirror::texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t fram
 }
 
 void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
-                               int layer, std::uint64_t frame) {
+                               int layer, std::uint64_t frame, std::shared_ptr<TextureJob> job) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (omit_op_matches("texture_2d_update", frame)) {
     ++stats_.dropped_omit_op;
@@ -1929,6 +1945,9 @@ void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, Paylo
   }
   ++epoch_;
   texture->version += 1;
+  // G8kw: the shape compared below is the hook's (predicted) one, never the worker's content, so
+  // a pending previous copy decides exactly as a finished one; its own job is superseded.
+  texture->job.reset();
   if (layer != 0) {
     texture->status = TextureStatus::Unsupported;
     texture->has_reason = true;
@@ -1942,7 +1961,10 @@ void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, Paylo
   } else {
     texture->copy = copy;
     take_copy(copy, std::move(bytes), &texture->status, &texture->has_reason, &texture->reason,
-              &texture->bytes);
+              &texture->bytes, job != nullptr);
+    if (texture->status == TextureStatus::Ok && job != nullptr) {
+      texture->job = std::move(job);
+    }
   }
 }
 
@@ -1970,11 +1992,13 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
       t->reason = b->reason;
       t->copy = b->copy;
       t->bytes = b->bytes;
+      t->job = b->job;  // G8kw: a pending payload moves with the rest
     } else {
       t->status = TextureStatus::Unsupported;
       t->has_reason = true;
       t->reason = TextureReason::UnknownTexture;
       t->bytes.reset();
+      t->job.reset();
     }
   }
   if (b != nullptr) {
@@ -2112,6 +2136,10 @@ std::uint64_t Mirror::spurious_texture_update(std::uint64_t frame) {
   (void)frame;
   for (auto &entry : textures_) {
     Texture &texture = entry.second;
+    if (texture.job != nullptr) {
+      texture.job->wait();  // G8kw: the sabotage re-copies bytes, so it needs them
+      settle(&texture);
+    }
     if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
         texture.rid != 0 && texture.bytes != nullptr) {
       ++epoch_;
@@ -3121,12 +3149,21 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     out.items.push_back(entry.second.state);
   }
   out.textures.reserve(textures_.size());
-  for (const auto &entry : textures_) {
-    const Texture &texture = entry.second;
+  for (auto &entry : textures_) {
+    Texture &texture = entry.second;
+    settle(&texture);  // G8kw: a finished worker's hash and bytes, before they are published
     out.textures.push_back(wire_entry(texture));
     if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
         texture.bytes != nullptr) {
       captured.payloads.emplace(texture.copy.hash, texture.bytes);
+    } else if (texture.job != nullptr && texture.kind == TextureKind::Image &&
+               texture.status == TextureStatus::Ok) {
+      // G8kw: still on a worker. The entry is complete but for its hash; the caller holds the
+      // snapshot back until resolve_captured() can fill it (rs_texture_worker.h).
+      PendingTexture pending;
+      pending.index = out.textures.size() - 1;
+      pending.job = texture.job;
+      captured.pending.push_back(std::move(pending));
     }
   }
   out.meshes.reserve(meshes_.size());
@@ -3174,6 +3211,9 @@ MirrorStats Mirror::stats() const {
     const Texture &texture = entry.second;
     if (texture.bytes != nullptr && hashes.insert(texture.copy.hash).second) {
       out.texture_payload_bytes += texture.bytes->size();
+    } else if (texture.job != nullptr && texture.job->done() && texture.job->bytes() != nullptr &&
+               hashes.insert(texture.job->actual().hash).second) {
+      out.texture_payload_bytes += texture.job->bytes()->size();  // G8kw: finished, not settled
     }
   }
   out.live_shaders = shaders_.size();
