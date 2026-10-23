@@ -103,6 +103,8 @@ result under `results/gate7/`; the rest link to their design section under `prot
   `scripts/validate-increment.sh` and the parallel-legs verdict): [results/grt.md](results/grt.md).
 - Milestone sweeps: the pre-G7v sweep at c9026a06, each failure's cause and owner, and the
   supplementary g7-r/g7-k runs: [results/sweep-pre-g7v.md](results/sweep-pre-g7v.md).
+- The pre-G7z delta sweep (base c9026a06, remote plus local, g31 `g7-dev`, g7-1 after f0de33d6):
+  [results/sweep-pre-g7z.md](results/sweep-pre-g7z.md).
 - `results/` — this experiment's result write-ups, one file per gate (−1…6, 5.5) and one per
   gate-7 increment under `results/gate7/`, plus topical write-ups that aren't a single gate's
   result (e.g. `results/receiver-decode-profile.md`).
