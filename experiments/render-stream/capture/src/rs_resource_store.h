@@ -151,6 +151,11 @@ class ServedResources : public live::ResourceSource {
 
   // I/O thread: the bytes to serve for `hash`, or null (404).
   std::shared_ptr<const std::vector<std::uint8_t>> lookup(std::string_view hash) override;
+  // G8kz: the coded body of a retained GRT1 payload (render-stream-2.md "HTTP (live)"), compressed
+  // on first request on the calling (I/O) thread, outside the mutex, and kept until the hash
+  // retires; null for any other payload kind or when the coded form is not smaller.
+  std::shared_ptr<const std::vector<std::uint8_t>> lookup_coded(std::string_view hash,
+                                                                live::Coding coding) override;
 
   // Any thread (locked).
   std::uint64_t retained() const;
@@ -164,6 +169,12 @@ class ServedResources : public live::ResourceSource {
     std::uint64_t retired_unpinned = 0;  // of which the unpin sabotage forced
     std::uint64_t retained_max = 0;
     std::uint64_t retained_bytes_max = 0;
+    // G8kz: coded bodies made (compressed) and kept, their identity and coded bytes, and the
+    // time spent compressing on the I/O thread.
+    std::uint64_t coded_made = 0;
+    std::uint64_t coded_in_bytes = 0;
+    std::uint64_t coded_out_bytes = 0;
+    std::uint64_t coded_ns = 0;
   };
   Totals totals() const;
   std::string dropped_hash() const;
@@ -175,6 +186,12 @@ class ServedResources : public live::ResourceSource {
 
   mutable std::mutex mutex_;
   std::map<std::string, PayloadPtr> served_;  // retained hash -> the bytes it is served with
+  // G8kz: retained hash -> its coded bodies (a null slot: tried, not smaller, serve identity).
+  struct CodedBodies {
+    bool tried[3] = {false, false, false};  // indexed by live::Coding
+    PayloadPtr body[3];
+  };
+  std::map<std::string, CodedBodies> coded_;
   std::set<std::string> seen_;                // every hash ever pinned (drop-resource)
   std::uint64_t bytes_ = 0;
   std::uint64_t unpin_frame_ = 0;

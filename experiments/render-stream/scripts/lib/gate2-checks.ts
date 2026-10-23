@@ -334,6 +334,11 @@ export interface ResourceLine {
   /** G7n (gate7-design.md Q3): "OPTIONS" on a CORS preflight's http-get line, the only line
    * that carries `method` (a GET's line is unchanged). */
   method?: "OPTIONS";
+  /** G8kz: a 200 http-get line's content coding and the bytes that crossed the wire, present
+   * only when the host offered a coding (GRC_HTTP_ENCODING not off); `payload_bytes` stays the
+   * identity size. */
+  coding?: "identity" | "zstd" | "gzip";
+  coded_bytes?: number;
 }
 
 /** A hook-log line that is a RenderingServer call the engine made: not a publisher event and not
@@ -397,13 +402,31 @@ export function validateResourceLine(value: unknown): string | null {
   if (
     keys.slice(0, RESOURCE_LINE_KEYS.length).join(",") !==
       RESOURCE_LINE_KEYS.join(",") ||
-    !["", "sabotage", "sabotage,omitted", "method"].includes(trailing.join(","))
+    ![
+      "",
+      "sabotage",
+      "sabotage,omitted",
+      "method",
+      "coding,coded_bytes",
+    ].includes(trailing.join(","))
   )
     return `keys ${keys.join(",")} are not render-stream-resource-log/1's, in order`;
   const v = value as ResourceLine;
   // G7n: `method` appears only on a preflight's http-get line, and is always OPTIONS.
   if (v.method !== undefined && (v.op !== "http-get" || v.method !== "OPTIONS"))
     return "method";
+  // G8kz: `coding` and `coded_bytes` appear together, only on a 200 http-get line.
+  if (v.coding !== undefined) {
+    if (
+      v.op !== "http-get" ||
+      !["identity", "zstd", "gzip"].includes(v.coding) ||
+      !Number.isInteger(v.coded_bytes) ||
+      (v.coded_bytes as number) < 0
+    )
+      return "coding";
+    if (v.coding === "identity" && v.coded_bytes !== v.payload_bytes)
+      return "coded_bytes";
+  }
   if (!Number.isInteger(v.frame) || v.frame < 1) return "frame";
   if (v.thread !== "main" && v.thread !== "other") return "thread";
   if (!RESOURCE_LOG_OPS.includes(v.op) && !PUBLISHER_LOG_OPS.includes(v.op))

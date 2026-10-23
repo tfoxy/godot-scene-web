@@ -25,6 +25,7 @@
 #include "rs2_diff.h"
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
+#include "rs_http_coding.h"
 #include "rs_live.h"
 #include "rs_publish.h"
 #include "rs_resource_store.h"
@@ -1437,6 +1438,52 @@ struct ServeRig {
   }
 };
 
+// G8kz: coded bodies of the served set (render-stream-2.md "HTTP (live)").
+void test_served_coded_bodies() {
+  using grc::live::Coding;
+  const grc::rs::PayloadPtr big = grt1(7, 20000);
+  const grc::rs::PayloadPtr tiny = grt1(7, 16);
+  auto mesh_bytes = std::vector<std::uint8_t>(big->begin(), big->end());
+  mesh_bytes[3] = '2';  // not a GRT1 magic
+  const grc::rs::PayloadPtr other = std::make_shared<grc::rs::PayloadBytes>(std::move(mesh_bytes));
+  grc::rs::ServedResources served;
+  grc::rs::PayloadMap map = {{kH1, big}, {kH2, tiny}, {kH3, other}};
+  std::vector<grc::rs::ServeEvent> events;
+  served.pin({&map}, 1, &events);
+
+  check(served.lookup_coded(kH1, Coding::Identity) == nullptr, "identity is never a coded body");
+  const auto zstd = served.lookup_coded(kH1, Coding::Zstd);
+  check(zstd != nullptr && zstd->size() < big->size() / 10, "a GRT1 payload is coded and smaller");
+  std::vector<std::uint8_t> decoded;
+  check(zstd != nullptr && grc::rs::http_coding::zstd_decompress(zstd->data(), zstd->size(), &decoded) &&
+            decoded == *big,
+        "the zstd body decodes to the identity bytes");
+  check(served.lookup_coded(kH1, Coding::Zstd) == zstd, "coded once, the same body is kept");
+  const auto gzip = served.lookup_coded(kH1, Coding::Gzip);
+  check(gzip != nullptr && grc::rs::http_coding::gzip_decompress(gzip->data(), gzip->size(), &decoded) &&
+            decoded == *big,
+        "the gzip body decodes to the identity bytes");
+  check(served.lookup_coded(kH2, Coding::Zstd) == nullptr, "a short body is served as is");
+  check(served.lookup_coded(kH3, Coding::Zstd) == nullptr, "a payload that is not GRT1 is served as is");
+  check(served.lookup_coded(std::string(64, '9'), Coding::Zstd) == nullptr, "an unknown hash has no coded body");
+  grc::rs::ServedResources::Totals t = served.totals();
+  check(t.coded_made == 2 && t.coded_in_bytes == 2 * big->size(), "two coded bodies made, once each");
+
+  // wrong-hash corrupts the served copy: the coded body is of the corrupted bytes.
+  served.corrupt(kH1);
+  const auto after = served.lookup_coded(kH1, Coding::Zstd);
+  check(after != nullptr && after != zstd, "corrupt() drops the coded cache");
+  check(after != nullptr && grc::rs::http_coding::zstd_decompress(after->data(), after->size(), &decoded) &&
+            decoded == *served.lookup(kH1) && decoded != *big,
+        "the coded body of a corrupted copy decodes to the corrupted bytes");
+
+  // Retirement drops the coded bodies with the hash.
+  grc::rs::PayloadMap only = {{kH3, other}};
+  served.retire(only, {}, 2, &events);
+  check(served.lookup(kH1) == nullptr && served.lookup_coded(kH1, Coding::Zstd) == nullptr,
+        "a retired hash has no coded body");
+}
+
 void test_served_resources() {
   const grc::rs::PayloadPtr p1 = grt1(1, 16);
   const grc::rs::PayloadPtr p2 = grt1(2, 16);
@@ -1874,6 +1921,7 @@ int main() {
   test_inline_resources();
   test_carried_bounded();
   test_served_resources();
+  test_served_coded_bodies();
   test_rate_uncapped_unchanged();
   test_rate_targets();
   test_rate_credit_blocked_and_no_burst();

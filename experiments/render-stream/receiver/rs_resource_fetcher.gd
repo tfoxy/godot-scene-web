@@ -15,6 +15,18 @@ extends RefCounted
 ## `resource-unavailable` errors; the first error stops the queue. Verification, decoding and the
 ## cache are RsResourceCache's (add_fetched), never this class's.
 ##
+## G8kz (render-stream-2.md "HTTP (live)", texture-delivery-design.md D2): a native fetcher sends
+## `Accept-Encoding: <accept_encoding>` ("zstd, gzip" by default; "" sends none) and decodes a
+## 200 whose `Content-Encoding` is zstd or gzip with PackedByteArray.decompress_dynamic
+## (FileAccess.COMPRESSION_ZSTD / COMPRESSION_GZIP; core/io/compression.cpp). Godot's HTTPClient
+## decodes nothing itself (only HTTPRequest does, and only gzip/deflate). `bytes` is the decoded
+## (identity) length, `wire_bytes` the body as it crossed the wire, `content_encoding` what the
+## response named ("identity" when none), `decode_us` the decode time. A body that does not decode,
+## or a coding the receiver did not ask for, is `resource-invalid`; the hash is verified by the
+## cache on the decoded bytes, as for any payload. A browser (web fetch, or HTTPClientWeb) sends
+## Accept-Encoding itself and hands over decoded bytes: `wire_bytes` is then the response's
+## Content-Length (the coded length, a CORS-safelisted header) when present.
+##
 ## Two Godot 4.5.1 HTTPClient facts this relies on (memory: godot-httpclient-framing-gotchas):
 ## request() needs its headers argument passed explicitly, and a bodyless response is framed by
 ## its explicit Content-Length: 0 (rs_ws always sends one), so the next GET on the same connection
@@ -49,7 +61,9 @@ extends RefCounted
 const READ_CHUNK: int = 65536
 ## A bound on the polls one poll() call makes (each one non-blocking).
 const MAX_POLLS_PER_CALL: int = 64
-const KEPT_HEADERS: Array[String] = ["Content-Type", "Content-Length", "Cache-Control", "ETag"]
+## The largest decoded body a coded response may declare (a bound on a hostile frame header).
+const MAX_DECODED_BYTES: int = 1 << 30
+const KEPT_HEADERS: Array[String] = ["Content-Type", "Content-Length", "Cache-Control", "ETag", "Content-Encoding", "Vary"]
 ## A running web page polls every frame; a longer gap is the page hidden or frozen.
 const SUSPEND_GAP_MS: int = 1000
 
@@ -59,6 +73,8 @@ var path_prefix: String = "/resources/sha256/"
 var timeout_ms: int = 10000
 var delay_ms: int = 0
 var auth_token: String = ""
+## G8kz: the Accept-Encoding value sent by the native HTTPClient path ("" = none).
+var accept_encoding: String = "zstd, gzip"
 
 var results: Array[Dictionary] = []
 var error: String = ""
@@ -116,7 +132,7 @@ static func _web_helper() -> JavaScriptObject:
 				const abort = new AbortController();
 				const headers = [];
 				if (token !== '') headers.push(['Authorization', 'Bearer ' + token]);
-				const kept = ['Content-Type', 'Content-Length', 'Cache-Control', 'ETag'];
+				const kept = ['Content-Type', 'Content-Length', 'Cache-Control', 'ETag', 'Content-Encoding', 'Vary'];
 				const t0 = performance.now();
 				let tHeaders = -1;
 				let tBody = -1;
@@ -183,6 +199,7 @@ func _next() -> void:
 	_current = {
 		"hash": hash, "status": null, "bytes": 0, "data": PackedByteArray(), "start_us": 0,
 		"end_us": 0, "delay_us": 0, "headers": {}, "error": "",
+		"wire_bytes": 0, "content_encoding": "identity", "decode_us": 0,
 	}
 	if delay_ms > 0:
 		_delay_until_msec = Time.get_ticks_msec() + delay_ms
@@ -236,6 +253,9 @@ func _request() -> void:
 	var headers := PackedStringArray()
 	if auth_token != "":
 		headers.append("Authorization: Bearer " + auth_token)
+	# A browser owns Accept-Encoding (a forbidden request header) and decodes the body itself.
+	if accept_encoding != "" and not RsConfig.is_web():
+		headers.append("Accept-Encoding: " + accept_encoding)
 	var err: Error = _client.request(HTTPClient.METHOD_GET, path_prefix + hash, headers)
 	if err != OK:
 		_fail("GET %s%s: request() %s" % [path_prefix, hash, error_string(err)])
@@ -348,14 +368,88 @@ func _read_body(status: HTTPClient.Status) -> void:
 	# fetch then connects again).
 	var data: PackedByteArray = _current["data"]
 	_current["bytes"] = data.size()
+	_current["wire_bytes"] = data.size()
 	_current["end_us"] = Time.get_ticks_usec()
 	var code: int = _current["status"]
 	if code != 200:
 		_fail("GET %s%s answered HTTP %d" % [path_prefix, _current["hash"], code])
 		return
+	if not RsConfig.is_web() and not _decode_content_encoding():
+		return
 	results.append(_current)
 	_current = {}
 	_next()
+
+
+## G8kz: decodes the current 200's body per its Content-Encoding (the native HTTPClient path).
+## Returns false after _fail() when the coding is not one this fetcher asked for or the body does
+## not decode.
+func _decode_content_encoding() -> bool:
+	var headers: Dictionary = _current["headers"]
+	var coding: String = str(headers.get("Content-Encoding", "")).strip_edges().to_lower()
+	if coding == "" or coding == "identity":
+		return true
+	var mode: int = -1
+	if coding == "zstd" and accept_encoding.contains("zstd"):
+		mode = FileAccess.COMPRESSION_ZSTD
+	elif coding == "gzip" and accept_encoding.contains("gzip"):
+		mode = FileAccess.COMPRESSION_GZIP
+	var hash: String = _current["hash"]
+	_current["content_encoding"] = coding
+	if mode < 0:
+		_fail_invalid("GET %s%s: Content-Encoding %s, which this receiver did not ask for (Accept-Encoding: %s)" % [path_prefix, hash, coding, accept_encoding])
+		return false
+	var start_us: int = Time.get_ticks_usec()
+	var coded: PackedByteArray = _current["data"]
+	var plain: PackedByteArray = PackedByteArray()
+	if mode == FileAccess.COMPRESSION_ZSTD:
+		var size: int = zstd_content_size(coded)
+		if size > 0 and size <= MAX_DECODED_BYTES:
+			plain = coded.decompress(size, mode)
+			if plain.size() != size:
+				plain = PackedByteArray()
+	else:
+		plain = coded.decompress_dynamic(MAX_DECODED_BYTES, mode)
+	_current["decode_us"] = Time.get_ticks_usec() - start_us
+	if plain.is_empty():
+		_fail_invalid("GET %s%s: the Content-Encoding %s body (%d B) does not decode" % [path_prefix, hash, coding, coded.size()])
+		return false
+	_current["data"] = plain
+	_current["bytes"] = plain.size()
+	return true
+
+
+## The Frame_Content_Size of a zstd frame (RFC 8878 3.1.1.1), or -1 when the bytes are not a zstd
+## frame or its header names none.
+static func zstd_content_size(frame: PackedByteArray) -> int:
+	if frame.size() < 6 or frame[0] != 0x28 or frame[1] != 0xB5 or frame[2] != 0x2F or frame[3] != 0xFD:
+		return -1
+	var descriptor: int = frame[4]
+	var single_segment: bool = (descriptor >> 5) & 1 == 1
+	var field: int = descriptor >> 6
+	var offset: int = 5 + (0 if single_segment else 1) + [0, 1, 2, 4][descriptor & 3]
+	if field == 0 and not single_segment:
+		return -1
+	var width: int = 1 if field == 0 else [1, 2, 4, 8][field]
+	if frame.size() < offset + width:
+		return -1
+	match width:
+		1:
+			return frame.decode_u8(offset)
+		2:
+			return frame.decode_u16(offset) + 256
+		4:
+			return frame.decode_u32(offset)
+	var wide: int = frame.decode_s64(offset)
+	return wide if wide > 0 else -1
+
+
+## G8kz: _fail() with the resource-invalid code (a body that arrived but cannot be used).
+func _fail_invalid(detail: String) -> void:
+	_fail(detail)
+	var failed: Dictionary = results[results.size() - 1]
+	failed["error"] = RsWire.err("resource-invalid", detail)
+	error = failed["error"]
 
 
 ## G7wf: issues the current GET through the page's fetch(). The URL is the one HTTPClientWeb built
@@ -407,6 +501,11 @@ func _on_web_done(args: Array) -> void:
 	_current["data"] = data
 	_current["bytes"] = data.size()
 	_current["end_us"] = end_us
+	var headers_seen: Dictionary = _current["headers"]
+	# The browser decoded the body already: the coding is not exposed cross-origin ("unknown"),
+	# the Content-Length header (CORS-safelisted) is the coded length.
+	_current["content_encoding"] = str(headers_seen["Content-Encoding"]).to_lower() if headers_seen.has("Content-Encoding") else "unknown"
+	_current["wire_bytes"] = str(headers_seen["Content-Length"]).to_int() if headers_seen.has("Content-Length") and str(headers_seen["Content-Length"]).is_valid_int() else data.size()
 	if code != 200:
 		_fail("GET %s%s answered HTTP %d" % [path_prefix, _current["hash"], code])
 		return

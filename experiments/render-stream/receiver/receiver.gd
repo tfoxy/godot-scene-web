@@ -31,6 +31,11 @@ extends Node
 ##                                (reading from it counts as a fetch)
 ##   RS_RECEIVER_FETCH_TIMEOUT_MS live: a GET not complete this many ms after it was issued is
 ##                                resource-unavailable (default 10000)
+##   RS_RECEIVER_ACCEPT_ENCODING  G8kz (render-stream-2.md "HTTP (live)"): the Accept-Encoding a native
+##                                receiver sends on payload GETs: auto (default, "zstd, gzip"),
+##                                zstd, gzip, or off (no header: identity bodies). A coded body is
+##                                decoded here and verified after decoding; a web receiver's
+##                                browser negotiates and decodes by itself (the variable is unused)
 ##   RS_RECEIVER_SHADER_LIBRARY   G55d (gate5_5-design.md D4, Q5): absolute operator-local GRP1
 ##                                library (sha256/<hash>.grp) a `withheld` shader's code comes
 ##                                from, verified by hash; without it (or without that hash) the
@@ -361,6 +366,8 @@ var _late_poll: bool = false
 ## G7wf: the web export fetches payloads with the browser's fetch() (RS_RECEIVER_WEB_FETCH unset or
 ## `fetch`), or with HTTPClient as before (`httpclient`, kept for the A/B). Always false natively.
 var _web_fetch: bool = false
+## G8kz: the Accept-Encoding value the native fetcher sends ("" = none).
+var _accept_encoding: String = "zstd, gzip"
 var _client: RsLiveClient = null
 var _live_report: Dictionary = {}
 var _live_phase: String = ""  # connecting | streaming | draining
@@ -621,6 +628,17 @@ func _parse_resource_env(live: bool) -> bool:
 			_log("error: RS_RECEIVER_FETCH_DELAY_MS must be an integer >= 0 (got %s)" % JSON.stringify(delay_text))
 			return false
 		_fetch_delay_ms = delay_text.to_int()
+	var accept_encoding: String = RsConfig.get_env("RS_RECEIVER_ACCEPT_ENCODING").strip_edges()
+	match accept_encoding:
+		"", "auto":
+			_accept_encoding = "zstd, gzip"
+		"zstd", "gzip":
+			_accept_encoding = accept_encoding
+		"off":
+			_accept_encoding = ""
+		_:
+			_log("error: RS_RECEIVER_ACCEPT_ENCODING must be auto, zstd, gzip or off (got %s)" % JSON.stringify(accept_encoding))
+			return false
 	var sabotage: String = RsConfig.get_env("RS_RECEIVER_SABOTAGE").strip_edges()
 	if sabotage != "" and not SABOTAGES.has(sabotage):
 		_log("error: RS_RECEIVER_SABOTAGE must be one of %s (got %s)" % [str(SABOTAGES), JSON.stringify(sabotage)])
@@ -981,6 +999,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 		if _sabotage == "wrong-http-token" and fetch_token != "":
 			fetch_token += "-wrong"
 		_fetcher = RsResourceFetcher.new(origin_host, origin_port, str(http_path), _fetch_timeout_ms, _fetch_delay_ms, fetch_token, _web_fetch)
+		_fetcher.accept_encoding = _accept_encoding
 	var blocks: Array = record["blocks"]
 	_applier.sabotage = _sabotage
 	_applier.begin_session()
@@ -2038,6 +2057,10 @@ func _poll_fetches() -> void:
 			"stream": _conn_index, "seq": seq, "hash": hash, "source": "http",
 			"status": result["status"], "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
 			"verified": false, "delay_us": result["delay_us"], "headers": result["headers"],
+			# G8kz: the bytes that crossed the wire (the coded body's length), the coding the
+			# response named, and the time spent decoding it; `bytes` is the identity size.
+			"wire_bytes": result["wire_bytes"], "content_encoding": result["content_encoding"],
+			"decode_us": result["decode_us"],
 		}
 		if result.has("browser"):
 			# G7wf (web, browser fetch only): the page clock's headers_ms/body_ms/callback_ms.

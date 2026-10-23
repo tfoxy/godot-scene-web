@@ -445,11 +445,22 @@ const G2C_CHECKS = [
   ...G2C_LEGS.map((leg) => `leg-class-${leg}`),
 ];
 
-const G2E_LEGS = ["live-auth", "sabotage-no-token", "sabotage-bad-http-token"];
+const G2E_LEGS = [
+  "live-auth",
+  "sabotage-no-token",
+  "sabotage-bad-http-token",
+  // G8kz: the content-coding legs
+  "coding-gzip",
+  "coding-off",
+  "coding-receiver-off",
+  "sabotage-corrupt-coded-body",
+];
 const G2E_CHECKS = [
   ...G2E_LEGS.map((leg) => `leg-class-${leg}`),
   "auth-required",
   "token-not-logged",
+  "http-content-coding",
+  "corrupt-coded-body",
 ];
 
 /** applied.json /3, as far as the scenarios edit it. */
@@ -2201,6 +2212,114 @@ async function main(): Promise<void> {
         });
       },
       ["leg-class-sabotage-bad-http-token"],
+    );
+
+    // ---- g2e: HTTP content coding (G8kz) -------------------------------------------------
+    for (const leg of ["coding-gzip", "coding-off", "coding-receiver-off"])
+      await scenario(
+        root,
+        good,
+        `g2e-${leg}-fails`,
+        async (out) => {
+          await editLive(out, leg, (a) => {
+            a.status = "replay-failure";
+            a.failure = { seq: 3, reason: "resource-unavailable" };
+          });
+        },
+        [`leg-class-${leg}`],
+      );
+    await scenario(
+      root,
+      good,
+      "g2e-corrupt-coded-body-applied",
+      async (out) => {
+        // The receiver applied a corrupted coded body: no refusal at all.
+        await editLive(out, "sabotage-corrupt-coded-body", (a) => {
+          a.status = "ok";
+          a.failure = null;
+          a.end_seen = true;
+        });
+      },
+      ["leg-class-sabotage-corrupt-coded-body", "corrupt-coded-body"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-corrupt-coded-body-not-armed",
+      async (out) => {
+        await editJson<{ listener_sabotage: string | null }>(
+          join(
+            out,
+            "sabotage-corrupt-coded-body",
+            "host",
+            "evidence",
+            "live.json",
+          ),
+          (l) => {
+            l.listener_sabotage = null;
+          },
+        );
+      },
+      ["corrupt-coded-body"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-gzip-host-logs-zstd",
+      async (out) => {
+        await editLog(hostLog(out, "coding-gzip"), (ls) =>
+          ls.map((l) =>
+            l.op === "http-get" && l.coding === "gzip"
+              ? { ...l, coding: "zstd" }
+              : l,
+          ),
+        );
+      },
+      ["http-content-coding"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-off-host-logs-coding",
+      async (out) => {
+        await editLog(hostLog(out, "coding-off"), (ls) =>
+          ls.map((l) =>
+            l.op === "http-get" && l.http_status === 200
+              ? { ...l, coding: "identity", coded_bytes: l.payload_bytes ?? 0 }
+              : l,
+          ),
+        );
+      },
+      ["http-content-coding"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-default-host-sends-identity",
+      async (out) => {
+        // live-auth's host never coded anything: every GET line says identity.
+        await editLog(hostLog(out, "live-auth"), (ls) =>
+          ls.map((l) =>
+            l.op === "http-get" && l.coding === "zstd"
+              ? { ...l, coding: "identity", coded_bytes: l.payload_bytes ?? 0 }
+              : l,
+          ),
+        );
+      },
+      ["http-content-coding"],
+    );
+    await scenario(
+      root,
+      good,
+      "g2e-coded-length-not-the-wire",
+      async (out) => {
+        // The receiver read more bytes off the wire than the host says it sent.
+        await editLive(out, "coding-gzip", (a) => {
+          for (const f of a.fetches as Array<{ wire_bytes?: number }>)
+            if (f.wire_bytes !== undefined) f.wire_bytes += 1;
+        });
+      },
+      ["http-content-coding"],
     );
 
     // Every check of a passing tree is failed by some scenario (expected-self-consistent by

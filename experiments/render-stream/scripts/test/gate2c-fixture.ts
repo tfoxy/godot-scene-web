@@ -73,6 +73,20 @@ export interface LegSpec {
   /** the frames between a transaction's send and the callback that logs its GETs (default 1;
    * the next send, and the transaction's acks, come at the same callback) */
   getDelay?: number;
+  /** G8kz: the host's GRC_HTTP_ENCODING (`off` logs no coding), a native receiver that asked for
+   * none (`identity`), and a listener sabotage (live.json). Unset: a pre-G8kz host (no coding keys
+   * anywhere), which the checkers read as identity. */
+  coding?: {
+    host: "off" | "zstd" | "gzip";
+    receiverIdentity?: boolean;
+    listenerSabotage?: string;
+  };
+}
+
+/** The fabricated coded length of a `bytes`-long GRT1 body: a tenth, and identity (no coding)
+ * for a body of 72 bytes or fewer, as the host's rule. */
+export function fakeCodedBytes(bytes: number): number {
+  return bytes > 72 ? Math.max(1, Math.floor(bytes / 10)) : bytes;
 }
 
 function okHashes(state: TState | undefined): Set<string> {
@@ -102,6 +116,9 @@ export interface HttpFetch {
   /** the host frame its GET is logged at */
   frame: number;
   conn: number;
+  /** G8kz: bytes on the wire, and the coding the native receiver saw */
+  wire_bytes?: number;
+  content_encoding?: string;
 }
 
 export interface LegFiles {
@@ -405,6 +422,15 @@ export async function writeLiveLeg(
         x.hash === spec.failure.hash;
       const status = failing ? (spec.failure?.status ?? 404) : 200;
       const bytes = status === 200 ? x.bytes : 0;
+      // G8kz: what the host sent for this GET.
+      const hostCoding = spec.coding?.host ?? "off";
+      const coding =
+        hostCoding === "off" ||
+        spec.coding?.receiverIdentity ||
+        fakeCodedBytes(bytes) >= bytes
+          ? "identity"
+          : hostCoding;
+      const coded = coding === "identity" ? bytes : fakeCodedBytes(bytes);
       const start = sentFrame * US_PER_FRAME + 1000 + n * 20000;
       fetches.push({
         stream,
@@ -421,11 +447,18 @@ export async function writeLiveLeg(
           status === 200
             ? {
                 "Content-Type": "application/octet-stream",
-                "Content-Length": String(bytes),
+                "Content-Length": String(coded),
                 "Cache-Control": CACHE_CONTROL,
-                ETag: `"${x.hash}"`,
+                ETag:
+                  coding === "identity"
+                    ? `"${x.hash}"`
+                    : `"${x.hash}-${coding}"`,
+                ...(coding === "identity"
+                  ? {}
+                  : { "Content-Encoding": coding }),
               }
             : { "Content-Length": "0" },
+        ...(spec.coding ? { wire_bytes: coded, content_encoding: coding } : {}),
         frame,
         conn: c.n,
       });
@@ -576,6 +609,15 @@ export async function writeLiveLeg(
       hash: x.hash,
       conn: x.conn,
       http_status: x.status,
+      ...(spec.coding && spec.coding.host !== "off" && x.status === 200
+        ? {
+            coding: (x.content_encoding ?? "identity") as
+              | "identity"
+              | "zstd"
+              | "gzip",
+            coded_bytes: x.wire_bytes ?? x.bytes,
+          }
+        : {}),
     }),
   );
   const hook = [...spec.model.hook, ...serving.lines, ...gets].sort(
@@ -591,6 +633,12 @@ export async function writeLiveLeg(
     address: "127.0.0.1",
     port: 40000,
     reason: null,
+    ...(spec.coding
+      ? {
+          http_encoding: spec.coding.host,
+          listener_sabotage: spec.coding.listenerSabotage ?? null,
+        }
+      : {}),
   });
   await writeJson(join(hostDir, "evidence", "live-summary.json"), {
     schema: "render-stream-live-summary/1",
@@ -602,6 +650,15 @@ export async function writeLiveLeg(
         0,
       ),
       http_errors: fetches.filter((x) => x.status !== 200).length,
+      ...(spec.coding
+        ? {
+            http_coded_bytes: fetches.reduce(
+              (n, x) => n + (x.status === 200 ? (x.wire_bytes ?? x.bytes) : 0),
+              0,
+            ),
+            http_encoding: spec.coding.host,
+          }
+        : {}),
       ...serving.totals,
     },
   });
@@ -910,6 +967,57 @@ export async function buildG2eTree(
       },
     ],
     rendered: true,
+    coding: { host: "zstd" },
+  });
+  // G8kz: the content-coding legs (headless), see lib/gate2e-checks.ts G2E_CODING_LEGS.
+  const everyConn = [
+    {
+      n: 1,
+      sends: everyFrame(JOIN_FRAME, quit),
+      closed: null,
+      closedBy: "receiver" as const,
+    },
+  ];
+  await writeLiveLeg(out, e, {
+    leg: "coding-gzip",
+    model: main,
+    conns: everyConn,
+    rendered: false,
+    coding: { host: "gzip" },
+  });
+  await writeLiveLeg(out, e, {
+    leg: "coding-off",
+    model: main,
+    conns: everyConn,
+    rendered: false,
+    coding: { host: "off" },
+  });
+  await writeLiveLeg(out, e, {
+    leg: "coding-receiver-off",
+    model: main,
+    conns: everyConn,
+    rendered: false,
+    coding: { host: "zstd", receiverIdentity: true },
+  });
+  await writeLiveLeg(out, e, {
+    leg: "sabotage-corrupt-coded-body",
+    model: main,
+    conns: [
+      {
+        n: 1,
+        sends: [JOIN_FRAME],
+        closed: JOIN_FRAME + 3,
+        closedBy: "receiver",
+      },
+    ],
+    rendered: false,
+    coding: { host: "zstd", listenerSabotage: "corrupt-coded-body" },
+    failure: {
+      seq: 1,
+      hash: CONTENT.A0.hash,
+      reason: "resource-hash-mismatch",
+      status: 200,
+    },
   });
   await writeLiveLeg(out, e, {
     leg: "sabotage-bad-http-token",

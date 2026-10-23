@@ -381,6 +381,61 @@ ETag: "<hash>"
 - `private` makes a shared cache drop responses to authorized requests. A browser's own HTTP cache
   keeps them across sessions, which is the reuse the handoff asks for.
 
+#### Content coding (G8kz)
+
+A host may answer a payload GET with an HTTP content coding. It is plain HTTP negotiation, not a
+change to framing, keys or payload bytes, so it applies at every live version >= /2 and needs no
+version of its own. Hosts: `GRC_HTTP_ENCODING=off|zstd|gzip` (default `zstd`; `off` is today's
+bytes exactly).
+
+```
+GET <http_path><hash> HTTP/1.1
+Accept-Encoding: zstd, gzip
+
+200 OK
+Content-Type: application/octet-stream
+Content-Encoding: zstd
+Content-Length: <coded bytes>
+Cache-Control: private, max-age=31536000, immutable
+ETag: "<hash>-zstd"
+Vary: Accept-Encoding
+<coded body>
+```
+
+- **What is coded.** Only `render-stream-texture/1` (GRT1) bodies of more than 72 bytes. Mesh and
+  shader payloads, short bodies, and any body whose coded form is not strictly smaller are sent as
+  identity (still with `Vary: Accept-Encoding`, ETag `"<hash>"`). zstd is level 3 and every frame
+  carries its content size; gzip is RFC 1952 at level 6.
+- **Negotiation.** The host picks, in its own order, the first coding it offers that the request's
+  `Accept-Encoding` accepts (a named token or `*` with `q` > 0; `q=0` refuses). No header, or no
+  match, is identity. A host that offers none (`off`) ignores the header and sends neither
+  `Content-Encoding` nor `Vary`.
+- **Headers.** `Content-Length` is the coded length. `Vary: Accept-Encoding` is on every 200 and 304
+  of a host that offers a coding (a second `Vary: Origin` line is CORS's, G7n). The strong validator
+  differs by coding (RFC 9110 8.8.3.3): `"<hash>"` for identity, `"<hash>-zstd"`, `"<hash>-gzip"`
+  per coding. `If-None-Match` matches any of the three for the hash (a comma list is searched),
+  and the 304 carries the validator that matched.
+- **Integrity.** The hash stays the SHA-256 of the identity payload and is verified **after
+  decoding**, as for any payload. A coded body that does not decode, or decodes to other bytes, is
+  refused (`resource-invalid` for a body the receiver itself cannot decode, `resource-hash-mismatch`
+  for one that decodes to the wrong bytes).
+- **Receivers.**
+  - A native receiver sends `Accept-Encoding: zstd, gzip` (`RS_RECEIVER_ACCEPT_ENCODING=auto|zstd|gzip|off`)
+    and decodes itself: Godot's HTTPClient decodes nothing, and `PackedByteArray.decompress_dynamic`
+    supports only gzip, deflate and brotli, so zstd is `decompress` with the frame's content size
+    (refused when absent or above 1 GiB).
+  - A browser (GSW, the web export) sends its own `Accept-Encoding` (Chrome 148: gzip, deflate, br,
+    zstd), decodes transparently and hands over identity bytes. `Content-Encoding` and `ETag` are
+    not CORS-safelisted, so a cross-origin page sees only `Content-Length` (the coded length);
+    the host sets no `Access-Control-Expose-Headers`, and the coding adds no preflight (a
+    forbidden request header, not a safelisted one to declare).
+- **Evidence.** A host logs per 200 `http-get` line the trailing keys `coding` (`identity`, `zstd`,
+  `gzip`) and `coded_bytes` (the wire length; `payload_bytes` stays the identity size) when it
+  offers a coding, and `live-summary.json` `resources` gains `http_coded_bytes`, `http_encoding`,
+  the GET counts per coding and the coded-body totals (`coded_made`, `coded_in_bytes`,
+  `coded_out_bytes`, `coded_ns`). The coded body is made once per hash, on the HTTP I/O thread
+  (never the RenderingServer caller) and kept until the hash retires.
+
 ## End record
 
 ```
