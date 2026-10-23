@@ -338,8 +338,8 @@ def self_test(m):
     f = P("experiments/render-stream/capture/src/hooks.cpp")
     check("the capture library reaches everything", set(f["targets"]) == uni)
     seam = P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/rs_texture_decode.h")
-    check("the gate 8 seams reach the build, the pure tests and gate 0 only (G8w)",
-          set(seam["targets"]) == {"capture-build", "pure", "native:gate0@rust"})
+    check("the gate 8 seams reach the build, the pure tests, gate 0 and gate 8 only (G8w, G8a)",
+          set(seam["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
     check("a shared capture file next to a seam still reaches everything",
           set(P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/entry.cpp")["targets"]) == uni)
     g = P("experiments/render-stream/scripts/lib/gate5-checks.ts")

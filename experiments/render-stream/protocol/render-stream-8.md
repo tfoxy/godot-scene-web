@@ -262,3 +262,16 @@ format is a new version.
   `rs-core-capi` accepts `version` 8 (`VERSIONS = [6, 7, 8]`); the apply layer ignores /8's
   additions, so a /8 recording draws exactly as the /6 one of the same scene would. The live hello
   still offers `.6`/`.7` only, and the browser receivers' gate 8 legs are G8g's.
+
+## As built (G8a)
+
+- **Adopted origins are produced.** Under `GRC_ADOPT=arm` the first transaction carries every
+  canvas layer's canvas and every canvas item reachable from the root window with
+  `origin: "adopted"` (gate8-design.md Q2 "As built (G8a)"); objects created after arm are
+  `created`, as always. Resource tables stay `created` until G8r/G8m adopt resources. No wire
+  change: items and canvases accept `adopted` since /0.
+- **`adoption.frame` is the iteration of the walk**, in the host's own main-loop iterations: an
+  adopting capture aligns its frame counter with `Engine.get_process_frames()` at arm, so the
+  session's `frame`, the first transaction's `frame` and every later frame are the same clock a
+  capture loaded at startup uses.
+

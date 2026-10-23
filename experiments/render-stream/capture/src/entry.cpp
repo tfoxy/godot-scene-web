@@ -230,6 +230,9 @@ struct Stream {
   // request, read at arm; and what the adoption seam reported (G8w: nothing).
   rs::Gate8Policy gate8;
   rs::AdoptStats adopt_stats;
+  // G8a (D13): GRC_MIRROR_MAX_ITEMS / GRC_MIRROR_MAX_COMMANDS, read at arm.
+  size_t max_items = rs2::kMaxLiveItems;
+  size_t max_commands = rs2::kMaxCommandsPerItem;
   std::unique_ptr<rs2::FileRecordSink> full_sink;
   std::unique_ptr<rs2::FileRecordSink> patch_sink;
   std::unique_ptr<rs2::Publisher> publisher;
@@ -546,7 +549,33 @@ std::string result_json() {
     json.field("canvases", static_cast<int64_t>(g_stream.adopt_stats.canvases));
     json.field("layers", static_cast<int64_t>(g_stream.adopt_stats.layers));
     json.field("items", static_cast<int64_t>(g_stream.adopt_stats.items));
-    json.field("residue", static_cast<int64_t>(g_stream.adopt_stats.residue));
+    // G8a: the residue (RS-only canvas/item RIDs with no node) is only discovered when a later
+    // call names one: under skip the mirror counts every distinct one; under strict the first
+    // one is the sticky pre-existing-object failure, so the count is not known (null).
+    if (!g_stream.gate8.adopt) {
+      json.field("residue", static_cast<int64_t>(0));
+    } else if (g_stream.unknown_item_policy == rs2::UnknownItemPolicy::Skip) {
+      json.field("residue", static_cast<int64_t>(rs::mirror_stats().unknown_rids_named));
+    } else {
+      json.field_null("residue");
+    }
+    if (g_stream.gate8.adopt) {
+      const rs::AdoptStats &a = g_stream.adopt_stats;
+      json.field_or_null("error", a.error);
+      json.field("hidden", static_cast<int64_t>(a.hidden));
+      json.field("top_level", static_cast<int64_t>(a.top_level));
+      json.field("redraws", static_cast<int64_t>(a.redraws));
+      json.field("canvas_modulates", static_cast<int64_t>(a.canvas_modulates));
+      json.field("lights", static_cast<int64_t>(a.lights));
+      json.field("materials", static_cast<int64_t>(a.materials));
+      json.field("non_root_viewports", static_cast<int64_t>(a.non_root_viewports));
+      json.field("walk_ns", static_cast<int64_t>(a.walk_ns));
+      json.field("apply_ns", static_cast<int64_t>(a.apply_ns));
+      json.field("engine_ns", static_cast<int64_t>(a.engine_ns));
+      json.field("total_ns", static_cast<int64_t>(a.total_ns));
+      json.field("max_items", static_cast<int64_t>(g_stream.max_items));
+      json.field("max_commands", static_cast<int64_t>(g_stream.max_commands));
+    }
     json.object_end();
     // G8t (gate8-design.md Q3 `decode-cost`): the decode seam's totals since arm (per-texture
     // times are the hook log's `decode_ns`).
@@ -1242,6 +1271,55 @@ void stream_start() {
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
   }
+  // G8a (gate8-design.md D13): the mirror's caps are configuration. No wire change: a cap that is
+  // hit is the existing `mirror-capacity` failure. Defaults keep every other session unchanged.
+  {
+    uint64_t max_items = 0;
+    uint64_t max_commands = 0;
+    std::string error;
+    if (!env_non_negative("GRC_MIRROR_MAX_ITEMS", rs2::kMaxLiveItems, &max_items) ||
+        max_items < 1 || max_items > (1u << 20)) {
+      error = "invalid GRC_MIRROR_MAX_ITEMS=" + env_string("GRC_MIRROR_MAX_ITEMS") +
+              " (expected an integer 1..1048576)";
+    } else if (!env_non_negative("GRC_MIRROR_MAX_COMMANDS", rs2::kMaxCommandsPerItem,
+                                 &max_commands) ||
+               max_commands < 1 || max_commands > (1u << 20)) {
+      error = "invalid GRC_MIRROR_MAX_COMMANDS=" + env_string("GRC_MIRROR_MAX_COMMANDS") +
+              " (expected an integer 1..1048576)";
+    }
+    if (!error.empty()) {
+      log_line("stream: refused mirror caps (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    g_stream.max_items = static_cast<size_t>(max_items);
+    g_stream.max_commands = static_cast<size_t>(max_commands);
+  }
+  // G8a (gate8-design.md D4): adoption reads the scene tree, so it runs on the main thread only
+  // (`adopt-thread`), and only when every method bind it needs exists at its 4.5.1 hash
+  // (`adopt-unavailable`); both refuse before anything is published.
+  if (g_stream.gate8.adopt) {
+    std::string why;
+    std::string detail;
+    if (!rs::adopt_binds_ready(&detail)) {
+      why = "adopt-unavailable: " + detail;
+    } else if (!rs::adopt_on_main_thread(&detail)) {
+      why = "adopt-thread: " + detail;
+    }
+    if (!why.empty()) {
+      log_line("stream: refused adoption (" + why + ")");
+      g_stream.status = "refused";
+      g_stream.reason = why;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + why);
+      }
+      return;
+    }
+  }
   // GRC_HOOK_LOG (Q3d, G6r): on|off, default on.
   const std::string hook_log = env_string("GRC_HOOK_LOG");
   if (!hook_log.empty() && hook_log != "on" && hook_log != "off") {
@@ -1449,7 +1527,12 @@ void stream_start() {
       why = "wrong-hash acts on the resource store; set a file sink and GRC_RESOURCE_STORE_DIR";
     } else if (kind == rs2::SabotageKind::PerturbDecode && !g_stream.gate8.decode_engine) {
       // G8t (gate8-design.md Q3 "Sabotages"): it perturbs host-decoded payloads only.
-      why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";
+      why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";    } else if ((kind == rs2::SabotageKind::AdoptSkipState ||
+                kind == rs2::SabotageKind::AdoptNoRedraw ||
+                kind == rs2::SabotageKind::AdoptSkipLayers) &&
+               !g_stream.gate8.adopt) {
+      // G8a (gate8-design.md Q2 "Sabotages"): they act on the arm-time adoption walk.
+      why = std::string(rs2::to_wire(kind)) + " acts on the adoption walk; set GRC_ADOPT=arm";
     }
     if (!why.empty()) {
       log_line("stream: refused sabotage (" + why + ")");
@@ -1541,6 +1624,7 @@ void stream_start() {
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
   // Before the root query, so every hook call the session sees is under the declared policy.
   rs::mirror_set_unknown_item_policy(g_stream.unknown_item_policy);
+  rs::mirror_set_caps(g_stream.max_items, g_stream.max_commands);
   if (g_stream.unknown_item_policy == rs2::UnknownItemPolicy::Skip) {
     log_line("stream: unknown_item_policy=skip (unknown canvas/item RIDs are withheld, not failed)");
   }
@@ -1553,11 +1637,35 @@ void stream_start() {
   // because the policy's relayout reaches the hooks as ordinary calls on adopted items. The seam
   // is empty until G8a; the session still declares `adoption` so the wire is honest about intent.
   if (g_stream.gate8.adopt) {
+    // G8a: date every frame of an adopting session in the host's own main-loop iterations. A
+    // library loaded at runtime (Q1a) would otherwise count from its load, so frame 1 would be the
+    // iteration it armed in; Engine.get_process_frames() is the 0-based index of the iteration
+    // running (it advances after the frame callback, main.cpp:4852), so the hooks stamp this
+    // iteration's calls `process_frames + 1`, exactly as an extension loaded at startup does.
+    const int64_t process_frames = rs::adopt_engine_process_frames();
+    if (process_frames > 0 && static_cast<uint64_t>(process_frames) > g_state.frames_total) {
+      g_state.frames_total = static_cast<uint64_t>(process_frames);
+      hooks_set_frame(g_state.frames_total + 1);
+    }
     rs::AdoptConfig adopt_config;
-    adopt_config.arm_frame = std::max<uint64_t>(1, g_state.frames_total);
+    adopt_config.arm_frame = g_state.frames_total + 1;  // the iteration the walk runs in
+    switch (sabotage.config.kind) {
+    case rs2::SabotageKind::AdoptSkipState: adopt_config.sabotage = rs::AdoptSabotage::SkipState; break;
+    case rs2::SabotageKind::AdoptNoRedraw: adopt_config.sabotage = rs::AdoptSabotage::NoRedraw; break;
+    case rs2::SabotageKind::AdoptSkipLayers: adopt_config.sabotage = rs::AdoptSabotage::SkipLayers; break;
+    default: break;
+    }
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
     session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
+    const rs::AdoptStats &a = g_stream.adopt_stats;
+    log_line("adopt: frame=" + std::to_string(adopt_config.arm_frame) + " items=" +
+             std::to_string(a.items) + " layers=" + std::to_string(a.layers) + " hidden=" +
+             std::to_string(a.hidden) + " top_level=" + std::to_string(a.top_level) +
+             " redraws=" + std::to_string(a.redraws) + " non_root_viewports=" +
+             std::to_string(a.non_root_viewports) + " total_us=" +
+             std::to_string(a.total_ns / 1000) +
+             (a.error.empty() ? std::string() : " error=" + a.error));
   }
   rs::RootInfo after = before;
   bool enforce_called = false;

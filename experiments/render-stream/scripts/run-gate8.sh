@@ -23,6 +23,16 @@
 #       on the sabotage capture; last the decode-cost timing group (decode-cost/oracle-timing:
 #       best-of-3 Image.decompress of the 2048x2048 cost textures; decode-cost/capture: the hook's
 #       own decode/copy/hash times on them), each under the exclusive quiet lock (timing_leg).
+#   g8a (G8a, Q2: arm-time adoption of canvases, layers and items, fixtures/gate8-adopt; every leg
+#       under g8a/): the editor import of the fixture and the receiver; headless /8 captures under
+#       GRC_UNKNOWN_ITEM=skip of `born` (main scene born.tscn, armed in the loader's _enter_tree:
+#       every object created armed), `born-adopt` (the same with GRC_ADOPT=arm: nothing to adopt),
+#       `late` (adopt.tscn as the main scene, armed at fixture frame K=12 with GRC_ADOPT=arm) and
+#       `late-strict` (late without skip: the residue's pre-existing-object), `late-thread` (late,
+#       loaded from a worker thread: the stream refuses adopt-thread), and the three walk
+#       sabotages (adopt-skip-state, adopt-no-redraw, adopt-skip-layers); then, rendered, the
+#       unarmed `reference` and the native receiver on born, late (full and patch sinks) and each
+#       sabotage capture, shooting the four checkpoints.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -44,8 +54,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8a, G8h, G8f, G8r, G8m add theirs).
-LANDED_GROUPS=(g8t)
-KNOWN_GROUPS=(g8t)
+LANDED_GROUPS=(g8t g8a)
+KNOWN_GROUPS=(g8t g8a)
 
 EXTENSION=""
 CALIBRATION=""
@@ -305,9 +315,88 @@ run_g8t() {
 	fi
 }
 
+# ------------------------------------------------------------------------------------- g8a
+G8A_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-adopt"
+# The fixture's arm frame K (fixtures/gate8-adopt/loader.gd, expected.json arm_frame).
+G8A_ARM_FRAME=12
+# Every g8a capture: a /8 file sink (D2) and the product's unknown-item policy (skip), so born and
+# late differ only by when they armed.
+G8A_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip)
+
+run_import_g8a() {
+	echo "run-gate8: g8a import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8a/import/fixture" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8a/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in fixture receiver; do
+		if [ "$(cat "$OUT/g8a/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8a import ($leg) failed, see $OUT/g8a/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8a <dir> <born|late|thread> <env word...>: a headless capture of the fixture, armed
+# at birth (main scene res://born.tscn) or late (adopt.tscn at frame K, from the main thread or a
+# worker thread), with the probe log beside it.
+run_capture_g8a() {
+	local dir="$1" arm="$2" scene=""
+	shift 2
+	[ "$arm" = born ] && scene="res://born.tscn"
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8A_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_ARM="$arm" RS_FIXTURE_ARM_FRAME="$G8A_ARM_FRAME"
+		RS_FIXTURE_PROBE_LOG="$dir/probe.jsonl")
+	run_capture "$dir" "" none "$scene"
+}
+
+run_g8a() {
+	run_import_g8a
+	echo "run-gate8: g8a born (armed at birth, every object created under the hooks)"
+	run_capture_g8a "$OUT/g8a/born/capture" born "${G8A_ENV[@]}"
+	echo "run-gate8: g8a born-adopt (GRC_ADOPT=arm at birth: nothing to adopt)"
+	run_capture_g8a "$OUT/g8a/born-adopt/capture" born "${G8A_ENV[@]}" GRC_ADOPT=arm
+	echo "run-gate8: g8a late (armed at frame $G8A_ARM_FRAME, GRC_ADOPT=arm)"
+	run_capture_g8a "$OUT/g8a/late/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm
+	echo "run-gate8: g8a late-strict (late, GRC_UNKNOWN_ITEM unset: the residue fails)"
+	run_capture_g8a "$OUT/g8a/late-strict/capture" late GRC_STREAM_VERSION=8 GRC_ADOPT=arm
+	echo "run-gate8: g8a late-thread (late, armed from a worker thread: adopt-thread)"
+	run_capture_g8a "$OUT/g8a/late-thread/capture" thread "${G8A_ENV[@]}" GRC_ADOPT=arm
+	local s
+	for s in adopt-skip-state adopt-no-redraw adopt-skip-layers; do
+		echo "run-gate8: g8a sabotage-$s (capture)"
+		run_capture_g8a "$OUT/g8a/sabotage-$s/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm \
+			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8A_ARM_FRAME"
+	done
+
+	echo "run-gate8: bringing up private gamescope for g8a's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8a"
+	legs_par_begin
+	echo "run-gate8: g8a reference (unarmed, rendered)"
+	mkdir -p "$OUT/g8a/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8a/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8a/reference/steps.jsonl"
+		RS_FIXTURE_ARM_FRAME="$G8A_ARM_FRAME")
+	run_rendered "$OUT/g8a/reference" "$G8A_FIXTURE_DIR"
+	echo "run-gate8: g8a receivers (born, late, late patch sink)"
+	run_rendered_receiver "$OUT/g8a/born/capture" "$OUT/g8a/born/receiver"
+	run_rendered_receiver "$OUT/g8a/late/capture" "$OUT/g8a/late/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8a/late/capture" "$OUT/g8a/late/receiver-patch"
+	for s in adopt-skip-state adopt-no-redraw adopt-skip-layers; do
+		echo "run-gate8: g8a sabotage-$s (receiver)"
+		run_rendered_receiver "$OUT/g8a/sabotage-$s/capture" "$OUT/g8a/sabotage-$s/receiver"
+	done
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8a"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8t) run_g8t ;;
+	g8a) run_g8a ;;
 	esac
 done
 
