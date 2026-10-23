@@ -69,6 +69,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7wd | credit window 2 is the default (fork F1): host maximum, receivers' hellos and `run-gate7.sh --live` ask for 2, window 1 explicit and pinned; native gates 1, 2, 6 stay /6 | [results/gate7/g7wd.md](results/gate7/g7wd.md) |
 | G7v | phone acceptance on the g31 (g86 descoped by the user): neither browser meets the target at either window; window 2 lifts g31 drawn rates (gsw pace 47→58, scene 36→54; web pace 28→56, scene 9→16), so G7v recommends it as the default; GSW misses on `phase-alias` at a 58.8 Hz panel, the web export on Godot's own 15–36 ms iteration — landed | [results/gate7/g7v.md](results/gate7/g7v.md) |
 | G7p | `render-stream-report/2` (browser, device and env fields, validated with sabotages), the `g7-p` matrix driver on all three receivers, and the g31 device rows from G7v's run; the g86 is descoped | [results/gate7/g7p.md](results/gate7/g7p.md) |
+| G7kh | the sweep's GSW soak `js-heap-bounded` regression: G7q's two per-fold log lines kept in the page's log buffer, exposed by G7wd's window 2 (half the soak's transactions fold); a summary log keeps no per-transaction state and the GSW soak tap is capped like the web one; slope 834 → 310 KB/min (window 2), 307 KB/min (window 1), budget unchanged; finding: `rss-bounded-renderer` samples an idle renderer — landed | [results/gate7/g7kh.md](results/gate7/g7kh.md) |
 | G7z | three manifests, gate 7 summary | [protocol/gate7/g7z.md](protocol/gate7/g7z.md) |
 
 ## Protocol docs
