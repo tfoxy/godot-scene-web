@@ -44,7 +44,32 @@ Or, if you need a different display setup, put the wrapper around the INNER vite
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 2. WARN: `tsx` without the `development` condition resolves packages to dist/, so you measure or
+# 2. WARN: `git push`. The only sanctioned push path is scripts/remote-validate.sh, which pushes to
+#    refs/heads/remote-run/* as a child process (so this guard never sees it); any literal
+#    `git push` on the command line is therefore outside the wrapper. Warn, never block.
+#    `git` in command position (a quoted `echo git push` also warns — acceptable for a warning),
+#    then global options (-C dir, -c k=v, --git-dir=…, --no-pager, …), then `push` as a word.
+#    `git stash push` and `git log --grep push` do not match: the subcommand must be `push`.
+# ---------------------------------------------------------------------------------------------
+git_opt='((-C|-c|--git-dir|--work-tree|--namespace|--exec-path)[[:space:]]+[^[:space:];&|()]+|--[A-Za-z-]+(=[^[:space:];&|()]+)?|-[pP])[[:space:]]+'
+git_push_re="(^|[[:space:];&|(])git[[:space:]]+(${git_opt})*push([[:space:];&|)]|\$)"
+if has "$git_push_re"; then
+  # The push's own arguments: from `push` up to the next command separator.
+  push_args="$(printf '%s' "$cmd" | grep -Eo "${git_push_re}[^;&|)]*" | head -n1 | sed -E 's/^.*[[:space:]]push//')"
+  strong=0
+  # main/master, tags, mirror/all, force, or a bare push (which pushes the current branch).
+  printf '%s\n' "$push_args" | grep -Eq '(^|[[:space:]:/+])(main|master)([[:space:]]|$)' && strong=1
+  printf '%s\n' "$push_args" | grep -Eq '(--tags|--follow-tags|refs/tags/|[[:space:]:]v[0-9])' && strong=1
+  printf '%s\n' "$push_args" | grep -Eq '(--mirror|--all|--force|[[:space:]]-[A-Za-z]*f[A-Za-z]*([[:space:]]|$)|[[:space:]]\+[^[:space:]])' && strong=1
+  printf '%s\n' "$push_args" | grep -Eq '^([[:space:]]+-[^[:space:]]*)*([[:space:]]+[^[:space:]-][^[:space:]]*)?[[:space:]]*$' && strong=1
+  if [ "$strong" -eq 1 ]; then
+    warn "STOP: this \`git push\` may touch main, a tag, or force-update a ref (a bare \`git push\`/\`git push origin\` pushes the CURRENT branch, which may be main). A tag push fires the real GitHub Release plus npm/NuGet publish. Pushes go only through scripts/remote-validate.sh (to remote-run/*); never push main or tags unless the user asked for it in this session."
+  fi
+  warn "Pushes go only through scripts/remote-validate.sh (to remote-run/*). Never push main or tags unless the user asked for it in this session."
+fi
+
+# ---------------------------------------------------------------------------------------------
+# 3. WARN: `tsx` without the `development` condition resolves packages to dist/, so you measure or
 #    test a STALE BUILD instead of your edit. Every package.json script passes --conditions=development.
 # ---------------------------------------------------------------------------------------------
 if has '(^|[[:space:];&|])(npx[[:space:]]+)?tsx[[:space:]]' && ! has '\-\-conditions=development'; then
@@ -52,7 +77,7 @@ if has '(^|[[:space:];&|])(npx[[:space:]]+)?tsx[[:space:]]' && ! has '\-\-condit
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 3. WARN: package managers run from the repo root here (AGENTS.md → Tooling).
+# 4. WARN: package managers run from the repo root here (AGENTS.md → Tooling).
 # ---------------------------------------------------------------------------------------------
 if has '(^|[[:space:];&|])(pnpm|npm|yarn)[[:space:]]' && [ -n "$cwd" ]; then
   root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"

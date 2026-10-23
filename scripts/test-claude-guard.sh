@@ -77,6 +77,49 @@ expect allow 'biome check .'
 expect allow 'vitest run packages/tscn-parser'
 expect allow 'bash scripts/install-agent-config.sh'
 
+echo "== must warn: git push outside the remote wrapper =="
+expect warn 'git push'
+expect warn 'git push origin main'
+expect warn 'git push --tags'
+expect warn 'git push origin v1.2.3'
+expect warn 'git -C .worktrees/x push origin HEAD:main'
+expect warn 'git -C /tmp/y push origin feature'
+expect warn 'cd x && git push'
+expect warn 'mise exec -- pnpm test; git push origin topic'
+expect warn '(git push)'
+expect warn 'git push --force origin topic'
+expect warn 'git push origin topic'
+expect warn 'env GIT_SSH=x git -c core.x=y push origin topic'
+
+strong() { # strong <yes|no> <cmd> — the stronger text appears (or not), under both harnesses
+  local want="$1" cmd="$2" out has_strong
+  out="$(jq -n --arg c "$cmd" --arg d "$REPO" '{cwd:$d,tool_input:{command:$c}}' | bash "$GUARD")"
+  if printf '%s' "$out" | grep -q 'npm/NuGet publish'; then has_strong=yes; else has_strong=no; fi
+  if [ "$has_strong" = "$want" ]; then pass=$((pass+1)); else
+    fail=$((fail+1)); printf 'FAIL  strong-text want=%s got=%s  %s\n' "$want" "$has_strong" "$cmd" >&2
+  fi
+}
+for c in 'git push' 'git push origin' 'git push origin main' 'git push origin HEAD:main' \
+         'git push origin refs/heads/master' 'git push --tags' 'git push origin v1.2.3' \
+         'git push --follow-tags origin topic' 'git push origin refs/tags/x' 'git push --mirror' \
+         'git push --all' 'git push --force origin topic' 'git push -f origin topic' \
+         'git push --force-with-lease origin topic' 'git push origin +topic'; do
+  strong yes "$c"
+done
+for c in 'git push origin topic' 'git push -u origin topic' 'git -C /tmp/y push origin feature'; do
+  strong no "$c"
+done
+
+echo "== must allow: sanctioned wrapper and non-push git =="
+expect allow 'scripts/remote-validate.sh --only pure'
+expect allow 'bash scripts/remote-validate.sh --only bench-instr --no-wait'
+expect allow 'scripts/remote-run-branch.sh list'
+expect allow 'git status'
+expect allow 'git log --grep push'
+expect allow 'git stash push -m wip'
+expect allow 'echo pushing'
+expect allow 'git pull'
+
 echo "== must allow: command lines in docs/ =="
 expected_deny_re='xvfb-run.*(test:(webgpu-composite|webgl-composite|canvas-pixel)|bench:canvas-upload)'
 harvested=0; flagged=0
