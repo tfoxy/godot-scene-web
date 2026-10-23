@@ -25,7 +25,7 @@
       "experiments/render-stream/web/gsw-rs",
       "experiments/render-stream/decode-proto-rs"
     ],
-    "other": ["pure", "lock-tests", "capture-build", "pnpm-test"]
+    "other": ["pure", "lock-tests", "capture-build", "pnpm-test", "bench-instr"]
   },
   "sabotage_paths": [
     "experiments/render-stream/scripts/check-gate*.ts",
@@ -56,8 +56,8 @@
   "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. 'refuse.groups' refuses single groups of a gate 7 run (the run keeps its other groups remotely, and is refused whole when none is left). Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
-    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55", "g7-gsw", "g7-web-rust", "g7live-gsw", "g7live-web-rust", "g7live-gsw-g7-1", "g7live-gsw-g7-2", "g7live-gsw-g7-5", "g7live-gsw-g7-55", "g7live-web-rust-g7-1", "g7live-web-rust-g7-2", "g7live-web-rust-g7-5", "g7live-web-rust-g7-55"],
-    "capable_doc": "R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps g7-1 and g7-2 local: on a 4-vCPU runner each failed a check intermittently from credit-window-2 timing, load-sensitive, so local-only and never loosened). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
+    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "bench-instr", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55", "g7-gsw", "g7-web-rust", "g7live-gsw", "g7live-web-rust", "g7live-gsw-g7-1", "g7live-gsw-g7-2", "g7live-gsw-g7-5", "g7live-gsw-g7-55", "g7live-web-rust-g7-1", "g7live-web-rust-g7-2", "g7live-web-rust-g7-5", "g7live-web-rust-g7-55"],
+    "capable_doc": "R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps g7-1 and g7-2 local: on a 4-vCPU runner each failed a check intermittently from credit-window-2 timing, load-sensitive, so local-only and never loosened). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
       "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
       "ids": {
@@ -179,6 +179,7 @@
         "g7live:*@native",
         "cargo:experiments/render-stream/rs-core",
         "cargo:experiments/render-stream/rs-core-capi",
+        "bench-instr",
         "g7x:*"
       ]
     },
@@ -198,6 +199,16 @@
       "reach": ["pnpm-test"]
     },
     {
+      "why": "R4's instruction-count bench: its runner, parser, self-test and committed baseline (the cases are goldens and rs-core, reached above)",
+      "paths": [
+        "experiments/render-stream/scripts/bench-instr.sh",
+        "experiments/render-stream/scripts/lib/bench-instr.py",
+        "experiments/render-stream/scripts/test/self-test-bench-instr.sh",
+        "experiments/render-stream/benches/**"
+      ],
+      "reach": ["pure", "bench-instr"]
+    },
+    {
       "why": "the legacy decoder prototype crate",
       "paths": ["experiments/render-stream/decode-proto-rs/**"],
       "reach": ["cargo:experiments/render-stream/decode-proto-rs"]
@@ -208,7 +219,8 @@
       "reach": [
         "pure",
         "cargo:experiments/render-stream/rs-core",
-        "cargo:experiments/render-stream/rs-core-capi"
+        "cargo:experiments/render-stream/rs-core-capi",
+        "bench-instr"
       ]
     },
     {

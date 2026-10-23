@@ -192,6 +192,8 @@ def runs(targets, m, sabotage, tier="smoke"):
             out.append({"id": f"cargo-{os.path.basename(c)}", "kind": "cargo", "crate": c})
     if "pnpm-test" in targets:
         out.append({"id": "pnpm-test", "kind": "pnpm-test"})
+    if "bench-instr" in targets:  # R4: instruction counts (load-insensitive, so a setup-phase run)
+        out.append({"id": "bench-instr", "kind": "bench-instr"})
     for core in u["cores"]:
         gates = [g for g in order if f"native:{g}@{core}" in targets]
         for g in gates:
@@ -320,6 +322,11 @@ def self_test(m):
           nat and all(t.endswith("@rust") for t in nat) and "native:gate0@rust" in nat)
     check("rs-core reaches gsw and the web rust core",
           "g7:g7-3@gsw" in d["targets"] and "g7:g7-3@web/rust" in d["targets"])
+    check("rs-core and the goldens reach bench-instr, a setup-phase run that is not timing (R4)",
+          "bench-instr" in d["targets"] and "bench-instr" in P("experiments/render-stream/protocol/golden-6/inline.rs6")["targets"]
+          and "bench-instr" not in P("experiments/render-stream/scripts/lib/quiet.sh")["targets"]
+          and "bench-instr" not in timing_targets(m, uni)
+          and {"id": "bench-instr", "kind": "bench-instr", "phase": "setup"} in d["runs"])
     check("no target names the GDScript core (G7gd removed it)",
           not any("gdscript" in t for t in uni))
     e = P("experiments/render-stream/scripts/lib/gate3-checks.ts")

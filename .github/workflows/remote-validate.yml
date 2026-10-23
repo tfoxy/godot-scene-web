@@ -153,6 +153,7 @@ jobs:
           # release template, the editor (imports, receiver self-test) and strace
           swrast: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           rs-core-ext: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
+          valgrind: ${{ matrix.id == 'bench-instr' }}
           apt: ${{ startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           # gate 4's i18n fixtures read the engine's thirdparty/fonts (fonts.lock.json); g7-4's
           # source is a gate 4 run
@@ -297,6 +298,10 @@ jobs:
           # per-test seconds of a pure shard (a few KB): the input to pure-shard-weights.json
           [ -f "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" ] && cp "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" "$art/timings-$LABEL.jsonl"
+          # R4: bench-instr's per-case Ir, rustc, valgrind, CPU model and binary sha (a few KB)
+          for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
+            [ -f "$o/$ID/run/bench-instr.json" ] && cp "$o/$ID/run/bench-instr.json" "$art/bench-instr-$LABEL${o##*/v}.json"
+          done
           # the watchdog's snapshot and log tails (R3), when it fired or got close
           [ -d "$RUNNER_TEMP/watchdog" ] && cp -r "$RUNNER_TEMP/watchdog" "$art/watchdog"
           # swrast provenance plus the GL renderer string the run's Godot printed (OpenGL API ... llvmpipe)
@@ -337,6 +342,7 @@ jobs:
             mkdir -p "$ev/run"
             for f in command.txt run.log tier-verdict.json; do [ -f "$run/$f" ] && cp "$run/$f" "$ev/"; done
             [ -f "$run/run/result.json" ] && cp "$run/run/result.json" "$ev/run/"
+            [ -f "$run/run/bench-instr.json" ] && cp "$run/run/bench-instr.json" "$ev/run/"
             cp "$run"/*.log "$ev/" 2>/dev/null
           done
           true

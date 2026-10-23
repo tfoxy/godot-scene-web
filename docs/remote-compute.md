@@ -212,6 +212,30 @@ Moving wall-clock benchmarks to hosted runners would make them worse. What does 
 3. **Fan-out repeats:** N repeats on N runners, gated on the median or an interval rather than a
    single number.
 
+### Instruction counts for the Rust core (R4, 2026-10-23)
+
+- **Bench:** `rs-core-bench-instr` (cargo feature `bench-instr`, off by default, so the library and
+  wasm builds are unchanged) decodes and applies one committed golden recording per process.
+  `scripts/bench-instr.sh` builds it on rustc 1.95.0 with no RUSTFLAGS, runs it under
+  `valgrind --tool=cachegrind --cache-sim=no`, writes `bench-instr.json` and compares against
+  `benches/instr-baseline.json`. Cases (all self-contained, inline payloads): `g3-inline`,
+  `g4-inline`, `g5-inline`, `g6-inline` (the scene-sized one), `g6-snap`, `g7-window2`. The
+  `full`/`patch` goldens need a payload store and are not cases.
+- **Run id:** `bench-instr` (setup phase, not timing, remote-capable; rs-setup `valgrind` input
+  installs the Ubuntu package). The tier verdict has one check per case. Locally it exits 3 when
+  valgrind is not installed.
+- **Noise (three runners, one binary, same sha256 on all of them):** AMD EPYC 7763, AMD EPYC 9V45
+  and Intel Xeon Platinum 8573C differ by at most 0.29% on a case (g5-inline 92.64-92.91 M,
+  g6-inline 110.21-110.50 M, g3/g4 below 0.04%, snap/window2 identical). That is CPU-feature
+  dispatch (memchr/sha2), not run-to-run noise: the same runner type repeats exactly. One baseline
+  (the median) and a 1% threshold per case therefore hold on every runner type seen, with 3x margin
+  over the spread. A new CPU family that exceeds 1% would get `threshold_pct` on the affected case.
+- **Sabotage proof:** one extra pass over each /5 record in `Validator::accept` moved only
+  `g5-inline`, 92908617 to 95073722 Ir (+2.33%, fail); the other cases moved under 0.03% (code
+  layout). Reverting it passes.
+- **Local:** this machine has no valgrind, so the remote job is the only producer; the script
+  names the missing tool and exits 3 rather than skipping.
+
 None of these covers GPU frame time, frame pacing or the phone. Those stay local and still need a
 quiet machine (`uptime`), as today.
 

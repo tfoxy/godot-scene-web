@@ -12,6 +12,11 @@ crate-type = ["rlib"]
 name = "rs-core-check"
 path = "src/bin/rs-core-check.rs"
 
+[[bin]]
+name = "rs-core-bench-instr"
+path = "src/bin/rs-core-bench-instr.rs"
+required-features = ["bench-instr"]
+
 [dependencies]
 gsw-canvas-draw-list = { path = "../../../packages/canvas/rust-draw-list" }
 sha2 = { version = "0.10", default-features = false }
@@ -20,6 +25,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 [features]
 # The portable SHA-256 (what wasm32 gets anyway): a phone-like upper bound for native runs.
 soft-sha = ["sha2/force-soft"]
+
+# R4: the instruction-count bench binary (scripts/bench-instr.sh); no code, only gates the [[bin]].
+bench-instr = []
 
 [profile.release]
 opt-level = 3
