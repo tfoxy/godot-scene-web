@@ -338,6 +338,81 @@ s = json.load(open(sys.argv[1]))
 assert [r["id"] for r in s["runs"]] == ["pure"] and s["runs"][0]["rc"] == "0" and s["runs"][0]["wall_s"] == 180.0
 PY
 
+# ---- bench-instr: per-case counts ride on the row ---------------------------------------------------------------------------------
+mkb() { # mkb <dir> <rc> <delta> : one bench-instr job whose row carries bench_instr
+	mkdir -p "$1"
+	python3 - "$1/validate-summary.json" "$2" "$3" <<'PY'
+import json, sys
+row = {"id": "bench-instr", "phase": "setup", "rc": sys.argv[2], "wall_s": 37.0, "lock_wait_s": 0.0, "lock_hold_s": 0.0, "lock": {},
+       "lock_summaries": 0, "skipped_by_tier": 0, "unavailable": [], "failing": []}
+if sys.argv[3] != "none":
+    row["bench_instr"] = {"cpu_model": "AMD EPYC 7763", "baseline_cpu_model": "AMD EPYC 9V45",
+                          "cases": [{"case": "g5-inline", "ir": 92908617, "baseline_ir": 92800000, "delta_pct": float(sys.argv[3]),
+                                     "threshold_pct": 1.0, "status": "ok" if sys.argv[2] == "0" else "regression"}]}
+json.dump({"schema": "render-stream-validate-summary/2", "wall_s": 37.0, "runs": [row], "phases": {}, "milestone": None, "base": "abc",
+           "sabotage": {"run": False, "why": []}, "skipped_targets": 0, "failed": 0}, open(sys.argv[1], "w"))
+PY
+}
+mkb "$TMP/bi/pass" 0 0.117; mkb "$TMP/bi/fail" 1 2.33; mkb "$TMP/bi/nocount" 3 none
+mkdir -p "$TMP/bi/other"; mk "$TMP/bi/other" cargo-a setup 0 20
+python3 "$VS" --merge --out "$TMP/bim" --expect bench-instr,cargo-a "$TMP/bi/pass" "$TMP/bi/other" >/dev/null 2>&1
+check "merge carries bench_instr of a passing bench-instr row; other rows have no such key" python3 - "$TMP/bim/validate-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+r = {x["id"]: x for x in s["runs"]}
+b = r["bench-instr"]["bench_instr"]
+assert r["bench-instr"]["rc"] == "0" and b["cpu_model"] == "AMD EPYC 7763" and b["baseline_cpu_model"] == "AMD EPYC 9V45"
+assert b["cases"][0] == {"case": "g5-inline", "ir": 92908617, "baseline_ir": 92800000, "delta_pct": 0.117, "threshold_pct": 1.0, "status": "ok"}
+assert "bench_instr" not in r["cargo-a"]
+PY
+python3 "$VS" --merge --out "$TMP/bimf" --expect bench-instr "$TMP/bi/fail" >/dev/null 2>&1
+check "merge carries bench_instr of a failing bench-instr row" python3 - "$TMP/bimf/validate-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["failed"] == 1 and s["runs"][0]["bench_instr"]["cases"][0]["status"] == "regression"
+PY
+python3 "$VS" --merge --out "$TMP/bimn" --expect bench-instr,pnpm-test "$TMP/bi/nocount" >/dev/null 2>&1
+check "a row without counts and a missing-run row have no bench_instr key" python3 - "$TMP/bimn/validate-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert [r["id"] for r in s["runs"]] == ["bench-instr", "pnpm-test"] and s["failed"] == 2
+assert all("bench_instr" not in r for r in s["runs"]) and s["runs"][1]["rc"] == "missing"
+PY
+mkb "$TMP/bi/rep1" 0 0.117; mkb "$TMP/bi/rep2" 0 0.118
+python3 "$VS" --merge --out "$TMP/bimr" --expect bench-instr "$TMP/bi/rep1" "$TMP/bi/rep2" >/dev/null 2>&1
+check "determinism repeats fold into one row keeping every repeat's cases in bench_instr.repeats" python3 - "$TMP/bimr/validate-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert len(s["runs"]) == 1
+b = s["runs"][0]["bench_instr"]
+assert [r["cases"][0]["delta_pct"] for r in b["repeats"]] == [0.117, 0.118] and all("cpu_model" in r for r in b["repeats"]) and b["cases"][0]["delta_pct"] == 0.117
+PY
+# collect_rows over a fake run dir (the write path, validate-increment.sh)
+mkdir -p "$TMP/cr/bench-instr/run" "$TMP/cr/pure"
+echo 0 >"$TMP/cr/bench-instr/rc"; echo 0 >"$TMP/cr/pure/rc"
+python3 - "$TMP/cr" <<'PY'
+import json, sys
+d = sys.argv[1] + "/bench-instr/run"
+json.dump({"schema": "render-stream-instr-result/1", "cpu_model": "EPYC", "baseline_cpu_model": "EPYC B", "checks": [
+    {"id": "bench-instr-g3-inline", "passed": True, "status": "ok", "detail": "d", "ir": 10, "baseline_ir": 10, "delta_pct": 0.0, "threshold_pct": 1.0}]},
+    open(d + "/result.json", "w"))
+json.dump({"schema": "render-stream-instr-bench/1", "cpu_model": "EPYC"}, open(d + "/bench-instr.json", "w"))
+json.dump({"runs": [{"id": "bench-instr", "phase": "setup"}, {"id": "pure", "phase": "setup"}]}, open(sys.argv[1] + "/plan.json", "w"))
+PY
+check "collect_rows adds bench_instr to the bench-instr row only" python3 - "$VS" "$TMP/cr" <<'PY'
+import importlib.util, json, sys
+sp = importlib.util.spec_from_file_location("vs", sys.argv[1]); vs = importlib.util.module_from_spec(sp); sp.loader.exec_module(vs)
+rows, failed = vs.collect_rows(sys.argv[2], json.load(open(sys.argv[2] + "/plan.json")))
+r = {x["id"]: x for x in rows}
+assert failed == 0 and "bench_instr" not in r["pure"]
+b = r["bench-instr"]["bench_instr"]
+assert b["cpu_model"] == "EPYC" and b["baseline_cpu_model"] == "EPYC B" and b["cases"] == [
+    {"case": "g3-inline", "ir": 10, "baseline_ir": 10, "delta_pct": 0.0, "threshold_pct": 1.0, "status": "ok"}], b
+import shutil; shutil.rmtree(sys.argv[2] + "/bench-instr/run")
+rows, _ = vs.collect_rows(sys.argv[2], json.load(open(sys.argv[2] + "/plan.json")))
+assert "bench_instr" not in {x["id"]: x for x in rows}["bench-instr"]
+PY
+
 # ---- pure shards: the split ---------------------------------------------------------------------------------------------------------
 PURE="$ROOT/experiments/render-stream/scripts/test/run-pure-self-tests.sh"
 bash "$PURE" --list >"$TMP/all.txt"

@@ -45,6 +45,29 @@ def lock_totals(d):
     return t, files
 
 
+def bench_instr_block(d):
+    """The bench-instr run's counts (R4) for its summary row: {cpu_model, baseline_cpu_model, cases:
+    [{case, ir, baseline_ir, delta_pct, threshold_pct, status}]} from <run dir>/run/result.json (the
+    checks) and run/bench-instr.json (cpu_model). Present for passing and failing runs alike; None
+    (the key is then omitted) when result.json is absent or unreadable, e.g. valgrind missing (rc 3)
+    or the build failed, because there are no counts to report."""
+    try:
+        res = json.load(open(os.path.join(d, "run", "result.json")))
+    except (OSError, ValueError):
+        return None
+    cases = []
+    for c in res.get("checks", []):
+        cases.append({"case": c["id"].removeprefix("bench-instr-"), "ir": c.get("ir"), "baseline_ir": c.get("baseline_ir"),
+                      "delta_pct": c.get("delta_pct"), "threshold_pct": c.get("threshold_pct"), "status": c.get("status")})
+    cpu = res.get("cpu_model")
+    if cpu is None:
+        try:
+            cpu = json.load(open(os.path.join(d, "run", "bench-instr.json"))).get("cpu_model")
+        except (OSError, ValueError):
+            pass
+    return {"cpu_model": cpu, "baseline_cpu_model": res.get("baseline_cpu_model"), "cases": cases}
+
+
 def collect_rows(out, plan):
     rows, failed = [], 0
     for r in plan["runs"]:
@@ -68,6 +91,10 @@ def collect_rows(out, plan):
                      "skipped_remote": tier.get("skipped_remote", []),
                      "skipped_remote_groups": tier.get("skipped_remote_groups", []),
                      "unavailable": tier.get("unavailable", []), "failing": tier.get("failing", [])})
+        if r["id"] == "bench-instr":
+            bi = bench_instr_block(d)
+            if bi is not None:
+                rows[-1]["bench_instr"] = bi
         failed += rc != "0"
     return rows, failed
 
@@ -95,7 +122,7 @@ def fold_shards(rows, expected):
     """Sharded runs (the workflow splits `pure` into RS_PURE_SHARD jobs) arrive as several rows with
     one id. Fold each id into ONE row so readers and run ids are unchanged: rc = the worst, wall_s =
     the max (shards run in parallel), lock times and skipped_by_tier summed, failing/unavailable
-    unioned. `expected` maps id -> shard count: fewer rows than that (a shard job died before writing
+    unioned, bench_instr from the first row plus `repeats`. `expected` maps id -> shard count: fewer rows than that (a shard job died before writing
     its summary) makes the folded rc "missing". The row gains `shards`: [{rc, wall_s}] for audit."""
     by_id, order = {}, []
     for r in rows:
@@ -125,6 +152,12 @@ def fold_shards(rows, expected):
             for r in g:
                 seen += [x for x in r.get(k, []) if x not in seen]
             f[k] = seen
+        bis = [r["bench_instr"] for r in g if r.get("bench_instr")]
+        if len(bis) > 1:
+            # --determinism repeats of one job: the first repeat's block stays on top, every repeat's
+            # {cpu_model, cases} is kept in `repeats` (in repeat order; repeats may run on different
+            # runners) so a run-to-run or cross-CPU drift is visible
+            f["bench_instr"] = dict(bis[0], repeats=[{"cpu_model": b["cpu_model"], "cases": b["cases"]} for b in bis])
         f["shards"] = [{"rc": r["rc"], "wall_s": r["wall_s"]} for r in g]
         out.append(f)
     return out

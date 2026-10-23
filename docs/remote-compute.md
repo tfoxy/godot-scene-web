@@ -248,6 +248,15 @@ Moving wall-clock benchmarks to hosted runners would make them worse. What does 
 - **Sabotage proof:** one extra pass over each /5 record in `Validator::accept` moved only
   `g5-inline`, 92908617 to 95073722 Ir (+2.33%, fail); the other cases moved under 0.03% (code
   layout). Reverting it passes.
+- **In the summary:** the `bench-instr` row of `validate-summary.json` (passing or failing) carries an
+  additive `bench_instr` key: `{cpu_model, baseline_cpu_model, cases: [{case, ir, baseline_ir,
+  delta_pct, threshold_pct, status}]}`, built by `lib/validate-summary.py` from `run/result.json`
+  (whose checks now also keep those four numbers; `tier-verdict.py` ignores them) and
+  `run/bench-instr.json`. The key is omitted when there is no `result.json` (valgrind missing, build
+  failed). With `--determinism`, the repeats fold into one row: the first repeat's block stays on
+  top and `bench_instr.repeats` lists every repeat's `{cpu_model, cases}`. The wrapper prints one
+  `bench-instr: <case> Ir N (+x% vs baseline, cpu ...)` line per case. No workflow change: the key
+  rides on the row.
 - **Local:** this machine has no valgrind, so the remote job is the only producer; the script
   names the missing tool and exits 3 rather than skipping.
 
@@ -322,7 +331,7 @@ All three layers were seen working on real runs (R0):
 - SIGINT on the wrapper cancelled the run (rc 130) and deleted its branch;
 - a janitor dispatch deleted a ref aged 3 days and nothing else.
 
-The logic is covered synthetically by `scripts/test-remote-validate.sh` (107 checks).
+The logic is covered synthetically by `scripts/test-remote-validate.sh` (112 checks).
 
 Rejected transports:
 
@@ -400,8 +409,7 @@ Risks that remain:
 - **Queueing** when several agents dispatch at once.
 
 Possible next steps (not started):
-- fix g7-1's window-2 model on `main`, then move g7-1 remote;
-- per-case `Ir` in the summary of passing `bench-instr` runs.
+- fix g7-1's window-2 model on `main`, then move g7-1 remote.
 
 ## Sources
 
