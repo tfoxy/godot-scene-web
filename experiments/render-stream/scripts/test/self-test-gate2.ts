@@ -1958,6 +1958,40 @@ async function main(): Promise<void> {
       },
       ["fetch-before-applied", "leg-class-sabotage-drop-resource"],
     );
+    // G7lw: at credit window 2 a slow poll folds the first transaction naming A1 into the next
+    // one; the receiver logs the fold (`coalesced_into`) and fails, and fetches, at that apply.
+    const foldFailure = (a: LiveAppliedEdit, logged: boolean) => {
+      if (!a.failure) return;
+      const want = a.failure.seq;
+      const t = a.transactions.find((x) => x.stream === 1 && x.seq === want);
+      if (!t) return;
+      a.transactions.push({
+        ...t,
+        seq: want + 1,
+        frame: t.frame + 1,
+        received_us: (t.received_us ?? 0) + 100,
+      });
+      if (logged) (t as { coalesced_into?: number }).coalesced_into = want + 1;
+      a.failure.seq = want + 1;
+      for (const f of a.fetches)
+        if (f.stream === 1 && f.seq === want) f.seq = want + 1;
+    };
+    for (const leg of ["sabotage-drop-resource", "sabotage-wrong-hash-live"]) {
+      await passScenario(
+        root,
+        good,
+        `${leg}-folded`,
+        (out) => editLive(out, leg, (a) => foldFailure(a, true)),
+        [`leg-class-${leg}`],
+      );
+      await scenario(
+        root,
+        good,
+        `${leg}-folded-unlogged`,
+        (out) => editLive(out, leg, (a) => foldFailure(a, false)),
+        [`leg-class-${leg}`],
+      );
+    }
     await scenario(
       root,
       good,

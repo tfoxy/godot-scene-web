@@ -43,7 +43,13 @@ import {
   type ReceiverEvidence,
   textureLogDivergence,
 } from "./gate2b-checks";
-import { type G2cFetch, getsVsFetches, httpGets } from "./gate2c-checks";
+import {
+  failureSeqs,
+  type G2cFetch,
+  type G2cTransaction,
+  getsVsFetches,
+  httpGets,
+} from "./gate2c-checks";
 
 /** run-gate2.sh's live timeline: S = 300, N = 60, quit S + N*11 + 11 (steps 0..11; as
  * gate2b-checks.ts's live-inline leg and gate2c-checks.ts's live legs). */
@@ -552,7 +558,10 @@ export async function checkNoCors(outDir: string): Promise<G2bCheck> {
   ) as { listener_sabotage?: string | null } | null;
   const applied = JSON.parse(
     (await readTextOrUndefined(join(receiverDir, "applied.json"))) ?? "null",
-  ) as { failure?: { seq?: number | null; reason?: string } | null } | null;
+  ) as {
+    failure?: { seq?: number | null; reason?: string } | null;
+    transactions?: G2cTransaction[];
+  } | null;
   const gets = (await hookGets(hostDir)).filter(
     (g) => (g.method ?? "GET") === "GET",
   );
@@ -563,16 +572,21 @@ export async function checkNoCors(outDir: string): Promise<G2bCheck> {
     );
   if (served.length < 1)
     problems.push("the host's hook log shows no GET it served (http-get 200)");
+  // G7lw: at credit window 2 seq 1 can be folded into seq 2 (the receiver's applied.json says
+  // so), and the withheld GET then fails that apply.
+  const seqs = failureSeqs(applied?.transactions ?? [], 1);
+  const failSeq = applied?.failure?.seq;
   if (
     applied?.failure?.reason !== "resource-unavailable" ||
-    applied.failure.seq !== 1
+    failSeq == null ||
+    !seqs.includes(failSeq)
   )
     problems.push(
-      `the receiver's failure is ${JSON.stringify(applied?.failure ?? null)}, expected resource-unavailable at seq 1`,
+      `the receiver's failure is ${JSON.stringify(applied?.failure ?? null)}, expected resource-unavailable at seq 1${seqs.length > 1 ? ` or ${seqs[1]} (the apply seq 1 was folded into)` : ""}`,
     );
   return check(
     "no-cors-withheld",
-    "sabotage-no-cors (G7l): with every Access-Control-* header omitted, the host still served the receiver's GET (http-get 200 in its hook log), and the browser withheld it: the receiver fails resource-unavailable at seq 1",
+    "sabotage-no-cors (G7l): with every Access-Control-* header omitted, the host still served the receiver's GET (http-get 200 in its hook log), and the browser withheld it: the receiver fails resource-unavailable at seq 1 (or, G7lw, at the seq its applied.json says seq 1 was folded into)",
     problems,
     `${served.length} GET(s) served (${gets.length} logged); receiver ${applied?.failure?.reason} at seq ${applied?.failure?.seq}`,
     [

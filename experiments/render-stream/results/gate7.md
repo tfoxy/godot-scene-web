@@ -346,7 +346,10 @@ memory-cache entries, rss-bounded-renderer, wasm-heap-bounded}, GSW `leak-gl-tex
 - **g7-2 web `live-vs-reference`** (G8f's report, 252/61/512/512 px off-by-one in two 32×32
   texture regions at steps 4 and 6–9; owner **G7lw**): passed in this run at load 2.6–3.7 (every
   live leg 12/12 shots), consistent with it being contention-dependent; not disproven. No
-  manifest entry changes on it, because the run quoted passed.
+  manifest entry changes on it, because the run quoted passed. **Closed by [G7lw](gate7/g7lw.md):**
+  those pixels are the exact view, the constant Q7 band (byte-identical in this run). The failure
+  under load was `leg-class-sabotage-wrong-hash-live` / `-drop-resource` / `no-cors-withheld` at
+  the seq the failing transaction was folded into (credit window 2), now judged fold-exact.
 - **g7-lc `sabotage-ack-while-hidden@gsw`**: one load-sensitive extra row (`host-unperturbed`,
   +14.9 % at load 9–12) on the first run; exact on the one rerun at low load.
 - **Harness, fixed in G7z**: a gate 6 view wrote into its read-only source (EACCES), and a device

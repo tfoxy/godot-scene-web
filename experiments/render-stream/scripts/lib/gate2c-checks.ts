@@ -229,6 +229,20 @@ export function appliedAs(
   );
 }
 
+/** G7lw: the seqs a receiver may report a failure at when the transaction that hit it was `want`
+ * (stream 1): `want` itself, or at credit window 2 the later seq its own applied.json says `want`
+ * was folded into (receiver.gd's `_mark_coalesced` attributes a fold's fetches and failures to the
+ * apply, G7q). Fold-exact: no other seq, and a fold the receiver did not log does not count. */
+export function failureSeqs(
+  txs: readonly G2cTransaction[],
+  want: number | undefined,
+): number[] {
+  if (want === undefined) return [];
+  const t = txs.find((x) => (x.stream ?? 1) === 1 && x.seq === want);
+  const as = appliedAs(txs, t)?.seq;
+  return as !== undefined && as !== want ? [want, as] : [want];
+}
+
 export interface G2cApplied {
   schema?: string;
   mode?: string;
@@ -2240,9 +2254,12 @@ export async function runG2c(
       const want = host.connections[0]?.tap.recording?.transactions.find((t) =>
         okImageHashes(t).has(a1 ?? ""),
       )?.seq;
-      if (failure?.seq !== want)
+      // G7lw: at credit window 2 a slow poll can fold `want` into the next seq; the receiver
+      // then fails at the apply it was folded into (its own applied.json says which).
+      const seqs = failureSeqs(ev.e.applied?.transactions ?? [], want);
+      if (failure?.seq == null || !seqs.includes(failure.seq))
         extra.push(
-          `receiver failure at seq ${failure?.seq}, expected seq ${want} (the first naming A1)`,
+          `receiver failure at seq ${failure?.seq}, expected seq ${want} (the first naming A1)${seqs.length > 1 ? ` or ${seqs[1]} (the apply it was folded into)` : ""}`,
         );
       const dropped =
         host.serving?.dropped_hash ?? host.serving?.corrupted_hash;
