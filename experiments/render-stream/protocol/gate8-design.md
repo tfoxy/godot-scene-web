@@ -366,6 +366,30 @@ Decisions taken where this section left room, each the long-term option:
   (results/gate8/g8sha.md) moved the hash to SHA-NI: ~48.5 -> ~8.4 ms, now the smallest of
   decode, copy and hash for every format.
 
+### As built (G8f)
+
+The wire and receiver facts are in [render-stream-8.md](render-stream-8.md) "As built (G8f)". The
+design choices taken here:
+
+- **Opt-in formats, not a /8 default.** Floats come in through `GRC_RESOURCE_FORMATS`, which a /6
+  sink already refuses; the defaults stay the six 8-bit formats so no existing capture changes.
+- **HDR decodes need their target permitted.** BC6H and ASTC-HDR decode to `RGBH`/`RGBAH`, and a
+  decode the policy would refuse is skipped, not run and thrown away.
+- **GSW quantization is rs-core's** (`texture_rgba8`), with the rule spelled out and shared vectors;
+  nothing reached `packages/canvas`, so the browsers' float path (and the `float-texture-quantized`
+  caveat in their reports) stays G8g's. The design's "GSW within its band" half of `float-exact` is
+  therefore G8g's too: here `float-exact` is the native receivers against the reference, exact.
+- **Fixture.** `fixtures/gate8-tex/gate8_float.gd` (its own scene, expected-float.json): STS2's
+  case, small float textures as shader inputs. Engine curve, curve-XYZ and HDR gradient textures
+  (deferred update, `texture_replace` on a width change, `texture_2d_update` on a curve change) and
+  seven float images of every other format built and uploaded on a loader `Thread`, ImageTexture
+  updates, plus the imported EXR's BC6H and ASTC-HDR decodes. The independent oracle is the fixture's
+  own GDScript-side payload (`Curve.sample_baked`, `Gradient.sample`, the images it
+  built, its own `Image.decompress`) hashed by payload.gd.
+- **Checks:** `float-oracle`, `float-census`, `float-wire`, `float-default-refused`,
+  `float-v6-refused`, `float-workers` (G8kw, floats on workers), `float-exact` and the
+  `sabotage-perturb-decode` leg. See results/gate8/g8f.md.
+
 ## Q4. Host size at a late arm (blocker 3)
 
 **Behaviour.** With `GRC_ROOT_SIZE=presentation:<W>x<H>` and a late arm, the capture calls

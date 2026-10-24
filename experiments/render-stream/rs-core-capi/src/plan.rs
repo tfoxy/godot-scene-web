@@ -110,12 +110,14 @@ pub enum Library {
 pub struct Payloads<'a> {
     pub provided: &'a HashMap<Hash, Vec<u8>>,
     pub library: &'a HashMap<String, Library>,
+    /// The stream's wire version: from /8 a texture payload may be a float format (D9).
+    pub version: u8,
 }
 
 impl Payloads<'_> {
     fn texture(&self, h: &Hash) -> Result<TexturePayload<'_>, String> {
         let bytes = self.provided.get(h).ok_or_else(|| missing(h))?;
-        payload::decode_texture(bytes)
+        payload::decode_texture_v(bytes, self.version)
             .map_err(|e| format!("resource-invalid: {} {}", h.to_hex(), e))
     }
     fn mesh(&self, h: &Hash) -> Result<MeshPayload<'_>, String> {
@@ -137,8 +139,8 @@ fn missing(h: &Hash) -> String {
     )
 }
 
-/// `IMAGE_FORMATS` (rs_texture_payload.gd): Image.Format for the six permitted formats, else -1
-/// (make_image() returns null).
+/// `IMAGE_FORMATS` (rs_texture_payload.gd): Image.Format for the six permitted formats and, from
+/// /8, the eight float formats (G8f, `core/io/image.h:75-114`), else -1 (make_image() returns null).
 fn image_format(name: &str) -> i32 {
     match name {
         "L8" => 0,
@@ -147,6 +149,14 @@ fn image_format(name: &str) -> i32 {
         "RG8" => 3,
         "RGB8" => 4,
         "RGBA8" => 5,
+        "RF" => 8,
+        "RGF" => 9,
+        "RGBF" => 10,
+        "RGBAF" => 11,
+        "RH" => 12,
+        "RGH" => 13,
+        "RGBH" => 14,
+        "RGBAH" => 15,
         _ => -1,
     }
 }

@@ -35,7 +35,8 @@ const char *image_format_name(std::int64_t format);
 std::int64_t image_format_from_name(const std::string &name);
 
 // Bytes per pixel of the formats a payload may carry (L8 1, LA8 2, R8 1, RG8 2,
-// RGB8 3, RGBA8 4); 0 for every other format.
+// RGB8 3, RGBA8 4; G8f, at /8 only: RF 4, RGF 8, RGBF 12, RGBAF 16, RH 2, RGH 4, RGBH 6,
+// RGBAH 8); 0 for every other format.
 int payload_pixel_size(std::int64_t format);
 
 // Godot's data size for the shape (core/io/image.cpp:1700-1745): pixel size

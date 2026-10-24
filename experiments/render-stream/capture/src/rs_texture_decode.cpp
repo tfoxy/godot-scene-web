@@ -16,19 +16,25 @@ namespace {
 constexpr std::int64_t kR8 = 2;
 constexpr std::int64_t kRG8 = 3;
 constexpr std::int64_t kRGBA8 = 5;
+constexpr std::int64_t kRGBH = 14;
+constexpr std::int64_t kRGBAH = 15;
 constexpr std::int64_t kDXT1 = 17;
 constexpr std::int64_t kDXT3 = 18;
 constexpr std::int64_t kDXT5 = 19;
 constexpr std::int64_t kRGTC_R = 20;
 constexpr std::int64_t kRGTC_RG = 21;
 constexpr std::int64_t kBPTC_RGBA = 22;
+constexpr std::int64_t kBPTC_RGBF = 23;
+constexpr std::int64_t kBPTC_RGBFU = 24;
 constexpr std::int64_t kETC = 25;
 constexpr std::int64_t kETC2_R11 = 26;
 constexpr std::int64_t kETC2_RG11 = 28;
 constexpr std::int64_t kETC2_RGB8 = 30;
 constexpr std::int64_t kETC2_RGBA8 = 31;
 constexpr std::int64_t kASTC_4x4 = 35;
+constexpr std::int64_t kASTC_4x4_HDR = 36;
 constexpr std::int64_t kASTC_8x8 = 37;
+constexpr std::int64_t kASTC_8x8_HDR = 38;
 
 std::atomic<bool> g_enabled{false};
 std::atomic<std::uint64_t> g_perturb_frame{0};
@@ -182,8 +188,16 @@ std::int64_t decode_target_format(std::int64_t source) {
     case kASTC_4x4:
     case kASTC_8x8:
       return kRGBA8;
+    // G8f: the HDR formats decode to half floats, carried exact (D9): BC6H signed and unsigned to
+    // RGBH (image_decompress_bcdec.cpp:248-256), ASTC HDR to RGBAH (image_compress_astcenc.cpp:232)
+    case kBPTC_RGBF:
+    case kBPTC_RGBFU:
+      return kRGBH;
+    case kASTC_4x4_HDR:
+    case kASTC_8x8_HDR:
+      return kRGBAH;
     default:
-      // BPTC_RGBF/RGBFU and ASTC_*_HDR decode to half floats (G8f); DXT5_RA_AS_RG and
+      // DXT5_RA_AS_RG and
       // ETC2_RA_AS_RG are swizzled further by GLES3 (D8 "Stays unsupported"); etcpak has no
       // decoder for ETC2_R11S, ETC2_RG11S or ETC2_RGB8A1; nothing else is block-compressed.
       return -1;
@@ -216,7 +230,14 @@ DecodeResult texture_decode(const DecodeRequest &request) {
   if (perturb != 0 && request.frame >= perturb) {
     auto flipped = std::make_shared<std::vector<std::uint8_t>>(
         decoded.data, decoded.data + decoded.data_size);
-    (*flipped)[0] = static_cast<std::uint8_t>((*flipped)[0] ^ 0xff);
+    // G8f: a float texel's first channel is flipped whole (4 bytes of an f32, 2 of a half), so
+    // the change is a sign and exponent one, never a mantissa ripple a clamp could hide.
+    const std::int64_t flip = decoded.format >= 8 && decoded.format <= 11
+                                  ? 4
+                                  : (decoded.format >= 12 && decoded.format <= 15 ? 2 : 1);
+    for (std::int64_t i = 0; i < flip && i < decoded.data_size; ++i) {
+      (*flipped)[i] = static_cast<std::uint8_t>((*flipped)[i] ^ 0xff);
+    }
     decoded.data = flipped->data();
     decoded.hold = flipped;
     result.perturbed = true;

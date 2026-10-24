@@ -1,4 +1,4 @@
-# Gate 8 texture fixture (`gate8-tex`, G8t)
+# Gate 8 texture fixture (`gate8-tex`, G8t and G8f)
 
 The fixture for gate 8's host decode of block-compressed textures
 ([`../../protocol/gate8-design.md`](../../protocol/gate8-design.md) D8, "Q3. Compressed and float
@@ -75,3 +75,29 @@ decoders and their outputs: `modules/bcdec/image_decompress_bcdec.cpp:224-267`,
 **Not produced by the 4.5.1 importer, so not in the fixture:** DXT3, ETC (ETC1), ASTC_8x8,
 ETC2_R11S/RG11S/RGB8A1 and the `*_RA_AS_RG` swizzles. The capture's decode table still names DXT3,
 ETC and ASTC_8x8 (same decoders, RGBA8 output); the other five stay `unsupported-format`.
+
+## The float scene (G8f)
+
+`gate8_float.tscn` / `gate8_float.gd` is a second main scene of the same project, run by
+`run-gate8.sh`'s `g8f` group (`expected-float.json`, `render-stream-gate8-float-expected/1`). It models
+STS2's float textures (gate8-design.md Q1e, D9): small curve and gradient textures, mostly made on
+loader threads, used as shader inputs. Thirteen float textures, all created after arm:
+
+| texture | made by | format and shape |
+| ------- | ------- | ---------------- |
+| `curve_rf`, `curve_rgb`, `curve_xyz` | `CurveTexture` (RED, RGB), `CurveXYZTexture`, main thread, deferred update | RF, RGBF, RGBF, 256x1 |
+| `grad_hdr` | `GradientTexture1D` `use_hdr`, main thread | RGBAF 256x1, then 192x1 (create + replace) |
+| `img_rgf`, `img_rh`, `img_rgh`, `img_rgbh`, `img_rgbah`, `img_rgbaf_mip`, `img_rf_odd` | images built and uploaded on a loader `Thread` | RGF, RH, RGH, RGBH, RGBAH 16x16; RGBAF 16x16 + 5 mips; RF 5x3 + 2 mips |
+| `hdr_bptc`, `hdr_astc` | the imported `hdr.exr` (desktop BPTC_RGBFU, mobile ASTC_4x4_HDR) | decoded to RGBH and RGBAH 16x16 |
+
+Every texture is the `src` uniform of a `ColorRect` with a small canvas_item shader (nearest,
+clamped); `img_rgbah`, `img_rgbh`, `hdr_astc` and `hdr_bptc` are also drawn by a `Sprite2D`. Step 1
+(frame 11) changes the curves (`texture_2d_update` of the float image), re-creates the gradient at
+width 192 (`texture_replace`) and `ImageTexture.update`s `img_rh` and `img_rgbah`.
+
+The fixture is its own oracle (`textures.jsonl`): it logs the GRT1 payload hash it expects for each
+texture and step, from values it computes itself (`Curve.sample_baked`, `Gradient.sample`, the images
+it built, `Image.decompress` of the imported EXR in a headless run). `RS_FIXTURE_HDR_DUMP` writes
+those two decoded half-float payloads; the rendered `reference` reads them back
+(`RS_FIXTURE_SOURCE=decoded`, `RS_FIXTURE_DECODED_DIR`) because a rendered GLES3 run's own
+`CompressedTexture2D.get_image()` is not the creation-time image (desktop cannot sample ASTC HDR).

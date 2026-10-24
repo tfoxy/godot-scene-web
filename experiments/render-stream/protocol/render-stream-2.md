@@ -328,7 +328,8 @@ data       data_bytes raw bytes: the Image's data exactly (Image::ptr(), Image::
 - `data_bytes` must equal Godot's size for that shape (`core/io/image.cpp:1700-1745`). For the
   permitted uncompressed formats this is the pixel size times the sum, over the mip chain, of
   `w·h`. The chain halves each dimension with a floor of 1 until both reach 1, and it is level 0
-  alone without mipmaps. Pixel sizes: L8 1, LA8 2, R8 1, RG8 2, RGB8 3, RGBA8 4. Any other
+  alone without mipmaps. Pixel sizes: L8 1, LA8 2, R8 1, RG8 2, RGB8 3, RGBA8 4 (render-stream/8
+  adds the float formats, [render-stream-8.md](render-stream-8.md) "Texture payload"). Any other
   difference is `payload-size`.
 - Format names are Godot's `Image.Format` identifiers without `FORMAT_`, in enum order
   (`core/io/image.h:75-114`): `L8 LA8 R8 RG8 RGB8 RGBA8 RGBA4444 RGB565 RF RGF RGBF RGBAF RH RGH

@@ -80,8 +80,44 @@ pub const ARRAY_FORMAT_CUSTOM0: i64 = 1 << 6;
 pub const ARRAY_FORMAT_INDEX: i64 = 1 << 12;
 pub const ARRAY_FLAG_COMPRESS_ATTRIBUTES: i64 = 1 << 29;
 
-/// Straight RGBA8 from an uncompressed permitted format's level 0 (render-stream-2.md "Texture
-/// payload"): L8 → (l,l,l,1), LA8 → (l,l,l,a), R8 → (r,0,0,1), RG8 → (r,g,0,1), RGB8 → (r,g,b,1).
+/// The IEEE-754 binary16 value of `h` as an `f32`, exactly (every half is representable).
+pub fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0f32 } else { 1.0f32 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let frac = (h & 0x03ff) as f32;
+    if exp == 0 {
+        // zero or subnormal: frac * 2^-24
+        sign * frac * (1.0 / 16_777_216.0)
+    } else if exp == 31 {
+        if frac == 0.0 {
+            sign * f32::INFINITY
+        } else {
+            f32::NAN
+        }
+    } else {
+        sign * (1.0 + frac / 1024.0) * (2.0f32).powi(exp - 15)
+    }
+}
+
+/// The unorm8 a float channel quantizes to for a receiver that cannot sample float (gate8-design.md
+/// D9, render-stream-8.md "As built (G8f)"): NaN is 0; any other value is clamped to [0, 1]
+/// (so +-infinity and everything outside become 1 and 0); then `floor(fl32(fl32(c * 255) + 0.5))`,
+/// that is round-half-up in single precision. No sRGB conversion: the value is taken as stored.
+pub fn quantize_unorm8(v: f32) -> u8 {
+    if v.is_nan() {
+        return 0;
+    }
+    let c = v.clamp(0.0, 1.0);
+    let scaled: f32 = c * 255.0;
+    let biased: f32 = scaled + 0.5;
+    biased.floor() as u8
+}
+
+/// Straight RGBA8 from a permitted format's level 0 (render-stream-2.md "Texture payload"):
+/// L8 -> (l,l,l,1), LA8 -> (l,l,l,a), R8 -> (r,0,0,1), RG8 -> (r,g,0,1), RGB8 -> (r,g,b,1). From
+/// /8 the float formats too (D9): RF, RGF, RGBF, RGBAF, RH, RGH, RGBH, RGBAH map their channels the
+/// way R8, RG8, RGB8 and RGBA8 do (a missing G or B is 0, a missing alpha is 1), each channel
+/// little-endian IEEE-754 (halves widened exactly first) and quantized by [`quantize_unorm8`].
 pub fn texture_rgba8(
     format: &str,
     width: u32,
@@ -89,13 +125,23 @@ pub fn texture_rgba8(
     data: &[u8],
 ) -> Result<TexturePixels, String> {
     let n = width as usize * height as usize;
-    let px = match format {
-        "L8" | "R8" => 1,
-        "LA8" | "RG8" => 2,
-        "RGB8" => 3,
-        "RGBA8" => 4,
+    // (bytes per channel, channels): 1 byte = unorm8, 2 = half, 4 = f32
+    let (bpc, channels) = match format {
+        "L8" | "R8" => (1, 1),
+        "LA8" | "RG8" => (1, 2),
+        "RGB8" => (1, 3),
+        "RGBA8" => (1, 4),
+        "RF" => (4, 1),
+        "RGF" => (4, 2),
+        "RGBF" => (4, 3),
+        "RGBAF" => (4, 4),
+        "RH" => (2, 1),
+        "RGH" => (2, 2),
+        "RGBH" => (2, 3),
+        "RGBAH" => (2, 4),
         other => return Err(format!("texture format {other} has no RGBA8 conversion")),
     };
+    let px = bpc * channels;
     if data.len() < n * px {
         return Err(format!(
             "texture data {} bytes < {}×{}×{px}",
@@ -106,6 +152,30 @@ pub fn texture_rgba8(
     }
     let mut rgba = Vec::with_capacity(4 * n);
     let src = &data[..n * px];
+    if bpc > 1 {
+        let channel = |c: &[u8]| -> u8 {
+            if bpc == 2 {
+                quantize_unorm8(half_to_f32(u16::from_le_bytes([c[0], c[1]])))
+            } else {
+                quantize_unorm8(f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            }
+        };
+        for p in src.chunks_exact(px) {
+            let mut v = [0u8, 0, 0, 255];
+            for (i, c) in p.chunks_exact(bpc).enumerate() {
+                v[i] = channel(c);
+            }
+            rgba.extend_from_slice(&v);
+        }
+        return Ok(TexturePixels {
+            width,
+            height,
+            rgba,
+            format: format.to_string(),
+            mipmaps: false,
+            data_len: data.len(),
+        });
+    }
     match format {
         "RGBA8" => rgba.extend_from_slice(src),
         "RGB8" => {
@@ -143,6 +213,7 @@ pub fn texture_rgba8(
         data_len: data.len(),
     })
 }
+
 
 /// Mesh geometry from a GRM1 surface's decoded buffers.
 pub fn mesh_geometry(
@@ -395,7 +466,9 @@ pub fn verify_decode(
     version: u8,
     verify: bool,
 ) -> Result<Decoded, crate::wire::Error> {
-    use crate::payload::{decode_mesh, decode_shader, decode_texture, payload_kind, PayloadKind};
+    use crate::payload::{
+        decode_mesh, decode_shader, decode_texture_v, payload_kind, PayloadKind,
+    };
     use crate::prof;
     let t = prof::start();
     if verify {
@@ -416,7 +489,13 @@ pub fn verify_decode(
     let bad = |e: String| crate::wire::Error::new("resource-payload", e);
     let d = match payload_kind(bytes, version) {
         PayloadKind::Texture => {
-            let t = decode_texture(bytes)?;
+            let t = decode_texture_v(bytes, version)?;
+            if version < 8 && crate::payload::float_pixel_size(&t.format).is_some() {
+                return Err(bad(format!(
+                    "texture format {} is a float format, legal at /8 only",
+                    t.format
+                )));
+            }
             let mut px =
                 texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data).map_err(bad)?;
             px.mipmaps = t.mipmaps;
@@ -606,6 +685,160 @@ mod tests {
         b.extend_from_slice(&8u32.to_le_bytes());
         b.extend_from_slice(&px);
         b
+    }
+
+    /// A float GRT1 payload of `format` (width x 1) over `data`.
+    fn grt1_float(format: &str, width: u32, data: &[u8]) -> Vec<u8> {
+        let meta = format!(
+            r#"{{"type":"texture-2d","format":"{format}","width":{width},"height":1,"mipmaps":false,"data_bytes":{}}}"#,
+            data.len()
+        );
+        let mut b = crate::payload::GRT1_MAGIC.to_vec();
+        b.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        b.extend_from_slice(meta.as_bytes());
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    fn f32_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn half_floats_widen_exactly() {
+        assert_eq!(half_to_f32(0x0000), 0.0);
+        assert!(half_to_f32(0x8000).is_sign_negative() && half_to_f32(0x8000) == 0.0);
+        assert_eq!(half_to_f32(0x3c00), 1.0);
+        assert_eq!(half_to_f32(0xc000), -2.0);
+        assert_eq!(half_to_f32(0x3800), 0.5);
+        assert_eq!(half_to_f32(0x7bff), 65504.0);
+        assert_eq!(half_to_f32(0x0001), 2.0f32.powi(-24)); // the smallest subnormal
+        assert_eq!(half_to_f32(0x0400), 2.0f32.powi(-14)); // the smallest normal
+        assert_eq!(half_to_f32(0x7c00), f32::INFINITY);
+        assert_eq!(half_to_f32(0xfc00), f32::NEG_INFINITY);
+        assert!(half_to_f32(0x7e00).is_nan());
+        // every half but NaN round-trips through f32 to the same value: spot-check the grid
+        for h in (0u16..0x7c00).step_by(97) {
+            let want = (h >> 10) as i32;
+            let v = half_to_f32(h);
+            assert!(v >= 0.0 && (want == 0 || v >= 2.0f32.powi(want - 15)));
+        }
+    }
+
+    /// D9's rule, value by value: NaN 0, clamp to [0,1], floor(c*255 + 0.5) in single precision.
+    #[test]
+    fn float_channels_quantize_by_the_documented_rule() {
+        let q = quantize_unorm8;
+        assert_eq!(q(f32::NAN), 0);
+        assert_eq!(q(f32::NEG_INFINITY), 0);
+        assert_eq!(q(f32::INFINITY), 255);
+        assert_eq!(q(-0.0), 0);
+        assert_eq!(q(-3.5), 0);
+        assert_eq!(q(0.0), 0);
+        assert_eq!(q(1.0), 255);
+        assert_eq!(q(2.0), 255);
+        assert_eq!(q(65504.0), 255);
+        assert_eq!(q(0.5), 128); // 127.5 rounds half up
+        assert_eq!(q(1.0 / 255.0), 1);
+        assert_eq!(q(0.5 / 255.0), 1); // exactly half rounds up (0.5/255*255 = 0.5 in f32)
+        assert_eq!(q(0.499 / 255.0), 0);
+        assert_eq!(q(254.5 / 255.0), 255);
+        assert_eq!(q(254.4 / 255.0), 254);
+        assert_eq!(q(0.2), 51);
+        assert_eq!(q(1e-30), 0); // a tiny positive
+        // monotone over a dense ramp, and the ends are exact
+        let mut last = 0u8;
+        for i in 0..=1000 {
+            let v = q(i as f32 / 1000.0);
+            assert!(v >= last);
+            last = v;
+        }
+        assert_eq!(last, 255);
+    }
+
+    #[test]
+    fn float_formats_convert_to_straight_rgba8() {
+        // RF: (r,0,0,1); the second pixel is out of range and clamps.
+        let rf = texture_rgba8("RF", 2, 1, &f32_bytes(&[0.5, 7.0])).unwrap();
+        assert_eq!(rf.rgba, vec![128, 0, 0, 255, 255, 0, 0, 255]);
+        // RGF: (r,g,0,1)
+        let rgf = texture_rgba8("RGF", 1, 1, &f32_bytes(&[1.0, -1.0])).unwrap();
+        assert_eq!(rgf.rgba, vec![255, 0, 0, 255]);
+        // RGBF: (r,g,b,1)
+        let rgbf = texture_rgba8("RGBF", 1, 1, &f32_bytes(&[0.0, 0.5, f32::NAN])).unwrap();
+        assert_eq!(rgbf.rgba, vec![0, 128, 0, 255]);
+        // RGBAF: alpha is quantized like a colour channel, straight
+        let rgbaf = texture_rgba8("RGBAF", 1, 1, &f32_bytes(&[0.2, 4.0, 0.0, 0.5])).unwrap();
+        assert_eq!(rgbaf.rgba, vec![51, 255, 0, 128]);
+        // The half family: 0x3800 = 0.5, 0x3c00 = 1.0, 0x0000, 0xbc00 = -1
+        let h = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+        assert_eq!(texture_rgba8("RH", 1, 1, &h(&[0x3800])).unwrap().rgba, vec![128, 0, 0, 255]);
+        assert_eq!(
+            texture_rgba8("RGH", 1, 1, &h(&[0x3c00, 0xbc00])).unwrap().rgba,
+            vec![255, 0, 0, 255]
+        );
+        assert_eq!(
+            texture_rgba8("RGBH", 1, 1, &h(&[0x3c00, 0x3800, 0x7c00])).unwrap().rgba,
+            vec![255, 128, 255, 255]
+        );
+        assert_eq!(
+            texture_rgba8("RGBAH", 1, 1, &h(&[0x3800, 0x3c00, 0x0000, 0x3800])).unwrap().rgba,
+            vec![128, 255, 0, 128]
+        );
+        // short data is refused, as for the 8-bit formats
+        assert!(texture_rgba8("RGBAF", 2, 1, &[0u8; 31]).is_err());
+        // a format with no conversion still has none
+        assert!(texture_rgba8("RGBE9995", 1, 1, &[0u8; 4]).is_err());
+    }
+
+    /// The shared vectors (protocol/golden-8/float-quantize.json), produced by the checker's own
+    /// TypeScript implementation of the rule: both must give every byte.
+    #[test]
+    fn quantization_matches_the_independent_vectors() {
+        let text = include_str!("../../../protocol/golden-8/float-quantize.json");
+        let field = |chunk: &str, key: &str| -> String {
+            let k = format!("\"{key}\": ");
+            let at = chunk.find(&k).unwrap_or_else(|| panic!("no {key}")) + k.len();
+            let rest = &chunk[at..];
+            let rest = rest.trim_start_matches('"');
+            rest.split(['"', ',', '\n']).next().unwrap().trim().to_string()
+        };
+        let unhex = |h: &str| -> Vec<u8> {
+            (0..h.len() / 2)
+                .map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap())
+                .collect()
+        };
+        let mut n = 0;
+        for chunk in text.split("\"name\": ").skip(1) {
+            let format = field(chunk, "format");
+            let width: u32 = field(chunk, "width").parse().unwrap();
+            let height: u32 = field(chunk, "height").parse().unwrap();
+            let data = unhex(&field(chunk, "data_hex"));
+            let want = unhex(&field(chunk, "rgba_hex"));
+            let got = texture_rgba8(&format, width, height, &data).unwrap();
+            assert_eq!(got.rgba, want, "{format} {}", field(chunk, "name"));
+            n += 1;
+        }
+        assert_eq!(n, 8, "one vector per float format");
+    }
+
+    #[test]
+    fn a_float_payload_is_legal_at_v8_only() {
+        let data = f32_bytes(&[0.25, 0.5, 0.75]);
+        let bytes = grt1_float("RF", 3, &data);
+        let hash = crate::wire::sha256(&bytes);
+        match verify_decode(&bytes, &hash, 8, true).unwrap() {
+            Decoded::Texture(t) => {
+                assert_eq!(t.format, "RF");
+                assert_eq!(t.rgba, vec![64, 0, 0, 255, 128, 0, 0, 255, 191, 0, 0, 255]);
+            }
+            _ => panic!("a texture"),
+        }
+        for v in [6u8, 7] {
+            let e = verify_decode(&bytes, &hash, v, true).unwrap_err();
+            assert_eq!(e.code, "resource-payload", "/{v}");
+        }
     }
 
     #[test]

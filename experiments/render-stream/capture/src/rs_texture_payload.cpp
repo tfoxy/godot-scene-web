@@ -55,6 +55,25 @@ int payload_pixel_size(std::int64_t format) {
       return 3;
     case 5:  // RGBA8
       return 4;
+    // G8f (gate8-design.md D9): the float formats, Godot's pixel sizes (core/io/image.cpp:1700-1745).
+    // They are payload formats at /8 only; the capture admits them solely through
+    // GRC_RESOURCE_FORMATS, which a /6 file sink refuses (rs_gate8_policy).
+    case 8:   // RF
+      return 4;
+    case 9:   // RGF
+      return 8;
+    case 10:  // RGBF
+      return 12;
+    case 11:  // RGBAF
+      return 16;
+    case 12:  // RH
+      return 2;
+    case 13:  // RGH
+      return 4;
+    case 14:  // RGBH
+      return 6;
+    case 15:  // RGBAH
+      return 8;
     default:
       return 0;
   }
@@ -130,7 +149,8 @@ bool parse_format_policy(const char *value, FormatPolicy *out, std::string *erro
     const std::int64_t format = image_format_from_name(name);
     if (format < 0 || payload_pixel_size(format) == 0) {
       *error = "GRC_RESOURCE_FORMATS: \"" + name +
-               "\" is not one of L8, LA8, R8, RG8, RGB8, RGBA8 (the 8-bit uncompressed formats)";
+               "\" is not one of L8, LA8, R8, RG8, RGB8, RGBA8 (the 8-bit uncompressed formats) or "
+               "RF, RGF, RGBF, RGBAF, RH, RGH, RGBH, RGBAH (the float formats, render-stream/8)";
       return false;
     }
     if (!out->permitted[format]) {

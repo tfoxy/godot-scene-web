@@ -749,7 +749,10 @@ struct OpReader {
 };
 
 // Image.create_from_data(w, h, mipmaps, format, data) as an owned Object* (nullptr for a format
-// that is not one of the six: RsTexturePayload.make_image() returns null then).
+// the core did not code: -1, i.e. none of the six 8-bit formats and, from /8, the eight float
+// formats RF RGF RGBF RGBAF RH RGH RGBH RGBAH, whose Image.Format values 8-15 the core sends as is
+// (G8f, gate8-design.md D9). The engine's own GLES3 upload then applies its float rules: 32-bit
+// floats become halves where OES_texture_float_linear is missing.)
 GDExtensionObjectPtr make_image(OpReader &r) {
   int64_t format = static_cast<int32_t>(r.u());
   int64_t width = r.i64();

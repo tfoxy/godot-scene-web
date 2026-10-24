@@ -44,6 +44,16 @@
 #       `late-observe` (late without the policy: the degenerate control) and the sabotage
 #       size-before-adopt under skip and under strict; then, rendered at 640x360, the unarmed
 #       `reference` the native receiver on born, late (full and patch sinks), the sabotage and the observe control.
+#   g8f (G8f, D9: float texture payloads end to end, fixtures/gate8-tex's gate8_float scene; every leg
+#       under g8f/): STS2's small curve, gradient and loader-thread image textures as shader inputs.
+#       The import (shared with g8t), then headless /8 captures under GRC_TEXTURE_DECODE=engine with
+#       every float format in GRC_RESOURCE_FORMATS (`capture`, both sinks and the store), the same
+#       with every copy on a texture worker (`workers/capture`), the default-formats control
+#       (`capture-default`: floats stay refused), a /6 sink asking for floats (`refused-v6`) and the
+#       perturb-decode sabotage; then, rendered, the `reference` (the hdr textures as the fixture's own
+#       headless Image.decompress wrote them) and the native receiver on the full sink, the patch sink and the
+#       sabotage capture.
+#
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -64,9 +74,9 @@ set -euo pipefail
 
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
-# Groups whose increment has landed, in run order (G8f, G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h)
-KNOWN_GROUPS=(g8t g8a g8h)
+# Groups whose increment has landed, in run order (G8r, G8m add theirs).
+LANDED_GROUPS=(g8t g8a g8h g8f)
+KNOWN_GROUPS=(g8t g8a g8h g8f)
 
 EXTENSION=""
 CALIBRATION=""
@@ -507,9 +517,69 @@ run_g8h() {
 	GS_RUN_DIR=""
 }
 
+# ------------------------------------------------------------------------------------- g8f
+G8F_SCENE="res://gate8_float.tscn"
+G8F_FLOATS=RF,RGF,RGBF,RGBAF,RH,RGH,RGBH,RGBAH
+G8F_ENV=(GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=engine
+	"GRC_RESOURCE_FORMATS=L8,LA8,R8,RG8,RGB8,RGBA8,$G8F_FLOATS")
+
+# run_capture_g8f <dir> <env word...>: a headless capture of the float scene, its texture log
+# (the fixture's independent expected payloads) beside it.
+run_capture_g8f() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" RS_FIXTURE_HDR_DUMP="$dir/hdr")
+	run_capture "$dir" "" none "$G8F_SCENE"
+}
+
+run_g8f() {
+	# the hdr textures need the editor import (g8t's), once per out dir
+	if [ ! -f "$OUT/import/fixture/exit-code.txt" ]; then
+		run_import_g8t
+	fi
+	echo "run-gate8: g8f capture (/8, decode engine, every float format permitted)"
+	run_capture_g8f "$OUT/g8f/capture" "${G8F_ENV[@]}"
+	echo "run-gate8: g8f workers/capture (the same, every copy on a texture worker, held back)"
+	run_capture_g8f "$OUT/g8f/workers/capture" "${G8F_ENV[@]}" "${G8T_WORKERS_ENV[@]}"
+	echo "run-gate8: g8f capture-default (/8, decode engine, default formats: floats stay refused)"
+	run_capture_g8f "$OUT/g8f/capture-default" "${G8T_DECODE_ENV[@]}"
+	echo "run-gate8: g8f refused-v6 (a /6 sink asking for float formats: policy-needs-v8)"
+	RECORDING_NAME=recording.rs2
+	PATCH_RECORDING_NAME=recording-patch.rs2
+	run_capture_g8f "$OUT/g8f/refused-v6" "GRC_RESOURCE_FORMATS=L8,LA8,R8,RG8,RGB8,RGBA8,$G8F_FLOATS"
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+	echo "run-gate8: g8f sabotage-perturb-decode (capture, from frame 1)"
+	run_capture_g8f "$OUT/g8f/sabotage-perturb-decode/capture" "${G8F_ENV[@]}" \
+		GRC_SABOTAGE=perturb-decode GRC_SABOTAGE_FRAME=1
+
+	echo "run-gate8: bringing up private gamescope for g8f's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8f"
+	legs_par_begin
+	echo "run-gate8: g8f reference (hdr decompressed by the fixture, plain textures)"
+	mkdir -p "$OUT/g8f/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8f/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8f/reference/steps.jsonl"
+		RS_FIXTURE_TEXTURE_LOG="$OUT/g8f/reference/textures.jsonl" RS_FIXTURE_SOURCE=decoded
+		RS_FIXTURE_DECODED_DIR="$OUT/g8f/capture/hdr")
+	RENDERED_EXTRA_ARGS=("$G8F_SCENE")
+	run_rendered "$OUT/g8f/reference" "$FIXTURE_DIR"
+	echo "run-gate8: g8f receiver"
+	run_rendered_receiver "$OUT/g8f/capture" "$OUT/g8f/receiver"
+	echo "run-gate8: g8f receiver-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8f/capture" "$OUT/g8f/receiver-patch"
+	echo "run-gate8: g8f sabotage-perturb-decode (receiver)"
+	run_rendered_receiver "$OUT/g8f/sabotage-perturb-decode/capture" "$OUT/g8f/sabotage-perturb-decode/receiver"
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8f"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8t) run_g8t ;;
+	g8f) run_g8f ;;
 	g8a) run_g8a ;;
 	g8h) run_g8h ;;
 	esac

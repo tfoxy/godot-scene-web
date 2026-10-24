@@ -1,0 +1,132 @@
+{
+  "schema": "render-stream-gate8-float-expected/1",
+  "doc": "Hand-derived from the fixture's scene and the 4.5.1 engine (gate8_float.gd header), not measured: per texture the float payload format, shape and kind the capture must publish. Step 0 is frame 1, step 1 frame 11 (curves and images updated, the gradient re-created at width 192, texture_replace). The two hdr entries are the imported EXR's BPTC_RGBFU and ASTC_4x4_HDR host-decoded to half floats (bcdec image_decompress_bcdec.cpp:248-256, astcenc image_compress_astcenc.cpp:232).",
+  "start_frame": 1,
+  "step_frames": 10,
+  "settle_offset": 7,
+  "steps": [
+    {
+      "step": 0
+    },
+    {
+      "step": 1
+    }
+  ],
+  "formats": [
+    "RF",
+    "RGF",
+    "RGBF",
+    "RGBAF",
+    "RH",
+    "RGH",
+    "RGBH",
+    "RGBAH"
+  ],
+  "textures": {
+    "curve_rf": {
+      "kind": "curve",
+      "format": "RF",
+      "width": 256,
+      "height": 1,
+      "mipmaps": false
+    },
+    "curve_rgb": {
+      "kind": "curve",
+      "format": "RGBF",
+      "width": 256,
+      "height": 1,
+      "mipmaps": false
+    },
+    "curve_xyz": {
+      "kind": "curve",
+      "format": "RGBF",
+      "width": 256,
+      "height": 1,
+      "mipmaps": false
+    },
+    "grad_hdr": {
+      "kind": "gradient",
+      "format": "RGBAF",
+      "width": 256,
+      "height": 1,
+      "mipmaps": false,
+      "width_step1": 192
+    },
+    "img_rgf": {
+      "kind": "image",
+      "format": "RGF",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "loader_thread": true
+    },
+    "img_rh": {
+      "kind": "image",
+      "format": "RH",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "loader_thread": true
+    },
+    "img_rgh": {
+      "kind": "image",
+      "format": "RGH",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "loader_thread": true
+    },
+    "img_rgbh": {
+      "kind": "image",
+      "format": "RGBH",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "loader_thread": true
+    },
+    "img_rgbaf_mip": {
+      "kind": "image",
+      "format": "RGBAF",
+      "width": 16,
+      "height": 16,
+      "mipmaps": true,
+      "loader_thread": true
+    },
+    "img_rgbah": {
+      "kind": "image",
+      "format": "RGBAH",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "loader_thread": true
+    },
+    "img_rf_odd": {
+      "kind": "image",
+      "format": "RF",
+      "width": 5,
+      "height": 3,
+      "mipmaps": true,
+      "loader_thread": true
+    },
+    "hdr_bptc": {
+      "kind": "hdr",
+      "format": "RGBH",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "source_format": "BPTC_RGBFU"
+    },
+    "hdr_astc": {
+      "kind": "hdr",
+      "format": "RGBAH",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "source_format": "ASTC_4x4_HDR"
+    }
+  },
+  "perturbed": [
+    "hdr_bptc",
+    "hdr_astc"
+  ]
+}
