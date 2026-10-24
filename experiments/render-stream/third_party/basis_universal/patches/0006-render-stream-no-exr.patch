@@ -1,0 +1,36 @@
+--- a/thirdparty/basis_universal/encoder/basisu_enc.cpp
++++ b/thirdparty/basis_universal/encoder/basisu_enc.cpp
+@@ -26,10 +26,12 @@
+ 
+ #include <vector>
+ 
++#ifndef BASISU_NO_EXR
+ #ifndef TINYEXR_USE_ZFP
+ #define TINYEXR_USE_ZFP (1)
+ #endif
+ #include <tinyexr.h>
++#endif // BASISU_NO_EXR
+ 
+ #ifndef MINIZ_HEADER_FILE_ONLY
+ #define MINIZ_HEADER_FILE_ONLY
+@@ -3400,6 +3402,12 @@
+ 		return write_vec_to_file(pFilename, file_data);
+ 	}
+ 		
++#ifdef BASISU_NO_EXR
++	// render-stream local patch 0006: no OpenEXR support (the capture only encodes LDR RGBA8 from memory).
++	bool read_exr(const char*, imagef&, int& n_chans) { n_chans = 0; return false; }
++	bool read_exr(const void*, size_t, imagef&) { return false; }
++	bool write_exr(const char*, const imagef&, uint32_t, uint32_t) { return false; }
++#else
+ 	bool read_exr(const char* pFilename, imagef& img, int& n_chans)
+ 	{
+ 		n_chans = 0;
+@@ -3591,6 +3599,7 @@
+ 
+ 		return (ret == TINYEXR_SUCCESS);
+ 	}
++#endif // BASISU_NO_EXR
+ 
+ 	void image::debug_text(uint32_t x_ofs, uint32_t y_ofs, uint32_t scale_x, uint32_t scale_y, const color_rgba& fg, const color_rgba* pBG, bool alpha_only, const char* pFmt, ...)
+ 	{

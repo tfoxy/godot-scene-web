@@ -48,6 +48,33 @@ set_source_files_properties(src/rs_http_coding.cpp PROPERTIES
 set_target_properties(grc_codecs PROPERTIES
   POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
 
+# G8kv: basisu 1.60 (the copy Godot 4.5.1 vendors, third_party/basis_universal/PROVENANCE.md), the
+# encoder and the transcoder, hidden-visibility static library on the zstd above. No OpenCL; the
+# SSE4.1 kernels file is the only file built with -msse4.1 (upstream CMakeLists does the same) and
+# basisu dispatches to it only when the CPU reports SSE4.1.
+set(GRC_BASISU_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/basis_universal)
+set(GRC_BASISU_ENC_SOURCES
+  3rdparty/android_astc_decomp.cpp basisu_astc_hdr_6x6_enc.cpp basisu_astc_hdr_common.cpp
+  basisu_backend.cpp basisu_basis_file.cpp basisu_bc7enc.cpp basisu_comp.cpp basisu_enc.cpp
+  basisu_etc.cpp basisu_frontend.cpp basisu_gpu_texture.cpp basisu_kernels_sse.cpp
+  basisu_opencl.cpp basisu_pvrtc1_4.cpp basisu_resample_filters.cpp basisu_resampler.cpp
+  basisu_ssim.cpp basisu_uastc_enc.cpp basisu_uastc_hdr_4x4_enc.cpp jpgd.cpp pvpngreader.cpp)
+list(TRANSFORM GRC_BASISU_ENC_SOURCES PREPEND ${GRC_BASISU_DIR}/encoder/)
+add_library(grc_basisu STATIC ${GRC_BASISU_ENC_SOURCES}
+  ${GRC_BASISU_DIR}/transcoder/basisu_transcoder.cpp)
+target_include_directories(grc_basisu PUBLIC src)
+target_include_directories(grc_basisu SYSTEM PUBLIC ${GRC_BASISU_DIR} vendor/zstd)
+# PUBLIC: the headers' class layouts depend on these, so the wrapper must see the same ones.
+target_compile_definitions(grc_basisu PUBLIC
+  BASISU_SUPPORT_OPENCL=0 BASISU_NO_EXR=1 BASISU_SUPPORT_SSE=1 BASISD_SUPPORT_KTX2_ZSTD=1
+  BASISD_SUPPORT_ATC=0 BASISD_SUPPORT_FXT1=0 BASISD_SUPPORT_PVRTC1=0 BASISD_SUPPORT_PVRTC2=0)
+target_compile_options(grc_basisu PRIVATE -w -O2)
+set_source_files_properties(${GRC_BASISU_DIR}/encoder/basisu_kernels_sse.cpp
+  PROPERTIES COMPILE_OPTIONS "-msse4.1")
+target_link_libraries(grc_basisu PUBLIC grc_codecs Threads::Threads)
+set_target_properties(grc_basisu PROPERTIES
+  POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 add_library(render_stream_capture SHARED
   src/calib.cpp
   src/entry.cpp
@@ -57,6 +84,7 @@ add_library(render_stream_capture SHARED
   src/rs2_codec.cpp
   src/rs2_diff.cpp
   src/rs_adopt.cpp
+  src/rs_basis_encode.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
@@ -79,7 +107,7 @@ add_library(render_stream_capture SHARED
   src/vtable.cpp
 )
 target_include_directories(render_stream_capture PRIVATE src vendor)
-target_link_libraries(render_stream_capture PRIVATE grc_warnings grc_codecs)
+target_link_libraries(render_stream_capture PRIVATE grc_warnings grc_codecs grc_basisu)
 set_target_properties(render_stream_capture PROPERTIES
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
@@ -429,3 +457,15 @@ add_executable(rs_variant_test test/rs_variant_test.cpp src/rs_variant.cpp src/i
 target_include_directories(rs_variant_test PRIVATE src vendor)
 target_link_libraries(rs_variant_test PRIVATE grc_warnings)
 add_test(NAME rs_variant COMMAND rs_variant_test)
+
+# G8kv: the basisu wrapper, on synthetic images: encode, validate the KTX2 against the render-stream/9
+# ktx2 profile in C++, thread safety of the one-time init. The Godot-transcoder round trip and the
+# TS validator run from scripts/test/g8kv-roundtrip.sh (ctest label "engine" is not used: it needs godot).
+add_executable(rs_basis_encode_test test/rs_basis_encode_test.cpp src/rs_basis_encode.cpp)
+target_include_directories(rs_basis_encode_test PRIVATE src)
+target_link_libraries(rs_basis_encode_test PRIVATE grc_warnings grc_basisu)
+add_test(NAME rs_basis_encode COMMAND rs_basis_encode_test)
+# The Godot-transcoder round trip and the TS validator (needs mise, godot, pnpm; SKIP when no godot).
+add_test(NAME rs_basis_roundtrip
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/g8kv-roundtrip.sh ${CMAKE_CURRENT_BINARY_DIR}/g8kv-roundtrip)
+set_tests_properties(rs_basis_roundtrip PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
