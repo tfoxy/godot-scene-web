@@ -200,13 +200,14 @@ with the receiver project's `--import`).
         refused one before its resync. There may be at most w − 1 of them (none at window 1), they
         must equal the resync line's `discarded`, and each must be refused unapplied. The full one
         is then the next seq.
-      - Still open, a receiver.gd bug the check rightly catches: the forced full arrives folded
-        with the next patch. The raw log shows it on local NVIDIA web-rust (1 of 5). Run
-        39893185658's web-rust failures (2 of 3 repeats) have the same signature. `_apply_newest` tests only the newest (a patch) for the awaited full, so
-        it refuses the full too (`_refuse_coalesced`). Both resyncs are credited, because both
-        seqs are still in the host's window, and each forces another full: 4 fulls, 3 to 5
-        resyncs. gsw passed 3 of 3 remotely with determinism agreeing, but GSW's `refuseForResync`
-        also tests only the newest. g7-1 stays refused until the receiver is fixed.
+      - Fixed by G7rf: the forced full could arrive folded with the next patch, and both receivers
+        tested only the newest (a patch) for the awaited full, so they refused it and resynced
+        again (a cascade of up to 4 fulls). A fold holding the full now ends the wait. Locally
+        `resync-full` passes 5 of 5 on gsw and on web at window 2, and once at window 1.
+      - Still refused: the G7rf determinism dispatch (`--determinism 3,1`, run 39982714414) agreed
+        on web-rust (519/519 shots) but not on gsw. On one runner the `live-resync` leg shot no
+        step 2, a pre-resync shot-window miss that every check tolerated, so 517/519 shots agreed.
+        g7-1 stays refused until that is understood.
   - A full-tier `g7live-*` run keeps its other groups remotely. `--and-local` runs the refused
     groups locally with `RS_VALIDATE_GROUPS`.
 - **Environment fixes:**
@@ -408,7 +409,7 @@ iterating.
 | Gate 6 and the gate 7 timing legs (g6l, g6s, g6c, g6p, g7-6 timing, g7-lc, g7-r, g7-k, g7-bench) and the lock self-tests | Wall-clock measurements; hosted VMs are noisier than this machine |
 | The timing groups inside correctness gates (g1c-rate, g1d, g2c-pins, g5f, g55f) | Same reason. They are skipped remotely, and the wrapper prints their local commands |
 | Live g7-2 | Load-sensitive on 4 vCPU runners: two transactions folded into one poll |
-| Live g7-1 | Web-rust `resync-full` fails when the forced full arrives folded with the next patch: receiver.gd refuses both and the host credits both resyncs. That is a receiver bug, 2 of 3 remotely and 1 of 5 locally. FU1 fixed the in-flight model gap |
+| Live g7-1 | GSW `live-resync` shots disagree across runners (G7rf run 39982714414: one runner shot no step 2, before the resync). The resync-at-fold receiver bug itself is fixed (G7rf); web-rust agreed over 4 runs |
 | Phone legs (g31) | The device is attached to this machine |
 | NVIDIA pixel authority | A remote green on llvmpipe/lavapipe means "safe to spend a local GPU run on", not "landed". Llvmpipe has matched the RTX 2060 byte for byte so far, but that is evidence, not the contract |
 
@@ -420,10 +421,8 @@ Risks that remain:
 - **Queueing** when several agents dispatch at once.
 
 Possible next steps (not started):
-- move g7-1 remote once the receivers' resync-at-fold is fixed. While awaiting the full, a fold
-  that holds it should end the wait and apply (receiver.gd `_apply_newest` / `_refuse_for_resync`,
-  GSW `takeQueued` / `refuseForResync`). Then confirm `resync-full` with one `--determinism 2,1`
-  dispatch.
+- move g7-1 remote once GSW's `live-resync` step-2 shot-window miss (G7rf's `--determinism 3,1`,
+  run 39982714414) is understood or repeats clean; web-rust already agreed.
 - g7-2 fold-seq model (archive d86ca3f4/7abbfcbd foldSeqs) needs a rewrite onto main if g7-2 ever
   goes remote.
 
