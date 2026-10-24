@@ -22,7 +22,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { compareRgbaBuffers } from "../../../../packages/test-harness/src/image-diff";
@@ -98,6 +98,18 @@ function regionDelta(a: Rgba, b: Rgba, rect?: readonly number[]) {
 
 function gswDir(out: string, gate: GswGate, leg: string): string {
   return join(out, gate, "gsw", leg);
+}
+
+/** A sabotage check whose leg the smoke tier did not launch (`skipped-by-tier.txt`, written by
+ * lib/gate7-web-legs.ts) has no evidence: it is reported failing with a `skipped-by-tier` detail
+ * naming the leg, which the tier verdict (lib/tier-verdict.py) excuses. Never reported as passed. */
+function ifSkippedByTier(check: Gate7Check, legDir: string): Gate7Check {
+  if (!existsSync(join(legDir, "skipped-by-tier.txt"))) return check;
+  return {
+    ...check,
+    passed: false,
+    detail: `skipped-by-tier: the ${basename(legDir)} leg was not run by the smoke tier`,
+  };
 }
 
 function shotSeqs(dir: string): number[] {
@@ -237,11 +249,14 @@ async function gate0Checks(ctx: Ctx): Promise<Gate7Check[]> {
       comp,
       "screenshot equals the last shot exactly",
     ),
-    mk(
-      "sabotage-css-opacity@gsw",
-      "Q7: `opacity: 0.99` on the canvas fails exactly compositor-equals-readback (its readback shots still equal the honest gsw leg's)",
-      sabProblems,
-      `fails exactly compositor-equals-readback (${sabComp[0] ?? ""})`,
+    ifSkippedByTier(
+      mk(
+        "sabotage-css-opacity@gsw",
+        "Q7: `opacity: 0.99` on the canvas fails exactly compositor-equals-readback (its readback shots still equal the honest gsw leg's)",
+        sabProblems,
+        `fails exactly compositor-equals-readback (${sabComp[0] ?? ""})`,
+      ),
+      sab,
     ),
     logCheck(
       "goldens-native@gsw",
@@ -453,11 +468,14 @@ async function gate1Checks(ctx: Ctx): Promise<Gate7Check[]> {
       `differs from the honest gsw leg at steps {${failed}}, predicted {${predicted}}`,
     );
   out.push(
-    mk(
-      "sabotage-ignore-z@gsw",
-      "G7a: ignore-z (each canvas in draw_index walk order, no per-z lists) fails exactly gate 1's z steps: the steps where painting gate 1's own resolved state with and without z differs",
-      problems,
-      `fails exactly steps {${predicted}} (predicted from the resolved states)`,
+    ifSkippedByTier(
+      mk(
+        "sabotage-ignore-z@gsw",
+        "G7a: ignore-z (each canvas in draw_index walk order, no per-z lists) fails exactly gate 1's z steps: the steps where painting gate 1's own resolved state with and without z differs",
+        problems,
+        `fails exactly steps {${predicted}} (predicted from the resolved states)`,
+      ),
+      gswDir(ctx.out, "gate1", "sabotage-gsw-ignore-z"),
     ),
   );
   out.push(
@@ -670,11 +688,14 @@ async function gate2Checks(ctx: Ctx): Promise<Gate7Check[]> {
     if (JSON.stringify(want) !== JSON.stringify(got))
       problems.push(`delta > 1 in {${got}}, predicted {${want}}`);
     out.push(
-      mk(
-        "sabotage-premultiplied-upload@gsw",
-        "G7a: premultiplying textures on upload (so linear filtering mixes premultiplied texels) fails exactly gate 2's translucent-filtered (step, region)s with channel delta > 1, predicted from expected.json",
-        problems,
-        `fails exactly {${want}}; ${delta1Only} other (step, region)s at delta 1 (8-bit premultiply rounding, inside Q7's delta1 class)`,
+      ifSkippedByTier(
+        mk(
+          "sabotage-premultiplied-upload@gsw",
+          "G7a: premultiplying textures on upload (so linear filtering mixes premultiplied texels) fails exactly gate 2's translucent-filtered (step, region)s with channel delta > 1, predicted from expected.json",
+          problems,
+          `fails exactly {${want}}; ${delta1Only} other (step, region)s at delta 1 (8-bit premultiply rounding, inside Q7's delta1 class)`,
+        ),
+        gswDir(ctx.out, "gate2", "sabotage-gsw-premultiplied-upload"),
       ),
     );
     out.push(

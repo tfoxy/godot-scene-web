@@ -68,8 +68,7 @@
       "match": { "(?i)device|g31|phone|adb": "device-related: the attached phone is local" },
       "groups": {
         "g7live-*": {
-          "g7-1": "G7rf fixed the receivers' resync-at-fold bug (a fold holding the forced full ends the wait; gate1-g1d-checks.ts checkResyncFull passes 5/5 locally on gsw and web at window 2), but the remote determinism check (run 39982714414, --determinism 3,1) still disagrees on GSW: one runner's live-resync leg shot no step 2 (its a704118930 image, and the step-2 diff, are absent; every check passed), so it is a shot-window miss under runner load before the resync, not the resync wait. Web-rust agreed over 4 runs (519/519 shots). Local-only until the GSW step-2 window miss is understood",
-          "g7-2": "R3: load-sensitive at credit window 2 on a 4-vCPU runner, local-only: drop-resource / no-cors-withheld failed intermittently (runs 39861745131, 39867385871; two transactions folded in one poll, the failure at the other seq)"
+          "g7-1": "G7rf fixed the receivers' resync-at-fold bug (a fold holding the forced full ends the wait; gate1-g1d-checks.ts checkResyncFull passes 5/5 locally on gsw and web at window 2), but the remote determinism check (run 39982714414, --determinism 3,1) still disagrees on GSW: one runner's live-resync leg shot no step 2 (its a704118930 image, and the step-2 diff, are absent; every check passed), so it is a shot-window miss under runner load before the resync, not the resync wait. Web-rust agreed over 4 runs (519/519 shots). Local-only until the GSW step-2 window miss is understood"
         }
       }
     },
