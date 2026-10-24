@@ -308,6 +308,9 @@ struct ItemM {
     material_rid: Option<u32>,
     use_parent_material: bool,
     instance_params: Vec<(Box<str>, ParamKey)>,
+    /// G8kf: the textures whose draw commands this item's last replay skipped as undrawable
+    /// (`unsupported-texture`), mirrored in `Planner::skipped_items`.
+    skipped_tex: Vec<Id>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -579,6 +582,13 @@ pub struct Planner {
     mat_items: HashMap<Id, BTreeSet<Id>>,
     rid_param_items: BTreeSet<Id>,
     mattex: BTreeSet<Id>,
+    /// G8kf (render-stream-9.md "Texture reasons"): texture id -> the items whose last replay
+    /// skipped a command naming it as undrawable. When an apply uploads that texture (a
+    /// `delivery-pending` entry returning as `ok`), those items replay their content, since no
+    /// item entry changed to make a delta apply visit them.
+    skipped_items: BTreeMap<Id, BTreeSet<Id>>,
+    /// The undrawable texture ids texture_for() met since the last take (replay is `&self`).
+    tex_skips: std::cell::RefCell<Vec<Id>>,
 }
 
 fn bump(map: &mut HashMap<Id, i64>, id: Id, by: i64) {
@@ -974,6 +984,16 @@ impl Planner {
 
     /// `_texture_for()`: (drawable, RID, reason when not drawable).
     fn texture_for(&self, st: &ResolvedState, tex: Option<Id>) -> (bool, RidRef, &'static str) {
+        let answer = self.texture_for_inner(st, tex);
+        if !answer.0 {
+            if let Some(id) = tex {
+                self.tex_skips.borrow_mut().push(id);
+            }
+        }
+        answer
+    }
+
+    fn texture_for_inner(&self, st: &ResolvedState, tex: Option<Id>) -> (bool, RidRef, &'static str) {
         let Some(id) = tex else {
             return (true, RidRef::None, "");
         };
@@ -1490,6 +1510,7 @@ impl Planner {
                     material_rid: None,
                     use_parent_material: false,
                     instance_params: Vec::new(),
+                    skipped_tex: Vec::new(),
                 },
             );
             fresh.insert(id);
@@ -1586,8 +1607,31 @@ impl Planner {
                 );
             }
         }
+        // G8kf: an item that skipped a command for an undrawable texture replays once an apply
+        // uploads that texture.
+        let mut forced: BTreeSet<Id> = BTreeSet::new();
+        if !self.skipped_items.is_empty() {
+            for up in &uploads {
+                if let Some(items) = self.skipped_items.get(&up.id) {
+                    for item in items {
+                        if self.items.contains_key(item) && st.items.contains_key(item) {
+                            forced.insert(*item);
+                        }
+                    }
+                }
+            }
+            visit.extend(forced.iter().copied());
+        }
         for id in visit {
-            self.apply_item(st, id, fresh.contains(&id), ops, &mut c, &mut unsupported);
+            self.apply_item(
+                st,
+                id,
+                fresh.contains(&id),
+                forced.contains(&id),
+                ops,
+                &mut c,
+                &mut unsupported,
+            );
         }
 
         // 8. Canvas 1 transform; 9. canvas 1 modulate.
@@ -2108,6 +2152,7 @@ impl Planner {
         st: &ResolvedState,
         id: Id,
         is_new: bool,
+        force_content: bool,
         ops: &mut OpBuf,
         c: &mut Counters,
         unsupported: &mut Vec<UnsupportedCommand>,
@@ -2284,7 +2329,7 @@ impl Planner {
         }
 
         let me_version = self.items[&id].content_version;
-        if is_new || wire.content_version != me_version {
+        if is_new || force_content || wire.content_version != me_version {
             if !is_new {
                 ops.op(Op::ItemClear, 1);
                 ops.rid(rid);
@@ -2292,8 +2337,26 @@ impl Planner {
                     self.items.get_mut(&id).unwrap().clip = false;
                 }
             }
+            // G8kf: forget the textures the last replay skipped, replay, remember the new ones.
+            for tex in std::mem::take(&mut self.items.get_mut(&id).unwrap().skipped_tex) {
+                if let Some(set) = self.skipped_items.get_mut(&tex) {
+                    set.remove(&id);
+                    if set.is_empty() {
+                        self.skipped_items.remove(&tex);
+                    }
+                }
+            }
+            self.tex_skips.borrow_mut().clear();
             self.replay(st, id, rid, &wire.commands, ops, c, unsupported);
-            self.items.get_mut(&id).unwrap().content_version = wire.content_version;
+            let mut skipped: Vec<Id> = std::mem::take(&mut *self.tex_skips.borrow_mut());
+            skipped.sort_unstable();
+            skipped.dedup();
+            for tex in &skipped {
+                self.skipped_items.entry(*tex).or_default().insert(id);
+            }
+            let me = self.items.get_mut(&id).unwrap();
+            me.skipped_tex = skipped;
+            me.content_version = wire.content_version;
         }
         if !sab.clip_before_clear {
             let me = self.items.get_mut(&id).unwrap();
@@ -2565,6 +2628,8 @@ impl Planner {
         self.mat_items.clear();
         self.rid_param_items.clear();
         self.mattex.clear();
+        self.skipped_items.clear();
+        self.tex_skips.borrow_mut().clear();
         self.touched.clear();
         self.rs_calls += (ops.rs_calls - ops_before) as i64;
         self.disposed_frees = n;

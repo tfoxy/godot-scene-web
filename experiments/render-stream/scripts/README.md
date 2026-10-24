@@ -3505,10 +3505,11 @@ is removed at exit (never inside the repository).
 | `bounded/capture`, `bounded/cache/` | `GRC_TEXTURE_CACHE_MAX_BYTES=60000` |
 | `adopt-cold/capture`, `adopt-warm/capture` | gate8-adopt armed late (`GRC_ADOPT=arm`) twice on one directory |
 | `uastc-cold/capture`, `uastc-warm/capture`, `uastc-{cold,warm}/cache/` | G8ku: `fixtures/gate8-basis` under `basis-uastc` (g8ku's wait frame) twice on one directory: every UASTC encode stored, then served |
+| `uastc-prepare/dump`, `uastc-prepare/`, `uastc-prepare/out/`, `uastc-prepared/capture` | G8kf: the basis fixture's step-0 images saved as Image `.res` files (`RS_FIXTURE_DUMP_RES_DIR`, an unarmed run), `scripts/prepare-textures.sh --list` over them into an empty directory (its /9 basis-uastc sink, drained at stream end), then one basis-uastc session on that directory: zero encodes (`prepare-uastc-warm`) |
 | `sabotage-corrupt/{capture,after/capture}`, `damaged.json`, `index-before.jsonl` | a copy of the warm cache with a flipped byte, a truncated file and a deleted file; then the session after the repair |
 
 Criteria (`lib/gate8-cache-checks.ts`, driven by `test/self-test-gate8kc.ts`): `cache-off-identical`,
-`cache-paths`, `cache-cold`, `cache-warm`, `prepare-key-match`, `cache-corrupt`, `cache-lru`,
+`cache-paths`, `cache-cold`, `cache-warm`, `prepare-key-match`, `cache-corrupt`, `cache-lru`, `prepare-uastc-warm` (G8kf),
 `cache-adopt`; see [`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md)
 "As built (G8kc)". `prepare-textures.sh --help` documents the prepare step.
 
@@ -3543,16 +3544,18 @@ port; one 101 upgrade and every GET, each 200, went through it; the final image 
 | `capture` | headless, `GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12`; both sinks, store (`<hash>.grt`, `<hash>.ktx2`) |
 | `workers/capture` | the same at `GRC_TEXTURE_WORKERS=2` |
 | `sabotage-perturb-ktx2/capture`, `.../receiver` | `GRC_TEXTURE_ENCODE_FAULT=perturb-ktx2` (one byte of each KTX2 flipped after hashing), and the native receiver under `upgrade`, which must refuse |
+| `pending/capture`, `pending/receiver` | G8kf: `workers/capture` again with `GRC_TEXTURE_PENDING=publish` (a texture whose worker is not done goes out as `delivery-pending` and returns as `ok` at the next version), and the native receiver replaying it |
+| `sabotage-corrupt-ktx2/capture`, `.../receiver` | G8kf: `GRC_TEXTURE_ENCODE_FAULT=corrupt-ktx2` (level 0 of each KTX2 damaged before hashing: every hash and header check passes, the transcode fails) and the native receiver under `upgrade`, which must fall back to `decoded` |
 | `reference`, `reference-oracle`, `reference-oracle-hw` | rendered fixture: procedural; every stored KTX2 through `Image.load_ktx_from_buffer` (`oracle/oracle.json`, `oracle/<hash>.rgba`), its CPU decode drawn from step 1; and the same drawing the transcoded blocks (GPU-sampled) |
 | `receiver`, `receiver-upgrade` | the native receiver, D6 `keep` and `upgrade` (`RS_RECEIVER_TRANSCODE_LOG=1`) |
 | `live/host`, `live/receiver` | a /9 basis-uastc live host without the wait knob and the rendered native receiver at `RS_RECEIVER_PROTOCOL=9`; `live/host/ktx2-get.*` is one KTX2 GET with `Accept-Encoding: zstd` |
-| `../g8ku-web/web` | the web export in headless Chromium on `receiver-upgrade`'s launch (its harness root beside `g8ku/`) |
+| `../g8ku-web/web`, `../g8ku-web/web-fallback` | the web export in headless Chromium on `receiver-upgrade`'s launch (its harness root beside `g8ku/`), and (G8kf) on `sabotage-corrupt-ktx2/receiver`'s |
 
 ## Gate 8 criteria (g8ku)
 
 `basis-capture`, `ktx2-wire`, `delivery-lazy`, `delivery-keep`, `transcode-oracle`,
-`delivery-reference` (exact), `quality-band`, `sabotage-perturb-ktx2`, `delivery-live` and
-`delivery-web`; each criterion is spelled out in `lib/gate8-basis-checks.ts` and
+`delivery-reference` (exact), `quality-band`, `sabotage-perturb-ktx2`, `delivery-live`,
+`delivery-web`, `delivery-pending` and `delivery-fallback` (G8kf); each criterion is spelled out in `lib/gate8-basis-checks.ts` and
 [`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8ku)".
 
 ## Gate 8 criteria (g8m)

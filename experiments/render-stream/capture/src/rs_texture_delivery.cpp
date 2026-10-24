@@ -195,7 +195,7 @@ std::vector<rs2::TextureVariant> texture_variants(const VariantRequest &request)
 
 bool parse_basis_config(const char *level, const char *min_px, const char *workers,
                         const char *wait_frame, const char *fault, BasisConfig *out,
-                        std::string *error) {
+                        std::string *error, const char *drain) {
   *out = BasisConfig();
   out->uastc_level = kDefaultUastcLevel;
   std::int64_t v = 0;
@@ -230,12 +230,20 @@ bool parse_basis_config(const char *level, const char *min_px, const char *worke
     out->wait_frame = static_cast<std::uint64_t>(v);
   }
   if (fault != nullptr && *fault != '\0') {
-    if (std::string(fault) != "perturb-ktx2") {
+    if (std::string(fault) != "perturb-ktx2" && std::string(fault) != "corrupt-ktx2") {
       *error = std::string("invalid GRC_TEXTURE_ENCODE_FAULT=") + fault +
-               " (expected perturb-ktx2)";
+               " (expected perturb-ktx2 or corrupt-ktx2)";
       return false;
     }
-    out->fault_perturb = true;
+    out->fault_perturb = std::string(fault) == "perturb-ktx2";
+    out->fault_corrupt = std::string(fault) == "corrupt-ktx2";
+  }
+  if (drain != nullptr && *drain != '\0') {
+    if (std::string(drain) != "0" && std::string(drain) != "1") {
+      *error = std::string("invalid GRC_TEXTURE_ENCODE_DRAIN=") + drain + " (expected 0 or 1)";
+      return false;
+    }
+    out->drain = std::string(drain) == "1";
   }
   return true;
 }

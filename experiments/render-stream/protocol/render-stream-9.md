@@ -143,7 +143,7 @@ is checked against its entry: see "Payload checks".
 image entry (hash null, `payload_bytes` 0, the usual rule): the async worker path (D11) had no
 hook-time hash yet. When the payload is ready the entry returns as `ok` with a raised `version`.
 At /6 to /8 G8kw holds publication back instead (Q7), with no wire change. G8k9's capture never
-publishes it.
+published it; since G8kf it does under `GRC_TEXTURE_PENDING=publish` (see "As built (G8kf)").
 
 ## Texture payload
 
@@ -353,3 +353,28 @@ The wire is unchanged; G8ku produces and consumes `uastc` variants
   `hash`, `ok`, Godot `format`, size, `mipmaps`, `data_bytes`, `ktx2_bytes`, `transcode_us`, and
   `data_sha256` under `RS_RECEIVER_TRANSCODE_LOG=1`) and `receiver.texture_delivery.variant_policy`
   (`keep` or `upgrade`). `uploads[]` rows name `uastc` as their `encoding`.
+
+## As built (G8kf)
+
+The wire is unchanged; G8kf makes the capture publish `delivery-pending` and the receivers recover
+from it.
+
+- **When.** `GRC_TEXTURE_PENDING=publish` (default `hold`, G8kw's hold-back) with
+  `GRC_TEXTURE_WORKERS=<N>` at /9. A snapshot that carries a texture whose worker has not delivered
+  its hash, and that no earlier snapshot carried as `ok`, publishes it as `unsupported` /
+  `delivery-pending` (the shape the hook already knows, `hash` null, `payload_bytes` 0, no variants)
+  and is not held back. A content change of an already published texture keeps the hold-back: its
+  old pixels stay until the new ones are ready, so a streamed atlas never flashes.
+- **Recovery.** The entry returns as `ok` at the next `version` (the capture advances the mirror's
+  epoch when the worker is done, so a live hub sends it), with the hash, shape and variants the
+  synchronous capture gives. An id is announced pending at one version only.
+- **Derived entries.** Every item or material that names a pending texture gets its
+  `unsupported-texture` entry, as for any unsupported texture (`unsupported-mismatch` otherwise).
+- **Receivers.** The Rust planner replays an item that skipped a command for an undrawable texture
+  once an apply uploads that texture (no item entry changes when a texture recovers, so a delta
+  apply would never visit it): `skipped_items` in `rs-core-capi/src/plan.rs`. The native receiver and
+  the web export (the same planner in wasm) upload nothing while a texture is pending and create it
+  when it returns; the native receiver's shots draw it. GSW's own apply (`gsw-rs`) was not checked
+  for this recovery.
+- **Gate 8:** `g8ku/pending/{capture,receiver}`, check `delivery-pending`.
+

@@ -36,7 +36,8 @@ std::uint64_t now_ns() {
 }  // namespace
 
 bool parse_texture_workers(const char *workers, const char *min_bytes, const char *delay_ms,
-                           const char *fault, TextureWorkerConfig *out, std::string *error) {
+                           const char *fault, TextureWorkerConfig *out, std::string *error,
+                           const char *pending) {
   TextureWorkerConfig config;
   if (workers != nullptr && *workers != '\0' && std::strcmp(workers, "sync") != 0) {
     if (!digits(workers) || std::strtoull(workers, nullptr, 10) < 1 ||
@@ -75,6 +76,17 @@ bool parse_texture_workers(const char *workers, const char *min_bytes, const cha
       return false;
     }
     config.fault_publish_before_ready = true;
+  }
+  if (pending != nullptr && *pending != '\0') {
+    if (std::strcmp(pending, "hold") != 0 && std::strcmp(pending, "publish") != 0) {
+      *error = std::string("invalid GRC_TEXTURE_PENDING=") + pending + " (expected hold or publish)";
+      return false;
+    }
+    config.publish_pending = std::strcmp(pending, "publish") == 0;
+    if (config.publish_pending && !config.async()) {
+      *error = "GRC_TEXTURE_PENDING=publish acts on texture workers; set GRC_TEXTURE_WORKERS=<N>";
+      return false;
+    }
   }
   if (!config.async() && (config.delay_ms != 0)) {
     *error = "GRC_TEXTURE_WORKER_DELAY_MS delays texture workers; set GRC_TEXTURE_WORKERS=<N>";
@@ -162,6 +174,11 @@ std::size_t TextureWorkerPool::discard_queued() {
   }
   idle_cv_.notify_all();
   return dropped.size();  // the closures are destroyed here, outside the lock
+}
+
+void TextureWorkerPool::wait_outstanding_at_most(std::size_t n) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  idle_cv_.wait(lock, [this, n] { return !running_ || queue_.size() + in_flight_ <= n; });
 }
 
 TextureWorkerPool::Stats TextureWorkerPool::stats() const {

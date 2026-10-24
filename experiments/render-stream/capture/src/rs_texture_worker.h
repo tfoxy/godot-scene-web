@@ -58,6 +58,12 @@ struct TextureWorkerConfig {
   // GRC_TEXTURE_WORKER_FAULT=publish-before-ready (a fault knob for the sabotage leg, never on the
   // wire): a snapshot naming a pending texture is published at once, its hash all zeros.
   bool fault_publish_before_ready = false;
+  // GRC_TEXTURE_PENDING=publish|hold (G8kf, default hold; render-stream-9.md "Texture reasons"): at
+  // /9 a first-time texture whose hash is not ready is published as `unsupported` /
+  // `delivery-pending` at once instead of holding the whole snapshot back, and returns as `ok` at
+  // a raised version when the worker is done. Content changes of an already published texture
+  // keep the hold-back (the old pixels stay until the new ones are ready).
+  bool publish_pending = false;
   bool async() const { return workers > 0; }
 };
 
@@ -67,7 +73,8 @@ constexpr int kMaxTextureWorkers = 16;
 // invalid value (the stream then refuses to start): `workers` must be `sync` or 1..16, the two
 // numbers decimal digits, `fault` empty or publish-before-ready (which needs N workers).
 bool parse_texture_workers(const char *workers, const char *min_bytes, const char *delay_ms,
-                           const char *fault, TextureWorkerConfig *out, std::string *error);
+                           const char *fault, TextureWorkerConfig *out, std::string *error,
+                           const char *pending = nullptr);
 
 // "sync" or the worker count, for logs and result.json.
 std::string texture_workers_name(const TextureWorkerConfig &config);
@@ -157,6 +164,8 @@ class TextureWorkerPool {
   // G8ku: drops every job not yet started (returns how many), so a following stop() waits only
   // for the ones in flight. The encode pool's stream end: a lazy encode nobody will publish.
   std::size_t discard_queued();
+  // G8kf: blocks until at most `n` jobs are queued or running (backpressure for the prepare step).
+  void wait_outstanding_at_most(std::size_t n);
 
   struct Stats {
     std::uint64_t submitted = 0;

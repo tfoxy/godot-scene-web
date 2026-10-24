@@ -139,6 +139,17 @@ pub extern "C" fn rsc_set_variant_upgrade(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.delivery.upgrade = on != 0);
 }
 
+/// G8kf (texture-delivery-design.md Q3): the receiver could not transcode the variant whose hash is
+/// the `hlen` hex bytes at `hash`; D3 skips it from now on. 1, or 0 for a malformed hash.
+///
+/// # Safety
+/// `hash` points to `hlen` bytes of UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_refuse_variant(h: *mut RsCore, hash: *const u8, hlen: usize) -> i32 {
+    let hash = text(hash, hlen).to_string();
+    guard(h, 0, |c| i32::from(c.refuse_variant(&hash)))
+}
+
 /// G8ku: the lowercase hex SHA-256 of `len` bytes at `data` into the 64 bytes at `out` (the
 /// executor's `transcode-oracle` log of the blocks it uploaded).
 ///

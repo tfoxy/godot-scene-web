@@ -10,6 +10,8 @@
 //   g8kp/refused-basis/capture/         GRC_TEXTURE_DELIVERY=basis-etc1s at /9: refused (G8ku)
 //   g8kp/reference/ g8kp/reference-hw/  rendered fixture: the oracle's decoded payloads / the .ctex
 //   g8kp/receiver{,-patch,-masked}/     the native receiver (masked: s3tc,bptc,rgtc)
+//   g8kp-web/web/                       (G8kf) the web export on receiver/'s launch (its harness root
+//                                       beside g8kp/, linking g8kp/ alone)
 //   g8kp/gsw-run/{gsw,gsw-masked,sabotage-ignore-format-mask/gsw}/
 //                                       the GSW receiver on g8kp/receiver's own launch
 //   g8kp/live/{host,receiver}/          a /9 passthrough live host and the rendered native
@@ -387,6 +389,7 @@ export async function runG8kp(
     ),
     "live/host": g("live/host"),
     "live/receiver": g("live/receiver"),
+    web: join(out, "g8kp-web", "web"),
   };
   const legs: G8kpReport["legs"] = {};
   for (const [l, dir] of Object.entries(legDirs)) {
@@ -751,6 +754,35 @@ export async function runG8kp(
           .filter((l) => !ran(l))
           .map((l) => `g8kp/${l}`)
           .join(", ") || "the recording",
+      ),
+    );
+  }
+  // G8kf: the web export at /9 passthrough: does it state gpu_formats, and take `block`?
+  {
+    const problems: string[] = [];
+    const l = "web";
+    okExit(l, problems);
+    const r = await selectOf(l, []);
+    select[l] = { block: r.block, decoded: r.decoded, stated: r.stated };
+    problems.push(...r.problems);
+    const stated = (r.stated?.gpu_formats ?? "none").split(",");
+    const bcStated = MASK.filter((f) => stated.includes(f));
+    const bc = MASK.reduce((n, f) => n + (r.blockFamilies[f] ?? 0), 0);
+    if (bcStated.length > 0 && bc === 0)
+      problems.push(
+        `the web export states ${r.stated?.gpu_formats} but uploaded no BC block`,
+      );
+    if (bcStated.length === 0 && bc > 0)
+      problems.push(
+        `the web export states ${r.stated?.gpu_formats} yet uploaded ${bc} BC blocks`,
+      );
+    checks.push(
+      check(
+        "delivery-select-web",
+        'G8kf (Q3, Q6 "Web export"): the web export replaying the /9 passthrough recording states gpu_formats from its WebGL context through has_os_feature, every upload is the payload D3 picks under its own stated texture_encodings and gpu_formats, and it takes the BC `block` variants exactly when it states a BC family (otherwise it uploads `decoded` for them)',
+        ran(l) && recordings.full ? [...new Set(problems)] : null,
+        `${select[l]?.block} block, ${select[l]?.decoded} decoded (gpu_formats ${r.stated?.gpu_formats}; BC stated: ${bcStated.join(",") || "none"})`,
+        "g8kp-web/web",
       ),
     );
   }

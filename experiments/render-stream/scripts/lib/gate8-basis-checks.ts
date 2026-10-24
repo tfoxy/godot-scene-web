@@ -7,6 +7,13 @@
 //   g8ku/workers/capture/               the same at GRC_TEXTURE_WORKERS=2
 //   g8ku/sabotage-perturb-ktx2/{capture,receiver}/
 //                                       one KTX2 byte flipped after hashing; the receiver must refuse
+//   g8ku/pending/{capture,receiver}/    (G8kf) the workers capture at GRC_TEXTURE_PENDING=publish: a
+//                                       texture whose worker is not done is published as
+//                                       `delivery-pending` and returns as ok at the next version
+//   g8ku/sabotage-corrupt-ktx2/{capture,receiver}/
+//                                       (G8kf) level 0 of each KTX2 damaged BEFORE hashing, so every
+//                                       hash and header check passes and only the transcode fails;
+//                                       the receiver (upgrade) must fall back to `decoded`
 //   g8ku/reference/                     the procedural fixture, rendered
 //   g8ku/reference-oracle/              every stored KTX2 through Image.load_ktx_from_buffer on this
 //                                       GPU (oracle/oracle.json, oracle/<hash>.rgba), drawn from step 1
@@ -17,6 +24,8 @@
 //                                       live/host/ktx2-get.* is one KTX2 GET with Accept-Encoding: zstd
 //   g8ku-web/web/                       the web export on receiver-upgrade's launch (its harness root
 //                                       beside g8ku/, linking g8ku/ alone)
+//   g8ku-web/web-fallback/              (G8kf) the web export on sabotage-corrupt-ktx2/receiver's
+//   g8ku-web/web-pending/               (G8kf) the web export on pending/receiver's
 
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
@@ -104,6 +113,7 @@ interface Applied {
     seq?: number;
   }>;
   transcodes?: TranscodeRow[];
+  variant_fallbacks?: Array<{ stream: number; seq: number; hash: string }>;
   receiver?: {
     texture_delivery?: { texture_encodings: string; variant_policy?: string };
   };
@@ -183,6 +193,10 @@ export async function runG8ku(
     "workers/capture": g("workers/capture"),
     "sabotage-perturb-ktx2/capture": g("sabotage-perturb-ktx2/capture"),
     "sabotage-perturb-ktx2/receiver": g("sabotage-perturb-ktx2/receiver"),
+    "pending/capture": g("pending/capture"),
+    "pending/receiver": g("pending/receiver"),
+    "sabotage-corrupt-ktx2/capture": g("sabotage-corrupt-ktx2/capture"),
+    "sabotage-corrupt-ktx2/receiver": g("sabotage-corrupt-ktx2/receiver"),
     reference: g("reference"),
     "reference-oracle": g("reference-oracle"),
     "reference-oracle-hw": g("reference-oracle-hw"),
@@ -191,6 +205,8 @@ export async function runG8ku(
     "live/host": g("live/host"),
     "live/receiver": g("live/receiver"),
     web: join(out, "g8ku-web", "web"),
+    "web-fallback": join(out, "g8ku-web", "web-fallback"),
+    "web-pending": join(out, "g8ku-web", "web-pending"),
   };
   const legs: G8kuReport["legs"] = {};
   for (const [l, dir] of Object.entries(legDirs)) {
@@ -506,8 +522,12 @@ export async function runG8ku(
     "receiver",
     "receiver-upgrade",
     "sabotage-perturb-ktx2/receiver",
+    "pending/receiver",
+    "sabotage-corrupt-ktx2/receiver",
     "live/receiver",
     "web",
+    "web-fallback",
+    "web-pending",
   ])
     applied[l] = await readJson<Applied>(join(legDirs[l], "applied.json"));
   {
@@ -898,6 +918,265 @@ export async function runG8ku(
         ran("web") ? problems : null,
         `transcode us ${JSON.stringify(got.map((t) => t.transcode_us))}; ${sameTarget} on the oracle's target, ${otherTarget} on another`,
         "g8ku-web/web",
+      ),
+    );
+  }
+
+  // --- delivery-pending (G8kf): publishing `delivery-pending` instead of holding back ----------------
+  {
+    const problems: string[] = [];
+    const l = "pending/capture";
+    if (legs[l].exit_code !== "0")
+      problems.push(`${l} exit ${legs[l].exit_code}`);
+    const pr = await readRec(legDirs[l], "recording.rs9", problems);
+    await readRec(legDirs[l], "recording-patch.rs9", problems);
+    const result = await readJson<{
+      stream?: {
+        gate8?: {
+          texture_workers?: {
+            publish_pending?: boolean;
+            pending_published?: number;
+          };
+        };
+        texture_workers?: {
+          publish_pending?: boolean;
+          pending_published?: number;
+        };
+      };
+    }>(join(legDirs[l], "evidence", "result.json"));
+    const tw =
+      result?.stream?.texture_workers ?? result?.stream?.gate8?.texture_workers;
+    const firstPending = new Map<number, number>(); // id -> version published as pending
+    const okAt = new Map<number, { version: number; seq: number }>();
+    if (pr) {
+      for (const tx of pr.transactions)
+        for (const t of tx.state.textures) {
+          if (t.kind !== "image") continue;
+          if (t.status === "unsupported" && t.reason === "delivery-pending") {
+            if (t.hash !== null || t.payload_bytes !== 0)
+              problems.push(
+                `texture ${t.id}: a delivery-pending entry carries a hash or payload`,
+              );
+            if (!firstPending.has(t.id)) firstPending.set(t.id, t.version);
+            if (okAt.has(t.id))
+              problems.push(`texture ${t.id}: pending again after it was ok`);
+          } else if (t.status === "ok" && firstPending.has(t.id)) {
+            const was = firstPending.get(t.id) as number;
+            if (!okAt.has(t.id)) {
+              okAt.set(t.id, { version: t.version, seq: tx.seq });
+              if (t.version !== was + 1)
+                problems.push(
+                  `texture ${t.id}: pending at version ${was}, ok at ${t.version}, not ${was + 1}`,
+                );
+            }
+          }
+        }
+      if (firstPending.size === 0)
+        problems.push("no delivery-pending entry in the recording");
+      const first = pr.transactions[0]?.state.textures.filter(
+        (t) => t.status === "unsupported" && t.reason === "delivery-pending",
+      );
+      if (!first || first.length === 0)
+        problems.push(
+          "the first transaction carries no delivery-pending entry",
+        );
+      for (const id of firstPending.keys())
+        if (!okAt.has(id)) problems.push(`texture ${id}: never became ok`);
+      // The same textures as the synchronous capture's, but for the raised version.
+      if (rec) {
+        const strip = (t: ResolvedTexture) => ({ ...t, version: 0 });
+        const mine = lastState(pr).textures.map(strip);
+        const sync = lastState(rec).textures.map(strip);
+        if (JSON.stringify(mine) !== JSON.stringify(sync))
+          problems.push(
+            "the final texture table differs from the synchronous capture's beyond the version",
+          );
+      }
+    }
+    if (tw?.publish_pending !== true)
+      problems.push("result.json does not state publish_pending");
+    if (tw?.pending_published !== firstPending.size)
+      problems.push(
+        `result.json pending_published ${tw?.pending_published}, the recording has ${firstPending.size} pending textures`,
+      );
+    // The receiver: nothing is uploaded for a texture while it is pending, and each is uploaded
+    // once it is ok; an apply never fails on the unsupported entry.
+    for (const l of ["pending/receiver", "web-pending"] as const) {
+      const a = applied[l];
+      if (legs[l].exit_code !== "0" || a?.status !== "ok") {
+        problems.push(
+          `${l}: exit ${legs[l].exit_code}, status ${a?.status} ${failureText(a)}`,
+        );
+        continue;
+      }
+      for (const [id, ok] of okAt) {
+        const mine = (a.uploads ?? []).filter((u) => u.id === id);
+        if (mine.length === 0)
+          problems.push(`${l}: texture ${id} never uploaded`);
+        else if ((mine[0].seq ?? 0) < ok.seq)
+          problems.push(
+            `${l}: texture ${id} uploaded at seq ${mine[0].seq}, before it was ok at ${ok.seq}`,
+          );
+      }
+    }
+    if (applied["pending/receiver"]?.status === "ok" && pr) {
+      // A shot whose transaction has no pending entry left equals the reference.
+      const seqs =
+        (await readText(join(legDirs["pending/receiver"], "shot-seqs.txt")))
+          ?.trim()
+          .split(",") ?? null;
+      let compared = 0;
+      for (const s of expected.steps) {
+        const tx = seqs
+          ? pr.transactions.find((x) => String(x.seq) === seqs[s.step])
+          : undefined;
+        if (!tx) {
+          problems.push(`step ${s.step}: no transaction for its shot seq`);
+          continue;
+        }
+        const pendingLeft = tx.state.textures.some(
+          (t) => t.reason === "delivery-pending",
+        );
+        if (pendingLeft) continue;
+        // From step 1 the entries arrive with their uastc variants (they attach at the wait
+        // frame, which also resolves every pending texture), so the first upload is the
+        // transcoded block, as an upgrade receiver's: the oracle's blocks are the reference.
+        const ref = await shot(
+          s.step === 0 ? legDirs.reference : legDirs["reference-oracle-hw"],
+          s.step,
+          null,
+        );
+        const got = await shot(legDirs["pending/receiver"], s.step, seqs);
+        if (!ref || !got) {
+          problems.push(`step ${s.step}: a shot is missing`);
+          continue;
+        }
+        const d = diffShots(ref, got);
+        pixels[`pending/receiver/step-${s.step}`] = d;
+        compared++;
+        if (d.differing > 0)
+          problems.push(
+            `pending/receiver step ${s.step}: ${d.differing} px differ from the ${s.step === 0 ? "reference" : "oracle's blocks"} (max ${d.max})`,
+          );
+      }
+      if (compared === 0)
+        problems.push("no step's shot was taken with every texture resolved");
+    }
+    checks.push(
+      check(
+        "delivery-pending",
+        "G8kf (render-stream-9.md \"Texture reasons\"): under GRC_TEXTURE_WORKERS=2 and GRC_TEXTURE_PENDING=publish a texture whose worker is not done is published as `unsupported`/`delivery-pending` (no hash, no payload) in the first transaction instead of holding the snapshot back, and returns as `ok` at the next version with the synchronous capture's hash, variants and shape (full and patch sinks validate); the native receiver and the web export upload nothing for it while pending and upload it once ok, and the native receiver's shot with every texture resolved equals the reference (step 0) or the oracle's transcoded blocks (step 1; the receiver runs under upgrade) exactly",
+        ran(l) &&
+          ran("pending/receiver") &&
+          ran("web-pending") &&
+          ran("reference") &&
+          ran("reference-oracle-hw")
+          ? problems
+          : null,
+        `${firstPending.size} pending textures, ok at seq ${[...okAt.values()].map((v) => v.seq).join(",")}`,
+        "g8ku/pending",
+      ),
+    );
+  }
+
+  // --- delivery-fallback (G8kf): a KTX2 the transcoder refuses falls back to `decoded` -----------
+  {
+    const problems: string[] = [];
+    const cap = legDirs["sabotage-corrupt-ktx2/capture"];
+    const result = await readJson<{
+      stream?: { gate8?: { delivery_stats?: { fault?: string } } };
+    }>(join(cap, "evidence", "result.json"));
+    if (result?.stream?.gate8?.delivery_stats?.fault !== "corrupt-ktx2")
+      problems.push("the capture did not run the corrupt-ktx2 fault");
+    // Unlike perturb-ktx2, every stored KTX2 hashes to its name: only the transcode can refuse it.
+    let files = 0;
+    const dir = join(cap, "store", "sha256");
+    if (existsSync(dir))
+      for (const f of (await readdir(dir)).filter((x) => x.endsWith(".ktx2"))) {
+        files++;
+        if (
+          sha256(new Uint8Array(await readFile(join(dir, f)))) !==
+          f.replace(".ktx2", "")
+        )
+          problems.push(`${f}: does not hash to its name`);
+      }
+    if (files === 0) problems.push("no stored KTX2");
+    const wantFallbacks = expected.textures.filter(
+      (t) => t.upgrade === "uastc",
+    ).length;
+    for (const l of [
+      "sabotage-corrupt-ktx2/receiver",
+      "web-fallback",
+    ] as const) {
+      const a = applied[l];
+      if (legs[l].exit_code !== "0" || a?.status !== "ok") {
+        problems.push(
+          `${l}: exit ${legs[l].exit_code}, status ${a?.status} ${failureText(a)}`,
+        );
+        continue;
+      }
+      const fb = a.variant_fallbacks ?? [];
+      if (fb.length !== wantFallbacks)
+        problems.push(
+          `${l}: ${fb.length} variant fallbacks, expected ${wantFallbacks}`,
+        );
+      const failedRows = (a.transcodes ?? []).filter((t) => !t.ok).length;
+      if (failedRows !== wantFallbacks)
+        problems.push(
+          `${l}: ${failedRows} failed transcodes, expected ${wantFallbacks}`,
+        );
+      const ups = a.uploads ?? [];
+      if (ups.some((u) => u.encoding === "uastc"))
+        problems.push(`${l}: a uastc payload was uploaded`);
+      for (const e of expected.textures) {
+        const id = [...idNames.entries()].find(([, n]) => n === e.name)?.[0];
+        if (id === undefined) continue;
+        const mine = ups.filter((u) => u.id === id);
+        if (e.name === "updated") continue; // its step-1 upload is the content change
+        const want = e.keep;
+        if (mine.length !== 1 || mine[0].encoding !== want)
+          problems.push(
+            `${l} ${e.name}: uploads ${JSON.stringify(mine.map((u) => u.encoding))}, expected one ${want}`,
+          );
+      }
+    }
+    // Pixels (native): the fallback receiver draws what the keep receiver does, the reference.
+    const seqs =
+      (
+        await readText(
+          join(legDirs["sabotage-corrupt-ktx2/receiver"], "shot-seqs.txt"),
+        )
+      )
+        ?.trim()
+        .split(",") ?? null;
+    for (const s of expected.steps) {
+      const ref = await shot(legDirs.reference, s.step, null);
+      const got = seqs
+        ? await shot(legDirs["sabotage-corrupt-ktx2/receiver"], s.step, seqs)
+        : undefined;
+      if (!ref || !got) {
+        problems.push(`step ${s.step}: a shot is missing`);
+        continue;
+      }
+      const d = diffShots(ref, got);
+      pixels[`sabotage-corrupt-ktx2/receiver/step-${s.step}`] = d;
+      if (d.differing > 0)
+        problems.push(
+          `sabotage-corrupt-ktx2/receiver step ${s.step}: ${d.differing} px differ from the reference (max ${d.max})`,
+        );
+    }
+    checks.push(
+      check(
+        "delivery-fallback",
+        'G8kf sabotage corrupt-ktx2 (Q3 "Transcode or upload failure on the receiver"): with level 0 of every KTX2 damaged before hashing (each file hashes to its name and passes the header checks), the native receiver (upgrade) and the web export both fail the transcode ahead of the apply, count a variant fallback and a failed transcode per uastc texture, upload only decoded (block for the DXT1 source) and finish the replay ok; the native receiver\'s shots equal the reference exactly',
+        ran("sabotage-corrupt-ktx2/capture") &&
+          ran("sabotage-corrupt-ktx2/receiver") &&
+          ran("web-fallback") &&
+          ran("reference")
+          ? problems
+          : null,
+        `${files} KTX2 stored; native fallbacks ${applied["sabotage-corrupt-ktx2/receiver"]?.variant_fallbacks?.length}, web ${applied["web-fallback"]?.variant_fallbacks?.length}`,
+        "g8ku/sabotage-corrupt-ktx2 or g8ku-web/web-fallback",
       ),
     );
   }

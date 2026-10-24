@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -470,6 +471,10 @@ struct Instance {
   std::string transcodes;
   bool hash_uploads = false;
   int64_t transcode_failed = 0;
+  // G8kf: KTX2 files transcoded ahead of the apply (`pretranscode`), by the SHA-256 of their bytes;
+  // the executor takes its image from here instead of transcoding again. A failure is thus known
+  // before any RenderingServer call, and the receiver falls back to `decoded` (Q3).
+  std::map<std::string, GDExtensionObjectPtr> pretranscoded;
 
   uint64_t &slot(uint32_t kind, uint32_t handle) {
     std::vector<uint64_t> &t = rids[kind];
@@ -792,8 +797,8 @@ GDExtensionObjectPtr make_image(OpReader &r, Instance *inst);
 // (rs-core verified its hash and checked its shape) through Image.load_ktx_from_buffer, which
 // transcodes to the first target Godot's KTX2 loader finds in RenderingServer.has_os_feature
 // (with 4 channels ASTC_4x4, BC7, BC3, ETC2_RGBA, then RGBA8). The transcode is logged.
-GDExtensionObjectPtr make_ktx2_image(const uint8_t *p, size_t len, int64_t width, int64_t height,
-                                     Instance *inst) {
+GDExtensionObjectPtr transcode_ktx2(const uint8_t *p, size_t len, int64_t width, int64_t height,
+                                    Instance *inst) {
   StringName image_class("Image");
   GDExtensionObjectPtr image = gd.construct_object(image_class.ptr());
   PackedArray data(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
@@ -817,7 +822,7 @@ GDExtensionObjectPtr make_ktx2_image(const uint8_t *p, size_t len, int64_t width
     gd.ptrcall(engine.image_get_data_size, image, nullptr, &data_size);
   }
   std::string row = std::string("{\"hash\":\"") + hash + "\",\"ok\":" +
-                    (error == 0 && w == width && h == height ? "true" : "false") +
+                    (error == 0 && (width < 0 || (w == width && h == height)) ? "true" : "false") +
                     ",\"error\":" + std::to_string(error) + ",\"format\":" + std::to_string(format) +
                     ",\"width\":" + std::to_string(w) + ",\"height\":" + std::to_string(h) +
                     ",\"mipmaps\":" + (mips ? "true" : "false") +
@@ -833,7 +838,7 @@ GDExtensionObjectPtr make_ktx2_image(const uint8_t *p, size_t len, int64_t width
   }
   row += "}";
   inst->transcodes += (inst->transcodes.empty() ? "" : ",") + row;
-  if (error != 0 || w != width || h != height) {
+  if (error != 0 || (width >= 0 && (w != width || h != height))) {
     ++inst->transcode_failed;
     GDExtensionBool last = false;
     gd.ptrcall(engine.refcounted_unreference, image, nullptr, &last);
@@ -841,6 +846,51 @@ GDExtensionObjectPtr make_ktx2_image(const uint8_t *p, size_t len, int64_t width
     return nullptr;
   }
   return image;
+}
+
+
+void release_image(GDExtensionObjectPtr image);
+
+// The executor's KTX2 image: the pre-transcoded one when `pretranscode` already ran this file,
+// else the transcode now. Dimensions are the entry's (the core checked the header against them).
+GDExtensionObjectPtr make_ktx2_image(const uint8_t *p, size_t len, int64_t width, int64_t height,
+                                     Instance *inst) {
+  if (!inst->pretranscoded.empty()) {
+    char hash[65] = {0};
+    rsc_sha256_hex(p, len, reinterpret_cast<uint8_t *>(hash));
+    auto it = inst->pretranscoded.find(hash);
+    if (it != inst->pretranscoded.end()) {
+      GDExtensionObjectPtr image = it->second;
+      inst->pretranscoded.erase(it);
+      int64_t w = 0, h = 0;
+      gd.ptrcall(engine.image_get_width, image, nullptr, &w);
+      gd.ptrcall(engine.image_get_height, image, nullptr, &h);
+      if (w != width || h != height) {
+        ++inst->transcode_failed;
+        release_image(image);
+        return nullptr;
+      }
+      return image;
+    }
+  }
+  return transcode_ktx2(p, len, width, height, inst);
+}
+
+// G8kf: transcodes a KTX2 now and keeps the image for the executor. True when it transcoded (or
+// already had); the row is logged either way.
+bool pretranscode_ktx2(const uint8_t *p, size_t len, Instance *inst) {
+  char hash[65] = {0};
+  rsc_sha256_hex(p, len, reinterpret_cast<uint8_t *>(hash));
+  if (inst->pretranscoded.count(hash) != 0) return true;
+  GDExtensionObjectPtr image = transcode_ktx2(p, len, -1, -1, inst);
+  if (image == nullptr) return false;
+  inst->pretranscoded[hash] = image;
+  return true;
+}
+
+void release_pretranscoded(Instance *inst) {
+  for (auto &entry : inst->pretranscoded) release_image(entry.second);
+  inst->pretranscoded.clear();
 }
 
 GDExtensionObjectPtr make_image(OpReader &r, Instance *inst) {
@@ -1453,6 +1503,10 @@ struct BytesArg {
   BytesArg &operator=(const BytesArg &) = delete;
 };
 
+void ret_bool(GDExtensionVariantPtr r, bool b) {
+  GDExtensionBool v = b;
+  gd.from[GDEXTENSION_VARIANT_TYPE_BOOL](r, &v);
+}
 void ret_int(GDExtensionVariantPtr r, int64_t v) { gd.from[GDEXTENSION_VARIANT_TYPE_INT](r, &v); }
 
 void ret_string(GDExtensionVariantPtr r, const std::string &s) {
@@ -1486,6 +1540,8 @@ enum Method : int {
   M_SET_VARIANT_UPGRADE,
   M_SET_TRANSCODE_LOG,
   M_TAKE_TRANSCODES,
+  M_PRETRANSCODE,
+  M_REFUSE_VARIANT,
   M_COUNT,
 };
 
@@ -1517,6 +1573,8 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"set_variant_upgrade", 1}, // (on: bool) -> void (G8ku: D6 upgrade instead of keep)
     {"set_transcode_log", 1}, // (hash_uploads: bool) -> void (G8ku: hash each transcoded upload)
     {"take_transcodes", 0},  // () -> String: a JSON array of the KTX2 transcodes since the last call
+    {"pretranscode", 2},     // (hash: String, ktx2: PackedByteArray) -> bool (G8kf: transcode ahead of the apply)
+    {"refuse_variant", 1},   // (hash: String) -> void (G8kf: D3 skips this variant; Q3 fallback)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1619,6 +1677,7 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       } else {
         text_string(inst, static_cast<Variant *>(ret));
       }
+      release_pretranscoded(inst);  // G8kf: images of files this apply did not use
       return;
     }
     case M_STAGE: {
@@ -1655,6 +1714,16 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
     }
     case M_SET_TRANSCODE_LOG: {
       inst->hash_uploads = arg_bool(args[0]);
+      return;
+    }
+    case M_PRETRANSCODE: {
+      BytesArg data(args[1]);
+      ret_bool(ret, pretranscode_ktx2(data.data, data.size, inst));
+      return;
+    }
+    case M_REFUSE_VARIANT: {
+      std::string hash = arg_string(args[0]);
+      rsc_refuse_variant(inst->core, reinterpret_cast<const uint8_t *>(hash.data()), hash.size());
       return;
     }
     case M_TAKE_TRANSCODES: {
@@ -1733,6 +1802,7 @@ GDExtensionObjectPtr create_instance(void *, GDExtensionBool) {
 }
 
 void free_instance(void *, GDExtensionClassInstancePtr instance) {
+  release_pretranscoded(static_cast<Instance *>(instance));
   auto *inst = static_cast<Instance *>(instance);
   rsc_free(inst->core);
   delete inst;

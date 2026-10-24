@@ -59,6 +59,8 @@ var _core: Object = null
 ## needed()'s answer for the stream as it stands (receiver.gd asks before fetching and again at
 ## apply); dropped whenever a record is accepted or the applier changes residency.
 var _need: Dictionary = {}
+## G8kf: the variant hashes screen_variants() refused (their failed transcode rows are not errors).
+var _refused: Dictionary = {}
 var _counters: Dictionary = {}
 var _counters_frame: int = -1
 ## G7o3: the last apply_state()'s split, in microseconds (receiver.gd's perf.json): the provide
@@ -174,6 +176,37 @@ func begin_session() -> void:
 	_refresh_counters()
 
 
+## G8kf (texture-delivery-design.md Q3): transcodes ahead of the apply every uastc file the stream
+## as it stands needs and this process holds (in memory; `load_from_directory` also reads the
+## persisted cache's). A file Godot's KTX2 loader refuses is `delivery-transcode-failed`: the core
+## refuses that variant, so D3 chooses the entry's next preference (`decoded` at last) and
+## needed() names its payload. Returns one {hash} per variant refused (empty: nothing changed),
+## after which the caller fetches what needed() now lists. Idempotent: a file already transcoded
+## is not transcoded again, and the executor takes the image from here.
+func screen_variants(cache: RsResourceCache, load_from_directory: bool = false) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var need: Dictionary = needed()
+	var listed: Array = need["ktx2_hashes"] if need.has("ktx2_hashes") else []
+	for value: Variant in listed:
+		var hash: String = value
+		if not cache.has_in_memory(hash):
+			if not load_from_directory or cache.ignore_cache or not cache.cache_has(hash, false, false, true):
+				continue
+			var got: Dictionary = cache.obtain(hash, false, false, true)
+			var obtain_error: String = got["error"]
+			if obtain_error != "":
+				continue  # _obtain_needed reports it with the transaction's seq
+		var ok: bool = _core.call("pretranscode", hash, cache.raw(hash))
+		if ok:
+			continue
+		_core.call("refuse_variant", hash)
+		_refused[hash] = true
+		out.append({"hash": hash})
+	if not out.is_empty():
+		_need = {}
+	return out
+
+
 ## What the stream as it stands needs: {hashes: Array (payload hashes), library: Array (withheld
 ## shaders' library hashes), ...} as rs-core-capi answers it.
 func needed() -> Dictionary:
@@ -222,7 +255,8 @@ func apply_state(cache: RsResourceCache) -> Dictionary:
 	for value: Variant in transcode_rows:
 		var row: Dictionary = value
 		var ok: bool = row["ok"]
-		if not ok:
+		var row_hash: String = row["hash"]
+		if not ok and not _refused.has(row_hash):
 			return {"error": RsWire.err("delivery-transcode-failed", "Image.load_ktx_from_buffer refused KTX2 %s (error %s, %sx%s)" % [row["hash"], row["error"], row["width"], row["height"]])}
 	stats["transcodes"] = transcode_rows
 	# receiver.gd's _note_applied() reads a typed Array[Dictionary] here; the adapter's Arrays are

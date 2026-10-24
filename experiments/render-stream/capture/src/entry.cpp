@@ -604,7 +604,9 @@ std::string result_json() {
         json.field("encode_us_total", static_cast<int64_t>(basis.encode_ns_total / 1000));
         json.field("encode_us_max", static_cast<int64_t>(basis.encode_ns_max / 1000));
         json.field("encode_px_total", static_cast<int64_t>(basis.encode_px_total));
-        json.field("fault", std::string(g_stream.basis_config.fault_perturb ? "perturb-ktx2" : "none"));
+        json.field("fault", std::string(g_stream.basis_config.fault_perturb
+                                           ? "perturb-ktx2"
+                                           : g_stream.basis_config.fault_corrupt ? "corrupt-ktx2" : "none"));
       }
       json.object_end();
     }
@@ -711,6 +713,8 @@ std::string result_json() {
     json.field("fault", std::string(g_stream.workers.fault_publish_before_ready
                                         ? "publish-before-ready"
                                         : "none"));
+    json.field("publish_pending", g_stream.workers.publish_pending);
+    json.field("pending_published", static_cast<int64_t>(rs::mirror_instance().pending_published()));
     json.field("jobs", static_cast<int64_t>(pool.submitted));
     json.field("completed", static_cast<int64_t>(pool.completed));
     json.field("max_queued", static_cast<int64_t>(pool.max_queued));
@@ -1475,7 +1479,7 @@ void stream_start() {
                                 std::getenv("GRC_TEXTURE_ENCODE_WORKERS"),
                                 std::getenv("GRC_TEXTURE_ENCODE_WAIT_FRAME"),
                                 std::getenv("GRC_TEXTURE_ENCODE_FAULT"), &g_stream.basis_config,
-                                &error)) {
+                                &error, std::getenv("GRC_TEXTURE_ENCODE_DRAIN"))) {
       log_line("stream: refused texture delivery policy (" + error + ")");
       g_stream.status = "refused";
       g_stream.reason = error;
@@ -1494,10 +1498,15 @@ void stream_start() {
   {
     rs::TextureWorkerConfig workers;
     std::string error;
-    if (!rs::parse_texture_workers(std::getenv("GRC_TEXTURE_WORKERS"),
-                                   std::getenv("GRC_TEXTURE_WORKER_MIN_BYTES"),
-                                   std::getenv("GRC_TEXTURE_WORKER_DELAY_MS"),
-                                   std::getenv("GRC_TEXTURE_WORKER_FAULT"), &workers, &error)) {
+    bool workers_ok = rs::parse_texture_workers(
+        std::getenv("GRC_TEXTURE_WORKERS"), std::getenv("GRC_TEXTURE_WORKER_MIN_BYTES"),
+        std::getenv("GRC_TEXTURE_WORKER_DELAY_MS"), std::getenv("GRC_TEXTURE_WORKER_FAULT"), &workers,
+        &error, std::getenv("GRC_TEXTURE_PENDING"));
+    if (workers_ok && workers.publish_pending && !g_stream.gate8.speaks_v9()) {
+      error = "GRC_TEXTURE_PENDING=publish needs render-stream/9 (delivery-pending is a /9 reason)";
+      workers_ok = false;
+    }
+    if (!workers_ok) {
       log_line("stream: refused texture workers (" + error + ")");
       g_stream.status = "refused";
       g_stream.reason = error;
@@ -1906,6 +1915,7 @@ void stream_start() {
     g_stream.workers_started =
         rs::texture_worker_pool().start(g_stream.workers.workers, g_stream.workers.delay_ms);
     hooks_set_texture_workers(g_stream.workers);
+    rs::mirror_instance().set_publish_pending(g_stream.workers_started && g_stream.workers.publish_pending);
     log_line("stream: texture_workers=" + rs::texture_workers_name(g_stream.workers) +
              " min_bytes=" + std::to_string(g_stream.workers.min_bytes) +
              (g_stream.workers.delay_ms != 0
@@ -1921,15 +1931,25 @@ void stream_start() {
         rs::texture_encode_pool().start(g_stream.basis_config.encode_workers, 0);
     const int level = g_stream.basis_config.uastc_level;
     const bool perturb = g_stream.basis_config.fault_perturb;
-    rs::mirror_instance().set_basis_submit(
-        [level, perturb](const rs::BasisJobPtr &job) { return rs::submit_basis_job(job, level, perturb); });
+    const bool corrupt = g_stream.basis_config.fault_corrupt;
+    // G8kf: under GRC_TEXTURE_ENCODE_DRAIN the submit waits for room first (at most two jobs per
+    // worker beside the mirror); it runs under the mirror's lock, which the encode workers never take.
+    const std::size_t room =
+        g_stream.basis_config.drain ? static_cast<std::size_t>(g_stream.basis_config.encode_workers) * 2 - 1
+                                    : static_cast<std::size_t>(-1);
+    rs::mirror_instance().set_basis_submit([level, perturb, corrupt, room](const rs::BasisJobPtr &job) {
+      if (room != static_cast<std::size_t>(-1)) {
+        rs::texture_encode_pool().wait_outstanding_at_most(room);
+      }
+      return rs::submit_basis_job(job, level, perturb, corrupt);
+    });
     log_line("stream: basis-uastc encode_workers=" +
              std::to_string(g_stream.basis_config.encode_workers) + " uastc_level=" +
              std::to_string(level) + " min_px=" + std::to_string(g_stream.basis_config.min_px) +
              (g_stream.basis_config.wait_frame != 0
                   ? " wait_frame=" + std::to_string(g_stream.basis_config.wait_frame)
                   : std::string()) +
-             (perturb ? " fault=perturb-ktx2" : "") +
+             (perturb ? " fault=perturb-ktx2" : "") + (corrupt ? " fault=corrupt-ktx2" : "") +
              (g_stream.encoders_started ? "" : " (encode pool failed to start: no uastc variant)"));
   }
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
@@ -2423,6 +2443,7 @@ void workers_finish() {
   }
   rs::texture_worker_pool().stop();
   g_stream.workers_started = false;
+  rs::mirror_instance().set_publish_pending(false);
   hooks_set_texture_workers(rs::TextureWorkerConfig());
   rs::HeldSnapshot last;
   std::string error;
@@ -2449,6 +2470,13 @@ void workers_finish() {
 void encoders_finish() {
   if (!g_stream.basis) {
     return;
+  }
+  if (g_stream.basis_config.drain && g_stream.encoders_started) {
+    // G8kf: the prepare step's end. Start what the last callback did not, then wait for every
+    // queued encode: each one stores its result in the persisted cache (D8).
+    rs::mirror_instance().service_basis(false, false);
+    rs::texture_encode_pool().drain();
+    log_line("stream: drained the uastc encode pool at stream end");
   }
   rs::mirror_instance().set_basis_submit(nullptr);
   const std::size_t dropped = rs::texture_encode_pool().discard_queued();
@@ -2606,6 +2634,9 @@ void stream_publish(uint64_t frame) {
       log_line("stream: attached " + std::to_string(attached) + " uastc variants at frame " +
                std::to_string(frame));
     }
+  }
+  if (g_stream.workers_started && g_stream.workers.publish_pending) {
+    rs::mirror_instance().service_pending();  // G8kf: a finished worker's texture returns as ok
   }
   const uint64_t epoch = rs::mirror_epoch();
   // G2c2: with a live server the snapshot is taken at every callback, so the served set always

@@ -8,10 +8,14 @@
 #   --cache DIR         the cache directory (GRC_TEXTURE_CACHE_DIR). Outside any repository.
 #   --project DIR       every <DIR>/.godot/imported/*.ctex (the project must be imported)
 #   --images DIR        every png/jpg/jpeg/webp/bmp/tga/svg file under DIR
-#   --list FILE         an explicit list: one absolute path per line (.ctex or an image). This is
+#   --list FILE         an explicit list: one absolute path per line (.ctex, an Image saved as .res,
+#                       or an image file). This is
 #                       the form a later all-pack / selective-pack warming feeds (design K3).
 #   --max-bytes N       GRC_TEXTURE_CACHE_MAX_BYTES (LRU budget; default unbounded)
 #   --workers N         GRC_TEXTURE_WORKERS (default: synchronous)
+#   --no-uastc          skip the UASTC warm-up (a /8 sink, as G8kc ran it)
+#   --encode-workers N  GRC_TEXTURE_ENCODE_WORKERS, the UASTC encode pool (default: the capture's 2)
+#   --uastc-level N     GRC_TEXTURE_UASTC_LEVEL 0..4 (default: the capture's; the cache is keyed by it)
 #   --out DIR           keep the run's logs and the capture's evidence here (default: removed)
 #   --binary PATH       the 4.5.1 release template (default: the pinned one)
 #   --extension PATH    the capture's .gdextension (default: capture/build)
@@ -22,6 +26,12 @@
 # host decode is stored under (source key, decoded, params_id), and anything else is its own source
 # (nothing to derive yet; the key is what a later Basis encode will be filed under). The summary
 # printed at the end is the capture's own result.json `texture_cache` block.
+#
+# UASTC (G8kf): by default the sink is render-stream/9 under GRC_TEXTURE_DELIVERY=basis-uastc with
+# GRC_TEXTURE_ENCODE_DRAIN=1, so every admitted texture (D12) is encoded and stored in the cache
+# under (source key, uastc, params_id) and the run waits for the encode pool before it ends. A
+# session on this cache (same level) then runs zero UASTC encodes. Encoding costs ~1 s per
+# megapixel per thread at the default level, so a large pack takes minutes.
 #
 # The run strips every inherited GRC_*/RS_* variable and DISPLAY/WAYLAND_DISPLAY; the stream sink is
 # a throwaway file under a private temp directory.
@@ -35,6 +45,9 @@ MODE=""
 SOURCE=""
 MAX_BYTES=""
 WORKERS=""
+UASTC=1
+ENCODE_WORKERS=""
+UASTC_LEVEL=""
 OUT_KEEP=""
 BINARY="${HOME}/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
 EXTENSION="$EXPERIMENT/capture/build/render_stream_capture.gdextension"
@@ -52,6 +65,9 @@ while [ $# -gt 0 ]; do
 	--list) MODE=list; SOURCE="${2:-}"; shift 2 ;;
 	--max-bytes) MAX_BYTES="${2:-}"; shift 2 ;;
 	--workers) WORKERS="${2:-}"; shift 2 ;;
+	--no-uastc) UASTC=0; shift ;;
+	--encode-workers) ENCODE_WORKERS="${2:-}"; shift 2 ;;
+	--uastc-level) UASTC_LEVEL="${2:-}"; shift 2 ;;
 	--out) OUT_KEEP="${2:-}"; shift 2 ;;
 	--binary) BINARY="${2:-}"; shift 2 ;;
 	--extension) EXTENSION="${2:-}"; shift 2 ;;
@@ -123,11 +139,18 @@ PROJ
 
 ENVV=(
 	GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
-	GRC_EVIDENCE_DIR="$WORK/evidence" GRC_STREAM_OUT="$WORK/prepare.rs8" GRC_RESOURCE_STORE_DIR="$WORK/store"
-	GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=engine
-	GRC_TEXTURE_CACHE_DIR="$CACHE"
+	GRC_EVIDENCE_DIR="$WORK/evidence" GRC_RESOURCE_STORE_DIR="$WORK/store"
+	GRC_TEXTURE_DECODE=engine GRC_TEXTURE_CACHE_DIR="$CACHE"
 	RS_PREPARE_LIST="$LIST" RS_PREPARE_LOG="$WORK/prepare.jsonl"
 )
+if [ "$UASTC" = 1 ]; then
+	ENVV+=(GRC_STREAM_VERSION=9 GRC_STREAM_OUT="$WORK/prepare.rs9" GRC_TEXTURE_DELIVERY=basis-uastc
+		GRC_TEXTURE_ENCODE_DRAIN=1)
+	[ -n "$ENCODE_WORKERS" ] && ENVV+=(GRC_TEXTURE_ENCODE_WORKERS="$ENCODE_WORKERS")
+	[ -n "$UASTC_LEVEL" ] && ENVV+=(GRC_TEXTURE_UASTC_LEVEL="$UASTC_LEVEL")
+else
+	ENVV+=(GRC_STREAM_VERSION=8 GRC_STREAM_OUT="$WORK/prepare.rs8")
+fi
 [ -n "$MAX_BYTES" ] && ENVV+=(GRC_TEXTURE_CACHE_MAX_BYTES="$MAX_BYTES")
 [ -n "$WORKERS" ] && ENVV+=(GRC_TEXTURE_WORKERS="$WORKERS")
 

@@ -5,7 +5,8 @@ extends SceneTree
 ##
 ## It loads every file of RS_PREPARE_LIST (one absolute path per line) exactly as a game would:
 ## a `.ctex` through ResourceLoader (so the engine's own CompressedTexture2D loader creates the
-## texture), any other file as an Image turned into an ImageTexture. The capture's texture hooks
+## texture), a `.res` as an Image resource (any format and mip chain; G8kf's fixture dumps) turned
+## into an ImageTexture, any other file as an Image turned into an ImageTexture. The capture's texture hooks
 ## then see the same texture_2d_create the game would make, compute the same D7 source key and
 ## fill the cache through the same code as a live session. One texture per frame, released at the
 ## next frame, so a large pack never holds more than one texture beside the mirror.
@@ -54,6 +55,11 @@ func _process(_delta: float) -> bool:
 	var kind: String = "ctex"
 	if path.get_extension() == "ctex":
 		resource = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	elif path.get_extension() == "res":
+		kind = "image-res"
+		var loaded: Variant = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+		if loaded is Image and not (loaded as Image).is_empty():
+			resource = ImageTexture.create_from_image(loaded as Image)
 	else:
 		kind = "image"
 		var image := Image.load_from_file(path)

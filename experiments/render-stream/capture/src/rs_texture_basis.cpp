@@ -25,14 +25,14 @@ TextureWorkerPool &texture_encode_pool() {
   return pool;
 }
 
-void run_basis_job(BasisJob *job, int level, bool perturb) {
+void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt) {
   BasisJob::Outcome out;
   // G8kc (D7, D8): a persisted encode of this source at these params is served instead of encoding
   // (verified against its name by the cache); a miss or a corrupt file encodes and stores.
   TextureCache &cache = texture_cache();
   const CacheKey key{job->cache_source(), "uastc",
                      ::rs::basis::params_id(level) != nullptr ? ::rs::basis::params_id(level) : ""};
-  const bool keyed = cache.enabled() && cache_key_valid(key);
+  const bool keyed = cache.enabled() && cache_key_valid(key) && !corrupt;
   if (keyed) {
     std::vector<std::uint8_t> bytes;
     std::string hash;
@@ -77,6 +77,12 @@ void run_basis_job(BasisJob *job, int level, bool perturb) {
     job->finish(std::move(out));
     return;
   }
+  if (corrupt && r.ktx2.size() > 104) {
+    // KTX2 level index: 24-byte entries from byte 80, each led by the level's byte offset (LE u64).
+    std::uint64_t at = 0;
+    for (int i = 0; i < 8; ++i) at |= static_cast<std::uint64_t>(r.ktx2[80 + i]) << (8 * i);
+    if (at < r.ktx2.size()) r.ktx2[at] ^= 0xFF;
+  }
   out.hash = sha256_hex(r.ktx2.data(), r.ktx2.size());
   out.hash_ns = now_ns() - t1;
   out.params = r.params_id;
@@ -91,8 +97,9 @@ void run_basis_job(BasisJob *job, int level, bool perturb) {
   job->finish(std::move(out));
 }
 
-bool submit_basis_job(const BasisJobPtr &job, int level, bool perturb) {
-  return texture_encode_pool().submit([job, level, perturb] { run_basis_job(job.get(), level, perturb); });
+bool submit_basis_job(const BasisJobPtr &job, int level, bool perturb, bool corrupt) {
+  return texture_encode_pool().submit(
+      [job, level, perturb, corrupt] { run_basis_job(job.get(), level, perturb, corrupt); });
 }
 
 }  // namespace rs

@@ -19,12 +19,14 @@ namespace rs {
 TextureWorkerPool &texture_encode_pool();
 
 // One job on the calling thread: the decoded GRT1 payload's levels as RGBA8, UASTC at `level`,
-// zstd 6, linear (D13), then the SHA-256 of the KTX2 bytes; under `perturb` (the perturb-ktx2
+// zstd 6, linear (D13), then the SHA-256 of the KTX2 bytes; under `corrupt` (G8kf, GRC_TEXTURE_ENCODE_FAULT=corrupt-ktx2) the first byte of level 0's Zstandard frame
+// is flipped BEFORE hashing, so the hash matches the published bytes and the file passes every header
+// check but Godot's transcoder refuses it (the cache is bypassed); under `perturb` (the perturb-ktx2
 // fault) one byte is flipped after hashing. Finishes the job exactly once.
-void run_basis_job(BasisJob *job, int level, bool perturb);
+void run_basis_job(BasisJob *job, int level, bool perturb, bool corrupt = false);
 
 // Queues `job` on the encode pool; false (the job untouched) when the pool is not running.
-bool submit_basis_job(const BasisJobPtr &job, int level, bool perturb);
+bool submit_basis_job(const BasisJobPtr &job, int level, bool perturb, bool corrupt = false);
 
 }  // namespace rs
 }  // namespace grc
