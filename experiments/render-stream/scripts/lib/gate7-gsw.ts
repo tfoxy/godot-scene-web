@@ -39,9 +39,11 @@ import { decodePngRgba } from "./gate-minus1-checks";
 import { loadRecording, RECORDING_NAME } from "./gate0-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
 import {
+  CHECKER_WRITES,
+  sourceProvenanceProblems,
   type Gate7Check,
   type SourceProvenance,
-  sourceProvenanceProblems,
+  viewHoldsWrite,
 } from "./gate7-adapters";
 import {
   GATE55_LEGS,
@@ -377,11 +379,13 @@ export function gswLegSpecs(
   }));
 }
 
-/** A view of `sourceDir` in `viewDir`: every entry linked, the replaced legs linked to theirs. */
+/** A view of `sourceDir` in `viewDir`: every entry linked, the replaced legs linked to theirs, and
+ * the `writes` paths left for the checker to create in the view (their parents are real dirs). */
 export async function buildView(
   sourceDir: string,
   replaced: ReadonlyMap<string, string>,
   viewDir: string,
+  writes: readonly RegExp[] = CHECKER_WRITES,
 ): Promise<void> {
   await mkdir(viewDir, { recursive: true });
   const walk = async (rel: string): Promise<void> => {
@@ -390,6 +394,7 @@ export async function buildView(
     for (const entry of readdirSync(src)) {
       if (rel === "" && entry === "result.json") continue;
       const r = rel === "" ? entry : `${rel}/${entry}`;
+      if (writes.some((re) => re.test(r))) continue;
       const target = replaced.get(r);
       const at = join(dst, entry);
       if (existsSync(at) || lstatExists(at)) continue;
@@ -397,7 +402,9 @@ export async function buildView(
         symlinkSync(target, at);
         continue;
       }
-      const inside = [...replaced.keys()].some((k) => k.startsWith(`${r}/`));
+      const inside =
+        [...replaced.keys()].some((k) => k.startsWith(`${r}/`)) ||
+        viewHoldsWrite(writes, r);
       if (inside && statSync(join(src, entry)).isDirectory()) {
         await mkdir(at, { recursive: true });
         await walk(r);

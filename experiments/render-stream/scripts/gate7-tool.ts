@@ -350,7 +350,11 @@ async function main(): Promise<void> {
       buildSha256:
         process.env.GATE7_BUILD_SHA256 ||
         bundleBuildSha256(resolve(bundle), kind),
-      manifestSha256: process.env.GATE7_MANIFEST_SHA256 || undefined,
+      // G7z: run-gate7.sh --manifest-hello exports one sha per kind.
+      manifestSha256:
+        process.env.GATE7_MANIFEST_SHA256 ||
+        process.env[`GATE7_MANIFEST_SHA256_${kind.toUpperCase()}`] ||
+        undefined,
       // G7wf: GATE7_WEB_FETCH (run-gate7.sh --web-fetch), the web export's payload GETs.
       ...(kind === "web"
         ? { webFetch: webFetchOf(process.env.GATE7_WEB_FETCH) }

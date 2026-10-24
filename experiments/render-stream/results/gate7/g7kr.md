@@ -218,7 +218,10 @@ Everything below ran on the final code, and each run's outcome is listed.
     `leg-class-sabotage-drop-resource@web` failed at seq 611 against 610, and
     `no-cors-withheld@web` at seq 2 against 1. That is the remote refusal's "two transactions
     folded in one poll, the failure at the other seq". The diff does not reach gate 2's receiver
-    or checks. A single rerun of web g7-2 was started, but it had not finished at landing time.
+    or checks. A single rerun of web g7-2 finished after landing (corrected by G7z; this said it
+    had not finished): 35 PASS, 1 FAIL. `no-cors-withheld@web` passed, and
+    `leg-class-sabotage-drop-resource@web` failed again with the same fold class (receiver failure
+    at seq 617, expected 616). Evidence: `g7kr/finisher2/validate/local-web-g7-2-rerun/`.
 - **Local timing:**
   - `g7live-gsw-timing` **passes**: 174 PASS, 4 `unavailable` (desktop g7-lc's phone rows).
   - `g7live-web-rust-timing` has 162 PASS, 3 `unavailable` and 1 FAIL:

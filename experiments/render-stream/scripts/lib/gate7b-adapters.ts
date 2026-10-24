@@ -50,19 +50,21 @@ import {
 import { decodePngRgba } from "./gate-minus1-checks";
 import { diffRgba } from "./gate0-checks";
 import {
+  CHECKER_WRITES,
+  type Gate7Check,
+  type Gate7GroupResult,
+  type SourceProvenance,
   appliedCore,
   dropCrossCoreDetail,
   filesUnder,
-  type Gate7Check,
-  type Gate7GroupResult,
   jsonDiffPaths,
   mk,
   nativeOnly,
   normalizeApplied,
   readJson,
-  type SourceProvenance,
   sha256File,
   sourceProvenanceProblems,
+  viewHoldsWrite,
 } from "./gate7-adapters";
 import type { WebLegSpec } from "./gate7-web-legs";
 import { resolveRecording, statesEqual } from "./render-stream-2";
@@ -346,6 +348,8 @@ export async function buildMirrorView(
       const r = rel === "" ? entry : `${rel}/${entry}`;
       if (rel === "" && (entry === "result.json" || entry === "legs.json"))
         continue;
+      // The checker's own outputs are the view's (CHECKER_WRITES): never written through a link.
+      if (CHECKER_WRITES.some((re) => re.test(r))) continue;
       const target = replaced.get(r);
       if (target !== undefined) {
         symlinkSync(target, join(viewDir, r));
@@ -357,7 +361,8 @@ export async function buildMirrorView(
       }
       const src = join(sourceDir, r);
       if (
-        keys.some((k) => k.startsWith(`${r}/`)) &&
+        (keys.some((k) => k.startsWith(`${r}/`)) ||
+          viewHoldsWrite(CHECKER_WRITES, r)) &&
         statSync(src).isDirectory()
       ) {
         await mkdir(join(viewDir, r), { recursive: true });

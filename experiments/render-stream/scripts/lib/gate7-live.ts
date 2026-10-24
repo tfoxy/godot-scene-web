@@ -506,6 +506,10 @@ export async function grepTree(
  * (`submitted_ack_ms`, never before `drawn_ms`). */
 export function pacedLoopProblems(leg: string, applied: unknown): string[] {
   const problems: string[] = [];
+  // A leg whose receiver never wrote applied.json (a device browser that stopped answering CDP)
+  // fails this check by name instead of crashing the whole checker.
+  if (applied === undefined || applied === null)
+    return [`${leg}: no applied.json (the receiver wrote no evidence)`];
   const doc = applied as {
     receiver?: { kind?: string };
     transactions?: Array<Record<string, unknown>>;

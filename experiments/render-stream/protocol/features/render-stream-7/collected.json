@@ -1,0 +1,1298 @@
+{
+  "schema": "render-stream-features-collected/1",
+  "primary_build": "6a454065",
+  "receivers": {
+    "native": {
+      "receiver": {
+        "id": "native-godot-4.5.1-gl_compatibility-rs-core",
+        "kind": "native",
+        "build": {
+          "sha256": "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
+          "godot_editor": "4.5.1-stable",
+          "web_template_sha256": null,
+          "bundle_bytes": null,
+          "commit": "6a454065"
+        },
+        "platform": {
+          "runtime": "godot-4.5.1-gl_compatibility",
+          "graphics": "OpenGL API 3.3.0 NVIDIA 595.71.05 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 2060",
+          "angle_backend": null
+        }
+      },
+      "webgl_compression_extensions": null,
+      "device_targets": [
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 1,
+          "status": "not-applicable",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "not applicable: the phones run browser receivers only",
+          "notes": null
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 1,
+          "status": "not-applicable",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "not applicable: the phones run browser receivers only",
+          "notes": null
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 1,
+          "status": "not-applicable",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "not applicable: the phones run browser receivers only",
+          "notes": null
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 2,
+          "status": "not-applicable",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "not applicable: the phones run browser receivers only",
+          "notes": null
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 2,
+          "status": "not-applicable",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "not applicable: the phones run browser receivers only",
+          "notes": null
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 2,
+          "status": "not-applicable",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "not applicable: the phones run browser receivers only",
+          "notes": null
+        }
+      ]
+    },
+    "web-export": {
+      "receiver": {
+        "id": "web-export-godot-4.5.1-web_dlink_nothreads-rs-core",
+        "kind": "web-export",
+        "build": {
+          "sha256": "d2a55ca95e5269405ddfcb39f2617b3c038d244f1181164c8289bc67ccfbd3f1",
+          "godot_editor": "4.5.1-stable",
+          "web_template_sha256": "68162ae9249ca3b7ce53dde8cdfab59463bd6518dca9123df41e5cc8fb1bd454",
+          "bundle_bytes": null,
+          "commit": "6a454065"
+        },
+        "platform": {
+          "runtime": "chromium-148.0.7778.96",
+          "graphics": "ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA NVIDIA GeForce RTX 2060 (0x00001F03)), NVIDIA)",
+          "angle_backend": "vulkan"
+        }
+      },
+      "webgl_compression_extensions": [
+        "WEBGL_compressed_texture_s3tc",
+        "WEBGL_compressed_texture_s3tc_srgb"
+      ],
+      "device_targets": [
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": 60,
+          "chrome": "Chrome/154.0.8037.127",
+          "build_sha": "dcdbc5b4b1fc16d29ef2cbbe4f2082f6829df106d27ea10a2b7e802c57fb9e98",
+          "failed_checks": [
+            "dev-rate@web-w1:pace",
+            "dev-cadence@web-w1:pace",
+            "dev-main-thread@web-w1:pace"
+          ],
+          "evidence": [
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "device-provenance@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-rate@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-cadence@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-main-thread@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-gpu@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-unthrottled@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-presence@web-w1:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-pace-w1-web",
+              "check": "dev-presentation-typed@web-w1:pace",
+              "receiver_kind": "web-export"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 27.78,
+          "drawn_hz": 27.81,
+          "run_build": "c9026a06+G7v",
+          "acceptance": "not met (user 2026-10-22: recorded with its numbers, F3(a))",
+          "notes": "G7v, g31 web window 1 (not rerun on the closing build: window 2 is the default). Unverified on this manifest's build (D28, Q11): the run is c9026a06+G7v, bundle dcdbc5b4b1fc16d2; its own Q13d verdict is not met."
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": 60,
+          "chrome": "Chrome/154.0.8037.127",
+          "build_sha": "dcdbc5b4b1fc16d29ef2cbbe4f2082f6829df106d27ea10a2b7e802c57fb9e98",
+          "failed_checks": [
+            "dev-rate@web-w1:scene",
+            "dev-cadence@web-w1:scene",
+            "dev-main-thread@web-w1:scene"
+          ],
+          "evidence": [
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "device-provenance@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-rate@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-cadence@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-main-thread@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-gpu@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-unthrottled@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-presence@web-w1:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-scene-w1-web",
+              "check": "dev-presentation-typed@web-w1:scene",
+              "receiver_kind": "web-export"
+            }
+          ],
+          "t_p_ms": 20.48,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 8.75,
+          "drawn_hz": 8.74,
+          "run_build": "c9026a06+G7v",
+          "acceptance": "not met (user 2026-10-22: recorded with its numbers, F3(a))",
+          "notes": "G7v, g31 web window 1 (not rerun on the closing build: window 2 is the default). Unverified on this manifest's build (D28, Q11): the run is c9026a06+G7v, bundle dcdbc5b4b1fc16d2; its own Q13d verdict is not met."
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": 60,
+          "chrome": "Chrome/154.0.8037.127",
+          "build_sha": "dcdbc5b4b1fc16d29ef2cbbe4f2082f6829df106d27ea10a2b7e802c57fb9e98",
+          "failed_checks": [
+            "dev-rate@web-w1:hd",
+            "dev-cadence@web-w1:hd",
+            "dev-main-thread@web-w1:hd",
+            "dev-presence@web-w1:hd"
+          ],
+          "evidence": [
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "device-provenance@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-rate@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-cadence@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-main-thread@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-gpu@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-unthrottled@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-presence@web-w1:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7v/g7v-g31-web",
+              "leg": "dev-hd-w1-web",
+              "check": "dev-presentation-typed@web-w1:hd",
+              "receiver_kind": "web-export"
+            }
+          ],
+          "t_p_ms": 61.26,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 0.28,
+          "drawn_hz": 0.3,
+          "run_build": "c9026a06+G7v",
+          "acceptance": "stretch: not met, accepted as measured (user 2026-10-22)",
+          "notes": "G7v, g31 web window 1 (not rerun on the closing build: window 2 is the default). Unverified on this manifest's build (D28, Q11): the run is c9026a06+G7v, bundle dcdbc5b4b1fc16d2; its own Q13d verdict is not met."
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 2,
+          "status": "not-met",
+          "panel_hz": 60,
+          "chrome": "Chrome/155.0.8059.84",
+          "build_sha": "d2a55ca95e5269405ddfcb39f2617b3c038d244f1181164c8289bc67ccfbd3f1",
+          "failed_checks": [
+            "dev-rate@web-w2:pace",
+            "dev-cadence@web-w2:pace",
+            "dev-main-thread@web-w2:pace"
+          ],
+          "evidence": [
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "device-provenance@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-rate@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-cadence@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-main-thread@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-gpu@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-unthrottled@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-presence@web-w2:pace",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-pace-w2-web",
+              "check": "dev-presentation-typed@web-w2:pace",
+              "receiver_kind": "web-export"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 57.71,
+          "drawn_hz": 56.06,
+          "run_build": "6a454065",
+          "acceptance": "not met (user 2026-10-22: recorded with its numbers, F3(a))",
+          "notes": "G7z closing run, g31 web/rust at credit window 2 (G7V_WINDOWS=2)"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 2,
+          "status": "not-met",
+          "panel_hz": 60,
+          "chrome": "Chrome/155.0.8059.84",
+          "build_sha": "d2a55ca95e5269405ddfcb39f2617b3c038d244f1181164c8289bc67ccfbd3f1",
+          "failed_checks": [
+            "dev-rate@web-w2:scene",
+            "dev-cadence@web-w2:scene",
+            "dev-main-thread@web-w2:scene"
+          ],
+          "evidence": [
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "device-provenance@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-rate@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-cadence@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-main-thread@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-gpu@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-unthrottled@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-presence@web-w2:scene",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-scene-w2-web",
+              "check": "dev-presentation-typed@web-w2:scene",
+              "receiver_kind": "web-export"
+            }
+          ],
+          "t_p_ms": 23.8,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 19.61,
+          "drawn_hz": 16.72,
+          "run_build": "6a454065",
+          "acceptance": "not met (user 2026-10-22: recorded with its numbers, F3(a))",
+          "notes": "G7z closing run, g31 web/rust at credit window 2 (G7V_WINDOWS=2)"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 2,
+          "status": "not-met",
+          "panel_hz": 60,
+          "chrome": "Chrome/155.0.8059.84",
+          "build_sha": "d2a55ca95e5269405ddfcb39f2617b3c038d244f1181164c8289bc67ccfbd3f1",
+          "failed_checks": [
+            "dev-rate@web-w2:hd",
+            "dev-cadence@web-w2:hd",
+            "dev-main-thread@web-w2:hd",
+            "dev-presence@web-w2:hd"
+          ],
+          "evidence": [
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "device-provenance@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-rate@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-cadence@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-main-thread@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-gpu@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-unthrottled@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-presence@web-w2:hd",
+              "receiver_kind": "web-export"
+            },
+            {
+              "run": "g7z/g31-web/run",
+              "leg": "dev-hd-w2-web",
+              "check": "dev-presentation-typed@web-w2:hd",
+              "receiver_kind": "web-export"
+            }
+          ],
+          "t_p_ms": 64.62,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 0.34,
+          "drawn_hz": 0.18,
+          "run_build": "6a454065",
+          "acceptance": "stretch: not met, accepted as measured (user 2026-10-22)",
+          "notes": "G7z closing run, g31 web/rust at credit window 2 (G7V_WINDOWS=2)"
+        }
+      ]
+    },
+    "gsw-canvas": {
+      "receiver": {
+        "id": "gsw-canvas-rs-core-wasm",
+        "kind": "gsw-canvas",
+        "build": {
+          "sha256": "3955c72124c8a6714e5641d92ee8319408617140a016f22c4a8f23e1bdecfe18",
+          "godot_editor": "4.5.1-stable",
+          "web_template_sha256": null,
+          "bundle_bytes": null,
+          "commit": "6a454065"
+        },
+        "platform": {
+          "runtime": "chromium-148.0.7778.96",
+          "graphics": "ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA NVIDIA GeForce RTX 2060 (0x00001F03)), NVIDIA)",
+          "angle_backend": "vulkan"
+        }
+      },
+      "webgl_compression_extensions": [
+        "WEBGL_compressed_texture_s3tc",
+        "WEBGL_compressed_texture_s3tc_srgb"
+      ],
+      "device_targets": [
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": 60,
+          "chrome": "Chrome/154.0.8037.127",
+          "build_sha": "f4548380d0bfd89bacaf13bcd4bc283fb5278483ef52ac67810ede96b03c1b05",
+          "failed_checks": [
+            "dev-rate@gsw-w1:pace",
+            "dev-cadence@gsw-w1:pace",
+            "dev-unthrottled@gsw-w1:pace"
+          ],
+          "evidence": [
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "device-provenance@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-rate@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-cadence@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-main-thread@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-gpu@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-unthrottled@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-presence@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-pace-w1-gsw",
+              "check": "dev-presentation-typed@gsw-w1:pace",
+              "receiver_kind": "gsw-canvas"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 46.98,
+          "drawn_hz": 47.02,
+          "run_build": "c9026a06+G7v",
+          "acceptance": "not met at window 1 (window 2 is the default, G7wd)",
+          "notes": "G7v, g31 gsw window 1 (not rerun on the closing build: window 2 is the default). Unverified on this manifest's build (D28, Q11): the run is c9026a06+G7v, bundle f4548380d0bfd89b; its own Q13d verdict is not met."
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": 60,
+          "chrome": "Chrome/154.0.8037.127",
+          "build_sha": "f4548380d0bfd89bacaf13bcd4bc283fb5278483ef52ac67810ede96b03c1b05",
+          "failed_checks": [
+            "dev-rate@gsw-w1:scene",
+            "dev-cadence@gsw-w1:scene",
+            "dev-unthrottled@gsw-w1:scene"
+          ],
+          "evidence": [
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "device-provenance@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-rate@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-cadence@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-main-thread@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-gpu@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-unthrottled@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-presence@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-scene-w1-gsw",
+              "check": "dev-presentation-typed@gsw-w1:scene",
+              "receiver_kind": "gsw-canvas"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 36.02,
+          "drawn_hz": 35.85,
+          "run_build": "c9026a06+G7v",
+          "acceptance": "not met at window 1 (window 2 is the default, G7wd)",
+          "notes": "G7v, g31 gsw window 1 (not rerun on the closing build: window 2 is the default). Unverified on this manifest's build (D28, Q11): the run is c9026a06+G7v, bundle f4548380d0bfd89b; its own Q13d verdict is not met."
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": 60,
+          "chrome": "Chrome/154.0.8037.127",
+          "build_sha": "f4548380d0bfd89bacaf13bcd4bc283fb5278483ef52ac67810ede96b03c1b05",
+          "failed_checks": [
+            "dev-rate@gsw-w1:hd",
+            "dev-cadence@gsw-w1:hd",
+            "dev-main-thread@gsw-w1:hd",
+            "dev-gpu@gsw-w1:hd"
+          ],
+          "evidence": [
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "device-provenance@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-rate@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-cadence@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-main-thread@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-gpu@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-unthrottled@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-presence@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7v/g7v-g31-gsw",
+              "leg": "dev-hd-w1-gsw",
+              "check": "dev-presentation-typed@gsw-w1:hd",
+              "receiver_kind": "gsw-canvas"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 4.44,
+          "drawn_hz": 4.41,
+          "run_build": "c9026a06+G7v",
+          "acceptance": "stretch: not met, accepted as measured (user 2026-10-22)",
+          "notes": "G7v, g31 gsw window 1 (not rerun on the closing build: window 2 is the default). Unverified on this manifest's build (D28, Q11): the run is c9026a06+G7v, bundle f4548380d0bfd89b; its own Q13d verdict is not met."
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 2,
+          "status": "not-met",
+          "panel_hz": 60,
+          "chrome": "Chrome/155.0.8059.84",
+          "build_sha": "3955c72124c8a6714e5641d92ee8319408617140a016f22c4a8f23e1bdecfe18",
+          "failed_checks": [
+            "dev-cadence@gsw-w2:pace",
+            "dev-cadence@gsw-w2:gpu-headroom-pace",
+            "dev-gpu-headroom@gsw-w2:gpu-headroom-pace"
+          ],
+          "evidence": [
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "device-provenance@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-rate@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-cadence@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-main-thread@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-gpu@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-unthrottled@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-presence@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-pace-w2-gsw",
+              "check": "dev-presentation-typed@gsw-w2:pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "device-provenance@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-rate@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-cadence@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-main-thread@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-gpu@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-unthrottled@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-presence@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-presentation-typed@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-pace-w2-gsw",
+              "check": "dev-gpu-headroom@gsw-w2:gpu-headroom-pace",
+              "receiver_kind": "gsw-canvas"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 59.89,
+          "drawn_hz": 57.8,
+          "run_build": "6a454065",
+          "acceptance": "met with measured shortfall (user 2026-10-22, F3(a)): gate 7's phone receiver",
+          "notes": "G7z closing run, g31 gsw at credit window 2 (G7V_WINDOWS=2)"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 2,
+          "status": "not-met",
+          "panel_hz": 60,
+          "chrome": "Chrome/155.0.8059.84",
+          "build_sha": "3955c72124c8a6714e5641d92ee8319408617140a016f22c4a8f23e1bdecfe18",
+          "failed_checks": [
+            "dev-rate@gsw-w2:scene",
+            "dev-cadence@gsw-w2:scene",
+            "dev-rate@gsw-w2:gpu-headroom-scene",
+            "dev-cadence@gsw-w2:gpu-headroom-scene",
+            "dev-gpu-headroom@gsw-w2:gpu-headroom-scene"
+          ],
+          "evidence": [
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "device-provenance@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-rate@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-cadence@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-main-thread@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-gpu@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-unthrottled@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-presence@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-scene-w2-gsw",
+              "check": "dev-presentation-typed@gsw-w2:scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "device-provenance@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-rate@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-cadence@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-main-thread@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-gpu@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-unthrottled@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-presence@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-presentation-typed@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-scene-w2-gsw",
+              "check": "dev-gpu-headroom@gsw-w2:gpu-headroom-scene",
+              "receiver_kind": "gsw-canvas"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 57.99,
+          "drawn_hz": 54.11,
+          "run_build": "6a454065",
+          "acceptance": "met with measured shortfall (user 2026-10-22, F3(a)): gate 7's phone receiver",
+          "notes": "G7z closing run, g31 gsw at credit window 2 (G7V_WINDOWS=2)"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 2,
+          "status": "not-met",
+          "panel_hz": 60,
+          "chrome": "Chrome/155.0.8059.84",
+          "build_sha": "3955c72124c8a6714e5641d92ee8319408617140a016f22c4a8f23e1bdecfe18",
+          "failed_checks": [
+            "dev-rate@gsw-w2:hd",
+            "dev-cadence@gsw-w2:hd",
+            "dev-main-thread@gsw-w2:hd",
+            "dev-gpu@gsw-w2:hd",
+            "dev-rate@gsw-w2:gpu-headroom-hd",
+            "dev-cadence@gsw-w2:gpu-headroom-hd",
+            "dev-main-thread@gsw-w2:gpu-headroom-hd",
+            "dev-gpu@gsw-w2:gpu-headroom-hd",
+            "dev-gpu-headroom@gsw-w2:gpu-headroom-hd"
+          ],
+          "evidence": [
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "device-provenance@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-rate@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-cadence@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-main-thread@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-gpu@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-unthrottled@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-presence@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-hd-w2-gsw",
+              "check": "dev-presentation-typed@gsw-w2:hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "device-provenance@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-rate@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-cadence@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-main-thread@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-gpu@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-unthrottled@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-presence@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-presentation-typed@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            },
+            {
+              "run": "g7z/g31-gsw/run",
+              "leg": "dev-gpu-headroom-hd-w2-gsw",
+              "check": "dev-gpu-headroom@gsw-w2:gpu-headroom-hd",
+              "receiver_kind": "gsw-canvas"
+            }
+          ],
+          "t_p_ms": 17,
+          "panel_mode": "60 Hz, the g31's only mode (dumpsys); T_p measured per repeat",
+          "thermal": "none",
+          "freq_cap_derated": true,
+          "published_hz": 8.77,
+          "drawn_hz": 5.05,
+          "run_build": "6a454065",
+          "acceptance": "stretch: not met, accepted as measured (user 2026-10-22)",
+          "notes": "G7z closing run, g31 gsw at credit window 2 (G7V_WINDOWS=2)"
+        }
+      ]
+    }
+  }
+}

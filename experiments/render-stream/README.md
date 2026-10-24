@@ -4,11 +4,14 @@ Gates −1 through 6 have passed: a GDExtension observes every `RenderingServer`
 texture call on an **unmodified official** Godot release template under `--headless`, ships it
 over a versioned wire format (`render-stream/0` through `/6`), and an independent receiver
 replays it pixel-exact, live or from a file, surviving stalls, resync and reconnects. Gate 7
-(browser receivers) is in progress: see
-[protocol/gate7-design.md](protocol/gate7-design.md) and the increments table below. The
-baseline phone is the moto g31 (browser receivers must reach 60/60 on 2020-era phones).
+(browser receivers) has passed on build 6a454065: the web export and the GSW canvas receiver
+replay the same streams in Chromium, each with its own feature manifest
+([results/gate7.md](results/gate7.md); contract
+[protocol/gate7-design.md](protocol/gate7-design.md)). The baseline phone is the moto g31: GSW at
+credit window 2 is accepted as met with a measured shortfall, and the web export does not meet
+it.
 
-## Gates −1 to 6
+## Gates −1 to 7
 
 One row per gate; "Result" links to that gate's file under `results/`.
 
@@ -23,6 +26,7 @@ One row per gate; "Result" links to that gate's file under `results/`.
 | 5 | Immediate geometry, meshes and styleboxes travel on `render-stream/4`→`/5`; live mesh recovery through dropped presentations. | [results/gate5.md](results/gate5.md) |
 | 5.5 | `CanvasItemMaterial` and `ShaderMaterial` (code + params) travel on `render-stream/5`; live shader recovery through dropped presentations. | [results/gate5-5.md](results/gate5-5.md) |
 | 6 | Presentation size, font oversampling, snap and rate are session-declared (`render-stream/6`); `CanvasLayer`s, follow-viewport and a committed supported-feature manifest. | [results/gate6.md](results/gate6.md) |
+| 7 | Browser receivers: the Godot web export and the GSW canvas receiver on the shared Rust core replay gates 0–6 from files and live over `render-stream/7` (credit window 2 by default), with lifecycle, startup, soak and a per-receiver feature manifest; the g31 phone target is met with a measured shortfall on GSW only. | [results/gate7.md](results/gate7.md) (closing run: [results/gate7/g7z.md](results/gate7/g7z.md)) |
 
 ## Gate 7 increments (browser receivers)
 
@@ -73,7 +77,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
 | G7p | `render-stream-report/2` (browser, device and env fields, validated with sabotages), the `g7-p` matrix driver on all three receivers, and the g31 device rows from G7v's run; the g86 is descoped | [results/gate7/g7p.md](results/gate7/g7p.md) |
 | G7kh | the sweep's GSW soak `js-heap-bounded` regression: G7q's two per-fold log lines kept in the page's log buffer, exposed by G7wd's window 2 (half the soak's transactions fold); a summary log keeps no per-transaction state and the GSW soak tap is capped like the web one; slope 834 → 310 KB/min (window 2), 307 KB/min (window 1), budget unchanged; finding: `rss-bounded-renderer` samples an idle renderer — landed | [results/gate7/g7kh.md](results/gate7/g7kh.md) |
 | G7kr | `rss-bounded-renderer` samples the receiver page's own renderer (128 MiB marker), post-GC, with per-process `mem-procs.json`/`mem-summary.json`; GSW gates on Q10 + 5 KiB per payload GET (Playwright's CDP Network-domain record: 3.9 KB/GET vs 0.23 bare); the web export's 7.4-10.3 MB/min (GL-id tables + unexplained PartitionAlloc; no one-factor control removed it) is a report-only `known-shortfall` owned by G7kw2 — landed | [results/gate7/g7kr.md](results/gate7/g7kr.md) |
-| G7z | three manifests, gate 7 summary | [protocol/gate7/g7z.md](protocol/gate7/g7z.md) |
+| G7z | the three `render-stream-features/2` manifests (native, web-export, gsw-canvas; 123 entries each), Q11's seven g7-z checks, the closing run on one build (6a454065: gates −1 to 6, every gate 7 group, the g31 on both browsers) and the gate 7 summary; gate 7 passed — landed | [results/gate7/g7z.md](results/gate7/g7z.md) |
 
 ## Protocol docs
 

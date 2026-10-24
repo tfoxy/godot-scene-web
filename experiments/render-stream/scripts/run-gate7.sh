@@ -9,7 +9,7 @@
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--no-source-cache] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
 #     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust]
-#     [--web-fetch fetch|httpclient]
+#     [--web-fetch fetch|httpclient] [--manifest-hello]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -68,6 +68,10 @@
 # (the flag stays for callers that pass it); a bundle whose build.json does not say core rust (an
 # old GDScript build) is refused before anything runs.
 #
+# --manifest-hello (G7z, gate7-design.md Q11 manifest-matches-hello): every live receiver's /7
+#             hello sends its kind's protocol/features/render-stream-7/<kind>.json sha256 (browsers
+#             through the daemon, native through lib/gate6c-legs.sh's /7 path). The manifests are
+#             judged by `check-gate7.ts --legs g7-z` afterwards, never by this runner.
 # --web-fetch fetch|httpclient (G7wf, protocol/gate7/g7wf.md; --live only): how the web export
 # GETs resource payloads. `fetch` (the default) is the browser's fetch() through JavaScriptBridge;
 # `httpclient` (GATE7_WEB_FETCH to the browser daemon, RS_RECEIVER_WEB_FETCH=httpclient on every
@@ -389,6 +393,12 @@ while [ $# -gt 0 ]; do
 		WEB_FETCH="${2:-}"
 		shift 2
 		;;
+	--manifest-hello)
+		# G7z (Q11 manifest-matches-hello): every live receiver's /7 hello carries the sha256 of
+		# its kind's protocol/features/render-stream-7/<kind>.json (below).
+		MANIFEST_HELLO=1
+		shift
+		;;
 	--rs-build)
 		RS_BUILD="${2:-}"
 		shift 2
@@ -422,6 +432,15 @@ while [ $# -gt 0 ]; do
 done
 # G7wd (fork F1 resolved): a live run is at credit window 2 unless --credit-window 1 says otherwise.
 [ "$LIVE" = 1 ] && export GATE7_CREDIT_WINDOW="${GATE7_CREDIT_WINDOW:-2}"
+# G7z: --manifest-hello exports one sha per receiver kind; gate7-tool.ts's browser daemon picks
+# its kind's (GATE7_MANIFEST_SHA256_WEB / _GSW), lib/gate6c-legs.sh the native one on /7.
+if [ "${MANIFEST_HELLO:-0}" = 1 ]; then
+	for pair in NATIVE:native WEB:web-export GSW:gsw-canvas; do
+		f="$EXPERIMENT_DIR/protocol/features/render-stream-7/${pair#*:}.json"
+		[ -f "$f" ] || { echo "run-gate7: --manifest-hello: $f missing (make-features.ts --receiver all)" >&2; exit 2; }
+		export "GATE7_MANIFEST_SHA256_${pair%%:*}=$(sha256sum "$f" | cut -d' ' -f1)"
+	done
+fi
 
 
 tool() {

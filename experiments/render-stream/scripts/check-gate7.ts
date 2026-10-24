@@ -39,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { buildGate4Report } from "./check-gate4";
 import { buildGate5Report } from "./check-gate5";
 import { buildGate6Report } from "./check-gate6";
+import { loadDeviceTable } from "./lib/browser-harness";
 import { type Gate0Expected, runGate0 } from "./lib/gate0-checks";
 import { runGate1 } from "./lib/gate1-checks";
 import type { Gate1Expected } from "./lib/gate1-expected";
@@ -61,7 +62,6 @@ import {
 } from "./lib/gate7-gsw";
 import { gswExtraChecks } from "./lib/gate7-gsw-checks";
 import { GATE6_LEGS } from "./lib/gate7-gsw-g6";
-
 import {
   checkGateLive,
   GATE7L_GATES,
@@ -75,19 +75,22 @@ import {
   runGate7DevChecks,
 } from "./lib/gate7d-checks";
 import { checkG7kKind, type G7kKindResult } from "./lib/gate7k-checks";
-import { checkG7pKind, G7P_KINDS, type G7pKindResult } from "./lib/gate7p-checks";
 import {
-  checkDevRun,
-  type DevRunResult,
-  writeDevSummary,
-} from "./lib/gate7v-checks";
-import { loadDeviceTable } from "./lib/browser-harness";
+  checkG7pKind,
+  G7P_KINDS,
+  type G7pKindResult,
+} from "./lib/gate7p-checks";
 import {
   checkG7rKind,
   G7R_KINDS,
   type G7rKindResult,
 } from "./lib/gate7r-checks";
 import { checkG7u, type G7uRunResult } from "./lib/gate7u-checks";
+import {
+  checkDevRun,
+  type DevRunResult,
+  writeDevSummary,
+} from "./lib/gate7v-checks";
 import type { Gate55Expected as Gate55CimExpected } from "./lib/gate55b-expected";
 import { runGate55d } from "./lib/gate55d-checks";
 import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
@@ -121,6 +124,7 @@ export const ALL_GROUPS = [
   "g7-dev",
   "g7-bench",
   "g7-p",
+  "g7-z",
 ] as const;
 export const LANDED_GROUPS: readonly string[] = [
   "g7-0",
@@ -137,6 +141,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-dev",
   "g7-bench",
   "g7-p",
+  "g7-z",
 ];
 /** G7a: the groups with gsw legs (G7b adds the web half of g7-1..g7-6 and g7-55; G7t and G7s
  * the gsw half of g7-4, g7-5 and g7-55). */
@@ -217,6 +222,8 @@ interface Args {
   deviceEvidence: string[];
   /** G7p: the credit windows the matrix ran (`--g7p-windows 1,2`). */
   g7pWindows: (1 | 2)[];
+  /** G7z: the evidence root the quoted runs are relative to (`--evidence-root`). */
+  evidenceRoot: string | undefined;
   /** G7p: report ids the run declares it ran (`--g7p-scenarios a,b`); unset: the full matrix. */
   g7pScenarios: string[] | undefined;
 }
@@ -230,6 +237,7 @@ function parseArgs(argv: string[]): Args {
   let deviceEvidence: string[] = [];
   let g7pWindows: (1 | 2)[] = [1, 2];
   let g7pScenarios: string[] | undefined;
+  let evidenceRoot: string | undefined;
   let extension: string | undefined;
   let calibration: string | undefined;
   let receiver: string | undefined;
@@ -268,6 +276,8 @@ function parseArgs(argv: string[]): Args {
         .split(",")
         .filter(Boolean)
         .map((d) => resolve(d));
+    } else if (argv[i] === "--evidence-root") {
+      evidenceRoot = resolve(argv[++i] ?? "");
     } else if (argv[i] === "--g7p-scenarios") {
       g7pScenarios = (argv[++i] ?? "").split(",").filter(Boolean);
     } else if (argv[i] === "--g7p-windows") {
@@ -303,6 +313,7 @@ function parseArgs(argv: string[]): Args {
     deviceEvidence,
     g7pWindows,
     g7pScenarios,
+    evidenceRoot,
   };
 }
 
@@ -448,6 +459,26 @@ async function main(): Promise<void> {
   // G7d's pace and plan checks (file legs); `--live` g7-dev is G7v's (below).
   if (legs.includes("g7-dev") && !live)
     groupChecks["g7-dev"] = await runGate7DevChecks(out, device);
+  // G7z: Q11's seven manifest checks per receiver kind (lib/gate7z-checks.ts), against the runs
+  // lib/feature-evidence-7.ts quotes under `--evidence-root` (default: the main checkout's
+  // artifacts/render-stream/gate7). Pure: no leg runs.
+  if (legs.includes("g7-z")) {
+    const { runGate7z, runGate7zSessions, defaultEvidenceRoot } = await import(
+      "./lib/gate7z-checks"
+    );
+    const { buildManifest2, manifest7Path, serializeManifest2 } = await import(
+      "./make-features"
+    );
+    const inp = {
+      root: args.evidenceRoot ?? defaultEvidenceRoot(),
+      manifestPath: manifest7Path,
+      regenerate: (k: Parameters<typeof manifest7Path>[0]) =>
+        serializeManifest2(buildManifest2(k)),
+    };
+    const z = runGate7z(inp);
+    await runGate7zSessions(inp, z);
+    groupChecks["g7-z"] = z;
+  }
   if (legs.includes("g7-bench")) {
     const bench = await runGate7BenchChecks(out, device, env?.receiver ?? null);
     groupChecks["g7-bench"] = bench.checks;
@@ -523,7 +554,9 @@ async function main(): Promise<void> {
         );
         if (!ran) {
           if (receiver === kind)
-            throw new Error(`check-gate7: --live g7-p@${kind}: no <out>/gate6/matrix-${kind}-w<N>/`);
+            throw new Error(
+              `check-gate7: --live g7-p@${kind}: no <out>/gate6/matrix-${kind}-w<N>/`,
+            );
           continue;
         }
         console.log(`check-gate7: judging g7-p @${kind}`);
@@ -536,7 +569,9 @@ async function main(): Promise<void> {
         );
       }
       if (!results.some((r) => r.group === "g7-p"))
-        throw new Error("check-gate7: --live g7-p: no <out>/gate6/matrix-<kind>-w<N>/");
+        throw new Error(
+          "check-gate7: --live g7-p: no <out>/gate6/matrix-<kind>-w<N>/",
+        );
     }
     // G7u: one result per receiver kind and environment that ran (run-gate7.sh --live --legs
     // g7-lc), plus each kind's real legs typed `unavailable` when no device run exists.
@@ -606,11 +641,15 @@ async function main(): Promise<void> {
         throw new Error(
           "check-gate7: --live g7-dev: no <out>/gate6/<ctl|dev-<id>>-<kind>-w<w>/",
         );
-      const firstDev = devResults.find((r) => r.device !== null)?.device ?? "g31";
+      const firstDev =
+        devResults.find((r) => r.device !== null)?.device ?? "g31";
       await writeDevSummary(
         out,
         devResults,
-        table[firstDev as keyof typeof table]?.required_workloads ?? ["pace", "scene"],
+        table[firstDev as keyof typeof table]?.required_workloads ?? [
+          "pace",
+          "scene",
+        ],
       );
       console.log(`check-gate7: wrote ${join(out, "g7v-summary.json")}`);
     }
