@@ -1165,6 +1165,15 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
       // G8t (gate8-design.md D8): under GRC_TEXTURE_DECODE=engine the host-decode seam
       // (rs_texture_decode.cpp) turns a block-compressed image into an RGBA8/R8/RG8 payload with
       // the engine's own Image::decompress, on a duplicate; it declines everything else.
+      const int64_t target = rs::decode_target_format(facts.format);
+      if (target >= 0 && (target >= rs::kImageFormatCount ||
+                          !g_resource_policy.formats.permitted[target])) {
+        // G8f: a decode whose payload the policy would refuse is not run. BC6H and ASTC HDR
+        // decode to half floats (RGBH, RGBAH), which only a GRC_RESOURCE_FORMATS naming them
+        // admits; without that the texture keeps G8t's typed refusal and costs nothing.
+        copy.reason = "unsupported-format";
+        return copy;
+      }
       rs::DecodeRequest request;
       request.format = facts.format;
       request.width = static_cast<int32_t>(facts.width);
@@ -1172,7 +1181,6 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
       request.mipmaps = facts.mipmaps;
       request.image = image->object;
       request.frame = current_frame();
-      const int64_t target = rs::decode_target_format(facts.format);
       if (target >= 0 && g_texture_workers.load(std::memory_order_acquire) > 0) {
         // G8kw: the decode's outcome predicted from the D8 table, its content left to a worker. A
         // decoded payload the policy would refuse stays synchronous (the refusal keeps the

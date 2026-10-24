@@ -443,7 +443,7 @@ impl Core {
             ));
         }
         let decoded = match payload::payload_kind(bytes, self.version) {
-            PayloadKind::Texture => payload::decode_texture(bytes).map(|_| ()),
+            PayloadKind::Texture => payload::decode_texture_v(bytes, self.version).map(|_| ()),
             PayloadKind::Mesh => payload::decode_mesh(bytes).map(|_| ()),
             PayloadKind::Shader => payload::decode_shader(bytes).map(|_| ()),
         };
@@ -530,6 +530,7 @@ impl Core {
         let payloads = Payloads {
             provided: &self.provided,
             library: &self.library,
+            version: self.version,
         };
         let r = self
             .planner

@@ -128,7 +128,18 @@ int main() {
   EXPECT(image_format_from_name("ETC2_RA_AS_RG") == 33);
   EXPECT(image_format_from_name("rgba8") == -1);
   EXPECT(payload_pixel_size(4) == 3);
-  EXPECT(payload_pixel_size(11) == 0);
+  // G8f: the float formats' sizes (gate8-design.md D9)
+  EXPECT(payload_pixel_size(8) == 4);    // RF
+  EXPECT(payload_pixel_size(9) == 8);    // RGF
+  EXPECT(payload_pixel_size(10) == 12);  // RGBF
+  EXPECT(payload_pixel_size(11) == 16);  // RGBAF
+  EXPECT(payload_pixel_size(12) == 2);   // RH
+  EXPECT(payload_pixel_size(13) == 4);   // RGH
+  EXPECT(payload_pixel_size(14) == 6);   // RGBH
+  EXPECT(payload_pixel_size(15) == 8);   // RGBAH
+  EXPECT(payload_pixel_size(6) == 0);    // RGBA4444
+  EXPECT(payload_pixel_size(7) == 0);    // RGB565
+  EXPECT(payload_pixel_size(16) == 0);   // RGBE9995
 
   // Mip chains (core/io/image.cpp:1700-1745).
   EXPECT(expected_data_bytes(5, 16, 16, false) == 1024);
@@ -137,7 +148,10 @@ int main() {
   EXPECT(expected_data_bytes(1, 4, 4, false) == 32);
   EXPECT(expected_data_bytes(4, 5, 3, true) == 3 * (15 + 2 + 1));  // 5x3, 2x1, 1x1
   EXPECT(expected_data_bytes(0, 1, 1, true) == 1);
-  EXPECT(expected_data_bytes(11, 4, 4, false) == -1);
+  EXPECT(expected_data_bytes(11, 4, 4, false) == 16 * 16);
+  EXPECT(expected_data_bytes(14, 256, 1, false) == 6 * 256);
+  EXPECT(expected_data_bytes(8, 5, 3, true) == 4 * (15 + 2 + 1));
+  EXPECT(expected_data_bytes(6, 4, 4, false) == -1);
   EXPECT(expected_data_bytes(5, 0, 4, false) == -1);
 
   std::vector<std::uint8_t> la8;
@@ -214,8 +228,13 @@ int main() {
   EXPECT(parse_format_policy("RGBA8,LA8,RGBA8", &policy, &error));
   EXPECT(policy.names == (std::vector<std::string>{"LA8", "RGBA8"}));
   EXPECT(!policy.permitted[0]);
-  EXPECT(!parse_format_policy("RGBA8,RGBAF", &policy, &error));
-  EXPECT(error.find("RGBAF") != std::string::npos);
+  // G8f: the eight float formats parse (and size) now; the unsized ones stay refused.
+  EXPECT(parse_format_policy("RGBA8,RGBAF,RH,RGBH,RF,RGF,RGBF,RGH", &policy, &error));
+  EXPECT(policy.permitted[11] && policy.permitted[12] && policy.permitted[14] && !policy.permitted[0]);
+  EXPECT(!parse_format_policy("RGBA8,RGBE9995", &policy, &error));
+  EXPECT(error.find("RGBE9995") != std::string::npos);
+  EXPECT(!parse_format_policy("RGB565", &policy, &error));
+  EXPECT(!parse_format_policy("RGBA4444", &policy, &error));
   EXPECT(!parse_format_policy("RGBA8,", &policy, &error));
 
   // GRC_RESOURCE_MAX_PAYLOAD_BYTES.

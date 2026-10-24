@@ -68,8 +68,13 @@ void test_table() {
   for (const std::int64_t f : {25, 26, 28, 30, 31, 35, 37}) {
     check(decode_target_format(f) == 5, "ETC/ETC2/ASTC LDR -> RGBA8");
   }
-  // declined: half-float decodes (G8f), swizzles, formats etcpak cannot decode, uncompressed
-  for (const std::int64_t f : {23, 24, 36, 38, 33, 34, 27, 29, 32, 0, 5, 6, 7, 8, 11, 15, 16, -1, 39}) {
+  // G8f: the HDR formats decode to half floats (BC6H -> RGBH, ASTC HDR -> RGBAH)
+  check(decode_target_format(23) == 14, "BPTC_RGBF -> RGBH");
+  check(decode_target_format(24) == 14, "BPTC_RGBFU -> RGBH");
+  check(decode_target_format(36) == 15, "ASTC_4x4_HDR -> RGBAH");
+  check(decode_target_format(38) == 15, "ASTC_8x8_HDR -> RGBAH");
+  // declined: swizzles, formats etcpak cannot decode, uncompressed (floats included)
+  for (const std::int64_t f : {33, 34, 27, 29, 32, 0, 5, 6, 7, 8, 11, 15, 16, -1, 39}) {
     check(decode_target_format(f) == -1, "declined source format");
   }
 }
@@ -82,8 +87,8 @@ void test_decode() {
   grc::rs::texture_decode_set_enabled(true);
   check(!grc::rs::texture_decode(request(6)).handled && g_backend_calls == 0,
         "RGBA4444 is not block-compressed: declined by the table");
-  check(!grc::rs::texture_decode(request(23)).handled && g_backend_calls == 0,
-        "BPTC_RGBF (BC6H, half floats) is declined by the table");
+  check(!grc::rs::texture_decode(request(32)).handled && g_backend_calls == 0,
+        "ETC2_RGB8A1 (no etcpak decoder) is declined by the table");
   const DecodeResult ok = grc::rs::texture_decode(request(19));
   check(ok.handled && ok.format == 5 && ok.width == 4 && ok.height == 4 && ok.data_size == 64 &&
             ok.data != nullptr && ok.data[0] == 0x40 && ok.hold != nullptr && ok.decode_ns >= 0 &&
