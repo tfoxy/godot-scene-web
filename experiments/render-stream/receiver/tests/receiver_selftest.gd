@@ -33,6 +33,7 @@ var _checked: int = 0
 func _init() -> void:
 	_check_scripts()
 	_check_fetcher_coding()
+	_check_folded_full()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
@@ -126,6 +127,37 @@ func _check_fetcher_coding() -> void:
 			var data: PackedByteArray = fetcher._current["data"]
 			if data == plain:
 				_fail("a corrupted %s body decoded to the identity bytes" % corrupt_case[0])
+
+
+## G7rf: a fold holding the forced full and a later patch during a resync wait ends the wait.
+func _check_folded_full() -> void:
+	var script: GDScript = load("res://receiver.gd")
+	var node: Node = script.new()
+	node.set("_resync_step", 1)
+	node.set("_awaiting_full", true)
+	var before: Dictionary = {"seq": 6, "encoding": "patch"}
+	var full: Dictionary = {"seq": 7, "encoding": "full"}
+	var patch: Dictionary = {"seq": 8, "encoding": "patch"}
+	var folded: Array[Dictionary] = [before, full]
+	node.set("_coalesced", folded)
+	node.call("_end_wait_on_folded_full", patch)
+	_checked += 1
+	if node.get("_awaiting_full") != false:
+		_fail("a full folded with a later patch did not end the resync wait")
+	var kept: Array = node.get("_coalesced")
+	if kept.size() != 1 or kept[0]["seq"] != 7:
+		_fail("the fold kept %s, expected only the full seq 7" % str(kept))
+	if before.get("skipped", "") != "resync" or full.has("skipped"):
+		_fail("only the entry before the folded full is refused")
+	# No full in the fold: the wait stays.
+	node.set("_awaiting_full", true)
+	var only_patches: Array[Dictionary] = [{"seq": 9, "encoding": "patch"}]
+	node.set("_coalesced", only_patches)
+	node.call("_end_wait_on_folded_full", {"seq": 10, "encoding": "patch"})
+	_checked += 1
+	if node.get("_awaiting_full") != true:
+		_fail("a fold with no full ended the resync wait")
+	node.free()
 
 
 func _check_scripts() -> void:

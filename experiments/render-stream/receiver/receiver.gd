@@ -1977,11 +1977,36 @@ func _apply_newest() -> void:
 	_waiting.clear()
 	var entry: Dictionary = newest["entry"]
 	var meta: Dictionary = newest["meta"]
+	_end_wait_on_folded_full(entry)
 	_mark_coalesced(entry)
 	if _refuse_for_resync(entry):
 		_refuse_coalesced()
 		return
 	_begin_apply(entry, meta, _empty_resources())
+
+
+## G7rf: a fold applied during a resync wait can hold the forced full and a later patch. The full
+## ends the wait: the folded transactions before it are refused without a second resync (the host
+## already has one outstanding), the full and the ones after it apply with the newest, so the
+## newest is never refused. No-op unless waiting and the newest is not itself the full.
+func _end_wait_on_folded_full(newest_entry: Dictionary) -> void:
+	if _resync_step < 0 or not _awaiting_full or newest_entry["encoding"] == "full":
+		return
+	var at: int = -1
+	for index: int in range(_coalesced.size()):
+		if _coalesced[index]["encoding"] == "full":
+			at = index
+	if at < 0:
+		return
+	_awaiting_full = false
+	_log("resync: full transaction seq %d arrived (folded with seq %d)" % [RsWire.as_int(_coalesced[at]["seq"]), RsWire.as_int(newest_entry["seq"])])
+	var kept: Array[Dictionary] = []
+	for index: int in range(_coalesced.size()):
+		if index < at:
+			_coalesced[index]["skipped"] = "resync"
+		else:
+			kept.append(_coalesced[index])
+	_coalesced = kept
 
 
 ## G7q: marks every folded transaction with the seq it is applied with, as soon as it is folded
@@ -2097,6 +2122,7 @@ func _poll_fetches() -> void:
 		_waiting.clear()
 		var newest_entry: Dictionary = newest["entry"]
 		var newest_meta: Dictionary = newest["meta"]
+		_end_wait_on_folded_full(newest_entry)
 		_mark_coalesced(newest_entry)
 		if _refuse_for_resync(newest_entry):
 			_refuse_coalesced()

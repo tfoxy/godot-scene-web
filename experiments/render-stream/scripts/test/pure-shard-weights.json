@@ -42,6 +42,7 @@
   "self-test-gate7k": 1.2,
   "self-test-gate7l": 2.2,
   "self-test-gate7r": 1.2,
+  "self-test-gate7rf": 1.0,
   "self-test-gate7u": 1.2,
   "self-test-gate7u-harness": 1.7,
   "self-test-grt4b": 3.1,

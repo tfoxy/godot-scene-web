@@ -93,6 +93,7 @@ import {
   type ShellTx,
 } from "./evidence";
 import { type FetchResult, LiveFetcher } from "./fetcher";
+import { foldedFullIndex } from "./fold";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
 import { type PayloadVerify, Perf } from "./perf";
 import {
@@ -1029,6 +1030,7 @@ class LiveReceiver {
     const queued = this.queue;
     this.queue = [];
     const item = queued[queued.length - 1];
+    const folded = queued.slice();
     // G7q (credit window 2): a payload is requested for the oldest queued transaction that needed
     // it (its own accept's needed set), so a fetch, or its failure, is logged at the seq that first
     // named it even when that seq is folded into the newest here.
@@ -1055,6 +1057,7 @@ class LiveReceiver {
       );
       rebuild = true;
     }
+    if (this.windowTwo()) this.endWaitOnFoldedFull(folded, item.entry);
     if (this.refuseForResync(item.entry)) return;
     if (rebuild) {
       this.rebuildDue = false;
@@ -1509,6 +1512,33 @@ class LiveReceiver {
     return this.connIndex > 1
       ? `stream-${this.connIndex}-seq-${seq}`
       : `seq-${seq}`;
+  }
+
+  /**
+   * G7rf: a fold applied for a resync wait can hold the forced full and a later patch. The full
+   * ends the wait (receiver.gd `_end_wait_on_folded_full`): the transactions before it are
+   * refused without a second resync (the host already has one outstanding), the full and the
+   * ones after it apply with the newest, so the newest is never refused.
+   */
+  private endWaitOnFoldedFull(folded: Queued[], newest: LiveEntry): void {
+    if (this.L.resync === null || !this.awaitingFull) return;
+    const at = foldedFullIndex(
+      folded.map((q) => q.entry),
+      newest.encoding,
+    );
+    if (at < 0) return;
+    const full = folded[at].entry;
+    this.awaitingFull = false;
+    this.rebuildDue = true;
+    log(
+      `resync: full transaction seq ${full.seq} arrived (folded with seq ${newest.seq})`,
+    );
+    const before = new Set(folded.slice(0, at).map((q) => q.entry));
+    for (const e of before) {
+      e.skipped = "resync";
+      delete e.coalesced_into;
+    }
+    this.coalesced = this.coalesced.filter((e) => !before.has(e));
   }
 
   /** RS_RECEIVER_RESYNC (receiver.gd `_refuse_for_resync`). */
