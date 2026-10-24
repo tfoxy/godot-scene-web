@@ -17,7 +17,7 @@
 #   --fast-frames on|off
 #                GRT3 (scripts/README.md "Fast frames (GRT3)"): run the allowlisted live correctness
 #                legs faster than real time (RS_FAST_FRAMES=all, RS_FAST_FRAMES_MAX_FPS=--fast-fps,
-#                and GATE7_FAST_FRAMES=1 on the g7-1/g7-2/g7-5/g7-55 live runs). Default on for every
+#                and GATE7_FAST_FRAMES=1 on the g7-1/g7-2/g7-5/g7-55/g7-8 live runs). Default on for every
 #                tier, --milestone included (GRT4a). Every timing leg and every denylisted leg stays
 #                real time either way (lib/legs.sh RS_FAST_ALLOW_LEGS / RS_FAST_DENY_LEGS; the
 #                g7-6/g7-lc/g7-r/g7-k live runs and g7x never get the fast env).
@@ -258,9 +258,11 @@ run_one() {
 		[ -z "$sl_live" ] || genv+=(RS_SMOKE_LEGS="$sl_live")
 		[ -z "$sl_file" ] || genv+=(GATE7_SMOKE_LEGS="$sl_file")
 		# GRT3: only the live groups whose legs are allowlisted get fast frames (and an unthrottled
-		# Chromium); g7-6, g7-lc, g7-r and g7-k are timing groups and keep real time.
+		# Chromium); g7-6, g7-lc, g7-r and g7-k are timing groups and keep real time. G8g: g7-8 is a
+		# correctness group whose g8l legs are not (yet) in lib/legs.sh RS_FAST_ALLOW_LEGS, so they
+		# stay real time inside a fast run, and they must not take the other groups' fast frames away.
 		if [ "$kind" = g7live ] && [ "${#FAST_ENV[@]}" -gt 0 ] &&
-			python3 -c 'import sys; sys.exit(0 if set(sys.argv[1].split(",")) <= {"g7-1", "g7-2", "g7-5", "g7-55"} else 1)' "$groups"; then
+			python3 -c 'import sys; sys.exit(0 if set(sys.argv[1].split(",")) <= {"g7-1", "g7-2", "g7-5", "g7-55", "g7-8"} else 1)' "$groups"; then
 			genv+=("${FAST_ENV[@]}" GATE7_FAST_FRAMES=1)
 		fi
 		case "$recv" in

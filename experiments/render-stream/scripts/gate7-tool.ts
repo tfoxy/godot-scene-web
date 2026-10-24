@@ -278,11 +278,12 @@ async function main(): Promise<void> {
         "g7-4": "gate4",
         "g7-5": "gate5",
         "g7-6": "gate6",
+        "g7-8": "gate8",
       } as Record<string, GswGate>
     )[group];
     if (!gate)
       throw new Error(
-        `gate7-tool: no gsw legs for ${group} (G7a lands g7-0..g7-3, G7t g7-4 and g7-5, G7s g7-55, G7g g7-6)`,
+        `gate7-tool: no gsw legs for ${group} (G7a lands g7-0..g7-3, G7t g7-4 and g7-5, G7s g7-55, G7g g7-6, G8g g7-8)`,
       );
     const out = resolve(flag(argv, "--out"));
     const source = resolve(flag(argv, "--source"));

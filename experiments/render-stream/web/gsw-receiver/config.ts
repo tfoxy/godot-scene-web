@@ -59,8 +59,12 @@ export interface LiveConfig {
   httpOrigin: string;
   windows: ShotWindow[];
   shotFinal: boolean;
-  /** URL path of the received tap (default <dirname(out)>/received.rs7). */
+  /** URL path of the received tap (default <dirname(out)>/received.rs<version>). */
   receivedOut: string;
+  /** G8g: RS_RECEIVER_PROTOCOL, the live wire version: 7 (the default) or 8 (render-stream/8's
+   * live transport, /7's with /8's tables: subprotocol render-stream.8; a gate 8 host offers only
+   * .8). receiver.gd's rule, and the hello's `protocol`. */
+  version: 7 | 8;
   /** RS_RECEIVER_RECEIVED_MAX_BYTES (receiver.gd's G7k cap, honoured here since G7v): store at
    * most this many received bytes in the tap; later messages are counted, not stored, and the
    * stream report says `received_truncated` (null: no cap, the default). */
@@ -189,9 +193,15 @@ function readLive(
     throw new UsageError(
       `RS_RECEIVER_SHOT_FINAL must be 1 or unset (got ${JSON.stringify(shotFinal)})`,
     );
+  const protocolText = (env.RS_RECEIVER_PROTOCOL ?? "").trim() || "7";
+  if (protocolText !== "7" && protocolText !== "8")
+    throw new UsageError(
+      `RS_RECEIVER_PROTOCOL must be 7 or 8 for the GSW receiver (got ${JSON.stringify(protocolText)})`,
+    );
+  const version = Number(protocolText) as 7 | 8;
   const dir = out.slice(0, out.lastIndexOf("/") + 1);
   let receivedOut = (env.RS_RECEIVER_RECEIVED_OUT ?? "").trim();
-  if (receivedOut === "") receivedOut = `${dir}received.rs7`;
+  if (receivedOut === "") receivedOut = `${dir}received.rs${version}`;
   else if (!receivedOut.startsWith("/"))
     throw new UsageError(
       `RS_RECEIVER_RECEIVED_OUT must be absolute (got ${JSON.stringify(receivedOut)})`,
@@ -264,6 +274,7 @@ function readLive(
     windows,
     shotFinal: shotFinal === "1",
     receivedOut,
+    version,
     receivedMaxBytes: nonNegative(
       "RS_RECEIVER_RECEIVED_MAX_BYTES",
       env.RS_RECEIVER_RECEIVED_MAX_BYTES,

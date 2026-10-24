@@ -164,6 +164,10 @@ extends Node
 ##                               an `error`) with reason `unauthorized` before any session is
 ##                               replay-failure live-connect-failed: the /7 analogue of /6's 401
 ##                               upgrade (gate7-design.md Q8).
+##                               G8g: 8 is render-stream/8's live transport (/7's, natively and on
+##                               the web; render-stream-8.md "Live transport"): subprotocol
+##                               render-stream.8, the /7 hello with protocol "render-stream/8",
+##                               received tap received.rs8. A gate 8 host offers only .8.
 ##   RS_RECEIVER_TOKEN           G7l, web only: the bearer token itself (the shell takes it from
 ##                               the page's fragment; a browser has no token file). /7 only.
 ##   RS_RECEIVER_CREDIT_WINDOW   G7l: 2 (default since G7wd) or 1, the hello's credit_window (/7 only; the
@@ -951,7 +955,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_stream_id = stream_meta["stream_id"]
 	_stream_report["stream_id"] = stream_meta["stream_id"]
 	_stream_report["connection"] = stream_meta["connection"]
-	if _live and _wire_version == 7:
+	if _live and _wire_version >= 7:
 		# G7l: the window the host granted (render-stream-7.md "Session": publication.credit_window).
 		var publication: Dictionary = meta["publication"]
 		var receiver_block: Dictionary = _report["receiver"]
@@ -1381,7 +1385,7 @@ func _ready_live() -> void:
 		return
 	_received_path = RsConfig.get_env("RS_RECEIVER_RECEIVED_OUT")
 	if _received_path == "":
-		_received_path = _out_path.get_base_dir().path_join("received.rs7" if _wire_version == 7 else "received.rs2")
+		_received_path = _out_path.get_base_dir().path_join(("received.rs%d" % _wire_version) if _wire_version >= 7 else "received.rs2")
 	elif not _received_path.is_absolute_path():
 		_log("error: RS_RECEIVER_RECEIVED_OUT must be absolute (got %s)" % JSON.stringify(_received_path))
 		_quit(EXIT_USAGE)
@@ -1405,8 +1409,8 @@ func _ready_live() -> void:
 			_log("error: RS_RECEIVER_TOKEN is web only; a native receiver reads RS_RECEIVER_TOKEN_FILE")
 			_quit(EXIT_USAGE)
 			return
-		if _wire_version != 7 or not RsLiveClient.is_hex64(token_text):
-			_log("error: RS_RECEIVER_TOKEN must be 64 lowercase hex on a render-stream/7 connection")
+		if _wire_version < 7 or not RsLiveClient.is_hex64(token_text):
+			_log("error: RS_RECEIVER_TOKEN must be 64 lowercase hex on a render-stream/7 or /8 connection")
 			_quit(EXIT_USAGE)
 			return
 		_token = token_text
@@ -1420,7 +1424,7 @@ func _ready_live() -> void:
 			_log("error: RS_RECEIVER_TOKEN_FILE %s is empty" % JSON.stringify(token_file))
 			_quit(EXIT_USAGE)
 			return
-		if _wire_version == 7 and not RsLiveClient.is_hex64(_token):
+		if _wire_version >= 7 and not RsLiveClient.is_hex64(_token):
 			_log("error: RS_RECEIVER_TOKEN_FILE %s does not hold 64 lowercase hex (a /7 hello token)" % JSON.stringify(token_file))
 			_quit(EXIT_USAGE)
 			return
@@ -1486,9 +1490,9 @@ func _ready_live() -> void:
 	}
 	_streams.append(_stream_report)
 	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, stall %s, reconnect %s, resync %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), "%d:%d" % [_stall_step, _stall_ms] if _stall_step >= 0 else "off", str(_reconnect_step) if _reconnect_step >= 0 else "off", str(_resync_step) if _resync_step >= 0 else "off", display_server])
-	if _wire_version == 7:
+	if _wire_version >= 7:
 		# Never the token itself (token-not-logged): only whether one is held.
-		_log("protocol %s, credit window %d asked, token %s, manifest %s" % [RsWire.PROTOCOL_V7, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
+		_log("protocol %s, credit window %d asked, token %s, manifest %s" % ["render-stream/%d" % _wire_version, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
 	if display_server == "headless" and (not _windows.is_empty() or _shot_final):
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
@@ -1517,33 +1521,34 @@ func _ready_live() -> void:
 	set_process(true)
 
 
-## G7l: RS_RECEIVER_PROTOCOL (6 natively by default, 7 on the web, where it is the only one),
+## G7l: RS_RECEIVER_PROTOCOL (6 natively by default, 7 on the web, where it is the default; G8g: 8,
+## render-stream/8's live transport, natively and on the web; a gate 8 host offers only .8),
 ## RS_RECEIVER_CREDIT_WINDOW (1 or 2, /7 only) and RS_RECEIVER_MANIFEST_SHA256 (64 lowercase hex,
 ## checked at /7). Logs and returns false when one is malformed (a usage error).
 func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if protocol_text != "6" and protocol_text != "7":
-		_log("error: RS_RECEIVER_PROTOCOL must be 6 or 7 (got %s)" % JSON.stringify(protocol_text))
+	if protocol_text != "6" and protocol_text != "7" and protocol_text != "8":
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7 or 8 (got %s)" % JSON.stringify(protocol_text))
 		return false
-	if RsConfig.is_web() and protocol_text != "7":
-		_log("error: a web receiver speaks only render-stream/7 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+	if RsConfig.is_web() and protocol_text == "6":
+		_log("error: a web receiver speaks only render-stream/7 or /8 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
-	_credit_window = 2 if _wire_version == 7 else 1
+	_credit_window = 2 if _wire_version >= 7 else 1
 	var window_text: String = RsConfig.get_env("RS_RECEIVER_CREDIT_WINDOW").strip_edges()
 	if window_text != "":
 		if window_text != "1" and window_text != "2":
 			_log("error: RS_RECEIVER_CREDIT_WINDOW must be 1 or 2 (got %s)" % JSON.stringify(window_text))
 			return false
-		if _wire_version != 7 and window_text != "1":
+		if _wire_version < 7 and window_text != "1":
 			_log("error: RS_RECEIVER_CREDIT_WINDOW %s needs RS_RECEIVER_PROTOCOL=7 (render-stream/6 has no window)" % window_text)
 			return false
 		_credit_window = window_text.to_int()
 	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
-	if _wire_version == 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
+	if _wire_version >= 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
 		_log("error: RS_RECEIVER_MANIFEST_SHA256 must be 64 lowercase hex (got %s)" % JSON.stringify(_manifest_sha256))
 		return false
 	return true
@@ -1566,7 +1571,7 @@ func _hello_v7() -> Dictionary:
 		if scale > 0.0:
 			dpr_milli = roundi(scale * 1000.0)
 	var css := Vector2i(backing.x * 1000 / dpr_milli, backing.y * 1000 / dpr_milli)
-	return RsLiveClient.hello_v7("gate1-receiver-%s" % DisplayServer.get_name(), kind, _credit_stage, _credit_window, _inbound_bytes, _token, _manifest_sha256, backing, css, dpr_milli)
+	return RsLiveClient.hello_v7("gate1-receiver-%s" % DisplayServer.get_name(), kind, _credit_stage, _credit_window, _inbound_bytes, _token, _manifest_sha256, backing, css, dpr_milli, "render-stream/%d" % _wire_version)
 
 
 ## A positive integer environment value, or `fallback` when unset; -1 (after logging) when
@@ -1671,7 +1676,7 @@ func _process_live() -> void:
 					_reconnect_record["opened_us"] = Time.get_ticks_usec()
 				if _conn_index == 1:
 					_web_mark("rs-socket-open")
-				if _wire_version == 7:
+				if _wire_version >= 7:
 					_send(_hello_v7())
 				else:
 					_send(RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes))

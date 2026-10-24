@@ -476,7 +476,8 @@ design choices taken here:
   built, its own `Image.decompress`) hashed by payload.gd.
 - **Checks:** `float-oracle`, `float-census`, `float-wire`, `float-default-refused`,
   `float-v6-refused`, `float-workers` (G8kw, floats on workers), `float-exact` and the
-  `sabotage-perturb-decode` leg. See results/gate8/g8f.md.
+  `sabotage-perturb-decode` leg (its check is `float-sabotage-perturb-decode` since G8g, beside
+  g8t's own `sabotage-perturb-decode`). See results/gate8/g8f.md.
 
 ## Q4. Host size at a late arm (blocker 3)
 
@@ -655,8 +656,8 @@ the long-term option:
   through their items' transform origins), `adopt-cim-builtin` (against the born hook's
   engine-generated code; C and N4 share one entry), `adopt-equivalence` (gate8-adopt's bijection,
   materials and instance parameters compared by content), `adopt-material-account`,
-  `adopt-reference` (born, late and late's patch sink pixel-equal to the reference),
-  `adopt-include-refused`, and the sabotages `sabotage-adopt-raw-shader-code` (fails
+  `mat-adopt-reference` (born, late and late's patch sink pixel-equal to the reference; named
+  `adopt-reference` until G8g made gate 8's check ids unique), `adopt-include-refused`, and the sabotages `sabotage-adopt-raw-shader-code` (fails
   shader-hash-parity) and `sabotage-adopt-skip-params` (fails param-parity).
 
 ## Q6. Wire: render-stream/8 (G8w)
@@ -700,6 +701,64 @@ stays the independent oracle for rs-core (memory rust-core-direction).
   the orchestrator may add a narrow rule for them (`capture-build`, `pure`, `native:gate0@*`,
   `native:gate8@*`), keeping `*` for any shared capture file. A delta milestone sweep before the
   release covers `*` regardless.
+
+### As built (G8g)
+
+G8g runs gate 8 through both browser receivers as gate 7 group `g7-8` (results/gate8/g8g.md).
+Decisions taken where the row above left room, each the long-term option:
+
+- **File half: the gate's own source, both browsers.** `run-gate7.sh --legs g7-8` makes (or takes,
+  `--source gate8=<dir>`) one native gate 8 source, `run-gate8.sh --legs g8t,g8a,g8h,g8f,g8m`
+  (`G8_FILE_LEGS`, the source cache key), and replays its 23 file receiver legs. The web export's
+  half is one `GATE7B_GATES` entry (`lib/gate7b-adapters.ts`, `GATE8_FILE_GROUPS`): legs are
+  discovered, every check is judged through G7b's native, blank, web and banded views. The GSW
+  half is `lib/gate7-gsw-g8.ts` (legs, not-applicable import legs, the 18 receiver-reading checks
+  found by `test/probe-receiver-checks.ts gate8`) and `lib/gate7-gsw-g8-checks.ts`. A new gate 8
+  file group or leg (G8kp's and G8kb's delivery legs) is one word in `G8_FILE_LEGS` and
+  `GATE8_FILE_GROUPS` and one entry in `GATE8_LEGS`.
+- **GSW is judged against the native leg, not under gsw-tolerance.json.** Gate 8's fixtures have no
+  per-pixel model, and gate 8 asks what the /8 additions deliver, not how GSW rasterizes (gates 0
+  to 6 judged that under Q7). So, like the web export's readback/delta1 band, a GSW shot whose every
+  pixel differing from the native receiver's same shot is within channel 1, or inside a region the
+  fixture scene declares, stands in for the native shot, and check-gate8.ts's own checks judge the
+  view (`gsw-band@gsw` reports the classes). The regions come from the scenes, never from a GSW
+  run: gate8-tex rows B (linear, and mipmapped `alpha_mip`), C (a 72x56 NinePatchRect at nearest,
+  whose stretch puts pixel centres on texel boundaries) and D (a 32 px region drawn at 48 px,
+  nearest: the same ties; found missing by the lavapipe run, where GSW resolved them unlike the
+  native receiver, while NVIDIA's GSW matched) are `undecided`; the float scene's two
+  view strips with a shader gain other than 1 are `excluded` with the reason
+  `float-texture-quantized`. Measured: 71 shots, 70 within the band, 0 px beyond it.
+- **Floats in GSW** go through rs-core's `texture_rgba8` (`golden-8/float-quantize.json`), and the
+  receiver says so: applied.json `receiver.caveats` `["float-texture-quantized"]` and
+  `receiver.float_quantized` (the formats), judged by `float-texture-quantized@gsw` against the
+  source's carried float formats. The web export samples floats in WebGL2 itself and has no caveat.
+- **Unique check ids.** g8f's `sabotage-perturb-decode` check is `float-sabotage-perturb-decode`
+  and g8m's `adopt-reference` is `mat-adopt-reference`: a gate 7 view (and result.json) keys checks
+  by id, and the duplicates shadowed each other.
+- **Live: a new native group, `g8l`.** Gate 8 had no live leg, so `run-gate8.sh` gains `g8l`: per
+  fixture (tex, float, adopt, size, mat) a headless host at --max-fps 60 with its /8 file sink and
+  a live listener under the fixture's policy (late arm and adoption where it has one),
+  `GRC_LIVE_AWAIT_HELLO_MS` so a slow browser misses nothing, a quit late enough that every GET is
+  served; a rendered live receiver at `RS_RECEIVER_PROTOCOL=8` with `RS_RECEIVER_SHOT_FINAL=1`; and
+  the same receiver replaying the host's file sink. `run-gate7.sh --live --legs g7-8` reruns it with
+  `GATE7_LIVE_KIND` (lib/legs.sh now also routes a GRS8 replay to the browser), and
+  `lib/gate7-live.ts` reports every check that reads a browser leg as `@web`/`@gsw`. Checks
+  (`lib/gate8-live-checks.ts`): `g8l-<f>-host`, `-live`, `-states` (every live transaction of the
+  received tap is the file sink's state at its frame, and the last is the sink's final state:
+  timing-independent), `live-replay-equals-live-g8l-<f>` (the final image equals the replay's last
+  checkpoint, same receiver, exactly) and, in a native run with the file groups, `-replay-equals-file`.
+- **Receivers speak /8 live on request.** `RS_RECEIVER_PROTOCOL=8` (native, web export, GSW)
+  offers only `render-stream.8`, sends /7's hello with `protocol` `render-stream/8` and taps
+  `received.rs8`; the defaults are unchanged (/6 native, /7 browsers), so no other leg's handshake
+  changes. GSW's wasm `live_session` takes the version. A product receiver behind a gate 8 policy
+  host must set it (G8z's hand-off).
+- **D14's proxy leg** is `g8l/proxy`: tex again with its receiver connected through
+  `scripts/lib/reverse-proxy.ts`, an HTTP/1.1 reverse proxy (Host rewritten, X-Forwarded-*, the
+  upgrade forwarded after the 101, every GET and preflight forwarded). `g8l-proxy-fronted`: the
+  receiver's URL is the proxy's port, one 101 upgrade and every GET (200) went through it, and the
+  final image equals the direct tex leg's. No wire or capture change.
+- **Out of scope** (results/gate8/g8g.md): the /9 delivery legs (G8kp, G8kb add their legs to
+  `g7-8`), the phone, gate 8's timing group `decode-cost` in the browsers (it judges no receiver).
 
 ## Increments
 

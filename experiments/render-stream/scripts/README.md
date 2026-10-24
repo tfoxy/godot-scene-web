@@ -3449,6 +3449,29 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `reference` | rendered, unarmed: shots `step-<k>.png` at the three checkpoints and gate 5.5's material oracle (`materials.jsonl`, `shader-library/`) |
 | `born/receiver`, `late/receiver`, `late/receiver-patch` | the native receiver on born's and late's full sink and late's patch sink |
 
+## Gate 8 legs and evidence under `--out/g8l` (g8l, G8g)
+
+One live leg per fixture at render-stream/8 (`../protocol/gate8-design.md` "As built (G8g)"), then
+D14's reverse-proxy leg. `run-gate7.sh --live --legs g7-8` runs the same group with a browser
+receiver (`GATE7_LIVE_KIND`); every receiver and replay leg below is then that browser.
+
+| leg | what |
+| --- | ---- |
+| `<f>/host` (`tex`, `float`, `adopt`, `size`, `mat`) | headless at `--max-fps 60` under the fixture's own gate 8 policy (tex: g8t's decode; float: g8f's formats; adopt, size, mat: armed late at K=12 with `GRC_ADOPT=arm`, skip, and size's `presentation:640x360`); its /8 file sink and store, a live listener on `127.0.0.1:0`, `GRC_LIVE_AWAIT_HELLO_MS=60000`, `RS_FIXTURE_QUIT_FRAME=300` |
+| `<f>/receiver` | rendered live receiver, `RS_RECEIVER_PROTOCOL=8` (subprotocol `render-stream.8`), `RS_RECEIVER_SHOT_FINAL=1` (`shots/final.png`), tap `received.rs8` |
+| `<f>/replay` | the same receiver on the host's `recording.rs8` (`run_rendered_receiver`, its checkpoints) |
+| `proxy/{host,proxy,receiver,replay}` | tex again; `proxy/` is `lib/reverse-proxy.ts` in front of the host (`ports.json`, `requests.jsonl`, `stats.json`), and the receiver connects to the proxy's port |
+
+## Gate 8 criteria (g8l, G8g)
+
+`lib/gate8-live-checks.ts`: `g8l-<f>-host` (published, listening, one connection at /8),
+`g8l-<f>-live` (render-stream/8, no failure, final shot), `g8l-<f>-states` (every transaction of
+`received.rs8` is the file sink's state at its frame; the last is the sink's final state),
+`live-replay-equals-live-g8l-<f>` (the final image equals the replay's last checkpoint, exactly),
+`g8l-<f>-replay-equals-file` (a native run with the file groups: the replay's checkpoints equal
+the file group's honest receiver's), `g8l-proxy-fronted` (D14: the receiver's URL is the proxy's
+port; one 101 upgrade and every GET, each 200, went through it; the final image equals tex's).
+
 ## Gate 8 criteria (g8m)
 
 `g8m-legs`, `g8m-wire`, `shader-hash-parity`, `param-parity`, `adopt-cim-builtin`,

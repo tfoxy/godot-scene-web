@@ -538,7 +538,9 @@ export async function runG8f(out: string, expected: FloatExpected): Promise<G8fR
     else if (d.differing === 0) problems.push("the perturbed decode left the receiver's pixels identical to the reference");
     checks.push(
       check(
-        "sabotage-perturb-decode",
+        // G8g: g8t has its own `sabotage-perturb-decode`; check ids are unique per gate report
+        // (a gate 7 view and result.json key checks by id).
+        "float-sabotage-perturb-decode",
         "perturb-decode (the first channel of texel 0 of every host-decoded payload inverted whole, after the decode and before the hash) fails the float oracle for exactly the two HDR decodes and changes the receiver's pixels",
         ran("sabotage-perturb-decode/capture") && ran("sabotage-perturb-decode/receiver") && ran("reference") ? problems : null,
         `oracle caught ${hdrFailed.join(", ")}; ${d.differing} px differ`,

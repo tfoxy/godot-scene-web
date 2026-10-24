@@ -67,6 +67,12 @@
 #       the GRC_ADOPT_FAULT=no-include-path capture (the typed shader-adopt-include); then, rendered,
 #       the unarmed `reference` with gate 5.5's material oracle (RS_FIXTURE_MATERIAL_LOG) and the
 #       native receiver on born, late (full and patch sinks) and the no-include-path capture.
+#   g8l (G8g, D14: render-stream/8 live; every leg under g8l/<fixture>/): one live leg per fixture
+#       (tex, float, adopt, size, mat), each a headless live host with its /8 file sink under the
+#       fixture's gate 8 policy, a rendered live receiver at RS_RECEIVER_PROTOCOL=8 and the same
+#       receiver replaying the host's file sink; plus `proxy` (tex through lib/reverse-proxy.ts, an
+#       HTTP/1.1 reverse proxy: the WebSocket and every GET through a server in front of the
+#       listener, D14). run-gate7.sh --live --legs g7-8 runs this group with a browser receiver.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -88,8 +94,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8l)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8l)
 
 EXTENSION=""
 CALIBRATION=""
@@ -222,6 +228,13 @@ cleanup() {
 	if [ -n "${CURRENT_CHILD_PID:-}" ] && kill -0 "$CURRENT_CHILD_PID" 2>/dev/null; then
 		echo "run-gate8: stopping owned process $CURRENT_CHILD_PID" >&2
 		kill "$CURRENT_CHILD_PID" 2>/dev/null || true
+	fi
+	# G8g: g8l's own reverse proxy and live host, when a leg was interrupted
+	if [ -n "${PROXY_PID:-}" ] && kill -0 "$PROXY_PID" 2>/dev/null; then
+		kill "$PROXY_PID" 2>/dev/null || true
+	fi
+	if [ -n "${LIVE_HOST_PID:-}" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; then
+		kill "$LIVE_HOST_PID" 2>/dev/null || true
 	fi
 	if [ -n "${GS_RUN_DIR:-}" ]; then
 		gs_teardown "$GS_RUN_DIR" || true
@@ -686,6 +699,171 @@ run_g8m() {
 	GS_RUN_DIR=""
 }
 
+# ------------------------------------------------------------------------------------- g8l
+# G8g (gate8-design.md "Increments" G8g, D14): one live leg per gate 8 fixture at render-stream/8,
+# the host's file sink beside it, the same receiver replaying that sink, and D14's reverse-proxy
+# leg. Every leg lives under g8l/<fixture>/ (host/, receiver/, replay/; proxy/ adds proxy/):
+#   tex    gate8-tex's main scene under g8t's decode policy (GRC_TEXTURE_DECODE=engine)
+#   float  gate8-tex's float scene under g8f's policy (every float format permitted)
+#   adopt  gate8-adopt armed late at K (GRC_ADOPT=arm, skip, decode: G8a and G8r's lazy resources)
+#   size   gate8-size armed late at K with presentation:640x360 (G8h)
+#   mat    gate8-mat armed late at K (G8m's materials and shaders)
+#   proxy  tex again, its receiver connected through scripts/lib/reverse-proxy.ts (an HTTP/1.1
+#          reverse proxy forwarding the upgrade and every GET): D14 without a wire change
+# A host is the fixture headless at --max-fps 60 with its /8 file sink and store, a live listener
+# on 127.0.0.1:0 (lib/legs.sh moves it to GATE7_HOST_PORT for a browser), and
+# GRC_LIVE_AWAIT_HELLO_MS (its timeline waits at the first armed frame for the receiver's hello, so
+# a slow browser misses nothing). It lingers to G8L_QUIT_FRAME so every payload GET is served
+# before it ends. The live receiver is rendered at 640x360, speaks render-stream/8
+# (RS_RECEIVER_PROTOCOL=8: a gate 8 policy host offers only .8) and shoots its final state after the
+# end record (RS_RECEIVER_SHOT_FINAL=1); the replay is run_rendered_receiver on the host's own
+# recording (its checkpoints). Under GATE7_LIVE_KIND (run-gate7.sh --live --legs g7-8) every
+# receiver and replay is that browser. Correctness legs: the checks judge states and the final
+# image, never cadence, so they hold no timing group natively.
+G8L_FIXTURES=(tex float adopt size mat proxy)
+# Every fixture's default quit is below 60 (tex/float S+N+11, adopt K+38, size K+26, mat K+24);
+# at 60 fps the linger is about 4 s.
+G8L_QUIT_FRAME=300
+G8L_AWAIT_HELLO_MS=60000
+
+# g8l_spec <fixture>: G8L_PROJECT, G8L_SCENE (empty: the project's main scene) and G8L_ENV (the
+# host's policy and fixture words) for one fixture, from its file group's own captures.
+g8l_spec() {
+	G8L_SCENE=""
+	case "$1" in
+	tex | proxy)
+		G8L_PROJECT="$FIXTURE_DIR"
+		G8L_ENV=("${G8T_DECODE_ENV[@]}")
+		;;
+	float)
+		G8L_PROJECT="$FIXTURE_DIR"
+		G8L_SCENE="$G8F_SCENE"
+		G8L_ENV=("${G8F_ENV[@]}")
+		;;
+	adopt)
+		G8L_PROJECT="$G8A_FIXTURE_DIR"
+		G8L_ENV=("${G8A_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME="$G8A_ARM_FRAME")
+		;;
+	size)
+		G8L_PROJECT="$G8H_FIXTURE_DIR"
+		G8L_ENV=("${G8H_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME="$G8H_ARM_FRAME")
+		;;
+	mat)
+		G8L_PROJECT="$G8M_FIXTURE_DIR"
+		G8L_ENV=("${G8M_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME="$G8M_ARM_FRAME")
+		;;
+	esac
+}
+
+# start_g8l_host <dir> <fixture>: the fixture's live host in the background (header above); sets
+# LIVE_HOST_PID and LIVE_PORT ("" when the host is not listening).
+start_g8l_host() {
+	local dir="$1" waited=0
+	g8l_spec "$2"
+	mkdir -p "$dir/evidence" "$dir/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		GRC_LIVE_AWAIT_HELLO_MS="$G8L_AWAIT_HELLO_MS"
+		RS_FIXTURE_QUIT_FRAME="$G8L_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "${G8L_ENV[@]}"
+	)
+	local -a argv=("$BINARY" --headless --max-fps 60 --path "$G8L_PROJECT")
+	[ -n "$G8L_SCENE" ] && argv+=("$G8L_SCENE")
+	start_headless_bg "$dir" -- "${argv[@]}"
+	LIVE_HOST_PID="$BG_PID"
+	LIVE_PORT=""
+	while [ "$waited" -lt 600 ] && [ ! -s "$dir/evidence/live.json" ] && kill -0 "$LIVE_HOST_PID" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$dir/evidence/live.json" 2>/dev/null; then
+		LIVE_PORT="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$dir/evidence/live.json")"
+	fi
+	echo "run-gate8: ${dir#"$OUT"/} listening on port ${LIVE_PORT:-<none>}"
+}
+
+# g8l_receiver <leg dir> <port>: the live receiver on 127.0.0.1:<port> (the host's, or the proxy's).
+g8l_receiver() {
+	local dir="$1/receiver" port="$2"
+	mkdir -p "$dir"
+	if [ -z "$port" ]; then
+		echo "the live host (or its proxy) is not listening (see $1/host/evidence/live.json)" >"$dir/skipped.txt"
+		echo "run-gate8: ${dir#"$OUT"/} skipped: nothing is listening" >&2
+		return 0
+	fi
+	LEG_ENV=(
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_PROTOCOL=8
+		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" RS_RECEIVER_SHOT_FINAL=1
+	)
+	RENDERED_EXTRA_ARGS=(--max-fps 60)
+	run_rendered "$dir" "$RECEIVER_DIR"
+}
+
+# start_g8l_proxy <dir> <target port>: scripts/lib/reverse-proxy.ts in front of the host; sets
+# PROXY_PID and PROXY_PORT ("" when it did not bind).
+start_g8l_proxy() {
+	local dir="$1" target="$2" waited=0
+	mkdir -p "$dir"
+	PROXY_PID=""
+	PROXY_PORT=""
+	[ -n "$target" ] || return 0
+	(cd "$REPO_ROOT" && exec mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/reverse-proxy.ts" \
+		--target-port "$target" --log "$dir/requests.jsonl" --stats-out "$dir/stats.json") \
+		>"$dir/stdout.log" 2>"$dir/stderr.log" &
+	local wrapper=$!
+	while [ "$waited" -lt 600 ] && ! grep -q listening_port "$dir/stdout.log" 2>/dev/null && kill -0 "$wrapper" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	PROXY_PORT="$(sed -n 's/^{"listening_port":\([0-9][0-9]*\),.*$/\1/p' "$dir/stdout.log" | head -1)"
+	PROXY_PID="$(sed -n 's/^.*"pid":\([0-9][0-9]*\)}.*$/\1/p' "$dir/stdout.log" | head -1)"
+	printf '{"target_port": %s, "listen_port": %s}\n' "$target" "${PROXY_PORT:-null}" >"$dir/ports.json"
+	echo "run-gate8: ${dir#"$OUT"/} reverse proxy on ${PROXY_PORT:-<none>} -> $target"
+}
+
+stop_g8l_proxy() {
+	[ -n "${PROXY_PID:-}" ] || return 0
+	kill "$PROXY_PID" 2>/dev/null || true
+	local i
+	for i in $(seq 1 100); do
+		kill -0 "$PROXY_PID" 2>/dev/null || break
+		sleep 0.05
+	done
+	PROXY_PID=""
+}
+
+run_g8l() {
+	# Each fixture's editor import, once per out dir (its file group's, when that ran first).
+	[ -f "$OUT/import/fixture/exit-code.txt" ] || run_import_g8t
+	[ -f "$OUT/g8a/import/fixture/exit-code.txt" ] || run_import_g8a
+	[ -f "$OUT/g8h/import/fixture/exit-code.txt" ] || run_import_g8h
+	[ -f "$OUT/g8m/import/fixture/exit-code.txt" ] || run_import_g8m
+	echo "run-gate8: bringing up private gamescope for g8l's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8l"
+	local f leg via
+	for f in "${G8L_FIXTURES[@]}"; do
+		leg="$OUT/g8l/$f"
+		via=""
+		[ "$f" = proxy ] && via=" through the reverse proxy"
+		echo "run-gate8: g8l $f (live host at /8, receiver over render-stream.8$via)"
+		start_g8l_host "$leg/host" "$f"
+		if [ "$f" = proxy ]; then
+			start_g8l_proxy "$leg/proxy" "$LIVE_PORT"
+			g8l_receiver "$leg" "$PROXY_PORT"
+		else
+			g8l_receiver "$leg" "$LIVE_PORT"
+		fi
+		finish_bg "$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+		LIVE_HOST_PID=""
+		[ "$f" = proxy ] && stop_g8l_proxy
+		echo "run-gate8: g8l $f replay (the host's /8 file sink, the same receiver)"
+		run_rendered_receiver "$leg/host" "$leg/replay"
+	done
+	gs_teardown "$OUT/gamescope-g8l"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8t) run_g8t ;;
@@ -693,6 +871,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8a) run_g8a ;;
 	g8h) run_g8h ;;
 	g8m) run_g8m ;;
+	g8l) run_g8l ;;
 	esac
 done
 
