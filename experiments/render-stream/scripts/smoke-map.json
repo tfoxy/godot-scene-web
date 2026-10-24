@@ -15,9 +15,9 @@
       "gate8"
     ],
     "cores": ["rust"],
-    "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6"],
+    "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6", "g7-8"],
     "g7_receivers": ["gsw", "web/rust"],
-    "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-lc", "g7-r", "g7-k"],
+    "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-8", "g7-lc", "g7-r", "g7-k"],
     "g7live_receivers": ["gsw", "web/rust", "native"],
     "g7x": ["g7-dev", "g7-bench"],
     "cargo": [
@@ -46,7 +46,8 @@
       "g7-2": { "legs": ["import", "capture", "reference", "live"], "full_legs": null },
       "g7-5": { "legs": ["mesh/import", "mesh/reference-live", "mesh/live-mesh"], "full_legs": null },
       "g7-55": { "legs": ["shader-live/import", "shader-live/reference-live", "shader-live/live-shader"], "full_legs": null },
-      "g7-6": { "legs": ["live/import", "live/reference-live-frames", "live/live-scene"], "full_legs": null }
+      "g7-6": { "legs": ["live/import", "live/reference-live-frames", "live/live-scene"], "full_legs": null },
+      "g7-8": { "legs": ["import", "g8a/import", "g8h/import", "g8m/import", "g8l/tex"], "full_legs": null }
     },
     "defer": ["g7-k"],
     "defer_doc": "Groups smoke never runs (the full tier and --milestone run them whole, listed in smoke_deferred): g7-k's soak legs hold the exclusive quiet lock for 300 s each (about 11 min per browser with startup), and run-gate7.sh has no leg filter for them that tier-verdict.py would accept. Run a g7-k change with --tier full --only g7live-<r>-timing.",
@@ -58,7 +59,7 @@
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. 'refuse.groups' refuses single groups of a gate 7 run (the run keeps its other groups remotely, and is refused whole when none is left). Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
     "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "bench-instr", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55", "native-rust-gate8", "g7-gsw", "g7-web-rust", "g7live-gsw", "g7live-web-rust", "g7live-gsw-g7-1", "g7live-gsw-g7-2", "g7live-gsw-g7-5", "g7live-gsw-g7-55", "g7live-web-rust-g7-1", "g7live-web-rust-g7-2", "g7live-web-rust-g7-5", "g7live-web-rust-g7-55"],
-    "capable_doc": "R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps g7-1 and g7-2 local: on a 4-vCPU runner each failed a check intermittently from credit-window-2 timing, load-sensitive, so local-only and never loosened). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
+    "capable_doc": "G8g: gate 8's browser group g7-8 (its file legs in g7-gsw/g7-web-rust and its live g8l legs in g7live-gsw/g7live-web-rust) is remote-capable: --determinism 2,1 (run 40088061009) agreed over 12 runs, 205/205 shots and 70/70 dumps. R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps g7-1 and g7-2 local: on a 4-vCPU runner each failed a check intermittently from credit-window-2 timing, load-sensitive, so local-only and never loosened). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
       "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
       "ids": {
@@ -391,15 +392,16 @@
       "reach": ["native:gate55@*", "g7:g7-55@*", "g7live:g7-55@*"]
     },
     {
-      "why": "gate 8 (G8t: runner, checker, its libs and fixtures; gate8-design.md Q7; G8kp: the g8kp group's GSW leg tool)",
+      "why": "gate 8 (G8t: runner, checker, its libs and fixtures; gate8-design.md Q7; G8kp: the g8kp group's GSW leg tool). G8g: the browsers' g7-8 file and live groups replay and rerun them, and g8l's D14 proxy",
       "paths": [
         "experiments/render-stream/scripts/run-gate8.sh",
         "experiments/render-stream/scripts/check-gate8.ts",
         "experiments/render-stream/scripts/gate8-delivery-tool.ts",
         "experiments/render-stream/scripts/lib/gate8-*",
+        "experiments/render-stream/scripts/lib/reverse-proxy.ts",
         "experiments/render-stream/fixtures/gate8-*/**"
       ],
-      "reach": ["native:gate8@*"]
+      "reach": ["native:gate8@*", "g7:g7-8@*", "g7live:g7-8@*"]
     },
     {
       "why": "gate 6",

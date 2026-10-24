@@ -4,7 +4,7 @@
 // view can change, which GSW_RECEIVER_CHECKS keeps `@gsw` (or lists as not applicable).
 //
 //   tsx --conditions=development experiments/render-stream/scripts/test/probe-receiver-checks.ts \
-//     gate4|gate5 <absolute source run dir> <receiver leg>...
+//     gate4|gate5|gate8 <absolute source run dir> <receiver leg>...
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { buildGate4Report } from "../check-gate4";
 import { buildGate5Report } from "../check-gate5";
+import { buildGate8Report } from "../check-gate8";
 import { buildView } from "../lib/gate7-gsw";
 
 const [gate, source, ...legs] = process.argv.slice(2);
@@ -23,7 +24,12 @@ await buildView(
   new Map(legs.map((l) => [l, join(empty, "x")])),
   join(view, "v"),
 );
-const build = gate === "gate4" ? buildGate4Report : buildGate5Report;
+const build =
+  gate === "gate4"
+    ? buildGate4Report
+    : gate === "gate8"
+      ? buildGate8Report
+      : buildGate5Report;
 const report = (await build(join(view, "v"))) as unknown as {
   checks: { id: string; passed: boolean }[];
 };

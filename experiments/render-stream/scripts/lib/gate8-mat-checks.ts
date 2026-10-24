@@ -13,7 +13,8 @@
 //     (`adopt-equivalence`, through gate8-adopt-checks' bijection, materials compared by content)
 //     and what each CanvasItemMaterial's rebuilt template must hash to (`adopt-cim-builtin`: the
 //     born hook copied the engine's own generated code);
-//   - the rendered reference judges every receiver shot (`adopt-reference`).
+//   - the rendered reference judges every receiver shot (`mat-adopt-reference`; G8g renamed it from
+//     g8a's `adopt-reference`).
 // Fixture items are found on the wire by their transform origin (expected.json `items`), never by
 // id; a material by the item that draws with it.
 
@@ -668,7 +669,8 @@ export async function runG8m(
     }
     checks.push(
       check(
-        "adopt-reference",
+        // G8g: g8a has its own `adopt-reference`; check ids are unique per gate report.
+        "mat-adopt-reference",
         "the native receiver's shots of the born capture and of the late capture (full and patch sinks) equal the unarmed rendered reference at every checkpoint, pixel for pixel",
         any ? problems : null,
       ),

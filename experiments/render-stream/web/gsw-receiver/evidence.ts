@@ -99,6 +99,9 @@ export async function encodePng(
 
 /** The wasm module's applied.json parts (`GswRs::applied_json_parts`). */
 export interface RustParts {
+  /** G8g: the float payload formats taken as RGBA8 (rs-core's quantization) and the caveat. */
+  float_quantized?: string[];
+  caveats?: string[];
   transactions: {
     /** G7l: the connection (1 in file mode). */
     stream?: number;
@@ -249,7 +252,7 @@ export interface Report {
   /** Live: the `live` block (receiver.gd `_live_report`), the protocol and the granted window. */
   live: Record<string, unknown> | null;
   entries: LiveEntry[] | null;
-  protocol: "render-stream/6" | "render-stream/7" | "render-stream/9";
+  protocol: "render-stream/6" | "render-stream/7" | "render-stream/8" | "render-stream/9";
   creditWindow: number | null;
   /** G8kp: at /9, the module's `delivery_json()` (what this receiver states and selects with). */
   textureDelivery?: Record<string, unknown> | null;
@@ -373,6 +376,9 @@ export function appliedJson(r: Report): Record<string, unknown> {
       protocol: r.protocol,
       credit_window: r.creditWindow,
       ...(r.textureDelivery ? { texture_delivery: r.textureDelivery } : {}),
+      // G8g: `float-texture-quantized` when a float payload was drawn as RGBA8, with its formats.
+      caveats: rust.caveats ?? [],
+      float_quantized: rust.float_quantized ?? [],
     },
     mode: r.mode,
     recording: r.recording,

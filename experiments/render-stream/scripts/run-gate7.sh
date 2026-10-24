@@ -138,6 +138,14 @@
 #             presentation-check (the page's canvas backing store equals presentation_size; the web
 #             half gets it too, lib/gate7-g6-checks.ts). `--live` with g7-6 runs g6l in both browsers.
 #
+# Group landed (G8g, protocol/gate8-design.md "As built (G8g)"):
+#   g7-8      gate 8's file receiver legs (g8t, g8a, g8h, g8f, g8m; G8_FILE_LEGS below) in both
+#             browsers from one native gate 8 source (`--make-sources`: run-gate8.sh --legs
+#             $G8_FILE_LEGS): the web half through G7b's views (lib/gate7b-adapters.ts GATE8_FILE_GROUPS),
+#             the gsw half through lib/gate7-gsw-g8.ts's band against the native legs, both judged by
+#             check-gate8.ts's own checks. `--live` with g7-8 runs gate 8's live group g8l (one live
+#             leg per fixture at render-stream/8, and D14's reverse-proxy leg) in each browser.
+#
 # Group landed (G7r, protocol/gate7/g7r.md, gate7-design.md Q9; `--live` only): pacing, rates, the
 #   g7-r      60/60 phase study and dual receivers at credit window 1, on all three receivers. G6c's
 #             group is reused unforked (lib/gate6c-legs.sh with receiver kinds): run-gate6.sh
@@ -252,8 +260,8 @@ FIXTURE_DIR="$PACE_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
 # The final leg-group vocabulary (gate7-design.md "Gate 7 passes when…") plus the phone groups.
-KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
-LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
+KNOWN_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
+LANDED_GROUPS=(g7-0 g7-1 g7-2 g7-3 g7-4 g7-5 g7-55 g7-6 g7-8 g7-lc g7-r g7-k g7-dev g7-bench g7-p)
 
 # G7u: each browser kind's lifecycle legs (run-gate6.sh G7U_LEGS), desktop (simulated suspension)
 # and device (real hidden/frozen). G7U_LEGS in the environment replaces every kind's list.
@@ -622,7 +630,7 @@ source_cache_publish() {
 	fi
 }
 
-# --- G7l: --live runs only the live halves of g7-1, g7-2, g7-5 and g7-55, then judges them. -----
+# --- G7l: --live runs only the live halves of g7-1, g7-2, g7-5, g7-55 (and g7-6, g7-8), then judges them.
 if [ "$LIVE" = "1" ]; then
 	# G7u: `--env device --device <id>` is accepted for exactly `--legs g7-lc` (the real hidden and
 	# frozen legs run on the phone); every other live group is desktop only.
@@ -650,14 +658,14 @@ if [ "$LIVE" = "1" ]; then
 		fi
 	fi
 	LIVE_RUNS=()
-	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f g7-6:6:g6l; do
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f g7-6:6:g6l g7-8:8:g8l; do
 		group="${pair%%:*}"
 		rest="${pair#*:}"
 		has_group "$group" || continue
 		LIVE_RUNS+=("$group:$rest")
 	done
 	if [ "${#LIVE_RUNS[@]}" -eq 0 ] && ! has_group g7-r && ! has_group g7-lc && ! has_group g7-k && ! has_group g7-dev && ! has_group g7-p; then
-		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-lc, g7-r, g7-k, g7-dev, g7-p in --legs" >&2
+		echo "run-gate7: --live needs one of g7-1, g7-2, g7-5, g7-55, g7-6, g7-8, g7-lc, g7-r, g7-k, g7-dev, g7-p in --legs" >&2
 		exit 2
 	fi
 	if [ "$RECEIVER" = "native" ] && [ "${#LIVE_RUNS[@]}" -gt 0 ]; then
@@ -944,18 +952,24 @@ if [ "$LIVE" = "1" ]; then
 	exit $?
 fi
 
+# G8g: gate 8's file-leg groups, the one list both browser halves make the gate 8 source with (a
+# new gate 8 file group is one word here and one in lib/gate7b-adapters.ts GATE8_FILE_GROUPS).
+G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m
+
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
 CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG" --calibration "$(realpath -m "$CALIBRATION")")
 [ -n "$RECEIVER" ] && CHECK_ARGS+=(--receiver "$RECEIVER")
 want_gsw() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "gsw" ]; }
 want_web() { [ -z "$RECEIVER" ] || [ "$RECEIVER" = "web" ]; }
 SOURCE_GATES=()
-for g in 0 1 2 3 4 5 55 6; do
+for g in 0 1 2 3 4 5 55 6 8; do
 	has_group "g7-$g" || continue
 	# G7s: gate 5.5's gsw half takes this path; its web half is G7b's (below).
 	if [ "$g" = 55 ] && ! want_gsw; then continue; fi
 	# G7g: so does gate 6's (its web half is G7b's).
 	if [ "$g" = 6 ] && ! want_gsw; then continue; fi
+	# G8g: and gate 8's (its web half is G7b's table entry, below).
+	if [ "$g" = 8 ] && ! want_gsw; then continue; fi
 	if [ "$HARNESS_ENV" != "desktop" ]; then
 		echo "run-gate7: g7-$g runs on the desktop only (drop --env device)" >&2
 		exit 2
@@ -980,6 +994,8 @@ for g in "${SOURCE_GATES[@]}"; do
 		[ "$g" = 55 ] && source_legs=(--legs g55b,g55c,g55d,g55e)
 		# Gate 6: g6a, g6h and g6b only (g6l is live, G7g's --live; g6s/g6c are timing groups).
 		[ "$g" = 6 ] && source_legs=(--legs g6a,g6h,g6b)
+		# Gate 8: its file groups (g8l is live, --live's; decode-cost is g8t's timing group).
+		[ "$g" = 8 ] && source_legs=(--legs "$G8_FILE_LEGS")
 		cache_legs="${source_legs[1]:-all}"
 		source_cache_flight "gate$g"
 		source_cache_lookup "gate$g" "$cache_legs" && source_cache_land "gate$g" && continue
@@ -1008,7 +1024,7 @@ done
 G7B_GROUPS=(g7-1:gate1:run-gate1.sh:g1a,g1b g7-2:gate2:run-gate2.sh:g2a,g2b,g2d
 	g7-3:gate3:run-gate3.sh:g3a,g3b,g3c,g3d g7-4:gate4:run-gate4.sh:g4a,g4b,g4c,g4d,g4e,g4f
 	g7-5:gate5:run-gate5.sh:g5b,g5c,g5d,g5e,g5g g7-55:gate55:run-gate55.sh:g55b,g55c,g55d,g55e
-	g7-6:gate6:run-gate6.sh:g6a,g6h,g6b)
+	g7-6:gate6:run-gate6.sh:g6a,g6h,g6b g7-8:gate8:run-gate8.sh:$G8_FILE_LEGS)
 G7B_RUN=()
 for spec in "${G7B_GROUPS[@]}"; do
 	IFS=: read -r group gate runner source_legs <<<"$spec"

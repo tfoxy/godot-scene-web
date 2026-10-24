@@ -42,6 +42,7 @@ import {
   q7Plan,
 } from "./gate7-gsw";
 import { GATE55_Q7_LEGS, gate55Checks } from "./gate7-gsw-55-checks";
+import { gate8Checks } from "./gate7-gsw-g8-checks";
 import { earlySteps } from "./gate7-gsw-g45";
 import { g45ExtraChecks } from "./gate7-gsw-g45-checks";
 import { classMask, judgeQ7Classes, readTolerance } from "./gsw-tolerance";
@@ -831,6 +832,8 @@ const Q7_LEGS: Record<GswGate, [string, string, string][]> = {
     ["receiver-clip-ignore", "reference-clip-ignore", "gate3"],
   ],
   gate55: GATE55_Q7_LEGS,
+  // G8g: gate 8 is judged exactly by its own checks (lib/gate7-gsw-g8.ts gate8Q7Plan).
+  gate8: [],
   // G7t: the honest legs of gates 4 and 5; key and reference from q7Plan (with gate 4's early
   // shots). gate 4e's MSDF legs count their typed regions as excluded.
   gate4: [
@@ -952,6 +955,8 @@ export async function gswExtraChecks(
   if (gate === "gate2") out.push(...(await gate2Checks(ctx)));
   if (gate === "gate3") out.push(...(await gate3Checks(ctx)));
   if (gate === "gate55") out.push(...(await gate55Checks(ctx)));
+  // G8g: gate 8's compositor legs and the float caveat (lib/gate7-gsw-g8-checks.ts).
+  if (gate === "gate8") out.push(...(await gate8Checks(ctx)));
   // G7g: gate 6's backing stores at 640x360, 1920x1080 and 960x540, and the compositor at each.
   if (gate === "gate6") {
     out.push(

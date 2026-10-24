@@ -101,6 +101,17 @@ export const GATE7L_GATES: readonly LiveGateDef[] = [
     runnerLegs: "g55f",
     liveGroups: ["g55f"],
   },
+  // G8g: gate 8's live legs (g8l): one host per fixture at render-stream/8 under its gate 8
+  // policy (late arm and adoption where the fixture has one), its live receiver, the same
+  // receiver replaying the host's /8 file sink, and D14's reverse-proxy leg.
+  {
+    gate: "gate8",
+    group: "g7-8",
+    checker: "check-gate8.ts",
+    runner: "run-gate8.sh",
+    runnerLegs: "g8l",
+    liveGroups: ["g8l"],
+  },
   // G7g: gate 6's live motion, warm, stall, reconnect and stale-coalesce legs (g6l); its
   // reference-live-frames and reference-file legs are native and run in the same runner.
   {
@@ -211,7 +222,8 @@ export function helloProblems(
   const env = page?.env ?? {};
   const origin = page?.url ? new URL(page.url).origin : null;
   const want: Record<string, unknown> = {
-    version: 7,
+    // G8g: a gate 8 live leg speaks render-stream/8 (its RS_RECEIVER_PROTOCOL word).
+    version: Number(env.RS_RECEIVER_PROTOCOL ?? "7"),
     receiver_kind: expectedKind,
     // G7q/G7wd: the grant equals the request; the default request is 2 (the host maximum defaults to 2).
     credit_window: Number(env.RS_RECEIVER_CREDIT_WINDOW ?? "2"),
@@ -880,7 +892,19 @@ export async function checkGateLive(
 
   // token-not-logged over the whole run: every host token.
   const tokens: Array<{ leg: string; token: string; path: string }> = [];
+  // A leg's host at <leg>/host, the leg one level down (gates 1 to 6) or two (G8g: g8l/<fixture>).
+  const legRoots: string[] = [];
   for (const entry of readdirSync(runDir)) {
+    legRoots.push(entry);
+    let sub: string[] = [];
+    try {
+      if (statSync(join(runDir, entry)).isDirectory())
+        sub = readdirSync(join(runDir, entry));
+    } catch {}
+    for (const e of sub)
+      if (existsSync(join(runDir, entry, e, "host"))) legRoots.push(`${entry}/${e}`);
+  }
+  for (const entry of legRoots) {
     const path = join(runDir, entry, "host", "evidence", "live-token");
     if (existsSync(path))
       tokens.push({

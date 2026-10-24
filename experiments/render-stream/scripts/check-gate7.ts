@@ -37,6 +37,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildGate4Report } from "./check-gate4";
+import { buildGate8Report } from "./check-gate8";
 import { buildGate5Report } from "./check-gate5";
 import { buildGate6Report } from "./check-gate6";
 import { loadDeviceTable } from "./lib/browser-harness";
@@ -118,6 +119,7 @@ export const ALL_GROUPS = [
   "g7-5",
   "g7-55",
   "g7-6",
+  "g7-8",
   "g7-lc",
   "g7-r",
   "g7-k",
@@ -135,6 +137,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g7-5",
   "g7-55",
   "g7-6",
+  "g7-8",
   "g7-lc",
   "g7-r",
   "g7-k",
@@ -154,6 +157,7 @@ const GSW_GATES: Record<string, GswGate> = {
   "g7-4": "gate4",
   "g7-5": "gate5",
   "g7-6": "gate6",
+  "g7-8": "gate8",
 };
 
 interface HarnessCheck {
@@ -405,6 +409,9 @@ async function gateChecker(
     // G7g: gate 6 through its CLI's report builder.
     case "gate6":
       return (dir) => buildGate6Report(dir) as never;
+    // G8g: gate 8 through its CLI's report builder (every group that ran).
+    case "gate8":
+      return (dir) => buildGate8Report(dir) as never;
   }
 }
 

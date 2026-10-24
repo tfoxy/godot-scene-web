@@ -30,7 +30,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 import type { CDPSession } from "@playwright/test";
 
@@ -42,6 +42,22 @@ import {
   launchHarnessBrowser,
 } from "./browser-harness";
 import { quietAcquire } from "./quiet-lock";
+
+/** G8g: the file name a browser leg's recording copy takes: a gate 8 receiver's own
+ * (`recording.rs8`, `recording.rs9`), else `recording.rs2` as before (gates 0 to 6). */
+export function recordingFileName(nativePath: string): string {
+  const name = basename(nativePath);
+  return /^recording\.rs[89]$/.test(name) ? name : "recording.rs2";
+}
+
+/** G8g: the recording a receiver leg directory holds (`recording.rs2`, or gate 8's `.rs8`/`.rs9`). */
+export function legRecording(dir: string): string {
+  for (const name of ["recording.rs2", "recording.rs8", "recording.rs9"]) {
+    const p = join(dir, name);
+    if (existsSync(p)) return p;
+  }
+  return join(dir, "recording.rs2");
+}
 
 export interface WebLegSpec {
   /** The leg's id, e.g. "receiver" or "sabotage-freeze/receiver" (the native leg's own path). */
@@ -177,7 +193,9 @@ export function mapNativeLeg(
       continue;
     }
     if (name === "RS_RECEIVER_RECORDING") {
-      const to = join(spec.webDir, "recording.rs2");
+      // G8g: the leg's own recording name (gate 8's receivers copy `recording.rs8`), so the
+      // browser leg holds the file its native leg holds; gates 0 to 6 name `recording.rs2`.
+      const to = join(spec.webDir, recordingFileName(value));
       copies.push([value, to]);
       env[name] = urlOf(to);
       continue;
