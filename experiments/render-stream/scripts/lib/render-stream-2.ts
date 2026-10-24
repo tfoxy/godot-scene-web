@@ -245,7 +245,10 @@ export type ShaderReason =
   | "shader-global-uniform"
   | "shader-excluded"
   | "payload-too-large"
-  | "payload-unavailable";
+  | "payload-unavailable"
+  /** new at /8 (render-stream-8.md "Resource tables"): an adopted shader whose code could not be
+   * recovered (gate8-design.md Q5). */
+  | "shader-adopt-include";
 export type ShaderUse =
   | "global_uniform"
   | "instance_uniform"
@@ -1517,6 +1520,9 @@ const SHADER_REASONS = [
   "shader-excluded",
   "payload-too-large",
   "payload-unavailable",
+  // render-stream-8.md "Resource tables": an adopted shader whose code could not be recovered
+  // (gate8-design.md Q5); legal at /8 on an adopted entry only.
+  "shader-adopt-include",
 ] as const;
 const SHADER_USES = [
   "global_uniform",
@@ -2497,6 +2503,14 @@ function checkShaderEntrySchema(
   }
   if ((s.status === "ok") !== (s.reason === null)) {
     return err('"reason" must be null exactly for status "ok"');
+  }
+  if (
+    s.reason === "shader-adopt-include" &&
+    (version < 8 || s.origin !== "adopted" || s.hash !== null)
+  ) {
+    return err(
+      '"reason" "shader-adopt-include" needs render-stream/8, origin "adopted" and no code',
+    );
   }
   if (!isInt(s.version) || s.version < 1) {
     return err('"version" is not an integer >= 1');

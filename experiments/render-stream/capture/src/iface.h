@@ -55,6 +55,13 @@ struct Iface {
   GDExtensionInterfaceVariantDestroy variant_destroy = nullptr;
   GDExtensionInterfaceVariantGetPtrBuiltinMethod variant_get_ptr_builtin_method = nullptr;
   GDExtensionInterfaceArrayOperatorIndexConst array_operator_index_const = nullptr;
+  // G8m (rs_adopt.cpp, pre-arm materials and shaders): the temporary Shader (D11), the
+  // SceneTree.node_added callable that keeps the node map current, and the map's lookups.
+  // Optional like the above: a host without them refuses GRC_ADOPT=arm (`adopt-unavailable`).
+  GDExtensionInterfaceClassdbConstructObject2 classdb_construct_object2 = nullptr;
+  GDExtensionInterfaceObjectDestroy object_destroy = nullptr;
+  GDExtensionInterfaceCallableCustomCreate2 callable_custom_create2 = nullptr;
+  GDExtensionInterfaceObjectGetInstanceFromId object_get_instance_from_id = nullptr;
   // Name of the first interface function that failed to resolve, if any.
   std::string missing;
 };

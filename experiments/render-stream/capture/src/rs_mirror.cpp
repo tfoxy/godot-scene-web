@@ -1987,6 +1987,98 @@ bool Mirror::knows_mesh(std::uint64_t rid) const {
   return mesh_by_rid_.count(rid) != 0;
 }
 
+void Mirror::shader_adopt(std::uint64_t rid, const ShaderCodeInput &code, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || shader_by_rid_.count(rid) != 0) {
+    return;  // adoption only ever names a RID the table does not hold
+  }
+  ++epoch_;
+  Shader shader;
+  shader.id = next_shader_id_++;
+  shader.rid = rid;
+  shader.origin = Origin::Adopted;
+  take_shader_code(&shader, code, frame);
+  shader_by_rid_[rid] = shader.id;
+  shaders_.emplace(shader.id, std::move(shader));
+}
+
+void Mirror::shader_adopt_refused(std::uint64_t rid, ShaderReason reason, std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || shader_by_rid_.count(rid) != 0) {
+    return;
+  }
+  ++epoch_;
+  Shader shader;
+  shader.id = next_shader_id_++;
+  shader.rid = rid;
+  shader.origin = Origin::Adopted;
+  shader.refused = true;
+  shader.refused_reason = reason;
+  shader_by_rid_[rid] = shader.id;
+  shaders_.emplace(shader.id, std::move(shader));
+}
+
+void Mirror::material_adopt(std::uint64_t rid, std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || material_by_rid_.count(rid) != 0) {
+    return;
+  }
+  ++epoch_;
+  Material material;
+  material.id = next_material_id_++;
+  material.rid = rid;
+  material.origin = Origin::Adopted;
+  material_by_rid_[rid] = material.id;
+  materials_.emplace(material.id, std::move(material));
+}
+
+bool Mirror::knows_shader(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return shader_by_rid_.count(rid) != 0;
+}
+
+bool Mirror::knows_material(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return material_by_rid_.count(rid) != 0;
+}
+
+std::uint64_t Mirror::material_refs_epoch() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return material_refs_epoch_;
+}
+
+Mirror::PendingMaterialRefs Mirror::pending_material_refs() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  PendingMaterialRefs out;
+  std::map<std::uint32_t, std::size_t> by_material;  // material id -> index in out.materials
+  for (const auto &entry : materials_) {
+    if (entry.second.shader_unknown && entry.second.unknown_shader_rid != 0) {
+      by_material[entry.first] = out.materials.size();
+      PendingMaterialRefs::MaterialRef ref;
+      ref.material = entry.second.rid;
+      ref.shader = entry.second.unknown_shader_rid;
+      out.materials.push_back(std::move(ref));
+    }
+  }
+  for (const auto &entry : items_) {
+    const Item &item = entry.second;
+    if (item.rid == 0) {
+      continue;
+    }
+    if (item.unknown_material && item.unknown_material_rid != 0) {
+      out.items.push_back({item.rid, item.unknown_material_rid});
+    } else if (item.state.has_material) {
+      const auto it = by_material.find(item.state.material);
+      if (it != by_material.end()) {
+        out.materials[it->second].items.push_back(item.rid);
+      }
+    }
+  }
+  return out;
+}
+
 void Mirror::texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (rid == 0 || dropped_identity("texture_2d_placeholder_create", frame)) {
@@ -2266,6 +2358,7 @@ bool shader_reason_from_text(const std::string &text, ShaderReason *out) {
       {"shader-excluded", ShaderReason::ShaderExcluded},
       {"payload-too-large", ShaderReason::PayloadTooLarge},
       {"payload-unavailable", ShaderReason::PayloadUnavailable},
+      {"shader-adopt-include", ShaderReason::ShaderAdoptInclude},
   };
   for (const auto &entry : kReasons) {
     if (text == entry.first) {
@@ -2445,6 +2538,28 @@ bool perturbable_code(const std::string &code, std::size_t *close) {
 
 }  // namespace
 
+bool Mirror::shader_code_of(std::uint64_t rid, std::string *code) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = shader_by_rid_.find(rid);
+  if (it == shader_by_rid_.end()) {
+    return false;
+  }
+  const Shader &shader = shaders_.at(it->second);
+  return shader.has_code && shader.bytes != nullptr && payload_code(*shader.bytes, code);
+}
+
+void Mirror::shader_rebind(std::uint64_t old_rid, std::uint64_t new_rid) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = shader_by_rid_.find(old_rid);
+  if (it == shader_by_rid_.end() || new_rid == 0 || shader_by_rid_.count(new_rid) != 0) {
+    return;
+  }
+  const std::uint32_t id = it->second;
+  shader_by_rid_.erase(it);
+  shader_by_rid_[new_rid] = id;
+  shaders_.at(id).rid = new_rid;
+}
+
 void Mirror::set_shader_policy(ShaderPolicy policy) {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
@@ -2492,6 +2607,7 @@ void Mirror::take_shader_code(Shader *shader, const ShaderCodeInput &code,
 ShaderEntry Mirror::wire_shader(const Shader &shader) const {
   ShaderEntry out;
   out.id = shader.id;
+  out.origin = shader.origin;
   out.version = shader.version;
   for (const auto &entry : shader.default_textures) {
     DefaultTextureRef ref;
@@ -2499,6 +2615,13 @@ ShaderEntry Mirror::wire_shader(const Shader &shader) const {
     ref.index = entry.first.second;
     ref.tex = entry.second;
     out.default_textures.push_back(std::move(ref));
+  }
+  if (shader.refused) {
+    // G8m (Q5): an adopted shader whose code could not be recovered keeps the no-code shape.
+    out.status = ShaderStatus::Unsupported;
+    out.has_reason = true;
+    out.reason = shader.refused_reason;
+    return out;
   }
   if (!shader.has_code) {
     return out;  // render-stream-5.md "Shader table": mode, source, hash null, payload_bytes 0
@@ -2562,6 +2685,7 @@ ShaderEntry Mirror::wire_shader(const Shader &shader) const {
 MaterialEntry Mirror::wire_material(const Material &material) {
   MaterialEntry out;
   out.id = material.id;
+  out.origin = material.origin;
   out.version = material.version;
   out.has_shader = material.has_shader;
   out.shader = material.shader;
@@ -2779,6 +2903,8 @@ void Mirror::material_create_from_shader(std::uint64_t rid, std::uint64_t shader
       material.shader = it->second;
     } else {
       material.shader_unknown = true;
+      material.unknown_shader_rid = shader;
+      ++material_refs_epoch_;
     }
   }
   material_by_rid_[rid] = material.id;
@@ -2798,6 +2924,7 @@ void Mirror::material_set_shader(std::uint64_t rid, std::uint64_t shader, std::u
   material->has_shader = false;
   material->shader = 0;
   material->shader_unknown = false;
+  material->unknown_shader_rid = 0;
   if (shader != 0) {
     const auto it = shader_by_rid_.find(shader);
     if (it != shader_by_rid_.end()) {
@@ -2805,6 +2932,8 @@ void Mirror::material_set_shader(std::uint64_t rid, std::uint64_t shader, std::u
       material->shader = it->second;
     } else {
       material->shader_unknown = true;
+      material->unknown_shader_rid = shader;
+      ++material_refs_epoch_;
     }
   }
   ++material->version;
@@ -2851,13 +2980,17 @@ void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64
   item->state.has_material = false;
   item->state.material = 0;
   item->unknown_material = false;
+  item->unknown_material_rid = 0;
   if (material != 0) {
+    // G8m: any assignment may give a material with an unknown shader its first item.
+    ++material_refs_epoch_;
     const auto it = material_by_rid_.find(material);
     if (it != material_by_rid_.end()) {
       item->state.has_material = true;
       item->state.material = it->second;
     } else {
       item->unknown_material = true;
+      item->unknown_material_rid = material;
     }
   }
 }

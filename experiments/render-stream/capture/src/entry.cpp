@@ -629,6 +629,29 @@ std::string result_json() {
       json.field("census_ns", static_cast<int64_t>(r.census_ns));
       json.field("lookup_ns", static_cast<int64_t>(r.lookup_ns));
       json.object_end();
+      // G8m (D11, D12, Q5): material and shader adoption's account (`materials` above is G8a's
+      // count of adopted items that draw with a material).
+      const rs::AdoptMaterialStats ms = rs::adopt_material_stats();
+      json.key("material_adoption").object_begin();
+      json.field("materials", static_cast<int64_t>(ms.materials));
+      json.field("shader_materials", static_cast<int64_t>(ms.shader_materials));
+      json.field("canvas_item_materials", static_cast<int64_t>(ms.canvas_item_materials));
+      json.field("at_arm", static_cast<int64_t>(ms.at_arm));
+      json.field("materials_refused", static_cast<int64_t>(ms.materials_refused));
+      json.field("shaders", static_cast<int64_t>(ms.shaders));
+      json.field("shaders_builtin", static_cast<int64_t>(ms.shaders_builtin));
+      json.field("shaders_include_refused", static_cast<int64_t>(ms.shaders_include_refused));
+      json.field("shaders_lazy", static_cast<int64_t>(ms.shaders_lazy));
+      json.field("shaders_refused", static_cast<int64_t>(ms.shaders_refused));
+      json.field("params", static_cast<int64_t>(ms.params));
+      json.field("default_textures", static_cast<int64_t>(ms.default_textures));
+      json.field("instance_params", static_cast<int64_t>(ms.instance_params));
+      json.field("resolve_passes", static_cast<int64_t>(ms.resolve_passes));
+      json.field("nodes_added", static_cast<int64_t>(ms.nodes_added));
+      json.field("node_map_connected", ms.node_map_connected);
+      json.field("arm_ns", static_cast<int64_t>(ms.arm_ns));
+      json.field("resolve_ns", static_cast<int64_t>(ms.resolve_ns));
+      json.object_end();
     }
     json.object_end();
     // G8t (gate8-design.md Q3 `decode-cost`): the decode seam's totals since arm (per-texture
@@ -1673,6 +1696,11 @@ void stream_start() {
                !g_stream.gate8.adopt) {
       // G8a (gate8-design.md Q2 "Sabotages"): they act on the arm-time adoption walk.
       why = std::string(rs2::to_wire(kind)) + " acts on the adoption walk; set GRC_ADOPT=arm";
+    } else if ((kind == rs2::SabotageKind::AdoptRawShaderCode ||
+                kind == rs2::SabotageKind::AdoptSkipParams) &&
+               !g_stream.gate8.adopt) {
+      // G8m (gate8-design.md Q5 "Sabotages"): they act on adopted shaders and materials.
+      why = std::string(rs2::to_wire(kind)) + " acts on adopted materials; set GRC_ADOPT=arm";
     }
     if (!why.empty()) {
       log_line("stream: refused sabotage (" + why + ")");
@@ -1824,6 +1852,14 @@ void stream_start() {
     // G8r (D6, D7): lazy resource adoption is on from the walk to the stream's end; the walk's
     // redraws (this iteration's flush) are the first hooked calls to name pre-arm resources.
     rs::adopt_resources_begin(g_stream.adopt_fault);
+    // G8m (D11, D12): materials and shaders resolve after the hook log opens (below) and at every
+    // frame boundary; the two Q5 sabotages act there.
+    rs::adopt_materials_configure(
+        sabotage.config.kind == rs2::SabotageKind::AdoptRawShaderCode
+            ? rs::AdoptMaterialSabotage::RawShaderCode
+            : sabotage.config.kind == rs2::SabotageKind::AdoptSkipParams
+                  ? rs::AdoptMaterialSabotage::SkipParams
+                  : rs::AdoptMaterialSabotage::None);
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
     session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
@@ -2057,6 +2093,20 @@ void stream_start() {
   }
   g_stream.status = "open";
   resources_start(root.viewport_rid);
+  if (g_stream.gate8.adopt) {
+    // G8m (gate8-design.md D11, Q5): every adopted item's material, shader and instance
+    // parameters, through the hooks' own paths now that the hook log is open; still this
+    // iteration, before the first transaction.
+    rs::adopt_materials_at_arm();
+    const rs::AdoptMaterialStats ms = rs::adopt_material_stats();
+    log_line("adopt: materials=" + std::to_string(ms.materials) + " shaders=" +
+             std::to_string(ms.shaders) + " include_refused=" +
+             std::to_string(ms.shaders_include_refused) + " instance_params=" +
+             std::to_string(ms.instance_params) + " refused=" +
+             std::to_string(ms.materials_refused) + " node_map=" +
+             (ms.node_map_connected ? "connected" : "unconnected") +
+             " us=" + std::to_string(ms.arm_ns / 1000));
+  }
   const rs2::Publisher *publisher = g_stream.publisher.get();
   const auto stream_id = [publisher](rs2::Encoding encoding) {
     return publisher != nullptr && publisher->has_sink(encoding)
@@ -2686,6 +2736,11 @@ void on_frame() {
   }
   ++g_state.frames_total;
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
+  if (g_state.armed && g_stream.gate8.adopt) {
+    // G8m (gate8-design.md Q5): references to pre-arm materials and shaders a hooked call named
+    // this iteration resolve now, dated this frame, before the transaction is formed.
+    rs::adopt_materials_resolve();
+  }
   hooks_set_frame(g_state.frames_total + 1);
   // Only a library armed before this callback publishes for this frame: one
   // armed by the deferred attempt below saw none of the frame's calls.

@@ -8,8 +8,9 @@ of canvases, layers and items, the `gate8-adopt` fixture) is landed: Q2 "As buil
 [results/gate8/g8a.md](../results/gate8/g8a.md). G8sha (the capture's SHA-256 on SHA-NI, 5.7x, output
 unchanged) is landed: [results/gate8/g8sha.md](../results/gate8/g8sha.md). G8r (lazy adoption of
 pre-arm textures, meshes and glyph atlases) is landed: Q2 "As built (G8r)",
-[results/gate8/g8r.md](../results/gate8/g8r.md). Nothing else here is
-implemented. The user decided on
+[results/gate8/g8r.md](../results/gate8/g8r.md). G8m (pre-arm materials and shaders, the
+`gate8-mat` fixture) is landed: Q5 "As built (G8m)", [results/gate8/g8m.md](../results/gate8/g8m.md).
+Nothing else here is implemented. The user decided on
 2026-10-22 that public release needs the gate 8 blockers first (memory g31-good-enough-release-first).
 Gate 8 is "integrate behind couch-coop's instance rules, with the streaming seat opting out of the
 headless visual freeze/suspender" (`docs/handoff-headless-render-stream.md`, gate table). The single
@@ -578,6 +579,85 @@ object), `adopt-equivalence` and `adopt-reference` as in Q2.
 whose include resolves relative to the original resource path (the temporary `Shader` has none;
 typed `shader-adopt-include` when the preprocessed code differs in its `@@` markers); D11 of gate
 5.5's shader reasons (`TIME`, screen texture, SDF, globals) unchanged.
+
+### As built (G8m)
+
+D11 and D12 as specified, through the hooks' own paths; decisions taken where they left room, each
+the long-term option:
+
+- **When.** At arm, after the hook log opens (still the arm iteration, before the first
+  transaction): every adopted item's material, then the instance parameters of every adopted item
+  that draws with one. After arm, at the frame callback before the transaction is formed: every
+  reference the mirror could not resolve. The mirror keeps the unknown RID an item's
+  `canvas_item_set_material`, or a material's `material_create_from_shader` /
+  `material_set_shader`, named (`Mirror::pending_material_refs`) and an epoch that moves only when
+  such a reference can appear or gain an item, so an unchanged frame costs one load. A resolved
+  reference is set again through the hooks' setter, so no transaction of a late capture carries the
+  transient `unknown-material` / `unknown-shader` (`g8m-wire` checks every frame).
+- **Through the item's node.** The node map is the walk's, kept current by one custom callable
+  (`callable_custom_create2`) connected to `SceneTree.node_added` for the stream's lifetime and
+  disconnected at its end; it maps a `CanvasItem`'s RID to its instance id, never holds a pointer,
+  and drops dead entries once it doubles. A material is resolved only when the item's own
+  `get_material()` has the RID the call named; a material with an unknown shader only when an item
+  draws with it (a material no item uses draws nothing, and it resolves when one does).
+- **The temporary Shader gets the original's path** (`Resource.set_path_cache`, which does not touch
+  the resource cache: `~Resource` unregisters only itself, `resource.cpp:763-775`). D11 as written
+  gives it none, so a relative `#include` would fail; with the path it resolves exactly as it did
+  for the original (`shader_preprocessor.cpp:701-704`), and `shader-adopt-include` is left for a
+  preprocessing that still fails: the preprocessor leaves the source as it was on an error
+  (`shader.cpp:97-104`), so an `#include` directive left in the code the temporary sent is the
+  test (not a marker count, which nested and repeated includes make ambiguous). The design's case
+  is kept reachable as the fault `GRC_ADOPT_FAULT=no-include-path` (the temporary gets no path),
+  whose leg proves the typed refusal and that a receiver draws that item without its material.
+- **The reentrancy flag (D4)** is thread-local in hooks.cpp: while it is set,
+  `shader_create_from_code` hands the code and RID to the adopter and `shader_set_code` and `free`
+  pass straight to the engine, so the temporary Shader never reaches the mirror, the hook log or
+  `counters.json`. The temporary is `classdb_construct_object2("Shader")` and is destroyed with
+  `object_destroy` before the flag drops (its RID's free included).
+- **Parameters by the code's own uniforms.** The dummy keeps a shader's uniforms, but
+  `Shader.get_shader_uniform_list` hides every name with a default texture (`shader.cpp:169-171`),
+  so the names come from a token scan of the preprocessed code (`scan_uniforms`: comments skipped,
+  `instance` and `global` uniforms excluded); each non-nil `get_shader_parameter` is a parameter,
+  a texture `Object` sent by its RID as `set_shader_parameter` sends it (`material.cpp:465-475`),
+  and index 0 of each sampler's `get_default_texture_parameter` a shader default. A parameter set
+  under a name the code does not declare is not recovered (it reaches no uniform either).
+- **CanvasItemMaterial (D12).** The template is rebuilt from the getters
+  (`canvas_item_material_code`, the comment's version text from the GDExtension version: the
+  name and `GODOT_VERSION_FULL_CONFIG`, module config included), with the three particles
+  parameters the constructor sends. No getter returns a material's shader RID
+  (`Material.get_shader_rid` is not bound), so the template of a material adopted at arm is keyed
+  in the shader table under a capture-reserved key (the top bit set, which no 31-bit-validator RID
+  takes) and re-keyed to the engine RID the first hooked call names (`Mirror::shader_rebind`), so a
+  later material of the same mode shares the one entry, as a born capture's does. Until then the
+  entry outlives the engine's shader if every material of that mode dies first (an unreferenced
+  table entry, nothing drawn).
+- **Instance parameters.** `canvas_item_get_instance_shader_parameter` returns a parameter's
+  default when it was never set (`instance_uniforms.cpp:161-163`), so one equal to the default
+  (type included) is taken as unset; an instance parameter set to exactly its default is not
+  recovered.
+- **Wire.** `shader-adopt-include` is a /8 shader reason (render-stream-8.md "Resource tables",
+  "As built (G8m)"), validated by the TypeScript decoder and rs-core (adopted entries only, no
+  code); no receiver change. The two Q5 sabotages act on adopted shaders and materials only and
+  refuse without `GRC_ADOPT=arm`; `adopt-skip-params` drops instance parameters too.
+- **Accounting.** `stream.gate8.adopt_stats.material_adoption` (result.json): materials by class, at arm
+  and lazily, shaders (templates, include refusals, lazy shader resolutions), parameters, default
+  textures, instance parameters, refusals, resolve passes, node-map size and connection, times.
+- **Fixture `fixtures/gate8-mat/`** (born and late through gate8-adopt's loader, K = 12): `MA`
+  (`ShaderMaterial` on `main.gdshader`, which `#include`s `res://inc/tint.gdshaderinc`, a texture
+  parameter, `tint` changed at frame 5) on `A` and `I` (an instance uniform set before arm), `MR`
+  on `rel.gdshader` (a relative include), `MC` (`CanvasItemMaterial`, add) on `C`; held before arm
+  but on no item, `MP` (main), `spare.gdshader` (a default texture) and a mul
+  `CanvasItemMaterial`. At K+4: `N1` takes `MP`, `N2` a new `ShaderMaterial` on `spare`, `N3` a new
+  mul and `N4` a new add `CanvasItemMaterial`; at K+14 parameters change on adopted objects. The
+  reference runs gate 5.5's `material_oracle.gd` (a symlink, unchanged).
+- **Checks** (run-gate8.sh group `g8m`, lib/gate8-mat-checks.ts): `g8m-legs`, `g8m-wire`,
+  `shader-hash-parity` and `param-parity` (born and late, against the oracle, materials found
+  through their items' transform origins), `adopt-cim-builtin` (against the born hook's
+  engine-generated code; C and N4 share one entry), `adopt-equivalence` (gate8-adopt's bijection,
+  materials and instance parameters compared by content), `adopt-material-account`,
+  `adopt-reference` (born, late and late's patch sink pixel-equal to the reference),
+  `adopt-include-refused`, and the sabotages `sabotage-adopt-raw-shader-code` (fails
+  shader-hash-parity) and `sabotage-adopt-skip-params` (fails param-parity).
 
 ## Q6. Wire: render-stream/8 (G8w)
 

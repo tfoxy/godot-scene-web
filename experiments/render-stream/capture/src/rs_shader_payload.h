@@ -55,6 +55,21 @@ struct CanvasItemMaterialBuiltin {
 };
 CanvasItemMaterialBuiltin recognize_canvas_item_material(const std::string &code);
 
+// G8m (gate8-design.md D12): the code `CanvasItemMaterial::_update_shader` generates for a mode,
+// rebuilt from the mode (never from the engine's process-wide cache). `version_text` is the
+// comment's GODOT_VERSION_NAME " " GODOT_VERSION_FULL_CONFIG (e.g. "Godot Engine 4.5.1.stable");
+// `blend_mode` and `light_mode` are the engine's enum values (BlendMode 0..5: mix, add, sub, mul,
+// premul_alpha, disabled; LightMode 0..2: normal, unshaded, light_only). Empty for a value out of
+// range.
+std::string canvas_item_material_code(const std::string &version_text, int blend_mode,
+                                      int light_mode, bool particles_animation);
+
+// G8m: that comment's version text from the engine's GDExtension version (`full_name` is
+// GODOT_VERSION_FULL_NAME, "<name> v<full config>.<build>"; `build` GODOT_VERSION_BUILD). Empty
+// when `full_name` does not have that shape.
+std::string canvas_item_material_version_text(const std::string &full_name,
+                                              const std::string &build);
+
 // The canonical meta JSON for a code of `code_bytes` length.
 std::string payload_meta(std::uint64_t code_bytes);
 

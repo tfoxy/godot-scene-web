@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "rs_adopt.h"
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
+#include "rs_shader_payload.h"
 
 namespace {
 
@@ -350,6 +352,18 @@ bool hooks_adopt_texture(uint64_t, void *, rs2::AdoptedContent, const char *, bo
 bool hooks_adopt_mesh(uint64_t, const std::vector<rs::AdoptSurface> &, const float[6]) {
   return false;
 }
+// G8m: the material path's hooks (never reached here: the engine walk does not run).
+void hooks_internal_begin(std::string *, uint64_t *) {}
+void hooks_internal_end() {}
+bool hooks_adopt_shader(uint64_t, const std::string &) { return false; }
+bool hooks_adopt_shader_refused(uint64_t, rs2::ShaderReason) { return false; }
+void hooks_adopt_default_texture(uint64_t, const std::string &, uint64_t, int32_t) {}
+bool hooks_adopt_material(uint64_t, uint64_t, const std::vector<rs::AdoptParam> &) {
+  return false;
+}
+void hooks_adopt_item_material(uint64_t, uint64_t) {}
+void hooks_adopt_material_shader(uint64_t, uint64_t) {}
+void hooks_adopt_instance_param(uint64_t, const std::string &, const void *) {}
 }  // namespace grc
 namespace {
 
@@ -567,6 +581,172 @@ void test_adopt_fault_parse() {
 
 }  // namespace
 
+// ------------------------------------------------------------------ G8m: materials, shaders
+
+namespace {
+
+grc::rs::ShaderCodeInput shader_input(const std::string &code) {
+  grc::rs::ShaderCodeInput in;
+  in.copy.status = "ok";
+  in.copy.mode = "canvas_item";
+  const grc::rs::CanvasItemMaterialBuiltin b = grc::rs::recognize_canvas_item_material(code);
+  in.copy.builtin = b.recognized;
+  in.copy.builtin_blend_mode = b.blend_mode;
+  in.copy.builtin_light_mode = b.light_mode;
+  in.copy.builtin_particles_animation = b.particles_animation;
+  auto bytes = std::make_shared<grc::rs::PayloadBytes>(grc::rs::encode_payload(code));
+  in.copy.hash = std::string(64, code.size() % 2 == 0 ? 'a' : 'b');
+  in.copy.payload_bytes = static_cast<int64_t>(bytes->size());
+  in.copy.code_bytes = static_cast<int64_t>(code.size());
+  in.bytes = bytes;
+  return in;
+}
+
+grc::rs::DecodedParam float_param(double v) {
+  grc::rs::DecodedParam p;
+  p.type = "float";
+  p.n = 1;
+  p.f = {v};
+  return p;
+}
+
+// Born: the hooks see the shader and material created and set; late: the same objects adopted
+// (shader_adopt, material_adopt, then the hooks' own setters), after an item already named the
+// material (unknown-material until then, listed as pending).
+void test_materials_born_equals_adopted() {
+  constexpr uint64_t kItem = 0x40, kShader = 0x70, kMaterial = 0x80, kShader2 = 0x71;
+  const std::string code = "shader_type canvas_item;\nuniform float gain;\nvoid fragment() {}\n";
+  Mirror born;
+  start(&born, grc::rs2::UnknownItemPolicy::Strict);
+  born.canvas_item_create(kItem, 1);
+  born.set_parent(kItem, kRootCanvas, 1);
+  born.shader_create_from_code(kShader, shader_input(code), 1);
+  born.material_create_from_shader(kMaterial, kShader, 1);
+  born.material_set_param(kMaterial, "gain", float_param(0.5), 1);
+  born.set_material(kItem, kMaterial, 1);
+
+  Mirror late;
+  start(&late, grc::rs2::UnknownItemPolicy::Strict);
+  late.adopt_item(kItem, 1);
+  late.set_parent(kItem, kRootCanvas, 1);
+  const uint64_t e0 = late.material_refs_epoch();
+  late.set_material(kItem, kMaterial, 1);
+  check(late.material_refs_epoch() != e0, "m: an unknown material reference moves the epoch");
+  auto pending = late.pending_material_refs();
+  check(pending.items.size() == 1 && pending.items[0].first == kItem &&
+            pending.items[0].second == kMaterial && pending.materials.empty(),
+        "m: the item's unknown material is pending");
+  Snapshot u = late.snapshot(1, 1).state;
+  check(u.items.size() == 1 && !u.items[0].has_material && u.unsupported.size() == 1 &&
+            u.unsupported[0].reason == grc::rs2::UnsupportedReason::UnknownMaterial,
+        "m: unresolved, the item is unknown-material");
+  late.shader_adopt(kShader, shader_input(code), 2);
+  late.material_adopt(kMaterial, 2);
+  late.material_set_shader(kMaterial, kShader, 2);
+  late.material_set_param(kMaterial, "gain", float_param(0.5), 2);
+  late.set_material(kItem, kMaterial, 2);
+  check(late.knows_shader(kShader) && late.knows_material(kMaterial), "m: known after adoption");
+  check(late.pending_material_refs().items.empty(), "m: nothing pending after resolution");
+  std::string got;
+  check(late.shader_code_of(kShader, &got) && got == code, "m: the adopted shader's code");
+  const Snapshot b = born.snapshot(2, 2).state;
+  const Snapshot l = late.snapshot(2, 2).state;
+  check(b.shaders.size() == 1 && l.shaders.size() == 1 && b.materials.size() == 1 &&
+            l.materials.size() == 1,
+        "m: one shader and one material each");
+  if (b.shaders.size() == 1 && l.shaders.size() == 1) {
+    check(b.shaders[0].origin == Origin::Created && l.shaders[0].origin == Origin::Adopted,
+          "m: shader origins");
+    check(b.shaders[0].hash == l.shaders[0].hash && l.shaders[0].has_hash &&
+              b.shaders[0].status == l.shaders[0].status,
+          "m: shader entries equal but for origin");
+  }
+  if (b.materials.size() == 1 && l.materials.size() == 1) {
+    check(l.materials[0].origin == Origin::Adopted, "m: material adopted");
+    check(l.materials[0].has_shader && l.materials[0].shader == l.shaders[0].id &&
+              l.materials[0].params.size() == 1 && l.materials[0].params[0].name == "gain" &&
+              b.materials[0].params.size() == 1,
+          "m: the adopted material names its shader and parameter");
+  }
+  check(l.items.size() == 1 && l.items[0].has_material && l.unsupported.empty(),
+        "m: the item names the adopted material, no unknown-material");
+
+  // A post-arm material on an unknown (pre-arm) shader is pending through its items.
+  late.material_create_from_shader(0x81, kShader2, 3);
+  late.set_material(kItem, 0x81, 3);
+  pending = late.pending_material_refs();
+  check(pending.materials.size() == 1 && pending.materials[0].shader == kShader2 &&
+            pending.materials[0].items.size() == 1 && pending.materials[0].items[0] == kItem,
+        "m: a material's unknown shader is pending with its item");
+  // D12: a template shader adopted under a synthetic key is re-keyed to the RID a call names.
+  constexpr uint64_t kSynthetic = (1ull << 63) | 0x1;
+  late.shader_adopt(kSynthetic, shader_input(code), 3);
+  late.shader_rebind(kSynthetic, kShader2);
+  check(late.knows_shader(kShader2) && !late.knows_shader(kSynthetic), "m: rebind re-keys");
+  late.material_set_shader(0x81, kShader2, 3);
+  check(late.pending_material_refs().materials.empty(), "m: resolved after the rebind");
+  // Q5: an unrecoverable shader keeps the no-code shape, unsupported, shader-adopt-include.
+  late.shader_adopt_refused(0x72, grc::rs2::ShaderReason::ShaderAdoptInclude, 3);
+  const Snapshot r = late.snapshot(3, 3).state;
+  bool refused = false;
+  for (const auto &sh : r.shaders) {
+    refused = refused || (sh.origin == Origin::Adopted && sh.has_reason &&
+                          sh.reason == grc::rs2::ShaderReason::ShaderAdoptInclude &&
+                          sh.status == grc::rs2::ShaderStatus::Unsupported && !sh.has_hash &&
+                          !sh.has_mode);
+  }
+  check(refused, "m: shader-adopt-include entry");
+  check(std::string(grc::rs2::to_wire(grc::rs2::ShaderReason::ShaderAdoptInclude)) ==
+            "shader-adopt-include",
+        "m: wire spelling");
+}
+
+void test_material_scans() {
+  const auto u = grc::rs::scan_uniforms(
+      "shader_type canvas_item;\n// uniform float commented;\n/* uniform int c2; */\n"
+      "@@>res://inc/a.gdshaderinc\nuniform vec4 tint = vec4(1.0);\n@@<res://inc/a.gdshaderinc\n"
+      "uniform sampler2D pal : filter_nearest;\ninstance uniform vec4 inst;\n"
+      "global uniform vec4 g;\nuniform lowp float arr[3];\nvoid fragment() {}\n");
+  check(u.size() == 3 && u[0].name == "tint" && !u[0].sampler && u[1].name == "pal" &&
+            u[1].sampler && u[2].name == "arr",
+        "scan: uniform names, samplers, instance/global/comments skipped");
+  check(grc::rs::has_include_directive("shader_type canvas_item;\n  #include \"x.gdshaderinc\"\n"),
+        "include: a left-over directive");
+  check(!grc::rs::has_include_directive("shader_type canvas_item;\n@@>res://x\n"),
+        "include: markers only");
+  const std::string version = grc::rs::canvas_item_material_version_text(
+      "Godot Engine v4.5.1.stable.official", "official");
+  check(version == "Godot Engine 4.5.1.stable", "cim: version text from the full name");
+  check(grc::rs::canvas_item_material_version_text("Godot Engine v4.5.1.stable.mono.official",
+                                                   "official") == "Godot Engine 4.5.1.stable.mono",
+        "cim: version text keeps the module config");
+  for (int blend = 0; blend < 6; ++blend) {
+    for (int light = 0; light < 3; ++light) {
+      for (bool particles : {false, true}) {
+        const auto b = grc::rs::recognize_canvas_item_material(
+            grc::rs::canvas_item_material_code(version, blend, light, particles));
+        static const char *kBlend[] = {"mix", "add", "sub", "mul", "premul_alpha", "disabled"};
+        static const char *kLight[] = {"normal", "unshaded", "light_only"};
+        check(b.recognized && b.blend_mode == kBlend[blend] && b.light_mode == kLight[light] &&
+                  b.particles_animation == particles,
+              "cim: the rebuilt template is recognized as its own mode");
+      }
+    }
+  }
+  check(grc::rs::canvas_item_material_code(version, 6, 0, false).empty(), "cim: out of range");
+  grc::rs::AdoptFault f = grc::rs::AdoptFault::None;
+  std::string error;
+  check(grc::rs::parse_adopt_fault("no-include-path", true, &f, &error) &&
+            f == grc::rs::AdoptFault::NoIncludePath,
+        "fault: no-include-path");
+  // Inactive: the frame-boundary resolution and the arm pass are no-ops.
+  grc::rs::adopt_materials_resolve();
+  grc::rs::adopt_materials_at_arm();
+  check(grc::rs::adopt_material_stats().materials == 0, "m: nothing adopted while inactive");
+}
+
+}  // namespace
+
 int main() {
   test_born_equals_adopted();
   test_sabotages();
@@ -577,6 +757,8 @@ int main() {
   test_resources_refinement();
   test_resources_log();
   test_adopt_fault_parse();
+  test_materials_born_equals_adopted();
+  test_material_scans();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

@@ -115,6 +115,13 @@ The four tables' entries keep every /7 field, in /7's order, with these addition
   (`meta-schema` otherwise); it is non-null only on an `ok` entry of kind `image` (not freed, not
   `unsupported`, not a placeholder or canvas texture); it differs from `format`; and the session's
   `resources.decode` is `"engine"`. A freed entry carries `null`.
+- Shader entries gain one reason, `shader-adopt-include` (G8m, gate8-design.md Q5): an adopted
+  shader whose code the capture could not recover, because its preprocessing left an `#include`
+  it could not resolve. Its entry keeps the no-code shape (`mode`, `source` and `hash` null,
+  `payload_bytes` 0) with `status: "unsupported"`; a material naming it is `unsupported` through
+  it, and its items carry the derived `unsupported-material`, so a receiver draws them without the
+  material. The reason is legal at /8 only, on an entry whose `origin` is `"adopted"` and whose
+  `hash` is null (`shader-entry` otherwise).
 - Entries compare as whole values for `texture-version`: at an equal version an entry is identical
   except for a transition into `freed`, so `origin`, `adopted_content` and `source_format` take
   part. A refinement that raises `adopted_content` from `"creation"` to `"current"` raises the
@@ -338,3 +345,23 @@ Float payloads end to end (gate8-design.md D9). Where the design left room:
   `image` or `mesh`, the id and version a create would have), ending with the trailing keys
   `adopted_content` and `adopt_source` (`textserver`, `cache`, `dummy` or `update`); no other line
   changes.
+
+## As built (G8m)
+
+- **Adopted shaders and materials are produced.** Under `GRC_ADOPT=arm` a shader or material that
+  existed at arm gets its table entry with `origin: "adopted"`, at arm (every adopted item's
+  material) or at the frame boundary after a hooked call first names it, before that frame's
+  transaction is formed (gate8-design.md Q5 "As built (G8m)"). The entry is otherwise exactly a
+  created one: a new id, version 1, a `ShaderMaterial` shader's GRP1 payload of the code the
+  server received (preprocessed, `@@` markers included), a `CanvasItemMaterial` shader's template
+  code and `builtin` object, and the parameters as `material_set_param` would have declared them.
+  `shader-adopt-include` is the one new value (above); the TypeScript decoder and rs-core validate
+  it, and the receivers need no change: an unsupported shader already draws as no material.
+- **No transaction names an unresolved pre-arm material.** Resolution runs before every
+  transaction is formed, so a late capture's stream never carries the transient `unknown-material`
+  or `unknown-shader` a hooked call would have typed; what stays typed is what has no resource
+  behind it (raw RenderingServer materials and shaders), as below /8.
+- **The hook log** (not a wire format) registers an adopted shader on a `shader_create_from_code`
+  line (or a `shader_create` line for `shader-adopt-include`) and an adopted material on
+  `material_create`, `material_set_shader` and `material_set_param` lines, each with the id and
+  version a create would have; no line kind changes.

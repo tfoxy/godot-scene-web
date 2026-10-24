@@ -26,8 +26,7 @@
 // Not adopted, by design (each stays typed by the mirror exactly as an unknown RID is today):
 // RS-only items and canvases with no node (the residue: TileMapLayer quadrants, a script's
 // `RenderingServer.canvas_item_create`, an embedded subwindow's canvas), and every subtree of a
-// non-root viewport. Materials and shaders are G8m's: an adopted material is the hooks'
-// `unknown-material`.
+// non-root viewport. Materials and shaders are G8m's (below).
 //
 // G8r (gate8-design.md D6, D7): pre-arm textures, meshes and glyph atlases are adopted lazily, at
 // their first reference by a hooked call (adopt_texture_ref / adopt_mesh_ref, called by every hook
@@ -51,6 +50,27 @@
 // What cannot be read (texture_2d_get returns no image: a placeholder, a proxy, a RID that is no
 // dummy texture; a RID that is no mesh) stays the hooks' typed `unknown-texture` /
 // `unknown-mesh`, counted once per RID in AdoptResourceStats.
+//
+// G8m (gate8-design.md D11, D12, Q5): pre-arm materials and shaders are resolved through the
+// item's node, at arm (every adopted item's material, before the plan is applied, and its
+// instance parameters after) and lazily at the next frame boundary (a hooked call named an
+// unknown material or shader: a post-arm item given a pre-arm material, a post-arm material on a
+// pre-arm Shader, a CanvasItemMaterial mode first used before arm), before the transaction is
+// formed. The node map is the walk's, kept current by a custom callable on SceneTree.node_added.
+//
+//   - a ShaderMaterial's Shader: its code preprocessed by a capture-owned temporary Shader
+//     (set_path_cache to the original's path, so relative includes resolve as they did; then
+//     set_code(get_code()) and get_rid(), which reaches the hooked shader_create_from_code under
+//     the hooks' reentrancy flag, D4), its default textures; a preprocessing that left an
+//     `#include` in the code is the typed `shader-adopt-include` (no code, unsupported);
+//   - its parameters: get_shader_parameter for every `uniform` the code declares (a texture
+//     value by its RID), as the material_set_param calls that made them;
+//   - a CanvasItemMaterial: the template code for its mode, rebuilt from the getters (D12), and
+//     the three particles parameters its constructor sets;
+//   - instance parameters: canvas_item_get_instance_shader_parameter over the server's list
+//     (RendererCanvasCull keeps them headless), the ones that were set.
+// Anything else (a material class with no recipe, a material or shader no node holds: raw
+// RenderingServer calls) stays the hooks' `unknown-material` / `unknown-shader`, counted.
 #ifndef GRC_RS_ADOPT_H
 #define GRC_RS_ADOPT_H
 
@@ -81,7 +101,7 @@ struct AdoptStats {
   std::uint32_t canvas_modulates = 0;  // canvases given a CanvasModulate colour
   std::uint32_t lights = 0;             // Light2D nodes declared (canvas-light, sticky)
   std::uint32_t non_root_viewports = 0; // viewport subtrees not walked (non-root-viewport)
-  std::uint32_t materials = 0;          // adopted items with a material (unknown-material: G8m)
+  std::uint32_t materials = 0;          // adopted items with a material (resolved by G8m)
   std::uint64_t walk_ns = 0;   // the read-only tree walk
   std::uint64_t apply_ns = 0;  // the mirror application
   std::uint64_t engine_ns = 0; // the redraw requests and the re-raises
@@ -186,6 +206,9 @@ enum class AdoptFault : std::uint8_t {
   AtlasFromDummy,  // atlas-from-dummy: atlas pages read from the dummy's stale copy, still
                    // declared `current`
   ClaimCurrent,    // claim-current: every adopted texture and mesh declared `current`
+  // G8m: no-include-path: the temporary Shader gets no path (gate8-design.md D11 as written), so
+  // a relative #include cannot resolve and its shader is the typed shader-adopt-include.
+  NoIncludePath,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -249,6 +272,69 @@ struct AdoptSurface {
   std::size_t index_bytes = 0;
   std::int64_t blend_shape_bytes = 0;  // non-zero when the surface has blend shapes (refused)
 };
+
+// ------------------------------------------------------------------- G8m: materials, shaders
+
+// One parameter read back from a material (a Variant the caller keeps alive for the call).
+struct AdoptParam {
+  std::string name;
+  const void *variant = nullptr;
+};
+
+// The two G8m sabotages (render-stream-8.md "Sabotage kinds", gate8-design.md Q5).
+enum class AdoptMaterialSabotage : std::uint8_t {
+  None,
+  RawShaderCode,  // adopt-raw-shader-code: an adopted shader publishes get_code() unpreprocessed
+  SkipParams,     // adopt-skip-params: adopted materials and items publish no parameters
+};
+
+// One `uniform` declaration a shader's code makes (instance and global uniforms excluded).
+struct UniformDecl {
+  std::string name;
+  bool sampler = false;  // a sampler type (its default texture is a shader default)
+};
+// The token scan G8m reads parameter names with: `//` and `/* */` comments skipped, `uniform`
+// preceded by `instance` or `global` skipped, an optional precision qualifier, then the type and
+// the name. Engine-free.
+std::vector<UniformDecl> scan_uniforms(const std::string &code);
+// True when `code` still holds an `#include` directive (a line whose first token is #include):
+// the preprocessor failed and left the source as it was (Q5's shader-adopt-include).
+bool has_include_directive(const std::string &code);
+
+// What material adoption did (result.json stream.gate8.adopt_stats.material_adoption).
+struct AdoptMaterialStats {
+  std::uint32_t materials = 0;             // adopted materials, every class
+  std::uint32_t shader_materials = 0;      // ... ShaderMaterial
+  std::uint32_t canvas_item_materials = 0; // ... CanvasItemMaterial
+  std::uint32_t at_arm = 0;                // ... adopted by the walk (the rest lazily)
+  std::uint32_t materials_refused = 0;     // material refs nothing could resolve (counted once)
+  std::uint32_t shaders = 0;               // adopted shaders
+  std::uint32_t shaders_builtin = 0;       // ... CanvasItemMaterial templates (D12)
+  std::uint32_t shaders_include_refused = 0;  // ... shader-adopt-include
+  std::uint32_t shaders_lazy = 0;          // material shaders resolved at a frame boundary
+  std::uint32_t shaders_refused = 0;       // material-shader refs nothing could resolve
+  std::uint32_t params = 0;                // material parameters published
+  std::uint32_t default_textures = 0;      // shader default textures published
+  std::uint32_t instance_params = 0;       // item instance parameters published
+  std::uint32_t resolve_passes = 0;        // frame boundaries with pending references
+  std::uint32_t nodes_added = 0;           // CanvasItems node_added mapped after arm
+  bool node_map_connected = false;         // SceneTree.node_added connected
+  std::uint64_t arm_ns = 0;                // the walk's material and instance-parameter reads
+  std::uint64_t resolve_ns = 0;            // every frame-boundary resolution
+};
+
+// Called by entry.cpp before adopt_at_arm (with the stream's sabotage kind).
+void adopt_materials_configure(AdoptMaterialSabotage sabotage);
+const char *adopt_material_sabotage_name(AdoptMaterialSabotage sabotage);
+AdoptMaterialStats adopt_material_stats();
+// At arm, once the hook log is open (entry.cpp, after the walk; same main-loop iteration, before
+// the first transaction): connects the node map to SceneTree.node_added, resolves every adopted
+// item's material and reads the adopted items' instance parameters.
+void adopt_materials_at_arm();
+// The frame boundary (entry.cpp's frame callback, main thread, before the transaction is
+// formed): resolves the mirror's pending material and shader references through the node map.
+// Cheap when nothing changed since the last call (one epoch read).
+void adopt_materials_resolve();
 
 }  // namespace rs
 }  // namespace grc

@@ -368,6 +368,9 @@ enum class ShaderStatus : std::uint8_t { Ok, Unsupported };
 enum class ShaderReason : std::uint8_t {
   ShaderMode, ShaderScreenTexture, ShaderSdf, ShaderTime, ShaderGlobalUniform,
   ShaderExcluded, PayloadTooLarge, PayloadUnavailable,
+  // new at /8 (render-stream-8.md "Resource tables", gate8-design.md Q5): an adopted shader whose
+  // code the capture could not recover (its preprocessing failed on an #include).
+  ShaderAdoptInclude,
 };
 // gate5_5-design.md D11/Q3a: listed in `uses`, for information only (never drives `reason` except
 // in the priority order D11 states: time, screen-texture, sdf, global-uniform, mode).
@@ -730,6 +733,7 @@ inline const char *to_wire(ShaderReason v) {
   case ShaderReason::ShaderExcluded: return "shader-excluded";
   case ShaderReason::PayloadTooLarge: return "payload-too-large";
   case ShaderReason::PayloadUnavailable: return "payload-unavailable";
+  case ShaderReason::ShaderAdoptInclude: return "shader-adopt-include";
   }
   return "shader-mode";
 }

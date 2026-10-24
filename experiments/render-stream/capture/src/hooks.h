@@ -85,6 +85,29 @@ bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent c
 bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,
                       const float custom_aabb[6]);
 
+// G8m (gate8-design.md D4, D11, D12, Q5; rs_adopt.h): pre-arm shaders and materials.
+// hooks_internal_begin/end bracket the capture's own temporary objects on this thread (D4's
+// reentrancy flag): shader_create_from_code writes the code it receives into `code_out` and the
+// RID into `rid_out` instead of the mirror and the hook log; shader_set_code and free pass
+// straight through. The hooks_adopt_* calls register what rs_adopt.cpp read back, through the
+// hooks' own copy and decode paths, in the mirror and the hook log, with origin `adopted`; each
+// is a no-op when nothing is streaming. hooks_adopt_shader / _material return false, registering
+// nothing, for a RID the mirror already knows.
+void hooks_internal_begin(std::string *code_out, uint64_t *rid_out);
+void hooks_internal_end();
+bool hooks_adopt_shader(uint64_t rid, const std::string &code);
+bool hooks_adopt_shader_refused(uint64_t rid, rs2::ShaderReason reason);
+void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint64_t texture,
+                                 int32_t index);
+bool hooks_adopt_material(uint64_t material, uint64_t shader,
+                          const std::vector<rs::AdoptParam> &params);
+// The references a frame-boundary resolution completes: the item's material and the material's
+// shader, set again now that the mirror knows them (canvas_item_set_material /
+// material_set_shader as the hooks would have declared them).
+void hooks_adopt_item_material(uint64_t item, uint64_t material);
+void hooks_adopt_material_shader(uint64_t material, uint64_t shader);
+void hooks_adopt_instance_param(uint64_t item, const std::string &name, const void *variant);
+
 // Serialised counters and captured values.
 std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed);
 

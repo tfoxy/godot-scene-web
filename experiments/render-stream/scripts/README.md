@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3367,7 +3367,8 @@ mise exec -- pnpm render-stream:gate8 -- \
 
 - `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
   `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`, which G8r extends;
-  `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f and G8m add their groups).
+  `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f adds `run_g8f`; `run_g8m` with
+  `run_import_g8m` and `run_capture_g8m`).
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
   and the informative `hardware_band`; under `g8a` the legs, the adoption `cost`, the
@@ -3386,6 +3387,11 @@ mise exec -- pnpm render-stream:gate8 -- \
   `probeProblems`, `atlasProblems`, `accountProblems`); it reuses g8a's `equivalence`.
 - `test/self-test-gate8-size.ts`: those helpers on `fixtures/gate8-size/expected.json` and
   synthetic sessions, probes and recordings.
+- `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
+  `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
+  `canonicalState` compares materials by content since G8m.
+- `test/self-test-gate8-mat.ts`: those helpers on `fixtures/gate8-mat/expected.json` and synthetic
+  resolved states.
 
 ## Gate 8 legs and evidence under `--out` (g8t)
 
@@ -3430,6 +3436,26 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `sabotage-size-before-adopt/{capture,receiver}`, `sabotage-size-before-adopt-strict/capture` | `GRC_SABOTAGE=size-before-adopt` under skip (and the receiver on it) and under strict |
 | `reference` | rendered at 640x360, unarmed: shots `step-<k>.png` at the three checkpoints |
 | `born/receiver`, `late/receiver`, `late/receiver-patch`, `late-observe/receiver` | the native receiver on born's and late's full sink, late's patch sink and the control |
+
+## Gate 8 legs and evidence under `--out/g8m` (g8m)
+
+| leg | what |
+| --- | ---- |
+| `import/fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-mat` and of the receiver |
+| `born/capture` | headless, `GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip`, main scene `res://born.tscn`, armed at birth; both sinks, store, `steps.jsonl` |
+| `late/capture` | `mat.tscn` as the main scene, armed at frame K=12 with `GRC_ADOPT=arm` |
+| `sabotage-adopt-{raw-shader-code,skip-params}/capture` | `late` with the Q5 sabotage (from K) |
+| `fault-no-include-path/{capture,receiver}` | `late` under `GRC_ADOPT_FAULT=no-include-path` (the typed `shader-adopt-include`), and the native receiver on it |
+| `reference` | rendered, unarmed: shots `step-<k>.png` at the three checkpoints and gate 5.5's material oracle (`materials.jsonl`, `shader-library/`) |
+| `born/receiver`, `late/receiver`, `late/receiver-patch` | the native receiver on born's and late's full sink and late's patch sink |
+
+## Gate 8 criteria (g8m)
+
+`g8m-legs`, `g8m-wire`, `shader-hash-parity`, `param-parity`, `adopt-cim-builtin`,
+`adopt-equivalence`, `adopt-material-account`, `adopt-reference` (exact), `adopt-include-refused`,
+`sabotage-adopt-raw-shader-code` and `sabotage-adopt-skip-params`; each criterion is spelled out in
+`lib/gate8-mat-checks.ts` and [`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q5 "As
+built (G8m)".
 
 ## Gate 8 criteria (g8h)
 
