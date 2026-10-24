@@ -154,6 +154,16 @@ void TextureWorkerPool::stop() {
   stopping_ = false;
 }
 
+std::size_t TextureWorkerPool::discard_queued() {
+  std::deque<std::function<void()>> dropped;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    dropped.swap(queue_);
+  }
+  idle_cv_.notify_all();
+  return dropped.size();  // the closures are destroyed here, outside the lock
+}
+
 TextureWorkerPool::Stats TextureWorkerPool::stats() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return stats_;

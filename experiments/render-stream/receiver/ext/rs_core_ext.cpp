@@ -330,6 +330,15 @@ struct Engine {
   GDExtensionMethodBindPtr binds[RS_COUNT] = {};
   GDExtensionMethodBindPtr image_create_from_data = nullptr;
   GDExtensionMethodBindPtr refcounted_unreference = nullptr;
+  // G8ku: Image.load_ktx_from_buffer (D14: Godot's own KTX2 loader picks the transcode target)
+  // and the getters the transcode log reads.
+  GDExtensionMethodBindPtr image_load_ktx = nullptr;
+  GDExtensionMethodBindPtr image_get_format = nullptr;
+  GDExtensionMethodBindPtr image_get_width = nullptr;
+  GDExtensionMethodBindPtr image_get_height = nullptr;
+  GDExtensionMethodBindPtr image_has_mipmaps = nullptr;
+  GDExtensionMethodBindPtr image_get_data = nullptr;
+  GDExtensionMethodBindPtr image_get_data_size = nullptr;
 };
 Engine engine;
 
@@ -356,6 +365,24 @@ bool engine_ready() {
   if (engine.image_create_from_data == nullptr || engine.refcounted_unreference == nullptr) {
     engine.error = "Image.create_from_data or RefCounted.unreference has another hash";
     return false;
+  }
+  {
+    StringName ktx("load_ktx_from_buffer"), fmt("get_format"), w("get_width"), h("get_height"),
+        mips("has_mipmaps"), data("get_data"), size("get_data_size");
+    engine.image_load_ktx = gd.classdb_get_method_bind(image.ptr(), ktx.ptr(), 680677267);
+    engine.image_get_format = gd.classdb_get_method_bind(image.ptr(), fmt.ptr(), 3847873762);
+    engine.image_get_width = gd.classdb_get_method_bind(image.ptr(), w.ptr(), 3905245786);
+    engine.image_get_height = gd.classdb_get_method_bind(image.ptr(), h.ptr(), 3905245786);
+    engine.image_has_mipmaps = gd.classdb_get_method_bind(image.ptr(), mips.ptr(), 36873697);
+    engine.image_get_data = gd.classdb_get_method_bind(image.ptr(), data.ptr(), 2362200018);
+    engine.image_get_data_size = gd.classdb_get_method_bind(image.ptr(), size.ptr(), 3905245786);
+    if (engine.image_load_ktx == nullptr || engine.image_get_format == nullptr ||
+        engine.image_get_width == nullptr || engine.image_get_height == nullptr ||
+        engine.image_has_mipmaps == nullptr || engine.image_get_data == nullptr ||
+        engine.image_get_data_size == nullptr) {
+      engine.error = "an Image method G8ku's KTX2 path calls has another hash";
+      return false;
+    }
   }
   engine.ready = true;
   return true;
@@ -437,6 +464,12 @@ struct Instance {
   int64_t apply_plan_us = 0;
   int64_t apply_execute_us = 0;
   int64_t apply_stats_us = 0;
+  // G8ku: one JSON object per KTX2 the executor transcoded since the last take_transcodes()
+  // (texture-delivery-design.md D16 `transcode-oracle`); `hash_uploads` (set_transcode_log) adds
+  // the uploaded blocks' SHA-256, off by default (it hashes every transcoded texture).
+  std::string transcodes;
+  bool hash_uploads = false;
+  int64_t transcode_failed = 0;
 
   uint64_t &slot(uint32_t kind, uint32_t handle) {
     std::vector<uint64_t> &t = rids[kind];
@@ -753,12 +786,70 @@ struct OpReader {
 // formats RF RGF RGBF RGBAF RH RGH RGBH RGBAH, whose Image.Format values 8-15 the core sends as is
 // (G8f, gate8-design.md D9). The engine's own GLES3 upload then applies its float rules: 32-bit
 // floats become halves where OES_texture_float_linear is missing.)
-GDExtensionObjectPtr make_image(OpReader &r) {
+GDExtensionObjectPtr make_image(OpReader &r, Instance *inst);
+
+// G8ku (texture-delivery-design.md Q6 "Native receiver", D14): a `uastc` variant's KTX2 file
+// (rs-core verified its hash and checked its shape) through Image.load_ktx_from_buffer, which
+// transcodes to the first target Godot's KTX2 loader finds in RenderingServer.has_os_feature
+// (with 4 channels ASTC_4x4, BC7, BC3, ETC2_RGBA, then RGBA8). The transcode is logged.
+GDExtensionObjectPtr make_ktx2_image(const uint8_t *p, size_t len, int64_t width, int64_t height,
+                                     Instance *inst) {
+  StringName image_class("Image");
+  GDExtensionObjectPtr image = gd.construct_object(image_class.ptr());
+  PackedArray data(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+  data.fill(p, len, 1);
+  int64_t error = 0;
+  const void *args[1] = {&data.p};
+  const auto t0 = std::chrono::steady_clock::now();
+  gd.ptrcall(engine.image_load_ktx, image, args, &error);
+  const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - t0)
+                         .count();
+  char hash[65] = {0};
+  rsc_sha256_hex(p, len, reinterpret_cast<uint8_t *>(hash));
+  int64_t format = -1, w = 0, h = 0, data_size = 0;
+  GDExtensionBool mips = false;
+  if (error == 0) {
+    gd.ptrcall(engine.image_get_format, image, nullptr, &format);
+    gd.ptrcall(engine.image_get_width, image, nullptr, &w);
+    gd.ptrcall(engine.image_get_height, image, nullptr, &h);
+    gd.ptrcall(engine.image_has_mipmaps, image, nullptr, &mips);
+    gd.ptrcall(engine.image_get_data_size, image, nullptr, &data_size);
+  }
+  std::string row = std::string("{\"hash\":\"") + hash + "\",\"ok\":" +
+                    (error == 0 && w == width && h == height ? "true" : "false") +
+                    ",\"error\":" + std::to_string(error) + ",\"format\":" + std::to_string(format) +
+                    ",\"width\":" + std::to_string(w) + ",\"height\":" + std::to_string(h) +
+                    ",\"mipmaps\":" + (mips ? "true" : "false") +
+                    ",\"data_bytes\":" + std::to_string(data_size) +
+                    ",\"ktx2_bytes\":" + std::to_string(len) + ",\"transcode_us\":" + std::to_string(us);
+  if (error == 0 && inst->hash_uploads) {
+    PackedArray out(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+    gd.ptrcall(engine.image_get_data, image, nullptr, &out.p);
+    char digest[65] = {0};
+    rsc_sha256_hex(data_size > 0 ? static_cast<const uint8_t *>(out.data()) : nullptr,
+                   static_cast<size_t>(data_size), reinterpret_cast<uint8_t *>(digest));
+    row += std::string(",\"data_sha256\":\"") + digest + "\"";
+  }
+  row += "}";
+  inst->transcodes += (inst->transcodes.empty() ? "" : ",") + row;
+  if (error != 0 || w != width || h != height) {
+    ++inst->transcode_failed;
+    GDExtensionBool last = false;
+    gd.ptrcall(engine.refcounted_unreference, image, nullptr, &last);
+    if (last) gd.object_destroy(image);
+    return nullptr;
+  }
+  return image;
+}
+
+GDExtensionObjectPtr make_image(OpReader &r, Instance *inst) {
   int64_t format = static_cast<int32_t>(r.u());
   int64_t width = r.i64();
   int64_t height = r.i64();
   GDExtensionBool mipmaps = r.b();
   auto [p, len] = r.bytes();
+  if (format == rsc::KTX2_FORMAT) return make_ktx2_image(p, len, width, height, inst);
   if (format < 0) return nullptr;
   PackedArray data(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
   data.fill(p, len, 1);
@@ -859,7 +950,7 @@ int64_t execute(Instance *inst) {
       }
       case rsc::Texture2dCreate: {
         uint32_t h = r.u();
-        GDExtensionObjectPtr image = make_image(r);
+        GDExtensionObjectPtr image = make_image(r, inst);
         uint64_t rid = 0;
         rs_call(RS_TEXTURE_2D_CREATE, {&image}, &rid);
         release_image(image);
@@ -868,7 +959,7 @@ int64_t execute(Instance *inst) {
       }
       case rsc::Texture2dUpdate: {
         uint64_t tex = r.rid();
-        GDExtensionObjectPtr image = make_image(r);
+        GDExtensionObjectPtr image = make_image(r, inst);
         int64_t layer = 0;
         rs_call(RS_TEXTURE_2D_UPDATE, {&tex, &image, &layer});
         release_image(image);
@@ -876,7 +967,7 @@ int64_t execute(Instance *inst) {
       }
       case rsc::TextureReplaceWithImage: {
         uint64_t tex = r.rid();
-        GDExtensionObjectPtr image = make_image(r);
+        GDExtensionObjectPtr image = make_image(r, inst);
         uint64_t replacement = 0;
         rs_call(RS_TEXTURE_2D_CREATE, {&image}, &replacement);
         release_image(image);
@@ -1392,6 +1483,9 @@ enum Method : int {
   M_UNSTAGE,
   M_APPLY_TIMING,
   M_SET_DELIVERY,
+  M_SET_VARIANT_UPGRADE,
+  M_SET_TRANSCODE_LOG,
+  M_TAKE_TRANSCODES,
   M_COUNT,
 };
 
@@ -1420,6 +1514,9 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"unstage", 1},          // (hash: String) -> void (G7o3)
     {"apply_timing", 0},     // () -> int: the last apply's plan | execute << 21 | stats << 42, in us (G7o3)
     {"set_delivery", 2},     // (texture_encodings: String, gpu_formats: String) -> String ("" ok; G8kp)
+    {"set_variant_upgrade", 1}, // (on: bool) -> void (G8ku: D6 upgrade instead of keep)
+    {"set_transcode_log", 1}, // (hash_uploads: bool) -> void (G8ku: hash each transcoded upload)
+    {"take_transcodes", 0},  // () -> String: a JSON array of the KTX2 transcodes since the last call
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1550,6 +1647,19 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       } else {
         text_string(inst, static_cast<Variant *>(ret));
       }
+      return;
+    }
+    case M_SET_VARIANT_UPGRADE: {
+      rsc_set_variant_upgrade(inst->core, arg_bool(args[0]) ? 1 : 0);
+      return;
+    }
+    case M_SET_TRANSCODE_LOG: {
+      inst->hash_uploads = arg_bool(args[0]);
+      return;
+    }
+    case M_TAKE_TRANSCODES: {
+      ret_string(ret, "[" + inst->transcodes + "]");
+      inst->transcodes.clear();
       return;
     }
     case M_APPLY_TIMING: {

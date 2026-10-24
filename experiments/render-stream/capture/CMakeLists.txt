@@ -85,6 +85,7 @@ add_library(render_stream_capture SHARED
   src/rs2_diff.cpp
   src/rs_adopt.cpp
   src/rs_basis_encode.cpp
+  src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
@@ -466,6 +467,10 @@ add_executable(rs_basis_encode_test test/rs_basis_encode_test.cpp src/rs_basis_e
 target_include_directories(rs_basis_encode_test PRIVATE src)
 target_link_libraries(rs_basis_encode_test PRIVATE grc_warnings grc_basisu)
 add_test(NAME rs_basis_encode COMMAND rs_basis_encode_test)
+# G8ku: UASTC level against speed and PSNR on raw RGBA8 inputs (a bench, not a test).
+add_executable(rs_basis_level_bench test/rs_basis_level_bench.cpp src/rs_basis_encode.cpp)
+target_include_directories(rs_basis_level_bench PRIVATE src)
+target_link_libraries(rs_basis_level_bench PRIVATE grc_warnings grc_basisu)
 # The Godot-transcoder round trip and the TS validator (needs mise, godot, pnpm; SKIP when no godot).
 add_test(NAME rs_basis_roundtrip
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/g8kv-roundtrip.sh ${CMAKE_CURRENT_BINARY_DIR}/g8kv-roundtrip)

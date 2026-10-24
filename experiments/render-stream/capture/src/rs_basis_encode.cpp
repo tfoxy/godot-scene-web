@@ -9,20 +9,53 @@
 namespace rs::basis {
 
 namespace {
-constexpr int kUastcLevel = 2; // basisu cPackUASTCLevelDefault
 constexpr int kZstdLevel = 6;
 std::once_flag g_init_once;
+constexpr const char *kParams[] = {
+		"basisu-1.60/uastc-l0/zstd6/linear", "basisu-1.60/uastc-l1/zstd6/linear",
+		"basisu-1.60/uastc-l2/zstd6/linear", "basisu-1.60/uastc-l3/zstd6/linear",
+		"basisu-1.60/uastc-l4/zstd6/linear"};
 } // namespace
 
-const char *params_id() { return "basisu-1.60/uastc-l2/zstd6/linear"; }
+const char *params_id(int uastc_level) {
+	if (uastc_level < kMinUastcLevel || uastc_level > kMaxUastcLevel) return nullptr;
+	return kParams[uastc_level];
+}
+
+const char *encoder_name() { return "basisu-1.60"; }
 
 void init() {
+	// basisu_encoder_init also runs basisu_transcoder_init (transcode_rgba8 relies on it).
 	std::call_once(g_init_once, [] { basisu::basisu_encoder_init(false, false); });
 }
 
-EncodeResult encode_uastc_ktx2(const Level *levels, size_t level_count) {
+bool transcode_rgba8(const std::vector<uint8_t> &ktx2, uint32_t level, std::vector<uint8_t> *rgba,
+		uint32_t *width, uint32_t *height) {
+	init();
+	try {
+		basist::ktx2_transcoder t;
+		if (ktx2.empty() || !t.init(ktx2.data(), uint32_t(ktx2.size())) || level >= t.get_levels() || !t.start_transcoding()) {
+			return false;
+		}
+		basist::ktx2_image_level_info info;
+		if (!t.get_image_level_info(info, level, 0, 0)) return false;
+		rgba->assign(size_t(info.m_orig_width) * info.m_orig_height * 4, 0);
+		*width = info.m_orig_width;
+		*height = info.m_orig_height;
+		return t.transcode_image_level(level, 0, 0, rgba->data(), info.m_orig_width * info.m_orig_height,
+				basist::transcoder_texture_format::cTFRGBA32);
+	} catch (const std::exception &) {
+		return false;
+	}
+}
+
+EncodeResult encode_uastc_ktx2(const Level *levels, size_t level_count, int uastc_level) {
 	EncodeResult out;
-	out.params_id = params_id();
+	if (params_id(uastc_level) == nullptr) {
+		out.error = "uastc level must be 0..4";
+		return out;
+	}
+	out.params_id = params_id(uastc_level);
 	if (levels == nullptr || level_count < 1 || level_count > 32) {
 		out.error = "level count must be 1..32";
 		return out;
@@ -56,7 +89,7 @@ EncodeResult encode_uastc_ktx2(const Level *levels, size_t level_count) {
 		}
 		p.m_uastc = true;
 		p.m_pack_uastc_ldr_4x4_flags &= ~basisu::cPackUASTCLevelMask;
-		p.m_pack_uastc_ldr_4x4_flags |= kUastcLevel;
+		p.m_pack_uastc_ldr_4x4_flags |= uint32_t(uastc_level);
 		p.m_rdo_uastc_ldr_4x4 = false;
 		p.m_create_ktx2_file = true;
 		p.m_ktx2_uastc_supercompression = basist::KTX2_SS_ZSTANDARD;

@@ -65,7 +65,9 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -76,6 +78,7 @@
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_resource_log.h"
+#include "rs_texture_delivery.h"
 #include "rs_variant.h"
 
 namespace grc {
@@ -601,6 +604,22 @@ class Mirror {
   // every `ok` mesh's surface payloads (Captured::payloads holds both kinds).
   Captured snapshot(std::uint64_t seq, std::uint64_t frame);
 
+  // --- G8ku: lazy Basis variants (texture-delivery-design.md D6, D12; rs_texture_delivery.h) --
+  //
+  // `submit` queues an encode (rs_texture_basis.h submit_basis_job); null (the default, and every
+  // stream but /9 basis-uastc) means no encode is ever started. Survives reset().
+  using BasisSubmit = std::function<bool(const BasisJobPtr &)>;
+  void set_basis_submit(BasisSubmit submit);
+  // Called by the frame callback before the snapshot (main thread). Starts an encode for every
+  // settled ok image that D12 admits and has none for its current content, and attaches every
+  // finished one whose content is still current (one more variant at an equal `version`, D6: the
+  // epoch advances, so the next transaction carries a patch entry). `attach` false keeps finished
+  // results for later (GRC_TEXTURE_ENCODE_WAIT_FRAME before its frame); `wait` first waits for
+  // every encode in flight (that frame itself). Returns the number of variants attached.
+  std::size_t service_basis(bool attach, bool wait);
+  // Every unfinished encode job (stream end: entry.cpp abandons them after the pool dropped them).
+  std::vector<BasisJobPtr> basis_jobs() const;
+
   MirrorStats stats() const;
 
  private:
@@ -645,6 +664,15 @@ class Mirror {
     PayloadPtr bytes;  // the payload while status is ok and kind image
     // G8kw: the worker delivering `copy.hash` and `bytes` (null once settled, or when synchronous).
     std::shared_ptr<TextureJob> job;
+    // G8ku (D6, D12): `updated` once a texture_2d_update reached it (D12(a): never Basis after);
+    // the encode of the current content while it runs; the attached uastc variant; and
+    // `basis_decided` once this content's Basis outcome is known (attached, declined, failed).
+    bool updated = false;
+    BasisJobPtr basis;
+    std::string uastc_hash;
+    std::string uastc_params;
+    PayloadPtr uastc_bytes;
+    bool basis_decided = false;
     // Canvas fields (kind == Canvas only; gate2-design.md Q3, G2d).
     bool has_diffuse = false;
     std::uint32_t diffuse_id = 0;
@@ -768,6 +796,8 @@ class Mirror {
   static rs2::TextureEntry wire_entry(const Texture &texture);
   // G8kw: a finished job's hash and bytes move into the entry (no-op without one).
   static void settle(Texture *texture);
+  static void reset_basis(Texture *texture);  // G8ku: a content change drops the Basis state
+  BasisSubmit basis_submit_;
   // Meshes (G5e).
   Mesh *find_mesh(std::uint64_t rid);
   // A mesh tap's prologue: omit-op (and the epoch), then the entry, or nullptr (counted unknown).

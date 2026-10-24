@@ -155,6 +155,7 @@
 #include "rs_adopt.h"
 #include "rs_canvas_texture_shim.h"
 #include "rs_gate8_policy.h"
+#include "rs_texture_basis.h"
 #include "rs_texture_delivery.h"
 #include "rs_histogram.h"
 #include "rs_live.h"
@@ -240,6 +241,10 @@ struct Stream {
   rs::HoldBack holdback;
   bool workers_started = false;
   uint64_t texture_cache_max_bytes = 0;  // G8kc: GRC_TEXTURE_CACHE_MAX_BYTES (0: unbounded)
+  // G8ku: the /9 basis-uastc encode pool (rs_texture_basis.h) and its knobs.
+  bool basis = false;
+  bool encoders_started = false;
+  rs::BasisConfig basis_config;
   // G8a (D13): GRC_MIRROR_MAX_ITEMS / GRC_MIRROR_MAX_COMMANDS, read at arm.
   size_t max_items = rs2::kMaxLiveItems;
   size_t max_commands = rs2::kMaxCommandsPerItem;
@@ -581,6 +586,26 @@ std::string result_json() {
       json.field("block_built", delivery.block_built);
       json.field("block_bytes", delivery.block_bytes);
       json.field("block_declined", delivery.block_declined);
+      if (g_stream.basis) {
+        // G8ku: the lazy uastc variants (D6, D12) and their encode cost.
+        const rs::BasisStats basis = rs::texture_delivery_basis_stats();
+        json.field("uastc_level", static_cast<int64_t>(g_stream.basis_config.uastc_level));
+        json.field("uastc_built", basis.uastc_built);
+        json.field("uastc_bytes", basis.uastc_bytes);
+        json.field("uastc_failed", basis.uastc_failed);
+        json.field("uastc_stale", basis.uastc_stale);
+        json.field("uastc_declined_updated", basis.declined_updated);
+        json.field("uastc_declined_format", basis.declined_format);
+        json.field("uastc_declined_small", basis.declined_small);
+        json.field("encodes_submitted", basis.encodes_submitted);
+        json.field("encodes_run", basis.encodes_run);
+        json.field("cache_hits", basis.cache_hits);
+        json.field("encode_workers", static_cast<int64_t>(g_stream.basis_config.encode_workers));
+        json.field("encode_us_total", static_cast<int64_t>(basis.encode_ns_total / 1000));
+        json.field("encode_us_max", static_cast<int64_t>(basis.encode_ns_max / 1000));
+        json.field("encode_px_total", static_cast<int64_t>(basis.encode_px_total));
+        json.field("fault", std::string(g_stream.basis_config.fault_perturb ? "perturb-ktx2" : "none"));
+      }
       json.object_end();
     }
     json.field("adopt", std::string(g_stream.gate8.adopt ? "arm" : "off"));
@@ -729,7 +754,8 @@ std::string result_json() {
     json.field("files", cache.files);
     json.field("bytes", cache.bytes);
     json.field("derivations", decode.decoded);
-    json.field("encodes", static_cast<int64_t>(0));
+    // G8ku: the UASTC encodes this session ran (a warm cache serves them: zero).
+    json.field("encodes", rs::texture_delivery_basis_stats().encodes_run);
     json.object_end();
   }
   // Additive (the headless CanvasTexture shim): present only when GRC_HEADLESS_CANVAS_TEXTURE is
@@ -1440,6 +1466,25 @@ void stream_start() {
     // G8kp: the hooks keep a block-compressed source's own bytes (the `block` variant) only on a
     // /9 stream whose mode offers it.
     rs::texture_delivery_set_block(gate8.speaks_v9() && rs::mode_offers_block(delivery.mode));
+    // G8ku: a /9 basis-uastc stream encodes lazily on its own pool (rs_texture_basis.h).
+    g_stream.basis = gate8.speaks_v9() && delivery.mode == "basis-uastc";
+    g_stream.basis_config = rs::BasisConfig();
+    if (g_stream.basis &&
+        !rs::parse_basis_config(std::getenv("GRC_TEXTURE_UASTC_LEVEL"),
+                                std::getenv("GRC_TEXTURE_BASIS_MIN_PX"),
+                                std::getenv("GRC_TEXTURE_ENCODE_WORKERS"),
+                                std::getenv("GRC_TEXTURE_ENCODE_WAIT_FRAME"),
+                                std::getenv("GRC_TEXTURE_ENCODE_FAULT"), &g_stream.basis_config,
+                                &error)) {
+      log_line("stream: refused texture delivery policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    rs::texture_delivery_set_basis(g_stream.basis, g_stream.basis_config);
     g_stream.gate8 = gate8;
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
@@ -1869,6 +1914,23 @@ void stream_start() {
              (g_stream.workers.fault_publish_before_ready ? " fault=publish-before-ready"
                                                           : "") +
              (g_stream.workers_started ? "" : " (pool failed to start: copies stay synchronous)"));
+  }
+  // G8ku: the encode pool, and the mirror's way to it, before the mirror sees any call.
+  if (g_stream.basis) {
+    g_stream.encoders_started =
+        rs::texture_encode_pool().start(g_stream.basis_config.encode_workers, 0);
+    const int level = g_stream.basis_config.uastc_level;
+    const bool perturb = g_stream.basis_config.fault_perturb;
+    rs::mirror_instance().set_basis_submit(
+        [level, perturb](const rs::BasisJobPtr &job) { return rs::submit_basis_job(job, level, perturb); });
+    log_line("stream: basis-uastc encode_workers=" +
+             std::to_string(g_stream.basis_config.encode_workers) + " uastc_level=" +
+             std::to_string(level) + " min_px=" + std::to_string(g_stream.basis_config.min_px) +
+             (g_stream.basis_config.wait_frame != 0
+                  ? " wait_frame=" + std::to_string(g_stream.basis_config.wait_frame)
+                  : std::string()) +
+             (perturb ? " fault=perturb-ktx2" : "") +
+             (g_stream.encoders_started ? "" : " (encode pool failed to start: no uastc variant)"));
   }
   rs::mirror_enable(true);  // off -> on: a fresh mirror session
   // Before the root query, so every hook call the session sees is under the declared policy.
@@ -2382,11 +2444,30 @@ void workers_finish() {
   }
 }
 
+// G8ku: a lazy encode nobody will publish is dropped at stream end (the pool discards what is
+// queued and waits only for the encodes in flight); the mirror forgets its submitter.
+void encoders_finish() {
+  if (!g_stream.basis) {
+    return;
+  }
+  rs::mirror_instance().set_basis_submit(nullptr);
+  const std::size_t dropped = rs::texture_encode_pool().discard_queued();
+  rs::texture_encode_pool().stop();
+  for (const rs::BasisJobPtr &job : rs::mirror_instance().basis_jobs()) {
+    job->abandon();
+  }
+  g_stream.encoders_started = false;
+  if (dropped != 0) {
+    log_line("stream: dropped " + std::to_string(dropped) + " queued uastc encodes at stream end");
+  }
+}
+
 void stream_finish(rs2::EndReason reason) {
   if (g_stream.status != "open") {
     return;
   }
   workers_finish();
+  encoders_finish();
   rs::mirror_enable(false);
   rs::adopt_resources_end();  // G8r
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
@@ -2514,6 +2595,18 @@ void stream_publish(uint64_t frame) {
   // nanoseconds this function otherwise takes before the snapshot would have been copied.
   const uint64_t now_ns = monotonic_ns();
   const bool live_wants = g_live.hub != nullptr && g_live.hub->wants_snapshot(frame, now_ns);
+  // G8ku (D6): start the lazy encodes this frame's state admits and attach the finished ones,
+  // before the epoch is read, so an attached variant is this callback's mutation. Under
+  // GRC_TEXTURE_ENCODE_WAIT_FRAME finished encodes wait for that frame, which waits for them all.
+  if (g_stream.basis) {
+    const uint64_t wait_frame = g_stream.basis_config.wait_frame;
+    const std::size_t attached = rs::mirror_instance().service_basis(
+        wait_frame == 0 || frame >= wait_frame, wait_frame != 0 && frame == wait_frame);
+    if (attached != 0 && wait_frame != 0 && frame == wait_frame) {
+      log_line("stream: attached " + std::to_string(attached) + " uastc variants at frame " +
+               std::to_string(frame));
+    }
+  }
   const uint64_t epoch = rs::mirror_epoch();
   // G2c2: with a live server the snapshot is taken at every callback, so the served set always
   // holds the current state's payloads (D7), even when no connection takes a transaction.

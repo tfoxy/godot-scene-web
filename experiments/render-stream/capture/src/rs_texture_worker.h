@@ -154,6 +154,9 @@ class TextureWorkerPool {
   bool submit(std::function<void()> work);
   void drain();
   void stop();
+  // G8ku: drops every job not yet started (returns how many), so a following stop() waits only
+  // for the ones in flight. The encode pool's stream end: a lazy encode nobody will publish.
+  std::size_t discard_queued();
 
   struct Stats {
     std::uint64_t submitted = 0;

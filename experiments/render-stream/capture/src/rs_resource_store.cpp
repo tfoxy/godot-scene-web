@@ -78,6 +78,18 @@ ResourceStore::Put ResourceStore::put_variant(const rs2::TextureEntry &entry,
                                               const rs2::TextureVariant &variant,
                                               const std::vector<std::uint8_t> &payload,
                                               std::uint64_t frame, std::string *error) {
+  if (variant.encoding == rs2::VariantEncoding::Uastc ||
+      variant.encoding == rs2::VariantEncoding::Etc1s) {
+    // G8ku (render-stream-9.md "KTX2 payload"): `<hash>.ktx2`, the index line naming the encoding
+    // and params instead of a format.
+    const std::string fields =
+        std::string(",\"type\":\"texture-ktx2\",\"encoding\":\"") +
+        (variant.encoding == rs2::VariantEncoding::Uastc ? "uastc" : "etc1s") +
+        "\",\"params\":\"" + variant.params + "\",\"width\":" + std::to_string(entry.width) +
+        ",\"height\":" + std::to_string(entry.height) +
+        ",\"mipmaps\":" + (entry.mipmaps ? "true" : "false");
+    return put_bytes(variant.hash, ".ktx2", fields, payload, frame, error);
+  }
   const std::string fields = ",\"type\":\"texture-2d\",\"format\":\"" + variant.format +
                              "\",\"width\":" + std::to_string(entry.width) +
                              ",\"height\":" + std::to_string(entry.height) +

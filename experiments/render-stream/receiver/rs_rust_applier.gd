@@ -115,6 +115,18 @@ func set_delivery(texture_encodings: String, gpu_formats: String) -> String:
 	return refused
 
 
+## G8ku (texture-delivery-design.md D6): `upgrade` (true) refetches when a preferred variant appears
+## at an equal version; `keep` (false, the default) holds what is resident.
+func set_variant_upgrade(on: bool) -> void:
+	_core.call("set_variant_upgrade", on)
+
+
+## G8ku (D16 `transcode-oracle`): whether each KTX2 transcode's uploaded blocks are hashed into the
+## transcode log (off by default: it hashes every transcoded texture).
+func set_transcode_log(hash_uploads: bool) -> void:
+	_core.call("set_transcode_log", hash_uploads)
+
+
 ## G7o2 (D31): whether the next session defers the per-record digest (record.sha256 is "" in every
 ## answer until record_digest fills it, after the frame).
 func set_digest_deferred(on: bool) -> void:
@@ -202,6 +214,17 @@ func apply_state(cache: RsResourceCache) -> Dictionary:
 		var error: String = result
 		return {"error": error}
 	var stats: Dictionary = result
+	# G8ku: the KTX2 transcodes this apply ran (Image.load_ktx_from_buffer, D14). A failed one is
+	# the typed `delivery-transcode-failed` (texture-delivery-design.md Q3).
+	var transcodes_text: String = _core.call("take_transcodes")
+	var transcodes: Variant = JSON.parse_string(transcodes_text)
+	var transcode_rows: Array = transcodes if transcodes is Array else []
+	for value: Variant in transcode_rows:
+		var row: Dictionary = value
+		var ok: bool = row["ok"]
+		if not ok:
+			return {"error": RsWire.err("delivery-transcode-failed", "Image.load_ktx_from_buffer refused KTX2 %s (error %s, %sx%s)" % [row["hash"], row["error"], row["width"], row["height"]])}
+	stats["transcodes"] = transcode_rows
 	# receiver.gd's _note_applied() reads a typed Array[Dictionary] here; the adapter's Arrays are
 	# untyped.
 	var listed: Array = stats["unsupported_commands"]

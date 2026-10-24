@@ -7,7 +7,7 @@
 //   g8kp/capture/                       /9, GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough:
 //                                       recording.rs9, recording-patch.rs9, store, evidence/
 //   g8kp/workers/capture/               the same at GRC_TEXTURE_WORKERS=2
-//   g8kp/refused-basis/capture/         GRC_TEXTURE_DELIVERY=basis-uastc at /9: refused
+//   g8kp/refused-basis/capture/         GRC_TEXTURE_DELIVERY=basis-etc1s at /9: refused (G8ku)
 //   g8kp/reference/ g8kp/reference-hw/  rendered fixture: the oracle's decoded payloads / the .ctex
 //   g8kp/receiver{,-patch,-masked}/     the native receiver (masked: s3tc,bptc,rgtc)
 //   g8kp/gsw-run/{gsw,gsw-masked,sabotage-ignore-format-mask/gsw}/
@@ -74,18 +74,24 @@ export interface DeliveryEntry {
 /**
  * texture-delivery-design.md D3, written independently of the receivers' Rust (rs-core
  * `delivery.rs`): the first encoding of `encodings` that the entry lists, `block` only when its
- * format's family is in `gpuFormats`, `decoded` (the base entry) always last. Null for anything
+ * format's family is in `gpuFormats`, `uastc` whenever listed (G8ku), `decoded` (the base entry)
+ * always last. Null for anything
  * but an ok image with a hash.
  */
 export function predictD3(
   entry: DeliveryEntry,
   encodings: readonly string[],
   gpuFormats: readonly string[],
-): { hash: string; encoding: "decoded" | "block" } | null {
+): { hash: string; encoding: "decoded" | "block" | "uastc" } | null {
   if (entry.kind !== "image" || entry.status !== "ok" || entry.hash === null)
     return null;
   for (const e of encodings) {
     if (e === "decoded") break;
+    // G8ku: a receiver lists uastc only when it can transcode it, so a listed variant wins.
+    if (e === "uastc") {
+      const v = (entry.variants ?? []).find((x) => x.encoding === "uastc");
+      if (v) return { hash: v.hash, encoding: "uastc" };
+    }
     if (e === "block") {
       const v = (entry.variants ?? []).find(
         (x) =>
@@ -208,7 +214,7 @@ export function deliverySelectProblems(
 
 // ------------------------------------------------------------------------------- evidence I/O
 
-async function readText(path: string): Promise<string | undefined> {
+export async function readText(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf8");
   } catch {
@@ -216,7 +222,7 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
-async function readJson<T>(path: string): Promise<T | undefined> {
+export async function readJson<T>(path: string): Promise<T | undefined> {
   const text = await readText(path);
   if (text === undefined) return undefined;
   try {
@@ -226,17 +232,17 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   }
 }
 
-function skipped(dir: string): string | null {
+export function skipped(dir: string): string | null {
   if (existsSync(join(dir, "skipped-by-tier.txt"))) return "skipped-by-tier";
   if (existsSync(join(dir, "skipped-remote.txt"))) return "skipped-remote";
   return null;
 }
 
-function sha256(bytes: Uint8Array): string {
+export function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function check(
+export function check(
   id: string,
   criterion: string,
   problems: string[] | null,
@@ -262,7 +268,7 @@ function check(
   };
 }
 
-interface Rgba {
+export interface Rgba {
   width: number;
   height: number;
   data: Uint8Array;
@@ -270,7 +276,7 @@ interface Rgba {
 
 /** A leg's shot of `step`: shots/step-<k>.png (a fixture run) or shots/seq-<n>.png, n the k-th of
  * `seqs` (the settle seqs, the native receiver leg's shot-seqs.txt). */
-async function shot(
+export async function shot(
   dir: string,
   step: number,
   seqs: string[] | null,
@@ -648,7 +654,7 @@ export async function runG8kp(
     );
   }
 
-  // --- delivery-refused: the Basis modes are typed refusals until G8ku --------------------
+  // --- delivery-refused: basis-etc1s is a typed refusal until G8ke (basis-uastc landed, G8ku) --
   {
     const problems: string[] = [];
     const r = await readJson<{ stream?: { status?: string; reason?: string } }>(
@@ -658,7 +664,7 @@ export async function runG8kp(
       problems.push(`stream status ${r?.stream?.status}`);
     if (
       !(r?.stream?.reason ?? "").startsWith(
-        "texture-delivery-unimplemented: GRC_TEXTURE_DELIVERY=basis-uastc",
+        "texture-delivery-unimplemented: GRC_TEXTURE_DELIVERY=basis-etc1s",
       )
     )
       problems.push(`stream reason ${JSON.stringify(r?.stream?.reason)}`);
@@ -672,7 +678,7 @@ export async function runG8kp(
     checks.push(
       check(
         "delivery-refused",
-        "G8kp: GRC_TEXTURE_DELIVERY=basis-uastc at /9 refuses the stream with the typed reason texture-delivery-unimplemented (its encoder is G8ku's), and writes no stream",
+        "G8kp: GRC_TEXTURE_DELIVERY=basis-etc1s at /9 refuses the stream with the typed reason texture-delivery-unimplemented (its encoder is G8ke's; basis-uastc is G8ku's, group g8ku), and writes no stream",
         ran("refused-basis/capture") ? problems : null,
         r?.stream?.reason,
         "g8kp/refused-basis/capture",

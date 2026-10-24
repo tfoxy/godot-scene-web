@@ -23,13 +23,14 @@ import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { runG8l } from "./lib/gate8-live-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
+import { type G8kuExpected, runG8ku } from "./lib/gate8-basis-checks";
 import { runG8kc } from "./lib/gate8-cache-checks";
 import { runG8kp } from "./lib/gate8-delivery-checks";
 import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8kc", "g8l"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -140,6 +141,19 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8l = await runG8l(out);
     checks.push(...g8l.checks);
     report.g8l = g8l.report;
+  }
+  if (run.includes("g8ku")) {
+    const expected = JSON.parse(
+      await readFile(join(EXPERIMENT_DIR, "fixtures", "gate8-basis", "expected.json"), "utf8"),
+    ) as G8kuExpected;
+    const g8ku = await runG8ku(out, expected);
+    checks.push(...g8ku.checks);
+    report.g8ku = {
+      legs: g8ku.legs,
+      quality: g8ku.quality,
+      transcodes: g8ku.transcodes,
+      pixels: g8ku.pixels,
+    };
   }
   const gating = checks.filter((c) => c.gating !== false);
   report.gate_passed = gating.length > 0 && gating.every((c) => c.passed);

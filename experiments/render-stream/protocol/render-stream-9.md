@@ -330,3 +330,24 @@ The wire is unchanged; G8kp fills the seam and the receivers
   `applied.json` gain `encoding` (`block` or `decoded`) for /9 streams only, and `receiver` gains
   `texture_delivery` (what the receiver stated, the families it detected and the mask).
 
+
+## As built (G8ku)
+
+The wire is unchanged; G8ku produces and consumes `uastc` variants
+([texture-delivery-design.md](texture-delivery-design.md) "As built (G8ku)").
+
+- **Capture policy at /9:** `GRC_TEXTURE_DELIVERY=basis-uastc` is accepted and declares
+  `{"mode":"basis-uastc","encoder":"basisu-1.60"}`; `basis-etc1s` still refuses the stream until
+  G8ke. A uastc variant's `params` is `basisu-1.60/uastc-l<level>/zstd6/linear`, level 1 by default.
+- **Lazy variants:** a uastc variant first appears in a patch entry at an equal `version`, its base
+  hash and earlier variants unchanged ("Variant lifetime"). `stream.gate8.delivery_stats` adds
+  `uastc_built`, `uastc_bytes`, `uastc_failed`, `uastc_stale`, `uastc_declined_{updated,format,small}`,
+  `encodes_submitted` and the encode time totals.
+- **Store and HTTP:** the file sink stores each KTX2 as `<hash>.ktx2`, its index line
+  `{"type":"texture-ktx2","encoding":"uastc","params":…,"width":…,"height":…,"mipmaps":…}`; the live
+  route answers a KTX2 body with `Content-Type: image/ktx2` and never content-codes it.
+- **Receivers:** the native receiver and the web export state `texture_encodings`
+  `block,uastc,decoded` by default; `applied.json` gains `transcodes[]` (one row per KTX2 transcode:
+  `hash`, `ok`, Godot `format`, size, `mipmaps`, `data_bytes`, `ktx2_bytes`, `transcode_us`, and
+  `data_sha256` under `RS_RECEIVER_TRANSCODE_LOG=1`) and `receiver.texture_delivery.variant_policy`
+  (`keep` or `upgrade`). `uploads[]` rows name `uastc` as their `encoding`.

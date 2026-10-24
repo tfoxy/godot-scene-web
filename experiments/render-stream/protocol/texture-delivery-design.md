@@ -6,8 +6,10 @@ G8kz (HTTP content coding) is landed: "As built (G8kz)". G8k9 (the render-stream
 validators only) is landed: "As built (G8k9)", [render-stream-9.md](render-stream-9.md),
 [results/gate8/g8k9.md](../results/gate8/g8k9.md). G8kp (`passthrough` end to end: the capture's
 `block` variant, D3 in the native and GSW receivers, the /9 hellos) is landed: "As built (G8kp)",
-[results/gate8/g8kp.md](../results/gate8/g8kp.md). G8kv vendors basisu and builds its UASTC encoder,
-uncalled ("As built (G8kv)"). Nothing else here is implemented. This doc
+[results/gate8/g8kp.md](../results/gate8/g8kp.md). G8kv vendors basisu and builds its UASTC encoder
+("As built (G8kv)"). G8ku (`basis-uastc` on the host, the native receiver and the web export: lazy
+uastc variants, D12, D14, D16's checks, UASTC level 1) is landed: "As built (G8ku)",
+[results/gate8/g8ku.md](../results/gate8/g8ku.md). Nothing else here is implemented. This doc
 follows [gate8-design.md](gate8-design.md) and replaces its deferred "Route C" (gate8-design Q3,
 "Deferred") and fork F3. User decisions of 2026-10-23 (memory texture-delivery-direction):
 
@@ -478,7 +480,7 @@ Shared call sites still reach `*`.
 | G8kw | **Landed** (Q7 "As built (G8kw)"). Worker pool for copy/decode/hash (D11), publication hold-back at /6-/8, `GRC_TEXTURE_WORKERS=sync\|N`; checks: sync and async recordings resolve to equal states at every checkpoint, main-thread hook time ≤ 2 ms per create at 2048², `decode-cost` re-measured | `capture/src/rs_texture_worker.*` (new), `hooks.cpp` copy path, `rs_mirror.*`, `rs_resource_log.*`, `entry.cpp` (the hold-back lives in `rs_texture_worker.*`, not `rs_publish.*`), `smoke-map.json` narrow rule | `*`, then narrow | opus, 5 h + full tier | G8t; before G8r (which reuses the path) |
 | G8k9 | **Landed** ("As built (G8k9)"). render-stream/9 codecs and validators (Q5): `variants`, `ktx2` and `block` payloads, `resources.delivery`, hello keys, `delivery-pending`, `golden-9/`; empty delivery seam; no receiver offers .9 yet | `protocol/render-stream-9.md`, `protocol/golden-9/`, `rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `render-stream-2.ts`, `rs-core/src/{wire,validate,meta,payload}.rs`, capi pin | `*` | sonnet, 4 h + full tier | G8w (parallel with G8kz/G8kw) |
 | G8kp | **Landed** ("As built (G8kp)"). `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
-| G8ku | `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |
+| G8ku | **Landed** ("As built (G8ku)"). `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |
 | G8kb | GSW Basis: transcoder wasm in a Web Worker (emsdk 4.0.11, D15 sources), ASTC/ETC2/BC7 upload, `upgrade` policy; g31 device bench of transcode time per Mpx, GPU memory (gfxinfo) and hd-patch p95 unchanged (real time, standing phone approval) | `web/gsw-receiver/`, `web/basis-transcoder/` (new), `packages/canvas/rust-prototype/…/gl.rs`, `scripts/gate7-bench.ts` arm | `g7:*@gsw`, `g7live:*@gsw`, `bench-instr`, device leg | opus, 6 h + scoped tier | G8ku |
 | G8kc | **Landed** ("As built (G8kc)"; UASTC entries wait for G8ku). Persistent cache and the prepare step (D8, D9), and the `texture_set_path` hook with paths in the hook log (D10): `GRC_TEXTURE_CACHE_DIR`, index, verify-on-load, LRU budget; `scripts/prepare-textures.sh` over a project's `.ctex` or an image directory; checks `prepare-key-match` (every hooked texture of the fixture hits after prepare from its `.ctex`), `cache-warm` (second session: zero encodes, identical hashes), `cache-corrupt` sabotage | `capture/src/rs_texture_cache.*`, `scripts/prepare-textures.*`, `fixtures/gate8-tex/` | narrow rule + `native:gate8@*` | sonnet, 4 h + scoped tier | G8ku |
 | G8ke | `basis-etc1s` (internet): ETC1S level 1/q128, D12(d)'s PSNR floor with UASTC fallback; a throttled-link leg through G6c's constrained proxy (bytes and time to first complete frame at 10 Mbit/s); g31 ETC1S → ETC2 cost | `rs_texture_delivery.*`, `lib/gate8-delivery*.ts`, proxy config | narrow + `native:gate8@*`, `g7:*@gsw`, device leg | sonnet, 4 h + scoped tier | G8kc, G8kb |
@@ -788,7 +790,8 @@ GSW's is "exact or one rounding apart" on the pixels GSW already decides.
 
 Landed as one commit; the evidence summary is [results/gate8/g8kc.md](../results/gate8/g8kc.md).
 The cache is encoding-agnostic and filled by the one derivation that exists today, the host decode;
-**UASTC is not wired** (G8ku had not landed), see "UASTC hookup" below.
+**UASTC is not wired** (G8ku had not landed), see "UASTC hookup" below; G8ku wired it ("As built
+(G8ku)", "Persisted cache").
 
 **The cache** (`capture/src/rs_texture_cache.*`, pure C++17, ctest `rs_texture_cache`).
 `GRC_TEXTURE_CACHE_DIR` opens it at stream start (a directory that cannot be used refuses the
@@ -875,3 +878,116 @@ calls `texture_cache().put({source_key, "uastc", rs::basis_params_id()}, sha256(
 encode so that `cache-warm` can assert zero encodes in a second session (it already does). The
 prepare script then needs only the mode env (`GRC_TEXTURE_DELIVERY=basis-uastc`) added to its
 launch to warm UASTC entries.
+## As built (G8ku)
+
+Landed as one commit; evidence summary [results/gate8/g8ku.md](../results/gate8/g8ku.md). `basis-uastc`
+works end to end at /9 on the host, the native receiver and the web export; GSW stays G8kb's.
+
+**UASTC level: 1** (`basisu-1.60/uastc-l1/zstd6/linear`, `GRC_TEXTURE_UASTC_LEVEL=0..4` overrides it per
+session, and `params_id` names the level). Measured single-threaded on this host (Ryzen 5 5500,
+`capture/build/rs_basis_level_bench`, one level, PSNR over RGBA through basisu's own transcoder to
+RGBA8), on six recovered STS2 PNGs read in place and the fixture's five textures:
+
+| image | size | L0 ms/Mpx | L1 ms/Mpx | L2 ms/Mpx | L0 dB | L1 dB | L2 dB |
+| ----- | ---- | --------- | --------- | --------- | ----- | ----- | ----- |
+| card portrait (RGB) | 1000x760 | 181 | 707 | 2502 | 47.2 | 50.2 | 50.5 |
+| hand sprite (alpha) | 422x1200 | 209 | 562 | 1575 | 50.3 | 50.8 | 51.6 |
+| vfx noise | 500x500 | 226 | 1047 | 3853 | 56.2 | 57.4 | 60.6 |
+| event art (mostly flat) | 3440x1616 | 46 | 93 | 292 | 58.4 | 61.8 | 62.2 |
+| epoch portrait (RGB) | 810x500 | 235 | 970 | 3648 | 40.8 | 43.4 | 43.5 |
+| relic icon (alpha) | 256x256 | 233 | 820 | 2795 | 49.4 | 49.9 | 51.2 |
+| card atlas (alpha) | 4032x4032 | 242 | 1008 | not run | 37.2 | 42.8 | — |
+| fixture, five textures | 16-20 kpx | 237-332 | 1198-1461 | 4260-5794 | 44.2-53.5 | 44.8-54.0 | 44.9-54.6 |
+
+L1 is within 0.1-0.4 dB of L2 on the art (1.3 dB on the relic icon, 3.2 on the noise) at 2.8-4.1x
+L2's speed; L0 is another 3-5x faster but loses 0.4-5.5 dB (5.5 on the atlas, 3.0 on the portrait).
+At ~1 s/Mpx per thread the census's 173 Mpx is ~1.5 min of background encoding on two workers
+(L2: ~4-5 min). The bytes barely move with the level (L1 +2-6% over L0, L2 +1-3% over L1).
+
+**Decisions taken where the design left room.**
+
+- **Its own encode pool, not G8kw's.** `GRC_TEXTURE_ENCODE_WORKERS=1..16` (default 2, nice +10,
+  `rs_texture_basis.*`), started for a /9 basis-uastc stream only. D11 named one pool, but G8kw's
+  FIFO holds publication back on its decode/hash jobs: a 16 Mpx atlas at L1 is ~16 s on one thread,
+  and every texture created behind it would wait for it. The encode never touches the engine, the
+  mirror or a sink: it reads the mirror's immutable decoded GRT1 bytes.
+- **Lazy, at the frame boundary.** Each frame callback (before the epoch is read) starts an encode
+  for every settled ok image D12 admits that has no outcome for its content yet, and attaches the
+  finished ones whose `version` and decoded hash are still the entry's: one more variant at an
+  equal version (D6), the epoch advances, the next transaction carries the patch entry. A content
+  change (update, replace, free) drops the texture's Basis state; an encode that finishes for old
+  content is discarded and counted (`uastc_stale`). Start order is texture-table order; the
+  receiver-driven priority of Q4 is not built (one more knob than the fixture can exercise).
+- **D12 as built.** (a) `updated`: any texture `texture_2d_update`d since arm (an encode running
+  when it happens is dropped). The capture cannot tell a glyph atlas page from an image at the
+  RenderingServer; the atlases that grow are updated, and the grayscale ones are LA8 (b), so an
+  RGBA8 atlas page never updated would get a variant. (b) the decoded payload is RGBA8 or RGB8 (a
+  block source counts by its G8t decode). (c) `GRC_TEXTURE_BASIS_MIN_PX`, default 16384. Declines
+  are counted per reason (`uastc_declined_{updated,format,small}`).
+- **`delivery-pending` is not published.** Q5 reserves it for the async path's *decoded* hash, which
+  G8kw's hold-back already keeps frame-consistent at /9; a variant still encoding is listed by
+  omission (Q3 "Not ready yet"), which is what the capture does.
+- **A deterministic test knob.** `GRC_TEXTURE_ENCODE_WAIT_FRAME=<f>`: finished encodes attach only at
+  frame f, whose publish first waits (on the main thread, which never encodes) for every encode
+  queued so far, so the recordings of the gate legs are exact. Off by default; the live leg runs
+  without it.
+- **`perturb-ktx2` is a fault knob** (`GRC_TEXTURE_ENCODE_FAULT=perturb-ktx2`: the last byte of each
+  KTX2 flipped after hashing), not a `GRC_SABOTAGE` kind, for G8kw's reason (a new kind is a wire
+  change in three validators). The receivers refuse it with `resource-hash-mismatch`.
+- **Stream end drops queued encodes** (`discard_queued`) and waits only for the ones in flight; their
+  results are never published.
+- **Persisted cache (G8kc).** An encode job whose entry has a D7 source key (the cache is open)
+  first asks G8kc's cache for (source key, `uastc`, `params_id`): a hit serves the verified KTX2 with
+  no encode; a miss or a corrupt file encodes and stores the result (`<hash>.ktx2`, the correct
+  bytes even under `perturb-ktx2`, which flips only what is published). `result.json`
+  `texture_cache.encodes` is the number of encodes the session ran, attached or not (an encode of
+  content that changed before it finished still runs and is stored, never published), and
+  `delivery_stats.cache_hits` the attached variants the cache served. Gate 8's g8kc group runs the
+  Basis fixture twice on one directory (`uastc-cold`, `uastc-warm`): `cache-cold` checks one row per
+  encode and a row for every published variant, `cache-warm` that the second session runs zero
+  encodes and publishes the first session's uastc hashes.
+- **Store and HTTP.** A uastc variant is `<hash>.ktx2` in the store (index `type: texture-ktx2`,
+  `encoding`, `params`, the entry's shape), and the live route serves any KTX2 body as
+  `Content-Type: image/ktx2`; content coding stays GRT1-only (G8kz), so a KTX2 is never coded.
+- **D6 in the Rust core.** `DeliveryPrefs.upgrade` (`keep` by default): a resident payload of the
+  entry's current version (its base hash or any listed variant) is kept; `upgrade` re-uploads when
+  D3 now prefers another. `rsc_set_variant_upgrade`, and the receivers' `RS_RECEIVER_VARIANT_POLICY=
+  keep|upgrade`. `set_delivery` keeps the policy (it is not part of the hello).
+- **Native receiver.** D3 picks `uastc` when the receiver lists it (default `block,uastc,decoded`:
+  every 4.5.1 template links the KTX2 loader). The capi plans a KTX2 upload as a texture op whose
+  format code is `KTX2_FORMAT` (1000) after `decode_ktx2` and `check_ktx2_shape` against the entry
+  (the shape check only, Q6); the needed list names the hashes (`ktx2_hashes`, `.ktx2` in the
+  cache). The executor in `receiver/ext/rs_core_ext.cpp` (the glue that runs the core's texture
+  ops, C++ rather than GDScript) calls `Image.load_ktx_from_buffer`, then `texture_2d_create`, and
+  logs each transcode (format, size, mips, data size, time; with `RS_RECEIVER_TRANSCODE_LOG=1`
+  the uploaded blocks' SHA-256) into `applied.json` `transcodes[]`. A transcode failure is the
+  typed `delivery-transcode-failed` and ends the replay; the refetch of `decoded` Q3 names is not
+  built (no receiver hit it).
+- **Web export.** It now reads the delivery variables, fills `gpu_formats` from its WebGL context
+  through the same `has_os_feature`, and may speak /9 (`RS_RECEIVER_PROTOCOL=9`). It transcodes
+  through the same engine call in wasm, on the main thread.
+
+**Measured (RTX 2060, 2026-10-24).** On this GPU D14 picks BC7 (`bptc`) for every UASTC file, native
+and web alike, and the web export's blocks equal the native oracle's bit for bit. Transcode cost
+(UASTC + zstd to BC7 through `Image.load_ktx_from_buffer`, the fixture's 0.52 Mpx texture): native
+5.2 ms (~10 ms/Mpx), web export 20.1 ms (~38 ms/Mpx, ~3.8x; the web timer has 0.1 ms resolution and
+the first transcode of a page adds ~5 ms of table setup). basisu's own transcoder in native code
+measures 6.5-10.5 ms/Mpx to BC7 and 3.2-5.9 ms/Mpx to ASTC 4x4 on the STS2 images. The fixture's
+uastc payloads are 6x smaller than its decoded RGBA8 ones (0.52 Mpx: 347 KB against 2.1 MB), and
+PSNR through the oracle's BC7 decode is 44-53 dB (floor 30). Pixels: the receiver drawing the
+transcoded blocks equals the fixture drawing the oracle's blocks on the same GPU exactly (0 px), and
+here also the fixture drawing the oracle's CPU decode (`hw-band` 0 px: this GPU's BC7 decode is
+bcdec's). `delivery-reference` gates on the GPU-sampled oracle and records the CPU band, because a
+GPU whose hardware decode rounds differently (G8kp's BC1/BC3 band, or another target such as
+llvmpipe's ASTC) would differ there without being wrong.
+
+**Out of scope here.**
+
+| Item | Owner | State after G8ku |
+| ---- | ----- | ---------------- |
+| GSW transcoder (wasm in a Web Worker), its ASTC/ETC2/BC7 upload, `upgrade` on the phone | G8kb | GSW never lists `uastc`; D3 falls through to `block`/`decoded` |
+| The g31 (ETC2/ASTC targets, transcode cost, GPU memory) | G8kb | not run |
+| The prepare step warming UASTC entries (`prepare-textures.sh` runs a /8 sink and drops queued encodes at its end; it needs a /9 basis-uastc sink and an end-of-stream drain) | G8kc follow-up | UASTC entries warm from live sessions only |
+| ETC1S, D12(d)'s PSNR floor, the throttled link | G8ke | `basis-etc1s` still refused at /9 |
+| Receiver-driven encode priority (Q4), freeing `decoded` bytes on the host (Q7 "Memory") | later | FIFO in table order; `decoded` stays resident |
+| `delivery-transcode-failed` fallback to `decoded` | G8kb | a typed replay failure |

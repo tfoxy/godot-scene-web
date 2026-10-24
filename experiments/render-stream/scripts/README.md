@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8kc, G8kc)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3368,10 +3368,14 @@ mise exec -- pnpm render-stream:gate8 -- \
 - `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
   `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`, which G8r extends;
   `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f adds `run_g8f`; `run_g8m` with
-  `run_import_g8m` and `run_capture_g8m`; `run_g8kp` with `run_g8kp_live`).
+  `run_import_g8m` and `run_capture_g8m`; `run_g8kp` with `run_g8kp_live`; `run_g8ku` with
+  `run_import_g8ku`, `run_capture_g8ku`, `run_reference_g8ku` and `run_g8ku_live`).
 - `gate8-delivery-tool.ts` (G8kp): builds the rs-core wasm and the GSW bundle, then replays the
   native leg `g8kp/receiver` in the GSW receiver page three times (as is, BC masked, the
-  ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`.
+  ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`. G8ku's
+  `web-legs` builds the web export (`build-web-receiver.sh`) and replays `g8ku/receiver-upgrade`
+  in it, into `g8ku-web/web` (beside `g8ku/`, whose harness link targets `g8ku/` alone: a second
+  link to the whole run would make the remote artifact trim's recursive glob never end).
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
   and the informative `hardware_band`; under `g8a` the legs, the adoption `cost`, the
@@ -3398,6 +3402,10 @@ mise exec -- pnpm render-stream:gate8 -- \
 - `lib/gate8-delivery-checks.ts`: the g8kp checks (`runG8kp`) and their pure helpers (`predictD3`,
   D3 written independently of rs-core's `delivery.rs`; `deliverySelectProblems`;
   `gswBlockAgainstHw`).
+- `lib/gate8-basis-checks.ts` (G8ku): the g8ku checks (`runG8ku`) on
+  `fixtures/gate8-basis/expected.json`, and `psnrRgba`.
+- `test/g8ku-png-to-rgba.gd` (G8ku): the UASTC level bench's input step (PNG files anywhere, read
+  only, to raw RGBA8 in a scratch directory); the bench is `capture/build/rs_basis_level_bench`.
 - `test/self-test-gate8kp.ts`: those helpers and the GSW receiver's `hello.ts` on synthetic
   entries, uploads and pixels, each with a passing and a failing case.
 
@@ -3463,7 +3471,7 @@ mise exec -- pnpm render-stream:gate8 -- \
 | --- | ---- |
 | `capture` | headless, `GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough`; both sinks (`recording.rs9`, `recording-patch.rs9`), store, `textures.jsonl` |
 | `workers/capture` | the same at `GRC_TEXTURE_WORKERS=2` (G8kw's delayed workers) |
-| `refused-basis/capture` | `GRC_TEXTURE_DELIVERY=basis-uastc` at /9: the typed refusal |
+| `refused-basis/capture` | `GRC_TEXTURE_DELIVERY=basis-etc1s` at /9 (basis-uastc before G8ku): the typed refusal |
 | `reference`, `reference-hw` | rendered fixture: the oracle's decoded payloads, and the `.ctex` sampled by the GPU |
 | `receiver`, `receiver-patch`, `receiver-masked` | the native receiver on the full and patch sinks (`block,decoded`), and with `RS_RECEIVER_GPU_FORMAT_MASK=s3tc,bptc,rgtc` |
 | `live/host`, `live/receiver` | a /9 passthrough live host (desktop step for 600 frames) and the rendered native receiver at `RS_RECEIVER_PROTOCOL=9` |
@@ -3496,6 +3504,7 @@ is removed at exit (never inside the repository).
 | `prepared/capture` | a session on the prepared directory |
 | `bounded/capture`, `bounded/cache/` | `GRC_TEXTURE_CACHE_MAX_BYTES=60000` |
 | `adopt-cold/capture`, `adopt-warm/capture` | gate8-adopt armed late (`GRC_ADOPT=arm`) twice on one directory |
+| `uastc-cold/capture`, `uastc-warm/capture`, `uastc-{cold,warm}/cache/` | G8ku: `fixtures/gate8-basis` under `basis-uastc` (g8ku's wait frame) twice on one directory: every UASTC encode stored, then served |
 | `sabotage-corrupt/{capture,after/capture}`, `damaged.json`, `index-before.jsonl` | a copy of the warm cache with a flipped byte, a truncated file and a deleted file; then the session after the repair |
 
 Criteria (`lib/gate8-cache-checks.ts`, driven by `test/self-test-gate8kc.ts`): `cache-off-identical`,
@@ -3525,6 +3534,26 @@ receiver (`GATE7_LIVE_KIND`); every receiver and replay leg below is then that b
 `g8l-<f>-replay-equals-file` (a native run with the file groups: the replay's checkpoints equal
 the file group's honest receiver's), `g8l-proxy-fronted` (D14: the receiver's URL is the proxy's
 port; one 101 upgrade and every GET, each 200, went through it; the final image equals tex's).
+
+## Gate 8 legs and evidence under `--out/g8ku` (g8ku)
+
+| leg | what |
+| --- | ---- |
+| `import/fixture` | the editor import of `fixtures/gate8-basis` |
+| `capture` | headless, `GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12`; both sinks, store (`<hash>.grt`, `<hash>.ktx2`) |
+| `workers/capture` | the same at `GRC_TEXTURE_WORKERS=2` |
+| `sabotage-perturb-ktx2/capture`, `.../receiver` | `GRC_TEXTURE_ENCODE_FAULT=perturb-ktx2` (one byte of each KTX2 flipped after hashing), and the native receiver under `upgrade`, which must refuse |
+| `reference`, `reference-oracle`, `reference-oracle-hw` | rendered fixture: procedural; every stored KTX2 through `Image.load_ktx_from_buffer` (`oracle/oracle.json`, `oracle/<hash>.rgba`), its CPU decode drawn from step 1; and the same drawing the transcoded blocks (GPU-sampled) |
+| `receiver`, `receiver-upgrade` | the native receiver, D6 `keep` and `upgrade` (`RS_RECEIVER_TRANSCODE_LOG=1`) |
+| `live/host`, `live/receiver` | a /9 basis-uastc live host without the wait knob and the rendered native receiver at `RS_RECEIVER_PROTOCOL=9`; `live/host/ktx2-get.*` is one KTX2 GET with `Accept-Encoding: zstd` |
+| `../g8ku-web/web` | the web export in headless Chromium on `receiver-upgrade`'s launch (its harness root beside `g8ku/`) |
+
+## Gate 8 criteria (g8ku)
+
+`basis-capture`, `ktx2-wire`, `delivery-lazy`, `delivery-keep`, `transcode-oracle`,
+`delivery-reference` (exact), `quality-band`, `sabotage-perturb-ktx2`, `delivery-live` and
+`delivery-web`; each criterion is spelled out in `lib/gate8-basis-checks.ts` and
+[`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8ku)".
 
 ## Gate 8 criteria (g8m)
 

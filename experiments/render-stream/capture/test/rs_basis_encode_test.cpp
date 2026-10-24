@@ -163,7 +163,8 @@ int main(int argc, char **argv) {
 		if (!std::strcmp(argv[i], "--emit") && i + 1 < argc) emit = argv[++i];
 		else if (!std::strcmp(argv[i], "--bench")) bench = true;
 	}
-	CHECK(std::string(rs::basis::params_id()) == "basisu-1.60/uastc-l2/zstd6/linear", "params_id");
+	CHECK(std::string(rs::basis::params_id(2)) == "basisu-1.60/uastc-l2/zstd6/linear", "params_id");
+	CHECK(rs::basis::params_id(5) == nullptr && rs::basis::params_id(-1) == nullptr, "params_id range");
 
 	// Input refusals never throw and never encode.
 	{

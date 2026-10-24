@@ -72,8 +72,8 @@
 #       each .ctex's block bytes as <name>.<family>.block.grt1), then headless /9 captures under
 #       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough (`capture`, full and patch
 #       sinks and the store), the same at GRC_TEXTURE_WORKERS=2 (`workers/capture`: the block
-#       variant hashed on the worker) and `refused-basis/capture` (basis-uastc at /9: the typed
-#       refusal); then, rendered, `reference` and `reference-hw` (as g8t's) and the native receiver
+#       variant hashed on the worker) and `refused-basis/capture` (basis-etc1s at /9, since G8ku:
+#       the typed refusal); then, rendered, `reference` and `reference-hw` (as g8t's) and the native receiver
 #       on the full sink (`receiver`, default texture_encodings block,decoded with the GPU's
 #       families), the patch sink (`receiver-patch`) and with s3tc,bptc,rgtc masked
 #       (`receiver-masked`); last, in headless Chromium, the GSW receiver on the same recording
@@ -89,7 +89,9 @@
 #       textures.sh over the fixture's imported .ctex files into a second, empty directory) and
 #       `prepared/capture` (a session on that directory), `bounded/capture` (a byte budget) and
 #       `sabotage-corrupt/{capture,after/capture}` (a copy of the warm cache with a flipped byte, a
-#       truncated file and a deleted file, then the session after the repair). The cache
+#       truncated file and a deleted file, then the session after the repair), and (G8ku)
+#       `uastc-cold/capture` and `uastc-warm/capture` (fixtures/gate8-basis under basis-uastc twice
+#       on one directory: the second session runs zero UASTC encodes). The cache
 #       directories live under $XDG_CACHE_HOME (or ~/.cache) and are removed at exit.
 #   g8l (G8g, D14: render-stream/8 live; every leg under g8l/<fixture>/): one live leg per fixture
 #       (tex, float, adopt, size, mat), each a headless live host with its /8 file sink under the
@@ -97,6 +99,22 @@
 #       receiver replaying the host's file sink; plus `proxy` (tex through lib/reverse-proxy.ts, an
 #       HTTP/1.1 reverse proxy: the WebSocket and every GET through a server in front of the
 #       listener, D14). run-gate7.sh --live --legs g7-8 runs this group with a browser receiver.
+#   g8ku (G8ku, texture-delivery-design.md D6, D12, D14, D16 `basis-uastc`; fixtures/gate8-basis;
+#       every leg under g8ku/): the fixture import; headless /9 captures under
+#       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc GRC_TEXTURE_ENCODE_WAIT_FRAME=12
+#       (`capture`: the lazy uastc variants publish at frame 12, full and patch sinks and the store),
+#       the same at GRC_TEXTURE_WORKERS=2 (`workers/capture`) and with GRC_TEXTURE_ENCODE_FAULT=
+#       perturb-ktx2 (`sabotage-perturb-ktx2/capture`); then, rendered, `reference`
+#       (the procedural fixture), `reference-oracle` (every stored KTX2 through
+#       Image.load_ktx_from_buffer on this GPU: oracle.json, the CPU decodes, and from step 1 the
+#       uastc textures drawn from them), `reference-oracle-hw` (the same drawing the oracle's
+#       transcoded blocks, sampled by the GPU), the native receiver with `keep` (`receiver`),
+#       `upgrade` (`receiver-upgrade`, transcodes hashed) and on the perturbed store
+#       (`sabotage-perturb-ktx2/receiver`, which must refuse), and `live/{host,receiver}` (a /9
+#       basis-uastc host without the wait knob, the receiver at RS_RECEIVER_PROTOCOL=9, and a GET of
+#       one KTX2 with Accept-Encoding: zstd, `live/host/ktx2-get.*`); last, in headless Chromium,
+#       the web export on `receiver-upgrade`'s own launch (`g8ku-web/web`, beside g8ku/) through
+#       gate8-delivery-tool.ts web-legs.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -118,8 +136,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8kc g8l)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8kc g8l)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l)
 
 EXTENSION=""
 CALIBRATION=""
@@ -389,8 +407,8 @@ run_g8t() {
 	run_capture "$OUT/workers/sabotage-publish-before-ready/capture" "" none
 
 	# G8k9 (texture-delivery-design.md D4, Q5): the same fixture through a /9 file sink with the delivery
-	# mode declared. Mode rgba offers no variant (G8kp: the Basis modes G8k9 declared here are
-	# refused now, g8kp/refused-basis), so the result must be the /8 capture's, state for state,
+	# mode declared. Mode rgba offers no variant (basis-uastc is group g8ku's since G8ku, and
+	# basis-etc1s is refused, g8kp/refused-basis), so the result must be the /8 capture's, state for state,
 	# with `variants: []` on every ok image and the session naming the mode.
 	echo "run-gate8: delivery9/capture (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba: no variant)"
 	RECORDING_NAME=recording.rs9
@@ -787,8 +805,8 @@ run_g8kp() {
 		RS_FIXTURE_TEXTURE_LOG="$OUT/g8kp/workers/capture/textures.jsonl")
 	run_capture "$OUT/g8kp/workers/capture" "" none
 
-	echo "run-gate8: g8kp refused-basis/capture (GRC_TEXTURE_DELIVERY=basis-uastc at /9: refused)"
-	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc
+	echo "run-gate8: g8kp refused-basis/capture (GRC_TEXTURE_DELIVERY=basis-etc1s at /9: refused)"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-etc1s
 		RS_FIXTURE_TEXTURE_LOG="$OUT/g8kp/refused-basis/capture/textures.jsonl")
 	CAPTURE_WITH_PATCH=0
 	run_capture "$OUT/g8kp/refused-basis/capture" "" none
@@ -923,6 +941,20 @@ run_g8kc() {
 	run_g8kc_capture "$K/sabotage-corrupt/capture" "$C/corrupt"
 	g8kc_keep_index "$C/corrupt" "$K/sabotage-corrupt/cache"
 	run_g8kc_capture "$K/sabotage-corrupt/after/capture" "$C/corrupt"
+
+	# uastc-cold / uastc-warm (G8ku): fixtures/gate8-basis under basis-uastc (its lazy encodes
+	# attached at the wait frame, so the cold session stores every one) twice on one directory: the
+	# second session serves every UASTC variant from the cache and runs zero encodes.
+	if [ ! -f "$OUT/g8ku/import/fixture/exit-code.txt" ]; then
+		run_import_g8ku
+	fi
+	echo "run-gate8: g8kc uastc-cold / uastc-warm (UASTC encodes through the cache)"
+	CAPTURE_WITH_PATCH=0
+	run_capture_g8ku "$K/uastc-cold/capture" GRC_TEXTURE_CACHE_DIR="$C/uastc"
+	g8kc_keep_index "$C/uastc" "$K/uastc-cold/cache"
+	run_capture_g8ku "$K/uastc-warm/capture" GRC_TEXTURE_CACHE_DIR="$C/uastc"
+	g8kc_keep_index "$C/uastc" "$K/uastc-warm/cache"
+	CAPTURE_WITH_PATCH=1
 
 	# adopt-cold / adopt-warm (D9a): a pre-arm VRAM-compressed texture (gate8-adopt's chip_bc), armed
 	# late with GRC_ADOPT=arm at /8, goes through the same copy as any hooked texture, so the cache
@@ -1109,10 +1141,150 @@ run_g8l() {
 	GS_RUN_DIR=""
 }
 
+# ------------------------------------------------------------------------------------ g8ku
+# G8ku (texture-delivery-design.md D6, D12, D14, D16): `basis-uastc` at /9 end to end.
+G8KU_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-basis"
+# The fixture's step-1 frame: the `updated` texture's in-place update, and the frame the capture
+# legs attach every lazy encode at (GRC_TEXTURE_ENCODE_WAIT_FRAME), so the recordings are exact.
+G8KU_WAIT_FRAME=12
+G8KU_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc)
+
+run_import_g8ku() {
+	echo "run-gate8: g8ku import (fixture)"
+	LEG_ENV=()
+	run_headless "$OUT/g8ku/import/fixture" none -- mise exec -- godot --headless --path "$G8KU_FIXTURE_DIR" --import
+	if [ "$(cat "$OUT/g8ku/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8ku import failed, see $OUT/g8ku/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+}
+
+# run_capture_g8ku <dir> <env word...>: a headless /9 basis-uastc capture of the fixture, the lazy
+# variants attached at G8KU_WAIT_FRAME.
+run_capture_g8ku() {
+	local dir="$1"
+	shift
+	CAPTURE_FIXTURE_DIR="$G8KU_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("${G8KU_ENV[@]}" GRC_TEXTURE_ENCODE_WAIT_FRAME="$G8KU_WAIT_FRAME"
+		RS_FIXTURE_UPDATE_FRAME="$G8KU_WAIT_FRAME" "$@")
+	run_capture "$dir" "" none
+}
+
+# run_reference_g8ku <dir> <procedural|oracle> [cpu|blocks]: a rendered fixture run, shots
+# step-<k>; oracle: from step 1 the uastc textures are the oracle's CPU decodes (cpu) or its
+# transcoded blocks sampled by the GPU (blocks).
+run_reference_g8ku() {
+	local dir="$1" source="$2" draw="${3:-cpu}"
+	mkdir -p "$dir/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$dir/shots" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+		RS_FIXTURE_SOURCE="$source" RS_FIXTURE_UPDATE_FRAME="$G8KU_WAIT_FRAME")
+	[ "$source" = oracle ] && LEG_ENV+=(RS_FIXTURE_KTX2_DIR="$OUT/g8ku/capture/store"
+		RS_FIXTURE_ORACLE_OUT="$dir/oracle" RS_FIXTURE_ORACLE_DRAW="$draw")
+	run_rendered "$dir" "$G8KU_FIXTURE_DIR"
+}
+
+# run_g8ku_live: g8ku/live/{host,receiver} (inside g8ku's gamescope): no wait knob, so the
+# variants publish when their encodes finish; the receiver joins at RS_RECEIVER_PROTOCOL=9. While
+# it runs, one stored KTX2 is fetched with Accept-Encoding: zstd (live/host/ktx2-get.{headers,body}).
+run_g8ku_live() {
+	local host="$OUT/g8ku/live/host" receiver="$OUT/g8ku/live/receiver" waited=0 port=""
+	mkdir -p "$host/evidence" "$receiver"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_OUT="$host/$RECORDING_NAME"
+		GRC_RESOURCE_STORE_DIR="$host/store" GRC_LIVE_LISTEN=127.0.0.1:0 "${G8KU_ENV[@]}"
+		RS_FIXTURE_UPDATE_FRAME=600 RS_FIXTURE_QUIT_FRAME=780 RS_FIXTURE_STEP_LOG="$host/steps.jsonl"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$G8KU_FIXTURE_DIR"
+	local pid="$BG_PID"
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see g8ku/live/host/evidence/live.json)" >"$receiver/skipped.txt"
+	else
+		(
+			local i=0 ktx=""
+			while [ "$i" -lt 200 ] && [ -z "$ktx" ]; do
+				ktx="$(find "$host/store/sha256" -name '*.ktx2' 2>/dev/null | sort | head -1)"
+				[ -z "$ktx" ] && sleep 0.05
+				i=$((i + 1))
+			done
+			if [ -n "$ktx" ]; then
+				curl -s --max-time 5 -H 'Accept-Encoding: zstd, gzip' -D "$host/ktx2-get.headers" \
+					-o "$host/ktx2-get.body" "http://127.0.0.1:$port/resources/sha256/$(basename "$ktx" .ktx2)" ||
+					echo "curl failed: $?" >"$host/ktx2-get.error"
+				basename "$ktx" .ktx2 >"$host/ktx2-get.hash"
+			else
+				echo "no .ktx2 in the host store within 10 s" >"$host/ktx2-get.error"
+			fi
+		) &
+		local probe=$!
+		LEG_ENV=(
+			RS_RECEIVER_MODE=live RS_RECEIVER_PROTOCOL=9 RS_RECEIVER_CREDIT_WINDOW=1
+			RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_TRANSCODE_LOG=1
+			RS_RECEIVER_OUT="$receiver/applied.json" RS_RECEIVER_CACHE_DIR="$receiver/cache"
+		)
+		RENDERED_EXTRA_ARGS=(--max-fps 60)
+		run_rendered "$receiver" "$RECEIVER_DIR"
+		wait "$probe" 2>/dev/null || true
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8ku() {
+	run_import_g8ku
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+
+	echo "run-gate8: g8ku capture (/9, GRC_TEXTURE_DELIVERY=basis-uastc, variants at frame $G8KU_WAIT_FRAME)"
+	run_capture_g8ku "$OUT/g8ku/capture"
+	echo "run-gate8: g8ku workers/capture (the same at GRC_TEXTURE_WORKERS=2)"
+	run_capture_g8ku "$OUT/g8ku/workers/capture" "${G8T_WORKERS_ENV[@]}"
+	echo "run-gate8: g8ku sabotage-perturb-ktx2/capture (one KTX2 byte flipped after hashing)"
+	if ! legs_sabotage_skipped "$OUT/g8ku/sabotage-perturb-ktx2/capture"; then
+		run_capture_g8ku "$OUT/g8ku/sabotage-perturb-ktx2/capture" GRC_TEXTURE_ENCODE_FAULT=perturb-ktx2
+	fi
+
+	echo "run-gate8: bringing up private gamescope for g8ku's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8ku"
+	legs_par_begin
+	echo "run-gate8: g8ku reference, reference-oracle and reference-oracle-hw"
+	run_reference_g8ku "$OUT/g8ku/reference" procedural
+	run_reference_g8ku "$OUT/g8ku/reference-oracle" oracle cpu
+	run_reference_g8ku "$OUT/g8ku/reference-oracle-hw" oracle blocks
+	echo "run-gate8: g8ku receiver (keep), receiver-upgrade, sabotage-perturb-ktx2/receiver"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_TRANSCODE_LOG=1)
+	run_rendered_receiver "$OUT/g8ku/capture" "$OUT/g8ku/receiver"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
+	run_rendered_receiver "$OUT/g8ku/capture" "$OUT/g8ku/receiver-upgrade"
+	if [ -f "$OUT/g8ku/sabotage-perturb-ktx2/capture/$RECORDING_NAME" ]; then
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
+		run_rendered_receiver "$OUT/g8ku/sabotage-perturb-ktx2/capture" "$OUT/g8ku/sabotage-perturb-ktx2/receiver"
+	fi
+	legs_par_end
+	echo "run-gate8: g8ku live (host /9 basis-uastc + rendered native receiver at RS_RECEIVER_PROTOCOL=9)"
+	run_g8ku_live
+	gs_teardown "$OUT/gamescope-g8ku"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+
+	echo "run-gate8: g8ku web legs (g8ku-web/web: the web export on receiver-upgrade's launch)"
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/gate8-delivery-tool.ts" web-legs --source "$OUT") \
+		>"$OUT/g8ku/web-legs.log" 2>&1 || echo "run-gate8: g8ku web legs failed, see $OUT/g8ku/web-legs.log" >&2
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8kp) run_g8kp ;;
 	g8kc) run_g8kc ;;
+	g8ku) run_g8ku ;;
 	g8t) run_g8t ;;
 	g8f) run_g8f ;;
 	g8a) run_g8a ;;

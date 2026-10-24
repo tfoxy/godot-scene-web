@@ -132,6 +132,32 @@ pub unsafe extern "C" fn rsc_set_delivery(
     guard(h, 0, |c| i32::from(c.set_delivery(encodings, gpu_formats)))
 }
 
+/// G8ku (texture-delivery-design.md D6): `keep` (0, the default) or `upgrade` (1) for a variant
+/// that appears at an equal version.
+#[no_mangle]
+pub extern "C" fn rsc_set_variant_upgrade(h: *mut RsCore, on: i32) {
+    guard(h, (), |c| c.planner.delivery.upgrade = on != 0);
+}
+
+/// G8ku: the lowercase hex SHA-256 of `len` bytes at `data` into the 64 bytes at `out` (the
+/// executor's `transcode-oracle` log of the blocks it uploaded).
+///
+/// # Safety
+/// `data` points to `len` bytes (or is null with `len` 0); `out` points to 64 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_sha256_hex(data: *const u8, len: usize, out: *mut u8) {
+    if out.is_null() {
+        return;
+    }
+    let bytes: &[u8] = if data.is_null() || len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(data, len)
+    };
+    let hex = render_stream_core::wire::sha256(bytes).to_hex();
+    std::ptr::copy_nonoverlapping(hex.as_ptr(), out, 64.min(hex.len()));
+}
+
 /// G7o2 (D31): whether the next session defers the per-record digest (receiver.gd: the web
 /// export's file mode).
 #[no_mangle]
