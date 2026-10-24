@@ -182,6 +182,19 @@
       "exclusive": true
     },
     {
+      "why": "the vendored basisu encoder and its wrapper (G8kv, texture-delivery-design.md D13, D15): nothing in the hooks calls rs_basis_encode yet, so a change confined to these files moves no capture output. They are built into the capture library and driven by rs_basis_encode_test and the Godot-transcoder round trip (rs_basis_roundtrip), both ctests in the build: the build, the pure self-tests, the default gate 0 leg and gate 8 are enough. The call sites G8ku adds in hooks.cpp and rs_texture_delivery.* are shared capture files and still reach '*'. capture/CMakeLists.txt is in this rule because G8kv's edit to it only adds the basisu library, its wrapper and two tests; a later edit that links other code into the capture should drop it from here",
+      "paths": [
+        "experiments/render-stream/third_party/basis_universal/**",
+        "experiments/render-stream/capture/src/rs_basis_encode.*",
+        "experiments/render-stream/capture/test/rs_basis_encode_test.cpp",
+        "experiments/render-stream/capture/test/g8kv_transcode.gd",
+        "experiments/render-stream/capture/CMakeLists.txt",
+        "experiments/render-stream/scripts/test/g8kv-*"
+      ],
+      "reach": ["capture-build", "pure", "native:gate0@*", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",

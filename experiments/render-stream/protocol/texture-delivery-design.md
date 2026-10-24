@@ -668,7 +668,42 @@ list; a narrow `smoke-map.json` rule; gate 8's `delivery9/capture` leg.
 | GSW (`web/gsw-receiver`, `web/gsw-rs`) | G8kp, G8kb | unchanged; never offered `.9` |
 | Web export | G8ku | unchanged |
 | Block upload, `texture_encodings`/`gpu_formats` filled from hardware | G8kp | the hello keys are parsed and logged, not sent |
-| The encoder, the host cache, lazy variants, `delivery-pending` in a capture | G8ku, G8kc | the seam is empty; the capture never publishes the reason |
+| The host cache, lazy variants, `delivery-pending` in a capture | G8ku, G8kc | the encoder is built (G8kv) but uncalled; the seam is empty; the capture never publishes the reason |
 | `transcode-oracle`, `delivery-reference`, `quality-band`, `perturb-ktx2` | G8ku | not started |
 | ETC1S, the PSNR floor, the throttled link | G8ke | after the release |
 | Gate 7 browser groups, the g31 | none | unreachable: `GRC_STREAM_VERSION` is unset in every one |
+
+## As built (G8kv)
+
+Landed as one commit; the evidence summary is [results/gate8/g8kv.md](../results/gate8/g8kv.md). The
+encoder exists in the build and nothing calls it.
+
+- **Vendored tree.** `third_party/basis_universal/` is Godot 4.5.1's copy of basisu 1.60 (`323239a6`),
+  `PROVENANCE.md` beside it with the upstream commit, Godot tag, the five Godot patches, one local patch
+  and every file's sha256. zstd is not copied again: the library uses `capture/vendor/zstd` (G8kz).
+- **One local patch (`0006-render-stream-no-exr`).** `basisu_enc.cpp` includes tinyexr, which Godot
+  vendors as a separate tree. A `BASISU_NO_EXR` guard stubs the three EXR functions instead of
+  vendoring tinyexr, because the capture never reads or writes EXR.
+- **Dropped:** four unreachable transcoder tables (ATC, PVRTC2) and the OpenCL kernels header, each
+  behind a define the build sets to 0, as Godot's own SCsub does. The HDR encoders stay (referenced by
+  `basisu_comp.cpp`); the wrapper only requests UASTC LDR 4x4.
+- **Build.** Static library `grc_basisu` (hidden visibility, `-w`, the SSE4.1 kernels file alone with
+  `-msse4.1`), linked into `render_stream_capture`; the wrapper `src/rs_basis_encode.{h,cpp}` is the
+  only TU that sees basisu headers, and the header includes none.
+- **Wrapper contract.** `encode_uastc_ktx2(levels, n)`: level i must be `max(1, base >> i)` (the KTX2
+  level rule), 1-32 levels, supplied explicitly (`m_mip_gen` off; basisu's `m_source_mipmap_images`),
+  UASTC level 2, no RDO, zstd 6, `m_perceptual` off and no sRGB transfer (linear DFD, D13). It prints
+  nothing and never throws. `params_id()` is `basisu-1.60/uastc-l2/zstd6/linear`.
+- **Alpha is decided by the wrapper.** basisu's own alpha check looks at the first image, and with it
+  off, an alpha texture silently loses alpha (the first run decoded every pixel opaque). The wrapper
+  scans every level and sets `m_force_alpha` when any alpha is below 255.
+- **Thread safety.** `basisu_encoder_init()` runs under `std::call_once`, on the first encode or an
+  explicit `init()`. Every encode is single-threaded on its caller with its own compressor and
+  `job_pool(1)`, so G8kw's pool is the only parallelism; six concurrent encodes are byte-identical to
+  one thread's.
+- **Tests.** `rs_basis_encode_test` (ctest `rs_basis_encode`): header, level index and DFD against the
+  `ktx2` profile, refusals, thread safety. `scripts/test/g8kv-roundtrip.sh` (ctest `rs_basis_roundtrip`):
+  the TS validator, then stock Godot's `Image.load_ktx_from_buffer` under `timeout` with a per-level PSNR.
+- **Cost.** About 3.3-5.0 s per Mpx per thread (UASTC L2 + zstd 6), so eager preparation of a large pack
+  is minutes on 12 threads; lazy encode of a big texture is seconds on a worker. G8ku decides which
+  textures a worker may take at what budget.
