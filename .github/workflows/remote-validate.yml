@@ -164,7 +164,8 @@ jobs:
           templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           emsdk: ${{ matrix.id == 'toolchain-smoke' || (startsWith(matrix.id, 'g7') && contains(matrix.id, 'web-rust')) }}
           rust-nightly: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') }}
-          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') }}
+          # cargo-gsw-rs checks the crate for wasm32 (it has no host-runnable test)
+          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || matrix.id == 'cargo-gsw-rs' || startsWith(matrix.id, 'g7') }}
 
       - name: Record setup time
         run: |

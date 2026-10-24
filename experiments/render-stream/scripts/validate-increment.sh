@@ -185,10 +185,15 @@ run_one() {
 		launch "$dir" -- bash "$SCRIPT_DIR/build-capture.sh" >"$dir/run.log" 2>&1 || rc=$?
 		;;
 	cargo)
-		local crate
+		local crate cmd
 		crate="$(field crate)"
+		cmd="cargo test --offline --release"
+		# web/gsw-rs is wasm-only (its executor is cfg(target_arch = "wasm32")) and has no host-runnable
+		# test: a native cargo test cannot compile it (GRT5). The real check is that it, with its
+		# tests, builds for the target it ships on.
+		case "$crate" in */web/gsw-rs) cmd="cargo check --offline --release --target wasm32-unknown-unknown --all-targets" ;; esac
 		launch "$dir" -- bash "$Q" shared --label "validate:cargo:$(basename "$crate")" -- \
-			bash -c "cd '$REPO_ROOT/$crate' && cargo test --offline --release" >"$dir/run.log" 2>&1 || rc=$?
+			bash -c "cd '$REPO_ROOT/$crate' && $cmd" >"$dir/run.log" 2>&1 || rc=$?
 		;;
 	bench-instr)
 		# R4: instruction counts, so load cannot disturb them: no timing lock, a shared one for the build

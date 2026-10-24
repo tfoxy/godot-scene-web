@@ -101,9 +101,10 @@ authority.
 | Family | Remote? | What it takes |
 | --- | --- | --- |
 | Pure self-tests, cargo crates, builds, `pnpm test` | **Yes (R0)** | Toolchain setup plus a cache of the pinned inputs; `pure` is sharded 6 ways |
+| `cargo-gsw-rs` | **Yes (GRT5)** | Wasm-only crate with no host-runnable test: the run is `cargo check --target wasm32-unknown-unknown --all-targets`, not `cargo test` (which cannot compile it natively) |
 | Native gates −1..5.5 correctness | **Yes (R1, R2)** | CI-only Xvfb + llvmpipe; no own baselines were needed. Their timing groups (g1c-rate, g1d, g2c-pins, g5f, g55f) stay local |
 | Rust core instruction counts | **Yes (R4)** | cachegrind `Ir` against a committed baseline, 1% threshold |
-| Gate 7 file/live correctness (browser) | **Yes (R3)** | Chromium on ANGLE-Vulkan over lavapipe, a CI-only provenance mode; no own baselines were needed. Live g7-1/g7-2 stay local. The NVIDIA track stays authoritative. |
+| Gate 7 file/live correctness (browser) | **Yes (R3)** | Chromium on ANGLE-Vulkan over lavapipe, a CI-only provenance mode; no own baselines were needed. Live g7-2 runs remotely (GRT5); live g7-1 stays local. The NVIDIA track stays authoritative. |
 | Gate 6 and gate 7 timing legs, perf benches | **No** (wall-clock) | Stay local; see below |
 | Phone legs (g31) | **No** | The device is attached to this machine |
 | STS2 game, recovered project, spirectl fonts | **Never** | Proprietary |
@@ -189,10 +190,13 @@ with the receiver project's `--import`).
     together. Such a set is compared as a function from state to image: every state applied in two
     runs must render the same.
 - **Live groups.** g7-5 and g7-55 run remotely (their rate group g1c-rate skipped).
-  - g7-1 and g7-2 stay local (`smoke-map.json` `remote.refuse.groups`). Each failed a check
-    intermittently at credit window 2 on 4 vCPU, and neither check is loosened:
-    - g7-2: the drop-resource and no-cors failure seq. Two transactions arrived in one poll and were
-      folded, so the failure landed at the other seq. Seen only on runners: load-sensitive.
+  - g7-2 runs remotely since GRT5. It was refused because the drop-resource and no-cors failure seq
+    differed when two transactions folded into one poll; G7lw (110d2680) made the checkers accept
+    the folded seq (`failureSeqs()`). GRT5's full-tier `--determinism 3,1` dispatch of `g7live-gsw`
+    and `g7live-web-rust` (g7-2 only; run 40080397563) passed all 8 runs and agreed: 72/72 shots,
+    44/44 dumps, 22 live sets.
+  - g7-1 stays local (`smoke-map.json` `remote.refuse.groups`). It failed a check
+    intermittently at credit window 2 on 4 vCPU, and the check is not loosened:
     - g7-1: `resync-full`, in two ways.
       - A patch was already in flight when the host logged the resync, so the full one was
         refused + 2. That also failed on local NVIDIA, so it was a G7wd checker-model gap. FU1
@@ -287,8 +291,8 @@ scripts/remote-validate.sh [--base main] [--tier smoke|full] [--only id,id] [--p
 
 1. **Plans locally** with `validate-increment.sh --plan`, then splits the runs.
    - Remote-capable runs come from the `smoke-map.json` `remote` table.
-   - Always refused: timing-phase runs, `lock-tests`, `g7x` and device legs. The live groups g7-1
-     and g7-2 are refused per group.
+   - Always refused: timing-phase runs, `lock-tests`, `g7x` and device legs. The live group g7-1
+     is refused per group.
    - `--and-local` runs the refused ones through local `validate-increment.sh` while the remote run
      is in flight.
    - A requested `--only` id that the plan does not reach is an error (rc 2), not a silent pass.
@@ -408,7 +412,6 @@ iterating.
 | --- | --- |
 | Gate 6 and the gate 7 timing legs (g6l, g6s, g6c, g6p, g7-6 timing, g7-lc, g7-r, g7-k, g7-bench) and the lock self-tests | Wall-clock measurements; hosted VMs are noisier than this machine |
 | The timing groups inside correctness gates (g1c-rate, g1d, g2c-pins, g5f, g55f) | Same reason. They are skipped remotely, and the wrapper prints their local commands |
-| Live g7-2 | Load-sensitive on 4 vCPU runners: two transactions folded into one poll |
 | Live g7-1 | GSW `live-resync` shots disagree across runners (G7rf run 39982714414: one runner shot no step 2, before the resync). The resync-at-fold receiver bug itself is fixed (G7rf); web-rust agreed over 4 runs |
 | Phone legs (g31) | The device is attached to this machine |
 | NVIDIA pixel authority | A remote green on llvmpipe/lavapipe means "safe to spend a local GPU run on", not "landed". Llvmpipe has matched the RTX 2060 byte for byte so far, but that is evidence, not the contract |
@@ -423,8 +426,6 @@ Risks that remain:
 Possible next steps (not started):
 - move g7-1 remote once GSW's `live-resync` step-2 shot-window miss (G7rf's `--determinism 3,1`,
   run 39982714414) is understood or repeats clean; web-rust already agreed.
-- g7-2 fold-seq model (archive d86ca3f4/7abbfcbd foldSeqs) needs a rewrite onto main if g7-2 ever
-  goes remote.
 
 ## Sources
 
