@@ -1096,3 +1096,17 @@ A/B and the runs: [results/gate8/g8kb.md](../results/gate8/g8kb.md).
 | The web export's block-variant uploads (`INVALID_ENUM` on g8kp) and non-4-aligned BC uploads (g8ku, its g8l basis leg) | G8kf | its g8kp/g8ku legs are not replayed in g7-8's web half, its g8l basis leg not run |
 | ETC1S and its g31 cost | G8ke | refused at /9 |
 | GSW mip levels beyond 0; reading GL errors after a compressed upload | later | level 0; no read-back |
+
+### G8kb2 note: ASTC for RGB in GSW
+
+Landed after G8kb; evidence [results/gate8/g8kb2.md](../results/gate8/g8kb2.md). D14's 3-component
+order in GSW (`transcoder.cpp` `target`) is now BC7, **ASTC 4x4**, BC1, ETC1, RGBA8: when the context
+states `astc` and no `bptc`, an RGB texture takes ASTC 4x4 instead of ETC1. UASTC -> ASTC 4x4 is a
+lossless repack (1 B/px; the native decode equals the UASTC decode), where ETC1 (0.5 B/px) measured
+18.8 dB on per-pixel noise and 34.8 dB on a gradient on the g31 and ASTC 59.0 and 58.3 dB against the
+UASTC decode. The native receiver and the web export keep Godot's rule, so block identity across
+receivers holds on a desktop (BC7 everywhere) but not on an ASTC phone, which was already true for
+RGBA. The g31 transcode is not slower (ASTC 66 vs ETC1 80 ms/Mpx on the RGB files); the cost is
+1 B/px instead of 0.5. Checks: `scripts/test/self-test-gate8kb.ts` (the selection table),
+`scripts/test/g8kb2-astc-rgb.ts` (the wasm's ASTC equals native basisu 1.60's, byte for byte), and the
+bench's new `quality` mode (the context's own GL decode, PSNR against the UASTC decode and the source).

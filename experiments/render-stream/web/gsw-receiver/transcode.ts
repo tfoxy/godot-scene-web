@@ -6,7 +6,7 @@
 //      its shape against the entry (wasm `stage_ktx2`). A refusal is the payload's, raised where
 //      `stage_payload`'s would be (`resource-hash-mismatch`): a perturbed KTX2 is never transcoded.
 //   2. The transcoder worker (web/basis-transcoder/) transcodes every level to D14's target for
-//      the context's stated gpu_formats: ASTC 4x4, BC7, BC3, ETC2 RGBA (4 components), BC7, BC1,
+//      the context's stated gpu_formats: ASTC 4x4, BC7, BC3, ETC2 RGBA (4 components), BC7, ASTC 4x4, BC1,
 //      ETC1 (3), else RGBA8.
 //   3. wasm `stage_transcoded` stages level 0 (and the accounting's every-level length) like any
 //      verified payload; `provide_staged` then moves it to the store when its transaction runs.

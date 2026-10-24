@@ -51,7 +51,12 @@ expect(predictGswTarget(4, ["s3tc", "bptc", "rgtc"], 150, 110) === "RGBA8", "des
 expect(predictGswTarget(4, ["etc2", "astc"], 150, 110) === "ASTC_4x4", "phone unaligned: ASTC");
 expect(predictGswTarget(4, ["s3tc"], 16, 16) === "DXT5", "s3tc only: BC3");
 expect(predictGswTarget(4, ["etc2"], 16, 16) === "ETC2_RGBA8", "etc2 only: ETC2 RGBA");
-expect(predictGswTarget(3, ["etc2", "astc"], 16, 16) === "ETC2_RGB8", "3 components never take ASTC: ETC1");
+expect(predictGswTarget(3, ["etc2", "astc"], 16, 16) === "ASTC_4x4", "3 components take ASTC over ETC1 (G8kb2)");
+expect(predictGswTarget(3, ["etc2", "astc"], 150, 110) === "ASTC_4x4", "3 components, unaligned: still ASTC");
+expect(predictGswTarget(3, ["etc2"], 16, 16) === "ETC2_RGB8", "3 components, ETC2 only: ETC1");
+expect(predictGswTarget(3, ["s3tc", "bptc", "rgtc", "astc"], 16, 16) === "BPTC_RGBA", "3 components: BC7 stays ahead of ASTC");
+expect(predictGswTarget(3, [], 16, 16) === "RGBA8", "3 components, none: RGBA8");
+expect(predictGswTarget(3, ["bptc"], 150, 110) === "RGBA8", "3 components, BC7 only, unaligned: RGBA8");
 expect(predictGswTarget(3, ["s3tc", "bptc"], 16, 16) === "BPTC_RGBA", "3 components: BC7 first");
 expect(predictGswTarget(3, ["s3tc"], 16, 16) === "DXT1", "3 components: BC1");
 expect(predictGswTarget(2, ["rgtc"], 16, 16) === "RGTC_RG", "2 components: BC5");

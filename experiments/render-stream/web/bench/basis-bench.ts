@@ -7,7 +7,7 @@
 //   (BasisTranscoder: transfer in, bt_transcode, transfer out) once as a warmup and `repeats`
 //   times; per transcode the worker's own time (zstd inflate + every level) and the main thread's
 //   round trip. D14 picks the target from the family set and the file's components exactly as the
-//   receiver does (client.ts webglFamilies included), so `astc` is ASTC 4x4 for RGBA and RGB files
+//   receiver does (client.ts webglFamilies included), so `astc` is ASTC 4x4 for RGBA and RGB files (G8kb2)
 //   alike, `etc2` ETC2 RGBA8 or ETC1 (RGB), `none` RGBA8.
 // ?mode=gpu&delivery=decoded|uastc|none&copies=K
 //   GSW's upload calls (gl.rs: texImage2D RGBA8 for a decoded payload, compressedTexImage2D level 0
@@ -23,6 +23,7 @@ interface Entry {
   name: string;
   file: string;
   bytes: number;
+  source?: { file: string; channels: number } | null;
 }
 interface State {
   state: "running" | "baseline" | "holding" | "done" | "error";
@@ -78,7 +79,7 @@ async function transcodeMode(): Promise<void> {
   const files = await inputs();
   const t = transcoder();
   const initMs = await t.ready;
-  // `phone` is the g31's own gpu_formats (etc2, astc: D14 gives ASTC 4x4 for RGBA, ETC1 for RGB).
+  // `phone` is the g31's own gpu_formats (etc2, astc: G8kb2: ASTC 4x4 for RGBA and RGB).
   const sets: [string, string[]][] = [
     ["phone", ["etc2", "astc"]],
     ["etc2", ["etc2"]],
@@ -195,7 +196,90 @@ async function gpuMode(): Promise<void> {
   (window as unknown as { __keep: unknown }).__keep = textures;
 }
 
+/** G8kb2: PSNR (RGB, plus alpha when the reference has it) of `got` (RGBA8, row 0 first) against a reference. */
+function psnr(got: Uint8Array, ref: Uint8Array, refChannels: number, n: number): number {
+  const ch = refChannels === 4 ? 4 : 3;
+  let se = 0;
+  for (let i = 0; i < n; i++)
+    for (let c = 0; c < ch; c++) {
+      const d = got[i * 4 + c] - ref[i * refChannels + c];
+      se += d * d;
+    }
+  const mse = se / (n * ch);
+  return mse === 0 ? 99 : 10 * Math.log10((255 * 255) / mse);
+}
+
+/** G8kb2: every KTX2, for the phone's family set and for etc2 alone (before G8kb2's target for RGB),
+ * transcoded, uploaded through GSW's compressedTexImage2D call, decoded by THIS context's GL (a
+ * 1:1 texelFetch draw read back), and compared with the UASTC decode (cTFRGBA32) and the source. */
+async function qualityMode(): Promise<void> {
+  const canvas = document.getElementById("c") as HTMLCanvasElement;
+  const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error("no webgl2");
+  const supported = gl.getSupportedExtensions() ?? [];
+  const families: string[] = [];
+  for (const [f, ext] of EXTENSIONS) if (supported.includes(ext) && gl.getExtension(ext)) families.push(f);
+  const files = await inputs();
+  const t = transcoder();
+  await t.ready;
+  const vs = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
+  gl.shaderSource(vs, "#version 300 es\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0.0,1.0);}");
+  gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER) as WebGLShader;
+  gl.shaderSource(fs, "#version 300 es\nprecision highp float;uniform highp sampler2D t;out vec4 o;void main(){o=texelFetch(t,ivec2(gl_FragCoord.xy),0);}");
+  gl.compileShader(fs);
+  const prog = gl.createProgram() as WebGLProgram;
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+  const rows: unknown[] = [];
+  for (const f of files) {
+    set({ state: "running", detail: `quality ${f.entry.name.slice(0, 12)}` });
+    const ref = await t.transcode(f.bytes, []);
+    if (ref.format !== "RGBA8") throw new Error(`reference transcode is ${ref.format}`);
+    const w = ref.width;
+    const h = ref.height;
+    const refPx = ref.data.subarray(0, w * h * 4);
+    const src = f.entry.source
+      ? new Uint8Array(await (await fetch(`inputs/basis/${f.entry.source.file}`)).arrayBuffer())
+      : null;
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0, 0, w, h);
+    for (const [label, fams] of [["etc2", ["etc2"]], ["phone", ["etc2", "astc"]]] as [string, string[]][]) {
+      const x = await t.transcode(f.bytes, webglFamilies(f.bytes, fams.filter((q) => families.includes(q))));
+      if (x.format === "RGBA8") continue; // the context has neither family
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.compressedTexImage2D(gl.TEXTURE_2D, 0, GL_FORMAT[x.format], w, h, 0, x.data.subarray(0, x.level0Bytes));
+      const err = gl.getError();
+      if (err !== 0) throw new Error(`upload ${x.format} ${w}x${h}: GL error ${err}`);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.deleteTexture(tex);
+      rows.push({
+        file: f.entry.name,
+        set: label,
+        format: x.format,
+        components: x.components,
+        width: w,
+        height: h,
+        bytes_per_px: x.level0Bytes / (w * h),
+        psnr_vs_uastc: psnr(px, refPx, 4, w * h),
+        psnr_vs_source: src && f.entry.source ? psnr(px, src, f.entry.source.channels, w * h) : null,
+        uastc_psnr_vs_source: src && f.entry.source ? psnr(refPx, src, f.entry.source.channels, w * h) : null,
+      });
+    }
+  }
+  t.terminate();
+  set({ state: "done", detail: "quality done", result: { families, rows, user_agent: navigator.userAgent } });
+}
+
 const mode = params.get("mode") ?? "transcode";
-(mode === "gpu" ? gpuMode() : transcodeMode()).catch((e: unknown) => {
+(mode === "gpu" ? gpuMode() : mode === "quality" ? qualityMode() : transcodeMode()).catch((e: unknown) => {
   set({ state: "error", detail: e instanceof Error ? e.message : String(e) });
 });

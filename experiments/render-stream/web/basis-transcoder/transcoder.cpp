@@ -8,7 +8,7 @@
 // (modules/ktx/texture_loader_ktx.cpp:255-319, through libktx's ktxTexture2_TranscodeBasis), so
 // every receiver class on one GPU holds the same blocks:
 //   4 components: astc -> ASTC_4x4, bptc -> BC7, s3tc -> BC3, etc2 -> ETC2_RGBA, else RGBA32
-//   3 components: bptc -> BC7, s3tc -> BC1, etc2 -> ETC1, else RGBA32
+//   3 components: bptc -> BC7, astc -> ASTC_4x4 (G8kb2; Godot's rule has no astc here), s3tc -> BC1, etc2 -> ETC1, else RGBA32
 //   2 / 1 components: rgtc -> BC5 / BC4, else RGBA32
 //   an sRGB transfer function: RGBA32 (Godot's "TODO srgb native support")
 // The component count is libktx's ktxTexture2_GetNumComponents for UASTC (the DFD's first channel
@@ -67,6 +67,8 @@ basist::transcoder_texture_format target(uint32_t comps, bool srgb, uint32_t f) 
   case 3:
     if (f & BPTC)
       return F::cTFBC7_RGBA;
+    if (f & ASTC) // G8kb2: GSW departs from Godot's rule here; UASTC -> ASTC 4x4 is a near-lossless repack
+      return F::cTFASTC_4x4_RGBA;
     if (f & S3TC)
       return F::cTFBC1_RGB;
     if (f & ETC2)
