@@ -77,6 +77,16 @@
   },
   "rules": [
     {
+      "why": "G7z manifests (gate7-design.md Q11): generation and the g7-z checks are pure (check-gate7.ts --legs g7-z, self-test-gate7z)",
+      "paths": [
+        "experiments/render-stream/protocol/features/**",
+        "experiments/render-stream/scripts/make-features.ts",
+        "experiments/render-stream/scripts/lib/feature-evidence*.ts",
+        "experiments/render-stream/scripts/lib/gate7z-checks.ts"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "docs: no leg reads them",
       "paths": [
         "**/*.md",

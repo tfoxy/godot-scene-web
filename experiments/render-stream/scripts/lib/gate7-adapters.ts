@@ -853,3 +853,30 @@ export function currentBuildProvenance(
     calibration_sha256: inputs.calibration_sha256,
   };
 }
+
+/** Paths (relative to the run) a gate's checker WRITES while it judges: gate 6's g6c writes each
+ * rate leg's `report-set/` and `render-stream-report.json` (gate6c-checks.ts writeLegReport). In a
+ * view they are the view's own, never links: through a link the checker would rewrite the source
+ * run's reports (with the view's id), and a source from the GRT source cache is read-only, so the
+ * write fails with EACCES (G7z's closing run, where native gate 6 had published the source). */
+export const CHECKER_WRITES: readonly RegExp[] = [
+  /^rates\/[^/]+\/report-set$/,
+  /^rates\/[^/]+\/render-stream-report\.json$/,
+];
+
+/** Whether `rel` is a directory some path matching `re` could sit under (`rates`, `rates/<leg>`
+ * for CHECKER_WRITES): the pattern's leading literal-or-one-segment parts, matched segment-wise. */
+function holdsMatch(re: RegExp, rel: string): boolean {
+  const parts = re.source.replace(/^\^/, "").replace(/\$$/, "").split("\\/");
+  const segs = rel.split("/");
+  if (segs.length >= parts.length) return false;
+  return segs.every((seg, i) => new RegExp(`^${parts[i]}$`).test(seg));
+}
+
+/** Whether a view must make `rel` a real directory because a `writes` path sits under it. */
+export function viewHoldsWrite(
+  writes: readonly RegExp[],
+  rel: string,
+): boolean {
+  return writes.some((re) => holdsMatch(re, rel));
+}

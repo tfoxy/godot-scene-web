@@ -318,6 +318,8 @@ g6c_start_receiver() {
 		# G7q: a native receiver at credit window 2 speaks /7 (render-stream/6 has no window);
 		# dual-native's receiver-b (G6C_RECEIVER_NATIVE=1) stays /6 at window 1.
 		LEG_ENV+=(RS_RECEIVER_PROTOCOL=7 RS_RECEIVER_CREDIT_WINDOW=2)
+		# G7z: run-gate7.sh --manifest-hello (Q11 manifest-matches-hello).
+		[ -n "${GATE7_MANIFEST_SHA256_NATIVE:-}" ] && LEG_ENV+=(RS_RECEIVER_MANIFEST_SHA256="$GATE7_MANIFEST_SHA256_NATIVE")
 	fi
 	g6c_launch_rendered "$dir" "$RECEIVER_DIR" --max-fps "$fps" "$@"
 	G6C_RECEIVER_PID="$G6C_LAUNCHED_PID"

@@ -5,6 +5,15 @@
 //   mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/make-features.ts
 //   mise exec -- pnpm exec tsx --conditions=development experiments/render-stream/scripts/make-features.ts --check
 //
+//   ... make-features.ts --receiver native|web-export|gsw-canvas|all [--check]   (G7z, /2)
+//   ... make-features.ts --collect [--evidence-root <dir>]                     (G7z, device targets)
+//
+// G7z (gate7-design.md Q11): `--receiver` writes protocol/features/render-stream-7/<kind>.json,
+// schema render-stream-features/2, from lib/feature-evidence-7.ts and collected.json (the g31
+// device targets and the receiver blocks, which `--collect` derives from the evidence runs that
+// feature-evidence-7.ts quotes). Generation never reads the evidence tree, so `--check` stays
+// byte-reproducible after evidence is pruned; lib/gate7z-checks.ts re-reads the evidence.
+//
 // With no flag, (re)writes the committed manifest. `--check` regenerates in memory and exits
 // non-zero unless the committed file is byte-identical (the G6z `manifest-check` check runs this).
 //
@@ -14,7 +23,8 @@
 // can drift from the other silently; every other entry (viewport, material, text, control,
 // delivery, payload kinds) comes from feature-evidence.ts alone.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +33,24 @@ import {
   type FeatureEntry,
   type FeatureKind,
 } from "./lib/feature-evidence";
+import {
+  EVIDENCE_RUNS,
+  type FeatureEntry2,
+  MANIFEST_FILE,
+  PRIMARY_BUILD,
+  RECEIVER_KINDS,
+  type ReceiverKind,
+  receiverFeatureEntries,
+  SHORT_KIND,
+  validateEntries2,
+} from "./lib/feature-evidence-7";
+import {
+  bundleShas,
+  collectDeviceTargets,
+  type DeviceTarget,
+  defaultEvidenceRoot,
+  loadRun,
+} from "./lib/gate7z-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -293,8 +321,370 @@ export function serializeManifest(manifest: FeatureManifest): string {
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
+// -------------------------------------------------------------------------------------------
+// G7z: render-stream-features/2, one file per receiver kind (Q11).
+// -------------------------------------------------------------------------------------------
+
+export const MANIFEST7_DIR = join(
+  EXPERIMENT_DIR,
+  "protocol",
+  "features",
+  "render-stream-7",
+);
+export const COLLECTED_PATH = join(MANIFEST7_DIR, "collected.json");
+export function manifest7Path(kind: ReceiverKind): string {
+  return join(MANIFEST7_DIR, MANIFEST_FILE[kind]);
+}
+
+interface ReceiverBlock {
+  id: string;
+  kind: ReceiverKind;
+  build: {
+    sha256: string | null;
+    godot_editor: string;
+    web_template_sha256: string | null;
+    bundle_bytes: number | null;
+    commit: string;
+  };
+  platform: {
+    runtime: string;
+    graphics: string | null;
+    angle_backend: "vulkan" | null;
+  };
+}
+
+export interface Collected {
+  schema: "render-stream-features-collected/1";
+  primary_build: string;
+  receivers: Record<
+    ReceiverKind,
+    {
+      receiver: ReceiverBlock;
+      webgl_compression_extensions: string[] | null;
+      device_targets: DeviceTarget[];
+    }
+  >;
+}
+
+export interface FeatureManifest2 {
+  schema: "render-stream-features/2";
+  protocol: "render-stream/7";
+  stream_protocols: string[];
+  engine: { version: string; template: string; platform: string };
+  capture: { calibrator_version: number; hooks: number };
+  receiver: ReceiverBlock;
+  /** G7z: the run each evidence group@kind is quoted from (lib/feature-evidence-7.ts). */
+  evidence_runs: { key: string; path: string; build: string; note: string }[];
+  entries: FeatureEntry2[];
+  limits: FeatureManifest["limits"] & {
+    receiver: {
+      max_texture_size: number | null;
+      max_message_bytes: number;
+      credit_windows: number[];
+      default_credit_window: number;
+      fetch_concurrency: number;
+      cache: "memory+disk" | "memory+http-cache";
+      shader_policies: string[];
+      texture_formats: string[];
+      webgl_compression_extensions: string[] | null;
+      device_targets: DeviceTarget[];
+    };
+  };
+}
+
+const RECEIVER_LIMITS: Record<
+  ReceiverKind,
+  { cache: "memory+disk" | "memory+http-cache"; fetch_concurrency: number }
+> = {
+  // receiver.gd's store fetcher and GSW's StoreFetcher are one GET at a time (G7p: "GSW's fetcher
+  // is one fetch at a time"); native has the disk cache, browsers the HTTP cache (D16).
+  native: { cache: "memory+disk", fetch_concurrency: 1 },
+  "web-export": { cache: "memory+http-cache", fetch_concurrency: 1 },
+  "gsw-canvas": { cache: "memory+http-cache", fetch_concurrency: 1 },
+};
+
+export function readCollected(): Collected {
+  const text = readFileSyncOrNull(COLLECTED_PATH);
+  if (text === null)
+    throw new Error(
+      `make-features: ${COLLECTED_PATH} missing; run make-features.ts --collect first`,
+    );
+  return JSON.parse(text) as Collected;
+}
+
+function readFileSyncOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function sortedEntries2(entries: readonly FeatureEntry2[]): FeatureEntry2[] {
+  return [...entries].sort((a, b) => {
+    const ka = KIND_ORDER.indexOf(a.kind);
+    const kb = KIND_ORDER.indexOf(b.kind);
+    if (ka !== kb) return ka - kb;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+export function buildManifest2(
+  kind: ReceiverKind,
+  collected: Collected = readCollected(),
+): FeatureManifest2 {
+  const v1 = buildManifest();
+  const entries = sortedEntries2(receiverFeatureEntries(kind));
+  const problems = validateEntries2(entries);
+  if (problems.length > 0)
+    throw new Error(`make-features --receiver ${kind}: ${problems.join("; ")}`);
+  const ids1 = v1.entries.map((e) => `${e.kind}:${e.id}`);
+  const ids2 = new Set(entries.map((e) => `${e.kind}:${e.id}`));
+  for (const id of ids1)
+    if (!ids2.has(id))
+      throw new Error(
+        `make-features --receiver ${kind}: /1 entry ${id} missing`,
+      );
+  const c = collected.receivers[kind];
+  const short = SHORT_KIND[kind];
+  return {
+    schema: "render-stream-features/2",
+    protocol: "render-stream/7",
+    stream_protocols: ["render-stream/6", "render-stream/7"],
+    engine: v1.engine,
+    capture: v1.capture,
+    receiver: c.receiver,
+    evidence_runs: EVIDENCE_RUNS.filter((r) => r.key.endsWith(`@${short}`)).map(
+      (r) => ({ key: r.key, path: r.path, build: r.build, note: r.note }),
+    ),
+    entries,
+    limits: {
+      ...v1.limits,
+      receiver: {
+        // Null by design: no gate 7 evidence file records it (provenance.json lists extensions,
+        // not GL limits), and no leg uploads a texture near it. G7z names the gap rather than
+        // quoting a number nothing measured.
+        max_texture_size: null,
+        // rs_live's per-message ceiling equals the payload ceiling (GRC_RESOURCE_MAX_PAYLOAD_BYTES).
+        max_message_bytes: v1.limits.max_payload_bytes,
+        credit_windows: [1, 2],
+        default_credit_window: 2,
+        fetch_concurrency: RECEIVER_LIMITS[kind].fetch_concurrency,
+        cache: RECEIVER_LIMITS[kind].cache,
+        shader_policies: v1.limits.shader_policies,
+        texture_formats: v1.limits.permitted_formats.map((f) =>
+          f.toLowerCase(),
+        ),
+        webgl_compression_extensions: c.webgl_compression_extensions,
+        device_targets: c.device_targets,
+      },
+    },
+  };
+}
+
+export function serializeManifest2(manifest: FeatureManifest2): string {
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+function provenanceOf(dir: string): {
+  renderer: string | null;
+  version: string | null;
+  args: string[];
+  extensions: string[];
+} | null {
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop() as string;
+    let names: string[] = [];
+    try {
+      names = readdirSync(d);
+    } catch {
+      continue;
+    }
+    if (names.includes("provenance.json")) {
+      try {
+        const p = JSON.parse(
+          readFileSync(join(d, "provenance.json"), "utf8"),
+        ) as {
+          renderer?: string;
+          version?: string;
+          args?: string[];
+          extensions?: string[];
+        };
+        if (p.renderer)
+          return {
+            renderer: p.renderer,
+            version: p.version ?? null,
+            args: p.args ?? [],
+            extensions: p.extensions ?? [],
+          };
+      } catch {
+        // keep looking
+      }
+    }
+    for (const n of names) {
+      const p = join(d, n);
+      try {
+        if (statSync(p).isDirectory()) stack.push(p);
+      } catch {
+        // skip
+      }
+    }
+  }
+  return null;
+}
+
+/** make-features.ts --collect: the receiver blocks and the g31 device targets, from the runs
+ * feature-evidence-7.ts quotes (the primary build's g7-6 file run per browser kind, the native
+ * gate 6 run for native). */
+export function collect(root: string): Collected {
+  const receivers = {} as Collected["receivers"];
+  for (const kind of RECEIVER_KINDS) {
+    const short = SHORT_KIND[kind];
+    // The browsers' receiver block comes from the g7-6 FILE run, not a live one: every live run
+    // sends this file's sha256 in its hello (manifest-matches-hello), so the file must be final
+    // before them, and cannot be generated from them.
+    const primaryKey = kind === "native" ? "gate6@native" : `g7-6@${short}`;
+    const q = EVIDENCE_RUNS.find((r) => r.key === primaryKey);
+    const run = q ? loadRun(root, q.path) : null;
+    if (!q || !run)
+      throw new Error(
+        `make-features --collect: quoted run ${primaryKey} missing under ${root}`,
+      );
+    let sha: string | null = null;
+    let graphics: string | null = null;
+    let ext: string[] | null = null;
+    let angle: "vulkan" | null = null;
+    let runtime = "godot-4.5.1-gl_compatibility";
+    if (kind === "native") {
+      sha = (
+        JSON.parse(readFileSync(join(run.dir, "binary.json"), "utf8")) as {
+          sha256: string;
+        }
+      ).sha256;
+      graphics = nativeRenderer(run.dir);
+    } else {
+      sha = [...(bundleShas(run.dir).get(short) ?? [])][0] ?? null;
+      const p = provenanceOf(run.dir);
+      graphics = p?.renderer ?? null;
+      ext = (p?.extensions ?? []).filter((e) => /compressed/i.test(e)).sort();
+      angle = p?.args.includes("--use-angle=vulkan") ? "vulkan" : null;
+      runtime = "chromium-148.0.7778.96";
+    }
+    const receiver: ReceiverBlock = {
+      id:
+        kind === "native"
+          ? "native-godot-4.5.1-gl_compatibility-rs-core"
+          : kind === "web-export"
+            ? "web-export-godot-4.5.1-web_dlink_nothreads-rs-core"
+            : "gsw-canvas-rs-core-wasm",
+      kind,
+      build: {
+        sha256: sha,
+        godot_editor: "4.5.1-stable",
+        web_template_sha256:
+          kind === "web-export"
+            ? "68162ae9249ca3b7ce53dde8cdfab59463bd6518dca9123df41e5cc8fb1bd454"
+            : null,
+        bundle_bytes: null,
+        commit: q.build,
+      },
+      platform: { runtime, graphics, angle_backend: angle },
+    };
+    receivers[kind] = {
+      receiver,
+      webgl_compression_extensions: ext,
+      device_targets: collectDeviceTargets(root, kind, sha),
+    };
+  }
+  return {
+    schema: "render-stream-features-collected/1",
+    primary_build: PRIMARY_BUILD,
+    receivers,
+  };
+}
+
+function nativeRenderer(dir: string): string | null {
+  const stack = [dir];
+  let seen = 0;
+  while (stack.length && seen < 4000) {
+    const d = stack.pop() as string;
+    let names: string[] = [];
+    try {
+      names = readdirSync(d);
+    } catch {
+      continue;
+    }
+    for (const n of names) {
+      const p = join(d, n);
+      seen++;
+      try {
+        if (statSync(p).isDirectory()) stack.push(p);
+        else if (n === "stdout.log") {
+          const m = /OpenGL API [^\n]*/.exec(readFileSync(p, "utf8"));
+          if (m) return m[0].trim();
+        }
+      } catch {
+        // skip
+      }
+    }
+  }
+  return null;
+}
+
+function argValue(flag: string): string | undefined {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+async function main7(receiverArg: string, check: boolean): Promise<void> {
+  const kinds =
+    receiverArg === "all"
+      ? RECEIVER_KINDS
+      : RECEIVER_KINDS.filter((k) => k === receiverArg);
+  if (kinds.length === 0)
+    throw new Error(
+      `make-features: --receiver must be native, web-export, gsw-canvas or all (got ${receiverArg})`,
+    );
+  await mkdir(MANIFEST7_DIR, { recursive: true });
+  for (const kind of kinds) {
+    const serialized = serializeManifest2(buildManifest2(kind));
+    const path = manifest7Path(kind);
+    if (check) {
+      const onDisk = readFileSyncOrNull(path);
+      if (onDisk !== serialized) {
+        console.error(
+          `make-features --receiver ${kind} --check: ${path} is stale`,
+        );
+        process.exitCode = 1;
+      } else
+        console.log(
+          `make-features --receiver ${kind} --check: ${path} is up to date`,
+        );
+      continue;
+    }
+    await writeFile(path, serialized);
+    console.log(`make-features: wrote ${path}`);
+  }
+}
+
 async function main(): Promise<void> {
   const check = process.argv.includes("--check");
+  if (process.argv.includes("--collect")) {
+    const root = resolve(argValue("--evidence-root") ?? defaultEvidenceRoot());
+    await mkdir(MANIFEST7_DIR, { recursive: true });
+    const collected = collect(root);
+    await writeFile(COLLECTED_PATH, `${JSON.stringify(collected, null, 2)}\n`);
+    console.log(
+      `make-features --collect: wrote ${COLLECTED_PATH} from ${root}`,
+    );
+    return;
+  }
+  const receiverArg = argValue("--receiver");
+  if (receiverArg !== undefined) {
+    await main7(receiverArg, check);
+    return;
+  }
   const manifest = buildManifest();
   const serialized = serializeManifest(manifest);
   if (check) {
