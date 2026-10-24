@@ -36,6 +36,15 @@ extends Node
 ##                                zstd, gzip, or off (no header: identity bodies). A coded body is
 ##                                decoded here and verified after decoding; a web receiver's
 ##                                browser negotiates and decodes by itself (the variable is unused)
+##   RS_RECEIVER_TEXTURE_ENCODINGS G8kp (texture-delivery-design.md D3): native only, the delivery
+##                                preference a /9 stream is read with (and a /9 hello states):
+##                                default "block,decoded"; each texture's payload is the first
+##                                encoding listed that the entry offers, `block` only for a block
+##                                format whose family is in gpu_formats, `decoded` always last
+##   RS_RECEIVER_GPU_FORMAT_MASK  G8kp: comma-separated families (s3tc, bptc, rgtc, etc2, astc)
+##                                left out of gpu_formats, which is otherwise every family
+##                                RenderingServer.has_os_feature reports. A web export stays on
+##                                `decoded` (it reads neither variable and never offers /9)
 ##   RS_RECEIVER_SHADER_LIBRARY   G55d (gate5_5-design.md D4, Q5): absolute operator-local GRP1
 ##                                library (sha256/<hash>.grp) a `withheld` shader's code comes
 ##                                from, verified by hash; without it (or without that hash) the
@@ -417,6 +426,15 @@ var _token: String = ""
 ## G7l: the wire version (RS_RECEIVER_PROTOCOL in live mode; the recording's magic in file mode),
 ## the hello's credit window and manifest sha256 ("" for null).
 var _wire_version: int = 6
+## G8kp (texture-delivery-design.md D3, Q3): the delivery preference and the GPU families this
+## receiver states (RS_RECEIVER_TEXTURE_ENCODINGS, RS_RECEIVER_GPU_FORMAT_MASK); gpu_formats is
+## detected once the renderer exists (_new_applier).
+const GPU_FAMILIES: Array[String] = ["s3tc", "bptc", "rgtc", "etc2", "astc"]
+const TEXTURE_ENCODINGS: Array[String] = ["block", "uastc", "etc1s", "decoded"]
+var _texture_encodings: String = "block,decoded"
+var _gpu_format_mask: Array[String] = []
+var _gpu_formats: String = "none"
+var _gpu_formats_detected: String = "none"
 var _credit_window: int = 1
 var _manifest_sha256: String = ""
 ## The live connection being read: 1, then 2 after a reconnect. Transactions, shots and state
@@ -469,7 +487,7 @@ func _ready() -> void:
 	if not _parse_resource_env(false):
 		_quit(EXIT_USAGE)
 		return
-	if not _parse_perf_env() or not _parse_core_env():
+	if not _parse_perf_env() or not _parse_core_env() or not _parse_delivery_env():
 		_quit(EXIT_USAGE)
 		return
 
@@ -493,6 +511,12 @@ func _ready() -> void:
 		_wire_version = 7
 		var receiver_block: Dictionary = _report["receiver"]
 		receiver_block["protocol"] = RsWire.PROTOCOL_V7
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V9_HEX:
+		# G8kp: a texture-delivery recording (render-stream/9 file sink) replays at /9; the core
+		# fetches and uploads each texture's payload by D3 (RS_RECEIVER_TEXTURE_ENCODINGS).
+		_wire_version = 9
+		var receiver_block_v9: Dictionary = _report["receiver"]
+		receiver_block_v9["protocol"] = "render-stream/9"
 	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
 		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
 		# additions to the tables, so it draws exactly as a /6 recording would.
@@ -951,7 +975,7 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_stream_id = stream_meta["stream_id"]
 	_stream_report["stream_id"] = stream_meta["stream_id"]
 	_stream_report["connection"] = stream_meta["connection"]
-	if _live and _wire_version == 7:
+	if _live and _wire_version >= 7:
 		# G7l: the window the host granted (render-stream-7.md "Session": publication.credit_window).
 		var publication: Dictionary = meta["publication"]
 		var receiver_block: Dictionary = _report["receiver"]
@@ -1381,7 +1405,7 @@ func _ready_live() -> void:
 		return
 	_received_path = RsConfig.get_env("RS_RECEIVER_RECEIVED_OUT")
 	if _received_path == "":
-		_received_path = _out_path.get_base_dir().path_join("received.rs7" if _wire_version == 7 else "received.rs2")
+		_received_path = _out_path.get_base_dir().path_join("received.rs%d" % _wire_version if _wire_version >= 7 else "received.rs2")
 	elif not _received_path.is_absolute_path():
 		_log("error: RS_RECEIVER_RECEIVED_OUT must be absolute (got %s)" % JSON.stringify(_received_path))
 		_quit(EXIT_USAGE)
@@ -1405,7 +1429,7 @@ func _ready_live() -> void:
 			_log("error: RS_RECEIVER_TOKEN is web only; a native receiver reads RS_RECEIVER_TOKEN_FILE")
 			_quit(EXIT_USAGE)
 			return
-		if _wire_version != 7 or not RsLiveClient.is_hex64(token_text):
+		if _wire_version < 7 or not RsLiveClient.is_hex64(token_text):
 			_log("error: RS_RECEIVER_TOKEN must be 64 lowercase hex on a render-stream/7 connection")
 			_quit(EXIT_USAGE)
 			return
@@ -1420,7 +1444,7 @@ func _ready_live() -> void:
 			_log("error: RS_RECEIVER_TOKEN_FILE %s is empty" % JSON.stringify(token_file))
 			_quit(EXIT_USAGE)
 			return
-		if _wire_version == 7 and not RsLiveClient.is_hex64(_token):
+		if _wire_version >= 7 and not RsLiveClient.is_hex64(_token):
 			_log("error: RS_RECEIVER_TOKEN_FILE %s does not hold 64 lowercase hex (a /7 hello token)" % JSON.stringify(token_file))
 			_quit(EXIT_USAGE)
 			return
@@ -1441,7 +1465,7 @@ func _ready_live() -> void:
 	if not _parse_resource_env(true):
 		_quit(EXIT_USAGE)
 		return
-	if not _parse_perf_env() or not _parse_core_env():
+	if not _parse_perf_env() or not _parse_core_env() or not _parse_delivery_env():
 		_quit(EXIT_USAGE)
 		return
 	var display_server: String = _init_report("live")
@@ -1486,9 +1510,9 @@ func _ready_live() -> void:
 	}
 	_streams.append(_stream_report)
 	_log("mode live, url %s, out %s, received %s, credit %s, inbound %d, windows %s, stall %s, reconnect %s, resync %s, display %s" % [_url, _out_path, _received_path, _credit_stage, _inbound_bytes, JSON.stringify(_windows), "%d:%d" % [_stall_step, _stall_ms] if _stall_step >= 0 else "off", str(_reconnect_step) if _reconnect_step >= 0 else "off", str(_resync_step) if _resync_step >= 0 else "off", display_server])
-	if _wire_version == 7:
+	if _wire_version >= 7:
 		# Never the token itself (token-not-logged): only whether one is held.
-		_log("protocol %s, credit window %d asked, token %s, manifest %s" % [RsWire.PROTOCOL_V7, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
+		_log("protocol %s, credit window %d asked, token %s, manifest %s" % ["render-stream/%d" % _wire_version, _credit_window, "held" if _token != "" else "none", _manifest_sha256 if _manifest_sha256 != "" else "none"])
 	if display_server == "headless" and (not _windows.is_empty() or _shot_final):
 		_fail(null, "shot-unavailable", "shot windows were requested, but the display server is headless")
 		return
@@ -1524,26 +1548,26 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if protocol_text != "6" and protocol_text != "7":
-		_log("error: RS_RECEIVER_PROTOCOL must be 6 or 7 (got %s)" % JSON.stringify(protocol_text))
+	if protocol_text != "6" and protocol_text != "7" and protocol_text != "9":
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7 or 9 (got %s)" % JSON.stringify(protocol_text))
 		return false
 	if RsConfig.is_web() and protocol_text != "7":
 		_log("error: a web receiver speaks only render-stream/7 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
-	_credit_window = 2 if _wire_version == 7 else 1
+	_credit_window = 2 if _wire_version >= 7 else 1
 	var window_text: String = RsConfig.get_env("RS_RECEIVER_CREDIT_WINDOW").strip_edges()
 	if window_text != "":
 		if window_text != "1" and window_text != "2":
 			_log("error: RS_RECEIVER_CREDIT_WINDOW must be 1 or 2 (got %s)" % JSON.stringify(window_text))
 			return false
-		if _wire_version != 7 and window_text != "1":
+		if _wire_version < 7 and window_text != "1":
 			_log("error: RS_RECEIVER_CREDIT_WINDOW %s needs RS_RECEIVER_PROTOCOL=7 (render-stream/6 has no window)" % window_text)
 			return false
 		_credit_window = window_text.to_int()
 	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
-	if _wire_version == 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
+	if _wire_version >= 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
 		_log("error: RS_RECEIVER_MANIFEST_SHA256 must be 64 lowercase hex (got %s)" % JSON.stringify(_manifest_sha256))
 		return false
 	return true
@@ -1671,7 +1695,9 @@ func _process_live() -> void:
 					_reconnect_record["opened_us"] = Time.get_ticks_usec()
 				if _conn_index == 1:
 					_web_mark("rs-socket-open")
-				if _wire_version == 7:
+				if _wire_version == 9:
+					_send(RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats))
+				elif _wire_version == 7:
 					_send(_hello_v7())
 				else:
 					_send(RsLiveClient.hello("gate1-receiver-%s" % DisplayServer.get_name(), _credit_stage, _inbound_bytes))
@@ -2392,13 +2418,68 @@ func _new_applier() -> void:
 	var viewport: RID = get_viewport().get_viewport_rid()
 	var canvas: RID = get_viewport().find_world_2d().canvas
 	_applier = RsRustApplier.new(viewport, canvas)
+	_apply_delivery()
 	# G7o3 (D31): payloads are verified and decoded by the core as they arrive (the cache stages
 	# them), not in the frame; the verify-in-frame sabotage keeps the pre-G7o3 path.
 	_cache.stager = null if _sabotage == "verify-in-frame" else _applier
 
 
+## G8kp (texture-delivery-design.md D3, Q3): RS_RECEIVER_TEXTURE_ENCODINGS and
+## RS_RECEIVER_GPU_FORMAT_MASK, checked against render-stream-9.md's hello grammar and names. A web
+## export reads neither (it stays on `decoded`). Logs and returns false on a malformed value.
+func _parse_delivery_env() -> bool:
+	if RsConfig.is_web():
+		return true
+	var encodings: String = RsConfig.get_env("RS_RECEIVER_TEXTURE_ENCODINGS").strip_edges()
+	if encodings != "":
+		var seen: Array[String] = []
+		for name: String in encodings.split(","):
+			if not TEXTURE_ENCODINGS.has(name) or seen.has(name):
+				_log("error: RS_RECEIVER_TEXTURE_ENCODINGS must list distinct names from %s (got %s)" % [",".join(TEXTURE_ENCODINGS), JSON.stringify(encodings)])
+				return false
+			seen.append(name)
+		_texture_encodings = encodings
+	var mask: String = RsConfig.get_env("RS_RECEIVER_GPU_FORMAT_MASK").strip_edges()
+	_gpu_format_mask = []
+	if mask != "":
+		for family: String in mask.split(","):
+			if not GPU_FAMILIES.has(family):
+				_log("error: RS_RECEIVER_GPU_FORMAT_MASK must list families from %s (got %s)" % [",".join(GPU_FAMILIES), JSON.stringify(mask)])
+				return false
+			_gpu_format_mask.append(family)
+	return true
+
+
+## G8kp: gpu_formats from RenderingServer.has_os_feature (Godot's feature names, Q3) minus the mask,
+## handed to the core with the preference; the report states both at /9 (_accept_session). A web
+## export keeps the core's default, `decoded` alone.
+func _apply_delivery() -> void:
+	if RsConfig.is_web():
+		return
+	var detected: Array[String] = []
+	var effective: Array[String] = []
+	for family: String in GPU_FAMILIES:
+		if RenderingServer.has_os_feature(family):
+			detected.append(family)
+			if not _gpu_format_mask.has(family):
+				effective.append(family)
+	_gpu_formats_detected = ",".join(detected) if not detected.is_empty() else "none"
+	_gpu_formats = ",".join(effective) if not effective.is_empty() else "none"
+	var refused: String = _applier.set_delivery(_texture_encodings, _gpu_formats)
+	if refused != "":
+		_log("warning: the core refused the delivery preference (%s); every texture stays decoded" % refused)
+
+
 ## A stream's first record (a session), at the stream's wire version (G7xwl: /6, or /7).
 func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
+	if _wire_version >= 9 and not RsConfig.is_web():
+		var receiver_block: Dictionary = _report["receiver"]
+		receiver_block["texture_delivery"] = {
+			"texture_encodings": _texture_encodings,
+			"gpu_formats": _gpu_formats,
+			"gpu_formats_detected": _gpu_formats_detected,
+			"gpu_format_mask": ",".join(_gpu_format_mask),
+		}
 	return _applier.accept_session(data, offset, _wire_version)
 
 

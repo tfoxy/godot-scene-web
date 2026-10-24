@@ -19,6 +19,7 @@
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_decode.h"
+#include "rs_texture_delivery.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_worker.h"
 #include "rs_variant.h"
@@ -1051,6 +1052,36 @@ rs::PayloadCopy copy_decoded(rs::PayloadCopy copy, const rs::DecodeResult &decod
   return copy;
 }
 
+// G8kp (texture-delivery-design.md D1 `passthrough`, rs_texture_delivery.h): beside an ok host
+// decode, the hooked block bytes as a GRT1 payload in their own block format, hashed here (the
+// calling thread, or the worker that made the decode). `data` is the source image's own buffer,
+// read only. Nothing happens unless a /9 stream runs a mode offering `block`, so every other
+// stream's bytes are unchanged; a source whose size is not Godot's for its shape gets no variant
+// (counted, never a wrong payload).
+void attach_block_variant(rs::PayloadCopy *copy, int64_t source_format, int64_t width,
+                          int64_t height, bool mipmaps, int64_t source_bytes,
+                          const uint8_t *data) {
+  if (!rs::texture_delivery_block_enabled() || copy->status != "ok" || copy->source_format < 0) {
+    return;
+  }
+  const char *name = rs::image_format_name(source_format);
+  const int64_t expected =
+      name != nullptr ? rs::block_data_bytes(name, width, height, mipmaps) : -1;
+  if (expected < 0 || expected != source_bytes || data == nullptr) {
+    rs::texture_delivery_note_block(false, 0);
+    return;
+  }
+  const std::string meta = rs::payload_meta(name, width, height, mipmaps, source_bytes);
+  rs::PayloadCopy block;
+  rs::PayloadPtr bytes;
+  build_payload(meta, data, source_bytes, &block, &bytes);
+  copy->block_hash = block.hash;
+  copy->block_format = name;
+  copy->block_payload_bytes = block.payload_bytes;
+  copy->block_bytes = std::move(bytes);
+  rs::texture_delivery_note_block(true, static_cast<uint64_t>(block.payload_bytes));
+}
+
 // --- G8kw: the texture worker path (texture-delivery-design.md D11, rs_texture_worker.h) -------
 //
 // The hook keeps every fact-based decision of copy_payload (status, reason, shape, payload size)
@@ -1101,6 +1132,8 @@ void run_texture_job(const rs::TextureJobPtr &job, std::shared_ptr<ImageDuplicat
     const rs::DecodeResult decoded = rs::texture_decode(request);
     if (decoded.handled) {
       actual = copy_decoded(base, decoded, &bytes);
+      attach_block_variant(&actual, base.format, base.width, base.height, base.mipmaps,
+                           base.data_bytes, g_iface.image_ptr(dup->object));
     } else {
       actual.decode_ns = decoded.decode_ns;
       actual.reason = "unsupported-format";
@@ -1211,7 +1244,10 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
       }
       const rs::DecodeResult decoded = rs::texture_decode(request);
       if (decoded.handled) {
-        return copy_decoded(copy, decoded, bytes);
+        rs::PayloadCopy out = copy_decoded(copy, decoded, bytes);
+        attach_block_variant(&out, facts.format, facts.width, facts.height, facts.mipmaps,
+                             facts.data_size, g_iface.image_ptr(image->object));
+        return out;
       }
       copy.decode_ns = decoded.decode_ns;  // the cost of a decode that was tried and refused
     }

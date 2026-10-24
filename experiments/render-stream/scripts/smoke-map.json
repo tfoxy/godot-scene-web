@@ -248,6 +248,16 @@
       ]
     },
     {
+      "why": "G8kp: gate 8's g8kp group replays its /9 passthrough recording in the GSW receiver (gate8-delivery-tool.ts), so the page, its wasm crate and the canvas crates it links reach native gate 8 too",
+      "paths": [
+        "experiments/render-stream/web/gsw-receiver/**",
+        "experiments/render-stream/web/gsw-rs/**",
+        "packages/canvas/rust-draw-list/**",
+        "packages/canvas/rust-prototype/**"
+      ],
+      "reach": ["native:gate8@*"]
+    },
+    {
       "why": "packages: the toolkit's own suite too",
       "paths": ["packages/**"],
       "reach": ["pnpm-test"]
@@ -381,10 +391,11 @@
       "reach": ["native:gate55@*", "g7:g7-55@*", "g7live:g7-55@*"]
     },
     {
-      "why": "gate 8 (G8t: runner, checker, its libs and fixtures; gate8-design.md Q7)",
+      "why": "gate 8 (G8t: runner, checker, its libs and fixtures; gate8-design.md Q7; G8kp: the g8kp group's GSW leg tool)",
       "paths": [
         "experiments/render-stream/scripts/run-gate8.sh",
         "experiments/render-stream/scripts/check-gate8.ts",
+        "experiments/render-stream/scripts/gate8-delivery-tool.ts",
         "experiments/render-stream/scripts/lib/gate8-*",
         "experiments/render-stream/fixtures/gate8-*/**"
       ],

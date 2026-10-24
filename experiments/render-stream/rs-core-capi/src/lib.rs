@@ -114,6 +114,24 @@ pub unsafe extern "C" fn rsc_session(
     guard(h, 0, |c| c.session(data, offset, version))
 }
 
+/// G8kp (texture-delivery-design.md D3): the delivery preferences (`texture_encodings`,
+/// `gpu_formats`). 1, or 0 with the error in text.
+///
+/// # Safety
+/// Each pointer points to its `len` bytes of UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_set_delivery(
+    h: *mut RsCore,
+    encodings: *const u8,
+    encodings_len: usize,
+    gpu_formats: *const u8,
+    gpu_formats_len: usize,
+) -> i32 {
+    let encodings = text(encodings, encodings_len);
+    let gpu_formats = text(gpu_formats, gpu_formats_len);
+    guard(h, 0, |c| i32::from(c.set_delivery(encodings, gpu_formats)))
+}
+
 /// G7o2 (D31): whether the next session defers the per-record digest (receiver.gd: the web
 /// export's file mode).
 #[no_mangle]

@@ -902,8 +902,8 @@ export async function runG8t(
       };
       if (session.protocol !== "render-stream/9") problems.push(`${name} session protocol ${session.protocol}`);
       const declared = session.resources.texture_delivery;
-      if (declared?.mode !== "basis-uastc" || declared.encoder !== null)
-        problems.push(`${name} declares ${JSON.stringify(declared)}, not {"mode":"basis-uastc","encoder":null}`);
+      if (declared?.mode !== "rgba" || declared.encoder !== null)
+        problems.push(`${name} declares ${JSON.stringify(declared)}, not {"mode":"rgba","encoder":null}`);
       for (const t of rec.transactions)
         for (const tex of t.state.textures) {
           texturesSeen++;
@@ -927,12 +927,12 @@ export async function runG8t(
       join(dir, "evidence", "result.json"),
     );
     if (r?.stream?.gate8?.file_stream_version !== 9) problems.push(`result.json file_stream_version ${r?.stream?.gate8?.file_stream_version}`);
-    if (r?.stream?.gate8?.texture_delivery !== "basis-uastc")
+    if (r?.stream?.gate8?.texture_delivery !== "rgba")
       problems.push(`result.json texture_delivery ${r?.stream?.gate8?.texture_delivery}`);
     checks.push(
       check(
         "delivery-v9-wire",
-        "G8k9: a /9 file sink (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=basis-uastc) writes full and patch recordings that start GRS9, validate at /9 with the independent TypeScript decoder, declare resources.texture_delivery {basis-uastc, encoder null}, and carry `variants: []` on every texture entry, because the delivery seam offers nothing; stripped of that key every transaction equals the /8 capture of the same frame state for state",
+        "G8k9: a /9 file sink (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba since G8kp refuses the Basis modes) writes full and patch recordings that start GRS9, validate at /9 with the independent TypeScript decoder, declare resources.texture_delivery {rgba, encoder null}, and carry `variants: []` on every texture entry, because rgba offers none; stripped of that key every transaction equals the /8 capture of the same frame state for state",
         ran("delivery9/capture") && ran("capture") ? problems : null,
         `${texturesSeen} texture entries, none with a variant`,
         "delivery9/capture",

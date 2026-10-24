@@ -151,6 +151,8 @@ export interface RustParts {
     data_bytes: number;
     stream: number;
     seq: number;
+    /** G8kp: D3's choice (`decoded` or `block`), at /9 only. */
+    encoding?: string;
   }[];
   unsupported: {
     seq: number | null;
@@ -247,8 +249,10 @@ export interface Report {
   /** Live: the `live` block (receiver.gd `_live_report`), the protocol and the granted window. */
   live: Record<string, unknown> | null;
   entries: LiveEntry[] | null;
-  protocol: "render-stream/6" | "render-stream/7";
+  protocol: "render-stream/6" | "render-stream/7" | "render-stream/9";
   creditWindow: number | null;
+  /** G8kp: at /9, the module's `delivery_json()` (what this receiver states and selects with). */
+  textureDelivery?: Record<string, unknown> | null;
   /** Live: the page payload cache's block (null: file mode's `http-cache`). */
   cache?: Record<string, unknown> | null;
   /** G7k (Q10 soak), live mode only: the `PayloadStore`'s cumulative eviction count at the last
@@ -368,6 +372,7 @@ export function appliedJson(r: Report): Record<string, unknown> {
       manifest_sha256: r.cfg.manifestSha256,
       protocol: r.protocol,
       credit_window: r.creditWindow,
+      ...(r.textureDelivery ? { texture_delivery: r.textureDelivery } : {}),
     },
     mode: r.mode,
     recording: r.recording,

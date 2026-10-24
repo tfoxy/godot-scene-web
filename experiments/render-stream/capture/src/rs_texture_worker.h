@@ -109,6 +109,11 @@ class TextureJob {
     copy->copy_ns = actual_.copy_ns;
     copy->hash_ns = actual_.hash_ns;
     copy->decode_ns = actual_.decode_ns;
+    // G8kp: the block variant is content too (built and hashed beside the decode).
+    copy->block_hash = actual_.block_hash;
+    copy->block_format = actual_.block_format;
+    copy->block_payload_bytes = actual_.block_payload_bytes;
+    copy->block_bytes = actual_.block_bytes;
   }
 
   static bool same_facts(const PayloadCopy &a, const PayloadCopy &b) {

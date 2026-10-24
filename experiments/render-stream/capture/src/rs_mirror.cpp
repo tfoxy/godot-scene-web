@@ -1231,6 +1231,11 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
     request.height = out.height;
     request.mipmaps = out.mipmaps;
     request.version = texture.version;
+    // G8kp: the hooked block bytes, when the hook kept them (a /9 passthrough stream).
+    request.block.hash = copy.block_hash;
+    request.block.format = copy.block_format;
+    request.block.payload_bytes =
+        static_cast<std::uint64_t>(std::max<std::int64_t>(copy.block_payload_bytes, 0));
     out.variants = texture_variants(request);
   } else {
     out.has_reason = texture.has_reason;
@@ -3375,6 +3380,13 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
         texture.bytes != nullptr) {
       captured.payloads.emplace(texture.copy.hash, texture.bytes);
+      // G8kp: every variant the entry lists travels in the same content-addressed map (store,
+      // HTTP), never as an inline record (rs_captured.h variant_refs).
+      for (const rs2::TextureVariant &variant : out.textures.back().variants) {
+        if (variant.hash == texture.copy.block_hash && texture.copy.block_bytes != nullptr) {
+          captured.payloads.emplace(variant.hash, texture.copy.block_bytes);
+        }
+      }
     } else if (texture.job != nullptr && texture.kind == TextureKind::Image &&
                texture.status == TextureStatus::Ok) {
       // G8kw: still on a worker. The entry is complete but for its hash; the caller holds the

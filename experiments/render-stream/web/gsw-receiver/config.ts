@@ -38,6 +38,13 @@ export interface ReceiverConfig {
   evidenceUrl: string;
   /** The harness's own sabotage (Q7 `css-opacity`): the shell's, not the receiver's. */
   shellSabotage: string | null;
+  /** G8kp (texture-delivery-design.md D3): RS_RECEIVER_TEXTURE_ENCODINGS (null: the module's
+   * default `block,decoded`) and RS_RECEIVER_GPU_FORMAT_MASK (families left out of gpu_formats);
+   * the module checks both against render-stream-9.md's grammar. */
+  textureEncodings: string | null;
+  gpuFormatMask: string | null;
+  /** G8kp: RS_RECEIVER_PROTOCOL (live): 7 (default) or 9 (offers render-stream.9). */
+  liveProtocol: 7 | 9;
   canvas: [number, number] | null;
   /** Every RS_RECEIVER_* value as given, for the log. */
   raw: Record<string, string>;
@@ -369,6 +376,9 @@ export function readConfig(
     manifestSha256: orNull(env.RS_RECEIVER_MANIFEST_SHA256),
     evidenceUrl,
     shellSabotage: page.sabotage ?? null,
+    textureEncodings: orNull(env.RS_RECEIVER_TEXTURE_ENCODINGS),
+    gpuFormatMask: orNull(env.RS_RECEIVER_GPU_FORMAT_MASK),
+    liveProtocol: liveProtocol(env.RS_RECEIVER_PROTOCOL),
     canvas: page.canvas ?? null,
     raw: Object.fromEntries(
       Object.entries(env).filter(([k]) => k.startsWith("RS_RECEIVER_")),
@@ -391,4 +401,15 @@ export function relativeToOut(cfg: ReceiverConfig, url: string): string {
 /** The URL path of `<dirname(out)>/<rel>`. */
 export function underOut(cfg: ReceiverConfig, rel: string): string {
   return cfg.out.slice(0, cfg.out.lastIndexOf("/") + 1) + rel;
+}
+
+/** G8kp: RS_RECEIVER_PROTOCOL for a GSW receiver: 7 (default) or 9 (render-stream.9, the
+ * texture-delivery hello keys). */
+function liveProtocol(value: string | undefined): 7 | 9 {
+  const v = (value ?? "").trim();
+  if (v === "" || v === "7") return 7;
+  if (v === "9") return 9;
+  throw new UsageError(
+    `RS_RECEIVER_PROTOCOL must be 7 or 9 for a GSW receiver (got ${v})`,
+  );
 }

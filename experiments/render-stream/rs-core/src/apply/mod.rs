@@ -37,7 +37,7 @@ use gsw_canvas_draw_list::{
     BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_UNTEXTURED, ITEM_UNTEXTURED, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
-use payloads::{MeshGeometry, PayloadStore};
+use payloads::{MeshGeometry, PayloadStore, TexturePixels};
 use programs::{ProgramEntry, ProgramInfo};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::BuildHasherDefault;
@@ -432,6 +432,11 @@ pub struct Applier {
     /// This transaction's texture accounting.
     pub account: residency::TextureAccount,
     pub sabotage: ApplySabotage,
+    /// G8kp (texture-delivery-design.md D3): which payload of an ok image texture is fetched and
+    /// uploaded; the default is `decoded` alone (the base hash, as before /9).
+    pub delivery: crate::delivery::DeliveryPrefs,
+    /// G8kp: the stream's wire version; `uploads[]` name D3's encoding from /9 only.
+    pub stream_version: u8,
     attach: Vec<Attach>,
     vertex_holes: u32,
     /// The canvas, material, shader and canvas-texture entries the last walk used: a full
@@ -485,6 +490,8 @@ struct TableView<'a> {
     state: &'a ResolvedState,
     payloads: &'a PayloadStore,
     meshes: &'a meshes::MeshResidency,
+    /// G8kp: D3's choice decides which payload the store must hold for a texture to draw.
+    delivery: &'a crate::delivery::DeliveryPrefs,
 }
 
 impl TableView<'_> {
@@ -495,7 +502,7 @@ impl TableView<'_> {
             (EntryStatus::Freed, _) => TexDraw::White,
             (EntryStatus::Unsupported, _) => TexDraw::Skip,
             (EntryStatus::Ok, TextureKind::Placeholder) => TexDraw::Sized(4, 4, false),
-            (EntryStatus::Ok, TextureKind::Image) => match t.hash {
+            (EntryStatus::Ok, TextureKind::Image) => match self.delivery.select(t).map(|s| s.hash) {
                 Some(h) if self.payloads.textures.contains_key(&h) => {
                     TexDraw::Sized(t.width as u32, t.height as u32, t.mipmaps)
                 }
@@ -649,6 +656,8 @@ impl Applier {
             merged: None,
             account: Default::default(),
             sabotage: ApplySabotage::default(),
+            delivery: crate::delivery::DeliveryPrefs::default(),
+            stream_version: 6,
             attach: Vec::new(),
             vertex_holes: 0,
             canvases: IdMap::default(),
@@ -869,7 +878,7 @@ impl Applier {
             .collect();
         for (id, hash) in ids {
             if let Some(px) = payloads.textures.get(&hash) {
-                self.list.upload_texture(id, px.width, px.height, &px.rgba);
+                upload_pixels(&mut self.list, id, px);
             }
         }
     }
@@ -1074,10 +1083,9 @@ impl Applier {
         }
         for id in &self.pending {
             if let Some(t) = state.textures.get(id) {
-                if t.kind == TextureKind::Image && t.status == EntryStatus::Ok {
-                    if let Some(h) = t.hash {
-                        push(h, out);
-                    }
+                // G8kp: D3's choice (the base hash unless a usable variant wins).
+                if let Some(sel) = self.delivery.select(t) {
+                    push(sel.hash, out);
                 }
             }
         }
@@ -1163,6 +1171,7 @@ impl Applier {
                         hash: None,
                         op: "placeholder",
                         data_bytes: 0,
+                        encoding: None,
                     });
                 }
                 TextureKind::Canvas => {
@@ -1186,12 +1195,16 @@ impl Applier {
                         hash: None,
                         op: "canvas",
                         data_bytes: 0,
+                        encoding: None,
                     });
                 }
                 TextureKind::Image => {
-                    let Some(hash) = t.hash else {
+                    // G8kp: D3's choice of payload (the base `decoded` hash by default).
+                    let Some(sel) = self.delivery.select(t) else {
                         continue;
                     };
+                    let hash = sel.hash;
+                    let encoding = (self.stream_version >= 9).then_some(sel.encoding);
                     let old = self.resident.get(&id).cloned();
                     let same = old
                         .as_ref()
@@ -1245,15 +1258,16 @@ impl Applier {
                             mipmaps: px.mipmaps,
                         },
                     );
-                    self.list.upload_texture(id, px.width, px.height, &px.rgba);
+                    upload_pixels(&mut self.list, id, px);
                     self.stats.texture_uploads += 1;
-                    self.stats.texture_upload_bytes += px.rgba.len() as u64;
+                    self.stats.texture_upload_bytes += px.held_bytes();
                     self.account.upload_bytes += px.data_len as u64;
                     self.account.uploads.push(Upload {
                         id,
                         hash: Some(hash),
                         op,
                         data_bytes: px.data_len as u64,
+                        encoding,
                     });
                 }
             }
@@ -1302,10 +1316,12 @@ impl Applier {
         mesh_res.sync(state, upserted, &delta.items_removed, self.first, payloads);
         prof::add(prof::MESH_SYNC, t);
         let t = prof::start();
+        let delivery = self.delivery.clone();
         let tables = TableView {
             state,
             payloads,
             meshes: &mesh_res,
+            delivery: &delivery,
         };
         let mut why = if self.first { Why::FIRST } else { 0 };
         if delta.defaults_changed {
@@ -2566,3 +2582,18 @@ mod ordering_model;
 mod tests;
 #[cfg(test)]
 mod window_tests;
+
+/// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
+/// carries (texture-delivery-design.md Q6 "GSW"). A block format the list cannot carry would have
+/// been refused by D3 (no gpu family names it), so it never reaches here; if one does, the texture
+/// is left undefined rather than drawn from the wrong bytes.
+fn upload_pixels(list: &mut DrawList, id: Id, px: &TexturePixels) {
+    match &px.compressed {
+        None => list.upload_texture(id, px.width, px.height, &px.rgba),
+        Some(level0) => {
+            if let Some(format) = gsw_canvas_draw_list::CompressedFormat::from_godot(&px.format) {
+                list.upload_compressed_texture(id, px.width, px.height, format, level0);
+            }
+        }
+    }
+}

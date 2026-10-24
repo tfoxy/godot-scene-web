@@ -140,10 +140,11 @@ jobs:
       - uses: ./.github/actions/rs-setup
         with:
           # pnpm-test's browser tests use Playwright's own install; gate 7 (R3) needs the pinned
-          # chromium-1223, sha-checked against browser-harness.ts's EXPECTED_CHROMIUM_SHA256
-          chromium: ${{ matrix.id == 'pnpm-test' || startsWith(matrix.id, 'g7') }}
-          chromium-pinned: ${{ startsWith(matrix.id, 'g7') }}
-          browser-renderer: ${{ startsWith(matrix.id, 'g7') && inputs.browser_renderer || '' }}
+          # chromium-1223, sha-checked against browser-harness.ts's EXPECTED_CHROMIUM_SHA256, and
+          # so does native gate 8, whose g8kp group replays its /9 recording in the GSW receiver
+          chromium: ${{ matrix.id == 'pnpm-test' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
+          chromium-pinned: ${{ startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
+          browser-renderer: ${{ (startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8') && inputs.browser_renderer || '' }}
           # the pure self-tests include rs-ws, which runs the capture build's rs_ws_echo (a local
           # worktree runs build-capture.sh once for the same reason): restored from the seeded cache.
           # A native gate needs the capture extension too, and so does every gate 7 run: its sources
@@ -165,7 +166,7 @@ jobs:
           emsdk: ${{ matrix.id == 'toolchain-smoke' || (startsWith(matrix.id, 'g7') && contains(matrix.id, 'web-rust')) }}
           rust-nightly: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') }}
           # cargo-gsw-rs checks the crate for wasm32 (it has no host-runnable test)
-          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || matrix.id == 'cargo-gsw-rs' || startsWith(matrix.id, 'g7') }}
+          wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || matrix.id == 'cargo-gsw-rs' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
 
       - name: Record setup time
         run: |
@@ -202,7 +203,7 @@ jobs:
           # (g7-6, g7-lc, g7-r, g7-k) are -timing runs, refused by phase.
           RS_SKIP_TIMING_GROUPS: ${{ (startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7-')) && '1' || (startsWith(matrix.id, 'g7live-') && 'g1c-rate' || '') }}
           # the CI-only browser allowance (lib/browser-renderer.ts; Decision 10): only here
-          RS_BROWSER_PROVENANCE: ${{ startsWith(matrix.id, 'g7') && inputs.browser_renderer || '' }}
+          RS_BROWSER_PROVENANCE: ${{ (startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8') && inputs.browser_renderer || '' }}
         run: |
           # the planner's default base is `main`; point it at the merge-base the wrapper computed
           git update-ref refs/heads/main "$BASE"

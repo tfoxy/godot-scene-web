@@ -17,6 +17,7 @@
 
 use crate::ops::{Op, OpBuf, RidRef};
 use crate::vt::{gd, Vt};
+use render_stream_core::delivery::DeliveryPrefs;
 use render_stream_core::payload::{self, MeshPayload, TexturePayload};
 use render_stream_core::state::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -140,9 +141,27 @@ fn missing(h: &Hash) -> String {
 }
 
 /// `IMAGE_FORMATS` (rs_texture_payload.gd): Image.Format for the six permitted formats and, from
-/// /8, the eight float formats (G8f, `core/io/image.h:75-114`), else -1 (make_image() returns null).
+/// /8, the eight float formats (G8f, `core/io/image.h:75-114`), and from /9 the block formats a
+/// `block` variant may carry (G8kp: the payload decoder admits them only at /9), else -1
+/// (make_image() returns null).
 fn image_format(name: &str) -> i32 {
     match name {
+        "DXT1" => 17,
+        "DXT3" => 18,
+        "DXT5" => 19,
+        "RGTC_R" => 20,
+        "RGTC_RG" => 21,
+        "BPTC_RGBA" => 22,
+        "ETC" => 25,
+        "ETC2_R11" => 26,
+        "ETC2_R11S" => 27,
+        "ETC2_RG11" => 28,
+        "ETC2_RG11S" => 29,
+        "ETC2_RGB8" => 30,
+        "ETC2_RGBA8" => 31,
+        "ETC2_RGB8A1" => 32,
+        "ASTC_4x4" => 35,
+        "ASTC_8x8" => 37,
         "L8" => 0,
         "LA8" => 1,
         "R8" => 2,
@@ -470,6 +489,9 @@ struct Upload {
     hash: Option<Hash>,
     op: &'static str,
     data_bytes: i64,
+    /// G8kp (texture-delivery-design.md D3): the encoding D3 chose (`decoded` or `block`), written
+    /// to `uploads[]` at /9 only, so every older stream's report is unchanged.
+    encoding: Option<&'static str>,
 }
 
 struct MeshUpload {
@@ -505,6 +527,9 @@ pub struct Planner {
     pub freed_by_apply: i64,
     pub disposed_frees: i64,
     pub touched: Touched,
+    /// G8kp (texture-delivery-design.md D3): which payload of an ok image texture is fetched and
+    /// uploaded. The default is `decoded` alone, exactly the base hash, as before /9.
+    pub delivery: DeliveryPrefs,
     version: u8,
     canvases: BTreeMap<Id, CanvasM>,
     items: BTreeMap<Id, ItemM>,
@@ -885,7 +910,9 @@ impl Planner {
             if e.kind != TextureKind::Image || e.status != EntryStatus::Ok {
                 continue;
             }
-            let Some(h) = e.hash else { continue };
+            let Some(h) = self.delivery.select(e).map(|s| s.hash) else {
+                continue;
+            };
             let same = self
                 .textures
                 .get(tid)
@@ -1075,6 +1102,7 @@ impl Planner {
                         hash: None,
                         op: "placeholder",
                         data_bytes: 0,
+                        encoding: None,
                     });
                 }
                 TextureKind::Canvas => {
@@ -1105,6 +1133,7 @@ impl Planner {
                             hash: None,
                             op: "canvas",
                             data_bytes: 0,
+                            encoding: None,
                         });
                     }
                     let t = &self.textures[&id];
@@ -1133,7 +1162,12 @@ impl Planner {
                     }
                 }
                 TextureKind::Image => {
-                    let Some(hash) = e.hash else { continue };
+                    // G8kp: D3's choice (the base `decoded` hash unless a usable variant wins).
+                    let Some(chosen) = self.delivery.select(e) else {
+                        continue;
+                    };
+                    let hash = chosen.hash;
+                    let encoding = (self.version >= 9).then_some(chosen.encoding);
                     let resident = self.textures.get(&id);
                     if resident.is_some_and(|t| t.kind == TexKind::Image && t.hash == Some(hash))
                         && !self.sab.reupload
@@ -1216,6 +1250,7 @@ impl Planner {
                         hash: Some(hash),
                         op: op_name,
                         data_bytes: p.data.len() as i64,
+                        encoding,
                     });
                 }
             }
@@ -2743,7 +2778,7 @@ fn write_stats(
     v.key("uploads");
     v.array(uploads.len());
     for u in uploads {
-        v.dict(4);
+        v.dict(if u.encoding.is_some() { 5 } else { 4 });
         v.key("id");
         v.int(u.id as i64);
         v.key("hash");
@@ -2752,6 +2787,10 @@ fn write_stats(
         v.str(u.op);
         v.key("data_bytes");
         v.int(u.data_bytes);
+        if let Some(e) = u.encoding {
+            v.key("encoding");
+            v.str(e);
+        }
     }
     v.key("item_calls");
     v.array(0);

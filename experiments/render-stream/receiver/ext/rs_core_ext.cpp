@@ -1391,6 +1391,7 @@ enum Method : int {
   M_STAGE,
   M_UNSTAGE,
   M_APPLY_TIMING,
+  M_SET_DELIVERY,
   M_COUNT,
 };
 
@@ -1400,7 +1401,7 @@ struct MethodSpec {
 };
 constexpr MethodSpec METHODS[M_COUNT] = {
     {"open", 3},             // (viewport: RID, root_canvas: RID, sabotage: String) -> String ("" ok)
-    {"session", 3},          // (data: PackedByteArray, offset: int, version: int 6|7) -> Dictionary
+    {"session", 3},          // (data: PackedByteArray, offset: int, version: int 6..9) -> Dictionary
     {"begin_session", 0},    // () -> int (ops executed)
     {"accept", 2},           // (data: PackedByteArray, offset: int) -> Dictionary
     {"resource_payload", 0}, // () -> PackedByteArray
@@ -1418,6 +1419,7 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"stage", 2},            // (hash: String, data: PackedByteArray) -> String ("" ok; G7o3)
     {"unstage", 1},          // (hash: String) -> void (G7o3)
     {"apply_timing", 0},     // () -> int: the last apply's plan | execute << 21 | stats << 42, in us (G7o3)
+    {"set_delivery", 2},     // (texture_encodings: String, gpu_formats: String) -> String ("" ok; G8kp)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1536,6 +1538,18 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
     case M_UNSTAGE: {
       std::string hash = arg_string(args[0]);
       rsc_unstage(inst->core, reinterpret_cast<const uint8_t *>(hash.data()), hash.size());
+      return;
+    }
+    case M_SET_DELIVERY: {
+      std::string encodings = arg_string(args[0]);
+      std::string gpu_formats = arg_string(args[1]);
+      if (rsc_set_delivery(inst->core, reinterpret_cast<const uint8_t *>(encodings.data()),
+                           encodings.size(), reinterpret_cast<const uint8_t *>(gpu_formats.data()),
+                           gpu_formats.size()) == 1) {
+        ret_string(ret, "");
+      } else {
+        text_string(inst, static_cast<Variant *>(ret));
+      }
       return;
     }
     case M_APPLY_TIMING: {

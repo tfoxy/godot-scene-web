@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3368,7 +3368,10 @@ mise exec -- pnpm render-stream:gate8 -- \
 - `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
   `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`, which G8r extends;
   `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f adds `run_g8f`; `run_g8m` with
-  `run_import_g8m` and `run_capture_g8m`).
+  `run_import_g8m` and `run_capture_g8m`; `run_g8kp` with `run_g8kp_live`).
+- `gate8-delivery-tool.ts` (G8kp): builds the rs-core wasm and the GSW bundle, then replays the
+  native leg `g8kp/receiver` in the GSW receiver page three times (as is, BC masked, the
+  ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`.
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
   and the informative `hardware_band`; under `g8a` the legs, the adoption `cost`, the
@@ -3392,6 +3395,11 @@ mise exec -- pnpm render-stream:gate8 -- \
   `canonicalState` compares materials by content since G8m.
 - `test/self-test-gate8-mat.ts`: those helpers on `fixtures/gate8-mat/expected.json` and synthetic
   resolved states.
+- `lib/gate8-delivery-checks.ts`: the g8kp checks (`runG8kp`) and their pure helpers (`predictD3`,
+  D3 written independently of rs-core's `delivery.rs`; `deliverySelectProblems`;
+  `gswBlockAgainstHw`).
+- `test/self-test-gate8kp.ts`: those helpers and the GSW receiver's `hello.ts` on synthetic
+  entries, uploads and pixels, each with a passing and a failing case.
 
 ## Gate 8 legs and evidence under `--out` (g8t)
 
@@ -3448,6 +3456,29 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `fault-no-include-path/{capture,receiver}` | `late` under `GRC_ADOPT_FAULT=no-include-path` (the typed `shader-adopt-include`), and the native receiver on it |
 | `reference` | rendered, unarmed: shots `step-<k>.png` at the three checkpoints and gate 5.5's material oracle (`materials.jsonl`, `shader-library/`) |
 | `born/receiver`, `late/receiver`, `late/receiver-patch` | the native receiver on born's and late's full sink and late's patch sink |
+
+## Gate 8 legs and evidence under `--out/g8kp` (g8kp)
+
+| leg | what |
+| --- | ---- |
+| `capture` | headless, `GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough`; both sinks (`recording.rs9`, `recording-patch.rs9`), store, `textures.jsonl` |
+| `workers/capture` | the same at `GRC_TEXTURE_WORKERS=2` (G8kw's delayed workers) |
+| `refused-basis/capture` | `GRC_TEXTURE_DELIVERY=basis-uastc` at /9: the typed refusal |
+| `reference`, `reference-hw` | rendered fixture: the oracle's decoded payloads, and the `.ctex` sampled by the GPU |
+| `receiver`, `receiver-patch`, `receiver-masked` | the native receiver on the full and patch sinks (`block,decoded`), and with `RS_RECEIVER_GPU_FORMAT_MASK=s3tc,bptc,rgtc` |
+| `live/host`, `live/receiver` | a /9 passthrough live host (desktop step for 600 frames) and the rendered native receiver at `RS_RECEIVER_PROTOCOL=9` |
+| `gsw-run/gsw`, `gsw-run/gsw-masked`, `gsw-run/sabotage-ignore-format-mask/gsw` | GSW in headless Chromium on `receiver`'s launch: as is, BC masked, the mask stated but not applied |
+
+The import and `oracle/` (which also writes `<name>.<family>.block.grt1`, each `.ctex`'s block
+bytes) are g8t's, run once when both groups run.
+
+## Gate 8 criteria (g8kp)
+
+`delivery-capture`, `block-exact`, `delivery-workers`, `delivery-refused`, `delivery-select`,
+`sabotage-ignore-format-mask`, `delivery-live`, `delivery-pixels-native` (exact against
+`reference-hw`) and `delivery-pixels-gsw` (delta 1 on GSW's decided pixels); each criterion is
+spelled out in `lib/gate8-delivery-checks.ts` and
+[`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8kp)".
 
 ## Gate 8 criteria (g8m)
 

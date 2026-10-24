@@ -108,6 +108,13 @@ func accept_session(data: PackedByteArray, offset: int, version: int) -> Diction
 	return out
 
 
+## G8kp (texture-delivery-design.md D3): the receiver's texture_encodings and gpu_formats; the core
+## then fetches and uploads each ok image texture's chosen payload. "" when accepted, else why not.
+func set_delivery(texture_encodings: String, gpu_formats: String) -> String:
+	var refused: String = _core.call("set_delivery", texture_encodings, gpu_formats)
+	return refused
+
+
 ## G7o2 (D31): whether the next session defers the per-record digest (record.sha256 is "" in every
 ## answer until record_digest fills it, after the frame).
 func set_digest_deferred(on: bool) -> void:

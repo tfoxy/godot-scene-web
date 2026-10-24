@@ -2,9 +2,10 @@
 
 Status: specified and golden-tested at G8k9 (2026-10-24), written with
 [texture-delivery-design.md](texture-delivery-design.md) D1, D4, D5, D6, D12, D13 and Q5, which this
-document implements. /9 is **opt-in**: no receiver advertises it, the capture's file sinks stay on
-/6 unless asked (`GRC_STREAM_VERSION=9`), and the live listener offers `render-stream.9` only
-under `GRC_STREAM_VERSION=9`. Nothing in /2 to /8 changes: `golden-2/` to `golden-8/` pass unchanged
+document implements. /9 is **opt-in**: the capture's file sinks stay on /6 unless asked
+(`GRC_STREAM_VERSION=9`), the live listener offers `render-stream.9` only under
+`GRC_STREAM_VERSION=9`, and a receiver offers it only when told to (G8kp: the native receiver's and
+GSW's `RS_RECEIVER_PROTOCOL=9`; "As built (G8kp)"). Nothing in /2 to /8 changes: `golden-2/` to `golden-8/` pass unchanged
 and the window-1 transcripts (`capture/test/golden/live-window1-transcripts.txt`) are byte-identical.
 Codecs (G8k9): the C++ encoder (`capture/src/rs2_codec.*`, `rs2_diff.*`, behind `Session::version`),
 the TypeScript decoder/validator/resolver (`scripts/lib/render-stream-2.ts`, behind an explicit
@@ -211,7 +212,8 @@ on a /9 connection, or the reverse, is `error` `protocol`, close 1002.
 
 The listener offers `render-stream.9` **only under `GRC_STREAM_VERSION=9`**, then `.8`, `.7`, `.6`
 (under a gate 8 policy, `.9` then `.8`). Every other configuration offers exactly what /8 offered.
-No receiver's hello offers `render-stream.9` in G8k9.
+No receiver's hello offers `render-stream.9` in G8k9; since G8kp the native receiver and GSW do
+under `RS_RECEIVER_PROTOCOL=9` ("As built (G8kp)").
 
 ## Capture policy
 
@@ -308,3 +310,23 @@ format is a new version.
 - **`rs_texture_delivery.*`** sits behind a narrow `smoke-map.json` rule (the G8w seam pattern):
   `capture-build`, `pure`, `native:gate0@*`, `native:gate8@*`. Its call sites in `entry.cpp` and
   `rs_mirror.cpp` are shared capture files and still reach `*`.
+
+## As built (G8kp)
+
+The wire is unchanged; G8kp fills the seam and the receivers
+([texture-delivery-design.md](texture-delivery-design.md) "As built (G8kp)").
+
+- **Capture policy at /9:** `GRC_TEXTURE_DELIVERY` accepts `rgba` and `passthrough`; `basis-uastc`
+  and `basis-etc1s` refuse the stream (`texture-delivery-unimplemented: …`) until their encoders
+  land. Below /9 the variable stays ignored.
+- **`block` variants** are produced for every ok host-decoded image whose source format is a block
+  format of the "Texture payload" table, from the hooked bytes themselves; `stream.gate8`'s
+  `delivery_stats` (`block_built`, `block_bytes`, `block_declined`) count them when the sink is /9.
+  The file sink's store holds each as `<hash>.grt` (index `format`: the block format); inline
+  records never carry one.
+- **Receivers' hello at /9:** /7's fourteen keys under `render-stream/9`, then
+  `texture_encodings` (default `block,decoded`) and `gpu_formats` (the receiver's families after
+  `RS_RECEIVER_GPU_FORMAT_MASK`, `none` when empty). `uploads[]` rows in a receiver's
+  `applied.json` gain `encoding` (`block` or `decoded`) for /9 streams only, and `receiver` gains
+  `texture_delivery` (what the receiver stated, the families it detected and the mask).
+

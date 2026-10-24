@@ -4,7 +4,10 @@ Status: design written 2026-10-23 (increment G8k). G8kw (the texture worker pool
 publication hold-back, D11/Q7) is landed: Q7 "As built (G8kw)", [results/gate8/g8kw.md](../results/gate8/g8kw.md).
 G8kz (HTTP content coding) is landed: "As built (G8kz)". G8k9 (the render-stream/9 wire, codecs and
 validators only) is landed: "As built (G8k9)", [render-stream-9.md](render-stream-9.md),
-[results/gate8/g8k9.md](../results/gate8/g8k9.md). Nothing else here is implemented. This doc
+[results/gate8/g8k9.md](../results/gate8/g8k9.md). G8kp (`passthrough` end to end: the capture's
+`block` variant, D3 in the native and GSW receivers, the /9 hellos) is landed: "As built (G8kp)",
+[results/gate8/g8kp.md](../results/gate8/g8kp.md). G8kv vendors basisu and builds its UASTC encoder,
+uncalled ("As built (G8kv)"). Nothing else here is implemented. This doc
 follows [gate8-design.md](gate8-design.md) and replaces its deferred "Route C" (gate8-design Q3,
 "Deferred") and fork F3. User decisions of 2026-10-23 (memory texture-delivery-direction):
 
@@ -474,7 +477,7 @@ Shared call sites still reach `*`.
 | G8kz | HTTP `Content-Encoding` zstd/gzip for payload GETs at /2+ (D2, Q5): precompressed per hash on the HTTP thread, `Vary`, per-coding ETag, the native receiver's `Accept-Encoding` + decompress; checks: identity hash after decode, coded bytes logged per GET, `corrupt-coded-body` sabotage (receiver must refuse) | `capture/src/rs_live.*`, `rs_resource_store.*`, `receiver/` fetcher, `scripts/lib/gate2-*`/`gate8-*` checks, `render-stream-2.md` "HTTP" | `*` (capture) | sonnet, 3 h + full tier | G8w |
 | G8kw | **Landed** (Q7 "As built (G8kw)"). Worker pool for copy/decode/hash (D11), publication hold-back at /6-/8, `GRC_TEXTURE_WORKERS=sync\|N`; checks: sync and async recordings resolve to equal states at every checkpoint, main-thread hook time ≤ 2 ms per create at 2048², `decode-cost` re-measured | `capture/src/rs_texture_worker.*` (new), `hooks.cpp` copy path, `rs_mirror.*`, `rs_resource_log.*`, `entry.cpp` (the hold-back lives in `rs_texture_worker.*`, not `rs_publish.*`), `smoke-map.json` narrow rule | `*`, then narrow | opus, 5 h + full tier | G8t; before G8r (which reuses the path) |
 | G8k9 | **Landed** ("As built (G8k9)"). render-stream/9 codecs and validators (Q5): `variants`, `ktx2` and `block` payloads, `resources.delivery`, hello keys, `delivery-pending`, `golden-9/`; empty delivery seam; no receiver offers .9 yet | `protocol/render-stream-9.md`, `protocol/golden-9/`, `rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `render-stream-2.ts`, `rs-core/src/{wire,validate,meta,payload}.rs`, capi pin | `*` | sonnet, 4 h + full tier | G8w (parallel with G8kz/G8kw) |
-| G8kp | `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
+| G8kp | **Landed** ("As built (G8kp)"). `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
 | G8ku | `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |
 | G8kb | GSW Basis: transcoder wasm in a Web Worker (emsdk 4.0.11, D15 sources), ASTC/ETC2/BC7 upload, `upgrade` policy; g31 device bench of transcode time per Mpx, GPU memory (gfxinfo) and hd-patch p95 unchanged (real time, standing phone approval) | `web/gsw-receiver/`, `web/basis-transcoder/` (new), `packages/canvas/rust-prototype/…/gl.rs`, `scripts/gate7-bench.ts` arm | `g7:*@gsw`, `g7live:*@gsw`, `bench-instr`, device leg | opus, 6 h + scoped tier | G8ku |
 | G8kc | Persistent cache and the prepare step (D8, D9), and the `texture_set_path` hook with paths in the hook log (D10): `GRC_TEXTURE_CACHE_DIR`, index, verify-on-load, LRU budget; `scripts/prepare-textures.sh` over a project's `.ctex` or an image directory; checks `prepare-key-match` (every hooked texture of the fixture hits after prepare from its `.ctex`), `cache-warm` (second session: zero encodes, identical hashes), `cache-corrupt` sabotage | `capture/src/rs_texture_cache.*`, `scripts/prepare-textures.*`, `fixtures/gate8-tex/` | narrow rule + `native:gate8@*` | sonnet, 4 h + scoped tier | G8ku |
@@ -707,3 +710,76 @@ encoder exists in the build and nothing calls it.
 - **Cost.** About 3.3-5.0 s per Mpx per thread (UASTC L2 + zstd 6), so eager preparation of a large pack
   is minutes on 12 threads; lazy encode of a big texture is seconds on a worker. G8ku decides which
   textures a worker may take at what budget.
+
+## As built (G8kp)
+
+Landed as one commit; evidence summary [results/gate8/g8kp.md](../results/gate8/g8kp.md), wire
+notes in [render-stream-9.md](render-stream-9.md) "As built (G8kp)".
+
+**Capture.** `GRC_TEXTURE_DELIVERY=rgba|passthrough` at /9; `basis-uastc` and `basis-etc1s` refuse
+the stream with the typed reason `texture-delivery-unimplemented: GRC_TEXTURE_DELIVERY=… is not
+implemented yet` (G8ku, G8ke) when the sink is /9, and stay ignored below /9 as G8k9 left them.
+Under `passthrough` the hooks keep, beside an ok G8t host decode, the hooked image's own bytes as a
+GRT1 payload in their block format (`rs_texture_delivery.h` `block_data_bytes` is Godot's size; a
+source whose size disagrees gets no variant and is counted), hashed where the decode is: on the
+calling thread, or on G8kw's worker beside the decode (`TextureJob::fill` carries it; the worker
+path fills the entry's variants in `resolve_captured`). The bytes travel as `PayloadCopy`'s
+`block_*` fields through the mirror; a snapshot's payload map holds them under their own hash, so
+the file sink's store (`<hash>.grt`, `put_variant`) and the live HTTP routes serve them like any
+payload, never as an inline record. `stream.gate8.delivery_stats` counts block payloads built,
+their bytes and the block sources declined. `rgba` and every /6-/8 stream build nothing.
+
+**D3 in the receivers.** One rule, written once in rs-core (`delivery.rs`, `DeliveryPrefs`) and
+independently in the checker (`lib/gate8-delivery-checks.ts` `predictD3`): the first of the
+receiver's `texture_encodings` that the entry lists, `block` only when its format's family
+(`block_family`: s3tc, bptc, rgtc, etc2, astc) is in the stated `gpu_formats`, `decoded` always
+last. The default preference is `decoded` alone, so an unconfigured core picks the base hash as
+before; both receivers configure `block,decoded` (`RS_RECEIVER_TEXTURE_ENCODINGS` overrides).
+
+- **Native receiver:** `gpu_formats` from `RenderingServer.has_os_feature` minus
+  `RS_RECEIVER_GPU_FORMAT_MASK`, handed to the core (`rsc_set_delivery`, GDExtension
+  `set_delivery`); the planner fetches and uploads the chosen hash and `make_image` gained the
+  block formats, so a `block` variant reaches `RenderingServer.texture_2d_create` through
+  `Image.create_from_data` exactly as a `.ctex` does. GRS9 files replay at /9; `RS_RECEIVER_PROTOCOL=9`
+  (native only) offers `render-stream.9` with /7's transport and the /9 hello
+  (`RsLiveClient.hello_v9`). `uploads[]` name the encoding from /9 only.
+- **GSW:** `gpu_formats` from its own context's WebGL extensions (`gpu_families`: s3tc from
+  `WEBGL_compressed_texture_s3tc`, bptc, rgtc, etc2, astc), minus the mask; the applier uploads a
+  block variant's level 0 through a new `TextureOp::UploadCompressed` (`gsw-canvas-draw-list`
+  `CompressedFormat`: DXT1/3/5, RGTC_R/RG, BPTC_RGBA, and the ETC2/EAC and ASTC LDR formats) and
+  `compressedTexImage2D` in `canvas_items/gl.rs` with the GL internal format Godot's GLES3 driver
+  uses. Level 0 only, as the RGBA8 path. Only the BC formats ran here: the desktop GPU exposes no
+  ETC2/ASTC to WebGL, so those uploads are first exercised on the g31 (G8kb). The draw path asks D3 too (a texture is drawable when its chosen payload is held).
+  The live client offers `render-stream.9` under `RS_RECEIVER_PROTOCOL=9` with the two keys
+  (`web/gsw-receiver/hello.ts`, the families probed on a throwaway WebGL2 context before the
+  module's own exists).
+- **Web export:** stays on `decoded` (it reads neither variable, keeps the core's default and never
+  offers /9). A /9 file replays there as /8 would.
+
+**Measured on the development host (RTX 2060, 2026-10-24).** The native receiver on `block`
+equals `reference-hw` (the fixture sampling the `.ctex` on the same GPU) at 0 px on both steps,
+while `reference-hw` itself differs from the CPU-decoded reference by 23,827 px (max delta 5) on
+the desktop step. GSW on `block`: on the 209,605 pixels where GSW's decoded draw equals the native
+decoded reference, 203,702 equal `reference-hw` exactly and 5,903 differ by exactly 1, none by
+more. Hardware BC decode gives texels between 8-bit steps, and ANGLE-Vulkan's path and Godot's
+GLES3 path round them into the RGB10A2 target at different points; the native claim is exact,
+GSW's is "exact or one rounding apart" on the pixels GSW already decides.
+
+**Deviations.**
+
+- `delivery-pixels-gsw` is delta 1, not exact (above). `delivery-pixels-native` is exact.
+- The GSW live hello is implemented and self-tested (`self-test-gate8kp.ts`), not run live: gate 8's
+  live leg is native. The browser live legs for gate 8 belong to G8g.
+- The `uastc`/`etc1s` encodings are parsed in a hello and skipped by D3 (no transcoder in any
+  receiver yet), so a receiver listing them falls through to `block` or `decoded`.
+
+**Out of scope here.**
+
+| Receiver or group | Owner | State after G8kp |
+| ----------------- | ----- | ---------------- |
+| Web export | G8ku | `decoded` only, no /9 hello |
+| GSW live /9 run, gate 8 browser groups | G8g | hello built and self-tested; file legs only |
+| The g31 (ETC2/ASTC block upload in GSW) | G8kb | wired (`etc2,astc` stated, `block` picked), never run on the device |
+| Basis encoders, `uastc`/`etc1s` variants | G8ku, G8ke | typed refusal at /9 |
+| Gate 7 groups | none | unchanged: `GRC_STREAM_VERSION` is unset in every one, so no variant exists |
+

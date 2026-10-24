@@ -354,9 +354,11 @@ def self_test(m):
     i = P("experiments/render-stream/receiver/README.md")
     check("a .md under the receiver is still a doc (exclusive rule)", i["targets"] == ["pure"])
     j = P("experiments/render-stream/web/gsw-receiver/main.ts")
-    check("the GSW page reaches gsw only", j["targets"] and all(
+    # G8kp: gate 8's g8kp group replays its /9 recording in the GSW page, so native gate 8 too.
+    check("the GSW page reaches gsw (and gate 8's GSW legs) only", j["targets"] and all(
         t in ("pure", "cargo:experiments/render-stream/web/gsw-rs", "g7x:g7-dev", "g7x:g7-bench") or t.endswith("@gsw")
-        for t in j["targets"]))
+        or t.startswith("native:gate8@")
+        for t in j["targets"]) and any(t.startswith("native:gate8@") for t in j["targets"]))
     k = P("experiments/render-stream/results/grt.md", ms=True)
     check("--milestone runs everything with sabotage", set(k["targets"]) == uni and k["sabotage"]["run"])
     kinds = [r["kind"] for r in f["runs"]]

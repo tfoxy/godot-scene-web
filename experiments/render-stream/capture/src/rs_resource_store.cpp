@@ -74,6 +74,17 @@ ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry,
   return put_bytes(entry.hash, ".grt", fields, payload, frame, error);
 }
 
+ResourceStore::Put ResourceStore::put_variant(const rs2::TextureEntry &entry,
+                                              const rs2::TextureVariant &variant,
+                                              const std::vector<std::uint8_t> &payload,
+                                              std::uint64_t frame, std::string *error) {
+  const std::string fields = ",\"type\":\"texture-2d\",\"format\":\"" + variant.format +
+                             "\",\"width\":" + std::to_string(entry.width) +
+                             ",\"height\":" + std::to_string(entry.height) +
+                             ",\"mipmaps\":" + (entry.mipmaps ? "true" : "false");
+  return put_bytes(variant.hash, ".grt", fields, payload, frame, error);
+}
+
 ResourceStore::Put ResourceStore::put_mesh(const rs2::MeshSurface &surface,
                                            const std::vector<std::uint8_t> &payload,
                                            std::uint64_t frame, std::string *error) {
