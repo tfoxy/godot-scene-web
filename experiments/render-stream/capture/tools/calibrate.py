@@ -157,6 +157,11 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("canvas_set_item_mirroring", ("canvas_set_item_mirroring",)),
     ("canvas_set_item_repeat", ("canvas_set_item_repeat",)),
     ("canvas_set_parent", ("canvas_set_parent",)),
+    # G8kc (texture-delivery-design.md D10) -- the res:// path the engine gives a texture right
+    # after texture_2d_create. Hooked only under GRC_TEXTURE_CACHE_DIR, so it is neither planned
+    # nor omitted without it. It adds no calibrator version: the version is echoed in every
+    # session record, and a run with no cache directory must stay byte-identical to before.
+    ("texture_set_path", ("texture_set_path",)),
 )
 
 ET_EXEC = 2
