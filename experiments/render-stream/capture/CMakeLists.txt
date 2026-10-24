@@ -327,9 +327,12 @@ add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 # G8a: the arm-time adoption pass (gate8-design.md D3-D5, D13): a born-armed hook sequence and the
 # walk's AdoptPlan give the same mirror state but for origin; the walk sabotages; the residue under
 # strict and skip; the configurable caps. The walk itself runs only inside Godot (run-gate8.sh g8a).
+# G8r: adopted textures and meshes equal created ones but for origin and adopted_content, the
+# refinement to current, the hook log's adopt lines, GRC_ADOPT_FAULT parsing.
 add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/iface.cpp
   src/rs_mirror.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
-  src/rs_sha256.cpp src/rs2_diff.cpp)
+  src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
+  src/rs2_codec.cpp)
 target_include_directories(rs_adopt_test PRIVATE src vendor)
 target_link_libraries(rs_adopt_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_adopt COMMAND rs_adopt_test)

@@ -230,6 +230,8 @@ struct Stream {
   // request, read at arm; and what the adoption seam reported (G8w: nothing).
   rs::Gate8Policy gate8;
   rs::AdoptStats adopt_stats;
+  // G8r: GRC_ADOPT_FAULT (lazy resource adoption's fault knob), read at arm.
+  rs::AdoptFault adopt_fault = rs::AdoptFault::None;
   // G8kw (texture-delivery-design.md D11, Q7): GRC_TEXTURE_WORKERS and its knobs, read at arm,
   // and the publication hold-back that waits for the workers' hashes (unused when sync).
   rs::TextureWorkerConfig workers;
@@ -600,6 +602,27 @@ std::string result_json() {
       json.field("total_ns", static_cast<int64_t>(a.total_ns));
       json.field("max_items", static_cast<int64_t>(g_stream.max_items));
       json.field("max_commands", static_cast<int64_t>(g_stream.max_commands));
+      // G8r (D6, D7): lazy resource adoption's account.
+      const rs::AdoptResourceStats r = rs::adopt_resource_stats();
+      json.field("fault", std::string(rs::adopt_fault_name(g_stream.adopt_fault)));
+      json.key("resources").object_begin();
+      json.field("textures", static_cast<int64_t>(r.textures));
+      json.field("textures_current", static_cast<int64_t>(r.textures_current));
+      json.field("textures_creation", static_cast<int64_t>(r.textures_creation));
+      json.field("atlas_pages", static_cast<int64_t>(r.atlas_pages));
+      json.field("compressed", static_cast<int64_t>(r.compressed));
+      json.field("from_update", static_cast<int64_t>(r.from_update));
+      json.field("decoded", static_cast<int64_t>(r.decoded));
+      json.field("textures_refused", static_cast<int64_t>(r.textures_refused));
+      json.field("meshes", static_cast<int64_t>(r.meshes));
+      json.field("mesh_surfaces", static_cast<int64_t>(r.mesh_surfaces));
+      json.field("meshes_refused", static_cast<int64_t>(r.meshes_refused));
+      json.field("fonts", static_cast<int64_t>(r.fonts));
+      json.field("cached_compressed", static_cast<int64_t>(r.cached_compressed));
+      json.field("cache_paths", static_cast<int64_t>(r.cache_paths));
+      json.field("census_ns", static_cast<int64_t>(r.census_ns));
+      json.field("lookup_ns", static_cast<int64_t>(r.lookup_ns));
+      json.object_end();
     }
     json.object_end();
     // G8t (gate8-design.md Q3 `decode-cost`): the decode seam's totals since arm (per-texture
@@ -1318,6 +1341,18 @@ void stream_start() {
       }
       return;
     }
+    // G8r: GRC_ADOPT_FAULT needs GRC_ADOPT=arm (rs_adopt.h AdoptFault).
+    rs::AdoptFault adopt_fault = rs::AdoptFault::None;
+    if (!rs::parse_adopt_fault(std::getenv("GRC_ADOPT_FAULT"), gate8.adopt, &adopt_fault, &error)) {
+      log_line("stream: refused adoption fault (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    g_stream.adopt_fault = adopt_fault;
     g_stream.gate8 = gate8;
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
@@ -1763,6 +1798,9 @@ void stream_start() {
           rs::root_set_min_size(before, presentation_wh[0], presentation_wh[1], &early_detail);
       log_line("sabotage: size-before-adopt applied the presentation size before adoption");
     }
+    // G8r (D6, D7): lazy resource adoption is on from the walk to the stream's end; the walk's
+    // redraws (this iteration's flush) are the first hooked calls to name pre-arm resources.
+    rs::adopt_resources_begin(g_stream.adopt_fault);
     g_stream.adopt_stats = rs::adopt_at_arm(adopt_config);
     session.adoption.present = true;
     session.adoption.frame = static_cast<int32_t>(adopt_config.arm_frame);
@@ -2212,6 +2250,7 @@ void stream_finish(rs2::EndReason reason) {
   }
   workers_finish();
   rs::mirror_enable(false);
+  rs::adopt_resources_end();  // G8r
   live_drain(g_state.frames_total);  // G2c2: GETs answered so far reach the hook log first
   resources_finish();
   live_finish(reason, reason == rs2::EndReason::Shutdown);

@@ -1,27 +1,99 @@
 {
   "schema": "render-stream-gate8-adopt-expected/1",
-  "doc": "Hand-derived from adopt.tscn and adopt.gd, not measured (README.md 'Expected'). census: what the late capture's adoption walk finds at arm frame K (stream.gate8.adopt_stats): 20 CanvasItems (World and its 10 descendants, UI and its 5, the layer's 3), 1 CanvasLayer and its canvas, the hidden subtree's 2 items, 7 canvas-group members (World, TopA, TopB and UI on the root canvas; Tint, LayerBox and LayerUI on the layer's), one CanvasModulate. visible_at_arm: the draw signals the arm-time redraws emit (the 18 items visible in tree). probe_nodes: the Adopt subtree (22 nodes, the root and the CanvasLayer included). residue: the RS-only item. strict: under GRC_UNKNOWN_ITEM=strict the residue's transform change at K+4 is the sticky failure.",
+  "doc": "Hand-derived from adopt.tscn and adopt.gd, not measured (README.md 'Expected'). census: what the late capture's adoption walk finds at arm frame K (stream.gate8.adopt_stats): 28 CanvasItems (World and its 17 descendants, UI and its 5, the Label Grown, the layer's 3), 1 CanvasLayer and its canvas, the hidden subtree's 3 items, 8 canvas-group members (World, TopA, TopB, UI and Grown on the root canvas; Tint, LayerBox and LayerUI on the layer's), one CanvasModulate. visible_at_arm: the draw signals the arm-time redraws emit (the 25 items visible in tree). probe_nodes: the Adopt subtree (30 nodes, the root and the CanvasLayer included). residue: the RS-only item. strict: under GRC_UNKNOWN_ITEM=strict the residue's transform change at K+4 is the sticky failure. resources (G8r): what lazy adoption adopts (stream.gate8.adopt_stats.resources): 6 textures -- current: Grown's glyph atlas page (TextServer read-back), Chip and ChipBc (CompressedTexture2D in the resource cache; ChipBc's DXT5 host-decoded), HiddenSprite's (first named by its update at K+4); creation: Stale (updated in place before arm) and Plain -- 1 refused (Placeholder: a PlaceholderTexture2D has no image), 1 mesh (Mesh's ArrayMesh, 1 surface, creation), 2 CompressedTexture2Ds in the cache census. exceptions: the equivalence exceptions the resources add, per resource: Stale's creation copy differs from born's content until its post-arm update at K+14 (regions.creation, steps 0 and 1); Placeholder stays unknown-texture (regions.refused, every step). regions: screen rects [x0, y0, x1, y1] inclusive.",
   "arm_frame": 12,
   "checkpoints": [
-    { "step": 0, "applied": 0, "settle": 2 },
-    { "step": 1, "applied": 4, "settle": 11 },
-    { "step": 2, "applied": 14, "settle": 21 },
-    { "step": 3, "applied": 24, "settle": 31 }
+    {
+      "step": 0,
+      "applied": 0,
+      "settle": 2
+    },
+    {
+      "step": 1,
+      "applied": 4,
+      "settle": 11
+    },
+    {
+      "step": 2,
+      "applied": 14,
+      "settle": 21
+    },
+    {
+      "step": 3,
+      "applied": 24,
+      "settle": 31
+    }
   ],
   "census": {
-    "items": 20,
+    "items": 28,
     "layers": 1,
     "canvases": 1,
-    "hidden": 2,
-    "top_level": 7,
-    "redraws": 20,
+    "hidden": 3,
+    "top_level": 8,
+    "redraws": 28,
     "canvas_modulates": 1,
     "lights": 0,
     "materials": 0,
     "non_root_viewports": 0
   },
-  "visible_at_arm": 18,
-  "probe_nodes": 22,
+  "visible_at_arm": 25,
+  "probe_nodes": 30,
   "residue": 1,
-  "strict": { "reason": "pre-existing-object", "op": "canvas_item_set_transform", "frame_offset": 4 }
+  "strict": {
+    "reason": "pre-existing-object",
+    "op": "canvas_item_set_transform",
+    "frame_offset": 4
+  },
+  "resources": {
+    "textures": 6,
+    "textures_current": 4,
+    "textures_creation": 2,
+    "atlas_pages": 1,
+    "compressed": 2,
+    "from_update": 1,
+    "decoded": 1,
+    "textures_refused": 1,
+    "meshes": 1,
+    "mesh_surfaces": 1,
+    "meshes_refused": 0,
+    "cached_compressed": 2,
+    "source_format": "DXT5"
+  },
+  "exceptions": {
+    "creation": {
+      "paths": 1,
+      "until_offset": 14
+    },
+    "refused": {
+      "paths": 1
+    }
+  },
+  "regions": {
+    "creation": {
+      "rect": [
+        320,
+        16,
+        351,
+        47
+      ],
+      "steps": [
+        0,
+        1
+      ]
+    },
+    "refused": {
+      "rect": [
+        282,
+        16,
+        297,
+        31
+      ],
+      "steps": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  }
 }

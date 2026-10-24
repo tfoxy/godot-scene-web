@@ -13,6 +13,11 @@
 //    hidden item's commands, custom rect and clip are exempt, its effective visibility is not.
 // 3. censusProblems: the census passes; a wrong count, a missing adoption time and the
 //    skip-layers account each behave as specified.
+// 4. G8r's resource exceptions (resourceException through compareStates): an exact creation copy
+//    is no difference; a creation copy with other content and a refused (unknown-texture) draw are
+//    excused and keyed by resource; a "current" texture with other content, a refused draw where
+//    born named no texture and a changed command beside an excused one each fail; meshes compare
+//    by surface hashes. And expected.json's G8r census is self-consistent.
 //
 // Exits non-zero if any assertion fails.
 
@@ -25,6 +30,7 @@ import {
   censusProblems,
   compareStates,
   type G8aExpected,
+  resourceException,
 } from "../lib/gate8-adopt-checks";
 import type { ResolvedItem, ResolvedTransaction } from "../lib/render-stream-2";
 
@@ -169,6 +175,79 @@ async function main(): Promise<void> {
     "the skip-layers account adopts no layer",
   );
   assert(censusProblems(undefined, expected.census).length === 1, "no stats fails");
+
+  // 4. G8r: resources
+  {
+    const r = expected.resources;
+    assert(r.textures === r.textures_current + r.textures_creation, "resources: current + creation = textures");
+    assert(
+      r.atlas_pages + r.compressed + r.from_update <= r.textures_current && r.decoded <= r.compressed,
+      "resources: the current sources fit",
+    );
+    assert(expected.exceptions.creation.until_offset === expected.checkpoints[2].applied, "creation until step 2's update");
+    assert(
+      expected.regions.creation.steps.every((k) => expected.checkpoints[k].settle < expected.exceptions.creation.until_offset),
+      "the creation region's steps settle before the update",
+    );
+  }
+  {
+    const H = "a".repeat(64);
+    const G = "b".repeat(64);
+    const rect = { op: "add_texture_rect", tex: H, tile: false, rect: [0, 0, 8, 8] };
+    const keys = () => ({ creation: new Set<string>(), refused: new Set<string>() });
+    let k = keys();
+    assert(resourceException([rect], [{ ...rect, tex: `creation:${H}` }], k) === "none", "an exact creation copy is no difference");
+    assert(k.creation.size === 0, "an exact creation copy is no exception");
+    k = keys();
+    assert(resourceException([rect], [{ ...rect, tex: `creation:${G}` }], k) === "creation", "a stale creation copy is excused");
+    assert(k.creation.has(`creation:${G}`), "the creation exception is keyed by the late copy");
+    k = keys();
+    const refusedCmd = { op: "unsupported", name: "canvas_item_add_texture_rect", reason: "unknown-texture" };
+    assert(resourceException([rect], [refusedCmd], k) === "refused", "a refused draw is excused");
+    assert(k.refused.has(H), "the refused exception is keyed by born's texture");
+    assert(resourceException([rect], [{ ...rect, tex: G }]) === null, "a current texture with other content fails");
+    assert(
+      resourceException([{ op: "add_rect", rect: [0, 0, 1, 1] }], [refusedCmd]) === null,
+      "a refused draw where born named no texture fails",
+    );
+    assert(
+      resourceException([rect, rect], [{ ...rect, tex: `creation:${G}` }, { ...rect, tile: true }]) === null,
+      "a changed command beside an excused one fails",
+    );
+    assert(resourceException([{ ...rect, tex: `creation:${G}` }], [{ ...rect, tile: true, tex: `creation:${G}` }]) === null,
+      "a creation copy with another changed field fails");
+    // Through compareStates: meshes by surface hashes, textures by hash, exceptions collected.
+    const withRes = (texOrigin: "created" | "adopted", content: "creation" | "current" | null, hash: string, meshHash: string) => {
+      const st = born();
+      st.textures = [
+        {
+          id: 7, origin: texOrigin, adopted_content: content, kind: "image", status: "ok", reason: null, version: 1,
+          hash, format: "RGBA8", width: 4, height: 4, mipmaps: false, payload_bytes: 100, canvas: null,
+        } as State["textures"][number],
+      ];
+      st.meshes = [
+        { id: 3, origin: texOrigin, adopted_content: texOrigin === "adopted" ? "creation" : null, status: "ok", reason: null, version: 1,
+          custom_aabb: [0, 0, 0, 0, 0, 0], surfaces: [{ hash: meshHash, payload_bytes: 10, primitive: "triangles", format: 1, vertex_count: 4, index_count: 6 }] },
+      ] as State["meshes"];
+      st.items[3].commands = [
+        { op: "add_texture_rect", tex: 7, tile: false, transpose: false, rect: [0, 0, 8, 8], modulate: [1, 1, 1, 1] },
+        { op: "add_mesh", mesh: 3, tex: null, transform: [1, 0, 0, 1, 0, 0], modulate: [1, 1, 1, 1] },
+      ] as ResolvedItem["commands"];
+      return st;
+    };
+    const bornRes = canonicalState(withRes("created", null, H, H));
+    const ex = keys();
+    assert(compareStates(bornRes, canonicalState(withRes("adopted", "creation", H, H)), ex).problems.length === 0,
+      "adopted creation texture and mesh with born's content equal born");
+    assert(compareStates(bornRes, canonicalState(withRes("adopted", "creation", G, H)), ex).problems.length === 0 && ex.creation.size === 1,
+      "a stale creation texture is collected, not a problem");
+    assert(compareStates(bornRes, canonicalState(withRes("adopted", "current", G, H)), keys()).problems.length > 0,
+      "a stale texture declared current fails");
+    assert(compareStates(bornRes, canonicalState(withRes("adopted", "creation", H, G)), keys()).problems.length > 0,
+      "a mesh with other surfaces fails");
+    assert(compareStates(bornRes, canonicalState(withRes("adopted", "creation", G, H))).problems.length > 0,
+      "without an exception collector a stale creation copy fails");
+  }
 
   console.log(`\nself-test-gate8-adopt: ${assertions - failures}/${assertions} assertions passed`);
   if (failures > 0) process.exitCode = 1;

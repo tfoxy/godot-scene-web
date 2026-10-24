@@ -10,8 +10,10 @@
 #include <string>
 #include <vector>
 
+#include "hooks.h"
 #include "rs_adopt.h"
 #include "rs_mirror.h"
+#include "rs_resource_log.h"
 
 namespace {
 
@@ -338,12 +340,243 @@ void test_seam_without_engine() {
 
 }  // namespace
 
+// ------------------------------------------------------------------ G8r: resources by RID
+
+// rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
+namespace grc {
+bool hooks_adopt_texture(uint64_t, void *, rs2::AdoptedContent, const char *, bool *) {
+  return false;
+}
+bool hooks_adopt_mesh(uint64_t, const std::vector<rs::AdoptSurface> &, const float[6]) {
+  return false;
+}
+}  // namespace grc
+namespace {
+
+grc::rs::PayloadCopy rgba_copy(const std::string &hash) {
+  grc::rs::PayloadCopy c;
+  c.status = "ok";
+  c.format = 5;  // RGBA8
+  c.width = 4;
+  c.height = 4;
+  c.mipmaps_known = true;
+  c.mipmaps = false;
+  c.data_bytes = 64;
+  c.payload_bytes = 100;
+  c.hash = hash;
+  return c;
+}
+
+grc::rs::PayloadPtr some_bytes() { return std::make_shared<grc::rs::PayloadBytes>(100, 7); }
+
+grc::rs::MeshSurfaceInput mesh_input(const std::string &hash) {
+  grc::rs::MeshSurfaceInput in;
+  in.copy.status = "ok";
+  in.copy.primitive = 3;
+  in.copy.format = 0x1 | 0x4;
+  in.copy.vertex_count = 4;
+  in.copy.index_count = 6;
+  in.copy.hash = hash;
+  in.bytes = some_bytes();
+  return in;
+}
+
+const std::string kHashA(64, 'a');
+const std::string kHashB(64, 'b');
+const std::string kHashM(64, 'c');
+
+// Born: a texture and a mesh created under the hooks, drawn by one item. Late: the same item
+// adopted, the texture and mesh adopted at their first reference, the same draws. The snapshots
+// agree on everything but origin and adopted_content (D15.1 for resources).
+void test_resources_born_equals_adopted() {
+  constexpr uint64_t kItem = 0x40, kTex = 0x50, kMesh = 0x60;
+  const grc::rs2::Rect4 rect = {0, 0, 32, 32};
+  Mirror born;
+  start(&born, grc::rs2::UnknownItemPolicy::Strict);
+  born.canvas_item_create(kItem, 1);
+  born.set_parent(kItem, kRootCanvas, 1);
+  born.texture_2d_create(kTex, rgba_copy(kHashA), some_bytes(), 1);
+  born.mesh_create_from_surfaces(kMesh, {mesh_input(kHashM)}, 1);
+  born.add_texture_rect(kItem, rect, kTex, false, grc::rs2::kWhite, false, 2);
+  born.add_mesh(kItem, kMesh, kIdentity, grc::rs2::kWhite, kTex, 2);
+
+  Mirror late;
+  start(&late, grc::rs2::UnknownItemPolicy::Strict);
+  late.adopt_item(kItem, 1);
+  late.set_parent(kItem, kRootCanvas, 1);
+  check(!late.knows_texture(kTex) && !late.knows_mesh(kMesh), "r: unknown before adoption");
+  late.texture_adopt(kTex, rgba_copy(kHashA), some_bytes(), grc::rs2::AdoptedContent::Creation, 2);
+  late.mesh_adopt(kMesh, {mesh_input(kHashM)}, {0, 0, 0, 0, 0, 0}, 2);
+  check(late.knows_texture(kTex) && late.knows_mesh(kMesh), "r: known after adoption");
+  // A second adoption of a known RID changes nothing (no new id).
+  late.texture_adopt(kTex, rgba_copy(kHashB), some_bytes(), grc::rs2::AdoptedContent::Current, 2);
+  late.add_texture_rect(kItem, rect, kTex, false, grc::rs2::kWhite, false, 2);
+  late.add_mesh(kItem, kMesh, kIdentity, grc::rs2::kWhite, kTex, 2);
+
+  const Snapshot b = born.snapshot(1, 2).state;
+  const Snapshot l = late.snapshot(1, 2).state;
+  check(b.textures.size() == 1 && l.textures.size() == 1, "r: one texture each");
+  check(b.meshes.size() == 1 && l.meshes.size() == 1, "r: one mesh each");
+  if (b.textures.size() == 1 && l.textures.size() == 1) {
+    const auto &bt = b.textures[0];
+    const auto &lt = l.textures[0];
+    check(bt.origin == Origin::Created && bt.adopted_content == grc::rs2::AdoptedContent::None,
+          "r: born texture created");
+    check(lt.origin == Origin::Adopted && lt.adopted_content == grc::rs2::AdoptedContent::Creation,
+          "r: late texture adopted, creation");
+    check(bt.hash == lt.hash && lt.hash == kHashA && bt.format == lt.format &&
+              bt.width == lt.width && bt.status == lt.status && bt.version == lt.version,
+          "r: texture entries equal but for origin");
+  }
+  if (b.meshes.size() == 1 && l.meshes.size() == 1) {
+    check(l.meshes[0].origin == Origin::Adopted &&
+              l.meshes[0].adopted_content == grc::rs2::AdoptedContent::Creation,
+          "r: late mesh adopted, creation");
+    check(b.meshes[0].surfaces.size() == 1 && l.meshes[0].surfaces.size() == 1 &&
+              b.meshes[0].surfaces[0].hash == l.meshes[0].surfaces[0].hash,
+          "r: mesh surfaces equal");
+  }
+  const auto *bi = b.items.empty() ? nullptr : &b.items[0];
+  const auto *li = l.items.empty() ? nullptr : &l.items[0];
+  check(bi != nullptr && li != nullptr && bi->commands.size() == 2 && li->commands.size() == 2,
+        "r: two commands each");
+  if (bi != nullptr && li != nullptr && bi->commands.size() == 2 && li->commands.size() == 2) {
+    check(bi->commands[0].kind == li->commands[0].kind &&
+              li->commands[0].kind == grc::rs2::CommandKind::AddTextureRect &&
+              li->commands[0].has_tex && li->commands[0].tex == l.textures[0].id,
+          "r: the texture rect names the adopted texture");
+    check(li->commands[1].kind == grc::rs2::CommandKind::AddMesh &&
+              li->commands[1].mesh == l.meshes[0].id,
+          "r: add_mesh names the adopted mesh");
+  }
+  check(l.unsupported.empty(), "r: no unknown-texture / unknown-mesh entry");
+
+  // Without adoption the same draws are G8a's typed refusals.
+  Mirror refused;
+  start(&refused, grc::rs2::UnknownItemPolicy::Strict);
+  refused.adopt_item(kItem, 1);
+  refused.set_parent(kItem, kRootCanvas, 1);
+  refused.add_texture_rect(kItem, rect, kTex, false, grc::rs2::kWhite, false, 2);
+  refused.add_mesh(kItem, kMesh, kIdentity, grc::rs2::kWhite, 0, 2);
+  const Snapshot r = refused.snapshot(1, 2).state;
+  bool unknown_texture = false, unknown_mesh = false;
+  for (const auto &u : r.unsupported) {
+    unknown_texture = unknown_texture || u.reason == grc::rs2::UnsupportedReason::UnknownTexture;
+    unknown_mesh = unknown_mesh || u.reason == grc::rs2::UnsupportedReason::UnknownMesh;
+  }
+  check(unknown_texture && unknown_mesh, "r: unadopted draws stay unknown-texture/unknown-mesh");
+}
+
+// adopted_content follows the entry: a whole update (or a replace by a created texture, or a mesh
+// clear) makes an adopted entry's content the hooks' own: current, at a higher version.
+void test_resources_refinement() {
+  constexpr uint64_t kTex = 0x50, kOther = 0x51, kNew = 0x52, kMesh = 0x60;
+  Mirror m;
+  start(&m, grc::rs2::UnknownItemPolicy::Strict);
+  m.texture_adopt(kTex, rgba_copy(kHashA), some_bytes(), grc::rs2::AdoptedContent::Creation, 1);
+  m.texture_adopt(kOther, rgba_copy(kHashA), some_bytes(), grc::rs2::AdoptedContent::Creation, 1);
+  m.mesh_adopt(kMesh, {mesh_input(kHashM)}, {0, 0, 0, 0, 0, 0}, 1);
+  m.texture_2d_update(kTex, rgba_copy(kHashB), some_bytes(), 0, 2);
+  m.texture_2d_create(kNew, rgba_copy(kHashB), some_bytes(), 2);
+  m.texture_replace(kOther, kNew, 2);
+  m.mesh_clear(kMesh, 2);
+  const Snapshot s = m.snapshot(1, 2).state;
+  int current = 0;
+  for (const auto &t : s.textures) {
+    check(t.origin == Origin::Adopted, "refine: still adopted");
+    check(t.version == 2, "refine: version raised");
+    current += t.adopted_content == grc::rs2::AdoptedContent::Current ? 1 : 0;
+    check(t.hash == kHashB, "refine: the update's / replacement's content");
+  }
+  check(s.textures.size() == 2 && current == 2, "refine: update and replace give current");
+  check(s.meshes.size() == 1 &&
+            s.meshes[0].adopted_content == grc::rs2::AdoptedContent::Current,
+        "refine: mesh_clear gives current");
+  // A layered or mismatched update leaves the trust where it was.
+  Mirror n;
+  start(&n, grc::rs2::UnknownItemPolicy::Strict);
+  n.texture_adopt(kTex, rgba_copy(kHashA), some_bytes(), grc::rs2::AdoptedContent::Creation, 1);
+  n.texture_2d_update(kTex, rgba_copy(kHashB), some_bytes(), 1, 2);
+  const Snapshot t = n.snapshot(1, 2).state;
+  check(t.textures.size() == 1 &&
+            t.textures[0].adopted_content == grc::rs2::AdoptedContent::Creation,
+        "refine: a layered update keeps creation");
+}
+
+// The hook log registers an adopted texture/mesh exactly as a create, on an "adopt" line.
+void test_resources_log() {
+  grc::rs::ResourceLog log;
+  log.start(0, kRootViewport);
+  grc::rs::TapContext ctx;
+  ctx.frame = 3;
+  log.texture_adopt(ctx, 0x50, rgba_copy(kHashA), "current", "textserver");
+  log.texture_adopt(ctx, 0x50, rgba_copy(kHashB), "creation", "dummy");  // known: no line
+  std::vector<grc::rs::MeshSurfaceCopy> surfaces = {mesh_input(kHashM).copy};
+  log.mesh_adopt(ctx, 0x60, surfaces);
+  log.texture_2d_update(ctx, 0x50, rgba_copy(kHashB), 0);
+  const std::string text = log.take_lines();
+  std::vector<std::string> lines;
+  size_t at = 0;
+  while (at < text.size()) {
+    const size_t nl = text.find('\n', at);
+    lines.push_back(text.substr(at, nl - at));
+    at = nl + 1;
+  }
+  check(lines.size() == 3, "log: adopt, adopt (mesh), update");
+  if (lines.size() == 3) {
+    check(lines[0].find("\"op\":\"adopt\"") != std::string::npos &&
+              lines[0].find("\"id\":1,") != std::string::npos &&
+              lines[0].find("\"version\":1,") != std::string::npos &&
+              lines[0].find("\"adopted_content\":\"current\",\"adopt_source\":\"textserver\"") !=
+                  std::string::npos,
+          "log: texture adopt line " + lines[0]);
+    check(lines[1].find("\"op\":\"adopt\"") != std::string::npos &&
+              lines[1].find("\"kind\":\"mesh\"") != std::string::npos &&
+              lines[1].find("\"adopted_content\":\"creation\"") != std::string::npos,
+          "log: mesh adopt line " + lines[1]);
+    check(lines[2].find("\"op\":\"texture_2d_update\"") != std::string::npos &&
+              lines[2].find("\"version\":2,") != std::string::npos &&
+              lines[2].find("adopted_content") == std::string::npos,
+          "log: the update after adoption is an ordinary update " + lines[2]);
+  }
+}
+
+void test_adopt_fault_parse() {
+  grc::rs::AdoptFault f = grc::rs::AdoptFault::ClaimCurrent;
+  std::string error;
+  check(grc::rs::parse_adopt_fault(nullptr, false, &f, &error) && f == grc::rs::AdoptFault::None,
+        "fault: unset is none");
+  check(grc::rs::parse_adopt_fault("atlas-from-dummy", true, &f, &error) &&
+            f == grc::rs::AdoptFault::AtlasFromDummy,
+        "fault: atlas-from-dummy");
+  check(grc::rs::parse_adopt_fault("claim-current", true, &f, &error) &&
+            f == grc::rs::AdoptFault::ClaimCurrent,
+        "fault: claim-current");
+  check(grc::rs::parse_adopt_fault("no-resources", true, &f, &error) &&
+            f == grc::rs::AdoptFault::NoResources,
+        "fault: no-resources");
+  check(!grc::rs::parse_adopt_fault("no-resources", false, &f, &error), "fault: needs GRC_ADOPT");
+  check(!grc::rs::parse_adopt_fault("bogus", true, &f, &error), "fault: unknown value refused");
+  // Lazy adoption is off until a stream begins it; every entry point is then a no-op.
+  check(!grc::rs::adopt_resources_active(), "lazy: inactive by default");
+  grc::rs::adopt_texture_ref(0x50);
+  grc::rs::adopt_mesh_ref(0x60);
+  check(!grc::rs::adopt_from_update_begin(), "lazy: no update adoption while inactive");
+  check(grc::rs::adopt_resource_stats().textures == 0, "lazy: nothing counted");
+}
+
+}  // namespace
+
 int main() {
   test_born_equals_adopted();
   test_sabotages();
   test_residue_and_strict();
   test_caps();
   test_seam_without_engine();
+  test_resources_born_equals_adopted();
+  test_resources_refinement();
+  test_resources_log();
+  test_adopt_fault_parse();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

@@ -1,7 +1,12 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://adopt.gd" id="1"]
 [ext_resource type="Script" path="res://box.gd" id="2"]
+[ext_resource type="Texture2D" path="res://tex/chip.png" id="3"]
+[ext_resource type="Texture2D" path="res://tex/chip_bc.png" id="4"]
+
+[sub_resource type="PlaceholderTexture2D" id="placeholder"]
+size = Vector2(16, 16)
 
 [node name="Adopt" type="Node"]
 script = ExtResource("1")
@@ -53,6 +58,11 @@ offset_right = 110.0
 offset_bottom = 40.0
 color = Color(0.4, 0.8, 1, 1)
 
+[node name="HiddenSprite" type="Sprite2D" parent="World/Hidden"]
+position = Vector2(0, 45)
+scale = Vector2(4, 4)
+centered = false
+
 [node name="Sprite" type="Sprite2D" parent="World"]
 position = Vector2(140, 120)
 scale = Vector2(8, 8)
@@ -79,6 +89,34 @@ position = Vector2(100, 70)
 script = ExtResource("2")
 size = Vector2(30, 30)
 color = Color(1, 1, 1, 1)
+
+[node name="Stale" type="Sprite2D" parent="World"]
+position = Vector2(300, 0)
+scale = Vector2(8, 8)
+centered = false
+
+[node name="Plain" type="Sprite2D" parent="World"]
+position = Vector2(340, 0)
+scale = Vector2(8, 8)
+centered = false
+
+[node name="Placeholder" type="Sprite2D" parent="World"]
+position = Vector2(262, 0)
+texture = SubResource("placeholder")
+centered = false
+
+[node name="Chip" type="Sprite2D" parent="World"]
+position = Vector2(300, 60)
+texture = ExtResource("3")
+centered = false
+
+[node name="ChipBc" type="Sprite2D" parent="World"]
+position = Vector2(340, 60)
+texture = ExtResource("4")
+centered = false
+
+[node name="Mesh" type="MeshInstance2D" parent="World"]
+position = Vector2(300, 110)
 
 [node name="UI" type="Control" parent="."]
 clip_contents = true
@@ -118,6 +156,13 @@ offset_top = 90.0
 offset_right = 74.0
 offset_bottom = 138.0
 stretch_mode = 1
+
+[node name="Grown" type="Label" parent="."]
+offset_left = 420.0
+offset_top = 196.0
+offset_right = 636.0
+offset_bottom = 224.0
+text = "Ab"
 
 [node name="Layer" type="CanvasLayer" parent="."]
 layer = 2

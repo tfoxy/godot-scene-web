@@ -278,7 +278,6 @@ format is a new version.
   session's `frame`, the first transaction's `frame` and every later frame are the same clock a
   capture loaded at startup uses.
 
-
 ## As built (G8f)
 
 Float payloads end to end (gate8-design.md D9). Where the design left room:
@@ -322,3 +321,20 @@ Float payloads end to end (gate8-design.md D9). Where the design left room:
   The browser receivers' use of it, and their float checks, are G8g's.
 - **Still refused:** `RGBA4444`, `RGB565` and `RGBE9995` (unsized), and every non-decodable
   block-compressed format G8t lists.
+
+## As built (G8r)
+
+- **Adopted textures and meshes are produced.** Under `GRC_ADOPT=arm` a texture or mesh that existed
+  at arm gets its table entry at its first reference by a hooked call, with `origin: "adopted"` and
+  `adopted_content` `"current"` (a TextServer atlas read-back, a `CompressedTexture2D`, or a
+  texture first met as a whole-image update) or `"creation"` (the dummy renderer's creation-time
+  copy; every adopted mesh), gate8-design.md Q2 "As built (G8r)". The entry is otherwise exactly a
+  created one: a new id, version 1, the same payload, `source_format` for a host decode.
+- **`adopted_content` follows the content.** An accepted whole `texture_2d_update`, a
+  `texture_replace` by a hooked texture and a `mesh_clear` turn an adopted entry `"current"`,
+  always together with the version bump the call makes anyway; `origin` never changes. No wire
+  change: G8w's validators already hold `adoption-entry`.
+- **The hook log** (not a wire format) registers an adopted resource on an `op: "adopt"` line (kind
+  `image` or `mesh`, the id and version a create would have), ending with the trailing keys
+  `adopted_content` and `adopt_source` (`textserver`, `cache`, `dummy` or `update`); no other line
+  changes.

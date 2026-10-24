@@ -26,12 +26,35 @@
 // Not adopted, by design (each stays typed by the mirror exactly as an unknown RID is today):
 // RS-only items and canvases with no node (the residue: TileMapLayer quadrants, a script's
 // `RenderingServer.canvas_item_create`, an embedded subwindow's canvas), and every subtree of a
-// non-root viewport. Pre-arm textures, meshes and glyph atlases are G8r's, materials and shaders
-// G8m's: a redrawn command naming one is the hooks' `unknown-texture` / `unknown-mesh`, an
-// adopted material the hooks' `unknown-material`.
+// non-root viewport. Materials and shaders are G8m's: an adopted material is the hooks'
+// `unknown-material`.
+//
+// G8r (gate8-design.md D6, D7): pre-arm textures, meshes and glyph atlases are adopted lazily, at
+// their first reference by a hooked call (adopt_texture_ref / adopt_mesh_ref, called by every hook
+// that names a texture or mesh RID, before its mirror tap), with origin `adopted`:
+//
+//   - a glyph atlas page: found through the TextServer (fonts from ThemeDB and the resource
+//     cache, each expanded by Font.get_rids(); a page whose current image is consistent with the
+//     dummy's creation copy is confirmed by font_get_glyph_texture_rid == the RID), its bytes
+//     font_get_texture_image's current page: adopted_content `current`, source `textserver`;
+//   - a CompressedTexture2D (found in the resource cache, where every one lives: it is loaded by
+//     path, and the engine never updates one in place): texture_2d_get's copy is its content,
+//     `current`, source `cache`;
+//   - any other texture: the dummy's creation-time copy (texture_2d_get), `creation`, source
+//     `dummy` -- exact unless the engine updated it in place before arm (an ImageTexture.update,
+//     an oversampled atlas page D7 cannot address);
+//   - a texture whose first reference is a texture_2d_update: that update's own image, `current`,
+//     source `update` (the hooks then apply the update as usual);
+//   - a mesh: mesh_get_surface per surface and mesh_get_custom_aabb, `creation`, source `dummy`.
+//
+// The bytes go through the hooks' own copy path (G8t's host decode, G8kw's worker and hold-back).
+// What cannot be read (texture_2d_get returns no image: a placeholder, a proxy, a RID that is no
+// dummy texture; a RID that is no mesh) stays the hooks' typed `unknown-texture` /
+// `unknown-mesh`, counted once per RID in AdoptResourceStats.
 #ifndef GRC_RS_ADOPT_H
 #define GRC_RS_ADOPT_H
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -152,6 +175,80 @@ AdoptStats adopt_at_arm(const AdoptConfig &config);
 
 // The adopted item RID -> node ObjectID map the walk built (D11's node map; G8m keeps it current).
 const std::unordered_map<std::uint64_t, std::uint64_t> &adopted_item_nodes();
+
+// ------------------------------------------------------------------- G8r: resources by RID
+
+// GRC_ADOPT_FAULT (G8r's fault knob, not a GRC_SABOTAGE kind: a new kind is a wire change, as
+// G8kw's GRC_TEXTURE_WORKER_FAULT; the bug each models would not declare itself either).
+enum class AdoptFault : std::uint8_t {
+  None,
+  NoResources,     // no-resources: nothing adopted lazily (G8a's typed refusals come back)
+  AtlasFromDummy,  // atlas-from-dummy: atlas pages read from the dummy's stale copy, still
+                   // declared `current`
+  ClaimCurrent,    // claim-current: every adopted texture and mesh declared `current`
+};
+
+// Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
+// for a fault without GRC_ADOPT=arm (`adopt` false).
+bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::string *error);
+const char *adopt_fault_name(AdoptFault fault);
+
+// What lazy resource adoption did (result.json stream.gate8.adopt_stats.resources).
+struct AdoptResourceStats {
+  std::uint32_t textures = 0;          // adopted textures, every source
+  std::uint32_t textures_current = 0;  // ... declared current
+  std::uint32_t textures_creation = 0; // ... declared creation
+  std::uint32_t atlas_pages = 0;       // ... of which TextServer readbacks
+  std::uint32_t compressed = 0;        // ... of which CompressedTexture2D (resource cache)
+  std::uint32_t from_update = 0;       // ... of which first met as a texture_2d_update
+  std::uint32_t decoded = 0;           // ... whose payload is a host decode (G8t)
+  std::uint32_t textures_refused = 0;  // RIDs nothing could read: unknown-texture stays
+  std::uint32_t meshes = 0;            // adopted meshes (creation)
+  std::uint32_t mesh_surfaces = 0;
+  std::uint32_t meshes_refused = 0;    // RIDs mesh_get_surface_count could not read
+  std::uint32_t fonts = 0;             // TextServer font RIDs the census found
+  std::uint32_t cached_compressed = 0; // CompressedTexture2D RIDs the census found
+  std::uint32_t cache_paths = 0;       // resource paths the census listed
+  std::uint64_t census_ns = 0;         // the one-time census (fonts, resource cache)
+  std::uint64_t lookup_ns = 0;         // every adoption's read-back, census excluded
+};
+
+// Starts lazy adoption for this stream (GRC_ADOPT=arm, after the walk; the TextServer and
+// resource-cache reads run on the main thread only, any other thread gets the dummy's copy).
+// Ends with the stream.
+void adopt_resources_begin(AdoptFault fault);
+void adopt_resources_end();
+bool adopt_resources_active();
+AdoptResourceStats adopt_resource_stats();
+
+// Called by a hook before its mirror tap: adopts `rid` if it is non-null, lazy adoption is
+// active and the mirror does not know it. Cheap otherwise (an atomic load).
+void adopt_texture_ref(std::uint64_t rid);
+void adopt_mesh_ref(std::uint64_t rid);
+// Called by the texture_2d_update hook for a whole-image update of a RID the mirror does not
+// know: true (and counted as one `current` adoption from an update) when lazy adoption is active
+// and not faulted off; the hook then registers the texture from the update's own image.
+bool adopt_from_update_begin();
+
+// One surface read back through mesh_get_surface, for hooks_adopt_mesh (pointers valid for the
+// call only).
+struct AdoptSurface {
+  std::int32_t primitive = 0;
+  std::uint64_t format = 0;
+  std::uint32_t vertex_count = 0;
+  std::uint32_t index_count = 0;
+  float aabb[6] = {};
+  float uv_scale[4] = {};
+  const std::uint8_t *vertex = nullptr;
+  std::size_t vertex_bytes = 0;
+  const std::uint8_t *attribute = nullptr;
+  std::size_t attribute_bytes = 0;
+  const std::uint8_t *skin = nullptr;
+  std::size_t skin_bytes = 0;
+  const std::uint8_t *index = nullptr;
+  std::size_t index_bytes = 0;
+  std::int64_t blend_shape_bytes = 0;  // non-zero when the surface has blend shapes (refused)
+};
 
 }  // namespace rs
 }  // namespace grc

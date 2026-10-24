@@ -228,6 +228,14 @@ class ResourceLog {
                          int layer, bool omitted = false, std::shared_ptr<TextureJob> job = nullptr);
   void texture_2d_placeholder_create(const TapContext &ctx, std::uint64_t rid,
                                      bool omitted = false);
+  // G8r (gate8-design.md D6, D7): op "adopt", kind "image": a texture that existed before arm,
+  // registered at its first reference exactly as texture_2d_create registers one (a new id,
+  // version 1, status from the copy). The line ends with the trailing keys `adopted_content`
+  // ("current" | "creation") and `adopt_source` ("textserver", "cache", "dummy" or "update":
+  // where the bytes were read), present on adopt lines only.
+  void texture_adopt(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy,
+                     const char *content, const char *source,
+                     std::shared_ptr<TextureJob> job = nullptr);
   void texture_replace(const TapContext &ctx, std::uint64_t texture, std::uint64_t by_texture,
                        bool omitted = false);
   // Logs only RIDs it knows as a texture or a mesh (every other free changes nothing here).
@@ -284,6 +292,11 @@ class ResourceLog {
   // unsupported (the surface is still kept, so later indices still line up).
   void mesh_add_surface(const TapContext &ctx, std::uint64_t rid, const MeshSurfaceCopy &surface,
                         bool omitted = false);
+  // G8r (gate8-design.md D6): op "adopt", kind "mesh": a pre-arm mesh read back through
+  // mesh_get_surface, registered as mesh_create_from_surfaces registers one (its single surface
+  // on the line, as G5c's), with `adopted_content` "creation" and `adopt_source` "dummy".
+  void mesh_adopt(const TapContext &ctx, std::uint64_t rid,
+                  const std::vector<MeshSurfaceCopy> &surfaces);
   // mesh_surface_update_vertex_region / _attribute_region / _skin_region / _index_region:
   // `buffer` is "vertex" | "attribute" | "skin" | "index". `outcome` is "unknown" for an unknown
   // mesh or an out-of-range surface index, "rejected" for an out-of-bounds or empty update
