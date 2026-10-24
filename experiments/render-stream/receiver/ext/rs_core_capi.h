@@ -19,6 +19,10 @@ void rsc_free(RsCore *h);
 uint32_t rsc_op_count();
 void rsc_set_sabotage(RsCore *h, const uint8_t *name, size_t len);
 void rsc_set_full_scan(RsCore *h, int32_t on);
+// G8kp (texture-delivery-design.md D3): the hello's texture_encodings and gpu_formats; 1, or 0
+// with the error in text.
+int32_t rsc_set_delivery(RsCore *h, const uint8_t *encodings, size_t encodings_len,
+                         const uint8_t *gpu_formats, size_t gpu_formats_len);
 // G7o2 (D31): the next session defers the record digest; rsc_record_digest fills it later
 // (text: the record at `offset`'s sha256 hex; 1, or 0 with the error in text).
 void rsc_set_digest_deferred(RsCore *h, int32_t on);

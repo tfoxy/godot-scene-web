@@ -155,7 +155,58 @@ void test_delivery_seam() {
         "the declaration carries the mode and, until an encoder exists, a null encoder");
   grc::rs::VariantRequest request;
   request.hash = std::string(64, 'a');
-  check(grc::rs::texture_variants(request).empty(), "the seam offers no variants in G8k9");
+  check(grc::rs::texture_variants(request).empty(), "no block bytes, no variant");
+
+  // G8kp: passthrough offers `block`, the Basis modes are refused typed at /9.
+  std::string why;
+  grc::rs::parse_delivery_policy("passthrough", &d, &error);
+  check(grc::rs::delivery_mode_implemented(d, &why), "passthrough is implemented");
+  grc::rs::parse_delivery_policy("rgba", &d, &error);
+  check(grc::rs::delivery_mode_implemented(d, &why), "rgba is implemented");
+  for (const char *mode : {"basis-uastc", "basis-etc1s"}) {
+    grc::rs::parse_delivery_policy(mode, &d, &error);
+    why.clear();
+    check(!grc::rs::delivery_mode_implemented(d, &why) &&
+              why.find("texture-delivery-unimplemented: GRC_TEXTURE_DELIVERY=") == 0,
+          "a Basis mode is refused typed until its encoder lands");
+  }
+  check(grc::rs::mode_offers_block("passthrough") && grc::rs::mode_offers_block("basis-uastc") &&
+            !grc::rs::mode_offers_block("rgba") && !grc::rs::mode_offers_block("basis-etc1s"),
+        "D1: block in passthrough and basis-uastc only");
+  check(std::string(grc::rs::block_format_family("DXT5")) == "s3tc" &&
+            std::string(grc::rs::block_format_family("BPTC_RGBA")) == "bptc" &&
+            std::string(grc::rs::block_format_family("RGTC_RG")) == "rgtc" &&
+            std::string(grc::rs::block_format_family("ETC2_RGBA8")) == "etc2" &&
+            std::string(grc::rs::block_format_family("ASTC_8x8")) == "astc" &&
+            grc::rs::block_format_family("DXT5_RA_AS_RG") == nullptr &&
+            grc::rs::block_format_family("BPTC_RGBFU") == nullptr &&
+            grc::rs::block_format_family("RGBA8") == nullptr,
+        "block families follow Godot's feature names");
+  // render-stream-9.md "Texture payload": 64x64 DXT1 = 2048 B; DXT5 with mips 64..1 =
+  // 4096+1024+256+64+16+16+16 = 5488; ASTC_8x8 10x10 = 2x2 blocks of 16 B = 64.
+  check(grc::rs::block_data_bytes("DXT1", 64, 64, false) == 2048 &&
+            grc::rs::block_data_bytes("DXT5", 64, 64, true) == 5488 &&
+            grc::rs::block_data_bytes("ASTC_8x8", 10, 10, false) == 64 &&
+            grc::rs::block_data_bytes("RGBA8", 4, 4, false) == -1,
+        "block data sizes are Godot's");
+  grc::rs::parse_delivery_policy("passthrough", &d, &error);
+  grc::rs::texture_delivery_set_policy(d);
+  request.block.hash = std::string(64, 'b');
+  request.block.format = "DXT5";
+  request.block.payload_bytes = 100;
+  const std::vector<grc::rs2::TextureVariant> offered = grc::rs::texture_variants(request);
+  check(offered.size() == 1 && offered[0].encoding == grc::rs2::VariantEncoding::Block &&
+            offered[0].hash == request.block.hash && offered[0].has_format &&
+            offered[0].format == "DXT5" && !offered[0].has_params &&
+            offered[0].payload_bytes == 100,
+        "passthrough offers the hooked bytes as one block variant");
+  request.block.hash = request.hash;
+  check(grc::rs::texture_variants(request).empty(), "never a variant repeating the base hash");
+  request.block.hash = std::string(64, 'b');
+  grc::rs::parse_delivery_policy("rgba", &d, &error);
+  grc::rs::texture_delivery_set_policy(d);
+  check(grc::rs::texture_variants(request).empty(), "rgba offers no variant");
+  grc::rs::texture_delivery_set_policy(grc::rs::DeliveryPolicy());
 }
 
 void test_subprotocols() {

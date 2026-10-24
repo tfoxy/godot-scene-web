@@ -26,6 +26,10 @@ const PROTOCOL: String = "render-stream/6"
 ## never in an Authorization header on the upgrade (a browser's WebSocket cannot set one).
 const SUBPROTOCOL_V7: String = "render-stream.7"
 const PROTOCOL_V7: String = "render-stream/7"
+## render-stream/9 (G8kp, render-stream-9.md "Live transport"): /7's transport and hello plus the
+## two delivery keys.
+const SUBPROTOCOL_V9: String = "render-stream.9"
+const PROTOCOL_V9: String = "render-stream/9"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
 const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 
@@ -56,6 +60,9 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 	peer.inbound_buffer_size = inbound_bytes
 	if version == 7:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V7])
+	elif version == 9:
+		# G8kp: a /9 client (texture delivery) offers only render-stream.9; /7's transport.
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V9])
 	else:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
 		if token != "":
@@ -178,4 +185,14 @@ static func parse_host_text(text: String) -> Dictionary:
 	out["ok"] = true
 	out["reason"] = reason
 	out["detail"] = detail
+	return out
+
+
+## G8kp: the /9 hello (render-stream-9.md "Live transport"): /7's fourteen keys under protocol
+## render-stream/9, then texture_encodings and gpu_formats (texture-delivery-design.md D3, Q3).
+static func hello_v9(v7: Dictionary, texture_encodings: String, gpu_formats: String) -> Dictionary:
+	var out: Dictionary = v7.duplicate()
+	out["protocol"] = PROTOCOL_V9
+	out["texture_encodings"] = texture_encodings
+	out["gpu_formats"] = gpu_formats
 	return out

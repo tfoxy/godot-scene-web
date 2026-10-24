@@ -27,7 +27,8 @@ use crate::present::{
 use glow::HasContext;
 use gsw_canvas_draw_list::{
     BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, DRAW_UNTEXTURED, Draw, DrawList,
-    Format, Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
+    CompressedFormat, Format, Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE,
+    premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -720,6 +721,13 @@ pub const CONTEXT_ATTRIBUTES: ContextAttributes = ContextAttributes {
 };
 
 impl CanvasItemsExecutor {
+    /// G8kp: the compressed families this context exposes ([`gpu_families`]), the `gpu_formats` a
+    /// GSW receiver states before any mask.
+    pub fn gpu_families(&self) -> Vec<&'static str> {
+        let extensions = self.gl.raw.supported_extensions();
+        gpu_families(extensions.iter().map(String::as_str))
+    }
+
     /// Create `canvas`'s WebGL2 context ([`CONTEXT_ATTRIBUTES`]) and every object a frame needs.
     /// The canvas must have no context yet. The first `execute` must carry `dirty.all`.
     pub fn new(canvas: web_sys::HtmlCanvasElement, options: ExecOptions) -> Result<Self, String> {
@@ -1064,6 +1072,34 @@ impl CanvasItemsExecutor {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
                     }
                 }
+                TextureOp::UploadCompressed {
+                    id,
+                    width,
+                    height,
+                    format,
+                    offset,
+                    len,
+                } => {
+                    if id == WHITE_TEXTURE {
+                        return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
+                    }
+                    if width == 0 || height == 0 || width > self.max_side || height > self.max_side
+                    {
+                        return Err(ExecError::Invalid(format!(
+                            "texture {id}: size {width}x{height}"
+                        )));
+                    }
+                    if u64::from(len) != format.level_bytes(width, height) {
+                        return Err(ExecError::Invalid(format!(
+                            "texture {id}: {len} bytes is not {format:?}'s level 0 at {width}x{height}"
+                        )));
+                    }
+                    if u64::from(offset) + u64::from(len) > list.texture_bytes.len() as u64 {
+                        return Err(ExecError::Invalid(format!(
+                            "texture {id}: bytes outside texture_bytes"
+                        )));
+                    }
+                }
             }
         }
         Ok(())
@@ -1146,6 +1182,48 @@ impl CanvasItemsExecutor {
                     }
                     stats.texture_uploads += 1;
                     stats.texture_upload_bytes += bytes.len() as u32;
+                }
+                TextureOp::UploadCompressed {
+                    id,
+                    width,
+                    height,
+                    format,
+                    offset,
+                    len,
+                } => {
+                    // G8kp (texture-delivery-design.md Q6 "GSW"): a `block` variant's level 0, in
+                    // the GL internal format Godot's GLES3 driver uses for it; the texture is then
+                    // sampled exactly as an RGBA8 one (level 0, the draw's own sampler).
+                    let texture = match self.textures.get(&id) {
+                        Some(texture) => *texture,
+                        None => match unsafe { self.gl.c().create_texture() } {
+                            Ok(texture) => {
+                                self.textures.insert(id, texture);
+                                texture
+                            }
+                            Err(_) => {
+                                self.loss.mark_lost();
+                                continue;
+                            }
+                        },
+                    };
+                    self.bind_draw_texture(texture, stats);
+                    let start = offset as usize;
+                    let bytes = &list.texture_bytes[start..start + len as usize];
+                    unsafe {
+                        self.gl.c().compressed_tex_image_2d(
+                            glow::TEXTURE_2D,
+                            0,
+                            compressed_internal_format(format) as i32,
+                            width as i32,
+                            height as i32,
+                            0,
+                            len as i32,
+                            bytes,
+                        );
+                    }
+                    stats.texture_uploads += 1;
+                    stats.texture_upload_bytes += len;
                 }
                 TextureOp::Free { id } => {
                     if let Some(texture) = self.textures.remove(&id) {
@@ -1907,4 +1985,45 @@ fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, opaque: bool, stats: &mut
         cache.blend_func = Some(func);
         stats.blend_changes += 1;
     }
+}
+
+/// G8kp: the GL internal format of a block-compressed upload, as Godot's GLES3 driver picks it
+/// (`texture_storage.cpp` `_get_gl_image_and_format`).
+fn compressed_internal_format(format: CompressedFormat) -> u32 {
+    match format {
+        CompressedFormat::Dxt1 => 0x83F1, // COMPRESSED_RGBA_S3TC_DXT1_EXT
+        CompressedFormat::Dxt3 => 0x83F2, // COMPRESSED_RGBA_S3TC_DXT3_EXT
+        CompressedFormat::Dxt5 => 0x83F3, // COMPRESSED_RGBA_S3TC_DXT5_EXT
+        CompressedFormat::RgtcR => 0x8DBB, // COMPRESSED_RED_RGTC1_EXT
+        CompressedFormat::RgtcRg => 0x8DBD, // COMPRESSED_RED_GREEN_RGTC2_EXT
+        CompressedFormat::BptcRgba => 0x8E8C, // COMPRESSED_RGBA_BPTC_UNORM_EXT
+        CompressedFormat::Etc2Rgb8 => 0x9274, // COMPRESSED_RGB8_ETC2
+        CompressedFormat::Etc2Rgb8A1 => 0x9276, // COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2
+        CompressedFormat::Etc2Rgba8 => 0x9278, // COMPRESSED_RGBA8_ETC2_EAC
+        CompressedFormat::EacR11 => 0x9270, // COMPRESSED_R11_EAC
+        CompressedFormat::EacR11Signed => 0x9271, // COMPRESSED_SIGNED_R11_EAC
+        CompressedFormat::EacRg11 => 0x9272, // COMPRESSED_RG11_EAC
+        CompressedFormat::EacRg11Signed => 0x9273, // COMPRESSED_SIGNED_RG11_EAC
+        CompressedFormat::Astc4x4 => 0x93B0, // COMPRESSED_RGBA_ASTC_4x4_KHR
+        CompressedFormat::Astc8x8 => 0x93B7, // COMPRESSED_RGBA_ASTC_8x8_KHR
+    }
+}
+
+/// G8kp (texture-delivery-design.md Q3): Godot's feature names for the compressed families a
+/// WebGL context exposes, from its extension list: `s3tc` (`WEBGL_compressed_texture_s3tc`),
+/// `bptc` (`EXT_texture_compression_bptc`), `rgtc` (`EXT_texture_compression_rgtc`), `etc2`
+/// (`WEBGL_compressed_texture_etc`), `astc` (`WEBGL_compressed_texture_astc`), in that order.
+pub fn gpu_families<'a>(extensions: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
+    let have: Vec<&str> = extensions.into_iter().collect();
+    [
+        ("s3tc", "WEBGL_compressed_texture_s3tc"),
+        ("bptc", "EXT_texture_compression_bptc"),
+        ("rgtc", "EXT_texture_compression_rgtc"),
+        ("etc2", "WEBGL_compressed_texture_etc"),
+        ("astc", "WEBGL_compressed_texture_astc"),
+    ]
+    .into_iter()
+    .filter(|(_, ext)| have.contains(ext))
+    .map(|(family, _)| family)
+    .collect()
 }

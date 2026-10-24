@@ -19,6 +19,8 @@ extends SceneTree
 const Textures := preload("res://textures.gd")
 const Payload := preload("res://payload.gd")
 const CARRIED: Array[String] = ["RGBA8", "R8", "RG8"]
+## G8kp: the block formats render-stream-9.md offers as a `block` variant.
+const BLOCK_FORMATS: Array[String] = ["DXT1", "DXT3", "DXT5", "RGTC_R", "RGTC_RG", "BPTC_RGBA", "ETC", "ETC2_R11", "ETC2_R11S", "ETC2_RG11", "ETC2_RG11S", "ETC2_RGB8", "ETC2_RGBA8", "ETC2_RGB8A1", "ASTC_4x4", "ASTC_8x8"]
 
 
 func _init() -> void:
@@ -79,6 +81,20 @@ func _decode(texture: Dictionary, family: String, v: Dictionary, timed: bool, re
 	entry["height"] = source.get_height()
 	entry["mipmaps"] = source.has_mipmaps()
 	entry["source_data_bytes"] = source.get_data_size()
+	# G8kp (texture-delivery-design.md D1 `passthrough`): the .ctex's own block bytes as a GRT1
+	# payload in their block format, what a `block` variant must equal byte for byte
+	# (`block-exact`); null for a format render-stream-9.md never offers as a variant.
+	var source_format: String = entry["source_format"]
+	if not timed and source.is_compressed() and BLOCK_FORMATS.has(source_format):
+		var block: PackedByteArray = Payload.encode(source)
+		entry["block_payload_sha256"] = Payload.sha256_hex(block)
+		entry["block_payload_bytes"] = block.size()
+		var block_out := FileAccess.open(out_dir.path_join("%s.%s.block.grt1" % [name, family]), FileAccess.WRITE)
+		block_out.store_buffer(block)
+		block_out.close()
+	else:
+		entry["block_payload_sha256"] = null
+		entry["block_payload_bytes"] = null
 	var decoded: Image = source.duplicate() as Image
 	var error: Error = OK
 	if decoded.is_compressed():

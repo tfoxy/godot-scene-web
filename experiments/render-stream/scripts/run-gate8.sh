@@ -67,6 +67,19 @@
 #       the GRC_ADOPT_FAULT=no-include-path capture (the typed shader-adopt-include); then, rendered,
 #       the unarmed `reference` with gate 5.5's material oracle (RS_FIXTURE_MATERIAL_LOG) and the
 #       native receiver on born, late (full and patch sinks) and the no-include-path capture.
+#   g8kp (G8kp, texture-delivery-design.md D1 `passthrough`, D3; fixtures/gate8-tex; every leg
+#       under g8kp/): the import and oracle (shared with g8t when both run; the oracle also writes
+#       each .ctex's block bytes as <name>.<family>.block.grt1), then headless /9 captures under
+#       GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough (`capture`, full and patch
+#       sinks and the store), the same at GRC_TEXTURE_WORKERS=2 (`workers/capture`: the block
+#       variant hashed on the worker) and `refused-basis/capture` (basis-uastc at /9: the typed
+#       refusal); then, rendered, `reference` and `reference-hw` (as g8t's) and the native receiver
+#       on the full sink (`receiver`, default texture_encodings block,decoded with the GPU's
+#       families), the patch sink (`receiver-patch`) and with s3tc,bptc,rgtc masked
+#       (`receiver-masked`); last, in headless Chromium, the GSW receiver on the same recording
+#       (`gsw`), with s3tc,bptc,rgtc masked (`gsw-masked`) and the ignore-format-mask sabotage
+#       (`sabotage-ignore-format-mask/gsw`: the mask stated, not applied), through
+#       gate8-delivery-tool.ts (the rs-core wasm and the GSW bundle are built first).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -88,8 +101,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp)
 
 EXTENSION=""
 CALIBRATION=""
@@ -349,12 +362,13 @@ run_g8t() {
 	run_capture "$OUT/workers/sabotage-publish-before-ready/capture" "" none
 
 	# G8k9 (texture-delivery-design.md D4, Q5): the same fixture through a /9 file sink with the delivery
-	# mode declared. The seam offers no variant, so the result must be the /8 capture's, state for
-	# state, with `variants: []` on every ok image and the session naming the mode.
-	echo "run-gate8: delivery9/capture (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=basis-uastc, empty seam)"
+	# mode declared. Mode rgba offers no variant (G8kp: the Basis modes G8k9 declared here are
+	# refused now, g8kp/refused-basis), so the result must be the /8 capture's, state for state,
+	# with `variants: []` on every ok image and the session naming the mode.
+	echo "run-gate8: delivery9/capture (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=rgba: no variant)"
 	RECORDING_NAME=recording.rs9
 	PATCH_RECORDING_NAME=recording-patch.rs9
-	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=rgba
 		RS_FIXTURE_TEXTURE_LOG="$OUT/delivery9/capture/textures.jsonl")
 	run_capture "$OUT/delivery9/capture" "" none
 	RECORDING_NAME=recording.rs8
@@ -686,8 +700,111 @@ run_g8m() {
 	GS_RUN_DIR=""
 }
 
+# ------------------------------------------------------------------------------------ g8kp
+# G8kp (texture-delivery-design.md D1, D3, Q3): `passthrough` at /9 end to end.
+G8KP_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough)
+# The families a desktop receiver masks to stand in for one without BC (the g31's view of BC).
+G8KP_MASK="s3tc,bptc,rgtc"
+
+# run_g8kp_live: g8kp/live/{host,receiver} (inside g8kp's gamescope).
+run_g8kp_live() {
+	local host="$OUT/g8kp/live/host" receiver="$OUT/g8kp/live/receiver" waited=0 port=""
+	mkdir -p "$host/evidence" "$receiver"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_OUT="$host/$RECORDING_NAME"
+		GRC_RESOURCE_STORE_DIR="$host/store" GRC_LIVE_LISTEN=127.0.0.1:0 "${G8KP_ENV[@]}"
+		RS_FIXTURE_STEP_FRAMES=600 RS_FIXTURE_QUIT_FRAME=780 RS_FIXTURE_STEP_LOG="$host/steps.jsonl"
+		RS_FIXTURE_TEXTURE_LOG="$host/textures.jsonl"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$FIXTURE_DIR"
+	local pid="$BG_PID"
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see g8kp/live/host/evidence/live.json)" >"$receiver/skipped.txt"
+	else
+		LEG_ENV=(
+			RS_RECEIVER_MODE=live RS_RECEIVER_PROTOCOL=9 RS_RECEIVER_CREDIT_WINDOW=1
+			RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream"
+			RS_RECEIVER_OUT="$receiver/applied.json" RS_RECEIVER_CACHE_DIR="$receiver/cache"
+		)
+		RENDERED_EXTRA_ARGS=(--max-fps 60)
+		run_rendered "$receiver" "$RECEIVER_DIR"
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8kp() {
+	if [ ! -f "$OUT/import/fixture/exit-code.txt" ]; then
+		run_import_g8t
+	fi
+	if [ ! -f "$OUT/oracle/exit-code.txt" ]; then
+		echo "run-gate8: oracle"
+		run_oracle "$OUT/oracle"
+	fi
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+
+	echo "run-gate8: g8kp capture (/9, GRC_TEXTURE_DELIVERY=passthrough)"
+	CAPTURE_EXTRA_ENV=("${G8KP_ENV[@]}" RS_FIXTURE_TEXTURE_LOG="$OUT/g8kp/capture/textures.jsonl")
+	run_capture "$OUT/g8kp/capture" "" none
+
+	echo "run-gate8: g8kp workers/capture (the same at GRC_TEXTURE_WORKERS=2)"
+	CAPTURE_EXTRA_ENV=("${G8KP_ENV[@]}" "${G8T_WORKERS_ENV[@]}"
+		RS_FIXTURE_TEXTURE_LOG="$OUT/g8kp/workers/capture/textures.jsonl")
+	run_capture "$OUT/g8kp/workers/capture" "" none
+
+	echo "run-gate8: g8kp refused-basis/capture (GRC_TEXTURE_DELIVERY=basis-uastc at /9: refused)"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc
+		RS_FIXTURE_TEXTURE_LOG="$OUT/g8kp/refused-basis/capture/textures.jsonl")
+	CAPTURE_WITH_PATCH=0
+	run_capture "$OUT/g8kp/refused-basis/capture" "" none
+	CAPTURE_WITH_PATCH=1
+
+	echo "run-gate8: bringing up private gamescope for g8kp's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8kp"
+	legs_par_begin
+	echo "run-gate8: g8kp reference and reference-hw"
+	run_reference_g8t "$OUT/g8kp/reference" decoded
+	run_reference_g8t "$OUT/g8kp/reference-hw" ctex
+	echo "run-gate8: g8kp receiver (block,decoded; the GPU's families)"
+	run_rendered_receiver "$OUT/g8kp/capture" "$OUT/g8kp/receiver"
+	echo "run-gate8: g8kp receiver-patch"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8kp/capture" "$OUT/g8kp/receiver-patch"
+	echo "run-gate8: g8kp receiver-masked ($G8KP_MASK masked: decoded)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_GPU_FORMAT_MASK="$G8KP_MASK")
+	run_rendered_receiver "$OUT/g8kp/capture" "$OUT/g8kp/receiver-masked"
+	legs_par_end
+
+	# live: a /9 passthrough host serving the fixture (the desktop family current for 600 frames at
+	# --max-fps 60) and the native receiver, rendered, joining with RS_RECEIVER_PROTOCOL=9: its hello
+	# offers render-stream.9 with texture_encodings and gpu_formats, and the block variants it picks
+	# are fetched over HTTP like any payload.
+	echo "run-gate8: g8kp live (host /9 passthrough + rendered native receiver at RS_RECEIVER_PROTOCOL=9)"
+	run_g8kp_live
+	gs_teardown "$OUT/gamescope-g8kp"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+
+	# The GSW legs (headless Chromium, the repo-private pinned build): the native receiver leg's
+	# own env and argv, replayed by the GSW receiver page (lib/gate7-web-legs.ts).
+	echo "run-gate8: g8kp gsw legs (gsw, gsw-masked, sabotage-ignore-format-mask/gsw)"
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/gate8-delivery-tool.ts" gsw-legs --source "$OUT" --mask "$G8KP_MASK") \
+		>"$OUT/g8kp/gsw-legs.log" 2>&1 || echo "run-gate8: g8kp gsw legs failed, see $OUT/g8kp/gsw-legs.log" >&2
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
+	g8kp) run_g8kp ;;
 	g8t) run_g8t ;;
 	g8f) run_g8f ;;
 	g8a) run_g8a ;;

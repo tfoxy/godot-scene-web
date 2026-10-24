@@ -95,6 +95,7 @@ import {
 import { type FetchResult, LiveFetcher } from "./fetcher";
 import { foldedFullIndex } from "./fold";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
+import { gpuFormatsOf, helloV9 } from "./hello";
 import { type PayloadVerify, Perf } from "./perf";
 import {
   definePrograms,
@@ -105,6 +106,19 @@ import {
 
 const SUBPROTOCOL = "render-stream.7";
 const PROTOCOL = "render-stream/7";
+/** G8kp (render-stream-9.md "Live transport"): RS_RECEIVER_PROTOCOL=9 offers only this. */
+const SUBPROTOCOL_V9 = "render-stream.9";
+/** G8kp (texture-delivery-design.md Q3): the compressed families a WebGL2 context on this page
+ * exposes, probed on a throwaway canvas before the module's own context exists (the hello goes
+ * out first), minus RS_RECEIVER_GPU_FORMAT_MASK; `none` when empty. The module re-derives the same
+ * list from its own context at `start` (`delivery_json`), which the evidence records beside it. */
+function probeGpuFormats(mask: string | null): string {
+  const probe = document.createElement("canvas").getContext("webgl2");
+  if (probe === null) return "none";
+  const extensions = probe.getSupportedExtensions() ?? [];
+  probe.getExtension("WEBGL_lose_context")?.loseContext();
+  return gpuFormatsOf(extensions, mask);
+}
 const CLOSE_WAIT_MS = 2000;
 /** RS_RECEIVER_RECONNECT_ON_LOSS: the most lost connections one run reconnects after. */
 const LOSS_RECONNECTS_MAX = 3;
@@ -356,7 +370,7 @@ class LiveReceiver {
       distinctFetched: 0,
       live: this.liveBlock,
       entries: this.entries,
-      protocol: "render-stream/7",
+      protocol: cfg.liveProtocol === 9 ? "render-stream/9" : "render-stream/7",
       creditWindow: null,
       cache: null,
     };
@@ -396,6 +410,9 @@ class LiveReceiver {
             // G7k (Q10 soak): live mode only; `null` (no RS_RECEIVER_MEMORY_BUDGET_BYTES) means
             // the module never evicts, same as native's unbudgeted default.
             memory_budget_bytes: this.cfg.memoryBudgetBytes,
+            texture_encodings: this.cfg.textureEncodings ?? "",
+            gpu_format_mask: this.cfg.gpuFormatMask ?? "",
+            ...(this.cfg.liveProtocol === 9 ? { live_protocol: 9 } : {}),
           }),
         );
       } catch (e) {
@@ -435,7 +452,9 @@ class LiveReceiver {
     this.closeInfo = null;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.L.url, [SUBPROTOCOL]);
+      ws = new WebSocket(this.L.url, [
+        this.cfg.liveProtocol === 9 ? SUBPROTOCOL_V9 : SUBPROTOCOL,
+      ]);
     } catch (e) {
       throw new ReplayFailure(
         null,
@@ -475,7 +494,8 @@ class LiveReceiver {
       lr.opened_us = us();
     const rect = this.canvas.getBoundingClientRect();
     // The /7 hello (Q2), key order as there. The token goes only here, never to a log.
-    this.send({
+    // G8kp: at /9 the same keys under render-stream/9, then the two delivery keys.
+    const hello: Record<string, unknown> = {
       type: "hello",
       protocol: PROTOCOL,
       receiver: "gsw-canvas-receiver",
@@ -490,7 +510,17 @@ class LiveReceiver {
       presentation_css_w: Math.round(rect.width),
       presentation_css_h: Math.round(rect.height),
       dpr_milli: Math.round(window.devicePixelRatio * 1000),
-    });
+    };
+    // G8kp: at /9 the same keys under render-stream/9, then the two delivery keys.
+    this.send(
+      this.cfg.liveProtocol === 9
+        ? helloV9(
+            hello,
+            this.cfg.textureEncodings ?? "block,decoded",
+            probeGpuFormats(this.cfg.gpuFormatMask),
+          )
+        : hello,
+    );
     log(
       `connected to ${this.L.url} as connection ${this.connIndex} (subprotocol ${ws.protocol}); hello sent`,
     );
@@ -587,6 +617,11 @@ class LiveReceiver {
     new Uint8Array(mem.buffer, p, len).set(new Uint8Array(buf));
     if (!this.sessionSeen) {
       if (g.live_session(len) < 0) throw failWith(null, g.error());
+      if (this.cfg.liveProtocol === 9)
+        this.report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
+          string,
+          unknown
+        >;
       this.sessionSeen = true;
       this.everSession = true;
       this.beginSession();

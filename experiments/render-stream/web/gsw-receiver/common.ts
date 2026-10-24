@@ -30,6 +30,8 @@ export interface GswRs {
   target_height(): number;
   error(): string;
   session_meta(): string;
+  /** G8kp: `{texture_encodings, gpu_formats, gpu_formats_detected, gpu_format_mask}` after start. */
+  delivery_json(): string;
   // G7g: the window this receiver presents into, and how it adopted the session's presentation.
   set_window(width: number, height: number): void;
   presentation_json(): string;

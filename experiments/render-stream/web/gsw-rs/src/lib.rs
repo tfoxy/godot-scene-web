@@ -76,7 +76,7 @@ pub struct Stats {
     pub stream: u32,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Opts {
     digest_inline: bool,
     skip_payload_hash: bool,
@@ -94,6 +94,24 @@ struct Opts {
     /// Sabotage `no-evict`: the budget above is parsed (so it is still reported) but
     /// [`PayloadStore::evict_unreferenced`] is simply never called.
     no_evict: bool,
+    /// G8kp (texture-delivery-design.md D3, Q3): `RS_RECEIVER_TEXTURE_ENCODINGS` (default
+    /// `block,decoded`) and `RS_RECEIVER_GPU_FORMAT_MASK` (families left out of `gpu_formats`).
+    texture_encodings: Option<String>,
+    gpu_format_mask: Vec<String>,
+    /// Sabotage `ignore-format-mask`: the receiver states the masked `gpu_formats` but picks
+    /// variants as if nothing were masked (`delivery-select` must catch it).
+    ignore_format_mask: bool,
+    /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session.
+    live_v9: bool,
+}
+
+/// A flat string value `"key":"value"` of the caller-written options object (no escapes).
+fn find_str(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = json.find(&needle)? + needle.len();
+    let rest = &json[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 /// `RS_RECEIVER_SABOTAGE` values the TypeScript shell, not this module, acts on, or that have no
@@ -143,6 +161,18 @@ fn parse_options(json: &str) -> Result<Opts, String> {
     o.format_rgba8 = json.contains("\"format\":\"rgba8\"");
     // G7k (Q10 soak), live mode only; a file-mode caller never sends this key.
     o.memory_budget_bytes = find_number(json, "memory_budget_bytes");
+    // G8kp: the delivery preference, checked against render-stream-9.md's grammar and names.
+    o.texture_encodings = find_str(json, "texture_encodings").filter(|t| !t.is_empty());
+    if let Some(enc) = &o.texture_encodings {
+        render_stream_core::delivery::DeliveryPrefs::parse(enc, "none")
+            .map_err(|e| format!("RS_RECEIVER_TEXTURE_ENCODINGS: {e}"))?;
+    }
+    if let Some(mask) = find_str(json, "gpu_format_mask").filter(|t| !t.is_empty()) {
+        render_stream_core::delivery::DeliveryPrefs::parse("decoded", &mask)
+            .map_err(|e| format!("RS_RECEIVER_GPU_FORMAT_MASK: {e}"))?;
+        o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
+    }
+    o.live_v9 = json.contains("\"live_protocol\":9");
     if let Some(start) = json.find("\"sabotage\":[") {
         let rest = &json[start + 12..];
         let end = rest.find(']').unwrap_or(rest.len());
@@ -174,6 +204,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "drop-mesh-surface" => o.apply.mesh.drop_surface = true,
                 "stale-mesh" => o.apply.mesh.stale = true,
                 "ignore-presentation" => o.ignore_presentation = true,
+                "ignore-format-mask" => o.ignore_format_mask = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
                     if let Some(s) = Sabotage::parse(other)? {
@@ -184,6 +215,15 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         }
     }
     Ok(o)
+}
+
+/// G8kp: the delivery preference a receiver states (`delivery_json`).
+#[derive(Default)]
+struct DeliveryReport {
+    texture_encodings: String,
+    gpu_formats: String,
+    gpu_formats_detected: String,
+    gpu_format_mask: String,
 }
 
 #[derive(Default)]
@@ -364,6 +404,8 @@ pub struct GswRs {
     validator: Option<Validator>,
     applier: Option<Applier>,
     executor: Option<CanvasItemsExecutor>,
+    /// G8kp: what this receiver states and selects with (`delivery_json`), set at `start`.
+    delivery: DeliveryReport,
     payloads: PayloadStore,
     /// G7o2: payloads verified and decoded when they arrived, not yet provided.
     stage: PayloadStage,
@@ -578,6 +620,7 @@ impl GswRs {
             validator: None,
             applier: None,
             executor: None,
+            delivery: DeliveryReport::default(),
             payloads: PayloadStore::default(),
             stage: PayloadStage::default(),
             verify: VerifyCounts::default(),
@@ -918,6 +961,44 @@ impl GswRs {
         }
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
+        // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
+        // minus the mask; the selection uses the stated list unless `ignore-format-mask`.
+        let detected = self
+            .executor
+            .as_ref()
+            .map(|e| e.gpu_families())
+            .unwrap_or_default();
+        let list = |fams: &[&str]| {
+            if fams.is_empty() {
+                "none".to_string()
+            } else {
+                fams.join(",")
+            }
+        };
+        let stated: Vec<&str> = detected
+            .iter()
+            .copied()
+            .filter(|f| !self.opts.gpu_format_mask.iter().any(|m| m == f))
+            .collect();
+        let encodings = self
+            .opts
+            .texture_encodings
+            .clone()
+            .unwrap_or_else(|| "block,decoded".to_string());
+        let selection = if self.opts.ignore_format_mask {
+            list(&detected)
+        } else {
+            list(&stated)
+        };
+        applier.delivery =
+            render_stream_core::delivery::DeliveryPrefs::parse(&encodings, &selection)?;
+        applier.stream_version = self.version;
+        self.delivery = DeliveryReport {
+            texture_encodings: encodings,
+            gpu_formats: list(&stated),
+            gpu_formats_detected: list(&detected),
+            gpu_format_mask: self.opts.gpu_format_mask.join(","),
+        };
         self.applier = Some(applier);
         self.viewport = Some(viewport);
         self.stats.stream = self.stream_index;
@@ -1049,15 +1130,17 @@ impl GswRs {
     pub fn live_session(&mut self, len: usize) -> i32 {
         self.live = true;
         let msg = &self.rx[..len];
-        if wire::version_of_magic(msg) != Some(7) {
+        // G8kp: a receiver that offered render-stream.9 (RS_RECEIVER_PROTOCOL=9) speaks /9 only.
+        let want: u8 = if self.opts.live_v9 { 9 } else { 7 };
+        if wire::version_of_magic(msg) != Some(want) {
             self.error = format!(
                 "bad-magic: expected {}, got {}",
-                wire::hex(&wire::magic(7)),
+                wire::hex(&wire::magic(want)),
                 wire::hex(&msg[..len.min(wire::MAGIC_LEN)])
             );
             return -1;
         }
-        let spans = match wire::split_records(msg, 7) {
+        let spans = match wire::split_records(msg, want) {
             Ok(s) => s,
             Err(e) => {
                 self.error = fail(e);
@@ -1073,7 +1156,7 @@ impl GswRs {
         }
         self.data = msg.to_vec();
         self.spans = spans;
-        self.version = 7;
+        self.version = want;
         self.rx_offset = len;
         self.start()
     }
@@ -1693,6 +1776,19 @@ impl GswRs {
 
     /// The session record's meta, as the wire carries it (the shell reads the viewport, stream and
     /// resources blocks from it once, at start).
+    /// G8kp (texture-delivery-design.md D3, Q3): `{texture_encodings, gpu_formats,
+    /// gpu_formats_detected, gpu_format_mask}` as this receiver states them (after `start`).
+    pub fn delivery_json(&self) -> String {
+        let d = &self.delivery;
+        format!(
+            "{{\"texture_encodings\":{},\"gpu_formats\":{},\"gpu_formats_detected\":{},\"gpu_format_mask\":{}}}",
+            json_str(&d.texture_encodings),
+            json_str(&d.gpu_formats),
+            json_str(&d.gpu_formats_detected),
+            json_str(&d.gpu_format_mask)
+        )
+    }
+
     pub fn session_meta(&self) -> String {
         let Some(span) = self.spans.first() else {
             return String::new();
@@ -1776,8 +1872,9 @@ impl GswRs {
                     out.push(',');
                 }
                 first = false;
+                // G8kp: `encoding` (D3's choice) only from /9, so older reports are unchanged.
                 out.push_str(&format!(
-                    "{{\"id\":{},\"hash\":{},\"op\":\"{}\",\"data_bytes\":{},\"stream\":{},\"seq\":{}}}",
+                    "{{\"id\":{},\"hash\":{},\"op\":\"{}\",\"data_bytes\":{},\"stream\":{},\"seq\":{}{}}}",
                     u.id,
                     u.hash
                         .map(|h| format!("\"{}\"", h.to_hex()))
@@ -1785,7 +1882,10 @@ impl GswRs {
                     u.op,
                     u.data_bytes,
                     e.stream,
-                    e.seq
+                    e.seq,
+                    u.encoding
+                        .map(|enc| format!(",\"encoding\":\"{enc}\""))
+                        .unwrap_or_default()
                 ));
             }
         }

@@ -220,6 +220,9 @@ async function run(): Promise<void> {
           digest: "deferred",
           sabotage: cfg.sabotage,
           format: "rgb10a2",
+          // G8kp (texture-delivery-design.md D3): the delivery preference a /9 recording is read with.
+          texture_encodings: cfg.textureEncodings ?? "",
+          gpu_format_mask: cfg.gpuFormatMask ?? "",
         }),
       );
     } catch (e) {
@@ -241,6 +244,14 @@ async function run(): Promise<void> {
         null,
         err.includes(": ") ? err : `missing-session: ${err}`,
       );
+    }
+    // G8kp: a render-stream/9 recording ("GRS9") states its delivery preference in the report.
+    if (data.length >= 4 && data[3] === 0x39) {
+      report.protocol = "render-stream/9";
+      report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
+        string,
+        unknown
+      >;
     }
     canvas.style.width = `${canvas.width}px`;
     canvas.style.height = `${canvas.height}px`;

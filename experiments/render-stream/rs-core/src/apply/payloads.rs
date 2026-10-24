@@ -11,12 +11,17 @@
 use crate::state::{Hash, Primitive};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// A texture's level 0 as straight RGBA8.
+/// A texture's level 0 as straight RGBA8, or (G8kp, a render-stream/9 `block` variant) as the
+/// source's own block-compressed level 0 (`compressed`; `rgba` is then empty and `format` names
+/// the block format).
 #[derive(Clone, Debug)]
 pub struct TexturePixels {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// G8kp: level 0 of a block-format payload, exactly the payload's bytes (no decode here: the
+    /// GPU samples it, texture-delivery-design.md Q6 "GSW").
+    pub compressed: Option<Vec<u8>>,
     /// The payload's own `Image.Format` name, mipmaps flag and `data` length (every level): what
     /// the native receiver's upload accounting reads (the former GDScript applier, `rs_applier.gd`, removed in G7gd; `uploads[].data_bytes`).
     pub format: String,
@@ -174,6 +179,7 @@ pub fn texture_rgba8(
             format: format.to_string(),
             mipmaps: false,
             data_len: data.len(),
+            compressed: None,
         });
     }
     match format {
@@ -211,7 +217,44 @@ pub fn texture_rgba8(
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
+        compressed: None,
     })
+}
+
+impl TexturePixels {
+    /// The bytes this store holds for the texture (G7k's budget): RGBA8 pixels, or a block
+    /// variant's level 0.
+    pub fn held_bytes(&self) -> u64 {
+        self.rgba.len() as u64 + self.compressed.as_ref().map_or(0, |c| c.len() as u64)
+    }
+}
+
+/// G8kp: a block-format GRT1 payload's level 0 (render-stream-9.md "Texture payload": whole blocks
+/// covering the level), kept as bytes for a compressed upload. None for a non-block format.
+pub fn texture_block_level0(
+    format: &str,
+    width: u32,
+    height: u32,
+    data: &[u8],
+) -> Option<Result<TexturePixels, String>> {
+    crate::payload::block_format(format)?;
+    let len = crate::payload::block_data_bytes(format, u64::from(width), u64::from(height), false)?;
+    let len = usize::try_from(len).ok()?;
+    if data.len() < len {
+        return Some(Err(format!(
+            "block texture {format} {width}x{height}: {} data bytes, level 0 needs {len}",
+            data.len()
+        )));
+    }
+    Some(Ok(TexturePixels {
+        width,
+        height,
+        rgba: Vec::new(),
+        compressed: Some(data[..len].to_vec()),
+        format: format.to_string(),
+        mipmaps: false,
+        data_len: data.len(),
+    }))
 }
 
 
@@ -397,7 +440,7 @@ impl PayloadStore {
     pub fn total_bytes(&self) -> u64 {
         self.textures
             .values()
-            .map(|t| t.rgba.len() as u64)
+            .map(|t| t.held_bytes())
             .sum::<u64>()
             + self.meshes.values().map(|m| m.data_bytes()).sum::<u64>()
             + self.shaders.values().map(|s| s.len() as u64).sum::<u64>()
@@ -408,7 +451,7 @@ impl PayloadStore {
         hashes
             .iter()
             .map(|h| {
-                self.textures.get(h).map_or(0, |t| t.rgba.len() as u64)
+                self.textures.get(h).map_or(0, |t| t.held_bytes())
                     + self.meshes.get(h).map_or(0, |m| m.data_bytes())
                     + self.shaders.get(h).map_or(0, |s| s.len() as u64)
             })
@@ -496,8 +539,17 @@ pub fn verify_decode(
                     t.format
                 )));
             }
-            let mut px =
-                texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data).map_err(bad)?;
+            // G8kp: a block payload (legal only at /9, decode_texture_v sized it) stays compressed.
+            let block = if version >= 9 {
+                texture_block_level0(&t.format, t.width as u32, t.height as u32, t.data)
+            } else {
+                None
+            };
+            let mut px = match block {
+                Some(b) => b.map_err(bad)?,
+                None => texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
+                    .map_err(bad)?,
+            };
             px.mipmaps = t.mipmaps;
             Decoded::Texture(px)
         }

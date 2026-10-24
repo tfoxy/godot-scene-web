@@ -43,7 +43,10 @@ Every pixel is a pure function of its coordinates, so the sources are identical 
   textures, one per frame from frame 2 (the `decode-cost` leg).
 - `oracle.gd`: the decode oracle (D15 (3)), a separate headless template process run with
   `--script`: it loads every `.ctex`, decodes a duplicate with `Image.decompress()` and records the
-  GRT1 payload's SHA-256 (`oracle.json`) and the payload itself (`<name>.<family>.grt1`). With
+  GRT1 payload's SHA-256 (`oracle.json`) and the payload itself (`<name>.<family>.grt1`); since
+  G8kp also the `.ctex`'s own block bytes as a GRT1 payload in their block format
+  (`<name>.<family>.block.grt1`, `block_payload_sha256`), what a `passthrough` capture's `block`
+  variant must equal (run-gate8.sh's `g8kp` group). With
   `RS_ORACLE_TIMING=1` it times the decode of the cost textures instead, best of 3.
 - `payload.gd`: this fixture's own `render-stream-texture/1` encoder and decoder (a copy of gate
   2's, deliberately not shared with the capture or the receiver).

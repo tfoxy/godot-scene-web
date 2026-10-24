@@ -149,6 +149,14 @@ struct PayloadCopy {
   bool worker = false;
   std::int64_t hook_ns = -1;
   std::int64_t dup_ns = -1;
+  // G8kp (rs_texture_delivery.h, texture-delivery-design.md D1 `passthrough`): beside an ok host
+  // decode at /9, the hooked block bytes as a GRT1 payload in their own format (the `block`
+  // variant). Empty hash and null bytes otherwise. Never logged, never part of a prediction's
+  // facts: a worker fills them with the content (TextureJob::fill).
+  std::string block_hash;
+  std::string block_format;
+  std::int64_t block_payload_bytes = 0;
+  std::shared_ptr<const std::vector<std::uint8_t>> block_bytes;
 };
 
 class TextureJob;  // rs_texture_worker.h

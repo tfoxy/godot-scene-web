@@ -548,6 +548,38 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
       return false;
     }
   }
+  // G8kp (texture-delivery-design.md Q3 "File sink"): the store holds every variant produced, so a
+  // replaying receiver picks by D3 as a live one does. A variant is never inline (D12(c), Q5) and
+  // never required: without a store it is simply not carried.
+  if (store_ == nullptr) {
+    return true;
+  }
+  for (const TextureEntry &entry : published.state.textures) {
+    if (!is_ok_image(entry)) {
+      continue;
+    }
+    for (const rs2::TextureVariant &variant : entry.variants) {
+      if (variant.encoding != rs2::VariantEncoding::Block || store_->has(variant.hash)) {
+        continue;
+      }
+      const auto payload = published.payloads.find(variant.hash);
+      if (payload == published.payloads.end() || payload->second == nullptr) {
+        error_ = "resource-store-failed: no payload for variant hash " + variant.hash;
+        return false;
+      }
+      std::string why;
+      const rs::ResourceStore::Put put =
+          store_->put_variant(entry, variant, *payload->second, frame, &why);
+      if (events_ && put != rs::ResourceStore::Put::Present) {
+        events_("store", variant.hash, payload->second->size(),
+                put == rs::ResourceStore::Put::Stored, frame);
+      }
+      if (put == rs::ResourceStore::Put::Failed) {
+        error_ = "resource-store-failed: " + why;
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -599,6 +631,18 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
       payloads.emplace(entry.hash, it->second);
     } else if (entry.id == stale_id_ && stale_payload_ != nullptr) {
       payloads.emplace(entry.hash, stale_payload_);
+    }
+    // G8kp: an entry's variants travel with it (the stale one's from the previous frame).
+    for (const rs2::TextureVariant &variant : entry.variants) {
+      const auto v = captured->payloads.find(variant.hash);
+      if (v != captured->payloads.end()) {
+        payloads.emplace(variant.hash, v->second);
+      } else if (entry.id == stale_id_) {
+        const auto old = previous_.payloads.find(variant.hash);
+        if (old != previous_.payloads.end()) {
+          payloads.emplace(variant.hash, old->second);
+        }
+      }
     }
   }
   for (const MeshEntry &mesh : captured->state.meshes) {

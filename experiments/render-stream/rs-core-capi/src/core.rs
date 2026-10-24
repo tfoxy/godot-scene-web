@@ -115,6 +115,22 @@ impl Core {
         self.planner.sab = Sabotage::parse(name);
     }
 
+    /// G8kp (texture-delivery-design.md D3): the receiver's `texture_encodings` and `gpu_formats`,
+    /// as its hello states them; the planner then fetches and uploads D3's choice per texture.
+    /// False (error in `text`) for a list render-stream-9.md's grammar or names refuse.
+    pub fn set_delivery(&mut self, encodings: &str, gpu_formats: &str) -> bool {
+        match render_stream_core::delivery::DeliveryPrefs::parse(encodings, gpu_formats) {
+            Ok(p) => {
+                self.planner.delivery = p;
+                true
+            }
+            Err(e) => {
+                self.text = e.into_bytes();
+                false
+            }
+        }
+    }
+
     pub fn state(&self) -> Option<&ResolvedState> {
         self.validator.as_ref().map(|v| v.state())
     }
@@ -174,7 +190,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6, /7 and /8, not /{version}"),
+                format!("the receiver core speaks render-stream/6, /7, /8 and /9, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;

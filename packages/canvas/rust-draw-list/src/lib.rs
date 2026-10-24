@@ -16,7 +16,8 @@
 //!   executor may merge ADJACENT draws whose state is equal and whose index ranges touch, never
 //!   reorder them; an untextured draw's texture and sampler count as equal to anything
 //!   ([`DRAW_UNTEXTURED`], G7o4).
-//! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels and frees.
+//! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels (or, from G8kp, of
+//!   block-compressed level-0 bytes, [`CompressedFormat`]) and frees.
 //! - [`Binding`]s: item-space programs (Godot's custom `canvas_item` shaders, registered with the
 //!   executor beside the list) with their uniform values, named by a draw's `program`.
 //!
@@ -265,6 +266,103 @@ pub enum TextureOp {
     Free {
         id: u32,
     },
+    /// (Re)define texture `id` as `width × height` block-compressed texels of `format`, level 0
+    /// only, from `DrawList::texture_bytes[offset..offset + len]` (`len` is the format's level-0
+    /// size, [`CompressedFormat::level_bytes`]). The executor uploads it only where the context
+    /// exposes the format; texture-delivery `block` variants (render-stream/9) are its only source.
+    UploadCompressed {
+        id: u32,
+        width: u32,
+        height: u32,
+        format: CompressedFormat,
+        offset: u32,
+        len: u32,
+    },
+}
+
+/// A block-compressed texture format, named for Godot's `Image.Format` it carries (the GL internal
+/// format Godot's GLES3 driver picks for it, `texture_storage.cpp` `_get_gl_image_and_format`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CompressedFormat {
+    /// BC1 with alpha (`COMPRESSED_RGBA_S3TC_DXT1_EXT`).
+    Dxt1,
+    /// BC2 (`COMPRESSED_RGBA_S3TC_DXT3_EXT`).
+    Dxt3,
+    /// BC3 (`COMPRESSED_RGBA_S3TC_DXT5_EXT`).
+    Dxt5,
+    /// BC4 (`COMPRESSED_RED_RGTC1_EXT`).
+    RgtcR,
+    /// BC5 (`COMPRESSED_RED_GREEN_RGTC2_EXT`).
+    RgtcRg,
+    /// BC7 (`COMPRESSED_RGBA_BPTC_UNORM_EXT`).
+    BptcRgba,
+    /// ETC1 and ETC2 RGB (`COMPRESSED_RGB8_ETC2`: an ETC1 block is a valid ETC2 block).
+    Etc2Rgb8,
+    /// ETC2 RGB with punch-through alpha (`COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2`).
+    Etc2Rgb8A1,
+    /// ETC2 RGBA (`COMPRESSED_RGBA8_ETC2_EAC`).
+    Etc2Rgba8,
+    /// EAC R11 unsigned / signed (`COMPRESSED_R11_EAC`, `COMPRESSED_SIGNED_R11_EAC`).
+    EacR11,
+    EacR11Signed,
+    /// EAC RG11 unsigned / signed (`COMPRESSED_RG11_EAC`, `COMPRESSED_SIGNED_RG11_EAC`).
+    EacRg11,
+    EacRg11Signed,
+    /// ASTC LDR 4×4 and 8×8 (`COMPRESSED_RGBA_ASTC_4x4_KHR`, `_8x8_KHR`).
+    Astc4x4,
+    Astc8x8,
+}
+
+impl CompressedFormat {
+    /// The format for a Godot `Image.Format` name, if this list carries it.
+    pub fn from_godot(name: &str) -> Option<CompressedFormat> {
+        Some(match name {
+            "DXT1" => CompressedFormat::Dxt1,
+            "DXT3" => CompressedFormat::Dxt3,
+            "DXT5" => CompressedFormat::Dxt5,
+            "RGTC_R" => CompressedFormat::RgtcR,
+            "RGTC_RG" => CompressedFormat::RgtcRg,
+            "BPTC_RGBA" => CompressedFormat::BptcRgba,
+            "ETC" | "ETC2_RGB8" => CompressedFormat::Etc2Rgb8,
+            "ETC2_RGB8A1" => CompressedFormat::Etc2Rgb8A1,
+            "ETC2_RGBA8" => CompressedFormat::Etc2Rgba8,
+            "ETC2_R11" => CompressedFormat::EacR11,
+            "ETC2_R11S" => CompressedFormat::EacR11Signed,
+            "ETC2_RG11" => CompressedFormat::EacRg11,
+            "ETC2_RG11S" => CompressedFormat::EacRg11Signed,
+            "ASTC_4x4" => CompressedFormat::Astc4x4,
+            "ASTC_8x8" => CompressedFormat::Astc8x8,
+            _ => return None,
+        })
+    }
+
+    /// Bytes per block.
+    pub fn block_bytes(self) -> u32 {
+        match self {
+            CompressedFormat::Dxt1
+            | CompressedFormat::RgtcR
+            | CompressedFormat::Etc2Rgb8
+            | CompressedFormat::Etc2Rgb8A1
+            | CompressedFormat::EacR11
+            | CompressedFormat::EacR11Signed => 8,
+            _ => 16,
+        }
+    }
+
+    /// The block's edge in texels (8 for ASTC 8×8, else 4).
+    pub fn block_edge(self) -> u32 {
+        if self == CompressedFormat::Astc8x8 {
+            8
+        } else {
+            4
+        }
+    }
+
+    /// Level 0's size: whole blocks covering `width × height`.
+    pub fn level_bytes(self, width: u32, height: u32) -> u64 {
+        let e = self.block_edge();
+        u64::from(width.div_ceil(e)) * u64::from(height.div_ceil(e)) * u64::from(self.block_bytes())
+    }
 }
 
 /// Half-open ranges of changed elements, coalesced on insert.
@@ -388,6 +486,28 @@ impl DrawList {
             offset: offset as u32,
         });
         &mut self.texture_bytes[offset..offset + len]
+    }
+
+    /// Queue an upload of block-compressed level-0 bytes (copied once into the byte arena).
+    pub fn upload_compressed_texture(
+        &mut self,
+        id: u32,
+        width: u32,
+        height: u32,
+        format: CompressedFormat,
+        level0: &[u8],
+    ) {
+        debug_assert_eq!(level0.len() as u64, format.level_bytes(width, height));
+        let offset = self.texture_bytes.len() as u32;
+        self.texture_bytes.extend_from_slice(level0);
+        self.texture_ops.push(TextureOp::UploadCompressed {
+            id,
+            width,
+            height,
+            format,
+            offset,
+            len: level0.len() as u32,
+        });
     }
 
     pub fn free_texture(&mut self, id: u32) {

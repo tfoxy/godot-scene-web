@@ -573,6 +573,13 @@ std::string result_json() {
                        : (g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6)));
     if (g_stream.gate8.speaks_v9()) {
       json.field("texture_delivery", rs::texture_delivery_policy().mode);
+      // G8kp (texture-delivery-design.md Q3 "Fallbacks, all typed and counted").
+      const rs::DeliveryStats delivery = rs::texture_delivery_stats();
+      json.key("delivery_stats").object_begin();
+      json.field("block_built", delivery.block_built);
+      json.field("block_bytes", delivery.block_bytes);
+      json.field("block_declined", delivery.block_declined);
+      json.object_end();
     }
     json.field("adopt", std::string(g_stream.gate8.adopt ? "arm" : "off"));
     json.field("texture_decode", std::string(g_stream.gate8.decode_engine ? "engine" : "off"));
@@ -1394,8 +1401,22 @@ void stream_start() {
       }
       return;
     }
+    // G8kp: a /9 stream declares the mode, so it must be one this build honours (the Basis modes
+    // are refused typed until G8ku/G8ke). Below /9 the mode is ignored, as G8k9 left it.
+    if (gate8.speaks_v9() && !rs::delivery_mode_implemented(delivery, &error)) {
+      log_line("stream: refused texture delivery policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
     rs::texture_delivery_set_policy(delivery);
     g_stream.policy.texture_delivery = rs::declare_texture_delivery(delivery);
+    // G8kp: the hooks keep a block-compressed source's own bytes (the `block` variant) only on a
+    // /9 stream whose mode offers it.
+    rs::texture_delivery_set_block(gate8.speaks_v9() && rs::mode_offers_block(delivery.mode));
     g_stream.gate8 = gate8;
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);

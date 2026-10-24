@@ -85,6 +85,12 @@ class ResourceStore {
   // already holds that hash. `entry` supplies the index line's shape.
   Put put(const rs2::TextureEntry &entry, const std::vector<std::uint8_t> &payload,
           std::uint64_t frame, std::string *error);
+  // G8kp (render-stream-9.md "Texture entries"): stores a `block` variant's GRT1 payload (its
+  // SHA-256 is `variant.hash`) as `<hash>.grt`, the index line naming the variant's block format
+  // and the entry's shape, as put() does.
+  Put put_variant(const rs2::TextureEntry &entry, const rs2::TextureVariant &variant,
+                  const std::vector<std::uint8_t> &payload, std::uint64_t frame,
+                  std::string *error);
   // Stores a complete GRM1 payload whose SHA-256 is `surface.hash` (G5e), as put() does.
   Put put_mesh(const rs2::MeshSurface &surface, const std::vector<std::uint8_t> &payload,
                std::uint64_t frame, std::string *error);

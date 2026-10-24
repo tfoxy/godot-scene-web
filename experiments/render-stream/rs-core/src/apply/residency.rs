@@ -53,6 +53,9 @@ pub struct Upload {
     /// `create`, `update`, `replace`, `placeholder` or `canvas`.
     pub op: &'static str,
     pub data_bytes: u64,
+    /// G8kp (texture-delivery-design.md D3): the encoding chosen (`decoded` or `block`), from /9
+    /// only; None below /9 and for placeholders and canvas textures.
+    pub encoding: Option<&'static str>,
 }
 
 /// Per-transaction texture accounting (`transactions[].resources`' texture fields).

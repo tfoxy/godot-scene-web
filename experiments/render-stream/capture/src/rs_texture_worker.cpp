@@ -1,5 +1,7 @@
 #include "rs_texture_worker.h"
 
+#include "rs_texture_delivery.h"
+
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -243,6 +245,27 @@ bool resolve_captured(Captured *captured, bool fault, std::string *error) {
     }
     entry.hash = p.job->actual().hash;
     captured->payloads.emplace(entry.hash, p.job->bytes());
+    // G8kp: the block variant the worker built beside the decode (rs_texture_delivery.h).
+    const PayloadCopy &actual = p.job->actual();
+    if (!actual.block_hash.empty() && actual.block_bytes != nullptr) {
+      VariantRequest request;
+      request.id = entry.id;
+      request.hash = entry.hash;
+      request.format = entry.format;
+      request.width = entry.width;
+      request.height = entry.height;
+      request.mipmaps = entry.mipmaps;
+      request.version = entry.version;
+      request.block.hash = actual.block_hash;
+      request.block.format = actual.block_format;
+      request.block.payload_bytes = static_cast<std::uint64_t>(actual.block_payload_bytes);
+      entry.variants = texture_variants(request);
+      for (const rs2::TextureVariant &variant : entry.variants) {
+        if (variant.hash == actual.block_hash) {
+          captured->payloads.emplace(variant.hash, actual.block_bytes);
+        }
+      }
+    }
   }
   captured->pending.clear();
   return true;
