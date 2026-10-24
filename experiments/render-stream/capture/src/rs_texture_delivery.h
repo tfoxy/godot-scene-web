@@ -114,12 +114,20 @@ struct BasisConfig {
   // GRC_TEXTURE_ENCODE_FAULT=perturb-ktx2 (the sabotage leg's fault knob, never on the wire): one
   // byte of each KTX2 payload is flipped after it was hashed, so a receiver must refuse it.
   bool fault_perturb = false;
+  // GRC_TEXTURE_ENCODE_FAULT=corrupt-ktx2 (G8kf, likewise): level 0's compressed bytes are damaged
+  // BEFORE hashing, so every check passes but the receiver's transcode fails (Q3's fallback).
+  bool fault_corrupt = false;
+  // GRC_TEXTURE_ENCODE_DRAIN=1 (G8kf, the prepare step): the stream's end waits for every queued
+  // encode instead of dropping it (so each one reaches the persisted cache), and the frame
+  // callback keeps the queue short (2 jobs per worker) so a long pack never holds more than a few
+  // decoded payloads beside the mirror.
+  bool drain = false;
 };
 
 // Each argument is the raw environment value or nullptr. False with `error` set on a bad value.
 bool parse_basis_config(const char *level, const char *min_px, const char *workers,
                         const char *wait_frame, const char *fault, BasisConfig *out,
-                        std::string *error);
+                        std::string *error, const char *drain = nullptr);
 
 // Set once at stream start (a /9 basis-uastc stream), read by the mirror and the encode jobs.
 void texture_delivery_set_basis(bool enabled, const BasisConfig &config);

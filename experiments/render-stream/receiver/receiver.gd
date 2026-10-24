@@ -445,6 +445,9 @@ var _texture_encodings: String = "block,uastc,decoded"
 var _variant_upgrade: bool = false
 var _transcode_log: bool = false
 var _transcodes: Array[Dictionary] = []
+## G8kf (texture-delivery-design.md Q3): each uastc variant whose transcode failed, {stream, seq,
+## hash, fallback}: the entry went on with D3's next preference (`decoded` at last).
+var _variant_fallbacks: Array[Dictionary] = []
 var _gpu_format_mask: Array[String] = []
 var _gpu_formats: String = "none"
 var _gpu_formats_detected: String = "none"
@@ -632,6 +635,7 @@ func _init_report(mode: String) -> String:
 		"fetches": null if _log_mode == "summary" else _fetches,
 		"uploads": null if _log_mode == "summary" else _uploads,
 		"transcodes": _transcodes,
+		"variant_fallbacks": _variant_fallbacks,
 		# G5e (render-stream-receiver-applied/4).
 		"mesh_uploads": null if _log_mode == "summary" else _mesh_uploads,
 		"resources_summary": _summary,
@@ -852,6 +856,13 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 	return ""
 
 
+## G8kf: records and logs the variants screen_variants() refused at `seq`.
+func _note_variant_fallbacks(refused: Array[Dictionary], stream_index: int, seq: int) -> void:
+	for row: Dictionary in refused:
+		_variant_fallbacks.append({"stream": stream_index, "seq": seq, "hash": row["hash"], "fallback": "next-preference"})
+		_log("seq %d: delivery-transcode-failed for variant %s; falling back to the entry's next preference" % [seq, row["hash"]])
+
+
 ## One transaction's `resources` counters, all zero.
 static func _empty_resources() -> Dictionary:
 	return {
@@ -877,6 +888,17 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	if error != "":
 		_fail_with_error(seq, error)
 		return {"ok": false, "stats": {}}
+	# G8kf: a uastc file the loader refuses falls back to the entry's next preference (Q3); what
+	# that needs (`decoded`, always servable) is obtained before any RenderingServer call.
+	for _round: int in range(64):
+		var refused: Array[Dictionary] = _applier.screen_variants(_cache)
+		if refused.is_empty():
+			break
+		_note_variant_fallbacks(refused, stream_index, seq)
+		error = _obtain_needed(stream_index, seq, resources)
+		if error != "":
+			_fail_with_error(seq, error)
+			return {"ok": false, "stats": {}}
 	if _perf != null:
 		# The whole fetch stage for this transaction, including HTTP fetches live mode may have
 		# run across several earlier _process calls (resources["fetch_us"] already carries those
@@ -2101,6 +2123,14 @@ func _http_misses() -> Array[String]:
 ## (_poll_fetches) and the previous state stays on screen. `resources` carries the fetch counters
 ## of the passes so far.
 func _begin_apply(entry: Dictionary, meta: Dictionary, resources: Dictionary) -> void:
+	# G8kf: transcode what is already here first; a refused variant makes the entry need `decoded`,
+	# which the miss check below then fetches.
+	var entry_seq: int = entry["seq"]
+	for _round: int in range(64):
+		var refused: Array[Dictionary] = _applier.screen_variants(_cache, true)
+		if refused.is_empty():
+			break
+		_note_variant_fallbacks(refused, _conn_index, entry_seq)
 	var misses: Array[String] = _http_misses()
 	if not misses.is_empty():
 		_pending_apply = {"entry": entry, "meta": meta, "resources": resources}

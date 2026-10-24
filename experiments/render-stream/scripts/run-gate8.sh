@@ -954,6 +954,23 @@ run_g8kc() {
 	g8kc_keep_index "$C/uastc" "$K/uastc-cold/cache"
 	run_capture_g8ku "$K/uastc-warm/capture" GRC_TEXTURE_CACHE_DIR="$C/uastc"
 	g8kc_keep_index "$C/uastc" "$K/uastc-warm/cache"
+
+	# uastc-prepare / uastc-prepared (G8kf): the same fixture's step-0 images saved as Image .res
+	# files (an unarmed dump run), fed to scripts/prepare-textures.sh --list on an empty directory
+	# (its /9 basis-uastc sink and end-of-stream drain), then one session on that directory: it must
+	# run zero UASTC encodes and serve every variant the cold session built.
+	echo "run-gate8: g8kc uastc-prepare (the fixture's images through prepare-textures.sh) / uastc-prepared"
+	mkdir -p "$K/uastc-prepare/res"
+	LEG_ENV=(RS_FIXTURE_DUMP_RES_DIR="$K/uastc-prepare/res")
+	run_headless "$K/uastc-prepare/dump" none -- "$BINARY" --headless --path "$G8KU_FIXTURE_DIR"
+	find "$K/uastc-prepare/res" -maxdepth 1 -name '*.res' | LC_ALL=C sort >"$K/uastc-prepare/list.txt"
+	LEG_ENV=()
+	run_headless "$K/uastc-prepare" none -- "$SCRIPT_DIR/prepare-textures.sh" --cache "$C/uastc-prep" \
+		--list "$K/uastc-prepare/list.txt" --out "$K/uastc-prepare/out" --binary "$BINARY" \
+		--extension "$EXTENSION" --calibration "$CALIBRATION"
+	g8kc_keep_index "$C/uastc-prep" "$K/uastc-prepare/cache"
+	run_capture_g8ku "$K/uastc-prepared/capture" GRC_TEXTURE_CACHE_DIR="$C/uastc-prep"
+	g8kc_keep_index "$C/uastc-prep" "$K/uastc-prepared/cache"
 	CAPTURE_WITH_PATCH=1
 
 	# adopt-cold / adopt-warm (D9a): a pre-arm VRAM-compressed texture (gate8-adopt's chip_bc), armed
@@ -1285,6 +1302,14 @@ run_g8ku() {
 	if ! legs_sabotage_skipped "$OUT/g8ku/sabotage-perturb-ktx2/capture"; then
 		run_capture_g8ku "$OUT/g8ku/sabotage-perturb-ktx2/capture" GRC_TEXTURE_ENCODE_FAULT=perturb-ktx2
 	fi
+	echo "run-gate8: g8ku pending/capture (G8kf: the same at GRC_TEXTURE_PENDING=publish)"
+	# 250 ms jobs: the first frame alone takes ~100 ms, so most textures are still pending at seq 1
+	run_capture_g8ku "$OUT/g8ku/pending/capture" "${G8T_WORKERS_ENV[@]}" GRC_TEXTURE_WORKER_DELAY_MS=250 \
+		GRC_TEXTURE_PENDING=publish
+	echo "run-gate8: g8ku sabotage-corrupt-ktx2/capture (level 0 damaged before hashing: the transcode fails)"
+	if ! legs_sabotage_skipped "$OUT/g8ku/sabotage-corrupt-ktx2/capture"; then
+		run_capture_g8ku "$OUT/g8ku/sabotage-corrupt-ktx2/capture" GRC_TEXTURE_ENCODE_FAULT=corrupt-ktx2
+	fi
 
 	echo "run-gate8: bringing up private gamescope for g8ku's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8ku"
@@ -1301,6 +1326,13 @@ run_g8ku() {
 	if [ -f "$OUT/g8ku/sabotage-perturb-ktx2/capture/$RECORDING_NAME" ]; then
 		RECEIVER_EXTRA_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
 		run_rendered_receiver "$OUT/g8ku/sabotage-perturb-ktx2/capture" "$OUT/g8ku/sabotage-perturb-ktx2/receiver"
+	fi
+	echo "run-gate8: g8ku pending/receiver, sabotage-corrupt-ktx2/receiver (G8kf)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
+	run_rendered_receiver "$OUT/g8ku/pending/capture" "$OUT/g8ku/pending/receiver"
+	if [ -f "$OUT/g8ku/sabotage-corrupt-ktx2/capture/$RECORDING_NAME" ]; then
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
+		run_rendered_receiver "$OUT/g8ku/sabotage-corrupt-ktx2/capture" "$OUT/g8ku/sabotage-corrupt-ktx2/receiver"
 	fi
 	legs_par_end
 	echo "run-gate8: g8ku live (host /9 basis-uastc + rendered native receiver at RS_RECEIVER_PROTOCOL=9)"

@@ -114,6 +114,14 @@ void test_parse() {
             c.fault_publish_before_ready,
         "the fault knob with workers");
   check(!grc::rs::parse_texture_workers("0", nullptr, nullptr, nullptr, &c, &error), "0 refused");
+  check(grc::rs::parse_texture_workers("2", nullptr, nullptr, nullptr, &c, &error, "publish") &&
+            c.publish_pending &&
+            grc::rs::parse_texture_workers("2", nullptr, nullptr, nullptr, &c, &error, "hold") &&
+            !c.publish_pending &&
+            !grc::rs::parse_texture_workers("sync", nullptr, nullptr, nullptr, &c, &error, "publish") &&
+            !grc::rs::parse_texture_workers("2", nullptr, nullptr, nullptr, &c, &error, "now") &&
+            error.find("invalid GRC_TEXTURE_PENDING=now") == 0,
+        "GRC_TEXTURE_PENDING: publish needs workers, hold is the default, anything else is refused");
   check(!grc::rs::parse_texture_workers("17", nullptr, nullptr, nullptr, &c, &error), "17 refused");
   check(!grc::rs::parse_texture_workers("two", nullptr, nullptr, nullptr, &c, &error), "text refused");
   check(!grc::rs::parse_texture_workers("2", "-1", nullptr, nullptr, &c, &error), "negative refused");

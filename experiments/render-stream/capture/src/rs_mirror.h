@@ -617,6 +617,12 @@ class Mirror {
   // results for later (GRC_TEXTURE_ENCODE_WAIT_FRAME before its frame); `wait` first waits for
   // every encode in flight (that frame itself). Returns the number of variants attached.
   std::size_t service_basis(bool attach, bool wait);
+  // G8kf: GRC_TEXTURE_PENDING=publish (see TextureWorkerConfig). The frame callback calls
+  // service_pending() before it reads the epoch: a texture published as `delivery-pending` whose
+  // worker has finished gets its next version, which advances the epoch (a mutation).
+  void set_publish_pending(bool on);
+  void service_pending();
+  std::uint64_t pending_published() const;
   // Every unfinished encode job (stream end: entry.cpp abandons them after the pool dropped them).
   std::vector<BasisJobPtr> basis_jobs() const;
 
@@ -664,6 +670,11 @@ class Mirror {
     PayloadPtr bytes;  // the payload while status is ok and kind image
     // G8kw: the worker delivering `copy.hash` and `bytes` (null once settled, or when synchronous).
     std::shared_ptr<TextureJob> job;
+    // G8kf (render-stream-9.md "Texture reasons"): `published_ok` once a snapshot carried this
+    // texture as an `ok` entry; `pending_version` the version a snapshot carried it at as
+    // `delivery-pending` (0: none). The entry returns as `ok` at the next version.
+    bool published_ok = false;
+    std::uint64_t pending_version = 0;
     // G8ku (D6, D12): `updated` once a texture_2d_update reached it (D12(a): never Basis after);
     // the encode of the current content while it runs; the attached uastc variant; and
     // `basis_decided` once this content's Basis outcome is known (attached, declined, failed).
@@ -796,6 +807,9 @@ class Mirror {
   static rs2::TextureEntry wire_entry(const Texture &texture);
   // G8kw: a finished job's hash and bytes move into the entry (no-op without one).
   static void settle(Texture *texture);
+  // G8kf: a texture a snapshot carried as `delivery-pending`, once its job is gone, takes its next
+  // version (true when it did). Needs the lock.
+  static bool resolve_pending(Texture *texture);
   static void reset_basis(Texture *texture);  // G8ku: a content change drops the Basis state
   BasisSubmit basis_submit_;
   // Meshes (G5e).
@@ -833,6 +847,9 @@ class Mirror {
 
   mutable std::mutex mutex_;
   std::uint64_t epoch_ = 0;
+  bool publish_pending_ = false;          // G8kf: GRC_TEXTURE_PENDING=publish
+  std::uint64_t pending_published_ = 0;   // delivery-pending entries snapshots carried
+  std::set<std::uint32_t> pending_ids_;   // the textures the snapshot being taken carries as pending
   std::uint64_t drop_frame_ = 0;
   std::string omit_op_;
   std::uint64_t omit_from_frame_ = 0;

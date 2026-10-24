@@ -6,6 +6,11 @@
 //       [--rs-build <artifacts/render-stream/rs-core/<sha>>]
 //   gate8-delivery-tool.ts web-legs --source <gate 8 run> [--bundle <web-receiver bundle dir>]
 //
+// G8kf: gsw-legs also replays g8kp/receiver in the web export (g8kp-web/web: does the web export
+// state gpu_formats and take `block` variants at /9?), and web-legs replays
+// g8ku/sabotage-corrupt-ktx2/receiver as g8ku-web/web-fallback and g8ku/pending/receiver as
+// g8ku-web/web-pending.
+//
 // web-legs (G8ku): builds the web export (build-web-receiver.sh, which builds the rs-core side
 // module first; reused when its source digest is unchanged) unless --bundle names one, then
 // replays the native leg g8ku/receiver-upgrade (its env.txt and argv.txt: the /9 basis-uastc
@@ -140,17 +145,11 @@ async function main(): Promise<void> {
     console.log(
       `gate8-delivery-tool: ${r.leg} exit ${r.exitCode}${r.provenanceOk ? "" : " (harness-refused: browser-provenance)"} ${r.wallMs} ms`,
     );
+  await webBlockLeg(source, []);
 }
 
-// G8ku: the web export on g8ku/receiver-upgrade's own launch.
-async function webLegs(argv: string[]): Promise<void> {
-  const source = resolve(flag(argv, "--source"));
-  const g8ku = join(source, "g8ku");
-  // The harness's static root links its source run at sources/gate8. It sits beside g8ku/, not in
-  // it, and links g8ku/ alone: a link to the whole run from inside it (as g8kp's gsw-run has) would
-  // make a second cycle, and a recursive walk through two cycles never ends (the remote job's
-  // artifact trim globs every stdout.log through symlinks).
-  const run = join(source, "g8ku-web");
+// The web export's bundle: --bundle names one, else build-web-receiver.sh builds (or reuses) it.
+function webBundle(argv: string[]): { dir: string; sha256: string } {
   let bundle = argv.includes("--bundle") ? resolve(flag(argv, "--bundle")) : "";
   if (!bundle) {
     const log = execFileSync(
@@ -167,21 +166,80 @@ async function webLegs(argv: string[]): Promise<void> {
   const build = JSON.parse(
     readFileSync(join(bundle, "build.json"), "utf8"),
   ) as { pck: { sha256: string } };
+  return { dir: bundle, sha256: build.pck.sha256 };
+}
+
+// G8kf: the web export on g8kp/receiver's own launch (the /9 passthrough recording): does it state
+// gpu_formats and take `block` variants? g8kp-web/web, a harness root beside g8kp/ like g8ku-web.
+async function webBlockLeg(source: string, argv: string[]): Promise<void> {
+  const g8kp = join(source, "g8kp");
+  const nativeDir = join(g8kp, "receiver");
+  if (!existsSync(join(nativeDir, "env.txt")))
+    throw new Error(
+      `gate8-delivery-tool: no native leg at ${nativeDir} (env.txt missing)`,
+    );
+  const bundle = webBundle(argv);
+  const run = join(source, "g8kp-web");
+  const results = await runWebLegs(
+    {
+      out: run,
+      gate: "gate8",
+      sourceDir: g8kp,
+      bundleDir: bundle.dir,
+      buildSha256: bundle.sha256,
+      kind: "web",
+    },
+    [{ leg: "web", nativeDir, webDir: join(run, "web") }],
+  );
+  for (const r of results)
+    console.log(
+      `gate8-delivery-tool: g8kp-web ${r.leg} exit ${r.exitCode}${r.provenanceOk ? "" : " (harness-refused: browser-provenance)"} ${r.wallMs} ms`,
+    );
+}
+
+// G8ku: the web export on g8ku/receiver-upgrade's own launch; G8kf adds web-fallback, the same on
+// g8ku/sabotage-corrupt-ktx2/receiver's (a KTX2 the transcoder refuses: Q3's fallback to decoded).
+async function webLegs(argv: string[]): Promise<void> {
+  const source = resolve(flag(argv, "--source"));
+  const g8ku = join(source, "g8ku");
+  // The harness's static root links its source run at sources/gate8. It sits beside g8ku/, not in
+  // it, and links g8ku/ alone: a link to the whole run from inside it (as g8kp's gsw-run has) would
+  // make a second cycle, and a recursive walk through two cycles never ends (the remote job's
+  // artifact trim globs every stdout.log through symlinks).
+  const run = join(source, "g8ku-web");
+  const bundle = webBundle(argv);
   const nativeDir = join(g8ku, "receiver-upgrade");
   if (!existsSync(join(nativeDir, "env.txt")))
     throw new Error(
       `gate8-delivery-tool: no native leg at ${nativeDir} (env.txt missing)`,
     );
+  const legs: WebLegSpec[] = [
+    { leg: "web", nativeDir, webDir: join(run, "web") },
+  ];
+  const fallbackDir = join(g8ku, "sabotage-corrupt-ktx2", "receiver");
+  if (existsSync(join(fallbackDir, "env.txt")))
+    legs.push({
+      leg: "web-fallback",
+      nativeDir: fallbackDir,
+      webDir: join(run, "web-fallback"),
+    });
+  const pendingDir = join(g8ku, "pending", "receiver");
+  if (existsSync(join(pendingDir, "env.txt")))
+    legs.push({
+      leg: "web-pending",
+      nativeDir: pendingDir,
+      webDir: join(run, "web-pending"),
+    });
   const results = await runWebLegs(
     {
       out: run,
       gate: "gate8",
       sourceDir: g8ku,
-      bundleDir: bundle,
-      buildSha256: build.pck.sha256,
+      bundleDir: bundle.dir,
+      buildSha256: bundle.sha256,
       kind: "web",
     },
-    [{ leg: "web", nativeDir, webDir: join(run, "web") }],
+    legs,
   );
   for (const r of results)
     console.log(

@@ -245,6 +245,11 @@ void test_delivery_seam() {
             b.uastc_level == 2 && b.min_px == 1 && b.encode_workers == 4 && b.wait_frame == 30 &&
             b.fault_perturb,
         "Basis knobs parse");
+  check(grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, "corrupt-ktx2", &b, &error) &&
+            b.fault_corrupt && !b.fault_perturb &&
+            grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, "perturb-ktx2", &b, &error) &&
+            b.fault_perturb && !b.fault_corrupt,
+        "corrupt-ktx2 and perturb-ktx2 are separate fault knobs");
   check(!grc::rs::parse_basis_config("5", nullptr, nullptr, nullptr, nullptr, &b, &error) &&
             error.find("invalid GRC_TEXTURE_UASTC_LEVEL=5") == 0,
         "a UASTC level above 4 is refused naming the variable");
@@ -252,6 +257,14 @@ void test_delivery_seam() {
             !grc::rs::parse_basis_config(nullptr, nullptr, "17", nullptr, nullptr, &b, &error) &&
             !grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, "flip", &b, &error),
         "bad encode workers and an unknown fault are refused");
+  check(!b.drain, "GRC_TEXTURE_ENCODE_DRAIN is off by default");
+  check(grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, nullptr, &b, &error, "1") &&
+            b.drain &&
+            grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, nullptr, &b, &error, "0") &&
+            !b.drain &&
+            !grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, nullptr, &b, &error, "yes") &&
+            error.find("invalid GRC_TEXTURE_ENCODE_DRAIN=yes") == 0,
+        "GRC_TEXTURE_ENCODE_DRAIN parses 0/1 and refuses anything else naming the variable");
   check(grc::rs::basis_decline_reason("RGBA8", 128, 128, false, 16384) == nullptr &&
             grc::rs::basis_decline_reason("RGB8", 256, 64, false, 16384) == nullptr &&
             std::string(grc::rs::basis_decline_reason("RGBA8", 128, 128, true, 16384)) == "updated" &&

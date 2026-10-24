@@ -14,6 +14,10 @@
 //                                       directory; prepare/out/evidence/texture-cache.json is the
 //                                       prepare run's own view, prepare/cache/ its index
 //   g8kc/prepared/capture/              a session on the prepared directory
+//   g8kc/uastc-prepare/                 (G8kf) the basis fixture's step-0 images saved as .res
+//                                       (dump/), prepare-textures.sh --list over them into a third
+//                                       empty directory (out/evidence/result.json, cache/)
+//   g8kc/uastc-prepared/capture/        a basis-uastc session on that directory: zero encodes
 //   g8kc/bounded/capture/               a session with GRC_TEXTURE_CACHE_MAX_BYTES
 //   g8kc/adopt-cold/capture/, adopt-warm/capture/
 //                                       gate8-adopt armed late with GRC_ADOPT=arm at /8 (recording.rs8)
@@ -217,6 +221,9 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     "adopt-warm/capture": k("adopt-warm/capture"),
     "uastc-cold/capture": k("uastc-cold/capture"),
     "uastc-warm/capture": k("uastc-warm/capture"),
+    "uastc-prepare/dump": k("uastc-prepare/dump"),
+    "uastc-prepare": k("uastc-prepare"),
+    "uastc-prepared/capture": k("uastc-prepared/capture"),
   };
   const legs: G8kcReport["legs"] = {};
   for (const [l, dir] of Object.entries(legDirs)) {
@@ -271,6 +278,11 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
   );
   const prepareResult = await readJson<{ texture_cache?: CacheStatsJson }>(
     join(prepareEv, "result.json"),
+  );
+
+  // G8kf: the prepare step's own UASTC run over the fixture's saved images.
+  const uprepareResult = await readJson<{ texture_cache?: CacheStatsJson }>(
+    join(legDirs["uastc-prepare"], "out", "evidence", "result.json"),
   );
 
   const oracle = await readJson<OracleReport>(
@@ -779,6 +791,88 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
         ran("prepare", l) ? problems : null,
         `${matched} fixture textures matched; ${s?.hits} hits, 0 derivations`,
         missingOf("prepare", l),
+      ),
+    );
+  }
+
+  // --- prepare-uastc-warm: prepare-textures.sh warms UASTC entries (G8kf) -------------------------
+  {
+    const problems: string[] = [];
+    const cl = "uastc-cold/capture";
+    const pl = "uastc-prepared/capture";
+    okExit("uastc-prepare/dump", problems);
+    okExit("uastc-prepare", problems);
+    okExit(pl, problems);
+    const cold = stats[cl];
+    const coldDs = basisStats(cl);
+    const ps = uprepareResult?.texture_cache;
+    const ss = stats[pl];
+    const sds = basisStats(pl);
+    if (!ps)
+      problems.push("the prepare run's result.json has no texture_cache");
+    else {
+      if (!(ps.encodes > 0))
+        problems.push(`the prepare run ran ${ps.encodes} UASTC encodes`);
+      // The same images, so the same set of admitted encodes as the cold live session ran.
+      if (cold && ps.encodes !== cold.encodes)
+        problems.push(
+          `the prepare run ran ${ps.encodes} encodes, the cold session ${cold.encodes}`,
+        );
+    }
+    if (!ss || !sds)
+      problems.push(
+        `${pl}: result.json has no texture_cache or delivery_stats`,
+      );
+    else {
+      if (ss.encodes !== 0)
+        problems.push(
+          `${pl}: ${ss.encodes} UASTC encodes after the prepare step`,
+        );
+      if (
+        ss.derivations !== 0 ||
+        ss.misses !== 0 ||
+        ss.puts !== 0 ||
+        ss.corrupt !== 0
+      )
+        problems.push(
+          `${pl}: derivations ${ss.derivations}, misses ${ss.misses}, puts ${ss.puts}, corrupt ${ss.corrupt}`,
+        );
+      if (
+        !((sds.uastc_built ?? 0) > 0) ||
+        sds.uastc_built !== coldDs?.uastc_built ||
+        sds.cache_hits !== sds.uastc_built
+      )
+        problems.push(
+          `${pl}: ${sds.cache_hits} cache hits, ${sds.uastc_built} variants; the cold session built ${coldDs?.uastc_built}`,
+        );
+    }
+    const cv = await uastcBySize(legDirs[cl]);
+    const pv = await uastcBySize(legDirs[pl]);
+    if (cv.size === 0)
+      problems.push("the cold session's store lists no uastc variant");
+    for (const [size, hash] of cv)
+      if (pv.get(size) !== hash)
+        problems.push(
+          `${pl}: the ${size} uastc variant differs from the cold session's`,
+        );
+    const urows = [
+      ...foldIndex(
+        await readText(
+          join(legDirs["uastc-prepare"], "cache", "index-v1.jsonl"),
+        ),
+      ).values(),
+    ].filter((r) => r.encoding === "uastc");
+    if (ps && urows.length !== ps.encodes)
+      problems.push(
+        `the prepared cache has ${urows.length} uastc rows, the prepare run ran ${ps.encodes} encodes`,
+      );
+    checks.push(
+      check(
+        "prepare-uastc-warm",
+        "G8kf: scripts/prepare-textures.sh on the basis fixture's saved images (its /9 basis-uastc sink, drained at stream end) encodes every texture D12 admits into an empty cache, and the next basis-uastc session on that directory runs zero UASTC encodes, zero derivations and zero cache misses and publishes the cold live session's uastc variants, every one served from the cache",
+        ran("uastc-prepare/dump", "uastc-prepare", pl, cl) ? problems : null,
+        `${ps?.encodes} encodes in the prepare run; ${pl}: ${sds?.cache_hits} UASTC variants from the cache, ${ss?.encodes} encodes`,
+        missingOf("uastc-prepare/dump", "uastc-prepare", pl, cl),
       ),
     );
   }

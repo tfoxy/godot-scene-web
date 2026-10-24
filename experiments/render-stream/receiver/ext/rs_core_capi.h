@@ -25,6 +25,9 @@ int32_t rsc_set_delivery(RsCore *h, const uint8_t *encodings, size_t encodings_l
                          const uint8_t *gpu_formats, size_t gpu_formats_len);
 // G8ku: D6 keep (0) or upgrade (1); and a SHA-256 hex (64 bytes, no NUL) of `len` bytes.
 void rsc_set_variant_upgrade(RsCore *h, int32_t on);
+// G8kf: the receiver could not transcode this variant (hex hash); D3 skips it from now on. 1, or 0
+// for a malformed hash.
+int32_t rsc_refuse_variant(RsCore *h, const uint8_t *hash, size_t hlen);
 void rsc_sha256_hex(const uint8_t *data, size_t len, uint8_t *out);
 // G7o2 (D31): the next session defers the record digest; rsc_record_digest fills it later
 // (text: the record at `offset`'s sha256 hex; 1, or 0 with the error in text).

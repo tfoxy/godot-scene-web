@@ -13,6 +13,8 @@
 //    recordings) names the missing recording.
 // 5. G8ku: a warm basis-uastc session that encodes, and one whose uastc variant differs from the
 //    cold session's, fail cache-warm; a cold one whose UASTC encode is not stored fails cache-cold.
+// 6. G8kf: prepare-uastc-warm fails when the session after the prepare step encodes, when its
+//    variant differs from the cold session's, or when the prepare run dropped an encode.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8kc.ts
@@ -237,6 +239,14 @@ function uastcIndex(): string {
   );
 }
 
+function preparedUastc(root: string, encodes: number) {
+  write(root, "g8kc/uastc-prepare/exit-code.txt", "0\n");
+  write(root, "g8kc/uastc-prepare/out/evidence/result.json", {
+    texture_cache: stats({ misses: encodes, puts: encodes, encodes }),
+  });
+  write(root, "g8kc/uastc-prepare/cache/index-v1.jsonl", uastcIndex());
+}
+
 function tree(mutate?: (root: string) => void): string {
   const root = mkdtempSync(join(tmpdir(), "self-test-gate8kc-"));
   write(root, "import/fixture/exit-code.txt", "0\n");
@@ -317,6 +327,10 @@ function tree(mutate?: (root: string) => void): string {
   write(root, "g8kc/uastc-cold/cache/index-v1.jsonl", uastcIndex());
   uastcCapture(root, "uastc-warm/capture", { encodes: 0, hits: UASTC_N });
   write(root, "g8kc/uastc-warm/cache/index-v1.jsonl", uastcIndex());
+  // G8kf: the prepare step's UASTC run, then a session on its directory
+  write(root, "g8kc/uastc-prepare/dump/exit-code.txt", "0\n");
+  preparedUastc(root, UASTC_N);
+  uastcCapture(root, "uastc-prepared/capture", { encodes: 0, hits: UASTC_N });
   mutate?.(root);
   return root;
 }
@@ -367,6 +381,7 @@ const ONLY = [
   "prepare-key-match",
   "cache-corrupt",
   "cache-lru",
+  "prepare-uastc-warm",
 ];
 const roots: string[] = [];
 async function run(
@@ -403,6 +418,30 @@ await run(
       vhash: (i) => (i === 0 ? "e".repeat(64) : uastcKey(i)),
     }),
   ["cache-warm"],
+);
+await run(
+  "session after the prepare step encoded",
+  (r) =>
+    uastcCapture(r, "uastc-prepared/capture", {
+      encodes: 1,
+      hits: UASTC_N - 1,
+    }),
+  ["prepare-uastc-warm"],
+);
+await run(
+  "prepared variant differs from the cold session's",
+  (r) =>
+    uastcCapture(r, "uastc-prepared/capture", {
+      encodes: 0,
+      hits: UASTC_N,
+      vhash: (i) => (i === 1 ? "e".repeat(64) : uastcKey(i)),
+    }),
+  ["prepare-uastc-warm"],
+);
+await run(
+  "the prepare step dropped its queued encodes",
+  (r) => preparedUastc(r, UASTC_N - 1),
+  ["prepare-uastc-warm"],
 );
 await run(
   "cold uastc encode not stored",

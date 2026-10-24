@@ -123,6 +123,7 @@ impl Core {
             Ok(mut p) => {
                 // G8ku: the D6 policy is not part of the hello; a new preference keeps it.
                 p.upgrade = self.planner.delivery.upgrade;
+                p.refused = std::mem::take(&mut self.planner.delivery.refused);
                 self.planner.delivery = p;
                 true
             }
@@ -130,6 +131,19 @@ impl Core {
                 self.text = e.into_bytes();
                 false
             }
+        }
+    }
+
+    /// G8kf (texture-delivery-design.md Q3): the receiver could not transcode the variant `hash_hex`
+    /// (`delivery-transcode-failed`); D3 then chooses the entry's next preference, `decoded` at
+    /// last. False for a malformed hash.
+    pub fn refuse_variant(&mut self, hash_hex: &str) -> bool {
+        match Hash::from_hex(hash_hex) {
+            Some(h) => {
+                self.planner.delivery.refuse(h);
+                true
+            }
+            None => false,
         }
     }
 

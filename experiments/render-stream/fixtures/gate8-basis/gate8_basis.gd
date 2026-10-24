@@ -40,6 +40,9 @@ extends Node
 ##   RS_FIXTURE_QUIT_FRAME    >= U + 8 (default U + 18)
 ##   RS_FIXTURE_STEP_LOG      absolute path: one JSONL line per step
 ##   RS_FIXTURE_SHOT_DIR      absolute dir: step-<k>.png at each settle frame (rendered runs only)
+##   RS_FIXTURE_DUMP_RES_DIR  absolute dir: save every step-0 image as <name>.res (an Image resource,
+##                            format and mip chain kept) and quit, drawing nothing (G8kf: the
+##                            prepare step's list, scripts/prepare-textures.sh --list)
 
 const START_FRAME: int = 1
 const UPDATE_FRAME_DEFAULT: int = 12
@@ -106,6 +109,17 @@ var _failed: bool = false
 
 
 func _ready() -> void:
+	if OS.has_environment("RS_FIXTURE_DUMP_RES_DIR"):
+		_failed = true
+		var dir: String = OS.get_environment("RS_FIXTURE_DUMP_RES_DIR")
+		var bad: int = 0
+		for t: Dictionary in TEXTURES:
+			var err: Error = ResourceSaver.save(_make(t, 0), dir.path_join("%s.res" % t["name"]))
+			if err != OK:
+				bad += 1
+				_error("cannot save %s.res (%d)" % [t["name"], err])
+		get_tree().quit(1 if bad != 0 else 0)
+		return
 	if not _parse_env():
 		_failed = true
 		get_tree().quit(1)

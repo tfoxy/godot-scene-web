@@ -1198,10 +1198,22 @@ std::size_t Mirror::service_basis(bool attach, bool wait) {
     return 0;
   }
   const BasisConfig config = texture_delivery_basis_config();
+  if (wait) {
+    // G8kf: the test knob's frame first waits for the texture workers too, so every image has its
+    // hash (and its encode queued) whatever the machine's speed.
+    for (auto &entry : textures_) {
+      if (entry.second.job != nullptr) {
+        entry.second.job->wait();
+      }
+    }
+  }
   // 1. Start: every settled ok image whose current content has no Basis outcome yet (D12).
   for (auto &entry : textures_) {
     Texture &texture = entry.second;
     settle(&texture);
+    if (resolve_pending(&texture)) {
+      ++epoch_;  // G8kf: the encode below is of the version the receivers will see
+    }
     if (texture.kind != TextureKind::Image || texture.status != TextureStatus::Ok ||
         texture.basis_decided || texture.basis != nullptr || texture.bytes == nullptr ||
         texture.job != nullptr) {
@@ -1290,6 +1302,48 @@ void Mirror::settle(Texture *texture) {
   texture->job->fill(&texture->copy);
   texture->bytes = texture->job->bytes();
   texture->job.reset();
+}
+
+bool Mirror::resolve_pending(Texture *texture) {
+  if (texture->pending_version == 0 || texture->job != nullptr) {
+    return false;
+  }
+  const bool same = texture->pending_version == texture->version;
+  texture->pending_version = 0;
+  if (!same) {
+    return false;  // the content changed meanwhile: the version already moved past the pending one
+  }
+  if (texture->kind == TextureKind::Image && texture->status == TextureStatus::Ok) {
+    texture->version += 1;  // render-stream-9.md: the recovery from delivery-pending is a new version
+    return true;
+  }
+  return false;
+}
+
+void Mirror::set_publish_pending(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  publish_pending_ = on;
+}
+
+std::uint64_t Mirror::pending_published() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return pending_published_;
+}
+
+void Mirror::service_pending() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  bool moved = false;
+  for (auto &entry : textures_) {
+    Texture &texture = entry.second;
+    if (texture.pending_version == 0) {
+      continue;
+    }
+    settle(&texture);
+    moved = resolve_pending(&texture) || moved;
+  }
+  if (moved) {
+    ++epoch_;
+  }
 }
 
 TextureEntry Mirror::wire_entry(const Texture &texture) {
@@ -2919,7 +2973,8 @@ bool Mirror::material_unsupported(std::uint32_t material_id) const {
   const Material &material = it->second;
   const auto texture_unsupported = [this](std::uint32_t tex) {
     const auto t = textures_.find(tex);
-    return t != textures_.end() && t->second.status == TextureStatus::Unsupported;
+    return t != textures_.end() &&
+           (t->second.status == TextureStatus::Unsupported || pending_ids_.count(tex) != 0);
   };
   if (wire_material(material).status == MaterialStatus::Unsupported) {
     return true;
@@ -3258,6 +3313,23 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.default_texture_filter = default_filter_;
   out.default_texture_repeat = default_repeat_;
 
+  // G8kf: the textures this snapshot carries as `delivery-pending` (see below). Decided first,
+  // because an item naming one needs its derived unsupported-texture entry like any unsupported
+  // texture (render-stream-2.md "Item-level unsupported entries").
+  std::set<std::uint32_t> &pending_ids = pending_ids_;
+  pending_ids.clear();
+  for (auto &entry : textures_) {
+    Texture &texture = entry.second;
+    settle(&texture);
+    if (resolve_pending(&texture)) {
+      ++epoch_;  // the version moved under a snapshot taken before service_pending ran
+    }
+    if (publish_pending_ && texture.job != nullptr && texture.kind == TextureKind::Image &&
+        texture.status == TextureStatus::Ok && !texture.published_ok) {
+      pending_ids.insert(entry.first);
+    }
+  }
+
   // protocol/unknown-item-skip.md: under Skip, every known item whose parent chain reaches an
   // unknown RID is left out of the published state -- its item entry, its item-level unsupported
   // entries and its draw-index groups. No published container lists one (a withheld item's parent
@@ -3437,12 +3509,14 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
         // unsupported, or (G2d) it names a canvas entry whose diffuse names one.
         const auto texture = textures_.find(command.tex);
         bool unsupported_ref =
-            texture != textures_.end() && texture->second.status == TextureStatus::Unsupported;
+            texture != textures_.end() && (texture->second.status == TextureStatus::Unsupported ||
+                                           pending_ids.count(command.tex) != 0);
         if (!unsupported_ref && texture != textures_.end() &&
             texture->second.kind == TextureKind::Canvas && texture->second.has_diffuse) {
           const auto diffuse = textures_.find(texture->second.diffuse_id);
           unsupported_ref =
-              diffuse != textures_.end() && diffuse->second.status == TextureStatus::Unsupported;
+              diffuse != textures_.end() && (diffuse->second.status == TextureStatus::Unsupported ||
+                                             pending_ids.count(texture->second.diffuse_id) != 0);
         }
         if (unsupported_ref) {
           add_item_entry(state.id, rs_method_name(command.kind),
@@ -3509,6 +3583,24 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   for (auto &entry : textures_) {
     Texture &texture = entry.second;
     settle(&texture);  // G8kw: a finished worker's hash and bytes, before they are published
+    if (pending_ids.count(entry.first) != 0) {
+      // G8kf: not ready, and never published as ok: carry it as `delivery-pending` (the shape the
+      // hook already knows, no hash, no payload) and do not hold the snapshot back for it.
+      Texture shown = texture;
+      shown.status = TextureStatus::Unsupported;
+      shown.has_reason = true;
+      shown.reason = TextureReason::DeliveryPending;
+      out.textures.push_back(wire_entry(shown));
+      if (texture.pending_version != texture.version) {
+        ++pending_published_;  // textures, not snapshots
+      }
+      texture.pending_version = texture.version;
+      continue;
+    }
+    if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
+        texture.job == nullptr) {
+      texture.published_ok = true;
+    }
     out.textures.push_back(wire_entry(texture));
     if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
         texture.bytes != nullptr) {
