@@ -256,6 +256,10 @@ export interface Report {
   creditWindow: number | null;
   /** G8kp: at /9, the module's `delivery_json()` (what this receiver states and selects with). */
   textureDelivery?: Record<string, unknown> | null;
+  /** G8kb: every KTX2 transcode (transcode.ts `TranscodeRow`) and every `delivery-transcode-failed`
+   * fallback to `decoded` (`FallbackRow`), written at /9 as `transcodes[]`, `delivery_fallbacks[]`. */
+  transcodes?: unknown[];
+  deliveryFallbacks?: unknown[];
   /** Live: the page payload cache's block (null: file mode's `http-cache`). */
   cache?: Record<string, unknown> | null;
   /** G7k (Q10 soak), live mode only: the `PayloadStore`'s cumulative eviction count at the last
@@ -381,6 +385,9 @@ export function appliedJson(r: Report): Record<string, unknown> {
       float_quantized: rust.float_quantized ?? [],
     },
     mode: r.mode,
+    ...(r.textureDelivery
+      ? { transcodes: r.transcodes ?? [], delivery_fallbacks: r.deliveryFallbacks ?? [] }
+      : {}),
     recording: r.recording,
     session_id: r.sessionId,
     streams: r.streams,

@@ -19,6 +19,12 @@
 //                    native gate 8 run) the replay's checkpoints equal the file group's honest
 //                    receiver's, so g8l's host is the scene the file legs judged against the
 //                    reference
+//   g8l-basis-delivery  G8kb (texture-delivery-design.md Q3, Q6): the basis leg (gate8-basis at
+//                    render-stream/9 under basis-uastc, the receiver at RS_RECEIVER_PROTOCOL=9 with
+//                    `upgrade`): the live /9 hello stated uastc in texture_encodings, the receiver
+//                    fetched at least one uastc variant over HTTP, transcoded every one it fetched
+//                    without a failure, and uploaded them (uploads[] encoding uastc). The basis leg's
+//                    host, live, states and live-replay checks read .rs9 at /9.
 //   g8l-proxy-fronted  D14: the proxy leg's receiver connected to the proxy's port, not the host's;
 //                    the proxy forwarded exactly one WebSocket upgrade (101) and every GET the
 //                    receiver made (each answered 200), the host saw them with the proxy's
@@ -50,11 +56,24 @@ import {
 } from "./render-stream-2";
 
 /** run-gate8.sh G8L_FIXTURES, in run order; `proxy` is tex through the reverse proxy. */
-export const G8L_FIXTURES = ["tex", "float", "adopt", "size", "mat", "proxy"] as const;
+export const G8L_FIXTURES = ["tex", "float", "adopt", "size", "mat", "proxy", "basis"] as const;
 export type G8lFixture = (typeof G8L_FIXTURES)[number];
 
-/** The file group whose honest full-sink receiver shows the same scene (replay-equals-file). */
-const FILE_RECEIVER: Record<Exclude<G8lFixture, "proxy">, string> = {
+/** G8kb: the wire version a fixture's live leg speaks (run-gate8.sh g8l_spec G8L_VERSION). */
+export const G8L_VERSION: Record<G8lFixture, 8 | 9> = {
+  tex: 8,
+  float: 8,
+  adopt: 8,
+  size: 8,
+  mat: 8,
+  proxy: 8,
+  basis: 9,
+};
+
+/** The file group whose honest full-sink receiver shows the same scene (replay-equals-file). G8kb:
+ * the basis leg has none (g8ku's receivers attach the variants at a wait frame, the live host does
+ * not). */
+const FILE_RECEIVER: Record<Exclude<G8lFixture, "proxy" | "basis">, string> = {
   tex: "receiver",
   float: "g8f/receiver",
   adopt: "g8a/late/receiver",
@@ -75,10 +94,26 @@ export interface G8lLegReport {
 export interface G8lReport {
   legs: Partial<Record<G8lFixture, G8lLegReport>>;
   proxy: { requests: number; upgrades: number; gets: number; options: number } | null;
+  /** G8kb: fixtures the runner did not run for this receiver, with its reason. */
+  not_applicable?: Partial<Record<G8lFixture, string>>;
 }
 
 interface LiveSummary {
-  connections?: Array<{ connection?: number; version?: number; subprotocol?: string; gets?: number }>;
+  connections?: Array<{
+    connection?: number;
+    version?: number;
+    subprotocol?: string;
+    gets?: number;
+    /** /9 hellos (G8kp): what the receiver stated. */
+    texture_encodings?: string | null;
+  }>;
+}
+
+/** G8kb: what g8l-basis-delivery reads of a /9 receiver's applied.json. */
+interface BasisApplied {
+  receiver?: { texture_delivery?: { texture_encodings?: string } };
+  uploads?: Array<{ hash?: string | null; encoding?: string | null }>;
+  transcodes?: Array<{ hash: string; ok: boolean; format?: number; format_name?: string }>;
 }
 
 interface Applied {
@@ -130,13 +165,13 @@ async function pixelDiff(a: string | undefined, b: string | undefined): Promise<
   return n;
 }
 
-async function loadTap(dir: string): Promise<{ rec?: ResolvedRecording; error?: string }> {
-  const path = join(dir, "received.rs8");
+async function loadTap(dir: string, version: 8 | 9): Promise<{ rec?: ResolvedRecording; error?: string }> {
+  const path = join(dir, `received.rs${version}`);
   if (!existsSync(path)) return { error: `${path} missing` };
   const bytes = new Uint8Array(await readFile(path));
-  if (wireVersionOf(bytes) !== 8) return { error: `${path} is not GRS8` };
+  if (wireVersionOf(bytes) !== version) return { error: `${path} is not GRS${version}` };
   try {
-    return { rec: resolveRecording(bytes, 8) };
+    return { rec: resolveRecording(bytes, version) };
   } catch (e) {
     return { error: `${path}: ${(e as Error).message}` };
   }
@@ -163,7 +198,15 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
   const finalShot = (dir: string) => join(dir, "shots", "final.png");
 
   for (const f of G8L_FIXTURES) {
+    const v = G8L_VERSION[f];
     const leg = join(out, "g8l", f);
+    // G8kb: a fixture the runner declared not applicable to this receiver (run-gate8.sh: the web
+    // export's basis leg) has no checks; the reason is in the report.
+    const na = await readText(join(leg, "not-applicable.txt"));
+    if (na !== undefined) {
+      report.not_applicable = { ...(report.not_applicable ?? {}), [f]: na.trim() };
+      continue;
+    }
     const host = join(leg, "host");
     const receiver = join(leg, "receiver");
     const replay = join(leg, "replay");
@@ -196,13 +239,13 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       const conns = summary?.connections ?? [];
       if (conns.length !== 1) problems.push(`${conns.length} connections, expected 1`);
       for (const c of conns)
-        if (c.version !== 8) problems.push(`connection ${c.connection}: version ${c.version}, expected 8`);
+        if (c.version !== v) problems.push(`connection ${c.connection}: version ${c.version}, expected ${v}`);
       checks.push(
         check(
           `g8l-${f}-host`,
-          "G8g: the fixture's live host published under its gate 8 policy, listened, and its one connection spoke render-stream/8",
+          `G8g: the fixture's live host published under its gate 8 policy, listened, and its one connection spoke render-stream/${v}`,
           missingHost ? null : problems,
-          `port ${lr.host_port}, 1 connection at /8`,
+          `port ${lr.host_port}, 1 connection at /${v}`,
         ),
       );
     }
@@ -215,8 +258,8 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       const code = await exitCode(receiver);
       if (!applied) problems.push("applied.json missing");
       else {
-        if (applied.receiver?.protocol !== "render-stream/8")
-          problems.push(`receiver protocol ${JSON.stringify(applied.receiver?.protocol)}, expected render-stream/8`);
+        if (applied.receiver?.protocol !== `render-stream/${v}`)
+          problems.push(`receiver protocol ${JSON.stringify(applied.receiver?.protocol)}, expected render-stream/${v}`);
         problems.push(...failuresOf(applied));
       }
       if (code !== "0") problems.push(`receiver exit ${code ?? "missing"}`);
@@ -225,9 +268,9 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       checks.push(
         check(
           `g8l-${f}-live`,
-          "G8g: the live receiver negotiated render-stream/8, applied the stream without a failure, read its end and shot the final state",
+          `G8g: the live receiver negotiated render-stream/${v}, applied the stream without a failure, read its end and shot the final state`,
           missingReceiver ? null : problems,
-          "render-stream/8, final shot taken",
+          `render-stream/${v}, final shot taken`,
         ),
       );
     }
@@ -235,8 +278,8 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
     // states: the received tap against the host's file sink, frame for frame
     {
       const problems: string[] = [];
-      const file = await loadRecording(host);
-      const tap = await loadTap(receiver);
+      const file = await loadRecording(host, v);
+      const tap = await loadTap(receiver, v);
       if (file.error) problems.push(`file sink: ${file.error}`);
       if (tap.error) problems.push(`received tap: ${tap.error}`);
       if (file.rec && tap.rec) {
@@ -260,7 +303,7 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       checks.push(
         check(
           `g8l-${f}-states`,
-          "G8g: every live transaction (received.rs8 at /8) is the host's /8 file-sink state at its frame, and the last is the sink's final state",
+          `G8g: every live transaction (received.rs${v} at /${v}) is the host's /${v} file-sink state at its frame, and the last is the sink's final state`,
           missingHost || missingReceiver ? null : problems,
           `${lr.transactions_received} live transactions against ${lr.transactions_file} file transactions`,
         ),
@@ -281,15 +324,44 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       checks.push(
         check(
           `live-replay-equals-live-g8l-${f}`,
-          "G8g: the live receiver's final image equals the same receiver's replay of the host's /8 file sink at its last checkpoint, exactly",
+          `G8g: the live receiver's final image equals the same receiver's replay of the host's /${v} file sink at its last checkpoint, exactly`,
           missingReceiver || absent(replay) ? null : problems,
           "0 px",
         ),
       );
     }
 
+    // G8kb: the basis leg delivers uastc over the live /9 transport
+    if (f === "basis") {
+      const problems: string[] = [];
+      const applied = await readJson<BasisApplied>(join(receiver, "applied.json"));
+      const conns = (await readJson<LiveSummary>(join(host, "evidence", "live-summary.json")))?.connections ?? [];
+      const stated = applied?.receiver?.texture_delivery?.texture_encodings ?? "";
+      if (!stated.split(",").includes("uastc"))
+        problems.push(`texture_encodings ${JSON.stringify(stated)} lacks uastc`);
+      for (const c of conns)
+        if (!(c.texture_encodings ?? "").split(",").includes("uastc"))
+          problems.push(`host saw connection ${c.connection}'s hello texture_encodings ${JSON.stringify(c.texture_encodings)}`);
+      const uastc = (applied?.uploads ?? []).filter((u) => u.encoding === "uastc");
+      const transcodes = applied?.transcodes ?? [];
+      if (uastc.length === 0) problems.push("no uastc upload");
+      if (transcodes.length === 0) problems.push("no transcode logged");
+      for (const t of transcodes) if (!t.ok) problems.push(`transcode of ${t.hash.slice(0, 12)} failed`);
+      for (const u of uastc)
+        if (!transcodes.some((t) => t.hash === u.hash && t.ok))
+          problems.push(`uastc upload of ${String(u.hash).slice(0, 12)} has no ok transcode`);
+      checks.push(
+        check(
+          "g8l-basis-delivery",
+          "G8kb (texture-delivery-design.md Q3, Q6): at render-stream/9 under basis-uastc, the live receiver's hello states uastc, and it fetches, transcodes (without a failure) and uploads the lazy uastc variants over the live transport",
+          missingReceiver || missingHost ? null : problems,
+          `${uastc.length} uastc uploads, ${transcodes.length} transcodes (${[...new Set(transcodes.map((t) => t.format_name ?? t.format))].join(",")})`,
+        ),
+      );
+    }
+
     // replay == the file group's receiver (a native run with that group)
-    if (f !== "proxy") {
+    if (f !== "proxy" && f !== "basis") {
       const file = join(out, FILE_RECEIVER[f]);
       if (existsSync(join(file, "shots")) && !absent(replay)) {
         const problems: string[] = [];

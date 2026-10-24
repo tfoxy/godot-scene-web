@@ -481,7 +481,7 @@ Shared call sites still reach `*`.
 | G8k9 | **Landed** ("As built (G8k9)"). render-stream/9 codecs and validators (Q5): `variants`, `ktx2` and `block` payloads, `resources.delivery`, hello keys, `delivery-pending`, `golden-9/`; empty delivery seam; no receiver offers .9 yet | `protocol/render-stream-9.md`, `protocol/golden-9/`, `rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `render-stream-2.ts`, `rs-core/src/{wire,validate,meta,payload}.rs`, capi pin | `*` | sonnet, 4 h + full tier | G8w (parallel with G8kz/G8kw) |
 | G8kp | **Landed** ("As built (G8kp)"). `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
 | G8ku | **Landed** ("As built (G8ku)"). `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |
-| G8kb | GSW Basis: transcoder wasm in a Web Worker (emsdk 4.0.11, D15 sources), ASTC/ETC2/BC7 upload, `upgrade` policy; g31 device bench of transcode time per Mpx, GPU memory (gfxinfo) and hd-patch p95 unchanged (real time, standing phone approval) | `web/gsw-receiver/`, `web/basis-transcoder/` (new), `packages/canvas/rust-prototype/…/gl.rs`, `scripts/gate7-bench.ts` arm | `g7:*@gsw`, `g7live:*@gsw`, `bench-instr`, device leg | opus, 6 h + scoped tier | G8ku |
+| G8kb | **Landed** ("As built (G8kb)"). GSW Basis: transcoder wasm in a Web Worker (emsdk 4.0.11, D15 sources), ASTC/ETC2/BC7 upload, `upgrade` policy; g31 device bench of transcode time per Mpx, GPU memory (gfxinfo) and hd-patch p95 unchanged (real time, standing phone approval) | `web/gsw-receiver/`, `web/basis-transcoder/` (new), `packages/canvas/rust-prototype/…/gl.rs`, `scripts/gate7-bench.ts` arm | `g7:*@gsw`, `g7live:*@gsw`, `bench-instr`, device leg | opus, 6 h + scoped tier | G8ku |
 | G8kc | **Landed** ("As built (G8kc)"; UASTC entries wait for G8ku). Persistent cache and the prepare step (D8, D9), and the `texture_set_path` hook with paths in the hook log (D10): `GRC_TEXTURE_CACHE_DIR`, index, verify-on-load, LRU budget; `scripts/prepare-textures.sh` over a project's `.ctex` or an image directory; checks `prepare-key-match` (every hooked texture of the fixture hits after prepare from its `.ctex`), `cache-warm` (second session: zero encodes, identical hashes), `cache-corrupt` sabotage | `capture/src/rs_texture_cache.*`, `scripts/prepare-textures.*`, `fixtures/gate8-tex/` | narrow rule + `native:gate8@*` | sonnet, 4 h + scoped tier | G8ku |
 | G8ke | `basis-etc1s` (internet): ETC1S level 1/q128, D12(d)'s PSNR floor with UASTC fallback; a throttled-link leg through G6c's constrained proxy (bytes and time to first complete frame at 10 Mbit/s); g31 ETC1S → ETC2 cost | `rs_texture_delivery.*`, `lib/gate8-delivery*.ts`, proxy config | narrow + `native:gate8@*`, `g7:*@gsw`, device leg | sonnet, 4 h + scoped tier | G8kc, G8kb |
 
@@ -991,3 +991,108 @@ llvmpipe's ASTC) would differ there without being wrong.
 | ETC1S, D12(d)'s PSNR floor, the throttled link | G8ke | `basis-etc1s` still refused at /9 |
 | Receiver-driven encode priority (Q4), freeing `decoded` bytes on the host (Q7 "Memory") | later | FIFO in table order; `decoded` stays resident |
 | `delivery-transcode-failed` fallback to `decoded` | G8kb | a typed replay failure |
+
+
+## As built (G8kb)
+
+Landed as one commit; evidence summary [results/gate8/g8kb.md](../results/gate8/g8kb.md). GSW (the
+browser canvas receiver) now takes `uastc` at /9, file and live.
+
+**Transcoder.** `web/basis-transcoder/transcoder.cpp` wraps basisu 1.60's `ktx2_transcoder` from the
+vendored `third_party/basis_universal/` (D15) with zstd 1.5.7's decompressor (`capture/vendor/zstd`).
+`scripts/build-basis-transcoder.sh` compiles it with the pinned emscripten 4.0.11 (the web export's
+emsdk, nothing downloaded) into ONE standalone wasm (568 KB, no JS glue; its few WASI/env imports are
+stubbed) under `artifacts/render-stream/basis-transcoder/<input digest>/`, reused while its inputs are
+unchanged. Defines: Godot's (KTX2 + Zstandard, no ATC/FXT1/PVRTC), plus `BASISD_SUPPORT_UASTC_HDR=0`
+and `BASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY=1` (basisu defaults the latter to 0 under emscripten
+and 1 natively; neither changes a UASTC LDR transcode, both are pinned). One call transcodes every
+level, decode flags 0, as libktx's `ktxTexture2_TranscodeBasis` does for Godot.
+
+**D14 in GSW.** The transcoder applies Godot's KTX2 loader rule itself (4 components: ASTC 4x4, BC7,
+BC3, ETC2 RGBA, RGBA8; 3: BC7, BC1, ETC1, RGBA8; 2/1: BC5/BC4 or RGBA8; sRGB: RGBA8), the component
+count read as libktx reads it (the DFD's first channel id). One WebGL rule is added in front of it
+(`client.ts` `webglFamilies`): **WebGL refuses a BC (S3TC, BPTC, RGTC) level 0 whose width or height
+is not a multiple of 4** (`INVALID_OPERATION`, measured in the pinned Chromium; desktop GL accepts
+it), so for such a KTX2 the BC families drop out and D14 takes the next target, on the desktop
+RGBA8. ETC2 and ASTC have no such rule (a 150x110 ASTC upload succeeds on the g31). Godot names an
+ASTC 4x4 UNORM transcode `FORMAT_ASTC_4x4_HDR` (`texture_loader_ktx.cpp:437`, the same GL internal
+format); GSW names it `ASTC_4x4`.
+
+**Worker and the arrival path.** `web/basis-transcoder/worker.ts` runs the wasm in a Web Worker
+(`client.ts` `BasisTranscoder`, one per page; the KTX2 is transferred in, every transcoded level
+out). `web/gsw-receiver/transcode.ts` (`KtxStager`) is the arrival path both modes share, in the
+payload's fetch completion (G7o2's pattern: the step transaction never transcodes):
+
+1. rs-core verifies the KTX2 (`stage_ktx2`: SHA-256 against the hash it was fetched for, then
+   `decode_ktx2` and `check_ktx2_shape` against the entry listing it), so a perturbed KTX2 is
+   refused (`resource-hash-mismatch`) and never transcoded;
+2. the worker transcodes it to D14's target for the context's *stated* gpu_formats;
+3. `stage_transcoded` stages level 0 (`payloads::texture_transcoded`; a block format or RGBA8) under
+   the KTX2's hash, and `provide_staged` moves it to the store when its transaction runs; only a
+   hash `stage_ktx2` verified may be staged.
+
+The applier uploads it through G8kp's `TextureOp::UploadCompressed` (`compressedTexImage2D`, level
+0, the GL format Godot's GLES3 driver uses), or `Upload` for RGBA8; `gl.rs` needed no change. File
+mode fetches `<hash>.ktx2` (needed kind 3); live mode GETs it like any payload, and the fetcher hands
+the result back once its transcode settled while the next GET goes out. `applied.json` gains
+`transcodes[]` (the native receiver's fields: hash, ok, `format` as Godot's Image.Format value,
+size, mipmaps, data and KTX2 bytes, `transcode_us`, and with `RS_RECEIVER_TRANSCODE_LOG=1` the
+blocks' SHA-256; plus `format_name`, `levels`, `components` and the main thread's `round_trip_us`)
+and `delivery_fallbacks[]`.
+
+**Hello and D6.** With the worker in its bundle GSW's default `texture_encodings` is
+`block,uastc,decoded` (the hello and the core alike; `RS_RECEIVER_TEXTURE_ENCODINGS` overrides).
+`RS_RECEIVER_VARIANT_POLICY=keep|upgrade` sets D6's policy; unset, GSW **upgrades on a context with
+neither `bptc` nor `s3tc`** (the phone class, where `decoded` costs 4 B/px and the transcode 1 B/px or
+less) and keeps otherwise. rs-core's applier, which GSW runs, implements `keep` as the native planner
+does: a resident payload of the entry's current version stays (not refetched, and drawn from: the
+applier's `kept` map), `upgrade` re-uploads. `texture_delivery` in `applied.json` reports
+`variant_policy` and whether the default chose it.
+
+**`delivery-transcode-failed` falls back to `decoded`** (Q3). A transcode that fails (basisu
+refuses the file, the worker cannot start, or the test fault `RS_RECEIVER_TRANSCODE_FAULT=fail`)
+is a `delivery_fallbacks[]` row; `transcode_failed` refuses the variant for the session
+(`DeliveryPrefs::refuse`, rs-core: D3 skips refused variant hashes) and recomputes the needed set,
+and the shell fetches what it now lists: the entry's `decoded` payload, unless it is already
+resident. A hash refusal stays a refusal. **Not built:** the same fallback in the native receiver
+and the web export (`rs_core_ext.cpp`'s transcode failure still ends the replay;
+`DeliveryPrefs::refuse` is the core half they need), and a fallback on a failed *upload* (GSW does
+not read `getError` after `compressedTexImage2D`; D14 plus the WebGL rule above choose only
+formats the context takes).
+
+**Gate legs.** g7-8's gate 8 source now runs g8kp and g8ku (`G8_FILE_LEGS`). The web half does not
+replay their legs (`lib/gate7b-adapters.ts` excludes them as `gsw-only-group`, reported by
+`legs-not-replayed@web`): replayed, the web export fails both, a defect for G8kf (its g8kp block
+uploads log `WebGL: INVALID_ENUM: compressedTexImage2D: invalid format` and draw 77,878 px wrong;
+its g8ku upgrade leg draws the 150x110 BC7 texture wrong, 16,500 px). The GSW half replays g8kp's three receiver legs (judged by
+`delivery-select` and `delivery-pixels-native` through the band) and g8ku's perturbed-KTX2
+sabotage (`sabotage-perturb-ktx2`), and runs four GSW-only g8ku legs judged by
+`lib/gate7-gsw-g8-checks.ts`: `gsw-transcode-oracle`, `gsw-delivery-policy`, `gsw-delivery-pixels`,
+`gsw-transcode-rgba`, `gsw-transcode-fallback`. g8l gains `basis` (gate8-basis at /9 basis-uastc,
+no wait knob; receiver and replay at `RS_RECEIVER_PROTOCOL=9` with `upgrade`; tap and sink `.rs9`;
+the replay also shoots the sink's last transaction) with `g8l-basis-delivery`, so the native
+receiver's and GSW's live /9 hellos run, GSW's for the first time. The web export's basis leg is not
+run (`g8l/basis/not-applicable.txt`): live it draws its non-4-aligned BC7 texture wrong while its
+replay draws it right (WebGL refuses such a BC level 0, and the web export applies no alignment
+rule), a web-export defect for G8kf.
+
+**Bench.** `gate7-bench.ts --arm gsw-basis --basis-store <store>` (`web/bench/basis.html`): GSW's own
+worker on every KTX2 of a store per D14 target set (warmup + repeats), then per delivery (`decoded`:
+the RGBA8 a decoded payload uploads; `uastc`: the context's own transcode) K copies of each texture
+uploaded through GSW's calls, the phone's memory sampled on the same page before and after.
+
+**Measured.** Desktop: GSW's BC7 transcodes equal the native oracle's bit for bit (every level), and
+its pixels equal the native receiver's within channel 1 outside the declared regions. The g31 (ETC2
+and ASTC only): ASTC 4x4 57-77 ms/Mpx in the worker (ETC1 ~120 on small textures, ETC2 RGBA8 ~82,
+RGBA8 57); 64 copies of the fixture's textures cost +157-163 MB of system `Lost RAM` as decoded RGBA8
+(149.6 MiB uploaded) and +17-22 MB as their ASTC/ETC1 transcodes (36.4 MiB). Details, the hd-patch
+A/B and the runs: [results/gate8/g8kb.md](../results/gate8/g8kb.md).
+
+**Out of scope here.**
+
+| Item | Owner | State after G8kb |
+| ---- | ----- | ---------------- |
+| `delivery-transcode-failed` fallback in the native receiver and the web export | G8kf | a typed replay failure; `DeliveryPrefs::refuse` in rs-core is the core half |
+| The web export's block-variant uploads (`INVALID_ENUM` on g8kp) and non-4-aligned BC uploads (g8ku, its g8l basis leg) | G8kf | its g8kp/g8ku legs are not replayed in g7-8's web half, its g8l basis leg not run |
+| ETC1S and its g31 cost | G8ke | refused at /9 |
+| GSW mip levels beyond 0; reading GL errors after a compressed upload | later | level 0; no read-back |

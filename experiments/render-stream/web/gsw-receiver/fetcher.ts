@@ -35,6 +35,9 @@ export interface FetchResult {
   /** G7o2: set by `onBody` (the verify and decode on arrival, and its refusal if any). */
   verify_us?: number;
   stage_error?: string | null;
+  /** G8kb: the body was a KTX2 whose transcode failed (`delivery-transcode-failed`): the variant
+   * is refused and wasm's needed set recomputed; the caller fetches the fallback. */
+  transcode_fallback?: boolean;
 }
 
 const KEPT_HEADERS = [
@@ -53,6 +56,8 @@ export class LiveFetcher {
   private inFlightHash: string | null = null;
   private delayUntil = -1;
   private done: FetchResult[] = [];
+  /** G8kb: completed bodies whose `onBody` promise (a transcode) has not settled yet. */
+  private staging = new Set<string>();
   private failed = false;
   private generation = 0;
 
@@ -65,8 +70,10 @@ export class LiveFetcher {
     /** Sabotage `ignore-cache`: every GET bypasses the HTTP cache (the native "fetch even on a
      * cache hit"). */
     private readonly bypassCache = false,
-    /** G7o2: called with each 200 result in its completion, before `poll` hands it back. */
-    private readonly onBody: ((r: FetchResult) => void) | null = null,
+    /** G7o2: called with each 200 result in its completion, before `poll` hands it back. G8kb:
+     * it may return a promise (a KTX2's transcode in the worker); the result is handed back when
+     * it settles, while the next GET goes out meanwhile. */
+    private readonly onBody: ((r: FetchResult) => void | Promise<void>) | null = null,
   ) {}
 
   /** Queues one transaction's misses, in the order wasm needs them. */
@@ -88,6 +95,7 @@ export class LiveFetcher {
   requested(): Set<string> {
     const out = new Set(this.queue);
     if (this.inFlight && this.inFlightHash !== null) out.add(this.inFlightHash);
+    for (const h of this.staging) out.add(h);
     for (const r of this.done) out.add(r.hash);
     return out;
   }
@@ -101,6 +109,7 @@ export class LiveFetcher {
   busy(): boolean {
     return (
       this.inFlight ||
+      this.staging.size > 0 ||
       this.done.length > 0 ||
       (!this.failed && this.queue.length > 0)
     );
@@ -112,6 +121,7 @@ export class LiveFetcher {
     this.queue = [];
     this.inFlight = false;
     this.inFlightHash = null;
+    this.staging.clear();
     this.done = [];
     this.delayUntil = -1;
   }
@@ -128,7 +138,9 @@ export class LiveFetcher {
     this.done = [];
     return {
       results,
-      finished: this.failed || (!this.inFlight && this.queue.length === 0),
+      finished:
+        this.failed ||
+        (!this.inFlight && this.staging.size === 0 && this.queue.length === 0),
     };
   }
 
@@ -163,7 +175,18 @@ export class LiveFetcher {
       if (error !== "") {
         this.failed = true;
         this.queue = [];
-      } else if (this.onBody) this.onBody(r);
+      } else if (this.onBody) {
+        const pending = this.onBody(r);
+        if (pending instanceof Promise) {
+          this.staging.add(hash);
+          void pending.finally(() => {
+            if (gen !== this.generation) return;
+            this.staging.delete(hash);
+            this.done.push(r);
+          });
+          return;
+        }
+      }
       this.done.push(r);
     };
     fetch(`${this.origin}${path}`, {

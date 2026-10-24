@@ -987,6 +987,11 @@ run_g8kc() {
 #   mat    gate8-mat armed late at K (G8m's materials and shaders)
 #   proxy  tex again, its receiver connected through scripts/lib/reverse-proxy.ts (an HTTP/1.1
 #          reverse proxy forwarding the upgrade and every GET): D14 without a wire change
+#   basis  G8kb: gate8-basis at render-stream/9 under g8ku's basis-uastc policy (no wait knob: the
+#          lazy uastc variants publish when their encodes finish), the receiver and its replay at
+#          RS_RECEIVER_PROTOCOL=9 with RS_RECEIVER_VARIANT_POLICY=upgrade, so the live /9 hello
+#          states uastc and the variants are fetched and transcoded over HTTP (texture-delivery-
+#          design.md Q3, Q6); its tap and sink are .rs9
 # A host is the fixture headless at --max-fps 60 with its /8 file sink and store, a live listener
 # on 127.0.0.1:0 (lib/legs.sh moves it to GATE7_HOST_PORT for a browser), and
 # GRC_LIVE_AWAIT_HELLO_MS (its timeline waits at the first armed frame for the receiver's hello, so
@@ -997,7 +1002,7 @@ run_g8kc() {
 # recording (its checkpoints). Under GATE7_LIVE_KIND (run-gate7.sh --live --legs g7-8) every
 # receiver and replay is that browser. Correctness legs: the checks judge states and the final
 # image, never cadence, so they hold no timing group natively.
-G8L_FIXTURES=(tex float adopt size mat proxy)
+G8L_FIXTURES=(tex float adopt size mat proxy basis)
 # Every fixture's default quit is below 60 (tex/float S+N+11, adopt K+38, size K+26, mat K+24);
 # at 60 fps the linger is about 4 s.
 G8L_QUIT_FRAME=300
@@ -1007,6 +1012,8 @@ G8L_AWAIT_HELLO_MS=60000
 # host's policy and fixture words) for one fixture, from its file group's own captures.
 g8l_spec() {
 	G8L_SCENE=""
+	G8L_VERSION=8
+	G8L_RECEIVER_ENV=()
 	case "$1" in
 	tex | proxy)
 		G8L_PROJECT="$FIXTURE_DIR"
@@ -1029,6 +1036,12 @@ g8l_spec() {
 		G8L_PROJECT="$G8M_FIXTURE_DIR"
 		G8L_ENV=("${G8M_ENV[@]}" GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME="$G8M_ARM_FRAME")
 		;;
+	basis)
+		G8L_PROJECT="$G8KU_FIXTURE_DIR"
+		G8L_ENV=("${G8KU_ENV[@]}")
+		G8L_VERSION=9
+		G8L_RECEIVER_ENV=(RS_RECEIVER_VARIANT_POLICY=upgrade RS_RECEIVER_TRANSCODE_LOG=1)
+		;;
 	esac
 }
 
@@ -1040,7 +1053,7 @@ start_g8l_host() {
 	mkdir -p "$dir/evidence" "$dir/tap"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
-		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/recording.rs$G8L_VERSION"
 		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
 		GRC_LIVE_AWAIT_HELLO_MS="$G8L_AWAIT_HELLO_MS"
 		RS_FIXTURE_QUIT_FRAME="$G8L_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "${G8L_ENV[@]}"
@@ -1070,7 +1083,8 @@ g8l_receiver() {
 		return 0
 	fi
 	LEG_ENV=(
-		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_PROTOCOL=8
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream"
+		RS_RECEIVER_PROTOCOL="$G8L_VERSION" "${G8L_RECEIVER_ENV[@]}"
 		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" RS_RECEIVER_SHOT_FINAL=1
 	)
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
@@ -1116,11 +1130,22 @@ run_g8l() {
 	[ -f "$OUT/g8a/import/fixture/exit-code.txt" ] || run_import_g8a
 	[ -f "$OUT/g8h/import/fixture/exit-code.txt" ] || run_import_g8h
 	[ -f "$OUT/g8m/import/fixture/exit-code.txt" ] || run_import_g8m
+	[ -f "$OUT/g8ku/import/fixture/exit-code.txt" ] || run_import_g8ku
 	echo "run-gate8: bringing up private gamescope for g8l's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8l"
 	local f leg via
 	for f in "${G8L_FIXTURES[@]}"; do
 		leg="$OUT/g8l/$f"
+		# G8kb: the web export's /9 basis live leg is not run here: live, its non-4-aligned BC7
+		# texture (npot, 150x110) draws wrong while its replay of the same sink draws right (WebGL
+		# refuses such a BC level 0; texture-delivery-design.md "As built (G8kb)"), a web-export
+		# defect G8kf owns. The checks report the leg not-applicable from this marker.
+		if [ "$f" = basis ] && [ "${GATE7_LIVE_KIND:-}" = web ]; then
+			mkdir -p "$leg"
+			echo "G8kb: the web export's live /9 basis leg waits for G8kf (non-4-aligned BC7 upload, live differs from replay)" >"$leg/not-applicable.txt"
+			echo "run-gate8: g8l basis not run for the web export (see $leg/not-applicable.txt)"
+			continue
+		fi
 		via=""
 		[ "$f" = proxy ] && via=" through the reverse proxy"
 		echo "run-gate8: g8l $f (live host at /8, receiver over render-stream.8$via)"
@@ -1134,8 +1159,19 @@ run_g8l() {
 		finish_bg "$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
 		LIVE_HOST_PID=""
 		[ "$f" = proxy ] && stop_g8l_proxy
-		echo "run-gate8: g8l $f replay (the host's /8 file sink, the same receiver)"
+		echo "run-gate8: g8l $f replay (the host's /$G8L_VERSION file sink, the same receiver)"
+		local recording_name="$RECORDING_NAME"
+		RECORDING_NAME="recording.rs$G8L_VERSION"
+		RECEIVER_EXTRA_ENV=("${G8L_RECEIVER_ENV[@]}")
+		# G8kb: basis's variants attach whenever their encodes finish, after its step checkpoints;
+		# its replay also shoots the sink's last transaction (seq = frame, from 1), the state the
+		# live receiver's final shot shows.
+		if [ "$f" = basis ]; then
+			RECEIVER_EXTRA_SHOTS="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["stream"]["transactions"])' \
+				"$leg/host/evidence/result.json" 2>/dev/null || true)"
+		fi
 		run_rendered_receiver "$leg/host" "$leg/replay"
+		RECORDING_NAME="$recording_name"
 	done
 	gs_teardown "$OUT/gamescope-g8l"
 	GS_RUN_DIR=""

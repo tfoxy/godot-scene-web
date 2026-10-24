@@ -56,6 +56,7 @@ import { runLive, takeToken } from "./live";
 import { type FrameSample, type PayloadVerify, Perf } from "./perf";
 import { ProgramError, resolvePrograms } from "./programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
+import { KtxStager } from "./transcode";
 
 // Before anything else: the fragment's token, then the fragment is gone (G7l, token-not-logged).
 const token = takeToken();
@@ -223,6 +224,10 @@ async function run(): Promise<void> {
           // G8kp (texture-delivery-design.md D3): the delivery preference a /9 recording is read with.
           texture_encodings: cfg.textureEncodings ?? "",
           gpu_format_mask: cfg.gpuFormatMask ?? "",
+          // G8kb: the bundle carries the KTX2 transcoder worker (transcode.ts), so the default
+          // preference lists uastc; D6's policy (null: the module's default).
+          transcoder: true,
+          variant_policy: cfg.variantPolicy ?? "",
         }),
       );
     } catch (e) {
@@ -232,6 +237,13 @@ async function run(): Promise<void> {
       return;
     }
     const g = gs;
+    const ktx = new KtxStager(g, mem, {
+      log: cfg.transcodeLog,
+      fault: cfg.transcodeFault,
+      stream: () => 1,
+    });
+    report.transcodes = ktx.transcodes;
+    report.deliveryFallbacks = ktx.fallbacks;
     const ptr = g.alloc_recording(data.length);
     new Uint8Array(mem.buffer, ptr, data.length).set(data);
     const recordCount = g.load(data.length);
@@ -321,23 +333,24 @@ async function run(): Promise<void> {
       let verifyUs = 0;
       if (code === ACCEPT_NEEDS_PAYLOADS) {
         // Q5 "Fetch": one at a time; the transaction waits, unapplied, across frames.
-        const n = g.needed_count();
-        const hashes = new Uint8Array(
-          mem.buffer,
-          g.needed_ptr(),
-          32 * n,
-        ).slice();
-        const kinds = new Uint8Array(
-          mem.buffer,
-          g.needed_kinds_ptr(),
-          n,
-        ).slice();
-        const staged: { hash: string; error: string | null }[] = [];
-        for (let k = 0; k < n; k++) {
-          const hash = hex(hashes.subarray(32 * k, 32 * k + 32));
+        const readNeeded = (): { hashes: string[]; kinds: Uint8Array } => {
+          const n = g.needed_count();
+          const raw = new Uint8Array(mem.buffer, g.needed_ptr(), 32 * n).slice();
+          const kinds = new Uint8Array(mem.buffer, g.needed_kinds_ptr(), n).slice();
+          const hashes: string[] = [];
+          for (let k = 0; k < n; k++) hashes.push(hex(raw.subarray(32 * k, 32 * k + 32)));
+          return { hashes, kinds };
+        };
+        let needed = readNeeded();
+        // Each payload's own refusal (null: staged), raised in needed order at provide time.
+        const outcome = new Map<string, string | null>();
+        for (let k = 0; k < needed.hashes.length; k++) {
+          const hash = needed.hashes[k];
+          const kind = needed.kinds[k];
+          if (outcome.has(hash)) continue;
           let got: { bytes: Uint8Array; us: number };
           try {
-            got = await fetcher.fetch(seq, hash, kinds[k]);
+            got = await fetcher.fetch(seq, hash, kind);
           } catch (e) {
             if (e instanceof SourceError)
               throw new ReplayFailure(seq, e.reason, e.message);
@@ -346,18 +359,36 @@ async function run(): Promise<void> {
           shellTx.fetched++;
           shellTx.fetched_bytes += got.bytes.length;
           shellTx.fetch_us += got.us;
-          if (kinds[k] === 2) shellTx.shader_payload_fetches++;
+          if (kind === 2) shellTx.shader_payload_fetches++;
           perf.fetchUs.push(got.us);
           // G7o2: verified (SHA-256 against the hash it was fetched for) and decoded in the
           // fetch's completion, between frames; a mismatch stages nothing, so nothing can use it.
           // Its failure is raised where `provide` raised it before (same evidence).
           const v0 = nowUs();
+          if (kind === 3) {
+            // G8kb: a KTX2 is verified, transcoded in the worker and staged (transcode.ts).
+            const r = await ktx.stage(hash, got.bytes, seq);
+            verifyUs += nowUs() - v0;
+            if (r.fallback) {
+              // delivery-transcode-failed: D3 now picks the entry's next choice; fetch what
+              // the recomputed needed set lists that is neither staged nor already refused.
+              needed = readNeeded();
+              k = -1;
+              continue;
+            }
+            outcome.set(hash, r.error);
+            continue;
+          }
           const pp = g.alloc_payload(got.bytes.length);
           new Uint8Array(mem.buffer, pp, got.bytes.length).set(got.bytes);
           const refused = g.stage_payload(got.bytes.length, hash) < 0;
           verifyUs += nowUs() - v0;
-          staged.push({ hash, error: refused ? g.error() : null });
+          outcome.set(hash, refused ? g.error() : null);
         }
+        const staged = needed.hashes.map((hash) => ({
+          hash,
+          error: outcome.get(hash) ?? null,
+        }));
         await nextFrame();
         rafCount++;
         shellTx.process_frame = rafCount;

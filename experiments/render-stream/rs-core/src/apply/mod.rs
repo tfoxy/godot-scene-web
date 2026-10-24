@@ -437,6 +437,9 @@ pub struct Applier {
     pub delivery: crate::delivery::DeliveryPrefs,
     /// G8kp: the stream's wire version; `uploads[]` name D3's encoding from /9 only.
     pub stream_version: u8,
+    /// G8kb (D6): textures `keep` holds on a resident payload D3 no longer chooses (a variant
+    /// appeared at the entry's version), and that payload's hash: what they draw from.
+    kept: HashMap<Id, Hash, payloads::HashBuild>,
     attach: Vec<Attach>,
     vertex_holes: u32,
     /// The canvas, material, shader and canvas-texture entries the last walk used: a full
@@ -492,6 +495,8 @@ struct TableView<'a> {
     meshes: &'a meshes::MeshResidency,
     /// G8kp: D3's choice decides which payload the store must hold for a texture to draw.
     delivery: &'a crate::delivery::DeliveryPrefs,
+    /// G8kb (D6): textures `keep` holds on a payload D3 no longer chooses, and that payload.
+    kept: &'a HashMap<Id, Hash, payloads::HashBuild>,
 }
 
 impl TableView<'_> {
@@ -502,7 +507,12 @@ impl TableView<'_> {
             (EntryStatus::Freed, _) => TexDraw::White,
             (EntryStatus::Unsupported, _) => TexDraw::Skip,
             (EntryStatus::Ok, TextureKind::Placeholder) => TexDraw::Sized(4, 4, false),
-            (EntryStatus::Ok, TextureKind::Image) => match self.delivery.select(t).map(|s| s.hash) {
+            (EntryStatus::Ok, TextureKind::Image) => match self
+                .kept
+                .get(&t.id)
+                .copied()
+                .or_else(|| self.delivery.select(t).map(|s| s.hash))
+            {
                 Some(h) if self.payloads.textures.contains_key(&h) => {
                     TexDraw::Sized(t.width as u32, t.height as u32, t.mipmaps)
                 }
@@ -657,6 +667,7 @@ impl Applier {
             account: Default::default(),
             sabotage: ApplySabotage::default(),
             delivery: crate::delivery::DeliveryPrefs::default(),
+            kept: HashMap::default(),
             stream_version: 6,
             attach: Vec::new(),
             vertex_holes: 0,
@@ -1083,9 +1094,15 @@ impl Applier {
         }
         for id in &self.pending {
             if let Some(t) = state.textures.get(id) {
-                // G8kp: D3's choice (the base hash unless a usable variant wins).
+                // G8kp: D3's choice (the base hash unless a usable variant wins); G8kb (D6):
+                // nothing under `keep` while a payload of the entry's version is resident.
                 if let Some(sel) = self.delivery.select(t) {
-                    push(sel.hash, out);
+                    let kept = self.resident.get(id).is_some_and(|r| {
+                        r.hash != Some(sel.hash) && kept_hash(&self.delivery, r, t).is_some()
+                    });
+                    if !kept {
+                        push(sel.hash, out);
+                    }
                 }
             }
         }
@@ -1123,6 +1140,7 @@ impl Applier {
             if !is_gone {
                 continue;
             }
+            self.kept.remove(&id);
             if let Some(r) = self.resident.remove(&id) {
                 if matches!(r.kind, TextureKind::Image | TextureKind::Placeholder) {
                     self.list.free_texture(id);
@@ -1156,6 +1174,7 @@ impl Applier {
                         width: 0,
                         height: 0,
                         mipmaps: false,
+                        version: t.version,
                     };
                     match self.resident.insert(id, placeholder) {
                         Some(_) => self.account.replaced += 1,
@@ -1187,6 +1206,7 @@ impl Applier {
                             width: 0,
                             height: 0,
                             mipmaps: false,
+                            version: t.version,
                         },
                     );
                     self.account.created += 1;
@@ -1209,7 +1229,19 @@ impl Applier {
                     let same = old
                         .as_ref()
                         .is_some_and(|r| r.kind == TextureKind::Image && r.hash == Some(hash));
-                    if same && !self.sabotage.reupload {
+                    // D6 (G8ku; G8kb in GSW): `keep` holds any payload of the entry's current
+                    // version, so a variant appearing at an equal version is not refetched;
+                    // `upgrade` switches to it. The kept hash is what the texture draws from.
+                    let kept = !same && old.as_ref().and_then(|r| kept_hash(&self.delivery, r, t)).is_some();
+                    if (same || kept) && !self.sabotage.reupload {
+                        if let Some(r) = self.resident.get_mut(&id) {
+                            r.version = t.version;
+                            if kept {
+                                self.kept.insert(id, r.hash.unwrap_or(hash));
+                            } else {
+                                self.kept.remove(&id);
+                            }
+                        }
                         continue;
                     }
                     if self.sabotage.stale_texture
@@ -1256,8 +1288,10 @@ impl Applier {
                             width: px.width,
                             height: px.height,
                             mipmaps: px.mipmaps,
+                            version: t.version,
                         },
                     );
+                    self.kept.remove(&id);
                     upload_pixels(&mut self.list, id, px);
                     self.stats.texture_uploads += 1;
                     self.stats.texture_upload_bytes += px.held_bytes();
@@ -1316,13 +1350,6 @@ impl Applier {
         mesh_res.sync(state, upserted, &delta.items_removed, self.first, payloads);
         prof::add(prof::MESH_SYNC, t);
         let t = prof::start();
-        let delivery = self.delivery.clone();
-        let tables = TableView {
-            state,
-            payloads,
-            meshes: &mesh_res,
-            delivery: &delivery,
-        };
         let mut why = if self.first { Why::FIRST } else { 0 };
         if delta.defaults_changed {
             why |= Why::DEFAULTS;
@@ -1400,6 +1427,16 @@ impl Applier {
             }
         }
         let resized = self.sync_textures(state, delta, payloads);
+        // G8kb: the kept map after this transaction's residency (restored below, as mesh_res).
+        let kept = std::mem::take(&mut self.kept);
+        let delivery = self.delivery.clone();
+        let tables = TableView {
+            state,
+            payloads,
+            meshes: &mesh_res,
+            delivery: &delivery,
+            kept: &kept,
+        };
         if !resized.is_empty() {
             why |= Why::TEXTURE_SIZE;
         }
@@ -1746,6 +1783,7 @@ impl Applier {
         prof::add(prof::BINDINGS, t);
         self.first = false;
         self.meshes = mesh_res;
+        self.kept = kept;
         self.coalesce_dirty();
         self.stats.vertex_count = self.list.vertices.len() as u32;
         self.stats.index_count = self.list.indices.len() as u32;
@@ -2587,6 +2625,17 @@ mod window_tests;
 /// carries (texture-delivery-design.md Q6 "GSW"). A block format the list cannot carry would have
 /// been refused by D3 (no gpu family names it), so it never reaches here; if one does, the texture
 /// is left undefined rather than drawn from the wrong bytes.
+/// D6 (G8ku; G8kb in the browser applier): the resident payload `keep` holds for entry `t` instead
+/// of D3's choice, or None (under `upgrade`, after a content change, or when nothing is resident).
+fn kept_hash(
+    delivery: &crate::delivery::DeliveryPrefs,
+    r: &residency::Resident,
+    t: &crate::state::Texture,
+) -> Option<Hash> {
+    let h = r.hash?;
+    (r.kind == TextureKind::Image && delivery.keeps(t, h, r.version)).then_some(h)
+}
+
 fn upload_pixels(list: &mut DrawList, id: Id, px: &TexturePixels) {
     match &px.compressed {
         None => list.upload_texture(id, px.width, px.height, &px.rgba),

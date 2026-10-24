@@ -18,7 +18,7 @@ other agents' work, without a lock held for a whole multi-gate run (`lib/quiet.s
 - **Shared, per correctness leg**: every other `run_headless`, `run_rendered` and
   `start_headless_bg ... finish_bg` launch, each gate 7 web/gsw file leg, the build scripts
   (`build-capture.sh`, `build-rs-core.sh`, `build-rs-core-ext.sh`, `build-rs-core-web.sh`,
-  `build-web-receiver.sh`) and
+  `build-web-receiver.sh`, `build-basis-transcoder.sh`) and
   each runner's checker. Shared holders run together, but wait while a timing leg holds the lock
   or waits for it (a waiter marker in `<lock>.waiters/`, so a stream of shared holders cannot
   starve it; a marker whose process is gone, or older than `GSW_QUIET_MARKER_MAX_S`, default

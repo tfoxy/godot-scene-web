@@ -6,8 +6,11 @@
 // The file legs are every file-mode receiver leg of the gate 8 groups g8t (host decode), g8f (float
 // payloads), g8a (adoption, with G8r's lazy resources and faults), g8h (presentation size) and g8m
 // (materials and shaders), replayed from a native gate 8 source run (D21: run-gate8.sh --legs
-// g8t,g8a,g8h,g8f,g8m) and judged by check-gate8.ts's own checks (`@gsw`). g8l's live legs are the
-// live half's (lib/gate7-live.ts).
+// g8t,g8a,g8h,g8f,g8m,g8kp,g8ku) and judged by check-gate8.ts's own checks (`@gsw`). G8kb adds the
+// texture-delivery groups: g8kp's receiver legs (judged by g8kp's checks through the band), g8ku's
+// perturbed-KTX2 sabotage, and four GSW-only g8ku legs judged by lib/gate7-gsw-g8-checks.ts (GSW
+// transcodes in its own worker to its own context's D14 target). g8l's live legs are the live
+// half's (lib/gate7-live.ts).
 
 import { existsSync, readdirSync, symlinkSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -60,6 +63,36 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8m/late/receiver"),
   leg("g8m/late/receiver-patch"),
   leg("g8m/fault-no-include-path/receiver"),
+  // G8kb: g8kp (gate8-tex at /9 passthrough: D3 picks `block` where the context has the family,
+  // `decoded` under the mask), judged by g8kp's own receiver checks through the band
+  leg("g8kp/receiver"),
+  leg("g8kp/receiver-patch"),
+  leg("g8kp/receiver-masked"),
+  // G8kb: g8ku (gate8-basis at /9 basis-uastc). Its perturbed-KTX2 sabotage replaces the native leg
+  // (g8ku's sabotage-perturb-ktx2 judges the refusal); the rest are GSW-only legs judged by
+  // lib/gate7-gsw-g8-checks.ts: GSW transcodes to its own WebGL context's D14 target, which is not
+  // always the native receiver's (WebGL refuses a BC level 0 that is not 4-aligned), so g8ku's
+  // native-target checks cannot judge them as they stand.
+  leg("g8ku/sabotage-perturb-ktx2/receiver"),
+  { leg: "g8ku/gsw-upgrade", from: "g8ku/receiver-upgrade", replaces: false },
+  {
+    leg: "g8ku/gsw-keep",
+    from: "g8ku/receiver",
+    env: { RS_RECEIVER_VARIANT_POLICY: "keep" },
+    replaces: false,
+  },
+  {
+    leg: "g8ku/gsw-rgba",
+    from: "g8ku/receiver-upgrade",
+    env: { RS_RECEIVER_GPU_FORMAT_MASK: "s3tc,bptc,rgtc,etc2,astc" },
+    replaces: false,
+  },
+  {
+    leg: "g8ku/gsw-transcode-fail",
+    from: "g8ku/receiver-upgrade",
+    env: { RS_RECEIVER_TRANSCODE_FAULT: "fail" },
+    replaces: false,
+  },
 ];
 
 const IMPORT_NA =
@@ -102,6 +135,11 @@ export const GATE8_RECEIVER_CHECKS: {
     "g8m-legs",
     "mat-adopt-reference",
     "adopt-include-refused",
+    // g8kp (G8kb)
+    "delivery-select",
+    "delivery-pixels-native",
+    // g8ku (G8kb)
+    "sabotage-perturb-ktx2",
   ],
   notApplicable: {},
 };
@@ -188,6 +226,8 @@ const FLOAT_REGIONS: BandRegion[] = [
 /** The regions a gate 8 gsw leg's shots may differ in beyond channel 1. */
 export function gate8BandRegions(leg: string): BandRegion[] {
   if (leg.startsWith("g8f/")) return FLOAT_REGIONS;
+  // G8kb: g8kp's legs draw gate8-tex's main scene.
+  if (leg.startsWith("g8kp/")) return texRegions();
   if (!leg.includes("/") || leg === "sabotage-perturb-decode/receiver") return texRegions();
   return [];
 }

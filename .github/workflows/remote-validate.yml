@@ -164,7 +164,9 @@ jobs:
           # does native gate 8, whose g8ku group replays its /9 recording in the web export (G8ku)
           godot: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
           templates: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'native-') || startsWith(matrix.id, 'g7') }}
-          emsdk: ${{ matrix.id == 'toolchain-smoke' || (startsWith(matrix.id, 'g7') && contains(matrix.id, 'web-rust')) || matrix.id == 'native-rust-gate8' }}
+          # every gate 7 run: the web receiver (web-rust), and since G8kb the gsw bundle's KTX2
+          # transcoder wasm (build-basis-transcoder.sh)
+          emsdk: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
           rust-nightly: ${{ matrix.id == 'toolchain-smoke' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}
           # cargo-gsw-rs checks the crate for wasm32 (it has no host-runnable test)
           wasm-bindgen: ${{ matrix.id == 'toolchain-smoke' || matrix.id == 'cargo-gsw-rs' || startsWith(matrix.id, 'g7') || matrix.id == 'native-rust-gate8' }}

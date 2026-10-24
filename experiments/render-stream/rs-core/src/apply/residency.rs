@@ -42,6 +42,9 @@ pub struct Resident {
     pub width: u32,
     pub height: u32,
     pub mipmaps: bool,
+    /// G8kb (D6): the entry's `version` when this payload was uploaded (or last kept): `keep`
+    /// holds a resident payload only while the entry's version is unchanged.
+    pub version: i64,
 }
 
 /// One `uploads[]` entry of applied.json (`{id, hash, op, data_bytes}`; the adapter adds `stream`

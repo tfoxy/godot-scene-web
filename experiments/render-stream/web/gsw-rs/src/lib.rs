@@ -29,12 +29,13 @@ use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
+use render_stream_core::state::VariantEncoding;
 use render_stream_core::meta::Stretch;
 use render_stream_core::prof;
 use render_stream_core::state::{Hash, Id, ShaderSource};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire::{self, RecordSpan};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 pub const ACCEPT_TRANSACTION: i32 = 0;
@@ -103,6 +104,22 @@ struct Opts {
     ignore_format_mask: bool,
     /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session.
     live_v9: bool,
+    /// G8kb (texture-delivery-design.md Q6 "GSW"): the shell runs the KTX2 transcoder worker, so
+    /// the default `texture_encodings` lists `uastc` (`block,uastc,decoded`).
+    transcoder: bool,
+    /// G8kb (D6): `RS_RECEIVER_VARIANT_POLICY=keep|upgrade`; None is this receiver's default
+    /// (upgrade where the context has neither bptc nor s3tc, the phone class, else keep).
+    variant_policy: Option<bool>,
+}
+
+/// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
+fn uastc_hashes(st: &render_stream_core::state::ResolvedState) -> HashSet<Hash> {
+    st.textures
+        .values()
+        .flat_map(|t| t.variants.iter())
+        .filter(|v| v.encoding == VariantEncoding::Uastc)
+        .map(|v| v.hash)
+        .collect()
 }
 
 /// A flat string value `"key":"value"` of the caller-written options object (no escapes).
@@ -173,6 +190,17 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.live_v9 = json.contains("\"live_protocol\":9");
+    o.transcoder = json.contains("\"transcoder\":true");
+    o.variant_policy = match find_str(json, "variant_policy").as_deref() {
+        None | Some("") => None,
+        Some("keep") => Some(false),
+        Some("upgrade") => Some(true),
+        Some(other) => {
+            return Err(format!(
+                "RS_RECEIVER_VARIANT_POLICY: {other:?} (expected keep or upgrade)"
+            ))
+        }
+    };
     if let Some(start) = json.find("\"sabotage\":[") {
         let rest = &json[start + 12..];
         let end = rest.find(']').unwrap_or(rest.len());
@@ -224,6 +252,9 @@ struct DeliveryReport {
     gpu_formats: String,
     gpu_formats_detected: String,
     gpu_format_mask: String,
+    /// G8kb (D6): `keep` or `upgrade`, and whether the receiver's default chose it.
+    variant_policy: &'static str,
+    variant_policy_default: bool,
 }
 
 #[derive(Default)]
@@ -410,6 +441,10 @@ pub struct GswRs {
     /// G7o2: payloads verified and decoded when they arrived, not yet provided.
     stage: PayloadStage,
     verify: VerifyCounts,
+    /// G8kb: KTX2 payloads `stage_ktx2` verified (hash and shape) and handed to the shell's
+    /// transcoder worker: (width, height, mipmaps, KTX2 bytes, hash-checked). Only these may be
+    /// staged by `stage_transcoded`.
+    ktx2_verified: HashMap<Hash, (u32, u32, bool, usize, bool)>,
     needed: Vec<Hash>,
     needed_bytes: Vec<u8>,
     provide_cursor: usize,
@@ -628,6 +663,7 @@ impl GswRs {
             payloads: PayloadStore::default(),
             stage: PayloadStage::default(),
             verify: VerifyCounts::default(),
+            ktx2_verified: HashMap::new(),
             needed: Vec::new(),
             needed_bytes: Vec::new(),
             provide_cursor: 0,
@@ -985,11 +1021,15 @@ impl GswRs {
             .copied()
             .filter(|f| !self.opts.gpu_format_mask.iter().any(|m| m == f))
             .collect();
-        let encodings = self
-            .opts
-            .texture_encodings
-            .clone()
-            .unwrap_or_else(|| "block,decoded".to_string());
+        // G8kb: with the transcoder worker the default lists uastc (D3: after block, before
+        // decoded); without it GSW never states an encoding it cannot transcode (Q3).
+        let encodings = self.opts.texture_encodings.clone().unwrap_or_else(|| {
+            if self.opts.transcoder {
+                "block,uastc,decoded".to_string()
+            } else {
+                "block,decoded".to_string()
+            }
+        });
         let selection = if self.opts.ignore_format_mask {
             list(&detected)
         } else {
@@ -997,12 +1037,20 @@ impl GswRs {
         };
         applier.delivery =
             render_stream_core::delivery::DeliveryPrefs::parse(&encodings, &selection)?;
+        // G8kb (D6): `upgrade` is the phone default (texture-delivery-design.md D6): a context
+        // with neither BC family holds `decoded` at 4 B/px until a uastc variant appears, and
+        // upgrading to its ASTC/ETC2 transcode trades one refetch for a quarter of the GPU memory.
+        // Desktop contexts keep (a block variant, or the decoded copy, is already resident).
+        let phone_class = !stated.iter().any(|f| *f == "bptc" || *f == "s3tc");
+        applier.delivery.upgrade = self.opts.variant_policy.unwrap_or(phone_class);
         applier.stream_version = self.version;
         self.delivery = DeliveryReport {
             texture_encodings: encodings,
             gpu_formats: list(&stated),
             gpu_formats_detected: list(&detected),
             gpu_format_mask: self.opts.gpu_format_mask.join(","),
+            variant_policy: if applier.delivery.upgrade { "upgrade" } else { "keep" },
+            variant_policy_default: self.opts.variant_policy.is_none(),
         };
         self.applier = Some(applier);
         self.viewport = Some(viewport);
@@ -1105,12 +1153,15 @@ impl GswRs {
             .flat_map(|m| m.surfaces.iter().map(|s| s.hash))
             .collect();
         let shader: HashSet<Hash> = st.shaders.values().filter_map(|s| s.hash).collect();
+        let ktx2 = uastc_hashes(st);
         for h in &self.needed {
             self.needed_bytes.extend_from_slice(&h.0);
             self.needed_kinds.push(if shader.contains(h) {
                 2
             } else if mesh.contains(h) {
                 1
+            } else if ktx2.contains(h) {
+                3
             } else {
                 0
             });
@@ -1394,6 +1445,122 @@ impl GswRs {
     /// Whether `hash_hex` is staged (verified, not yet provided).
     pub fn is_staged(&self, hash_hex: &str) -> bool {
         Hash::from_hex(hash_hex).is_some_and(|h| self.stage.has(&h))
+    }
+
+    /// G8kb: whether `hash_hex` names a KTX2 payload (a `uastc` variant of a texture of the
+    /// accepted state): the shell transcodes it (`stage_ktx2`, the worker, `stage_transcoded`)
+    /// instead of staging it with `stage_payload`.
+    pub fn is_ktx2(&self, hash_hex: &str) -> bool {
+        let (Some(h), Some(v)) = (Hash::from_hex(hash_hex), self.validator.as_ref()) else {
+            return false;
+        };
+        uastc_hashes(v.state()).contains(&h)
+    }
+
+    /// G8kb (texture-delivery-design.md Q6 "GSW"): step 1 of a KTX2 payload's arrival. Verify the
+    /// bytes just written through `alloc_payload` (SHA-256 against `hash_hex`, then rs-core's KTX2
+    /// header and shape checks against the entry listing it) before the shell posts them to its
+    /// transcoder worker; nothing is staged yet. A mismatch is refused here (`resource-hash`), as
+    /// `stage_payload` refuses one, so a perturbed KTX2 is never transcoded.
+    pub fn stage_ktx2(&mut self, len: usize, hash_hex: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        let shape = self.validator.as_ref().and_then(|v| {
+            v.state().textures.values().find_map(|t| {
+                t.variants
+                    .iter()
+                    .any(|x| x.hash == hash && x.encoding == VariantEncoding::Uastc)
+                    .then_some((t.width, t.height, t.mipmaps))
+            })
+        });
+        let Some((w, h, mips)) = shape else {
+            self.verify.refused += 1;
+            self.error = format!(
+                "resource-payload: {hash_hex} is not a uastc variant of the accepted state"
+            );
+            return -1;
+        };
+        let verify = !self.opts.skip_payload_hash;
+        match render_stream_core::apply::payloads::verify_ktx2(
+            &self.payload_buf[..len],
+            &hash,
+            verify,
+            w,
+            h,
+            mips,
+        ) {
+            Ok(()) => {
+                self.ktx2_verified
+                    .insert(hash, (w as u32, h as u32, mips, len, verify));
+                0
+            }
+            Err(e) => {
+                self.verify.refused += 1;
+                self.error = fail(e);
+                -1
+            }
+        }
+    }
+
+    /// G8kb: step 3 of a KTX2 payload's arrival. Stage the worker's transcode of `hash_hex` (every
+    /// level, level 0 first, just written through `alloc_payload`) as `format`, an Image.Format
+    /// name (a block format this context uploads, or `RGBA8`). Only a KTX2 `stage_ktx2` verified
+    /// may be staged; `provide_staged` then moves it to the store like any staged payload.
+    pub fn stage_transcoded(&mut self, len: usize, hash_hex: &str, format: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        let Some((w, h, mips, ktx2_len, verified)) = self.ktx2_verified.remove(&hash) else {
+            self.error = format!(
+                "resource-unverified: KTX2 {hash_hex} was transcoded without being verified"
+            );
+            return -1;
+        };
+        match render_stream_core::apply::payloads::texture_transcoded(
+            format,
+            w,
+            h,
+            mips,
+            &self.payload_buf[..len],
+        ) {
+            Ok(px) => {
+                self.stage.put(
+                    hash,
+                    render_stream_core::apply::payloads::Decoded::Texture(px),
+                    ktx2_len,
+                    verified,
+                );
+                self.verify.staged += 1;
+                0
+            }
+            Err(e) => {
+                self.error = format!("delivery-transcode-failed: {e}");
+                -1
+            }
+        }
+    }
+
+    /// G8kb (texture-delivery-design.md Q3 "Transcode or upload failure"): the transcode of KTX2
+    /// `hash_hex` failed (`delivery-transcode-failed`). The variant is refused for the session, so
+    /// D3 falls through to the entry's next choice (at worst `decoded`, always servable), and the
+    /// needed set is recomputed for the transaction being fetched: the shell re-reads it and
+    /// fetches what is neither held nor staged. Returns `accept`'s code (`ACCEPT_TRANSACTION`
+    /// when nothing more is needed), or -1 before a session.
+    pub fn transcode_failed(&mut self, hash_hex: &str) -> i32 {
+        let Some(hash) = Hash::from_hex(hash_hex) else {
+            self.error = format!("resource-unavailable: {hash_hex:?} is not a sha256 hex name");
+            return -1;
+        };
+        self.ktx2_verified.remove(&hash);
+        let Some(a) = self.applier.as_mut() else {
+            self.error = "transcode_failed before start".into();
+            return -1;
+        };
+        a.delivery.refuse(hash);
+        self.compute_needed()
     }
 
     /// G7o2: provide the next needed payload from the stage (verified when it arrived). Fails when
@@ -1799,11 +1966,13 @@ impl GswRs {
     pub fn delivery_json(&self) -> String {
         let d = &self.delivery;
         format!(
-            "{{\"texture_encodings\":{},\"gpu_formats\":{},\"gpu_formats_detected\":{},\"gpu_format_mask\":{}}}",
+            "{{\"texture_encodings\":{},\"gpu_formats\":{},\"gpu_formats_detected\":{},\"gpu_format_mask\":{},\"variant_policy\":{},\"variant_policy_default\":{}}}",
             json_str(&d.texture_encodings),
             json_str(&d.gpu_formats),
             json_str(&d.gpu_formats_detected),
-            json_str(&d.gpu_format_mask)
+            json_str(&d.gpu_format_mask),
+            json_str(d.variant_policy),
+            d.variant_policy_default
         )
     }
 

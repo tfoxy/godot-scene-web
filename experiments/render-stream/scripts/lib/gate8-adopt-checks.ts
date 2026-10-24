@@ -496,13 +496,16 @@ export function skipped(dir: string): string | null {
   return null;
 }
 
-export async function loadRecording(dir: string): Promise<{ bytes?: Uint8Array; rec?: ResolvedRecording; error?: string }> {
-  const path = join(dir, "recording.rs8");
+export async function loadRecording(
+  dir: string,
+  version: 8 | 9 = 8,
+): Promise<{ bytes?: Uint8Array; rec?: ResolvedRecording; error?: string }> {
+  const path = join(dir, `recording.rs${version}`);
   if (!existsSync(path)) return { error: `${path} missing` };
   const bytes = new Uint8Array(await readFile(path));
-  if (wireVersionOf(bytes) !== 8) return { bytes, error: `${path} is not GRS8` };
+  if (wireVersionOf(bytes) !== version) return { bytes, error: `${path} is not GRS${version}` };
   try {
-    return { bytes, rec: resolveRecording(bytes, 8) };
+    return { bytes, rec: resolveRecording(bytes, version) };
   } catch (e) {
     return { bytes, error: `${path}: ${(e as Error).message}` };
   }

@@ -43,6 +43,15 @@ export interface ReceiverConfig {
    * the module checks both against render-stream-9.md's grammar. */
   textureEncodings: string | null;
   gpuFormatMask: string | null;
+  /** G8kb (texture-delivery-design.md D6, Q6 "GSW"): RS_RECEIVER_VARIANT_POLICY (`keep` or
+   * `upgrade`; null: the module's default, upgrade on a context with neither bptc nor s3tc),
+   * RS_RECEIVER_TRANSCODE_LOG=1 (each transcode's blocks SHA-256 in applied.json `transcodes[]`,
+   * as the native receiver logs them) and the test fault RS_RECEIVER_TRANSCODE_FAULT=fail (every
+   * transcode fails, so each uastc texture falls back to `decoded`: Q3's typed
+   * `delivery-transcode-failed`). */
+  variantPolicy: string | null;
+  transcodeLog: boolean;
+  transcodeFault: "fail" | null;
   /** G8kp: RS_RECEIVER_PROTOCOL (live): 7 (default), 8 (G8g: render-stream/8's live transport,
    * /7's with /8's tables; a gate 8 policy host offers only .8) or 9 (offers render-stream.9). */
   liveProtocol: 7 | 8 | 9;
@@ -384,6 +393,9 @@ export function readConfig(
     shellSabotage: page.sabotage ?? null,
     textureEncodings: orNull(env.RS_RECEIVER_TEXTURE_ENCODINGS),
     gpuFormatMask: orNull(env.RS_RECEIVER_GPU_FORMAT_MASK),
+    variantPolicy: orNull(env.RS_RECEIVER_VARIANT_POLICY),
+    transcodeLog: env.RS_RECEIVER_TRANSCODE_LOG === "1",
+    transcodeFault: transcodeFault(env.RS_RECEIVER_TRANSCODE_FAULT),
     liveProtocol: liveProtocol(env.RS_RECEIVER_PROTOCOL),
     canvas: page.canvas ?? null,
     raw: Object.fromEntries(
@@ -419,4 +431,12 @@ function liveProtocol(value: string | undefined): 7 | 8 | 9 {
   throw new UsageError(
     `RS_RECEIVER_PROTOCOL must be 7, 8 or 9 for a GSW receiver (got ${v})`,
   );
+}
+
+/** G8kb: RS_RECEIVER_TRANSCODE_FAULT, a test fault (unset or `fail`). */
+function transcodeFault(value: string | undefined): "fail" | null {
+  const v = (value ?? "").trim();
+  if (v === "") return null;
+  if (v === "fail") return "fail";
+  throw new UsageError(`RS_RECEIVER_TRANSCODE_FAULT must be fail (got ${v})`);
 }
