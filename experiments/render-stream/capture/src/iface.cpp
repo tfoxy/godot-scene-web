@@ -59,6 +59,16 @@ bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
       reinterpret_cast<GDExtensionInterfaceObjectCastTo>(get_proc_address("object_cast_to"));
   g_iface.image_ptr =
       reinterpret_cast<GDExtensionInterfaceImagePtr>(get_proc_address("image_ptr"));
+  g_iface.get_variant_from_type_constructor =
+      reinterpret_cast<GDExtensionInterfaceGetVariantFromTypeConstructor>(
+          get_proc_address("get_variant_from_type_constructor"));
+  g_iface.variant_destroy =
+      reinterpret_cast<GDExtensionInterfaceVariantDestroy>(get_proc_address("variant_destroy"));
+  g_iface.variant_get_ptr_builtin_method =
+      reinterpret_cast<GDExtensionInterfaceVariantGetPtrBuiltinMethod>(
+          get_proc_address("variant_get_ptr_builtin_method"));
+  g_iface.array_operator_index_const = reinterpret_cast<GDExtensionInterfaceArrayOperatorIndexConst>(
+      get_proc_address("array_operator_index_const"));
   return ok;
 }
 

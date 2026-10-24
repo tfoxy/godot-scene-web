@@ -1,5 +1,6 @@
 #include "hooks.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -1292,7 +1293,55 @@ std::map<uint64_t, std::vector<MeshSurfaceBuffer>> g_mesh_buffers;  // guarded b
 // copied or hashed for a refused surface (D7) or one over GRC_RESOURCE_MAX_PAYLOAD_BYTES. Since
 // G5e the encoded payload is handed back in `payload` (null unless ok): the mirror's mesh table
 // keeps it, shared, never copied again (gate5-design.md D5, D6).
-rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBuffer *buffer,
+// The fields copy_mesh_surface reads, whether from the engine's SurfaceData (a hook argument) or
+// from a mesh_get_surface read-back (G8r adoption): the same classification, encode and hash.
+struct SurfaceView {
+  int32_t primitive = 0;
+  uint64_t format = 0;
+  uint32_t vertex_count = 0;
+  uint32_t index_count = 0;
+  AABB aabb{};
+  Vector4 uv_scale{};
+  const uint8_t *vertex = nullptr;
+  size_t vertex_bytes = 0;
+  const uint8_t *attribute = nullptr;
+  size_t attribute_bytes = 0;
+  const uint8_t *skin = nullptr;
+  size_t skin_bytes = 0;
+  const uint8_t *index = nullptr;
+  size_t index_bytes = 0;
+  int64_t blend_shape_bytes = 0;
+};
+
+SurfaceView surface_view(const SurfaceDataPrefix &sd) {
+  SurfaceView v;
+  v.primitive = sd.primitive;
+  v.format = sd.format;
+  v.vertex_count = sd.vertex_count;
+  v.index_count = sd.index_count;
+  v.aabb = sd.aabb;
+  v.uv_scale = sd.uv_scale;
+  v.vertex = sd.vertex_data.ptr();
+  v.vertex_bytes = static_cast<size_t>(sd.vertex_data.size());
+  v.attribute = sd.attribute_data.ptr();
+  v.attribute_bytes = static_cast<size_t>(sd.attribute_data.size());
+  v.skin = sd.skin_data.ptr();
+  v.skin_bytes = static_cast<size_t>(sd.skin_data.size());
+  v.index = sd.index_data.ptr();
+  v.index_bytes = static_cast<size_t>(sd.index_data.size());
+  v.blend_shape_bytes = sd.blend_shape_data.size();
+  return v;
+}
+
+void assign_bytes(std::vector<uint8_t> *out, const uint8_t *data, size_t size) {
+  if (data == nullptr || size == 0) {
+    out->clear();
+    return;
+  }
+  out->assign(data, data + size);
+}
+
+rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceView &sd, MeshSurfaceBuffer *buffer,
                                       rs::PayloadPtr *payload_out) {
   rs::MeshSurfaceCopy copy;
   copy.primitive = sd.primitive;
@@ -1303,13 +1352,13 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBu
   rs::SurfaceFacts facts;
   facts.primitive = sd.primitive;
   facts.format = sd.format;
-  facts.vertex_data_bytes = sd.vertex_data.size();
-  facts.attribute_data_bytes = sd.attribute_data.size();
-  facts.skin_data_bytes = sd.skin_data.size();
-  facts.index_data_bytes = sd.index_data.size();
+  facts.vertex_data_bytes = static_cast<int64_t>(sd.vertex_bytes);
+  facts.attribute_data_bytes = static_cast<int64_t>(sd.attribute_bytes);
+  facts.skin_data_bytes = static_cast<int64_t>(sd.skin_bytes);
+  facts.index_data_bytes = static_cast<int64_t>(sd.index_bytes);
   facts.vertex_count = sd.vertex_count;
   facts.index_count = sd.index_count;
-  facts.blend_shape_data_bytes = sd.blend_shape_data.size();
+  facts.blend_shape_data_bytes = sd.blend_shape_bytes;
   const rs::SurfaceClassification classification = rs::classify_surface(facts);
 
   buffer->ok = false;
@@ -1332,12 +1381,12 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBu
 
   const std::string meta = rs::payload_meta(
       sd.primitive, sd.format, sd.vertex_count, sd.index_count,
-      static_cast<int64_t>(sd.vertex_data.size()), static_cast<int64_t>(sd.attribute_data.size()),
-      static_cast<int64_t>(sd.skin_data.size()), static_cast<int64_t>(sd.index_data.size()));
-  const uint64_t data_bytes = static_cast<uint64_t>(sd.vertex_data.size()) +
-                              static_cast<uint64_t>(sd.attribute_data.size()) +
-                              static_cast<uint64_t>(sd.skin_data.size()) +
-                              static_cast<uint64_t>(sd.index_data.size());
+      static_cast<int64_t>(sd.vertex_bytes), static_cast<int64_t>(sd.attribute_bytes),
+      static_cast<int64_t>(sd.skin_bytes), static_cast<int64_t>(sd.index_bytes));
+  const uint64_t data_bytes = static_cast<uint64_t>(sd.vertex_bytes) +
+                              static_cast<uint64_t>(sd.attribute_bytes) +
+                              static_cast<uint64_t>(sd.skin_bytes) +
+                              static_cast<uint64_t>(sd.index_bytes);
   if (rs::mesh_payload_size(meta, data_bytes) > g_resource_policy.max_payload_bytes) {
     copy.status = "unsupported";
     copy.reason = "payload-too-large";
@@ -1345,11 +1394,10 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBu
   }
 
   const uint64_t t0 = now_ns();
-  buffer->vertex_data.assign(sd.vertex_data.ptr(), sd.vertex_data.ptr() + sd.vertex_data.size());
-  buffer->attribute_data.assign(sd.attribute_data.ptr(),
-                                sd.attribute_data.ptr() + sd.attribute_data.size());
-  buffer->skin_data.assign(sd.skin_data.ptr(), sd.skin_data.ptr() + sd.skin_data.size());
-  buffer->index_data.assign(sd.index_data.ptr(), sd.index_data.ptr() + sd.index_data.size());
+  assign_bytes(&buffer->vertex_data, sd.vertex, sd.vertex_bytes);
+  assign_bytes(&buffer->attribute_data, sd.attribute, sd.attribute_bytes);
+  assign_bytes(&buffer->skin_data, sd.skin, sd.skin_bytes);
+  assign_bytes(&buffer->index_data, sd.index, sd.index_bytes);
   auto payload = std::make_shared<rs::PayloadBytes>(rs::encode_payload(
       sd.primitive, sd.format, sd.vertex_count, sd.index_count, sd.aabb, sd.uv_scale,
       buffer->vertex_data.data(), buffer->vertex_data.size(), buffer->attribute_data.data(),
@@ -1364,6 +1412,11 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBu
   buffer->ok = true;
   *payload_out = std::move(payload);
   return copy;
+}
+
+rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceDataPrefix &sd, MeshSurfaceBuffer *buffer,
+                                      rs::PayloadPtr *payload_out) {
+  return copy_mesh_surface(surface_view(sd), buffer, payload_out);
 }
 
 // Re-encodes and re-hashes a surface already in `buffer` (whole payload, D6): used after a region
@@ -1499,6 +1552,7 @@ void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, 
 void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture, bool tile,
                            const Color *modulate, bool transpose) {
   bump(kAddTextureRect);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && modulate != nullptr) {
     // A mirror tap since G2b2 (gate2-design.md Q3): the raw arguments, flips included.
     mirror().add_texture_rect(item.id, to_rect(*rect), texture.id, tile, to_color(*modulate),
@@ -1525,6 +1579,7 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
                                   const Rect2 *source, const Color *modulate, bool transpose,
                                   bool clip_uv) {
   bump(kAddTextureRectRegion);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
                                      to_color(*modulate), transpose, clip_uv, current_frame());
@@ -1549,6 +1604,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
                                        const Rect2 *source, const Color *modulate,
                                        int outline_size, float px_range, float scale) {
   bump(kAddMsdfTextureRectRegion);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   // G4e2 (gate4-design.md Q3 "MSDF tap"): the /3 command, no longer a typed refusal.
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_msdf_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
@@ -1575,6 +1631,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
 void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
                       const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPolygon);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/true, current_frame());
@@ -1664,6 +1721,18 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
   if (logging) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("texture_2d_update");
+    // G8r (gate8-design.md D6, D7): the first reference to a pre-arm texture is this whole-image
+    // update (an atlas page growing, an ImageTexture.update): adopt it with the update's own
+    // image as its content, `current`; the update below then applies as for any known texture.
+    if (rs::adopt_resources_active() && streaming() && !omit && layer == 0 &&
+        !mirror().knows_texture(texture.id) && rs::adopt_from_update_begin()) {
+      if (job != nullptr) {
+        copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook - forward_ns);
+      }
+      mirror().texture_adopt(texture.id, copy, bytes, rs2::AdoptedContent::Current,
+                             current_frame(), job);
+      resources().texture_adopt(tap_context(), texture.id, copy, "current", "update", job);
+    }
     if (streaming() && !omit) {
       mirror().texture_2d_update(texture.id, copy, std::move(bytes), layer, current_frame(), job);
     }
@@ -1709,6 +1778,7 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                              const Vector<Point2> *uvs, const Vector<int32_t> *bones,
                              const Vector<float> *weights, RID texture, int count) {
   bump(kAddTriangleArray);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     const bool skinned =
         (bones != nullptr && bones->size() > 0) || (weights != nullptr && weights->size() > 0);
@@ -1736,6 +1806,10 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
 void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *transform,
                    const Color *modulate, RID texture) {
   bump(kAddMesh);
+  if (mesh != nullptr) {
+    rs::adopt_mesh_ref(mesh->id);  // G8r: a pre-arm mesh is adopted at first reference
+  }
+  rs::adopt_texture_ref(texture.id);
   // G5e (gate5-design.md Q3b, render-stream-4.md "Command"): the /4 add_mesh command, naming the
   // mirror's mesh table entry (an unknown mesh RID becomes `unsupported`/`unknown-mesh`).
   if (streaming()) {
@@ -1771,6 +1845,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
                          int32_t x_axis_mode, int32_t y_axis_mode, bool draw_center,
                          const Color *modulate) {
   bump(kAddNinePatch);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && topleft != nullptr &&
       bottomright != nullptr && modulate != nullptr) {
     mirror().add_nine_patch(item.id, to_rect(*rect), to_rect(*source), texture.id,
@@ -1800,6 +1875,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
 void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPrimitive);
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/false, current_frame());
@@ -2362,6 +2438,9 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
     const std::string param_name = rs::decode_string_name(name);
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
+    if (decoded.type == "rid" && decoded.status == "ok") {
+      rs::adopt_texture_ref(decoded.tex_rid);  // G8r: a texture parameter naming a pre-arm texture
+    }
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_set_param");
     if (streaming()) {
@@ -2392,6 +2471,7 @@ RID hook_shader_create(void *self) {
 void hook_shader_set_default_texture_parameter(void *self, RID shader, const void *name,
                                                RID texture, int32_t index) {
   bump(kShaderSetDefaultTextureParameter);
+  rs::adopt_texture_ref(texture.id);  // G8r
   ShaderDefaultTextureKey key;
   zero(&key);
   key.shader = shader.id;
@@ -2506,6 +2586,9 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
     const std::string param_name = rs::decode_string_name(name);
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
+    if (decoded.type == "rid" && decoded.status == "ok") {
+      rs::adopt_texture_ref(decoded.tex_rid);  // G8r
+    }
     if (streaming()) {
       mirror().set_instance_shader_parameter(item.id, param_name, decoded, current_frame());
     }
@@ -2814,6 +2897,9 @@ RID hook_texture_2d_placeholder_create(void *self) {
 
 void hook_texture_replace(void *self, RID texture, RID by_texture) {
   bump(kTextureReplace);
+  // G8r: either side may be a pre-arm texture; adopt it before the dummy frees the by-texture.
+  rs::adopt_texture_ref(texture.id);
+  rs::adopt_texture_ref(by_texture.id);
   log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
   original<FnSetMaterial>(kTextureReplace)(self, texture, by_texture);
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -2864,6 +2950,7 @@ RID hook_canvas_texture_create(void *self) {
 void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t channel,
                                      RID texture) {
   bump(kCanvasTextureSetChannel);
+  rs::adopt_texture_ref(texture.id);  // G8r
   ChannelKey key;
   zero(&key);
   key.canvas_texture = canvas_texture.id;
@@ -3430,6 +3517,82 @@ void hooks_set_texture_workers(const rs::TextureWorkerConfig &config) {
 }
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }
+
+bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
+                         const char *source, bool *decoded) {
+  if (decoded != nullptr) {
+    *decoded = false;
+  }
+  if (rid == 0 || image_object == nullptr || !streaming() || !resources().active()) {
+    return false;
+  }
+  const uint64_t t_hook = now_ns();
+  Ref image{image_object};
+  const ImageFacts facts = read_image(&image);
+  rs::PayloadPtr bytes;
+  rs::TextureJobPtr job;
+  rs::PayloadCopy copy = copy_payload(facts, &image, &bytes, &job);
+  if (job != nullptr) {
+    copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook);
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_texture(rid)) {
+    return false;  // a loader thread created or adopted it meanwhile
+  }
+  mirror().texture_adopt(rid, copy, std::move(bytes), content, current_frame(), job);
+  resources().texture_adopt(tap_context(), rid, copy,
+                            content == rs2::AdoptedContent::Current ? "current" : "creation",
+                            source, job);
+  if (decoded != nullptr) {
+    *decoded = copy.status == "ok" && copy.source_format >= 0;
+  }
+  return true;
+}
+
+bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,
+                      const float custom_aabb[6]) {
+  if (rid == 0 || !streaming() || !resources().active()) {
+    return false;
+  }
+  std::vector<MeshSurfaceBuffer> buffers;
+  std::vector<rs::MeshSurfaceInput> inputs;
+  std::vector<rs::MeshSurfaceCopy> copies;
+  for (const rs::AdoptSurface &a : surfaces) {
+    SurfaceView v;
+    v.primitive = a.primitive;
+    v.format = a.format;
+    v.vertex_count = a.vertex_count;
+    v.index_count = a.index_count;
+    v.aabb = AABB{{a.aabb[0], a.aabb[1], a.aabb[2]}, {a.aabb[3], a.aabb[4], a.aabb[5]}};
+    v.uv_scale = Vector4{a.uv_scale[0], a.uv_scale[1], a.uv_scale[2], a.uv_scale[3]};
+    v.vertex = a.vertex;
+    v.vertex_bytes = a.vertex_bytes;
+    v.attribute = a.attribute;
+    v.attribute_bytes = a.attribute_bytes;
+    v.skin = a.skin;
+    v.skin_bytes = a.skin_bytes;
+    v.index = a.index;
+    v.index_bytes = a.index_bytes;
+    v.blend_shape_bytes = a.blend_shape_bytes;
+    MeshSurfaceBuffer buffer;
+    rs::MeshSurfaceInput input;
+    input.copy = copy_mesh_surface(v, &buffer, &input.bytes);
+    copies.push_back(input.copy);
+    inputs.push_back(std::move(input));
+    buffers.push_back(std::move(buffer));
+  }
+  std::array<float, 6> aabb = {custom_aabb[0], custom_aabb[1], custom_aabb[2],
+                               custom_aabb[3], custom_aabb[4], custom_aabb[5]};
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_mesh(rid)) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_mesh_buffers[rid] = std::move(buffers);
+  mirror().mesh_adopt(rid, inputs, aabb, current_frame());
+  resources().mesh_adopt(tap_context(), rid, copies);
+  return true;
+}
 
 bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   *plan = HookPlan();

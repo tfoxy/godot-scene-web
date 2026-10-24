@@ -36,7 +36,12 @@
 #       loaded from a worker thread: the stream refuses adopt-thread), and the three walk
 #       sabotages (adopt-skip-state, adopt-no-redraw, adopt-skip-layers); then, rendered, the
 #       unarmed `reference` and the native receiver on born, late (full and patch sinks) and each
-#       sabotage capture, shooting the four checkpoints.
+#       sabotage capture, shooting the four checkpoints. G8r (D6, D7: pre-arm textures, meshes and
+#       glyph atlases adopted lazily) extends the same group: the sources step (make_sources.gd
+#       writes the two imported textures), GRC_TEXTURE_DECODE=engine on every capture,
+#       `late-workers` (late at GRC_TEXTURE_WORKERS=2, every copy on a delayed worker) and the
+#       three GRC_ADOPT_FAULT captures (no-resources, atlas-from-dummy, claim-current), the first
+#       two also through the receiver.
 #   g8h (G8h, Q4: the presentation size at a late arm, fixtures/gate8-size; every leg under g8h/):
 #       the fixture and receiver imports; headless /8 captures under GRC_UNKNOWN_ITEM=skip of `born`
 #       (armed at birth, GRC_ROOT_SIZE=presentation:640x360), `late` (armed at frame K=12 with
@@ -372,18 +377,25 @@ run_g8t() {
 G8A_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-adopt"
 # The fixture's arm frame K (fixtures/gate8-adopt/loader.gd, expected.json arm_frame).
 G8A_ARM_FRAME=12
-# Every g8a capture: a /8 file sink (D2) and the product's unknown-item policy (skip), so born and
-# late differ only by when they armed.
-G8A_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip)
+# Every g8a capture: a /8 file sink (D2), the product's unknown-item policy (skip) and host decode
+# (G8r: the VRAM-compressed pre-arm texture is adopted through G8t's decode), so born and late
+# differ only by when they armed.
+G8A_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip GRC_TEXTURE_DECODE=engine)
+# G8r: the lazy-adoption fault knobs (GRC_ADOPT_FAULT, rs_adopt.h); the receiver runs on the two
+# whose pixels differ (claim-current changes only the declaration).
+G8R_FAULTS=(no-resources atlas-from-dummy claim-current)
+G8R_FAULTS_RENDERED=(no-resources atlas-from-dummy)
 
 run_import_g8a() {
-	echo "run-gate8: g8a import (fixture, receiver)"
+	echo "run-gate8: g8a import (sources, fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8a/import/sources" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --script res://make_sources.gd
 	LEG_ENV=()
 	run_headless "$OUT/g8a/import/fixture" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --import
 	LEG_ENV=()
 	run_headless "$OUT/g8a/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
 	local leg
-	for leg in fixture receiver; do
+	for leg in sources fixture receiver; do
 		if [ "$(cat "$OUT/g8a/import/$leg/exit-code.txt")" != "0" ]; then
 			echo "run-gate8: g8a import ($leg) failed, see $OUT/g8a/import/$leg/stdout.log" >&2
 			exit 1
@@ -417,11 +429,17 @@ run_g8a() {
 	run_capture_g8a "$OUT/g8a/late-strict/capture" late GRC_STREAM_VERSION=8 GRC_ADOPT=arm
 	echo "run-gate8: g8a late-thread (late, armed from a worker thread: adopt-thread)"
 	run_capture_g8a "$OUT/g8a/late-thread/capture" thread "${G8A_ENV[@]}" GRC_ADOPT=arm
+	echo "run-gate8: g8a late-workers (late at GRC_TEXTURE_WORKERS=2: adopted textures on workers)"
+	run_capture_g8a "$OUT/g8a/late-workers/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm "${G8T_WORKERS_ENV[@]}"
 	local s
 	for s in adopt-skip-state adopt-no-redraw adopt-skip-layers; do
 		echo "run-gate8: g8a sabotage-$s (capture)"
 		run_capture_g8a "$OUT/g8a/sabotage-$s/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm \
 			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8A_ARM_FRAME"
+	done
+	for s in "${G8R_FAULTS[@]}"; do
+		echo "run-gate8: g8a fault-$s (capture, GRC_ADOPT_FAULT)"
+		run_capture_g8a "$OUT/g8a/fault-$s/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm GRC_ADOPT_FAULT="$s"
 	done
 
 	echo "run-gate8: bringing up private gamescope for g8a's rendered legs"
@@ -440,6 +458,10 @@ run_g8a() {
 	for s in adopt-skip-state adopt-no-redraw adopt-skip-layers; do
 		echo "run-gate8: g8a sabotage-$s (receiver)"
 		run_rendered_receiver "$OUT/g8a/sabotage-$s/capture" "$OUT/g8a/sabotage-$s/receiver"
+	done
+	for s in "${G8R_FAULTS_RENDERED[@]}"; do
+		echo "run-gate8: g8a fault-$s (receiver)"
+		run_rendered_receiver "$OUT/g8a/fault-$s/capture" "$OUT/g8a/fault-$s/receiver"
 	done
 	legs_par_end
 	gs_teardown "$OUT/gamescope-g8a"

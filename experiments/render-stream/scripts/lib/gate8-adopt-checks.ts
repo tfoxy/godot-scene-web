@@ -16,13 +16,24 @@
 //   - the residue: born-only trailing items with no commands and no children (the fixture's one
 //     RS-only item, at draw index 1000 under the root canvas), counted.
 // A command naming a texture is compared through the texture's payload hash (texture ids differ:
-// the born capture also saw the engine's frame-1 default-theme texture).
+// the born capture also saw the engine's frame-1 default-theme texture), one naming a mesh through
+// its surfaces' hashes.
+//
+// G8r (gate8-design.md D6, D7) adds lazily adopted textures and meshes, and two exceptions, each
+// counted per resource and judged against expected.json `exceptions`:
+//   - creation: a command whose late texture is adopted with adopted_content "creation" may name
+//     other content than born's (the dummy's creation copy of a texture updated in place before
+//     arm: the declared limit of D6);
+//   - refused: a command the late capture types `unsupported` / `unknown-texture` where born names
+//     a texture (a pre-arm texture nothing can read back, e.g. a PlaceholderTexture2D), and the
+//     derived item-level unknown-texture entry that goes with it.
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { decodePngRgba } from "./gate-minus1-checks";
+import { compareWorkerRecordings } from "./gate8-tex-checks";
 import {
   decodeRecording,
   type ResolvedItem,
@@ -55,6 +66,30 @@ export interface G8aCensus {
   non_root_viewports: number;
 }
 
+/** G8r: lazy resource adoption's account (stream.gate8.adopt_stats.resources). */
+export interface G8rResources {
+  textures: number;
+  textures_current: number;
+  textures_creation: number;
+  atlas_pages: number;
+  compressed: number;
+  from_update: number;
+  decoded: number;
+  textures_refused: number;
+  meshes: number;
+  mesh_surfaces: number;
+  meshes_refused: number;
+  cached_compressed: number;
+  /** the host-decoded adopted texture's source format. */
+  source_format: string;
+}
+
+/** G8r: the equivalence exceptions the fixture's resources allow (counted per draw path). */
+export interface EquivalenceAllow {
+  creation?: { paths: number; until_frame: number };
+  refused?: { paths: number };
+}
+
 export interface G8aExpected {
   schema: "render-stream-gate8-adopt-expected/1";
   doc: string;
@@ -68,14 +103,24 @@ export interface G8aExpected {
   probe_nodes: number;
   residue: number;
   strict: { reason: string; op: string; frame_offset: number };
+  resources: G8rResources;
+  exceptions: { creation: { paths: number; until_offset: number }; refused: { paths: number } };
+  /** screen rects [x0, y0, x1, y1] inclusive and the checkpoints at which each may differ. */
+  regions: Record<"creation" | "refused", { rect: [number, number, number, number]; steps: number[] }>;
 }
 
 export interface G8aReport {
   legs: Record<string, { exit_code: string | null; skipped: string | null }>;
   cost: Record<string, unknown> | null;
   equivalence: { frames_compared: number; residue: number; first_problems: string[] } | null;
-  pixels: Record<string, { step: number; differing: number; max_delta: number }[]>;
+  pixels: Record<string, { step: number; differing: number; max_delta: number; outside?: number }[]>;
   sabotages: Record<string, { equivalence_problems: number; differing_px: number }>;
+  /** G8r: lazy resource adoption. */
+  resources: {
+    late: Record<string, unknown> | null;
+    exceptions: { creation: string[]; refused: string[]; creation_frames: number[] } | null;
+    workers: { sync_transactions: number; async_transactions: number; held_frames: number } | null;
+  };
 }
 
 // --------------------------------------------------------------------------- canonical states
@@ -105,15 +150,27 @@ export function drawOrder(ids: number[], items: Map<number, ResolvedItem>): Reso
     .map((x) => x.item);
 }
 
+/** A texture reference's canonical key: its payload hash (else kind:status); an adopted texture
+ * declared "creation" is marked `creation:<hash>` so compareStates can apply G8r's exception. */
+const CREATION = "creation:";
+
 export function canonicalState(state: State): CanonCanvas[] {
   const items = new Map<number, ResolvedItem>();
   for (const it of state.items) items.set(it.id, it);
   const texHash = new Map<number, string>();
-  for (const t of state.textures) texHash.set(t.id, t.hash ?? `${t.kind}:${t.status}`);
+  for (const t of state.textures) {
+    const key = t.hash ?? `${t.kind}:${t.status}`;
+    texHash.set(t.id, t.origin === "adopted" && t.adopted_content === "creation" ? CREATION + key : key);
+  }
+  const meshKey = new Map<number, string>();
+  for (const m of state.meshes ?? [])
+    meshKey.set(m.id, `mesh:${m.status}:${m.surfaces.map((x) => x.hash).join(",")}`);
   const canonCommands = (it: ResolvedItem) =>
     it.commands.map((c) => {
       const out: Record<string, unknown> = { ...c };
       if (typeof c.tex === "number") out.tex = texHash.get(c.tex) ?? `missing:${c.tex}`;
+      const mesh = (c as { mesh?: unknown }).mesh;
+      if (typeof mesh === "number") out.mesh = meshKey.get(mesh) ?? `missing-mesh:${mesh}`;
       return out;
     });
   const visit = (it: ResolvedItem, path: string, parentEffective: boolean): CanonItem => {
@@ -173,11 +230,52 @@ function residueLike(it: CanonItem): boolean {
   return (it.draw.commands as unknown[]).length === 0 && it.children.length === 0;
 }
 
+/** G8r: whether two differing command lists differ only by the resource exceptions. Returns the
+ * exception kind ("creation" before "refused" when both occur), "none" when only the creation
+ * marks of exact creation copies differ, or null for a real difference. */
+export function resourceException(
+  born: Record<string, unknown>[],
+  late: Record<string, unknown>[],
+  keys?: { creation: Set<string>; refused: Set<string> },
+): "none" | "creation" | "refused" | null {
+  if (born.length !== late.length) return null;
+  let kind: "none" | "creation" | "refused" = "none";
+  const creation: string[] = [];
+  const refused: string[] = [];
+  for (let i = 0; i < born.length; i++) {
+    const b = born[i];
+    const l = late[i];
+    if (eq(b, l)) continue;
+    const lt = l.tex;
+    if (typeof lt === "string" && lt.startsWith(CREATION) && typeof b.tex === "string") {
+      if (!eq({ ...b, tex: null }, { ...l, tex: null })) return null;
+      if (lt.slice(CREATION.length) === b.tex) continue;  // a creation copy that is exact
+      kind = "creation";
+      creation.push(lt);
+      continue;
+    }
+    if (l.op === "unsupported" && l.reason === "unknown-texture" && typeof b.tex === "string") {
+      if (kind === "none") kind = "refused";
+      refused.push(b.tex);
+      continue;
+    }
+    return null;
+  }
+  // The exception's identity is the resource (the late creation copy's hash, the born texture's
+  // key), not the draw path, which moves when a sibling leaves.
+  for (const k of creation) keys?.creation.add(k);
+  for (const k of refused) keys?.refused.add(k);
+  return kind;
+}
+
 /** Compares a late capture's canonical state with the born one's under Q2's exceptions. Returns
- * the problems and the residue count (born-only trailing items with no commands or children). */
+ * the problems and the residue count (born-only trailing items with no commands or children).
+ * `exceptions` (G8r) collects the resources excused by resourceException (creation-copy hashes,
+ * refused born texture keys); without it a resource difference is a problem. */
 export function compareStates(
   born: CanonCanvas[],
   late: CanonCanvas[],
+  exceptions?: { creation: Set<string>; refused: Set<string> },
 ): { problems: string[]; residue: number } {
   const problems: string[] = [];
   let residue = 0;
@@ -201,11 +299,21 @@ export function compareStates(
         if (!eq(x.fields[k], y.fields[k]))
           problems.push(`${x.path}: ${k} ${JSON.stringify(x.fields[k])} vs ${JSON.stringify(y.fields[k])}`);
       if (x.effective && y.effective)
-        for (const k of Object.keys(x.draw))
-          if (!eq(x.draw[k], y.draw[k]))
-            problems.push(
-              `${x.path}: ${k} ${JSON.stringify(x.draw[k]).slice(0, 120)} vs ${JSON.stringify(y.draw[k]).slice(0, 120)}`,
+        for (const k of Object.keys(x.draw)) {
+          if (eq(x.draw[k], y.draw[k])) continue;
+          if (k === "commands") {
+            const kind = resourceException(
+              x.draw[k] as Record<string, unknown>[],
+              y.draw[k] as Record<string, unknown>[],
+              exceptions,
             );
+            if (kind === "none") continue;  // exact creation copies: not a difference
+            if (kind !== null && exceptions) continue;
+          }
+          problems.push(
+            `${x.path}: ${k} ${JSON.stringify(x.draw[k]).slice(0, 120)} vs ${JSON.stringify(y.draw[k]).slice(0, 120)}`,
+          );
+        }
       items(x.children, y.children, x.path);
     }
   };
@@ -240,14 +348,26 @@ export function stateAt(rec: ResolvedRecording, frame: number): ResolvedTransact
 const unsupportedKeys = (s: State) => s.unsupported.map((u) => `${u.op}|${u.reason}`).sort();
 const failureKeys = (s: State) => s.failures.map((f) => f.reason).sort();
 
-/** Equivalence over every frame from `fromFrame` to the last frame both recordings cover. */
+/** Equivalence over every frame from `fromFrame` to the last frame both recordings cover. `allow`
+ * (G8r): the resource exceptions the fixture declares; each is counted per draw path over the
+ * whole run and must match exactly (a creation exception only before `until_frame`), and every
+ * frame's late unknown-texture entries must be exactly its refused paths. */
 export function equivalence(
   born: ResolvedRecording,
   late: ResolvedRecording,
   fromFrame: number,
   expectedResidue: number,
-): { problems: string[]; frames: number; residue: number } {
+  allow: EquivalenceAllow = {},
+): {
+  problems: string[];
+  frames: number;
+  residue: number;
+  exceptions: { creation: string[]; refused: string[]; creation_frames: number[] };
+} {
   const problems: string[] = [];
+  const creationAll = new Set<string>();
+  const refusedAll = new Set<string>();
+  const creationFrames: number[] = [];
   const last = Math.min(
     born.transactions.at(-1)?.frame ?? 0,
     late.transactions.at(-1)?.frame ?? 0,
@@ -262,20 +382,45 @@ export function equivalence(
       continue;
     }
     frames++;
-    const r = compareStates(canonicalState(b.state), canonicalState(l.state));
+    const ex = { creation: new Set<string>(), refused: new Set<string>() };
+    const r = compareStates(canonicalState(b.state), canonicalState(l.state), ex);
     residueMax = Math.max(residueMax, r.residue);
     if (r.residue !== expectedResidue)
       problems.push(`frame ${f}: residue ${r.residue}, expected ${expectedResidue}`);
     for (const p of r.problems) problems.push(`frame ${f}: ${p}`);
-    if (!eq(unsupportedKeys(b.state), unsupportedKeys(l.state)))
-      problems.push(
-        `frame ${f}: unsupported ${unsupportedKeys(b.state).join(",")} vs ${unsupportedKeys(l.state).join(",")}`,
-      );
+    for (const p of ex.creation) creationAll.add(p);
+    for (const p of ex.refused) refusedAll.add(p);
+    if (ex.creation.size > 0) {
+      creationFrames.push(f);
+      if (!allow.creation || f >= allow.creation.until_frame)
+        problems.push(`frame ${f}: creation-content difference at ${[...ex.creation].join(",")}`);
+    }
+    if (ex.refused.size > 0 && !allow.refused)
+      problems.push(`frame ${f}: refused texture at ${[...ex.refused].join(",")}`);
+    // The refused draws' derived item-level unknown-texture entries are the exception's own.
+    const lateUnknown = l.state.unsupported.filter((u) => u.reason === "unknown-texture").length;
+    const lateKeys = unsupportedKeys(l.state).filter((k) => !k.endsWith("|unknown-texture"));
+    const bornKeys = unsupportedKeys(b.state);
+    if (lateUnknown !== ex.refused.size)
+      problems.push(`frame ${f}: ${lateUnknown} unknown-texture entries, ${ex.refused.size} refused draws`);
+    if (!eq(bornKeys, lateKeys))
+      problems.push(`frame ${f}: unsupported ${bornKeys.join(",")} vs ${lateKeys.join(",")}`);
     if (!eq(failureKeys(b.state), failureKeys(l.state)))
       problems.push(`frame ${f}: failures ${failureKeys(b.state)} vs ${failureKeys(l.state)}`);
   }
   if (frames === 0) problems.push("no frame compared");
-  return { problems, frames, residue: residueMax };
+  const wantCreation = allow.creation?.paths ?? 0;
+  const wantRefused = allow.refused?.paths ?? 0;
+  if (creationAll.size !== wantCreation)
+    problems.push(`${creationAll.size} creation-content resource(s) (${[...creationAll].join(",")}), expected ${wantCreation}`);
+  if (refusedAll.size !== wantRefused)
+    problems.push(`${refusedAll.size} refused-texture resource(s) (${[...refusedAll].join(",")}), expected ${wantRefused}`);
+  return {
+    problems,
+    frames,
+    residue: residueMax,
+    exceptions: { creation: [...creationAll], refused: [...refusedAll], creation_frames: creationFrames },
+  };
 }
 
 // ------------------------------------------------------------------------------- evidence
@@ -351,14 +496,19 @@ async function shotPath(dir: string, step: number): Promise<string> {
   return join(dir, "shots", `seq-${seqs.trim().split(",")[step]}.png`);
 }
 
+export type Rect = [number, number, number, number];
+
+/** Differing pixels of two shots; with `regions` (G8r's declared rects) also split by region:
+ * `inside[i]` counts the pixels in regions[i], `outside` the rest. */
 export async function shotDiff(
   a: string,
   b: string,
   step: number,
-): Promise<{ step: number; present: boolean; differing: number; max_delta: number }> {
+  regions: Rect[] = [],
+): Promise<{ step: number; present: boolean; differing: number; max_delta: number; inside: number[]; outside: number }> {
   const ia = existsSync(await shotPath(a, step)) ? await decodePngRgba(await shotPath(a, step)) : undefined;
   const ib = existsSync(await shotPath(b, step)) ? await decodePngRgba(await shotPath(b, step)) : undefined;
-  const out = { step, present: false, differing: 0, max_delta: 0 };
+  const out = { step, present: false, differing: 0, max_delta: 0, inside: regions.map(() => 0), outside: 0 };
   if (!ia || !ib || ia.width !== ib.width || ia.height !== ib.height) return out;
   out.present = true;
   for (let i = 0; i < ia.data.length; i += 4) {
@@ -367,6 +517,12 @@ export async function shotDiff(
     if (d > 0) {
       out.differing++;
       out.max_delta = Math.max(out.max_delta, d);
+      const p = i / 4;
+      const x = p % ia.width;
+      const y = Math.floor(p / ia.width);
+      const r = regions.findIndex((q) => x >= q[0] && x <= q[2] && y >= q[1] && y <= q[3]);
+      if (r >= 0) out.inside[r]++;
+      else out.outside++;
     }
   }
   return out;
@@ -417,6 +573,9 @@ export function censusProblems(
 // ------------------------------------------------------------------------------- the group
 
 const SABOTAGES = ["adopt-skip-state", "adopt-no-redraw", "adopt-skip-layers"] as const;
+// G8r: the GRC_ADOPT_FAULT captures (run-gate8.sh G8R_FAULTS); the first two also rendered.
+const FAULTS = ["no-resources", "atlas-from-dummy", "claim-current"] as const;
+const FAULTS_RENDERED = ["no-resources", "atlas-from-dummy"] as const;
 
 export async function runG8a(out: string, expected: G8aExpected): Promise<{ checks: G8aCheck[]; report: G8aReport }> {
   const root = join(out, "g8a");
@@ -429,19 +588,34 @@ export async function runG8a(out: string, expected: G8aExpected): Promise<{ chec
     "late/capture",
     "late-strict/capture",
     "late-thread/capture",
+    "late-workers/capture",
     ...SABOTAGES.map((s) => `sabotage-${s}/capture`),
+    ...FAULTS.map((s) => `fault-${s}/capture`),
     "reference",
     "born/receiver",
     "late/receiver",
     "late/receiver-patch",
     ...SABOTAGES.map((s) => `sabotage-${s}/receiver`),
+    ...FAULTS_RENDERED.map((s) => `fault-${s}/receiver`),
   ];
   const legs: G8aReport["legs"] = {};
   for (const l of legDirs)
     legs[l] = { exit_code: await exitCode(join(root, l)), skipped: skipped(join(root, l)) };
   const ran = (l: string) => legs[l].exit_code !== null && legs[l].skipped === null;
   const K = expected.arm_frame;
-  const report: G8aReport = { legs, cost: null, equivalence: null, pixels: {}, sabotages: {} };
+  const report: G8aReport = {
+    legs,
+    cost: null,
+    equivalence: null,
+    pixels: {},
+    sabotages: {},
+    resources: { late: null, exceptions: null, workers: null },
+  };
+  // G8r's declared exceptions (expected.json), shared by every comparison with born.
+  const allow: EquivalenceAllow = {
+    creation: { paths: expected.exceptions.creation.paths, until_frame: K + expected.exceptions.creation.until_offset },
+    refused: { paths: expected.exceptions.refused.paths },
+  };
 
   {
     const problems: string[] = [];
@@ -510,16 +684,21 @@ export async function runG8a(out: string, expected: G8aExpected): Promise<{ chec
   {
     let problems: string[] | null = null;
     if (born.rec && late.rec) {
-      const e = equivalence(born.rec, late.rec, K, expected.residue);
+      const e = equivalence(born.rec, late.rec, K, expected.residue, allow);
       problems = e.problems;
       report.equivalence = { frames_compared: e.frames, residue: e.residue, first_problems: e.problems.slice(0, 20) };
+      report.resources.exceptions = e.exceptions;
+      // The creation exception is exactly the declared window: from the arm until the update.
+      const cf = e.exceptions.creation_frames;
+      if (cf.length > 0 && (cf[0] !== K || cf.at(-1) !== allow.creation!.until_frame - 1))
+        problems.push(`creation-content frames ${cf[0]}..${cf.at(-1)}, expected ${K}..${allow.creation!.until_frame - 1}`);
     }
     checks.push(
       check(
         "adopt-equivalence",
-        `at every frame from the arm (${K}) on, the late capture's resolved state equals the born capture's under an id bijection, with Q2's exceptions only (ids, versions, content_version, origin, draw-index values, draw-derived state of items not visible in tree, the ${expected.residue} residue item)`,
+        `at every frame from the arm (${K}) on, the late capture's resolved state equals the born capture's under an id bijection, with Q2's exceptions only (ids, versions, content_version, origin, draw-index values, draw-derived state of items not visible in tree, the ${expected.residue} residue item) and G8r's declared resource exceptions (${expected.exceptions.creation.paths} creation-copy texture from the arm until K+${expected.exceptions.creation.until_offset}, ${expected.exceptions.refused.paths} refused texture); textures compare by payload hash, meshes by surface hashes`,
         problems,
-        `${report.equivalence?.frames_compared} frames equal, residue ${report.equivalence?.residue}`,
+        `${report.equivalence?.frames_compared} frames equal, residue ${report.equivalence?.residue}, creation ${report.resources.exceptions?.creation.join(",")} (frames ${report.resources.exceptions?.creation_frames[0]}..${report.resources.exceptions?.creation_frames.at(-1)}), refused ${report.resources.exceptions?.refused.join(",")}`,
       ),
     );
   }
@@ -646,16 +825,20 @@ export async function runG8a(out: string, expected: G8aExpected): Promise<{ chec
   }
 
   // --- adopt-reference: pixels --------------------------------------------------------------
+  // G8r: the late capture may differ from the reference (and from born) only inside the declared
+  // regions -- the creation copy's at its steps (where it must differ: the declaration is honest)
+  // and the refused texture's -- and nowhere else; born equals the reference exactly.
+  const regionRects: Rect[] = [expected.regions.creation.rect, expected.regions.refused.rect];
   {
     let problems: string[] | null = [];
-    const pairs: [string, string][] = [
-      ["late/receiver", "reference"],
-      ["late/receiver-patch", "reference"],
-      ["born/receiver", "reference"],
-      ["late/receiver", "born/receiver"],
+    const pairs: [string, string, boolean][] = [
+      ["late/receiver", "reference", true],
+      ["late/receiver-patch", "reference", true],
+      ["born/receiver", "reference", false],
+      ["late/receiver", "born/receiver", true],
     ];
     let any = false;
-    for (const [a, b] of pairs) {
+    for (const [a, b, lateSide] of pairs) {
       if (!ran(a) || !ran(b)) {
         problems?.push(`${a} vs ${b}: a leg did not run`);
         continue;
@@ -663,11 +846,25 @@ export async function runG8a(out: string, expected: G8aExpected): Promise<{ chec
       any = true;
       const rows = [];
       for (const c of expected.checkpoints) {
-        const d = await shotDiff(join(root, a), join(root, b), c.step);
-        rows.push({ step: c.step, differing: d.differing, max_delta: d.max_delta });
-        if (!d.present) problems?.push(`${a} vs ${b} step ${c.step}: shot missing`);
-        else if (d.differing > 0)
-          problems?.push(`${a} vs ${b} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`);
+        const d = await shotDiff(join(root, a), join(root, b), c.step, lateSide ? regionRects : []);
+        rows.push({ step: c.step, differing: d.differing, max_delta: d.max_delta, outside: d.outside });
+        if (!d.present) {
+          problems?.push(`${a} vs ${b} step ${c.step}: shot missing`);
+          continue;
+        }
+        if (!lateSide) {
+          if (d.differing > 0) problems?.push(`${a} vs ${b} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`);
+          continue;
+        }
+        if (d.outside > 0)
+          problems?.push(`${a} vs ${b} step ${c.step}: ${d.outside} px differ outside the declared regions (max ${d.max_delta})`);
+        const creationStep = expected.regions.creation.steps.includes(c.step);
+        if (!creationStep && d.inside[0] > 0)
+          problems?.push(`${a} vs ${b} step ${c.step}: ${d.inside[0]} px differ in the creation region after its update`);
+        if (creationStep && d.inside[0] === 0)
+          problems?.push(`${a} vs ${b} step ${c.step}: the creation region does not differ (the stale copy is not shown)`);
+        if (!expected.regions.refused.steps.includes(c.step) && d.inside[1] > 0)
+          problems?.push(`${a} vs ${b} step ${c.step}: ${d.inside[1]} px differ in the refused region`);
       }
       report.pixels[`${a} vs ${b}`] = rows;
     }
@@ -675,8 +872,170 @@ export async function runG8a(out: string, expected: G8aExpected): Promise<{ chec
     checks.push(
       check(
         "adopt-reference",
-        "the native receiver's shots of the late capture (full and patch sinks) and of the born capture equal the rendered reference exactly at every checkpoint (the arm and the three post-arm steps), and late equals born",
+        "the native receiver's shots of the born capture equal the rendered reference exactly at every checkpoint; those of the late capture (full and patch sinks) equal the reference, and born's, everywhere but G8r's declared regions: the creation copy's rect at steps 0 and 1 (where it must differ) and the refused placeholder's rect",
         problems,
+      ),
+    );
+  }
+
+  // --- G8r: lazy resource adoption -------------------------------------------------------------
+  const R = expected.resources;
+  const resourceProblems = (
+    stats: Record<string, unknown> | undefined,
+    want: Partial<Record<keyof G8rResources, number>>,
+  ): string[] => {
+    const res = stats?.resources as Record<string, unknown> | undefined;
+    if (!res) return ["no stream.gate8.adopt_stats.resources"];
+    const out: string[] = [];
+    for (const [k, v] of Object.entries(want)) if (res[k] !== v) out.push(`${k} ${res[k]}, expected ${v}`);
+    return out;
+  };
+  const wantResources: Partial<Record<keyof G8rResources, number>> = {
+    textures: R.textures,
+    textures_current: R.textures_current,
+    textures_creation: R.textures_creation,
+    atlas_pages: R.atlas_pages,
+    compressed: R.compressed,
+    from_update: R.from_update,
+    decoded: R.decoded,
+    textures_refused: R.textures_refused,
+    meshes: R.meshes,
+    mesh_surfaces: R.mesh_surfaces,
+    meshes_refused: R.meshes_refused,
+    cached_compressed: R.cached_compressed,
+  };
+  // --- adopt-resources-account: result.json, the hook log and the wire agree with the census ---
+  {
+    let problems: string[] | null = null;
+    const st = lateResult?.stream?.gate8?.adopt_stats as Record<string, unknown> | undefined;
+    report.resources.late = (st?.resources as Record<string, unknown> | undefined) ?? null;
+    if (lateResult && late.rec) {
+      problems = resourceProblems(st, wantResources).map((p) => `late: ${p}`);
+      const res = st?.resources as Record<string, number> | undefined;
+      if (res && !(res.fonts >= 1)) problems.push(`late: ${res.fonts} fonts in the census`);
+      if (st?.fault !== "none") problems.push(`late: fault ${st?.fault}`);
+      // The hook log: one adopt line per adopted texture and mesh, by declared content.
+      const lines = jsonl<Record<string, unknown>>(await readText(join(root, "late/capture/evidence/resources.jsonl")));
+      const adopt = lines.filter((l) => l.op === "adopt");
+      const tex = adopt.filter((l) => l.kind === "image");
+      const count = (f: (l: Record<string, unknown>) => boolean) => tex.filter(f).length;
+      const want: [string, number, number][] = [
+        ["adopt lines (textures)", tex.length, R.textures],
+        ["current", count((l) => l.adopted_content === "current"), R.textures_current],
+        ["creation", count((l) => l.adopted_content === "creation"), R.textures_creation],
+        ["textserver", count((l) => l.adopt_source === "textserver"), R.atlas_pages],
+        ["cache", count((l) => l.adopt_source === "cache"), R.compressed],
+        ["update", count((l) => l.adopt_source === "update"), R.from_update],
+        ["decoded", count((l) => l.source_format === R.source_format), R.decoded],
+        ["adopt lines (meshes)", adopt.filter((l) => l.kind === "mesh").length, R.meshes],
+      ];
+      for (const [what, got, exp] of want) if (got !== exp) problems.push(`hook log: ${what} ${got}, expected ${exp}`);
+      // The wire: every adopted entry, at its first appearance.
+      const firstTex = new Map<number, { adopted_content: unknown; source_format: unknown }>();
+      const firstMesh = new Map<number, unknown>();
+      for (const t of late.rec.transactions) {
+        for (const e of t.state.textures)
+          if (e.origin === "adopted" && !firstTex.has(e.id))
+            firstTex.set(e.id, { adopted_content: e.adopted_content, source_format: e.source_format ?? null });
+        for (const m of t.state.meshes ?? [])
+          if (m.origin === "adopted" && !firstMesh.has(m.id)) firstMesh.set(m.id, m.adopted_content);
+      }
+      const wire = [...firstTex.values()];
+      if (wire.length !== R.textures) problems.push(`wire: ${wire.length} adopted textures, expected ${R.textures}`);
+      const cur = wire.filter((w) => w.adopted_content === "current").length;
+      if (cur !== R.textures_current) problems.push(`wire: ${cur} adopted current, expected ${R.textures_current}`);
+      const dec = wire.filter((w) => w.source_format === R.source_format).length;
+      if (dec !== R.decoded) problems.push(`wire: ${dec} adopted with source_format ${R.source_format}, expected ${R.decoded}`);
+      if (firstMesh.size !== R.meshes || [...firstMesh.values()].some((c) => c !== "creation"))
+        problems.push(`wire: adopted meshes ${JSON.stringify([...firstMesh.values()])}, expected ${R.meshes} creation`);
+      if (born.rec)
+        for (const t of born.rec.transactions)
+          if (t.state.textures.some((e) => e.origin === "adopted") || (t.state.meshes ?? []).some((m) => m.origin === "adopted"))
+            problems.push(`born: an adopted resource at frame ${t.frame}`);
+      // After the post-arm update the stale texture's entry is current (version raised).
+      const lastT = late.rec.transactions.at(-1);
+      const creationLeft = lastT?.state.textures.filter((e) => e.adopted_content === "creation").length ?? -1;
+      if (creationLeft !== R.textures_creation - 1)
+        problems.push(`wire: ${creationLeft} creation entries at the end, expected ${R.textures_creation - 1} (the updated one is current)`);
+    }
+    checks.push(
+      check(
+        "adopt-resources-account",
+        `G8r (D6, D7): the late capture adopts exactly expected.json's resources -- ${R.textures} textures (${R.textures_current} current: ${R.atlas_pages} atlas page read back from the TextServer, ${R.compressed} CompressedTexture2Ds from the resource cache, ${R.from_update} first met as an update; ${R.textures_creation} creation), ${R.decoded} host-decoded from ${R.source_format}, ${R.textures_refused} refused, ${R.meshes} mesh (creation) -- in result.json, in the hook log's adopt lines and on the wire; born adopts nothing; the stale texture is current after its post-arm update`,
+        problems,
+        report.resources.late ? JSON.stringify(report.resources.late) : undefined,
+      ),
+    );
+  }
+
+  // --- adopt-resources-workers: G8kw's path ----------------------------------------------------
+  {
+    let problems: string[] | null = null;
+    const w = await loadRecording(join(root, "late-workers/capture"));
+    const wr = await readJson<CaptureResult & { stream?: { texture_workers?: Record<string, number> } }>(
+      join(root, "late-workers/capture/evidence/result.json"),
+    );
+    if (w.rec && late.rec) {
+      const cmp = compareWorkerRecordings(late.rec, w.rec);
+      problems = [...cmp.problems];
+      report.resources.workers = {
+        sync_transactions: cmp.sync_transactions,
+        async_transactions: cmp.async_transactions,
+        held_frames: cmp.held_frames.length,
+      };
+      if (cmp.held_frames.length === 0) problems.push("no frame was held back: the adopted copies never waited on a worker");
+      problems.push(...resourceProblems(wr?.stream?.gate8?.adopt_stats, wantResources).map((p) => `late-workers: ${p}`));
+      const lines = jsonl<Record<string, unknown>>(await readText(join(root, "late-workers/capture/evidence/resources.jsonl")));
+      const workerAdopts = lines.filter((l) => l.op === "adopt" && l.kind === "image" && l.worker === true).length;
+      if (workerAdopts === 0) problems.push("no adopt line was a worker copy");
+    } else if (w.error) problems = [w.error];
+    checks.push(
+      check(
+        "adopt-resources-workers",
+        "G8r through G8kw: the late capture at GRC_TEXTURE_WORKERS=2 (every copy on a delayed worker) adopts the same resources, its adopted copies are worker copies, publication is held back, and every transaction equals the synchronous late capture's at the same frame",
+        problems,
+        report.resources.workers ? JSON.stringify(report.resources.workers) : undefined,
+      ),
+    );
+  }
+
+  // --- G8r faults (GRC_ADOPT_FAULT) -----------------------------------------------------------
+  for (const f of FAULTS) {
+    const dir = join(root, `fault-${f}`);
+    let problems: string[] | null = null;
+    const cap = await loadRecording(join(dir, "capture"));
+    const rendered = (FAULTS_RENDERED as readonly string[]).includes(f);
+    if (cap.rec && born.rec && (!rendered || (ran(`fault-${f}/receiver`) && ran("reference")))) {
+      problems = [];
+      const e = equivalence(born.rec, cap.rec, K, expected.residue, allow);
+      let outside = 0;
+      if (rendered)
+        for (const c of expected.checkpoints)
+          outside += (await shotDiff(join(dir, "receiver"), join(root, "reference"), c.step, regionRects)).outside;
+      report.sabotages[`fault-${f}`] = { equivalence_problems: e.problems.length, differing_px: outside };
+      if (e.problems.length === 0) problems.push("adopt-equivalence did not fail");
+      if (rendered && outside === 0) problems.push("adopt-reference did not fail (no pixel outside the declared regions)");
+      const r = await readJson<CaptureResult>(join(dir, "capture/evidence/result.json"));
+      const st = r?.stream?.gate8?.adopt_stats as Record<string, unknown> | undefined;
+      if (st?.fault !== f) problems.push(`its result.json names fault ${st?.fault}`);
+      if (resourceProblems(st, wantResources).length === 0) {
+        if (f !== "atlas-from-dummy") problems.push("adopt-resources-account would not fail");
+      }
+      if (f === "atlas-from-dummy") {
+        // The same account (the page is found), but its bytes are the dummy's stale copy.
+        const lines = jsonl<Record<string, unknown>>(await readText(join(dir, "capture/evidence/resources.jsonl")));
+        if (lines.some((l) => l.op === "adopt" && l.adopt_source === "textserver"))
+          problems.push("an atlas page was still read from the TextServer");
+      }
+    }
+    checks.push(
+      check(
+        `fault-${f}`,
+        `G8r's GRC_ADOPT_FAULT=${f} (${f === "no-resources" ? "no lazy adoption: G8a's unknown-texture/unknown-mesh come back" : f === "atlas-from-dummy" ? "atlas pages read from the dummy's stale copy, still declared current" : "every adopted texture declared current"}) fails adopt-equivalence against born${rendered ? " and its receiver fails adopt-reference outside the declared regions" : ""}${f !== "atlas-from-dummy" ? "; its account fails adopt-resources-account" : ""}`,
+        problems,
+        report.sabotages[`fault-${f}`]
+          ? `${report.sabotages[`fault-${f}`].equivalence_problems} state problems${rendered ? `, ${report.sabotages[`fault-${f}`].differing_px} px outside the declared regions` : " (not rendered: its pixels are late's)"}`
+          : undefined,
       ),
     );
   }
@@ -688,10 +1047,10 @@ export async function runG8a(out: string, expected: G8aExpected): Promise<{ chec
     const cap = await loadRecording(join(dir, "capture"));
     if (cap.rec && born.rec && ran(`sabotage-${s}/receiver`) && ran("reference")) {
       problems = [];
-      const e = equivalence(born.rec, cap.rec, K, expected.residue);
+      const e = equivalence(born.rec, cap.rec, K, expected.residue, allow);
       let differing = 0;
       for (const c of expected.checkpoints)
-        differing += (await shotDiff(join(dir, "receiver"), join(root, "reference"), c.step)).differing;
+        differing += (await shotDiff(join(dir, "receiver"), join(root, "reference"), c.step, regionRects)).outside;
       report.sabotages[s] = { equivalence_problems: e.problems.length, differing_px: differing };
       if (e.problems.length === 0) problems.push("adopt-equivalence did not fail");
       if (differing === 0) problems.push("adopt-reference did not fail");

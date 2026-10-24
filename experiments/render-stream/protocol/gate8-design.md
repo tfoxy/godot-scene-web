@@ -6,7 +6,9 @@ G8t (host decode of block-compressed textures, the `gate8-tex` fixture and the g
 landed: Q3 "As built (G8t)", [results/gate8/g8t.md](../results/gate8/g8t.md). G8a (arm-time adoption
 of canvases, layers and items, the `gate8-adopt` fixture) is landed: Q2 "As built (G8a)",
 [results/gate8/g8a.md](../results/gate8/g8a.md). G8sha (the capture's SHA-256 on SHA-NI, 5.7x, output
-unchanged) is landed: [results/gate8/g8sha.md](../results/gate8/g8sha.md). Nothing else here is
+unchanged) is landed: [results/gate8/g8sha.md](../results/gate8/g8sha.md). G8r (lazy adoption of
+pre-arm textures, meshes and glyph atlases) is landed: Q2 "As built (G8r)",
+[results/gate8/g8r.md](../results/gate8/g8r.md). Nothing else here is
 implemented. The user decided on
 2026-10-22 that public release needs the gate 8 blockers first (memory g31-good-enough-release-first).
 Gate 8 is "integrate behind couch-coop's instance rules, with the streaming seat opting out of the
@@ -252,6 +254,91 @@ Decisions taken where Q2 and D3-D5 left room, each the long-term option:
   (G8m reads them with the materials); Polygon2D skeletons (`attach_skeleton` is not re-sent);
   `canvas_item_set_use_identity_transform` items (no getter: their transform is read as the node's);
   RS state a script set directly on a node's own canvas item (read as the node's state).
+
+### As built (G8r)
+
+D6 and D7 as specified, through the hooks' own copy path; decisions taken where they left room, each
+the long-term option:
+
+- **Where.** Every hook that names a texture RID (the texture-rect, MSDF, polygon, primitive,
+  triangle-array, nine-patch and mesh draws, `canvas_texture_set_channel`, `texture_replace`,
+  `shader_set_default_texture_parameter`, and a `rid` value of `material_set_param` or
+  `canvas_item_set_instance_shader_parameter`) calls `rs::adopt_texture_ref` before its mirror tap,
+  and `canvas_item_add_mesh` calls `rs::adopt_mesh_ref`: one atomic load when `GRC_ADOPT` is off,
+  and a mirror lookup when it is on. The read-back is `rs_adopt.cpp`'s; the registration is
+  `hooks_adopt_texture` / `hooks_adopt_mesh`, which run the hooks' `copy_payload` /
+  `copy_mesh_surface` (so G8t's decode, G8kw's worker and hold-back, the format and size policy and
+  every typed refusal apply unchanged) and then `Mirror::texture_adopt` / `mesh_adopt` and the hook
+  log's `adopt` line, under the texture-identity lock, so both registries assign the same ids.
+- **Which content, which declaration.** In this order: a glyph atlas page is read back from the
+  TextServer (`current`); a `CompressedTexture2D` takes the dummy's copy, which equals its file
+  (`current`); anything else takes the dummy's copy (`creation`). A texture whose first post-arm
+  reference is a whole-image `texture_2d_update` (an atlas page that grows, an `ImageTexture.update`
+  on a texture nothing drew since arm) is adopted from that update's own image (`current`, source
+  `update`), and the update then applies as for any known texture. The adopted entry's trust then
+  follows its content: an accepted whole update, a `texture_replace` by a hooked texture and a
+  `mesh_clear` make it `current` (at a higher version, as render-stream-8.md requires); a layered
+  or mismatched update leaves it.
+- **How a CompressedTexture2D is recognised: by the resource cache, not by a node.** The design says
+  "reached through a node". Every `CompressedTexture2D` is loaded by path, so it is in the
+  `ResourceCache` while it lives; one census per stream (lazily, at the first unknown texture, on
+  the main thread) walks `ResourceLoader.list_directory("res://")` recursively (hidden directories
+  excluded, as the loader does; at most 200,000 paths), and for every cached path keeps a `Font`'s
+  `get_rids()` and a `CompressedTexture2D`'s RID. That covers a texture on any node, theme, style
+  box or material without a per-class getter table, and gives D7 its fonts in the same pass (plus
+  ThemeDB's fallback font and the default and project themes' default fonts). Everything the
+  census can miss (a texture loaded under `CACHE_MODE_IGNORE`, a `.ctex` loaded by its
+  `.godot/imported` path) degrades to `creation`, never to a false `current`. It cost 0.8 ms on the
+  fixture (12 paths); a pack's file count scales it.
+- **How an atlas page is matched: content first, then the RID.** `font_get_glyph_texture_rid` is the
+  only page-to-RID map, and on a page that never had a texture it creates one (a game-visible
+  side effect D3 does not allow). So the census only lists `(font, size cache, page)` triples
+  (`font_get_size_cache_list`, `font_get_texture_count`), and an unknown RID is compared with each
+  page's current image (`font_get_texture_image`, no side effect): same shape, and every non-zero
+  byte of the dummy's creation copy equal to the page's (a shelf atlas only ever adds glyphs). Only
+  a page that passes is confirmed by `font_get_glyph_texture_rid` of a glyph on it; that page
+  already has the texture, so the call creates nothing (it may flush a dirty page through the hooked
+  update, which then adopts it). A page with mipmaps or fixed-up SVG alpha edges fails the content
+  test and is adopted as `creation`. Oversampled caches stay unaddressable (D7's limit): `creation`.
+- **Threads.** The read-back runs on the main thread only (the dummy's storage, the TextServer and
+  the resource cache are read there); a reference from another thread leaves the command
+  `unknown-texture` and the next main-thread reference adopts it. The update path needs no engine
+  call and runs on any thread.
+- **Refusals.** `texture_2d_get` returning no image (a `PlaceholderTexture2D`, a proxy, a RID that
+  is no texture) leaves the hooks' `unknown-texture`, counted once per RID (`textures_refused`).
+  A mesh RID always adopts: the dummy cannot tell an empty mesh from a RID that is no mesh (both
+  read 0 surfaces, the latter with an engine error), and both draw nothing. Blend-shape surfaces
+  are the hooks' `mesh-blend-shapes`.
+- **Fault knob, not a sabotage kind.** `GRC_ADOPT_FAULT=no-resources|atlas-from-dummy|claim-current`
+  (needs `GRC_ADOPT=arm`, else the stream refuses), as G8kw's `GRC_TEXTURE_WORKER_FAULT`: a new
+  `GRC_SABOTAGE` kind is a wire change in three validators, and none of these bugs would declare
+  itself on the wire. The design names no G8r sabotage; these three are the ways adoption could
+  be wrong (missing, stale while claiming current, overclaiming).
+- **Accounting.** `stream.gate8.adopt_stats` gains `fault` and `resources` (textures by declared
+  content and source, decoded, refused, meshes and surfaces, the census's fonts, cached
+  CompressedTexture2Ds and paths, census and read-back times). The hook log's `adopt` lines end
+  with `adopted_content` and `adopt_source` (`textserver`, `cache`, `dummy`, `update`).
+- **Checks** (run-gate8.sh `g8a`, which G8r extends instead of adding a `g8r` group: the same
+  fixture, the same born and late legs). `adopt-equivalence` compares textures by payload hash and
+  meshes by surface hashes, with two declared resource exceptions counted per resource:
+  `creation` (a late texture declared `creation` whose content differs from born's, allowed only
+  before its post-arm update) and `refused` (a late `unknown-texture` draw where born named a
+  texture, with its derived entry). `adopt-reference` lets the late shots differ only inside the two
+  declared rects, and requires the creation rect to differ where the stale copy shows.
+  `adopt-resources-account` (result.json, the hook log's adopt lines and the wire against
+  expected.json), `adopt-resources-workers` (G8kw: a late capture at `GRC_TEXTURE_WORKERS=2` with
+  every copy on a delayed worker equals the synchronous one at every published frame) and the
+  three `fault-*` checks are new.
+- **Fixture.** `gate8-adopt` gains `Stale` (an `ImageTexture` updated in place at frame 5 and again
+  at K+14: the declared creation region), `Plain` (an exact creation copy), `HiddenSprite` (hidden
+  before arm, its texture first named by an update at K+4), `Chip` and `ChipBc` (lossless and
+  VRAM-compressed `CompressedTexture2D`s that `make_sources.gd` writes for the editor import; ChipBc
+  is DXT5, host-decoded), `Placeholder` (the refusal), `Mesh` (an `ArrayMesh`) and `Grown` (a
+  `Label` whose page grows at frame 5 and again at K+4). A desktop editor always imports S3TC
+  (`resource_importer_texture_settings.cpp:37-44`), and a GPU samples BC1/BC3 with its own
+  interpolation, so the rendered reference draws ChipBc's DXT5 decoded by `Image.decompress` (what
+  the host decode publishes; GLES3 over GL reads the compressed bytes back), as G8t's reference
+  does.
 
 ## Q3. Compressed and float textures (blocker 2)
 

@@ -4,19 +4,27 @@ extends Node
 ## before arm and shown after it, a clip_contents Control, two top-level items, a CanvasLayer
 ## (layer 2) with a CanvasModulate, texture filter/repeat inheritance, and one RS-only item
 ## (`_residue`, RenderingServer.canvas_item_create in `_ready`: the residue adoption cannot reach).
-## Textures are created after arm only (pre-arm resources are G8r's). The timeline, in fixture
-## frames (the main-loop iteration; the loader arms at K = RS_FIXTURE_ARM_FRAME, default 12):
+## G8r adds pre-arm resources: three ImageTextures (Stale, updated in place before arm; Plain;
+## HiddenSprite's, first named after arm by an update), two
+## CompressedTexture2Ds (Chip lossless, ChipBc VRAM-compressed), a PlaceholderTexture2D (no image:
+## the typed refusal), an ArrayMesh (Mesh) and a Label (Grown) whose atlas grows before arm. The
+## timeline, in fixture frames (the main-loop iteration; the loader arms at K =
+## RS_FIXTURE_ARM_FRAME, default 12):
 ##
 ##   _ready     the scene as authored; the residue item (root canvas, draw index 1000, no commands)
 ##   frame 5    (before arm) World moves, TopA is raised above TopB (move_to_front), Hidden hides,
-##              World's filter becomes linear, UI moves
+##              World's filter becomes linear, UI moves; Stale's texture is updated in place and
+##              Grown's text grows (new glyphs on its atlas page)
 ##   K          the capture arms (late). Checkpoint 0 settles at K+2.
-##   K+4        Hidden shows; a 4x4 checker ImageTexture is created and drawn by Sprite (scaled
+##   K+4        HiddenSprite's texture is updated and Hidden shows; a 4x4 checker ImageTexture is
+##              created and drawn by Sprite (scaled
 ##              8x, filter inherited from World) and Tiled (TextureRect tile, repeat enabled); the
 ##              residue item is moved (RenderingServer.canvas_item_set_transform); World's
-##              modulate changes. Checkpoint 1 settles at K+11.
+##              modulate changes; Grown grows again (glyphs added to the adopted page).
+##              Checkpoint 1 settles at K+11.
 ##   K+14       Behind moves to index 0 (move_child), TopB is raised again, Spin turns, Inner
-##              clips, the CanvasModulate colour and the layer offset change. Checkpoint 2: K+21.
+##              clips, the CanvasModulate colour and the layer offset change, Stale is updated
+##              again (its adopted entry becomes current). Checkpoint 2: K+21.
 ##   K+24       the layer hides, a new item `Late` is added under World, ZHigh is freed, UI
 ##              moves. Checkpoint 3: K+31.
 ##   K+38       quit
@@ -43,6 +51,8 @@ var _step_log_file: FileAccess
 var _probe_log_file: FileAccess
 var _failed: bool = false
 var _residue: RID = RID()
+var _stale: ImageTexture
+var _hidden_texture: ImageTexture
 var _draws: int = 0
 ## [applied_frame, settle_frame] per checkpoint
 var _checkpoints: Array[Array] = []
@@ -71,7 +81,45 @@ func _ready() -> void:
 		var item := node as CanvasItem
 		if item != null:
 			item.draw.connect(_on_draw)
+	_make_resources()
 	print("[fixture] gate8-adopt ready: K=%d quit=%d" % [_arm_frame, _quit_frame])
+
+
+## G8r's pre-arm resources (made in _ready, so before a late arm and after a born one): two
+## ImageTextures (`_stale`, updated in place at frame 5 -- the dummy keeps its creation image, the
+## declared `creation` region -- and again after arm at K+14; Plain's, never updated) and the
+## ArrayMesh MeshInstance2D draws. Chip and ChipBc load CompressedTexture2Ds with the scene; Grown
+## (a Label) grows its glyph atlas before arm.
+func _make_resources() -> void:
+	_stale = ImageTexture.create_from_image(_checker(Color(1, 0.2, 0.2, 1), Color(0.2, 0.2, 1, 1)))
+	($World/Stale as Sprite2D).texture = _stale
+	($World/Plain as Sprite2D).texture = ImageTexture.create_from_image(
+		_checker(Color(0.9, 0.9, 0.9, 1), Color(0.1, 0.6, 0.3, 1)))
+	_hidden_texture = ImageTexture.create_from_image(_checker(Color(0, 0, 0, 1), Color(1, 1, 1, 1)))
+	($World/Hidden/HiddenSprite as Sprite2D).texture = _hidden_texture
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector2Array([Vector2(0, 0), Vector2(40, 0), Vector2(40, 30), Vector2(0, 30)])
+	arrays[Mesh.ARRAY_COLOR] = PackedColorArray([Color(1, 0, 0, 1), Color(0, 1, 0, 1), Color(0, 0, 1, 1), Color(1, 1, 0, 1)])
+	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2, 0, 2, 3])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	($World/Mesh as MeshInstance2D).mesh = mesh
+	if not OS.has_environment("GRC_EXTENSION"):
+		# The rendered reference draws ChipBc's DXT5 decoded by the engine's own CPU decoder (what the
+		# capture's host decode publishes), as G8t's reference does: a GPU samples BC1/BC3 with its
+		# own interpolation (G8t's hardware band). GLES3 over GL reads the compressed bytes back.
+		var chip_bc := ($World/ChipBc as Sprite2D).texture.get_image()
+		chip_bc.decompress()
+		($World/ChipBc as Sprite2D).texture = ImageTexture.create_from_image(chip_bc)
+
+
+func _checker(a: Color, b: Color) -> Image:
+	var image := Image.create_empty(4, 4, false, Image.FORMAT_RGBA8)
+	for y: int in range(4):
+		for x: int in range(4):
+			image.set_pixel(x, y, a if (x + y) % 2 == 0 else b)
+	return image
 
 
 func _exit_tree() -> void:
@@ -118,9 +166,16 @@ func _step_pre_arm() -> void:
 	($World/Hidden as Node2D).hide()
 	world.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	($UI as Control).position += Vector2(0, 4)
+	# G8r: an in-place update the dummy drops (a late capture adopts the creation image) and a
+	# glyph atlas that grows before arm (the TextServer keeps the current page).
+	_stale.update(_checker(Color(1, 1, 0.2, 1), Color(0.2, 1, 0.2, 1)))
+	($Grown as Label).text = "Abcdefghijklmn"
 
 
 func _step_1() -> void:
+	# G8r: HiddenSprite has not drawn since it was hidden before arm, so this update is the first
+	# hooked call to name its pre-arm texture (adopted from the update's own image: current).
+	_hidden_texture.update(_checker(Color(0.2, 0.8, 1, 1), Color(1, 0.4, 0.7, 1)))
 	($World/Hidden as Node2D).show()
 	var image := Image.create_empty(4, 4, false, Image.FORMAT_RGBA8)
 	for y: int in range(4):
@@ -132,6 +187,7 @@ func _step_1() -> void:
 	($UI/Tiled as TextureRect).texture = texture
 	RenderingServer.canvas_item_set_transform(_residue, Transform2D(0.0, Vector2(5, 5)))
 	($World as Node2D).modulate = Color(1, 1, 0.8, 1)
+	($Grown as Label).text = "Abcdefghijklmn OPQrs"  # new glyphs on the adopted page
 
 
 func _step_2() -> void:
@@ -142,6 +198,7 @@ func _step_2() -> void:
 	($UI/Inner as Control).clip_contents = true
 	($Layer/Tint as CanvasModulate).color = Color(0.8, 1, 1, 1)
 	($Layer as CanvasLayer).offset = Vector2(10, 210)
+	_stale.update(_checker(Color(1, 1, 1, 1), Color(0.6, 0.2, 0.8, 1)))  # current again
 
 
 func _step_3() -> void:

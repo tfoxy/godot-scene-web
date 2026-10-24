@@ -343,6 +343,12 @@ class Mirror {
   // entry `unsupported` with its reason (its slot is kept so later indices line up).
   void mesh_create_from_surfaces(std::uint64_t rid, const std::vector<MeshSurfaceInput> &surfaces,
                                  std::uint64_t frame);
+  // G8r (gate8-design.md D6): a mesh that already existed when the capture armed, read back
+  // through mesh_get_surface at its first reference. Exactly mesh_create_from_surfaces plus its
+  // custom AABB, with origin `adopted` and adopted_content `creation` (the dummy keeps the
+  // creation-time surfaces; region updates it dropped are not recoverable). Never dropped.
+  void mesh_adopt(std::uint64_t rid, const std::vector<MeshSurfaceInput> &surfaces,
+                  const std::array<float, 6> &custom_aabb, std::uint64_t frame);
   // mesh_add_surface: appended, version + 1.
   void mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface, std::uint64_t frame);
   // One of the four mesh_surface_update_*_region taps (`op` its method name). `applied` is the
@@ -482,6 +488,16 @@ class Mirror {
   // and bytes the job delivers; the entry is `ok` and pending until a snapshot settles it.
   void texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
                          std::uint64_t frame, std::shared_ptr<TextureJob> job = nullptr);
+  // G8r (gate8-design.md D6, D7): a texture that already existed when the capture armed, met at
+  // its first reference by a hooked call. Exactly texture_2d_create (a new id, kind image, version
+  // 1, status from the copy, G8kw's job) but with origin `adopted` and `content` (Current or
+  // Creation) as its adopted_content. Identity bookkeeping: no omit-op name, never dropped.
+  void texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+                     rs2::AdoptedContent content, std::uint64_t frame,
+                     std::shared_ptr<TextureJob> job = nullptr);
+  // G8r: whether `rid` is in the texture / mesh table (a live entry, not a tombstone).
+  bool knows_texture(std::uint64_t rid) const;
+  bool knows_mesh(std::uint64_t rid) const;
   // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
   void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
   // texture_2d_update: a known id gets version + 1 and, when the layer is 0 and
@@ -583,6 +599,10 @@ class Mirror {
     bool has_reason = false;
     rs2::TextureReason reason = rs2::TextureReason::UnsupportedFormat;
     std::uint64_t version = 1;
+    // G8r (render-stream-8.md "Resource tables"): `adopted` for a texture the capture met already
+    // existing at arm; its adopted_content (None exactly when origin is Created).
+    rs2::Origin origin = rs2::Origin::Created;
+    rs2::AdoptedContent adopted_content = rs2::AdoptedContent::None;
     // The last accepted copy's description (kind image): its shape decides
     // whether an update is accepted, as in the hook log.
     PayloadCopy copy;
@@ -618,6 +638,8 @@ class Mirror {
     bool has_reason = false;
     rs2::MeshReason reason = rs2::MeshReason::MeshFormat;
     std::uint64_t version = 1;
+    rs2::Origin origin = rs2::Origin::Created;  // G8r, as Texture's
+    rs2::AdoptedContent adopted_content = rs2::AdoptedContent::None;
     std::vector<MeshSurf> surfaces;
     std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
   };

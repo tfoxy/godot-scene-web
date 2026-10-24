@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3366,8 +3366,8 @@ mise exec -- pnpm render-stream:gate8 -- \
 ```
 
 - `run-gate8.sh`: the orchestrator (`run_g8t` with `run_import_g8t`, `run_oracle` and
-  `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`; `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f, G8r and
-  G8m add their groups).
+  `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`, which G8r extends;
+  `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f and G8m add their groups).
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
   and the informative `hardware_band`; under `g8a` the legs, the adoption `cost`, the
@@ -3377,8 +3377,9 @@ mise exec -- pnpm render-stream:gate8 -- \
 - `test/self-test-gate8.ts`: the helpers on `fixtures/gate8-tex/expected.json` and synthetic hook,
   fixture and oracle lines, each with a passing and a failing case.
 - `lib/gate8-adopt-checks.ts`: the g8a checks (`runG8a`) and their pure helpers (`canonicalState`,
-  `compareStates`, `equivalence`, `censusProblems`): born-armed equivalence through an id
-  bijection built per container in draw order, with exactly Q2's exceptions.
+  `compareStates`, `equivalence`, `censusProblems`, G8r's `resourceException`): born-armed
+  equivalence through an id bijection built per container in draw order, with exactly Q2's
+  exceptions and G8r's two declared resource exceptions (creation copies, refused textures).
 - `test/self-test-gate8-adopt.ts`: those helpers on `fixtures/gate8-adopt/expected.json` and
   synthetic resolved states.
 - `lib/gate8-size-checks.ts`: the g8h checks (`runG8h`) and their pure helpers (`sizeProblems`,
@@ -3406,12 +3407,14 @@ mise exec -- pnpm render-stream:gate8 -- \
 
 | leg | what |
 | --- | ---- |
-| `import/fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-adopt` and of the receiver |
-| `born/capture` | headless, `GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip`, main scene `res://born.tscn`, armed in the loader's `_enter_tree`: every object created armed; both sinks, store, `steps.jsonl`, `probe.jsonl` |
+| `import/sources`, `import/fixture`, `import/receiver` | the editor: `make_sources.gd` (G8r's two textures into the fixture's ignored `tex/`), the `--import` of `fixtures/gate8-adopt` and of the receiver |
+| `born/capture` | headless, `GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip GRC_TEXTURE_DECODE=engine`, main scene `res://born.tscn`, armed in the loader's `_enter_tree`: every object created armed; both sinks, store, `steps.jsonl`, `probe.jsonl` |
 | `born-adopt/capture` | `born` with `GRC_ADOPT=arm`: adoption at birth, nothing to adopt |
 | `late/capture` | `adopt.tscn` as the main scene, armed at frame K=12 with `GRC_ADOPT=arm` |
 | `late-strict/capture` | `late` without `GRC_UNKNOWN_ITEM=skip`: the residue's first call fails `pre-existing-object` |
 | `late-thread/capture` | `late`, the extension loaded from a worker thread (`RS_FIXTURE_ARM=thread`): the stream refuses `adopt-thread` |
+| `late-workers/capture` | G8r: `late` at `GRC_TEXTURE_WORKERS=2 GRC_TEXTURE_WORKER_MIN_BYTES=0 GRC_TEXTURE_WORKER_DELAY_MS=8`: adopted copies on delayed workers |
+| `fault-{no-resources,atlas-from-dummy,claim-current}/capture`, `fault-{no-resources,atlas-from-dummy}/receiver` | G8r: `late` under `GRC_ADOPT_FAULT`, and the native receiver on the two whose pixels differ |
 | `sabotage-adopt-{skip-state,no-redraw,skip-layers}/{capture,receiver}` | `late` with the walk sabotage, and the native receiver on it |
 | `reference` | rendered, unarmed: shots `step-<k>.png` at the four checkpoints |
 | `born/receiver`, `late/receiver`, `late/receiver-patch` | the native receiver on born's and late's full sink and late's patch sink |
@@ -3438,9 +3441,12 @@ mise exec -- pnpm render-stream:gate8 -- \
 ## Gate 8 criteria (g8a)
 
 `g8a-legs`, `adopt-wire`, `adopt-equivalence`, `adopt-noop-at-birth`, `adopt-account`,
-`adopt-thread-refused`, `adopt-no-scene-mutation`, `adopt-reference` (exact) and the three `sabotage-adopt-*` checks; each
-criterion is spelled out in `lib/gate8-adopt-checks.ts` and
-[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q2 "As built (G8a)".
+`adopt-thread-refused`, `adopt-no-scene-mutation`, `adopt-reference` (exact outside G8r's two
+declared regions) and the three `sabotage-adopt-*` checks; G8r adds `adopt-resources-account`,
+`adopt-resources-workers` and `fault-no-resources`, `fault-atlas-from-dummy`, `fault-claim-current`.
+Each criterion is spelled out in `lib/gate8-adopt-checks.ts` and
+[`../protocol/gate8-design.md`](../protocol/gate8-design.md) Q2 "As built (G8a)" and "As built
+(G8r)".
 
 ## Gate 8 criteria (g8t)
 

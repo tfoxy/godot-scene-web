@@ -48,6 +48,13 @@ struct Iface {
   // since 4.3) the texture hooks copy payload bytes through. Optional like the four above: a
   // host without it still arms, and a stream refuses at arm (`image-access-unavailable`).
   GDExtensionInterfaceImagePtr image_ptr = nullptr;
+  // G8r (rs_adopt.cpp, lazy resource adoption): the Variant, Array and Dictionary access the
+  // TextServer, resource-cache and mesh read-backs need. Optional like the above: a host without
+  // them refuses GRC_ADOPT=arm at arm (`adopt-unavailable`).
+  GDExtensionInterfaceGetVariantFromTypeConstructor get_variant_from_type_constructor = nullptr;
+  GDExtensionInterfaceVariantDestroy variant_destroy = nullptr;
+  GDExtensionInterfaceVariantGetPtrBuiltinMethod variant_get_ptr_builtin_method = nullptr;
+  GDExtensionInterfaceArrayOperatorIndexConst array_operator_index_const = nullptr;
   // Name of the first interface function that failed to resolve, if any.
   std::string missing;
 };

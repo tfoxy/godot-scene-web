@@ -105,6 +105,9 @@ struct ResourceLog::Line {
   bool has_repeat = false;
   float repeat_size[2] = {};
   std::int32_t repeat_times = 0;
+  // G8r: trailing keys of an adopt line only ("" elsewhere).
+  std::string adopted_content;
+  std::string adopt_source;
 };
 
 // G8kw: a line held for a texture worker's hash (`job` set; `payload` is the line's own copy,
@@ -406,6 +409,13 @@ void ResourceLog::format(std::string *out, const Line &l) const {
     o += ",\"dup_ns\":";
     o += std::to_string(p->dup_ns);
   }
+  // G8r: present only on an adopt line.
+  if (!l.adopted_content.empty()) {
+    o += ",\"adopted_content\":";
+    append_string(&o, l.adopted_content);
+    o += ",\"adopt_source\":";
+    append_string(&o, l.adopt_source);
+  }
   // G2b2: present only on a sabotage's own lines (spurious-texture-update's version bump; an
   // op the omit-op sabotage left out of the registry, `omitted`).
   if (l.sabotage) {
@@ -511,6 +521,35 @@ void ResourceLog::texture_2d_create(const TapContext &ctx, std::uint64_t rid,
   line.status = entry.status;
   line.reason = entry.reason;
   line.payload = &copy;
+  emit(line, job);
+}
+
+void ResourceLog::texture_adopt(const TapContext &ctx, std::uint64_t rid, const PayloadCopy &copy,
+                                const char *content, const char *source,
+                                std::shared_ptr<TextureJob> job) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_ || rid == 0 || by_rid_.count(rid) != 0) {
+    return;
+  }
+  Entry entry;
+  entry.id = next_id_++;
+  entry.kind = "image";
+  entry.version = 1;
+  entry.status = copy.status;
+  entry.reason = copy.reason;
+  entry.payload = copy;
+  entry.job = job;
+  by_rid_[rid] = entry;
+  Line line = base_line(ctx, "adopt");
+  line.id = entry.id;
+  line.rid = rid;
+  line.version = entry.version;
+  line.kind = entry.kind;
+  line.status = entry.status;
+  line.reason = entry.reason;
+  line.payload = &copy;
+  line.adopted_content = content;
+  line.adopt_source = source;
   emit(line, job);
 }
 
@@ -1195,6 +1234,34 @@ void ResourceLog::mesh_create_from_surfaces(const TapContext &ctx, std::uint64_t
     line.has_surface = true;
     line.surface = 0;
   }
+  emit(line);
+}
+
+void ResourceLog::mesh_adopt(const TapContext &ctx, std::uint64_t rid,
+                             const std::vector<MeshSurfaceCopy> &surfaces) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_ || rid == 0 || mesh_by_rid_.count(rid) != 0) {
+    return;
+  }
+  MeshEntry entry;
+  entry.id = next_mesh_id_++;
+  entry.version = 1;
+  entry.surfaces = surfaces;
+  recompute_mesh_status(&entry);
+  mesh_by_rid_[rid] = entry;
+  Line line = mesh_line(ctx, "adopt", rid);
+  line.id = entry.id;
+  line.version = entry.version;
+  line.status = entry.status;
+  line.reason = entry.reason;
+  line.outcome = "applied";
+  if (surfaces.size() == 1) {
+    line.mesh_payload = &surfaces[0];
+    line.has_surface = true;
+    line.surface = 0;
+  }
+  line.adopted_content = "creation";
+  line.adopt_source = "dummy";
   emit(line);
 }
 

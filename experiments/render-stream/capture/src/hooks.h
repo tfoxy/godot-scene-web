@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "calib.h"
+#include "rs2_snapshot.h"
+#include "rs_adopt.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_worker.h"
 #include "vtable.h"
@@ -69,6 +71,19 @@ std::string hooks_plan_detail(const HookPlan &plan);
 // frame counter (the frame callback runs after process and draw). Captures
 // carry it so an expected call can be placed in time.
 void hooks_set_frame(uint64_t frame);
+
+// G8r (gate8-design.md D6, D7; rs_adopt.h): registers a texture that existed before arm in the
+// mirror and the hook log, through the hooks' own copy path (G8t's decode, G8kw's worker), as a
+// texture_2d_create of `image_object` (an Image the caller keeps alive for the call) with origin
+// `adopted`. False, registering nothing, when the RID is already known or nothing is streaming.
+// `decoded` (optional) reports a host-decoded payload.
+bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
+                         const char *source, bool *decoded);
+// G8r: the same for a mesh read back through mesh_get_surface (its custom AABB, position xyz and
+// size xyz); the hook's retained-buffer cache takes its surfaces, so a later region update
+// re-hashes them as for any mesh.
+bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surfaces,
+                      const float custom_aabb[6]);
 
 // Serialised counters and captured values.
 std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed);

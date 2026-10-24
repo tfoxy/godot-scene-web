@@ -1182,6 +1182,8 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
   out.kind = texture.kind;
   out.status = texture.status;
   out.version = texture.version;
+  out.origin = texture.origin;  // G8r
+  out.adopted_content = texture.adopted_content;
   if (texture.kind == TextureKind::Canvas) {
     // render-stream-2.md "Texture" field table: a canvas entry carries no shape, but keeps its
     // {diffuse, filter, repeat} (and reason, if unsupported) while status isn't freed.
@@ -1663,6 +1665,8 @@ MeshEntry Mirror::wire_mesh(const Mesh &mesh) {
   out.id = mesh.id;
   out.status = mesh.status;
   out.version = mesh.version;
+  out.origin = mesh.origin;  // G8r
+  out.adopted_content = mesh.adopted_content;
   out.has_reason = mesh.status == MeshStatus::Unsupported && mesh.has_reason;
   out.reason = mesh.reason;
   out.has_aabb = mesh.status != MeshStatus::Freed;
@@ -1723,6 +1727,27 @@ void Mirror::mesh_create_from_surfaces(std::uint64_t rid,
   meshes_.emplace(mesh.id, std::move(mesh));
 }
 
+void Mirror::mesh_adopt(std::uint64_t rid, const std::vector<MeshSurfaceInput> &surfaces,
+                        const std::array<float, 6> &custom_aabb, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || mesh_by_rid_.count(rid) != 0) {
+    return;
+  }
+  ++epoch_;
+  Mesh mesh;
+  mesh.id = next_mesh_id_++;
+  mesh.rid = rid;
+  mesh.origin = Origin::Adopted;
+  mesh.adopted_content = AdoptedContent::Creation;
+  mesh.custom_aabb = custom_aabb;
+  for (const MeshSurfaceInput &input : surfaces) {
+    mesh.surfaces.push_back(mesh_surface(input, frame));
+  }
+  recompute_mesh_status(&mesh);
+  mesh_by_rid_[rid] = mesh.id;
+  meshes_.emplace(mesh.id, std::move(mesh));
+}
+
 void Mirror::mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface,
                               std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -1775,6 +1800,9 @@ void Mirror::mesh_clear(std::uint64_t rid, std::uint64_t frame) {
   ++epoch_;
   mesh->surfaces.clear();
   mesh->version += 1;
+  if (mesh->origin == Origin::Adopted) {
+    mesh->adopted_content = AdoptedContent::Current;  // G8r: nothing of the creation copy is left
+  }
   recompute_mesh_status(mesh);
 }
 
@@ -1911,6 +1939,42 @@ void Mirror::texture_2d_create(std::uint64_t rid, const PayloadCopy &copy, Paylo
   textures_.emplace(texture.id, std::move(texture));
 }
 
+void Mirror::texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPtr bytes,
+                           AdoptedContent content, std::uint64_t frame,
+                           std::shared_ptr<TextureJob> job) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || texture_by_rid_.count(rid) != 0) {
+    return;  // adoption only ever names a RID the table does not hold
+  }
+  ++epoch_;
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = rid;
+  texture.kind = TextureKind::Image;
+  texture.version = 1;
+  texture.origin = Origin::Adopted;
+  texture.adopted_content = content == AdoptedContent::None ? AdoptedContent::Creation : content;
+  texture.copy = copy;
+  take_copy(copy, std::move(bytes), &texture.status, &texture.has_reason, &texture.reason,
+            &texture.bytes, job != nullptr);
+  if (texture.status == TextureStatus::Ok && job != nullptr) {
+    texture.job = std::move(job);
+  }
+  texture_by_rid_[rid] = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+}
+
+bool Mirror::knows_texture(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return texture_by_rid_.count(rid) != 0;
+}
+
+bool Mirror::knows_mesh(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return mesh_by_rid_.count(rid) != 0;
+}
+
 void Mirror::texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (rid == 0 || dropped_identity("texture_2d_placeholder_create", frame)) {
@@ -1960,6 +2024,11 @@ void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, Paylo
     texture->bytes.reset();
   } else {
     texture->copy = copy;
+    // G8r: an accepted update replaces the whole content (layer 0, same shape), so an adopted
+    // entry's bytes are the hooks' from here on.
+    if (texture->origin == Origin::Adopted) {
+      texture->adopted_content = AdoptedContent::Current;
+    }
     take_copy(copy, std::move(bytes), &texture->status, &texture->has_reason, &texture->reason,
               &texture->bytes, job != nullptr);
     if (texture->status == TextureStatus::Ok && job != nullptr) {
@@ -1993,6 +2062,11 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
       t->copy = b->copy;
       t->bytes = b->bytes;
       t->job = b->job;  // G8kw: a pending payload moves with the rest
+      // G8r: t's content is now b's; an adopted t keeps origin and inherits b's trust.
+      if (t->origin == Origin::Adopted) {
+        t->adopted_content =
+            b->origin == Origin::Adopted ? b->adopted_content : AdoptedContent::Current;
+      }
     } else {
       t->status = TextureStatus::Unsupported;
       t->has_reason = true;
