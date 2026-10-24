@@ -5,6 +5,7 @@
 #include <string>
 
 #include "rs_gate8_policy.h"
+#include "rs_texture_delivery.h"
 #include "rs_texture_decode.h"
 
 namespace {
@@ -102,6 +103,61 @@ void test_refusal() {
         "sabotage_needs_v8 names exactly the seven /8 kinds");
 }
 
+void test_v9_policy() {
+  Gate8Policy p;
+  std::string error;
+  check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
+            p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
+        "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8 or 9") != std::string::npos,
+        "GRC_STREAM_VERSION=7 is still invalid");
+  check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
+  Gate8Policy policy;
+  parse("9", "arm", nullptr, nullptr, &policy, &error);
+  check(grc::rs::gate8_policy_allows(policy, true, &error), "a gate 8 policy is allowed on a /9 file sink");
+  auto offer = grc::rs::gate8_live_subprotocols(policy);
+  check(offer.size() == 2 && offer[0] == "render-stream.9" && offer[1] == "render-stream.8",
+        "GRC_STREAM_VERSION=9 under a gate 8 policy offers .9 then .8");
+  parse("9", nullptr, nullptr, nullptr, &policy, &error);
+  offer = grc::rs::gate8_live_subprotocols(policy);
+  check(offer.size() == 4 && offer[0] == "render-stream.9" && offer[1] == "render-stream.8" &&
+            offer[2] == "render-stream.7" && offer[3] == "render-stream.6",
+        "GRC_STREAM_VERSION=9 offers .9, .8, .7, .6");
+  // .9 is never offered otherwise (G8k9).
+  for (const char *version : {static_cast<const char *>(nullptr), "6", "8"}) {
+    for (const char *adopt : {static_cast<const char *>(nullptr), "arm"}) {
+      Gate8Policy other;
+      parse(version, adopt, nullptr, nullptr, &other, &error);
+      for (const std::string &name : grc::rs::gate8_live_subprotocols(other)) {
+        check(name != "render-stream.9", "render-stream.9 is offered only under GRC_STREAM_VERSION=9");
+      }
+    }
+  }
+}
+
+void test_delivery_seam() {
+  grc::rs::DeliveryPolicy d;
+  std::string error;
+  check(grc::rs::parse_delivery_policy(nullptr, &d, &error) && d.mode == "rgba" && !d.set,
+        "GRC_TEXTURE_DELIVERY unset is rgba");
+  check(grc::rs::parse_delivery_policy("", &d, &error) && d.mode == "rgba" && !d.set,
+        "GRC_TEXTURE_DELIVERY empty is unset");
+  for (const char *mode : {"rgba", "passthrough", "basis-uastc", "basis-etc1s"}) {
+    check(grc::rs::parse_delivery_policy(mode, &d, &error) && d.mode == mode && d.set,
+          "each delivery mode parses");
+  }
+  check(!grc::rs::parse_delivery_policy("zstd", &d, &error) &&
+            error.find("invalid GRC_TEXTURE_DELIVERY=zstd") == 0 && d.mode == "rgba",
+        "an invalid delivery mode is refused naming the variable");
+  grc::rs::parse_delivery_policy("basis-uastc", &d, &error);
+  const grc::rs2::TextureDeliveryDeclaration declared = grc::rs::declare_texture_delivery(d);
+  check(declared.mode == "basis-uastc" && !declared.has_encoder,
+        "the declaration carries the mode and, until an encoder exists, a null encoder");
+  grc::rs::VariantRequest request;
+  request.hash = std::string(64, 'a');
+  check(grc::rs::texture_variants(request).empty(), "the seam offers no variants in G8k9");
+}
+
 void test_subprotocols() {
   Gate8Policy p;
   std::string error;
@@ -137,6 +193,8 @@ int main() {
   test_values();
   test_invalid();
   test_refusal();
+  test_v9_policy();
+  test_delivery_seam();
   test_subprotocols();
   test_seams();
   if (g_failures != 0) {

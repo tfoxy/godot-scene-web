@@ -340,6 +340,18 @@ run_g8t() {
 		RS_FIXTURE_TEXTURE_LOG="$OUT/workers/sabotage-publish-before-ready/capture/textures.jsonl")
 	run_capture "$OUT/workers/sabotage-publish-before-ready/capture" "" none
 
+	# G8k9 (texture-delivery-design.md D4, Q5): the same fixture through a /9 file sink with the delivery
+	# mode declared. The seam offers no variant, so the result must be the /8 capture's, state for
+	# state, with `variants: []` on every ok image and the session naming the mode.
+	echo "run-gate8: delivery9/capture (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=basis-uastc, empty seam)"
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=basis-uastc
+		RS_FIXTURE_TEXTURE_LOG="$OUT/delivery9/capture/textures.jsonl")
+	run_capture "$OUT/delivery9/capture" "" none
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+
 	echo "run-gate8: bringing up private gamescope for g8t's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8t"
 	legs_par_begin

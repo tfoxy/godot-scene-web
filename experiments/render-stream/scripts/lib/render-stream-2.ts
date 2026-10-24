@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -176,7 +176,9 @@ export type TextureReason =
   | "update-shape-mismatch"
   | "layered-update"
   | "unknown-texture"
-  | "canvas-texture-channel";
+  | "canvas-texture-channel"
+  /** new at /9 (render-stream-9.md "Texture reasons"). */
+  | "delivery-pending";
 
 /** render-stream-4.md "Command": add_nine_patch's per-axis stretch mode. */
 export type AxisStretchMode = "stretch" | "tile" | "tile_fit";
@@ -341,6 +343,15 @@ export interface ResourcesMeta {
   auth: Auth;
   /** new at /8 (render-stream-8.md "Session"): the host's declared texture-decode policy. */
   decode?: "off" | "engine";
+  /** new at /9 (render-stream-9.md "Session"): the host's declared texture-delivery mode. */
+  texture_delivery?: TextureDeliveryDeclaration;
+}
+
+/** render-stream-9.md "Session": `resources.texture_delivery`. */
+export interface TextureDeliveryDeclaration {
+  mode: "rgba" | "passthrough" | "basis-uastc" | "basis-etc1s";
+  /** The params_id prefix of the Basis encoder (e.g. "basisu-1.60"), null when there is none. */
+  encoder: string | null;
 }
 
 /** render-stream-5.md "Session": a new "materials" session key, right after "resources". */
@@ -632,7 +643,19 @@ export interface TransactionTexture {
   height: number;
   mipmaps: boolean;
   payload_bytes: number;
+  /** new at /9 (render-stream-9.md "Texture entries"): the alternative payloads, sorted by
+   * encoding, at most one each; present only in a /9 stream. */
+  variants?: TextureVariant[];
   canvas: CanvasTextureMeta | null;
+}
+
+/** render-stream-9.md "Texture entries": one alternative payload of an ok image texture. */
+export interface TextureVariant {
+  encoding: "block" | "uastc" | "etc1s";
+  hash: string;
+  payload_bytes: number;
+  format: string | null;
+  params: string | null;
 }
 
 /** render-stream-4.md "Mesh table": one mesh-table entry. `f` is null exactly for "freed". */
@@ -753,10 +776,15 @@ export const MAGIC_V7: Uint8Array = new Uint8Array([
 export const MAGIC_V8: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x38, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-9.md: the GRS9 magic, selected by `version: 9` (golden-9/; opt-in, never the
+// default: G8k9 keeps the capture's file sinks and every receiver on /6 and /7).
+export const MAGIC_V9: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x39, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), else 6 -- so
  * every other magic still meets the /6 decoder's own refusal, exactly as before. */
-export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 | 8 {
+export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 | 8 | 9 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -765,8 +793,13 @@ export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 | 8 {
   };
   if (startsWith(MAGIC_V7)) return 7;
   if (startsWith(MAGIC_V8)) return 8;
+  if (startsWith(MAGIC_V9)) return 9;
   return 6;
 }
+/** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
+export const KTX2_IDENTIFIER: Uint8Array = new Uint8Array([
+  0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 export const GRT1_MAGIC: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x54, 0x31, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
@@ -883,6 +916,8 @@ const RESOURCES_KEYS_V4 = [
 ];
 // render-stream-8.md "Session": "decode" (the declared host texture-decode policy) after "auth".
 const RESOURCES_KEYS_V8 = [...RESOURCES_KEYS_V4, "decode"];
+// render-stream-9.md "Session": "texture_delivery" after "decode" (the end of the resources object).
+const RESOURCES_KEYS_V9 = [...RESOURCES_KEYS_V8, "texture_delivery"];
 const FEATURES_KEYS = [
   "ops",
   "item_state",
@@ -1157,6 +1192,22 @@ const TEXTURE_KEYS_V8 = [
   "payload_bytes",
   "canvas",
 ];
+// render-stream-9.md "Texture entries": "variants" right after "payload_bytes".
+const TEXTURE_KEYS_V9 = [
+  ...TEXTURE_KEYS_V8.slice(0, TEXTURE_KEYS_V8.indexOf("payload_bytes") + 1),
+  "variants",
+  "canvas",
+];
+const VARIANT_KEYS = ["encoding", "hash", "payload_bytes", "format", "params"];
+const VARIANT_ENCODINGS = ["block", "uastc", "etc1s"] as const;
+const TEXTURE_DELIVERY_KEYS = ["mode", "encoder"];
+// texture-delivery-design.md D1: the variants each mode offers beside `decoded`.
+const DELIVERY_MODE_ENCODINGS: Record<string, readonly string[]> = {
+  rgba: [],
+  passthrough: ["block"],
+  "basis-uastc": ["block", "uastc"],
+  "basis-etc1s": ["etc1s"],
+};
 const CANVAS_TEXTURE_KEYS = ["diffuse", "filter", "repeat"];
 // render-stream-4.md "Mesh table" (new at /4).
 const MESH_KEYS = [
@@ -1303,6 +1354,8 @@ const TEXTURE_REASONS = [
   "unknown-texture",
   "canvas-texture-channel",
 ] as const;
+// render-stream-9.md "Texture reasons": legal at /9 only.
+const TEXTURE_REASONS_V9 = [...TEXTURE_REASONS, "delivery-pending"] as const;
 const UNSUPPORTED_CMD_REASONS = [
   "unsupported-op",
   "unknown-texture",
@@ -1726,7 +1779,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -1736,13 +1789,16 @@ function checkResourcesSchema(
     version === 5 ||
     version === 6 ||
     version === 7 ||
-    version === 8;
+    version === 8 ||
+    version === 9;
   const keys =
-    version === 8
-      ? RESOURCES_KEYS_V8
-      : isV4OrLater
-        ? RESOURCES_KEYS_V4
-        : RESOURCES_KEYS;
+    version === 9
+      ? RESOURCES_KEYS_V9
+      : version === 8
+        ? RESOURCES_KEYS_V8
+        : isV4OrLater
+          ? RESOURCES_KEYS_V4
+          : RESOURCES_KEYS;
   if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
   }
@@ -1781,8 +1837,37 @@ function checkResourcesSchema(
     return err('"http_path" must be non-null exactly for fetch "http"');
   }
   if (!isOneOf(resources.auth, AUTHS)) return err("has an invalid auth");
-  if (version === 8 && !isOneOf(resources.decode, TEXTURE_DECODES)) {
+  if (version >= 8 && !isOneOf(resources.decode, TEXTURE_DECODES)) {
     return err('"decode" must be "off" or "engine"');
+  }
+  if (version >= 9) {
+    // render-stream-9.md "Session": texture_delivery is {"mode":<D1 mode>,"encoder":null|<prefix>}.
+    const delivery = resources.texture_delivery;
+    if (
+      !isPlainObject(delivery) ||
+      !hasExactKeys(delivery, TEXTURE_DELIVERY_KEYS)
+    ) {
+      return err('"texture_delivery" has the wrong keys');
+    }
+    if (
+      typeof delivery.mode !== "string" ||
+      !(delivery.mode in DELIVERY_MODE_ENCODINGS)
+    ) {
+      return err(
+        '"texture_delivery.mode" must be "rgba", "passthrough", "basis-uastc" or "basis-etc1s"',
+      );
+    }
+    if (
+      !(
+        delivery.encoder === null ||
+        (typeof delivery.encoder === "string" &&
+          /^[a-z0-9][a-z0-9._-]*$/.test(delivery.encoder))
+      )
+    ) {
+      return err(
+        '"texture_delivery.encoder" is neither null nor a params_id prefix',
+      );
+    }
   }
   const expectedDelivery: Delivery =
     resources.inline_max_bytes === 0
@@ -1804,12 +1889,14 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV8 = version === 8;
+  const isV9 = version === 9;
+  // isV8 means "V8 or later": /9 is /8 plus exactly render-stream-9.md's list.
+  const isV8 = version === 8 || isV9;
   // isV7 means "V7 or later": /8 is /7 plus exactly render-stream-8.md's list, so it keeps the
   // publication credit_window.
   const isV7 = version === 7 || isV8;
@@ -1845,19 +1932,21 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV8
-    ? "render-stream/8"
-    : isV7
-      ? "render-stream/7"
-      : isV6
-        ? "render-stream/6"
-        : isV5
-          ? "render-stream/5"
-          : version === 4
-            ? "render-stream/4"
-            : version === 3
-              ? "render-stream/3"
-              : "render-stream/2";
+  const expectedProtocol = isV9
+    ? "render-stream/9"
+    : isV8
+      ? "render-stream/8"
+      : isV7
+        ? "render-stream/7"
+        : isV6
+          ? "render-stream/6"
+          : isV5
+            ? "render-stream/5"
+            : version === 4
+              ? "render-stream/4"
+              : version === 3
+                ? "render-stream/3"
+                : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -2193,7 +2282,14 @@ function checkTextureEntrySchema(
   ];
   if (
     !isPlainObject(t) ||
-    !hasExactKeys(t, version >= 8 ? TEXTURE_KEYS_V8 : TEXTURE_KEYS)
+    !hasExactKeys(
+      t,
+      version >= 9
+        ? TEXTURE_KEYS_V9
+        : version >= 8
+          ? TEXTURE_KEYS_V8
+          : TEXTURE_KEYS,
+    )
   ) {
     return err("has the wrong keys");
   }
@@ -2215,7 +2311,12 @@ function checkTextureEntrySchema(
   }
   if (!isOneOf(t.kind, TEXTURE_KINDS)) return err("has an invalid kind");
   if (!isOneOf(t.status, TEXTURE_STATUSES)) return err("has an invalid status");
-  if (!(t.reason === null || isOneOf(t.reason, TEXTURE_REASONS))) {
+  if (
+    !(
+      t.reason === null ||
+      isOneOf(t.reason, version >= 9 ? TEXTURE_REASONS_V9 : TEXTURE_REASONS)
+    )
+  ) {
     return err('"reason" is neither null nor a valid texture reason');
   }
   if (!isInt(t.version) || t.version < 1)
@@ -2233,6 +2334,33 @@ function checkTextureEntrySchema(
   if (typeof t.mipmaps !== "boolean") return err('"mipmaps" is not a boolean');
   if (!isInt(t.payload_bytes) || t.payload_bytes < 0) {
     return err('"payload_bytes" is not a non-negative integer');
+  }
+  if (version >= 9) {
+    // render-stream-9.md "Texture entries": variants is an array of five-key objects; the
+    // cross-entry rules (order, one per encoding, which entries may carry any) are delivery-entry.
+    if (!Array.isArray(t.variants)) return err('"variants" is not an array');
+    for (const v of t.variants) {
+      if (!isPlainObject(v) || !hasExactKeys(v, VARIANT_KEYS)) {
+        return err('has a "variants" entry with the wrong keys');
+      }
+      if (!isOneOf(v.encoding, VARIANT_ENCODINGS)) {
+        return err('has a variant with an invalid "encoding"');
+      }
+      if (!isLowerHex(v.hash, 64)) {
+        return err('has a variant "hash" that is not 64 lowercase hex digits');
+      }
+      if (!isInt(v.payload_bytes) || v.payload_bytes < 0) {
+        return err(
+          'has a variant "payload_bytes" that is not a non-negative integer',
+        );
+      }
+      if (!(v.format === null || typeof v.format === "string")) {
+        return err('has a variant "format" that is neither null nor a string');
+      }
+      if (!(v.params === null || typeof v.params === "string")) {
+        return err('has a variant "params" that is neither null nor a string');
+      }
+    }
   }
   const canvas = t.canvas;
   if (canvas !== null) {
@@ -2490,13 +2618,13 @@ function checkMaterialEntrySchema(
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
   // isV6 means "V6 or later" (render-stream-7.md: transactions are byte-identical to /6).
-  const isV6 = version === 6 || version === 7 || version === 8;
+  const isV6 = version === 6 || version === 7 || version === 8 || version === 9;
   // isV5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
   const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
@@ -2989,7 +3117,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -3015,25 +3143,27 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 8
-      ? MAGIC_V8
-      : version === 7
-        ? MAGIC_V7
-        : version === 6
-          ? MAGIC_V6
-          : version === 5
-            ? MAGIC_V5
-            : version === 4
-              ? MAGIC_V4
-              : version === 3
-                ? MAGIC_V3
-                : MAGIC;
+    version === 9
+      ? MAGIC_V9
+      : version === 8
+        ? MAGIC_V8
+        : version === 7
+          ? MAGIC_V7
+          : version === 6
+            ? MAGIC_V6
+            : version === 5
+              ? MAGIC_V5
+              : version === 4
+                ? MAGIC_V4
+                : version === 3
+                  ? MAGIC_V3
+                  : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -3134,7 +3264,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -3153,7 +3283,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -3309,7 +3439,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -3318,7 +3448,8 @@ export function decodeRecording(
     | "render-stream-5-decoded/1"
     | "render-stream-6-decoded/1"
     | "render-stream-7-decoded/1"
-    | "render-stream-8-decoded/1";
+    | "render-stream-8-decoded/1"
+    | "render-stream-9-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -3336,34 +3467,38 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 8
-      ? MAGIC_V8
-      : version === 7
-        ? MAGIC_V7
-        : version === 6
-          ? MAGIC_V6
-          : version === 5
-            ? MAGIC_V5
-            : version === 4
-              ? MAGIC_V4
-              : version === 3
-                ? MAGIC_V3
-                : MAGIC;
+    version === 9
+      ? MAGIC_V9
+      : version === 8
+        ? MAGIC_V8
+        : version === 7
+          ? MAGIC_V7
+          : version === 6
+            ? MAGIC_V6
+            : version === 5
+              ? MAGIC_V5
+              : version === 4
+                ? MAGIC_V4
+                : version === 3
+                  ? MAGIC_V3
+                  : MAGIC;
   return {
     schema:
-      version === 8
-        ? "render-stream-8-decoded/1"
-        : version === 7
-          ? "render-stream-7-decoded/1"
-          : version === 6
-            ? "render-stream-6-decoded/1"
-            : version === 5
-              ? "render-stream-5-decoded/1"
-              : version === 4
-                ? "render-stream-4-decoded/1"
-                : version === 3
-                  ? "render-stream-3-decoded/1"
-                  : "render-stream-2-decoded/1",
+      version === 9
+        ? "render-stream-9-decoded/1"
+        : version === 8
+          ? "render-stream-8-decoded/1"
+          : version === 7
+            ? "render-stream-7-decoded/1"
+            : version === 6
+              ? "render-stream-6-decoded/1"
+              : version === 5
+                ? "render-stream-5-decoded/1"
+                : version === 4
+                  ? "render-stream-4-decoded/1"
+                  : version === 3
+                    ? "render-stream-3-decoded/1"
+                    : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -3515,6 +3650,9 @@ export function expectedDataBytes(
 ): number {
   const pixelSize = pixelSizeOf(format, version);
   if (pixelSize === undefined) {
+    if (version >= 9 && format in BLOCK_FORMATS) {
+      return blockDataBytes(format, width, height, mipmaps);
+    }
     throw new Error(`expectedDataBytes: "${format}" is not a permitted format`);
   }
   return pixelSize * mipChainTexelCount(width, height, mipmaps);
@@ -3538,8 +3676,226 @@ function expectedDataBytesOrNull(
   version: number = 6,
 ): number | null {
   const pixelSize = pixelSizeOf(format, version);
-  if (pixelSize === undefined) return null;
+  if (pixelSize === undefined) {
+    if (version >= 9 && format in BLOCK_FORMATS) {
+      return blockDataBytes(format, width, height, mipmaps);
+    }
+    return null;
+  }
   return pixelSize * mipChainTexelCount(width, height, mipmaps);
+}
+
+// render-stream-9.md "Texture payload": the block formats legal as a `block` variant, with
+// Godot's block edge and pixel right-shift (core/io/image.cpp get_format_block_size / _rshift, the
+// pixel size of every block format being 1), so one level is
+// ceil(w/block) * block * ceil(h/block) * block >> shift bytes. The swizzled *_RA_AS_RG formats and
+// the HDR formats are not offered.
+export const BLOCK_FORMATS: Readonly<
+  Record<string, { block: number; shift: number }>
+> = {
+  DXT1: { block: 4, shift: 1 },
+  DXT3: { block: 4, shift: 0 },
+  DXT5: { block: 4, shift: 0 },
+  RGTC_R: { block: 4, shift: 1 },
+  RGTC_RG: { block: 4, shift: 0 },
+  BPTC_RGBA: { block: 4, shift: 0 },
+  ETC: { block: 4, shift: 1 },
+  ETC2_R11: { block: 4, shift: 1 },
+  ETC2_R11S: { block: 4, shift: 1 },
+  ETC2_RG11: { block: 4, shift: 0 },
+  ETC2_RG11S: { block: 4, shift: 0 },
+  ETC2_RGB8: { block: 4, shift: 1 },
+  ETC2_RGBA8: { block: 4, shift: 0 },
+  ETC2_RGB8A1: { block: 4, shift: 1 },
+  ASTC_4x4: { block: 4, shift: 0 },
+  ASTC_8x8: { block: 8, shift: 2 },
+};
+
+function blockDataBytes(
+  format: string,
+  width: number,
+  height: number,
+  mipmaps: boolean,
+): number {
+  const { block, shift } = BLOCK_FORMATS[format];
+  let w = width;
+  let h = height;
+  let total = 0;
+  for (;;) {
+    const bw = w % block !== 0 ? w + (block - (w % block)) : w;
+    const bh = h % block !== 0 ? h + (block - (h % block)) : h;
+    total += Math.floor((bw * bh) / 2 ** shift);
+    if (!mipmaps || (w === 1 && h === 1)) break;
+    w = Math.max(1, Math.floor(w / 2));
+    h = Math.max(1, Math.floor(h / 2));
+  }
+  return total;
+}
+
+// ----------------------------------------------------------------- KTX2 payloads (render-stream-9.md)
+
+export interface DecodedKtx2Payload {
+  width: number;
+  height: number;
+  levels: number;
+  /** The DFD colour model: UASTC (166) or ETC1S (163). */
+  model: "uastc" | "etc1s";
+  /** 1 = BasisLZ, 2 = Zstandard. */
+  supercompression: 1 | 2;
+}
+
+export function isKtx2Payload(bytes: Uint8Array): boolean {
+  return (
+    bytes.length >= KTX2_IDENTIFIER.length &&
+    bytesEqual(bytes.subarray(0, KTX2_IDENTIFIER.length), KTX2_IDENTIFIER)
+  );
+}
+
+// render-stream-9.md "KTX2 payload" (D13): the header, level index and DFD of one 2D image, one
+// face, no layers, vkFormat UNDEFINED, ETC1S + BasisLZ or UASTC LDR 4x4 + Zstandard, linear
+// transfer. Throws "ktx2-header: <detail>" on anything else. The entry-dependent half (pixel size,
+// levels, which of the two encodings) is checkKtx2Shape().
+export function decodeKtx2Payload(bytes: Uint8Array): DecodedKtx2Payload {
+  const fail = (detail: string): never => {
+    throw new Error(`ktx2-header: ${detail}`);
+  };
+  if (!isKtx2Payload(bytes))
+    fail("the first 12 bytes are not the KTX2 identifier");
+  if (bytes.length < 80) fail("the file ends inside the header or index");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const u32 = (o: number) => view.getUint32(o, true);
+  const u64 = (o: number) => Number(view.getBigUint64(o, true));
+  const vkFormat = u32(12);
+  const typeSize = u32(16);
+  const width = u32(20);
+  const height = u32(24);
+  const depth = u32(28);
+  const layers = u32(32);
+  const faces = u32(36);
+  const levels = u32(40);
+  const supercompression = u32(44);
+  if (vkFormat !== 0) fail(`vkFormat is ${vkFormat}, not 0 (UNDEFINED)`);
+  if (typeSize !== 1) fail(`typeSize is ${typeSize}, not 1`);
+  if (width < 1 || height < 1) fail("pixelWidth or pixelHeight is 0");
+  if (depth !== 0) fail(`pixelDepth is ${depth}, not 0 (a 2D image)`);
+  if (layers !== 0) fail(`layerCount is ${layers}, not 0 (not an array)`);
+  if (faces !== 1) fail(`faceCount is ${faces}, not 1 (not a cube)`);
+  if (levels < 1 || levels > 32) fail(`levelCount is ${levels}, not 1..32`);
+  if (supercompression !== 1 && supercompression !== 2) {
+    fail(
+      `supercompressionScheme is ${supercompression}, not 1 (BasisLZ) or 2 (Zstandard)`,
+    );
+  }
+  const levelIndexEnd = 80 + 24 * levels;
+  if (levelIndexEnd > bytes.length)
+    fail("the level index runs past the end of the file");
+  const dfdOffset = u32(48);
+  const dfdLength = u32(52);
+  const kvdOffset = u32(56);
+  const kvdLength = u32(60);
+  const sgdOffset = u64(64);
+  const sgdLength = u64(72);
+  if (dfdOffset < levelIndexEnd || dfdOffset + dfdLength > bytes.length) {
+    fail("the data format descriptor lies outside the file");
+  }
+  if (kvdLength !== 0 && kvdOffset + kvdLength > bytes.length) {
+    fail("the key/value data lies outside the file");
+  }
+  if (supercompression === 1) {
+    if (sgdLength < 1 || sgdOffset + sgdLength > bytes.length) {
+      fail("BasisLZ needs global data inside the file");
+    }
+  } else if (sgdLength !== 0) {
+    fail("Zstandard supercompression has no global data");
+  }
+  // DFD: u32 totalSize, then one basic descriptor block (KDF 1.3) of at least 24 bytes.
+  if (dfdLength < 28 || u32(dfdOffset) !== dfdLength) {
+    fail("the DFD total size disagrees with dfdByteLength");
+  }
+  const word0 = u32(dfdOffset + 4); // vendorId (low 17 bits) | descriptorType (high 15)
+  const word1 = u32(dfdOffset + 8); // versionNumber (low 16) | descriptorBlockSize (high 16)
+  if (word0 !== 0) fail("the DFD descriptor is not a Khronos basic block");
+  if ((word1 & 0xffff) !== 2) fail("the DFD version number is not 2 (KDF 1.3)");
+  if (word1 >>> 16 !== dfdLength - 4) {
+    fail("the DFD descriptor block size disagrees with its length");
+  }
+  const model = bytes[dfdOffset + 12];
+  const transfer = bytes[dfdOffset + 14];
+  if (model !== 163 && model !== 166) {
+    fail(`the DFD colour model is ${model}, not ETC1S (163) or UASTC (166)`);
+  }
+  if (transfer !== 1) {
+    fail(`the DFD transfer function is ${transfer}, not 1 (linear)`);
+  }
+  const dims = bytes.subarray(dfdOffset + 16, dfdOffset + 20);
+  if (dims[0] !== 3 || dims[1] !== 3 || dims[2] !== 0 || dims[3] !== 0) {
+    fail("the DFD texel block is not 4x4x1");
+  }
+  if ((model === 163) !== (supercompression === 1)) {
+    fail(
+      "the colour model and the supercompression scheme disagree (ETC1S is BasisLZ, UASTC is Zstandard)",
+    );
+  }
+  for (let l = 0; l < levels; l++) {
+    const offset = u64(80 + 24 * l);
+    const length = u64(80 + 24 * l + 8);
+    const uncompressed = u64(80 + 24 * l + 16);
+    if (length < 1 || offset + length > bytes.length) {
+      fail(`level ${l} lies outside the file`);
+    }
+    if (supercompression === 2) {
+      const w = Math.max(1, width >> l);
+      const h = Math.max(1, height >> l);
+      const expected = Math.ceil(w / 4) * Math.ceil(h / 4) * 16;
+      if (uncompressed !== expected) {
+        fail(
+          `level ${l} uncompressedByteLength is ${uncompressed}, expected ${expected}`,
+        );
+      }
+    }
+  }
+  return {
+    width,
+    height,
+    levels,
+    model: model === 166 ? "uastc" : "etc1s",
+    supercompression: supercompression as 1 | 2,
+  };
+}
+
+// The entry-dependent half of the KTX2 rules (render-stream-9.md "KTX2 payload"): pixel size and
+// level count equal the entry's, and the file's codec is the variant's encoding. Returns
+// "ktx2-shape: <detail>" or null.
+export function checkKtx2Shape(
+  decoded: DecodedKtx2Payload,
+  encoding: string,
+  width: number,
+  height: number,
+  mipmaps: boolean,
+): string | null {
+  if (decoded.model !== encoding) {
+    return `ktx2-shape: the file is ${decoded.model}, the variant's encoding is ${encoding}`;
+  }
+  if (decoded.width !== width || decoded.height !== height) {
+    return `ktx2-shape: the file is ${decoded.width}x${decoded.height}, the entry is ${width}x${height}`;
+  }
+  const levels = mipmaps ? mipChainDimsCount(width, height) : 1;
+  if (decoded.levels !== levels) {
+    return `ktx2-shape: the file has ${decoded.levels} levels, the entry's mip chain has ${levels}`;
+  }
+  return null;
+}
+
+function mipChainDimsCount(width: number, height: number): number {
+  let n = 1;
+  let w = width;
+  let h = height;
+  while (w > 1 || h > 1) {
+    w = Math.max(1, Math.floor(w / 2));
+    h = Math.max(1, Math.floor(h / 2));
+    n++;
+  }
+  return n;
 }
 
 // --------------------------------------------------------------------------------------- resolution engine
@@ -4408,6 +4764,15 @@ function textureEntryFieldErrors(
   return [];
 }
 
+function variantsOnlyGrew(
+  previous: TextureVariant[],
+  current: TextureVariant[],
+): boolean {
+  return previous.every((p) =>
+    current.some((c) => c.encoding === p.encoding && statesEqual(p, c)),
+  );
+}
+
 // render-stream-2.md "Texture invariants (resolved state)" texture-version: "within one stream,
 // an id's version never decreases; at an equal version the entry is identical except for a
 // change to status: 'freed' and the nulls that implies".
@@ -4419,6 +4784,19 @@ function textureVersionRegressed(
   if (current.version < previous.version) return true;
   if (current.version > previous.version) return false;
   if (statesEqual(previous, current)) return false;
+  // render-stream-9.md (texture-delivery-design.md D6): at an equal version `variants` may grow --
+  // every earlier variant stays identical and more may appear -- and nothing else changes.
+  if (
+    previous.status !== "freed" &&
+    current.status !== "freed" &&
+    statesEqual(
+      { ...previous, variants: undefined },
+      { ...current, variants: undefined },
+    ) &&
+    variantsOnlyGrew(previous.variants ?? [], current.variants ?? [])
+  ) {
+    return false;
+  }
   // Equal version, not identical: only a transition INTO "freed" from a non-freed status is
   // allowed, with the nulled freed shape.
   if (previous.status === "freed" || current.status !== "freed") return true;
@@ -4571,6 +4949,82 @@ function checkAdoptionInvariants(
       return [
         `decode-entry: record at offset ${offset}: texture ${t.id} declares source_format ${t.source_format}, but the session's resources.decode is not "engine"`,
       ];
+    }
+  }
+  return [];
+}
+
+// render-stream-9.md "Texture entries" (`delivery-entry`): the rules on `variants` and on what a
+// block format may be. Variants sit only on an ok image; they are sorted by encoding with at most
+// one each; every one is an encoding the session's mode offers; a `block` variant carries a block
+// format and null params; a Basis variant carries null format and params that start with the
+// session's encoder; no variant repeats the base payload's hash; and a block format is never the
+// base payload of an ok entry (it is legal only as a variant).
+function checkDeliveryInvariants(
+  state: ResolvedState,
+  declaration: TextureDeliveryDeclaration,
+  offset: number,
+): string[] {
+  const offered = DELIVERY_MODE_ENCODINGS[declaration.mode] ?? [];
+  for (const t of state.textures.values()) {
+    const err = (detail: string) => [
+      `delivery-entry: record at offset ${offset}: texture ${t.id}: ${detail}`,
+    ];
+    const variants = t.variants ?? [];
+    const okImage = t.kind === "image" && t.status === "ok";
+    if (okImage && t.format !== null && t.format in BLOCK_FORMATS) {
+      return err(
+        `the base payload format ${t.format} is a block format (legal only as a variant)`,
+      );
+    }
+    if (variants.length > 0 && !okImage) {
+      return err('only an "ok" image entry carries variants');
+    }
+    let previous = -1;
+    const hashes = new Set<string>(t.hash === null ? [] : [t.hash]);
+    for (const v of variants) {
+      const order = VARIANT_ENCODINGS.indexOf(v.encoding);
+      if (order <= previous) {
+        return err(
+          `variants are not sorted by encoding with at most one each (${v.encoding})`,
+        );
+      }
+      previous = order;
+      if (!offered.includes(v.encoding)) {
+        return err(
+          `a ${v.encoding} variant, but the session's mode "${declaration.mode}" does not offer it`,
+        );
+      }
+      if (v.payload_bytes < 1)
+        return err(`a ${v.encoding} variant has payload_bytes 0`);
+      if (hashes.has(v.hash)) {
+        return err(`a ${v.encoding} variant repeats a hash of the same entry`);
+      }
+      hashes.add(v.hash);
+      if (v.encoding === "block") {
+        if (v.format === null || !(v.format in BLOCK_FORMATS)) {
+          return err(
+            `a block variant's format ${v.format} is not a block format`,
+          );
+        }
+        if (v.params !== null) return err("a block variant has params");
+      } else {
+        if (v.format !== null)
+          return err(`a ${v.encoding} variant has a format`);
+        if (declaration.encoder === null) {
+          return err(
+            `a ${v.encoding} variant, but the session declares no encoder`,
+          );
+        }
+        if (
+          v.params === null ||
+          !v.params.startsWith(`${declaration.encoder}/`)
+        ) {
+          return err(
+            `a ${v.encoding} variant's params do not start with the declared encoder ${declaration.encoder}`,
+          );
+        }
+      }
     }
   }
   return [];
@@ -5263,7 +5717,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
   options?: DecodeRecordOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -5276,7 +5730,8 @@ export function createRecordingValidator(
   });
   // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
   // byte-identical to /6).
-  const isV8 = version === 8;
+  const isV9 = version === 9;
+  const isV8 = version === 8 || isV9;
   const isV7 = version === 7 || isV8;
   const isV6 = isV7 || version === 6;
   // isV5 means "V5 or later" (render-stream-6.md: transactions/items/commands are byte-identical
@@ -5367,6 +5822,8 @@ export function createRecordingValidator(
   // repeatedly (e.g. once per golden vector) and must not leak state between calls.
   const resourcePayloadShapes = new Map<string, DecodedTexturePayload>();
   const resourcePayloadLengths = new Map<string, number>();
+  const ktx2Shapes = new Map<string, DecodedKtx2Payload>();
+  const ktx2Lengths = new Map<string, number>();
   const meshPayloadShapes = new Map<string, DecodedMeshPayload>();
   const meshPayloadLengths = new Map<string, number>();
   const shaderPayloadShapes = new Map<string, DecodedShaderPayload>();
@@ -5413,7 +5870,25 @@ export function createRecordingValidator(
         isV4 && bytesEqual(rawPayload.subarray(0, 8), GRM1_MAGIC);
       const isShaderPayload =
         isV5 && bytesEqual(rawPayload.subarray(0, 8), GRP1_MAGIC);
-      if (isShaderPayload) {
+      const isKtx2 = isV9 && isKtx2Payload(rawPayload);
+      if (isKtx2) {
+        // render-stream-9.md "KTX2 payload": header, level index and DFD (ktx2-header); the
+        // entry-dependent half runs once a variant names the hash (ktx2-shape).
+        let decodedKtx2: DecodedKtx2Payload;
+        try {
+          decodedKtx2 = decodeKtx2Payload(rawPayload);
+        } catch (e) {
+          return [`${(e as Error).message} (record at offset ${offset})`];
+        }
+        const actualHash = block.sha256;
+        if (actualHash !== meta.hash) {
+          return [
+            `resource-hash: record at offset ${offset}: payload sha256 ${actualHash} disagrees with declared hash ${meta.hash}`,
+          ];
+        }
+        ktx2Shapes.set(meta.hash, decodedKtx2);
+        ktx2Lengths.set(meta.hash, block.u8_bytes);
+      } else if (isShaderPayload) {
         let decodedShader: DecodedShaderPayload;
         try {
           decodedShader = decodeShaderPayload(rawPayload);
@@ -5705,7 +6180,15 @@ export function createRecordingValidator(
         snapDeclared,
       );
       if (resolvedErrors.length > 0) return resolvedErrors;
-      if (version === 8) {
+      if (isV9) {
+        const deliveryErrors = checkDeliveryInvariants(
+          nextState,
+          sessionMeta.resources.texture_delivery as TextureDeliveryDeclaration,
+          offset,
+        );
+        if (deliveryErrors.length > 0) return deliveryErrors;
+      }
+      if (isV8) {
         const adoptionErrors = checkAdoptionInvariants(
           nextState,
           sessionMeta.adoption !== null && sessionMeta.adoption !== undefined,
@@ -5788,6 +6271,50 @@ export function createRecordingValidator(
           return [
             `resource-payload: record at offset ${offset}: the resource for hash ${t.hash} decodes as ${shape.format} ${shape.width}x${shape.height}, texture ${t.id} declares ${t.format} ${t.width}x${t.height}`,
           ];
+        }
+        // render-stream-9.md: a variant's payload, when this stream carries it, has the entry's
+        // shape. Variants are never required to arrive as resource records.
+        for (const v of t.variants ?? []) {
+          if (!carriedHashes.has(v.hash)) continue;
+          if (v.encoding === "block") {
+            const blockShape = resourcePayloadShapes.get(v.hash);
+            if (
+              blockShape === undefined ||
+              blockShape.format !== v.format ||
+              blockShape.width !== t.width ||
+              blockShape.height !== t.height ||
+              blockShape.mipmaps !== t.mipmaps ||
+              (resourcePayloadLengths.get(v.hash) ?? -1) !== v.payload_bytes
+            ) {
+              return [
+                `resource-payload: record at offset ${offset}: the resource for block variant ${v.hash} of texture ${t.id} is not a ${v.format} ${t.width}x${t.height} GRT1 payload of ${v.payload_bytes} bytes`,
+              ];
+            }
+          } else {
+            const ktx2 = ktx2Shapes.get(v.hash);
+            if (ktx2 === undefined) {
+              return [
+                `resource-payload: record at offset ${offset}: the resource for ${v.encoding} variant ${v.hash} of texture ${t.id} is not a KTX2 file`,
+              ];
+            }
+            const shapeError = checkKtx2Shape(
+              ktx2,
+              v.encoding,
+              t.width,
+              t.height,
+              t.mipmaps,
+            );
+            if (shapeError !== null) {
+              return [
+                `${shapeError} (record at offset ${offset}, texture ${t.id})`,
+              ];
+            }
+            if ((ktx2Lengths.get(v.hash) ?? -1) !== v.payload_bytes) {
+              return [
+                `ktx2-shape: record at offset ${offset}: texture ${t.id}'s ${v.encoding} variant declares ${v.payload_bytes} bytes, the file has ${ktx2Lengths.get(v.hash)}`,
+              ];
+            }
+          }
         }
       }
       if (isV4) {
@@ -5937,7 +6464,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
 ): string[] {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
@@ -6181,7 +6708,8 @@ export interface ResolvedRecording {
     | "render-stream-5-resolved/1"
     | "render-stream-6-resolved/1"
     | "render-stream-7-resolved/1"
-    | "render-stream-8-resolved/1";
+    | "render-stream-8-resolved/1"
+    | "render-stream-9-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -6190,7 +6718,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -6239,19 +6767,21 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 8
-        ? "render-stream-8-resolved/1"
-        : version === 7
-          ? "render-stream-7-resolved/1"
-          : version === 6
-            ? "render-stream-6-resolved/1"
-            : version === 5
-              ? "render-stream-5-resolved/1"
-              : version === 4
-                ? "render-stream-4-resolved/1"
-                : version === 3
-                  ? "render-stream-3-resolved/1"
-                  : "render-stream-2-resolved/1",
+      version === 9
+        ? "render-stream-9-resolved/1"
+        : version === 8
+          ? "render-stream-8-resolved/1"
+          : version === 7
+            ? "render-stream-7-resolved/1"
+            : version === 6
+              ? "render-stream-6-resolved/1"
+              : version === 5
+                ? "render-stream-5-resolved/1"
+                : version === 4
+                  ? "render-stream-4-resolved/1"
+                  : version === 3
+                    ? "render-stream-3-resolved/1"
+                    : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

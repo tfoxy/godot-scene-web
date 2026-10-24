@@ -62,6 +62,7 @@ add_library(render_stream_capture SHARED
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_mirror.cpp
+  src/rs_texture_delivery.cpp
   src/rs_publish.cpp
   src/rs_mesh_payload.cpp
   src/rs_resource_log.cpp
@@ -109,7 +110,7 @@ add_test(NAME abi_decode COMMAND abi_decode_test)
 # through its public API with no engine, including draw-index ties, root geometry, the omit-op
 # sabotage, the texture table (ids, versions, tombstones, replace, derived unsupported entries)
 # and the clip reset of canvas_item_clear (diffed against the previous snapshot).
-add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_shader_payload.cpp
+add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp
   src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
 target_include_directories(rs_mirror_test PRIVATE src)
 target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
@@ -124,6 +125,7 @@ add_executable(rs_publish_test
   src/rs2_diff.cpp
   src/rs_publish.cpp
   src/rs_mirror.cpp
+  src/rs_texture_delivery.cpp
   src/rs_shader_payload.cpp
   src/rs_resource_store.cpp
   src/rs_texture_payload.cpp
@@ -178,6 +180,7 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN3_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-3"
   GRC_GOLDEN4_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-4"
   GRC_GOLDEN7_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-7"
+  GRC_GOLDEN9_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-9"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 
@@ -304,11 +307,20 @@ target_compile_definitions(rs8_codec_test PRIVATE
   GRC_GOLDEN8_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-8")
 add_test(NAME rs8_codec COMMAND rs8_codec_test)
 
+# Gate 8 (G8k9): render-stream/9 is /8 plus the texture-delivery wire (texture-delivery-design.md
+# D4/Q5), proven byte-identical to protocol/golden-9/{full,patch,inline,off}.rs9.
+add_executable(rs9_codec_test test/rs9_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs9_codec_test PRIVATE src test)
+target_link_libraries(rs9_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs9_codec_test PRIVATE
+  GRC_GOLDEN9_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-9")
+add_test(NAME rs9_codec COMMAND rs9_codec_test)
+
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test
   test/rs_gate8_policy_test.cpp src/rs_gate8_policy.cpp
-  src/rs_texture_decode.cpp src/iface.cpp)
+  src/rs_texture_decode.cpp src/rs_texture_delivery.cpp src/iface.cpp)
 target_include_directories(rs_gate8_policy_test PRIVATE src vendor)
 target_link_libraries(rs_gate8_policy_test PRIVATE grc_warnings)
 add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
@@ -317,7 +329,7 @@ add_test(NAME rs_gate8_policy COMMAND rs_gate8_policy_test)
 # (texture-delivery-design.md D11, Q7): async predictions plus jobs resolve to the synchronous
 # snapshots (full-transaction bytes) and log lines; stop/drain/refusal, mispredict, the fault knob.
 add_executable(rs_texture_worker_test
-  test/rs_texture_worker_test.cpp src/rs_texture_worker.cpp src/rs_mirror.cpp
+  test/rs_texture_worker_test.cpp src/rs_texture_worker.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp
   src/rs_resource_log.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp
   src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
 target_include_directories(rs_texture_worker_test PRIVATE src)
@@ -330,7 +342,7 @@ add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 # G8r: adopted textures and meshes equal created ones but for origin and adopted_content, the
 # refinement to current, the hook log's adopt lines, GRC_ADOPT_FAULT parsing.
 add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/iface.cpp
-  src/rs_mirror.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
+  src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
   src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
   src/rs2_codec.cpp)
 target_include_directories(rs_adopt_test PRIVATE src vendor)

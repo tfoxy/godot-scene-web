@@ -155,6 +155,9 @@ struct ResourcePolicy {
   // render-stream-8.md "Session": the declared host texture-decode policy (GRC_TEXTURE_DECODE),
   // encoded as resources.decode at /8 only.
   TextureDecode decode = TextureDecode::Off;
+  // render-stream-9.md "Session": the declared delivery mode, encoded as
+  // resources.texture_delivery at /9 only (rs_texture_delivery.h).
+  TextureDeliveryDeclaration texture_delivery;
 };
 
 // The session's `resources` object (render-stream-2.md "Session record"). `delivery` follows from
@@ -248,7 +251,8 @@ class Publisher {
   ResourceEventFn events_;
   std::string error_;
   std::uint64_t next_seq_ = 1;
-  bool stamp_v8_ = false;  // G8w: the session template speaks /8 (start())
+  bool stamp_v8_ = false;  // G8w: the session template speaks /8 or /9 (start())
+  ProtocolVersion stamp_version_ = ProtocolVersion::V6;  // the version to stamp when stamp_v8_
   bool finished_ = false;
   // The previous published snapshot: the patch sink's base and last_published().
   rs::Captured previous_;

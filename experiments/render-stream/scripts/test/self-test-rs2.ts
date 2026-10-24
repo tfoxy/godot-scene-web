@@ -56,6 +56,8 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  checkKtx2Shape,
+  decodeKtx2Payload,
   decodeRecording,
   decodeTexturePayload,
   expectedDataBytes,
@@ -85,6 +87,7 @@ const GOLDEN5_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-5");
 const GOLDEN6_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-6");
 const GOLDEN7_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-7");
 const GOLDEN8_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-8");
+const GOLDEN9_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-9");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -139,6 +142,18 @@ interface GoldenIndex {
   // golden-8 only (render-stream-8.md "Golden vectors"): off.rs8, the adoption-null,
   // decode-off leg with a /8 sabotage declaration.
   off_leg?: IndependentLeg;
+  // golden-9 only (render-stream-9.md "Golden vectors"): the two synthetic KTX2 payloads.
+  ktx2_payloads?: Array<{
+    file: string;
+    hash: string;
+    width: number;
+    height: number;
+    levels: number;
+    bytes: number;
+    encoding: string;
+    supercompression: string;
+  }>;
+  control?: { valid: string[]; invalid: string[] };
 }
 
 interface IndependentLeg {
@@ -190,21 +205,23 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-8")
-    ? "golden-8"
-    : goldenDir.endsWith("golden-7")
-      ? "golden-7"
-      : goldenDir.endsWith("golden-6")
-        ? "golden-6"
-        : goldenDir.endsWith("golden-5")
-          ? "golden-5"
-          : goldenDir.endsWith("golden-4")
-            ? "golden-4"
-            : goldenDir.endsWith("golden-3")
-              ? "golden-3"
-              : "golden-2";
+  const label = goldenDir.endsWith("golden-9")
+    ? "golden-9"
+    : goldenDir.endsWith("golden-8")
+      ? "golden-8"
+      : goldenDir.endsWith("golden-7")
+        ? "golden-7"
+        : goldenDir.endsWith("golden-6")
+          ? "golden-6"
+          : goldenDir.endsWith("golden-5")
+            ? "golden-5"
+            : goldenDir.endsWith("golden-4")
+              ? "golden-4"
+              : goldenDir.endsWith("golden-3")
+                ? "golden-3"
+                : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -350,6 +367,52 @@ async function runSuite(
     );
   }
 
+  // --- golden-9's ktx2_payloads/*.ktx2 hash to their names and decode to their listed shape ----
+  for (const entry of index.ktx2_payloads ?? []) {
+    const bytes = await readBytes(goldenDir, entry.file);
+    ok(
+      payloadSha256(bytes) === entry.hash && bytes.length === entry.bytes,
+      `${label}: ${entry.file} hashes to its listed hash and has its listed length`,
+    );
+    let decoded: ReturnType<typeof decodeKtx2Payload> | undefined;
+    try {
+      decoded = decodeKtx2Payload(bytes);
+    } catch (error) {
+      ok(
+        false,
+        `${label}: decodeKtx2Payload(${entry.file}) threw ${String(error)}`,
+      );
+    }
+    if (decoded !== undefined) {
+      ok(
+        decoded.width === entry.width &&
+          decoded.height === entry.height &&
+          decoded.levels === entry.levels &&
+          decoded.model === entry.encoding &&
+          decoded.supercompression ===
+            (entry.supercompression === "zstd" ? 2 : 1),
+        `${label}: decodeKtx2Payload(${entry.file}) decodes to its listed shape`,
+      );
+      ok(
+        checkKtx2Shape(
+          decoded,
+          "uastc",
+          entry.width,
+          entry.height,
+          entry.levels > 1,
+        ) === null &&
+          checkKtx2Shape(
+            decoded,
+            "etc1s",
+            entry.width,
+            entry.height,
+            entry.levels > 1,
+          ) !== null,
+        `${label}: checkKtx2Shape(${entry.file}) accepts uastc at its own size and refuses etc1s`,
+      );
+    }
+  }
+
   // --- every golden-4 mesh_payloads/*.grm hashes to its name and decodes to its listed shape ---
   for (const entry of index.mesh_payloads ?? []) {
     const bytes = await readBytes(goldenDir, entry.file);
@@ -456,6 +519,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN6_DIR, 6);
   await runSuite(GOLDEN7_DIR, 7);
   await runSuite(GOLDEN8_DIR, 8);
+  await runSuite(GOLDEN9_DIR, 9);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -528,6 +592,22 @@ async function main(): Promise<void> {
     "wireVersionOf() reads GRS8 as 8, GRS7 as 7 and every other magic as 6",
   );
   await version8Cases(full8, rate7);
+
+  // a /9 decode refuses /8 and a /8 decode refuses /9 (same rule, render-stream-9.md).
+  const full9 = await readBytes(GOLDEN9_DIR, "full.rs9");
+  ok(
+    validateRecording(full8, 9)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-8/full.rs8 decoded as version 9 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full9, 8)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-9/full.rs9 decoded as version 8 is rejected with bad-magic",
+  );
+  ok(
+    wireVersionOf(full9) === 9 && wireVersionOf(full8) === 8,
+    "wireVersionOf() reads GRS9 as 9",
+  );
+  await version9Cases(full9);
 
   unknownItemCases();
   await helloCases();
@@ -626,6 +706,65 @@ async function version8Cases(
     threw = true;
   }
   ok(threw, "expectedDataBytes() refuses RGBAF below /8");
+}
+
+// render-stream-9.md: the version gates the golden vectors cannot show, mutated from the real /9
+// recording, plus the block payload sizes.
+async function version9Cases(full9: Uint8Array): Promise<void> {
+  const first = (bytes: Uint8Array) => validateRecording(bytes, 9)[0] ?? "";
+  const same = reframeSession(full9, () => undefined);
+  ok(
+    Buffer.compare(Buffer.from(same), Buffer.from(full9)) === 0,
+    "reframeSession() without a mutation reproduces golden-9/full.rs9 exactly",
+  );
+  const noDelivery = reframeSession(full9, (meta) => {
+    delete (meta.resources as Record<string, unknown>).texture_delivery;
+  });
+  ok(
+    first(noDelivery).startsWith("meta-schema: "),
+    "a /9 session without resources.texture_delivery is rejected (meta-schema)",
+  );
+  const badEncoder = reframeSession(full9, (meta) => {
+    (
+      (meta.resources as Record<string, unknown>).texture_delivery as Record<
+        string,
+        unknown
+      >
+    ).encoder = "Basis 1.60";
+  });
+  ok(
+    first(badEncoder).startsWith("meta-schema: "),
+    "a /9 session whose encoder is not a params_id prefix is rejected (meta-schema)",
+  );
+  // The /8 decoder refuses a /8 session carrying the /9 key (the resources object has fixed keys).
+  const full8 = await readBytes(GOLDEN8_DIR, "full.rs8");
+  const with8Key = reframeSession(full8, (meta) => {
+    (meta.resources as Record<string, unknown>).texture_delivery = {
+      mode: "rgba",
+      encoder: null,
+    };
+  });
+  ok(
+    (validateRecording(with8Key, 8)[0] ?? "").startsWith("meta-schema: "),
+    "a /8 session carrying resources.texture_delivery is rejected (meta-schema)",
+  );
+  // Block payload sizes are known at /9 only; below /9 the block formats stay unsized.
+  ok(
+    expectedDataBytes("DXT1", 4, 4, false, 9) === 8 &&
+      expectedDataBytes("DXT5", 16, 16, true, 9) === 368 &&
+      expectedDataBytes("ASTC_8x8", 16, 16, true, 9) ===
+        64 + 16 + 16 + 16 + 16 &&
+      expectedDataBytes("ETC2_RGB8", 5, 5, false, 9) === 32 &&
+      expectedDataBytes("RGTC_R", 1, 1, true, 9) === 8,
+    "expectedDataBytes() sizes the block formats at /9 (Godot's _get_dst_image_size)",
+  );
+  let threw = false;
+  try {
+    expectedDataBytes("DXT5", 4, 4, false, 8);
+  } catch {
+    threw = true;
+  }
+  ok(threw, "expectedDataBytes() refuses a block format below /9");
 }
 
 // protocol/unknown-item-skip.md "Session"/"Transaction": the two optional keys, at /6 (the test encoder speaks /6 since G6b).
@@ -733,6 +872,39 @@ function isNonNegativeInt(value: unknown): boolean {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
+// render-stream-9.md "Hello": /8's keys plus texture_encodings and gpu_formats, each a comma list
+// matching ^[a-z0-9]+(,[a-z0-9]+)*$ of at most 96 characters.
+const HELLO9_KEYS = [...HELLO7_KEYS, "texture_encodings", "gpu_formats"];
+const FLAT_LIST = /^[a-z0-9]+(,[a-z0-9]+)*$/;
+
+function checkHello9(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return ["hello is not an object"];
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (
+    keys.length !== HELLO9_KEYS.length ||
+    !HELLO9_KEYS.every((k) => keys.includes(k))
+  ) {
+    return [
+      `hello has keys ${JSON.stringify(keys)}, expected exactly ${JSON.stringify(HELLO9_KEYS)}`,
+    ];
+  }
+  for (const key of ["texture_encodings", "gpu_formats"]) {
+    const v = obj[key];
+    if (typeof v !== "string" || v.length > 96 || !FLAT_LIST.test(v)) {
+      return [`"${key}" is not a comma list of [a-z0-9] names, <= 96 chars`];
+    }
+  }
+  // Everything else is /7's hello under the protocol string render-stream/9.
+  const rest: Record<string, unknown> = {};
+  for (const key of HELLO7_KEYS) rest[key] = obj[key];
+  rest.protocol =
+    obj.protocol === "render-stream/9" ? "render-stream/7" : obj.protocol;
+  return checkHello7(rest);
+}
+
 function checkHello7(value: unknown): string[] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return ["hello is not an object"];
@@ -802,7 +974,34 @@ function checkHello7(value: unknown): string[] {
   return [];
 }
 
+async function helloCases9(): Promise<void> {
+  const index = JSON.parse(
+    await readFile(join(GOLDEN9_DIR, "index.json"), "utf8"),
+  ) as { control: { valid: string[]; invalid: string[] } };
+  ok(
+    index.control.valid.length === 4 && index.control.invalid.length === 10,
+    "golden-9 index lists 4 valid and 10 invalid control vectors",
+  );
+  for (const file of index.control.valid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN9_DIR, file), "utf8"),
+    );
+    const errors = checkHello9(parsed);
+    ok(
+      errors.length === 0,
+      `golden-9/${file} accepted (got ${JSON.stringify(errors)})`,
+    );
+  }
+  for (const file of index.control.invalid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN9_DIR, file), "utf8"),
+    );
+    ok(checkHello9(parsed).length > 0, `golden-9/${file} refused`);
+  }
+}
+
 async function helloCases(): Promise<void> {
+  await helloCases9();
   const root = join(GOLDEN7_DIR, "control");
   const validDir = join(root, "valid");
   const invalidDir = join(root, "invalid");

@@ -179,6 +179,11 @@ struct ControlMessage {
   std::uint64_t presentation_css_w = 0;
   std::uint64_t presentation_css_h = 0;
   std::uint64_t dpr_milli = 0;
+  // hello, /9 only (render-stream-9.md "Hello"): comma lists matching ^[a-z0-9]+(,[a-z0-9]+)*$,
+  // at most 96 chars (texture-delivery-design.md Q3). Parsing only -- no Hub behaviour reads them
+  // until a delivery increment does.
+  std::string texture_encodings;
+  std::string gpu_formats;
   // ack, resync
   std::string stream_id;
   std::uint64_t seq = 0;
@@ -249,6 +254,10 @@ inline constexpr const char *kSubprotocolV7 = "render-stream.7";
 // The subprotocol that makes a connection /8 (render-stream-8.md "Live transport", gate8-design.md
 // D2): /7's live transport with /8's session and tables. Opt-in; no receiver offers it by default.
 inline constexpr const char *kSubprotocolV8 = "render-stream.8";
+// The subprotocol that makes a connection /9 (render-stream-9.md "Live transport",
+// texture-delivery-design.md D4): /8's live transport with /9's hello keys `texture_encodings` and
+// `gpu_formats`. Opt-in (GRC_STREAM_VERSION=9); no receiver offers it yet.
+inline constexpr const char *kSubprotocolV9 = "render-stream.9";
 
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
@@ -327,6 +336,8 @@ struct ConnectionSummary {
   std::uint64_t presentation_css_w = 0;
   std::uint64_t presentation_css_h = 0;
   std::uint64_t dpr_milli = 0;
+  std::string texture_encodings;  // /9 hello; empty otherwise
+  std::string gpu_formats;
   std::string origin;
   bool token_checked = false;
   bool token_ok = false;

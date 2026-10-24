@@ -1,5 +1,6 @@
 #include "rs_mirror.h"
 
+#include "rs_texture_delivery.h"
 #include "rs_texture_worker.h"
 
 #include <algorithm>
@@ -1220,6 +1221,17 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
     out.has_source_format = source != nullptr;
     out.source_format = source != nullptr ? source : "";
     out.payload_bytes = static_cast<std::uint64_t>(std::max<std::int64_t>(copy.payload_bytes, 0));
+    // G8k9 (render-stream-9.md "Texture entries"): the delivery seam's variants, written at /9
+    // only. The seam offers nothing yet, so every entry stays `decoded` alone.
+    VariantRequest request;
+    request.id = texture.id;
+    request.hash = copy.hash;
+    request.format = out.format;
+    request.width = out.width;
+    request.height = out.height;
+    request.mipmaps = out.mipmaps;
+    request.version = texture.version;
+    out.variants = texture_variants(request);
   } else {
     out.has_reason = texture.has_reason;
     out.reason = texture.reason;

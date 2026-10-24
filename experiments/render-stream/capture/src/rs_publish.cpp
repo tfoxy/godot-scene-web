@@ -402,6 +402,7 @@ ResourcesInfo resources_info(const ResourcePolicy &policy, Fetch out_of_band_fet
   info.http_path = info.has_http_path ? "/resources/sha256/" : "";
   info.auth = Auth::None;
   info.decode = policy.decode;
+  info.texture_delivery = policy.texture_delivery;
   return info;
 }
 
@@ -426,7 +427,8 @@ bool Publisher::start(const Session &tmpl) {
   bool ok = true;
   const std::vector<std::uint8_t> magic_bytes = magic(tmpl.version);
   // G8w: a /8 file sink publishes /8 transactions (the mirror stamps its snapshots V6).
-  stamp_v8_ = tmpl.version == ProtocolVersion::V8;
+  stamp_v8_ = is_v8_or_later(tmpl.version);
+  stamp_version_ = tmpl.version;
   for (Lane &lane : lanes_) {
     if (lane.sink == nullptr) {
       continue;
@@ -647,7 +649,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
   published.state.seq = next_seq_++;
   published.state.frame = frame;
   if (stamp_v8_) {
-    published.state.version = ProtocolVersion::V8;
+    published.state.version = stamp_version_;
   }
 
   // Out of band first: every payload the transactions below name is in the store before any

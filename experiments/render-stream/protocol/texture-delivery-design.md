@@ -2,7 +2,9 @@
 
 Status: design written 2026-10-23 (increment G8k). G8kw (the texture worker pool and the
 publication hold-back, D11/Q7) is landed: Q7 "As built (G8kw)", [results/gate8/g8kw.md](../results/gate8/g8kw.md).
-Nothing else here is implemented. This doc
+G8kz (HTTP content coding) is landed: "As built (G8kz)". G8k9 (the render-stream/9 wire, codecs and
+validators only) is landed: "As built (G8k9)", [render-stream-9.md](render-stream-9.md),
+[results/gate8/g8k9.md](../results/gate8/g8k9.md). Nothing else here is implemented. This doc
 follows [gate8-design.md](gate8-design.md) and replaces its deferred "Route C" (gate8-design Q3,
 "Deferred") and fork F3. User decisions of 2026-10-23 (memory texture-delivery-direction):
 
@@ -38,7 +40,7 @@ Generic parts land here on stock-template fixtures. Applying them to STS2 is cou
 | D1 | Modes | **`GRC_TEXTURE_DELIVERY=rgba\|passthrough\|basis-uastc\|basis-etc1s`**, a host/session setting, default `rgba` (today's behavior). Each mode names the **variants the host offers** per texture (Q3). `rgba` = `decoded` only. `passthrough` = `decoded` + `block`. `basis-uastc` (LAN) = `decoded` + `block` + `uastc`. `basis-etc1s` (internet) = `decoded` + `etc1s`. `decoded` is the /8 payload (G8t's RGBA8/R8/RG8, or the uncompressed source); it is always offered, so every receiver has a fallback. |
 | D2 | HTTP content coding | **`GRC_HTTP_ENCODING=off\|zstd\|gzip`** (default `zstd` since G8kz, see "As built (G8kz)"), orthogonal to D1 and **valid at every live version ≥ /2**. It is plain HTTP negotiation (`Accept-Encoding` → `Content-Encoding`), not a change to framing, keys or payload format, so no wire version. It applies to GRT1 bodies only. KTX2 bodies are already entropy-coded (Q5). It lands first (G8kz). |
 | D3 | Who picks a variant | **The receiver**, from the variants listed in the texture entry, by a fixed rule. The rule is the first encoding in its own hello `texture_encodings` that the entry lists. `block` counts only if the variant's format family is in its `gpu_formats`, and `decoded` is always last. The host uses the hellos only to decide which variants are worth preparing lazily (Q4). It never rewrites a transaction per connection, so file recordings, stores and every connection share one stream. |
-| D4 | Wire | **`render-stream/9`, on the version-switch pattern** (`V9` in `rs2_codec.*`/`rs2_diff.*`, `version: … \| 9` in `render-stream-2.ts`, rs-core and capi). Changes against /8: texture entries gain `variants`; a `render-stream-texture/ktx2` payload profile; GRT1 may carry the BC/ETC2/ASTC source formats as a `block` variant; the session gains `resources.delivery`; the hello gains `texture_encodings` and `gpu_formats`; the texture reason `delivery-pending` (Q5). A /8 or older connection sees exactly /8, the `decoded` payload, so no refusal is needed. |
+| D4 | Wire | **`render-stream/9`, on the version-switch pattern** (`V9` in `rs2_codec.*`/`rs2_diff.*`, `version: … \| 9` in `render-stream-2.ts`, rs-core and capi). Changes against /8: texture entries gain `variants`; a `render-stream-texture/ktx2` payload profile; GRT1 may carry the BC/ETC2/ASTC source formats as a `block` variant; the session gains `resources.texture_delivery` (G8k9 renamed it from `resources.delivery`, a key /2 already uses for out-of-band/inline); the hello gains `texture_encodings` and `gpu_formats`; the texture reason `delivery-pending` (Q5). A /8 or older connection sees exactly /8, the `decoded` payload, so no refusal is needed. |
 | D5 | Base entry stays /8 | **`hash`, `format`, `payload_bytes` and `source_format` keep their /8 meaning: the `decoded` variant.** `variants` only adds alternatives. Every /8 rule (`decode-entry`, `texture-version`, the oracle) holds unchanged, and a receiver that ignores `variants` is a correct /8 receiver. |
 | D6 | Variant lifetime | **`version` counts content; `variants` may grow at equal version.** A lazy encode that completes publishes a patch entry with one more variant at the same `version`. A content change, such as `texture_2d_update`, raises `version` and resets `variants` to what is ready for the new content. A receiver that already holds any variant of the current version keeps it (`keep`, the desktop default). `upgrade` (the phone default) refetches when a variant it prefers appears, which trades bytes for GPU memory. |
 | D7 | Cache key | **The source key is the SHA-256 of the hooked image as a GRT1 payload in its own format.** For BC sources that is the `block` variant's hash; for uncompressed sources it is the `decoded` hash. A cache entry is keyed by (source key, encoding, `params_id`). `params_id` names the encoder and every setting that changes bytes, for example `basisu-1.60/uastc-l2/zstd6/linear`. The key is hashed from 1 B/px for BC sources, about 4 ms per 4 Mpx with SHA-NI (results/gate8/g8sha.md). |
@@ -258,7 +260,8 @@ allows it and the host enables it:
 **render-stream/9 (G8k9), as /8 plus exactly:**
 
 - magic `GRS9`, subprotocol `render-stream.9`, `GRC_STREAM_VERSION=6|8|9`;
-- session `resources.delivery`, right after `resources.decode`: `{"mode":<D1 mode>,
+- session `resources.texture_delivery` (the design said `resources.delivery`, which would duplicate /2's
+  `resources.delivery` key; G8k9 renamed it), right after `resources.decode`: `{"mode":<D1 mode>,
   "encoder":null|<params_id prefix, e.g. "basisu-1.60">}`;
 - texture entries, right after `payload_bytes`: `"variants":[{"encoding":"block"|"uastc"|"etc1s",
   "hash":<hex>,"payload_bytes":<int>,"format":<name>|null,"params":<params_id>|null}…]`. The list is
@@ -470,7 +473,7 @@ Shared call sites still reach `*`.
 | -- | ------- | ----- | ------------ | ----------- | ---------- |
 | G8kz | HTTP `Content-Encoding` zstd/gzip for payload GETs at /2+ (D2, Q5): precompressed per hash on the HTTP thread, `Vary`, per-coding ETag, the native receiver's `Accept-Encoding` + decompress; checks: identity hash after decode, coded bytes logged per GET, `corrupt-coded-body` sabotage (receiver must refuse) | `capture/src/rs_live.*`, `rs_resource_store.*`, `receiver/` fetcher, `scripts/lib/gate2-*`/`gate8-*` checks, `render-stream-2.md` "HTTP" | `*` (capture) | sonnet, 3 h + full tier | G8w |
 | G8kw | **Landed** (Q7 "As built (G8kw)"). Worker pool for copy/decode/hash (D11), publication hold-back at /6-/8, `GRC_TEXTURE_WORKERS=sync\|N`; checks: sync and async recordings resolve to equal states at every checkpoint, main-thread hook time ≤ 2 ms per create at 2048², `decode-cost` re-measured | `capture/src/rs_texture_worker.*` (new), `hooks.cpp` copy path, `rs_mirror.*`, `rs_resource_log.*`, `entry.cpp` (the hold-back lives in `rs_texture_worker.*`, not `rs_publish.*`), `smoke-map.json` narrow rule | `*`, then narrow | opus, 5 h + full tier | G8t; before G8r (which reuses the path) |
-| G8k9 | render-stream/9 codecs and validators (Q5): `variants`, `ktx2` and `block` payloads, `resources.delivery`, hello keys, `delivery-pending`, `golden-9/`; empty delivery seam; no receiver offers .9 yet | `protocol/render-stream-9.md`, `protocol/golden-9/`, `rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `render-stream-2.ts`, `rs-core/src/{wire,validate,meta,payload}.rs`, capi pin | `*` | sonnet, 4 h + full tier | G8w (parallel with G8kz/G8kw) |
+| G8k9 | **Landed** ("As built (G8k9)"). render-stream/9 codecs and validators (Q5): `variants`, `ktx2` and `block` payloads, `resources.delivery`, hello keys, `delivery-pending`, `golden-9/`; empty delivery seam; no receiver offers .9 yet | `protocol/render-stream-9.md`, `protocol/golden-9/`, `rs2_codec.*`, `rs2_diff.*`, `rs_live.*`, `render-stream-2.ts`, `rs-core/src/{wire,validate,meta,payload}.rs`, capi pin | `*` | sonnet, 4 h + full tier | G8w (parallel with G8kz/G8kw) |
 | G8kp | `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
 | G8ku | `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |
 | G8kb | GSW Basis: transcoder wasm in a Web Worker (emsdk 4.0.11, D15 sources), ASTC/ETC2/BC7 upload, `upgrade` policy; g31 device bench of transcode time per Mpx, GPU memory (gfxinfo) and hd-patch p95 unchanged (real time, standing phone approval) | `web/gsw-receiver/`, `web/basis-transcoder/` (new), `packages/canvas/rust-prototype/…/gl.rs`, `scripts/gate7-bench.ts` arm | `g7:*@gsw`, `g7live:*@gsw`, `bench-instr`, device leg | opus, 6 h + scoped tier | G8ku |
@@ -519,10 +522,22 @@ So the release sequence is:
 - **Web-export transcode in a JS worker** via `JavaScriptBridge`: if G8ku's g31 hitch matters.
 - **R8/RG8/LA8 and glyph atlases in Basis** (BC4/BC5, ETC2_R11/RG11): no byte need in the census.
 - **Arm-on-subscribe interplay** (gate8-design "Deferred"): a warm cache makes re-arming cheap.
+- **Warming the cache from a pack** (user decision K3, 2026-10-23; owner: G8kc or a successor, after
+  G8ku). A library feature of the generic prepare step (D9b) that warms the persisted cache (D8)
+  from a game's pack in two modes: **all** (every texture in the pack) and **selective** (the
+  integrator supplies the textures it expects to need soon). The prediction logic, the choice of
+  what is "soon", stays in the product; the library only takes the list. **Each integrator picks one
+  of three**: live (the lazy path, the default and what ships now), all-pack, or selective-pack.
+  Reading an installed game's pack stays an explicit operator action; the cache never sits inside a
+  repository, and nothing here writes to the game's install.
 
 ## Open forks for the user
 
-- **K1. basisu revision.** The dependency is approved. The question is which revision.
+Decided by the user on 2026-10-23, after this design was written: K1 (basisu 1.60), K2 (ETC1S does
+not gate the release) and K3 (warm from live sessions now; the pack-warming library feature is
+deferred, above). Their text is kept below as the record of the alternatives.
+
+- **K1. DECIDED: vendored basisu 1.60 (the engine's copy).** The dependency is approved. The question is which revision.
   - **Default:** basisu **1.60**, BinomialLLC/basis_universal commit `323239a6`, the copy Godot
     4.5.1 vendors. It is copied from the local `../godot-4.5.1-stable/thirdparty/basis_universal`
     with Godot's five patches, plus zstd 1.5.7 from the same tree. **Nothing is downloaded**, and
@@ -531,11 +546,11 @@ So the release sequence is:
   - **Alternative:** if you would rather track upstream, G8ku fetches the upstream source archive of
     a named later release tag, verified by its sha256. In that case the receivers' transcoder would
     differ from the engine's, and D14/D16 would need per-receiver oracles.
-- **K2. Does the internet tier gate the public release?**
+- **K2. DECIDED: ETC1S (the internet tier) does not gate the release.** Does the internet tier gate the public release?
   - **Default:** no. G8kz, G8kw and the LAN tier land before G8g/G8z. ETC1S (G8ke) comes after the
     release.
   - **Alternative:** move G8ke before G8g, about one more 4 h increment plus a scoped tier.
-- **K3. Preparing from the installed game.** The generic prepare step (D9b) can read any Godot
+- **K3. DECIDED: warm from live sessions now; the pack is a deferred library feature ("Deferred, with owners").** Preparing from the installed game. The generic prepare step (D9b) can read any Godot
   project's or pack's `.ctex`. Pointing couch-coop's host at the user's own STS2 pack would read the
   Steam install at host startup; it would never write there and never copy into a repo, and the
   cache would sit outside every repository.
@@ -605,3 +620,55 @@ Receiver-side decode: `receiver/tests/receiver_selftest.gd`.
 The gate 6 scene is flat colour and gradients, so its ratio is the optimistic end of Q8's range;
 `gate8-tex` is procedural noise-like content, the pessimistic end. STS2's measured 11x sits
 between them.
+
+## As built (G8k9)
+
+Landed as one commit; the wire spec is [render-stream-9.md](render-stream-9.md), the evidence
+summary [results/gate8/g8k9.md](../results/gate8/g8k9.md). Codecs and validators only: no receiver
+offers `.9` and the delivery seam offers nothing.
+
+**Decisions taken where the design was ambiguous or wrong.**
+
+- **`resources.texture_delivery`, not `resources.delivery`.** D4 and Q5 named the session key
+  `resources.delivery`, but `resources.delivery` has existed since /2 (`out-of-band`, `inline`,
+  `mixed`), so a second key of that name would be a duplicate in one JSON object. The key is
+  `texture_delivery`, `{"mode":…,"encoder":…}`, right after `decode`. D4 and Q5 above are corrected.
+- **Hello:** `gpu_formats` of a receiver with no compressed format is `none` (the grammar forbids an
+  empty string); both keys are required at /9.
+- **`delivery-pending` is an `unsupported` image entry** (hash null, `payload_bytes` 0), the
+  existing reason/status coupling; the recovery is an `ok` entry at a raised `version`.
+- **Variant payloads in a recording.** The validators accept a variant's payload (a `block` GRT1 or
+  a KTX2) as a resource record and check it against its entry (`resource-payload`, `ktx2-shape`),
+  though no resource record is ever required for one. The host's inline policy stays "decoded only"
+  (D12(c)).
+- **`delivery-entry` also checks the session**: a variant's encoding must be one the declared mode
+  offers (D1's table), and a Basis variant needs a declared encoder that its `params` start with.
+  `GRC_TEXTURE_DELIVERY` is declared by a /9 session and ignored below /9 (so it is not a gate 8
+  policy); `GRC_STREAM_VERSION=9` is the only way `render-stream.9` is offered.
+- **KTX2 golden sources:** the Godot-editor route, not a hand-written generator. Godot 4.5.1's
+  editor binary links basisu's encoder, and `PortableCompressedTexture2D` with
+  `COMPRESSION_MODE_BASIS_UNIVERSAL` writes a real UASTC LDR 4x4 + Zstandard KTX2 from a synthetic
+  image headlessly (`golden-9/gen_ktx2.gd`; the file is bytes 24.. of the texture's `_data`). The two
+  outputs (16x16 with five levels, 4x4 with one) are committed and synthetic. This also gives the
+  validators real DFD bytes (colour model 166, primaries 1, linear transfer) rather than ones a
+  generator guessed.
+
+**What landed.** `protocol/render-stream-9.md`; `protocol/golden-9/` (full, patch, inline, off,
+resolved, 26 invalid and 14 control vectors, `make_golden.py`, `gen_ktx2.gd`); the C++ codec
+(`ProtocolVersion::V9`, `TextureVariant`, `TextureReason::DeliveryPending`, the hello parser and
+subprotocol offer) and `rs_texture_delivery.*`, the empty seam; the TypeScript decoder, validator
+and independent KTX2 parser; the Rust core's decoder, validator and KTX2 parser; the capi version
+list; a narrow `smoke-map.json` rule; gate 8's `delivery9/capture` leg.
+
+**Out of scope here (owned by later increments).**
+
+| Receiver or group | Owner | State after G8k9 |
+| ----------------- | ----- | ---------------- |
+| Native receiver (GDScript glue, `rs_core` GDExtension) | G8kp, G8ku | replays a `.rs9` recording as /8; its hello does not offer `.9` |
+| GSW (`web/gsw-receiver`, `web/gsw-rs`) | G8kp, G8kb | unchanged; never offered `.9` |
+| Web export | G8ku | unchanged |
+| Block upload, `texture_encodings`/`gpu_formats` filled from hardware | G8kp | the hello keys are parsed and logged, not sent |
+| The encoder, the host cache, lazy variants, `delivery-pending` in a capture | G8ku, G8kc | the seam is empty; the capture never publishes the reason |
+| `transcode-oracle`, `delivery-reference`, `quality-band`, `perturb-ktx2` | G8ku | not started |
+| ETC1S, the PSNR floor, the throttled link | G8ke | after the release |
+| Gate 7 browser groups, the g31 | none | unreachable: `GRC_STREAM_VERSION` is unset in every one |

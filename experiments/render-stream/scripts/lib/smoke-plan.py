@@ -340,6 +340,11 @@ def self_test(m):
     seam = P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/rs_texture_decode.h")
     check("the gate 8 seams reach the build, the pure tests, gate 0 and gate 8 only (G8w, G8a)",
           set(seam["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
+    delivery = P("experiments/render-stream/capture/src/rs_texture_delivery.cpp", "experiments/render-stream/capture/test/rs9_codec_test.cpp")
+    check("the texture delivery seam reaches the build, the pure tests, gate 0 and gate 8 only (G8k9)",
+          set(delivery["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
+    check("a shared capture file next to the delivery seam still reaches everything",
+          set(P("experiments/render-stream/capture/src/rs_texture_delivery.h", "experiments/render-stream/capture/src/rs_mirror.cpp")["targets"]) == uni)
     check("a shared capture file next to a seam still reaches everything",
           set(P("experiments/render-stream/capture/src/rs_adopt.cpp", "experiments/render-stream/capture/src/entry.cpp")["targets"]) == uni)
     g = P("experiments/render-stream/scripts/lib/gate5-checks.ts")

@@ -1,0 +1,18 @@
+{
+  "type": "hello",
+  "protocol": "render-stream/9",
+  "receiver": "gate9-native",
+  "receiver_kind": "native",
+  "credit_stage": "submitted",
+  "credit_window": 1,
+  "inbound_buffer_bytes": 16777216,
+  "token": null,
+  "manifest_sha256": null,
+  "presentation_backing_w": 640,
+  "presentation_backing_h": 360,
+  "presentation_css_w": 640,
+  "presentation_css_h": 360,
+  "dpr_milli": 1000,
+  "texture_encodings": "block,decoded",
+  "gpu_formats": "s3tc,,bptc"
+}

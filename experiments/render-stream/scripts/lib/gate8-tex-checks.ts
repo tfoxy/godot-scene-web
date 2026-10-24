@@ -491,6 +491,7 @@ export async function runG8t(
     "decode-cost/capture",
     "workers/capture",
     "workers/sabotage-publish-before-ready/capture",
+    "delivery9/capture",
     "decode-cost/capture-workers",
   ];
   const legs: G8tReport["legs"] = {};
@@ -865,6 +866,76 @@ export async function runG8t(
           : null,
         `caught: ${caught.slice(0, 2).join("; ")}`,
         "workers/sabotage-publish-before-ready/capture",
+      ),
+    );
+  }
+
+  // --- G8k9: the /9 wire with an empty delivery seam (texture-delivery-design.md D4, Q5) ------
+  {
+    const dir = join(out, "delivery9", "capture");
+    const problems: string[] = [];
+    const exit = legs["delivery9/capture"].exit_code;
+    if (exit !== "0") problems.push(`delivery9/capture exit ${exit}`);
+    let variantsSeen = 0;
+    let texturesSeen = 0;
+    const strip = (state: unknown): unknown => {
+      const s = state as { textures: Array<Record<string, unknown>> } & Record<string, unknown>;
+      return { ...s, textures: s.textures.map(({ variants: _v, ...rest }) => rest) };
+    };
+    for (const [name, base] of [["recording.rs9", "recording.rs8"], ["recording-patch.rs9", "recording-patch.rs8"]] as const) {
+      const path = join(dir, name);
+      if (!existsSync(path)) {
+        problems.push(`${name} missing`);
+        continue;
+      }
+      const bytes = new Uint8Array(await readFile(path));
+      if (wireVersionOf(bytes) !== 9) problems.push(`${name} does not start with GRS9`);
+      const errors = validateRecording(bytes, 9);
+      if (errors.length > 0) {
+        problems.push(`${name} invalid at /9: ${errors[0]}`);
+        continue;
+      }
+      const rec = resolveRecording(bytes, 9);
+      const session = decodeRecording(bytes, 9).records[0].meta as unknown as {
+        protocol: string;
+        resources: { texture_delivery?: { mode: string; encoder: string | null } };
+      };
+      if (session.protocol !== "render-stream/9") problems.push(`${name} session protocol ${session.protocol}`);
+      const declared = session.resources.texture_delivery;
+      if (declared?.mode !== "basis-uastc" || declared.encoder !== null)
+        problems.push(`${name} declares ${JSON.stringify(declared)}, not {"mode":"basis-uastc","encoder":null}`);
+      for (const t of rec.transactions)
+        for (const tex of t.state.textures) {
+          texturesSeen++;
+          variantsSeen += (tex.variants ?? []).length;
+          if (!Array.isArray(tex.variants)) problems.push(`${name} seq ${t.seq}: texture ${tex.id} has no variants list`);
+        }
+      const reference = await resolved(capDir, base);
+      if (reference.error || !reference.rec) {
+        problems.push(`capture/${reference.error}`);
+        continue;
+      }
+      const stripped: ResolvedRecording = {
+        ...rec,
+        transactions: rec.transactions.map((t) => ({ ...t, state: strip(t.state) as typeof t.state })),
+      };
+      problems.push(...compareWorkerRecordings(reference.rec, stripped).problems.map((p) => `${name}: ${p}`));
+    }
+    if (variantsSeen > 0) problems.push(`${variantsSeen} variants offered by an empty seam`);
+    if (texturesSeen === 0) problems.push("no texture entry was seen");
+    const r = await readJson<{ stream?: { gate8?: { file_stream_version?: number; texture_delivery?: string } } }>(
+      join(dir, "evidence", "result.json"),
+    );
+    if (r?.stream?.gate8?.file_stream_version !== 9) problems.push(`result.json file_stream_version ${r?.stream?.gate8?.file_stream_version}`);
+    if (r?.stream?.gate8?.texture_delivery !== "basis-uastc")
+      problems.push(`result.json texture_delivery ${r?.stream?.gate8?.texture_delivery}`);
+    checks.push(
+      check(
+        "delivery-v9-wire",
+        "G8k9: a /9 file sink (GRC_STREAM_VERSION=9, GRC_TEXTURE_DELIVERY=basis-uastc) writes full and patch recordings that start GRS9, validate at /9 with the independent TypeScript decoder, declare resources.texture_delivery {basis-uastc, encoder null}, and carry `variants: []` on every texture entry, because the delivery seam offers nothing; stripped of that key every transaction equals the /8 capture of the same frame state for state",
+        ran("delivery9/capture") && ran("capture") ? problems : null,
+        `${texturesSeen} texture entries, none with a variant`,
+        "delivery9/capture",
       ),
     );
   }

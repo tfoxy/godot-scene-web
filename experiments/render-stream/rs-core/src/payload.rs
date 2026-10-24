@@ -105,8 +105,50 @@ pub fn expected_data_bytes_v(
         } else {
             None
         }
-    })?;
+    });
+    let Some(size) = size else {
+        // /9: the block formats are sized too (render-stream-9.md "Texture payload").
+        return if version >= 9 {
+            block_data_bytes(format, width, height, mipmaps)
+        } else {
+            None
+        };
+    };
     Some(size as u128 * mip_chain_texels(width, height, mipmaps))
+}
+
+/// The block formats legal as a `block` variant (render-stream-9.md "Texture payload"): Godot's
+/// block edge and pixel right-shift (`core/io/image.cpp` `get_format_block_size` / `_rshift`; the
+/// pixel size of every block format is 1), so one level is
+/// `ceil(w/block) * block * ceil(h/block) * block >> shift` bytes. The swizzled `*_RA_AS_RG` and
+/// the HDR formats are not offered.
+pub fn block_format(format: &str) -> Option<(u64, u32)> {
+    Some(match format {
+        "DXT1" | "RGTC_R" | "ETC" | "ETC2_R11" | "ETC2_R11S" | "ETC2_RGB8" | "ETC2_RGB8A1" => (4, 1),
+        "DXT3" | "DXT5" | "RGTC_RG" | "BPTC_RGBA" | "ETC2_RG11" | "ETC2_RG11S" | "ETC2_RGBA8"
+        | "ASTC_4x4" => (4, 0),
+        "ASTC_8x8" => (8, 2),
+        _ => return None,
+    })
+}
+
+/// The data size of a block format's mip chain (`Image::_get_dst_image_size`), None for any other
+/// format name.
+pub fn block_data_bytes(format: &str, width: u64, height: u64, mipmaps: bool) -> Option<u128> {
+    let (block, shift) = block_format(format)?;
+    let (mut w, mut h) = (width, height);
+    let mut total: u128 = 0;
+    loop {
+        let bw = if w % block != 0 { w + (block - w % block) } else { w };
+        let bh = if h % block != 0 { h + (block - h % block) } else { h };
+        total += ((bw as u128) * (bh as u128)) >> shift;
+        if !mipmaps || (w == 1 && h == 1) {
+            break;
+        }
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    Some(total)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -410,15 +452,244 @@ pub enum PayloadKind {
     Texture,
     Mesh,
     Shader,
+    /// /9 only: a `render-stream-texture/ktx2` payload, a delivery variant (never drawn directly).
+    Ktx2,
 }
 
 pub fn payload_kind(bytes: &[u8], version: u8) -> PayloadKind {
     let head = bytes.get(..8);
-    if version >= 5 && head == Some(&GRP1_MAGIC[..]) {
+    if version >= 9 && bytes.get(..12) == Some(&KTX2_IDENTIFIER[..]) {
+        PayloadKind::Ktx2
+    } else if version >= 5 && head == Some(&GRP1_MAGIC[..]) {
         PayloadKind::Shader
     } else if version >= 4 && head == Some(&GRM1_MAGIC[..]) {
         PayloadKind::Mesh
     } else {
         PayloadKind::Texture
+    }
+}
+
+// ------------------------------------------------------------------------------------- KTX2
+
+/// The 12-byte KTX2 file identifier (KTX 2.0 section 2.1).
+pub const KTX2_IDENTIFIER: [u8; 12] = [
+    0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a,
+];
+
+/// A decoded `render-stream-texture/ktx2` payload's shape (render-stream-9.md "KTX2 payload").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ktx2Payload {
+    pub width: i64,
+    pub height: i64,
+    pub levels: i64,
+    /// The DFD colour model: false = ETC1S (163), true = UASTC (166).
+    pub uastc: bool,
+    /// 1 = BasisLZ, 2 = Zstandard.
+    pub supercompression: u32,
+}
+
+/// `decodeKtx2Payload()`: the header, level index and DFD of one 2D image, one face, no layers,
+/// vkFormat UNDEFINED, ETC1S + BasisLZ or UASTC LDR 4x4 + Zstandard, linear transfer. Errors are
+/// `ktx2-header`; the entry-dependent half is [`check_ktx2_shape`].
+pub fn decode_ktx2(bytes: &[u8]) -> Result<Ktx2Payload, Error> {
+    let fail = |d: String| Err(err("ktx2-header", d));
+    if bytes.get(..12) != Some(&KTX2_IDENTIFIER[..]) {
+        return fail("the first 12 bytes are not the KTX2 identifier".into());
+    }
+    if bytes.len() < 80 {
+        return fail("the file ends inside the header or index".into());
+    }
+    let u32_at = |o: usize| le_u32(bytes, o) as u64;
+    let u64_at = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
+    let (vk, type_size, width, height) = (u32_at(12), u32_at(16), u32_at(20), u32_at(24));
+    let (depth, layers, faces, levels, sc) =
+        (u32_at(28), u32_at(32), u32_at(36), u32_at(40), u32_at(44));
+    if vk != 0 {
+        return fail(format!("vkFormat is {vk}, not 0 (UNDEFINED)"));
+    }
+    if type_size != 1 {
+        return fail(format!("typeSize is {type_size}, not 1"));
+    }
+    if width < 1 || height < 1 {
+        return fail("pixelWidth or pixelHeight is 0".into());
+    }
+    if depth != 0 {
+        return fail(format!("pixelDepth is {depth}, not 0 (a 2D image)"));
+    }
+    if layers != 0 {
+        return fail(format!("layerCount is {layers}, not 0 (not an array)"));
+    }
+    if faces != 1 {
+        return fail(format!("faceCount is {faces}, not 1 (not a cube)"));
+    }
+    if !(1..=32).contains(&levels) {
+        return fail(format!("levelCount is {levels}, not 1..32"));
+    }
+    if sc != 1 && sc != 2 {
+        return fail(format!(
+            "supercompressionScheme is {sc}, not 1 (BasisLZ) or 2 (Zstandard)"
+        ));
+    }
+    let len = bytes.len() as u64;
+    let level_index_end = 80 + 24 * levels;
+    if level_index_end > len {
+        return fail("the level index runs past the end of the file".into());
+    }
+    let (dfd_off, dfd_len, kvd_off, kvd_len) = (u32_at(48), u32_at(52), u32_at(56), u32_at(60));
+    let (sgd_off, sgd_len) = (u64_at(64), u64_at(72));
+    if dfd_off < level_index_end || dfd_off + dfd_len > len {
+        return fail("the data format descriptor lies outside the file".into());
+    }
+    if kvd_len != 0 && kvd_off + kvd_len > len {
+        return fail("the key/value data lies outside the file".into());
+    }
+    if sc == 1 {
+        if sgd_len < 1 || sgd_off.saturating_add(sgd_len) > len {
+            return fail("BasisLZ needs global data inside the file".into());
+        }
+    } else if sgd_len != 0 {
+        return fail("Zstandard supercompression has no global data".into());
+    }
+    let d = dfd_off as usize;
+    if dfd_len < 28 || u32_at(d) != dfd_len {
+        return fail("the DFD total size disagrees with dfdByteLength".into());
+    }
+    let (word0, word1) = (u32_at(d + 4), u32_at(d + 8));
+    if word0 != 0 {
+        return fail("the DFD descriptor is not a Khronos basic block".into());
+    }
+    if word1 & 0xffff != 2 {
+        return fail("the DFD version number is not 2 (KDF 1.3)".into());
+    }
+    if word1 >> 16 != dfd_len - 4 {
+        return fail("the DFD descriptor block size disagrees with its length".into());
+    }
+    let (model, transfer) = (bytes[d + 12], bytes[d + 14]);
+    if model != 163 && model != 166 {
+        return fail(format!(
+            "the DFD colour model is {model}, not ETC1S (163) or UASTC (166)"
+        ));
+    }
+    if transfer != 1 {
+        return fail(format!("the DFD transfer function is {transfer}, not 1 (linear)"));
+    }
+    if bytes[d + 16..d + 20] != [3, 3, 0, 0] {
+        return fail("the DFD texel block is not 4x4x1".into());
+    }
+    if (model == 163) != (sc == 1) {
+        return fail("the colour model and the supercompression scheme disagree (ETC1S is BasisLZ, UASTC is Zstandard)".into());
+    }
+    for l in 0..levels {
+        let at = 80 + 24 * l as usize;
+        let (offset, length, uncompressed) = (u64_at(at), u64_at(at + 8), u64_at(at + 16));
+        if length < 1 || offset.saturating_add(length) > len {
+            return fail(format!("level {l} lies outside the file"));
+        }
+        if sc == 2 {
+            let w = (width >> l).max(1);
+            let h = (height >> l).max(1);
+            let expected = w.div_ceil(4) * h.div_ceil(4) * 16;
+            if uncompressed != expected {
+                return fail(format!(
+                    "level {l} uncompressedByteLength is {uncompressed}, expected {expected}"
+                ));
+            }
+        }
+    }
+    Ok(Ktx2Payload {
+        width: width as i64,
+        height: height as i64,
+        levels: levels as i64,
+        uastc: model == 166,
+        supercompression: sc as u32,
+    })
+}
+
+/// The entry-dependent half of the KTX2 rules (`ktx2-shape`): the file's codec is the variant's
+/// encoding, its pixel size is the entry's, and its level count is the entry's mip chain.
+pub fn check_ktx2_shape(
+    k: &Ktx2Payload,
+    encoding: &str,
+    width: i64,
+    height: i64,
+    mipmaps: bool,
+) -> Result<(), Error> {
+    let model = if k.uastc { "uastc" } else { "etc1s" };
+    if model != encoding {
+        return Err(err(
+            "ktx2-shape",
+            format!("the file is {model}, the variant's encoding is {encoding}"),
+        ));
+    }
+    if k.width != width || k.height != height {
+        return Err(err(
+            "ktx2-shape",
+            format!(
+                "the file is {}x{}, the entry is {width}x{height}",
+                k.width, k.height
+            ),
+        ));
+    }
+    let levels = if mipmaps { mip_levels(width, height) } else { 1 };
+    if k.levels != levels {
+        return Err(err(
+            "ktx2-shape",
+            format!(
+                "the file has {} levels, the entry's mip chain has {levels}",
+                k.levels
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn mip_levels(width: i64, height: i64) -> i64 {
+    let (mut w, mut h, mut n) = (width, height, 1);
+    while w > 1 || h > 1 {
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+        n += 1;
+    }
+    n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_sizes_follow_godots_dst_image_size() {
+        // Godot's _get_dst_image_size, by hand: the same values the TypeScript self-test pins.
+        assert_eq!(block_data_bytes("DXT1", 4, 4, false), Some(8));
+        assert_eq!(block_data_bytes("DXT5", 16, 16, true), Some(368));
+        assert_eq!(block_data_bytes("ASTC_8x8", 16, 16, true), Some(128));
+        assert_eq!(block_data_bytes("ETC2_RGB8", 5, 5, false), Some(32));
+        assert_eq!(block_data_bytes("RGTC_R", 1, 1, true), Some(8));
+        assert_eq!(block_data_bytes("RGBA8", 4, 4, false), None);
+        // Block formats are sized from /9 only.
+        assert_eq!(expected_data_bytes_v("DXT5", 4, 4, false, 8), None);
+        assert_eq!(expected_data_bytes_v("DXT5", 4, 4, false, 9), Some(16));
+    }
+
+    #[test]
+    fn a_ktx2_header_is_checked_field_by_field() {
+        // The committed UASTC + Zstandard file Godot's editor binary wrote (golden-9 generator).
+        let good = include_bytes!("../../protocol/golden-9/payloads/ktx2-16x16-mips.ktx2");
+        let k = decode_ktx2(good).unwrap();
+        assert_eq!((k.width, k.height, k.levels, k.uastc), (16, 16, 5, true));
+        assert!(check_ktx2_shape(&k, "uastc", 16, 16, true).is_ok());
+        assert_eq!(check_ktx2_shape(&k, "etc1s", 16, 16, true).unwrap_err().code, "ktx2-shape");
+        assert_eq!(check_ktx2_shape(&k, "uastc", 16, 16, false).unwrap_err().code, "ktx2-shape");
+        assert_eq!(check_ktx2_shape(&k, "uastc", 8, 8, true).unwrap_err().code, "ktx2-shape");
+        let mut bad = good.to_vec();
+        bad[12] = 37; // vkFormat
+        assert_eq!(decode_ktx2(&bad).unwrap_err().code, "ktx2-header");
+        assert_eq!(decode_ktx2(&good[..60]).unwrap_err().code, "ktx2-header");
+        let mut srgb = good.to_vec();
+        let dfd = u32::from_le_bytes(srgb[48..52].try_into().unwrap()) as usize;
+        srgb[dfd + 14] = 2; // transfer: sRGB
+        assert_eq!(decode_ktx2(&srgb).unwrap_err().code, "ktx2-header");
+        assert_eq!(payload_kind(good, 9), PayloadKind::Ktx2);
+        assert_eq!(payload_kind(good, 8), PayloadKind::Texture);
     }
 }

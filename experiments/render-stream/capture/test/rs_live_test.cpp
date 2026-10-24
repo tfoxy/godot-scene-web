@@ -1787,6 +1787,104 @@ void test_v8_connection() {
   }
 }
 
+// G8k9 (render-stream-9.md "Live transport", "Hello"): /9 is /8's live transport plus the hello keys
+// texture_encodings and gpu_formats. golden-9/control/ holds the vectors; the same files are parsed
+// independently by self-test-rs2.ts. A /9 connection gets the GRS9 magic and a /9 session; /6, /7
+// and /8 connections on a /9 template still speak their own version.
+void test_v9_connection() {
+  const std::string root = std::string(GRC_GOLDEN9_DIR) + "/control";
+  const std::vector<std::string> valid = list_dir(root + "/valid");
+  const std::vector<std::string> invalid = list_dir(root + "/invalid");
+  check(valid.size() == 4, "4 valid golden-9 control vectors (got " + std::to_string(valid.size()) + ")");
+  check(invalid.size() == 10,
+        "10 invalid golden-9 control vectors (got " + std::to_string(invalid.size()) + ")");
+  for (const std::string &path : valid) {
+    ControlMessage m;
+    std::string error;
+    check(parse_control(read_file(path), &m, &error, ProtocolVersion::V9),
+          "valid golden-9 control parses as V9: " + path + " " + error);
+  }
+  for (const std::string &path : invalid) {
+    ControlMessage m;
+    std::string error;
+    check(!parse_control(read_file(path), &m, &error, ProtocolVersion::V9),
+          "invalid golden-9 control refused as V9: " + path);
+    check(!error.empty(), "invalid golden-9 control has an error text: " + path);
+  }
+  ControlMessage m;
+  check(parse_control(read_file(root + "/valid/hello-native-block.json"), &m, nullptr,
+                       ProtocolVersion::V9) &&
+            m.protocol == "render-stream/9" && m.texture_encodings == "block,decoded" &&
+            m.gpu_formats == "s3tc,bptc,rgtc" && m.receiver_kind == "native",
+        "hello-native-block fields");
+  check(!parse_control(read_file(root + "/valid/hello-native-block.json"), &m, nullptr,
+                        ProtocolVersion::V8),
+        "a /9 hello is refused by the V8 parser");
+  check(!parse_control(hello7("null"), &m, nullptr, ProtocolVersion::V9),
+        "a /7 hello is refused by the V9 parser");
+
+  Session tmpl = template_v6();
+  tmpl.version = ProtocolVersion::V9;
+  tmpl.adoption.present = true;
+  tmpl.adoption.frame = 7;
+  tmpl.resources.decode = TextureDecode::Engine;
+  tmpl.resources.texture_delivery.mode = "passthrough";
+  FakeTransport transport;
+  LiveConfig config;
+  config.credit_window_max = 2;
+  Hub hub(&transport, config, tmpl);
+  hub.on_event(opened_with(1, "render-stream.6"), 0);
+  hub.on_event(opened_with(2, "render-stream.9", "http://127.0.0.1:5173"), 0);
+  hub.on_event(opened_with(3, "render-stream.8"), 0);
+  hub.on_event(text(1, kHello6), 0);
+  hub.on_event(text(2, read_file(root + "/valid/hello-native-block.json")), 0);
+  const auto hello8 = [] {
+    std::string t = hello7("null", 1);
+    const std::string from = "render-stream/7";
+    t.replace(t.find(from), from.size(), "render-stream/8");
+    return t;
+  };
+  hub.on_event(text(3, hello8()), 0);
+  Captured snapshot = captured_v6();
+  hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1, 16000000ULL) ? &snapshot : nullptr, 1, 1000);
+  const std::vector<Sent> b6 = of_conn(transport, Sent::Binary, 1);
+  const std::vector<Sent> b9 = of_conn(transport, Sent::Binary, 2);
+  const std::vector<Sent> b8 = of_conn(transport, Sent::Binary, 3);
+  check(b6.size() == 2 && b9.size() == 2 && b8.size() == 2, "all three versions got session + seq 1");
+  if (b6.size() == 2 && b9.size() == 2 && b8.size() == 2) {
+    const std::vector<std::uint8_t> m9 = magic(ProtocolVersion::V9);
+    check(std::equal(m9.begin(), m9.end(), b9[0].bytes.begin()), "the /9 connection starts GRS9");
+    const std::string s9 = meta_at(b9[0].bytes, 8);
+    const std::string s8 = meta_at(b8[0].bytes, 8);
+    check(has(s9, "\"protocol\":\"render-stream/9\"") &&
+              has(s9, "\"texture_delivery\":{\"mode\":\"passthrough\",\"encoder\":null}") &&
+              has(s9, "\"adoption\":{\"mode\":\"arm\",\"frame\":7}"),
+          "the /9 session declares texture_delivery: " + s9.substr(0, 60));
+    check(has(s8, "\"protocol\":\"render-stream/8\"") && !has(s8, "texture_delivery"),
+          "a /8 connection on a /9 template still speaks /8, with no /9 key");
+    check(!has(meta_at(b6[0].bytes, 8), "texture_delivery"), "a /6 connection has no /9 key");
+    check(has(meta_at(b9[1].bytes, 0), "\"variants\":[]"),
+          "a /9 texture entry carries an empty variants list");
+  }
+  const std::vector<ConnectionSummary> sums = hub.summaries();
+  check(sums.size() == 3 && sums[0].version == 6 && sums[1].version == 9 && sums[2].version == 8,
+        "versions 6, 9 and 8");
+  if (sums.size() == 3) {
+    check(sums[1].texture_encodings == "block,decoded" && sums[1].gpu_formats == "s3tc,bptc,rgtc",
+          "a /9 summary records the hello's delivery preferences");
+    check(sums[2].texture_encodings.empty(), "a /8 summary records none");
+  }
+  {
+    FakeTransport t2;
+    Hub h2(&t2, LiveConfig(), tmpl);
+    h2.on_event(opened_with(1, "render-stream.9"), 0);
+    h2.on_event(text(1, hello8()), 0);
+    const std::vector<Sent> closes = t2.of(Sent::Close);
+    check(closes.size() == 1 && closes[0].code == 1002 && t2.of(Sent::Binary).empty(),
+          "a /8 hello on a /9 connection closes 1002 with nothing streamed");
+  }
+}
+
 // gate7-design.md D3, Q2 "Host behaviour on the hello": on a bearer session a /7 hello whose
 // token is null or wrong is `error` unauthorized + close 1008 "unauthorized", with nothing sent
 // before or after; the right token streams. token-ignored lets the wrong one through but still
@@ -1901,6 +1999,7 @@ int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
   test_v8_connection();
+  test_v9_connection();
   test_v7_hello_token();
   test_preflight_attribution();
   test_control_parser();
