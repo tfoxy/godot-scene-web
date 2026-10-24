@@ -60,6 +60,7 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  writeFileSync,
   symlinkSync,
 } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -585,9 +586,34 @@ async function buildBasisSite(args: Args, site: string): Promise<void> {
   if (files.length === 0)
     throw new HarnessUsageError(`--basis-store ${args.basisStore}: no sha256/*.ktx2`);
   await mkdir(join(site, "inputs", "basis"), { recursive: true });
+  // G8kb2: where the store holds the source pixels (a decoded .grt payload of the same size), the
+  // quality mode measures against them too: its last width*height*channels bytes, copied as .src.
+  const indexPath = join(args.basisStore ?? "", "index.jsonl");
+  const stored = existsSync(indexPath)
+    ? readFileSync(indexPath, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as { hash: string; format: string; width: number; height: number })
+    : [];
   const manifest = files.map((f) => {
     copyFileSync(join(dir, f), join(site, "inputs", "basis", f));
-    return { name: f.replace(/\.ktx2$/, ""), file: f, bytes: statSync(join(dir, f)).size };
+    const head = readFileSync(join(dir, f)).subarray(20, 28);
+    const w = head.readUInt32LE(0);
+    const h = head.readUInt32LE(4);
+    const src = stored.find(
+      (e) => e.width === w && e.height === h && (e.format === "RGBA8" || e.format === "RGB8") && existsSync(join(dir, `${e.hash}.grt`)),
+    );
+    let source: { file: string; channels: number } | null = null;
+    if (src) {
+      const channels = src.format === "RGB8" ? 3 : 4;
+      const raw = readFileSync(join(dir, `${src.hash}.grt`));
+      if (raw.length >= w * h * channels && raw.length - w * h * channels < 256) {
+        const name = `${f.replace(/\.ktx2$/, "")}.src`;
+        writeFileSync(join(site, "inputs", "basis", name), raw.subarray(raw.length - w * h * channels));
+        source = { file: name, channels };
+      }
+    }
+    return { name: f.replace(/\.ktx2$/, ""), file: f, bytes: statSync(join(dir, f)).size, source };
   });
   await writeFile(join(site, "inputs", "basis", "manifest.json"), `${JSON.stringify(manifest)}\n`);
   if (args.basisReceiver) {
@@ -1660,6 +1686,16 @@ async function runBasisBench(
     await page.close();
   }
   if (device) conditions.push({ when: "after-transcode", ...(await deviceCondition(device)) });
+  {
+    // G8kb2: the context's own GL decode of each transcode against the UASTC decode and the source.
+    const q = await openPage(`${origin}/basis.html?mode=quality`);
+    try {
+      await waitBench(q, 10 * 60_000, `${label} quality`);
+      result.quality = await q.evaluate("window.__bench.result");
+    } finally {
+      await q.close();
+    }
+  }
   const gpu: unknown[] = [];
   for (const delivery of args.basisDeliveries) {
     const p = await openPage(`${origin}/basis.html?mode=gpu&delivery=${delivery}&copies=${args.basisCopies}`);

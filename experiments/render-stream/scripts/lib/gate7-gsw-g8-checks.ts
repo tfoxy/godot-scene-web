@@ -214,6 +214,7 @@ export function predictGswTarget(
   if (components === 2) return has("rgtc") ? "RGTC_RG" : "RGBA8";
   if (components === 3) {
     if (has("bptc")) return "BPTC_RGBA";
+    if (has("astc")) return "ASTC_4x4"; // G8kb2: GSW departs from Godot's rule
     if (has("s3tc")) return "DXT1";
     if (has("etc2")) return "ETC2_RGB8";
     return "RGBA8";
