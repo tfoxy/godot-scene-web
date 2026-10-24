@@ -75,6 +75,8 @@ macro_rules! wire_enum {
 wire_enum!(Origin { Created = "created", RootQuery = "root-query", Adopted = "adopted" });
 // render-stream-8.md "Resource tables": where an adopted texture's or mesh's content came from.
 wire_enum!(AdoptedContent { Current = "current", Creation = "creation" });
+// render-stream-9.md "Texture entries": the encoding of a texture variant, in wire (sorted) order.
+wire_enum!(VariantEncoding { Block = "block", Uastc = "uastc", Etc1s = "etc1s" });
 wire_enum!(ParentKind { Canvas = "canvas", Item = "item" });
 wire_enum!(Encoding { Full = "full", Patch = "patch" });
 wire_enum!(TxStatus { Ok = "ok", CaptureFailure = "capture-failure" });
@@ -463,7 +465,22 @@ pub struct Texture {
     pub height: i64,
     pub mipmaps: bool,
     pub payload_bytes: i64,
+    /// /9 only (render-stream-9.md "Texture entries"): the alternative payloads, sorted by
+    /// encoding, at most one each; empty below /9.
+    pub variants: Vec<TextureVariant>,
     pub canvas: Option<CanvasTexture>,
+}
+
+/// One alternative payload of an ok image texture (render-stream-9.md "Texture entries").
+#[derive(Clone, PartialEq, Debug)]
+pub struct TextureVariant {
+    pub encoding: VariantEncoding,
+    pub hash: Hash,
+    pub payload_bytes: i64,
+    /// `block` only: the source block format.
+    pub format: Option<Box<str>>,
+    /// Basis encodings only: the params_id.
+    pub params: Option<Box<str>>,
 }
 
 #[derive(Clone, PartialEq, Debug)]

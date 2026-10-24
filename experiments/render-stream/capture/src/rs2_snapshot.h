@@ -110,13 +110,29 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV8 = {0x47, 0x52, 0x53, 0x38,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV8 = "render-stream/8";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8 };
+// render-stream/9 (G8k9, render-stream-9.md, texture-delivery-design.md D4/Q5): /8 plus the
+// texture-delivery wire delta: the session key `resources.texture_delivery`, texture-entry
+// `variants`, `block` GRT1 payloads and `render-stream-texture/ktx2` payloads (as variants only),
+// the texture reason `delivery-pending`, and the hello keys `texture_encodings` / `gpu_formats`.
+// Same version-switch pattern as /3 to /8, and opt-in: file sinks speak it only with
+// GRC_STREAM_VERSION=9, the live listener offers `render-stream.9` only then, and no receiver's
+// hello offers it yet.
+inline constexpr std::array<std::uint8_t, 8> kMagicV9 = {0x47, 0x52, 0x53, 0x39,
+                                                          0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV9 = "render-stream/9";
 
-// True for /7 and /8, the versions whose live transport is the /7 one (token hello, credit
-// window, CORS). /8 is /7 plus render-stream-8.md's list, so every "V7" cascade means "V7 or
-// later".
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9 };
+
+// True for /7, /8 and /9, the versions whose live transport is the /7 one (token hello, credit
+// window, CORS). /8 is /7 plus render-stream-8.md's list and /9 is /8 plus render-stream-9.md's,
+// so every "V7" cascade means "V7 or later".
 inline constexpr bool is_v7_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V7 || v == ProtocolVersion::V8;
+  return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9;
+}
+
+// True for /8 and /9: the versions that carry render-stream-8.md's keys.
+inline constexpr bool is_v8_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V8 || v == ProtocolVersion::V9;
 }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
@@ -294,6 +310,9 @@ enum class HostSizeStatus : std::uint8_t { Match, DegenerateVisible, DegenerateW
 
 enum class TextureKind : std::uint8_t { Image, Placeholder, Canvas };
 enum class TextureStatus : std::uint8_t { Ok, Unsupported, Freed };
+// new at /9 (render-stream-9.md "Texture entries"), in wire order.
+enum class VariantEncoding : std::uint8_t { Block, Uastc, Etc1s };
+
 enum class TextureReason : std::uint8_t {
   UnsupportedFormat,
   PayloadTooLarge,
@@ -302,6 +321,7 @@ enum class TextureReason : std::uint8_t {
   LayeredUpdate,
   UnknownTexture,
   CanvasTextureChannel,
+  DeliveryPending,  // new at /9 (render-stream-9.md): the async worker path had no hash yet
 };
 
 // RenderingServer.CanvasItemTextureFilter / CanvasItemTextureRepeat order (servers/rendering_
@@ -527,8 +547,17 @@ inline const char *to_wire(TextureReason v) {
   case TextureReason::LayeredUpdate: return "layered-update";
   case TextureReason::UnknownTexture: return "unknown-texture";
   case TextureReason::CanvasTextureChannel: return "canvas-texture-channel";
+  case TextureReason::DeliveryPending: return "delivery-pending";
   }
   return "unsupported-format";
+}
+inline const char *to_wire(VariantEncoding v) {
+  switch (v) {
+  case VariantEncoding::Block: return "block";
+  case VariantEncoding::Uastc: return "uastc";
+  case VariantEncoding::Etc1s: return "etc1s";
+  }
+  return "block";
 }
 inline const char *to_wire(Filter v) {
   switch (v) {
@@ -827,6 +856,13 @@ struct PublicationInfo {
   std::int32_t credit_window = 1;
 };
 
+// render-stream-9.md "Session": resources.texture_delivery, {"mode":<D1 mode>,"encoder":null|<prefix>}.
+struct TextureDeliveryDeclaration {
+  std::string mode = "rgba";  // rgba|passthrough|basis-uastc|basis-etc1s
+  bool has_encoder = false;   // false -> "encoder": null
+  std::string encoder;        // the params_id prefix, e.g. "basisu-1.60"
+};
+
 // render-stream-2.md session "resources": the resource policy for this stream.
 struct ResourcesInfo {
   Delivery delivery = Delivery::OutOfBand;
@@ -840,6 +876,9 @@ struct ResourcesInfo {
   // render-stream-8.md "Session": the host's declared texture-decode policy (gate8-design.md D8),
   // encoded as resources.decode at /8 only; Off at every earlier version.
   TextureDecode decode = TextureDecode::Off;
+  // render-stream-9.md "Session": the host's declared texture-delivery mode (texture-delivery-
+  // design.md D1) and the encoder prefix, encoded as resources.texture_delivery at /9 only.
+  TextureDeliveryDeclaration texture_delivery;
 };
 
 // render-stream-8.md "Session": adoption is null (off) or {"mode":"arm","frame":<int >= 1>}, the
@@ -1110,6 +1149,18 @@ struct CanvasTextureInfo {
 // One texture-table entry (render-stream-2.md "Texture"). Field meaning by kind/status is the
 // field table there; this struct can represent any legal combination, and an illegal one too
 // (for building invalid golden vectors), since it performs no validation itself.
+// new at /9 (render-stream-9.md "Texture entries"): one alternative payload of an ok image
+// texture. The base entry stays the `decoded` variant (texture-delivery-design.md D5).
+struct TextureVariant {
+  VariantEncoding encoding = VariantEncoding::Block;
+  std::string hash;  // 64 lowercase hex
+  std::uint64_t payload_bytes = 0;
+  bool has_format = false;  // block only
+  std::string format;
+  bool has_params = false;  // basis variants only
+  std::string params;       // the params_id
+};
+
 struct TextureEntry {
   std::uint32_t id = 0;
   // new at /8 (render-stream-8.md "Resource tables"): origin is "created" below /8; adopted_content
@@ -1132,6 +1183,8 @@ struct TextureEntry {
   std::int32_t height = 0;
   bool mipmaps = false;
   std::uint64_t payload_bytes = 0;
+  // new at /9: sorted by encoding (block, uastc, etc1s), at most one each; empty below /9.
+  std::vector<TextureVariant> variants;
   bool has_canvas = false;  // false -> "canvas": null
   CanvasTextureInfo canvas;
 };

@@ -376,6 +376,38 @@ impl Suite<'_> {
                 "",
             );
         }
+        for entry in arr("ktx2_payloads") {
+            let file = s(&entry, "file");
+            let Some(bytes) = self.bytes(&file) else {
+                self.ok(false, format!("{file} is readable"), "");
+                continue;
+            };
+            self.ok(
+                wire::sha256(&bytes).to_hex() == s(&entry, "hash")
+                    && Some(bytes.len() as u64) == entry.get("bytes").and_then(|v| v.as_u64()),
+                format!("{file} hashes to its listed hash and has its listed length"),
+                "",
+            );
+            match payload::decode_ktx2(&bytes) {
+                Ok(k) => {
+                    let shape = Some(k.width) == entry.get("width").and_then(|v| v.as_i64())
+                        && Some(k.height) == entry.get("height").and_then(|v| v.as_i64())
+                        && Some(k.levels) == entry.get("levels").and_then(|v| v.as_i64())
+                        && (if k.uastc { "uastc" } else { "etc1s" }) == s(&entry, "encoding")
+                        && (k.supercompression == 2) == (s(&entry, "supercompression") == "zstd");
+                    self.ok(
+                        shape,
+                        format!("decodeKtx2Payload({file}) decodes to its listed shape"),
+                        "",
+                    );
+                }
+                Err(e) => self.ok(
+                    false,
+                    format!("decodeKtx2Payload({file}) decodes to its listed shape"),
+                    e.to_string(),
+                ),
+            }
+        }
         for entry in arr("mesh_payloads") {
             let file = s(&entry, "file");
             let Some(bytes) = self.bytes(&file) else {
@@ -530,10 +562,10 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-8 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-9 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=8u8 {
+    for v in 2..=9u8 {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -550,6 +582,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (5, 6),
         (6, 7),
         (8, 7),
+        (8, 9),
+        (9, 8),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

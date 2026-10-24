@@ -134,7 +134,7 @@ fn cmd_goldens(args: &Args) -> ExitCode {
     );
     let only = match args.get("only").map(|s| s.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=8).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=9).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     let opts = match args.get("sabotage") {
@@ -508,7 +508,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
 fn cmd_validate(args: &Args) -> ExitCode {
     let forced = match args.get("version").map(|v| v.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=8).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=9).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     if args.positional.is_empty() {

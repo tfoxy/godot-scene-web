@@ -133,7 +133,34 @@ const RESOURCES_KEYS_V8: &[&str] = &[
     "auth",
     "decode",
 ];
+// render-stream-9.md "Session": "texture_delivery" after "decode" (the end of the resources object).
+const RESOURCES_KEYS_V9: &[&str] = &[
+    "hash",
+    "payloads",
+    "delivery",
+    "inline_max_bytes",
+    "max_payload_bytes",
+    "permitted_formats",
+    "fetch",
+    "http_path",
+    "auth",
+    "decode",
+    "texture_delivery",
+];
 const TEXTURE_DECODES: &[&str] = &["off", "engine"];
+const TEXTURE_DELIVERY_KEYS: &[&str] = &["mode", "encoder"];
+/// texture-delivery-design.md D1: the session's delivery modes, and (render-stream-9.md) the
+/// variant encodings each offers beside `decoded`.
+pub const DELIVERY_MODES: &[&str] = &["rgba", "passthrough", "basis-uastc", "basis-etc1s"];
+pub fn mode_offers(mode: &str, encoding: VariantEncoding) -> bool {
+    match mode {
+        "passthrough" => encoding == VariantEncoding::Block,
+        "basis-uastc" => encoding != VariantEncoding::Etc1s,
+        "basis-etc1s" => encoding == VariantEncoding::Etc1s,
+        _ => false,
+    }
+}
+const VARIANT_KEYS: &[&str] = &["encoding", "hash", "payload_bytes", "format", "params"];
 const ADOPTION_KEYS: &[&str] = &["mode", "frame"];
 const FEATURES_KEYS: &[&str] = &[
     "ops",
@@ -359,6 +386,25 @@ const TEXTURE_KEYS_V8: &[&str] = &[
     "payload_bytes",
     "canvas",
 ];
+// render-stream-9.md "Texture entries": "variants" right after "payload_bytes".
+const TEXTURE_KEYS_V9: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "kind",
+    "status",
+    "reason",
+    "version",
+    "hash",
+    "format",
+    "source_format",
+    "width",
+    "height",
+    "mipmaps",
+    "payload_bytes",
+    "variants",
+    "canvas",
+];
 const CANVAS_TEXTURE_KEYS: &[&str] = &["diffuse", "filter", "repeat"];
 const MESH_KEYS: &[&str] = &[
     "id", "origin", "status", "reason", "version", "f", "surfaces",
@@ -455,6 +501,17 @@ pub const TEXTURE_REASONS: &[&str] = &[
     "layered-update",
     "unknown-texture",
     "canvas-texture-channel",
+];
+/// render-stream-9.md "Texture reasons": /9 adds `delivery-pending`.
+const TEXTURE_REASONS_V9: &[&str] = &[
+    "unsupported-format",
+    "payload-too-large",
+    "payload-unavailable",
+    "update-shape-mismatch",
+    "layered-update",
+    "unknown-texture",
+    "canvas-texture-channel",
+    "delivery-pending",
 ];
 const UNSUPPORTED_RESOURCE_REASONS: &[&str] = &["canvas-texture-headless"];
 const SESSION_UNSUPPORTED_REASONS: &[&str] =
@@ -917,6 +974,16 @@ pub struct Resources {
     pub auth: &'static str,
     /// /8 only (render-stream-8.md "Session"): "off" or "engine".
     pub decode: Option<&'static str>,
+    /// /9 only (render-stream-9.md "Session"): the host's declared texture-delivery mode and
+    /// encoder prefix.
+    pub texture_delivery: Option<TextureDelivery>,
+}
+
+/// `resources.texture_delivery`: `{"mode":<D1 mode>,"encoder":null|<params_id prefix>}`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextureDelivery {
+    pub mode: &'static str,
+    pub encoder: Option<String>,
 }
 
 /// /8 only (render-stream-8.md "Session"): the late-join adoption declaration,
@@ -988,7 +1055,9 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
     let v4 = version >= 4;
     let Some(f) = ck.fields(
         v,
-        if version >= 8 {
+        if version >= 9 {
+            RESOURCES_KEYS_V9
+        } else if version >= 8 {
             RESOURCES_KEYS_V8
         } else if v4 {
             RESOURCES_KEYS_V4
@@ -1059,6 +1128,34 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
     } else {
         None
     };
+    let texture_delivery = if version >= 9 {
+        let Some(d) = ck.fields(f.at(10), TEXTURE_DELIVERY_KEYS) else {
+            return Err(err(ck, "\"texture_delivery\" has the wrong keys"));
+        };
+        let Some(mode) = ck.one_of_str(d.at(0), DELIVERY_MODES) else {
+            return Err(err(
+                ck,
+                "\"texture_delivery.mode\" must be \"rgba\", \"passthrough\", \"basis-uastc\" or \"basis-etc1s\"",
+            ));
+        };
+        let encoder = if ck.null(d.at(1)) {
+            None
+        } else if let Some(e) = ck
+            .string(d.at(1))
+            .filter(|e| is_params_prefix(e))
+            .map(|e| String::from_utf8_lossy(e).into_owned())
+        {
+            Some(e)
+        } else {
+            return Err(err(
+                ck,
+                "\"texture_delivery.encoder\" is neither null nor a params_id prefix",
+            ));
+        };
+        Some(TextureDelivery { mode, encoder })
+    } else {
+        None
+    };
     let expected = if inline_max_bytes == 0 {
         "out-of-band"
     } else if inline_max_bytes >= max_payload_bytes {
@@ -1089,7 +1186,17 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
         http_path,
         auth,
         decode,
+        texture_delivery,
     })
+}
+
+/// `^[a-z0-9][a-z0-9._-]*$`: a params_id prefix such as `basisu-1.60`.
+fn is_params_prefix(s: &[u8]) -> bool {
+    !s.is_empty()
+        && (s[0].is_ascii_lowercase() || s[0].is_ascii_digit())
+        && s.iter().all(|&b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-'
+        })
 }
 
 fn string_vec_checked(ck: &Ck, v: Value) -> Option<Vec<String>> {
@@ -1918,8 +2025,18 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     // render-stream-8.md "Resource tables": at /8 `adopted_content` follows `origin` and
     // `source_format` follows `format`, so the later keys shift by one, then two.
     let v8 = version >= 8;
+    let v9 = version >= 9;
     let (s1, s2) = if v8 { (1, 2) } else { (0, 0) };
-    let Some(f) = ck.fields(t, if v8 { TEXTURE_KEYS_V8 } else { TEXTURE_KEYS }) else {
+    let Some(f) = ck.fields(
+        t,
+        if v9 {
+            TEXTURE_KEYS_V9
+        } else if v8 {
+            TEXTURE_KEYS_V8
+        } else {
+            TEXTURE_KEYS
+        },
+    ) else {
         return Err(err(ck, "has the wrong keys"));
     };
     let Some(id) = ck.id1(f.at(0)) else {
@@ -1955,7 +2072,10 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     };
     let reason = if ck.null(f.at(4 + s1)) {
         None
-    } else if let Some(r) = ck.one_of_str(f.at(4 + s1), TEXTURE_REASONS) {
+    } else if let Some(r) = ck.one_of_str(
+        f.at(4 + s1),
+        if v9 { TEXTURE_REASONS_V9 } else { TEXTURE_REASONS },
+    ) {
         Some(r)
     } else {
         return Err(err(
@@ -1995,10 +2115,67 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
     let Some(payload_bytes) = ck.int_ge(f.at(11 + s2), 0) else {
         return Err(err(ck, "\"payload_bytes\" is not a non-negative integer"));
     };
-    let canvas = if ck.null(f.at(12 + s2)) {
+    // render-stream-9.md "Texture entries": variants is an array of five-key objects; the
+    // cross-entry rules are `delivery-entry` (validate.rs).
+    let mut variants = Vec::new();
+    if v9 {
+        let Some(list) = ck.arr(f.at(12 + s2)) else {
+            return Err(err(ck, "\"variants\" is not an array"));
+        };
+        for &item in list {
+            let Some(v) = ck.fields(item, VARIANT_KEYS) else {
+                return Err(err(ck, "has a \"variants\" entry with the wrong keys"));
+            };
+            let Some(encoding) = enum_of(ck, v.at(0), VariantEncoding::ALL, VariantEncoding::as_str)
+            else {
+                return Err(err(ck, "has a variant with an invalid \"encoding\""));
+            };
+            let Some(hash) = ck.hash(v.at(1)) else {
+                return Err(err(
+                    ck,
+                    "has a variant \"hash\" that is not 64 lowercase hex digits",
+                ));
+            };
+            let Some(payload_bytes) = ck.int_ge(v.at(2), 0) else {
+                return Err(err(
+                    ck,
+                    "has a variant \"payload_bytes\" that is not a non-negative integer",
+                ));
+            };
+            let format = if ck.null(v.at(3)) {
+                None
+            } else if let Some(s) = ck.owned(v.at(3)) {
+                Some(s)
+            } else {
+                return Err(err(
+                    ck,
+                    "has a variant \"format\" that is neither null nor a string",
+                ));
+            };
+            let params = if ck.null(v.at(4)) {
+                None
+            } else if let Some(s) = ck.owned(v.at(4)) {
+                Some(s)
+            } else {
+                return Err(err(
+                    ck,
+                    "has a variant \"params\" that is neither null nor a string",
+                ));
+            };
+            variants.push(TextureVariant {
+                encoding,
+                hash,
+                payload_bytes,
+                format,
+                params,
+            });
+        }
+    }
+    let cs = if v9 { 1 } else { 0 };
+    let canvas = if ck.null(f.at(12 + s2 + cs)) {
         None
     } else {
-        let Some(c) = ck.fields(f.at(12 + s2), CANVAS_TEXTURE_KEYS) else {
+        let Some(c) = ck.fields(f.at(12 + s2 + cs), CANVAS_TEXTURE_KEYS) else {
             return Err(err(ck, "\"canvas\" has the wrong keys"));
         };
         let Some(diffuse) = ck.opt_id1(c.at(0)) else {
@@ -2034,6 +2211,7 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
         height,
         mipmaps,
         payload_bytes,
+        variants,
         canvas,
     })
 }

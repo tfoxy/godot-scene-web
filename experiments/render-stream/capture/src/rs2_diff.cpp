@@ -279,6 +279,20 @@ bool texture_entry_equal(const TextureEntry &a, const TextureEntry &b) {
   if (a.has_canvas && !canvas_texture_info_equal(a.canvas, b.canvas)) {
     return false;
   }
+  // new at /9: variants (empty below /9) take part in the entry's identity, so a variant that
+  // appears at an equal version is a patch entry (texture-delivery-design.md D6).
+  if (a.variants.size() != b.variants.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.variants.size(); ++i) {
+    const TextureVariant &x = a.variants[i];
+    const TextureVariant &y = b.variants[i];
+    if (x.encoding != y.encoding || x.hash != y.hash || x.payload_bytes != y.payload_bytes ||
+        x.has_format != y.has_format || x.format != y.format || x.has_params != y.has_params ||
+        x.params != y.params) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -307,11 +321,12 @@ Transaction make_full(const Snapshot &cur) {
   t.textures = cur.textures;
   if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5 ||
       cur.version == ProtocolVersion::V6 || cur.version == ProtocolVersion::V7 ||
-      cur.version == ProtocolVersion::V8) {
+      cur.version == ProtocolVersion::V8 || cur.version == ProtocolVersion::V9) {
     t.meshes = cur.meshes;
   }
   if (cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
-      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8) {
+      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8 ||
+      cur.version == ProtocolVersion::V9) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -405,7 +420,8 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
   // its shader/material tables and mesh table forward unchanged).
   const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
-                      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8;
+                      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8 ||
+                      cur.version == ProtocolVersion::V9;
   const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     for (const auto &[id, ptr] : base_meshes) {
@@ -505,7 +521,8 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
 
   // is_v5 means "V5 or later" (see make_patch()'s comment above).
   const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6 ||
-                      txn.version == ProtocolVersion::V7 || txn.version == ProtocolVersion::V8;
+                      txn.version == ProtocolVersion::V7 || txn.version == ProtocolVersion::V8 ||
+                      txn.version == ProtocolVersion::V9;
   const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
 
   if (txn.encoding == Encoding::Full) {

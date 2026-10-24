@@ -522,6 +522,12 @@ pub fn verify_decode(
             )
         }
         PayloadKind::Shader => Decoded::Shader(decode_shader(bytes)?.code.to_string()),
+        // /9: a KTX2 payload is a delivery variant; nothing here draws from one (render-stream-9.md).
+        PayloadKind::Ktx2 => {
+            return Err(bad(
+                "a KTX2 payload is a delivery variant, not a drawable texture".to_string(),
+            ))
+        }
     };
     prof::add(prof::PAYLOAD_DECODE, t);
     Ok(d)

@@ -326,6 +326,25 @@ bool is_lower_hex(const std::string &text, std::size_t length) {
          });
 }
 
+// render-stream-9.md "Hello": ^[a-z0-9]+(,[a-z0-9]+)*$, at most 96 characters.
+bool is_flat_list(const std::string &text) {
+  if (text.empty() || text.size() > 96 || text.front() == ',' || text.back() == ',') {
+    return false;
+  }
+  char prev = ',';
+  for (char c : text) {
+    const bool name = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z');
+    if (!name && c != ',') {
+      return false;
+    }
+    if (c == ',' && prev == ',') {
+      return false;
+    }
+    prev = c;
+  }
+  return true;
+}
+
 bool stage_from(const std::string &text, AckStage *out) {
   if (text == "received") {
     *out = AckStage::Received;
@@ -343,7 +362,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V8   ? kProtocolV8
+  return version == ProtocolVersion::V9   ? kProtocolV9
+         : version == ProtocolVersion::V8 ? kProtocolV8
          : version == ProtocolVersion::V7 ? kProtocolV7
          : version == ProtocolVersion::V6 ? kProtocolV6
          : version == ProtocolVersion::V5 ? kProtocolV5
@@ -417,6 +437,11 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
               "presentation_css_w",
               "presentation_css_h",
               "dpr_milli"};
+      if (version == ProtocolVersion::V9) {
+        // render-stream-9.md "Hello": /8's keys plus texture_encodings and gpu_formats.
+        keys.push_back("texture_encodings");
+        keys.push_back("gpu_formats");
+      }
     } else {
       keys = {"type", "protocol", "receiver", "credit_stage", "inbound_buffer_bytes"};
     }
@@ -515,6 +540,18 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
             !num("presentation_css_h", &message.presentation_css_h) ||
             !num("dpr_milli", &message.dpr_milli)) {
           return false;
+        }
+        if (version == ProtocolVersion::V9) {
+          if (!str("texture_encodings", &message.texture_encodings) ||
+              !str("gpu_formats", &message.gpu_formats)) {
+            return false;
+          }
+          if (!is_flat_list(message.texture_encodings)) {
+            return fail("\"texture_encodings\" is not a comma list of [a-z0-9] names, <= 96 chars");
+          }
+          if (!is_flat_list(message.gpu_formats)) {
+            return fail("\"gpu_formats\" is not a comma list of [a-z0-9] names, <= 96 chars");
+          }
         }
       }
       // render-stream-2.md "Golden vectors": a hello for another version is invalid.
@@ -796,10 +833,12 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       c.opened_ns = event.t_ns;
       // G7n: the subprotocol decides the connection's version (render-stream.7 -> /7).
       // G8w: render-stream.8 -> /8 (render-stream-8.md "Live transport").
-      c.version = event.subprotocol == kSubprotocolV8   ? ProtocolVersion::V8
+      // G8k9: render-stream.9 -> /9 (render-stream-9.md "Live transport").
+      c.version = event.subprotocol == kSubprotocolV9   ? ProtocolVersion::V9
+                  : event.subprotocol == kSubprotocolV8 ? ProtocolVersion::V8
                   : event.subprotocol == kSubprotocolV7 ? ProtocolVersion::V7
-                  : template_.version == ProtocolVersion::V8 ? ProtocolVersion::V6
-                                                             : template_.version;
+                  : is_v8_or_later(template_.version) ? ProtocolVersion::V6
+                                                      : template_.version;
       c.s.version = version_number(c.version);
       c.s.origin = event.origin;
       if (!config_.auth_token.empty() && !is_v7_or_later(c.version)) {
@@ -910,6 +949,8 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         c.s.presentation_css_w = message.presentation_css_w;
         c.s.presentation_css_h = message.presentation_css_h;
         c.s.dpr_milli = message.dpr_milli;
+        c.s.texture_encodings = message.texture_encodings;
+        c.s.gpu_formats = message.gpu_formats;
         if (!config_.auth_token.empty()) {
           // D3: compared in constant time, as the G2e upgrade check is.
           c.s.token_checked = true;
@@ -931,6 +972,10 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             .num("presentation_css_w", message.presentation_css_w)
             .num("presentation_css_h", message.presentation_css_h)
             .num("dpr_milli", message.dpr_milli);
+        if (c.version == ProtocolVersion::V9) {
+          hello.str("texture_encodings", message.texture_encodings)
+              .str("gpu_formats", message.gpu_formats);
+        }
         if (c.s.token_checked) {
           hello.boolean("token_ok", c.s.token_ok);
         } else {
@@ -1740,6 +1785,11 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       }
     }
     json.field_or_null("origin", s.origin);
+    if (s.version == 9) {
+      // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 connections only.
+      json.field_or_null("texture_encodings", s.texture_encodings);
+      json.field_or_null("gpu_formats", s.gpu_formats);
+    }
     if (s.token_checked) {
       json.field("token_ok", s.token_ok);
     } else {

@@ -185,7 +185,9 @@ def session_record(
     publication_mode: str = "every-frame",
     publication_target_fps: int | None = None,
     credit_window: int = 1,
+    texture_delivery: dict | None = None,
 ) -> bytes:
+    # texture_delivery is golden-9's hook (it appends resources.texture_delivery); /8 never sets it.
     logical_size = (640, 360)
     if delivery == "out-of-band":
         resources = {
@@ -206,6 +208,8 @@ def session_record(
             "permitted_formats": PERMITTED_FORMATS, "fetch": "none", "http_path": None,
             "auth": "none", "decode": decode,
         }
+    if texture_delivery is not None:
+        resources["texture_delivery"] = texture_delivery
     meta = {
         "type": "session",
         "protocol": PROTOCOL,

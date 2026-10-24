@@ -411,6 +411,7 @@ fn texture(c: &mut Cur) -> O<Texture> {
         height,
         mipmaps,
         payload_bytes,
+        variants: Vec::new(),
         canvas,
     })
 }

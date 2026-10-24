@@ -155,6 +155,7 @@
 #include "rs_adopt.h"
 #include "rs_canvas_texture_shim.h"
 #include "rs_gate8_policy.h"
+#include "rs_texture_delivery.h"
 #include "rs_histogram.h"
 #include "rs_live.h"
 #include "rs_mirror.h"
@@ -567,7 +568,12 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6));
+                   g_stream.gate8.speaks_v9()
+                       ? 9
+                       : (g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6)));
+    if (g_stream.gate8.speaks_v9()) {
+      json.field("texture_delivery", rs::texture_delivery_policy().mode);
+    }
     json.field("adopt", std::string(g_stream.gate8.adopt ? "arm" : "off"));
     json.field("texture_decode", std::string(g_stream.gate8.decode_engine ? "engine" : "off"));
     json.field("float_formats", g_stream.gate8.float_formats);
@@ -1353,6 +1359,20 @@ void stream_start() {
       return;
     }
     g_stream.adopt_fault = adopt_fault;
+    // G8k9 (texture-delivery-design.md D1): GRC_TEXTURE_DELIVERY, declared by a /9 session only; at
+    // every other version the decoded payload is all there is, so it changes nothing there.
+    rs::DeliveryPolicy delivery;
+    if (!rs::parse_delivery_policy(std::getenv("GRC_TEXTURE_DELIVERY"), &delivery, &error)) {
+      log_line("stream: refused texture delivery policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    rs::texture_delivery_set_policy(delivery);
+    g_stream.policy.texture_delivery = rs::declare_texture_delivery(delivery);
     g_stream.gate8 = gate8;
     g_stream.policy.decode = gate8.decode_engine ? rs2::TextureDecode::Engine : rs2::TextureDecode::Off;
     rs::texture_decode_set_enabled(gate8.decode_engine);
@@ -1690,7 +1710,10 @@ void stream_start() {
   // G55d, /4 from G5d, /3 from G4e2). The mirror stamps its snapshots V6 to match.
   // G8w (gate8-design.md D2): /8 only when a file sink asked for it (GRC_STREAM_VERSION=8) or a
   // gate 8 policy needs it; /6 otherwise, and every /2-/7 byte stays as it was.
-  session.version = g_stream.gate8.speaks_v8() ? rs2::ProtocolVersion::V8 : rs2::ProtocolVersion::V6;
+  // G8k9: GRC_STREAM_VERSION=9 selects /9 (render-stream-9.md); the seam declares the delivery mode.
+  session.version = g_stream.gate8.speaks_v9()   ? rs2::ProtocolVersion::V9
+                    : g_stream.gate8.speaks_v8() ? rs2::ProtocolVersion::V8
+                                                 : rs2::ProtocolVersion::V6;
   session.materials.shader_policy = g_stream.shader_policy;
   session.session_id = rs2::generate_id();
   session.engine.version_string = g_state.fp.version_string;
@@ -1988,7 +2011,8 @@ void stream_start() {
     // first under GRC_STREAM_VERSION=8, and alone under a gate 8 policy. A /8 upgrade carries the
     // token in the hello like /7's.
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
-    server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8};
+    server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
+                                                   rs2::kSubprotocolV9};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";

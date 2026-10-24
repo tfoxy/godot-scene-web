@@ -365,6 +365,11 @@ enum Carried {
     Shader {
         len: i64,
     },
+    /// /9: a `render-stream-texture/ktx2` payload (a delivery variant).
+    Ktx2 {
+        shape: payload::Ktx2Payload,
+        len: i64,
+    },
 }
 
 // ------------------------------------------------------------------------------------- validator
@@ -432,6 +437,36 @@ fn feq(a: &[f32], b: &[f32]) -> bool {
 }
 
 fn texture_states_equal(a: &Texture, b: &Texture) -> bool {
+    texture_core_equal(a, b) && variants_equal(&a.variants, &b.variants)
+}
+
+fn variant_equal(x: &TextureVariant, y: &TextureVariant) -> bool {
+    x.encoding == y.encoding
+        && x.hash == y.hash
+        && ieq(x.payload_bytes, y.payload_bytes)
+        && x.format == y.format
+        && x.params == y.params
+}
+
+fn variants_equal(a: &[TextureVariant], b: &[TextureVariant]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| variant_equal(x, y))
+}
+
+/// render-stream-9.md (texture-delivery-design.md D6): at an equal version `variants` may grow --
+/// every earlier variant stays identical and more may appear -- and nothing else changes.
+fn variants_only_grew(prev: &Texture, cur: &Texture) -> bool {
+    prev.status != EntryStatus::Freed
+        && cur.status != EntryStatus::Freed
+        && texture_core_equal(prev, cur)
+        && prev.variants.iter().all(|p| {
+            cur.variants
+                .iter()
+                .any(|c| c.encoding == p.encoding && variant_equal(p, c))
+        })
+}
+
+/// Everything in a texture entry but its `variants`.
+fn texture_core_equal(a: &Texture, b: &Texture) -> bool {
     ieq(a.id as i64, b.id as i64)
         && a.origin == b.origin
         && a.adopted_content == b.adopted_content
@@ -1244,8 +1279,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=8).contains(&opts.version),
-            "render-stream version 2..=8"
+            (2..=9).contains(&opts.version),
+            "render-stream version 2..=9"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1460,6 +1495,10 @@ impl Validator {
                     len,
                 }
             }
+            PayloadKind::Ktx2 => Carried::Ktx2 {
+                shape: payload::decode_ktx2(bytes)?,
+                len,
+            },
             PayloadKind::Texture => {
                 let t = payload::decode_texture_v(bytes, self.opts.version)?;
                 Carried::Texture {
@@ -2708,10 +2747,101 @@ impl Validator {
     /// Everything `accept` checks after `applyTransaction`, in order.
     fn post_checks(&mut self, offset: usize) -> Result<(), Error> {
         self.check_invariants()?;
+        self.check_delivery(offset)?;
         self.check_adoption(offset)?;
         self.check_versions(offset)?;
         self.check_resources(offset)?;
         self.check_id_reuse(offset)
+    }
+
+    /// `checkDeliveryInvariants` (render-stream-9.md "Texture entries"; `delivery-entry`): variants
+    /// sit only on an ok image; they are sorted by encoding with at most one each; every one is an
+    /// encoding the session's mode offers; a `block` variant carries a block format and null
+    /// params; a Basis variant carries null format and params that start with the session's
+    /// encoder; no variant repeats a hash of its entry; and a block format is never the base
+    /// payload of an ok entry (legal only as a variant). Over what the transaction carries.
+    fn check_delivery(&self, offset: usize) -> Result<(), Error> {
+        if self.opts.version < 9 {
+            return Ok(());
+        }
+        let Some(delivery) = &self.session.resources.texture_delivery else {
+            return Ok(());
+        };
+        for t in &self.tx.textures {
+            let err = |msg: String| {
+                Error::new(
+                    "delivery-entry",
+                    format!("record at offset {offset}: texture {}: {msg}", t.id),
+                )
+            };
+            let ok_image = t.kind == TextureKind::Image && t.status == EntryStatus::Ok;
+            if let Some(f) = t.format.as_deref().filter(|f| ok_image && payload::block_format(f).is_some()) {
+                return Err(err(format!(
+                    "the base payload format {f} is a block format (legal only as a variant)"
+                )));
+            }
+            if !t.variants.is_empty() && !ok_image {
+                return Err(err("only an \"ok\" image entry carries variants".into()));
+            }
+            let mut previous: Option<usize> = None;
+            let mut hashes: Vec<Hash> = t.hash.into_iter().collect();
+            for v in &t.variants {
+                let order = VariantEncoding::ALL.iter().position(|&e| e == v.encoding).unwrap();
+                let name = v.encoding.as_str();
+                if previous.is_some_and(|p| order <= p) {
+                    return Err(err(format!(
+                        "variants are not sorted by encoding with at most one each ({name})"
+                    )));
+                }
+                previous = Some(order);
+                if !meta::mode_offers(delivery.mode, v.encoding) {
+                    return Err(err(format!(
+                        "a {name} variant, but the session's mode \"{}\" does not offer it",
+                        delivery.mode
+                    )));
+                }
+                if v.payload_bytes < 1 {
+                    return Err(err(format!("a {name} variant has payload_bytes 0")));
+                }
+                if hashes.contains(&v.hash) {
+                    return Err(err(format!("a {name} variant repeats a hash of the same entry")));
+                }
+                hashes.push(v.hash);
+                if v.encoding == VariantEncoding::Block {
+                    match v.format.as_deref() {
+                        Some(f) if payload::block_format(f).is_some() => {}
+                        other => {
+                            return Err(err(format!(
+                                "a block variant's format {} is not a block format",
+                                other.unwrap_or("null")
+                            )))
+                        }
+                    }
+                    if v.params.is_some() {
+                        return Err(err("a block variant has params".into()));
+                    }
+                } else {
+                    if v.format.is_some() {
+                        return Err(err(format!("a {name} variant has a format")));
+                    }
+                    let Some(encoder) = &delivery.encoder else {
+                        return Err(err(format!(
+                            "a {name} variant, but the session declares no encoder"
+                        )));
+                    };
+                    let prefixed = v
+                        .params
+                        .as_deref()
+                        .is_some_and(|p| p.starts_with(&format!("{encoder}/")));
+                    if !prefixed {
+                        return Err(err(format!(
+                            "a {name} variant's params do not start with the declared encoder {encoder}"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `checkAdoptionInvariants` (render-stream-8.md "Resource tables"; `adoption-entry`,
@@ -3345,6 +3475,7 @@ impl Validator {
                 let regressed = t.version < p.version
                     || (t.version == p.version
                         && !texture_states_equal(p, t)
+                        && !variants_only_grew(p, t)
                         && (p.status == EntryStatus::Freed || t.status != EntryStatus::Freed));
                 if regressed {
                     return Err(e("texture-version", "texture", t.id));
@@ -3433,6 +3564,65 @@ impl Validator {
                     }
                 }
                 Some(_) => {}
+            }
+            // render-stream-9.md: a variant's payload, when this stream carries it, has the
+            // entry's shape. Variants are never required to arrive as resource records.
+            for v in &t.variants {
+                let Some(carried) = self.carried.get(&v.hash) else {
+                    continue;
+                };
+                let bad = |msg: String| {
+                    Error::new(
+                        "resource-payload",
+                        format!("record at offset {offset}: {msg}"),
+                    )
+                };
+                if v.encoding == VariantEncoding::Block {
+                    let ok = matches!(carried, Carried::Texture { format, width, height, mipmaps, len }
+                        if v.format.as_deref() == Some(format.as_str())
+                            && *width == t.width
+                            && *height == t.height
+                            && *mipmaps == t.mipmaps
+                            && *len == v.payload_bytes);
+                    if !ok {
+                        return Err(bad(format!(
+                            "the resource for block variant {} of texture {} is not a {} {}x{} GRT1 payload of {} bytes",
+                            v.hash.to_hex(),
+                            t.id,
+                            v.format.as_deref().unwrap_or("null"),
+                            t.width,
+                            t.height,
+                            v.payload_bytes
+                        )));
+                    }
+                } else {
+                    let Carried::Ktx2 { shape, len } = carried else {
+                        return Err(bad(format!(
+                            "the resource for {} variant {} of texture {} is not a KTX2 file",
+                            v.encoding.as_str(),
+                            v.hash.to_hex(),
+                            t.id
+                        )));
+                    };
+                    payload::check_ktx2_shape(shape, v.encoding.as_str(), t.width, t.height, t.mipmaps)
+                        .map_err(|e| {
+                            Error::new(
+                                e.code,
+                                format!("{} (record at offset {offset}, texture {})", e, t.id),
+                            )
+                        })?;
+                    if *len != v.payload_bytes {
+                        return Err(Error::new(
+                            "ktx2-shape",
+                            format!(
+                                "record at offset {offset}: texture {}'s {} variant declares {} bytes, the file has {len}",
+                                t.id,
+                                v.encoding.as_str(),
+                                v.payload_bytes
+                            ),
+                        ));
+                    }
+                }
             }
         }
         for m in &tx.meshes {

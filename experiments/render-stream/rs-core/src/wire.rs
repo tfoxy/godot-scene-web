@@ -39,13 +39,13 @@ pub fn magic(version: u8) -> [u8; 8] {
     [0x47, 0x52, 0x53, b'0' + version, 0x0d, 0x0a, 0x1a, 0x0a]
 }
 
-/// The protocol version (2 to 8) whose magic `data` starts with.
+/// The protocol version (2 to 9) whose magic `data` starts with.
 pub fn version_of_magic(data: &[u8]) -> Option<u8> {
     if data.len() < MAGIC_LEN {
         return None;
     }
     let v = data[3].wrapping_sub(b'0');
-    if (2..=8).contains(&v) && data[..MAGIC_LEN] == magic(v) {
+    if (2..=9).contains(&v) && data[..MAGIC_LEN] == magic(v) {
         Some(v)
     } else {
         None
@@ -405,10 +405,10 @@ mod tests {
 
     #[test]
     fn magic_round_trip() {
-        for v in 2..=8 {
+        for v in 2..=9 {
             assert_eq!(version_of_magic(&magic(v)), Some(v));
         }
-        assert_eq!(version_of_magic(&magic(9)), None);
+        assert_eq!(version_of_magic(&magic(10)), None);
         assert_eq!(version_of_magic(b"GRS6"), None);
     }
 

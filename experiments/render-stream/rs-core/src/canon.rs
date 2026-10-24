@@ -673,6 +673,33 @@ fn texture(w: &mut W, t: &Texture, v: u8) {
     w.key("payload_bytes");
     w.int(t.payload_bytes);
     w.raw(",");
+    if v >= 9 {
+        // render-stream-9.md "Texture entries": variants, right after payload_bytes.
+        w.key("variants");
+        w.raw("[");
+        for (i, variant) in t.variants.iter().enumerate() {
+            if i > 0 {
+                w.raw(",");
+            }
+            w.raw("{");
+            w.key("encoding");
+            w.str(variant.encoding.as_str());
+            w.raw(",");
+            w.key("hash");
+            w.hash(&Some(variant.hash));
+            w.raw(",");
+            w.key("payload_bytes");
+            w.int(variant.payload_bytes);
+            w.raw(",");
+            w.key("format");
+            w.opt_str(variant.format.as_deref());
+            w.raw(",");
+            w.key("params");
+            w.opt_str(variant.params.as_deref());
+            w.raw("}");
+        }
+        w.raw("],");
+    }
     w.key("canvas");
     match &t.canvas {
         Some(c) => {

@@ -331,7 +331,26 @@ void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<floa
   out += "]}";
 }
 
-void append_texture_entry(std::string &out, const TextureEntry &t, bool v8) {
+void append_texture_variants(std::string &out, const std::vector<TextureVariant> &variants) {
+  out += ",\"variants\":[";
+  for (std::size_t i = 0; i < variants.size(); ++i) {
+    const TextureVariant &v = variants[i];
+    out += i == 0 ? "{\"encoding\":" : ",{\"encoding\":";
+    append_json_string(out, to_wire(v.encoding));
+    out += ",\"hash\":";
+    append_json_string(out, v.hash);
+    out += ",\"payload_bytes\":";
+    append_json_int(out, v.payload_bytes);
+    out += ",\"format\":";
+    append_json_optional_string(out, v.has_format, v.format);
+    out += ",\"params\":";
+    append_json_optional_string(out, v.has_params, v.params);
+    out += "}";
+  }
+  out += "]";
+}
+
+void append_texture_entry(std::string &out, const TextureEntry &t, bool v8, bool v9) {
   out += "{\"id\":";
   append_json_int(out, t.id);
   if (v8) {
@@ -371,6 +390,10 @@ void append_texture_entry(std::string &out, const TextureEntry &t, bool v8) {
   append_json_bool(out, t.mipmaps);
   out += ",\"payload_bytes\":";
   append_json_int(out, t.payload_bytes);
+  if (v9) {
+    // render-stream-9.md "Texture entries": variants, right after payload_bytes.
+    append_texture_variants(out, t.variants);
+  }
   append_canvas_texture(out, t);
   out += "}";
 }
@@ -516,6 +539,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V9) {
+    return std::vector<std::uint8_t>(kMagicV9.begin(), kMagicV9.end());
+  }
   if (version == ProtocolVersion::V8) {
     return std::vector<std::uint8_t>(kMagicV8.begin(), kMagicV8.end());
   }
@@ -540,7 +566,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V8
+      session.version == ProtocolVersion::V9
+          ? kProtocolV9
+          : session.version == ProtocolVersion::V8
           ? kProtocolV8
           : session.version == ProtocolVersion::V7
           ? kProtocolV7
@@ -590,7 +618,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string_array(m, sorted_copy(session.capture.hooks_omitted));
   m += "}";
 
-  const bool is_v8 = session.version == ProtocolVersion::V8;
+  const bool is_v9 = session.version == ProtocolVersion::V9;
+  // is_v8 means "V8 or later": /9 is /8 plus render-stream-9.md's list.
+  const bool is_v8 = is_v9 || session.version == ProtocolVersion::V8;
   // is_v7 means "V7 or later": /8 is /7 plus render-stream-8.md's list, so it keeps the
   // publication credit_window.
   const bool is_v7 = is_v8 || session.version == ProtocolVersion::V7;
@@ -683,6 +713,16 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
     // render-stream-8.md "Session": decode, after auth (the end of the resources object).
     m += ",\"decode\":";
     append_json_string(m, to_wire(session.resources.decode));
+  }
+  if (is_v9) {
+    // render-stream-9.md "Session": texture_delivery, right after decode (the end of resources).
+    // (The design text called it resources.delivery, a key /2 already uses for out-of-band.)
+    m += ",\"texture_delivery\":{\"mode\":";
+    append_json_string(m, session.resources.texture_delivery.mode);
+    m += ",\"encoder\":";
+    append_json_optional_string(m, session.resources.texture_delivery.has_encoder,
+                                session.resources.texture_delivery.encoder);
+    m += "}";
   }
   m += "}";
 
@@ -796,7 +836,8 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   // render-stream-7.md: transactions are byte-identical to /6 (gate7-design.md D2), so is_v6
   // (meaning "V6 or later") is only needed for the unknown_items version gate below and the
   // canvas layer/sublayer keys /6 added.
-  const bool v8 = transaction.version == ProtocolVersion::V8;
+  const bool v9 = transaction.version == ProtocolVersion::V9;
+  const bool v8 = v9 || transaction.version == ProtocolVersion::V8;
   const bool is_v6 = transaction.version == ProtocolVersion::V6 ||
                       transaction.version == ProtocolVersion::V7 || v8;
   std::string m;
@@ -1282,7 +1323,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (i != 0) {
       m += ",";
     }
-    append_texture_entry(m, transaction.textures[i], v8);
+    append_texture_entry(m, transaction.textures[i], v8, v9);
   }
   m += "]";
 

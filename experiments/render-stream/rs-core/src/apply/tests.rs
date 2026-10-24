@@ -305,6 +305,7 @@ fn texture_region_uses_texpixel_size_and_flips() {
             height: 16,
             mipmaps: false,
             payload_bytes: 100,
+            variants: Vec::new(),
             canvas: None,
         },
     );
@@ -388,6 +389,7 @@ fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
             height: 16,
             mipmaps: false,
             payload_bytes: 100,
+            variants: Vec::new(),
             canvas: None,
         },
     );

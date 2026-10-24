@@ -1,0 +1,397 @@
+{
+  "schema": "render-stream-9-golden-index/1",
+  "protocol": "render-stream/9",
+  "valid": [
+    {
+      "file": "full.rs9",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "1cf1caf9fd159bdeeb3fd130c4f2e2e18f340260f97ae28dcb7a917023b91f15"
+    },
+    {
+      "file": "patch.rs9",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "790c6fda92f689a63c1cf3fc8771f2942c2c1e95dde6e1e43c8b2229c0dc72f8"
+    },
+    {
+      "file": "inline.rs9",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "fd27f709661de9676674079e404e5b505bfaa51af616264c87e64d3b8187c555"
+    }
+  ],
+  "resolved": "resolved.json",
+  "off_leg": {
+    "file": "off.rs9",
+    "hex": "off.hex",
+    "decoded": "off.decoded.json",
+    "sha256": "f5527f5ee76e96e52c96b3e2f11ac5dc7d7ac747443b7906d3dcb489152796d0",
+    "resolved": "resolved-off.json"
+  },
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5
+    },
+    {
+      "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+      "bytes": 171,
+      "record_index": 7
+    },
+    {
+      "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+      "bytes": 171,
+      "record_index": 8
+    },
+    {
+      "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+      "bytes": 117,
+      "record_index": 9
+    },
+    {
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "bytes": 256,
+      "record_index": 10
+    },
+    {
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157,
+      "record_index": 11
+    },
+    {
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "bytes": 297,
+      "record_index": 13
+    },
+    {
+      "hash": "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+      "bytes": 1474,
+      "record_index": 16
+    },
+    {
+      "hash": "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+      "bytes": 476,
+      "record_index": 17
+    },
+    {
+      "hash": "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+      "bytes": 122,
+      "record_index": 18
+    },
+    {
+      "hash": "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+      "bytes": 593,
+      "record_index": 20
+    },
+    {
+      "hash": "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+      "bytes": 209,
+      "record_index": 21
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs9",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs9 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs9",
+      "code": "bad-magic",
+      "description": "magic byte 3 is '8' (GRS8), not '9'"
+    },
+    {
+      "file": "invalid/delivery-mode.rs9",
+      "code": "meta-schema",
+      "description": "resources.texture_delivery.mode is \"gzip\", not an offering mode"
+    },
+    {
+      "file": "invalid/delivery-entry-mode.rs9",
+      "code": "delivery-entry",
+      "description": "a block variant in a session whose mode \"rgba\" offers none"
+    },
+    {
+      "file": "invalid/delivery-entry-mode-uastc.rs9",
+      "code": "delivery-entry",
+      "description": "a uastc variant in a session whose mode \"passthrough\" does not offer it"
+    },
+    {
+      "file": "invalid/delivery-entry-order.rs9",
+      "code": "delivery-entry",
+      "description": "variants are not sorted by encoding (uastc before block)"
+    },
+    {
+      "file": "invalid/delivery-entry-duplicate.rs9",
+      "code": "delivery-entry",
+      "description": "two block variants in one entry"
+    },
+    {
+      "file": "invalid/delivery-entry-not-ok.rs9",
+      "code": "delivery-entry",
+      "description": "an unsupported entry carries a variant"
+    },
+    {
+      "file": "invalid/delivery-entry-block-params.rs9",
+      "code": "delivery-entry",
+      "description": "a block variant with params non-null"
+    },
+    {
+      "file": "invalid/delivery-entry-block-format.rs9",
+      "code": "delivery-entry",
+      "description": "a block variant whose format RGBA8 is not a block format"
+    },
+    {
+      "file": "invalid/delivery-entry-basis-format.rs9",
+      "code": "delivery-entry",
+      "description": "a uastc variant with format non-null"
+    },
+    {
+      "file": "invalid/delivery-entry-basis-params.rs9",
+      "code": "delivery-entry",
+      "description": "a uastc variant whose params do not start with the declared encoder"
+    },
+    {
+      "file": "invalid/delivery-entry-no-encoder.rs9",
+      "code": "delivery-entry",
+      "description": "a uastc variant in a session that declares no encoder"
+    },
+    {
+      "file": "invalid/delivery-entry-block-base.rs9",
+      "code": "delivery-entry",
+      "description": "an ok entry whose base payload is a block format (legal only as a variant)"
+    },
+    {
+      "file": "invalid/delivery-entry-hash.rs9",
+      "code": "delivery-entry",
+      "description": "a variant whose hash equals the base entry's hash"
+    },
+    {
+      "file": "invalid/delivery-entry-bytes.rs9",
+      "code": "delivery-entry",
+      "description": "a variant with payload_bytes 0"
+    },
+    {
+      "file": "invalid/variants-shrink.rs9",
+      "code": "texture-version",
+      "description": "variants disappear at an equal version"
+    },
+    {
+      "file": "invalid/variants-change.rs9",
+      "code": "texture-version",
+      "description": "a variant's hash changes at an equal version"
+    },
+    {
+      "file": "invalid/block-payload-size.rs9",
+      "code": "payload-size",
+      "description": "a DXT5 4x4 block variant payload carries 32 data bytes, not 16"
+    },
+    {
+      "file": "invalid/block-payload-shape.rs9",
+      "code": "resource-payload",
+      "description": "a block variant payload decodes as DXT5 8x8, the entry is 16x16"
+    },
+    {
+      "file": "invalid/ktx2-header-vkformat.rs9",
+      "code": "ktx2-header",
+      "description": "vkFormat is 37, not 0 (UNDEFINED)"
+    },
+    {
+      "file": "invalid/ktx2-header-transfer.rs9",
+      "code": "ktx2-header",
+      "description": "the DFD transfer function is sRGB, not linear"
+    },
+    {
+      "file": "invalid/ktx2-header-truncated.rs9",
+      "code": "ktx2-header",
+      "description": "the file ends inside the header"
+    },
+    {
+      "file": "invalid/ktx2-header-level-range.rs9",
+      "code": "ktx2-header",
+      "description": "level 0's byteOffset runs past the end of the file"
+    },
+    {
+      "file": "invalid/ktx2-shape-size.rs9",
+      "code": "ktx2-shape",
+      "description": "a 4x4 KTX2 for a 16x16 entry"
+    },
+    {
+      "file": "invalid/ktx2-shape-levels.rs9",
+      "code": "ktx2-shape",
+      "description": "a 5-level KTX2 for an entry with mipmaps false"
+    },
+    {
+      "file": "invalid/ktx2-shape-codec.rs9",
+      "code": "ktx2-shape",
+      "description": "a UASTC + Zstandard file named as the etc1s variant"
+    }
+  ],
+  "control": {
+    "valid": [
+      "control/valid/hello-native-block.json",
+      "control/valid/hello-gsw-uastc.json",
+      "control/valid/hello-web-export-decoded.json",
+      "control/valid/hello-native-all.json"
+    ],
+    "invalid": [
+      "control/invalid/hello-missing-encodings.json",
+      "control/invalid/hello-missing-gpu-formats.json",
+      "control/invalid/hello-encodings-uppercase.json",
+      "control/invalid/hello-encodings-empty.json",
+      "control/invalid/hello-gpu-formats-trailing-comma.json",
+      "control/invalid/hello-gpu-formats-double-comma.json",
+      "control/invalid/hello-gpu-formats-too-long.json",
+      "control/invalid/hello-encodings-not-string.json",
+      "control/invalid/hello-wrong-protocol.json",
+      "control/invalid/hello-unknown-key.json"
+    ]
+  },
+  "payloads": [
+    {
+      "file": "payloads/a1.grt",
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/a2.grt",
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": false,
+      "bytes": 1135
+    },
+    {
+      "file": "payloads/f.grt",
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "format": "LA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 137
+    },
+    {
+      "file": "payloads/dec.grt",
+      "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+      "format": "RGBA8",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 171
+    },
+    {
+      "file": "payloads/rgbaf.grt",
+      "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+      "format": "RGBAF",
+      "width": 2,
+      "height": 2,
+      "mipmaps": false,
+      "bytes": 171
+    },
+    {
+      "file": "payloads/rh.grt",
+      "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+      "format": "RH",
+      "width": 3,
+      "height": 2,
+      "mipmaps": true,
+      "bytes": 117
+    },
+    {
+      "file": "payloads/mip16.grt",
+      "hash": "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+      "format": "RGBA8",
+      "width": 16,
+      "height": 16,
+      "mipmaps": true,
+      "bytes": 1474
+    },
+    {
+      "file": "payloads/dxt5-4x4.grt",
+      "hash": "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+      "format": "DXT5",
+      "width": 4,
+      "height": 4,
+      "mipmaps": false,
+      "bytes": 122
+    },
+    {
+      "file": "payloads/dxt5-16x16-mips.grt",
+      "hash": "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+      "format": "DXT5",
+      "width": 16,
+      "height": 16,
+      "mipmaps": true,
+      "bytes": 476
+    }
+  ],
+  "ktx2_payloads": [
+    {
+      "file": "payloads/ktx2-16x16-mips.ktx2",
+      "hash": "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+      "width": 16,
+      "height": 16,
+      "levels": 5,
+      "bytes": 593,
+      "encoding": "uastc",
+      "supercompression": "zstd"
+    },
+    {
+      "file": "payloads/ktx2-4x4.ktx2",
+      "hash": "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+      "width": 4,
+      "height": 4,
+      "levels": 1,
+      "bytes": 209,
+      "encoding": "uastc",
+      "supercompression": "zstd"
+    }
+  ],
+  "mesh_payloads": [
+    {
+      "file": "payloads/mesh1-a.grm",
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "primitive": "triangles",
+      "format": 33554440,
+      "vertex_count": 3,
+      "index_count": 0,
+      "bytes": 256
+    },
+    {
+      "file": "payloads/mesh1-b.grm",
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "primitive": "triangles",
+      "format": 33558544,
+      "vertex_count": 4,
+      "index_count": 6,
+      "bytes": 297
+    }
+  ],
+  "shader_payloads": [
+    {
+      "file": "payloads/shader2-tint-v1.grp",
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157
+    }
+  ]
+}

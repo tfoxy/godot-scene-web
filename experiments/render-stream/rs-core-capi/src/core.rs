@@ -26,8 +26,10 @@ pub const VERSION: u8 = 6;
 /// (render-stream-7.md), and rs-core's validator already gates all three on `version`. G8t adds
 /// render-stream/8 files (gate 8 recordings, render-stream-8.md): rs-core validates and resolves
 /// /8 since G8w, and the apply layer ignores /8's additions (`origin`, `adopted_content`,
-/// `source_format`), so a /8 stream applies like a /6 one. The live hello still offers .6/.7 only.
-pub const VERSIONS: [u8; 3] = [6, 7, 8];
+/// `source_format`), so a /8 stream applies like a /6 one. G8k9 adds render-stream/9 files the same
+/// way (render-stream-9.md): the apply layer ignores `variants` and the delivery declaration, so a
+/// /9 stream draws its `decoded` payloads exactly as /8 would. The live hello still offers .6/.7 only.
+pub const VERSIONS: [u8; 4] = [6, 7, 8, 9];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -446,6 +448,7 @@ impl Core {
             PayloadKind::Texture => payload::decode_texture_v(bytes, self.version).map(|_| ()),
             PayloadKind::Mesh => payload::decode_mesh(bytes).map(|_| ()),
             PayloadKind::Shader => payload::decode_shader(bytes).map(|_| ()),
+            PayloadKind::Ktx2 => payload::decode_ktx2(bytes).map(|_| ()),
         };
         if let Err(e) = decoded {
             return Err(format!(

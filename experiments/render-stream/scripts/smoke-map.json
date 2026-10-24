@@ -174,6 +174,15 @@
       "exclusive": true
     },
     {
+      "why": "texture delivery seam and the /9 codec test (G8k9, texture-delivery-design.md D1, Q5): the empty delivery seam, which only declares resources.texture_delivery at a /9 session and offers no variant, and rs9_codec_test. Off unless GRC_STREAM_VERSION=9, which no existing run sets, so a change confined to these files moves no /2-/8 run: the build (whose ctests drive them), the pure self-tests, the default gate 0 leg and gate 8 are enough. Their call sites in entry.cpp and rs_mirror.cpp are shared capture files and still reach '*'",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_texture_delivery.*",
+        "experiments/render-stream/capture/test/rs9_codec_test.cpp"
+      ],
+      "reach": ["capture-build", "pure", "native:gate0@*", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",
