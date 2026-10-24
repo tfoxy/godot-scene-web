@@ -121,6 +121,24 @@ impl Payloads<'_> {
         payload::decode_texture_v(bytes, self.version)
             .map_err(|e| format!("resource-invalid: {} {}", h.to_hex(), e))
     }
+    /// G8ku (texture-delivery-design.md Q6 "Native receiver"): a `uastc` variant's KTX2, checked
+    /// against its entry's shape (`ktx2-shape`; the transcode is the engine's), as a
+    /// TexturePayload whose `format` is "KTX2" and whose `data` is the whole file: the executor
+    /// hands it to `Image.load_ktx_from_buffer` (D14) instead of `Image.create_from_data`.
+    fn ktx2(&self, h: &Hash, e: &Texture) -> Result<TexturePayload<'_>, String> {
+        let bytes = self.provided.get(h).ok_or_else(|| missing(h))?;
+        let k = payload::decode_ktx2(bytes)
+            .map_err(|e| format!("resource-invalid: {} {}", h.to_hex(), e))?;
+        payload::check_ktx2_shape(&k, "uastc", e.width, e.height, e.mipmaps)
+            .map_err(|e| format!("resource-invalid: {} {}", h.to_hex(), e))?;
+        Ok(TexturePayload {
+            format: "KTX2".to_string(),
+            width: k.width,
+            height: k.height,
+            mipmaps: k.levels > 1,
+            data: bytes,
+        })
+    }
     fn mesh(&self, h: &Hash) -> Result<MeshPayload<'_>, String> {
         let bytes = self.provided.get(h).ok_or_else(|| missing(h))?;
         payload::decode_mesh(bytes).map_err(|e| format!("resource-invalid: {} {}", h.to_hex(), e))
@@ -139,6 +157,10 @@ fn missing(h: &Hash) -> String {
         h.to_hex()
     )
 }
+
+/// G8ku: the image-format code of a KTX2 payload in a texture op (rs_core_ext.cpp make_image calls
+/// `Image.load_ktx_from_buffer` for it). Outside Godot's `Image.Format` range (0..38).
+pub const KTX2_FORMAT: i32 = 1000;
 
 /// `IMAGE_FORMATS` (rs_texture_payload.gd): Image.Format for the six permitted formats and, from
 /// /8, the eight float formats (G8f, `core/io/image.h:75-114`), and from /9 the block formats a
@@ -176,6 +198,8 @@ fn image_format(name: &str) -> i32 {
         "RGH" => 13,
         "RGBH" => 14,
         "RGBAH" => 15,
+        // G8ku: not an Image.Format: the executor transcodes the KTX2 file in `data` (KTX2_FORMAT).
+        "KTX2" => KTX2_FORMAT,
         _ => -1,
     }
 }
@@ -304,6 +328,8 @@ struct TexM {
     height: i64,
     mipmaps: bool,
     canvas_version: i64,
+    /// G8ku (D6 `keep`): the entry version the resident image was uploaded for.
+    version: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -441,6 +467,8 @@ pub struct Needed {
     pub texture_ids: Vec<Id>,
     pub mesh_hashes: Vec<Hash>,
     pub shader_hashes: Vec<Hash>,
+    /// G8ku: the hashes D3 chose a `uastc` variant for (KTX2 payloads, `<hash>.ktx2` on disk).
+    pub ktx2_hashes: Vec<Hash>,
     pub library: Vec<String>,
 }
 
@@ -910,19 +938,24 @@ impl Planner {
             if e.kind != TextureKind::Image || e.status != EntryStatus::Ok {
                 continue;
             }
-            let Some(h) = self.delivery.select(e).map(|s| s.hash) else {
+            let Some(sel) = self.delivery.select(e) else {
                 continue;
             };
-            let same = self
-                .textures
-                .get(tid)
-                .is_some_and(|t| t.kind == TexKind::Image && t.hash == Some(h));
+            let h = sel.hash;
+            let same = self.textures.get(tid).is_some_and(|t| {
+                t.kind == TexKind::Image
+                    && (t.hash == Some(h)
+                        || t.hash.is_some_and(|r| self.delivery.keeps(e, r, t.version)))
+            });
             if same && !self.sab.reupload {
                 continue;
             }
             out.texture_ids.push(*tid);
             if seen.insert(h) {
                 out.hashes.push(h);
+                if sel.encoding == "uastc" {
+                    out.ktx2_hashes.push(h);
+                }
             }
         }
         out
@@ -1091,6 +1124,7 @@ impl Planner {
                                 height: 0,
                                 mipmaps: false,
                                 canvas_version: -1,
+                                version: -1,
                             },
                         );
                         self.created_rids += 1;
@@ -1123,6 +1157,7 @@ impl Planner {
                                 height: 0,
                                 mipmaps: false,
                                 canvas_version: -1,
+                                version: -1,
                             },
                         );
                         self.created_rids += 1;
@@ -1169,9 +1204,17 @@ impl Planner {
                     let hash = chosen.hash;
                     let encoding = (self.version >= 9).then_some(chosen.encoding);
                     let resident = self.textures.get(&id);
-                    if resident.is_some_and(|t| t.kind == TexKind::Image && t.hash == Some(hash))
-                        && !self.sab.reupload
+                    // D6 (G8ku): `keep` holds any payload of the current version (a variant
+                    // appearing at an equal version is not refetched); `upgrade` switches.
+                    if resident.is_some_and(|t| {
+                        t.kind == TexKind::Image
+                            && (t.hash == Some(hash)
+                                || t.hash.is_some_and(|r| self.delivery.keeps(e, r, t.version)))
+                    }) && !self.sab.reupload
                     {
+                        if let Some(t) = self.textures.get_mut(&id) {
+                            t.version = e.version;
+                        }
                         continue;
                     }
                     if self.sab.stale_texture
@@ -1180,7 +1223,11 @@ impl Planner {
                     {
                         continue;
                     }
-                    let p = payloads.texture(&hash)?;
+                    let p = if chosen.encoding == "uastc" {
+                        payloads.ktx2(&hash, e)?
+                    } else {
+                        payloads.texture(&hash)?
+                    };
                     let image = |ops: &mut OpBuf| {
                         ops.u(image_format(&p.format) as u32);
                         ops.i64(p.width);
@@ -1208,6 +1255,7 @@ impl Planner {
                                     height: 0,
                                     mipmaps: false,
                                     canvas_version: -1,
+                                    version: -1,
                                 },
                             );
                             self.created_rids += 1;
@@ -1244,6 +1292,7 @@ impl Planner {
                     t.width = p.width;
                     t.height = p.height;
                     t.mipmaps = p.mipmaps;
+                    t.version = e.version;
                     c.upload_bytes += p.data.len() as i64;
                     uploads.push(Upload {
                         id,

@@ -1165,6 +1165,121 @@ void Mirror::retire_texture(std::uint32_t id) {
   texture.has_reason = false;
   texture.bytes.reset();
   texture.job.reset();
+  reset_basis(&texture);
+}
+
+void Mirror::reset_basis(Texture *texture) {
+  texture->basis.reset();
+  texture->uastc_hash.clear();
+  texture->uastc_params.clear();
+  texture->uastc_bytes.reset();
+  texture->basis_decided = false;
+}
+
+void Mirror::set_basis_submit(BasisSubmit submit) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  basis_submit_ = std::move(submit);
+}
+
+std::vector<BasisJobPtr> Mirror::basis_jobs() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<BasisJobPtr> out;
+  for (const auto &entry : textures_) {
+    if (entry.second.basis != nullptr && !entry.second.basis->done()) {
+      out.push_back(entry.second.basis);
+    }
+  }
+  return out;
+}
+
+std::size_t Mirror::service_basis(bool attach, bool wait) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!basis_submit_) {
+    return 0;
+  }
+  const BasisConfig config = texture_delivery_basis_config();
+  // 1. Start: every settled ok image whose current content has no Basis outcome yet (D12).
+  for (auto &entry : textures_) {
+    Texture &texture = entry.second;
+    settle(&texture);
+    if (texture.kind != TextureKind::Image || texture.status != TextureStatus::Ok ||
+        texture.basis_decided || texture.basis != nullptr || texture.bytes == nullptr ||
+        texture.job != nullptr) {
+      continue;
+    }
+    const char *format = image_format_name(texture.copy.format);
+    const std::string name = format != nullptr ? format : "";
+    const bool mipmaps = texture.copy.mipmaps_known && texture.copy.mipmaps;
+    const char *decline = basis_decline_reason(name, texture.copy.width, texture.copy.height,
+                                               texture.updated, config.min_px);
+    if (decline != nullptr) {
+      texture.basis_decided = true;
+      texture_delivery_note_basis_decline(decline);
+      continue;
+    }
+    BasisJobPtr job = std::make_shared<BasisJob>(texture.id, texture.version, texture.copy.hash,
+                                                 texture.bytes, name, texture.copy.width,
+                                                 texture.copy.height, mipmaps,
+                                                 texture.copy.source_key);
+    if (!basis_submit_(job)) {
+      continue;  // the pool is not running: try again at the next callback
+    }
+    texture_delivery_note_basis_submit();
+    texture.basis = std::move(job);
+  }
+  // 2. Wait (outside the lock: hooks on other threads keep going; workers never take it).
+  if (wait) {
+    std::vector<BasisJobPtr> pending;
+    for (const auto &entry : textures_) {
+      if (entry.second.basis != nullptr) {
+        pending.push_back(entry.second.basis);
+      }
+    }
+    lock.unlock();
+    for (const BasisJobPtr &job : pending) {
+      job->wait();
+    }
+    lock.lock();
+  }
+  if (!attach) {
+    return 0;
+  }
+  // 3. Attach: a finished encode of the content the entry still has (D6: equal version).
+  std::size_t attached = 0;
+  for (auto &entry : textures_) {
+    Texture &texture = entry.second;
+    if (texture.basis == nullptr || !texture.basis->done()) {
+      continue;
+    }
+    const BasisJobPtr job = std::move(texture.basis);
+    texture.basis.reset();
+    const BasisJob::Outcome &outcome = job->outcome();
+    if (outcome.error == "abandoned") {
+      continue;
+    }
+    const bool current = texture.kind == TextureKind::Image &&
+                         texture.status == TextureStatus::Ok &&
+                         texture.version == job->version() &&
+                         texture.copy.hash == job->source_hash();
+    if (!current) {
+      texture_delivery_note_basis_result(false, true, *job);
+      continue;  // the content changed meanwhile; the change already reset basis_decided
+    }
+    texture.basis_decided = true;
+    if (!outcome.ok || outcome.ktx2 == nullptr || outcome.hash == texture.copy.hash) {
+      texture_delivery_note_basis_result(false, false, *job);
+      continue;
+    }
+    texture.uastc_hash = outcome.hash;
+    texture.uastc_params = outcome.params;
+    texture.uastc_bytes = outcome.ktx2;
+    texture_delivery_note_basis_result(true, false, *job);
+    ++attached;
+  }
+  if (attached != 0) {
+    ++epoch_;
+  }
+  return attached;
 }
 
 void Mirror::settle(Texture *texture) {
@@ -1236,6 +1351,11 @@ TextureEntry Mirror::wire_entry(const Texture &texture) {
     request.block.format = copy.block_format;
     request.block.payload_bytes =
         static_cast<std::uint64_t>(std::max<std::int64_t>(copy.block_payload_bytes, 0));
+    // G8ku: the lazy uastc variant, once attached (service_basis).
+    request.uastc_hash = texture.uastc_hash;
+    request.uastc_params = texture.uastc_params;
+    request.uastc_payload_bytes =
+        texture.uastc_bytes != nullptr ? static_cast<std::uint64_t>(texture.uastc_bytes->size()) : 0;
     out.variants = texture_variants(request);
   } else {
     out.has_reason = texture.has_reason;
@@ -2121,6 +2241,10 @@ void Mirror::texture_2d_update(std::uint64_t rid, const PayloadCopy &copy, Paylo
   // G8kw: the shape compared below is the hook's (predicted) one, never the worker's content, so
   // a pending previous copy decides exactly as a finished one; its own job is superseded.
   texture->job.reset();
+  // G8ku (D6, D12(a)): the content changed, so its variants reset, and an updated texture never
+  // gets a Basis variant again (an encode still running is discarded when it finishes).
+  reset_basis(texture);
+  texture->updated = true;
   if (layer != 0) {
     texture->status = TextureStatus::Unsupported;
     texture->has_reason = true;
@@ -2171,6 +2295,14 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
       t->copy = b->copy;
       t->bytes = b->bytes;
       t->job = b->job;  // G8kw: a pending payload moves with the rest
+      // G8ku: so does b's Basis state (its encode is of exactly this content; the version check
+      // in service_basis is against t's raised version, so a running encode becomes stale).
+      t->updated = b->updated;
+      t->basis = b->basis;
+      t->uastc_hash = b->uastc_hash;
+      t->uastc_params = b->uastc_params;
+      t->uastc_bytes = b->uastc_bytes;
+      t->basis_decided = b->basis_decided;
       // G8r: t's content is now b's; an adopted t keeps origin and inherits b's trust.
       if (t->origin == Origin::Adopted) {
         t->adopted_content =
@@ -2182,6 +2314,7 @@ void Mirror::texture_replace(std::uint64_t t_rid, std::uint64_t b_rid, std::uint
       t->reason = TextureReason::UnknownTexture;
       t->bytes.reset();
       t->job.reset();
+      reset_basis(t);
     }
   }
   if (b != nullptr) {
@@ -3385,6 +3518,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       for (const rs2::TextureVariant &variant : out.textures.back().variants) {
         if (variant.hash == texture.copy.block_hash && texture.copy.block_bytes != nullptr) {
           captured.payloads.emplace(variant.hash, texture.copy.block_bytes);
+        } else if (variant.hash == texture.uastc_hash && texture.uastc_bytes != nullptr) {
+          captured.payloads.emplace(variant.hash, texture.uastc_bytes);  // G8ku: a KTX2
         }
       }
     } else if (texture.job != nullptr && texture.kind == TextureKind::Image &&

@@ -46,6 +46,31 @@ import {
 
 /** The cache's params id for the host decode (hooks.cpp kDecodeParamsId). */
 export const DECODE_PARAMS_ID = "engine-decompress/4.5.1";
+/** G8ku: the default UASTC encoder's params id (rs_basis_encode.h params_id()). */
+export const UASTC_PARAMS_ID = "basisu-1.60/uastc-l1/zstd6/linear";
+
+/** G8ku: the uastc variants a /9 basis-uastc capture published, from its store's index (one
+ * `texture-ktx2` line per KTX2 stored), keyed by size (fixtures/gate8-basis gives every texture its
+ * own size). */
+async function uastcBySize(dir: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const r of jsonl<{
+    type?: string;
+    encoding?: string;
+    hash: string;
+    width: number;
+    height: number;
+  }>(await readText(join(dir, "store", "index.jsonl"))))
+    if (r.type === "texture-ktx2" && r.encoding === "uastc")
+      out.set(`${r.width}x${r.height}`, r.hash);
+  return out;
+}
+
+interface BasisDeliveryStats {
+  uastc_built?: number;
+  encodes_run?: number;
+  cache_hits?: number;
+}
 
 interface CacheStatsJson {
   max_bytes: number;
@@ -190,6 +215,8 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     "sabotage-corrupt/after/capture": k("sabotage-corrupt/after/capture"),
     "adopt-cold/capture": k("adopt-cold/capture"),
     "adopt-warm/capture": k("adopt-warm/capture"),
+    "uastc-cold/capture": k("uastc-cold/capture"),
+    "uastc-warm/capture": k("uastc-warm/capture"),
   };
   const legs: G8kcReport["legs"] = {};
   for (const [l, dir] of Object.entries(legDirs)) {
@@ -231,6 +258,13 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
     );
     counters[l] = await readJson(join(ev, "counters.json"));
   }
+  // G8ku: a basis-uastc leg's stream.gate8.delivery_stats.
+  const basisStats = (l: string): BasisDeliveryStats | undefined =>
+    (
+      results[l] as
+        | { stream?: { gate8?: { delivery_stats?: BasisDeliveryStats } } }
+        | undefined
+    )?.stream?.gate8?.delivery_stats;
   const prepareEv = join(legDirs.prepare, "out", "evidence");
   const prepareCache = await readJson<CacheEvidence>(
     join(prepareEv, "texture-cache.json"),
@@ -435,7 +469,9 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
         problems.push(`puts ${s.puts} != derivations ${s.derivations}`);
       if (!(s.misses > 0)) problems.push("a fresh cache had no miss");
       if (s.encodes !== 0)
-        problems.push(`encodes ${s.encodes}: no encoder is wired yet`);
+        problems.push(
+          `encodes ${s.encodes}: a passthrough session runs no encoder`,
+        );
     }
     for (const f of decodable) {
       const o = oracleOf(f.name, f.family);
@@ -465,13 +501,57 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
           `texture ${t.id}: a source texture's key is not its hash`,
         );
     }
+    // G8ku: the UASTC encodes go through the same cache, keyed (source key, uastc, params_id).
+    const ul = "uastc-cold/capture";
+    const us = stats[ul];
+    const uds = basisStats(ul);
+    const uvars = await uastcBySize(legDirs[ul]);
+    okExit(ul, problems);
+    if (!us || !uds)
+      problems.push(
+        `${ul}: result.json has no texture_cache or delivery_stats`,
+      );
+    else {
+      if (!((uds.uastc_built ?? 0) > 0))
+        problems.push(`${ul}: no uastc variant built`);
+      // Every published variant was encoded here; an encode whose texture changed content before
+      // it finished (the fixture's `updated`) is run and stored too, just never published.
+      if (us.encodes < (uds.uastc_built ?? 0) || uds.cache_hits !== 0)
+        problems.push(
+          `${ul}: encodes ${us.encodes}, cache hits ${uds.cache_hits}, uastc_built ${uds.uastc_built}`,
+        );
+      if (us.puts !== us.derivations + us.encodes)
+        problems.push(
+          `${ul}: puts ${us.puts} != derivations ${us.derivations} + encodes ${us.encodes}`,
+        );
+      const uidx = [
+        ...foldIndex(
+          await readText(join(legDirs[ul], "..", "cache", "index-v1.jsonl")),
+        ).values(),
+      ].filter((r) => r.encoding === "uastc");
+      if (uidx.length !== us.encodes)
+        problems.push(
+          `${ul}: ${uidx.length} uastc index rows, ${us.encodes} encodes`,
+        );
+      for (const r of uidx)
+        if (r.params !== UASTC_PARAMS_ID || r.ext !== "ktx2")
+          problems.push(
+            `${ul}: uastc row ${r.hash.slice(0, 12)} has params ${r.params}, ext ${r.ext}`,
+          );
+      const rowHashes = new Set(uidx.map((r) => r.hash));
+      for (const [size, h] of uvars)
+        if (!rowHashes.has(h))
+          problems.push(
+            `${ul}: the published ${size} uastc variant has no cache row`,
+          );
+    }
     checks.push(
       check(
         "cache-cold",
-        "G8kc (D7, D8): on an empty cache every decodable fixture texture is derived once and stored (derivations = puts = misses), its source key equals the oracle's independently built block payload hash, its stored decoded hash equals the oracle's payload hash, and the index maps (source key, decoded, params_id) to that hash",
-        ran(cold) ? problems : null,
-        `${s?.misses} derived and stored, ${s?.bytes_put} bytes`,
-        cold,
+        "G8kc (D7, D8): on an empty cache every decodable fixture texture is derived once and stored (derivations = puts = misses), its source key equals the oracle's independently built block payload hash, its stored decoded hash equals the oracle's payload hash, and the index maps (source key, decoded, params_id) to that hash; G8ku: under basis-uastc every UASTC encode is stored as (source key, uastc, basisu-1.60/uastc-l1/zstd6/linear) -> its KTX2 (puts = derivations + encodes, one row per encode) and every published uastc variant has its row",
+        ran(cold, "uastc-cold/capture") ? problems : null,
+        `${s?.misses} derived and stored, ${s?.bytes_put} bytes; ${us?.encodes} UASTC encodes stored`,
+        missingOf(cold, "uastc-cold/capture"),
       ),
     );
   }
@@ -543,13 +623,74 @@ export async function runG8kc(out: string): Promise<G8kcReport> {
       problems.push(
         `index has ${b.size} rows after the warm session, ${a.size} before`,
       );
+    // G8ku: the second basis-uastc session runs zero UASTC encodes: every variant is the cold
+    // session's KTX2, served from a verified file.
+    {
+      const cl = "uastc-cold/capture";
+      const wl = "uastc-warm/capture";
+      okExit(wl, problems);
+      const ws = stats[wl];
+      const wds = basisStats(wl);
+      const cds = basisStats(cl);
+      if (!ws || !wds)
+        problems.push(
+          `${wl}: result.json has no texture_cache or delivery_stats`,
+        );
+      else {
+        if (ws.encodes !== 0)
+          problems.push(`${wl}: ${ws.encodes} UASTC encodes in a warm session`);
+        if (
+          ws.derivations !== 0 ||
+          ws.misses !== 0 ||
+          ws.puts !== 0 ||
+          ws.corrupt !== 0
+        )
+          problems.push(
+            `${wl}: derivations ${ws.derivations}, misses ${ws.misses}, puts ${ws.puts}, corrupt ${ws.corrupt}`,
+          );
+        if (
+          wds.cache_hits !== cds?.uastc_built ||
+          wds.uastc_built !== cds?.uastc_built
+        )
+          problems.push(
+            `${wl}: ${wds.cache_hits} cache hits, ${wds.uastc_built} variants; the cold session built ${cds?.uastc_built}`,
+          );
+      }
+      const cv = await uastcBySize(legDirs[cl]);
+      const wv = await uastcBySize(legDirs[wl]);
+      if (cv.size === 0)
+        problems.push("the cold session's store lists no uastc variant");
+      else
+        for (const [size, hash] of cv)
+          if (wv.get(size) !== hash)
+            problems.push(
+              `${wl}: the ${size} uastc variant differs from the cold session's`,
+            );
+      detail.push(
+        `${wl}: ${wds?.cache_hits} UASTC variants from the cache, 0 encodes`,
+      );
+    }
     checks.push(
       check(
         "cache-warm",
-        "G8kc (D8): a second session on the cold session's cache directory (synchronous, and at GRC_TEXTURE_WORKERS=2) does zero derivations and zero encodes, serves every decodable texture from a verified file, and every hash and source key equals the cold session's and the oracle's",
-        ran(cold, "warm/capture", "warm-workers/capture") ? problems : null,
+        "G8kc (D8): a second session on the cold session's cache directory (synchronous, and at GRC_TEXTURE_WORKERS=2) does zero derivations and zero encodes, serves every decodable texture from a verified file, and every hash and source key equals the cold session's and the oracle's; G8ku: a second basis-uastc session runs zero UASTC encodes and publishes the cold session's uastc variants, every one served from the cache",
+        ran(
+          cold,
+          "warm/capture",
+          "warm-workers/capture",
+          "uastc-cold/capture",
+          "uastc-warm/capture",
+        )
+          ? problems
+          : null,
         detail.join("; "),
-        missingOf(cold, "warm/capture", "warm-workers/capture"),
+        missingOf(
+          cold,
+          "warm/capture",
+          "warm-workers/capture",
+          "uastc-cold/capture",
+          "uastc-warm/capture",
+        ),
       ),
     );
   }

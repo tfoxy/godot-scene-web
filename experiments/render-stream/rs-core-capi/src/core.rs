@@ -120,7 +120,9 @@ impl Core {
     /// False (error in `text`) for a list render-stream-9.md's grammar or names refuse.
     pub fn set_delivery(&mut self, encodings: &str, gpu_formats: &str) -> bool {
         match render_stream_core::delivery::DeliveryPrefs::parse(encodings, gpu_formats) {
-            Ok(p) => {
+            Ok(mut p) => {
+                // G8ku: the D6 policy is not part of the hello; a new preference keeps it.
+                p.upgrade = self.planner.delivery.upgrade;
                 self.planner.delivery = p;
                 true
             }
@@ -412,12 +414,13 @@ impl Core {
     }
 
     /// RsApplier.needed()'s `{hashes, ids, mesh_hashes, shader_hashes}` plus `library` (the
-    /// `withheld` shader hashes whose library code the apply reads).
+    /// `withheld` shader hashes whose library code the apply reads) and (G8ku) `ktx2_hashes` (the
+    /// `uastc` variants D3 chose: KTX2 payloads, `<hash>.ktx2` in a store or cache).
     pub fn needed(&mut self) {
         let n = self.needed_raw();
         let v = &mut self.vt;
         v.clear();
-        v.dict(5);
+        v.dict(6);
         v.key("hashes");
         v.array(n.hashes.len());
         for h in &n.hashes {
@@ -442,6 +445,11 @@ impl Core {
         v.array(n.library.len());
         for h in &n.library {
             v.str(h);
+        }
+        v.key("ktx2_hashes");
+        v.array(n.ktx2_hashes.len());
+        for h in &n.ktx2_hashes {
+            v.str(&h.to_hex());
         }
     }
 

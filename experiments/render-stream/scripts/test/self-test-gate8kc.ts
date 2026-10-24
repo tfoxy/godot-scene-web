@@ -11,6 +11,8 @@
 //    unbounded cache and a texture the hook never named each fail their check.
 // 4. cache-off-identical fails when the uncached capture shows the hook, and (here, with no
 //    recordings) names the missing recording.
+// 5. G8ku: a warm basis-uastc session that encodes, and one whose uastc variant differs from the
+//    cold session's, fail cache-warm; a cold one whose UASTC encode is not stored fails cache-cold.
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8kc.ts
@@ -29,6 +31,7 @@ import {
   DECODE_PARAMS_ID,
   foldIndex,
   runG8kc,
+  UASTC_PARAMS_ID,
 } from "../lib/gate8-cache-checks";
 
 let failures = 0;
@@ -167,6 +170,73 @@ function capture(
   }
 }
 
+// G8ku: a basis-uastc capture of fixtures/gate8-basis on a cache directory: `encodes` UASTC
+// encodes run, `hits` variants served from the cache, the store's KTX2 index lines (one per
+// variant, hash `uastcKey(i)` unless `vhash` says otherwise).
+const UASTC_N = 3;
+const uastcKey = (i: number) => (i + 10).toString(16).padStart(64, "c");
+const uastcSrc = (i: number) => (i + 10).toString(16).padStart(64, "d");
+function uastcCapture(
+  root: string,
+  leg: string,
+  o: {
+    encodes: number;
+    hits: number;
+    puts?: number;
+    vhash?: (i: number) => string;
+  },
+) {
+  write(root, `g8kc/${leg}/exit-code.txt`, "0\n");
+  write(root, `g8kc/${leg}/evidence/result.json`, {
+    texture_cache: stats({
+      hits: o.hits,
+      misses: o.encodes,
+      puts: o.puts ?? o.encodes,
+      encodes: o.encodes,
+    }),
+    stream: {
+      gate8: {
+        delivery_stats: {
+          uastc_built: UASTC_N,
+          encodes_run: o.encodes,
+          cache_hits: o.hits,
+        },
+      },
+    },
+  });
+  write(
+    root,
+    `g8kc/${leg}/store/index.jsonl`,
+    Array.from({ length: UASTC_N }, (_, i) =>
+      JSON.stringify({
+        hash: o.vhash ? o.vhash(i) : uastcKey(i),
+        type: "texture-ktx2",
+        encoding: "uastc",
+        params: UASTC_PARAMS_ID,
+        width: 128 + i,
+        height: 128,
+        mipmaps: false,
+      }),
+    ).join("\n") + "\n",
+  );
+}
+function uastcIndex(): string {
+  return (
+    Array.from({ length: UASTC_N }, (_, i) =>
+      JSON.stringify({
+        v: 1,
+        source: uastcSrc(i),
+        encoding: "uastc",
+        params: UASTC_PARAMS_ID,
+        hash: uastcKey(i),
+        bytes: 50,
+        ext: "ktx2",
+        use: i + 1,
+      }),
+    ).join("\n") + "\n"
+  );
+}
+
 function tree(mutate?: (root: string) => void): string {
   const root = mkdtempSync(join(tmpdir(), "self-test-gate8kc-"));
   write(root, "import/fixture/exit-code.txt", "0\n");
@@ -243,6 +313,10 @@ function tree(mutate?: (root: string) => void): string {
     cache: true,
     stats: { hits: n },
   });
+  uastcCapture(root, "uastc-cold/capture", { encodes: UASTC_N, hits: 0 });
+  write(root, "g8kc/uastc-cold/cache/index-v1.jsonl", uastcIndex());
+  uastcCapture(root, "uastc-warm/capture", { encodes: 0, hits: UASTC_N });
+  write(root, "g8kc/uastc-warm/cache/index-v1.jsonl", uastcIndex());
   mutate?.(root);
   return root;
 }
@@ -314,6 +388,32 @@ async function run(
 }
 
 await run("honest", undefined, []);
+await run(
+  "warm uastc session encoded",
+  (r) =>
+    uastcCapture(r, "uastc-warm/capture", { encodes: 1, hits: UASTC_N - 1 }),
+  ["cache-warm"],
+);
+await run(
+  "warm uastc variant differs",
+  (r) =>
+    uastcCapture(r, "uastc-warm/capture", {
+      encodes: 0,
+      hits: UASTC_N,
+      vhash: (i) => (i === 0 ? "e".repeat(64) : uastcKey(i)),
+    }),
+  ["cache-warm"],
+);
+await run(
+  "cold uastc encode not stored",
+  (r) =>
+    uastcCapture(r, "uastc-cold/capture", {
+      encodes: UASTC_N,
+      hits: 0,
+      puts: 0,
+    }),
+  ["cache-cold"],
+);
 await run(
   "warm session derived",
   (r) =>

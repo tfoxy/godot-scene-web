@@ -1,0 +1,19 @@
+{
+  "schema": "g8ku-expected/1",
+  "wait_frame": 12,
+  "params": "basisu-1.60/uastc-l1/zstd6/linear",
+  "encoder": "basisu-1.60",
+  "psnr_floor_db": 30,
+  "steps": [{ "step": 0 }, { "step": 1 }],
+  "textures": [
+    { "name": "rgba", "width": 160, "height": 128, "uastc": true, "keep": "decoded", "upgrade": "uastc" },
+    { "name": "rgb", "width": 192, "height": 96, "uastc": true, "keep": "decoded", "upgrade": "uastc" },
+    { "name": "bc1", "width": 136, "height": 124, "uastc": true, "keep": "block", "upgrade": "block" },
+    { "name": "small", "width": 64, "height": 64, "uastc": false, "decline": "small", "keep": "decoded", "upgrade": "decoded" },
+    { "name": "gray", "width": 224, "height": 80, "uastc": false, "decline": "format", "keep": "decoded", "upgrade": "decoded" },
+    { "name": "updated", "width": 136, "height": 136, "uastc": false, "decline": "updated", "keep": "decoded", "upgrade": "decoded" },
+    { "name": "npot", "width": 150, "height": 110, "uastc": true, "keep": "decoded", "upgrade": "uastc" },
+    { "name": "mip", "width": 128, "height": 128, "uastc": true, "mipmaps": true, "keep": "decoded", "upgrade": "uastc" },
+    { "name": "big", "width": 1024, "height": 512, "uastc": true, "keep": "decoded", "upgrade": "uastc" }
+  ]
+}

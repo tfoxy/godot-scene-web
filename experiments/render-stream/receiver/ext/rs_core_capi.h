@@ -23,6 +23,9 @@ void rsc_set_full_scan(RsCore *h, int32_t on);
 // with the error in text.
 int32_t rsc_set_delivery(RsCore *h, const uint8_t *encodings, size_t encodings_len,
                          const uint8_t *gpu_formats, size_t gpu_formats_len);
+// G8ku: D6 keep (0) or upgrade (1); and a SHA-256 hex (64 bytes, no NUL) of `len` bytes.
+void rsc_set_variant_upgrade(RsCore *h, int32_t on);
+void rsc_sha256_hex(const uint8_t *data, size_t len, uint8_t *out);
 // G7o2 (D31): the next session defers the record digest; rsc_record_digest fills it later
 // (text: the record at `offset`'s sha256 hex; 1, or 0 with the error in text).
 void rsc_set_digest_deferred(RsCore *h, int32_t on);
@@ -67,6 +70,8 @@ namespace rsc {
 constexpr uint32_t KIND_ITEM = 0;
 constexpr uint32_t KIND_CANVAS = 1;
 constexpr uint32_t KIND_TEXTURE = 2;
+// G8ku: plan.rs KTX2_FORMAT, the image-format code of a KTX2 payload in a texture op.
+constexpr int64_t KTX2_FORMAT = 1000;
 constexpr uint32_t KIND_MESH = 3;
 constexpr uint32_t KIND_SHADER = 4;
 constexpr uint32_t KIND_MATERIAL = 5;

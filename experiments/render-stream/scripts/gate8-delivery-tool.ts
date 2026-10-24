@@ -1,9 +1,18 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 8 group g8kp's browser legs (G8kp, protocol/texture-delivery-design.md D3, Q3, Q6 "GSW"),
-// called by run-gate8.sh after the native legs:
+// Gate 8 groups g8kp's and g8ku's browser legs (G8kp, protocol/texture-delivery-design.md D3, Q3,
+// Q6 "GSW"; G8ku, Q6 "Web export"), called by run-gate8.sh after the native legs:
 //
 //   gate8-delivery-tool.ts gsw-legs --source <gate 8 run> [--mask s3tc,bptc,rgtc]
 //       [--rs-build <artifacts/render-stream/rs-core/<sha>>]
+//   gate8-delivery-tool.ts web-legs --source <gate 8 run> [--bundle <web-receiver bundle dir>]
+//
+// web-legs (G8ku): builds the web export (build-web-receiver.sh, which builds the rs-core side
+// module first; reused when its source digest is unchanged) unless --bundle names one, then
+// replays the native leg g8ku/receiver-upgrade (its env.txt and argv.txt: the /9 basis-uastc
+// recording, its store, shot seqs, RS_RECEIVER_VARIANT_POLICY=upgrade and RS_RECEIVER_TRANSCODE_LOG=1)
+// in the web export, in the pinned headless Chromium: g8ku-web/web. The web export transcodes
+// the uastc variants with the same engine call (Image.load_ktx_from_buffer, in wasm, on the main
+// thread), so its transcodes[] carry the desktop transcode cost (D14 target: the WebGL context's).
 //
 // Builds the rs-core wasm (build-rs-core.sh --wasm-only, unless --rs-build names one) and the GSW
 // bundle (lib/gsw-bundle.ts) under <run>/g8kp/gsw-bundle, then replays the native leg
@@ -24,7 +33,7 @@
 // lib/legs.sh does for a native sabotage leg.
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,9 +54,13 @@ function flag(argv: string[], name: string, fallback?: string): string {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "web-legs") {
+    await webLegs(argv);
+    return;
+  }
   if (command !== "gsw-legs")
     throw new Error(
-      "usage: gate8-delivery-tool.ts gsw-legs --source <gate 8 run> [--mask list]",
+      "usage: gate8-delivery-tool.ts gsw-legs --source <gate 8 run> [--mask list] | web-legs --source <gate 8 run> [--bundle dir]",
     );
   const source = resolve(flag(argv, "--source"));
   const mask = flag(argv, "--mask", "s3tc,bptc,rgtc");
@@ -122,6 +135,53 @@ async function main(): Promise<void> {
       kind: "gsw",
     },
     legs,
+  );
+  for (const r of results)
+    console.log(
+      `gate8-delivery-tool: ${r.leg} exit ${r.exitCode}${r.provenanceOk ? "" : " (harness-refused: browser-provenance)"} ${r.wallMs} ms`,
+    );
+}
+
+// G8ku: the web export on g8ku/receiver-upgrade's own launch.
+async function webLegs(argv: string[]): Promise<void> {
+  const source = resolve(flag(argv, "--source"));
+  const g8ku = join(source, "g8ku");
+  // The harness's static root links its source run at sources/gate8. It sits beside g8ku/, not in
+  // it, and links g8ku/ alone: a link to the whole run from inside it (as g8kp's gsw-run has) would
+  // make a second cycle, and a recursive walk through two cycles never ends (the remote job's
+  // artifact trim globs every stdout.log through symlinks).
+  const run = join(source, "g8ku-web");
+  let bundle = argv.includes("--bundle") ? resolve(flag(argv, "--bundle")) : "";
+  if (!bundle) {
+    const log = execFileSync(
+      "bash",
+      [join(SCRIPT_DIR, "build-web-receiver.sh"), "--core", "rust"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+    );
+    bundle = log.trim().split("\n").pop()?.trim() ?? "";
+    if (!bundle || !existsSync(join(bundle, "build.json")))
+      throw new Error(
+        `gate8-delivery-tool: build-web-receiver.sh printed no bundle directory:\n${log}`,
+      );
+  }
+  const build = JSON.parse(
+    readFileSync(join(bundle, "build.json"), "utf8"),
+  ) as { pck: { sha256: string } };
+  const nativeDir = join(g8ku, "receiver-upgrade");
+  if (!existsSync(join(nativeDir, "env.txt")))
+    throw new Error(
+      `gate8-delivery-tool: no native leg at ${nativeDir} (env.txt missing)`,
+    );
+  const results = await runWebLegs(
+    {
+      out: run,
+      gate: "gate8",
+      sourceDir: g8ku,
+      bundleDir: bundle,
+      buildSha256: build.pck.sha256,
+      kind: "web",
+    },
+    [{ leg: "web", nativeDir, webDir: join(run, "web") }],
   );
   for (const r of results)
     console.log(

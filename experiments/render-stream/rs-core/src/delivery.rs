@@ -53,6 +53,10 @@ pub struct DeliveryPrefs {
     pub encodings: Vec<Box<str>>,
     /// `gpu_formats` (empty for `none`).
     pub gpu_formats: Vec<Box<str>>,
+    /// D6 (G8ku): what a receiver holding a variant of the current `version` does when a variant
+    /// it prefers appears at that same version. False is `keep` (the desktop default: no refetch);
+    /// true is `upgrade` (refetch and re-upload). Not part of the hello.
+    pub upgrade: bool,
 }
 
 impl Default for DeliveryPrefs {
@@ -60,6 +64,7 @@ impl Default for DeliveryPrefs {
         DeliveryPrefs {
             encodings: vec!["decoded".into()],
             gpu_formats: Vec::new(),
+            upgrade: false,
         }
     }
 }
@@ -68,7 +73,7 @@ impl Default for DeliveryPrefs {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Selected<'a> {
     pub hash: Hash,
-    /// `"decoded"` or `"block"`.
+    /// `"decoded"`, `"block"` or (G8ku) `"uastc"`.
     pub encoding: &'static str,
     /// The block variant's format (None for `decoded`: the payload names its own).
     pub format: Option<&'a str>,
@@ -118,6 +123,7 @@ impl DeliveryPrefs {
         Ok(DeliveryPrefs {
             encodings: enc,
             gpu_formats: gpu,
+            upgrade: false,
         })
     }
 
@@ -137,6 +143,15 @@ impl DeliveryPrefs {
     /// Whether the receiver can upload `family` (a [`block_family`] name).
     pub fn has_family(&self, family: &str) -> bool {
         self.gpu_formats.iter().any(|f| &**f == family)
+    }
+
+    /// D6 (G8ku): whether a texture resident as `resident` (a hash uploaded at `resident_version`)
+    /// stays as it is for entry `t` although D3 now chooses another payload: under `keep`, any
+    /// payload of the entry's current version (its base hash or one of its variants) stays.
+    pub fn keeps(&self, t: &Texture, resident: Hash, resident_version: i64) -> bool {
+        !self.upgrade
+            && t.version == resident_version
+            && (t.hash == Some(resident) || t.variants.iter().any(|v| v.hash == resident))
     }
 
     /// D3 for one texture entry: None unless it is an `ok` image with a hash.
@@ -169,7 +184,22 @@ impl DeliveryPrefs {
                         });
                     }
                 }
-                // uastc / etc1s: no transcoder in this build (G8ku, G8kb).
+                // G8ku: a receiver lists `uastc` only when it can transcode (the native receiver
+                // and the web export: Godot's KTX2 loader, D14), so a listed uastc variant wins.
+                "uastc" => {
+                    if let Some(v) = t
+                        .variants
+                        .iter()
+                        .find(|v| v.encoding == VariantEncoding::Uastc)
+                    {
+                        return Some(Selected {
+                            hash: v.hash,
+                            encoding: "uastc",
+                            format: None,
+                        });
+                    }
+                }
+                // etc1s: no transcoder path yet (G8ke).
                 _ => {}
             }
         }
@@ -211,6 +241,43 @@ mod tests {
             format: Some(format.into()),
             params: None,
         }
+    }
+
+    fn uastc(b: u8) -> TextureVariant {
+        TextureVariant {
+            encoding: VariantEncoding::Uastc,
+            hash: Hash([b; 32]),
+            payload_bytes: 10,
+            format: None,
+            params: Some("basisu-1.60/uastc-l1/zstd6/linear".into()),
+        }
+    }
+
+    #[test]
+    fn uastc_follows_the_preference_order() {
+        // G8ku: block first when its family is there, else uastc, else decoded.
+        let p = DeliveryPrefs::parse("block,uastc,decoded", "s3tc").unwrap();
+        let both = tex(vec![block("DXT1", 2), uastc(3)]);
+        assert_eq!(p.select(&both).unwrap().encoding, "block");
+        let masked = DeliveryPrefs::parse("block,uastc,decoded", "none").unwrap();
+        let s = masked.select(&both).unwrap();
+        assert_eq!((s.encoding, s.hash, s.format), ("uastc", Hash([3; 32]), None));
+        assert_eq!(masked.select(&tex(vec![])).unwrap().encoding, "decoded");
+        let no_uastc = DeliveryPrefs::parse("block,decoded", "none").unwrap();
+        assert_eq!(no_uastc.select(&tex(vec![uastc(3)])).unwrap().encoding, "decoded");
+    }
+
+    #[test]
+    fn keep_holds_any_payload_of_the_current_version() {
+        // D6: a resident decoded copy at the entry's version stays under keep, not under upgrade.
+        let mut p = DeliveryPrefs::parse("uastc,decoded", "none").unwrap();
+        let t = tex(vec![uastc(3)]);
+        assert!(p.keeps(&t, Hash([1; 32]), 1));
+        assert!(p.keeps(&t, Hash([3; 32]), 1));
+        assert!(!p.keeps(&t, Hash([1; 32]), 0), "a content change is never kept");
+        assert!(!p.keeps(&t, Hash([9; 32]), 1), "a hash the entry does not list is never kept");
+        p.upgrade = true;
+        assert!(!p.keeps(&t, Hash([1; 32]), 1));
     }
 
     #[test]

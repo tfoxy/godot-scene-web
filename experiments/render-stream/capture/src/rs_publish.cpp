@@ -559,7 +559,11 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
       continue;
     }
     for (const rs2::TextureVariant &variant : entry.variants) {
-      if (variant.encoding != rs2::VariantEncoding::Block || store_->has(variant.hash)) {
+      // G8kp's `block` (`<hash>.grt`) and G8ku's `uastc` (`<hash>.ktx2`, render-stream-9.md "KTX2
+      // payload"); etc1s is G8ke's.
+      if ((variant.encoding != rs2::VariantEncoding::Block &&
+           variant.encoding != rs2::VariantEncoding::Uastc) ||
+          store_->has(variant.hash)) {
         continue;
       }
       const auto payload = published.payloads.find(variant.hash);

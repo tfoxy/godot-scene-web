@@ -2,7 +2,9 @@
 // decode seam (src/rs_gate8_policy.*, rs_texture_decode.*; G8w; the adoption seam is rs_adopt_test).
 
 #include <cstdio>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "rs_gate8_policy.h"
 #include "rs_texture_delivery.h"
@@ -151,8 +153,11 @@ void test_delivery_seam() {
         "an invalid delivery mode is refused naming the variable");
   grc::rs::parse_delivery_policy("basis-uastc", &d, &error);
   const grc::rs2::TextureDeliveryDeclaration declared = grc::rs::declare_texture_delivery(d);
-  check(declared.mode == "basis-uastc" && !declared.has_encoder,
-        "the declaration carries the mode and, until an encoder exists, a null encoder");
+  check(declared.mode == "basis-uastc" && declared.has_encoder && declared.encoder == "basisu-1.60",
+        "basis-uastc declares the mode and the basisu encoder (G8ku)");
+  grc::rs::parse_delivery_policy("basis-etc1s", &d, &error);
+  check(!grc::rs::declare_texture_delivery(d).has_encoder,
+        "basis-etc1s declares a null encoder until G8ke");
   grc::rs::VariantRequest request;
   request.hash = std::string(64, 'a');
   check(grc::rs::texture_variants(request).empty(), "no block bytes, no variant");
@@ -163,12 +168,14 @@ void test_delivery_seam() {
   check(grc::rs::delivery_mode_implemented(d, &why), "passthrough is implemented");
   grc::rs::parse_delivery_policy("rgba", &d, &error);
   check(grc::rs::delivery_mode_implemented(d, &why), "rgba is implemented");
-  for (const char *mode : {"basis-uastc", "basis-etc1s"}) {
+  grc::rs::parse_delivery_policy("basis-uastc", &d, &error);
+  check(grc::rs::delivery_mode_implemented(d, &why), "basis-uastc is implemented (G8ku)");
+  for (const char *mode : {"basis-etc1s"}) {
     grc::rs::parse_delivery_policy(mode, &d, &error);
     why.clear();
     check(!grc::rs::delivery_mode_implemented(d, &why) &&
               why.find("texture-delivery-unimplemented: GRC_TEXTURE_DELIVERY=") == 0,
-          "a Basis mode is refused typed until its encoder lands");
+          "basis-etc1s is refused typed until G8ke");
   }
   check(grc::rs::mode_offers_block("passthrough") && grc::rs::mode_offers_block("basis-uastc") &&
             !grc::rs::mode_offers_block("rgba") && !grc::rs::mode_offers_block("basis-etc1s"),
@@ -206,7 +213,64 @@ void test_delivery_seam() {
   grc::rs::parse_delivery_policy("rgba", &d, &error);
   grc::rs::texture_delivery_set_policy(d);
   check(grc::rs::texture_variants(request).empty(), "rgba offers no variant");
+
+  // G8ku: basis-uastc lists block then uastc, the uastc one only once its encode is attached.
+  grc::rs::parse_delivery_policy("basis-uastc", &d, &error);
+  grc::rs::texture_delivery_set_policy(d);
+  check(grc::rs::texture_variants(request).size() == 1, "basis-uastc before an encode: block only");
+  request.uastc_hash = std::string(64, 'c');
+  request.uastc_payload_bytes = 77;
+  request.uastc_params = "basisu-1.60/uastc-l1/zstd6/linear";
+  const std::vector<grc::rs2::TextureVariant> both = grc::rs::texture_variants(request);
+  check(both.size() == 2 && both[0].encoding == grc::rs2::VariantEncoding::Block &&
+            both[1].encoding == grc::rs2::VariantEncoding::Uastc && !both[1].has_format &&
+            both[1].has_params && both[1].params == request.uastc_params &&
+            both[1].payload_bytes == 77,
+        "basis-uastc lists block, then the attached uastc variant");
+  request.uastc_hash = request.hash;
+  check(grc::rs::texture_variants(request).size() == 1, "never a uastc variant repeating the base hash");
+  grc::rs::parse_delivery_policy("passthrough", &d, &error);
+  grc::rs::texture_delivery_set_policy(d);
+  request.uastc_hash = std::string(64, 'c');
+  check(grc::rs::texture_variants(request).size() == 1, "passthrough never lists uastc");
   grc::rs::texture_delivery_set_policy(grc::rs::DeliveryPolicy());
+
+  // G8ku: the Basis knobs and D12.
+  grc::rs::BasisConfig b;
+  check(grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, nullptr, &b, &error) &&
+            b.uastc_level == grc::rs::kDefaultUastcLevel && b.min_px == 16384 &&
+            b.encode_workers == 2 && b.wait_frame == 0 && !b.fault_perturb,
+        "Basis defaults: level 1, 128x128, 2 encode workers, no wait, no fault");
+  check(grc::rs::parse_basis_config("2", "1", "4", "30", "perturb-ktx2", &b, &error) &&
+            b.uastc_level == 2 && b.min_px == 1 && b.encode_workers == 4 && b.wait_frame == 30 &&
+            b.fault_perturb,
+        "Basis knobs parse");
+  check(!grc::rs::parse_basis_config("5", nullptr, nullptr, nullptr, nullptr, &b, &error) &&
+            error.find("invalid GRC_TEXTURE_UASTC_LEVEL=5") == 0,
+        "a UASTC level above 4 is refused naming the variable");
+  check(!grc::rs::parse_basis_config(nullptr, nullptr, "0", nullptr, nullptr, &b, &error) &&
+            !grc::rs::parse_basis_config(nullptr, nullptr, "17", nullptr, nullptr, &b, &error) &&
+            !grc::rs::parse_basis_config(nullptr, nullptr, nullptr, nullptr, "flip", &b, &error),
+        "bad encode workers and an unknown fault are refused");
+  check(grc::rs::basis_decline_reason("RGBA8", 128, 128, false, 16384) == nullptr &&
+            grc::rs::basis_decline_reason("RGB8", 256, 64, false, 16384) == nullptr &&
+            std::string(grc::rs::basis_decline_reason("RGBA8", 128, 128, true, 16384)) == "updated" &&
+            std::string(grc::rs::basis_decline_reason("LA8", 256, 256, false, 16384)) == "format" &&
+            std::string(grc::rs::basis_decline_reason("RGBAF", 256, 256, false, 16384)) == "format" &&
+            std::string(grc::rs::basis_decline_reason("RGBA8", 127, 128, false, 16384)) == "small",
+        "D12: updated, format and size decide, in that order");
+  // A 2x1 RGB8 GRT1 with mipmaps (levels 2x1, 1x1): RGB8 gains alpha 255.
+  {
+    std::vector<std::uint8_t> p = {0x47, 0x52, 0x54, 0x31, 0x0D, 0x0A, 0x1A, 0x0A, 2, 0, 0, 0, '{', '}', 9, 0, 0, 0,
+                                   1, 2, 3, 4, 5, 6, 7, 8, 9};
+    std::vector<std::vector<std::uint8_t>> levels;
+    check(grc::rs::grt1_rgba8_levels(p, "RGB8", 2, 1, true, &levels) && levels.size() == 2 &&
+              levels[0] == std::vector<std::uint8_t>({1, 2, 3, 255, 4, 5, 6, 255}) &&
+              levels[1] == std::vector<std::uint8_t>({7, 8, 9, 255}),
+          "a GRT1's levels become straight RGBA8");
+    check(!grc::rs::grt1_rgba8_levels(p, "RGB8", 2, 1, false, &levels) && levels.empty(),
+          "a payload longer than its shape is refused");
+  }
 }
 
 void test_subprotocols() {

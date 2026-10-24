@@ -750,7 +750,13 @@ struct Server::Impl {
                     const std::vector<std::pair<std::string, std::string>> &cors,
                     Coding coding = Coding::Identity) {
     std::string resp = "HTTP/1.1 200 OK\r\n";
-    resp += "Content-Type: application/octet-stream\r\n";
+    // G8ku (render-stream-9.md "KTX2 payload"): a KTX2 body is `image/ktx2` (and never coded: only
+    // GRT1 bodies are, ServedResources::lookup_coded); every other payload stays octet-stream.
+    static const std::uint8_t kKtx2[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+                                           0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+    const bool ktx2 = coding == Coding::Identity && body.size() >= sizeof(kKtx2) &&
+                      std::equal(kKtx2, kKtx2 + sizeof(kKtx2), body.begin());
+    resp += ktx2 ? "Content-Type: image/ktx2\r\n" : "Content-Type: application/octet-stream\r\n";
     if (coding != Coding::Identity) resp += std::string("Content-Encoding: ") + coding_token(coding) + "\r\n";
     resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     resp += "Cache-Control: private, max-age=31536000, immutable\r\n";

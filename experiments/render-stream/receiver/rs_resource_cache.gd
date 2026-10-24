@@ -176,7 +176,7 @@ func bytes() -> int:
 
 
 static func _is_payload_file(file_name: String) -> bool:
-	return file_name.ends_with(".grt") or file_name.ends_with(".grm") or file_name.ends_with(".grp")
+	return file_name.ends_with(".grt") or file_name.ends_with(".grm") or file_name.ends_with(".grp") or file_name.ends_with(".ktx2")
 
 
 ## G6s: the number of payloads held in memory, and their total decoded-source byte length
@@ -301,6 +301,15 @@ static func is_shader_payload(payload: PackedByteArray) -> bool:
 	return payload.size() >= 8 and payload.slice(0, 8).hex_encode() == RsShaderPayload.GRP1_MAGIC_HEX
 
 
+## G8ku (render-stream-9.md "KTX2 payload"): a `uastc`/`etc1s` variant's KTX2 file, by its
+## 12-byte identifier.
+const KTX2_IDENTIFIER_HEX: String = "ab4b5458203230bb0d0a1a0a"
+
+
+static func is_ktx2_payload(payload: PackedByteArray) -> bool:
+	return payload.size() >= 12 and payload.slice(0, 12).hex_encode() == KTX2_IDENTIFIER_HEX
+
+
 ## A payload's kind by its magic: "mesh" (GRM1), "shader" (GRP1) or "texture".
 static func payload_kind(payload: PackedByteArray) -> String:
 	if is_mesh_payload(payload):
@@ -311,17 +320,20 @@ static func payload_kind(payload: PackedByteArray) -> String:
 
 
 ## The file name a payload has in a cache or store directory: `<hash>.grm` for a mesh surface,
-## `<hash>.grp` for shader code (G55d), `<hash>.grt` for a texture.
-static func file_name(hash: String, mesh: bool, shader: bool = false) -> String:
+## `<hash>.grp` for shader code (G55d), `<hash>.ktx2` for a KTX2 variant (G8ku), `<hash>.grt` for a
+## texture.
+static func file_name(hash: String, mesh: bool, shader: bool = false, ktx2: bool = false) -> String:
 	if shader:
 		return hash + ".grp"
+	if ktx2:
+		return hash + ".ktx2"
 	return hash + (".grm" if mesh else ".grt")
 
 
 ## Whether the cache directory holds a file for `hash` (a hit for obtain(), unless ignore_cache).
 ## `mesh`: the hash names a mesh surface (G5e); `shader`: GRP1 shader code (G55d).
-func cache_has(hash: String, mesh: bool = false, shader: bool = false) -> bool:
-	return dir != "" and FileAccess.file_exists(dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader)))
+func cache_has(hash: String, mesh: bool = false, shader: bool = false, ktx2: bool = false) -> bool:
+	return dir != "" and FileAccess.file_exists(dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader, ktx2)))
 
 
 ## A `withheld` shader's code from the operator-local library (gate5_5-design.md D4, Q5):
@@ -451,13 +463,13 @@ static func _kept(payload: PackedByteArray) -> Dictionary:
 ## A cache hit is a read of the cache; a miss (or ignore_cache) is a fetch from the store
 ## directory, verified, decoded and written to the cache. `mesh`: the hash names a mesh surface
 ## (G5e), whose files are `<hash>.grm`; `shader`: GRP1 shader code (G55d), `<hash>.grp`.
-func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionary:
+func obtain(hash: String, mesh: bool = false, shader: bool = false, ktx2: bool = false) -> Dictionary:
 	var out: Dictionary = {"error": "", "source": "memory", "bytes": 0, "verified": true, "start_us": 0, "end_us": 0}
 	if _memory.has(hash):
 		out["bytes"] = _lengths[hash]
 		_touch(_memory_order, hash)
 		return out
-	var cached: String = dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader)) if dir != "" else ""
+	var cached: String = dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader, ktx2)) if dir != "" else ""
 	if cached != "" and not ignore_cache and FileAccess.file_exists(cached):
 		var cache_bytes: PackedByteArray = FileAccess.get_file_as_bytes(cached)
 		out["source"] = "cache"
@@ -481,7 +493,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 		out["verified"] = false
 		out["error"] = RsWire.err("resource-unavailable", "payload %s is not in memory or the cache, and RS_RECEIVER_STORE_DIR is unset" % hash)
 		return out
-	var origin: String = store_dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader))
+	var origin: String = store_dir.path_join(CACHE_SUBDIR).path_join(file_name(hash, mesh, shader, ktx2))
 	if not FileAccess.file_exists(origin):
 		out["end_us"] = Time.get_ticks_usec()
 		out["verified"] = false
@@ -512,10 +524,10 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false) -> Dictionar
 
 
 ## Writes a verified payload to the cache: a temporary file, then a rename (`.grm` for a GRM1
-## payload, `.grp` for a GRP1 one, `.grt` otherwise).
+## payload, `.grp` for a GRP1 one, `.ktx2` for a KTX2 file (G8ku), `.grt` otherwise).
 func _write_cache(hash: String, payload: PackedByteArray) -> String:
 	var base: String = dir.path_join(CACHE_SUBDIR)
-	var final_path: String = base.path_join(file_name(hash, is_mesh_payload(payload), is_shader_payload(payload)))
+	var final_path: String = base.path_join(file_name(hash, is_mesh_payload(payload), is_shader_payload(payload), is_ktx2_payload(payload)))
 	var temp_path: String = base.path_join(".%s.tmp" % hash)
 	var file: FileAccess = FileAccess.open(temp_path, FileAccess.WRITE)
 	if file == null:

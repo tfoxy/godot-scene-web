@@ -36,15 +36,20 @@ extends Node
 ##                                zstd, gzip, or off (no header: identity bodies). A coded body is
 ##                                decoded here and verified after decoding; a web receiver's
 ##                                browser negotiates and decodes by itself (the variable is unused)
-##   RS_RECEIVER_TEXTURE_ENCODINGS G8kp (texture-delivery-design.md D3): native only, the delivery
-##                                preference a /9 stream is read with (and a /9 hello states):
-##                                default "block,decoded"; each texture's payload is the first
-##                                encoding listed that the entry offers, `block` only for a block
-##                                format whose family is in gpu_formats, `decoded` always last
+##   RS_RECEIVER_TEXTURE_ENCODINGS G8kp (texture-delivery-design.md D3): the delivery preference a
+##                                /9 stream is read with (and a /9 hello states): default
+##                                "block,uastc,decoded" (G8ku: `uastc` through Godot's own KTX2
+##                                loader, D14); each texture's payload is the first encoding listed
+##                                that the entry offers, `block` only for a block format whose
+##                                family is in gpu_formats, `decoded` always last
 ##   RS_RECEIVER_GPU_FORMAT_MASK  G8kp: comma-separated families (s3tc, bptc, rgtc, etc2, astc)
 ##                                left out of gpu_formats, which is otherwise every family
-##                                RenderingServer.has_os_feature reports. A web export stays on
-##                                `decoded` (it reads neither variable and never offers /9)
+##                                RenderingServer.has_os_feature reports. G8ku: the web export reads
+##                                both too (and may offer /9)
+##   RS_RECEIVER_VARIANT_POLICY   G8ku (D6): keep (default) holds a texture's resident payload when a
+##                                variant it prefers appears at an equal version; upgrade refetches
+##   RS_RECEIVER_TRANSCODE_LOG    G8ku (D16): 1 hashes each KTX2 transcode's uploaded blocks into
+##                                the report's transcodes[] (format, size and time are always there)
 ##   RS_RECEIVER_SHADER_LIBRARY   G55d (gate5_5-design.md D4, Q5): absolute operator-local GRP1
 ##                                library (sha256/<hash>.grp) a `withheld` shader's code comes
 ##                                from, verified by hash; without it (or without that hash) the
@@ -435,7 +440,11 @@ var _wire_version: int = 6
 ## detected once the renderer exists (_new_applier).
 const GPU_FAMILIES: Array[String] = ["s3tc", "bptc", "rgtc", "etc2", "astc"]
 const TEXTURE_ENCODINGS: Array[String] = ["block", "uastc", "etc1s", "decoded"]
-var _texture_encodings: String = "block,decoded"
+var _texture_encodings: String = "block,uastc,decoded"
+## G8ku: RS_RECEIVER_VARIANT_POLICY and RS_RECEIVER_TRANSCODE_LOG.
+var _variant_upgrade: bool = false
+var _transcode_log: bool = false
+var _transcodes: Array[Dictionary] = []
 var _gpu_format_mask: Array[String] = []
 var _gpu_formats: String = "none"
 var _gpu_formats_detected: String = "none"
@@ -622,6 +631,7 @@ func _init_report(mode: String) -> String:
 		"cache": null,
 		"fetches": null if _log_mode == "summary" else _fetches,
 		"uploads": null if _log_mode == "summary" else _uploads,
+		"transcodes": _transcodes,
 		# G5e (render-stream-receiver-applied/4).
 		"mesh_uploads": null if _log_mode == "summary" else _mesh_uploads,
 		"resources_summary": _summary,
@@ -793,6 +803,7 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 	var hashes: Array = need["hashes"]
 	var mesh_hashes: Array = need["mesh_hashes"]
 	var shader_hashes: Array = need["shader_hashes"]
+	var ktx2_hashes: Array = need["ktx2_hashes"] if need.has("ktx2_hashes") else []
 	# G6s (gate2-design.md Q5, gate6-design.md Q5 "Resource budgets"): eviction must not touch any
 	# of these while this loop is making them available, one call at a time, below.
 	_cache.set_needed(hashes)
@@ -805,10 +816,11 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 			return RsWire.err("resource-unavailable", "payload %s is needed, and RS_RECEIVER_CACHE_DIR is unset (delivery %s)" % [hash, _delivery])
 		var mesh: bool = mesh_hashes.has(hash)
 		var shader: bool = shader_hashes.has(hash)
-		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh, shader)
+		var ktx2: bool = ktx2_hashes.has(hash)
+		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh, shader, ktx2)
 		if will_fetch and _fetch_delay_ms > 0:
 			OS.delay_msec(_fetch_delay_ms)
-		var got: Dictionary = _cache.obtain(hash, mesh, shader)
+		var got: Dictionary = _cache.obtain(hash, mesh, shader, ktx2)
 		var source: String = got["source"]
 		var got_bytes: int = got["bytes"]
 		if source == "cache":
@@ -938,6 +950,13 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		mesh_upload["seq"] = seq
 		if _log_mode != "summary":
 			_mesh_uploads.append(mesh_upload)
+	# G8ku: the KTX2 transcodes (D14, D16), each with the transaction that ran it.
+	var transcodes: Array = stats["transcodes"] if stats.has("transcodes") else []
+	for value: Variant in transcodes:
+		var transcode: Dictionary = value
+		transcode["stream"] = stream_index
+		transcode["seq"] = seq
+		_transcodes.append(transcode)
 	var uploads: Array = stats["uploads"]
 	for value: Variant in uploads:
 		var upload: Dictionary = value
@@ -1556,8 +1575,8 @@ func _parse_wire_env() -> bool:
 	if protocol_text != "6" and protocol_text != "7" and protocol_text != "8" and protocol_text != "9":
 		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8 or 9 (got %s)" % JSON.stringify(protocol_text))
 		return false
-	if RsConfig.is_web() and protocol_text != "7" and protocol_text != "8":
-		_log("error: a web receiver speaks only render-stream/7 or /8 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+	if RsConfig.is_web() and protocol_text != "7" and protocol_text != "8" and protocol_text != "9":
+		_log("error: a web receiver speaks only render-stream/7, /8 or (G8ku) /9 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
@@ -2067,11 +2086,12 @@ func _http_misses() -> Array[String]:
 	var need: Dictionary = _applier.needed()
 	var mesh_hashes: Array = need["mesh_hashes"]
 	var shader_hashes: Array = need["shader_hashes"]
+	var ktx2_hashes: Array = need["ktx2_hashes"] if need.has("ktx2_hashes") else []
 	for value: Variant in need["hashes"]:
 		var hash: String = value
 		if _cache.has_in_memory(hash):
 			continue
-		if not _cache.ignore_cache and _cache.cache_has(hash, mesh_hashes.has(hash), shader_hashes.has(hash)):
+		if not _cache.ignore_cache and _cache.cache_has(hash, mesh_hashes.has(hash), shader_hashes.has(hash), ktx2_hashes.has(hash)):
 			continue
 		out.append(hash)
 	return out
@@ -2430,11 +2450,16 @@ func _new_applier() -> void:
 
 
 ## G8kp (texture-delivery-design.md D3, Q3): RS_RECEIVER_TEXTURE_ENCODINGS and
-## RS_RECEIVER_GPU_FORMAT_MASK, checked against render-stream-9.md's hello grammar and names. A web
-## export reads neither (it stays on `decoded`). Logs and returns false on a malformed value.
+## RS_RECEIVER_GPU_FORMAT_MASK, checked against render-stream-9.md's hello grammar and names, and
+## (G8ku) RS_RECEIVER_VARIANT_POLICY and RS_RECEIVER_TRANSCODE_LOG; the web export reads them too.
+## Logs and returns false on a malformed value.
 func _parse_delivery_env() -> bool:
-	if RsConfig.is_web():
-		return true
+	var policy: String = RsConfig.get_env("RS_RECEIVER_VARIANT_POLICY").strip_edges()
+	if policy != "" and policy != "keep" and policy != "upgrade":
+		_log("error: RS_RECEIVER_VARIANT_POLICY must be keep or upgrade (got %s)" % JSON.stringify(policy))
+		return false
+	_variant_upgrade = policy == "upgrade"
+	_transcode_log = RsConfig.get_env("RS_RECEIVER_TRANSCODE_LOG").strip_edges() == "1"
 	var encodings: String = RsConfig.get_env("RS_RECEIVER_TEXTURE_ENCODINGS").strip_edges()
 	if encodings != "":
 		var seen: Array[String] = []
@@ -2456,11 +2481,9 @@ func _parse_delivery_env() -> bool:
 
 
 ## G8kp: gpu_formats from RenderingServer.has_os_feature (Godot's feature names, Q3) minus the mask,
-## handed to the core with the preference; the report states both at /9 (_accept_session). A web
-## export keeps the core's default, `decoded` alone.
+## handed to the core with the preference; the report states both at /9 (_accept_session). G8ku:
+## the web export too (its WebGL2 context's features through the same engine call).
 func _apply_delivery() -> void:
-	if RsConfig.is_web():
-		return
 	var detected: Array[String] = []
 	var effective: Array[String] = []
 	for family: String in GPU_FAMILIES:
@@ -2473,17 +2496,20 @@ func _apply_delivery() -> void:
 	var refused: String = _applier.set_delivery(_texture_encodings, _gpu_formats)
 	if refused != "":
 		_log("warning: the core refused the delivery preference (%s); every texture stays decoded" % refused)
+	_applier.set_variant_upgrade(_variant_upgrade)
+	_applier.set_transcode_log(_transcode_log)
 
 
 ## A stream's first record (a session), at the stream's wire version (G7xwl: /6, or /7).
 func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
-	if _wire_version >= 9 and not RsConfig.is_web():
+	if _wire_version >= 9:
 		var receiver_block: Dictionary = _report["receiver"]
 		receiver_block["texture_delivery"] = {
 			"texture_encodings": _texture_encodings,
 			"gpu_formats": _gpu_formats,
 			"gpu_formats_detected": _gpu_formats_detected,
 			"gpu_format_mask": ",".join(_gpu_format_mask),
+			"variant_policy": "upgrade" if _variant_upgrade else "keep",
 		}
 	return _applier.accept_session(data, offset, _wire_version)
 
