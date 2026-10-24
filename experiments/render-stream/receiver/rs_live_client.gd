@@ -7,7 +7,9 @@ extends RefCounted
 ## render-stream/7 (render-stream-7.md, gate7-design.md Q2/Q4): `open(..., wire_version = 7)` offers
 ## subprotocol render-stream.7 and hello_v7 carries the token, the credit window, the manifest and
 ## the presentation integers. The receiver picks the version (RS_RECEIVER_PROTOCOL; a web export
-## speaks only /7); every /6 byte is unchanged.
+## speaks only /7); every /6 byte is unchanged. G8g: `wire_version` 8 is render-stream/8's live
+## transport (render-stream-8.md "Live transport"): /7's, with subprotocol render-stream.8 and the
+## hello's protocol "render-stream/8"; a gate 8 host offers only .8.
 ##
 ## Two engine facts this class exists to get right:
 ## - The inbound buffer is allocated at handshake time and is also wslay's maximum message length
@@ -30,13 +32,15 @@ const PROTOCOL_V7: String = "render-stream/7"
 ## two delivery keys.
 const SUBPROTOCOL_V9: String = "render-stream.9"
 const PROTOCOL_V9: String = "render-stream/9"
+const SUBPROTOCOL_V8: String = "render-stream.8"
+const PROTOCOL_V8: String = "render-stream/8"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
 const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 
 var peer: WebSocketPeer = null
 var url: String = ""
 var inbound_buffer_bytes: int = 0
-## 6 or 7: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
+## 6, 7 or 8: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
 var version: int = 6
 
 
@@ -60,6 +64,9 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 	peer.inbound_buffer_size = inbound_bytes
 	if version == 7:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V7])
+	elif version == 8:
+		# G8g: a /8 client offers only render-stream.8 (a gate 8 policy host offers only .8); /7's transport.
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V8])
 	elif version == 9:
 		# G8kp: a /9 client (texture delivery) offers only render-stream.9; /7's transport.
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V9])
@@ -130,10 +137,11 @@ static func hello(receiver: String, credit_stage: String, inbound_bytes: int) ->
 
 ## The /7 hello (render-stream-7.md "Hello", gate7-design.md Q2), in the documented key order.
 ## `token` and `manifest_sha256` are "" for JSON null.
-static func hello_v7(receiver: String, receiver_kind: String, credit_stage: String, credit_window: int, inbound_bytes: int, token: String, manifest_sha256: String, backing: Vector2i, css: Vector2i, dpr_milli: int) -> Dictionary:
+## `protocol` (G8g) is PROTOCOL_V8 on a render-stream.8 connection; the keys are /7's.
+static func hello_v7(receiver: String, receiver_kind: String, credit_stage: String, credit_window: int, inbound_bytes: int, token: String, manifest_sha256: String, backing: Vector2i, css: Vector2i, dpr_milli: int, protocol: String = PROTOCOL_V7) -> Dictionary:
 	return {
 		"type": "hello",
-		"protocol": PROTOCOL_V7,
+		"protocol": protocol,
 		"receiver": receiver,
 		"receiver_kind": receiver_kind,
 		"credit_stage": credit_stage,

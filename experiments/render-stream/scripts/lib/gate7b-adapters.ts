@@ -66,8 +66,8 @@ import {
   sourceProvenanceProblems,
   viewHoldsWrite,
 } from "./gate7-adapters";
-import type { WebLegSpec } from "./gate7-web-legs";
-import { resolveRecording, statesEqual } from "./render-stream-2";
+import { legRecording, type WebLegSpec } from "./gate7-web-legs";
+import { resolveRecording, statesEqual, wireVersionOf } from "./render-stream-2";
 
 /** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
 const ciAllowance = ciRendererAllowance();
@@ -89,6 +89,9 @@ export interface GateDef {
   sourceLegs: string;
   runner: string;
 }
+
+/** G8g: gate 8's file-leg groups, in run-gate8.sh's order (the source run's --legs). */
+export const GATE8_FILE_GROUPS: readonly string[] = ["g8t", "g8a", "g8h", "g8f", "g8m"];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's
  * and G7g's, the rate, soak and report groups (g6s, g6c, g6p, g6z) G7r's, G7k's and G7p's. */
@@ -148,6 +151,16 @@ export const GATE7B_GATES: readonly GateDef[] = [
     viewGroups: ["g6a", "g6h", "g6b"],
     sourceLegs: "g6a,g6h,g6b",
     runner: "run-gate6.sh",
+  },  // G8g: gate 8's file groups (g8t's decode and g8f's floats on gate8-tex, g8a with G8r's lazy
+  // resources on gate8-adopt, g8h on gate8-size, g8m on gate8-mat). g8l (its live legs) is the
+  // live half's (lib/gate7-live.ts); decode-cost is a timing group and judges no receiver leg.
+  {
+    gate: "gate8",
+    group: "g7-8",
+    checker: "check-gate8.ts",
+    viewGroups: GATE8_FILE_GROUPS,
+    sourceLegs: GATE8_FILE_GROUPS.join(","),
+    runner: "run-gate8.sh",
   },
 ];
 
@@ -262,7 +275,7 @@ export function discoverFileReceiverLegs(sourceDir: string): DiscoveredLeg[] {
       excluded: null,
       excludedDetail: "",
     };
-    const recording = join(dir, "recording.rs2");
+    const recording = legRecording(dir);
     if (basename(argv[0] ?? "") !== "linux_release.x86_64") {
       leg.excluded = "native-only-editor";
       leg.excludedDetail = `launched ${basename(argv[0] ?? "?")}, not the release template (a native support leg)`;
@@ -633,7 +646,10 @@ function resolvedStates(
 ): Map<number, unknown> | undefined {
   try {
     const data = new Uint8Array(readFileSync(recordingPath));
-    for (const version of [6, 5, 4, 3, 2] as const) {
+    // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9).
+    const wire = wireVersionOf(data);
+    const versions = wire === 8 || wire === 9 ? [wire] : ([6, 5, 4, 3, 2] as const);
+    for (const version of versions) {
       try {
         const r = resolveRecording(data, version);
         return new Map(r.transactions.map((t) => [t.seq, t.state]));
@@ -670,7 +686,7 @@ async function compositorVerdict(
       problems: [],
       note: "no shot or no transaction",
     };
-  const states = resolvedStates(join(legDir, "recording.rs2"));
+  const states = resolvedStates(legRecording(legDir));
   if (!states)
     return {
       applicable: true,

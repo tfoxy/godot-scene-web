@@ -20,7 +20,7 @@
 //     env.txt, argv.txt, page-config.json, console.jsonl or any log written here
 //     (`token-not-logged`);
 //   - added: RS_RECEIVER_EVIDENCE_URL (/evidence/<nonce>; PUTs land in RS_RECEIVER_OUT's
-//     directory), RS_RECEIVER_BUILD_SHA256, RS_RECEIVER_PROTOCOL=7 on a live leg, and
+//     directory), RS_RECEIVER_BUILD_SHA256, RS_RECEIVER_PROTOCOL=7 on a live leg (8 kept: G8g), and
 //     RS_RECEIVER_MANIFEST_SHA256 (GATE7_MANIFEST_SHA256) on a live leg when set (the web
 //     export's bundle must be a Rust-core build: requireRustBundle, G7gd);
 //   - a native `--headless` leg: a browser always renders, so the leg runs rendered, with the
@@ -328,14 +328,17 @@ export function mapBrowserLeg(
     engineArgs.push(a);
   }
   if (live) {
+    // G8g: a gate 8 live leg asks for render-stream/8 (the native leg's own word); every other
+    // live leg speaks /7, the browsers' default.
     if (
       env.RS_RECEIVER_PROTOCOL !== undefined &&
-      env.RS_RECEIVER_PROTOCOL !== "7"
+      env.RS_RECEIVER_PROTOCOL !== "7" &&
+      env.RS_RECEIVER_PROTOCOL !== "8"
     )
       throw new Error(
-        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7`,
+        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7 or /8`,
       );
-    env.RS_RECEIVER_PROTOCOL = "7";
+    env.RS_RECEIVER_PROTOCOL = env.RS_RECEIVER_PROTOCOL ?? "7";
     // The native receiver forces `applied` under --headless (frame_post_draw never fires there);
     // the browser renders, so the leg keeps the stage its native receiver actually used.
     if (headless && env.RS_RECEIVER_CREDIT_STAGE === undefined)

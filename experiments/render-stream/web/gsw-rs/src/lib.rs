@@ -421,6 +421,10 @@ pub struct GswRs {
     stats: Stats,
     last_exec: ExecStats,
     totals: Totals,
+    /// G8g: the float payload formats (render-stream/8, D9) this receiver took as RGBA8 through
+    /// rs-core's `texture_rgba8` quantization (GSW samples no float texture): the
+    /// `float-texture-quantized` caveat of its evidence (render-stream-8.md "As built (G8f)").
+    quantized_float: std::collections::BTreeSet<String>,
     shot_buf: Vec<u8>,
     error: String,
     /// Kind per needed hash (0 texture GRT1, 1 mesh GRM1, 2 shader GRP1), parallel to `needed`.
@@ -634,6 +638,7 @@ impl GswRs {
             stats: Stats::default(),
             last_exec: ExecStats::default(),
             totals: Totals::default(),
+            quantized_float: std::collections::BTreeSet::new(),
             shot_buf: Vec::new(),
             error: String::new(),
             needed_kinds: Vec::new(),
@@ -832,7 +837,7 @@ impl GswRs {
     pub fn load(&mut self, len: usize) -> i32 {
         self.data.truncate(len);
         let Some(version) = wire::version_of_magic(&self.data) else {
-            self.error = "bad-magic: not a render-stream/2..7 recording".into();
+            self.error = "bad-magic: not a render-stream/2..9 recording".into();
             return -1;
         };
         self.version = version;
@@ -1055,6 +1060,7 @@ impl GswRs {
                         self.error = fail(e);
                         return -1;
                     }
+                    self.note_quantized(&hash);
                 }
                 ACCEPT_RESOURCE
             }
@@ -1124,23 +1130,32 @@ impl GswRs {
         self.rx.as_mut_ptr()
     }
 
-    /// A connection's first message, `len` bytes in `rx`: the /7 magic followed by exactly the
-    /// session record (render-stream-2.md "Live transport"). Starts the session as `start` does.
+    /// A connection's first message, `len` bytes in `rx`: the magic of `version` (7, or G8g's 8:
+    /// render-stream/8's live transport is /7's with /8's tables) followed by exactly the session
+    /// record (render-stream-2.md "Live transport"). Starts the session as `start` does.
     /// 0, or -1 (`error`: `bad-magic`, `truncated`, `live-framing`, or the session's own codes).
-    pub fn live_session(&mut self, len: usize) -> i32 {
+    pub fn live_session(&mut self, len: usize, version: u8) -> i32 {
         self.live = true;
+        // G8kp: a receiver that offered render-stream.9 (RS_RECEIVER_PROTOCOL=9, `live_protocol`
+        // in the options) speaks /9 only; G8g: 7 or 8 otherwise (the page passes the version it
+        // offered).
+        if !(version == 7 || version == 8 || version == 9) || (self.opts.live_v9 != (version == 9)) {
+            self.error = format!(
+                "live-version: render-stream/{version} (options live_protocol {}) has no live transport here",
+                if self.opts.live_v9 { 9 } else { 7 }
+            );
+            return -1;
+        }
         let msg = &self.rx[..len];
-        // G8kp: a receiver that offered render-stream.9 (RS_RECEIVER_PROTOCOL=9) speaks /9 only.
-        let want: u8 = if self.opts.live_v9 { 9 } else { 7 };
-        if wire::version_of_magic(msg) != Some(want) {
+        if wire::version_of_magic(msg) != Some(version) {
             self.error = format!(
                 "bad-magic: expected {}, got {}",
-                wire::hex(&wire::magic(want)),
+                wire::hex(&wire::magic(version)),
                 wire::hex(&msg[..len.min(wire::MAGIC_LEN)])
             );
             return -1;
         }
-        let spans = match wire::split_records(msg, want) {
+        let spans = match wire::split_records(msg, version) {
             Ok(s) => s,
             Err(e) => {
                 self.error = fail(e);
@@ -1156,7 +1171,7 @@ impl GswRs {
         }
         self.data = msg.to_vec();
         self.spans = spans;
-        self.version = want;
+        self.version = version;
         self.rx_offset = len;
         self.start()
     }
@@ -1333,6 +1348,7 @@ impl GswRs {
             .provide(bytes, &hash, self.version, !self.opts.skip_payload_hash)
         {
             Ok(()) => {
+                self.note_quantized(&hash);
                 self.provide_cursor += 1;
                 self.totals.provided += 1;
                 self.totals.provided_bytes += len as u64;
@@ -1395,6 +1411,7 @@ impl GswRs {
             return -1;
         };
         self.payloads.insert(hash, s.decoded);
+        self.note_quantized(&hash);
         self.provide_cursor += 1;
         self.totals.provided += 1;
         self.totals.provided_bytes += s.bytes as u64;
@@ -1668,6 +1685,7 @@ impl GswRs {
             return -1;
         };
         self.payloads.insert(hash, s.decoded);
+        self.note_quantized(&hash);
         self.totals.provided += 1;
         self.totals.provided_bytes += s.bytes as u64;
         0
@@ -1933,7 +1951,15 @@ impl GswRs {
             }
             out.push('}');
         }
-        out.push_str("]}");
+        // G8g: the receiver-side caveat of a quantized float texture (render-stream-8.md "As built
+        // (G8f)"; no wire change), with the float formats it was taken for.
+        let q: Vec<String> = self.quantized_float.iter().map(|f| format!("\"{f}\"")).collect();
+        out.push_str(&format!("],\"float_quantized\":[{}]", q.join(",")));
+        out.push_str(if q.is_empty() {
+            ",\"caveats\":[]}"
+        } else {
+            ",\"caveats\":[\"float-texture-quantized\"]}"
+        });
         out
     }
 
@@ -1989,6 +2015,18 @@ impl GswRs {
             ));
         }
         out
+    }
+
+    /// G8g: records `hash`'s payload format when it is a float one (quantized to RGBA8 on decode).
+    fn note_quantized(&mut self, hash: &Hash) {
+        if let Some(t) = self.payloads.textures.get(hash) {
+            if matches!(
+                t.format.as_str(),
+                "RF" | "RGF" | "RGBF" | "RGBAF" | "RH" | "RGH" | "RGBH" | "RGBAH"
+            ) {
+                self.quantized_float.insert(t.format.clone());
+            }
+        }
     }
 
     /// The run's evidence (off the frame path): totals, the typed shortcuts, the wire's unsupported

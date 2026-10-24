@@ -8,8 +8,9 @@
 //
 // The checks live in lib/gate8-*-checks.ts (G8t: lib/gate8-tex-checks.ts, G8a:
 // lib/gate8-adopt-checks.ts, G8h: lib/gate8-size-checks.ts, G8f: lib/gate8-float-checks.ts, G8m:
-// lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts), which scripts/test/self-test-gate8*.ts
-// drive against fabricated evidence.
+// lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts, G8g: lib/gate8-live-checks.ts, the
+// live group g8l), which scripts/test/self-test-gate8*.ts drive against fabricated evidence.
+// buildGate8Report is also check-gate7.ts's gate 8 checker for the GSW receiver's file legs (G8g).
 
 // GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
 import "./lib/node-hash";
@@ -20,13 +21,14 @@ import { fileURLToPath } from "node:url";
 import { type G8aExpected, runG8a } from "./lib/gate8-adopt-checks";
 import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
+import { runG8l } from "./lib/gate8-live-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { runG8kp } from "./lib/gate8-delivery-checks";
 import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8l"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -40,8 +42,26 @@ function parseArgs(argv: string[]): { out: string } {
   return { out: resolve(out) };
 }
 
-async function main(): Promise<void> {
-  const { out } = parseArgs(process.argv.slice(2));
+interface Gate8Check {
+  id: string;
+  passed: boolean;
+  status: string;
+  criterion: string;
+  detail?: string;
+  gating?: boolean;
+}
+
+export interface Gate8Report {
+  schema: string;
+  groups: { run: string[]; not_run: string[] };
+  gate_passed: boolean;
+  checks: Gate8Check[];
+  [group: string]: unknown;
+}
+
+/** The gate 8 report over an evidence directory (render-stream-gate8-report/1): every group that ran.
+ * check-gate7.ts judges the GSW receiver's gate 8 legs through it (G8g, D21: the gate's own code). */
+export async function buildGate8Report(out: string): Promise<Gate8Report> {
   const legsJson = JSON.parse(await readFile(join(out, "legs.json"), "utf8")) as {
     groups_run: string[];
   };
@@ -50,7 +70,7 @@ async function main(): Promise<void> {
     schema: "render-stream-gate8-report/1",
     groups: { run, not_run: KNOWN_GROUPS.filter((g) => !run.includes(g)) },
   };
-  const checks: { id: string; passed: boolean; status: string; criterion: string; detail?: string; gating?: boolean }[] = [];
+  const checks: Gate8Check[] = [];
   if (run.includes("g8t")) {
     const expected = JSON.parse(
       await readFile(join(EXPERIMENT_DIR, "fixtures", "gate8-tex", "expected.json"), "utf8"),
@@ -110,9 +130,22 @@ async function main(): Promise<void> {
     checks.push(...g8kp.checks);
     report.g8kp = { legs: g8kp.legs, select: g8kp.select, pixels: g8kp.pixels };
   }
+  if (run.includes("g8l")) {
+    const g8l = await runG8l(out);
+    checks.push(...g8l.checks);
+    report.g8l = g8l.report;
+  }
   const gating = checks.filter((c) => c.gating !== false);
   report.gate_passed = gating.length > 0 && gating.every((c) => c.passed);
   report.checks = checks;
+  return report as Gate8Report;
+}
+
+async function main(): Promise<void> {
+  const { out } = parseArgs(process.argv.slice(2));
+  const report = await buildGate8Report(out);
+  const checks = report.checks;
+  const gating = checks.filter((c) => c.gating !== false);
   await writeFile(join(out, "result.json"), `${JSON.stringify(report, null, 2)}\n`);
   for (const c of checks) {
     const tag = c.status === "not-run" ? "NOT-RUN" : c.passed ? "PASS" : "FAIL";
@@ -121,12 +154,14 @@ async function main(): Promise<void> {
   }
   const passed = gating.filter((c) => c.passed).length;
   console.log(
-    `\ngate 8 (groups ${run.join(",") || "none"}): ${report.gate_passed ? "PASS" : "FAIL"} ${passed}/${gating.length} (${join(out, "result.json")})`,
+    `\ngate 8 (groups ${report.groups.run.join(",") || "none"}): ${report.gate_passed ? "PASS" : "FAIL"} ${passed}/${gating.length} (${join(out, "result.json")})`,
   );
   if (!report.gate_passed) process.exitCode = 1;
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

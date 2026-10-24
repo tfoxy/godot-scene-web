@@ -60,6 +60,12 @@
 // shots and state dumps at window seqs (`stream-2-seq-N` after a reconnect), the received taps, and
 // per transaction `paced`: the rAF callback that applied and drew it and when its submitted ack was
 // sent, also in perf-timeline.jsonl when RS_RECEIVER_PERF_OUT is set.
+//
+// render-stream/8 (G8g, render-stream-8.md "Live transport"): RS_RECEIVER_PROTOCOL=8 offers
+// `render-stream.8` instead and sends the same hello with protocol `render-stream/8` (a gate 8
+// host offers only .8); the session and every record go through wasm at /8 (`live_session(len, 8)`),
+// and the received tap is `received.rs8`. Everything else is the /7 client above (G8kp's /9 adds
+// the delivery hello keys).
 
 import {
   ACCEPT_END,
@@ -104,10 +110,10 @@ import {
   provideLibrary,
 } from "./programs";
 
-const SUBPROTOCOL = "render-stream.7";
-const PROTOCOL = "render-stream/7";
-/** G8kp (render-stream-9.md "Live transport"): RS_RECEIVER_PROTOCOL=9 offers only this. */
-const SUBPROTOCOL_V9 = "render-stream.9";
+/** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
+ * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
+const SUBPROTOCOL = (v: 7 | 8 | 9) => `render-stream.${v}`;
+const PROTOCOL = (v: 7 | 8 | 9) => `render-stream/${v}` as const;
 /** G8kp (texture-delivery-design.md Q3): the compressed families a WebGL2 context on this page
  * exposes, probed on a throwaway canvas before the module's own context exists (the hello goes
  * out first), minus RS_RECEIVER_GPU_FORMAT_MASK; `none` when empty. The module re-derives the same
@@ -370,7 +376,7 @@ class LiveReceiver {
       distinctFetched: 0,
       live: this.liveBlock,
       entries: this.entries,
-      protocol: cfg.liveProtocol === 9 ? "render-stream/9" : "render-stream/7",
+      protocol: PROTOCOL(this.cfg.liveProtocol),
       creditWindow: null,
       cache: null,
     };
@@ -452,9 +458,7 @@ class LiveReceiver {
     this.closeInfo = null;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.L.url, [
-        this.cfg.liveProtocol === 9 ? SUBPROTOCOL_V9 : SUBPROTOCOL,
-      ]);
+      ws = new WebSocket(this.L.url, [SUBPROTOCOL(this.cfg.liveProtocol)]);
     } catch (e) {
       throw new ReplayFailure(
         null,
@@ -494,10 +498,11 @@ class LiveReceiver {
       lr.opened_us = us();
     const rect = this.canvas.getBoundingClientRect();
     // The /7 hello (Q2), key order as there. The token goes only here, never to a log.
-    // G8kp: at /9 the same keys under render-stream/9, then the two delivery keys.
+    // G8g: at /8 the same keys under render-stream/8. G8kp: at /9 the same keys under
+    // render-stream/9, then the two delivery keys.
     const hello: Record<string, unknown> = {
       type: "hello",
-      protocol: PROTOCOL,
+      protocol: PROTOCOL(this.cfg.liveProtocol),
       receiver: "gsw-canvas-receiver",
       receiver_kind: "gsw-canvas",
       credit_stage: this.L.creditStage,
@@ -616,7 +621,8 @@ class LiveReceiver {
     const p = g.rx(len);
     new Uint8Array(mem.buffer, p, len).set(new Uint8Array(buf));
     if (!this.sessionSeen) {
-      if (g.live_session(len) < 0) throw failWith(null, g.error());
+      if (g.live_session(len, this.cfg.liveProtocol) < 0)
+        throw failWith(null, g.error());
       if (this.cfg.liveProtocol === 9)
         this.report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
           string,

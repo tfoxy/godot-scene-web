@@ -36,7 +36,7 @@ import {
   provenancePassDetail,
 } from "./browser-renderer";
 import { decodePngRgba } from "./gate-minus1-checks";
-import { loadRecording, RECORDING_NAME } from "./gate0-checks";
+import { loadRecording } from "./gate0-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
 import {
   CHECKER_WRITES,
@@ -45,6 +45,13 @@ import {
   type SourceProvenance,
   viewHoldsWrite,
 } from "./gate7-adapters";
+import {
+  GATE8_LEGS,
+  GATE8_NOT_APPLICABLE,
+  GATE8_RECEIVER_CHECKS,
+  gate8BandViews,
+  gate8Q7Plan,
+} from "./gate7-gsw-g8";
 import {
   GATE55_LEGS,
   GATE55_NOT_APPLICABLE,
@@ -68,7 +75,7 @@ import {
   type TypedCheck,
 } from "./gate7-gsw-g45";
 import { buildQ7View, stepsOf } from "./gate7-q7";
-import type { WebLegSpec } from "./gate7-web-legs";
+import { legRecording, type WebLegSpec } from "./gate7-web-legs";
 
 /** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
 const ciAllowance = ciRendererAllowance();
@@ -80,6 +87,7 @@ export type GswGate =
   | "gate3"
   | "gate55"
   | "gate6"
+  | "gate8"
   | G45Gate;
 export const GSW_GROUP_OF: Record<GswGate, string> = {
   gate0: "g7-0",
@@ -90,6 +98,7 @@ export const GSW_GROUP_OF: Record<GswGate, string> = {
   gate4: "g7-4",
   gate5: "g7-5",
   gate6: "g7-6",
+  gate8: "g7-8",
 };
 
 /** One gsw leg: a native receiver leg replayed, or a GSW-only sabotage derived from one. */
@@ -207,6 +216,8 @@ export const GSW_LEGS: Record<GswGate, GswLegDef[]> = {
   ...G45_LEGS,
   // G7g: gate 6 (lib/gate7-gsw-g6.ts).
   gate6: GATE6_LEGS,
+  // G8g: gate 8 (lib/gate7-gsw-g8.ts).
+  gate8: GATE8_LEGS,
 };
 
 export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
@@ -224,6 +235,7 @@ export const GSW_NOT_APPLICABLE: Record<GswGate, NotApplicable[]> = {
   gate55: GATE55_NOT_APPLICABLE,
   ...G45_NOT_APPLICABLE,
   gate6: GATE6_NOT_APPLICABLE,
+  gate8: GATE8_NOT_APPLICABLE,
 };
 
 /** Each gate's checks that judge receiver legs (kept `@gsw`), and those not applicable. */
@@ -359,6 +371,7 @@ export const GSW_RECEIVER_CHECKS: Record<
     },
   },
   gate55: GATE55_RECEIVER_CHECKS,
+  gate8: GATE8_RECEIVER_CHECKS,
   ...G45_RECEIVER_CHECKS,
   gate6: GATE6_RECEIVER_CHECKS,
 };
@@ -539,6 +552,7 @@ export function q7Plan(
   if (gate === "gate3" && /xform/.test(leg))
     return { key: "gate3-xform", reference: "reference-xform", live: false };
   if (gate === "gate55") return gate55Q7Plan(leg);
+  if (gate === "gate8") return gate8Q7Plan(leg);
   return null;
 }
 
@@ -657,6 +671,19 @@ export async function checkGswGroup(
         : undefined,
     );
     replaced.set(d.leg, viewDir);
+  }
+  // G8g: gate 8's legs are judged through the band against the native leg (lib/gate7-gsw-g8.ts).
+  if (gate === "gate8") {
+    const band = await gate8BandViews(
+      input.gswRoot,
+      input.sourceDir,
+      defs.filter((d) => d.replaces).map((d) => d.leg),
+    );
+    for (const [leg, view] of band.views) replaced.set(leg, view);
+    await writeFile(
+      join(input.viewDir, "..", "gsw-band.json"),
+      `${JSON.stringify(band.shots, null, 2)}\n`,
+    );
   }
   await buildView(input.sourceDir, replaced, input.viewDir);
   await writeFile(
@@ -848,12 +875,14 @@ export async function checkGswGroup(
   checks.push(await noSourceScene(input.bundleDir));
 
   const legs: GswGroupResult["legs"] = {};
+  // G8g: gate 8's report keeps its legs per group (report.g8t.legs, ...), not at the top.
+  const reportLegs = report.legs ?? {};
   for (const d of defs.filter((x) => x.replaces)) {
     const key55 = gate === "gate55" ? gate55LegKey(d.leg) : undefined;
     const e =
-      (key55 !== undefined ? report.legs[key55] : undefined) ??
-      report.legs[d.leg] ??
-      report.legs[d.leg.replace(/\/receiver$/, "")];
+      (key55 !== undefined ? reportLegs[key55] : undefined) ??
+      reportLegs[d.leg] ??
+      reportLegs[d.leg.replace(/\/receiver$/, "")];
     legs[d.leg] = {
       result_class: e?.result_class ?? null,
       expected_class: e?.expected_class ?? null,
@@ -908,7 +937,8 @@ export async function compositorProblems(legDir: string): Promise<string[]> {
   // The canvas shows the LAST applied transaction while the PUT is held: the comparison is of the
   // same frame only when that transaction's resolved state equals the last shot's (compared from
   // the recording itself, as gate7-adapters.ts does for the web export).
-  const recording = await loadRecording(join(legDir, RECORDING_NAME));
+  // G8g: gate 8 legs hold recording.rs8 (summarizeRecording reads its version from the magic).
+  const recording = await loadRecording(legRecording(legDir));
   const stateOf = (seq: number): string | undefined => {
     const meta = recording.transactions[seq - 1]?.meta as unknown as
       | Record<string, unknown>
