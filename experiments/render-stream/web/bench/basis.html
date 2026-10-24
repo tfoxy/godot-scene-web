@@ -1,0 +1,26 @@
+<!doctype html>
+<!--
+  G8kb's Basis bench page (protocol/texture-delivery-design.md Q6 "GSW", "As built (G8kb)"), served by
+  scripts/gate7-bench.ts --arm gsw-basis through browser-harness.ts's HarnessServer, on desktop
+  headless Chromium and on a phone's Chrome over adb reverse. basis-bench.ts runs GSW's own
+  transcoder worker (web/basis-transcoder/) and GSW's upload calls; window.__bench reports progress
+  and the result.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>render-stream G8kb basis bench</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #333366;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="64" height="64"></canvas>
+    <script type="module" src="basis-bench.js"></script>
+  </body>
+</html>

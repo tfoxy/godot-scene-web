@@ -213,7 +213,9 @@ on a /9 connection, or the reverse, is `error` `protocol`, close 1002.
 The listener offers `render-stream.9` **only under `GRC_STREAM_VERSION=9`**, then `.8`, `.7`, `.6`
 (under a gate 8 policy, `.9` then `.8`). Every other configuration offers exactly what /8 offered.
 No receiver's hello offers `render-stream.9` in G8k9; since G8kp the native receiver and GSW do
-under `RS_RECEIVER_PROTOCOL=9` ("As built (G8kp)").
+under `RS_RECEIVER_PROTOCOL=9` ("As built (G8kp)"). Since G8kb GSW's /9 hello lists
+`block,uastc,decoded` by default (its transcoder worker, texture-delivery-design.md "As built
+(G8kb)"), and gate 8's g8l `basis` leg runs it live.
 
 ## Capture policy
 

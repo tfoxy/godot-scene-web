@@ -172,7 +172,13 @@ export type ExcludedReason =
   | "native-only-trace"
   | "native-only-editor"
   | "native-only-warm-cache"
-  | "live-derived";
+  | "live-derived"
+  | "gsw-only-group";
+
+/** G8kb: source groups only g7-8's GSW half replays (lib/gate7-gsw-g8.ts GATE8_LEGS): gate 8's
+ * texture-delivery groups at /9. The web export's own /9 legs run inside g8ku (g8ku-web/web); its
+ * block-variant and non-4-aligned BC uploads are G8kf's (results/gate8/g8kb.md). */
+export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8kp", "g8ku"];
 
 export interface DiscoveredLeg {
   leg: string;
@@ -286,6 +292,10 @@ export function discoverFileReceiverLegs(sourceDir: string): DiscoveredLeg[] {
       leg.excluded = "native-only-trace";
       leg.excludedDetail =
         "the leg straces the native receiver process (D11: its checks read strace.txt; a browser has no such trace)";
+    } else if (GSW_ONLY_SOURCE_GROUPS.some((g) => rel.startsWith(`${g}/`))) {
+      leg.excluded = "gsw-only-group";
+      leg.excludedDetail =
+        "G8kb: gate 8's texture-delivery groups (g8kp, g8ku) are in g7-8's source for the GSW half; the web export's /9 legs run inside g8ku (g8ku-web/web), and its block and non-4-aligned BC uploads wait for G8kf";
     } else if (env.get("RS_RECEIVER_CACHE_MODE") === "warm") {
       leg.excluded = "native-only-warm-cache";
       leg.excludedDetail =

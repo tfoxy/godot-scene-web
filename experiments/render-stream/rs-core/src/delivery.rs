@@ -57,6 +57,11 @@ pub struct DeliveryPrefs {
     /// it prefers appears at that same version. False is `keep` (the desktop default: no refetch);
     /// true is `upgrade` (refetch and re-upload). Not part of the hello.
     pub upgrade: bool,
+    /// G8kb (texture-delivery-design.md Q3 "Transcode or upload failure"): variant hashes this
+    /// receiver could not transcode or upload (`delivery-transcode-failed`). D3 skips them, so the
+    /// entry falls through to its next choice, at worst `decoded` (always servable). Not part of
+    /// the hello; never cleared within a session (the same bytes fail the same way).
+    pub refused: Vec<Hash>,
 }
 
 impl Default for DeliveryPrefs {
@@ -65,6 +70,7 @@ impl Default for DeliveryPrefs {
             encodings: vec!["decoded".into()],
             gpu_formats: Vec::new(),
             upgrade: false,
+            refused: Vec::new(),
         }
     }
 }
@@ -124,6 +130,7 @@ impl DeliveryPrefs {
             encodings: enc,
             gpu_formats: gpu,
             upgrade: false,
+            refused: Vec::new(),
         })
     }
 
@@ -138,6 +145,13 @@ impl DeliveryPrefs {
 
     pub fn encodings_text(&self) -> String {
         self.encodings.join(",")
+    }
+
+    /// G8kb: never choose variant `hash` again (its transcode or upload failed).
+    pub fn refuse(&mut self, hash: Hash) {
+        if !self.refused.contains(&hash) {
+            self.refused.push(hash);
+        }
     }
 
     /// Whether the receiver can upload `family` (a [`block_family`] name).
@@ -171,6 +185,7 @@ impl DeliveryPrefs {
                 "block" => {
                     let hit = t.variants.iter().find(|v| {
                         v.encoding == VariantEncoding::Block
+                            && !self.refused.contains(&v.hash)
                             && v.format
                                 .as_deref()
                                 .and_then(block_family)
@@ -185,13 +200,12 @@ impl DeliveryPrefs {
                     }
                 }
                 // G8ku: a receiver lists `uastc` only when it can transcode (the native receiver
-                // and the web export: Godot's KTX2 loader, D14), so a listed uastc variant wins.
+                // and the web export: Godot's KTX2 loader, D14; G8kb: GSW's transcoder worker), so
+                // a listed uastc variant wins unless its transcode already failed here (G8kb).
                 "uastc" => {
-                    if let Some(v) = t
-                        .variants
-                        .iter()
-                        .find(|v| v.encoding == VariantEncoding::Uastc)
-                    {
+                    if let Some(v) = t.variants.iter().find(|v| {
+                        v.encoding == VariantEncoding::Uastc && !self.refused.contains(&v.hash)
+                    }) {
                         return Some(Selected {
                             hash: v.hash,
                             encoding: "uastc",
@@ -278,6 +292,22 @@ mod tests {
         assert!(!p.keeps(&t, Hash([9; 32]), 1), "a hash the entry does not list is never kept");
         p.upgrade = true;
         assert!(!p.keeps(&t, Hash([1; 32]), 1));
+    }
+
+    #[test]
+    fn a_refused_variant_falls_through_to_decoded() {
+        // G8kb (Q3): a variant whose transcode failed is never chosen again.
+        let mut p = DeliveryPrefs::parse("uastc,decoded", "none").unwrap();
+        let t = tex(vec![uastc(3)]);
+        assert_eq!(p.select(&t).unwrap().encoding, "uastc");
+        p.refuse(Hash([3; 32]));
+        p.refuse(Hash([3; 32]));
+        assert_eq!(p.refused.len(), 1);
+        let s = p.select(&t).unwrap();
+        assert_eq!((s.encoding, s.hash), ("decoded", Hash([1; 32])));
+        let mut b = DeliveryPrefs::parse("block,uastc,decoded", "s3tc").unwrap();
+        b.refuse(Hash([2; 32]));
+        assert_eq!(b.select(&tex(vec![block("DXT1", 2), uastc(3)])).unwrap().encoding, "uastc");
     }
 
     #[test]

@@ -257,6 +257,71 @@ pub fn texture_block_level0(
     }))
 }
 
+/// G8kb (texture-delivery-design.md Q6 "GSW", D14): a KTX2 `uastc` variant after the browser's
+/// transcoder worker turned it into `format` (an Image.Format name: a block format the context
+/// uploads, or `RGBA8`, the fallback when it has none of D14's families). `data` is every
+/// transcoded level, level 0 first; level 0 is what is uploaded, as for every other payload, and
+/// `data.len()` is the upload accounting's `data_len`. The KTX2 itself was verified against its
+/// hash and shape before it was transcoded ([`verify_ktx2`]).
+pub fn texture_transcoded(
+    format: &str,
+    width: u32,
+    height: u32,
+    mipmaps: bool,
+    data: &[u8],
+) -> Result<TexturePixels, String> {
+    let mut px = if format == "RGBA8" {
+        let need = 4 * width as usize * height as usize;
+        if data.len() < need {
+            return Err(format!(
+                "transcoded RGBA8 {width}x{height}: {} bytes, level 0 needs {need}",
+                data.len()
+            ));
+        }
+        let mut px = texture_rgba8("RGBA8", width, height, &data[..need])?;
+        px.data_len = data.len();
+        px
+    } else {
+        match texture_block_level0(format, width, height, data) {
+            Some(r) => r?,
+            None => return Err(format!("transcode target {format} is not a block format")),
+        }
+    };
+    px.mipmaps = mipmaps;
+    Ok(px)
+}
+
+/// G8kb: a KTX2 payload's SHA-256 against `expected` (skipped only under `skip-payload-hash`) and
+/// its shape against the entry that lists it as a `uastc` variant (render-stream-9.md, Q6: the
+/// receiver checks the KTX2 shape only; the transcode is the worker's). Nothing is decoded here.
+pub fn verify_ktx2(
+    bytes: &[u8],
+    expected: &Hash,
+    verify: bool,
+    width: i64,
+    height: i64,
+    mipmaps: bool,
+) -> Result<(), crate::wire::Error> {
+    use crate::prof;
+    let t = prof::start();
+    if verify {
+        let actual = crate::wire::sha256(bytes);
+        if actual != *expected {
+            return Err(crate::wire::Error::new(
+                "resource-hash",
+                format!(
+                    "payload sha256 {} disagrees with the wire's {}",
+                    actual.to_hex(),
+                    expected.to_hex()
+                ),
+            ));
+        }
+    }
+    prof::add(prof::PAYLOAD_HASH, t);
+    let k = crate::payload::decode_ktx2(bytes)?;
+    crate::payload::check_ktx2_shape(&k, "uastc", width, height, mipmaps)?;
+    Ok(())
+}
 
 /// Mesh geometry from a GRM1 surface's decoded buffers.
 pub fn mesh_geometry(
@@ -640,6 +705,21 @@ impl PayloadStage {
         self.staged.contains_key(hash)
     }
 
+    /// G8kb: stage a payload verified elsewhere (a KTX2 checked by [`verify_ktx2`] and transcoded
+    /// by the browser's worker): `bytes` is the payload's own length, `verified` false only under
+    /// `skip-payload-hash`.
+    pub fn put(&mut self, hash: Hash, decoded: Decoded, bytes: usize, verified: bool) {
+        self.staged.insert(
+            hash,
+            Staged {
+                decoded,
+                bytes,
+                verified,
+            },
+        );
+        self.staged_count += 1;
+    }
+
     pub fn take(&mut self, hash: &Hash) -> Option<Staged> {
         self.staged.remove(hash)
     }
@@ -897,6 +977,35 @@ mod tests {
             let e = verify_decode(&bytes, &hash, v, true).unwrap_err();
             assert_eq!(e.code, "resource-payload", "/{v}");
         }
+    }
+
+    #[test]
+    fn a_ktx2_is_verified_against_hash_and_shape_before_transcoding() {
+        // G8kb: the committed golden-9 UASTC file (16x16, five levels).
+        let good = include_bytes!("../../../protocol/golden-9/payloads/ktx2-16x16-mips.ktx2");
+        let h = crate::wire::sha256(good);
+        assert!(verify_ktx2(good, &h, true, 16, 16, true).is_ok());
+        assert_eq!(verify_ktx2(good, &Hash([0; 32]), true, 16, 16, true).unwrap_err().code, "resource-hash");
+        assert!(verify_ktx2(good, &Hash([0; 32]), false, 16, 16, true).is_ok());
+        assert_eq!(verify_ktx2(good, &h, true, 8, 8, true).unwrap_err().code, "ktx2-shape");
+        let mut bad = good.to_vec();
+        bad[0] ^= 1;
+        assert_eq!(verify_ktx2(&bad, &crate::wire::sha256(&bad), true, 16, 16, true).unwrap_err().code, "ktx2-header");
+    }
+
+    #[test]
+    fn a_transcode_keeps_level_0_and_counts_every_level() {
+        // BC7 16x16 with mips: level 0 is 16 blocks (256 B); the data is every level (5 levels).
+        let data = vec![7u8; 256 + 64 + 16 + 16 + 16];
+        let px = texture_transcoded("BPTC_RGBA", 16, 16, true, &data).unwrap();
+        assert_eq!(px.compressed.as_ref().unwrap().len(), 256);
+        assert_eq!((px.data_len, px.mipmaps, px.format.as_str()), (data.len(), true, "BPTC_RGBA"));
+        assert!(px.rgba.is_empty());
+        let rgba = texture_transcoded("RGBA8", 2, 2, false, &[9u8; 16]).unwrap();
+        assert_eq!((rgba.rgba.len(), rgba.compressed.is_none()), (16, true));
+        assert!(texture_transcoded("RGBA8", 4, 4, false, &[0u8; 16]).is_err());
+        assert!(texture_transcoded("ASTC_4x4", 16, 16, false, &[0u8; 255]).is_err());
+        assert!(texture_transcoded("PNG", 4, 4, false, &[0u8; 64]).is_err());
     }
 
     #[test]

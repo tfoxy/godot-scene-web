@@ -251,7 +251,8 @@ leg_env_value() {
 
 # gate7_browser_leg <command...>: true when GATE7 mode is on and the command launches the receiver
 # project as a live receiver, or as a file-mode replay of a GRS7 recording, or (G8g) of a GRS8 one
-# (gate 8's g8l replays its live host's /8 file sink in the same browser).
+# (gate 8's g8l replays its live host's /8 file sink in the same browser), or (G8kb) of a GRS9 one
+# (g8l's basis leg replays its /9 sink).
 gate7_browser_leg() {
 	[ -n "$GATE7_LIVE_KIND" ] || return 1
 	local prev="" word on_receiver=0 recording
@@ -264,7 +265,7 @@ gate7_browser_leg() {
 	[ "$on_receiver" = 1 ] || return 1
 	[ "$(leg_env_value RS_RECEIVER_MODE || true)" = "live" ] && return 0
 	recording="$(leg_env_value RS_RECEIVER_RECORDING || true)"
-	[ -n "$recording" ] && [ -f "$recording" ] && case "$(head -c 4 "$recording")" in GRS7 | GRS8) return 0 ;; esac
+	[ -n "$recording" ] && [ -f "$recording" ] && case "$(head -c 4 "$recording")" in GRS7 | GRS8 | GRS9) return 0 ;; esac
 	return 1
 }
 

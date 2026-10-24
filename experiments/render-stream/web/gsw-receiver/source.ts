@@ -17,11 +17,13 @@ export interface FetchEntry {
   start_us: number;
   end_us: number;
   verified: boolean;
-  kind: "texture" | "mesh" | "shader";
+  kind: "texture" | "mesh" | "shader" | "texture-ktx2";
 }
 
-export const KIND_EXT = ["grt", "grm", "grp"] as const;
-export const KIND_NAME = ["texture", "mesh", "shader"] as const;
+// G8kb: kind 3 is a KTX2 texture variant (`uastc`, `<hash>.ktx2` in the store, index type
+// `texture-ktx2`).
+export const KIND_EXT = ["grt", "grm", "grp", "ktx2"] as const;
+export const KIND_NAME = ["texture", "mesh", "shader", "texture-ktx2"] as const;
 
 export class SourceError extends Error {
   constructor(

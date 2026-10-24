@@ -145,6 +145,9 @@
 #             the gsw half through lib/gate7-gsw-g8.ts's band against the native legs, both judged by
 #             check-gate8.ts's own checks. `--live` with g7-8 runs gate 8's live group g8l (one live
 #             leg per fixture at render-stream/8, and D14's reverse-proxy leg) in each browser.
+#             G8kb: the source also runs g8kp and g8ku (texture delivery at /9); the gsw half
+#             replays their receiver legs (Basis: GSW's transcoder worker, judged by
+#             lib/gate7-gsw-g8-checks.ts), and g8l gains `basis`, a /9 basis-uastc live leg.
 #
 # Group landed (G7r, protocol/gate7/g7r.md, gate7-design.md Q9; `--live` only): pacing, rates, the
 #   g7-r      60/60 phase study and dual receivers at credit window 1, on all three receivers. G6c's
@@ -954,7 +957,11 @@ fi
 
 # G8g: gate 8's file-leg groups, the one list both browser halves make the gate 8 source with (a
 # new gate 8 file group is one word here and one in lib/gate7b-adapters.ts GATE8_FILE_GROUPS).
-G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m
+# G8kb: g8kp and g8ku (texture delivery at /9) are in the source for the GSW half only
+# (lib/gate7-gsw-g8.ts GATE8_LEGS); the web half does not replay their legs (lib/gate7b-adapters.ts
+# GSW_ONLY_SOURCE_GROUPS) and its view stays on GATE8_FILE_GROUPS; the web export's own /9 leg runs
+# inside g8ku (g8ku-web/web).
+G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku
 
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
 CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG" --calibration "$(realpath -m "$CALIBRATION")")

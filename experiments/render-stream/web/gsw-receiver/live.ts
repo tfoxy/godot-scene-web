@@ -102,6 +102,7 @@ import { type FetchResult, LiveFetcher } from "./fetcher";
 import { foldedFullIndex } from "./fold";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
 import { gpuFormatsOf, helloV9 } from "./hello";
+import { KtxStager } from "./transcode";
 import { type PayloadVerify, Perf } from "./perf";
 import {
   definePrograms,
@@ -128,7 +129,7 @@ function probeGpuFormats(mask: string | null): string {
 const CLOSE_WAIT_MS = 2000;
 /** RS_RECEIVER_RECONNECT_ON_LOSS: the most lost connections one run reconnects after. */
 const LOSS_RECONNECTS_MAX = 3;
-const KIND_NAME = ["texture", "mesh", "shader"] as const;
+const KIND_NAME = ["texture", "mesh", "shader", "texture-ktx2"] as const;
 
 /** The page's fragment token (`#token=<hex>`), read once; the fragment is then removed from the
  * address (before anything logs), so the token is never in a URL, a log line or evidence. */
@@ -217,6 +218,8 @@ export async function runLive(
 
 class LiveReceiver {
   private g: GswRs | null = null;
+  /** G8kb: KTX2 payloads' verify, transcode and stage (transcode.ts). */
+  private ktx: KtxStager | null = null;
   private mem: WebAssembly.Memory | null = null;
   private stats: (() => Record<string, number>) | null = null;
   private readonly perf = new Perf();
@@ -419,8 +422,16 @@ class LiveReceiver {
             texture_encodings: this.cfg.textureEncodings ?? "",
             gpu_format_mask: this.cfg.gpuFormatMask ?? "",
             ...(this.cfg.liveProtocol === 9 ? { live_protocol: 9 } : {}),
+            // G8kb: the bundle carries the KTX2 transcoder worker (transcode.ts).
+            transcoder: true,
+            variant_policy: this.cfg.variantPolicy ?? "",
           }),
         );
+        this.ktx = new KtxStager(this.g, this.mem, {
+          log: this.cfg.transcodeLog,
+          fault: this.cfg.transcodeFault,
+          stream: () => this.connIndex,
+        });
       } catch (e) {
         // An unknown RS_RECEIVER_SABOTAGE is a usage error natively (exit 2, nothing written).
         log(`error: ${String(e)}`);
@@ -521,7 +532,8 @@ class LiveReceiver {
       this.cfg.liveProtocol === 9
         ? helloV9(
             hello,
-            this.cfg.textureEncodings ?? "block,decoded",
+            // G8kb: GSW transcodes uastc (the module's default with the worker, Q3).
+            this.cfg.textureEncodings ?? "block,uastc,decoded",
             probeGpuFormats(this.cfg.gpuFormatMask),
           )
         : hello,
@@ -623,11 +635,14 @@ class LiveReceiver {
     if (!this.sessionSeen) {
       if (g.live_session(len, this.cfg.liveProtocol) < 0)
         throw failWith(null, g.error());
-      if (this.cfg.liveProtocol === 9)
+      if (this.cfg.liveProtocol === 9) {
         this.report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
           string,
           unknown
         >;
+        this.report.transcodes = this.ktx?.transcodes ?? [];
+        this.report.deliveryFallbacks = this.ktx?.fallbacks ?? [];
+      }
       this.sessionSeen = true;
       this.everSession = true;
       this.beginSession();
@@ -1253,16 +1268,46 @@ class LiveReceiver {
   /** G7o2: a 200 body in its fetch completion (between frames): into wasm, verified against the
    * hash it was fetched for and decoded (`stage_payload`). A refusal is kept on the result and
    * raised when the transaction is provided. */
-  private stageFetched(r: FetchResult): void {
+  private stageFetched(r: FetchResult): void | Promise<void> {
     const g = this.g;
     const mem = this.mem;
     if (!g || !mem || !r.data) return;
     const t0 = performance.now();
+    // G8kb: a KTX2 (uastc) body is verified, transcoded in the worker and staged; the fetcher
+    // hands the result back once that settled. A failed transcode is a fallback, not a refusal.
+    if (this.ktx && g.is_ktx2(r.hash)) {
+      const seq = this.pending?.requester.get(r.hash) ?? this.pending?.item.entry.seq ?? null;
+      return this.ktx.stage(r.hash, r.data, seq).then((o) => {
+        r.stage_error = o.error;
+        r.transcode_fallback = o.fallback;
+        r.verify_us = (performance.now() - t0) * 1000;
+      });
+    }
     const ptr = g.alloc_payload(r.data.length);
     new Uint8Array(mem.buffer, ptr, r.data.length).set(r.data);
     r.stage_error =
       g.stage_payload(r.data.length, r.hash) < 0 ? g.error() : null;
     r.verify_us = (performance.now() - t0) * 1000;
+  }
+
+  /** G8kb (Q3 `delivery-transcode-failed`): wasm refused the variant and recomputed the pending
+   * transaction's needed set; adopt it and fetch what is neither held nor requested (the entry's
+   * `decoded` payload). */
+  private fetchFallback(p: Pending): void {
+    const g = this.g as GswRs;
+    const fresh = this.readNeeded(
+      g.needed_count() > 0 ? ACCEPT_NEEDS_PAYLOADS : 0,
+    );
+    p.item.needed = fresh;
+    for (const n of fresh) {
+      p.kinds.set(n.hash, n.kind);
+      if (!p.requester.has(n.hash)) p.requester.set(n.hash, p.item.entry.seq);
+    }
+    const requested = this.fetcher?.requested() ?? new Set<string>();
+    const misses = fresh
+      .map((n) => n.hash)
+      .filter((h) => !p.bodies.has(h) && !requested.has(h));
+    if (misses.length > 0) this.fetcher?.extend(misses);
   }
 
   /** One completed GET, logged as receiver.gd `_poll_fetches` logs it. */
@@ -1302,6 +1347,7 @@ class LiveReceiver {
       fetchIndex: null,
       stageError: r.stage_error ?? null,
     });
+    if (r.transcode_fallback) this.fetchFallback(p);
     this.verifyUs += r.verify_us ?? 0;
     p.tx.fetched++;
     p.tx.fetched_bytes += r.bytes;

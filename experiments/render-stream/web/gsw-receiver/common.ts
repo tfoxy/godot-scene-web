@@ -19,6 +19,11 @@ export interface GswRs {
   /** G7o2: verify and decode a payload on arrival / provide the next needed one from there. */
   stage_payload(len: number, hash: string): number;
   provide_staged(): number;
+  /** G8kb: a KTX2 (uastc) payload: verified, transcoded in the worker, staged; or refused. */
+  is_ktx2(hash: string): boolean;
+  stage_ktx2(len: number, hash: string): number;
+  stage_transcoded(len: number, hash: string, format: string): number;
+  transcode_failed(hash: string): number;
   payload_verify_json(): string;
   apply(): number;
   draw(): number;
