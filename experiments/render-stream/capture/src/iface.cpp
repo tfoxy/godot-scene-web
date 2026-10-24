@@ -69,6 +69,15 @@ bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
           get_proc_address("variant_get_ptr_builtin_method"));
   g_iface.array_operator_index_const = reinterpret_cast<GDExtensionInterfaceArrayOperatorIndexConst>(
       get_proc_address("array_operator_index_const"));
+  g_iface.classdb_construct_object2 = reinterpret_cast<GDExtensionInterfaceClassdbConstructObject2>(
+      get_proc_address("classdb_construct_object2"));
+  g_iface.object_destroy =
+      reinterpret_cast<GDExtensionInterfaceObjectDestroy>(get_proc_address("object_destroy"));
+  g_iface.callable_custom_create2 = reinterpret_cast<GDExtensionInterfaceCallableCustomCreate2>(
+      get_proc_address("callable_custom_create2"));
+  g_iface.object_get_instance_from_id =
+      reinterpret_cast<GDExtensionInterfaceObjectGetInstanceFromId>(
+          get_proc_address("object_get_instance_from_id"));
   return ok;
 }
 

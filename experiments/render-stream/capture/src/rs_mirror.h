@@ -498,6 +498,41 @@ class Mirror {
   // G8r: whether `rid` is in the texture / mesh table (a live entry, not a tombstone).
   bool knows_texture(std::uint64_t rid) const;
   bool knows_mesh(std::uint64_t rid) const;
+
+  // --- G8m (gate8-design.md D11, D12, Q5): pre-arm shaders and materials, adopted with origin
+  // `adopted` through the same tables. Identity bookkeeping: no omit-op name, never dropped.
+  // shader_adopt: exactly shader_create_from_code (the code the capture recovered: a temporary
+  // Shader's preprocessed code, or a CanvasItemMaterial template), origin adopted.
+  void shader_adopt(std::uint64_t rid, const ShaderCodeInput &code, std::uint64_t frame);
+  // shader_adopt_refused: a shader that exists but whose code cannot be recovered (Q5's
+  // shader-adopt-include): no code, `unsupported` with `reason`, origin adopted.
+  void shader_adopt_refused(std::uint64_t rid, rs2::ShaderReason reason, std::uint64_t frame);
+  // material_adopt: exactly material_create, origin adopted (its shader and parameters then arrive
+  // through material_set_shader / material_set_param, as the hooks would have declared them).
+  void material_adopt(std::uint64_t rid, std::uint64_t frame);
+  bool knows_shader(std::uint64_t rid) const;
+  bool knows_material(std::uint64_t rid) const;
+  // The code of a known shader's GRP1 payload (false when it has none).
+  bool shader_code_of(std::uint64_t rid, std::string *code) const;
+  // Re-keys a shader entry from `old_rid` to `new_rid` (G8m: a CanvasItemMaterial template shader
+  // adopted before its engine RID was known, D12), keeping its id; nothing when `new_rid` is known.
+  void shader_rebind(std::uint64_t old_rid, std::uint64_t new_rid);
+  // The references the mirror could not resolve (rs_adopt.cpp resolves them at the next frame
+  // boundary): items whose last canvas_item_set_material named an unknown material, and
+  // materials whose last shader named an unknown shader, each with the items that draw with it
+  // as their own material. `epoch` advances whenever such a reference may have appeared or
+  // gained an item, so a caller can skip an unchanged set.
+  struct PendingMaterialRefs {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> items;  // (item RID, material RID)
+    struct MaterialRef {
+      std::uint64_t material = 0;
+      std::uint64_t shader = 0;
+      std::vector<std::uint64_t> items;  // item RIDs whose own material it is
+    };
+    std::vector<MaterialRef> materials;
+  };
+  std::uint64_t material_refs_epoch() const;
+  PendingMaterialRefs pending_material_refs() const;
   // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
   void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
   // texture_2d_update: a known id gets version + 1 and, when the layer is 0 and
@@ -575,6 +610,7 @@ class Mirror {
     // G55d (render-stream-5.md "Item"): the last canvas_item_set_material named a non-null RID
     // the material table does not know -- `material: null` plus the derived `unknown-material`.
     bool unknown_material = false;
+    std::uint64_t unknown_material_rid = 0;  // G8m: that RID (0 when none)
     // G55d: instance parameters (sorted by name on publication) and the names whose last value
     // had an unsupported type (the derived `param-type` entry while non-empty).
     std::map<std::string, rs2::Param> instance_params;
@@ -648,6 +684,9 @@ class Mirror {
     std::uint32_t id = 0;
     std::uint64_t rid = 0;
     std::uint64_t version = 1;
+    rs2::Origin origin = rs2::Origin::Created;  // G8m: `adopted` for a pre-arm shader
+    bool refused = false;                       // G8m: shader_adopt_refused (no code, `reason`)
+    rs2::ShaderReason refused_reason = rs2::ShaderReason::ShaderMode;
     bool has_code = false;
     ShaderCopy copy;     // the hook's classification (perturb-shader: hash/size of the new copy)
     PayloadPtr bytes;    // the GRP1 payload (null when the hook built none)
@@ -669,6 +708,8 @@ class Mirror {
     bool has_shader = false;
     std::uint32_t shader = 0;
     bool shader_unknown = false;  // the last shader set named an unknown non-null RID
+    std::uint64_t unknown_shader_rid = 0;       // G8m: that RID (0 when none)
+    rs2::Origin origin = rs2::Origin::Created;  // G8m: `adopted` for a pre-arm material
     std::map<std::string, MaterialParam> params;
   };
   enum class Kind : std::uint8_t { Canvas, Item };
@@ -802,6 +843,7 @@ class Mirror {
   std::unordered_map<std::uint64_t, std::uint32_t> material_by_rid_;
   std::uint32_t next_material_id_ = 1;
   rs2::ShaderPolicy shader_policy_ = rs2::ShaderPolicy::Source;
+  std::uint64_t material_refs_epoch_ = 0;  // G8m: see pending_material_refs()
   std::uint64_t perturb_shader_frame_ = 0;
   rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
   rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)

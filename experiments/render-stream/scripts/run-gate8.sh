@@ -58,7 +58,15 @@
 #       perturb-decode sabotage; then, rendered, the `reference` (the hdr textures as the fixture's own
 #       headless Image.decompress wrote them) and the native receiver on the full sink, the patch sink and the
 #       sabotage capture.
-#
+#   g8m (G8m, Q5, D11, D12: pre-arm materials and shaders, fixtures/gate8-mat; every leg under g8m/):
+#       the fixture and receiver imports; headless /8 captures under GRC_UNKNOWN_ITEM=skip of `born`
+#       (main scene born.tscn, armed in the loader's _enter_tree) and `late` (mat.tscn armed at
+#       K=12 with GRC_ADOPT=arm: its ShaderMaterials, CanvasItemMaterials, shaders, a texture
+#       parameter, a shader default texture and an instance parameter are adopted at arm or at the
+#       next frame boundary), the two Q5 sabotages (adopt-raw-shader-code, adopt-skip-params) and
+#       the GRC_ADOPT_FAULT=no-include-path capture (the typed shader-adopt-include); then, rendered,
+#       the unarmed `reference` with gate 5.5's material oracle (RS_FIXTURE_MATERIAL_LOG) and the
+#       native receiver on born, late (full and patch sinks) and the no-include-path capture.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -80,8 +88,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f)
-KNOWN_GROUPS=(g8t g8a g8h g8f)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m)
 
 EXTENSION=""
 CALIBRATION=""
@@ -610,12 +618,81 @@ run_g8f() {
 	GS_RUN_DIR=""
 }
 
+# ------------------------------------------------------------------------------------- g8m
+G8M_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-mat"
+# The fixture's arm frame K (gate8-adopt's loader, expected.json arm_frame).
+G8M_ARM_FRAME=12
+G8M_ENV=(GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip)
+
+run_import_g8m() {
+	echo "run-gate8: g8m import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8m/import/fixture" none -- mise exec -- godot --headless --path "$G8M_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8m/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in fixture receiver; do
+		if [ "$(cat "$OUT/g8m/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8m import ($leg) failed, see $OUT/g8m/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8m <dir> <born|late> <env word...>: a headless capture of the fixture, armed at birth
+# (main scene res://born.tscn) or late (mat.tscn at frame K).
+run_capture_g8m() {
+	local dir="$1" arm="$2" scene=""
+	shift 2
+	[ "$arm" = born ] && scene="res://born.tscn"
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8M_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_ARM="$arm" RS_FIXTURE_ARM_FRAME="$G8M_ARM_FRAME")
+	run_capture "$dir" "" none "$scene"
+}
+
+run_g8m() {
+	run_import_g8m
+	echo "run-gate8: g8m born (armed at birth, every material and shader created under the hooks)"
+	run_capture_g8m "$OUT/g8m/born/capture" born "${G8M_ENV[@]}"
+	echo "run-gate8: g8m late (armed at frame $G8M_ARM_FRAME, GRC_ADOPT=arm)"
+	run_capture_g8m "$OUT/g8m/late/capture" late "${G8M_ENV[@]}" GRC_ADOPT=arm
+	local s
+	for s in adopt-raw-shader-code adopt-skip-params; do
+		echo "run-gate8: g8m sabotage-$s (capture)"
+		run_capture_g8m "$OUT/g8m/sabotage-$s/capture" late "${G8M_ENV[@]}" GRC_ADOPT=arm \
+			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8M_ARM_FRAME"
+	done
+	echo "run-gate8: g8m fault-no-include-path (capture, GRC_ADOPT_FAULT: the typed shader-adopt-include)"
+	run_capture_g8m "$OUT/g8m/fault-no-include-path/capture" late "${G8M_ENV[@]}" GRC_ADOPT=arm \
+		GRC_ADOPT_FAULT=no-include-path
+
+	echo "run-gate8: bringing up private gamescope for g8m's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8m"
+	legs_par_begin
+	echo "run-gate8: g8m reference (unarmed, rendered, gate 5.5's material oracle)"
+	mkdir -p "$OUT/g8m/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8m/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8m/reference/steps.jsonl"
+		RS_FIXTURE_MATERIAL_LOG="$OUT/g8m/reference/materials.jsonl" RS_FIXTURE_ARM_FRAME="$G8M_ARM_FRAME")
+	run_rendered "$OUT/g8m/reference" "$G8M_FIXTURE_DIR"
+	echo "run-gate8: g8m receivers (born, late, late patch sink, fault-no-include-path)"
+	run_rendered_receiver "$OUT/g8m/born/capture" "$OUT/g8m/born/receiver"
+	run_rendered_receiver "$OUT/g8m/late/capture" "$OUT/g8m/late/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8m/late/capture" "$OUT/g8m/late/receiver-patch"
+	run_rendered_receiver "$OUT/g8m/fault-no-include-path/capture" "$OUT/g8m/fault-no-include-path/receiver"
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8m"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8t) run_g8t ;;
 	g8f) run_g8f ;;
 	g8a) run_g8a ;;
 	g8h) run_g8h ;;
+	g8m) run_g8m ;;
 	esac
 done
 

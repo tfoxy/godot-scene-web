@@ -231,6 +231,37 @@ CanvasItemMaterialBuiltin recognize_canvas_item_material(const std::string &code
   return out;
 }
 
+std::string canvas_item_material_code(const std::string &version_text, int blend_mode,
+                                      int light_mode, bool particles_animation) {
+  constexpr int kBlendCount = static_cast<int>(sizeof(kBlends) / sizeof(kBlends[0]));
+  constexpr int kLightCount = static_cast<int>(sizeof(kLights) / sizeof(kLights[0]));
+  if (blend_mode < 0 || blend_mode >= kBlendCount || light_mode < 0 || light_mode >= kLightCount ||
+      version_text.empty()) {
+    return std::string();
+  }
+  return "// NOTE: Shader automatically converted from " + version_text +
+         "'s CanvasItemMaterial.\n\n" +
+         canvas_item_material_body(kBlends[blend_mode].token, kLights[light_mode].suffix,
+                                   particles_animation);
+}
+
+std::string canvas_item_material_version_text(const std::string &full_name,
+                                              const std::string &build) {
+  // GODOT_VERSION_FULL_NAME = GODOT_VERSION_NAME " v" GODOT_VERSION_FULL_CONFIG "."
+  // GODOT_VERSION_BUILD (core/version.h:77-81).
+  const std::string tail = "." + build;
+  if (build.empty() || full_name.size() <= tail.size() ||
+      full_name.compare(full_name.size() - tail.size(), tail.size(), tail) != 0) {
+    return std::string();
+  }
+  const std::string head = full_name.substr(0, full_name.size() - tail.size());
+  const std::size_t v = head.rfind(" v");
+  if (v == std::string::npos || v == 0 || v + 2 >= head.size()) {
+    return std::string();
+  }
+  return head.substr(0, v) + " " + head.substr(v + 2);
+}
+
 std::string payload_meta(std::uint64_t code_bytes) {
   return "{\"type\":\"shader-code\",\"code_bytes\":" + std::to_string(code_bytes) + "}";
 }

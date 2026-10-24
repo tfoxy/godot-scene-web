@@ -568,6 +568,8 @@ pub const SHADER_REASONS: &[&str] = &[
     "shader-excluded",
     "payload-too-large",
     "payload-unavailable",
+    // render-stream-8.md "Resource tables" (gate8-design.md Q5): /8, adopted entries only.
+    "shader-adopt-include",
 ];
 pub const MATERIAL_REASONS: &[&str] = &[
     "unknown-shader",
@@ -2346,6 +2348,13 @@ fn check_shader(ck: &mut Ck, s: Value, version: u8) -> Result<Shader, Error> {
     if (status == EntryStatus::Ok) != reason.is_none() {
         return Err(err(ck, "\"reason\" must be null exactly for status \"ok\""));
     }
+    let adopt_include = reason == Some("shader-adopt-include");
+    if adopt_include && (version < 8 || origin != Origin::Adopted) {
+        return Err(err(
+            ck,
+            "\"reason\" \"shader-adopt-include\" needs render-stream/8, origin \"adopted\" and no code",
+        ));
+    }
     let Some(version) = ck.int_ge(f.at(4), 1) else {
         return Err(err(ck, "\"version\" is not an integer >= 1"));
     };
@@ -2385,6 +2394,12 @@ fn check_shader(ck: &mut Ck, s: Value, version: u8) -> Result<Shader, Error> {
     let Some(payload_bytes) = ck.int_ge(f.at(8), 0) else {
         return Err(err(ck, "\"payload_bytes\" is not a non-negative integer"));
     };
+    if adopt_include && hash.is_some() {
+        return Err(err(
+            ck,
+            "\"reason\" \"shader-adopt-include\" needs render-stream/8, origin \"adopted\" and no code",
+        ));
+    }
     let builtin = if ck.null(f.at(9)) {
         None
     } else {

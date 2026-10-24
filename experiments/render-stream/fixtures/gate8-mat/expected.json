@@ -1,0 +1,186 @@
+{
+  "schema": "render-stream-gate8-mat-expected/1",
+  "doc": "Hand-derived from mat.gd, not measured (README.md 'Expected'). items: each fixture item's position (its xform origin identifies it on the wire) and its material. materials: per fixture material its shader (a fixture Shader by name, or a CanvasItemMaterial mode) and the first checkpoint it exists at. account: what stream.gate8.adopt_stats.material_adoption holds for the late capture (MA, MR, MC adopted at arm through A/I, R and C; MP lazily through N1; spare (MN), mul (M3) and add (M4, re-keyed from MC's template adopted at arm) resolved at the K+4 frame boundary; spare's default texture; I's instance parameter; MA 2 + MR 1 + MC 3 + MP 2 parameters). instance: the instance parameters a script set per item (A's `inst` is never set: it reads back its default and must stay off the wire). textures: the fixture's two ImageTextures as RGBA8. include_refused: the item whose shader the no-include-path fault types shader-adopt-include, and its screen rect [x0, y0, x1, y1] inclusive.",
+  "arm_frame": 12,
+  "checkpoints": [
+    {
+      "step": 0,
+      "applied": 0,
+      "settle": 2
+    },
+    {
+      "step": 1,
+      "applied": 4,
+      "settle": 11
+    },
+    {
+      "step": 2,
+      "applied": 14,
+      "settle": 21
+    }
+  ],
+  "items": {
+    "A": {
+      "at": [
+        32,
+        32
+      ],
+      "material": "MA",
+      "from_step": 0
+    },
+    "I": {
+      "at": [
+        96,
+        32
+      ],
+      "material": "MA",
+      "from_step": 0
+    },
+    "R": {
+      "at": [
+        160,
+        32
+      ],
+      "material": "MR",
+      "from_step": 0
+    },
+    "C": {
+      "at": [
+        224,
+        32
+      ],
+      "material": "MC",
+      "from_step": 0
+    },
+    "N1": {
+      "at": [
+        32,
+        128
+      ],
+      "material": "MP",
+      "from_step": 1
+    },
+    "N2": {
+      "at": [
+        96,
+        128
+      ],
+      "material": "MN",
+      "from_step": 1
+    },
+    "N3": {
+      "at": [
+        160,
+        128
+      ],
+      "material": "M3",
+      "from_step": 1
+    },
+    "N4": {
+      "at": [
+        224,
+        128
+      ],
+      "material": "M4",
+      "from_step": 1
+    }
+  },
+  "materials": {
+    "MA": {
+      "item": "A",
+      "shader": "main",
+      "origin": "adopted"
+    },
+    "MR": {
+      "item": "R",
+      "shader": "rel",
+      "origin": "adopted"
+    },
+    "MC": {
+      "item": "C",
+      "builtin": {
+        "blend_mode": "add",
+        "light_mode": "normal",
+        "particles_animation": false
+      },
+      "origin": "adopted"
+    },
+    "MP": {
+      "item": "N1",
+      "shader": "main",
+      "origin": "adopted"
+    },
+    "MN": {
+      "item": "N2",
+      "shader": "spare",
+      "origin": "created"
+    },
+    "M3": {
+      "item": "N3",
+      "builtin": {
+        "blend_mode": "mul",
+        "light_mode": "normal",
+        "particles_animation": false
+      },
+      "origin": "created"
+    },
+    "M4": {
+      "item": "N4",
+      "builtin": {
+        "blend_mode": "add",
+        "light_mode": "normal",
+        "particles_animation": false
+      },
+      "origin": "created"
+    }
+  },
+  "shared_shader": [
+    [
+      "C",
+      "N4"
+    ]
+  ],
+  "instance": {
+    "A": [],
+    "I": [
+      "inst"
+    ]
+  },
+  "account": {
+    "materials": 4,
+    "shader_materials": 3,
+    "canvas_item_materials": 1,
+    "at_arm": 3,
+    "materials_refused": 0,
+    "shaders": 5,
+    "shaders_builtin": 2,
+    "shaders_include_refused": 0,
+    "shaders_lazy": 3,
+    "shaders_refused": 0,
+    "params": 8,
+    "default_textures": 1,
+    "instance_params": 1,
+    "node_map_connected": true
+  },
+  "textures": {
+    "PAL": {
+      "width": 4,
+      "height": 4,
+      "rgba8_hex": "ffcc33ff3399ffffffcc33ff3399ffff3399ffffffcc33ff3399ffffffcc33ffffcc33ff3399ffffffcc33ff3399ffff3399ffffffcc33ff3399ffffffcc33ff"
+    },
+    "PAL2": {
+      "width": 4,
+      "height": 4,
+      "rgba8_hex": "99ff66ffff66ccff99ff66ffff66ccffff66ccff99ff66ffff66ccff99ff66ff99ff66ffff66ccff99ff66ffff66ccffff66ccff99ff66ffff66ccff99ff66ff"
+    }
+  },
+  "include_refused": {
+    "item": "R",
+    "rect": [
+      160,
+      32,
+      207,
+      71
+    ]
+  }
+}

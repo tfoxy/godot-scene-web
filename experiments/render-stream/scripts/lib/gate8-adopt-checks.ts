@@ -165,6 +165,37 @@ export function canonicalState(state: State): CanonCanvas[] {
   const meshKey = new Map<number, string>();
   for (const m of state.meshes ?? [])
     meshKey.set(m.id, `mesh:${m.status}:${m.surfaces.map((x) => x.hash).join(",")}`);
+  // G8m: a material compares by content (ids, versions and origin are Q2's exceptions): its status,
+  // its shader's status, reason, hash, builtin and default textures, and its parameters, every
+  // texture named through its payload hash (an adopted creation copy by its hash too: no resource
+  // exception applies to a material, so a creation copy that differs is a difference).
+  const plainTex = (id: number) => {
+    const key = texHash.get(id);
+    return key === undefined ? `missing:${id}` : key.startsWith(CREATION) ? key.slice(CREATION.length) : key;
+  };
+  const texOf = (v: unknown) =>
+    v !== null && typeof v === "object" && typeof (v as { tex?: unknown }).tex === "number"
+      ? { tex: plainTex((v as { tex: number }).tex) }
+      : v;
+  const canonParams = (ps: { name: string; type: string; value: unknown }[] | undefined) =>
+    (ps ?? []).map((p) => ({ name: p.name, type: p.type, value: texOf(p.value) }));
+  const shaderKey = new Map<number, unknown>();
+  for (const sh of state.shaders ?? [])
+    shaderKey.set(sh.id, {
+      status: sh.status,
+      reason: sh.reason,
+      hash: sh.hash,
+      builtin: sh.builtin,
+      defaults: sh.default_textures.map((d) => ({ name: d.name, index: d.index, tex: plainTex(d.tex) })),
+    });
+  const materialKey = new Map<number, unknown>();
+  for (const m of state.materials ?? [])
+    materialKey.set(m.id, {
+      status: m.status,
+      reason: m.reason,
+      shader: m.shader === null ? null : (shaderKey.get(m.shader) ?? `missing-shader:${m.shader}`),
+      params: canonParams(m.params),
+    });
   const canonCommands = (it: ResolvedItem) =>
     it.commands.map((c) => {
       const out: Record<string, unknown> = { ...c };
@@ -188,9 +219,12 @@ export function canonicalState(state: State): CanonCanvas[] {
         visibility_layer: it.visibility_layer,
         texture_filter: it.texture_filter,
         texture_repeat: it.texture_repeat,
-        material: it.material ?? null,
+        material:
+          it.material === null || it.material === undefined
+            ? null
+            : (materialKey.get(it.material) ?? `missing-material:${it.material}`),
         use_parent_material: it.use_parent_material ?? false,
-        instance_params: it.instance_params ?? [],
+        instance_params: canonParams(it.instance_params),
       },
       draw: {
         commands: canonCommands(it),

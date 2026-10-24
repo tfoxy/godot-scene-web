@@ -1456,10 +1456,9 @@ rs::MeshSurfaceCopy rehash_mesh_surface(const MeshSurfaceBuffer &buffer,
 // CanvasItemMaterial recognizer runs regardless (a recognized engine-generated shader is never
 // refused by D11, Q1e). `copy_ns` covers the UTF-8 decode and the payload encode, `scan_ns` the
 // token scan and the template comparison, `hash_ns` the SHA-256 alone.
-rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_out = nullptr) {
+rs::ShaderCopy copy_shader_code_text(const std::string &code, uint64_t t0,
+                                     rs::PayloadPtr *payload_out = nullptr) {
   rs::ShaderCopy copy;
-  const uint64_t t0 = now_ns();
-  const std::string code = rs::decode_string(code_ptr);
   copy.code_bytes = static_cast<int64_t>(code.size());
   const uint64_t t_decode = now_ns();
   const rs::ShaderScan scan = rs::scan_shader_code(code);
@@ -1498,6 +1497,19 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
   }
   return copy;
 }
+
+rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_out = nullptr) {
+  const uint64_t t0 = now_ns();
+  return copy_shader_code_text(rs::decode_string(code_ptr), t0, payload_out);
+}
+
+// G8m (gate8-design.md D4, D11): the capture's own temporary objects. While a thread is inside
+// hooks_internal_begin/end, shader_create_from_code hands the code it receives to the caller
+// (rs_adopt.cpp's temporary Shader) instead of the mirror and the hook log, and every other
+// shader and free call passes straight to the engine: none of them is the game's.
+thread_local bool t_internal = false;
+thread_local std::string *t_internal_code = nullptr;
+thread_local uint64_t *t_internal_rid = nullptr;
 
 // A material or instance parameter's Variant value (D8), classified applied/rejected/unknown
 // (D6) for the hook log; the decoded name and value never reach counters.json (Q2).
@@ -1744,6 +1756,10 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
 }
 
 void hook_free(void *self, RID rid) {
+  if (t_internal) {  // G8m (D4): the temporary Shader's RID
+    original<FnFree>(kFree)(self, rid);
+    return;
+  }
   bump(kFree);
   log_entry(&g_frees, rids(rid.id));
   // A private CanvasTexture RID of the headless shim is recorded, then forwarded like any other:
@@ -2397,6 +2413,17 @@ void hook_attach_skeleton(void *self, RID item, RID skeleton) {
 }
 
 RID hook_shader_create_from_code(void *self, const void *code, const void *path_hint) {
+  if (t_internal) {  // G8m (D4): the capture's temporary Shader
+    const RID made =
+        original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
+    if (t_internal_code != nullptr) {
+      *t_internal_code = rs::decode_string(code);
+    }
+    if (t_internal_rid != nullptr) {
+      *t_internal_rid = made.id;
+    }
+    return made;
+  }
   bump(kShaderCreateFromCode);
   const RID result =
       original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
@@ -2416,6 +2443,10 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
 }
 
 void hook_shader_set_code(void *self, RID shader, const void *code) {
+  if (t_internal) {  // G8m (D4)
+    original<FnShaderSetCode>(kShaderSetCode)(self, shader, code);
+    return;
+  }
   bump(kShaderSetCode);
   log_entry(&g_shader_codes, rids(shader.id));
   if (resources().active()) {
@@ -3592,6 +3623,125 @@ bool hooks_adopt_mesh(uint64_t rid, const std::vector<rs::AdoptSurface> &surface
   mirror().mesh_adopt(rid, inputs, aabb, current_frame());
   resources().mesh_adopt(tap_context(), rid, copies);
   return true;
+}
+
+// --- G8m (gate8-design.md D11, D12, Q5; rs_adopt.h): pre-arm shaders and materials ---------
+
+void hooks_internal_begin(std::string *code_out, uint64_t *rid_out) {
+  t_internal = true;
+  t_internal_code = code_out;
+  t_internal_rid = rid_out;
+}
+
+void hooks_internal_end() {
+  t_internal = false;
+  t_internal_code = nullptr;
+  t_internal_rid = nullptr;
+}
+
+bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
+  if (rid == 0 || !streaming() || !resources().active()) {
+    return false;
+  }
+  rs::ShaderCodeInput input;
+  input.copy = copy_shader_code_text(code, now_ns(), &input.bytes);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_shader(rid)) {
+    return false;
+  }
+  mirror().shader_adopt(rid, input, current_frame());
+  resources().shader_create_from_code(tap_context(), rid, input.copy, false);
+  return true;
+}
+
+bool hooks_adopt_shader_refused(uint64_t rid, rs2::ShaderReason reason) {
+  if (rid == 0 || !streaming() || !resources().active()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_shader(rid)) {
+    return false;
+  }
+  mirror().shader_adopt_refused(rid, reason, current_frame());
+  resources().shader_create(tap_context(), rid, false);
+  return true;
+}
+
+void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint64_t texture,
+                                 int32_t index) {
+  if (shader == 0 || !streaming() || !resources().active()) {
+    return;
+  }
+  rs::adopt_texture_ref(texture);
+  std::lock_guard<std::mutex> order(g_texture_order);
+  mirror().shader_set_default_texture_parameter(shader, name, texture, index, current_frame());
+  resources().shader_set_default_texture_parameter(tap_context(), shader, name, texture, index,
+                                                    false);
+}
+
+bool hooks_adopt_material(uint64_t material, uint64_t shader,
+                          const std::vector<rs::AdoptParam> &params) {
+  if (material == 0 || !streaming() || !resources().active()) {
+    return false;
+  }
+  std::vector<std::pair<rs::DecodedParam, rs::MaterialParamCopy>> decoded(params.size());
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    decoded[i].second = decode_material_param(params[i].variant, &decoded[i].first);
+    if (decoded[i].first.type == "rid" && decoded[i].first.status == "ok") {
+      rs::adopt_texture_ref(decoded[i].first.tex_rid);
+    }
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_material(material)) {
+    return false;
+  }
+  const uint64_t frame = current_frame();
+  mirror().material_adopt(material, frame);
+  resources().material_create(tap_context(), material, false);
+  if (shader != 0) {
+    mirror().material_set_shader(material, shader, frame);
+    resources().material_set_shader(tap_context(), material, shader, false);
+  }
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    mirror().material_set_param(material, params[i].name, decoded[i].first, frame);
+    resources().material_set_param(tap_context(), material, params[i].name, decoded[i].second,
+                                   false);
+  }
+  return true;
+}
+
+void hooks_adopt_item_material(uint64_t item, uint64_t material) {
+  if (!streaming()) {
+    return;
+  }
+  mirror().set_material(item, material, current_frame());
+  if (resources().active()) {
+    resources().canvas_item_set_material(tap_context(), item, material);
+  }
+}
+
+void hooks_adopt_material_shader(uint64_t material, uint64_t shader) {
+  if (!streaming() || !resources().active()) {
+    return;
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  mirror().material_set_shader(material, shader, current_frame());
+  resources().material_set_shader(tap_context(), material, shader, false);
+}
+
+void hooks_adopt_instance_param(uint64_t item, const std::string &name, const void *variant) {
+  if (!streaming()) {
+    return;
+  }
+  rs::DecodedParam decoded;
+  const rs::MaterialParamCopy copy = decode_material_param(variant, &decoded);
+  if (decoded.type == "rid" && decoded.status == "ok") {
+    rs::adopt_texture_ref(decoded.tex_rid);
+  }
+  mirror().set_instance_shader_parameter(item, name, decoded, current_frame());
+  if (resources().active()) {
+    resources().canvas_item_set_instance_shader_parameter(tap_context(), item, name, copy);
+  }
 }
 
 bool hooks_plan(const Calibration &calib, HookPlan *plan) {

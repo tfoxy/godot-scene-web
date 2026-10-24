@@ -344,7 +344,7 @@ add_test(NAME rs_texture_worker COMMAND rs_texture_worker_test)
 add_executable(rs_adopt_test test/rs_adopt_test.cpp src/rs_adopt.cpp src/iface.cpp
   src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp src/rs_texture_payload.cpp src/rs_mesh_payload.cpp
   src/rs_sha256.cpp src/rs2_diff.cpp src/rs_resource_log.cpp src/rs_texture_worker.cpp
-  src/rs2_codec.cpp)
+  src/rs2_codec.cpp src/rs_variant.cpp)
 target_include_directories(rs_adopt_test PRIVATE src vendor)
 target_link_libraries(rs_adopt_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_adopt COMMAND rs_adopt_test)
