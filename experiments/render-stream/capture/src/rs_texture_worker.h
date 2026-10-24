@@ -114,6 +114,9 @@ class TextureJob {
     copy->block_format = actual_.block_format;
     copy->block_payload_bytes = actual_.block_payload_bytes;
     copy->block_bytes = actual_.block_bytes;
+    // G8kc: the source key and the cache outcome are content too.
+    copy->source_key = actual_.source_key;
+    copy->cache_outcome = actual_.cache_outcome;
   }
 
   static bool same_facts(const PayloadCopy &a, const PayloadCopy &b) {

@@ -343,6 +343,12 @@ def self_test(m):
     delivery = P("experiments/render-stream/capture/src/rs_texture_delivery.cpp", "experiments/render-stream/capture/test/rs9_codec_test.cpp")
     check("the texture delivery seam reaches the build, the pure tests, gate 0 and gate 8 only (G8k9)",
           set(delivery["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
+    cache = P("experiments/render-stream/capture/src/rs_texture_cache.cpp", "experiments/render-stream/capture/test/rs_texture_cache_test.cpp",
+              "experiments/render-stream/scripts/prepare-textures.sh", "experiments/render-stream/scripts/prepare_textures.gd")
+    check("the texture cache and the prepare step reach the build, the pure tests, gate 0 and gate 8 only (G8kc)",
+          set(cache["targets"]) == {"capture-build", "pure", "native:gate0@rust", "native:gate8@rust"})
+    check("the cache's call sites (hooks.cpp, entry.cpp) next to it still reach everything",
+          set(P("experiments/render-stream/capture/src/rs_texture_cache.cpp", "experiments/render-stream/capture/src/entry.cpp")["targets"]) == uni)
     check("a shared capture file next to the delivery seam still reaches everything",
           set(P("experiments/render-stream/capture/src/rs_texture_delivery.h", "experiments/render-stream/capture/src/rs_mirror.cpp")["targets"]) == uni)
     check("a shared capture file next to a seam still reaches everything",

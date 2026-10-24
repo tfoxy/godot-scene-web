@@ -8,7 +8,7 @@
 //
 // The checks live in lib/gate8-*-checks.ts (G8t: lib/gate8-tex-checks.ts, G8a:
 // lib/gate8-adopt-checks.ts, G8h: lib/gate8-size-checks.ts, G8f: lib/gate8-float-checks.ts, G8m:
-// lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts, G8g: lib/gate8-live-checks.ts, the
+// lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts, G8kc: lib/gate8-cache-checks.ts, G8g: lib/gate8-live-checks.ts, the
 // live group g8l), which scripts/test/self-test-gate8*.ts drive against fabricated evidence.
 // buildGate8Report is also check-gate7.ts's gate 8 checker for the GSW receiver's file legs (G8g).
 
@@ -23,12 +23,13 @@ import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { runG8l } from "./lib/gate8-live-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
+import { runG8kc } from "./lib/gate8-cache-checks";
 import { runG8kp } from "./lib/gate8-delivery-checks";
 import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8l"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8kc", "g8l"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -129,6 +130,11 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8kp = await runG8kp(out, expected);
     checks.push(...g8kp.checks);
     report.g8kp = { legs: g8kp.legs, select: g8kp.select, pixels: g8kp.pixels };
+  }
+  if (run.includes("g8kc")) {
+    const g8kc = await runG8kc(out);
+    checks.push(...g8kc.checks);
+    report.g8kc = { legs: g8kc.legs, stats: g8kc.stats };
   }
   if (run.includes("g8l")) {
     const g8l = await runG8l(out);

@@ -157,6 +157,14 @@ struct PayloadCopy {
   std::string block_format;
   std::int64_t block_payload_bytes = 0;
   std::shared_ptr<const std::vector<std::uint8_t>> block_bytes;
+  // G8kc (rs_texture_cache.h, texture-delivery-design.md D7/D8): with GRC_TEXTURE_CACHE_DIR set,
+  // the D7 source key (SHA-256 of the hooked image as GRT1 in its own format) and what the cache
+  // made of the derivation: "hit" (the decoded payload came from a verified file), "miss"
+  // (derived, then stored), "corrupt" (a file failed verify-against-name, deleted and derived
+  // again), "source" (nothing to derive: the payload is the source itself) or "uncached" (the
+  // cache was bypassed). Empty when the cache is off. Never logged to resources.jsonl.
+  std::string source_key;
+  std::string cache_outcome;
 };
 
 class TextureJob;  // rs_texture_worker.h

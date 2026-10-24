@@ -163,6 +163,7 @@
 #include "rs_resource_log.h"
 #include "rs_resource_store.h"
 #include "rs_root_query.h"
+#include "rs_texture_cache.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
 #include "rs_ws.h"
@@ -238,6 +239,7 @@ struct Stream {
   rs::TextureWorkerConfig workers;
   rs::HoldBack holdback;
   bool workers_started = false;
+  uint64_t texture_cache_max_bytes = 0;  // G8kc: GRC_TEXTURE_CACHE_MAX_BYTES (0: unbounded)
   // G8a (D13): GRC_MIRROR_MAX_ITEMS / GRC_MIRROR_MAX_COMMANDS, read at arm.
   size_t max_items = rs2::kMaxLiveItems;
   size_t max_commands = rs2::kMaxCommandsPerItem;
@@ -709,6 +711,27 @@ std::string result_json() {
   json.field("connections",
              static_cast<int64_t>(g_live.hub != nullptr ? g_live.hub->connections() : 0));
   json.object_end();
+  // Additive (G8kc): present only under GRC_TEXTURE_CACHE_DIR, so every other run's result.json
+  // is unchanged. derivations is what the cache did not have: the engine decodes this session ran.
+  if (rs::texture_cache().enabled()) {
+    const rs::CacheStats cache = rs::texture_cache().stats();
+    const rs::DecodeStats decode = rs::texture_decode_stats();
+    json.key("texture_cache").object_begin();
+    json.field("max_bytes", static_cast<int64_t>(g_stream.texture_cache_max_bytes));
+    json.field("hits", cache.hits);
+    json.field("misses", cache.misses);
+    json.field("corrupt", cache.corrupt);
+    json.field("puts", cache.puts);
+    json.field("evicted", cache.evicted);
+    json.field("bytes_hit", cache.bytes_hit);
+    json.field("bytes_put", cache.bytes_put);
+    json.field("entries", cache.entries);
+    json.field("files", cache.files);
+    json.field("bytes", cache.bytes);
+    json.field("derivations", decode.decoded);
+    json.field("encodes", static_cast<int64_t>(0));
+    json.object_end();
+  }
   // Additive (the headless CanvasTexture shim): present only when GRC_HEADLESS_CANVAS_TEXTURE is
   // set, so every run without the opt-in keeps its result.json unchanged.
   if (g_state.ct_shim_env_set) {
@@ -1441,6 +1464,26 @@ void stream_start() {
     g_stream.workers = workers;
     g_stream.holdback = rs::HoldBack();
     hooks_set_texture_workers(rs::TextureWorkerConfig());  // sync until the pool runs
+  }
+  // G8kc (texture-delivery-design.md D8): GRC_TEXTURE_CACHE_DIR and GRC_TEXTURE_CACHE_MAX_BYTES,
+  // valid at every version (the cache only stands in for a derivation, never changes a payload).
+  // Unset, the cache is closed and nothing below it runs.
+  {
+    rs::CacheConfig cache;
+    std::string error;
+    if (!rs::parse_cache_config(std::getenv("GRC_TEXTURE_CACHE_DIR"),
+                                std::getenv("GRC_TEXTURE_CACHE_MAX_BYTES"), &cache, &error) ||
+        !rs::texture_cache().open(cache, &error)) {
+      log_line("stream: refused texture cache (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    g_stream.texture_cache_max_bytes = cache.max_bytes;
+    hooks_reset_texture_cache_notes();
   }
   // G8a (gate8-design.md D13): the mirror's caps are configuration. No wire change: a cap that is
   // hit is the existing `mirror-capacity` failure. Defaults keep every other session unchanged.
@@ -2737,6 +2780,9 @@ void do_disarm(const char *phase) {
            " restored=" + (restored ? "true" : "false"));
   emit("disarm.json", disarm_json());
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  if (rs::texture_cache().enabled()) {
+    emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
+  }
   emit_canvas_texture_shim();
   perf_finish();
   emit("result.json", result_json());
@@ -2793,6 +2839,9 @@ void on_shutdown() {
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  if (rs::texture_cache().enabled()) {
+    emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
+  }
   emit_canvas_texture_shim();
   emit("result.json", result_json());
   log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +

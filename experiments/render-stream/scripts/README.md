@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8kc, G8kc)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3479,6 +3479,29 @@ bytes) are g8t's, run once when both groups run.
 `reference-hw`) and `delivery-pixels-gsw` (delta 1 on GSW's decided pixels); each criterion is
 spelled out in `lib/gate8-delivery-checks.ts` and
 [`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8kp)".
+
+## Gate 8 legs and evidence under `--out/g8kc` (g8kc, G8kc)
+
+All headless, no gamescope. Capture legs are `GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine
+GRC_TEXTURE_DELIVERY=passthrough` on `fixtures/gate8-tex` (adopt legs: gate8-adopt at /8); a cache
+directory lives under `$XDG_CACHE_HOME` (else `~/.cache`) in `godot-render-stream/g8kc.XXXXXX` and
+is removed at exit (never inside the repository).
+
+| leg | what |
+| --- | ---- |
+| `off/capture` | no `GRC_TEXTURE_CACHE_DIR`: the control (79 hooks, no cache block, no `texture-cache.json`) |
+| `cold/capture`, `cold/cache/` | an empty cache directory: every decode derived and stored; the index and file listing afterwards |
+| `warm/capture`, `warm-workers/capture` | a second session on that directory, synchronous and at `GRC_TEXTURE_WORKERS=2` |
+| `prepare/`, `prepare/out/` | `scripts/prepare-textures.sh --list` over the fixture's imported `.ctex` files (not the 2048x2048 cost ones) into a second, empty directory; `out/evidence/texture-cache.json` is the prepare run's own view |
+| `prepared/capture` | a session on the prepared directory |
+| `bounded/capture`, `bounded/cache/` | `GRC_TEXTURE_CACHE_MAX_BYTES=60000` |
+| `adopt-cold/capture`, `adopt-warm/capture` | gate8-adopt armed late (`GRC_ADOPT=arm`) twice on one directory |
+| `sabotage-corrupt/{capture,after/capture}`, `damaged.json`, `index-before.jsonl` | a copy of the warm cache with a flipped byte, a truncated file and a deleted file; then the session after the repair |
+
+Criteria (`lib/gate8-cache-checks.ts`, driven by `test/self-test-gate8kc.ts`): `cache-off-identical`,
+`cache-paths`, `cache-cold`, `cache-warm`, `prepare-key-match`, `cache-corrupt`, `cache-lru`,
+`cache-adopt`; see [`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md)
+"As built (G8kc)". `prepare-textures.sh --help` documents the prepare step.
 
 ## Gate 8 legs and evidence under `--out/g8l` (g8l, G8g)
 

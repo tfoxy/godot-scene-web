@@ -480,7 +480,7 @@ Shared call sites still reach `*`.
 | G8kp | **Landed** ("As built (G8kp)"). `passthrough` end to end (D1, D3): capture offers `block`, hello `gpu_formats`, the native receiver uploads block formats, GSW `compressedTexImage2D` for s3tc/bptc/rgtc; `gate8-tex` gains delivery legs (desktop GSW, GSW with BC masked → `decoded`, native); checks `block-exact` (payload = `.ctex` bytes), `delivery-select`, pixels = `reference-hw` exactly on the same GPU | `capture/src/rs_texture_delivery.*`, `receiver/`, `web/gsw-receiver/`, `packages/canvas/rust-prototype/…/gl.rs`, `fixtures/gate8-tex/`, `lib/gate8-delivery*.ts` | `*` + `g7:*@gsw` | opus, 5 h + full tier | G8k9 |
 | G8ku | `basis-uastc` (LAN): vendored basisu 1.60 + zstd 1.5.7 (D15), UASTC encode on workers, lazy variants (D6), D12 rules; native and web-export transcode via `Image.load_ktx_from_buffer`; checks `transcode-oracle`, `delivery-reference`, `quality-band`, `ktx2-wire`; sabotage `perturb-ktx2` (one byte after hashing: receivers must refuse) | `third_party/basis_universal/**`, `capture/` build, `rs_texture_delivery.*`, `receiver/`, `fixtures/gate8-tex/` | `*` | opus, 7 h + full tier | G8kp, G8kw |
 | G8kb | GSW Basis: transcoder wasm in a Web Worker (emsdk 4.0.11, D15 sources), ASTC/ETC2/BC7 upload, `upgrade` policy; g31 device bench of transcode time per Mpx, GPU memory (gfxinfo) and hd-patch p95 unchanged (real time, standing phone approval) | `web/gsw-receiver/`, `web/basis-transcoder/` (new), `packages/canvas/rust-prototype/…/gl.rs`, `scripts/gate7-bench.ts` arm | `g7:*@gsw`, `g7live:*@gsw`, `bench-instr`, device leg | opus, 6 h + scoped tier | G8ku |
-| G8kc | Persistent cache and the prepare step (D8, D9), and the `texture_set_path` hook with paths in the hook log (D10): `GRC_TEXTURE_CACHE_DIR`, index, verify-on-load, LRU budget; `scripts/prepare-textures.sh` over a project's `.ctex` or an image directory; checks `prepare-key-match` (every hooked texture of the fixture hits after prepare from its `.ctex`), `cache-warm` (second session: zero encodes, identical hashes), `cache-corrupt` sabotage | `capture/src/rs_texture_cache.*`, `scripts/prepare-textures.*`, `fixtures/gate8-tex/` | narrow rule + `native:gate8@*` | sonnet, 4 h + scoped tier | G8ku |
+| G8kc | **Landed** ("As built (G8kc)"; UASTC entries wait for G8ku). Persistent cache and the prepare step (D8, D9), and the `texture_set_path` hook with paths in the hook log (D10): `GRC_TEXTURE_CACHE_DIR`, index, verify-on-load, LRU budget; `scripts/prepare-textures.sh` over a project's `.ctex` or an image directory; checks `prepare-key-match` (every hooked texture of the fixture hits after prepare from its `.ctex`), `cache-warm` (second session: zero encodes, identical hashes), `cache-corrupt` sabotage | `capture/src/rs_texture_cache.*`, `scripts/prepare-textures.*`, `fixtures/gate8-tex/` | narrow rule + `native:gate8@*` | sonnet, 4 h + scoped tier | G8ku |
 | G8ke | `basis-etc1s` (internet): ETC1S level 1/q128, D12(d)'s PSNR floor with UASTC fallback; a throttled-link leg through G6c's constrained proxy (bytes and time to first complete frame at 10 Mbit/s); g31 ETC1S → ETC2 cost | `rs_texture_delivery.*`, `lib/gate8-delivery*.ts`, proxy config | narrow + `native:gate8@*`, `g7:*@gsw`, device leg | sonnet, 4 h + scoped tier | G8kc, G8kb |
 
 **Order and release.** The correctness blockers stay first: G8h → G8f → G8r → G8m, as
@@ -783,3 +783,95 @@ GSW's is "exact or one rounding apart" on the pixels GSW already decides.
 | Basis encoders, `uastc`/`etc1s` variants | G8ku, G8ke | typed refusal at /9 |
 | Gate 7 groups | none | unchanged: `GRC_STREAM_VERSION` is unset in every one, so no variant exists |
 
+
+## As built (G8kc)
+
+Landed as one commit; the evidence summary is [results/gate8/g8kc.md](../results/gate8/g8kc.md).
+The cache is encoding-agnostic and filled by the one derivation that exists today, the host decode;
+**UASTC is not wired** (G8ku had not landed), see "UASTC hookup" below.
+
+**The cache** (`capture/src/rs_texture_cache.*`, pure C++17, ctest `rs_texture_cache`).
+`GRC_TEXTURE_CACHE_DIR` opens it at stream start (a directory that cannot be used refuses the
+stream, typed), `GRC_TEXTURE_CACHE_MAX_BYTES` bounds the files (0 or unset: unbounded). A key is
+(source key, encoding, `params_id`), the source key being D7's: the SHA-256 of the hooked image as
+a GRT1 payload in its own format, built once per decode-eligible texture on whichever thread
+copies it (the caller or a G8kw worker; under `passthrough` the same payload is the `block`
+variant, hashed once). Layout as D8: `sha256/<hash>.grt|.ktx2` plus `index-v1.jsonl`, an
+append-only log of rows `{v,source,encoding,params,hash,bytes,ext,use}` and `del` rows, last row
+wins, rewritten to one row per entry when it has grown past twice the entries. A `get` reads the
+file outside the lock and serves it only if its size and SHA-256 match the row, otherwise the
+file and every row naming it are deleted and the caller derives again (`corrupt`); a missing file
+is a `miss`. Writes go through a temp file and `rename`. The byte budget evicts the file whose
+newest row is oldest (a hit counts as use, and recency survives a reopen), counting a file shared
+by several keys once, and never the entry just stored (a single entry larger than the budget
+stays). Memory is the in-process index; the payload bytes live in the existing store, so no
+second in-memory copy of a texture exists. Hashes are what make D6's variants stable across
+sessions, which is the point of the persisted form.
+
+**Where the capture uses it.** `derive_decoded` in `hooks.cpp` replaces the bare
+`texture_decode` + `copy_decoded` pair at both call sites (the calling thread and the worker,
+which the adopt path shares): with the cache open it builds the source payload, looks up
+(source key, `decoded`, `engine-decompress/4.5.1`), and on a hit returns the stored GRT1 as the
+decoded payload without calling `Image::decompress`; on a miss it decodes as before and stores the
+payload. The decoded bytes are stored, not regenerated (D8 allows regeneration; storing was
+simpler and keeps hits independent of the engine's decoder). A payload that needs no derivation
+(an RGBA8 `.ctex`, a PNG) is its own source: its hash is its key (`outcome: source`) and nothing is
+stored, so the cache stays empty of data that the source already is. The cache is bypassed while
+`perturb-decode` is configured, so a warm cache cannot hide that sabotage. With the cache closed
+the path is exactly the old one.
+
+**`texture_set_path` (D10).** One new hook, slot 42 (`calibrate.sh` derived it by name), installed
+**only when `GRC_TEXTURE_CACHE_DIR` is set**: without it the hook is neither planned nor omitted,
+so `hooks_planned` (79), `counts` and every session record stay what they were. The calibrator
+version stays 9 for the same reason (it is echoed in every session record; the slot is an optional
+conditional addition, and a record that predates it still loads, the hook then omitted and
+reported). The hook keeps the last path per texture and reports it in two places: every call in
+`counters.json` `captured.texture_set_path` and, per texture, in the new
+`evidence/texture-cache.json` (id, path, D7 source key, outcome `hit|miss|corrupt|source`, status,
+payload hash). `result.json` gains a `texture_cache` block (hits, misses, corrupt, puts, evicted,
+bytes, entries, files, `derivations` = engine decodes the session ran, `encodes` = 0 until G8ku).
+Both are written only when a cache directory is set.
+
+**The prepare step.** `scripts/prepare-textures.sh --cache DIR (--project DIR | --images DIR |
+--list FILE)` runs the pinned release template headless on a scratch project with the capture
+armed and `prepare_textures.gd` loading each file as a game would (a `.ctex` through
+`ResourceLoader`, an image through `Image.load_from_file`), one per frame, to a throwaway /8
+sink. So a source key is computed by the very code the hooks run, not by a second implementation
+that could drift, and the cache fills through the live path. This is a deviation from D9b's
+wording ("a headless stock-4.5.1 script plus the capture's encoder"): the encoder is the
+capture, and the script is the loader. `--list` is the explicit-texture-list form that K3's
+all-pack and selective-pack warming will feed (not built). It refuses a cache directory inside a
+git repository. A file this build cannot load (an EXR: the release template has no EXR module) is
+counted as failed and skipped. D9a (startup prepare of already-held textures) needed no new code:
+a pre-arm texture is adopted through the same copy (G8r), so its decode goes through the cache;
+`cache-adopt` shows the second session adopting `chip_bc` from the cache.
+
+**Checks** (gate 8 group `g8kc`, `lib/gate8-cache-checks.ts`, `test/self-test-gate8kc.ts`):
+`cache-off-identical`, `cache-paths`, `cache-cold`, `cache-warm`, `prepare-key-match`,
+`cache-corrupt` (sabotage), `cache-lru`, `cache-adopt`. The oracle's independently built block
+payload hash is the expected source key, and its decoded payload hash the expected value, so the
+cache is judged against the fixture's GDScript oracle rather than against itself.
+
+**Deviations and notes.**
+
+- **Byte identity.** With no cache directory a /9 recording differs from main's only in its `end`
+  record's timing stats (checked against a build of main); `hooks_planned`, `counts`, the session
+  and every payload are equal, and `cache-off-identical` pins this across runs.
+- **Reach.** `hooks.cpp`, `entry.cpp` and the calibration record are shared capture files, so the
+  plan still reaches every gate; the narrow `smoke-map.json` rule covers only the new files
+  (`rs_texture_cache.*`, its ctest, the prepare script), as the G8kw and G8k9 rules do.
+- **Params id of the decode** is `engine-decompress/4.5.1`; a different engine must change it, or
+  the cache would serve another decoder's bytes.
+- **Memory-only cache** (D8's "memory always") is not a separate layer: the index is in memory and
+  the store and mirror already deduplicate by hash within a session.
+- **A cache hit still builds the source payload** to learn the key (a copy and a hash at 1 B/px for
+  block sources, D7); only the decode is saved.
+
+**UASTC hookup (for G8ku).** The cache needs no change: G8ku's worker, after producing a KTX2,
+calls `texture_cache().put({source_key, "uastc", rs::basis_params_id()}, sha256(ktx2), bytes,
+"ktx2")` and, before encoding, `get` with the same key. The source key is already on the
+`PayloadCopy` (`source_key`, filled for every ok texture while the cache is open, copied by
+`TextureJob::fill`), and `result.json`'s `texture_cache.encodes` is the counter to increment per
+encode so that `cache-warm` can assert zero encodes in a second session (it already does). The
+prepare script then needs only the mode env (`GRC_TEXTURE_DELIVERY=basis-uastc`) added to its
+launch to warm UASTC entries.

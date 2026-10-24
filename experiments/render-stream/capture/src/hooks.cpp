@@ -3,7 +3,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -19,6 +21,7 @@
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_decode.h"
+#include "rs_texture_cache.h"
 #include "rs_texture_delivery.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_worker.h"
@@ -58,6 +61,10 @@ using FnAddPolygon = void (*)(void *, RID, const Vector<Point2> *, const Vector<
 using FnTexture2dCreate = RID (*)(void *, const Ref *);
 //   144: virtual void texture_2d_update(RID, const Ref<Image> &, int) = 0;
 using FnTexture2dUpdate = void (*)(void *, RID, const Ref *, int);
+//   161: virtual void texture_set_path(RID p_texture, const String &p_path) = 0;
+//   (G8kc, calibrator 10: the engine calls it after texture_2d_create with the res:// path,
+//   compressed_texture.cpp:91-96, :158-161; installed only under GRC_TEXTURE_CACHE_DIR)
+using FnTextureSetPath = void (*)(void *, RID, const void *);
 //   1770: virtual void free(RID) = 0;
 using FnFree = void (*)(void *, RID);
 //
@@ -342,12 +349,16 @@ enum HookId : size_t {
   kCanvasSetItemMirroring,
   kCanvasSetItemRepeat,
   kCanvasSetParent,
+  // calibrator 10 (G8kc): conditional, see hooks_plan
+  kTextureSetPath,
   kHookCount,
 };
 
 void *g_original[kHookCount] = {};
 std::atomic<uint64_t> g_count[kHookCount];
 bool g_omitted[kHookCount] = {};
+size_t g_hooks_total = kHookCount;
+bool g_skipped[kHookCount] = {};  // conditional hooks left out by configuration (not omitted)
 std::vector<std::string> g_planned_names;
 std::vector<std::string> g_omitted_names;
 
@@ -1052,15 +1063,39 @@ rs::PayloadCopy copy_decoded(rs::PayloadCopy copy, const rs::DecodeResult &decod
   return copy;
 }
 
+// G8kc (texture-delivery-design.md D7): the hooked image as a GRT1 payload in its own format. Its
+// hash is the cache's source key, and for a block source it is also the `block` variant.
+struct SourcePayload {
+  bool built = false;
+  rs::PayloadCopy copy;  // hash, payload_bytes
+  rs::PayloadPtr bytes;
+  std::string format_name;
+};
+
+SourcePayload build_source_payload(int64_t source_format, int64_t width, int64_t height,
+                                   bool mipmaps, int64_t source_bytes, const uint8_t *data) {
+  SourcePayload out;
+  const char *name = rs::image_format_name(source_format);
+  if (name == nullptr || data == nullptr || source_bytes < 0) {
+    return out;
+  }
+  out.format_name = name;
+  const std::string meta = rs::payload_meta(name, width, height, mipmaps, source_bytes);
+  build_payload(meta, data, source_bytes, &out.copy, &out.bytes);
+  out.built = true;
+  return out;
+}
+
 // G8kp (texture-delivery-design.md D1 `passthrough`, rs_texture_delivery.h): beside an ok host
 // decode, the hooked block bytes as a GRT1 payload in their own block format, hashed here (the
 // calling thread, or the worker that made the decode). `data` is the source image's own buffer,
 // read only. Nothing happens unless a /9 stream runs a mode offering `block`, so every other
 // stream's bytes are unchanged; a source whose size is not Godot's for its shape gets no variant
-// (counted, never a wrong payload).
+// (counted, never a wrong payload). G8kc: `prebuilt` is the same payload when the cache already
+// built it for the source key.
 void attach_block_variant(rs::PayloadCopy *copy, int64_t source_format, int64_t width,
                           int64_t height, bool mipmaps, int64_t source_bytes,
-                          const uint8_t *data) {
+                          const uint8_t *data, const SourcePayload *prebuilt = nullptr) {
   if (!rs::texture_delivery_block_enabled() || copy->status != "ok" || copy->source_format < 0) {
     return;
   }
@@ -1071,15 +1106,107 @@ void attach_block_variant(rs::PayloadCopy *copy, int64_t source_format, int64_t 
     rs::texture_delivery_note_block(false, 0);
     return;
   }
-  const std::string meta = rs::payload_meta(name, width, height, mipmaps, source_bytes);
   rs::PayloadCopy block;
   rs::PayloadPtr bytes;
-  build_payload(meta, data, source_bytes, &block, &bytes);
+  if (prebuilt != nullptr && prebuilt->built) {
+    block = prebuilt->copy;
+    bytes = prebuilt->bytes;
+  } else {
+    const std::string meta = rs::payload_meta(name, width, height, mipmaps, source_bytes);
+    build_payload(meta, data, source_bytes, &block, &bytes);
+  }
   copy->block_hash = block.hash;
   copy->block_format = name;
   copy->block_payload_bytes = block.payload_bytes;
   copy->block_bytes = std::move(bytes);
   rs::texture_delivery_note_block(true, static_cast<uint64_t>(block.payload_bytes));
+}
+
+// G8kc (texture-delivery-design.md D7, D8): the host decode through the persisted cache. The
+// source key is the hash of the hooked image's own GRT1 payload; a verified file for (key,
+// decoded, params) stands in for the engine's decompress, and a derived payload is stored. The
+// cache is bypassed (outcome "uncached") while the perturb-decode sabotage is configured, so a
+// warm cache can never hide it. With the cache off this is exactly texture_decode + copy_decoded.
+constexpr const char *kDecodeParamsId = "engine-decompress/4.5.1";
+
+rs::PayloadCopy derive_decoded(const rs::PayloadCopy &copy, rs::DecodeRequest request,
+                               const uint8_t *src_data, rs::PayloadPtr *bytes, bool *handled,
+                               SourcePayload *source) {
+  *handled = false;
+  rs::TextureCache &cache = rs::texture_cache();
+  const bool cached = cache.enabled();
+  std::string outcome = cached ? "uncached" : "";
+  rs::CacheKey key;
+  bool keyed = false;
+  if (cached) {
+    *source = build_source_payload(copy.format, copy.width, copy.height, copy.mipmaps,
+                                   copy.data_bytes, src_data);
+    if (source->built) {
+      key.source = source->copy.hash;
+      key.encoding = "decoded";
+      key.params = kDecodeParamsId;
+      keyed = !rs::texture_decode_perturb_active();
+    }
+  }
+  if (keyed) {
+    std::vector<uint8_t> data;
+    std::string hash;
+    const rs::CacheResult result = cache.get(key, &data, &hash);
+    outcome = result == rs::CacheResult::Hit ? "hit"
+              : result == rs::CacheResult::Corrupt ? "corrupt" : "miss";
+    if (result == rs::CacheResult::Hit) {
+      // The same facts copy_decoded derives from a decode: the D8 table's format, the source's shape.
+      const int64_t target = rs::decode_target_format(copy.format);
+      const int64_t expected =
+          target >= 0 ? rs::expected_data_bytes(target, copy.width, copy.height, copy.mipmaps) : -1;
+      const std::string meta =
+          expected >= 0 ? rs::payload_meta(rs::image_format_name(target), copy.width, copy.height,
+                                           copy.mipmaps, expected)
+                        : std::string();
+      if (expected >= 0 && target < rs::kImageFormatCount &&
+          g_resource_policy.formats.permitted[target] &&
+          rs::payload_size(meta, static_cast<uint64_t>(expected)) == data.size()) {
+        rs::PayloadCopy out = copy;
+        out.status = "ok";
+        out.decode_ns = 0;
+        out.copy_ns = 0;
+        out.hash_ns = 0;
+        out.hash = hash;
+        out.payload_bytes = static_cast<int64_t>(data.size());
+        out.source_format = copy.format;
+        out.format = target;
+        out.data_bytes = expected;
+        out.source_key = key.source;
+        out.cache_outcome = "hit";
+        *bytes = std::make_shared<rs::PayloadBytes>(std::move(data));
+        *handled = true;
+        return out;
+      }
+      outcome = "corrupt";  // a file that verifies but is not this decode's payload: derive again
+    }
+  }
+  const rs::DecodeResult decoded = rs::texture_decode(request);
+  if (!decoded.handled) {
+    rs::PayloadCopy out = copy;
+    out.decode_ns = decoded.decode_ns;
+    return out;
+  }
+  *handled = true;
+  rs::PayloadCopy out = copy_decoded(copy, decoded, bytes);
+  out.source_key = source->built ? source->copy.hash : std::string();
+  out.cache_outcome = outcome;
+  if (keyed && out.status == "ok" && *bytes != nullptr && !decoded.perturbed) {
+    cache.put(key, out.hash, (*bytes)->data(), (*bytes)->size(), "grt");
+  }
+  return out;
+}
+
+// G8kc: an ok payload that needs no derivation is its own source: its hash is the D7 key.
+void note_source_payload(rs::PayloadCopy *copy) {
+  if (copy->status == "ok" && rs::texture_cache().enabled()) {
+    copy->source_key = copy->hash;
+    copy->cache_outcome = "source";
+  }
 }
 
 // --- G8kw: the texture worker path (texture-delivery-design.md D11, rs_texture_worker.h) -------
@@ -1129,13 +1256,14 @@ void run_texture_job(const rs::TextureJobPtr &job, std::shared_ptr<ImageDuplicat
   rs::PayloadCopy actual = base;
   if (decode) {
     request.image = dup->object;
-    const rs::DecodeResult decoded = rs::texture_decode(request);
-    if (decoded.handled) {
-      actual = copy_decoded(base, decoded, &bytes);
+    bool handled = false;
+    SourcePayload source;
+    const uint8_t *src_data = g_iface.image_ptr(dup->object);  // const: never a copy-on-write
+    actual = derive_decoded(base, request, src_data, &bytes, &handled, &source);
+    if (handled) {
       attach_block_variant(&actual, base.format, base.width, base.height, base.mipmaps,
-                           base.data_bytes, g_iface.image_ptr(dup->object));
+                           base.data_bytes, src_data, &source);
     } else {
-      actual.decode_ns = decoded.decode_ns;
       actual.reason = "unsupported-format";
     }
   } else {
@@ -1144,6 +1272,7 @@ void run_texture_job(const rs::TextureJobPtr &job, std::shared_ptr<ImageDuplicat
       actual.reason = "payload-unavailable";
     } else {
       build_payload(meta, data, base.data_bytes, &actual, &bytes);
+      note_source_payload(&actual);
     }
   }
   dup.reset();  // the duplicate dies here, before the job is visible as done
@@ -1242,14 +1371,16 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
           }
         }
       }
-      const rs::DecodeResult decoded = rs::texture_decode(request);
-      if (decoded.handled) {
-        rs::PayloadCopy out = copy_decoded(copy, decoded, bytes);
+      bool handled = false;
+      SourcePayload source;
+      const uint8_t *src_data = g_iface.image_ptr(image->object);
+      rs::PayloadCopy out = derive_decoded(copy, request, src_data, bytes, &handled, &source);
+      if (handled) {
         attach_block_variant(&out, facts.format, facts.width, facts.height, facts.mipmaps,
-                             facts.data_size, g_iface.image_ptr(image->object));
+                             facts.data_size, src_data, &source);
         return out;
       }
-      copy.decode_ns = decoded.decode_ns;  // the cost of a decode that was tried and refused
+      copy.decode_ns = out.decode_ns;  // the cost of a decode that was tried and refused
     }
     copy.reason = "unsupported-format";
     return copy;
@@ -1284,6 +1415,7 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
     return copy;
   }
   build_payload(meta, data, facts.data_size, &copy, bytes);
+  note_source_payload(&copy);
   return copy;
 }
 
@@ -1711,6 +1843,79 @@ void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
   original<FnAddPolygon>(kAddPolygon)(self, item, points, colors, uvs, texture);
 }
 
+// --- G8kc: texture_set_path (texture-delivery-design.md D10) ----------------------------------
+//
+// The engine calls texture_set_path(rid, "res://...") right after texture_2d_create on the loading
+// thread (compressed_texture.cpp:91-96, :158-161), so the path of a texture is known to the hook.
+// The hook is installed only under GRC_TEXTURE_CACHE_DIR (the cache is what uses it), keeps the
+// path per texture, and reports it with the texture's D7 source key and cache outcome in
+// evidence/texture-cache.json, and every call in counters.json `captured.texture_set_path`.
+
+struct CacheNote {
+  rs::PayloadCopy copy;
+  rs::TextureJobPtr job;
+};
+
+std::mutex g_cache_mutex;
+std::map<uint64_t, CacheNote> g_cache_notes;
+std::map<uint64_t, std::string> g_texture_paths;  // the last path set per texture
+std::vector<std::pair<uint64_t, std::string>> g_set_path_calls;
+
+// Keeps only the small facts the evidence needs: the payload bytes (the block variant's, the
+// worker job's) must not stay alive for the session through this registry.
+void slim_note(CacheNote *note) {
+  note->copy.block_bytes.reset();
+}
+
+// Resolves a finished job into its note (source key, outcome, status, hash) and drops the job, and
+// with it the payload bytes the job holds. Under g_cache_mutex.
+void resolve_note(CacheNote *note) {
+  if (note->job != nullptr && note->job->done()) {
+    note->job->fill(&note->copy);
+    note->copy.status = note->job->actual().status;
+    note->job.reset();
+    slim_note(note);
+  }
+}
+
+std::vector<uint64_t> g_cache_pending;  // ids whose job was not done when last looked at
+
+void note_cache_texture(uint64_t id, const rs::PayloadCopy &copy, const rs::TextureJobPtr &job) {
+  if (!rs::texture_cache().enabled()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_cache_mutex);
+  // Sweep the jobs that finished since the last texture, so a long session holds none of them.
+  std::vector<uint64_t> still;
+  for (uint64_t pending : g_cache_pending) {
+    auto it = g_cache_notes.find(pending);
+    if (it == g_cache_notes.end()) continue;
+    resolve_note(&it->second);
+    if (it->second.job != nullptr) still.push_back(pending);
+  }
+  g_cache_pending.swap(still);
+  if (g_cache_notes.size() < kMaxTextures) {
+    CacheNote note{copy, job};
+    slim_note(&note);
+    resolve_note(&note);
+    if (note.job != nullptr) g_cache_pending.push_back(id);
+    g_cache_notes[id] = std::move(note);
+  }
+}
+
+void hook_texture_set_path(void *self, RID texture, const void *path) {
+  bump(kTextureSetPath);
+  const std::string text = rs::decode_string(path);
+  {
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    g_texture_paths[texture.id] = text;
+    if (g_set_path_calls.size() < kMaxTextures) {
+      g_set_path_calls.emplace_back(texture.id, text);
+    }
+  }
+  original<FnTextureSetPath>(kTextureSetPath)(self, texture, path);
+}
+
 RID hook_texture_2d_create(void *self, const Ref *image) {
   bump(kTexture2dCreate);
   const uint64_t t_hook = now_ns();
@@ -1744,6 +1949,7 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
       copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook - forward_ns);
     }
     resources().texture_2d_create(tap_context(), result.id, copy, omit, job);
+    note_cache_texture(result.id, copy, job);
   }
   return result;
 }
@@ -3231,6 +3437,7 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_canvas_set_item_mirroring)},
     {kCanvasSetItemRepeat, "canvas_set_item_repeat", as_ptr(&hook_canvas_set_item_repeat)},
     {kCanvasSetParent, "canvas_set_parent", as_ptr(&hook_canvas_set_parent)},
+    {kTextureSetPath, "texture_set_path", as_ptr(&hook_texture_set_path)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -3784,10 +3991,21 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   *plan = HookPlan();
   g_planned_names.clear();
   g_omitted_names.clear();
+  const char *cache_dir = std::getenv("GRC_TEXTURE_CACHE_DIR");
+  const bool path_hook_wanted = cache_dir != nullptr && cache_dir[0] != '\0';
+  g_hooks_total = kHookCount;
   for (const HookSpec &spec : kSpecs) {
     const int64_t index = calib.slot(spec.name);
     const bool required = spec.id < kRequiredHookCount;
     g_omitted[spec.id] = false;
+    g_skipped[spec.id] = false;
+    if (spec.id == kTextureSetPath && !path_hook_wanted) {
+      // G8kc: conditional hook. Without a cache directory the plan, counters and session are
+      // exactly what they were before the hook existed.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
     if (index < 0) {
       if (required) {
         if (plan->missing_required.empty()) {
@@ -3811,9 +4029,53 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   return plan->missing_required.empty();
 }
 
+void hooks_reset_texture_cache_notes() {
+  std::lock_guard<std::mutex> lock(g_cache_mutex);
+  g_cache_notes.clear();
+  g_texture_paths.clear();
+  g_set_path_calls.clear();
+  g_cache_pending.clear();
+}
+
+std::string hooks_texture_cache_json() {
+  JsonWriter json;
+  json.object_begin();
+  json.field("schema", std::string("render-stream-texture-cache/1"));
+  json.field("path_hook", !g_skipped[kTextureSetPath] && !g_omitted[kTextureSetPath]);
+  json.key("textures").array_begin();
+  {
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    for (auto &kv : g_cache_notes) {
+      resolve_note(&kv.second);
+      const rs::PayloadCopy &copy = kv.second.copy;
+      const std::string outcome = kv.second.job != nullptr ? std::string("pending") : copy.cache_outcome;
+      json.object_begin();
+      json.field("id", std::to_string(kv.first));
+      const auto path = g_texture_paths.find(kv.first);
+      if (path != g_texture_paths.end()) {
+        json.field("path", path->second);
+      } else {
+        json.field_null("path");
+      }
+      if (copy.source_key.empty()) {
+        json.field_null("source_key");
+      } else {
+        json.field("source_key", copy.source_key);
+      }
+      json.field("outcome", outcome);
+      json.field("status", copy.status);
+      json.field("hash", copy.hash);
+      json.object_end();
+    }
+  }
+  json.array_end();
+  json.object_end();
+  return json.take();
+}
+
 std::string hooks_plan_detail(const HookPlan &plan) {
   std::string detail = std::to_string(plan.planned.size()) + " of " +
-                       std::to_string(static_cast<size_t>(kHookCount)) + " hooks named by the record";
+                       std::to_string(static_cast<size_t>(g_hooks_total)) + " hooks named by the record";
   if (!plan.missing_required.empty()) {
     detail += "; required hook missing: " + plan.missing_required;
   }
@@ -3856,6 +4118,9 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   // An omitted hook's count is null: "not installed" must not read as "never called".
   json.key("counts").object_begin();
   for (const HookSpec &spec : kSpecs) {
+    if (g_skipped[spec.id]) {
+      continue;
+    }
     if (g_omitted[spec.id]) {
       json.field_null(spec.name);
     } else {
@@ -3928,6 +4193,18 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   write_image_captures(&json, s.creates, false);
   json.key("texture_2d_update");
   write_image_captures(&json, s.updates, true);
+  if (!g_skipped[kTextureSetPath] && !g_omitted[kTextureSetPath]) {
+    // G8kc: every texture_set_path call (the paths of the hook log), in call order.
+    std::lock_guard<std::mutex> lock(g_cache_mutex);
+    json.key("texture_set_path").array_begin();
+    for (const auto &call : g_set_path_calls) {
+      json.object_begin();
+      json.field("texture", std::to_string(call.first));
+      json.field("path", call.second);
+      json.object_end();
+    }
+    json.array_end();
+  }
 
   // Optional hooks: deduplicated entries, each with calls/first_frame/last_frame.
   // Arrays keep at most 64 elements (the *_total fields carry the real sizes).

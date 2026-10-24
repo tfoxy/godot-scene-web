@@ -80,6 +80,17 @@
 #       (`gsw`), with s3tc,bptc,rgtc masked (`gsw-masked`) and the ignore-format-mask sabotage
 #       (`sabotage-ignore-format-mask/gsw`: the mask stated, not applied), through
 #       gate8-delivery-tool.ts (the rs-core wasm and the GSW bundle are built first).
+#   g8kc (G8kc, texture-delivery-design.md D7-D10: the persisted host texture cache, the prepare step
+#       and the texture_set_path hook; fixtures/gate8-tex; every leg under g8kc/, all headless): the
+#       import and oracle (shared), then /9 passthrough captures with GRC_TEXTURE_DECODE=engine:
+#       `off/capture` (no cache directory: the control), `cold/capture` (an empty cache directory:
+#       every decode is derived and stored), `warm/capture` (the same directory, a second session),
+#       `warm-workers/capture` (the same at GRC_TEXTURE_WORKERS=2), `prepare/` (scripts/prepare-
+#       textures.sh over the fixture's imported .ctex files into a second, empty directory) and
+#       `prepared/capture` (a session on that directory), `bounded/capture` (a byte budget) and
+#       `sabotage-corrupt/{capture,after/capture}` (a copy of the warm cache with a flipped byte, a
+#       truncated file and a deleted file, then the session after the repair). The cache
+#       directories live under $XDG_CACHE_HOME (or ~/.cache) and are removed at exit.
 #   g8l (G8g, D14: render-stream/8 live; every leg under g8l/<fixture>/): one live leg per fixture
 #       (tex, float, adopt, size, mat), each a headless live host with its /8 file sink under the
 #       fixture's gate 8 policy, a rendered live receiver at RS_RECEIVER_PROTOCOL=8 and the same
@@ -107,8 +118,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8l)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8l)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8kc g8l)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8kc g8l)
 
 EXTENSION=""
 CALIBRATION=""
@@ -235,6 +246,9 @@ HAVE_STRACE=0
 command -v strace >/dev/null 2>&1 && HAVE_STRACE=1
 
 cleanup() {
+	if [ -n "${G8KC_CACHE_ROOT:-}" ]; then
+		rm -rf "$G8KC_CACHE_ROOT"
+	fi
 	if declare -F legs_par_cleanup >/dev/null; then
 		legs_par_cleanup
 	fi
@@ -815,6 +829,121 @@ run_g8kp() {
 		>"$OUT/g8kp/gsw-legs.log" 2>&1 || echo "run-gate8: g8kp gsw legs failed, see $OUT/g8kp/gsw-legs.log" >&2
 }
 
+# ------------------------------------------------------------------------------------ g8kc
+# G8kc (texture-delivery-design.md D7-D10): the persisted cache, the prepare step, the path hook.
+G8KC_ENV=(GRC_STREAM_VERSION=9 GRC_TEXTURE_DECODE=engine GRC_TEXTURE_DELIVERY=passthrough)
+# Bound for the byte-budget leg: well under the fixture's decoded payloads (~190 kB).
+G8KC_BOUND_BYTES=60000
+G8KC_CACHE_ROOT=""
+
+# run_g8kc_capture <dir> <cache dir or ""> [extra env words]: one headless capture, /9 passthrough.
+run_g8kc_capture() {
+	local dir="$1" cache="$2"
+	shift 2
+	mkdir -p "$dir"
+	CAPTURE_EXTRA_ENV=("${G8KC_ENV[@]}" RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl" "$@")
+	if [ -n "$cache" ]; then
+		CAPTURE_EXTRA_ENV+=(GRC_TEXTURE_CACHE_DIR="$cache")
+	fi
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "" none
+	CAPTURE_WITH_PATCH=1
+}
+
+# g8kc_keep_index <cache> <dir>: the cache's index and file listing, kept as evidence.
+g8kc_keep_index() {
+	local cache="$1" dir="$2"
+	mkdir -p "$dir"
+	cp "$cache/index-v1.jsonl" "$dir/index-v1.jsonl" 2>/dev/null || : >"$dir/index-v1.jsonl"
+	(cd "$cache/sha256" 2>/dev/null && ls -l --time-style=+ . | sed '1d') >"$dir/files.txt" || : >"$dir/files.txt"
+}
+
+run_g8kc() {
+	if [ ! -f "$OUT/import/fixture/exit-code.txt" ]; then
+		run_import_g8t
+	fi
+	if [ ! -f "$OUT/oracle/exit-code.txt" ]; then
+		echo "run-gate8: oracle"
+		run_oracle "$OUT/oracle"
+	fi
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+	local K="$OUT/g8kc"
+	mkdir -p "$K"
+	# Never inside a repository: a private directory under the user's cache.
+	mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/godot-render-stream"
+	G8KC_CACHE_ROOT="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/godot-render-stream/g8kc.XXXXXX")"
+	local C="$G8KC_CACHE_ROOT"
+
+	echo "run-gate8: g8kc off/capture (no cache directory: the control)"
+	run_g8kc_capture "$K/off/capture" ""
+	echo "run-gate8: g8kc cold/capture (an empty cache)"
+	run_g8kc_capture "$K/cold/capture" "$C/main"
+	g8kc_keep_index "$C/main" "$K/cold/cache"
+	echo "run-gate8: g8kc warm/capture (the same cache, a second session)"
+	run_g8kc_capture "$K/warm/capture" "$C/main"
+	g8kc_keep_index "$C/main" "$K/warm/cache"
+	echo "run-gate8: g8kc warm-workers/capture (the same at GRC_TEXTURE_WORKERS=2)"
+	run_g8kc_capture "$K/warm-workers/capture" "$C/main" "${G8T_WORKERS_ENV[@]}"
+
+	# prepare: the fixture's imported .ctex files (the 64x64 set the scene loads, not the 2048x2048
+	# cost textures) into a second, empty cache; prepared/capture then needs nothing derived.
+	echo "run-gate8: g8kc prepare (scripts/prepare-textures.sh --list, into an empty cache)"
+	mkdir -p "$K/prepare"
+	find "$FIXTURE_DIR/.godot/imported" -maxdepth 1 -name '*.ctex' ! -name 'cost_*' | LC_ALL=C sort >"$K/prepare/list.txt"
+	LEG_ENV=()
+	run_headless "$K/prepare" none -- "$SCRIPT_DIR/prepare-textures.sh" --cache "$C/prepared" \
+		--list "$K/prepare/list.txt" --out "$K/prepare/out" --binary "$BINARY" \
+		--extension "$EXTENSION" --calibration "$CALIBRATION"
+	g8kc_keep_index "$C/prepared" "$K/prepare/cache"
+	echo "run-gate8: g8kc prepared/capture (a session on the prepared cache)"
+	run_g8kc_capture "$K/prepared/capture" "$C/prepared"
+
+	echo "run-gate8: g8kc bounded/capture (GRC_TEXTURE_CACHE_MAX_BYTES=$G8KC_BOUND_BYTES)"
+	run_g8kc_capture "$K/bounded/capture" "$C/bounded" GRC_TEXTURE_CACHE_MAX_BYTES="$G8KC_BOUND_BYTES"
+	g8kc_keep_index "$C/bounded" "$K/bounded/cache"
+
+	# sabotage-corrupt: a copy of the warm cache with three files damaged. The session must detect
+	# the two that no longer match their names (never serving them), derive and store the three
+	# again, and the session after it must find the repaired cache clean.
+	echo "run-gate8: g8kc sabotage-corrupt (a flipped byte, a truncated file, a deleted file)"
+	cp -a "$C/main" "$C/corrupt"
+	local -a files
+	mapfile -t files < <(find "$C/corrupt/sha256" -name '*.grt' | LC_ALL=C sort | head -3)
+	mkdir -p "$K/sabotage-corrupt"
+	if [ "${#files[@]}" -eq 3 ]; then
+		printf '\377' | dd of="${files[0]}" bs=1 seek=40 conv=notrunc status=none
+		truncate -s 10 "${files[1]}"
+		rm -f "${files[2]}"
+		printf '{"flipped": "%s", "truncated": "%s", "deleted": "%s"}\n' \
+			"$(basename "${files[0]}" .grt)" "$(basename "${files[1]}" .grt)" \
+			"$(basename "${files[2]}" .grt)" >"$K/sabotage-corrupt/damaged.json"
+		cp "$C/corrupt/index-v1.jsonl" "$K/sabotage-corrupt/index-before.jsonl"
+	fi
+	run_g8kc_capture "$K/sabotage-corrupt/capture" "$C/corrupt"
+	g8kc_keep_index "$C/corrupt" "$K/sabotage-corrupt/cache"
+	run_g8kc_capture "$K/sabotage-corrupt/after/capture" "$C/corrupt"
+
+	# adopt-cold / adopt-warm (D9a): a pre-arm VRAM-compressed texture (gate8-adopt's chip_bc), armed
+	# late with GRC_ADOPT=arm at /8, goes through the same copy as any hooked texture, so the cache
+	# serves its adoption on the second session. (/8: the adopt fixture's own policy, no delivery mode.)
+	if [ ! -f "$OUT/g8a/import/fixture/exit-code.txt" ]; then
+		run_import_g8a
+	fi
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+	echo "run-gate8: g8kc adopt-cold / adopt-warm (late adoption through the cache)"
+	CAPTURE_WITH_PATCH=0
+	run_capture_g8a "$K/adopt-cold/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm GRC_TEXTURE_CACHE_DIR="$C/adopt"
+	run_capture_g8a "$K/adopt-warm/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm GRC_TEXTURE_CACHE_DIR="$C/adopt"
+	CAPTURE_WITH_PATCH=1
+
+	rm -rf "$G8KC_CACHE_ROOT"
+	G8KC_CACHE_ROOT=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
 # ------------------------------------------------------------------------------------- g8l
 # G8g (gate8-design.md "Increments" G8g, D14): one live leg per gate 8 fixture at render-stream/8,
 # the host's file sink beside it, the same receiver replaying that sink, and D14's reverse-proxy
@@ -983,6 +1112,7 @@ run_g8l() {
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g8kp) run_g8kp ;;
+	g8kc) run_g8kc ;;
 	g8t) run_g8t ;;
 	g8f) run_g8f ;;
 	g8a) run_g8a ;;

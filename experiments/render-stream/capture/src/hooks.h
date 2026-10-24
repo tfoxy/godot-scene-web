@@ -111,6 +111,12 @@ void hooks_adopt_instance_param(uint64_t item, const std::string &name, const vo
 // Serialised counters and captured values.
 std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed);
 
+// G8kc: evidence/texture-cache.json, each hooked texture's path, D7 source key and cache outcome
+// (written only under GRC_TEXTURE_CACHE_DIR).
+std::string hooks_texture_cache_json();
+// Forgets the previous stream's notes and paths (called when the cache is opened for a stream).
+void hooks_reset_texture_cache_notes();
+
 // Total number of intercepted calls across all hooks.
 uint64_t hooks_total_calls();
 

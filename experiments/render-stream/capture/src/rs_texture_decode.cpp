@@ -205,6 +205,7 @@ std::int64_t decode_target_format(std::int64_t source) {
 }
 
 void texture_decode_set_perturb(std::uint64_t from_frame) { g_perturb_frame.store(from_frame); }
+bool texture_decode_perturb_active() { return g_perturb_frame.load() != 0; }
 
 DecodeResult texture_decode(const DecodeRequest &request) {
   DecodeResult result;

@@ -97,7 +97,8 @@
     "viewport_set_canvas_stacking": 324,
     "canvas_set_item_mirroring": 436,
     "canvas_set_item_repeat": 437,
-    "canvas_set_parent": 439
+    "canvas_set_parent": 439,
+    "texture_set_path": 42
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,

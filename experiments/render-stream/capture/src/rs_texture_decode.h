@@ -71,6 +71,9 @@ std::int64_t decode_target_format(std::int64_t source);
 // decoded payload is inverted after the decode and before the caller hashes it (on a private copy
 // of the decoded bytes: the engine's buffers are only ever read).
 void texture_decode_set_perturb(std::uint64_t from_frame);
+// Whether the sabotage is configured (G8kc: the persisted cache is bypassed while it is, so a warm
+// cache can never hide it).
+bool texture_decode_perturb_active();
 
 // Decodes `request` into a payload-ready image (see the header comment).
 DecodeResult texture_decode(const DecodeRequest &request);

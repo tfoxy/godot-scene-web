@@ -90,6 +90,7 @@ add_library(render_stream_capture SHARED
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_mirror.cpp
+  src/rs_texture_cache.cpp
   src/rs_texture_delivery.cpp
   src/rs_publish.cpp
   src/rs_mesh_payload.cpp
@@ -469,3 +470,10 @@ add_test(NAME rs_basis_encode COMMAND rs_basis_encode_test)
 add_test(NAME rs_basis_roundtrip
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test/g8kv-roundtrip.sh ${CMAKE_CURRENT_BINARY_DIR}/g8kv-roundtrip)
 set_tests_properties(rs_basis_roundtrip PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+
+# G8kc: the persisted host texture cache (texture-delivery-design.md D7, D8): put/get, reopen,
+# verify-against-name, corrupt delete, the LRU byte budget, key validation.
+add_executable(rs_texture_cache_test test/rs_texture_cache_test.cpp src/rs_texture_cache.cpp src/rs_sha256.cpp)
+target_include_directories(rs_texture_cache_test PRIVATE src)
+target_link_libraries(rs_texture_cache_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_texture_cache COMMAND rs_texture_cache_test)
