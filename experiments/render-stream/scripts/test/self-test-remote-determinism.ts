@@ -623,6 +623,41 @@ try {
       stall.live_timed.includes("mesh/live-mesh-stall/receiver/shots/"),
     "live legs: a stall leg's differing shot set is listed live-timed, not compared",
   );
+
+  // GRT6: a replay whose recording follows wall-clock timing on the capturing machine (pending
+  // worker jobs, the live host's lazy variants) is listed live-timed, not compared; the same
+  // difference in a leg that replays a deterministic capture still disagrees.
+  for (const [leg, timed] of [
+    ["g8ku/pending", true],
+    ["g8ku-web/web-pending", true],
+    ["g8l/basis/replay", true],
+    ["g8ku/receiver", false],
+  ] as const) {
+    const dirs: string[] = [];
+    for (const i of [0, 1]) {
+      const d = join(tmp, `timed-${leg.replace(/\W/g, "_")}${i}`);
+      await makeRun(d, { session: `t${i}`, root: `/runner/v${i}` }); // the plain root files agree
+      await makeRun(join(d, leg), {
+        session: `t${i}`,
+        root: `/runner/v${i}`,
+        record: `r${i}`,
+        poke: i ? { x: 3, y: 3, rgba: [250, 0, 0, 255] } : undefined,
+      });
+      dirs.push(d);
+    }
+    const r = await compareRuns(dirs);
+    const timedShots = leg !== "g8l/basis/replay";
+    expect(
+      timed
+        ? r.live_timed.includes(`${leg}/receiver/applied.json`) &&
+            r.live_timed.includes(`${leg}/receiver/shots/seq-8.png`) ===
+              timedShots &&
+            // the replay's own shot stays compared outside the pending legs
+            (timedShots || !r.ok)
+        : !r.ok && r.live_timed.length === 0,
+      `GRT6: ${leg} ${timed ? "applied.json is live-timed" + (timedShots ? " with its shots" : ", its shots still compared") : "still disagrees on a deterministic replay"}`,
+    );
+  }
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }

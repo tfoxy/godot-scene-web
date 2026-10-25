@@ -347,7 +347,7 @@ All three layers were seen working on real runs (R0):
 - SIGINT on the wrapper cancelled the run (rc 130) and deleted its branch;
 - a janitor dispatch deleted a ref aged 3 days and nothing else.
 
-The logic is covered synthetically by `scripts/test-remote-validate.sh` (112 checks).
+The logic is covered synthetically by `scripts/test-remote-validate.sh` (116 checks, GRT6).
 
 Rejected transports:
 
@@ -422,6 +422,38 @@ Risks that remain:
 - **The Godot 4.5.1 web export is not byte-reproducible across machines.** Packs are compared by
   content digest.
 - **Queueing** when several agents dispatch at once.
+
+**GRT6 (2026-10-25): gate 8 remote failures and the Trim hang.** Details in
+`experiments/render-stream/results/grt6.md`. Traps worth keeping:
+- **Never `glob("**")` (or any symlink-following walk) over a run dir in a workflow step.** A gate 8
+  run dir holds `g8kp/gsw-run/sources/gate8 -> <run dir>` (a link back to its own root), so
+  Python's `glob(recursive=True)` in "Trim artifact" walked an exponential cycle until the job was
+  cancelled, and a cancel loses the job logs. The step now uses `os.walk(followlinks=False)`, has
+  `timeout-minutes: 10`, and uploads `symlinks-<label>.txt` (every link in the run dir, listed with
+  `find -P`).
+- **A failing run's evidence now carries the small per-leg files** (`evidence/<label>/legs/`: each
+  leg's `stdout.log`, `applied.json`, `live-summary.json`, `steps.jsonl`, `live.json`,
+  `result.json` and recordings under 300 KB), enough to replay a runner's recording locally.
+- **A check that iterates "every texture that was pending" must restrict itself to the ones an item
+  names.** Which textures are still pending in the first transaction follows the capture's frame
+  rate, which differs on llvmpipe; the receiver never uploads an unnamed texture (the engine's own
+  frame-1 texture 1), so `delivery-pending` failed on every hosted runner and never on the dev box.
+- **Legs whose recording follows wall-clock timing are live-timed in `remote-determinism.ts`**
+  (`TIMED_RECORDING_LEG`): the worker-delay pending legs and the replay of the live host's basis
+  recording. Their applied.json (and the pending shots) are not compared across runners.
+- **Hosted runners are a CPU lottery, and llvmpipe's pixels followed the CPU.** Seen: AMD EPYC
+  7763, 9V45, 9V74 (all agree) and Intel Xeon 8573C (differs from the AMD parts on every gate 8
+  shot, the plain reference included). `--determinism` records the CPU models; a disagreement
+  across vendors is not evidence against the code. Pass/fail of each run is unaffected, since each
+  run compares against its own reference.
+- **Select a dispatch by its own run id.** `gh run list --limit 1` returns whichever agent
+  dispatched last; one `gh run cancel` on it cancelled someone else's run.
+- A hosted receiver that must see a lazily published variant needs `RS_RECEIVER_VARIANT_POLICY=upgrade`
+  (the default `keep` takes it only if it was in the first snapshot, a race against the host's
+  encode pool that a 4-vCPU runner loses).
+- The timing checks `decode-cost` and `worker-hook-time` were never the failure: the tier verdict
+  already excuses them (`skipped_remote_groups: decode-cost`); the raw `result.json` still lists
+  them as failed.
 
 Possible next steps (not started):
 - move g7-1 remote once GSW's `live-resync` step-2 shot-window miss (G7rf's `--determinism 3,1`,

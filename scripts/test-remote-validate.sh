@@ -60,7 +60,7 @@ case "$1 $2" in
 	if [ "$name" = summary ]; then
 		f="${FAKE_GH_FAILED:-0}"
 		printf '{"schema":"render-stream-validate-summary/2","wall_s":1.0,"failed":%s,"runs":[{"id":"pure","phase":"setup","rc":"0","wall_s":1.0%s}],"remote":{"run_url":"u","setup_s":[3.0],"refused":[],"determinism":"%s"}}\n' "$f" "${FAKE_GH_SKIPPED:+,\"skipped_remote_groups\":[\"$FAKE_GH_SKIPPED\"]}" "${FAKE_GH_DET_REQ:-}" >"$dir/validate-summary.json"
-		[ -n "${FAKE_GH_DET:-}" ] && printf '{"ok":%s,"runs":4,"shots":{"agree":3,"total":3},"dumps":{"agree":2,"total":2}}\n' "$FAKE_GH_DET" >"$dir/determinism.json"
+		[ -n "${FAKE_GH_DET:-}" ] && printf '{"ok":%s,"runs":4,"shots":{"agree":3,"total":3},"dumps":{"agree":2,"total":2},"cpu_models":{"x-det1x2":"AMD EPYC 9V45 96-Core Processor","x-det2x1":"INTEL(R) XEON(R) PLATINUM 8573C"}}\n' "$FAKE_GH_DET" >"$dir/determinism.json"
 	else
 		[ "${FAKE_GH_FAILED:-0}" = 1 ] && echo x >"$dir/pure-evidence.txt"
 	fi
@@ -122,9 +122,9 @@ check "lock-tests refused" grep -q 'refused lock-tests: lock self-tests' "$TMP/d
 check "g7x refused" grep -q 'refused g7x:' "$TMP/dry.out"
 check "device run refused" grep -q 'refused g7live-gsw-device: device-related' "$TMP/dry.out"
 check "not-yet-capable run refused with its reason" grep -q 'refused g7-future: not yet remote-capable' "$TMP/dry.out"
-check "refuse.groups: a live run's intermittent groups are refused, with their reason" grep -q 'refused g7live-gsw groups g7-1,g7-2: g7-1: FU1: the resync-full window-2 in-flight model landed' "$TMP/dry.out"
-check "refuse.groups: the run keeps its other groups remotely" grep -qF '"g7live-gsw": ["g7-5"]' "$TMP/dry.out"
-check "refuse.groups: a run with no group left is refused whole" grep -q 'refused g7live-web-rust-g7-1: g7-1: FU1: the resync-full window-2 in-flight model landed' "$TMP/dry.out"
+check "refuse.groups: a live run's intermittent groups are refused, with their reason" grep -q 'refused g7live-gsw groups g7-1: g7-1: G7rf fixed the receivers' "$TMP/dry.out"
+check "refuse.groups: the run keeps its other groups remotely" grep -qF '"g7live-gsw": ["g7-2", "g7-5"]' "$TMP/dry.out"
+check "refuse.groups: a run with no group left is refused whole" grep -q 'refused g7live-web-rust-g7-1: g7-1: G7rf fixed the receivers' "$TMP/dry.out"
 ( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer lavapipe ) >"$TMP/dry-br.out" 2>&1
 check "--browser-renderer reaches the dispatch inputs" grep -q 'browser_renderer=lavapipe' "$TMP/dry-br.out"
 ( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer nvidia ) >"$TMP/dry-br2.out" 2>&1
@@ -162,7 +162,7 @@ check "dispatch carried run_key, sha, base, tier and the run list" bash -c \
 	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\", \"g7-gsw\", \"g7live-gsw\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no determinism input" bash -c "! grep -q 'determinism=' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no browser_renderer input (the workflow default)" bash -c "! grep -q 'browser_renderer=' '$FAKE_GH_LOG'"
-check "a multi-group gate 7 run is dispatched with its groups (one job per group)" grep -qF 'run_groups={"g7-gsw": ["g7-1", "g7-2"], "g7live-gsw": ["g7-5"]}' "$FAKE_GH_LOG"
+check "a multi-group gate 7 run is dispatched with its groups (one job per group)" grep -qF 'run_groups={"g7-gsw": ["g7-1", "g7-2"], "g7live-gsw": ["g7-2", "g7-5"]}' "$FAKE_GH_LOG"
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"
 check "the output names the results directory" grep -q 'results in .*artifacts/render-stream/remote/' "$TMP/ok.out"
@@ -178,6 +178,7 @@ check "an agreeing determinism run exits 0 and says so" bash -c "test $rc = 0 &&
 check "the determinism dispatch carries its repeat counts" grep -q 'determinism=3,1' "$FAKE_GH_LOG"
 FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 FAKE_GH_DET=false bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
 check "a disagreeing determinism run exits non-zero" bash -c "test $rc != 0 && grep -q 'determinism DISAGREES' '$TMP/det.out'"
+check "a disagreement across CPU vendors names the runner CPUs and says so (GRT6)" bash -c "grep -q 'runner CPUs: x-det1x2: AMD EPYC.*x-det2x1: INTEL' '$TMP/det.out' && grep -q 'different CPU vendors' '$TMP/det.out'"
 FAKE_GH_MODE=ok FAKE_GH_DET_REQ=3,1 bash "$WRAP" --only native-rust-gate0 --determinism 3,1 >"$TMP/det.out" 2>&1; rc=$?
 check "a requested determinism report that never came back exits non-zero" bash -c "test $rc != 0 && grep -q 'no determinism.json came back' '$TMP/det.out'"
 
@@ -471,6 +472,28 @@ check "the seed workflow runs on main only, saves, and is cron plus dispatch" ba
 	"grep -q \"github.ref == 'refs/heads/main'\" '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'save: \"true\"' '$ROOT/.github/workflows/remote-cache-seed.yml' && grep -q 'cron:' '$ROOT/.github/workflows/remote-cache-seed.yml' && ! grep -q pull_request '$ROOT/.github/workflows/remote-cache-seed.yml'"
 check "only the cleanup job and the janitor may write contents" bash -c \
 	"[ \"\$(grep -c 'contents: write' '$ROOT/.github/workflows/remote-validate.yml')\" = 1 ]"
+# GRT6: the Trim artifact step must not follow symlinks (G8ku/G8kb: a run dir holds symlinks into
+# itself and the source cache; python glob("**") looped on them and hung the job until cancelled).
+check "trim step: no recursive glob over the run dir" bash -c "! grep -n 'glob.glob(sys.argv\\[2\\]' '$ROOT/.github/workflows/remote-validate.yml'"
+check "trim step has a timeout-minutes" bash -c "grep -A3 'name: Trim artifact' '$ROOT/.github/workflows/remote-validate.yml' | grep -q 'timeout-minutes'"
+walker="$TMP/walker.py"
+python3 -I - "$ROOT/.github/workflows/remote-validate.yml" "$walker" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+m = re.search(r"( +)def walk_files\(root, name\):\n((?:\1 .*\n)+)", t)
+ind = len(m.group(1))
+body = "\n".join(l[ind:] for l in (m.group(0)).splitlines())
+open(sys.argv[2], "w").write("import os, sys\n" + body + "\nprint('\\n'.join(walk_files(sys.argv[1], sys.argv[2])))\n")
+PY
+sym="$TMP/symtree"
+mkdir -p "$sym/run/g8ku/live" "$sym/run/g8kp"
+echo x >"$sym/run/g8ku/live/stdout.log"
+ln -s "$sym/run" "$sym/run/g8ku/loop"           # a cycle back to the root
+ln -s "$sym/run/g8ku" "$sym/run/g8kp/sources"   # a sibling link
+ln -s /nonexistent "$sym/run/dangling"
+ln -s "$sym/run/g8ku/live/stdout.log" "$sym/run/g8kp/stdout.log"
+check "trim walker finds the real file, follows no symlink, and terminates" bash -c "out=\$(timeout 20 python3 -I '$walker' '$sym/run' stdout.log) && [ \"\$out\" = '$sym/run/g8ku/live/stdout.log' ]"
+check "the old glob form does loop or double-count here (the test is meaningful)" bash -c "n=\$(timeout 20 python3 -I -c \"import glob,sys; print(len(glob.glob(sys.argv[1]+'/**/stdout.log', recursive=True)))\" '$sym/run'); [ \"\${n:-99}\" -gt 1 ]"
 if command -v actionlint >/dev/null 2>&1; then AL=actionlint; elif mise exec actionlint@latest -- actionlint -version >/dev/null 2>&1; then AL="mise exec actionlint@latest -- actionlint"; else AL=""; fi
 if [ -n "$AL" ]; then
 	check "actionlint is clean" bash -c "cd '$ROOT' && $AL .github/workflows/remote-validate.yml .github/workflows/remote-run-janitor.yml .github/workflows/remote-cache-seed.yml"
