@@ -102,6 +102,10 @@ struct Opts {
     /// Sabotage `ignore-format-mask`: the receiver states the masked `gpu_formats` but picks
     /// variants as if nothing were masked (`delivery-select` must catch it).
     ignore_format_mask: bool,
+    /// P3-VX sabotage `vertex-flat-varyings`: every shader's varyings made `flat` before the
+    /// transpiler sees the code (`pending_code`), as the native receiver does before
+    /// `shader_set_code`.
+    vertex_flat_varyings: bool,
     /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session.
     live_v9: bool,
     /// G8kb (texture-delivery-design.md Q6 "GSW"): the shell runs the KTX2 transcoder worker, so
@@ -234,6 +238,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "stale-mesh" => o.apply.mesh.stale = true,
                 "ignore-presentation" => o.ignore_presentation = true,
                 "ignore-format-mask" => o.ignore_format_mask = true,
+                "vertex-flat-varyings" => o.vertex_flat_varyings = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
                     if let Some(s) = Sabotage::parse(other)? {
@@ -771,7 +776,12 @@ impl GswRs {
     /// `provide_library`): crosses the boundary once per shader code hash (Q14c).
     pub fn pending_code(&self, i: u32) -> Option<String> {
         let (_, hash, _) = self.pending.get(i as usize)?;
-        self.payloads.shaders.get(hash).cloned()
+        let code = self.payloads.shaders.get(hash)?;
+        Some(if self.opts.vertex_flat_varyings {
+            render_stream_core::apply::programs::flat_varyings(code)
+        } else {
+            code.clone()
+        })
     }
 
     /// A `withheld` shader's GRP1 from the operator's library, written by the caller at
@@ -796,9 +806,11 @@ impl GswRs {
 
     /// Pending shader `i` transpiled: compile `glsl` (the effects transpiler's item-space module)
     /// in the executor and register it with its metadata (the transpiler's result without
-    /// `glsl`, JSON). Returns 0 when registered, 1 when GL refused it (registered as the typed
-    /// refusal `gsw-shader-transpile` with the compile log), -1 on a usage error.
-    pub fn define_program(&mut self, i: u32, glsl: &str, meta: &str) -> i32 {
+    /// `glsl` and `vertexGlsl`, JSON). `vertex_glsl` is the transpiler's `vertexGlsl` (P3-VX), or
+    /// empty for a program on the plain vertex stage. Returns 0 when registered, 1 when GL refused
+    /// it (registered as the typed refusal `gsw-shader-transpile` with the compile log), -1 on a
+    /// usage error.
+    pub fn define_program(&mut self, i: u32, glsl: &str, meta: &str, vertex_glsl: &str) -> i32 {
         let Some((_, hash, _)) = self.pending.get(i as usize).copied() else {
             self.error = format!("define_program: no pending shader {i}");
             return -1;
@@ -815,7 +827,8 @@ impl GswRs {
                 return -1;
             }
         };
-        match x.define_program(id, glsl) {
+        let vertex = (!vertex_glsl.is_empty()).then_some(vertex_glsl);
+        match x.define_program_with_vertex(id, glsl, vertex) {
             Ok(()) => {
                 self.next_program += 1;
                 a.set_program(hash, ProgramEntry::Ready(info));

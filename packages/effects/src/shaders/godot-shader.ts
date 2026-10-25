@@ -881,7 +881,7 @@ export function promoteIntLiterals(
       return match;
     }
     if (
-      intNames.length > 0 &&
+      (intNames.length > 0 || options.arithmetic) &&
       isIntegerComparisonLiteral(src, offset, intNames, options.arithmetic)
     ) {
       return match;
@@ -955,6 +955,22 @@ function isIntegerArithmeticLiteral(
     `([A-Za-z_][A-Za-z0-9_]*)(?:\\.[xyzwrgba]{1,4})?\\s*${op}\\s*$`,
   ).exec(before);
   if (left && names.has(left[1])) {
+    return true;
+  }
+  // An int constructor call is an int operand too: `int(VERTEX.x) / 64`, `2 * ivec2(p)`.
+  const leftCall = new RegExp(`\\)\\s*${op}\\s*$`).exec(before);
+  if (leftCall) {
+    let depth = 0;
+    for (let i = leftCall.index; i >= 0; i--) {
+      if (before[i] === ")") depth++;
+      else if (before[i] === "(" && --depth === 0) {
+        if (/(?<![\w.])(?:int|ivec[234])\s*$/.test(before.slice(0, i)))
+          return true;
+        break;
+      }
+    }
+  }
+  if (new RegExp(`^\\s*${op}\\s*(?:int|ivec[234])\\s*\\(`).test(after)) {
     return true;
   }
   const right = new RegExp(

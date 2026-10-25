@@ -296,6 +296,85 @@ void main() {{
     )
 }
 
+/// The vertex stage of an item-space program whose code has its own (P3-VX: a `vertex()`, or
+/// `skip_vertex_transform`), around the transpiler's vertex module (`@godot-scene-web/effects`'
+/// `vertexGlsl`, which declares `void godot_item_vertex(inout vec2 VERTEX, inout vec2 UV,
+/// inout vec4 COLOR, inout float POINT_SIZE, in mat4 MODEL_MATRIX, in mat4 CANVAS_MATRIX,
+/// in mat4 SCREEN_MATRIX)` and `#define`s `GSW_SKIP_VERTEX_TRANSFORM` / `GSW_WORLD_VERTEX_COORDS`
+/// for those render modes). Godot 4.5.1's order (drivers/gles3/shaders/canvas.glsl:179-280):
+///
+/// ```text
+/// color  = vertex colour * item modulate        (straight, BEFORE the code: v_tint is white)
+/// model  = canvas⁻¹ · the row's xform           (GLES3's base_transform: final_transform with the
+///                                                canvas transform taken off again)
+/// world_vertex_coords:   vertex = model · vertex
+/// vertex(VERTEX, UV, COLOR, POINT_SIZE, model, canvas, screen)
+/// neither render mode:   vertex = model · vertex
+/// color_interp = color;  vertex = canvas · vertex;  gl_Position = screen · vertex
+/// ```
+///
+/// `gsw_canvas_matrix` / `gsw_canvas_inverse` are the binding's (the item's canvas transform and
+/// its affine inverse, both column-major `mat4`s; identity until a binding sets them). The screen
+/// matrix is [`godot_screen_transform`] under `godot_orientation`, else the projection as a matrix.
+pub fn item_program_vertex(module: &str) -> String {
+    format!(
+        r#"#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec2 a_uv;
+layout(location = 2) in vec4 a_color;  // STRAIGHT
+layout(location = 3) in uint a_item;
+uniform sampler2D u_items;
+uniform vec4 u_projection;
+uniform bool u_godot_screen;
+uniform mat4 u_screen;
+uniform mat4 gsw_canvas_matrix;
+uniform mat4 gsw_canvas_inverse;
+uniform sampler2D TEXTURE;
+out vec2 v_uv;
+out vec4 v_color;
+flat out vec4 v_tint;
+{module}
+void main() {{
+  int gsw_item = int(a_item);
+  ivec2 gsw_at = ivec2((gsw_item % 512) * 3, gsw_item / 512);
+  vec4 gsw_t0 = texelFetch(u_items, gsw_at, 0);
+  vec4 gsw_t1 = texelFetch(u_items, gsw_at + ivec2(1, 0), 0);
+  vec4 gsw_t2 = texelFetch(u_items, gsw_at + ivec2(2, 0), 0);
+  mat4 gsw_final = mat4(vec4(gsw_t0.xy, 0.0, 0.0), vec4(gsw_t0.zw, 0.0, 0.0),
+                        vec4(0.0, 0.0, 1.0, 0.0), vec4(gsw_t1.xy, 0.0, 1.0));
+  mat4 gsw_model = gsw_canvas_inverse * gsw_final;
+  mat4 gsw_screen = u_godot_screen ? u_screen
+      : mat4(vec4(u_projection.x, 0.0, 0.0, 0.0), vec4(0.0, u_projection.y, 0.0, 0.0),
+             vec4(0.0, 0.0, 1.0, 0.0), vec4(u_projection.zw, 0.0, 1.0));
+  vec2 gsw_vertex = a_position;
+  vec2 gsw_uv = a_uv;
+  vec4 gsw_color = a_color * vec4(gsw_t1.zw, gsw_t2.xy);
+  float gsw_point_size = 1.0;
+#ifdef GSW_WORLD_VERTEX_COORDS
+  gsw_vertex = (gsw_model * vec4(gsw_vertex, 0.0, 1.0)).xy;
+#endif
+  godot_item_vertex(gsw_vertex, gsw_uv, gsw_color, gsw_point_size, gsw_model, gsw_canvas_matrix,
+                    gsw_screen);
+#if !defined(GSW_SKIP_VERTEX_TRANSFORM) && !defined(GSW_WORLD_VERTEX_COORDS)
+  gsw_vertex = (gsw_model * vec4(gsw_vertex, 0.0, 1.0)).xy;
+#endif
+  v_color = gsw_color;
+  gsw_vertex = (gsw_canvas_matrix * vec4(gsw_vertex, 0.0, 1.0)).xy;
+  v_uv = gsw_uv;
+  v_tint = vec4(1.0);
+  gl_Position = gsw_screen * vec4(gsw_vertex, 0.0, 1.0);
+}}
+"#
+    )
+}
+
+/// The uniform names [`item_program_vertex`] reads from a binding (P3-VX).
+pub const CANVAS_MATRIX_UNIFORM: &str = "gsw_canvas_matrix";
+pub const CANVAS_INVERSE_UNIFORM: &str = "gsw_canvas_inverse";
+
 /// Texture units: 0 the draw's texture, 1 the item rows, 2 the target (present only); an item-space
 /// program's own samplers take units [`FIRST_SAMPLER_UNIT`] and up, at most
 /// [`MAX_PROGRAM_SAMPLERS`] (WebGL 2 guarantees 16 fragment units).

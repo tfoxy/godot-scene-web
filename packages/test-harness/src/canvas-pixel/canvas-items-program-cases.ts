@@ -383,9 +383,250 @@ function msdfCases(): ProgramCase[] {
   ];
 }
 
+// ---- P3-VX: programs with their own vertex stage (canvas.glsl:179-280) ----------------------
+
+const VERTEX_SHIFT = server(`shader_type canvas_item;
+varying vec4 c;
+void vertex() {
+	VERTEX.x += 16.0;
+	c = COLOR;
+}
+void fragment() {
+	COLOR = vec4(c.rgb * 0.6, 1.0);
+}
+`);
+const SKIP_PLAIN = server(`shader_type canvas_item;
+render_mode skip_vertex_transform;
+void fragment() {
+	COLOR = vec4(0.8, 0.1, 0.1, 1.0);
+}
+`);
+const SKIP_MODEL = server(`shader_type canvas_item;
+render_mode skip_vertex_transform;
+void vertex() {
+	VERTEX = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy + vec2(8.0, 0.0);
+}
+void fragment() {
+	COLOR = vec4(0.1, 0.8, 0.1, 1.0);
+}
+`);
+const FLAT = server(`shader_type canvas_item;
+varying flat vec4 f;
+void vertex() {
+	f = COLOR;
+}
+void fragment() {
+	COLOR = f;
+}
+`);
+const UV_FLIP = server(`shader_type canvas_item;
+void vertex() {
+	UV = vec2(1.0) - UV;
+}
+`);
+const WORLD = server(`shader_type canvas_item;
+render_mode world_vertex_coords;
+void vertex() {
+	VERTEX.x += 8.0;
+}
+void fragment() {
+	COLOR = vec4(0.1, 0.45, 0.8, 1.0);
+}
+`);
+const PIXEL_SIZE = server(`shader_type canvas_item;
+void vertex() {
+	VERTEX.x += 4.0 / TEXTURE_PIXEL_SIZE.x;
+}
+void fragment() {
+	COLOR = vec4(TEXTURE_PIXEL_SIZE.y * 1.2, 0.25, 0.1, 1.0);
+}
+`);
+
+/** Column-major `mat4` of a 2D translation. */
+const translation = (x: number, y: number): number[] => [
+  1,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  x,
+  y,
+  0,
+  1,
+];
+
+function vertexCase(): ProgramCase {
+  const V = 96;
+  const red: Rgba = [0.8, 0.1, 0.1, 1];
+  const green: Rgba = [0.1, 0.8, 0.1, 1];
+  const blue: Rgba = [0.1, 0.1, 0.8, 1];
+  const grey: Rgba = [0.7, 0.7, 0.7, 1];
+  const clear = px(CLEAR[0], CLEAR[1], CLEAR[2]);
+  const meshes = [
+    at(4, 4, 8, 8, { item: 0, program: 1 }),
+    at(36, 4, 8, 8, { item: 1, program: 2 }),
+    at(4, 4, 8, 8, { item: 2, program: 3 }),
+    at(36, 36, 16, 16, {
+      item: 3,
+      program: 4,
+      colors: [red, green, blue, grey],
+    }),
+    at(4, 48, 16, 16, { item: 4, program: 5, texture: 2 }),
+    at(4, 4, 8, 8, { item: 5, program: 6 }),
+    at(4, 80, 8, 8, { item: 6, program: 7, texture: 2 }),
+  ];
+  const item = (
+    xform: readonly [number, number, number, number, number, number],
+    modulate: Rgba = WHITE,
+  ) => ({ xform, modulate });
+  const items: ItemsCase = {
+    name: "programVertex",
+    width: V,
+    height: V,
+    format: "rgb10a2",
+    opaque: true,
+    clear: CLEAR,
+    textures: [QUADRANTS],
+    meshes,
+    frames: [
+      [
+        item(IDENTITY, [1, 0.5, 1, 1]),
+        item([1, 0, 0, 1, 0, 16]),
+        item([1, 0, 0, 1, 0, 32]),
+        item(IDENTITY),
+        item(IDENTITY),
+        // final = canvas (translate 48, 0) · model (scale 2, translate 0, 64).
+        item([2, 0, 0, 2, 48, 64]),
+        item(IDENTITY),
+      ],
+    ],
+  };
+  const programs = [
+    VERTEX_SHIFT,
+    SKIP_PLAIN,
+    SKIP_MODEL,
+    FLAT,
+    UV_FLIP,
+    WORLD,
+    PIXEL_SIZE,
+  ].map((code, k) => ({ id: k + 1, code }));
+  const bindings: BindingSpec[] = programs.map((p, k) => ({
+    slot: k,
+    program: p.id,
+    ...(p.code === WORLD
+      ? {
+          uniforms: [
+            { name: "gsw_canvas_matrix", float: translation(48, 0) },
+            { name: "gsw_canvas_inverse", float: translation(-48, 0) },
+          ],
+        }
+      : {}),
+  }));
+  return {
+    name: "programVertex",
+    items,
+    programs,
+    bindings,
+    expect: [
+      {
+        rect: [20, 4, 8, 8],
+        rgba: px(0.6, f32(0.5 * f32(0.6)), 0.6),
+        maxDelta: 0,
+        why: "VERTEX displaced before the model transform; COLOR is the vertex colour × the modulate (1, .5, 1) before vertex(), through a smooth varying",
+      },
+      {
+        rect: [4, 4, 8, 8],
+        rgba: clear,
+        maxDelta: 0,
+        why: "A's own place stays clear",
+      },
+      {
+        rect: [36, 4, 8, 8],
+        rgba: px(0.8, 0.1, 0.1),
+        maxDelta: 0,
+        why: "skip_vertex_transform with no vertex(): the item's translation (0, 16) is never applied",
+      },
+      {
+        rect: [36, 20, 8, 8],
+        rgba: clear,
+        maxDelta: 0,
+        why: "B's transformed place stays clear",
+      },
+      {
+        rect: [12, 36, 8, 8],
+        rgba: px(0.1, 0.8, 0.1),
+        maxDelta: 0,
+        why: "skip_vertex_transform: the code applies MODEL_MATRIX itself, then shifts 8",
+      },
+      {
+        rect: [46, 37, 5, 3],
+        rgba: px(0.1, 0.1, 0.8),
+        maxDelta: 0,
+        why: "flat varying: triangle (TL, TR, BR) takes its provoking (last) vertex, BR",
+      },
+      {
+        rect: [37, 46, 3, 5],
+        rgba: px(0.7, 0.7, 0.7),
+        maxDelta: 0,
+        why: "flat varying: triangle (TL, BR, BL) takes BL",
+      },
+      {
+        rect: [4, 48, 8, 8],
+        rgba: px(1, 1, 1),
+        maxDelta: 0,
+        why: "UV flipped in vertex(): TL shows texel (1,1)",
+      },
+      {
+        rect: [12, 48, 8, 8],
+        rgba: px(0, 0, 1),
+        maxDelta: 0,
+        why: "UV flipped: TR shows texel (0,1)",
+      },
+      {
+        rect: [4, 56, 8, 8],
+        rgba: px(0, 1, 0),
+        maxDelta: 0,
+        why: "UV flipped: BL shows texel (1,0)",
+      },
+      {
+        rect: [12, 56, 8, 8],
+        rgba: px(1, 0, 0),
+        maxDelta: 0,
+        why: "UV flipped: BR shows texel (0,0)",
+      },
+      {
+        rect: [64, 72, 16, 16],
+        rgba: px(0.1, 0.45, 0.8),
+        maxDelta: 0,
+        why: "world_vertex_coords: model (scale 2) applied before the code's +8, then the binding's canvas matrix (translate 48)",
+      },
+      {
+        rect: [80, 72, 8, 16],
+        rgba: clear,
+        maxDelta: 0,
+        why: "where +8 before the model would land",
+      },
+      {
+        rect: [12, 80, 8, 8],
+        rgba: px(f32(0.5 * f32(1.2)), 0.25, 0.1),
+        maxDelta: 0,
+        why: "TEXTURE_PIXEL_SIZE is 1 / the 2x2 texture's size in both stages",
+      },
+    ],
+  };
+}
+
 export function buildProgramCases(): ProgramCase[] {
   return [
     ...msdfCases(),
+    vertexCase(),
     {
       name: "programTint",
       items: scene("programTint", [

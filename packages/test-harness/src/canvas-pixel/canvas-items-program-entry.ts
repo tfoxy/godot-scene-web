@@ -19,6 +19,7 @@ interface RustHarness {
     rgba: Uint8Array,
   ): void;
   define_program(id: number, module: string): void;
+  define_program_vertex(id: number, module: string, vertex: string): void;
   set_binding(slot: number, json: string): void;
   execute(): string;
   read_target(): Uint8Array;
@@ -78,12 +79,13 @@ async function run(name: string, godot = false): Promise<ProgramCaseResult> {
     harness.load(encodePdl1(spec.items, 0));
     const defineErrors: Record<number, string> = {};
     for (const p of spec.programs) {
-      const glsl =
-        p.code === null
-          ? "this is not GLSL;"
-          : transpileGodotItemShader(p.code).glsl;
+      const t = p.code === null ? null : transpileGodotItemShader(p.code);
+      const glsl = t === null ? "this is not GLSL;" : t.glsl;
       try {
-        harness.define_program(p.id, glsl);
+        // P3-VX: a program with its own vertex stage.
+        if (t?.vertexGlsl)
+          harness.define_program_vertex(p.id, glsl, t.vertexGlsl);
+        else harness.define_program(p.id, glsl);
       } catch (e) {
         defineErrors[p.id] = String(e);
       }

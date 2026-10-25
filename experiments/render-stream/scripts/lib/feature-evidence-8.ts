@@ -565,7 +565,30 @@ const FORMATS_NOTE =
 const BACKBUFFER_NOTE =
   "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones.";
 
+/** P3-VX (gate5_5-design.md "vertex() (P3-VX)"): GSW's transpiler runs vertex() and varyings
+ * since P3-VX, so the refusals left are narrower. */
+const OUTSIDE_TRANSPILE_NOTE =
+  "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). Still typed gsw-shader-transpile (programs.ts): TIME, VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, hint_default_black/transparent samplers, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal.";
+
 const OVERRIDES_8: readonly Override8[] = [
+  {
+    id: "material.shader-outside-transpile-subset",
+    native: {
+      status: "declared-unverified",
+      notes:
+        "The engine compiles every shader the wire carries; no gate leg carries one outside GSW's subset (TIME is wire-typed unsupported-material).",
+    },
+    web: {
+      status: "declared-unverified",
+      notes:
+        "The web export compiles shaders in the engine, as native; no gate leg carries a shader outside GSW's subset.",
+    },
+    gsw: {
+      status: "declared-unverified",
+      reason: "gsw-shader-transpile",
+      notes: OUTSIDE_TRANSPILE_NOTE,
+    },
+  },
   {
     id: "canvas_item_set_copy_to_backbuffer",
     native: {

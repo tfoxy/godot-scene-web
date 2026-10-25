@@ -50,7 +50,12 @@ export interface GswRs {
   pending_withheld(i: number): boolean;
   pending_code(i: number): string | undefined;
   provide_library(i: number, len: number): number;
-  define_program(i: number, glsl: string, meta: string): number;
+  define_program(
+    i: number,
+    glsl: string,
+    meta: string,
+    vertexGlsl: string,
+  ): number;
   refuse_program(i: number, reason: string, detail: string): number;
   // G7l live mode.
   rx(len: number): number;

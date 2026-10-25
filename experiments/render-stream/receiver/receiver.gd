@@ -89,8 +89,10 @@ extends Node
 ##                                update) or (G6s) no-evict (RsResourceCache's budgets are
 ##                                ignored) or (P3-ST) screen-copy-per-reader (a back-buffer copy
 ##                                before every item whose material reads the screen texture,
-##                                canvas_item_set_copy_to_backbuffer); all eighteen exist only to
-##                                fail checks or compare
+##                                canvas_item_set_copy_to_backbuffer) or (P3-VX)
+##                                vertex-flat-varyings (every shader varying made `flat` before
+##                                shader_set_code); all nineteen exist only to fail checks or
+##                                compare
 ##
 ## Resource budgets (G6s, gate6-design.md Q5 "Resource budgets"; both modes; rs_resource_cache.gd):
 ##   RS_RECEIVER_MEMORY_BUDGET_BYTES  unset: unlimited (off by default, every other gate's
@@ -291,7 +293,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).

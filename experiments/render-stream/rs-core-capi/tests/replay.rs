@@ -109,7 +109,7 @@ const RECORDINGS: [&str; 6] = [
     "snap.rs6",
 ];
 
-const SABOTAGES: [&str; 17] = [
+const SABOTAGES: [&str; 18] = [
     "",
     "reupload",
     "ignore-clip",
@@ -127,6 +127,7 @@ const SABOTAGES: [&str; 17] = [
     "stale-texture",
     "ignore-canvas-stacking",
     "screen-copy-per-reader",
+    "vertex-flat-varyings",
 ];
 
 #[test]
@@ -162,13 +163,15 @@ fn sabotages_change_the_calls() {
     assert_eq!(inert, EXPECTED_INERT);
 }
 
-/// golden-6 has no clipping item, no in-place mesh payload change, no CanvasTexture and no
-/// screen-reading shader: these four have nothing to act on there (the gate legs exercise them).
+/// golden-6 has no clipping item, no in-place mesh payload change, no CanvasTexture, no
+/// screen-reading shader and no varying: these five have nothing to act on there (the gate legs
+/// exercise them).
 const EXPECTED_INERT: &[&str] = &[
     "ignore-clip",
     "stale-mesh",
     "refuse-canvas-texture",
     "screen-copy-per-reader",
+    "vertex-flat-varyings",
 ];
 
 #[test]

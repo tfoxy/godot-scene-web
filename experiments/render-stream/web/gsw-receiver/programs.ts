@@ -26,7 +26,12 @@ export interface ProgramHost {
   pending_code(i: number): string | undefined;
   alloc_payload(len: number): number;
   provide_library(i: number, len: number): number;
-  define_program(i: number, glsl: string, meta: string): number;
+  define_program(
+    i: number,
+    glsl: string,
+    meta: string,
+    vertexGlsl: string,
+  ): number;
   refuse_program(i: number, reason: string, detail: string): number;
   error(): string;
 }
@@ -166,8 +171,9 @@ export function definePrograms(
       out.refused++;
       continue;
     }
-    const { glsl, ...meta } = transpiled;
-    const r = g.define_program(i, glsl, JSON.stringify(meta));
+    // P3-VX: the vertex module (null: the plain vertex stage) travels beside the fragment one.
+    const { glsl, vertexGlsl, ...meta } = transpiled;
+    const r = g.define_program(i, glsl, JSON.stringify(meta), vertexGlsl ?? "");
     if (r < 0) throw new ProgramError("receiver-error", g.error());
     if (r === 1) {
       log(`${label} did not compile`);

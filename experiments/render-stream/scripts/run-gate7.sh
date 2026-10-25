@@ -121,12 +121,13 @@
 # g6l):
 #   g7-1 g7-2 g7-5 g7-55  the live groups of gates 1 (g1c, g1d), 2 (g2c, g2e, plus G7l's
 #             origin-refused and sabotage-no-cors), 5 (g5f) and 5.5 (g55f, plus P3-ST's g55s
-#             screen-texture file receivers on its /8 capture), delivered to a browser
+#             screen-texture and P3-VX's g55v vertex() file receivers on their /8 captures),
+#             delivered to a browser
 #             receiver over render-stream/7. A live leg cannot replay a source: per gate and receiver
 #             kind (`--receiver web|gsw`, else both) the gate's OWN runner runs again with
 #             GATE7_LIVE_KIND set (lib/legs.sh substitutes the browser for every live receiver and
 #             every received.rs7 replay; lib/gate7-live-legs.ts launches it) into
-#             <out>/<gate>/live-<kind>/ with --legs g1a,g1c,g1d / g2a,g2c,g2e / g5c,g5f (check-gate5.ts judges g5f only beside g5c) / g55f,g55s, and its
+#             <out>/<gate>/live-<kind>/ with --legs g1a,g1c,g1d / g2a,g2c,g2e / g5c,g5f (check-gate5.ts judges g5f only beside g5c) / g55f,g55s,g55v, and its
 #             checker judges it there. check-gate7.ts --live then reports the checks that read a
 #             browser leg as `<id>@<kind>` plus gate 7's live checks (lib/gate7-live.ts). Timing-
 #             sensitive: run it on a quiet machine.
@@ -668,7 +669,7 @@ if [ "$LIVE" = "1" ]; then
 		fi
 	fi
 	LIVE_RUNS=()
-	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s g7-6:6:g6l g7-8:8:g8l; do
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v g7-6:6:g6l g7-8:8:g8l; do
 		group="${pair%%:*}"
 		rest="${pair#*:}"
 		has_group "$group" || continue

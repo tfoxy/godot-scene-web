@@ -97,6 +97,19 @@ impl CanvasItemsTestHarness {
         self.executor.define_program(id, module).map_err(js)
     }
 
+    /// P3-VX: [`define_program`](Self::define_program) for a program with its own vertex stage
+    /// (`vertex`: the transpiler's `vertexGlsl`).
+    pub fn define_program_vertex(
+        &mut self,
+        id: u32,
+        module: &str,
+        vertex: &str,
+    ) -> Result<(), JsValue> {
+        self.executor
+            .define_program_with_vertex(id, module, Some(vertex))
+            .map_err(js)
+    }
+
     /// G7s: binding slot `slot` of the held list (draws name it `slot + 1`) from JSON
     /// `{"program": n, "post_modulate": [r, g, b, a], "uniforms": [{"name": s, "float": [..]} |
     /// {"name": s, "int": [..]}], "samplers": [{"name": s, "texture": n, "sampler": bits}]}`.

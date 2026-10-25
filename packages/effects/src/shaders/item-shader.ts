@@ -23,13 +23,36 @@
 // whitespace runs collapsed, `#include` expanded between `@@>path` / `@@<path` marker lines), or
 // plain `.gdshader` text.
 //
-// The subset is deliberately the one a renderer can execute EXACTLY: COLOR, UV, TEXTURE, PI/TAU/E,
-// user uniforms (bool, int, float, vec/ivec 2-4, and arrays of them), sampler2D uniforms with filter/repeat/default-white hints, `instance uniform`s, helper
-// functions and constants, `render_mode` blend_*/unshaded/light_only, and the screen: SCREEN_UV,
-// SCREEN_PIXEL_SIZE and `hint_screen_texture` samplers (see `screenTexture` below). Anything else throws
-// `UnsupportedShaderError` with a message naming it, which a renderer reports as a typed refusal
-// and draws the item without its material. `light()` is dropped: Godot runs it only per light, and
-// an item-space renderer has none.
+// The subset is deliberately the one a renderer can execute EXACTLY: COLOR, UV, TEXTURE,
+// TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS, PI/TAU/E, user uniforms (bool, int, float, vec/ivec 2-4, and
+// arrays of them), sampler2D uniforms with filter/repeat/default-white hints, `instance uniform`s,
+// helper functions and constants, `render_mode` blend_*/unshaded/light_only, the screen: SCREEN_UV,
+// SCREEN_PIXEL_SIZE and `hint_screen_texture` samplers (see `screenTexture` below), and a
+// `vertex()` with varyings (see `vertexGlsl` below). Anything else throws `UnsupportedShaderError`
+// with a message naming it, which a renderer reports as a typed refusal and draws the item without
+// its material. `light()` is dropped: Godot runs it only per light, and an item-space renderer has
+// none.
+//
+// `vertex()` (P3-VX). Godot's canvas.glsl vertex stage (drivers/gles3/shaders/canvas.glsl:131-285),
+// with the GLES3 compiler's renames (drivers/gles3/storage/material_storage.cpp:1150-1220):
+//
+//   vertex = <command-local position>; uv = <its UV>;
+//   color  = <vertex colour> * <the item's composed modulate>   // folded in BEFORE vertex()
+//   #ifdef USE_WORLD_VERTEX_COORDS  vertex = (model_matrix * vec4(vertex, 0, 1)).xy;
+//   { #CODE : VERTEX }               // VERTEX vertex, UV uv, COLOR color, POINT_SIZE point_size,
+//                                    // MODEL_MATRIX model_matrix, CANVAS_MATRIX canvas_transform,
+//                                    // SCREEN_MATRIX screen_transform, AT_LIGHT_PASS false
+//   #if !SKIP_TRANSFORM_USED && !USE_WORLD_VERTEX_COORDS  vertex = (model_matrix * …).xy;
+//   color_interp = color; vertex = (canvas_transform * …).xy; gl_Position = screen_transform * …;
+//
+// The vertex module declares the same uniforms and samplers, the varyings `out` (their
+// interpolation and precision qualifiers kept), the constants and only the helpers the vertex code
+// reaches, and `void godot_item_vertex(inout vec2 VERTEX, inout vec2 UV, inout vec4 COLOR,
+// inout float POINT_SIZE, in mat4 MODEL_MATRIX, in mat4 CANVAS_MATRIX, in mat4 SCREEN_MATRIX)`;
+// the renderer owns the stage's `main()` and does everything around the call. INSTANCE_CUSTOM is
+// `vec4(0.0)`, which is what canvas.glsl has for every draw that is not an instanced multimesh.
+// `skip_vertex_transform` needs the vertex stage even without a `vertex()` (GLES3 then never applies
+// the model matrix); `world_vertex_coords` without one changes nothing.
 
 import {
   hasToken,
@@ -55,6 +78,17 @@ export const ITEM_SHADER_PRELUDE_NAMES = {
   screenPixelSize: "SCREEN_PIXEL_SIZE",
   /** The module's entry point: `void godot_item_fragment(inout vec4 COLOR, in vec2 UV)`. */
   entry: "godot_item_fragment",
+  /** The vertex module's entry point (`vertexGlsl`): `void godot_item_vertex(inout vec2 VERTEX,
+   *  inout vec2 UV, inout vec4 COLOR, inout float POINT_SIZE, in mat4 MODEL_MATRIX,
+   *  in mat4 CANVAS_MATRIX, in mat4 SCREEN_MATRIX)`. The renderer's vertex stage declares
+   *  `uniform sampler2D TEXTURE;` too (TEXTURE_PIXEL_SIZE reads its size). */
+  vertexEntry: "godot_item_vertex",
+  /** Defined by the vertex module under `render_mode skip_vertex_transform`: the renderer does
+   *  not apply the model matrix after the call. */
+  skipVertexTransform: "GSW_SKIP_VERTEX_TRANSFORM",
+  /** Defined by the vertex module under `render_mode world_vertex_coords`: the renderer applies
+   *  the model matrix before the call, and not after it. */
+  worldVertexCoords: "GSW_WORLD_VERTEX_COORDS",
 } as const;
 
 export type ItemShaderBlend =
@@ -122,6 +156,31 @@ export interface TranspiledItemShader {
   screenPixelSize: boolean;
   blend: ItemShaderBlend;
   lightMode: ItemShaderLightMode;
+  /** P3-VX: the program needs its own vertex stage (a `vertex()`, or `skip_vertex_transform`):
+   *  `vertexGlsl` is its module (see the file note). False: the renderer's plain vertex stage. */
+  vertexStage: boolean;
+  /** The vertex module, or null when `vertexStage` is false. Not part of the metadata a renderer
+   *  serializes: it is GLSL, like `glsl`. */
+  vertexGlsl: string | null;
+  /** `render_mode skip_vertex_transform` / `world_vertex_coords` (also `#define`d in
+   *  `vertexGlsl`). */
+  skipVertexTransform: boolean;
+  worldVertexCoords: boolean;
+  /** The user varyings as declared (`flat`/`smooth` and precision kept), in declaration order. */
+  varyings: ItemShaderVarying[];
+}
+
+export interface ItemShaderVarying {
+  name: string;
+  /** GLSL type (`vec4`, `int`, …). */
+  type: string;
+  /** `flat`, `smooth` or null (smooth). */
+  interpolation: "flat" | "smooth" | null;
+  /** `name[N]`'s N, absent for a non-array. */
+  arrayLength?: number;
+  /** Assigned in the vertex stage, so interpolated into `fragment()`; false: a fragment-stage
+   *  global (Godot passes those on to `light()` only, which an item-space renderer never runs). */
+  fromVertex: boolean;
 }
 
 const COMPONENTS: Record<ItemUniformType, number> = {
@@ -136,7 +195,8 @@ const COMPONENTS: Record<ItemUniformType, number> = {
   vec4: 4,
 };
 
-/** Fragment built-ins outside the item-space subset (each would need state no item draw has). */
+/** Fragment built-ins outside the item-space subset (each would need state no item draw has). The
+ *  vertex-only built-ins are here too: Godot refuses them in `fragment()` and helpers alike. */
 const ITEM_UNSUPPORTED_BUILTINS = [
   "VERTEX",
   "SHADOW_VERTEX",
@@ -151,8 +211,7 @@ const ITEM_UNSUPPORTED_BUILTINS = [
   "SCREEN_TEXTURE",
   "REGION_RECT",
   "POINT_COORD",
-  "AT_LIGHT_PASS",
-  "TEXTURE_PIXEL_SIZE",
+  "POINT_SIZE",
   "TIME",
   "INSTANCE_CUSTOM",
   "INSTANCE_ID",
@@ -167,6 +226,37 @@ const ITEM_UNSUPPORTED_BUILTINS = [
   "sdf_to_screen_uv",
   "screen_uv_to_sdf",
 ];
+
+/** Names `vertex()` (and the helpers it reaches) may not use, each with why. The rest of Godot
+ *  4.5.1's canvas_item vertex built-ins (shader_types.cpp:266-280) are admitted. */
+const VERTEX_REFUSED: Record<string, string> = {
+  TIME: "TIME is the receiver rasterizer's own clock (gate5_5-design.md, shader TIME)",
+  INSTANCE_ID:
+    "INSTANCE_ID is GLES3's per-batch instance index (one instance per rect), which an item-space draw does not reproduce",
+  VERTEX_ID:
+    "VERTEX_ID is GLES3's per-batch vertex index, which an item-space draw does not reproduce",
+  CUSTOM0:
+    "CUSTOM0 needs a mesh's custom attribute arrays, which are not carried",
+  CUSTOM1:
+    "CUSTOM1 needs a mesh's custom attribute arrays, which are not carried",
+  TEXTURE: "TEXTURE is not a vertex() built-in",
+  SCREEN_UV: "SCREEN_UV is not a vertex() built-in",
+  SCREEN_PIXEL_SIZE: "SCREEN_PIXEL_SIZE is not a vertex() built-in",
+  FRAGCOORD: "FRAGCOORD is not a vertex() built-in",
+  NORMAL: "NORMAL is not a vertex() built-in",
+  NORMAL_MAP: "NORMAL_MAP is not a vertex() built-in",
+  NORMAL_MAP_DEPTH: "NORMAL_MAP_DEPTH is not a vertex() built-in",
+  REGION_RECT: "REGION_RECT is not a vertex() built-in",
+  POINT_COORD: "POINT_COORD is not a vertex() built-in",
+  texture_sdf: "texture_sdf is not available in vertex()",
+  texture_sdf_normal: "texture_sdf_normal is not available in vertex()",
+  sdf_to_screen_uv: "sdf_to_screen_uv is not available in vertex()",
+  screen_uv_to_sdf: "screen_uv_to_sdf is not available in vertex()",
+};
+
+/** The renderer's own vertex-stage names (`a_`, `u_`, `v_`, `gsw_`): a user varying so named is
+ *  renamed `gsw_vary_<name>` so the two never collide. */
+const RENDERER_NAME = /^(a_|u_|v_|gsw_)/;
 
 const ALLOWED_SAMPLER_HINTS =
   /^(filter_nearest|filter_linear|repeat_enable|repeat_disable|hint_default_white)$/;
@@ -193,9 +283,13 @@ function dropFunction(src: string, name: string): string {
 function parseRenderModes(src: string): {
   blend: ItemShaderBlend;
   lightMode: ItemShaderLightMode;
+  skipVertexTransform: boolean;
+  worldVertexCoords: boolean;
 } {
   let blend: ItemShaderBlend = "mix";
   let lightMode: ItemShaderLightMode = "normal";
+  let skipVertexTransform = false;
+  let worldVertexCoords = false;
   for (const match of src.matchAll(/render_mode\s+([^;]+);/g)) {
     for (const raw of match[1].split(",")) {
       const mode = raw.trim();
@@ -218,17 +312,117 @@ function parseRenderModes(src: string): {
       } else if (mode === "light_only") {
         lightMode = "light_only";
         continue;
-      } else if (
-        mode === "skip_vertex_transform" ||
-        mode === "world_vertex_coords"
-      ) {
-        // Vertex-stage modes: without a vertex() (refused below) they change nothing.
+      } else if (mode === "skip_vertex_transform") {
+        skipVertexTransform = true;
+        continue;
+      } else if (mode === "world_vertex_coords") {
+        worldVertexCoords = true;
         continue;
       }
       throw new UnsupportedShaderError(`unsupported render_mode "${mode}"`);
     }
   }
-  return { blend, lightMode };
+  return { blend, lightMode, skipVertexTransform, worldVertexCoords };
+}
+
+const VARYING_DECL =
+  /^varying\s+(?:(flat|smooth)\s+)?(?:(lowp|mediump|highp)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*(\d+)\s*\])?$/;
+
+/** Every `varying …;` declaration, or throw for one this subset does not read. */
+function parseItemVaryings(
+  src: string,
+): (Omit<ItemShaderVarying, "fromVertex"> & { precision: string | null })[] {
+  const out: (Omit<ItemShaderVarying, "fromVertex"> & {
+    precision: string | null;
+  })[] = [];
+  for (const m of src.matchAll(/\bvarying\b[^;]*;/g)) {
+    const text = m[0].slice(0, -1).replace(/\s+/g, " ").trim();
+    const d = VARYING_DECL.exec(text);
+    if (!d) {
+      throw new UnsupportedShaderError(
+        `varying declaration "${text}" is not supported (one name per declaration)`,
+      );
+    }
+    if (/^(sampler|mat)/.test(d[3]) || d[3] === "struct") {
+      throw new UnsupportedShaderError(
+        `varying "${d[4]}": type ${d[3]} is not supported`,
+      );
+    }
+    out.push({
+      name: d[4],
+      type: d[3],
+      interpolation: (d[1] as "flat" | "smooth" | undefined) ?? null,
+      precision: d[2] ?? null,
+      ...(d[5] !== undefined ? { arrayLength: Number(d[5]) } : {}),
+    });
+  }
+  return out;
+}
+
+/** Top-level pieces of the helper text: functions (named) and everything else (constants,
+ *  structs), in order. */
+function splitTopLevel(src: string): { text: string; fn: string | null }[] {
+  const out: { text: string; fn: string | null }[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === ";") {
+      const text = src.slice(start, i + 1).trim();
+      if (text) out.push({ text, fn: null });
+      start = i + 1;
+      i++;
+      continue;
+    }
+    if (c === "{") {
+      const head = src.slice(start, i);
+      const close = matchBrace(src, i);
+      if (/^\s*struct\b/.test(head)) {
+        // `struct S { … };` ends at its `;`.
+        i = close + 1;
+        continue;
+      }
+      const name = /([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*$/.exec(head);
+      out.push({
+        text: src.slice(start, close + 1).trim(),
+        fn: name?.[1] ?? "",
+      });
+      start = close + 1;
+      i = close + 1;
+      continue;
+    }
+    i++;
+  }
+  const rest = src.slice(start).trim();
+  if (rest) out.push({ text: rest, fn: null });
+  return out;
+}
+
+/** The helper text the vertex stage needs: every non-function piece, and the functions `body`
+ *  calls, transitively (Godot emits per stage only the functions that stage reaches). */
+function vertexHelpers(helpers: string, body: string): string {
+  const pieces = splitTopLevel(helpers);
+  const used = new Set<string>();
+  let frontier = body;
+  for (;;) {
+    const before = used.size;
+    for (const p of pieces)
+      if (p.fn && !used.has(p.fn) && hasToken(frontier, p.fn)) used.add(p.fn);
+    if (used.size === before) break;
+    frontier = `${body}\n${pieces
+      .filter((p) => p.fn !== null && used.has(p.fn))
+      .map((p) => p.text)
+      .join("\n")}`;
+  }
+  return pieces
+    .filter((p) => p.fn === null || used.has(p.fn))
+    .map((p) => p.text)
+    .join("\n");
+}
+
+/** Whole-identifier replace that leaves member accesses (`x.name`) alone. */
+function renameIdentifier(src: string, from: string, to: string): string {
+  return src.replace(new RegExp(`(?<![\\w.])${from}(?![\\w])`, "g"), to);
 }
 
 /** A default literal flattened to `components` numbers, or throw. */
@@ -309,14 +503,44 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
     );
   }
   // light() runs per light only; an item-space renderer has none, so it never runs.
-  const withoutLight = dropFunction(cleaned, "light");
+  let withoutLight = dropFunction(cleaned, "light");
+  // Varyings: a name the renderer's stages use for themselves is renamed throughout.
+  const declaredVaryings = parseItemVaryings(withoutLight);
+  for (const v of declaredVaryings) {
+    if (!RENDERER_NAME.test(v.name)) continue;
+    const to = `gsw_vary_${v.name}`;
+    withoutLight = renameIdentifier(withoutLight, v.name, to);
+    v.name = to;
+  }
+  // Godot runs a missing fragment() as an empty one (COLOR stays the texture × colour).
+  if (!/void\s+fragment\s*\(\s*\)\s*\{/.test(withoutLight))
+    withoutLight = `${withoutLight}\nvoid fragment() {}\n`;
   const parsed = parseShader(withoutLight);
-  if (parsed.vertexBody !== null) {
-    throw new UnsupportedShaderError("vertex() is not supported");
+  const modes = parseRenderModes(withoutLight);
+  // GLES3 skips the model matrix under skip_vertex_transform whether or not there is a vertex().
+  const vertexStage = parsed.vertexBody !== null || modes.skipVertexTransform;
+  const vertexBody = parsed.vertexBody ?? "";
+  const vertexHelperText = vertexStage
+    ? vertexHelpers(parsed.helpers, vertexBody)
+    : "";
+  const vertexLogic = `${vertexHelperText}\n${vertexBody}`;
+  if (vertexStage) {
+    for (const [name, why] of Object.entries(VERTEX_REFUSED))
+      if (hasToken(vertexLogic, name))
+        throw new UnsupportedShaderError(`vertex(): ${why}`);
+    for (const name of parsed.screenTextureNames)
+      if (hasToken(vertexLogic, name))
+        throw new UnsupportedShaderError(
+          `vertex(): the screen texture "${name}" is not readable in vertex()`,
+        );
   }
-  if (parsed.varyings.length > 0) {
-    throw new UnsupportedShaderError("varyings are not supported");
-  }
+  const varyings: ItemShaderVarying[] = declaredVaryings.map((v) => ({
+    name: v.name,
+    type: v.type,
+    interpolation: v.interpolation,
+    ...(v.arrayLength !== undefined ? { arrayLength: v.arrayLength } : {}),
+    fromVertex: vertexStage && hasToken(vertexLogic, v.name),
+  }));
   const logic = `${parsed.helpers}\n${parsed.fragmentBody}`;
   for (const builtin of ITEM_UNSUPPORTED_BUILTINS) {
     // SCREEN_TEXTURE is a Godot 3 built-in (refused); a `hint_screen_texture` sampler may be
@@ -330,12 +554,12 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
       throw new UnsupportedShaderError(`unsupported built-in "${builtin}"`);
     }
   }
-  if (/\b(uint|uvec[234]|bvec[234])\b/.test(logic)) {
+  if (/\b(uint|uvec[234]|bvec[234])\b/.test(`${logic}\n${vertexLogic}`)) {
     throw new UnsupportedShaderError(
       "unsigned and boolean-vector types are not supported",
     );
   }
-  const { blend, lightMode } = parseRenderModes(withoutLight);
+  const { blend, lightMode, skipVertexTransform, worldVertexCoords } = modes;
 
   const declOf = (name: string) =>
     parsed.declarations.get(name) ?? {
@@ -473,19 +697,46 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
   const promote = (text: string) =>
     promoteIntLiterals(text, intNames, { arithmetic: true });
 
-  const decls: string[] = [];
-  if (hasToken(logic, "PI"))
-    decls.push("const float PI = 3.1415926535897932384626433833;");
-  if (hasToken(logic, "TAU"))
-    decls.push("const float TAU = 6.2831853071795864769252867666;");
-  if (hasToken(logic, "E"))
-    decls.push("const float E = 2.7182818284590452353602874714;");
+  // Declarations both stages share: the constants a stage's text uses, the user uniforms and
+  // samplers (GLSL ES links a uniform both stages declare as one).
+  const constants = (text: string): string[] => {
+    const out: string[] = [];
+    if (hasToken(text, "PI"))
+      out.push("const float PI = 3.1415926535897932384626433833;");
+    if (hasToken(text, "TAU"))
+      out.push("const float TAU = 6.2831853071795864769252867666;");
+    if (hasToken(text, "E"))
+      out.push("const float E = 2.7182818284590452353602874714;");
+    return out;
+  };
+  const userDecls: string[] = [];
   for (const u of uniforms) {
-    decls.push(
+    userDecls.push(
       `uniform ${u.type} ${u.name}${u.arrayLength !== undefined ? `[${u.arrayLength}]` : ""};`,
     );
   }
-  for (const s of samplers) decls.push(`uniform sampler2D ${s.name};`);
+  for (const s of samplers) userDecls.push(`uniform sampler2D ${s.name};`);
+  // Godot's TEXTURE_PIXEL_SIZE is 1 / the bound texture's size, 1x1 for the default white
+  // (rasterizer_canvas_gles3.cpp:2378-2400); the renderer's TEXTURE is the draw's texture.
+  const builtinDefines = (text: string): string[] => {
+    const out: string[] = [];
+    if (hasToken(text, "TEXTURE_PIXEL_SIZE"))
+      out.push(
+        `#define TEXTURE_PIXEL_SIZE (vec2(1.0) / vec2(textureSize(${ITEM_SHADER_PRELUDE_NAMES.texture}, 0)))`,
+      );
+    if (hasToken(text, "AT_LIGHT_PASS"))
+      out.push("#define AT_LIGHT_PASS false");
+    if (hasToken(text, "INSTANCE_CUSTOM"))
+      out.push("#define INSTANCE_CUSTOM vec4(0.0)");
+    return out;
+  };
+  const varyingDecl = (v: ItemShaderVarying, storage: "in" | "out" | null) => {
+    const precision =
+      declaredVaryings.find((d) => d.name === v.name)?.precision ?? null;
+    return `${storage !== null && v.interpolation ? `${v.interpolation} ` : ""}${storage !== null ? `${storage} ` : ""}${precision ? `${precision} ` : ""}${v.type} ${v.name}${v.arrayLength !== undefined ? `[${v.arrayLength}]` : ""};`;
+  };
+
+  const decls: string[] = [...constants(logic), ...userDecls];
   if (screenTexture) {
     const screen = ITEM_SHADER_PRELUDE_NAMES.screenTexture;
     decls.push(`uniform sampler2D ${screen};`);
@@ -498,17 +749,44 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
     decls.push(
       `#define SCREEN_UV (gl_FragCoord.xy * ${ITEM_SHADER_PRELUDE_NAMES.screenPixelSize})`,
     );
+  decls.push(...builtinDefines(logic));
+  for (const v of varyings)
+    decls.push(varyingDecl(v, v.fromVertex ? "in" : null));
+  const indentBody = (text: string) =>
+    text
+      .split("\n")
+      .map((line) => (line.trim() ? `  ${line.trim()}` : ""))
+      .filter((line) => line !== "")
+      .join("\n");
   const helpers = promote(parsed.helpers).trim();
-  const body = promote(parsed.fragmentBody)
-    .split("\n")
-    .map((line) => (line.trim() ? `  ${line.trim()}` : ""))
-    .filter((line) => line !== "")
-    .join("\n");
+  const body = indentBody(promote(parsed.fragmentBody));
   const glsl = `${decls.join("\n")}
 ${helpers ? `${helpers}\n` : ""}void ${ITEM_SHADER_PRELUDE_NAMES.entry}(inout vec4 COLOR, in vec2 UV) {
 ${body}
 }
 `;
+
+  let vertexGlsl: string | null = null;
+  if (vertexStage) {
+    const vdecls: string[] = [];
+    if (skipVertexTransform)
+      vdecls.push(`#define ${ITEM_SHADER_PRELUDE_NAMES.skipVertexTransform}`);
+    if (worldVertexCoords)
+      vdecls.push(`#define ${ITEM_SHADER_PRELUDE_NAMES.worldVertexCoords}`);
+    vdecls.push(
+      ...constants(vertexLogic),
+      ...userDecls,
+      ...builtinDefines(vertexLogic),
+    );
+    for (const v of varyings)
+      if (v.fromVertex) vdecls.push(varyingDecl(v, "out"));
+    const vhelpers = promote(vertexHelperText).trim();
+    vertexGlsl = `${vdecls.join("\n")}
+${vhelpers ? `${vhelpers}\n` : ""}void ${ITEM_SHADER_PRELUDE_NAMES.vertexEntry}(inout vec2 VERTEX, inout vec2 UV, inout vec4 COLOR, inout float POINT_SIZE, in mat4 MODEL_MATRIX, in mat4 CANVAS_MATRIX, in mat4 SCREEN_MATRIX) {
+${indentBody(promote(vertexBody))}
+}
+`;
+  }
   return {
     glsl,
     uniforms,
@@ -517,6 +795,11 @@ ${body}
     screenPixelSize,
     blend,
     lightMode,
+    vertexStage,
+    vertexGlsl,
+    skipVertexTransform,
+    worldVertexCoords,
+    varyings,
   };
 }
 

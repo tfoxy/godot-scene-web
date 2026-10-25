@@ -4,7 +4,7 @@
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g55b,g55c,g55d,g55e,g55f,g55s]
+#     [--legs g55b,g55c,g55d,g55e,g55f,g55s,g55v]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -47,7 +47,9 @@
 # itself and does not need g55c's own legs) and g55s (P3-ST, gate5_5-design.md "Screen texture
 # (P3-ST)": fixtures/gate55-screen under <out>/screen/ -- its import and the receiver's, a
 # render-stream/8 capture, the rendered reference and a repeat, rendered receivers on the full and
-# patch sinks, and the receiver sabotage screen-copy-per-reader; self-contained).
+# patch sinks, and the receiver sabotage screen-copy-per-reader; self-contained) and g55v (P3-VX,
+# gate5_5-design.md "vertex() (P3-VX)": fixtures/gate55-vertex under <out>/vertex/, the same legs as
+# g55s with the receiver sabotage vertex-flat-varyings; self-contained).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -63,6 +65,7 @@ REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 SHADER_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-shader"
 CIM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-cim"
 SCREEN_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-screen"
+VERTEX_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-vertex"
 FIXTURE_DIR="$SHADER_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
@@ -73,8 +76,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55b g55c g55d g55e g55f g55s)
-KNOWN_GROUPS=(g55b g55c g55d g55e g55f g55s)
+LANDED_GROUPS=(g55b g55c g55d g55e g55f g55s g55v)
+KNOWN_GROUPS=(g55b g55c g55d g55e g55f g55s g55v)
 
 EXTENSION=""
 CALIBRATION=""
@@ -162,7 +165,7 @@ if [ ! -x "$BINARY" ]; then
 	exit 1
 fi
 BINARY="$(realpath "$BINARY")"
-for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR" "$SCREEN_FIXTURE_DIR"; do
+for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR" "$SCREEN_FIXTURE_DIR" "$VERTEX_FIXTURE_DIR"; do
 	if [ ! -f "$project/project.godot" ]; then
 		echo "run-gate55: $project/project.godot is missing" >&2
 		exit 1
@@ -806,10 +809,57 @@ run_g55s() {
 	GS_RUN_DIR=""
 }
 
+# P3-VX (gate5_5-design.md "vertex() (P3-VX)"): fixtures/gate55-vertex under <out>/vertex/, legs as
+# g55s's: imports, a render-stream/8 capture, inside one gamescope the rendered reference and a
+# repeat, rendered receivers on the full and patch sinks, and the receiver sabotage
+# vertex-flat-varyings (every varying made `flat` before the receiver compiles the code), which
+# must differ from the reference exactly where a smooth varying varies across a primitive.
+run_g55v() {
+	local D="$OUT/vertex"
+	mkdir -p "$D/import"
+	echo "run-gate55: g55v: import"
+	LEG_ENV=()
+	run_headless "$D/import/fixture" none -- mise exec -- godot --headless --path "$VERTEX_FIXTURE_DIR" --import
+	if [ "$(cat "$D/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $VERTEX_FIXTURE_DIR failed, see $D/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	run_headless "$D/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$D/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $RECEIVER_DIR failed, see $D/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate55: g55v: capture-vertex"
+	CAPTURE_FIXTURE_DIR="$VERTEX_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_STREAM_VERSION=8)
+	run_capture "$D/capture" "" none
+
+	echo "run-gate55: bringing up private gamescope for g55v rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g55v"
+	echo "run-gate55: g55v: reference-vertex"
+	REFERENCE_FIXTURE_DIR="$VERTEX_FIXTURE_DIR"
+	run_reference "$D/reference"
+	echo "run-gate55: g55v: reference-vertex-repeat"
+	REFERENCE_FIXTURE_DIR="$VERTEX_FIXTURE_DIR"
+	run_reference "$D/reference-repeat"
+	echo "run-gate55: g55v: receiver-vertex (full sink)"
+	run_rendered_receiver "$D/capture" "$D/receiver"
+	echo "run-gate55: g55v: receiver-vertex-patch (patch sink)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$D/capture" "$D/receiver-patch"
+	echo "run-gate55: g55v: sabotage-vertex-receiver-flat-varyings (RS_RECEIVER_SABOTAGE=vertex-flat-varyings)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=vertex-flat-varyings)
+	run_rendered_receiver "$D/capture" "$D/sabotage-receiver-flat-varyings"
+	gs_teardown "$OUT/gamescope-g55v"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g55b) run_g55b ;;
 	g55s) run_g55s ;;
+	g55v) run_g55v ;;
 	g55c) run_g55c ;;
 	g55d) run_g55d ;;
 	g55e) run_g55e ;;

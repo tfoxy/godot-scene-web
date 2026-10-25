@@ -44,6 +44,9 @@ pub struct Sabotage {
     /// on each item whose own material's shader uses `screen_texture`) -- the copy taken at the
     /// wrong time; GLES3 takes one per canvas, before the first reader.
     pub screen_copy_per_reader: bool,
+    /// P3-VX: every `varying` of a shader's code made `flat` before `shader_set_code`
+    /// (`render_stream_core::apply::programs::flat_varyings`): vertex outputs not interpolated.
+    pub vertex_flat_varyings: bool,
 }
 
 impl Sabotage {
@@ -66,6 +69,7 @@ impl Sabotage {
             "stale-texture" => s.stale_texture = true,
             "ignore-canvas-stacking" => s.ignore_canvas_stacking = true,
             "screen-copy-per-reader" => s.screen_copy_per_reader = true,
+            "vertex-flat-varyings" => s.vertex_flat_varyings = true,
             _ => {}
         }
         s
@@ -2100,7 +2104,12 @@ impl Planner {
             if self.shaders[&id].hash != hash {
                 ops.op(Op::ShaderSetCode, 1);
                 ops.rid(RidRef::Shader(h));
-                ops.bytes(code.as_bytes());
+                if self.sab.vertex_flat_varyings {
+                    let flat = render_stream_core::apply::programs::flat_varyings(code);
+                    ops.bytes(flat.as_bytes());
+                } else {
+                    ops.bytes(code.as_bytes());
+                }
                 self.shaders.get_mut(&id).unwrap().hash = hash;
                 c.shader_code_sets += 1;
             }

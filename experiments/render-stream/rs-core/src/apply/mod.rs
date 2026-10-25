@@ -34,7 +34,7 @@ use crate::state::{
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
     Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
-    BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY, DRAW_SCREEN_MIPMAPS,
+    UniformValue, BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY, DRAW_SCREEN_MIPMAPS,
     DRAW_UNTEXTURED, ITEM_UNTEXTURED, SCREEN_TEXTURE, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
@@ -2030,6 +2030,29 @@ impl Applier {
         } else {
             canvas_modulate(state, key.canvas, self.sabotage.ignore_canvas_modulate)
         };
+        // P3-VX: a program with its own vertex stage applies MODEL_MATRIX and CANVAS_MATRIX
+        // apart, as GLES3 does (`model = canvas⁻¹ · final_transform`). A binding is per canvas
+        // (`BindingKey::canvas`), so it carries the canvas transform the walk composes
+        // (`viewport.global_xform · canvas.xform`) and Godot's float32 `affine_inverse` of it.
+        let mut uniforms: Vec<Uniform> = uniforms;
+        if info.vertex {
+            let canvas_xf = state
+                .canvases
+                .get(&key.canvas)
+                .map_or(self.viewport.global_xform, |c| {
+                    geom::mul(&self.viewport.global_xform, &c.xform)
+                });
+            uniforms.push(Uniform {
+                name: "gsw_canvas_matrix".into(),
+                value: UniformValue::Float(geom::to_mat4(&canvas_xf).to_vec()),
+            });
+            uniforms.push(Uniform {
+                name: "gsw_canvas_inverse".into(),
+                value: UniformValue::Float(
+                    geom::to_mat4(&geom::affine_inverse(&canvas_xf)).to_vec(),
+                ),
+            });
+        }
         Binding {
             program: info.program,
             post_modulate,
