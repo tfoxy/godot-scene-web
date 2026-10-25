@@ -23,11 +23,15 @@ import { createHash } from "node:crypto";
 import {
   createReadStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
+  renameSync,
   statSync,
+  symlinkSync,
 } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import {
@@ -639,6 +643,53 @@ export function acceptWebSocket(
       closeFns.push(fn);
     },
   };
+}
+
+/** P3-GX: point the symlink `link` at `target`, so a static root serves the bundle (or source)
+ * this run asked for. A symlink already there that resolves elsewhere is replaced (atomically: a
+ * fresh link renamed over it), and its old target returned; anything else at `link` (a real file
+ * or directory) is refused. Before, a link that existed was kept, so a reused static root (C3's
+ * leg data roots) served its first replay's bundle to every later `--bundle`, while the leg's
+ * `RS_RECEIVER_BUILD_SHA256` named the requested one. A concurrent leg creating the same link is
+ * accepted when it points at `target` too. */
+export function linkTo(target: string, link: string): string | null {
+  const want = realpathSync(target);
+  const current = (): { kind: "none" | "link" | "other"; to?: string } => {
+    let st: ReturnType<typeof lstatSync>;
+    try {
+      st = lstatSync(link);
+    } catch {
+      return { kind: "none" };
+    }
+    if (!st.isSymbolicLink()) return { kind: "other" };
+    let to: string;
+    try {
+      to = realpathSync(link);
+    } catch {
+      to = readlinkSync(link); // dangling: its target is gone
+    }
+    return { kind: "link", to };
+  };
+  const now = current();
+  if (now.kind === "other")
+    throw new Error(
+      `linkTo: ${link} exists and is not a symlink; refusing to serve it in place of ${want}`,
+    );
+  if (now.kind === "link" && now.to === want) return null;
+  if (now.kind === "none") {
+    try {
+      symlinkSync(want, link);
+      return null;
+    } catch (e) {
+      const again = current();
+      if (again.kind === "link" && again.to === want) return null;
+      throw e;
+    }
+  }
+  const tmp = `${link}.${process.pid}.${Date.now()}.tmp`;
+  symlinkSync(want, tmp);
+  renameSync(tmp, link);
+  return now.to ?? null;
 }
 
 export interface ResourceHitCounts {

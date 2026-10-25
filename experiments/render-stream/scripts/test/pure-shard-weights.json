@@ -8,6 +8,7 @@
   "golden-6": 0.2,
   "golden-7": 0.1,
   "self-test-browser-decoder": 10.6,
+  "self-test-bundle-link": 1.0,
   "self-test-checker": 3.0,
   "self-test-checker-diff-dir": 1.7,
   "self-test-device-harness": 13.6,

@@ -61,7 +61,7 @@
 //     was seen so far (exit code 143). The daemon exits when its parent (the runner) is gone.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -82,6 +82,7 @@ import {
   collectChromiumProcesses,
   HarnessServer,
   type LaunchedBrowser,
+  linkTo,
   resolvePinnedChromium,
 } from "./browser-harness";
 import {
@@ -369,11 +370,6 @@ export function mapBrowserLeg(
   };
 }
 
-function ensureLink(target: string, link: string): void {
-  if (existsSync(link)) return;
-  symlinkSync(target, link);
-}
-
 /** Reads a bundle's build.json digest: the web export's .pck sha256, or the GSW bundle's sha256. */
 export function bundleBuildSha256(
   bundleDir: string,
@@ -567,7 +563,14 @@ export function runBrowserLeg(
     await mkdir(evidenceDir, { recursive: true });
 
     const bundleName = ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle";
-    ensureLink(resolve(ctx.bundleDir), join(staticRoot, bundleName));
+    const replaced = linkTo(
+      resolve(ctx.bundleDir),
+      join(staticRoot, bundleName),
+    );
+    if (replaced)
+      console.error(
+        `browser-receiver: ${bundleName} pointed at ${replaced}; now ${resolve(ctx.bundleDir)}`,
+      );
     server = new HarnessServer({
       staticRoot,
       evidenceRoot: join(staticRoot, ".evidence"),
