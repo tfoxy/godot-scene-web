@@ -446,7 +446,28 @@ pub struct PayloadStore {
     /// query is not a touch, matching the native receiver's cache, which only re-orders on a
     /// re-provide). A browser adapter with no budget never calls [`Self::evict_unreferenced`], so
     /// this is dead weight (one `VecDeque` push per provide) until it does.
-    order: VecDeque<Hash>,
+    ///
+    /// P3-LV (results/p3/p3-lv.md): each slot carries its touch stamp, and a slot whose stamp is
+    /// no longer the hash's current one in `touched` (re-touched later, or evicted) is stale and
+    /// skipped, so a touch is O(1) instead of a scan of every held entry. At game scale the store
+    /// holds one entry per animated mesh pose ever received (hundreds of thousands), and the scan
+    /// made every provide linear in the session's length.
+    order: VecDeque<(Hash, u64)>,
+    /// P3-LV: each held hash's current touch stamp (the live slot in `order`).
+    touched: HashMap<Hash, u64, HashBuild>,
+    /// P3-LV: the last stamp handed out.
+    stamp: u64,
+    /// P3-LV: [`Self::total_bytes`], kept as entries come and go (it summed every entry).
+    bytes: u64,
+}
+
+/// P3-LV: a decoded payload's bytes as [`PayloadStore::total_bytes`] counts them.
+fn decoded_bytes(d: &Decoded) -> u64 {
+    match d {
+        Decoded::Texture(px) => px.held_bytes(),
+        Decoded::Mesh(g) => g.data_bytes(),
+        Decoded::Shader(code) => code.len() as u64,
+    }
 }
 
 impl PayloadStore {
@@ -461,6 +482,37 @@ impl PayloadStore {
         self.meshes.clear();
         self.shaders.clear();
         self.order.clear();
+        self.touched.clear();
+        self.bytes = 0;
+    }
+
+    /// P3-LV: removes `hash` from every table and from `bytes` (its slot in `order` goes stale).
+    fn remove_held(&mut self, hash: &Hash) {
+        if let Some(t) = self.textures.remove(hash) {
+            self.bytes = self.bytes.saturating_sub(t.held_bytes());
+        }
+        if let Some(m) = self.meshes.remove(hash) {
+            self.bytes = self.bytes.saturating_sub(m.data_bytes());
+        }
+        if let Some(c) = self.shaders.remove(hash) {
+            self.bytes = self.bytes.saturating_sub(c.len() as u64);
+        }
+        self.touched.remove(hash);
+    }
+
+    /// P3-LV: drops stale slots at the front, and every stale slot once they outnumber the live
+    /// ones (amortised O(1) per touch).
+    fn compact_order(&mut self) {
+        while let Some((h, st)) = self.order.front() {
+            if self.touched.get(h) == Some(st) {
+                break;
+            }
+            self.order.pop_front();
+        }
+        if self.order.len() > 2 * self.touched.len() + 64 {
+            let touched = &self.touched;
+            self.order.retain(|(h, st)| touched.get(h) == Some(st));
+        }
     }
 
     /// Verify and ingest one payload (Q14c `provide`): its SHA-256 must equal `expected` (the hash
@@ -481,10 +533,14 @@ impl PayloadStore {
     /// A payload [`verify_decode`] already checked against `hash` (G7o2: a staged payload moving
     /// into the store when its transaction is applied).
     pub fn insert(&mut self, hash: Hash, d: Decoded) {
-        if let Some(pos) = self.order.iter().position(|h| *h == hash) {
-            self.order.remove(pos);
-        }
-        self.order.push_back(hash);
+        // A re-provide replaces the held entry and moves the hash to the back (its old slot goes
+        // stale), as the scan-and-remove this replaces did.
+        self.remove_held(&hash);
+        self.stamp += 1;
+        self.touched.insert(hash, self.stamp);
+        self.order.push_back((hash, self.stamp));
+        self.bytes += decoded_bytes(&d);
+        self.compact_order();
         match d {
             Decoded::Texture(px) => {
                 self.textures.insert(hash, px);
@@ -502,13 +558,11 @@ impl PayloadStore {
     /// source) -- what a browser adapter counts toward `RS_RECEIVER_MEMORY_BUDGET_BYTES` (D29
     /// amendment: "the core's payload cache in wasm memory"; GL texture bytes are counted
     /// separately, by the adapter, since they are not in this store).
+    ///
+    /// P3-LV: kept as entries are inserted and evicted (it summed every entry on each call, once
+    /// per eviction step), so it counts what [`Self::insert`]/[`Self::provide`] put in.
     pub fn total_bytes(&self) -> u64 {
-        self.textures
-            .values()
-            .map(|t| t.held_bytes())
-            .sum::<u64>()
-            + self.meshes.values().map(|m| m.data_bytes()).sum::<u64>()
-            + self.shaders.values().map(|s| s.len() as u64).sum::<u64>()
+        self.bytes
     }
 
     /// G7k: decoded bytes of the entries in `hashes` that this store holds (each hash once).
@@ -540,19 +594,18 @@ impl PayloadStore {
     pub fn evict_unreferenced(&mut self, referenced: &HashSet<Hash>, budget_bytes: u64) -> u32 {
         let mut evicted = 0u32;
         let mut i = 0;
-        while self.total_bytes() > budget_bytes && i < self.order.len() {
-            let hash = self.order[i];
-            if referenced.contains(&hash) {
-                i += 1;
+        while self.bytes > budget_bytes && i < self.order.len() {
+            let (hash, st) = self.order[i];
+            i += 1;
+            // A stale slot (re-touched later, or already evicted), or a referenced entry, stays.
+            if self.touched.get(&hash) != Some(&st) || referenced.contains(&hash) {
                 continue;
             }
-            self.textures.remove(&hash);
-            self.meshes.remove(&hash);
-            self.shaders.remove(&hash);
-            self.order.remove(i);
+            // P3-LV: its slot goes stale in place (no shift of everything after it).
+            self.remove_held(&hash);
             evicted += 1;
-            // The entry after the removed one shifted into index `i`: do not advance.
         }
+        self.compact_order();
         evicted
     }
 }
@@ -1100,6 +1153,49 @@ mod tests {
         assert_eq!(evicted, 1);
         assert!(!store.has(&h2)); // h2, not h1, was the oldest-touched.
         assert!(store.has(&h1));
+    }
+
+    /// P3-LV: the touch order is stamped, not scanned. Re-provides leave stale slots that eviction
+    /// skips and compaction drops, so the order stays bounded by the live entries, `total_bytes`
+    /// follows every insert, re-provide and eviction, and the LRU order is the scan's.
+    #[test]
+    fn stamped_touch_order_stays_bounded_and_counts_bytes() {
+        let mut store = PayloadStore::default();
+        let hashes: Vec<Hash> = (1..=50u8).map(|n| provide_n(&mut store, n)).collect();
+        let one = store.total_bytes() / 50;
+        assert_eq!(store.total_bytes(), 50 * one);
+        // 2,000 re-provides of the same hashes: no growth in entries, bytes or the order.
+        for round in 0..40u8 {
+            for n in 1..=50u8 {
+                provide_n(&mut store, n);
+            }
+            assert_eq!(store.len(), 50, "round {round}");
+            assert_eq!(store.total_bytes(), 50 * one, "round {round}");
+            assert!(store.order.len() <= 2 * store.touched.len() + 64, "round {round}");
+        }
+        // Touch 1..=10 once more: 11..=50 are now the oldest, in provide order.
+        for n in 1..=10u8 {
+            provide_n(&mut store, n);
+        }
+        let mut referenced = HashSet::new();
+        referenced.insert(hashes[10]); // h11, the oldest, is referenced and must stay
+        let evicted = store.evict_unreferenced(&referenced, 20 * one);
+        assert_eq!(evicted, 30);
+        assert_eq!(store.total_bytes(), 20 * one);
+        assert!(store.has(&hashes[10]));
+        for h in &hashes[11..41] {
+            assert!(!store.has(h)); // h12..=h41 went, oldest first
+        }
+        for h in hashes[41..].iter().chain(&hashes[..10]) {
+            assert!(store.has(h));
+        }
+        // An evicted hash provided again is held again, at the back.
+        provide_n(&mut store, 12);
+        assert!(store.has(&hashes[11]));
+        assert_eq!(store.total_bytes(), 21 * one);
+        store.clear();
+        assert_eq!(store.total_bytes(), 0);
+        assert!(store.order.is_empty() && store.touched.is_empty());
     }
 
     /// G7k: `bytes_of` counts each named hash once, and only what the store holds.

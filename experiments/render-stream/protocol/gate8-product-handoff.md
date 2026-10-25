@@ -46,6 +46,7 @@ source does not.
 | `GRC_RESOURCE_MAX_PAYLOAD_BYTES` | raise for large atlases | per-payload ceiling (default 64 MiB) |
 | `GRC_RESOURCE_BUDGET_BYTES` | raise for the game's texture working set | host resource store budget (default 512 MiB) |
 | `GRC_LIVE_MAX_MESSAGE_BYTES`, `GRC_LIVE_MAX_CONNECTIONS` | per deployment | message ceiling (default 16 MiB); admitted connections (1..4, default 1) |
+| `GRC_RESOURCE_INLINE_MAX_BYTES` | `4096` (P3-LV) | live: a payload of at most this many bytes rides the WebSocket as a resource record ahead of the transaction instead of a GET. Every STS2 mesh surface (max 2,284 B) does, which a game with skeletal animation needs: at the default 0 every pose is a GET, and no receiver kept up in combat (see "Live at game scale") |
 | `GRC_LIVE_AUTH`, `GRC_LIVE_ALLOWED_ORIGINS` | `token`; the page origins | the hello token and the CORS/origin allowlist (gate 7) |
 | `GRC_SHADER_POLICY` | the product's choice | `source` (default) serves game shader code to the operator's own receivers only; `params` or `exclude` do not |
 
@@ -108,6 +109,38 @@ Per-receiver status, with the evidence each row cites, is in
 `gsw-canvas.json`. Read the manifest of the receiver you ship; its `entries` say `supported`,
 `typed-unsupported`, `unobserved` or `declared-unverified` for every feature, and its `limits`
 carry the formats and encodings the receiver lists.
+
+### Live at game scale (P3-LV)
+
+Measured on STS2 (menu, map, combat) with the settings above, `/8` decoded, loopback
+([../results/p3/p3-lv.md](../results/p3/p3-lv.md)):
+
+- **Set `GRC_RESOURCE_INLINE_MAX_BYTES=4096`.** Without it, combat updates reach a receiver 0.1–0.9
+  times a second and 2–5.6 s late, because every spine pose is a new payload fetched by GET at
+  about one per frame. With it, GSW follows the game at its frame rate on the menu and the map
+  (52–56 updates a second, 5–17 ms behind). In combat it follows the host's publication rate.
+- **Receiver: GSW, credit window 2** (`RS_RECEIVER_CREDIT_WINDOW=2`, the `/7`+ default). It is the
+  only receiver whose main thread keeps up with combat's ~2,000 inline records a second.
+  - The web export and the native receiver handle every record in GDScript. They manage 6–15
+    combat updates a second, though they are fine on the menu and the map.
+  - Window 2 roughly doubles the web export and the native receiver on the menu and the map
+    against window 1.
+- **Each viewer costs the seat.** The capture forms, encodes and sends a transaction per connection.
+  With 3–4 viewers the seat's combat frame rate fell from about 54 to 24–35 fps. Budget
+  `GRC_LIVE_MAX_CONNECTIONS` with that in mind, until shared publication lands (the result doc's
+  design).
+- **Memory grows with mesh churn** on both sides until the dynamic-mesh wire change (`/11` in the
+  result doc's design).
+  - The seat's per-viewer set of hashes already sent inline grows by about 2.3 GB an hour of
+    60-fps combat.
+  - A receiver's payload store grows the same way, and `RS_RECEIVER_MEMORY_BUDGET_BYTES` bounds
+    it. On GSW the budgeted store is O(1) a payload since P3-LV. The GDScript cache of the native
+    receiver and the web export still sums and sorts its entries when a budget is set, which is
+    slow at this churn.
+  - Plan session length or reconnects accordingly.
+- **A fresh subscriber's first frame takes the decoded textures' bytes**: 3.3 s for a GSW joining
+  STS2 combat at `/8`, and 1.7 s at `/9` `basis-uastc` with a cold cache. A prepared
+  `GRC_TEXTURE_CACHE_DIR` takes the encodes off the session.
 
 ## Transport (P2)
 
