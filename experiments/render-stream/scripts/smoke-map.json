@@ -298,6 +298,15 @@
       "reach": ["pure"]
     },
     {
+      "why": "P3-LV's live-scale bench (results/p3/p3-lv.md): the capture-scale fixture streamed live to one receiver, a real-time measurement run by hand, not a validate-increment target; its tap summary and verdict logic have a pure self-test",
+      "paths": [
+        "experiments/render-stream/scripts/bench-live-scale.sh",
+        "experiments/render-stream/scripts/lib/bench-live-scale.py",
+        "experiments/render-stream/scripts/test/self-test-bench-live-scale.sh"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "the legacy decoder prototype crate",
       "paths": ["experiments/render-stream/decode-proto-rs/**"],
       "reach": ["cargo:experiments/render-stream/decode-proto-rs"]
