@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   createReadStream,
+  createWriteStream,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -33,7 +34,7 @@ import {
   statSync,
   symlinkSync,
 } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -50,6 +51,7 @@ import {
   relative,
 } from "node:path";
 import type { Duplex } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -965,11 +967,31 @@ export class HarnessServer {
       res.end("rejected: path escapes leg directory");
       return;
     }
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
-    const body = Buffer.concat(chunks);
+    // P3-HX: a body too large for one request (Playwright's 512 MB pipe message) arrives as
+    // `?part=k&of=n` PUTs in order: part 0 creates the file, later parts append, and only the last
+    // part is answered (and `onPut` called) once the file is complete.
+    const partParam = url.searchParams.get("part");
+    const ofParam = url.searchParams.get("of");
+    const part = partParam === null ? 0 : Number(partParam);
+    const of = ofParam === null ? 1 : Number(ofParam);
+    if (
+      !Number.isInteger(part) ||
+      !Number.isInteger(of) ||
+      part < 0 ||
+      part >= of
+    ) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("rejected: bad part");
+      return;
+    }
     await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, body);
+    const sink = createWriteStream(target, { flags: part === 0 ? "w" : "a" });
+    await pipeline(req, sink);
+    if (part + 1 < of) {
+      res.writeHead(200);
+      res.end("ok");
+      return;
+    }
     if (this.options.onPut) {
       await this.options.onPut(nonce, target.slice(legRoot.length + 1));
     }

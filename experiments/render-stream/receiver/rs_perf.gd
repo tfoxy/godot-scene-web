@@ -136,6 +136,9 @@ var payloads: Dictionary = {}
 var _last_frame_us: int = -1
 var _start_ms: int = 0
 var _last_timeline_second: int = -1
+## P3-HX: the newest applied seq, stamped on each timeline line when RS_RECEIVER_PERF_SAMPLES=1
+## (-1 otherwise, and then the line has no `seq` key), to read RSS growth per transaction.
+var timeline_seq: int = -1
 var _timeline: Array[Dictionary] = []
 ## Set once, the first time a render-time query is attempted (Godot's own
 ## viewport_set_measure_render_time must run before the first measured frame).
@@ -224,6 +227,7 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 	if elapsed_s <= _last_timeline_second:
 		return
 	_last_timeline_second = elapsed_s
+	var seq_stamp: Dictionary = {} if timeline_seq < 0 else {"seq": timeline_seq}
 	_timeline.append({
 		"t_us": Time.get_ticks_usec(),
 		# G6c: frames drawn so far (D9's receiver frame rate counts frame_post_draw).
@@ -242,7 +246,7 @@ func sample_timeline(cache_entries_disk: int, cache_bytes_disk: int, cache_entri
 		# Declared, not guessed (D9): pipeline compilations would need a new RenderingServer/
 		# RsRustApplier accessor this increment's file list does not add.
 		"pipeline_compilations": null,
-	})
+	}.merged(seq_stamp))
 
 
 ## The full render-stream-receiver-perf/1 document. `counts` is the caller's own

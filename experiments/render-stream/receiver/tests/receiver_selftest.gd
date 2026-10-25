@@ -15,6 +15,8 @@ extends SceneTree
 ##      the zstd CLI and gzip, the same format the host's vendored zstd/zlib write) to the exact
 ##      identity bytes, and refuses a corrupted, content-size-less or unasked-for coding with
 ##      resource-invalid.
+##   5. (P3-HX) RsRowLog keeps evidence rows as bytes (equal rows, keys in order) and writes the
+##      report exactly as `JSON.stringify(report, "  ", false) + "\n"` would, rows streamed.
 ##
 ## Decoding, validation and resolution of the golden vectors are the Rust core's (rs-core's cargo
 ## tests) and the TypeScript checker decoder's (scripts/test/self-test-rs*.ts); G7gd removed the
@@ -34,6 +36,7 @@ func _init() -> void:
 	_check_scripts()
 	_check_fetcher_coding()
 	_check_folded_full()
+	_check_row_log()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
@@ -158,6 +161,61 @@ func _check_folded_full() -> void:
 	if node.get("_awaiting_full") != true:
 		_fail("a fold with no full ended the resync wait")
 	node.free()
+
+
+func _row_log_rows(count: int) -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	for index: int in count:
+		rows.append({
+			"stream": 1, "seq": index, "hash": "ab%062d" % index, "source": "directory",
+			"status": null, "bytes": 1 << 40 if index % 5 == 0 else index * 7, "start_us": 0.5 * index,
+			"verified": index % 2 == 0, "kind": "mesh", "note": "café \"q\" \\ \n\t 世",
+			"surfaces": [0, 1, index], "buffers": [], "nested": {"b": [{"x": 1}, []], "a": {}},
+		})
+	return rows
+
+
+func _row_log_json(report: Dictionary) -> String:
+	var path: String = "user://receiver_selftest_row_log.json"
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	RsRowLog.write_report_json(file, report)
+	file.close()
+	return FileAccess.get_file_as_string(path)
+
+
+func _check_row_log() -> void:
+	var rows: Array[Dictionary] = _row_log_rows(300)
+	var log: RsRowLog = RsRowLog.new()
+	for row: Dictionary in rows:
+		log.append(row)
+	_checked += 1
+	if log.size() != 300:
+		_fail("the row log holds %d rows, expected 300" % log.size())
+	for index: int in rows.size():
+		if JSON.stringify(log.at(index), "  ", false) != JSON.stringify(rows[index], "  ", false) or log.at(index).keys() != rows[index].keys():
+			_fail("row %d does not decode to the row appended" % index)
+			break
+	var cases: Dictionary = {
+		"populated": {"schema": "x/7", "empty_arr": [], "empty_obj": {}, "none": null, "tx": rows.slice(0, 3),
+			"fetches": rows, "uploads": [], "f": 1.25, "nested": {"a": [1, 2, {"b": "c"}]}},
+		"null log": {"schema": "x", "fetches": null, "uploads": []},
+		"one row": {"fetches": rows.slice(0, 1)},
+		"empty": {},
+	}
+	for name: String in cases:
+		var report: Dictionary = cases[name]
+		var logged: Dictionary = report.duplicate()
+		for key: String in ["fetches", "uploads"]:
+			if logged.has(key) and logged[key] is Array:
+				var made: RsRowLog = RsRowLog.new()
+				var list: Array = logged[key]
+				for value: Variant in list:
+					var row: Dictionary = value
+					made.append(row)
+				logged[key] = made
+		_checked += 1
+		if _row_log_json(logged) != JSON.stringify(report, "  ", false) + "\n":
+			_fail("the streamed report differs from JSON.stringify's (%s)" % name)
 
 
 func _check_scripts() -> void:

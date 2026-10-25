@@ -17,13 +17,133 @@ import type { FetchEntry } from "./source";
 
 export const APPLIED_SCHEMA = "render-stream-receiver-applied/7";
 
+/** P3-HX: a PUT body larger than this is sent as several `?part=k&of=n` PUTs. Chromium reports a
+ * request body to the automation client whole, so one 367 MB applied.json at STS2 scale overran
+ * Playwright's 512 MB pipe-message limit (`ERR_STRING_TOO_LONG`); the harness server appends the
+ * parts byte for byte and answers the last one (the one a held-PUT screenshot waits on) after the
+ * file is complete. */
+export const PUT_PART_BYTES = 8 * 1024 * 1024;
+
 export async function put(
   cfg: ReceiverConfig,
   rel: string,
-  body: BodyInit,
+  body: BodyInit | string[],
 ): Promise<void> {
-  const res = await fetch(`${cfg.evidenceUrl}/${rel}`, { method: "PUT", body });
-  if (!res.ok) throw new Error(`PUT ${rel}: HTTP ${res.status}`);
+  const send = async (url: string, b: BodyInit): Promise<void> => {
+    const res = await fetch(url, { method: "PUT", body: b });
+    if (!res.ok) throw new Error(`PUT ${rel}: HTTP ${res.status}`);
+  };
+  const url = `${cfg.evidenceUrl}/${rel}`;
+  if (typeof body === "string" && body.length <= PUT_PART_BYTES / 4)
+    return send(url, body);
+  if (
+    (body instanceof Blob && body.size <= PUT_PART_BYTES) ||
+    (body instanceof Uint8Array && body.length <= PUT_PART_BYTES)
+  )
+    return send(url, body as BodyInit);
+  // Large body: cut it into byte parts. Strings and string lists are UTF-8 encoded piecewise (a
+  // part boundary may fall anywhere: the server concatenates raw bytes).
+  const parts: Blob[] = [];
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  const flush = (): void => {
+    if (pendingBytes === 0) return;
+    parts.push(new Blob(pending as BlobPart[]));
+    pending = [];
+    pendingBytes = 0;
+  };
+  const enc = new TextEncoder();
+  const addBytes = (b: Uint8Array): void => {
+    for (let o = 0; o < b.length; o += PUT_PART_BYTES) {
+      const piece = b.subarray(o, Math.min(b.length, o + PUT_PART_BYTES));
+      pending.push(piece);
+      pendingBytes += piece.length;
+      if (pendingBytes >= PUT_PART_BYTES) flush();
+    }
+  };
+  const addString = (str: string): void => {
+    // 1M-char slices (never splitting a surrogate pair) bound the encoder's output.
+    const step = 1 << 20;
+    for (let o = 0; o < str.length; ) {
+      let end = Math.min(str.length, o + step);
+      if (end < str.length) {
+        const c = str.charCodeAt(end - 1);
+        if (c >= 0xd800 && c <= 0xdbff) end++;
+      }
+      addBytes(enc.encode(str.slice(o, end)));
+      o = end;
+    }
+  };
+  if (Array.isArray(body)) for (const s of body) addString(s);
+  else if (typeof body === "string") addString(body);
+  else if (body instanceof Uint8Array) addBytes(body);
+  else if (body instanceof Blob) {
+    for (let o = 0; o < body.size; o += PUT_PART_BYTES)
+      parts.push(body.slice(o, o + PUT_PART_BYTES));
+  } else throw new Error(`PUT ${rel}: unsupported large body`);
+  flush();
+  if (parts.length === 0) parts.push(new Blob([]));
+  for (let k = 0; k < parts.length; k++)
+    await send(`${url}?part=${k}&of=${parts.length}`, parts[k]);
+}
+
+/** `JSON.stringify(value, null, 2)` as string pieces whose concatenation is byte-equal to it,
+ * built without ever holding the whole text as one string (V8 caps a string at 2^29-24 chars;
+ * the STS2-scale applied.json is 367 MB). Arrays and objects with at least `minEntries` entries
+ * are split per entry; anything smaller is stringified whole. */
+export function prettyJsonParts(value: unknown, minEntries = 64): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown, pad: string): void => {
+    const inner = `${pad}  `;
+    if (Array.isArray(v) && v.length >= minEntries) {
+      out.push("[\n");
+      v.forEach((e, i) => {
+        out.push(inner);
+        const skip =
+          e === undefined || typeof e === "function" || typeof e === "symbol";
+        walk(skip ? null : e, inner);
+        out.push(i + 1 < v.length ? ",\n" : "\n");
+      });
+      out.push(`${pad}]`);
+      return;
+    }
+    if (
+      v !== null &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      typeof (v as { toJSON?: unknown }).toJSON !== "function"
+    ) {
+      const entries = Object.entries(v as Record<string, unknown>).filter(
+        ([, x]) =>
+          x !== undefined && typeof x !== "function" && typeof x !== "symbol",
+      );
+      if (entries.length >= minEntries || entries.some(([, x]) => isBig(x))) {
+        out.push("{\n");
+        entries.forEach(([k, x], i) => {
+          out.push(`${inner}${JSON.stringify(k)}: `);
+          walk(x, inner);
+          out.push(i + 1 < entries.length ? ",\n" : "\n");
+        });
+        out.push(`${pad}}`);
+        return;
+      }
+    }
+    // JSON text never holds a raw newline inside a string, so re-indenting by line is exact.
+    out.push((JSON.stringify(v, null, 2) ?? "null").replace(/\n/g, `\n${pad}`));
+  };
+  const isBig = (x: unknown, depth = 0): boolean => {
+    if (Array.isArray(x)) return x.length >= minEntries;
+    if (
+      x === null ||
+      typeof x !== "object" ||
+      depth >= 3 ||
+      typeof (x as { toJSON?: unknown }).toJSON === "function"
+    )
+      return false;
+    return Object.values(x).some((y) => isBig(y, depth + 1));
+  };
+  walk(value, "");
+  return out;
 }
 
 // ------------------------------------------------------------------------------------------ PNG

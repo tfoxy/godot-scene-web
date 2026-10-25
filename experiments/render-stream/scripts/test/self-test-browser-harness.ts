@@ -477,6 +477,77 @@ async function main(): Promise<void> {
     detail: `allowed-nonce PUT -> ${goodPutRes}`,
   });
 
+  // P3-HX: a body PUT as `?part=k&of=n` pieces lands as their byte concatenation (a multi-byte
+  // character cut between parts included), and a part sequence that is out of range is refused.
+  const partsText = "\u00e9\u4e16\u754c-part-body-\ud83d\ude00";
+  const partsRes = await page.evaluate(
+    async ({ base, text }) => {
+      const bytes = new TextEncoder().encode(text);
+      const cuts = [0, 1, 4, bytes.length];
+      const statuses: number[] = [];
+      for (let k = 0; k + 1 < cuts.length; k++) {
+        const r = await fetch(`${base}?part=${k}&of=${cuts.length - 1}`, {
+          method: "PUT",
+          body: bytes.slice(cuts[k], cuts[k + 1]),
+        });
+        statuses.push(r.status);
+      }
+      const bad = await fetch(`${base}?part=3&of=3`, {
+        method: "PUT",
+        body: "x",
+      });
+      return { statuses, bad: bad.status };
+    },
+    { base: `${pageOrigin}/evidence/selftest/parts.bin`, text: partsText },
+  );
+  const {
+    readFileSync: readFileSyncParts,
+    statSync: statSyncParts,
+    rmSync: rmSyncParts,
+  } = await import("node:fs");
+  const partsBack = readFileSyncParts(
+    join(evidenceDir, "selftest", "parts.bin"),
+    "utf8",
+  );
+  checks.push({
+    id: "evidence-put-parts-assembled",
+    ok:
+      partsBack === partsText &&
+      partsRes.statuses.every((c) => c === 200) &&
+      partsRes.bad === 400,
+    detail: `parts -> ${partsRes.statuses.join(",")}, bad part -> ${partsRes.bad}, bytes equal: ${partsBack === partsText}`,
+  });
+
+  // P3-HX: 640 MB in 8 MB parts (more than Playwright's 512 MB pipe message, which one such PUT
+  // overran with ERR_STRING_TOO_LONG at STS2 scale) completes and leaves 640 MB on disk.
+  const hugeParts = 80;
+  const hugeStatuses = await page.evaluate(
+    async ({ base, n }) => {
+      const piece = new Uint8Array(8 * 1024 * 1024).fill(0x41);
+      const codes: number[] = [];
+      for (let k = 0; k < n; k++) {
+        const r = await fetch(`${base}?part=${k}&of=${n}`, {
+          method: "PUT",
+          body: piece,
+        });
+        codes.push(r.status);
+      }
+      return codes;
+    },
+    { base: `${pageOrigin}/evidence/selftest/huge.bin`, n: hugeParts },
+  );
+  const hugePath = join(evidenceDir, "selftest", "huge.bin");
+  const hugeBytes = statSyncParts(hugePath).size;
+  rmSyncParts(hugePath);
+  checks.push({
+    id: "evidence-put-640mb-in-parts",
+    ok:
+      hugeStatuses.length === hugeParts &&
+      hugeStatuses.every((c) => c === 200) &&
+      hugeBytes === hugeParts * 8 * 1024 * 1024,
+    detail: `${hugeStatuses.length} parts, ${hugeBytes} bytes on disk`,
+  });
+
   // Sabotage: --use-angle=swiftshader must make browser-provenance refuse. Under the CI-only
   // lavapipe allowance (R3, lib/browser-renderer.ts) the same SwiftShader browser is judged by the
   // lavapipe rule, which refuses it as an undeclared renderer; locally it is the NVIDIA default.
