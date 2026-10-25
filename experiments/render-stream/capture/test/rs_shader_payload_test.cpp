@@ -89,7 +89,13 @@ void test_scan_screen_texture() {
   const grc::rs::ShaderScan scan = grc::rs::scan_shader_code(
       "shader_type canvas_item;\nuniform sampler2D screen : hint_screen_texture;\n"
       "void fragment() { COLOR = texture(screen, UV); }\n");
-  check(scan.reason == "shader-screen-texture", "hint_screen_texture scans as shader-screen-texture");
+  // P3-ST (gate5_5-design.md D11 as amended): supported, listed in uses only.
+  check(scan.reason.empty(), "hint_screen_texture alone is not a reason");
+  check(scan.uses.size() == 1 && scan.uses[0] == "screen_texture", "uses lists screen_texture");
+  const grc::rs::ShaderScan both = grc::rs::scan_shader_code(
+      "shader_type canvas_item;\nuniform sampler2D screen : hint_screen_texture;\n"
+      "void fragment() { COLOR = texture(screen, UV) * sin(TIME); }\n");
+  check(both.reason == "shader-time", "TIME still refuses a screen-texture shader");
 }
 
 void test_scan_sdf() {

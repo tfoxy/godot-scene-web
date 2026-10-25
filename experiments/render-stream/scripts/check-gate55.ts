@@ -36,18 +36,27 @@ import {
 import { runGate55d } from "./lib/gate55d-checks";
 import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
 import { runGate55f } from "./lib/gate55f-checks";
+import { runGate55s } from "./lib/gate55s-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
 
 /** Every group of protocol/gate5_5-design.md "Increments", and those whose increment landed. */
-export const ALL_GROUPS = ["g55b", "g55c", "g55d", "g55e", "g55f"] as const;
+export const ALL_GROUPS = [
+  "g55b",
+  "g55c",
+  "g55d",
+  "g55e",
+  "g55f",
+  "g55s",
+] as const;
 export const LANDED_GROUPS: readonly string[] = [
   "g55b",
   "g55c",
   "g55d",
   "g55e",
   "g55f",
+  "g55s",
 ];
 
 export interface Gate55Report {
@@ -191,6 +200,14 @@ async function main(): Promise<void> {
     const r = await runGate55f(out, expected);
     report.checks.push(...r.checks);
     Object.assign(report.legs, r.legs);
+  }
+  if (run.includes("g55s")) {
+    // P3-ST: fixtures/gate55-screen under <out>/screen/ (self-contained: no expected.json; the
+    // hand model is in lib/gate55s-checks.ts).
+    const r = await runGate55s(out);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.materials["gate55-screen"] = { pixels: r.pixels };
   }
   for (const group of report.groups.not_run)
     report.checks.push({

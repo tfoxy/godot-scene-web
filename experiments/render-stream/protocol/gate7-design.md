@@ -126,7 +126,8 @@ phones (D24), or a phone on a real network: each phone reaches the desktop host 
 feedback stays `unavailable` under headless Chromium (D13), and on the phones too, where only the
 compositor's activation rate is available (Q13a). Payload, atlas
 or parameter deltas are not added. GSW gets no `TIME` and no screen-texture shaders (MSDF text was
-excluded too until G7tm drew it, 2026-10-16).
+excluded too until G7tm drew it, 2026-10-16; screen-texture shaders until P3-ST, 2026-10-25,
+gate5_5-design.md "Screen texture (P3-ST)").
 All of these are typed or deferred, with owners, in "Deferred".
 
 ## Decisions

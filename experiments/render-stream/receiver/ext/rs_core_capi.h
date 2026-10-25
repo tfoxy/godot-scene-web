@@ -150,7 +150,8 @@ enum Op : uint32_t {
   AddSetTransform = 63,
   AddClipIgnore = 64,
   AddMesh = 65,
-  OP_COUNT = 66,
+  ItemSetCopyToBackbuffer = 66,
+  OP_COUNT = 67,
 };
 
 // vt.rs tags.

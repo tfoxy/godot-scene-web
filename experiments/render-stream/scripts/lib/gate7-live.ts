@@ -98,8 +98,10 @@ export const GATE7L_GATES: readonly LiveGateDef[] = [
     group: "g7-55",
     checker: "check-gate55.ts",
     runner: "run-gate55.sh",
-    runnerLegs: "g55f",
-    liveGroups: ["g55f"],
+    // P3-ST: g55s's screen-texture receivers are file legs on a /8 capture, which lib/legs.sh's
+    // gate7_browser_leg routes to the browser in the same run.
+    runnerLegs: "g55f,g55s",
+    liveGroups: ["g55f", "g55s"],
   },
   // G8g: gate 8's live legs (g8l): one host per fixture at render-stream/8 under its gate 8
   // policy (late arm and adoption where the fixture has one), its live receiver, the same
@@ -902,7 +904,8 @@ export async function checkGateLive(
         sub = readdirSync(join(runDir, entry));
     } catch {}
     for (const e of sub)
-      if (existsSync(join(runDir, entry, e, "host"))) legRoots.push(`${entry}/${e}`);
+      if (existsSync(join(runDir, entry, e, "host")))
+        legRoots.push(`${entry}/${e}`);
   }
   for (const entry of legRoots) {
     const path = join(runDir, entry, "host", "evidence", "live-token");

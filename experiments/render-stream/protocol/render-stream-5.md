@@ -179,7 +179,10 @@ patch transactions only (ascending, no duplicates). A shader entry:
   shader entry; `status` is only `"ok"`/`"unsupported"`, never `"freed"`.
 - `reason` is non-null exactly for `status: "unsupported"` (`shader-entry`). Shader reasons:
   `shader-mode`, `shader-screen-texture`, `shader-sdf`, `shader-time`, `shader-global-uniform`,
-  `shader-excluded`, `payload-too-large`, `payload-unavailable` (gate5_5-design.md D11, D4).
+  `shader-excluded`, `payload-too-large`, `payload-unavailable` (gate5_5-design.md D11, D4). P3-ST
+  (2026-10-25): the capture no longer produces `shader-screen-texture` (a `hint_screen_texture`
+  shader is `ok`, `uses` naming `screen_texture`); the reason stays valid on the wire
+  (gate5_5-design.md "Screen texture (P3-ST)").
 - `version` starts at 1 and increments by 1 on every accepted mutating call to that shader; it
   never decreases and is monotonic per id across the whole stream (`shader-version`, mirroring
   `texture-version`/`mesh-version`, but with no `"freed"` exception: at an equal version the entry

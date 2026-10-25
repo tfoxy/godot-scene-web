@@ -109,7 +109,7 @@ const RECORDINGS: [&str; 6] = [
     "snap.rs6",
 ];
 
-const SABOTAGES: [&str; 16] = [
+const SABOTAGES: [&str; 17] = [
     "",
     "reupload",
     "ignore-clip",
@@ -126,6 +126,7 @@ const SABOTAGES: [&str; 16] = [
     "stale-param",
     "stale-texture",
     "ignore-canvas-stacking",
+    "screen-copy-per-reader",
 ];
 
 #[test]
@@ -161,9 +162,14 @@ fn sabotages_change_the_calls() {
     assert_eq!(inert, EXPECTED_INERT);
 }
 
-/// golden-6 has no clipping item, no in-place mesh payload change and no CanvasTexture: these
-/// three have nothing to act on there (the gate legs exercise them).
-const EXPECTED_INERT: &[&str] = &["ignore-clip", "stale-mesh", "refuse-canvas-texture"];
+/// golden-6 has no clipping item, no in-place mesh payload change, no CanvasTexture and no
+/// screen-reading shader: these four have nothing to act on there (the gate legs exercise them).
+const EXPECTED_INERT: &[&str] = &[
+    "ignore-clip",
+    "stale-mesh",
+    "refuse-canvas-texture",
+    "screen-copy-per-reader",
+];
 
 #[test]
 fn golden_7_applies_as_golden_6() {
@@ -245,7 +251,7 @@ fn the_session_is_at_the_streams_version() {
 #[test]
 fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
-    assert_eq!(rs_core_capi::ops::OP_COUNT, 66);
+    assert_eq!(rs_core_capi::ops::OP_COUNT, 67);
 }
 
 /// G7o2 (D31): a deferred-digest session answers every record without its sha256, and

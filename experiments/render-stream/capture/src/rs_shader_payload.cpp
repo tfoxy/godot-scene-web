@@ -121,11 +121,11 @@ ShaderScan scan_shader_code(const std::string &code) {
     scan.uses.push_back("time");
   }
   scan.mode = mode;
-  // D11's precedence order.
+  // D11's precedence order. P3-ST (gate5_5-design.md D11 "As amended"): `hint_screen_texture` is
+  // no longer a reason -- receivers mirror GLES3's back-buffer copies -- so it stays in `uses`
+  // only; `shader-screen-texture` remains wire vocabulary that this capture no longer produces.
   if (time_used) {
     scan.reason = "shader-time";
-  } else if (screen_texture_used) {
-    scan.reason = "shader-screen-texture";
   } else if (sdf_used) {
     scan.reason = "shader-sdf";
   } else if (global_uniform_used) {

@@ -29,12 +29,13 @@ pub mod residency;
 use crate::prof;
 use crate::state::{
     BlendMode, Canvas, EntryStatus, Filter, Hash, Id, Item, LightMode, Param, Repeat,
-    ResolvedState, ShaderSource, TextureKind, TxDelta,
+    ResolvedState, ShaderSource, ShaderUse, TextureKind, TxDelta,
 };
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
     Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
-    BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_UNTEXTURED, ITEM_UNTEXTURED, WHITE_TEXTURE,
+    BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY, DRAW_SCREEN_MIPMAPS,
+    DRAW_UNTEXTURED, ITEM_UNTEXTURED, SCREEN_TEXTURE, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
 use payloads::{MeshGeometry, PayloadStore, TexturePixels};
@@ -90,6 +91,9 @@ pub struct ApplySabotage {
     /// GSW-only `blend-swap` (G7s): every effective `add` blend draws `sub` and every `sub` draws
     /// `add`.
     pub blend_swap: bool,
+    /// Native `screen-copy-per-reader` (P3-ST): a back-buffer copy before every screen-reading
+    /// item, where GLES3 takes one per canvas before the first.
+    pub screen_copy_per_reader: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -295,6 +299,13 @@ struct MaterialEff {
     light_only: bool,
     /// A custom shader drawn as an item-space program: (material, code hash).
     program: Option<(Id, Hash)>,
+    /// P3-ST: that program reads the screen (`Some(mipmaps)`, mipmaps being GLES3's
+    /// `uses_screen_texture_mipmaps`): the applier marks GLES3's copy points.
+    screen: Option<bool>,
+    /// P3-ST (gate5_5-design.md "Refused materials"): the effective material reads the screen but
+    /// is not drawn with its code (refused on the wire or here): the item's own draws are dropped,
+    /// since a screen reader drawn plain covers what it would have read.
+    skip: bool,
 }
 
 const NO_MATERIAL: MaterialEff = MaterialEff {
@@ -302,7 +313,17 @@ const NO_MATERIAL: MaterialEff = MaterialEff {
     unshaded: false,
     light_only: false,
     program: None,
+    screen: None,
+    skip: false,
 };
+
+/// [`NO_MATERIAL`], or a dropped item when the refused material reads the screen.
+const fn refused(reads_screen: bool) -> MaterialEff {
+    MaterialEff {
+        skip: reads_screen,
+        ..NO_MATERIAL
+    }
+}
 
 /// The texture sizes a lowering read (id, drawable size and mipmaps).
 type TexSizes = Vec<(Id, Option<(u32, u32, bool)>)>;
@@ -334,6 +355,8 @@ struct ItemRec {
     unshaded: bool,
     /// Drawn with an item-space program: the canvas modulate is the binding's, not the row's.
     program_bound: bool,
+    /// P3-ST: the last walk's [`MaterialEff::screen`].
+    screen: Option<bool>,
     /// `clip-before-clear` sabotage: the clip the native receiver last sent, and the one in effect.
     clip_shadow: bool,
     clip_eff: bool,
@@ -1539,6 +1562,7 @@ impl Applier {
                     canvas: 0,
                     unshaded: false,
                     program_bound: false,
+                    screen: None,
                     clip_shadow: it.clip,
                     clip_eff: it.clip,
                     scissor: None,
@@ -1950,7 +1974,7 @@ impl Applier {
         let shader = material
             .and_then(|m| m.shader)
             .and_then(|s| state.shaders.get(&s));
-        let samplers = info
+        let samplers: Vec<SamplerUniform> = info
             .samplers
             .iter()
             .map(|s| {
@@ -1992,6 +2016,15 @@ impl Applier {
                 }
             })
             .collect();
+        // P3-ST: the screen texture, which the module declares as SCREEN_TEXTURE.
+        let mut samplers: Vec<SamplerUniform> = samplers;
+        if info.screen.is_some() {
+            samplers.push(SamplerUniform {
+                name: "SCREEN_TEXTURE".into(),
+                texture: SCREEN_TEXTURE,
+                sampler: 0,
+            });
+        }
         let post_modulate = if info.light == LightMode::Unshaded {
             WHITE
         } else {
@@ -2118,6 +2151,7 @@ impl Applier {
             blend,
             unshaded,
             light_only,
+            skip,
             ..
         } = eff;
         let canvas = cv.id;
@@ -2164,6 +2198,7 @@ impl Applier {
             rec.canvas = canvas;
             rec.unshaded = unshaded;
             rec.program_bound = eff.program.is_some();
+            rec.screen = eff.screen;
             rec.canvas_modulate = if unshaded || rec.program_bound {
                 WHITE
             } else {
@@ -2200,7 +2235,7 @@ impl Applier {
                 self.list.dirty.items.add(r, r + 1);
                 self.stats.rows_written += 1;
             }
-            if !rec.lowered.draws.is_empty() && !light_only && rec.on_screen {
+            if !rec.lowered.draws.is_empty() && !light_only && !skip && rec.on_screen {
                 let scissor =
                     own_clip.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]);
                 let order = self.attach.len() as u32;
@@ -2269,19 +2304,18 @@ impl Applier {
         let Some(m) = state.materials.get(&mid) else {
             return NO_MATERIAL;
         };
+        let shader = m.shader.and_then(|sid| state.shaders.get(&sid));
+        let reads_screen = shader.is_some_and(|s| s.uses.contains(&ShaderUse::ScreenTexture));
         if m.status != EntryStatus::Ok {
             self.note(ApplyShortcut::MaterialUnsupportedDefault.as_str(), 1);
-            return NO_MATERIAL;
+            return refused(reads_screen);
         }
-        let Some(sid) = m.shader else {
-            return NO_MATERIAL;
-        };
-        let Some(s) = state.shaders.get(&sid) else {
+        let Some(s) = shader else {
             return NO_MATERIAL;
         };
         if s.status != EntryStatus::Ok {
             self.note(ApplyShortcut::MaterialUnsupportedDefault.as_str(), 1);
-            return NO_MATERIAL;
+            return refused(reads_screen);
         }
         let blend_of = |b: BlendMode| match b {
             BlendMode::Mix => Blend::Mix,
@@ -2297,6 +2331,8 @@ impl Applier {
                 unshaded: b.light_mode == LightMode::Unshaded,
                 light_only: b.light_mode == LightMode::LightOnly,
                 program: None,
+                screen: None,
+                skip: false,
             };
         }
         // G7s: a custom shader draws as its item-space program; a refused one (transpile,
@@ -2309,11 +2345,14 @@ impl Applier {
                 unshaded: info.light == LightMode::Unshaded,
                 light_only: info.light == LightMode::LightOnly,
                 program: Some((mid, hash)),
+                // The wire's `uses` decides whether GLES3 copies here; the code says if with mips.
+                screen: reads_screen.then(|| info.screen.unwrap_or(false)),
+                skip: false,
             },
-            Some((_, ProgramEntry::Refused { .. })) => NO_MATERIAL,
+            Some((_, ProgramEntry::Refused { .. })) => refused(reads_screen),
             None => {
                 self.note(ApplyShortcut::ShaderBuiltin.as_str(), 1);
-                NO_MATERIAL
+                refused(reads_screen)
             }
         }
     }
@@ -2363,12 +2402,33 @@ impl Applier {
         // canvas-texture diffuse, filter and repeat, and whether what it draws is resident.
         type TexFacts = (Option<(Id, Filter, Repeat)>, bool);
         let mut memo: Option<(Id, TexFacts)> = None;
+        // P3-ST: GLES3's back-buffer bookkeeping, reset per canvas (one `canvas_render_items`
+        // call each, rasterizer_canvas_gles3.cpp:397-540): a screen reader copies when no copy was
+        // taken since the canvas began (with mips when it reads them), and builds the mip chain of
+        // the cached copy when it reads mips the copy lacks. `pending` carries flags whose reader
+        // drew nothing here to the next draw.
+        let mut screen_canvas: Option<Id> = None;
+        let (mut copied, mut mips_built) = (false, false);
+        let mut pending = 0u32;
         for a in &self.attach {
             // Every attached item has its record (and so its state entry: a removal re-walks).
             let Some(rec) = self.items.get(&a.item) else {
                 continue;
             };
             attached += 1;
+            if screen_canvas != Some(rec.canvas) {
+                screen_canvas = Some(rec.canvas);
+                (copied, mips_built) = (false, false);
+            }
+            if let (true, Some(mips)) = (a.program != BUILTIN_PROGRAM, rec.screen) {
+                if !copied || self.sabotage.screen_copy_per_reader {
+                    pending |= DRAW_SCREEN_COPY | if mips { DRAW_SCREEN_MIPMAPS } else { 0 };
+                    (copied, mips_built) = (true, mips);
+                } else if mips && !mips_built {
+                    pending |= DRAW_SCREEN_MIPMAPS;
+                    mips_built = true;
+                }
+            }
             let (item_filter, item_repeat) = (a.filter, a.repeat);
             // G7o4: an untextured item's draws through the builtin program ignore the texture.
             let untextured = if a.program == BUILTIN_PROGRAM && row_flags(&rec.lowered) != 0 {
@@ -2453,7 +2513,8 @@ impl Applier {
                     scissor: scissor.unwrap_or([0; 4]),
                     flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 }
                         | if msdf.is_some() { DRAW_MSDF } else { 0 }
-                        | untextured,
+                        | untextured
+                        | std::mem::take(&mut pending),
                     msdf: msdf.unwrap_or([0.0; 2]),
                 });
             }

@@ -197,6 +197,8 @@ opcodes! {
     AddClipIgnore = 64,
     // item, rid mesh, xform6, color4, rid tex
     AddMesh = 65,
+    // item, bool, rect4 (P3-ST: only the `screen-copy-per-reader` receiver sabotage emits it)
+    ItemSetCopyToBackbuffer = 66,
 }
 
 /// The planner's output for one call: the op words and the arena their byte operands point into.

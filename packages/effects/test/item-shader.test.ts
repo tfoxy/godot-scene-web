@@ -208,6 +208,41 @@ describe("transpileGodotItemShader (item-space module)", () => {
     expect(t.glsl).not.toContain("LIGHT");
   });
 
+  it("reads the screen through one SCREEN_TEXTURE and gl_FragCoord-based SCREEN_UV", () => {
+    const t = transpileGodotItemShader(
+      "shader_type canvas_item;\nuniform float lod = 5.0;\nuniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;\nvoid fragment() { COLOR = texture(screen_tex, SCREEN_UV, lod); }",
+    );
+    expect(t.screenTexture).toEqual({ names: ["screen_tex"], mipmaps: true });
+    expect(t.screenPixelSize).toBe(true);
+    expect(t.samplers).toEqual([]);
+    expect(t.glsl).toContain("uniform sampler2D SCREEN_TEXTURE;");
+    expect(t.glsl).toContain("#define screen_tex SCREEN_TEXTURE");
+    expect(t.glsl).toContain("uniform vec2 SCREEN_PIXEL_SIZE;");
+    expect(t.glsl).toContain(
+      "#define SCREEN_UV (gl_FragCoord.xy * SCREEN_PIXEL_SIZE)",
+    );
+    // Named SCREEN_TEXTURE itself, nearest (GLES3 ignores the filter, so no mipmaps): no alias.
+    const n = transpileGodotItemShader(
+      "shader_type canvas_item;\nuniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_nearest;\nvoid fragment() { COLOR = texture(SCREEN_TEXTURE, SCREEN_UV); }",
+    );
+    expect(n.screenTexture).toEqual({
+      names: ["SCREEN_TEXTURE"],
+      mipmaps: false,
+    });
+    expect(n.glsl).not.toContain("#define SCREEN_TEXTURE");
+    // A mipmap filter on a screen sampler the code never reads asks for no mip chain.
+    const unused = transpileGodotItemShader(
+      "shader_type canvas_item;\nuniform sampler2D s : hint_screen_texture, filter_linear_mipmap;\nvoid fragment() { COLOR = vec4(SCREEN_PIXEL_SIZE, 0.0, 1.0); }",
+    );
+    expect(unused.screenTexture).toEqual({ names: ["s"], mipmaps: false });
+    expect(unused.glsl).not.toContain("#define SCREEN_UV");
+    const plain = transpileGodotItemShader(
+      "shader_type canvas_item;\nvoid fragment() { COLOR.a = 1.0; }",
+    );
+    expect(plain.screenTexture).toBeNull();
+    expect(plain.screenPixelSize).toBe(false);
+  });
+
   it("refuses what an item draw cannot execute exactly, naming it", () => {
     const refused: [string, RegExp][] = [
       [
@@ -215,8 +250,8 @@ describe("transpileGodotItemShader (item-space module)", () => {
         /TIME/,
       ],
       [
-        "shader_type canvas_item;\nuniform sampler2D screen_tex : hint_screen_texture, filter_nearest;\nvoid fragment() { COLOR = texture(screen_tex, SCREEN_UV); }",
-        /hint_screen_texture/,
+        "shader_type canvas_item;\nuniform sampler2D screen_tex : hint_screen_texture, hint_default_black;\nvoid fragment() { COLOR = texture(screen_tex, SCREEN_UV); }",
+        /hint_default_black/,
       ],
       [
         "shader_type canvas_item;\nvoid fragment() { COLOR = vec4(0.4, 0.2, 0.8 - 0.0 * step(0.0, texture_sdf(vec2(0.0))), 1.0); }",

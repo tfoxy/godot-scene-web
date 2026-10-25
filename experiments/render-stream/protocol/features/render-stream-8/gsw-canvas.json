@@ -566,8 +566,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "post-gate-6 capabilities: screen texture (unscheduled)",
-      "notes": "hooked slot; no committed gate 6 fixture reads the backbuffer, so the hook never fires."
+      "owner": "P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md \"Screen texture (P3-ST)\")",
+      "notes": "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
     },
     {
       "id": "canvas_item_set_light_mask",

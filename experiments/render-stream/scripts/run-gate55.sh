@@ -4,7 +4,7 @@
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g55b,g55c,g55d,g55e]
+#     [--legs g55b,g55c,g55d,g55e,g55f,g55s]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -44,7 +44,10 @@
 # live-shader-warm (a new host + a new rendered receiver on live-shader's cache),
 # live-shader-stall (RS_RECEIVER_STALL=1:2000, step 1) and sabotage-shader-stale-coalesce (the
 # same stall, host GRC_SABOTAGE=stale-coalesce from step 1's frame); g55f imports both projects
-# itself and does not need g55c's own legs).
+# itself and does not need g55c's own legs) and g55s (P3-ST, gate5_5-design.md "Screen texture
+# (P3-ST)": fixtures/gate55-screen under <out>/screen/ -- its import and the receiver's, a
+# render-stream/8 capture, the rendered reference and a repeat, rendered receivers on the full and
+# patch sinks, and the receiver sabotage screen-copy-per-reader; self-contained).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -59,6 +62,7 @@ EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 SHADER_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-shader"
 CIM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-cim"
+SCREEN_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-screen"
 FIXTURE_DIR="$SHADER_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
@@ -69,8 +73,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55b g55c g55d g55e g55f)
-KNOWN_GROUPS=(g55b g55c g55d g55e g55f)
+LANDED_GROUPS=(g55b g55c g55d g55e g55f g55s)
+KNOWN_GROUPS=(g55b g55c g55d g55e g55f g55s)
 
 EXTENSION=""
 CALIBRATION=""
@@ -158,7 +162,7 @@ if [ ! -x "$BINARY" ]; then
 	exit 1
 fi
 BINARY="$(realpath "$BINARY")"
-for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR"; do
+for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR" "$SCREEN_FIXTURE_DIR"; do
 	if [ ! -f "$project/project.godot" ]; then
 		echo "run-gate55: $project/project.godot is missing" >&2
 		exit 1
@@ -753,9 +757,59 @@ run_g55f() {
 	GS_RUN_DIR=""
 }
 
+# P3-ST (gate5_5-design.md "Screen texture (P3-ST)"): fixtures/gate55-screen under <out>/screen/.
+# Its import and the receiver's; a headless capture on the fixture's own default run (62 frames)
+# with both sinks and the store; inside one gamescope the rendered reference and a same-build
+# repeat, rendered receivers on the full sink and the patch sink, and the receiver sabotage
+# screen-copy-per-reader (a fresh back-buffer copy before every screen-reading item: the copy taken
+# at the wrong time), which must differ from the reference where a later reader reuses a copy.
+run_g55s() {
+	local D="$OUT/screen"
+	mkdir -p "$D/import"
+	echo "run-gate55: g55s: import"
+	LEG_ENV=()
+	run_headless "$D/import/fixture" none -- mise exec -- godot --headless --path "$SCREEN_FIXTURE_DIR" --import
+	if [ "$(cat "$D/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $SCREEN_FIXTURE_DIR failed, see $D/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	run_headless "$D/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$D/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $RECEIVER_DIR failed, see $D/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	# render-stream/8, the product's wire, so gate 7's browser receivers can replay the same
+	# capture (lib/legs.sh gate7_browser_leg routes GRS7..9 recordings).
+	echo "run-gate55: g55s: capture-screen"
+	CAPTURE_FIXTURE_DIR="$SCREEN_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_STREAM_VERSION=8)
+	run_capture "$D/capture" "" none
+
+	echo "run-gate55: bringing up private gamescope for g55s rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g55s"
+	echo "run-gate55: g55s: reference-screen"
+	REFERENCE_FIXTURE_DIR="$SCREEN_FIXTURE_DIR"
+	run_reference "$D/reference"
+	echo "run-gate55: g55s: reference-screen-repeat"
+	REFERENCE_FIXTURE_DIR="$SCREEN_FIXTURE_DIR"
+	run_reference "$D/reference-repeat"
+	echo "run-gate55: g55s: receiver-screen (full sink)"
+	run_rendered_receiver "$D/capture" "$D/receiver"
+	echo "run-gate55: g55s: receiver-screen-patch (patch sink)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$D/capture" "$D/receiver-patch"
+	echo "run-gate55: g55s: sabotage-screen-receiver-copy-per-reader (RS_RECEIVER_SABOTAGE=screen-copy-per-reader)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=screen-copy-per-reader)
+	run_rendered_receiver "$D/capture" "$D/sabotage-receiver-copy-per-reader"
+	gs_teardown "$OUT/gamescope-g55s"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g55b) run_g55b ;;
+	g55s) run_g55s ;;
 	g55c) run_g55c ;;
 	g55d) run_g55d ;;
 	g55e) run_g55e ;;

@@ -24,7 +24,7 @@ namespace rs {
 constexpr std::uint8_t kShaderPayloadMagic[8] = {0x47, 0x52, 0x50, 0x31, 0x0D, 0x0A, 0x1A, 0x0A};
 
 // D11: the typed shader dependencies a token scan found, and the first reason in precedence
-// order (TIME, screen texture, SDF, global uniform, mode), if any.
+// order (TIME, SDF, global uniform, mode), if any.
 struct ShaderScan {
   // A fixed subset of {"global_uniform","instance_uniform","light","screen_texture","sdf","time"},
   // in that order -- every category the scan matched, for information (Q3a); never a reason by
@@ -32,8 +32,8 @@ struct ShaderScan {
   std::vector<std::string> uses;
   // The first `shader_type <id>;`'s id, or "" when the scan found none.
   std::string mode;
-  // "" (supported) | "shader-time" | "shader-screen-texture" | "shader-sdf" |
-  // "shader-global-uniform" | "shader-mode" (D11).
+  // "" (supported) | "shader-time" | "shader-sdf" | "shader-global-uniform" | "shader-mode"
+  // (D11; P3-ST: screen texture is supported and appears in `uses` only).
   std::string reason;
 };
 

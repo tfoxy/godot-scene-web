@@ -26,9 +26,9 @@ use crate::present::{
 };
 use glow::HasContext;
 use gsw_canvas_draw_list::{
-    BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, DRAW_UNTEXTURED, Draw, DrawList,
-    CompressedFormat, Format, Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE,
-    premultiplies,
+    BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY,
+    DRAW_SCREEN_MIPMAPS, DRAW_UNTEXTURED, Draw, DrawList, CompressedFormat, Format, SCREEN_TEXTURE,
+    Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -254,6 +254,10 @@ struct CompiledItem {
     u_msdf: Option<glow::UniformLocation>,
     u_msdf_no_median: Option<glow::UniformLocation>,
     msdf_state: Option<(bool, MsdfState)>,
+    /// P3-ST: `SCREEN_PIXEL_SIZE` (declared by a module that reads SCREEN_UV or it) and the target
+    /// size it was set for.
+    u_screen_pixel_size: Option<glow::UniformLocation>,
+    screen_pixel_size: Option<(u32, u32)>,
 }
 
 /// An MSDF draw's fragment uniforms as GL holds them: `[px_range, outline]` as bits, and whether
@@ -324,6 +328,265 @@ struct Objects {
     /// Index `wrap · 2 + linear` (wrap 0 clamp, 1 repeat, 2 mirror).
     samplers: [glow::Sampler; 6],
     target: Option<TargetObjects>,
+    /// P3-ST: the back buffer, made at the first screen copy for the target's size and format.
+    screen: Option<ScreenObjects>,
+}
+
+/// P3-ST: Godot 4.5.1's GLES3 render-target back buffer (`_create_render_target_backbuffer`,
+/// texture_storage.cpp:2290-2337): the target's internal format, `max(1, mips(w, h) - 4)` levels
+/// (the smallest no smaller than about 32 px), each half the previous (floor, at least 1), sampled
+/// linear / linear-mipmap-linear / clamp-to-edge, with MAX_LEVEL 0 until a mip chain is built.
+struct ScreenObjects {
+    texture: glow::Texture,
+    framebuffer: glow::Framebuffer,
+    width: u32,
+    height: u32,
+    format: Format,
+    levels: u32,
+    /// The texture's GL_TEXTURE_MAX_LEVEL.
+    max_level: u32,
+    sampler: glow::Sampler,
+    /// The gaussian downsample (copy.glsl's MODE_GAUSSIAN_BLUR).
+    program: glow::Program,
+    u_pixel_size: Option<glow::UniformLocation>,
+}
+
+/// Godot's `Image::get_image_required_mipmaps`: halvings until both sides are 1.
+fn required_mipmaps(width: u32, height: u32) -> u32 {
+    let (mut w, mut h, mut n) = (width.max(1), height.max(1), 0);
+    while w > 1 || h > 1 {
+        w = (w >> 1).max(1);
+        h = (h >> 1).max(1);
+        n += 1;
+    }
+    n
+}
+
+/// copy.glsl's MODE_GAUSSIAN_BLUR vertex stage over copy_effects.cpp's six-vertex screen quad
+/// (`copy_section` and `source_section` are the whole level: GSW copies the whole target).
+const GAUSS_VERT: &str = r#"#version 300 es
+precision highp float;
+out vec2 uv_interp;
+const vec2 QUAD[6] = vec2[6](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+                             vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+void main() {
+  vec2 v = QUAD[gl_VertexID];
+  uv_interp = v * 0.5 + 0.5;
+  gl_Position = vec4(v, 1.0, 1.0);
+}"#;
+
+/// copy.glsl's MODE_GAUSSIAN_BLUR fragment stage (Jimenez's 13-tap box filter), verbatim.
+const GAUSS_FRAG: &str = r#"#version 300 es
+precision highp float;
+precision highp sampler2D;
+in vec2 uv_interp;
+uniform sampler2D source;
+uniform highp vec2 pixel_size;
+layout(location = 0) out vec4 frag_color;
+void main() {
+  vec4 A = textureLod(source, uv_interp + pixel_size * vec2(-1.0, -1.0), 0.0);
+  vec4 B = textureLod(source, uv_interp + pixel_size * vec2(0.0, -1.0), 0.0);
+  vec4 C = textureLod(source, uv_interp + pixel_size * vec2(1.0, -1.0), 0.0);
+  vec4 D = textureLod(source, uv_interp + pixel_size * vec2(-0.5, -0.5), 0.0);
+  vec4 E = textureLod(source, uv_interp + pixel_size * vec2(0.5, -0.5), 0.0);
+  vec4 F = textureLod(source, uv_interp + pixel_size * vec2(-1.0, 0.0), 0.0);
+  vec4 G = textureLod(source, uv_interp, 0.0);
+  vec4 H = textureLod(source, uv_interp + pixel_size * vec2(1.0, 0.0), 0.0);
+  vec4 I = textureLod(source, uv_interp + pixel_size * vec2(-0.5, 0.5), 0.0);
+  vec4 J = textureLod(source, uv_interp + pixel_size * vec2(0.5, 0.5), 0.0);
+  vec4 K = textureLod(source, uv_interp + pixel_size * vec2(-1.0, 1.0), 0.0);
+  vec4 L = textureLod(source, uv_interp + pixel_size * vec2(0.0, 1.0), 0.0);
+  vec4 M = textureLod(source, uv_interp + pixel_size * vec2(1.0, 1.0), 0.0);
+  float weight = 0.5 / 4.0;
+  float lesser_weight = 0.125 / 4.0;
+  frag_color = (D + E + I + J) * weight;
+  frag_color += (A + B + G + F) * lesser_weight;
+  frag_color += (B + C + H + G) * lesser_weight;
+  frag_color += (F + G + L + K) * lesser_weight;
+  frag_color += (G + H + M + L) * lesser_weight;
+}"#;
+
+/// The unit the gaussian pass samples its source level on (an item-space program's last unit;
+/// the cache's record of it is kept).
+const UNIT_SCREEN_PASS: u32 = 15;
+
+fn delete_screen(gl: &glow::Context, screen: ScreenObjects) {
+    unsafe {
+        gl.delete_framebuffer(screen.framebuffer);
+        gl.delete_texture(screen.texture);
+        gl.delete_sampler(screen.sampler);
+        gl.delete_program(screen.program);
+    }
+}
+
+/// The back buffer for `target`, made (or remade for a new size or format) on demand. None when
+/// GL refuses it, or for a target of 40 px or less on a side, for which GLES3 makes none.
+fn ensure_screen<'o>(
+    gl: &Gl,
+    cache: &mut Cache,
+    screen: &'o mut Option<ScreenObjects>,
+    target: &TargetObjects,
+) -> Option<&'o mut ScreenObjects> {
+    if screen
+        .as_ref()
+        .is_some_and(|s| (s.width, s.height, s.format) != (target.width, target.height, target.format))
+    {
+        if let Some(old) = screen.take() {
+            delete_screen(gl.c(), old);
+        }
+        for unit in cache.units.iter_mut() {
+            *unit = None;
+        }
+    }
+    if screen.is_none() {
+        if target.width <= 40 || target.height <= 40 {
+            return None;
+        }
+        let levels = required_mipmaps(target.width, target.height).saturating_sub(4).max(1);
+        let internal = match target.format {
+            Format::Rgb10A2 => glow::RGB10_A2,
+            Format::Rgba8 => glow::RGBA8,
+        };
+        let program = compile(gl.c(), GAUSS_VERT, GAUSS_FRAG).ok()?;
+        unsafe {
+            let c = gl.c();
+            let texture = c.create_texture().ok()?;
+            let framebuffer = c.create_framebuffer().ok()?;
+            let sampler = c.create_sampler().ok()?;
+            set_active_unit(gl, cache, UNIT_SCREEN_PASS);
+            c.bind_texture(glow::TEXTURE_2D, Some(texture));
+            cache.units[UNIT_SCREEN_PASS as usize] = None;
+            c.tex_storage_2d(
+                glow::TEXTURE_2D,
+                levels as i32,
+                internal,
+                target.width as i32,
+                target.height as i32,
+            );
+            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, 0);
+            c.sampler_parameter_i32(sampler, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            c.sampler_parameter_i32(
+                sampler,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR_MIPMAP_LINEAR as i32,
+            );
+            c.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+            c.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            c.use_program(Some(program));
+            cache.program = Some(program);
+            c.uniform_1_i32(
+                c.get_uniform_location(program, "source").as_ref(),
+                UNIT_SCREEN_PASS as i32,
+            );
+            let u_pixel_size = c.get_uniform_location(program, "pixel_size");
+            *screen = Some(ScreenObjects {
+                texture,
+                framebuffer,
+                width: target.width,
+                height: target.height,
+                format: target.format,
+                levels,
+                max_level: 0,
+                sampler,
+                program,
+                u_pixel_size,
+            });
+        }
+    }
+    screen.as_mut()
+}
+
+/// P3-ST: a [`DRAW_SCREEN_COPY`] and/or [`DRAW_SCREEN_MIPMAPS`] before a draw: the whole target
+/// into the back buffer's level 0 (`render_target_copy_to_back_buffer` with an empty region), then
+/// each level `i` from level `i - 1` through the gaussian pass (`gaussian_blur`), blending off as
+/// GLES3 has it. Leaves the target bound for drawing; the caller rebinds its vertex array.
+fn screen_pass(
+    gl: &Gl,
+    cache: &mut Cache,
+    objects: &mut Objects,
+    copy: bool,
+    mipmaps: bool,
+    stats: &mut ExecStats,
+) {
+    let Some(target) = objects.target.as_ref() else {
+        return;
+    };
+    let target_fb = target.framebuffer;
+    let present_vertex_array = objects.present_vertex_array;
+    let linear_clamp = objects.samplers[sampler_index(Sampler::LINEAR | Sampler::CLAMP)];
+    let Some(screen) = ensure_screen(gl, cache, &mut objects.screen, target) else {
+        return;
+    };
+    set_scissor_enabled(gl, cache, false);
+    unsafe {
+        let c = gl.c();
+        if copy {
+            bind_read(gl, cache, Some(target_fb));
+            bind_draw_framebuffer(gl, cache, Some(screen.framebuffer));
+            c.framebuffer_texture_2d(
+                glow::DRAW_FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(screen.texture),
+                0,
+            );
+            let (w, h) = (screen.width as i32, screen.height as i32);
+            c.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            stats.screen_copies += 1;
+        }
+        let mut max_level = if copy { 0 } else { screen.max_level };
+        if mipmaps && screen.levels > 1 {
+            if cache.blend_enabled != Some(false) {
+                c.disable(glow::BLEND);
+                cache.blend_enabled = Some(false);
+            }
+            if cache.program != Some(screen.program) {
+                c.use_program(Some(screen.program));
+                cache.program = Some(screen.program);
+            }
+            bind_vertex_array(gl, cache, present_vertex_array);
+            set_active_unit(gl, cache, UNIT_SCREEN_PASS);
+            c.bind_texture(glow::TEXTURE_2D, Some(screen.texture));
+            c.bind_sampler(UNIT_SCREEN_PASS, Some(linear_clamp));
+            cache.units[UNIT_SCREEN_PASS as usize] = Some((screen.texture, linear_clamp));
+            bind_draw_framebuffer(gl, cache, Some(screen.framebuffer));
+            let (mut w, mut h) = (screen.width, screen.height);
+            for level in 1..screen.levels {
+                w = (w >> 1).max(1);
+                h = (h >> 1).max(1);
+                c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, level as i32 - 1);
+                c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, level as i32 - 1);
+                c.framebuffer_texture_2d(
+                    glow::DRAW_FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(screen.texture),
+                    level as i32,
+                );
+                set_viewport(gl, cache, w, h);
+                c.uniform_2_f32(
+                    screen.u_pixel_size.as_ref(),
+                    (1.0 / f64::from(w)) as f32,
+                    (1.0 / f64::from(h)) as f32,
+                );
+                c.draw_arrays(glow::TRIANGLES, 0, 6);
+            }
+            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+            max_level = screen.levels - 1;
+            screen.max_level = u32::MAX; // force the MAX_LEVEL write below
+            stats.screen_mipmaps += 1;
+        }
+        if screen.max_level != max_level {
+            set_active_unit(gl, cache, UNIT_SCREEN_PASS);
+            c.bind_texture(glow::TEXTURE_2D, Some(screen.texture));
+            cache.units[UNIT_SCREEN_PASS as usize] = None;
+            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, max_level as i32);
+            screen.max_level = max_level;
+        }
+    }
+    bind_draw_framebuffer(gl, cache, Some(target_fb));
+    set_viewport(gl, cache, screen.width, screen.height);
 }
 
 fn compile(gl: &glow::Context, vert: &str, frag: &str) -> Result<glow::Program, String> {
@@ -393,7 +656,11 @@ fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String
                 continue;
             };
             let name = active.name.trim_end_matches("[0]").to_string();
-            if name == "TEXTURE" || name.starts_with("gsw_") || name.starts_with("u_") {
+            if name == "TEXTURE"
+                || name == "SCREEN_PIXEL_SIZE"
+                || name.starts_with("gsw_")
+                || name.starts_with("u_")
+            {
                 continue;
             }
             let Some(location) = gl.get_uniform_location(program, &name) else {
@@ -430,6 +697,8 @@ fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String
             u_msdf: gl.get_uniform_location(program, "gsw_msdf"),
             u_msdf_no_median: gl.get_uniform_location(program, "gsw_msdf_no_median"),
             msdf_state: None,
+            u_screen_pixel_size: gl.get_uniform_location(program, "SCREEN_PIXEL_SIZE"),
+            screen_pixel_size: None,
         };
         gl.use_program(None);
         Ok(compiled)
@@ -661,6 +930,7 @@ impl Objects {
                 white,
                 samplers,
                 target: None,
+                screen: None,
             })
         }
     }
@@ -902,7 +1172,9 @@ impl CanvasItemsExecutor {
                             programs
                                 .get(&b.program)
                                 .is_some_and(|p| p.compiled.is_some())
-                                && b.samplers.iter().all(|s| known_texture(s.texture))
+                                && b.samplers
+                                    .iter()
+                                    .all(|s| s.texture == SCREEN_TEXTURE || known_texture(s.texture))
                         })
                 },
                 &mut calls,
@@ -1500,6 +1772,19 @@ impl CanvasItemsExecutor {
                 continue;
             }
             let draw = &list.draws[call.draw as usize];
+            // P3-ST: the back-buffer copy and mip chain GLES3 makes before this draw.
+            let screen_flags = draw.flags & (DRAW_SCREEN_COPY | DRAW_SCREEN_MIPMAPS);
+            if screen_flags != 0 {
+                screen_pass(
+                    gl,
+                    cache,
+                    objects,
+                    screen_flags & DRAW_SCREEN_COPY != 0,
+                    screen_flags & DRAW_SCREEN_MIPMAPS != 0,
+                    stats,
+                );
+                bind_vertex_array(gl, cache, objects.vertex_array);
+            }
             // `plan_calls` admitted only known blends.
             let blend = Blend::from_u32(draw.blend).unwrap_or(Blend::Mix);
             let msdf = draw.flags & DRAW_MSDF != 0;
@@ -1616,18 +1901,34 @@ impl CanvasItemsExecutor {
                     item.applied = Some((slot, version));
                     stats.binding_uploads += 1;
                 }
+                if item.u_screen_pixel_size.is_some()
+                    && item.screen_pixel_size != Some((width, height))
+                {
+                    unsafe {
+                        gl.c().uniform_2_f32(
+                            item.u_screen_pixel_size.as_ref(),
+                            (1.0 / f64::from(width)) as f32,
+                            (1.0 / f64::from(height)) as f32,
+                        )
+                    };
+                    item.screen_pixel_size = Some((width, height));
+                }
                 for (name, unit) in &item.sampler_units {
                     let bound = binding.samplers.iter().find(|s| &*s.name == name.as_str());
-                    let (texture, bits) = match bound {
+                    let (texture, sampler) = match bound {
+                        // P3-ST: the back buffer, with its own fixed sampler.
+                        Some(s) if s.texture == SCREEN_TEXTURE => match objects.screen.as_ref() {
+                            Some(screen) => (screen.texture, screen.sampler),
+                            None => (objects.white, objects.samplers[0]),
+                        },
                         Some(s) if s.texture != WHITE_TEXTURE => {
                             match self.textures.get(&s.texture) {
-                                Some(t) => (*t, s.sampler),
-                                None => (objects.white, 0),
+                                Some(t) => (*t, objects.samplers[sampler_index(s.sampler)]),
+                                None => (objects.white, objects.samplers[0]),
                             }
                         }
-                        _ => (objects.white, 0),
+                        _ => (objects.white, objects.samplers[0]),
                     };
-                    let sampler = objects.samplers[sampler_index(bits)];
                     let at = *unit as usize;
                     if cache.units[at] != Some((texture, sampler)) {
                         set_active_unit(gl, cache, *unit);
@@ -1809,6 +2110,9 @@ impl Drop for CanvasItemsExecutor {
                 if let Some(t) = o.target {
                     gl.delete_framebuffer(t.framebuffer);
                     gl.delete_texture(t.texture);
+                }
+                if let Some(screen) = o.screen {
+                    delete_screen(gl, screen);
                 }
             }
         }

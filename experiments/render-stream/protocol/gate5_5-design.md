@@ -94,12 +94,12 @@ browser receivers (all typed or deferred with owners in "Deferred").
 | D8  | Parameter values on the wire     | **The Variant type by name plus every numeric component as float64**, in a new block `param_f64` (type `f64`). Float64 keeps `FLOAT` (a double) and `INT` exact. GLES3 converts by the uniform's type at upload (`g3ms.cpp:49-350`), so the receiver must rebuild the same type and value. Supported: `nil bool int float vector2 vector2i rect2 rect2i vector3 vector3i transform2d vector4 vector4i plane quaternion aabb basis transform3d projection color rid` and the numeric packed arrays (`int32 int64 float32 float64 vector2 vector3 vector4 color`). `rid` carries `tex` (a texture-table id) and no floats. `int` beyond ±2^53 is `param-range`; any other type is `param-type`. The capture decodes through the GDExtension interface (`variant_get_type`, the to-type constructors, the two-word Vector ABI for packed arrays, memory: godot-vector-abi-two-words, `string_to_utf8_chars`), on the calling thread, before forwarding. |
 | D9  | Item state                       | **`material`, `use_parent_material` and `instance_params` are item state, never `content_version`.** Setting a material does not redraw (`ci.cpp:1169-1177`). The *effective* material follows the parent chain while `use_parent_material` is set (`rcc:309-313`, `:2514-2525`). The derived item-level entry `unsupported-material` uses the effective material (Q4). |
 | D10 | Canvas modulate, lights          | **`canvas_set_modulate` is a canvas field**: `canvas_f32` grows from 6 to 10 floats per canvas. Without lights, a material's light mode is visible only through it. Normal items multiply by the canvas modulate, `unshaded` items do not, and `light_only` items get alpha 0 (`canvas.glsl:713-717`, `:865-866`; lighting is disabled with no lights, `gles3c:878-883`). **`Light2D` is typed**: `canvas_light_attach_to_canvas` to a non-null canvas adds the sticky session-level entry `{"op":"canvas_light_attach_to_canvas","item":null,"reason":"canvas-light"}`. Occluders, light masks and normal or specular canvas textures follow `Light2D` (Deferred). |
-| D11 | `TIME`, screen texture, SDF, globals | **Typed `unsupported` on the shader, found by a token scan of the code** (identifiers outside comments, not after `.`): `TIME` → `shader-time`. It is the receiver's own rasterizer time (`drivers/gles3/rasterizer_gles3.cpp:96-106`), and the dummy has none. `hint_screen_texture` → `shader-screen-texture` (back-buffer copies, `gles3c:423-436`). `texture_sdf`, `texture_sdf_normal`, `sdf_to_screen_uv`, `screen_uv_to_sdf` → `shader-sdf` (`servers/rendering/shader_types.cpp:309-326`). `global uniform` → `shader-global-uniform`: values come from project settings loaded before arming. A `shader_type` other than `canvas_item` → `shader-mode`: GLES3 draws such a material as none (`g3ms.h:651-658`). `uses` lists every match, and `reason` is the first in that order. The handoff makes time and screen-texture dependencies later work. Owners are in "Deferred". |
+| D11 | `TIME`, screen texture, SDF, globals | **Typed `unsupported` on the shader, found by a token scan of the code** (identifiers outside comments, not after `.`): `TIME` → `shader-time`. It is the receiver's own rasterizer time (`drivers/gles3/rasterizer_gles3.cpp:96-106`), and the dummy has none. `hint_screen_texture` → `shader-screen-texture` (back-buffer copies, `gles3c:423-436`). `texture_sdf`, `texture_sdf_normal`, `sdf_to_screen_uv`, `screen_uv_to_sdf` → `shader-sdf` (`servers/rendering/shader_types.cpp:309-326`). `global uniform` → `shader-global-uniform`: values come from project settings loaded before arming. A `shader_type` other than `canvas_item` → `shader-mode`: GLES3 draws such a material as none (`g3ms.h:651-658`). `uses` lists every match, and `reason` is the first in that order. The handoff makes time and screen-texture dependencies later work. Owners are in "Deferred". **As amended (P3-ST, 2026-10-25): `hint_screen_texture` is no longer a reason** -- the shader is `ok` with `screen_texture` in `uses`, and every receiver mirrors GLES3's back-buffer copies ("Screen texture (P3-ST)" below). |
 | D12 | Independent expectations         | **Five, none of them a replay of the capture.** (1) **Script arguments**: every `set_shader_parameter`, `set_instance_shader_parameter`, blend or light mode and `CanvasModulate` colour the fixture sets reaches the wire with that Variant type and value. (2) A **hand pixel model** in `make_expected.py`: a Python twin of each synthetic shader's `fragment()`, GL's blend equations (`gles3c:741-799`) and the canvas-modulate rule (D10), rasterized by `geometry-raster.ts`. (3) A **reference-side material oracle** (Q6e) that reads the reference's own `shader_get_code` (GLES3 keeps the code, `g3ms.cpp:2288-2292`), `material_get_param` and `canvas_item_get_instance_shader_parameter`. Checks: `shader-hash-parity` and `param-parity`. (4) A **hand census** of shader and material calls per frame. (5) **Presence and freshness** per region, including fresh-without-redraw. |
 | D13 | Pixel exactness and budgets      | **Exact where the output is opaque, flat and computed without a product of two non-trivial grid values; delta 1 where a product or `α = .6` is involved; never relaxed.** Exact: `mix`, `add`, `sub`, `premul_alpha` and `disabled` at α 1 on 0.2-grid colours (sums and differences of `k·0.2f` round to `k·51`, clamped), synthetic shaders that output a uniform, an integer-derived `k·0.2`, or a nearest-sampled texel, and a canvas modulate whose components are 0 or 1 (the product is exact). Delta 1: `mul`, any `α = .6` strip, and grid × grid modulation (gate4-design.md D8). Receiver against reference is exact everywhere, under the budget a same-build reference repeat measures (expected 0). Comparisons are raw per channel, alpha included (`disabled` writes source alpha into the render target), never pixelmatch. |
 | D14 | Delivery and dropped presentations | **File recordings for G55b–G55e, live for G55f.** Parameters and shader payloads are whole values per version, never deltas. A stalled receiver jumps to the newest parameter values and fetches only the newest `GRP1` hash. G55f proves it with a parameter written every frame and a code change inside the stall, and proves the opposite with `stale-coalesce`. |
 | D15 | Result classes                   | **Gate 5's, extended.** `capture-failure` gains `material-log-divergence`. `unsupported` gains every `unsupported-material`, `unknown-material`, `param-type` (instance) and `canvas-light` entry. `replay-failure`'s `resource-*` reasons cover `GRP1`, and a receiver shader compile error is `replay-failure` / `shader-compile`. `resource-violation` covers a redundant shader fetch. Census and parity failures are named checks, not classes. |
-| D16 | Typed out of scope               | Hooked, typed `unsupported`, not supported: D11's five shader reasons, `param-type`/`param-range`, `unknown-shader`, `unknown-material`, `unknown-texture` on a parameter, `shader-excluded`/`shader-withheld` by policy, and `canvas-light`. Declared `unobserved` (not hooked, no visible effect while D11 refuses their users): `canvas_item_set_copy_to_backbuffer`, the `global_shader_parameter_*` setters, `material_set_next_pass`, `material_set_render_priority` and `shader_set_path_hint`. |
+| D16 | Typed out of scope               | Hooked, typed `unsupported`, not supported: D11's five shader reasons, `param-type`/`param-range`, `unknown-shader`, `unknown-material`, `unknown-texture` on a parameter, `shader-excluded`/`shader-withheld` by policy, and `canvas-light`. Declared `unobserved` (not hooked, no visible effect while D11 refuses their users; P3-ST: `BackBufferCopy` now has an effect, see "Screen texture (P3-ST)", and stays unobserved until a /10): `canvas_item_set_copy_to_backbuffer`, the `global_shader_parameter_*` setters, `material_set_next_pass`, `material_set_render_priority` and `shader_set_path_hint`. |
 | D17 | Waves against gate 5             | **Work that touches no codec, runner, mirror or receiver may start now** (G55a, G55b and G55c reference legs). G55w may start now and lands after G5d, since both change the version defaults. G55d waits for G5e, which edits the same mirror, store, publisher and receiver files. |
 
 ## Q1. What the engine does
@@ -1068,6 +1068,108 @@ correction to this section's own prediction:
   `checkWarmHostNoGetsShader` with fabricated evidence, each with a passing and at least one
   failing case.
 
+## Screen texture (P3-ST, 2026-10-25)
+
+C3's STS2 leg (`results/p3/fidelity.md`, gap 1) found the main menu white on both receivers: a
+full-screen blur rect whose `ShaderMaterial` reads `hint_screen_texture` was typed
+`shader-screen-texture`, so the receivers drew the rect without its material. P3-ST supports
+screen-reading shaders on every receiver (`results/p3/p3-st.md`).
+
+### What Godot 4.5.1's GLES3 renderer does (the reference)
+
+- **The back buffer** (`_create_render_target_backbuffer`, `drivers/gles3/storage/texture_storage.cpp:2290-2337`):
+  the render target's internal format, `max(1, mips(w, h) - 4)` levels (`mips` = halvings to
+  1x1, `Image::get_image_required_mipmaps`), each level half the previous, none at all for a
+  target of 40 px or less on a side. It is sampled through the texture object's own state, so the
+  screen sampler's hints are ignored: linear, linear-mipmap-linear, clamped
+  (`color_buffer`, `canvas.glsl:336`, texunit -4), with `GL_TEXTURE_MAX_LEVEL` 0 unless the
+  current canvas's copy has its mip chain (`canvas_begin`, `rasterizer_canvas_gles3.cpp:2216-2222`).
+- **Copy points**, per `canvas_render_items` call, i.e. per canvas (`renderer_canvas_cull.cpp:104`;
+  a `CanvasLayer` is a new canvas), over the culled, z-sorted item list
+  (`rasterizer_canvas_gles3.cpp:397-540`): before the first item whose effective material's
+  shader uses the screen texture, the whole target is copied (`material_screen_texture_cached`),
+  with the blurred mip chain when that shader reads a screen sampler with a mipmap filter
+  (`uses_screen_texture_mipmaps`, `shader_compiler.cpp:929-933`). Later readers of the same canvas
+  reuse that copy, so what was drawn between them is not in it; a later mipmap reader builds the
+  mip chain of the cached copy at its own position. Only items in the list count: an item with
+  no commands, or off screen, takes no copy (`renderer_canvas_cull.cpp:249`).
+- **The mip chain** (`CopyEffects::gaussian_blur`, `copy_effects.cpp:240-310`): level `i` from level
+  `i - 1` through copy.glsl's 13-tap `MODE_GAUSSIAN_BLUR`, linear, blending off.
+- **`SCREEN_UV`** is `gl_FragCoord.xy * screen_pixel_size` (`canvas.glsl:679`), the target stored
+  y-up; `SCREEN_PIXEL_SIZE` is `1 / target size`.
+- **`BackBufferCopy`** (`canvas_item_set_copy_to_backbuffer`) forces a copy at its item -- of
+  `rect` taken in item-local coordinates untransformed (GLES3 reads `copy_back_buffer->rect`, not
+  `screen_rect`, `:413-420`), or of the whole target -- and marks the copy cached. Inside a
+  `CanvasGroup` none of this applies (`canvas_group_owner`).
+
+### Capture and wire
+
+D11 as amended: `hint_screen_texture` is not a reason. The shader is `ok`, its GRP1 code travels,
+and `uses` lists `screen_texture`. A shader that also reads `TIME`, the SDF or a global uniform
+keeps that reason. **No wire version and no flag**: the shader entry's shape is unchanged, the
+receivers already read `uses`, and a session with no screen-reading shader is byte-identical
+(`golden-5/` to `golden-9/` are untouched). `shader-screen-texture` stays in /5-/9's vocabulary,
+so decoders accept it, but this capture no longer produces it.
+
+**`BackBufferCopy` is not carried.** `canvas_item_set_copy_to_backbuffer` stays unhooked and
+declared `unobserved` (D16), so a host's `BackBufferCopy` copy points replay as the automatic
+ones. Carrying it needs calibrator slot 484 (`(RID, bool, const Rect2 &)`) and an item key
+(`copy_to_backbuffer: null | {"rect": null | [x, y, w, h]}`), which is a wire change: a
+render-stream/10, opt-in like /8 and /9, with its own goldens. It is the same /10 that carries
+`canvas_item_set_canvas_group_mode` (`clip_children`, P3-NP's CG1, `results/p3/p3-np.md`), so
+both item keys land in one version. The receivers are ready for it: the
+native receiver's adapter already calls `canvas_item_set_copy_to_backbuffer`
+(`Op::ItemSetCopyToBackbuffer`, used today by the `screen-copy-per-reader` sabotage), and GSW's
+copy points are draw flags its applier computes. STS2's screen readers C3 recorded use the
+automatic copies.
+
+### Receivers
+
+- **Native and web export:** unchanged. They compile the code (Q5), and Godot takes the copies.
+  The capture's per-canvas structure (one receiver canvas per host canvas, gate 6) keeps the copy
+  points.
+- **GSW:** `packages/effects`' item-shader transpiler admits `hint_screen_texture` samplers (all
+  aliased to one `SCREEN_TEXTURE`, `screenTexture: {names, mipmaps}`), `SCREEN_UV` and
+  `SCREEN_PIXEL_SIZE`. The applier (`rs-core` `assemble`) marks GLES3's copy points per canvas as
+  `DRAW_SCREEN_COPY` / `DRAW_SCREEN_MIPMAPS` draw flags and binds `SCREEN_TEXTURE` to the
+  executor's back buffer (`gsw_canvas_draw_list::SCREEN_TEXTURE`). The executor
+  (`canvas_items/gl.rs`) allocates the back buffer as GLES3 does, copies the target with
+  `blitFramebuffer` and builds the mip chain with copy.glsl's gaussian pass. GSW's target is
+  stored y-up like Godot's, so `SCREEN_UV` maps 1:1.
+- **Measured on fixtures/gate55-screen:** native exact; web export and GSW exact but the mip chain
+  (RE) within 1 per channel (the browser's linear-filtering arithmetic, ANGLE against the native
+  driver).
+
+### Refused materials (every receiver)
+
+What a receiver draws for an item whose effective material (D9) it cannot draw with its code:
+refused on the wire (`unsupported` material or shader, `unknown-material`), withheld code without
+a library (`shader-withheld`), or, on GSW, a shader the transpiler or GL refuses
+(`gsw-shader-transpile`).
+
+| The refused material's shader | The receiver draws |
+| ------------------------------ | ------------------ |
+| does not read the screen | the item without its material (plain), as before: GLES3's own fallback for a material it cannot use, and the right picture for most sprite shaders (tints, outlines, dissolves) |
+| reads the screen (`uses` has `screen_texture`) | **nothing of the item itself** (its children still draw): drawn plain it covers what it would read with an opaque rect (C3's white menu); dropped, the backdrop it would have filtered shows, which an identity, blur or tint post-effect approximates |
+
+The native receiver (`rs-core-capi` `refused_screen_reader`) and GSW (`rs-core` `MaterialEff::skip`)
+apply the same rule; the web export is the native receiver. A dropped reader takes no copy, so a
+later reader of its canvas copies at its own position where the host copied at the dropped one.
+fixtures/gate55-screen's RT (a screen reader that also reads `TIME`) proves the rule on all three.
+
+### Fixture, legs and checks
+
+`fixtures/gate55-screen` (run-gate55.sh group `g55s`, `scripts/lib/gate55s-checks.ts`; gate 7 runs
+the same group's receivers in both browsers as part of `g7-55`'s live half): nearest-filtered
+textures under RA (the automatic copy), RB (a second reader of the same copy over LC, drawn after
+RA, so LC never shows), RF (`SCREEN_UV` itself), RE (a mipmap blur: the cached copy's mip chain),
+RT (refused, dropped), and a child `CanvasLayer` whose RC takes a fresh copy of canvas 0's outputs
+and whose RD is clipped. Checks: the capture types only RT; the reference repeats and equals a
+hand model of the copy points everywhere but RE; every receiver equals the reference exactly
+(browsers: RE within 1) with RT dropped; the receiver sabotage `screen-copy-per-reader` (a fresh
+copy before every reader, the copy taken at the wrong time) differs exactly where the model says.
+gate55-shader's `refused` variant keeps its SC screen shader, which now draws.
+
 ## Deferred, with owners
 
 - **The GSW browser receiver's shader path: gate 7.** It transpiles its supported subset through
@@ -1080,9 +1182,10 @@ correction to this section's own prediction:
   screen-texture dependencies", after gate 6. A design must carry host time per transaction and
   make the receiver use it, because `TIME` is the receiver rasterizer's own (Q1c) and the
   headless host has none.
-- **Screen texture, `BackBufferCopy`, `CanvasGroup` and clip-children** (`shader-screen-texture`;
-  the canvas-group materials are engine shaders on `hint_screen_texture`, `gles3c:2841-2890`):
-  the same capability and the handoff's "CanvasGroup/masks".
+- **`BackBufferCopy`, `CanvasGroup` and clip-children** (the canvas-group materials are engine
+  shaders on `hint_screen_texture`, `gles3c:2841-2890`): the handoff's "CanvasGroup/masks".
+  Screen-reading shaders themselves landed with P3-ST ("Screen texture (P3-ST)"); carrying
+  `BackBufferCopy` is that section's render-stream/10 note.
 - **`Light2D`, occluders, SDF, light masks, normal and specular maps** (`canvas-light`,
   `shader-sdf`, `canvas-texture-channel`): a lighting capability after gate 6, if gate 6's
   feature list or gate 8's census needs it.

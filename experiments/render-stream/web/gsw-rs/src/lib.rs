@@ -222,6 +222,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-z" => o.apply.ignore_z = true,
                 "stale-param" => o.apply.stale_param = true,
                 "blend-swap" => o.apply.blend_swap = true,
+                "screen-copy-per-reader" => o.apply.screen_copy_per_reader = true,
                 "drop-msdf" => o.apply.lower.drop_msdf = true,
                 "ignore-set-transform" => o.apply.lower.ignore_set_transform = true,
                 "ignore-clip-ignore" => o.apply.lower.ignore_clip_ignore = true,

@@ -107,6 +107,22 @@ pub const DRAW_MSDF: u32 = 2;
 /// neighbour of otherwise equal state ([`mergeable`], [`merged`]).
 pub const DRAW_UNTEXTURED: u32 = 4;
 
+/// [`Draw::flags`] (P3-ST): before this draw the executor copies its whole render target into its
+/// screen texture, as Godot 4.5.1's GLES3 canvas renderer copies to the back buffer before the
+/// first screen-reading item of a canvas (rasterizer_canvas_gles3.cpp:426-533,
+/// texture_storage.cpp:3201-3236). A producer sets it on the reader's first non-empty draw; a
+/// flagged draw starts a call ([`mergeable`] compares flags).
+pub const DRAW_SCREEN_COPY: u32 = 8;
+/// [`Draw::flags`] (P3-ST): before this draw (after a [`DRAW_SCREEN_COPY`] on the same draw) the
+/// executor builds the screen texture's blurred mip chain as GLES3 does
+/// (`render_target_gen_back_buffer_mipmaps`, copy_effects.cpp:240-310); until the next copy the
+/// chain is sampled, else only level 0.
+pub const DRAW_SCREEN_MIPMAPS: u32 = 16;
+/// [`SamplerUniform::texture`] (P3-ST): the executor's screen texture (the last
+/// [`DRAW_SCREEN_COPY`]), sampled as GLES3 samples its back buffer whatever the shader's hints say:
+/// linear, linear-mipmap-linear, clamped. The sampler bits are ignored.
+pub const SCREEN_TEXTURE: u32 = u32::MAX;
+
 /// [`Item::flags`] (G7o4): every fragment the builtin program draws for this item takes the white
 /// texel's value (`texel = 1`) instead of sampling the bound texture. Bit 30: the flags word reads
 /// as the normal float 2.0 through a float texel. A producer sets it only on items whose every draw
