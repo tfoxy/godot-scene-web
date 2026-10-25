@@ -331,9 +331,9 @@ var _unsupported: Array[Dictionary] = []
 # Resources (G2b2).
 var _cache := RsResourceCache.new()
 var _cache_report: Variant = null
-var _fetches: Array[Dictionary] = []
-var _uploads: Array[Dictionary] = []
-var _mesh_uploads: Array[Dictionary] = []
+var _fetches: RsRowLog = RsRowLog.new()
+var _uploads: RsRowLog = RsRowLog.new()
+var _mesh_uploads: RsRowLog = RsRowLog.new()
 var _fetched_hashes: Dictionary[String, bool] = {}
 var _summary: Dictionary = {
 	"distinct_fetched": 0, "fetched_bytes": 0, "cache_hits": 0, "uploads": 0, "upload_bytes": 0,
@@ -360,6 +360,10 @@ var _perf_headless: bool = false
 # transaction's timings (`samples`: seq, decode, payload verify, provide, plan, execute, stats and
 # apply, in us), for a per-transaction profile. Off by default: a soak's list would grow unbounded.
 var _perf_samples: bool = false
+## P3-HX: RS_RECEIVER_RSS_EVERY=N (file mode, a diagnostic; 0/unset = off) logs one memory line
+## every N applied transactions: process RSS, the engine's tracked static memory, the cache's
+## in-memory payload bytes, the receiver's evidence rows and the resident RIDs.
+var _rss_every: int = 0
 var _payload_totals: Dictionary = {}
 var _last_decode_us: int = 0
 # G6c: RS_RECEIVER_SHOT_FINAL=1 (live): after the end record, one more shot of the last applied
@@ -779,6 +783,7 @@ func _parse_perf_env() -> bool:
 		_log("error: RS_RECEIVER_PERF_SAMPLES must be 0 or 1 (got %s)" % JSON.stringify(samples))
 		return false
 	_perf_samples = samples == "1" and _perf != null
+	_rss_every = _non_negative_env("RS_RECEIVER_RSS_EVERY", 0)
 	return true
 
 
@@ -941,6 +946,7 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		_perf.execute_us.add(_applier.last_execute_us)
 		_perf.stats_us.add(_applier.last_stats_us)
 		if _perf_samples:
+			_perf.timeline_seq = seq
 			_perf.samples.append({
 				"seq": seq, "decode_us": _last_decode_us, "payload_verify_us": verify_us, "apply_us": apply_us,
 				"provide_us": _applier.last_provide_us,
@@ -1309,6 +1315,8 @@ func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary
 			_digest_entries.append([entry, RsWire.as_int(record["offset"])])
 	_note_applied(entry, meta, stats)
 	var seq: int = entry["seq"]
+	if _rss_every > 0 and seq % _rss_every == 0:
+		_log_memory(seq)
 
 	if _state_seqs.has(seq) and not _dump_state(seq):
 		return
@@ -1319,6 +1327,15 @@ func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary
 			return
 		_busy = true
 		RenderingServer.frame_post_draw.connect(_take_shot.bind(seq), CONNECT_ONE_SHOT)
+
+
+## P3-HX: the RS_RECEIVER_RSS_EVERY line.
+func _log_memory(seq: int) -> void:
+	_log("mem seq=%d rss_mb=%d static_mb=%d cache_mem_mb=%d cache_mem_n=%d tx_rows=%d fetch_rows=%d upload_rows=%d mesh_upload_rows=%d items=%d textures=%d meshes=%d" % [
+		seq, RsPerf.read_rss_bytes() >> 20, OS.get_static_memory_usage() >> 20,
+		_cache.memory_bytes() >> 20, _cache.memory_entries(), _transactions.size(), _fetches.size(),
+		_uploads.size(), _mesh_uploads.size(), _applier.resident_items(), _applier.resident_textures(),
+		_applier.resident_meshes()])
 
 
 ## Writes state/<name>.json: the resolved state just applied, in render-stream-2.md's resolved
@@ -2193,10 +2210,6 @@ func _poll_fetches() -> void:
 		if result.has("browser"):
 			# G7wf (web, browser fetch only): the page clock's headers_ms/body_ms/callback_ms.
 			fetch_entry["browser"] = result["browser"]
-		# G6s: dropped under RS_RECEIVER_LOG=summary (fetch_entry is still mutated below, just
-		# never kept).
-		if _log_mode != "summary":
-			_fetches.append(fetch_entry)
 		resources["fetch_us"] = RsWire.as_int(resources["fetch_us"]) + (end_us - start_us)
 		if error == "":
 			# A 200 body: verified against its name first (a mismatch leaves verified false).
@@ -2206,6 +2219,10 @@ func _poll_fetches() -> void:
 				resources["shader_payload_fetches"] = RsWire.as_int(resources.get("shader_payload_fetches", 0)) + 1
 			error = _cache.add_fetched(hash, body, "GET %s" % hash)
 			fetch_entry["verified"] = not error.begins_with("resource-hash-mismatch")
+		# G6s: dropped under RS_RECEIVER_LOG=summary (fetch_entry is still mutated above, just
+		# never kept). P3-HX: the row log snapshots a row, so it is appended once it is final.
+		if _log_mode != "summary":
+			_fetches.append(fetch_entry)
 		if error != "":
 			_fail_with_error(seq, error)
 			return
@@ -2686,7 +2703,7 @@ func _write_report() -> void:
 	if file == null:
 		_log("error: cannot write %s: %s" % [_out_path, error_string(FileAccess.get_open_error())])
 		return
-	file.store_string(JSON.stringify(_report, "  ", false) + "\n")
+	RsRowLog.write_report_json(file, _report)
 	file.close()
 	_write_perf_report()
 

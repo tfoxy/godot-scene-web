@@ -46,6 +46,7 @@ import {
 } from "./config";
 import {
   appliedJson,
+  prettyJsonParts,
   encodePng,
   put,
   type Report,
@@ -175,11 +176,10 @@ async function run(): Promise<void> {
     }
     // applied.json last: the harness takes its compositor screenshot while this PUT is held, and
     // the canvas still shows the last drawn frame.
-    await put(
-      cfg,
-      relativeToOut(cfg, cfg.out),
-      `${JSON.stringify(doc, null, 2)}\n`,
-    );
+    await put(cfg, relativeToOut(cfg, cfg.out), [
+      ...prettyJsonParts(doc),
+      "\n",
+    ]);
   };
 
   try {

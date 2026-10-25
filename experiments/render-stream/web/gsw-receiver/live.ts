@@ -91,6 +91,7 @@ import {
 } from "./config";
 import {
   appliedJson,
+  prettyJsonParts,
   encodePng,
   type LiveEntry,
   put,
@@ -2109,11 +2110,10 @@ class LiveReceiver {
         if (params !== "")
           await put(this.cfg, "gsw/shader-params.jsonl", params);
       }
-      await put(
-        this.cfg,
-        relativeToOut(this.cfg, this.cfg.out),
-        `${JSON.stringify(appliedJson(this.report), null, 2)}\n`,
-      );
+      await put(this.cfg, relativeToOut(this.cfg, this.cfg.out), [
+        ...prettyJsonParts(appliedJson(this.report)),
+        "\n",
+      ]);
       for (const u of this.report.rust?.unsupported ?? [])
         log(`seq ${u.seq}: unsupported ${u.name} item ${u.item} (${u.reason})`);
       return code;
