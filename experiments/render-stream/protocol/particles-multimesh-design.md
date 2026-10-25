@@ -340,6 +340,11 @@ The multimesh half (PM1-PM4) is independent of the particles half and should go 
 
 ## Fit with the version plan
 
+*W11-D (2026-10-25): `/11` is specified in [render-stream-11.md](render-stream-11.md) as `/10` plus
+the carried-set prune rule, dynamic mesh surfaces and this multimesh tier. PM1 lands inside `/11`,
+and `buffer_f` follows the dynamic meshes' "changed since the connection's base" rule. The list
+below predates that.*
+
 - `/10` is fixed: `/9` plus P3-ST's screen-texture and back-buffer state plus CG1's
   `canvas_group` item key ([results/p3/p3-np.md](../results/p3/p3-np.md)). Both are item state over
   one shared GSW back buffer.
