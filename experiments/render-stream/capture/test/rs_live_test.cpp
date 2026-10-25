@@ -1383,6 +1383,149 @@ void test_carried_bounded() {
   check(resource_records() == 2, "an unchanged A carries nothing new: " + std::to_string(resource_records()));
 }
 
+
+// P3-SP (results/p3/p3-sp.md): shared publication. Every connection of a multi-connection hub gets
+// exactly the bytes a hub serving that connection alone sends it -- transactions re-stamped from
+// another connection's encode, inline records encoded once, the carried sets in one index -- and
+// the sharing actually happens (shared_sends), including a full transaction after two resyncs.
+struct SpConn {
+  std::uint64_t open_frame;
+  std::uint64_t ack_period;  // acks the latest seq every ack_period frames
+  std::uint64_t resync_frame;  // 0: never
+};
+
+Captured sp_state(std::uint64_t frame) {
+  Captured c = with_payloads(1 + static_cast<int>(frame % 4));
+  // Two hex-hashed textures that cycle (a hash recurs: never re-carried) beside the golden ones.
+  static const char *kHex[] = {"0123", "4567", "89ab", "cdef", "a5a5"};
+  for (std::uint32_t k = 0; k < 2; ++k) {
+    std::string hash;
+    while (hash.size() < 64) {
+      hash += kHex[(frame / (k + 1) + k) % 5];
+    }
+    TextureEntry t = golden::texture_a(frame / (k + 1) + 1, hash);
+    t.id = 100 + k;
+    c.state.textures.push_back(t);
+    c.payloads[hash] = std::make_shared<grc::rs::PayloadBytes>(
+        std::vector<std::uint8_t>(t.payload_bytes, static_cast<std::uint8_t>(k + 3)));
+  }
+  return c;
+}
+
+std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> sp_run(
+    const std::vector<SpConn> &conns, std::vector<ConnectionSummary> *summaries) {
+  FakeTransport transport;
+  Hub hub(&transport, LiveConfig(), make_template(Delivery::Inline));
+  std::map<std::uint32_t, std::uint32_t> number;  // transport id -> connection number (open order)
+  for (std::uint64_t frame = 1; frame <= 40; ++frame) {
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (conns[i].open_frame == frame) {
+        hub.on_event(opened(i + 1), frame);
+        hub.on_event(text(i + 1, kHelloApplied), frame);
+        number[i + 1] = static_cast<std::uint32_t>(number.size() + 1);
+      }
+    }
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (number.count(i + 1) == 0 || frame <= conns[i].open_frame) {
+        continue;
+      }
+      const ConnectionSummary &cs = now.at(number[i + 1] - 1);
+      if (conns[i].resync_frame == frame && cs.sent > 0) {
+        hub.on_event(text(i + 1, resync(cs.stream_id, cs.sent)), frame);
+      } else if ((frame - conns[i].open_frame) % conns[i].ack_period == 0 && cs.sent > 0) {
+        hub.on_event(text(i + 1, ack(cs.stream_id, cs.sent, "applied")), frame);
+      }
+    }
+    const Captured c = sp_state(frame);
+    hub.on_frame(frame, frame * 16000000ULL,
+                 hub.wants_snapshot(frame, frame * 16000000ULL) ? &c : nullptr, frame, 0);
+  }
+  std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> out;
+  for (const Sent &x : transport.of(Sent::Binary)) {
+    if (x.bytes.size() > 8 && x.bytes[0] == 'G') {
+      continue;  // the magic + session message: its stream_id is fresh per connection
+    }
+    out[x.conn].push_back(x.bytes);
+  }
+  if (summaries != nullptr) {
+    *summaries = hub.summaries();
+  }
+  return out;
+}
+
+void test_shared_publication_bytes() {
+  const std::vector<SpConn> conns = {
+      {1, 1, 0}, {1, 1, 0}, {3, 2, 0}, {3, 1, 17}, {1, 1, 17}};
+  std::vector<ConnectionSummary> multi_summaries;
+  const auto multi = sp_run(conns, &multi_summaries);
+  std::uint64_t shared = 0;
+  for (const ConnectionSummary &cs : multi_summaries) {
+    shared += cs.shared_sends;
+  }
+  check(shared > 40, "lockstep connections share their transactions: " + std::to_string(shared));
+  for (std::uint32_t i = 0; i < conns.size(); ++i) {
+    std::vector<ConnectionSummary> solo_summaries;
+    const auto solo = sp_run({conns[i]}, &solo_summaries);
+    const auto &mine = multi.at(i + 1);
+    const auto &alone = solo.at(1);
+    bool same = mine.size() == alone.size();
+    for (std::size_t k = 0; same && k < mine.size(); ++k) {
+      same = mine[k] == alone[k];
+    }
+    check(same, "connection " + std::to_string(i + 1) + " gets the bytes it gets alone (" +
+                    std::to_string(mine.size()) + " vs " + std::to_string(alone.size()) +
+                    " messages)");
+    check(solo_summaries.at(0).shared_sends == 0, "a lone connection shares nothing");
+    check(solo_summaries.at(0).carried_size > 0 &&
+              solo_summaries.at(0).carried_size == multi_summaries.at(
+                  i < 2 ? i : (i == 4 ? 2 : i + 1)).carried_size,
+          "carried_size per connection as alone");
+  }
+}
+
+// P3-SP: the host-wide carried index -- exact per slot, a reused slot starts empty, and the
+// table empties once no connection holds a slot.
+void test_carried_index() {
+  CarriedIndex index;
+  const unsigned a = index.acquire();
+  const unsigned b = index.acquire();
+  check(a != b && a < CarriedIndex::kSlots && b < CarriedIndex::kSlots, "two slots");
+  const std::uint32_t h1 = index.intern(golden::kHashA1);
+  const std::uint32_t h2 = index.intern(golden::kHashA2);
+  const std::uint32_t odd = index.intern("not-a-sha256");
+  check(h1 != h2 && h1 != odd && index.intern(golden::kHashA1) == h1 &&
+            index.intern("not-a-sha256") == odd,
+        "ids are stable and distinct");
+  index.mark(h1, a);
+  index.mark(odd, b);
+  check(index.carried(h1, a) && !index.carried(h1, b) && index.carried(odd, b) &&
+            !index.carried(h2, a),
+        "carried exactly per slot");
+  for (int i = 0; i < 5000; ++i) {
+    char buf[65];
+    std::snprintf(buf, sizeof(buf), "%016x%048x", i * 2654435761u, i);
+    const std::uint32_t id = index.intern(buf);
+    index.mark(id, a);
+  }
+  check(index.carried(index.intern(golden::kHashA1), a) && index.entries() == 5003,
+        "growth keeps every id and mark: " + std::to_string(index.entries()));
+  index.release(a);
+  for (unsigned i = 0; i < CarriedIndex::kSlots - 1; ++i) {
+    const unsigned s = index.acquire();
+    check(s != CarriedIndex::kNoSlot, "slots are reused once every one was used");
+    if (s == a) {
+      check(!index.carried(h1, s), "a reused slot starts with nothing carried");
+    }
+    if (i + 2 < CarriedIndex::kSlots) {
+      index.release(s);
+    }
+  }
+  check(index.carried(odd, b), "the open connection keeps its marks");
+  index.maintain();
+  check(index.entries() > 0, "the table stays while a slot is held");
+}
+
 // ----------------------------------------------------------------- G2c2: serving and pins
 
 grc::rs::PayloadPtr grt1(std::uint8_t fill, std::size_t data_bytes) {
@@ -2019,6 +2162,8 @@ int main() {
   test_stale_coalesce();
   test_inline_resources();
   test_carried_bounded();
+  test_shared_publication_bytes();
+  test_carried_index();
   test_served_resources();
   test_served_coded_bodies();
   test_rate_uncapped_unchanged();

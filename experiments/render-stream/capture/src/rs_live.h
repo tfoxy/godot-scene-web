@@ -15,7 +15,16 @@
 // once" per stream) makes that a correctness requirement, not an oversight (confirmed the hard
 // way, gate6-design.md G6s: a hash that recurs, such as a mesh surface's periodic pose, must
 // never be carried a second time), so a long-running connection's set holds one entry per
-// distinct hash it has ever sent, for its whole life.
+// distinct hash it has ever sent, for its whole life. Since P3-SP every connection's set lives in
+// one host-wide CarriedIndex (rs_carried.h: one compact entry per hash, a bit per connection).
+//
+// Shared publication (P3-SP, results/p3/p3-sp.md): the published snapshot is held once
+// (shared_ptr) by every connection whose base or pending target it is, never copied per
+// connection. Within one frame callback, connections that send the same transaction (the same
+// base snapshot, the same target, the same version) share its diff and encode: the first one forms
+// it, the others re-stamp only the meta's leading seq/frame/encoding/base_seq, so every connection
+// still gets exactly the bytes it would get alone. Inline resource records are encoded once per
+// hash per callback, and each target's payload hashes are looked up once.
 // The hub does not serve HTTP itself: it reports what each connection pins (the payloads of its
 // base, the last transaction sent on it; base_payloads()) so the caller's ServedResources
 // (rs_resource_store.h) keeps them servable until the next transaction, and it attributes every
@@ -138,6 +147,7 @@
 
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
+#include "rs_carried.h"
 #include "rs_histogram.h"
 
 namespace grc {
@@ -380,6 +390,9 @@ struct ConnectionSummary {
   // (not accumulated -- Hub::summaries() fills this fresh from Conn::carried each call), for the
   // perf timeline's first-third/last-third residency comparison.
   std::uint64_t carried_size = 0;
+  // P3-SP: transactions this connection sent re-stamped from another connection's encode of the
+  // same transaction in the same frame callback (0 for a lone connection).
+  std::uint64_t shared_sends = 0;
   // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
   // bytes of the 200 bodies, and how many were not 200.
   std::uint64_t http_gets = 0;
@@ -457,6 +470,11 @@ class Hub {
   // before it was copied; `snapshot_ns` its copy time (added to each sending stream's stats).
   void on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured *snapshot,
                 std::uint64_t epoch, std::uint64_t snapshot_ns);
+  // P3-SP: the same, with the published snapshot shared rather than copied (the capture's path:
+  // the hub keeps it as every sending connection's base without a per-connection copy).
+  void on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
+                       std::shared_ptr<const rs::Captured> snapshot, std::uint64_t epoch,
+                       std::uint64_t snapshot_ns);
 
   // Shutdown / disarm: the end record to every streaming connection, credit or not. It does NOT
   // close them: Godot's WebSocketPeer drops every message that arrives in the same poll() as a
@@ -515,13 +533,17 @@ class Hub {
   void error_close(Conn &c, const std::string &reason, const std::string &detail,
                    std::uint16_t code, std::uint64_t frame, std::uint64_t t_ns);
   void host_close(Conn &c, std::uint16_t code, const std::string &reason);
+  void release_closed(Conn &c);
+  // P3-SP: every open tap and live log, flushed at the end of each frame callback and of finish().
+  void flush_taps();
   bool deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send);
   // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns
   // the live log's `sent` object, or "null" when the connection was closed instead.
   // `stale_from` (stale-coalesce) is the frame the snapshot was taken at, 0 otherwise.
   // `capture_ns` (G6r Q3c "Staleness") is the frame callback's time the snapshot was captured at
   // -- `now_ns` for a fresh send, or the earlier time it was set aside for a stale-coalesce send.
-  std::string send_transaction(Conn &c, const rs::Captured &snapshot, std::uint64_t frame,
+  std::string send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &snapshot,
+                               std::uint64_t frame,
                                std::uint64_t now_ns, std::uint64_t epoch,
                                std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
                                std::uint64_t stale_from = 0);
@@ -539,6 +561,12 @@ class Hub {
   // `now_ns`. No-op under GRC_PUBLISH_FPS=uncapped.
   void advance_schedule(Conn &c, std::uint64_t now_ns);
 
+  // P3-SP: one frame callback's shared work (cleared at the start and end of on_frame_shared).
+  struct TargetRefs;  // a target's payload refs and their CarriedIndex ids
+  struct SharedTx;    // an encoded transaction other connections may re-stamp
+  const TargetRefs &target_refs(const std::shared_ptr<const rs::Captured> &target);
+  void clear_frame_memo();
+
   LiveTransport *transport_;
   LiveConfig config_;
   Session template_;
@@ -553,6 +581,10 @@ class Hub {
   bool finished_ = false;
   std::string finish_reason_;
   std::uint64_t frame_ = 0;  // the frame callback being processed (for log lines)
+  CarriedIndex carried_;     // P3-SP: every connection's carried hashes
+  std::vector<std::unique_ptr<TargetRefs>> frame_targets_;
+  std::vector<std::unique_ptr<SharedTx>> frame_txs_;
+  std::map<std::uint32_t, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_;
 };
 
 }  // namespace rs2

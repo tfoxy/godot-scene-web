@@ -609,8 +609,15 @@ struct Server::Impl {
   std::uint32_t next_id = 1;
   std::vector<Event> events;
 
+  // P3-SP: one wake byte per drain, not one per message. The I/O thread drains the pipe, then
+  // clears the flag, and only then rebuilds its poll set under `mu`: a message enqueued before
+  // the clear (its wake() saw the flag set and wrote nothing) is in that rebuild, and one
+  // enqueued after it writes a new byte.
+  std::atomic<bool> wake_pending{false};
+
   void wake() {
     if (wake_w < 0) return;
+    if (wake_pending.exchange(true, std::memory_order_acq_rel)) return;
     const char b = 0;
     // Best effort: a full pipe means poll() is already about to wake anyway.
     if (::write(wake_w, &b, 1) < 0) { /* ignored */
@@ -1165,8 +1172,12 @@ struct Server::Impl {
       for (std::size_t i = 0; i < fds.size(); ++i) {
         if (fds[i].revents == 0) continue;
         if (entries[i].is_wake) {
+          // Drain first, then re-arm: clearing first would let this drain swallow the byte of a
+          // wake() that set the flag after the clear, leaving the flag set with nothing in the
+          // pipe (the next message would then wait for poll's 50 ms timeout).
           while (::read(wake_r, drain, sizeof(drain)) > 0) {
           }
+          wake_pending.store(false, std::memory_order_release);
           continue;
         }
         if (entries[i].is_listener) {

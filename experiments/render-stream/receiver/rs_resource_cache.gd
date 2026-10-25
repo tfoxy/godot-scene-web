@@ -87,8 +87,13 @@ var _memory: Dictionary[String, Dictionary] = {}
 ## hash -> the raw payload length, for the same entries.
 var _lengths: Dictionary[String, int] = {}
 ## hash -> the access counter's value the last time this hash was added to or read from memory
-## (G6s LRU). Entries are removed from both this and _memory/_lengths together.
+## (G6s LRU). Entries are removed from both this and _memory/_lengths together. P3-SP: a touch
+## erases and re-inserts the key, so the dictionary's own (insertion) order is the LRU order and
+## eviction walks it from the front instead of sorting every entry.
 var _memory_order: Dictionary[String, int] = {}
+## P3-SP: the running sum of _lengths (memory_bytes()), kept on every add and eviction instead of
+## summed over every entry on each add.
+var _memory_total: int = 0
 ## hash -> the same, for the disk cache's files. Seeded from mtime for a warm cache's existing
 ## files (open()), updated on every write and cache-hit read.
 var _disk_order: Dictionary[String, int] = {}
@@ -186,10 +191,7 @@ func memory_entries() -> int:
 
 
 func memory_bytes() -> int:
-	var total: int = 0
-	for hash: String in _lengths:
-		total += _lengths[hash]
-	return total
+	return _memory_total
 
 
 ## G6s (gate2-design.md Q5): the hashes `obtain()` must not evict for the rest of this
@@ -205,28 +207,39 @@ func set_needed(hashes: Array) -> void:
 
 ## G6s LRU bookkeeping: bumps the shared counter and records `hash`'s new position in `order`.
 func _touch(order: Dictionary, hash: String) -> void:
+	order.erase(hash)
 	order[hash] = _access_counter
 	_access_counter += 1
+
+
+## Keeps a verified payload in memory (replacing any copy), touches it and evicts over budget.
+func _keep(hash: String, payload: PackedByteArray) -> void:
+	var previous: int = _lengths[hash] if _lengths.has(hash) else 0
+	_memory_total += payload.size() - previous
+	_memory[hash] = _kept(payload)
+	_lengths[hash] = payload.size()
+	_touch(_memory_order, hash)
+	_evict_memory_over_budget()
 
 
 ## G6s: evicts least-recently-used, non-needed entries from `_memory` until its total `_lengths`
 ## bytes are at or under `memory_budget_bytes` (never touched when no_evict is set, or the budget
 ## is negative -- unlimited). Called after every add to `_memory`.
 func _evict_memory_over_budget() -> void:
-	if no_evict or memory_budget_bytes < 0:
+	if no_evict or memory_budget_bytes < 0 or _memory_total <= memory_budget_bytes:
 		return
-	var total: int = memory_bytes()
-	if total <= memory_budget_bytes:
-		return
-	var candidates: Array[String] = []
-	for hash: String in _memory:
-		if not _needed.has(hash):
-			candidates.append(hash)
-	candidates.sort_custom(func(a: String, b: String) -> bool: return _memory_order.get(a, 0) < _memory_order.get(b, 0))
-	for hash: String in candidates:
+	# Least recently used first: _memory_order's insertion order (P3-SP), needed hashes skipped.
+	var victims: Array[String] = []
+	var total: int = _memory_total
+	for hash: String in _memory_order:
 		if total <= memory_budget_bytes:
 			break
+		if _needed.has(hash) or not _lengths.has(hash):
+			continue
+		victims.append(hash)
 		total -= _lengths[hash]
+	for hash: String in victims:
+		_memory_total -= _lengths[hash]
 		_memory.erase(hash)
 		_lengths.erase(hash)
 		_memory_order.erase(hash)
@@ -284,10 +297,7 @@ func add_inline(hash: String, payload: PackedByteArray) -> String:
 	var decoded: Dictionary = _verified(hash, payload, "inline payload %s" % hash, false)
 	if not decoded["ok"]:
 		return decoded["error"]
-	_memory[hash] = _kept(payload)
-	_lengths[hash] = payload.size()
-	_touch(_memory_order, hash)
-	_evict_memory_over_budget()
+	_keep(hash, payload)
 	return ""
 
 
@@ -385,6 +395,8 @@ func clear_memory() -> void:
 			stager.unstage(hash)
 	_memory.clear()
 	_lengths.clear()
+	_memory_order.clear()
+	_memory_total = 0
 
 
 ## A payload fetched over HTTP (G2c2, RsResourceFetcher): verified against its name, decoded,
@@ -402,10 +414,7 @@ func add_fetched(hash: String, payload: PackedByteArray, origin: String) -> Stri
 		_evict_disk_over_budget()
 	if _ever_evicted.has(hash):
 		refetch_after_evict += 1
-	_memory[hash] = _kept(payload)
-	_lengths[hash] = payload.size()
-	_touch(_memory_order, hash)
-	_evict_memory_over_budget()
+	_keep(hash, payload)
 	return ""
 
 
@@ -480,10 +489,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false, ktx2: bool =
 			out["error"] = cache_decoded["error"]
 			return out
 		_touch(_disk_order, hash)
-		_memory[hash] = _kept(cache_bytes)
-		_lengths[hash] = cache_bytes.size()
-		_touch(_memory_order, hash)
-		_evict_memory_over_budget()
+		_keep(hash, cache_bytes)
 		return out
 	# A fetch from the origin (file mode: the capture's store directory).
 	out["source"] = "directory"
@@ -516,10 +522,7 @@ func obtain(hash: String, mesh: bool = false, shader: bool = false, ktx2: bool =
 		_evict_disk_over_budget()
 	if _ever_evicted.has(hash):
 		refetch_after_evict += 1
-	_memory[hash] = _kept(fetched)
-	_lengths[hash] = fetched.size()
-	_touch(_memory_order, hash)
-	_evict_memory_over_budget()
+	_keep(hash, fetched)
 	return out
 
 

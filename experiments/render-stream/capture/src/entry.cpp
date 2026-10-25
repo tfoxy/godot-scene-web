@@ -958,6 +958,9 @@ void perf_timeline_tick(uint64_t now_ns) {
               // resource-duplicate rule means a carried hash is never forgotten), so the check
               // here is on its growth rate, not on it staying flat.
               ",\"carried_size\":" + std::to_string(s.carried_size) +
+              // P3-SP: transactions re-stamped from another connection's encode (shared
+              // publication); 0 for a lone connection.
+              ",\"shared_sends\":" + std::to_string(s.shared_sends) +
               // G7q: a window-2 connection's grant (credit capacity is w / RTT); absent at 1.
               (s.credit_window > 1 ? ",\"credit_window\":" + std::to_string(s.credit_window)
                                    : std::string()) +
@@ -2756,6 +2759,18 @@ void stream_publish(uint64_t frame) {
     snapshot.state.frame = publish_frame;
   }
   if (g_live.hub != nullptr) {
+    // P3-SP: the hub holds the published snapshot shared (every connection's base is this one
+    // object, never a per-connection copy): moved in when there is no file sink, copied once when
+    // the publisher keeps its own.
+    std::shared_ptr<const rs::Captured> shared;
+    if (live_wants) {
+      if (g_stream.publisher == nullptr) {
+        shared = std::make_shared<const rs::Captured>(std::move(snapshot));
+      } else {
+        shared = std::make_shared<const rs::Captured>(*published);
+      }
+      published = shared.get();
+    }
     std::vector<rs::ServeEvent> events;
     if (serving) {
       // wrong-hash (G2b2/G2c2): the store corrupted its copy at this publish; serve the same.
@@ -2767,8 +2782,7 @@ void stream_publish(uint64_t frame) {
       sendable.insert(sendable.begin(), &published->payloads);
       g_live.served->pin(sendable, frame, &events);
     }
-    g_live.hub->on_frame(frame, monotonic_ns(), live_wants ? published : nullptr, publish_epoch,
-                         snapshot_ns);
+    g_live.hub->on_frame_shared(frame, monotonic_ns(), shared, publish_epoch, snapshot_ns);
     if (serving) {
       // Phase 2: retained := current ∪ every connection's base; the rest is retired.
       g_live.served->retire(published->payloads, g_live.hub->base_payloads(), frame, &events);

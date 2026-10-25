@@ -22,6 +22,7 @@ is measured the same way:
 """
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -163,12 +164,38 @@ def rx_stats(rx):
     return out
 
 
+def rx_dirs(out_dir):
+    """The receivers' directories: rx/ for one viewer, rx1/ .. rxN/ for --viewers N (P3-SP)."""
+    names = [n for n in os.listdir(out_dir) if re.fullmatch(r"rx\d*", n) and
+             os.path.isdir(os.path.join(out_dir, n))]
+    return sorted(names, key=lambda n: int(n[2:] or 0))
+
+
+def host_stats(out_dir):
+    """The host's own cost (P3-SP): frame rate, frame callback, CPU cores and RSS, from
+    bench-capture-scale.py's samples and the host's perf.json (or None without them)."""
+    leg = os.path.join(out_dir, "host")
+    if not os.path.isdir(leg):
+        return None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import importlib
+    bcs = importlib.import_module("bench-capture-scale")
+    s = bcs.summarize(leg, os.sysconf("SC_CLK_TCK"))
+    out = {k: s.get(k) for k in ("cores", "rss_mb_max", "rss_mb_end")}
+    fi = s.get("frame_interval_us")
+    if fi and fi.get("mean"):
+        out["fps"] = r1(1e6 / fi["mean"])
+    for k in ("frame_callback_us", "snapshot_us", "diff_us", "encode_us"):
+        if s.get(k):
+            out[k[:-3] + "_ms_mean"] = round(s[k]["mean"] / 1000, 2)
+    return out
+
+
 def verdict(out_dir, min_rate, max_rtt_ms):
-    taps = sorted(f for f in os.listdir(os.path.join(out_dir, "host", "tap"))
-                  if f.startswith("live-") and f.endswith(".jsonl")) \
-        if os.path.isdir(os.path.join(out_dir, "host", "tap")) else []
-    tap = tap_stats(load_jsonl(os.path.join(out_dir, "host", "tap", taps[0]))) if taps else None
-    rx = rx_stats(os.path.join(out_dir, "rx"))
+    tap_dir = os.path.join(out_dir, "host", "tap")
+    taps = sorted((f for f in os.listdir(tap_dir) if re.fullmatch(r"live-\d+\.jsonl", f)),
+                  key=lambda f: int(f[5:-6])) if os.path.isdir(tap_dir) else []
+    rxs = rx_dirs(out_dir) or ["rx"]
     host_exit = None
     path = os.path.join(out_dir, "host", "exit.txt")
     if os.path.exists(path):
@@ -177,27 +204,45 @@ def verdict(out_dir, min_rate, max_rtt_ms):
     path = os.path.join(out_dir, "host", "scale-report.json")
     if os.path.exists(path):
         scale = json.load(open(path))
-    ran = tap is not None and host_exit == "0" and rx.get("exit") == "0"
+    # One viewer per receiver directory; the tap's connection n is the n-th to open, so viewers
+    # are matched to taps by order only for the summary (every check is judged over all of them).
+    viewers = []
+    for i, name in enumerate(rxs):
+        tap = tap_stats(load_jsonl(os.path.join(tap_dir, taps[i]))) if i < len(taps) else None
+        viewers.append({"rx": name, "tap": tap, "receiver": rx_stats(os.path.join(out_dir, name))})
+    taps_ok = all(v["tap"] is not None for v in viewers)
+    rx_ok = all(v["receiver"].get("exit") == "0" for v in viewers)
+    ran = taps_ok and host_exit == "0" and rx_ok
     checks = [{"id": "legs-ran", "passed": ran,
-               "detail": f"host exit {host_exit}, receiver exit {rx.get('exit')}, tap {'seen' if tap else 'missing'}"}]
-    rate = (tap or {}).get("applies_per_s")
+               "detail": f"host exit {host_exit}, receiver exit "
+                         f"{','.join(str(v['receiver'].get('exit')) for v in viewers)}, "
+                         f"taps {len(taps)} for {len(viewers)} viewer(s)"}]
+    rates = [(v["tap"] or {}).get("applies_per_s") for v in viewers]
+    rate = None if None in rates else min(rates)
     checks.append({"id": "update-rate", "passed": ran and rate is not None and rate >= min_rate,
-                   "detail": f"{rate} distinct applies/s (>= {min_rate}); sent {(tap or {}).get('sent_per_s')}/s, "
-                             f"folded {(tap or {}).get('folded')}"})
-    rtt = (tap or {}).get("credit_rtt_ms_p50")
+                   "detail": f"{rate} distinct applies/s, the slowest viewer (>= {min_rate}); sent "
+                             f"{[(v['tap'] or {}).get('sent_per_s') for v in viewers]}/s, folded "
+                             f"{[(v['tap'] or {}).get('folded') for v in viewers]}"})
+    rtts = [(v["tap"] or {}).get("credit_rtt_ms_p50") for v in viewers]
+    rtt = None if None in rtts else max(rtts)
     checks.append({"id": "credit-rtt", "passed": ran and rtt is not None and rtt <= max_rtt_ms,
-                   "detail": f"credit RTT p50 {rtt} ms (<= {max_rtt_ms}), p95 {(tap or {}).get('credit_rtt_ms_p95')}"})
-    summary = {"schema": "render-stream-live-scale/1", "tap": tap, "receiver": rx, "host_scale": scale,
-               "min_rate": min_rate, "max_credit_rtt_ms": max_rtt_ms}
+                   "detail": f"credit RTT p50 {rtt} ms, the slowest viewer (<= {max_rtt_ms}), p95 "
+                             f"{[(v['tap'] or {}).get('credit_rtt_ms_p95') for v in viewers]}"})
+    summary = {"schema": "render-stream-live-scale/1", "tap": viewers[0]["tap"],
+               "receiver": viewers[0]["receiver"], "viewers": viewers, "host": host_stats(out_dir),
+               "host_scale": scale, "min_rate": min_rate, "max_credit_rtt_ms": max_rtt_ms}
     json.dump(summary, open(os.path.join(out_dir, "bench-live-scale.json"), "w"), indent=1)
     json.dump({"schema": "render-stream-live-scale-result/1", "checks": checks},
               open(os.path.join(out_dir, "result.json"), "w"), indent=2)
     for c in checks:
         print(f"bench-live-scale: {'pass' if c['passed'] else 'FAIL'} {c['id']}: {c['detail']}")
-    if tap:
-        print("bench-live-scale: " + json.dumps({k: tap[k] for k in (
-            "latency_ms_p50", "latency_ms_p95", "ws_kib_per_s", "gets_per_s", "inline_records_per_s",
-            "first_apply_ms")}))
+    if summary["host"]:
+        print("bench-live-scale: host " + json.dumps(summary["host"]))
+    for v in viewers:
+        if v["tap"]:
+            print(f"bench-live-scale: {v['rx']} " + json.dumps({k: v["tap"][k] for k in (
+                "applies_per_s", "latency_ms_p50", "latency_ms_p95", "ws_kib_per_s", "gets_per_s",
+                "inline_records_per_s", "first_apply_ms")}))
     return 0 if all(c["passed"] for c in checks) else 1
 
 
@@ -271,6 +316,22 @@ def self_test():
         check("a frame window has no first apply", win["first_apply_ms"] is None and win["frames"] == [100, 400])
         crashed = leg("crashed", 2, 2, rx_exit="3")
         check("a failed receiver fails legs-ran", verdict(crashed, 15, 100) == 1)
+        # P3-SP: --viewers N (rx1/ .. rxN/, taps live-1 .. live-N), judged on the slowest viewer.
+        multi = os.path.join(tmp, "multi")
+        os.makedirs(os.path.join(multi, "host", "tap"))
+        open(os.path.join(multi, "host", "exit.txt"), "w").write("0\n")
+        for i, (every, rtt) in enumerate(((2, 2), (2, 2), (4, 3)), 1):
+            os.makedirs(os.path.join(multi, f"rx{i}"))
+            open(os.path.join(multi, f"rx{i}", "exit.txt"), "w").write("0\n")
+            synthetic_tap(os.path.join(multi, "host", "tap", f"live-{i}.jsonl"), 601, every, rtt)
+        check("three viewers that keep up pass", verdict(multi, 10, 100) == 0)
+        s = json.load(open(os.path.join(multi, "bench-live-scale.json")))
+        check("one summary per viewer, in rx order",
+              [v["rx"] for v in s["viewers"]] == ["rx1", "rx2", "rx3"])
+        check("update-rate is the slowest viewer's", s["viewers"][2]["tap"]["applies_per_s"] < 16 and
+              verdict(multi, 16, 100) == 1)
+        open(os.path.join(multi, "rx2", "exit.txt"), "w").write("1\n")
+        check("one failed viewer fails legs-ran", verdict(multi, 10, 100) == 1)
     print("bench-live-scale self-test: " + ("PASS" if failures == 0 else f"{failures} FAILED"))
     return 0 if failures == 0 else 1
 

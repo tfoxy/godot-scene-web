@@ -307,6 +307,37 @@ checks this.
 - After a resync, a receiver keeps what it already received. After a reconnect, the new stream
   carries again every inline payload it needs.
 
+### Design, not built: a carried set bounded by the resolved state (P3-SP, for `/11`)
+
+Up to `/10`, `resource-duplicate` and the first-transaction rule make "carried" a lifelong,
+exact set on both ends: the host may never send a hash twice and may never skip one the receiver
+lacks, and the receiver checks every table entry at or under `inline_max_bytes` against it
+(`resource-missing`). Under content-addressed churn (a game's skeletal mesh poses: ~4,300 new
+hashes a second in STS2 combat) both sets grow with the session. P3-SP made the host's set compact
+and shared between connections (results/p3/p3-sp.md); bounding it needs this rule change, gated
+on the stream's version (every version below `/11` keeps the rule above):
+
+- **Pruning.** After the transaction with seq S (the host: as it is sent; the receiver: as it is
+  accepted), a stream's carried set becomes `carried ∩ hashes(S)`, where `hashes(S)` are the
+  payload hashes the resolved state S names (image entries, their variants, mesh surfaces,
+  payload-source shaders). Both ends process the same records in the same order, so the two sets
+  stay equal, and each is bounded by the size of one resolved state, not by the session.
+- **`resource-duplicate` narrows** to "a hash the stream still carries": a hash that left the
+  state and returns is carried again, by a new resource record. A receiver that skipped a
+  transaction (a resync's ignored in-flight patches, `/7` window 2) prunes less than the host
+  did, so it may still hold a hash the host sends again: that record is accepted and replaces the
+  held copy.
+- **`resource-missing` is unchanged**: the host still carries every inline-sized hash before the
+  first transaction that names it, now "first since it last left the state".
+- **Cost.** A hash that recurs after leaving the state is sent again (a periodic pose: G6s's
+  gate 6 `MS` region every 90 frames). Its bytes are inline-sized by definition.
+- **What it removes.** The host's per-stream set and the receiver validator's carried map stop
+  growing; a receiver's payload store can drop what the state no longer names without a GET when
+  the hash returns. With the dynamic mesh surfaces P3-LV designed for `/11`
+  ([p3-lv.md](../results/p3/p3-lv.md), "Design: dynamic mesh surfaces by id, inline"), poses stop
+  being hashes at all; this rule bounds what is left (textures, shaders, static meshes) and any
+  other content-addressed churn.
+
 ## Texture payload (`render-stream-texture/1`)
 
 The canonical bytes of one texture version. A file in a store, an HTTP response body and a

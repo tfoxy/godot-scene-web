@@ -17,6 +17,8 @@ extends SceneTree
 ##      resource-invalid.
 ##   5. (P3-HX) RsRowLog keeps evidence rows as bytes (equal rows, keys in order) and writes the
 ##      report exactly as `JSON.stringify(report, "  ", false) + "\n"` would, rows streamed.
+##   6. (P3-SP) RsResourceCache's memory budget: a running byte total and least-recently-used
+##      eviction that never drops a needed hash, a re-touched hash moving to the back.
 ##
 ## Decoding, validation and resolution of the golden vectors are the Rust core's (rs-core's cargo
 ## tests) and the TypeScript checker decoder's (scripts/test/self-test-rs*.ts); G7gd removed the
@@ -37,6 +39,7 @@ func _init() -> void:
 	_check_fetcher_coding()
 	_check_folded_full()
 	_check_row_log()
+	_check_cache_budget()
 	var golden2: String = OS.get_environment("RS_SELFTEST_GOLDEN_DIR").strip_edges()
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
@@ -216,6 +219,36 @@ func _check_row_log() -> void:
 		_checked += 1
 		if _row_log_json(logged) != JSON.stringify(report, "  ", false) + "\n":
 			_fail("the streamed report differs from JSON.stringify's (%s)" % name)
+
+
+## P3-SP: the memory budget's running total and LRU order (no sum or sort per add).
+func _check_cache_budget() -> void:
+	var cache: RsResourceCache = RsResourceCache.new()
+	cache.memory_budget_bytes = 300
+	var payload: PackedByteArray = PackedByteArray()
+	payload.resize(100)
+	for name: String in ["a", "b", "c"]:
+		cache.add_inline(name, payload)
+	_checked += 1
+	if cache.memory_bytes() != 300 or cache.memory_entries() != 3:
+		_fail("three 100-byte payloads hold %d bytes in %d entries" % [cache.memory_bytes(), cache.memory_entries()])
+	cache.obtain("a")  # a is now the most recently used
+	cache.set_needed(["b"])
+	cache.add_inline("d", payload)  # over budget: the oldest that is not needed (c) goes
+	_checked += 1
+	if cache.has_in_memory("c") or not cache.has_in_memory("a") or not cache.has_in_memory("b"):
+		_fail("eviction dropped %s, expected only c" % str(["a", "b", "c"].filter(func(h: String) -> bool: return not cache.has_in_memory(h))))
+	_checked += 1
+	if cache.memory_bytes() != 300 or cache.evictions_memory != 1:
+		_fail("after one eviction: %d bytes, %d evictions" % [cache.memory_bytes(), cache.evictions_memory])
+	cache.add_inline("a", payload)  # a replaced in place: the total does not double count it
+	_checked += 1
+	if cache.memory_bytes() != 300:
+		_fail("re-adding a held hash counts %d bytes" % cache.memory_bytes())
+	cache.clear_memory()
+	_checked += 1
+	if cache.memory_bytes() != 0 or cache.memory_entries() != 0:
+		_fail("clear_memory leaves %d bytes" % cache.memory_bytes())
 
 
 func _check_scripts() -> void:

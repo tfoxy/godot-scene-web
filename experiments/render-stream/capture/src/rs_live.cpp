@@ -695,26 +695,32 @@ struct Hub::Conn {
   std::uint64_t window_slots = 1;
   std::set<std::uint64_t> uncredited;  // sent seqs whose credit has not returned
   bool credit = false;
-  // Window >= 2 only: the payloads of every in-window seq other than the last one sent (that one
-  // is `base_payloads`), so every in-flight transaction's payloads stay pinned (D7, Q2).
-  std::map<std::uint64_t, rs::PayloadMap> window_payloads;
-  Snapshot base;
+  // Window >= 2 only: the snapshot of every in-window seq other than the last one sent (that one
+  // is `base`), so every in-flight transaction's payloads stay pinned (D7, Q2).
+  std::map<std::uint64_t, std::shared_ptr<const rs::Captured>> window_payloads;
+  // The last snapshot sent (shared with every connection that sent it, P3-SP) and its seq here;
+  // its payloads are the pin (G2c2, D7).
+  std::shared_ptr<const rs::Captured> base;
+  std::uint64_t base_seq = 0;
   bool has_base = false;
-  rs::PayloadMap base_payloads;  // G2c2: the payloads `base` names (the pin, D7)
   bool resync = false;
   std::uint64_t epoch_sent = 0;
   bool pending = false;
   std::uint64_t pending_since_frame = 0;  // the callback that made the current target pending
   std::uint64_t pending_since_ns = 0;
-  std::optional<rs::Captured> stale;  // stale-coalesce: the first missed target since the last send
-  std::set<std::string> carried;  // G2b2: payload hashes this connection already carried inline
+  // stale-coalesce: the first missed target since the last send
+  std::shared_ptr<const rs::Captured> stale;
+  // G2b2: the payload hashes this connection already carried inline are the CarriedIndex entries
+  // with this slot's bit (P3-SP); `carried_count` is their number.
+  unsigned carried_slot = CarriedIndex::kNoSlot;
+  std::uint64_t carried_count = 0;
   std::uint64_t stale_frame = 0;
   std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
   // G7q, stale-coalesce at window >= 2: the stale target just sent stays the target of every
   // send made while its seq still holds a window slot, so a receiver folding those sends into one
   // apply still draws it (the sabotage's sets stay window 1's). Never set at window 1, where
   // nothing is sent while a seq is in flight.
-  std::optional<rs::Captured> stale_held;
+  std::shared_ptr<const rs::Captured> stale_held;
   std::uint64_t stale_held_seq = 0;
   std::uint64_t stale_held_frame = 0;
   std::uint64_t stale_held_ns = 0;
@@ -740,6 +746,109 @@ struct Hub::Conn {
   std::FILE *log = nullptr;
 };
 
+// P3-SP: a target's payload refs (payload_refs, table order) and, for each one at or under
+// inline_max_bytes, its CarriedIndex id (kNoId above it) -- looked up once per target per frame.
+struct Hub::TargetRefs {
+  std::shared_ptr<const rs::Captured> target;
+  std::vector<rs::PayloadRef> refs;
+  std::vector<std::uint32_t> ids;
+};
+
+// P3-SP: a transaction one connection formed and encoded in this frame callback. Another connection
+// sending the same transaction (the same base snapshot, or none for a full one, the same target and
+// version) re-stamps its meta's leading fields instead of forming and encoding it again.
+struct Hub::SharedTx {
+  std::shared_ptr<const rs::Captured> base;  // null: a full transaction
+  std::shared_ptr<const rs::Captured> target;
+  TxMeta meta;  // the fields the encode was stamped with
+  bool full = false;
+  std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+};
+
+namespace {
+
+// The meta's leading fields, exactly as encode_transaction writes them (rs2_codec.cpp), up to
+// (not including) `,"status":`.
+std::string tx_prefix(const TxMeta &meta, bool full) {
+  std::string m = "{\"type\":\"transaction\",\"seq\":" + std::to_string(meta.seq) +
+                  ",\"frame\":" + std::to_string(meta.frame) + ",\"encoding\":\"" +
+                  to_wire(full ? Encoding::Full : Encoding::Patch) + "\",\"base_seq\":" +
+                  (full ? std::string("null") : std::to_string(meta.base_seq));
+  return m;
+}
+
+void put_u32le(std::vector<std::uint8_t> &out, std::size_t at, std::uint32_t v) {
+  out[at] = static_cast<std::uint8_t>(v);
+  out[at + 1] = static_cast<std::uint8_t>(v >> 8);
+  out[at + 2] = static_cast<std::uint8_t>(v >> 16);
+  out[at + 3] = static_cast<std::uint8_t>(v >> 24);
+}
+
+std::uint32_t get_u32le(const std::vector<std::uint8_t> &b, std::size_t at) {
+  return static_cast<std::uint32_t>(b[at]) | (static_cast<std::uint32_t>(b[at + 1]) << 8) |
+         (static_cast<std::uint32_t>(b[at + 2]) << 16) |
+         (static_cast<std::uint32_t>(b[at + 3]) << 24);
+}
+
+// `shared`'s record (u32 body length, u32 meta length, meta, blocks) with its meta prefix replaced
+// by `meta`'s. False when the record does not start with the prefix its own meta implies (the
+// caller then forms and encodes the transaction itself, so the bytes are never wrong).
+bool restamp(const std::vector<std::uint8_t> &src, const TxMeta &src_meta, const TxMeta &meta,
+             bool full, std::vector<std::uint8_t> *out) {
+  const std::string old_prefix = tx_prefix(src_meta, full);
+  if (src.size() < 8 + old_prefix.size() ||
+      std::memcmp(src.data() + 8, old_prefix.data(), old_prefix.size()) != 0) {
+    return false;
+  }
+  static const char kStatus[] = ",\"status\":";
+  if (src.size() < 8 + old_prefix.size() + sizeof(kStatus) - 1 ||
+      std::memcmp(src.data() + 8 + old_prefix.size(), kStatus, sizeof(kStatus) - 1) != 0) {
+    return false;
+  }
+  const std::string prefix = tx_prefix(meta, full);
+  const std::uint32_t body = get_u32le(src, 0);
+  const std::uint32_t meta_len = get_u32le(src, 4);
+  if (static_cast<std::size_t>(body) + 4 != src.size() || meta_len < old_prefix.size()) {
+    return false;
+  }
+  out->clear();
+  out->reserve(src.size() + prefix.size() - old_prefix.size());
+  out->resize(8);
+  put_u32le(*out, 0, static_cast<std::uint32_t>(body - old_prefix.size() + prefix.size()));
+  put_u32le(*out, 4, static_cast<std::uint32_t>(meta_len - old_prefix.size() + prefix.size()));
+  out->insert(out->end(), prefix.begin(), prefix.end());
+  out->insert(out->end(), src.begin() + 8 + static_cast<std::ptrdiff_t>(old_prefix.size()),
+              src.end());
+  return true;
+}
+
+}  // namespace
+
+const Hub::TargetRefs &Hub::target_refs(const std::shared_ptr<const rs::Captured> &target) {
+  for (const auto &t : frame_targets_) {
+    if (t->target == target) {
+      return *t;
+    }
+  }
+  auto t = std::make_unique<TargetRefs>();
+  t->target = target;
+  t->refs = rs::payload_refs(target->state);
+  t->ids.reserve(t->refs.size());
+  for (const rs::PayloadRef &ref : t->refs) {
+    t->ids.push_back(ref.payload_bytes > template_.resources.inline_max_bytes
+                         ? CarriedIndex::kNoId
+                         : carried_.intern(*ref.hash));
+  }
+  frame_targets_.push_back(std::move(t));
+  return *frame_targets_.back();
+}
+
+void Hub::clear_frame_memo() {
+  frame_targets_.clear();
+  frame_txs_.clear();
+  frame_records_.clear();
+}
+
 Hub::Hub(LiveTransport *transport, LiveConfig config, Session session_template)
     : transport_(transport), config_(std::move(config)), template_(std::move(session_template)) {}
 
@@ -760,7 +869,19 @@ void Hub::log_line(Conn &c, const std::string &line) {
   }
   std::fwrite(line.data(), 1, line.size(), c.log);
   std::fputc('\n', c.log);
-  std::fflush(c.log);
+  // P3-SP: flushed once per frame callback (flush_taps), not per line.
+}
+
+void Hub::flush_taps() {
+  for (auto &entry : conns_) {
+    Conn &c = *entry.second;
+    if (c.tap != nullptr) {
+      std::fflush(c.tap);
+    }
+    if (c.log != nullptr) {
+      std::fflush(c.log);
+    }
+  }
 }
 
 void Hub::close_files(Conn &c) {
@@ -774,12 +895,23 @@ void Hub::close_files(Conn &c) {
   }
 }
 
+void Hub::release_closed(Conn &c) {
+  // P3-SP: a closed connection pins nothing and carries nothing any more.
+  carried_.release(c.carried_slot);
+  c.carried_slot = CarriedIndex::kNoSlot;
+  c.base.reset();
+  c.window_payloads.clear();
+  c.stale.reset();
+  c.stale_held.reset();
+}
+
 void Hub::host_close(Conn &c, std::uint16_t code, const std::string &reason) {
   if (c.state == State::Closed) {
     return;
   }
   transport_->close(c.id, code, reason);
   c.state = State::Closed;
+  release_closed(c);
   c.s.close_code = code;
   c.s.closed_by = "host";
   c.s.close_reason = reason;
@@ -851,6 +983,11 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
         const std::string n = std::to_string(c.s.connection);
         c.tap = std::fopen(path_join(config_.tap_dir, "stream-" + n + ".rs2").c_str(), "wb");
         c.log = std::fopen(path_join(config_.tap_dir, "live-" + n + ".jsonl").c_str(), "wb");
+        // P3-SP: the stream copy is one frame's messages per flush (flush_taps), so a buffer
+        // that holds them keeps it to about one write per frame.
+        if (c.tap != nullptr) {
+          std::setvbuf(c.tap, nullptr, _IOFBF, 1u << 20);
+        }
       }
       conns_[event.conn] = std::move(conn);
       Line open;
@@ -882,6 +1019,7 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
         return;  // already closed by the host (host_close logged it)
       }
       c->state = State::Closed;
+      release_closed(*c);
       c->s.close_code = event.code;
       c->s.closed_by = "receiver";
       c->s.close_reason = event.reason;
@@ -1078,6 +1216,11 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             ignored = "stale";
           }
         }
+        // P3-SP: a seq every stage has answered is never timed again; its entry goes (the map
+        // grew by one entry per transaction for the connection's life).
+        if (sent != c.sent_at.end() && sent->second.acked == 7u) {
+          c.sent_at.erase(sent);
+        }
       }
       if (!ignored.empty()) {
         ++c.s.acks_ignored;
@@ -1133,7 +1276,7 @@ bool Hub::wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const {
     if ((c.credit || ignore_credit || overrun) && (ignore_credit || tick_due(c, now_ns))) {
       return true;
     }
-    if (stale_coalesce && !c.stale.has_value()) {
+    if (stale_coalesce && c.stale == nullptr) {
       return true;
     }
   }
@@ -1149,8 +1292,8 @@ void Hub::note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns) {
 
 bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send) {
   if (c.tap != nullptr) {
+    // P3-SP: flushed once per frame callback (flush_taps), not per message.
     std::fwrite(message.data(), 1, message.size(), c.tap);
-    std::fflush(c.tap);
   }
   c.s.max_message_sent = std::max<std::uint64_t>(c.s.max_message_sent, message.size());
   if (!send) {
@@ -1197,26 +1340,36 @@ void Hub::advance_schedule(Conn &c, std::uint64_t now_ns) {
   c.next_due_ns += steps * config_.publish_period_ns;
 }
 
-std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::uint64_t frame,
-                                  std::uint64_t now_ns, std::uint64_t epoch,
+std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &target,
+                                  std::uint64_t frame, std::uint64_t now_ns, std::uint64_t epoch,
                                   std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
                                   std::uint64_t stale_from) {
+  const rs::Captured &snapshot = *target;
   // G2b2: the inline payloads this connection has not carried yet, one resource record per
   // message, ahead of the transaction that needs them (render-stream-2.md "Live transport");
-  // since G5e every `ok` mesh's surfaces too, after the textures.
-  for (const rs::PayloadRef &ref : rs::payload_refs(snapshot.state)) {
-    const std::string &hash = *ref.hash;
-    if (ref.payload_bytes > template_.resources.inline_max_bytes || c.carried.count(hash) != 0) {
+  // since G5e every `ok` mesh's surfaces too, after the textures. P3-SP: the hashes are looked up
+  // once per target and each record is encoded once per frame callback, whichever connection
+  // sends it first.
+  const TargetRefs &refs = target_refs(target);
+  for (std::size_t i = 0; i < refs.refs.size(); ++i) {
+    const std::uint32_t id = refs.ids[i];
+    if (id == CarriedIndex::kNoId || carried_.carried(id, c.carried_slot)) {
       continue;
     }
+    const std::string &hash = *refs.refs[i].hash;
     const auto payload = snapshot.payloads.find(hash);
     if (payload == snapshot.payloads.end() || payload->second == nullptr) {
       continue;  // never happens: a Captured holds every payload its tables name
     }
-    ResourceRecord record;
-    record.hash = hash;
-    record.payload = *payload->second;
-    const std::vector<std::uint8_t> bytes = encode_resource(record);
+    std::shared_ptr<const std::vector<std::uint8_t>> &record_bytes = frame_records_[id];
+    if (record_bytes == nullptr) {
+      ResourceRecord record;
+      record.hash = hash;
+      record.payload = *payload->second;
+      record_bytes = std::make_shared<const std::vector<std::uint8_t>>(encode_resource(record));
+    }
+    const std::vector<std::uint8_t> &bytes = *record_bytes;
+    const std::uint64_t payload_size = payload->second->size();
     if (bytes.size() > c.s.max_message_bytes) {
       const std::string detail = "resource " + hash + " is " +
                                  std::to_string(bytes.size()) + " bytes, the cap is " +
@@ -1234,11 +1387,12 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
       return "null";
     }
     deliver(c, bytes, true);
-    c.carried.insert(hash);
+    carried_.mark(id, c.carried_slot);
+    ++c.carried_count;
     ++c.s.resource_records;
-    c.s.resource_bytes += record.payload.size();
+    c.s.resource_bytes += payload_size;
     ++c.stats.resource_records;
-    c.stats.resource_bytes += record.payload.size();
+    c.stats.resource_bytes += payload_size;
     c.stats.bytes_total += bytes.size();
     c.stats.max_record_bytes = std::max<std::uint64_t>(c.stats.max_record_bytes, bytes.size());
     log_line(c, Line()
@@ -1246,25 +1400,56 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
                     .num("t_us", now_ns / 1000)
                     .str("event", "resource")
                     .str("hash", hash)
-                    .num("bytes", record.payload.size())
+                    .num("bytes", payload_size)
                     .take());
   }
-  Snapshot cur = snapshot.state;
-  if (is_v7_or_later(c.version)) {
-    // /7 is byte-identical to /6 (render-stream-7.md) but faithful; /8 carries the new table
-    // fields (render-stream-8.md).
-    cur.version = c.version;
-  }
-  cur.seq = c.next_seq;
-  cur.frame = frame;
+  // /7 is byte-identical to /6 (render-stream-7.md) but faithful; /8 carries the new table fields
+  // (render-stream-8.md): a /7-or-later connection's own version stamps its transactions.
+  TxMeta meta;
+  meta.version = is_v7_or_later(c.version) ? c.version : snapshot.state.version;
+  meta.seq = c.next_seq;
+  meta.frame = frame;
+  meta.base_seq = c.base_seq;
   const bool full = !c.has_base || c.resync;
+  const std::shared_ptr<const rs::Captured> base = full ? nullptr : c.base;
+  // P3-SP: the same transaction already formed this callback (another connection in lockstep).
+  SharedTx *shared = nullptr;
+  for (const auto &tx : frame_txs_) {
+    if (tx->full == full && tx->base == base && tx->target == target &&
+        tx->meta.version == meta.version && tx->meta.frame == meta.frame) {
+      shared = tx.get();
+      break;
+    }
+  }
   const std::uint64_t t0 = monotonic_ns();
-  Transaction transaction = full ? make_full(cur) : make_patch(c.base, cur);
-  const std::uint64_t t1 = monotonic_ns();
-  const std::vector<std::uint8_t> bytes = encode_transaction(transaction);
+  std::uint64_t t1 = t0;
+  std::shared_ptr<const std::vector<std::uint8_t>> encoded;
+  if (shared != nullptr) {
+    auto out = std::make_shared<std::vector<std::uint8_t>>();
+    if (restamp(*shared->bytes, shared->meta, meta, full, out.get())) {
+      encoded = std::move(out);
+      ++c.s.shared_sends;
+    }
+  }
+  if (encoded == nullptr) {
+    const Transaction transaction =
+        full ? make_full(snapshot.state, meta) : make_patch(base->state, snapshot.state, meta);
+    t1 = monotonic_ns();
+    encoded = std::make_shared<const std::vector<std::uint8_t>>(encode_transaction(transaction));
+    if (shared == nullptr) {
+      auto tx = std::make_unique<SharedTx>();
+      tx->base = base;
+      tx->target = target;
+      tx->meta = meta;
+      tx->full = full;
+      tx->bytes = encoded;
+      frame_txs_.push_back(std::move(tx));
+    }
+  }
   const std::uint64_t t2 = monotonic_ns();
+  const std::vector<std::uint8_t> &bytes = *encoded;
   if (bytes.size() > c.s.max_message_bytes) {
-    const std::string detail = "transaction " + std::to_string(cur.seq) + " is " +
+    const std::string detail = "transaction " + std::to_string(meta.seq) + " is " +
                                std::to_string(bytes.size()) + " bytes, the cap is " +
                                std::to_string(c.s.max_message_bytes);
     transport_->send_text(c.id, encode_error("message-too-large", detail));
@@ -1287,7 +1472,7 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
                     .num("t_us", now_ns / 1000)
                     .str("event", "error")
                     .str("reason", "send-failed")
-                    .str("detail", "the transport refused seq " + std::to_string(cur.seq))
+                    .str("detail", "the transport refused seq " + std::to_string(meta.seq))
                     .take());
   }
   ++c.s.transactions;
@@ -1311,16 +1496,16 @@ std::string Hub::send_transaction(Conn &c, const rs::Captured &snapshot, std::ui
     diff_hist_.add((t1 - t0) / 1000);
   }
 
-  const std::uint64_t seq = cur.seq;
+  const std::uint64_t seq = meta.seq;
   const bool had_credit = c.credit;
   if (c.window_slots > 1 && c.has_base &&
-      std::find(c.window.begin(), c.window.end(), c.base.seq) != c.window.end()) {
+      std::find(c.window.begin(), c.window.end(), c.base_seq) != c.window.end()) {
     // G7q: the last sent is still in flight, so its payloads stay pinned past this send.
-    c.window_payloads[c.base.seq] = std::move(c.base_payloads);
+    c.window_payloads[c.base_seq] = std::move(c.base);
   }
-  c.base = std::move(cur);
+  c.base = target;
+  c.base_seq = seq;
   c.has_base = true;
-  c.base_payloads = snapshot.payloads;
   c.resync = false;
   ++c.next_seq;
   c.epoch_sent = epoch;
@@ -1403,10 +1588,20 @@ void Hub::log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool cre
 
 void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured *snapshot,
                    std::uint64_t epoch, std::uint64_t snapshot_ns) {
+  on_frame_shared(frame, now_ns,
+                  snapshot == nullptr ? nullptr : std::make_shared<const rs::Captured>(*snapshot),
+                  epoch, snapshot_ns);
+}
+
+void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
+                          std::shared_ptr<const rs::Captured> snapshot, std::uint64_t epoch,
+                          std::uint64_t snapshot_ns) {
   if (finished_) {
     return;
   }
   frame_ = frame;
+  carried_.maintain();
+  clear_frame_memo();
   for (auto &entry : conns_) {
     Conn &c = *entry.second;
     if (c.state == State::Closed) {
@@ -1460,8 +1655,9 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
             std::max<std::uint64_t>(c.stats.max_record_bytes, session_bytes.size());
         c.stats.encode_ns_total = saturating_add(c.stats.encode_ns_total, t1 - t0);
         c.state = State::Streaming;
+        c.carried_slot = carried_.acquire();  // a fresh connection has carried nothing
         ++c.s.frames_offered;
-        sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
+        sent_json = send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
         // G6r: this very first send starts the connection's rate schedule (its tick 0); it is
         // never itself rate-gated (there is nothing to compare "due" against until now).
         advance_schedule(c, now_ns);
@@ -1494,13 +1690,13 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
       // tick_due() is always true, so `due` adds nothing and every ticks_*/frames_rate_idle
       // counter below stays 0 (each is gated on `rate_limited`).
       const bool due = ignore_credit || tick_due(c, now_ns);
-      if (c.credit && c.stale.has_value()) {
+      if (c.credit && c.stale != nullptr) {
         // stale-coalesce: the first missed target goes out instead of the newest state.
         if (due) {
           if (rate_limited) {
             ++c.s.ticks_due;
           }
-          const rs::Captured stale = std::move(*c.stale);
+          const std::shared_ptr<const rs::Captured> stale = std::move(c.stale);
           const std::uint64_t stale_capture_ns = c.stale_ns;
           c.stale.reset();
           const std::uint64_t sent_before = c.s.sent;
@@ -1527,18 +1723,18 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
           if (snapshot == nullptr) {
             continue;
           }
-          if (c.stale_held.has_value() &&
+          if (c.stale_held != nullptr &&
               std::find(c.window.begin(), c.window.end(), c.stale_held_seq) == c.window.end()) {
             c.stale_held.reset();  // its seq was credited (or resynced): drawn on its own
           }
           const std::uint64_t sent_before = c.s.sent;
-          if (c.stale_held.has_value()) {
+          if (c.stale_held != nullptr) {
             // G7q stale-coalesce at window >= 2: repeat the stale target while it is in flight.
-            const rs::Captured held = *c.stale_held;
+            const std::shared_ptr<const rs::Captured> held = c.stale_held;
             sent_json = send_transaction(c, held, frame, now_ns, epoch, snapshot_ns, false,
                                          c.stale_held_ns, c.stale_held_frame);
           } else {
-            sent_json = send_transaction(c, *snapshot, frame, now_ns, epoch, snapshot_ns, false,
+            sent_json = send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, false,
                                          now_ns);
           }
           advance_schedule(c, now_ns);
@@ -1569,8 +1765,8 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
           ++c.s.coalesced;
           note_pending_age(c, frame, now_ns);
           if (config_.stale_coalesce_frame != 0 && frame >= config_.stale_coalesce_frame &&
-              !c.stale.has_value() && snapshot != nullptr) {
-            c.stale = *snapshot;
+              c.stale == nullptr && snapshot != nullptr) {
+            c.stale = snapshot;
             c.stale_ns = now_ns;
             c.stale_frame = frame;
           }
@@ -1582,6 +1778,8 @@ void Hub::on_frame(std::uint64_t frame, std::uint64_t now_ns, const rs::Captured
     }
     log_frame(c, frame, now_ns, credit_before, sent_json);
   }
+  clear_frame_memo();  // P3-SP: the shared work holds snapshots; it lives for one callback
+  flush_taps();
 }
 
 void Hub::finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns) {
@@ -1618,6 +1816,7 @@ void Hub::finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns) {
   }
   finished_ = true;
   finish_reason_ = to_wire(reason);
+  flush_taps();
 }
 
 std::size_t Hub::open_connections() const {
@@ -1646,7 +1845,7 @@ std::vector<ConnectionSummary> Hub::summaries() const {
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
     ConnectionSummary s = c.s;
-    s.carried_size = c.carried.size();
+    s.carried_size = c.carried_count;
     for (std::size_t i = 0; i < 3; ++i) {
       s.ack_latency_us[i] = latency_stats(c.latency[i]);
     }
@@ -1682,15 +1881,26 @@ void write_latency(JsonWriter *json, const std::string &name, const LatencyStats
 
 }  // namespace
 
+namespace {
+
+// P3-SP: connections in lockstep share one snapshot, so its payload map is listed once.
+void push_unique(std::vector<const rs::PayloadMap *> *out, const rs::PayloadMap *map) {
+  if (std::find(out->begin(), out->end(), map) == out->end()) {
+    out->push_back(map);
+  }
+}
+
+}  // namespace
+
 std::vector<const rs::PayloadMap *> Hub::base_payloads() const {
   std::vector<const rs::PayloadMap *> out;
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
-    if (c.state != State::Closed && c.has_base) {
-      out.push_back(&c.base_payloads);
+    if (c.state != State::Closed && c.has_base && c.base != nullptr) {
+      push_unique(&out, &c.base->payloads);
       // G7q: every other in-flight transaction's payloads (window >= 2; none at window 1).
       for (const auto &held : c.window_payloads) {
-        out.push_back(&held.second);
+        push_unique(&out, &held.second->payloads);
       }
     }
   }
@@ -1701,8 +1911,8 @@ std::vector<const rs::PayloadMap *> Hub::held_payloads() const {
   std::vector<const rs::PayloadMap *> out;
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
-    if (c.state != State::Closed && c.stale.has_value()) {
-      out.push_back(&c.stale->payloads);
+    if (c.state != State::Closed && c.stale != nullptr) {
+      push_unique(&out, &c.stale->payloads);
     }
   }
   return out;

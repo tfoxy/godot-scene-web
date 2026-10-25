@@ -25,6 +25,19 @@ namespace rs2 {
 
 Transaction make_full(const Snapshot &cur);
 Transaction make_patch(const Snapshot &base, const Snapshot &cur);
+
+// P3-SP: the same transactions with their own fields taken from `meta` instead of `cur` (and
+// `base`): the version (which also picks the tables, as cur.version does above), seq, frame and,
+// for a patch, base_seq. The live hub shares one published Snapshot between every connection and
+// passes each connection's seq here instead of stamping a per-connection copy of it.
+struct TxMeta {
+  ProtocolVersion version = ProtocolVersion::V2;
+  std::uint64_t seq = 0;
+  std::uint64_t frame = 0;
+  std::uint64_t base_seq = 0;  // patch only
+};
+Transaction make_full(const Snapshot &cur, const TxMeta &meta);
+Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta);
 Snapshot resolve(const Snapshot &base, const Transaction &txn);
 
 }  // namespace rs2
