@@ -1486,7 +1486,7 @@ export async function runGate55e(
   checks.push(
     check(
       "shader-receiver-typed",
-      "honest receivers (receiver-shader, -patch, -inline, receiver-params-lib) record no typed refusal and skip nothing; receiver-refused records exactly canvas_item_set_material / unsupported-material on the five refused items; receiver-params-nolib records exactly one shader_set_code / shader-withheld per withheld (shader, hash) pair it would make resident and sets no code; receiver-params-lib fetches no shader payload and sets exactly that many codes from its library; no receiver stdout (sabotages included) carries SHADER ERROR, Shader compilation failed or a script error",
+      "honest receivers (receiver-shader, -patch, -inline, receiver-params-lib) record no typed refusal and skip nothing; receiver-refused records exactly canvas_item_set_material / unsupported-material on the capture's four refused items (P3-ST: SC's screen-texture shader draws); receiver-params-nolib records exactly one shader_set_code / shader-withheld per withheld (shader, hash) pair it would make resident and sets no code; receiver-params-lib fetches no shader payload and sets exactly that many codes from its library; no receiver stdout (sabotages included) carries SHADER ERROR, Shader compilation failed or a script error",
       typed.problems,
       Object.entries(typed.table)
         .map(([k, v]) => `${k}: ${v}`)

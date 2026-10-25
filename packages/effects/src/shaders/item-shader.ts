@@ -25,7 +25,8 @@
 //
 // The subset is deliberately the one a renderer can execute EXACTLY: COLOR, UV, TEXTURE, PI/TAU/E,
 // user uniforms (bool, int, float, vec/ivec 2-4, and arrays of them), sampler2D uniforms with filter/repeat/default-white hints, `instance uniform`s, helper
-// functions and constants, and `render_mode` blend_*/unshaded/light_only. Anything else throws
+// functions and constants, `render_mode` blend_*/unshaded/light_only, and the screen: SCREEN_UV,
+// SCREEN_PIXEL_SIZE and `hint_screen_texture` samplers (see `screenTexture` below). Anything else throws
 // `UnsupportedShaderError` with a message naming it, which a renderer reports as a typed refusal
 // and draws the item without its material. `light()` is dropped: Godot runs it only per light, and
 // an item-space renderer has none.
@@ -44,6 +45,14 @@ import {
 export const ITEM_SHADER_PRELUDE_NAMES = {
   /** `uniform sampler2D TEXTURE;`: the item's own texture, straight (not premultiplied). */
   texture: "TEXTURE",
+  /** Declared BY THE MODULE when the code reads the screen (`uniform sampler2D SCREEN_TEXTURE;`):
+   *  the renderer binds its back-buffer copy here (`screenTexture`), never a user texture. */
+  screenTexture: "SCREEN_TEXTURE",
+  /** Declared BY THE MODULE when the code uses SCREEN_UV or SCREEN_PIXEL_SIZE
+   *  (`uniform vec2 SCREEN_PIXEL_SIZE;`): the renderer sets 1 / its render target's size, and
+   *  `SCREEN_UV` is `gl_FragCoord.xy * SCREEN_PIXEL_SIZE`, as Godot's canvas.glsl:679 -- so the
+   *  target must be stored the way Godot stores it (row 0 at the bottom, y-up). */
+  screenPixelSize: "SCREEN_PIXEL_SIZE",
   /** The module's entry point: `void godot_item_fragment(inout vec4 COLOR, in vec2 UV)`. */
   entry: "godot_item_fragment",
 } as const;
@@ -101,6 +110,16 @@ export interface TranspiledItemShader {
   glsl: string;
   uniforms: ItemShaderUniform[];
   samplers: ItemShaderSampler[];
+  /** The code samples the screen (`hint_screen_texture`): the renderer binds a copy of its render
+   *  target to `SCREEN_TEXTURE` taken where Godot's GLES3 canvas renderer takes one (before the
+   *  first such item of each canvas, rasterizer_canvas_gles3.cpp:426-533). `mipmaps`: a screen
+   *  sampler that is read has a `filter_*_mipmap*` hint, so that copy needs Godot's blurred mip
+   *  chain (`uses_screen_texture_mipmaps`, shader_compiler.cpp:929-933). Null otherwise.
+   *  GLES3 ignores the screen sampler's other hints (the back buffer is always sampled linear,
+   *  linear-mipmap, clamped), and so does this result. */
+  screenTexture: { names: string[]; mipmaps: boolean } | null;
+  /** The code uses SCREEN_UV or SCREEN_PIXEL_SIZE (the module declares SCREEN_PIXEL_SIZE). */
+  screenPixelSize: boolean;
   blend: ItemShaderBlend;
   lightMode: ItemShaderLightMode;
 }
@@ -129,8 +148,6 @@ const ITEM_UNSUPPORTED_BUILTINS = [
   "NORMAL_TEXTURE",
   "SPECULAR_SHININESS",
   "SPECULAR_SHININESS_TEXTURE",
-  "SCREEN_UV",
-  "SCREEN_PIXEL_SIZE",
   "SCREEN_TEXTURE",
   "REGION_RECT",
   "POINT_COORD",
@@ -153,6 +170,9 @@ const ITEM_UNSUPPORTED_BUILTINS = [
 
 const ALLOWED_SAMPLER_HINTS =
   /^(filter_nearest|filter_linear|repeat_enable|repeat_disable|hint_default_white)$/;
+/** A screen sampler's hints: GLES3 ignores all but the mipmap filters (see `screenTexture`). */
+const SCREEN_SAMPLER_HINTS =
+  /^(hint_screen_texture|filter_(nearest|linear)(_mipmap(_anisotropic)?)?|repeat_enable|repeat_disable)$/;
 const ALLOWED_UNIFORM_HINTS =
   /^(source_color|hint_range\b.*|instance_index\b.*)$/;
 
@@ -297,11 +317,15 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
   if (parsed.varyings.length > 0) {
     throw new UnsupportedShaderError("varyings are not supported");
   }
-  if (parsed.screenTextureNames.length > 0) {
-    throw new UnsupportedShaderError("hint_screen_texture is not supported");
-  }
   const logic = `${parsed.helpers}\n${parsed.fragmentBody}`;
   for (const builtin of ITEM_UNSUPPORTED_BUILTINS) {
+    // SCREEN_TEXTURE is a Godot 3 built-in (refused); a `hint_screen_texture` sampler may be
+    // named so (Godot 4), and is handled below.
+    if (
+      builtin === "SCREEN_TEXTURE" &&
+      parsed.screenTextureNames.includes(builtin)
+    )
+      continue;
     if (hasToken(logic, builtin)) {
       throw new UnsupportedShaderError(`unsupported built-in "${builtin}"`);
     }
@@ -401,6 +425,41 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
     });
   }
 
+  // Screen samplers: Godot binds its back buffer to every `hint_screen_texture` sampler
+  // (shader_compiler.cpp:929-933, `color_buffer`); the module aliases each to one SCREEN_TEXTURE.
+  let screenTexture: TranspiledItemShader["screenTexture"] = null;
+  if (parsed.screenTextureNames.length > 0) {
+    let mipmaps = false;
+    for (const name of parsed.screenTextureNames) {
+      const d = declOf(name);
+      if (d.qualifier !== null) {
+        throw new UnsupportedShaderError(
+          `${d.qualifier} sampler "${name}" is not supported`,
+        );
+      }
+      if (/^\s*\[/.test(declarationTail(withoutLight, name))) {
+        throw new UnsupportedShaderError(
+          `sampler "${name}": sampler arrays are not supported`,
+        );
+      }
+      for (const hint of d.hints) {
+        if (!SCREEN_SAMPLER_HINTS.test(hint)) {
+          throw new UnsupportedShaderError(
+            `sampler "${name}": hint "${hint}" is not supported`,
+          );
+        }
+      }
+      if (
+        hasToken(logic, name) &&
+        d.hints.some((h) => /^filter_(nearest|linear)_mipmap/.test(h))
+      )
+        mipmaps = true;
+    }
+    screenTexture = { names: [...parsed.screenTextureNames], mipmaps };
+  }
+  const usesScreenUv = hasToken(logic, "SCREEN_UV");
+  const screenPixelSize = usesScreenUv || hasToken(logic, "SCREEN_PIXEL_SIZE");
+
   // Integer contexts: int and ivec names (uniforms, locals, parameters) keep their literal
   // operands int (`phase % 6`, `5 - p`); every other bare integer literal is a float in Godot.
   const intNames = new Set(parsed.intIdentifiers);
@@ -427,6 +486,18 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
     );
   }
   for (const s of samplers) decls.push(`uniform sampler2D ${s.name};`);
+  if (screenTexture) {
+    const screen = ITEM_SHADER_PRELUDE_NAMES.screenTexture;
+    decls.push(`uniform sampler2D ${screen};`);
+    for (const name of screenTexture.names)
+      if (name !== screen) decls.push(`#define ${name} ${screen}`);
+  }
+  if (screenPixelSize)
+    decls.push(`uniform vec2 ${ITEM_SHADER_PRELUDE_NAMES.screenPixelSize};`);
+  if (usesScreenUv)
+    decls.push(
+      `#define SCREEN_UV (gl_FragCoord.xy * ${ITEM_SHADER_PRELUDE_NAMES.screenPixelSize})`,
+    );
   const helpers = promote(parsed.helpers).trim();
   const body = promote(parsed.fragmentBody)
     .split("\n")
@@ -438,7 +509,15 @@ ${helpers ? `${helpers}\n` : ""}void ${ITEM_SHADER_PRELUDE_NAMES.entry}(inout ve
 ${body}
 }
 `;
-  return { glsl, uniforms, samplers, blend, lightMode };
+  return {
+    glsl,
+    uniforms,
+    samplers,
+    screenTexture,
+    screenPixelSize,
+    blend,
+    lightMode,
+  };
 }
 
 /** The text after `<name>` in its uniform declaration, up to the `;`. */

@@ -138,6 +138,9 @@ pub struct ExecStats {
     pub program_binds: u32,
     /// Bindings whose uniform values were (re)sent to their program.
     pub binding_uploads: u32,
+    /// P3-ST: back-buffer copies (`DRAW_SCREEN_COPY`) and mip chains (`DRAW_SCREEN_MIPMAPS`).
+    pub screen_copies: u32,
+    pub screen_mipmaps: u32,
 }
 
 impl ExecStats {
@@ -157,7 +160,8 @@ impl ExecStats {
                 "\"textureFrees\":{},\"itemRows\":{},\"itemBytes\":{},\"vertexBytes\":{},",
                 "\"indexBytes\":{},\"uploadCalls\":{},\"scissorChanges\":{},\"blendChanges\":{},",
                 "\"textureBinds\":{},\"samplerBinds\":{},\"glCalls\":{},\"restored\":{},",
-                "\"fenceIssued\":{},\"programBinds\":{},\"bindingUploads\":{}}}"
+                "\"fenceIssued\":{},\"programBinds\":{},\"bindingUploads\":{},",
+                "\"screenCopies\":{},\"screenMipmaps\":{}}}"
             ),
             self.draws,
             self.draw_calls,
@@ -181,6 +185,8 @@ impl ExecStats {
             self.fence_issued,
             self.program_binds,
             self.binding_uploads,
+            self.screen_copies,
+            self.screen_mipmaps,
         )
     }
 }

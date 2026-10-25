@@ -560,7 +560,33 @@ interface Override8 {
 const FORMATS_NOTE =
   "Resolved at /8 by host decode (payload.host_decoded_block_textures), float payloads (payload.float_texture_formats) and the /9 block variant (delivery.texture_variant_block). Not proven at STS2 scale: wire and memory acceptability are the product leg's (P3).";
 
+/** P3-ST (gate5_5-design.md "Screen texture (P3-ST)"): screen-reading shaders are supported with
+ * GLES3's automatic copy points; `BackBufferCopy` itself is not on the wire. */
+const BACKBUFFER_NOTE =
+  "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones.";
+
 const OVERRIDES_8: readonly Override8[] = [
+  {
+    id: "canvas_item_set_copy_to_backbuffer",
+    native: {
+      status: "unobserved",
+      owner:
+        'P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md "Screen texture (P3-ST)")',
+      notes: BACKBUFFER_NOTE,
+    },
+    web: {
+      status: "unobserved",
+      owner:
+        'P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md "Screen texture (P3-ST)")',
+      notes: BACKBUFFER_NOTE,
+    },
+    gsw: {
+      status: "unobserved",
+      owner:
+        'P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md "Screen texture (P3-ST)")',
+      notes: BACKBUFFER_NOTE,
+    },
+  },
   {
     id: "payload.compressed_and_float_texture_formats",
     native: {

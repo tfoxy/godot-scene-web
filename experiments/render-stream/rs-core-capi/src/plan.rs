@@ -40,6 +40,10 @@ pub struct Sabotage {
     pub stale_param: bool,
     pub stale_texture: bool,
     pub ignore_canvas_stacking: bool,
+    /// P3-ST: a back-buffer copy before every screen-reading item (`canvas_item_set_copy_to_backbuffer`
+    /// on each item whose own material's shader uses `screen_texture`) -- the copy taken at the
+    /// wrong time; GLES3 takes one per canvas, before the first reader.
+    pub screen_copy_per_reader: bool,
 }
 
 impl Sabotage {
@@ -61,6 +65,7 @@ impl Sabotage {
             "stale-param" => s.stale_param = true,
             "stale-texture" => s.stale_texture = true,
             "ignore-canvas-stacking" => s.ignore_canvas_stacking = true,
+            "screen-copy-per-reader" => s.screen_copy_per_reader = true,
             _ => {}
         }
         s
@@ -306,6 +311,11 @@ struct ItemM {
     content_version: i64,
     material_wire: Option<Id>,
     material_rid: Option<u32>,
+    /// `screen-copy-per-reader` only: whether this item has its back-buffer copy set.
+    copy_to_backbuffer: bool,
+    /// P3-ST (gate5_5-design.md "Refused materials"): the effective material reads the screen but
+    /// is refused, so the item's own commands are not replayed.
+    screen_skip: bool,
     use_parent_material: bool,
     instance_params: Vec<(Box<str>, ParamKey)>,
     /// G8kf: the textures whose draw commands this item's last replay skipped as undrawable
@@ -1592,6 +1602,8 @@ impl Planner {
                     content_version: -1,
                     material_wire: None,
                     material_rid: None,
+                    copy_to_backbuffer: false,
+                    screen_skip: false,
                     use_parent_material: false,
                     instance_params: Vec::new(),
                     skipped_tex: Vec::new(),
@@ -2372,6 +2384,21 @@ impl Planner {
                 }
                 me.material_rid = material_rid;
             }
+            if sab.screen_copy_per_reader {
+                let reads_screen = wire
+                    .material
+                    .and_then(|m| st.materials.get(&m))
+                    .and_then(|m| m.shader)
+                    .and_then(|s| st.shaders.get(&s))
+                    .is_some_and(|s| s.uses.contains(&ShaderUse::ScreenTexture));
+                if reads_screen != me.copy_to_backbuffer {
+                    ops.op(Op::ItemSetCopyToBackbuffer, 1);
+                    ops.rid(rid);
+                    ops.b(reads_screen);
+                    ops.fs(&[0.0; 4]);
+                    me.copy_to_backbuffer = reads_screen;
+                }
+            }
             if wire.use_parent_material != me.use_parent_material {
                 ops.op(Op::ItemSetUseParentMaterial, 1);
                 ops.rid(rid);
@@ -2412,8 +2439,12 @@ impl Planner {
             }
         }
 
+        // P3-ST: a refused screen reader draws nothing (drawn plain it would cover what it reads).
+        let screen_skip = v5 && self.refused_screen_reader(st, id);
+        let skip_changed = screen_skip != self.items[&id].screen_skip;
+        self.items.get_mut(&id).unwrap().screen_skip = screen_skip;
         let me_version = self.items[&id].content_version;
-        if is_new || force_content || wire.content_version != me_version {
+        if is_new || force_content || skip_changed || wire.content_version != me_version {
             if !is_new {
                 ops.op(Op::ItemClear, 1);
                 ops.rid(rid);
@@ -2431,7 +2462,9 @@ impl Planner {
                 }
             }
             self.tex_skips.borrow_mut().clear();
-            self.replay(st, id, rid, &wire.commands, ops, c, unsupported);
+            if !screen_skip {
+                self.replay(st, id, rid, &wire.commands, ops, c, unsupported);
+            }
             let mut skipped: Vec<Id> = std::mem::take(&mut *self.tex_skips.borrow_mut());
             skipped.sort_unstable();
             skipped.dedup();
@@ -2446,6 +2479,42 @@ impl Planner {
             let me = self.items.get_mut(&id).unwrap();
             apply_clip(me, ops);
         }
+    }
+
+    /// P3-ST: whether `id`'s effective material (its own, or an ancestor's while
+    /// `use_parent_material` holds) is one this receiver did not create -- refused on the wire --
+    /// and its shader reads the screen texture.
+    fn refused_screen_reader(&self, st: &ResolvedState, id: Id) -> bool {
+        let mut item = &st.items[&id];
+        let mut hops = 0;
+        while item.use_parent_material && hops < 4096 {
+            match item.parent.as_ref() {
+                Some(p) if p.kind == ParentKind::Item => match st.items.get(&p.id) {
+                    Some(parent) => item = parent,
+                    None => break,
+                },
+                _ => break,
+            }
+            hops += 1;
+        }
+        let Some(mid) = item.material else {
+            return false;
+        };
+        let Some(m) = st.materials.get(&mid) else {
+            return false;
+        };
+        let Some((sid, shader)) = m.shader.and_then(|s| st.shaders.get(&s).map(|e| (s, e))) else {
+            return false;
+        };
+        if !shader.uses.contains(&ShaderUse::ScreenTexture) {
+            return false;
+        }
+        // Refused: the material or its shader is unsupported on the wire, or this receiver made
+        // no code for it (a withheld shader without the library).
+        m.status != EntryStatus::Ok
+            || shader.status != EntryStatus::Ok
+            || !self.materials.contains_key(&mid)
+            || !self.shaders.get(&sid).is_some_and(|x| x.hash.is_some())
     }
 
     #[allow(clippy::too_many_arguments)]

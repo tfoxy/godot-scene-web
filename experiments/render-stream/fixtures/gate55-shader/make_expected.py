@@ -95,6 +95,9 @@ REFUSED_REGIONS = {
     "SP": [16, 208, 104, 288],
 }
 REFUSED_SHADERS = {"TM": "time", "SC": "screen", "SD": "sdf", "GU": "global", "SP": "spatial"}
+# P3-ST (gate5_5-design.md D11 as amended): the screen-texture shader is no longer refused, so SC
+# draws with its material on every receiver; the capture types the other four.
+CAPTURE_REFUSED = {k: v for k, v in REFUSED_SHADERS.items() if v != "screen"}
 
 # Wire item ids: canvas_item_create order in gate55_shader.gd _ready.
 CREATION_ORDER = ["TI", "PA", "I1", "I2", "TY", "PH", "RM", "SH", "Marker"]
@@ -160,7 +163,7 @@ SHADER_SCAN = {
     "sh_a": {"mode": "canvas_item", "uses": [], "reason": None},
     "sh_b": {"mode": "canvas_item", "uses": [], "reason": None},
     "time": {"mode": "canvas_item", "uses": ["time"], "reason": "shader-time"},
-    "screen": {"mode": "canvas_item", "uses": ["screen_texture"], "reason": "shader-screen-texture"},
+    "screen": {"mode": "canvas_item", "uses": ["screen_texture"], "reason": None},
     "sdf": {"mode": "canvas_item", "uses": ["sdf"], "reason": "shader-sdf"},
     "global": {"mode": "canvas_item", "uses": ["global_uniform"], "reason": "shader-global-uniform"},
     "spatial": {"mode": "spatial", "uses": [], "reason": "shader-mode"},
@@ -597,7 +600,8 @@ def build_variant(variant, op_lists):
 
 def receiver_view(variant, op_lists, view, without_material):
     """G55e: per step, what a receiver draws when it draws the items in `without_material` with no
-    material at all (receiver-refused: the five refused items, whose material it never creates;
+    material at all (receiver-refused: the capture's four refused items, whose material it never
+    creates -- SC's screen-texture shader is supported since P3-ST;
     receiver-params-nolib: every item, since no withheld shader compiles without the library and a
     material with no shader draws as none). Op lists are shared with the variant's own where the
     content is the same, else named `<view>/<item>@<step>`."""
@@ -751,7 +755,7 @@ def predictions():
         "sabotage-shader-receiver-stale-param": {"regions": diff_sets(lambda k: content("", state_at("", settle_frame(k), stale_param=True), k))},
         # G55e's typed legs (class `unsupported`): the regions where the receiver's drawing without
         # a material differs from the reference's.
-        "receiver-refused": {"regions": diff_sets(without("refused", set(REFUSED_REGIONS)), "refused")},
+        "receiver-refused": {"regions": diff_sets(without("refused", set(CAPTURE_REFUSED)), "refused")},
         "receiver-params-nolib": {"regions": diff_sets(without("", set(CREATION_ORDER) - {"Marker"}))},
     }
 
@@ -857,7 +861,7 @@ def build():
     r_regions, r_order, r_steps = build_variant("refused", op_lists)
     check(r_steps, op_lists, r_regions)
     views = {
-        "receiver-refused": receiver_view("refused", op_lists, "receiver-refused", set(REFUSED_REGIONS)),
+        "receiver-refused": receiver_view("refused", op_lists, "receiver-refused", set(CAPTURE_REFUSED)),
         "receiver-params-nolib": receiver_view("", op_lists, "receiver-params-nolib", set(CREATION_ORDER) - {"Marker"}),
     }
     check([{**v, "marker_rgba8": MARKER[v["step"]]} for v in views["receiver-refused"]["steps"]], op_lists, r_regions)
@@ -899,7 +903,7 @@ def build():
                 "regions": r_regions,
                 "shader_order": REFUSED_SHADER_ORDER,
                 "material_order": REFUSED_MATERIAL_ORDER,
-                "refused_items": REFUSED_SHADERS,
+                "refused_items": CAPTURE_REFUSED,
                 "typed": {"ops": ["canvas_item_set_material"], "reason": "unsupported-state", "items": [n for n in r_order if n != "Marker"]},
                 "counters": counters("refused"),
                 "census": census("refused"),

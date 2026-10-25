@@ -62,6 +62,11 @@ pub struct ProgramInfo {
     pub light: LightMode,
     pub uniforms: Vec<UniformDecl>,
     pub samplers: Vec<SamplerDecl>,
+    /// P3-ST: the code samples the screen (`hint_screen_texture`): `Some(mipmaps)`, `mipmaps`
+    /// being GLES3's `uses_screen_texture_mipmaps` (a read screen sampler with a mipmap filter).
+    /// The applier binds the back-buffer copy to `SCREEN_TEXTURE` and marks the draws where
+    /// GLES3 takes the copy (rasterizer_canvas_gles3.cpp:426-533).
+    pub screen: Option<bool>,
 }
 
 impl ProgramInfo {
@@ -151,12 +156,23 @@ impl ProgramInfo {
                 repeat: doc.get(s, "repeat").and_then(|v| doc.as_bool(v)),
             });
         }
+        // P3-ST: `screenTexture` is null or {names, mipmaps}; an older transpiler omits it.
+        let screen = match doc.get(root, "screenTexture") {
+            None => None,
+            Some(v) if doc.is_null(v) => None,
+            Some(v) => Some(
+                doc.get(v, "mipmaps")
+                    .and_then(|m| doc.as_bool(m))
+                    .ok_or("program meta: screenTexture.mipmaps")?,
+            ),
+        };
         Ok(ProgramInfo {
             program,
             blend,
             light,
             uniforms,
             samplers,
+            screen,
         })
     }
 }

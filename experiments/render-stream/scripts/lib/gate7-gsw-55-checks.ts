@@ -96,6 +96,8 @@ function shotSeqs(dir: string): number[] {
 interface ShaderExpected {
   shader_codes: Record<string, { sha256: string }>;
   shader_scan: Record<string, { reason: string | null }>;
+  shader_order: string[];
+  variants: { refused: { shader_order: string[] } };
 }
 
 async function transpileSet(ctx: Ctx): Promise<Gate7Check> {
@@ -105,8 +107,17 @@ async function transpileSet(ctx: Ctx): Promise<Gate7Check> {
   // The predicted set: every fixture shader code the wire does not refuse (refused ones are typed
   // by the capture and never reach a receiver's transpiler). `tint_b` is a code (step 3 assigns
   // its text to `tint`), not a scanned resource of its own.
+  // The honest legs replay the base scene: a shader only the `refused` variant makes (P3-ST:
+  // its screen shader is `ok` now) never reaches them.
+  const variantOnly = new Set(
+    expected.variants.refused.shader_order.filter(
+      (name) => !expected.shader_order.includes(name),
+    ),
+  );
   const predicted = Object.keys(expected.shader_codes).filter(
-    (name) => (expected.shader_scan[name]?.reason ?? null) === null,
+    (name) =>
+      !variantOnly.has(name) &&
+      (expected.shader_scan[name]?.reason ?? null) === null,
   );
   const problems: string[] = [];
   for (const leg of HONEST_SHADER_LEGS) {

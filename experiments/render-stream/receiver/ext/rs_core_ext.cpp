@@ -220,6 +220,7 @@ enum Rs : int {
   RS_CANVAS_ITEM_SET_VISIBLE,
   RS_CANVAS_ITEM_SET_CLIP,
   RS_CANVAS_ITEM_SET_CUSTOM_RECT,
+  RS_CANVAS_ITEM_SET_COPY_TO_BACKBUFFER,
   RS_CANVAS_ITEM_SET_VISIBILITY_LAYER,
   RS_CANVAS_ITEM_SET_Z_INDEX,
   RS_CANVAS_ITEM_SET_Z_AS_RELATIVE_TO_PARENT,
@@ -296,6 +297,7 @@ constexpr RsBind RS_BINDS[RS_COUNT] = {
     {"canvas_item_set_visible", 1265174801},
     {"canvas_item_set_clip", 1265174801},
     {"canvas_item_set_custom_rect", 1333997032},
+    {"canvas_item_set_copy_to_backbuffer", 2429202503},
     {"canvas_item_set_visibility_layer", 3411492887},
     {"canvas_item_set_z_index", 3411492887},
     {"canvas_item_set_z_as_relative_to_parent", 1265174801},
@@ -1319,6 +1321,14 @@ int64_t execute(Instance *inst) {
         float rect[4];
         r.fs(rect, 4);
         rs_call(RS_CANVAS_ITEM_SET_CUSTOM_RECT, {&item, &use, rect});
+        break;
+      }
+      case rsc::ItemSetCopyToBackbuffer: {
+        uint64_t item = r.rid();
+        GDExtensionBool enabled = r.b();
+        float rect[4];
+        r.fs(rect, 4);
+        rs_call(RS_CANVAS_ITEM_SET_COPY_TO_BACKBUFFER, {&item, &enabled, rect});
         break;
       }
       case rsc::ItemSetVisibilityLayer:

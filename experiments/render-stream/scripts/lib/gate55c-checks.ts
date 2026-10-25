@@ -13,7 +13,8 @@
 //     shader code, material parameters and instance parameters back through the RenderingServer;
 //   - the capture: since G55d it speaks render-stream/5, so capture-shader classifies `success`
 //     (every ShaderMaterial and its shader carried; end to end with a receiver is G55e's) and
-//     capture-refused `unsupported` with exactly its five refused items and shaders typed;
+//     capture-refused `unsupported` with exactly its four refused items and shaders typed (P3-ST:
+//     the screen-texture shader is ok);
 //     counters.json counts the four material calls the record hooked before calibrator 8;
 //   - the capture's shader/material hook log (G55a, evidence/resources.jsonl kind shader,
 //     material and item-material lines): the census, hook-hash parity and the D11 scan.
@@ -1539,7 +1540,7 @@ export async function runGate55c(
     ),
     check(
       "leg-class-capture-refused",
-      "the capture-refused leg classifies as unsupported on render-stream/5: its only entries are item-level canvas_item_set_material / unsupported-material on exactly the five refused items (TM, SC, SD, GU, SP) at every settle frame, and its five refused shaders are unsupported with exactly shader-time, shader-screen-texture, shader-sdf, shader-global-uniform and shader-mode (every other shader ok)",
+      "the capture-refused leg classifies as unsupported on render-stream/5: its only entries are item-level canvas_item_set_material / unsupported-material on exactly the four refused items (TM, SD, GU, SP) at every settle frame, and its four refused shaders are unsupported with exactly shader-time, shader-sdf, shader-global-uniform and shader-mode (every other shader ok, the screen-texture one included since P3-ST)",
       refusedTyped.problems,
       `${refusedCapture.result_class}: ${refusedTyped.ops.join(", ")} typed (${Object.keys(expected.variants.refused.refused_items).join(",")})`,
       refusedCapture.artifacts,
@@ -1606,7 +1607,7 @@ export async function runGate55c(
     ),
     check(
       "shader-scan",
-      "every shader code line in the hook log classifies as expected.json shader_scan (D11): the refused variant's time, screen, sdf, global and spatial shaders carry exactly shader-time, shader-screen-texture, shader-sdf, shader-global-uniform and shader-mode with their uses, inst uses instance_uniform, every other fixture shader is ok with no uses",
+      "every shader code line in the hook log classifies as expected.json shader_scan (D11): the refused variant's time, sdf, global and spatial shaders carry exactly shader-time, shader-sdf, shader-global-uniform and shader-mode with their uses, the screen shader uses screen_texture and is ok (P3-ST), inst uses instance_uniform, every other fixture shader is ok with no uses",
       [
         ...scan.problems.map((p) => `capture-shader: ${p}`),
         ...refusedScan.problems.map((p) => `capture-refused: ${p}`),
