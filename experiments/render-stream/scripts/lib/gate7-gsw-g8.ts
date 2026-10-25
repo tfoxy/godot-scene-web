@@ -4,13 +4,13 @@
 // entry in GATE8_LEGS, plus its check ids in GATE8_RECEIVER_CHECKS when it adds a check.
 //
 // The file legs are every file-mode receiver leg of the gate 8 groups g8t (host decode), g8f (float
-// payloads), g8a (adoption, with G8r's lazy resources and faults), g8h (presentation size) and g8m
-// (materials and shaders), replayed from a native gate 8 source run (D21: run-gate8.sh --legs
-// g8t,g8a,g8h,g8f,g8m,g8kp,g8ku) and judged by check-gate8.ts's own checks (`@gsw`). G8kb adds the
-// texture-delivery groups: g8kp's receiver legs (judged by g8kp's checks through the band), g8ku's
-// perturbed-KTX2 sabotage, and four GSW-only g8ku legs judged by lib/gate7-gsw-g8-checks.ts (GSW
-// transcodes in its own worker to its own context's D14 target). g8l's live legs are the live
-// half's (lib/gate7-live.ts).
+// payloads), g8a (adoption, with G8r's lazy resources and faults), g8h (presentation size), g8m
+// (materials and shaders) and g8c (P3-CT: canvas-texture diffuses), replayed from a native gate 8
+// source run (D21: run-gate8.sh --legs g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c) and judged by
+// check-gate8.ts's own checks (`@gsw`). G8kb adds the texture-delivery groups: g8kp's receiver
+// legs (judged by g8kp's checks through the band), g8ku's perturbed-KTX2 sabotage, and four
+// GSW-only g8ku legs judged by lib/gate7-gsw-g8-checks.ts (GSW transcodes in its own worker to its
+// own context's D14 target). g8l's live legs are the live half's (lib/gate7-live.ts).
 
 import { existsSync, readdirSync, symlinkSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -54,6 +54,9 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8h/late/receiver-patch"),
   leg("g8h/late-observe/receiver"),
   leg("g8h/sabotage-size-before-adopt/receiver"),
+  // g8c (gate8-ct, P3-CT: images drawn only through a CanvasTexture's diffuse)
+  leg("g8c/receiver"),
+  leg("g8c/receiver-patch"),
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -102,6 +105,7 @@ export const GATE8_NOT_APPLICABLE: NotApplicable[] = [
   { leg: "import/receiver", reason: IMPORT_NA },
   { leg: "g8a/import/receiver", reason: IMPORT_NA },
   { leg: "g8h/import/receiver", reason: IMPORT_NA },
+  { leg: "g8c/import/receiver", reason: IMPORT_NA },
   { leg: "g8m/import/receiver", reason: IMPORT_NA },
 ];
 
@@ -128,6 +132,11 @@ export const GATE8_RECEIVER_CHECKS: {
     "late-size-reference",
     "late-size-needed",
     "sabotage-size-before-adopt",
+    // g8c (P3-CT)
+    "g8c-legs",
+    "ct-reference",
+    "ct-channel-refused",
+    "ct-diffuse-uploaded",
     // g8f
     "float-exact",
     "float-sabotage-perturb-decode",

@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3369,7 +3369,8 @@ mise exec -- pnpm render-stream:gate8 -- \
   `run_reference_g8t`; `run_g8a` with `run_import_g8a` and `run_capture_g8a`, which G8r extends;
   `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f adds `run_g8f`; `run_g8m` with
   `run_import_g8m` and `run_capture_g8m`; `run_g8kp` with `run_g8kp_live`; `run_g8ku` with
-  `run_import_g8ku`, `run_capture_g8ku`, `run_reference_g8ku` and `run_g8ku_live`).
+  `run_import_g8ku`, `run_capture_g8ku`, `run_reference_g8ku` and `run_g8ku_live`; P3-CT's
+  `run_g8c` with `run_import_g8c` and `run_capture_rendered_g8c`).
 - `gate8-delivery-tool.ts` (G8kp): builds the rs-core wasm and the GSW bundle, then replays the
   native leg `g8kp/receiver` in the GSW receiver page three times (as is, BC masked, the
   ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`. G8ku's
@@ -3396,6 +3397,9 @@ mise exec -- pnpm render-stream:gate8 -- \
   `probeProblems`, `atlasProblems`, `accountProblems`); it reuses g8a's `equivalence`.
 - `test/self-test-gate8-size.ts`: those helpers on `fixtures/gate8-size/expected.json` and
   synthetic sessions, probes and recordings.
+- `lib/gate8-ct-checks.ts` (P3-CT): the g8c checks (`runG8c`) and their pure helpers
+  (`premiseProblems`, `regionProblems`, `uploadProblems`); `test/self-test-gate8-ct.ts` drives them
+  on `fixtures/gate8-ct/expected.json` and synthetic recordings, images and upload lists.
 - `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
   `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
   `canonicalState` compares materials by content since G8m.
@@ -3454,6 +3458,22 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `sabotage-size-before-adopt/{capture,receiver}`, `sabotage-size-before-adopt-strict/capture` | `GRC_SABOTAGE=size-before-adopt` under skip (and the receiver on it) and under strict |
 | `reference` | rendered at 640x360, unarmed: shots `step-<k>.png` at the three checkpoints |
 | `born/receiver`, `late/receiver`, `late/receiver-patch`, `late-observe/receiver` | the native receiver on born's and late's full sink, late's patch sink and the control |
+
+## Gate 8 legs and evidence under `--out/g8c` (g8c, P3-CT)
+
+| leg | what |
+| --- | ---- |
+| `import/fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-ct` and of the receiver |
+| `reference` | rendered at 640x360, unarmed: shots `step-<k>.png` at the two checkpoints |
+| `capture` | the same private gamescope (a rendered host: headless allocates no canvas texture), armed at birth, `GRC_STREAM_VERSION=8`, both sinks, the store and its own shots |
+| `receiver`, `receiver-patch` | the native receiver on the full and the patch sink |
+
+## Gate 8 criteria (g8c)
+
+`g8c-legs`, `ct-premise`, `ct-reference-textured`, `ct-reference` (exact outside the two refused
+cells), `ct-channel-refused` and `ct-diffuse-uploaded`; each criterion is spelled out in
+`lib/gate8-ct-checks.ts` and [`../protocol/gate8-design.md`](../protocol/gate8-design.md) "As built
+(P3-CT)".
 
 ## Gate 8 legs and evidence under `--out/g8m` (g8m)
 

@@ -1,0 +1,23 @@
+{
+  "schema": "render-stream-gate8-ct-expected/1",
+  "doc": "Hand-derived from ct.gd, not measured (README.md). Regions are inclusive [x0, y0, x1, y1] of the 64x64 cells. `drawn`: images reached only through an ok canvas texture's diffuse, which both receivers must draw as the reference does. `refused`: canvas textures with a normal or specular map are unsupported (canvas-texture-channel, render-stream-2.md 'Texture'): the receivers skip their commands, so those cells stay the clear colour. SWAP's canvas texture gets a new diffuse at step 1; UPD's diffuse is updated in place at step 1. POLY's diffuse is created after its canvas texture (a higher wire id).",
+  "checkpoints": [
+    { "step": 0, "applied": 1, "settle": 4 },
+    { "step": 1, "applied": 10, "settle": 17 }
+  ],
+  "regions": {
+    "MESH": [40, 40, 103, 103],
+    "POLY": [136, 40, 199, 103],
+    "RECT": [232, 40, 295, 103],
+    "TRECT": [328, 40, 391, 103],
+    "SWAP": [40, 136, 103, 199],
+    "UPD": [136, 136, 199, 199],
+    "NORM": [232, 136, 295, 199],
+    "SPEC": [328, 136, 391, 199]
+  },
+  "drawn": ["MESH", "POLY", "RECT", "TRECT", "SWAP", "UPD"],
+  "refused": ["NORM", "SPEC"],
+  "canvas_ok": 6,
+  "canvas_refused": 2,
+  "clear_color": [51, 51, 102]
+}

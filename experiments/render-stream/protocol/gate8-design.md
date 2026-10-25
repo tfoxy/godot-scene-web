@@ -660,6 +660,40 @@ the long-term option:
   `adopt-reference` until G8g made gate 8's check ids unique), `adopt-include-refused`, and the sabotages `sabotage-adopt-raw-shader-code` (fails
   shader-hash-parity) and `sabotage-adopt-skip-params` (fails param-parity).
 
+### As built (P3-CT): a canvas texture names its diffuse
+
+C3's STS2 leg (`results/p3/fidelity.md` gap 2) found every spine creature drawn as a white
+silhouette in both receivers. spine-godot draws an atlas page through a `CanvasTexture`
+(`add_mesh` with the canvas texture), and no command names the page itself. D5's lazy residency
+(gate2-design.md) made a texture resident only when a command, an instance parameter or a named
+material names it, so the page was never fetched. The native receiver bound `RID()` as the diffuse,
+and GSW lowered the draw to the white default. No wire change was needed: the canvas entry already
+carries `diffuse`.
+
+- **Residency (both receivers).** An `ok` canvas texture that something names also names its
+  diffuse. The native planner adds the named canvas textures' diffuses to its indirectly named set,
+  beside the materials' textures (`rs-core-capi` `plan.rs` `canvas_diffuses`). GSW's `Names` keeps
+  the same closure incrementally: the named canvas textures and their diffuses, recomputed when a
+  named canvas entry changes (`rs-core` `residency.rs`). A new diffuse, a diffuse updated in place
+  and a diffuse renamed by its canvas texture all reach the applier.
+- **Binding order (native).** `canvas_texture_set_channel` is issued after the apply's images
+  exist, and again whenever the diffuse's RID changes. A diffuse created after its canvas texture
+  has a higher id, so the old id-order loop bound `RID()` and never bound again. GSW resolves the
+  canvas texture to its diffuse at draw time and needed no change there.
+- **Unchanged.** A normal or specular map keeps the entry `unsupported`/`canvas-texture-channel`:
+  lighting stays out of scope, and the receivers skip and report its draws.
+- **Fixture and group `g8c`.** `fixtures/gate8-ct` draws through canvas textures only: an
+  `ArrayMesh` in a `MeshInstance2D`, a `Polygon2D`, a `Sprite2D` region (the canvas texture's own
+  nearest and repeat over the item's linear and disabled), a `TextureRect`, a diffuse swapped and
+  a diffuse updated at step 1, and a normal-mapped and a specular-mapped cell. The capture runs on
+  the rendered host: a headless dummy storage allocates no canvas texture.
+  - Checks: `ct-premise` (no command names a diffuse), `ct-reference-textured` (the reference
+    has teeth), `ct-reference` (both sinks equal the unarmed reference outside the refused cells),
+    `ct-channel-refused` and `ct-diffuse-uploaded`.
+  - `g7-8` replays the receiver legs in GSW (through the band) and in the web export.
+  - The pre-fix receiver fails `ct-reference` (6 white cells, 24,576 px per checkpoint) and
+    `ct-diffuse-uploaded`.
+
 ## Q6. Wire: render-stream/8 (G8w)
 
 `render-stream-8.md` states /8 as /7 plus exactly:
@@ -687,9 +721,9 @@ stays the independent oracle for rs-core (memory rust-core-direction).
 ## Q7. Runner, legs, smoke map
 
 - `scripts/run-gate8.sh`, `scripts/check-gate8.ts`, `scripts/lib/gate8-*.ts`; groups `g8t`, `g8a`,
-  `g8h`, `g8f`, `g8r`, `g8m`, each with its fixture's `born`/`late`/reference legs. Correctness legs
-  are fast-frames eligible once they count frames (`RS_FAST_ALLOW_LEGS`); `decode-cost` is a
-  timing leg (`timing_leg`).
+  `g8h`, `g8f`, `g8r`, `g8m` (and P3-CT's `g8c`), each with its fixture's `born`/`late`/reference
+  legs. Correctness legs are fast-frames eligible once they count frames (`RS_FAST_ALLOW_LEGS`);
+  `decode-cost` is a timing leg (`timing_leg`).
 - `smoke-map.json`: G8t adds `gate8` to `universe.native` and a rule mapping
   `run-gate8.sh`, `check-gate8.ts`, `lib/gate8-*`, `fixtures/gate8-*/**` to `native:gate8@*`. G8g
   adds `g7-8` to `universe.g7` and the gate 8 rule's reach.
