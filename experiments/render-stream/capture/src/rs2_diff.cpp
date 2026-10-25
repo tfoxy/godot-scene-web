@@ -312,10 +312,18 @@ ItemEntry full_entry(const ItemState &item) {
 }  // namespace
 
 Transaction make_full(const Snapshot &cur) {
+  TxMeta meta;
+  meta.version = cur.version;
+  meta.seq = cur.seq;
+  meta.frame = cur.frame;
+  return make_full(cur, meta);
+}
+
+Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   Transaction t;
-  t.version = cur.version;
-  t.seq = cur.seq;
-  t.frame = cur.frame;
+  t.version = meta.version;
+  t.seq = meta.seq;
+  t.frame = meta.frame;
   t.encoding = Encoding::Full;
   t.base_seq.reset();
   t.failures = cur.failures;
@@ -325,14 +333,14 @@ Transaction make_full(const Snapshot &cur) {
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases;
   t.textures = cur.textures;
-  if (cur.version == ProtocolVersion::V4 || cur.version == ProtocolVersion::V5 ||
-      cur.version == ProtocolVersion::V6 || cur.version == ProtocolVersion::V7 ||
-      cur.version == ProtocolVersion::V8 || cur.version == ProtocolVersion::V9) {
+  if (t.version == ProtocolVersion::V4 || t.version == ProtocolVersion::V5 ||
+      t.version == ProtocolVersion::V6 || t.version == ProtocolVersion::V7 ||
+      t.version == ProtocolVersion::V8 || t.version == ProtocolVersion::V9) {
     t.meshes = cur.meshes;
   }
-  if (cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
-      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8 ||
-      cur.version == ProtocolVersion::V9) {
+  if (t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
+      t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
+      t.version == ProtocolVersion::V9) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -392,12 +400,21 @@ class IdIndex {
 }  // namespace
 
 Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
+  TxMeta meta;
+  meta.version = cur.version;
+  meta.seq = cur.seq;
+  meta.frame = cur.frame;
+  meta.base_seq = base.seq;
+  return make_patch(base, cur, meta);
+}
+
+Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta) {
   Transaction t;
-  t.version = cur.version;
-  t.seq = cur.seq;
-  t.frame = cur.frame;
+  t.version = meta.version;
+  t.seq = meta.seq;
+  t.frame = meta.frame;
   t.encoding = Encoding::Patch;
-  t.base_seq = base.seq;
+  t.base_seq = meta.base_seq;
   t.failures = cur.failures;
   t.unsupported = cur.unsupported;
   t.unknown_items = cur.unknown_items;
@@ -423,10 +440,10 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   base_textures.removed_from(cur_texture_ids, &t.removed_textures);
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
   // its shader/material tables and mesh table forward unchanged).
-  const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
-                      cur.version == ProtocolVersion::V7 || cur.version == ProtocolVersion::V8 ||
-                      cur.version == ProtocolVersion::V9;
-  const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
+  const bool is_v5 = t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
+                      t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
+                      t.version == ProtocolVersion::V9;
+  const bool is_v4_or_later = is_v5 || t.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     base_meshes.removed_from(cur_mesh_ids, &t.removed_meshes);
   }

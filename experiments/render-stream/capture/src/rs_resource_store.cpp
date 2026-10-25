@@ -248,7 +248,9 @@ void ServedResources::add_locked(const std::string &hash, const PayloadPtr &payl
   event.hash = hash;
   event.bytes = payload->size();
   event.reason = "current";
-  if (seen_.insert(hash).second && drop_frame_ != 0 && frame >= drop_frame_ && dropped_.empty()) {
+  // P3-SP: `seen_` (every hash ever pinned) only exists for the drop-resource sabotage; without it
+  // a long session would keep one string per payload ever published.
+  if (drop_frame_ != 0 && dropped_.empty() && seen_.insert(hash).second && frame >= drop_frame_) {
     dropped_ = hash;  // drop-resource: retained like any other hash, but answered 404
     event.sabotage = true;
   }
@@ -290,18 +292,25 @@ void ServedResources::retire(const PayloadMap &current,
   for (const auto &entry : current) {
     add_locked(entry.first, entry.second, frame, events);
   }
-  std::set<std::string> base_hashes;
-  for (const PayloadMap *base : bases) {
-    if (base == nullptr) {
-      continue;
-    }
-    for (const auto &entry : *base) {
-      base_hashes.insert(entry.first);
-      if (!unpin) {
+  // P3-SP: the bases are looked up in place (no per-frame set of every base hash).
+  if (!unpin) {
+    for (const PayloadMap *base : bases) {
+      if (base == nullptr) {
+        continue;
+      }
+      for (const auto &entry : *base) {
         add_locked(entry.first, entry.second, frame, events);
       }
     }
   }
+  const auto in_bases = [&bases](const std::string &hash) {
+    for (const PayloadMap *base : bases) {
+      if (base != nullptr && base->count(hash) != 0) {
+        return true;
+      }
+    }
+    return false;
+  };
   note_max_locked();
   if (retain_superseded) {
     // Every hash this host ever pinned stays servable: nothing is retired, so served_ (and its
@@ -311,7 +320,7 @@ void ServedResources::retire(const PayloadMap &current,
   }
   for (auto it = served_.begin(); it != served_.end();) {
     const bool in_current = current.count(it->first) != 0;
-    const bool in_base = base_hashes.count(it->first) != 0;
+    const bool in_base = !in_current && in_bases(it->first);
     if (in_current || (in_base && !unpin)) {
       ++it;
       continue;

@@ -393,7 +393,11 @@ pub struct Validator {
     /// canvas, item, texture, mesh, shader, material
     max_id: [i64; 6],
     carried: HashMap<Hash, Carried>,
-    inline_payloads: HashMap<Hash, Vec<u8>>,
+    /// P3-SP: the last accepted resource record's verified payload. Every caller takes it right
+    /// after `accept` returns `Accepted::Resource` (into its own store), so the validator keeps one
+    /// payload, not every inline payload of the stream (which grew with the session: every mesh
+    /// pose of a game's animation).
+    last_inline: Option<(Hash, Vec<u8>)>,
     last_texture: FastMap<Id, Texture>,
     last_mesh: FastMap<Id, Mesh>,
     last_shader: FastMap<Id, Shader>,
@@ -1360,7 +1364,7 @@ impl Validator {
             prev_frame: None,
             max_id: [0; 6],
             carried: HashMap::new(),
-            inline_payloads: HashMap::new(),
+            last_inline: None,
             last_texture: FastMap::default(),
             last_mesh: FastMap::default(),
             last_shader: FastMap::default(),
@@ -1392,9 +1396,13 @@ impl Validator {
     pub fn delta(&self) -> &TxDelta {
         &self.delta
     }
-    /// A verified inline resource payload.
+    /// The verified payload of the last accepted resource record, when it carried `hash` (P3-SP:
+    /// only the last one is kept; read it right after `accept` returns `Accepted::Resource`).
     pub fn inline_payload(&self, hash: &Hash) -> Option<&[u8]> {
-        self.inline_payloads.get(hash).map(|v| v.as_slice())
+        match &self.last_inline {
+            Some((h, v)) if h == hash => Some(v.as_slice()),
+            _ => None,
+        }
     }
     /// D31: one digest per accepted record, session first (`None` under `Deferred` until set).
     pub fn record_digests(&self) -> &[Option<Hash>] {
@@ -1524,7 +1532,11 @@ impl Validator {
             }
         }
         self.carried.insert(r.hash, carried);
-        self.inline_payloads.insert(r.hash, bytes.to_vec());
+        // P3-SP: reuse the last payload's buffer (one allocation per growth, not per record).
+        let mut buf = self.last_inline.take().map(|(_, v)| v).unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(bytes);
+        self.last_inline = Some((r.hash, buf));
         self.resource_records += 1;
         self.resource_bytes += r.bytes;
         self.bytes_total += record.len() as u64;

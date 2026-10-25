@@ -125,19 +125,25 @@ Measured on STS2 (menu, map, combat) with the settings above, `/8` decoded, loop
     combat updates a second, though they are fine on the menu and the map.
   - Window 2 roughly doubles the web export and the native receiver on the menu and the map
     against window 1.
-- **Each viewer costs the seat.** The capture forms, encodes and sends a transaction per connection.
-  With 3–4 viewers the seat's combat frame rate fell from about 54 to 24–35 fps. Budget
-  `GRC_LIVE_MAX_CONNECTIONS` with that in mind, until shared publication lands (the result doc's
-  design).
-- **Memory grows with mesh churn** on both sides until the dynamic-mesh wire change (`/11` in the
-  result doc's design).
-  - The seat's per-viewer set of hashes already sent inline grows by about 2.3 GB an hour of
-    60-fps combat.
-  - A receiver's payload store grows the same way, and `RS_RECEIVER_MEMORY_BUDGET_BYTES` bounds
-    it. On GSW the budgeted store is O(1) a payload since P3-LV. The GDScript cache of the native
-    receiver and the web export still sums and sorts its entries when a budget is set, which is
-    slow at this churn.
-  - Plan session length or reconnects accordingly.
+- **Each viewer costs the seat about two fifths of what it did** (P3-SP,
+  [../results/p3/p3-sp.md](../results/p3/p3-sp.md)). Viewers share the published snapshot, and
+  viewers in step share each transaction's diff and encode and every inline record. In STS2 combat
+  the seat held 53 fps with one GSW viewer and 37 fps with four (35 and 22 fps before). A viewer still
+  costs its own copy of every message, and the diff and encode whenever its base differs from the
+  others'. Up to 4 connections (`GRC_LIVE_MAX_CONNECTIONS`).
+- **Memory still grows with mesh churn, more slowly**, until the `/11` changes (P3-LV's dynamic
+  mesh surfaces and P3-SP's carried set bounded by the resolved state, render-stream-2.md).
+  - The seat holds one carried-hash entry (about 40 bytes) per distinct inline hash for all
+    viewers together, about 0.6 GB an hour of 60-fps combat (2.3 GB an hour per viewer before
+    P3-SP). It is freed when the last viewer leaves.
+  - GSW keeps every payload it receives (its validator no longer keeps a second copy since
+    P3-SP). In STS2 combat its wasm heap grew 5–7 MB a second (more when it keeps up, since every
+    pose it is sent stays), so a GSW viewer reaches wasm32's 4 GB after roughly ten minutes of
+    combat. Until the `/11` changes, reconnect a viewer before that. `RS_RECEIVER_MEMORY_BUDGET_BYTES` bounds the
+    store, but at this churn the evictions turned into re-fetches on the fixture (P3-SP's result
+    doc): treat it as untested at game scale. The GDScript cache of the native receiver and the
+    web export is O(1) a payload under a budget since P3-SP.
+  - Plan session length or reconnects accordingly: a reconnect starts the receiver's sets afresh.
 - **A fresh subscriber's first frame takes the decoded textures' bytes**: 3.3 s for a GSW joining
   STS2 combat at `/8`, and 1.7 s at `/9` `basis-uastc` with a cold cache. A prepared
   `GRC_TEXTURE_CACHE_DIR` takes the encodes off the session.
