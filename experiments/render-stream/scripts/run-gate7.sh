@@ -957,10 +957,10 @@ fi
 
 # G8g: gate 8's file-leg groups, the one list both browser halves make the gate 8 source with (a
 # new gate 8 file group is one word here and one in lib/gate7b-adapters.ts GATE8_FILE_GROUPS).
-# G8kb: g8kp and g8ku (texture delivery at /9) are in the source for the GSW half only
-# (lib/gate7-gsw-g8.ts GATE8_LEGS); the web half does not replay their legs (lib/gate7b-adapters.ts
-# GSW_ONLY_SOURCE_GROUPS) and its view stays on GATE8_FILE_GROUPS; the web export's own /9 leg runs
-# inside g8ku (g8ku-web/web).
+# G8kb: g8kp and g8ku (texture delivery at /9) are in the source for the GSW half (lib/gate7-gsw-g8.ts
+# GATE8_LEGS). G8kwh: the web half replays g8kp's receiver legs again; it does not replay g8ku's
+# (lib/gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS: the web export's npot choice differs from native by
+# design, and gate 8 judges its own g8ku-web legs). The web view stays on GATE8_FILE_GROUPS.
 G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku
 
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----

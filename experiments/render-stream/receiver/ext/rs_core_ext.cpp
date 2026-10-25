@@ -475,6 +475,13 @@ struct Instance {
   // the executor takes its image from here instead of transcoding again. A failure is thus known
   // before any RenderingServer call, and the receiver falls back to `decoded` (Q3).
   std::map<std::string, GDExtensionObjectPtr> pretranscoded;
+  // G8kwh: the web export's upload rules (set_webgl_rules): the stated gpu_formats (set_delivery)
+  // bound the KTX2 loader's target, and WebGL's BC alignment rule applies. Godot's loader picks
+  // its target from RenderingServer.has_os_feature, which on the web claims etc2 whatever the
+  // context has, so a transcode to a family the receiver did not state is refused, as a failed
+  // transcode is (Q3: the entry falls back). Off on the native receiver.
+  bool webgl_rules = false;
+  std::string gpu_formats;
 
   uint64_t &slot(uint32_t kind, uint32_t handle) {
     std::vector<uint64_t> &t = rids[kind];
@@ -793,6 +800,37 @@ struct OpReader {
 // floats become halves where OES_texture_float_linear is missing.)
 GDExtensionObjectPtr make_image(OpReader &r, Instance *inst);
 
+// G8kwh: the family Godot's Image.Format `format` uploads as (texture-delivery-design.md Q3's
+// feature names), or nullptr for an uncompressed format.
+const char *image_format_family(int64_t format) {
+  if ((format >= 17 && format <= 19) || format == 34) return "s3tc";  // DXT1/3/5, DXT5_RA_AS_RG
+  if (format == 20 || format == 21) return "rgtc";
+  if (format >= 22 && format <= 24) return "bptc";
+  if (format >= 25 && format <= 33) return "etc2";  // ETC (as ETC2 RGB8) .. ETC2_RA_AS_RG
+  if (format >= 35 && format <= 38) return "astc";
+  return nullptr;
+}
+
+// G8kwh: under the web export's rules, the family of a transcoded image the WebGL context cannot
+// upload: one the receiver did not state, or BC at a level 0 that is not 4-aligned. nullptr: fine.
+const char *webgl_refused_target(const Instance *inst, int64_t format, int64_t w, int64_t h) {
+  const char *family = image_format_family(format);
+  if (family == nullptr) return nullptr;
+  bool stated = false;
+  const std::string &list = inst->gpu_formats;
+  for (size_t at = 0; at <= list.size();) {
+    size_t end = list.find(',', at);
+    if (end == std::string::npos) end = list.size();
+    if (list.compare(at, end - at, family) == 0 && std::strlen(family) == end - at) stated = true;
+    at = end + 1;
+  }
+  if (!stated) return family;
+  const bool bc = std::strcmp(family, "s3tc") == 0 || std::strcmp(family, "bptc") == 0 ||
+                  std::strcmp(family, "rgtc") == 0;
+  if (bc && (w % 4 != 0 || h % 4 != 0)) return family;
+  return nullptr;
+}
+
 // G8ku (texture-delivery-design.md Q6 "Native receiver", D14): a `uastc` variant's KTX2 file
 // (rs-core verified its hash and checked its shape) through Image.load_ktx_from_buffer, which
 // transcodes to the first target Godot's KTX2 loader finds in RenderingServer.has_os_feature
@@ -836,9 +874,18 @@ GDExtensionObjectPtr transcode_ktx2(const uint8_t *p, size_t len, int64_t width,
                    static_cast<size_t>(data_size), reinterpret_cast<uint8_t *>(digest));
     row += std::string(",\"data_sha256\":\"") + digest + "\"";
   }
+  // G8kwh: under the web export's rules, a target the context cannot upload is a failed transcode.
+  const char *refused_target = nullptr;
+  if (error == 0 && inst->webgl_rules) refused_target = webgl_refused_target(inst, format, w, h);
+  if (refused_target != nullptr) row += std::string(",\"refused_target\":\"") + refused_target + "\"";
+  if (refused_target != nullptr) {
+    const std::string ok_true = ",\"ok\":true,";
+    const size_t at = row.find(ok_true);
+    if (at != std::string::npos) row.replace(at, ok_true.size(), ",\"ok\":false,");
+  }
   row += "}";
   inst->transcodes += (inst->transcodes.empty() ? "" : ",") + row;
-  if (error != 0 || (width >= 0 && (w != width || h != height))) {
+  if (error != 0 || refused_target != nullptr || (width >= 0 && (w != width || h != height))) {
     ++inst->transcode_failed;
     GDExtensionBool last = false;
     gd.ptrcall(engine.refcounted_unreference, image, nullptr, &last);
@@ -1542,6 +1589,7 @@ enum Method : int {
   M_TAKE_TRANSCODES,
   M_PRETRANSCODE,
   M_REFUSE_VARIANT,
+  M_SET_WEBGL_RULES,
   M_COUNT,
 };
 
@@ -1575,6 +1623,7 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"take_transcodes", 0},  // () -> String: a JSON array of the KTX2 transcodes since the last call
     {"pretranscode", 2},     // (hash: String, ktx2: PackedByteArray) -> bool (G8kf: transcode ahead of the apply)
     {"refuse_variant", 1},   // (hash: String) -> void (G8kf: D3 skips this variant; Q3 fallback)
+    {"set_webgl_rules", 1},  // (on: bool) -> void (G8kwh: the web export's upload rules)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1702,6 +1751,7 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       if (rsc_set_delivery(inst->core, reinterpret_cast<const uint8_t *>(encodings.data()),
                            encodings.size(), reinterpret_cast<const uint8_t *>(gpu_formats.data()),
                            gpu_formats.size()) == 1) {
+        inst->gpu_formats = gpu_formats;
         ret_string(ret, "");
       } else {
         text_string(inst, static_cast<Variant *>(ret));
@@ -1719,6 +1769,11 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
     case M_PRETRANSCODE: {
       BytesArg data(args[1]);
       ret_bool(ret, pretranscode_ktx2(data.data, data.size, inst));
+      return;
+    }
+    case M_SET_WEBGL_RULES: {
+      inst->webgl_rules = arg_bool(args[0]);
+      rsc_set_bc_aligned_only(inst->core, inst->webgl_rules ? 1 : 0);
       return;
     }
     case M_REFUSE_VARIANT: {

@@ -124,6 +124,8 @@ impl Core {
                 // G8ku: the D6 policy is not part of the hello; a new preference keeps it.
                 p.upgrade = self.planner.delivery.upgrade;
                 p.refused = std::mem::take(&mut self.planner.delivery.refused);
+                // G8kwh: nor is WebGL's alignment rule.
+                p.bc_aligned_only = self.planner.delivery.bc_aligned_only;
                 self.planner.delivery = p;
                 true
             }

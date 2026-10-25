@@ -9,6 +9,14 @@
 //! whatever the list says. A receiver with no transcoder never lists `uastc`/`etc1s`; one that
 //! does gets no Basis choice here until G8ku, so the rule falls through to `decoded`.
 //!
+//! **WebGL's alignment rule (G8kwh).** WebGL refuses a BC (S3TC, BPTC, RGTC) level 0 whose width
+//! or height is not a multiple of 4; desktop GL takes it. A WebGL receiver sets
+//! [`DeliveryPrefs::bc_aligned_only`], and D3 then skips a BC `block` variant of such a texture,
+//! and, unless the receiver's own transcoder applies the rule ([`DeliveryPrefs::transcoder_aligns`],
+//! GSW), its `uastc` variant whenever `gpu_formats` states a BC family (Godot's KTX2 loader, D14,
+//! would pick that family for it). The entry falls through to its next preference, `decoded` at
+//! last.
+//!
 //! [`DeliveryPrefs::default`] is `decoded` alone: every receiver that is not configured, and every
 //! stream below /9 (whose entries carry no variants), picks exactly the hash it always did.
 
@@ -27,6 +35,11 @@ pub fn block_family(format: &str) -> Option<&'static str> {
         "ASTC_4x4" | "ASTC_8x8" => "astc",
         _ => return None,
     })
+}
+
+/// G8kwh: the block-compressed families WebGL uploads only at 4-aligned level-0 sizes.
+pub fn is_bc_family(family: &str) -> bool {
+    matches!(family, "s3tc" | "bptc" | "rgtc")
 }
 
 /// The families [`block_family`] knows, in the order hellos list them.
@@ -62,6 +75,15 @@ pub struct DeliveryPrefs {
     /// entry falls through to its next choice, at worst `decoded` (always servable). Not part of
     /// the hello; never cleared within a session (the same bytes fail the same way).
     pub refused: Vec<Hash>,
+    /// G8kwh: WebGL's rule, a BC level 0 uploads only when its width and height are multiples of
+    /// 4. D3 skips a BC `block` variant of a texture that is not, and (see `transcoder_aligns`)
+    /// its `uastc` variant. Not part of the hello; false on a desktop GL receiver.
+    pub bc_aligned_only: bool,
+    /// G8kwh: the receiver's uastc transcoder applies WebGL's rule itself and picks a non-BC
+    /// target for a texture that is not 4-aligned (GSW's `webglFamilies`, G8kb). False for
+    /// Godot's KTX2 loader (the web export): with `bc_aligned_only`, D3 then skips such a
+    /// texture's `uastc` variant whenever `gpu_formats` states a BC family.
+    pub transcoder_aligns: bool,
 }
 
 impl Default for DeliveryPrefs {
@@ -71,6 +93,8 @@ impl Default for DeliveryPrefs {
             gpu_formats: Vec::new(),
             upgrade: false,
             refused: Vec::new(),
+            bc_aligned_only: false,
+            transcoder_aligns: false,
         }
     }
 }
@@ -131,6 +155,8 @@ impl DeliveryPrefs {
             gpu_formats: gpu,
             upgrade: false,
             refused: Vec::new(),
+            bc_aligned_only: false,
+            transcoder_aligns: false,
         })
     }
 
@@ -157,6 +183,11 @@ impl DeliveryPrefs {
     /// Whether the receiver can upload `family` (a [`block_family`] name).
     pub fn has_family(&self, family: &str) -> bool {
         self.gpu_formats.iter().any(|f| &**f == family)
+    }
+
+    /// G8kwh: whether WebGL's alignment rule keeps BC payloads of `t` off this receiver.
+    fn bc_refused(&self, t: &Texture) -> bool {
+        self.bc_aligned_only && (t.width % 4 != 0 || t.height % 4 != 0)
     }
 
     /// D6 (G8ku): whether a texture resident as `resident` (a hash uploaded at `resident_version`)
@@ -189,7 +220,10 @@ impl DeliveryPrefs {
                             && v.format
                                 .as_deref()
                                 .and_then(block_family)
-                                .is_some_and(|fam| self.has_family(fam))
+                                .is_some_and(|fam| {
+                                    self.has_family(fam)
+                                        && !(is_bc_family(fam) && self.bc_refused(t))
+                                })
                     });
                     if let Some(v) = hit {
                         return Some(Selected {
@@ -202,7 +236,15 @@ impl DeliveryPrefs {
                 // G8ku: a receiver lists `uastc` only when it can transcode (the native receiver
                 // and the web export: Godot's KTX2 loader, D14; G8kb: GSW's transcoder worker), so
                 // a listed uastc variant wins unless its transcode already failed here (G8kb).
+                // G8kwh: unless the transcoder aligns, a texture WebGL's rule refuses as BC skips its
+                // uastc variant while a BC family is stated (the loader's target, D14).
                 "uastc" => {
+                    if !self.transcoder_aligns
+                        && self.bc_refused(t)
+                        && self.gpu_formats.iter().any(|f| is_bc_family(f))
+                    {
+                        continue;
+                    }
                     if let Some(v) = t.variants.iter().find(|v| {
                         v.encoding == VariantEncoding::Uastc && !self.refused.contains(&v.hash)
                     }) {
@@ -326,6 +368,35 @@ mod tests {
         assert_eq!(p.select(&tex(vec![])).unwrap().encoding, "decoded");
         let masked = DeliveryPrefs::parse("block,decoded", "none").unwrap();
         assert_eq!(masked.select(&tex(vec![block("DXT5", 2)])).unwrap().encoding, "decoded");
+    }
+
+    #[test]
+    fn webgl_alignment_rule() {
+        // G8kwh: a 150x110 texture on a WebGL receiver never takes BC.
+        let sized = |w: i64, h: i64, v: Vec<TextureVariant>| {
+            let mut t = tex(v);
+            t.width = w;
+            t.height = h;
+            t
+        };
+        let mut p = DeliveryPrefs::parse("block,uastc,decoded", "s3tc,bptc,rgtc,astc").unwrap();
+        let npot = sized(150, 110, vec![block("DXT5", 2), uastc(3)]);
+        let aligned = sized(152, 112, vec![block("DXT5", 2), uastc(3)]);
+        assert_eq!(p.select(&npot).unwrap().encoding, "block", "desktop GL: no rule");
+        p.bc_aligned_only = true;
+        assert_eq!(p.select(&aligned).unwrap().encoding, "block");
+        let s = p.select(&npot).unwrap();
+        // Conservative: the loader picks ASTC first for four components, BC for three.
+        assert_eq!((s.encoding, s.hash), ("decoded", Hash([1; 32])), "the loader may pick BC");
+        // A non-BC block variant of the same texture is still taken.
+        assert_eq!(p.select(&sized(150, 110, vec![block("ASTC_4x4", 4)])).unwrap().encoding, "block");
+        // GSW's transcoder picks a non-BC target itself: uastc stays.
+        p.transcoder_aligns = true;
+        assert_eq!(p.select(&npot).unwrap().encoding, "uastc");
+        // No BC family stated: the loader cannot pick BC, so uastc stays.
+        let mut q = DeliveryPrefs::parse("block,uastc,decoded", "astc").unwrap();
+        q.bc_aligned_only = true;
+        assert_eq!(q.select(&npot).unwrap().encoding, "uastc");
     }
 
     #[test]

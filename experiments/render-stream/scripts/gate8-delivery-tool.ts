@@ -7,7 +7,10 @@
 //   gate8-delivery-tool.ts web-legs --source <gate 8 run> [--bundle <web-receiver bundle dir>]
 //
 // G8kf: gsw-legs also replays g8kp/receiver in the web export (g8kp-web/web: does the web export
-// state gpu_formats and take `block` variants at /9?), and web-legs replays
+// state gpu_formats and take `block` variants at /9?); G8kwh adds g8kp-web/web-masked
+// (RS_RECEIVER_GPU_FORMAT_MASK=<mask>: every texture decoded, the pixel baseline) and
+// g8kp-web/sabotage-advertise-etc2/web (the pre-G8kwh hello: etc2 stated without the context's
+// extension, WebGL's rules off), and web-legs replays
 // g8ku/sabotage-corrupt-ktx2/receiver as g8ku-web/web-fallback and g8ku/pending/receiver as
 // g8ku-web/web-pending.
 //
@@ -145,7 +148,7 @@ async function main(): Promise<void> {
     console.log(
       `gate8-delivery-tool: ${r.leg} exit ${r.exitCode}${r.provenanceOk ? "" : " (harness-refused: browser-provenance)"} ${r.wallMs} ms`,
     );
-  await webBlockLeg(source, []);
+  await webBlockLeg(source, [], mask, sabotageSkipped);
 }
 
 // The web export's bundle: --bundle names one, else build-web-receiver.sh builds (or reuses) it.
@@ -171,7 +174,12 @@ function webBundle(argv: string[]): { dir: string; sha256: string } {
 
 // G8kf: the web export on g8kp/receiver's own launch (the /9 passthrough recording): does it state
 // gpu_formats and take `block` variants? g8kp-web/web, a harness root beside g8kp/ like g8ku-web.
-async function webBlockLeg(source: string, argv: string[]): Promise<void> {
+async function webBlockLeg(
+  source: string,
+  argv: string[],
+  mask: string,
+  sabotageSkipped: boolean,
+): Promise<void> {
   const g8kp = join(source, "g8kp");
   const nativeDir = join(g8kp, "receiver");
   if (!existsSync(join(nativeDir, "env.txt")))
@@ -180,6 +188,29 @@ async function webBlockLeg(source: string, argv: string[]): Promise<void> {
     );
   const bundle = webBundle(argv);
   const run = join(source, "g8kp-web");
+  const legs: WebLegSpec[] = [
+    { leg: "web", nativeDir, webDir: join(run, "web") },
+    {
+      leg: "web-masked",
+      nativeDir,
+      webDir: join(run, "web-masked"),
+      extraEnv: { RS_RECEIVER_GPU_FORMAT_MASK: mask },
+    },
+  ];
+  const sabotageDir = join(run, "sabotage-advertise-etc2", "web");
+  if (sabotageSkipped) {
+    await mkdir(sabotageDir, { recursive: true });
+    await writeFile(
+      join(sabotageDir, "skipped-by-tier.txt"),
+      "skipped-by-tier: RS_SABOTAGE_TIER=skip (a sabotage leg)\n",
+    );
+  } else
+    legs.push({
+      leg: "sabotage-advertise-etc2/web",
+      nativeDir,
+      webDir: sabotageDir,
+      extraEnv: { RS_RECEIVER_SABOTAGE: "advertise-etc2" },
+    });
   const results = await runWebLegs(
     {
       out: run,
@@ -189,7 +220,7 @@ async function webBlockLeg(source: string, argv: string[]): Promise<void> {
       buildSha256: bundle.sha256,
       kind: "web",
     },
-    [{ leg: "web", nativeDir, webDir: join(run, "web") }],
+    legs,
   );
   for (const r of results)
     console.log(
@@ -198,7 +229,8 @@ async function webBlockLeg(source: string, argv: string[]): Promise<void> {
 }
 
 // G8ku: the web export on g8ku/receiver-upgrade's own launch; G8kf adds web-fallback, the same on
-// g8ku/sabotage-corrupt-ktx2/receiver's (a KTX2 the transcoder refuses: Q3's fallback to decoded).
+// g8ku/sabotage-corrupt-ktx2/receiver's (a KTX2 the transcoder refuses: Q3's fallback to decoded);
+// G8kwh adds web-masked (BC masked: each transcode's BC target refused, decoded instead).
 async function webLegs(argv: string[]): Promise<void> {
   const source = resolve(flag(argv, "--source"));
   const g8ku = join(source, "g8ku");
@@ -223,6 +255,15 @@ async function webLegs(argv: string[]): Promise<void> {
       nativeDir: fallbackDir,
       webDir: join(run, "web-fallback"),
     });
+  // G8kwh: the same with every BC family masked. Godot's KTX2 loader still picks BC7 (it reads
+  // has_os_feature, not the stated families), so the web export's rules must refuse each
+  // transcode's target and fall back to decoded: the stated hello bounds the uploads.
+  legs.push({
+    leg: "web-masked",
+    nativeDir,
+    webDir: join(run, "web-masked"),
+    extraEnv: { RS_RECEIVER_GPU_FORMAT_MASK: "s3tc,bptc,rgtc" },
+  });
   const pendingDir = join(g8ku, "pending", "receiver");
   if (existsSync(join(pendingDir, "env.txt")))
     legs.push({

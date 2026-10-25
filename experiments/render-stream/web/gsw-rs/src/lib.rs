@@ -1043,6 +1043,11 @@ impl GswRs {
         // Desktop contexts keep (a block variant, or the decoded copy, is already resident).
         let phone_class = !stated.iter().any(|f| *f == "bptc" || *f == "s3tc");
         applier.delivery.upgrade = self.opts.variant_policy.unwrap_or(phone_class);
+        // G8kwh: WebGL's BC alignment rule. A BC `block` variant of a texture whose level 0 is not
+        // 4-aligned is never chosen; GSW's transcoder applies the rule to its own target (G8kb's
+        // webglFamilies), so such a texture's uastc variant stays.
+        applier.delivery.bc_aligned_only = true;
+        applier.delivery.transcoder_aligns = true;
         applier.stream_version = self.version;
         self.delivery = DeliveryReport {
             texture_encodings: encodings,
@@ -1966,7 +1971,7 @@ impl GswRs {
     pub fn delivery_json(&self) -> String {
         let d = &self.delivery;
         format!(
-            "{{\"texture_encodings\":{},\"gpu_formats\":{},\"gpu_formats_detected\":{},\"gpu_format_mask\":{},\"variant_policy\":{},\"variant_policy_default\":{}}}",
+            "{{\"texture_encodings\":{},\"gpu_formats\":{},\"gpu_formats_detected\":{},\"gpu_format_mask\":{},\"variant_policy\":{},\"variant_policy_default\":{},\"bc_aligned_only\":true,\"transcoder_aligns\":true}}",
             json_str(&d.texture_encodings),
             json_str(&d.gpu_formats),
             json_str(&d.gpu_formats_detected),

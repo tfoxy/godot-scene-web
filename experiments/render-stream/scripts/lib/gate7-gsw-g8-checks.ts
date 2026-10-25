@@ -43,6 +43,7 @@ import { decodePngRgba } from "./gate-minus1-checks";
 import type { Gate7Check } from "./gate7-adapters";
 import { compositorProblems, mk } from "./gate7-gsw";
 import { type BandShot, GATE8_COMPOSITOR_LEGS } from "./gate7-gsw-g8";
+import { BASIS_HALF_MIP, BASIS_REGIONS } from "./gate8-basis-checks";
 
 interface Ctx {
   out: string;
@@ -145,17 +146,8 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
 
 // ------------------------------------------------------------------------------------- G8kb
 
-/** gate8-basis's drawn textures (fixtures/gate8-basis/gate8_basis.gd TEXTURES), by oracle name. */
-const BASIS_REGIONS: Record<string, [number, number, number, number]> = {
-  rgba: [4, 4, 160, 128],
-  rgb: [168, 4, 192, 96],
-  bc1: [364, 4, 136, 124],
-  npot: [144, 136, 150, 110],
-  mip: [298, 136, 128, 128],
-  big: [500, 136, 128, 128],
-};
-/** HalfMip: `mip` at half size with linear mipmaps (its level 1); GSW uploads level 0 only. */
-const BASIS_HALF_MIP: [number, number, number, number] = [430, 136, 64, 64];
+// gate8-basis's drawn textures and the half-size mip draw (GSW uploads level 0 only) are
+// BASIS_REGIONS and BASIS_HALF_MIP (lib/gate8-basis-checks.ts).
 const QUALITY_FLOOR_DB = 30;
 
 interface TranscodeRow {

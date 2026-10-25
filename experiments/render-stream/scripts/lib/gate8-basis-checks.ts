@@ -26,16 +26,20 @@
 //                                       beside g8ku/, linking g8ku/ alone)
 //   g8ku-web/web-fallback/              (G8kf) the web export on sabotage-corrupt-ktx2/receiver's
 //   g8ku-web/web-pending/               (G8kf) the web export on pending/receiver's
+//   g8ku-web/web-masked/                (G8kwh) web/'s launch with s3tc,bptc,rgtc masked
 
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  BC_FAMILIES,
   check,
   diffShots,
+  type Rgba,
   readJson,
   readText,
+  type StatedDelivery,
   sha256,
   shot,
   skipped,
@@ -100,6 +104,8 @@ interface TranscodeRow {
   transcode_us: number;
   data_sha256?: string;
   seq?: number;
+  /** G8kwh: the web export refused this transcode's target (a family it did not state). */
+  refused_target?: string;
 }
 
 interface Applied {
@@ -115,8 +121,103 @@ interface Applied {
   transcodes?: TranscodeRow[];
   variant_fallbacks?: Array<{ stream: number; seq: number; hash: string }>;
   receiver?: {
-    texture_delivery?: { texture_encodings: string; variant_policy?: string };
+    texture_delivery?: StatedDelivery & { variant_policy?: string };
   };
+}
+
+/** gate8-basis's drawn textures (fixtures/gate8-basis/gate8_basis.gd TEXTURES): [x, y, w, h]. */
+export const BASIS_REGIONS: Record<string, [number, number, number, number]> = {
+  rgba: [4, 4, 160, 128],
+  rgb: [168, 4, 192, 96],
+  bc1: [364, 4, 136, 124],
+  npot: [144, 136, 150, 110],
+  mip: [298, 136, 128, 128],
+  big: [500, 136, 128, 128],
+};
+/** `mip` at half size with linear mipmaps (its level 1). */
+export const BASIS_HALF_MIP: [number, number, number, number] = [
+  430, 136, 64, 64,
+];
+
+/**
+ * G8kwh (texture-delivery-design.md "As built (G8kwh)"): the uastc textures D3 leaves `decoded` on
+ * a receiver stating WebGL's BC alignment rule without an aligning transcoder (the web export):
+ * level 0 not 4-aligned while a BC family is stated. Independent of rs-core's delivery.rs.
+ */
+export function alignmentSkipped(
+  textures: readonly G8kuTextureExpected[],
+  stated: StatedDelivery | undefined,
+): string[] {
+  if (stated?.bc_aligned_only !== true || stated.transcoder_aligns === true)
+    return [];
+  const gpu = (stated.gpu_formats ?? "none").split(",");
+  if (!gpu.some((f) => BC_FAMILIES.includes(f))) return [];
+  return textures
+    .filter(
+      (t) => t.upgrade === "uastc" && (t.width % 4 !== 0 || t.height % 4 !== 0),
+    )
+    .map((t) => t.name);
+}
+
+/** Pixels differing by more than channel 1 outside `skip`, and the largest delta. */
+function beyondOne(
+  a: Rgba,
+  b: Rgba,
+  skip: ReadonlyArray<readonly [number, number, number, number]>,
+): { n: number; max: number } {
+  let n = 0;
+  let max = 0;
+  for (let y = 0; y < a.height; y++)
+    for (let x = 0; x < a.width; x++) {
+      if (
+        skip.some(
+          (r) => x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3],
+        )
+      )
+        continue;
+      const i = (y * a.width + x) * 4;
+      let d = 0;
+      for (let c = 0; c < 4; c++)
+        d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
+      if (d > 1) {
+        n++;
+        max = Math.max(max, d);
+      }
+    }
+  return { n, max };
+}
+
+/** `base` with `region` copied from `from`. */
+function paste(
+  base: Rgba,
+  from: Rgba,
+  region: readonly [number, number, number, number],
+): Rgba {
+  const data = new Uint8Array(base.data);
+  for (let y = region[1]; y < region[1] + region[3]; y++) {
+    const at = (y * base.width + region[0]) * 4;
+    data.set(from.data.subarray(at, at + region[2] * 4), at);
+  }
+  return { width: base.width, height: base.height, data };
+}
+
+function regionPsnr(
+  a: Rgba,
+  b: Rgba,
+  r: readonly [number, number, number, number],
+): number {
+  let se = 0;
+  let n = 0;
+  for (let y = r[1]; y < r[1] + r[3]; y++)
+    for (let x = r[0]; x < r[0] + r[2]; x++) {
+      const i = (y * a.width + x) * 4;
+      for (let c = 0; c < 4; c++) {
+        const d = a.data[i + c] - b.data[i + c];
+        se += d * d;
+        n++;
+      }
+    }
+  return se === 0 ? Infinity : 10 * Math.log10((255 * 255 * n) / se);
 }
 
 export interface G8kuReport {
@@ -207,6 +308,7 @@ export async function runG8ku(
     web: join(out, "g8ku-web", "web"),
     "web-fallback": join(out, "g8ku-web", "web-fallback"),
     "web-pending": join(out, "g8ku-web", "web-pending"),
+    "web-masked": join(out, "g8ku-web", "web-masked"),
   };
   const legs: G8kuReport["legs"] = {};
   for (const [l, dir] of Object.entries(legDirs)) {
@@ -528,6 +630,7 @@ export async function runG8ku(
     "web",
     "web-fallback",
     "web-pending",
+    "web-masked",
   ])
     applied[l] = await readJson<Applied>(join(legDirs[l], "applied.json"));
   {
@@ -868,13 +971,31 @@ export async function runG8ku(
       problems.push(`web status ${a?.status} ${failureText(a)}`);
     const rows = new Map((oracle?.ktx2 ?? []).map((r) => [r.hash, r]));
     const got = a?.transcodes ?? [];
-    const upgraded = expected.textures.filter(
-      (t) => t.upgrade === "uastc",
-    ).length;
+    // G8kwh: WebGL's alignment rule keeps a non-4-aligned texture `decoded` (no KTX2 fetched).
+    const skippedNames = alignmentSkipped(
+      expected.textures,
+      a?.receiver?.texture_delivery,
+    );
+    const upgraded =
+      expected.textures.filter((t) => t.upgrade === "uastc").length -
+      skippedNames.length;
     if (got.length < upgraded)
       problems.push(
         `the web export transcoded ${got.length} KTX2, expected ${upgraded}`,
       );
+    for (const name of skippedNames) {
+      const e = expected.textures.find((t) => t.name === name);
+      if (got.some((t) => t.width === e?.width && t.height === e?.height))
+        problems.push(
+          `web ${name}: transcoded although WebGL's BC rule leaves it decoded`,
+        );
+      const id = [...idNames.entries()].find(([, n]) => n === name)?.[0];
+      const ups = (a?.uploads ?? []).filter((u) => u.id === id);
+      if (ups.length === 0 || ups.some((u) => u.encoding !== "decoded"))
+        problems.push(
+          `web ${name}: uploads ${JSON.stringify(ups.map((u) => u.encoding))}, expected decoded only (WebGL's BC rule)`,
+        );
+    }
     let sameTarget = 0;
     let otherTarget = 0;
     for (const t of got) {
@@ -916,8 +1037,167 @@ export async function runG8ku(
         "delivery-web",
         `G8ku (Q6 "Web export"): the web export replaying the upgrade leg takes the uastc variants, transcodes each through Image.load_ktx_from_buffer in wasm (time recorded) at the entry's size, and where its WebGL context's D14 target is the native oracle's, uploads the same blocks bit for bit`,
         ran("web") ? problems : null,
-        `transcode us ${JSON.stringify(got.map((t) => t.transcode_us))}; ${sameTarget} on the oracle's target, ${otherTarget} on another`,
+        `transcode us ${JSON.stringify(got.map((t) => t.transcode_us))}; ${sameTarget} on the oracle's target, ${otherTarget} on another; decoded by WebGL's BC rule: ${skippedNames.join(",") || "none"}`,
         "g8ku-web/web",
+      ),
+    );
+  }
+
+  // --- delivery-pixels-web (G8kwh): the web export's uastc pixels against the native legs ------
+  {
+    const problems: string[] = [];
+    const rows: string[] = [];
+    const w = applied.web;
+    const nu = applied["receiver-upgrade"];
+    const skippedNames = alignmentSkipped(
+      expected.textures,
+      w?.receiver?.texture_delivery,
+    );
+    const seqs =
+      (await readText(join(legDirs["receiver-upgrade"], "shot-seqs.txt")))
+        ?.trim()
+        .split(",") ?? null;
+    // The last upload of each fixture texture, and the transcode format of a uastc one.
+    const lastUpload = (a: Applied | undefined, name: string) => {
+      const id = [...idNames.entries()].find(([, n]) => n === name)?.[0];
+      const ups = (a?.uploads ?? []).filter((u) => u.id === id);
+      const u = ups[ups.length - 1];
+      const t = u
+        ? (a?.transcodes ?? []).find((x) => x.hash === u.hash && x.ok)
+        : undefined;
+      return { encoding: u?.encoding ?? null, format: t?.format ?? null };
+    };
+    for (const s of expected.steps) {
+      const web = seqs ? await shot(legDirs.web, s.step, seqs) : undefined;
+      const up = seqs
+        ? await shot(legDirs["receiver-upgrade"], s.step, seqs)
+        : undefined;
+      const keep = seqs
+        ? await shot(legDirs.receiver, s.step, seqs)
+        : undefined;
+      const ref = await shot(legDirs.reference, s.step, null);
+      if (!web || !up || !keep || !ref) {
+        problems.push(`step ${s.step}: a shot is missing`);
+        continue;
+      }
+      // Step 0 precedes every variant: both receivers draw decoded. From step 1 a texture the web
+      // export drew decoded where the native upgrade leg drew its transcode (WebGL's BC rule) is
+      // compared with the native keep leg (decoded), one on another transcode target is held to
+      // the PSNR floor against the procedural reference, and the rest to the native upgrade leg.
+      let against = up;
+      const skip: Array<[number, number, number, number]> = [];
+      const notes: string[] = [];
+      if (s.step > 0)
+        for (const e of expected.textures) {
+          const r = BASIS_REGIONS[e.name];
+          if (!r) continue;
+          const wu = lastUpload(w, e.name);
+          const nn = lastUpload(nu, e.name);
+          if (wu.encoding === "decoded" && nn.encoding === "uastc") {
+            against = paste(against, keep, r);
+            notes.push(`${e.name} decoded (native keep)`);
+            if (!skippedNames.includes(e.name))
+              problems.push(
+                `step ${s.step}: ${e.name} drawn decoded, not by WebGL's BC rule`,
+              );
+          } else if (
+            wu.encoding === "uastc" &&
+            nn.encoding === "uastc" &&
+            wu.format !== nn.format
+          ) {
+            skip.push(r);
+            if (e.name === "mip") skip.push(BASIS_HALF_MIP);
+            const db = regionPsnr(web, ref, r);
+            notes.push(
+              `${e.name} on format ${wu.format} (native ${nn.format}) ${db.toFixed(1)} dB`,
+            );
+            if (db < expected.psnr_floor_db)
+              problems.push(
+                `step ${s.step}: ${e.name} ${db.toFixed(1)} dB < ${expected.psnr_floor_db}`,
+              );
+          } else if (wu.encoding !== nn.encoding)
+            problems.push(
+              `step ${s.step}: ${e.name} uploaded ${wu.encoding} on the web, ${nn.encoding} natively`,
+            );
+        }
+      const b = beyondOne(web, against, skip);
+      pixels[`web/step-${s.step}`] = {
+        beyond_channel_1: b.n,
+        max: b.max,
+        notes,
+      };
+      rows.push(
+        `step ${s.step}: ${b.n} px beyond channel 1${notes.length ? ` (${notes.join(", ")})` : ""}`,
+      );
+      if (b.n > 0)
+        problems.push(
+          `step ${s.step}: ${b.n} px beyond channel 1 of the native legs (max ${b.max})`,
+        );
+    }
+    const webgl = ((await readText(join(legDirs.web, "console.jsonl"))) ?? "")
+      .split("\n")
+      .filter((line) => line.includes("WebGL: ")).length;
+    if (webgl > 0)
+      problems.push(
+        `the web export's console logs ${webgl} \`WebGL: \` errors`,
+      );
+    checks.push(
+      check(
+        "delivery-pixels-web",
+        "G8kwh (D16): the web export replaying the upgrade leg draws within channel 1 of the native upgrade leg at every step, except where WebGL's BC alignment rule kept a texture decoded (that region within channel 1 of the native keep leg) or its context's D14 target differs from the native one (that region at the PSNR floor against the procedural reference); and its console logs no `WebGL: ` error",
+        ran("web") &&
+          ran("receiver-upgrade") &&
+          ran("receiver") &&
+          ran("reference")
+          ? problems
+          : null,
+        rows.join("; "),
+        "g8ku-web/web or a native leg",
+      ),
+    );
+  }
+
+  // --- delivery-web-masked (G8kwh): the stated families bound the KTX2 loader's target -----------
+  {
+    const problems: string[] = [];
+    const a = applied["web-masked"];
+    const stated = a?.receiver?.texture_delivery;
+    if (a?.status !== "ok")
+      problems.push(`web-masked status ${a?.status} ${failureText(a)}`);
+    if (stated?.gpu_formats !== "none")
+      problems.push(
+        `web-masked states gpu_formats ${stated?.gpu_formats}, expected none`,
+      );
+    // Every texture with a uastc variant (bc1's too: with BC masked its block is not taken).
+    const uastcTextures = expected.textures.filter((t) => t.uastc).length;
+    const rows = a?.transcodes ?? [];
+    const refused = rows.filter((t) => !t.ok && t.refused_target);
+    if (refused.length !== uastcTextures)
+      problems.push(
+        `${refused.length} transcodes refused for their target (${rows.map((t) => `${t.ok ? "ok" : "refused"} ${t.format} ${t.refused_target ?? "-"}`).join(", ")}), expected ${uastcTextures}`,
+      );
+    for (const t of refused)
+      if (!BC_FAMILIES.includes(t.refused_target ?? ""))
+        problems.push(
+          `${t.hash.slice(0, 12)}: refused target ${t.refused_target}, expected a BC family`,
+        );
+    if ((a?.variant_fallbacks ?? []).length !== uastcTextures)
+      problems.push(
+        `${(a?.variant_fallbacks ?? []).length} variant fallbacks, expected ${uastcTextures}`,
+      );
+    const ups = a?.uploads ?? [];
+    for (const u of ups)
+      if (u.encoding !== "decoded")
+        problems.push(
+          `texture ${u.id} uploaded ${u.encoding} at seq ${u.seq} although no family is stated`,
+        );
+    checks.push(
+      check(
+        "delivery-web-masked",
+        "G8kwh: the web export stating no family (s3tc,bptc,rgtc masked) still fetches the uastc variants, but Godot's KTX2 loader picks a BC target from has_os_feature; the web export's rules refuse each such transcode (refused_target, a BC family), fall back to decoded (one variant fallback per uastc texture), upload only decoded and finish ok",
+        ran("web-masked") ? problems : null,
+        `${refused.length} targets refused (${[...new Set(refused.map((t) => t.refused_target))].join(",")}), ${ups.length} decoded uploads`,
+        "g8ku-web/web-masked",
       ),
     );
   }
@@ -1129,15 +1409,20 @@ export async function runG8ku(
         );
         continue;
       }
+      // G8kwh: the web export never fetches a KTX2 WebGL's BC rule keeps decoded.
+      const want =
+        wantFallbacks -
+        (l === "web-fallback"
+          ? alignmentSkipped(expected.textures, a.receiver?.texture_delivery)
+              .length
+          : 0);
       const fb = a.variant_fallbacks ?? [];
-      if (fb.length !== wantFallbacks)
-        problems.push(
-          `${l}: ${fb.length} variant fallbacks, expected ${wantFallbacks}`,
-        );
+      if (fb.length !== want)
+        problems.push(`${l}: ${fb.length} variant fallbacks, expected ${want}`);
       const failedRows = (a.transcodes ?? []).filter((t) => !t.ok).length;
-      if (failedRows !== wantFallbacks)
+      if (failedRows !== want)
         problems.push(
-          `${l}: ${failedRows} failed transcodes, expected ${wantFallbacks}`,
+          `${l}: ${failedRows} failed transcodes, expected ${want}`,
         );
       const ups = a.uploads ?? [];
       if (ups.some((u) => u.encoding === "uastc"))

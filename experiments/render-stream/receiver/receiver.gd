@@ -45,7 +45,11 @@ extends Node
 ##   RS_RECEIVER_GPU_FORMAT_MASK  G8kp: comma-separated families (s3tc, bptc, rgtc, etc2, astc)
 ##                                left out of gpu_formats, which is otherwise every family
 ##                                RenderingServer.has_os_feature reports. G8ku: the web export reads
-##                                both too (and may offer /9)
+##                                both too (and may offer /9). G8kwh: on the web a family counts
+##                                only when the page's WebGL context also lists its extension
+##                                (Godot claims etc2 on every web build), and WebGL's BC alignment
+##                                rule applies (set_webgl_rules); RS_RECEIVER_SABOTAGE=
+##                                advertise-etc2 states etc2 anyway (the pre-G8kwh hello)
 ##   RS_RECEIVER_VARIANT_POLICY   G8ku (D6): keep (default) holds a texture's resident payload when a
 ##                                variant it prefers appears at an equal version; upgrade refetches
 ##   RS_RECEIVER_TRANSCODE_LOG    G8ku (D16): 1 hashes each KTX2 transcode's uploaded blocks into
@@ -284,7 +288,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation", "no-evict", "verify-in-frame"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -439,6 +443,16 @@ var _wire_version: int = 6
 ## receiver states (RS_RECEIVER_TEXTURE_ENCODINGS, RS_RECEIVER_GPU_FORMAT_MASK); gpu_formats is
 ## detected once the renderer exists (_new_applier).
 const GPU_FAMILIES: Array[String] = ["s3tc", "bptc", "rgtc", "etc2", "astc"]
+## G8kwh: the WebGL extension each family needs (lib/gsw-receiver/hello.ts GPU_EXTENSIONS, the GSW
+## receiver's own table). Godot's GLES3 config sets etc2_supported unconditionally on any GLES/WebGL
+## build (drivers/gles3/storage/config.cpp), so on the web has_os_feature alone is not the context.
+const WEBGL_EXTENSIONS: Dictionary = {
+	"s3tc": "WEBGL_compressed_texture_s3tc",
+	"bptc": "EXT_texture_compression_bptc",
+	"rgtc": "EXT_texture_compression_rgtc",
+	"etc2": "WEBGL_compressed_texture_etc",
+	"astc": "WEBGL_compressed_texture_astc",
+}
 const TEXTURE_ENCODINGS: Array[String] = ["block", "uastc", "etc1s", "decoded"]
 var _texture_encodings: String = "block,uastc,decoded"
 ## G8ku: RS_RECEIVER_VARIANT_POLICY and RS_RECEIVER_TRANSCODE_LOG.
@@ -451,6 +465,11 @@ var _variant_fallbacks: Array[Dictionary] = []
 var _gpu_format_mask: Array[String] = []
 var _gpu_formats: String = "none"
 var _gpu_formats_detected: String = "none"
+## G8kwh (web only): what has_os_feature claims, and the context's compressed-texture extensions.
+var _gpu_formats_engine: String = "none"
+var _webgl_extensions: String = ""
+## G8kwh: whether the web export's upload rules apply (the web export, unless sabotaged).
+var _webgl_rules: bool = false
 var _credit_window: int = 1
 var _manifest_sha256: String = ""
 ## The live connection being read: 1, then 2 after a reconnect. Transactions, shots and state
@@ -2499,6 +2518,7 @@ func _parse_delivery_env() -> bool:
 				return false
 			seen.append(name)
 		_texture_encodings = encodings
+	_webgl_rules = OS.has_feature("web") and _sabotage != "advertise-etc2"
 	var mask: String = RsConfig.get_env("RS_RECEIVER_GPU_FORMAT_MASK").strip_edges()
 	_gpu_format_mask = []
 	if mask != "":
@@ -2514,20 +2534,57 @@ func _parse_delivery_env() -> bool:
 ## handed to the core with the preference; the report states both at /9 (_accept_session). G8ku:
 ## the web export too (its WebGL2 context's features through the same engine call).
 func _apply_delivery() -> void:
+	var web: bool = OS.has_feature("web")
+	# (Not a ternary: an untyped `[]` branch cannot be assigned to Array[String].)
+	var extensions: Array[String] = []
+	if web:
+		extensions = _webgl_compressed_extensions()
+	var engine: Array[String] = []
 	var detected: Array[String] = []
 	var effective: Array[String] = []
 	for family: String in GPU_FAMILIES:
-		if RenderingServer.has_os_feature(family):
-			detected.append(family)
-			if not _gpu_format_mask.has(family):
-				effective.append(family)
+		if not RenderingServer.has_os_feature(family):
+			continue
+		engine.append(family)
+		# G8kwh: on the web the context must list the family's extension too.
+		var ext_name: String = WEBGL_EXTENSIONS[family]
+		if web and not extensions.has(ext_name) and not (family == "etc2" and _sabotage == "advertise-etc2"):
+			continue
+		detected.append(family)
+		if not _gpu_format_mask.has(family):
+			effective.append(family)
+	_gpu_formats_engine = ",".join(engine) if not engine.is_empty() else "none"
+	_webgl_extensions = ",".join(extensions)
 	_gpu_formats_detected = ",".join(detected) if not detected.is_empty() else "none"
 	_gpu_formats = ",".join(effective) if not effective.is_empty() else "none"
 	var refused: String = _applier.set_delivery(_texture_encodings, _gpu_formats)
 	if refused != "":
 		_log("warning: the core refused the delivery preference (%s); every texture stays decoded" % refused)
+	# G8kwh: WebGL's upload rules (the stated families bound the KTX2 loader's target; BC level 0
+	# must be 4-aligned). The advertise-etc2 sabotage drops them too: the pre-G8kwh web export.
+	if _webgl_rules:
+		_applier.set_webgl_rules(true)
 	_applier.set_variant_upgrade(_variant_upgrade)
 	_applier.set_transcode_log(_transcode_log)
+
+
+## G8kwh: the compressed-texture extensions (WEBGL_EXTENSIONS' values) the page's WebGL 2 context
+## supports, read through JavaScriptBridge from the engine's own canvas (getContext returns the
+## context the engine made; emscripten enables every supported compressed-texture extension by
+## default, and Godot's config reads the same list). Empty when it cannot be read: no family is
+## then stated, and every texture is `decoded`.
+func _webgl_compressed_extensions() -> Array[String]:
+	var out: Array[String] = []
+	var got: Variant = JavaScriptBridge.eval("(function () { var c = document.getElementById('canvas') || document.querySelector('canvas'); var gl = c ? c.getContext('webgl2') : null; var e = gl ? gl.getSupportedExtensions() : null; return e ? e.join(',') : ''; })()", true)
+	if not got is String:
+		_log("warning: the WebGL extension list could not be read; stating no gpu_formats")
+		return out
+	var text: String = got
+	for name: String in text.split(",", false):
+		if WEBGL_EXTENSIONS.values().has(name):
+			out.append(name)
+	out.sort()
+	return out
 
 
 ## A stream's first record (a session), at the stream's wire version (G7xwl: /6, or /7).
@@ -2541,6 +2598,12 @@ func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
 			"gpu_format_mask": ",".join(_gpu_format_mask),
 			"variant_policy": "upgrade" if _variant_upgrade else "keep",
 		}
+		# G8kwh: the web export also states where its families came from and WebGL's BC rule.
+		if OS.has_feature("web"):
+			var block: Dictionary = receiver_block["texture_delivery"]
+			block["gpu_formats_engine"] = _gpu_formats_engine
+			block["webgl_extensions"] = _webgl_extensions
+			block["bc_aligned_only"] = _webgl_rules
 	return _applier.accept_session(data, offset, _wire_version)
 
 

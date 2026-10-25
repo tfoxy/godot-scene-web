@@ -10,6 +10,10 @@
 //    and one that never uploads a variant-offering texture each fail.
 // 3. gswBlockAgainstHw: decided pixels only; delta 1 is counted apart from beyond.
 // 4. hello.ts: gpu_formats from an extension list (order, mask, `none`) and the /9 hello's keys.
+// 5. G8kwh: predictD3 under WebGL's BC alignment rule (block and uastc, GSW's aligning transcoder),
+//    webStatementProblems (a family stated without its extension, the rule unstated) and
+//    webBlockPixels (a failed ETC2 upload on a step it took blocks of; a WebGL console error),
+//    and gate7b's deliveryContextDiffers (a CI runner's native astc against its WebGL's none).
 //
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8kp.ts
@@ -17,12 +21,16 @@
 // Exits non-zero if any assertion fails.
 
 import { gpuFormatsOf, helloV9 } from "../../web/gsw-receiver/hello";
+import { deliveryContextDiffers } from "../lib/gate7b-adapters";
 import {
   type DeliveryEntry,
   deliverySelectProblems,
   gswBlockAgainstHw,
   predictD3,
+  type Rgba,
   type UploadRow,
+  webBlockPixels,
+  webStatementProblems,
 } from "../lib/gate8-delivery-checks";
 import type { ResolvedRecording } from "../lib/render-stream-2";
 
@@ -265,6 +273,138 @@ const block = (format: string, c: string) => ({
     JSON.stringify(h) ===
       '{"type":"hello","protocol":"render-stream/9","receiver":"r","dpr_milli":1000,"texture_encodings":"block,decoded","gpu_formats":"none"}',
     `the /9 hello keeps /7's order and appends the two keys (${JSON.stringify(h)})`,
+  );
+}
+
+// 5. G8kwh
+{
+  const uastc = {
+    encoding: "uastc" as const,
+    hash: H("u"),
+    payload_bytes: 50,
+    format: null,
+    params: "p",
+  };
+  const npot: DeliveryEntry = {
+    ...entry(7, [block("BPTC_RGBA", "b"), uastc]),
+    width: 150,
+    height: 110,
+  };
+  const aligned: DeliveryEntry = { ...npot, width: 152, height: 112 };
+  const enc = ["block", "uastc", "decoded"];
+  const gpu = ["s3tc", "bptc", "rgtc"];
+  expect(
+    predictD3(npot, enc, gpu)?.encoding === "block",
+    "desktop GL: no alignment rule",
+  );
+  expect(
+    predictD3(npot, enc, gpu, { bcAlignedOnly: true })?.encoding === "decoded",
+    "WebGL: a 150x110 texture takes neither BC block nor a uastc the loader would put on BC",
+  );
+  expect(
+    predictD3(aligned, enc, gpu, { bcAlignedOnly: true })?.encoding === "block",
+    "WebGL: a 4-aligned texture keeps its BC block",
+  );
+  expect(
+    predictD3(npot, enc, gpu, { bcAlignedOnly: true, transcoderAligns: true })
+      ?.encoding === "uastc",
+    "GSW: its transcoder aligns, so the uastc variant stays",
+  );
+  expect(
+    predictD3(npot, enc, ["etc2", "astc"], { bcAlignedOnly: true })
+      ?.encoding === "uastc",
+    "no BC family stated: the loader cannot pick BC",
+  );
+  const honest = {
+    texture_encodings: "block,decoded",
+    gpu_formats: "s3tc,bptc,rgtc",
+    gpu_formats_engine: "s3tc,bptc,rgtc,etc2",
+    webgl_extensions:
+      "EXT_texture_compression_bptc,EXT_texture_compression_rgtc,WEBGL_compressed_texture_s3tc",
+    bc_aligned_only: true,
+  };
+  expect(
+    webStatementProblems(honest).length === 0,
+    `an honest statement passes (${webStatementProblems(honest)})`,
+  );
+  expect(
+    webStatementProblems({
+      ...honest,
+      gpu_formats: "s3tc,bptc,rgtc,etc2",
+    }).some((p) => p.includes("etc2")),
+    "etc2 stated without WEBGL_compressed_texture_etc fails",
+  );
+  expect(
+    webStatementProblems({ ...honest, bc_aligned_only: undefined }).length > 0,
+    "an unstated alignment rule fails",
+  );
+  const img = (v: number): Rgba => ({
+    width: 2,
+    height: 2,
+    data: new Uint8Array(16).fill(v),
+  });
+  const step = (family: "desktop" | "mobile", web: number) => ({
+    step: family === "desktop" ? 0 : 1,
+    family,
+    web: img(web),
+    masked: img(100),
+    reference: img(100),
+    referenceHw: img(101),
+  });
+  const ok = webBlockPixels(
+    [step("desktop", 101), step("mobile", 100)],
+    { s3tc: 2 },
+    "",
+  );
+  expect(
+    ok.problems.length === 0,
+    `the honest web leg passes (${ok.problems})`,
+  );
+  const etc = webBlockPixels(
+    [step("desktop", 101), step("mobile", 0)],
+    { s3tc: 2, etc2: 3 },
+    "",
+  );
+  expect(
+    etc.problems.some((p) => p.includes("step 1")),
+    "a refused ETC2 upload (black) fails its step",
+  );
+  const quiet = webBlockPixels(
+    [step("desktop", 101), step("mobile", 0)],
+    { s3tc: 2 },
+    "",
+  );
+  expect(
+    quiet.problems.some((p) => p.includes("masked")),
+    "a no-block step must equal the masked leg",
+  );
+  const logged = webBlockPixels(
+    [step("desktop", 101), step("mobile", 100)],
+    { s3tc: 2 },
+    '{"text":"WebGL: INVALID_ENUM: compressedTexImage2D: invalid format"}\n',
+  );
+  expect(
+    logged.problems.some((p) => p.includes("WebGL")),
+    "a WebGL console error fails",
+  );
+}
+
+{
+  const td = (f: string) => ({
+    receiver: { texture_delivery: { gpu_formats: f } },
+  });
+  expect(
+    deliveryContextDiffers(td("s3tc,bptc,rgtc"), td("s3tc,bptc,rgtc")) === null,
+    "equal families: compared as usual",
+  );
+  expect(
+    deliveryContextDiffers(td("s3tc,bptc,rgtc,astc"), td("s3tc,bptc,rgtc")) !==
+      null,
+    "the runner's native astc: a context difference",
+  );
+  expect(
+    deliveryContextDiffers({ receiver: {} }, td("none")) === null,
+    "below /9: compared as usual",
   );
 }
 

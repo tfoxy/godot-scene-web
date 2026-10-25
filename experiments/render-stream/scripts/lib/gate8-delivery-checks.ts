@@ -12,6 +12,10 @@
 //   g8kp/receiver{,-patch,-masked}/     the native receiver (masked: s3tc,bptc,rgtc)
 //   g8kp-web/web/                       (G8kf) the web export on receiver/'s launch (its harness root
 //                                       beside g8kp/, linking g8kp/ alone)
+//   g8kp-web/web-masked/                (G8kwh) the same with s3tc,bptc,rgtc masked (all decoded)
+//   g8kp-web/sabotage-advertise-etc2/web/
+//                                       (G8kwh) the pre-G8kwh hello: etc2 stated without the
+//                                       context's WEBGL_compressed_texture_etc
 //   g8kp/gsw-run/{gsw,gsw-masked,sabotage-ignore-format-mask/gsw}/
 //                                       the GSW receiver on g8kp/receiver's own launch
 //   g8kp/live/{host,receiver}/          a /9 passthrough live host and the rendered native
@@ -70,7 +74,21 @@ export interface DeliveryEntry {
   hash: string | null;
   format: string | null;
   source_format?: string | null;
+  /** Level 0's size (G8kwh: WebGL's BC alignment rule reads it). */
+  width?: number;
+  height?: number;
   variants?: TextureVariant[];
+}
+
+/** G8kwh: the BC families WebGL uploads only at a 4-aligned level 0. */
+export const BC_FAMILIES: readonly string[] = ["s3tc", "bptc", "rgtc"];
+
+/** G8kwh: the receiver's WebGL upload rules as its applied.json states them. */
+export interface DeliveryRules {
+  /** WebGL's BC alignment rule (the web export and GSW). */
+  bcAlignedOnly?: boolean;
+  /** The receiver's own transcoder applies the rule to its target (GSW). */
+  transcoderAligns?: boolean;
 }
 
 /**
@@ -84,12 +102,26 @@ export function predictD3(
   entry: DeliveryEntry,
   encodings: readonly string[],
   gpuFormats: readonly string[],
+  rules: DeliveryRules = {},
 ): { hash: string; encoding: "decoded" | "block" | "uastc" } | null {
   if (entry.kind !== "image" || entry.status !== "ok" || entry.hash === null)
     return null;
+  // G8kwh: WebGL refuses a BC level 0 whose width or height is not a multiple of 4.
+  const unaligned =
+    rules.bcAlignedOnly === true &&
+    ((entry.width ?? 0) % 4 !== 0 || (entry.height ?? 0) % 4 !== 0);
   for (const e of encodings) {
     if (e === "decoded") break;
-    // G8ku: a receiver lists uastc only when it can transcode it, so a listed variant wins.
+    // G8ku: a receiver lists uastc only when it can transcode it, so a listed variant wins;
+    // G8kwh: unless WebGL's rule refuses the texture as BC and the receiver's transcode (Godot's
+    // KTX2 loader) may pick a stated BC family for it.
+    if (
+      e === "uastc" &&
+      unaligned &&
+      !rules.transcoderAligns &&
+      gpuFormats.some((f) => BC_FAMILIES.includes(f))
+    )
+      continue;
     if (e === "uastc") {
       const v = (entry.variants ?? []).find((x) => x.encoding === "uastc");
       if (v) return { hash: v.hash, encoding: "uastc" };
@@ -99,7 +131,8 @@ export function predictD3(
         (x) =>
           x.encoding === "block" &&
           x.format !== null &&
-          gpuFormats.includes(BLOCK_FAMILY[x.format] ?? ""),
+          gpuFormats.includes(BLOCK_FAMILY[x.format] ?? "") &&
+          !(unaligned && BC_FAMILIES.includes(BLOCK_FAMILY[x.format] ?? "")),
       );
       if (v) return { hash: v.hash, encoding: "block" };
     }
@@ -113,6 +146,12 @@ export interface StatedDelivery {
   gpu_formats: string;
   gpu_formats_detected?: string;
   gpu_format_mask?: string;
+  /** G8kwh: the web export's has_os_feature families, its context's compressed-texture
+   * extensions, and WebGL's BC rule (GSW states the rule and transcoder_aligns too). */
+  gpu_formats_engine?: string;
+  webgl_extensions?: string;
+  bc_aligned_only?: boolean;
+  transcoder_aligns?: boolean;
 }
 
 export interface UploadRow {
@@ -178,7 +217,10 @@ export function deliverySelectProblems(
       continue;
     }
     uploaded.add(u.id);
-    const want = predictD3(entry, encodings, gpu);
+    const want = predictD3(entry, encodings, gpu, {
+      bcAlignedOnly: stated.bc_aligned_only === true,
+      transcoderAligns: stated.transcoder_aligns === true,
+    });
     const got = u.encoding ?? "decoded";
     if (got === "block") {
       block++;
@@ -351,6 +393,106 @@ export function gswBlockAgainstHw(
   return out;
 }
 
+/** G8kwh: one step's shots for delivery-pixels-web. */
+export interface WebPixelShots {
+  step: number;
+  family: "desktop" | "mobile";
+  web: Rgba | undefined;
+  masked: Rgba | undefined;
+  reference: Rgba | undefined;
+  referenceHw: Rgba | undefined;
+}
+
+/** G8kwh: the families each g8kp step draws its `block` variants from. */
+const STEP_FAMILIES: Record<"desktop" | "mobile", readonly string[]> = {
+  desktop: ["s3tc", "bptc", "rgtc"],
+  mobile: ["etc2", "astc"],
+};
+
+/**
+ * G8kwh: delivery-pixels-web's predicate, pure. A step whose families the leg took `block`
+ * variants of: on the decided pixels (where the masked web leg equals the CPU-decoded reference),
+ * the web draw is within channel delta 1 of reference-hw. A step it took none of: the web draw
+ * equals the masked leg exactly. Any `WebGL: ` console line (a refused upload) is a problem too.
+ */
+export function webBlockPixels(
+  shots: readonly WebPixelShots[],
+  blockFamilies: Record<string, number>,
+  consoleText: string,
+): { problems: string[]; rows: string[] } {
+  const problems: string[] = [];
+  const rows: string[] = [];
+  for (const s of shots) {
+    const { web, masked, reference, referenceHw } = s;
+    if (!web || !masked || !reference || !referenceHw) {
+      problems.push(`step ${s.step}: a shot is missing`);
+      continue;
+    }
+    const blocks = STEP_FAMILIES[s.family].reduce(
+      (n, f) => n + (blockFamilies[f] ?? 0),
+      0,
+    );
+    if (blocks > 0) {
+      const r = gswBlockAgainstHw(web, masked, reference, referenceHw);
+      rows.push(
+        `step ${s.step} (${s.family}, ${blocks} block uploads): ${r.decided} decided px, ${r.exact} exact, ${r.delta1} at delta 1, ${r.beyond} beyond`,
+      );
+      if (r.decided < (web.width * web.height) / 2)
+        problems.push(`step ${s.step}: only ${r.decided} decided pixels`);
+      if (r.beyond > 0)
+        problems.push(
+          `step ${s.step}: ${r.beyond} decided px differ from reference-hw by more than 1 (max ${r.max})`,
+        );
+    } else {
+      const d = diffShots(masked, web);
+      rows.push(
+        `step ${s.step} (${s.family}, no block): ${d.differing} px from the masked leg`,
+      );
+      if (d.differing > 0)
+        problems.push(
+          `step ${s.step}: no ${s.family} block taken, yet ${d.differing} px differ from the masked (decoded) leg (max ${d.max})`,
+        );
+    }
+  }
+  const webgl = consoleText
+    .split("\n")
+    .filter((line) => line.includes("WebGL: ")).length;
+  if (webgl > 0) problems.push(`the console logs ${webgl} \`WebGL: \` errors`);
+  return { problems, rows };
+}
+
+/** G8kwh: the web export's statement of its families: each stated family's WebGL extension is
+ * in the context's own list (also stated), and WebGL's BC rule is stated. */
+export function webStatementProblems(
+  stated: StatedDelivery | null | undefined,
+): string[] {
+  const problems: string[] = [];
+  if (!stated) return ["no receiver.texture_delivery"];
+  const ext = new Map(GPU_EXTENSION_OF);
+  const have = new Set(
+    (stated.webgl_extensions ?? "").split(",").filter(Boolean),
+  );
+  if (stated.webgl_extensions === undefined)
+    problems.push("the web export states no webgl_extensions");
+  for (const f of list(stated.gpu_formats))
+    if (!have.has(ext.get(f) ?? "?"))
+      problems.push(
+        `states ${f} but its context lists no ${ext.get(f)} (extensions ${stated.webgl_extensions || "none"})`,
+      );
+  if (stated.bc_aligned_only !== true)
+    problems.push("does not state WebGL's BC alignment rule (bc_aligned_only)");
+  return problems;
+}
+
+/** G8kwh: Godot's feature names and the WebGL extension each needs (web/gsw-receiver/hello.ts). */
+const GPU_EXTENSION_OF: readonly (readonly [string, string])[] = [
+  ["s3tc", "WEBGL_compressed_texture_s3tc"],
+  ["bptc", "EXT_texture_compression_bptc"],
+  ["rgtc", "EXT_texture_compression_rgtc"],
+  ["etc2", "WEBGL_compressed_texture_etc"],
+  ["astc", "WEBGL_compressed_texture_astc"],
+];
+
 // ------------------------------------------------------------------------------- the group
 
 export interface G8kpReport {
@@ -390,6 +532,13 @@ export async function runG8kp(
     "live/host": g("live/host"),
     "live/receiver": g("live/receiver"),
     web: join(out, "g8kp-web", "web"),
+    "web-masked": join(out, "g8kp-web", "web-masked"),
+    "sabotage-advertise-etc2/web": join(
+      out,
+      "g8kp-web",
+      "sabotage-advertise-etc2",
+      "web",
+    ),
   };
   const legs: G8kpReport["legs"] = {};
   for (const [l, dir] of Object.entries(legDirs)) {
@@ -691,6 +840,7 @@ export async function runG8kp(
 
   // --- delivery-select: each receiver chose what D3 predicts --------------------------------
   const select: G8kpReport["select"] = {};
+  const pixels: Record<string, unknown> = {};
   const selectOf = async (l: string, mask: readonly string[]) => {
     const applied = await readJson<{
       receiver?: { texture_delivery?: StatedDelivery };
@@ -776,13 +926,83 @@ export async function runG8kp(
       problems.push(
         `the web export states ${r.stated?.gpu_formats} yet uploaded ${bc} BC blocks`,
       );
+    problems.push(...webStatementProblems(r.stated));
     checks.push(
       check(
         "delivery-select-web",
-        'G8kf (Q3, Q6 "Web export"): the web export replaying the /9 passthrough recording states gpu_formats from its WebGL context through has_os_feature, every upload is the payload D3 picks under its own stated texture_encodings and gpu_formats, and it takes the BC `block` variants exactly when it states a BC family (otherwise it uploads `decoded` for them)',
+        "G8kf (Q3, Q6 \"Web export\"), G8kwh: the web export replaying the /9 passthrough recording states only the gpu_formats its WebGL context can upload (has_os_feature AND the family's WebGL extension in the context's own list, which it states; Godot claims etc2 on every web build) and WebGL's BC alignment rule, every upload is the payload D3 picks under its own stated texture_encodings, gpu_formats and rule, and it takes the BC `block` variants exactly when it states a BC family (otherwise it uploads `decoded` for them)",
         ran(l) && recordings.full ? [...new Set(problems)] : null,
-        `${select[l]?.block} block, ${select[l]?.decoded} decoded (gpu_formats ${r.stated?.gpu_formats}; BC stated: ${bcStated.join(",") || "none"})`,
+        `${select[l]?.block} block, ${select[l]?.decoded} decoded (gpu_formats ${r.stated?.gpu_formats}, engine ${r.stated?.gpu_formats_engine}, extensions ${r.stated?.webgl_extensions || "none"}; BC stated: ${bcStated.join(",") || "none"})`,
         "g8kp-web/web",
+      ),
+    );
+  }
+  // G8kwh: the web export's `block` pixels, and the sabotage that states etc2 anyway.
+  {
+    const seqsText = await readText(join(legDirs.receiver, "shot-seqs.txt"));
+    const seqs = seqsText ? seqsText.trim().split(",") : null;
+    const judge = async (l: string) => {
+      const r = await selectOf(l, []);
+      const shots: WebPixelShots[] = [];
+      for (const s of expected.steps)
+        shots.push({
+          step: s.step,
+          family: s.family,
+          web: seqs ? await shot(legDirs[l], s.step, seqs) : undefined,
+          masked: seqs
+            ? await shot(legDirs["web-masked"], s.step, seqs)
+            : undefined,
+          reference: await shot(legDirs.reference, s.step, null),
+          referenceHw: await shot(legDirs["reference-hw"], s.step, null),
+        });
+      const consoleText =
+        (await readText(join(legDirs[l], "console.jsonl"))) ?? "";
+      return {
+        r,
+        px: webBlockPixels(shots, r.blockFamilies, consoleText),
+      };
+    };
+    const legsUsed = ["web", "web-masked", "reference", "reference-hw"];
+    const honest = legsUsed.every(ran) ? await judge("web") : null;
+    if (honest) pixels.web = honest.px.rows;
+    checks.push(
+      check(
+        "delivery-pixels-web",
+        "G8kwh (D16): the web export drawing D3's `block` variants matches reference-hw (the .ctex sampled by the GPU through Godot's GLES3) within channel delta 1 on every pixel where its decoded draw (s3tc,bptc,rgtc masked) equals the CPU-decoded reference; a step whose family it took no block of equals the masked leg exactly; and its console logs no `WebGL: ` error (a refused compressed upload)",
+        honest ? honest.px.problems : null,
+        honest?.px.rows.join("; "),
+        legsUsed
+          .filter((l) => !ran(l))
+          .map((l) => (l.startsWith("web") ? `g8kp-web/${l}` : `g8kp/${l}`))
+          .join(", ") || "a leg",
+      ),
+    );
+    const sl = "sabotage-advertise-etc2/web";
+    const sab = ran(sl) && legsUsed.every(ran) ? await judge(sl) : null;
+    if (sab) pixels[sl] = sab.px.rows;
+    // On a context that does list WEBGL_compressed_texture_etc the sabotage states the truth.
+    const etcReal = (sab?.r.stated?.webgl_extensions ?? "")
+      .split(",")
+      .includes("WEBGL_compressed_texture_etc");
+    checks.push(
+      check(
+        "sabotage-advertise-etc2",
+        "G8kwh sabotage: a web export that states etc2 although its WebGL context lists no WEBGL_compressed_texture_etc (the pre-G8kwh hello, has_os_feature alone) takes the ETC2 `block` variants and fails delivery-pixels-web's predicate",
+        sab === null
+          ? null
+          : etcReal
+            ? [
+                "not applicable here: this context lists WEBGL_compressed_texture_etc, so stating etc2 is honest",
+              ]
+            : sab.px.problems.length > 0 && (sab.r.blockFamilies.etc2 ?? 0) > 0
+              ? []
+              : [
+                  `the sabotage went unnoticed (${sab.r.blockFamilies.etc2 ?? 0} etc2 block uploads, ${sab.px.problems.length} pixel problems)`,
+                ],
+        sab
+          ? `caught: ${sab.r.blockFamilies.etc2 ?? 0} etc2 block uploads; ${sab.px.problems.slice(0, 2).join("; ")}`
+          : undefined,
+        `g8kp-web/${sl}`,
       ),
     );
   }
@@ -882,7 +1102,6 @@ export async function runG8kp(
   }
 
   // --- pixels: block against the GPU-sampled .ctex reference ------------------------------
-  const pixels: Record<string, unknown> = {};
   {
     const problems: string[] = [];
     const seqsText = await readText(join(legDirs.receiver, "shot-seqs.txt"));
