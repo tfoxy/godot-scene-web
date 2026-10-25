@@ -94,7 +94,7 @@ browser receivers (all typed or deferred with owners in "Deferred").
 | D8  | Parameter values on the wire     | **The Variant type by name plus every numeric component as float64**, in a new block `param_f64` (type `f64`). Float64 keeps `FLOAT` (a double) and `INT` exact. GLES3 converts by the uniform's type at upload (`g3ms.cpp:49-350`), so the receiver must rebuild the same type and value. Supported: `nil bool int float vector2 vector2i rect2 rect2i vector3 vector3i transform2d vector4 vector4i plane quaternion aabb basis transform3d projection color rid` and the numeric packed arrays (`int32 int64 float32 float64 vector2 vector3 vector4 color`). `rid` carries `tex` (a texture-table id) and no floats. `int` beyond ±2^53 is `param-range`; any other type is `param-type`. The capture decodes through the GDExtension interface (`variant_get_type`, the to-type constructors, the two-word Vector ABI for packed arrays, memory: godot-vector-abi-two-words, `string_to_utf8_chars`), on the calling thread, before forwarding. |
 | D9  | Item state                       | **`material`, `use_parent_material` and `instance_params` are item state, never `content_version`.** Setting a material does not redraw (`ci.cpp:1169-1177`). The *effective* material follows the parent chain while `use_parent_material` is set (`rcc:309-313`, `:2514-2525`). The derived item-level entry `unsupported-material` uses the effective material (Q4). |
 | D10 | Canvas modulate, lights          | **`canvas_set_modulate` is a canvas field**: `canvas_f32` grows from 6 to 10 floats per canvas. Without lights, a material's light mode is visible only through it. Normal items multiply by the canvas modulate, `unshaded` items do not, and `light_only` items get alpha 0 (`canvas.glsl:713-717`, `:865-866`; lighting is disabled with no lights, `gles3c:878-883`). **`Light2D` is typed**: `canvas_light_attach_to_canvas` to a non-null canvas adds the sticky session-level entry `{"op":"canvas_light_attach_to_canvas","item":null,"reason":"canvas-light"}`. Occluders, light masks and normal or specular canvas textures follow `Light2D` (Deferred). |
-| D11 | `TIME`, screen texture, SDF, globals | **Typed `unsupported` on the shader, found by a token scan of the code** (identifiers outside comments, not after `.`): `TIME` → `shader-time`. It is the receiver's own rasterizer time (`drivers/gles3/rasterizer_gles3.cpp:96-106`), and the dummy has none. `hint_screen_texture` → `shader-screen-texture` (back-buffer copies, `gles3c:423-436`). `texture_sdf`, `texture_sdf_normal`, `sdf_to_screen_uv`, `screen_uv_to_sdf` → `shader-sdf` (`servers/rendering/shader_types.cpp:309-326`). `global uniform` → `shader-global-uniform`: values come from project settings loaded before arming. A `shader_type` other than `canvas_item` → `shader-mode`: GLES3 draws such a material as none (`g3ms.h:651-658`). `uses` lists every match, and `reason` is the first in that order. The handoff makes time and screen-texture dependencies later work. Owners are in "Deferred". **As amended (P3-ST, 2026-10-25): `hint_screen_texture` is no longer a reason** -- the shader is `ok` with `screen_texture` in `uses`, and every receiver mirrors GLES3's back-buffer copies ("Screen texture (P3-ST)" below). |
+| D11 | `TIME`, screen texture, SDF, globals | **Typed `unsupported` on the shader, found by a token scan of the code** (identifiers outside comments, not after `.`): `TIME` → `shader-time`. It is the receiver's own rasterizer time (`drivers/gles3/rasterizer_gles3.cpp:96-106`), and the dummy has none. `hint_screen_texture` → `shader-screen-texture` (back-buffer copies, `gles3c:423-436`). `texture_sdf`, `texture_sdf_normal`, `sdf_to_screen_uv`, `screen_uv_to_sdf` → `shader-sdf` (`servers/rendering/shader_types.cpp:309-326`). `global uniform` → `shader-global-uniform`: values come from project settings loaded before arming. A `shader_type` other than `canvas_item` → `shader-mode`: GLES3 draws such a material as none (`g3ms.h:651-658`). `uses` lists every match, and `reason` is the first in that order. The handoff makes time and screen-texture dependencies later work. Owners are in "Deferred". **As amended (P3-ST, 2026-10-25): `hint_screen_texture` is no longer a reason** -- the shader is `ok` with `screen_texture` in `uses`, and every receiver mirrors GLES3's back-buffer copies ("Screen texture (P3-ST)" below). **As amended (P3-TM, 2026-10-25): in a render-stream/10 session `TIME` is no longer a reason either** -- the transaction carries the host's shader time and every receiver draws with it ("TIME and sampler defaults (P3-TM)" below); below /10 it stays `shader-time`. |
 | D12 | Independent expectations         | **Five, none of them a replay of the capture.** (1) **Script arguments**: every `set_shader_parameter`, `set_instance_shader_parameter`, blend or light mode and `CanvasModulate` colour the fixture sets reaches the wire with that Variant type and value. (2) A **hand pixel model** in `make_expected.py`: a Python twin of each synthetic shader's `fragment()`, GL's blend equations (`gles3c:741-799`) and the canvas-modulate rule (D10), rasterized by `geometry-raster.ts`. (3) A **reference-side material oracle** (Q6e) that reads the reference's own `shader_get_code` (GLES3 keeps the code, `g3ms.cpp:2288-2292`), `material_get_param` and `canvas_item_get_instance_shader_parameter`. Checks: `shader-hash-parity` and `param-parity`. (4) A **hand census** of shader and material calls per frame. (5) **Presence and freshness** per region, including fresh-without-redraw. |
 | D13 | Pixel exactness and budgets      | **Exact where the output is opaque, flat and computed without a product of two non-trivial grid values; delta 1 where a product or `α = .6` is involved; never relaxed.** Exact: `mix`, `add`, `sub`, `premul_alpha` and `disabled` at α 1 on 0.2-grid colours (sums and differences of `k·0.2f` round to `k·51`, clamped), synthetic shaders that output a uniform, an integer-derived `k·0.2`, or a nearest-sampled texel, and a canvas modulate whose components are 0 or 1 (the product is exact). Delta 1: `mul`, any `α = .6` strip, and grid × grid modulation (gate4-design.md D8). Receiver against reference is exact everywhere, under the budget a same-build reference repeat measures (expected 0). Comparisons are raw per channel, alpha included (`disabled` writes source alpha into the render target), never pixelmatch. |
 | D14 | Delivery and dropped presentations | **File recordings for G55b–G55e, live for G55f.** Parameters and shader payloads are whole values per version, never deltas. A stalled receiver jumps to the newest parameter values and fetches only the newest `GRP1` hash. G55f proves it with a parameter written every frame and a code change inside the stall, and proves the opposite with `stale-coalesce`. |
@@ -1288,6 +1288,71 @@ The checks:
   compiles the code (native: before `shader_set_code`; GSW: before the transpiler;
   `rs-core` `programs::flat_varyings`). It must differ in VP and VM and nowhere else.
 
+## TIME and sampler defaults (P3-TM, 2026-10-25)
+
+C3's STS2 leg (`results/p3/fidelity.md`, gap 4) found the hand cards' glow missing: its shader reads
+`TIME` (typed `shader-time`, 33 refusals on a8-2) and samples an RGBAH texture. P3-VX left a second
+GSW gap: a sampler under `hint_default_black` was refused because the GSW binding had no black
+default (STS2's shader 32, `22b48677`). P3-TM closes both on every receiver
+(`results/p3/p3-tm.md`).
+
+### What Godot 4.5.1's GLES3 renderer does (the reference)
+
+- **`TIME`** (Q1c) is `RasterizerGLES3::time_total`: `begin_frame(frame_step)` adds the main loop's
+  scaled step at every draw and wraps it at `rendering/limits/time/time_rollover_secs`
+  (rasterizer_gles3.cpp:97-107); `RenderingServer::draw` is called once per iteration that draws,
+  with `process_step * time_scale` (main.cpp:4694, 4825-4829); the canvas uploads it as a float
+  (rasterizer_canvas_gles3.cpp:352). It is not readable through `RenderingServer`, and no
+  `global_shader_parameter` carries it, so it is not observable at the RS boundary as a value. Its
+  inputs are: the frames drawn (`Engine.get_frames_drawn()`, incremented right after each draw) and
+  the step (`Node.get_process_delta_time()`, the same double `SceneTree::process` received).
+- **Default textures** (material_storage.cpp:928-953): a `sampler2D` the material leaves unset
+  is bound to `DEFAULT_GL_TEXTURE_BLACK` under `hint_default_black`, `_TRANSPARENT` under
+  `hint_default_transparent`, `_ANISO` under `hint_anisotropy`, `_NORMAL` under `hint_normal` or
+  `hint_roughness_normal`, and `_WHITE` otherwise. Each is a 4x4 RGBA8 single colour
+  (texture_storage.cpp:66-155): (0,0,0,1), (0,0,0,0), (1,0.5,1,1) and (0.5,0.5,1,1) truncated to
+  (127,127,255,255) and (255,127,255,255).
+
+### Capture and wire
+
+`TIME` needs a wire field: a per-transaction value no /2-/9 key carries. It joins **/10**, still
+unreleased (CG1): the optional transaction key `shader_time` (render-stream-10.md "Shader time"),
+the host's double at the end of `param_f64`, present exactly when the state holds an `ok` shader
+that uses `time`. A /10 capture keeps the same sum as GLES3 from its frame callback (after each
+iteration's draw): a drawn iteration adds the processed step; a host that never draws (headless)
+adds every iteration. In a /10 session the D11 scan types `TIME` as a use only, so the shader is
+`ok` and its code travels. Sessions below /10, and /10 sessions without a TIME reader, are
+byte-identical to before (`golden-5/` to `golden-10/` are unchanged).
+
+The sampler defaults need no wire change: the shader's code names the hint, and the native
+receiver's Godot binds its own defaults.
+
+### Receivers
+
+- **Native and web export:** a TIME shader's code is compiled with `TIME` read from
+  `uniform float rs_host_time` (rs-core `programs::host_time`, the capture's token rule), and the
+  planner sets that parameter on its materials whenever the transaction's shader time changes.
+- **GSW:** the transpiler admits `TIME` in both stages as a renderer-set `uniform float TIME`; the
+  applier passes the transaction's time in the draw list, and the executor sets it per program as
+  a float. The transpiler admits `hint_default_black`, `hint_default_transparent`, `hint_normal`,
+  `hint_roughness_normal` and `hint_anisotropy` and names each sampler's default
+  (`ItemShaderSampler.default`); the applier binds that default when the material sets no texture,
+  and the executor holds the four default textures beside its white one (1x1: a single colour
+  samples the same under every filter and wrap). A texture set but not resident still draws white.
+- **Sabotage** `shader-time-frozen` (native and GSW): every `TIME` reads 0.
+
+### Fixture, legs and checks
+
+`fixtures/gate55-time` (run-gate55.sh group `g55t`, `scripts/lib/gate55t-checks.ts`; gate 7 runs its
+receivers in both browsers as part of `g7-55`'s live half): TP (a sine pulse in `TIME` through a
+helper), TS (UV scrolling with `TIME`), TV (`TIME` in `vertex()`), the unset-sampler row D0, DW, DB,
+DT, DN, DR, DA, and DS (a black-hint sampler set at step 2 and cleared at step 3). The capture host
+and the reference run `--fixed-fps 60`, so `TIME` at frame F is F steps of 1/60 on both. Checks: the
+/10 capture carries every shader `ok` and every transaction's `shader_time` equals that sum bit for
+bit; the reference repeats and equals a hand model (the pulse within 2, the shift exact, the
+defaults within 1); every receiver equals the reference (native exactly, browsers within 1); the
+sabotage differs in TP, TS and TV at every step and nowhere else.
+
 ## Deferred, with owners
 
 - **The GSW browser receiver's shader path: gate 7.** It transpiles its supported subset through
@@ -1296,10 +1361,8 @@ The checks:
   values and, under `params`, a hand-written effect keyed by shader hash. Its conformance set is
   this gate's two fixtures, and `geometry-raster.ts`'s blend modes are its reference.
 - **The web-export receiver** compiling the captured source in WebGL 2: gate 7, with Q5 unchanged.
-- **Shader `TIME`** (`shader-time`): the handoff's later capability "shader time and
-  screen-texture dependencies", after gate 6. A design must carry host time per transaction and
-  make the receiver use it, because `TIME` is the receiver rasterizer's own (Q1c) and the
-  headless host has none.
+- **Shader `TIME`** (`shader-time`): landed with P3-TM on render-stream/10 ("TIME and sampler
+  defaults (P3-TM)"); below /10 it stays refused.
 - **`BackBufferCopy`, `CanvasGroup` and clip-children** (the canvas-group materials are engine
   shaders on `hint_screen_texture`, `gles3c:2841-2890`): the handoff's "CanvasGroup/masks".
   Screen-reading shaders themselves landed with P3-ST ("Screen texture (P3-ST)"); carrying

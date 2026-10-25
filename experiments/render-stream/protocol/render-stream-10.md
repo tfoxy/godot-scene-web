@@ -22,6 +22,8 @@ render-stream/10 is render-stream/9 plus exactly:
 - a seventh transaction block, `backbuffer_f32`, holding their floats;
 - `features.unobserved` loses `canvas_item_set_canvas_group_mode` and
   `canvas_item_set_copy_to_backbuffer` when the capture hooked them.
+- an optional transaction key, `shader_time`, with the host's canvas shader time (P3-TM, "Shader
+  time" below), and `TIME` no longer a shader reason.
 
 Everything else is exactly as in render-stream-9.md and, through it, render-stream-8.md to
 render-stream-0.md: record framing, the record sha256, canonical JSON, the session (but for the
@@ -195,6 +197,66 @@ module and re-binds what changes. It writes:
 Checks: `scripts/test/self-test-rs2.ts` (`runSuite(golden-10, 10)`),
 `capture/test/rs10_codec_test.cpp` (the C++ encoder, `make_patch` included, matches every `.rs10`
 byte for byte; /9 output ignores both keys), `rs-core-check goldens` / `cargo test` in `rs-core`.
+
+## Shader time (P3-TM)
+
+Added by P3-TM (2026-10-25, gate5_5-design.md "TIME and sampler defaults (P3-TM)"), before any
+release shipped /10. A canvas shader's `TIME` is Godot 4.5.1's GLES3 rasterizer's own
+`time_total`: every drawn frame adds the main loop's scaled step (`RenderingServer::draw(..,
+scaled_step)`, main.cpp:4825-4829) and wraps at `rendering/limits/time/time_rollover_secs`
+(`RasterizerGLES3::begin_frame`, rasterizer_gles3.cpp:97-107), and the canvas uploads it as a float
+(rasterizer_canvas_gles3.cpp:352). Gate 5.5 refused it (D11 `shader-time`) because a receiver's
+own clock is not the host's: a replay would not be exact and a live receiver would show another
+phase. /10 carries the host's value per transaction, so every receiver draws the host's `TIME`.
+
+```
+"shader_time": {"f":<int>}      (absent when the state reads no TIME)
+```
+
+- **Where:** the transaction's last key before `blocks`, right after `materials`. Its value is
+  `param_f64[f]`, the host's double: `f` is the count of `param_f64` floats before it (the
+  materials' parameters, then the items' `instance_params`, render-stream-5.md `param-offset`), so
+  the shader time is `param_f64`'s last float and the block holds `f + 1`.
+- **When:** present exactly when the transaction's resolved state holds an `ok` shader whose `uses`
+  names `time`, in full and patch transactions alike (complete, never patched). A /10 session
+  without such a shader never carries the key, so it is byte-identical to what it was before P3-TM
+  (`golden-10/` is unchanged). Below /10 there is no key.
+- **The value** is the time GLES3 had when it drew the frame the transaction captures. The capture
+  keeps the same sum from its frame callback, which runs after each iteration's draw
+  (main.cpp:4839): an iteration that drew (`Engine.get_frames_drawn()` moved) adds the step the tree
+  processed (`Node.get_process_delta_time()`, the same double), `fmod` by the project setting. A
+  host that has never drawn (headless: no draw path) adds every iteration, the time a rendered host
+  drawing each iteration would have. It starts at the extension's first frame callback: exact when
+  the extension loads before the first iteration (every fixture, a mod loading it at startup); a
+  late-loaded extension starts from 0 and logs `start_frames_drawn`.
+- **The shader entry:** in a /10 session `TIME` is a `use` only (as `screen_texture` since P3-ST):
+  the token scan no longer types `shader-time`, so the shader is `ok`, its `GRP1` code travels and
+  its materials are drawn. A shader that also reads the SDF or a global uniform, or is not
+  `canvas_item`, keeps that reason. `shader-time` stays in the vocabulary (an older capture, a
+  lower version).
+- **A mirror change:** while the state holds a TIME reader, a new shader time moves the mirror's
+  epoch, so a live connection that holds credit sends the frame even when nothing else changed (the
+  picture moves with the time alone).
+
+Validation (`shader-time`, an invariant and its error code): `shader_time` is `{"f": <int >= 0>}`
+(else `meta-schema`), its `f` equals the running `param_f64` count after every parameter, and it is
+present exactly when the resolved state holds an `ok` shader using `time`. The decoded form keeps
+the key verbatim; the resolved form carries `"shader_time": <number>` (the double) right after
+`unknown_items` only in such transactions.
+
+Receivers:
+
+- **Native and web export** (rs-core-capi's planner): a shader whose `uses` names `time` is
+  compiled with every `TIME` token (the capture's scan) read from `uniform float rs_host_time`
+  instead (`programs::host_time`), and every material on it gets `rs_host_time` set to the
+  transaction's shader time whenever it changes. The receiver's own rasterizer clock never reaches
+  the picture.
+- **GSW:** the item-shader transpiler declares `uniform float TIME;` in each stage that reads it
+  (`TranspiledItemShader.time`); the applier puts the transaction's shader time in the draw list
+  (`DrawList::shader_time`), and the executor sets every reading program's `TIME` from it, rounded
+  to float as GLES3 uploads it.
+- Receiver sabotage `shader-time-frozen` (native and GSW): the carried time is ignored, so every
+  `TIME` reads 0.
 
 ## Versioning
 

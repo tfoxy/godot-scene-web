@@ -711,6 +711,10 @@ export interface TransactionMeta {
   /** protocol/unknown-item-skip.md: present exactly when the session declares
    * `unknown_item_policy: "skip"` (/4 and /5), right after `unsupported`. */
   unknown_items?: UnknownItemsMeta;
+  /** P3-TM (render-stream-10.md "Shader time"): /10 only, right after `materials`, present
+   * exactly when the resolved state holds an ok shader that uses `time`: the host's shader time
+   * is param_f64's float at `f` (the last one). */
+  shader_time?: { f: number };
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
   removed_canvases: number[];
@@ -2711,15 +2715,25 @@ function checkTransactionSchema(
   // protocol/unknown-item-skip.md "Transaction": legal only at /4 and later; whether it must be
   // present is the session's call (validateRecording checks the coupling).
   const hasUnknownItems = isV4 && UNKNOWN_ITEMS_KEY in meta;
-  if (
-    !hasExactKeys(
-      meta,
-      hasUnknownItems
-        ? keysWith(transactionKeys, "unsupported", UNKNOWN_ITEMS_KEY)
-        : transactionKeys,
-    )
-  )
+  // P3-TM (render-stream-10.md "Shader time"): /10's optional shader_time, right after materials.
+  const hasShaderTime = isV10 && "shader_time" in meta;
+  let expectedKeys: readonly string[] = hasUnknownItems
+    ? keysWith(transactionKeys, "unsupported", UNKNOWN_ITEMS_KEY)
+    : transactionKeys;
+  if (hasShaderTime)
+    expectedKeys = keysWith(expectedKeys, "materials", "shader_time");
+  if (!hasExactKeys(meta, expectedKeys))
     return err("transaction has the wrong top-level keys or order");
+  if (hasShaderTime) {
+    const t = meta.shader_time;
+    if (
+      !isPlainObject(t) ||
+      !hasExactKeys(t, ["f"]) ||
+      !isInt(t.f) ||
+      (t.f as number) < 0
+    )
+      return err('"shader_time" must be {f}, an integer >= 0');
+  }
   if (hasUnknownItems) {
     const u = meta.unknown_items;
     if (
@@ -6268,6 +6282,14 @@ export function createRecordingValidator(
             if (err !== null) return err;
           }
         }
+        // P3-TM: the host's shader time is the last float.
+        if (meta.shader_time !== undefined) {
+          if (meta.shader_time.f !== runningParamOffset)
+            return [
+              `shader-time: record at offset ${offset}: shader_time f=${meta.shader_time.f}, expected ${runningParamOffset}`,
+            ];
+          runningParamOffset += 1;
+        }
         totalParamFloats = runningParamOffset;
       }
       // backbuffer-offset (render-stream-10.md "Transaction blocks"): a running offset into
@@ -6380,6 +6402,16 @@ export function createRecordingValidator(
         snapDeclared,
       );
       if (resolvedErrors.length > 0) return resolvedErrors;
+      if (isV10) {
+        // P3-TM (render-stream-10.md "Shader time"): present exactly when the state reads TIME.
+        let reads = false;
+        for (const sh of nextState.shaders.values())
+          if (sh.status === "ok" && sh.uses.includes("time")) reads = true;
+        if (reads !== (meta.shader_time !== undefined))
+          return [
+            `shader-time: record at offset ${offset}: "shader_time" must be present exactly when the state holds an ok shader that uses time (it reads: ${reads})`,
+          ];
+      }
       if (isV9) {
         const deliveryErrors = checkDeliveryInvariants(
           nextState,
@@ -6881,6 +6913,8 @@ export interface ResolvedTransaction {
     unsupported: TransactionMeta["unsupported"];
     /** protocol/unknown-item-skip.md: present only in a skip session. */
     unknown_items?: UnknownItemsMeta;
+    /** P3-TM: /10's host shader time, present only when the state reads TIME. */
+    shader_time?: number;
     default_texture_filter: Filter;
     default_texture_repeat: Repeat;
     canvases: ResolvedCanvas[];
@@ -6950,6 +6984,11 @@ export function resolveRecording(
         unsupported: meta.unsupported,
         ...(meta.unknown_items !== undefined
           ? { unknown_items: meta.unknown_items }
+          : {}),
+        ...(meta.shader_time !== undefined
+          ? {
+              shader_time: (record.blocks as number[][])[5][meta.shader_time.f],
+            }
           : {}),
         default_texture_filter: meta.default_texture_filter,
         default_texture_repeat: meta.default_texture_repeat,

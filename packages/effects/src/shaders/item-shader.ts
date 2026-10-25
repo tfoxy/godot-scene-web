@@ -76,6 +76,11 @@ export const ITEM_SHADER_PRELUDE_NAMES = {
    *  `SCREEN_UV` is `gl_FragCoord.xy * SCREEN_PIXEL_SIZE`, as Godot's canvas.glsl:679 -- so the
    *  target must be stored the way Godot stores it (row 0 at the bottom, y-up). */
   screenPixelSize: "SCREEN_PIXEL_SIZE",
+  /** Declared BY THE MODULE (either stage) when the code reads TIME (`uniform float TIME;`): the
+   *  renderer sets the host's shader time, Godot's `RasterizerGLES3::time_total` (the scaled frame
+   *  steps summed, wrapped at `rendering/limits/time/time_rollover_secs`,
+   *  rasterizer_gles3.cpp:97-107), converted to float as GLES3 uploads it. */
+  time: "TIME",
   /** The module's entry point: `void godot_item_fragment(inout vec4 COLOR, in vec2 UV)`. */
   entry: "godot_item_fragment",
   /** The vertex module's entry point (`vertexGlsl`): `void godot_item_vertex(inout vec2 VERTEX,
@@ -137,7 +142,20 @@ export interface ItemShaderSampler {
   /** `repeat_enable` / `repeat_disable`; null when no hint is given (the canvas default is
    *  disabled: `repeat_from_uniform_canvas`, material_storage.cpp:691-695). */
   repeat: boolean | null;
+  /** The texture GLES3 binds when the material sets none (material_storage.cpp:928-953):
+   *  `hint_default_black` black (0,0,0,1), `hint_default_transparent` (0,0,0,0), `hint_normal` and
+   *  `hint_roughness_normal` the normal (0.5,0.5,1,1) as RGBA8 (127,127,255,255),
+   *  `hint_anisotropy` (1,0.5,1,1), anything else white. Each is a 4x4 single-colour texture
+   *  (texture_storage.cpp:66-155), so any filter or wrap samples its one colour. */
+  default: ItemSamplerDefault;
 }
+
+export type ItemSamplerDefault =
+  | "white"
+  | "black"
+  | "transparent"
+  | "normal"
+  | "anisotropy";
 
 export interface TranspiledItemShader {
   /** The module (see the file note). Not a complete shader: a renderer wraps it. */
@@ -154,6 +172,9 @@ export interface TranspiledItemShader {
   screenTexture: { names: string[]; mipmaps: boolean } | null;
   /** The code uses SCREEN_UV or SCREEN_PIXEL_SIZE (the module declares SCREEN_PIXEL_SIZE). */
   screenPixelSize: boolean;
+  /** The code (either stage) reads TIME: the module declares `uniform float TIME;`, which the
+   *  renderer sets to the host's shader time (see `ITEM_SHADER_PRELUDE_NAMES.time`). */
+  time: boolean;
   blend: ItemShaderBlend;
   lightMode: ItemShaderLightMode;
   /** P3-VX: the program needs its own vertex stage (a `vertex()`, or `skip_vertex_transform`):
@@ -212,7 +233,6 @@ const ITEM_UNSUPPORTED_BUILTINS = [
   "REGION_RECT",
   "POINT_COORD",
   "POINT_SIZE",
-  "TIME",
   "INSTANCE_CUSTOM",
   "INSTANCE_ID",
   "VERTEX_ID",
@@ -230,7 +250,6 @@ const ITEM_UNSUPPORTED_BUILTINS = [
 /** Names `vertex()` (and the helpers it reaches) may not use, each with why. The rest of Godot
  *  4.5.1's canvas_item vertex built-ins (shader_types.cpp:266-280) are admitted. */
 const VERTEX_REFUSED: Record<string, string> = {
-  TIME: "TIME is the receiver rasterizer's own clock (gate5_5-design.md, shader TIME)",
   INSTANCE_ID:
     "INSTANCE_ID is GLES3's per-batch instance index (one instance per rect), which an item-space draw does not reproduce",
   VERTEX_ID:
@@ -259,7 +278,17 @@ const VERTEX_REFUSED: Record<string, string> = {
 const RENDERER_NAME = /^(a_|u_|v_|gsw_)/;
 
 const ALLOWED_SAMPLER_HINTS =
-  /^(filter_nearest|filter_linear|repeat_enable|repeat_disable|hint_default_white)$/;
+  /^(filter_nearest|filter_linear|repeat_enable|repeat_disable|hint_default_white|hint_default_black|hint_default_transparent|hint_normal|hint_roughness_normal|hint_anisotropy)$/;
+
+/** GLES3's unset-sampler texture for a `sampler2D`'s hints (material_storage.cpp:928-953). */
+function samplerDefault(hints: readonly string[]): ItemSamplerDefault {
+  if (hints.includes("hint_default_black")) return "black";
+  if (hints.includes("hint_default_transparent")) return "transparent";
+  if (hints.includes("hint_anisotropy")) return "anisotropy";
+  if (hints.includes("hint_normal") || hints.includes("hint_roughness_normal"))
+    return "normal";
+  return "white";
+}
 /** A screen sampler's hints: GLES3 ignores all but the mipmap filters (see `screenTexture`). */
 const SCREEN_SAMPLER_HINTS =
   /^(hint_screen_texture|filter_(nearest|linear)(_mipmap(_anisotropic)?)?|repeat_enable|repeat_disable)$/;
@@ -646,6 +675,7 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
         : d.hints.includes("repeat_disable")
           ? false
           : null,
+      default: samplerDefault(d.hints),
     });
   }
 
@@ -683,6 +713,9 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
   }
   const usesScreenUv = hasToken(logic, "SCREEN_UV");
   const screenPixelSize = usesScreenUv || hasToken(logic, "SCREEN_PIXEL_SIZE");
+  const fragmentTime = hasToken(logic, "TIME");
+  const vertexTime = vertexStage && hasToken(vertexLogic, "TIME");
+  const timeDecl = `uniform float ${ITEM_SHADER_PRELUDE_NAMES.time};`;
 
   // Integer contexts: int and ivec names (uniforms, locals, parameters) keep their literal
   // operands int (`phase % 6`, `5 - p`); every other bare integer literal is a float in Godot.
@@ -745,6 +778,7 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
   }
   if (screenPixelSize)
     decls.push(`uniform vec2 ${ITEM_SHADER_PRELUDE_NAMES.screenPixelSize};`);
+  if (fragmentTime) decls.push(timeDecl);
   if (usesScreenUv)
     decls.push(
       `#define SCREEN_UV (gl_FragCoord.xy * ${ITEM_SHADER_PRELUDE_NAMES.screenPixelSize})`,
@@ -778,6 +812,7 @@ ${body}
       ...userDecls,
       ...builtinDefines(vertexLogic),
     );
+    if (vertexTime) vdecls.push(timeDecl);
     for (const v of varyings)
       if (v.fromVertex) vdecls.push(varyingDecl(v, "out"));
     const vhelpers = promote(vertexHelperText).trim();
@@ -793,6 +828,7 @@ ${indentBody(promote(vertexBody))}
     samplers,
     screenTexture,
     screenPixelSize,
+    time: fragmentTime || vertexTime,
     blend,
     lightMode,
     vertexStage,

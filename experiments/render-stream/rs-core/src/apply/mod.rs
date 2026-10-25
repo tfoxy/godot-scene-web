@@ -94,6 +94,9 @@ pub struct ApplySabotage {
     /// Native `screen-copy-per-reader` (P3-ST): a back-buffer copy before every screen-reading
     /// item, where GLES3 takes one per canvas before the first.
     pub screen_copy_per_reader: bool,
+    /// Native and GSW `shader-time-frozen` (P3-TM): the host's shader time is ignored, so every
+    /// `TIME` reads 0 (a receiver that never follows the carried time).
+    pub shader_time_frozen: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -1351,6 +1354,12 @@ impl Applier {
         }
         self.prepared = false;
         self.last_delta = None;
+        // P3-TM: TIME for every program that reads it (the executor sets it per frame).
+        self.list.shader_time = if self.sabotage.shader_time_frozen {
+            0.0
+        } else {
+            state.shader_time.unwrap_or(0.0) as f32
+        };
         // G7q: every transaction prepared since the last apply, merged (one: the caller's).
         let merged = self.merged.take();
         let delta = merged.as_ref().unwrap_or(delta);
@@ -1987,9 +1996,18 @@ impl Applier {
                             .map(|d| d.tex)
                     }),
                 };
-                // A canvas texture samples its diffuse; anything not resident is Godot's
-                // default (white, the only default the transpiler admits).
-                let gpu = wire
+                // P3-TM: an unset sampler takes GLES3's default for its hint
+                // (material_storage.cpp:928-953). A canvas texture samples its diffuse; a set
+                // texture that is not resident draws white, as GLES3 draws a texture it cannot
+                // resolve.
+                let Some(wire) = wire else {
+                    return SamplerUniform {
+                        name: s.name.clone(),
+                        texture: s.default,
+                        sampler: 0,
+                    };
+                };
+                let gpu = Some(wire)
                     .map(|t| match state.textures.get(&t) {
                         Some(e) if e.kind == TextureKind::Canvas => {
                             e.canvas.as_ref().and_then(|c| c.diffuse).unwrap_or(0)

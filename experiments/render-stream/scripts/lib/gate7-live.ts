@@ -99,9 +99,10 @@ export const GATE7L_GATES: readonly LiveGateDef[] = [
     checker: "check-gate55.ts",
     runner: "run-gate55.sh",
     // P3-ST: g55s's screen-texture receivers are file legs on a /8 capture, which lib/legs.sh's
-    // gate7_browser_leg routes to the browser in the same run; P3-VX's g55v (vertex()) likewise.
-    runnerLegs: "g55f,g55s,g55v",
-    liveGroups: ["g55f", "g55s", "g55v"],
+    // gate7_browser_leg routes to the browser in the same run; P3-VX's g55v (vertex()) likewise,
+    // and P3-TM's g55t (TIME and sampler defaults, a /10 capture).
+    runnerLegs: "g55f,g55s,g55v,g55t",
+    liveGroups: ["g55f", "g55s", "g55v", "g55t"],
   },
   // G8g: gate 8's live legs (g8l): one host per fixture at render-stream/8 under its gate 8
   // policy (late arm and adoption where the fixture has one), its live receiver, the same

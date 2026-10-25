@@ -895,6 +895,11 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             Some(())
         })?;
     }
+    // P3-TM: /10's optional `shader_time` (render-stream-10.md "Shader time").
+    if v10 && c.lit(b",\"shader_time\":{\"f\":").is_some() {
+        tx.shader_time_f = Some(c.int_ge(0)? as u64);
+        c.lit(b"}")?;
+    }
     c.lit(b",\"blocks\":[")?;
     let n = transaction_block_count(version);
     for i in 0..n {

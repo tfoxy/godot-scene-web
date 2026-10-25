@@ -968,6 +968,12 @@ fn write_state_as(out: &mut Vec<u8>, st: &ResolvedState, godot: bool) {
         w.int(u.unknown_calls);
         w.raw("}");
     }
+    // P3-TM (render-stream-10.md "Shader time"): only in a transaction whose state reads TIME.
+    if let Some(t) = st.shader_time.filter(|_| !godot) {
+        w.raw(",");
+        w.key("shader_time");
+        w.f64(t);
+    }
     w.raw(",");
     w.key("default_texture_filter");
     w.str(st.default_texture_filter.as_str());

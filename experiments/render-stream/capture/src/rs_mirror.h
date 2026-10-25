@@ -330,6 +330,14 @@ class Mirror {
   // from its frame on (a new copy, re-hashed); the hook log keeps the true hash.
   void set_perturb_vertex(std::uint64_t from_frame);
 
+  // P3-TM (render-stream-10.md "Shader time"): a /10 session carries the host's shader time.
+  // set_carry_shader_time(true) once before arming; set_shader_time() at every frame callback,
+  // before the snapshot. Each snapshot whose state holds an `ok` shader reading TIME carries the
+  // value, and a new value is a mirror change (the epoch moves) only while such a shader exists, so
+  // a TIME-free session is unchanged.
+  void set_carry_shader_time(bool carry);
+  void set_shader_time(double time);
+
   // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
   //
   // The mesh table: its own per-session id counter (from 1, never reused), `version` 1 at
@@ -852,6 +860,9 @@ class Mirror {
   // Records `code` into `shader` (classification and payload, perturb-shader applied at `frame`).
   void take_shader_code(Shader *shader, const ShaderCodeInput &code, std::uint64_t frame) const;
   rs2::ShaderEntry wire_shader(const Shader &shader) const;
+  // P3-TM: whether `shader` is an `ok` wire shader whose `uses` names `time` (wire_shader's
+  // status rules, without building the entry).
+  bool reads_time(const Shader &shader) const;
   static rs2::MaterialEntry wire_material(const Material &material);
   // P3-CAP: material.wire, brought up to date with material.version.
   static const Material::WireParams &wire_params(const Material &material);
@@ -880,6 +891,8 @@ class Mirror {
   std::uint64_t omit_from_frame_ = 0;
   std::uint64_t perturb_glyph_frame_ = 0;
   std::uint64_t perturb_vertex_frame_ = 0;
+  bool carry_shader_time_ = false;  // P3-TM
+  double shader_time_ = 0.0;        // P3-TM: the last set_shader_time()
   bool degenerate_host_size_ = false;
   // G6b (Q3a, Q3b): the arm-time global canvas transform reference and the latest value the root
   // viewport set; the root's snap_2d flags.

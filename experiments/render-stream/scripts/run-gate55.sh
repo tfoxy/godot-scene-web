@@ -4,7 +4,7 @@
 #
 #   bash run-gate55.sh --extension /abs/path/render_stream_capture.gdextension \
 #     --calibration /abs/path/record.json [--binary /abs/path/linux_release.x86_64] [--out DIR] \
-#     [--legs g55b,g55c,g55d,g55e,g55f,g55s,g55v]
+#     [--legs g55b,g55c,g55d,g55e,g55f,g55s,g55v,g55t]
 #
 # --extension and --calibration are required; without them the runner refuses before doing
 # anything. --binary defaults to the pinned 4.5.1 release template. --out defaults to
@@ -66,6 +66,7 @@ SHADER_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-shader"
 CIM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-cim"
 SCREEN_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-screen"
 VERTEX_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-vertex"
+TIME_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-time"
 FIXTURE_DIR="$SHADER_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
@@ -76,8 +77,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order.
-LANDED_GROUPS=(g55b g55c g55d g55e g55f g55s g55v)
-KNOWN_GROUPS=(g55b g55c g55d g55e g55f g55s g55v)
+LANDED_GROUPS=(g55b g55c g55d g55e g55f g55s g55v g55t)
+KNOWN_GROUPS=(g55b g55c g55d g55e g55f g55s g55v g55t)
 
 EXTENSION=""
 CALIBRATION=""
@@ -165,7 +166,7 @@ if [ ! -x "$BINARY" ]; then
 	exit 1
 fi
 BINARY="$(realpath "$BINARY")"
-for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR" "$SCREEN_FIXTURE_DIR" "$VERTEX_FIXTURE_DIR"; do
+for project in "$CIM_FIXTURE_DIR" "$SHADER_FIXTURE_DIR" "$SCREEN_FIXTURE_DIR" "$VERTEX_FIXTURE_DIR" "$TIME_FIXTURE_DIR"; do
 	if [ ! -f "$project/project.godot" ]; then
 		echo "run-gate55: $project/project.godot is missing" >&2
 		exit 1
@@ -855,11 +856,61 @@ run_g55v() {
 	GS_RUN_DIR=""
 }
 
+# P3-TM (gate5_5-design.md "TIME and sampler defaults (P3-TM)"): fixtures/gate55-time under
+# <out>/time/, legs as g55v's, but the capture is render-stream/10 (which carries the host's shader
+# time per transaction) and both the capture host and the rendered reference run --fixed-fps 60,
+# so TIME at frame F is the same F steps of 1/60 on both. The receiver sabotage
+# shader-time-frozen (every TIME reads 0) must differ from the reference exactly in the TIME items.
+run_g55t() {
+	local D="$OUT/time"
+	mkdir -p "$D/import"
+	echo "run-gate55: g55t: import"
+	LEG_ENV=()
+	run_headless "$D/import/fixture" none -- mise exec -- godot --headless --path "$TIME_FIXTURE_DIR" --import
+	if [ "$(cat "$D/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $TIME_FIXTURE_DIR failed, see $D/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+	run_headless "$D/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	if [ "$(cat "$D/import/receiver/exit-code.txt")" != "0" ]; then
+		echo "run-gate55: import of $RECEIVER_DIR failed, see $D/import/receiver/stdout.log" >&2
+		exit 1
+	fi
+
+	echo "run-gate55: g55t: capture-time"
+	CAPTURE_FIXTURE_DIR="$TIME_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_STREAM_VERSION=10)
+	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
+	run_capture "$D/capture" "" none
+
+	echo "run-gate55: bringing up private gamescope for g55t rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g55t"
+	echo "run-gate55: g55t: reference-time"
+	REFERENCE_FIXTURE_DIR="$TIME_FIXTURE_DIR"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_reference "$D/reference"
+	echo "run-gate55: g55t: reference-time-repeat"
+	REFERENCE_FIXTURE_DIR="$TIME_FIXTURE_DIR"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_reference "$D/reference-repeat"
+	echo "run-gate55: g55t: receiver-time (full sink)"
+	run_rendered_receiver "$D/capture" "$D/receiver"
+	echo "run-gate55: g55t: receiver-time-patch (patch sink)"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$D/capture" "$D/receiver-patch"
+	echo "run-gate55: g55t: sabotage-time-receiver-frozen (RS_RECEIVER_SABOTAGE=shader-time-frozen)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=shader-time-frozen)
+	run_rendered_receiver "$D/capture" "$D/sabotage-receiver-time-frozen"
+	gs_teardown "$OUT/gamescope-g55t"
+	GS_RUN_DIR=""
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
 	g55b) run_g55b ;;
 	g55s) run_g55s ;;
 	g55v) run_g55v ;;
+	g55t) run_g55t ;;
 	g55c) run_g55c ;;
 	g55d) run_g55d ;;
 	g55e) run_g55e ;;

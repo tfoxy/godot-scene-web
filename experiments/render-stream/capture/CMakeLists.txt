@@ -98,6 +98,7 @@ add_library(render_stream_capture SHARED
   src/rs_resource_log.cpp
   src/rs_resource_store.cpp
   src/rs_root_query.cpp
+  src/rs_shader_clock.cpp
   src/rs_sha1.cpp
   src/rs_sha256.cpp
   src/rs_shader_payload.cpp

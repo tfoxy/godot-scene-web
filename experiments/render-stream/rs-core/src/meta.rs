@@ -1906,6 +1906,8 @@ pub struct TxMeta {
     pub failures: Vec<Failure>,
     pub unsupported: Vec<UnsupportedMeta>,
     pub unknown_items: Option<UnknownItems>,
+    /// P3-TM: `/10`'s `shader_time.f`, the host's shader time's offset in `param_f64`.
+    pub shader_time_f: Option<u64>,
     pub default_texture_filter: Option<Filter>,
     pub default_texture_repeat: Option<Repeat>,
     pub removed_canvases: Vec<i64>,
@@ -1931,6 +1933,7 @@ impl TxMeta {
         self.failures.clear();
         self.unsupported.clear();
         self.unknown_items = None;
+        self.shader_time_f = None;
         self.removed_canvases.clear();
         self.removed_items.clear();
         self.removed_textures.clear();
@@ -2754,11 +2757,20 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         TRANSACTION_KEYS
     };
     let has_unknown = v4 && ck.has_key(meta, "unknown_items");
+    // P3-TM (render-stream-10.md "Shader time"): /10's optional `shader_time`, right before
+    // `blocks`.
+    let has_time = version >= 10 && ck.has_key(meta, "shader_time");
     let mut keys_buf: Vec<&str>;
-    let keys: &[&str] = if has_unknown {
+    let keys: &[&str] = if has_unknown || has_time {
         keys_buf = base.to_vec();
-        let at = keys_buf.iter().position(|&k| k == "unsupported").unwrap() + 1;
-        keys_buf.insert(at, "unknown_items");
+        if has_unknown {
+            let at = keys_buf.iter().position(|&k| k == "unsupported").unwrap() + 1;
+            keys_buf.insert(at, "unknown_items");
+        }
+        if has_time {
+            let at = keys_buf.iter().position(|&k| k == "blocks").unwrap();
+            keys_buf.insert(at, "shader_time");
+        }
         &keys_buf
     } else {
         base
@@ -2770,11 +2782,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     let shift = has_unknown as usize;
     let pos = |name: &str| -> usize {
         let i = base.iter().position(|&k| k == name).unwrap();
-        if i >= 8 {
-            i + shift
-        } else {
-            i
-        }
+        let i = if i >= 8 { i + shift } else { i };
+        i + (has_time && name == "blocks") as usize
     };
     if has_unknown {
         let u = (|| {
@@ -3164,6 +3173,17 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             let m = check_material(ck, m, &mut tx.params, version)?;
             tx.materials.push(m);
         }
+    }
+    if has_time {
+        let at = keys.iter().position(|&k| k == "shader_time").unwrap();
+        let t = (|| {
+            let t = ck.fields(f.at(at), &["f"])?;
+            ck.int_ge(t.at(0), 0)
+        })();
+        let Some(t) = t else {
+            return Err(ck.schema("\"shader_time\" must be {f}, an integer >= 0"));
+        };
+        tx.shader_time_f = Some(t as u64);
     }
     let n = transaction_block_count(version);
     let types = if v4 {

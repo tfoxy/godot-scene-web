@@ -10,7 +10,10 @@
 //! 717-794).
 
 use crate::state::{BlendMode, LightMode, Param, ParamValue};
-use gsw_canvas_draw_list::UniformValue;
+use gsw_canvas_draw_list::{
+    ANISOTROPY_TEXTURE, BLACK_TEXTURE, NORMAL_TEXTURE, TRANSPARENT_TEXTURE, UniformValue,
+    WHITE_TEXTURE,
+};
 
 /// How a uniform's GL values are stored.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,6 +55,9 @@ pub struct SamplerDecl {
     pub name: Box<str>,
     pub linear: Option<bool>,
     pub repeat: Option<bool>,
+    /// P3-TM: the draw-list default-texture id GLES3 binds when the material sets no texture
+    /// (`default`: white, black, transparent, normal, anisotropy; material_storage.cpp:928-953).
+    pub default: u32,
 }
 
 /// A transpiled shader: the executor program id and what its code declares.
@@ -71,6 +77,8 @@ pub struct ProgramInfo {
     /// `skip_vertex_transform`), which reads its canvas's transform and inverse from the binding
     /// (`gsw_canvas_matrix` / `gsw_canvas_inverse`).
     pub vertex: bool,
+    /// P3-TM: the code reads `TIME`, which the executor sets from the list's shader time.
+    pub time: bool,
 }
 
 impl ProgramInfo {
@@ -154,10 +162,20 @@ impl ProgramInfo {
         let mut samplers = Vec::new();
         for s in list("samplers")? {
             let filter = doc.get(s, "filter").and_then(|v| doc.as_str(v));
+            // P3-TM: `default`; an older transpiler omits it (and admitted white only).
+            let default = match doc.get(s, "default").and_then(|v| doc.as_str(v)) {
+                None | Some("white") => WHITE_TEXTURE,
+                Some("black") => BLACK_TEXTURE,
+                Some("transparent") => TRANSPARENT_TEXTURE,
+                Some("normal") => NORMAL_TEXTURE,
+                Some("anisotropy") => ANISOTROPY_TEXTURE,
+                Some(other) => return Err(format!("program meta: sampler default {other:?}")),
+            };
             samplers.push(SamplerDecl {
                 name: str_of(s, "name")?.into(),
                 linear: filter.map(|f| f == "linear"),
                 repeat: doc.get(s, "repeat").and_then(|v| doc.as_bool(v)),
+                default,
             });
         }
         // P3-ST: `screenTexture` is null or {names, mipmaps}; an older transpiler omits it.
@@ -175,6 +193,11 @@ impl ProgramInfo {
             .get(root, "vertexStage")
             .and_then(|v| doc.as_bool(v))
             .unwrap_or(false);
+        // P3-TM: `time`; an older transpiler omits it (and refused TIME).
+        let time = doc
+            .get(root, "time")
+            .and_then(|v| doc.as_bool(v))
+            .unwrap_or(false);
         Ok(ProgramInfo {
             program,
             blend,
@@ -183,6 +206,7 @@ impl ProgramInfo {
             samplers,
             screen,
             vertex,
+            time,
         })
     }
 }
@@ -245,6 +269,84 @@ pub fn flat_varyings(code: &str) -> String {
     }
     out.push_str(&code[last..]);
     out
+}
+
+/// P3-TM: the material parameter a native receiver's rewritten code reads in place of `TIME`
+/// ([`host_time`]).
+pub const HOST_TIME_PARAM: &str = "rs_host_time";
+
+/// P3-TM: `code` with every `TIME` (an identifier outside comments, not after `.`, the capture's
+/// own D11 scan) read from the uniform [`HOST_TIME_PARAM`] instead, declared right after the
+/// `shader_type` statement. A native receiver compiles this so its draws follow the host's shader
+/// time (which it sets as that material parameter per transaction) rather than its own
+/// rasterizer's clock. Code without `TIME` is returned unchanged.
+pub fn host_time(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::with_capacity(code.len() + 64);
+    let mut last = 0;
+    let mut i = 0;
+    let mut declare_at: Option<usize> = None;
+    let mut in_shader_type = false;
+    let mut replaced = false;
+    let mut prev_sig: u8 = 0; // the last non-space byte outside comments
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if word(c) && (i == 0 || !word(bytes[i - 1])) {
+            let mut end = i;
+            while end < bytes.len() && word(bytes[end]) {
+                end += 1;
+            }
+            let ident = &code[i..end];
+            if ident == "shader_type" && declare_at.is_none() {
+                in_shader_type = true;
+            } else if ident == "TIME" && prev_sig != b'.' {
+                out.push_str(&code[last..i]);
+                out.push_str(HOST_TIME_PARAM);
+                last = end;
+                replaced = true;
+            }
+            prev_sig = bytes[end - 1];
+            i = end;
+            continue;
+        }
+        if c == b';' && in_shader_type {
+            in_shader_type = false;
+            declare_at = Some(i + 1);
+        }
+        if !c.is_ascii_whitespace() {
+            prev_sig = c;
+        }
+        i += 1;
+    }
+    out.push_str(&code[last..]);
+    if !replaced {
+        return code.to_string();
+    }
+    // `declare_at` indexes `code`; map it into `out` (no replacement precedes `shader_type`'s `;`
+    // in valid code, so the offsets agree up to there).
+    let decl = format!("\nuniform float {HOST_TIME_PARAM};\n");
+    match declare_at {
+        Some(at) if at <= out.len() && code[..at] == out[..at] => {
+            out.insert_str(at, &decl);
+            out
+        }
+        _ => format!("{decl}{out}"),
+    }
 }
 
 /// A wire parameter's numbers, flattened (a packed array's elements in order).
@@ -323,6 +425,17 @@ mod tests {
             ty,
             value,
         }
+    }
+
+    #[test]
+    fn host_time_reads_the_parameter_for_every_time_token() {
+        let code = "shader_type canvas_item; render_mode unshaded;\n// TIME in a comment\nvoid fragment() { COLOR.r = sin(TIME * 2.0) + s.TIME; /* TIME */ float TIMES = TIME; }";
+        assert_eq!(
+            host_time(code),
+            "shader_type canvas_item;\nuniform float rs_host_time;\n render_mode unshaded;\n// TIME in a comment\nvoid fragment() { COLOR.r = sin(rs_host_time * 2.0) + s.TIME; /* TIME */ float TIMES = rs_host_time; }"
+        );
+        let plain = "shader_type canvas_item; void fragment() { COLOR.a = 1.0; }";
+        assert_eq!(host_time(plain), plain);
     }
 
     #[test]

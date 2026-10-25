@@ -30,9 +30,14 @@ use gsw_canvas_draw_list::{
     BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY,
     DRAW_SCREEN_MIPMAPS, DRAW_UNTEXTURED, Draw, DrawList, CompressedFormat, Format, SCREEN_TEXTURE,
     Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
+    ANISOTROPY_TEXTURE, BLACK_TEXTURE, NORMAL_TEXTURE, TRANSPARENT_TEXTURE, default_texture_texel,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+
+/// P3-TM: the default-texture ids beside [`WHITE_TEXTURE`], in `Objects::defaults` order.
+const DEFAULT_TEXTURE_IDS: [u32; 4] =
+    [BLACK_TEXTURE, TRANSPARENT_TEXTURE, NORMAL_TEXTURE, ANISOTROPY_TEXTURE];
 
 const IDENTITY_MAT4: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -263,6 +268,10 @@ struct CompiledItem {
     /// size it was set for.
     u_screen_pixel_size: Option<glow::UniformLocation>,
     screen_pixel_size: Option<(u32, u32)>,
+    /// P3-TM: `TIME` (declared by a module whose code reads it) and the bits of the
+    /// [`DrawList::shader_time`] it was set to.
+    u_time: Option<glow::UniformLocation>,
+    time: Option<u32>,
 }
 
 /// An MSDF draw's fragment uniforms as GL holds them: `[px_range, outline]` as bits, and whether
@@ -332,6 +341,9 @@ struct Objects {
     item_texture: glow::Texture,
     item_rows: u32,
     white: glow::Texture,
+    /// P3-TM: GLES3's other default textures, in [`DEFAULT_TEXTURE_IDS`] order (1x1, nearest, as
+    /// `white`).
+    defaults: [glow::Texture; 4],
     /// Index `wrap · 2 + linear` (wrap 0 clamp, 1 repeat, 2 mirror).
     samplers: [glow::Sampler; 6],
     target: Option<TargetObjects>,
@@ -676,6 +688,7 @@ fn compile_item(
             if !canvas
                 && (name == "TEXTURE"
                     || name == "SCREEN_PIXEL_SIZE"
+                    || name == "TIME"
                     || name.starts_with("gsw_")
                     || name.starts_with("u_"))
             {
@@ -721,6 +734,8 @@ fn compile_item(
             msdf_state: None,
             u_screen_pixel_size: gl.get_uniform_location(program, "SCREEN_PIXEL_SIZE"),
             screen_pixel_size: None,
+            u_time: gl.get_uniform_location(program, "TIME"),
+            time: None,
         };
         gl.use_program(None);
         Ok(compiled)
@@ -912,6 +927,38 @@ impl Objects {
                 glow::PixelUnpackData::Slice(Some(&[255u8, 255, 255, 255][..])),
             );
 
+            let mut defaults = Vec::with_capacity(DEFAULT_TEXTURE_IDS.len());
+            for id in DEFAULT_TEXTURE_IDS {
+                let texel = default_texture_texel(id).ok_or("default texture")?;
+                let texture = gl.create_texture()?;
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::NEAREST as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::NEAREST as i32,
+                );
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    1,
+                    1,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&texel[..])),
+                );
+                defaults.push(texture);
+            }
+            let defaults: [glow::Texture; 4] =
+                defaults.try_into().map_err(|_| "defaults".to_string())?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(white));
+
             let mut samplers = Vec::with_capacity(6);
             for index in 0..6usize {
                 let sampler = gl.create_sampler()?;
@@ -950,6 +997,7 @@ impl Objects {
                 item_texture,
                 item_rows: 1,
                 white,
+                defaults,
                 samplers,
                 target: None,
                 screen: None,
@@ -1197,7 +1245,11 @@ impl CanvasItemsExecutor {
         let counts = {
             let textures = &self.textures;
             let programs = &self.programs;
-            let known_texture = |id: u32| id == WHITE_TEXTURE || textures.contains_key(&id);
+            let known_texture = |id: u32| {
+                id == WHITE_TEXTURE
+                    || DEFAULT_TEXTURE_IDS.contains(&id)
+                    || textures.contains_key(&id)
+            };
             plan_calls(
                 list,
                 known_texture,
@@ -1949,6 +2001,11 @@ impl CanvasItemsExecutor {
                     };
                     item.screen_pixel_size = Some((width, height));
                 }
+                let time = list.shader_time.to_bits();
+                if item.u_time.is_some() && item.time != Some(time) {
+                    unsafe { gl.c().uniform_1_f32(item.u_time.as_ref(), list.shader_time) };
+                    item.time = Some(time);
+                }
                 for (name, unit) in &item.sampler_units {
                     let bound = binding.samplers.iter().find(|s| &*s.name == name.as_str());
                     let (texture, sampler) = match bound {
@@ -1957,6 +2014,14 @@ impl CanvasItemsExecutor {
                             Some(screen) => (screen.texture, screen.sampler),
                             None => (objects.white, objects.samplers[0]),
                         },
+                        // P3-TM: GLES3's default for an unset hinted sampler.
+                        Some(s) if DEFAULT_TEXTURE_IDS.contains(&s.texture) => {
+                            let at = DEFAULT_TEXTURE_IDS
+                                .iter()
+                                .position(|id| *id == s.texture)
+                                .unwrap_or(0);
+                            (objects.defaults[at], objects.samplers[0])
+                        }
                         Some(s) if s.texture != WHITE_TEXTURE => {
                             match self.textures.get(&s.texture) {
                                 Some(t) => (*t, objects.samplers[sampler_index(s.sampler)]),
@@ -2140,6 +2205,9 @@ impl Drop for CanvasItemsExecutor {
                 gl.delete_buffer(o.index_buffer);
                 gl.delete_texture(o.item_texture);
                 gl.delete_texture(o.white);
+                for texture in o.defaults {
+                    gl.delete_texture(texture);
+                }
                 for sampler in o.samplers {
                     gl.delete_sampler(sampler);
                 }

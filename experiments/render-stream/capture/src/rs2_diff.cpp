@@ -357,6 +357,7 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   t.failures = cur.failures;
   t.unsupported = cur.unsupported;
   t.unknown_items = cur.unknown_items;
+  t.shader_time = cur.shader_time;  // P3-TM: complete, never patched
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases;
@@ -447,6 +448,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   t.failures = cur.failures;
   t.unsupported = cur.unsupported;
   t.unknown_items = cur.unknown_items;
+  t.shader_time = cur.shader_time;  // P3-TM: complete, never patched
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
 
@@ -552,6 +554,7 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   out.failures = txn.failures;
   out.unsupported = txn.unsupported;
   out.unknown_items = txn.unknown_items;
+  out.shader_time = txn.shader_time;
   out.default_texture_filter = txn.default_texture_filter;
   out.default_texture_repeat = txn.default_texture_repeat;
 

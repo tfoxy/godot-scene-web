@@ -1361,6 +1361,9 @@ struct Snapshot {
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
   UnknownItems unknown_items;  // protocol/unknown-item-skip.md
+  // P3-TM (render-stream-10.md "Shader time"): the host's shader time at this frame, set exactly
+  // when the session carries it and the state holds an `ok` shader whose `uses` names `time`.
+  std::optional<double> shader_time;
   Filter default_texture_filter = Filter::Nearest;    // new at /2: never Default on the wire
   Repeat default_texture_repeat = Repeat::Disabled;   // new at /2: never Default on the wire
   std::vector<CanvasState> canvases;  // sorted by id ascending
@@ -1402,6 +1405,7 @@ struct Transaction {
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
   UnknownItems unknown_items;  // protocol/unknown-item-skip.md; complete, never patched
+  std::optional<double> shader_time;  // P3-TM: /10 only; complete, never patched
   Filter default_texture_filter = Filter::Nearest;
   Repeat default_texture_repeat = Repeat::Disabled;
   std::vector<std::uint32_t> removed_canvases;  // ascending

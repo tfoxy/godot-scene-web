@@ -568,7 +568,7 @@ const BACKBUFFER_NOTE =
 /** P3-VX (gate5_5-design.md "vertex() (P3-VX)"): GSW's transpiler runs vertex() and varyings
  * since P3-VX, so the refusals left are narrower. */
 const OUTSIDE_TRANSPILE_NOTE =
-  "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). Still typed gsw-shader-transpile (programs.ts): TIME, VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, hint_default_black/transparent samplers, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal.";
+  "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). P3-TM: TIME (both stages, the host's shader time carried by /10) and the hint_default_black/transparent, hint_normal, hint_roughness_normal and hint_anisotropy sampler defaults transpile too (fixtures/gate55-time, g55t). Still typed gsw-shader-transpile (programs.ts): VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, other sampler hints, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal.";
 
 const OVERRIDES_8: readonly Override8[] = [
   {

@@ -18,7 +18,7 @@ bool is_ident_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) 
 
 }  // namespace
 
-ShaderScan scan_shader_code(const std::string &code) {
+ShaderScan scan_shader_code(const std::string &code, bool time_carried) {
   bool time_used = false;
   bool screen_texture_used = false;
   bool sdf_used = false;
@@ -124,7 +124,9 @@ ShaderScan scan_shader_code(const std::string &code) {
   // D11's precedence order. P3-ST (gate5_5-design.md D11 "As amended"): `hint_screen_texture` is
   // no longer a reason -- receivers mirror GLES3's back-buffer copies -- so it stays in `uses`
   // only; `shader-screen-texture` remains wire vocabulary that this capture no longer produces.
-  if (time_used) {
+  // P3-TM (render-stream-10.md "Shader time"): a session that carries the host's shader time per
+  // transaction (/10) types TIME as a use only, like the screen texture.
+  if (time_used && !time_carried) {
     scan.reason = "shader-time";
   } else if (sdf_used) {
     scan.reason = "shader-sdf";
