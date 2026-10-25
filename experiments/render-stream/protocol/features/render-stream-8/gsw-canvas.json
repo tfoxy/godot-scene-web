@@ -1,0 +1,2886 @@
+{
+  "schema": "render-stream-features/2",
+  "protocol": "render-stream/8",
+  "stream_protocols": [
+    "render-stream/6",
+    "render-stream/7",
+    "render-stream/8",
+    "render-stream/9"
+  ],
+  "engine": {
+    "version": "4.5.1-stable",
+    "template": "linux_release",
+    "platform": "linux-x86_64"
+  },
+  "capture": {
+    "calibrator_version": 9,
+    "hooks": 79
+  },
+  "receiver": {
+    "id": "gsw-canvas-rs-core-wasm",
+    "kind": "gsw-canvas",
+    "build": {
+      "sha256": "3a3b369418efce094fe1112d9fa54e276394e8ddc5ceeed3363ec447e995c121",
+      "godot_editor": "4.5.1-stable",
+      "web_template_sha256": null,
+      "bundle_bytes": null,
+      "commit": "ea402b95"
+    },
+    "platform": {
+      "runtime": "chromium-148.0.7778.96",
+      "graphics": "ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA NVIDIA GeForce RTX 2060 (0x00001F03)), NVIDIA)",
+      "angle_backend": "vulkan"
+    }
+  },
+  "evidence_runs": [
+    {
+      "key": "g7-0@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-1@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-2@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-3@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-4@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-5@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-55@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-6@gsw",
+      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
+    },
+    {
+      "key": "g7-1-live@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-corr/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 gsw (fast frames, --manifest-hello)"
+    },
+    {
+      "key": "g7-5-live@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-corr/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 gsw (fast frames, --manifest-hello)"
+    },
+    {
+      "key": "g7-55-live@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-corr/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 gsw (fast frames, --manifest-hello)"
+    },
+    {
+      "key": "g7-6-live@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-timing/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, live g7-6/g7-lc/g7-k gsw (real time, --manifest-hello; g7-lc's real-suspension device rows typed unavailable)"
+    },
+    {
+      "key": "g7-lc@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-timing/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, live g7-6/g7-lc/g7-k gsw (real time, --manifest-hello; g7-lc's real-suspension device rows typed unavailable)"
+    },
+    {
+      "key": "g7-k@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-timing/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, live g7-6/g7-lc/g7-k gsw (real time, --manifest-hello; g7-lc's real-suspension device rows typed unavailable)"
+    },
+    {
+      "key": "g7-r@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-g7-r/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, g7-r gsw at credit window 2 (real time, --manifest-hello)"
+    },
+    {
+      "key": "g7-r-w1@gsw",
+      "path": "render-stream/gate7/g7z/live/gsw-g7-r-w1/run",
+      "build": "6a454065",
+      "note": "carried from gate 7: G7z closing run, g7-r gsw at --credit-window 1 (dual-native, late-poll, ack-on-receipt)"
+    },
+    {
+      "key": "gate8@gsw",
+      "path": "render-stream/gate8/g8z/native-gate8",
+      "build": "ea402b95",
+      "note": "G8z closing run, native gate 8: the checks it makes of GSW legs it drives itself (g8kp)"
+    },
+    {
+      "key": "g7-8@gsw",
+      "path": "render-stream/gate8/g8z/g7-gsw-g8",
+      "build": "ea402b95",
+      "note": "G8z closing run, g7-8 file legs gsw (23 recordings of gate 8's fixtures)"
+    },
+    {
+      "key": "g7-8-live@gsw",
+      "path": "render-stream/gate8/g8z/live-g8",
+      "build": "ea402b95",
+      "note": "G8z closing run, g7-8 live legs, both browsers (--manifest-hello 8)"
+    },
+    {
+      "key": "g7-2-live@gsw",
+      "path": "render-stream/gate8/g8z/live-g7-2-gsw",
+      "build": "ea402b95",
+      "note": "G8z closing run, live g7-2 gsw (fast frames, --manifest-hello 8; G8kz's coding checks)"
+    }
+  ],
+  "entries": [
+    {
+      "id": "add_circle",
+      "kind": "op",
+      "name": "add_circle",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_clip_ignore",
+      "kind": "op",
+      "name": "add_clip_ignore",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_line",
+      "kind": "op",
+      "name": "add_line",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_mesh",
+      "kind": "op",
+      "name": "add_mesh",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_msdf_texture_rect_region",
+      "kind": "op",
+      "name": "add_msdf_texture_rect_region",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_multiline",
+      "kind": "op",
+      "name": "add_multiline",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_nine_patch",
+      "kind": "op",
+      "name": "add_nine_patch",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_polygon",
+      "kind": "op",
+      "name": "add_polygon",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_polyline",
+      "kind": "op",
+      "name": "add_polyline",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_primitive",
+      "kind": "op",
+      "name": "add_primitive",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_rect",
+      "kind": "op",
+      "name": "add_rect",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_set_transform",
+      "kind": "op",
+      "name": "add_set_transform",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_texture_rect",
+      "kind": "op",
+      "name": "add_texture_rect",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_texture_rect_region",
+      "kind": "op",
+      "name": "add_texture_rect_region",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "add_triangle_array",
+      "kind": "op",
+      "name": "add_triangle_array",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "canvas_item_add_animation_slice",
+      "kind": "op",
+      "name": "canvas_item_add_animation_slice",
+      "status": "typed-unsupported",
+      "reason": "unsupported-op",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: shader TIME / AnimationPlayer slice drawing (gate6-design.md Deferred, unscheduled)",
+      "notes": null
+    },
+    {
+      "id": "canvas_item_add_lcd_texture_rect_region",
+      "kind": "op",
+      "name": "canvas_item_add_lcd_texture_rect_region",
+      "status": "typed-unsupported",
+      "reason": "unsupported-op",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "leg-class-receiver-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "receiver-typed-clean@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "unscheduled: LCD subpixel text (gate4-design.md Deferred)",
+      "notes": null
+    },
+    {
+      "id": "canvas_item_add_multimesh",
+      "kind": "op",
+      "name": "canvas_item_add_multimesh",
+      "status": "typed-unsupported",
+      "reason": "unsupported-op",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "leg-class-receiver-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "receiver-typed-clean@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "post-gate-6 capabilities: multimesh (gate6-design.md Deferred, unscheduled)",
+      "notes": null
+    },
+    {
+      "id": "canvas_item_add_particles",
+      "kind": "op",
+      "name": "canvas_item_add_particles",
+      "status": "typed-unsupported",
+      "reason": "unsupported-op",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: GPU/CPU particles (gate6-design.md Deferred, unscheduled)",
+      "notes": null
+    },
+    {
+      "id": "canvas_item_attach_skeleton",
+      "kind": "op",
+      "name": "canvas_item_attach_skeleton",
+      "status": "typed-unsupported",
+      "reason": "unsupported-state",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled: skeletons, skinning, blend shapes (gate5-design.md Deferred)",
+      "notes": null
+    },
+    {
+      "id": "canvas_item_set_canvas_group_mode",
+      "kind": "op",
+      "name": "canvas_item_set_canvas_group_mode",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: CanvasGroup / clip-children (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture creates a CanvasGroup item, so the hook never fires."
+    },
+    {
+      "id": "canvas_item_set_copy_to_backbuffer",
+      "kind": "op",
+      "name": "canvas_item_set_copy_to_backbuffer",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: screen texture (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture reads the backbuffer, so the hook never fires."
+    },
+    {
+      "id": "canvas_item_set_light_mask",
+      "kind": "op",
+      "name": "canvas_item_set_light_mask",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: Light2D (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture sets a light mask."
+    },
+    {
+      "id": "canvas_item_set_sort_children_by_y",
+      "kind": "op",
+      "name": "canvas_item_set_sort_children_by_y",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture enables y-sort."
+    },
+    {
+      "id": "canvas_item_set_visibility_notifier",
+      "kind": "op",
+      "name": "canvas_item_set_visibility_notifier",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture uses a VisibilityNotifier2D."
+    },
+    {
+      "id": "canvas_light_attach_to_canvas",
+      "kind": "op",
+      "name": "canvas_light_attach_to_canvas",
+      "status": "typed-unsupported",
+      "reason": "canvas-light",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "leg-class-receiver-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "receiver-typed-clean@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "post-gate-6 capabilities: Light2D, occluders, light masks, normal/specular maps (gate5_5-design.md Deferred, unscheduled)",
+      "notes": null
+    },
+    {
+      "id": "canvas_set_disable_scale",
+      "kind": "op",
+      "name": "canvas_set_disable_scale",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "calibrator 9 hooks its five sibling canvas setters but leaves slot 440 unhooked (render-stream-6.md \"Features\", gate6-design.md Q2)."
+    },
+    {
+      "id": "canvas_set_item_mirroring",
+      "kind": "op",
+      "name": "canvas_set_item_mirroring",
+      "status": "typed-unsupported",
+      "reason": "canvas-repeat",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: follow_viewport layers and parallax repeat census",
+      "notes": null
+    },
+    {
+      "id": "canvas_set_item_repeat",
+      "kind": "op",
+      "name": "canvas_set_item_repeat",
+      "status": "typed-unsupported",
+      "reason": "canvas-repeat",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: follow_viewport layers and parallax repeat census",
+      "notes": null
+    },
+    {
+      "id": "canvas_set_parent",
+      "kind": "op",
+      "name": "canvas_set_parent",
+      "status": "typed-unsupported",
+      "reason": "canvas-follow-viewport",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "leg-class-receiver-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "receiver-typed-clean@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "gate 8: follow_viewport layers and parallax repeat census",
+      "notes": null
+    },
+    {
+      "id": "canvas_texture_set_shading_parameters",
+      "kind": "op",
+      "name": "canvas_texture_set_shading_parameters",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: CanvasTexture census (memory canvas-texture-headless-rid)",
+      "notes": "hooked slot; CanvasTexture itself is typed canvas-texture-headless on a headless host, so its shading parameters are never reached."
+    },
+    {
+      "id": "global_shader_parameter_add",
+      "kind": "op",
+      "name": "global_shader_parameter_add",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: global shader uniforms (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture sets a global shader parameter."
+    },
+    {
+      "id": "global_shader_parameter_remove",
+      "kind": "op",
+      "name": "global_shader_parameter_remove",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: global shader uniforms (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture removes a global shader parameter."
+    },
+    {
+      "id": "global_shader_parameter_set",
+      "kind": "op",
+      "name": "global_shader_parameter_set",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: global shader uniforms (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture sets a global shader parameter."
+    },
+    {
+      "id": "global_shader_parameter_set_override",
+      "kind": "op",
+      "name": "global_shader_parameter_set_override",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6 capabilities: global shader uniforms (unscheduled)",
+      "notes": "hooked slot; no committed gate 6 fixture overrides a global shader parameter."
+    },
+    {
+      "id": "material_set_next_pass",
+      "kind": "op",
+      "name": "material_set_next_pass",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture chains a material's next pass."
+    },
+    {
+      "id": "material_set_render_priority",
+      "kind": "op",
+      "name": "material_set_render_priority",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture sets a render priority."
+    },
+    {
+      "id": "shader_set_path_hint",
+      "kind": "op",
+      "name": "shader_set_path_hint",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture sets a shader path hint."
+    },
+    {
+      "id": "texture_set_size_override",
+      "kind": "op",
+      "name": "texture_set_size_override",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture overrides a texture's reported size."
+    },
+    {
+      "id": "viewport_set_canvas_cull_mask",
+      "kind": "op",
+      "name": "viewport_set_canvas_cull_mask",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "hooked slot; no committed gate 6 fixture changes the root canvas cull mask."
+    },
+    {
+      "id": "viewport_set_snap_2d_transforms_to_pixel",
+      "kind": "op",
+      "name": "viewport_set_snap_2d_transforms_to_pixel",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: snap-to-pixel runtime-change census (gate6-design.md D17)",
+      "notes": "the setting is declared at arm (viewport.snap_2d); a runtime CHANGE to it stays unobserved (D17)."
+    },
+    {
+      "id": "viewport_set_snap_2d_vertices_to_pixel",
+      "kind": "op",
+      "name": "viewport_set_snap_2d_vertices_to_pixel",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: snap-to-pixel runtime-change census (gate6-design.md D17)",
+      "notes": "the setting is declared at arm (viewport.snap_2d); a runtime CHANGE to it stays unobserved (D17)."
+    },
+    {
+      "id": "item_state.behind",
+      "kind": "item_state",
+      "name": "behind",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.children",
+      "kind": "item_state",
+      "name": "children",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.clip",
+      "kind": "item_state",
+      "name": "clip",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.custom_rect",
+      "kind": "item_state",
+      "name": "custom_rect",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.draw_index",
+      "kind": "item_state",
+      "name": "draw_index",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.instance_params",
+      "kind": "item_state",
+      "name": "instance_params",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.material",
+      "kind": "item_state",
+      "name": "material",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.modulate",
+      "kind": "item_state",
+      "name": "modulate",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.parent",
+      "kind": "item_state",
+      "name": "parent",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.self_modulate",
+      "kind": "item_state",
+      "name": "self_modulate",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.texture_filter",
+      "kind": "item_state",
+      "name": "texture_filter",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.texture_repeat",
+      "kind": "item_state",
+      "name": "texture_repeat",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.transform",
+      "kind": "item_state",
+      "name": "transform",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.use_parent_material",
+      "kind": "item_state",
+      "name": "use_parent_material",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.visibility_layer",
+      "kind": "item_state",
+      "name": "visibility_layer",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.visible",
+      "kind": "item_state",
+      "name": "visible",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.z_index",
+      "kind": "item_state",
+      "name": "z_index",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "item_state.z_relative",
+      "kind": "item_state",
+      "name": "z_relative",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "canvas_state.layer",
+      "kind": "canvas_state",
+      "name": "layer",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6-hd-half",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "hd/receiver-half",
+          "check": "receiver-vs-reference-half@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "scene/sabotage-receiver-ignore-canvas-stacking",
+          "check": "leg-class-sabotage-receiver-ignore-canvas-stacking@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "CanvasLayer stacking (layer, sublayer), supported on /6 for layers attached to the root viewport (gate6-design.md D3)."
+    },
+    {
+      "id": "canvas_state.modulate",
+      "kind": "canvas_state",
+      "name": "modulate",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "canvas_state.transform",
+      "kind": "canvas_state",
+      "name": "transform",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "resource.canvas_texture",
+      "kind": "resource",
+      "name": "canvas_texture",
+      "status": "typed-unsupported",
+      "reason": "canvas-texture-headless",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: headless CanvasTexture shim (memory canvas-texture-headless-rid; STS2 criterion 5 pending approval)",
+      "notes": "a headless host's RenderingServer.canvas_texture_create returns RID() by default (dummy renderer); the opt-in GRC_HEADLESS_CANVAS_TEXTURE=synthesize shim is not used by any committed gate 6 fixture."
+    },
+    {
+      "id": "resource.material",
+      "kind": "resource",
+      "name": "material",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "resource.mesh",
+      "kind": "resource",
+      "name": "mesh",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "resource.shader",
+      "kind": "resource",
+      "name": "shader",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "resource.texture_2d",
+      "kind": "resource",
+      "name": "texture_2d",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "resource.texture_2d_placeholder",
+      "kind": "resource",
+      "name": "texture_2d_placeholder",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "payload.compressed_and_float_texture_formats",
+      "kind": "payload",
+      "name": "DXT, BPTC and float texture payloads",
+      "status": "supported",
+      "reason": null,
+      "exactness": "quantized",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-tex",
+          "leg": "receiver",
+          "check": "decode-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-tex",
+          "leg": "g8f/receiver",
+          "check": "float-texture-quantized@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Resolved at /8 by host decode (payload.host_decoded_block_textures), float payloads (payload.float_texture_formats) and the /9 block variant (delivery.texture_variant_block). Not proven at STS2 scale: wire and memory acceptability are the product leg's (P3). GSW quantizes floats (caveat float-texture-quantized)."
+    },
+    {
+      "id": "payload.content_addressed_store_and_inline",
+      "kind": "payload",
+      "name": "content-addressed file store, HTTP-by-hash and inline live delivery",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate2",
+      "evidence": [
+        {
+          "gate": "g7-2",
+          "fixture": "gate6-scene",
+          "leg": "receiver-cold",
+          "check": "upload-accounting@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-2",
+          "fixture": "gate6-scene",
+          "leg": "receiver-inline",
+          "check": "leg-class-receiver-inline@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "payload.deltas_and_lazy_hashing",
+      "kind": "payload",
+      "name": "payload deltas, atlas/mesh-region deltas, parameter deltas, hash-at-publish, lazy hashing, spill-to-disk, parallel fetches",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "the first optimization increment after gate 6, chosen from G6p's `optimizations` numbers (gate6-design.md D15)",
+      "notes": "measured offline by scripts/analyze-deltas.ts, not implemented; see the README \"Gate 6 summary\" for the measured whole-version-vs-delta figures."
+    },
+    {
+      "id": "payload.float_texture_formats",
+      "kind": "payload",
+      "name": "Float texture payloads (RF, RGF, RGBF, RGBAF, RH, RGH, RGBH, RGBAH) quantized to RGBA8 by the receiver (rs-core texture_rgba8)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "quantized",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-tex",
+          "leg": "g8f/receiver",
+          "check": "float-exact@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-tex",
+          "leg": "g8f/receiver",
+          "check": "float-texture-quantized@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Caveat float-texture-quantized (applied.json receiver.caveats, receiver.float_quantized): GSW takes every float as RGBA8, so a shader that scales an HDR value past 1 differs; the fixture's two gain-scaled strips are excluded from the pixel comparison."
+    },
+    {
+      "id": "payload.host_decoded_block_textures",
+      "kind": "payload",
+      "name": "Block-compressed textures (BC1-BC7, RGTC, ETC2, ASTC) delivered as host-decoded RGBA8/R8/RG8 (GRC_TEXTURE_DECODE=engine)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-tex",
+          "leg": "receiver",
+          "check": "decode-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Judged against the native leg of the same recording: channel 1, or inside a region the fixture declares undecided (its filtered and nearest-stretched rows)."
+    },
+    {
+      "id": "payload.size_and_format_limits",
+      "kind": "payload",
+      "name": "GRC_RESOURCE_MAX_PAYLOAD_BYTES / GRC_RESOURCE_FORMATS",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-2",
+          "fixture": "gate6-scene",
+          "leg": "unsupported-textures/receiver",
+          "check": "unsupported-regions@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "material.late-join-materials",
+      "kind": "material",
+      "name": "materials and shaders already live when a receiver joins",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-mat",
+          "leg": "g8m/late/receiver",
+          "check": "mat-adopt-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "material.param-range",
+      "kind": "material",
+      "name": "a material or instance parameter outside its supported range",
+      "status": "typed-unsupported",
+      "reason": "param-range",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "named in gate5_5-design.md D16; no committed fixture triggers it."
+    },
+    {
+      "id": "material.param-type",
+      "kind": "material",
+      "name": "an instance shader parameter of an unsupported type",
+      "status": "typed-unsupported",
+      "reason": "param-type",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "proven at gate 5.5 by a golden-5 decoder vector (gate5_5-design.md \"State 15\"), not by an end-to-end gate 6 leg."
+    },
+    {
+      "id": "material.shader-excluded",
+      "kind": "material",
+      "name": "GRC_SHADER_POLICY=exclude: shader refused outright",
+      "status": "supported",
+      "reason": "shader-excluded",
+      "exactness": "exact",
+      "tolerance": "gate55-shader",
+      "evidence": [
+        {
+          "gate": "g7-55",
+          "fixture": "gate55-shader",
+          "leg": "shader-refused/receiver",
+          "check": "leg-class-receiver-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "material.shader-outside-transpile-subset",
+      "kind": "material",
+      "name": "a ShaderMaterial the wire carries but GSW's transpiler does not cover",
+      "status": "declared-unverified",
+      "reason": "gsw-shader-transpile",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": null,
+      "notes": "G7s: vertex(), varyings, screen/SDF built-ins, global and matrix uniforms, TEXTURE_PIXEL_SIZE, uvec/bvec and non-literal defaults are typed gsw-shader-transpile (programs.ts). Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal."
+    },
+    {
+      "id": "material.shader-transpile-subset",
+      "kind": "material",
+      "name": "ShaderMaterial fragment code inside GSW's transpile subset",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": "gate55-shader",
+      "evidence": [
+        {
+          "gate": "g7-55",
+          "fixture": "gate6-scene",
+          "leg": "shader/receiver",
+          "check": "shader-receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-55",
+          "fixture": "gate6-scene",
+          "leg": "shader/receiver",
+          "check": "shader-transpile-set@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "material.shader-withheld",
+      "kind": "material",
+      "name": "GRC_SHADER_POLICY=params: code withheld, a receiver with no library types it",
+      "status": "supported",
+      "reason": "shader-withheld",
+      "exactness": "exact",
+      "tolerance": "gate55-shader",
+      "evidence": [
+        {
+          "gate": "g7-55",
+          "fixture": "gate55-shader",
+          "leg": "shader-policy-params/receiver-nolib",
+          "check": "leg-class-receiver-params-nolib@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-55",
+          "fixture": "gate55-shader",
+          "leg": "shader/receiver",
+          "check": "shader-receiver-typed@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "material.shader_policy",
+      "kind": "material",
+      "name": "shader delivery policy (source / params / exclude)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": "gate55-shader",
+      "evidence": [
+        {
+          "gate": "g7-55",
+          "fixture": "gate55-shader",
+          "leg": "shader-policy-params/receiver-nolib",
+          "check": "leg-class-receiver-params-nolib@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "material.unknown-material",
+      "kind": "material",
+      "name": "an item names a material RID the mirror never saw created",
+      "status": "typed-unsupported",
+      "reason": "unknown-material",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "proven at gate 5.5 by a golden-5 decoder vector (gate5_5-design.md \"State 15\"), not by an end-to-end gate 6 leg."
+    },
+    {
+      "id": "material.unknown-shader",
+      "kind": "material",
+      "name": "a material names a shader RID the mirror never saw created",
+      "status": "typed-unsupported",
+      "reason": "unknown-shader",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "unscheduled",
+      "notes": "named in gate5_5-design.md D16; no committed fixture triggers it."
+    },
+    {
+      "id": "material.unsupported-material",
+      "kind": "material",
+      "name": "an item's effective material is itself unsupported",
+      "status": "typed-unsupported",
+      "reason": "unsupported-material",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "leg-class-receiver-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "refused/receiver",
+          "check": "receiver-typed-clean@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "post-gate-6 capabilities: shader TIME (gate6-design.md Deferred, unscheduled)",
+      "notes": "the refused fixture's TIME shader is the committed example (gate6-design.md \"As built (G6b)\" 9)."
+    },
+    {
+      "id": "viewport.canvas-stacking-tie",
+      "kind": "viewport",
+      "name": "two attached canvases at an equal (layer, sublayer)",
+      "status": "declared-unverified",
+      "reason": "canvas-stacking-tie",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: canvas RID-order tie-breaking census",
+      "notes": "the renderer breaks equal stacking keys by canvas RID (rv.h:125-130), which no receiver can reproduce; decoders accept and validate the shape (viewport-entry / canvas-stacking-tie-miss / -false, render-stream-6.md), but no committed gate 6 fixture produces it (gate6-design.md \"As built (G6b)\" 1: \"No transaction of any capture carries a canvas-stacking-tie\")."
+    },
+    {
+      "id": "viewport.degenerate-host-size",
+      "kind": "viewport",
+      "name": "degenerate 64x64 host (observe policy)",
+      "status": "typed-unsupported",
+      "reason": "degenerate-host-size",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: STS2's host size policy (gate6-design.md D4)",
+      "notes": "root_size_policy observe keeps the 64x64 headless root (scene_tree.cpp:2034); no committed gate 6 fixture uses this policy, every one declares enforce-min-size or presentation:."
+    },
+    {
+      "id": "viewport.global-canvas-transform",
+      "kind": "viewport",
+      "name": "Viewport.set_canvas_transform changed at runtime",
+      "status": "declared-unverified",
+      "reason": "global-canvas-transform",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8",
+      "notes": "calibrator 9 hooks viewport_set_global_canvas_transform and compares it with the arm-time stretch (gate6-design.md Q2); render-stream-6.md's golden-6 fixture exercises the wire shape, but no end-to-end gate 6 leg changes the root's global canvas transform at runtime."
+    },
+    {
+      "id": "viewport.late-presentation-size",
+      "kind": "viewport",
+      "name": "presentation:WxH applied at a late arm (D10), the engine recomputing stretch, oversampling and StyleBox AA",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-size",
+          "leg": "g8h/late/receiver",
+          "check": "late-size-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-size",
+          "leg": "g8h/late/receiver",
+          "check": "late-size-needed@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "viewport.non-root-viewport",
+      "kind": "viewport",
+      "name": "non-root Viewport / SubViewport",
+      "status": "typed-unsupported",
+      "reason": "non-root-viewport",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: non-root Viewport/SubViewport census (typed since gate 0, never given a dedicated increment)",
+      "notes": null
+    },
+    {
+      "id": "viewport.oversampling-mismatch",
+      "kind": "viewport",
+      "name": "receiver oversampling differs from the declared value",
+      "status": "typed-unsupported",
+      "reason": "oversampling-mismatch",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "hd/receiver-half-at-logical",
+          "check": "presentation-hazard-measured@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "gate 7: several presentation sizes per session, receiver-advertised size negotiation",
+      "notes": null
+    },
+    {
+      "id": "viewport.presentation-declared",
+      "kind": "viewport",
+      "name": "presentation_size / font_oversampling / host_size_status declared",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6-hd-half",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "hd/receiver-half",
+          "check": "presentation-check@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "GRC_ROOT_SIZE=presentation:<W>x<H> makes the headless root window WxH so the engine itself computes the stretch transform, font oversampling and StyleBoxFlat feather (gate6-design.md D2)."
+    },
+    {
+      "id": "viewport.presentation-mismatch",
+      "kind": "viewport",
+      "name": "receiver at a different presentation size",
+      "status": "typed-unsupported",
+      "reason": "presentation-mismatch",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "hd/receiver-half-at-logical",
+          "check": "presentation-hazard-measured@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": "gate 7: several presentation sizes per session, receiver-advertised size negotiation",
+      "notes": "one presentation scale per capture session (gate6-design.md D2); this is the typing, not the feature -- serving several viewer sizes from one session is gate 7's."
+    },
+    {
+      "id": "viewport.presentation-size-negotiation",
+      "kind": "viewport",
+      "name": "several presentation sizes per capture session",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post gate 7: one presentation size per session",
+      "notes": "Gate 7 kept one host evaluation per session; a receiver at another size types presentation-mismatch (Q4)."
+    },
+    {
+      "id": "viewport.snap-2d",
+      "kind": "viewport",
+      "name": "snap-to-pixel replay",
+      "status": "typed-unsupported",
+      "reason": "snap-2d",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: snap-to-pixel replay census (gate6-design.md D17)",
+      "notes": "declared and typed, never replayed: the receiver does not apply snap_2d_transforms_to_pixel/_vertices_to_pixel."
+    },
+    {
+      "id": "viewport.snap_2d-declared",
+      "kind": "viewport",
+      "name": "snap_2d declared at arm",
+      "status": "declared-unverified",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": null,
+      "notes": "no gsw-canvas leg replays the /1 evidence (capture-snap|snap-typed); the wire carries it as for native"
+    },
+    {
+      "id": "viewport.stretch-aspect-other-than-keep",
+      "kind": "viewport",
+      "name": "stretch.aspect other than \"keep\" at an unequal ratio",
+      "status": "declared-unverified",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8",
+      "notes": "the wire's stretch.aspect enum accepts ignore/keep/keep_width/keep_height/expand; every committed gate 6 fixture uses keep at an equal aspect ratio (gate6-hd 1920x1080 <-> 960x540), so the other values are unexercised (Q8 example)."
+    },
+    {
+      "id": "viewport.stretch-mode-viewport",
+      "kind": "viewport",
+      "name": "stretch.mode = \"viewport\"",
+      "status": "declared-unverified",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8: stretch mode viewport census",
+      "notes": "stretch mode viewport evaluates nothing scale-dependent on the host, but no committed fixture proves it, so the receiver would type it stretch-mode if it occurred (gate6-design.md D2, Deferred)."
+    },
+    {
+      "id": "viewport.stretch-scale-mode-integer",
+      "kind": "viewport",
+      "name": "stretch.scale_mode = \"integer\"",
+      "status": "declared-unverified",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8",
+      "notes": "every committed gate 6 fixture uses scale_mode fractional (the default); integer is accepted by the wire schema but unexercised (Q8 example)."
+    },
+    {
+      "id": "delivery.constrained_transport",
+      "kind": "delivery",
+      "name": "delivery across a bandwidth- and latency-limited link",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-r",
+          "fixture": "gate6-scene",
+          "leg": "constrained",
+          "check": "host-unperturbed-constrained@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "a runner-side token-bucket TCP proxy (gate6-design.md D12), not tc; loopback only."
+    },
+    {
+      "id": "delivery.disk_cache_budget",
+      "kind": "delivery",
+      "name": "a receiver disk-cache budget with LRU eviction (G6s)",
+      "status": "declared-unverified",
+      "reason": "cache-budget-unsupported",
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": null,
+      "notes": "GSW has no disk cache (memory + the browser HTTP cache). Its file mode types a disk budget cache-budget-unsupported (web/gsw-receiver/main.ts), but no gsw leg sets one, so the refusal is declared, not observed."
+    },
+    {
+      "id": "delivery.http_content_coding",
+      "kind": "delivery",
+      "name": "HTTP content coding of payload GETs (GRC_HTTP_ENCODING zstd default, gzip, off)",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-2-live",
+          "fixture": "gate6-scene",
+          "leg": "live-auth",
+          "check": "http-content-coding@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-2-live",
+          "fixture": "gate6-scene",
+          "leg": "sabotage-corrupt-coded-body",
+          "check": "corrupt-coded-body@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "The browser's own fetch decodes zstd and gzip transparently; a coded body with a flipped byte is refused."
+    },
+    {
+      "id": "delivery.live_credit_window",
+      "kind": "delivery",
+      "name": "render-stream/7 negotiated credit window (1, or 2 by default since G7wd)",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-r",
+          "fixture": "gate6-scene",
+          "leg": "phase-60-r1",
+          "check": "rate-achieved-phase-60-r1@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-r",
+          "fixture": "gate6-scene",
+          "leg": "phase-60-r1",
+          "check": "phase-window2-rate-phase-60-r1@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-r-w1",
+          "fixture": "gate6-scene",
+          "leg": "phase-60-r1",
+          "check": "rate-achieved-phase-60-r1@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Window 2 is the default (G7wd); window 1 is explicit and its g7-r list (late-poll, ack-on-receipt) passed in G7w2c's addendum."
+    },
+    {
+      "id": "delivery.live_token_and_origin",
+      "kind": "delivery",
+      "name": "/7 hello token, HTTP token and Origin allowlist",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-2-live",
+          "fixture": "gate6-scene",
+          "leg": "live-auth",
+          "check": "leg-class-live-auth@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-2-live",
+          "fixture": "gate6-scene",
+          "leg": "origin-refused",
+          "check": "origin-refused@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-2-live",
+          "fixture": "gate6-scene",
+          "leg": "live",
+          "check": "token-not-logged@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "delivery.multiple_live_connections",
+      "kind": "delivery",
+      "name": "GRC_LIVE_MAX_CONNECTIONS: two receivers at different rates",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-r-w1",
+          "fixture": "gate6-scene",
+          "leg": "dual-native",
+          "check": "dual-independent-dual-native@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "one snapshot copy per host frame serves every open connection."
+    },
+    {
+      "id": "delivery.non_loopback_serving",
+      "kind": "delivery",
+      "name": "the host and receiver on separate machines",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "gate 8 (gate2-design.md D13)",
+      "notes": "gate 6's constrained transport is a loopback proxy, not a real network path."
+    },
+    {
+      "id": "delivery.page_lifecycle",
+      "kind": "delivery",
+      "name": "page suspension (hidden, frozen), reload, close and WebGL context loss",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-lc",
+          "fixture": "gate6-scene",
+          "leg": "sim-hidden-30s",
+          "check": "leg-class@gsw:sim-hidden-30s",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-lc",
+          "fixture": "gate6-scene",
+          "leg": "sim-frozen-30s",
+          "check": "leg-class@gsw:sim-frozen-30s",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-lc",
+          "fixture": "gate6-scene",
+          "leg": "reload",
+          "check": "reload-pixels@gsw:reload",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-lc",
+          "fixture": "gate6-scene",
+          "leg": "context-loss",
+          "check": "context-pixels@gsw:context-loss",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Desktop suspensions are simulated (page-side rAF pause, G7u fork 2026-10-18); the real hidden/frozen rows need the g31 and are typed `unavailable` on the desktop (G7u e7c8235f passed them on the g31)."
+    },
+    {
+      "id": "delivery.presented_timing",
+      "kind": "delivery",
+      "name": "presentation feedback (frame actually shown, not just applied)",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post gate 7: no receiver reads presentation feedback",
+      "notes": "Q12: `presented` is `unavailable` for every receiver, the phones included (`content_update_hz` is the compositor's activation rate, never called presented)."
+    },
+    {
+      "id": "delivery.publication_rate_control",
+      "kind": "delivery",
+      "name": "GRC_PUBLISH_FPS target rate, coalescing missed ticks",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-r",
+          "fixture": "gate6-scene",
+          "leg": "phase-60-r1",
+          "check": "rate-achieved-phase-60-r1@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "at 60/60 the achieved rate is phase-dependent on the credit RTT (memory rs-g6c-60-60-phase-lock); the mechanism itself (a due tick that holds credit, carrying the newest state) is supported."
+    },
+    {
+      "id": "delivery.receiver_resource_budgets",
+      "kind": "delivery",
+      "name": "receiver memory/disk cache budgets with LRU eviction",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "soak-scene",
+          "check": "g6s-cache-budget-respected-soak-scene",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "never evicts a hash in the needed set; a 300 s soak keeps residency bounded (gate6-design.md Q7e)."
+    },
+    {
+      "id": "delivery.reverse_proxy_fronting",
+      "kind": "delivery",
+      "name": "Live listener fronted by an HTTP/1.1 reverse proxy (D14: Host rewritten, X-Forwarded-*, WebSocket upgrade forwarded)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8-live",
+          "fixture": "gate8-tex",
+          "leg": "g8l-proxy",
+          "check": "g8l-proxy-fronted@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8-live",
+          "fixture": "gate8-tex",
+          "leg": "g8l-proxy",
+          "check": "g8l-proxy-states@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "delivery.soak_memory_bounded",
+      "kind": "delivery",
+      "name": "a 300-s live soak with bounded receiver memory",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "soak-scene",
+          "check": "g6s-residency-bounded-soak-scene",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "soak-scene",
+          "check": "g7k-soak-scene-js-heap-bounded",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "soak-scene",
+          "check": "g7k-soak-scene-gpu-mem-bounded",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "soak-scene",
+          "check": "g7k-soak-scene-rss-bounded-renderer",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "G7kr 099a92f9: rss-bounded-renderer judges the receiver page's own renderer (found by a 128 MiB touch probe) on post-GC samples, against Q10's bound plus 5 KiB per payload GET (the harness's CDP Network-domain record, not receiver state)."
+    },
+    {
+      "id": "delivery.startup",
+      "kind": "delivery",
+      "name": "cold and warm startup to the first submitted frame",
+      "status": "supported",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "startup-warm-r1",
+          "check": "g7k-startup-complete-startup-warm-r1",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-k",
+          "fixture": "gate6-scene",
+          "leg": "startup-cold-r1",
+          "check": "g7k-startup-complete-startup-cold-r1",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "delivery.stream_protocol_8",
+      "kind": "delivery",
+      "name": "render-stream/8 file stream (GRS8) and live subprotocol render-stream.8 (RS_RECEIVER_PROTOCOL=8)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8-live",
+          "fixture": "gate8-tex",
+          "leg": "g8l-tex",
+          "check": "g8l-tex-live@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8-live",
+          "fixture": "gate8-tex",
+          "leg": "g8l-tex",
+          "check": "g8l-tex-states@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8-live",
+          "fixture": "gate8-tex",
+          "leg": "g8l-tex",
+          "check": "live-replay-equals-live-g8l-tex@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Live transactions equal the host's /8 file-sink state at their frame; the final image equals the same receiver's replay."
+    },
+    {
+      "id": "delivery.texture_variant_block",
+      "kind": "delivery",
+      "name": "render-stream/9 `block` variant: the game's own BC/ETC2/ASTC bytes uploaded as blocks (GRC_TEXTURE_DELIVERY=passthrough)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "gate8",
+          "fixture": "gate8-tex",
+          "leg": "g8kp",
+          "check": "delivery-pixels-gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "On the desktop only the BC formats ran (its GPU exposes no ETC2/ASTC to WebGL): on the pixels GSW's decoded draw already equals the native reference, 203,702 equal the GPU-sampled reference and 5,903 differ by exactly 1. On the g31 (ETC2 + ASTC only, no BC) G8kb uploaded the uastc transcodes through the same compressedTexImage2D calls without a GL error (see texture_variant_uastc); a g31 leg on a block-source recording was not run. GSW states bc_aligned_only (G8kwh), which no fixture exercises."
+    },
+    {
+      "id": "delivery.texture_variant_uastc",
+      "kind": "delivery",
+      "name": "render-stream/9 `uastc` variant: KTX2 UASTC LDR 4x4 + zstd transcoded by the receiver to its GPU's block format (GRC_TEXTURE_DELIVERY=basis-uastc)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-basis",
+          "leg": "g8ku/sabotage-perturb-ktx2/receiver",
+          "check": "gsw-transcode-oracle@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-basis",
+          "leg": "g8ku/sabotage-perturb-ktx2/receiver",
+          "check": "gsw-delivery-policy@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-basis",
+          "leg": "g8ku/sabotage-perturb-ktx2/receiver",
+          "check": "gsw-delivery-pixels@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-basis",
+          "leg": "g8ku/sabotage-perturb-ktx2/receiver",
+          "check": "gsw-transcode-fallback@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-basis",
+          "leg": "g8ku/sabotage-perturb-ktx2/receiver",
+          "check": "sabotage-perturb-ktx2@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "G8kb: a basisu transcoder wasm in a Web Worker verifies the KTX2 in rs-core, transcodes it to D14's target for the context (BC7 on the desktop, ASTC 4x4 on the g31 for RGBA and, since G8kb2, RGB; ETC1/ETC2/BC1/BC3 where ASTC is absent; RGBA8 when none) and uploads the blocks. Blocks equal the native oracle's bit for bit on the oracle's target; pixels are within channel 1 of the native upgrade leg except the half-size mip draw (GSW uploads level 0 only) and the npot texture (RGBA8 by WebGL's alignment rule, 46.2 dB). A failed transcode refetches the decoded variant (gsw-transcode-fallback; final image equals keep's). g31 (real time): ASTC transcode about 57-77 ms/Mpx in the worker, GPU memory a quarter or less of decoded's (36 vs 150 MiB over 64 copies); ETC1 for RGB was lossy on noise (18.8 dB), which G8kb2's ASTC for RGB closed (59.0 dB). Upgrade on a phone-class context, keep on a desktop (D6)."
+    },
+    {
+      "id": "text.rasterization-and-atlas",
+      "kind": "text",
+      "name": "host-evaluated, host-rasterized glyph atlases",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": "gate4",
+      "evidence": [
+        {
+          "gate": "g7-4",
+          "fixture": "gate6-scene",
+          "leg": "receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-4",
+          "fixture": "gate6-scene",
+          "leg": "receiver",
+          "check": "atlas-upload-parity@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "glyph pixels and antialiasing bands are 'undecided' only in the independent hand model (gate6-design.md D7); the receiver is still checked whole-frame, budget 0, against the rendered reference."
+    },
+    {
+      "id": "text.rich_text_label_scroll_and_lines",
+      "kind": "text",
+      "name": "RichTextLabel line height, scroll clamping and clip",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "23px regular/bold line height, image line 64px, scroll clamped to the new maximum on text replacement (gate6-design.md \"As built (G6a)\" 7)."
+    },
+    {
+      "id": "text.richtextlabel-effects-textedit-ime",
+      "kind": "text",
+      "name": "RichTextLabel BBCode effects, TextEdit and IME composition",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "post-gate-6: a host-time contract like shader TIME (effects); gate 8's census (TextEdit/IME)",
+      "notes": "effects run on process time (gate6-design.md Q1f) and are kept out of every gate 6 fixture by construction."
+    },
+    {
+      "id": "control.adopted_pre_arm_resources",
+      "kind": "control",
+      "name": "Lazy adoption of pre-arm textures, meshes and glyph atlases at a late arm (GRC_ADOPT=arm)",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-adopt",
+          "leg": "g8a/fault-no-resources/receiver",
+          "check": "fault-no-resources@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-adopt",
+          "leg": "g8a/fault-atlas-from-dummy/receiver",
+          "check": "fault-atlas-from-dummy@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "control.animation_player_and_tween_sampling",
+      "kind": "control",
+      "name": "AnimationPlayer and Tween deterministic per-frame sampling",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "quarter-frame clocks (gate6-design.md D6) keep every sample a quarter frame from any key, loop end or rounding threshold."
+    },
+    {
+      "id": "control.arm-on-first-subscriber",
+      "kind": "control",
+      "name": "arm on first subscriber, disarm on last",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "after gate 8's adoption pass (gate1-design.md D6)",
+      "notes": "gate 6's armed-idle arm measures what a permanently armed hook costs today (G6p)."
+    },
+    {
+      "id": "control.browser-receivers",
+      "kind": "control",
+      "name": "web export and GSW canvas receivers",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-0",
+          "fixture": "gate6-scene",
+          "leg": "receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-1-live",
+          "fixture": "gate6-scene",
+          "leg": "live",
+          "check": "live-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "browser-provenance@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "The GSW canvas receiver (rs-core wasm + canvas-items) under the pinned Chromium; its own legs only (D1)."
+    },
+    {
+      "id": "control.late-join-adoption",
+      "kind": "control",
+      "name": "a receiver joining after items/canvases/textures/meshes/materials already exist",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-adopt",
+          "leg": "g8a/late/receiver",
+          "check": "adopt-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-adopt",
+          "leg": "g8a/late/receiver",
+          "check": "g8a-legs@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "control.light2d_rendering",
+      "kind": "control",
+      "name": "Light2D rendering: shadows, normal/specular maps, occluders",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "the handoff's later capabilities, unchanged from gate5_5-design.md and gate5-design.md \"Deferred\"",
+      "notes": "Light2D attachment itself is typed (material.unsupported via canvas-light); its rendering is not implemented at all."
+    },
+    {
+      "id": "control.line_edit_focus_selection_caret",
+      "kind": "control",
+      "name": "LineEdit focus box, selection and caret",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6-hd-native",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "hd/receiver-native",
+          "check": "hd-receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "one focus owner per viewport; deselect_on_focus_loss_enabled must be set false before the next LineEdit grabs focus (memory rs-g6h-hd-facts)."
+    },
+    {
+      "id": "control.progress_bar_value_and_fill",
+      "kind": "control",
+      "name": "ProgressBar per-frame value, text and fill width",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "redraws every frame (step 0.01); text int(ratio*100), fill round(ratio*(w-4)) (gate6-design.md \"As built (G6a)\" 4)."
+    },
+    {
+      "id": "control.reference-repeatability-budget",
+      "kind": "control",
+      "name": "a same-build repeat of the rendered reference",
+      "status": "supported",
+      "reason": null,
+      "exactness": "repeat-budget",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "source-run-valid@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "0 mismatched pixels of every shot on gate6-scene and gate6-hd, both presentations (gate6-design.md \"As built (G6a/G6h)\")."
+    },
+    {
+      "id": "control.scroll_container_offset",
+      "kind": "control",
+      "name": "ScrollContainer offset and content clip",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-scene",
+          "leg": "scene/receiver",
+          "check": "receiver-vs-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
+      "id": "control.stylebox_antialiasing_feather",
+      "kind": "control",
+      "name": "StyleBoxFlat antialiasing feather under canvas_items stretch",
+      "status": "supported",
+      "reason": null,
+      "exactness": "band",
+      "tolerance": "gate6-hd-half",
+      "evidence": [
+        {
+          "gate": "g7-6",
+          "fixture": "gate6-hd",
+          "leg": "hd/receiver-half",
+          "check": "receiver-vs-reference-half@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "aa_size / scale, band still aa_size/2 + 1 screen px; 768 triangle arrays matched the gate 5g port with 0 ulp, needing none of the 2-ulp allowance (gate6-design.md \"As built (G6b)\" 6)."
+    },
+    {
+      "id": "control.windows-and-macos",
+      "kind": "control",
+      "name": "Windows and macOS hosts/receivers",
+      "status": "unobserved",
+      "reason": null,
+      "exactness": null,
+      "tolerance": null,
+      "evidence": [],
+      "owner": "after gate 6, per the handoff's platform scope",
+      "notes": "every gate 6 fixture, capture and receiver run on Linux; nothing here has been tried on Windows or macOS."
+    }
+  ],
+  "limits": {
+    "max_payload_bytes": 67108864,
+    "permitted_formats": [
+      "L8",
+      "LA8",
+      "R8",
+      "RG8",
+      "RGB8",
+      "RGBA8"
+    ],
+    "live_item_cap": 4096,
+    "max_connections": 4,
+    "publish_fps": {
+      "min": 1,
+      "max": 240,
+      "uncapped": true
+    },
+    "shader_policies": [
+      "exclude",
+      "params",
+      "source"
+    ],
+    "receiver": {
+      "max_texture_size": null,
+      "max_message_bytes": 67108864,
+      "credit_windows": [
+        1,
+        2
+      ],
+      "default_credit_window": 2,
+      "fetch_concurrency": 1,
+      "cache": "memory+http-cache",
+      "shader_policies": [
+        "exclude",
+        "params",
+        "source"
+      ],
+      "texture_formats": [
+        "l8",
+        "la8",
+        "r8",
+        "rg8",
+        "rgb8",
+        "rgba8",
+        "rf",
+        "rgf",
+        "rgbf",
+        "rgbaf",
+        "rh",
+        "rgh",
+        "rgbh",
+        "rgbah"
+      ],
+      "texture_encodings": [
+        "block",
+        "uastc",
+        "decoded"
+      ],
+      "webgl_compression_extensions": [
+        "WEBGL_compressed_texture_s3tc",
+        "WEBGL_compressed_texture_s3tc_srgb"
+      ],
+      "device_targets": [
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+          "notes": "run g7v/g7v-g31-gsw missing under the evidence root"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+          "notes": "run g7v/g7v-g31-gsw missing under the evidence root"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 1,
+          "status": "unverified",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+          "notes": "run g7v/g7v-g31-gsw missing under the evidence root"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "pace",
+          "required": true,
+          "credit_window": 2,
+          "status": "unverified",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+          "notes": "run g7z/g31-gsw/run missing under the evidence root"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "scene",
+          "required": true,
+          "credit_window": 2,
+          "status": "unverified",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+          "notes": "run g7z/g31-gsw/run missing under the evidence root"
+        },
+        {
+          "id": "moto-g31-60",
+          "device": "g31",
+          "baseline": true,
+          "workload": "hd",
+          "required": false,
+          "credit_window": 2,
+          "status": "unverified",
+          "panel_hz": null,
+          "chrome": null,
+          "build_sha": null,
+          "failed_checks": [],
+          "evidence": [],
+          "t_p_ms": null,
+          "panel_mode": null,
+          "thermal": null,
+          "freq_cap_derated": null,
+          "published_hz": null,
+          "drawn_hz": null,
+          "run_build": null,
+          "acceptance": "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+          "notes": "run g7z/g31-gsw/run missing under the evidence root"
+        }
+      ]
+    }
+  }
+}

@@ -9,7 +9,7 @@
 #     [--source gate0=/abs/run/dir,...] [--make-sources] [--no-source-cache] [--skip-harness-selftest] \
 #     [--bundle /abs/web-receiver/<sha>/bundle] [--gsw-bundle /abs/gsw-bundle/dir] \
 #     [--rs-build /abs/artifacts/render-stream/rs-core/<sha>] [--live] [--web-core rust]
-#     [--web-fetch fetch|httpclient] [--manifest-hello]
+#     [--web-fetch fetch|httpclient] [--manifest-hello [--manifest-features 7|8]]
 #
 # Device arms never run without both `--env device` and `--device <id>` (D28): either flag alone is
 # a usage error (exit 2), and a run without `--env device` never selects a `dev-` arm. The g86 is
@@ -68,6 +68,7 @@
 # (the flag stays for callers that pass it); a bundle whose build.json does not say core rust (an
 # old GDScript build) is refused before anything runs.
 #
+# --manifest-features 8 (G8z) points --manifest-hello at protocol/features/render-stream-8/.
 # --manifest-hello (G7z, gate7-design.md Q11 manifest-matches-hello): every live receiver's /7
 #             hello sends its kind's protocol/features/render-stream-7/<kind>.json sha256 (browsers
 #             through the daemon, native through lib/gate6c-legs.sh's /7 path). The manifests are
@@ -410,6 +411,11 @@ while [ $# -gt 0 ]; do
 		MANIFEST_HELLO=1
 		shift
 		;;
+	--manifest-features)
+		# G8z: which protocol/features/render-stream-<N>/ the hellos' sha256 comes from (7|8).
+		MANIFEST_FEATURES="${2:-}"
+		shift 2
+		;;
 	--rs-build)
 		RS_BUILD="${2:-}"
 		shift 2
@@ -447,7 +453,7 @@ done
 # its kind's (GATE7_MANIFEST_SHA256_WEB / _GSW), lib/gate6c-legs.sh the native one on /7.
 if [ "${MANIFEST_HELLO:-0}" = 1 ]; then
 	for pair in NATIVE:native WEB:web-export GSW:gsw-canvas; do
-		f="$EXPERIMENT_DIR/protocol/features/render-stream-7/${pair#*:}.json"
+		f="$EXPERIMENT_DIR/protocol/features/render-stream-${MANIFEST_FEATURES:-7}/${pair#*:}.json"
 		[ -f "$f" ] || { echo "run-gate7: --manifest-hello: $f missing (make-features.ts --receiver all)" >&2; exit 2; }
 		export "GATE7_MANIFEST_SHA256_${pair%%:*}=$(sha256sum "$f" | cut -d' ' -f1)"
 	done
