@@ -77,12 +77,13 @@
   },
   "rules": [
     {
-      "why": "G7z manifests (gate7-design.md Q11): generation and the g7-z checks are pure (check-gate7.ts --legs g7-z, self-test-gate7z)",
+      "why": "G7z/G8z manifests (gate7-design.md Q11): generation and the g7-z / check-gate8z.ts checks are pure (self-test-gate7z, self-test-gate8z)",
       "paths": [
         "experiments/render-stream/protocol/features/**",
         "experiments/render-stream/scripts/make-features.ts",
         "experiments/render-stream/scripts/lib/feature-evidence*.ts",
-        "experiments/render-stream/scripts/lib/gate7z-checks.ts"
+        "experiments/render-stream/scripts/lib/gate7z-checks.ts",
+        "experiments/render-stream/scripts/check-gate8z.ts"
       ],
       "reach": ["pure"]
     },

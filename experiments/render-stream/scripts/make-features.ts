@@ -23,7 +23,7 @@
 // can drift from the other silently; every other entry (viewport, material, text, control,
 // delivery, payload kinds) comes from feature-evidence.ts alone.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,10 +45,17 @@ import {
   validateEntries2,
 } from "./lib/feature-evidence-7";
 import {
+  EVIDENCE_RUNS_8,
+  MANIFEST8_FILES,
+  PRIMARY_BUILD_8,
+  receiverFeatureEntries8,
+} from "./lib/feature-evidence-8";
+import {
   bundleShas,
   collectDeviceTargets,
   type DeviceTarget,
   defaultEvidenceRoot,
+  defaultEvidenceRoot8,
   loadRun,
 } from "./lib/gate7z-checks";
 
@@ -336,6 +343,19 @@ export function manifest7Path(kind: ReceiverKind): string {
   return join(MANIFEST7_DIR, MANIFEST_FILE[kind]);
 }
 
+// G8z: the same files for render-stream/8 (lib/feature-evidence-8.ts).
+export const MANIFEST8_DIR = join(
+  EXPERIMENT_DIR,
+  "protocol",
+  "features",
+  "render-stream-8",
+);
+export const COLLECTED8_PATH = join(MANIFEST8_DIR, "collected.json");
+export function manifest8Path(kind: ReceiverKind): string {
+  return join(MANIFEST8_DIR, MANIFEST8_FILES[kind]);
+}
+export type ManifestProtocol = 7 | 8;
+
 interface ReceiverBlock {
   id: string;
   kind: ReceiverKind;
@@ -368,7 +388,7 @@ export interface Collected {
 
 export interface FeatureManifest2 {
   schema: "render-stream-features/2";
-  protocol: "render-stream/7";
+  protocol: "render-stream/7" | "render-stream/8";
   stream_protocols: string[];
   engine: { version: string; template: string; platform: string };
   capture: { calibrator_version: number; hooks: number };
@@ -386,6 +406,8 @@ export interface FeatureManifest2 {
       cache: "memory+disk" | "memory+http-cache";
       shader_policies: string[];
       texture_formats: string[];
+      /** G8z: the encodings the receiver lists in its /9 hello, in preference order */
+      texture_encodings?: string[];
       webgl_compression_extensions: string[] | null;
       device_targets: DeviceTarget[];
     };
@@ -403,11 +425,12 @@ const RECEIVER_LIMITS: Record<
   "gsw-canvas": { cache: "memory+http-cache", fetch_concurrency: 1 },
 };
 
-export function readCollected(): Collected {
-  const text = readFileSyncOrNull(COLLECTED_PATH);
+export function readCollected(proto: ManifestProtocol = 7): Collected {
+  const path = proto === 8 ? COLLECTED8_PATH : COLLECTED_PATH;
+  const text = readFileSyncOrNull(path);
   if (text === null)
     throw new Error(
-      `make-features: ${COLLECTED_PATH} missing; run make-features.ts --collect first`,
+      `make-features: ${path} missing; run make-features.ts --collect${proto === 8 ? " --protocol 8" : ""} first`,
     );
   return JSON.parse(text) as Collected;
 }
@@ -429,12 +452,33 @@ function sortedEntries2(entries: readonly FeatureEntry2[]): FeatureEntry2[] {
   });
 }
 
+const FLOAT_FORMATS_8 = [
+  "rf",
+  "rgf",
+  "rgbf",
+  "rgbaf",
+  "rh",
+  "rgh",
+  "rgbh",
+  "rgbah",
+];
+/** The encodings each receiver lists in its /9 hello (receiver.gd, web/gsw-receiver/hello.ts):
+ * all three list `block,uastc,decoded` (GSW since G8kb's worker transcoder). */
+const TEXTURE_ENCODINGS_8: Record<ReceiverKind, string[]> = {
+  native: ["block", "uastc", "decoded"],
+  "web-export": ["block", "uastc", "decoded"],
+  "gsw-canvas": ["block", "uastc", "decoded"],
+};
+
 export function buildManifest2(
   kind: ReceiverKind,
   collected: Collected = readCollected(),
+  proto: ManifestProtocol = 7,
 ): FeatureManifest2 {
   const v1 = buildManifest();
-  const entries = sortedEntries2(receiverFeatureEntries(kind));
+  const entries = sortedEntries2(
+    proto === 8 ? receiverFeatureEntries8(kind) : receiverFeatureEntries(kind),
+  );
   const problems = validateEntries2(entries);
   if (problems.length > 0)
     throw new Error(`make-features --receiver ${kind}: ${problems.join("; ")}`);
@@ -449,14 +493,22 @@ export function buildManifest2(
   const short = SHORT_KIND[kind];
   return {
     schema: "render-stream-features/2",
-    protocol: "render-stream/7",
-    stream_protocols: ["render-stream/6", "render-stream/7"],
+    protocol: proto === 8 ? "render-stream/8" : "render-stream/7",
+    stream_protocols:
+      proto === 8
+        ? [
+            "render-stream/6",
+            "render-stream/7",
+            "render-stream/8",
+            "render-stream/9",
+          ]
+        : ["render-stream/6", "render-stream/7"],
     engine: v1.engine,
     capture: v1.capture,
     receiver: c.receiver,
-    evidence_runs: EVIDENCE_RUNS.filter((r) => r.key.endsWith(`@${short}`)).map(
-      (r) => ({ key: r.key, path: r.path, build: r.build, note: r.note }),
-    ),
+    evidence_runs: (proto === 8 ? EVIDENCE_RUNS_8 : EVIDENCE_RUNS)
+      .filter((r) => r.key.endsWith(`@${short}`))
+      .map((r) => ({ key: r.key, path: r.path, build: r.build, note: r.note })),
     entries,
     limits: {
       ...v1.limits,
@@ -472,9 +524,13 @@ export function buildManifest2(
         fetch_concurrency: RECEIVER_LIMITS[kind].fetch_concurrency,
         cache: RECEIVER_LIMITS[kind].cache,
         shader_policies: v1.limits.shader_policies,
-        texture_formats: v1.limits.permitted_formats.map((f) =>
-          f.toLowerCase(),
-        ),
+        texture_formats: [
+          ...v1.limits.permitted_formats.map((f) => f.toLowerCase()),
+          ...(proto === 8 ? FLOAT_FORMATS_8 : []),
+        ],
+        ...(proto === 8
+          ? { texture_encodings: TEXTURE_ENCODINGS_8[kind] }
+          : {}),
         webgl_compression_extensions: c.webgl_compression_extensions,
         device_targets: c.device_targets,
       },
@@ -493,10 +549,14 @@ function provenanceOf(dir: string): {
   extensions: string[];
 } | null {
   const stack = [dir];
+  const seen = new Set<string>(); // runs link each other's directories: walk a real one once
   while (stack.length) {
     const d = stack.pop() as string;
     let names: string[] = [];
     try {
+      const real = realpathSync(d);
+      if (seen.has(real)) continue;
+      seen.add(real);
       names = readdirSync(d);
     } catch {
       continue;
@@ -537,15 +597,25 @@ function provenanceOf(dir: string): {
 /** make-features.ts --collect: the receiver blocks and the g31 device targets, from the runs
  * feature-evidence-7.ts quotes (the primary build's g7-6 file run per browser kind, the native
  * gate 6 run for native). */
-export function collect(root: string): Collected {
+export function collect(root: string, proto: ManifestProtocol = 7): Collected {
   const receivers = {} as Collected["receivers"];
   for (const kind of RECEIVER_KINDS) {
     const short = SHORT_KIND[kind];
     // The browsers' receiver block comes from the g7-6 FILE run, not a live one: every live run
     // sends this file's sha256 in its hello (manifest-matches-hello), so the file must be final
     // before them, and cannot be generated from them.
-    const primaryKey = kind === "native" ? "gate6@native" : `g7-6@${short}`;
-    const q = EVIDENCE_RUNS.find((r) => r.key === primaryKey);
+    // G8z: gate 8's receiver blocks come from native gate 8 and the g7-8 file runs.
+    const primaryKey =
+      proto === 8
+        ? kind === "native"
+          ? "gate8@native"
+          : `g7-8@${short}`
+        : kind === "native"
+          ? "gate6@native"
+          : `g7-6@${short}`;
+    const q = (proto === 8 ? EVIDENCE_RUNS_8 : EVIDENCE_RUNS).find(
+      (r) => r.key === primaryKey,
+    );
     const run = q ? loadRun(root, q.path) : null;
     if (!q || !run)
       throw new Error(
@@ -594,12 +664,26 @@ export function collect(root: string): Collected {
     receivers[kind] = {
       receiver,
       webgl_compression_extensions: ext,
-      device_targets: collectDeviceTargets(root, kind, sha),
+      // G8z: gate 8 ran no phone legs, so the browsers' targets are `unverified` with the
+      // gate 7 verdicts left to render-stream-7/<kind>.json (they describe its own build).
+      device_targets:
+        proto === 8
+          ? collectDeviceTargets(join(root, "no-device-runs"), kind, sha).map(
+              (t) =>
+                kind === "native"
+                  ? t
+                  : {
+                      ...t,
+                      acceptance:
+                        "unverified on this build: gate 8 ran no phone legs (the g31 verdicts are render-stream-7/*.json's, on build 6a454065)",
+                    },
+            )
+          : collectDeviceTargets(root, kind, sha),
     };
   }
   return {
     schema: "render-stream-features-collected/1",
-    primary_build: PRIMARY_BUILD,
+    primary_build: proto === 8 ? PRIMARY_BUILD_8 : PRIMARY_BUILD,
     receivers,
   };
 }
@@ -637,7 +721,11 @@ function argValue(flag: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-async function main7(receiverArg: string, check: boolean): Promise<void> {
+async function main7(
+  receiverArg: string,
+  check: boolean,
+  proto: ManifestProtocol,
+): Promise<void> {
   const kinds =
     receiverArg === "all"
       ? RECEIVER_KINDS
@@ -646,10 +734,12 @@ async function main7(receiverArg: string, check: boolean): Promise<void> {
     throw new Error(
       `make-features: --receiver must be native, web-export, gsw-canvas or all (got ${receiverArg})`,
     );
-  await mkdir(MANIFEST7_DIR, { recursive: true });
+  await mkdir(proto === 8 ? MANIFEST8_DIR : MANIFEST7_DIR, { recursive: true });
   for (const kind of kinds) {
-    const serialized = serializeManifest2(buildManifest2(kind));
-    const path = manifest7Path(kind);
+    const serialized = serializeManifest2(
+      buildManifest2(kind, readCollected(proto), proto),
+    );
+    const path = proto === 8 ? manifest8Path(kind) : manifest7Path(kind);
     if (check) {
       const onDisk = readFileSyncOrNull(path);
       if (onDisk !== serialized) {
@@ -670,19 +760,28 @@ async function main7(receiverArg: string, check: boolean): Promise<void> {
 
 async function main(): Promise<void> {
   const check = process.argv.includes("--check");
-  if (process.argv.includes("--collect")) {
-    const root = resolve(argValue("--evidence-root") ?? defaultEvidenceRoot());
-    await mkdir(MANIFEST7_DIR, { recursive: true });
-    const collected = collect(root);
-    await writeFile(COLLECTED_PATH, `${JSON.stringify(collected, null, 2)}\n`);
-    console.log(
-      `make-features --collect: wrote ${COLLECTED_PATH} from ${root}`,
+  const protoArg = argValue("--protocol");
+  if (protoArg !== undefined && protoArg !== "7" && protoArg !== "8")
+    throw new Error(
+      `make-features: --protocol must be 7 or 8 (got ${protoArg})`,
     );
+  const proto: ManifestProtocol = protoArg === "8" ? 8 : 7;
+  if (process.argv.includes("--collect")) {
+    const root = resolve(
+      argValue("--evidence-root") ??
+        (proto === 8 ? defaultEvidenceRoot8() : defaultEvidenceRoot()),
+    );
+    const dir = proto === 8 ? MANIFEST8_DIR : MANIFEST7_DIR;
+    const target = proto === 8 ? COLLECTED8_PATH : COLLECTED_PATH;
+    await mkdir(dir, { recursive: true });
+    const collected = collect(root, proto);
+    await writeFile(target, `${JSON.stringify(collected, null, 2)}\n`);
+    console.log(`make-features --collect: wrote ${target} from ${root}`);
     return;
   }
   const receiverArg = argValue("--receiver");
   if (receiverArg !== undefined) {
-    await main7(receiverArg, check);
+    await main7(receiverArg, check, proto);
     return;
   }
   const manifest = buildManifest();

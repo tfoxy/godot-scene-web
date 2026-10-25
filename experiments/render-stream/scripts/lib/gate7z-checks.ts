@@ -15,13 +15,20 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { FeatureManifest } from "../make-features";
 import {
   DEVICE_RUNS,
+  type DeviceRun,
   EVIDENCE_RUNS,
   type EvidenceRun,
   type FeatureEntry2,
@@ -67,6 +74,13 @@ export function defaultEvidenceRoot(): string {
 interface CheckRow {
   passed: boolean;
 }
+/** G8z: `<checkout>/artifacts`, where gate 8's manifest evidence paths are rooted (they span
+ * `render-stream/gate7/` and `render-stream/gate8/`); the main checkout's from a worktree. */
+export function defaultEvidenceRoot8(): string {
+  // defaultEvidenceRoot() is `<artifacts>/render-stream/gate7`
+  return resolve(defaultEvidenceRoot(), "..", "..");
+}
+
 export interface IndexedResult {
   group: string;
   kind: ShortKind;
@@ -153,6 +167,27 @@ export function loadRun(root: string, path: string): IndexedRun | null {
       legs: new Set(),
     });
   }
+  if (schema.startsWith("render-stream-gate8-report")) {
+    // G8z: native gate 8's report (run-gate8.sh). Its checks are the native receiver's, and
+    // also the browser legs the delivery groups drive themselves (gate8-delivery-tool.ts: g8kp's
+    // GSW legs, g8ku's web legs), named `...-gsw` / `...-web`: those are indexed under the kind
+    // whose receiver they judge.
+    for (const [kind, keep] of [
+      ["native", () => true],
+      ["gsw", (id: string) => /(^|-)gsw($|-)/.test(id)],
+      ["web", (id: string) => /(^|-)web($|-)/.test(id)],
+    ] as [ShortKind, (id: string) => boolean][])
+      results.push({
+        group: "gate8",
+        kind,
+        passed: true,
+        window: null,
+        device: null,
+        runDir: dir,
+        checks: toMap((doc.checks ?? []).filter((c) => keep(c.id))),
+        legs: new Set(),
+      });
+  }
   for (const r of doc.results ?? []) {
     const legs = new Set<string>();
     if (r.legs && typeof r.legs === "object" && !Array.isArray(r.legs))
@@ -179,8 +214,31 @@ export function loadRun(root: string, path: string): IndexedRun | null {
   return run;
 }
 
+/** The evidence a run of the seven checks is judged against. Gate 7's is `PROFILE_7`; G8z's
+ * (lib/feature-evidence-8.ts) quotes its own runs, may flag which of them carry a live hello, and
+ * has no device runs. `runGate7z` sets it for the duration of a call. */
+export interface ZProfile {
+  label: string;
+  runs: readonly EvidenceRun[];
+  deviceRuns: readonly DeviceRun[];
+  primaryBuild: string;
+  /** true: manifest-matches-hello reads only runs with `hello: true` (a profile that carries
+   * older runs forward cannot ask them to have sent a file that did not exist yet) */
+  helloFlaggedOnly: boolean;
+  /** the run key whose capture recordings the session check reads (default gate 6's native run) */
+  sessionRunKey?: string;
+}
+export const PROFILE_7: ZProfile = {
+  label: "gate 7",
+  runs: EVIDENCE_RUNS,
+  deviceRuns: DEVICE_RUNS,
+  primaryBuild: PRIMARY_BUILD,
+  helloFlaggedOnly: false,
+};
+let ACTIVE: ZProfile = PROFILE_7;
+
 export function quotedRun(key: string): EvidenceRun | undefined {
-  return EVIDENCE_RUNS.find((r) => r.key === key);
+  return ACTIVE.runs.find((r) => r.key === key);
 }
 
 /** The result group a reference's `gate` names (`g7-r-w1` is g7-r at window 1). */
@@ -193,9 +251,15 @@ function findFiles(
   name: string,
   out: string[],
   limit = 100000,
+  seen: Set<string> = new Set(),
 ): string[] {
   let entries: string[];
   try {
+    // Runs link each other's directories (a source's `gate8/` view, a browser leg's `gsw-run/`):
+    // follow a real directory once, or two runs that link back make the walk exponential.
+    const real = realpathSync(dir);
+    if (seen.has(real)) return out;
+    seen.add(real);
     entries = readdirSync(dir);
   } catch {
     return out;
@@ -209,7 +273,7 @@ function findFiles(
     } catch {
       continue;
     }
-    if (st.isDirectory()) findFiles(p, name, out, limit);
+    if (st.isDirectory()) findFiles(p, name, out, limit, seen);
     else if (e === name) out.push(p);
   }
   return out;
@@ -561,10 +625,12 @@ function observedReceiverTyped(
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const dirs = new Set(
-    EVIDENCE_RUNS.filter((r) => r.key.endsWith(`@${short}`)).map((r) => {
-      const run = loadRun(root, r.path);
-      return run?.dir ?? resolve(root, r.path);
-    }),
+    ACTIVE.runs
+      .filter((r) => r.key.endsWith(`@${short}`))
+      .map((r) => {
+        const run = loadRun(root, r.path);
+        return run?.dir ?? resolve(root, r.path);
+      }),
   );
   for (const dir of dirs)
     for (const p of findFiles(dir, "applied.json", [])) {
@@ -596,11 +662,14 @@ export interface G7zInputs {
   root: string;
   manifestPath: (kind: ReceiverKind) => string;
   regenerate: (kind: ReceiverKind) => string;
+  /** default PROFILE_7 */
+  profile?: ZProfile;
 }
 
 export function runGate7z(inp: G7zInputs): G7zCheck[] {
   // Each call re-reads the evidence (the self-test mutates it between calls).
   runCache.clear();
+  ACTIVE = inp.profile ?? PROFILE_7;
   const checks: G7zCheck[] = [];
   for (const kind of RECEIVER_KINDS) {
     const short = SHORT_KIND[kind];
@@ -640,7 +709,10 @@ export function runGate7z(inp: G7zInputs): G7zCheck[] {
     {
       const recs = [
         ...findFiles(
-          resolve(inp.root, quotedRun("gate6@native")?.path ?? "."),
+          resolve(
+            inp.root,
+            quotedRun(ACTIVE.sessionRunKey ?? "gate6@native")?.path ?? ".",
+          ),
           "recording.rs2",
           [],
           4,
@@ -785,9 +857,15 @@ export function runGate7z(inp: G7zInputs): G7zCheck[] {
       let conns = 0;
       const nulls: string[] = [];
       const dirs = new Set(
-        EVIDENCE_RUNS.filter((r) => r.key.endsWith(`@${short}`)).map(
-          (r) => loadRun(inp.root, r.path)?.dir ?? resolve(inp.root, r.path),
-        ),
+        ACTIVE.runs
+          .filter(
+            (r) =>
+              r.key.endsWith(`@${short}`) &&
+              (!ACTIVE.helloFlaggedOnly || r.hello === true),
+          )
+          .map(
+            (r) => loadRun(inp.root, r.path)?.dir ?? resolve(inp.root, r.path),
+          ),
       );
       for (const dir of dirs)
         for (const p of findFiles(dir, "live-summary.json", [])) {
@@ -858,7 +936,7 @@ export function runGate7z(inp: G7zInputs): G7zCheck[] {
           problems.push(`${tag}: not-applicable on a browser`);
           continue;
         }
-        const dr = DEVICE_RUNS.find(
+        const dr = ACTIVE.deviceRuns.find(
           (d) => d.kind === short && d.windows.includes(t.credit_window),
         );
         const run = dr ? loadRun(inp.root, dr.path) : null;
@@ -918,8 +996,8 @@ export function runGate7z(inp: G7zInputs): G7zCheck[] {
 
     // evidence-builds (report only)
     {
-      const off = EVIDENCE_RUNS.filter(
-        (r) => r.key.endsWith(`@${short}`) && r.build !== PRIMARY_BUILD,
+      const off = ACTIVE.runs.filter(
+        (r) => r.key.endsWith(`@${short}`) && r.build !== ACTIVE.primaryBuild,
       );
       checks.push({
         id: `evidence-builds@${short}`,
@@ -927,8 +1005,8 @@ export function runGate7z(inp: G7zInputs): G7zCheck[] {
         status: "report",
         detail:
           off.length === 0
-            ? `every quoted run is on ${PRIMARY_BUILD}`
-            : `report: ${off.length} quoted run(s) off ${PRIMARY_BUILD}: ${off.map((r) => `${r.key}=${r.build}`).join(", ")} (g7z.md Pass needs one build)`,
+            ? `every quoted run is on ${ACTIVE.primaryBuild}`
+            : `report: ${off.length} quoted run(s) off ${ACTIVE.primaryBuild}: ${off.map((r) => `${r.key}=${r.build}`).join(", ")} (${ACTIVE.label}: carried forward, see the manifest's evidence_runs notes)`,
       });
     }
   }
@@ -941,7 +1019,8 @@ export async function runGate7zSessions(
   inp: G7zInputs,
   checks: G7zCheck[],
 ): Promise<void> {
-  const q = quotedRun("gate6@native");
+  ACTIVE = inp.profile ?? PROFILE_7;
+  const q = quotedRun(ACTIVE.sessionRunKey ?? "gate6@native");
   if (!q) return;
   const dir = resolve(inp.root, q.path);
   const recs = [

@@ -66,6 +66,7 @@ export type FeatureExactness2 =
   | "delta1"
   | "band"
   | "repeat-budget"
+  | "quantized"
   | null;
 
 export interface EvidenceRef2 {
@@ -116,6 +117,8 @@ export interface EvidenceRun {
   path: string;
   build: string;
   note: string;
+  /** G8z: this run's live connections sent the manifest sha256 (see ZProfile.helloFlaggedOnly) */
+  hello?: boolean;
 }
 
 export const PRIMARY_BUILD = "6a454065";

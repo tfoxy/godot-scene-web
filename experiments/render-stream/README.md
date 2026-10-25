@@ -9,7 +9,9 @@ replay the same streams in Chromium, each with its own feature manifest
 ([results/gate7.md](results/gate7.md); contract
 [protocol/gate7-design.md](protocol/gate7-design.md)). The baseline phone is the moto g31: GSW at
 credit window 2 is accepted as met with a measured shortfall, and the web export does not meet
-it.
+it. Gate 8 (late-join adoption, compressed and float textures, a late presentation size, pre-arm
+materials and texture delivery over `render-stream/8` and `/9`) has landed its generic halves
+([results/gate8.md](results/gate8.md)); running them on the installed game is the product's leg.
 
 ## Gates −1 to 7
 
@@ -27,6 +29,7 @@ One row per gate; "Result" links to that gate's file under `results/`.
 | 5.5 | `CanvasItemMaterial` and `ShaderMaterial` (code + params) travel on `render-stream/5`; live shader recovery through dropped presentations. | [results/gate5-5.md](results/gate5-5.md) |
 | 6 | Presentation size, font oversampling, snap and rate are session-declared (`render-stream/6`); `CanvasLayer`s, follow-viewport and a committed supported-feature manifest. | [results/gate6.md](results/gate6.md) |
 | 7 | Browser receivers: the Godot web export and the GSW canvas receiver on the shared Rust core replay gates 0–6 from files and live over `render-stream/7` (credit window 2 by default), with lifecycle, startup, soak and a per-receiver feature manifest; the g31 phone target is met with a measured shortfall on GSW only. | [results/gate7.md](results/gate7.md) (closing run: [results/gate7/g7z.md](results/gate7/g7z.md)) |
+| 8 | The capture meets a running game: late-join adoption of canvases, layers, items, textures, meshes, atlases, materials and shaders; host-decoded block and float textures; a presentation size at a late arm; `render-stream/8` and `/9` with texture delivery (HTTP zstd, pass-through, KTX2/UASTC, a persisted host cache); all of it through the native receiver and both browsers, with a per-receiver manifest. The installed game itself is the product's leg. | [results/gate8.md](results/gate8.md) (product hand-off: [protocol/gate8-product-handoff.md](protocol/gate8-product-handoff.md)) |
 
 ## Gate 7 increments (browser receivers)
 
@@ -89,13 +92,14 @@ result under `results/gate7/`; the rest link to their design section under `prot
   [protocol/render-stream-8.md](protocol/render-stream-8.md) (G8w: adoption, decode and float
   payloads on the wire; file sinks stay on `/6` unless `GRC_STREAM_VERSION=8`) and
   [protocol/render-stream-9.md](protocol/render-stream-9.md) (G8k9: texture-delivery variants, `block`
-  and KTX2 payloads and the delivery hello keys; opt-in with `GRC_STREAM_VERSION=9`, no receiver
-  offers it yet).
-- Feature manifests: `protocol/features/`. Golden vectors: `protocol/golden/` through
+  and KTX2 payloads and the delivery hello keys; opt-in with `GRC_STREAM_VERSION=9`; the
+  receivers offer it under `RS_RECEIVER_PROTOCOL=9`).
+- Feature manifests: `protocol/features/` (`render-stream-6.json`, `render-stream-7/`, `render-stream-8/`). Golden vectors: `protocol/golden/` through
   `protocol/golden-9/`.
 - Topical notes: `protocol/canvas-texture-headless.md`, `protocol/unknown-item-skip.md`.
 - Gate 8 (the STS2 blockers' generic halves: late-join adoption, compressed textures, host size,
-  pre-arm materials): [protocol/gate8-design.md](protocol/gate8-design.md).
+  pre-arm materials, texture delivery): [protocol/gate8-design.md](protocol/gate8-design.md),
+  summary [results/gate8.md](results/gate8.md), per-increment results in `results/gate8/`.
 - Texture delivery (G8k: HTTP zstd, BC pass-through and KTX2/Basis UASTC/ETC1S tiers, the host
   cache): [protocol/texture-delivery-design.md](protocol/texture-delivery-design.md).
 

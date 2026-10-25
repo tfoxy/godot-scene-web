@@ -1107,6 +1107,13 @@ g8l_receiver() {
 		RS_RECEIVER_PROTOCOL="$G8L_VERSION" "${G8L_RECEIVER_ENV[@]}"
 		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" RS_RECEIVER_SHOT_FINAL=1
 	)
+	# G8z (manifest-matches-hello): RS_G8_MANIFEST_HELLO=1 sends protocol/features/render-stream-8/
+	# native.json's sha256 in the hello, which the host's live-summary.json records.
+	if [ "${RS_G8_MANIFEST_HELLO:-0}" = 1 ]; then
+		local mf="$EXPERIMENT_DIR/protocol/features/render-stream-8/native.json"
+		[ -f "$mf" ] || { echo "run-gate8: RS_G8_MANIFEST_HELLO=1: $mf missing" >&2; exit 2; }
+		LEG_ENV+=(RS_RECEIVER_MANIFEST_SHA256="$(sha256sum "$mf" | cut -d' ' -f1)")
+	fi
 	RENDERED_EXTRA_ARGS=(--max-fps 60)
 	run_rendered "$dir" "$RECEIVER_DIR"
 }
