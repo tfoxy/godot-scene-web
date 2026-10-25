@@ -28,7 +28,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
@@ -40,6 +40,7 @@ import {
   checkBrowserProvenance,
   HarnessServer,
   launchHarnessBrowser,
+  linkTo,
 } from "./browser-harness";
 import { quietAcquire } from "./quiet-lock";
 
@@ -233,11 +234,6 @@ export function base64url(text: string): string {
     .replace(/=+$/, "");
 }
 
-function ensureLink(target: string, link: string): void {
-  if (existsSync(link)) return;
-  symlinkSync(target, link);
-}
-
 /** Runs `legs` one after another, each in its own browser, on one harness server. */
 export async function runWebLegs(
   ctx: WebRunContext,
@@ -245,8 +241,8 @@ export async function runWebLegs(
 ): Promise<WebLegResult[]> {
   const log = ctx.log ?? ((line: string) => console.log(line));
   await mkdir(join(ctx.out, "sources"), { recursive: true });
-  ensureLink(resolve(ctx.sourceDir), join(ctx.out, "sources", ctx.gate));
-  ensureLink(
+  linkTo(resolve(ctx.sourceDir), join(ctx.out, "sources", ctx.gate));
+  linkTo(
     resolve(ctx.bundleDir),
     join(ctx.out, ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle"),
   );

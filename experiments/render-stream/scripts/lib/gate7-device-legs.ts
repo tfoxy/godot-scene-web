@@ -23,7 +23,7 @@
 // Only lifecycle legs run here: any other leg is refused (the device run is g7-lc alone).
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join, relative, resolve } from "node:path";
@@ -37,6 +37,7 @@ import {
   type DevicePageFacts,
   type DeviceProvenance,
   HarnessServer,
+  linkTo,
   loadDeviceTable,
   openHarnessDevice,
 } from "./browser-harness";
@@ -433,7 +434,7 @@ export function runDeviceBrowserLeg(
 
     const bundleName = ctx.kind === "gsw" ? "gsw-bundle" : "web-bundle";
     const link = join(staticRoot, bundleName);
-    if (!existsSync(link)) symlinkSync(resolve(ctx.bundleDir), link);
+    linkTo(resolve(ctx.bundleDir), link);
     server = new HarnessServer({
       staticRoot,
       evidenceRoot: join(staticRoot, ".evidence"),
