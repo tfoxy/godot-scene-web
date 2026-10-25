@@ -288,6 +288,16 @@
       "reach": ["pure", "bench-instr"]
     },
     {
+      "why": "P3-CAP's capture-scale bench (results/p3/p3-cap.md): a real-time measurement run by hand or by the milestone sweep, not a validate-increment target; its verdict logic has a pure self-test",
+      "paths": [
+        "experiments/render-stream/scripts/bench-capture-scale.sh",
+        "experiments/render-stream/scripts/lib/bench-capture-scale.py",
+        "experiments/render-stream/scripts/test/self-test-bench-capture-scale.sh",
+        "experiments/render-stream/fixtures/capture-scale/**"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "the legacy decoder prototype crate",
       "paths": ["experiments/render-stream/decode-proto-rs/**"],
       "reach": ["cargo:experiments/render-stream/decode-proto-rs"]

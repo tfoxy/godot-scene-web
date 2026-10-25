@@ -69,9 +69,14 @@ class FileRecordSink : public RecordSink {
   bool write(const std::vector<std::uint8_t> &bytes) override;
   bool flush() override;
   void close() override;
+  // P3-CAP: queue every later write and flush on `writer` (nullptr: synchronous). write() and
+  // flush() then report whether the writer is still healthy (a failure is seen one call later);
+  // close() drains the writer first. The writer must outlive the open sink.
+  void set_writer(rs::FileWriter *writer) { writer_ = writer; }
 
  private:
   std::FILE *file_ = nullptr;
+  rs::FileWriter *writer_ = nullptr;
 };
 
 // Records every call in memory; no disk I/O. For unit tests.

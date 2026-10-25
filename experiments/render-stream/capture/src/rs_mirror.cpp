@@ -333,6 +333,18 @@ std::set<std::uint32_t> Mirror::withheld_ids() const {
   if (!skip_unknown()) {
     return out;
   }
+  // P3-CAP: is_withheld() is true only on a chain through an item with an unknown parent; with
+  // none, nothing is withheld and the per-item parent walks are skipped.
+  bool any_unknown_parent = false;
+  for (const auto &entry : items_) {
+    if (entry.second.unknown_parent != 0) {
+      any_unknown_parent = true;
+      break;
+    }
+  }
+  if (!any_unknown_parent) {
+    return out;
+  }
   for (const auto &entry : items_) {
     if (is_withheld(entry.second)) {
       out.insert(entry.first);
@@ -2886,17 +2898,41 @@ MaterialEntry Mirror::wire_material(const Material &material) {
     out.has_reason = true;
     out.reason = MaterialReason::UnknownShader;
   }
+  const Material::WireParams &wire = wire_params(material);
+  out.params = wire.params;
+  if (wire.unsupported && out.status == MaterialStatus::Ok) {
+    out.status = MaterialStatus::Unsupported;
+    out.has_reason = true;
+    out.reason = wire.reason;
+  }
+  return out;
+}
+
+const Mirror::Material::WireParams &Mirror::wire_params(const Material &material) {
+  Material::WireParams &wire = material.wire;
+  if (wire.version == material.version) {
+    return wire;
+  }
+  std::vector<Param> params;
+  params.reserve(material.params.size());
+  wire.unsupported = false;
+  wire.reason = MaterialReason::ParamType;
+  wire.textures.clear();
   for (const auto &entry : material.params) {
     const MaterialParam &param = entry.second;
     if (param.ok) {
-      out.params.push_back(param.param);
-    } else if (out.status == MaterialStatus::Ok) {
-      out.status = MaterialStatus::Unsupported;
-      out.has_reason = true;
-      out.reason = param.reason;
+      params.push_back(param.param);
+      if (param.param.has_tex) {
+        wire.textures.push_back(param.param.tex);
+      }
+    } else if (!wire.unsupported) {
+      wire.unsupported = true;
+      wire.reason = param.reason;
     }
   }
-  return out;
+  wire.params = std::move(params);
+  wire.version = material.version;
+  return wire;
 }
 
 bool Mirror::to_param(const std::string &name, const DecodedParam &value, Param *out,
@@ -2976,12 +3012,13 @@ bool Mirror::material_unsupported(std::uint32_t material_id) const {
     return t != textures_.end() &&
            (t->second.status == TextureStatus::Unsupported || pending_ids_.count(tex) != 0);
   };
-  if (wire_material(material).status == MaterialStatus::Unsupported) {
+  // P3-CAP: wire_material()'s status without building the entry (the same two conditions).
+  const Material::WireParams &wire = wire_params(material);
+  if (material.shader_unknown || wire.unsupported) {
     return true;
   }
-  for (const auto &entry : material.params) {
-    if (entry.second.ok && entry.second.param.has_tex &&
-        texture_unsupported(entry.second.param.tex)) {
+  for (std::uint32_t tex : wire.textures) {
+    if (texture_unsupported(tex)) {
       return true;
     }
   }
@@ -3265,7 +3302,13 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
   // commands or non-empty children) gets exactly one entry, at the smallest
   // drawing id. The engine's order among equal indices depends on its sort
   // history (gate1-design.md Q2c, D7), which a receiver cannot reproduce.
-  std::map<std::int32_t, std::pair<std::uint32_t, std::uint32_t>> groups;  // index -> (count, min id)
+  if (children.size() < 2) {
+    return;  // P3-CAP: a tie needs two members
+  }
+  // P3-CAP: (draw_index, id) of the drawing children, sorted: a run of one index is a group, its
+  // first id the smallest -- the entries a std::map<index, (count, min id)> gave, in index order.
+  std::vector<std::pair<std::int32_t, std::uint32_t>> drawing;
+  drawing.reserve(children.size());
   for (std::uint32_t child : children) {
     const auto it = items_.find(child);
     if (it == items_.end()) {
@@ -3275,24 +3318,23 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
     if (state.commands.empty() && state.children.empty()) {
       continue;  // not drawing
     }
-    auto group = groups.find(state.draw_index);
-    if (group == groups.end()) {
-      groups.emplace(state.draw_index, std::make_pair(1u, state.id));
-    } else {
-      ++group->second.first;
-      group->second.second = std::min(group->second.second, state.id);
-    }
+    drawing.emplace_back(state.draw_index, state.id);
   }
-  for (const auto &group : groups) {
-    if (group.second.first < 2) {
-      continue;
+  std::sort(drawing.begin(), drawing.end());
+  for (std::size_t i = 0; i < drawing.size();) {
+    std::size_t end = i + 1;
+    while (end < drawing.size() && drawing[end].first == drawing[i].first) {
+      ++end;
     }
-    UnsupportedRef ref;
-    ref.op = "canvas_item_set_draw_index";
-    ref.has_item = true;
-    ref.item = group.second.second;
-    ref.reason = UnsupportedReason::DrawIndexTie;
-    out->push_back(std::move(ref));
+    if (end - i >= 2) {
+      UnsupportedRef ref;
+      ref.op = "canvas_item_set_draw_index";
+      ref.has_item = true;
+      ref.item = drawing[i].second;
+      ref.reason = UnsupportedReason::DrawIndexTie;
+      out->push_back(std::move(ref));
+    }
+    i = end;
   }
 }
 
@@ -3318,8 +3360,12 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   // texture (render-stream-2.md "Item-level unsupported entries").
   std::set<std::uint32_t> &pending_ids = pending_ids_;
   pending_ids.clear();
+  std::set<std::uint32_t> referenced;  // the tombstone rule's texture references (see below)
   for (auto &entry : textures_) {
     Texture &texture = entry.second;
+    if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
+      referenced.insert(texture.diffuse_id);  // G2d: a diffuse keeps its target's tombstone alive
+    }
     settle(&texture);
     if (resolve_pending(&texture)) {
       ++epoch_;  // the version moved under a snapshot taken before service_pending ran
@@ -3405,75 +3451,28 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   }
 
   // A tombstone leaves the table at the first snapshot in which nothing names it
-  // (gate2-design.md Q3).
-  std::set<std::uint32_t> referenced;
-  for (const auto &entry : items_) {
-    for (const Command &command : entry.second.state.commands) {
-      if (names_texture(command) && command.has_tex) {
-        referenced.insert(command.tex);
-      }
-    }
-  }
-  // G2d: a canvas texture's diffuse also keeps its target's tombstone alive.
-  for (const auto &entry : textures_) {
-    const Texture &texture = entry.second;
-    if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
-      referenced.insert(texture.diffuse_id);
-    }
-  }
-  // G55d: so do material rid parameters, item rid instance parameters and shader default
-  // textures.
-  for (const auto &entry : materials_) {
-    for (const auto &param : entry.second.params) {
-      if (param.second.ok && param.second.param.has_tex) {
-        referenced.insert(param.second.param.tex);
-      }
-    }
-  }
-  for (const auto &entry : items_) {
-    for (const auto &param : entry.second.instance_params) {
-      if (param.second.has_tex) {
-        referenced.insert(param.second.tex);
-      }
-    }
-  }
-  for (const auto &entry : shaders_) {
-    for (const auto &ref : entry.second.default_textures) {
-      referenced.insert(ref.second);
-    }
-  }
-  for (auto it = textures_.begin(); it != textures_.end();) {
-    if (it->second.status == TextureStatus::Freed && referenced.count(it->first) == 0) {
-      it = textures_.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  // G5e: likewise a mesh tombstone leaves at the first snapshot no add_mesh names it.
+  // (gate2-design.md Q3). `referenced` gathers every texture id something names: the items'
+  // commands and rid instance parameters (in the items walk below), a canvas texture's diffuse
+  // (G2d, gathered in the first textures walk above), material rid parameters and shader default
+  // textures (G55d); `meshes_named` every mesh an add_mesh names (G5e).
+  //
+  // P3-CAP: one walk of the items does the tombstone references, the item-level entries and the
+  // published items. Nothing the item-level entries look up is a tombstone removed below (a
+  // removed tombstone is named by nothing), so building them first changes no entry.
   std::set<std::uint32_t> meshes_named;
-  for (const auto &entry : items_) {
-    for (const Command &command : entry.second.state.commands) {
-      if (command.kind == CommandKind::AddMesh) {
-        meshes_named.insert(command.mesh);
-      }
-    }
-  }
-  for (auto it = meshes_.begin(); it != meshes_.end();) {
-    if (it->second.status == MeshStatus::Freed && meshes_named.count(it->first) == 0) {
-      it = meshes_.erase(it);
-    } else {
-      ++it;
-    }
-  }
-
   // Item-level entries (render-stream-2.md "Item-level unsupported entries"): one per distinct
   // (op, reason) pair of each item -- an unsupported command's name and reason, a texture draw
   // naming an unsupported texture (unsupported-texture), a material (unsupported-state) -- and
   // draw-index-tie per container; then ordered by item id, then op, then reason (byte order).
   std::vector<UnsupportedRef> item_level;
-  const auto add_item_entry = [&item_level](std::uint32_t item, const std::string &op,
-                                            UnsupportedReason reason) {
-    for (const UnsupportedRef &ref : item_level) {
+  std::map<std::uint32_t, bool> material_unsupported_memo;
+  // P3-CAP: an item's own entries are the ones added since its walk began (find_ties adds only
+  // draw-index-tie, which add_item_entry never adds), so the distinct-pair check scans just those.
+  std::size_t item_begin = 0;
+  const auto add_item_entry = [&item_level, &item_begin](std::uint32_t item, const std::string &op,
+                                                         UnsupportedReason reason) {
+    for (std::size_t i = item_begin; i < item_level.size(); ++i) {
+      const UnsupportedRef &ref = item_level[i];
       if (ref.has_item && ref.item == item && ref.op == op && ref.reason == reason) {
         return;
       }
@@ -3485,10 +3484,25 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     ref.reason = reason;
     item_level.push_back(std::move(ref));
   };
-  for (const auto &entry : items_) {
+  out.items.reserve(items_.size() - withheld.size());
+  for (auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if (names_texture(command) && command.has_tex) {
+        referenced.insert(command.tex);
+      }
+      if (command.kind == CommandKind::AddMesh) {
+        meshes_named.insert(command.mesh);
+      }
+    }
+    for (const auto &param : entry.second.instance_params) {
+      if (param.second.has_tex) {
+        referenced.insert(param.second.tex);
+      }
+    }
     if (withheld.count(entry.first) != 0) {
       continue;
     }
+    item_begin = item_level.size();
     const Item &item = entry.second;
     const ItemState &state = item.state;
     for (const Command &command : state.commands) {
@@ -3538,8 +3552,16 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnknownMaterial);
     } else {
       const std::uint32_t effective = effective_material(item);
-      if (effective != 0 && material_unsupported(effective)) {
-        add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnsupportedMaterial);
+      if (effective != 0) {
+        // P3-CAP: once per material per snapshot (nothing it reads changes under the lock).
+        auto memo = material_unsupported_memo.find(effective);
+        if (memo == material_unsupported_memo.end()) {
+          memo = material_unsupported_memo.emplace(effective, material_unsupported(effective)).first;
+        }
+        if (memo->second) {
+          add_item_entry(state.id, "canvas_item_set_material",
+                         UnsupportedReason::UnsupportedMaterial);
+        }
       }
     }
     if (!item.instance_param_unsupported.empty()) {
@@ -3550,9 +3572,36 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       add_item_entry(state.id, "canvas_item_attach_skeleton", UnsupportedReason::UnsupportedState);
     }
     find_ties(state.children, &item_level);
+    entry.second.published = true;
+    out.items.push_back(state);
   }
   for (const auto &entry : canvases_) {
     find_ties(entry.second.state.items, &item_level);
+  }
+  for (const auto &entry : materials_) {
+    for (std::uint32_t tex : wire_params(entry.second).textures) {
+      referenced.insert(tex);
+    }
+  }
+  for (const auto &entry : shaders_) {
+    for (const auto &ref : entry.second.default_textures) {
+      referenced.insert(ref.second);
+    }
+  }
+  for (auto it = textures_.begin(); it != textures_.end();) {
+    if (it->second.status == TextureStatus::Freed && referenced.count(it->first) == 0) {
+      it = textures_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  // G5e: likewise a mesh tombstone leaves at the first snapshot no add_mesh names it.
+  for (auto it = meshes_.begin(); it != meshes_.end();) {
+    if (it->second.status == MeshStatus::Freed && meshes_named.count(it->first) == 0) {
+      it = meshes_.erase(it);
+    } else {
+      ++it;
+    }
   }
   std::sort(item_level.begin(), item_level.end(),
             [](const UnsupportedRef &a, const UnsupportedRef &b) {
@@ -3570,14 +3619,6 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.canvases.reserve(canvases_.size());
   for (const auto &entry : canvases_) {
     out.canvases.push_back(entry.second.state);
-  }
-  out.items.reserve(items_.size() - withheld.size());
-  for (auto &entry : items_) {
-    if (withheld.count(entry.first) != 0) {
-      continue;
-    }
-    entry.second.published = true;
-    out.items.push_back(entry.second.state);
   }
   out.textures.reserve(textures_.size());
   for (auto &entry : textures_) {

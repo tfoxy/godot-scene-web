@@ -13,6 +13,8 @@
 // rs2_diff_test's job.
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -31,6 +33,7 @@
 #include "rs_mirror.h"
 #include "rs_shader_payload.h"
 #include "rs_publish.h"
+#include "rs_file_writer.h"
 #include "rs_resource_store.h"
 #include "rs_sha256.h"
 #include "rs_texture_payload.h"
@@ -1404,7 +1407,151 @@ void test_shader_payloads() {
         "params: the shader entry is withheld");
 }
 
+// P3-CAP: the file sinks and the store through one FileWriter thread write exactly what the
+// synchronous path writes -- recordings, payload files and index.jsonl -- in the same order; a
+// failed task is sticky and fails the next publication; the queue bound throttles, never drops.
+struct WriterRun {
+  std::vector<std::uint8_t> full;
+  std::vector<std::uint8_t> patch;
+  std::string index;
+  std::vector<std::string> stored;  // "<hash>.<ext>:<sha of the file>", in index order
+};
+
+WriterRun run_file_sinks(const std::string &name, bool threaded) {
+  const std::string dir = tmp_dir(name);
+  grc::rs::FileWriter writer;
+  grc::rs::ResourceStore store;
+  std::string error;
+  check(store.open(dir + "/store", &error), "open the store: " + error);
+  FileRecordSink full;
+  FileRecordSink patch;
+  check(full.open(dir + "/recording.rs8") && patch.open(dir + "/recording-patch.rs8"),
+        "open both file sinks");
+  if (threaded) {
+    full.set_writer(&writer);
+    patch.set_writer(&writer);
+    store.set_writer(&writer);
+  }
+  SabotageConfig sabotage;
+  sabotage.kind = SabotageKind::WrongHash;  // the corruption is decided at put(), not by the writer
+  sabotage.frame = 3;
+  Publisher publisher(&full, &patch, sabotage, golden_policy(0), &store);
+  check(publisher.start(make_template()), "start " + name);
+  TextureScene textures;
+  MeshScene meshes;
+  for (int f = 1; f <= 5; ++f) {
+    Captured frame = textures.frame(f);
+    const Captured mesh = meshes.frame(f <= 3 ? f : 3);
+    frame.state.meshes = mesh.state.meshes;
+    frame.payloads.insert(mesh.payloads.begin(), mesh.payloads.end());
+    check(publisher.publish(std::move(frame), static_cast<std::uint64_t>(f), 0),
+          name + ": publish frame " + std::to_string(f));
+  }
+  check(writer.drain(), name + ": the writer drains without a failure");
+  WriterRun out;
+  // Everything but the end record (its stats carry wall-clock timings).
+  out.full = read_bytes(dir + "/recording.rs8");
+  out.patch = read_bytes(dir + "/recording-patch.rs8");
+  publisher.finish(EndReason::Shutdown);
+  store.close();
+  out.index = read_text(dir + "/store/index.jsonl");
+  std::istringstream lines(out.index);
+  std::string line;
+  while (std::getline(lines, line)) {
+    const std::string hash = line.substr(9, 64);
+    const char *ext = line.find("mesh-surface") != std::string::npos ? ".grm" : ".grt";
+    out.stored.push_back(hash + ext + ":" + sha_of(read_bytes(dir + "/store/sha256/" + hash + ext)));
+  }
+  return out;
+}
+
+// True when `a` and `b` have one length and differ only before the first transaction record (the
+// session record: each run's lanes draw fresh stream ids).
+bool equal_after_session(const std::vector<std::uint8_t> &a, const std::vector<std::uint8_t> &b) {
+  if (a.empty() || a.size() != b.size()) {
+    return false;
+  }
+  const std::string marker = "\"type\":\"transaction\"";
+  const auto first_tx = std::search(a.begin(), a.end(), marker.begin(), marker.end());
+  if (first_tx == a.end()) {
+    return false;
+  }
+  const auto from = static_cast<std::size_t>(first_tx - a.begin());
+  return std::equal(a.begin() + static_cast<long>(from), a.end(), b.begin() + static_cast<long>(from));
+}
+
+void test_file_writer() {
+  const WriterRun sync = run_file_sinks("writer-sync", false);
+  const WriterRun threaded = run_file_sinks("writer-thread", true);
+  check(equal_after_session(sync.full, threaded.full),
+        "full sink: every transaction byte-identical through the writer thread");
+  check(equal_after_session(sync.patch, threaded.patch),
+        "patch sink: every transaction byte-identical through the writer thread");
+  check(!sync.index.empty() && sync.index == threaded.index,
+        "index.jsonl: identical lines in identical order");
+  check(sync.stored.size() >= 6 && sync.stored == threaded.stored,
+        "every payload file identical (the wrong-hash corruption included)");
+
+  // Order and stickiness.
+  grc::rs::FileWriter writer(16);  // a 16-byte bound: every submit beyond it waits
+  std::vector<int> ran;
+  for (int i = 0; i < 20; ++i) {
+    check(writer.submit(
+              [&ran, i](std::string *) {
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+                ran.push_back(i);
+                return true;
+              },
+              8, nullptr),
+          "submit " + std::to_string(i));
+  }
+  check(writer.drain(), "drain after 20 tasks");
+  bool in_order = ran.size() == 20;
+  for (int i = 0; in_order && i < 20; ++i) {
+    in_order = ran[static_cast<std::size_t>(i)] == i;
+  }
+  check(in_order, "tasks run once each, in submission order, under the queue bound");
+  check(writer.submit([](std::string *error) {
+          *error = "disk full";
+          return false;
+        },
+                      0, nullptr),
+        "a failing task is accepted");
+  bool after = false;
+  writer.submit([&after](std::string *) { return after = true; }, 0, nullptr);
+  std::string error;
+  check(!writer.drain(&error) && error == "disk full", "drain reports the first failure");
+  check(!after, "a task queued behind a failure does not run");
+  check(!writer.submit([](std::string *) { return true; }, 0, &error) && error == "disk full",
+        "the failure is sticky: later submits are refused with its error");
+  writer.stop();
+  writer.stop();  // idempotent
+
+  // A failed store write fails the next publication through the publisher.
+  const std::string dir = tmp_dir("writer-fail");
+  grc::rs::FileWriter failing;
+  grc::rs::ResourceStore store;
+  check(store.open(dir, &error), "open the failing store");
+  store.set_writer(&failing);
+  MemoryRecordSink full;
+  full.open("memory://full");
+  Publisher publisher(&full, nullptr, SabotageConfig(), golden_policy(0), &store);
+  publisher.start(make_template());
+  TextureScene scene;
+  check(publisher.publish(scene.frame(1), 1, 0), "frame 1 queues its payloads");
+  failing.drain();
+  const int removed = std::system(("rm -rf '" + dir + "/sha256'").c_str());
+  check(removed == 0, "remove the store's payload directory");
+  check(publisher.publish(scene.frame(3), 3, 0), "frame 3 queues A1 (the write fails later)");
+  failing.drain();
+  check(!publisher.publish(scene.frame(4), 4, 0) &&
+            publisher.error().find("resource-store-failed: cannot create") == 0,
+        "the next new payload's put reports the writer's failure: " + publisher.error());
+  store.close();
+}
+
 int main() {
+  test_file_writer();
   test_start_two_sinks();
   test_sink_presence();
   test_full_and_patch_chain();
