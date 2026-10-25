@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3370,7 +3370,8 @@ mise exec -- pnpm render-stream:gate8 -- \
   `run_g8h` with `run_import_g8h` and `run_capture_g8h`; G8f adds `run_g8f`; `run_g8m` with
   `run_import_g8m` and `run_capture_g8m`; `run_g8kp` with `run_g8kp_live`; `run_g8ku` with
   `run_import_g8ku`, `run_capture_g8ku`, `run_reference_g8ku` and `run_g8ku_live`; P3-CT's
-  `run_g8c` with `run_import_g8c` and `run_capture_rendered_g8c`).
+  `run_g8c` with `run_import_g8c` and `run_capture_rendered_g8c`; CG1's `run_g8cg` with
+  `run_import_g8cg` and `run_capture_g8cg`).
 - `gate8-delivery-tool.ts` (G8kp): builds the rs-core wasm and the GSW bundle, then replays the
   native leg `g8kp/receiver` in the GSW receiver page three times (as is, BC masked, the
   ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`. G8ku's
@@ -3400,6 +3401,11 @@ mise exec -- pnpm render-stream:gate8 -- \
 - `lib/gate8-ct-checks.ts` (P3-CT): the g8c checks (`runG8c`) and their pure helpers
   (`premiseProblems`, `regionProblems`, `uploadProblems`); `test/self-test-gate8-ct.ts` drives them
   on `fixtures/gate8-ct/expected.json` and synthetic recordings, images and upload lists.
+- `lib/gate8-cg-checks.ts` (CG1): the g8cg checks (`runG8cg`) and their pure helpers
+  (`wireStateProblems`, `toggleProblems`, `sessionProblems`, `itemKeyProblems`,
+  `hookCountProblems`, `cellDiff`, `cellProblems`, `exactProblems`, `modelProblems`);
+  `test/self-test-gate8-cg.ts` drives them on `fixtures/gate8-cg/expected.json` and synthetic items,
+  sessions, counters and images, including that each receiver sabotage's picture is caught.
 - `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
   `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
   `canonicalState` compares materials by content since G8m.
@@ -3474,6 +3480,33 @@ mise exec -- pnpm render-stream:gate8 -- \
 cells), `ct-channel-refused` and `ct-diffuse-uploaded`; each criterion is spelled out in
 `lib/gate8-ct-checks.ts` and [`../protocol/gate8-design.md`](../protocol/gate8-design.md) "As built
 (P3-CT)".
+
+## Gate 8 legs and evidence under `--out/g8cg` (g8cg, CG1)
+
+| leg | what |
+| --- | ---- |
+| `import/fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-cg` and of the receiver |
+| `capture` | headless, armed at birth, `GRC_STREAM_VERSION=10`: both sinks (`recording.rs10`, `recording-patch.rs10`), the store, `steps.jsonl` |
+| `late/capture` | headless, armed at fixture frame 12 (`RS_FIXTURE_ARM=late`) with `GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip GRC_TEXTURE_DECODE=engine` at /10: the scene's /10 state adopted from its nodes |
+| `capture-v9` | headless, armed at birth, `GRC_STREAM_VERSION=9`: the negative control (the pre-/10 wire) |
+| `reference`, `reference-repeat` | rendered at 640x360, unarmed: shots `step-<k>.png` at the three checkpoints |
+| `receiver`, `receiver-patch` | the native receiver on the /10 full and patch sinks |
+| `receiver-v9` | the native receiver on the /9 capture (fills full height, no group, no forced copy) |
+| `late/receiver` | the native receiver on the late capture (shots at checkpoints 1 and 2) |
+| `sabotage-drop-canvas-group/receiver`, `sabotage-full-backbuffer-copy/receiver` | the native receiver on the /10 full sink with `RS_RECEIVER_SABOTAGE` |
+
+## Gate 8 criteria (g8cg)
+
+`g8cg-legs`, `cg-hooks` (both hooks planned, neither unobserved, every armed call counted),
+`cg-below-10` (the /9 session unchanged), `cg-wire` (every checkpoint's items carry exactly
+expected.json's state, both sinks decode at /10), `cg-toggle-patch` (a state-only patch entry),
+`cg-reference-repeat`, `cg-reference-model`, `cg-native-exact`, `cg-negative-control`,
+`cg-sabotage-drop-group`, `cg-sabotage-full-copy` (each differs exactly in the cells whose state it
+loses) and `cg-adopt` (the late capture's state and replay); each criterion is spelled out in
+`lib/gate8-cg-checks.ts` and [`../fixtures/gate8-cg/README.md`](../fixtures/gate8-cg/README.md).
+In g7-8 the web export replays every g8cg receiver leg (`GATE8_FILE_GROUPS`); GSW runs g8cg only as
+the GSW-only legs `g8cg/gsw-receiver`, `gsw-receiver-patch` and `gsw-late`, judged by
+`cg-gsw-typed@gsw` (GSW types the /10 state until CG3).
 
 ## Gate 8 legs and evidence under `--out/g8m` (g8m)
 

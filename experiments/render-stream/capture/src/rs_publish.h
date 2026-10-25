@@ -152,6 +152,12 @@ std::string generate_id();
 // render-stream-8.md), so a caller speaking either asks for V6's.
 Features gate2_features(bool headless_host = false, ProtocolVersion version = ProtocolVersion::V2);
 
+// render-stream-10.md "Features": a /10 session's features.unobserved is /9's (gate2_features at
+// V6) minus canvas_item_set_canvas_group_mode and canvas_item_set_copy_to_backbuffer, each only
+// when `hooks_planned` names it. Keeps the list sorted (it only removes).
+void observe_planned_backbuffer_setters(Features *features,
+                                        const std::vector<std::string> &hooks_planned);
+
 // The resource policy a capture publishes under (GRC_RESOURCE_*).
 struct ResourcePolicy {
   std::vector<std::string> permitted_formats;  // sorted ascending (byte order)
@@ -256,7 +262,7 @@ class Publisher {
   ResourceEventFn events_;
   std::string error_;
   std::uint64_t next_seq_ = 1;
-  bool stamp_v8_ = false;  // G8w: the session template speaks /8 or /9 (start())
+  bool stamp_v8_ = false;  // G8w: the session template speaks /8, /9 or /10 (start())
   ProtocolVersion stamp_version_ = ProtocolVersion::V6;  // the version to stamp when stamp_v8_
   bool finished_ = false;
   // The previous published snapshot: the patch sink's base and last_published().

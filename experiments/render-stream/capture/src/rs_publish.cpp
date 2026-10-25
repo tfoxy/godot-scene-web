@@ -418,6 +418,20 @@ Features gate2_features(bool headless_host, ProtocolVersion version) {
   return features;
 }
 
+void observe_planned_backbuffer_setters(Features *features,
+                                        const std::vector<std::string> &hooks_planned) {
+  for (const char *name :
+       {"canvas_item_set_canvas_group_mode", "canvas_item_set_copy_to_backbuffer"}) {
+    if (std::find(hooks_planned.begin(), hooks_planned.end(), name) == hooks_planned.end()) {
+      continue;
+    }
+    const auto it = std::find(features->unobserved.begin(), features->unobserved.end(), name);
+    if (it != features->unobserved.end()) {
+      features->unobserved.erase(it);
+    }
+  }
+}
+
 ResourcesInfo resources_info(const ResourcePolicy &policy, Fetch out_of_band_fetch) {
   ResourcesInfo info;
   info.inline_max_bytes = policy.inline_max_bytes;

@@ -89,6 +89,12 @@ wire_enum!(Filter {
     NearestMipmapsAnisotropic = "nearest_mipmaps_anisotropic",
     LinearMipmapsAnisotropic = "linear_mipmaps_anisotropic",
 });
+// render-stream-10.md "Item": RS `CanvasGroupMode` 1, 2, 3 (0, disabled, is a null `canvas_group`).
+wire_enum!(CanvasGroupMode {
+    ClipOnly = "clip_only",
+    ClipAndDraw = "clip_and_draw",
+    Transparent = "transparent",
+});
 wire_enum!(Repeat { Default = "default", Disabled = "disabled", Enabled = "enabled", Mirror = "mirror" });
 wire_enum!(Axis { Stretch = "stretch", Tile = "tile", TileFit = "tile_fit" });
 wire_enum!(TextureKind { Image = "image", Placeholder = "placeholder", Canvas = "canvas" });
@@ -428,12 +434,38 @@ pub struct Item {
     pub material: Option<Id>,
     pub use_parent_material: bool,
     pub instance_params: Vec<Param>,
+    /// /10 only (render-stream-10.md "Item"): `None` is `CANVAS_GROUP_MODE_DISABLED`.
+    pub canvas_group: Option<CanvasGroup>,
+    /// /10 only: the `canvas_item_set_copy_to_backbuffer` rect (x, y, w, h) while enabled.
+    pub copy_to_backbuffer: Option<[f32; 4]>,
     pub content_version: i64,
     pub xform: [f32; 6],
     pub modulate: [f32; 4],
     pub self_modulate: [f32; 4],
     pub custom_rect_rect: [f32; 4],
     pub commands: Commands,
+}
+
+/// An item's `canvas_item_set_canvas_group_mode` state, in the setter's argument order
+/// (render-stream-10.md "Decoded and resolved forms").
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CanvasGroup {
+    pub mode: CanvasGroupMode,
+    pub clear_margin: f32,
+    pub fit_empty: bool,
+    pub fit_margin: f32,
+    pub blur_mipmaps: bool,
+}
+
+impl CanvasGroup {
+    /// RS's `CanvasGroupMode` value (1, 2 or 3).
+    pub fn mode_value(&self) -> i64 {
+        match self.mode {
+            CanvasGroupMode::ClipOnly => 1,
+            CanvasGroupMode::ClipAndDraw => 2,
+            CanvasGroupMode::Transparent => 3,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]

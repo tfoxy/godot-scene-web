@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -607,8 +607,21 @@ export interface TransactionItem {
   material?: number | null;
   use_parent_material?: boolean;
   instance_params?: TransactionParam[];
+  /** new at /10 (render-stream-10.md "Item"): present only when decoded at version 10, in this
+   * order, after instance_params. "f" is the running offset into backbuffer_f32. */
+  canvas_group?: TransactionCanvasGroup | null;
+  copy_to_backbuffer?: { f: number } | null;
   content_version: number;
   commands: Command[] | null;
+}
+
+/** render-stream-10.md "Item": canvas_group on the wire; its floats (clear_margin, fit_margin)
+ * are at f in backbuffer_f32. */
+export interface TransactionCanvasGroup {
+  mode: CanvasGroupMode;
+  fit_empty: boolean;
+  blur_mipmaps: boolean;
+  f: number;
 }
 
 export interface TransactionCanvas {
@@ -784,10 +797,18 @@ export const MAGIC_V8: Uint8Array = new Uint8Array([
 export const MAGIC_V9: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x39, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-10.md: the GRSA magic (byte 3 is the version as one uppercase hex digit from /10
+// on), selected by `version: 10` (golden-10/; opt-in, never the default).
+export const MAGIC_V10: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x41, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
- * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), else 6 -- so
- * every other magic still meets the /6 decoder's own refusal, exactly as before. */
-export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 | 8 | 9 {
+ * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
+ * (G8k9), 10 for GRSA (CG1), else 6 -- so every other magic still meets the /6 decoder's own
+ * refusal, exactly as before. */
+export function wireVersionOf(
+  data: Uint8Array | undefined,
+): 6 | 7 | 8 | 9 | 10 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -797,6 +818,7 @@ export function wireVersionOf(data: Uint8Array | undefined): 6 | 7 | 8 | 9 {
   if (startsWith(MAGIC_V7)) return 7;
   if (startsWith(MAGIC_V8)) return 8;
   if (startsWith(MAGIC_V9)) return 9;
+  if (startsWith(MAGIC_V10)) return 10;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -1126,6 +1148,22 @@ const ITEM_KEYS_V5 = [
   "content_version",
   "commands",
 ];
+// render-stream-10.md "Item": canvas_group and copy_to_backbuffer, right after instance_params
+// and before content_version.
+const ITEM_KEYS_V10 = keysWith(
+  keysWith(ITEM_KEYS_V5, "instance_params", "canvas_group"),
+  "canvas_group",
+  "copy_to_backbuffer",
+);
+const CANVAS_GROUP_KEYS = ["mode", "fit_empty", "blur_mipmaps", "f"];
+const COPY_TO_BACKBUFFER_KEYS = ["f"];
+/** render-stream-10.md "Item": RenderingServer's CanvasGroupMode 1, 2, 3 (0, disabled, is null). */
+export const CANVAS_GROUP_MODES = [
+  "clip_only",
+  "clip_and_draw",
+  "transparent",
+] as const;
+export type CanvasGroupMode = (typeof CANVAS_GROUP_MODES)[number];
 const PARENT_KEYS = ["kind", "id"];
 const ADD_RECT_KEYS = ["op", "aa", "f"];
 const ADD_TEXTURE_RECT_KEYS = ["op", "tex", "tile", "transpose", "f"];
@@ -1331,6 +1369,15 @@ const TRANSACTION_BLOCK_TYPES_V5: Array<"f32" | "i32" | "f64"> = [
   "i32",
   "f32",
   "f64",
+];
+// render-stream-10.md "Transaction blocks": seven blocks; backbuffer_f32 is type "f32".
+const TRANSACTION_BLOCK_NAMES_V10 = [
+  ...TRANSACTION_BLOCK_NAMES_V5,
+  "backbuffer_f32",
+];
+const TRANSACTION_BLOCK_TYPES_V10: Array<"f32" | "i32" | "f64"> = [
+  ...TRANSACTION_BLOCK_TYPES_V5,
+  "f32",
 ];
 
 const FILTERS = [
@@ -1785,7 +1832,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -1796,9 +1843,10 @@ function checkResourcesSchema(
     version === 6 ||
     version === 7 ||
     version === 8 ||
-    version === 9;
+    version === 9 ||
+    version === 10;
   const keys =
-    version === 9
+    version >= 9
       ? RESOURCES_KEYS_V9
       : version === 8
         ? RESOURCES_KEYS_V8
@@ -1895,12 +1943,15 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV9 = version === 9;
+  const isV10 = version === 10;
+  // isV9 means "V9 or later": /10 is /9 plus exactly render-stream-10.md's list (no new
+  // session key; only the protocol string and the features list change).
+  const isV9 = version === 9 || isV10;
   // isV8 means "V8 or later": /9 is /8 plus exactly render-stream-9.md's list.
   const isV8 = version === 8 || isV9;
   // isV7 means "V7 or later": /8 is /7 plus exactly render-stream-8.md's list, so it keeps the
@@ -1938,21 +1989,23 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV9
-    ? "render-stream/9"
-    : isV8
-      ? "render-stream/8"
-      : isV7
-        ? "render-stream/7"
-        : isV6
-          ? "render-stream/6"
-          : isV5
-            ? "render-stream/5"
-            : version === 4
-              ? "render-stream/4"
-              : version === 3
-                ? "render-stream/3"
-                : "render-stream/2";
+  const expectedProtocol = isV10
+    ? "render-stream/10"
+    : isV9
+      ? "render-stream/9"
+      : isV8
+        ? "render-stream/8"
+        : isV7
+          ? "render-stream/7"
+          : isV6
+            ? "render-stream/6"
+            : isV5
+              ? "render-stream/5"
+              : version === 4
+                ? "render-stream/4"
+                : version === 3
+                  ? "render-stream/3"
+                  : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -2632,13 +2685,21 @@ function checkMaterialEntrySchema(
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
   // isV6 means "V6 or later" (render-stream-7.md: transactions are byte-identical to /6).
-  const isV6 = version === 6 || version === 7 || version === 8 || version === 9;
+  const isV6 =
+    version === 6 ||
+    version === 7 ||
+    version === 8 ||
+    version === 9 ||
+    version === 10;
+  // render-stream-10.md "Item"/"Transaction blocks": the two back-buffer item keys and the
+  // seventh block, backbuffer_f32.
+  const isV10 = version === 10;
   // isV5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
   const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
@@ -2783,7 +2844,10 @@ function checkTransactionSchema(
   for (const it of meta.items) {
     if (
       !isPlainObject(it) ||
-      !hasExactKeys(it, isV5 ? ITEM_KEYS_V5 : ITEM_KEYS) ||
+      !hasExactKeys(
+        it,
+        isV10 ? ITEM_KEYS_V10 : isV5 ? ITEM_KEYS_V5 : ITEM_KEYS,
+      ) ||
       !isInt(it.id) ||
       !isOneOf(it.origin, ["created", "root-query", "adopted"] as const) ||
       typeof it.visible !== "boolean" ||
@@ -2827,6 +2891,37 @@ function checkTransactionSchema(
           );
         }
         lastParamName = name;
+      }
+    }
+    if (isV10) {
+      // render-stream-10.md "Transaction blocks": null or an object of exactly its keys, a mode
+      // among the three spellings, boolean flags and a non-negative integer f.
+      const cg = it.canvas_group;
+      if (
+        !(
+          cg === null ||
+          (isPlainObject(cg) &&
+            hasExactKeys(cg, CANVAS_GROUP_KEYS) &&
+            isOneOf(cg.mode, CANVAS_GROUP_MODES) &&
+            typeof cg.fit_empty === "boolean" &&
+            typeof cg.blur_mipmaps === "boolean" &&
+            isInt(cg.f) &&
+            cg.f >= 0)
+        )
+      ) {
+        return err('an items[] entry has an invalid "canvas_group"');
+      }
+      const copy = it.copy_to_backbuffer;
+      if (
+        !(
+          copy === null ||
+          (isPlainObject(copy) &&
+            hasExactKeys(copy, COPY_TO_BACKBUFFER_KEYS) &&
+            isInt(copy.f) &&
+            copy.f >= 0)
+        )
+      ) {
+        return err('an items[] entry has an invalid "copy_to_backbuffer"');
       }
     }
     const parent = it.parent;
@@ -3040,25 +3135,32 @@ function checkTransactionSchema(
 
   const blocksError = checkBlocksField(meta.blocks, offset);
   if (blocksError !== null) return [blocksError];
-  const nameError = isV5
+  const nameError = isV10
     ? checkFixedBlockNames(
         meta.blocks as BlockDescriptor[],
-        TRANSACTION_BLOCK_NAMES_V5,
+        TRANSACTION_BLOCK_NAMES_V10,
         offset,
-        TRANSACTION_BLOCK_TYPES_V5,
+        TRANSACTION_BLOCK_TYPES_V10,
       )
-    : isV4
+    : isV5
       ? checkFixedBlockNames(
           meta.blocks as BlockDescriptor[],
-          TRANSACTION_BLOCK_NAMES_V4,
+          TRANSACTION_BLOCK_NAMES_V5,
           offset,
-          TRANSACTION_BLOCK_TYPES_V4,
+          TRANSACTION_BLOCK_TYPES_V5,
         )
-      : checkFixedBlockNames(
-          meta.blocks as BlockDescriptor[],
-          TRANSACTION_BLOCK_NAMES,
-          offset,
-        );
+      : isV4
+        ? checkFixedBlockNames(
+            meta.blocks as BlockDescriptor[],
+            TRANSACTION_BLOCK_NAMES_V4,
+            offset,
+            TRANSACTION_BLOCK_TYPES_V4,
+          )
+        : checkFixedBlockNames(
+            meta.blocks as BlockDescriptor[],
+            TRANSACTION_BLOCK_NAMES,
+            offset,
+          );
   if (nameError !== null) return [nameError];
   return [];
 }
@@ -3131,7 +3233,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -3157,27 +3259,29 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 9
-      ? MAGIC_V9
-      : version === 8
-        ? MAGIC_V8
-        : version === 7
-          ? MAGIC_V7
-          : version === 6
-            ? MAGIC_V6
-            : version === 5
-              ? MAGIC_V5
-              : version === 4
-                ? MAGIC_V4
-                : version === 3
-                  ? MAGIC_V3
-                  : MAGIC;
+    version === 10
+      ? MAGIC_V10
+      : version === 9
+        ? MAGIC_V9
+        : version === 8
+          ? MAGIC_V8
+          : version === 7
+            ? MAGIC_V7
+            : version === 6
+              ? MAGIC_V6
+              : version === 5
+                ? MAGIC_V5
+                : version === 4
+                  ? MAGIC_V4
+                  : version === 3
+                    ? MAGIC_V3
+                    : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -3278,7 +3382,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -3297,7 +3401,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -3453,7 +3557,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -3463,7 +3567,8 @@ export function decodeRecording(
     | "render-stream-6-decoded/1"
     | "render-stream-7-decoded/1"
     | "render-stream-8-decoded/1"
-    | "render-stream-9-decoded/1";
+    | "render-stream-9-decoded/1"
+    | "render-stream-10-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -3481,38 +3586,42 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 9
-      ? MAGIC_V9
-      : version === 8
-        ? MAGIC_V8
-        : version === 7
-          ? MAGIC_V7
-          : version === 6
-            ? MAGIC_V6
-            : version === 5
-              ? MAGIC_V5
-              : version === 4
-                ? MAGIC_V4
-                : version === 3
-                  ? MAGIC_V3
-                  : MAGIC;
+    version === 10
+      ? MAGIC_V10
+      : version === 9
+        ? MAGIC_V9
+        : version === 8
+          ? MAGIC_V8
+          : version === 7
+            ? MAGIC_V7
+            : version === 6
+              ? MAGIC_V6
+              : version === 5
+                ? MAGIC_V5
+                : version === 4
+                  ? MAGIC_V4
+                  : version === 3
+                    ? MAGIC_V3
+                    : MAGIC;
   return {
     schema:
-      version === 9
-        ? "render-stream-9-decoded/1"
-        : version === 8
-          ? "render-stream-8-decoded/1"
-          : version === 7
-            ? "render-stream-7-decoded/1"
-            : version === 6
-              ? "render-stream-6-decoded/1"
-              : version === 5
-                ? "render-stream-5-decoded/1"
-                : version === 4
-                  ? "render-stream-4-decoded/1"
-                  : version === 3
-                    ? "render-stream-3-decoded/1"
-                    : "render-stream-2-decoded/1",
+      version === 10
+        ? "render-stream-10-decoded/1"
+        : version === 9
+          ? "render-stream-9-decoded/1"
+          : version === 8
+            ? "render-stream-8-decoded/1"
+            : version === 7
+              ? "render-stream-7-decoded/1"
+              : version === 6
+                ? "render-stream-6-decoded/1"
+                : version === 5
+                  ? "render-stream-5-decoded/1"
+                  : version === 4
+                    ? "render-stream-4-decoded/1"
+                    : version === 3
+                      ? "render-stream-3-decoded/1"
+                      : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -4012,12 +4121,25 @@ export interface ResolvedItem {
   material?: number | null;
   use_parent_material?: boolean;
   instance_params?: ResolvedParam[];
+  /** new at /10 (render-stream-10.md "Decoded and resolved forms"): present only when resolved
+   * at version 10, floats inline in the setter's argument order. */
+  canvas_group?: ResolvedCanvasGroup | null;
+  copy_to_backbuffer?: { rect: [number, number, number, number] } | null;
   content_version: number;
   xform: [number, number, number, number, number, number];
   modulate: [number, number, number, number];
   self_modulate: [number, number, number, number];
   custom_rect_rect: [number, number, number, number];
   commands: ResolvedCommand[];
+}
+
+/** render-stream-10.md "Decoded and resolved forms": a resolved canvas_group. */
+export interface ResolvedCanvasGroup {
+  mode: CanvasGroupMode;
+  clear_margin: number;
+  fit_empty: boolean;
+  fit_margin: number;
+  blur_mipmaps: boolean;
 }
 
 export type ResolvedTexture = TransactionTexture;
@@ -4433,6 +4555,7 @@ function liftItem(
   cmdF32: number[],
   cmdI32: number[],
   paramF64: number[],
+  backbufferF32: number[] = [],
 ): ResolvedItem {
   const base = {
     id: it.id,
@@ -4466,9 +4589,37 @@ function liftItem(
           ),
         }
       : {};
+  // new at /10 (render-stream-10.md "Decoded and resolved forms"): canvas_group and
+  // copy_to_backbuffer, right after instance_params, their floats lifted inline.
+  const backbufferFields =
+    it.canvas_group !== undefined
+      ? {
+          canvas_group:
+            it.canvas_group === null
+              ? null
+              : {
+                  mode: it.canvas_group.mode,
+                  clear_margin: backbufferF32[it.canvas_group.f],
+                  fit_empty: it.canvas_group.fit_empty,
+                  fit_margin: backbufferF32[it.canvas_group.f + 1],
+                  blur_mipmaps: it.canvas_group.blur_mipmaps,
+                },
+          copy_to_backbuffer:
+            it.copy_to_backbuffer === null ||
+            it.copy_to_backbuffer === undefined
+              ? null
+              : {
+                  rect: backbufferF32.slice(
+                    it.copy_to_backbuffer.f,
+                    it.copy_to_backbuffer.f + 4,
+                  ) as [number, number, number, number],
+                },
+        }
+      : {};
   return {
     ...base,
     ...materialFields,
+    ...backbufferFields,
     content_version: it.content_version,
     xform: itemF32.slice(0, 6) as [
       number,
@@ -4558,7 +4709,8 @@ export function applyTransaction(
       for (const id of meta.removed_materials ?? []) materials.delete(id);
     }
   }
-  const [itemF32, canvasF32, cmdF32, cmdI32, meshF32, paramF64] = blocks;
+  const [itemF32, canvasF32, cmdF32, cmdI32, meshF32, paramF64, backbufferF32] =
+    blocks;
   const canvasStride = isV5 ? 10 : 6;
   for (let i = 0; i < meta.canvases.length; i++) {
     const c = meta.canvases[i];
@@ -4585,6 +4737,7 @@ export function applyTransaction(
       cmdF32,
       isV4 ? (cmdI32 ?? []) : [],
       isV5 ? (paramF64 ?? []) : [],
+      backbufferF32 ?? [],
     );
     if (raw.commands === null) {
       const prev = base.items.get(raw.id);
@@ -5731,7 +5884,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
   options?: DecodeRecordOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -5744,7 +5897,8 @@ export function createRecordingValidator(
   });
   // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
   // byte-identical to /6).
-  const isV9 = version === 9;
+  const isV10 = version === 10;
+  const isV9 = version === 9 || isV10;
   const isV8 = version === 8 || isV9;
   const isV7 = version === 7 || isV8;
   const isV6 = isV7 || version === 6;
@@ -6116,6 +6270,38 @@ export function createRecordingValidator(
         }
         totalParamFloats = runningParamOffset;
       }
+      // backbuffer-offset (render-stream-10.md "Transaction blocks"): a running offset into
+      // backbuffer_f32 over items in entry order, canvas_group (2 floats) before
+      // copy_to_backbuffer (4 floats) within an item; the block's length is the final count.
+      if (isV10) {
+        let runningBackbufferOffset = 0;
+        for (const it of meta.items) {
+          for (const [key, value, width] of [
+            ["canvas_group", it.canvas_group, 2],
+            ["copy_to_backbuffer", it.copy_to_backbuffer, 4],
+          ] as const) {
+            if (value === null || value === undefined) continue;
+            if (value.f !== runningBackbufferOffset) {
+              return [
+                `backbuffer-offset: record at offset ${offset}: item ${it.id} ${key} f=${value.f}, expected ${runningBackbufferOffset}`,
+              ];
+            }
+            runningBackbufferOffset += width;
+          }
+        }
+        const declared = meta.blocks.find(
+          (b) => b.name === "backbuffer_f32",
+        )?.count;
+        const decodedLength = (decoded.record.blocks as number[][])[6]?.length;
+        if (
+          declared !== runningBackbufferOffset ||
+          decodedLength !== runningBackbufferOffset
+        ) {
+          return [
+            `backbuffer-offset: record at offset ${offset}: block "backbuffer_f32" declares count ${declared}, expected ${runningBackbufferOffset}`,
+          ];
+        }
+      }
       const canvasStride = isV5 ? 10 : 6;
       const blockByName = new Map(
         meta.blocks.map((b) => [b.name, b.count] as const),
@@ -6478,7 +6664,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
 ): string[] {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
@@ -6723,7 +6909,8 @@ export interface ResolvedRecording {
     | "render-stream-6-resolved/1"
     | "render-stream-7-resolved/1"
     | "render-stream-8-resolved/1"
-    | "render-stream-9-resolved/1";
+    | "render-stream-9-resolved/1"
+    | "render-stream-10-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -6732,7 +6919,7 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
@@ -6781,21 +6968,23 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 9
-        ? "render-stream-9-resolved/1"
-        : version === 8
-          ? "render-stream-8-resolved/1"
-          : version === 7
-            ? "render-stream-7-resolved/1"
-            : version === 6
-              ? "render-stream-6-resolved/1"
-              : version === 5
-                ? "render-stream-5-resolved/1"
-                : version === 4
-                  ? "render-stream-4-resolved/1"
-                  : version === 3
-                    ? "render-stream-3-resolved/1"
-                    : "render-stream-2-resolved/1",
+      version === 10
+        ? "render-stream-10-resolved/1"
+        : version === 9
+          ? "render-stream-9-resolved/1"
+          : version === 8
+            ? "render-stream-8-resolved/1"
+            : version === 7
+              ? "render-stream-7-resolved/1"
+              : version === 6
+                ? "render-stream-6-resolved/1"
+                : version === 5
+                  ? "render-stream-5-resolved/1"
+                  : version === 4
+                    ? "render-stream-4-resolved/1"
+                    : version === 3
+                      ? "render-stream-3-resolved/1"
+                      : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

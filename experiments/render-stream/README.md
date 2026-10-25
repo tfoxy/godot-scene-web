@@ -93,9 +93,12 @@ result under `results/gate7/`; the rest link to their design section under `prot
   payloads on the wire; file sinks stay on `/6` unless `GRC_STREAM_VERSION=8`) and
   [protocol/render-stream-9.md](protocol/render-stream-9.md) (G8k9: texture-delivery variants, `block`
   and KTX2 payloads and the delivery hello keys; opt-in with `GRC_STREAM_VERSION=9`; the
-  receivers offer it under `RS_RECEIVER_PROTOCOL=9`).
+  receivers offer it under `RS_RECEIVER_PROTOCOL=9`), and
+  [protocol/render-stream-10.md](protocol/render-stream-10.md) (CG1: canvas-group mode and
+  copy-to-backbuffer item state, `clip_children`/`CanvasGroup`/`BackBufferCopy`; opt-in with
+  `GRC_STREAM_VERSION=10` and `RS_RECEIVER_PROTOCOL=10`).
 - Feature manifests: `protocol/features/` (`render-stream-6.json`, `render-stream-7/`, `render-stream-8/`). Golden vectors: `protocol/golden/` through
-  `protocol/golden-9/`.
+  `protocol/golden-10/`.
 - Topical notes: `protocol/canvas-texture-headless.md`, `protocol/unknown-item-skip.md`.
 - Gate 8 (the STS2 blockers' generic halves: late-join adoption, compressed textures, host size,
   pre-arm materials, texture delivery): [protocol/gate8-design.md](protocol/gate8-design.md),

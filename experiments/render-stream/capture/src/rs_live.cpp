@@ -362,7 +362,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V9   ? kProtocolV9
+  return version == ProtocolVersion::V10  ? kProtocolV10
+         : version == ProtocolVersion::V9 ? kProtocolV9
          : version == ProtocolVersion::V8 ? kProtocolV8
          : version == ProtocolVersion::V7 ? kProtocolV7
          : version == ProtocolVersion::V6 ? kProtocolV6
@@ -370,6 +371,19 @@ const char *protocol_string(ProtocolVersion version) {
          : version == ProtocolVersion::V4 ? kProtocolV4
          : version == ProtocolVersion::V3 ? kProtocolV3
                                           : kProtocol;
+}
+
+// render-stream-10.md "Features": below /10 both back-buffer setters stay in features.unobserved,
+// even on a host whose /10 session dropped them because it hooks them. Sorted, as the list is.
+void declare_backbuffer_unobserved(Features *features) {
+  for (const char *name :
+       {"canvas_item_set_canvas_group_mode", "canvas_item_set_copy_to_backbuffer"}) {
+    std::vector<std::string> &list = features->unobserved;
+    const auto it = std::lower_bound(list.begin(), list.end(), std::string(name));
+    if (it == list.end() || *it != name) {
+      list.insert(it, name);
+    }
+  }
 }
 
 std::uint32_t version_number(ProtocolVersion version) {
@@ -437,8 +451,9 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
               "presentation_css_w",
               "presentation_css_h",
               "dpr_milli"};
-      if (version == ProtocolVersion::V9) {
-        // render-stream-9.md "Hello": /8's keys plus texture_encodings and gpu_formats.
+      if (is_v9_or_later(version)) {
+        // render-stream-9.md "Hello": /8's keys plus texture_encodings and gpu_formats (and
+        // render-stream-10.md: /10's hello is /9's under its own protocol string).
         keys.push_back("texture_encodings");
         keys.push_back("gpu_formats");
       }
@@ -541,7 +556,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
             !num("dpr_milli", &message.dpr_milli)) {
           return false;
         }
-        if (version == ProtocolVersion::V9) {
+        if (is_v9_or_later(version)) {
           if (!str("texture_encodings", &message.texture_encodings) ||
               !str("gpu_formats", &message.gpu_formats)) {
             return false;
@@ -966,7 +981,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // G7n: the subprotocol decides the connection's version (render-stream.7 -> /7).
       // G8w: render-stream.8 -> /8 (render-stream-8.md "Live transport").
       // G8k9: render-stream.9 -> /9 (render-stream-9.md "Live transport").
-      c.version = event.subprotocol == kSubprotocolV9   ? ProtocolVersion::V9
+      // CG1: render-stream.10 -> /10 (render-stream-10.md "Live transport").
+      c.version = event.subprotocol == kSubprotocolV10  ? ProtocolVersion::V10
+                  : event.subprotocol == kSubprotocolV9 ? ProtocolVersion::V9
                   : event.subprotocol == kSubprotocolV8 ? ProtocolVersion::V8
                   : event.subprotocol == kSubprotocolV7 ? ProtocolVersion::V7
                   : is_v8_or_later(template_.version) ? ProtocolVersion::V6
@@ -1110,7 +1127,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             .num("presentation_css_w", message.presentation_css_w)
             .num("presentation_css_h", message.presentation_css_h)
             .num("dpr_milli", message.dpr_milli);
-        if (c.version == ProtocolVersion::V9) {
+        if (is_v9_or_later(c.version)) {
           hello.str("texture_encodings", message.texture_encodings)
               .str("gpu_formats", message.gpu_formats);
         }
@@ -1618,6 +1635,11 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
         // G7n: the connection's own version (render-stream.7 -> /7: the GRS7 magic, the /7
         // protocol string and publication.credit_window, the grant).
         c.session.version = c.version;
+        if (template_.version == ProtocolVersion::V10 && c.version != ProtocolVersion::V10) {
+          // render-stream-10.md "Live transport": a /9-or-older connection on a /10 host gets its
+          // own version's session, which still declares both back-buffer setters unobserved.
+          declare_backbuffer_unobserved(&c.session.features);
+        }
         c.session.publication.credit_window = static_cast<std::int32_t>(c.s.credit_window);
         c.session.stream.stream_id = c.s.stream_id;
         c.session.stream.has_connection = true;
@@ -1995,8 +2017,9 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       }
     }
     json.field_or_null("origin", s.origin);
-    if (s.version == 9) {
-      // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 connections only.
+    if (s.version == 9 || s.version == 10) {
+      // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 and /10 connections
+      // only (render-stream-10.md: /10's hello is /9's).
       json.field_or_null("texture_encodings", s.texture_encodings);
       json.field_or_null("gpu_formats", s.gpu_formats);
     }

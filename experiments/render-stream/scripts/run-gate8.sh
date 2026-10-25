@@ -123,6 +123,16 @@
 #       RENDERED host (a headless host's dummy storage allocates no canvas texture,
 #       canvas-texture-headless.md; both sinks and the store; its own shots too), and the native
 #       receiver on the full and patch sinks (`receiver`, `receiver-patch`).
+#   g8cg (CG1, render-stream-10.md: clip_children, CanvasGroup and BackBufferCopy carried on /10,
+#       fixtures/gate8-cg; every leg under g8cg/): the fixture and receiver imports; headless captures
+#       of the fixture armed at birth at /10 (`capture`, GRC_STREAM_VERSION=10: both sinks, the
+#       store) and at /9 (`capture-v9`, the negative control: the pre-/10 wire), and the late arm
+#       (`late/capture`: armed at fixture frame 12 with GRC_ADOPT=arm, /10, GRC_UNKNOWN_ITEM=skip);
+#       then, in one private 640x360 gamescope, the unarmed `reference` and `reference-repeat`, the
+#       native receiver on the /10 full and patch sinks (`receiver`, `receiver-patch`), on the /9
+#       capture (`receiver-v9`), on the late capture (`late/receiver`), and the two receiver
+#       sabotages on the /10 full sink (`sabotage-drop-canvas-group/receiver`,
+#       `sabotage-full-backbuffer-copy/receiver`, RS_RECEIVER_SABOTAGE).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -144,8 +154,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg)
 
 EXTENSION=""
 CALIBRATION=""
@@ -676,6 +686,85 @@ run_g8c() {
 	legs_par_end
 	gs_teardown "$OUT/gamescope-g8c"
 	GS_RUN_DIR=""
+}
+
+# ------------------------------------------------------------------------------------ g8cg
+G8CG_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-cg"
+# The late arm frame (fixtures/gate8-cg/loader.gd, expected.json arm_frame).
+G8CG_ARM_FRAME=12
+G8CG_SABOTAGES=(drop-canvas-group full-backbuffer-copy)
+
+run_import_g8cg() {
+	echo "run-gate8: g8cg import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8cg/import/fixture" none -- mise exec -- godot --headless --path "$G8CG_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8cg/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in fixture receiver; do
+		[ -f "$OUT/g8cg/import/$leg/skipped-by-tier.txt" ] && continue
+		if [ "$(cat "$OUT/g8cg/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8cg import ($leg) failed, see $OUT/g8cg/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8cg <dir> <born|late> <env word...>: a headless capture of the fixture (both sinks,
+# the store, the step log), armed at birth or at fixture frame G8CG_ARM_FRAME.
+run_capture_g8cg() {
+	local dir="$1" arm="$2"
+	shift 2
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8CG_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_ARM="$arm" RS_FIXTURE_ARM_FRAME="$G8CG_ARM_FRAME")
+	run_capture "$dir" "" none
+}
+
+run_g8cg() {
+	run_import_g8cg
+	RECORDING_NAME=recording.rs10
+	PATCH_RECORDING_NAME=recording-patch.rs10
+	echo "run-gate8: g8cg capture (/10, armed at birth)"
+	run_capture_g8cg "$OUT/g8cg/capture" born GRC_STREAM_VERSION=10
+	echo "run-gate8: g8cg late/capture (/10, armed at frame $G8CG_ARM_FRAME, GRC_ADOPT=arm)"
+	run_capture_g8cg "$OUT/g8cg/late/capture" late GRC_STREAM_VERSION=10 GRC_ADOPT=arm \
+		GRC_UNKNOWN_ITEM=skip GRC_TEXTURE_DECODE=engine
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+	echo "run-gate8: g8cg capture-v9 (/9, the negative control: the pre-/10 wire)"
+	run_capture_g8cg "$OUT/g8cg/capture-v9" born GRC_STREAM_VERSION=9
+
+	echo "run-gate8: bringing up private gamescope for g8cg's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8cg"
+	legs_par_begin
+	local r
+	for r in reference reference-repeat; do
+		echo "run-gate8: g8cg $r (unarmed, rendered at 640x360)"
+		mkdir -p "$OUT/g8cg/$r/shots"
+		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8cg/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8cg/$r/steps.jsonl")
+		run_rendered "$OUT/g8cg/$r" "$G8CG_FIXTURE_DIR"
+	done
+	echo "run-gate8: g8cg receiver-v9 (the /9 capture replayed)"
+	run_rendered_receiver "$OUT/g8cg/capture-v9" "$OUT/g8cg/receiver-v9"
+	RECORDING_NAME=recording.rs10
+	PATCH_RECORDING_NAME=recording-patch.rs10
+	echo "run-gate8: g8cg receivers (/10 full and patch sinks, the late capture)"
+	run_rendered_receiver "$OUT/g8cg/capture" "$OUT/g8cg/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8cg/capture" "$OUT/g8cg/receiver-patch"
+	run_rendered_receiver "$OUT/g8cg/late/capture" "$OUT/g8cg/late/receiver"
+	local s
+	for s in "${G8CG_SABOTAGES[@]}"; do
+		echo "run-gate8: g8cg sabotage-$s (receiver, RS_RECEIVER_SABOTAGE=$s)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE="$s")
+		run_rendered_receiver "$OUT/g8cg/capture" "$OUT/g8cg/sabotage-$s/receiver"
+	done
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8cg"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
 }
 
 # ------------------------------------------------------------------------------------- g8f
@@ -1421,6 +1510,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8a) run_g8a ;;
 	g8h) run_g8h ;;
 	g8c) run_g8c ;;
+	g8cg) run_g8cg ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	esac

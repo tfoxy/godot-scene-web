@@ -1123,6 +1123,12 @@ native receiver's adapter already calls `canvas_item_set_copy_to_backbuffer`
 copy points are draw flags its applier computes. STS2's screen readers C3 recorded use the
 automatic copies.
 
+**As amended (CG1, 2026-10-25): carried on /10.** render-stream-10.md carries it as
+`copy_to_backbuffer: null | {"f": <int>}`, the rect's four floats in the new `backbuffer_f32`
+block (the wire puts no floats in JSON, so the sketch's inline array became an offset; the
+full-target case is the engine's own `rect == Rect2()` rule, not a separate spelling). The hook is
+slot 484, installed only by a /10 session. Below /10 everything above still holds.
+
 ### Receivers
 
 - **Native and web export:** unchanged. They compile the code (Q5), and Godot takes the copies.

@@ -89,10 +89,13 @@ extends Node
 ##                                update) or (G6s) no-evict (RsResourceCache's budgets are
 ##                                ignored) or (P3-ST) screen-copy-per-reader (a back-buffer copy
 ##                                before every item whose material reads the screen texture,
-##                                canvas_item_set_copy_to_backbuffer) or (P3-VX)
-##                                vertex-flat-varyings (every shader varying made `flat` before
-##                                shader_set_code); all nineteen exist only to fail checks or
-##                                compare
+##                                canvas_item_set_copy_to_backbuffer, only where a /10 item sets
+##                                no copy of its own) or (P3-VX) vertex-flat-varyings (every
+##                                shader varying made `flat` before shader_set_code) or (CG1, /10)
+##                                drop-canvas-group (canvas_item_set_canvas_group_mode is never
+##                                called) or full-backbuffer-copy (every /10 copy_to_backbuffer is
+##                                issued with Rect2(), the whole target); all twenty-one exist only
+##                                to fail checks or compare
 ##
 ## Resource budgets (G6s, gate6-design.md Q5 "Resource budgets"; both modes; rs_resource_cache.gd):
 ##   RS_RECEIVER_MEMORY_BUDGET_BYTES  unset: unlimited (off by default, every other gate's
@@ -191,6 +194,13 @@ extends Node
 ##                               the web; render-stream-8.md "Live transport"): subprotocol
 ##                               render-stream.8, the /7 hello with protocol "render-stream/8",
 ##                               received tap received.rs8. A gate 8 host offers only .8.
+##                               G8kp: 9 is render-stream/9 (/7's transport, the /9 hello with
+##                               texture_encodings and gpu_formats). CG1: 10 is render-stream/10
+##                               (render-stream-10.md "Live transport"): subprotocol
+##                               render-stream.10, /9's hello with protocol "render-stream/10",
+##                               received tap received.rs10; natively and on the web. In file mode
+##                               a GRSA recording replays at /10. Either way the core re-issues
+##                               each item's canvas_group and copy_to_backbuffer.
 ##   RS_RECEIVER_TOKEN           G7l, web only: the bearer token itself (the shell takes it from
 ##                               the page's fragment; a browser has no token file). /7 only.
 ##   RS_RECEIVER_CREDIT_WINDOW   G7l: 2 (default since G7wd) or 1, the hello's credit_window (/7 only; the
@@ -293,11 +303,15 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
 const CANVAS_COUNTERS: Array[String] = ["canvases_created", "canvas_attach", "canvas_stacking_sets"]
+## CG1 (render-stream-10.md "Receivers"): the core's canvas_item_set_canvas_group_mode and
+## canvas_item_set_copy_to_backbuffer calls, in each transaction's `resources` and in
+## resources_summary of a /10 stream only (every older report keeps its shape).
+const BACKBUFFER_COUNTERS: Array[String] = ["canvas_group_sets", "backbuffer_copy_sets"]
 ## File mode carries exactly one stream; transactions and shots name it as stream 1. Live mode
 ## numbers its connections from 1 (a second one after an RS_RECEIVER_RECONNECT).
 const FILE_STREAM: int = 1
@@ -561,6 +575,12 @@ func _ready() -> void:
 		_wire_version = 9
 		var receiver_block_v9: Dictionary = _report["receiver"]
 		receiver_block_v9["protocol"] = "render-stream/9"
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V10_HEX:
+		# CG1: a back-buffer recording (render-stream/10 file sink, GRC_STREAM_VERSION=10) replays
+		# at /10 (/9's delivery included); the core re-issues canvas_group and copy_to_backbuffer.
+		_wire_version = 10
+		var receiver_block_v10: Dictionary = _report["receiver"]
+		receiver_block_v10["protocol"] = "render-stream/10"
 	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
 		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
 		# additions to the tables, so it draws exactly as a /6 recording would.
@@ -978,6 +998,10 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	for key: String in CANVAS_COUNTERS:
 		resources[key] = canvas_resources[key]
 		_summary[key] = RsWire.as_int(_summary[key]) + RsWire.as_int(resources[key])
+	if _wire_version >= 10:
+		for key: String in BACKBUFFER_COUNTERS:
+			resources[key] = canvas_resources[key]
+			_summary[key] = RsWire.as_int(_summary.get(key, 0)) + RsWire.as_int(resources[key])
 	var skipped_shaders: Array = stats["skipped_shaders"]
 	for value: Variant in skipped_shaders:
 		var skip: Dictionary = value
@@ -1635,11 +1659,11 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if protocol_text != "6" and protocol_text != "7" and protocol_text != "8" and protocol_text != "9":
-		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8 or 9 (got %s)" % JSON.stringify(protocol_text))
+	if not ["6", "7", "8", "9", "10"].has(protocol_text):
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9 or 10 (got %s)" % JSON.stringify(protocol_text))
 		return false
-	if RsConfig.is_web() and protocol_text != "7" and protocol_text != "8" and protocol_text != "9":
-		_log("error: a web receiver speaks only render-stream/7, /8 or (G8ku) /9 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+	if RsConfig.is_web() and not ["7", "8", "9", "10"].has(protocol_text):
+		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9 or (CG1) /10 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
@@ -1782,8 +1806,9 @@ func _process_live() -> void:
 					_reconnect_record["opened_us"] = Time.get_ticks_usec()
 				if _conn_index == 1:
 					_web_mark("rs-socket-open")
-				if _wire_version == 9:
-					_send(RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats))
+				if _wire_version >= 9:
+					# CG1: /10's hello is /9's under protocol render-stream/10.
+					_send(RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, "render-stream/%d" % _wire_version))
 				elif _wire_version >= 7:
 					_send(_hello_v7())
 				else:
@@ -2611,6 +2636,10 @@ func _webgl_compressed_extensions() -> Array[String]:
 
 ## A stream's first record (a session), at the stream's wire version (G7xwl: /6, or /7).
 func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
+	if _wire_version >= 10:
+		for key: String in BACKBUFFER_COUNTERS:
+			if not _summary.has(key):
+				_summary[key] = 0
 	if _wire_version >= 9:
 		var receiver_block: Dictionary = _report["receiver"]
 		receiver_block["texture_delivery"] = {

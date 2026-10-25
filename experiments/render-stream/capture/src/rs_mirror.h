@@ -424,6 +424,17 @@ class Mirror {
                           std::uint64_t frame);
   // canvas_item_set_use_parent_material: the item field (D9).
   void set_use_parent_material(std::uint64_t item, bool enable, std::uint64_t frame);
+  // --- render-stream/10 (CG1, render-stream-10.md "Capture"): the two conditional hooks ------
+  // canvas_item_set_canvas_group_mode: mode 0 (disabled) clears the item's canvas_group, 1-3
+  // replace it whole. A mode outside 0-3 changes nothing (the hook counts it). Item state, never
+  // content_version; canvas_item_clear keeps it.
+  void set_canvas_group_mode(std::uint64_t item, std::int32_t mode, float clear_margin,
+                             bool fit_empty, float fit_margin, bool blur_mipmaps,
+                             std::uint64_t frame);
+  // canvas_item_set_copy_to_backbuffer: `enable` false clears it, true sets it with `rect` as the
+  // engine received it (Rect2() is the whole target, the receiver's rule).
+  void set_copy_to_backbuffer(std::uint64_t item, bool enable, const rs2::Rect4 &rect,
+                              std::uint64_t frame);
   // canvas_item_set_instance_shader_parameter: instance_params[name] set (NIL kept as type nil,
   // OBJECT rejected, an unsupported type drops the name and adds the derived
   // `param-type` item entry until the name is set to a supported value).

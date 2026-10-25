@@ -22,8 +22,12 @@ fn golden7() -> PathBuf {
 }
 
 fn payloads() -> HashMap<Hash, Vec<u8>> {
+    payloads_in(&golden().join("payloads"))
+}
+
+fn payloads_in(dir: &std::path::Path) -> HashMap<Hash, Vec<u8>> {
     let mut out = HashMap::new();
-    for e in std::fs::read_dir(golden().join("payloads")).unwrap() {
+    for e in std::fs::read_dir(dir).unwrap() {
         let bytes = std::fs::read(e.unwrap().path()).unwrap();
         out.insert(wire::sha256(&bytes), bytes);
     }
@@ -53,7 +57,13 @@ fn replay_at(
 ) -> Vec<(Vec<u32>, Vec<u8>)> {
     let name = path.display().to_string();
     let data = std::fs::read(path).unwrap();
-    let mut store = payloads();
+    // A golden directory's own payloads when it has them (golden-9, golden-10), else golden-6's.
+    let own = path.parent().unwrap().join("payloads");
+    let mut store = if own.is_dir() {
+        payloads_in(&own)
+    } else {
+        payloads()
+    };
     let mut core = Core::new();
     core.planner.full_scan = full_scan;
     core.set_sabotage(sabotage);
@@ -94,10 +104,45 @@ fn replay_at(
         core.apply()
             .unwrap_or_else(|e| panic!("{name}: apply after record {i}: {e}"));
         batches.push((core.ops.words.clone(), core.ops.arena.clone()));
+        STAT_TOTALS.with(|t| {
+            if let Some(t) = t.borrow_mut().as_mut() {
+                t.0 += stat_int(&core.vt.out, "canvas_group_sets");
+                t.1 += stat_int(&core.vt.out, "backbuffer_copy_sets");
+            }
+        });
     }
     core.dispose();
     batches.push((core.ops.words.clone(), core.ops.arena.clone()));
     batches
+}
+
+thread_local! {
+    /// When set, `replay_at` sums each apply's canvas_group_sets and backbuffer_copy_sets.
+    static STAT_TOTALS: std::cell::RefCell<Option<(i64, i64)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// An int stat from an apply's Variant-tree stats: the key's string, then tag 2 and an i64.
+fn stat_int(vt: &[u8], key: &str) -> i64 {
+    let at = vt
+        .windows(key.len())
+        .position(|w| w == key.as_bytes())
+        .unwrap_or_else(|| panic!("no {key} in the apply stats"));
+    let v = at + key.len();
+    assert_eq!(vt[v], 2, "{key} is not an int");
+    i64::from_le_bytes(vt[v + 1..v + 9].try_into().unwrap())
+}
+
+/// `replay_at`, also returning the summed (canvas_group_sets, backbuffer_copy_sets).
+fn replay_counting(
+    path: &std::path::Path,
+    version: u8,
+    full_scan: bool,
+    sabotage: &str,
+) -> (Vec<(Vec<u32>, Vec<u8>)>, (i64, i64)) {
+    STAT_TOTALS.with(|t| *t.borrow_mut() = Some((0, 0)));
+    let batches = replay_at(path, version, full_scan, sabotage);
+    let totals = STAT_TOTALS.with(|t| t.borrow_mut().take().unwrap());
+    (batches, totals)
 }
 
 const RECORDINGS: [&str; 6] = [
@@ -109,7 +154,7 @@ const RECORDINGS: [&str; 6] = [
     "snap.rs6",
 ];
 
-const SABOTAGES: [&str; 18] = [
+const SABOTAGES: [&str; 20] = [
     "",
     "reupload",
     "ignore-clip",
@@ -128,6 +173,8 @@ const SABOTAGES: [&str; 18] = [
     "ignore-canvas-stacking",
     "screen-copy-per-reader",
     "vertex-flat-varyings",
+    "drop-canvas-group",
+    "full-backbuffer-copy",
 ];
 
 #[test]
@@ -165,13 +212,16 @@ fn sabotages_change_the_calls() {
 
 /// golden-6 has no clipping item, no in-place mesh payload change, no CanvasTexture, no
 /// screen-reading shader and no varying: these five have nothing to act on there (the gate legs
-/// exercise them).
+/// exercise them). The two CG1 sabotages act only on /10 state
+/// (`golden_10_reissues_the_backbuffer_state`).
 const EXPECTED_INERT: &[&str] = &[
     "ignore-clip",
     "stale-mesh",
     "refuse-canvas-texture",
     "screen-copy-per-reader",
     "vertex-flat-varyings",
+    "drop-canvas-group",
+    "full-backbuffer-copy",
 ];
 
 #[test]
@@ -237,6 +287,10 @@ fn the_session_is_at_the_streams_version() {
     // G8t: a /8 file (golden-8's full sink) opens at /8 and only at /8.
     let rs8 = golden7().join("../golden-8/full.rs8");
     assert_eq!(session_at(&rs8, 8).0, KIND_SESSION);
+    // CG1: a /10 file opens at /10 and only at /10.
+    let rs10 = golden7().join("../golden-10/full.rs10");
+    assert_eq!(session_at(&rs10, 10).0, KIND_SESSION);
+    assert_eq!(session_at(&rs10, 9).0, KIND_ERROR);
     assert_eq!(session_at(&rs8, 6).0, KIND_ERROR);
     assert_eq!(session_at(&rs6, 8).0, KIND_ERROR);
     // Only 6, 7 and 8: an older version is not a receiver stream.
@@ -254,7 +308,33 @@ fn the_session_is_at_the_streams_version() {
 #[test]
 fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
-    assert_eq!(rs_core_capi::ops::OP_COUNT, 67);
+    assert_eq!(rs_core_capi::ops::OP_COUNT, 68);
+}
+
+/// CG1 (render-stream-10.md "Receivers"): golden-10's states 9 and 10 re-issue the canvas-group
+/// mode 5 times (three owners set; the transparent owner's fit margin; the clip-only owner
+/// disabled -- the freed clip-and-draw item and the cleared full-copy item issue nothing) and the
+/// back-buffer copy 3 times (two set, the rect copy disabled), at either encoding, and the delta
+/// walk equals the full scan. The two CG1 sabotages each change the calls.
+#[test]
+fn golden_10_reissues_the_backbuffer_state() {
+    let g10 = golden().join("../golden-10");
+    for name in ["full.rs10", "patch.rs10", "inline.rs10"] {
+        let path = g10.join(name);
+        let (honest, totals) = replay_counting(&path, 10, false, "");
+        assert_eq!(totals, (5, 3), "{name}");
+        assert!(replay_at(&path, 10, true, "") == honest, "{name}: delta vs full scan");
+        let (dropped, totals) = replay_counting(&path, 10, false, "drop-canvas-group");
+        assert_eq!(totals, (0, 3), "{name}: drop-canvas-group");
+        assert!(dropped != honest, "{name}: drop-canvas-group changes the calls");
+        let (full, totals) = replay_counting(&path, 10, false, "full-backbuffer-copy");
+        // The full-target copy is Rect2() already; the rect copy now is too.
+        assert_eq!(totals, (5, 3), "{name}: full-backbuffer-copy");
+        assert!(full != honest, "{name}: full-backbuffer-copy changes the calls");
+    }
+    // golden-9's states at /9 issue neither op (the keys do not exist below /10).
+    let (_, totals) = replay_counting(&golden().join("../golden-9/full.rs9"), 9, false, "");
+    assert_eq!(totals, (0, 0));
 }
 
 /// G7o2 (D31): a deferred-digest session answers every record without its sha256, and

@@ -268,6 +268,9 @@ inline constexpr const char *kSubprotocolV8 = "render-stream.8";
 // texture-delivery-design.md D4): /8's live transport with /9's hello keys `texture_encodings` and
 // `gpu_formats`. Opt-in (GRC_STREAM_VERSION=9); no receiver offers it yet.
 inline constexpr const char *kSubprotocolV9 = "render-stream.9";
+// The subprotocol that makes a connection /10 (render-stream-10.md "Live transport"): /9's live
+// transport and hello with /10's session and items. Opt-in (GRC_STREAM_VERSION=10).
+inline constexpr const char *kSubprotocolV10 = "render-stream.10";
 
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES

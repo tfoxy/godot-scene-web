@@ -35,6 +35,7 @@ const CORE_SABOTAGES: Array[String] = [
 	"ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh",
 	"refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param",
 	"stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings",
+	"drop-canvas-group", "full-backbuffer-copy",
 ]
 
 ## The seq of the last accepted transaction.

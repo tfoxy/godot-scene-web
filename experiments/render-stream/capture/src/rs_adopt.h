@@ -102,6 +102,8 @@ struct AdoptStats {
   std::uint32_t lights = 0;             // Light2D nodes declared (canvas-light, sticky)
   std::uint32_t non_root_viewports = 0; // viewport subtrees not walked (non-root-viewport)
   std::uint32_t materials = 0;          // adopted items with a material (resolved by G8m)
+  std::uint32_t canvas_groups = 0;      // CG1: items given a canvas group (clip_children/CanvasGroup)
+  std::uint32_t backbuffer_copies = 0;  // CG1: BackBufferCopy items given a copy
   std::uint64_t walk_ns = 0;   // the read-only tree walk
   std::uint64_t apply_ns = 0;  // the mirror application
   std::uint64_t engine_ns = 0; // the redraw requests and the re-raises
@@ -122,6 +124,11 @@ struct AdoptConfig {
   // frame counter with Engine.get_process_frames() under GRC_ADOPT=arm).
   std::uint64_t arm_frame = 1;
   AdoptSabotage sabotage = AdoptSabotage::None;
+  // CG1 (render-stream-10.md "Capture"/"Adoption"): read each back-buffer state only when its
+  // conditional hook is planned (GRC_STREAM_VERSION=10 and the record names the slot), so a
+  // session that declares the setter unobserved never carries adopted state for it.
+  bool canvas_group = false;        // canvas_item_set_canvas_group_mode is hooked
+  bool copy_to_backbuffer = false;  // canvas_item_set_copy_to_backbuffer is hooked
 };
 
 // One adopted CanvasLayer (D5 "Per layer"), in tree order.
@@ -162,6 +169,17 @@ struct AdoptedItem {
   bool repeat = false;              // a Parallax2D with a non-zero repeat size
   float repeat_xy[2] = {0.0f, 0.0f};
   std::int32_t repeat_times = 1;
+  // CG1 (render-stream-10.md "Capture"/"Adoption"), each filled only when its hook is planned:
+  // the canvas_item_set_canvas_group_mode call the node made (a CanvasItem's clip_children_mode
+  // with the RS defaults, or a CanvasGroup's transparent group), and a BackBufferCopy's
+  // canvas_item_set_copy_to_backbuffer (rect mode: its rect; viewport mode: Rect2()).
+  std::int32_t canvas_group_mode = 0;  // RS CanvasGroupMode; 0 = none (never set)
+  float clear_margin = 5.0f;
+  bool fit_empty = false;
+  float fit_margin = 0.0f;
+  bool blur_mipmaps = false;
+  bool copy_to_backbuffer = false;
+  rs2::Rect4 copy_rect = rs2::kZeroRect;
 };
 
 struct AdoptPlan {

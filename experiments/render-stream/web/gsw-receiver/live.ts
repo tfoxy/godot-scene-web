@@ -114,8 +114,8 @@ import {
 
 /** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
-const SUBPROTOCOL = (v: 7 | 8 | 9) => `render-stream.${v}`;
-const PROTOCOL = (v: 7 | 8 | 9) => `render-stream/${v}` as const;
+const SUBPROTOCOL = (v: 7 | 8 | 9 | 10) => `render-stream.${v}`;
+const PROTOCOL = (v: 7 | 8 | 9 | 10) => `render-stream/${v}` as const;
 /** G8kp (texture-delivery-design.md Q3): the compressed families a WebGL2 context on this page
  * exposes, probed on a throwaway canvas before the module's own context exists (the hello goes
  * out first), minus RS_RECEIVER_GPU_FORMAT_MASK; `none` when empty. The module re-derives the same
@@ -422,7 +422,10 @@ class LiveReceiver {
             memory_budget_bytes: this.cfg.memoryBudgetBytes,
             texture_encodings: this.cfg.textureEncodings ?? "",
             gpu_format_mask: this.cfg.gpuFormatMask ?? "",
-            ...(this.cfg.liveProtocol === 9 ? { live_protocol: 9 } : {}),
+            // CG1: /10 is /9's live transport with /10's items (render-stream-10.md).
+            ...(this.cfg.liveProtocol >= 9
+              ? { live_protocol: this.cfg.liveProtocol }
+              : {}),
             // G8kb: the bundle carries the KTX2 transcoder worker (transcode.ts).
             transcoder: true,
             variant_policy: this.cfg.variantPolicy ?? "",
@@ -529,13 +532,15 @@ class LiveReceiver {
       dpr_milli: Math.round(window.devicePixelRatio * 1000),
     };
     // G8kp: at /9 the same keys under render-stream/9, then the two delivery keys.
+    // CG1: /10's hello is /9's under protocol render-stream/10.
     this.send(
-      this.cfg.liveProtocol === 9
+      this.cfg.liveProtocol >= 9
         ? helloV9(
             hello,
             // G8kb: GSW transcodes uastc (the module's default with the worker, Q3).
             this.cfg.textureEncodings ?? "block,uastc,decoded",
             probeGpuFormats(this.cfg.gpuFormatMask),
+            this.cfg.liveProtocol === 10 ? "render-stream/10" : "render-stream/9",
           )
         : hello,
     );
@@ -636,7 +641,7 @@ class LiveReceiver {
     if (!this.sessionSeen) {
       if (g.live_session(len, this.cfg.liveProtocol) < 0)
         throw failWith(null, g.error());
-      if (this.cfg.liveProtocol === 9) {
+      if (this.cfg.liveProtocol >= 9) {
         this.report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
           string,
           unknown

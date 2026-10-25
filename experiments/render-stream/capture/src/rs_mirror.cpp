@@ -3235,6 +3235,44 @@ void Mirror::set_use_parent_material(std::uint64_t rid, bool enable, std::uint64
   }
 }
 
+void Mirror::set_canvas_group_mode(std::uint64_t rid, std::int32_t mode, float clear_margin,
+                                   bool fit_empty, float fit_margin, bool blur_mipmaps,
+                                   std::uint64_t frame) {
+  if (mode < 0 || mode > 3) {
+    return;  // render-stream-10.md "Capture": unreachable from scene code; the hook counts it
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_canvas_group_mode", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_set_canvas_group_mode", frame)) {
+    // renderer_canvas_cull.cpp:2015-2033: DISABLED frees the group (nothing of the call is kept);
+    // any other mode replaces the whole state.
+    CanvasGroupState group;
+    if (mode != 0) {
+      group.mode = static_cast<CanvasGroupMode>(mode);
+      group.clear_margin = clear_margin;
+      group.fit_empty = fit_empty;
+      group.fit_margin = fit_margin;
+      group.blur_mipmaps = blur_mipmaps;
+    }
+    item->state.canvas_group = group;
+  }
+}
+
+void Mirror::set_copy_to_backbuffer(std::uint64_t rid, bool enable, const Rect4 &rect,
+                                    std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (dropped("canvas_item_set_copy_to_backbuffer", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_set_copy_to_backbuffer", frame)) {
+    // renderer_canvas_cull.cpp:1871-1886: disabling frees the copy (the rect is not kept).
+    item->state.copy_to_backbuffer = enable;
+    item->state.copy_to_backbuffer_rect = enable ? rect : kZeroRect;
+  }
+}
+
 void Mirror::set_instance_shader_parameter(std::uint64_t rid, const std::string &name,
                                            const DecodedParam &value, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);

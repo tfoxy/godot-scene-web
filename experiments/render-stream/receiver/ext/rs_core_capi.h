@@ -151,7 +151,9 @@ enum Op : uint32_t {
   AddClipIgnore = 64,
   AddMesh = 65,
   ItemSetCopyToBackbuffer = 66,
-  OP_COUNT = 67,
+  // item, i64 mode, f32 clear_margin, bool fit_empty, f32 fit_margin, bool blur_mipmaps (CG1, /10)
+  ItemSetCanvasGroupMode = 67,
+  OP_COUNT = 68,
 };
 
 // vt.rs tags.

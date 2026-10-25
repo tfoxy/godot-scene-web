@@ -2028,6 +2028,125 @@ void test_v9_connection() {
   }
 }
 
+// CG1 (render-stream-10.md "Live transport"): /10 is /9's live transport and hello under
+// "render-stream/10". golden-10/control/ holds the vectors (a /10 hello; a /9 hello, which a /10
+// connection refuses). A /10 connection gets the GRSA magic, a /10 session whose unobserved list
+// lacks the two hooked setters, and items carrying canvas_group / copy_to_backbuffer; a /9
+// connection on the same /10 host gets its own session (both setters unobserved, no item key).
+void test_v10_connection() {
+  const std::string root = std::string(GRC_GOLDEN10_DIR) + "/control";
+  const std::vector<std::string> valid = list_dir(root + "/valid");
+  const std::vector<std::string> invalid = list_dir(root + "/invalid");
+  check(!valid.empty() && !invalid.empty(), "golden-10 control vectors exist");
+  for (const std::string &path : valid) {
+    ControlMessage m;
+    std::string error;
+    check(parse_control(read_file(path), &m, &error, ProtocolVersion::V10),
+          "valid golden-10 control parses as V10: " + path + " " + error);
+    check(!parse_control(read_file(path), &m, &error, ProtocolVersion::V9),
+          "a golden-10 hello is refused by the V9 parser: " + path);
+  }
+  for (const std::string &path : invalid) {
+    ControlMessage m;
+    std::string error;
+    check(!parse_control(read_file(path), &m, &error, ProtocolVersion::V10),
+          "invalid golden-10 control refused as V10: " + path);
+  }
+  const std::string hello10 = read_file(root + "/valid/hello-native-block.json");
+  ControlMessage m;
+  check(parse_control(hello10, &m, nullptr, ProtocolVersion::V10) &&
+            m.protocol == "render-stream/10" && !m.texture_encodings.empty(),
+        "the /10 hello carries /9's keys under render-stream/10");
+  const std::string hello9 = read_file(std::string(GRC_GOLDEN9_DIR) +
+                                       "/control/valid/hello-native-block.json");
+  check(!parse_control(hello9, &m, nullptr, ProtocolVersion::V10),
+        "a /9 hello is refused by the V10 parser");
+
+  Session tmpl = template_v6();
+  tmpl.version = ProtocolVersion::V10;
+  tmpl.features = gate2_features(false, ProtocolVersion::V6);
+  tmpl.capture.hooks_planned.push_back("canvas_item_set_canvas_group_mode");
+  tmpl.capture.hooks_planned.push_back("canvas_item_set_copy_to_backbuffer");
+  observe_planned_backbuffer_setters(&tmpl.features, tmpl.capture.hooks_planned);
+  const auto listed = [](const Session &s, const char *name) {
+    return std::find(s.features.unobserved.begin(), s.features.unobserved.end(), name) !=
+           s.features.unobserved.end();
+  };
+  check(!listed(tmpl, "canvas_item_set_canvas_group_mode") &&
+            !listed(tmpl, "canvas_item_set_copy_to_backbuffer") &&
+            std::is_sorted(tmpl.features.unobserved.begin(), tmpl.features.unobserved.end()),
+        "a /10 template planning both hooks declares neither setter unobserved");
+  FakeTransport transport;
+  LiveConfig config;
+  Hub hub(&transport, config, tmpl);
+  hub.on_event(opened_with(1, "render-stream.10"), 0);
+  hub.on_event(opened_with(2, "render-stream.9"), 0);
+  hub.on_event(text(1, hello10), 0);
+  hub.on_event(text(2, hello9), 0);
+  Captured snapshot = captured_v6();
+  check(!snapshot.state.items.empty(), "the captured state has an item");
+  if (!snapshot.state.items.empty()) {
+    snapshot.state.items[0].canvas_group.mode = CanvasGroupMode::ClipOnly;
+    snapshot.state.items[0].canvas_group.clear_margin = 5.0f;
+    snapshot.state.items[0].copy_to_backbuffer = true;
+  }
+  hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1, 16000000ULL) ? &snapshot : nullptr, 1, 1000);
+  const std::vector<Sent> b10 = of_conn(transport, Sent::Binary, 1);
+  const std::vector<Sent> b9 = of_conn(transport, Sent::Binary, 2);
+  check(b10.size() == 2 && b9.size() == 2, "both versions got session + seq 1");
+  if (b10.size() == 2 && b9.size() == 2) {
+    const std::vector<std::uint8_t> m10 = magic(ProtocolVersion::V10);
+    check(std::equal(m10.begin(), m10.end(), b10[0].bytes.begin()),
+          "the /10 connection starts GRSA");
+    const std::vector<std::uint8_t> m9 = magic(ProtocolVersion::V9);
+    check(std::equal(m9.begin(), m9.end(), b9[0].bytes.begin()), "the /9 connection starts GRS9");
+    const std::string s10 = meta_at(b10[0].bytes, 8);
+    const std::string s9 = meta_at(b9[0].bytes, 8);
+    check(has(s10, "\"protocol\":\"render-stream/10\"") && has(s10, "\"texture_delivery\":"),
+          "the /10 session: render-stream/10, /9's keys");
+    check(has(s9, "\"protocol\":\"render-stream/9\"") &&
+              has(s9, "\"unobserved\":[\"canvas_item_set_canvas_group_mode\",") &&
+              has(s9, "\"canvas_item_set_copy_to_backbuffer\""),
+          "a /9 connection on a /10 host still declares both setters unobserved");
+    const std::size_t unobserved10 = s10.find("\"unobserved\":");
+    check(unobserved10 != std::string::npos &&
+              s10.find("canvas_item_set_canvas_group_mode", unobserved10) == std::string::npos &&
+              s10.find("canvas_item_set_copy_to_backbuffer", unobserved10) == std::string::npos,
+          "the /10 session's unobserved list names neither setter");
+    const std::string t10 = meta_at(b10[1].bytes, 0);
+    const std::string t9 = meta_at(b9[1].bytes, 0);
+    check(has(t10, "\"canvas_group\":{\"mode\":\"clip_only\",\"fit_empty\":false,"
+                   "\"blur_mipmaps\":false,\"f\":0},\"copy_to_backbuffer\":{\"f\":2}") &&
+              has(t10, "\"name\":\"backbuffer_f32\",\"type\":\"f32\",\"count\":6}"),
+          "a /10 transaction carries the item's back-buffer state");
+    check(!has(t9, "canvas_group") && !has(t9, "backbuffer"),
+          "a /9 transaction on the same host carries none of it");
+  }
+  const std::vector<ConnectionSummary> sums = hub.summaries();
+  check(sums.size() == 2 && sums[0].version == 10 && sums[1].version == 9, "versions 10 and 9");
+  if (sums.size() == 2) {
+    check(!sums[0].texture_encodings.empty(), "a /10 summary records the hello's preferences");
+  }
+  {
+    FakeTransport t2;
+    Hub h2(&t2, LiveConfig(), tmpl);
+    h2.on_event(opened_with(1, "render-stream.10"), 0);
+    h2.on_event(text(1, hello9), 0);
+    const std::vector<Sent> closes = t2.of(Sent::Close);
+    check(closes.size() == 1 && closes[0].code == 1002 && t2.of(Sent::Binary).empty(),
+          "a /9 hello on a /10 connection closes 1002 with nothing streamed");
+  }
+  {
+    FakeTransport t3;
+    Hub h3(&t3, LiveConfig(), tmpl);
+    h3.on_event(opened_with(1, "render-stream.9"), 0);
+    h3.on_event(text(1, hello10), 0);
+    const std::vector<Sent> closes = t3.of(Sent::Close);
+    check(closes.size() == 1 && closes[0].code == 1002 && t3.of(Sent::Binary).empty(),
+          "a /10 hello on a /9 connection closes 1002 with nothing streamed");
+  }
+}
+
 // gate7-design.md D3, Q2 "Host behaviour on the hello": on a bearer session a /7 hello whose
 // token is null or wrong is `error` unauthorized + close 1008 "unauthorized", with nothing sent
 // before or after; the right token streams. token-ignored lets the wrong one through but still
@@ -2143,6 +2262,7 @@ int main() {
   test_v6_and_v7_on_one_hub();
   test_v8_connection();
   test_v9_connection();
+  test_v10_connection();
   test_v7_hello_token();
   test_preflight_attribution();
   test_control_parser();

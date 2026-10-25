@@ -694,6 +694,41 @@ carries `diffuse`.
   - The pre-fix receiver fails `ct-reference` (6 white cells, 24,576 px per checkpoint) and
     `ct-diffuse-uploaded`.
 
+### As built (CG1): back-buffer item state on render-stream/10
+
+P3-NP (`results/p3/p3-np.md`) found STS2's HP bars wrong because `clip_children`
+(`canvas_item_set_canvas_group_mode`) was never hooked; P3-ST left `BackBufferCopy`
+(`canvas_item_set_copy_to_backbuffer`) unhooked for the same reason. CG1 carries both on an opt-in
+render-stream/10 (`render-stream-10.md`): two item keys, `canvas_group` and `copy_to_backbuffer`,
+re-issued by the native receiver and the web export, typed by GSW until CG3 composites them.
+
+**Calibration for /10 (decision).** P3-NP proposed "calibrator 10". CG1 does **not** bump the
+calibrator version; it follows G8kc's `texture_set_path` precedent instead:
+
+- `calibrate.py`'s `WANTED_SLOTS` gains `canvas_item_set_copy_to_backbuffer` (slot 484) and
+  `canvas_item_set_canvas_group_mode` (slot 495, measured on the pinned template), and the
+  committed record gains the two keys. `calibrator.version` stays `"9"` and `header_sha256` is
+  unchanged.
+- **Why not a bump.** The version is echoed into every session record
+  (`capture.calibrator_version`), so a bump changes every /2-/9 recording, golden and checker
+  expectation for two hooks that only /10 uses. A key added to `WANTED_SLOTS` is already backward
+  compatible by the calibrator's own rule (a record without it still loads, and the library omits
+  the hook and says so), so the version carries no information a reader needs.
+- **Conditional hooks.** Both are installed only under `GRC_STREAM_VERSION=10`, which also
+  makes the file sinks /10. Below /10 they are neither planned nor omitted, so `hooks_planned`,
+  the counters and every /2-/9 session stay byte-identical, and existing recordings and goldens
+  stay valid.
+- **Older records.** A record without the two keys still arms at /10: the hooks are omitted
+  (`capture.hooks_omitted`), the methods stay in `features.unobserved`, and every item carries
+  `null` for them, declared rather than silent. STS2's current record
+  (`sts2-megadot-4.5.1-m12.p3.json`, calibrator 9) is such a record. Read offline, it matches the
+  pinned template's layout slot for slot (prefix 23, 588 slots, every other key equal) and lacks
+  only the two new keys, so CG4's re-derivation should find 484 and 495 there too. Until CG4 runs
+  `calibrate.py` on the game binary, a /10 STS2 capture types the state as unobserved.
+- Later wire versions can follow the same rule: particles-multimesh-design.md planned new
+  calibrator versions for the multimesh and particles slots, but conditional hooks make them
+  unnecessary.
+
 ## Q6. Wire: render-stream/8 (G8w)
 
 `render-stream-8.md` states /8 as /7 plus exactly:

@@ -562,10 +562,10 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-9 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-10 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=9u8 {
+    for v in 2..=10u8 {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -584,6 +584,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (8, 7),
         (8, 9),
         (9, 8),
+        (9, 10),
+        (10, 9),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

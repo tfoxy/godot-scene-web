@@ -211,6 +211,7 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN4_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-4"
   GRC_GOLDEN7_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-7"
   GRC_GOLDEN9_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-9"
+  GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 
@@ -345,6 +346,16 @@ target_link_libraries(rs9_codec_test PRIVATE grc_warnings)
 target_compile_definitions(rs9_codec_test PRIVATE
   GRC_GOLDEN9_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-9")
 add_test(NAME rs9_codec COMMAND rs9_codec_test)
+
+# CG1: render-stream/10 is /9 plus the back-buffer item state (canvas_group, copy_to_backbuffer,
+# the backbuffer_f32 block; render-stream-10.md), proven byte-identical to
+# protocol/golden-10/{full,patch,inline}.rs10.
+add_executable(rs10_codec_test test/rs10_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs10_codec_test PRIVATE src test)
+target_link_libraries(rs10_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs10_codec_test PRIVATE
+  GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10")
+add_test(NAME rs10_codec COMMAND rs10_codec_test)
 
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.

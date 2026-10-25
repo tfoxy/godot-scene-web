@@ -1,0 +1,191 @@
+{
+  "schema": "render-stream-gate8-cg-expected/1",
+  "doc": "Hand-derived from cg.gd and Godot 4.5.1's canvas renderer (results/p3/p3-np.md 'Engine semantics', gate5_5-design.md 'Screen texture (P3-ST)'), not measured (README.md). Regions are inclusive [x0, y0, x1, y1]. `cells[].uses` names the /10 state a cell's pixels depend on at its `steps`: canvas_group (clip_children or CanvasGroup), copy_viewport (a BackBufferCopy of the whole target) and copy_rect (a BackBufferCopy of a rect). `removes` says which uses a leg's wire or receiver loses: the /9 capture carries none, the drop-canvas-group sabotage drops canvas_group, the full-backbuffer-copy sabotage turns every rect copy into a whole-target copy. A leg must differ from the reference in every cell whose uses it removes, at those steps, and equal it everywhere else. `wire` is every item's /10 state at each checkpoint as a multiset (`commands`: whether the item has draw commands); every other item carries null for both keys. `model` pins the screen-reading cells to closed-form pixels (`invert`: 255 - the 16x16 pattern of `seed` at scale 4, cg.gd _pattern) and the HP bar's clipping.",
+  "checkpoints": [
+    { "step": 0, "applied": 1, "settle": 4 },
+    { "step": 1, "applied": 14, "settle": 17 },
+    { "step": 2, "applied": 20, "settle": 27 }
+  ],
+  "arm_frame": 12,
+  "late_steps": [1, 2],
+  "toggle": { "step": 2, "frame": 20, "mode": "clip_only" },
+  "cells": {
+    "HPBAR": {
+      "region": [24, 20, 287, 51],
+      "uses": ["canvas_group"],
+      "steps": [0, 1, 2]
+    },
+    "HPLOW": {
+      "region": [24, 60, 287, 91],
+      "uses": ["canvas_group"],
+      "steps": [0, 1, 2]
+    },
+    "CLIPDRAW": {
+      "region": [328, 8, 423, 103],
+      "uses": ["canvas_group"],
+      "steps": [0, 1, 2]
+    },
+    "GROUP": {
+      "region": [436, 4, 523, 91],
+      "uses": ["canvas_group"],
+      "steps": [0, 1, 2]
+    },
+    "NESTED": {
+      "region": [536, 8, 631, 103],
+      "uses": ["canvas_group"],
+      "steps": [0, 1, 2]
+    },
+    "BBV": {
+      "region": [40, 136, 103, 199],
+      "uses": ["copy_viewport"],
+      "steps": [0, 1, 2]
+    },
+    "BBR": {
+      "region": [136, 136, 199, 199],
+      "uses": ["copy_rect"],
+      "steps": [0, 1, 2]
+    },
+    "TGL": {
+      "region": [224, 128, 319, 223],
+      "uses": ["canvas_group"],
+      "steps": [2]
+    },
+    "PLAIN": { "region": [328, 136, 391, 199], "uses": [], "steps": [] }
+  },
+  "removes": {
+    "receiver-v9": ["canvas_group", "copy_viewport", "copy_rect"],
+    "sabotage-drop-canvas-group/receiver": ["canvas_group"],
+    "sabotage-full-backbuffer-copy/receiver": ["copy_rect"]
+  },
+  "wire": {
+    "canvas_group": [
+      {
+        "state": {
+          "mode": "clip_only",
+          "clear_margin": 5,
+          "fit_empty": false,
+          "fit_margin": 0,
+          "blur_mipmaps": false
+        },
+        "commands": false,
+        "count": 2,
+        "from_step": 0,
+        "why": "HPBAR/HPLOW ForegroundContainer (a Control: no draw, so no group)"
+      },
+      {
+        "state": {
+          "mode": "clip_only",
+          "clear_margin": 5,
+          "fit_empty": false,
+          "fit_margin": 0,
+          "blur_mipmaps": false
+        },
+        "commands": true,
+        "count": 3,
+        "from_step": 0,
+        "why": "HPBAR/HPLOW Mask, NESTED's inner owner"
+      },
+      {
+        "state": {
+          "mode": "clip_only",
+          "clear_margin": 5,
+          "fit_empty": false,
+          "fit_margin": 0,
+          "blur_mipmaps": false
+        },
+        "commands": true,
+        "count": 1,
+        "from_step": 2,
+        "why": "TGL's mask after the toggle"
+      },
+      {
+        "state": {
+          "mode": "clip_and_draw",
+          "clear_margin": 5,
+          "fit_empty": false,
+          "fit_margin": 0,
+          "blur_mipmaps": false
+        },
+        "commands": true,
+        "count": 3,
+        "from_step": 0,
+        "why": "HPBAR/HPLOW HpForeground, CLIPDRAW's owner"
+      },
+      {
+        "state": {
+          "mode": "transparent",
+          "clear_margin": 12,
+          "fit_empty": true,
+          "fit_margin": 6,
+          "blur_mipmaps": true
+        },
+        "commands": false,
+        "count": 1,
+        "from_step": 0,
+        "why": "GROUP"
+      },
+      {
+        "state": {
+          "mode": "transparent",
+          "clear_margin": 10,
+          "fit_empty": true,
+          "fit_margin": 10,
+          "blur_mipmaps": false
+        },
+        "commands": false,
+        "count": 1,
+        "from_step": 0,
+        "why": "NESTED's outer CanvasGroup (the defaults)"
+      }
+    ],
+    "copy_to_backbuffer": [
+      {
+        "state": { "rect": [0, 0, 0, 0] },
+        "commands": false,
+        "count": 1,
+        "from_step": 0,
+        "why": "BBV (viewport mode: Rect2())"
+      },
+      {
+        "state": { "rect": [136, 136, 32, 64] },
+        "commands": false,
+        "count": 1,
+        "from_step": 0,
+        "why": "BBR (rect mode, the node at the origin)"
+      }
+    ]
+  },
+  "hooks": {
+    "canvas_group_mode": "canvas_item_set_canvas_group_mode",
+    "copy_to_backbuffer": "canvas_item_set_copy_to_backbuffer",
+    "calls_doc": "Calls the born capture's counters must count while armed: canvas_group_mode 14 = GROUP 4 (the CanvasGroup constructor's set_fit_margin(10), then fit_margin, clear_margin, use_mipmaps) + NESTED's group 1 (constructor) + 8 clip_children setters + TGL's toggle; copy_to_backbuffer 5 = BBV 2 (constructor's default rect mode, then viewport) + BBR 3 (constructor, copy_mode, rect). Teardown may add one disabling call per CanvasGroup (~CanvasGroup), hence the slack.",
+    "canvas_group_mode_calls": 14,
+    "copy_to_backbuffer_calls": 5,
+    "teardown_slack": 2
+  },
+  "model": {
+    "invert": [
+      { "cell": "BBV", "origin": [40, 136], "size": [64, 64], "seed": 3 },
+      { "cell": "BBR", "origin": [136, 136], "size": [32, 64], "seed": 4 }
+    ],
+    "solid": [
+      {
+        "cell": "BBR",
+        "rect": [168, 136, 199, 199],
+        "rgb": [204, 204, 153],
+        "why": "the back buffer outside BBR's rect still holds BBV's whole-target copy there: the clear colour, inverted"
+      }
+    ],
+    "pattern": [
+      { "cell": "PLAIN", "origin": [328, 136], "size": [64, 64], "seed": 6 }
+    ],
+    "clipped_rows": {
+      "cell": "HPBAR",
+      "x": [52, 259],
+      "inside_y": 36,
+      "outside_y": [28, 29, 30, 31, 42, 43, 44, 45],
+      "why": "the 18 px fills (y 28..45) show only on the mask's 10 rows (y 32..41): no fill-row colour above or below them"
+    }
+  },
+  "clear_color": [51, 51, 102]
+}

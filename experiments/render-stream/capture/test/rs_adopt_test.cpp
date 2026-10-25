@@ -78,6 +78,11 @@ void drive_born(Mirror *m, const Rids &r, uint64_t frame) {
   m->set_self_modulate(r.box, kHalf, frame);
   m->set_z_index(r.box, 1, frame);
   m->set_behind(r.behind, true, frame);
+  // CG1: World clips its children (clip_children_mode only: the RS defaults), Behind is a
+  // CanvasGroup (its constructor's transparent group), Top a BackBufferCopy in rect mode.
+  m->set_canvas_group_mode(r.world, 1, 5.0f, false, 0.0f, false, frame);
+  m->set_canvas_group_mode(r.behind, 3, 10.0f, true, 10.0f, false, frame);
+  m->set_copy_to_backbuffer(r.top, true, {-100.0f, -100.0f, 200.0f, 200.0f}, frame);
   // enter tree, pre-order
   m->set_parent(r.world, kRootCanvas, frame);
   m->set_visibility_layer(r.world, 1, frame);
@@ -136,6 +141,7 @@ AdoptPlan make_plan(const Rids &r) {
   AdoptedItem world = item(r.world, kRootCanvas, true, 0);
   world.xform = kMoved;
   world.modulate = kTint;
+  world.canvas_group_mode = 1;  // CG1: the walk's clip_children read, RS defaults
   plan.items.push_back(world);
   AdoptedItem box = item(r.box, r.world, false, 0);
   box.self_modulate = kHalf;
@@ -143,8 +149,15 @@ AdoptPlan make_plan(const Rids &r) {
   plan.items.push_back(box);
   AdoptedItem behind = item(r.behind, r.world, false, 1);
   behind.behind = true;
+  behind.canvas_group_mode = 3;  // CG1: a CanvasGroup's getters
+  behind.clear_margin = 10.0f;
+  behind.fit_empty = true;
+  behind.fit_margin = 10.0f;
   plan.items.push_back(behind);
-  plan.items.push_back(item(r.top, kRootCanvas, true, 0));
+  AdoptedItem top = item(r.top, kRootCanvas, true, 0);
+  top.copy_to_backbuffer = true;  // CG1: a BackBufferCopy in rect mode
+  top.copy_rect = {-100.0f, -100.0f, 200.0f, 200.0f};
+  plan.items.push_back(top);
   plan.items.push_back(item(r.modulate, kLayerCanvas, true, 0));
   AdoptedItem layer_box = item(r.layer_box, kLayerCanvas, true, 0);
   layer_box.visible = false;
@@ -177,6 +190,15 @@ std::string diff_items(const ItemState &a, const ItemState &b) {
   if (a.visibility_layer != b.visibility_layer) return "visibility_layer";
   if (a.texture_filter != b.texture_filter) return "texture_filter";
   if (a.texture_repeat != b.texture_repeat) return "texture_repeat";
+  if (a.canvas_group.mode != b.canvas_group.mode ||
+      a.canvas_group.clear_margin != b.canvas_group.clear_margin ||
+      a.canvas_group.fit_empty != b.canvas_group.fit_empty ||
+      a.canvas_group.fit_margin != b.canvas_group.fit_margin ||
+      a.canvas_group.blur_mipmaps != b.canvas_group.blur_mipmaps)
+    return "canvas_group";
+  if (a.copy_to_backbuffer != b.copy_to_backbuffer ||
+      a.copy_to_backbuffer_rect != b.copy_to_backbuffer_rect)
+    return "copy_to_backbuffer";
   return "";
 }
 
@@ -232,7 +254,8 @@ void test_born_equals_adopted() {
   check(b.canvases.size() == 2 && b.canvases[1].origin == Origin::Adopted,
         "the layer canvas is adopted");
   check(stats.items == 6 && stats.layers == 1 && stats.canvases == 1 && stats.hidden == 1 &&
-            stats.top_level == 4 && stats.canvas_modulates == 1,
+            stats.top_level == 4 && stats.canvas_modulates == 1 && stats.canvas_groups == 2 &&
+            stats.backbuffer_copies == 1,
         "the stats count the plan");
 }
 

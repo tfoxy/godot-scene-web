@@ -372,7 +372,12 @@ export interface Report {
   /** Live: the `live` block (receiver.gd `_live_report`), the protocol and the granted window. */
   live: Record<string, unknown> | null;
   entries: LiveEntry[] | null;
-  protocol: "render-stream/6" | "render-stream/7" | "render-stream/8" | "render-stream/9";
+  protocol:
+    | "render-stream/6"
+    | "render-stream/7"
+    | "render-stream/8"
+    | "render-stream/9"
+    | "render-stream/10";
   creditWindow: number | null;
   /** G8kp: at /9, the module's `delivery_json()` (what this receiver states and selects with). */
   textureDelivery?: Record<string, unknown> | null;

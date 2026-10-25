@@ -579,7 +579,9 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v9()
+                   g_stream.gate8.speaks_v10()
+                       ? 10
+                       : g_stream.gate8.speaks_v9()
                        ? 9
                        : (g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6)));
     if (g_stream.gate8.speaks_v9()) {
@@ -641,6 +643,11 @@ std::string result_json() {
       json.field("canvas_modulates", static_cast<int64_t>(a.canvas_modulates));
       json.field("lights", static_cast<int64_t>(a.lights));
       json.field("materials", static_cast<int64_t>(a.materials));
+      if (g_stream.gate8.speaks_v10()) {
+        // CG1 (render-stream-10.md "Capture"/"Adoption"): additive, /10 streams only.
+        json.field("canvas_groups", static_cast<int64_t>(a.canvas_groups));
+        json.field("backbuffer_copies", static_cast<int64_t>(a.backbuffer_copies));
+      }
       json.field("non_root_viewports", static_cast<int64_t>(a.non_root_viewports));
       json.field("walk_ns", static_cast<int64_t>(a.walk_ns));
       json.field("apply_ns", static_cast<int64_t>(a.apply_ns));
@@ -1864,7 +1871,9 @@ void stream_start() {
   // G8w (gate8-design.md D2): /8 only when a file sink asked for it (GRC_STREAM_VERSION=8) or a
   // gate 8 policy needs it; /6 otherwise, and every /2-/7 byte stays as it was.
   // G8k9: GRC_STREAM_VERSION=9 selects /9 (render-stream-9.md); the seam declares the delivery mode.
-  session.version = g_stream.gate8.speaks_v9()   ? rs2::ProtocolVersion::V9
+  // CG1: GRC_STREAM_VERSION=10 selects /10 (render-stream-10.md).
+  session.version = g_stream.gate8.speaks_v10()  ? rs2::ProtocolVersion::V10
+                    : g_stream.gate8.speaks_v9() ? rs2::ProtocolVersion::V9
                     : g_stream.gate8.speaks_v8() ? rs2::ProtocolVersion::V8
                                                  : rs2::ProtocolVersion::V6;
   session.materials.shader_policy = g_stream.shader_policy;
@@ -1888,6 +1897,11 @@ void stream_start() {
   const bool ct_synthesized = rs::canvas_texture_shim().armed();
   // /7 and /8 change no feature list (render-stream-7.md, render-stream-8.md): ask for /6's.
   session.features = rs2::gate2_features(headless_host && !ct_synthesized, rs2::ProtocolVersion::V6);
+  if (session.version == rs2::ProtocolVersion::V10) {
+    // render-stream-10.md "Features": each back-buffer setter leaves unobserved when its hook is
+    // planned (a record without the slot omits the hook and keeps the method unobserved).
+    rs2::observe_planned_backbuffer_setters(&session.features, session.capture.hooks_planned);
+  }
   if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
     session.sabotage.frame = sabotage.config.frame;
@@ -2009,6 +2023,13 @@ void stream_start() {
     }
     rs::AdoptConfig adopt_config;
     adopt_config.arm_frame = g_state.frames_total + 1;  // the iteration the walk runs in
+    // CG1: the back-buffer state is adopted exactly where its conditional hook is installed.
+    const auto planned = [](const char *name) {
+      return std::find(g_state.plan.planned.begin(), g_state.plan.planned.end(), name) !=
+             g_state.plan.planned.end();
+    };
+    adopt_config.canvas_group = planned("canvas_item_set_canvas_group_mode");
+    adopt_config.copy_to_backbuffer = planned("canvas_item_set_copy_to_backbuffer");
     switch (sabotage.config.kind) {
     case rs2::SabotageKind::AdoptSkipState: adopt_config.sabotage = rs::AdoptSabotage::SkipState; break;
     case rs2::SabotageKind::AdoptNoRedraw: adopt_config.sabotage = rs::AdoptSabotage::NoRedraw; break;
@@ -2222,7 +2243,7 @@ void stream_start() {
     // token in the hello like /7's.
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
     server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
-                                                   rs2::kSubprotocolV9};
+                                                   rs2::kSubprotocolV9, rs2::kSubprotocolV10};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";
