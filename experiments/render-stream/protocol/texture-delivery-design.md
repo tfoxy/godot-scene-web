@@ -524,14 +524,7 @@ So the release sequence is:
 
 - **Basis-mode `.ctex` reuse** (D10's file-derived UASTC): when a fixture or a game needs it; G8kc's
   path hook makes it a small addition.
-- **Web-export compressed-format honesty (OPEN; owner G8kwh).** The web export states what
-  `has_os_feature` claims, but Godot's GLES3 config sets `etc2_supported` unconditionally on web
-  builds, so the export states `etc2` on a WebGL context with no `WEBGL_compressed_texture_etc`
-  (every desktop GPU) and then uploads ETC2 `block` variants (`INVALID_ENUM:
-  compressedTexImage2D`, a wrong picture). WebGL also refuses a BC level 0 whose size is not a
-  multiple of 4 (the 150x110 `npot` texture). G8kwh: the web export states only what the WebGL
-  context can upload (`getSupportedExtensions`), and D3 skips BC `block` and `uastc` variants
-  that are not 4-aligned (`bc_aligned_only`). Until then web `block` pixels are not claimed.
+- **Web-export compressed-format honesty: closed by G8kwh** ("As built (G8kwh)").
 - **Web-export transcode in a JS worker** via `JavaScriptBridge`: if G8ku's g31 hitch matters.
 - **R8/RG8/LA8 and glyph atlases in Basis** (BC4/BC5, ETC2_R11/RG11): no byte need in the census.
 - **Arm-on-subscribe interplay** (gate8-design "Deferred"): a warm cache makes re-arming cheap.
@@ -1198,3 +1191,75 @@ recovery, ETC1S, receiver-driven encode priority, pack warming (all/selective), 
 | All-pack / selective-pack warming (K3) | deferred library feature | `--list` is the form it feeds |
 | Receiver-driven encode priority (Q4), freeing `decoded` bytes on the host (Q7 "Memory") | later | FIFO in table order; `decoded` stays resident |
 | Manifests for gate 8's new checks | G8z | not added here |
+
+## As built (G8kwh)
+
+Landed as one commit; evidence summary [results/gate8/g8kwh.md](../results/gate8/g8kwh.md). The web
+export now states, and uploads, only the texture formats its WebGL context takes.
+
+**The two defects.** (1) Godot 4.5.1's GLES3 config sets `etc2_supported = true` on every build that
+is not desktop GL (`drivers/gles3/storage/config.cpp`, the `!is_gles_over_gl()` branch: WebGL,
+Android, iOS), whatever the context's extensions; `s3tc`, `bptc`, `rgtc` and `astc` do read them. So
+`has_os_feature("etc2")` is true on every web build, the web export stated `etc2` on desktop
+contexts without `WEBGL_compressed_texture_etc`, took the ETC2 `block` variants and
+`compressedTexImage2D` refused them (`INVALID_ENUM`, the texture incomplete: black). (2) WebGL refuses
+a BC level 0 that is not 4-aligned (`INVALID_OPERATION`); desktop GL takes it. The web export's
+150x110 `npot` uastc variant transcoded to BC7 and drew black (16,500 px). G8kb's "wrong live, right
+in the replay" was not a live/file difference: the replay in its evidence
+(`artifacts/render-stream/gate8/g8kb/web-npot-defect/replay`) ran on the *native* receiver
+(`applied.json` `receiver.kind` `native`, X11), whose desktop GL accepts the unaligned BC7; the live
+web final shot and that replay's last checkpoint differ on all 16,500 px of the box and elsewhere
+only by channel 1 (6,173 px, Q7's band). Under the landed harness `lib/legs.sh` sends a GRS9 replay to
+the browser too, where it would have drawn the same black box.
+
+**The hello.** `receiver.gd` `_apply_delivery` on the web reads the page's WebGL 2 context's
+extensions through `JavaScriptBridge` (`canvas.getContext('webgl2')` returns the engine's own context;
+emscripten enables every supported compressed-texture extension by default, and Godot's config reads
+the same `getSupportedExtensions` list) and states a family only when `has_os_feature` reports it AND
+its extension is listed (GSW's own table, `web/gsw-receiver/hello.ts`). `applied.json`'s
+`texture_delivery` adds, on the web, `gpu_formats_engine` (what `has_os_feature` claims),
+`webgl_extensions` (the compressed-texture ones the context lists) and `bc_aligned_only`. A list that
+cannot be read states no family. The native receiver's hello and report are unchanged.
+
+**WebGL's alignment rule in D3.** rs-core `DeliveryPrefs` gains `bc_aligned_only` and
+`transcoder_aligns`. With `bc_aligned_only`, D3 skips a BC (`s3tc`, `bptc`, `rgtc`) `block` variant of
+a texture whose level 0 is not 4-aligned, and, unless the receiver's transcoder applies the rule
+itself (`transcoder_aligns`), that texture's `uastc` variant while any BC family is stated: Godot's
+KTX2 loader (D14) would pick that family for it. This is conservative for a four-component texture
+on a context with ASTC as well as BC (the loader picks ASTC first; D3 takes `decoded`): no desktop GPU
+has both. The entry falls through to its next preference, `decoded` at last, so no KTX2 is fetched
+for it. The web export sets the rule (`rsc_set_bc_aligned_only`, through `set_webgl_rules`), GSW sets
+both (its transcoder's `webglFamilies` already retargets an unaligned texture, G8kb, so its `uastc`
+stays; the new part is that it never takes an unaligned BC `block` variant, which no fixture has).
+
+**The loader's target, bounded.** Godot's loader picks its target from `has_os_feature`, so on the
+web it still believes in `etc2`, and it ignores the receiver's mask. Under `set_webgl_rules` the
+extension's transcode (`transcode_ktx2`, in `pretranscode` ahead of the apply) refuses a target whose
+family the receiver did not state, or BC at an unaligned size: the row gets `ok: false` and
+`refused_target`, and G8kf's fallback takes the entry's next preference (`decoded`). A context with
+neither BC nor ASTC nor ETC (a software WebGL) would otherwise have uploaded ETC2 and failed.
+
+**Native stays byte-identical**: it never sets the rules, and its hello and report are unchanged.
+
+**Checks.** g8kp: `delivery-select-web` now also requires each stated family's extension in the
+context's own list and the rule stated; `delivery-pixels-web` (new legs `g8kp-web/web-masked`, the
+decoded baseline): on the step whose BC blocks it took, the web draw is within channel 1 of
+`reference-hw` on every pixel where its decoded draw equals the CPU-decoded reference; on the
+mobile step (no ETC2/ASTC taken on desktop) it equals the masked leg exactly; no `WebGL: ` console
+line. Sabotage `advertise-etc2` (`g8kp-web/sabotage-advertise-etc2/web`, the pre-G8kwh hello: etc2
+stated, rules off) takes 5 ETC2 blocks and fails that predicate (`sabotage-advertise-etc2`). g8ku:
+`delivery-web` and `delivery-fallback` expect `npot` decoded on the web; `delivery-pixels-web` holds
+the web export's upgrade leg within channel 1 of the native upgrade leg, `npot`'s region of the
+native keep leg; `delivery-web-masked` (new leg `g8ku-web/web-masked`, BC masked) sees every
+transcode's BC target refused and only `decoded` uploaded. g7-8's web half replays g8kp's legs
+again; g8ku's stay out by design (`web-judged-in-gate8`: `npot` decoded on the web, BC7 natively),
+judged by gate 8's own web legs, and so does `g8l/basis/replay` when the source is a full gate 8
+run (the source cache can reuse one, which holds g8l's native file replays). A replayed delivery leg whose native and web receivers state
+different `gpu_formats` (the CI runner: llvmpipe GL has ASTC, ANGLE on lavapipe states
+`s3tc,bptc,rgtc`) makes different D3 choices by design: `delivery-context-differs@web` (report only)
+lists it, and its applied and pixel differences are attributed there, as a `web-*` refusal's are.
+The web export's live g8l `basis` leg runs.
+
+**Not covered.** A fixture with an unaligned BC `block` variant (the rule is unit-tested in rs-core
+and the self-test only); a WebGL context with neither BC nor ASTC (the refused-target backstop is
+exercised by masking); Android/iOS native exports, which share Godot's `etc2` claim; ETC1S (G8ke).

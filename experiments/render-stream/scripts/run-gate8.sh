@@ -79,7 +79,9 @@
 #       (`receiver-masked`); last, in headless Chromium, the GSW receiver on the same recording
 #       (`gsw`), with s3tc,bptc,rgtc masked (`gsw-masked`) and the ignore-format-mask sabotage
 #       (`sabotage-ignore-format-mask/gsw`: the mask stated, not applied), through
-#       gate8-delivery-tool.ts (the rs-core wasm and the GSW bundle are built first).
+#       gate8-delivery-tool.ts (the rs-core wasm and the GSW bundle are built first); then the web
+#       export on the same launch (`g8kp-web/web`, G8kf), BC masked (`g8kp-web/web-masked`) and
+#       stating etc2 without its WebGL extension (`g8kp-web/sabotage-advertise-etc2/web`, G8kwh).
 #   g8kc (G8kc, texture-delivery-design.md D7-D10: the persisted host texture cache, the prepare step
 #       and the texture_set_path hook; fixtures/gate8-tex; every leg under g8kc/, all headless): the
 #       import and oracle (shared), then /9 passthrough captures with GRC_TEXTURE_DECODE=engine:
@@ -1008,7 +1010,8 @@ run_g8kc() {
 #          lazy uastc variants publish when their encodes finish), the receiver and its replay at
 #          RS_RECEIVER_PROTOCOL=9 with RS_RECEIVER_VARIANT_POLICY=upgrade, so the live /9 hello
 #          states uastc and the variants are fetched and transcoded over HTTP (texture-delivery-
-#          design.md Q3, Q6); its tap and sink are .rs9
+#          design.md Q3, Q6); its tap and sink are .rs9. G8kwh: the web export's basis leg runs
+#          again (its replay is the web export too: lib/legs.sh routes a GRS9 replay to the browser)
 # A host is the fixture headless at --max-fps 60 with its /8 file sink and store, a live listener
 # on 127.0.0.1:0 (lib/legs.sh moves it to GATE7_HOST_PORT for a browser), and
 # GRC_LIVE_AWAIT_HELLO_MS (its timeline waits at the first armed frame for the receiver's hello, so
@@ -1153,16 +1156,6 @@ run_g8l() {
 	local f leg via
 	for f in "${G8L_FIXTURES[@]}"; do
 		leg="$OUT/g8l/$f"
-		# G8kb: the web export's /9 basis live leg is not run here: live, its non-4-aligned BC7
-		# texture (npot, 150x110) draws wrong while its replay of the same sink draws right (WebGL
-		# refuses such a BC level 0; texture-delivery-design.md "As built (G8kb)"), a web-export
-		# defect G8kf owns. The checks report the leg not-applicable from this marker.
-		if [ "$f" = basis ] && [ "${GATE7_LIVE_KIND:-}" = web ]; then
-			mkdir -p "$leg"
-			echo "G8kb: the web export's live /9 basis leg waits for G8kf (non-4-aligned BC7 upload, live differs from replay)" >"$leg/not-applicable.txt"
-			echo "run-gate8: g8l basis not run for the web export (see $leg/not-applicable.txt)"
-			continue
-		fi
 		via=""
 		[ "$f" = proxy ] && via=" through the reverse proxy"
 		echo "run-gate8: g8l $f (live host at /8, receiver over render-stream.8$via)"

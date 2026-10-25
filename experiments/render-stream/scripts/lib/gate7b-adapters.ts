@@ -67,7 +67,11 @@ import {
   viewHoldsWrite,
 } from "./gate7-adapters";
 import { legRecording, type WebLegSpec } from "./gate7-web-legs";
-import { resolveRecording, statesEqual, wireVersionOf } from "./render-stream-2";
+import {
+  resolveRecording,
+  statesEqual,
+  wireVersionOf,
+} from "./render-stream-2";
 
 /** R3: the CI-only software-renderer allowance this checker runs under (null: the NVIDIA default). */
 const ciAllowance = ciRendererAllowance();
@@ -91,7 +95,13 @@ export interface GateDef {
 }
 
 /** G8g: gate 8's file-leg groups, in run-gate8.sh's order (the source run's --legs). */
-export const GATE8_FILE_GROUPS: readonly string[] = ["g8t", "g8a", "g8h", "g8f", "g8m"];
+export const GATE8_FILE_GROUPS: readonly string[] = [
+  "g8t",
+  "g8a",
+  "g8h",
+  "g8f",
+  "g8m",
+];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's
  * and G7g's, the rate, soak and report groups (g6s, g6c, g6p, g6z) G7r's, G7k's and G7p's. */
@@ -151,7 +161,7 @@ export const GATE7B_GATES: readonly GateDef[] = [
     viewGroups: ["g6a", "g6h", "g6b"],
     sourceLegs: "g6a,g6h,g6b",
     runner: "run-gate6.sh",
-  },  // G8g: gate 8's file groups (g8t's decode and g8f's floats on gate8-tex, g8a with G8r's lazy
+  }, // G8g: gate 8's file groups (g8t's decode and g8f's floats on gate8-tex, g8a with G8r's lazy
   // resources on gate8-adopt, g8h on gate8-size, g8m on gate8-mat). g8l (its live legs) is the
   // live half's (lib/gate7-live.ts); decode-cost is a timing group and judges no receiver leg.
   {
@@ -173,12 +183,41 @@ export type ExcludedReason =
   | "native-only-editor"
   | "native-only-warm-cache"
   | "live-derived"
-  | "gsw-only-group";
+  | "web-judged-in-gate8";
 
-/** G8kb: source groups only g7-8's GSW half replays (lib/gate7-gsw-g8.ts GATE8_LEGS): gate 8's
- * texture-delivery groups at /9. The web export's own /9 legs run inside g8ku (g8ku-web/web); its
- * block-variant and non-4-aligned BC uploads are G8kf's (results/gate8/g8kb.md). */
-export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8kp", "g8ku"];
+/** Source groups only g7-8's GSW half replays (lib/gate7-gsw-g8.ts GATE8_LEGS). G8kb excluded both
+ * texture-delivery groups (g8kp, g8ku) for the web export's dishonest /9 uploads; G8kwh fixed those
+ * and replays g8kp's legs again. g8ku stays out by design: the web export keeps the non-4-aligned
+ * `npot` texture decoded (WebGL's BC alignment rule) where every native g8ku receiver uploads its
+ * BC7 transcode, so its applied.json and that region differ from the native leg's. Gate 8 replays
+ * those legs in the web export itself (g8ku-web/{web,web-fallback,web-pending}) and judges them
+ * with web-aware checks (delivery-web, delivery-pixels-web, delivery-fallback, delivery-pending).
+ * `g8l/basis` (a source made with every gate 8 group, e.g. a native gate 8 run reused from the
+ * source cache, holds g8l's native file replays) is the same fixture at /9: its replay of the
+ * host's sink differs from native the same way; g7-8's live half judges the web export's basis leg
+ * (live-replay-equals-live-g8l-basis@web). Entries are source leg-path prefixes. */
+export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8ku", "g8l/basis"];
+
+/** G8kwh (texture-delivery-design.md D3, "As built (G8kwh)"): a /9 delivery leg whose native and
+ * web receivers state different gpu_formats (each its own context's: a CI runner's llvmpipe GL has
+ * ASTC, its ANGLE-on-lavapipe WebGL does not) makes different D3 choices by design, so its
+ * applied.json and the textures' pixels differ from native. A description, or null when both state
+ * the same families (or a leg states none: below /9). */
+export function deliveryContextDiffers(
+  nApplied: unknown,
+  wApplied: unknown,
+): string | null {
+  const formats = (doc: unknown): string | undefined =>
+    (
+      doc as {
+        receiver?: { texture_delivery?: { gpu_formats?: unknown } };
+      } | null
+    )?.receiver?.texture_delivery?.gpu_formats as string | undefined;
+  const n = formats(nApplied);
+  const w = formats(wApplied);
+  if (typeof n !== "string" || typeof w !== "string" || n === w) return null;
+  return `native states gpu_formats ${n}, web ${w}`;
+}
 
 export interface DiscoveredLeg {
   leg: string;
@@ -293,9 +332,9 @@ export function discoverFileReceiverLegs(sourceDir: string): DiscoveredLeg[] {
       leg.excludedDetail =
         "the leg straces the native receiver process (D11: its checks read strace.txt; a browser has no such trace)";
     } else if (GSW_ONLY_SOURCE_GROUPS.some((g) => rel.startsWith(`${g}/`))) {
-      leg.excluded = "gsw-only-group";
+      leg.excluded = "web-judged-in-gate8";
       leg.excludedDetail =
-        "G8kb: gate 8's texture-delivery groups (g8kp, g8ku) are in g7-8's source for the GSW half; the web export's /9 legs run inside g8ku (g8ku-web/web), and its block and non-4-aligned BC uploads wait for G8kf";
+        "G8kwh: by design the web export keeps gate8-basis's non-4-aligned npot texture decoded (WebGL refuses a BC level 0 that is not 4-aligned) where the native receiver uploads its BC7 transcode, so applied.json and that region differ from the native leg; gate 8 replays g8ku's receiver legs in the web export itself (g8ku-web/) and judges them there (delivery-web, delivery-pixels-web, delivery-fallback, delivery-pending), and g7-8's live half runs the web export's g8l basis leg";
     } else if (env.get("RS_RECEIVER_CACHE_MODE") === "warm") {
       leg.excluded = "native-only-warm-cache";
       leg.excludedDetail =
@@ -658,7 +697,8 @@ function resolvedStates(
     const data = new Uint8Array(readFileSync(recordingPath));
     // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9).
     const wire = wireVersionOf(data);
-    const versions = wire === 8 || wire === 9 ? [wire] : ([6, 5, 4, 3, 2] as const);
+    const versions =
+      wire === 8 || wire === 9 ? [wire] : ([6, 5, 4, 3, 2] as const);
     for (const version of versions) {
       try {
         const r = resolveRecording(data, version);
@@ -879,6 +919,8 @@ export async function checkGateWeb(
     // A leg whose web receiver typed a web-only refusal (`web-*` in applied.json `unsupported`)
     // differs from native by design; its `other` pixels are attributed to the refusal (and its own
     // leg-class and reference checks fail on them), never to the pixel band.
+    // G8kwh: so does a delivery leg whose two receivers state different gpu_formats
+    // (delivery-context-differs@web).
     const refusedLegs = new Set<string>();
     for (const sp of specs) {
       const w = await readJson<{ unsupported?: { reason?: string }[] }>(
@@ -886,6 +928,8 @@ export async function checkGateWeb(
       );
       if ((w?.unsupported ?? []).some((u) => u.reason?.startsWith("web-")))
         refusedLegs.add(sp.leg);
+      const n = await readJson<unknown>(join(sp.nativeDir, "applied.json"));
+      if (deliveryContextDiffers(n, w)) refusedLegs.add(sp.leg);
     }
     for (const s of shotClasses) {
       totals.shots++;
@@ -953,6 +997,7 @@ export async function checkGateWeb(
   const missing: string[] = [];
   const appliedDiff: string[] = [];
   const webRefusals: string[] = [];
+  const contextDiffers: string[] = [];
   const pw1 = { shots: 0, identical: 0, differing: [] as string[] };
   const startup: Record<string, unknown>[] = [];
   const compositorProblems: string[] = [];
@@ -1031,7 +1076,12 @@ export async function checkGateWeb(
       ).filter(
         (u) => typeof u.reason === "string" && u.reason.startsWith("web-"),
       );
-      if (refusals.length > 0)
+      const context = deliveryContextDiffers(nApplied, wApplied);
+      if (context)
+        contextDiffers.push(
+          `${spec.leg}: ${context}; applied.json differs at ${diffs.join(" | ") || "nothing else"}`,
+        );
+      else if (refusals.length > 0)
         webRefusals.push(
           `${spec.leg}: ${refusals.length} refused (${[...new Set(refusals.map((u) => `${u.name} ${u.reason}`))].join(", ")}, first seq ${refusals[0].seq}); applied.json differs at ${diffs.join(" | ") || "nothing else"}`,
         );
@@ -1099,6 +1149,14 @@ export async function checkGateWeb(
       `${specs.length} legs equal native`,
     ),
   );
+  checks.push({
+    id: "delivery-context-differs@web",
+    criterion:
+      "G8kwh (report): /9 delivery legs whose native and web receivers state different gpu_formats (each its own context's families, D3); their applied.json and texture pixels differ from native by design, and gate 8's own web legs judge the web export's choices and pixels (delivery-select-web, delivery-pixels-web)",
+    passed: contextDiffers.length === 0,
+    gating: false,
+    detail: contextDiffers.length === 0 ? "none" : contextDiffers.join("; "),
+  });
   checks.push({
     id: "web-refusals@web",
     criterion:

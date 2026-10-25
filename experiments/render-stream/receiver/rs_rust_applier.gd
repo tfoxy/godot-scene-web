@@ -117,6 +117,13 @@ func set_delivery(texture_encodings: String, gpu_formats: String) -> String:
 	return refused
 
 
+## G8kwh: the web export's upload rules: WebGL's BC alignment rule in D3 (the core's
+## bc_aligned_only), and a KTX2 transcode whose target family the receiver did not state (or BC at a
+## size that is not 4-aligned) fails as a transcode does, so the entry falls back (Q3).
+func set_webgl_rules(on: bool) -> void:
+	_core.call("set_webgl_rules", on)
+
+
 ## G8ku (texture-delivery-design.md D6): `upgrade` (true) refetches when a preferred variant appears
 ## at an equal version; `keep` (false, the default) holds what is resident.
 func set_variant_upgrade(on: bool) -> void:

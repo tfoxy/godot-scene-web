@@ -3376,6 +3376,8 @@ mise exec -- pnpm render-stream:gate8 -- \
   `web-legs` builds the web export (`build-web-receiver.sh`) and replays `g8ku/receiver-upgrade`
   in it, into `g8ku-web/web` (beside `g8ku/`, whose harness link targets `g8ku/` alone: a second
   link to the whole run would make the remote artifact trim's recursive glob never end).
+  G8kf and G8kwh: `gsw-legs` also replays `g8kp/receiver` in the web export into `g8kp-web/`: as
+  is (`web`), BC masked (`web-masked`) and with the `advertise-etc2` sabotage.
 - `check-gate8.ts`: the checker CLI; writes `<out>/result.json` (`render-stream-gate8-report/1`:
   `checks`, and under `g8t` the legs, the `decode_cost` table, the largest calling-thread `hitch`
   and the informative `hardware_band`; under `g8a` the legs, the adoption `cost`, the
@@ -3476,6 +3478,7 @@ mise exec -- pnpm render-stream:gate8 -- \
 | `receiver`, `receiver-patch`, `receiver-masked` | the native receiver on the full and patch sinks (`block,decoded`), and with `RS_RECEIVER_GPU_FORMAT_MASK=s3tc,bptc,rgtc` |
 | `live/host`, `live/receiver` | a /9 passthrough live host (desktop step for 600 frames) and the rendered native receiver at `RS_RECEIVER_PROTOCOL=9` |
 | `gsw-run/gsw`, `gsw-run/gsw-masked`, `gsw-run/sabotage-ignore-format-mask/gsw` | GSW in headless Chromium on `receiver`'s launch: as is, BC masked, the mask stated but not applied |
+| `../g8kp-web/web`, `../g8kp-web/web-masked`, `../g8kp-web/sabotage-advertise-etc2/web` | (G8kf, G8kwh) the web export in headless Chromium on `receiver`'s launch: as is, BC masked, and `RS_RECEIVER_SABOTAGE=advertise-etc2` (etc2 stated without the context's extension, WebGL's rules off: the pre-G8kwh hello) |
 
 The import and `oracle/` (which also writes `<name>.<family>.block.grt1`, each `.ctex`'s block
 bytes) are g8t's, run once when both groups run.
@@ -3484,9 +3487,11 @@ bytes) are g8t's, run once when both groups run.
 
 `delivery-capture`, `block-exact`, `delivery-workers`, `delivery-refused`, `delivery-select`,
 `sabotage-ignore-format-mask`, `delivery-live`, `delivery-pixels-native` (exact against
-`reference-hw`) and `delivery-pixels-gsw` (delta 1 on GSW's decided pixels); each criterion is
-spelled out in `lib/gate8-delivery-checks.ts` and
-[`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8kp)".
+`reference-hw`), `delivery-pixels-gsw` (delta 1 on GSW's decided pixels), `delivery-select-web`
+(G8kf; G8kwh: only the families its WebGL context lists), `delivery-pixels-web` and
+`sabotage-advertise-etc2` (G8kwh); each criterion is spelled out in `lib/gate8-delivery-checks.ts` and
+[`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8kp)"
+and "As built (G8kwh)".
 
 ## Gate 8 legs and evidence under `--out/g8kc` (g8kc, G8kc)
 
@@ -3549,13 +3554,13 @@ port; one 101 upgrade and every GET, each 200, went through it; the final image 
 | `reference`, `reference-oracle`, `reference-oracle-hw` | rendered fixture: procedural; every stored KTX2 through `Image.load_ktx_from_buffer` (`oracle/oracle.json`, `oracle/<hash>.rgba`), its CPU decode drawn from step 1; and the same drawing the transcoded blocks (GPU-sampled) |
 | `receiver`, `receiver-upgrade` | the native receiver, D6 `keep` and `upgrade` (`RS_RECEIVER_TRANSCODE_LOG=1`) |
 | `live/host`, `live/receiver` | a /9 basis-uastc live host without the wait knob and the rendered native receiver at `RS_RECEIVER_PROTOCOL=9`; `live/host/ktx2-get.*` is one KTX2 GET with `Accept-Encoding: zstd` |
-| `../g8ku-web/web`, `../g8ku-web/web-fallback` | the web export in headless Chromium on `receiver-upgrade`'s launch (its harness root beside `g8ku/`), and (G8kf) on `sabotage-corrupt-ktx2/receiver`'s |
+| `../g8ku-web/web`, `../g8ku-web/web-fallback`, `../g8ku-web/web-pending`, `../g8ku-web/web-masked` | the web export in headless Chromium on `receiver-upgrade`'s launch (its harness root beside `g8ku/`), (G8kf) on `sabotage-corrupt-ktx2/receiver`'s and `pending/receiver`'s, and (G8kwh) on `receiver-upgrade`'s with `s3tc,bptc,rgtc` masked |
 
 ## Gate 8 criteria (g8ku)
 
 `basis-capture`, `ktx2-wire`, `delivery-lazy`, `delivery-keep`, `transcode-oracle`,
 `delivery-reference` (exact), `quality-band`, `sabotage-perturb-ktx2`, `delivery-live`,
-`delivery-web`, `delivery-pending` and `delivery-fallback` (G8kf); each criterion is spelled out in `lib/gate8-basis-checks.ts` and
+`delivery-web`, `delivery-pending` and `delivery-fallback` (G8kf), `delivery-pixels-web` and `delivery-web-masked` (G8kwh); each criterion is spelled out in `lib/gate8-basis-checks.ts` and
 [`../protocol/texture-delivery-design.md`](../protocol/texture-delivery-design.md) "As built (G8ku)".
 
 ## Gate 8 criteria (g8m)

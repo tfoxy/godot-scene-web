@@ -139,6 +139,14 @@ pub extern "C" fn rsc_set_variant_upgrade(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.delivery.upgrade = on != 0);
 }
 
+/// G8kwh (texture-delivery-design.md "As built (G8kwh)"): WebGL's BC alignment rule (`on`: D3 skips
+/// BC `block` variants, and `uastc` variants while a BC family is stated, of a texture whose level
+/// 0 is not 4-aligned). The web export sets it; the native receiver never does.
+#[no_mangle]
+pub extern "C" fn rsc_set_bc_aligned_only(h: *mut RsCore, on: i32) {
+    guard(h, (), |c| c.planner.delivery.bc_aligned_only = on != 0);
+}
+
 /// G8kf (texture-delivery-design.md Q3): the receiver could not transcode the variant whose hash is
 /// the `hlen` hex bytes at `hash`; D3 skips it from now on. 1, or 0 for a malformed hash.
 ///
