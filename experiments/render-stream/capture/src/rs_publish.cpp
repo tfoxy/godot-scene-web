@@ -74,12 +74,45 @@ bool FileRecordSink::write(const std::vector<std::uint8_t> &bytes) {
   if (bytes.empty()) {
     return true;
   }
+  if (writer_ != nullptr) {
+    // P3-CAP: queued in order behind the store payloads this record names (rs_file_writer.h).
+    std::FILE *file = file_;
+    return writer_->submit(
+        [file, bytes](std::string *error) {
+          if (std::fwrite(bytes.data(), 1, bytes.size(), file) != bytes.size()) {
+            *error = "transaction write failed";
+            return false;
+          }
+          return true;
+        },
+        bytes.size(), nullptr);
+  }
   return std::fwrite(bytes.data(), 1, bytes.size(), file_) == bytes.size();
 }
 
-bool FileRecordSink::flush() { return file_ != nullptr && std::fflush(file_) == 0; }
+bool FileRecordSink::flush() {
+  if (file_ == nullptr) {
+    return false;
+  }
+  if (writer_ != nullptr) {
+    std::FILE *file = file_;
+    return writer_->submit(
+        [file](std::string *error) {
+          if (std::fflush(file) != 0) {
+            *error = "transaction write failed";
+            return false;
+          }
+          return true;
+        },
+        0, nullptr);
+  }
+  return std::fflush(file_) == 0;
+}
 
 void FileRecordSink::close() {
+  if (writer_ != nullptr && file_ != nullptr) {
+    writer_->drain();  // P3-CAP: every queued record first
+  }
   if (file_ != nullptr) {
     std::fclose(file_);
     file_ = nullptr;
@@ -536,9 +569,9 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
     }
     std::string why;
     const rs::ResourceStore::Put put =
-        ref.texture != nullptr  ? store_->put(*ref.texture, *payload->second, frame, &why)
-        : ref.surface != nullptr ? store_->put_mesh(*ref.surface, *payload->second, frame, &why)
-                                 : store_->put_shader(*ref.shader, *payload->second, frame, &why);
+        ref.texture != nullptr  ? store_->put(*ref.texture, payload->second, frame, &why)
+        : ref.surface != nullptr ? store_->put_mesh(*ref.surface, payload->second, frame, &why)
+                                 : store_->put_shader(*ref.shader, payload->second, frame, &why);
     if (events_ && put != rs::ResourceStore::Put::Present) {
       events_("store", hash, payload->second->size(), put == rs::ResourceStore::Put::Stored,
               frame);
@@ -573,7 +606,7 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
       }
       std::string why;
       const rs::ResourceStore::Put put =
-          store_->put_variant(entry, variant, *payload->second, frame, &why);
+          store_->put_variant(entry, variant, payload->second, frame, &why);
       if (events_ && put != rs::ResourceStore::Put::Present) {
         events_("store", variant.hash, payload->second->size(),
                 put == rs::ResourceStore::Put::Stored, frame);

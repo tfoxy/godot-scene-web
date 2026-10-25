@@ -45,6 +45,9 @@ bool ResourceStore::open(const std::string &dir, std::string *error) {
 }
 
 void ResourceStore::close() {
+  if (writer_ != nullptr && index_ != nullptr) {
+    writer_->drain();  // P3-CAP: every queued payload and index line first
+  }
   if (index_ != nullptr) {
     std::fclose(index_);
     index_ = nullptr;
@@ -63,8 +66,7 @@ std::size_t ResourceStore::first_data_offset(const std::vector<std::uint8_t> &pa
   return offset < payload.size() ? offset : 0;
 }
 
-ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry,
-                                      const std::vector<std::uint8_t> &payload,
+ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry, const PayloadPtr &payload,
                                       std::uint64_t frame, std::string *error) {
   // render-stream-4.md "Mesh payload": index lines gain "type" (texture-2d | mesh-surface).
   const std::string fields = ",\"type\":\"texture-2d\",\"format\":\"" + entry.format +
@@ -76,7 +78,7 @@ ResourceStore::Put ResourceStore::put(const rs2::TextureEntry &entry,
 
 ResourceStore::Put ResourceStore::put_variant(const rs2::TextureEntry &entry,
                                               const rs2::TextureVariant &variant,
-                                              const std::vector<std::uint8_t> &payload,
+                                              const PayloadPtr &payload,
                                               std::uint64_t frame, std::string *error) {
   if (variant.encoding == rs2::VariantEncoding::Uastc ||
       variant.encoding == rs2::VariantEncoding::Etc1s) {
@@ -98,7 +100,7 @@ ResourceStore::Put ResourceStore::put_variant(const rs2::TextureEntry &entry,
 }
 
 ResourceStore::Put ResourceStore::put_mesh(const rs2::MeshSurface &surface,
-                                           const std::vector<std::uint8_t> &payload,
+                                           const PayloadPtr &payload,
                                            std::uint64_t frame, std::string *error) {
   const std::string fields = ",\"type\":\"mesh-surface\",\"primitive\":\"" +
                              std::string(rs2::to_wire(surface.primitive)) +
@@ -109,10 +111,11 @@ ResourceStore::Put ResourceStore::put_mesh(const rs2::MeshSurface &surface,
 }
 
 ResourceStore::Put ResourceStore::put_shader(const rs2::ShaderEntry &shader,
-                                             const std::vector<std::uint8_t> &payload,
-                                             std::uint64_t frame, std::string *error) {
+                                             const PayloadPtr &payload_ptr, std::uint64_t frame,
+                                             std::string *error) {
   // render-stream-5.md "Shader payload": index lines gain type "shader-code". code_bytes is the
   // payload's own meta value (whole length minus magic, meta length and meta).
+  const std::vector<std::uint8_t> &payload = *payload_ptr;
   std::uint64_t code_bytes = 0;
   if (payload.size() >= 12) {
     const std::uint32_t meta_len = static_cast<std::uint32_t>(payload[8]) |
@@ -125,13 +128,13 @@ ResourceStore::Put ResourceStore::put_shader(const rs2::ShaderEntry &shader,
   }
   const std::string fields =
       ",\"type\":\"shader-code\",\"code_bytes\":" + std::to_string(code_bytes);
-  return put_bytes(shader.hash, ".grp", fields, payload, frame, error);
+  return put_bytes(shader.hash, ".grp", fields, payload_ptr, frame, error);
 }
 
 ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char *extension,
                                             const std::string &index_fields,
-                                            const std::vector<std::uint8_t> &payload,
-                                            std::uint64_t frame, std::string *error) {
+                                            const PayloadPtr &payload, std::uint64_t frame,
+                                            std::string *error) {
   if (index_ == nullptr) {
     *error = "the resource store is not open";
     return Put::Failed;
@@ -139,22 +142,53 @@ ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char 
   if (hashes_.count(hash) != 0) {
     return Put::Present;
   }
+  // wrong-hash: the store's copy differs from the advertised hash in its first data byte. Decided
+  // here, on the publishing thread, so corrupted_hash() never races the writer.
+  const bool corrupt =
+      wrong_hash_frame_ != 0 && frame >= wrong_hash_frame_ && corrupted_.empty();
+  if (corrupt) {
+    corrupted_ = hash;
+  }
+  const std::string final_path = path_join(path_join(dir_, "sha256"), hash + extension);
+  std::string line = "{\"hash\":\"" + hash + "\",\"bytes\":" +
+                     std::to_string(payload->size()) + index_fields +
+                     ",\"first_frame\":" + std::to_string(frame) + "}\n";
+  std::FILE *index = index_;
+  std::string index_path = path_join(dir_, "index.jsonl");
+  auto write = [final_path, payload, corrupt, index, line = std::move(line),
+                index_path = std::move(index_path)](std::string *why) {
+    return write_payload_file(final_path, *payload, corrupt, index, line, index_path, why);
+  };
+  if (writer_ != nullptr) {
+    // P3-CAP: the I/O runs on the writer thread, in submission order (rs_file_writer.h).
+    if (!writer_->submit(std::move(write), payload->size(), error)) {
+      return Put::Failed;
+    }
+  } else if (!write(error)) {
+    return Put::Failed;
+  }
+  hashes_.insert(hash);
+  bytes_ += payload->size();
+  return Put::Stored;
+}
+
+bool ResourceStore::write_payload_file(const std::string &final_path,
+                                       const std::vector<std::uint8_t> &payload, bool corrupt,
+                                       std::FILE *index, const std::string &line,
+                                       const std::string &index_path, std::string *error) {
   const std::uint8_t *data = payload.data();
   std::vector<std::uint8_t> corrupted;
-  if (wrong_hash_frame_ != 0 && frame >= wrong_hash_frame_ && corrupted_.empty()) {
-    // wrong-hash: the store's copy differs from the advertised hash in its first data byte.
+  if (corrupt) {
     corrupted = payload;
     const std::size_t offset = first_data_offset(corrupted);
     corrupted[offset] ^= 0xFF;
     data = corrupted.data();
-    corrupted_ = hash;
   }
-  const std::string final_path = path_join(path_join(dir_, "sha256"), hash + extension);
   const std::string temp_path = final_path + ".tmp-" + std::to_string(::getpid());
   std::FILE *file = std::fopen(temp_path.c_str(), "wb");
   if (file == nullptr) {
     *error = "cannot create " + temp_path + ": " + errno_text();
-    return Put::Failed;
+    return false;
   }
   const bool wrote = payload.empty() || std::fwrite(data, 1, payload.size(), file) == payload.size();
   const bool flushed = std::fflush(file) == 0;
@@ -162,24 +196,18 @@ ResourceStore::Put ResourceStore::put_bytes(const std::string &hash, const char 
   if (!wrote || !flushed || !closed) {
     *error = "cannot write " + temp_path + ": " + errno_text();
     std::remove(temp_path.c_str());
-    return Put::Failed;
+    return false;
   }
   if (std::rename(temp_path.c_str(), final_path.c_str()) != 0) {
     *error = "cannot rename " + temp_path + ": " + errno_text();
     std::remove(temp_path.c_str());
-    return Put::Failed;
+    return false;
   }
-  const std::string line = "{\"hash\":\"" + hash + "\",\"bytes\":" +
-                           std::to_string(payload.size()) + index_fields +
-                           ",\"first_frame\":" + std::to_string(frame) + "}\n";
-  if (std::fwrite(line.data(), 1, line.size(), index_) != line.size() ||
-      std::fflush(index_) != 0) {
-    *error = "cannot append to " + path_join(dir_, "index.jsonl") + ": " + errno_text();
-    return Put::Failed;
+  if (std::fwrite(line.data(), 1, line.size(), index) != line.size() || std::fflush(index) != 0) {
+    *error = "cannot append to " + index_path + ": " + errno_text();
+    return false;
   }
-  hashes_.insert(hash);
-  bytes_ += payload.size();
-  return Put::Stored;
+  return true;
 }
 
 // ----------------------------------------------------------------------------- ServedResources
@@ -386,6 +414,25 @@ std::set<std::string> ServedResources::retained_hashes() const {
     out.insert(entry.first);
   }
   return out;
+}
+
+std::uint64_t ServedResources::retained_bytes_beyond(
+    const std::vector<const PayloadMap *> &known) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::uint64_t total = 0;
+  for (const auto &entry : served_) {
+    bool held = false;
+    for (const PayloadMap *map : known) {
+      if (map != nullptr && map->count(entry.first) != 0) {
+        held = true;
+        break;
+      }
+    }
+    if (!held && entry.second != nullptr) {
+      total += entry.second->size();
+    }
+  }
+  return total;
 }
 
 PayloadMap ServedResources::retained_payloads() const {

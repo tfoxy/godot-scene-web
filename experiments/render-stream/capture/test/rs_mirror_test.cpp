@@ -2580,6 +2580,50 @@ void test_material_tables_lifecycle() {
         "a recreated material and a new shader take fresh ids; create_from_code is version 1");
 }
 
+// P3-CAP: the mirror republishes an unchanged material's parameters without rebuilding them (the
+// same shared storage); any change (version + 1) rebuilds them with the new values, and the
+// derived unsupported-material entry follows the rebuilt status.
+void test_material_params_shared() {
+  using grc::rs2::MaterialStatus;
+  Mirror m;
+  bind_root(&m);
+  m.material_create(0x700, 1);
+  m.material_set_param(0x700, "tint", scalar("color", {0.2, 0.4, 0.6, 1.0}), 1);
+  m.canvas_item_create(0x100, 1);
+  m.set_parent(0x100, kRootCanvas, 1);
+  m.set_material(0x100, 0x700, 1);
+  const Snapshot first = m.snapshot(1, 1).state;
+  const Snapshot again = m.snapshot(2, 2).state;
+  check(material(again, 1)->params.shares(material(first, 1)->params),
+        "an unchanged material shares its parameters with the previous snapshot");
+  m.material_set_param(0x700, "tint", scalar("color", {1.0, 0.4, 0.6, 1.0}), 3);
+  const Snapshot changed = m.snapshot(3, 3).state;
+  check(!material(changed, 1)->params.shares(material(first, 1)->params) &&
+            material(changed, 1)->params[0].floats[0] == 1.0 &&
+            material(first, 1)->params[0].floats[0] == 0.2,
+        "a set parameter is rebuilt; the earlier snapshot keeps its own values");
+  grc::rs::DecodedParam str;
+  str.type = "string";
+  str.status = "unsupported";
+  str.reason = "param-type";
+  m.material_set_param(0x700, "label", str, 4);
+  const Snapshot bad = m.snapshot(4, 4).state;
+  bool entry = false;
+  for (const auto &u : bad.unsupported) {
+    entry = entry || (u.has_item && u.op == "canvas_item_set_material");
+  }
+  check(material(bad, 1)->status == MaterialStatus::Unsupported && entry,
+        "an unsupported parameter: the entry and its item's unsupported-material follow");
+  m.material_set_param(0x700, "label", scalar("nil", {}), 5);
+  const Snapshot fixed = m.snapshot(5, 5).state;
+  entry = false;
+  for (const auto &u : fixed.unsupported) {
+    entry = entry || (u.has_item && u.op == "canvas_item_set_material");
+  }
+  check(material(fixed, 1)->status == MaterialStatus::Ok && !entry,
+        "erased again: ok, and no unsupported-material entry");
+}
+
 void test_material_params() {
   using grc::rs2::MaterialReason;
   using grc::rs2::MaterialStatus;
@@ -2976,6 +3020,7 @@ int main() {
   test_skip_patch_full_equivalence();
   test_material_tables_lifecycle();
   test_material_params();
+  test_material_params_shared();
   test_material_items_and_derived_entries();
   test_canvas_modulate_and_light();
   test_canvas_layers();

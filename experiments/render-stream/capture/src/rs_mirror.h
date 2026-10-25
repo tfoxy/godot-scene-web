@@ -750,6 +750,18 @@ class Mirror {
     std::uint64_t unknown_shader_rid = 0;       // G8m: that RID (0 when none)
     rs2::Origin origin = rs2::Origin::Created;  // G8m: `adopted` for a pre-arm material
     std::map<std::string, MaterialParam> params;
+    // P3-CAP: the published form of `params` (wire_params()), rebuilt only when `version` moved
+    // since it was built -- every change to `params` bumps `version`. A game's particle
+    // materials carry ~64 parameters each; rebuilding all of them every frame was most of the
+    // snapshot.
+    struct WireParams {
+      std::uint64_t version = 0;  // 0: never built (versions start at 1)
+      rs2::SharedVector<rs2::Param> params;  // the ok ones, in name order
+      bool unsupported = false;              // some parameter is not ok ...
+      rs2::MaterialReason reason = rs2::MaterialReason::ParamType;  // ... the first one's reason
+      std::vector<std::uint32_t> textures;  // the texture ids of the ok rid parameters
+    };
+    mutable WireParams wire;
   };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
@@ -830,6 +842,8 @@ class Mirror {
   void take_shader_code(Shader *shader, const ShaderCodeInput &code, std::uint64_t frame) const;
   rs2::ShaderEntry wire_shader(const Shader &shader) const;
   static rs2::MaterialEntry wire_material(const Material &material);
+  // P3-CAP: material.wire, brought up to date with material.version.
+  static const Material::WireParams &wire_params(const Material &material);
   // A decoded Variant as a wire Param (`tex` already resolved by the caller for a rid); false
   // with `reason` set for an unsupported value.
   bool to_param(const std::string &name, const DecodedParam &value, rs2::Param *out,

@@ -248,6 +248,10 @@ struct Stream {
   // G8a (D13): GRC_MIRROR_MAX_ITEMS / GRC_MIRROR_MAX_COMMANDS, read at arm.
   size_t max_items = rs2::kMaxLiveItems;
   size_t max_commands = rs2::kMaxCommandsPerItem;
+  // P3-CAP: the file sinks' and the store's I/O thread (rs_file_writer.h); null under
+  // GRC_FILE_WRITER=sync. Declared before the sinks and the store it serves, so it is destroyed
+  // after them (their close() drains it).
+  std::unique_ptr<rs::FileWriter> writer;
   std::unique_ptr<rs2::FileRecordSink> full_sink;
   std::unique_ptr<rs2::FileRecordSink> patch_sink;
   std::unique_ptr<rs2::Publisher> publisher;
@@ -1909,6 +1913,27 @@ void stream_start() {
       return;
     }
   }
+  // P3-CAP (results/p3/p3-cap.md): the file sinks' and the store's I/O leave the frame callback
+  // for one writer thread, in submission order (the bytes on disk are unchanged).
+  // GRC_FILE_WRITER=sync keeps it on the calling thread.
+  if (files) {
+    const std::string mode = env_string("GRC_FILE_WRITER");
+    if (mode != "sync") {
+      if (!mode.empty() && mode != "thread") {
+        log_line("stream: ignoring GRC_FILE_WRITER=" + mode + " (thread | sync)");
+      }
+      g_stream.writer = std::make_unique<rs::FileWriter>();
+      for (rs2::FileRecordSink *sink : {g_stream.full_sink.get(), g_stream.patch_sink.get()}) {
+        if (sink != nullptr) {
+          sink->set_writer(g_stream.writer.get());
+        }
+      }
+      if (g_stream.store != nullptr) {
+        g_stream.store->set_writer(g_stream.writer.get());
+      }
+    }
+    log_line(std::string("stream: file_writer=") + (g_stream.writer != nullptr ? "thread" : "sync"));
+  }
 
   // G8kw: the pool runs before the mirror sees any call, and until stream_finish() drained it.
   if (g_stream.workers.async()) {
@@ -2519,6 +2544,12 @@ void stream_finish(rs2::EndReason reason) {
                   : " corrupted=" + g_stream.store->corrupted_hash()));
     g_stream.store->close();
   }
+  if (g_stream.writer != nullptr) {
+    std::string error;
+    if (!g_stream.writer->drain(&error) && g_stream.reason.empty()) {
+      g_stream.reason = error;  // a queued write failed after the last publication
+    }
+  }
   log_line("stream: resources retained_bytes_max=" + std::to_string(g_stream.retained_bytes_max) +
            " budget=" + std::to_string(g_stream.budget_bytes));
   for (const rs2::Encoding encoding : {rs2::Encoding::Full, rs2::Encoding::Patch}) {
@@ -2691,16 +2722,15 @@ void stream_publish(uint64_t frame) {
   // publication still pins and (G2c2) those still servable over HTTP -- stay within
   // GRC_RESOURCE_BUDGET_BYTES.
   {
-    rs::PayloadMap retained = snapshot.payloads;
+    // P3-CAP: the union's bytes without copying the maps into one (payload_union_bytes).
+    std::vector<const rs::PayloadMap *> retained = {&snapshot.payloads};
     if (g_stream.publisher != nullptr && g_stream.publisher->last_published() != nullptr) {
-      const rs::PayloadMap &pinned = g_stream.publisher->last_published()->payloads;
-      retained.insert(pinned.begin(), pinned.end());
+      retained.push_back(&g_stream.publisher->last_published()->payloads);
     }
+    uint64_t retained_bytes = rs::payload_union_bytes(retained);
     if (serving) {
-      const rs::PayloadMap served = g_live.served->retained_payloads();
-      retained.insert(served.begin(), served.end());
+      retained_bytes += g_live.served->retained_bytes_beyond(retained);
     }
-    const uint64_t retained_bytes = rs::payload_map_bytes(retained);
     g_stream.retained_bytes_max = std::max(g_stream.retained_bytes_max, retained_bytes);
     if (retained_bytes > g_stream.budget_bytes) {
       log_line("stream: resource-budget-exceeded at frame " + std::to_string(frame) + ": " +

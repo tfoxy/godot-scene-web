@@ -115,6 +115,27 @@ inline std::uint64_t payload_map_bytes(const PayloadMap &map) {
   return total;
 }
 
+// P3-CAP: payload_map_bytes() of the union of `maps` (each distinct hash once, the first map
+// holding it supplies its bytes), without building the union.
+inline std::uint64_t payload_union_bytes(const std::vector<const PayloadMap *> &maps) {
+  std::uint64_t total = 0;
+  for (std::size_t i = 0; i < maps.size(); ++i) {
+    if (maps[i] == nullptr) {
+      continue;
+    }
+    for (const auto &entry : *maps[i]) {
+      bool earlier = false;
+      for (std::size_t j = 0; j < i && !earlier; ++j) {
+        earlier = maps[j] != nullptr && maps[j]->count(entry.first) != 0;
+      }
+      if (!earlier && entry.second != nullptr) {
+        total += entry.second->size();
+      }
+    }
+  }
+  return total;
+}
+
 }  // namespace rs
 }  // namespace grc
 

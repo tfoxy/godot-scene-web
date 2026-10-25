@@ -327,7 +327,92 @@ void test_randomized_patch_resolve_round_trip() {
 
 }  // namespace
 
+// -------------------------------------------------------------------------
+// P3-CAP: make_patch's sorted id indexes keep std::map's semantics on any table order (the last
+// entry of a repeated id wins; removed_* ascending; changed entries in the current table's order),
+// and a MaterialEntry's shared parameters compare, copy and diverge like a vector.
+
+ItemState plain_item(std::uint32_t id, float x) {
+  ItemState item;
+  item.id = id;
+  item.parent.kind = ParentKind::Canvas;
+  item.parent.id = 1;
+  item.xform[4] = x;
+  return item;
+}
+
+void test_make_patch_table_order() {
+  Snapshot base;
+  base.version = ProtocolVersion::V8;
+  base.seq = 1;
+  base.items = {plain_item(9, 0), plain_item(3, 0), plain_item(7, 1), plain_item(5, 0),
+                plain_item(7, 2)};  // id 7 twice: the second one is the base's
+  Snapshot cur = base;
+  cur.seq = 2;
+  cur.items = {plain_item(7, 2), plain_item(4, 0), plain_item(3, 1)};
+  const Transaction t = make_patch(base, cur);
+  check(t.removed_items == std::vector<std::uint32_t>({5, 9}), "removed_items ascending: 5, 9");
+  check(t.items.size() == 2 && t.items[0].state.id == 4 && t.items[1].state.id == 3,
+        "changed entries in the current table's order (4 new, 3 moved); 7 equals the last base 7");
+  check(t.items[1].commands_null, "an existing item at the same content_version: commands null");
+  check(!t.items[0].commands_null, "a new item carries its commands");
+
+  Snapshot unsorted_textures = base;
+  TextureEntry a;
+  a.id = 4;
+  TextureEntry b;
+  b.id = 2;
+  unsorted_textures.textures = {a, b};
+  Snapshot next = unsorted_textures;
+  next.seq = 2;
+  next.textures = {b};
+  check(make_patch(unsorted_textures, next).removed_textures ==
+            std::vector<std::uint32_t>({4}),
+        "a texture leaves whatever the base table's order");
+}
+
+void test_shared_material_params() {
+  Param gain;
+  gain.name = "gain";
+  gain.type = VariantType::Float;
+  gain.floats = {0.5};
+  MaterialEntry m;
+  m.id = 1;
+  m.has_shader = true;
+  m.shader = 1;
+  m.params = std::vector<Param>{gain};
+  MaterialEntry copy = m;
+  check(copy.params.shares(m.params), "copying an entry shares its parameters");
+  Param more = gain;
+  more.name = "more";
+  copy.params.push_back(more);
+  check(m.params.size() == 1 && copy.params.size() == 2 && !copy.params.shares(m.params),
+        "a push_back on a shared copy leaves the other holder untouched");
+  Snapshot base;
+  base.version = ProtocolVersion::V8;
+  base.seq = 1;
+  base.materials = {m};
+  Snapshot cur = base;
+  cur.seq = 2;
+  check(make_patch(base, cur).materials.empty(), "a material sharing its parameters: no entry");
+  cur.materials[0].params = std::vector<Param>{gain};
+  check(!cur.materials[0].params.shares(m.params) && make_patch(base, cur).materials.empty(),
+        "equal parameters in different storage compare equal element by element: no entry");
+  cur.materials[0] = copy;
+  check(make_patch(base, cur).materials.size() == 1, "the diverged copy is a patch entry");
+  cur.materials[0].params = std::vector<Param>{more};
+  const Transaction t = make_patch(base, cur);
+  check(t.materials.size() == 1 && t.materials[0].params.size() == 1 &&
+            t.materials[0].params[0].name == "more",
+        "a changed parameter puts the material in the patch");
+  const SharedVector<Param> none;
+  check(none.empty() && none.begin() == none.end() && none.vector().empty(),
+        "an empty SharedVector iterates nothing");
+}
+
 int main() {
+  test_make_patch_table_order();
+  test_shared_material_params();
   test_full_rs2_via_make_full();
   test_patch_rs2_via_make_patch();
   test_resolve_chain_equals_full_golden_states();

@@ -1,5 +1,6 @@
 #include "rs2_diff.h"
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <set>
@@ -72,6 +73,11 @@ bool params_equal(const std::vector<Param> &a, const std::vector<Param> &b) {
     }
   }
   return true;
+}
+
+bool params_equal(const SharedVector<Param> &a, const SharedVector<Param> &b) {
+  // P3-CAP: an entry the mirror republished unchanged shares its parameters with the base.
+  return a.shares(b) || params_equal(a.vector(), b.vector());
 }
 
 // render-stream-1.md "Patch transactions", unchanged at /2: "An entry differs when any JSON
@@ -337,6 +343,54 @@ Transaction make_full(const Snapshot &cur) {
   return t;
 }
 
+namespace {
+
+// P3-CAP: a table's entries by id -- what std::map<id, const T *> gave make_patch (the last entry
+// of a repeated id wins, iteration ascending by id), in one sorted vector.
+template <typename T>
+class IdIndex {
+ public:
+  explicit IdIndex(const std::vector<T> &table) {
+    entries_.reserve(table.size());
+    for (const T &entry : table) {
+      entries_.emplace_back(entry.id, &entry);
+    }
+    // Stable, so of a repeated id the last one stays last; keep only that one.
+    std::stable_sort(entries_.begin(), entries_.end(),
+                     [](const Entry &a, const Entry &b) { return a.first < b.first; });
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+      if (i + 1 < entries_.size() && entries_[i + 1].first == entries_[i].first) {
+        continue;
+      }
+      entries_[out++] = entries_[i];
+    }
+    entries_.resize(out);
+  }
+
+  const T *find(std::uint32_t id) const {
+    const auto it = std::lower_bound(entries_.begin(), entries_.end(), id,
+                                     [](const Entry &e, std::uint32_t key) { return e.first < key; });
+    return it != entries_.end() && it->first == id ? it->second : nullptr;
+  }
+
+  // Appends, ascending, every id of this index that `other` does not hold.
+  template <typename U>
+  void removed_from(const IdIndex<U> &other, std::vector<std::uint32_t> *out) const {
+    for (const Entry &entry : entries_) {
+      if (other.find(entry.first) == nullptr) {
+        out->push_back(entry.first);
+      }
+    }
+  }
+
+ private:
+  using Entry = std::pair<std::uint32_t, const T *>;
+  std::vector<Entry> entries_;
+};
+
+}  // namespace
+
 Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   Transaction t;
   t.version = cur.version;
@@ -350,73 +404,23 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
 
-  std::map<std::uint32_t, const CanvasState *> base_canvases;
-  for (const CanvasState &c : base.canvases) {
-    base_canvases[c.id] = &c;
-  }
-  std::map<std::uint32_t, const ItemState *> base_items;
-  for (const ItemState &i : base.items) {
-    base_items[i.id] = &i;
-  }
-  std::map<std::uint32_t, const TextureEntry *> base_textures;
-  for (const TextureEntry &tex : base.textures) {
-    base_textures[tex.id] = &tex;
-  }
-  std::map<std::uint32_t, const MeshEntry *> base_meshes;
-  for (const MeshEntry &mesh : base.meshes) {
-    base_meshes[mesh.id] = &mesh;
-  }
-  std::map<std::uint32_t, const ShaderEntry *> base_shaders;
-  for (const ShaderEntry &shader : base.shaders) {
-    base_shaders[shader.id] = &shader;
-  }
-  std::map<std::uint32_t, const MaterialEntry *> base_materials;
-  for (const MaterialEntry &material : base.materials) {
-    base_materials[material.id] = &material;
-  }
-  std::set<std::uint32_t> cur_canvas_ids;
-  for (const CanvasState &c : cur.canvases) {
-    cur_canvas_ids.insert(c.id);
-  }
-  std::set<std::uint32_t> cur_item_ids;
-  for (const ItemState &i : cur.items) {
-    cur_item_ids.insert(i.id);
-  }
-  std::set<std::uint32_t> cur_texture_ids;
-  for (const TextureEntry &tex : cur.textures) {
-    cur_texture_ids.insert(tex.id);
-  }
-  std::set<std::uint32_t> cur_mesh_ids;
-  for (const MeshEntry &mesh : cur.meshes) {
-    cur_mesh_ids.insert(mesh.id);
-  }
-  std::set<std::uint32_t> cur_shader_ids;
-  for (const ShaderEntry &shader : cur.shaders) {
-    cur_shader_ids.insert(shader.id);
-  }
-  std::set<std::uint32_t> cur_material_ids;
-  for (const MaterialEntry &material : cur.materials) {
-    cur_material_ids.insert(material.id);
-  }
+  // P3-CAP: sorted id indexes (one allocation per table) instead of node-based maps and sets.
+  const IdIndex<CanvasState> base_canvases(base.canvases);
+  const IdIndex<ItemState> base_items(base.items);
+  const IdIndex<TextureEntry> base_textures(base.textures);
+  const IdIndex<MeshEntry> base_meshes(base.meshes);
+  const IdIndex<ShaderEntry> base_shaders(base.shaders);
+  const IdIndex<MaterialEntry> base_materials(base.materials);
+  const IdIndex<CanvasState> cur_canvas_ids(cur.canvases);
+  const IdIndex<ItemState> cur_item_ids(cur.items);
+  const IdIndex<TextureEntry> cur_texture_ids(cur.textures);
+  const IdIndex<MeshEntry> cur_mesh_ids(cur.meshes);
+  const IdIndex<ShaderEntry> cur_shader_ids(cur.shaders);
+  const IdIndex<MaterialEntry> cur_material_ids(cur.materials);
 
-  for (const auto &[id, ptr] : base_canvases) {
-    (void)ptr;
-    if (cur_canvas_ids.find(id) == cur_canvas_ids.end()) {
-      t.removed_canvases.push_back(id);
-    }
-  }
-  for (const auto &[id, ptr] : base_items) {
-    (void)ptr;
-    if (cur_item_ids.find(id) == cur_item_ids.end()) {
-      t.removed_items.push_back(id);
-    }
-  }
-  for (const auto &[id, ptr] : base_textures) {
-    (void)ptr;
-    if (cur_texture_ids.find(id) == cur_texture_ids.end()) {
-      t.removed_textures.push_back(id);
-    }
-  }
+  base_canvases.removed_from(cur_canvas_ids, &t.removed_canvases);
+  base_items.removed_from(cur_item_ids, &t.removed_items);
+  base_textures.removed_from(cur_texture_ids, &t.removed_textures);
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
   // its shader/material tables and mesh table forward unchanged).
   const bool is_v5 = cur.version == ProtocolVersion::V5 || cur.version == ProtocolVersion::V6 ||
@@ -424,46 +428,31 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
                       cur.version == ProtocolVersion::V9;
   const bool is_v4_or_later = is_v5 || cur.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
-    for (const auto &[id, ptr] : base_meshes) {
-      (void)ptr;
-      if (cur_mesh_ids.find(id) == cur_mesh_ids.end()) {
-        t.removed_meshes.push_back(id);
-      }
-    }
+    base_meshes.removed_from(cur_mesh_ids, &t.removed_meshes);
   }
   if (is_v5) {
-    for (const auto &[id, ptr] : base_shaders) {
-      (void)ptr;
-      if (cur_shader_ids.find(id) == cur_shader_ids.end()) {
-        t.removed_shaders.push_back(id);
-      }
-    }
-    for (const auto &[id, ptr] : base_materials) {
-      (void)ptr;
-      if (cur_material_ids.find(id) == cur_material_ids.end()) {
-        t.removed_materials.push_back(id);
-      }
-    }
+    base_shaders.removed_from(cur_shader_ids, &t.removed_shaders);
+    base_materials.removed_from(cur_material_ids, &t.removed_materials);
   }
-  // std::map iterates ascending by key, so removed_* are already ascending.
+  // IdIndex walks ascending by id, so removed_* are already ascending.
 
   for (const CanvasState &canvas : cur.canvases) {
-    auto it = base_canvases.find(canvas.id);
-    if (it != base_canvases.end() && canvas_state_equal(*it->second, canvas)) {
+    const CanvasState *prev = base_canvases.find(canvas.id);
+    if (prev != nullptr && canvas_state_equal(*prev, canvas)) {
       continue;
     }
     t.canvases.push_back(canvas);
   }
 
   for (const ItemState &item : cur.items) {
-    auto it = base_items.find(item.id);
-    const bool exists_in_base = it != base_items.end();
-    if (exists_in_base && item_state_equal(*it->second, item)) {
+    const ItemState *prev = base_items.find(item.id);
+    const bool exists_in_base = prev != nullptr;
+    if (exists_in_base && item_state_equal(*prev, item)) {
       continue;
     }
     ItemEntry entry;
     entry.state = item;
-    entry.commands_null = exists_in_base && it->second->content_version == item.content_version;
+    entry.commands_null = exists_in_base && prev->content_version == item.content_version;
     if (entry.commands_null) {
       entry.state.commands.clear();  // not encoded; keeping it empty avoids ambiguity
     }
@@ -471,8 +460,8 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
   }
 
   for (const TextureEntry &tex : cur.textures) {
-    auto it = base_textures.find(tex.id);
-    if (it != base_textures.end() && texture_entry_equal(*it->second, tex)) {
+    const TextureEntry *prev = base_textures.find(tex.id);
+    if (prev != nullptr && texture_entry_equal(*prev, tex)) {
       continue;
     }
     t.textures.push_back(tex);
@@ -480,8 +469,8 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
 
   if (is_v4_or_later) {
     for (const MeshEntry &mesh : cur.meshes) {
-      auto it = base_meshes.find(mesh.id);
-      if (it != base_meshes.end() && mesh_entry_equal(*it->second, mesh)) {
+      const MeshEntry *prev = base_meshes.find(mesh.id);
+      if (prev != nullptr && mesh_entry_equal(*prev, mesh)) {
         continue;
       }
       t.meshes.push_back(mesh);
@@ -490,15 +479,15 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
 
   if (is_v5) {
     for (const ShaderEntry &shader : cur.shaders) {
-      auto it = base_shaders.find(shader.id);
-      if (it != base_shaders.end() && shader_entry_equal(*it->second, shader)) {
+      const ShaderEntry *prev = base_shaders.find(shader.id);
+      if (prev != nullptr && shader_entry_equal(*prev, shader)) {
         continue;
       }
       t.shaders.push_back(shader);
     }
     for (const MaterialEntry &material : cur.materials) {
-      auto it = base_materials.find(material.id);
-      if (it != base_materials.end() && material_entry_equal(*it->second, material)) {
+      const MaterialEntry *prev = base_materials.find(material.id);
+      if (prev != nullptr && material_entry_equal(*prev, material)) {
         continue;
       }
       t.materials.push_back(material);

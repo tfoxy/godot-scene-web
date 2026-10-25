@@ -335,6 +335,13 @@ stream itself.
 - Inline: before a transaction is written to a sink, the sink writes one resource record for every
   hash that this stream has not carried yet and that has `payload_bytes ≤ inline_max_bytes`. The
   full sink and the patch sink each do this for themselves.
+- As built since P3-CAP (`results/p3/p3-cap.md`): the publisher still decides every store write,
+  index line and record on the frame callback, but the file I/O itself (payload file, rename, index
+  append, sink write and flush) runs on one capture-owned writer thread, strictly in submission
+  order (`capture/src/rs_file_writer.h`). A payload is therefore on disk before any record naming
+  it, and the files hold exactly the synchronous bytes. A failed write is still sticky; it ends the
+  stream at the next publication instead of the current one. `GRC_FILE_WRITER=sync` keeps the I/O
+  on the calling thread.
 
 ### Live: why HTTP on the same listener
 

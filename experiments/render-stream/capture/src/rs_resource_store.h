@@ -54,11 +54,13 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
+#include "rs_file_writer.h"
 #include "rs_ws.h"
 
 namespace grc {
@@ -83,21 +85,25 @@ class ResourceStore {
   enum class Put : std::uint8_t { Stored, Present, Failed };
   // Stores `payload` (a complete GRT1 payload whose SHA-256 is `entry.hash`) unless the store
   // already holds that hash. `entry` supplies the index line's shape.
-  Put put(const rs2::TextureEntry &entry, const std::vector<std::uint8_t> &payload,
-          std::uint64_t frame, std::string *error);
+  Put put(const rs2::TextureEntry &entry, const PayloadPtr &payload, std::uint64_t frame,
+          std::string *error);
   // G8kp (render-stream-9.md "Texture entries"): stores a `block` variant's GRT1 payload (its
   // SHA-256 is `variant.hash`) as `<hash>.grt`, the index line naming the variant's block format
   // and the entry's shape, as put() does.
   Put put_variant(const rs2::TextureEntry &entry, const rs2::TextureVariant &variant,
-                  const std::vector<std::uint8_t> &payload, std::uint64_t frame,
-                  std::string *error);
+                  const PayloadPtr &payload, std::uint64_t frame, std::string *error);
   // Stores a complete GRM1 payload whose SHA-256 is `surface.hash` (G5e), as put() does.
-  Put put_mesh(const rs2::MeshSurface &surface, const std::vector<std::uint8_t> &payload,
-               std::uint64_t frame, std::string *error);
+  Put put_mesh(const rs2::MeshSurface &surface, const PayloadPtr &payload, std::uint64_t frame,
+               std::string *error);
   // Stores a complete GRP1 payload whose SHA-256 is `shader.hash` (G55d, render-stream-5.md
   // "Shader payload"), as put() does: `<dir>/sha256/<hash>.grp`, index type "shader-code".
-  Put put_shader(const rs2::ShaderEntry &shader, const std::vector<std::uint8_t> &payload,
-                 std::uint64_t frame, std::string *error);
+  Put put_shader(const rs2::ShaderEntry &shader, const PayloadPtr &payload, std::uint64_t frame,
+                 std::string *error);
+
+  // P3-CAP: queue the file I/O of every later put on `writer` (nullptr: write synchronously).
+  // Stored then means "queued"; a failed write fails a later put (FileWriter is sticky), and
+  // close() drains the writer first. The writer must outlive this store's open period.
+  void set_writer(FileWriter *writer) { writer_ = writer; }
 
   bool has(const std::string &hash) const { return hashes_.count(hash) != 0; }
   std::uint64_t hashes() const { return hashes_.size(); }
@@ -111,11 +117,19 @@ class ResourceStore {
 
  private:
   Put put_bytes(const std::string &hash, const char *extension, const std::string &index_fields,
-                const std::vector<std::uint8_t> &payload, std::uint64_t frame, std::string *error);
+                const PayloadPtr &payload, std::uint64_t frame, std::string *error);
+  // The payload file (temp + rename) and its index line; runs on the writer thread when one is set.
+  static bool write_payload_file(const std::string &final_path,
+                                 const std::vector<std::uint8_t> &payload, bool corrupt,
+                                 std::FILE *index, const std::string &line,
+                                 const std::string &index_path, std::string *error);
 
+  FileWriter *writer_ = nullptr;
   std::string dir_;
   std::FILE *index_ = nullptr;
-  std::set<std::string> hashes_;
+  // P3-CAP: probed for every payload of every publication (hundreds of thousands of mesh hashes
+  // in a long game session), never iterated: hashed, not ordered.
+  std::unordered_set<std::string> hashes_;
   std::uint64_t bytes_ = 0;
   std::uint64_t wrong_hash_frame_ = 0;
   std::string corrupted_;
@@ -169,6 +183,9 @@ class ServedResources : public live::ResourceSource {
   std::set<std::string> retained_hashes() const;
   // The bytes every retained hash holds (budget accounting).
   PayloadMap retained_payloads() const;
+  // P3-CAP: the bytes of the retained hashes none of `known` holds -- payload_union_bytes()'s
+  // share of this set, without copying it.
+  std::uint64_t retained_bytes_beyond(const std::vector<const PayloadMap *> &known) const;
   struct Totals {
     std::uint64_t pinned = 0;            // pin events
     std::uint64_t retired = 0;           // retire events

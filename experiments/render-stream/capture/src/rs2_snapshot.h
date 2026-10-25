@@ -32,8 +32,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace grc {
@@ -1041,6 +1044,54 @@ struct Param {
   std::vector<double> floats;
 };
 
+// P3-CAP (results/p3/p3-cap.md): an immutable, shared sequence with std::vector's read interface.
+// Copying one copies a pointer, so a published table entry that holds one (MaterialEntry::params)
+// costs O(1) to snapshot, compare against an unchanged base (`shares`) and release. A mutation
+// (push_back, assigning a vector) never touches another holder's copy: it copies first unless this
+// holder is the only one. Not synchronised: mutate only a copy no other thread can reach.
+template <typename T>
+class SharedVector {
+ public:
+  using value_type = T;
+  using const_iterator = typename std::vector<T>::const_iterator;
+  using iterator = const_iterator;
+  using size_type = std::size_t;
+
+  SharedVector() = default;
+  SharedVector(std::vector<T> values)  // NOLINT(google-explicit-constructor): assigned like one
+      : data_(values.empty() ? nullptr
+                             : std::make_shared<const std::vector<T>>(std::move(values))) {}
+  SharedVector(std::initializer_list<T> values) : SharedVector(std::vector<T>(values)) {}
+
+  const std::vector<T> &vector() const { return data_ != nullptr ? *data_ : empty_vector(); }
+  std::size_t size() const { return data_ != nullptr ? data_->size() : 0; }
+  bool empty() const { return size() == 0; }
+  const T &operator[](std::size_t i) const { return (*data_)[i]; }
+  const T &front() const { return data_->front(); }
+  const T &back() const { return data_->back(); }
+  const_iterator begin() const { return vector().begin(); }
+  const_iterator end() const { return vector().end(); }
+  // True when both hold the very same sequence (then they are equal without a comparison).
+  bool shares(const SharedVector &other) const { return data_ == other.data_; }
+
+  void push_back(T value) { own().push_back(std::move(value)); }
+  void reserve(std::size_t n) { own().reserve(n); }
+  void clear() { data_.reset(); }
+
+ private:
+  static const std::vector<T> &empty_vector() {
+    static const std::vector<T> kEmpty;
+    return kEmpty;
+  }
+  std::vector<T> &own() {
+    if (data_ == nullptr || data_.use_count() != 1) {
+      data_ = std::make_shared<const std::vector<T>>(data_ != nullptr ? *data_ : std::vector<T>());
+    }
+    return const_cast<std::vector<T> &>(*data_);
+  }
+  std::shared_ptr<const std::vector<T>> data_;
+};
+
 // --- new at /5: the shader table (render-stream-5.md "Shader table") --------------------------
 
 // gate5_5-design.md D7: a CanvasItemMaterial-recognized engine-generated shader, described rather
@@ -1094,7 +1145,7 @@ struct MaterialEntry {
   std::uint64_t version = 1;
   bool has_shader = false;
   std::uint32_t shader = 0;
-  std::vector<Param> params;  // sorted by name (byte order)
+  SharedVector<Param> params;  // sorted by name (byte order); shared, P3-CAP
 };
 
 // The mirror's full state for one item at one frame: always carries its complete `commands`.
