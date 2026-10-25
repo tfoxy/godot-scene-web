@@ -309,6 +309,11 @@ checks this.
 
 ### Design, not built: a carried set bounded by the resolved state (P3-SP, for `/11`)
 
+*Specified in [render-stream-11.md](render-stream-11.md) "Resource retention" (W11-D), which
+supersedes this note. One correction: every receiver accepts every record (folds, resyncs and
+superseded transactions act at apply, not at accept), so both ends prune identically, and
+`resource-duplicate` stays an exact error at /11. The "prunes less" case below does not arise.*
+
 Up to `/10`, `resource-duplicate` and the first-transaction rule make "carried" a lifelong,
 exact set on both ends: the host may never send a hash twice and may never skip one the receiver
 lacks, and the receiver checks every table entry at or under `inline_max_bytes` against it
