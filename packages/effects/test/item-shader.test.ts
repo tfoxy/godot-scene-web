@@ -266,12 +266,12 @@ describe("transpileGodotItemShader (item-space module)", () => {
         /shader_type/,
       ],
       [
-        "shader_type canvas_item;\nvoid vertex() { VERTEX += vec2(1.0); }\nvoid fragment() {}",
-        /vertex\(\)/,
+        "shader_type canvas_item;\nvoid fragment() { COLOR.rg = VERTEX; }",
+        /VERTEX/,
       ],
       [
-        "shader_type canvas_item;\nvoid fragment() { COLOR = texture(TEXTURE, UV + TEXTURE_PIXEL_SIZE); }",
-        /TEXTURE_PIXEL_SIZE/,
+        "shader_type canvas_item;\nvoid fragment() { COLOR.a = POINT_SIZE; }",
+        /POINT_SIZE/,
       ],
       [
         "shader_type canvas_item;\nuniform sampler2D n : hint_default_black;\nvoid fragment() { COLOR = texture(n, UV); }",
@@ -291,6 +291,201 @@ describe("transpileGodotItemShader (item-space module)", () => {
       ],
     ];
     for (const [src, why] of refused) {
+      expect(() => transpileGodotItemShader(src)).toThrow(
+        UnsupportedShaderError,
+      );
+      expect(() => transpileGodotItemShader(src)).toThrow(why);
+    }
+  });
+});
+
+// P3-VX: vertex() and varyings. The STS2 settings gear's shape (COLOR copied into a varying that
+// the fragment multiplies back in), written out synthetically.
+const HSV_GEAR = server(`shader_type canvas_item;
+uniform float v = 1;
+varying vec4 modulate_color;
+void vertex() {
+	modulate_color = COLOR;
+}
+void fragment() {
+	vec4 col = texture(TEXTURE, UV);
+	col.rgb = mix(vec3(0,0,0), col.rgb, v);
+	COLOR = col;
+	COLOR *= modulate_color;
+}
+`);
+
+const DISPLACE = server(`shader_type canvas_item;
+const float SHEAR = 0.25;
+uniform vec2 offset = vec2(4.0, 0.0);
+uniform sampler2D lut : filter_nearest;
+varying flat int corner;
+varying smooth highp vec2 local;
+varying float weights[2];
+vec2 shear(vec2 p) { return vec2(p.x + p.y * SHEAR, p.y); }
+vec2 helper_outer(vec2 p) { return shear(p) + offset; }
+float frag_only(vec2 p) { return fwidth(p.x); }
+void vertex() {
+	VERTEX = helper_outer(VERTEX) + vec2(1.0 / TEXTURE_PIXEL_SIZE.x, 0.0) * 0.0;
+	UV = UV * 2 - 0.5;
+	corner = int(VERTEX.x > 10.0) + 2 * int(VERTEX.y > 10.0) + int(UV.x) % 3;
+	local = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy + (CANVAS_MATRIX * SCREEN_MATRIX)[3].xy * 0.0;
+	weights[0] = INSTANCE_CUSTOM.x;
+	weights[1] = AT_LIGHT_PASS ? 1.0 : 0.0;
+	POINT_SIZE = 2.0;
+}
+void fragment() {
+	COLOR = texture(lut, vec2(float(corner) / 4.0, frag_only(local) + weights[0]));
+}
+`);
+
+describe("transpileGodotItemShader vertex() (P3-VX)", () => {
+  it("emits a vertex module beside the fragment module, the varying out there and in here", () => {
+    const t = transpileGodotItemShader(HSV_GEAR);
+    expect(t.vertexStage).toBe(true);
+    expect(t.skipVertexTransform).toBe(false);
+    expect(t.worldVertexCoords).toBe(false);
+    expect(t.varyings).toEqual([
+      {
+        name: "modulate_color",
+        type: "vec4",
+        interpolation: null,
+        fromVertex: true,
+      },
+    ]);
+    const v = t.vertexGlsl ?? "";
+    expect(v).toContain("uniform float v;");
+    expect(v).toContain("out vec4 modulate_color;");
+    expect(v).toContain(
+      `void ${ITEM_SHADER_PRELUDE_NAMES.vertexEntry}(inout vec2 VERTEX, inout vec2 UV, inout vec4 COLOR, inout float POINT_SIZE, in mat4 MODEL_MATRIX, in mat4 CANVAS_MATRIX, in mat4 SCREEN_MATRIX) {`,
+    );
+    expect(v).toContain("modulate_color = COLOR;");
+    expect(v).not.toContain("texture(TEXTURE");
+    expect(t.glsl).toContain("in vec4 modulate_color;");
+    expect(t.glsl).toContain("COLOR *= modulate_color;");
+    expect(t.glsl).not.toContain("out vec4 modulate_color");
+  });
+
+  it("keeps interpolation and precision qualifiers and arrays, and emits only the helpers vertex() reaches", () => {
+    const t = transpileGodotItemShader(DISPLACE);
+    const v = t.vertexGlsl ?? "";
+    expect(v).toContain("flat out int corner;");
+    expect(v).toContain("smooth out highp vec2 local;");
+    expect(v).toContain("out float weights[2];");
+    expect(t.glsl).toContain("flat in int corner;");
+    expect(t.glsl).toContain("smooth in highp vec2 local;");
+    expect(t.glsl).toContain("in float weights[2];");
+    // Transitively reached helpers and every constant, but not the fragment-only helper (fwidth
+    // does not compile in a vertex shader).
+    expect(v).toContain("vec2 shear(vec2 p)");
+    expect(v).toContain("vec2 helper_outer(vec2 p)");
+    expect(v).toContain("const float SHEAR = 0.25;");
+    expect(v).not.toContain("frag_only");
+    expect(t.glsl).toContain("float frag_only(vec2 p)");
+    // Samplers are declared in both stages (one GL uniform).
+    expect(v).toContain("uniform sampler2D lut;");
+    // Built-ins as canvas.glsl has them for a non-instanced draw.
+    expect(v).toContain(
+      "#define TEXTURE_PIXEL_SIZE (vec2(1.0) / vec2(textureSize(TEXTURE, 0)))",
+    );
+    expect(v).toContain("#define AT_LIGHT_PASS false");
+    expect(v).toContain("#define INSTANCE_CUSTOM vec4(0.0)");
+    // Int literals become float in float arithmetic, as in fragment(), and stay int beside an
+    // int constructor call.
+    expect(v).toContain("UV = UV * 2.0 - 0.5;");
+    expect(v).toContain(
+      "corner = int(VERTEX.x > 10.0) + 2 * int(VERTEX.y > 10.0) + int(UV.x) % 3;",
+    );
+  });
+
+  it("needs a vertex stage for skip_vertex_transform even without vertex(), not for world_vertex_coords", () => {
+    const skip = transpileGodotItemShader(
+      "shader_type canvas_item;\nrender_mode skip_vertex_transform;\nvoid fragment() {}",
+    );
+    expect(skip.vertexStage).toBe(true);
+    expect(skip.skipVertexTransform).toBe(true);
+    expect(skip.vertexGlsl).toContain(
+      `#define ${ITEM_SHADER_PRELUDE_NAMES.skipVertexTransform}`,
+    );
+    const world = transpileGodotItemShader(
+      "shader_type canvas_item;\nrender_mode world_vertex_coords;\nvoid fragment() {}",
+    );
+    expect(world.vertexStage).toBe(false);
+    expect(world.vertexGlsl).toBeNull();
+    expect(world.worldVertexCoords).toBe(true);
+    const worldVertex = transpileGodotItemShader(
+      "shader_type canvas_item;\nrender_mode world_vertex_coords;\nvoid vertex() { VERTEX.x += 1.0; }",
+    );
+    expect(worldVertex.vertexGlsl).toContain(
+      `#define ${ITEM_SHADER_PRELUDE_NAMES.worldVertexCoords}`,
+    );
+  });
+
+  it("admits a shader without fragment() and keeps a plain one on the plain vertex stage", () => {
+    const t = transpileGodotItemShader(
+      "shader_type canvas_item;\nvoid vertex() { UV *= 0.5; }",
+    );
+    expect(t.vertexStage).toBe(true);
+    expect(t.glsl).toContain(
+      `void ${ITEM_SHADER_PRELUDE_NAMES.entry}(inout vec4 COLOR, in vec2 UV) {\n\n}`,
+    );
+    const plain = transpileGodotItemShader(TINT);
+    expect(plain.vertexStage).toBe(false);
+    expect(plain.vertexGlsl).toBeNull();
+    expect(plain.varyings).toEqual([]);
+  });
+
+  it("renames a varying that would collide with the renderer's own stage names", () => {
+    const t = transpileGodotItemShader(
+      "shader_type canvas_item;\nvarying vec4 v_color;\nvoid vertex() { v_color = COLOR; }\nvoid fragment() { COLOR = v_color; }",
+    );
+    expect(t.varyings[0].name).toBe("gsw_vary_v_color");
+    expect(t.vertexGlsl).toContain("out vec4 gsw_vary_v_color;");
+    expect(t.vertexGlsl).toContain("gsw_vary_v_color = COLOR;");
+    expect(t.glsl).toContain("COLOR = gsw_vary_v_color;");
+  });
+
+  it("declares a varying vertex() never writes as a fragment global", () => {
+    const t = transpileGodotItemShader(
+      "shader_type canvas_item;\nvarying vec4 tint;\nvoid fragment() { tint = vec4(0.5); COLOR *= tint; }",
+    );
+    expect(t.vertexStage).toBe(false);
+    expect(t.varyings[0].fromVertex).toBe(false);
+    expect(t.glsl).toMatch(/^vec4 tint;$/m);
+  });
+
+  it("admits TEXTURE_PIXEL_SIZE and AT_LIGHT_PASS in fragment()", () => {
+    const t = transpileGodotItemShader(
+      "shader_type canvas_item;\nvoid fragment() { if (!AT_LIGHT_PASS) COLOR = texture(TEXTURE, UV + TEXTURE_PIXEL_SIZE); }",
+    );
+    expect(t.glsl).toContain("#define TEXTURE_PIXEL_SIZE");
+    expect(t.glsl).toContain("#define AT_LIGHT_PASS false");
+  });
+
+  it("refuses what vertex() cannot execute exactly, naming it", () => {
+    const refused: [string, RegExp][] = [
+      ["void vertex() { VERTEX.x += float(VERTEX_ID); }", /VERTEX_ID/],
+      ["void vertex() { VERTEX.x += float(INSTANCE_ID); }", /INSTANCE_ID/],
+      ["void vertex() { VERTEX.x += TIME; }", /TIME/],
+      ["void vertex() { COLOR = CUSTOM0; }", /CUSTOM0/],
+      ["void vertex() { COLOR = texture(TEXTURE, UV); }", /TEXTURE/],
+      [
+        "uniform sampler2D s : hint_screen_texture;\nvoid vertex() { COLOR = textureLod(s, UV, 0.0); }\nvoid fragment() { COLOR = texture(s, SCREEN_UV); }",
+        /screen texture "s"/,
+      ],
+      [
+        "float h() { return TIME; }\nvoid vertex() { VERTEX.x += h(); }",
+        /TIME/,
+      ],
+      ["varying mat2 m;\nvoid vertex() { m = mat2(1.0); }", /type mat2/],
+      ["varying vec2 a, b;\nvoid vertex() { a = UV; }", /one name/],
+      [
+        "varying uvec2 u;\nvoid vertex() { u = uvec2(1); }",
+        /unsigned and boolean-vector/,
+      ],
+    ];
+    for (const [body, why] of refused) {
+      const src = `shader_type canvas_item;\n${body}`;
       expect(() => transpileGodotItemShader(src)).toThrow(
         UnsupportedShaderError,
       );

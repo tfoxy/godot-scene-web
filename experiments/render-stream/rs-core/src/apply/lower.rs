@@ -244,9 +244,11 @@ impl<'a> Builder<'a> {
         self.out.verts.len() as u32 - 1
     }
 
-    /// Godot's rect quad (canvas.glsl, `vertex_base` order 0:(0,0) 1:(0,1) 2:(1,1) 3:(1,0), triangles
-    /// (0,1,2) and (3,0,2)): `vertex = dst.xy + |dst.zw| · flip(base)`, `uv = src.xy + |src.zw| ·
-    /// (transpose ? base.yx : base.xy)`.
+    /// Godot's rect quad (canvas.glsl, `vertex_base` order 0:(0,0) 1:(0,1) 2:(1,1) 3:(1,0), drawn
+    /// through GLES3's indexed quad `{0, 2, 1, 3, 2, 0}`, rasterizer_canvas_gles3.cpp:2819):
+    /// `vertex = dst.xy + |dst.zw| · flip(base)`, `uv = src.xy + |src.zw| · (transpose ? base.yx :
+    /// base.xy)`. The index order matters only to a `flat` varying (P3-VX): GL's provoking vertex is
+    /// each triangle's last, (0,1) and (0,0) here, as on the host.
     fn quad(&mut self, dst: [f32; 4], src: [f32; 4], transpose: bool, color: [f32; 4]) {
         let base = [[0.0f32, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
         let flip = [src[2] < 0.0, src[3] < 0.0];
@@ -261,7 +263,7 @@ impl<'a> Builder<'a> {
         }
         self.out
             .idx
-            .extend_from_slice(&[first, first + 1, first + 2, first + 3, first, first + 2]);
+            .extend_from_slice(&[first, first + 2, first + 1, first + 3, first + 2, first]);
     }
 
     /// `quad` with `CANVAS_RECT_CLIP_UV` (canvas.glsl:593-596): the UV is clamped to the source

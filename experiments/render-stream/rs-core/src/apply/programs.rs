@@ -67,6 +67,10 @@ pub struct ProgramInfo {
     /// The applier binds the back-buffer copy to `SCREEN_TEXTURE` and marks the draws where
     /// GLES3 takes the copy (rasterizer_canvas_gles3.cpp:426-533).
     pub screen: Option<bool>,
+    /// P3-VX: the program has its own vertex stage (`vertexStage`: a `vertex()`, or
+    /// `skip_vertex_transform`), which reads its canvas's transform and inverse from the binding
+    /// (`gsw_canvas_matrix` / `gsw_canvas_inverse`).
+    pub vertex: bool,
 }
 
 impl ProgramInfo {
@@ -166,6 +170,11 @@ impl ProgramInfo {
                     .ok_or("program meta: screenTexture.mipmaps")?,
             ),
         };
+        // P3-VX: `vertexStage`; an older transpiler omits it (and refused every vertex()).
+        let vertex = doc
+            .get(root, "vertexStage")
+            .and_then(|v| doc.as_bool(v))
+            .unwrap_or(false);
         Ok(ProgramInfo {
             program,
             blend,
@@ -173,6 +182,7 @@ impl ProgramInfo {
             uniforms,
             samplers,
             screen,
+            vertex,
         })
     }
 }
@@ -189,6 +199,52 @@ pub enum ProgramEntry {
         reason: &'static str,
         detail: Box<str>,
     },
+}
+
+/// The receiver sabotage `vertex-flat-varyings` (P3-VX): `code` with every `varying` declared
+/// `flat` (a `smooth` one turned `flat`, an unqualified one given `flat`), so a vertex stage's
+/// outputs reach `fragment()` as the provoking vertex's value instead of interpolated. Both the
+/// native receiver (before `shader_set_code`) and GSW (before its transpiler) apply it to the code
+/// they are about to compile; a shader without varyings is returned unchanged.
+pub fn flat_varyings(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::with_capacity(code.len() + 16);
+    let mut last = 0;
+    let mut i = 0;
+    while let Some(at) = code[i..].find("varying") {
+        let start = i + at;
+        let end = start + "varying".len();
+        i = end;
+        if (start > 0 && word(bytes[start - 1]))
+            || bytes.get(end).is_none_or(|c| !c.is_ascii_whitespace())
+        {
+            continue;
+        }
+        let mut next = end;
+        while bytes.get(next).is_some_and(|c| c.is_ascii_whitespace()) {
+            next += 1;
+        }
+        let mut token_end = next;
+        while bytes.get(token_end).copied().is_some_and(word) {
+            token_end += 1;
+        }
+        match &code[next..token_end] {
+            "flat" => {}
+            "smooth" => {
+                out.push_str(&code[last..next]);
+                out.push_str("flat");
+                last = token_end;
+            }
+            _ => {
+                out.push_str(&code[last..next]);
+                out.push_str("flat ");
+                last = next;
+            }
+        }
+    }
+    out.push_str(&code[last..]);
+    out
 }
 
 /// A wire parameter's numbers, flattened (a packed array's elements in order).
@@ -267,6 +323,17 @@ mod tests {
             ty,
             value,
         }
+    }
+
+    #[test]
+    fn flat_varyings_sabotage_rewrites_only_varying_declarations() {
+        let code = "shader_type canvas_item;\nvarying vec4 a;\nvarying smooth vec2 b;\nvarying flat int c;\nvarying\thighp float d;\nfloat varying_x;\nvoid fragment() { COLOR = a; }";
+        assert_eq!(
+            flat_varyings(code),
+            "shader_type canvas_item;\nvarying flat vec4 a;\nvarying flat vec2 b;\nvarying flat int c;\nvarying\tflat highp float d;\nfloat varying_x;\nvoid fragment() { COLOR = a; }"
+        );
+        let plain = "shader_type canvas_item;\nvoid fragment() {}";
+        assert_eq!(flat_varyings(plain), plain);
     }
 
     #[test]

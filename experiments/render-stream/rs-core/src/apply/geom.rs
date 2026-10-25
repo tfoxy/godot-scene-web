@@ -30,6 +30,25 @@ pub fn xform_point(t: &Xform, p: [f32; 2]) -> [f32; 2] {
     ]
 }
 
+/// `Transform2D::affine_inverse()` (core/math/transform_2d.cpp:48-60), float32 per operation:
+/// `idet = 1 / det`, the basis diagonal swapped and scaled by `(idet, -idet)` / `(-idet, idet)`,
+/// the origin `basis_xform(-origin)` of the new basis.
+pub fn affine_inverse(t: &Xform) -> Xform {
+    let det = t[0] * t[3] - t[1] * t[2];
+    let idet = 1.0f32 / det;
+    let (a, b, c, d) = (t[3] * idet, t[1] * -idet, t[2] * -idet, t[0] * idet);
+    let (ox, oy) = (-t[4], -t[5]);
+    [a, b, c, d, a * ox + c * oy, b * ox + d * oy]
+}
+
+/// A `Transform2D` as the column-major `mat4` GLES3 builds for it
+/// (`_update_transform_2d_to_mat4`, rasterizer_canvas_gles3.cpp).
+pub fn to_mat4(t: &Xform) -> [f32; 16] {
+    [
+        t[0], t[1], 0.0, 0.0, t[2], t[3], 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, t[4], t[5], 0.0, 1.0,
+    ]
+}
+
 pub fn is_identity(t: &Xform) -> bool {
     *t == IDENTITY
 }

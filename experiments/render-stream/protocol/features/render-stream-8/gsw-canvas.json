@@ -1585,7 +1585,7 @@
       "tolerance": null,
       "evidence": [],
       "owner": null,
-      "notes": "G7s: vertex(), varyings, screen/SDF built-ins, global and matrix uniforms, TEXTURE_PIXEL_SIZE, uvec/bvec and non-literal defaults are typed gsw-shader-transpile (programs.ts). Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal."
+      "notes": "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). Still typed gsw-shader-transpile (programs.ts): TIME, VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, hint_default_black/transparent samplers, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal."
     },
     {
       "id": "material.shader-transpile-subset",

@@ -1170,6 +1170,118 @@ hand model of the copy points everywhere but RE; every receiver equals the refer
 copy before every reader, the copy taken at the wrong time) differs exactly where the model says.
 gate55-shader's `refused` variant keeps its SC screen shader, which now draws.
 
+## vertex() (P3-VX, 2026-10-25)
+
+GSW's item-shader transpiler refused every shader with a `vertex()` (`gsw-shader-transpile`,
+"vertex() is not supported"), so GSW drew those items plain. On STS2 that was the whole map gap:
+the settings gear's HSV shader (`v = 0.9`) only copies `COLOR` into a varying. It also cost part of
+combat (shaders 30 and 31, and the screen reader `ed56752c`). The native receiver and the web
+export were never affected, since Godot compiles the code. P3-VX runs `vertex()` on GSW
+(`results/p3/p3-vx.md`). **No wire change**: D11 never had a `vertex()` reason, and the shader
+entry is unchanged.
+
+### What Godot 4.5.1's GLES3 renderer does (the reference)
+
+- **The vertex stage** (`drivers/gles3/shaders/canvas.glsl:179-285`), with the compiler's renames
+  (`drivers/gles3/storage/material_storage.cpp:1150-1220`):
+  - `vertex` and `uv` are the command's own, before any transform;
+  - `color` is the vertex colour times the item's modulate, folded in **before** the code
+    (`color_attrib * read_draw_data_modulation`; for a rect, the rect's modulate times it);
+  - `model_matrix` is `world`, the item's `final_transform` with the canvas transform taken off
+    again, times the command's draw transform (`base_transform = canvas⁻¹ · final_transform`,
+    `rasterizer_canvas_gles3.cpp:831-894`).
+- **The order:**
+  1. `world_vertex_coords` applies the model before the code.
+  2. Then the code runs.
+  3. Unless `skip_vertex_transform` or `world_vertex_coords`, the model is applied after the code.
+     `skip_vertex_transform` applies **even without a `vertex()`**: the item lands at its local
+     coordinates.
+  4. Then `color_interp = color`, `vertex = canvas_transform · vertex` and
+     `gl_Position = screen_transform · vertex`.
+- **The built-ins:**
+  - `CANVAS_MATRIX` is `canvas_transform`, the canvas's transform with the viewport's global one.
+  - `SCREEN_MATRIX` is `screen_transform`.
+  - `AT_LIGHT_PASS` is `false`.
+  - `INSTANCE_CUSTOM` is `vec4(0)` except in an instanced multimesh draw.
+  - `TEXTURE_PIXEL_SIZE` is `1 / size` of the draw's texture, with the default white enforced as
+    1x1 (`:2378-2400`).
+  - `POINT_SIZE` is declared only under `USE_POINT_SIZE`, which GLES3 never defines.
+- **Rects** go through the indexed quad `{0, 2, 1, 3, 2, 0}` over `vertex_base` (0,0) (0,1) (1,1)
+  (1,0) (`:2819`). GL's provoking vertex is each triangle's last, so a `flat` varying of a rect is
+  (0,1)'s value in the lower-left triangle and (0,0)'s in the upper-right one.
+
+### GSW
+
+- **Transpiler** (`packages/effects` `transpileGodotItemShader`): `vertexGlsl` is a second module.
+  - It declares the uniforms and samplers (one GL uniform across both stages), the varyings `out`
+    with their interpolation and precision qualifiers, the constants and only the helpers the
+    vertex code reaches.
+  - Its entry is `godot_item_vertex(inout VERTEX, UV, COLOR, POINT_SIZE, in MODEL_MATRIX,
+    CANVAS_MATRIX, SCREEN_MATRIX)`, and it `#define`s `GSW_SKIP_VERTEX_TRANSFORM` /
+    `GSW_WORLD_VERTEX_COORDS`.
+  - The fragment module declares the same varyings `in`. A varying the vertex code never writes is
+    a fragment global: Godot passes it on to `light()` only.
+  - A shader without `fragment()` is admitted. `TEXTURE_PIXEL_SIZE` and `AT_LIGHT_PASS` are
+    admitted in `fragment()` too.
+- **Typed refusals** (`gsw-shader-transpile`):
+  - in `vertex()`: `TIME`, `VERTEX_ID` and `INSTANCE_ID` (GLES3's per-batch indices), `CUSTOM0/1`
+    (mesh attributes not carried), and the fragment-only names (`TEXTURE`, the screen, the SDF);
+  - `mat*`/sampler varyings, and multi-name varying declarations.
+- **Executor** (`canvas_items` `item_program_vertex`), in canvas.glsl's order:
+  - `COLOR` is the vertex colour times the row's modulate, before the code. `v_tint` is white, so
+    the fragment stage's `v_color * v_tint` is the vertex stage's `COLOR`.
+  - `MODEL_MATRIX` is `gsw_canvas_inverse · row xform`.
+  - Then the render modes, `CANVAS_MATRIX` (`gsw_canvas_matrix`), and `SCREEN_MATRIX` (Godot's
+    `screen_transform` under `godot_orientation`).
+  - Programs without a vertex stage keep the builtin vertex stage, byte for byte.
+- **Applier** (`rs-core` `binding_of`): a binding is per canvas (`BindingKey::canvas`). A vertex-stage
+  program's binding carries that canvas's transform (`viewport.global_xform · canvas.xform`) and
+  Godot's float32 `affine_inverse` of it.
+- **Batching:**
+  - Merging is unchanged. Each vertex still fetches its own item row, so the modulate and the
+    transforms stay per item.
+  - Instance uniforms keep their per-item bindings.
+  - Draws merge only within one binding, and so within one canvas.
+- **Rect index order** (`lower.rs` `quad`): GLES3's `{0, 2, 1, 3, 2, 0}`. These are the same two
+  triangles as before with the other provoking vertices, so a builtin draw is unchanged and a
+  `flat` varying matches the host.
+- **Known deviations:**
+  1. GSW's vertices carry the command's draw transform (`add_set_transform`, a mesh's own
+     transform) already applied, so `VERTEX` in `vertex()` is that point, not the command-local
+     one. Exact for every draw without a draw transform, and for any affine `vertex()` code.
+  2. Nine-patch and `CANVAS_RECT_CLIP_UV` rects are split into cells, so non-affine vertex code
+     and `flat` varyings see the cells' corners.
+  3. GSW draws no point primitives, so `POINT_SIZE` is a no-op local.
+
+### Fixture, legs and checks
+
+`fixtures/gate55-vertex` (run-gate55.sh group `g55v`, `scripts/lib/gate55v-checks.ts`; gate 7 runs
+its receivers in both browsers as part of `g7-55`'s live half, beside g55s). Every item has a
+`vertex()` or a vertex render mode:
+
+- VH: STS2's gear HSV shape under a non-white modulate.
+- VP: a four-colour polygon through a smooth `COLOR` varying.
+- VD: `VERTEX` displaced in local space on a 2x node.
+- VU: UV transposed and flipped.
+- VF: `flat` vec4 and int varyings.
+- VS1: `skip_vertex_transform` alone; VS2: with `MODEL_MATRIX` in the code.
+- VW: `world_vertex_coords`.
+- VT: `TEXTURE_PIXEL_SIZE`, `AT_LIGHT_PASS` and `INSTANCE_CUSTOM`.
+- VM: `SCREEN_MATRIX · CANVAS_MATRIX · MODEL_MATRIX` into a varying.
+- In a scaled CanvasLayer: VC (`CANVAS_MATRIX`) and VLD.
+
+Steps change a parameter, a node position, the layer's offset and a modulate.
+
+The checks:
+
+- the capture carries every shader `ok`;
+- the reference repeats, and equals a hand model of the order above at every solid or texel-exact
+  item;
+- every receiver equals the reference: native exactly, browsers within 1;
+- the receiver sabotage `vertex-flat-varyings` makes every varying `flat` before the receiver
+  compiles the code (native: before `shader_set_code`; GSW: before the transpiler;
+  `rs-core` `programs::flat_varyings`). It must differ in VP and VM and nowhere else.
+
 ## Deferred, with owners
 
 - **The GSW browser receiver's shader path: gate 7.** It transpiles its supported subset through

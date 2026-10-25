@@ -16,9 +16,10 @@
 //! `execute` refuses with [`ExecError::NeedsFullUpload`] until the caller sends a list with
 //! `dirty.all` and every texture re-queued.
 use super::{
-    Call, ExecOptions, ExecStats, FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW,
-    MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor, gl_scissor_y_up, godot_screen_transform,
-    item_program_fragment, item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
+    CANVAS_INVERSE_UNIFORM, CANVAS_MATRIX_UNIFORM, Call, ExecOptions, ExecStats,
+    FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW, MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor,
+    gl_scissor_y_up, godot_screen_transform, item_program_fragment, item_program_vertex,
+    item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
 };
 use crate::present::{
     ContextAttributes,
@@ -32,6 +33,10 @@ use gsw_canvas_draw_list::{
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+
+const IDENTITY_MAT4: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 const UNIT_DRAW: u32 = 0;
 const UNIT_ITEMS: u32 = 1;
@@ -293,6 +298,8 @@ struct MsdfProgram {
 /// A registered item-space program: its module (kept to recompile after a restored context).
 struct ItemProgram {
     module: String,
+    /// P3-VX: the vertex module, for a program with its own vertex stage.
+    vertex: Option<String>,
     compiled: Option<CompiledItem>,
 }
 
@@ -630,10 +637,18 @@ fn sampler_index(bits: u32) -> usize {
     wrap * 2 + (bits & Sampler::LINEAR) as usize
 }
 
-/// Compile an item-space program: the builtin vertex stage (its modulate passed straight) and
-/// [`item_program_fragment`] around `module`. Leaves no program bound.
-fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String> {
-    let program = compile(gl, VERT, &item_program_fragment(module))?;
+/// Compile an item-space program: the builtin vertex stage (its modulate passed straight), or
+/// [`item_program_vertex`] around `vertex` (P3-VX), and [`item_program_fragment`] around `module`.
+/// Leaves no program bound.
+fn compile_item(
+    gl: &glow::Context,
+    module: &str,
+    vertex: Option<&str>,
+) -> Result<CompiledItem, String> {
+    let program = match vertex {
+        Some(v) => compile(gl, &item_program_vertex(v), &item_program_fragment(module))?,
+        None => compile(gl, VERT, &item_program_fragment(module))?,
+    };
     unsafe {
         gl.use_program(Some(program));
         // The vertex stage's tint stays straight: the fragment stage owns the order.
@@ -656,10 +671,13 @@ fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String
                 continue;
             };
             let name = active.name.trim_end_matches("[0]").to_string();
-            if name == "TEXTURE"
-                || name == "SCREEN_PIXEL_SIZE"
-                || name.starts_with("gsw_")
-                || name.starts_with("u_")
+            // P3-VX: the vertex stage's canvas matrices are binding values like any uniform.
+            let canvas = name == CANVAS_MATRIX_UNIFORM || name == CANVAS_INVERSE_UNIFORM;
+            if !canvas
+                && (name == "TEXTURE"
+                    || name == "SCREEN_PIXEL_SIZE"
+                    || name.starts_with("gsw_")
+                    || name.starts_with("u_"))
             {
                 continue;
             }
@@ -678,6 +696,10 @@ fn compile_item(gl: &glow::Context, module: &str) -> Result<CompiledItem, String
                 gl.uniform_1_i32(Some(&location), unit as i32);
                 sampler_units.push((name, unit));
             } else {
+                if canvas {
+                    // Identity until a binding sends the item's canvas transform.
+                    gl.uniform_matrix_4_f32_slice(Some(&location), false, &IDENTITY_MAT4);
+                }
                 uniforms.insert(name, (location, active.utype, active.size));
             }
         }
@@ -1032,19 +1054,32 @@ impl CanvasItemsExecutor {
     /// compile or link failure is returned with GL's log and registers nothing. Redefining an id
     /// replaces its program. Programs survive a restored context (recompiled from the module).
     pub fn define_program(&mut self, id: u32, module: &str) -> Result<(), String> {
+        self.define_program_with_vertex(id, module, None)
+    }
+
+    /// [`define_program`](Self::define_program) for a program with its own vertex stage (P3-VX):
+    /// `vertex` is the transpiler's `vertexGlsl`, compiled around [`item_program_vertex`]; `None`
+    /// keeps the builtin vertex stage.
+    pub fn define_program_with_vertex(
+        &mut self,
+        id: u32,
+        module: &str,
+        vertex: Option<&str>,
+    ) -> Result<(), String> {
         if id == BUILTIN_PROGRAM {
             return Err("program id 0 is the builtin".into());
         }
         if self.context_state() == ContextState::Lost {
             return Err(ExecError::Lost.to_string());
         }
-        let compiled = compile_item(&self.gl.raw, module);
+        let compiled = compile_item(&self.gl.raw, module, vertex);
         self.cache.program = None;
         let compiled = compiled?;
         if let Some(old) = self.programs.insert(
             id,
             ItemProgram {
                 module: module.to_string(),
+                vertex: vertex.map(str::to_string),
                 compiled: Some(compiled),
             },
         ) && let Some(c) = old.compiled
@@ -1118,7 +1153,8 @@ impl CanvasItemsExecutor {
                     self.needs_full = true;
                     // Item-space programs come back from their modules (they compiled before).
                     for p in self.programs.values_mut() {
-                        p.compiled = compile_item(&self.gl.raw, &p.module).ok();
+                        p.compiled =
+                            compile_item(&self.gl.raw, &p.module, p.vertex.as_deref()).ok();
                     }
                     ContextState::Restored
                 }
