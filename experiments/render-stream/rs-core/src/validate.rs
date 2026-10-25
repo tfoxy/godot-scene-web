@@ -411,6 +411,8 @@ pub struct Validator {
     /// Recycled item buffers (replaced entries, after commit).
     item_pool: Vec<Item>,
     old_defaults: (Filter, Repeat),
+    /// P3-TM: the transaction's `shader_time` value, read in `apply`, committed with it.
+    shader_time: Option<f64>,
     dirty: Dirty,
     removed: Removed,
     /// Per tx entry: it was absent from the previous state (canvases, items, textures, meshes,
@@ -1398,6 +1400,7 @@ impl Validator {
             undo: Vec::new(),
             item_pool: Vec::new(),
             old_defaults: (Filter::Nearest, Repeat::Disabled),
+            shader_time: None,
             dirty: Dirty::default(),
             removed: Removed::default(),
             was_new: Default::default(),
@@ -1780,6 +1783,17 @@ impl Validator {
                 }
             }
         }
+        // P3-TM (render-stream-10.md "Shader time"): the host's shader time is param_f64's last
+        // float, after the materials' and the items' instance parameters.
+        if let Some(f) = tx.shader_time_f {
+            if f != param_floats {
+                return Err(Error::new(
+                    "shader-time",
+                    format!("record at offset {offset}: shader_time f={f}, expected {param_floats}"),
+                ));
+            }
+            param_floats += 1;
+        }
         // backbuffer-offset (render-stream-10.md "Transaction blocks").
         let mut backbuffer_floats = 0u64;
         if v >= 10 {
@@ -2027,6 +2041,7 @@ impl Validator {
             F64s(bl[5]),
         );
         let backbuffer_f32 = F32s(bl[6]);
+        self.shader_time = tx.shader_time_f.map(|f| param_f64.get(f as usize));
         let stride = if v >= 5 { 10 } else { 6 };
 
         let r = &mut self.removed;
@@ -2824,12 +2839,36 @@ impl Validator {
 
     /// Everything `accept` checks after `applyTransaction`, in order.
     fn post_checks(&mut self, offset: usize) -> Result<(), Error> {
+        self.check_shader_time(offset)?;
         self.check_invariants()?;
         self.check_delivery(offset)?;
         self.check_adoption(offset)?;
         self.check_versions(offset)?;
         self.check_resources(offset)?;
         self.check_id_reuse(offset)
+    }
+
+    /// P3-TM (render-stream-10.md "Shader time"; `shader-time`): a /10 transaction carries
+    /// `shader_time` exactly when its resolved state holds an `ok` shader whose `uses` names
+    /// `time`.
+    fn check_shader_time(&self, offset: usize) -> Result<(), Error> {
+        if self.opts.version < 10 {
+            return Ok(());
+        }
+        let reads = self
+            .state
+            .shaders
+            .values()
+            .any(|s| s.status == EntryStatus::Ok && s.uses.contains(&ShaderUse::Time));
+        if reads != self.tx.shader_time_f.is_some() {
+            return Err(Error::new(
+                "shader-time",
+                format!(
+                    "record at offset {offset}: \"shader_time\" must be present exactly when the state holds an ok shader that uses time (it reads: {reads})"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// `checkDeliveryInvariants` (render-stream-9.md "Texture entries"; `delivery-entry`): variants
@@ -3825,6 +3864,7 @@ impl Validator {
             })
             .collect();
         st.unknown_items = tx.unknown_items;
+        st.shader_time = self.shader_time;
 
         for t in &tx.textures {
             self.last_texture.insert(t.id, t.clone());

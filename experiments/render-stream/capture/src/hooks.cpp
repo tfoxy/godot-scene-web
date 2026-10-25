@@ -383,6 +383,10 @@ void bump(HookId id) { g_count[id].fetch_add(1, std::memory_order_relaxed); }
 
 uint64_t current_frame() { return g_frame.load(std::memory_order_relaxed); }
 
+// P3-TM: the session carries the host's shader time (render-stream/10), so the D11 scan does not
+// type TIME as a reason (hooks_set_shader_time_carried).
+std::atomic<bool> g_shader_time_carried{false};
+
 // --- capture storage ---------------------------------------------------------
 
 constexpr size_t kMaxRects = 64;
@@ -1639,7 +1643,8 @@ rs::ShaderCopy copy_shader_code_text(const std::string &code, uint64_t t0,
   rs::ShaderCopy copy;
   copy.code_bytes = static_cast<int64_t>(code.size());
   const uint64_t t_decode = now_ns();
-  const rs::ShaderScan scan = rs::scan_shader_code(code);
+  const rs::ShaderScan scan =
+      rs::scan_shader_code(code, g_shader_time_carried.load(std::memory_order_relaxed));
   const rs::CanvasItemMaterialBuiltin builtin = rs::recognize_canvas_item_material(code);
   const uint64_t t_scan = now_ns();
   copy.mode = scan.mode;
@@ -3839,6 +3844,10 @@ void hooks_set_texture_workers(const rs::TextureWorkerConfig &config) {
 }
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }
+
+void hooks_set_shader_time_carried(bool carried) {
+  g_shader_time_carried.store(carried, std::memory_order_relaxed);
+}
 
 bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent content,
                          const char *source, bool *decoded) {

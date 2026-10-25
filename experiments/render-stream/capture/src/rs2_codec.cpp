@@ -1398,6 +1398,14 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += "]";
     m += materials_json;
   }
+  // P3-TM (render-stream-10.md "Shader time"): the host's shader time, last in param_f64, right
+  // after the materials; absent (no key) from a transaction whose state reads no TIME.
+  if (v10 && transaction.shader_time.has_value()) {
+    m += ",\"shader_time\":{\"f\":";
+    append_json_int(m, static_cast<std::int64_t>(param_f64.size()));
+    m += "}";
+    param_f64.push_back(*transaction.shader_time);
+  }
 
   m += ",";
   if (v10) {

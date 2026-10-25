@@ -72,6 +72,10 @@ std::string hooks_plan_detail(const HookPlan &plan);
 // carry it so an expected call can be placed in time.
 void hooks_set_frame(uint64_t frame);
 
+// P3-TM (render-stream-10.md "Shader time"): set before arming when the session is /10. The
+// shader hooks then classify `TIME` as a use, not the `shader-time` reason.
+void hooks_set_shader_time_carried(bool carried);
+
 // G8r (gate8-design.md D6, D7; rs_adopt.h): registers a texture that existed before arm in the
 // mirror and the hook log, through the hooks' own copy path (G8t's decode, G8kw's worker), as a
 // texture_2d_create of `image_object` (an Image the caller keeps alive for the call) with origin

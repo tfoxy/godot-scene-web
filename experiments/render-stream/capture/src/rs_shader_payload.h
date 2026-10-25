@@ -40,8 +40,9 @@ struct ShaderScan {
 // D11's token scan: skips `//` and `/* */` comments, reads identifiers `[A-Za-z_][A-Za-z0-9_]*`,
 // ignores an identifier right after `.`. Never calls a shader compiler and never engine memory;
 // a difference against the reference oracle's actual behaviour (G55c) is a finding, not a bug
-// here.
-ShaderScan scan_shader_code(const std::string &code);
+// here. P3-TM: `time_carried` (a render-stream/10 session, which carries the host's shader time)
+// keeps `TIME` out of the reasons; it stays in `uses`.
+ShaderScan scan_shader_code(const std::string &code, bool time_carried = false);
 
 // D7: `CanvasItemMaterial`'s generated code, recognized by exact text comparison against the 36
 // templates (6 blend modes x 3 light modes x particles on/off, Q1e) once the version comment

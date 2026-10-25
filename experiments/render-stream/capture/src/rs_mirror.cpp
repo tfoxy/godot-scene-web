@@ -167,6 +167,25 @@ void Mirror::set_perturb_vertex(std::uint64_t from_frame) {
   perturb_vertex_frame_ = from_frame;
 }
 
+void Mirror::set_carry_shader_time(bool carry) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  carry_shader_time_ = carry;
+}
+
+void Mirror::set_shader_time(double time) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!carry_shader_time_ || time == shader_time_) {
+    return;
+  }
+  shader_time_ = time;
+  for (const auto &entry : shaders_) {
+    if (reads_time(entry.second)) {
+      ++epoch_;  // a TIME reader's picture moves with the time alone
+      return;
+    }
+  }
+}
+
 std::uint64_t Mirror::epoch() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return epoch_;
@@ -2808,6 +2827,21 @@ void Mirror::take_shader_code(Shader *shader, const ShaderCodeInput &code,
   shader->bytes = std::move(payload);
 }
 
+bool Mirror::reads_time(const Shader &shader) const {
+  if (shader.refused || !shader.has_code || shader.copy.status != "ok") {
+    return false;
+  }
+  ShaderMode mode = ShaderMode::CanvasItem;
+  if (!shader_mode_from_text(shader.copy.mode, &mode)) {
+    return false;
+  }
+  if (!shader.copy.builtin && shader_policy_ == ShaderPolicy::Exclude) {
+    return false;
+  }
+  return std::find(shader.copy.uses.begin(), shader.copy.uses.end(), "time") !=
+         shader.copy.uses.end();
+}
+
 ShaderEntry Mirror::wire_shader(const Shader &shader) const {
   ShaderEntry out;
   out.id = shader.id;
@@ -3719,9 +3753,14 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   // G55d: the shader and material tables (sorted by id); the payload of every `ok` shader whose
   // code travels (`source: "payload"`: never a withheld one, D4) -- exactly payload_refs' set.
   out.shaders.reserve(shaders_.size());
+  bool time_read = false;  // P3-TM
   for (const auto &entry : shaders_) {
     const Shader &shader = entry.second;
     ShaderEntry wire = wire_shader(shader);
+    if (carry_shader_time_ && !time_read && wire.status == ShaderStatus::Ok &&
+        std::find(wire.uses.begin(), wire.uses.end(), ShaderUse::Time) != wire.uses.end()) {
+      time_read = true;
+    }
     if (wire.status == ShaderStatus::Ok && wire.has_source &&
         wire.source == ShaderSource::Payload && wire.has_hash && shader.bytes != nullptr) {
       captured.payloads.emplace(wire.hash, shader.bytes);
@@ -3731,6 +3770,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.materials.reserve(materials_.size());
   for (const auto &entry : materials_) {
     out.materials.push_back(wire_material(entry.second));
+  }
+  if (time_read) {
+    out.shader_time = shader_time_;
   }
   return captured;
 }

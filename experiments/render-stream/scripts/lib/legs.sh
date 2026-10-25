@@ -670,8 +670,10 @@ legs__finish_bg() {
 # FIXTURE_DIR). CAPTURE_EXTRA_ENV adds sabotage/variant/policy words. CAPTURE_STORE_DIR picks the
 # out-of-band resource store (GRC_RESOURCE_STORE_DIR, which a file sink needs unless delivery is
 # inline): unset or empty -> <dir>/store; the literal `none` -> no GRC_RESOURCE_STORE_DIR at all;
-# anything else -> that directory. All three are reset after the call.
+# anything else -> that directory. All three are reset after the call. CAPTURE_EXTRA_ARGS (P3-TM,
+# reset after the call too) are appended to the host's command line, e.g. --fixed-fps 60.
 CAPTURE_EXTRA_ENV=()
+CAPTURE_EXTRA_ARGS=()
 CAPTURE_FIXTURE_DIR=""
 CAPTURE_STORE_DIR=""
 run_capture() {
@@ -699,8 +701,12 @@ run_capture() {
 		LEG_ENV+=("${CAPTURE_EXTRA_ENV[@]}")
 	fi
 	local -a argv=("$BINARY" --headless --path "$fixture")
+	if [ "${#CAPTURE_EXTRA_ARGS[@]}" -gt 0 ]; then
+		argv+=("${CAPTURE_EXTRA_ARGS[@]}")
+	fi
 	[ -n "$scene" ] && argv+=("$scene")
 	run_headless "$dir" "$mode" -- "${argv[@]}"
+	CAPTURE_EXTRA_ARGS=()
 	CAPTURE_EXTRA_ENV=()
 	CAPTURE_FIXTURE_DIR=""
 }

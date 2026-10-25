@@ -620,6 +620,10 @@ pub struct ResolvedState {
     pub failures: Vec<Failure>,
     pub unsupported: Vec<UnsupportedEntry>,
     pub unknown_items: Option<UnknownItems>,
+    /// P3-TM (render-stream/10): the host's shader time for this transaction (Godot's
+    /// `RasterizerGLES3::time_total`), present exactly when the state holds an `ok` shader whose
+    /// `uses` names `time`. `None` below /10 and on a TIME-free state.
+    pub shader_time: Option<f64>,
     pub default_texture_filter: Filter,
     pub default_texture_repeat: Repeat,
     pub canvases: IdTable<Canvas>,
@@ -641,6 +645,7 @@ impl ResolvedState {
             failures: Vec::new(),
             unsupported: Vec::new(),
             unknown_items: None,
+            shader_time: None,
             default_texture_filter: Filter::Nearest,
             default_texture_repeat: Repeat::Disabled,
             canvases: IdTable::new(),

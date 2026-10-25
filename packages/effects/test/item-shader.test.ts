@@ -184,13 +184,15 @@ describe("transpileGodotItemShader (item-space module)", () => {
   it("honours sampler filter and repeat hints", () => {
     const t = transpileGodotItemShader(PAL);
     expect(t.samplers).toEqual([
-      { name: "pal", filter: "nearest", repeat: null },
+      { name: "pal", filter: "nearest", repeat: null, default: "white" },
     ]);
     expect(t.glsl).toContain("uniform sampler2D pal;");
     const r = transpileGodotItemShader(
       "shader_type canvas_item;\nuniform sampler2D n : filter_linear, repeat_enable;\nvoid fragment() { COLOR = texture(n, UV); }\n",
     );
-    expect(r.samplers).toEqual([{ name: "n", filter: "linear", repeat: true }]);
+    expect(r.samplers).toEqual([
+      { name: "n", filter: "linear", repeat: true, default: "white" },
+    ]);
   });
 
   it("reads render modes", () => {
@@ -246,10 +248,6 @@ describe("transpileGodotItemShader (item-space module)", () => {
   it("refuses what an item draw cannot execute exactly, naming it", () => {
     const refused: [string, RegExp][] = [
       [
-        "shader_type canvas_item;\nvoid fragment() { COLOR = vec4(0.2, 0.4, 0.6 - 0.0 * step(0.0, TIME), 1.0); }",
-        /TIME/,
-      ],
-      [
         "shader_type canvas_item;\nuniform sampler2D screen_tex : hint_screen_texture, hint_default_black;\nvoid fragment() { COLOR = texture(screen_tex, SCREEN_UV); }",
         /hint_default_black/,
       ],
@@ -274,8 +272,8 @@ describe("transpileGodotItemShader (item-space module)", () => {
         /POINT_SIZE/,
       ],
       [
-        "shader_type canvas_item;\nuniform sampler2D n : hint_default_black;\nvoid fragment() { COLOR = texture(n, UV); }",
-        /hint_default_black/,
+        "shader_type canvas_item;\nuniform sampler2D n : hint_roughness_r;\nvoid fragment() { COLOR = texture(n, UV); }",
+        /hint_roughness_r/,
       ],
       [
         "shader_type canvas_item;\nuniform float f = 0.5 * 2.0;\nvoid fragment() { COLOR.a = f; }",
@@ -454,6 +452,52 @@ describe("transpileGodotItemShader vertex() (P3-VX)", () => {
     expect(t.glsl).toMatch(/^vec4 tint;$/m);
   });
 
+  it("admits TIME in either stage as a renderer-set uniform (P3-TM)", () => {
+    const frag = transpileGodotItemShader(
+      "shader_type canvas_item;\nvoid fragment() { COLOR.rgb *= 0.5 + 0.5 * sin(TIME * 2.0); }",
+    );
+    expect(frag.time).toBe(true);
+    expect(frag.glsl).toContain("uniform float TIME;");
+    expect(frag.vertexGlsl).toBeNull();
+    const helper = transpileGodotItemShader(
+      "shader_type canvas_item;\nfloat h() { return TIME; }\nvoid vertex() { VERTEX.x += h(); }\nvoid fragment() { COLOR.a = 1.0; }",
+    );
+    expect(helper.time).toBe(true);
+    expect(helper.vertexGlsl).toContain("uniform float TIME;");
+    // The fragment module carries every helper, so it declares TIME too.
+    expect(helper.glsl).toContain("uniform float TIME;");
+    const plain = transpileGodotItemShader(
+      "shader_type canvas_item;\nvoid fragment() { COLOR.a = 1.0; }",
+    );
+    expect(plain.time).toBe(false);
+    expect(plain.glsl).not.toContain("TIME");
+  });
+
+  it("names GLES3's unset-sampler default per hint (P3-TM)", () => {
+    const t = transpileGodotItemShader(
+      [
+        "shader_type canvas_item;",
+        "uniform sampler2D w;",
+        "uniform sampler2D w2 : hint_default_white, filter_nearest;",
+        "uniform sampler2D b : hint_default_black;",
+        "uniform sampler2D t : hint_default_transparent, repeat_enable;",
+        "uniform sampler2D n : hint_normal;",
+        "uniform sampler2D rn : hint_roughness_normal;",
+        "uniform sampler2D a : hint_anisotropy;",
+        "void fragment() { COLOR = texture(w, UV) * texture(w2, UV) + texture(b, UV) + texture(t, UV) + texture(n, UV) + texture(rn, UV) + texture(a, UV); }",
+      ].join("\n"),
+    );
+    expect(t.samplers.map((s) => [s.name, s.default])).toEqual([
+      ["w", "white"],
+      ["w2", "white"],
+      ["b", "black"],
+      ["t", "transparent"],
+      ["n", "normal"],
+      ["rn", "normal"],
+      ["a", "anisotropy"],
+    ]);
+  });
+
   it("admits TEXTURE_PIXEL_SIZE and AT_LIGHT_PASS in fragment()", () => {
     const t = transpileGodotItemShader(
       "shader_type canvas_item;\nvoid fragment() { if (!AT_LIGHT_PASS) COLOR = texture(TEXTURE, UV + TEXTURE_PIXEL_SIZE); }",
@@ -466,16 +510,11 @@ describe("transpileGodotItemShader vertex() (P3-VX)", () => {
     const refused: [string, RegExp][] = [
       ["void vertex() { VERTEX.x += float(VERTEX_ID); }", /VERTEX_ID/],
       ["void vertex() { VERTEX.x += float(INSTANCE_ID); }", /INSTANCE_ID/],
-      ["void vertex() { VERTEX.x += TIME; }", /TIME/],
       ["void vertex() { COLOR = CUSTOM0; }", /CUSTOM0/],
       ["void vertex() { COLOR = texture(TEXTURE, UV); }", /TEXTURE/],
       [
         "uniform sampler2D s : hint_screen_texture;\nvoid vertex() { COLOR = textureLod(s, UV, 0.0); }\nvoid fragment() { COLOR = texture(s, SCREEN_UV); }",
         /screen texture "s"/,
-      ],
-      [
-        "float h() { return TIME; }\nvoid vertex() { VERTEX.x += h(); }",
-        /TIME/,
       ],
       ["varying mat2 m;\nvoid vertex() { m = mat2(1.0); }", /type mat2/],
       ["varying vec2 a, b;\nvoid vertex() { a = UV; }", /one name/],

@@ -37,6 +37,7 @@ import { runGate55d } from "./lib/gate55d-checks";
 import { type Gate55eExpected, runGate55e } from "./lib/gate55e-checks";
 import { runGate55f } from "./lib/gate55f-checks";
 import { runGate55s } from "./lib/gate55s-checks";
+import { runGate55t } from "./lib/gate55t-checks";
 import { runGate55v } from "./lib/gate55v-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,7 @@ export const ALL_GROUPS = [
   "g55f",
   "g55s",
   "g55v",
+  "g55t",
 ] as const;
 export const LANDED_GROUPS: readonly string[] = [
   "g55b",
@@ -60,6 +62,7 @@ export const LANDED_GROUPS: readonly string[] = [
   "g55f",
   "g55s",
   "g55v",
+  "g55t",
 ];
 
 export interface Gate55Report {
@@ -219,6 +222,14 @@ async function main(): Promise<void> {
     report.checks.push(...r.checks);
     Object.assign(report.legs, r.legs);
     report.materials["gate55-vertex"] = { pixels: r.pixels };
+  }
+  if (run.includes("g55t")) {
+    // P3-TM: fixtures/gate55-time under <out>/time/ (self-contained, like g55v; the hand model is
+    // in lib/gate55t-checks.ts).
+    const r = await runGate55t(out);
+    report.checks.push(...r.checks);
+    Object.assign(report.legs, r.legs);
+    report.materials["gate55-time"] = { pixels: r.pixels };
   }
   for (const group of report.groups.not_run)
     report.checks.push({

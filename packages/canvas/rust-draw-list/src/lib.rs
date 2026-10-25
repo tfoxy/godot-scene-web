@@ -122,6 +122,29 @@ pub const DRAW_SCREEN_MIPMAPS: u32 = 16;
 /// [`DRAW_SCREEN_COPY`]), sampled as GLES3 samples its back buffer whatever the shader's hints say:
 /// linear, linear-mipmap-linear, clamped. The sampler bits are ignored.
 pub const SCREEN_TEXTURE: u32 = u32::MAX;
+/// [`SamplerUniform::texture`] (P3-TM): Godot 4.5.1's GLES3 default textures, which it binds to a
+/// `sampler2D` the material leaves unset, by the sampler's hint (material_storage.cpp:928-953):
+/// `hint_default_black` (0,0,0,1), `hint_default_transparent` (0,0,0,0), `hint_normal` /
+/// `hint_roughness_normal` (0.5,0.5,1,1) stored as RGBA8 (127,127,255,255), `hint_anisotropy`
+/// (1,0.5,1,1) as (255,127,255,255) (texture_storage.cpp:66-155). Every other hint takes
+/// [`WHITE_TEXTURE`]. Each is a single colour, so the executor's sampler choice cannot change
+/// what it samples.
+pub const BLACK_TEXTURE: u32 = u32::MAX - 1;
+pub const TRANSPARENT_TEXTURE: u32 = u32::MAX - 2;
+pub const NORMAL_TEXTURE: u32 = u32::MAX - 3;
+pub const ANISOTROPY_TEXTURE: u32 = u32::MAX - 4;
+
+/// The RGBA8 texel of a default-texture id ([`WHITE_TEXTURE`] and the four above), else `None`.
+pub fn default_texture_texel(id: u32) -> Option<[u8; 4]> {
+    match id {
+        WHITE_TEXTURE => Some([255, 255, 255, 255]),
+        BLACK_TEXTURE => Some([0, 0, 0, 255]),
+        TRANSPARENT_TEXTURE => Some([0, 0, 0, 0]),
+        NORMAL_TEXTURE => Some([127, 127, 255, 255]),
+        ANISOTROPY_TEXTURE => Some([255, 127, 255, 255]),
+        _ => None,
+    }
+}
 
 /// [`Item::flags`] (G7o4): every fragment the builtin program draws for this item takes the white
 /// texel's value (`texel = 1`) instead of sampling the bound texture. Bit 30: the flags word reads
@@ -463,6 +486,10 @@ pub struct DrawList {
     pub dirty: Dirty,
     pub texture_ops: Vec<TextureOp>,
     pub texture_bytes: Vec<u8>,
+    /// P3-TM: the host's shader time for this frame, which item-space programs whose code reads
+    /// `TIME` see (Godot's `RasterizerGLES3::time_total`, uploaded as a float: canvas.glsl's
+    /// `time`). Zero when the producer has none.
+    pub shader_time: f32,
 }
 
 impl DrawList {
@@ -743,6 +770,7 @@ pub mod pdl1 {
             },
             texture_ops: Vec::new(),
             texture_bytes: Vec::new(),
+            shader_time: 0.0,
         })
     }
 }

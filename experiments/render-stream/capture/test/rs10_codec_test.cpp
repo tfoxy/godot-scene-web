@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -604,6 +606,40 @@ void test_fields_ignored_at_v9() {
   check(make_patch(base, cur).items.size() == 2, "the same change at /10 is two entries");
 }
 
+// P3-TM (render-stream-10.md "Shader time"): the optional shader_time key, last before blocks, its
+// value param_f64's last float; absent without a value and below /10; complete in a patch.
+void test_shader_time() {
+  Snapshot plain = state10(9);
+  Snapshot timed = plain;
+  timed.shader_time = 1.25;
+  const std::string tp = text_of(encode_transaction(make_full(plain)));
+  const std::string tt = text_of(encode_transaction(make_full(timed)));
+  check(tp.find("shader_time") == std::string::npos, "no shader_time key without a value");
+  const std::size_t at = tt.find(",\"shader_time\":{\"f\":");
+  check(at != std::string::npos && tt.find("},\"blocks\":", at) != std::string::npos,
+        "shader_time is the last key before blocks");
+  const std::string count_key = "{\"name\":\"param_f64\",\"type\":\"f64\",\"count\":";
+  const std::size_t cp = tp.find(count_key);
+  const std::size_t ct = tt.find(count_key);
+  check(cp != std::string::npos && ct != std::string::npos, "both declare param_f64");
+  const long before = std::strtol(tp.c_str() + cp + count_key.size(), nullptr, 10);
+  const long after = std::strtol(tt.c_str() + ct + count_key.size(), nullptr, 10);
+  const long f = std::strtol(tt.c_str() + at + std::string(",\"shader_time\":{\"f\":").size(),
+                             nullptr, 10);
+  check(f == before && after == before + 1, "shader_time's f is the param count; one more float");
+  Snapshot timed9 = timed;
+  timed9.version = ProtocolVersion::V9;
+  Snapshot plain9 = plain;
+  plain9.version = ProtocolVersion::V9;
+  check(encode_transaction(make_full(timed9)) == encode_transaction(make_full(plain9)),
+        "a /9 transaction never carries shader_time");
+  Snapshot next = timed;
+  next.seq = timed.seq + 1;
+  next.shader_time = 1.5;
+  check(make_patch(timed, next).shader_time == std::optional<double>(1.5),
+        "a patch carries the current shader_time (complete, never patched)");
+}
+
 void test_magic_and_protocol() {
   const std::vector<std::uint8_t> m = magic(ProtocolVersion::V10);
   check(m.size() == 8 && m[0] == 'G' && m[1] == 'R' && m[2] == 'S' && m[3] == 'A' &&
@@ -634,6 +670,7 @@ int main() {
   test_item_keys_and_offsets();
   test_patch_semantics();
   test_fields_ignored_at_v9();
+  test_shader_time();
   if (g_failures != 0) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
     return 1;

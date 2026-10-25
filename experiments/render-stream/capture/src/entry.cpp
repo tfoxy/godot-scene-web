@@ -164,6 +164,7 @@
 #include "rs_resource_log.h"
 #include "rs_resource_store.h"
 #include "rs_root_query.h"
+#include "rs_shader_clock.h"
 #include "rs_texture_cache.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
@@ -189,6 +190,7 @@ struct State {
   ShadowVtable shadow;
 
   bool decided = false;
+  bool shader_clock_logged = false;  // P3-TM: the clock's unavailability is logged once
   bool armed = false;
   bool vptr_written = false;
   bool disarmed = false;
@@ -1677,6 +1679,16 @@ void stream_start() {
       return;
     }
     hooks_set_resource_policy(formats, max_payload_bytes);
+    // P3-TM (render-stream-10.md "Shader time"): a /10 session carries the host's shader time, so
+    // TIME is a use, not a reason, from the first hooked (or adopted) shader on.
+    if (g_stream.gate8.speaks_v10()) {
+      hooks_set_shader_time_carried(true);
+      rs::mirror_instance().set_carry_shader_time(true);
+      const rs::ShaderClock &clock = rs::shader_clock();
+      log_line("shader-clock: carried; rollover=" + std::to_string(clock.rollover) +
+               " start_frames_drawn=" + std::to_string(clock.start_drawn) + " ticks=" +
+               std::to_string(clock.ticks) + " advanced=" + std::to_string(clock.advanced));
+    }
   }
   if (!sabotage.ok && !g_live.listen.empty()) {
     live_decided("refused", "sabotage refused: " + sabotage.error);
@@ -2693,6 +2705,8 @@ void stream_publish(uint64_t frame) {
   if (g_stream.workers_started && g_stream.workers.publish_pending) {
     rs::mirror_instance().service_pending();  // G8kf: a finished worker's texture returns as ok
   }
+  // P3-TM: this iteration's shader time (a mirror change only while a TIME reader exists).
+  rs::mirror_instance().set_shader_time(rs::shader_clock().total);
   const uint64_t epoch = rs::mirror_epoch();
   // G2c2: with a live server the snapshot is taken at every callback, so the served set always
   // holds the current state's payloads (D7), even when no connection takes a transaction.
@@ -2981,6 +2995,11 @@ void on_startup() { attempt("startup"); }
 
 void on_frame() {
   const uint64_t frame_start_ns = monotonic_ns();
+  // P3-TM: the host's shader time follows every iteration from the first, armed or not.
+  if (!rs::shader_clock_tick() && !g_state.shader_clock_logged) {
+    g_state.shader_clock_logged = true;
+    log_line("shader-clock: unavailable (" + rs::shader_clock().unavailable + ")");
+  }
   // Q3d frame_interval_us (G6r): measured only while armed, from one armed callback to the
   // next -- the unarmed/validate-mode callbacks before arming are not part of any measured arm
   // (D11's `unarmed` arm is "no extension at all", so this code does not even run for it).

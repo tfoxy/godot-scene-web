@@ -53,6 +53,8 @@ pub struct Sabotage {
     /// CG1: issue every wire `copy_to_backbuffer` with `Rect2()` (the rect dropped), so the
     /// engine copies the whole target instead of the region.
     pub full_backbuffer_copy: bool,
+    /// P3-TM: the host's shader time is ignored: every `TIME` reads 0.
+    pub shader_time_frozen: bool,
 }
 
 impl Sabotage {
@@ -78,6 +80,7 @@ impl Sabotage {
             "vertex-flat-varyings" => s.vertex_flat_varyings = true,
             "drop-canvas-group" => s.drop_canvas_group = true,
             "full-backbuffer-copy" => s.full_backbuffer_copy = true,
+            "shader-time-frozen" => s.shader_time_frozen = true,
             _ => {}
         }
         s
@@ -2142,6 +2145,15 @@ impl Planner {
             if self.shaders[&id].hash != hash {
                 ops.op(Op::ShaderSetCode, 1);
                 ops.rid(RidRef::Shader(h));
+                // P3-TM: a shader whose code reads TIME reads the host's shader time instead,
+                // set per transaction as a material parameter (`apply_materials`).
+                let timed;
+                let code = if e.uses.contains(&ShaderUse::Time) {
+                    timed = render_stream_core::apply::programs::host_time(code);
+                    timed.as_str()
+                } else {
+                    code
+                };
                 if self.sab.vertex_flat_varyings {
                     let flat = render_stream_core::apply::programs::flat_varyings(code);
                     ops.bytes(flat.as_bytes());
@@ -2268,6 +2280,43 @@ impl Planner {
                 ops.bytes(p.name.as_bytes());
                 ops.bytes(&variant.out);
                 c.param_sets += 1;
+            }
+            // P3-TM: the host's shader time, for a material whose shader reads TIME (its code was
+            // rewritten to read this parameter, `apply_shaders`).
+            let timed = e
+                .shader
+                .and_then(|s| st.shaders.get(&s))
+                .is_some_and(|sh| sh.status == EntryStatus::Ok && sh.uses.contains(&ShaderUse::Time));
+            if timed {
+                let name = render_stream_core::apply::programs::HOST_TIME_PARAM;
+                wanted.insert(name);
+                let t = if self.sab.shader_time_frozen {
+                    0.0
+                } else {
+                    st.shader_time.unwrap_or(0.0)
+                };
+                let key = ParamKey::Val(VariantType::Float, ParamBits::Nums(vec![t.to_bits()], 0));
+                let m = self.materials.get_mut(&id).unwrap();
+                let send = match m.params.iter_mut().find(|x| &*x.0 == name) {
+                    Some(entry) if entry.1 == key => false,
+                    Some(entry) => {
+                        entry.1 = key;
+                        true
+                    }
+                    None => {
+                        m.params.push((name.into(), key));
+                        true
+                    }
+                };
+                if send {
+                    let mut v = Vt::new();
+                    v.float(t);
+                    ops.op(Op::MaterialSetParam, 1);
+                    ops.rid(RidRef::Material(h));
+                    ops.bytes(name.as_bytes());
+                    ops.bytes(&v.out);
+                    c.param_sets += 1;
+                }
             }
             let stale: Vec<Box<str>> = self.materials[&id]
                 .params
