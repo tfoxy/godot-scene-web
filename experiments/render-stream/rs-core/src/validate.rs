@@ -942,6 +942,8 @@ fn blank_item() -> Item {
         material: None,
         use_parent_material: false,
         instance_params: Vec::new(),
+        canvas_group: None,
+        copy_to_backbuffer: None,
         content_version: 0,
         xform: [0.0; 6],
         modulate: [0.0; 4],
@@ -1013,6 +1015,26 @@ fn item_head_identical(a: &Item, b: &Item) -> bool {
         && bits_eq(&a.self_modulate, &b.self_modulate)
         && bits_eq(&a.custom_rect_rect, &b.custom_rect_rect)
         && params_identical(&a.instance_params, &b.instance_params)
+        && canvas_group_identical(&a.canvas_group, &b.canvas_group)
+        && match (&a.copy_to_backbuffer, &b.copy_to_backbuffer) {
+            (None, None) => true,
+            (Some(x), Some(y)) => bits_eq(x, y),
+            _ => false,
+        }
+}
+
+fn canvas_group_identical(a: &Option<CanvasGroup>, b: &Option<CanvasGroup>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.mode == y.mode
+                && bit_eq(x.clear_margin, y.clear_margin)
+                && x.fit_empty == y.fit_empty
+                && bit_eq(x.fit_margin, y.fit_margin)
+                && x.blur_mipmaps == y.blur_mipmaps
+        }
+        _ => false,
+    }
 }
 
 fn command_identical(x: &Command, y: &Command) -> bool {
@@ -1283,8 +1305,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=9).contains(&opts.version),
-            "render-stream version 2..=9"
+            (2..=10).contains(&opts.version),
+            "render-stream version 2..=10"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1589,7 +1611,7 @@ impl Validator {
                 .map(|b| &record[b.start..b.start + b.len])
                 .unwrap_or(&[])
         };
-        let bl = [blk(0), blk(1), blk(2), blk(3), blk(4), blk(5)];
+        let bl = [blk(0), blk(1), blk(2), blk(3), blk(4), blk(5), blk(6)];
         self.apply(bl);
         self.reindex_dirty();
         prof::add(prof::RESOLVE, t);
@@ -1758,6 +1780,29 @@ impl Validator {
                 }
             }
         }
+        // backbuffer-offset (render-stream-10.md "Transaction blocks").
+        let mut backbuffer_floats = 0u64;
+        if v >= 10 {
+            for it in &tx.items {
+                let slots = [
+                    ("canvas_group", it.canvas_group.map(|g| g.f), 2u64),
+                    ("copy_to_backbuffer", it.copy_to_backbuffer, 4u64),
+                ];
+                for (key, f, n) in slots {
+                    let Some(f) = f else { continue };
+                    if f != backbuffer_floats {
+                        return Err(Error::new(
+                            "backbuffer-offset",
+                            format!(
+                                "record at offset {offset}: item {} {key} f={f}, expected {backbuffer_floats}",
+                                it.id
+                            ),
+                        ));
+                    }
+                    backbuffer_floats += n;
+                }
+            }
+        }
         let stride: u64 = if v >= 5 { 10 } else { 6 };
         let count = |i: usize| tx.blocks.get(i).map(|b| b.count);
         let expected_canvas = stride * tx.canvases.len() as u64;
@@ -1783,10 +1828,17 @@ impl Validator {
         if v >= 5 {
             expected.push((5, param_floats));
         }
+        if v >= 10 {
+            expected.push((6, backbuffer_floats));
+        }
         for (i, n) in expected {
             if count(i) != Some(n) {
                 return Err(Error::new(
-                    "block-count",
+                    if i == 6 {
+                        "backbuffer-offset"
+                    } else {
+                        "block-count"
+                    },
                     format!(
                         "record at offset {offset}: block \"{}\" declares count {}, expected {n}",
                         meta::TRANSACTION_BLOCK_NAMES[i],
@@ -1955,7 +2007,7 @@ impl Validator {
     /// `undo`. A full transaction removes the previous ids it omits; an entry bitwise identical to
     /// the one it replaces (most of a full transaction) is left in place and not marked dirty, so
     /// a full transaction costs what it changes beyond reading it.
-    fn apply(&mut self, bl: [&[u8]; 6]) {
+    fn apply(&mut self, bl: [&[u8]; 7]) {
         let v = self.opts.version;
         let tx = &self.tx;
         let st = &mut self.state;
@@ -1974,6 +2026,7 @@ impl Validator {
             F32s(bl[4]),
             F64s(bl[5]),
         );
+        let backbuffer_f32 = F32s(bl[6]);
         let stride = if v >= 5 { 10 } else { 6 };
 
         let r = &mut self.removed;
@@ -2159,6 +2212,19 @@ impl Validator {
                     .iter()
                     .map(|p| lift_param(p, param_f64)),
             );
+            item.canvas_group = it.canvas_group.map(|g| {
+                let [clear_margin, fit_margin] = backbuffer_f32.arr::<2>(g.f as usize);
+                CanvasGroup {
+                    mode: g.mode,
+                    clear_margin,
+                    fit_empty: g.fit_empty,
+                    fit_margin,
+                    blur_mipmaps: g.blur_mipmaps,
+                }
+            });
+            item.copy_to_backbuffer = it
+                .copy_to_backbuffer
+                .map(|f| backbuffer_f32.arr::<4>(f as usize));
             item.content_version = it.content_version;
             item.xform = item_f32.arr(base);
             item.modulate = item_f32.arr(base + 6);
@@ -4006,7 +4072,7 @@ mod tests {
     #[test]
     fn delta_names_every_change_in_the_goldens() {
         let dir = protocol_dir();
-        for v in 2..=6u8 {
+        for v in (2..=6u8).chain([10]) {
             for f in ["full", "patch", "inline"] {
                 let data = std::fs::read(dir.join(format!("golden-{v}/{f}.rs{v}"))).unwrap();
                 assert!(run_with_delta_check(&data, v) > 0);

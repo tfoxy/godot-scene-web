@@ -124,18 +124,34 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV9 = {0x47, 0x52, 0x53, 0x39,
                                                           0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV9 = "render-stream/9";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9 };
+// render-stream/10 (CG1, render-stream-10.md): /9 plus the back-buffer item state: the item keys
+// `canvas_group` and `copy_to_backbuffer` (right after instance_params), the seventh transaction
+// block `backbuffer_f32`, and features.unobserved losing the two setters when they are hooked.
+// Byte 3 of the magic is the version as one uppercase hex digit from /10 on ("GRSA"). Opt-in like
+// /8 and /9: file sinks speak it only with GRC_STREAM_VERSION=10, which also installs the two
+// conditional hooks, and the live listener offers `render-stream.10` only then.
+inline constexpr std::array<std::uint8_t, 8> kMagicV10 = {0x47, 0x52, 0x53, 0x41,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV10 = "render-stream/10";
 
-// True for /7, /8 and /9, the versions whose live transport is the /7 one (token hello, credit
-// window, CORS). /8 is /7 plus render-stream-8.md's list and /9 is /8 plus render-stream-9.md's,
-// so every "V7" cascade means "V7 or later".
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10 };
+
+// True for /7 to /10, the versions whose live transport is the /7 one (token hello, credit
+// window, CORS). /8 is /7 plus render-stream-8.md's list, /9 is /8 plus render-stream-9.md's and
+// /10 is /9 plus render-stream-10.md's, so every "V7" cascade means "V7 or later".
 inline constexpr bool is_v7_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9;
+  return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
+         v == ProtocolVersion::V10;
 }
 
-// True for /8 and /9: the versions that carry render-stream-8.md's keys.
+// True for /8, /9 and /10: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V8 || v == ProtocolVersion::V9;
+  return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10;
+}
+
+// True for /9 and /10: the versions that carry render-stream-9.md's keys.
+inline constexpr bool is_v9_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V9 || v == ProtocolVersion::V10;
 }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
@@ -1148,6 +1164,35 @@ struct MaterialEntry {
   SharedVector<Param> params;  // sorted by name (byte order); shared, P3-CAP
 };
 
+// render-stream-10.md "Item": canvas_item_set_canvas_group_mode's state. Disabled is the RS's
+// CANVAS_GROUP_MODE_DISABLED (0) and encodes as null; the engine frees the state then, so a disabled
+// group keeps none of the other arguments (they stay at these defaults). ClipOnly, ClipAndDraw and
+// Transparent are RS's CanvasGroupMode 1, 2, 3 ("clip_only", "clip_and_draw", "transparent").
+enum class CanvasGroupMode : std::uint8_t { Disabled, ClipOnly, ClipAndDraw, Transparent };
+
+// Disabled has no spelling (it encodes as null); the codec never asks for it.
+inline const char *to_wire(CanvasGroupMode v) {
+  switch (v) {
+  case CanvasGroupMode::ClipOnly: return "clip_only";
+  case CanvasGroupMode::ClipAndDraw: return "clip_and_draw";
+  case CanvasGroupMode::Transparent: return "transparent";
+  case CanvasGroupMode::Disabled: break;
+  }
+  return "disabled";
+}
+
+struct CanvasGroupState {
+  CanvasGroupMode mode = CanvasGroupMode::Disabled;
+  float clear_margin = 0.0f;  // backbuffer_f32[f]
+  bool fit_empty = false;
+  float fit_margin = 0.0f;  // backbuffer_f32[f + 1]
+  bool blur_mipmaps = false;
+};
+
+// render-stream-10.md "Transaction blocks": floats per non-null object in backbuffer_f32.
+inline constexpr std::size_t kCanvasGroupFloats = 2;      // clear_margin, fit_margin
+inline constexpr std::size_t kCopyToBackbufferFloats = 4;  // rect x, y, w, h
+
 // The mirror's full state for one item at one frame: always carries its complete `commands`.
 // Never encoded directly -- see ItemEntry for the wire-level, possibly-null-commands form.
 struct ItemState {
@@ -1176,6 +1221,11 @@ struct ItemState {
   std::uint32_t material = 0;
   bool use_parent_material = false;
   std::vector<Param> instance_params;  // sorted by name (byte order; As built)
+  // --- new at /10 (render-stream-10.md "Item"): after instance_params, before content_version.
+  // Item state, never content_version; kept by canvas_item_clear. Encoded at /10 only.
+  CanvasGroupState canvas_group;            // mode Disabled -> "canvas_group": null
+  bool copy_to_backbuffer = false;          // false -> "copy_to_backbuffer": null
+  Rect4 copy_to_backbuffer_rect = kZeroRect;  // as the engine received it (Rect2() = whole target)
 };
 
 struct CanvasState {

@@ -221,6 +221,7 @@ enum Rs : int {
   RS_CANVAS_ITEM_SET_CLIP,
   RS_CANVAS_ITEM_SET_CUSTOM_RECT,
   RS_CANVAS_ITEM_SET_COPY_TO_BACKBUFFER,
+  RS_CANVAS_ITEM_SET_CANVAS_GROUP_MODE,
   RS_CANVAS_ITEM_SET_VISIBILITY_LAYER,
   RS_CANVAS_ITEM_SET_Z_INDEX,
   RS_CANVAS_ITEM_SET_Z_AS_RELATIVE_TO_PARENT,
@@ -298,6 +299,7 @@ constexpr RsBind RS_BINDS[RS_COUNT] = {
     {"canvas_item_set_clip", 1265174801},
     {"canvas_item_set_custom_rect", 1333997032},
     {"canvas_item_set_copy_to_backbuffer", 2429202503},
+    {"canvas_item_set_canvas_group_mode", 3973586316},
     {"canvas_item_set_visibility_layer", 3411492887},
     {"canvas_item_set_z_index", 3411492887},
     {"canvas_item_set_z_as_relative_to_parent", 1265174801},
@@ -1329,6 +1331,18 @@ int64_t execute(Instance *inst) {
         float rect[4];
         r.fs(rect, 4);
         rs_call(RS_CANVAS_ITEM_SET_COPY_TO_BACKBUFFER, {&item, &enabled, rect});
+        break;
+      }
+      case rsc::ItemSetCanvasGroupMode: {
+        // CG1 (render-stream-10.md "Receivers"): CanvasGroupMode is an enum (int64 in a ptrcall),
+        // the two margins are `float` arguments (double in a ptrcall).
+        uint64_t item = r.rid();
+        int64_t mode = r.i64();
+        double clear_margin = r.fd();
+        GDExtensionBool fit_empty = r.b();
+        double fit_margin = r.fd();
+        GDExtensionBool blur_mipmaps = r.b();
+        rs_call(RS_CANVAS_ITEM_SET_CANVAS_GROUP_MODE, {&item, &mode, &clear_margin, &fit_empty, &fit_margin, &blur_mipmaps});
         break;
       }
       case rsc::ItemSetVisibilityLayer:

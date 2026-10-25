@@ -162,6 +162,13 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # nor omitted without it. It adds no calibrator version: the version is echoed in every
     # session record, and a run with no cache directory must stay byte-identical to before.
     ("texture_set_path", ("texture_set_path",)),
+    # CG1 (render-stream-10.md, gate8-design.md "Calibration for /10") -- the back-buffer item
+    # state: canvas-group mode (`clip_children`, CanvasGroup) and copy-to-backbuffer
+    # (BackBufferCopy). Hooked only by a /10 session (GRC_STREAM_VERSION=10), so like
+    # texture_set_path they add no calibrator version: below /10 they are neither planned nor
+    # omitted, and every /2-/9 session record stays byte-identical.
+    ("canvas_item_set_copy_to_backbuffer", ("canvas_item_set_copy_to_backbuffer",)),
+    ("canvas_item_set_canvas_group_mode", ("canvas_item_set_canvas_group_mode",)),
 )
 
 ET_EXEC = 2

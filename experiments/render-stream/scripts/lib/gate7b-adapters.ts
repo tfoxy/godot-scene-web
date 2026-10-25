@@ -103,6 +103,8 @@ export const GATE8_FILE_GROUPS: readonly string[] = [
   "g8m",
   // P3-CT: images drawn only through a CanvasTexture's diffuse (fixtures/gate8-ct)
   "g8c",
+  // CG1: clip_children, CanvasGroup and BackBufferCopy on /10 (fixtures/gate8-cg)
+  "g8cg",
 ];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's
@@ -697,10 +699,12 @@ function resolvedStates(
 ): Map<number, unknown> | undefined {
   try {
     const data = new Uint8Array(readFileSync(recordingPath));
-    // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9).
+    // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9; CG1: GRSA).
     const wire = wireVersionOf(data);
     const versions =
-      wire === 8 || wire === 9 ? [wire] : ([6, 5, 4, 3, 2] as const);
+      wire === 8 || wire === 9 || wire === 10
+        ? [wire]
+        : ([6, 5, 4, 3, 2] as const);
     for (const version of versions) {
       try {
         const r = resolveRecording(data, version);

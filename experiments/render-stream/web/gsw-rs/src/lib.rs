@@ -106,8 +106,9 @@ struct Opts {
     /// transpiler sees the code (`pending_code`), as the native receiver does before
     /// `shader_set_code`.
     vertex_flat_varyings: bool,
-    /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session.
-    live_v9: bool,
+    /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session; CG1:
+    /// 10 the same for render-stream.10. 0 when the options carry no `live_protocol` (7 or 8).
+    live_protocol: u8,
     /// G8kb (texture-delivery-design.md Q6 "GSW"): the shell runs the KTX2 transcoder worker, so
     /// the default `texture_encodings` lists `uastc` (`block,uastc,decoded`).
     transcoder: bool,
@@ -193,7 +194,13 @@ fn parse_options(json: &str) -> Result<Opts, String> {
             .map_err(|e| format!("RS_RECEIVER_GPU_FORMAT_MASK: {e}"))?;
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
-    o.live_v9 = json.contains("\"live_protocol\":9");
+    o.live_protocol = if json.contains("\"live_protocol\":10") {
+        10
+    } else if json.contains("\"live_protocol\":9") {
+        9
+    } else {
+        0
+    };
     o.transcoder = json.contains("\"transcoder\":true");
     o.variant_policy = match find_str(json, "variant_policy").as_deref() {
         None | Some("") => None,
@@ -1207,12 +1214,16 @@ impl GswRs {
     pub fn live_session(&mut self, len: usize, version: u8) -> i32 {
         self.live = true;
         // G8kp: a receiver that offered render-stream.9 (RS_RECEIVER_PROTOCOL=9, `live_protocol`
-        // in the options) speaks /9 only; G8g: 7 or 8 otherwise (the page passes the version it
-        // offered).
-        if !(version == 7 || version == 8 || version == 9) || (self.opts.live_v9 != (version == 9)) {
+        // in the options) speaks /9 only, CG1: one that offered render-stream.10 /10 only; G8g: 7
+        // or 8 otherwise (the page passes the version it offered).
+        let ok = match self.opts.live_protocol {
+            0 => version == 7 || version == 8,
+            p => version == p,
+        };
+        if !ok {
             self.error = format!(
                 "live-version: render-stream/{version} (options live_protocol {}) has no live transport here",
-                if self.opts.live_v9 { 9 } else { 7 }
+                if self.opts.live_protocol == 0 { 7 } else { self.opts.live_protocol }
             );
             return -1;
         }
@@ -1732,6 +1743,43 @@ impl GswRs {
                 });
             }
             now.insert(key);
+        }
+        // CG1 (render-stream-10.md "Receivers"): GSW does not composite canvas groups or copy the
+        // back buffer until CG3. Every item whose /10 `canvas_group` or `copy_to_backbuffer` is
+        // non-null is typed (`gsw-canvas-group`, `gsw-backbuffer-copy`) in the native receiver's
+        // `unsupported[]` shape, once while it holds, and drawn as /9 would (the state ignored).
+        if self.version >= 10 {
+            for it in state.items.values() {
+                for (set, op, reason) in [
+                    (
+                        it.canvas_group.is_some(),
+                        "canvas_item_set_canvas_group_mode",
+                        "gsw-canvas-group",
+                    ),
+                    (
+                        it.copy_to_backbuffer.is_some(),
+                        "canvas_item_set_copy_to_backbuffer",
+                        "gsw-backbuffer-copy",
+                    ),
+                ] {
+                    if !set {
+                        continue;
+                    }
+                    let key: (Box<str>, Option<Id>, &'static str) =
+                        (op.into(), Some(it.id), reason);
+                    if !self.prev_unsupported.contains(&key) && !now.contains(&key) {
+                        self.unsupported_out.push(UnsupportedOut {
+                            seq: state.seq,
+                            item: Some(it.id),
+                            name: op.into(),
+                            reason,
+                            shader: None,
+                            detail: None,
+                        });
+                    }
+                    now.insert(key);
+                }
+            }
         }
         self.prev_unsupported = now;
         // G7s: shaders drawn without their code, once per (shader, hash), in the native

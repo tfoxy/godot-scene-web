@@ -92,6 +92,16 @@ void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabot
     if (item.use_parent_material) {
       mirror.set_use_parent_material(item.rid, true, frame);
     }
+    // CG1: the back-buffer state a node set through its setters (render-stream-10.md "Capture").
+    if (item.canvas_group_mode != 0) {
+      mirror.set_canvas_group_mode(item.rid, item.canvas_group_mode, item.clear_margin,
+                                   item.fit_empty, item.fit_margin, item.blur_mipmaps, frame);
+      ++stats->canvas_groups;
+    }
+    if (item.copy_to_backbuffer) {
+      mirror.set_copy_to_backbuffer(item.rid, true, item.copy_rect, frame);
+      ++stats->backbuffer_copies;
+    }
     if (item.light) {
       mirror.canvas_light_attach_to_canvas(0, item.light_canvas, frame);
       ++stats->lights;
@@ -179,6 +189,13 @@ enum BindId : int {
   kParallaxLayerGetMirroring,
   kParallax2dGetRepeatSize,
   kParallax2dGetRepeatTimes,
+  // CG1 (render-stream-10.md "Capture"/"Adoption").
+  kItemGetClipChildrenMode,
+  kCanvasGroupGetClearMargin,
+  kCanvasGroupGetFitMargin,
+  kCanvasGroupIsUsingMipmaps,
+  kBackBufferCopyGetCopyMode,
+  kBackBufferCopyGetRect,
   // G8r: lazy resource adoption (D6, D7).
   kRsTexture2dGet,
   kRsMeshGetSurfaceCount,
@@ -267,6 +284,13 @@ const BindSpec kBinds[kBindCount] = {
     {"ParallaxLayer", "get_mirroring", 3341600327LL},
     {"Parallax2D", "get_repeat_size", 3341600327LL},
     {"Parallax2D", "get_repeat_times", 3905245786LL},
+    // CG1 (render-stream-10.md "Capture"/"Adoption"), every one const.
+    {"CanvasItem", "get_clip_children_mode", 3581808349LL},  // -> CanvasItem.ClipChildrenMode
+    {"CanvasGroup", "get_clear_margin", 1740695150LL},       // -> float
+    {"CanvasGroup", "get_fit_margin", 1740695150LL},         // -> float
+    {"CanvasGroup", "is_using_mipmaps", 36873697LL},         // -> bool
+    {"BackBufferCopy", "get_copy_mode", 3271169440LL},       // -> BackBufferCopy.CopyMode
+    {"BackBufferCopy", "get_rect", 1639390495LL},            // -> Rect2
     // G8r (gate8-design.md D6, D7), every one read-only.
     {"RenderingServer", "texture_2d_get", 4206205781LL},          // (RID) -> Image
     {"RenderingServer", "mesh_get_surface_count", 2198884583LL},  // (RID) -> int
@@ -444,7 +468,8 @@ std::uint64_t world_canvas_of(void *viewport) {
 // Class tags, resolved once per walk (iface.h cast_to builds a StringName per call).
 struct Tags {
   void *viewport = nullptr, *canvas_item = nullptr, *canvas_layer = nullptr, *light = nullptr,
-       *parallax_layer = nullptr, *parallax2d = nullptr, *canvas_modulate = nullptr;
+       *parallax_layer = nullptr, *parallax2d = nullptr, *canvas_modulate = nullptr,
+       *canvas_group = nullptr, *back_buffer_copy = nullptr;
   static void *tag(const char *name) {
     StringName n(name);
     return g_iface.classdb_get_class_tag(n.ptr());
@@ -457,6 +482,8 @@ struct Tags {
     parallax_layer = tag("ParallaxLayer");
     parallax2d = tag("Parallax2D");
     canvas_modulate = tag("CanvasModulate");
+    canvas_group = tag("CanvasGroup");
+    back_buffer_copy = tag("BackBufferCopy");
   }
 };
 
@@ -467,6 +494,8 @@ void *as(void *object, void *tag) {
 struct Walker {
   Tags tags;
   void *root = nullptr;
+  bool read_canvas_group = false;        // CG1: AdoptConfig::canvas_group
+  bool read_copy_to_backbuffer = false;  // CG1: AdoptConfig::copy_to_backbuffer
   AdoptPlan plan;
   // canvas RID -> the canvas group's members (top-level items) in tree order
   std::vector<std::pair<std::uint64_t, std::vector<void *>>> groups;
@@ -560,6 +589,43 @@ struct Walker {
         get_vector2(kParallax2dGetRepeatSize, node, a.repeat_xy);
         a.repeat_times = static_cast<std::int32_t>(get_int(kParallax2dGetRepeatTimes, node));
         a.repeat = a.repeat_xy[0] != 0.0f || a.repeat_xy[1] != 0.0f;
+      }
+      if (read_canvas_group) {
+        if (as(node, tags.canvas_group) != nullptr) {
+          // canvas_group.cpp:33-60, :115: every CanvasGroup setter (and its constructor) sends
+          // the whole transparent group with fit_empty true; it ignores clip_children
+          // (canvas_item.cpp:1699).
+          double clear = 5.0;
+          double fit = 10.0;
+          ptrcall(kCanvasGroupGetClearMargin, node, nullptr, &clear);
+          ptrcall(kCanvasGroupGetFitMargin, node, nullptr, &fit);
+          a.canvas_group_mode = 3;
+          a.clear_margin = static_cast<float>(clear);
+          a.fit_empty = true;
+          a.fit_margin = static_cast<float>(fit);
+          a.blur_mipmaps = get_bool(kCanvasGroupIsUsingMipmaps, node);
+        } else {
+          // canvas_item.cpp:1688-1704: clip_children_mode 1/2 is the RS mode of the same value,
+          // sent with the RS defaults (rendering_server.h:1626).
+          const std::int64_t clip = get_int(kItemGetClipChildrenMode, item);
+          if (clip == 1 || clip == 2) {
+            a.canvas_group_mode = static_cast<std::int32_t>(clip);
+          }
+        }
+      }
+      if (read_copy_to_backbuffer && as(node, tags.back_buffer_copy) != nullptr) {
+        // back_buffer_copy.cpp:33-45: rect mode sends the rect, viewport mode Rect2(), disabled
+        // nothing the mirror has not already got (null).
+        const std::int64_t copy_mode = get_int(kBackBufferCopyGetCopyMode, node);
+        if (copy_mode == 1) {
+          alignas(16) float raw[4] = {};
+          ptrcall(kBackBufferCopyGetRect, node, nullptr, raw);
+          a.copy_to_backbuffer = true;
+          a.copy_rect = {raw[0], raw[1], raw[2], raw[3]};
+        } else if (copy_mode == 2) {
+          a.copy_to_backbuffer = true;
+          a.copy_rect = rs2::kZeroRect;
+        }
       }
       if (as(node, tags.canvas_modulate) != nullptr && a.visible) {
         const std::uint64_t canvas = get_rid(kItemGetCanvas, item);
@@ -676,6 +742,8 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
   Walker walker;
   walker.tags.resolve();
   walker.root = root;
+  walker.read_canvas_group = config.canvas_group;
+  walker.read_copy_to_backbuffer = config.copy_to_backbuffer;
   walker.visit(root, nullptr, 0, 0);
   const std::uint64_t t1 = now_ns();
   apply_adopt_plan(mirror_instance(), walker.plan, config.sabotage, config.arm_frame, &stats);

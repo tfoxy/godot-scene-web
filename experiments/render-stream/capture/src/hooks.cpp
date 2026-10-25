@@ -65,6 +65,12 @@ using FnTexture2dUpdate = void (*)(void *, RID, const Ref *, int);
 //   (G8kc, calibrator 10: the engine calls it after texture_2d_create with the res:// path,
 //   compressed_texture.cpp:91-96, :158-161; installed only under GRC_TEXTURE_CACHE_DIR)
 using FnTextureSetPath = void (*)(void *, RID, const void *);
+//   virtual void canvas_item_set_canvas_group_mode(RID p_item, CanvasGroupMode p_mode,
+//       float p_clear_margin = 5.0, bool p_fit_empty = false, float p_fit_margin = 0.0,
+//       bool p_blur_mipmaps = false) = 0;
+//   (CG1, slot 495, render-stream-10.md "Capture": installed only under GRC_STREAM_VERSION=10;
+//   canvas_item_set_copy_to_backbuffer, slot 484, is FnSetCustomRect's shape)
+using FnSetCanvasGroupMode = void (*)(void *, RID, int32_t, float, bool, float, bool);
 //   1770: virtual void free(RID) = 0;
 using FnFree = void (*)(void *, RID);
 //
@@ -351,6 +357,10 @@ enum HookId : size_t {
   kCanvasSetParent,
   // calibrator 10 (G8kc): conditional, see hooks_plan
   kTextureSetPath,
+  // CG1 (render-stream-10.md "Capture", calibrator 9 record slots 484/495): conditional, see
+  // hooks_plan
+  kSetCopyToBackbuffer,
+  kSetCanvasGroupMode,
   kHookCount,
 };
 
@@ -3071,6 +3081,40 @@ void hook_set_clip(void *self, RID item, bool clip) {
   original<FnRidBool>(kSetClip)(self, item, clip);
 }
 
+// --- CG1: the two back-buffer setters (render-stream-10.md "Capture") ------------------------
+//
+// Conditional: installed only under GRC_STREAM_VERSION=10 (hooks_plan), so every /2-/9 session,
+// plan and counters.json is what it was. Each passes the call through first, then sets the item's
+// mirror state as the engine does (renderer_canvas_cull.cpp:1871-1886, :2015-2033). A canvas group
+// mode outside 0-3 cannot come from scene code (canvas_item.cpp:1690); it passes through, leaves
+// the mirror unchanged and is counted in counters.json `captured.canvas_group_mode_invalid`.
+
+std::atomic<uint64_t> g_canvas_group_mode_invalid{0};
+
+void hook_set_canvas_group_mode(void *self, RID item, int32_t mode, float clear_margin,
+                                bool fit_empty, float fit_margin, bool blur_mipmaps) {
+  bump(kSetCanvasGroupMode);
+  original<FnSetCanvasGroupMode>(kSetCanvasGroupMode)(self, item, mode, clear_margin, fit_empty,
+                                                      fit_margin, blur_mipmaps);
+  if (mode < 0 || mode > 3) {
+    g_canvas_group_mode_invalid.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  if (streaming()) {
+    mirror().set_canvas_group_mode(item.id, mode, clear_margin, fit_empty, fit_margin,
+                                   blur_mipmaps, current_frame());
+  }
+}
+
+void hook_set_copy_to_backbuffer(void *self, RID item, bool enable, const Rect2 *rect) {
+  bump(kSetCopyToBackbuffer);
+  original<FnSetCustomRect>(kSetCopyToBackbuffer)(self, item, enable, rect);
+  if (streaming()) {
+    const rs2::Rect4 wire = rect != nullptr ? to_rect(*rect) : rs2::kZeroRect;
+    mirror().set_copy_to_backbuffer(item.id, enable, wire, current_frame());
+  }
+}
+
 void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect) {
   bump(kSetCustomRect);
   if (rect != nullptr) {
@@ -3438,6 +3482,10 @@ const HookSpec kSpecs[] = {
     {kCanvasSetItemRepeat, "canvas_set_item_repeat", as_ptr(&hook_canvas_set_item_repeat)},
     {kCanvasSetParent, "canvas_set_parent", as_ptr(&hook_canvas_set_parent)},
     {kTextureSetPath, "texture_set_path", as_ptr(&hook_texture_set_path)},
+    {kSetCopyToBackbuffer, "canvas_item_set_copy_to_backbuffer",
+     as_ptr(&hook_set_copy_to_backbuffer)},
+    {kSetCanvasGroupMode, "canvas_item_set_canvas_group_mode",
+     as_ptr(&hook_set_canvas_group_mode)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -3993,6 +4041,11 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   g_omitted_names.clear();
   const char *cache_dir = std::getenv("GRC_TEXTURE_CACHE_DIR");
   const bool path_hook_wanted = cache_dir != nullptr && cache_dir[0] != '\0';
+  // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10).
+  const char *stream_version = std::getenv("GRC_STREAM_VERSION");
+  const bool backbuffer_hooks_wanted =
+      stream_version != nullptr && std::strcmp(stream_version, "10") == 0;
+  g_canvas_group_mode_invalid.store(0);
   g_hooks_total = kHookCount;
   for (const HookSpec &spec : kSpecs) {
     const int64_t index = calib.slot(spec.name);
@@ -4002,6 +4055,14 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
     if (spec.id == kTextureSetPath && !path_hook_wanted) {
       // G8kc: conditional hook. Without a cache directory the plan, counters and session are
       // exactly what they were before the hook existed.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
+    if ((spec.id == kSetCopyToBackbuffer || spec.id == kSetCanvasGroupMode) &&
+        !backbuffer_hooks_wanted) {
+      // CG1 (render-stream-10.md "Capture"): conditional like texture_set_path; neither planned
+      // nor omitted below /10.
       g_skipped[spec.id] = true;
       --g_hooks_total;
       continue;
@@ -4193,6 +4254,11 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   write_image_captures(&json, s.creates, false);
   json.key("texture_2d_update");
   write_image_captures(&json, s.updates, true);
+  if (!g_skipped[kSetCanvasGroupMode] && !g_omitted[kSetCanvasGroupMode]) {
+    // CG1 (render-stream-10.md "Capture"): the out-of-range modes passed through unmirrored.
+    json.field("canvas_group_mode_invalid",
+               static_cast<int64_t>(g_canvas_group_mode_invalid.load()));
+  }
   if (!g_skipped[kTextureSetPath] && !g_omitted[kTextureSetPath]) {
     // G8kc: every texture_set_path call (the paths of the hook log), in call order.
     std::lock_guard<std::mutex> lock(g_cache_mutex);

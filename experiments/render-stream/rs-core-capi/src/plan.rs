@@ -47,6 +47,12 @@ pub struct Sabotage {
     /// P3-VX: every `varying` of a shader's code made `flat` before `shader_set_code`
     /// (`render_stream_core::apply::programs::flat_varyings`): vertex outputs not interpolated.
     pub vertex_flat_varyings: bool,
+    /// CG1 (render-stream-10.md "Receivers"): never issue `canvas_item_set_canvas_group_mode`, so
+    /// a group owner draws as a plain item (its children unclipped, nothing composited).
+    pub drop_canvas_group: bool,
+    /// CG1: issue every wire `copy_to_backbuffer` with `Rect2()` (the rect dropped), so the
+    /// engine copies the whole target instead of the region.
+    pub full_backbuffer_copy: bool,
 }
 
 impl Sabotage {
@@ -70,6 +76,8 @@ impl Sabotage {
             "ignore-canvas-stacking" => s.ignore_canvas_stacking = true,
             "screen-copy-per-reader" => s.screen_copy_per_reader = true,
             "vertex-flat-varyings" => s.vertex_flat_varyings = true,
+            "drop-canvas-group" => s.drop_canvas_group = true,
+            "full-backbuffer-copy" => s.full_backbuffer_copy = true,
             _ => {}
         }
         s
@@ -239,6 +247,29 @@ fn feq(a: &[f32], b: &[f32]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y)
 }
 
+/// Bit-for-bit, as the wire compares block floats (so a NaN margin is not re-issued every apply).
+fn canvas_group_eq(a: &Option<CanvasGroup>, b: &Option<CanvasGroup>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.mode == y.mode
+                && x.clear_margin.to_bits() == y.clear_margin.to_bits()
+                && x.fit_empty == y.fit_empty
+                && x.fit_margin.to_bits() == y.fit_margin.to_bits()
+                && x.blur_mipmaps == y.blur_mipmaps
+        }
+        _ => false,
+    }
+}
+
+fn rect_bits_eq(a: &Option<[f32; 4]>, b: &Option<[f32; 4]>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()),
+        _ => false,
+    }
+}
+
 // ----------------------------------------------------------------------------------- mirror
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -315,8 +346,11 @@ struct ItemM {
     content_version: i64,
     material_wire: Option<Id>,
     material_rid: Option<u32>,
-    /// `screen-copy-per-reader` only: whether this item has its back-buffer copy set.
-    copy_to_backbuffer: bool,
+    /// The back-buffer copy this receiver last set on the item (`None`: disabled): the wire's
+    /// /10 `copy_to_backbuffer`, or the `screen-copy-per-reader` sabotage's `Rect2()` copy.
+    copy_to_backbuffer: Option<[f32; 4]>,
+    /// The /10 canvas-group state this receiver last set on the item (`None`: disabled).
+    canvas_group: Option<CanvasGroup>,
     /// P3-ST (gate5_5-design.md "Refused materials"): the effective material reads the screen but
     /// is refused, so the item's own commands are not replayed.
     screen_skip: bool,
@@ -530,6 +564,9 @@ struct Counters {
     canvases_created: i64,
     canvas_attach: i64,
     canvas_stacking_sets: i64,
+    /// CG1: `canvas_item_set_canvas_group_mode` and `canvas_item_set_copy_to_backbuffer` calls.
+    canvas_group_sets: i64,
+    backbuffer_copy_sets: i64,
 }
 
 struct Upload {
@@ -1606,7 +1643,8 @@ impl Planner {
                     content_version: -1,
                     material_wire: None,
                     material_rid: None,
-                    copy_to_backbuffer: false,
+                    copy_to_backbuffer: None,
+                    canvas_group: None,
                     screen_skip: false,
                     use_parent_material: false,
                     instance_params: Vec::new(),
@@ -2393,21 +2431,6 @@ impl Planner {
                 }
                 me.material_rid = material_rid;
             }
-            if sab.screen_copy_per_reader {
-                let reads_screen = wire
-                    .material
-                    .and_then(|m| st.materials.get(&m))
-                    .and_then(|m| m.shader)
-                    .and_then(|s| st.shaders.get(&s))
-                    .is_some_and(|s| s.uses.contains(&ShaderUse::ScreenTexture));
-                if reads_screen != me.copy_to_backbuffer {
-                    ops.op(Op::ItemSetCopyToBackbuffer, 1);
-                    ops.rid(rid);
-                    ops.b(reads_screen);
-                    ops.fs(&[0.0; 4]);
-                    me.copy_to_backbuffer = reads_screen;
-                }
-            }
             if wire.use_parent_material != me.use_parent_material {
                 ops.op(Op::ItemSetUseParentMaterial, 1);
                 ops.rid(rid);
@@ -2446,6 +2469,70 @@ impl Planner {
                 me.instance_params.retain(|x| x.0 != name);
                 c.instance_param_sets += 1;
             }
+        }
+
+        // CG1 (render-stream-10.md "Receivers"): re-issue the item's back-buffer state whenever it
+        // differs from what this receiver last set; its own Godot does the rest.
+        let v10 = self.version >= 10;
+        let me = self.items.get_mut(&id).unwrap();
+        let group = if v10 && !sab.drop_canvas_group {
+            wire.canvas_group
+        } else {
+            None
+        };
+        if !canvas_group_eq(&group, &me.canvas_group) {
+            // RS's defaults for a disabled call (the engine frees the state, the rest is unused).
+            let (mode, clear_margin, fit_empty, fit_margin, blur_mipmaps) = match &group {
+                Some(g) => (
+                    g.mode_value(),
+                    g.clear_margin,
+                    g.fit_empty,
+                    g.fit_margin,
+                    g.blur_mipmaps,
+                ),
+                None => (0, 5.0, false, 0.0, false),
+            };
+            ops.op(Op::ItemSetCanvasGroupMode, 1);
+            ops.rid(rid);
+            ops.i64(mode);
+            ops.f(clear_margin);
+            ops.b(fit_empty);
+            ops.f(fit_margin);
+            ops.b(blur_mipmaps);
+            me.canvas_group = group;
+            c.canvas_group_sets += 1;
+        }
+        let mut copy = if v10 {
+            wire.copy_to_backbuffer.map(|r| {
+                if sab.full_backbuffer_copy {
+                    [0.0; 4]
+                } else {
+                    r
+                }
+            })
+        } else {
+            None
+        };
+        // P3-ST's `screen-copy-per-reader` sabotage: a full-target copy on each item whose own
+        // material reads the screen, only where the wire sets no copy of its own.
+        if sab.screen_copy_per_reader && v5 && copy.is_none() {
+            let reads_screen = wire
+                .material
+                .and_then(|m| st.materials.get(&m))
+                .and_then(|m| m.shader)
+                .and_then(|s| st.shaders.get(&s))
+                .is_some_and(|s| s.uses.contains(&ShaderUse::ScreenTexture));
+            if reads_screen {
+                copy = Some([0.0; 4]);
+            }
+        }
+        if !rect_bits_eq(&copy, &me.copy_to_backbuffer) {
+            ops.op(Op::ItemSetCopyToBackbuffer, 1);
+            ops.rid(rid);
+            ops.b(copy.is_some());
+            ops.fs(&copy.unwrap_or([0.0; 4]));
+            me.copy_to_backbuffer = copy;
+            c.backbuffer_copy_sets += 1;
         }
 
         // P3-ST: a refused screen reader draws nothing (drawn plain it would cover what it reads).
@@ -3150,6 +3237,8 @@ fn write_stats(
             ("canvases_created", c.canvases_created),
             ("canvas_attach", c.canvas_attach),
             ("canvas_stacking_sets", c.canvas_stacking_sets),
+            ("canvas_group_sets", c.canvas_group_sets),
+            ("backbuffer_copy_sets", c.backbuffer_copy_sets),
         ],
     );
 }

@@ -269,9 +269,10 @@ fn replay(
             out.ops
                 .push((core.ops.words.clone(), core.ops.arena.clone()));
         }
-        // G7xwl: a /7 live receiver's received.rs7 replays at /7; everything else at /6.
+        // G7xwl: a /7 live receiver's received.rs7 replays at /7; CG1: any receiver version
+        // (/8, /9, /10 files) at its own; everything else at /6.
         let version = match wire::version_of_magic(data) {
-            Some(7) => 7,
+            Some(v) if rs_core_capi::core::VERSIONS.contains(&v) => v,
             _ => 6,
         };
         let spans = match wire::split_records(data, version) {

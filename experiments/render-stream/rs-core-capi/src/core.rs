@@ -29,7 +29,9 @@ pub const VERSION: u8 = 6;
 /// `source_format`), so a /8 stream applies like a /6 one. G8k9 adds render-stream/9 files the same
 /// way (render-stream-9.md): the apply layer ignores `variants` and the delivery declaration, so a
 /// /9 stream draws its `decoded` payloads exactly as /8 would. The live hello still offers .6/.7 only.
-pub const VERSIONS: [u8; 4] = [6, 7, 8, 9];
+/// CG1 adds render-stream/10 (render-stream-10.md): the planner re-issues each item's
+/// `canvas_group` and `copy_to_backbuffer` state and the receiver's Godot does the rest.
+pub const VERSIONS: [u8; 5] = [6, 7, 8, 9, 10];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -208,7 +210,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6, /7, /8 and /9, not /{version}"),
+                format!("the receiver core speaks render-stream/6, /7, /8, /9 and /10, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;

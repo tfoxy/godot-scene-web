@@ -11,7 +11,8 @@ extends RefCounted
 ## JSON.parse returns every number as a float. Every wire integer is below 2^53, so an integer is
 ## accepted only when it is finite, integral and within +-(2^53 - 1), then converted with int().
 
-## The GRS2 to GRS9 magics (render-stream-2.md to render-stream-9.md), by wire version.
+## The GRS2 to GRS9 magics (render-stream-2.md to render-stream-9.md) and GRSA (render-stream-10.md:
+## byte 3 is the version as one uppercase hex digit from /10 on), by wire version.
 const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	2: "475253320d0a1a0a",
 	3: "475253330d0a1a0a",
@@ -21,6 +22,7 @@ const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	7: "475253370d0a1a0a",
 	8: "475253380d0a1a0a",
 	9: "475253390d0a1a0a",
+	10: "475253410d0a1a0a",
 }
 const MAGIC_V7_HEX: String = "475253370d0a1a0a"
 ## G8t: render-stream/8 files (gate 8 recordings, render-stream-8.md) replay at /8.
@@ -28,6 +30,9 @@ const MAGIC_V8_HEX: String = "475253380d0a1a0a"
 ## G8kp: render-stream/9 files (texture delivery, render-stream-9.md) replay at /9: the core
 ## picks each texture's payload by texture-delivery-design.md D3.
 const MAGIC_V9_HEX: String = "475253390d0a1a0a"
+## CG1: render-stream/10 files (back-buffer state, render-stream-10.md) replay at /10: the core
+## re-issues each item's canvas_group and copy_to_backbuffer.
+const MAGIC_V10_HEX: String = "475253410d0a1a0a"
 const PROTOCOL_V7: String = "render-stream/7"
 const MAX_SAFE_INT: float = 9007199254740991.0
 

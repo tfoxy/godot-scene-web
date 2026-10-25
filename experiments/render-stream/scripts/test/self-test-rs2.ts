@@ -88,6 +88,7 @@ const GOLDEN6_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-6");
 const GOLDEN7_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-7");
 const GOLDEN8_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-8");
 const GOLDEN9_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-9");
+const GOLDEN10_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-10");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -205,23 +206,25 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-9")
-    ? "golden-9"
-    : goldenDir.endsWith("golden-8")
-      ? "golden-8"
-      : goldenDir.endsWith("golden-7")
-        ? "golden-7"
-        : goldenDir.endsWith("golden-6")
-          ? "golden-6"
-          : goldenDir.endsWith("golden-5")
-            ? "golden-5"
-            : goldenDir.endsWith("golden-4")
-              ? "golden-4"
-              : goldenDir.endsWith("golden-3")
-                ? "golden-3"
-                : "golden-2";
+  const label = goldenDir.endsWith("golden-10")
+    ? "golden-10"
+    : goldenDir.endsWith("golden-9")
+      ? "golden-9"
+      : goldenDir.endsWith("golden-8")
+        ? "golden-8"
+        : goldenDir.endsWith("golden-7")
+          ? "golden-7"
+          : goldenDir.endsWith("golden-6")
+            ? "golden-6"
+            : goldenDir.endsWith("golden-5")
+              ? "golden-5"
+              : goldenDir.endsWith("golden-4")
+                ? "golden-4"
+                : goldenDir.endsWith("golden-3")
+                  ? "golden-3"
+                  : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -520,6 +523,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN7_DIR, 7);
   await runSuite(GOLDEN8_DIR, 8);
   await runSuite(GOLDEN9_DIR, 9);
+  await runSuite(GOLDEN10_DIR, 10);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -608,6 +612,24 @@ async function main(): Promise<void> {
     "wireVersionOf() reads GRS9 as 9",
   );
   await version9Cases(full9);
+
+  // a /10 decode refuses /9 and a /9 decode refuses /10 (same rule, render-stream-10.md "File
+  // layout": byte 3 is the version as one uppercase hex digit, GRSA).
+  const full10 = await readBytes(GOLDEN10_DIR, "full.rs10");
+  ok(
+    validateRecording(full9, 10)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-9/full.rs9 decoded as version 10 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full10, 9)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-10/full.rs10 decoded as version 9 is rejected with bad-magic",
+  );
+  ok(
+    Buffer.from(full10.subarray(0, 4)).toString("latin1") === "GRSA" &&
+      wireVersionOf(full10) === 10 &&
+      wireVersionOf(full9) === 9,
+    "wireVersionOf() reads GRSA as 10",
+  );
 
   unknownItemCases();
   await helloCases();
@@ -1000,8 +1022,53 @@ async function helloCases9(): Promise<void> {
   }
 }
 
+// render-stream-10.md "Live transport": the hello is /9's under protocol "render-stream/10"; a /9
+// hello on a /10 connection is refused.
+function checkHello10(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return ["hello is not an object"];
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.protocol !== "render-stream/10")
+    return [
+      `"protocol" is ${JSON.stringify(obj.protocol)}, not "render-stream/10"`,
+    ];
+  return checkHello9({ ...obj, protocol: "render-stream/9" });
+}
+
+async function helloCases10(): Promise<void> {
+  const index = JSON.parse(
+    await readFile(join(GOLDEN10_DIR, "index.json"), "utf8"),
+  ) as { control: { valid: string[]; invalid: string[] } };
+  ok(
+    index.control.valid.length === 1 && index.control.invalid.length === 1,
+    "golden-10 index lists 1 valid and 1 invalid control vector",
+  );
+  for (const file of index.control.valid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN10_DIR, file), "utf8"),
+    );
+    const errors = checkHello10(parsed);
+    ok(
+      errors.length === 0,
+      `golden-10/${file} accepted (got ${JSON.stringify(errors)})`,
+    );
+  }
+  for (const file of index.control.invalid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN10_DIR, file), "utf8"),
+    );
+    ok(checkHello10(parsed).length > 0, `golden-10/${file} refused`);
+    ok(
+      checkHello9(parsed).length === 0,
+      `golden-10/${file} is a valid /9 hello (refused only for its protocol)`,
+    );
+  }
+}
+
 async function helloCases(): Promise<void> {
   await helloCases9();
+  await helloCases10();
   const root = join(GOLDEN7_DIR, "control");
   const validDir = join(root, "valid");
   const invalidDir = join(root, "invalid");

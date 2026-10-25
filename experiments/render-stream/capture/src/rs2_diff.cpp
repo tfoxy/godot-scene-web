@@ -87,7 +87,35 @@ bool params_equal(const SharedVector<Param> &a, const SharedVector<Param> &b) {
 // gate5_5-design.md D9: "material, use_parent_material and instance_params are item state, never
 // content_version" -- they participate here unconditionally, exactly like texture_filter/
 // texture_repeat, never exempted by a content_version match the way `commands` is.
-bool item_state_equal(const ItemState &a, const ItemState &b) {
+//
+// render-stream-10.md "Item": canvas_group and copy_to_backbuffer are item state too, but they
+// exist on the wire at /10 only, so they take part only when `v10`: below /10 a patch stays exactly
+// what it was (the keys are not encoded, so an entry for them alone would be an unchanged entry).
+bool canvas_group_equal(const CanvasGroupState &a, const CanvasGroupState &b) {
+  if (a.mode != b.mode) {
+    return false;
+  }
+  if (a.mode == CanvasGroupMode::Disabled) {
+    return true;  // null: the engine keeps none of a disabled call's arguments
+  }
+  return a.fit_empty == b.fit_empty && a.blur_mipmaps == b.blur_mipmaps &&
+         arrays_equal_bits(std::array<float, 2>{a.clear_margin, a.fit_margin},
+                           std::array<float, 2>{b.clear_margin, b.fit_margin});
+}
+
+bool backbuffer_state_equal(const ItemState &a, const ItemState &b) {
+  if (!canvas_group_equal(a.canvas_group, b.canvas_group) ||
+      a.copy_to_backbuffer != b.copy_to_backbuffer) {
+    return false;
+  }
+  return !a.copy_to_backbuffer ||
+         arrays_equal_bits(a.copy_to_backbuffer_rect, b.copy_to_backbuffer_rect);
+}
+
+bool item_state_equal(const ItemState &a, const ItemState &b, bool v10) {
+  if (v10 && !backbuffer_state_equal(a, b)) {
+    return false;
+  }
   if (a.parent.kind != b.parent.kind) {
     return false;
   }
@@ -335,12 +363,13 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   t.textures = cur.textures;
   if (t.version == ProtocolVersion::V4 || t.version == ProtocolVersion::V5 ||
       t.version == ProtocolVersion::V6 || t.version == ProtocolVersion::V7 ||
-      t.version == ProtocolVersion::V8 || t.version == ProtocolVersion::V9) {
+      t.version == ProtocolVersion::V8 || t.version == ProtocolVersion::V9 ||
+      t.version == ProtocolVersion::V10) {
     t.meshes = cur.meshes;
   }
   if (t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
       t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
-      t.version == ProtocolVersion::V9) {
+      t.version == ProtocolVersion::V9 || t.version == ProtocolVersion::V10) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -438,11 +467,12 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   base_canvases.removed_from(cur_canvas_ids, &t.removed_canvases);
   base_items.removed_from(cur_item_ids, &t.removed_items);
   base_textures.removed_from(cur_texture_ids, &t.removed_textures);
+  const bool v10 = t.version == ProtocolVersion::V10;
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
   // its shader/material tables and mesh table forward unchanged).
   const bool is_v5 = t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
                       t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
-                      t.version == ProtocolVersion::V9;
+                      t.version == ProtocolVersion::V9 || t.version == ProtocolVersion::V10;
   const bool is_v4_or_later = is_v5 || t.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     base_meshes.removed_from(cur_mesh_ids, &t.removed_meshes);
@@ -464,7 +494,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   for (const ItemState &item : cur.items) {
     const ItemState *prev = base_items.find(item.id);
     const bool exists_in_base = prev != nullptr;
-    if (exists_in_base && item_state_equal(*prev, item)) {
+    if (exists_in_base && item_state_equal(*prev, item, v10)) {
       continue;
     }
     ItemEntry entry;
@@ -528,7 +558,7 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   // is_v5 means "V5 or later" (see make_patch()'s comment above).
   const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6 ||
                       txn.version == ProtocolVersion::V7 || txn.version == ProtocolVersion::V8 ||
-                      txn.version == ProtocolVersion::V9;
+                      txn.version == ProtocolVersion::V9 || txn.version == ProtocolVersion::V10;
   const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
 
   if (txn.encoding == Encoding::Full) {

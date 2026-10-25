@@ -382,6 +382,8 @@ fn item_with(id: Id, commands: Commands) -> Item {
         material: None,
         use_parent_material: false,
         instance_params: Vec::new(),
+        canvas_group: None,
+        copy_to_backbuffer: None,
         content_version: 1,
         xform: geom::IDENTITY,
         modulate: [1.0; 4],

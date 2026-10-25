@@ -70,8 +70,10 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
       parsed.file_version = rs2::ProtocolVersion::V8;
     } else if (text == "9") {
       parsed.file_version = rs2::ProtocolVersion::V9;
+    } else if (text == "10") {
+      parsed.file_version = rs2::ProtocolVersion::V10;
     } else {
-      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8 or 9)";
+      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9 or 10)";
       return false;
     }
     parsed.stream_version_set = true;
@@ -126,6 +128,14 @@ bool gate8_policy_allows(const Gate8Policy &policy, bool files, std::string *err
 }
 
 std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
+  if (policy.file_version == rs2::ProtocolVersion::V10) {
+    // render-stream-10.md "Live transport".
+    if (policy.any()) {
+      return {rs2::kSubprotocolV10, rs2::kSubprotocolV9, rs2::kSubprotocolV8};
+    }
+    return {rs2::kSubprotocolV10, rs2::kSubprotocolV9, rs2::kSubprotocolV8, rs2::kSubprotocolV7,
+            "render-stream.6"};
+  }
   if (policy.file_version == rs2::ProtocolVersion::V9) {
     if (policy.any()) {
       return {rs2::kSubprotocolV9, rs2::kSubprotocolV8};

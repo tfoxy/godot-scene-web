@@ -335,6 +335,32 @@ const ITEM_KEYS_V5: &[&str] = &[
     "content_version",
     "commands",
 ];
+// render-stream-10.md "Item": canvas_group and copy_to_backbuffer right after instance_params.
+const ITEM_KEYS_V10: &[&str] = &[
+    "id",
+    "origin",
+    "parent",
+    "children",
+    "visible",
+    "draw_index",
+    "z_index",
+    "z_relative",
+    "behind",
+    "clip",
+    "custom_rect",
+    "visibility_layer",
+    "texture_filter",
+    "texture_repeat",
+    "material",
+    "use_parent_material",
+    "instance_params",
+    "canvas_group",
+    "copy_to_backbuffer",
+    "content_version",
+    "commands",
+];
+const CANVAS_GROUP_KEYS: &[&str] = &["mode", "fit_empty", "blur_mipmaps", "f"];
+const COPY_TO_BACKBUFFER_KEYS: &[&str] = &["f"];
 const PARENT_KEYS: &[&str] = &["kind", "id"];
 const ADD_RECT_KEYS: &[&str] = &["op", "aa", "f"];
 const ADD_TEXTURE_RECT_KEYS: &[&str] = &["op", "tex", "tile", "transpose", "f"];
@@ -477,6 +503,7 @@ pub const TRANSACTION_BLOCK_NAMES: &[&str] = &[
     "cmd_i32",
     "mesh_f32",
     "param_f64",
+    "backbuffer_f32",
 ];
 const TRANSACTION_BLOCK_TYPES: &[BlockType] = &[
     BlockType::F32,
@@ -485,7 +512,19 @@ const TRANSACTION_BLOCK_TYPES: &[BlockType] = &[
     BlockType::I32,
     BlockType::F32,
     BlockType::F64,
+    BlockType::F32,
 ];
+
+/// How many transaction blocks a version's transactions carry (render-stream-10.md "Transaction
+/// blocks": seven from /10).
+pub fn transaction_block_count(version: u8) -> usize {
+    match version {
+        10.. => 7,
+        5..=9 => 6,
+        4 => 5,
+        _ => 3,
+    }
+}
 
 const FAILURE_REASONS: &[&str] = &[
     "root-query-failed",
@@ -1808,8 +1847,22 @@ pub struct ItemMeta {
     pub material: Option<Id>,
     pub use_parent_material: bool,
     pub instance_params: Rng,
+    /// /10 only: `None` is a null `canvas_group`.
+    pub canvas_group: Option<CanvasGroupMeta>,
+    /// /10 only: a non-null `copy_to_backbuffer`'s `f`.
+    pub copy_to_backbuffer: Option<u64>,
     pub content_version: i64,
     pub commands: Option<Rng>,
+}
+
+/// A non-null /10 `canvas_group` (render-stream-10.md "Item"); its two floats, `clear_margin`
+/// then `fit_margin`, are at `f` in `backbuffer_f32`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CanvasGroupMeta {
+    pub mode: CanvasGroupMode,
+    pub fit_empty: bool,
+    pub blur_mipmaps: bool,
+    pub f: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -2922,8 +2975,21 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     let Some(items) = ck.arr(f.at(pos("items"))) else {
         return Err(ck.schema("\"items\" is not an array"));
     };
-    let ikeys = if v5 { ITEM_KEYS_V5 } else { ITEM_KEYS };
-    let cv_at = if v5 { 17 } else { 14 };
+    let v10 = version >= 10;
+    let ikeys = if v10 {
+        ITEM_KEYS_V10
+    } else if v5 {
+        ITEM_KEYS_V5
+    } else {
+        ITEM_KEYS
+    };
+    let cv_at = if v10 {
+        19
+    } else if v5 {
+        17
+    } else {
+        14
+    };
     for &iv in items {
         let it = (|| {
             let itf = ck.fields(iv, ikeys)?;
@@ -2964,6 +3030,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
                     material: None,
                     use_parent_material: false,
                     instance_params: Rng::default(),
+                    canvas_group: None,
+                    copy_to_backbuffer: None,
                     content_version,
                     commands: None,
                 },
@@ -3005,6 +3073,35 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
                 start,
                 end: tx.params.len() as u32,
             };
+        }
+        if v10 {
+            let gv = itf.at(17);
+            if !ck.null(gv) {
+                let g = (|| {
+                    let gf = ck.fields(gv, CANVAS_GROUP_KEYS)?;
+                    Some(CanvasGroupMeta {
+                        mode: enum_of(ck, gf.at(0), CanvasGroupMode::ALL, CanvasGroupMode::as_str)?,
+                        fit_empty: ck.boolean(gf.at(1))?,
+                        blur_mipmaps: ck.boolean(gf.at(2))?,
+                        f: ck.uint(gf.at(3))?,
+                    })
+                })();
+                let Some(g) = g else {
+                    return Err(ck.schema("an items[] entry has an invalid \"canvas_group\""));
+                };
+                it.canvas_group = Some(g);
+            }
+            let bv = itf.at(18);
+            if !ck.null(bv) {
+                let b = (|| {
+                    let bf = ck.fields(bv, COPY_TO_BACKBUFFER_KEYS)?;
+                    ck.uint(bf.at(0))
+                })();
+                let Some(b) = b else {
+                    return Err(ck.schema("an items[] entry has an invalid \"copy_to_backbuffer\""));
+                };
+                it.copy_to_backbuffer = Some(b);
+            }
         }
         let pv = itf.at(2);
         if !ck.null(pv) {
@@ -3068,13 +3165,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             tx.materials.push(m);
         }
     }
-    let n = if v5 {
-        6
-    } else if v4 {
-        5
-    } else {
-        3
-    };
+    let n = transaction_block_count(version);
     let types = if v4 {
         Some(&TRANSACTION_BLOCK_TYPES[..n])
     } else {

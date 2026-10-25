@@ -2957,7 +2957,72 @@ void test_material_omit_op() {
         "omit-op material_set_shader: the old shader's free still nulls it; the new bind is lost");
 }
 
+// CG1 (render-stream-10.md "Capture"): the two back-buffer setters. Each replaces the item's
+// state whole (disabled / enable false clears it, keeping no argument), neither bumps
+// content_version, canvas_item_clear keeps both, an out-of-range mode changes nothing, an unknown
+// item is the unknown-RID rule, and omit-op drops the call by its RenderingServer name.
+void test_backbuffer_state() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.canvas_item_create(101, 1);
+  m.set_parent(100, kRootCanvas, 1);
+  m.set_parent(101, kRootCanvas, 1);
+  m.set_draw_index(101, 1, 1);
+  m.set_canvas_group_mode(100, 3, 10.0f, true, 10.0f, true, 1);
+  m.set_copy_to_backbuffer(101, true, {-100.0f, -100.0f, 200.0f, 200.0f}, 1);
+  Snapshot s = m.snapshot(1, 1).state;
+  check(item(s, 1)->canvas_group.mode == grc::rs2::CanvasGroupMode::Transparent &&
+            item(s, 1)->canvas_group.clear_margin == 10.0f && item(s, 1)->canvas_group.fit_empty &&
+            item(s, 1)->canvas_group.fit_margin == 10.0f && item(s, 1)->canvas_group.blur_mipmaps &&
+            item(s, 1)->content_version == 0,
+        "set_canvas_group_mode: the whole state, content_version untouched");
+  check(item(s, 2)->copy_to_backbuffer && item(s, 2)->copy_to_backbuffer_rect[2] == 200.0f &&
+            item(s, 2)->content_version == 0,
+        "set_copy_to_backbuffer: enabled with its rect, content_version untouched");
+  m.set_canvas_group_mode(100, 4, 1.0f, false, 1.0f, false, 2);
+  m.set_canvas_group_mode(100, -1, 1.0f, false, 1.0f, false, 2);
+  m.clear(100, 2);
+  m.clear(101, 2);
+  s = m.snapshot(2, 2).state;
+  check(item(s, 1)->canvas_group.mode == grc::rs2::CanvasGroupMode::Transparent &&
+            item(s, 1)->canvas_group.fit_margin == 10.0f,
+        "an out-of-range mode changes nothing; canvas_item_clear keeps the group");
+  check(item(s, 2)->copy_to_backbuffer && item(s, 1)->content_version == 1,
+        "canvas_item_clear keeps the copy (and bumps content_version as always)");
+  m.set_canvas_group_mode(100, 1, 5.0f, false, 0.0f, false, 3);
+  s = m.snapshot(3, 3).state;
+  check(item(s, 1)->canvas_group.mode == grc::rs2::CanvasGroupMode::ClipOnly &&
+            item(s, 1)->canvas_group.clear_margin == 5.0f && !item(s, 1)->canvas_group.fit_empty &&
+            item(s, 1)->canvas_group.fit_margin == 0.0f && !item(s, 1)->canvas_group.blur_mipmaps,
+        "a new mode replaces the whole group");
+  m.set_canvas_group_mode(100, 0, 7.0f, true, 7.0f, true, 4);
+  m.set_copy_to_backbuffer(101, false, {1.0f, 2.0f, 3.0f, 4.0f}, 4);
+  s = m.snapshot(4, 4).state;
+  const grc::rs2::CanvasGroupState none;
+  check(item(s, 1)->canvas_group.mode == grc::rs2::CanvasGroupMode::Disabled &&
+            item(s, 1)->canvas_group.clear_margin == none.clear_margin &&
+            !item(s, 1)->canvas_group.fit_empty,
+        "mode 0 clears the group, keeping none of the call's arguments");
+  check(!item(s, 2)->copy_to_backbuffer && item(s, 2)->copy_to_backbuffer_rect[0] == 0.0f,
+        "enable false clears the copy, keeping no rect");
+  check(s.failures.empty(), "no failure from any of that");
+  m.set_omit_op("canvas_item_set_canvas_group_mode", 5);
+  m.set_canvas_group_mode(100, 2, 5.0f, false, 0.0f, false, 5);
+  m.set_copy_to_backbuffer(101, true, {0.0f, 0.0f, 0.0f, 0.0f}, 5);
+  s = m.snapshot(5, 5).state;
+  check(item(s, 1)->canvas_group.mode == grc::rs2::CanvasGroupMode::Disabled &&
+            item(s, 2)->copy_to_backbuffer,
+        "omit-op canvas_item_set_canvas_group_mode drops only that setter");
+  Mirror u;
+  bind_root(&u);
+  u.set_copy_to_backbuffer(0x999, true, {0.0f, 0.0f, 0.0f, 0.0f}, 1);
+  check(!u.snapshot(1, 1).state.failures.empty(),
+        "a copy on an item the mirror does not know is the unknown-RID rule");
+}
+
 int main() {
+  test_backbuffer_state();
   test_fresh_session();
   test_ids_and_recycled_rid();
   test_append_on_same_parent();

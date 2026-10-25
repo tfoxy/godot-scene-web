@@ -257,9 +257,10 @@ async function run(): Promise<void> {
         err.includes(": ") ? err : `missing-session: ${err}`,
       );
     }
-    // G8kp: a render-stream/9 recording ("GRS9") states its delivery preference in the report.
-    if (data.length >= 4 && data[3] === 0x39) {
-      report.protocol = "render-stream/9";
+    // G8kp: a render-stream/9 recording ("GRS9") states its delivery preference in the report;
+    // CG1: so does a render-stream/10 one ("GRSA", /9's delivery included).
+    if (data.length >= 4 && (data[3] === 0x39 || data[3] === 0x41)) {
+      report.protocol = data[3] === 0x41 ? "render-stream/10" : "render-stream/9";
       report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
         string,
         unknown

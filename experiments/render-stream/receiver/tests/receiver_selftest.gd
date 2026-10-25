@@ -8,7 +8,7 @@ extends SceneTree
 ##      which project.godot levels as an error, fails the load and prints a script diagnostic the
 ##      checker also greps for);
 ##   2. RsWire.split_records() frames every valid golden recording exactly as its *.decoded.json
-##      lists the records (offset, byte_length), for golden-2 to golden-7;
+##      lists the records (offset, byte_length), for golden-2 to golden-10;
 ##   3. every golden invalid/ vector whose index.json code is a framing code (bad-magic, truncated,
 ##      record-length) fails framing with that code;
 ##   4. (G8kz) RsResourceFetcher decodes a zstd and a gzip Content-Encoding body (frames made by
@@ -25,7 +25,7 @@ extends SceneTree
 ## GDScript codec self-test (codec2_selftest.gd) with the GDScript decoder.
 ##
 ## RS_SELFTEST_GOLDEN_DIR names golden-2 (default <receiver>/../protocol/golden-2); golden-3 to
-## golden-7 are its siblings. Prints "[receiver-selftest] ok" and quits 0, or prints each failure
+## golden-10 are its siblings. Prints "[receiver-selftest] ok" and quits 0, or prints each failure
 ## and quits 1.
 
 const FRAMING_CODES: Array[String] = ["bad-magic", "truncated", "record-length"]
@@ -44,7 +44,7 @@ func _init() -> void:
 	if golden2 == "":
 		golden2 = ProjectSettings.globalize_path("res://").path_join("../protocol/golden-2").simplify_path()
 	var root: String = golden2.get_base_dir()
-	for version: int in range(2, 8):
+	for version: int in [2, 3, 4, 5, 6, 7, 8, 9, 10]:
 		var dir: String = golden2 if version == 2 else root.path_join("golden-%d" % version)
 		_check_golden(dir, version)
 	if _failures.is_empty():

@@ -32,6 +32,10 @@ const PROTOCOL_V7: String = "render-stream/7"
 ## two delivery keys.
 const SUBPROTOCOL_V9: String = "render-stream.9"
 const PROTOCOL_V9: String = "render-stream/9"
+## render-stream/10 (CG1, render-stream-10.md "Live transport"): /9's transport and hello under
+## protocol render-stream/10.
+const SUBPROTOCOL_V10: String = "render-stream.10"
+const PROTOCOL_V10: String = "render-stream/10"
 const SUBPROTOCOL_V8: String = "render-stream.8"
 const PROTOCOL_V8: String = "render-stream/8"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
@@ -40,7 +44,7 @@ const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 var peer: WebSocketPeer = null
 var url: String = ""
 var inbound_buffer_bytes: int = 0
-## 6, 7 or 8: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
+## 6, 7, 8, 9 or 10: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
 var version: int = 6
 
 
@@ -70,6 +74,9 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 	elif version == 9:
 		# G8kp: a /9 client (texture delivery) offers only render-stream.9; /7's transport.
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V9])
+	elif version == 10:
+		# CG1: a /10 client offers only render-stream.10; /9's transport.
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V10])
 	else:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
 		if token != "":
@@ -198,9 +205,11 @@ static func parse_host_text(text: String) -> Dictionary:
 
 ## G8kp: the /9 hello (render-stream-9.md "Live transport"): /7's fourteen keys under protocol
 ## render-stream/9, then texture_encodings and gpu_formats (texture-delivery-design.md D3, Q3).
-static func hello_v9(v7: Dictionary, texture_encodings: String, gpu_formats: String) -> Dictionary:
+## CG1: `protocol` "render-stream/10" gives /10's hello (render-stream-10.md "Live transport": /9's
+## fifteen keys under protocol render-stream/10).
+static func hello_v9(v7: Dictionary, texture_encodings: String, gpu_formats: String, protocol: String = PROTOCOL_V9) -> Dictionary:
 	var out: Dictionary = v7.duplicate()
-	out["protocol"] = PROTOCOL_V9
+	out["protocol"] = protocol
 	out["texture_encodings"] = texture_encodings
 	out["gpu_formats"] = gpu_formats
 	return out

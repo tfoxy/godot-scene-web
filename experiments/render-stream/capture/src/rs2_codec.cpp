@@ -532,6 +532,38 @@ void append_material_entry(std::string &out, const MaterialEntry &m, std::vector
   out += "]}";
 }
 
+// render-stream-10.md "Item": the two back-buffer keys, right after instance_params, each a
+// non-null object claiming its floats from `backbuffer_f32` at the running offset "f".
+void append_backbuffer_state(std::string &out, const ItemState &item,
+                             std::vector<float> &backbuffer_f32) {
+  out += ",\"canvas_group\":";
+  if (item.canvas_group.mode == CanvasGroupMode::Disabled) {
+    out += "null";
+  } else {
+    out += "{\"mode\":";
+    append_json_string(out, to_wire(item.canvas_group.mode));
+    out += ",\"fit_empty\":";
+    append_json_bool(out, item.canvas_group.fit_empty);
+    out += ",\"blur_mipmaps\":";
+    append_json_bool(out, item.canvas_group.blur_mipmaps);
+    out += ",\"f\":";
+    append_json_int(out, backbuffer_f32.size());
+    out += "}";
+    backbuffer_f32.push_back(item.canvas_group.clear_margin);
+    backbuffer_f32.push_back(item.canvas_group.fit_margin);
+  }
+  out += ",\"copy_to_backbuffer\":";
+  if (!item.copy_to_backbuffer) {
+    out += "null";
+  } else {
+    out += "{\"f\":";
+    append_json_int(out, backbuffer_f32.size());
+    out += "}";
+    backbuffer_f32.insert(backbuffer_f32.end(), item.copy_to_backbuffer_rect.begin(),
+                          item.copy_to_backbuffer_rect.end());
+  }
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> magic() {
@@ -539,6 +571,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V10) {
+    return std::vector<std::uint8_t>(kMagicV10.begin(), kMagicV10.end());
+  }
   if (version == ProtocolVersion::V9) {
     return std::vector<std::uint8_t>(kMagicV9.begin(), kMagicV9.end());
   }
@@ -566,7 +601,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V9
+      session.version == ProtocolVersion::V10
+          ? kProtocolV10
+          : session.version == ProtocolVersion::V9
           ? kProtocolV9
           : session.version == ProtocolVersion::V8
           ? kProtocolV8
@@ -618,7 +655,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   append_json_string_array(m, sorted_copy(session.capture.hooks_omitted));
   m += "}";
 
-  const bool is_v9 = session.version == ProtocolVersion::V9;
+  // is_v9 means "V9 or later": /10 is /9 plus render-stream-10.md's list, none of it in the
+  // session but the protocol string and the features (which the caller computes).
+  const bool is_v9 = is_v9_or_later(session.version);
   // is_v8 means "V8 or later": /9 is /8 plus render-stream-9.md's list.
   const bool is_v8 = is_v9 || session.version == ProtocolVersion::V8;
   // is_v7 means "V7 or later": /8 is /7 plus render-stream-8.md's list, so it keeps the
@@ -836,7 +875,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   // render-stream-7.md: transactions are byte-identical to /6 (gate7-design.md D2), so is_v6
   // (meaning "V6 or later") is only needed for the unknown_items version gate below and the
   // canvas layer/sublayer keys /6 added.
-  const bool v9 = transaction.version == ProtocolVersion::V9;
+  // render-stream-10.md: /10 is /9 plus the two back-buffer item keys and the backbuffer_f32 block.
+  const bool v10 = transaction.version == ProtocolVersion::V10;
+  const bool v9 = v10 || transaction.version == ProtocolVersion::V9;
   const bool v8 = v9 || transaction.version == ProtocolVersion::V8;
   const bool is_v6 = transaction.version == ProtocolVersion::V6 ||
                       transaction.version == ProtocolVersion::V7 || v8;
@@ -984,6 +1025,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   // (through "canvases"); every later piece is assembled into its own buffer and spliced into `m`
   // in true JSON key order once all of them (and their floats) are known.
   std::vector<double> param_f64;
+  // render-stream-10.md "Transaction blocks": `f` runs over the items in entry order, within an
+  // item canvas_group (2 floats) before copy_to_backbuffer (4 floats).
+  std::vector<float> backbuffer_f32;
   std::string materials_json;
   if (is_v5) {
     materials_json += ",\"materials\":[";
@@ -1060,6 +1104,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
         append_param_entry(items_json, item.instance_params[p], param_f64);
       }
       items_json += "]";
+    }
+    if (v10) {
+      append_backbuffer_state(items_json, item, backbuffer_f32);
     }
     items_json += ",\"content_version\":";
     append_json_int(items_json, item.content_version);
@@ -1353,7 +1400,15 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
 
   m += ",";
-  if (is_v5) {
+  if (v10) {
+    append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
+                                  {"canvas_f32", "f32", canvas_f32.size()},
+                                  {"cmd_f32", "f32", cmd_f32.size()},
+                                  {"cmd_i32", "i32", cmd_i32.size()},
+                                  {"mesh_f32", "f32", mesh_f32.size()},
+                                  {"param_f64", "f64", param_f64.size()},
+                                  {"backbuffer_f32", "f32", backbuffer_f32.size()}});
+  } else if (is_v5) {
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
                                   {"cmd_f32", "f32", cmd_f32.size()},
@@ -1381,6 +1436,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
   if (is_v5) {
     blocks.push_back(f64_payload(param_f64));
+  }
+  if (v10) {
+    blocks.push_back(f32_payload(backbuffer_f32));
   }
   return assemble_record(m, blocks);
 }

@@ -53,8 +53,9 @@ export interface ReceiverConfig {
   transcodeLog: boolean;
   transcodeFault: "fail" | null;
   /** G8kp: RS_RECEIVER_PROTOCOL (live): 7 (default), 8 (G8g: render-stream/8's live transport,
-   * /7's with /8's tables; a gate 8 policy host offers only .8) or 9 (offers render-stream.9). */
-  liveProtocol: 7 | 8 | 9;
+   * /7's with /8's tables; a gate 8 policy host offers only .8) or 9 (offers render-stream.9).
+   * CG1: or 10 (offers render-stream.10; /10's back-buffer keys are typed, not composited). */
+  liveProtocol: 7 | 8 | 9 | 10;
   canvas: [number, number] | null;
   /** Every RS_RECEIVER_* value as given, for the log. */
   raw: Record<string, string>;
@@ -80,7 +81,7 @@ export interface LiveConfig {
   receivedOut: string;
   /** G8g: the live wire version (ReceiverConfig.liveProtocol, RS_RECEIVER_PROTOCOL): the received
    * tap's default name is received.rs<version>. */
-  version: 7 | 8 | 9;
+  version: 7 | 8 | 9 | 10;
   /** RS_RECEIVER_RECEIVED_MAX_BYTES (receiver.gd's G7k cap, honoured here since G7v): store at
    * most this many received bytes in the tap; later messages are counted, not stored, and the
    * stream report says `received_truncated` (null: no cap, the default). */
@@ -422,14 +423,15 @@ export function underOut(cfg: ReceiverConfig, rel: string): string {
 }
 
 /** G8kp: RS_RECEIVER_PROTOCOL for a GSW receiver: 7 (default), 8 (G8g: render-stream.8) or 9
- * (render-stream.9, the texture-delivery hello keys). */
-function liveProtocol(value: string | undefined): 7 | 8 | 9 {
+ * (render-stream.9, the texture-delivery hello keys); CG1: 10 (render-stream.10, /9's hello). */
+function liveProtocol(value: string | undefined): 7 | 8 | 9 | 10 {
   const v = (value ?? "").trim();
   if (v === "" || v === "7") return 7;
   if (v === "8") return 8;
   if (v === "9") return 9;
+  if (v === "10") return 10;
   throw new UsageError(
-    `RS_RECEIVER_PROTOCOL must be 7, 8 or 9 for a GSW receiver (got ${v})`,
+    `RS_RECEIVER_PROTOCOL must be 7, 8, 9 or 10 for a GSW receiver (got ${v})`,
   );
 }
 

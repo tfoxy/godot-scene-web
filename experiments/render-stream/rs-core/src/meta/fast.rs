@@ -617,6 +617,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
     let v4 = version >= 4;
     let v5 = version >= 5;
     let v6 = version >= 6;
+    let v10 = version >= 10;
     let c = &mut Cur { s: meta, p: 0 };
     c.lit(b"{\"type\":\"transaction\",\"seq\":")?;
     tx.seq = c.int_ge(1)?;
@@ -799,6 +800,33 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
                 end: params.len() as u32,
             };
         }
+        let (mut canvas_group, mut copy_to_backbuffer) = (None, None);
+        if v10 {
+            c.lit(b",\"canvas_group\":")?;
+            if !c.null() {
+                c.lit(b"{\"mode\":")?;
+                let mode = c.enum_of(CanvasGroupMode::ALL, CanvasGroupMode::as_str)?;
+                c.lit(b",\"fit_empty\":")?;
+                let fit_empty = c.boolean()?;
+                c.lit(b",\"blur_mipmaps\":")?;
+                let blur_mipmaps = c.boolean()?;
+                c.lit(b",\"f\":")?;
+                let f = c.uint()?;
+                c.lit(b"}")?;
+                canvas_group = Some(CanvasGroupMeta {
+                    mode,
+                    fit_empty,
+                    blur_mipmaps,
+                    f,
+                });
+            }
+            c.lit(b",\"copy_to_backbuffer\":")?;
+            if !c.null() {
+                c.lit(b"{\"f\":")?;
+                copy_to_backbuffer = Some(c.uint()?);
+                c.lit(b"}")?;
+            }
+        }
         c.lit(b",\"content_version\":")?;
         let content_version = c.int()?;
         c.lit(b",\"commands\":")?;
@@ -831,6 +859,8 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             material,
             use_parent_material,
             instance_params,
+            canvas_group,
+            copy_to_backbuffer,
             content_version,
             commands,
         });
@@ -866,13 +896,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
         })?;
     }
     c.lit(b",\"blocks\":[")?;
-    let n = if v5 {
-        6
-    } else if v4 {
-        5
-    } else {
-        3
-    };
+    let n = transaction_block_count(version);
     for i in 0..n {
         if i > 0 {
             c.lit(b",")?;
@@ -932,7 +956,7 @@ mod tests {
     fn fast_path_matches_the_general_path() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut hits = 0;
-        for v in 2..=6u8 {
+        for v in 2..=10u8 {
             let dir = base.join(format!("../protocol/golden-{v}"));
             for f in [
                 "full",

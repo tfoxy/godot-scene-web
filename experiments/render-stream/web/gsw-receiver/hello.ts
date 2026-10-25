@@ -25,15 +25,17 @@ export function gpuFormatsOf(
 }
 
 /** The /9 hello: the /7 hello's keys in their order under protocol render-stream/9, then
- * texture_encodings and gpu_formats. */
+ * texture_encodings and gpu_formats. CG1: `protocol` "render-stream/10" is /10's hello
+ * (render-stream-10.md "Live transport"). */
 export function helloV9(
   v7: Record<string, unknown>,
   textureEncodings: string,
   gpuFormats: string,
+  protocol: "render-stream/9" | "render-stream/10" = "render-stream/9",
 ): Record<string, unknown> {
   return {
     ...v7,
-    protocol: "render-stream/9",
+    protocol,
     texture_encodings: textureEncodings,
     gpu_formats: gpuFormats,
   };

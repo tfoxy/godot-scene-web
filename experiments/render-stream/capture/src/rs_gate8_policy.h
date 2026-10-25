@@ -3,10 +3,13 @@
 // Pure C++17, no engine types, so it is unit-testable without a Godot process (the ctest
 // rs_gate8_policy_test). The environment variables it reads:
 //
-//   GRC_STREAM_VERSION    6 | 8 | 9, default 6. The wire version of FILE sinks only (render-stream-8.md
+//   GRC_STREAM_VERSION    6 | 8 | 9 | 10, default 6. The wire version of FILE sinks only (render-stream-8.md
 //                         "Which sinks speak /8"); the live listener negotiates per connection.
 //                         9 (G8k9, render-stream-9.md) is /8 plus the texture-delivery wire; it is the
-//                         only way `render-stream.9` is ever offered.
+//                         only way `render-stream.9` is ever offered. 10 (CG1, render-stream-10.md)
+//                         is /9 plus the back-buffer item state; it also installs the two
+//                         conditional back-buffer hooks and is the only way `render-stream.10` is
+//                         ever offered.
 //   GRC_ADOPT             off | arm, default off. Late-join adoption at arm (D3-D7).
 //   GRC_TEXTURE_DECODE    off | engine, default off. Host decode of block-compressed textures (D8).
 //   GRC_RESOURCE_FORMATS  a float payload format (RF RGF RGBF RGBAF RH RGH RGBH RGBAH) counts as a
@@ -27,7 +30,7 @@ namespace grc {
 namespace rs {
 
 struct Gate8Policy {
-  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8 or V9.
+  // GRC_STREAM_VERSION: the wire version of file sinks. V6 (the default), V8, V9 or V10.
   rs2::ProtocolVersion file_version = rs2::ProtocolVersion::V6;
   bool stream_version_set = false;  // GRC_STREAM_VERSION was present and non-empty
   bool adopt = false;               // GRC_ADOPT=arm
@@ -39,8 +42,12 @@ struct Gate8Policy {
   bool any() const { return adopt || decode_engine || float_formats || v8_sabotage; }
   // Whether the stream as a whole speaks /8 anywhere: a /8 file sink or a policy that forces it.
   bool speaks_v8() const { return rs2::is_v8_or_later(file_version) || any(); }
-  // Whether the stream speaks /9: GRC_STREAM_VERSION=9, and only that (G8k9).
-  bool speaks_v9() const { return file_version == rs2::ProtocolVersion::V9; }
+  // Whether the stream speaks /9 or later: GRC_STREAM_VERSION=9 or 10, and only that (G8k9; /10
+  // carries /9's texture delivery, render-stream-10.md "Capture policy").
+  bool speaks_v9() const { return rs2::is_v9_or_later(file_version); }
+  // Whether the stream speaks /10: GRC_STREAM_VERSION=10, and only that (CG1). Also the switch
+  // for the two conditional back-buffer hooks (render-stream-10.md "Capture").
+  bool speaks_v10() const { return file_version == rs2::ProtocolVersion::V10; }
 };
 
 // Parses the four variables (each may be null). On a bad value returns false with *error naming
@@ -62,7 +69,8 @@ bool gate8_policy_allows(const Gate8Policy &policy, bool files, std::string *err
 // "render-stream.8"] by default (the default stays /7), "render-stream.8" first when
 // GRC_STREAM_VERSION=8, and only "render-stream.8" under a gate 8 policy (D2). Under
 // GRC_STREAM_VERSION=9 "render-stream.9" leads (then .8, .7, .6; under a gate 8 policy .9, .8):
-// it is never offered otherwise (G8k9).
+// it is never offered otherwise (G8k9). Under GRC_STREAM_VERSION=10 "render-stream.10" leads
+// (then .9, .8, .7, .6; under a gate 8 policy .10, .9, .8): never offered otherwise (CG1).
 std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy);
 
 }  // namespace rs

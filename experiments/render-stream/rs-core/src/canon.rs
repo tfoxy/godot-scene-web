@@ -589,6 +589,43 @@ fn item(w: &mut W, it: &Item, v: u8) {
         w.key("instance_params");
         params(w, &it.instance_params);
     }
+    if v >= 10 {
+        // render-stream-10.md "Decoded and resolved forms": the floats inline, no `f`.
+        w.raw(",");
+        w.key("canvas_group");
+        match &it.canvas_group {
+            None => w.raw("null"),
+            Some(g) => {
+                w.raw("{");
+                w.key("mode");
+                w.str(g.mode.as_str());
+                w.raw(",");
+                w.key("clear_margin");
+                w.f32(g.clear_margin);
+                w.raw(",");
+                w.key("fit_empty");
+                w.bool(g.fit_empty);
+                w.raw(",");
+                w.key("fit_margin");
+                w.f32(g.fit_margin);
+                w.raw(",");
+                w.key("blur_mipmaps");
+                w.bool(g.blur_mipmaps);
+                w.raw("}");
+            }
+        }
+        w.raw(",");
+        w.key("copy_to_backbuffer");
+        match &it.copy_to_backbuffer {
+            None => w.raw("null"),
+            Some(rect) => {
+                w.raw("{");
+                w.key("rect");
+                w.floats(rect);
+                w.raw("}");
+            }
+        }
+    }
     w.raw(",");
     w.key("content_version");
     w.int(it.content_version);
