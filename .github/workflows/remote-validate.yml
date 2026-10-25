@@ -292,6 +292,7 @@ jobs:
 
       - name: Trim artifact
         if: always()
+        timeout-minutes: 10
         env:
           ID: ${{ matrix.id }}
           LABEL: ${{ matrix.label }}
@@ -307,13 +308,25 @@ jobs:
           for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
             [ -f "$o/$ID/run/bench-instr.json" ] && cp "$o/$ID/run/bench-instr.json" "$art/bench-instr-$LABEL${o##*/v}.json"
           done
+          # GRT6: where the run dir holds symlinks (a walker that follows them can loop); find -P
+          [ -d "$RUNNER_TEMP/v/$ID" ] && timeout 60 find "$RUNNER_TEMP/v/$ID" -type l -printf '%p -> %l\n' 2>/dev/null | head -200 >"$art/symlinks-$LABEL.txt"
           # the watchdog's snapshot and log tails (R3), when it fired or got close
           [ -d "$RUNNER_TEMP/watchdog" ] && cp -r "$RUNNER_TEMP/watchdog" "$art/watchdog"
           # swrast provenance plus the GL renderer string the run's Godot printed (OpenGL API ... llvmpipe)
           [ -f "$RUNNER_TEMP/swrast-provenance.json" ] && python3 -I - "$RUNNER_TEMP/swrast-provenance.json" "$RUNNER_TEMP/v/$ID/run" "$art/swrast-provenance.json" <<'PY'
-          import glob, json, os, re, sys
+          import json, os, re, sys
+          # GRT6: never glob("**") here. glob follows directory symlinks, and a harness run dir
+          # holds symlinks into itself and into the source cache (G8ku: an endless walk hung the
+          # job for 2 h; G8kb added more). os.walk does not follow them.
+          def walk_files(root, name):
+              hits = []
+              for d, dirs, files in os.walk(root, followlinks=False):
+                  dirs[:] = [x for x in dirs if not os.path.islink(os.path.join(d, x))]
+                  if name in files and not os.path.islink(os.path.join(d, name)):
+                      hits.append(os.path.join(d, name))
+              return sorted(hits)
           p = json.load(open(sys.argv[1]))
-          for f in sorted(glob.glob(sys.argv[2] + "/**/stdout.log", recursive=True)):
+          for f in walk_files(sys.argv[2], "stdout.log"):
               m = re.search(r"^OpenGL API .*$", open(f, errors="replace").read(), re.M)
               if m:
                   p["godot_gl"] = m.group(0)
@@ -323,7 +336,7 @@ jobs:
           b = os.path.join(os.environ["RUNNER_TEMP"], "browser-provenance.json")
           if os.path.isfile(b):
               p["browser_setup"] = json.load(open(b))
-          for f in sorted(glob.glob(sys.argv[2] + "/**/provenance.json", recursive=True)):
+          for f in walk_files(sys.argv[2], "provenance.json"):
               try:
                   j = json.load(open(f))
               except ValueError:
@@ -349,6 +362,14 @@ jobs:
             [ -f "$run/run/result.json" ] && cp "$run/run/result.json" "$ev/run/"
             [ -f "$run/run/bench-instr.json" ] && cp "$run/run/bench-instr.json" "$ev/run/"
             cp "$run"/*.log "$ev/" 2>/dev/null
+            # GRT6: the small per-leg files that explain a failing check (a leg's stdout, the
+            # receiver's applied.json, the live host's summary), not the stores or recordings.
+            # find -P (the default) lists symlinks without following them.
+            ( cd "$run/run" 2>/dev/null &&
+              timeout 120 find . -type f \( -name applied.json -o -name live-summary.json \
+                -o -name stdout.log -o -name stderr.log -o -name steps.jsonl -o -name live.json -o -name 'recording*.rs9' -o -name result.json \) \
+                -size -300k -print 2>/dev/null | head -600 |
+                timeout 120 cpio -pdm --quiet "$ev/legs" 2>/dev/null )
           done
           true
 
@@ -412,6 +433,12 @@ jobs:
           import glob, json, os
           g = {os.path.basename(f)[:-5]: json.load(open(f)) for f in sorted(glob.glob("out/gates/*.json"))}
           tot = lambda k, f: sum(r[k][f] for r in g.values())
+          cpus = {}
+          for f in sorted(glob.glob("det/*/swrast-provenance.json")):
+              try:
+                  cpus[os.path.basename(os.path.dirname(f))] = json.load(open(f)).get("cpu", {}).get("model")
+              except ValueError:
+                  pass
           json.dump({
               "schema": "render-stream-remote-determinism/1", "per_gate": True,
               "ok": bool(g) and all(r["ok"] for r in g.values()),
@@ -419,6 +446,9 @@ jobs:
               "shots": {"total": tot("shots", "total"), "agree": tot("shots", "agree")},
               "dumps": {"total": tot("dumps", "total"), "agree": tot("dumps", "agree")},
               "live_sets": sum(len(r.get("live_sets", [])) for r in g.values()),
+              # GRT6: hosted runners are a CPU lottery (AMD EPYC 7763/9V45/9V74, Intel Xeon 8573C seen),
+              # and llvmpipe's output followed the CPU in one dispatch: record which job ran on what
+              "cpu_models": cpus,
               "gates": {k: {"ok": r["ok"], "runs": r["runs"], "shots": r["shots"]["agree"], "shots_total": r["shots"]["total"],
                             "dumps": r["dumps"]["agree"], "dumps_total": r["dumps"]["total"],
                             "live_sets": len(r.get("live_sets", [])), "live_timed": len(r.get("live_timed", [])),

@@ -173,6 +173,12 @@ if d is not None:
               + (f", {g.get('live_sets')} live content sets" if g.get("live_sets") else "")
               + (", web pck sha256 drifts (export order; content agrees)" if g.get("build_raw_drift") and g.get("build_content_agree") else "")
               + (", web pck CONTENT differs" if g.get("build_content_agree") is False else ""))
+    cpus = d.get("cpu_models") or {}
+    if cpus:
+        print("  runner CPUs: " + "; ".join(f"{k}: {v}" for k, v in sorted(cpus.items())))
+        if not d.get("ok") and len({str(v).split()[0] for v in cpus.values()}) > 1:
+            print("  note: the runs ran on different CPU vendors; llvmpipe's output can follow the CPU (GRT6), "
+                  "so read the disagreeing shots against the rows above before suspecting the code")
     bad = bad or (0 if d.get("ok") else 1)
 elif r.get("determinism"):
     print("remote-validate: determinism was requested but no determinism.json came back")

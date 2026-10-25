@@ -446,6 +446,19 @@ const SET_STATE = /(^|\/)state\/(stream-\d+-)?seq-\d+\.json$/;
  * listed in live_timed, never compared. */
 const STALL_LEG = /(^|\/)[^/]*(stall|stale-coalesce)[^/]*\//;
 
+/** GRT6: a replay of a recording whose CONTENT follows wall-clock timing on the capturing machine, so
+ * two runs record different transactions (not a rendering difference):
+ *  - g8ku/pending, g8ku-web/web-pending: GRC_TEXTURE_WORKER_DELAY_MS=250 jobs against the capture's
+ *    frame rate decide which textures are still `delivery-pending` at each seq (run 40153318460:
+ *    three runners, three pending sets, so the seq-8 shot differs);
+ *  - g8l/basis/replay: the replay of the live host's recording, where the lazy uastc variants land
+ *    at whichever seq their encodes finish (the same two local NVIDIA runs differ too).
+ * Their applied.json (and, for the pending legs, the shots) are listed in live_timed, never compared.
+ * The checker still holds each run to its own exact pixel and upload checks. */
+const TIMED_RECORDING_LEG =
+  /^(g8ku\/pending|g8ku-web\/web-pending|g8l\/basis\/replay)\//;
+const TIMED_RECORDING_SHOTS = /^(g8ku\/pending|g8ku-web\/web-pending)\//;
+
 /** R3: an ANIMATED live leg (g2c's live-animate, g5f's live-mesh, g55f's live-shader). Each settle
  * shot shows whichever animation frame the credit loop delivered by then, so the shot images
  * themselves differ run to run, together with the receiver's applied state (state/seq-N.json):
@@ -683,6 +696,17 @@ export async function compareRuns(
   for (const rel of all.filter((f) => /(^|\/)applied\.json$/.test(f))) {
     const d = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
     if (setDirs.has(d) || digests.some((x) => x.applied_live.includes(rel))) {
+      inSet.add(rel);
+      liveTimed.push(rel);
+    }
+  }
+
+  for (const rel of all) {
+    if (inSet.has(rel)) continue;
+    if (
+      (/(^|\/)applied\.json$/.test(rel) && TIMED_RECORDING_LEG.test(rel)) ||
+      (rel.endsWith(".png") && TIMED_RECORDING_SHOTS.test(rel))
+    ) {
       inSet.add(rel);
       liveTimed.push(rel);
     }

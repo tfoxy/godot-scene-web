@@ -999,6 +999,15 @@ export async function runG8ku(
       problems.push(
         `result.json pending_published ${tw?.pending_published}, the recording has ${firstPending.size} pending textures`,
       );
+    // The textures some item's command names, in any transaction (the receiver's naming).
+    const named = new Set<number>();
+    if (pr)
+      for (const tx of pr.transactions)
+        for (const it of Object.values(tx.state.items) as Array<{
+          commands?: Array<{ tex?: number }>;
+        }>)
+          for (const c of it.commands ?? [])
+            if (typeof c.tex === "number") named.add(c.tex);
     // The receiver: nothing is uploaded for a texture while it is pending, and each is uploaded
     // once it is ok; an apply never fails on the unsupported entry.
     for (const l of ["pending/receiver", "web-pending"] as const) {
@@ -1010,6 +1019,11 @@ export async function runG8ku(
         continue;
       }
       for (const [id, ok] of okAt) {
+        // GRT6: the receiver uploads a texture only while some item's command names it (an
+        // unreferenced texture, like the engine's own frame-1 texture 1, is never uploaded, with
+        // or without pending). Whether that texture is still pending at the first transaction
+        // depends on how fast the capture's first frame is, so a runner differs from the dev box.
+        if (!named.has(id)) continue;
         const mine = (a.uploads ?? []).filter((u) => u.id === id);
         if (mine.length === 0)
           problems.push(`${l}: texture ${id} never uploaded`);

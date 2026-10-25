@@ -1239,6 +1239,10 @@ run_reference_g8ku() {
 # run_g8ku_live: g8ku/live/{host,receiver} (inside g8ku's gamescope): no wait knob, so the
 # variants publish when their encodes finish; the receiver joins at RS_RECEIVER_PROTOCOL=9. While
 # it runs, one stored KTX2 is fetched with Accept-Encoding: zstd (live/host/ktx2-get.{headers,body}).
+# GRT6: the receiver runs RS_RECEIVER_VARIANT_POLICY=upgrade. Under the default `keep` it takes a uastc
+# variant only if the first snapshot naming the texture already lists it, i.e. only if the host's
+# encode pool (about 1 s of CPU on 2 workers) beat the receiver's start; a 4-vCPU hosted runner lost
+# that race on every run, the dev box won it. `upgrade` takes the variant whenever it lands.
 run_g8ku_live() {
 	local host="$OUT/g8ku/live/host" receiver="$OUT/g8ku/live/receiver" waited=0 port=""
 	mkdir -p "$host/evidence" "$receiver"
@@ -1279,6 +1283,7 @@ run_g8ku_live() {
 		local probe=$!
 		LEG_ENV=(
 			RS_RECEIVER_MODE=live RS_RECEIVER_PROTOCOL=9 RS_RECEIVER_CREDIT_WINDOW=1
+			RS_RECEIVER_VARIANT_POLICY=upgrade
 			RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_TRANSCODE_LOG=1
 			RS_RECEIVER_OUT="$receiver/applied.json" RS_RECEIVER_CACHE_DIR="$receiver/cache"
 		)
