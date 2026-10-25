@@ -3,7 +3,8 @@
 //!
 //! - a texture becomes resident only once something *names* it: a command of any item (visible or
 //!   not), an item's instance parameter, a named material's `rid` parameter or its shader's default
-//!   texture (`_all_texture_ids`);
+//!   texture (`_all_texture_ids`), or (P3-CT) the `diffuse` of an `ok` canvas texture one of those
+//!   names: a canvas texture draws its diffuse, which no command need name itself;
 //! - it stays resident until it leaves the table or becomes a `freed` tombstone, never because
 //!   nothing names it any more;
 //! - an `ok` image is created, `update`d in place when its format, size and mipmaps are unchanged
@@ -82,6 +83,10 @@ pub struct Names {
     material_refs: super::IdMap<u32>,
     /// Textures the named materials' parameters and their shaders' default textures name.
     from_materials: BTreeSet<Id>,
+    /// P3-CT: the directly named (commands, instance parameters, materials) `ok` canvas textures.
+    canvas_named: BTreeSet<Id>,
+    /// P3-CT: their diffuses, named through them.
+    from_canvas: BTreeSet<Id>,
     /// Ids whose named-ness may have changed since the last [`Names::take_changed`].
     changed: BTreeSet<Id>,
     materials_dirty: bool,
@@ -117,7 +122,49 @@ impl Names {
     }
 
     pub fn is_named(&self, id: Id) -> bool {
+        self.is_named_directly(id) || self.from_canvas.contains(&id)
+    }
+
+    fn is_named_directly(&self, id: Id) -> bool {
         self.refs.get(&id).is_some_and(|n| *n > 0) || self.from_materials.contains(&id)
+    }
+
+    /// P3-CT: bring the canvas-texture closure in line: the named `ok` canvas textures among
+    /// `check` (ids whose named-ness or entry may have changed), then, when that set or one of its
+    /// entries changed, their diffuses (`upserted`: the transaction's upserted texture ids).
+    fn update_canvas(
+        &mut self,
+        state: &ResolvedState,
+        check: BTreeSet<Id>,
+        upserted: &[Id],
+        all: bool,
+    ) {
+        let mut dirty = all;
+        for id in check {
+            let canvas = self.is_named_directly(id)
+                && state
+                    .textures
+                    .get(&id)
+                    .is_some_and(|t| t.kind == TextureKind::Canvas && t.status == EntryStatus::Ok);
+            if canvas {
+                dirty |= self.canvas_named.insert(id);
+            } else {
+                dirty |= self.canvas_named.remove(&id);
+            }
+        }
+        dirty |= upserted.iter().any(|id| self.canvas_named.contains(id));
+        if !dirty {
+            return;
+        }
+        let set: BTreeSet<Id> = self
+            .canvas_named
+            .iter()
+            .filter_map(|c| state.textures.get(c)?.canvas.as_ref()?.diffuse)
+            .collect();
+        for t in set.symmetric_difference(&self.from_canvas) {
+            self.changed.insert(*t);
+        }
+        self.from_canvas = set;
     }
 
     /// Bring the names in line with `state` after `delta` (`all`: a fresh applier, every item).
@@ -208,6 +255,21 @@ impl Names {
             }
             self.from_materials = set;
         }
+        let check: BTreeSet<Id> = if all {
+            self.refs
+                .keys()
+                .chain(self.from_materials.iter())
+                .copied()
+                .collect()
+        } else {
+            self.changed
+                .iter()
+                .chain(delta.textures_upserted.iter())
+                .chain(delta.textures_removed.iter())
+                .copied()
+                .collect()
+        };
+        self.update_canvas(state, check, &delta.textures_upserted, all);
     }
 
     /// The ids whose named-ness may have changed, ascending, and forget them.
@@ -224,6 +286,7 @@ impl Names {
             .map(|(id, _)| *id)
             .collect();
         out.extend(self.from_materials.iter().copied());
+        out.extend(self.from_canvas.iter().copied());
         out
     }
 

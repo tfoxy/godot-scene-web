@@ -101,6 +101,8 @@ export const GATE8_FILE_GROUPS: readonly string[] = [
   "g8h",
   "g8f",
   "g8m",
+  // P3-CT: images drawn only through a CanvasTexture's diffuse (fixtures/gate8-ct)
+  "g8c",
 ];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's

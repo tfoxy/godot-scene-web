@@ -117,6 +117,12 @@
 #       one KTX2 with Accept-Encoding: zstd, `live/host/ktx2-get.*`); last, in headless Chromium,
 #       the web export on `receiver-upgrade`'s own launch (`g8ku-web/web`, beside g8ku/) through
 #       gate8-delivery-tool.ts web-legs.
+#   g8c (P3-CT, gate8-design.md "As built (P3-CT)": images drawn only through a CanvasTexture's
+#       diffuse, fixtures/gate8-ct; every leg under g8c/): the fixture and receiver imports; then,
+#       in one private 640x360 gamescope, the unarmed `reference`, the /8 `capture` on that
+#       RENDERED host (a headless host's dummy storage allocates no canvas texture,
+#       canvas-texture-headless.md; both sinks and the store; its own shots too), and the native
+#       receiver on the full and patch sinks (`receiver`, `receiver-patch`).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -138,8 +144,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c)
 
 EXTENSION=""
 CALIBRATION=""
@@ -617,6 +623,58 @@ run_g8h() {
 	run_rendered_receiver "$OUT/g8h/late-observe/capture" "$OUT/g8h/late-observe/receiver"
 	legs_par_end
 	gs_teardown "$OUT/gamescope-g8h"
+	GS_RUN_DIR=""
+}
+
+# ------------------------------------------------------------------------------------- g8c
+G8C_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-ct"
+
+run_import_g8c() {
+	echo "run-gate8: g8c import (fixture, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8c/import/fixture" none -- mise exec -- godot --headless --path "$G8C_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8c/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in fixture receiver; do
+		if [ "$(cat "$OUT/g8c/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8c import ($leg) failed, see $OUT/g8c/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_rendered_g8c <dir>: the armed /8 capture on a rendered host (the private gamescope):
+# both sinks, the store, the step log and the fixture's own shots.
+run_capture_rendered_g8c() {
+	local dir="$1"
+	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm GRC_STREAM_VERSION=8
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_SHOT_DIR="$dir/shots"
+	)
+	run_rendered "$dir" "$G8C_FIXTURE_DIR"
+}
+
+run_g8c() {
+	run_import_g8c
+	echo "run-gate8: bringing up private gamescope for g8c's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8c"
+	echo "run-gate8: g8c reference (unarmed, rendered at 640x360)"
+	mkdir -p "$OUT/g8c/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8c/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8c/reference/steps.jsonl")
+	run_rendered "$OUT/g8c/reference" "$G8C_FIXTURE_DIR"
+	echo "run-gate8: g8c capture (/8, armed at birth, on the rendered host)"
+	run_capture_rendered_g8c "$OUT/g8c/capture"
+	legs_par_begin
+	echo "run-gate8: g8c receivers (full and patch sinks)"
+	run_rendered_receiver "$OUT/g8c/capture" "$OUT/g8c/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8c/capture" "$OUT/g8c/receiver-patch"
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8c"
 	GS_RUN_DIR=""
 }
 
@@ -1362,6 +1420,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8f) run_g8f ;;
 	g8a) run_g8a ;;
 	g8h) run_g8h ;;
+	g8c) run_g8c ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	esac

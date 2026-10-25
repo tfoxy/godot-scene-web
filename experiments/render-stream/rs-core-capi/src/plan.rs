@@ -331,6 +331,9 @@ struct TexM {
     height: i64,
     mipmaps: bool,
     canvas_version: i64,
+    /// P3-CT: the serial of the diffuse texture RID the last `canvas_texture_set_channel` bound
+    /// (0: none, or `RID()`).
+    canvas_diffuse_serial: u64,
     /// G8ku (D6 `keep`): the entry version the resident image was uploaded for.
     version: i64,
 }
@@ -582,6 +585,8 @@ pub struct Planner {
     mat_items: HashMap<Id, BTreeSet<Id>>,
     rid_param_items: BTreeSet<Id>,
     mattex: BTreeSet<Id>,
+    /// P3-CT: the texture ids whose entry was a canvas texture as of the last apply.
+    canvas_ids: BTreeSet<Id>,
     /// G8kf (render-stream-9.md "Texture reasons"): texture id -> the items whose last replay
     /// skipped a command naming it as undrawable. When an apply uploads that texture (a
     /// `delivery-pending` entry returning as `ok`), those items replay their content, since no
@@ -781,6 +786,47 @@ impl Planner {
         out
     }
 
+    /// P3-CT: the diffuses of the named `ok` canvas textures (named by an item, or through
+    /// `named_now`, the named materials' textures). A canvas texture draws its diffuse, so the
+    /// diffuse is named through it although no command names it (render-stream-2.md "Texture").
+    fn canvas_diffuses(
+        &self,
+        st: &ResolvedState,
+        s: &Sync,
+        named_now: &BTreeSet<Id>,
+    ) -> BTreeSet<Id> {
+        let named =
+            |x: Id| count(&self.tex_count, x) + count(&s.tex, x) > 0 || named_now.contains(&x);
+        let mut out = BTreeSet::new();
+        for &c in self.canvas_ids.iter().chain(self.touched.textures.iter()) {
+            let Some(e) = st.textures.get(&c) else {
+                continue;
+            };
+            if e.kind != TextureKind::Canvas || e.status != EntryStatus::Ok || !named(c) {
+                continue;
+            }
+            if let Some(d) = e.canvas.as_ref().and_then(|ct| ct.diffuse) {
+                out.insert(d);
+            }
+        }
+        out
+    }
+
+    /// The textures an apply of `st` names besides the items' own commands: the named materials'
+    /// (`material_textures`) and the named canvas textures' diffuses (`canvas_diffuses`).
+    fn indirect_textures(
+        &self,
+        st: &ResolvedState,
+        s: &Sync,
+        mats: &BTreeSet<Id>,
+        shaders: &BTreeSet<Id>,
+    ) -> BTreeSet<Id> {
+        let mut out = Self::material_textures(st, mats, shaders);
+        let diffuses = self.canvas_diffuses(st, s, &out);
+        out.extend(diffuses);
+        out
+    }
+
     /// The named textures and meshes an apply must look at, ascending: every named one under
     /// full_scan (or a sabotage that keeps residency stale on purpose), else those newly named
     /// or whose entry a transaction touched.
@@ -897,7 +943,7 @@ impl Planner {
         let s = self.sync(st);
         let mats = self.named_materials(st, &s);
         let shaders = Self::named_shaders(st, &mats);
-        let mattex_now = Self::material_textures(st, &mats, &shaders);
+        let mattex_now = self.indirect_textures(st, &s, &mats, &shaders);
         let (tex, mesh) = self.candidates(st, &s, &mattex_now);
         let mut out = Needed::default();
         let mut seen: BTreeSet<Hash> = BTreeSet::new();
@@ -1071,12 +1117,24 @@ impl Planner {
         let s = self.sync(st);
         let mats_now = self.named_materials(st, &s);
         let shaders_now = Self::named_shaders(st, &mats_now);
-        let mattex_now = Self::material_textures(st, &mats_now, &shaders_now);
+        let mattex_now = self.indirect_textures(st, &s, &mats_now, &shaders_now);
         let (tex_cands, mesh_cands) = self.candidates(st, &s, &mattex_now);
         let touched = std::mem::take(&mut self.touched);
+        for &id in &touched.textures {
+            if st
+                .textures
+                .get(&id)
+                .is_some_and(|e| e.kind == TextureKind::Canvas)
+            {
+                self.canvas_ids.insert(id);
+            } else {
+                self.canvas_ids.remove(&id);
+            }
+        }
         let mut extra_items: BTreeSet<Id> = s.items.iter().map(|(id, _)| *id).collect();
         self.commit(s, mattex_now);
         let mut tex_rid_changed = false;
+        let mut canvas_bind: BTreeSet<Id> = BTreeSet::new();
 
         // Textures: free what left the table or became a tombstone, then the named ones.
         let free_tex: Vec<Id> = if self.full_scan {
@@ -1144,6 +1202,7 @@ impl Planner {
                                 height: 0,
                                 mipmaps: false,
                                 canvas_version: -1,
+                                canvas_diffuse_serial: 0,
                                 version: -1,
                             },
                         );
@@ -1177,6 +1236,7 @@ impl Planner {
                                 height: 0,
                                 mipmaps: false,
                                 canvas_version: -1,
+                                canvas_diffuse_serial: 0,
                                 version: -1,
                             },
                         );
@@ -1191,30 +1251,9 @@ impl Planner {
                             encoding: None,
                         });
                     }
-                    let t = &self.textures[&id];
-                    if t.canvas_version != e.version {
-                        let h = t.handle;
-                        let info = e
-                            .canvas
-                            .as_ref()
-                            .expect("a canvas texture carries `canvas`");
-                        let diffuse = info
-                            .diffuse
-                            .and_then(|d| self.textures.get(&d))
-                            .map(|d| RidRef::Texture(d.handle))
-                            .unwrap_or(RidRef::None);
-                        ops.op(Op::CanvasTextureSetChannel, 1);
-                        ops.rid(RidRef::Texture(h));
-                        ops.u(0); // CANVAS_TEXTURE_CHANNEL_DIFFUSE
-                        ops.rid(diffuse);
-                        ops.op(Op::CanvasTextureSetFilter, 1);
-                        ops.rid(RidRef::Texture(h));
-                        ops.u(filter_index(info.filter));
-                        ops.op(Op::CanvasTextureSetRepeat, 1);
-                        ops.rid(RidRef::Texture(h));
-                        ops.u(repeat_index(info.repeat));
-                        self.textures.get_mut(&id).unwrap().canvas_version = e.version;
-                    }
+                    // P3-CT: bound after the loop, once this apply's images exist (a diffuse
+                    // can be created in the same apply under a higher id).
+                    canvas_bind.insert(id);
                 }
                 TextureKind::Image => {
                     // G8kp: D3's choice (the base `decoded` hash unless a usable variant wins).
@@ -1275,6 +1314,7 @@ impl Planner {
                                     height: 0,
                                     mipmaps: false,
                                     canvas_version: -1,
+                                    canvas_diffuse_serial: 0,
                                     version: -1,
                                 },
                             );
@@ -1323,6 +1363,50 @@ impl Planner {
                     });
                 }
             }
+        }
+        // P3-CT: bind each canvas texture looked at, and (when a texture RID appeared) each one
+        // whose diffuse RID differs from the one it bound: a diffuse named only through its
+        // canvas texture is created after the canvas texture's own entry was first applied.
+        if tex_rid_changed {
+            canvas_bind.extend(self.canvas_ids.iter().copied());
+        }
+        for id in canvas_bind {
+            let (Some(e), Some(t)) = (st.textures.get(&id), self.textures.get(&id)) else {
+                continue;
+            };
+            if e.kind != TextureKind::Canvas
+                || e.status != EntryStatus::Ok
+                || t.kind != TexKind::Canvas
+            {
+                continue;
+            }
+            let info = e
+                .canvas
+                .as_ref()
+                .expect("a canvas texture carries `canvas`");
+            let (diffuse, serial) = info
+                .diffuse
+                .and_then(|d| self.textures.get(&d))
+                .map(|d| (RidRef::Texture(d.handle), d.serial))
+                .unwrap_or((RidRef::None, 0));
+            let rebind = serial != 0 && serial != t.canvas_diffuse_serial;
+            if t.canvas_version == e.version && !rebind {
+                continue;
+            }
+            let h = t.handle;
+            ops.op(Op::CanvasTextureSetChannel, 1);
+            ops.rid(RidRef::Texture(h));
+            ops.u(0); // CANVAS_TEXTURE_CHANNEL_DIFFUSE
+            ops.rid(diffuse);
+            ops.op(Op::CanvasTextureSetFilter, 1);
+            ops.rid(RidRef::Texture(h));
+            ops.u(filter_index(info.filter));
+            ops.op(Op::CanvasTextureSetRepeat, 1);
+            ops.rid(RidRef::Texture(h));
+            ops.u(repeat_index(info.repeat));
+            let t = self.textures.get_mut(&id).unwrap();
+            t.canvas_version = e.version;
+            t.canvas_diffuse_serial = serial;
         }
 
         // Meshes.
@@ -2628,6 +2712,7 @@ impl Planner {
         self.mat_items.clear();
         self.rid_param_items.clear();
         self.mattex.clear();
+        self.canvas_ids.clear();
         self.skipped_items.clear();
         self.tex_skips.borrow_mut().clear();
         self.touched.clear();

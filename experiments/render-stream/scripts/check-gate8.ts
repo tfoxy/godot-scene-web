@@ -8,7 +8,8 @@
 //
 // The checks live in lib/gate8-*-checks.ts (G8t: lib/gate8-tex-checks.ts, G8a:
 // lib/gate8-adopt-checks.ts, G8h: lib/gate8-size-checks.ts, G8f: lib/gate8-float-checks.ts, G8m:
-// lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts, G8kc: lib/gate8-cache-checks.ts, G8g: lib/gate8-live-checks.ts, the
+// lib/gate8-mat-checks.ts, G8kp: lib/gate8-delivery-checks.ts, G8kc: lib/gate8-cache-checks.ts, P3-CT:
+// lib/gate8-ct-checks.ts, G8g: lib/gate8-live-checks.ts, the
 // live group g8l), which scripts/test/self-test-gate8*.ts drive against fabricated evidence.
 // buildGate8Report is also check-gate7.ts's gate 8 checker for the GSW receiver's file legs (G8g).
 
@@ -22,6 +23,7 @@ import { type G8aExpected, runG8a } from "./lib/gate8-adopt-checks";
 import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { runG8l } from "./lib/gate8-live-checks";
+import { type G8cExpected, runG8c } from "./lib/gate8-ct-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { type G8kuExpected, runG8ku } from "./lib/gate8-basis-checks";
 import { runG8kc } from "./lib/gate8-cache-checks";
@@ -30,7 +32,7 @@ import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -102,6 +104,14 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8h = await runG8h(out, expected);
     checks.push(...g8h.checks);
     report.g8h = g8h.report;
+  }
+  if (run.includes("g8c")) {
+    const expected = JSON.parse(
+      await readFile(join(EXPERIMENT_DIR, "fixtures", "gate8-ct", "expected.json"), "utf8"),
+    ) as G8cExpected;
+    const g8c = await runG8c(out, expected);
+    checks.push(...g8c.checks);
+    report.g8c = g8c.report;
   }
   if (run.includes("g8f")) {
     const expected = JSON.parse(
