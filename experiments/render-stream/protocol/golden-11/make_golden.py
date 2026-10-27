@@ -685,9 +685,18 @@ def control_messages() -> dict[str, dict]:
     hello10 = g10.control_messages()["valid"]["hello-native-block"]
     assert hello10["protocol"] == PROTOCOL
     hello11 = dict(hello10, receiver="gate11-native")
+    # W11t (render-stream-11.md "As built (W11t)"): a /11 hello may offer `live_coding`, the
+    # receiver's codings in its preference order (^[a-z0-9-]+(,[a-z0-9-]+)*$); the only optional
+    # key of any control message. Its invalid twin breaks the grammar.
     return {
-        "valid": {"hello-native-block": hello11},
-        "invalid": {"hello-wrong-protocol": dict(hello11, protocol="render-stream/10")},
+        "valid": {
+            "hello-native-block": hello11,
+            "hello-live-coding": dict(hello11, live_coding="zstd-base,zstd"),
+        },
+        "invalid": {
+            "hello-wrong-protocol": dict(hello11, protocol="render-stream/10"),
+            "hello-live-coding-grammar": dict(hello11, live_coding="zstd-base,"),
+        },
     }
 
 

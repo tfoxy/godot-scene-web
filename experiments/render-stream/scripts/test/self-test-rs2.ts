@@ -1110,7 +1110,8 @@ async function helloCases10(): Promise<void> {
 }
 
 // render-stream-11.md "Why": the hello is /9's fifteen keys under protocol "render-stream/11"; a
-// /10 hello on a /11 connection is refused.
+// /10 hello on a /11 connection is refused. W11t ("As built (W11t)"): it may add `live_coding`, a
+// comma list of [a-z0-9-] names of at most 96 characters (the only optional key).
 function checkHello11(value: unknown): string[] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return ["hello is not an object"];
@@ -1120,7 +1121,15 @@ function checkHello11(value: unknown): string[] {
     return [
       `"protocol" is ${JSON.stringify(obj.protocol)}, not "render-stream/11"`,
     ];
-  return checkHello9({ ...obj, protocol: "render-stream/9" });
+  const { live_coding: liveCoding, ...rest } = obj;
+  if (
+    "live_coding" in obj &&
+    (typeof liveCoding !== "string" ||
+      liveCoding.length > 96 ||
+      !/^[a-z0-9-]+(,[a-z0-9-]+)*$/.test(liveCoding))
+  )
+    return [`"live_coding" ${JSON.stringify(liveCoding)} is not a comma list of [a-z0-9-] names`];
+  return checkHello9({ ...rest, protocol: "render-stream/9" });
 }
 
 async function helloCases11(): Promise<void> {
@@ -1128,8 +1137,8 @@ async function helloCases11(): Promise<void> {
     await readFile(join(GOLDEN11_DIR, "index.json"), "utf8"),
   ) as { control: { valid: string[]; invalid: string[] } };
   ok(
-    index.control.valid.length === 1 && index.control.invalid.length === 1,
-    "golden-11 index lists 1 valid and 1 invalid control vector",
+    index.control.valid.length === 2 && index.control.invalid.length === 2,
+    "golden-11 index lists 2 valid and 2 invalid control vectors",
   );
   for (const file of index.control.valid) {
     const parsed: unknown = JSON.parse(
@@ -1146,10 +1155,16 @@ async function helloCases11(): Promise<void> {
       await readFile(join(GOLDEN11_DIR, file), "utf8"),
     );
     ok(checkHello11(parsed).length > 0, `golden-11/${file} refused`);
-    ok(
-      checkHello10(parsed).length === 0,
-      `golden-11/${file} is a valid /10 hello (refused only for its protocol)`,
-    );
+    if (file.includes("wrong-protocol"))
+      ok(
+        checkHello10(parsed).length === 0,
+        `golden-11/${file} is a valid /10 hello (refused only for its protocol)`,
+      );
+    else
+      ok(
+        checkHello11({ ...(parsed as object), live_coding: "zstd" }).length === 0,
+        `golden-11/${file} is refused only for its live_coding`,
+      );
   }
 }
 

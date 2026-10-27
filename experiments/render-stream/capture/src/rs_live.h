@@ -156,6 +156,7 @@
 #include "rs_captured.h"
 #include "rs_carried.h"
 #include "rs_histogram.h"
+#include "rs_live_coding.h"
 
 namespace grc {
 
@@ -201,6 +202,11 @@ struct ControlMessage {
   // until a delivery increment does.
   std::string texture_encodings;
   std::string gpu_formats;
+  // hello, /11 only, optional (W11t, render-stream-11.md "As built (W11t)"): the live codings the
+  // receiver decodes, in its preference order (^[a-z0-9-]+(,[a-z0-9-]+)*$, <= 96 chars). Absent:
+  // none, so the connection stays uncoded.
+  bool has_live_coding = false;
+  std::string live_coding;
   // ack, resync
   std::string stream_id;
   std::uint64_t seq = 0;
@@ -300,6 +306,14 @@ struct LiveConfig {
   // lifelong carried set (rs2_diff.h RecordPlanner), so a hash that returns is never re-carried.
   bool keep_carried = false;
   std::uint64_t window_overrun_frame = 0;  // G7q (a listener sabotage, rs_live.h header)
+  // W11t (render-stream-11.md "As built (W11t)"): GRC_LIVE_CODING, the coding a /11 connection
+  // gets when its hello offers it (rs_live_coding.h negotiate). Off by default here so that a
+  // Hub built without it (the tests that predate W11t) never codes; entry.cpp sets zstd-base.
+  rs::live_coding::Coding live_coding = rs::live_coding::Coding::Off;
+  // W11t listener sabotage coding-wrong-prefix: from this frame on, the first based transaction
+  // whose frame decodes differently against its true base is coded against that base plus one
+  // byte, under the true base_seq (0 disables).
+  std::uint64_t coding_wrong_prefix_frame = 0;
   // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2); every grant is also capped at
   // kHostCreditWindow.
   std::uint64_t credit_window_max = 2;
@@ -410,6 +424,20 @@ struct ConnectionSummary {
   // P3-SP: transactions this connection sent re-stamped from another connection's encode of the
   // same transaction in the same frame callback (0 for a lone connection).
   std::uint64_t shared_sends = 0;
+  // W11t (/11 connections; the summary's `live_coding` object): the hello's offer, the coding
+  // the host chose, the coded messages (and how many had a base prefix or came from another
+  // connection's encode of the same (base, target) messages in the callback), their uncoded and
+  // wire bytes, and the encode time. `wrong_prefix_seq` is the coding-wrong-prefix sabotage's seq.
+  bool has_live_coding = false;
+  std::string live_coding_offer;
+  std::string live_coding = "off";
+  std::uint64_t coded_messages = 0;
+  std::uint64_t coded_prefixed = 0;
+  std::uint64_t coded_shared = 0;
+  std::uint64_t coded_input_bytes = 0;
+  std::uint64_t coded_wire_bytes = 0;
+  std::uint64_t coding_ns = 0;
+  std::uint64_t wrong_prefix_seq = 0;
   // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
   // bytes of the 200 bodies, and how many were not 200.
   std::uint64_t http_gets = 0;
@@ -553,7 +581,18 @@ class Hub {
   void release_closed(Conn &c);
   // P3-SP: every open tap and live log, flushed at the end of each frame callback and of finish().
   void flush_taps();
-  bool deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send);
+  // `message` is the uncoded message (what the tap holds); on a coded connection (W11t) `wire` is
+  // what is sent instead.
+  bool deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send,
+               const std::vector<std::uint8_t> *wire = nullptr);
+  // W11t: a coded connection's wire bytes for a non-transaction message (memoized by `memo_key`
+  // when not empty: a /11 record's hash) and for a transaction (memoized per callback by its
+  // uncoded base and target messages and their seqs). Null when the coder failed.
+  std::shared_ptr<const std::vector<std::uint8_t>> coded_plain(
+      Conn &c, const std::vector<std::uint8_t> &message, const std::string &memo_key);
+  std::shared_ptr<const std::vector<std::uint8_t>> coded_tx(
+      Conn &c, const std::shared_ptr<const std::vector<std::uint8_t>> &message, std::uint64_t seq,
+      std::uint64_t frame, std::uint64_t now_ns);
   // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns
   // the live log's `sent` object, or "null" when the connection was closed instead.
   // `stale_from` (stale-coalesce) is the frame the snapshot was taken at, 0 otherwise.
@@ -582,6 +621,7 @@ class Hub {
   struct TargetRefs;  // a target's payload refs and their CarriedIndex ids
   struct SharedTx;    // an encoded transaction other connections may re-stamp
   struct V11Records;  // W11b: the /11 records before a target, for one (base, target) pair
+  struct CodedTx;     // W11t: a coded transaction, for one (base, target) message pair
   const TargetRefs &target_refs(const std::shared_ptr<const rs::Captured> &target);
   const V11Records &v11_records(const std::shared_ptr<const rs::Captured> &base,
                                 const std::shared_ptr<const rs::Captured> &target);
@@ -609,6 +649,10 @@ class Hub {
   // encode by hash (a /11 record is never a CarriedIndex entry).
   std::vector<std::unique_ptr<V11Records>> frame_v11_;
   std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_v11_;
+  // W11t: the callback's coded transactions, and each /11 record's plain-coded bytes by hash.
+  std::vector<std::unique_ptr<CodedTx>> frame_coded_;
+  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_coded_;
+  bool wrong_prefix_done_ = false;
 };
 
 }  // namespace rs2

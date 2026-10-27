@@ -21,6 +21,10 @@ required-features = ["bench-instr"]
 gsw-canvas-draw-list = { path = "../../../packages/canvas/rust-draw-list" }
 sha2 = { version = "0.10", default-features = false }
 serde_json = { version = "1", features = ["preserve_order"] }
+# W11t (render-stream-11.md "As built (W11t)"): the live transport's zstd decoder, pure Rust (no C
+# toolchain for wasm32). Exact pin; no default features, so no checksum crate (coding.rs computes
+# XXH64 itself).
+ruzstd = { version = "=0.9.1", default-features = false, features = ["std"] }
 
 [features]
 # The portable SHA-256 (what wasm32 gets anyway): a phone-like upper bound for native runs.

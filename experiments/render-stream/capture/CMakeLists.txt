@@ -39,11 +39,11 @@ add_library(grc_codecs STATIC
   ${GRC_ZSTD_SOURCES}
   vendor/zlib/adler32.c vendor/zlib/crc32.c vendor/zlib/deflate.c vendor/zlib/inffast.c
   vendor/zlib/inflate.c vendor/zlib/inftrees.c vendor/zlib/trees.c vendor/zlib/zutil.c
-  src/rs_http_coding.cpp)
+  src/rs_http_coding.cpp src/rs_live_coding.cpp)
 target_include_directories(grc_codecs PUBLIC vendor/zstd vendor/zlib src)
 target_compile_definitions(grc_codecs PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0)
 target_compile_options(grc_codecs PRIVATE -w -O2)
-set_source_files_properties(src/rs_http_coding.cpp PROPERTIES
+set_source_files_properties(src/rs_http_coding.cpp src/rs_live_coding.cpp PROPERTIES
   COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
 set_target_properties(grc_codecs PROPERTIES
   POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
@@ -258,6 +258,20 @@ add_executable(rs_live_host
 )
 target_include_directories(rs_live_host PRIVATE src test)
 target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads)
+
+# W11t: the /11 live coding (rs_live_coding.h): unit checks, and the coding tool whose output for
+# golden-11's recordings is pinned byte for byte (protocol/golden-11/coding/).
+add_executable(rs_live_coding_test test/rs_live_coding_test.cpp)
+target_link_libraries(rs_live_coding_test PRIVATE grc_warnings grc_codecs)
+add_test(NAME rs_live_coding COMMAND rs_live_coding_test)
+add_executable(rs_live_coding_tool test/rs_live_coding_tool.cpp)
+target_link_libraries(rs_live_coding_tool PRIVATE grc_warnings grc_codecs)
+foreach(name full patch inline)
+  add_test(NAME rs_live_coding_golden_${name}
+    COMMAND sh -c "\"$1\" encode \"$2/$3.rs11\" \"$4/$3.coded\" >/dev/null && cmp \"$4/$3.coded\" \"$2/coding/$3.coded\""
+      sh $<TARGET_FILE:rs_live_coding_tool> ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11
+      ${name} ${CMAKE_CURRENT_BINARY_DIR})
+endforeach()
 
 # Gate 2 (G2b1): the /2 codec is byte-identical to protocol/golden-2/{full,patch,inline}.rs2.
 # Linked into render_stream_capture since G2b2 (rs_publish, rs_live).

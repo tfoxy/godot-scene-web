@@ -379,3 +379,133 @@ pub unsafe extern "C" fn rsc_ops_arena(h: *mut RsCore, n: *mut usize) -> *const 
     *n = c.ops.arena.len();
     c.ops.arena.as_ptr()
 }
+
+// ------------------------------------------------------------------------- W11t: live coding
+//
+// render-stream-11.md "As built (W11t)": the /11 live coding's decoder (rs-core `coding`), one
+// handle per connection, apart from `RsCore` so a receiver adds it without touching the core.
+// The one call a receiver makes is `rsc_coding_decode` on every WebSocket message before it
+// parses it (`rsc_session` / `rsc_accept`); with it, the hello offers `live_coding`
+// (`zstd-base,zstd`, or `zstd` for a receiver that keeps no bases), and a -1 whose
+// `rsc_coding_seq` is not 0 is answered with `resync` (reason `coding`).
+
+/// A connection's live-coding decoder.
+pub struct RscCoding {
+    d: render_stream_core::coding::LiveDecoder,
+    text: Vec<u8>,
+}
+
+/// `offer` is the hello's `live_coding` value (empty: none was sent, every message passes
+/// through); `max_bytes` the hello's `inbound_buffer_bytes`.
+///
+/// # Safety
+/// `offer` points to `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_coding_new(
+    offer: *const u8,
+    len: usize,
+    max_bytes: u64,
+) -> *mut RscCoding {
+    let keep = text(offer, len).split(',').any(|t| t == "zstd-base");
+    Box::into_raw(Box::new(RscCoding {
+        d: render_stream_core::coding::LiveDecoder::new(keep, max_bytes),
+        text: Vec::new(),
+    }))
+}
+
+/// # Safety
+/// `h` came from `rsc_coding_new` and is not used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_coding_free(h: *mut RscCoding) {
+    if !h.is_null() {
+        drop(Box::from_raw(h));
+    }
+}
+
+/// Decodes one WebSocket message. Returns 1 (decoded: `*out`/`*out_len` is the uncoded message,
+/// valid until the next call on `h`), 2 (an uncoded connection: the message is its own bytes,
+/// `*out` = `data`), 0 (a based transaction skipped while a resync is pending: drop it, no ack) or
+/// -1 (`rsc_coding_error`, code `coding`; resync `rsc_coding_seq` when it is not 0, else fail).
+///
+/// # Safety
+/// `data` points to `len` bytes; `out` and `out_len` are writable.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_coding_decode(
+    h: *mut RscCoding,
+    data: *const u8,
+    len: usize,
+    out: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    use render_stream_core::coding::Outcome;
+    let c = &mut *h;
+    let msg = bytes(data, len);
+    *out = std::ptr::null();
+    *out_len = 0;
+    match catch_unwind(AssertUnwindSafe(|| c.d.decode(msg))) {
+        Ok(Ok(Outcome::Decoded)) => {
+            let o = c.d.output();
+            *out = o.as_ptr();
+            *out_len = o.len();
+            1
+        }
+        Ok(Ok(Outcome::Plain)) => {
+            *out = data;
+            *out_len = len;
+            2
+        }
+        Ok(Ok(Outcome::Skipped)) => 0,
+        Ok(Err(e)) => {
+            c.text = e.to_string().into_bytes();
+            -1
+        }
+        Err(_) => {
+            c.text = b"coding: the decoder panicked".to_vec();
+            -1
+        }
+    }
+}
+
+/// The last message's envelope seq (0: not a transaction): the seq to resync after a -1.
+///
+/// # Safety
+/// `h` came from `rsc_coding_new`.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_coding_seq(h: *mut RscCoding) -> u64 {
+    (*h).d.seq()
+}
+
+/// The last error (`coding: ...`).
+///
+/// # Safety
+/// `n` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_coding_error(h: *mut RscCoding, n: *mut usize) -> *const u8 {
+    let c = &*h;
+    *n = c.text.len();
+    c.text.as_ptr()
+}
+
+/// `{"coded":..,"messages":..,"prefixed":..,"skipped":..,"errors":..,"coded_bytes":..,
+/// "decoded_bytes":..,"retained":[..],"retained_bytes":..}` for the receiver's evidence.
+///
+/// # Safety
+/// `n` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_coding_stats(h: *mut RscCoding, n: *mut usize) -> *const u8 {
+    let c = &mut *h;
+    let s = c.d.stats;
+    let coded = match c.d.coded() {
+        None => "null",
+        Some(true) => "true",
+        Some(false) => "false",
+    };
+    c.text = format!(
+        "{{\"coded\":{coded},\"messages\":{},\"prefixed\":{},\"skipped\":{},\"errors\":{},\"coded_bytes\":{},\"decoded_bytes\":{},\"retained\":{:?},\"retained_bytes\":{}}}",
+        s.messages, s.prefixed, s.skipped, s.errors, s.coded_bytes, s.decoded_bytes,
+        c.d.retained(), c.d.retained_bytes()
+    )
+    .into_bytes();
+    *n = c.text.len();
+    c.text.as_ptr()
+}

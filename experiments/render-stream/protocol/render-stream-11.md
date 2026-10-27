@@ -456,6 +456,7 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
 | `GRC_MESH_DYNAMIC_MAX_BYTES` | default 65,536 | the largest mesh that may be dynamic |
 | `GRC_PREDRAW_PUMP` | `0` (default), `1` | headless only: emit `frame_pre_draw` before the snapshot (PM1) |
 | `RS_RECEIVER_PROTOCOL` | `…`, `11` | the native receiver and GSW offer `render-stream.11` |
+| `GRC_LIVE_CODING` | `zstd-base` (default), `zstd`, `off` | W11t: the live coding a /11 hello that offers `live_coding` gets ("As built (W11t)"). Nothing below /11, no file sink and no HTTP body is coded |
 
 - **Defaults do not move.**
   - File sinks stay /6.
@@ -787,7 +788,77 @@ Each measured win and where it belongs:
   - compile the capture's vendored zstd C decoder into `rs-core-capi` and `rs-gsw-wasm`;
   - add a pure-Rust zstd crate, which is a download and needs the user's sign-off.
 
-  W11t decides. The HTTP payload coding (G8kz) is unchanged.
+  W11t decides. The HTTP payload coding (G8kz) is unchanged. **Decided (W11t):** the pure-Rust
+  `ruzstd` crate, approved by the user ("As built (W11t)", 1).
+
+### As built (W11t): decisions
+
+W11t built the transport ([results/p3/w11t.md](../results/p3/w11t.md)). Measured on W11b's STS2
+recording through the capture's own encoder: warm combat **12,506 B a frame (6.0 Mbps)**, the map
+321 B and the menu 1,111 B, records included. These rules are now the coding's:
+
+1. **The decoder is `ruzstd` 0.9.1** (pure Rust, MIT; exact pin, `default-features = false`,
+   `std` only: no dependency at all), in rs-core's `coding` module, so `rs-core-capi`,
+   `rs-gsw-wasm` and the web export's core share it and wasm32 needs no C toolchain. ruzstd has no
+   public raw-content dictionary, so a base is a 117-byte formatted template dictionary (entropy
+   tables from zstd 1.5.7's trainer, repeat offsets 1, 4, 8, no content) with `dict_content` set to
+   the base, forced onto the frame (`force_dict`). That is what `refPrefix` is to a decoder: a
+   `refPrefix` frame starts with no entropy repeat state, so the template's tables are never read.
+2. **Every binary message of a coded connection is coded, the first included.** There is no
+   acceptance field: the record stream is unchanged, so nothing in the session says it is coded.
+   The receiver learns the host's answer from its first message: zstd (or envelope) magic means
+   coded, `GRS` means uncoded. A coded message on an uncoded connection, or the reverse, is
+   `coding`. The host's acceptance is in its live log (`live_coding_chosen`) and its summary
+   (`live_coding` per /11 connection).
+3. **A transaction carries an envelope:** a zstd skippable frame (magic `0x184D2A5B`, 16 bytes of
+   content: u64le `seq`, then u64le `base_seq`, 0 for none), then one zstd frame. Records, the
+   session message and the end record are one zstd frame with no envelope. The envelope lets the
+   receiver pick the prefix before it decodes, and name the seq to resync when it cannot. A coded
+   message is still a valid zstd stream: `zstd -d --patch-from=<base>` decodes it.
+4. **Every frame has its content size and an XXH64 checksum** (+4 B). A wrong prefix then fails
+   at the transport as `coding`, not at the record parser as garbage. rs-core computes the XXH64
+   itself (ruzstd's `hash` feature would pull in a second crate). A frame declaring more than the
+   receiver's `inbound_buffer_bytes` is `coding` before anything is allocated.
+   `message-too-large` stays on the uncoded size.
+5. **The base is the last transaction the host formed on the connection**, the dropped one
+   included (`drop-message`), so it is always the patch's own `base_seq`. Under `zstd` and for a
+   full transaction there is none.
+6. **Receiver retention:** after decoding T against B, the decoder drops every base older than B
+   and keeps T. That is two messages at any window (measured: 2 at window 1 and 2 on capture-scale
+   and STS2, 1.1 MB at most in combat). The cap is three.
+7. **`coding` resyncs.** After a missing base, a checksum mismatch or an undecodable frame, the
+   decoder skips every based transaction (not decoded, not applied, not acked) until a full one.
+   The receiver sends `resync` with the envelope's seq and reason `coding`. A `coding` error on a
+   message that is not a transaction (session, record, end) ends the stream.
+8. **Negotiation:** a /11 hello may carry `live_coding`, the codings the receiver decodes, in its
+   preference order (`^[a-z0-9-]+(,[a-z0-9-]+)*$`, at most 96 characters). It is the only optional
+   key of any control message, so a /11 receiver that predates W11t stays valid and uncoded. The
+   host chooses: under `zstd-base` it picks `zstd-base` if offered, else `zstd` if offered, else
+   none; under `zstd`, `zstd` if offered; under `off`, none. Unknown tokens are ignored. Below /11
+   the key is unknown (`protocol`). Golden-11 gains `control/valid/hello-live-coding.json` and
+   `control/invalid/hello-live-coding-grammar.json`.
+9. **Sharing:** the hub memoizes each coded transaction per frame callback by its uncoded base and
+   target messages, seqs included, and each record's coding by hash. Lockstep viewers with equal
+   seqs share the compressed bytes (`rs_live_test`). Viewers at different seq offsets do not: the
+   base messages differ in their stamps. They cost one encode each, 0.19 ms in combat. The tap
+   (`GRC_LIVE_TAP_DIR`) keeps the uncoded messages, so it is still a valid stream.
+10. **Receivers.** Each receiver makes one call on every WebSocket message before it parses it:
+    GSW's `LiveCoding.decode_rx(g, len)` (rs-gsw-wasm, in place in the receive buffer), or
+    `rsc_coding_decode` in `rs-core-capi` (declared in `receiver/ext/rs_core_capi.h`). Its hello
+    offers `live_coding: "zstd-base,zstd"`, and it answers -1 with `resync` for `seq` (reason
+    `coding`). At W11t's landing no receiver speaks /11 live yet. The calls and the g8w11
+    `coding/` legs' Node viewer (`scripts/lib/coding-receiver.ts`, on the wasm `LiveCoding`) are
+    what W11c (GSW), W11d (native) and W11e (web export) wire.
+11. **Sabotages.** A dropped base is the existing `drop-message`: under `zstd-base` the next patch
+    names a base the receiver never got. `coding-wrong-prefix` (a listener sabotage, `GRC_SABOTAGE`
+    with `GRC_SABOTAGE_FRAME`, /11 and `zstd-base` only) codes one based transaction against its
+    base plus one byte. Every match into the prefix then shifts by one. The host keeps the wrong
+    encode only once it has checked that it really decodes differently against the true base. A
+    flipped byte that no match reads would not.
+12. **Wire vectors.** `golden-11/coding/{full,patch,inline}.coded` are the capture encoder's coding
+    of golden-11's recordings (u32le length, then the message, repeated), each transaction against
+    the previous one. The capture's ctests pin them byte for byte, and rs-core's tests decode them
+    back to the recordings.
 
 ### Bottom line
 
@@ -806,7 +877,8 @@ video. The menu is 0.43 Mbps and the map 0.21. Uncompressed, the lean /11 messag
 
 What is still missing:
 
-- the zstd decoder in the receivers (W11t);
+- the zstd decoder in the receivers: **built (W11t)** in rs-core; each receiver still has to call
+  it ("As built (W11t)", 10);
 - the cold start's texture GETs;
 - the phone's decode cost: unmeasured; the projection is about 5 ms of `meta` per combat
   transaction on the g31 before the lean rule;
@@ -827,6 +899,7 @@ sweep.
 | **W11c** | GSW: rs-core retention (H, prune on accept), applier geometry by mesh id, `bufferSubData` uploads, `inline-fetch-zero`; GSW offers `.11` under `RS_RECEIVER_PROTOCOL=11` | `capture-scale` through `bench-live-scale.sh` with a GSW viewer; `gate6-scene` soak (`soak-inline`) at /11; g7-5 and g7-2 groups at /11 | `store-bounded`: 20 min on `capture-scale` with the payload store's entries ≤ \|names\| + window and a wasm-heap slope after warm-up ≤ 1 MB/min (at /10 the same leg grows about 280 MB/min, P3-SP `long-rx-before`). `inline-fetch-zero`. `resend-applied`: gate6-scene `MS` returns pixel-match the reference. `gsw-band` on gate 5 meshes at /11. Apply rate ≥ /10's on the same leg (real time, milestone) | `no-prune` (receiver keeps C lifelong) fails `resend-applied` with a typed `resource-duplicate`; `evict-carried` (drop a hash still in C) fails `inline-fetch-zero`; `stale-dynamic-rx` (ignore a body) fails `gsw-band` |
 | **W11d** | native receiver: capi maps prune, `RsResourceCache` drops on leave, dynamic region uploads | `capture-scale` with a native viewer; `gate5-mesh`; `gate6-scene` | `store-bounded` (RSS slope and cache entries); `records-per-tx` ≤ 1 + static churn (≈ 1 on `capture-scale`); `resend-applied`; g5c and g5e `reference` at /11 | `no-prune`, `evict-carried`, `stale-dynamic-rx` as W11c, failing the native checks |
 | **W11e** | web export: the same capi on wasm, the web leg of every W11d check | as W11d through the web export (g7-5 and g7-2 web groups at /11) | as W11d, plus `rss-bounded-renderer` (G7kr) on a 20-minute `capture-scale` leg | as W11d |
+| **W11t** | the live transport coding: base-prefix zstd ("Transport", "As built (W11t)"), `GRC_LIVE_CODING`, the hello's `live_coding`, rs-core's decoder (`ruzstd`), the capi and wasm calls | `golden-11/coding/`; g8w11's `coding/` legs (capture-scale, live, Node viewers on rs-core's wasm) | `coding-wire` (capture encoder to rs-core, byte-equal, golden-11 and g8w11 captures), `coding-negotiated`, `coding-lossless` (decoded = the host's tap), `coding-validates`, `coding-applies-as-off`, `coding-smaller`; `rs_live_test` (lockstep viewers share the coded bytes) | `drop-message` (a dropped base) and `coding-wrong-prefix`: `coding`, then resync |
 | **PM1** (in /11) | particles-multimesh-design.md's PM1, with `buffer_f` on W11a's (B, T) rule; adds multimesh states to `golden-11/` before /11 is released | `fixtures/gate8-mm` (hook-log legs), goldens | `mm-hook-census`, `mm-wire`, `mm-frame-pairing` (particles-multimesh-design.md) | `perturb-instance`, `stale-buffer` |
 | PM2, PM3 | receivers (native and web, then GSW), unchanged from particles-multimesh-design.md but on /11 | `gate8-mm` | as there | as there |
 | **W11z** | STS2 acceptance | none (game leg) | **one GSW viewer, /11, window 2, inline 4096, in combat for ≥ 20 min** (the combat idles; spine keeps animating): wasm heap slope over minutes 2–20 ≤ 1 MB/min (/10: about 400 MB/min); payload store entries ≤ \|names\| + window; zero inline-sized GETs; applies/s and latency no worse than P3-SP's 49.6/s and 16.5 ms (load-gated); combat dB within 0.1 of P3-CT's replay; host RSS flat; `survivors: none` and hash sets unchanged. A 3-minute /10 leg first, as the "before" slope | none in game (the sabotages live on the fixtures) |

@@ -473,7 +473,14 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   } else {
     return fail("unknown type \"" + type->text + "\"");
   }
+  // W11t (render-stream-11.md "As built (W11t)"): a /11 hello may carry `live_coding`; the only
+  // optional key of any control message.
+  const bool optional_live_coding =
+      message.type == ControlType::Hello && version == ProtocolVersion::V11;
   for (const auto &field : fields) {
+    if (optional_live_coding && field.first == "live_coding") {
+      continue;
+    }
     if (std::find(keys.begin(), keys.end(), field.first) == keys.end()) {
       return fail("unknown key \"" + field.first + "\" for type " + type->text);
     }
@@ -568,6 +575,15 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
           if (!is_flat_list(message.gpu_formats)) {
             return fail("\"gpu_formats\" is not a comma list of [a-z0-9] names, <= 96 chars");
           }
+        }
+        if (optional_live_coding && find("live_coding") != nullptr) {
+          if (!str("live_coding", &message.live_coding)) {
+            return false;
+          }
+          if (!rs::live_coding::valid_offer(message.live_coding)) {
+            return fail("\"live_coding\" is not a comma list of [a-z0-9-] names, <= 96 chars");
+          }
+          message.has_live_coding = true;
         }
       }
       // render-stream-2.md "Golden vectors": a hello for another version is invalid.
@@ -733,6 +749,10 @@ struct Hub::Conn {
   // W11b: a /11 connection's carried set is inline(base) (L2), never held; only the keep-carried
   // sabotage gives it a lifelong RecordPlanner. `carried_count` then reports |inline(base)|.
   std::unique_ptr<RecordPlanner> keep_carried;
+  // W11t: the connection's live coding (negotiated at the hello, /11 only), and the uncoded
+  // message of the last transaction formed on it (sent or dropped): the next patch's prefix.
+  rs::live_coding::Coding coding = rs::live_coding::Coding::Off;
+  std::shared_ptr<const std::vector<std::uint8_t>> last_tx;
   std::uint64_t stale_frame = 0;
   std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
   // G7q, stale-coalesce at window >= 2: the stale target just sent stays the target of every
@@ -792,6 +812,17 @@ struct Hub::SharedTx {
   TxMeta meta;  // the fields the encode was stamped with
   bool full = false;
   std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+};
+
+// W11t: a transaction coded in this frame callback. Its coded bytes are a function of the uncoded
+// base and target messages (seq and base_seq included, which the envelope repeats), so another
+// connection with byte-equal ones reuses them: lockstep viewers share the compressed bytes.
+struct Hub::CodedTx {
+  std::shared_ptr<const std::vector<std::uint8_t>> base;  // null: no prefix
+  std::shared_ptr<const std::vector<std::uint8_t>> target;
+  std::uint64_t seq = 0;
+  std::uint64_t base_seq = 0;
+  std::shared_ptr<const std::vector<std::uint8_t>> coded;
 };
 
 namespace {
@@ -896,6 +927,115 @@ void Hub::clear_frame_memo() {
   frame_records_.clear();
   frame_v11_.clear();
   frame_records_v11_.clear();
+  frame_coded_.clear();
+  frame_records_coded_.clear();
+}
+
+std::shared_ptr<const std::vector<std::uint8_t>> Hub::coded_plain(
+    Conn &c, const std::vector<std::uint8_t> &message, const std::string &memo_key) {
+  if (!memo_key.empty()) {
+    const auto found = frame_records_coded_.find(memo_key);
+    if (found != frame_records_coded_.end()) {
+      ++c.s.coded_shared;
+      return found->second;
+    }
+  }
+  const std::uint64_t t0 = monotonic_ns();
+  auto out = std::make_shared<std::vector<std::uint8_t>>();
+  const bool ok = rs::live_coding::encode_plain(message.data(), message.size(), out.get());
+  c.s.coding_ns = saturating_add(c.s.coding_ns, monotonic_ns() - t0);
+  if (!ok) {
+    return nullptr;
+  }
+  if (!memo_key.empty()) {
+    frame_records_coded_[memo_key] = out;
+  }
+  return out;
+}
+
+namespace {
+
+bool same_bytes(const std::shared_ptr<const std::vector<std::uint8_t>> &a,
+                const std::shared_ptr<const std::vector<std::uint8_t>> &b) {
+  if (a == b) {
+    return true;
+  }
+  if (a == nullptr || b == nullptr || a->size() != b->size()) {
+    return false;
+  }
+  return std::memcmp(a->data(), b->data(), a->size()) == 0;
+}
+
+}  // namespace
+
+std::shared_ptr<const std::vector<std::uint8_t>> Hub::coded_tx(
+    Conn &c, const std::shared_ptr<const std::vector<std::uint8_t>> &message, std::uint64_t seq,
+    std::uint64_t frame, std::uint64_t now_ns) {
+  using rs::live_coding::Coding;
+  const std::shared_ptr<const std::vector<std::uint8_t>> base =
+      c.coding == Coding::ZstdBase ? c.last_tx : nullptr;
+  const std::uint64_t base_seq = base != nullptr ? c.base_seq : 0;
+  if (base != nullptr) {
+    ++c.s.coded_prefixed;
+  }
+  const bool sabotage = base != nullptr && config_.coding_wrong_prefix_frame != 0 &&
+                        !wrong_prefix_done_ && frame >= config_.coding_wrong_prefix_frame;
+  if (!sabotage) {
+    for (const auto &m : frame_coded_) {
+      if (m->seq == seq && m->base_seq == base_seq && same_bytes(m->target, message) &&
+          same_bytes(m->base, base)) {
+        ++c.s.coded_shared;
+        return m->coded;
+      }
+    }
+  }
+  const std::uint64_t t0 = monotonic_ns();
+  auto out = std::make_shared<std::vector<std::uint8_t>>();
+  bool ok = rs::live_coding::encode_transaction(
+      message->data(), message->size(), seq, base != nullptr ? base->data() : nullptr,
+      base != nullptr ? base->size() : 0, base_seq, out.get());
+  if (ok && sabotage) {
+    // coding-wrong-prefix: the base plus one byte shifts every match into the prefix. Kept only
+    // when it really decodes differently against the true base (else the next one is tried).
+    std::vector<std::uint8_t> wrong(*base);
+    wrong.push_back(0);
+    auto bad = std::make_shared<std::vector<std::uint8_t>>();
+    std::vector<std::uint8_t> decoded;
+    std::uint64_t got_seq = 0;
+    std::uint64_t got_base = 0;
+    std::string error;
+    if (rs::live_coding::encode_transaction(message->data(), message->size(), seq, wrong.data(),
+                                            wrong.size(), base_seq, bad.get()) &&
+        (!rs::live_coding::decode(bad->data(), bad->size(), base.get(), &decoded, &got_seq,
+                                  &got_base, &error) ||
+         decoded != *message)) {
+      out = bad;
+      wrong_prefix_done_ = true;
+      c.s.wrong_prefix_seq = seq;
+      log_line(c, Line()
+                      .num("frame", frame)
+                      .num("t_us", now_ns / 1000)
+                      .str("event", "sabotage")
+                      .str("kind", "coding-wrong-prefix")
+                      .num("seq", seq)
+                      .num("base_seq", base_seq)
+                      .take());
+    }
+  }
+  c.s.coding_ns = saturating_add(c.s.coding_ns, monotonic_ns() - t0);
+  if (!ok) {
+    return nullptr;
+  }
+  if (!sabotage) {
+    auto m = std::make_unique<CodedTx>();
+    m->base = base;
+    m->target = message;
+    m->seq = seq;
+    m->base_seq = base_seq;
+    m->coded = out;
+    frame_coded_.push_back(std::move(m));
+  }
+  return out;
 }
 
 Hub::Hub(LiveTransport *transport, LiveConfig config, Session session_template)
@@ -1173,6 +1313,21 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         } else {
           hello.null("token_ok");
         }
+        if (c.version == ProtocolVersion::V11) {
+          // W11t: the receiver offers, the host chooses (rs_live_coding.h negotiate).
+          c.s.has_live_coding = message.has_live_coding;
+          c.s.live_coding_offer = message.live_coding;
+          c.coding = message.has_live_coding
+                         ? rs::live_coding::negotiate(config_.live_coding, message.live_coding)
+                         : rs::live_coding::Coding::Off;
+          c.s.live_coding = rs::live_coding::to_token(c.coding);
+          if (message.has_live_coding) {
+            hello.str("live_coding", message.live_coding);
+          } else {
+            hello.null("live_coding");
+          }
+          hello.str("live_coding_chosen", c.s.live_coding);
+        }
       }
       log_line(c, hello.take());
       if (refuse) {
@@ -1344,18 +1499,26 @@ void Hub::note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns) {
       c.s.max_pending_age_us, (now_ns - std::min(now_ns, c.pending_since_ns)) / 1000);
 }
 
-bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send) {
+bool Hub::deliver(Conn &c, const std::vector<std::uint8_t> &message, bool send,
+                  const std::vector<std::uint8_t> *wire) {
   if (c.tap != nullptr) {
-    // P3-SP: flushed once per frame callback (flush_taps), not per message.
+    // P3-SP: flushed once per frame callback (flush_taps), not per message. W11t: the tap holds
+    // the uncoded message, so it stays a valid stream on a coded connection.
     std::fwrite(message.data(), 1, message.size(), c.tap);
   }
   c.s.max_message_sent = std::max<std::uint64_t>(c.s.max_message_sent, message.size());
   if (!send) {
     return true;
   }
-  c.s.bytes_sent += message.size();
+  const std::vector<std::uint8_t> &out = wire != nullptr ? *wire : message;
+  if (wire != nullptr) {
+    ++c.s.coded_messages;
+    c.s.coded_input_bytes += message.size();
+    c.s.coded_wire_bytes += wire->size();
+  }
+  c.s.bytes_sent += out.size();
   const std::uint64_t t0 = monotonic_ns();
-  const bool ok = transport_->send_binary(c.id, message);
+  const bool ok = transport_->send_binary(c.id, out);
   enqueue_hist_.add((monotonic_ns() - t0) / 1000);  // Q3d enqueue_us (G6r)
   return ok;
 }
@@ -1474,7 +1637,11 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
       host_close(c, 1009, "message-too-large");
       return "null";
     }
-    deliver(c, bytes, true);
+    std::shared_ptr<const std::vector<std::uint8_t>> wire;
+    if (c.coding != rs::live_coding::Coding::Off) {
+      wire = coded_plain(c, bytes, hash);
+    }
+    deliver(c, bytes, true, wire.get());
     if (!v11) {
       carried_.mark(id, c.carried_slot);
       ++c.carried_count;
@@ -1556,7 +1723,17 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   }
   const bool drop = !first && config_.drop_message_frame != 0 && !drop_done_ &&
                     frame >= config_.drop_message_frame;
-  if (!deliver(c, bytes, !drop)) {
+  std::shared_ptr<const std::vector<std::uint8_t>> wire;
+  if (c.coding != rs::live_coding::Coding::Off) {
+    // W11t: coded against the last transaction formed here (its uncoded message), which is the
+    // base this patch names; a full transaction has none.
+    if (full) {
+      c.last_tx = nullptr;
+    }
+    wire = coded_tx(c, encoded, meta.seq, frame, now_ns);
+  }
+  c.last_tx = encoded;
+  if (!deliver(c, bytes, !drop, wire.get())) {
     log_line(c, Line()
                     .num("frame", frame)
                     .num("t_us", now_ns / 1000)
@@ -1745,7 +1922,11 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           host_close(c, 1009, "message-too-large");
           continue;
         }
-        deliver(c, message, true);
+        std::shared_ptr<const std::vector<std::uint8_t>> wire;
+        if (c.coding != rs::live_coding::Coding::Off) {
+          wire = coded_plain(c, message, "");  // W11t: the first message is coded too
+        }
+        deliver(c, message, true, wire.get());
         c.stats.bytes_total += message.size();  // the magic counts (render-stream-0.md)
         c.stats.max_record_bytes =
             std::max<std::uint64_t>(c.stats.max_record_bytes, session_bytes.size());
@@ -1901,7 +2082,11 @@ void Hub::finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns) {
       end.reason = reason;
       end.stats = c.stats;
       const std::vector<std::uint8_t> bytes = encode_end(end);
-      deliver(c, bytes, true);
+      std::shared_ptr<const std::vector<std::uint8_t>> wire;
+      if (c.coding != rs::live_coding::Coding::Off) {
+        wire = coded_plain(c, bytes, "");
+      }
+      deliver(c, bytes, true, wire.get());
       c.s.end_sent = true;
       log_line(c, Line()
                       .num("frame", frame)
@@ -2103,6 +2288,28 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       // only (render-stream-10.md and -11.md: their hellos are /9's).
       json.field_or_null("texture_encodings", s.texture_encodings);
       json.field_or_null("gpu_formats", s.gpu_formats);
+    }
+    if (s.version == 11) {
+      // W11t: the live coding (render-stream-11.md "As built (W11t)").
+      json.key("live_coding").object_begin();
+      if (s.has_live_coding) {
+        json.field("offered", s.live_coding_offer);
+      } else {
+        json.field_null("offered");
+      }
+      json.field("coding", s.live_coding);
+      json.field("messages", static_cast<int64_t>(s.coded_messages));
+      json.field("prefixed", static_cast<int64_t>(s.coded_prefixed));
+      json.field("shared", static_cast<int64_t>(s.coded_shared));
+      json.field("input_bytes", static_cast<int64_t>(s.coded_input_bytes));
+      json.field("wire_bytes", static_cast<int64_t>(s.coded_wire_bytes));
+      json.field("encode_us", static_cast<int64_t>(s.coding_ns / 1000));
+      if (s.wrong_prefix_seq != 0) {
+        json.field("wrong_prefix_seq", static_cast<int64_t>(s.wrong_prefix_seq));
+      } else {
+        json.field_null("wrong_prefix_seq");
+      }
+      json.object_end();
     }
     if (s.token_checked) {
       json.field("token_ok", s.token_ok);

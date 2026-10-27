@@ -48,6 +48,7 @@ import {
   withRecordMemo,
 } from "./render-stream-2";
 import { expectedMeshBufferBytes } from "./render-stream-mesh";
+import { runG8w11Coding } from "./gate8-w11t-checks";
 
 export const HONEST_LEGS = [
   "scale/capture",
@@ -690,5 +691,7 @@ export async function runG8w11(
       );
     }
   }
+  // W11t: the live coding (gate8-w11t-checks.ts).
+  checks.push(...(await runG8w11Coding(g)));
   return { checks, report };
 }

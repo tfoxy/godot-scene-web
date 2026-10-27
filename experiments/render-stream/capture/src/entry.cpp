@@ -127,7 +127,11 @@
 // allowlist is ignored), token-ignored (a wrong /7 hello token is not refused; needs
 // GRC_LIVE_AUTH=token) and window-overrun (G7q: from GRC_SABOTAGE_FRAME on, default 1, every
 // connection keeps publishing at each due tick past a full credit window, the third in flight
-// at window 2 and every one after). They act on the listener only, never on a record, so the
+// at window 2 and every one after), and coding-wrong-prefix (W11t: needs GRC_STREAM_VERSION=11
+// and GRC_LIVE_CODING=zstd-base; from GRC_SABOTAGE_FRAME on, default 1, the first based /11
+// transaction is coded against its base plus one byte, render-stream-11.md "As built (W11t)").
+// GRC_LIVE_CODING (W11t) = zstd-base (default) | zstd | off: the coding a /11 hello that offers
+// `live_coding` gets; nothing below /11 is coded. They act on the listener only, never on a record, so the
 // wire declares no sabotage for them (the session's `sabotage` stays null): evidence/live.json
 // carries `listener_sabotage` instead.
 
@@ -306,6 +310,7 @@ struct Live {
   std::vector<std::string> allowed_origins;
   uint64_t credit_window_max = 2;
   std::string listener_sabotage;
+  std::string live_coding = "zstd-base";  // W11t: GRC_LIVE_CODING (what /11 hellos may get)
   // G8kz: GRC_HTTP_ENCODING (default zstd): the codings the host offers on resource GETs.
   std::vector<live::Coding> http_codings;
   bool http_coding_on = false;
@@ -335,7 +340,8 @@ bool is_listener_sabotage(const char *kind) {
   }
   const std::string text(kind);
   return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored" ||
-         text == "window-overrun" || text == "corrupt-coded-body";
+         text == "window-overrun" || text == "corrupt-coded-body" ||
+         text == "coding-wrong-prefix";
 }
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
@@ -1367,6 +1373,7 @@ std::string live_json() {
   json.array_end();
   json.field("credit_window_max", static_cast<int64_t>(g_live.credit_window_max));
   json.field_or_null("listener_sabotage", g_live.listener_sabotage);
+  json.field("live_coding", g_live.live_coding);  // W11t: GRC_LIVE_CODING as parsed
   json.field("http_encoding", g_live.serving.http_encoding);
   json.object_end();
   return json.take();
@@ -1795,8 +1802,22 @@ void stream_start() {
       // G7q: the frame the overrun starts at (default 1, from the first send).
       live_ok = false;
       why = "sabotage window-overrun: invalid GRC_SABOTAGE_FRAME (a positive frame)";
+    } else if (!rs::live_coding::parse_env(std::getenv("GRC_LIVE_CODING"),
+                                           &live_config.live_coding, &why)) {
+      // W11t (render-stream-11.md "As built (W11t)"): the /11 live coding, default zstd-base.
+      live_ok = false;
+    } else if (g_live.listener_sabotage == "coding-wrong-prefix" &&
+               (live_config.live_coding != rs::live_coding::Coding::ZstdBase ||
+                !g_stream.gate8.speaks_v11())) {
+      live_ok = false;
+      why = "sabotage coding-wrong-prefix needs GRC_STREAM_VERSION=11 and GRC_LIVE_CODING=zstd-base";
+    } else if (g_live.listener_sabotage == "coding-wrong-prefix" &&
+               !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.coding_wrong_prefix_frame)) {
+      live_ok = false;
+      why = "sabotage coding-wrong-prefix: invalid GRC_SABOTAGE_FRAME (a positive frame)";
     }
     g_live.credit_window_max = live_config.credit_window_max;
+    g_live.live_coding = rs::live_coding::to_token(live_config.live_coding);
     g_live.serving.http_encoding =
         g_live.http_codings.empty() ? "off" : live::coding_token(g_live.http_codings[0]);
     // G2e: generated only once every other live setting is known good, so a usage error never
