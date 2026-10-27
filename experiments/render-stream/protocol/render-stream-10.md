@@ -153,10 +153,29 @@ to a /9 one.
   differs from what the receiver last set (`null` re-issues mode 0), and
   `canvas_item_set_copy_to_backbuffer` (enable, rect) whenever `copy_to_backbuffer` does. The
   receiver's own Godot then does everything else.
-- **GSW** (until CG3): accepts /10 and **types** both keys instead of compositing them: every item
-  whose `canvas_group` or `copy_to_backbuffer` is non-null is reported with the GSW reason
-  `gsw-canvas-group` or `gsw-backbuffer-copy`, and drawn as /9 would (the state ignored). A GSW
-  leg over a fixture that uses them is therefore `unsupported`-typed, never silently wrong.
+- **GSW** (CG3, `results/p3/cg3.md`): composites both keys itself, as GLES3's
+  `canvas_render_items` does (`rasterizer_canvas_gles3.cpp:409-540`, `:2844-2883`):
+  - **The walk** (rs-core's applier): an item whose `canvas_group` is set and that has commands or
+    `fit_empty` culls its whole subtree before it attaches; its range is what that subtree attached
+    at its z, whose global rects merged (and, for `fit_empty` without commands, the rect Godot
+    synthesizes, grown by `fit_margin`) and grown by `clear_margin` are the owner's rect. A
+    `copy_to_backbuffer` item is attached for its copy whether or not it draws.
+  - **The draw list** (`gsw-canvas-draw-list` `ScreenOp`): GLES3's state machine per canvas: the
+    range's first entry opens the group (one open at a time; an inner owner's is ignored), a clip
+    group copying its rect `Rect2i`-truncated into the back buffer (a clip-and-draw owner then drawn
+    plainly into it) and a transparent one clearing it; the range drawn into the back buffer
+    (`DRAW_TO_BACK_BUFFER`); the owner closing it (its `blur_mipmaps` chain built over its rect) and
+    drawn through Godot's default clip-children or canvas-group shader (`DRAW_GROUP_CLIP`,
+    `DRAW_GROUP_COMPOSITE`), or its own material where GLES3 uses it; an item with group state and
+    no open group skipped unless clip-and-draw. A `copy_to_backbuffer` outside a group copies its
+    rect untransformed (`Rect2()` the whole target) and, like P3-ST's screen-reader copy, caches
+    the copy for the canvas's later screen readers.
+  - **The executor** (`canvas_items`): the operations run on P3-ST's back buffer (the target's
+    format, its gaussian mip chain over a region as `CopyEffects::gaussian_blur` builds it).
+  - Receiver sabotages `drop-canvas-group` and `full-backbuffer-copy` act on the same state.
+  - Not modelled: a canvas modulate's alpha on a clip-and-draw owner's clip pass (its row is the
+    shaded plain pass's), an MSDF owner through a group program (drawn without its coverage), and
+    an owner whose `fit_empty` rect Godot keeps from an earlier frame after its range emptied.
 
 ## Decoded and resolved forms
 

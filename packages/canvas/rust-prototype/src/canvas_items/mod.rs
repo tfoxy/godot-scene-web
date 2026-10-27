@@ -138,7 +138,8 @@ pub struct ExecStats {
     pub program_binds: u32,
     /// Bindings whose uniform values were (re)sent to their program.
     pub binding_uploads: u32,
-    /// P3-ST: back-buffer copies (`DRAW_SCREEN_COPY`) and mip chains (`DRAW_SCREEN_MIPMAPS`).
+    /// P3-ST, CG3: back-buffer copies and clears (`ScreenOpKind::Copy`, `ScreenOpKind::Clear`)
+    /// and mip chains built (`ScreenOpKind::Mipmaps`, or a copy's).
     pub screen_copies: u32,
     pub screen_mipmaps: u32,
 }

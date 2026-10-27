@@ -18,6 +18,7 @@
 //   gate7-tool.ts gsw-bundle --out <dir> [--rs-build <artifacts/render-stream/rs-core/<sha>>]
 //     (G7a) bundles the GSW canvas receiver (lib/gsw-bundle.ts); prints the directory
 //   gate7-tool.ts gsw-legs --group g7-<0..6> --source <gate run> --bundle <gsw bundle> --out <gate 7 run>
+//     [--only a,b]
 //     (G7a) replays the group's native receiver legs, and its GSW-only sabotages, in the GSW canvas
 //     receiver into <out>/<gate>/gsw/ (lib/gate7-gsw.ts)
 //   gate7-tool.ts browser-receiver --dir <leg dir> [--kind web|gsw] [--port N] [--bundle <dir>]
@@ -293,6 +294,12 @@ async function main(): Promise<void> {
     ) as {
       sha256: string;
     };
+    // --only <substring,...> (development, as web-legs): replay only the legs whose id contains one.
+    const onlyAt = argv.indexOf("--only");
+    const only = onlyAt >= 0 ? (argv[onlyAt + 1] ?? "").split(",") : [];
+    let specs = gswLegSpecs(gate, source, join(out, gate, "gsw"));
+    if (only.length > 0)
+      specs = specs.filter((s) => only.some((o) => s.leg.includes(o)));
     const results = await runWebLegs(
       {
         out,
@@ -302,7 +309,7 @@ async function main(): Promise<void> {
         buildSha256: build.sha256,
         kind: "gsw",
       },
-      gswLegSpecs(gate, source, join(out, gate, "gsw")),
+      specs,
     );
     const refused = results.filter((r) => !r.provenanceOk);
     if (refused.length > 0)

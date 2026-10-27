@@ -10,10 +10,11 @@
 // check-gate8.ts's own checks (`@gsw`). G8kb adds the texture-delivery groups: g8kp's receiver
 // legs (judged by g8kp's checks through the band), g8ku's perturbed-KTX2 sabotage, and four
 // GSW-only g8ku legs judged by lib/gate7-gsw-g8-checks.ts (GSW transcodes in its own worker to its
-// own context's D14 target). g8l's live legs are the live half's (lib/gate7-live.ts). CG1 adds g8cg
-// (gate8-cg: clip_children, CanvasGroup, BackBufferCopy on /10) as GSW-only legs: GSW types that
-// state until CG3 (render-stream-10.md "Receivers"), so they are judged by
-// lib/gate7-gsw-g8-checks.ts's cg-gsw-typed, not by g8cg's own checks.
+// own context's D14 target). g8l's live legs are the live half's (lib/gate7-live.ts). CG1 added g8cg
+// (gate8-cg: clip_children, CanvasGroup, BackBufferCopy on /10); since CG3 GSW composites that
+// state itself (render-stream-10.md "Receivers"), so every g8cg receiver leg, the /9 negative
+// control and both receiver sabotages included, replaces the native one and g8cg's own checks judge
+// it through the band.
 
 import { existsSync, readdirSync, symlinkSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -60,12 +61,15 @@ export const GATE8_LEGS: GswLegDef[] = [
   // g8c (gate8-ct, P3-CT: images drawn only through a CanvasTexture's diffuse)
   leg("g8c/receiver"),
   leg("g8c/receiver-patch"),
-  // g8cg (gate8-cg, CG1): GSW-only until CG3 -- GSW types every item carrying /10 state
-  // (gsw-canvas-group, gsw-backbuffer-copy) and draws it as /9 would; cg-gsw-typed@gsw judges them
-  // against the native replay of the /9 capture (lib/gate7-gsw-g8-checks.ts).
-  { leg: "g8cg/gsw-receiver", from: "g8cg/receiver", replaces: false },
-  { leg: "g8cg/gsw-receiver-patch", from: "g8cg/receiver-patch", replaces: false },
-  { leg: "g8cg/gsw-late", from: "g8cg/late/receiver", replaces: false },
+  // g8cg (gate8-cg, CG1; CG3: GSW composites canvas groups and back-buffer copies). The receiver
+  // sabotages are the native ones (RS_RECEIVER_SABOTAGE drop-canvas-group, full-backbuffer-copy),
+  // which GSW's applier implements on the same state.
+  leg("g8cg/receiver"),
+  leg("g8cg/receiver-patch"),
+  leg("g8cg/late/receiver"),
+  leg("g8cg/receiver-v9"),
+  leg("g8cg/sabotage-drop-canvas-group/receiver"),
+  leg("g8cg/sabotage-full-backbuffer-copy/receiver"),
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -116,15 +120,6 @@ export const GATE8_NOT_APPLICABLE: NotApplicable[] = [
   { leg: "g8h/import/receiver", reason: IMPORT_NA },
   { leg: "g8c/import/receiver", reason: IMPORT_NA },
   { leg: "g8cg/import/receiver", reason: IMPORT_NA },
-  ...[
-    "g8cg/receiver-v9",
-    "g8cg/sabotage-drop-canvas-group/receiver",
-    "g8cg/sabotage-full-backbuffer-copy/receiver",
-  ].map((l) => ({
-    leg: l,
-    reason:
-      "CG1: GSW types /10 state until CG3, so the native-only negative control and the receiver sabotages (how the state is re-issued to an engine) judge nothing on it; cg-gsw-typed@gsw judges GSW's g8cg legs",
-  })),
   { leg: "g8m/import/receiver", reason: IMPORT_NA },
 ];
 
@@ -163,6 +158,13 @@ export const GATE8_RECEIVER_CHECKS: {
     "g8m-legs",
     "mat-adopt-reference",
     "adopt-include-refused",
+    // g8cg (CG3)
+    "g8cg-legs",
+    "cg-native-exact",
+    "cg-negative-control",
+    "cg-sabotage-drop-group",
+    "cg-sabotage-full-copy",
+    "cg-adopt",
     // g8kp (G8kb)
     "delivery-select",
     "delivery-pixels-native",

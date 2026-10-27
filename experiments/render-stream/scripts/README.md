@@ -3504,9 +3504,10 @@ expected.json's state, both sinks decode at /10), `cg-toggle-patch` (a state-onl
 `cg-sabotage-drop-group`, `cg-sabotage-full-copy` (each differs exactly in the cells whose state it
 loses) and `cg-adopt` (the late capture's state and replay); each criterion is spelled out in
 `lib/gate8-cg-checks.ts` and [`../fixtures/gate8-cg/README.md`](../fixtures/gate8-cg/README.md).
-In g7-8 the web export replays every g8cg receiver leg (`GATE8_FILE_GROUPS`); GSW runs g8cg only as
-the GSW-only legs `g8cg/gsw-receiver`, `gsw-receiver-patch` and `gsw-late`, judged by
-`cg-gsw-typed@gsw` (GSW types the /10 state until CG3).
+In g7-8 both browsers replay every g8cg receiver leg (the web export through `GATE8_FILE_GROUPS`,
+GSW through `GATE8_LEGS`), the /9 negative control and both receiver sabotages included; since CG3
+GSW composites the groups and copies itself, so g8cg's own checks judge its legs through the gate 8
+band (channel 1 of the native shot), with `cg-gsw-untyped@gsw` beside them.
 
 ## Gate 8 legs and evidence under `--out/g8m` (g8m)
 

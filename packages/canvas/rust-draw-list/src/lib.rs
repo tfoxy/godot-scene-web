@@ -107,19 +107,60 @@ pub const DRAW_MSDF: u32 = 2;
 /// neighbour of otherwise equal state ([`mergeable`], [`merged`]).
 pub const DRAW_UNTEXTURED: u32 = 4;
 
-/// [`Draw::flags`] (P3-ST): before this draw the executor copies its whole render target into its
-/// screen texture, as Godot 4.5.1's GLES3 canvas renderer copies to the back buffer before the
-/// first screen-reading item of a canvas (rasterizer_canvas_gles3.cpp:426-533,
-/// texture_storage.cpp:3201-3236). A producer sets it on the reader's first non-empty draw; a
-/// flagged draw starts a call ([`mergeable`] compares flags).
-pub const DRAW_SCREEN_COPY: u32 = 8;
-/// [`Draw::flags`] (P3-ST): before this draw (after a [`DRAW_SCREEN_COPY`] on the same draw) the
-/// executor builds the screen texture's blurred mip chain as GLES3 does
-/// (`render_target_gen_back_buffer_mipmaps`, copy_effects.cpp:240-310); until the next copy the
-/// chain is sampled, else only level 0.
-pub const DRAW_SCREEN_MIPMAPS: u32 = 16;
-/// [`SamplerUniform::texture`] (P3-ST): the executor's screen texture (the last
-/// [`DRAW_SCREEN_COPY`]), sampled as GLES3 samples its back buffer whatever the shader's hints say:
+/// [`Draw::flags`] (P3-ST, CG3): before this draw the executor runs, in order, every
+/// [`DrawList::screen_ops`] entry whose `before` is this draw's index: the back-buffer copies,
+/// clears and mip chains Godot 4.5.1's GLES3 canvas renderer makes between two items
+/// (rasterizer_canvas_gles3.cpp:409-540). A producer sets it on the first non-empty draw after the
+/// operations' point; a flagged draw always starts a call ([`mergeable`]).
+pub const DRAW_SCREEN_OPS: u32 = 8;
+/// [`Draw::flags`] (CG3): the draw goes into the back buffer instead of the target, blended as GLES3
+/// blends into it (`canvas_begin(.., p_to_backbuffer)`: a transparent target, whatever
+/// [`Target::opaque`] says), as the items of an open canvas group are drawn. A
+/// [`SCREEN_TEXTURE`] sampled by such a draw reads the white texel (canvas_begin binds white there).
+pub const DRAW_TO_BACK_BUFFER: u32 = 16;
+/// [`Draw::flags`] (CG3): a [`BUILTIN_PROGRAM`] draw that runs Godot's default clip-children shader
+/// (rasterizer_canvas_gles3.cpp:2873-2883: `render_mode unshaded`, `COLOR.rgb` replaced by the back
+/// buffer at `SCREEN_UV`, level 0), the program of a `clip_children` group owner.
+pub const DRAW_GROUP_CLIP: u32 = 32;
+/// [`Draw::flags`] (CG3): a [`BUILTIN_PROGRAM`] draw that runs Godot's default `CanvasGroup` shader
+/// (rasterizer_canvas_gles3.cpp:2844-2860: unshaded, `COLOR *=` the un-premultiplied back buffer at
+/// `SCREEN_UV`, level 0).
+pub const DRAW_GROUP_COMPOSITE: u32 = 64;
+
+/// What a [`ScreenOp`] does to the executor's back buffer (Godot's render-target back buffer).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScreenOpKind {
+    /// `render_target_copy_to_back_buffer(region, mipmaps)` (texture_storage.cpp:3201-3236): the
+    /// target's `region` into the back buffer's level 0, then, with `mipmaps`, the region's
+    /// gaussian mip chain.
+    Copy,
+    /// `render_target_clear_back_buffer(Rect2i(), (0, 0, 0, 0))`: the whole level 0 to
+    /// transparent black (`region` is ignored).
+    Clear,
+    /// `render_target_gen_back_buffer_mipmaps(region)`: the region's gaussian mip chain of what
+    /// level 0 holds (copy_effects.cpp:240-310).
+    Mipmaps,
+}
+
+/// One back-buffer operation between two draws (CG3; P3-ST's screen copies are ones too).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScreenOp {
+    /// The index in [`DrawList::draws`] of the draw it precedes (flagged [`DRAW_SCREEN_OPS`]).
+    pub before: u32,
+    pub kind: ScreenOpKind,
+    /// `[x, y, w, h]` in target pixels, top-left origin, already intersected with the target
+    /// (GLES3's `Rect2i(Size2i(), rt->size).intersection(..)`). An empty one does nothing to the
+    /// pixels, as GLES3 returns early.
+    pub region: [i32; 4],
+    /// [`ScreenOpKind::Copy`]: build the region's mip chain after the copy.
+    pub mipmaps: bool,
+    /// Whether draws after this operation sample the whole mip chain or level 0 only: GLES3's
+    /// `GL_TEXTURE_MAX_LEVEL`, which `canvas_begin` sets from `material_screen_texture_mipmaps_cached`.
+    pub sample_mips: bool,
+}
+
+/// [`SamplerUniform::texture`] (P3-ST): the executor's screen texture (the back buffer as the last
+/// [`ScreenOp`] left it), sampled as GLES3 samples its back buffer whatever the shader's hints say:
 /// linear, linear-mipmap-linear, clamped. The sampler bits are ignored.
 pub const SCREEN_TEXTURE: u32 = u32::MAX;
 /// [`SamplerUniform::texture`] (P3-TM): Godot 4.5.1's GLES3 default textures, which it binds to a
@@ -490,6 +531,10 @@ pub struct DrawList {
     /// `TIME` see (Godot's `RasterizerGLES3::time_total`, uploaded as a float: canvas.glsl's
     /// `time`). Zero when the producer has none.
     pub shader_time: f32,
+    /// P3-ST, CG3: the back-buffer operations, in paint order (each `before` names a draw flagged
+    /// [`DRAW_SCREEN_OPS`]). Part of the draw table: a producer rewrites them with the draws. Not
+    /// in a `PDL1` dump.
+    pub screen_ops: Vec<ScreenOp>,
 }
 
 impl DrawList {
@@ -602,14 +647,17 @@ impl DrawList {
 
 /// Whether `next` can extend the run `prev` (one draw, or a run's state from [`merged`]) into one
 /// draw call: touching index ranges and equal state, where a [`DRAW_UNTEXTURED`] side's texture and
-/// sampler match anything. Without untextured draws this is plain equality of adjacent draws.
+/// sampler match anything, and a [`DRAW_SCREEN_OPS`] `next` never joins (its operations run before
+/// it). Without untextured draws or screen operations this is plain equality of adjacent draws.
 pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
     let untextured = (prev.flags | next.flags) & DRAW_UNTEXTURED != 0;
     prev.first_index + prev.index_count == next.first_index
         && (untextured || (prev.texture == next.texture && prev.sampler == next.sampler))
         && prev.blend == next.blend
         && prev.program == next.program
-        && (prev.flags & !DRAW_UNTEXTURED) == (next.flags & !DRAW_UNTEXTURED)
+        && (prev.flags & !(DRAW_UNTEXTURED | DRAW_SCREEN_OPS))
+            == (next.flags & !(DRAW_UNTEXTURED | DRAW_SCREEN_OPS))
+        && next.flags & DRAW_SCREEN_OPS == 0
         && (prev.flags & DRAW_SCISSOR == 0 || prev.scissor == next.scissor)
         && (prev.flags & DRAW_MSDF == 0 || prev.msdf == next.msdf)
 }
@@ -771,6 +819,7 @@ pub mod pdl1 {
             texture_ops: Vec::new(),
             texture_bytes: Vec::new(),
             shader_time: 0.0,
+            screen_ops: Vec::new(),
         })
     }
 }
@@ -926,6 +975,34 @@ mod tests {
             ..plain
         };
         assert!(mergeable(&plain, &plain2));
+    }
+
+    #[test]
+    fn a_draw_after_screen_operations_starts_a_call_and_its_successors_join_it() {
+        let a = Draw {
+            first_index: 0,
+            index_count: 6,
+            ..Draw::default()
+        };
+        let ops = Draw {
+            first_index: 6,
+            flags: DRAW_SCREEN_OPS,
+            ..a
+        };
+        let next = Draw {
+            first_index: 12,
+            ..a
+        };
+        assert!(!mergeable(&a, &ops));
+        assert!(mergeable(&ops, &next));
+        let bb = Draw {
+            flags: DRAW_TO_BACK_BUFFER,
+            ..next
+        };
+        assert!(
+            !mergeable(&ops, &bb),
+            "the target and the back buffer never share a call"
+        );
     }
 
     #[test]
