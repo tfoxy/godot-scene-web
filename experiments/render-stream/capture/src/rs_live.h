@@ -18,6 +18,13 @@
 // distinct hash it has ever sent, for its whole life. Since P3-SP every connection's set lives in
 // one host-wide CarriedIndex (rs_carried.h: one compact entry per hash, a bit per connection).
 //
+// render-stream/11 (W11b, render-stream-11.md "Resource retention: the carried set"): a /11
+// connection keeps no carried set. Its records before a target T are inline(T) \ inline(B), B the
+// last snapshot it sent (rs2_diff.h records_before: property L2), a function of (B, T) alone, so
+// connections in lockstep share the record list and its encodes like the transaction itself. The
+// host-wide CarriedIndex serves /6-/10 connections only. Dynamic mesh surfaces travel inside the
+// transaction (`mesh_u8`) and take no record.
+//
 // Shared publication (P3-SP, results/p3/p3-sp.md): the published snapshot is held once
 // (shared_ptr) by every connection whose base or pending target it is, never copied per
 // connection. Within one frame callback, connections that send the same transaction (the same
@@ -271,6 +278,10 @@ inline constexpr const char *kSubprotocolV9 = "render-stream.9";
 // The subprotocol that makes a connection /10 (render-stream-10.md "Live transport"): /9's live
 // transport and hello with /10's session and items. Opt-in (GRC_STREAM_VERSION=10).
 inline constexpr const char *kSubprotocolV10 = "render-stream.10";
+// The subprotocol that makes a connection /11 (render-stream-11.md "Live transport"): /10's live
+// transport and hello under render-stream/11, with /11's carried-set rules, dynamic mesh surfaces
+// and stable content_version. Opt-in (GRC_STREAM_VERSION=11).
+inline constexpr const char *kSubprotocolV11 = "render-stream.11";
 
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
@@ -285,6 +296,9 @@ struct LiveConfig {
   std::uint64_t drop_message_frame = 0;
   std::uint64_t ignore_credit_frame = 0;   // G1d
   std::uint64_t stale_coalesce_frame = 0;  // G1d
+  // W11b (render-stream-11.md "Sabotage kinds"): `keep-carried` -- a /11 connection keeps /10's
+  // lifelong carried set (rs2_diff.h RecordPlanner), so a hash that returns is never re-carried.
+  bool keep_carried = false;
   std::uint64_t window_overrun_frame = 0;  // G7q (a listener sabotage, rs_live.h header)
   // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2); every grant is also capped at
   // kHostCreditWindow.
@@ -567,7 +581,10 @@ class Hub {
   // P3-SP: one frame callback's shared work (cleared at the start and end of on_frame_shared).
   struct TargetRefs;  // a target's payload refs and their CarriedIndex ids
   struct SharedTx;    // an encoded transaction other connections may re-stamp
+  struct V11Records;  // W11b: the /11 records before a target, for one (base, target) pair
   const TargetRefs &target_refs(const std::shared_ptr<const rs::Captured> &target);
+  const V11Records &v11_records(const std::shared_ptr<const rs::Captured> &base,
+                                const std::shared_ptr<const rs::Captured> &target);
   void clear_frame_memo();
 
   LiveTransport *transport_;
@@ -588,6 +605,10 @@ class Hub {
   std::vector<std::unique_ptr<TargetRefs>> frame_targets_;
   std::vector<std::unique_ptr<SharedTx>> frame_txs_;
   std::map<std::uint32_t, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_;
+  // W11b: /11's per-callback memo, the record list of each (base, target) pair and each record's
+  // encode by hash (a /11 record is never a CarriedIndex entry).
+  std::vector<std::unique_ptr<V11Records>> frame_v11_;
+  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_v11_;
 };
 
 }  // namespace rs2

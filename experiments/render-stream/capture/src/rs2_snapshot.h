@@ -321,6 +321,11 @@ enum class SabotageKind : std::uint8_t {
   SizeBeforeAdopt,         // Q4: the presentation size is applied before the adoption walk
   AdoptRawShaderCode,      // Q5: an adopted shader publishes get_code() unpreprocessed
   AdoptSkipParams,         // Q5: adopted materials/shaders publish without their parameters
+  // New at /11 (W11b, render-stream-11.md "Capture policy" and "Warm wire budget (WB)"). Declared
+  // on the wire only in a /11 session (render-stream-11.md "Sabotage kinds").
+  CvChurn,       // WB: content_version moves on every re-record, equal lists included (/10's rule)
+  StaleDynamic,  // u8 stays null for one changed dynamic mesh from the sabotage frame on
+  KeepCarried,   // the host keeps /10's lifelong carried set at /11 (W11a's codec flag, live too)
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -518,6 +523,9 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::SizeBeforeAdopt: return "size-before-adopt";
   case SabotageKind::AdoptRawShaderCode: return "adopt-raw-shader-code";
   case SabotageKind::AdoptSkipParams: return "adopt-skip-params";
+  case SabotageKind::CvChurn: return "cv-churn";
+  case SabotageKind::StaleDynamic: return "stale-dynamic";
+  case SabotageKind::KeepCarried: return "keep-carried";
   }
   return "";
 }

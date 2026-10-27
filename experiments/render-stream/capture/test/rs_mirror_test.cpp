@@ -3021,7 +3021,188 @@ void test_backbuffer_state() {
         "a copy on an item the mirror does not know is the unknown-RID rule");
 }
 
+// --- render-stream/11 (W11b; render-stream-11.md "Capture policy", WB) --------------------------
+
+grc::rs::Mirror::V11Options v11_options(grc::rs2::MeshDynamicMode mode, int frames = 4,
+                                        uint64_t max_bytes = 65536) {
+  grc::rs::Mirror::V11Options o;
+  o.enabled = true;
+  o.mesh_dynamic.mode = mode;
+  o.mesh_dynamic.frames = frames;
+  o.mesh_dynamic.max_bytes = max_bytes;
+  return o;
+}
+
+void update_vertices(Mirror *m, uint64_t rid, float x0, uint64_t frame) {
+  const auto in = mesh_input(x0);
+  m->mesh_surface_update_region(rid, "mesh_surface_update_vertex_region", 0, true, &in, frame);
+}
+
+// auto: the second change frame within K frames promotes; the creation frame and a byte-equal
+// update are no change; a dynamic mesh stays dynamic; its body is the payload past header + meta.
+void test_v11_mesh_classification() {
+  using grc::rs2::MeshDynamicMode;
+  Mirror m;
+  bind_root(&m);
+  m.set_v11(v11_options(MeshDynamicMode::Auto, 4));
+  m.mesh_create(0x500, 1);
+  m.mesh_add_surface(0x500, mesh_input(0), 1);  // the build frame: not a change
+  update_vertices(&m, 0x500, 1, 1);              // still the build frame
+  update_vertices(&m, 0x500, 2, 10);             // change frame 1
+  update_vertices(&m, 0x500, 3, 10);             // the same frame: counted once
+  check(!mesh(m.snapshot(1, 10).state, 1)->dynamic, "one change frame (10) is not dynamic");
+  update_vertices(&m, 0x500, 3, 12);             // byte-equal: no change
+  check(!mesh(m.snapshot(2, 12).state, 1)->dynamic, "a byte-equal update is no change");
+  update_vertices(&m, 0x500, 4, 15);             // 15 - 10 > 4: a fresh first change
+  check(!mesh(m.snapshot(3, 15).state, 1)->dynamic, "changes 5 frames apart stay static (K = 4)");
+  update_vertices(&m, 0x500, 5, 19);             // 19 - 15 = 4 <= K
+  grc::rs::Captured cap = m.snapshot(4, 19);
+  const grc::rs2::MeshEntry *e = mesh(cap.state, 1);
+  check(e->dynamic && e->surfaces.size() == 1 && e->surfaces[0].body != nullptr,
+        "the second change within 4 frames makes it dynamic, with a body per surface");
+  const auto in = mesh_input(5);
+  const std::vector<uint8_t> &payload = *in.bytes;
+  const uint32_t meta = payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24);
+  check(e->surfaces[0].body->size() == payload.size() - 12 - meta &&
+            std::equal(e->surfaces[0].body->begin(), e->surfaces[0].body->end(),
+                       payload.begin() + 12 + meta),
+        "the body is the GRM1 payload without its 12-byte header and its meta");
+  check(e->surfaces[0].hash == in.copy.hash && e->surfaces[0].payload_bytes == payload.size() &&
+            cap.payloads.count(in.copy.hash) == 1,
+        "the snapshot keeps the GRM1 hash and payload (a /10 connection on a /11 host)");
+  const uint64_t serial = e->content_serial;
+  check(m.snapshot(5, 20).state.meshes[0].content_serial == serial,
+        "no change, no serial move");
+  for (uint64_t f = 30; f < 400; f += 50) {
+    update_vertices(&m, 0x500, static_cast<float>(f), f);
+  }
+  const grc::rs2::MeshEntry later = mesh(m.snapshot(6, 400).state, 1) != nullptr
+                                        ? *mesh(m.snapshot(7, 400).state, 1)
+                                        : grc::rs2::MeshEntry();
+  check(later.dynamic && later.content_serial > serial,
+        "a dynamic mesh is never demoted, and every change moves its serial");
+  m.mesh_clear(0x500, 401);
+  const grc::rs2::MeshEntry *empty = mesh(m.snapshot(8, 401).state, 1);
+  check(empty != nullptr && !empty->dynamic && empty->surfaces.empty(),
+        "an empty mesh carries no dynamic flag (nothing to carry)");
+  m.mesh_add_surface(0x500, mesh_input(9), 401);
+  check(mesh(m.snapshot(9, 401).state, 1)->dynamic, "refilled, it is dynamic again");
+}
+
+void test_v11_mesh_modes() {
+  using grc::rs2::MeshDynamicMode;
+  {
+    Mirror m;
+    bind_root(&m);
+    m.set_v11(v11_options(MeshDynamicMode::All));
+    m.mesh_create(0x500, 1);
+    check(!mesh(m.snapshot(1, 1).state, 1)->dynamic, "all: an empty mesh is not dynamic");
+    m.mesh_add_surface(0x500, mesh_input(0), 1);
+    check(mesh(m.snapshot(2, 1).state, 1)->dynamic, "all: dynamic at its first content");
+  }
+  {
+    Mirror m;
+    bind_root(&m);
+    m.set_v11(v11_options(MeshDynamicMode::Off));
+    m.mesh_create(0x500, 1);
+    m.mesh_add_surface(0x500, mesh_input(0), 1);
+    for (uint64_t f = 2; f < 10; ++f) {
+      update_vertices(&m, 0x500, static_cast<float>(f), f);
+    }
+    check(!mesh(m.snapshot(1, 10).state, 1)->dynamic, "off: never dynamic");
+  }
+  {
+    Mirror m;
+    bind_root(&m);
+    m.set_v11(v11_options(MeshDynamicMode::Auto, 4, 10));  // a 3-vertex body is 64 bytes
+    m.mesh_create(0x500, 1);
+    m.mesh_add_surface(0x500, mesh_input(0), 1);
+    update_vertices(&m, 0x500, 1, 2);
+    update_vertices(&m, 0x500, 2, 3);
+    check(!mesh(m.snapshot(1, 3).state, 1)->dynamic, "a mesh over max_bytes stays static");
+  }
+  {
+    Mirror m;  // V11Options off: the snapshot is /10's
+    bind_root(&m);
+    m.mesh_create(0x500, 1);
+    m.mesh_add_surface(0x500, mesh_input(0), 1);
+    update_vertices(&m, 0x500, 1, 2);
+    update_vertices(&m, 0x500, 2, 3);
+    const grc::rs2::MeshEntry *e = mesh(m.snapshot(1, 3).state, 1);
+    check(!e->dynamic && e->content_serial == 0 && e->surfaces[0].body == nullptr,
+          "disabled: no dynamic flag, serial or body");
+  }
+  {
+    Mirror m;  // stale-dynamic: the first dynamic mesh changing from frame 6 keeps its serial
+    bind_root(&m);
+    grc::rs::Mirror::V11Options o = v11_options(MeshDynamicMode::All);
+    o.stale_dynamic_frame = 6;
+    m.set_v11(o);
+    m.mesh_create(0x500, 1);
+    m.mesh_add_surface(0x500, mesh_input(0), 1);
+    m.mesh_create(0x600, 1);
+    m.mesh_add_surface(0x600, mesh_input(0), 1);
+    const uint64_t s1 = mesh(m.snapshot(1, 1).state, 1)->content_serial;
+    const uint64_t s2 = mesh(m.snapshot(2, 1).state, 2)->content_serial;
+    update_vertices(&m, 0x500, 5, 5);
+    update_vertices(&m, 0x500, 6, 6);
+    update_vertices(&m, 0x600, 7, 7);
+    const Snapshot snap = m.snapshot(3, 7).state;
+    check(mesh(snap, 1)->content_serial == s1 + 1 && mesh(snap, 2)->content_serial == s2 + 1,
+          "stale-dynamic: mesh 1 froze at its frame-6 change, mesh 2 still moves");
+  }
+}
+
+// WB's stable content_version: equal command lists carry equal versions, whatever lies between.
+void test_v11_stable_content_version() {
+  using grc::rs2::MeshDynamicMode;
+  const auto draw = [](Mirror *m, const grc::rs2::Color4 &color, uint64_t frame) {
+    m->clear(100, frame);
+    m->add_rect(100, kRect, color, false, frame);
+  };
+  Mirror m;
+  bind_root(&m);
+  m.set_v11(v11_options(MeshDynamicMode::Auto));
+  m.canvas_item_create(100, 1);
+  draw(&m, kRed, 1);
+  const uint64_t red = item(m.snapshot(1, 1).state, 1)->content_version;
+  check(red != 0 && red < (uint64_t{1} << 53), "a 53-bit content_version");
+  draw(&m, kRed, 2);
+  check(item(m.snapshot(2, 2).state, 1)->content_version == red,
+        "an identical re-record keeps content_version");
+  draw(&m, kGreen, 3);
+  const uint64_t green = item(m.snapshot(3, 3).state, 1)->content_version;
+  check(green != red, "a different list moves it");
+  draw(&m, kRed, 4);
+  check(item(m.snapshot(4, 4).state, 1)->content_version == red,
+        "back to the first list (A-B-A): the first version again, so any base agrees");
+  grc::rs2::Color4 nz = kRed;
+  nz[0] = -0.0f;
+  grc::rs2::Color4 pz = kRed;
+  pz[0] = 0.0f;
+  draw(&m, nz, 5);
+  const uint64_t neg = item(m.snapshot(5, 5).state, 1)->content_version;
+  draw(&m, pz, 6);
+  check(item(m.snapshot(6, 6).state, 1)->content_version != neg,
+        "floats compare by bit pattern (-0 and +0 differ)");
+
+  Mirror churn;
+  bind_root(&churn);
+  grc::rs::Mirror::V11Options o = v11_options(MeshDynamicMode::Auto);
+  o.cv_churn = true;
+  churn.set_v11(o);
+  churn.canvas_item_create(100, 1);
+  draw(&churn, kRed, 1);
+  const uint64_t a = item(churn.snapshot(1, 1).state, 1)->content_version;
+  draw(&churn, kRed, 2);
+  check(item(churn.snapshot(2, 2).state, 1)->content_version == a + 2,
+        "cv-churn: the counter moves on every re-record, as below /11");
+}
+
 int main() {
+  test_v11_mesh_classification();
+  test_v11_mesh_modes();
+  test_v11_stable_content_version();
   test_backbuffer_state();
   test_fresh_session();
   test_ids_and_recycled_rid();

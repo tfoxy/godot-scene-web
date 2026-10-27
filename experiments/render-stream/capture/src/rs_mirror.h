@@ -101,6 +101,10 @@ struct MirrorStats {
   std::uint64_t live_meshes = 0;          // mesh-table entries, tombstones included
   std::uint64_t mesh_unknown = 0;         // a mesh tap naming a RID the table does not know
   std::uint64_t mesh_payload_bytes = 0;   // distinct GRM1 payload bytes the table holds now
+  // W11b (render-stream/11 only; zero otherwise).
+  std::uint64_t meshes_dynamic = 0;        // dynamic mesh entries now
+  std::uint64_t mesh_promotions = 0;       // meshes made dynamic so far
+  std::uint64_t mesh_content_changes = 0;  // content changes counted (hook calls)
   // Gate 5.5 (G55d).
   std::uint64_t live_shaders = 0;
   std::uint64_t live_materials = 0;
@@ -337,6 +341,34 @@ class Mirror {
   // a TIME-free session is unchanged.
   void set_carry_shader_time(bool carry);
   void set_shader_time(double time);
+
+  // --- render-stream/11 (W11b; render-stream-11.md "Capture policy", "Warm wire budget (WB)") --
+  //
+  // Set once before arming (survives reset(), like set_carry_shader_time). With `enabled` (a
+  // GRC_STREAM_VERSION=11 session) the snapshots carry:
+  //   - dynamic meshes. A content change is a hook call that changes a mesh's surface bytes (a
+  //     region update whose re-encoded payload hashes differently, a surface added or removed, a
+  //     clear of a mesh with surfaces), counted once per host frame and never in the frame the
+  //     mesh was created in. Under `auto` a mesh becomes dynamic at its second change frame within
+  //     `frames` frames (f2 - f1 <= frames); under `all` at its first snapshot with content. Only
+  //     an `ok` mesh with at least one surface and bodies totalling at most `max_bytes` is
+  //     promoted, decided at the snapshot. It stays dynamic until freed. Each dynamic surface
+  //     carries its body (the GRM1 payload without its 12-byte header and meta, shared), and the
+  //     mesh its content serial, which moves exactly at each content change.
+  //   - a stable content_version: every item's is a 53-bit digest of its encoded command list
+  //     (rs2_codec.h encode_command_list), so equal lists carry equal versions whatever lies
+  //     between them, and a list that differs moves it.
+  // Sabotages: `cv_churn` publishes the mirror's own counter instead (every re-record moves it,
+  // /10's rule); `stale_dynamic_frame` freezes the content serial of the first dynamic mesh that
+  // changes at or after that frame, so its patches leave `u8` null over changed bytes.
+  // Disabled (every older stream) the snapshots are exactly what they were.
+  struct V11Options {
+    bool enabled = false;
+    rs2::MeshDynamicPolicy mesh_dynamic;
+    bool cv_churn = false;
+    std::uint64_t stale_dynamic_frame = 0;  // 0: off
+  };
+  void set_v11(const V11Options &options);
 
   // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
   //
@@ -651,6 +683,10 @@ class Mirror {
   struct Item {
     rs2::ItemState state;
     std::uint64_t rid = 0;
+    // W11b: the stable content_version (V11Options) and the mirror counter it was computed at.
+    bool cv_digest_set = false;
+    std::uint64_t cv_digest_of = 0;
+    std::uint64_t cv_digest = 0;
     // G55d (render-stream-5.md "Item"): the last canvas_item_set_material named a non-null RID
     // the material table does not know -- `material: null` plus the derived `unknown-material`.
     bool unknown_material = false;
@@ -724,6 +760,8 @@ class Mirror {
     std::int64_t format = 0;
     std::int32_t vertex_count = 0;
     std::int32_t index_count = 0;
+    // W11b: the /11 body of `bytes` (built at the first snapshot that needs it, then shared).
+    mutable std::shared_ptr<const std::vector<std::uint8_t>> body;
   };
   struct Mesh {
     std::uint32_t id = 0;
@@ -736,6 +774,12 @@ class Mirror {
     rs2::AdoptedContent adopted_content = rs2::AdoptedContent::None;
     std::vector<MeshSurf> surfaces;
     std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    // W11b (V11Options): the classification and the content serial.
+    bool dynamic = false;
+    bool promote = false;           // a qualifying change since the last snapshot (auto)
+    std::uint64_t born_frame = 0;   // the frame it was created (or adopted) in
+    std::uint64_t change_frame = 0;  // the last change frame (0: none yet)
+    std::uint64_t content_serial = 1;
   };
   // One shader (G55d). `has_code` false: shader_create'd, no shader_set_code yet.
   struct Shader {
@@ -853,7 +897,12 @@ class Mirror {
   bool mesh_referenced(std::uint32_t id) const;
   // Takes `id` out of the table: a `freed` tombstone while a command names it, gone otherwise.
   void retire_mesh(std::uint32_t id);
-  static rs2::MeshEntry wire_mesh(const Mesh &mesh);
+  // W11b: with V11Options enabled, a dynamic mesh's entry carries `dynamic`, its serial and bodies.
+  rs2::MeshEntry wire_mesh(const Mesh &mesh) const;
+  // W11b: one content change of `mesh` at `frame` (V11Options): the serial and the classification.
+  void mesh_changed(Mesh *mesh, std::uint64_t frame);
+  // W11b: promotes `mesh` at the snapshot when V11Options says so.
+  void classify_mesh(Mesh *mesh);
   // Shaders and materials (G55d).
   Shader *find_shader(std::uint64_t rid);
   Material *find_material(std::uint64_t rid);
@@ -892,6 +941,8 @@ class Mirror {
   std::uint64_t perturb_glyph_frame_ = 0;
   std::uint64_t perturb_vertex_frame_ = 0;
   bool carry_shader_time_ = false;  // P3-TM
+  V11Options v11_;                  // W11b (survives reset())
+  std::uint32_t stale_dynamic_mesh_ = 0;  // W11b stale-dynamic: the frozen mesh (0: none yet)
   double shader_time_ = 0.0;        // P3-TM: the last set_shader_time()
   bool degenerate_host_size_ = false;
   // G6b (Q3a, Q3b): the arm-time global canvas transform reference and the latest value the root

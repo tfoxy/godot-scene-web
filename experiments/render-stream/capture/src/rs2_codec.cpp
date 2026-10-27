@@ -341,7 +341,9 @@ void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<floa
       append_json_string(out, s.hash);
     }
     out += ",\"payload_bytes\":";
-    append_json_int(out, s.payload_bytes);
+    // W11b: a dynamic surface's payload_bytes is its body's length; the snapshot keeps the GRM1
+    // payload's for a /10 connection on the same host (rs_captured.h payload_refs).
+    append_json_int(out, dynamic && s.body != nullptr ? s.body->size() : s.payload_bytes);
     out += ",\"primitive\":";
     append_json_string(out, to_wire(s.primitive));
     out += ",\"format\":";
@@ -588,7 +590,258 @@ void append_backbuffer_state(std::string &out, const ItemState &item,
   }
 }
 
+// The JSON array of an item's commands, with their floats appended to `cmd_f32` and (/4) their
+// indices to `cmd_i32`, the running offsets taken from those blocks' sizes (render-stream-1.md
+// "Commands"; the same at every version). W11b: also what command_list_digest() hashes.
+void append_commands(std::string &items_json, const std::vector<Command> &commands,
+                     std::vector<float> &cmd_f32, std::vector<std::int32_t> &cmd_i32) {
+  items_json += "[";
+  for (std::size_t c = 0; c < commands.size(); ++c) {
+    if (c != 0) {
+      items_json += ",";
+    }
+    const Command &command = commands[c];
+    switch (command.kind) {
+    case CommandKind::AddRect:
+      items_json += "{\"op\":\"add_rect\",\"aa\":";
+      append_json_bool(items_json, command.antialiased);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+      cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
+      break;
+    case CommandKind::AddTextureRect:
+      items_json += "{\"op\":\"add_texture_rect\",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"tile\":";
+      append_json_bool(items_json, command.tile);
+      items_json += ",\"transpose\":";
+      append_json_bool(items_json, command.transpose);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+      cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+      break;
+    case CommandKind::AddTextureRectRegion:
+      items_json += "{\"op\":\"add_texture_rect_region\",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"transpose\":";
+      append_json_bool(items_json, command.transpose);
+      items_json += ",\"clip_uv\":";
+      append_json_bool(items_json, command.clip_uv);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+      cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
+      cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+      break;
+    case CommandKind::AddMsdfTextureRectRegion:
+      // render-stream-3.md "Command": 14 floats (rect 4, src 4, modulate 4, px_range, scale).
+      items_json += "{\"op\":\"add_msdf_texture_rect_region\",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"outline\":";
+      append_json_int(items_json, command.msdf_outline);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+      cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
+      cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+      cmd_f32.push_back(command.msdf_px_range);
+      cmd_f32.push_back(command.msdf_scale);
+      break;
+    case CommandKind::AddLine:
+      // render-stream-4.md "Command": 9 floats (from 2, to 2, colour 4, width 1).
+      items_json += "{\"op\":\"add_line\",\"aa\":";
+      append_json_bool(items_json, command.antialiased);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.line_from.begin(), command.line_from.end());
+      cmd_f32.insert(cmd_f32.end(), command.line_to.begin(), command.line_to.end());
+      cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
+      cmd_f32.push_back(command.width);
+      break;
+    case CommandKind::AddPolyline:
+    case CommandKind::AddMultiline:
+      // render-stream-4.md "Command": width 1, points 2n, colours 4 x colors.size().
+      items_json += command.kind == CommandKind::AddPolyline ? "{\"op\":\"add_polyline\",\"aa\":"
+                                                      : "{\"op\":\"add_multiline\",\"aa\":";
+      append_json_bool(items_json, command.antialiased);
+      items_json += ",\"n\":";
+      append_json_int(items_json, command.points.size());
+      items_json += ",\"colors\":";
+      append_json_int(items_json, command.colors.size());
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.push_back(command.width);
+      for (const Point2 &p : command.points) {
+        cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
+      }
+      for (const Color4 &c : command.colors) {
+        cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
+      }
+      break;
+    case CommandKind::AddCircle:
+      // render-stream-4.md "Command": 7 floats (position 2, radius 1, colour 4).
+      items_json += "{\"op\":\"add_circle\",\"aa\":";
+      append_json_bool(items_json, command.antialiased);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.circle_position.begin(), command.circle_position.end());
+      cmd_f32.push_back(command.circle_radius);
+      cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
+      break;
+    case CommandKind::AddPrimitive:
+    case CommandKind::AddPolygon:
+      // render-stream-4.md "Command": points 2n, colours 4 x colors.size(), uvs 2 x uvs.size().
+      items_json += command.kind == CommandKind::AddPrimitive ? "{\"op\":\"add_primitive\",\"tex\":"
+                                                        : "{\"op\":\"add_polygon\",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"n\":";
+      append_json_int(items_json, command.points.size());
+      items_json += ",\"colors\":";
+      append_json_int(items_json, command.colors.size());
+      items_json += ",\"uvs\":";
+      append_json_int(items_json, command.uvs.size());
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      for (const Point2 &p : command.points) {
+        cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
+      }
+      for (const Color4 &c : command.colors) {
+        cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
+      }
+      for (const Point2 &uv : command.uvs) {
+        cmd_f32.insert(cmd_f32.end(), uv.begin(), uv.end());
+      }
+      break;
+    case CommandKind::AddTriangleArray:
+      // render-stream-4.md "Command": cmd_f32 as add_primitive; indices (int32) in cmd_i32.
+      items_json += "{\"op\":\"add_triangle_array\",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"n\":";
+      append_json_int(items_json, command.points.size());
+      items_json += ",\"colors\":";
+      append_json_int(items_json, command.colors.size());
+      items_json += ",\"uvs\":";
+      append_json_int(items_json, command.uvs.size());
+      items_json += ",\"indices\":";
+      append_json_int(items_json, command.indices.size());
+      items_json += ",\"count\":";
+      append_json_int(items_json, command.triangle_count);
+      items_json += ",\"i\":";
+      append_json_int(items_json, cmd_i32.size());
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      for (const Point2 &p : command.points) {
+        cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
+      }
+      for (const Color4 &c : command.colors) {
+        cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
+      }
+      for (const Point2 &uv : command.uvs) {
+        cmd_f32.insert(cmd_f32.end(), uv.begin(), uv.end());
+      }
+      cmd_i32.insert(cmd_i32.end(), command.indices.begin(), command.indices.end());
+      break;
+    case CommandKind::AddNinePatch:
+      // render-stream-4.md "Command": rect 4, source 4, margin tl 2, margin br 2, modulate 4.
+      items_json += "{\"op\":\"add_nine_patch\",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"x_axis\":";
+      append_json_string(items_json, to_wire(command.x_axis));
+      items_json += ",\"y_axis\":";
+      append_json_string(items_json, to_wire(command.y_axis));
+      items_json += ",\"draw_center\":";
+      append_json_bool(items_json, command.draw_center);
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
+      cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
+      cmd_f32.insert(cmd_f32.end(), command.np_margin_tl.begin(), command.np_margin_tl.end());
+      cmd_f32.insert(cmd_f32.end(), command.np_margin_br.begin(), command.np_margin_br.end());
+      cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+      break;
+    case CommandKind::AddMesh:
+      // render-stream-4.md "Command": transform 6, modulate 4.
+      items_json += "{\"op\":\"add_mesh\",\"mesh\":";
+      append_json_int(items_json, command.mesh);
+      items_json += ",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += ",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
+      cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
+      break;
+    case CommandKind::AddSetTransform:
+      // render-stream-4.md "Command": transform 6 (x.x, x.y, y.x, y.y, origin.x, origin.y).
+      items_json += "{\"op\":\"add_set_transform\",\"f\":";
+      append_json_int(items_json, cmd_f32.size());
+      items_json += "}";
+      cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
+      break;
+    case CommandKind::AddClipIgnore:
+      // render-stream-4.md "Command": no floats, no "f" key.
+      items_json += "{\"op\":\"add_clip_ignore\",\"ignore\":";
+      append_json_bool(items_json, command.clip_ignore);
+      items_json += "}";
+      break;
+    case CommandKind::Unsupported:
+      items_json += "{\"op\":\"unsupported\",\"name\":";
+      append_json_string(items_json, command.name);
+      items_json += ",\"reason\":";
+      append_json_string(items_json, to_wire(command.unsupported_reason));
+      items_json += "}";
+      break;
+    }
+  }
+  items_json += "]";
+}
+
 }  // namespace
+
+void encode_command_list(const std::vector<Command> &commands, std::string *json,
+                         std::vector<float> *cmd_f32, std::vector<std::int32_t> *cmd_i32) {
+  append_commands(*json, commands, *cmd_f32, *cmd_i32);
+}
 
 std::vector<std::uint8_t> magic() {
   return std::vector<std::uint8_t>(kMagic.begin(), kMagic.end());
@@ -1162,245 +1415,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (entry.commands_null) {
       items_json += "null";
     } else {
-      items_json += "[";
-      for (std::size_t c = 0; c < item.commands.size(); ++c) {
-        if (c != 0) {
-          items_json += ",";
-        }
-        const Command &command = item.commands[c];
-        switch (command.kind) {
-        case CommandKind::AddRect:
-          items_json += "{\"op\":\"add_rect\",\"aa\":";
-          append_json_bool(items_json, command.antialiased);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
-          cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
-          break;
-        case CommandKind::AddTextureRect:
-          items_json += "{\"op\":\"add_texture_rect\",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"tile\":";
-          append_json_bool(items_json, command.tile);
-          items_json += ",\"transpose\":";
-          append_json_bool(items_json, command.transpose);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
-          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
-          break;
-        case CommandKind::AddTextureRectRegion:
-          items_json += "{\"op\":\"add_texture_rect_region\",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"transpose\":";
-          append_json_bool(items_json, command.transpose);
-          items_json += ",\"clip_uv\":";
-          append_json_bool(items_json, command.clip_uv);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
-          cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
-          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
-          break;
-        case CommandKind::AddMsdfTextureRectRegion:
-          // render-stream-3.md "Command": 14 floats (rect 4, src 4, modulate 4, px_range, scale).
-          items_json += "{\"op\":\"add_msdf_texture_rect_region\",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"outline\":";
-          append_json_int(items_json, command.msdf_outline);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
-          cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
-          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
-          cmd_f32.push_back(command.msdf_px_range);
-          cmd_f32.push_back(command.msdf_scale);
-          break;
-        case CommandKind::AddLine:
-          // render-stream-4.md "Command": 9 floats (from 2, to 2, colour 4, width 1).
-          items_json += "{\"op\":\"add_line\",\"aa\":";
-          append_json_bool(items_json, command.antialiased);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.line_from.begin(), command.line_from.end());
-          cmd_f32.insert(cmd_f32.end(), command.line_to.begin(), command.line_to.end());
-          cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
-          cmd_f32.push_back(command.width);
-          break;
-        case CommandKind::AddPolyline:
-        case CommandKind::AddMultiline:
-          // render-stream-4.md "Command": width 1, points 2n, colours 4 x colors.size().
-          items_json += command.kind == CommandKind::AddPolyline ? "{\"op\":\"add_polyline\",\"aa\":"
-                                                          : "{\"op\":\"add_multiline\",\"aa\":";
-          append_json_bool(items_json, command.antialiased);
-          items_json += ",\"n\":";
-          append_json_int(items_json, command.points.size());
-          items_json += ",\"colors\":";
-          append_json_int(items_json, command.colors.size());
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.push_back(command.width);
-          for (const Point2 &p : command.points) {
-            cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
-          }
-          for (const Color4 &c : command.colors) {
-            cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
-          }
-          break;
-        case CommandKind::AddCircle:
-          // render-stream-4.md "Command": 7 floats (position 2, radius 1, colour 4).
-          items_json += "{\"op\":\"add_circle\",\"aa\":";
-          append_json_bool(items_json, command.antialiased);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.circle_position.begin(), command.circle_position.end());
-          cmd_f32.push_back(command.circle_radius);
-          cmd_f32.insert(cmd_f32.end(), command.color.begin(), command.color.end());
-          break;
-        case CommandKind::AddPrimitive:
-        case CommandKind::AddPolygon:
-          // render-stream-4.md "Command": points 2n, colours 4 x colors.size(), uvs 2 x uvs.size().
-          items_json += command.kind == CommandKind::AddPrimitive ? "{\"op\":\"add_primitive\",\"tex\":"
-                                                            : "{\"op\":\"add_polygon\",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"n\":";
-          append_json_int(items_json, command.points.size());
-          items_json += ",\"colors\":";
-          append_json_int(items_json, command.colors.size());
-          items_json += ",\"uvs\":";
-          append_json_int(items_json, command.uvs.size());
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          for (const Point2 &p : command.points) {
-            cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
-          }
-          for (const Color4 &c : command.colors) {
-            cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
-          }
-          for (const Point2 &uv : command.uvs) {
-            cmd_f32.insert(cmd_f32.end(), uv.begin(), uv.end());
-          }
-          break;
-        case CommandKind::AddTriangleArray:
-          // render-stream-4.md "Command": cmd_f32 as add_primitive; indices (int32) in cmd_i32.
-          items_json += "{\"op\":\"add_triangle_array\",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"n\":";
-          append_json_int(items_json, command.points.size());
-          items_json += ",\"colors\":";
-          append_json_int(items_json, command.colors.size());
-          items_json += ",\"uvs\":";
-          append_json_int(items_json, command.uvs.size());
-          items_json += ",\"indices\":";
-          append_json_int(items_json, command.indices.size());
-          items_json += ",\"count\":";
-          append_json_int(items_json, command.triangle_count);
-          items_json += ",\"i\":";
-          append_json_int(items_json, cmd_i32.size());
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          for (const Point2 &p : command.points) {
-            cmd_f32.insert(cmd_f32.end(), p.begin(), p.end());
-          }
-          for (const Color4 &c : command.colors) {
-            cmd_f32.insert(cmd_f32.end(), c.begin(), c.end());
-          }
-          for (const Point2 &uv : command.uvs) {
-            cmd_f32.insert(cmd_f32.end(), uv.begin(), uv.end());
-          }
-          cmd_i32.insert(cmd_i32.end(), command.indices.begin(), command.indices.end());
-          break;
-        case CommandKind::AddNinePatch:
-          // render-stream-4.md "Command": rect 4, source 4, margin tl 2, margin br 2, modulate 4.
-          items_json += "{\"op\":\"add_nine_patch\",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"x_axis\":";
-          append_json_string(items_json, to_wire(command.x_axis));
-          items_json += ",\"y_axis\":";
-          append_json_string(items_json, to_wire(command.y_axis));
-          items_json += ",\"draw_center\":";
-          append_json_bool(items_json, command.draw_center);
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.rect.begin(), command.rect.end());
-          cmd_f32.insert(cmd_f32.end(), command.src.begin(), command.src.end());
-          cmd_f32.insert(cmd_f32.end(), command.np_margin_tl.begin(), command.np_margin_tl.end());
-          cmd_f32.insert(cmd_f32.end(), command.np_margin_br.begin(), command.np_margin_br.end());
-          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
-          break;
-        case CommandKind::AddMesh:
-          // render-stream-4.md "Command": transform 6, modulate 4.
-          items_json += "{\"op\":\"add_mesh\",\"mesh\":";
-          append_json_int(items_json, command.mesh);
-          items_json += ",\"tex\":";
-          if (command.has_tex) {
-            append_json_int(items_json, command.tex);
-          } else {
-            items_json += "null";
-          }
-          items_json += ",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
-          cmd_f32.insert(cmd_f32.end(), command.modulate.begin(), command.modulate.end());
-          break;
-        case CommandKind::AddSetTransform:
-          // render-stream-4.md "Command": transform 6 (x.x, x.y, y.x, y.y, origin.x, origin.y).
-          items_json += "{\"op\":\"add_set_transform\",\"f\":";
-          append_json_int(items_json, cmd_f32.size());
-          items_json += "}";
-          cmd_f32.insert(cmd_f32.end(), command.transform.begin(), command.transform.end());
-          break;
-        case CommandKind::AddClipIgnore:
-          // render-stream-4.md "Command": no floats, no "f" key.
-          items_json += "{\"op\":\"add_clip_ignore\",\"ignore\":";
-          append_json_bool(items_json, command.clip_ignore);
-          items_json += "}";
-          break;
-        case CommandKind::Unsupported:
-          items_json += "{\"op\":\"unsupported\",\"name\":";
-          append_json_string(items_json, command.name);
-          items_json += ",\"reason\":";
-          append_json_string(items_json, to_wire(command.unsupported_reason));
-          items_json += "}";
-          break;
-        }
-      }
-      items_json += "]";
+      append_commands(items_json, item.commands, cmd_f32, cmd_i32);
     }
     items_json += "}";
 

@@ -30,10 +30,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "rs2_diff.h"
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_resource_store.h"
@@ -243,7 +245,11 @@ class Publisher {
     Session session;
     std::uint64_t transactions = 0;
     EndStats stats;
-    std::set<std::string> carried;  // hashes this stream already carried inline
+    std::set<std::string> carried;  // hashes this stream already carried inline (/2-/10)
+    // W11b (render-stream-11.md "Resource retention"): a /11 stream's records are
+    // inline(T) \ inline(B), B the previous published snapshot (both sinks advance together), so
+    // nothing is held -- unless the keep-carried sabotage makes the planner lifelong.
+    std::unique_ptr<RecordPlanner> planner;
   };
 
   const Lane &lane(Encoding encoding) const {

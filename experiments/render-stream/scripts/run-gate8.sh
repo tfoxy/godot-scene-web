@@ -133,6 +133,16 @@
 #       capture (`receiver-v9`), on the late capture (`late/receiver`), and the two receiver
 #       sabotages on the /10 full sink (`sabotage-drop-canvas-group/receiver`,
 #       `sabotage-full-backbuffer-copy/receiver`, RS_RECEIVER_SABOTAGE).
+#   g8w11 (W11b, render-stream-11.md: the capture side of /11; every leg under g8w11/, headless
+#       captures only, both sinks): imports of fixtures/gate6-scene and fixtures/gate5-mesh; at
+#       GRC_STREAM_VERSION=11 and GRC_RESOURCE_INLINE_MAX_BYTES=4096, fixtures/capture-scale shrunk
+#       to 600 items (`scale/capture`; sabotages cv-churn, stale-dynamic and perturb-vertex under
+#       `scale/sabotage-*`), fixtures/gate6-scene animate (`scene/capture`, auto; `scene/off`,
+#       GRC_MESH_DYNAMIC=off, where MS's poses recur every 90 frames;
+#       `scene/sabotage-keep-carried`, off plus keep-carried) and fixtures/gate5-mesh
+#       (`mesh/capture`). The checker validates every recording through the TypeScript validator
+#       and rs-core-check, and judges dyn-wire, dyn-classify, carried-equals-names,
+#       resend-on-return and the stable content_version (lib/gate8-w11-checks.ts).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -154,8 +164,8 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11)
 
 EXTENSION=""
 CALIBRATION=""
@@ -769,6 +779,87 @@ run_g8cg() {
 	rm -rf "$OUT/g8cg/reference/xdg-data" "$OUT/g8cg/reference-repeat/xdg-data"
 	gs_teardown "$OUT/gamescope-g8cg"
 	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
+# ----------------------------------------------------------------------------------- g8w11
+G8W11_SCALE_DIR="$EXPERIMENT_DIR/fixtures/capture-scale"
+G8W11_SCENE_DIR="$EXPERIMENT_DIR/fixtures/gate6-scene"
+G8W11_MESH_DIR="$EXPERIMENT_DIR/fixtures/gate5-mesh"
+# The frame the scale sabotages start at (well after every mesh has turned dynamic).
+G8W11_SABOTAGE_FRAME=20
+G8W11_ENV=(GRC_STREAM_VERSION=11 GRC_RESOURCE_INLINE_MAX_BYTES=4096)
+# capture-scale (P3-CAP) at a tenth of its items and small textures: STS2's combat shape for the
+# meshes (187, 76 updated a frame, every pose new) and its identical redraws (150 items a frame,
+# RS_SCALE_REDRAWS), cheap enough for a correctness leg.
+G8W11_SCALE_ENV=(RS_FIXTURE_ARM=born GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_ITEMS=600
+	RS_SCALE_TEXTURES=24 RS_SCALE_TEX_W=64 RS_SCALE_TEX_H=64 RS_SCALE_DRAWN_TEXTURES=24
+	RS_SCALE_FLOAT_TEXTURES=16 RS_SCALE_SHADERS=8 RS_SCALE_MATERIALS=80 RS_SCALE_WARMUP=10 RS_SCALE_REDRAWS=150)
+G8W11_SCALE_QUIT=60
+G8W11_SCENE_QUIT=300
+
+run_import_g8w11() {
+	echo "run-gate8: g8w11 import (gate6-scene, gate5-mesh)"
+	local project leg
+	for leg in scene mesh; do
+		project="$G8W11_SCENE_DIR"
+		[ "$leg" = mesh ] && project="$G8W11_MESH_DIR"
+		LEG_ENV=()
+		run_headless "$OUT/g8w11/import/$leg" none -- mise exec -- godot --headless --path "$project" --import
+		[ -f "$OUT/g8w11/import/$leg/skipped-by-tier.txt" ] && continue
+		if [ "$(cat "$OUT/g8w11/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8w11 import ($leg) failed, see $OUT/g8w11/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8w11 <dir> <fixture dir> <quit frame|""> <env word...>: a /11 headless capture,
+# both sinks and the store.
+run_capture_g8w11() {
+	local dir="$1" fixture="$2" quit="$3"
+	shift 3
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$fixture"
+	CAPTURE_EXTRA_ENV=("${G8W11_ENV[@]}" "$@")
+	run_capture "$dir" "$quit" none
+}
+
+run_g8w11() {
+	run_import_g8w11
+	# The checker validates every recording through rs-core-check too: build it (incremental, a
+	# no-op when current; native only, no wasm).
+	echo "run-gate8: g8w11 build-rs-core.sh --native-only (rs-core-check)"
+	mkdir -p "$OUT/g8w11"
+	bash "$SCRIPT_DIR/build-rs-core.sh" --native-only >"$OUT/g8w11/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8w11/build-rs-core.log" >&2
+		exit 1
+	}
+	RECORDING_NAME=recording.rs11
+	PATCH_RECORDING_NAME=recording-patch.rs11
+	echo "run-gate8: g8w11 scale/capture (capture-scale, /11, auto)"
+	run_capture_g8w11 "$OUT/g8w11/scale/capture" "$G8W11_SCALE_DIR" "$G8W11_SCALE_QUIT" \
+		"${G8W11_SCALE_ENV[@]}"
+	local s
+	for s in cv-churn stale-dynamic perturb-vertex; do
+		echo "run-gate8: g8w11 scale/sabotage-$s (capture, $s @$G8W11_SABOTAGE_FRAME)"
+		run_capture_g8w11 "$OUT/g8w11/scale/sabotage-$s/capture" "$G8W11_SCALE_DIR" \
+			"$G8W11_SCALE_QUIT" "${G8W11_SCALE_ENV[@]}" GRC_SABOTAGE="$s" \
+			GRC_SABOTAGE_FRAME="$G8W11_SABOTAGE_FRAME"
+	done
+	echo "run-gate8: g8w11 scene/capture (gate6-scene animate, /11, auto)"
+	run_capture_g8w11 "$OUT/g8w11/scene/capture" "$G8W11_SCENE_DIR" "$G8W11_SCENE_QUIT" \
+		GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=animate
+	echo "run-gate8: g8w11 scene/off (gate6-scene animate, /11, GRC_MESH_DYNAMIC=off)"
+	run_capture_g8w11 "$OUT/g8w11/scene/off/capture" "$G8W11_SCENE_DIR" "$G8W11_SCENE_QUIT" \
+		GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=animate GRC_MESH_DYNAMIC=off
+	echo "run-gate8: g8w11 scene/sabotage-keep-carried (off, keep-carried)"
+	run_capture_g8w11 "$OUT/g8w11/scene/sabotage-keep-carried/capture" "$G8W11_SCENE_DIR" \
+		"$G8W11_SCENE_QUIT" GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=animate \
+		GRC_MESH_DYNAMIC=off GRC_SABOTAGE=keep-carried GRC_SABOTAGE_FRAME=1
+	echo "run-gate8: g8w11 mesh/capture (gate5-mesh, /11, auto)"
+	run_capture_g8w11 "$OUT/g8w11/mesh/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }
@@ -1517,6 +1608,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8h) run_g8h ;;
 	g8c) run_g8c ;;
 	g8cg) run_g8cg ;;
+	g8w11) run_g8w11 ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	esac

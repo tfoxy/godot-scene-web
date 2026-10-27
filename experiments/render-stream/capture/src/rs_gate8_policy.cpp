@@ -1,5 +1,6 @@
 #include "rs_gate8_policy.h"
 
+#include <cstdint>
 #include <cstring>
 
 #include "rs_live.h"
@@ -34,6 +35,67 @@ bool sabotage_needs_v8(rs2::SabotageKind kind) {
     default:
       return false;
   }
+}
+
+bool sabotage_needs_v11(rs2::SabotageKind kind) {
+  return kind == rs2::SabotageKind::CvChurn || kind == rs2::SabotageKind::StaleDynamic ||
+         kind == rs2::SabotageKind::KeepCarried;
+}
+
+bool parse_mesh_dynamic_policy(const char *mode, const char *frames, const char *max_bytes,
+                               rs2::MeshDynamicPolicy *out, std::string *error) {
+  *out = rs2::MeshDynamicPolicy();
+  rs2::MeshDynamicPolicy parsed;
+  const auto present = [](const char *value) { return value != nullptr && *value != '\0'; };
+  // A plain decimal integer (no sign, no spaces), within [lo, hi].
+  const auto integer = [](const char *text, std::uint64_t lo, std::uint64_t hi, std::uint64_t *v) {
+    std::uint64_t n = 0;
+    std::size_t digits = 0;
+    for (const char *p = text; *p != '\0'; ++p) {
+      if (*p < '0' || *p > '9' || digits >= 19) {
+        return false;
+      }
+      n = n * 10 + static_cast<std::uint64_t>(*p - '0');
+      ++digits;
+    }
+    if (digits == 0 || n < lo || n > hi) {
+      return false;
+    }
+    *v = n;
+    return true;
+  };
+  if (present(mode)) {
+    const std::string text(mode);
+    if (text == "auto") {
+      parsed.mode = rs2::MeshDynamicMode::Auto;
+    } else if (text == "off") {
+      parsed.mode = rs2::MeshDynamicMode::Off;
+    } else if (text == "all") {
+      parsed.mode = rs2::MeshDynamicMode::All;
+    } else {
+      *error = "invalid GRC_MESH_DYNAMIC=" + text + " (expected auto, off or all)";
+      return false;
+    }
+  }
+  std::uint64_t v = 0;
+  if (present(frames)) {
+    if (!integer(frames, 1, 60, &v)) {
+      *error = std::string("invalid GRC_MESH_DYNAMIC_FRAMES=") + frames + " (expected 1..60)";
+      return false;
+    }
+    parsed.frames = static_cast<std::int32_t>(v);
+  }
+  if (present(max_bytes)) {
+    // JSON's exact integers (canonical JSON, render-stream-0.md): at most 2^53 - 1.
+    if (!integer(max_bytes, 0, (std::uint64_t{1} << 53) - 1, &v)) {
+      *error = std::string("invalid GRC_MESH_DYNAMIC_MAX_BYTES=") + max_bytes +
+               " (expected an integer >= 0)";
+      return false;
+    }
+    parsed.max_bytes = v;
+  }
+  *out = parsed;
+  return true;
 }
 
 bool formats_name_float(const char *resource_formats) {
@@ -72,8 +134,10 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
       parsed.file_version = rs2::ProtocolVersion::V9;
     } else if (text == "10") {
       parsed.file_version = rs2::ProtocolVersion::V10;
+    } else if (text == "11") {
+      parsed.file_version = rs2::ProtocolVersion::V11;
     } else {
-      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9 or 10)";
+      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9, 10 or 11)";
       return false;
     }
     parsed.stream_version_set = true;
@@ -128,6 +192,15 @@ bool gate8_policy_allows(const Gate8Policy &policy, bool files, std::string *err
 }
 
 std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
+  if (policy.file_version == rs2::ProtocolVersion::V11) {
+    // render-stream-11.md "Opt-in and version policy": .11 first, then /10's list.
+    if (policy.any()) {
+      return {rs2::kSubprotocolV11, rs2::kSubprotocolV10, rs2::kSubprotocolV9,
+              rs2::kSubprotocolV8};
+    }
+    return {rs2::kSubprotocolV11, rs2::kSubprotocolV10, rs2::kSubprotocolV9, rs2::kSubprotocolV8,
+            rs2::kSubprotocolV7,  "render-stream.6"};
+  }
   if (policy.file_version == rs2::ProtocolVersion::V10) {
     // render-stream-10.md "Live transport".
     if (policy.any()) {

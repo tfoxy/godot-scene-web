@@ -902,6 +902,8 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
   g8l: ["delivery.stream_protocol_8", "delivery.reverse_proxy_fronting"],
   g8c: ["payload.canvas_texture_diffuse"],
   g8cg: ["delivery.canvas_group_state_10"],
+  g8w11:
+    "none: the capture side of render-stream/11 (W11b); no receiver applies /11 yet, so the /8 manifest has no row",
   g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",
   g55c: "none: gate 7's carried shader entries (material.*)",
   g55d: "none: gate 7's carried material entries (material.*)",

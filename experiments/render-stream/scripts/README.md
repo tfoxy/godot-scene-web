@@ -3356,7 +3356,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1; g8w11, W11b)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3406,6 +3406,10 @@ mise exec -- pnpm render-stream:gate8 -- \
   `hookCountProblems`, `cellDiff`, `cellProblems`, `exactProblems`, `modelProblems`);
   `test/self-test-gate8-cg.ts` drives them on `fixtures/gate8-cg/expected.json` and synthetic items,
   sessions, counters and images, including that each receiver sabotage's picture is caught.
+- `lib/gate8-w11-checks.ts` (W11b, render-stream-11.md): the g8w11 checks (`runG8w11`) and their
+  pure helpers (`rebuildGrm1`, `traceDynamic`, `dynWireProblems`, `dynClassifyProblems`,
+  `inlineNames`, `carriedEqualsNamesProblems`, `resendOnReturn`); `test/self-test-gate8-w11.ts`
+  drives them on golden-4's GRM1 payloads and synthetic recordings and hook logs.
 - `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
   `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
   `canonicalState` compares materials by content since G8m.
@@ -3494,6 +3498,33 @@ cells), `ct-channel-refused` and `ct-diffuse-uploaded`; each criterion is spelle
 | `receiver-v9` | the native receiver on the /9 capture (fills full height, no group, no forced copy) |
 | `late/receiver` | the native receiver on the late capture (shots at checkpoints 1 and 2) |
 | `sabotage-drop-canvas-group/receiver`, `sabotage-full-backbuffer-copy/receiver` | the native receiver on the /10 full sink with `RS_RECEIVER_SABOTAGE` |
+
+## Gate 8 legs and evidence under `--out/g8w11` (g8w11, W11b)
+
+Headless captures only (no receiver applies dynamic meshes before W11c/W11d), every one at
+`GRC_STREAM_VERSION=11 GRC_RESOURCE_INLINE_MAX_BYTES=4096` with both sinks (`recording.rs11`,
+`recording-patch.rs11`), the store and the hook log.
+
+| leg | what |
+| --- | ---- |
+| `import/scene`, `import/mesh` | the editor's `--import` of `fixtures/gate6-scene` and `fixtures/gate5-mesh` |
+| `scale/capture` | `fixtures/capture-scale` at 600 items, 24 64x64 textures, 187 meshes (76 updated a frame), 150 identical redraws a frame, 60 frames, `GRC_MESH_DYNAMIC` auto |
+| `scale/sabotage-cv-churn/capture`, `scale/sabotage-stale-dynamic/capture`, `scale/sabotage-perturb-vertex/capture` | the same with `GRC_SABOTAGE` at frame 20 |
+| `scene/capture` | `fixtures/gate6-scene` `RS_FIXTURE_VARIANT=animate`, 300 frames, auto (`MS` turns dynamic) |
+| `scene/off/capture` | the same with `GRC_MESH_DYNAMIC=off`: MS's poses recur every 90 frames (`resend-on-return`) |
+| `scene/sabotage-keep-carried/capture` | off plus `keep-carried`: never re-carried, so `resource-missing` |
+| `mesh/capture` | `fixtures/gate5-mesh`, its default run, auto |
+
+## Gate 8 criteria (g8w11)
+
+`w11-validate` (every honest recording through `validateRecording(…, 11)` and `rs-core-check
+validate --version 11`), `cv-churn-caught` and `keep-carried-caught` (both validators refuse with
+`content-version-stable` / `resource-missing`), `dyn-wire` (each held dynamic body, rebuilt into
+GRM1, hashes to the hook log's surface at that frame) with `dyn-wire-catches-perturb-vertex` and
+`dyn-wire-catches-stale-dynamic`, `dyn-classify` (first dynamic at the second change frame within
+K, never demoted; none under off), `carried-equals-names` (records = inline(T) \ inline(B) in table
+order), `resend-on-return` and `cv-stable` (items per patch, honest against cv-churn). The sabotage
+checks are not-run when the smoke tier skips their legs.
 
 ## Gate 8 criteria (g8cg)
 

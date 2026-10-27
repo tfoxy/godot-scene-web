@@ -13,6 +13,7 @@
 #include <memory>
 #include <utility>
 
+#include "rs2_codec.h"
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
@@ -83,6 +84,7 @@ void Mirror::reset() {
   next_material_id_ = 1;
   shader_policy_ = ShaderPolicy::Source;
   perturb_shader_frame_ = 0;
+  stale_dynamic_mesh_ = 0;
   default_filter_ = Filter::Linear;
   default_repeat_ = Repeat::Disabled;
   failures_.clear();
@@ -165,6 +167,11 @@ void Mirror::set_perturb_glyph(std::uint64_t from_frame) {
 void Mirror::set_perturb_vertex(std::uint64_t from_frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   perturb_vertex_frame_ = from_frame;
+}
+
+void Mirror::set_v11(const V11Options &options) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  v11_ = options;
 }
 
 void Mirror::set_carry_shader_time(bool carry) {
@@ -1882,7 +1889,116 @@ void Mirror::retire_mesh(std::uint32_t id) {
   mesh.surfaces.clear();
 }
 
-MeshEntry Mirror::wire_mesh(const Mesh &mesh) {
+namespace {
+
+// W11b (render-stream-11.md "Mesh entry"): a GRM1 payload without its 8-byte magic, its u32le
+// meta length and its meta -- the 40 geometry bytes, then the vertex, attribute, skin and index
+// bytes. Empty when `payload` is too short to hold its own header (never for a hook's payload).
+// W11b (render-stream-11.md "Stable `content_version`"): an item's stable content_version, the
+// first 53 bits of the SHA-256 of its encoded command list (JSON, then the f32 and i32 blocks,
+// each length-prefixed), never 0. 53 bits keep it an exact JSON number in every decoder; a
+// collision between two lists one item holds at a base and a target is a 2^-53 event.
+std::uint64_t command_list_digest(const std::vector<Command> &commands) {
+  std::string json;
+  std::vector<float> f32;
+  std::vector<std::int32_t> i32;
+  encode_command_list(commands, &json, &f32, &i32);
+  Sha256 sha;
+  const auto put_len = [&sha](std::uint64_t n) {
+    std::uint8_t b[8];
+    for (int k = 0; k < 8; ++k) {
+      b[k] = static_cast<std::uint8_t>(n >> (8 * k));
+    }
+    sha.update(b, sizeof(b));
+  };
+  put_len(json.size());
+  sha.update(json.data(), json.size());
+  put_len(f32.size());
+  if (!f32.empty()) {
+    sha.update(f32.data(), f32.size() * sizeof(float));  // the host is little-endian (abi.h)
+  }
+  put_len(i32.size());
+  if (!i32.empty()) {
+    sha.update(i32.data(), i32.size() * sizeof(std::int32_t));
+  }
+  const std::array<std::uint8_t, 32> digest = sha.finish();
+  std::uint64_t v = 0;
+  for (int k = 0; k < 7; ++k) {
+    v |= static_cast<std::uint64_t>(digest[static_cast<std::size_t>(k)]) << (8 * k);
+  }
+  v &= (std::uint64_t{1} << 53) - 1;
+  return v == 0 ? 1 : v;
+}
+
+std::shared_ptr<const std::vector<std::uint8_t>> mesh_body(const PayloadBytes &payload) {
+  if (payload.size() < 12) {
+    return std::make_shared<const std::vector<std::uint8_t>>();
+  }
+  const std::uint32_t meta = static_cast<std::uint32_t>(payload[8]) |
+                             (static_cast<std::uint32_t>(payload[9]) << 8) |
+                             (static_cast<std::uint32_t>(payload[10]) << 16) |
+                             (static_cast<std::uint32_t>(payload[11]) << 24);
+  const std::size_t start = 12 + static_cast<std::size_t>(meta);
+  if (start > payload.size()) {
+    return std::make_shared<const std::vector<std::uint8_t>>();
+  }
+  return std::make_shared<const std::vector<std::uint8_t>>(
+      payload.begin() + static_cast<std::ptrdiff_t>(start), payload.end());
+}
+
+}  // namespace
+
+void Mirror::mesh_changed(Mesh *mesh, std::uint64_t frame) {
+  if (!v11_.enabled) {
+    return;
+  }
+  ++stats_.mesh_content_changes;
+  // stale-dynamic: the first dynamic mesh that changes at or after the frame keeps its serial.
+  const bool stale = v11_.stale_dynamic_frame != 0 && frame >= v11_.stale_dynamic_frame &&
+                     mesh->dynamic &&
+                     (stale_dynamic_mesh_ == 0 || stale_dynamic_mesh_ == mesh->id);
+  if (stale) {
+    stale_dynamic_mesh_ = mesh->id;
+  } else {
+    ++mesh->content_serial;
+  }
+  // Classification counts change frames: never the frame the mesh was built in, once per frame.
+  if (frame == mesh->born_frame || frame == mesh->change_frame) {
+    return;
+  }
+  if (mesh->change_frame != 0 &&
+      frame - mesh->change_frame <= static_cast<std::uint64_t>(v11_.mesh_dynamic.frames)) {
+    mesh->promote = true;
+  }
+  mesh->change_frame = frame;
+}
+
+void Mirror::classify_mesh(Mesh *mesh) {
+  const bool wanted = v11_.enabled && !mesh->dynamic &&
+                      (v11_.mesh_dynamic.mode == MeshDynamicMode::All ||
+                       (v11_.mesh_dynamic.mode == MeshDynamicMode::Auto && mesh->promote));
+  mesh->promote = false;
+  if (!wanted || mesh->status != MeshStatus::Ok || mesh->surfaces.empty()) {
+    return;
+  }
+  std::uint64_t total = 0;
+  for (const MeshSurf &surface : mesh->surfaces) {
+    if (!surface.ok || surface.bytes == nullptr) {
+      return;
+    }
+    if (surface.body == nullptr) {
+      surface.body = mesh_body(*surface.bytes);
+    }
+    total += surface.body->size();
+  }
+  if (total == 0 || total > v11_.mesh_dynamic.max_bytes) {
+    return;  // max_bytes 0: no mesh qualifies, as `off`
+  }
+  mesh->dynamic = true;
+  ++stats_.mesh_promotions;
+}
+
+MeshEntry Mirror::wire_mesh(const Mesh &mesh) const {
   MeshEntry out;
   out.id = mesh.id;
   out.status = mesh.status;
@@ -1907,6 +2023,18 @@ MeshEntry Mirror::wire_mesh(const Mesh &mesh) {
       wire.index_count = surface.index_count;
       out.surfaces.push_back(std::move(wire));
     }
+    if (v11_.enabled && mesh.dynamic && !mesh.surfaces.empty()) {
+      // W11b: the entry is dynamic; each surface also carries its body (render-stream-11.md).
+      out.dynamic = true;
+      out.content_serial = mesh.content_serial;
+      for (std::size_t i = 0; i < mesh.surfaces.size(); ++i) {
+        const MeshSurf &surface = mesh.surfaces[i];
+        if (surface.body == nullptr && surface.bytes != nullptr) {
+          surface.body = mesh_body(*surface.bytes);
+        }
+        out.surfaces[i].body = surface.body;
+      }
+    }
   }
   return out;
 }
@@ -1923,6 +2051,7 @@ void Mirror::mesh_create(std::uint64_t rid, std::uint64_t frame) {
   Mesh mesh;
   mesh.id = next_mesh_id_++;
   mesh.rid = rid;
+  mesh.born_frame = frame;
   mesh_by_rid_[rid] = mesh.id;
   meshes_.emplace(mesh.id, std::move(mesh));
 }
@@ -1941,6 +2070,7 @@ void Mirror::mesh_create_from_surfaces(std::uint64_t rid,
   Mesh mesh;
   mesh.id = next_mesh_id_++;
   mesh.rid = rid;
+  mesh.born_frame = frame;
   for (const MeshSurfaceInput &input : surfaces) {
     mesh.surfaces.push_back(mesh_surface(input, frame));
   }
@@ -1962,6 +2092,7 @@ void Mirror::mesh_adopt(std::uint64_t rid, const std::vector<MeshSurfaceInput> &
   mesh.origin = Origin::Adopted;
   mesh.adopted_content = AdoptedContent::Creation;
   mesh.custom_aabb = custom_aabb;
+  mesh.born_frame = frame;
   for (const MeshSurfaceInput &input : surfaces) {
     mesh.surfaces.push_back(mesh_surface(input, frame));
   }
@@ -1980,6 +2111,7 @@ void Mirror::mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface
   ++epoch_;
   mesh->surfaces.push_back(mesh_surface(surface, frame));
   mesh->version += 1;
+  mesh_changed(mesh, frame);
   recompute_mesh_status(mesh);
 }
 
@@ -1995,7 +2127,15 @@ void Mirror::mesh_surface_update_region(std::uint64_t rid, const char *op, std::
   mesh->version += 1;
   if (updated != nullptr && surface >= 0 &&
       static_cast<std::size_t>(surface) < mesh->surfaces.size()) {
-    mesh->surfaces[static_cast<std::size_t>(surface)] = mesh_surface(*updated, frame);
+    MeshSurf &slot = mesh->surfaces[static_cast<std::size_t>(surface)];
+    MeshSurf next = mesh_surface(*updated, frame);
+    // W11b: a content change only when the re-encoded payload differs (hashes, the hook's own
+    // SHA-256 of the whole payload): an update writing the bytes already there changes nothing.
+    const bool changed = next.ok != slot.ok || next.hash != slot.hash;
+    slot = std::move(next);
+    if (changed) {
+      mesh_changed(mesh, frame);
+    }
   }
   recompute_mesh_status(mesh);
 }
@@ -2010,6 +2150,7 @@ void Mirror::mesh_surface_remove(std::uint64_t rid, std::int32_t surface, std::u
   ++epoch_;
   mesh->surfaces.erase(mesh->surfaces.begin() + surface);
   mesh->version += 1;
+  mesh_changed(mesh, frame);
   recompute_mesh_status(mesh);
 }
 
@@ -2020,6 +2161,9 @@ void Mirror::mesh_clear(std::uint64_t rid, std::uint64_t frame) {
     return;
   }
   ++epoch_;
+  if (!mesh->surfaces.empty()) {
+    mesh_changed(mesh, frame);
+  }
   mesh->surfaces.clear();
   mesh->version += 1;
   if (mesh->origin == Origin::Adopted) {
@@ -3646,6 +3790,17 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     find_ties(state.children, &item_level);
     entry.second.published = true;
     out.items.push_back(state);
+    if (v11_.enabled && !v11_.cv_churn) {
+      // W11b: the stable content_version, recomputed only when the item recorded something since
+      // (its counter moved): an identical re-record keeps the published value.
+      Item &held = entry.second;
+      if (!held.cv_digest_set || held.cv_digest_of != state.content_version) {
+        held.cv_digest = command_list_digest(state.commands);
+        held.cv_digest_of = state.content_version;
+        held.cv_digest_set = true;
+      }
+      out.items.back().content_version = held.cv_digest;
+    }
   }
   for (const auto &entry : canvases_) {
     find_ties(entry.second.state.items, &item_level);
@@ -3738,7 +3893,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     }
   }
   out.meshes.reserve(meshes_.size());
-  for (const auto &entry : meshes_) {
+  for (auto &entry : meshes_) {
+    classify_mesh(&entry.second);  // W11b: no-op unless V11Options.enabled
     const Mesh &mesh = entry.second;
     out.meshes.push_back(wire_mesh(mesh));
     if (mesh.status != MeshStatus::Ok) {
@@ -3807,6 +3963,9 @@ MirrorStats Mirror::stats() const {
   out.live_meshes = meshes_.size();
   std::set<std::string> mesh_hashes;
   for (const auto &entry : meshes_) {
+    if (entry.second.dynamic) {
+      ++out.meshes_dynamic;  // W11b
+    }
     for (const MeshSurf &surface : entry.second.surfaces) {
       if (surface.bytes != nullptr && mesh_hashes.insert(surface.hash).second) {
         out.mesh_payload_bytes += surface.bytes->size();

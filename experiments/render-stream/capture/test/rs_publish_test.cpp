@@ -1134,6 +1134,120 @@ void test_mesh_payloads() {
         "the frame-2 patch carries the mesh entry (version 3) and no item");
 }
 
+// W11b (render-stream-11.md "Resource retention", "Dynamic mesh surfaces"): a /11 file sink's
+// records are inline(T) \ inline(B), a returning hash is re-carried (not under keep-carried), and a
+// dynamic mesh's poses take no record and no store file.
+struct V11Scene {
+  Mirror m;
+  explicit V11Scene() {
+    m.reset();
+    m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+    grc::rs::Mirror::V11Options o;
+    o.enabled = true;  // auto, K = 4
+    m.set_v11(o);
+  }
+  // Mesh 600 changes every frame from 2 (dynamic at 3); mesh 601 goes s(100) -> s(200) at 5 and
+  // back to s(100) at 15 (two change frames 10 apart: static).
+  Captured frame(int f) {
+    const std::uint64_t u = static_cast<std::uint64_t>(f);
+    if (f == 1) {
+      m.mesh_create(600, u);
+      m.mesh_add_surface(600, MeshScene::surface(0), u);
+      m.mesh_create(601, u);
+      m.mesh_add_surface(601, MeshScene::surface(100), u);
+      m.canvas_item_create(100, u);
+      m.set_parent(100, kRootCanvas, u);
+      m.add_mesh(100, 600, kIdentityXform, kRed, 0, u);
+      m.canvas_item_create(101, u);
+      m.set_parent(101, kRootCanvas, u);
+      m.add_mesh(101, 601, kIdentityXform, kRed, 0, u);
+    }
+    if (f >= 2 && f <= 4) {
+      const auto s = MeshScene::surface(static_cast<float>(4 * (f - 1)));
+      m.mesh_surface_update_region(600, "mesh_surface_update_vertex_region", 0, true, &s, u);
+    }
+    if (f == 5 || f == 15) {
+      const auto s = MeshScene::surface(f == 5 ? 200.0f : 100.0f);
+      m.mesh_surface_update_region(601, "mesh_surface_update_vertex_region", 0, true, &s, u);
+    }
+    // Every item redraws identically every frame (WB): content_version must not move.
+    m.clear(100, u);
+    m.add_mesh(100, 600, kIdentityXform, kRed, 0, u);
+    return m.snapshot(0, u);
+  }
+};
+
+void test_v11_file_sink() {
+  for (const bool keep : {false, true}) {
+    MemoryRecordSink full;
+    MemoryRecordSink patch;
+    full.open("memory://v11-full");
+    patch.open("memory://v11-patch");
+    SabotageConfig sabotage;
+    if (keep) {
+      sabotage.kind = SabotageKind::KeepCarried;
+      sabotage.frame = 1;
+    }
+    Publisher publisher(&full, &patch, sabotage, golden_policy(16777216), nullptr);
+    Session tmpl = make_template();
+    tmpl.version = ProtocolVersion::V11;
+    tmpl.resources.mesh_dynamic.frames = 4;
+    check(publisher.start(tmpl), "a /11 publisher starts");
+    check(contains(nth_write(patch, 1),
+                   "\"mesh_dynamic\":{\"mode\":\"auto\",\"frames\":4,\"max_bytes\":65536}"),
+          "the /11 file session declares resources.mesh_dynamic");
+    V11Scene scene;
+    for (int f = 1; f <= 16; ++f) {
+      check(publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0),
+            "a /11 publish " + std::to_string(f));
+    }
+    publisher.finish(EndReason::Shutdown);
+    // f1: s0, s100; f2: s4; f3, f4 (600 dynamic): none; f5: s200; f15: s100 again (not keep).
+    const std::string expect = std::string("rrtrtttrt") + std::string(9, 't') +
+                               (keep ? "t" : "rt") + "te";
+    check(record_kinds(patch) == expect && record_kinds(full) == expect,
+          std::string(keep ? "keep-carried" : "/11") + ": records are inline(T) \\ inline(B) (" +
+              record_kinds(patch) + ")");
+    if (keep) {
+      continue;
+    }
+    // patch writes: 0 magic, 1 session, 2 r, 3 r, 4 t(1), 5 r, 6 t(2), 7 t(3), 8 t(4)
+    const std::vector<std::uint8_t> t3 = nth_write(patch, 7);
+    check(contains(t3, "\"meshes\":[{\"id\":1,") && contains(t3, "\"u8\":0,\"surfaces\":[{"
+                                                                    "\"hash\":null") &&
+              contains(t3, "\"name\":\"mesh_u8\",\"type\":\"u8\",\"count\":64}"),
+          "seq 3: mesh 1 turns dynamic, its body (64 bytes) in mesh_u8");
+    check(contains(t3, "\"items\":[]") && contains(t3, "\"unsupported\":null"),
+          "seq 3: no item re-sent (stable content_version) and unsupported as the base");
+    const std::vector<std::uint8_t> t4 = nth_write(patch, 8);
+    check(contains(t4, "\"u8\":0,") && contains(t4, "\"items\":[]"),
+          "seq 4: the changed dynamic body goes again, nothing else");
+    const std::vector<std::uint8_t> t6 = nth_write(patch, 11);
+    check(contains(t6, "\"meshes\":[]") && contains(t6, "\"count\":0}"),
+          "seq 6: nothing changed, nothing sent, mesh_u8 empty");
+  }
+
+  // Out of band with a store: the dynamic poses are never stored.
+  const std::string dir = tmp_dir("v11-store");
+  grc::rs::ResourceStore store;
+  std::string error;
+  check(store.open(dir, &error), "open the /11 store");
+  MemoryRecordSink patch;
+  patch.open("memory://v11-store-patch");
+  Publisher publisher(nullptr, &patch, SabotageConfig(), golden_policy(0), &store);
+  Session tmpl = make_template();
+  tmpl.version = ProtocolVersion::V11;
+  publisher.start(tmpl);
+  V11Scene scene;
+  for (int f = 1; f <= 6; ++f) {
+    publisher.publish(scene.frame(f), static_cast<std::uint64_t>(f), 0);
+  }
+  publisher.finish(EndReason::Shutdown);
+  // s0, s100, s4 (frames 1-2, static), s200 (frame 5); s8 and s12 were dynamic.
+  check(store.hashes() == 4, "the store holds the static surfaces only (" +
+                                 std::to_string(store.hashes()) + ")");
+}
+
 void test_wrong_hash() {
   const std::string dir = tmp_dir("wrong-hash");
   grc::rs::ResourceStore store;
@@ -1575,6 +1689,7 @@ int main() {
   test_shader_payloads();
   test_wrong_hash();
   test_stale_texture();
+  test_v11_file_sink();
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_publish_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

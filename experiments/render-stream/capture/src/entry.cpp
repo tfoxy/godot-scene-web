@@ -234,6 +234,8 @@ struct Stream {
   // gate8-design.md D2: GRC_STREAM_VERSION, GRC_ADOPT, GRC_TEXTURE_DECODE and the float-format
   // request, read at arm; and what the adoption seam reported (G8w: nothing).
   rs::Gate8Policy gate8;
+  // W11b (render-stream-11.md): GRC_MESH_DYNAMIC*, read at arm; used at /11 only.
+  rs2::MeshDynamicPolicy mesh_dynamic;
   rs::AdoptStats adopt_stats;
   // G8r: GRC_ADOPT_FAULT (lazy resource adoption's fault knob), read at arm.
   rs::AdoptFault adopt_fault = rs::AdoptFault::None;
@@ -581,11 +583,24 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v10()
+                   g_stream.gate8.speaks_v11()   ? 11
+                   : g_stream.gate8.speaks_v10()
                        ? 10
                        : g_stream.gate8.speaks_v9()
                        ? 9
                        : (g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6)));
+    if (g_stream.gate8.speaks_v11()) {
+      // W11b (render-stream-11.md "Capture policy"): additive, /11 streams only.
+      const rs::MirrorStats ms = rs::mirror_stats();
+      json.key("mesh_dynamic").object_begin();
+      json.field("mode", std::string(rs2::to_wire(g_stream.mesh_dynamic.mode)));
+      json.field("frames", static_cast<int64_t>(g_stream.mesh_dynamic.frames));
+      json.field("max_bytes", static_cast<int64_t>(g_stream.mesh_dynamic.max_bytes));
+      json.field("meshes_dynamic", static_cast<int64_t>(ms.meshes_dynamic));
+      json.field("promotions", static_cast<int64_t>(ms.mesh_promotions));
+      json.field("content_changes", static_cast<int64_t>(ms.mesh_content_changes));
+      json.object_end();
+    }
     if (g_stream.gate8.speaks_v9()) {
       json.field("texture_delivery", rs::texture_delivery_policy().mode);
       // G8kp (texture-delivery-design.md Q3 "Fallbacks, all typed and counted").
@@ -1458,6 +1473,23 @@ void stream_start() {
       return;
     }
     g_stream.adopt_fault = adopt_fault;
+    // W11b (render-stream-11.md "Opt-in and version policy"): the dynamic-mesh classification
+    // policy, declared by a /11 session only and ignored below it (so never refused there).
+    rs2::MeshDynamicPolicy mesh_dynamic;
+    if (gate8.speaks_v11() &&
+        !rs::parse_mesh_dynamic_policy(std::getenv("GRC_MESH_DYNAMIC"),
+                                       std::getenv("GRC_MESH_DYNAMIC_FRAMES"),
+                                       std::getenv("GRC_MESH_DYNAMIC_MAX_BYTES"), &mesh_dynamic,
+                                       &error)) {
+      log_line("stream: refused mesh dynamic policy (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
+    g_stream.mesh_dynamic = mesh_dynamic;
     // G8k9 (texture-delivery-design.md D1): GRC_TEXTURE_DELIVERY, declared by a /9 session only; at
     // every other version the decoded payload is all there is, so it changes nothing there.
     rs::DeliveryPolicy delivery;
@@ -1829,6 +1861,9 @@ void stream_start() {
     } else if (kind == rs2::SabotageKind::WrongHash &&
                (!files || g_stream.store_dir.empty())) {
       why = "wrong-hash acts on the resource store; set a file sink and GRC_RESOURCE_STORE_DIR";
+    } else if (rs::sabotage_needs_v11(kind) && !g_stream.gate8.speaks_v11()) {
+      // W11b (render-stream-11.md "Sabotage kinds"): declared by a /11 session only.
+      why = std::string(rs2::to_wire(kind)) + " acts on render-stream/11; set GRC_STREAM_VERSION=11";
     } else if (kind == rs2::SabotageKind::PerturbDecode && !g_stream.gate8.decode_engine) {
       // G8t (gate8-design.md Q3 "Sabotages"): it perturbs host-decoded payloads only.
       why = "perturb-decode acts on host-decoded textures; set GRC_TEXTURE_DECODE=engine";    } else if (kind == rs2::SabotageKind::SizeBeforeAdopt &&
@@ -1865,6 +1900,8 @@ void stream_start() {
       live_config.stale_coalesce_frame = sabotage.config.frame;
     } else if (kind == rs2::SabotageKind::SpuriousTextureUpdate) {
       g_stream.spurious_frame = sabotage.config.frame;
+    } else if (kind == rs2::SabotageKind::KeepCarried) {
+      live_config.keep_carried = true;  // W11b: the publisher reads its own sabotage config
     }
   }
   if (!sabotage.ok) {
@@ -1886,7 +1923,9 @@ void stream_start() {
   // gate 8 policy needs it; /6 otherwise, and every /2-/7 byte stays as it was.
   // G8k9: GRC_STREAM_VERSION=9 selects /9 (render-stream-9.md); the seam declares the delivery mode.
   // CG1: GRC_STREAM_VERSION=10 selects /10 (render-stream-10.md).
-  session.version = g_stream.gate8.speaks_v10()  ? rs2::ProtocolVersion::V10
+  // W11b: GRC_STREAM_VERSION=11 selects /11 (render-stream-11.md).
+  session.version = g_stream.gate8.speaks_v11()  ? rs2::ProtocolVersion::V11
+                    : g_stream.gate8.speaks_v10() ? rs2::ProtocolVersion::V10
                     : g_stream.gate8.speaks_v9() ? rs2::ProtocolVersion::V9
                     : g_stream.gate8.speaks_v8() ? rs2::ProtocolVersion::V8
                                                  : rs2::ProtocolVersion::V6;
@@ -1911,7 +1950,8 @@ void stream_start() {
   const bool ct_synthesized = rs::canvas_texture_shim().armed();
   // /7 and /8 change no feature list (render-stream-7.md, render-stream-8.md): ask for /6's.
   session.features = rs2::gate2_features(headless_host && !ct_synthesized, rs2::ProtocolVersion::V6);
-  if (session.version == rs2::ProtocolVersion::V10) {
+  session.resources.mesh_dynamic = g_stream.mesh_dynamic;  // W11b: encoded at /11 only
+  if (rs2::is_v10_or_later(session.version)) {
     // render-stream-10.md "Features": each back-buffer setter leaves unobserved when its hook is
     // planned (a record without the slot omits the hook and keeps the method unobserved).
     rs2::observe_planned_backbuffer_setters(&session.features, session.capture.hooks_planned);
@@ -2174,6 +2214,17 @@ void stream_start() {
   } else if (sabotage.config.kind == rs2::SabotageKind::PerturbShader) {
     rs::mirror_set_perturb_shader(sabotage.config.frame);
   }
+  {
+    // W11b (render-stream-11.md "Capture policy", WB "Stable content_version"): the mirror's /11
+    // behaviours, off below /11 (every older snapshot is unchanged).
+    rs::Mirror::V11Options v11;
+    v11.enabled = g_stream.gate8.speaks_v11();
+    v11.mesh_dynamic = g_stream.mesh_dynamic;
+    v11.cv_churn = sabotage.config.kind == rs2::SabotageKind::CvChurn;
+    v11.stale_dynamic_frame =
+        sabotage.config.kind == rs2::SabotageKind::StaleDynamic ? sabotage.config.frame : 0;
+    rs::mirror_instance().set_v11(v11);
+  }
   // G8t (gate8-design.md Q3): perturb-decode acts in the decode seam, before the hook hashes.
   rs::texture_decode_set_perturb(
       sabotage.config.kind == rs2::SabotageKind::PerturbDecode ? sabotage.config.frame : 0);
@@ -2257,7 +2308,8 @@ void stream_start() {
     // token in the hello like /7's.
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
     server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
-                                                   rs2::kSubprotocolV9, rs2::kSubprotocolV10};
+                                                   rs2::kSubprotocolV9, rs2::kSubprotocolV10,
+                                                   rs2::kSubprotocolV11};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";
@@ -2296,6 +2348,7 @@ void stream_start() {
       // from GET /resources/sha256/<hash> on this listener.
       tmpl.resources = rs2::resources_info(g_stream.policy, rs2::Fetch::Http);
       tmpl.resources.auth = live_auth;  // G2e: "bearer" exactly when GRC_LIVE_AUTH=token.
+      tmpl.resources.mesh_dynamic = g_stream.mesh_dynamic;  // W11b: encoded at /11 only
       g_live.hub = std::make_unique<rs2::Hub>(g_live.transport.get(), live_config, tmpl);
       live_decided("listening", std::string());
     }

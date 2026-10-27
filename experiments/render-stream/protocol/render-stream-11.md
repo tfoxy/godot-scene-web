@@ -1,8 +1,9 @@
 # render-stream/11 wire format
 
-Status: **design; codecs and validators built** (W11-D, 2026-10-25; W11a, 2026-10-27: the C++
-encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; the capture
-and the receivers are W11b to W11e). The measurements behind every number here are
+Status: **design; codecs, validators and capture built** (W11-D, 2026-10-25; W11a, 2026-10-27:
+the C++ encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; W11b,
+2026-10-27: the capture emits /11 under `GRC_STREAM_VERSION=11`, see "As built (W11b): decisions";
+the receivers are W11c to W11e). The measurements behind every number here are
 in [results/p3/w11-d.md](../results/p3/w11-d.md). /11 builds on render-stream/10
 ([render-stream-10.md](render-stream-10.md): CG1's back-buffer item state and P3-TM's
 `shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
@@ -606,6 +607,70 @@ detail wrong, these rules are now the wire. They are frozen with /11.
 13. **The GDScript codec** (`rs_wire.gd`) is not touched. The native receiver decodes in rs-core
     through the capi. Its magic table gains `B` with W11d's offer.
 
+### As built (W11b): decisions
+
+W11b wired the capture ([results/p3/w11b.md](../results/p3/w11b.md)). Where the design left a
+choice open, or could not hold as written, these rules are now the capture's. Only the first one
+touches what a validator sees; it is a refinement of WB's rule, not a new rule.
+
+1. **A stable `content_version` is a digest of the command list.** At /11 every item's
+   `content_version` is the first 53 bits of the SHA-256 of its commands as a transaction encodes
+   them (the JSON array, then their `cmd_f32` and `cmd_i32` floats and indices from offset 0; 0 is
+   never used). The sketch restored "the published" version when a re-record matched the last
+   snapshot. That fails `content-version-stable` whenever a connection's base is older than the
+   previous snapshot: a list that goes X, Y, X between B and T gets a third version over X's
+   commands. Bases are older at window 1 under phase lock, at window 2, after a stall and at every
+   resync, so the rule must hold for any (B, T). A digest makes equal lists carry equal versions
+   whatever lies between them and needs no history. It is recomputed only for an item whose
+   commands were recorded since the last snapshot (one encode and one hash each; STS2 re-records
+   about 170 items a combat frame). Two different lists of one item colliding is a 2^-53 event; it
+   would show as stale commands, never as a validator error. The digest applies to every
+   connection of a /11 host, a /10 one included: at /10 equal versions over equal lists are what
+   /1 always meant.
+2. **Classification.** A content change is a hook call that changes a mesh's surface bytes: a
+   region update whose re-encoded payload hashes differently (the hook's own SHA-256, so no shadow
+   memcmp is kept), a surface added or removed, a clear of a mesh with surfaces. Changes count per
+   host frame, never in the frame the mesh was built in (create plus its first surfaces). Under
+   `auto` the mesh is promoted at its second change frame f2 with f2 − f1 ≤ `frames`; under `all`
+   at its first snapshot with content. Promotion is decided at the snapshot, so a clear and a
+   re-add in one frame see the final shape, and needs an `ok` mesh with at least one surface whose
+   bodies total at most `max_bytes` (checked at promotion only). It is never demoted. A dynamic
+   mesh that is empty at a snapshot is encoded like a static one (it has no surface to carry) and is
+   dynamic again once refilled. The serial moves at every byte change.
+3. **The hook still hashes dynamic surfaces.** The design's "dynamic surfaces skip SHA-256" is
+   deferred: the hook log (the `dyn-wire` evidence), change detection (rule 2) and a /10 viewer
+   of a /11 host all read the GRM1 hash, so the snapshot keeps each dynamic surface's GRM1 payload
+   and hash beside its body. Skipping the hash when no evidence log and no older viewer exist is a
+   host-cost follow-up (P3-CAP's area).
+4. **`payload_bytes` of a dynamic surface** is written by the /11 encoder from the body's length;
+   the snapshot keeps the GRM1 length for /10 connections.
+5. **Records.** File sinks and live connections send `records_before(B, T)` with B the stream's
+   previous transaction: the previous published snapshot for a file sink, the last snapshot sent
+   for a live connection, a resync included. The live hub memoizes each (B, T) pair's record list,
+   and each record's encode by hash, per frame callback, so lockstep viewers share records as they
+   share the transaction; a /11 connection takes no `CarriedIndex` slot, and its summary's
+   `carried_size` is |inline(T)|. `rs_captured.h` `payload_refs(state, skip_dynamic)` leaves
+   dynamic surfaces out of /11 stores and records.
+6. **Conditional hooks.** /11 installs /10's three conditional hooks (`canvas_item_set_copy_to_backbuffer`,
+   `canvas_item_set_canvas_group_mode` and P3-CK's `draw`). `GRC_MESH_DYNAMIC*` are parsed only
+   at /11 (an invalid value refuses the stream there) and ignored below it.
+
+#### Sabotage kinds (W11b)
+
+Three capture sabotages are legal only in a /11 session (`session.sabotage.kind`; the TypeScript
+validator and rs-core refuse them below /11 like the /8-only kinds), and need
+`GRC_STREAM_VERSION=11`:
+
+| kind | behaviour | caught by |
+| ---- | --------- | --------- |
+| `cv-churn` | the mirror's own counter as `content_version` (every re-record moves it, /10's rule) | `content-version-stable` |
+| `stale-dynamic` | the first dynamic mesh that changes at or after the frame keeps its serial, so its patches leave `u8` null over new bytes | `dyn-wire` |
+| `keep-carried` | file sinks and live connections keep /10's lifelong carried set | `resource-missing` (at the first return) |
+
+`fixtures/capture-scale` redraws nothing by default, so its `cv-churn` leg runs with
+`RS_SCALE_REDRAWS=150` (identical re-records, STS2's shape); the design's claim that the default
+fixture shows it did not hold.
+
 ## Predicted cost (STS2, from the kept recordings)
 
 One viewer that takes every transaction, `GRC_RESOURCE_INLINE_MAX_BYTES=4096`. Method and both
@@ -665,7 +730,9 @@ Each measured win and where it belongs:
 
 ### Stable `content_version` (/11)
 
-- **Capture (W11b).** At /11 the mirror keeps an item's published command list (its commands and
+- **Capture (W11b).** As built, the version is a digest of the command list, so this holds for
+  any base ("As built (W11b): decisions", 1). The sketch: at /11 the mirror keeps an item's
+  published command list (its commands and
   their floats). When a frame's re-recorded list is byte-identical to the published one, the
   snapshot restores the published `content_version`. The item then leaves the patch unless its
   state or floats moved.

@@ -362,8 +362,9 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V10  ? kProtocolV10
-         : version == ProtocolVersion::V9 ? kProtocolV9
+  return version == ProtocolVersion::V11   ? kProtocolV11
+         : version == ProtocolVersion::V10 ? kProtocolV10
+         : version == ProtocolVersion::V9  ? kProtocolV9
          : version == ProtocolVersion::V8 ? kProtocolV8
          : version == ProtocolVersion::V7 ? kProtocolV7
          : version == ProtocolVersion::V6 ? kProtocolV6
@@ -729,6 +730,9 @@ struct Hub::Conn {
   // with this slot's bit (P3-SP); `carried_count` is their number.
   unsigned carried_slot = CarriedIndex::kNoSlot;
   std::uint64_t carried_count = 0;
+  // W11b: a /11 connection's carried set is inline(base) (L2), never held; only the keep-carried
+  // sabotage gives it a lifelong RecordPlanner. `carried_count` then reports |inline(base)|.
+  std::unique_ptr<RecordPlanner> keep_carried;
   std::uint64_t stale_frame = 0;
   std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
   // G7q, stale-coalesce at window >= 2: the stale target just sent stays the target of every
@@ -767,6 +771,16 @@ struct Hub::TargetRefs {
   std::shared_ptr<const rs::Captured> target;
   std::vector<rs::PayloadRef> refs;
   std::vector<std::uint32_t> ids;
+};
+
+// W11b (render-stream-11.md "Multiple viewers"): the records a /11 connection sends before
+// `target` when its last sent snapshot is `base` (null: the stream's first transaction), with
+// |inline(target)| for the summary's carried size -- computed once per pair per frame callback.
+struct Hub::V11Records {
+  std::shared_ptr<const rs::Captured> base;
+  std::shared_ptr<const rs::Captured> target;
+  std::vector<PayloadName> records;
+  std::uint64_t inline_count = 0;
 };
 
 // P3-SP: a transaction one connection formed and encoded in this frame callback. Another connection
@@ -858,10 +872,30 @@ const Hub::TargetRefs &Hub::target_refs(const std::shared_ptr<const rs::Captured
   return *frame_targets_.back();
 }
 
+const Hub::V11Records &Hub::v11_records(const std::shared_ptr<const rs::Captured> &base,
+                                        const std::shared_ptr<const rs::Captured> &target) {
+  for (const auto &r : frame_v11_) {
+    if (r->base == base && r->target == target) {
+      return *r;
+    }
+  }
+  InlinePolicy policy;
+  policy.inline_max_bytes = template_.resources.inline_max_bytes;
+  auto r = std::make_unique<V11Records>();
+  r->base = base;
+  r->target = target;
+  r->records = records_before(base != nullptr ? &base->state : nullptr, target->state, policy);
+  r->inline_count = inline_names(target->state, policy).size();
+  frame_v11_.push_back(std::move(r));
+  return *frame_v11_.back();
+}
+
 void Hub::clear_frame_memo() {
   frame_targets_.clear();
   frame_txs_.clear();
   frame_records_.clear();
+  frame_v11_.clear();
+  frame_records_v11_.clear();
 }
 
 Hub::Hub(LiveTransport *transport, LiveConfig config, Session session_template)
@@ -914,6 +948,7 @@ void Hub::release_closed(Conn &c) {
   // P3-SP: a closed connection pins nothing and carries nothing any more.
   carried_.release(c.carried_slot);
   c.carried_slot = CarriedIndex::kNoSlot;
+  c.keep_carried.reset();
   c.base.reset();
   c.window_payloads.clear();
   c.stale.reset();
@@ -982,8 +1017,10 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // G8w: render-stream.8 -> /8 (render-stream-8.md "Live transport").
       // G8k9: render-stream.9 -> /9 (render-stream-9.md "Live transport").
       // CG1: render-stream.10 -> /10 (render-stream-10.md "Live transport").
-      c.version = event.subprotocol == kSubprotocolV10  ? ProtocolVersion::V10
-                  : event.subprotocol == kSubprotocolV9 ? ProtocolVersion::V9
+      // W11b: render-stream.11 -> /11 (render-stream-11.md "Live transport").
+      c.version = event.subprotocol == kSubprotocolV11   ? ProtocolVersion::V11
+                  : event.subprotocol == kSubprotocolV10 ? ProtocolVersion::V10
+                  : event.subprotocol == kSubprotocolV9  ? ProtocolVersion::V9
                   : event.subprotocol == kSubprotocolV8 ? ProtocolVersion::V8
                   : event.subprotocol == kSubprotocolV7 ? ProtocolVersion::V7
                   : is_v8_or_later(template_.version) ? ProtocolVersion::V6
@@ -1367,18 +1404,52 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   // since G5e every `ok` mesh's surfaces too, after the textures. P3-SP: the hashes are looked up
   // once per target and each record is encoded once per frame callback, whichever connection
   // sends it first.
-  const TargetRefs &refs = target_refs(target);
-  for (std::size_t i = 0; i < refs.refs.size(); ++i) {
-    const std::uint32_t id = refs.ids[i];
-    if (id == CarriedIndex::kNoId || carried_.carried(id, c.carried_slot)) {
-      continue;
+  //
+  // W11b (render-stream-11.md "Resource retention"): a /11 connection sends the hashes of
+  // inline(T) not in inline(B), B the last snapshot it sent (rs2_diff.h records_before), in the
+  // same table order, and marks nothing: its carried set is inline(B) by L2. keep-carried keeps
+  // /10's set instead.
+  const bool v11 = c.version == ProtocolVersion::V11;
+  std::vector<std::pair<const std::string *, std::uint32_t>> to_send;  // (hash, CarriedIndex id)
+  std::vector<PayloadName> kept;  // keep-carried's records (to_send points into it)
+  if (v11) {
+    const std::shared_ptr<const rs::Captured> record_base = c.has_base ? c.base : nullptr;
+    if (c.keep_carried != nullptr) {
+      kept = c.keep_carried->next(record_base != nullptr ? &record_base->state : nullptr,
+                                  snapshot.state);
+      for (const PayloadName &name : kept) {
+        to_send.emplace_back(&name.hash, CarriedIndex::kNoId);
+      }
+      c.carried_count = c.keep_carried->carried_count();
+    } else {
+      const V11Records &records = v11_records(record_base, target);
+      for (const PayloadName &name : records.records) {
+        to_send.emplace_back(&name.hash, CarriedIndex::kNoId);
+      }
+      c.carried_count = records.inline_count;  // C after this transaction is inline(T) (L2)
     }
-    const std::string &hash = *refs.refs[i].hash;
+  } else {
+    const TargetRefs &refs = target_refs(target);
+    for (std::size_t i = 0; i < refs.refs.size(); ++i) {
+      const std::uint32_t id = refs.ids[i];
+      if (id == CarriedIndex::kNoId || carried_.carried(id, c.carried_slot)) {
+        continue;
+      }
+      to_send.emplace_back(refs.refs[i].hash, id);
+    }
+  }
+  for (const auto &send : to_send) {
+    const std::string &hash = *send.first;
+    const std::uint32_t id = send.second;
+    if (!v11 && carried_.carried(id, c.carried_slot)) {
+      continue;  // a hash payload_refs names twice: carried by its first occurrence just now
+    }
     const auto payload = snapshot.payloads.find(hash);
     if (payload == snapshot.payloads.end() || payload->second == nullptr) {
       continue;  // never happens: a Captured holds every payload its tables name
     }
-    std::shared_ptr<const std::vector<std::uint8_t>> &record_bytes = frame_records_[id];
+    std::shared_ptr<const std::vector<std::uint8_t>> &record_bytes =
+        v11 ? frame_records_v11_[hash] : frame_records_[id];
     if (record_bytes == nullptr) {
       ResourceRecord record;
       record.hash = hash;
@@ -1404,8 +1475,10 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
       return "null";
     }
     deliver(c, bytes, true);
-    carried_.mark(id, c.carried_slot);
-    ++c.carried_count;
+    if (!v11) {
+      carried_.mark(id, c.carried_slot);
+      ++c.carried_count;
+    }
     ++c.s.resource_records;
     c.s.resource_bytes += payload_size;
     ++c.stats.resource_records;
@@ -1635,9 +1708,10 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
         // G7n: the connection's own version (render-stream.7 -> /7: the GRS7 magic, the /7
         // protocol string and publication.credit_window, the grant).
         c.session.version = c.version;
-        if (template_.version == ProtocolVersion::V10 && c.version != ProtocolVersion::V10) {
-          // render-stream-10.md "Live transport": a /9-or-older connection on a /10 host gets its
-          // own version's session, which still declares both back-buffer setters unobserved.
+        if (is_v10_or_later(template_.version) && !is_v10_or_later(c.version)) {
+          // render-stream-10.md "Live transport": a /9-or-older connection on a /10 (or /11) host
+          // gets its own version's session, which still declares both back-buffer setters
+          // unobserved.
           declare_backbuffer_unobserved(&c.session.features);
         }
         c.session.publication.credit_window = static_cast<std::int32_t>(c.s.credit_window);
@@ -1677,7 +1751,14 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
             std::max<std::uint64_t>(c.stats.max_record_bytes, session_bytes.size());
         c.stats.encode_ns_total = saturating_add(c.stats.encode_ns_total, t1 - t0);
         c.state = State::Streaming;
-        c.carried_slot = carried_.acquire();  // a fresh connection has carried nothing
+        if (c.version != ProtocolVersion::V11) {
+          c.carried_slot = carried_.acquire();  // a fresh connection has carried nothing
+        } else if (config_.keep_carried) {
+          // W11b sabotage keep-carried: /10's lifelong set on a /11 connection.
+          InlinePolicy policy;
+          policy.inline_max_bytes = template_.resources.inline_max_bytes;
+          c.keep_carried = std::make_unique<RecordPlanner>(ProtocolVersion::V11, policy, true);
+        }
         ++c.s.frames_offered;
         sent_json = send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
         // G6r: this very first send starts the connection's rate schedule (its tick 0); it is
@@ -2017,9 +2098,9 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       }
     }
     json.field_or_null("origin", s.origin);
-    if (s.version == 9 || s.version == 10) {
-      // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 and /10 connections
-      // only (render-stream-10.md: /10's hello is /9's).
+    if (s.version == 9 || s.version == 10 || s.version == 11) {
+      // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 to /11 connections
+      // only (render-stream-10.md and -11.md: their hellos are /9's).
       json.field_or_null("texture_encodings", s.texture_encodings);
       json.field_or_null("gpu_formats", s.gpu_formats);
     }

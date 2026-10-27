@@ -11,6 +11,7 @@
 #define GRC_RS2_CODEC_H
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "rs2_snapshot.h"
@@ -35,6 +36,13 @@ std::vector<std::uint8_t> magic(ProtocolVersion version);
 // ASCII (0x20-0x7E) replaced by '?'.
 std::vector<std::uint8_t> encode_session(const Session &session);
 std::vector<std::uint8_t> encode_transaction(const Transaction &transaction);
+
+// W11b (render-stream-11.md "Stable `content_version`"): an item's `commands` exactly as a
+// transaction encodes them -- the JSON array into `json`, their floats and indices into fresh
+// `cmd_f32` / `cmd_i32` blocks (offsets from 0). Equal lists give equal bytes, and the bytes
+// differ whenever a JSON value or a float's bit pattern does: what content-version-stable compares.
+void encode_command_list(const std::vector<Command> &commands, std::string *json,
+                         std::vector<float> *cmd_f32, std::vector<std::int32_t> *cmd_i32);
 std::vector<std::uint8_t> encode_end(const End &end);
 
 // encode_resource() wraps an already-built render-stream-texture/1 payload (ResourceRecord::

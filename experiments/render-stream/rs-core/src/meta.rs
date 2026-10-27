@@ -226,7 +226,12 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     "size-before-adopt",
     "adopt-raw-shader-code",
     "adopt-skip-params",
+    // New at /11 (W11b, render-stream-11.md "Sabotage kinds"): legal in a /11 session only.
+    "cv-churn",
+    "stale-dynamic",
+    "keep-carried",
 ];
+const SABOTAGE_V11_ONLY: &[&str] = &["cv-churn", "stale-dynamic", "keep-carried"];
 const SABOTAGE_V8_ONLY: &[&str] = &[
     "adopt-skip-state",
     "adopt-no-redraw",
@@ -1659,6 +1664,12 @@ fn check_session(
         if version < 8 && SABOTAGE_V8_ONLY.contains(&s.kind) {
             return Err(ck.schema(format!(
                 "\"sabotage.kind\" \"{}\" is legal only at /8",
+                s.kind
+            )));
+        }
+        if version < 11 && SABOTAGE_V11_ONLY.contains(&s.kind) {
+            return Err(ck.schema(format!(
+                "\"sabotage.kind\" \"{}\" is legal only at /11",
                 s.kind
             )));
         }
