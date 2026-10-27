@@ -20,11 +20,11 @@
     "id": "gsw-canvas-rs-core-wasm",
     "kind": "gsw-canvas",
     "build": {
-      "sha256": "3a3b369418efce094fe1112d9fa54e276394e8ddc5ceeed3363ec447e995c121",
+      "sha256": "dcba0aecf06f4f321065d7897a93dd470266923a145a4748e32567d0d5e7b13d",
       "godot_editor": "4.5.1-stable",
       "web_template_sha256": null,
       "bundle_bytes": null,
-      "commit": "ea402b95"
+      "commit": "4b0de2f7"
     },
     "platform": {
       "runtime": "chromium-148.0.7778.96",
@@ -70,12 +70,6 @@
       "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
     },
     {
-      "key": "g7-55@gsw",
-      "path": "render-stream/gate7/g7z/va/g7-gsw/run",
-      "build": "6a454065",
-      "note": "carried from gate 7: G7z closing run, gsw file legs g7-0..g7-6 (full tier, local)"
-    },
-    {
       "key": "g7-6@gsw",
       "path": "render-stream/gate7/g7z/va/g7-gsw/run",
       "build": "6a454065",
@@ -89,12 +83,6 @@
     },
     {
       "key": "g7-5-live@gsw",
-      "path": "render-stream/gate7/g7z/live/gsw-corr/run",
-      "build": "6a454065",
-      "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 gsw (fast frames, --manifest-hello)"
-    },
-    {
-      "key": "g7-55-live@gsw",
       "path": "render-stream/gate7/g7z/live/gsw-corr/run",
       "build": "6a454065",
       "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 gsw (fast frames, --manifest-hello)"
@@ -131,27 +119,39 @@
     },
     {
       "key": "gate8@gsw",
-      "path": "render-stream/gate8/g8z/native-gate8",
-      "build": "ea402b95",
-      "note": "G8z closing run, native gate 8: the checks it makes of GSW legs it drives itself (g8kp)"
+      "path": "render-stream/gate8/rm8/native-gate8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), native gate 8: the checks it makes of GSW legs it drives itself (g8kp)"
+    },
+    {
+      "key": "g7-55@gsw",
+      "path": "render-stream/gate8/rm8/g7-gsw-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-55 file legs gsw (the same run as g7-8@gsw)"
+    },
+    {
+      "key": "g7-55-live@gsw",
+      "path": "render-stream/gate8/rm8/live-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-55 live legs, both browsers (g55f, g55s, g55v, g55t; --manifest-hello 8)"
     },
     {
       "key": "g7-8@gsw",
-      "path": "render-stream/gate8/g8z/g7-gsw-g8",
-      "build": "ea402b95",
-      "note": "G8z closing run, g7-8 file legs gsw (23 recordings of gate 8's fixtures)"
+      "path": "render-stream/gate8/rm8/g7-gsw-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-8 file legs gsw (23 recordings of gate 8's fixtures)"
     },
     {
       "key": "g7-8-live@gsw",
-      "path": "render-stream/gate8/g8z/live-g8",
-      "build": "ea402b95",
-      "note": "G8z closing run, g7-8 live legs, both browsers (--manifest-hello 8)"
+      "path": "render-stream/gate8/rm8/live-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-8 live legs, both browsers (--manifest-hello 8; the same run as g7-55-live)"
     },
     {
       "key": "g7-2-live@gsw",
-      "path": "render-stream/gate8/g8z/live-g7-2-gsw",
-      "build": "ea402b95",
-      "note": "G8z closing run, live g7-2 gsw (fast frames, --manifest-hello 8; G8kz's coding checks)"
+      "path": "render-stream/gate8/rm8/live-g7-2-gsw",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), live g7-2 gsw (fast frames, --manifest-hello 8; G8kz's coding checks)"
     }
   ],
   "entries": [
@@ -554,8 +554,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "post-gate-6 capabilities: CanvasGroup / clip-children (unscheduled)",
-      "notes": "hooked slot; no committed gate 6 fixture creates a CanvasGroup item, so the hook never fires."
+      "owner": "CG1: carried on /10",
+      "notes": "Not carried on /8 or earlier: no /8 fixture creates a CanvasGroup or clip_children item. Since CG1 the opt-in render-stream/10 carries the setter as the item key `canvas_group` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, fixtures/gate8-cg, g8cg)."
     },
     {
       "id": "canvas_item_set_copy_to_backbuffer",
@@ -566,8 +566,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md \"Screen texture (P3-ST)\")",
-      "notes": "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
+      "owner": "CG1: carried on the opt-in render-stream/10 (results/p3/cg1.md); a /8 stream does not carry it",
+      "notes": "Not carried on /8 or earlier (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s). Since CG1 the opt-in render-stream/10 carries the setter as the item key `copy_to_backbuffer` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, g8cg). On a /8 stream a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
     },
     {
       "id": "canvas_item_set_light_mask",
@@ -1379,6 +1379,33 @@
       "notes": null
     },
     {
+      "id": "payload.canvas_texture_diffuse",
+      "kind": "payload",
+      "name": "CanvasTexture whose diffuse no command names (spine-godot atlas pages): the diffuse is fetched and drawn",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-ct",
+          "leg": "g8c/receiver",
+          "check": "ct-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-ct",
+          "leg": "g8c/receiver",
+          "check": "ct-diffuse-uploaded@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "Pixel-identical to the native receiver on both sinks (p3-ct.md)."
+    },
+    {
       "id": "payload.compressed_and_float_texture_formats",
       "kind": "payload",
       "name": "DXT, BPTC and float texture payloads",
@@ -1585,7 +1612,7 @@
       "tolerance": null,
       "evidence": [],
       "owner": null,
-      "notes": "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). Still typed gsw-shader-transpile (programs.ts): TIME, VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, hint_default_black/transparent samplers, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal."
+      "notes": "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). P3-TM: TIME (both stages, the host's shader time carried by /10) and the hint_default_black/transparent, hint_normal, hint_roughness_normal and hint_anisotropy sampler defaults transpile too (fixtures/gate55-time, g55t). Still typed gsw-shader-transpile (programs.ts): VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, other sampler hints, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal."
     },
     {
       "id": "material.shader-transpile-subset",
@@ -1594,7 +1621,7 @@
       "status": "supported",
       "reason": null,
       "exactness": "exact",
-      "tolerance": "gate55-shader",
+      "tolerance": null,
       "evidence": [
         {
           "gate": "g7-55",
@@ -1608,6 +1635,27 @@
           "fixture": "gate6-scene",
           "leg": "shader/receiver",
           "check": "shader-transpile-set@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-55-live",
+          "fixture": "gate55-screen",
+          "leg": "g55s",
+          "check": "g55s-receiver-equals-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-55-live",
+          "fixture": "gate55-vertex",
+          "leg": "g55v",
+          "check": "g55v-receiver-equals-reference@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-55-live",
+          "fixture": "gate55-time",
+          "leg": "g55t",
+          "check": "g55t-receiver-equals-reference@gsw",
           "receiver_kind": "gsw-canvas"
         }
       ],
@@ -1918,6 +1966,40 @@
       "evidence": [],
       "owner": "gate 8",
       "notes": "every committed gate 6 fixture uses scale_mode fractional (the default); integer is accepted by the wire schema but unexercised (Q8 example)."
+    },
+    {
+      "id": "delivery.canvas_group_state_10",
+      "kind": "delivery",
+      "name": "clip_children, CanvasGroup and BackBufferCopy carried as the render-stream/10 item keys canvas_group and copy_to_backbuffer",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg/receiver",
+          "check": "cg-native-exact@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg/receiver",
+          "check": "cg-gsw-untyped@gsw",
+          "receiver_kind": "gsw-canvas"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg/receiver",
+          "check": "cg-adopt@gsw",
+          "receiver_kind": "gsw-canvas"
+        }
+      ],
+      "owner": null,
+      "notes": "CG3: GSW composites canvas groups and back-buffer copies itself; every shot equals the native shot within channel 1."
     },
     {
       "id": "delivery.constrained_transport",

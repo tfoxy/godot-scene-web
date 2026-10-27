@@ -1,6 +1,6 @@
 {
   "schema": "render-stream-features-collected/1",
-  "primary_build": "ea402b95",
+  "primary_build": "4b0de2f7",
   "receivers": {
     "native": {
       "receiver": {
@@ -11,7 +11,7 @@
           "godot_editor": "4.5.1-stable",
           "web_template_sha256": null,
           "bundle_bytes": null,
-          "commit": "ea402b95"
+          "commit": "4b0de2f7"
         },
         "platform": {
           "runtime": "godot-4.5.1-gl_compatibility",
@@ -166,11 +166,11 @@
         "id": "web-export-godot-4.5.1-web_dlink_nothreads-rs-core",
         "kind": "web-export",
         "build": {
-          "sha256": "a633b068e3318150a0ae1556ddc916cb6d9b6e8b0e81d741b6730637beadcc9b",
+          "sha256": "efd57716720fe02a68a9ac1d2270112b306deee2e48034f25afa23c5482e33ba",
           "godot_editor": "4.5.1-stable",
           "web_template_sha256": "68162ae9249ca3b7ce53dde8cdfab59463bd6518dca9123df41e5cc8fb1bd454",
           "bundle_bytes": null,
-          "commit": "ea402b95"
+          "commit": "4b0de2f7"
         },
         "platform": {
           "runtime": "chromium-148.0.7778.96",
@@ -328,11 +328,11 @@
         "id": "gsw-canvas-rs-core-wasm",
         "kind": "gsw-canvas",
         "build": {
-          "sha256": "3a3b369418efce094fe1112d9fa54e276394e8ddc5ceeed3363ec447e995c121",
+          "sha256": "dcba0aecf06f4f321065d7897a93dd470266923a145a4748e32567d0d5e7b13d",
           "godot_editor": "4.5.1-stable",
           "web_template_sha256": null,
           "bundle_bytes": null,
-          "commit": "ea402b95"
+          "commit": "4b0de2f7"
         },
         "platform": {
           "runtime": "chromium-148.0.7778.96",

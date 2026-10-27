@@ -31,15 +31,18 @@ import {
 } from "./feature-evidence-7";
 import type { ZProfile } from "./gate7z-checks";
 
-/** The build the closing run was made from. The finisher sets it to the commit the runs under
- * `render-stream/gate8/g8z/` were made on (HANDOFF-G8z.md). */
-export const PRIMARY_BUILD_8 = "ea402b95";
-export const G8_DIR = "render-stream/gate8/g8z";
+/** The build the closing run was made from. RM8 reran the closing run on the commit the runs
+ * under `render-stream/gate8/rm8/` were made on (main after CGR/WX): P3 had added g8c, g8cg and
+ * gate 5.5's g55s/g55v/g55t since G8z's `ea402b95`. */
+export const PRIMARY_BUILD_8 = "4b0de2f7";
+export const G8_DIR = "render-stream/gate8/rm8";
+/** G8z's directory: the one run RM8 did not redo, the gate 6 g6a captures behind `session@native`. */
+const G8Z_DIR = "render-stream/gate8/g8z";
 const G7_DIR = "render-stream/gate7";
 
 function g8Runs(): EvidenceRun[] {
   const out: EvidenceRun[] = [];
-  const note = "G8z closing run";
+  const note = "RM8 closing run (G8z's, redone on the P3 build)";
   out.push(
     {
       key: "gate8@native",
@@ -56,9 +59,9 @@ function g8Runs(): EvidenceRun[] {
     },
     {
       key: "session@native",
-      path: `${G8_DIR}/gate6-g6a`,
-      build: PRIMARY_BUILD_8,
-      note: `${note}, native gate 6 group g6a (scene, animate, refused: the host sessions manifest-matches-session reads; gate 7's gate 6 run lost its recordings to the retention policy)`,
+      path: `${G8Z_DIR}/gate6-g6a`,
+      build: "ea402b95",
+      note: `G8z closing run, native gate 6 group g6a (scene, animate, refused: the host sessions manifest-matches-session reads; gate 7's gate 6 run lost its recordings to the retention policy)`,
     },
     {
       key: "gate8@gsw",
@@ -73,8 +76,27 @@ function g8Runs(): EvidenceRun[] {
       note: `${note}, native gate 8: the checks it makes of web-export legs it drives itself (g8ku)`,
     },
   );
+  out.push({
+    key: "gate5.5@native",
+    path: `${G8_DIR}/native-gate55`,
+    build: PRIMARY_BUILD_8,
+    note: `${note}, native gate 5.5 (every group: P3-ST's g55s, P3-VX's g55v and P3-TM's g55t join gate 7's)`,
+  });
   for (const k of ["gsw", "web"] as const) {
     out.push(
+      {
+        key: `g7-55@${k}`,
+        path: `${G8_DIR}/g7-${k === "web" ? "web-rust" : "gsw"}-g8`,
+        build: PRIMARY_BUILD_8,
+        note: `${note}, g7-55 file legs ${k} (the same run as g7-8@${k})`,
+      },
+      {
+        key: `g7-55-live@${k}`,
+        path: `${G8_DIR}/live-g8`,
+        build: PRIMARY_BUILD_8,
+        note: `${note}, g7-55 live legs, both browsers (g55f, g55s, g55v, g55t; --manifest-hello 8)`,
+        hello: true,
+      },
       {
         key: `g7-8@${k}`,
         path: `${G8_DIR}/g7-${k === "web" ? "web-rust" : "gsw"}-g8`,
@@ -85,7 +107,7 @@ function g8Runs(): EvidenceRun[] {
         key: `g7-8-live@${k}`,
         path: `${G8_DIR}/live-g8`,
         build: PRIMARY_BUILD_8,
-        note: `${note}, g7-8 live legs, both browsers (--manifest-hello 8)`,
+        note: `${note}, g7-8 live legs, both browsers (--manifest-hello 8; the same run as g7-55-live)`,
         hello: true,
       },
       {
@@ -170,6 +192,76 @@ const NATIVE = "gate8";
 const TEX = "gate8-tex";
 
 const SPECS_8: readonly Spec8[] = [
+  {
+    id: "payload.canvas_texture_diffuse",
+    kind: "payload",
+    name: "CanvasTexture whose diffuse no command names (spine-godot atlas pages): the diffuse is fetched and drawn",
+    native: {
+      status: "supported",
+      exactness: "exact",
+      refs: [
+        [NATIVE, "gate8-ct", "g8c", "ct-reference"],
+        [NATIVE, "gate8-ct", "g8c", "ct-diffuse-uploaded"],
+        [NATIVE, "gate8-ct", "g8c", "ct-channel-refused"],
+      ],
+      notes:
+        "P3-CT: residency follows a named canvas texture to its diffuse. Normal and specular maps stay a typed refusal (canvas-texture-channel).",
+    },
+    web: {
+      status: "supported",
+      exactness: "delta1",
+      refs: [
+        ["g7-8", "gate8-ct", "g8c/receiver", "ct-reference"],
+        ["g7-8", "gate8-ct", "g8c/receiver", "ct-diffuse-uploaded"],
+      ],
+    },
+    gsw: {
+      status: "supported",
+      exactness: "exact",
+      refs: [
+        ["g7-8", "gate8-ct", "g8c/receiver", "ct-reference"],
+        ["g7-8", "gate8-ct", "g8c/receiver", "ct-diffuse-uploaded"],
+      ],
+      notes: "Pixel-identical to the native receiver on both sinks (p3-ct.md).",
+    },
+  },
+  {
+    id: "delivery.canvas_group_state_10",
+    kind: "delivery",
+    name: "clip_children, CanvasGroup and BackBufferCopy carried as the render-stream/10 item keys canvas_group and copy_to_backbuffer",
+    native: {
+      status: "supported",
+      exactness: "exact",
+      refs: [
+        [NATIVE, "gate8-cg", "g8cg", "cg-native-exact"],
+        [NATIVE, "gate8-cg", "g8cg", "cg-wire"],
+        [NATIVE, "gate8-cg", "g8cg", "cg-toggle-patch"],
+        [NATIVE, "gate8-cg", "g8cg", "cg-adopt"],
+      ],
+      notes:
+        "CG1: opt-in /10 (RS_RECEIVER_PROTOCOL=10); the receiver re-issues the state to Godot and reproduces its picture exactly on fixtures/gate8-cg.",
+    },
+    web: {
+      status: "supported",
+      exactness: "delta1",
+      refs: [
+        ["g7-8", "gate8-cg", "g8cg/receiver", "cg-native-exact"],
+        ["g7-8", "gate8-cg", "g8cg/receiver", "cg-adopt"],
+      ],
+      notes: "The web export re-issues the state to its own Godot (CG1).",
+    },
+    gsw: {
+      status: "supported",
+      exactness: "delta1",
+      refs: [
+        ["g7-8", "gate8-cg", "g8cg/receiver", "cg-native-exact"],
+        ["g7-8", "gate8-cg", "g8cg/receiver", "cg-gsw-untyped"],
+        ["g7-8", "gate8-cg", "g8cg/receiver", "cg-adopt"],
+      ],
+      notes:
+        "CG3: GSW composites canvas groups and back-buffer copies itself; every shot equals the native shot within channel 1.",
+    },
+  },
   {
     id: "delivery.stream_protocol_8",
     kind: "delivery",
@@ -560,17 +652,87 @@ interface Override8 {
 const FORMATS_NOTE =
   "Resolved at /8 by host decode (payload.host_decoded_block_textures), float payloads (payload.float_texture_formats) and the /9 block variant (delivery.texture_variant_block). Not proven at STS2 scale: wire and memory acceptability are the product leg's (P3).";
 
-/** P3-ST (gate5_5-design.md "Screen texture (P3-ST)"): screen-reading shaders are supported with
- * GLES3's automatic copy points; `BackBufferCopy` itself is not on the wire. */
+/** P3-ST (gate5_5-design.md "Screen texture (P3-ST)"), then CG1/CG3 (render-stream-10.md): screen-reading
+ * shaders are supported with GLES3's automatic copy points, and /10 carries `BackBufferCopy`. */
 const BACKBUFFER_NOTE =
-  "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones.";
+  "Not carried on /8 or earlier (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s). Since CG1 the opt-in render-stream/10 carries the setter as the item key `copy_to_backbuffer` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, g8cg). On a /8 stream a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones.";
+
+const CANVAS_GROUP_NOTE =
+  "Not carried on /8 or earlier: no /8 fixture creates a CanvasGroup or clip_children item. Since CG1 the opt-in render-stream/10 carries the setter as the item key `canvas_group` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, fixtures/gate8-cg, g8cg).";
 
 /** P3-VX (gate5_5-design.md "vertex() (P3-VX)"): GSW's transpiler runs vertex() and varyings
  * since P3-VX, so the refusals left are narrower. */
 const OUTSIDE_TRANSPILE_NOTE =
   "P3-VX: vertex() with varyings (flat and smooth), skip_vertex_transform, world_vertex_coords, MODEL/CANVAS/SCREEN_MATRIX, TEXTURE_PIXEL_SIZE, AT_LIGHT_PASS and INSTANCE_CUSTOM transpile (fixtures/gate55-vertex, run-gate55.sh g55v). P3-TM: TIME (both stages, the host's shader time carried by /10) and the hint_default_black/transparent, hint_normal, hint_roughness_normal and hint_anisotropy sampler defaults transpile too (fixtures/gate55-time, g55t). Still typed gsw-shader-transpile (programs.ts): VERTEX_ID, INSTANCE_ID, CUSTOM0/1, fragment() VERTEX, SDF and light built-ins, global and matrix uniforms, other sampler hints, uvec/bvec and non-literal defaults. Every gate 5.5 shader the wire does not refuse transpiles (shader-transpile-set@gsw), so no leg observes the refusal.";
 
+const SHADER_P3_REFS_NATIVE: [string, string, string, string][] = [
+  ["gate5.5", "gate55-shader", "receiver", "shader-expected-image-reference"],
+  ["gate5.5", "gate55-screen", "g55s", "g55s-receiver-equals-reference"],
+  ["gate5.5", "gate55-vertex", "g55v", "g55v-receiver-equals-reference"],
+  ["gate5.5", "gate55-time", "g55t", "g55t-receiver-equals-reference"],
+];
+const SHADER_P3_REFS_BROWSER: [string, string, string, string][] = [
+  ["g7-55-live", "gate55-screen", "g55s", "g55s-receiver-equals-reference"],
+  ["g7-55-live", "gate55-vertex", "g55v", "g55v-receiver-equals-reference"],
+  ["g7-55-live", "gate55-time", "g55t", "g55t-receiver-equals-reference"],
+];
+
 const OVERRIDES_8: readonly Override8[] = [
+  {
+    id: "material.shader-transpile-subset",
+    native: {
+      status: "supported",
+      exactness: "exact",
+      refs: SHADER_P3_REFS_NATIVE,
+      notes:
+        "Gate 7's evidence plus P3-ST (screen texture), P3-VX (vertex() and varyings) and P3-TM (TIME and sampler defaults): each group's receiver equals the rendered reference.",
+    },
+    web: {
+      status: "supported",
+      exactness: "delta1",
+      refs: [
+        [
+          "g7-55",
+          "gate6-scene",
+          "shader/receiver",
+          "shader-receiver-vs-reference",
+        ],
+        ...SHADER_P3_REFS_BROWSER,
+      ],
+    },
+    gsw: {
+      status: "supported",
+      exactness: "exact",
+      refs: [
+        [
+          "g7-55",
+          "gate6-scene",
+          "shader/receiver",
+          "shader-receiver-vs-reference",
+        ],
+        ["g7-55", "gate6-scene", "shader/receiver", "shader-transpile-set"],
+        ...SHADER_P3_REFS_BROWSER,
+      ],
+    },
+  },
+  {
+    id: "canvas_item_set_canvas_group_mode",
+    native: {
+      status: "unobserved",
+      owner: "CG1: carried on /10",
+      notes: CANVAS_GROUP_NOTE,
+    },
+    web: {
+      status: "unobserved",
+      owner: "CG1: carried on /10",
+      notes: CANVAS_GROUP_NOTE,
+    },
+    gsw: {
+      status: "unobserved",
+      owner: "CG1: carried on /10",
+      notes: CANVAS_GROUP_NOTE,
+    },
+  },
   {
     id: "material.shader-outside-transpile-subset",
     native: {
@@ -594,19 +756,19 @@ const OVERRIDES_8: readonly Override8[] = [
     native: {
       status: "unobserved",
       owner:
-        'P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md "Screen texture (P3-ST)")',
+        "CG1: carried on the opt-in render-stream/10 (results/p3/cg1.md); a /8 stream does not carry it",
       notes: BACKBUFFER_NOTE,
     },
     web: {
       status: "unobserved",
       owner:
-        'P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md "Screen texture (P3-ST)")',
+        "CG1: carried on the opt-in render-stream/10 (results/p3/cg1.md); a /8 stream does not carry it",
       notes: BACKBUFFER_NOTE,
     },
     gsw: {
       status: "unobserved",
       owner:
-        'P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md "Screen texture (P3-ST)")',
+        "CG1: carried on the opt-in render-stream/10 (results/p3/cg1.md); a /8 stream does not carry it",
       notes: BACKBUFFER_NOTE,
     },
   },
@@ -723,3 +885,32 @@ export function receiverFeatureEntries8(kind: ReceiverKind): FeatureEntry2[] {
 
 export const NEW_ENTRY_IDS_8: readonly string[] = SPECS_8.map((s) => s.id);
 export const OVERRIDDEN_IDS_8: readonly string[] = OVERRIDES_8.map((o) => o.id);
+
+/** RM8: every group a gate 8 or gate 5.5 runner has landed (`LANDED_GROUPS` in run-gate8.sh and
+ * run-gate55.sh) says here what its manifest entries are, or why it has none. The G8z self-test
+ * fails on a landed group missing from this map, so a new group cannot skip the manifests. Entry
+ * ids must exist in the /8 file; `none:` is a reason, not an entry. */
+export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
+  g8t: ["payload.host_decoded_block_textures"],
+  g8a: ["control.late-join-adoption", "control.adopted_pre_arm_resources"],
+  g8h: ["viewport.late-presentation-size"],
+  g8f: ["payload.float_texture_formats"],
+  g8m: ["material.late-join-materials"],
+  g8kp: ["delivery.texture_variant_block"],
+  g8ku: ["delivery.texture_variant_uastc"],
+  g8kc: "none: the receivers' texture cache is internal, no feature row",
+  g8l: ["delivery.stream_protocol_8", "delivery.reverse_proxy_fronting"],
+  g8c: ["payload.canvas_texture_diffuse"],
+  g8cg: ["delivery.canvas_group_state_10"],
+  g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",
+  g55c: "none: gate 7's carried shader entries (material.*)",
+  g55d: "none: gate 7's carried material entries (material.*)",
+  g55e: "none: gate 7's carried ShaderMaterial entries (material.*)",
+  g55f: "none: gate 7's carried live shader entries (material.*)",
+  g55s: [
+    "material.shader-transpile-subset",
+    "canvas_item_set_copy_to_backbuffer",
+  ],
+  g55v: ["material.shader-transpile-subset"],
+  g55t: ["material.shader-transpile-subset"],
+};
