@@ -322,6 +322,7 @@ fn texture_region_uses_texpixel_size_and_flips() {
             mipmaps: false,
             data_len: 16 * 16 * 4,
             compressed: None,
+            half: None,
         },
     );
     let mut a = Applier::new(viewport());
@@ -407,6 +408,7 @@ fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
             mipmaps: false,
             data_len: 16 * 16 * 4,
             compressed: None,
+            half: None,
         },
     );
     let mut a = Applier::new(viewport());

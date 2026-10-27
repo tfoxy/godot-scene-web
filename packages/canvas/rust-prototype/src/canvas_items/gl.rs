@@ -1635,6 +1635,28 @@ impl CanvasItemsExecutor {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
                     }
                 }
+                TextureOp::UploadHalf {
+                    id,
+                    width,
+                    height,
+                    offset,
+                } => {
+                    if id == WHITE_TEXTURE {
+                        return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
+                    }
+                    if width == 0 || height == 0 || width > self.max_side || height > self.max_side
+                    {
+                        return Err(ExecError::Invalid(format!(
+                            "texture {id}: size {width}x{height}"
+                        )));
+                    }
+                    let end = u64::from(offset) + 8 * u64::from(width) * u64::from(height);
+                    if end > list.texture_bytes.len() as u64 {
+                        return Err(ExecError::Invalid(format!(
+                            "texture {id}: bytes outside texture_bytes"
+                        )));
+                    }
+                }
                 TextureOp::UploadCompressed {
                     id,
                     width,
@@ -1740,6 +1762,46 @@ impl CanvasItemsExecutor {
                             0,
                             glow::RGBA,
                             glow::UNSIGNED_BYTE,
+                            glow::PixelUnpackData::Slice(Some(bytes)),
+                        );
+                    }
+                    stats.texture_uploads += 1;
+                    stats.texture_upload_bytes += bytes.len() as u32;
+                }
+                TextureOp::UploadHalf {
+                    id,
+                    width,
+                    height,
+                    offset,
+                } => {
+                    // P3-CK: a half-float image as GLES3 keeps it (RGBA16F), sampled as RGBA8 is.
+                    let texture = match self.textures.get(&id) {
+                        Some(texture) => *texture,
+                        None => match unsafe { self.gl.c().create_texture() } {
+                            Ok(texture) => {
+                                self.textures.insert(id, texture);
+                                texture
+                            }
+                            Err(_) => {
+                                self.loss.mark_lost();
+                                continue;
+                            }
+                        },
+                    };
+                    self.bind_draw_texture(texture, stats);
+                    let start = offset as usize;
+                    let bytes =
+                        &list.texture_bytes[start..start + 8 * width as usize * height as usize];
+                    unsafe {
+                        self.gl.c().tex_image_2d(
+                            glow::TEXTURE_2D,
+                            0,
+                            glow::RGBA16F as i32,
+                            width as i32,
+                            height as i32,
+                            0,
+                            glow::RGBA,
+                            glow::HALF_FLOAT,
                             glow::PixelUnpackData::Slice(Some(bytes)),
                         );
                     }

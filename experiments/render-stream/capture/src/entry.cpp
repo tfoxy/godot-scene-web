@@ -1685,7 +1685,9 @@ void stream_start() {
       hooks_set_shader_time_carried(true);
       rs::mirror_instance().set_carry_shader_time(true);
       const rs::ShaderClock &clock = rs::shader_clock();
-      log_line("shader-clock: carried; rollover=" + std::to_string(clock.rollover) +
+      log_line(std::string("shader-clock: carried; source=") + rs::shader_clock_source() +
+               (clock.tree_delta_fault ? " (GRC_SHADER_CLOCK_FAULT=tree-delta)" : "") +
+               " rollover=" + std::to_string(clock.rollover) +
                " start_frames_drawn=" + std::to_string(clock.start_drawn) + " ticks=" +
                std::to_string(clock.ticks) + " advanced=" + std::to_string(clock.advanced));
     }
@@ -2981,6 +2983,15 @@ void do_disarm(const char *phase) {
   log_line(std::string("disarmed from ") + phase + " callback at frame " +
            std::to_string(g_state.frames_total) + " was_shadow=" + (was_shadow ? "true" : "false") +
            " restored=" + (restored ? "true" : "false"));
+  if (rs::shader_clock().draw_hooked) {
+    // P3-CK: what the hooked clock summed (render-stream-10.md "Shader time").
+    const rs::ShaderClock &clock = rs::shader_clock();
+    char total[64];
+    std::snprintf(total, sizeof(total), "%.17g", clock.total);
+    log_line(std::string("shader-clock: source=") + rs::shader_clock_source() +
+             " draws=" + std::to_string(clock.draws) + " ticks=" + std::to_string(clock.ticks) +
+             " advanced=" + std::to_string(clock.advanced) + " total=" + total);
+  }
   emit("disarm.json", disarm_json());
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
   if (rs::texture_cache().enabled()) {

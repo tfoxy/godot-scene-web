@@ -100,7 +100,8 @@
     "canvas_set_parent": 439,
     "texture_set_path": 42,
     "canvas_item_set_copy_to_backbuffer": 484,
-    "canvas_item_set_canvas_group_mode": 495
+    "canvas_item_set_canvas_group_mode": 495,
+    "draw": 552
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,

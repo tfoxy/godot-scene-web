@@ -19,6 +19,7 @@
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
 #include "rs_sha256.h"
+#include "rs_shader_clock.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_cache.h"
@@ -71,6 +72,10 @@ using FnTextureSetPath = void (*)(void *, RID, const void *);
 //   (CG1, slot 495, render-stream-10.md "Capture": installed only under GRC_STREAM_VERSION=10;
 //   canvas_item_set_copy_to_backbuffer, slot 484, is FnSetCustomRect's shape)
 using FnSetCanvasGroupMode = void (*)(void *, RID, int32_t, float, bool, float, bool);
+//   1780: virtual void draw(bool p_swap_buffers = true, double frame_step = 0.0) = 0;
+//   (P3-CK, slot 552, render-stream-10.md "Shader time": installed only under
+//   GRC_STREAM_VERSION=10; its frame_step is the step RasterizerGLES3::begin_frame adds to TIME)
+using FnDraw = void (*)(void *, bool, double);
 //   1770: virtual void free(RID) = 0;
 using FnFree = void (*)(void *, RID);
 //
@@ -361,6 +366,8 @@ enum HookId : size_t {
   // hooks_plan
   kSetCopyToBackbuffer,
   kSetCanvasGroupMode,
+  // P3-CK (render-stream-10.md "Shader time", record slot 552): conditional, see hooks_plan
+  kDraw,
   kHookCount,
 };
 
@@ -3120,6 +3127,22 @@ void hook_set_copy_to_backbuffer(void *self, RID item, bool enable, const Rect2 
   }
 }
 
+// --- P3-CK: RenderingServer::draw, the shader clock's source (render-stream-10.md "Shader time")
+//
+// Conditional like CG1's setters (/10 only). GLES3's TIME adds exactly this call's frame_step
+// (rendering_server_default.cpp:68-69 -> rasterizer_gles3.cpp:97-107), whoever calls it: the main
+// loop's unclamped scaled step (main.cpp:4825-4829) or a script's RenderingServer.force_draw. The
+// engine refuses a call off the main thread before drawing (rendering_server_default.cpp:420), so
+// only a main-thread call reaches the clock.
+
+void hook_draw(void *self, bool swap_buffers, double frame_step) {
+  bump(kDraw);
+  if (std::this_thread::get_id() == g_main_thread) {
+    rs::shader_clock_draw(frame_step);
+  }
+  original<FnDraw>(kDraw)(self, swap_buffers, frame_step);
+}
+
 void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect) {
   bump(kSetCustomRect);
   if (rect != nullptr) {
@@ -3491,6 +3514,7 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_set_copy_to_backbuffer)},
     {kSetCanvasGroupMode, "canvas_item_set_canvas_group_mode",
      as_ptr(&hook_set_canvas_group_mode)},
+    {kDraw, "draw", as_ptr(&hook_draw)},
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
@@ -4068,10 +4092,11 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
       --g_hooks_total;
       continue;
     }
-    if ((spec.id == kSetCopyToBackbuffer || spec.id == kSetCanvasGroupMode) &&
+    if ((spec.id == kSetCopyToBackbuffer || spec.id == kSetCanvasGroupMode ||
+         spec.id == kDraw) &&
         !backbuffer_hooks_wanted) {
       // CG1 (render-stream-10.md "Capture"): conditional like texture_set_path; neither planned
-      // nor omitted below /10.
+      // nor omitted below /10. P3-CK's draw (the shader clock) is /10's too.
       g_skipped[spec.id] = true;
       --g_hooks_total;
       continue;
@@ -4096,6 +4121,8 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   }
   g_planned_names = plan->planned;
   g_omitted_names = plan->omitted;
+  // P3-CK: the shader clock sums the hooked draws' steps once the host draws (rs_shader_clock.h).
+  rs::shader_clock_set_draw_hooked(!g_skipped[kDraw] && !g_omitted[kDraw]);
   return plan->missing_required.empty();
 }
 

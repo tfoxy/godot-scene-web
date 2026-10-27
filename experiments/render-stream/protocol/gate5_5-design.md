@@ -1353,6 +1353,56 @@ bit; the reference repeats and equals a hand model (the pulse within 2, the shif
 defaults within 1); every receiver equals the reference (native exactly, browsers within 1); the
 sabotage differs in TP, TS and TV at every step and nowhere else.
 
+## Shader clock under stalls and half-float samplers (P3-CK, 2026-10-27)
+
+P3-TM's STS2 replay left two card-glow residuals (`results/p3/p3-ck.md`): the host's shader time
+drifted from the reference by whole ring periods' fractions, and native and GSW disagreed by 2.5-3k
+px in the glow ring on every combat shot.
+
+- **The clock is clamped where GLES3's is not.** `Main::iteration` computes `scaled_step =
+  process_step * time_scale` first (main.cpp:4693-4694), then, when the iteration wants more physics
+  steps than `max_physics_steps_per_frame` (8 by default), takes the excess out of `process_step`
+  only (:4710-4713). The tree processes the clamped step and `RenderingServer::draw` receives the
+  unclamped one (:4825-4829), which `RasterizerGLES3::begin_frame` adds to `TIME`. P3-TM summed the
+  tree's delta, so every iteration longer than 8/60 s (a stall: a save, a scene load, a
+  screenshot's `save_png`) left the wire behind GLES3 by the excess, for good. On STS2 each C3 shot
+  (about 0.43 s of `save_png`) cost about 16 frames.
+- **The fix hooks `RenderingServer::draw`** (calibrated slot 552 on the stock template and on STS2's
+  MegaDot, no calibrator version: the hook is /10's only, like CG1's two). Its `frame_step` is
+  exactly the step GLES3 adds, whoever calls it (the main loop or a script's `force_draw`). The
+  frame callback still advances a host that has never drawn (headless) by the tree's delta, so every
+  headless fixture's `shader_time` is unchanged; a record without the `draw` slot keeps P3-TM's sum
+  and the log says `source=frame-callback`. No wire change: the key, its place and its presence
+  rule are P3-TM's; only the value a stalled rendered host carries changes, to GLES3's.
+- **Fault knob, not a sabotage kind:** `GRC_SHADER_CLOCK_FAULT=tree-delta` keeps P3-TM's sum with the
+  hook installed (a new `GRC_SABOTAGE` kind would be a wire change, as G8r's `GRC_ADOPT_FAULT`).
+- **GSW sampled half floats at 8 bits.** GLES3 keeps `RH`..`RGBAH` images as `R16F`..`RGBA16F`; rs-core
+  quantized them to RGBA8 (`texture_rgba8`). Read directly, the two agree after output rounding,
+  which is why g8f never saw it; a shader that amplifies the value does not. STS2's ring is
+  `mod(TIME * 0.03 + COLOR.a, 0.02)` over the glow's RGBAH distance field: an 8-bit alpha step
+  (1/255) is a fifth of the band, so ring edges move. rs-core now keeps a half payload as RGBA16F
+  (`TexturePixels::half`), the draw list carries it as `TextureOp::UploadHalf`, and the executor
+  uploads `RGBA16F`/`HALF_FLOAT` (filterable in WebGL 2). The float32 formats (`RF`..`RGBAF`) are
+  still quantized: none reaches a drawn command in STS2, and RGBA32F filtering needs
+  `OES_texture_float_linear`.
+
+**Fixture and checks** (`fixtures/gate55-time`, `g55t`):
+
+- **TH**, in the base scene: `fract(COLOR.a * 32 + TIME / 2)` over a 256-texel RGBAH alpha ramp
+  (0.25 + i/512, exact in binary16), drawn 1:1 with nearest filtering, in the hand model within 1.
+  An 8-bit copy of the ramp moves about 94 % of its texels by more than one level.
+- **The stall variant** (`RS_FIXTURE_VARIANT=stall`): TC, a clock writing `floor(TIME * 1024)` into its
+  RGB bytes, and a 0.3 s `OS.delay_msec` at frames 12, 22, 32 and 42. It runs in real time
+  (`--max-fps 60`, no `--fixed-fps`, which would disable the clamp), rendered, with the capture
+  armed in the same process, so the host's own settle shots are the reference.
+  - `g55t-stall-clock-carried`: each stall's next iteration is clamped (its tree delta is under
+    10/60 s), the source is `draw-hook`, and at every shot TC's code equals
+    `floor(f32(shader_time) * 1024)` of the transaction at that frame.
+  - `g55t-stall-receiver-equals-host`: a receiver on that recording equals the host's shots
+    (native exactly, browsers within 1).
+  - `g55t-sabotage-stall-clock-fault-detected`: under the fault the wire equals TC at step 0 and is
+    at least 0.05 s behind it at every later shot.
+
 ## Deferred, with owners
 
 - **The GSW browser receiver's shader path: gate 7.** It transpiles its supported subset through

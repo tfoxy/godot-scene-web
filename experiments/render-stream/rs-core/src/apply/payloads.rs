@@ -22,6 +22,11 @@ pub struct TexturePixels {
     /// G8kp: level 0 of a block-format payload, exactly the payload's bytes (no decode here: the
     /// GPU samples it, texture-delivery-design.md Q6 "GSW").
     pub compressed: Option<Vec<u8>>,
+    /// P3-CK: level 0 of a half-float payload (`RH`, `RGH`, `RGBH`, `RGBAH`) as RGBA16F, 8 bytes a
+    /// texel (a missing G or B is 0, a missing alpha 1, each half little-endian and bit-exact):
+    /// GLES3 samples these images at half precision, which RGBA8 cannot carry (a fine `mod()` over
+    /// a half-float distance field reads a different band). `rgba` is then empty.
+    pub half: Option<Vec<u8>>,
     /// The payload's own `Image.Format` name, mipmaps flag and `data` length (every level): what
     /// the native receiver's upload accounting reads (the former GDScript applier, `rs_applier.gd`, removed in G7gd; `uploads[].data_bytes`).
     pub format: String,
@@ -180,6 +185,7 @@ pub fn texture_rgba8(
             mipmaps: false,
             data_len: data.len(),
             compressed: None,
+            half: None,
         });
     }
     match format {
@@ -218,6 +224,7 @@ pub fn texture_rgba8(
         mipmaps: false,
         data_len: data.len(),
         compressed: None,
+        half: None,
     })
 }
 
@@ -225,8 +232,60 @@ impl TexturePixels {
     /// The bytes this store holds for the texture (G7k's budget): RGBA8 pixels, or a block
     /// variant's level 0.
     pub fn held_bytes(&self) -> u64 {
-        self.rgba.len() as u64 + self.compressed.as_ref().map_or(0, |c| c.len() as u64)
+        self.rgba.len() as u64
+            + self.compressed.as_ref().map_or(0, |c| c.len() as u64)
+            + self.half.as_ref().map_or(0, |h| h.len() as u64)
     }
+}
+
+/// P3-CK: a half-float payload's level 0 as RGBA16F ([`TexturePixels::half`]), or None for any
+/// other format. Channels map as [`texture_rgba8`]'s do: `RH` -> (r,0,0,1), `RGH` -> (r,g,0,1),
+/// `RGBH` -> (r,g,b,1), `RGBAH` as is.
+pub fn texture_rgba16f(
+    format: &str,
+    width: u32,
+    height: u32,
+    data: &[u8],
+) -> Option<Result<TexturePixels, String>> {
+    let channels = match format {
+        "RH" => 1,
+        "RGH" => 2,
+        "RGBH" => 3,
+        "RGBAH" => 4,
+        _ => return None,
+    };
+    let n = width as usize * height as usize;
+    let px = 2 * channels;
+    if data.len() < n * px {
+        return Some(Err(format!(
+            "texture data {} bytes < {}×{}×{px}",
+            data.len(),
+            width,
+            height
+        )));
+    }
+    let half = if channels == 4 {
+        data[..n * 8].to_vec()
+    } else {
+        let mut out = Vec::with_capacity(8 * n);
+        for p in data[..n * px].chunks_exact(px) {
+            // (0, 0, 0, 1.0) in binary16, little-endian; the payload's channels over it
+            let mut v = [0u8, 0, 0, 0, 0, 0, 0x00, 0x3c];
+            v[..px].copy_from_slice(p);
+            out.extend_from_slice(&v);
+        }
+        out
+    };
+    Some(Ok(TexturePixels {
+        width,
+        height,
+        rgba: Vec::new(),
+        compressed: None,
+        half: Some(half),
+        format: format.to_string(),
+        mipmaps: false,
+        data_len: data.len(),
+    }))
 }
 
 /// G8kp: a block-format GRT1 payload's level 0 (render-stream-9.md "Texture payload": whole blocks
@@ -251,6 +310,7 @@ pub fn texture_block_level0(
         height,
         rgba: Vec::new(),
         compressed: Some(data[..len].to_vec()),
+        half: None,
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
@@ -663,6 +723,9 @@ pub fn verify_decode(
             } else {
                 None
             };
+            // P3-CK: a half-float payload stays half (RGBA16F), as GLES3 keeps it.
+            let block = block
+                .or_else(|| texture_rgba16f(&t.format, t.width as u32, t.height as u32, t.data));
             let mut px = match block {
                 Some(b) => b.map_err(bad)?,
                 None => texture_rgba8(&t.format, t.width as u32, t.height as u32, t.data)
@@ -947,6 +1010,38 @@ mod tests {
             last = v;
         }
         assert_eq!(last, 255);
+    }
+
+    #[test]
+    fn half_formats_keep_rgba16f() {
+        // P3-CK: the half family stays half, bit for bit, with (0, 0, 0, 1.0) filling the
+        // channels a format lacks; every other format is not this path's.
+        let h = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+        let half = |f: &str, v: &[u16]| texture_rgba16f(f, 1, 1, &h(v)).unwrap().unwrap();
+        assert_eq!(
+            half("RH", &[0x3801]).half.unwrap(),
+            h(&[0x3801, 0, 0, 0x3c00])
+        );
+        assert_eq!(
+            half("RGH", &[0x3c00, 0xbc00]).half.unwrap(),
+            h(&[0x3c00, 0xbc00, 0, 0x3c00])
+        );
+        assert_eq!(
+            half("RGBH", &[0x3c00, 0x3800, 0x7c00]).half.unwrap(),
+            h(&[0x3c00, 0x3800, 0x7c00, 0x3c00])
+        );
+        let rgbah = half("RGBAH", &[0x3800, 0x3c00, 0x0000, 0x3401]);
+        assert_eq!(
+            rgbah.half.as_deref(),
+            Some(&h(&[0x3800, 0x3c00, 0x0000, 0x3401])[..])
+        );
+        assert!(rgbah.rgba.is_empty() && rgbah.compressed.is_none());
+        assert_eq!((rgbah.held_bytes(), rgbah.format.as_str()), (8, "RGBAH"));
+        assert!(texture_rgba16f("RGBAF", 1, 1, &[0; 16]).is_none());
+        assert!(texture_rgba16f("RGBA8", 1, 1, &[0; 4]).is_none());
+        assert!(texture_rgba16f("RGBAH", 2, 1, &h(&[0; 4]))
+            .unwrap()
+            .is_err());
     }
 
     #[test]

@@ -67,6 +67,8 @@ CIM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-cim"
 SCREEN_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-screen"
 VERTEX_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-vertex"
 TIME_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate55-time"
+# g55t's texture formats: the default six plus RGBAH (P3-CK's half-float TH ramp).
+G55T_FORMATS="L8,LA8,R8,RG8,RGB8,RGBA8,RGBAH"
 FIXTURE_DIR="$SHADER_FIXTURE_DIR"
 RECEIVER_DIR="$EXPERIMENT_DIR/receiver"
 
@@ -305,10 +307,13 @@ REFERENCE_MATERIAL_ORACLE=0
 REFERENCE_START_FRAME=""
 REFERENCE_STEP_FRAMES=""
 REFERENCE_QUIT_FRAME=""
+REFERENCE_EXTRA_ENV=()
 run_reference() {
 	local dir="$1" armed="$REFERENCE_ARMED" variant="$REFERENCE_VARIANT"
 	local project="${REFERENCE_FIXTURE_DIR:-$FIXTURE_DIR}" oracle="$REFERENCE_MATERIAL_ORACLE"
 	local start="$REFERENCE_START_FRAME" span="$REFERENCE_STEP_FRAMES" quit="$REFERENCE_QUIT_FRAME"
+	local -a extra_env=(${REFERENCE_EXTRA_ENV[@]+"${REFERENCE_EXTRA_ENV[@]}"})
+	REFERENCE_EXTRA_ENV=()
 	REFERENCE_ARMED=0
 	REFERENCE_VARIANT=""
 	REFERENCE_FIXTURE_DIR=""
@@ -340,6 +345,9 @@ run_reference() {
 			GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 			GRC_RESOURCE_STORE_DIR="$dir/store"
 		)
+	fi
+	if [ "${#extra_env[@]}" -gt 0 ]; then
+		LEG_ENV+=("${extra_env[@]}")
 	fi
 	run_rendered "$dir" "$project"
 }
@@ -879,7 +887,8 @@ run_g55t() {
 
 	echo "run-gate55: g55t: capture-time"
 	CAPTURE_FIXTURE_DIR="$TIME_FIXTURE_DIR"
-	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_STREAM_VERSION=10)
+	CAPTURE_EXTRA_ENV=(GRC_ROOT_SIZE=enforce-min-size GRC_STREAM_VERSION=10
+		"GRC_RESOURCE_FORMATS=$G55T_FORMATS")
 	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
 	run_capture "$D/capture" "" none
 
@@ -901,6 +910,27 @@ run_g55t() {
 	echo "run-gate55: g55t: sabotage-time-receiver-frozen (RS_RECEIVER_SABOTAGE=shader-time-frozen)"
 	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=shader-time-frozen)
 	run_rendered_receiver "$D/capture" "$D/sabotage-receiver-time-frozen"
+
+	# P3-CK (gate5_5-design.md "Shader clock under stalls (P3-CK)"): the stall variant in real
+	# time, captured by the rendered host itself (armed, /10, its own shots are the reference),
+	# so the host's GLES3 TIME after a clamped iteration is what its shots show.
+	local -a stall_env=(GRC_STREAM_VERSION=10 "GRC_RESOURCE_FORMATS=$G55T_FORMATS")
+	echo "run-gate55: g55t: stall-host (armed, real time, RS_FIXTURE_VARIANT=stall)"
+	REFERENCE_FIXTURE_DIR="$TIME_FIXTURE_DIR"
+	REFERENCE_VARIANT=stall
+	REFERENCE_ARMED=1
+	REFERENCE_EXTRA_ENV=("${stall_env[@]}")
+	RENDERED_EXTRA_ARGS=(--max-fps 60)
+	run_reference "$D/stall-host"
+	echo "run-gate55: g55t: stall-receiver (full sink)"
+	run_rendered_receiver "$D/stall-host" "$D/stall-receiver"
+	echo "run-gate55: g55t: sabotage-stall-host-clock-fault (GRC_SHADER_CLOCK_FAULT=tree-delta)"
+	REFERENCE_FIXTURE_DIR="$TIME_FIXTURE_DIR"
+	REFERENCE_VARIANT=stall
+	REFERENCE_ARMED=1
+	REFERENCE_EXTRA_ENV=("${stall_env[@]}" GRC_SHADER_CLOCK_FAULT=tree-delta)
+	RENDERED_EXTRA_ARGS=(--max-fps 60)
+	run_reference "$D/sabotage-stall-host-clock-fault"
 	gs_teardown "$OUT/gamescope-g55t"
 	GS_RUN_DIR=""
 }
