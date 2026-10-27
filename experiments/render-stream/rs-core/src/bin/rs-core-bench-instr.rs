@@ -40,6 +40,7 @@ fn run(data: &[u8]) -> Result<(usize, u64), wire::Error> {
             }
             Accepted::End => {}
             Accepted::Transaction => {
+                payloads.accept_transaction(&v, span.bytes(data))?;
                 applier.prepare(v.state(), v.delta());
                 applier.needed(v.state(), v.delta(), &payloads, &mut need);
                 if !need.is_empty() {

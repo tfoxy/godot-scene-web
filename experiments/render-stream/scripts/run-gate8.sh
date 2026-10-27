@@ -142,7 +142,11 @@
 #       `scene/sabotage-keep-carried`, off plus keep-carried) and fixtures/gate5-mesh
 #       (`mesh/capture`). The checker validates every recording through the TypeScript validator
 #       and rs-core-check, and judges dyn-wire, dyn-classify, carried-equals-names,
-#       resend-on-return and the stable content_version (lib/gate8-w11-checks.ts).
+#       resend-on-return and the stable content_version (lib/gate8-w11-checks.ts). W11c adds
+#       `scale/off` (/11, GRC_MESH_DYNAMIC=off), the /10 twins `scale/v10`, `scene/v10` and
+#       `mesh/v10`, and GSW's file legs on them under `g8w11/gsw/` (gate8-w11-tool.ts gsw-legs: the
+#       /11 legs, their /10 twins, and the receiver sabotages stale-dynamic-rx, no-prune,
+#       evict-carried and ignore-released), judged by lib/gate8-w11-gsw-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -928,8 +932,33 @@ run_g8w11() {
 	echo "run-gate8: g8w11 mesh/capture (gate5-mesh, /11, auto)"
 	run_capture_g8w11 "$OUT/g8w11/mesh/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size
 	run_g8w11_coding
+	RECORDING_NAME=recording.rs11
+	PATCH_RECORDING_NAME=recording-patch.rs11
+	# W11c: capture-scale under GRC_MESH_DYNAMIC=off (every pose a new inline hash: what a store
+	# keeps without the /11 retention rule), and /10 twins of the honest captures (the same
+	# fixture, frames and env at GRC_STREAM_VERSION=10: GSW's /10 path is judged against Godot by
+	# g7-5 and g7-6, so its pixels are the oracle of GSW's /11 legs).
+	echo "run-gate8: g8w11 scale/off (capture-scale, /11, GRC_MESH_DYNAMIC=off)"
+	run_capture_g8w11 "$OUT/g8w11/scale/off/capture" "$G8W11_SCALE_DIR" "$G8W11_SCALE_QUIT" \
+		"${G8W11_SCALE_ENV[@]}" GRC_MESH_DYNAMIC=off
+	RECORDING_NAME=recording.rs10
+	PATCH_RECORDING_NAME=recording-patch.rs10
+	echo "run-gate8: g8w11 /10 twins (scale/v10, scene/v10, mesh/v10)"
+	run_capture_g8w11 "$OUT/g8w11/scale/v10/capture" "$G8W11_SCALE_DIR" "$G8W11_SCALE_QUIT" \
+		"${G8W11_SCALE_ENV[@]}" GRC_STREAM_VERSION=10
+	run_capture_g8w11 "$OUT/g8w11/scene/v10/capture" "$G8W11_SCENE_DIR" "$G8W11_SCENE_QUIT" \
+		GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=animate GRC_STREAM_VERSION=10
+	run_capture_g8w11 "$OUT/g8w11/mesh/v10/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size \
+		GRC_STREAM_VERSION=10
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
+
+	# W11c: GSW applies /11 (render-stream-11.md "Receivers"): its file legs on these captures, in
+	# the repo-private pinned headless Chromium (gate8-w11-tool.ts; lib/gate8-w11-gsw-checks.ts).
+	echo "run-gate8: g8w11 gsw legs (gate8-w11-tool.ts)"
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/gate8-w11-tool.ts" gsw-legs --source "$OUT") \
+		>"$OUT/g8w11/gsw-legs.log" 2>&1 || echo "run-gate8: g8w11 gsw legs failed, see $OUT/g8w11/gsw-legs.log" >&2
 }
 
 # ------------------------------------------------------------------------------------- g8f

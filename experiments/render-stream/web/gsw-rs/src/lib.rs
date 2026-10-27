@@ -27,6 +27,7 @@ use render_stream_core::apply::material_residency::MaterialCounts;
 use render_stream_core::apply::payloads::{PayloadStage, PayloadStore};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
+use render_stream_core::apply::retention::Retention;
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
 use render_stream_core::state::VariantEncoding;
@@ -119,6 +120,19 @@ struct Opts {
     /// G8kb (D6): `RS_RECEIVER_VARIANT_POLICY=keep|upgrade`; None is this receiver's default
     /// (upgrade where the context has neither bptc nor s3tc, the phone class, else keep).
     variant_policy: Option<bool>,
+    /// W11c (G7kh's rule on the wasm side): `RS_RECEIVER_LOG=summary` keeps no per-transaction
+    /// evidence (no applied.json rows, mesh rows or parameter log), only running totals, so a
+    /// long live run's wasm heap is bounded by the state.
+    summary_log: bool,
+    /// W11c receiver sabotages (render-stream-11.md, the W11c row): `ignore-released` (the store
+    /// never drops a hash that left H), `evict-carried` (a carried record is dropped on arrival,
+    /// so the next apply needs a hash still in C: `inline-fetch-zero` at the fetcher),
+    /// `stale-dynamic-rx` (a dynamic body is ignored when its surface's shape holds) and `no-prune`
+    /// (the validator keeps C lifelong: a returning hash is `resource-duplicate`).
+    ignore_released: bool,
+    evict_carried: bool,
+    stale_dynamic_rx: bool,
+    no_prune: bool,
 }
 
 /// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
@@ -198,7 +212,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
             .map_err(|e| format!("RS_RECEIVER_GPU_FORMAT_MASK: {e}"))?;
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
-    o.live_protocol = if json.contains("\"live_protocol\":10") {
+    o.summary_log = json.contains("\"log\":\"summary\"");
+    o.live_protocol = if json.contains("\"live_protocol\":11") {
+        11
+    } else if json.contains("\"live_protocol\":10") {
         10
     } else if json.contains("\"live_protocol\":9") {
         9
@@ -253,6 +270,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-presentation" => o.ignore_presentation = true,
                 "ignore-format-mask" => o.ignore_format_mask = true,
                 "vertex-flat-varyings" => o.vertex_flat_varyings = true,
+                "ignore-released" => o.ignore_released = true,
+                "evict-carried" => o.evict_carried = true,
+                "stale-dynamic-rx" => o.stale_dynamic_rx = true,
+                "no-prune" => o.no_prune = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
                     if let Some(s) = Sabotage::parse(other)? {
@@ -292,6 +313,23 @@ struct Totals {
     /// G7k: `PayloadStore` entries [`PayloadStore::evict_unreferenced`] has freed, summed over
     /// every transaction applied (live mode, a budget set, `no-evict` not sabotaging it).
     residency_evictions: u64,
+}
+
+/// W11c: the /11 store and dynamic-mesh evidence (`evidence_json`'s `w11`), over every applied
+/// transaction of the session.
+#[derive(Default)]
+struct W11Totals {
+    /// The most store entries held after an apply, and the most beyond |names(S_n)| + |C| (the
+    /// display's lag; `store-bounded` wants it within the credit window's in-flight states).
+    store_max_entries: u64,
+    store_max_excess: i64,
+    /// Full log only: dynamic surfaces checked after an apply, and those whose held body's
+    /// SHA-256 differed from the resolved state's `body_sha256` (`dynamic-applied`).
+    dynamic_checked: u64,
+    dynamic_mismatched: u64,
+    first_mismatch_seq: Option<i64>,
+    /// Named dynamic meshes left undrawn (a body never ingested), summed over applies.
+    dynamic_undrawn: u64,
 }
 
 /// G7o2 `payload-verified-before-use`: how each payload a transaction used reached the store.
@@ -460,6 +498,12 @@ pub struct GswRs {
     /// G8kp: what this receiver states and selects with (`delivery_json`), set at `start`.
     delivery: DeliveryReport,
     payloads: PayloadStore,
+    /// W11c: the /11 retention rule over `payloads` (H = names(S_d) ∪ C ∪ names(S_n)).
+    retention: Retention,
+    w11: W11Totals,
+    /// W11c: a summary log's running dispose counters (`created`, `freed_by_apply`) per stream,
+    /// in place of the per-transaction evidence it does not keep.
+    summary_dispose: (u32, u64, u64),
     /// G7o2: payloads verified and decoded when they arrived, not yet provided.
     stage: PayloadStage,
     verify: VerifyCounts,
@@ -633,6 +677,28 @@ struct TxEvidence {
     mat: MaterialCounts,
     /// The transaction's `mesh_uploads` rows (G7t: native mesh residency).
     meshes: Vec<render_stream_core::apply::meshes::MeshUpload>,
+    /// W11c, /11 full log: SHA-256 over every dynamic surface of the applied state, ascending by
+    /// mesh id then surface, of (id u32 LE, surface u32 LE, the held body's SHA-256, or 32 zero bytes): what this
+    /// receiver draws dynamic meshes from, comparable with the TypeScript resolved state's
+    /// `body_sha256`s (`gsw-dynamic-applied`).
+    dynamic_sha256: Option<Hash>,
+}
+
+/// One applied transaction's (created, freed) objects in the native receiver's RID terms
+/// (`dispose_json`).
+fn tx_dispose_counts(e: &TxEvidence) -> (u64, u64) {
+    (
+        u64::from(e.created)
+            + u64::from(e.tex.created)
+            + u64::from(e.mat.shaders_created)
+            + u64::from(e.mat.materials_created)
+            + e.meshes.iter().filter(|m| m.op == "create").count() as u64,
+        u64::from(e.freed)
+            + u64::from(e.tex.freed)
+            + u64::from(e.mat.shaders_freed)
+            + u64::from(e.mat.materials_freed)
+            + e.meshes.iter().filter(|m| m.op == "free").count() as u64,
+    )
 }
 
 /// An `unsupported[]` entry: emitted when its (op, item, reason) was not in the previous applied
@@ -683,6 +749,9 @@ impl GswRs {
             executor: None,
             delivery: DeliveryReport::default(),
             payloads: PayloadStore::default(),
+            retention: Retention::default(),
+            w11: W11Totals::default(),
+            summary_dispose: (0, 0, 0),
             stage: PayloadStage::default(),
             verify: VerifyCounts::default(),
             ktx2_verified: HashMap::new(),
@@ -903,7 +972,7 @@ impl GswRs {
     pub fn load(&mut self, len: usize) -> i32 {
         self.data.truncate(len);
         let Some(version) = wire::version_of_magic(&self.data) else {
-            self.error = "bad-magic: not a render-stream/2..9 recording".into();
+            self.error = "bad-magic: not a render-stream/2..11 recording".into();
             return -1;
         };
         self.version = version;
@@ -924,6 +993,9 @@ impl GswRs {
         self.validator = None;
         self.applier = None;
         self.payloads.clear();
+        self.retention.clear();
+        self.w11 = W11Totals::default();
+        self.summary_dispose = (0, 0, 0);
         self.stage.clear();
         self.verify = VerifyCounts::default();
         self.needed.clear();
@@ -966,7 +1038,8 @@ impl GswRs {
             verify_payload_hashes: !self.opts.skip_payload_hash,
             early_prune: false,
         };
-        let v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
+        let mut v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
+        v.set_no_prune(self.opts.no_prune);
         let s = v.session();
         let vp = &s.viewport;
         let size = vp.presentation_size.unwrap_or(vp.logical_size);
@@ -1138,8 +1211,9 @@ impl GswRs {
         self.stats.accepted_records = self.accepted.len() as u32;
         match accepted {
             Accepted::Resource { hash } => {
-                // Inline delivery: the validator verified the payload against its hash.
-                if let Some(bytes) = v.inline_payload(&hash) {
+                // Inline delivery: the validator verified the payload against its hash. W11c's
+                // `evict-carried` sabotage drops it on arrival (it is still in C).
+                if let Some(bytes) = v.inline_payload(&hash).filter(|_| !self.opts.evict_carried) {
                     if let Err(e) = self.payloads.provide(bytes, &hash, self.version, false) {
                         self.error = fail(e);
                         return -1;
@@ -1159,6 +1233,51 @@ impl GswRs {
                     self.error = "accept before start".into();
                     return -1;
                 };
+                if self.version >= 11 {
+                    // W11c: the transaction's dynamic bodies replace their surfaces' geometry in
+                    // place (by mesh id, no store entry and no hash), while the record is in hand.
+                    let t = prof::start();
+                    let ingested = if self.opts.stale_dynamic_rx {
+                        // Sabotage: a body whose surface already holds one of the same shape is
+                        // ignored (the surface keeps drawing its first pose).
+                        let held = &self.payloads.dynamic;
+                        let keep: Vec<_> = v
+                            .dynamic_bodies()
+                            .iter()
+                            .filter(|b| {
+                                let old = held
+                                    .get(b.mesh)
+                                    .and_then(|m| m.surfaces.get(b.surface as usize))
+                                    .and_then(|g| g.as_ref());
+                                let new = st
+                                    .meshes
+                                    .get(&b.mesh)
+                                    .and_then(|m| m.surfaces.get(b.surface as usize));
+                                !matches!((old, new), (Some(g), Some(n))
+                                    if g.layout.vertex_count as i64 == n.vertex_count
+                                        && g.layout.index_count as i64 == n.index_count
+                                        && g.layout.format == n.format)
+                            })
+                            .copied()
+                            .collect();
+                        self.payloads.dynamic.ingest(st, &keep, bytes)
+                    } else {
+                        self.payloads.dynamic.ingest(st, v.dynamic_bodies(), bytes)
+                    };
+                    prof::add(prof::PAYLOAD_DECODE, t);
+                    if let Err(e) = ingested {
+                        self.error = fail(e);
+                        return -1;
+                    }
+                    // W11c: hashes that left C ∪ names(S_n) leave the store now, unless the
+                    // displayed state still draws from them (then after the apply).
+                    if !self.opts.ignore_released {
+                        self.retention.note(v);
+                        let shown = &*a;
+                        self.retention
+                            .sweep(v, &mut self.payloads, || shown.referenced_payload_hashes());
+                    }
+                }
                 a.prepare(st, v.delta());
                 self.compute_needed()
             }
@@ -1226,6 +1345,7 @@ impl GswRs {
         // G8kp: a receiver that offered render-stream.9 (RS_RECEIVER_PROTOCOL=9, `live_protocol`
         // in the options) speaks /9 only, CG1: one that offered render-stream.10 /10 only; G8g: 7
         // or 8 otherwise (the page passes the version it offered).
+        // W11c: one that offered render-stream.11 /11 only.
         let ok = match self.opts.live_protocol {
             0 => version == 7 || version == 8,
             p => version == p,
@@ -1333,16 +1453,13 @@ impl GswRs {
             .iter()
             .filter(|e| e.stream == self.stream_index)
         {
-            created += u64::from(e.created)
-                + u64::from(e.tex.created)
-                + u64::from(e.mat.shaders_created)
-                + u64::from(e.mat.materials_created)
-                + e.meshes.iter().filter(|m| m.op == "create").count() as u64;
-            freed += u64::from(e.freed)
-                + u64::from(e.tex.freed)
-                + u64::from(e.mat.shaders_freed)
-                + u64::from(e.mat.materials_freed)
-                + e.meshes.iter().filter(|m| m.op == "free").count() as u64;
+            let (c, f) = tx_dispose_counts(e);
+            created += c;
+            freed += f;
+        }
+        if self.summary_dispose.0 == self.stream_index {
+            created += self.summary_dispose.1;
+            freed += self.summary_dispose.2;
         }
         let owned = self
             .applier
@@ -1371,6 +1488,10 @@ impl GswRs {
         if !keep_payloads {
             self.payloads.clear();
         }
+        // W11c: dynamic geometry is keyed by the old session's mesh ids, and the retention queue
+        // by its states: neither survives a new session (its first full carries every body).
+        self.payloads.dynamic.clear();
+        self.retention.clear();
         self.stage.clear();
         self.needed.clear();
         self.provide_cursor = 0;
@@ -1643,7 +1764,7 @@ impl GswRs {
             .unwrap_or_default();
         let (gl_bytes, pinned_bytes) = self.pinned_and_gl_bytes();
         format!(
-            "{{\"entries\":{},\"bytes\":{},\"gl_texture_bytes\":{},\"pinned_bytes\":{},\"evictions\":{},\"budget_bytes\":{},\"resident_items\":{},\"resident_textures\":{},\"resident_meshes\":{},\"resident_shaders\":{},\"resident_materials\":{}}}",
+            "{{\"entries\":{},\"bytes\":{},\"gl_texture_bytes\":{},\"pinned_bytes\":{},\"evictions\":{},\"budget_bytes\":{},\"resident_items\":{},\"resident_textures\":{},\"resident_meshes\":{},\"resident_shaders\":{},\"resident_materials\":{}{}}}",
             self.payloads.len(),
             self.payloads.total_bytes(),
             gl_bytes,
@@ -1658,7 +1779,47 @@ impl GswRs {
             owned[3],
             owned[4],
             owned[5],
+            self.retention_keys(),
         )
+    }
+
+    /// W11c: residency_json's /11 keys (empty below /11, so /8-/10 samples are unchanged):
+    /// the dynamic bodies held, the retention rule's drops and queue, and |names(S_n)| and |C|
+    /// (`store-bounded`: entries <= |names| + window).
+    fn retention_keys(&self) -> String {
+        if self.version < 11 {
+            return String::new();
+        }
+        let d = &self.payloads.dynamic;
+        let (names, carried) = self
+            .validator
+            .as_ref()
+            .map(|v| (v.names_len(), v.carried_len()))
+            .unwrap_or_default();
+        format!(
+            ",\"dynamic_meshes\":{},\"dynamic_surfaces\":{},\"dynamic_bytes\":{},\"dynamic_bodies_total\":{},\"released_total\":{},\"release_pending\":{},\"names\":{},\"carried\":{}",
+            d.len(),
+            d.surfaces(),
+            d.bytes(),
+            d.bodies_total,
+            self.retention.released_total,
+            self.retention.pending_len(),
+            names,
+            carried
+        )
+    }
+
+    /// W11c (render-stream-11.md decision 9, `inline-fetch-zero`): may the fetcher GET `hash_hex`
+    /// over HTTP now? "" when it may (always below /11), else the validator's refusal
+    /// (`inline-fetch-zero: ...`), which the fetcher reports as a receiver failure.
+    pub fn check_fetch(&self, hash_hex: &str) -> String {
+        let (Some(v), Some(h)) = (self.validator.as_ref(), Hash::from_hex(hash_hex)) else {
+            return String::new();
+        };
+        match v.check_fetch(&h) {
+            Ok(()) => String::new(),
+            Err(e) => fail(e),
+        }
     }
 
     /// G7k: (GL texture bytes, pinned bytes). GL texture bytes are the resident textures' level-0
@@ -1703,6 +1864,52 @@ impl GswRs {
             return -1;
         };
         let st = a.apply(v.state(), v.delta(), &self.payloads).clone();
+        // W11c: the display moved to S_n, so what only the old display held leaves now.
+        if !self.opts.ignore_released {
+            let shown = &*a;
+            self.retention
+                .sweep(v, &mut self.payloads, || shown.referenced_payload_hashes());
+        }
+        let mut dynamic_sha = None;
+        if self.version >= 11 {
+            let w = &mut self.w11;
+            let entries = self.payloads.len() as u64;
+            w.store_max_entries = w.store_max_entries.max(entries);
+            w.store_max_excess = w
+                .store_max_excess
+                .max(entries as i64 - (v.names_len() + v.carried_len()) as i64);
+            w.dynamic_undrawn += a.meshes.dynamic_undrawn;
+            if !self.opts.summary_log {
+                let st = v.state();
+                let mut ids: Vec<Id> = st
+                    .meshes
+                    .iter()
+                    .filter(|(_, m)| m.is_dynamic())
+                    .map(|(id, _)| *id)
+                    .collect();
+                ids.sort_unstable();
+                let mut digest = Vec::new();
+                for id in ids {
+                    let m = &st.meshes[&id];
+                    let held = self.payloads.dynamic.get(id);
+                    for (k, s) in m.surfaces.iter().enumerate() {
+                        let got = held
+                            .and_then(|d| d.surfaces.get(k))
+                            .and_then(|g| g.as_ref())
+                            .map(render_stream_core::apply::dynamic::body_sha256);
+                        w.dynamic_checked += 1;
+                        if got != s.body_sha256 {
+                            w.dynamic_mismatched += 1;
+                            w.first_mismatch_seq.get_or_insert(st.seq);
+                        }
+                        digest.extend_from_slice(&id.to_le_bytes());
+                        digest.extend_from_slice(&(k as u32).to_le_bytes());
+                        digest.extend_from_slice(&got.map_or([0u8; 32], |h| h.0));
+                    }
+                }
+                dynamic_sha = Some(wire::sha256(&digest));
+            }
+        }
         // G7k (Q10 soak): live mode, a budget set, `no-evict` not sabotaging it. Evicting after
         // `apply` (not before) means this transaction's own newly-resident hashes are always in
         // `referenced_payload_hashes` and so can never be the entries evicted to make room for
@@ -1721,7 +1928,7 @@ impl GswRs {
         let t = prof::start();
         // applied.json evidence (no serialization here: `applied_json_parts` does it later).
         let state = v.state();
-        self.evidence.push(TxEvidence {
+        let tx = TxEvidence {
             stream: self.stream_index,
             seq: state.seq,
             frame: state.frame,
@@ -1738,7 +1945,19 @@ impl GswRs {
             tex: std::mem::take(&mut a.account),
             mat: a.material_counts,
             meshes: std::mem::take(&mut a.meshes.uploads),
-        });
+            dynamic_sha256: dynamic_sha,
+        };
+        if self.opts.summary_log {
+            // W11c: a summary log keeps only what `dispose_json` sums.
+            let (created, freed) = tx_dispose_counts(&tx);
+            if self.summary_dispose.0 != self.stream_index {
+                self.summary_dispose = (self.stream_index, 0, 0);
+            }
+            self.summary_dispose.1 += created;
+            self.summary_dispose.2 += freed;
+        } else {
+            self.evidence.push(tx);
+        }
         let mut now = HashSet::with_capacity(state.unsupported.len());
         for u in &state.unsupported {
             let key = (u.op.clone(), u.item, u.reason);
@@ -1767,7 +1986,7 @@ impl GswRs {
                 detail: (r.reason != "shader-withheld").then_some(r.detail),
             });
         }
-        for &slot in &a.bindings_changed {
+        for &slot in a.bindings_changed.iter().filter(|_| !self.opts.summary_log) {
             self.param_log.push(ParamLogEntry {
                 seq: state.seq,
                 slot,
@@ -2090,6 +2309,11 @@ impl GswRs {
                 e.meshes.iter().filter(|m| m.op == "update").count(),
                 e.meshes.iter().map(|m| m.bytes).sum::<u64>()
             ));
+            if let Some(d) = e.dynamic_sha256 {
+                // W11c: /11 only (None below), so /8-/10 parts are unchanged.
+                out.pop();
+                out.push_str(&format!(",\"dynamic_sha256\":\"{}\"}}", d.to_hex()));
+            }
         }
         out.push_str("],\"uploads\":[");
         let mut first = true;
@@ -2292,6 +2516,26 @@ impl GswRs {
             }
         }
         out.push_str(&format!(",\"last_exec\":{}", self.last_exec.to_json()));
+        if self.version >= 11 {
+            let w = &self.w11;
+            let d = &self.payloads.dynamic;
+            out.push_str(&format!(
+                ",\"w11\":{{\"store_max_entries\":{},\"store_max_excess\":{},\"store_entries\":{},\"released_total\":{},\"release_pending\":{},\"dynamic_meshes\":{},\"dynamic_bytes\":{},\"dynamic_bodies_total\":{},\"dynamic_body_bytes_total\":{},\"dynamic_checked\":{},\"dynamic_mismatched\":{},\"first_mismatch_seq\":{},\"dynamic_undrawn\":{}}}",
+                w.store_max_entries,
+                w.store_max_excess,
+                self.payloads.len(),
+                self.retention.released_total,
+                self.retention.pending_len(),
+                d.len(),
+                d.bytes(),
+                d.bodies_total,
+                d.body_bytes_total,
+                w.dynamic_checked,
+                w.dynamic_mismatched,
+                w.first_mismatch_seq.map_or("null".to_string(), |s| s.to_string()),
+                w.dynamic_undrawn
+            ));
+        }
         out.push('}');
         out
     }

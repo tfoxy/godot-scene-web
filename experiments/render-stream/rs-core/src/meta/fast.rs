@@ -82,11 +82,17 @@ impl<'a> Cur<'a> {
                 }
                 v = v * 10 + (c - b'0') as i64;
                 i += 1;
-                if i - start > 15 {
+                if i - start > 16 {
                     return None;
                 }
             }
             if matches!(s.get(i), Some(b'.' | b'e' | b'E')) {
+                return None;
+            }
+            // W11c: 16 digits reach /11's 53-bit `content_version` digests (WB, "As built
+            // (W11b)" 1). The general path reads a number as an f64, so only a value it holds
+            // exactly (|v| <= 2^53) is read here; anything above is the general path's.
+            if v > 1 << 53 {
                 return None;
             }
         }
@@ -416,10 +422,18 @@ fn texture(c: &mut Cur) -> O<Texture> {
     })
 }
 
-fn mesh(c: &mut Cur) -> O<MeshMeta> {
+/// W11c: from /8 a created mesh carries `"adopted_content":null` (an adopted one is the general
+/// path's), and from /11 `"u8"` after `"f"` and a dynamic surface's null `"hash"`; the
+/// `mesh-dynamic` rules over them are the validator's, as on the general path.
+fn mesh(c: &mut Cur, version: u8) -> O<MeshMeta> {
+    let v11 = version >= 11;
     c.lit(b"{\"id\":")?;
     let id = c.id1()?;
-    c.lit(b",\"origin\":\"created\",\"status\":")?;
+    if version >= 8 {
+        c.lit(b",\"origin\":\"created\",\"adopted_content\":null,\"status\":")?;
+    } else {
+        c.lit(b",\"origin\":\"created\",\"status\":")?;
+    }
     let status = c.enum_of(EntryStatus::ALL, EntryStatus::as_str)?;
     c.lit(b",\"reason\":")?;
     let reason = if c.null() {
@@ -431,11 +445,25 @@ fn mesh(c: &mut Cur) -> O<MeshMeta> {
     let version = c.int_ge(1)?;
     c.lit(b",\"f\":")?;
     let f = if c.null() { None } else { Some(c.uint()?) };
+    let u8_offset = if v11 {
+        c.lit(b",\"u8\":")?;
+        if c.null() {
+            None
+        } else {
+            Some(c.uint()?)
+        }
+    } else {
+        None
+    };
     c.lit(b",\"surfaces\":")?;
     let mut surfaces = Vec::new();
     c.list(|c| {
         c.lit(b"{\"hash\":")?;
-        let hash = c.hash()?;
+        let hash = if v11 && c.null() {
+            None
+        } else {
+            Some(c.hash()?)
+        };
         c.lit(b",\"payload_bytes\":")?;
         let payload_bytes = c.int_ge(1)?;
         c.lit(b",\"primitive\":")?;
@@ -448,7 +476,7 @@ fn mesh(c: &mut Cur) -> O<MeshMeta> {
         let index_count = c.int_ge(0)?;
         c.lit(b"}")?;
         surfaces.push(MeshSurface {
-            hash: Some(hash),
+            hash,
             body_sha256: None,
             payload_bytes,
             primitive,
@@ -467,7 +495,7 @@ fn mesh(c: &mut Cur) -> O<MeshMeta> {
         reason,
         version,
         f,
-        u8: None,
+        u8: u8_offset,
         surfaces,
     })
 }
@@ -888,7 +916,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
         c.lit(b",\"meshes\":")?;
         let meshes = &mut tx.meshes;
         c.list(|c| {
-            meshes.push(mesh(c)?);
+            meshes.push(mesh(c, version)?);
             Some(())
         })?;
     }
@@ -966,6 +994,37 @@ mod tests {
             }
         }
         fast_hits
+    }
+
+    #[test]
+    fn integers_up_to_2_pow_53_match_the_general_path() {
+        // W11c: /11's content_version digests have 16 digits; the general path reads an f64.
+        for (text, want) in [
+            ("123456789012345", Some(123456789012345i64)),
+            ("1984125798402717", Some(1984125798402717)),
+            ("9007199254740992", Some(9007199254740992)),
+            ("9007199254740993", None),
+            ("9999999999999999", None),
+            ("10000000000000000", None),
+        ] {
+            let mut c = super::Cur {
+                s: text.as_bytes(),
+                p: 0,
+            };
+            assert_eq!(c.int(), want, "{text}");
+        }
+    }
+
+    /// W11c: the equivalence on any recording, `W11C_REC=<file> W11C_VERSION=<v> cargo test
+    /// --release fast_path_matches_on_a_recording -- --ignored --nocapture` (an STS2 /11 capture:
+    /// every transaction takes the fast path).
+    #[test]
+    #[ignore]
+    fn fast_path_matches_on_a_recording() {
+        let data = std::fs::read(std::env::var("W11C_REC").unwrap()).unwrap();
+        let v: u8 = std::env::var("W11C_VERSION").map_or(11, |v| v.parse().unwrap());
+        let hits = equivalent(&data, v);
+        eprintln!("fast-path hits: {hits}");
     }
 
     #[test]

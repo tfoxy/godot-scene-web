@@ -74,6 +74,8 @@ import {
   failWith,
   finish,
   type GswRs,
+  type GswRsModule,
+  type LiveCoding,
   hex,
   loadModule,
   log,
@@ -114,8 +116,8 @@ import {
 
 /** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
-const SUBPROTOCOL = (v: 7 | 8 | 9 | 10) => `render-stream.${v}`;
-const PROTOCOL = (v: 7 | 8 | 9 | 10) => `render-stream/${v}` as const;
+const SUBPROTOCOL = (v: 7 | 8 | 9 | 10 | 11) => `render-stream.${v}`;
+const PROTOCOL = (v: 7 | 8 | 9 | 10 | 11) => `render-stream/${v}` as const;
 /** G8kp (texture-delivery-design.md Q3): the compressed families a WebGL2 context on this page
  * exposes, probed on a throwaway canvas before the module's own context exists (the hello goes
  * out first), minus RS_RECEIVER_GPU_FORMAT_MASK; `none` when empty. The module re-derives the same
@@ -219,6 +221,13 @@ export async function runLive(
 
 class LiveReceiver {
   private g: GswRs | null = null;
+  /** W11t's LiveCoding constructor (the module's), and this connection's decoder (W11c: one per
+   * connection, its bases reset with it; null below /11, where nothing is coded). */
+  private codingCtor: GswRsModule["LiveCoding"] | null = null;
+  private coding: LiveCoding | null = null;
+  /** W11c: every connection's coding stats, and the resyncs a coding error asked for. */
+  private readonly codingReports: Record<string, unknown>[] = [];
+  private codingResyncs = 0;
   /** G8kb: KTX2 payloads' verify, transcode and stage (transcode.ts). */
   private ktx: KtxStager | null = null;
   private mem: WebAssembly.Memory | null = null;
@@ -410,6 +419,7 @@ class LiveReceiver {
     try {
       const loaded = await loadModule();
       this.mem = loaded.memory;
+      this.codingCtor = loaded.mod.LiveCoding;
       try {
         this.g = new loaded.mod.GswRs(
           this.canvas,
@@ -422,10 +432,13 @@ class LiveReceiver {
             memory_budget_bytes: this.cfg.memoryBudgetBytes,
             texture_encodings: this.cfg.textureEncodings ?? "",
             gpu_format_mask: this.cfg.gpuFormatMask ?? "",
-            // CG1: /10 is /9's live transport with /10's items (render-stream-10.md).
+            // CG1: /10 is /9's live transport with /10's items (render-stream-10.md); W11c: /11
+            // is /10's with /11's records and dynamic meshes (render-stream-11.md).
             ...(this.cfg.liveProtocol >= 9
               ? { live_protocol: this.cfg.liveProtocol }
               : {}),
+            // W11c: a summary log keeps no per-transaction evidence in wasm either.
+            log: this.cfg.log,
             // G8kb: the bundle carries the KTX2 transcoder worker (transcode.ts).
             transcoder: true,
             variant_policy: this.cfg.variantPolicy ?? "",
@@ -471,6 +484,15 @@ class LiveReceiver {
   private open(): void {
     this.opened = false;
     this.closeInfo = null;
+    // W11c: a fresh decoder per connection (W11t: the bases are the connection's own).
+    if (this.coding !== null)
+      this.codingReports.push(
+        JSON.parse(this.coding.stats_json()) as Record<string, unknown>,
+      );
+    this.coding =
+      this.cfg.liveProtocol === 11 && this.codingCtor !== null
+        ? new this.codingCtor(this.L.liveCoding, this.L.inboundBytes)
+        : null;
     let ws: WebSocket;
     try {
       ws = new WebSocket(this.L.url, [SUBPROTOCOL(this.cfg.liveProtocol)]);
@@ -540,7 +562,13 @@ class LiveReceiver {
             // G8kb: GSW transcodes uastc (the module's default with the worker, Q3).
             this.cfg.textureEncodings ?? "block,uastc,decoded",
             probeGpuFormats(this.cfg.gpuFormatMask),
-            this.cfg.liveProtocol === 10 ? "render-stream/10" : "render-stream/9",
+            this.cfg.liveProtocol === 11
+              ? "render-stream/11"
+              : this.cfg.liveProtocol === 10
+                ? "render-stream/10"
+                : "render-stream/9",
+            // W11c: W11t's `live_coding` offer, last (golden-11's control hello); none when off.
+            this.L.liveCoding,
           )
         : hello,
     );
@@ -634,10 +662,23 @@ class LiveReceiver {
     } else this.streamReport.received_truncated = true;
     tap.bytes += buf.byteLength;
     this.streamReport.received_bytes = tap.bytes;
-    const len = buf.byteLength;
+    let len = buf.byteLength;
     // Q14c step 1: one copy into wasm's receive buffer (the pointer after rx(), which may grow).
     const p = g.rx(len);
     new Uint8Array(mem.buffer, p, len).set(new Uint8Array(buf));
+    // W11c: W11t's live coding, decoded in place before anything parses the message.
+    if (this.coding !== null) {
+      const n = this.coding.decode_rx(g, len);
+      if (n === 0) return; // a based transaction while a coding resync is pending: no apply, no ack
+      if (n < 0) {
+        const seq = this.coding.seq();
+        const err = this.coding.error();
+        if (seq === 0) throw failWith(this.lastSeqOrNull(), err);
+        this.codingResync(seq, err);
+        return;
+      }
+      len = n;
+    }
     if (!this.sessionSeen) {
       if (g.live_session(len, this.cfg.liveProtocol) < 0)
         throw failWith(null, g.error());
@@ -880,6 +921,15 @@ class LiveReceiver {
         resident_meshes: number;
         resident_shaders: number;
         resident_materials: number;
+        // W11c: present at /11 only.
+        dynamic_meshes?: number;
+        dynamic_surfaces?: number;
+        dynamic_bytes?: number;
+        dynamic_bodies_total?: number;
+        released_total?: number;
+        release_pending?: number;
+        names?: number;
+        carried?: number;
       };
       this.perf.residencyEvictions = r.evictions;
       this.perf.residencyBudgetBytes = r.budget_bytes;
@@ -895,6 +945,20 @@ class LiveReceiver {
         resident_shaders: r.resident_shaders,
         resident_materials: r.resident_materials,
         leaked_gl_textures: leakedGlTextureCount(),
+        ...(r.names !== undefined
+          ? {
+              w11: {
+                dynamic_meshes: r.dynamic_meshes ?? 0,
+                dynamic_surfaces: r.dynamic_surfaces ?? 0,
+                dynamic_bytes: r.dynamic_bytes ?? 0,
+                dynamic_bodies_total: r.dynamic_bodies_total ?? 0,
+                released_total: r.released_total ?? 0,
+                release_pending: r.release_pending ?? 0,
+                names: r.names,
+                carried: r.carried ?? 0,
+              },
+            }
+          : {}),
       };
     });
     const g = this.g as GswRs;
@@ -1075,6 +1139,7 @@ class LiveReceiver {
           "resource-unavailable",
           `payload ${misses[0]} is needed, and the session has no HTTP fetch`,
         );
+      this.checkFetches(next.entry.seq, misses);
       this.fetcher.extend(misses);
     }
     // G7kh: one line per fold only in a full log; the page keeps every log line (shell.lines),
@@ -1158,6 +1223,7 @@ class LiveReceiver {
           "resource-unavailable",
           `payload ${misses[0]} is needed, and the session has no HTTP fetch`,
         );
+      this.checkFetches(item.entry.seq, misses);
       this.fetcher.start(misses);
     }
     this.advancePending();
@@ -1313,7 +1379,22 @@ class LiveReceiver {
     const misses = fresh
       .map((n) => n.hash)
       .filter((h) => !p.bodies.has(h) && !requested.has(h));
-    if (misses.length > 0) this.fetcher?.extend(misses);
+    if (misses.length > 0) {
+      this.checkFetches(p.item.entry.seq, misses);
+      this.fetcher?.extend(misses);
+    }
+  }
+
+  /** W11c (render-stream-11.md decision 9, `inline-fetch-zero`): a /11 receiver never GETs a
+   * hash that always arrives inline (named by the newest state, or carried, and inline-sized).
+   * The validator answers (`check_fetch`); a refusal is this receiver's failure, before any GET. */
+  private checkFetches(seq: number, misses: readonly string[]): void {
+    if (this.cfg.liveProtocol < 11) return;
+    const g = this.g as GswRs;
+    for (const h of misses) {
+      const err = g.check_fetch(h);
+      if (err !== "") throw new ReplayFailure(seq, "inline-fetch-zero", err);
+    }
   }
 
   /** One completed GET, logged as receiver.gd `_poll_fetches` logs it. */
@@ -1632,6 +1713,21 @@ class LiveReceiver {
       delete e.coalesced_into;
     }
     this.coalesced = this.coalesced.filter((e) => !before.has(e));
+  }
+
+  /** W11c (W11t, render-stream-11.md "Transport"): a based message whose base is missing or that
+   * does not decode: ask for a resync (`reason: coding`); the decoder skips based transactions
+   * until the full one, which a fresh applier applies (the applier is delta-driven). */
+  private codingResync(seq: number, err: string): void {
+    this.codingResyncs++;
+    this.rebuildDue = true;
+    this.send({
+      type: "resync",
+      stream_id: this.streamId,
+      seq,
+      reason: "coding",
+    });
+    log(`coding: seq ${seq} did not decode (${err}); resync asked`);
   }
 
   /** RS_RECEIVER_RESYNC (receiver.gd `_refuse_for_resync`). */
@@ -2086,6 +2182,17 @@ class LiveReceiver {
       this.report.residencyEvictions = this.perf.residencyEvictions;
       const gsw = this.liveBlock.gsw as Record<string, unknown>;
       gsw.raf_callbacks = this.rafIndex;
+      // W11c: W11t's coding, per connection (the live block's own key, /11 only).
+      if (this.coding !== null || this.codingReports.length > 0) {
+        const all = [...this.codingReports];
+        if (this.coding !== null)
+          all.push(JSON.parse(this.coding.stats_json()) as Record<string, unknown>);
+        this.liveBlock.coding = {
+          offer: this.L.liveCoding,
+          resyncs: this.codingResyncs,
+          connections: all,
+        };
+      }
       gsw.raf_skipped = this.rafSkipped;
       gsw.drawn_rafs = this.drawnRafs;
       gsw.acks_while_hidden = this.acksWhileHidden;

@@ -256,6 +256,8 @@ export interface RustParts {
       surface_updates?: number;
       mesh_upload_bytes?: number;
     };
+    /** W11c (/11, full log): the dynamic surfaces' held bodies, digested (gsw-rs TxEvidence). */
+    dynamic_sha256?: string;
   }[];
   /** G7t: native mesh residency's rows (`rs_applier.gd` `_apply_meshes`). */
   mesh_uploads?: {
@@ -377,7 +379,8 @@ export interface Report {
     | "render-stream/7"
     | "render-stream/8"
     | "render-stream/9"
-    | "render-stream/10";
+    | "render-stream/10"
+    | "render-stream/11";
   creditWindow: number | null;
   /** G8kp: at /9, the module's `delivery_json()` (what this receiver states and selects with). */
   textureDelivery?: Record<string, unknown> | null;
@@ -459,6 +462,10 @@ export function appliedJson(r: Report): Record<string, unknown> {
             resources: resourcesOf(t, s) as ReturnType<
               typeof resourcesOf
             > | null,
+            // W11c: /11 only, so /6-/10 reports are unchanged.
+            ...(t.dynamic_sha256 !== undefined
+              ? { dynamic_sha256: t.dynamic_sha256 }
+              : {}),
           };
         })
       : r.entries.map((e) => {
@@ -485,6 +492,9 @@ export function appliedJson(r: Report): Record<string, unknown> {
               : {}),
             resources: applied ? resourcesOf(t, s) : null,
             paced: e.paced,
+            ...(t?.dynamic_sha256 !== undefined
+              ? { dynamic_sha256: t.dynamic_sha256 }
+              : {}),
           };
         });
   const applied = transactions.filter((t) => t.resources !== null);

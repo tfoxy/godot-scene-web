@@ -3410,6 +3410,11 @@ mise exec -- pnpm render-stream:gate8 -- \
   pure helpers (`rebuildGrm1`, `traceDynamic`, `dynWireProblems`, `dynClassifyProblems`,
   `inlineNames`, `carriedEqualsNamesProblems`, `resendOnReturn`); `test/self-test-gate8-w11.ts`
   drives them on golden-4's GRM1 payloads and synthetic recordings and hook logs.
+- `gate8-w11-tool.ts gsw-legs` (W11c): builds the rs-core wasm and the GSW bundle, then replays
+  g8w11's captures in the GSW receiver page (lib/gate7-web-legs.ts), one leg each under
+  `g8w11/gsw/<leg>/gsw`, from a planned launch it writes to `g8w11/gsw/<leg>/plan` (g8w11 has no
+  native receiver leg). `lib/gate8-w11-gsw-checks.ts` (`runG8w11Gsw`, called by `runG8w11`) judges
+  them; `test/self-test-gate8-w11-gsw.ts` drives its digest and frame helpers on golden-11.
 - `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
   `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
   `canonicalState` compares materials by content since G8m.
@@ -3499,9 +3504,9 @@ cells), `ct-channel-refused` and `ct-diffuse-uploaded`; each criterion is spelle
 | `late/receiver` | the native receiver on the late capture (shots at checkpoints 1 and 2) |
 | `sabotage-drop-canvas-group/receiver`, `sabotage-full-backbuffer-copy/receiver` | the native receiver on the /10 full sink with `RS_RECEIVER_SABOTAGE` |
 
-## Gate 8 legs and evidence under `--out/g8w11` (g8w11, W11b)
+## Gate 8 legs and evidence under `--out/g8w11` (g8w11, W11b; W11c's GSW legs)
 
-Headless captures only (no receiver applies dynamic meshes before W11c/W11d), every one at
+Headless captures, every one at
 `GRC_STREAM_VERSION=11 GRC_RESOURCE_INLINE_MAX_BYTES=4096` with both sinks (`recording.rs11`,
 `recording-patch.rs11`), the store and the hook log.
 
@@ -3514,6 +3519,9 @@ Headless captures only (no receiver applies dynamic meshes before W11c/W11d), ev
 | `scene/off/capture` | the same with `GRC_MESH_DYNAMIC=off`: MS's poses recur every 90 frames (`resend-on-return`) |
 | `scene/sabotage-keep-carried/capture` | off plus `keep-carried`: never re-carried, so `resource-missing` |
 | `mesh/capture` | `fixtures/gate5-mesh`, its default run, auto |
+| `scale/off/capture` (W11c) | `scale/capture` under `GRC_MESH_DYNAMIC=off`: every pose a new inline hash |
+| `scale/v10/capture`, `scene/v10/capture`, `mesh/v10/capture` (W11c) | the /10 twins (`GRC_STREAM_VERSION=10`, sinks `.rs10`): same fixture, env and frames |
+| `gsw/<leg>/gsw` (W11c) | GSW's file legs (gate8-w11-tool.ts): `scale`, `scale-off`, `scene`, `scene-off`, `mesh` (/11 patch sinks; `mesh` the full sink) and the twins `scale-v10`, `scene-v10`, `mesh-v10`, shots at up to six frames every capture of the group holds (`gsw/frames.json`), `perf.json` (`gsw.w11`); the receiver sabotages `sabotage-stale-dynamic-rx/scene`, `sabotage-no-prune/scene-off`, `sabotage-evict-carried/scene-off`, `sabotage-ignore-released/scale-off` |
 
 ## Gate 8 criteria (g8w11)
 
@@ -3525,6 +3533,15 @@ GRM1, hashes to the hook log's surface at that frame) with `dyn-wire-catches-per
 K, never demoted; none under off), `carried-equals-names` (records = inline(T) \ inline(B) in table
 order), `resend-on-return` and `cv-stable` (items per patch, honest against cv-churn). The sabotage
 checks are not-run when the smoke tier skips their legs.
+
+W11c's GSW criteria (`lib/gate8-w11-gsw-checks.ts`): `gsw-w11-replays` (every leg replays its whole
+recording), `gsw-dynamic-applied` (at every applied /11 transaction the bodies GSW draws dynamic
+meshes from, applied.json `dynamic_sha256`, equal the TypeScript resolved state's `body_sha256`s;
+none undrawn), `gsw-w11-equals-v10` (each /11 leg's shots equal its /10 twin's pixel for pixel, the
+off legs' returning hashes included), `store-bounded` (after every apply the store holds at most
+|names(S)| + |C| + 2 entries), `inline-fetch-zero`, and the sabotages `stale-dynamic-rx-caught`,
+`no-prune-caught` (`resource-duplicate`), `evict-carried-caught` (`inline-fetch-zero`) and
+`ignore-released-caught` (`store-bounded`).
 
 ## Gate 8 criteria (g8cg)
 

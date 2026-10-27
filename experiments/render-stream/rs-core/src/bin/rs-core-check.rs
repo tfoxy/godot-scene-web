@@ -656,6 +656,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
                 }
                 Accepted::End => {}
                 Accepted::Transaction => {
+                    payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
                     a.needed(v.state(), v.delta(), &payloads, &mut need);
                     for h in &need {
@@ -861,6 +862,7 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                     }
                     Accepted::End => {}
                     Accepted::Transaction => {
+                        payloads.accept_transaction(&v, span.bytes(&data))?;
                         inc.prepare(v.state(), v.delta());
                         oracle.prepare(v.state(), v.delta());
                         inc.needed(v.state(), v.delta(), &payloads, &mut need);
@@ -1017,6 +1019,7 @@ fn cmd_scissors(args: &Args) -> ExitCode {
                 }
                 Accepted::End => {}
                 Accepted::Transaction => {
+                    payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
                     a.needed(v.state(), v.delta(), &payloads, &mut need);
                     for h in &need {
@@ -1102,6 +1105,7 @@ fn cmd_lowered(args: &Args) -> ExitCode {
                 }
                 Accepted::End => {}
                 Accepted::Transaction => {
+                    payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
                     a.needed(v.state(), v.delta(), &payloads, &mut need);
                     for h in &need {

@@ -112,6 +112,9 @@ export class Perf {
      * otherwise, never null, so a soak checker can add it to `live_rids.textures` for one "GL
      * textures" number that is flat honestly and grows under the sabotage. */
     leaked_gl_textures: number;
+    /** W11c: at /11, `GswRs::residency_json()`'s retention keys (dynamic bodies held, |names|,
+     * |C|, entries the rule released); absent below /11. */
+    w11?: Record<string, number>;
   }[] = [];
   private lastSubmitMs = -1;
   private nextTimelineMs = -1;
@@ -158,6 +161,7 @@ export class Perf {
       resident_shaders: number;
       resident_materials: number;
       leaked_gl_textures: number;
+      w11?: Record<string, number>;
     },
   ): void {
     const now = performance.now();
@@ -188,6 +192,7 @@ export class Perf {
           }
         : null,
       leaked_gl_textures: r?.leaked_gl_textures ?? 0,
+      ...(r?.w11 ? { w11: r.w11 } : {}),
     });
   }
 

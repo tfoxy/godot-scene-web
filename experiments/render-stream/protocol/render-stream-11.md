@@ -672,6 +672,65 @@ validator and rs-core refuse them below /11 like the /8-only kinds), and need
 `RS_SCALE_REDRAWS=150` (identical re-records, STS2's shape); the design's claim that the default
 fixture shows it did not hold.
 
+### As built (W11c): decisions
+
+W11c makes GSW apply /11 ([results/p3/w11c.md](../results/p3/w11c.md)). Nothing here changes the
+wire; these rules are rs-core's receiver API, which W11d (`rs-core-capi`, the native receiver) and
+W11e (the web export) call too.
+
+1. **Dynamic geometry by mesh id.** `PayloadStore::dynamic` (`apply::dynamic::DynamicMeshes`) holds
+   one decoded body per dynamic surface, keyed by mesh id and surface index. An adapter calls
+   `PayloadStore::accept_transaction(&validator, record)` right after every `accept` that returned
+   `Accepted::Transaction`, with the record `accept` was given: a live message buffer is reused by
+   the next message, so the bodies are decoded then, not at the apply. Each body named by
+   `Validator::dynamic_bodies()` replaces its surface's geometry in place; then every mesh the new
+   state does not hold as dynamic (freed, gone, emptied) is dropped. A credit-window-2 fold needs
+   nothing more: a later null `u8` keeps the earlier body. No hash is computed or checked on the
+   receiver side (the validator already digests each body for `body_sha256`), and these bodies are
+   not store entries: `len()`, `total_bytes()` and the G7k budget never count them.
+2. **Mesh residency rows** (`apply::meshes`). A dynamic mesh is `create`d when it first becomes
+   resident, `rebuild`t when a surface's shape (primitive, format, counts, buffer sizes) or its
+   index bytes change, and otherwise gets one `update` row per surface whose body moved, listing
+   the region buffers (vertex, attribute, skin when present): W11d's region-upload rule. A static
+   mesh that turns dynamic is freed and created again. GSW keeps no per-mesh GL buffers (G7t lowers
+   meshes into the list's shared vertex buffer), so the design's `bufferSubData` is the item's
+   in-place re-lower; the native receiver's region uploads are W11d's.
+3. **Retention** (`apply::retention::Retention`). `note(&validator)` after every accepted
+   transaction queues `Validator::released()`; `sweep(&validator, &mut store, displayed)` after
+   every accept and after every apply drops each queued hash that is back in names(S_n) or C (kept)
+   or that the display does not draw from (`displayed()`, GSW: `Applier::referenced_payload_hashes`).
+   A hash the display still holds waits for the sweep after the apply that moves it. Below /11
+   `released()` is empty, so /2-/10 stores behave as before.
+4. **`inline-fetch-zero`.** GSW's live and file fetchers call `Validator::check_fetch` (wasm
+   `check_fetch(hash)`) before every GET at /11; a refusal fails the replay with that reason.
+5. **`content_version`** is compared for equality only (the applier's re-lower test), so a digest
+   needs no receiver change. `unsupported: null` and the empty `mm_f32` are resolved by the
+   validator.
+6. **Evidence.** At /11 only: `residency_json()` adds the dynamic bodies held, |names(S)|, |C| and
+   the rule's drops; `evidence_json()` adds `w11` (the store's most entries and most beyond
+   |names| + |C|, bodies, `dynamic_mismatched`); a full log's applied.json transactions carry
+   `dynamic_sha256` (per mesh id and surface, the held body's SHA-256). G7kh's summary-log rule now
+   holds in wasm too: `RS_RECEIVER_LOG=summary` keeps no per-transaction evidence there, only the
+   dispose counters, so a long live run's heap is bounded by the state.
+7. **The fast meta path** reads /8+ created mesh entries (`adopted_content: null`), /11's `u8` and
+   null surface hashes, and integers of up to 16 digits that an f64 holds exactly (≤ 2^53): /11's
+   53-bit `content_version` digests sent every STS2 item to the general path. On STS2's /11
+   recording every one of 4,932 transactions now takes it, equal to the general path.
+8. **Receiver sabotages** (GSW options; `no-prune` is `Validator::set_no_prune`):
+   `stale-dynamic-rx` (a body is ignored when its surface's shape holds), `no-prune` (C kept
+   lifelong: `resource-duplicate` at the first return), `evict-carried` (a carried record dropped
+   on arrival: the next GET is `inline-fetch-zero`) and `ignore-released` (the store keeps what
+   left H: `store-bounded`).
+9. **Live.** `RS_RECEIVER_PROTOCOL=11` offers `render-stream.11` with /10's hello under
+   `render-stream/11` and accepts only a /11 session. Windows 1 and 2 both run.
+10. **Live coding (W11t).** At /11 GSW's hello ends with `"live_coding": "zstd-base,zstd"`
+    (`RS_RECEIVER_LIVE_CODING=zstd|off` narrows or drops the offer). One `LiveCoding` per
+    connection decodes each message in place (`decode_rx`) before `live_session`/`live_accept`; a
+    skipped message (0) is neither applied nor acked; on -1 with a non-zero seq GSW sends
+    `resync` with reason `coding` and the full transaction that ends it is applied by a fresh
+    applier (`live_rebuild`); with seq 0 the stream fails. The live block reports each
+    connection's coding stats (`live.coding`).
+
 ## Predicted cost (STS2, from the kept recordings)
 
 One viewer that takes every transaction, `GRC_RESOURCE_INLINE_MAX_BYTES=4096`. Method and both
