@@ -33,19 +33,17 @@
 //   gsw-transcode-fallback@gsw Q3: under RS_RECEIVER_TRANSCODE_FAULT=fail every transcode fails;
 //                    each is a typed delivery-transcode-failed row, the texture falls back to
 //                    `decoded` (no uastc upload) and the final image equals gsw-keep's exactly
-//   CG1 (render-stream-10.md "Receivers": GSW types the /10 state until CG3; GSW-only legs of g8cg
-//   from the native receiver, receiver-patch and late/receiver legs):
-//   cg-gsw-typed@gsw  each g8cg GSW leg types exactly fixtures/gate8-cg's items with /10 state
-//                    (gsw-canvas-group for every canvas_group item, gsw-backbuffer-copy for every
-//                    copy_to_backbuffer item, nothing else unsupported but the headless capture's
-//                    degenerate-host-size, as on native) and draws them as /9 would:
-//                    every checkpoint shot is the native replay of the /9 capture (receiver-v9's
-//                    shot of the same checkpoint) within channel 1
+//   CG3 (render-stream-10.md "Receivers": GSW composites the /10 state; g8cg's own checks judge
+//   its legs through the band, lib/gate7-gsw-g8.ts):
+//   cg-gsw-untyped@gsw  no g8cg GSW leg types anything unsupported but the headless capture's
+//                    degenerate-host-size (as on native): no gsw-canvas-group or
+//                    gsw-backbuffer-copy row is left, and every checkpoint shot of the honest /10
+//                    legs (receiver, receiver-patch, late/receiver) is within the band (channel 1)
+//                    of the native shot
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { decodePngRgba } from "./gate-minus1-checks";
 
@@ -58,8 +56,6 @@ interface Ctx {
   out: string;
   sourceDir: string;
 }
-
-const EXPERIMENT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const gswDir = (ctx: Ctx, leg: string) => join(ctx.out, "gate8", "gsw", leg);
 
@@ -158,77 +154,52 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
 
 // --------------------------------------------------------------------------------------- CG1
 
-interface CgExpectedLite {
-  checkpoints: { step: number }[];
-  late_steps: number[];
-  wire: { canvas_group: { count: number }[]; copy_to_backbuffer: { count: number }[] };
-}
+/** The g8cg legs GSW replays (lib/gate7-gsw-g8.ts GATE8_LEGS), and the honest /10 ones. */
+const CG_LEGS = [
+  "g8cg/receiver",
+  "g8cg/receiver-patch",
+  "g8cg/late/receiver",
+  "g8cg/receiver-v9",
+  "g8cg/sabotage-drop-canvas-group/receiver",
+  "g8cg/sabotage-full-backbuffer-copy/receiver",
+];
+const CG_HONEST = CG_LEGS.slice(0, 3);
 
-async function shotSeqs(dir: string): Promise<string[]> {
-  try {
-    return (await readFile(join(dir, "shot-seqs.txt"), "utf8")).trim().split(",").filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/** cg-gsw-typed@gsw (header). Not emitted when the source ran no g8cg. */
+/** cg-gsw-untyped@gsw (header). Not emitted when the source ran no g8cg. */
 async function g8cgChecks(ctx: Ctx): Promise<Gate7Check[]> {
   if (!existsSync(join(ctx.sourceDir, "g8cg"))) return [];
-  const criterion =
-    "CG1 (render-stream-10.md Receivers): until CG3 GSW types every item carrying /10 state (gsw-canvas-group, gsw-backbuffer-copy; nothing else unsupported) and draws as /9 would: each g8cg GSW leg's checkpoint shots equal the native replay of the /9 capture within channel 1";
-  const expected = await readJson<CgExpectedLite>(join(EXPERIMENT_DIR, "fixtures", "gate8-cg", "expected.json"));
-  if (!expected) return [mk("cg-gsw-typed@gsw", criterion, ["fixtures/gate8-cg/expected.json unreadable"], "")];
-  const groupItems = expected.wire.canvas_group.reduce((n, w) => n + w.count, 0);
-  const copyItems = expected.wire.copy_to_backbuffer.reduce((n, w) => n + w.count, 0);
-  const all = expected.checkpoints.map((c) => c.step);
-  const legs: [string, string, number[]][] = [
-    ["g8cg/gsw-receiver", "g8cg/receiver", all],
-    ["g8cg/gsw-receiver-patch", "g8cg/receiver-patch", all],
-    ["g8cg/gsw-late", "g8cg/late/receiver", expected.late_steps],
-  ];
-  const v9Dir = join(ctx.sourceDir, "g8cg", "receiver-v9");
-  const v9Seqs = await shotSeqs(v9Dir);
+  const band = await readJson<Record<string, BandShot[]>>(join(ctx.out, "gate8", "gsw-band.json"));
   const problems: string[] = [];
   let shots = 0;
-  for (const [leg, from, steps] of legs) {
-    const dir = gswDir(ctx, leg);
-    const applied = await readJson<{ unsupported?: { item?: number | null; reason?: string }[] }>(
-      join(dir, "applied.json"),
+  for (const leg of CG_LEGS) {
+    const applied = await readJson<{ unsupported?: { reason?: string }[] }>(
+      join(gswDir(ctx, leg), "applied.json"),
     );
     if (!applied) {
       problems.push(`${leg}: applied.json missing`);
       continue;
     }
-    const rows = applied.unsupported ?? [];
-    const items = (reason: string) => new Set(rows.filter((u) => u.reason === reason).map((u) => u.item)).size;
-    // a headless capture's root (64x64) is typed degenerate-host-size by every receiver, native too
-    const typed = new Set(["gsw-canvas-group", "gsw-backbuffer-copy", "degenerate-host-size"]);
-    const others = rows.filter((u) => !typed.has(u.reason ?? ""));
-    if (items("gsw-canvas-group") !== groupItems)
-      problems.push(`${leg}: ${items("gsw-canvas-group")} items typed gsw-canvas-group, expected ${groupItems}`);
-    if (items("gsw-backbuffer-copy") !== copyItems)
-      problems.push(`${leg}: ${items("gsw-backbuffer-copy")} items typed gsw-backbuffer-copy, expected ${copyItems}`);
-    if (others.length > 0) problems.push(`${leg}: ${others.length} other unsupported entries (${others[0].reason})`);
-    const seqs = await shotSeqs(join(ctx.sourceDir, from));
-    for (const [i, step] of steps.entries()) {
-      const a = await png(join(dir, "shots", `seq-${seqs[i]}.png`));
-      const b = await png(join(v9Dir, "shots", `seq-${v9Seqs[all.indexOf(step)]}.png`));
-      if (!a || !b) {
-        problems.push(`${leg} step ${step}: ${a ? "receiver-v9's" : "the GSW"} shot is missing`);
-        continue;
-      }
+    const others = (applied.unsupported ?? []).filter((u) => u.reason !== "degenerate-host-size");
+    if (others.length > 0)
+      problems.push(`${leg}: ${others.length} unsupported entries (${[...new Set(others.map((u) => u.reason))].join(", ")})`);
+    if (!CG_HONEST.includes(leg)) continue;
+    const legShots = band?.[leg];
+    if (!legShots || legShots.length === 0) {
+      problems.push(`${leg}: no band classes`);
+      continue;
+    }
+    for (const s of legShots) {
       shots++;
-      const d = beyondOne(a, b, []);
-      if (d.n > 0) problems.push(`${leg} step ${step}: ${d.n} px beyond channel 1 of the /9 replay (max ${d.max})`);
+      if (s.other > 0)
+        problems.push(`${leg}/${s.shot}: ${s.other} px beyond channel 1 of the native shot (max ${s.max_other})`);
     }
   }
   return [
     mk(
-      "cg-gsw-typed@gsw",
-      criterion,
+      "cg-gsw-untyped@gsw",
+      "CG3 (render-stream-10.md Receivers): GSW composites canvas groups and back-buffer copies itself: no g8cg GSW leg types /10 state (only the headless capture's degenerate-host-size, as on native), and every shot of the honest /10 legs is the native shot within channel 1",
       problems,
-      `${legs.length} legs typed ${groupItems} canvas_group and ${copyItems} copy items; ${shots} shots within channel 1 of receiver-v9`,
+      `${CG_LEGS.length} legs; ${shots} honest shots within channel 1 of native`,
     ),
   ];
 }

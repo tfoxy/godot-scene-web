@@ -28,13 +28,14 @@ pub mod residency;
 
 use crate::prof;
 use crate::state::{
-    BlendMode, Canvas, EntryStatus, Filter, Hash, Id, Item, LightMode, Param, Repeat,
-    ResolvedState, ShaderSource, ShaderUse, TextureKind, TxDelta,
+    BlendMode, Canvas, CanvasGroup, CanvasGroupMode, EntryStatus, Filter, Hash, Id, Item,
+    LightMode, Param, Repeat, ResolvedState, ShaderSource, ShaderUse, TextureKind, TxDelta,
 };
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
-    Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, Target, Uniform,
-    UniformValue, BUILTIN_PROGRAM, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY, DRAW_SCREEN_MIPMAPS,
+    Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, ScreenOp,
+    ScreenOpKind, Target, Uniform, UniformValue, Vertex, BUILTIN_PROGRAM, DRAW_GROUP_CLIP,
+    DRAW_GROUP_COMPOSITE, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_OPS, DRAW_TO_BACK_BUFFER,
     DRAW_UNTEXTURED, ITEM_UNTEXTURED, SCREEN_TEXTURE, WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
@@ -97,6 +98,12 @@ pub struct ApplySabotage {
     /// Native and GSW `shader-time-frozen` (P3-TM): the host's shader time is ignored, so every
     /// `TIME` reads 0 (a receiver that never follows the carried time).
     pub shader_time_frozen: bool,
+    /// Native `drop-canvas-group` (CG1, CG3): every /10 `canvas_group` is ignored (no
+    /// clip_children, no CanvasGroup), as if `canvas_item_set_canvas_group_mode` never ran.
+    pub drop_canvas_group: bool,
+    /// Native `full-backbuffer-copy` (CG1, CG3): every /10 `copy_to_backbuffer` copies the whole
+    /// target (`Rect2()`), its rect dropped.
+    pub full_backbuffer_copy: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -247,6 +254,9 @@ struct StructKey {
     texture_repeat: Repeat,
     material: Option<Id>,
     use_parent_material: bool,
+    /// CG3: the /10 item state (a state-only patch changes the group ranges and copy points).
+    canvas_group: Option<CanvasGroup>,
+    copy_to_backbuffer: Option<[f32; 4]>,
 }
 
 impl StructKey {
@@ -267,6 +277,8 @@ impl StructKey {
             && self.texture_repeat == it.texture_repeat
             && self.material == it.material
             && self.use_parent_material == it.use_parent_material
+            && self.canvas_group == it.canvas_group
+            && self.copy_to_backbuffer == it.copy_to_backbuffer
     }
 
     fn of(it: &Item) -> Self {
@@ -286,6 +298,8 @@ impl StructKey {
             texture_repeat: it.texture_repeat,
             material: it.material,
             use_parent_material: it.use_parent_material,
+            canvas_group: it.canvas_group,
+            copy_to_backbuffer: it.copy_to_backbuffer,
         }
     }
 }
@@ -385,6 +399,73 @@ struct Attach {
     repeat: Repeat,
     /// G7o3: the position in the walk's attach order.
     order: u32,
+    /// CG3: the entry's global rect as Godot's `global_rect_cache` holds it (a group owner's
+    /// grown by its margins), which an enclosing group's rect merges.
+    global_rect: Rect,
+    /// CG3: the group owner whose range this entry begins (`canvas_group_owner`; the outermost of
+    /// nested owners whose ranges begin here, as the last write wins in Godot).
+    group_start: Option<Id>,
+    /// CG3: the item's `canvas_group` (None under `drop-canvas-group`) and `copy_to_backbuffer`
+    /// (the whole target, `[0; 4]`, under `full-backbuffer-copy`).
+    canvas_group: Option<CanvasGroup>,
+    copy: Option<[f32; 4]>,
+    /// CG3: the item's effective material is set (Godot's `material.is_null()` test for a group
+    /// owner's program).
+    has_material: bool,
+    /// Whether its lowered draws are emitted (a `copy_to_backbuffer` entry is attached for its
+    /// copy even when it draws nothing).
+    emit: bool,
+    /// CG3: a `fit_empty` owner without commands draws the rect Godot synthesizes for it
+    /// (`CANVAS_RECT_IS_GROUP`), from [`Applier::group_quads`].
+    synth: bool,
+}
+
+/// CG3: what a walk found of one group owner with a range (Godot's `canvas_group` state on an
+/// owner whose `_attach_canvas_item_for_draw` set a `canvas_group_owner`).
+#[derive(Clone, Copy, Debug)]
+struct GroupInfo {
+    group: CanvasGroup,
+    /// The owner's `global_rect_cache`: the copy region of a clip group, the mip-chain region.
+    global_rect: Rect,
+    /// It draws a synthesized rect ([`Applier::group_quads`]).
+    synth: bool,
+}
+
+/// CG3: one attach entry's draws in [`Applier::assemble`]'s order, with the back-buffer
+/// operations (`ops` range of the assembly's scratch list) that run before them.
+#[derive(Clone, Copy, Debug)]
+struct Emit {
+    /// The attach entry, or `u32::MAX` for operations alone (an entry that draws nothing).
+    at: u32,
+    ops: (u32, u32),
+    /// [`DRAW_TO_BACK_BUFFER`], [`DRAW_GROUP_CLIP`] or [`DRAW_GROUP_COMPOSITE`].
+    flags: u32,
+    /// The group program flag alone (drawn builtin, mix).
+    group: u32,
+    /// A clip-and-draw owner's plain pass into its own group.
+    pre: bool,
+}
+
+/// `Rect2::grow`.
+fn grow(r: Rect, by: f32) -> Rect {
+    [r[0] - by, r[1] - by, r[2] + by * 2.0, r[3] + by * 2.0]
+}
+
+/// CG3: the region a GLES3 back-buffer function works on for `r` (texture_storage.cpp:3201-3283):
+/// `Rect2i(Rect2)` (each component truncated toward zero); `Rect2i()` is the whole `width` x
+/// `height` target, anything else is intersected with it (`Rect2i::intersection`: `[0; 4]`, which
+/// does nothing, when they do not overlap). `[x, y, w, h]`.
+fn back_buffer_region(r: &Rect, width: u32, height: u32) -> [i32; 4] {
+    let [x, y, w, h] = r.map(|v| v as i32);
+    if [x, y, w, h] == [0; 4] {
+        return [0, 0, width as i32, height as i32];
+    }
+    let (x0, y0) = (x.max(0), y.max(0));
+    let (x1, y1) = ((x + w).min(width as i32), (y + h).min(height as i32));
+    if x1 <= x0 || y1 <= y0 {
+        return [0; 4];
+    }
+    [x0, y0, x1 - x0, y1 - y0]
 }
 
 /// G7o2: the largest gap (in elements) [`Applier`] merges between two dirty ranges: 16 item rows
@@ -512,6 +593,18 @@ pub struct Applier {
     /// G7o2 diagnostics (`rs-core-check walk-diff`): walk and re-assemble at every apply, the
     /// oracle the incremental paths are compared against.
     pub always_walk: bool,
+    /// CG3: items holding /10 `canvas_group` or `copy_to_backbuffer` state. While any does, every
+    /// apply walks: a group's range, rect and synthesized rect depend on its descendants' rects,
+    /// which the rows-only and in-place paths do not revisit.
+    back_buffer_items: HashSet<Id>,
+    /// CG3: the last walk's group owners with a range.
+    groups: IdMap<GroupInfo>,
+    /// CG3: the four vertices of each `fit_empty` owner's synthesized rect: their first index in
+    /// `list.vertices`.
+    group_quads: IdMap<u32>,
+    /// CG3: [`Applier::assemble`]'s scratch lists, reused.
+    spare_emits: Vec<Emit>,
+    spare_ops: Vec<ScreenOp>,
 }
 
 /// The texture and mesh tables as the lowering sees them.
@@ -723,6 +816,11 @@ impl Applier {
             spare: Spare::default(),
             walk_serial: 1,
             always_walk: false,
+            back_buffer_items: HashSet::new(),
+            groups: IdMap::default(),
+            group_quads: IdMap::default(),
+            spare_emits: Vec::new(),
+            spare_ops: Vec::new(),
         }
     }
 
@@ -879,6 +977,10 @@ impl Applier {
                 h.update(format!("{:?} {:?} {:?} {:?}\n", v.pos, v.uv, v.color, row));
             }
         }
+        // P3-ST, CG3: the back-buffer operations (none before /10 or a screen reader).
+        for o in &l.screen_ops {
+            h.update(format!("screen-op {o:?}\n"));
+        }
         let mut out = [0u8; 32];
         out.copy_from_slice(&h.finalize());
         crate::state::Hash(out)
@@ -999,6 +1101,15 @@ impl Applier {
             verts.extend_from_slice(&self.list.vertices[start..start + n]);
             rec.vstart = new_start;
             rec.vcap = n as u32;
+        }
+        // CG3: the synthesized group rects keep four vertices each (the walk that follows a
+        // compaction rewrites them).
+        let mut owners: Vec<Id> = self.group_quads.keys().copied().collect();
+        owners.sort_unstable();
+        for id in owners {
+            let start = verts.len() as u32;
+            verts.extend_from_slice(&[Vertex::default(); 4]);
+            self.group_quads.insert(id, start);
         }
         self.list.vertices = verts;
         self.vertex_holes = 0;
@@ -1524,6 +1635,10 @@ impl Applier {
                 self.stats.freed += 1;
                 why |= Why::ITEM_REMOVED;
             }
+            self.back_buffer_items.remove(id);
+            if self.group_quads.remove(id).is_some() {
+                self.vertex_holes += 4;
+            }
         }
         if self.first {
             // A fresh applier adopts whatever the state holds.
@@ -1536,6 +1651,10 @@ impl Applier {
             for id in stale {
                 let rec = self.items.remove(&id).unwrap();
                 self.free_rows.push(rec.row);
+                self.back_buffer_items.remove(&id);
+                if self.group_quads.remove(&id).is_some() {
+                    self.vertex_holes += 4;
+                }
             }
         }
 
@@ -1547,6 +1666,11 @@ impl Applier {
             let Some(it) = state.items.get(&id) else {
                 continue;
             };
+            if it.canvas_group.is_some() || it.copy_to_backbuffer.is_some() {
+                self.back_buffer_items.insert(id);
+            } else {
+                self.back_buffer_items.remove(&id);
+            }
             // G7o3: one record lookup per item (two when its content is re-lowered).
             let Some(rec) = self.items.get_mut(&id) else {
                 let (lowered, tex_sizes, mesh_versions) = self.lower_item(it, &tables);
@@ -1768,7 +1892,10 @@ impl Applier {
 
         // Content changes of shape alone keep the walk's results (attach list, rows): only the
         // index buffer and the draw table are re-assembled (G7a's incremental structural apply).
-        let mut walk = why & !Why::CONTENT_SHAPE != 0 || content_walk || self.always_walk;
+        let mut walk = why & !Why::CONTENT_SHAPE != 0
+            || content_walk
+            || self.always_walk
+            || !self.back_buffer_items.is_empty();
         if !walk {
             // Rows only: a moved canvas moves its top-level items' subtrees.
             let mut roots: Vec<Id> = Vec::new();
@@ -1836,6 +1963,7 @@ impl Applier {
         self.attach.clear();
         self.walk_keys.clear();
         self.walk_serial += 1;
+        self.groups.clear();
         let mut canvases: Vec<&Canvas> = state.canvases.values().filter(|c| c.attached).collect();
         if self.sabotage.ignore_canvas_stacking {
             canvases.sort_by_key(|c| c.id);
@@ -1877,6 +2005,14 @@ impl Applier {
                 // The stable sort without its scratch allocation: (z, attach order) is unique.
                 self.attach[start..].sort_unstable_by_key(|a| (a.z, a.order));
             }
+        }
+        // CG3: a synthesized group rect no owner draws any more gives its vertices back.
+        if !self.group_quads.is_empty() {
+            let groups = &self.groups;
+            let before = self.group_quads.len();
+            self.group_quads
+                .retain(|id, _| groups.get(id).is_some_and(|g| g.synth));
+            self.vertex_holes += 4 * (before - self.group_quads.len()) as u32;
         }
         // Binding slots no attached item uses any more are released.
         let gone: Vec<BindingKey> = self
@@ -2196,10 +2332,21 @@ impl Applier {
             ..
         } = eff;
         let canvas = cv.id;
+        // CG3 (renderer_canvas_cull.cpp:458-478): an item with a canvas group and commands (or
+        // `fit_empty`) culls every child, behind or not, before it attaches, and its range is
+        // what they attached at its z since it began.
+        let group = if self.sabotage.drop_canvas_group {
+            None
+        } else {
+            it.canvas_group
+        };
+        let has_commands = !it.commands.list.is_empty();
+        let use_group = group.is_some_and(|g| g.fit_empty || has_commands);
+        let group_from = self.attach.len();
         let (from, to) = self.children_into(state, &it.children, stack);
         for k in from..to {
             let (c, ci) = stack[k];
-            if ci.behind {
+            if ci.behind || use_group {
                 self.cull(
                     state,
                     c,
@@ -2214,10 +2361,66 @@ impl Applier {
                 );
             }
         }
+        // CG3: the item's global rect (`_cull_canvas_item`'s `global_rect`), and for a group owner
+        // with a range Godot's adjustments in `_attach_canvas_item_for_draw` (:185-240): the range's
+        // rects merged, a `fit_empty` owner without commands drawing that union grown by
+        // `fit_margin` (a rect synthesized in its local space), and the owner's rect grown by
+        // `clear_margin`.
+        let own_rect = if it.custom_rect {
+            it.custom_rect_rect
+        } else {
+            content_rect
+        };
+        let mut global_rect = geom::xform_rect(&final_xf, &own_rect);
+        let mut synth_rect: Option<Rect> = None;
+        let mut ranged = false;
+        if let (true, Some(g)) = (use_group, group) {
+            let zi = z as i32;
+            let mut first: Option<usize> = None;
+            let mut accum: Rect = [0.0; 4];
+            for k in group_from..self.attach.len() {
+                let a = &self.attach[k];
+                if a.z != zi {
+                    continue;
+                }
+                accum = match first {
+                    None => a.global_rect,
+                    Some(_) => geom::merge(&accum, &a.global_rect),
+                };
+                first.get_or_insert(k);
+            }
+            if let Some(k) = first {
+                ranged = true;
+                if g.fit_empty && !has_commands {
+                    if accum == [0.0; 4] {
+                        accum = [0.0, 0.0, 1.0, 1.0];
+                    }
+                    let fitted = grow(accum, g.fit_margin);
+                    synth_rect = Some(geom::xform_rect(&geom::affine_inverse(&final_xf), &fitted));
+                    global_rect = grow(fitted, g.clear_margin);
+                } else {
+                    global_rect = grow(geom::merge(&global_rect, &accum), g.clear_margin);
+                }
+                self.attach[k].group_start = Some(id);
+                self.groups.insert(
+                    id,
+                    GroupInfo {
+                        group: g,
+                        global_rect,
+                        synth: synth_rect.is_some(),
+                    },
+                );
+            }
+        }
+        // CG3: an owner drawn through Godot's default group shader is `unshaded` (its row carries
+        // no canvas modulate); a clip-and-draw owner's plain pass in the back buffer is shaded.
+        let group_unshaded = ranged
+            && owner.1.is_none()
+            && group.is_some_and(|g| g.mode != CanvasGroupMode::ClipAndDraw);
         // An item-space program takes the canvas modulate after its code (the binding's
         // `post_modulate`), so its row carries none.
         let program = match eff.program {
-            Some((material, hash)) if draws_something && !light_only => {
+            Some((material, hash)) if (draws_something || synth_rect.is_some()) && !light_only => {
                 let instanced = matches!(
                     self.programs.get(&hash),
                     Some(ProgramEntry::Ready(info)) if info.has_instance_uniforms()
@@ -2240,26 +2443,21 @@ impl Applier {
             rec.unshaded = unshaded;
             rec.program_bound = eff.program.is_some();
             rec.screen = eff.screen;
-            rec.canvas_modulate = if unshaded || rec.program_bound {
+            rec.canvas_modulate = if unshaded || rec.program_bound || group_unshaded {
                 WHITE
             } else {
                 cv.modulate
             };
             // _attach_canvas_item_for_draw: an item is drawn only when its global rect (the custom
-            // rect, else its content's) touches the viewport rect, borders included
-            // (renderer_canvas_cull.cpp:247; gate 3's `cull` region).
-            let rect = if it.custom_rect {
-                it.custom_rect_rect
-            } else {
-                rec.lowered.rect
-            };
+            // rect, else its content's; CG3: a group owner's adjusted one) touches the viewport
+            // rect, borders included (renderer_canvas_cull.cpp:247; gate 3's `cull` region).
             let vp = [
                 0.0,
                 0.0,
                 self.viewport.width as f32,
                 self.viewport.height as f32,
             ];
-            rec.on_screen = geom::intersects_inclusive(&vp, &geom::xform_rect(&final_xf, &rect));
+            rec.on_screen = geom::intersects_inclusive(&vp, &global_rect);
             // The item's row (write_row's), now that its walk results are set.
             let row = Row {
                 xform: rec.final_xform,
@@ -2276,12 +2474,37 @@ impl Applier {
                 self.list.dirty.items.add(r, r + 1);
                 self.stats.rows_written += 1;
             }
-            if !rec.lowered.draws.is_empty() && !light_only && !skip && rec.on_screen {
+            let row_index = rec.row;
+            let emit = (!rec.lowered.draws.is_empty() || synth_rect.is_some())
+                && !light_only
+                && !skip
+                && rec.on_screen;
+            // CG3: a `copy_to_backbuffer` item is attached for its copy whatever it draws
+            // (renderer_canvas_cull.cpp:247), and a group owner whenever its range is on screen
+            // (its group must close).
+            let copy = it.copy_to_backbuffer.map(|r| {
+                if self.sabotage.full_backbuffer_copy {
+                    [0.0; 4]
+                } else {
+                    r
+                }
+            });
+            if emit || copy.is_some() || (ranged && rec.on_screen) {
                 let scissor =
                     own_clip.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]);
                 let order = self.attach.len() as u32;
+                if let Some(local) = synth_rect {
+                    self.write_group_quad(id, row_index, local);
+                }
                 self.attach.push(Attach {
                     order,
+                    global_rect,
+                    group_start: None,
+                    canvas_group: group,
+                    copy,
+                    has_material: owner.1.is_some(),
+                    emit,
+                    synth: synth_rect.is_some(),
                     item: id,
                     z: z as i32,
                     scissor,
@@ -2302,7 +2525,7 @@ impl Applier {
         }
         for k in from..to {
             let (c, ci) = stack[k];
-            if !ci.behind {
+            if !ci.behind && !use_group {
                 self.cull(
                     state,
                     c,
@@ -2398,6 +2621,39 @@ impl Applier {
         }
     }
 
+    /// CG3: the four vertices of `id`'s synthesized group rect (`local`, in its item space): a
+    /// white `TYPE_RECT` as the lowering writes one (`lower::Builder::quad`, src `(0, 0, 1, 1)`),
+    /// allocated at the slab's end on first use and marked dirty only when they change.
+    fn write_group_quad(&mut self, id: Id, row: u32, local: Rect) {
+        let start = match self.group_quads.get(&id) {
+            Some(&v) => v,
+            None => {
+                let v = self.list.vertices.len() as u32;
+                self.list
+                    .vertices
+                    .extend_from_slice(&[Vertex::default(); 4]);
+                self.group_quads.insert(id, v);
+                v
+            }
+        };
+        let base = [[0.0f32, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
+        let [x, y, w, h] = local;
+        let mut quad = [Vertex::default(); 4];
+        for (v, b) in quad.iter_mut().zip(base) {
+            *v = Vertex {
+                pos: [x + w.abs() * b[0], y + h.abs() * b[1]],
+                uv: b,
+                color: WHITE,
+                item: row,
+            };
+        }
+        let at = start as usize;
+        if self.list.vertices[at..at + 4] != quad {
+            self.list.vertices[at..at + 4].copy_from_slice(&quad);
+            self.list.dirty.vertices.add(start, start + 4);
+        }
+    }
+
     fn write_row(&mut self, state: &ResolvedState, id: Id) {
         let Some(rec) = self.items.get(&id) else {
             return;
@@ -2443,40 +2699,220 @@ impl Applier {
         // canvas-texture diffuse, filter and repeat, and whether what it draws is resident.
         type TexFacts = (Option<(Id, Filter, Repeat)>, bool);
         let mut memo: Option<(Id, TexFacts)> = None;
-        // P3-ST: GLES3's back-buffer bookkeeping, reset per canvas (one `canvas_render_items`
-        // call each, rasterizer_canvas_gles3.cpp:397-540): a screen reader copies when no copy was
-        // taken since the canvas began (with mips when it reads them), and builds the mip chain of
-        // the cached copy when it reads mips the copy lacks. `pending` carries flags whose reader
-        // drew nothing here to the next draw.
-        let mut screen_canvas: Option<Id> = None;
-        let (mut copied, mut mips_built) = (false, false);
-        let mut pending = 0u32;
-        for a in &self.attach {
+        // P3-ST, CG3: GLES3's per-item back-buffer bookkeeping (`canvas_render_items`,
+        // rasterizer_canvas_gles3.cpp:409-540), reset per canvas (one call each), first as a list
+        // of emissions (which attach entry draws, how) with the back-buffer operations before
+        // each, then as draws.
+        let (vw, vh) = (self.viewport.width, self.viewport.height);
+        let whole = [0, 0, vw as i32, vh as i32];
+        let mut emits = std::mem::take(&mut self.spare_emits);
+        let mut ops = std::mem::take(&mut self.spare_ops);
+        emits.clear();
+        ops.clear();
+        self.list.screen_ops.clear();
+        // CG3: each group owner's attach entry (a clip-and-draw owner draws first in its group).
+        let mut owner_at: IdMap<u32> = IdMap::default();
+        if !self.groups.is_empty() {
+            for (i, a) in self.attach.iter().enumerate() {
+                if self.groups.contains_key(&a.item) {
+                    owner_at.insert(a.item, i as u32);
+                }
+            }
+        }
+        {
+            let mut canvas: Option<Id> = None;
+            let mut open: Option<Id> = None;
+            let (mut backbuffer_copy, mut gen_mipmaps) = (false, false);
+            let (mut cached, mut mips_cached) = (false, false);
+            // `back_buffer_rect`: `None` is `Rect2()`, the whole target.
+            let mut bb_rect: Option<[i32; 4]> = None;
+            let op = |kind, region: [i32; 4], mipmaps, sample_mips| ScreenOp {
+                before: 0,
+                kind,
+                region,
+                mipmaps,
+                sample_mips,
+            };
+            for (i, a) in self.attach.iter().enumerate() {
+                let Some(rec) = self.items.get(&a.item) else {
+                    continue;
+                };
+                if canvas != Some(rec.canvas) {
+                    canvas = Some(rec.canvas);
+                    open = None;
+                    (backbuffer_copy, gen_mipmaps, cached, mips_cached) =
+                        (false, false, false, false);
+                    bb_rect = None;
+                }
+                let ops_from = ops.len() as u32;
+                // A BackBufferCopy outside any group (its rect untransformed; `Rect2()` is whole).
+                if let (Some(c), None) = (a.copy, open) {
+                    backbuffer_copy = true;
+                    bb_rect = Some(back_buffer_region(&c, vw, vh));
+                }
+                // A screen reader outside any group: a copy unless one was taken in this canvas.
+                if let (true, Some(mips), None) = (a.program != BUILTIN_PROGRAM, rec.screen, open) {
+                    if !cached || self.sabotage.screen_copy_per_reader {
+                        backbuffer_copy = true;
+                        bb_rect = None;
+                        gen_mipmaps = mips;
+                    } else if !mips_cached {
+                        gen_mipmaps = mips;
+                    }
+                }
+                // The first entry of a group's range opens it (an inner owner's is ignored while
+                // one is open): a clip group copies its rect (a clip-and-draw owner then draws
+                // plainly into it), a transparent one clears the back buffer.
+                let mut pre_owner: Option<u32> = None;
+                if let (Some(owner), None) = (a.group_start, open) {
+                    if let Some(g) = self.groups.get(&owner) {
+                        if g.group.mode == CanvasGroupMode::Transparent {
+                            ops.push(op(ScreenOpKind::Clear, whole, false, mips_cached));
+                        } else {
+                            let region = back_buffer_region(&g.global_rect, vw, vh);
+                            ops.push(op(ScreenOpKind::Copy, region, false, mips_cached));
+                            if g.group.mode == CanvasGroupMode::ClipAndDraw {
+                                pre_owner = owner_at.get(&owner).copied();
+                            }
+                        }
+                        backbuffer_copy = false;
+                        open = Some(owner);
+                    }
+                }
+                if let Some(at) = pre_owner {
+                    emits.push(Emit {
+                        at,
+                        ops: (ops_from, ops.len() as u32),
+                        flags: DRAW_TO_BACK_BUFFER,
+                        group: 0,
+                        pre: true,
+                    });
+                }
+                let ops_mid = ops.len() as u32;
+                // An item with group state reached with no group open draws nothing, unless it
+                // is clip-and-draw (which then draws plainly).
+                let skip = open.is_none()
+                    && a.canvas_group
+                        .is_some_and(|g| g.mode != CanvasGroupMode::ClipAndDraw);
+                // The owner closes its group and draws through its group program.
+                let mut group = 0u32;
+                if open == Some(a.item) {
+                    if let Some(g) = self.groups.get(&a.item) {
+                        if g.group.blur_mipmaps {
+                            let region = back_buffer_region(&g.global_rect, vw, vh);
+                            ops.push(op(ScreenOpKind::Mipmaps, region, false, mips_cached));
+                        }
+                        group = match g.group.mode {
+                            CanvasGroupMode::ClipAndDraw => DRAW_GROUP_CLIP,
+                            _ if a.has_material => 0,
+                            CanvasGroupMode::ClipOnly => DRAW_GROUP_CLIP,
+                            CanvasGroupMode::Transparent => DRAW_GROUP_COMPOSITE,
+                        };
+                    }
+                    open = None;
+                }
+                if backbuffer_copy {
+                    let region = bb_rect.unwrap_or(whole);
+                    ops.push(op(ScreenOpKind::Copy, region, gen_mipmaps, gen_mipmaps));
+                    backbuffer_copy = false;
+                    cached = true;
+                    mips_cached = gen_mipmaps;
+                    gen_mipmaps = false;
+                }
+                if gen_mipmaps {
+                    let region = bb_rect.unwrap_or(whole);
+                    ops.push(op(ScreenOpKind::Mipmaps, region, false, true));
+                    gen_mipmaps = false;
+                    mips_cached = true;
+                }
+                let to_back_buffer = if open.is_some() {
+                    DRAW_TO_BACK_BUFFER
+                } else {
+                    0
+                };
+                emits.push(Emit {
+                    at: if skip || !a.emit { u32::MAX } else { i as u32 },
+                    ops: (
+                        if pre_owner.is_some() {
+                            ops_mid
+                        } else {
+                            ops_from
+                        },
+                        ops.len() as u32,
+                    ),
+                    flags: to_back_buffer | group,
+                    group,
+                    pre: false,
+                });
+            }
+        }
+        // The draws, each operation run before the next non-empty draw.
+        let mut pending: Vec<ScreenOp> = Vec::new();
+        for e in &emits {
+            pending.extend_from_slice(&ops[e.ops.0 as usize..e.ops.1 as usize]);
+            if e.at == u32::MAX {
+                continue;
+            }
+            let a = &self.attach[e.at as usize];
             // Every attached item has its record (and so its state entry: a removal re-walks).
             let Some(rec) = self.items.get(&a.item) else {
                 continue;
             };
-            attached += 1;
-            if screen_canvas != Some(rec.canvas) {
-                screen_canvas = Some(rec.canvas);
-                (copied, mips_built) = (false, false);
+            if !e.pre {
+                attached += 1;
             }
-            if let (true, Some(mips)) = (a.program != BUILTIN_PROGRAM, rec.screen) {
-                if !copied || self.sabotage.screen_copy_per_reader {
-                    pending |= DRAW_SCREEN_COPY | if mips { DRAW_SCREEN_MIPMAPS } else { 0 };
-                    (copied, mips_built) = (true, mips);
-                } else if mips && !mips_built {
-                    pending |= DRAW_SCREEN_MIPMAPS;
-                    mips_built = true;
-                }
-            }
+            // A group program is Godot's default material: builtin, mix.
+            let (program, blend) = if e.group != 0 {
+                (BUILTIN_PROGRAM, Blend::Mix)
+            } else {
+                (a.program, a.blend)
+            };
+            let extra = e.flags;
             let (item_filter, item_repeat) = (a.filter, a.repeat);
             // G7o4: an untextured item's draws through the builtin program ignore the texture.
-            let untextured = if a.program == BUILTIN_PROGRAM && row_flags(&rec.lowered) != 0 {
+            let untextured = if program == BUILTIN_PROGRAM && row_flags(&rec.lowered) != 0 {
                 DRAW_UNTEXTURED
             } else {
                 0
             };
+            let mut push = |list: &mut DrawList, draw: Draw| {
+                let mut draw = draw;
+                if !pending.is_empty() && draw.index_count > 0 {
+                    draw.flags |= DRAW_SCREEN_OPS;
+                    let before = list.draws.len() as u32;
+                    for mut o in pending.drain(..) {
+                        o.before = before;
+                        list.screen_ops.push(o);
+                    }
+                }
+                list.draws.push(draw);
+            };
+            if a.synth {
+                // CG3: the owner's synthesized `CANVAS_RECT_IS_GROUP` rect (white, untextured).
+                if let Some(&base) = self.group_quads.get(&a.item) {
+                    lowered_draws += 1;
+                    let first = self.list.indices.len() as u32;
+                    self.list
+                        .indices
+                        .extend([0, 2, 1, 3, 2, 0].iter().map(|i| base + i));
+                    let scissor = a.scissor;
+                    push(
+                        &mut self.list,
+                        Draw {
+                            first_index: first,
+                            index_count: 6,
+                            texture: WHITE_TEXTURE,
+                            sampler: sampler_bits(item_filter, item_repeat, false),
+                            blend: blend as u32,
+                            program,
+                            scissor: scissor.unwrap_or([0; 4]),
+                            flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 } | extra,
+                            msdf: [0.0; 2],
+                        },
+                    );
+                }
+                continue;
+            }
             for ld in &rec.lowered.draws {
                 lowered_draws += 1;
                 let LDraw {
@@ -2544,22 +2980,27 @@ impl Applier {
                         .map(|i| base + i),
                 );
                 let scissor = if clip_ignored { None } else { a.scissor };
-                self.list.draws.push(Draw {
-                    first_index: first,
-                    index_count,
-                    texture,
-                    sampler: sampler_bits(filter, repeat, force_repeat),
-                    blend: a.blend as u32,
-                    program: a.program,
-                    scissor: scissor.unwrap_or([0; 4]),
-                    flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 }
-                        | if msdf.is_some() { DRAW_MSDF } else { 0 }
-                        | untextured
-                        | std::mem::take(&mut pending),
-                    msdf: msdf.unwrap_or([0.0; 2]),
-                });
+                push(
+                    &mut self.list,
+                    Draw {
+                        first_index: first,
+                        index_count,
+                        texture,
+                        sampler: sampler_bits(filter, repeat, force_repeat),
+                        blend: blend as u32,
+                        program,
+                        scissor: scissor.unwrap_or([0; 4]),
+                        flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 }
+                            | if msdf.is_some() { DRAW_MSDF } else { 0 }
+                            | untextured
+                            | extra,
+                        msdf: msdf.unwrap_or([0.0; 2]),
+                    },
+                );
             }
         }
+        self.spare_emits = emits;
+        self.spare_ops = ops;
         if skips > 0 {
             self.note(ApplyShortcut::TextureNotResident.as_str(), u64::from(skips));
         }
@@ -2714,6 +3155,8 @@ impl Applier {
     }
 }
 
+#[cfg(test)]
+mod cg3_tests;
 #[cfg(test)]
 mod g7t_tests;
 #[cfg(test)]

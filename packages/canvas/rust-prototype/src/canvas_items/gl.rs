@@ -27,10 +27,11 @@ use crate::present::{
 };
 use glow::HasContext;
 use gsw_canvas_draw_list::{
-    BUILTIN_PROGRAM, Binding, Blend, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_COPY,
-    DRAW_SCREEN_MIPMAPS, DRAW_UNTEXTURED, Draw, DrawList, CompressedFormat, Format, SCREEN_TEXTURE,
-    Sampler, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE, premultiplies,
-    ANISOTROPY_TEXTURE, BLACK_TEXTURE, NORMAL_TEXTURE, TRANSPARENT_TEXTURE, default_texture_texel,
+    ANISOTROPY_TEXTURE, BLACK_TEXTURE, BUILTIN_PROGRAM, Binding, Blend, CompressedFormat,
+    DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_MSDF, DRAW_SCISSOR, DRAW_TO_BACK_BUFFER,
+    DRAW_UNTEXTURED, Draw, DrawList, Format, NORMAL_TEXTURE, SCREEN_TEXTURE, Sampler, ScreenOp,
+    ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE,
+    default_texture_texel, premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -368,6 +369,25 @@ struct ScreenObjects {
     /// The gaussian downsample (copy.glsl's MODE_GAUSSIAN_BLUR).
     program: glow::Program,
     u_pixel_size: Option<glow::UniformLocation>,
+    u_copy_section: Option<glow::UniformLocation>,
+    u_source_section: Option<glow::UniformLocation>,
+    /// The level attached to `framebuffer` (a mip chain leaves its last one there).
+    attached: u32,
+    /// CG3: the group owners' program ([`DRAW_GROUP_CLIP`], [`DRAW_GROUP_COMPOSITE`]).
+    group: GroupProgram,
+}
+
+/// CG3: [`VERT`] with [`GROUP_FRAG`]: Godot's default clip-children and canvas-group shaders over
+/// the builtin draw.
+struct GroupProgram {
+    program: glow::Program,
+    u_projection: Option<glow::UniformLocation>,
+    u_godot_screen: Option<glow::UniformLocation>,
+    u_screen: Option<glow::UniformLocation>,
+    u_mode: Option<glow::UniformLocation>,
+    /// The target size and orientation the vertex uniforms were set for, and the mode GL holds.
+    projection: Option<(u32, u32, bool)>,
+    mode: Option<i32>,
 }
 
 /// Godot's `Image::get_image_required_mipmaps`: halvings until both sides are 1.
@@ -381,10 +401,13 @@ fn required_mipmaps(width: u32, height: u32) -> u32 {
     n
 }
 
-/// copy.glsl's MODE_GAUSSIAN_BLUR vertex stage over copy_effects.cpp's six-vertex screen quad
-/// (`copy_section` and `source_section` are the whole level: GSW copies the whole target).
+/// copy.glsl's MODE_GAUSSIAN_BLUR vertex stage over copy_effects.cpp's six-vertex screen quad:
+/// `copy_section` places the destination region in the level, `source_section` the region it
+/// samples in the level above (both normalized; `(0, 0, 1, 1)` for the whole level).
 const GAUSS_VERT: &str = r#"#version 300 es
 precision highp float;
+uniform highp vec4 copy_section;
+uniform highp vec4 source_section;
 out vec2 uv_interp;
 const vec2 QUAD[6] = vec2[6](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
                              vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
@@ -392,6 +415,45 @@ void main() {
   vec2 v = QUAD[gl_VertexID];
   uv_interp = v * 0.5 + 0.5;
   gl_Position = vec4(v, 1.0, 1.0);
+  gl_Position.xy = (copy_section.xy + uv_interp.xy * copy_section.zw) * 2.0 - 1.0;
+  uv_interp = source_section.xy + uv_interp * source_section.zw;
+}"#;
+
+/// CG3: the fragment stage of a group owner's draw: the builtin draw's colour (straight: the
+/// vertex stage runs with `u_premultiply` off), then Godot's default shader for the owner
+/// (rasterizer_canvas_gles3.cpp:2844-2883), both `render_mode unshaded`, reading the back buffer
+/// at canvas.glsl's `SCREEN_UV` (`gl_FragCoord.xy * screen_pixel_size`) at level 0:
+/// - mode 1, clip children: `COLOR.rgb = c.rgb`;
+/// - mode 2, canvas group: `c.rgb /= c.a` when `c.a > 0.0001`, then `COLOR *= c`.
+///
+/// The result is premultiplied last, as every mix-blended draw is.
+const GROUP_FRAG: &str = r#"#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D u_texture;
+uniform sampler2D u_back_buffer;
+uniform highp vec2 u_screen_pixel_size;
+uniform int u_group_mode;
+in vec2 v_uv;
+in vec4 v_color;
+flat in vec4 v_tint;
+flat in uint v_untextured;
+out vec4 fragColor;
+void main() {
+  vec4 sampled = texture(u_texture, v_uv);
+  vec4 texel = v_untextured != 0u ? vec4(1.0) : sampled;
+  vec4 color = v_color * v_tint * texel;
+  vec4 c = textureLod(u_back_buffer, gl_FragCoord.xy * u_screen_pixel_size, 0.0);
+  if (u_group_mode == 1) {
+    color.rgb = c.rgb;
+  } else {
+    if (c.a > 0.0001) {
+      c.rgb /= c.a;
+    }
+    color *= c;
+  }
+  fragColor = vec4(color.rgb * color.a, color.a);
 }"#;
 
 /// copy.glsl's MODE_GAUSSIAN_BLUR fragment stage (Jimenez's 13-tap box filter), verbatim.
@@ -435,6 +497,7 @@ fn delete_screen(gl: &glow::Context, screen: ScreenObjects) {
         gl.delete_texture(screen.texture);
         gl.delete_sampler(screen.sampler);
         gl.delete_program(screen.program);
+        gl.delete_program(screen.group.program);
     }
 }
 
@@ -467,6 +530,13 @@ fn ensure_screen<'o>(
             Format::Rgba8 => glow::RGBA8,
         };
         let program = compile(gl.c(), GAUSS_VERT, GAUSS_FRAG).ok()?;
+        let group_program = match compile(gl.c(), VERT, GROUP_FRAG) {
+            Ok(p) => p,
+            Err(_) => {
+                unsafe { gl.c().delete_program(program) };
+                return None;
+            }
+        };
         unsafe {
             let c = gl.c();
             let texture = c.create_texture().ok()?;
@@ -499,6 +569,30 @@ fn ensure_screen<'o>(
                 UNIT_SCREEN_PASS as i32,
             );
             let u_pixel_size = c.get_uniform_location(program, "pixel_size");
+            let u_copy_section = c.get_uniform_location(program, "copy_section");
+            let u_source_section = c.get_uniform_location(program, "source_section");
+            // CG3: the group program's fixed uniforms (the back buffer is this target's size).
+            c.use_program(Some(group_program));
+            cache.program = Some(group_program);
+            let at = |name: &str| c.get_uniform_location(group_program, name);
+            c.uniform_1_i32(at("u_texture").as_ref(), UNIT_DRAW as i32);
+            c.uniform_1_i32(at("u_items").as_ref(), UNIT_ITEMS as i32);
+            c.uniform_1_i32(at("u_back_buffer").as_ref(), UNIT_SCREEN_PASS as i32);
+            c.uniform_1_i32(at("u_premultiply").as_ref(), 0);
+            c.uniform_2_f32(
+                at("u_screen_pixel_size").as_ref(),
+                (1.0 / f64::from(target.width)) as f32,
+                (1.0 / f64::from(target.height)) as f32,
+            );
+            let group = GroupProgram {
+                program: group_program,
+                u_projection: at("u_projection"),
+                u_godot_screen: at("u_godot_screen"),
+                u_screen: at("u_screen"),
+                u_mode: at("u_group_mode"),
+                projection: None,
+                mode: None,
+            };
             *screen = Some(ScreenObjects {
                 texture,
                 framebuffer,
@@ -510,22 +604,132 @@ fn ensure_screen<'o>(
                 sampler,
                 program,
                 u_pixel_size,
+                u_copy_section,
+                u_source_section,
+                attached: u32::MAX,
+                group,
             });
         }
     }
     screen.as_mut()
 }
 
-/// P3-ST: a [`DRAW_SCREEN_COPY`] and/or [`DRAW_SCREEN_MIPMAPS`] before a draw: the whole target
-/// into the back buffer's level 0 (`render_target_copy_to_back_buffer` with an empty region), then
-/// each level `i` from level `i - 1` through the gaussian pass (`gaussian_blur`), blending off as
-/// GLES3 has it. Leaves the target bound for drawing; the caller rebinds its vertex array.
-fn screen_pass(
+/// Attach level `level` of the back buffer to its framebuffer (bound for drawing) unless it is.
+fn attach_screen_level(gl: &Gl, screen: &mut ScreenObjects, level: u32) {
+    if screen.attached != level {
+        unsafe {
+            gl.c().framebuffer_texture_2d(
+                glow::DRAW_FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(screen.texture),
+                level as i32,
+            )
+        };
+        screen.attached = level;
+    }
+}
+
+/// A [`ScreenOp`]'s region in GL rows of the target (and back buffer): design rows under
+/// [`ExecOptions::godot_orientation`], else flipped, clamped to the target.
+fn screen_region(op: &ScreenOp, width: u32, height: u32, godot: bool) -> [i32; 4] {
+    let [x, y, w, h] = op.region;
+    let (x0, y0) = (x.max(0), y.max(0));
+    let (x1, y1) = ((x + w).min(width as i32), (y + h).min(height as i32));
+    let r = [x0, y0, (x1 - x0).max(0), (y1 - y0).max(0)];
+    if godot { r } else { gl_scissor(r, height) }
+}
+
+/// The back buffer's gaussian mip chain over `region` (GL rows of level 0), as
+/// `CopyEffects::gaussian_blur` builds it (copy_effects.cpp:240-310): level `i` from level `i - 1`,
+/// each destination region the previous one halved (position shifted, size at least 1), drawn in
+/// a viewport of the level's size, sampling the previous level's region. Blending is off.
+fn gaussian_chain(
+    gl: &Gl,
+    cache: &mut Cache,
+    screen: &mut ScreenObjects,
+    region: [i32; 4],
+    present_vertex_array: glow::VertexArray,
+    linear_clamp: glow::Sampler,
+) {
+    unsafe {
+        let c = gl.c();
+        if cache.blend_enabled != Some(false) {
+            c.disable(glow::BLEND);
+            cache.blend_enabled = Some(false);
+        }
+        if cache.program != Some(screen.program) {
+            c.use_program(Some(screen.program));
+            cache.program = Some(screen.program);
+        }
+        bind_vertex_array(gl, cache, present_vertex_array);
+        set_active_unit(gl, cache, UNIT_SCREEN_PASS);
+        c.bind_texture(glow::TEXTURE_2D, Some(screen.texture));
+        c.bind_sampler(UNIT_SCREEN_PASS, Some(linear_clamp));
+        cache.units[UNIT_SCREEN_PASS as usize] = Some((screen.texture, linear_clamp));
+        bind_draw_framebuffer(gl, cache, Some(screen.framebuffer));
+        let (mut w, mut h) = (screen.width, screen.height);
+        let [mut dx, mut dy, mut dw, mut dh] = region;
+        let mut source = [
+            dx as f32 / w as f32,
+            dy as f32 / h as f32,
+            dw as f32 / w as f32,
+            dh as f32 / h as f32,
+        ];
+        for level in 1..screen.levels {
+            dx >>= 1;
+            dy >>= 1;
+            dw = (dw >> 1).max(1);
+            dh = (dh >> 1).max(1);
+            w = (w >> 1).max(1);
+            h = (h >> 1).max(1);
+            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, level as i32 - 1);
+            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, level as i32 - 1);
+            attach_screen_level(gl, screen, level);
+            set_viewport(gl, cache, w, h);
+            let dest = [
+                dx as f32 / w as f32,
+                dy as f32 / h as f32,
+                dw as f32 / w as f32,
+                dh as f32 / h as f32,
+            ];
+            c.uniform_4_f32(
+                screen.u_copy_section.as_ref(),
+                dest[0],
+                dest[1],
+                dest[2],
+                dest[3],
+            );
+            c.uniform_4_f32(
+                screen.u_source_section.as_ref(),
+                source[0],
+                source[1],
+                source[2],
+                source[3],
+            );
+            c.uniform_2_f32(
+                screen.u_pixel_size.as_ref(),
+                (1.0 / f64::from(w)) as f32,
+                (1.0 / f64::from(h)) as f32,
+            );
+            c.draw_arrays(glow::TRIANGLES, 0, 6);
+            source = dest;
+        }
+        c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+        screen.max_level = u32::MAX; // force the caller's MAX_LEVEL write
+    }
+}
+
+/// P3-ST, CG3: one [`ScreenOp`] before a draw (Godot's `render_target_copy_to_back_buffer`,
+/// `render_target_clear_back_buffer` and `render_target_gen_back_buffer_mipmaps`), then the back
+/// buffer's sampled levels as the operation leaves them. Leaves the target bound for drawing; the
+/// caller rebinds its vertex array.
+fn screen_op(
     gl: &Gl,
     cache: &mut Cache,
     objects: &mut Objects,
-    copy: bool,
-    mipmaps: bool,
+    op: &ScreenOp,
+    godot: bool,
     stats: &mut ExecStats,
 ) {
     let Some(target) = objects.target.as_ref() else {
@@ -538,71 +742,70 @@ fn screen_pass(
         return;
     };
     set_scissor_enabled(gl, cache, false);
-    unsafe {
-        let c = gl.c();
-        if copy {
+    let region = screen_region(op, screen.width, screen.height, godot);
+    let empty = region[2] <= 0 || region[3] <= 0;
+    match op.kind {
+        ScreenOpKind::Copy if !empty => unsafe {
             bind_read(gl, cache, Some(target_fb));
             bind_draw_framebuffer(gl, cache, Some(screen.framebuffer));
-            c.framebuffer_texture_2d(
-                glow::DRAW_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(screen.texture),
-                0,
+            attach_screen_level(gl, screen, 0);
+            let [x, y, w, h] = region;
+            gl.c().blit_framebuffer(
+                x,
+                y,
+                x + w,
+                y + h,
+                x,
+                y,
+                x + w,
+                y + h,
+                glow::COLOR_BUFFER_BIT,
+                glow::NEAREST,
             );
-            let (w, h) = (screen.width as i32, screen.height as i32);
-            c.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
             stats.screen_copies += 1;
-        }
-        let mut max_level = if copy { 0 } else { screen.max_level };
-        if mipmaps && screen.levels > 1 {
-            if cache.blend_enabled != Some(false) {
-                c.disable(glow::BLEND);
-                cache.blend_enabled = Some(false);
+            if op.mipmaps && screen.levels > 1 {
+                gaussian_chain(
+                    gl,
+                    cache,
+                    screen,
+                    region,
+                    present_vertex_array,
+                    linear_clamp,
+                );
+                stats.screen_mipmaps += 1;
             }
-            if cache.program != Some(screen.program) {
-                c.use_program(Some(screen.program));
-                cache.program = Some(screen.program);
-            }
-            bind_vertex_array(gl, cache, present_vertex_array);
-            set_active_unit(gl, cache, UNIT_SCREEN_PASS);
-            c.bind_texture(glow::TEXTURE_2D, Some(screen.texture));
-            c.bind_sampler(UNIT_SCREEN_PASS, Some(linear_clamp));
-            cache.units[UNIT_SCREEN_PASS as usize] = Some((screen.texture, linear_clamp));
+        },
+        ScreenOpKind::Clear => unsafe {
             bind_draw_framebuffer(gl, cache, Some(screen.framebuffer));
-            let (mut w, mut h) = (screen.width, screen.height);
-            for level in 1..screen.levels {
-                w = (w >> 1).max(1);
-                h = (h >> 1).max(1);
-                c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, level as i32 - 1);
-                c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, level as i32 - 1);
-                c.framebuffer_texture_2d(
-                    glow::DRAW_FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    Some(screen.texture),
-                    level as i32,
-                );
-                set_viewport(gl, cache, w, h);
-                c.uniform_2_f32(
-                    screen.u_pixel_size.as_ref(),
-                    (1.0 / f64::from(w)) as f32,
-                    (1.0 / f64::from(h)) as f32,
-                );
-                c.draw_arrays(glow::TRIANGLES, 0, 6);
-            }
-            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
-            max_level = screen.levels - 1;
-            screen.max_level = u32::MAX; // force the MAX_LEVEL write below
+            attach_screen_level(gl, screen, 0);
+            gl.c().clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.c().clear(glow::COLOR_BUFFER_BIT);
+            cache.clear_color = None;
+            stats.screen_copies += 1;
+        },
+        ScreenOpKind::Mipmaps if !empty && screen.levels > 1 => {
+            gaussian_chain(
+                gl,
+                cache,
+                screen,
+                region,
+                present_vertex_array,
+                linear_clamp,
+            );
             stats.screen_mipmaps += 1;
         }
-        if screen.max_level != max_level {
+        _ => {}
+    }
+    let max_level = if op.sample_mips { screen.levels - 1 } else { 0 };
+    if screen.max_level != max_level {
+        unsafe {
             set_active_unit(gl, cache, UNIT_SCREEN_PASS);
-            c.bind_texture(glow::TEXTURE_2D, Some(screen.texture));
+            gl.c().bind_texture(glow::TEXTURE_2D, Some(screen.texture));
             cache.units[UNIT_SCREEN_PASS as usize] = None;
-            c.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, max_level as i32);
-            screen.max_level = max_level;
+            gl.c()
+                .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, max_level as i32);
         }
+        screen.max_level = max_level;
     }
     bind_draw_framebuffer(gl, cache, Some(target_fb));
     set_viewport(gl, cache, screen.width, screen.height);
@@ -1820,6 +2023,7 @@ impl CanvasItemsExecutor {
         let gl = &self.gl;
         let cache = &mut self.cache;
         let (width, height) = (target.width, target.height);
+        let target_fb = target.framebuffer;
 
         bind_draw_framebuffer(gl, cache, Some(target.framebuffer));
         set_viewport(gl, cache, width, height);
@@ -1852,7 +2056,23 @@ impl CanvasItemsExecutor {
             return;
         };
 
+        // P3-ST, CG3: the next screen operation to run (operations precede the draw they name).
+        let mut next_op = 0usize;
         for call in calls.iter() {
+            // The back-buffer operations GLES3 makes before this call's first draw (those of a
+            // draw `plan_calls` skipped run here too, in order).
+            let mut ran_ops = false;
+            while let Some(op) = list.screen_ops.get(next_op) {
+                if op.before > call.draw {
+                    break;
+                }
+                screen_op(gl, cache, objects, op, godot, stats);
+                next_op += 1;
+                ran_ops = true;
+            }
+            if ran_ops {
+                bind_vertex_array(gl, cache, objects.vertex_array);
+            }
             let n = self.planned_calls;
             self.planned_calls += 1;
             if self.options.sabotage == Some(Sabotage::DropDraws) && n % 2 == 1 {
@@ -1860,23 +2080,69 @@ impl CanvasItemsExecutor {
                 continue;
             }
             let draw = &list.draws[call.draw as usize];
-            // P3-ST: the back-buffer copy and mip chain GLES3 makes before this draw.
-            let screen_flags = draw.flags & (DRAW_SCREEN_COPY | DRAW_SCREEN_MIPMAPS);
-            if screen_flags != 0 {
-                screen_pass(
-                    gl,
-                    cache,
-                    objects,
-                    screen_flags & DRAW_SCREEN_COPY != 0,
-                    screen_flags & DRAW_SCREEN_MIPMAPS != 0,
-                    stats,
-                );
-                bind_vertex_array(gl, cache, objects.vertex_array);
+            // CG3: an open canvas group's draws go into the back buffer, blended as into a
+            // transparent target; every other draw into the target.
+            let to_back_buffer = draw.flags & DRAW_TO_BACK_BUFFER != 0;
+            let opaque = list.target.opaque && !to_back_buffer;
+            if to_back_buffer {
+                let Some(bb) = objects.screen.as_mut() else {
+                    // No back buffer (a target of 40 px or less): GLES3 has none to draw into.
+                    stats.calls_dropped += 1;
+                    continue;
+                };
+                bind_draw_framebuffer(gl, cache, Some(bb.framebuffer));
+                attach_screen_level(gl, bb, 0);
+            } else {
+                bind_draw_framebuffer(gl, cache, Some(target_fb));
             }
+            let group_mode = if draw.program != BUILTIN_PROGRAM {
+                0
+            } else if draw.flags & DRAW_GROUP_CLIP != 0 {
+                1
+            } else if draw.flags & DRAW_GROUP_COMPOSITE != 0 {
+                2
+            } else {
+                0
+            };
             // `plan_calls` admitted only known blends.
             let blend = Blend::from_u32(draw.blend).unwrap_or(Blend::Mix);
             let msdf = draw.flags & DRAW_MSDF != 0;
-            if draw.program == BUILTIN_PROGRAM && msdf {
+            if group_mode != 0 {
+                // CG3: a group owner through Godot's default clip-children or canvas-group shader.
+                let Some(bb) = objects.screen.as_mut() else {
+                    stats.calls_dropped += 1;
+                    continue;
+                };
+                let g = &mut bb.group;
+                if cache.program != Some(g.program) {
+                    unsafe { gl.c().use_program(Some(g.program)) };
+                    cache.program = Some(g.program);
+                }
+                if g.projection != Some((width, height, godot)) {
+                    set_vertex_projection(
+                        gl,
+                        [&g.u_projection, &g.u_godot_screen, &g.u_screen],
+                        projection,
+                        godot,
+                        &screen,
+                    );
+                    g.projection = Some((width, height, godot));
+                }
+                if g.mode != Some(group_mode) {
+                    unsafe { gl.c().uniform_1_i32(g.u_mode.as_ref(), group_mode) };
+                    g.mode = Some(group_mode);
+                }
+                let back = (bb.texture, bb.sampler);
+                if cache.units[UNIT_SCREEN_PASS as usize] != Some(back) {
+                    set_active_unit(gl, cache, UNIT_SCREEN_PASS);
+                    unsafe {
+                        gl.c().bind_texture(glow::TEXTURE_2D, Some(back.0));
+                        gl.c().bind_sampler(UNIT_SCREEN_PASS, Some(back.1));
+                    }
+                    cache.units[UNIT_SCREEN_PASS as usize] = Some(back);
+                    stats.texture_binds += 1;
+                }
+            } else if draw.program == BUILTIN_PROGRAM && msdf {
                 // G7tm: the builtin's MSDF variant.
                 let m = &mut objects.msdf;
                 if cache.program != Some(m.program) {
@@ -1893,7 +2159,7 @@ impl CanvasItemsExecutor {
                     );
                     cache.msdf_projection = Some((width, height, godot));
                 }
-                let premultiply_out = premultiplies(blend, list.target.opaque);
+                let premultiply_out = premultiplies(blend, opaque);
                 if m.premultiply_out != Some(premultiply_out) {
                     unsafe {
                         gl.c()
@@ -1951,7 +2217,7 @@ impl CanvasItemsExecutor {
                     );
                     item.projection = Some((width, height, godot));
                 }
-                let premultiply_out = premultiplies(blend, list.target.opaque);
+                let premultiply_out = premultiplies(blend, opaque);
                 if item.premultiply_out != Some(premultiply_out) {
                     unsafe {
                         gl.c()
@@ -2009,10 +2275,11 @@ impl CanvasItemsExecutor {
                 for (name, unit) in &item.sampler_units {
                     let bound = binding.samplers.iter().find(|s| &*s.name == name.as_str());
                     let (texture, sampler) = match bound {
-                        // P3-ST: the back buffer, with its own fixed sampler.
+                        // P3-ST: the back buffer, with its own fixed sampler; CG3: white for a draw
+                        // into the back buffer (canvas_begin binds white there).
                         Some(s) if s.texture == SCREEN_TEXTURE => match objects.screen.as_ref() {
-                            Some(screen) => (screen.texture, screen.sampler),
-                            None => (objects.white, objects.samplers[0]),
+                            Some(screen) if !to_back_buffer => (screen.texture, screen.sampler),
+                            _ => (objects.white, objects.samplers[0]),
                         },
                         // P3-TM: GLES3's default for an unset hinted sampler.
                         Some(s) if DEFAULT_TEXTURE_IDS.contains(&s.texture) => {
@@ -2060,10 +2327,14 @@ impl CanvasItemsExecutor {
             } else {
                 set_scissor_enabled(gl, cache, false);
             }
-            set_blend(gl, cache, blend, list.target.opaque, stats);
-            let premultiply = premultiplies(blend, list.target.opaque);
+            set_blend(gl, cache, blend, opaque, stats);
+            let premultiply = premultiplies(blend, opaque);
             // (The MSDF variant holds its own `u_premultiply_out`, set above.)
-            if draw.program == BUILTIN_PROGRAM && !msdf && cache.premultiply != Some(premultiply) {
+            if draw.program == BUILTIN_PROGRAM
+                && !msdf
+                && group_mode == 0
+                && cache.premultiply != Some(premultiply)
+            {
                 // Textures stored premultiplied (the premultiplied-upload sabotage) are sampled
                 // as premultiplied: only the vertex colour is premultiplied in the shader.
                 let texel = premultiply && sabotage != Some(Sabotage::PremultipliedUpload);

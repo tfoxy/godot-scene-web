@@ -235,6 +235,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "blend-swap" => o.apply.blend_swap = true,
                 "screen-copy-per-reader" => o.apply.screen_copy_per_reader = true,
                 "shader-time-frozen" => o.apply.shader_time_frozen = true,
+                "drop-canvas-group" => o.apply.drop_canvas_group = true,
+                "full-backbuffer-copy" => o.apply.full_backbuffer_copy = true,
                 "drop-msdf" => o.apply.lower.drop_msdf = true,
                 "ignore-set-transform" => o.apply.lower.ignore_set_transform = true,
                 "ignore-clip-ignore" => o.apply.lower.ignore_clip_ignore = true,
@@ -1744,43 +1746,6 @@ impl GswRs {
                 });
             }
             now.insert(key);
-        }
-        // CG1 (render-stream-10.md "Receivers"): GSW does not composite canvas groups or copy the
-        // back buffer until CG3. Every item whose /10 `canvas_group` or `copy_to_backbuffer` is
-        // non-null is typed (`gsw-canvas-group`, `gsw-backbuffer-copy`) in the native receiver's
-        // `unsupported[]` shape, once while it holds, and drawn as /9 would (the state ignored).
-        if self.version >= 10 {
-            for it in state.items.values() {
-                for (set, op, reason) in [
-                    (
-                        it.canvas_group.is_some(),
-                        "canvas_item_set_canvas_group_mode",
-                        "gsw-canvas-group",
-                    ),
-                    (
-                        it.copy_to_backbuffer.is_some(),
-                        "canvas_item_set_copy_to_backbuffer",
-                        "gsw-backbuffer-copy",
-                    ),
-                ] {
-                    if !set {
-                        continue;
-                    }
-                    let key: (Box<str>, Option<Id>, &'static str) =
-                        (op.into(), Some(it.id), reason);
-                    if !self.prev_unsupported.contains(&key) && !now.contains(&key) {
-                        self.unsupported_out.push(UnsupportedOut {
-                            seq: state.seq,
-                            item: Some(it.id),
-                            name: op.into(),
-                            reason,
-                            shader: None,
-                            detail: None,
-                        });
-                    }
-                    now.insert(key);
-                }
-            }
         }
         self.prev_unsupported = now;
         // G7s: shaders drawn without their code, once per (shader, hash), in the native
