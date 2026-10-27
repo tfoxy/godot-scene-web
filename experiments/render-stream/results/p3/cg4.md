@@ -4,11 +4,12 @@
 combat) at `/10`, recorded with a recalibrated STS2 record, carried the game's canvas-group and
 back-buffer state. Replayed natively, the five combat HP bars went from **14.92 dB to 56.3 dB**:
 0 pixels over 16, against 4,345 before. Whole-frame combat went from 32.6-33.8 dB (P3-TM) to
-**37.3-43.2 dB**. GSW still types the state as unsupported, so its "before" is unchanged until
-CG3 lands. The web export matches native within 1 on menu and map. It cannot replay combat: the
+**37.3-43.2 dB**. **GSW after CG3** (`04743948`) draws the bars too, at **60.8 dB**, and is within
+0.9 dB of native on every scene. The web export matches native within 1 on menu and map. It cannot replay combat: the
 store it stages up front does not fit its 2 GiB heap (gap 2).
 
-No GSW code changed. This commit is this result doc. The harness changes are in couch-coop's
+No GSW code changed. This doc is the only GSW file (the GSW-after column and HP-bar row came in a
+second, docs-only commit). The harness changes are in couch-coop's
 ignored research folder (step 2 below).
 
 ## Calibration
@@ -101,21 +102,32 @@ Reference: the in-process root-viewport readback.
 
 **PSNR (dB):**
 
-| scene | P3-TM native / GSW | CG4 native | CG4 web export | CG4 GSW (before) |
-| ----- | ------------------ | ---------- | -------------- | ---------------- |
-| menu | 31.17-31.43 / 31.20-31.47 | 31.34-31.89 | 31.38-31.92 | 31.38-31.93 |
-| map | 64.14-64.17 / 65.51-65.53 | 64.08-64.21 | 65.55-65.63 | 65.47-65.56 |
-| combat | 32.57-33.84 / 32.58-33.85 | **37.25-43.22** | not run (gap 2) | 32.60-33.78 |
+| scene | P3-TM native / GSW | CG4 native | CG4 web export | CG4 GSW (before) | CG4 GSW after CG3 |
+| ----- | ------------------ | ---------- | -------------- | ---------------- | ----------------- |
+| menu | 31.17-31.43 / 31.20-31.47 | 31.34-31.89 | 31.38-31.92 | 31.38-31.93 | 31.38-31.93 |
+| map | 64.14-64.17 / 65.51-65.53 | 64.08-64.21 | 65.55-65.63 | 65.47-65.56 | 65.47-65.56 |
+| combat | 32.57-33.84 / 32.58-33.85 | **37.25-43.22** | not run (gap 2) | 32.60-33.78 | **37.24-42.36** |
 
 **% of pixels over 16, and max delta:**
 
-| scene | P3-TM native | CG4 native | CG4 web | CG4 GSW (before) |
-| ----- | ------------ | ---------- | ------- | ---------------- |
-| menu | 7.88-8.45 %, 123 | 7.64-8.17 %, 124 | 7.64-8.15 %, 124 | 7.62-8.14 %, 124 |
-| map | 0 %, 3 | 0 %, 3 | 0 %, 3 | 0 %, 3 |
-| combat | 0.60-1.53 %, 228 | **0.21-1.34 %, 102** | — | 0.53-1.54 %, 228 |
+| scene | P3-TM native | CG4 native | CG4 web | CG4 GSW (before) | CG4 GSW after CG3 |
+| ----- | ------------ | ---------- | ------- | ---------------- | ----------------- |
+| menu | 7.88-8.45 %, 123 | 7.64-8.17 %, 124 | 7.64-8.15 %, 124 | 7.62-8.14 %, 124 | 7.62-8.14 %, 124 |
+| map | 0 %, 3 | 0 %, 3 | 0 %, 3 | 0 %, 3 | 0 %, 3 |
+| combat | 0.60-1.53 %, 228 | **0.21-1.34 %, 102** | — | 0.53-1.54 %, 228 | **0.32-1.33 %, 102** |
 
 - **Web against native:** within 1 on all six menu and map shots (57.0-66.3 dB, 0 pixels over 16).
+- **GSW after CG3 against native.** Menu and map equal GSW-before exactly (there are no
+  visible group items there). On combat-2 and combat-3, GSW is within 0.13 dB of native. On
+  combat-1 it is 0.86 dB lower (42.36 against 43.22; 6,703 against 4,448 px over 16).
+  - The whole difference is in the hand-card band (y 810-1080), on the cards' glow ring:
+    `artifacts/render-stream/p3/cg4/gsw-after/combat-1-cards-ref-native-gsw-diffx4.png`.
+  - The ring is drawn by items under the material-84 family (shader 3, `ripple_speed`). Those items
+    have no canvas-group or copy ancestor, and the one `copy_to_backbuffer` item is hidden.
+  - **It predates CG3.** Native and GSW disagree by 2.5-3k px over 16 in that band on every combat
+    shot of this leg and of P3-TM's. On combat-1 here, native happens to land on the reference's
+    ring phase. So this is not group state, and it stays undiagnosed (a glow-phase question, next
+    to P3-TM's `TIME` residual).
 - **Where the combat gain comes from.** On combat-1 (an 8x8 grid of pixels over 16), native
   removes every GSW-before error in the HP-bar band (y 675-810: 4,345 px, exactly the bar count
   below). It also removes most of them in the hand-card band below it (2,541 to 316 px). Every
@@ -137,6 +149,7 @@ old calibration record, so it has no group state. Its bar rows match this leg's 
 | /9-style GSW (p3tm-a10-2) | 14.92 | 4,345-4,359 | 228 |
 | **CG4 /10 native** | **56.3 / 56.3 / 50.2** | **0 / 0 / 24** | **2 / 2 / 30** |
 | CG4 GSW (before, typed `gsw-canvas-group`) | 14.92 | 4,345-4,359 | 228 |
+| **CG4 GSW after CG3** (`04743948`) | **60.83 / 60.83 / 51.04** | **0 / 0 / 23** | **1 / 1 / 30** |
 | CG4 web export | not measured (gap 2) | | |
 
 - **combat-3's 24 px** are all in the third enemy's crop (1562), at 43.5 dB. The other four bars
@@ -148,7 +161,16 @@ old calibration record, so it has no group state. Its bar rows match this leg's 
   `artifacts/render-stream/p3/cg4/hpbar/combat-{1,2,3}.png`, where each bar shows reference,
   /9-native, /9-GSW, /10-native and GSW-before at x4.
 
-## GSW "after" (for the CG3 resume)
+## GSW "after" (CG3 resume)
+
+**Ran on `04743948` (CG3).** Port 13901, bundle sha256 `f931fc54…`, `rs_core_build sha=04743948ce27`
+(the served page config names the same bundle).
+
+- **Refusals:** 0 `gsw-canvas-group` and 0 `gsw-backbuffer-copy`. Only multimesh (33), particles (9)
+  and 5 `unsupported-material` remain, as on native.
+- **Results:** in the tables above.
+- **Evidence:** `artifacts/render-stream/p3/cg4/gsw-after/` (compare, HP-bar crops and stats, the
+  card-band diff, the bundle `build.json`).
 
 The GSW "before" replay logged 70 `canvas_item_set_canvas_group_mode` (`gsw-canvas-group`) refusals
 and 1 `canvas_item_set_copy_to_backbuffer` (`gsw-backbuffer-copy`) refusal. Once CG3 is on main,
@@ -173,8 +195,9 @@ C3_GSW=/home/user/repo/godot-scene-web/.worktrees/<wt> C3_GSW_PORT=<new port> \
 
 ## Gaps (ranked)
 
-1. **GSW composites no canvas group yet.** This is CG3, in flight. Native shows the ceiling: 56 dB
-   on the bars and +4 to +10 dB on combat.
+1. **Closed by CG3:** GSW composites the groups. It is at 60.8 dB on the bars and within 0.9 dB of
+   native on combat. What remains is the pre-existing card-glow ring difference (see "Per-scene
+   fidelity").
 2. **The web export cannot replay a full STS2 combat recording.**
    - **The cause.** `rs_io.gd` stages every store file into MEMFS before `_ready`. This recording
      references 73,825 payloads (1.03 GB, 96 % of them textures) plus the 162 MB recording. With
