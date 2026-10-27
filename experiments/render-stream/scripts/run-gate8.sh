@@ -742,7 +742,12 @@ run_g8cg() {
 	for r in reference reference-repeat; do
 		echo "run-gate8: g8cg $r (unarmed, rendered at 640x360)"
 		mkdir -p "$OUT/g8cg/$r/shots"
-		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8cg/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8cg/$r/steps.jsonl")
+		# CGR: each reference run gets a private user data dir, so its GLES3 shader cache
+		# (user://shader_cache) starts empty; a shared one let the repeat load the first run's (or,
+		# in a parallel region, a concurrently written) program binaries and differ.
+		mkdir -p "$OUT/g8cg/$r/xdg-data"
+		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8cg/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8cg/$r/steps.jsonl"
+			XDG_DATA_HOME="$OUT/g8cg/$r/xdg-data")
 		run_rendered "$OUT/g8cg/$r" "$G8CG_FIXTURE_DIR"
 	done
 	echo "run-gate8: g8cg receiver-v9 (the /9 capture replayed)"
@@ -761,6 +766,7 @@ run_g8cg() {
 		run_rendered_receiver "$OUT/g8cg/capture" "$OUT/g8cg/sabotage-$s/receiver"
 	done
 	legs_par_end
+	rm -rf "$OUT/g8cg/reference/xdg-data" "$OUT/g8cg/reference-repeat/xdg-data"
 	gs_teardown "$OUT/gamescope-g8cg"
 	GS_RUN_DIR=""
 	RECORDING_NAME=recording.rs8
