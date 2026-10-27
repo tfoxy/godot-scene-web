@@ -781,8 +781,14 @@ fn mesh(w: &mut W, m: &Mesh, v: u8) {
         }
         w.raw("{");
         w.key("hash");
-        w.hash(&Some(s.hash));
+        w.hash(&s.hash);
         w.raw(",");
+        if v >= 11 {
+            // render-stream-11.md "Resolution and resolved form": resolved-only, after `hash`.
+            w.key("body_sha256");
+            w.hash(&s.body_sha256);
+            w.raw(",");
+        }
         w.key("payload_bytes");
         w.int(s.payload_bytes);
         w.raw(",");

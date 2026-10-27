@@ -14,6 +14,13 @@
 //! * the independent `*_leg` recordings decode, validate and resolve to their own files.
 //!
 //! [`run_all`] adds `self-test-rs2.ts`'s cross-version `bad-magic` checks.
+//!
+//! golden-11 (render-stream-11.md "Golden vectors") adds: `inline_resources` entries carry
+//! `before_seq` (a hash may be carried more than once); after every transaction of every valid
+//! recording the validator's names(S) is index.json's `names` for that seq (in table order) and
+//! its carried set C is inline(S) (names(S) for `inline.*`, empty otherwise: L2); `dynamic_bodies`
+//! hash to their listed digests; each `invalid` entry is decoded at its own `version`; and the
+//! validator sabotage `early-prune` makes `inline.rs11` fail `resource-missing`.
 
 use crate::canon;
 use crate::payload;
@@ -36,12 +43,16 @@ pub struct GoldenOptions {
     /// `false` is the `skip-payload-hash` sabotage: payload hashes go unverified, so golden-2's
     /// `invalid/resource-hash` vector must then fail its check (Q14d).
     pub verify_payload_hashes: bool,
+    /// `true` is the /11 validator sabotage `early-prune` (render-stream-11.md decision 10): every
+    /// golden-11 recording with a resource record must then fail its checks.
+    pub early_prune: bool,
 }
 
 impl Default for GoldenOptions {
     fn default() -> Self {
         GoldenOptions {
             verify_payload_hashes: true,
+            early_prune: false,
         }
     }
 }
@@ -115,10 +126,13 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
             version,
             digest: DigestPolicy::Deferred,
             verify_payload_hashes: opts.verify_payload_hashes,
+            early_prune: opts.early_prune,
         },
     )?;
     let mut transactions = Vec::new();
-    let mut resources = Vec::new();
+    let mut resources: Vec<J> = Vec::new();
+    // /11: the resources awaiting their transaction's seq (`before_seq`).
+    let mut pending = 0usize;
     let mut buf = Vec::new();
     for (i, r) in records.iter().enumerate().skip(1) {
         match v.accept(r.bytes(data), r.offset)? {
@@ -129,6 +143,12 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
                 let state: J =
                     serde_json::from_slice(&buf).map_err(|e| Error::new("canon", e.to_string()))?;
                 transactions.push(json!({"seq": st.seq, "frame": st.frame, "state": state}));
+                if version >= 11 {
+                    for res in &mut resources[pending..] {
+                        res["before_seq"] = json!(st.seq);
+                    }
+                    pending = resources.len();
+                }
             }
             Accepted::Resource { hash } => {
                 let bytes = v.inline_payload(&hash).map(|p| p.len()).unwrap_or(0);
@@ -165,10 +185,16 @@ impl Suite<'_> {
             version: self.version,
             digest: DigestPolicy::Deferred,
             verify_payload_hashes: self.opts.verify_payload_hashes,
+            early_prune: self.opts.early_prune,
         }
     }
 
     fn expect_code(&mut self, file: &str, code: &str, what: &str) {
+        self.expect_code_at(file, code, what, self.version);
+    }
+
+    /// `expect_code` at a vector's own version (golden-11's `invalid` entries carry `version`).
+    fn expect_code_at(&mut self, file: &str, code: &str, what: &str, version: u8) {
         let Some(data) = self.bytes(file) else {
             self.ok(
                 false,
@@ -177,7 +203,11 @@ impl Suite<'_> {
             );
             return;
         };
-        let got = validate_recording(&data, self.opts());
+        let opts = Options {
+            version,
+            ..self.opts()
+        };
+        let got = validate_recording(&data, opts);
         let ok = matches!(&got, Err(e) if e.code == code);
         let detail = match got {
             Ok(()) => "accepted".to_string(),
@@ -306,7 +336,19 @@ impl Suite<'_> {
             self.expect_code(&s(&entry, "file"), &s(&entry, "code"), "validateRecording");
         }
         for entry in arr("invalid") {
-            self.expect_code(&s(&entry, "file"), &s(&entry, "code"), "validateRecording");
+            let version = entry
+                .get("version")
+                .and_then(|v| v.as_u64())
+                .map_or(self.version, |v| v as u8);
+            self.expect_code_at(
+                &s(&entry, "file"),
+                &s(&entry, "code"),
+                "validateRecording",
+                version,
+            );
+        }
+        if self.version >= 11 {
+            self.run_v11(index, &valid);
         }
         for entry in arr("payload_invalid") {
             let (file, code) = (s(&entry, "file"), s(&entry, "code"));
@@ -544,6 +586,154 @@ impl Suite<'_> {
     }
 }
 
+impl Suite<'_> {
+    /// golden-11's own checks (the module docs).
+    fn run_v11(&mut self, index: &J, valid: &[J]) {
+        let s = |v: &J, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let names: Vec<(i64, Vec<String>)> = index
+            .get("names")
+            .and_then(|n| n.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|e| {
+                        let seq = e.get("seq").and_then(|x| x.as_i64()).unwrap_or(0);
+                        let hs = e
+                            .get("names")
+                            .and_then(|x| x.as_array())
+                            .map(|h| {
+                                h.iter()
+                                    .filter_map(|x| x.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (seq, hs)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for entry in valid {
+            let file = s(entry, "file");
+            let Some(data) = self.bytes(&file) else {
+                continue;
+            };
+            let inline = file.starts_with("inline.");
+            match carried_trace(&data, self.opts()) {
+                Ok(trace) => {
+                    let mut names_ok = trace.len() == names.len();
+                    let mut carried_ok = names_ok;
+                    let mut first_bad = String::new();
+                    for (t, (seq, want)) in trace.iter().zip(&names) {
+                        if t.seq != *seq || &t.names != want {
+                            names_ok = false;
+                            first_bad = format!("seq {}: names {:?}", t.seq, t.names);
+                        }
+                        let mut c = t.carried.clone();
+                        c.sort();
+                        let mut expect: Vec<String> = if inline { want.clone() } else { vec![] };
+                        expect.sort();
+                        if c != expect {
+                            carried_ok = false;
+                            if first_bad.is_empty() {
+                                first_bad = format!("seq {}: C {:?}", t.seq, c);
+                            }
+                        }
+                    }
+                    self.ok(
+                        names_ok,
+                        format!("after every transaction of {file}, names(S) in table order is index.json's names"),
+                        first_bad.clone(),
+                    );
+                    self.ok(
+                        carried_ok,
+                        format!(
+                            "after every transaction of {file}, the carried set C is inline(S) ({})",
+                            if inline { "names(S)" } else { "empty: out-of-band" }
+                        ),
+                        first_bad,
+                    );
+                }
+                Err(e) => self.ok(
+                    false,
+                    format!("{file} validates with its carried set traced"),
+                    e.to_string(),
+                ),
+            }
+        }
+        let bodies = index
+            .get("dynamic_bodies")
+            .and_then(|b| b.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for entry in bodies {
+            let file = s(&entry, "file");
+            let Some(bytes) = self.bytes(&file) else {
+                self.ok(false, format!("{file} is readable"), "");
+                continue;
+            };
+            self.ok(
+                wire::sha256(&bytes).to_hex() == s(&entry, "sha256")
+                    && Some(bytes.len() as u64) == entry.get("bytes").and_then(|v| v.as_u64()),
+                format!("{file} hashes to its listed sha256 and has its listed length"),
+                "",
+            );
+        }
+        // Decision 10: the validator sabotage early-prune drops the records a transaction brings,
+        // so inline.rs11 fails resource-missing at its first transaction with records.
+        if !self.opts.early_prune {
+            if let Some(data) = self.bytes("inline.rs11") {
+                let got = validate_recording(
+                    &data,
+                    Options {
+                        early_prune: true,
+                        ..self.opts()
+                    },
+                );
+                self.ok(
+                    matches!(&got, Err(e) if e.code == "resource-missing"),
+                    "sabotage early-prune: validateRecording(inline.rs11) is rejected with \"resource-missing\"",
+                    match got {
+                        Ok(()) => "accepted".to_string(),
+                        Err(e) => e.to_string(),
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// One accepted transaction's /11 resource view (`carried_trace`).
+pub struct CarriedStep {
+    pub seq: i64,
+    /// names(S) in table order, hex.
+    pub names: Vec<String>,
+    /// The carried set C after the transaction's prune, hex (unordered).
+    pub carried: Vec<String>,
+}
+
+/// Validates a /11 recording and records names(S) and C after every transaction.
+pub fn carried_trace(data: &[u8], opts: Options) -> Result<Vec<CarriedStep>, Error> {
+    let records = wire::split_records(data, opts.version)?;
+    let first = records
+        .first()
+        .ok_or_else(|| Error::new("missing-session", "the recording has no records"))?;
+    let mut v = Validator::new(first.bytes(data), first.offset, opts)?;
+    let mut out = Vec::new();
+    for r in &records[1..] {
+        if v.accept(r.bytes(data), r.offset)? == Accepted::Transaction {
+            let names = crate::validate::names_in_table_order(v.state());
+            let hex = |h: &crate::state::Hash| h.to_hex();
+            debug_assert_eq!(names.len(), v.names_len());
+            out.push(CarriedStep {
+                seq: v.state().seq,
+                names: names.iter().map(hex).collect(),
+                carried: v.carried().map(hex).collect(),
+            });
+        }
+    }
+    v.finish()?;
+    Ok(out)
+}
+
 /// Runs one golden directory (`golden-<version>`), reading `golden-<version>/...` through `read`.
 pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> {
     let dir = format!("golden-{version}");
@@ -562,10 +752,10 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-10 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-11 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=10u8 {
+    for v in 2..=11u8 {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -586,6 +776,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (9, 8),
         (9, 10),
         (10, 9),
+        (10, 11),
+        (11, 10),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

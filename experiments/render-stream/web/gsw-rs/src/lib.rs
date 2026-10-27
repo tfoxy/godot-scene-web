@@ -320,6 +320,7 @@ pub fn run_goldens(read: &js_sys::Function, only: u32, skip_payload_hash: bool) 
     };
     let opts = GoldenOptions {
         verify_payload_hashes: !skip_payload_hash,
+        ..GoldenOptions::default()
     };
     let only = if only == 0 { None } else { Some(only as u8) };
     let esc = |s: &str| {
@@ -363,6 +364,7 @@ pub fn core_bench(data: &[u8], digest_inline: bool) -> Result<Vec<f64>, JsValue>
             DigestPolicy::Deferred
         },
         verify_payload_hashes: true,
+        early_prune: false,
     };
     let mut v = Validator::new(spans[0].bytes(data), spans[0].offset, opts).map_err(err)?;
     let mut out = Vec::with_capacity(spans.len());
@@ -958,6 +960,7 @@ impl GswRs {
                 DigestPolicy::Deferred
             },
             verify_payload_hashes: !self.opts.skip_payload_hash,
+            early_prune: false,
         };
         let v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
         let s = v.session();
@@ -1179,7 +1182,7 @@ impl GswRs {
         let mesh: HashSet<Hash> = st
             .meshes
             .values()
-            .flat_map(|m| m.surfaces.iter().map(|s| s.hash))
+            .flat_map(|m| m.surfaces.iter().filter_map(|s| s.hash))
             .collect();
         let shader: HashSet<Hash> = st.shaders.values().filter_map(|s| s.hash).collect();
         let ktx2 = uastc_hashes(st);

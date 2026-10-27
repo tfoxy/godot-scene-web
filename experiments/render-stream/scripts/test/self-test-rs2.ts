@@ -56,7 +56,9 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  checkInlineFetch,
   checkKtx2Shape,
+  createRecordingValidator,
   decodeKtx2Payload,
   decodeRecording,
   decodeTexturePayload,
@@ -65,6 +67,7 @@ import {
   payloadSha256,
   recordSha256,
   resolveRecording,
+  splitRecords,
   statesEqual,
   validateRecording,
   wireVersionOf,
@@ -89,6 +92,7 @@ const GOLDEN7_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-7");
 const GOLDEN8_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-8");
 const GOLDEN9_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-9");
 const GOLDEN10_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-10");
+const GOLDEN11_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-11");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -97,6 +101,8 @@ interface GoldenIndex {
     hash: string;
     bytes: number;
     record_index: number;
+    /** golden-11 on: the seq of the transaction the record precedes. */
+    before_seq?: number;
   }>;
   corrupt: Array<{
     file: string;
@@ -105,11 +111,18 @@ interface GoldenIndex {
     seq: number;
     description: string;
   }>;
-  invalid: Array<{ file: string; code: string; description: string }>;
+  /** golden-11 on: each invalid entry carries the version to decode it at (decision 11). */
+  invalid: Array<{
+    file: string;
+    code: string;
+    description: string;
+    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  }>;
   // golden-3 has no payload-invalid vectors of its own: render-stream-3.md does not change the
   // render-stream-texture/1 payload format, so golden-2's are the only ones that exist.
   payload_invalid?: Array<{ file: string; code: string; description: string }>;
-  payloads: Array<{
+  /** absent from golden-11 (its payloads are golden-10's plus the dynamic bodies). */
+  payloads?: Array<{
     file: string;
     hash: string;
     format: string;
@@ -155,6 +168,15 @@ interface GoldenIndex {
     supercompression: string;
   }>;
   control?: { valid: string[]; invalid: string[] };
+  // golden-11 only (render-stream-11.md "Golden vectors"): names(S) per seq and the dynamic
+  // surface bodies.
+  names?: Array<{ seq: number; names: string[] }>;
+  dynamic_bodies?: Array<{
+    file: string;
+    source: string;
+    sha256: string;
+    bytes: number;
+  }>;
 }
 
 interface IndependentLeg {
@@ -206,25 +228,27 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-10")
-    ? "golden-10"
-    : goldenDir.endsWith("golden-9")
-      ? "golden-9"
-      : goldenDir.endsWith("golden-8")
-        ? "golden-8"
-        : goldenDir.endsWith("golden-7")
-          ? "golden-7"
-          : goldenDir.endsWith("golden-6")
-            ? "golden-6"
-            : goldenDir.endsWith("golden-5")
-              ? "golden-5"
-              : goldenDir.endsWith("golden-4")
-                ? "golden-4"
-                : goldenDir.endsWith("golden-3")
-                  ? "golden-3"
-                  : "golden-2";
+  const label = goldenDir.endsWith("golden-11")
+    ? "golden-11"
+    : goldenDir.endsWith("golden-10")
+      ? "golden-10"
+      : goldenDir.endsWith("golden-9")
+        ? "golden-9"
+        : goldenDir.endsWith("golden-8")
+          ? "golden-8"
+          : goldenDir.endsWith("golden-7")
+            ? "golden-7"
+            : goldenDir.endsWith("golden-6")
+              ? "golden-6"
+              : goldenDir.endsWith("golden-5")
+                ? "golden-5"
+                : goldenDir.endsWith("golden-4")
+                  ? "golden-4"
+                  : goldenDir.endsWith("golden-3")
+                    ? "golden-3"
+                    : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -309,7 +333,7 @@ async function runSuite(
   // --- every invalid/*.rs2/.rs3 is rejected with exactly its one expected code -----------------
   for (const entry of index.invalid) {
     const bytes = await readBytes(goldenDir, entry.file);
-    const errors = validateRecording(bytes, version);
+    const errors = validateRecording(bytes, entry.version ?? version);
     ok(
       errors.length === 1 && errors[0].startsWith(`${entry.code}: `),
       `${label}: validateRecording(${entry.file}) is rejected with exactly one error starting with "${entry.code}: " (got ${JSON.stringify(errors)})`,
@@ -340,7 +364,7 @@ async function runSuite(
   }
 
   // --- every payloads/*.grt hashes to its name and decodes to its listed shape ----------------
-  for (const entry of index.payloads) {
+  for (const entry of index.payloads ?? []) {
     const bytes = await readBytes(goldenDir, entry.file);
     ok(
       payloadSha256(bytes) === entry.hash,
@@ -524,6 +548,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN8_DIR, 8);
   await runSuite(GOLDEN9_DIR, 9);
   await runSuite(GOLDEN10_DIR, 10);
+  await runSuite(GOLDEN11_DIR, 11);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -630,6 +655,24 @@ async function main(): Promise<void> {
       wireVersionOf(full9) === 9,
     "wireVersionOf() reads GRSA as 10",
   );
+
+  // a /11 decode refuses /10 and a /10 decode refuses /11 (render-stream-11.md "File layout").
+  const full11 = await readBytes(GOLDEN11_DIR, "full.rs11");
+  ok(
+    validateRecording(full10, 11)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-10/full.rs10 decoded as version 11 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full11, 10)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-11/full.rs11 decoded as version 10 is rejected with bad-magic",
+  );
+  ok(
+    Buffer.from(full11.subarray(0, 4)).toString("latin1") === "GRSB" &&
+      wireVersionOf(full11) === 11 &&
+      wireVersionOf(full10) === 10,
+    "wireVersionOf() reads GRSB as 11",
+  );
+  await version11Cases();
 
   unknownItemCases();
   await helloCases();
@@ -1066,9 +1109,157 @@ async function helloCases10(): Promise<void> {
   }
 }
 
+// render-stream-11.md "Why": the hello is /9's fifteen keys under protocol "render-stream/11"; a
+// /10 hello on a /11 connection is refused.
+function checkHello11(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return ["hello is not an object"];
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.protocol !== "render-stream/11")
+    return [
+      `"protocol" is ${JSON.stringify(obj.protocol)}, not "render-stream/11"`,
+    ];
+  return checkHello9({ ...obj, protocol: "render-stream/9" });
+}
+
+async function helloCases11(): Promise<void> {
+  const index = JSON.parse(
+    await readFile(join(GOLDEN11_DIR, "index.json"), "utf8"),
+  ) as { control: { valid: string[]; invalid: string[] } };
+  ok(
+    index.control.valid.length === 1 && index.control.invalid.length === 1,
+    "golden-11 index lists 1 valid and 1 invalid control vector",
+  );
+  for (const file of index.control.valid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN11_DIR, file), "utf8"),
+    );
+    const errors = checkHello11(parsed);
+    ok(
+      errors.length === 0,
+      `golden-11/${file} accepted (got ${JSON.stringify(errors)})`,
+    );
+  }
+  for (const file of index.control.invalid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN11_DIR, file), "utf8"),
+    );
+    ok(checkHello11(parsed).length > 0, `golden-11/${file} refused`);
+    ok(
+      checkHello10(parsed).length === 0,
+      `golden-11/${file} is a valid /10 hello (refused only for its protocol)`,
+    );
+  }
+}
+
+// golden-11's /11-only legs: the early-prune validator sabotage (decision 10), names(S) per seq
+// against index.json's "names", the dynamic bodies' digests, and the inline-fetch-zero predicate
+// (decision 9).
+async function version11Cases(): Promise<void> {
+  const index = JSON.parse(
+    await readFile(join(GOLDEN11_DIR, "index.json"), "utf8"),
+  ) as GoldenIndex;
+  const inline11 = await readBytes(GOLDEN11_DIR, "inline.rs11");
+  const sabotaged = validateRecording(inline11, 11, {
+    sabotage: "early-prune",
+  });
+  ok(
+    sabotaged.length === 1 && sabotaged[0].startsWith("resource-missing: "),
+    `golden-11: sabotage early-prune fails inline.rs11 with resource-missing (got ${JSON.stringify(sabotaged)})`,
+  );
+  const firstTxnOffset = decodeRecording(inline11, 11).records.find(
+    (r) => r.meta.type === "transaction",
+  )?.offset;
+  ok(
+    sabotaged[0]?.includes(`record at offset ${firstTxnOffset}:`) ?? false,
+    "golden-11: early-prune's resource-missing is at the first transaction (seq 1)",
+  );
+  ok(
+    validateRecording(inline11, 11).length === 0,
+    "golden-11: inline.rs11 without the sabotage is valid",
+  );
+
+  // names(S) per seq, from the resolved tables (render-stream-11.md "Definitions").
+  const resolved = resolveRecording(
+    await readBytes(GOLDEN11_DIR, "full.rs11"),
+    11,
+  );
+  const namesBySeq = new Map(
+    (index.names ?? []).map((n) => [n.seq, [...n.names].sort()] as const),
+  );
+  ok(
+    namesBySeq.size === resolved.transactions.length,
+    `golden-11: index.json lists names for every seq (${namesBySeq.size} of ${resolved.transactions.length})`,
+  );
+  for (const txn of resolved.transactions) {
+    const names = new Set<string>();
+    for (const t of txn.state.textures) {
+      if (t.kind !== "image" || t.status !== "ok" || t.hash === null) continue;
+      names.add(t.hash);
+      for (const v of t.variants ?? []) names.add(v.hash);
+    }
+    for (const m of txn.state.meshes ?? [])
+      if (m.status === "ok")
+        for (const s of m.surfaces) if (s.hash !== null) names.add(s.hash);
+    for (const sh of txn.state.shaders ?? [])
+      if (sh.status === "ok" && sh.source === "payload" && sh.hash !== null)
+        names.add(sh.hash);
+    ok(
+      isDeepStrictEqual([...names].sort(), namesBySeq.get(txn.seq)),
+      `golden-11: seq ${txn.seq}'s resolved names equal index.json's names`,
+    );
+  }
+
+  const resolvedText = JSON.stringify(resolved.transactions);
+  for (const body of index.dynamic_bodies ?? []) {
+    const bytes = await readBytes(GOLDEN11_DIR, body.file);
+    ok(
+      payloadSha256(bytes) === body.sha256 && bytes.length === body.bytes,
+      `golden-11: ${body.file} hashes to its listed sha256 and has its listed length`,
+    );
+    ok(
+      resolvedText.includes(`"body_sha256":"${body.sha256}"`),
+      `golden-11: ${body.file}'s sha256 is some resolved dynamic surface's body_sha256`,
+    );
+  }
+
+  // inline-fetch-zero (decision 9): after inline.rs11's last transaction, every non-variant
+  // inline-sized name is refused; a hash the stream never named is not.
+  const split = splitRecords(inline11, 11);
+  const validator = createRecordingValidator(split.records, 11);
+  for (let i = 1; i < split.records.length - 1; i++) validator.accept(i);
+  const lastNames =
+    namesBySeq.get(resolved.transactions.at(-1)?.seq ?? -1) ?? [];
+  ok(
+    lastNames.length > 0 &&
+      lastNames.every(
+        (h) =>
+          checkInlineFetch(validator, h)?.startsWith("inline-fetch-zero: ") ??
+          false,
+      ),
+    "golden-11: checkInlineFetch refuses every name of inline.rs11's last state",
+  );
+  ok(
+    checkInlineFetch(validator, "0".repeat(64)) === null,
+    "golden-11: checkInlineFetch allows a hash outside the state and C",
+  );
+  const outOfBand = splitRecords(
+    await readBytes(GOLDEN11_DIR, "full.rs11"),
+    11,
+  );
+  const oobValidator = createRecordingValidator(outOfBand.records, 11);
+  for (let i = 1; i < outOfBand.records.length - 1; i++) oobValidator.accept(i);
+  ok(
+    lastNames.every((h) => checkInlineFetch(oobValidator, h) === null),
+    "golden-11: checkInlineFetch allows every name of full.rs11 (out-of-band, inline_max_bytes 0)",
+  );
+}
+
 async function helloCases(): Promise<void> {
   await helloCases9();
   await helloCases10();
+  await helloCases11();
   const root = join(GOLDEN7_DIR, "control");
   const validDir = join(root, "valid");
   const invalidDir = join(root, "invalid");

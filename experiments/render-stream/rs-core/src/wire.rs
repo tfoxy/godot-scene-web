@@ -35,7 +35,7 @@ impl std::error::Error for Error {}
 pub const MAGIC_LEN: usize = 8;
 
 /// `GRS<version>\r\n\x1a\n`, the version as one uppercase hex digit (render-stream-10.md "File
-/// layout": /10 is `GRSA`).
+/// layout": /10 is `GRSA`; render-stream-11.md: /11 is `GRSB`).
 pub fn magic(version: u8) -> [u8; 8] {
     let digit = if version < 10 {
         b'0' + version
@@ -45,7 +45,7 @@ pub fn magic(version: u8) -> [u8; 8] {
     [0x47, 0x52, 0x53, digit, 0x0d, 0x0a, 0x1a, 0x0a]
 }
 
-/// The protocol version (2 to 10) whose magic `data` starts with.
+/// The protocol version (2 to 11) whose magic `data` starts with.
 pub fn version_of_magic(data: &[u8]) -> Option<u8> {
     if data.len() < MAGIC_LEN {
         return None;
@@ -55,7 +55,7 @@ pub fn version_of_magic(data: &[u8]) -> Option<u8> {
         d @ b'A'..=b'F' => d - b'A' + 10,
         _ => return None,
     };
-    if (2..=10).contains(&v) && data[..MAGIC_LEN] == magic(v) {
+    if (2..=11).contains(&v) && data[..MAGIC_LEN] == magic(v) {
         Some(v)
     } else {
         None
@@ -415,11 +415,12 @@ mod tests {
 
     #[test]
     fn magic_round_trip() {
-        for v in 2..=10 {
+        for v in 2..=11 {
             assert_eq!(version_of_magic(&magic(v)), Some(v));
         }
         assert_eq!(&magic(10)[..4], b"GRSA");
-        assert_eq!(version_of_magic(&magic(11)), None);
+        assert_eq!(&magic(11)[..4], b"GRSB");
+        assert_eq!(version_of_magic(&magic(12)), None);
         assert_eq!(version_of_magic(b"GRS6"), None);
     }
 

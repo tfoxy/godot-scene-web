@@ -448,7 +448,8 @@ fn mesh(c: &mut Cur) -> O<MeshMeta> {
         let index_count = c.int_ge(0)?;
         c.lit(b"}")?;
         surfaces.push(MeshSurface {
-            hash,
+            hash: Some(hash),
+            body_sha256: None,
             payload_bytes,
             primitive,
             format,
@@ -466,6 +467,7 @@ fn mesh(c: &mut Cur) -> O<MeshMeta> {
         reason,
         version,
         f,
+        u8: None,
         surfaces,
     })
 }
@@ -641,35 +643,44 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
         Some(())
     })?;
     c.lit(b",\"unsupported\":")?;
+    // WB (/11): a patch's null `unsupported` ("as the base"); a full's is the general path's
+    // `meta-schema`.
+    let unsupported_null = version >= 11 && c.null();
+    if unsupported_null && tx.encoding != Some(Encoding::Patch) {
+        return None;
+    }
+    tx.unsupported_null = unsupported_null;
     let unsupported = &mut tx.unsupported;
-    c.list(|c| {
-        c.lit(b"{\"op\":")?;
-        let op = c.owned()?;
-        c.lit(b",\"item\":")?;
-        let item = if c.null() { None } else { Some(c.int()?) };
-        c.lit(b",\"reason\":")?;
-        let allowed = if v6 {
-            if item.is_none() {
-                SESSION_UNSUPPORTED_REASONS_V6
+    if !unsupported_null {
+        c.list(|c| {
+            c.lit(b"{\"op\":")?;
+            let op = c.owned()?;
+            c.lit(b",\"item\":")?;
+            let item = if c.null() { None } else { Some(c.int()?) };
+            c.lit(b",\"reason\":")?;
+            let allowed = if v6 {
+                if item.is_none() {
+                    SESSION_UNSUPPORTED_REASONS_V6
+                } else {
+                    ITEM_UNSUPPORTED_REASONS_V5
+                }
+            } else if v5 {
+                if item.is_none() {
+                    SESSION_UNSUPPORTED_REASONS_V5
+                } else {
+                    ITEM_UNSUPPORTED_REASONS_V5
+                }
+            } else if item.is_none() {
+                SESSION_UNSUPPORTED_REASONS
             } else {
-                ITEM_UNSUPPORTED_REASONS_V5
-            }
-        } else if v5 {
-            if item.is_none() {
-                SESSION_UNSUPPORTED_REASONS_V5
-            } else {
-                ITEM_UNSUPPORTED_REASONS_V5
-            }
-        } else if item.is_none() {
-            SESSION_UNSUPPORTED_REASONS
-        } else {
-            ITEM_UNSUPPORTED_REASONS
-        };
-        let reason = c.one_of(allowed)?;
-        c.lit(b"}")?;
-        unsupported.push(UnsupportedMeta { op, item, reason });
-        Some(())
-    })?;
+                ITEM_UNSUPPORTED_REASONS
+            };
+            let reason = c.one_of(allowed)?;
+            c.lit(b"}")?;
+            unsupported.push(UnsupportedMeta { op, item, reason });
+            Some(())
+        })?;
+    }
     if v4 && c.lit(b",\"unknown_items\":{\"unknown_rids\":").is_some() {
         let unknown_rids = c.int_ge(0)?;
         c.lit(b",\"withheld_items\":")?;
@@ -961,7 +972,7 @@ mod tests {
     fn fast_path_matches_the_general_path() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut hits = 0;
-        for v in 2..=10u8 {
+        for v in 2..=11u8 {
             let dir = base.join(format!("../protocol/golden-{v}"));
             for f in [
                 "full",

@@ -1,0 +1,5958 @@
+{
+  "schema": "render-stream-11-decoded/1",
+  "magic": "475253420d0a1a0a",
+  "records": [
+    {
+      "offset": 8,
+      "byte_length": 4784,
+      "sha256": "bc74fd8253dcdf83fcc54ac63dc63b4743c270f7afd7754749534da855846fca",
+      "meta": {
+        "type": "session",
+        "protocol": "render-stream/11",
+        "session_id": "fedcba9876543210fedcba9876543210",
+        "stream": {
+          "stream_id": "22222222222222222222222222222222",
+          "connection": null,
+          "transport": "file",
+          "encoding": "patch"
+        },
+        "engine": {
+          "version_string": "Godot Engine v4.5.1.stable.official",
+          "sha256": "54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c",
+          "display_server": "headless",
+          "rendering_driver": "opengl3",
+          "rendering_method": "gl_compatibility"
+        },
+        "capture": {
+          "calibrator_version": 8,
+          "hooks_planned": [
+            "canvas_create",
+            "canvas_item_add_circle",
+            "canvas_item_add_line",
+            "canvas_item_add_mesh",
+            "canvas_item_add_msdf_texture_rect_region",
+            "canvas_item_add_multimesh",
+            "canvas_item_add_nine_patch",
+            "canvas_item_add_polygon",
+            "canvas_item_add_polyline",
+            "canvas_item_add_primitive",
+            "canvas_item_add_rect",
+            "canvas_item_add_set_transform",
+            "canvas_item_add_texture_rect",
+            "canvas_item_add_texture_rect_region",
+            "canvas_item_add_triangle_array",
+            "canvas_item_clear",
+            "canvas_item_create",
+            "canvas_item_set_canvas_group_mode",
+            "canvas_item_set_clip",
+            "canvas_item_set_copy_to_backbuffer",
+            "canvas_item_set_custom_rect",
+            "canvas_item_set_draw_index",
+            "canvas_item_set_material",
+            "canvas_item_set_modulate",
+            "canvas_item_set_parent",
+            "canvas_item_set_self_modulate",
+            "canvas_item_set_transform",
+            "canvas_item_set_visibility_layer",
+            "canvas_item_set_visible",
+            "canvas_item_set_z_index",
+            "free",
+            "material_create",
+            "material_create_from_shader",
+            "material_set_param",
+            "material_set_shader",
+            "mesh_add_surface",
+            "mesh_clear",
+            "mesh_create",
+            "mesh_set_custom_aabb",
+            "mesh_surface_update_attribute_region",
+            "mesh_surface_update_vertex_region",
+            "shader_create",
+            "shader_create_from_code",
+            "shader_set_code",
+            "shader_set_default_texture_parameter",
+            "texture_2d_create",
+            "texture_2d_update",
+            "viewport_attach_canvas",
+            "viewport_set_canvas_transform"
+          ],
+          "hooks_omitted": []
+        },
+        "viewport": {
+          "canvas_cull_mask": 4294967295,
+          "root_canvas": 1,
+          "logical_size": [
+            640,
+            360
+          ],
+          "stretch": {
+            "mode": "disabled",
+            "aspect": "ignore",
+            "scale_mode": "fractional"
+          },
+          "stretch_applied_by": "receiver",
+          "root_size_policy": "observe",
+          "presentation_size": [
+            640,
+            360
+          ],
+          "host_size_status": "match",
+          "host_window_size": [
+            640,
+            360
+          ],
+          "font_oversampling": 1,
+          "snap_2d": {
+            "transforms": false,
+            "vertices": false
+          }
+        },
+        "resources": {
+          "hash": "sha256",
+          "payloads": [
+            "render-stream-mesh/1",
+            "render-stream-shader/1",
+            "render-stream-texture/1"
+          ],
+          "delivery": "out-of-band",
+          "inline_max_bytes": 0,
+          "max_payload_bytes": 16777216,
+          "permitted_formats": [
+            "L8",
+            "LA8",
+            "R8",
+            "RF",
+            "RG8",
+            "RGB8",
+            "RGBA8",
+            "RGBAF",
+            "RGBAH",
+            "RGBF",
+            "RGBH",
+            "RGF",
+            "RGH",
+            "RH"
+          ],
+          "fetch": "directory",
+          "http_path": null,
+          "auth": "none",
+          "decode": "engine",
+          "texture_delivery": {
+            "mode": "basis-uastc",
+            "encoder": "basisu-1.60"
+          },
+          "mesh_dynamic": {
+            "mode": "auto",
+            "frames": 4,
+            "max_bytes": 65536
+          }
+        },
+        "materials": {
+          "shader_policy": "source"
+        },
+        "features": {
+          "ops": [
+            "add_circle",
+            "add_clip_ignore",
+            "add_line",
+            "add_mesh",
+            "add_msdf_texture_rect_region",
+            "add_multiline",
+            "add_nine_patch",
+            "add_polygon",
+            "add_polyline",
+            "add_primitive",
+            "add_rect",
+            "add_set_transform",
+            "add_texture_rect",
+            "add_texture_rect_region",
+            "add_triangle_array"
+          ],
+          "item_state": [
+            "behind",
+            "children",
+            "clip",
+            "custom_rect",
+            "draw_index",
+            "instance_params",
+            "material",
+            "modulate",
+            "parent",
+            "self_modulate",
+            "texture_filter",
+            "texture_repeat",
+            "transform",
+            "use_parent_material",
+            "visibility_layer",
+            "visible",
+            "z_index",
+            "z_relative"
+          ],
+          "canvas_state": [
+            "layer",
+            "modulate",
+            "transform"
+          ],
+          "resources": [
+            "material",
+            "mesh",
+            "shader",
+            "texture_2d",
+            "texture_2d_placeholder"
+          ],
+          "unsupported_resources": [],
+          "observed_unsupported_ops": [
+            "canvas_item_add_animation_slice",
+            "canvas_item_add_lcd_texture_rect_region",
+            "canvas_item_add_multimesh",
+            "canvas_item_add_particles",
+            "canvas_item_attach_skeleton",
+            "canvas_light_attach_to_canvas",
+            "canvas_set_item_mirroring",
+            "canvas_set_item_repeat",
+            "canvas_set_parent"
+          ],
+          "unobserved": [
+            "canvas_item_set_light_mask",
+            "canvas_item_set_sort_children_by_y",
+            "canvas_item_set_visibility_notifier",
+            "canvas_set_disable_scale",
+            "canvas_texture_set_shading_parameters",
+            "global_shader_parameter_add",
+            "global_shader_parameter_remove",
+            "global_shader_parameter_set",
+            "global_shader_parameter_set_override",
+            "material_set_next_pass",
+            "material_set_render_priority",
+            "shader_set_path_hint",
+            "texture_set_size_override",
+            "viewport_set_canvas_cull_mask",
+            "viewport_set_snap_2d_transforms_to_pixel",
+            "viewport_set_snap_2d_vertices_to_pixel"
+          ],
+          "publication": "snapshot-or-patch"
+        },
+        "publication": {
+          "mode": "every-frame",
+          "target_fps": null,
+          "credit_window": 1
+        },
+        "sabotage": null,
+        "adoption": {
+          "mode": "arm",
+          "frame": 12
+        },
+        "blocks": [
+          {
+            "name": "clear_color",
+            "type": "f32",
+            "count": 4
+          },
+          {
+            "name": "root_canvas_xform",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "host_visible_rect",
+            "type": "f32",
+            "count": 4
+          },
+          {
+            "name": "host_final_xform",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "content_scale_factor",
+            "type": "f32",
+            "count": 1
+          }
+        ]
+      },
+      "blocks": [
+        [
+          0.25,
+          0.25,
+          0.5,
+          1.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          640.0,
+          360.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0
+        ]
+      ]
+    },
+    {
+      "offset": 4792,
+      "byte_length": 5500,
+      "sha256": "5089b5c098cfd227388d7d5c916ca6ae9dffc473a04fd1aead445bca32e16f19",
+      "meta": {
+        "type": "transaction",
+        "seq": 1,
+        "frame": 1,
+        "encoding": "full",
+        "base_seq": null,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 3,
+            "reason": "unknown-texture"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 5,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "linear",
+            "texture_repeat": "enabled",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 1,
+                "tile": true,
+                "transpose": true,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect_region",
+                "tex": 1,
+                "transpose": true,
+                "clip_uv": true,
+                "f": 8
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "unsupported",
+                "name": "canvas_item_add_texture_rect",
+                "reason": "unknown-texture"
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 3,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "f": 20
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 4,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "f": 28
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "placeholder",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+            "format": "LA8",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 137,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 90
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 36
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          20.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          40.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          60.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          80.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          32.0,
+          0.0,
+          -16.0,
+          16.0,
+          16.0,
+          0.0,
+          -16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 10292,
+      "byte_length": 1331,
+      "sha256": "1214de716ffcd61bd8bd462ea3573e5e7cba531a52563608ece7ed1810b940bd",
+      "meta": {
+        "type": "transaction",
+        "seq": 2,
+        "frame": 2,
+        "encoding": "patch",
+        "base_seq": 1,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "linear",
+            "texture_repeat": "enabled",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": null
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          8.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 11623,
+      "byte_length": 1150,
+      "sha256": "8d265a0ff886761b484beb3b8d891fe097efd08d30adbf3eb7d117f42727acd6",
+      "meta": {
+        "type": "transaction",
+        "seq": 3,
+        "frame": 3,
+        "encoding": "patch",
+        "base_seq": 2,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 12773,
+      "byte_length": 5579,
+      "sha256": "1dccc235b02d8e5eeb9b16d422852711683ef85124603fdf775f382c1a7f52fb",
+      "meta": {
+        "type": "transaction",
+        "seq": 4,
+        "frame": 4,
+        "encoding": "patch",
+        "base_seq": 3,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "adopted",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              7
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 6,
+            "origin": "adopted",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 5,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "f": 0
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "f": 8
+              }
+            ]
+          },
+          {
+            "id": 7,
+            "origin": "adopted",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 1,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 16
+              }
+            ]
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 6,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "f": 24
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 8,
+                "tile": false,
+                "transpose": false,
+                "f": 32
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 10,
+                "tile": false,
+                "transpose": false,
+                "f": 40
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "f": 48
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 6,
+            "origin": "adopted",
+            "adopted_content": "creation",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "DXT5",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 2,
+            "height": 2,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+            "format": "RH",
+            "source_format": null,
+            "width": 3,
+            "height": 2,
+            "mipmaps": true,
+            "payload_bytes": 117,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 10,
+            "origin": "adopted",
+            "adopted_content": "creation",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "BPTC_RGBA",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "adopted_content": "creation",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "f": 0,
+            "u8": null,
+            "surfaces": [
+              {
+                "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+                "payload_bytes": 256,
+                "primitive": "triangles",
+                "format": 33554440,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "payload",
+            "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+            "payload_bytes": 157,
+            "builtin": null,
+            "uses": [],
+            "default_textures": []
+          }
+        ],
+        "materials": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 1,
+            "params": [
+              {
+                "name": "tex_a",
+                "type": "rid",
+                "n": 1,
+                "tex": 6,
+                "f": 0
+              },
+              {
+                "name": "tint",
+                "type": "color",
+                "n": 1,
+                "tex": null,
+                "f": 0
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 54
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 20
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 58
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 4
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          100.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          40.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          130.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          16.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          24.0,
+          24.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          8.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          16.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.5,
+          0.25,
+          1.0
+        ],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 18352,
+      "byte_length": 10091,
+      "sha256": "9dd8cd16137816e30ffd4846efc1973acb7167c08c6ca07d14571bff1b66e5e5",
+      "meta": {
+        "type": "transaction",
+        "seq": 5,
+        "frame": 5,
+        "encoding": "full",
+        "base_seq": null,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 3,
+            "reason": "unknown-texture"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 5,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "adopted",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              7
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "linear",
+            "texture_repeat": "enabled",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 1,
+                "tile": true,
+                "transpose": true,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect_region",
+                "tex": 1,
+                "transpose": true,
+                "clip_uv": true,
+                "f": 8
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "unsupported",
+                "name": "canvas_item_add_texture_rect",
+                "reason": "unknown-texture"
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 3,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "f": 20
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 4,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "f": 28
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "origin": "adopted",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 5,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 6,
+                "tile": false,
+                "transpose": false,
+                "f": 36
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 9,
+                "tile": false,
+                "transpose": false,
+                "f": 44
+              }
+            ]
+          },
+          {
+            "id": 7,
+            "origin": "adopted",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 1,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 52
+              }
+            ]
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 6,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "f": 60
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 8,
+                "tile": false,
+                "transpose": false,
+                "f": 68
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 10,
+                "tile": false,
+                "transpose": false,
+                "f": 76
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "f": 84
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "placeholder",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+            "format": "LA8",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 137,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "DXT5",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 2,
+            "height": 2,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+            "format": "RH",
+            "source_format": null,
+            "width": 3,
+            "height": 2,
+            "mipmaps": true,
+            "payload_bytes": 117,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 10,
+            "origin": "adopted",
+            "adopted_content": "creation",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "BPTC_RGBA",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "f": 0,
+            "u8": null,
+            "surfaces": [
+              {
+                "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+                "payload_bytes": 297,
+                "primitive": "triangles",
+                "format": 33558544,
+                "vertex_count": 4,
+                "index_count": 6
+              }
+            ]
+          }
+        ],
+        "shaders": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "payload",
+            "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+            "payload_bytes": 157,
+            "builtin": null,
+            "uses": [],
+            "default_textures": []
+          }
+        ],
+        "materials": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 1,
+            "params": [
+              {
+                "name": "tex_a",
+                "type": "rid",
+                "n": 1,
+                "tex": 6,
+                "f": 0
+              },
+              {
+                "name": "tint",
+                "type": "color",
+                "n": 1,
+                "tex": null,
+                "f": 0
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 144
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 20
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 94
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 4
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          8.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          20.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          40.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          60.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          80.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          100.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          40.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          130.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          32.0,
+          0.0,
+          -16.0,
+          16.0,
+          16.0,
+          0.0,
+          -16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          16.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          24.0,
+          24.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          8.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          16.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.5,
+          0.25,
+          1.0
+        ],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 28443,
+      "byte_length": 1237,
+      "sha256": "54d3dd8197a6977241f8d39c9d6a1a6001619b20f9e799c8f41dee6a81763001",
+      "meta": {
+        "type": "transaction",
+        "seq": 6,
+        "frame": 6,
+        "encoding": "patch",
+        "base_seq": 5,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [
+          6
+        ],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              8
+            ]
+          }
+        ],
+        "items": [],
+        "textures": [
+          {
+            "id": 10,
+            "origin": "adopted",
+            "adopted_content": "creation",
+            "kind": "image",
+            "status": "freed",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 29680,
+      "byte_length": 2479,
+      "sha256": "0a6c42f33dc80a346aa5d30d07954efe337a0e246bf52518e897eb29c0ee02fb",
+      "meta": {
+        "type": "transaction",
+        "seq": 7,
+        "frame": 7,
+        "encoding": "patch",
+        "base_seq": 6,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              8,
+              9
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 9,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 7,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 11,
+                "tile": false,
+                "transpose": false,
+                "f": 0
+              }
+            ]
+          }
+        ],
+        "textures": [
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "DXT5",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [
+              {
+                "encoding": "block",
+                "hash": "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+                "payload_bytes": 122,
+                "format": "DXT5",
+                "params": null
+              }
+            ],
+            "canvas": null
+          },
+          {
+            "id": 11,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": true,
+            "payload_bytes": 1474,
+            "variants": [
+              {
+                "encoding": "block",
+                "hash": "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+                "payload_bytes": 476,
+                "format": "DXT5",
+                "params": null
+              }
+            ],
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 8
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          160.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 32159,
+      "byte_length": 2662,
+      "sha256": "afb0e523233b763d9cfec62f0219a466729fb72216edd600d478e8f1f39ac741",
+      "meta": {
+        "type": "transaction",
+        "seq": 8,
+        "frame": 8,
+        "encoding": "patch",
+        "base_seq": 7,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [],
+        "textures": [
+          {
+            "id": 6,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "DXT5",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [
+              {
+                "encoding": "block",
+                "hash": "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+                "payload_bytes": 122,
+                "format": "DXT5",
+                "params": null
+              },
+              {
+                "encoding": "uastc",
+                "hash": "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+                "payload_bytes": 209,
+                "format": null,
+                "params": "basisu-1.60/uastc-l1/zstd6/linear"
+              }
+            ],
+            "canvas": null
+          },
+          {
+            "id": 11,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": true,
+            "payload_bytes": 1474,
+            "variants": [
+              {
+                "encoding": "block",
+                "hash": "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+                "payload_bytes": 476,
+                "format": "DXT5",
+                "params": null
+              },
+              {
+                "encoding": "uastc",
+                "hash": "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+                "payload_bytes": 593,
+                "format": null,
+                "params": "basisu-1.60/uastc-l1/zstd6/linear"
+              }
+            ],
+            "canvas": null
+          },
+          {
+            "id": 12,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "delivery-pending",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 34821,
+      "byte_length": 3889,
+      "sha256": "44d2fb5406b044ed89b7d85c2eaabc3d51fb09d1bdd9175ae3a8f30b1a16b72d",
+      "meta": {
+        "type": "transaction",
+        "seq": 9,
+        "frame": 9,
+        "encoding": "patch",
+        "base_seq": 8,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              8,
+              9,
+              10,
+              12,
+              13,
+              14
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 10,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [
+              11
+            ],
+            "visible": true,
+            "draw_index": 8,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": {
+              "mode": "clip_only",
+              "fit_empty": false,
+              "blur_mipmaps": false,
+              "f": 0
+            },
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 11,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 10
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": {
+              "mode": "clip_and_draw",
+              "fit_empty": false,
+              "blur_mipmaps": false,
+              "f": 2
+            },
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 8
+              }
+            ]
+          },
+          {
+            "id": 12,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 9,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": {
+              "mode": "transparent",
+              "fit_empty": true,
+              "blur_mipmaps": true,
+              "f": 4
+            },
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": []
+          },
+          {
+            "id": 13,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 10,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": {
+              "f": 6
+            },
+            "content_version": 1,
+            "commands": []
+          },
+          {
+            "id": 14,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 11,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": {
+              "f": 10
+            },
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 16
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 90
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 24
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 14
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          8.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          48.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          96.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          144.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          32.0,
+          32.0,
+          1.0,
+          0.5,
+          0.25,
+          1.0,
+          0.0,
+          0.0,
+          48.0,
+          16.0,
+          0.25,
+          0.5,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          0.5,
+          1.0,
+          0.5,
+          1.0
+        ],
+        [],
+        [],
+        [],
+        [
+          5.0,
+          0.0,
+          5.0,
+          0.0,
+          10.0,
+          10.0,
+          -100.0,
+          -100.0,
+          200.0,
+          200.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 38710,
+      "byte_length": 2889,
+      "sha256": "d3609314194661e2d5c175dfd473d93c402cf1a3d95309a075e0624a82f4b78c",
+      "meta": {
+        "type": "transaction",
+        "seq": 10,
+        "frame": 10,
+        "encoding": "patch",
+        "base_seq": 9,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [
+          11
+        ],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [
+          {
+            "id": 10,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 8,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": null
+          },
+          {
+            "id": 12,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 9,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": {
+              "mode": "transparent",
+              "fit_empty": true,
+              "blur_mipmaps": true,
+              "f": 0
+            },
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": null
+          },
+          {
+            "id": 13,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 10,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": null
+          },
+          {
+            "id": 14,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 11,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": {
+              "f": 2
+            },
+            "content_version": 2,
+            "commands": []
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 72
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          48.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          96.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          144.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          10.0,
+          20.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 41599,
+      "byte_length": 2491,
+      "sha256": "227455552e609901763b46be54c6d7c1e0242e6452d479f274d7a509e5e2a496",
+      "meta": {
+        "type": "transaction",
+        "seq": 11,
+        "frame": 11,
+        "encoding": "patch",
+        "base_seq": 10,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              8,
+              9,
+              10,
+              12,
+              13,
+              14,
+              15
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 15,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 12,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "f": 0
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "f": 0,
+            "u8": 0,
+            "surfaces": [
+              {
+                "hash": null,
+                "payload_bytes": 116,
+                "primitive": "triangles",
+                "format": 33558544,
+                "vertex_count": 4,
+                "index_count": 6
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "f": 6,
+            "u8": 116,
+            "surfaces": [
+              {
+                "hash": null,
+                "payload_bytes": 100,
+                "primitive": "triangles",
+                "format": 33558536,
+                "vertex_count": 4,
+                "index_count": 6
+              },
+              {
+                "hash": null,
+                "payload_bytes": 76,
+                "primitive": "triangles",
+                "format": 33554440,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 12
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 292
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          192.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [],
+        {
+          "u8_bytes": 292,
+          "sha256": "064c85eddae63fa812f7799739b2e3e9c3b048d97f67263c4fd57a966ca400c6"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 44090,
+      "byte_length": 1410,
+      "sha256": "864a3fa78e377b944eb243c1c0cdc7c9fd46a85fca3f1d2af3da993172a2f535",
+      "meta": {
+        "type": "transaction",
+        "seq": 12,
+        "frame": 12,
+        "encoding": "patch",
+        "base_seq": 11,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [],
+        "textures": [
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "status": "ok",
+            "reason": null,
+            "version": 4,
+            "f": 0,
+            "u8": null,
+            "surfaces": [
+              {
+                "hash": null,
+                "payload_bytes": 116,
+                "primitive": "triangles",
+                "format": 33558544,
+                "vertex_count": 4,
+                "index_count": 6
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [],
+        [],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          32.0,
+          32.0,
+          0.0
+        ],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 45500,
+      "byte_length": 1683,
+      "sha256": "68b7417a34786993a13876018db04c3c9f5712a6136a8d615096ff709bfa073b",
+      "meta": {
+        "type": "transaction",
+        "seq": 13,
+        "frame": 13,
+        "encoding": "patch",
+        "base_seq": 12,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [],
+        "textures": [
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+            "format": "LA8",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 137,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "f": 0,
+            "u8": 0,
+            "surfaces": [
+              {
+                "hash": null,
+                "payload_bytes": 100,
+                "primitive": "triangles",
+                "format": 33558536,
+                "vertex_count": 4,
+                "index_count": 6
+              },
+              {
+                "hash": null,
+                "payload_bytes": 76,
+                "primitive": "triangles",
+                "format": 33554440,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 176
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [],
+        [],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [],
+        {
+          "u8_bytes": 176,
+          "sha256": "170323e11c0b913a554b0d3919c607f56f4bde40c935f9ace542cf5e1381d691"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 47183,
+      "byte_length": 2093,
+      "sha256": "82680d589e0e4ee0ca1b03e9d2e70c118c21a99ae253224610d964fa1098b40a",
+      "meta": {
+        "type": "transaction",
+        "seq": 14,
+        "frame": 14,
+        "encoding": "patch",
+        "base_seq": 13,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 3,
+            "reason": "unknown-texture"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 5,
+            "reason": "unsupported-texture"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 15,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [
+          {
+            "id": 15,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 12,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 2,
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "f": 0
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "f": 10
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "status": "ok",
+            "reason": null,
+            "version": 5,
+            "f": 0,
+            "u8": 0,
+            "surfaces": [
+              {
+                "hash": null,
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 88
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          192.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          32.0,
+          32.0,
+          0.0
+        ],
+        [],
+        [],
+        {
+          "u8_bytes": 88,
+          "sha256": "3f4e85ad8e66d99d17afd23a0723b2cd72571fa6fe97b7909efe6177fce10fbb"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 49276,
+      "byte_length": 1285,
+      "sha256": "07198f8a1790c68bb74ebe57468e08cee73769c36fb6f9c6f586454d1d424107",
+      "meta": {
+        "type": "transaction",
+        "seq": 15,
+        "frame": 15,
+        "encoding": "patch",
+        "base_seq": 14,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 3,
+            "reason": "unknown-texture"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 5,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [
+          15
+        ],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              8,
+              9,
+              10,
+              12,
+              13,
+              14
+            ]
+          }
+        ],
+        "items": [],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "freed",
+            "reason": null,
+            "version": 3,
+            "f": null,
+            "u8": null,
+            "surfaces": []
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 10
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 50561,
+      "byte_length": 13384,
+      "sha256": "352496d65eb99d516ee17565f188243038d7e9b745e5cbd3196f539b81157b25",
+      "meta": {
+        "type": "transaction",
+        "seq": 16,
+        "frame": 16,
+        "encoding": "full",
+        "base_seq": null,
+        "status": "ok",
+        "failures": [],
+        "unsupported": [
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 3,
+            "reason": "unknown-texture"
+          },
+          {
+            "op": "canvas_item_add_texture_rect",
+            "item": 5,
+            "reason": "unsupported-texture"
+          }
+        ],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              8,
+              9,
+              10,
+              12,
+              13,
+              14
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "adopted",
+            "role": null,
+            "attached": true,
+            "layer": 1,
+            "sublayer": 0,
+            "items": [
+              7
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "linear",
+            "texture_repeat": "enabled",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 1,
+                "tile": true,
+                "transpose": true,
+                "f": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 1,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect_region",
+                "tex": 1,
+                "transpose": true,
+                "clip_uv": true,
+                "f": 8
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 2,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "unsupported",
+                "name": "canvas_item_add_texture_rect",
+                "reason": "unknown-texture"
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 3,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 5,
+                "tile": false,
+                "transpose": false,
+                "f": 20
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 4,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 3,
+                "tile": false,
+                "transpose": false,
+                "f": 28
+              }
+            ]
+          },
+          {
+            "id": 7,
+            "origin": "adopted",
+            "parent": {
+              "kind": "canvas",
+              "id": 2
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": 1,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 36
+              }
+            ]
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 6,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 7,
+                "tile": false,
+                "transpose": false,
+                "f": 44
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 8,
+                "tile": false,
+                "transpose": false,
+                "f": 52
+              },
+              {
+                "op": "add_texture_rect",
+                "tex": 10,
+                "tile": false,
+                "transpose": false,
+                "f": 60
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "f": 68
+              }
+            ]
+          },
+          {
+            "id": 9,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 7,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_texture_rect",
+                "tex": 11,
+                "tile": false,
+                "transpose": false,
+                "f": 78
+              }
+            ]
+          },
+          {
+            "id": 10,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 8,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 86
+              }
+            ]
+          },
+          {
+            "id": 12,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 9,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": {
+              "mode": "transparent",
+              "fit_empty": true,
+              "blur_mipmaps": true,
+              "f": 0
+            },
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": []
+          },
+          {
+            "id": 13,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 10,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": []
+          },
+          {
+            "id": 14,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 11,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": {
+              "f": 2
+            },
+            "content_version": 2,
+            "commands": []
+          }
+        ],
+        "textures": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 3,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "unsupported-format",
+            "version": 1,
+            "hash": null,
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 4,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "placeholder",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 5,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+            "format": "LA8",
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 137,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 6,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": false,
+            "payload_bytes": 1135,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 7,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+            "format": "RGBA8",
+            "source_format": "DXT5",
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [
+              {
+                "encoding": "block",
+                "hash": "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+                "payload_bytes": 122,
+                "format": "DXT5",
+                "params": null
+              },
+              {
+                "encoding": "uastc",
+                "hash": "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+                "payload_bytes": 209,
+                "format": null,
+                "params": "basisu-1.60/uastc-l1/zstd6/linear"
+              }
+            ],
+            "canvas": null
+          },
+          {
+            "id": 8,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+            "format": "RGBAF",
+            "source_format": null,
+            "width": 2,
+            "height": 2,
+            "mipmaps": false,
+            "payload_bytes": 171,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 9,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+            "format": "RH",
+            "source_format": null,
+            "width": 3,
+            "height": 2,
+            "mipmaps": true,
+            "payload_bytes": 117,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 10,
+            "origin": "adopted",
+            "adopted_content": "creation",
+            "kind": "image",
+            "status": "freed",
+            "reason": null,
+            "version": 2,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 0,
+            "height": 0,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          },
+          {
+            "id": 11,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "hash": "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+            "format": "RGBA8",
+            "source_format": null,
+            "width": 16,
+            "height": 16,
+            "mipmaps": true,
+            "payload_bytes": 1474,
+            "variants": [
+              {
+                "encoding": "block",
+                "hash": "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+                "payload_bytes": 476,
+                "format": "DXT5",
+                "params": null
+              },
+              {
+                "encoding": "uastc",
+                "hash": "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+                "payload_bytes": 593,
+                "format": null,
+                "params": "basisu-1.60/uastc-l1/zstd6/linear"
+              }
+            ],
+            "canvas": null
+          },
+          {
+            "id": 12,
+            "origin": "created",
+            "adopted_content": null,
+            "kind": "image",
+            "status": "unsupported",
+            "reason": "delivery-pending",
+            "version": 1,
+            "hash": null,
+            "format": null,
+            "source_format": null,
+            "width": 4,
+            "height": 4,
+            "mipmaps": false,
+            "payload_bytes": 0,
+            "variants": [],
+            "canvas": null
+          }
+        ],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "adopted_content": "current",
+            "status": "ok",
+            "reason": null,
+            "version": 5,
+            "f": 0,
+            "u8": 0,
+            "surfaces": [
+              {
+                "hash": null,
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "freed",
+            "reason": null,
+            "version": 3,
+            "f": null,
+            "u8": null,
+            "surfaces": []
+          }
+        ],
+        "shaders": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mode": "canvas_item",
+            "source": "payload",
+            "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+            "payload_bytes": 157,
+            "builtin": null,
+            "uses": [],
+            "default_textures": []
+          }
+        ],
+        "materials": [
+          {
+            "id": 1,
+            "origin": "adopted",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "shader": 1,
+            "params": [
+              {
+                "name": "tex_a",
+                "type": "rid",
+                "n": 1,
+                "tex": 6,
+                "f": 0
+              },
+              {
+                "name": "tint",
+                "type": "color",
+                "n": 1,
+                "tex": null,
+                "f": 0
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 216
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 20
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 94
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 4
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 6
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 88
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          8.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          20.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          40.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          60.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          80.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          40.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          130.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          160.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          48.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          96.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          144.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          10.0,
+          10.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          32.0,
+          0.0,
+          -16.0,
+          16.0,
+          16.0,
+          0.0,
+          -16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          4.0,
+          4.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          24.0,
+          24.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          8.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          16.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          16.0,
+          16.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          32.0,
+          32.0,
+          1.0,
+          0.5,
+          0.25,
+          1.0
+        ],
+        [],
+        [
+          0.0,
+          0.0,
+          0.0,
+          32.0,
+          32.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.5,
+          0.25,
+          1.0
+        ],
+        [
+          10.0,
+          20.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        {
+          "u8_bytes": 88,
+          "sha256": "3f4e85ad8e66d99d17afd23a0723b2cd72571fa6fe97b7909efe6177fce10fbb"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 63945,
+      "byte_length": 290,
+      "sha256": "cab4bc7280ee705044e2d86c3b6ff6fa7e6337bc06539b2fb7277a5dc573ade4",
+      "meta": {
+        "type": "end",
+        "transactions": 16,
+        "reason": "shutdown",
+        "stats": {
+          "bytes_total": 63945,
+          "encode_ns_total": 250000,
+          "snapshot_ns_total": 40000,
+          "diff_ns_total": 12345,
+          "max_record_bytes": 13384,
+          "full_transactions": 3,
+          "patch_transactions": 13,
+          "resource_records": 0,
+          "resource_bytes": 0
+        },
+        "blocks": []
+      },
+      "blocks": []
+    }
+  ]
+}

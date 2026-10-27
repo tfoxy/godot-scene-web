@@ -147,6 +147,23 @@ const RESOURCES_KEYS_V9: &[&str] = &[
     "decode",
     "texture_delivery",
 ];
+// render-stream-11.md "Session record": "mesh_dynamic" after "texture_delivery" (last).
+const RESOURCES_KEYS_V11: &[&str] = &[
+    "hash",
+    "payloads",
+    "delivery",
+    "inline_max_bytes",
+    "max_payload_bytes",
+    "permitted_formats",
+    "fetch",
+    "http_path",
+    "auth",
+    "decode",
+    "texture_delivery",
+    "mesh_dynamic",
+];
+const MESH_DYNAMIC_KEYS: &[&str] = &["mode", "frames", "max_bytes"];
+pub const MESH_DYNAMIC_MODES: &[&str] = &["auto", "off", "all"];
 const TEXTURE_DECODES: &[&str] = &["off", "engine"];
 const TEXTURE_DELIVERY_KEYS: &[&str] = &["mode", "encoder"];
 /// texture-delivery-design.md D1: the session's delivery modes, and (render-stream-9.md) the
@@ -445,6 +462,18 @@ const MESH_KEYS_V8: &[&str] = &[
     "f",
     "surfaces",
 ];
+// render-stream-11.md "Mesh entry": "u8" right after "f".
+const MESH_KEYS_V11: &[&str] = &[
+    "id",
+    "origin",
+    "adopted_content",
+    "status",
+    "reason",
+    "version",
+    "f",
+    "u8",
+    "surfaces",
+];
 const MESH_SURFACE_KEYS: &[&str] = &[
     "hash",
     "payload_bytes",
@@ -504,6 +533,8 @@ pub const TRANSACTION_BLOCK_NAMES: &[&str] = &[
     "mesh_f32",
     "param_f64",
     "backbuffer_f32",
+    "mesh_u8",
+    "mm_f32",
 ];
 const TRANSACTION_BLOCK_TYPES: &[BlockType] = &[
     BlockType::F32,
@@ -513,13 +544,16 @@ const TRANSACTION_BLOCK_TYPES: &[BlockType] = &[
     BlockType::F32,
     BlockType::F64,
     BlockType::F32,
+    BlockType::U8,
+    BlockType::F32,
 ];
 
 /// How many transaction blocks a version's transactions carry (render-stream-10.md "Transaction
-/// blocks": seven from /10).
+/// blocks": seven from /10; render-stream-11.md: nine from /11, `mesh_u8` and `mm_f32` last).
 pub fn transaction_block_count(version: u8) -> usize {
     match version {
-        10.. => 7,
+        11.. => 9,
+        10 => 7,
         5..=9 => 6,
         4 => 5,
         _ => 3,
@@ -1018,6 +1052,16 @@ pub struct Resources {
     /// /9 only (render-stream-9.md "Session"): the host's declared texture-delivery mode and
     /// encoder prefix.
     pub texture_delivery: Option<TextureDelivery>,
+    /// /11 only (render-stream-11.md "Session record"): the host's mesh classification policy.
+    pub mesh_dynamic: Option<MeshDynamic>,
+}
+
+/// `resources.mesh_dynamic`: `{"mode":"auto"|"off"|"all","frames":1..60,"max_bytes":>=0}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeshDynamic {
+    pub mode: &'static str,
+    pub frames: i64,
+    pub max_bytes: i64,
 }
 
 /// `resources.texture_delivery`: `{"mode":<D1 mode>,"encoder":null|<params_id prefix>}`.
@@ -1096,7 +1140,9 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
     let v4 = version >= 4;
     let Some(f) = ck.fields(
         v,
-        if version >= 9 {
+        if version >= 11 {
+            RESOURCES_KEYS_V11
+        } else if version >= 9 {
             RESOURCES_KEYS_V9
         } else if version >= 8 {
             RESOURCES_KEYS_V8
@@ -1197,6 +1243,26 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
     } else {
         None
     };
+    // render-stream-11.md "Session record" (self-coded `mesh-dynamic-policy`, decision 8).
+    let mesh_dynamic = if version >= 11 {
+        let md = (|| {
+            let d = ck.fields(f.at(11), MESH_DYNAMIC_KEYS)?;
+            Some(MeshDynamic {
+                mode: ck.one_of_str(d.at(0), MESH_DYNAMIC_MODES)?,
+                frames: ck.int(d.at(1)).filter(|n| (1..=60).contains(n))?,
+                max_bytes: ck.int_ge(d.at(2), 0)?,
+            })
+        })();
+        let Some(md) = md else {
+            return Err(ck.err(
+                "mesh-dynamic-policy",
+                "resources.mesh_dynamic must be exactly {mode: \"auto\"|\"off\"|\"all\", frames: an integer 1..60, max_bytes: an integer >= 0}",
+            ));
+        };
+        Some(md)
+    } else {
+        None
+    };
     let expected = if inline_max_bytes == 0 {
         "out-of-band"
     } else if inline_max_bytes >= max_payload_bytes {
@@ -1228,6 +1294,7 @@ fn check_resources(ck: &mut Ck, v: Value, version: u8) -> Result<Resources, Erro
         auth,
         decode,
         texture_delivery,
+        mesh_dynamic,
     })
 }
 
@@ -1874,6 +1941,9 @@ pub struct MeshMeta {
     pub reason: Option<&'static str>,
     pub version: i64,
     pub f: Option<u64>,
+    /// /11 only: the offset in `mesh_u8` of a dynamic mesh's bodies (`None` is a null `u8`).
+    pub u8: Option<u64>,
+    /// `body_sha256` is always `None` here: the validator fills it from `mesh_u8`.
     pub surfaces: Vec<MeshSurface>,
 }
 
@@ -1905,6 +1975,9 @@ pub struct TxMeta {
     pub status: Option<TxStatus>,
     pub failures: Vec<Failure>,
     pub unsupported: Vec<UnsupportedMeta>,
+    /// /11 (WB "Patched `unsupported`"): a patch's `unsupported` was `null`, "as the base"
+    /// (`unsupported` is then empty here; the validator resolves it to the base's list).
+    pub unsupported_null: bool,
     pub unknown_items: Option<UnknownItems>,
     /// P3-TM: `/10`'s `shader_time.f`, the host's shader time's offset in `param_f64`.
     pub shader_time_f: Option<u64>,
@@ -1932,6 +2005,7 @@ impl TxMeta {
     pub(crate) fn clear(&mut self) {
         self.failures.clear();
         self.unsupported.clear();
+        self.unsupported_null = false;
         self.unknown_items = None;
         self.shader_time_f = None;
         self.removed_canvases.clear();
@@ -2278,8 +2352,16 @@ fn check_texture(ck: &mut Ck, t: Value, version: u8) -> Result<Texture, Error> {
 fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
     let err = |ck: &Ck, d: &str| ck.schema(format!("a meshes[] entry {d}"));
     let v8 = version >= 8;
+    let v11 = version >= 11;
     let s1 = if v8 { 1 } else { 0 };
-    let Some(f) = ck.fields(m, if v8 { MESH_KEYS_V8 } else { MESH_KEYS }) else {
+    let keys = if v11 {
+        MESH_KEYS_V11
+    } else if v8 {
+        MESH_KEYS_V8
+    } else {
+        MESH_KEYS
+    };
+    let Some(f) = ck.fields(m, keys) else {
         return Err(err(ck, "has the wrong keys"));
     };
     let Some(id) = ck.id1(f.at(0)) else {
@@ -2323,7 +2405,15 @@ fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
     } else {
         return Err(err(ck, "\"f\" is neither null nor a non-negative integer"));
     };
-    let Some(surfs) = ck.arr(f.at(6 + s1)) else {
+    let s2 = v11 as usize;
+    let u8_offset = if !v11 || ck.null(f.at(6 + s1)) {
+        None
+    } else if let Some(x) = ck.uint(f.at(6 + s1)) {
+        Some(x)
+    } else {
+        return Err(err(ck, "\"u8\" is neither null nor a non-negative integer"));
+    };
+    let Some(surfs) = ck.arr(f.at(6 + s1 + s2)) else {
         return Err(err(ck, "\"surfaces\" is not an array"));
     };
     let mut surfaces = Vec::with_capacity(surfs.len());
@@ -2332,7 +2422,17 @@ fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
         let Some(sf) = ck.fields(s, MESH_SURFACE_KEYS) else {
             return Err(serr(ck, "has the wrong keys"));
         };
-        let Some(hash) = ck.hash(sf.at(0)) else {
+        // /11: a dynamic surface's hash is null (render-stream-11.md "Mesh entry").
+        let hash = if v11 && ck.null(sf.at(0)) {
+            None
+        } else if let Some(h) = ck.hash(sf.at(0)) {
+            Some(h)
+        } else if v11 {
+            return Err(serr(
+                ck,
+                "\"hash\" is neither null nor 64 lowercase hex digits",
+            ));
+        } else {
             return Err(serr(ck, "\"hash\" is not 64 lowercase hex digits"));
         };
         let Some(payload_bytes) = ck.int_ge(sf.at(1), 1) else {
@@ -2352,6 +2452,7 @@ fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
         };
         surfaces.push(MeshSurface {
             hash,
+            body_sha256: None,
             payload_bytes,
             primitive,
             format,
@@ -2367,6 +2468,7 @@ fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
         reason,
         version,
         f: fo,
+        u8: u8_offset,
         surfaces,
     })
 }
@@ -2853,7 +2955,21 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         tx.failures.push(e);
     }
 
-    let Some(unsupported) = ck.arr(f.at(7)) else {
+    // WB (render-stream-11.md "Patched `unsupported`"): null is legal in a /11 patch only.
+    let unsupported_null = version >= 11 && ck.null(f.at(7));
+    if unsupported_null && tx.encoding == Some(Encoding::Full) {
+        return Err(
+            ck.schema("a full transaction's \"unsupported\" is null (legal in a patch only)")
+        );
+    }
+    tx.unsupported_null = unsupported_null;
+    let empty: &[Value] = &[];
+    let unsupported = if unsupported_null {
+        Some(empty)
+    } else {
+        ck.arr(f.at(7))
+    };
+    let Some(unsupported) = unsupported else {
         return Err(ck.schema("\"unsupported\" is not an array"));
     };
     for &uv in unsupported {

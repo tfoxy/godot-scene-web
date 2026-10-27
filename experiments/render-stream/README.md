@@ -96,9 +96,12 @@ result under `results/gate7/`; the rest link to their design section under `prot
   receivers offer it under `RS_RECEIVER_PROTOCOL=9`), and
   [protocol/render-stream-10.md](protocol/render-stream-10.md) (CG1: canvas-group mode and
   copy-to-backbuffer item state, `clip_children`/`CanvasGroup`/`BackBufferCopy`; opt-in with
-  `GRC_STREAM_VERSION=10` and `RS_RECEIVER_PROTOCOL=10`).
+  `GRC_STREAM_VERSION=10` and `RS_RECEIVER_PROTOCOL=10`), and
+  [protocol/render-stream-11.md](protocol/render-stream-11.md) (W11: the pruned carried set,
+  dynamic mesh surfaces by id, a stable `content_version`; W11a built the codecs and validators,
+  the capture and receivers follow).
 - Feature manifests: `protocol/features/` (`render-stream-6.json`, `render-stream-7/`, `render-stream-8/`). Golden vectors: `protocol/golden/` through
-  `protocol/golden-10/`.
+  `protocol/golden-11/`.
 - Topical notes: `protocol/canvas-texture-headless.md`, `protocol/unknown-item-skip.md`.
 - Gate 8 (the STS2 blockers' generic halves: late-join adoption, compressed textures, host size,
   pre-arm materials, texture delivery): [protocol/gate8-design.md](protocol/gate8-design.md),

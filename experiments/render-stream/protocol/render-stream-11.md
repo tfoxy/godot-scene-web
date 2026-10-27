@@ -1,6 +1,8 @@
 # render-stream/11 wire format
 
-Status: **design, not built** (W11-D, 2026-10-25). The measurements behind every number here are
+Status: **design; codecs and validators built** (W11-D, 2026-10-25; W11a, 2026-10-27: the C++
+encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; the capture
+and the receivers are W11b to W11e). The measurements behind every number here are
 in [results/p3/w11-d.md](../results/p3/w11-d.md). /11 builds on render-stream/10
 ([render-stream-10.md](render-stream-10.md): CG1's back-buffer item state and P3-TM's
 `shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
@@ -508,6 +510,8 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
 `make_golden.py` (stdlib, deterministic, `--check`) loads golden-10's generator and re-binds what
 changes. States 11 to 16 follow golden-10's ten:
 
+As built, the six states differ in detail from this list ("As built (W11a): decisions", 1).
+
 - **11.** A second mesh changes twice: under `mesh_dynamic.mode` `auto` with `frames` 4, it
   becomes dynamic (patch: `hash: null`, `u8` non-null).
 - **12.** The dynamic mesh's custom AABB changes with equal bytes (`u8` null). A texture hash
@@ -537,6 +541,70 @@ Checks:
 - `capture/test/rs11_codec_test.cpp`: the C++ encoder and `make_patch` match every `.rs11` byte
   for byte, and the records come from (B, T) alone;
 - `rs-core-check goldens` and `cargo test`.
+
+### As built (W11a): decisions
+
+W11a built `golden-11/` and the codecs. Where the sketch above left a choice open, or got a
+detail wrong, these rules are now the wire. They are frozen with /11.
+
+1. **The six states** (`golden-11/make_golden.py`'s docstring). Mesh 1, static since state 4,
+   is the one that turns dynamic at 11: a patch entry with `hash: null` and a non-null `u8`, while
+   its old hash leaves the state. Mesh 2 is new at 11, dynamic, with two surfaces, so its bodies
+   follow mesh 1's in `mesh_u8` and the offset rule runs over two entries. Texture 5's hash F
+   leaves at 12 (the texture is updated to another image) and returns at 13. Mesh 2's bytes change
+   at 13 with the same shape. Mesh 1's shape changes at 14. Mesh 2 is freed at 15. `unsupported`
+   changes at 14 (item 15 draws the unsupported texture 3) and back at 15, so `patch.rs11` has a
+   null list in every patch except 14 and 15. `patch.rs11`'s fulls are seqs 1, 5 and 16.
+2. **Record order.** The records before a target T are inline(T) \ inline(B) in **table order**:
+   textures by id (each texture's `hash`, then its variants in list order), then meshes by id
+   (static surfaces in order), then shaders by id, at each hash's first occurrence. That is a
+   function of (B, T), so shared encodes share it. golden-10 used a hand order. Index entries in
+   `inline_resources` carry `before_seq`, because a hash may now be carried more than once. The
+   golden's inline stream carries texture variants inline, which the format allows. The capture
+   never does (texture-delivery D12(c)), so its inline(S) has no variants: the C++ planner's
+   `InlinePolicy::inline_variants` is off by default and on only for the golden.
+3. **Multimesh before PM1.** Every /11 transaction carries the ninth block `mm_f32`. Until PM1
+   adds the `multimeshes` table, it must be empty: a float in it is `mm-offset`, the code PM1's
+   rule uses ("no entry claims it"). `features` stays /10's (no `"multimesh"`, no
+   `add_multimesh`) until PM1 plans the hooks, because features declare what the capture does.
+4. **Check order inside a transaction.** Per mesh entry, `mesh-dynamic` first, then
+   `mesh-u8-offset` over the entries, then `payload-size` on each body. Each invalid vector fails
+   one rule only (`mesh-dynamic-full-null` also drops the body from `mesh_u8`).
+5. **Resolved and decoded forms.** A resolved surface's keys are `hash`, `body_sha256`,
+   `payload_bytes`, `primitive`, `format`, `vertex_count`, `index_count`. A resolved mesh has no
+   `u8`, which is a per-transaction offset, not state. The decoded form keeps `u8`, the null
+   `hash` and a null `unsupported` verbatim.
+6. **`resource-unnamed`** covers every record accepted since the previous transaction, checked
+   at the next transaction (against names(S)) or at the end record. A stream truncated without an
+   end record is not flagged.
+7. **`content-version-stable`** compares a patch entry's commands with the base item's resolved
+   commands: the JSON values, and the floats by float32 bit pattern. A full transaction is exempt:
+   it has no base.
+8. **`mesh-dynamic-policy`** covers the `mesh_dynamic` object's key set and values. A
+   `resources` object without the key is `meta-schema`, like any missing key.
+9. **`inline-fetch-zero`'s predicate** belongs to the validator, so that every receiver asks the
+   same question: a GET of hash h is refused with `inline-fetch-zero` when h is a non-variant name
+   of the newest accepted state, or is in C, with `payload_bytes ≤ inline_max_bytes`. Variants are
+   never required inline (render-stream-9.md), so a variant may be fetched, unless it is in C
+   (it arrived inline, so a GET for it is a receiver bug). W11a ships the
+   predicate (rs-core `Validator::check_fetch`, TypeScript `checkInlineFetch`), and W11c and W11d
+   call it from their fetchers.
+10. **Sabotages.**
+    - `keep-carried` is a C++ codec flag. The encoder keeps /10's lifelong carried set at /11, so
+      F's record before seq 13 is never written. Its output is exactly
+      `invalid/resource-missing.rs11`, which every validator rejects at seq 13.
+    - `early-prune` is a validator flag (rs-core and TypeScript). It prunes C to the base state's
+      names when a transaction arrives, before resolving and checking it. That drops the records
+      the transaction brings, so `inline.rs11` fails `resource-missing` at the first transaction
+      with records (seq 1). The sketch's "on state 12" assumed a prune against S itself, which can
+      never fail, because required(S) ⊆ names(S).
+11. **`resource-duplicate-v10`** is a /10 file in golden-11's `invalid/`. Every invalid entry in
+    `index.json` carries its `version`, so runners decode each at its own version.
+12. **rs-core-capi** accepts /11 (`VERSIONS` gains 11), so /11 files decode and validate through
+    the capi. Its planner draws static meshes as before and leaves dynamic ones undrawn, counting
+    them, until W11d adds the region uploads. The live hello still does not offer `.11` (W11d).
+13. **The GDScript codec** (`rs_wire.gd`) is not touched. The native receiver decodes in rs-core
+    through the capi. Its magic table gains `B` with W11d's offer.
 
 ## Predicted cost (STS2, from the kept recordings)
 
@@ -687,7 +755,7 @@ sweep.
 
 | Id | Scope | Stock-template fixture | Checks | Sabotages |
 | -- | ----- | ---------------------- | ------ | --------- |
-| **W11a** | codecs, goldens and validators: `ProtocolVersion::V11` in the C++ encoder (`rs2_codec`, `rs2_diff`: records from (B, T), `u8` from serials), `render-stream-2.ts` and `rs-core` (prune by reference count, `resource-unnamed`, `mesh-dynamic`, `mesh-u8-offset`, `body_sha256`; WB's `content-version-stable` and `unsupported: null`), `golden-11/`; `rs-core-capi` pin to /11 | `golden-11/` | the golden checks above. A property test (`cargo test`): over random state sequences with resyncs, folds and window 2, the validator's C equals inline(S) after every transaction (L2), and a hub serving N connections from different bases emits records that each connection's validator accepts (L1). `rs_live_test` gains `test_records_from_base_and_target` | `keep-carried` (codec flag: the encoder keeps /10's lifelong set at /11, so state 13 fails `resource-missing`); `early-prune` (prune before the transaction's checks fails `resource-missing` on state 12) |
+| **W11a** | codecs, goldens and validators: `ProtocolVersion::V11` in the C++ encoder (`rs2_codec`, `rs2_diff`: records from (B, T), `u8` from serials), `render-stream-2.ts` and `rs-core` (prune by reference count, `resource-unnamed`, `mesh-dynamic`, `mesh-u8-offset`, `body_sha256`; WB's `content-version-stable` and `unsupported: null`), `golden-11/`; `rs-core-capi` pin to /11 | `golden-11/` | the golden checks above. A property test (`cargo test`): over random state sequences with resyncs, folds and window 2, the validator's C equals inline(S) after every transaction (L2), and a hub serving N connections from different bases emits records that each connection's validator accepts (L1). `rs_live_test` gains `test_records_from_base_and_target` | `keep-carried` (codec flag: the encoder keeps /10's lifelong set at /11, so state 13 fails `resource-missing`); `early-prune` (prune before the transaction's checks fails `resource-missing` at the first transaction with records, decision 10) |
 | **W11b** | capture: mirror classification and serials, `mesh_u8` from the snapshot, `resources.mesh_dynamic`, `GRC_MESH_DYNAMIC*`, /11 file sinks and listener offer, `rs_carried` bypassed for /11 connections, `stale-dynamic`; WB's stable `content_version` and patched `unsupported` (sabotage `cv-churn`) | `fixtures/capture-scale` (P3-CAP; STS2's combat shape, every pose new); `fixtures/gate6-scene` `animate` (the `MS` mesh recurs every 90 frames); `gate5-mesh` (g5c, g5e) | `dyn-wire`: every body at every transaction, rebuilt into GRM1, hashes to the hook log's surface hash for that frame. `dyn-classify`: dynamic from the second change within K, never demoted. `carried-equals-names`: the host's per-connection records are inline(T) \ inline(B). `resend-on-return` (gate6-scene with `GRC_MESH_DYNAMIC=off`: each return of `MS`'s hash re-carried exactly once). `host-flat`: `bench-live-scale.sh --viewers 4` null, 10 min, host RSS ≤ +0.2 MB/min. Byte identity below /11 (`cmp-rec.ts`, gates 1, 2, 5 against `main`) | `perturb-vertex` fails `dyn-wire`; `stale-dynamic` fails `dyn-wire`; `keep-carried` (host) fails `resend-on-return` with the receiver's `resource-missing` |
 | **W11c** | GSW: rs-core retention (H, prune on accept), applier geometry by mesh id, `bufferSubData` uploads, `inline-fetch-zero`; GSW offers `.11` under `RS_RECEIVER_PROTOCOL=11` | `capture-scale` through `bench-live-scale.sh` with a GSW viewer; `gate6-scene` soak (`soak-inline`) at /11; g7-5 and g7-2 groups at /11 | `store-bounded`: 20 min on `capture-scale` with the payload store's entries ≤ \|names\| + window and a wasm-heap slope after warm-up ≤ 1 MB/min (at /10 the same leg grows about 280 MB/min, P3-SP `long-rx-before`). `inline-fetch-zero`. `resend-applied`: gate6-scene `MS` returns pixel-match the reference. `gsw-band` on gate 5 meshes at /11. Apply rate ≥ /10's on the same leg (real time, milestone) | `no-prune` (receiver keeps C lifelong) fails `resend-applied` with a typed `resource-duplicate`; `evict-carried` (drop a hash still in C) fails `inline-fetch-zero`; `stale-dynamic-rx` (ignore a body) fails `gsw-band` |
 | **W11d** | native receiver: capi maps prune, `RsResourceCache` drops on leave, dynamic region uploads | `capture-scale` with a native viewer; `gate5-mesh`; `gate6-scene` | `store-bounded` (RSS slope and cache entries); `records-per-tx` ≤ 1 + static churn (≈ 1 on `capture-scale`); `resend-applied`; g5c and g5e `reference` at /11 | `no-prune`, `evict-carried`, `stale-dynamic-rx` as W11c, failing the native checks |
