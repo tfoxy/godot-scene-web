@@ -2534,6 +2534,247 @@ void test_v11_connections() {
             ")");
 }
 
+// W11t (render-stream-11.md "As built (W11t)"): base-prefix zstd on /11 connections. Every binary
+// message of a connection whose hello offered `live_coding` (and whose host accepted) is coded:
+// decoding them in order, each based transaction against the uncoded message its envelope names,
+// gives exactly the messages an uncoded run sends; lockstep viewers share the coded bytes.
+std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> sp_run11_wire(
+    const std::vector<SpConn> &conns, const LiveConfig &config, const std::string &hello,
+    std::vector<ConnectionSummary> *summaries) {
+  FakeTransport transport;
+  Session tmpl = make_template(Delivery::Inline);
+  tmpl.version = ProtocolVersion::V11;
+  Hub hub(&transport, config, tmpl);
+  std::map<std::uint32_t, std::uint32_t> number;
+  for (std::uint64_t frame = 1; frame <= 40; ++frame) {
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (conns[i].open_frame == frame) {
+        hub.on_event(opened_with(i + 1, "render-stream.11"), frame);
+        hub.on_event(text(i + 1, hello), frame);
+        number[i + 1] = static_cast<std::uint32_t>(number.size() + 1);
+      }
+    }
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (number.count(i + 1) == 0 || frame <= conns[i].open_frame) {
+        continue;
+      }
+      const ConnectionSummary &cs = now.at(number[i + 1] - 1);
+      if (conns[i].resync_frame == frame && cs.sent > 0) {
+        hub.on_event(text(i + 1, resync(cs.stream_id, cs.transactions)), frame);
+      } else if ((frame - conns[i].open_frame) % conns[i].ack_period == 0 && cs.sent > 0) {
+        hub.on_event(text(i + 1, ack(cs.stream_id, cs.transactions, "submitted")), frame);
+      }
+    }
+    Captured c = sp_state(frame);
+    c.state.version = ProtocolVersion::V11;
+    hub.on_frame(frame, frame * 16000000ULL,
+                 hub.wants_snapshot(frame, frame * 16000000ULL) ? &c : nullptr, frame, 0);
+  }
+  std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> out;
+  for (const Sent &x : transport.of(Sent::Binary)) {
+    out[x.conn].push_back(x.bytes);
+  }
+  if (summaries != nullptr) {
+    // by connection index (the hub's are in open order)
+    const std::vector<ConnectionSummary> all = hub.summaries();
+    summaries->clear();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      summaries->push_back(all.at(number.at(i + 1) - 1));
+    }
+  }
+  return out;
+}
+
+// A model receiver's decoder: keeps every decoded transaction by its envelope seq. False with *why
+// (rs-core's `coding`) on a missing base or a frame that fails; *differs counts based frames whose
+// zstd decode succeeded but that the caller finds wrong.
+bool model_decode(const std::vector<std::vector<std::uint8_t>> &wire,
+                  std::vector<std::vector<std::uint8_t>> *out, std::string *why,
+                  std::uint64_t *prefixed) {
+  std::map<std::uint64_t, std::vector<std::uint8_t>> bases;
+  *prefixed = 0;
+  for (const std::vector<std::uint8_t> &m : wire) {
+    std::uint64_t seq = 0;
+    std::uint64_t base_seq = 0;
+    if (m.size() >= 24 && u32le(m, 0) == grc::rs::live_coding::kEnvelopeMagic) {
+      std::uint64_t b = 0;
+      for (int k = 7; k >= 0; --k) b = (b << 8) | m[16 + static_cast<std::size_t>(k)];
+      base_seq = b;
+    }
+    const auto found = bases.find(base_seq);
+    if (base_seq != 0 && found == bases.end()) {
+      *why = "base " + std::to_string(base_seq) + " missing";
+      return false;
+    }
+    std::vector<std::uint8_t> decoded;
+    std::string error;
+    if (!grc::rs::live_coding::decode(m.data(), m.size(),
+                                      base_seq != 0 ? &found->second : nullptr, &decoded, &seq,
+                                      &base_seq, &error)) {
+      *why = error;
+      return false;
+    }
+    if (base_seq != 0) {
+      ++*prefixed;
+    }
+    if (seq != 0) {
+      bases[seq] = decoded;
+    }
+    out->push_back(std::move(decoded));
+  }
+  return true;
+}
+
+std::string with_live_coding(const std::string &hello, const std::string &offer) {
+  const std::size_t brace = hello.find('{');
+  return hello.substr(0, brace + 1) + "\"live_coding\":\"" + offer + "\"," +
+         hello.substr(brace + 1);
+}
+
+void test_v11_live_coding() {
+  using grc::rs::live_coding::Coding;
+  const std::string hello11 =
+      read_file(std::string(GRC_GOLDEN11_DIR) + "/control/valid/hello-native-block.json");
+  const std::string offered = with_live_coding(hello11, "zstd-base,zstd");
+  // The parser: optional at /11 only, with its grammar.
+  {
+    ControlMessage m;
+    std::string error;
+    check(parse_control(offered, &m, &error, ProtocolVersion::V11) && m.has_live_coding &&
+              m.live_coding == "zstd-base,zstd",
+          "W11t: a /11 hello may offer live_coding " + error);
+    check(parse_control(hello11, &m, &error, ProtocolVersion::V11) && !m.has_live_coding,
+          "W11t: live_coding is optional at /11");
+    check(parse_control(read_file(std::string(GRC_GOLDEN11_DIR) +
+                                  "/control/valid/hello-live-coding.json"),
+                        &m, &error, ProtocolVersion::V11) &&
+              m.live_coding == "zstd-base,zstd",
+          "W11t: golden-11 control/valid/hello-live-coding.json parses " + error);
+    check(!parse_control(read_file(std::string(GRC_GOLDEN11_DIR) +
+                                   "/control/invalid/hello-live-coding-grammar.json"),
+                         &m, &error, ProtocolVersion::V11),
+          "W11t: golden-11 control/invalid/hello-live-coding-grammar.json is refused");
+    check(!parse_control(with_live_coding(hello11, "Zstd"), &m, &error, ProtocolVersion::V11),
+          "W11t: live_coding's grammar is [a-z0-9-] names");
+    check(!parse_control(with_live_coding(hello11, ""), &m, &error, ProtocolVersion::V11),
+          "W11t: an empty live_coding is refused");
+    const std::string hello10 =
+        read_file(std::string(GRC_GOLDEN10_DIR) + "/control/valid/hello-native-block.json");
+    check(!parse_control(with_live_coding(hello10, "zstd"), &m, &error, ProtocolVersion::V10),
+          "W11t: below /11 live_coding is an unknown key");
+    check(grc::rs::live_coding::negotiate(Coding::ZstdBase, "zstd-base,zstd") == Coding::ZstdBase &&
+              grc::rs::live_coding::negotiate(Coding::ZstdBase, "zstd") == Coding::Zstd &&
+              grc::rs::live_coding::negotiate(Coding::Zstd, "zstd-base,zstd") == Coding::Zstd &&
+              grc::rs::live_coding::negotiate(Coding::Zstd, "zstd-base") == Coding::Off &&
+              grc::rs::live_coding::negotiate(Coding::Off, "zstd-base,zstd") == Coding::Off &&
+              grc::rs::live_coding::negotiate(Coding::ZstdBase, "brotli,zstd-base") ==
+                  Coding::ZstdBase,
+          "W11t: negotiate");
+  }
+  const std::vector<SpConn> conns = {
+      {1, 1, 0}, {1, 1, 0}, {3, 2, 0}, {3, 1, 17}, {1, 1, 17}};
+  LiveConfig off_config;
+  std::vector<ConnectionSummary> off_summaries;
+  const auto plain = sp_run11_wire(conns, off_config, hello11, &off_summaries);
+  LiveConfig config;
+  config.live_coding = Coding::ZstdBase;
+  std::vector<ConnectionSummary> summaries;
+  const auto wire = sp_run11_wire(conns, config, offered, &summaries);
+  std::uint64_t shared = 0;
+  for (std::uint32_t i = 0; i < conns.size(); ++i) {
+    const ConnectionSummary &cs = summaries.at(i);
+    check(cs.live_coding == "zstd-base" && cs.has_live_coding,
+          "W11t: connection " + std::to_string(i + 1) + " negotiated zstd-base");
+    check(off_summaries.at(i).live_coding == "off", "W11t: no offer, no coding");
+    std::vector<std::vector<std::uint8_t>> decoded;
+    std::string why;
+    std::uint64_t prefixed = 0;
+    check(model_decode(wire.at(i + 1), &decoded, &why, &prefixed),
+          "W11t: connection " + std::to_string(i + 1) + " decodes " + why);
+    // The session messages differ only in their stream_id; every later message is equal.
+    check(decoded.size() == plain.at(i + 1).size() && decoded[0][0] == 'G' &&
+              std::equal(decoded.begin() + 1, decoded.end(), plain.at(i + 1).begin() + 1),
+          "W11t: connection " + std::to_string(i + 1) +
+              " decodes to exactly the messages an uncoded run sends");
+    check(prefixed > 0 && prefixed == cs.coded_prefixed,
+          "W11t: based transactions on connection " + std::to_string(i + 1) + ": " +
+              std::to_string(prefixed));
+    check(cs.coded_wire_bytes < cs.coded_input_bytes && cs.coded_messages == wire.at(i + 1).size(),
+          "W11t: coded bytes " + std::to_string(cs.coded_wire_bytes) + " < " +
+              std::to_string(cs.coded_input_bytes));
+    shared += cs.coded_shared;
+  }
+  check(wire.at(1).size() == wire.at(2).size() &&
+            std::equal(wire.at(1).begin() + 1, wire.at(1).end(), wire.at(2).begin() + 1),
+        "W11t: lockstep viewers get byte-equal coded messages");
+  check(shared > 40, "W11t: lockstep viewers share the coded bytes: " + std::to_string(shared));
+  // A receiver that keeps no bases (offers zstd only): every frame is unprefixed.
+  {
+    std::vector<ConnectionSummary> z;
+    const auto zw = sp_run11_wire({{1, 1, 0}}, config, with_live_coding(hello11, "zstd"), &z);
+    std::vector<std::vector<std::uint8_t>> decoded;
+    std::string why;
+    std::uint64_t prefixed = 0;
+    check(z.at(0).live_coding == "zstd" && model_decode(zw.at(1), &decoded, &why, &prefixed) &&
+              prefixed == 0 && z.at(0).coded_prefixed == 0,
+          "W11t: per-message zstd for a receiver that keeps no bases " + why);
+  }
+  // drop-message: the dropped transaction is the next one's base, which the receiver never got.
+  {
+    LiveConfig drop = config;
+    drop.drop_message_frame = 12;
+    const auto dw = sp_run11_wire({{1, 1, 0}}, drop, offered, nullptr);
+    std::vector<std::vector<std::uint8_t>> decoded;
+    std::string why;
+    std::uint64_t prefixed = 0;
+    check(!model_decode(dw.at(1), &decoded, &why, &prefixed) && why.find("missing") != std::string::npos,
+          "W11t: a dropped base is a missing prefix (" + why + ")");
+  }
+  // coding-wrong-prefix: one based frame decodes wrongly (or not at all) against its true base.
+  {
+    LiveConfig wrong = config;
+    wrong.coding_wrong_prefix_frame = 12;
+    std::vector<ConnectionSummary> ws;
+    const auto ww = sp_run11_wire({{1, 1, 0}}, wrong, offered, &ws);
+    const auto honest = sp_run11_wire({{1, 1, 0}}, config, offered, nullptr);
+    std::size_t bad = 0;
+    std::map<std::uint64_t, std::vector<std::uint8_t>> bases;
+    std::vector<std::vector<std::uint8_t>> ref;
+    std::string why;
+    std::uint64_t prefixed = 0;
+    model_decode(honest.at(1), &ref, &why, &prefixed);
+    for (std::size_t k = 1; k < ww.at(1).size() && k < ref.size(); ++k) {  // 0: the session
+      if (ww.at(1)[k] == honest.at(1)[k]) {
+        continue;
+      }
+      ++bad;
+      // decode it against the true base (the honest stream's message of its base seq)
+      const std::vector<std::uint8_t> &m = ww.at(1)[k];
+      std::uint64_t base_seq = 0;
+      for (int b = 7; b >= 0; --b) base_seq = (base_seq << 8) | m[16 + static_cast<std::size_t>(b)];
+      const std::vector<std::uint8_t> *base = nullptr;
+      for (const auto &r : ref) {
+        if (r.size() > 8 && r[0] != 'G' && has(meta_at(r, 0), "\"type\":\"transaction\",\"seq\":" +
+                                                                    std::to_string(base_seq) + ",")) {
+          base = &r;
+        }
+      }
+      std::vector<std::uint8_t> out;
+      std::uint64_t s1 = 0;
+      std::uint64_t s2 = 0;
+      std::string error;
+      check(base != nullptr && (!grc::rs::live_coding::decode(m.data(), m.size(), base, &out, &s1,
+                                                              &s2, &error) ||
+                                out != ref[k]),
+            "W11t: the wrong-prefix frame does not decode to its transaction");
+    }
+    check(bad == 1 && ws.at(0).wrong_prefix_seq != 0,
+          "W11t: coding-wrong-prefix codes exactly one message wrongly (seq " +
+              std::to_string(ws.at(0).wrong_prefix_seq) + ")");
+  }
+}
+
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
@@ -2569,6 +2810,7 @@ int main() {
   test_rate_two_connections();
   test_records_from_base_and_target();
   test_v11_connections();
+  test_v11_live_coding();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

@@ -67,6 +67,20 @@ const uint8_t *rsc_text(RsCore *h, size_t *n);
 const uint32_t *rsc_ops_words(RsCore *h, size_t *n);
 const uint8_t *rsc_ops_arena(RsCore *h, size_t *n);
 
+// W11t (render-stream-11.md "As built (W11t)"): the /11 live coding's decoder, one handle per
+// connection. rsc_coding_decode on every WebSocket message before rsc_session/rsc_accept:
+// 1 decoded (*out valid until the next call), 2 uncoded (*out = data), 0 skipped (no apply, no
+// ack), -1 error (rsc_coding_error; resync rsc_coding_seq when it is not 0). Not bound by the
+// shim yet (W11d/W11e).
+typedef struct RscCoding RscCoding;
+RscCoding *rsc_coding_new(const uint8_t *offer, size_t len, uint64_t max_bytes);
+void rsc_coding_free(RscCoding *h);
+int32_t rsc_coding_decode(RscCoding *h, const uint8_t *data, size_t len, const uint8_t **out,
+                          size_t *out_len);
+uint64_t rsc_coding_seq(RscCoding *h);
+const uint8_t *rsc_coding_error(RscCoding *h, size_t *n);
+const uint8_t *rsc_coding_stats(RscCoding *h, size_t *n);
+
 }  // extern "C"
 
 namespace rsc {

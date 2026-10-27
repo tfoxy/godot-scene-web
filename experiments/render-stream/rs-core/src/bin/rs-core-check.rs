@@ -24,6 +24,7 @@
 //! the recording without it.
 
 use render_stream_core::canon;
+use render_stream_core::coding::{self, LiveDecoder, Outcome};
 use render_stream_core::goldens::{self, GoldenOptions};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire;
@@ -61,7 +62,8 @@ fn usage() -> ExitCode {
         "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..11>] [--sabotage skip-payload-hash|early-prune]\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
-         rs-core-check validate <recording>... [--version 2..8]"
+         rs-core-check validate <recording>... [--version 2..8]\n  \
+         rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
 }
@@ -123,6 +125,7 @@ fn main() -> ExitCode {
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
         "validate" => cmd_validate(&args),
+        "live-decode" => cmd_live_decode(&args),
         _ => usage(),
     }
 }
@@ -1191,5 +1194,194 @@ fn cmd_state_dump(args: &Args) -> ExitCode {
             eprintln!("rs-core-check state-dump: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// W11t: decodes a coded-message file (`rs_live_coding_tool encode`, or a live client's capture of
+/// what it received) through rs-core's `LiveDecoder`, the receivers' decoder, and compares the
+/// result with `--expect` (a recording: its magic + session, then each record, as messages).
+/// Prints one JSON object: messages, prefixed, equal, the first mismatch, and the decode time per
+/// transaction (min over --repeats passes; --stats writes one JSON line per transaction). A
+/// sabotage drops the first based message's base (`drop-base`) or flips its prefix's first byte
+/// (`wrong-prefix`); the object then reports the `coding` error and how many based messages
+/// were skipped after it.
+fn cmd_live_decode(args: &Args) -> ExitCode {
+    let Some(path) = args.positional.first() else {
+        return usage();
+    };
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let messages = match coding::split_messages(&data) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("{}", json!({"error": e.to_string()}));
+            return ExitCode::from(1);
+        }
+    };
+    let keep = args.get("bases").unwrap_or("keep") == "keep";
+    let repeats: usize = args
+        .get("repeats")
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let sabotage = args.get("sabotage");
+    let expected: Option<Vec<Vec<u8>>> = match args.get("expect") {
+        None => None,
+        Some(p) => {
+            let rec = match std::fs::read(p) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("{p}: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let Some(version) = wire::version_of_magic(&rec) else {
+                eprintln!("{p}: no render-stream magic");
+                return ExitCode::from(1);
+            };
+            let spans = match wire::split_records(&rec, version) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{p}: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let mut out = Vec::new();
+            for (i, span) in spans.iter().enumerate() {
+                if i == 0 {
+                    out.push(rec[..span.offset + span.byte_length].to_vec());
+                } else {
+                    out.push(span.bytes(&rec).to_vec());
+                }
+            }
+            Some(out)
+        }
+    };
+    let mut best = vec![f64::INFINITY; messages.len()];
+    let mut summary = json!({});
+    for pass in 0..repeats {
+        let mut d = LiveDecoder::new(keep, 1 << 30);
+        let mut equal = 0usize;
+        let mut first_mismatch: Option<usize> = None;
+        let mut error: Option<J> = None;
+        let mut skipped = 0usize;
+        let mut sabotaged = false;
+        let mut prefixed = 0usize;
+        let mut max_retained = 0usize;
+        let mut max_retained_bytes = 0usize;
+        for (i, m) in messages.iter().enumerate() {
+            let based = m.len() >= coding::ENVELOPE_LEN
+                && u32::from_le_bytes([m[0], m[1], m[2], m[3]]) == coding::ENVELOPE_MAGIC
+                && m[16..24] != [0u8; 8];
+            if based {
+                prefixed += 1;
+            }
+            if !sabotaged && based && i + 1 < messages.len() {
+                match sabotage {
+                    Some("drop-base") => {
+                        // Message i never arrives: the next transaction is coded against it.
+                        sabotaged = true;
+                        continue;
+                    }
+                    Some("wrong-prefix") => {
+                        sabotaged = true;
+                        d.sabotage_wrong_prefix = true;
+                    }
+                    _ => {}
+                }
+            }
+            let t0 = Instant::now();
+            let r = d.decode(m);
+            let us = t0.elapsed().as_secs_f64() * 1e6;
+            best[i] = best[i].min(us);
+            max_retained = max_retained.max(d.retained().len());
+            max_retained_bytes = max_retained_bytes.max(d.retained_bytes());
+            match r {
+                Ok(Outcome::Skipped) => skipped += 1,
+                Ok(Outcome::Plain) => {
+                    if expected
+                        .as_ref()
+                        .map(|e| e.get(i).map(|x| &x[..]) == Some(&m[..]))
+                        == Some(true)
+                    {
+                        equal += 1;
+                    } else if first_mismatch.is_none() {
+                        first_mismatch = Some(i);
+                    }
+                }
+                Ok(Outcome::Decoded) => {
+                    let ok = match &expected {
+                        Some(e) => e.get(i).map(|x| &x[..]) == Some(d.output()),
+                        None => true,
+                    };
+                    if ok {
+                        equal += 1;
+                    } else if first_mismatch.is_none() {
+                        first_mismatch = Some(i);
+                    }
+                }
+                Err(e) => {
+                    if error.is_none() {
+                        error = Some(
+                            json!({"index": i, "seq": d.seq(), "code": e.code, "detail": e.detail}),
+                        );
+                    }
+                }
+            }
+        }
+        if pass + 1 == repeats {
+            summary = json!({
+                "messages": messages.len(),
+                "prefixed": prefixed,
+                "expected": expected.as_ref().map(|e| e.len()),
+                "equal": equal,
+                "first_mismatch": first_mismatch,
+                "error": error,
+                "skipped": skipped,
+                "coded_bytes": d.stats.coded_bytes,
+                "decoded_bytes": d.stats.decoded_bytes,
+                "max_retained": max_retained,
+                "max_retained_bytes": max_retained_bytes,
+                "sabotage": sabotage,
+            });
+        }
+    }
+    if let Some(p) = args.get("stats") {
+        let mut f = match std::fs::File::create(p) {
+            Ok(f) => std::io::BufWriter::new(f),
+            Err(e) => {
+                eprintln!("{p}: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        for (i, m) in messages.iter().enumerate() {
+            if m.len() >= coding::ENVELOPE_LEN
+                && u32::from_le_bytes([m[0], m[1], m[2], m[3]]) == coding::ENVELOPE_MAGIC
+            {
+                let seq = u64::from_le_bytes(m[8..16].try_into().unwrap());
+                let base = u64::from_le_bytes(m[16..24].try_into().unwrap());
+                let _ = writeln!(
+                    f,
+                    "{}",
+                    json!({"index": i, "seq": seq, "base_seq": base, "coded_bytes": m.len(), "decode_us": (best[i] * 10.0).round() / 10.0})
+                );
+            }
+        }
+    }
+    let total: f64 = best.iter().filter(|x| x.is_finite()).sum();
+    summary["decode_us_total"] = json!((total * 10.0).round() / 10.0);
+    println!("{summary}");
+    let ok = summary["error"].is_null()
+        && summary["first_mismatch"].is_null()
+        && (expected.is_none() || summary["equal"] == summary["expected"]);
+    if ok || sabotage.is_some() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }

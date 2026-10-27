@@ -38,6 +38,10 @@ use render_stream_core::wire::{self, RecordSpan};
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
+// W11t: the /11 live coding (rs-core `coding`) for the browser receivers.
+mod live_coding;
+pub use live_coding::{coding_bench, LiveCoding};
+
 pub const ACCEPT_TRANSACTION: i32 = 0;
 pub const ACCEPT_RESOURCE: i32 = 1;
 pub const ACCEPT_END: i32 = 2;

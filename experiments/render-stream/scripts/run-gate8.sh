@@ -826,13 +826,80 @@ run_capture_g8w11() {
 	run_capture "$dir" "$quit" none
 }
 
+# W11t (render-stream-11.md "As built (W11t)"): the /11 live coding, live. A capture-scale /11 host
+# with a listener and a tap, and lib/coding-receiver.ts viewers decoding in rs-core's wasm
+# (LiveCoding) and acking on arrival. Viewer specs are <offer>:<window> (an empty offer sends no
+# live_coding). Each viewer writes what it decoded; the host's tap holds what it formed.
+G8W11_CODING_QUIT=420
+run_g8w11_coding_leg() {
+	local dir="$OUT/g8w11/coding/$1" waited=0 port="" k=0 spec pid
+	shift
+	local -a henv=() pids=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		henv+=("$1")
+		shift
+	done
+	shift
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$host/tap"
+		GRC_LIVE_MAX_CONNECTIONS="$#" "${G8W11_ENV[@]}" "${G8W11_SCALE_ENV[@]}"
+		RS_FIXTURE_QUIT_FRAME="$G8W11_CODING_QUIT" "${henv[@]}"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$G8W11_SCALE_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+	else
+		for spec in "$@"; do
+			k=$((k + 1))
+			mkdir -p "$dir/viewer-$k"
+			(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+				"$SCRIPT_DIR/lib/coding-receiver.ts" --url "ws://127.0.0.1:$port/render-stream" \
+				--out "$dir/viewer-$k" --offer "${spec%:*}" --window "${spec##*:}" --timeout-s 90) \
+				>"$dir/viewer-$k/stdout.log" 2>&1 &
+			pids+=("$!")
+		done
+		for spec in "${pids[@]}"; do
+			wait "$spec" || true
+		done
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8w11_coding() {
+	echo "run-gate8: g8w11 coding/live (zstd-base x2 at window 2, off, zstd at window 1)"
+	run_g8w11_coding_leg live -- "zstd-base,zstd:2" "zstd-base,zstd:2" ":2" "zstd:1"
+	echo "run-gate8: g8w11 coding/host-off (GRC_LIVE_CODING=off, a viewer offering zstd-base)"
+	run_g8w11_coding_leg host-off GRC_LIVE_CODING=off -- "zstd-base,zstd:2"
+	echo "run-gate8: g8w11 coding/sabotage-drop-base (drop-message @120 under zstd-base)"
+	run_g8w11_coding_leg sabotage-drop-base GRC_SABOTAGE=drop-message GRC_SABOTAGE_FRAME=120 \
+		-- "zstd-base,zstd:2"
+	echo "run-gate8: g8w11 coding/sabotage-wrong-prefix (coding-wrong-prefix @120)"
+	run_g8w11_coding_leg sabotage-wrong-prefix GRC_SABOTAGE=coding-wrong-prefix \
+		GRC_SABOTAGE_FRAME=120 -- "zstd-base,zstd:2"
+	# The wire-level check (gate8-w11t-checks.ts coding-wire) codes the recordings with the
+	# capture's encoder: rs_live_coding_tool, built with the capture.
+}
+
 run_g8w11() {
 	run_import_g8w11
 	# The checker validates every recording through rs-core-check too: build it (incremental, a
 	# no-op when current; native only, no wasm).
-	echo "run-gate8: g8w11 build-rs-core.sh --native-only (rs-core-check)"
+	# W11t: and rs-gsw-wasm, whose LiveCoding the coding legs' viewers decode with.
+	echo "run-gate8: g8w11 build-rs-core.sh (rs-core-check, rs-gsw-wasm)"
 	mkdir -p "$OUT/g8w11"
-	bash "$SCRIPT_DIR/build-rs-core.sh" --native-only >"$OUT/g8w11/build-rs-core.log" 2>&1 || {
+	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8w11/build-rs-core.log" 2>&1 || {
 		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8w11/build-rs-core.log" >&2
 		exit 1
 	}
@@ -860,6 +927,7 @@ run_g8w11() {
 		GRC_MESH_DYNAMIC=off GRC_SABOTAGE=keep-carried GRC_SABOTAGE_FRAME=1
 	echo "run-gate8: g8w11 mesh/capture (gate5-mesh, /11, auto)"
 	run_capture_g8w11 "$OUT/g8w11/mesh/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size
+	run_g8w11_coding
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }

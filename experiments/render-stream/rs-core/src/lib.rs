@@ -12,6 +12,7 @@ pub mod apply;
 pub mod state;
 
 pub mod canon;
+pub mod coding;
 pub mod delivery;
 pub mod goldens;
 pub mod idtable;

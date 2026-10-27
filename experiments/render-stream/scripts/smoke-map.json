@@ -450,6 +450,14 @@
       "reach": ["native:gate8@*", "g7:g7-8@*", "g7live:g7-8@*"]
     },
     {
+      "why": "W11t's live coding (render-stream-11.md \"As built (W11t)\"): the g8w11 coding legs' viewer (rs-core's wasm LiveCoding) runs in gate 8 only; bench-live-coding.mjs is a by-hand wasm decode timing, not a validate-increment target",
+      "paths": [
+        "experiments/render-stream/scripts/lib/coding-receiver.ts",
+        "experiments/render-stream/scripts/bench-live-coding.mjs"
+      ],
+      "reach": ["native:gate8@*"]
+    },
+    {
       "why": "gate 6",
       "paths": [
         "experiments/render-stream/scripts/run-gate6.sh",

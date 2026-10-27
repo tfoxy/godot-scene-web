@@ -495,10 +495,12 @@
   ],
   "control": {
     "valid": [
-      "control/valid/hello-native-block.json"
+      "control/valid/hello-native-block.json",
+      "control/valid/hello-live-coding.json"
     ],
     "invalid": [
-      "control/invalid/hello-wrong-protocol.json"
+      "control/invalid/hello-wrong-protocol.json",
+      "control/invalid/hello-live-coding-grammar.json"
     ]
   }
 }
