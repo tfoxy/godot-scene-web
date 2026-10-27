@@ -26,17 +26,24 @@ export function gpuFormatsOf(
 
 /** The /9 hello: the /7 hello's keys in their order under protocol render-stream/9, then
  * texture_encodings and gpu_formats. CG1: `protocol` "render-stream/10" is /10's hello
- * (render-stream-10.md "Live transport"). */
+ * (render-stream-10.md "Live transport"); W11c: "render-stream/11" is /10's again
+ * (render-stream-11.md, golden-11's control hello). */
 export function helloV9(
   v7: Record<string, unknown>,
   textureEncodings: string,
   gpuFormats: string,
-  protocol: "render-stream/9" | "render-stream/10" = "render-stream/9",
+  protocol:
+    | "render-stream/9"
+    | "render-stream/10"
+    | "render-stream/11" = "render-stream/9",
+  liveCoding = "",
 ): Record<string, unknown> {
   return {
     ...v7,
     protocol,
     texture_encodings: textureEncodings,
     gpu_formats: gpuFormats,
+    // W11c: W11t's /11 `live_coding` offer, absent when empty (the host keeps the stream uncoded).
+    ...(liveCoding !== "" ? { live_coding: liveCoding } : {}),
   };
 }

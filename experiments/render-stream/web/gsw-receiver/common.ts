@@ -74,6 +74,8 @@ export interface GswRs {
   restore_json(): string;
   // G7k (Q10 soak): live mode's residency and budget (D29 amendment).
   residency_json(): string;
+  /** W11c: "" when a GET of the hash is allowed, else the `inline-fetch-zero` refusal. */
+  check_fetch(hash: string): string;
   free(): void;
 }
 
@@ -82,6 +84,16 @@ export interface GswRsModule {
     module_or_path: BufferSource;
   }): Promise<{ memory: WebAssembly.Memory }>;
   GswRs: { new (canvas: HTMLCanvasElement, options: string): GswRs };
+  /** W11t: rs-core's live-coding decoder (gsw-rs live_coding.rs). */
+  LiveCoding: { new (offer: string, maxBytes: number): LiveCoding };
+}
+
+/** W11t (gsw-rs `LiveCoding`): decodes each /11 live message in place in a GswRs's rx buffer. */
+export interface LiveCoding {
+  decode_rx(g: GswRs, len: number): number;
+  error(): string;
+  seq(): number;
+  stats_json(): string;
 }
 
 export const ACCEPT_TRANSACTION = 0;

@@ -442,7 +442,7 @@
       "paths": [
         "experiments/render-stream/scripts/run-gate8.sh",
         "experiments/render-stream/scripts/check-gate8.ts",
-        "experiments/render-stream/scripts/gate8-delivery-tool.ts",
+        "experiments/render-stream/scripts/gate8-delivery-tool.ts", "experiments/render-stream/scripts/gate8-w11-tool.ts",
         "experiments/render-stream/scripts/lib/gate8-*",
         "experiments/render-stream/scripts/lib/reverse-proxy.ts",
         "experiments/render-stream/fixtures/gate8-*/**"

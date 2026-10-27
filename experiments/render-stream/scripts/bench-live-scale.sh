@@ -5,7 +5,7 @@
 # keeps up.
 #
 #   bash experiments/render-stream/scripts/bench-live-scale.sh --extension EXT --receiver KIND
-#     [--window 1|2] [--protocol 8|9] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
+#     [--window 1|2] [--protocol 8|9|10|11] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
 #     [--calibration PATH] [--min-rate R] [--max-credit-rtt-ms MS] [--viewers N] [--perf]
 #     [-- NAME=value ...]
 #
@@ -71,7 +71,7 @@ done
 [ -f "$EXTENSION" ] || { echo "bench-live-scale: pass --extension /abs/path/render_stream_capture.gdextension" >&2; exit 2; }
 case "$KIND" in native | gsw | web | null) ;; *) echo "bench-live-scale: --receiver native|gsw|web|null" >&2 && exit 2 ;; esac
 case "$WINDOW" in 1 | 2) ;; *) echo "bench-live-scale: --window 1|2" >&2 && exit 2 ;; esac
-case "$PROTOCOL" in 8 | 9) ;; *) echo "bench-live-scale: --protocol 8|9" >&2 && exit 2 ;; esac
+case "$PROTOCOL" in 8 | 9 | 10 | 11) ;; *) echo "bench-live-scale: --protocol 8|9|10|11" >&2 && exit 2 ;; esac
 case "$VIEWERS" in 1 | 2 | 3 | 4) ;; *) echo "bench-live-scale: --viewers 1..4" >&2 && exit 2 ;; esac
 case "$KIND" in native | null) ;; *) [ -d "$BUNDLE" ] || { echo "bench-live-scale: --receiver $KIND needs --bundle DIR" >&2; exit 2; } ;; esac
 [ -x "$BINARY" ] || { echo "bench-live-scale: no template at $BINARY" >&2; exit 2; }
@@ -127,7 +127,7 @@ if [ -z "${RS_BENCH_LIVE_INSIDE:-}" ]; then
 		--viewers "$VIEWERS" $([ "$PERF" = 1 ] && echo --perf) -- ${EXTRA[@]+"${EXTRA[@]}"}
 	if [ "${RS_BENCH_KEEP:-0}" != 1 ]; then
 		for rx in "${RX_NAMES[@]}"; do
-			rm -rf "$OUT/$rx/cache" "$OUT/$rx/received.rs8" "$OUT/$rx/received.rs9"
+			rm -rf "$OUT/$rx/cache" "$OUT/$rx/received.rs8" "$OUT/$rx/received.rs9" "$OUT/$rx/received.rs10" "$OUT/$rx/received.rs11"
 		done
 		rm -rf "$OUT"/host/tap/stream-* "$OUT/host/evidence/resources.jsonl"
 	fi

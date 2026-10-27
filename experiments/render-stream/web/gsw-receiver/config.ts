@@ -54,8 +54,9 @@ export interface ReceiverConfig {
   transcodeFault: "fail" | null;
   /** G8kp: RS_RECEIVER_PROTOCOL (live): 7 (default), 8 (G8g: render-stream/8's live transport,
    * /7's with /8's tables; a gate 8 policy host offers only .8) or 9 (offers render-stream.9).
-   * CG1: or 10 (offers render-stream.10; /10's back-buffer keys are typed, not composited). */
-  liveProtocol: 7 | 8 | 9 | 10;
+   * CG1: or 10 (offers render-stream.10; /10's back-buffer keys are typed, not composited).
+   * W11c: or 11 (offers render-stream.11: dynamic meshes by id, the pruned carried set). */
+  liveProtocol: 7 | 8 | 9 | 10 | 11;
   canvas: [number, number] | null;
   /** Every RS_RECEIVER_* value as given, for the log. */
   raw: Record<string, string>;
@@ -81,12 +82,16 @@ export interface LiveConfig {
   receivedOut: string;
   /** G8g: the live wire version (ReceiverConfig.liveProtocol, RS_RECEIVER_PROTOCOL): the received
    * tap's default name is received.rs<version>. */
-  version: 7 | 8 | 9 | 10;
+  version: 7 | 8 | 9 | 10 | 11;
   /** RS_RECEIVER_RECEIVED_MAX_BYTES (receiver.gd's G7k cap, honoured here since G7v): store at
    * most this many received bytes in the tap; later messages are counted, not stored, and the
    * stream report says `received_truncated` (null: no cap, the default). */
   receivedMaxBytes: number | null;
   inboundBytes: number;
+  /** W11c (W11t's transport, render-stream-11.md "Transport"): RS_RECEIVER_LIVE_CODING, the hello's
+   * `live_coding` offer at /11: `zstd-base,zstd` (the default), `zstd`, or `off` (no key: the host
+   * keeps the stream uncoded). Empty below /11, where the key does not exist. */
+  liveCoding: string;
   connectTimeoutMs: number;
   creditStage: "submitted" | "applied";
   creditWindow: number;
@@ -296,6 +301,7 @@ function readLive(
       env.RS_RECEIVER_INBOUND_BYTES,
       16777216,
     ),
+    liveCoding: liveCoding(env.RS_RECEIVER_LIVE_CODING, version),
     connectTimeoutMs: positive(
       "RS_RECEIVER_CONNECT_TIMEOUT",
       env.RS_RECEIVER_CONNECT_TIMEOUT,
@@ -422,16 +428,35 @@ export function underOut(cfg: ReceiverConfig, rel: string): string {
   return cfg.out.slice(0, cfg.out.lastIndexOf("/") + 1) + rel;
 }
 
+/** W11c: RS_RECEIVER_LIVE_CODING (the /11 hello's `live_coding` offer; "" sends no key). */
+function liveCoding(value: string | undefined, version: number): string {
+  const v = (value ?? "").trim();
+  if (version < 11) {
+    if (v !== "" && v !== "off")
+      throw new UsageError(
+        `RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11 (got ${v} at /${version})`,
+      );
+    return "";
+  }
+  if (v === "") return "zstd-base,zstd";
+  if (v === "off") return "";
+  if (v === "zstd-base,zstd" || v === "zstd") return v;
+  throw new UsageError(
+    `RS_RECEIVER_LIVE_CODING must be zstd-base,zstd, zstd or off (got ${v})`,
+  );
+}
+
 /** G8kp: RS_RECEIVER_PROTOCOL for a GSW receiver: 7 (default), 8 (G8g: render-stream.8) or 9
  * (render-stream.9, the texture-delivery hello keys); CG1: 10 (render-stream.10, /9's hello). */
-function liveProtocol(value: string | undefined): 7 | 8 | 9 | 10 {
+function liveProtocol(value: string | undefined): 7 | 8 | 9 | 10 | 11 {
   const v = (value ?? "").trim();
   if (v === "" || v === "7") return 7;
   if (v === "8") return 8;
   if (v === "9") return 9;
   if (v === "10") return 10;
+  if (v === "11") return 11;
   throw new UsageError(
-    `RS_RECEIVER_PROTOCOL must be 7, 8, 9 or 10 for a GSW receiver (got ${v})`,
+    `RS_RECEIVER_PROTOCOL must be 7, 8, 9, 10 or 11 for a GSW receiver (got ${v})`,
   );
 }
 

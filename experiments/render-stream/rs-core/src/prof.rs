@@ -226,6 +226,7 @@ pub fn replay(
         format: gsw_canvas_draw_list::Format::Rgb10A2,
     });
     let mut payloads = PayloadStore::default();
+    let mut retention = crate::apply::retention::Retention::default();
     let mut need = Vec::new();
     let mut rows = Vec::new();
     // Inline resource records since the last transaction: their accept and digest count toward
@@ -259,6 +260,13 @@ pub fn replay(
                 accept_us += std::mem::take(&mut carry_accept);
                 digest_us += std::mem::take(&mut carry_digest);
                 let t1 = now();
+                // W11c: dynamic bodies by mesh id, and the retention rule (the display is the
+                // applier's last apply), as GSW's accept does.
+                let t = start();
+                payloads.accept_transaction(&v, rec)?;
+                add(PAYLOAD_DECODE, t);
+                retention.note(&v);
+                retention.sweep(&v, &mut payloads, || a.referenced_payload_hashes());
                 a.prepare(v.state(), v.delta());
                 let t = start();
                 a.needed(v.state(), v.delta(), &payloads, &mut need);
@@ -278,6 +286,7 @@ pub fn replay(
                 let t4 = now();
                 let stats = a.apply(v.state(), v.delta(), &payloads).clone();
                 let apply_us = now() - t4;
+                retention.sweep(&v, &mut payloads, || a.referenced_payload_hashes());
                 let apply_allocs = a4.zip(allocs()).map(|(a, b)| b - a);
                 a.list.consumed();
                 let s = v.state();

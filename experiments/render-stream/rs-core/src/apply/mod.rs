@@ -18,6 +18,7 @@
 //!   walk re-runs over the state and the index buffer and draw table are rebuilt; vertices stay in
 //!   each item's slab range, so only changed items' vertices move.
 
+pub mod dynamic;
 pub mod geom;
 pub mod lower;
 pub mod material_residency;
@@ -25,6 +26,7 @@ pub mod meshes;
 pub mod payloads;
 pub mod programs;
 pub mod residency;
+pub mod retention;
 
 use crate::prof;
 use crate::state::{
@@ -3166,6 +3168,8 @@ mod ordering_model;
 mod tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod w11c_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
 /// carries (texture-delivery-design.md Q6 "GSW"). A block format the list cannot carry would have

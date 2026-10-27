@@ -338,15 +338,14 @@ export function mapBrowserLeg(
   if (live) {
     // G8g: a gate 8 live leg asks for render-stream/8 (the native leg's own word); G8kb: g8l's
     // basis leg asks for /9 (GSW's hello since G8kp, the web export's through receiver.gd since
-    // G8ku); every other live leg speaks /7, the browsers' default.
+    // G8ku); W11c: /10 and /11 (GSW's hello; the web export's /11 offer is W11e's, and refuses
+    // itself until then); every other live leg speaks /7, the browsers' default.
     if (
       env.RS_RECEIVER_PROTOCOL !== undefined &&
-      env.RS_RECEIVER_PROTOCOL !== "7" &&
-      env.RS_RECEIVER_PROTOCOL !== "8" &&
-      env.RS_RECEIVER_PROTOCOL !== "9"
+      !["7", "8", "9", "10", "11"].includes(env.RS_RECEIVER_PROTOCOL)
     )
       throw new Error(
-        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7, /8 or /9`,
+        `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7 to /11`,
       );
     env.RS_RECEIVER_PROTOCOL = env.RS_RECEIVER_PROTOCOL ?? "7";
     // The native receiver forces `applied` under --headless (frame_post_draw never fires there);

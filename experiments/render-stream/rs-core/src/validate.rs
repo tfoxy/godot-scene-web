@@ -479,6 +479,8 @@ fn same_shape(a: &MeshSurface, b: &MeshSurface) -> bool {
 
 pub struct Validator {
     opts: Options,
+    /// W11c receiver sabotage `no-prune` ([`Validator::set_no_prune`]).
+    no_prune: bool,
     session: Session,
     snap_declared: bool,
     state: ResolvedState,
@@ -1492,6 +1494,7 @@ impl Validator {
         };
         Ok(Validator {
             opts,
+            no_prune: false,
             session,
             snap_declared,
             state: ResolvedState::empty(opts.version),
@@ -1642,6 +1645,14 @@ impl Validator {
             ));
         }
         Ok(())
+    }
+
+    /// W11c receiver sabotage `no-prune` (render-stream-11.md, the W11c row): this receiver keeps
+    /// C lifelong at /11, as a /10 receiver does, so a hash that returns is refused
+    /// `resource-duplicate` when the host re-carries it. names(S) and [`Validator::released`] are
+    /// kept as usual; [`Validator::pruned`] stays empty.
+    pub fn set_no_prune(&mut self, on: bool) {
+        self.no_prune = on;
     }
 
     /// `finish()`: the end-of-stream verdict.
@@ -3370,7 +3381,7 @@ impl Validator {
             if e.all <= 0 {
                 self.names.remove(&h);
                 self.released.push(h);
-                if self.carried.remove(&h).is_some() {
+                if !self.no_prune && self.carried.remove(&h).is_some() {
                     self.pruned.push(h);
                 }
             }

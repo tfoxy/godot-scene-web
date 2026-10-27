@@ -259,8 +259,17 @@ async function run(): Promise<void> {
     }
     // G8kp: a render-stream/9 recording ("GRS9") states its delivery preference in the report;
     // CG1: so does a render-stream/10 one ("GRSA", /9's delivery included).
-    if (data.length >= 4 && (data[3] === 0x39 || data[3] === 0x41)) {
-      report.protocol = data[3] === 0x41 ? "render-stream/10" : "render-stream/9";
+    // W11c: and a render-stream/11 one ("GRSB").
+    if (
+      data.length >= 4 &&
+      (data[3] === 0x39 || data[3] === 0x41 || data[3] === 0x42)
+    ) {
+      report.protocol =
+        data[3] === 0x42
+          ? "render-stream/11"
+          : data[3] === 0x41
+            ? "render-stream/10"
+            : "render-stream/9";
       report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
         string,
         unknown
@@ -349,6 +358,11 @@ async function run(): Promise<void> {
           const hash = needed.hashes[k];
           const kind = needed.kinds[k];
           if (outcome.has(hash)) continue;
+          // W11c (render-stream-11.md decision 9): a /11 receiver never fetches a hash that always
+          // arrives inline; the validator answers, and a refusal fails the replay before the read.
+          const fetchRefused = g.check_fetch(hash);
+          if (fetchRefused !== "")
+            throw new ReplayFailure(seq, "inline-fetch-zero", fetchRefused);
           let got: { bytes: Uint8Array; us: number };
           try {
             got = await fetcher.fetch(seq, hash, kind);

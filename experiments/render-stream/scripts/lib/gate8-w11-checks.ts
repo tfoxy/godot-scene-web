@@ -19,6 +19,9 @@
 //   cv-stable             identical redraws leave the patch: the honest scale patches carry far
 //                         fewer items than cv-churn's
 //
+// W11c adds GSW's legs on these captures (gsw-w11-replays, gsw-dynamic-applied, gsw-w11-equals-v10,
+// store-bounded, inline-fetch-zero and the receiver sabotages): lib/gate8-w11-gsw-checks.ts.
+//
 // The pure helpers are exported so scripts/test/self-test-gate8-w11.ts drives them synthetically.
 
 import { spawnSync } from "node:child_process";
@@ -30,6 +33,7 @@ import { join } from "node:path";
 import type { ResourceLine } from "./gate2-checks";
 import { replayMeshLog } from "./gate5e-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { runG8w11Gsw } from "./gate8-w11-gsw-checks";
 import {
   check,
   type G8aCheck,
@@ -693,5 +697,7 @@ export async function runG8w11(
   }
   // W11t: the live coding (gate8-w11t-checks.ts).
   checks.push(...(await runG8w11Coding(g)));
+  // W11c: GSW's legs on these captures (lib/gate8-w11-gsw-checks.ts).
+  checks.push(...(await runG8w11Gsw(g)));
   return { checks, report };
 }

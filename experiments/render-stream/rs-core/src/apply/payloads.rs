@@ -519,6 +519,9 @@ pub struct PayloadStore {
     stamp: u64,
     /// P3-LV: [`Self::total_bytes`], kept as entries come and go (it summed every entry).
     bytes: u64,
+    /// W11c: /11 dynamic mesh geometry by mesh id (no hash, so no entry here per pose); not
+    /// counted by [`Self::len`], [`Self::total_bytes`] or the budget eviction.
+    pub dynamic: super::dynamic::DynamicMeshes,
 }
 
 /// P3-LV: a decoded payload's bytes as [`PayloadStore::total_bytes`] counts them.
@@ -544,6 +547,42 @@ impl PayloadStore {
         self.order.clear();
         self.touched.clear();
         self.bytes = 0;
+        self.dynamic.clear();
+    }
+
+    /// W11c (render-stream-11.md "Receivers"): drop `hash` from the store now (a /11 hash that
+    /// left the receiver's retention set H). Returns whether it was held.
+    pub fn release(&mut self, hash: &Hash) -> bool {
+        let held = self.has(hash);
+        if held {
+            self.remove_held(hash);
+            self.compact_order();
+        }
+        held
+    }
+
+    /// W11c (render-stream-11.md "Receivers"): the store's half of an accepted /11 transaction,
+    /// called right after `accept` returned `Accepted::Transaction`, with the same `record`: its
+    /// dynamic mesh bodies replace their surfaces' geometry in [`Self::dynamic`] (by mesh id), and
+    /// what the new state no longer holds as dynamic is dropped. A no-op below /11 (no bodies, no
+    /// dynamic meshes). Retention of hashed entries is [`super::retention::Retention`]'s.
+    pub fn accept_transaction(
+        &mut self,
+        v: &crate::validate::Validator,
+        record: &[u8],
+    ) -> Result<u32, crate::wire::Error> {
+        if self.dynamic.is_empty() && v.dynamic_bodies().is_empty() {
+            return Ok(0);
+        }
+        self.dynamic.ingest(v.state(), v.dynamic_bodies(), record)
+    }
+
+    /// W11c: every hash held (textures, meshes and shaders).
+    pub fn hashes(&self) -> impl Iterator<Item = &Hash> + '_ {
+        self.textures
+            .keys()
+            .chain(self.meshes.keys())
+            .chain(self.shaders.keys())
     }
 
     /// P3-LV: removes `hash` from every table and from `bytes` (its slot in `order` goes stale).
