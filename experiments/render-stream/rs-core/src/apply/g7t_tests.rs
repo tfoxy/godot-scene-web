@@ -412,7 +412,8 @@ fn mesh_state(surfaces: &[(u8, usize)]) -> ResolvedState {
             surfaces: surfaces
                 .iter()
                 .map(|(h, n)| MeshSurface {
-                    hash: hash(*h),
+                    hash: Some(hash(*h)),
+                    body_sha256: None,
                     payload_bytes: 0,
                     primitive: Primitive::Triangles,
                     format: 1 | (1 << 3),

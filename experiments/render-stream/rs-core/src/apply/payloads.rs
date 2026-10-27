@@ -824,8 +824,9 @@ pub fn needed(
         |id: &crate::state::Id, out: &mut Vec<Hash>, push: &mut dyn FnMut(Hash, &mut Vec<Hash>)| {
             if let Some(m) = state.meshes.get(id) {
                 if m.status == EntryStatus::Ok {
-                    for s in &m.surfaces {
-                        push(s.hash, out);
+                    // /11: a dynamic surface has no payload to fetch.
+                    for h in m.surfaces.iter().filter_map(|s| s.hash) {
+                        push(h, out);
                     }
                 }
             }

@@ -16,6 +16,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -2257,6 +2259,122 @@ void test_preflight_attribution() {
         "the live log has a preflight line, an http-get line and the open line's version/origin");
 }
 
+// W11a (render-stream-11.md "Resource retention", L2): at /11 the records a stream sends before a
+// target T are a function of (B, T) alone -- inline(T) \ inline(B), in table order -- so the host
+// keeps no per-connection carried set. Not wired into the hub yet (W11b); rs_carried stays for
+// /6-/10. Two histories reaching the same B give the same records for T; a validator replaying
+// either stream under /11's rules (resource-duplicate if h is in C, resource-missing unless
+// required(S) is in C, then C <- C n names(S)) accepts it and ends every transaction with
+// C = inline(S); and a hash that leaves and returns is re-carried at /11 but never under
+// keep-carried (/10's lifelong set), whose stream then fails resource-missing.
+void test_records_from_base_and_target() {
+  const auto hash = [](char c) { return std::string(64, c); };
+  // A state naming textures 1..3 (by hash, '-' for none), a static mesh and a dynamic one.
+  const auto state = [&](std::uint64_t seq, const std::string &textures, char mesh) {
+    Snapshot s;
+    s.version = ProtocolVersion::V11;
+    s.seq = seq;
+    s.frame = seq;
+    for (std::size_t i = 0; i < textures.size(); ++i) {
+      if (textures[i] == '-') {
+        continue;
+      }
+      TextureEntry t = golden::texture_a(seq, hash(textures[i]));
+      t.id = static_cast<std::uint32_t>(i + 1);
+      t.payload_bytes = textures[i] >= 'f' ? 1000 : 100;  // 'f' and above are out-of-band
+      s.textures.push_back(t);
+    }
+    MeshEntry stat = golden::mesh_entry(
+        MeshStatus::Ok, 1,
+        {golden::mesh_surface(hash(mesh), 256, Primitive::Triangles, golden::kMesh1SurfaceAFormat,
+                              3, 0)});
+    stat.id = 1;
+    MeshEntry dyn = golden::mesh_entry(
+        MeshStatus::Ok, seq,
+        {golden::mesh_surface("", 40, Primitive::Triangles, golden::kMesh1SurfaceAFormat, 3, 0)});
+    dyn.id = 2;
+    dyn.dynamic = true;
+    dyn.content_serial = seq;
+    dyn.surfaces[0].body = std::make_shared<const std::vector<std::uint8_t>>(40, std::uint8_t(seq));
+    s.meshes = {stat, dyn};
+    return s;
+  };
+  InlinePolicy policy;
+  policy.inline_max_bytes = 300;
+  const auto hashes = [](const std::vector<PayloadName> &names) {
+    std::vector<std::string> out;
+    for (const PayloadName &n : names) {
+      out.push_back(n.hash);
+    }
+    return out;
+  };
+  // Replays one stream's records and transactions under /11's validator rules.
+  const auto replay = [&](const std::vector<Snapshot> &states, bool keep_carried,
+                          std::vector<std::string> *last_records) {
+    RecordPlanner planner(ProtocolVersion::V11, policy, keep_carried);
+    std::vector<std::string> carried;  // C, sorted
+    bool ok = true;
+    const Snapshot *prev = nullptr;
+    for (const Snapshot &target : states) {
+      const std::vector<std::string> records = hashes(planner.next(prev, target));
+      for (const std::string &h : records) {
+        if (std::binary_search(carried.begin(), carried.end(), h)) {
+          ok = false;  // resource-duplicate
+        }
+        carried.insert(std::lower_bound(carried.begin(), carried.end(), h), h);
+      }
+      std::vector<std::string> names = hashes(payload_names(target));
+      for (const PayloadName &n : payload_names(target)) {
+        if (n.payload_bytes <= policy.inline_max_bytes &&
+            !std::binary_search(carried.begin(), carried.end(), n.hash)) {
+          ok = false;  // resource-missing
+        }
+      }
+      std::sort(names.begin(), names.end());
+      std::vector<std::string> pruned;
+      std::set_intersection(carried.begin(), carried.end(), names.begin(), names.end(),
+                            std::back_inserter(pruned));
+      carried = pruned;
+      if (!keep_carried) {
+        std::vector<std::string> expect = hashes(inline_names(target, policy));
+        std::sort(expect.begin(), expect.end());
+        ok = ok && carried == expect;  // L2: C = inline(S) after every transaction
+      }
+      *last_records = records;
+      prev = &target;
+    }
+    return ok;
+  };
+
+  const Snapshot b = state(3, "ab-", 'm');
+  const Snapshot t = state(4, "acf", 'n');
+  std::vector<std::string> r1;
+  std::vector<std::string> r2;
+  check(replay({state(1, "x--", 'm'), state(2, "xyz", 'p'), b, t}, false, &r1),
+        "W11a: a /11 stream through x, y, z replays clean with C = inline(S)");
+  check(replay({state(1, "--q", 'q'), b, t}, false, &r2),
+        "W11a: a second history reaching the same B replays clean");
+  check(r1 == r2 && r1 == hashes(records_before(&b, t, policy)),
+        "W11a: the records before T depend on (B, T) alone");
+  check(r1 == std::vector<std::string>{hash('c'), hash('n')},
+        "W11a: inline(T) \\ inline(B) in table order (textures, then static mesh surfaces); the "
+        "out-of-band f and the dynamic mesh carry nothing");
+
+  // A hash that leaves and returns: a at seq 1, gone at 2, back at 3.
+  const std::vector<Snapshot> leave = {state(1, "a--", 'm'), state(2, "-b-", 'm'),
+                                       state(3, "ab-", 'm')};
+  std::vector<std::string> back;
+  check(replay(leave, false, &back) && back == std::vector<std::string>{hash('a')},
+        "W11a: at /11 a returning hash is re-carried");
+  std::vector<std::string> kept;
+  check(!replay(leave, true, &kept) && kept.empty(),
+        "W11a: under keep-carried it is not, and the /11 stream fails resource-missing");
+  RecordPlanner v10(ProtocolVersion::V10, policy);
+  v10.next(nullptr, leave[0]);
+  v10.next(&leave[0], leave[1]);
+  check(v10.next(&leave[1], leave[2]).empty(), "W11a: below /11 the planner keeps /10's set");
+}
+
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
@@ -2290,6 +2408,7 @@ int main() {
   test_rate_targets();
   test_rate_credit_blocked_and_no_burst();
   test_rate_two_connections();
+  test_records_from_base_and_target();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

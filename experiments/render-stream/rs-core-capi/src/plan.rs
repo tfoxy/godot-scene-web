@@ -551,6 +551,9 @@ struct Counters {
     meshes_freed: i64,
     surface_updates: i64,
     mesh_upload_bytes: i64,
+    /// /11 (render-stream-11.md decision 12): named dynamic meshes left undrawn this transaction
+    /// (their bodies travel in `mesh_u8`; W11d adds the region uploads).
+    meshes_dynamic_undrawn: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
     shader_code_sets: i64,
@@ -1028,16 +1031,18 @@ impl Planner {
                 continue;
             }
             for (k, surf) in e.surfaces.iter().enumerate() {
+                // /11: a dynamic surface has no payload (its body is in `mesh_u8`).
+                let Some(h) = surf.hash else { continue };
                 if self
                     .meshes
                     .get(mid)
-                    .is_some_and(|m| m.hashes.get(k) == Some(&surf.hash))
+                    .is_some_and(|m| m.hashes.get(k) == Some(&h))
                 {
                     continue;
                 }
-                if seen.insert(surf.hash) {
-                    out.hashes.push(surf.hash);
-                    out.mesh_hashes.push(surf.hash);
+                if seen.insert(h) {
+                    out.hashes.push(h);
+                    out.mesh_hashes.push(h);
                 }
             }
         }
@@ -1873,10 +1878,11 @@ impl Planner {
                 .collect()
         };
         for id in free {
+            // /11: a mesh that turned dynamic is not drawn until W11d's region uploads.
             let gone = st
                 .meshes
                 .get(&id)
-                .is_none_or(|e| e.status == EntryStatus::Freed);
+                .is_none_or(|e| e.status == EntryStatus::Freed || e.is_dynamic());
             if !gone {
                 continue;
             }
@@ -1900,7 +1906,11 @@ impl Planner {
             if e.status != EntryStatus::Ok {
                 continue;
             }
-            let wire_hashes: Vec<Hash> = e.surfaces.iter().map(|s| s.hash).collect();
+            if e.is_dynamic() {
+                c.meshes_dynamic_undrawn += 1;
+                continue;
+            }
+            let wire_hashes: Vec<Hash> = e.surfaces.iter().filter_map(|s| s.hash).collect();
             let mut decoded: Vec<SurfaceBytes> = Vec::with_capacity(wire_hashes.len());
             for (k, h) in wire_hashes.iter().enumerate() {
                 let kept = self
@@ -2824,6 +2834,8 @@ impl Planner {
                         None => "unknown-mesh",
                         Some(m) if m.status == EntryStatus::Freed => "mesh-freed",
                         Some(m) if m.status != EntryStatus::Ok => "unsupported-mesh",
+                        // /11: typed, until W11d uploads dynamic bodies.
+                        Some(m) if m.is_dynamic() => "mesh-dynamic",
                         Some(_) if !self.meshes.contains_key(mesh) => "mesh-not-resident",
                         Some(_) => "",
                     };
@@ -3214,17 +3226,19 @@ fn write_stats(
     v.key("mesh_commands");
     v.int(c.mesh_commands);
     v.key("mesh_resources");
-    int_dict(
-        v,
-        &[
-            ("meshes_created", c.meshes_created),
-            ("meshes_rebuilt", c.meshes_rebuilt),
-            ("meshes_freed", c.meshes_freed),
-            ("surface_updates", c.surface_updates),
-            ("mesh_upload_bytes", c.mesh_upload_bytes),
-            ("skipped_mesh_commands", c.skipped_mesh),
-        ],
-    );
+    let mut mesh_resources = vec![
+        ("meshes_created", c.meshes_created),
+        ("meshes_rebuilt", c.meshes_rebuilt),
+        ("meshes_freed", c.meshes_freed),
+        ("surface_updates", c.surface_updates),
+        ("mesh_upload_bytes", c.mesh_upload_bytes),
+        ("skipped_mesh_commands", c.skipped_mesh),
+    ];
+    // /11 only in practice: below /11 no mesh is dynamic, and the stats stay byte-identical.
+    if c.meshes_dynamic_undrawn > 0 {
+        mesh_resources.push(("meshes_dynamic_undrawn", c.meshes_dynamic_undrawn));
+    }
+    int_dict(v, &mesh_resources);
     v.key("mesh_uploads");
     v.array(mesh_uploads.len());
     for u in mesh_uploads {

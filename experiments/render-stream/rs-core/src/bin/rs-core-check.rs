@@ -1,7 +1,7 @@
 //! `rs-core-check` (gate7-design.md Q14a/Q14d): the native front end of render-stream-core's decoder.
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
-//!                         [--sabotage skip-payload-hash]
+//!                         [--sabotage skip-payload-hash|early-prune]
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]
 //!   rs-core-check validate <recording>... [--version 2..8] [--recover]
@@ -58,7 +58,7 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..8>] [--sabotage skip-payload-hash]\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..11>] [--sabotage skip-payload-hash|early-prune]\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
          rs-core-check validate <recording>... [--version 2..8]"
@@ -134,13 +134,19 @@ fn cmd_goldens(args: &Args) -> ExitCode {
     );
     let only = match args.get("only").map(|s| s.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=10).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=11).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     let opts = match args.get("sabotage") {
         None => GoldenOptions::default(),
         Some("skip-payload-hash") => GoldenOptions {
             verify_payload_hashes: false,
+            ..GoldenOptions::default()
+        },
+        // render-stream-11.md decision 10: golden-11's inline recordings must then fail.
+        Some("early-prune") => GoldenOptions {
+            early_prune: true,
+            ..GoldenOptions::default()
         },
         Some(_) => return usage(),
     };
@@ -189,7 +195,9 @@ fn cmd_goldens(args: &Args) -> ExitCode {
     for (g, ok, n) in &per_dir {
         println!("{g}: {ok}/{n} checks passed");
     }
-    if opts.verify_payload_hashes {
+    if opts.early_prune {
+        println!("rs-core-check goldens (sabotage early-prune): {failed} check(s) FAILED");
+    } else if opts.verify_payload_hashes {
         println!(
             "rs-core-check goldens: {}",
             if failed == 0 {
@@ -314,6 +322,7 @@ fn cmd_diff(args: &Args) -> ExitCode {
                 version,
                 digest: DigestPolicy::Inline,
                 verify_payload_hashes: true,
+                early_prune: false,
             };
             let session_bytes = first.bytes(&data);
             let mut v = Validator::new(session_bytes, first.offset, opts)?;
@@ -410,6 +419,7 @@ fn bench_one(
             version,
             digest,
             verify_payload_hashes: true,
+            early_prune: false,
         };
         let mut v = Validator::new(first.bytes(data), first.offset, opts)?;
         for r in &records[1..] {
@@ -508,7 +518,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
 fn cmd_validate(args: &Args) -> ExitCode {
     let forced = match args.get("version").map(|v| v.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=10).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=11).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     if args.positional.is_empty() {

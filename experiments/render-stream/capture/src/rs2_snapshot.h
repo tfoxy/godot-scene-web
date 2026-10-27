@@ -134,24 +134,39 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV10 = {0x47, 0x52, 0x53, 0x41
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV10 = "render-stream/10";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10 };
+// render-stream/11 (W11a, render-stream-11.md): /10 plus the carried-set rules (records are a
+// function of a transaction's base and target, rs2_diff.h records_before()), dynamic mesh surfaces
+// (the mesh entry key `u8`, a null surface `hash`, the eighth block `mesh_u8`), the ninth block
+// `mm_f32` (empty until PM1), the session key resources.mesh_dynamic and a patched `unsupported`
+// (null in a patch means "as the base"). Magic "GRSB".
+inline constexpr std::array<std::uint8_t, 8> kMagicV11 = {0x47, 0x52, 0x53, 0x42,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV11 = "render-stream/11";
 
-// True for /7 to /10, the versions whose live transport is the /7 one (token hello, credit
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11 };
+
+// True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
 // window, CORS). /8 is /7 plus render-stream-8.md's list, /9 is /8 plus render-stream-9.md's and
 // /10 is /9 plus render-stream-10.md's, so every "V7" cascade means "V7 or later".
 inline constexpr bool is_v7_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
-         v == ProtocolVersion::V10;
+         v == ProtocolVersion::V10 || v == ProtocolVersion::V11;
 }
 
-// True for /8, /9 and /10: the versions that carry render-stream-8.md's keys.
+// True for /8 to /11: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10;
+  return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
+         v == ProtocolVersion::V11;
 }
 
-// True for /9 and /10: the versions that carry render-stream-9.md's keys.
+// True for /9 to /11: the versions that carry render-stream-9.md's keys.
 inline constexpr bool is_v9_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V9 || v == ProtocolVersion::V10;
+  return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11;
+}
+
+// True for /10 and /11: the versions that carry render-stream-10.md's keys.
+inline constexpr bool is_v10_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V10 || v == ProtocolVersion::V11;
 }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
@@ -886,6 +901,26 @@ struct TextureDeliveryDeclaration {
   std::string encoder;        // the params_id prefix, e.g. "basisu-1.60"
 };
 
+// render-stream-11.md "Session record": the capture's dynamic-mesh classification policy
+// (GRC_MESH_DYNAMIC, GRC_MESH_DYNAMIC_FRAMES, GRC_MESH_DYNAMIC_MAX_BYTES), encoded as
+// resources.mesh_dynamic {"mode","frames","max_bytes"} at /11 only.
+enum class MeshDynamicMode : std::uint8_t { Auto, Off, All };
+
+inline const char *to_wire(MeshDynamicMode v) {
+  switch (v) {
+  case MeshDynamicMode::Off: return "off";
+  case MeshDynamicMode::All: return "all";
+  case MeshDynamicMode::Auto: break;
+  }
+  return "auto";
+}
+
+struct MeshDynamicPolicy {
+  MeshDynamicMode mode = MeshDynamicMode::Auto;
+  std::int32_t frames = 4;          // 1..60: P3-LV's K
+  std::uint64_t max_bytes = 65536;  // a mesh whose bodies total more stays static; 0 = none qualify
+};
+
 // render-stream-2.md session "resources": the resource policy for this stream.
 struct ResourcesInfo {
   Delivery delivery = Delivery::OutOfBand;
@@ -902,6 +937,8 @@ struct ResourcesInfo {
   // render-stream-9.md "Session": the host's declared texture-delivery mode (texture-delivery-
   // design.md D1) and the encoder prefix, encoded as resources.texture_delivery at /9 only.
   TextureDeliveryDeclaration texture_delivery;
+  // render-stream-11.md "Session record": encoded as resources.mesh_dynamic, last, at /11 only.
+  MeshDynamicPolicy mesh_dynamic;
 };
 
 // render-stream-8.md "Session": adoption is null (off) or {"mode":"arm","frame":<int >= 1>}, the
@@ -1307,6 +1344,12 @@ struct MeshSurface {
   std::int64_t format = 0;
   std::int32_t vertex_count = 0;
   std::int32_t index_count = 0;
+  // --- new at /11 (render-stream-11.md "Mesh entry"): a dynamic mesh's surface body, the GRM1
+  // payload without its 12-byte header and its meta (40 geometry bytes, then the vertex,
+  // attribute, skin and index bytes). Set exactly on the surfaces of a `dynamic` mesh, whose
+  // `hash` is then not encoded (null on the wire) and whose `payload_bytes` is the body's length.
+  // Shared, never copied by a snapshot (P3-CAP).
+  std::shared_ptr<const std::vector<std::uint8_t>> body;
 };
 
 // One mesh-table entry (render-stream-4.md "Mesh table"). `has_aabb` is false exactly for
@@ -1323,6 +1366,14 @@ struct MeshEntry {
   bool has_aabb = true;
   std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
   std::vector<MeshSurface> surfaces;
+  // --- new at /11 (render-stream-11.md "Dynamic mesh surfaces"). Only an `ok` mesh is dynamic.
+  // A dynamic mesh's surfaces carry `body`, not a hash: it encodes `hash: null` per surface and
+  // its bodies travel in the transaction's `mesh_u8` block (the entry key `u8`). Ignored below /11.
+  bool dynamic = false;
+  // The mirror's content serial of a dynamic mesh ("Capture policy", "Change detection"): it moves
+  // exactly when the surface bytes change, so equal serials mean equal bodies. make_patch() sends a
+  // dynamic mesh's bodies (u8 non-null) when the target's serial differs from the base's.
+  std::uint64_t content_serial = 0;
 };
 
 struct Failure {
@@ -1405,7 +1456,10 @@ struct Transaction {
   std::vector<Failure> failures;
   std::vector<UnsupportedRef> unsupported;
   UnknownItems unknown_items;  // protocol/unknown-item-skip.md; complete, never patched
-  std::optional<double> shader_time;  // P3-TM: /10 only; complete, never patched
+  std::optional<double> shader_time;  // P3-TM: /10 on; complete, never patched
+  // render-stream-11.md "Patched `unsupported`": true in a /11 patch whose `unsupported` equals
+  // the base's, which then encodes as null. `unsupported` still holds the (equal) list.
+  bool unsupported_as_base = false;
   Filter default_texture_filter = Filter::Nearest;
   Repeat default_texture_repeat = Repeat::Disabled;
   std::vector<std::uint32_t> removed_canvases;  // ascending
@@ -1418,6 +1472,10 @@ struct Transaction {
   std::vector<ItemEntry> items;                  // ascending by id
   std::vector<TextureEntry> textures;            // ascending by id; new at /2; full entries
   std::vector<MeshEntry> meshes;                 // ascending by id; new at /4; full entries
+  // render-stream-11.md "Mesh entry": the ids (ascending) of the dynamic entries in `meshes` whose
+  // bodies the base already holds, so their `u8` is null ("the bytes you hold"). Set only by
+  // make_patch() at /11; every other dynamic entry sends its bodies.
+  std::vector<std::uint32_t> mesh_bodies_held;
   std::vector<ShaderEntry> shaders;      // ascending by id; new at /5; full entries
   std::vector<MaterialEntry> materials;  // ascending by id; new at /5; full entries
 

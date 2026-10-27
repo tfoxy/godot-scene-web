@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -49,6 +49,7 @@
 import {
   type DecodedMeshPayload,
   decodeMeshPayload,
+  expectedMeshBufferBytes,
   GRM1_MAGIC,
 } from "./render-stream-mesh";
 import {
@@ -676,6 +677,9 @@ export interface TextureVariant {
 
 /** render-stream-4.md "Mesh table": one mesh-table entry. `f` is null exactly for "freed". */
 export interface TransactionMeshSurface {
+  /** render-stream-11.md "Mesh entry": null at runtime on a dynamic mesh's surface (its bytes
+   * travel in the transaction's mesh_u8 block); never null below /11. Typed `string` so the
+   * /4-/10 checkers keep compiling unchanged; /11 code goes through `surfaceIsDynamic()`. */
   hash: string;
   payload_bytes: number;
   primitive: Primitive;
@@ -692,7 +696,16 @@ export interface TransactionMesh {
   reason: MeshReason | null;
   version: number;
   f: number | null;
+  /** new at /11 (render-stream-11.md "Mesh entry"): present only in a /11 stream. The offset in
+   * mesh_u8 of a dynamic mesh's surface bodies, null for a static mesh (and on a dynamic patch
+   * entry that keeps the bodies the receiver holds). */
+  u8?: number | null;
   surfaces: TransactionMeshSurface[];
+}
+
+/** render-stream-11.md "Mesh entry": a surface is dynamic when its hash is null (only at /11). */
+export function surfaceIsDynamic(s: { hash: string | null }): boolean {
+  return s.hash === null;
 }
 
 export interface TransactionMeta {
@@ -806,13 +819,18 @@ export const MAGIC_V9: Uint8Array = new Uint8Array([
 export const MAGIC_V10: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x41, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-11.md "File layout": the GRSB magic (byte 3 'B' is 11), selected by `version: 11`
+// (golden-11/; opt-in, never the default).
+export const MAGIC_V11: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x42, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
- * (G8k9), 10 for GRSA (CG1), else 6 -- so every other magic still meets the /6 decoder's own
- * refusal, exactly as before. */
+ * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), else 6 -- so every other magic still meets the
+ * /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 {
+): 6 | 7 | 8 | 9 | 10 | 11 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -823,6 +841,7 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V8)) return 8;
   if (startsWith(MAGIC_V9)) return 9;
   if (startsWith(MAGIC_V10)) return 10;
+  if (startsWith(MAGIC_V11)) return 11;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -947,6 +966,16 @@ const RESOURCES_KEYS_V4 = [
 const RESOURCES_KEYS_V8 = [...RESOURCES_KEYS_V4, "decode"];
 // render-stream-9.md "Session": "texture_delivery" after "decode" (the end of the resources object).
 const RESOURCES_KEYS_V9 = [...RESOURCES_KEYS_V8, "texture_delivery"];
+// render-stream-11.md "Session record": "mesh_dynamic" after "texture_delivery" (last).
+const RESOURCES_KEYS_V11 = [...RESOURCES_KEYS_V9, "mesh_dynamic"];
+const MESH_DYNAMIC_KEYS = ["mode", "frames", "max_bytes"];
+/** render-stream-11.md "Session record": the capture's dynamic-mesh classification policy. */
+export const MESH_DYNAMIC_MODES = ["auto", "off", "all"] as const;
+export interface MeshDynamicPolicy {
+  mode: (typeof MESH_DYNAMIC_MODES)[number];
+  frames: number;
+  max_bytes: number;
+}
 const FEATURES_KEYS = [
   "ops",
   "item_state",
@@ -1274,6 +1303,8 @@ const MESH_KEYS_V8 = [
   "f",
   "surfaces",
 ];
+// render-stream-11.md "Mesh entry": "u8" right after "f".
+const MESH_KEYS_V11 = keysWith(MESH_KEYS_V8, "f", "u8");
 const MESH_SURFACE_KEYS = [
   "hash",
   "payload_bytes",
@@ -1381,6 +1412,18 @@ const TRANSACTION_BLOCK_NAMES_V10 = [
 ];
 const TRANSACTION_BLOCK_TYPES_V10: Array<"f32" | "i32" | "f64"> = [
   ...TRANSACTION_BLOCK_TYPES_V5,
+  "f32",
+];
+// render-stream-11.md "Transaction blocks": nine blocks; mesh_u8 (type "u8", the one legal place
+// for a u8 block outside a resource record) and mm_f32 (type "f32", empty until PM1).
+const TRANSACTION_BLOCK_NAMES_V11 = [
+  ...TRANSACTION_BLOCK_NAMES_V10,
+  "mesh_u8",
+  "mm_f32",
+];
+const TRANSACTION_BLOCK_TYPES_V11: Array<"f32" | "i32" | "f64" | "u8"> = [
+  ...TRANSACTION_BLOCK_TYPES_V10,
+  "u8",
   "f32",
 ];
 
@@ -1803,7 +1846,7 @@ function checkFixedBlockNames(
   blocks: BlockDescriptor[],
   names: readonly string[],
   offset: number,
-  types?: ReadonlyArray<"f32" | "i32" | "f64">,
+  types?: ReadonlyArray<"f32" | "i32" | "f64" | "u8">,
 ): string | null {
   if (blocks.length !== names.length) {
     return `meta-schema: record at offset ${offset}: expected ${names.length} blocks (${names.join(", ")}), got ${blocks.length}`;
@@ -1836,7 +1879,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -1848,15 +1891,18 @@ function checkResourcesSchema(
     version === 7 ||
     version === 8 ||
     version === 9 ||
-    version === 10;
+    version === 10 ||
+    version === 11;
   const keys =
-    version >= 9
-      ? RESOURCES_KEYS_V9
-      : version === 8
-        ? RESOURCES_KEYS_V8
-        : isV4OrLater
-          ? RESOURCES_KEYS_V4
-          : RESOURCES_KEYS;
+    version >= 11
+      ? RESOURCES_KEYS_V11
+      : version >= 9
+        ? RESOURCES_KEYS_V9
+        : version === 8
+          ? RESOURCES_KEYS_V8
+          : isV4OrLater
+            ? RESOURCES_KEYS_V4
+            : RESOURCES_KEYS;
   if (!isPlainObject(resources) || !hasExactKeys(resources, keys)) {
     return err("has the wrong keys");
   }
@@ -1927,6 +1973,22 @@ function checkResourcesSchema(
       );
     }
   }
+  if (version >= 11) {
+    // render-stream-11.md "Session record" (self-coded, like adoption-entry): exactly the three
+    // keys, one of the three modes, frames 1..60 and max_bytes >= 0.
+    const policy = resources.mesh_dynamic;
+    const policyErr = (detail: string) => [
+      `mesh-dynamic-policy: record at offset ${offset}: resources.mesh_dynamic ${detail}`,
+    ];
+    if (!isPlainObject(policy) || !hasExactKeys(policy, MESH_DYNAMIC_KEYS))
+      return policyErr("has the wrong keys");
+    if (!isOneOf(policy.mode, MESH_DYNAMIC_MODES))
+      return policyErr('"mode" must be "auto", "off" or "all"');
+    if (!isInt(policy.frames) || policy.frames < 1 || policy.frames > 60)
+      return policyErr('"frames" is not an integer in 1..60');
+    if (!isInt(policy.max_bytes) || policy.max_bytes < 0)
+      return policyErr('"max_bytes" is not a non-negative integer');
+  }
   const expectedDelivery: Delivery =
     resources.inline_max_bytes === 0
       ? "out-of-band"
@@ -1947,12 +2009,16 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
-  const isV10 = version === 10;
+  // render-stream-11.md "Session record": /11's one new session key (resources.mesh_dynamic) is
+  // checked by checkResourcesSchema; here only the protocol string changes.
+  const isV11 = version === 11;
+  // isV10 means "V10 or later".
+  const isV10 = version === 10 || isV11;
   // isV9 means "V9 or later": /10 is /9 plus exactly render-stream-10.md's list (no new
   // session key; only the protocol string and the features list change).
   const isV9 = version === 9 || isV10;
@@ -1993,23 +2059,25 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV10
-    ? "render-stream/10"
-    : isV9
-      ? "render-stream/9"
-      : isV8
-        ? "render-stream/8"
-        : isV7
-          ? "render-stream/7"
-          : isV6
-            ? "render-stream/6"
-            : isV5
-              ? "render-stream/5"
-              : version === 4
-                ? "render-stream/4"
-                : version === 3
-                  ? "render-stream/3"
-                  : "render-stream/2";
+  const expectedProtocol = isV11
+    ? "render-stream/11"
+    : isV10
+      ? "render-stream/10"
+      : isV9
+        ? "render-stream/9"
+        : isV8
+          ? "render-stream/8"
+          : isV7
+            ? "render-stream/7"
+            : isV6
+              ? "render-stream/6"
+              : isV5
+                ? "render-stream/5"
+                : version === 4
+                  ? "render-stream/4"
+                  : version === 3
+                    ? "render-stream/3"
+                    : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -2449,14 +2517,20 @@ function checkTextureEntrySchema(
 // render-stream-4.md "Mesh table" (new at /4): the wire shape of one mesh entry, mirroring
 // checkTextureEntrySchema's structural checks. `mesh-entry`'s status/reason/f/surfaces coupling
 // is checked later, once the running mesh_f32 offset is known (checkResolvedInvariants).
-function checkMeshSurfaceSchema(s: unknown, offset: number): string[] {
+function checkMeshSurfaceSchema(
+  s: unknown,
+  offset: number,
+  version: number,
+): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: a meshes[].surfaces[] entry ${detail}`,
   ];
   if (!isPlainObject(s) || !hasExactKeys(s, MESH_SURFACE_KEYS)) {
     return err("has the wrong keys");
   }
-  if (!isLowerHex(s.hash, 64))
+  // render-stream-11.md "Mesh entry": a dynamic surface's hash is null (mesh-dynamic checks the
+  // coupling).
+  if (!(version >= 11 && s.hash === null) && !isLowerHex(s.hash, 64))
     return err('"hash" is not 64 lowercase hex digits');
   if (!isInt(s.payload_bytes) || s.payload_bytes < 1) {
     return err('"payload_bytes" is not an integer >= 1');
@@ -2482,7 +2556,10 @@ function checkMeshEntrySchema(
   ];
   if (
     !isPlainObject(m) ||
-    !hasExactKeys(m, version >= 8 ? MESH_KEYS_V8 : MESH_KEYS)
+    !hasExactKeys(
+      m,
+      version >= 11 ? MESH_KEYS_V11 : version >= 8 ? MESH_KEYS_V8 : MESH_KEYS,
+    )
   ) {
     return err("has the wrong keys");
   }
@@ -2502,9 +2579,12 @@ function checkMeshEntrySchema(
   if (!(m.f === null || (isInt(m.f) && m.f >= 0))) {
     return err('"f" is neither null nor a non-negative integer');
   }
+  if (version >= 11 && !(m.u8 === null || (isInt(m.u8) && m.u8 >= 0))) {
+    return err('"u8" is neither null nor a non-negative integer');
+  }
   if (!Array.isArray(m.surfaces)) return err('"surfaces" is not an array');
   for (const s of m.surfaces) {
-    const surfaceErr = checkMeshSurfaceSchema(s, offset);
+    const surfaceErr = checkMeshSurfaceSchema(s, offset, version);
     if (surfaceErr.length > 0) return surfaceErr;
   }
   return [];
@@ -2689,7 +2769,7 @@ function checkMaterialEntrySchema(
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2700,10 +2780,14 @@ function checkTransactionSchema(
     version === 7 ||
     version === 8 ||
     version === 9 ||
-    version === 10;
+    version === 10 ||
+    version === 11;
+  // render-stream-11.md: dynamic mesh surfaces (mesh entry key u8, a null surface hash), the
+  // eighth and ninth blocks mesh_u8 (u8) and mm_f32, and a patch's null "unsupported".
+  const isV11 = version === 11;
   // render-stream-10.md "Item"/"Transaction blocks": the two back-buffer item keys and the
-  // seventh block, backbuffer_f32.
-  const isV10 = version === 10;
+  // seventh block, backbuffer_f32 (isV10 means "V10 or later").
+  const isV10 = version === 10 || isV11;
   // isV5 means "V5 or later" (render-stream-6.md: transactions are byte-identical to /5).
   const isV5 = isV6 || version === 5;
   const isV4 = isV5 || version === 4;
@@ -2777,9 +2861,17 @@ function checkTransactionSchema(
     }
   }
 
-  if (!Array.isArray(meta.unsupported))
-    return err('"unsupported" is not an array');
-  for (const u of meta.unsupported) {
+  // render-stream-11.md "Patched unsupported" (WB): null in a patch means "as the base"; a full
+  // transaction always carries the list.
+  const unsupportedNull =
+    isV11 && meta.unsupported === null && meta.encoding === "patch";
+  if (!unsupportedNull && !Array.isArray(meta.unsupported))
+    return err(
+      isV11 && meta.unsupported === null
+        ? '"unsupported" is null in a full transaction (legal in a patch only)'
+        : '"unsupported" is not an array',
+    );
+  for (const u of unsupportedNull ? [] : (meta.unsupported as unknown[])) {
     if (
       !isPlainObject(u) ||
       !hasExactKeys(u, UNSUPPORTED_KEYS) ||
@@ -3149,32 +3241,39 @@ function checkTransactionSchema(
 
   const blocksError = checkBlocksField(meta.blocks, offset);
   if (blocksError !== null) return [blocksError];
-  const nameError = isV10
+  const nameError = isV11
     ? checkFixedBlockNames(
         meta.blocks as BlockDescriptor[],
-        TRANSACTION_BLOCK_NAMES_V10,
+        TRANSACTION_BLOCK_NAMES_V11,
         offset,
-        TRANSACTION_BLOCK_TYPES_V10,
+        TRANSACTION_BLOCK_TYPES_V11,
       )
-    : isV5
+    : isV10
       ? checkFixedBlockNames(
           meta.blocks as BlockDescriptor[],
-          TRANSACTION_BLOCK_NAMES_V5,
+          TRANSACTION_BLOCK_NAMES_V10,
           offset,
-          TRANSACTION_BLOCK_TYPES_V5,
+          TRANSACTION_BLOCK_TYPES_V10,
         )
-      : isV4
+      : isV5
         ? checkFixedBlockNames(
             meta.blocks as BlockDescriptor[],
-            TRANSACTION_BLOCK_NAMES_V4,
+            TRANSACTION_BLOCK_NAMES_V5,
             offset,
-            TRANSACTION_BLOCK_TYPES_V4,
+            TRANSACTION_BLOCK_TYPES_V5,
           )
-        : checkFixedBlockNames(
-            meta.blocks as BlockDescriptor[],
-            TRANSACTION_BLOCK_NAMES,
-            offset,
-          );
+        : isV4
+          ? checkFixedBlockNames(
+              meta.blocks as BlockDescriptor[],
+              TRANSACTION_BLOCK_NAMES_V4,
+              offset,
+              TRANSACTION_BLOCK_TYPES_V4,
+            )
+          : checkFixedBlockNames(
+              meta.blocks as BlockDescriptor[],
+              TRANSACTION_BLOCK_NAMES,
+              offset,
+            );
   if (nameError !== null) return [nameError];
   return [];
 }
@@ -3247,7 +3346,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -3273,29 +3372,31 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 10
-      ? MAGIC_V10
-      : version === 9
-        ? MAGIC_V9
-        : version === 8
-          ? MAGIC_V8
-          : version === 7
-            ? MAGIC_V7
-            : version === 6
-              ? MAGIC_V6
-              : version === 5
-                ? MAGIC_V5
-                : version === 4
-                  ? MAGIC_V4
-                  : version === 3
-                    ? MAGIC_V3
-                    : MAGIC;
+    version === 11
+      ? MAGIC_V11
+      : version === 10
+        ? MAGIC_V10
+        : version === 9
+          ? MAGIC_V9
+          : version === 8
+            ? MAGIC_V8
+            : version === 7
+              ? MAGIC_V7
+              : version === 6
+                ? MAGIC_V6
+                : version === 5
+                  ? MAGIC_V5
+                  : version === 4
+                    ? MAGIC_V4
+                    : version === 3
+                      ? MAGIC_V3
+                      : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -3396,7 +3497,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -3415,7 +3516,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -3571,7 +3672,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -3582,7 +3683,8 @@ export function decodeRecording(
     | "render-stream-7-decoded/1"
     | "render-stream-8-decoded/1"
     | "render-stream-9-decoded/1"
-    | "render-stream-10-decoded/1";
+    | "render-stream-10-decoded/1"
+    | "render-stream-11-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -3600,42 +3702,46 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 10
-      ? MAGIC_V10
-      : version === 9
-        ? MAGIC_V9
-        : version === 8
-          ? MAGIC_V8
-          : version === 7
-            ? MAGIC_V7
-            : version === 6
-              ? MAGIC_V6
-              : version === 5
-                ? MAGIC_V5
-                : version === 4
-                  ? MAGIC_V4
-                  : version === 3
-                    ? MAGIC_V3
-                    : MAGIC;
+    version === 11
+      ? MAGIC_V11
+      : version === 10
+        ? MAGIC_V10
+        : version === 9
+          ? MAGIC_V9
+          : version === 8
+            ? MAGIC_V8
+            : version === 7
+              ? MAGIC_V7
+              : version === 6
+                ? MAGIC_V6
+                : version === 5
+                  ? MAGIC_V5
+                  : version === 4
+                    ? MAGIC_V4
+                    : version === 3
+                      ? MAGIC_V3
+                      : MAGIC;
   return {
     schema:
-      version === 10
-        ? "render-stream-10-decoded/1"
-        : version === 9
-          ? "render-stream-9-decoded/1"
-          : version === 8
-            ? "render-stream-8-decoded/1"
-            : version === 7
-              ? "render-stream-7-decoded/1"
-              : version === 6
-                ? "render-stream-6-decoded/1"
-                : version === 5
-                  ? "render-stream-5-decoded/1"
-                  : version === 4
-                    ? "render-stream-4-decoded/1"
-                    : version === 3
-                      ? "render-stream-3-decoded/1"
-                      : "render-stream-2-decoded/1",
+      version === 11
+        ? "render-stream-11-decoded/1"
+        : version === 10
+          ? "render-stream-10-decoded/1"
+          : version === 9
+            ? "render-stream-9-decoded/1"
+            : version === 8
+              ? "render-stream-8-decoded/1"
+              : version === 7
+                ? "render-stream-7-decoded/1"
+                : version === 6
+                  ? "render-stream-6-decoded/1"
+                  : version === 5
+                    ? "render-stream-5-decoded/1"
+                    : version === 4
+                      ? "render-stream-4-decoded/1"
+                      : version === 3
+                        ? "render-stream-3-decoded/1"
+                        : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -4169,7 +4275,14 @@ export interface ResolvedMesh {
   reason: MeshReason | null;
   version: number;
   custom_aabb: [number, number, number, number, number, number];
-  surfaces: TransactionMeshSurface[];
+  surfaces: ResolvedMeshSurface[];
+}
+
+/** render-stream-11.md "Resolution and resolved form": at /11 a resolved surface carries
+ * `body_sha256` right after `hash` (the SHA-256 of a dynamic surface's current body, null on a
+ * static one). Below /11 the key is absent and the surface is the wire's. */
+export interface ResolvedMeshSurface extends TransactionMeshSurface {
+  body_sha256?: string | null;
 }
 
 /** new at /5: a shader-table entry, unchanged in shape from the wire's (no floats to lift). */
@@ -4656,7 +4769,12 @@ function liftItem(
 // Applies one decoded transaction to `base`, per render-stream-2.md "Full and patch transactions":
 // textures are treated like items (full table on a full transaction, upsert+remove on a patch),
 // but every texture entry is complete on the wire (no null-commands-style partial form).
-function liftMesh(m: TransactionMesh, meshF32: number[]): ResolvedMesh {
+function liftMesh(
+  m: TransactionMesh,
+  meshF32: number[],
+  meshU8?: Uint8Array,
+  previous?: ResolvedMesh,
+): ResolvedMesh {
   const custom_aabb: [number, number, number, number, number, number] =
     m.f === null
       ? [0, 0, 0, 0, 0, 0]
@@ -4678,14 +4796,70 @@ function liftMesh(m: TransactionMesh, meshF32: number[]): ResolvedMesh {
     reason: m.reason,
     version: m.version,
     custom_aabb,
-    surfaces: m.surfaces,
+    surfaces:
+      m.u8 === undefined ? m.surfaces : liftSurfacesV11(m, meshU8, previous),
   };
+}
+
+/** render-stream-11.md "Resolution and resolved form": a non-null u8 replaces every body of the
+ * mesh (each surface's body is payload_bytes long, in surface order, from u8); a null one keeps
+ * the previous entry's (same surface index). Static surfaces get body_sha256 null. A body the
+ * caller has no bytes for (no `meshU8`, or a slice past its end) also resolves to null. */
+function liftSurfacesV11(
+  m: TransactionMesh,
+  meshU8: Uint8Array | undefined,
+  previous: ResolvedMesh | undefined,
+): ResolvedMeshSurface[] {
+  let pos = m.u8 ?? 0;
+  return m.surfaces.map((s, i) => {
+    let body: string | null = null;
+    if (surfaceIsDynamic(s)) {
+      if (m.u8 !== null && m.u8 !== undefined) {
+        if (meshU8 !== undefined && pos + s.payload_bytes <= meshU8.length)
+          body = hashBytes(meshU8.subarray(pos, pos + s.payload_bytes));
+        pos += s.payload_bytes;
+      } else {
+        body = previous?.surfaces[i]?.body_sha256 ?? null;
+      }
+    }
+    return {
+      hash: s.hash,
+      body_sha256: body,
+      payload_bytes: s.payload_bytes,
+      primitive: s.primitive,
+      format: s.format,
+      vertex_count: s.vertex_count,
+      index_count: s.index_count,
+    };
+  });
+}
+
+/** The raw bytes of block `index` of a record that already passed decodeRecord()'s framing
+ * checks (decodeRecord() replaces a u8 block with {u8_bytes, sha256}). */
+export function rawRecordBlock(raw: RawRecord, index: number): Uint8Array {
+  const view = new DataView(
+    raw.bytes.buffer,
+    raw.bytes.byteOffset,
+    raw.bytes.byteLength,
+  );
+  let pos = 8 + view.getUint32(4, true);
+  const count = view.getUint32(pos, true);
+  pos += 4;
+  for (let i = 0; i < count; i++) {
+    const len = view.getUint32(pos, true);
+    pos += 4;
+    if (i === index) return raw.bytes.subarray(pos, pos + len);
+    pos += len;
+  }
+  return new Uint8Array(0);
 }
 
 export function applyTransaction(
   base: ResolvedState,
   meta: TransactionMeta,
   blocks: number[][],
+  /** /11 only: the transaction's raw mesh_u8 block (rawRecordBlock(raw, 7)), for body_sha256. */
+  meshU8?: Uint8Array,
 ): ResolvedState {
   const canvases =
     meta.encoding === "full"
@@ -4764,7 +4938,10 @@ export function applyTransaction(
   }
   if (isV4) {
     for (const m of meta.meshes ?? []) {
-      meshes.set(m.id, liftMesh(m, meshF32 ?? []));
+      meshes.set(
+        m.id,
+        liftMesh(m, meshF32 ?? [], meshU8, base.meshes.get(m.id)),
+      );
     }
   }
   if (isV5) {
@@ -5856,6 +6033,228 @@ export interface RecordingValidator {
   finish(): string[];
   digestPending(): number[];
   digest(index: number): string;
+  /** render-stream-11.md decision 9 (`inline-fetch-zero`): null when a GET of `hash` is legal
+   * now, else the `inline-fetch-zero` error. Always null below /11. See checkInlineFetch(). */
+  checkInlineFetch(hash: string): string | null;
+}
+
+/**
+ * render-stream-11.md "As built (W11a)" decision 9: the `inline-fetch-zero` predicate, the same
+ * question every /11 receiver asks before an HTTP GET (rs-core's `Validator::check_fetch`). A GET
+ * of `hash` is refused when, over the validator's accepted records, `hash` is a non-variant name
+ * of the newest accepted state (an ok image texture's hash, an ok mesh's static surface, an ok
+ * payload shader) whose entry has `payload_bytes <= inline_max_bytes`, or is in the carried set C
+ * with a record of `bytes <= inline_max_bytes`. A variant hash not in C may always be fetched
+ * (render-stream-9.md: a variant is never required inline). Returns null when the GET is legal.
+ */
+export function checkInlineFetch(
+  validator: RecordingValidator,
+  hash: string,
+): string | null {
+  return validator.checkInlineFetch(hash);
+}
+
+/** createRecordingValidator's options: DecodeRecordOptions plus a validator sabotage. */
+export interface RecordingValidatorOptions extends DecodeRecordOptions {
+  /**
+   * render-stream-11.md decision 10, /11 only: "early-prune" prunes C to the BASE state's names
+   * when a transaction arrives, before resolving and checking it. That drops the records the
+   * transaction brings, so golden-11's inline.rs11 fails resource-missing at seq 1.
+   */
+  sabotage?: "early-prune";
+}
+
+/** render-stream-11.md "Definitions": names(S), every payload hash the resolved state names --
+ * each ok image texture's hash and its variants' hashes, each static surface of an ok mesh, and
+ * each ok shader whose source is "payload". Dynamic surfaces (hash null) are not names. */
+export function resolvedStateNames(state: ResolvedState): Set<string> {
+  const names = new Set<string>();
+  for (const t of state.textures.values()) {
+    if (t.kind !== "image" || t.status !== "ok" || t.hash === null) continue;
+    names.add(t.hash);
+    for (const v of t.variants ?? []) names.add(v.hash);
+  }
+  for (const m of state.meshes.values()) {
+    if (m.status !== "ok") continue;
+    for (const surface of m.surfaces)
+      if (!surfaceIsDynamic(surface)) names.add(surface.hash);
+  }
+  for (const sh of state.shaders.values()) {
+    if (sh.status === "ok" && sh.source === "payload" && sh.hash !== null)
+      names.add(sh.hash);
+  }
+  return names;
+}
+
+/** The payload_bytes of `hash` as a non-variant name of `state` (decision 9), or undefined. */
+function nonVariantNameBytes(
+  state: ResolvedState,
+  hash: string,
+): number | undefined {
+  for (const t of state.textures.values())
+    if (t.kind === "image" && t.status === "ok" && t.hash === hash)
+      return t.payload_bytes;
+  for (const m of state.meshes.values()) {
+    if (m.status !== "ok") continue;
+    for (const surface of m.surfaces)
+      if (surface.hash === hash) return surface.payload_bytes;
+  }
+  for (const sh of state.shaders.values())
+    if (sh.status === "ok" && sh.source === "payload" && sh.hash === hash)
+      return sh.payload_bytes;
+  return undefined;
+}
+
+/** render-stream-11.md decision 7: JSON values equal, numbers by bit pattern (Object.is: -0 is not
+ * 0; every float here was read from an f32 block, so equal doubles are equal float32 bits). */
+function jsonBitEqual(a: unknown, b: unknown): boolean {
+  if (typeof a === "number" || typeof b === "number") return Object.is(a, b);
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== "object" ||
+    typeof b !== "object"
+  )
+    return a === b;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const bb = b as unknown[];
+    if (a.length !== bb.length) return false;
+    for (let i = 0; i < a.length; i++)
+      if (!jsonBitEqual(a[i], bb[i])) return false;
+    return true;
+  }
+  const ka = Object.keys(a).filter(
+    (k) => (a as Record<string, unknown>)[k] !== undefined,
+  );
+  const kb = Object.keys(b).filter(
+    (k) => (b as Record<string, unknown>)[k] !== undefined,
+  );
+  if (ka.length !== kb.length) return false;
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i]) return false;
+    if (
+      !jsonBitEqual(
+        (a as Record<string, unknown>)[ka[i]],
+        (b as Record<string, unknown>)[kb[i]],
+      )
+    )
+      return false;
+  }
+  return true;
+}
+
+/** render-stream-11.md "Dynamic mesh surfaces": a dynamic surface's body length from its shape,
+ * render-stream-4.md's payload-size buffer rules plus the 40 geometry bytes. */
+export function meshBodyBytes(surface: {
+  format: number;
+  vertex_count: number;
+  index_count: number;
+}): number {
+  const e = expectedMeshBufferBytes(
+    surface.format,
+    surface.vertex_count,
+    surface.index_count,
+  );
+  return 40 + e.vertex_bytes + e.attribute_bytes + e.skin_bytes + e.index_bytes;
+}
+
+/**
+ * render-stream-11.md "Dynamic mesh surfaces", in decision 4's order over one /11 transaction's
+ * mesh entries: mesh-dynamic (each entry), then mesh-u8-offset (over the entries, and the
+ * mesh_u8 block's count), then payload-size (each dynamic surface's body length from its shape).
+ * `base` is the state the transaction applies to (the u8-null rule reads its entry).
+ */
+function checkDynamicMeshes(
+  meta: TransactionMeta,
+  base: ResolvedState,
+  offset: number,
+): string[] {
+  const meshes = meta.meshes ?? [];
+  const dynErr = (id: number, detail: string) => [
+    `mesh-dynamic: record at offset ${offset}: mesh ${id}: ${detail}`,
+  ];
+  for (const m of meshes) {
+    const u8 = m.u8 ?? null;
+    if (m.status !== "ok") {
+      if (u8 !== null)
+        return dynErr(m.id, `an "${m.status}" entry has u8 ${u8}, not null`);
+      continue;
+    }
+    const dynamicCount = m.surfaces.filter(surfaceIsDynamic).length;
+    if (dynamicCount !== 0 && dynamicCount !== m.surfaces.length)
+      return dynErr(
+        m.id,
+        "its surfaces are neither all static nor all dynamic",
+      );
+    if (dynamicCount === 0) {
+      if (u8 !== null)
+        return dynErr(
+          m.id,
+          `u8 ${u8} on a static mesh (non-null only on a dynamic ok mesh with at least one surface)`,
+        );
+      continue;
+    }
+    if (u8 !== null) continue;
+    // u8 null on a dynamic mesh: legal only in a patch whose resolved entry was already dynamic,
+    // with the same surface count and the same four shape fields on every surface.
+    const previous = base.meshes.get(m.id);
+    const keeps =
+      meta.encoding === "patch" &&
+      previous !== undefined &&
+      previous.status === "ok" &&
+      previous.surfaces.length === m.surfaces.length &&
+      previous.surfaces.every(
+        (p, k) => surfaceIsDynamic(p) && sameSurfaceShape(p, m.surfaces[k]),
+      );
+    if (!keeps)
+      return dynErr(
+        m.id,
+        meta.encoding === "full"
+          ? "u8 is null in a full transaction"
+          : "u8 is null but the base entry is not dynamic with the same surface shapes",
+      );
+  }
+  let running = 0;
+  for (const m of meshes) {
+    if (m.u8 === null || m.u8 === undefined) continue;
+    if (m.u8 !== running)
+      return [
+        `mesh-u8-offset: record at offset ${offset}: mesh ${m.id} u8=${m.u8}, expected ${running}`,
+      ];
+    for (const surface of m.surfaces) running += surface.payload_bytes;
+  }
+  const declared = meta.blocks.find((b) => b.name === "mesh_u8")?.count;
+  if (declared !== running)
+    return [
+      `mesh-u8-offset: record at offset ${offset}: block "mesh_u8" declares count ${declared}, expected ${running}`,
+    ];
+  for (const m of meshes) {
+    if (m.status !== "ok") continue;
+    for (let k = 0; k < m.surfaces.length; k++) {
+      const surface = m.surfaces[k];
+      if (!surfaceIsDynamic(surface)) continue;
+      const expected = meshBodyBytes(surface);
+      if (surface.payload_bytes !== expected)
+        return [
+          `payload-size: record at offset ${offset}: mesh ${m.id} surface ${k}'s body is ${surface.payload_bytes} bytes, its shape (${surface.primitive} format ${surface.format} vertex_count ${surface.vertex_count} index_count ${surface.index_count}) needs ${expected}`,
+        ];
+    }
+  }
+  return [];
+}
+
+/** render-stream-11.md "Mesh entry" (mesh-dynamic): the four shape fields of two surfaces agree. */
+function sameSurfaceShape(
+  a: TransactionMeshSurface,
+  b: TransactionMeshSurface,
+): boolean {
+  return (
+    a.primitive === b.primitive &&
+    a.format === b.format &&
+    a.vertex_count === b.vertex_count &&
+    a.index_count === b.index_count
+  );
 }
 
 /**
@@ -5898,8 +6297,8 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
-  options?: DecodeRecordOptions,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
   const rejected = (errors: string[]): RecordingValidator => ({
@@ -5908,10 +6307,16 @@ export function createRecordingValidator(
     finish: () => errors,
     digestPending: () => [],
     digest: (i: number) => hashBytes(records[i].bytes),
+    checkInlineFetch: () => null,
   });
+  // render-stream-11.md: the carried-set rules (C is pruned after every transaction,
+  // resource-unnamed), dynamic mesh surfaces, the empty mm_f32 block, content-version-stable and
+  // a patch's null "unsupported".
+  const isV11 = version === 11;
+  const earlyPrune = isV11 && options?.sabotage === "early-prune";
   // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
   // byte-identical to /6).
-  const isV10 = version === 10;
+  const isV10 = version === 10 || isV11;
   const isV9 = version === 9 || isV10;
   const isV8 = version === 8 || isV9;
   const isV7 = version === 7 || isV8;
@@ -5996,7 +6401,15 @@ export function createRecordingValidator(
     shader: 0,
     material: 0,
   };
+  // Below /11: every hash ever carried in this stream. At /11: the carried set C
+  // (render-stream-11.md "Resource retention"), pruned to names(S) after every transaction.
   const carriedHashes = new Set<string>();
+  // /11: each carried hash's record bytes (checkInlineFetch), and the hashes added since the
+  // previous transaction (resource-unnamed).
+  const carriedBytes = new Map<string, number>();
+  const addedSinceTransaction: string[] = [];
+  // /11: the resolved "unsupported" list a patch's null stands for (the base's).
+  let resolvedUnsupported: TransactionMeta["unsupported"] = [];
   const lastSeenTexture = new Map<number, TransactionTexture>();
   const lastSeenMesh = new Map<number, ResolvedMesh>();
   // Resource payload shapes seen so far in THIS call, used to check resource-payload once a
@@ -6035,7 +6448,9 @@ export function createRecordingValidator(
     if (meta.type === "resource") {
       if (carriedHashes.has(meta.hash)) {
         return [
-          `resource-duplicate: record at offset ${offset}: hash ${meta.hash} already carried earlier in this stream`,
+          isV11
+            ? `resource-duplicate: record at offset ${offset}: hash ${meta.hash} is still in the carried set`
+            : `resource-duplicate: record at offset ${offset}: hash ${meta.hash} already carried earlier in this stream`,
         ];
       }
       const block = decoded.record.blocks[0];
@@ -6121,6 +6536,10 @@ export function createRecordingValidator(
         resourcePayloadLengths.set(meta.hash, block.u8_bytes);
       }
       carriedHashes.add(meta.hash);
+      if (isV11) {
+        carriedBytes.set(meta.hash, meta.bytes);
+        addedSinceTransaction.push(meta.hash);
+      }
       resourceRecordCount += 1;
       resourceByteTotal += meta.bytes;
       bytesTotal += decoded.record.byte_length;
@@ -6129,6 +6548,13 @@ export function createRecordingValidator(
     }
 
     if (meta.type === "transaction") {
+      if (earlyPrune) {
+        // Sabotage early-prune (render-stream-11.md decision 10): prune against the BASE state
+        // before this transaction is resolved or checked.
+        const baseNames = resolvedStateNames(state);
+        for (const h of carriedHashes)
+          if (!baseNames.has(h)) carriedHashes.delete(h);
+      }
       // protocol/unknown-item-skip.md: the account is in every transaction of a skip session and
       // in no other.
       const skipSession = sessionMeta.unknown_item_policy === "skip";
@@ -6250,6 +6676,18 @@ export function createRecordingValidator(
           }
           runningMeshOffset += 6;
           totalMeshFloats += 6;
+        }
+      }
+      if (isV11) {
+        const meshErrors = checkDynamicMeshes(meta, state, offset);
+        if (meshErrors.length > 0) return meshErrors;
+        // mm-offset (render-stream-11.md decision 3): until PM1 adds the multimesh table, no
+        // entry claims any mm_f32 float.
+        const mmCount = meta.blocks.find((b) => b.name === "mm_f32")?.count;
+        if (mmCount !== 0) {
+          return [
+            `mm-offset: record at offset ${offset}: block "mm_f32" declares count ${mmCount}, expected 0 (no multimesh entry claims any float)`,
+          ];
         }
       }
       // param-offset (render-stream-5.md "Material table", gate5_5-design.md D8): a running
@@ -6392,16 +6830,44 @@ export function createRecordingValidator(
         state,
         meta,
         decoded.record.blocks as number[][],
+        isV11 ? rawRecordBlock(records[i], 7) : undefined,
       );
       if (timer) timer.resolve_us += timer.now() - resolveT0;
+      // render-stream-11.md "Patched unsupported": a patch's null stands for the base's list.
+      const unsupportedNow =
+        meta.unsupported === null ? resolvedUnsupported : meta.unsupported;
       const resolvedErrors = checkResolvedInvariants(
-        meta,
+        meta.unsupported === null
+          ? { ...meta, unsupported: unsupportedNow }
+          : meta,
         nextState,
         offset,
         isV6,
         snapDeclared,
       );
       if (resolvedErrors.length > 0) return resolvedErrors;
+      if (isV11 && meta.encoding === "patch") {
+        // content-version-stable (render-stream-11.md "Stable content_version", decision 7): a
+        // patch entry whose commands equal the base item's resolved commands keeps its version.
+        for (const it of meta.items) {
+          if (it.commands === null) continue;
+          const before = state.items.get(it.id);
+          if (
+            before === undefined ||
+            before.content_version === it.content_version
+          )
+            continue;
+          const after = nextState.items.get(it.id);
+          if (
+            after !== undefined &&
+            jsonBitEqual(after.commands, before.commands)
+          ) {
+            return [
+              `content-version-stable: record at offset ${offset}: item ${it.id}'s content_version moved ${before.content_version} -> ${it.content_version} but its commands equal the base's`,
+            ];
+          }
+        }
+      }
       if (isV10) {
         // P3-TM (render-stream-10.md "Shader time"): present exactly when the state reads TIME.
         let reads = false;
@@ -6553,6 +7019,8 @@ export function createRecordingValidator(
         for (const m of sortedResolvedMeshes(nextState)) {
           if (m.status !== "ok") continue;
           for (const s of m.surfaces) {
+            // render-stream-11.md: a dynamic surface's bytes travel in mesh_u8, never as a record.
+            if (isV11 && surfaceIsDynamic(s)) continue;
             if (s.payload_bytes > inlineMaxBytes) continue;
             if (!carriedHashes.has(s.hash)) {
               return [
@@ -6599,6 +7067,19 @@ export function createRecordingValidator(
         }
       }
 
+      // resource-unnamed (render-stream-11.md "Rules", decision 6): every record accepted since the
+      // previous transaction names a hash this state names.
+      const names = isV11 ? resolvedStateNames(nextState) : null;
+      if (names !== null) {
+        for (const h of addedSinceTransaction) {
+          if (!names.has(h)) {
+            return [
+              `resource-unnamed: record at offset ${offset}: the resource record for hash ${h} precedes a transaction whose state does not name it`,
+            ];
+          }
+        }
+      }
+
       // id-reused: resolved ids this transaction vs. the previous one.
       const currentCanvasIds = new Set(nextState.canvases.keys());
       const currentItemIds = new Set(nextState.items.keys());
@@ -6634,6 +7115,17 @@ export function createRecordingValidator(
       }
 
       state = nextState;
+      if (names !== null) {
+        // The prune: C <- C ∩ names(S), after S's own checks.
+        for (const h of carriedHashes) {
+          if (!names.has(h)) {
+            carriedHashes.delete(h);
+            carriedBytes.delete(h);
+          }
+        }
+        addedSinceTransaction.length = 0;
+        resolvedUnsupported = unsupportedNow;
+      }
       prevSeq = meta.seq;
       prevFrame = meta.frame;
       transactionCount += 1;
@@ -6645,6 +7137,11 @@ export function createRecordingValidator(
     }
 
     // meta.type === "end"
+    if (isV11 && addedSinceTransaction.length > 0) {
+      return [
+        `resource-unnamed: end record at offset ${offset}: ${addedSinceTransaction.length} resource record(s) follow the last transaction (first: hash ${addedSinceTransaction[0]})`,
+      ];
+    }
     if (meta.transactions !== transactionCount) {
       return [
         `end-count-mismatch: end record says ${meta.transactions} transactions, but ${transactionCount} were seen`,
@@ -6681,6 +7178,22 @@ export function createRecordingValidator(
         ? []
         : ["recording-incomplete: the recording ends without an end record"],
     digestPending: () => Array.from(pendingDigest).sort((a, b) => a - b),
+    checkInlineFetch: (hash: string): string | null => {
+      if (!isV11) return null;
+      const nameBytes = nonVariantNameBytes(state, hash);
+      if (nameBytes !== undefined && nameBytes <= inlineMaxBytes) {
+        return `inline-fetch-zero: hash ${hash} is a name of the newest accepted state with payload_bytes ${nameBytes} <= inline_max_bytes ${inlineMaxBytes}`;
+      }
+      const recordBytes = carriedBytes.get(hash);
+      if (
+        carriedHashes.has(hash) &&
+        recordBytes !== undefined &&
+        recordBytes <= inlineMaxBytes
+      ) {
+        return `inline-fetch-zero: hash ${hash} is in the carried set (a ${recordBytes}-byte record, <= inline_max_bytes ${inlineMaxBytes})`;
+      }
+      return null;
+    },
     digest: (i: number): string => {
       let d = digests.get(i);
       if (d === undefined) {
@@ -6696,11 +7209,12 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) return [split.errors[0]];
-  const validator = createRecordingValidator(split.records, version);
+  const validator = createRecordingValidator(split.records, version, options);
   if (validator.errors) return validator.errors;
   for (let i = 1; i < split.records.length; i++) {
     const errors = validator.accept(i);
@@ -6932,6 +7446,9 @@ export interface ResolvedResource {
   hash: string;
   bytes: number;
   record_index: number;
+  /** new at /11 (golden-11 index.json "inline_resources"): the seq of the transaction the record
+   * precedes, since a hash may be carried more than once (render-stream-11.md decision 2). */
+  before_seq?: number;
 }
 
 export interface ResolvedRecording {
@@ -6944,7 +7461,8 @@ export interface ResolvedRecording {
     | "render-stream-7-resolved/1"
     | "render-stream-8-resolved/1"
     | "render-stream-9-resolved/1"
-    | "render-stream-10-resolved/1";
+    | "render-stream-10-resolved/1"
+    | "render-stream-11-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -6953,27 +7471,42 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
   if (sessionRecord.meta.type !== "session")
     throw new Error("missing-session: the first record is not a session");
   const sessionMeta = sessionRecord.meta;
+  const isV11 = version === 11;
+  // /11 reads each transaction's raw mesh_u8 block (body_sha256), which the decoded form drops.
+  const raws = isV11 ? splitRecords(data, version).records : [];
 
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
   const resources: ResolvedResource[] = [];
+  const pendingResources: ResolvedResource[] = [];
   const lastItems = new Map<number, ResolvedItem>();
+  let unsupported: TransactionMeta["unsupported"] = [];
   for (let i = 1; i < decoded.records.length; i++) {
     const record = decoded.records[i];
     const meta = record.meta;
     if (meta.type === "resource") {
-      resources.push({ hash: meta.hash, bytes: meta.bytes, record_index: i });
+      const entry = { hash: meta.hash, bytes: meta.bytes, record_index: i };
+      resources.push(entry);
+      if (isV11) pendingResources.push(entry);
       continue;
     }
     if (meta.type !== "transaction") continue;
-    state = applyTransaction(state, meta, record.blocks as number[][]);
+    for (const entry of pendingResources.splice(0)) entry.before_seq = meta.seq;
+    state = applyTransaction(
+      state,
+      meta,
+      record.blocks as number[][],
+      isV11 ? rawRecordBlock(raws[i], 7) : undefined,
+    );
+    // render-stream-11.md "Patched unsupported": a patch's null resolves to the base's list.
+    if (meta.unsupported !== null) unsupported = meta.unsupported;
     transactions.push({
       seq: meta.seq,
       frame: meta.frame,
@@ -6981,7 +7514,7 @@ export function resolveRecording(
       state: {
         status: meta.status,
         failures: meta.failures,
-        unsupported: meta.unsupported,
+        unsupported,
         ...(meta.unknown_items !== undefined
           ? { unknown_items: meta.unknown_items }
           : {}),
@@ -7007,23 +7540,25 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 10
-        ? "render-stream-10-resolved/1"
-        : version === 9
-          ? "render-stream-9-resolved/1"
-          : version === 8
-            ? "render-stream-8-resolved/1"
-            : version === 7
-              ? "render-stream-7-resolved/1"
-              : version === 6
-                ? "render-stream-6-resolved/1"
-                : version === 5
-                  ? "render-stream-5-resolved/1"
-                  : version === 4
-                    ? "render-stream-4-resolved/1"
-                    : version === 3
-                      ? "render-stream-3-resolved/1"
-                      : "render-stream-2-resolved/1",
+      version === 11
+        ? "render-stream-11-resolved/1"
+        : version === 10
+          ? "render-stream-10-resolved/1"
+          : version === 9
+            ? "render-stream-9-resolved/1"
+            : version === 8
+              ? "render-stream-8-resolved/1"
+              : version === 7
+                ? "render-stream-7-resolved/1"
+                : version === 6
+                  ? "render-stream-6-resolved/1"
+                  : version === 5
+                    ? "render-stream-5-resolved/1"
+                    : version === 4
+                      ? "render-stream-4-resolved/1"
+                      : version === 3
+                        ? "render-stream-3-resolved/1"
+                        : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

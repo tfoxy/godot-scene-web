@@ -517,7 +517,12 @@ pub struct TextureVariant {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct MeshSurface {
-    pub hash: Hash,
+    /// The surface's payload hash; `None` on a /11 dynamic surface (render-stream-11.md "Dynamic
+    /// mesh surfaces"), whose bytes travel in the transaction's `mesh_u8` block.
+    pub hash: Option<Hash>,
+    /// /11 dynamic surfaces only: the SHA-256 of the surface's current body (the validator keeps
+    /// the digest, not the bytes). `None` on a static surface and below /11.
+    pub body_sha256: Option<Hash>,
     pub payload_bytes: i64,
     pub primitive: Primitive,
     /// The engine's raw `ARRAY_FORMAT_*` mask (may exceed 32 bits).
@@ -538,6 +543,14 @@ pub struct Mesh {
     pub version: i64,
     pub custom_aabb: [f32; 6],
     pub surfaces: Vec<MeshSurface>,
+}
+
+impl Mesh {
+    /// /11: an `ok` mesh whose surfaces carry no payload hash (render-stream-11.md "Dynamic mesh
+    /// surfaces"). The validator guarantees all of its surfaces are dynamic, and that it has one.
+    pub fn is_dynamic(&self) -> bool {
+        self.status == EntryStatus::Ok && self.surfaces.first().is_some_and(|s| s.hash.is_none())
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]

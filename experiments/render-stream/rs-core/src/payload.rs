@@ -395,6 +395,67 @@ pub fn decode_mesh(bytes: &[u8]) -> Result<MeshPayload<'_>, Error> {
     })
 }
 
+/// render-stream-11.md "Mesh entry": a dynamic surface's body length (40 bytes of geometry, then
+/// the vertex, attribute, skin and index bytes), from its shape alone.
+pub fn mesh_body_bytes(format: i64, vertex_count: i64, index_count: i64) -> u128 {
+    40 + expected_mesh_buffer_bytes(format, vertex_count, index_count)
+        .iter()
+        .sum::<u128>()
+}
+
+/// A /11 dynamic surface's body (a `render-stream-mesh/1` payload without its first 12 bytes and
+/// its meta), split like [`decode_mesh`] by the surface's shape: `payload-size` when its length
+/// disagrees with that shape.
+pub fn decode_mesh_body(
+    bytes: &[u8],
+    primitive: Primitive,
+    format: i64,
+    vertex_count: i64,
+    index_count: i64,
+) -> Result<MeshPayload<'_>, Error> {
+    let lens = expected_mesh_buffer_bytes(format, vertex_count, index_count);
+    let expected = mesh_body_bytes(format, vertex_count, index_count);
+    if expected != bytes.len() as u128 {
+        return Err(err(
+            "payload-size",
+            format!(
+                "a dynamic mesh body is {} bytes, its shape needs {expected}",
+                bytes.len()
+            ),
+        ));
+    }
+    let mut aabb = [0f32; 6];
+    for (k, a) in aabb.iter_mut().enumerate() {
+        *a = le_f32(bytes, 4 * k);
+    }
+    let mut uv_scale = [0f32; 4];
+    for (k, u) in uv_scale.iter_mut().enumerate() {
+        *u = le_f32(bytes, 24 + 4 * k);
+    }
+    let mut p = 40usize;
+    let mut take = |n: u128| {
+        let s = &bytes[p..p + n as usize];
+        p += n as usize;
+        s
+    };
+    let vertex_data = take(lens[0]);
+    let attribute_data = take(lens[1]);
+    let skin_data = take(lens[2]);
+    let index_data = take(lens[3]);
+    Ok(MeshPayload {
+        primitive,
+        format,
+        vertex_count,
+        index_count,
+        aabb,
+        uv_scale,
+        vertex_data,
+        attribute_data,
+        skin_data,
+        index_data,
+    })
+}
+
 // ------------------------------------------------------------------------------------- GRP1
 
 #[derive(Clone, Debug, PartialEq)]

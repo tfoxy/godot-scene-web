@@ -173,10 +173,65 @@ bool mesh_surface_equal(const MeshSurface &a, const MeshSurface &b) {
          a.format == b.format && a.vertex_count == b.vertex_count && a.index_count == b.index_count;
 }
 
+// render-stream-11.md "Mesh entry": a mesh whose surfaces travel as bodies (`ok`, flagged, with at
+// least one surface).
+bool is_dynamic_mesh(const MeshEntry &m) {
+  return m.dynamic && m.status == MeshStatus::Ok && !m.surfaces.empty();
+}
+
+bool same_mesh_shape(const MeshEntry &a, const MeshEntry &b) {
+  if (a.surfaces.size() != b.surfaces.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.surfaces.size(); ++i) {
+    const MeshSurface &x = a.surfaces[i];
+    const MeshSurface &y = b.surfaces[i];
+    if (x.primitive != y.primitive || x.format != y.format || x.vertex_count != y.vertex_count ||
+        x.index_count != y.index_count) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// render-stream-11.md "Mesh entry" and "Capture policy" (the serial rule): a /11 patch entry for a
+// dynamic mesh sends its bodies (u8 non-null) unless the base's entry was already dynamic, with the
+// same surface count and shape fields, and the same content serial. A function of (B, T) alone.
+bool mesh_bodies_needed(const MeshEntry *base, const MeshEntry &cur) {
+  if (!is_dynamic_mesh(cur)) {
+    return false;  // static, unsupported or freed: u8 is null and nothing is held
+  }
+  if (base == nullptr || !is_dynamic_mesh(*base) || !same_mesh_shape(*base, cur)) {
+    return true;  // new entry, the transition from static, or a shape change
+  }
+  return base->content_serial != cur.content_serial;
+}
+
+bool unsupported_equal(const std::vector<UnsupportedRef> &a, const std::vector<UnsupportedRef> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].op != b[i].op || a[i].has_item != b[i].has_item ||
+        (a[i].has_item && a[i].item != b[i].item) || a[i].reason != b[i].reason) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // render-stream-4.md "Mesh table": "exactly the texture table's full/patch/resolve semantics",
 // so every JSON field participates (no content_version-style exemption, same as textures).
-bool mesh_entry_equal(const MeshEntry &a, const MeshEntry &b) {
+//
+// render-stream-11.md "Dynamic mesh surfaces": at /11 a dynamic mesh's class and content serial
+// are part of the entry too (a changed body puts the entry in the patch); below /11 neither exists
+// on the wire, so they never take part.
+bool mesh_entry_equal(const MeshEntry &a, const MeshEntry &b, bool v11) {
   if (a.origin != b.origin || a.adopted_content != b.adopted_content) {
+    return false;
+  }
+  if (v11 && (is_dynamic_mesh(a) != is_dynamic_mesh(b) ||
+              (is_dynamic_mesh(a) && a.content_serial != b.content_serial))) {
     return false;
   }
   if (a.status != b.status || a.has_reason != b.has_reason) {
@@ -365,12 +420,12 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   if (t.version == ProtocolVersion::V4 || t.version == ProtocolVersion::V5 ||
       t.version == ProtocolVersion::V6 || t.version == ProtocolVersion::V7 ||
       t.version == ProtocolVersion::V8 || t.version == ProtocolVersion::V9 ||
-      t.version == ProtocolVersion::V10) {
-    t.meshes = cur.meshes;
+      is_v10_or_later(t.version)) {
+    t.meshes = cur.meshes;  // /11: a full sends every dynamic body (mesh_bodies_held empty)
   }
   if (t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
       t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
-      t.version == ProtocolVersion::V9 || t.version == ProtocolVersion::V10) {
+      t.version == ProtocolVersion::V9 || is_v10_or_later(t.version)) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
@@ -469,12 +524,15 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   base_canvases.removed_from(cur_canvas_ids, &t.removed_canvases);
   base_items.removed_from(cur_item_ids, &t.removed_items);
   base_textures.removed_from(cur_texture_ids, &t.removed_textures);
-  const bool v10 = t.version == ProtocolVersion::V10;
+  const bool v10 = is_v10_or_later(t.version);  // "V10 or later"
+  const bool v11 = t.version == ProtocolVersion::V11;
+  // render-stream-11.md "Patched `unsupported`": null when the list equals the base's.
+  t.unsupported_as_base = v11 && unsupported_equal(base.unsupported, cur.unsupported);
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
   // its shader/material tables and mesh table forward unchanged).
   const bool is_v5 = t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
                       t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
-                      t.version == ProtocolVersion::V9 || t.version == ProtocolVersion::V10;
+                      t.version == ProtocolVersion::V9 || v10;
   const bool is_v4_or_later = is_v5 || t.version == ProtocolVersion::V4;
   if (is_v4_or_later) {
     base_meshes.removed_from(cur_mesh_ids, &t.removed_meshes);
@@ -519,8 +577,11 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   if (is_v4_or_later) {
     for (const MeshEntry &mesh : cur.meshes) {
       const MeshEntry *prev = base_meshes.find(mesh.id);
-      if (prev != nullptr && mesh_entry_equal(*prev, mesh)) {
+      if (prev != nullptr && mesh_entry_equal(*prev, mesh, v11)) {
         continue;
+      }
+      if (v11 && is_dynamic_mesh(mesh) && !mesh_bodies_needed(prev, mesh)) {
+        t.mesh_bodies_held.push_back(mesh.id);  // cur.meshes is ascending, so this is too
       }
       t.meshes.push_back(mesh);
     }
@@ -561,7 +622,7 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   // is_v5 means "V5 or later" (see make_patch()'s comment above).
   const bool is_v5 = txn.version == ProtocolVersion::V5 || txn.version == ProtocolVersion::V6 ||
                       txn.version == ProtocolVersion::V7 || txn.version == ProtocolVersion::V8 ||
-                      txn.version == ProtocolVersion::V9 || txn.version == ProtocolVersion::V10;
+                      txn.version == ProtocolVersion::V9 || is_v10_or_later(txn.version);
   const bool is_v4_or_later = is_v5 || txn.version == ProtocolVersion::V4;
 
   if (txn.encoding == Encoding::Full) {
@@ -686,6 +747,93 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   for (auto &[id, material] : materials) {
     (void)id;
     out.materials.push_back(material);
+  }
+  return out;
+}
+
+namespace {
+
+// names(S) as payload_names() describes, with or without the texture variants.
+std::vector<PayloadName> collect_names(const Snapshot &state, bool variants) {
+  std::vector<PayloadName> out;
+  std::set<std::string> seen;
+  const auto add = [&](const std::string &hash, std::uint64_t bytes) {
+    if (!hash.empty() && seen.insert(hash).second) {
+      out.push_back(PayloadName{hash, bytes});
+    }
+  };
+  for (const TextureEntry &t : state.textures) {
+    if (t.kind != TextureKind::Image || t.status != TextureStatus::Ok) {
+      continue;
+    }
+    if (t.has_hash) {
+      add(t.hash, t.payload_bytes);
+    }
+    for (std::size_t i = 0; variants && i < t.variants.size(); ++i) {
+      add(t.variants[i].hash, t.variants[i].payload_bytes);
+    }
+  }
+  for (const MeshEntry &m : state.meshes) {
+    if (m.status != MeshStatus::Ok || is_dynamic_mesh(m)) {
+      continue;  // a dynamic surface has no hash and is not in names(S)
+    }
+    for (const MeshSurface &surface : m.surfaces) {
+      add(surface.hash, surface.payload_bytes);
+    }
+  }
+  for (const ShaderEntry &sh : state.shaders) {
+    if (sh.status == ShaderStatus::Ok && sh.has_source && sh.source == ShaderSource::Payload &&
+        sh.has_hash) {
+      add(sh.hash, sh.payload_bytes);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<PayloadName> payload_names(const Snapshot &state) {
+  return collect_names(state, true);
+}
+
+std::vector<PayloadName> inline_names(const Snapshot &state, const InlinePolicy &policy) {
+  std::vector<PayloadName> out = collect_names(state, policy.inline_variants);
+  out.erase(std::remove_if(out.begin(), out.end(),
+                           [&](const PayloadName &n) {
+                             return n.payload_bytes > policy.inline_max_bytes;
+                           }),
+            out.end());
+  return out;
+}
+
+std::vector<PayloadName> records_before(const Snapshot *base, const Snapshot &target,
+                                        const InlinePolicy &policy) {
+  std::vector<PayloadName> out = inline_names(target, policy);
+  if (base == nullptr) {
+    return out;
+  }
+  std::set<std::string> held;
+  for (PayloadName &name : inline_names(*base, policy)) {
+    held.insert(std::move(name.hash));
+  }
+  out.erase(std::remove_if(out.begin(), out.end(),
+                           [&](const PayloadName &n) { return held.count(n.hash) != 0; }),
+            out.end());
+  return out;
+}
+
+std::vector<PayloadName> RecordPlanner::next(const Snapshot *base, const Snapshot &target) {
+  if (!lifelong_) {
+    return records_before(base, target, policy_);
+  }
+  std::vector<PayloadName> out;
+  for (PayloadName &name : inline_names(target, policy_)) {
+    const auto at = std::lower_bound(carried_.begin(), carried_.end(), name.hash);
+    if (at != carried_.end() && *at == name.hash) {
+      continue;
+    }
+    carried_.insert(at, name.hash);
+    out.push_back(std::move(name));
   }
   return out;
 }

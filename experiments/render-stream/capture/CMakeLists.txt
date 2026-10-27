@@ -358,6 +358,19 @@ target_compile_definitions(rs10_codec_test PRIVATE
   GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10")
 add_test(NAME rs10_codec COMMAND rs10_codec_test)
 
+# W11a: render-stream/11 is /10 plus the carried-set rules (records from (B, T)), dynamic mesh
+# surfaces (`u8`, the mesh_u8 block), the empty mm_f32 block, resources.mesh_dynamic and a patched
+# `unsupported` (render-stream-11.md), proven byte-identical to
+# protocol/golden-11/{full,patch,inline}.rs11 and, with keep-carried, invalid/resource-missing.rs11.
+add_executable(rs11_codec_test test/rs11_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs11_codec_test PRIVATE src test)
+target_link_libraries(rs11_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs11_codec_test PRIVATE
+  GRC_GOLDEN6_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-6"
+  GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10"
+  GRC_GOLDEN11_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11")
+add_test(NAME rs11_codec COMMAND rs11_codec_test)
+
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test

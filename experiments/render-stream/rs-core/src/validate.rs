@@ -55,12 +55,16 @@ pub enum DigestPolicy {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Options {
-    /// The protocol version, 2 to 6.
+    /// The protocol version, 2 to 11.
     pub version: u8,
     pub digest: DigestPolicy,
     /// Verify a resource record's payload against its declared hash (`resource-hash`). `false` is
     /// the `skip-payload-hash` sabotage only.
     pub verify_payload_hashes: bool,
+    /// /11 sabotage `early-prune` (render-stream-11.md decision 10): prune C to the base state's
+    /// names when a transaction arrives, before resolving and checking it. `false` always, except
+    /// in the sabotage.
+    pub early_prune: bool,
 }
 
 impl Options {
@@ -69,11 +73,14 @@ impl Options {
             version,
             digest: DigestPolicy::Inline,
             verify_payload_hashes: true,
+            early_prune: false,
         }
     }
 }
 
-/// What an accepted record was.
+/// What an accepted record was. After `Transaction` at /11, [`Validator::pruned`] and
+/// [`Validator::released`] name the hashes the transaction dropped, and
+/// [`Validator::dynamic_bodies`] locates its dynamic mesh bodies in the record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Accepted {
     Resource { hash: Hash },
@@ -372,6 +379,102 @@ enum Carried {
     },
 }
 
+impl Carried {
+    fn len(&self) -> i64 {
+        match self {
+            Carried::Texture { len, .. }
+            | Carried::Mesh { len, .. }
+            | Carried::Shader { len }
+            | Carried::Ktx2 { len, .. } => *len,
+        }
+    }
+}
+
+/// /11: how often the resolved state names a hash (render-stream-11.md "Definitions"): `all`
+/// counts names(S), `required` the non-variant names with `payload_bytes <= inline_max_bytes`.
+#[derive(Clone, Copy, Default, Debug)]
+struct NameRc {
+    all: i64,
+    required: i64,
+}
+
+/// One /11 dynamic mesh surface's body in the last accepted transaction record: bytes
+/// `start..start + len` of the record `accept` was given (inside its `mesh_u8` block).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BodyRef {
+    pub mesh: Id,
+    pub surface: u32,
+    pub start: usize,
+    pub len: usize,
+}
+
+/// Calls `f(hash, required)` for each name a table entry contributes to names(S): an `ok` image
+/// texture's hash (required when inline-sized) and each variant's (never required).
+fn texture_names(t: &Texture, inline_max: i64, f: &mut impl FnMut(Hash, bool)) {
+    if t.kind != TextureKind::Image || t.status != EntryStatus::Ok {
+        return;
+    }
+    if let Some(h) = t.hash {
+        f(h, t.payload_bytes <= inline_max);
+    }
+    for v in &t.variants {
+        f(v.hash, false);
+    }
+}
+
+/// An `ok` mesh's static surfaces (a dynamic surface has no hash and no name).
+fn mesh_names(m: &Mesh, inline_max: i64, f: &mut impl FnMut(Hash, bool)) {
+    if m.status != EntryStatus::Ok {
+        return;
+    }
+    for s in &m.surfaces {
+        if let Some(h) = s.hash {
+            f(h, s.payload_bytes <= inline_max);
+        }
+    }
+}
+
+/// An `ok` shader whose source is `payload`.
+fn shader_names(s: &Shader, inline_max: i64, f: &mut impl FnMut(Hash, bool)) {
+    if s.status != EntryStatus::Ok || s.source != Some(ShaderSource::Payload) {
+        return;
+    }
+    if let Some(h) = s.hash {
+        f(h, s.payload_bytes <= inline_max);
+    }
+}
+
+/// names(S) in **table order** (render-stream-11.md decision 2): textures by id (each texture's
+/// `hash`, then its variants in list order), then meshes by id (static surfaces in order), then
+/// shaders by id, each hash at its first occurrence. The records a /11 host sends before a target
+/// T on a connection whose previous transaction was B are this list of T minus inline(B).
+pub fn names_in_table_order(st: &ResolvedState) -> Vec<Hash> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut add = |h: Hash, _: bool| {
+        if seen.insert(h) {
+            out.push(h);
+        }
+    };
+    for t in st.textures.values() {
+        texture_names(t, 0, &mut add);
+    }
+    for m in st.meshes.values() {
+        mesh_names(m, 0, &mut add);
+    }
+    for s in st.shaders.values() {
+        shader_names(s, 0, &mut add);
+    }
+    out
+}
+
+fn same_shape(a: &MeshSurface, b: &MeshSurface) -> bool {
+    a.primitive == b.primitive
+        && a.format == b.format
+        && a.vertex_count == b.vertex_count
+        && a.index_count == b.index_count
+}
+
 // ------------------------------------------------------------------------------------- validator
 
 pub struct Validator {
@@ -418,6 +521,22 @@ pub struct Validator {
     /// Per tx entry: it was absent from the previous state (canvases, items, textures, meshes,
     /// shaders, materials).
     was_new: [Vec<bool>; 6],
+    // ---- /11 (render-stream-11.md "Resource retention"); empty below /11.
+    /// Reference counts of names(S) for the newest accepted state, updated from each delta.
+    names: HashMap<Hash, NameRc>,
+    /// The resource records accepted since the previous transaction (`resource-unnamed`).
+    since_tx: Vec<Hash>,
+    /// Scratch: the current transaction's change to `names`, from its undo log.
+    names_delta: HashMap<Hash, NameRc>,
+    /// The hashes the last transaction pruned out of C, ascending.
+    pruned: Vec<Hash>,
+    /// The hashes that left names(S) at the last transaction (so left C ∪ names(S)), ascending.
+    released: Vec<Hash>,
+    /// The last transaction's dynamic mesh bodies, in entry and surface order.
+    bodies: Vec<BodyRef>,
+    /// `content-version-stable` (WB): the first patch item whose commands equal the base's under
+    /// a moved `content_version`, found while resolving.
+    cv_stable: Option<Id>,
 }
 
 fn where_(seq: i64) -> String {
@@ -513,6 +632,7 @@ fn mesh_states_equal(a: &Mesh, b: &Mesh) -> bool {
         && a.surfaces.len() == b.surfaces.len()
         && a.surfaces.iter().zip(&b.surfaces).all(|(x, y)| {
             x.hash == y.hash
+                && x.body_sha256 == y.body_sha256
                 && ieq(x.payload_bytes, y.payload_bytes)
                 && x.primitive == y.primitive
                 && ieq(x.format, y.format)
@@ -1307,8 +1427,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=10).contains(&opts.version),
-            "render-stream version 2..=10"
+            (2..=11).contains(&opts.version),
+            "render-stream version 2..=11"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1404,6 +1524,13 @@ impl Validator {
             dirty: Dirty::default(),
             removed: Removed::default(),
             was_new: Default::default(),
+            names: HashMap::new(),
+            since_tx: Vec::new(),
+            names_delta: HashMap::new(),
+            pruned: Vec::new(),
+            released: Vec::new(),
+            bodies: Vec::new(),
+            cv_stable: None,
         })
     }
 
@@ -1443,6 +1570,80 @@ impl Validator {
         self.end_seen
     }
 
+    /// /11: the hashes the last accepted transaction pruned out of C (C ← C ∩ names(S)),
+    /// ascending. Empty below /11, and after a resource or end record.
+    pub fn pruned(&self) -> &[Hash] {
+        &self.pruned
+    }
+    /// /11: the hashes that left names(S) at the last accepted transaction, ascending. Since
+    /// C ⊆ names(S) after every transaction, these are exactly the hashes that left
+    /// C ∪ names(S_n); a receiver's retention set H also holds names(S_d), which it keeps itself.
+    /// [`Validator::pruned`] is a subset.
+    pub fn released(&self) -> &[Hash] {
+        &self.released
+    }
+    /// /11: whether `hash` is in the carried set C right now (records accepted since the last
+    /// transaction included).
+    pub fn is_carried(&self, hash: &Hash) -> bool {
+        self.opts.version >= 11 && self.carried.contains_key(hash)
+    }
+    /// /11: the carried set C (unordered).
+    pub fn carried(&self) -> impl Iterator<Item = &Hash> + '_ {
+        self.carried.keys().filter(move |_| self.opts.version >= 11)
+    }
+    /// /11: |C|.
+    pub fn carried_len(&self) -> usize {
+        if self.opts.version >= 11 {
+            self.carried.len()
+        } else {
+            0
+        }
+    }
+    /// /11: whether the newest accepted state names `hash` (names(S), variants included).
+    pub fn names_contains(&self, hash: &Hash) -> bool {
+        self.names.contains_key(hash)
+    }
+    /// /11: |names(S)| of the newest accepted state.
+    pub fn names_len(&self) -> usize {
+        self.names.len()
+    }
+    /// /11: the last accepted transaction's dynamic mesh bodies (byte ranges of the record given
+    /// to `accept`), for each mesh entry with a non-null `u8`, in entry then surface order.
+    pub fn dynamic_bodies(&self) -> &[BodyRef] {
+        &self.bodies
+    }
+
+    /// render-stream-11.md decision 9, `inline-fetch-zero`: may a /11 receiver GET `hash` over
+    /// HTTP now? Refused when `hash` is a non-variant name of the newest accepted state, or is in
+    /// C, with `payload_bytes <= inline_max_bytes` (such a hash always arrives inline). Below /11
+    /// every fetch is allowed.
+    pub fn check_fetch(&self, hash: &Hash) -> Result<(), Error> {
+        if self.opts.version < 11 {
+            return Ok(());
+        }
+        let inline_max = self.session.resources.inline_max_bytes;
+        let named = self.names.get(hash).is_some_and(|n| n.required > 0);
+        let carried = self
+            .carried
+            .get(hash)
+            .is_some_and(|c| c.len() <= inline_max);
+        if named || carried {
+            return Err(Error::new(
+                "inline-fetch-zero",
+                format!(
+                    "hash {} is {} with payload_bytes <= inline_max_bytes {inline_max}: a /11 receiver never fetches it",
+                    hash.to_hex(),
+                    if named {
+                        "named by the newest accepted state"
+                    } else {
+                        "carried"
+                    }
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// `finish()`: the end-of-stream verdict.
     pub fn finish(&self) -> Result<(), Error> {
         if self.end_seen {
@@ -1474,6 +1675,11 @@ impl Validator {
         );
         prof::add(prof::META, t);
         let decoded = decoded?;
+        if self.opts.version >= 11 {
+            self.pruned.clear();
+            self.released.clear();
+            self.bodies.clear();
+        }
         let accepted = match decoded {
             Decoded::Session(_) => {
                 return Err(Error::new(
@@ -1502,12 +1708,20 @@ impl Validator {
         r: ResourceMeta,
     ) -> Result<Accepted, Error> {
         if self.carried.contains_key(&r.hash) {
+            // /11: "h ∈ C" (C is pruned after every transaction); /2-/10: ever carried.
             return Err(Error::new(
                 "resource-duplicate",
-                format!(
-                    "record at offset {offset}: hash {} already carried earlier in this stream",
-                    r.hash.to_hex()
-                ),
+                if self.opts.version >= 11 {
+                    format!(
+                        "record at offset {offset}: hash {} is still carried (in C)",
+                        r.hash.to_hex()
+                    )
+                } else {
+                    format!(
+                        "record at offset {offset}: hash {} already carried earlier in this stream",
+                        r.hash.to_hex()
+                    )
+                },
             ));
         }
         let b = self.bufs.blocks[0];
@@ -1557,6 +1771,9 @@ impl Validator {
             }
         }
         self.carried.insert(r.hash, carried);
+        if self.opts.version >= 11 {
+            self.since_tx.push(r.hash);
+        }
         // P3-SP: reuse the last payload's buffer (one allocation per growth, not per record).
         let mut buf = self.last_inline.take().map(|(_, v)| v).unwrap_or_default();
         buf.clear();
@@ -1570,6 +1787,16 @@ impl Validator {
     }
 
     fn accept_end(&mut self, e: EndMeta) -> Result<Accepted, Error> {
+        // /11 `resource-unnamed` (decision 6): no record may follow the last transaction.
+        if let Some(h) = self.since_tx.first() {
+            return Err(Error::new(
+                "resource-unnamed",
+                format!(
+                    "the resource record for hash {} follows the last transaction (no transaction names it)",
+                    h.to_hex()
+                ),
+            ));
+        }
         if e.transactions != self.tx_count {
             return Err(Error::new(
                 "end-count-mismatch",
@@ -1602,6 +1829,12 @@ impl Validator {
     // --------------------------------------------------------------------------------- transaction
 
     fn accept_transaction(&mut self, record: &[u8], offset: usize) -> Result<Accepted, Error> {
+        if self.opts.early_prune {
+            // Sabotage `early-prune`: C ← C ∩ names(S_base) before this transaction is resolved,
+            // which drops the records it brings.
+            let names = &self.names;
+            self.carried.retain(|h, _| names.contains_key(h));
+        }
         let t = prof::start();
         let pre = self.pre_checks(offset);
         prof::add(prof::PRE_CHECKS, t);
@@ -1614,8 +1847,18 @@ impl Validator {
                 .map(|b| &record[b.start..b.start + b.len])
                 .unwrap_or(&[])
         };
-        let bl = [blk(0), blk(1), blk(2), blk(3), blk(4), blk(5), blk(6)];
-        self.apply(bl);
+        let bl = [
+            blk(0),
+            blk(1),
+            blk(2),
+            blk(3),
+            blk(4),
+            blk(5),
+            blk(6),
+            blk(7),
+        ];
+        let u8_start = blocks.get(7).map(|b| b.start).unwrap_or(0);
+        self.apply(bl, u8_start);
         self.reindex_dirty();
         prof::add(prof::RESOLVE, t);
         let t = prof::start();
@@ -1819,6 +2062,9 @@ impl Validator {
         }
         let stride: u64 = if v >= 5 { 10 } else { 6 };
         let count = |i: usize| tx.blocks.get(i).map(|b| b.count);
+        if v >= 11 {
+            self.check_dynamic_meshes(offset)?;
+        }
         let expected_canvas = stride * tx.canvases.len() as u64;
         if count(1) != Some(expected_canvas) {
             let code = if v >= 5 {
@@ -1872,6 +2118,131 @@ impl Validator {
                 tx.status.map(|s| s.as_str()).unwrap_or("?"),
                 tx.failures.len()
             )));
+        }
+        Ok(())
+    }
+
+    /// /11 (render-stream-11.md "Dynamic mesh surfaces", decision 4): per mesh entry
+    /// `mesh-dynamic`, then `mesh-u8-offset` over the entries and `mesh_u8`'s count, then
+    /// `payload-size` on each body; then `mm-offset` (decision 3: no multimesh entry claims a
+    /// float until PM1). Runs against the base state (before resolving).
+    fn check_dynamic_meshes(&self, offset: usize) -> Result<(), Error> {
+        let tx = &self.tx;
+        let full = tx.is_full();
+        let md = |d: String| Error::new("mesh-dynamic", format!("record at offset {offset}: {d}"));
+        for m in &tx.meshes {
+            let n_dyn = m.surfaces.iter().filter(|s| s.hash.is_none()).count();
+            if m.status != EntryStatus::Ok {
+                if m.u8.is_some() {
+                    return Err(md(format!(
+                        "mesh {} is \"{}\" but carries a non-null u8",
+                        m.id,
+                        m.status.as_str()
+                    )));
+                }
+                if n_dyn > 0 {
+                    return Err(md(format!(
+                        "mesh {} is \"{}\" but has a dynamic (hash null) surface",
+                        m.id,
+                        m.status.as_str()
+                    )));
+                }
+                continue;
+            }
+            if n_dyn > 0 && n_dyn < m.surfaces.len() {
+                return Err(md(format!(
+                    "mesh {} mixes static and dynamic surfaces",
+                    m.id
+                )));
+            }
+            if n_dyn == 0 {
+                if m.u8.is_some() {
+                    return Err(md(format!(
+                        "mesh {} is static (or has no surface) but carries a non-null u8",
+                        m.id
+                    )));
+                }
+                continue;
+            }
+            if m.u8.is_none() {
+                // "The bytes you hold": only in a patch whose base entry was already dynamic,
+                // with the same surface count and shapes.
+                let held = !full
+                    && self.state.meshes.get(&m.id).is_some_and(|old| {
+                        old.is_dynamic()
+                            && old.surfaces.len() == m.surfaces.len()
+                            && old
+                                .surfaces
+                                .iter()
+                                .zip(&m.surfaces)
+                                .all(|(a, b)| same_shape(a, b))
+                    });
+                if !held {
+                    return Err(md(format!(
+                        "dynamic mesh {} has a null u8, but {}",
+                        m.id,
+                        if full {
+                            "the transaction is full"
+                        } else {
+                            "its base entry is not a dynamic mesh of the same shape"
+                        }
+                    )));
+                }
+            }
+        }
+        let mut running = 0u64;
+        for m in &tx.meshes {
+            let Some(at) = m.u8 else { continue };
+            if at != running {
+                return Err(Error::new(
+                    "mesh-u8-offset",
+                    format!(
+                        "record at offset {offset}: mesh {} u8={at}, expected {running}",
+                        m.id
+                    ),
+                ));
+            }
+            for s in &m.surfaces {
+                running = running.saturating_add(s.payload_bytes as u64);
+            }
+        }
+        let u8_count = tx.blocks.get(7).map(|b| b.count).unwrap_or(0);
+        if u8_count != running {
+            return Err(Error::new(
+                "mesh-u8-offset",
+                format!(
+                    "record at offset {offset}: block \"mesh_u8\" declares count {u8_count}, the meshes' bodies total {running}"
+                ),
+            ));
+        }
+        for m in &tx.meshes {
+            if m.status != EntryStatus::Ok {
+                continue;
+            }
+            for (k, s) in m.surfaces.iter().enumerate() {
+                if s.hash.is_some() {
+                    continue;
+                }
+                let need = payload::mesh_body_bytes(s.format, s.vertex_count, s.index_count);
+                if need != s.payload_bytes as u128 {
+                    return Err(Error::new(
+                        "payload-size",
+                        format!(
+                            "record at offset {offset}: mesh {} surface {k}'s body is payload_bytes {}, its shape needs {need}",
+                            m.id, s.payload_bytes
+                        ),
+                    ));
+                }
+            }
+        }
+        let mm = tx.blocks.get(8).map(|b| b.count).unwrap_or(0);
+        if mm != 0 {
+            return Err(Error::new(
+                "mm-offset",
+                format!(
+                    "record at offset {offset}: block \"mm_f32\" carries {mm} floats, but no multimesh entry claims any"
+                ),
+            ));
         }
         Ok(())
     }
@@ -2021,10 +2392,14 @@ impl Validator {
     /// `undo`. A full transaction removes the previous ids it omits; an entry bitwise identical to
     /// the one it replaces (most of a full transaction) is left in place and not marked dirty, so
     /// a full transaction costs what it changes beyond reading it.
-    fn apply(&mut self, bl: [&[u8]; 7]) {
+    /// `u8_start`: where `mesh_u8` (`bl[7]`) starts in the record, for [`BodyRef`]s.
+    fn apply(&mut self, bl: [&[u8]; 8], u8_start: usize) {
         let v = self.opts.version;
         let tx = &self.tx;
         let st = &mut self.state;
+        self.cv_stable = None;
+        self.bodies.clear();
+        let mesh_u8 = bl[7];
         self.undo.clear();
         self.dirty.clear();
         self.removed.clear();
@@ -2258,7 +2633,19 @@ impl Validator {
                             self.was_new[1].push(false);
                             continue;
                         }
-                        Some(old) => Some(std::mem::replace(old, item)),
+                        Some(old) => {
+                            // WB `content-version-stable` (/11, decision 7): a patch re-sends a
+                            // list equal to the base's only under the base's content_version.
+                            if v >= 11
+                                && !tx.is_full()
+                                && self.cv_stable.is_none()
+                                && old.content_version != item.content_version
+                                && commands_identical(&old.commands, &item.commands)
+                            {
+                                self.cv_stable = Some(it.id);
+                            }
+                            Some(std::mem::replace(old, item))
+                        }
                         None => {
                             st.items.insert(it.id, item);
                             None
@@ -2309,6 +2696,42 @@ impl Validator {
         if v >= 4 {
             for m in &tx.meshes {
                 let custom_aabb = m.f.map(|f| mesh_f32.arr(f as usize)).unwrap_or([0.0; 6]);
+                // /11 (render-stream-11.md "Resolution"): a dynamic surface carries its body's
+                // digest; a non-null `u8` replaces every body, a null one keeps the base's.
+                let dynamic = v >= 11
+                    && m.status == EntryStatus::Ok
+                    && m.surfaces.iter().any(|s| s.hash.is_none());
+                let mut surfaces_buf;
+                let surfaces: &[MeshSurface] = if dynamic {
+                    surfaces_buf = m.surfaces.clone();
+                    match m.u8 {
+                        Some(at) => {
+                            let mut p = at as usize;
+                            for (k, s) in surfaces_buf.iter_mut().enumerate() {
+                                let n = s.payload_bytes as usize;
+                                let body = mesh_u8.get(p..p + n).unwrap_or(&[]);
+                                s.body_sha256 = Some(wire::sha256(body));
+                                self.bodies.push(BodyRef {
+                                    mesh: m.id,
+                                    surface: k as u32,
+                                    start: u8_start + p,
+                                    len: n,
+                                });
+                                p += n;
+                            }
+                        }
+                        None => {
+                            if let Some(old) = st.meshes.get(&m.id) {
+                                for (s, o) in surfaces_buf.iter_mut().zip(&old.surfaces) {
+                                    s.body_sha256 = o.body_sha256;
+                                }
+                            }
+                        }
+                    }
+                    &surfaces_buf
+                } else {
+                    &m.surfaces
+                };
                 if st.meshes.get(&m.id).is_some_and(|old| {
                     old.origin == m.origin
                         && old.adopted_content == m.adopted_content
@@ -2316,7 +2739,7 @@ impl Validator {
                         && old.reason == m.reason
                         && old.version == m.version
                         && bits_eq(&old.custom_aabb, &custom_aabb)
-                        && old.surfaces == m.surfaces
+                        && old.surfaces == surfaces
                 }) {
                     self.was_new[3].push(false);
                     continue;
@@ -2329,7 +2752,7 @@ impl Validator {
                     reason: m.reason,
                     version: m.version,
                     custom_aabb,
-                    surfaces: m.surfaces.clone(),
+                    surfaces: surfaces.to_vec(),
                 };
                 let prev = st.meshes.insert(m.id, mesh);
                 self.was_new[3].push(prev.is_none());
@@ -2402,6 +2825,7 @@ impl Validator {
             }
         }
         self.reindex(false);
+        self.bodies.clear();
     }
 
     fn reindex_dirty(&mut self) {
@@ -2839,13 +3263,120 @@ impl Validator {
 
     /// Everything `accept` checks after `applyTransaction`, in order.
     fn post_checks(&mut self, offset: usize) -> Result<(), Error> {
+        if let Some(id) = self.cv_stable {
+            return Err(Error::new(
+                "content-version-stable",
+                format!("record at offset {offset}: item {id}'s commands equal the base's, but its content_version moved"),
+            ));
+        }
         self.check_shader_time(offset)?;
         self.check_invariants()?;
         self.check_delivery(offset)?;
         self.check_adoption(offset)?;
         self.check_versions(offset)?;
         self.check_resources(offset)?;
+        self.check_unnamed(offset)?;
         self.check_id_reuse(offset)
+    }
+
+    /// /11: computes the transaction's change to names(S) from its undo log (each changed or
+    /// removed entry's old names out, its new names in: O(delta)) into `names_delta`, then checks
+    /// `resource-unnamed`: every record accepted since the previous transaction is in names(S).
+    fn check_unnamed(&mut self, offset: usize) -> Result<(), Error> {
+        if self.opts.version < 11 {
+            return Ok(());
+        }
+        let inline_max = self.session.resources.inline_max_bytes;
+        let delta = &mut self.names_delta;
+        delta.clear();
+        let st = &self.state;
+        let mut add = |h: Hash, required: bool, by: i64| {
+            let e = delta.entry(h).or_default();
+            e.all += by;
+            if required {
+                e.required += by;
+            }
+        };
+        let mut ids: [Vec<Id>; 3] = Default::default();
+        for u in &self.undo {
+            match u {
+                Undo::Texture(id, prev) => {
+                    if let Some(p) = prev {
+                        texture_names(p, inline_max, &mut |h, r| add(h, r, -1));
+                    }
+                    ids[0].push(*id);
+                }
+                Undo::Mesh(id, prev) => {
+                    if let Some(p) = prev {
+                        mesh_names(p, inline_max, &mut |h, r| add(h, r, -1));
+                    }
+                    ids[1].push(*id);
+                }
+                Undo::Shader(id, prev) => {
+                    if let Some(p) = prev {
+                        shader_names(p, inline_max, &mut |h, r| add(h, r, -1));
+                    }
+                    ids[2].push(*id);
+                }
+                _ => {}
+            }
+        }
+        for v in ids.iter_mut() {
+            sorted_dedup(v);
+        }
+        for id in &ids[0] {
+            if let Some(t) = st.textures.get(id) {
+                texture_names(t, inline_max, &mut |h, r| add(h, r, 1));
+            }
+        }
+        for id in &ids[1] {
+            if let Some(m) = st.meshes.get(id) {
+                mesh_names(m, inline_max, &mut |h, r| add(h, r, 1));
+            }
+        }
+        for id in &ids[2] {
+            if let Some(s) = st.shaders.get(id) {
+                shader_names(s, inline_max, &mut |h, r| add(h, r, 1));
+            }
+        }
+        for h in &self.since_tx {
+            let now = self.names.get(h).map_or(0, |n| n.all)
+                + self.names_delta.get(h).map_or(0, |n| n.all);
+            if now <= 0 {
+                return Err(Error::new(
+                    "resource-unnamed",
+                    format!(
+                        "record at offset {offset}: the resource record for hash {} is not named by this transaction's resolved state",
+                        h.to_hex()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// /11: names(S) ← names(S) + delta, then the prune C ← C ∩ names(S). Every hash of C was
+    /// named by the base or brought by a record that S names (`resource-unnamed`), so a hash
+    /// leaves C exactly when its count drops to zero here.
+    fn commit_names(&mut self) {
+        self.since_tx.clear();
+        for (h, d) in self.names_delta.drain() {
+            if d.all == 0 && d.required == 0 {
+                continue;
+            }
+            let e = self.names.entry(h).or_default();
+            e.all += d.all;
+            e.required += d.required;
+            if e.all <= 0 {
+                self.names.remove(&h);
+                self.released.push(h);
+                if self.carried.remove(&h).is_some() {
+                    self.pruned.push(h);
+                }
+            }
+        }
+        self.released.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        self.pruned.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     }
 
     /// P3-TM (render-stream-10.md "Shader time"; `shader-time`): a /10 transaction carries
@@ -3357,25 +3888,36 @@ impl Validator {
         let mut declared_stack = false;
         let mut declared_snap = false;
         let actual_stack = v >= 6 && ix.stack_ties > 0;
-        for e in &tx.unsupported {
-            let op = &*e.op;
-            let Some(item) = e.item else {
+        // WB (/11): a patch's null `unsupported` resolves to the base's list, which must still
+        // hold for the new state.
+        let entries: Box<dyn Iterator<Item = (&str, Option<i64>, &'static str)>> =
+            if tx.unsupported_null {
+                Box::new(
+                    st.unsupported
+                        .iter()
+                        .map(|u| (&*u.op, u.item.map(|i| i as i64), u.reason)),
+                )
+            } else {
+                Box::new(tx.unsupported.iter().map(|u| (&*u.op, u.item, u.reason)))
+            };
+        for (op, item, reason) in entries {
+            let Some(item) = item else {
                 if item_level {
                     return Err(mm(format!(
                         "session-level entry {op} follows an item-level entry"
                     )));
                 }
-                if e.reason == "canvas-light" && op != "canvas_light_attach_to_canvas" {
+                if reason == "canvas-light" && op != "canvas_light_attach_to_canvas" {
                     return Err(mm(format!(
                         "canvas-light entry names op {op}, expected canvas_light_attach_to_canvas"
                     )));
                 }
-                if v >= 6 && e.reason == "extra-canvas" {
+                if v >= 6 && reason == "extra-canvas" {
                     return Err(mm(format!(
                         "extra-canvas entry (op {op}) is never valid at /6 (a canvas attached to the root viewport is supported)"
                     )));
                 }
-                match e.reason {
+                match reason {
                     "canvas-stacking-tie" => {
                         if op != "viewport_set_canvas_stacking" {
                             return Err(mm(format!("canvas-stacking-tie entry names op {op}, expected viewport_set_canvas_stacking")));
@@ -3443,7 +3985,7 @@ impl Validator {
             last_item = item;
             last_op = op.as_bytes();
             let x = &ix.item[&id];
-            match e.reason {
+            match reason {
                 "unsupported-op"
                 | "unknown-texture"
                 | "canvas-texture-headless"
@@ -3457,10 +3999,10 @@ impl Validator {
                             Command::Unsupported { name, .. } if &**name == op => Some(reason),
                             _ => None,
                         });
-                    if actual != Some(e.reason) {
+                    if actual != Some(reason) {
                         return Err(mm(format!(
                             "{} entry ({item}, {op}) has no matching command",
-                            e.reason
+                            reason
                         )));
                     }
                     d_ops += 1;
@@ -3635,11 +4177,16 @@ impl Validator {
     fn check_resources(&self, offset: usize) -> Result<(), Error> {
         let tx = &self.tx;
         let inline_max = self.session.resources.inline_max_bytes;
+        let tail = if self.opts.version >= 11 {
+            "is not in the carried set C"
+        } else {
+            "never arrived as a resource record"
+        };
         let missing = |what: String, h: &Hash, pb: i64| {
             Error::new(
                 "resource-missing",
                 format!(
-                    "record at offset {offset}: {what}'s hash {} (payload_bytes {pb} <= inline_max_bytes {inline_max}) never arrived as a resource record",
+                    "record at offset {offset}: {what}'s hash {} (payload_bytes {pb} <= inline_max_bytes {inline_max}) {tail}",
                     h.to_hex()
                 ),
             )
@@ -3747,14 +4294,16 @@ impl Validator {
                 continue;
             }
             for s in &m.surfaces {
+                // /11: a dynamic surface has no payload hash (its body is in `mesh_u8`).
+                let Some(sh) = s.hash else { continue };
                 if s.payload_bytes > inline_max {
                     continue;
                 }
-                match self.carried.get(&s.hash) {
+                match self.carried.get(&sh) {
                     None => {
                         return Err(missing(
                             format!("mesh {}'s surface", m.id),
-                            &s.hash,
+                            &sh,
                             s.payload_bytes,
                         ))
                     }
@@ -3775,7 +4324,7 @@ impl Validator {
                                 "resource-payload",
                                 format!(
                                     "record at offset {offset}: the resource for hash {} decodes as {} vertex_count {vertex_count}, mesh {} declares {} vertex_count {}",
-                                    s.hash.to_hex(),
+                                    sh.to_hex(),
                                     primitive.as_str(),
                                     m.id,
                                     s.primitive.as_str(),
@@ -3854,15 +4403,18 @@ impl Validator {
         st.encoding = tx.encoding();
         st.status = tx.status.unwrap_or(TxStatus::Ok);
         st.failures = std::mem::take(&mut tx.failures);
-        st.unsupported = tx
-            .unsupported
-            .drain(..)
-            .map(|u| UnsupportedEntry {
-                op: u.op,
-                item: u.item.map(|i| i as Id),
-                reason: u.reason,
-            })
-            .collect();
+        // WB (/11): a patch's null `unsupported` keeps the base's list.
+        if !tx.unsupported_null {
+            st.unsupported = tx
+                .unsupported
+                .drain(..)
+                .map(|u| UnsupportedEntry {
+                    op: u.op,
+                    item: u.item.map(|i| i as Id),
+                    reason: u.reason,
+                })
+                .collect();
+        }
         st.unknown_items = tx.unknown_items;
         st.shader_time = self.shader_time;
 
@@ -3926,6 +4478,9 @@ impl Validator {
             self.full_count += 1;
         } else {
             self.patch_count += 1;
+        }
+        if self.opts.version >= 11 {
+            self.commit_names();
         }
         // Recycle the replaced items' buffers.
         for u in self.undo.drain(..) {
@@ -4098,6 +4653,7 @@ mod tests {
         let read = |rel: &str| std::fs::read(dir.join(rel)).ok();
         let opts = crate::goldens::GoldenOptions {
             verify_payload_hashes: false,
+            ..Default::default()
         };
         let checks = crate::goldens::run_golden(2, &read, opts);
         let failed: Vec<_> = checks
@@ -4112,7 +4668,7 @@ mod tests {
     #[test]
     fn delta_names_every_change_in_the_goldens() {
         let dir = protocol_dir();
-        for v in (2..=6u8).chain([10]) {
+        for v in (2..=6u8).chain([10, 11]) {
             for f in ["full", "patch", "inline"] {
                 let data = std::fs::read(dir.join(format!("golden-{v}/{f}.rs{v}"))).unwrap();
                 assert!(run_with_delta_check(&data, v) > 0);

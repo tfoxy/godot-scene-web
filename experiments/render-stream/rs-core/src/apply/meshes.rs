@@ -54,6 +54,9 @@ pub struct MeshResidency {
     pub uploads: Vec<MeshUpload>,
     /// Meshes whose drawn geometry changed this transaction (items naming them re-lower).
     pub changed: Vec<Id>,
+    /// /11: the named dynamic meshes this transaction left undrawn (their geometry travels by
+    /// mesh id in `mesh_u8`, which this applier does not upload yet: W11c).
+    pub dynamic_undrawn: u64,
 }
 
 impl MeshResidency {
@@ -87,6 +90,7 @@ impl MeshResidency {
     ) {
         self.uploads.clear();
         self.changed.clear();
+        self.dynamic_undrawn = 0;
         if first {
             self.named_by.clear();
         }
@@ -122,7 +126,7 @@ impl MeshResidency {
                 state
                     .meshes
                     .get(id)
-                    .is_none_or(|m| m.status == EntryStatus::Freed)
+                    .is_none_or(|m| m.status == EntryStatus::Freed || m.is_dynamic())
             })
             .copied()
             .collect();
@@ -150,8 +154,18 @@ impl MeshResidency {
             let surfaces: Vec<(Hash, &MeshGeometry)> = entry
                 .surfaces
                 .iter()
-                .filter_map(|s| payloads.meshes.get(&s.hash).map(|g| (s.hash, g)))
+                .filter_map(|s| {
+                    let h = s.hash?;
+                    payloads.meshes.get(&h).map(|g| (h, g))
+                })
                 .collect();
+            if entry.is_dynamic() {
+                // /11: a dynamic mesh's geometry travels by mesh id in the transaction; this
+                // applier does not upload it yet (W11c keys geometry by mesh id), so it stays
+                // unresident and undrawn, and is counted.
+                self.dynamic_undrawn += 1;
+                continue;
+            }
             if surfaces.len() != entry.surfaces.len() {
                 // A payload is missing (the adapter blocks apply until it is provided).
                 continue;

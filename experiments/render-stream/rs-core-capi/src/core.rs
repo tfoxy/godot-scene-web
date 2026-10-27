@@ -30,8 +30,12 @@ pub const VERSION: u8 = 6;
 /// way (render-stream-9.md): the apply layer ignores `variants` and the delivery declaration, so a
 /// /9 stream draws its `decoded` payloads exactly as /8 would. The live hello still offers .6/.7 only.
 /// CG1 adds render-stream/10 (render-stream-10.md): the planner re-issues each item's
-/// `canvas_group` and `copy_to_backbuffer` state and the receiver's Godot does the rest.
-pub const VERSIONS: [u8; 5] = [6, 7, 8, 9, 10];
+/// `canvas_group` and `copy_to_backbuffer` state and the receiver's Godot does the rest. W11a adds
+/// render-stream/11 (render-stream-11.md decision 12): rs-core validates the carried set and the
+/// dynamic meshes, and the planner draws static meshes as before and leaves dynamic ones undrawn
+/// (counted `meshes_dynamic_undrawn`, typed `mesh-dynamic`) until W11d. The live hello does not
+/// offer .11 (W11d).
+pub const VERSIONS: [u8; 6] = [6, 7, 8, 9, 10, 11];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -210,7 +214,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6, /7, /8, /9 and /10, not /{version}"),
+                format!("the receiver core speaks render-stream/6, /7, /8, /9, /10 and /11, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;
@@ -234,6 +238,7 @@ impl Core {
                 DigestPolicy::Inline
             },
             verify_payload_hashes: true,
+            early_prune: false,
         };
         let validator = match Validator::new(record, offset, opts) {
             Ok(v) => v,

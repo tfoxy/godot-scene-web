@@ -58,7 +58,12 @@ fn replay_at(
     let name = path.display().to_string();
     let data = std::fs::read(path).unwrap();
     // A golden directory's own payloads when it has them (golden-9, golden-10), else golden-6's.
-    let own = path.parent().unwrap().join("payloads");
+    // golden-11's own directory holds only dynamic bodies (they travel in `mesh_u8`): its hashed
+    // payloads are golden-10's.
+    let mut own = path.parent().unwrap().join("payloads");
+    if path.parent().unwrap().ends_with("golden-11") {
+        own = path.parent().unwrap().join("../golden-10/payloads");
+    }
     let mut store = if own.is_dir() {
         payloads_in(&own)
     } else {
@@ -291,6 +296,11 @@ fn the_session_is_at_the_streams_version() {
     let rs10 = golden7().join("../golden-10/full.rs10");
     assert_eq!(session_at(&rs10, 10).0, KIND_SESSION);
     assert_eq!(session_at(&rs10, 9).0, KIND_ERROR);
+    // W11a: a /11 file opens at /11 and only at /11.
+    let rs11 = golden7().join("../golden-11/full.rs11");
+    assert_eq!(session_at(&rs11, 11).0, KIND_SESSION);
+    assert_eq!(session_at(&rs11, 10).0, KIND_ERROR);
+    assert_eq!(session_at(&rs10, 11).0, KIND_ERROR);
     assert_eq!(session_at(&rs8, 6).0, KIND_ERROR);
     assert_eq!(session_at(&rs6, 8).0, KIND_ERROR);
     // Only 6, 7 and 8: an older version is not a receiver stream.
@@ -335,6 +345,61 @@ fn golden_10_reissues_the_backbuffer_state() {
     // golden-9's states at /9 issue neither op (the keys do not exist below /10).
     let (_, totals) = replay_counting(&golden().join("../golden-9/full.rs9"), 9, false, "");
     assert_eq!(totals, (0, 0));
+}
+
+/// W11a (render-stream-11.md decision 12): golden-11 replays through the capi at /11. States 1 to
+/// 10 are golden-10's, so the canvas-group and back-buffer calls are golden-10's; from state 11
+/// the dynamic meshes are left undrawn (typed `mesh-dynamic`, counted `meshes_dynamic_undrawn`)
+/// and the delta walk still equals the full scan.
+#[test]
+fn golden_11_replays_with_dynamic_meshes_undrawn() {
+    let g11 = golden().join("../golden-11");
+    for name in ["full.rs11", "patch.rs11", "inline.rs11"] {
+        let path = g11.join(name);
+        let (honest, totals) = replay_counting(&path, 11, false, "");
+        assert_eq!(totals, (5, 3), "{name}");
+        assert!(
+            replay_at(&path, 11, true, "") == honest,
+            "{name}: delta vs full scan"
+        );
+    }
+    // The stats name the undrawn dynamic meshes at /11.
+    let data = std::fs::read(g11.join("patch.rs11")).unwrap();
+    let mut store = payloads_in(&g11.join("../golden-10/payloads"));
+    let mut core = Core::new();
+    let spans = wire::split_records(&data, 11).unwrap();
+    assert_eq!(core.session(&data, spans[0].offset, 11), KIND_SESSION);
+    core.begin_session();
+    let mut undrawn = 0;
+    let mut typed = false;
+    for s in &spans[1..] {
+        let kind = core.accept(&data, s.offset);
+        assert_ne!(kind, KIND_ERROR);
+        if kind == KIND_RESOURCE {
+            assert!(core.resource_payload());
+            let p = core.text.clone();
+            store.insert(wire::sha256(&p), p);
+            continue;
+        }
+        if kind != KIND_TRANSACTION {
+            continue;
+        }
+        let (hashes, library) = needed(&mut core);
+        for h in hashes {
+            core.provide(&h, &store[&Hash::from_hex(&h).unwrap()])
+                .unwrap();
+        }
+        for h in library {
+            core.provide_library(&h, false, "no library in the golden test");
+        }
+        core.apply().unwrap();
+        if mentions(&core.vt.out, "meshes_dynamic_undrawn") {
+            undrawn += stat_int(&core.vt.out, "meshes_dynamic_undrawn");
+        }
+        typed |= mentions(&core.vt.out, "mesh-dynamic");
+    }
+    assert!(undrawn > 0, "no dynamic mesh was counted undrawn");
+    assert!(typed, "no add_mesh command was typed mesh-dynamic");
 }
 
 /// G7o2 (D31): a deferred-digest session answers every record without its sha256, and

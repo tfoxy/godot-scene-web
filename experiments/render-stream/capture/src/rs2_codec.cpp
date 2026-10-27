@@ -278,8 +278,15 @@ void append_canvas_texture(std::string &out, const TextureEntry &t) {
 // present) onto `mesh_f32` and recording the resulting offset as "f" -- the same running-offset
 // pattern cmd_f32/"f" uses for commands, except here the stride is fixed (0 or 6 floats) rather
 // than kind-dependent.
+//
+// render-stream-11.md "Mesh entry" (`mesh_u8` non-null exactly at /11): the key `u8` right after
+// `f`. A dynamic `ok` mesh writes `hash: null` per surface and, unless `bodies_held`, appends its
+// surface bodies (in surface order) to `mesh_u8`, recording the running offset as `u8`. Every
+// other entry (static, unsupported, freed) writes `"u8":null`.
 void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<float> &mesh_f32,
-                       bool v8) {
+                       bool v8, std::vector<std::uint8_t> *mesh_u8 = nullptr,
+                       bool bodies_held = false) {
+  const bool dynamic = mesh_u8 != nullptr && mesh.dynamic && mesh.status == MeshStatus::Ok;
   out += "{\"id\":";
   append_json_int(out, mesh.id);
   if (v8) {
@@ -308,6 +315,19 @@ void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<floa
   } else {
     out += "null";
   }
+  if (mesh_u8 != nullptr) {
+    out += ",\"u8\":";
+    if (dynamic && !bodies_held) {
+      append_json_int(out, mesh_u8->size());
+      for (const MeshSurface &s : mesh.surfaces) {
+        if (s.body != nullptr) {
+          mesh_u8->insert(mesh_u8->end(), s.body->begin(), s.body->end());
+        }
+      }
+    } else {
+      out += "null";
+    }
+  }
   out += ",\"surfaces\":[";
   for (std::size_t i = 0; i < mesh.surfaces.size(); ++i) {
     if (i != 0) {
@@ -315,7 +335,11 @@ void append_mesh_entry(std::string &out, const MeshEntry &mesh, std::vector<floa
     }
     const MeshSurface &s = mesh.surfaces[i];
     out += "{\"hash\":";
-    append_json_string(out, s.hash);
+    if (dynamic) {
+      out += "null";
+    } else {
+      append_json_string(out, s.hash);
+    }
     out += ",\"payload_bytes\":";
     append_json_int(out, s.payload_bytes);
     out += ",\"primitive\":";
@@ -571,6 +595,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V11) {
+    return std::vector<std::uint8_t>(kMagicV11.begin(), kMagicV11.end());
+  }
   if (version == ProtocolVersion::V10) {
     return std::vector<std::uint8_t>(kMagicV10.begin(), kMagicV10.end());
   }
@@ -601,7 +628,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V10
+      session.version == ProtocolVersion::V11
+          ? kProtocolV11
+          : session.version == ProtocolVersion::V10
           ? kProtocolV10
           : session.version == ProtocolVersion::V9
           ? kProtocolV9
@@ -763,6 +792,16 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
                                 session.resources.texture_delivery.encoder);
     m += "}";
   }
+  if (session.version == ProtocolVersion::V11) {
+    // render-stream-11.md "Session record": mesh_dynamic, last, right after texture_delivery.
+    m += ",\"mesh_dynamic\":{\"mode\":";
+    append_json_string(m, to_wire(session.resources.mesh_dynamic.mode));
+    m += ",\"frames\":";
+    append_json_int(m, session.resources.mesh_dynamic.frames);
+    m += ",\"max_bytes\":";
+    append_json_int(m, session.resources.mesh_dynamic.max_bytes);
+    m += "}";
+  }
   m += "}";
 
   if (is_v5) {
@@ -876,7 +915,10 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   // (meaning "V6 or later") is only needed for the unknown_items version gate below and the
   // canvas layer/sublayer keys /6 added.
   // render-stream-10.md: /10 is /9 plus the two back-buffer item keys and the backbuffer_f32 block.
-  const bool v10 = transaction.version == ProtocolVersion::V10;
+  // v10 means "V10 or later"; render-stream-11.md: /11 is /10 plus the mesh `u8` key, null dynamic
+  // surface hashes, a patched `unsupported` and the blocks mesh_u8 and mm_f32.
+  const bool v11 = transaction.version == ProtocolVersion::V11;
+  const bool v10 = v11 || transaction.version == ProtocolVersion::V10;
   const bool v9 = v10 || transaction.version == ProtocolVersion::V9;
   const bool v8 = v9 || transaction.version == ProtocolVersion::V8;
   const bool is_v6 = transaction.version == ProtocolVersion::V6 ||
@@ -911,8 +953,11 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
   m += "]";
 
-  m += ",\"unsupported\":[";
-  for (std::size_t i = 0; i < transaction.unsupported.size(); ++i) {
+  // render-stream-11.md "Patched `unsupported`": null in a /11 patch whose list equals the base's.
+  const bool unsupported_null =
+      v11 && transaction.encoding == Encoding::Patch && transaction.unsupported_as_base;
+  m += unsupported_null ? ",\"unsupported\":null" : ",\"unsupported\":[";
+  for (std::size_t i = 0; !unsupported_null && i < transaction.unsupported.size(); ++i) {
     if (i != 0) {
       m += ",";
     }
@@ -929,7 +974,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     append_json_string(m, to_wire(unsupported.reason));
     m += "}";
   }
-  m += "]";
+  if (!unsupported_null) {
+    m += "]";
+  }
 
   // protocol/unknown-item-skip.md "Transaction": in a session that declares
   // `unknown_item_policy: "skip"` (and only then, at /4, /5 and /6), every transaction carries
@@ -1375,13 +1422,19 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   m += "]";
 
   std::vector<float> mesh_f32;
+  // render-stream-11.md "Transaction blocks": the dynamic surface bodies, `u8` running over the
+  // mesh entries in entry order.
+  std::vector<std::uint8_t> mesh_u8;
   if (is_v4) {
     m += ",\"meshes\":[";
     for (std::size_t i = 0; i < transaction.meshes.size(); ++i) {
       if (i != 0) {
         m += ",";
       }
-      append_mesh_entry(m, transaction.meshes[i], mesh_f32, v8);
+      const MeshEntry &mesh = transaction.meshes[i];
+      const bool held = v11 && std::binary_search(transaction.mesh_bodies_held.begin(),
+                                                  transaction.mesh_bodies_held.end(), mesh.id);
+      append_mesh_entry(m, mesh, mesh_f32, v8, v11 ? &mesh_u8 : nullptr, held);
     }
     m += "]";
   }
@@ -1408,7 +1461,18 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
 
   m += ",";
-  if (v10) {
+  if (v11) {
+    // The ninth block mm_f32 is empty until PM1 adds the multimesh table (As built rule 3).
+    append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
+                                  {"canvas_f32", "f32", canvas_f32.size()},
+                                  {"cmd_f32", "f32", cmd_f32.size()},
+                                  {"cmd_i32", "i32", cmd_i32.size()},
+                                  {"mesh_f32", "f32", mesh_f32.size()},
+                                  {"param_f64", "f64", param_f64.size()},
+                                  {"backbuffer_f32", "f32", backbuffer_f32.size()},
+                                  {"mesh_u8", "u8", mesh_u8.size()},
+                                  {"mm_f32", "f32", 0}});
+  } else if (v10) {
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
                                   {"cmd_f32", "f32", cmd_f32.size()},
@@ -1447,6 +1511,10 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
   if (v10) {
     blocks.push_back(f32_payload(backbuffer_f32));
+  }
+  if (v11) {
+    blocks.push_back(u8_payload(std::move(mesh_u8)));
+    blocks.push_back(f32_payload(std::vector<float>()));
   }
   return assemble_record(m, blocks);
 }
