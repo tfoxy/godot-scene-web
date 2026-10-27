@@ -67,6 +67,19 @@ export function legRecording(dir: string): string {
   return join(dir, "recording.rs2");
 }
 
+/** WX (results/p3/wx.md): `GATE7_WEB_STORE=staged` replays a web file leg with the pre-WX store
+ * (RS_RECEIVER_WEB_STORE=staged: the whole store fetched into memory before the session), for the
+ * A/B; unset (or `lazy`) adds nothing, so the default page env is unchanged. A live receiver
+ * ignores the word. */
+export function webStoreEnv(
+  text: string | undefined = process.env.GATE7_WEB_STORE,
+): Record<string, string> {
+  if (text === undefined || text === "" || text === "lazy") return {};
+  if (text !== "staged")
+    throw new Error(`GATE7_WEB_STORE must be lazy or staged (got ${text})`);
+  return { RS_RECEIVER_WEB_STORE: "staged" };
+}
+
 export interface WebLegSpec {
   /** The leg's id, e.g. "receiver" or "sabotage-freeze/receiver" (the native leg's own path). */
   leg: string;
@@ -407,6 +420,7 @@ async function runOne(
   const env = {
     ...mapped.env,
     ...extra,
+    ...(ctx.kind === "gsw" ? {} : webStoreEnv()),
     RS_RECEIVER_EVIDENCE_URL: `/evidence/${nonce}`,
     RS_RECEIVER_BUILD_SHA256: ctx.buildSha256,
   };

@@ -92,7 +92,12 @@ import {
   lifecycleEnvOf,
   parseLifecycleSpec,
 } from "./gate7-lifecycle";
-import { type BackingStore, base64url, parseEnvTxt } from "./gate7-web-legs";
+import {
+  type BackingStore,
+  base64url,
+  parseEnvTxt,
+  webStoreEnv,
+} from "./gate7-web-legs";
 import { type MemSamplerHandle, startMemSampler } from "./gate7k-samplers";
 
 export type BrowserReceiverKind = "web" | "gsw";
@@ -148,8 +153,10 @@ export function webPageEnv(
     ...(ctx.kind === "web" && ctx.webFetch === "httpclient"
       ? { RS_RECEIVER_WEB_FETCH: "httpclient" }
       : {}),
+    ...(ctx.kind === "web" ? webStoreEnv() : {}),
   };
 }
+
 
 export interface BrowserLegRequest {
   /** The receiver leg directory: holds native-env.txt / native-argv.txt, receives the evidence. */
