@@ -39,7 +39,10 @@ cause it, and they hold on both ends:
 3. **dynamic mesh surfaces**: a mesh entry key `u8`, a surface `hash` that may be `null`, and a
    transaction block `mesh_u8` of type `u8`;
 4. the **multimesh table**, the `add_multimesh` command and a transaction block `mm_f32` (PM1);
-5. one session key, `resources.mesh_dynamic`, which declares the host's classification policy.
+5. one session key, `resources.mesh_dynamic`, which declares the host's classification policy;
+6. **a stable `content_version`** (WB): it moves only when an item's commands change, with one new
+   invariant, `content-version-stable` ("Warm wire budget (WB)");
+7. **a patched `unsupported`** (WB): `null` in a patch means "as the base".
 
 Everything else is /10's: record framing, the record sha256, canonical JSON, every other table and
 payload, out-of-band delivery, HTTP routes and D7's serving rule, and the hello (/9's fifteen keys,
@@ -422,6 +425,8 @@ meta.
 | `multimesh-entry`, `multimesh-ref`, `multimesh-version`, `mm-offset` | new (PM1) | particles-multimesh-design.md |
 | `mesh-dynamic-policy` | session | "Session record" |
 | `bad-magic` | framing | `GRSB` only |
+| `content-version-stable` | new (WB) | a patch entry carries `commands` equal to the base's (JSON and floats, by bit pattern) under a moved `content_version` |
+| `unsupported` | transaction schema (WB) | `null` legal in a patch only; it resolves to the base's list |
 
 Below /11 every rule is /10's, byte for byte. The TypeScript checkers change with it:
 
@@ -552,6 +557,129 @@ recur, and the bytes rise by 6 %. With `auto` those meshes are dynamic, and /11 
 The map is unchanged within 0.4 %. Multimesh adds P3-PM's 2,944 B a combat frame (+1.4 %), which
 the recordings cannot show (the hooks did not exist).
 
+## Warm wire budget (WB)
+
+WB ([results/p3/wb.md](../results/p3/wb.md), `scripts/lib/wire-budget.py`) measured where a warm
+transaction's bytes go in both STS2 recordings, and what each candidate coding saves. Warm combat
+(`a8-2`, per transaction, at 60 fps):
+
+| | bytes | Mbps |
+| - | -: | -: |
+| /10 transaction record | 176,480 | 84.7 |
+| /11 as designed above | 210,343 | 101.0 |
+| of which item state JSON / command JSON / command floats / `item_f32` | 63,736 / 32,821 / 24,406 / 12,499 | |
+| of which mesh bodies / mesh entries / `unsupported` | 39,012 / 32,678 / 9,512 | |
+
+Every byte is draw-state churn. **163 of the 174 items in a combat patch carry nothing new**: STS2
+redraws them every frame, and each `canvas_item_clear` and add moves `content_version`. Their
+header, floats and commands all equal the base's, and they make up 120,878 B. On the menu, all 38
+patched items are like this (19,478 B).
+
+### Decisions
+
+Each measured win and where it belongs:
+
+| change | saving (combat, measured) | where |
+| ------ | ------------------------- | ----- |
+| **stable `content_version`** (below) | −120,878 B raw (−57 %); about 70 % of the meta the receivers parse | **/11** (W11a invariant, W11b capture) |
+| **patched `unsupported`** (below) | −9,512 B raw (−4.9 KB of the map's 17.6 KB) | **/11** (W11a) |
+| **zstd-3 with the base message as prefix** (transport, below) | 210,343 → 12,682 B; lean 79,968 → 12,471 (6.0 Mbps) | **/11's live transport option, on by default** (W11t) |
+| zstd per message, no context | → 36,859 B (17.7 Mbps) | the fallback when the base is unknown (a full transaction) |
+| zstd streaming (one context a connection) | → 12,751 B, equal to base-prefix | not worth it: per connection, so it breaks P3-SP's shared encodes |
+| zstd with a trained dictionary | → 16,598 B (8.0 Mbps) | not worth it: worse than base-prefix, and the dictionary must be distributed |
+| permessage-deflate (context takeover) | → 40,340 B (19.4 Mbps): the 32 KB window cannot reach the previous frame | not the default: Godot's `WebSocketPeer` has no extension support, so it is browser-only |
+| zstd-9 instead of 3 | −1 to −6 %, 5x the host time (2.2 ms) | not worth it |
+| delta-coded transforms and item floats by item id (XOR, then compress) | 12.5 KB + 24.5 KB of floats → 0.26 KB. Base-prefix zstd already gets them to the same size | **not worth it**: no wire change for item or command floats |
+| XOR-delta mesh bodies against the base's body of the same mesh | lean base-prefix 12,471 → 10,322 B (−1 Mbps) | **final binary-structure swap**, with the quantized tier |
+| quantized mesh bodies: AABB-relative u16 positions, u16 UVs | with XOR: → 5,586 B (2.7 Mbps); max error 0.05 px | **final binary-structure swap** |
+| quantized item and command floats (fixed-point positions, u8 colours) | 25 KB raw, < 0.3 KB once compressed | final swap at most; transform linear parts and overbright colours stay f32 |
+| binary structure instead of canonical JSON | 42 KB of key names raw, ~0 once compressed; meta is 43 % of the GSW core's time | **final binary-structure swap** (deferred until after /11 and /12, as agreed) |
+
+### Stable `content_version` (/11)
+
+- **Capture (W11b).** At /11 the mirror keeps an item's published command list (its commands and
+  their floats). When a frame's re-recorded list is byte-identical to the published one, the
+  snapshot restores the published `content_version`. The item then leaves the patch unless its
+  state or floats moved.
+  - The comparison is one memcmp of the item's command buffer, done when the item was cleared
+    this frame.
+  - Below /11 the counter moves as today, so /2–/10 stay byte-identical.
+- **Wire rule.** At /11, `content_version` in T differs from B's only if T's command list differs
+  from B's. When it differs, `commands` is non-null, as at /1.
+- **Validator (W11a).** `content-version-stable` rejects a patch entry whose non-null `commands`
+  equal the base's resolved commands, by JSON value and by float bit pattern, under a moved
+  `content_version`. The validator already holds the base's commands, so the check costs one
+  comparison per re-sent list.
+- **Sabotage.** `cv-churn` (capture: bump the counter on every re-record, today's behaviour) fails
+  `content-version-stable` on `fixtures/capture-scale` and on `gate6-scene` `animate`.
+- **Predicted:**
+  - combat 210,343 → 89,465 B raw, and to 79,968 B with the next rule;
+  - menu 41,844 → 17,374 B;
+  - parse: about 0.3 of the GSW core's 0.45 ms of `meta` per combat transaction (the rules remove
+    about 95 KB of the 132 KB meta: the redundant items' JSON and `unsupported`).
+
+### Patched `unsupported` (/11)
+
+- In a patch, `unsupported` is `null` when the list equals the base's. Otherwise it is the complete
+  list, as at /1.
+- A full transaction always carries the list. The resolved state always holds one.
+- The decoded form keeps `null`, and the resolved form holds the list.
+- Saves 9,512 B a combat transaction and 4,940 B a map transaction (28 % of the map's message).
+
+### Transport: base-prefix zstd (W11t, a live option, not record semantics)
+
+- **Coding.**
+  - A /11 live message for target T with base B is one zstd frame (level 3, content size
+    present).
+  - Its dictionary is the raw bytes of B's uncompressed transaction message, as a prefix.
+  - A full transaction, and every resource record, is coded with no prefix.
+  - The coded message is a function of (B, T), so P3-SP's shared encodes still share it: lockstep
+    viewers share the compressed bytes.
+- **Receiver.** It keeps the uncompressed message of every transaction that may still be a base.
+  - At window 1 that is the last accepted one. At window 2, the in-flight ones too, until the
+    host's base moves past them.
+  - That is at most 2–3 combat messages (≤ 0.7 MB).
+  - A message whose prefix is missing is `error` `coding`, which resyncs.
+- **Negotiation.** The receiver offers it and the host accepts it. Default: on whenever both ends
+  support it (`GRC_LIVE_CODING=zstd-base|zstd|off`, default `zstd-base`). Per-message zstd is the
+  fallback for a receiver that keeps no bases.
+- **Cost** (desktop, combat):
+  - compression 0.49 ms per distinct (B, T);
+  - decompression 0.16 ms natively.
+  - The capture already vendors zstd 1.5.7 (G8kz).
+- **Dependency.** The receivers decode in rs-core, which has no zstd decoder. The local Cargo
+  registry holds `flate2` and `miniz_oxide`, not zstd. Two options:
+  - compile the capture's vendored zstd C decoder into `rs-core-capi` and `rs-gsw-wasm`;
+  - add a pure-Rust zstd crate, which is a download and needs the user's sign-off.
+
+  W11t decides. The HTTP payload coding (G8kz) is unchanged.
+
+### Bottom line
+
+| warm combat | bytes / frame | Mbps |
+| ----------- | ------------: | ---: |
+| /10 live today (record + inline mesh records) | ~256,300 | 123 |
+| /11 as designed above | 210,343 | 101 |
+| + stable `content_version` + patched `unsupported` | 79,968 | 38.4 |
+| **+ base-prefix zstd-3 (recommended default)** | **12,471** | **6.0** |
+| + final swap: XOR-delta + quantized mesh bodies | 5,586 | 2.7 |
+| 1080p60 video baseline | 31,000–52,000 | 15–25 |
+
+**/11 with the two WB rules and base-prefix zstd is about 6 Mbps for warm combat**, 2.5–4x under
+video. The menu is 0.43 Mbps and the map 0.21. Uncompressed, the lean /11 message is still
+38 Mbps, so the transport coding is what meets the video comparison.
+
+What is still missing:
+
+- the zstd decoder in the receivers (W11t);
+- the cold start's texture GETs;
+- the phone's decode cost: unmeasured; the projection is about 5 ms of `meta` per combat
+  transaction on the g31 before the lean rule;
+- the host's capture cost: 7–8 ms a frame against NVENC's 1–3 ms.
+
+The host cost is snapshot and diff (O(table)), not encoding (0.6 ms), so it is P3-CAP's dirty-set
+publication, not a wire question.
+
 ## Increments
 
 Each lands as one commit with its result doc. Timing legs stay real time and go to the milestone
@@ -559,8 +687,8 @@ sweep.
 
 | Id | Scope | Stock-template fixture | Checks | Sabotages |
 | -- | ----- | ---------------------- | ------ | --------- |
-| **W11a** | codecs, goldens and validators: `ProtocolVersion::V11` in the C++ encoder (`rs2_codec`, `rs2_diff`: records from (B, T), `u8` from serials), `render-stream-2.ts` and `rs-core` (prune by reference count, `resource-unnamed`, `mesh-dynamic`, `mesh-u8-offset`, `body_sha256`), `golden-11/`; `rs-core-capi` pin to /11 | `golden-11/` | the golden checks above. A property test (`cargo test`): over random state sequences with resyncs, folds and window 2, the validator's C equals inline(S) after every transaction (L2), and a hub serving N connections from different bases emits records that each connection's validator accepts (L1). `rs_live_test` gains `test_records_from_base_and_target` | `keep-carried` (codec flag: the encoder keeps /10's lifelong set at /11, so state 13 fails `resource-missing`); `early-prune` (prune before the transaction's checks fails `resource-missing` on state 12) |
-| **W11b** | capture: mirror classification and serials, `mesh_u8` from the snapshot, `resources.mesh_dynamic`, `GRC_MESH_DYNAMIC*`, /11 file sinks and listener offer, `rs_carried` bypassed for /11 connections, `stale-dynamic` | `fixtures/capture-scale` (P3-CAP; STS2's combat shape, every pose new); `fixtures/gate6-scene` `animate` (the `MS` mesh recurs every 90 frames); `gate5-mesh` (g5c, g5e) | `dyn-wire`: every body at every transaction, rebuilt into GRM1, hashes to the hook log's surface hash for that frame. `dyn-classify`: dynamic from the second change within K, never demoted. `carried-equals-names`: the host's per-connection records are inline(T) \ inline(B). `resend-on-return` (gate6-scene with `GRC_MESH_DYNAMIC=off`: each return of `MS`'s hash re-carried exactly once). `host-flat`: `bench-live-scale.sh --viewers 4` null, 10 min, host RSS ≤ +0.2 MB/min. Byte identity below /11 (`cmp-rec.ts`, gates 1, 2, 5 against `main`) | `perturb-vertex` fails `dyn-wire`; `stale-dynamic` fails `dyn-wire`; `keep-carried` (host) fails `resend-on-return` with the receiver's `resource-missing` |
+| **W11a** | codecs, goldens and validators: `ProtocolVersion::V11` in the C++ encoder (`rs2_codec`, `rs2_diff`: records from (B, T), `u8` from serials), `render-stream-2.ts` and `rs-core` (prune by reference count, `resource-unnamed`, `mesh-dynamic`, `mesh-u8-offset`, `body_sha256`; WB's `content-version-stable` and `unsupported: null`), `golden-11/`; `rs-core-capi` pin to /11 | `golden-11/` | the golden checks above. A property test (`cargo test`): over random state sequences with resyncs, folds and window 2, the validator's C equals inline(S) after every transaction (L2), and a hub serving N connections from different bases emits records that each connection's validator accepts (L1). `rs_live_test` gains `test_records_from_base_and_target` | `keep-carried` (codec flag: the encoder keeps /10's lifelong set at /11, so state 13 fails `resource-missing`); `early-prune` (prune before the transaction's checks fails `resource-missing` on state 12) |
+| **W11b** | capture: mirror classification and serials, `mesh_u8` from the snapshot, `resources.mesh_dynamic`, `GRC_MESH_DYNAMIC*`, /11 file sinks and listener offer, `rs_carried` bypassed for /11 connections, `stale-dynamic`; WB's stable `content_version` and patched `unsupported` (sabotage `cv-churn`) | `fixtures/capture-scale` (P3-CAP; STS2's combat shape, every pose new); `fixtures/gate6-scene` `animate` (the `MS` mesh recurs every 90 frames); `gate5-mesh` (g5c, g5e) | `dyn-wire`: every body at every transaction, rebuilt into GRM1, hashes to the hook log's surface hash for that frame. `dyn-classify`: dynamic from the second change within K, never demoted. `carried-equals-names`: the host's per-connection records are inline(T) \ inline(B). `resend-on-return` (gate6-scene with `GRC_MESH_DYNAMIC=off`: each return of `MS`'s hash re-carried exactly once). `host-flat`: `bench-live-scale.sh --viewers 4` null, 10 min, host RSS ≤ +0.2 MB/min. Byte identity below /11 (`cmp-rec.ts`, gates 1, 2, 5 against `main`) | `perturb-vertex` fails `dyn-wire`; `stale-dynamic` fails `dyn-wire`; `keep-carried` (host) fails `resend-on-return` with the receiver's `resource-missing` |
 | **W11c** | GSW: rs-core retention (H, prune on accept), applier geometry by mesh id, `bufferSubData` uploads, `inline-fetch-zero`; GSW offers `.11` under `RS_RECEIVER_PROTOCOL=11` | `capture-scale` through `bench-live-scale.sh` with a GSW viewer; `gate6-scene` soak (`soak-inline`) at /11; g7-5 and g7-2 groups at /11 | `store-bounded`: 20 min on `capture-scale` with the payload store's entries ≤ \|names\| + window and a wasm-heap slope after warm-up ≤ 1 MB/min (at /10 the same leg grows about 280 MB/min, P3-SP `long-rx-before`). `inline-fetch-zero`. `resend-applied`: gate6-scene `MS` returns pixel-match the reference. `gsw-band` on gate 5 meshes at /11. Apply rate ≥ /10's on the same leg (real time, milestone) | `no-prune` (receiver keeps C lifelong) fails `resend-applied` with a typed `resource-duplicate`; `evict-carried` (drop a hash still in C) fails `inline-fetch-zero`; `stale-dynamic-rx` (ignore a body) fails `gsw-band` |
 | **W11d** | native receiver: capi maps prune, `RsResourceCache` drops on leave, dynamic region uploads | `capture-scale` with a native viewer; `gate5-mesh`; `gate6-scene` | `store-bounded` (RSS slope and cache entries); `records-per-tx` ≤ 1 + static churn (≈ 1 on `capture-scale`); `resend-applied`; g5c and g5e `reference` at /11 | `no-prune`, `evict-carried`, `stale-dynamic-rx` as W11c, failing the native checks |
 | **W11e** | web export: the same capi on wasm, the web leg of every W11d check | as W11d through the web export (g7-5 and g7-2 web groups at /11) | as W11d, plus `rss-bounded-renderer` (G7kr) on a 20-minute `capture-scale` leg | as W11d |
@@ -578,8 +706,9 @@ W11z.
   recordings do not justify it: with `auto` the only recurring content is spine poses, and they
   stop being hashes. Prune-only on the menu re-sends 2.9 KB a transaction. The rule would cost N
   states of memory, and N = 1 is what /11 specifies.
-- **zstd on the WebSocket** (P3-LV): it is independent of /11. A combat transaction is still
-  ~210 KB, mostly item state.
+- **zstd on the WebSocket** (P3-LV) is no longer unproven: WB measured it, and "Warm wire budget
+  (WB)" specifies base-prefix zstd as a live transport option beside /11. The transport increment
+  itself (W11t) still has to land.
 - **Quantized multimesh encodings** and GPU particles (`/12`).
 - Whether STS2's product seat runs headless (the pre-draw pump's criterion 5).
 - Why the dropped P3-SP bound's LRU order reached the newest entries ("The P3-SP re-fetch storm").

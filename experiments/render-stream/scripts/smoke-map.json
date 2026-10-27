@@ -307,6 +307,14 @@
       "reach": ["pure"]
     },
     {
+      "why": "WB's offline wire-budget analysis (results/p3/wb.md): run by hand on a kept recording, not a validate-increment target; its arithmetic has a pure synthetic self-test",
+      "paths": [
+        "experiments/render-stream/scripts/lib/wire-budget.py",
+        "experiments/render-stream/scripts/test/self-test-wire-budget.sh"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "the legacy decoder prototype crate",
       "paths": ["experiments/render-stream/decode-proto-rs/**"],
       "reach": ["cargo:experiments/render-stream/decode-proto-rs"]
