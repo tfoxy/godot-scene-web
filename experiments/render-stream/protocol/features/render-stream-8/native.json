@@ -24,7 +24,7 @@
       "godot_editor": "4.5.1-stable",
       "web_template_sha256": null,
       "bundle_bytes": null,
-      "commit": "ea402b95"
+      "commit": "4b0de2f7"
     },
     "platform": {
       "runtime": "godot-4.5.1-gl_compatibility",
@@ -40,12 +40,6 @@
       "note": "carried from gate 7: G7z closing run, native gate 6 (every group incl. g6z, sabotage legs, recordings kept for g7-z)"
     },
     {
-      "key": "gate5.5@native",
-      "path": "render-stream/gate7/g7z/va/native-rust-gate55/run",
-      "build": "6a454065",
-      "note": "carried from gate 7: G7z closing run, native gate 5.5 (sabotage legs)"
-    },
-    {
       "key": "g7-r@native",
       "path": "render-stream/gate7/g7z/live/native-g7-r/run",
       "build": "6a454065",
@@ -59,21 +53,27 @@
     },
     {
       "key": "gate8@native",
-      "path": "render-stream/gate8/g8z/native-gate8",
-      "build": "ea402b95",
-      "note": "G8z closing run, native gate 8 (run-gate8.sh, every group)"
+      "path": "render-stream/gate8/rm8/native-gate8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), native gate 8 (run-gate8.sh, every group)"
     },
     {
       "key": "g8l-hello@native",
-      "path": "render-stream/gate8/g8z/native-g8l-hello",
-      "build": "ea402b95",
-      "note": "G8z closing run, native g8l again with RS_G8_MANIFEST_HELLO=1: its live hellos carry the /8 native manifest sha256 (the file is final only after the first native run)"
+      "path": "render-stream/gate8/rm8/native-g8l-hello",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), native g8l again with RS_G8_MANIFEST_HELLO=1: its live hellos carry the /8 native manifest sha256 (the file is final only after the first native run)"
     },
     {
       "key": "session@native",
       "path": "render-stream/gate8/g8z/gate6-g6a",
       "build": "ea402b95",
       "note": "G8z closing run, native gate 6 group g6a (scene, animate, refused: the host sessions manifest-matches-session reads; gate 7's gate 6 run lost its recordings to the retention policy)"
+    },
+    {
+      "key": "gate5.5@native",
+      "path": "render-stream/gate8/rm8/native-gate55",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), native gate 5.5 (every group: P3-ST's g55s, P3-VX's g55v and P3-TM's g55t join gate 7's)"
     }
   ],
   "entries": [
@@ -567,8 +567,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "post-gate-6 capabilities: CanvasGroup / clip-children (unscheduled)",
-      "notes": "hooked slot; no committed gate 6 fixture creates a CanvasGroup item, so the hook never fires."
+      "owner": "CG1: carried on /10",
+      "notes": "Not carried on /8 or earlier: no /8 fixture creates a CanvasGroup or clip_children item. Since CG1 the opt-in render-stream/10 carries the setter as the item key `canvas_group` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, fixtures/gate8-cg, g8cg)."
     },
     {
       "id": "canvas_item_set_copy_to_backbuffer",
@@ -579,8 +579,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md \"Screen texture (P3-ST)\")",
-      "notes": "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
+      "owner": "CG1: carried on the opt-in render-stream/10 (results/p3/cg1.md); a /8 stream does not carry it",
+      "notes": "Not carried on /8 or earlier (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s). Since CG1 the opt-in render-stream/10 carries the setter as the item key `copy_to_backbuffer` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, g8cg). On a /8 stream a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
     },
     {
       "id": "canvas_item_set_light_mask",
@@ -1497,6 +1497,40 @@
       "notes": null
     },
     {
+      "id": "payload.canvas_texture_diffuse",
+      "kind": "payload",
+      "name": "CanvasTexture whose diffuse no command names (spine-godot atlas pages): the diffuse is fetched and drawn",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "gate8",
+          "fixture": "gate8-ct",
+          "leg": "g8c",
+          "check": "ct-reference",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate8",
+          "fixture": "gate8-ct",
+          "leg": "g8c",
+          "check": "ct-diffuse-uploaded",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate8",
+          "fixture": "gate8-ct",
+          "leg": "g8c",
+          "check": "ct-channel-refused",
+          "receiver_kind": "native"
+        }
+      ],
+      "owner": null,
+      "notes": "P3-CT: residency follows a named canvas texture to its diffuse. Normal and specular maps stay a typed refusal (canvas-texture-channel)."
+    },
+    {
       "id": "payload.compressed_and_float_texture_formats",
       "kind": "payload",
       "name": "DXT, BPTC and float texture payloads",
@@ -1727,10 +1761,31 @@
           "leg": "receiver",
           "check": "shader-expected-image-reference",
           "receiver_kind": "native"
+        },
+        {
+          "gate": "gate5.5",
+          "fixture": "gate55-screen",
+          "leg": "g55s",
+          "check": "g55s-receiver-equals-reference",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate5.5",
+          "fixture": "gate55-vertex",
+          "leg": "g55v",
+          "check": "g55v-receiver-equals-reference",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate5.5",
+          "fixture": "gate55-time",
+          "leg": "g55t",
+          "check": "g55t-receiver-equals-reference",
+          "receiver_kind": "native"
         }
       ],
       "owner": null,
-      "notes": null
+      "notes": "Gate 7's evidence plus P3-ST (screen texture), P3-VX (vertex() and varyings) and P3-TM (TIME and sampler defaults): each group's receiver equals the rendered reference."
     },
     {
       "id": "material.shader-withheld",
@@ -2038,6 +2093,47 @@
       "evidence": [],
       "owner": "gate 8",
       "notes": "every committed gate 6 fixture uses scale_mode fractional (the default); integer is accepted by the wire schema but unexercised (Q8 example)."
+    },
+    {
+      "id": "delivery.canvas_group_state_10",
+      "kind": "delivery",
+      "name": "clip_children, CanvasGroup and BackBufferCopy carried as the render-stream/10 item keys canvas_group and copy_to_backbuffer",
+      "status": "supported",
+      "reason": null,
+      "exactness": "exact",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "gate8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg",
+          "check": "cg-native-exact",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg",
+          "check": "cg-wire",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg",
+          "check": "cg-toggle-patch",
+          "receiver_kind": "native"
+        },
+        {
+          "gate": "gate8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg",
+          "check": "cg-adopt",
+          "receiver_kind": "native"
+        }
+      ],
+      "owner": null,
+      "notes": "CG1: opt-in /10 (RS_RECEIVER_PROTOCOL=10); the receiver re-issues the state to Godot and reproduces its picture exactly on fixtures/gate8-cg."
     },
     {
       "id": "delivery.constrained_transport",

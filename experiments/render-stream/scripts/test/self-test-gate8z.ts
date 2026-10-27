@@ -30,6 +30,7 @@ import {
 } from "../lib/feature-evidence-7";
 import {
   EVIDENCE_RUNS_8,
+  GROUP_COVERAGE_8,
   NEW_ENTRY_IDS_8,
   OVERRIDDEN_IDS_8,
   PROFILE_8,
@@ -150,6 +151,37 @@ if (existsSync(handoff)) {
     unknown.join(","),
   );
 } else expect("hand-off note exists", false, handoff);
+
+// --- every landed gate 8 / gate 5.5 group has a manifest decision (RM8) -----------------------
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const landed: string[] = [];
+  for (const f of ["run-gate8.sh", "run-gate55.sh"]) {
+    const m = /^LANDED_GROUPS=\(([^)]*)\)/m.exec(
+      readFileSync(join(here, "..", f), "utf8"),
+    );
+    landed.push(...(m?.[1]?.split(/\s+/).filter(Boolean) ?? []));
+  }
+  const missing = landed.filter((g) => !(g in GROUP_COVERAGE_8));
+  expect(
+    `${landed.length} landed groups all have a GROUP_COVERAGE_8 decision`,
+    landed.length > 0 && missing.length === 0,
+    `missing: ${missing.join(",")} (add the group's manifest entries in lib/feature-evidence-8.ts, or a none: reason)`,
+  );
+  const ids = new Set(receiverFeatureEntries8("native").map((e) => e.id));
+  const badIds = Object.entries(GROUP_COVERAGE_8).flatMap(([g, v]) =>
+    typeof v === "string"
+      ? v.startsWith("none: ")
+        ? []
+        : [`${g}: reason must start "none: "`]
+      : v.filter((id) => !ids.has(id)).map((id) => `${g}: ${id}`),
+  );
+  expect(
+    "GROUP_COVERAGE_8 names only existing entries (or a none: reason)",
+    badIds.length === 0,
+    badIds.join(","),
+  );
+}
 
 // --- a synthetic evidence root ------------------------------------------------------------
 const root = mkdtempSync(join(tmpdir(), "self-test-gate8z-"));

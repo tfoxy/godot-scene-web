@@ -20,11 +20,11 @@
     "id": "web-export-godot-4.5.1-web_dlink_nothreads-rs-core",
     "kind": "web-export",
     "build": {
-      "sha256": "a633b068e3318150a0ae1556ddc916cb6d9b6e8b0e81d741b6730637beadcc9b",
+      "sha256": "efd57716720fe02a68a9ac1d2270112b306deee2e48034f25afa23c5482e33ba",
       "godot_editor": "4.5.1-stable",
       "web_template_sha256": "68162ae9249ca3b7ce53dde8cdfab59463bd6518dca9123df41e5cc8fb1bd454",
       "bundle_bytes": null,
-      "commit": "ea402b95"
+      "commit": "4b0de2f7"
     },
     "platform": {
       "runtime": "chromium-148.0.7778.96",
@@ -70,12 +70,6 @@
       "note": "carried from gate 7: G7z closing run, web/rust file legs g7-0..g7-6 (full tier, local)"
     },
     {
-      "key": "g7-55@web",
-      "path": "render-stream/gate7/g7z/va/g7-web-rust/run",
-      "build": "6a454065",
-      "note": "carried from gate 7: G7z closing run, web/rust file legs g7-0..g7-6 (full tier, local)"
-    },
-    {
       "key": "g7-6@web",
       "path": "render-stream/gate7/g7z/va/g7-web-rust/run",
       "build": "6a454065",
@@ -89,12 +83,6 @@
     },
     {
       "key": "g7-5-live@web",
-      "path": "render-stream/gate7/g7z/live/web-corr/run",
-      "build": "6a454065",
-      "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 web (fast frames, --manifest-hello)"
-    },
-    {
-      "key": "g7-55-live@web",
       "path": "render-stream/gate7/g7z/live/web-corr/run",
       "build": "6a454065",
       "note": "carried from gate 7: G7z closing run, live g7-1/g7-5/g7-55 web (fast frames, --manifest-hello)"
@@ -131,27 +119,39 @@
     },
     {
       "key": "gate8@web",
-      "path": "render-stream/gate8/g8z/native-gate8",
-      "build": "ea402b95",
-      "note": "G8z closing run, native gate 8: the checks it makes of web-export legs it drives itself (g8ku)"
+      "path": "render-stream/gate8/rm8/native-gate8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), native gate 8: the checks it makes of web-export legs it drives itself (g8ku)"
+    },
+    {
+      "key": "g7-55@web",
+      "path": "render-stream/gate8/rm8/g7-web-rust-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-55 file legs web (the same run as g7-8@web)"
+    },
+    {
+      "key": "g7-55-live@web",
+      "path": "render-stream/gate8/rm8/live-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-55 live legs, both browsers (g55f, g55s, g55v, g55t; --manifest-hello 8)"
     },
     {
       "key": "g7-8@web",
-      "path": "render-stream/gate8/g8z/g7-web-rust-g8",
-      "build": "ea402b95",
-      "note": "G8z closing run, g7-8 file legs web (23 recordings of gate 8's fixtures)"
+      "path": "render-stream/gate8/rm8/g7-web-rust-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-8 file legs web (23 recordings of gate 8's fixtures)"
     },
     {
       "key": "g7-8-live@web",
-      "path": "render-stream/gate8/g8z/live-g8",
-      "build": "ea402b95",
-      "note": "G8z closing run, g7-8 live legs, both browsers (--manifest-hello 8)"
+      "path": "render-stream/gate8/rm8/live-g8",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), g7-8 live legs, both browsers (--manifest-hello 8; the same run as g7-55-live)"
     },
     {
       "key": "g7-2-live@web",
-      "path": "render-stream/gate8/g8z/live-g7-2-web",
-      "build": "ea402b95",
-      "note": "G8z closing run, live g7-2 web (fast frames, --manifest-hello 8; G8kz's coding checks)"
+      "path": "render-stream/gate8/rm8/live-g7-2-web",
+      "build": "4b0de2f7",
+      "note": "RM8 closing run (G8z's, redone on the P3 build), live g7-2 web (fast frames, --manifest-hello 8; G8kz's coding checks)"
     }
   ],
   "entries": [
@@ -554,8 +554,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "post-gate-6 capabilities: CanvasGroup / clip-children (unscheduled)",
-      "notes": "hooked slot; no committed gate 6 fixture creates a CanvasGroup item, so the hook never fires."
+      "owner": "CG1: carried on /10",
+      "notes": "Not carried on /8 or earlier: no /8 fixture creates a CanvasGroup or clip_children item. Since CG1 the opt-in render-stream/10 carries the setter as the item key `canvas_group` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, fixtures/gate8-cg, g8cg)."
     },
     {
       "id": "canvas_item_set_copy_to_backbuffer",
@@ -566,8 +566,8 @@
       "exactness": null,
       "tolerance": null,
       "evidence": [],
-      "owner": "P3-ST design note: render-stream/10 (calibrator slot 484 and an item key; gate5_5-design.md \"Screen texture (P3-ST)\")",
-      "notes": "Not hooked (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s: native exact; web export and GSW exact but the mip chain within 1); a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
+      "owner": "CG1: carried on the opt-in render-stream/10 (results/p3/cg1.md); a /8 stream does not carry it",
+      "notes": "Not carried on /8 or earlier (the gate 6 text said hooked: it never was). Since P3-ST hint_screen_texture shaders are ok on the wire and every receiver mirrors GLES3's automatic back-buffer copies (fixtures/gate55-screen, run-gate55.sh g55s). Since CG1 the opt-in render-stream/10 carries the setter as the item key `copy_to_backbuffer` and the native receiver and the web export re-issue it; since CG3 GSW composites it (delivery.canvas_group_state_10, g8cg). On a /8 stream a host's BackBufferCopy nodes are not carried, so their copy points replay as the automatic ones."
     },
     {
       "id": "canvas_item_set_light_mask",
@@ -1379,6 +1379,33 @@
       "notes": null
     },
     {
+      "id": "payload.canvas_texture_diffuse",
+      "kind": "payload",
+      "name": "CanvasTexture whose diffuse no command names (spine-godot atlas pages): the diffuse is fetched and drawn",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-ct",
+          "leg": "g8c/receiver",
+          "check": "ct-reference@web",
+          "receiver_kind": "web-export"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-ct",
+          "leg": "g8c/receiver",
+          "check": "ct-diffuse-uploaded@web",
+          "receiver_kind": "web-export"
+        }
+      ],
+      "owner": null,
+      "notes": null
+    },
+    {
       "id": "payload.compressed_and_float_texture_formats",
       "kind": "payload",
       "name": "DXT, BPTC and float texture payloads",
@@ -1594,6 +1621,27 @@
           "fixture": "gate6-scene",
           "leg": "shader/receiver",
           "check": "shader-receiver-vs-reference@web",
+          "receiver_kind": "web-export"
+        },
+        {
+          "gate": "g7-55-live",
+          "fixture": "gate55-screen",
+          "leg": "g55s",
+          "check": "g55s-receiver-equals-reference@web",
+          "receiver_kind": "web-export"
+        },
+        {
+          "gate": "g7-55-live",
+          "fixture": "gate55-vertex",
+          "leg": "g55v",
+          "check": "g55v-receiver-equals-reference@web",
+          "receiver_kind": "web-export"
+        },
+        {
+          "gate": "g7-55-live",
+          "fixture": "gate55-time",
+          "leg": "g55t",
+          "check": "g55t-receiver-equals-reference@web",
           "receiver_kind": "web-export"
         }
       ],
@@ -1904,6 +1952,33 @@
       "evidence": [],
       "owner": "gate 8",
       "notes": "every committed gate 6 fixture uses scale_mode fractional (the default); integer is accepted by the wire schema but unexercised (Q8 example)."
+    },
+    {
+      "id": "delivery.canvas_group_state_10",
+      "kind": "delivery",
+      "name": "clip_children, CanvasGroup and BackBufferCopy carried as the render-stream/10 item keys canvas_group and copy_to_backbuffer",
+      "status": "supported",
+      "reason": null,
+      "exactness": "delta1",
+      "tolerance": null,
+      "evidence": [
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg/receiver",
+          "check": "cg-native-exact@web",
+          "receiver_kind": "web-export"
+        },
+        {
+          "gate": "g7-8",
+          "fixture": "gate8-cg",
+          "leg": "g8cg/receiver",
+          "check": "cg-adopt@web",
+          "receiver_kind": "web-export"
+        }
+      ],
+      "owner": null,
+      "notes": "The web export re-issues the state to its own Godot (CG1)."
     },
     {
       "id": "delivery.constrained_transport",
