@@ -2,32 +2,33 @@
   "schema": "render-stream-instr-baseline/1",
   "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
   "valgrind": "valgrind-3.22.0",
-  "cpu_model": "median of 3 runners: AMD EPYC 7763, AMD EPYC 9V45, Intel Xeon Platinum 8573C (cross-runner spread <= 0.29%, docs/remote-compute.md R4)",
+  "cpu_model": "median of 3 runners: AMD EPYC 7763, AMD EPYC 9V45, Intel Xeon Platinum 8370C (also checked on Xeon 8573C; cross-runner spread <= 0.003% at cbfc1649; docs/remote-compute.md R4)",
   "repeats": 3,
   "cases": {
     "g3-inline": {
       "recording": "golden-3/inline.rs3",
-      "ir": 16362362
+      "ir": 16528850
     },
     "g4-inline": {
       "recording": "golden-4/inline.rs4",
-      "ir": 72795669
+      "ir": 73004304
     },
     "g5-inline": {
       "recording": "golden-5/inline.rs5",
-      "ir": 92908617
+      "ir": 93177886
     },
     "g6-inline": {
       "recording": "golden-6/inline.rs6",
-      "ir": 110495236
+      "ir": 111557244
     },
     "g6-snap": {
       "recording": "golden-6/snap.rs6",
-      "ir": 2750223
+      "ir": 2741843
     },
     "g7-window2": {
       "recording": "golden-7/window2.rs7",
-      "ir": 2876330
+      "ir": 2889657
     }
-  }
+  },
+  "refreshed": "cbfc1649 (render-stream/11 W11b): the G8 texture-delivery commits (g3 +0.46%) and P3-CT..P3-CK residency, program and shader-TIME apply paths (g3 +0.5%, g6-inline +0.5%) legitimately grew the decode+apply path; g6-snap fell 0.3%. Gradual, bisected with remote runs, no single regression."
 }
