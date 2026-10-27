@@ -142,7 +142,7 @@ add_test(NAME abi_decode COMMAND abi_decode_test)
 # sabotage, the texture table (ids, versions, tombstones, replace, derived unsupported entries)
 # and the clip reset of canvas_item_clear (diffed against the previous snapshot).
 add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_texture_delivery.cpp src/rs_shader_payload.cpp
-  src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp)
+  src/rs_texture_payload.cpp src/rs_mesh_payload.cpp src/rs_sha256.cpp src/rs2_diff.cpp src/rs2_codec.cpp)
 target_include_directories(rs_mirror_test PRIVATE src)
 target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_mirror COMMAND rs_mirror_test)
@@ -213,6 +213,7 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN7_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-7"
   GRC_GOLDEN9_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-9"
   GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10"
+  GRC_GOLDEN11_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 

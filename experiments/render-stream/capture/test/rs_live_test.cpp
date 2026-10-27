@@ -2375,6 +2375,165 @@ void test_records_from_base_and_target() {
   check(v10.next(&leave[1], leave[2]).empty(), "W11a: below /11 the planner keeps /10's set");
 }
 
+// W11b (render-stream-11.md "Resource retention", "Multiple viewers"): /11 connections on one
+// hub. Each connection's records are inline(T) \ inline(B), so a recurring hash is re-carried,
+// and a model receiver holding C (record: not in C, add; transaction: required(S) in C, records
+// named by S, then C <- C n names(S)) accepts every connection's stream (L1). Lockstep connections
+// still share their encodes, and each still gets the bytes it gets alone.
+std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> sp_run11(
+    const std::vector<SpConn> &conns, bool keep_carried, std::vector<ConnectionSummary> *summaries) {
+  FakeTransport transport;
+  Session tmpl = make_template(Delivery::Inline);
+  tmpl.version = ProtocolVersion::V11;
+  LiveConfig config;
+  config.keep_carried = keep_carried;
+  Hub hub(&transport, config, tmpl);
+  const std::string hello11 =
+      read_file(std::string(GRC_GOLDEN11_DIR) + "/control/valid/hello-native-block.json");
+  std::map<std::uint32_t, std::uint32_t> number;
+  for (std::uint64_t frame = 1; frame <= 40; ++frame) {
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (conns[i].open_frame == frame) {
+        hub.on_event(opened_with(i + 1, "render-stream.11"), frame);
+        hub.on_event(text(i + 1, hello11), frame);
+        number[i + 1] = static_cast<std::uint32_t>(number.size() + 1);
+      }
+    }
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (number.count(i + 1) == 0 || frame <= conns[i].open_frame) {
+        continue;
+      }
+      const ConnectionSummary &cs = now.at(number[i + 1] - 1);
+      if (conns[i].resync_frame == frame && cs.sent > 0) {
+        hub.on_event(text(i + 1, resync(cs.stream_id, cs.sent)), frame);
+      } else if ((frame - conns[i].open_frame) % conns[i].ack_period == 0 && cs.sent > 0) {
+        hub.on_event(text(i + 1, ack(cs.stream_id, cs.sent, "submitted")), frame);
+      }
+    }
+    Captured c = sp_state(frame);
+    c.state.version = ProtocolVersion::V11;
+    hub.on_frame(frame, frame * 16000000ULL,
+                 hub.wants_snapshot(frame, frame * 16000000ULL) ? &c : nullptr, frame, 0);
+  }
+  std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> out;
+  for (const Sent &x : transport.of(Sent::Binary)) {
+    if (x.bytes.size() > 8 && x.bytes[0] == 'G') {
+      continue;
+    }
+    out[x.conn].push_back(x.bytes);
+  }
+  if (summaries != nullptr) {
+    *summaries = hub.summaries();
+  }
+  return out;
+}
+
+std::string json_field(const std::string &meta, const std::string &key) {
+  const std::string needle = "\"" + key + "\":";
+  const std::size_t at = meta.find(needle);
+  if (at == std::string::npos) {
+    return std::string();
+  }
+  std::size_t b = at + needle.size();
+  if (meta[b] == '"') {
+    return meta.substr(b + 1, meta.find('"', b + 1) - b - 1);
+  }
+  std::size_t e = b;
+  while (e < meta.size() && meta[e] != ',' && meta[e] != '}') {
+    ++e;
+  }
+  return meta.substr(b, e - b);
+}
+
+// The model receiver over one connection's messages; `recarried` counts records of a hash the
+// connection carried before (legal at /11 only after the hash left C).
+bool model_accepts(const std::vector<std::vector<std::uint8_t>> &messages, std::uint64_t inline_max,
+                   std::size_t *recarried, std::string *why) {
+  std::set<std::string> carried;
+  std::set<std::string> ever;
+  std::set<std::string> since;
+  *recarried = 0;
+  for (const std::vector<std::uint8_t> &m : messages) {
+    const std::string meta = meta_at(m, 0);
+    if (has(meta, "\"type\":\"resource\"")) {
+      const std::string hash = json_field(meta, "hash");
+      if (carried.count(hash) != 0) {
+        *why = "resource-duplicate " + hash.substr(0, 8);
+        return false;
+      }
+      *recarried += ever.count(hash);
+      carried.insert(hash);
+      ever.insert(hash);
+      since.insert(hash);
+      continue;
+    }
+    const std::uint64_t frame = std::stoull(json_field(meta, "frame"));
+    const Snapshot target = sp_state(frame).state;
+    std::set<std::string> names;
+    for (const PayloadName &n : payload_names(target)) {
+      names.insert(n.hash);
+      if (n.payload_bytes <= inline_max && carried.count(n.hash) == 0) {
+        *why = "resource-missing " + n.hash.substr(0, 8) + " at frame " + std::to_string(frame);
+        return false;
+      }
+    }
+    for (const std::string &h : since) {
+      if (names.count(h) == 0) {
+        *why = "resource-unnamed " + h.substr(0, 8);
+        return false;
+      }
+    }
+    since.clear();
+    std::set<std::string> pruned;
+    for (const std::string &h : carried) {
+      if (names.count(h) != 0) {
+        pruned.insert(h);
+      }
+    }
+    carried.swap(pruned);
+  }
+  return true;
+}
+
+void test_v11_connections() {
+  const std::uint64_t inline_max = make_template(Delivery::Inline).resources.inline_max_bytes;
+  const std::vector<SpConn> conns = {
+      {1, 1, 0}, {1, 1, 0}, {3, 2, 0}, {3, 1, 17}, {1, 1, 17}};
+  std::vector<ConnectionSummary> multi_summaries;
+  const auto multi = sp_run11(conns, false, &multi_summaries);
+  std::uint64_t shared = 0;
+  for (const ConnectionSummary &cs : multi_summaries) {
+    shared += cs.shared_sends;
+    check(cs.version == 11, "every connection negotiated /11");
+  }
+  check(shared > 40, "W11b: lockstep /11 connections share their transactions: " +
+                         std::to_string(shared));
+  std::size_t recarried_total = 0;
+  for (std::uint32_t i = 0; i < conns.size(); ++i) {
+    std::size_t recarried = 0;
+    std::string why;
+    check(model_accepts(multi.at(i + 1), inline_max, &recarried, &why),
+          "W11b: connection " + std::to_string(i + 1) + " passes the /11 carried-set rules " + why);
+    recarried_total += recarried;
+    std::vector<ConnectionSummary> solo_summaries;
+    const auto solo = sp_run11({conns[i]}, false, &solo_summaries);
+    check(multi.at(i + 1) == solo.at(1),
+          "W11b: /11 connection " + std::to_string(i + 1) + " gets the bytes it gets alone");
+  }
+  check(recarried_total > 0, "W11b: a recurring hash is re-carried at /11 (" +
+                                 std::to_string(recarried_total) + " records)");
+  // keep-carried (the host sabotage): /10's lifelong set on a /11 connection -- no hash goes twice,
+  // so the model receiver finds a returning hash missing.
+  const auto kept = sp_run11({{1, 1, 0}}, true, nullptr);
+  std::size_t recarried = 0;
+  std::string why;
+  check(!model_accepts(kept.at(1), inline_max, &recarried, &why) &&
+            why.find("resource-missing") == 0 && recarried == 0,
+        "W11b: keep-carried never re-carries, and the /11 receiver fails resource-missing (" + why +
+            ")");
+}
+
 int main() {
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
@@ -2409,6 +2568,7 @@ int main() {
   test_rate_credit_blocked_and_no_burst();
   test_rate_two_connections();
   test_records_from_base_and_target();
+  test_v11_connections();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

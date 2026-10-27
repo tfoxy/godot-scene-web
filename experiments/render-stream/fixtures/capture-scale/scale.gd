@@ -25,6 +25,9 @@ extends Node2D
 ##                                over 15 characters), each set with material_set_param
 ##   RS_SCALE_PARAM_UPDATES [8]   material_set_param calls per frame (round robin over materials)
 ##   RS_SCALE_MOVERS [100]        items whose transform changes every frame
+##   RS_SCALE_REDRAWS [0]         drawing items cleared and re-recorded with identical commands every
+##                                frame (round robin), as a game's CanvasItems redraw unchanged (W11b,
+##                                render-stream-11.md "Warm wire budget": STS2 redraws ~170 a frame)
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
@@ -46,6 +49,13 @@ var _mesh_materials: Array[RID] = []
 var _mesh_uvs: Array[PackedByteArray] = []
 var _mesh_cursor: int = 0
 var _param_updates: int = 8
+var _redraws: int = 0
+var _cmds: int = 4
+var _n_textures: int = 0
+var _n_float: int = 0
+# per drawing item: [item RID, mesh index or -1, drawn texture index or -1, float texture index or -1]
+var _draws: Array[Array] = []
+var _redraw_cursor: int = 0
 var _frame: int = 0
 var _quit_frame: int = 600
 var _warmup: int = 120
@@ -78,6 +88,7 @@ func _ready() -> void:
 	var n_materials: int = _env_int("RS_SCALE_MATERIALS", 560)
 	_mesh_updates = mini(_env_int("RS_SCALE_MESH_UPDATES", 76), n_meshes)
 	_movers = _env_int("RS_SCALE_MOVERS", 100)
+	_redraws = _env_int("RS_SCALE_REDRAWS", 0)
 	var n_float: int = _env_int("RS_SCALE_FLOAT_TEXTURES", 800)
 	var cmds: int = _env_int("RS_SCALE_CMDS", 4)
 	var n_params: int = _env_int("RS_SCALE_PARAMS", 64)
@@ -137,6 +148,9 @@ func _ready() -> void:
 		_mesh_points.append(points)
 		_mesh_uvs.append(uvs.to_byte_array())
 
+	_cmds = cmds
+	_n_textures = n_textures
+	_n_float = n_float
 	# Items: chains of 10 (each item the previous one's child) under this node's item; the first draw.
 	var root: RID = get_canvas_item()
 	var parent: RID = root
@@ -153,21 +167,21 @@ func _ready() -> void:
 			parent = item
 		RenderingServer.canvas_item_set_transform(item, Transform2D(0.0, Vector2((i * 37) % 600, (i * 23) % 330)))
 		var draws: bool = false
+		var rec: Array = [item, -1, -1, -1]
 		if mesh_i < n_meshes:
-			RenderingServer.canvas_item_add_mesh(item, _meshes[mesh_i], Transform2D(), Color(1, 1, 1, 1), _textures[mesh_i % maxi(1, n_textures)].get_rid() if n_textures > 0 else RID())
+			rec[1] = mesh_i
 			_mesh_items.append(item)
 			mesh_i += 1
 			draws = true
 		elif drawn < n_drawn:
-			RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 0, 16, 12), _textures[drawn].get_rid())
+			rec[2] = drawn
 			drawn += 1
 			draws = true
 		if draws:
-			for c: int in cmds:
-				RenderingServer.canvas_item_add_rect(item, Rect2(c * 3.0, 14.0, 2.0, 2.0), Color8(c * 40, 200, 80, 255))
 			if n_float > 0 and i % 50 == 0:
-				# an unsupported (RGBF) texture drawn: an item-level unsupported-texture entry
-				RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 20, 8, 4), _textures[n_textures + (i / 50) % n_float].get_rid())
+				rec[3] = n_textures + (i / 50) % n_float
+			_record(rec)
+			_draws.append(rec)
 		var material: RID = RID()
 		if draws and material_i < n_materials:
 			material = _materials[material_i]
@@ -177,7 +191,22 @@ func _ready() -> void:
 			_mesh_materials.append(material)
 		_items.append(item)
 	_setup_ms = (Time.get_ticks_usec() - t0) / 1000.0
+	_cmds = cmds
 	print("[scale] setup items=%d textures=%d float_textures=%d drawn_textures=%d meshes=%d materials=%d shaders=%d setup_ms=%.1f" % [n_items, n_textures, n_float, drawn, n_meshes, n_materials, n_shaders, _setup_ms])
+
+
+## One drawing item's commands (setup, and each identical redraw).
+func _record(rec: Array) -> void:
+	var item: RID = rec[0]
+	if rec[1] >= 0:
+		RenderingServer.canvas_item_add_mesh(item, _meshes[rec[1]], Transform2D(), Color(1, 1, 1, 1), _textures[rec[1] % maxi(1, _n_textures)].get_rid() if _n_textures > 0 else RID())
+	elif rec[2] >= 0:
+		RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 0, 16, 12), _textures[rec[2]].get_rid())
+	for c: int in _cmds:
+		RenderingServer.canvas_item_add_rect(item, Rect2(c * 3.0, 14.0, 2.0, 2.0), Color8(c * 40, 200, 80, 255))
+	if rec[3] >= 0:
+		# an unsupported (RGBF) texture drawn: an item-level unsupported-texture entry
+		RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 20, 8, 4), _textures[rec[3]].get_rid())
 
 
 func _process(_delta: float) -> void:
@@ -193,6 +222,12 @@ func _process(_delta: float) -> void:
 		var i: int = (j * 29) % n
 		var x: float = float((i * 37) % 600) + float((_frame + j) % 16)
 		RenderingServer.canvas_item_set_transform(_items[i], Transform2D(0.0, Vector2(x, (i * 23) % 330)))
+	for r: int in (mini(_redraws, _draws.size()) if _draws.size() > 0 else 0):
+		var rec: Array = _draws[(_redraw_cursor + r) % _draws.size()]
+		RenderingServer.canvas_item_clear(rec[0])
+		_record(rec)
+	if _draws.size() > 0:
+		_redraw_cursor = (_redraw_cursor + _redraws) % _draws.size()
 	var m: int = _meshes.size()
 	for u: int in _mesh_updates:
 		var k: int = (_mesh_cursor + u) % m

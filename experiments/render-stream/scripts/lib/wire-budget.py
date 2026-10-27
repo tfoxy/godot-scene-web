@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WB (results/p3/wb.md): the warm wire budget of a render-stream recording, offline.
 
-Reads a /2..=/10 file recording (and its payload store) without validating it, tracks the resolved
+Reads a /2..=/10 file recording (`analyze`; `measure` reads /11 too) (and its payload store) without validating it, tracks the resolved
 item, canvas and mesh state, and reports per scene, per warm patch transaction:
 
 - bytes by category (framing, transaction header, item state JSON, item floats, command JSON and
@@ -20,7 +20,16 @@ item, canvas and mesh state, and reports per scene, per warm patch transaction:
 
   wire-budget.py analyze --recording <file> [--store <dir>] --scene <name>:<f0>-<f1> ...
                          [--warm-skip 30] [--train-frac 0.3] [--quant-every 10] [--out <json>]
+  wire-budget.py measure --recording <file> --scene <name>:<f0>-<f1> ... [--warm-skip 30]
+                         [--top 12] [--out <json>]
   wire-budget.py self-test
+
+`measure` (W11b) reads any version, /11 included, and reports what the file's own records cost per
+warm patch transaction: the message a viewer receives (the transaction record plus the resource
+records just before it, one WebSocket frame each), its parts (mesh_u8, items, unsupported, meshes,
+records), zstd-3 per message and with the previous transaction record as a raw prefix (W11t's
+base-prefix coding), and the largest transactions (scene transitions). It infers nothing: a /10
+file written without inline records measures the transaction record alone.
 
 zstd needs Python 3.14's `compression.zstd` (run through `mise exec -- python3`); without it the
 zstd rows are reported as unavailable and everything else still runs.
@@ -1175,6 +1184,7 @@ def self_test():
 
     check("magic: GRSA is 10", version_of_magic(b"GRSA\r\n\x1a\n") == 10)
     check("magic: GRS8 is 8", version_of_magic(b"GRS8\r\n\x1a\n") == 8)
+    check("magic: GRSB is 11", version_of_magic(b"GRSB\r\n\x1a\n") == 11)
     try:
         version_of_magic(b"GRT1\r\n\x1a\n")
         check("magic: refuses GRT1", False)
@@ -1199,6 +1209,16 @@ def self_test():
         b = s["bytes"]
         ch = s["churn"]
         check("version from GRSA magic", rep["version"] == 10)
+        # W11b: `measure` reads the same file: the message is the record (no inline records here)
+        mp = os.path.join(td, "measure.json")
+        cmd_measure(["--recording", rp, "--scene", "all:1-80", "--warm-skip", "5", "--out", mp])
+        with open(mp) as fh:
+            mrep = json.load(fh)
+        mb = mrep["scenes"]["all"]["bytes"]
+        check("measure: 80 transactions, 75 warm", mrep["transactions"] == 80 and mrep["scenes"]["all"]["warm_tx"] == 75)
+        check("measure: message = record_v10 + its WebSocket header",
+              mb["message"]["mean"] == mb["tx_record"]["mean"] and abs(mb["tx_record"]["mean"] - b["record_v10"]["mean"]) < 1)
+        check("measure: two items a patch", mb["items"]["mean"] == 2)
         check("warm tx count (frames 6..80, all patches)", s["warm_tx"] == 75)
         check("two items per patch", ch["items_in_patch"]["mean"] == 2)
         check("its commands change only in floats", ch["items_cmds_floats_changed"]["mean"] == 1)
@@ -1244,12 +1264,113 @@ def self_test():
     return 1 if fails else 0
 
 
+def read_raw(path: str):
+    """(version, meta, raw record bytes) per record, the record's own framing included."""
+    with open(path, "rb") as fh:
+        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            ver = version_of_magic(mm[:8])
+            off = 8
+            n = len(mm)
+            while off + 4 <= n:
+                (rl,) = struct.unpack_from("<I", mm, off)
+                (ml,) = struct.unpack_from("<I", mm, off + 4)
+                meta = json.loads(bytes(mm[off + 8 : off + 8 + ml]))
+                yield ver, meta, bytes(mm[off : off + 4 + rl])
+                off += 4 + rl
+        finally:
+            mm.close()
+
+
+def cmd_measure(argv):
+    ap = argparse.ArgumentParser(prog="wire-budget.py measure")
+    ap.add_argument("--recording", required=True)
+    ap.add_argument("--scene", action="append", default=[])
+    ap.add_argument("--warm-skip", type=int, default=30)
+    ap.add_argument("--top", type=int, default=12)
+    ap.add_argument("--out")
+    a = ap.parse_args(argv)
+    scenes = []
+    for spec in a.scene:
+        name, rng = spec.split(":")
+        f0, f1 = (int(x) for x in rng.split("-"))
+        scenes.append((name, f0, f1))
+    rows = {name: {} for name, _f0, _f1 in scenes}
+    tops = []
+    pending = []  # resource records since the last transaction
+    prev_tx = None
+    version = None
+    count = 0
+    t0 = time.time()
+    for ver, meta, raw in read_raw(a.recording):
+        version = ver
+        kind = meta.get("type")
+        if kind == "resource":
+            pending.append(len(raw))
+            continue
+        if kind != "transaction":
+            continue
+        count += 1
+        frame = meta["frame"]
+        rec_bytes = sum(n + ws_header(n) for n in pending)
+        msg = len(raw) + ws_header(len(raw)) + rec_bytes
+        tops.append((len(raw), frame, meta["seq"]))
+        tops = sorted(tops, reverse=True)[: a.top]
+        scene = next((sc for sc in scenes if sc[1] + a.warm_skip <= frame <= sc[2]), None)
+        if scene is not None and meta["encoding"] == "patch":
+            r = rows[scene[0]]
+
+            def add(key, v, r=r):
+                r.setdefault(key, []).append(v)
+
+            add("message", msg)
+            add("tx_record", len(raw) + ws_header(len(raw)))
+            add("resource_records", len(pending))
+            add("resource_record_bytes", rec_bytes)
+            add("items", len(meta.get("items", [])))
+            add("item_json", len(cj(meta.get("items", []))))
+            add("mesh_entries", len(meta.get("meshes", [])))
+            add("mesh_json", len(cj(meta.get("meshes", []))))
+            add("unsupported_json", len(cj(meta.get("unsupported"))))
+            u8 = next((b["count"] for b in meta.get("blocks", []) if b["name"] == "mesh_u8"), 0)
+            add("mesh_u8", u8)
+            if zstd is not None:
+                z = len(zstd.compress(raw, level=3))
+                add("zstd3_tx", z + ws_header(z) + rec_bytes)
+                if prev_tx is not None:
+                    pre = zstd.ZstdDict(prev_tx, is_raw=True)
+                    zp = len(zstd.compress(raw, level=3, zstd_dict=pre.as_prefix))
+                    add("zstd3_prefix_tx", zp + ws_header(zp) + rec_bytes)
+        pending = []
+        prev_tx = raw
+    out = {"schema": SCHEMA + "#measure", "recording": os.path.basename(a.recording), "version": version,
+           "transactions": count, "warm_skip": a.warm_skip, "wall_s": round(time.time() - t0, 1),
+           "largest": [{"bytes": b, "frame": f, "seq": q} for b, f, q in tops], "scenes": {}}
+    for name, f0, f1 in scenes:
+        r = rows[name]
+        out["scenes"][name] = {"frames": [f0, f1], "warm_tx": len(r.get("message", [])),
+                               "bytes": {k: row(v) for k, v in sorted(r.items())}}
+        msg = row(r.get("message", [0]))
+        print(f"wire-budget measure: {name}: {len(r.get('message', []))} warm tx, message mean "
+              f"{msg.get('mean')} B, prefix-zstd3 {row(r.get('zstd3_prefix_tx', [0])).get('mean')} B",
+              file=sys.stderr)
+    text = json.dumps(out, indent=1)
+    if a.out:
+        with open(a.out, "w") as fh:
+            fh.write(text + "\n")
+    else:
+        print(text)
+    return 0
+
+
 def main(argv):
-    if not argv or argv[0] not in ("analyze", "self-test"):
+    if not argv or argv[0] not in ("analyze", "measure", "self-test"):
         print(__doc__, file=sys.stderr)
         return 2
     if argv[0] == "self-test":
         return self_test()
+    if argv[0] == "measure":
+        return cmd_measure(argv[1:])
     return cmd_analyze(argv[1:])
 
 

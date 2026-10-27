@@ -66,7 +66,12 @@ struct PayloadRef {
 // whose code travels as a payload (`source: "payload"`; never a `withheld` one, D4) by shader id
 // (render-stream-2.md "Resource record": inline records go out in table order). A hash may
 // repeat.
-inline std::vector<PayloadRef> payload_refs(const rs2::Snapshot &state) {
+//
+// W11b (render-stream-11.md "Mesh entry"): with `skip_dynamic` (a /11 stream) the surfaces of a
+// dynamic `ok` mesh are left out -- they travel in the transaction's `mesh_u8`, so they take no
+// resource record, store file or HTTP route. Every older stream names them as payloads, as the
+// snapshot still holds their GRM1 payload and hash for a /10 connection on a /11 host.
+inline std::vector<PayloadRef> payload_refs(const rs2::Snapshot &state, bool skip_dynamic = false) {
   std::vector<PayloadRef> out;
   for (const rs2::TextureEntry &entry : state.textures) {
     if (entry.kind == rs2::TextureKind::Image && entry.status == rs2::TextureStatus::Ok &&
@@ -79,7 +84,8 @@ inline std::vector<PayloadRef> payload_refs(const rs2::Snapshot &state) {
     }
   }
   for (const rs2::MeshEntry &mesh : state.meshes) {
-    if (mesh.status != rs2::MeshStatus::Ok) {
+    if (mesh.status != rs2::MeshStatus::Ok ||
+        (skip_dynamic && mesh.dynamic && !mesh.surfaces.empty())) {
       continue;
     }
     for (const rs2::MeshSurface &surface : mesh.surfaces) {

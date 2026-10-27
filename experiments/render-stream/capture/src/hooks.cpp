@@ -4074,10 +4074,12 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   g_omitted_names.clear();
   const char *cache_dir = std::getenv("GRC_TEXTURE_CACHE_DIR");
   const bool path_hook_wanted = cache_dir != nullptr && cache_dir[0] != '\0';
-  // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10).
+  // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10; W11b: and
+  // /11, which carries them too).
   const char *stream_version = std::getenv("GRC_STREAM_VERSION");
   const bool backbuffer_hooks_wanted =
-      stream_version != nullptr && std::strcmp(stream_version, "10") == 0;
+      stream_version != nullptr &&
+      (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0);
   g_canvas_group_mode_invalid.store(0);
   g_hooks_total = kHookCount;
   for (const HookSpec &spec : kSpecs) {

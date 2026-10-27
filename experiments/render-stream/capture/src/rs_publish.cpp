@@ -189,6 +189,11 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"size-before-adopt", SabotageKind::SizeBeforeAdopt},
       {"adopt-raw-shader-code", SabotageKind::AdoptRawShaderCode},
       {"adopt-skip-params", SabotageKind::AdoptSkipParams},
+      // New at /11 (W11b, render-stream-11.md "Sabotage kinds"; they need GRC_STREAM_VERSION=11:
+      // rs_gate8_policy.h sabotage_needs_v11).
+      {"cv-churn", SabotageKind::CvChurn},
+      {"stale-dynamic", SabotageKind::StaleDynamic},
+      {"keep-carried", SabotageKind::KeepCarried},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -487,6 +492,13 @@ bool Publisher::start(const Session &tmpl) {
     lane.session.stream.transport = Transport::File;
     lane.session.stream.encoding = lane.encoding;
     lane.session.resources = resources_info(policy_, Fetch::Directory);
+    lane.session.resources.mesh_dynamic = tmpl.resources.mesh_dynamic;  // W11b (encoded at /11)
+    if (tmpl.version == ProtocolVersion::V11) {
+      InlinePolicy inline_policy;
+      inline_policy.inline_max_bytes = policy_.inline_max_bytes;
+      lane.planner = std::make_unique<RecordPlanner>(
+          ProtocolVersion::V11, inline_policy, sabotage_.kind == SabotageKind::KeepCarried);
+    }
     const std::uint64_t t0 = monotonic_ns();
     const std::vector<std::uint8_t> session_bytes = encode_session(lane.session);
     const std::uint64_t t1 = monotonic_ns();
@@ -529,6 +541,33 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
   if (policy_.inline_max_bytes == 0) {
     return true;
   }
+  if (lane->planner != nullptr) {
+    // W11b (render-stream-11.md "Resource retention"): inline(T) \ inline(B) in table order.
+    const std::vector<PayloadName> records =
+        lane->planner->next(has_previous_ ? &previous_.state : nullptr, published.state);
+    for (const PayloadName &name : records) {
+      const auto payload = published.payloads.find(name.hash);
+      if (payload == published.payloads.end() || payload->second == nullptr) {
+        error_ = "resource-store-failed: no payload for hash " + name.hash;
+        return false;
+      }
+      ResourceRecord record;
+      record.hash = name.hash;
+      record.payload = *payload->second;
+      const std::vector<std::uint8_t> bytes = encode_resource(record);
+      const bool ok = lane->sink->write(bytes) && lane->sink->flush();
+      if (events_) {
+        events_("inline", name.hash, record.payload.size(), ok, frame);
+      }
+      if (!ok) {
+        return false;
+      }
+      ++lane->stats.resource_records;
+      lane->stats.resource_bytes += record.payload.size();
+      note_record_bytes(&lane->stats, bytes);
+    }
+    return true;
+  }
   // render-stream-2.md "Resource record": one record per hash the stream has not carried yet,
   // before the first transaction whose resolved table holds it, in table (id) order -- textures,
   // then (G5e, render-stream-4.md) every `ok` mesh's surfaces.
@@ -562,7 +601,9 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
 }
 
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
-  for (const rs::PayloadRef &ref : rs::payload_refs(published.state)) {
+  // W11b: a /11 stream's dynamic surfaces travel in its transactions, never in the store.
+  const bool v11 = stamp_v8_ && stamp_version_ == ProtocolVersion::V11;
+  for (const rs::PayloadRef &ref : rs::payload_refs(published.state, v11)) {
     const std::string &hash = *ref.hash;
     if (store_ == nullptr) {
       if (ref.payload_bytes > policy_.inline_max_bytes) {

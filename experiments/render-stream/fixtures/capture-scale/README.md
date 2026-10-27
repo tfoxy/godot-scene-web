@@ -30,6 +30,7 @@ game.
 | materials with a String parameter (unsupported param-type) | every other one | 348 |
 | `material_set_param` per frame | 8 | ~7 |
 | items moved per frame | 100 | |
+| drawing items cleared and re-recorded identically per frame (`RS_SCALE_REDRAWS`, W11b) | 0 | ~170 (WB: 163 of 174 patched items carry nothing new) |
 
 Every mesh update carries new vertex values, so each one is a new content-addressed payload, as
 skeletal animation produces. At the quit frame the scene prints, and writes to `RS_SCALE_REPORT`,

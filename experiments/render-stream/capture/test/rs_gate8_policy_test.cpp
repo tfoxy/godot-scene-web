@@ -111,7 +111,7 @@ void test_v9_policy() {
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
         "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
-  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9 or 10") != std::string::npos,
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10 or 11") != std::string::npos,
         "GRC_STREAM_VERSION=7 is still invalid");
   check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
   Gate8Policy policy;
@@ -147,9 +147,9 @@ void test_v10_policy() {
         "GRC_STREAM_VERSION=10 is a /10 file sink without a policy, speaking /8 and /9's keys");
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v10(),
         "/9 does not speak /10");
-  check(!parse("11", nullptr, nullptr, nullptr, &p, &error) &&
-            error.find("6, 8, 9 or 10") != std::string::npos,
-        "GRC_STREAM_VERSION=11 is invalid");
+  check(!parse("12", nullptr, nullptr, nullptr, &p, &error) &&
+            error.find("6, 8, 9, 10 or 11") != std::string::npos,
+        "GRC_STREAM_VERSION=12 is invalid");
   check(!parse("A", nullptr, nullptr, nullptr, &p, &error), "GRC_STREAM_VERSION=A is invalid");
   Gate8Policy policy;
   parse("10", "arm", nullptr, nullptr, &policy, &error);
@@ -176,6 +176,69 @@ void test_v10_policy() {
       }
     }
   }
+}
+
+// W11b (render-stream-11.md "Opt-in and version policy", "Sabotage kinds").
+void test_v11_policy() {
+  Gate8Policy p;
+  std::string error;
+  check(parse("11", nullptr, nullptr, nullptr, &p, &error) &&
+            p.file_version == ProtocolVersion::V11 && !p.any() && p.speaks_v8() &&
+            p.speaks_v9() && p.speaks_v10() && p.speaks_v11(),
+        "GRC_STREAM_VERSION=11 is a /11 file sink speaking /8 to /10's keys");
+  check(parse("10", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v11(),
+        "/10 does not speak /11");
+  Gate8Policy policy;
+  parse("11", "arm", nullptr, nullptr, &policy, &error);
+  auto offer = grc::rs::gate8_live_subprotocols(policy);
+  check(offer == std::vector<std::string>{"render-stream.11", "render-stream.10", "render-stream.9",
+                                          "render-stream.8"},
+        "GRC_STREAM_VERSION=11 under a gate 8 policy offers .11, .10, .9 then .8");
+  parse("11", nullptr, nullptr, nullptr, &policy, &error);
+  offer = grc::rs::gate8_live_subprotocols(policy);
+  check(offer == std::vector<std::string>{"render-stream.11", "render-stream.10", "render-stream.9",
+                                          "render-stream.8", "render-stream.7", "render-stream.6"},
+        "GRC_STREAM_VERSION=11 offers .11, .10, .9, .8, .7, .6");
+  for (const char *version : {static_cast<const char *>(nullptr), "6", "8", "9", "10"}) {
+    for (const char *adopt : {static_cast<const char *>(nullptr), "arm"}) {
+      Gate8Policy other;
+      parse(version, adopt, nullptr, nullptr, &other, &error);
+      for (const std::string &name : grc::rs::gate8_live_subprotocols(other)) {
+        check(name != "render-stream.11",
+              "render-stream.11 is offered only under GRC_STREAM_VERSION=11");
+      }
+    }
+  }
+  using grc::rs2::MeshDynamicMode;
+  using grc::rs2::MeshDynamicPolicy;
+  MeshDynamicPolicy m;
+  check(grc::rs::parse_mesh_dynamic_policy(nullptr, nullptr, nullptr, &m, &error) &&
+            m.mode == MeshDynamicMode::Auto && m.frames == 4 && m.max_bytes == 65536,
+        "GRC_MESH_DYNAMIC* unset: auto, 4 frames, 65536 bytes");
+  check(grc::rs::parse_mesh_dynamic_policy("off", "1", "0", &m, &error) &&
+            m.mode == MeshDynamicMode::Off && m.frames == 1 && m.max_bytes == 0,
+        "off, 1 frame, 0 bytes parse");
+  check(grc::rs::parse_mesh_dynamic_policy("all", "60", "", &m, &error) &&
+            m.mode == MeshDynamicMode::All && m.frames == 60 && m.max_bytes == 65536,
+        "all and 60 frames parse; an empty max is unset");
+  check(!grc::rs::parse_mesh_dynamic_policy("dynamic", nullptr, nullptr, &m, &error) &&
+            error.find("invalid GRC_MESH_DYNAMIC=dynamic") == 0 && m.mode == MeshDynamicMode::Auto,
+        "an unknown mode is refused naming the variable");
+  for (const char *frames : {"0", "61", "-1", "4x", " 4"}) {
+    check(!grc::rs::parse_mesh_dynamic_policy(nullptr, frames, nullptr, &m, &error) &&
+              error.find("invalid GRC_MESH_DYNAMIC_FRAMES=") == 0,
+          "a bad GRC_MESH_DYNAMIC_FRAMES is refused");
+  }
+  check(!grc::rs::parse_mesh_dynamic_policy(nullptr, nullptr, "-5", &m, &error) &&
+            error.find("invalid GRC_MESH_DYNAMIC_MAX_BYTES=") == 0,
+        "a negative max is refused");
+  using grc::rs2::SabotageKind;
+  check(grc::rs::sabotage_needs_v11(SabotageKind::CvChurn) &&
+            grc::rs::sabotage_needs_v11(SabotageKind::StaleDynamic) &&
+            grc::rs::sabotage_needs_v11(SabotageKind::KeepCarried) &&
+            !grc::rs::sabotage_needs_v11(SabotageKind::PerturbVertex) &&
+            !grc::rs::sabotage_needs_v8(SabotageKind::CvChurn),
+        "cv-churn, stale-dynamic and keep-carried need /11 (and only they)");
 }
 
 void test_delivery_seam() {
@@ -364,6 +427,7 @@ int main() {
   test_refusal();
   test_v9_policy();
   test_v10_policy();
+  test_v11_policy();
   test_delivery_seam();
   test_subprotocols();
   test_seams();

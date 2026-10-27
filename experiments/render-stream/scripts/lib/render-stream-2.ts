@@ -136,7 +136,11 @@ export type SabotageKind =
   | "perturb-decode"
   | "size-before-adopt"
   | "adopt-raw-shader-code"
-  | "adopt-skip-params";
+  | "adopt-skip-params"
+  // new at /11 (W11b; render-stream-11.md "Sabotage kinds")
+  | "cv-churn"
+  | "stale-dynamic"
+  | "keep-carried";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -1024,7 +1028,12 @@ const SABOTAGE_KINDS = [
   "size-before-adopt",
   "adopt-raw-shader-code",
   "adopt-skip-params",
+  // new at /11 (W11b, render-stream-11.md "Sabotage kinds"): legal in a /11 session only.
+  "cv-churn",
+  "stale-dynamic",
+  "keep-carried",
 ] as const;
+const SABOTAGE_KINDS_V11_ONLY: readonly string[] = ["cv-churn", "stale-dynamic", "keep-carried"];
 const SABOTAGE_KINDS_V8_ONLY: readonly string[] = [
   "adopt-skip-state",
   "adopt-no-redraw",
@@ -2324,6 +2333,9 @@ function checkSessionSchema(
     }
     if (!isV8 && SABOTAGE_KINDS_V8_ONLY.includes(sabotage.kind)) {
       return err(`"sabotage.kind" "${sabotage.kind}" is legal only at /8`);
+    }
+    if (!isV11 && SABOTAGE_KINDS_V11_ONLY.includes(sabotage.kind)) {
+      return err(`"sabotage.kind" "${sabotage.kind}" is legal only at /11`);
     }
   }
 
