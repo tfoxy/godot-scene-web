@@ -15,8 +15,18 @@ extends Node
 ## (hint_roughness_normal), DA (hint_anisotropy), and DS (hint_default_black, set at step 2 and
 ## cleared at step 3).
 ##
+## TH (P3-CK): a fine band in a half-float (RGBAH) texture's alpha, phased by TIME: GLES3 samples
+## the texture at half precision, which an RGBA8 copy of it cannot reproduce.
+##
 ## Every item is created in `_ready()`, after `GrcLoader` armed the capture (gate 0 route (a)).
 ## Steps: 1 sets TP's `tint`, 2 sets DS's texture, 3 clears it, 4 changes nothing (TIME alone).
+##
+## Variant `stall` (RS_FIXTURE_VARIANT=stall, P3-CK): run in real time (no --fixed-fps) with the
+## capture armed in the rendered host. It adds TC, a clock that writes floor(TIME*1024) into its
+## RGB bytes, and stalls the main loop for STALL_MS at each STALL_FRAMES frame. An iteration that
+## long wants more physics steps than `max_physics_steps_per_frame` (8), so the next iteration's
+## tree delta is clamped (main.cpp:4710-4713) while the draw's TIME step is not. Each stall prints
+## `[fixture] stall frame=.. ms=.. next_frame=.. next_delta=..` (the next iteration's tree delta).
 ##
 ## Environment (all optional; an invalid value prints an error and quits 2):
 ##   RS_FIXTURE_STEP_LOG     absolute path: one JSONL line per step at its applied frame
@@ -24,6 +34,7 @@ extends Node
 ##   RS_FIXTURE_START_FRAME  S >= 1, default 1
 ##   RS_FIXTURE_STEP_FRAMES  N >= 8, default 10 (step k >= 1 at S+N*k, settled at S+N*k+7)
 ##   RS_FIXTURE_QUIT_FRAME   >= S+N*4+11 (the default)
+##   RS_FIXTURE_VARIANT      "" (default) or "stall"
 
 const LAST_STEP: int = 4
 const SETTLE_OFFSET: int = 7
@@ -33,6 +44,12 @@ const QUIT_AFTER_LAST_SETTLE: int = 4
 
 const DEFAULTS: Array[String] = ["plain", "white", "black", "transparent", "normal", "roughness_normal", "anisotropy"]
 const DEFAULT_NAMES: Array[String] = ["D0", "DW", "DB", "DT", "DN", "DR", "DA"]
+## TH's ramp: texel i of 256 has alpha 0.25 + i/512, exact in binary16.
+const RAMP_TEXELS: int = 256
+## The stall variant: a STALL_MS main-loop stall in _process at each of these frames (between
+## settle frames 8, 18, 28, 38 and 48).
+const STALL_FRAMES: Array[int] = [12, 22, 32, 42]
+const STALL_MS: int = 300
 
 
 ## A `Node2D` drawing one rect, or one texture rect when `texture` is set.
@@ -59,6 +76,8 @@ var _step_frames: int = STEP_FRAMES_DEFAULT
 var _quit_frame: int = 0
 var _shot_dir: String = ""
 var _step_log_file: FileAccess
+var _variant: String = ""
+var _stalled_at: int = -1
 
 
 func _ready() -> void:
@@ -78,15 +97,27 @@ func _ready() -> void:
 	m_set = _material("default_black")
 	_shape("DS", Vector2(464, 160), Rect2(0, 0, 48, 48), m_set)
 	set_texture = _solid_texture(Color8(200, 100, 50, 255))
+	var th: ShapeNode = _shape("TH", Vector2(16, 240), Rect2(0, 0, RAMP_TEXELS, 16), _material("half_band"))
+	th.texture = _half_ramp_texture()
+	if _variant == "stall":
+		_shape("TC", Vector2(288, 240), Rect2(0, 0, 32, 16), _material("clock"))
 
 	_log_step(0, 1, _start_frame + SETTLE_OFFSET)
-	print("[fixture] gate55-time ready: S=%d N=%d quit=%d" % [_start_frame, _step_frames, _quit_frame])
+	print("[fixture] gate55-time ready: S=%d N=%d quit=%d variant=%s" % [_start_frame, _step_frames, _quit_frame, _variant])
 
 
 func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+
+	if _stalled_at >= 0:
+		# The iteration after a stall: the tree's (clamped) delta and the physics steps it ran.
+		print("[fixture] stall frame=%d ms=%d next_frame=%d next_delta=%s" % [_stalled_at, STALL_MS, _frame, var_to_str(get_process_delta_time())])
+		_stalled_at = -1
+	if _variant == "stall" and STALL_FRAMES.has(_frame):
+		OS.delay_msec(STALL_MS)
+		_stalled_at = _frame
 
 	var apply_step: int = _step_at(_frame, 0)
 	if apply_step >= 1:
@@ -121,6 +152,18 @@ func _stripes_texture() -> ImageTexture:
 	for y: int in range(16):
 		for x: int in range(16):
 			image.set_pixel(x, y, colors[x / 4])
+	return ImageTexture.create_from_image(image)
+
+
+## TH's RAMP_TEXELS x 1 RGBAH texture: white, alpha 0.25 + i/512 at texel i (each exact in binary16).
+func _half_ramp_texture() -> ImageTexture:
+	var data: PackedByteArray = PackedByteArray()
+	data.resize(RAMP_TEXELS * 8)
+	for i: int in range(RAMP_TEXELS):
+		for c: int in range(3):
+			data.encode_half(i * 8 + c * 2, 1.0)
+		data.encode_half(i * 8 + 6, 0.25 + float(i) / 512.0)
+	var image: Image = Image.create_from_data(RAMP_TEXELS, 1, false, Image.FORMAT_RGBAH, data)
 	return ImageTexture.create_from_image(image)
 
 
@@ -162,6 +205,10 @@ func _read_environment() -> bool:
 		return false
 	_quit_frame = quit
 
+	_variant = OS.get_environment("RS_FIXTURE_VARIANT")
+	if _variant != "" and _variant != "stall":
+		_error("RS_FIXTURE_VARIANT must be \"\" or \"stall\" (got %s)" % JSON.stringify(_variant))
+		return false
 	var step_log: String = _path_env("RS_FIXTURE_STEP_LOG")
 	var shot_dir: String = _path_env("RS_FIXTURE_SHOT_DIR")
 	if step_log == "!" or shot_dir == "!":

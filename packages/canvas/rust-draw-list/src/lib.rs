@@ -358,6 +358,19 @@ pub enum TextureOp {
         offset: u32,
         len: u32,
     },
+    /// (Re)define texture `id` as `width × height` RGBA half floats (`RGBA16F`, each channel an
+    /// IEEE-754 binary16, little-endian), from `DrawList::texture_bytes[offset..offset +
+    /// 8·width·height]`. Godot's GLES3 driver keeps a half-float image (`RH` to `RGBAH`) as `R16F`
+    /// to `RGBA16F` (`texture_storage.cpp` `_get_gl_image_and_format`), so a shader reads its
+    /// channels at half precision, which straight RGBA8 cannot carry (P3-CK). The texture is then
+    /// sampled exactly as an RGBA8 one (level 0, the draw's own sampler; `RGBA16F` filters in
+    /// WebGL 2 and GL ES 3).
+    UploadHalf {
+        id: u32,
+        width: u32,
+        height: u32,
+        offset: u32,
+    },
 }
 
 /// A block-compressed texture format, named for Godot's `Image.Format` it carries (the GL internal
@@ -574,6 +587,20 @@ impl DrawList {
             offset: offset as u32,
         });
         &mut self.texture_bytes[offset..offset + len]
+    }
+
+    /// Queue an upload of RGBA half floats, 8 bytes a texel ([`TextureOp::UploadHalf`]; copied
+    /// once into the byte arena).
+    pub fn upload_half_texture(&mut self, id: u32, width: u32, height: u32, rgba16f: &[u8]) {
+        debug_assert_eq!(rgba16f.len(), 8 * width as usize * height as usize);
+        let offset = self.texture_bytes.len() as u32;
+        self.texture_bytes.extend_from_slice(rgba16f);
+        self.texture_ops.push(TextureOp::UploadHalf {
+            id,
+            width,
+            height,
+            offset,
+        });
     }
 
     /// Queue an upload of block-compressed level-0 bytes (copied once into the byte arena).

@@ -3183,6 +3183,11 @@ fn kept_hash(
 }
 
 fn upload_pixels(list: &mut DrawList, id: Id, px: &TexturePixels) {
+    if let Some(half) = &px.half {
+        // P3-CK: RGBA16F, as GLES3 keeps a half-float image.
+        list.upload_half_texture(id, px.width, px.height, half);
+        return;
+    }
     match &px.compressed {
         None => list.upload_texture(id, px.width, px.height, &px.rgba),
         Some(level0) => {

@@ -241,11 +241,13 @@ phase. /10 carries the host's value per transaction, so every receiver draws the
   without such a shader never carries the key, so it is byte-identical to what it was before P3-TM
   (`golden-10/` is unchanged). Below /10 there is no key.
 - **The value** is the time GLES3 had when it drew the frame the transaction captures. The capture
-  keeps the same sum from its frame callback, which runs after each iteration's draw
-  (main.cpp:4839): an iteration that drew (`Engine.get_frames_drawn()` moved) adds the step the tree
-  processed (`Node.get_process_delta_time()`, the same double), `fmod` by the project setting. A
-  host that has never drawn (headless: no draw path) adds every iteration, the time a rendered host
-  drawing each iteration would have. It starts at the extension's first frame callback: exact when
+  keeps the same sum: since P3-CK it adds each hooked `RenderingServer::draw`'s own `frame_step`
+  (the step GLES3 adds), `fmod` by the project setting. Its frame callback, which runs after each
+  iteration's draw (main.cpp:4839), advances a host that has never drawn (headless: no draw path)
+  by the step the tree processed (`Node.get_process_delta_time()`) every iteration, the time a
+  rendered host drawing each iteration would have. Without the hook (P3-TM, or a record without
+  the slot) an iteration that drew (`Engine.get_frames_drawn()` moved) adds the tree's step, which
+  is clamped after a stall (below). It starts at the extension's first frame callback: exact when
   the extension loads before the first iteration (every fixture, a mod loading it at startup); a
   late-loaded extension starts from 0 and logs `start_frames_drawn`.
 - **The shader entry:** in a /10 session `TIME` is a `use` only (as `screen_texture` since P3-ST):
@@ -276,6 +278,15 @@ Receivers:
   to float as GLES3 uploads it.
 - Receiver sabotage `shader-time-frozen` (native and GSW): the carried time is ignored, so every
   `TIME` reads 0.
+
+**P3-CK (2026-10-27, no wire change).** The capture's source is now the hooked
+`RenderingServer::draw` (calibrated slot `draw`, /10 only): its `frame_step` is the step GLES3 adds,
+which the main loop takes before the physics clamp, so a rendered host that stalls longer than
+`max_physics_steps_per_frame` physics steps no longer falls behind (the tree's delta is clamped
+there, main.cpp:4710-4713). A host that never draws still advances by the tree's delta at every
+frame callback, and a calibration record without the slot keeps the frame-callback sum (the log
+names the `source`). The key, its place and its presence rule are unchanged
+(gate5_5-design.md "Shader clock under stalls and half-float samplers (P3-CK)").
 
 ## Versioning
 

@@ -1,6 +1,8 @@
 #include "rs_shader_clock.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 
 #include "abi.h"
 #include "iface.h"
@@ -80,6 +82,8 @@ bool resolve() {
   return g_clock.available;
 }
 
+bool draw_source() { return g_clock.draw_hooked && !g_clock.tree_delta_fault; }
+
 }  // namespace
 
 ShaderClock &shader_clock() { return g_clock; }
@@ -109,15 +113,40 @@ bool shader_clock_tick() {
   if (g_clock.start_drawn < 0) {
     g_clock.start_drawn = drawn;
   }
-  // A drawn iteration advances, as RasterizerGLES3::begin_frame does; a host that has never drawn
-  // advances every iteration.
-  if (drawn == 0 || drawn != g_clock.last_drawn) {
+  if (draw_source()) {
+    // P3-CK: the hooked draws keep the sum; only a host that has never drawn advances here.
+    if (drawn == 0 && g_clock.draws == 0) {
+      g_clock.total = std::fmod(g_clock.total + delta, g_clock.rollover);
+      ++g_clock.advanced;
+    }
+  } else if (drawn == 0 || drawn != g_clock.last_drawn) {
+    // P3-TM: a drawn iteration advances by the tree's delta, as RasterizerGLES3::begin_frame does
+    // by the draw's step; a host that has never drawn advances every iteration.
     g_clock.total = std::fmod(g_clock.total + delta, g_clock.rollover);
     ++g_clock.advanced;
   }
   g_clock.last_drawn = drawn;
   return true;
 }
+
+void shader_clock_set_draw_hooked(bool hooked) {
+  g_clock.draw_hooked = hooked;
+  // The fault knob (not a GRC_SABOTAGE kind, which the session record would carry): P3-TM's
+  // frame-callback sum with the hook installed, so a gate can show what the hook fixes.
+  const char *fault = std::getenv("GRC_SHADER_CLOCK_FAULT");
+  g_clock.tree_delta_fault = fault != nullptr && std::strcmp(fault, "tree-delta") == 0;
+}
+
+void shader_clock_draw(double frame_step) {
+  ++g_clock.draws;
+  if (!resolve() || !draw_source()) {
+    return;
+  }
+  g_clock.total = std::fmod(g_clock.total + frame_step, g_clock.rollover);
+  ++g_clock.advanced;
+}
+
+const char *shader_clock_source() { return draw_source() ? "draw-hook" : "frame-callback"; }
 
 }  // namespace rs
 }  // namespace grc

@@ -13,14 +13,23 @@
 //   receiver/, receiver-patch/           rendered receivers on the full and patch sinks:
 //                                        shot-seqs.txt, shots/seq-<n>.png
 //   sabotage-receiver-time-frozen/       RS_RECEIVER_SABOTAGE=shader-time-frozen
+//   stall-host/                          P3-CK: the stall variant in real time, rendered and armed
+//                                        (/10, its own shots are the reference): stdout.log,
+//                                        recording.rs2, store/, steps.jsonl, shots/step-<k>.png
+//   stall-receiver/                      a rendered receiver on stall-host's recording
+//   sabotage-stall-host-clock-fault/     stall-host under GRC_SHADER_CLOCK_FAULT=tree-delta
 //
 // Checks: the capture carries every shader `ok` (TIME a use, not a reason) with its GRP1 payload
 // in the store, types nothing unsupported, and every transaction carries `shader_time` equal to
 // its frame's F steps of 1/60 summed in double, bit for bit; the reference repeats exactly and
 // equals the hand model (TP's sine pulse within 2, TV's whole-pixel shift exact, every default
 // texture within 1, DS's set and cleared texture); every receiver shot equals the reference,
-// exactly natively; the sabotage differs from the reference inside the three TIME items at every
-// step, and nowhere else.
+// exactly natively; the sabotage differs from the reference inside the four TIME items at every
+// step, and nowhere else. P3-CK: TH (a fine band over a half-float alpha ramp) is in the model, so
+// a receiver that samples RGBAH at 8 bits misses it; in the stall variant the host's TC clock (its
+// GLES3 TIME as bytes) equals floor(shader_time*1024) of the transaction at every shot, after
+// clamped iterations too, the fault knob (P3-TM's frame-callback sum) falls behind at every shot
+// after a stall, and the receiver equals the host's shots.
 //
 // Browser receivers (gate 7 runs this group with GATE7_LIVE_KIND=web|gsw; a browser leg's directory
 // holds page-config.json) are judged within 1 per channel everywhere: the sine and the linear
@@ -41,9 +50,9 @@ export const G55T_STEPS = 5;
 const WIDTH = 640;
 const HEIGHT = 360;
 const CLEAR: Rgb = [51, 51, 102];
-/** Shaders the fixture makes (fixtures/gate55-time/shaders/): three read TIME. */
-const SHADER_COUNT = 10;
-const TIME_SHADERS = 3;
+/** Shaders the fixture makes (fixtures/gate55-time/shaders/): four read TIME (P3-CK's TH too). */
+const SHADER_COUNT = 11;
+const TIME_SHADERS = 4;
 /** The fixture's step model (gate55_time.gd): S=1, N=10, settle +7. */
 const SETTLE_FRAMES = [8, 18, 28, 38, 48];
 
@@ -75,8 +84,30 @@ export function g55tLayout(step: number) {
     tvBand: [240, 16, 32, 64] as Rect,
     defaults: [0, 1, 2, 3, 4, 5, 6].map(row),
     ds: row(7),
+    /** P3-CK: the half-float band (256 texels, 1:1, nearest). */
+    th: [16, 240, 256, 16] as Rect,
+    /** P3-CK, stall variant only: the clock. */
+    tc: [288, 240, 32, 16] as Rect,
   };
 }
+
+/**
+ * P3-CK: TH at column `i` and shader time `t` (gate55_time.gd `_half_ramp_texture`,
+ * shaders/half_band.gdshader): fract(a*32 + TIME*0.5) for texel alpha a = 0.25 + i/512 (exact in
+ * binary16, so a*32 = 8 + i/16 exactly), in binary32.
+ */
+export function g55tHalfBand(i: number, t: number): Rgb {
+  const band = f32(f32(8 + i / 16) + f32(f32(t) * 0.5));
+  const v = band - Math.floor(band);
+  return [unorm(v), unorm(0.5), unorm(1 - v)];
+}
+
+/** P3-CK: the clock's code for a shader time (shaders/clock.gdshader): floor(f32(TIME)*1024). */
+export const g55tClockCode = (t: number): number => Math.floor(f32(t) * 1024);
+
+/** The clock's code from its RGB bytes. */
+const clockFromRgb = (r: number, g: number, b: number): number =>
+  r * 65536 + g * 256 + b;
 
 /** The default textures' texels as the fixture's shaders fold them: (r, g/2 + a/2, b). */
 const DEFAULT_RGB: Rgb[] = [
@@ -107,6 +138,12 @@ export function g55tModel(
     return {
       rgb: [unorm(tint[0] * p), unorm(tint[1]), unorm(tint[2] * (1 - p))],
       tolerance: 2,
+    };
+  }
+  if (inRect(x, y, L.th)) {
+    return {
+      rgb: g55tHalfBand(x - L.th[0], g55tTime(SETTLE_FRAMES[step])),
+      tolerance: 1,
     };
   }
   if (inRect(x, y, L.tv)) return { rgb: [64, 204, 153], tolerance: 0 };
@@ -365,7 +402,7 @@ export async function runGate55t(out: string): Promise<Gate55tResult> {
     checks.push(
       check(
         "g55t-reference-hand-model",
-        "the reference equals the hand model wherever it has a value: TP's sine pulse in TIME at its settle frame (within 2), TV's vertex() shift of floor(TIME*30+0.25) whole pixels (exact), each unset sampler's default texture -- white with no hint or hint_default_white, black, transparent, the normal for hint_normal and hint_roughness_normal, anisotropy (within 1) -- and DS's texture while set (step 2), its black default before and after; the clear colour elsewhere",
+        "the reference equals the hand model wherever it has a value: TP's sine pulse in TIME at its settle frame (within 2), TH's band fract(a*32 + TIME/2) over its half-float alpha ramp (within 1), TV's vertex() shift of floor(TIME*30+0.25) whole pixels (exact), each unset sampler's default texture -- white with no hint or hint_default_white, black, transparent, the normal for hint_normal and hint_roughness_normal, anisotropy (within 1) -- and DS's texture while set (step 2), its black default before and after; the clear colour elsewhere",
         modelProblems,
         `${G55T_STEPS} steps match the model`,
         [rel(join(D, "reference"))],
@@ -448,26 +485,29 @@ export async function runGate55t(out: string): Promise<Gate55tResult> {
       const inTp = d.pixels.filter((p) => inRect(...at(p), L.tp)).length;
       const inTs = d.pixels.filter((p) => inRect(...at(p), L.ts)).length;
       const inTv = d.pixels.filter((p) => inRect(...at(p), L.tvBand)).length;
-      const outside = d.count - inTp - inTs - inTv;
+      const inTh = d.pixels.filter((p) => inRect(...at(p), L.th)).length;
+      const outside = d.count - inTp - inTs - inTv - inTh;
       // TIME 0 is a different pulse over all of TP, an unshifted scroll over a large part of TS
-      // (everywhere but the flat stripe interiors), and TV at its unshifted rows.
+      // (everywhere but the flat stripe interiors), TV at its unshifted rows, and TH's band
+      // unshifted (TIME/2 >= 1/15 moves every texel's band by more than 16 levels).
       const quarter = (r: Rect) => (r[2] * r[3]) / 4;
       if (
         inTp === L.tp[2] * L.tp[3] &&
         inTs > quarter(L.ts) &&
         inTv > 0 &&
+        inTh === L.th[2] * L.th[3] &&
         outside === 0
       )
         caught++;
       else
         problems.push(
-          `step ${k}: ${inTp} px differ in TP, ${inTs} in TS, ${inTv} in TV, ${outside} elsewhere`,
+          `step ${k}: ${inTp} px differ in TP, ${inTs} in TS, ${inTv} in TV, ${inTh} in TH, ${outside} elsewhere`,
         );
     }
     checks.push(
       check(
         "g55t-sabotage-time-frozen-detected",
-        "shader-time-frozen (the receiver ignores the carried shader time, so every TIME reads 0) differs from the reference over all of TP, more than a quarter of TS and TV's rows, at every step, and nowhere else (the default-texture items read no TIME)",
+        "shader-time-frozen (the receiver ignores the carried shader time, so every TIME reads 0) differs from the reference over all of TP and TH, more than a quarter of TS and TV's rows, at every step, and nowhere else (the default-texture items read no TIME)",
         problems,
         `${caught}/${G55T_STEPS} steps differ exactly as predicted`,
         [rel(dir)],
@@ -483,5 +523,214 @@ export async function runGate55t(out: string): Promise<Gate55tResult> {
     };
   }
 
+  await stallChecks(D, rel, checks, legs, pixels);
   return { checks, legs, pixels };
+}
+
+// --- P3-CK: the shader clock under stalls (stall variant, real time) ----------------------------
+
+/** The fixture's stalls (gate55_time.gd STALL_FRAMES, STALL_MS). */
+const STALL_FRAMES = [12, 22, 32, 42];
+const STALL_S = 0.3;
+/**
+ * A clamped iteration processes max_physics_steps_per_frame (8) physics steps' worth plus the timer
+ * sync's remainder (main.cpp:4710-4713; main_timer_sync.cpp keeps up to about one step of it, and
+ * a gate 7 run measured exactly 9/60): under 10/60 s, against the stall's 0.3 s unclamped.
+ */
+const CLAMPED_DELTA_MAX = 10 / 60;
+/** The fault falls behind by each stall's unclamped excess: far more than 0.05 s by step 1. */
+const FAULT_MIN_BEHIND = Math.floor(0.05 * 1024);
+
+interface StallLeg {
+  problems: string[];
+  /** per step: [GPU clock code from the shot, the transaction's code] */
+  codes: ([number, number] | null)[];
+  source: string;
+  stalls: { frame: number; nextDelta: number }[];
+  shots: (Shot | undefined)[];
+}
+
+async function stallLeg(dir: string): Promise<StallLeg> {
+  const problems: string[] = [];
+  const codes: ([number, number] | null)[] = [];
+  const shots: (Shot | undefined)[] = [];
+  const code = await readExitCode(dir);
+  if (code !== 0) problems.push(`exit ${code}`);
+  let log = "";
+  try {
+    log = await readFile(join(dir, "stdout.log"), "utf8");
+  } catch {
+    problems.push("no stdout.log");
+  }
+  const source = /shader-clock: carried; source=([a-z-]+)/.exec(log)?.[1] ?? "none";
+  const stalls = [
+    ...log.matchAll(
+      /\[fixture\] stall frame=(\d+) ms=\d+ next_frame=\d+ next_delta=([0-9.e+-]+)/g,
+    ),
+  ].map((m) => ({ frame: Number(m[1]), nextDelta: Number(m[2]) }));
+  if (stalls.map((s) => s.frame).join(",") !== STALL_FRAMES.join(","))
+    problems.push(
+      `stalls at ${JSON.stringify(stalls.map((s) => s.frame))}, want ${JSON.stringify(STALL_FRAMES)}`,
+    );
+  for (const s of stalls)
+    if (!(s.nextDelta > 0 && s.nextDelta < CLAMPED_DELTA_MAX))
+      problems.push(
+        `stall at ${s.frame}: next delta ${s.nextDelta} is not clamped below ${CLAMPED_DELTA_MAX.toFixed(4)} s (the stall is ${STALL_S} s)`,
+      );
+  let byFrame = new Map<number, number | undefined>();
+  try {
+    const bytes = new Uint8Array(await readFile(join(dir, "recording.rs2")));
+    const rec = resolveRecording(bytes, 10);
+    for (const t of rec.transactions) {
+      if (t.state.status !== "ok")
+        problems.push(`seq ${t.seq}: status ${t.state.status}`);
+      byFrame.set(t.frame, t.state.shader_time);
+    }
+  } catch (e) {
+    problems.push(`recording: ${(e as Error).message}`);
+    byFrame = new Map();
+  }
+  for (let k = 0; k < G55T_STEPS; k++) {
+    const shot = await decodePngRgba(join(dir, "shots", `step-${k}.png`));
+    shots.push(shot);
+    const t = byFrame.get(SETTLE_FRAMES[k]);
+    if (!shot || t === undefined) {
+      problems.push(
+        `step ${k}: ${shot ? "" : "no shot "}${t === undefined ? `no shader_time at frame ${SETTLE_FRAMES[k]}` : ""}`,
+      );
+      codes.push(null);
+      continue;
+    }
+    const L = g55tLayout(k);
+    const x = L.tc[0] + 16;
+    const y = L.tc[1] + 8;
+    const i = (y * shot.width + x) * 4;
+    codes.push([
+      clockFromRgb(shot.data[i], shot.data[i + 1], shot.data[i + 2]),
+      g55tClockCode(t),
+    ]);
+  }
+  return { problems, codes, source, stalls, shots };
+}
+
+async function stallChecks(
+  D: string,
+  rel: (p: string) => string,
+  checks: Gate5Check[],
+  legs: Record<string, Gate55LegEntry>,
+  pixels: Record<string, number[]>,
+): Promise<void> {
+  const hostDir = join(D, "stall-host");
+  const host = await stallLeg(hostDir);
+  {
+    const problems = [...host.problems];
+    if (host.source !== "draw-hook")
+      problems.push(`shader clock source ${host.source}, want draw-hook`);
+    host.codes.forEach((c, k) => {
+      if (c && c[0] !== c[1])
+        problems.push(
+          `step ${k}: the host's TIME code ${c[0]} (shot), the transaction's ${c[1]} (${(c[0] - c[1]) / 1024} s)`,
+        );
+    });
+    checks.push(
+      check(
+        "g55t-stall-clock-carried",
+        "P3-CK: the rendered, armed host stalls 0.3 s at each of frames 12/22/32/42 and the iteration after each is clamped (tree delta under 10/60 s); its shader clock is the hooked RenderingServer::draw (source=draw-hook); and at every settle shot the host's own GLES3 TIME (TC's floor(TIME*1024) bytes) equals floor(f32(shader_time)*1024) of the transaction at that frame",
+        problems,
+        `${host.stalls.length} clamped stalls (next deltas ${host.stalls.map((s) => s.nextDelta.toFixed(4)).join(", ")} s); clock codes ${host.codes.map((c) => (c ? c[0] : "-")).join(", ")} equal on the wire`,
+        [rel(hostDir)],
+      ),
+    );
+    legs["time/stall-host"] = {
+      group: "g55t",
+      expected_class: "success",
+      result_class: problems.length === 0 ? "success" : "capture-failure",
+      reasons: problems.slice(0, 5),
+      exit_code: await readExitCode(hostDir),
+      artifacts: [rel(hostDir)],
+    };
+  }
+
+  // The receiver on the host's recording equals the host's own shots.
+  {
+    const dir = join(D, "stall-receiver");
+    const problems: string[] = [];
+    const code = await readExitCode(dir);
+    if (code !== 0) problems.push(`exit ${code}`);
+    const seqs = await shotSeqs(dir);
+    const browser = isBrowserLeg(dir);
+    const tolerance = browser ? 1 : 0;
+    let max = 0;
+    pixels["stall-receiver"] = [];
+    if (!seqs) problems.push(`shot-seqs.txt missing or not ${G55T_STEPS} seqs`);
+    for (let k = 0; k < G55T_STEPS && seqs; k++) {
+      const r = host.shots[k];
+      const s = await decodePngRgba(join(dir, "shots", `seq-${seqs[k]}.png`));
+      if (!r || !s) {
+        problems.push(`step ${k}: missing shot`);
+        pixels["stall-receiver"].push(-1);
+        continue;
+      }
+      const d = diffShots(r, s, tolerance);
+      max = Math.max(max, d.max);
+      pixels["stall-receiver"].push(d.count);
+      if (d.count > 0)
+        problems.push(
+          `step ${k} (seq ${seqs[k]}): ${d.count} px differ beyond ${tolerance} in ${JSON.stringify(d.bbox)}`,
+        );
+    }
+    checks.push(
+      check(
+        "g55t-stall-receiver-equals-host",
+        "P3-CK: a receiver on the stall host's recording equals the host's own shots at every step, after each clamped iteration too (RGB; native budget 0, a browser leg within 1 per channel)",
+        problems,
+        `${G55T_STEPS} steps ${browser ? `within 1 (max delta ${max})` : "exact"}`,
+        [rel(dir)],
+      ),
+    );
+    legs["time/stall-receiver"] = {
+      group: "g55t",
+      expected_class: "success",
+      result_class: problems.length === 0 ? "success" : "pixel-mismatch",
+      reasons: problems.slice(0, 5),
+      exit_code: code,
+      artifacts: [rel(dir)],
+    };
+  }
+
+  // The fault knob: P3-TM's frame-callback sum falls behind at every shot after a stall.
+  {
+    const dir = join(D, "sabotage-stall-host-clock-fault");
+    const fault = await stallLeg(dir);
+    const problems = [...fault.problems];
+    if (fault.source !== "frame-callback")
+      problems.push(`shader clock source ${fault.source}, want frame-callback`);
+    let caught = 0;
+    fault.codes.forEach((c, k) => {
+      if (!c) return;
+      const behind = c[0] - c[1];
+      if (k === 0 ? behind === 0 : behind >= FAULT_MIN_BEHIND) caught++;
+      else
+        problems.push(
+          `step ${k}: the wire is ${behind} codes (${behind / 1024} s) behind the host's TIME, want ${k === 0 ? "0 (before any stall)" : `>= ${FAULT_MIN_BEHIND}`}`,
+        );
+    });
+    checks.push(
+      check(
+        "g55t-sabotage-stall-clock-fault-detected",
+        "P3-CK: under GRC_SHADER_CLOCK_FAULT=tree-delta (the shader clock sums the tree's clamped deltas, P3-TM's source) the wire equals the host's TIME at step 0, before any stall, and falls at least 0.05 s behind it at every shot after one",
+        problems,
+        `${caught}/${G55T_STEPS} steps as predicted (behind by ${fault.codes.map((c) => (c ? c[0] - c[1] : "-")).join(", ")} codes of 1/1024 s)`,
+        [rel(dir)],
+      ),
+    );
+    legs["time/sabotage-stall-host-clock-fault"] = {
+      group: "g55t",
+      expected_class: "capture-failure",
+      result_class: caught === G55T_STEPS ? "capture-failure" : "unexpected",
+      reasons: problems.slice(0, 5),
+      exit_code: await readExitCode(dir),
+      artifacts: [rel(dir)],
+    };
+  }
 }

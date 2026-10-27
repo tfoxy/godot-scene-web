@@ -22,7 +22,7 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-t
   (.2,.2,.4)) and loader.
 - `gate55_time.tscn`, `gate55_time.gd`: a root `Node`; `_ready()` makes everything, `_process()`
   applies the timeline. Variables: `RS_FIXTURE_STEP_LOG`, `RS_FIXTURE_SHOT_DIR`,
-  `RS_FIXTURE_START_FRAME`, `RS_FIXTURE_STEP_FRAMES`, `RS_FIXTURE_QUIT_FRAME`.
+  `RS_FIXTURE_START_FRAME`, `RS_FIXTURE_STEP_FRAMES`, `RS_FIXTURE_QUIT_FRAME`, `RS_FIXTURE_VARIANT`.
 - `shaders/`: one per item below (`default_*.gdshader` for the sampler row).
 
 ## Scene
@@ -40,12 +40,21 @@ mise exec -- godot --headless --path experiments/render-stream/fixtures/gate55-t
 | DR | rect (336,160,48,48) | `default_roughness_normal` | `hint_roughness_normal`: the normal texture too |
 | DA | rect (400,160,48,48) | `default_anisotropy` | `hint_anisotropy`: (1,0.5,1,1) as (255,127,255,255) |
 | DS | rect (464,160,48,48) | `default_black` | the same hint with a texture set (step 2), then cleared (step 3) |
+| TH | texture rect (16,240,256,16) | `half_band` | P3-CK: `fract(COLOR.a*32 + TIME/2)` over a 256x1 RGBAH alpha ramp (0.25 + i/512), nearest, 1:1: half-float sampling that RGBA8 cannot reproduce |
+| TC | rect (288,240,32,16) | `clock` | P3-CK, `stall` variant only: `floor(TIME*1024)` as RGB bytes (r = v>>16, g = v>>8, b = v, each & 255) |
 
 The sampler shaders draw `(t.r, t.g/2 + t.a/2, t.b)` of their texel `t`, so every default,
 transparent included, is a distinct opaque colour.
 
 Steps: 1 sets TP's `tint`, 2 sets DS's texture (a 4x4 (200,100,50)), 3 clears it, 4 changes nothing
 (`TIME` alone moves).
+
+**Variant `stall`** (`RS_FIXTURE_VARIANT=stall`, P3-CK): adds TC and stalls the main loop for 300 ms
+(`OS.delay_msec`) in `_process` at frames 12, 22, 32 and 42, printing `[fixture] stall frame=..
+ms=300 next_frame=.. next_delta=..` with the next iteration's tree delta. Run it in real time (no
+`--fixed-fps`: a fixed rate disables the physics clamp the stall exercises), rendered, with the
+capture armed in the same process, so its own settle shots are the reference for the host's TIME.
+The capture needs `RGBAH` in `GRC_RESOURCE_FORMATS` for TH.
 
 `scripts/lib/gate55t-checks.ts` holds the hand model and the checks; `scripts/run-gate55.sh --legs
 g55t` runs the legs.

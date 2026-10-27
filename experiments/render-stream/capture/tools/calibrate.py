@@ -169,6 +169,11 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # omitted, and every /2-/9 session record stays byte-identical.
     ("canvas_item_set_copy_to_backbuffer", ("canvas_item_set_copy_to_backbuffer",)),
     ("canvas_item_set_canvas_group_mode", ("canvas_item_set_canvas_group_mode",)),
+    # P3-CK (render-stream-10.md "Shader time") -- RenderingServer::draw(swap_buffers,
+    # frame_step), whose frame_step is the step GLES3's TIME adds (main.cpp:4825-4829 pass the
+    # main loop's unclamped scaled_step; the tree's process delta is clamped after a stall).
+    # Hooked only by a /10 session, like CG1's two: it adds no calibrator version.
+    ("draw", ("draw",)),
 )
 
 ET_EXEC = 2
