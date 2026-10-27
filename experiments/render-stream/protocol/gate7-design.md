@@ -478,6 +478,18 @@ cache rules are the same, and so is verification before use (D31).
   publish 58.4–59.0/s, as GSW's do.
 - **Unchanged.** File-mode sources (`rs_io.gd`) and native receivers still use `HTTPClient`.
 
+**As built (WX, 2026-10-27; [results/p3/wx.md](../results/p3/wx.md)).** The web export's file
+replay no longer stages its store. Under `RS_RECEIVER_WEB_STORE=lazy` (the default) it fetches each
+payload a transaction needs when that transaction is applied, through G7wf's browser `fetch()`
+(8 GETs at a time, one at a time under a fetch delay), and drops it from memory once uploaded
+when it is 64 KiB or larger (not under a G6s memory budget; smaller payloads stay, as natively). The transaction waits meanwhile, and the previous state stays on
+screen. The recording is fetched once the same way, straight into memory, with no in-memory file
+copy. `applied.json` is unchanged except for timing: the same `directory` fetch rows in the same
+order, the same uploads, shots and failure wording (`the store has no …` for a 404). A payload
+needed again after its drop is fetched again, as a new row; the receiver's `web store:` line
+counts those. `staged` keeps the pre-WX path (the A/B arm, `GATE7_WEB_STORE=staged`). The shader
+library is still staged, and live mode is unchanged.
+
 ## Q5. The GSW canvas receiver
 
 `experiments/render-stream/web/gsw-receiver/`, bundled by esbuild with `conditions:["development"]`

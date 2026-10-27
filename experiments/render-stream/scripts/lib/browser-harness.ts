@@ -1020,18 +1020,24 @@ function startTicker(ws: ServerWebSocket, hz: number): void {
   setTimeout(tick, periodMs);
 }
 
-/** Every file under `root`, recursively, as sorted `/`-joined paths relative to it. */
-function listFiles(root: string, prefix = ""): string[] {
+/** Every file under `root`, recursively, as sorted `/`-joined paths relative to it. WX: one
+ * output array and a directory work list, never `push(...spread)` (a spread of a few hundred
+ * thousand entries overflows the call stack: CG4's 288k-file store answered `?list` with 500). */
+export function listFiles(root: string): string[] {
   const out: string[] = [];
-  for (const entry of readdirSync(join(root, prefix), {
-    withFileTypes: true,
-  })) {
-    const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-    const isDir =
-      entry.isDirectory() ||
-      (entry.isSymbolicLink() && statSync(join(root, rel)).isDirectory());
-    if (isDir) out.push(...listFiles(root, rel));
-    else out.push(rel);
+  const dirs: string[] = [""];
+  for (let next = dirs.pop(); next !== undefined; next = dirs.pop()) {
+    const prefix = next;
+    for (const entry of readdirSync(join(root, prefix), {
+      withFileTypes: true,
+    })) {
+      const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+      const isDir =
+        entry.isDirectory() ||
+        (entry.isSymbolicLink() && statSync(join(root, rel)).isDirectory());
+      if (isDir) dirs.push(rel);
+      else out.push(rel);
+    }
   }
   return out.sort();
 }

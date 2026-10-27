@@ -20,12 +20,26 @@ extends RefCounted
 ##   PNG upload ever runs inside a timed window (D10), and a sink path outside the sink root
 ##   (RS_RECEIVER_PERF_OUT, RS_RECEIVER_RECEIVED_OUT) is refused by check_sink_paths().
 ##
+## WX (results/p3/wx.md): file replay's store is lazy by default on the web (RS_RECEIVER_WEB_STORE
+## unset or `lazy`). prepare_sources() then neither lists nor stages RS_RECEIVER_STORE_DIR: the
+## receiver fetches each payload a transaction needs when that transaction needs it
+## (start_store_fetch()/poll_store_fetch(): `GET <store>/sha256/<file>`, the browser's own fetch()
+## through RsResourceFetcher's JavaScriptBridge path, as live mode's GETs, CONCURRENCY at a time)
+## and drops it once it is uploaded. The recording is fetched the same way, once, straight into
+## memory (recording_bytes), with no in-memory file copy: the receiver frames the whole recording
+## before its first RenderingServer call, so it keeps it whole. `staged` is the pre-WX path: every
+## source, the store included, fetched into the in-memory filesystem before _ready applies.
+## The shader library (RS_RECEIVER_SHADER_LIBRARY) is staged in both modes, and live mode is
+## unchanged (it has no recording or store).
+##
 ## The cache directory (RS_RECEIVER_CACHE_DIR) is native only: on the web the "disk cache" is the
 ## browser's HTTP cache (gate7-design.md Q4), which receiver.gd declares as cache mode
 ## `http-cache`.
 
 ## How many fetches or PUTs run at once on the web (each one is one fetch() in the page).
 const CONCURRENCY: int = 8
+## WX: a recording GET's timeout (a large recording on the loopback harness).
+const RECORDING_TIMEOUT_MS: int = 600000
 const SOURCE_FILES: Array[String] = ["RS_RECEIVER_RECORDING"]
 const SOURCE_DIRS: Array[String] = ["RS_RECEIVER_STORE_DIR", "RS_RECEIVER_SHADER_LIBRARY"]
 
@@ -35,6 +49,20 @@ var source_bytes: int = 0
 var source_ms: int = 0
 var sink_files: int = 0
 var sink_bytes: int = 0
+
+## WX: the web file replay's store is fetched per transaction (RS_RECEIVER_WEB_STORE=lazy, the
+## default), not staged up front. Set by receiver.gd before prepare_sources().
+var lazy_store: bool = false
+## WX: the recording, fetched straight into memory under lazy_store (has_recording()).
+var recording_bytes: PackedByteArray = PackedByteArray()
+var _recording_fetched: bool = false
+## WX: the store GETs made and their bytes, and the results of the running batch, by index.
+var store_gets: int = 0
+var store_bytes: int = 0
+var store_results: Array[Dictionary] = []
+var _store_pool: Array[RsResourceFetcher] = []
+var _store_batch: Array[String] = []
+var _store_prefix: String = ""
 
 var _host: String = ""
 var _port: int = 0
@@ -55,11 +83,22 @@ func prepare_sources(tree: SceneTree) -> String:
 	var wanted: Array[Dictionary] = []
 	for variable: String in SOURCE_FILES:
 		var path: String = RsConfig.get_env(variable).strip_edges()
-		if path != "":
-			wanted.append({"variable": variable, "path": path})
+		if path == "":
+			continue
+		if lazy_store and variable == "RS_RECEIVER_RECORDING":
+			var recording_error: String = await _fetch_recording(tree, path)
+			if recording_error != "":
+				return recording_error
+			continue
+		wanted.append({"variable": variable, "path": path})
 	for variable: String in SOURCE_DIRS:
 		var dir: String = RsConfig.get_env(variable).strip_edges()
 		if dir == "":
+			continue
+		if lazy_store and variable == "RS_RECEIVER_STORE_DIR":
+			if not dir.is_absolute_path():
+				return "resource-unavailable: %s must be an absolute same-origin path on the web (got %s)" % [variable, JSON.stringify(dir)]
+			_store_prefix = _url_path(dir.trim_suffix("/").path_join(RsResourceCache.CACHE_SUBDIR)) + "/"
 			continue
 		if not dir.is_absolute_path():
 			return "resource-unavailable: %s must be an absolute same-origin path on the web (got %s)" % [variable, JSON.stringify(dir)]
@@ -153,6 +192,89 @@ func finish(tree: SceneTree, out_path: String, code: int, before_quit: Callable)
 	print("[receiver] web io: %d sources (%d bytes, %d ms), %d evidence files uploaded (%d bytes), exit %d" % [source_files, source_bytes, source_ms, sink_files, sink_bytes, code])
 	before_quit.call()
 	tree.quit(code)
+
+
+## WX: whether prepare_sources() fetched the recording into recording_bytes (lazy_store).
+func has_recording() -> bool:
+	return _recording_fetched
+
+
+## WX: hands over the fetched recording (the receiver keeps the only copy).
+func take_recording() -> PackedByteArray:
+	var data: PackedByteArray = recording_bytes
+	recording_bytes = PackedByteArray()
+	return data
+
+
+## WX: starts the GETs of `files` (store file names, `<hash>.grt` and the like) under the lazy
+## store's `sha256/` directory, CONCURRENCY at a time (one at a time with a fetch delay, which
+## then precedes each GET as it does each store read natively). store_results then holds one
+## RsResourceFetcher result per file, by index, once poll_store_fetch() is true (a file after a
+## failed one on the same fetcher has none).
+func start_store_fetch(files: Array[String], timeout_ms: int, delay_ms: int) -> void:
+	var lanes: int = 1 if delay_ms > 0 else CONCURRENCY
+	while _store_pool.size() < lanes:
+		_store_pool.append(RsResourceFetcher.new(_host, _port, _store_prefix, timeout_ms, delay_ms, "", true))
+	_store_batch = files.duplicate()
+	store_results.clear()
+	for lane: int in range(_store_pool.size()):
+		var fetcher: RsResourceFetcher = _store_pool[lane]
+		fetcher.timeout_ms = timeout_ms
+		fetcher.delay_ms = delay_ms
+		var mine: Array[String] = []
+		if lane < lanes:
+			for index: int in range(lane, files.size(), lanes):
+				mine.append(_url_encode_path(files[index]))
+		fetcher.start(mine)
+
+
+## WX: advances the running store batch (call once per _process). True once every lane is done;
+## store_results then holds the batch's results in file order.
+func poll_store_fetch() -> bool:
+	var done: bool = true
+	for fetcher: RsResourceFetcher in _store_pool:
+		if not fetcher.poll():
+			done = false
+	if not done:
+		return false
+	var by_file: Dictionary[String, Dictionary] = {}
+	for fetcher: RsResourceFetcher in _store_pool:
+		for result: Dictionary in fetcher.results:
+			by_file[str(result["hash"])] = result
+		fetcher.results.clear()
+	store_results.clear()
+	for file: String in _store_batch:
+		var key: String = _url_encode_path(file)
+		var result: Dictionary = by_file.get(key, {})
+		store_results.append(result)
+		if not result.is_empty():
+			store_gets += 1
+			store_bytes += RsWire.as_int(result["bytes"])
+	_store_batch.clear()
+	return true
+
+
+## WX: the lazy store's recording: one GET of `path` through the page's fetch(), kept in memory.
+func _fetch_recording(tree: SceneTree, path: String) -> String:
+	if not path.is_absolute_path():
+		return "recording-unreadable: RS_RECEIVER_RECORDING must be an absolute same-origin path on the web (got %s)" % JSON.stringify(path)
+	var fetcher := RsResourceFetcher.new(_host, _port, _url_path(path.get_base_dir()).trim_suffix("/") + "/", RECORDING_TIMEOUT_MS, 0, "", true)
+	var name: String = path.get_file().uri_encode()
+	fetcher.start([name])
+	while not fetcher.poll():
+		await tree.process_frame
+	var result: Dictionary = fetcher.results[0] if not fetcher.results.is_empty() else {}
+	var status: Variant = result.get("status")
+	if result.is_empty() or str(result.get("error", "")) != "":
+		if status is int and RsWire.as_int(status) != 200:
+			return "recording-unreadable: GET %s answered %s" % [path, str(status)]
+		return "recording-unreadable: GET %s failed: %s" % [path, str(result.get("error", "no result"))]
+	recording_bytes = result["data"]
+	result["data"] = PackedByteArray()
+	_recording_fetched = true
+	source_files += 1
+	source_bytes += recording_bytes.size()
+	return ""
 
 
 # --------------------------------------------------------------------------------- internals

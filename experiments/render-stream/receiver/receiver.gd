@@ -29,8 +29,15 @@ extends Node
 ##                                replay-failure cache-not-fresh) or warm (it must exist)
 ##   RS_RECEIVER_STORE_DIR        file mode: the capture's store, the origin for fetch "directory"
 ##                                (reading from it counts as a fetch)
-##   RS_RECEIVER_FETCH_TIMEOUT_MS live: a GET not complete this many ms after it was issued is
-##                                resource-unavailable (default 10000)
+##   RS_RECEIVER_WEB_STORE        WX (web export, file mode; results/p3/wx.md): lazy (default)
+##                                fetches each payload from RS_RECEIVER_STORE_DIR when the
+##                                transaction that needs it is applied (the browser's fetch(),
+##                                as live GETs) and drops it from memory once uploaded (64 KiB
+##                                and up, RsResourceCache.DROP_MIN_BYTES); staged is
+##                                the pre-WX path (the whole store fetched into memory before
+##                                _ready). Ignored natively
+##   RS_RECEIVER_FETCH_TIMEOUT_MS live, and the web's lazy store (WX): a GET not complete this many
+##                                ms after it was issued is resource-unavailable (default 10000)
 ##   RS_RECEIVER_ACCEPT_ENCODING  G8kz (render-stream-2.md "HTTP (live)"): the Accept-Encoding a native
 ##                                receiver sends on payload GETs: auto (default, "zstd, gzip"),
 ##                                zstd, gzip, or off (no header: identity bodies). A coded body is
@@ -335,6 +342,14 @@ var _state_seqs: Array[int] = []
 var _state_paths: Dictionary[String, String] = {}
 var _busy: bool = false
 var _finished: bool = false
+## WX: the web export's file replay fetches its store per transaction (RS_RECEIVER_WEB_STORE).
+var _lazy_store: bool = false
+## WX: the file-mode transaction whose payload GETs are running: {meta, record, seq, resources,
+## hashes (by GET index), kinds}; empty when none.
+var _store_pending: Dictionary = {}
+## WX: payloads fetched again after a drop, and their bytes (the web store line).
+var _store_rereads: int = 0
+var _store_reread_bytes: int = 0
 var _last_applied_seq: int = 0
 var _previous_unsupported: Dictionary[String, bool] = {}
 var _report: Dictionary = {}
@@ -556,10 +571,14 @@ func _ready() -> void:
 		return
 	_log("mode file, recording %s, out %s, shot seqs %s, state seqs %s, display %s" % [_recording_path, _out_path, str(_shot_seqs), str(_state_seqs), display_server])
 
-	if _recording_path == "" or not _recording_path.is_absolute_path() or not FileAccess.file_exists(_recording_path):
+	if _io.has_recording():
+		# WX: the web's lazy store fetched the recording straight into memory.
+		_data = _io.take_recording()
+	elif _recording_path == "" or not _recording_path.is_absolute_path() or not FileAccess.file_exists(_recording_path):
 		_fail(null, "recording-unreadable", "RS_RECEIVER_RECORDING is not an absolute path to an existing file: %s" % JSON.stringify(_recording_path))
 		return
-	_data = FileAccess.get_file_as_bytes(_recording_path)
+	else:
+		_data = FileAccess.get_file_as_bytes(_recording_path)
 	if _data.is_empty() and FileAccess.get_open_error() != OK:
 		_fail(null, "recording-unreadable", "cannot read %s: %s" % [_recording_path, error_string(FileAccess.get_open_error())])
 		return
@@ -712,6 +731,12 @@ func _parse_resource_env(live: bool) -> bool:
 	_fetch_timeout_ms = _positive_env("RS_RECEIVER_FETCH_TIMEOUT_MS", 10000)
 	if _fetch_timeout_ms < 0:
 		return false
+	var web_store: String = RsConfig.get_env("RS_RECEIVER_WEB_STORE").strip_edges()
+	if web_store != "" and web_store != "lazy" and web_store != "staged":
+		_log("error: RS_RECEIVER_WEB_STORE must be lazy or staged (got %s)" % JSON.stringify(web_store))
+		return false
+	_lazy_store = RsConfig.is_web() and not live and web_store != "staged"
+	_io.lazy_store = _lazy_store
 	var delay_text: String = RsConfig.get_env("RS_RECEIVER_FETCH_DELAY_MS").strip_edges()
 	if delay_text != "":
 		if not delay_text.is_valid_int() or delay_text.to_int() < 0:
@@ -880,29 +905,36 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 			resources["cache_hits"] = RsWire.as_int(resources["cache_hits"]) + 1
 			_summary["cache_hits"] = RsWire.as_int(_summary["cache_hits"]) + 1
 		elif source == "directory":
-			var start_us: int = got["start_us"]
-			var end_us: int = got["end_us"]
-			fetch_us += end_us - start_us
-			# G6s: dropped under RS_RECEIVER_LOG=summary, as the other per-transaction arrays are.
-			if _log_mode != "summary":
-				_fetches.append({
-					"stream": stream_index, "seq": seq, "hash": hash, "source": "directory",
-					"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
-					"verified": got["verified"], "kind": "mesh" if mesh else ("shader" if shader else "texture"),
-				})
-			resources["fetched"] = RsWire.as_int(resources["fetched"]) + 1
-			if shader:
-				resources["shader_payload_fetches"] = RsWire.as_int(resources["shader_payload_fetches"]) + 1
-			resources["fetched_bytes"] = RsWire.as_int(resources["fetched_bytes"]) + got_bytes
-			_summary["fetched_bytes"] = RsWire.as_int(_summary["fetched_bytes"]) + got_bytes
-			_fetched_hashes[hash] = true
-			_summary["distinct_fetched"] = _fetched_hashes.size()
+			fetch_us += _note_directory_fetch(stream_index, seq, hash, got, mesh, shader, resources)
 		var error: String = got["error"]
 		if error != "":
 			resources["fetch_us"] = fetch_us
 			return error
 	resources["fetch_us"] = fetch_us
 	return ""
+
+
+## A fetch from the store directory (RsResourceCache.obtain()'s `got`, or WX's lazy-store GET in
+## the same shape): its fetch row and the transaction's and summary's counters. Returns its time.
+func _note_directory_fetch(stream_index: int, seq: int, hash: String, got: Dictionary, mesh: bool, shader: bool, resources: Dictionary) -> int:
+	var got_bytes: int = got["bytes"]
+	var start_us: int = got["start_us"]
+	var end_us: int = got["end_us"]
+	# G6s: dropped under RS_RECEIVER_LOG=summary, as the other per-transaction arrays are.
+	if _log_mode != "summary":
+		_fetches.append({
+			"stream": stream_index, "seq": seq, "hash": hash, "source": "directory",
+			"status": null, "bytes": got_bytes, "start_us": start_us, "end_us": end_us,
+			"verified": got["verified"], "kind": "mesh" if mesh else ("shader" if shader else "texture"),
+		})
+	resources["fetched"] = RsWire.as_int(resources["fetched"]) + 1
+	if shader:
+		resources["shader_payload_fetches"] = RsWire.as_int(resources["shader_payload_fetches"]) + 1
+	resources["fetched_bytes"] = RsWire.as_int(resources["fetched_bytes"]) + got_bytes
+	_summary["fetched_bytes"] = RsWire.as_int(_summary["fetched_bytes"]) + got_bytes
+	_fetched_hashes[hash] = true
+	_summary["distinct_fetched"] = _fetched_hashes.size()
+	return end_us - start_us
 
 
 ## G8kf: records and logs the variants screen_variants() refused at `seq`.
@@ -1220,6 +1252,9 @@ func _process(_delta: float) -> void:
 		return
 	if _busy or _finished:
 		return
+	if not _store_pending.is_empty():
+		_poll_store_fetch()
+		return
 	if _next_record >= _records.size():
 		_fail(null, "recording-incomplete", "the recording ends after %d records without an end record" % _records.size())
 		return
@@ -1251,11 +1286,10 @@ func _process(_delta: float) -> void:
 		"resource":
 			_receive_resource(record)
 		"transaction":
-			var applied: Dictionary = _fetch_and_apply(FILE_STREAM, RsWire.as_int(meta["seq"]))
-			if not applied["ok"]:
+			if _lazy_store:
+				_begin_store_fetch(meta, record, RsWire.as_int(meta["seq"]), _empty_resources())
 				return
-			var stats: Dictionary = applied["stats"]
-			_record_transaction(meta, record, stats)
+			_apply_file_transaction(meta, record, RsWire.as_int(meta["seq"]), {})
 		"end":
 			_finish()
 
@@ -2165,6 +2199,118 @@ func _refuse_coalesced() -> void:
 	_coalesced.clear()
 
 
+## Applies one file-mode transaction (its payloads fetched or in memory) and records it. Under
+## WX's lazy store (and no memory budget), then drops the store payloads its apply uploaded.
+func _apply_file_transaction(meta: Dictionary, record: Dictionary, seq: int, prefetched: Dictionary) -> void:
+	var applied: Dictionary = _fetch_and_apply(FILE_STREAM, seq, prefetched)
+	if not applied["ok"]:
+		return
+	var stats: Dictionary = applied["stats"]
+	# A memory budget (G6s) keeps its own LRU rule exactly, so it turns the drop off.
+	if _lazy_store and _cache.memory_budget_bytes < 0:
+		var need: Dictionary = _applier.needed()
+		var still_needed: Array = need["hashes"]
+		_cache.drop_droppable(still_needed)
+	_record_transaction(meta, record, stats)
+
+
+## WX (web, file mode, RS_RECEIVER_WEB_STORE=lazy): the GETs of every payload the accepted
+## transaction `seq` needs that is not in memory, from the store's `sha256/` directory; the
+## transaction waits (_poll_store_fetch, one step per _process) and the previous state stays on
+## screen meanwhile. With nothing to fetch it applies at once. `resources` carries the fetch
+## counters of the passes so far (a G8kf variant fallback makes a second pass).
+func _begin_store_fetch(meta: Dictionary, record: Dictionary, seq: int, resources: Dictionary) -> void:
+	var need: Dictionary = _applier.needed()
+	var hashes: Array = need["hashes"]
+	var mesh_hashes: Array = need["mesh_hashes"]
+	var shader_hashes: Array = need["shader_hashes"]
+	var ktx2_hashes: Array = need["ktx2_hashes"] if need.has("ktx2_hashes") else []
+	_cache.set_needed(hashes)
+	var wanted: Array[String] = []
+	var files: Array[String] = []
+	var kinds: Array[Dictionary] = []
+	for value: Variant in hashes:
+		var hash: String = value
+		if _cache.has_in_memory(hash):
+			continue
+		var mesh: bool = mesh_hashes.has(hash)
+		var shader: bool = shader_hashes.has(hash)
+		var ktx2: bool = ktx2_hashes.has(hash)
+		wanted.append(hash)
+		files.append(RsResourceCache.file_name(hash, mesh, shader, ktx2))
+		kinds.append({"mesh": mesh, "shader": shader})
+	if wanted.is_empty():
+		_apply_file_transaction(meta, record, seq, resources)
+		return
+	_store_pending = {"meta": meta, "record": record, "seq": seq, "resources": resources, "hashes": wanted, "files": files, "kinds": kinds}
+	_io.start_store_fetch(files, _fetch_timeout_ms, _fetch_delay_ms)
+	_poll_store_fetch()
+
+
+## WX: one step of the pending transaction's store GETs. Once all are in, each is verified,
+## staged and kept (RsResourceCache.add_fetched, exactly obtain()'s directory branch) and recorded
+## as a `directory` fetch, in needed() order, the first failure failing the replay at that
+## transaction as a store read would; then G8kf's variant screen runs (a refused variant makes a
+## second pass for what it now needs), and the transaction is applied.
+func _poll_store_fetch() -> void:
+	if not _io.poll_store_fetch():
+		return
+	var pending: Dictionary = _store_pending
+	_store_pending = {}
+	var seq: int = pending["seq"]
+	var resources: Dictionary = pending["resources"]
+	var wanted: Array[String] = pending["hashes"]
+	var files: Array[String] = pending["files"]
+	var kinds: Array[Dictionary] = pending["kinds"]
+	var store_dir: String = _cache.store_dir.path_join(RsResourceCache.CACHE_SUBDIR)
+	for index: int in range(wanted.size()):
+		var hash: String = wanted[index]
+		var origin: String = store_dir.path_join(files[index])
+		var result: Dictionary = _io.store_results[index]
+		var got: Dictionary = {"error": "", "source": "directory", "bytes": 0, "verified": false, "start_us": 0, "end_us": 0}
+		if result.is_empty():
+			got["error"] = RsWire.err("resource-unavailable", "GET %s: no result" % origin)
+		else:
+			got["start_us"] = result["start_us"]
+			got["end_us"] = result["end_us"]
+			var status: Variant = result["status"]
+			var fetch_error: String = result["error"]
+			if status is int and RsWire.as_int(status) == 404:
+				# A store file that is absent: obtain()'s own wording for it.
+				got["error"] = RsWire.err("resource-unavailable", "the store has no %s" % origin)
+			elif fetch_error != "":
+				got["error"] = fetch_error
+			else:
+				var body: PackedByteArray = result["data"]
+				result["data"] = PackedByteArray()
+				got["bytes"] = body.size()
+				if _cache.was_dropped(hash):
+					_store_rereads += 1
+					_store_reread_bytes += body.size()
+				var add_error: String = _cache.add_fetched(hash, body, origin)
+				got["verified"] = not add_error.begins_with("resource-hash-mismatch")
+				got["error"] = add_error
+				if add_error == "":
+					_cache.mark_droppable(hash)
+		var kind: Dictionary = kinds[index]
+		var mesh: bool = kind["mesh"]
+		var shader: bool = kind["shader"]
+		resources["fetch_us"] = RsWire.as_int(resources["fetch_us"]) + _note_directory_fetch(FILE_STREAM, seq, hash, got, mesh, shader, resources)
+		var error: String = got["error"]
+		if error != "":
+			_fail_with_error(seq, error)
+			return
+	_io.store_results.clear()
+	var meta: Dictionary = pending["meta"]
+	var record: Dictionary = pending["record"]
+	for _round: int in range(64):
+		var refused: Array[Dictionary] = _applier.screen_variants(_cache)
+		if refused.is_empty():
+			break
+		_note_variant_fallbacks(refused, FILE_STREAM, seq)
+	_begin_store_fetch(meta, record, seq, resources)
+
+
 ## The payloads the current resolved state needs that are neither in memory nor in the cache
 ## directory (or every one not in memory, under ignore-cache): what live mode fetches over HTTP.
 func _http_misses() -> Array[String]:
@@ -2714,6 +2860,9 @@ func _write_report() -> void:
 	_summary["evictions_memory"] = _cache.evictions_memory
 	_summary["evictions_disk"] = _cache.evictions_disk
 	_summary["refetch_after_evict"] = _cache.refetch_after_evict
+	if _lazy_store:
+		# WX: the lazy store's own line (applied.json is unchanged by it).
+		_log("web store: lazy, %d GETs (%d bytes), %d payloads dropped after upload (%d bytes), %d fetched again after a drop (%d bytes), %d still in memory (%d bytes)" % [_io.store_gets, _io.store_bytes, _cache.dropped, _cache.dropped_bytes, _store_rereads, _store_reread_bytes, _cache.memory_entries(), _cache.memory_bytes()])
 	if _applier != null:
 		var floats: Array[float] = []
 		for value: float in _applier.root_canvas_xform():
@@ -2820,7 +2969,7 @@ func _prepare_sources() -> bool:
 	if error != "":
 		_fail_with_error(null, error)
 		return false
-	_log("web: %d sources staged in memory (%d bytes, %d ms)" % [_io.source_files, _io.source_bytes, _io.source_ms])
+	_log("web: %d sources staged in memory (%d bytes, %d ms)%s" % [_io.source_files, _io.source_bytes, _io.source_ms, "; store lazy" if _lazy_store else ""])
 	return true
 
 

@@ -47,6 +47,8 @@ extends RefCounted
 ## `evictions_memory`, `evictions_disk` and `refetch_after_evict` count what happened.
 
 const CACHE_SUBDIR: String = "sha256"
+## WX: the smallest store payload the web export's lazy store drops after its upload.
+const DROP_MIN_BYTES: int = 65536
 ## render-stream-mesh/1's GRM1 magic (render-stream-4.md "Mesh payload").
 const GRM1_MAGIC_HEX: String = "47524d310d0a1a0a"
 
@@ -104,6 +106,17 @@ var _needed: Dictionary[String, bool] = {}
 ## Every hash ever evicted from memory or disk, so a later re-fetch from the origin can be
 ## counted as a refetch_after_evict (not just an ordinary first-time fetch).
 var _ever_evicted: Dictionary[String, bool] = {}
+## WX (the web export's lazy store, results/p3/wx.md): the payloads fetched from the store one
+## transaction at a time (mark_droppable(): DROP_MIN_BYTES or larger), which drop_droppable()
+## forgets once their apply has uploaded them, so memory holds what is in flight and the small
+## payloads, never the whole store. `dropped` counts the
+## drops, `dropped_bytes` their raw lengths; `_ever_dropped` remembers each hash so a later need
+## for it (a re-read from the store) can be counted apart from a first fetch. Never set natively
+## or in live mode, so neither ever drops.
+var _droppable: Dictionary[String, bool] = {}
+var _ever_dropped: Dictionary[String, bool] = {}
+var dropped: int = 0
+var dropped_bytes: int = 0
 
 
 ## Opens the cache directory. `cache_mode` is fresh (the directory must be absent or empty; it is
@@ -385,6 +398,51 @@ func cache_hashes() -> Array[String]:
 			out.append(file_name.get_basename())
 	out.sort()
 	return out
+
+
+## WX: marks a payload just fetched from the store (the web export's lazy store) as one
+## drop_droppable() may forget after its apply, when it is DROP_MIN_BYTES or larger. A smaller one
+## stays in memory as natively: its re-read would cost a GET to save a few hundred bytes (CG4's
+## STS2 combat cut: 73k mesh surfaces averaging 555 B, a seventh of them needed again later,
+## against 85 textures holding 90 % of the bytes).
+func mark_droppable(hash: String) -> void:
+	if _lengths.get(hash, 0) >= DROP_MIN_BYTES:
+		_droppable[hash] = true
+
+
+## WX: whether `hash` was dropped by drop_droppable() before (its next fetch is a re-read).
+func was_dropped(hash: String) -> bool:
+	return _ever_dropped.has(hash)
+
+
+## WX: forgets every droppable payload that `keep` (the hashes the stream still needs, unapplied)
+## does not name, and unstages it from the core. Called after an apply: an uploaded payload is on
+## its RID, so the receiver no longer needs its bytes; a later need for it fetches it again.
+## Returns how many it dropped.
+func drop_droppable(keep: Array) -> int:
+	if _droppable.is_empty():
+		return 0
+	var kept: Dictionary[String, bool] = {}
+	for value: Variant in keep:
+		kept[value] = true
+	var victims: Array[String] = []
+	for hash: String in _droppable:
+		if not kept.has(hash):
+			victims.append(hash)
+	for hash: String in victims:
+		_droppable.erase(hash)
+		if not _memory.has(hash):
+			continue
+		_memory_total -= _lengths[hash]
+		dropped_bytes += _lengths[hash]
+		_memory.erase(hash)
+		_lengths.erase(hash)
+		_memory_order.erase(hash)
+		_ever_dropped[hash] = true
+		dropped += 1
+		if stager != null:
+			stager.unstage(hash)
+	return victims.size()
 
 
 ## Forgets every payload held in memory (a live reconnect: the new session's payloads come from
