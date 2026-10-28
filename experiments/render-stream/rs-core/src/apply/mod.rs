@@ -24,6 +24,7 @@ pub mod lower;
 pub mod material_residency;
 pub mod meshes;
 pub mod multimesh;
+pub mod particles;
 pub mod payloads;
 pub mod programs;
 pub mod residency;
@@ -641,12 +642,20 @@ pub struct Applier {
     pub instances_written: u64,
     /// PM3: `add_multimesh` commands lowered into instanced draws since the session began.
     pub multimesh_commands: u64,
+    /// PM6b: `add_particles` commands lowered into instanced draws since the session began.
+    pub particles_commands: u64,
+    /// PM6b: each drawn emitter's draw pass mesh as last seen.
+    pt_mesh: IdMap<Option<Id>>,
+    /// PM6b: [`particles::ParticleBuffers::membership`] at the last apply.
+    pt_membership: u64,
 }
 
 /// PM3: one instanced draw's range in `list.instances` and what fills it.
 #[derive(Clone, Copy, Debug)]
 struct MmSlot {
     multimesh: Id,
+    /// PM6b: `multimesh` is a particles id and the buffer the shell's simulation.
+    particles: bool,
     draw_xform: Option<Xform>,
     first: u32,
     count: u32,
@@ -833,6 +842,41 @@ impl lower::Tables for TableView<'_> {
             key: self.mm_key(m, drawable),
         })
     }
+    fn particles(&self, id: Id) -> Option<lower::MultimeshDraw> {
+        use std::hash::{Hash as _, Hasher as _};
+        let p = self.state.particles.get(&id)?;
+        let mesh = particles_mesh(self.state, id);
+        let amount = p.amount.max(0) as usize;
+        let drawable = p.status == EntryStatus::Ok
+            && p.mode == crate::state::ParticlesMode::D2
+            && mesh.is_some()
+            && self
+                .payloads
+                .particles
+                .get(id)
+                .is_some_and(|b| b.floats.len() == amount * particles::PT_INSTANCE_FLOATS);
+        let aabb = p.floats.as_ref().map(|f| f.custom_aabb).unwrap_or([0.0; 6]);
+        let rect = [aabb[0], aabb[1], aabb[3], aabb[4]];
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (drawable, p.status.as_str(), mesh, p.amount).hash(&mut h);
+        for v in rect {
+            v.to_bits().hash(&mut h);
+        }
+        Some(lower::MultimeshDraw {
+            mesh: mesh.filter(|_| drawable),
+            count: if drawable { amount as u32 } else { 0 },
+            rect,
+            key: h.finish(),
+        })
+    }
+}
+
+/// PM6b: an emitter's first draw pass mesh (GLES3 draws `particles_get_draw_pass_mesh(p, 0)`).
+fn particles_mesh(state: &ResolvedState, id: Id) -> Option<Id> {
+    state
+        .particles
+        .get(&id)
+        .and_then(|p| p.draw_passes.first().copied().flatten())
 }
 
 /// A canvas's modulate (white under the `ignore-canvas-modulate` sabotage for the root canvas,
@@ -951,6 +995,9 @@ impl Applier {
             mm_mesh: IdMap::default(),
             instances_written: 0,
             multimesh_commands: 0,
+            particles_commands: 0,
+            pt_mesh: IdMap::default(),
+            pt_membership: 0,
         }
     }
 
@@ -1262,6 +1309,7 @@ impl Applier {
             *self.shortcut_totals.entry(s.as_str()).or_insert(0) += u64::from(*n);
         }
         self.multimesh_commands += u64::from(lowered.multimesh_drawn);
+        self.particles_commands += u64::from(lowered.particles_drawn);
         let mut tex_sizes = spare.tex_sizes;
         tex_sizes.clear();
         tex_sizes.extend(
@@ -1640,8 +1688,24 @@ impl Applier {
                 remeshed.push(id);
             }
         }
+        // PM6b: likewise an emitter whose draw pass mesh moved.
+        let mut pt_remeshed: Vec<Id> = Vec::new();
+        for id in &delta.particles_removed {
+            self.pt_mesh.remove(id);
+        }
+        let pt_ids: Vec<Id> = if self.first {
+            state.particles.keys().copied().collect()
+        } else {
+            delta.particles_upserted.clone()
+        };
+        for id in pt_ids {
+            let mesh = particles_mesh(state, id);
+            if self.pt_mesh.insert(id, mesh) != Some(mesh) {
+                pt_remeshed.push(id);
+            }
+        }
         let renamed: Vec<Id>;
-        if !self.first && !remeshed.is_empty() {
+        if !self.first && (!remeshed.is_empty() || !pt_remeshed.is_empty()) {
             renamed = state
                 .items
                 .iter()
@@ -1650,6 +1714,8 @@ impl Applier {
                         && it.commands.list.iter().any(|c| {
                             matches!(c, crate::state::Command::Multimesh { multimesh, .. }
                                 if remeshed.contains(multimesh))
+                                || matches!(c, crate::state::Command::Particles { particles, .. }
+                                    if pt_remeshed.contains(particles))
                         })
                 })
                 .map(|(id, _)| *id)
@@ -1944,7 +2010,11 @@ impl Applier {
             || !delta.meshes_removed.is_empty()
             || !mesh_res.changed.is_empty()
             || !delta.multimeshes_upserted.is_empty()
-            || !delta.multimeshes_removed.is_empty();
+            || !delta.multimeshes_removed.is_empty()
+            || !delta.particles_upserted.is_empty()
+            || !delta.particles_removed.is_empty()
+            || payloads.particles.membership != self.pt_membership;
+        self.pt_membership = payloads.particles.membership;
         if !resized.is_empty() || dep_mesh_changed {
             let serial = self.serial;
             let stale: Vec<Id> = self
@@ -1962,6 +2032,11 @@ impl Applier {
                         .multimesh_deps
                         .iter()
                         .any(|(m, k)| lower::Tables::multimesh_key(&tables, *m) != Some(*k))
+                        || rec
+                            .lowered
+                            .particles_deps
+                            .iter()
+                            .any(|(p, k)| lower::Tables::particles_key(&tables, *p) != Some(*k))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -2820,25 +2895,34 @@ impl Applier {
     fn write_instances(&mut self, state: &ResolvedState, payloads: &PayloadStore) {
         let half = self.half_instances;
         for slot in &mut self.mm_slots {
-            let (Some(buf), Some(m)) = (
-                payloads.multimeshes.get(slot.multimesh),
-                state.multimeshes.get(&slot.multimesh),
-            ) else {
-                continue;
+            // PM6b: an emitter's simulated buffer is the 2D layout with colours and custom data.
+            let (floats, serial, stride, colors, custom) = if slot.particles {
+                let Some(buf) = payloads.particles.get(slot.multimesh) else {
+                    continue;
+                };
+                let n = particles::PT_INSTANCE_FLOATS;
+                (&buf.floats[..], buf.serial, n, true, true)
+            } else {
+                let (Some(buf), Some(m)) = (
+                    payloads.multimeshes.get(slot.multimesh),
+                    state.multimeshes.get(&slot.multimesh),
+                ) else {
+                    continue;
+                };
+                (&buf.floats[..], buf.serial, m.stride() as usize, m.colors, m.custom)
             };
-            if buf.serial == slot.written {
+            if serial == slot.written {
                 continue;
             }
-            let stride = m.stride() as usize;
             let (first, count) = (slot.first as usize, slot.count as usize);
-            if buf.floats.len() < count * stride || self.list.instances.len() < first + count {
+            if floats.len() < count * stride || self.list.instances.len() < first + count {
                 continue;
             }
-            slot.written = buf.serial;
+            slot.written = serial;
             let round = |c: [f32; 4]| if half { geom::godot_half4(c) } else { c };
             let mut changed: Option<(u32, u32)> = None;
             for i in 0..count {
-                let d = &buf.floats[i * stride..(i + 1) * stride];
+                let d = &floats[i * stride..(i + 1) * stride];
                 let xform = match &slot.draw_xform {
                     None => [d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]],
                     Some(t) => {
@@ -2853,13 +2937,13 @@ impl Applier {
                     }
                 };
                 let mut at = 8;
-                let color = if m.colors {
+                let color = if colors {
                     at += 4;
                     round([d[8], d[9], d[10], d[11]])
                 } else {
                     [1.0; 4]
                 };
-                let custom = if m.custom {
+                let custom = if custom {
                     round([d[at], d[at + 1], d[at + 2], d[at + 3]])
                 } else {
                     [0.0; 4]
@@ -3279,6 +3363,7 @@ impl Applier {
                     });
                     self.mm_slots.push(MmSlot {
                         multimesh: li.multimesh,
+                        particles: li.particles,
                         draw_xform: li.draw_xform,
                         first: instances,
                         count: li.count,
@@ -3467,6 +3552,8 @@ mod g7t_tests;
 mod ordering_model;
 #[cfg(test)]
 mod pm3_tests;
+#[cfg(test)]
+mod pm6b_tests;
 #[cfg(test)]
 mod uit_tests;
 #[cfg(test)]

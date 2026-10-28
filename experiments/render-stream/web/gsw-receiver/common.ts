@@ -76,6 +76,10 @@ export interface GswRs {
   residency_json(): string;
   /** W11c: "" when a GET of the hash is allowed, else the `inline-fetch-zero` refusal. */
   check_fetch(hash: string): string;
+  // PM6b: /12 GPU particles (particles.ts).
+  particles_sync(): string;
+  shader_time(): number;
+  particles_set(id: number, data: Float32Array): void;
   free(): void;
 }
 

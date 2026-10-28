@@ -623,6 +623,70 @@ needed no code of its own. GSW is PM6b's.
     still lit one lifetime after its restart). So every g8pt receiver leg runs `--fixed-fps 60`,
     and g7-8's web half passes the native leg's engine arguments through, `--fixed-fps` included.
 
+## As built (PM6b): decisions
+
+PM6b makes GSW draw /12 emitters ([results/p3/pm6b.md](../results/p3/pm6b.md)): the approximate
+tier of "What exact means here" in particles-multimesh-design.md. Nothing changes on the wire, in
+the capture or in the native and web receivers.
+
+1. **Where the simulation runs.** In the shell, in `packages/effects` (`GodotGpuEmitter`,
+   `particles/godot-gpu.ts`): the package that owns portable simulation. It is a port of what
+   gl_compatibility does with one emitter, not a mapping onto the CPUParticles2D-shaped
+   `ParticleConfig`/`simulateParticles` the design named: GLES3's `update_particles` and
+   `_particles_process` (inactivity after `1.2 x lifetime`, pre-process and request steps with
+   `while (todo >= 0)`, fixed-fps stepping with the 0.1 s clamp, the one-shot end clearing
+   `emitting`), particles.glsl's restart test (phase, cycle, randomness by `hash`,
+   explosiveness, fractional delta), the generated `start()` and `process()` of
+   `ParticleProcessMaterial`, and particles_copy.glsl (inactive particles collapse, `interpolate`
+   adds `velocity x frame_remainder`, global coordinates through the inverse emission
+   transform, `lifetime` order rotated at the newest particle). This is the design's
+   "Godot-RNG mode": `alt_seed = hash(NUMBER + 1 + RANDOM_SEED)`, then `rand_from_seed` per
+   parameter in the generated code's order, so a particle's spawn values are the host's to float
+   precision. `simulateParticles` is unchanged.
+2. **The shell's message.** rs-core `apply/particles.rs` `describe` (gsw-rs `particles_sync`) lists
+   every `ok` 2D emitter of the resolved table: the entry's JSON fields and floats, and its
+   process material's builtin key, uniforms (scalars and vectors by uniform name) and curve
+   textures. An emitter or material is listed only when its version (or, for a material, the
+   number of its curve textures resolved) moved since the last call; an empty string means
+   nothing did.
+3. **Curve textures at their values.** A float payload at most 4 rows high keeps its f32 texels
+   beside the RGBA8 quantization (`TexturePixels::floats`), and a half payload its halves, so
+   a curve above 1 (a scale curve to 2) is sampled as stored. Sampling is `texture()`'s: linear,
+   clamp to edge, at `vec2(t)`.
+4. **Order, per emitter, PM6a rule 4's:** the setters (`emitting` only when the wire's value
+   moved), the seed, one restart when `restarts` moved, one process request when
+   `process_requests` moved. A new emitter restarts once when the host's ever did and adopts the
+   request counter. A restart also re-asserts the wire's `emitting`, because
+   `GPUParticles2D::restart()` calls `particles_set_emitting(true)` after `particles_restart`,
+   and the mirror never sees that call when the value did not change.
+5. **The clock.** Each apply steps every emitter once, by the host's shader time delta since the
+   previous apply (the process shader `uses` `time`, so a /12 stream with an emitter carries
+   `shader_time`). A window-2 fold steps once by the fold's delta; a wrap steps 1/60 s; with no
+   shader time, 1/60 s. So the simulation follows the host's frames, not the browser's.
+6. **The draw.** `add_particles` lowers as GLES3's TYPE_PARTICLES: draw pass 0's mesh, surface
+   by surface, `amount` instances from the shell's buffer (16 floats each, PM3's 2D multimesh
+   layout with colours and custom data, half-rounded under gl_compatibility like a multimesh's),
+   culled by the custom AABB. An inactive emitter's buffer is zeros (nothing drawn), uploaded
+   once. An emitter that is unknown, freed, unsupported, 3D, without a draw pass mesh, or with no
+   buffer yet is typed `particles-unavailable-skipped`; an item re-lowers when an emitter's draw
+   pass mesh moves or its buffer first appears.
+7. **Emits.** gl_compatibility ignores `particles_emit` and sub-emitters (PM6a rule 10), so GSW
+   consumes the wire's emits as a counted no-op (`emits`); under the receiver sabotage
+   `ignore-particle-emits` they are `emits_dropped`. Trails: gl_compatibility draws none and
+   neither does GSW (the trail draw pass mesh is drawn as is).
+8. **Not modelled, typed in `approximate_features`:** turbulence's curl noise (its random draws
+   are consumed), the `points`/`directed_points` emission textures, `reverse_lifetime` and
+   `view_depth` sorting, attractors and collision. An emitter whose material has no builtin key
+   is not simulated (`unsimulated`), and its draw is `particles-unavailable-skipped`.
+9. **Evidence.** applied.json `w11.particles` (only when non-zero): the wasm's
+   `particles_commands`, `skipped_particles_commands`, `particles_commands_undrawn`, `emits`,
+   `emits_dropped`, `buffer_sets`, `buffers_held`, `buffers_dropped`, and the shell's
+   `particles_created`, `particles_freed`, `restarts`, `seed_sets`, `process_requests`,
+   `sim_steps`, `unsimulated`, `approximate_features`. A stream without an emitter is
+   byte-identical in evidence.
+10. **Receiver sabotages** on PM6a's names: `undrawn-particles` (every `add_particles` counted
+    `particles-undrawn`, the pre-PM6b executor) and `ignore-particle-emits`.
+
 ## Versioning
 
 As /11: any change to framing, a key, a key order, a block layout, an enum spelling or a payload

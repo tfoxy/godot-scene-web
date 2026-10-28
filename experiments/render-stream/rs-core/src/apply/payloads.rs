@@ -27,6 +27,11 @@ pub struct TexturePixels {
     /// GLES3 samples these images at half precision, which RGBA8 cannot carry (a fine `mod()` over
     /// a half-float distance field reads a different band). `rgba` is then empty.
     pub half: Option<Vec<u8>>,
+    /// PM6b: level 0 of an f32 payload (`RF`, `RGF`, `RGBF`, `RGBAF`) at most 4 rows high, as
+    /// RGBA f32 (a missing G or B is 0, a missing alpha 1): the curve and gradient textures a /12
+    /// process material names (render-stream-12.md "Curve textures"). GSW's particle simulation
+    /// samples them on the CPU at their stored values (`rgba` clamps them to [0, 1]).
+    pub floats: Option<Vec<f32>>,
     /// The payload's own `Image.Format` name, mipmaps flag and `data` length (every level): what
     /// the native receiver's upload accounting reads (the former GDScript applier, `rs_applier.gd`, removed in G7gd; `uploads[].data_bytes`).
     pub format: String,
@@ -163,6 +168,18 @@ pub fn texture_rgba8(
     let mut rgba = Vec::with_capacity(4 * n);
     let src = &data[..n * px];
     if bpc > 1 {
+        // PM6b: a curve-sized f32 texture keeps its values too.
+        let floats = (bpc == 4 && height <= 4).then(|| {
+            let mut out = Vec::with_capacity(4 * n);
+            for p in src.chunks_exact(px) {
+                let mut v = [0.0f32, 0.0, 0.0, 1.0];
+                for (i, c) in p.chunks_exact(4).enumerate() {
+                    v[i] = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                }
+                out.extend_from_slice(&v);
+            }
+            out
+        });
         let channel = |c: &[u8]| -> u8 {
             if bpc == 2 {
                 quantize_unorm8(half_to_f32(u16::from_le_bytes([c[0], c[1]])))
@@ -186,6 +203,7 @@ pub fn texture_rgba8(
             data_len: data.len(),
             compressed: None,
             half: None,
+            floats,
         });
     }
     match format {
@@ -225,6 +243,7 @@ pub fn texture_rgba8(
         data_len: data.len(),
         compressed: None,
         half: None,
+        floats: None,
     })
 }
 
@@ -282,6 +301,7 @@ pub fn texture_rgba16f(
         rgba: Vec::new(),
         compressed: None,
         half: Some(half),
+        floats: None,
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
@@ -311,6 +331,7 @@ pub fn texture_block_level0(
         rgba: Vec::new(),
         compressed: Some(data[..len].to_vec()),
         half: None,
+        floats: None,
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
@@ -525,6 +546,10 @@ pub struct PayloadStore {
     /// PM3: /11 multimesh instance buffers by multimesh id ([`super::multimesh`]); not counted by
     /// [`Self::len`], [`Self::total_bytes`] or the budget eviction.
     pub multimeshes: super::multimesh::MultimeshBuffers,
+    /// PM6b: /12 emitters' simulated instance buffers by particles id ([`super::particles`]),
+    /// set by the shell; not counted by [`Self::len`], [`Self::total_bytes`] or the budget
+    /// eviction.
+    pub particles: super::particles::ParticleBuffers,
 }
 
 /// P3-LV: a decoded payload's bytes as [`PayloadStore::total_bytes`] counts them.
@@ -552,6 +577,7 @@ impl PayloadStore {
         self.bytes = 0;
         self.dynamic.clear();
         self.multimeshes.clear();
+        self.particles.clear();
     }
 
     /// W11c (render-stream-11.md "Receivers"): drop `hash` from the store now (a /11 hash that

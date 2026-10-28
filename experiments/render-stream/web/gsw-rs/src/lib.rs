@@ -134,6 +134,9 @@ struct Opts {
     evict_carried: bool,
     stale_dynamic_rx: bool,
     no_prune: bool,
+    /// PM6a's receiver sabotage `ignore-particle-emits` on GSW: every wire emit is dropped
+    /// (counted `emits_dropped`) instead of consumed.
+    ignore_particle_emits: bool,
 }
 
 /// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
@@ -269,6 +272,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "msdf-px-range" => o.apply.lower.msdf_px_range = true,
                 // PM3: every add_multimesh skipped and counted, as GSW drew before PM3.
                 "undrawn-multimesh" => o.apply.lower.undrawn_multimesh = true,
+                // PM6b: PM6a's names. `undrawn-particles` is the pre-PM6 executor (every
+                // add_particles counted particles-undrawn); `ignore-particle-emits` drops emits.
+                "undrawn-particles" => o.apply.lower.undrawn_particles = true,
+                "ignore-particle-emits" => o.ignore_particle_emits = true,
                 // PM3, GSW-only: a particles_animation CanvasItemMaterial drawn as its builtin.
                 "no-flipbook" => o.apply.no_flipbook = true,
                 // UIT: every /11 use_identity_transform ignored, as every receiver drew before UIT.
@@ -1275,6 +1282,15 @@ impl GswRs {
                     } else {
                         self.payloads.dynamic.ingest(st, v.dynamic_bodies(), bytes)
                     };
+                    // PM6b: the transaction's emits. gl_compatibility's particles_emit is a no-op
+                    // (render-stream-12.md "As built (PM6a)" rule 10), so GSW's simulation consumes
+                    // them as one: counted, not simulated.
+                    let emits = v.particle_emits().len() as u64;
+                    if self.opts.ignore_particle_emits {
+                        self.payloads.particles.emits_dropped += emits;
+                    } else {
+                        self.payloads.particles.emits_total += emits;
+                    }
                     // PM3: the transaction's multimesh buffers, by multimesh id, likewise.
                     if !self.payloads.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {
                         self.payloads
@@ -2170,6 +2186,35 @@ impl GswRs {
         )
     }
 
+    /// PM6b: the emitters this receiver simulates and what changed since the last call (JSON,
+    /// `render_stream_core::apply::particles::describe`), or an empty string when nothing did. Call after the
+    /// transactions are accepted and before `apply`.
+    pub fn particles_sync(&mut self) -> String {
+        let Some(v) = self.validator.as_ref() else {
+            return String::new();
+        };
+        let st = v.state();
+        self.payloads.particles.retain(st);
+        if st.particles.is_empty() && self.payloads.particles.is_empty() {
+            return String::new();
+        }
+        render_stream_core::apply::particles::describe(st, &mut self.payloads)
+    }
+
+    /// PM6b: the host's shader time for the newest accepted state (the process material reads
+    /// `TIME`, so a /12 stream with an emitter carries it), or NaN without one.
+    pub fn shader_time(&self) -> f64 {
+        self.validator
+            .as_ref()
+            .and_then(|v| v.state().shader_time)
+            .unwrap_or(f64::NAN)
+    }
+
+    /// PM6b: emitter `id`'s simulated instances (16 floats each), for the next `apply`.
+    pub fn particles_set(&mut self, id: u32, data: &[f32]) {
+        self.payloads.particles.set(id, data);
+    }
+
     pub fn stats_ptr(&self) -> *const Stats {
         &self.stats
     }
@@ -2417,6 +2462,27 @@ impl GswRs {
         // (G8f)"; no wire change), with the float formats it was taken for.
         let q: Vec<String> = self.quantized_float.iter().map(|f| format!("\"{f}\"")).collect();
         out.push(']');
+        // PM6b: applied.json `w11.particles`, the native receiver's keys where GSW has them (the
+        // shell adds what its simulation counts: emitters made, restarts, seed sets).
+        if let (true, Some(a)) = (self.version >= 12, self.applier.as_ref()) {
+            let p = &self.payloads.particles;
+            let total = |k: &str| a.shortcut_totals.get(k).copied().unwrap_or(0);
+            let undrawn = total("particles-undrawn");
+            let skipped = total("particles-unavailable-skipped");
+            if p.sets_total + a.particles_commands + undrawn + skipped + p.emits_total + p.emits_dropped > 0 {
+                out.push_str(&format!(
+                    ",\"w11_particles\":{{\"particles_commands\":{},\"skipped_particles_commands\":{},\"particles_commands_undrawn\":{},\"emits\":{},\"emits_dropped\":{},\"buffer_sets\":{},\"buffers_held\":{},\"buffers_dropped\":{}}}",
+                    a.particles_commands,
+                    skipped,
+                    undrawn,
+                    p.emits_total,
+                    p.emits_dropped,
+                    p.sets_total,
+                    p.created_total,
+                    p.freed_total
+                ));
+            }
+        }
         // PM3: applied.json `w11.multimesh`, the native receiver's keys where GSW has them.
         if let (true, Some(a)) = (self.version >= 11, self.applier.as_ref()) {
             let m = &self.payloads.multimeshes;

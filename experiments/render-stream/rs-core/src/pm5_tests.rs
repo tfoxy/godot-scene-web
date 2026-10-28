@@ -433,14 +433,16 @@ fn viewport(v: &Validator) -> Viewport {
 }
 
 /// GSW's executor (rs-core's applier) over golden-12's inline stream: every transaction applies,
-/// and every lowered `add_particles` is a `particles-undrawn` shortcut (a typed skip) until PM6.
-/// Item 18 is lowered at states 22 (2 emitters), 24 (3) and 25 (2).
+/// and under PM6a's receiver sabotage `undrawn-particles` (the pre-PM6b executor) every lowered
+/// `add_particles` is a `particles-undrawn` shortcut (a typed skip). Item 18 is lowered at states
+/// 22 (2 emitters), 24 (3) and 25 (2). The honest executor draws them (apply/pm6b_tests.rs).
 #[test]
 fn gsw_counts_every_add_particles_undrawn() {
     let data = golden("golden-12/inline.rs12");
     let spans = wire::split_records(&data, 12).unwrap();
     let mut v = Validator::new(spans[0].bytes(&data), spans[0].offset, Options::new(12)).unwrap();
     let mut a = Applier::new(viewport(&v));
+    a.sabotage.lower.undrawn_particles = true;
     let mut store = PayloadStore::default();
     let mut need = Vec::new();
     let mut txs = 0;

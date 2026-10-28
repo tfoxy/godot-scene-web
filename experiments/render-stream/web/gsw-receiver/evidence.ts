@@ -224,6 +224,8 @@ export interface RustParts {
   caveats?: string[];
   /** PM3: the /11 multimesh counters (applied.json `w11.multimesh`, the native receiver's keys). */
   w11_multimesh?: Record<string, number>;
+  /** PM6b: the /12 particle counters the wasm keeps (draws, skips, emits, buffers). */
+  w11_particles?: Record<string, number>;
   transactions: {
     /** G7l: the connection (1 in file mode). */
     stream?: number;
@@ -397,6 +399,9 @@ export interface Report {
    * residency sample (`perf.ts` `Perf.residencyEvictions`). `null`/undefined (file mode, or no
    * residency sample was ever taken) reports as 0, the native receiver's own default. */
   residencyEvictions?: number | null;
+  /** PM6b: the shell's particle simulation counters (`particles.ts`), merged with the wasm's into
+   * applied.json `w11.particles`. */
+  particles?: import("./particles").ParticlesEvidence | null;
 }
 
 type RustTx = RustParts["transactions"][number];
@@ -548,7 +553,14 @@ export function appliedJson(r: Report): Record<string, unknown> {
     fetches: full ? r.fetches : null,
     uploads: full ? rust.uploads : null,
     mesh_uploads: full ? (rust.mesh_uploads ?? []) : null,
-    ...(rust.w11_multimesh ? { w11: { multimesh: rust.w11_multimesh } } : {}),
+    ...(rust.w11_multimesh || rust.w11_particles
+      ? {
+          w11: {
+            ...(rust.w11_multimesh ? { multimesh: rust.w11_multimesh } : {}),
+            ...(rust.w11_particles ? { particles: { ...rust.w11_particles, ...(r.particles ?? {}) } } : {}),
+          },
+        }
+      : {}),
     resources_summary: {
       distinct_fetched: r.distinctFetched,
       fetched_bytes: sum((t) => t.fetched_bytes),
