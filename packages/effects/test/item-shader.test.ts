@@ -508,10 +508,18 @@ describe("transpileGodotItemShader vertex() (P3-VX)", () => {
     expect(t.glsl).toContain("#define AT_LIGHT_PASS false");
   });
 
+  it("maps vertex() INSTANCE_ID to gl_InstanceID", () => {
+    const t = transpileGodotItemShader(
+      "shader_type canvas_item;\nvoid vertex() { COLOR.g = float(INSTANCE_ID * 2 + INSTANCE_ID); }",
+    );
+    expect(t.vertexGlsl).toContain("#define INSTANCE_ID gl_InstanceID");
+    expect(t.glsl).not.toContain("gl_InstanceID");
+  });
+
   it("refuses what vertex() cannot execute exactly, naming it", () => {
     const refused: [string, RegExp][] = [
       ["void vertex() { VERTEX.x += float(VERTEX_ID); }", /VERTEX_ID/],
-      ["void vertex() { VERTEX.x += float(INSTANCE_ID); }", /INSTANCE_ID/],
+      ["void fragment() { COLOR.r = float(INSTANCE_ID); }", /INSTANCE_ID/],
       ["void vertex() { COLOR = CUSTOM0; }", /CUSTOM0/],
       ["void vertex() { COLOR = texture(TEXTURE, UV); }", /TEXTURE/],
       [

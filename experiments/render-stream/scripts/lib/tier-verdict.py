@@ -98,7 +98,8 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
             text += f" {c.get('criterion', '')}"
         if str(c.get("status", "")) in UNAVAILABLE:
             unavailable.append(c["id"])
-        elif sabotage_skipped and "sabotage" in c["id"]:
+        elif sabotage_skipped and re.search(r"sabotage|catches|caught", c["id"]):
+            # a "...-catches-..." / "...-caught" check judges a sabotage leg (its id need not say so)
             excused.append(c["id"])
         elif any(re.search(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", text) for t in tokens):
             excused.append(c["id"])
@@ -149,6 +150,11 @@ def self_test():
     case("sabotage checks are excused only when sabotage was skipped",
          {"result.json": res(("a", True, ""), ("leg-class-sabotage-x", False, "no recording")),
           "live/applied.json": "{}"}, "pass", sab=True)
+    case("a catches/caught check is excused when sabotage was skipped, real otherwise",
+         {"result.json": res(("a", True, ""), ("coding-drop-base-caught", False, "no viewer report")),
+          "live/applied.json": "{}"}, "pass", sab=True)
+    case("a failing caught check is real when sabotage was not skipped",
+         {"result.json": res(("coding-drop-base-caught", False, "x")), "live/applied.json": "{}"}, "fail")
     case("a failing sabotage check is real when sabotage was not skipped",
          {"result.json": res(("leg-class-sabotage-x", False, "x")), "live/applied.json": "{}"}, "fail")
     case("a check naming a skipped leg is excused",

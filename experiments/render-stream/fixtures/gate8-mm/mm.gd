@@ -8,7 +8,8 @@ extends Node
 ##   B_CUSTOM   (240,40)   MultiMeshInstance2D, 6 instances, colour and custom data, one set_buffer
 ##                         in _ready, then instance 0's custom data = (fixture frame, 0, 0, 0) set
 ##                         in _process every frame (multimesh_instance_set_custom_data); a canvas
-##                         shader reads INSTANCE_CUSTOM (frame pairing)
+##                         shader reads INSTANCE_CUSTOM (frame pairing) and INSTANCE_ID (GSI: the
+##                         instance index tints blue)
 ##   C_FLIP     (460,70)   CPUParticles2D, 7 particles, use_fixed_seed, local coordinates, a 4x1
 ##                         flipbook through a CanvasItemMaterial (particles_animation)
 ##   D_GLOBAL   (40..98,180) CPUParticles2D, 9 particles, use_fixed_seed, global coordinates
@@ -47,14 +48,16 @@ const SENTINEL: float = -1.0
 const B_SHADER: String = """shader_type canvas_item;
 
 varying vec4 v_custom;
+varying float v_id;
 
 void vertex() {
 	v_custom = INSTANCE_CUSTOM;
+	v_id = float(INSTANCE_ID);
 }
 
 void fragment() {
 	float odd = mod(v_custom.x, 2.0);
-	COLOR = vec4(COLOR.rgb * (0.5 + 0.5 * odd) + vec3(0.0, v_custom.y, 0.0), 1.0);
+	COLOR = vec4(COLOR.rgb * (0.5 + 0.5 * odd) + vec3(0.0, v_custom.y, 0.1 * v_id), 1.0);
 }
 """
 
