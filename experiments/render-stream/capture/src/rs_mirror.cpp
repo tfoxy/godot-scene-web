@@ -3068,6 +3068,66 @@ Mirror::ParticlesCall Mirror::particles_create(std::uint64_t rid, std::uint64_t 
   return out;
 }
 
+Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const ParticlesAdopt &a,
+                                              std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ParticlesCall out;
+  if (!pt_options_.enabled || rid == 0 || particles_by_rid_.count(rid) != 0 ||
+      a.floats.size() < kParticlesBaseFloats ||
+      (a.floats.size() - kParticlesBaseFloats) % 12 != 0) {
+    return out;
+  }
+  (void)frame;
+  ++epoch_;
+  ++ppm_epoch_;
+  Particles p;
+  p.id = next_particles_id_++;
+  p.rid = rid;
+  p.adopted = true;
+  p.mode_2d = true;
+  p.emitting = a.emitting;
+  p.amount = a.amount;
+  p.one_shot = a.one_shot;
+  p.fixed_fps = a.fixed_fps;
+  p.interpolate = a.interpolate;
+  p.fractional_delta = a.fractional_delta;
+  p.local = a.local;
+  p.draw_order = a.draw_order;
+  p.transform_align = a.transform_align;
+  p.trails = a.trails;
+  p.seed = a.seed;
+  p.restarts = 1;  // the constructor's restart: a joiner's emitter starts fresh (PM6a rule 4)
+  if (a.material != 0) {
+    const auto it = material_by_rid_.find(a.material);
+    p.material_rid = a.material;
+    p.material_id = it != material_by_rid_.end() ? it->second : 0;
+    p.unknown_material = it == material_by_rid_.end();
+  }
+  {
+    const auto it = mesh_by_rid_.find(a.mesh);
+    p.pass_rids.push_back(a.mesh);
+    p.pass_ids.push_back(a.mesh != 0 && it != mesh_by_rid_.end() ? it->second : 0);
+    p.pass_unknown.push_back(a.mesh != 0 && it == mesh_by_rid_.end());
+  }
+  if (a.subemitter != 0) {
+    const auto it = particles_by_rid_.find(a.subemitter);
+    if (it != particles_by_rid_.end()) {
+      p.sub_rid = a.subemitter;
+      p.sub_id = it->second;
+    }
+  }
+  p.floats = std::make_shared<std::vector<float>>(a.floats);
+  particles_by_rid_[rid] = p.id;
+  out.known = true;
+  out.accepted = true;
+  out.changed = true;
+  out.id = p.id;
+  out.version = p.version;
+  out.restarts = p.restarts;
+  particles_.emplace(p.id, std::move(p));
+  return out;
+}
+
 Mirror::ParticlesCall Mirror::particles_free(std::uint64_t rid, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   ParticlesCall out;
@@ -3335,6 +3395,7 @@ void Mirror::add_particles(std::uint64_t rid, std::uint64_t particles_rid, std::
 ParticlesEntry Mirror::wire_particles(const Particles &p, bool notes) const {
   ParticlesEntry out;
   out.id = p.id;
+  out.origin = p.adopted ? Origin::Adopted : Origin::Created;
   out.version = notes ? p.version : p.version - p.wire_version_skew;
   out.mode_2d = p.mode_2d;
   out.emitting = p.emitting;

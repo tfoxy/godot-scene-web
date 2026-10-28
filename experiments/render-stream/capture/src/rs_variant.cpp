@@ -263,6 +263,7 @@ void decode_array_form(const void *variant_ptr, DecodedParam *out) {
   if (size_fn != nullptr) {
     size_fn(array, nullptr, &n, 0);
   }
+  out->array_n = n;  // read only under array_form, and by the hooks' PM7 census
   enum Kind { kNone, kInt, kFloat, kV2, kV3, kV4, kColor, kMixed };
   Kind kind = kNone;
   std::vector<double> f;
@@ -274,6 +275,22 @@ void decode_array_form(const void *variant_ptr, DecodedParam *out) {
       break;
     }
     const GDExtensionVariantType t = g_iface.variant_get_type(element);
+    {
+      // PM7: the element types, for the hook's evidence census.
+      const char *name = t == GDEXTENSION_VARIANT_TYPE_BOOL      ? "bool"
+                         : t == GDEXTENSION_VARIANT_TYPE_INT     ? "int"
+                         : t == GDEXTENSION_VARIANT_TYPE_FLOAT   ? "float"
+                         : t == GDEXTENSION_VARIANT_TYPE_VECTOR2 ? "vector2"
+                         : t == GDEXTENSION_VARIANT_TYPE_VECTOR3 ? "vector3"
+                         : t == GDEXTENSION_VARIANT_TYPE_VECTOR4 ? "vector4"
+                         : t == GDEXTENSION_VARIANT_TYPE_COLOR   ? "color"
+                         : t == GDEXTENSION_VARIANT_TYPE_NIL     ? "nil"
+                                                                 : unsupported_type_name(t);
+      const std::string token = std::string(",") + name + ",";
+      if ((std::string(",") + out->array_elements + ",").find(token) == std::string::npos) {
+        out->array_elements += (out->array_elements.empty() ? "" : ",") + std::string(name);
+      }
+    }
     DecodedParam one = decode_variant(element);
     Kind k = kMixed;
     if (one.status == "ok" && !one.packed) {

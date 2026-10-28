@@ -3884,6 +3884,58 @@ void test_particles_trail_poses_need_trails() {
         "trails on: the kept pose returns (trail_poses 1, 43 floats)");
 }
 
+// PM7 (render-stream-12.md "As built (PM7)"): an adopted emitter, its references and its
+// subemitter linked once that one is adopted too.
+void test_particles_adopt() {
+  using grc::rs2::ParticlesStatus;
+  Mirror m;
+  bind_root(&m);
+  m.set_v11(v11_options(grc::rs2::MeshDynamicMode::Auto));
+  m.set_multimesh(mm_options());
+  m.set_particles(pt_options());
+  m.canvas_item_create(100, 1);
+  m.canvas_item_create(101, 1);
+  m.mesh_create(0x500, 1);
+  grc::rs::Mirror::ParticlesAdopt a;
+  a.emitting = true;
+  a.amount = 12;
+  a.fixed_fps = 0;
+  a.seed = 7;
+  a.mesh = 0x500;
+  a.material = 0x777;  // unknown to the mirror: the entry's usual reason
+  a.subemitter = 0x902;  // not adopted yet: left null
+  a.floats.assign(31, 0.0f);
+  a.floats[1] = 2.0f;
+  auto r = m.particles_adopt(0x900, a, 1);
+  check(r.known && r.accepted && r.id == 1 && r.version == 1 && r.restarts == 1,
+        "adopt: id 1, version 1, the constructor's restart");
+  check(!m.particles_adopt(0x900, a, 1).known, "adopting a known emitter does nothing");
+  grc::rs::Mirror::ParticlesAdopt bad = a;
+  bad.floats.resize(30);
+  check(!m.particles_adopt(0x903, bad, 1).known, "adopt: the floats must be 31 + 12 x poses");
+  m.add_particles(100, 0x900, 0, 1);
+  Snapshot s1 = m.snapshot(1, 1).state;
+  const auto *e = pt_entry(s1, 1);
+  check(e != nullptr && e->origin == grc::rs2::Origin::Adopted && e->mode_2d && e->emitting &&
+            e->amount == 12 && e->seed == 7 && e->restarts == 1 && e->subemitter == 0 &&
+            e->draw_passes == std::vector<uint32_t>({1}) &&
+            e->status == ParticlesStatus::Unsupported &&
+            e->reason == grc::rs2::ParticlesReason::UnknownMaterial && (*e->floats)[1] == 2.0f,
+        "adopted entry: origin adopted, the getters, mesh 1, unknown-material");
+  grc::rs::Mirror::ParticlesAdopt sub;
+  sub.mesh = 0x500;
+  sub.floats.assign(31, 0.0f);
+  r = m.particles_adopt(0x902, sub, 2);
+  check(r.known && r.id == 2, "the subemitter adopted later: id 2");
+  r = m.particles_call(0x900, PtOp::SetSubemitter, pt_i(0, 0x902), 2);
+  check(r.accepted && r.changed && r.ref_id == 2, "the link, as particles_set_subemitter");
+  Snapshot s2 = m.snapshot(2, 2).state;
+  e = pt_entry(s2, 1);
+  check(e != nullptr && e->subemitter == 2 && pt_entry(s2, 2) != nullptr &&
+            pt_entry(s2, 2)->origin == grc::rs2::Origin::Adopted,
+        "the subemitter published through its parent");
+}
+
 // GLES3's defaults, version moves by value / bit pattern, the counters always move.
 void test_particles_defaults_and_versions() {
   using grc::rs2::ParticlesStatus;
@@ -4123,6 +4175,7 @@ int main() {
   test_same_value_set_material_keeps_epoch();
   test_particles_defaults_and_versions();
   test_particles_trail_poses_need_trails();
+  test_particles_adopt();
   test_particles_reasons_and_publication();
   test_particles_emits_and_drop_restart();
   test_particles_builtin_and_lowering();

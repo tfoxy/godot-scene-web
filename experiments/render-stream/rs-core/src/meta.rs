@@ -502,7 +502,8 @@ pub const PARTICLES_REASONS: &[&str] = &[
     "unknown-mesh",
     "unknown-particles",
 ];
-const PARTICLES_ORIGINS: &[&str] = &["created"];
+// PM7 (render-stream-12.md "As built (PM7)"): an emitter that existed before arm is "adopted".
+const PARTICLES_ORIGINS: &[&str] = &["created", "adopted"];
 // render-stream-12.md "The emit list".
 const PARTICLE_EMIT_KEYS: &[&str] = &["particles", "restarts", "flags", "f"];
 // render-stream-12.md "The `particle_process_material` builtin".
@@ -3866,7 +3867,7 @@ fn check_particles(ck: &mut Ck, p: Value) -> Result<ParticlesMeta, Error> {
         return Err(err(ck, "\"id\" is not an integer >= 1"));
     };
     let Some(origin) = ck.one_of_str(f.at(1), PARTICLES_ORIGINS).and_then(Origin::parse) else {
-        return Err(err(ck, "\"origin\" must be \"created\""));
+        return Err(err(ck, "\"origin\" must be \"created\" or \"adopted\""));
     };
     let Some(status) = enum_of(ck, f.at(2), EntryStatus::ALL, EntryStatus::as_str) else {
         return Err(err(ck, "has an invalid status"));

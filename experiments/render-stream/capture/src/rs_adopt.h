@@ -235,6 +235,9 @@ enum class AdoptFault : std::uint8_t {
   // G8m: no-include-path: the temporary Shader gets no path (gate8-design.md D11 as written), so
   // a relative #include cannot resolve and its shader is the typed shader-adopt-include.
   NoIncludePath,
+  // PM7: no-particles: no pre-arm emitter is adopted (the pre-PM7 capture: every draw of one is
+  // unknown-particles).
+  NoParticles,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -374,6 +377,46 @@ struct PpmStats {
   std::uint64_t builtin_unresolved = 0;  // shaders tried with no ParticleProcessMaterial found
 };
 PpmStats adopt_particles_stats();
+
+// PM7 (render-stream-12.md "As built (PM7)"): a GPUParticles2D emitter created before arm is
+// adopted lazily, at its first canvas_item_add_particles (the walk's queue_redraw makes one for
+// every visible adopted item; a pre-arm emitter whose node enters the tree later draws on entry,
+// mapped by node_added). Its particles RID and draw-pass mesh have no getter, so they come from
+// the draw itself (gpu_particles_2d.cpp:615-725: mesh_clear and mesh_add_surface on the private
+// quad mesh, particles_set_trail_bind_poses, then canvas_item_add_particles): the trail-poses hook
+// notes the draw of an emitter the mirror does not know (adopt_particles_note_draw), and the
+// add_particles hook adopts it (adopt_particles_ref) from the item's node (the node map), before
+// the command is recorded. The configuration is the node's getters; the mesh is adopted through
+// G8r (adopt_mesh_ref); a pre-arm process material through its class (a ParticleProcessMaterial:
+// a capture-owned duplicate's get_rid() names the shared shader and the parameter names through
+// the hooks under hooks_internal_begin, and RenderingServer.shader_get_code /
+// material_get_param read the original's code and values; a ShaderMaterial or
+// CanvasItemMaterial: G8m's recipe). Main thread only; a draw that does not match (no node, not
+// a GPUParticles2D, no noted draw) stays unknown-particles, counted.
+void adopt_particles_note_draw(std::uint64_t particles, std::uint64_t mesh,
+                               const std::vector<float> &poses);
+void adopt_particles_ref(std::uint64_t item, std::uint64_t particles);
+struct EmitterAdoptStats {
+  std::uint32_t emitters = 0;          // emitters adopted
+  std::uint32_t refused = 0;           // pre-arm emitters a draw named and nothing could adopt
+  std::uint32_t refused_no_node = 0;   // ... no node in the map for the drawing item
+  std::uint32_t refused_not_gpu = 0;   // ... the node is not a GPUParticles2D
+  std::uint32_t refused_no_draw = 0;   // ... no noted draw (mesh) for the emitter
+  std::uint32_t refused_binds = 0;     // ... a getter's bind is missing
+  std::uint32_t meshes = 0;            // draw-pass meshes adopted with an emitter
+  std::uint32_t ppm_materials = 0;     // ParticleProcessMaterials adopted
+  std::uint32_t ppm_shaders = 0;       // ... their shared shaders adopted
+  std::uint32_t ppm_params = 0;        // ... parameters read back
+  std::uint32_t ppm_refused = 0;       // process materials nothing could adopt (unknown-material)
+  std::uint32_t ppm_refused_no_shader = 0;  // ... the temporary was given no shader
+  std::uint32_t ppm_refused_created = 0;    // ... the temporary made its own shader
+  std::uint32_t ppm_refused_code = 0;       // ... the server returned no code (headless)
+  std::uint32_t ppm_refused_material = 0;   // ... the material could not be registered
+  std::uint32_t other_materials = 0;   // process materials adopted through G8m's recipe
+  std::uint32_t subemitters = 0;       // subemitter links made
+  std::uint64_t adopt_ns = 0;          // every adoption, the reads and the temporary included
+};
+EmitterAdoptStats adopt_emitter_stats();
 
 // PM5 (render-stream-12.md "Headless shims", GRC_PREDRAW_PUMP=1): connects a capture callable to
 // RenderingServer.frame_pre_draw (false, with `*why`, when the binds or the signal are missing).

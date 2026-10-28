@@ -84,7 +84,7 @@ and `removed_particles: [<id>]` (patch only, ascending, ids of the base table, n
 An entry, keys in this order:
 
 ```json
-{"id":<int>=1>,"origin":"created","status":"ok"|"unsupported"|"freed","reason":null|<reason>,
+{"id":<int>=1>,"origin":"created"|"adopted","status":"ok"|"unsupported"|"freed","reason":null|<reason>,
  "version":<int>=1>,"mode":"2d"|"3d","emitting":<bool>,"amount":<int>=0>,"one_shot":<bool>,
  "fixed_fps":<int>=0>,"interpolate":<bool>,"fractional_delta":<bool>,"local":<bool>,
  "draw_order":"index"|"lifetime"|"reverse_lifetime"|"view_depth",
@@ -95,8 +95,10 @@ An entry, keys in this order:
 ```
 
 - `id` has its own per-session counter from 1, never reused (like meshes and multimeshes).
-  `origin` is `"created"` only: PM5 does not adopt emitters (a pre-arm emitter is unknown, as a
-  pre-arm multimesh is at PM1).
+  `origin` was `"created"` only at PM5 (a pre-arm emitter was unknown, as a pre-arm multimesh is
+  at PM1). Since PM7 an emitter that existed before the arm and was adopted at its first draw is
+  `"adopted"` ("As built (PM7)"); an `"adopted"` entry in a session that declares no adoption is
+  `adoption-entry`, as for every other table.
 - The JSON fields are the host's last accepted `particles_*` values, modelled on GLES3's
   `ParticlesStorage::Particles` defaults (`drivers/gles3/storage/particles_storage.h`): at
   `particles_create`, mode `"3d"`, `emitting` false, `amount` 0, `one_shot` false, `fixed_fps` 30,
@@ -686,6 +688,88 @@ the capture or in the native and web receivers.
    byte-identical in evidence.
 10. **Receiver sabotages** on PM6a's names: `undrawn-particles` (every `add_particles` counted
     `particles-undrawn`, the pre-PM6b executor) and `ignore-particle-emits`.
+
+## As built (PM7): decisions
+
+PM7 adopts the GPU emitters that exist before a late arm
+([results/p3/pm7.md](../results/p3/pm7.md)). Before it, every draw of such an emitter was
+`unknown-particles` (PM5 rule 9), so an STS2 arm after the main menu existed could not show the
+menu's stars and fog. The capture, the two validators and the hook log change; the receivers
+(native, web and GSW) do not: none reads `origin`.
+
+1. **The wire.** `origin` may be `"adopted"` on a particles entry (TypeScript and rs-core accept
+   it at /12; `adoption-entry` covers the particles table too). Nothing else changes: an adopted
+   entry has the same keys, rules and floats as a created one, and a stream without a pre-arm
+   emitter is byte-identical to PM6a's. This relaxes a /12 rule, so it stays /12 (no other
+   version carries particles).
+2. **When.** An emitter is adopted lazily, at its first `canvas_item_add_particles` after the arm
+   (GRC_ADOPT=arm, main thread only), before the command is recorded, so the command names the
+   adopted entry and no transaction ever carries its `unknown-particles`. The walk's
+   `queue_redraw()` on every adopted item makes that draw at the arm's flush for every visible
+   emitter; a pre-arm emitter whose node enters the tree later draws on entry (mapped by
+   `node_added`); a hidden one is adopted when it is first shown.
+3. **The RID and the mesh come from the draw.** `GPUParticles2D` exposes neither its particles RID
+   nor its draw-pass quad mesh. Its `NOTIFICATION_DRAW` (gpu_particles_2d.cpp:602-725) rebuilds
+   the quad (`mesh_clear`, `mesh_add_surface_from_arrays`), sets the trail bind poses, then
+   calls `canvas_item_add_particles(item, particles, texture)`. The `trail_bind_poses` hook notes
+   an emitter the mirror does not know, with the mesh the thread's last `mesh_add_surface` filled
+   and the poses; the `add_particles` hook adopts it when the RID matches that note and the
+   item's node (G8m's node map) is a `GPUParticles2D`. The mesh is adopted through G8r
+   (`adopt_mesh_ref`, the server's read-back of the quad just built). A draw that does not match
+   stays `unknown-particles`, counted (`refused_no_node`, `refused_not_gpu`, `refused_no_draw`).
+4. **The configuration is the node's getters**, as its setters declared them to the server:
+   mode 2D; `emitting` (the node's: a finished one-shot is `false`); `amount`, `one_shot`,
+   `fixed_fps`, `interpolate`, `fractional_delta`, `local_coords`, `draw_order`, `seed`; trails
+   and `transform_align` Y-to-velocity with them; the floats `amount_ratio`, `lifetime`,
+   `pre_process_time`, `explosiveness`, `randomness`, `speed_scale` (0 when the node cannot
+   process, as ENTER_TREE sends), `collision_base_size` (scaled by the texture as
+   `_update_collision_size`), the trail length (0 without trails), `interp_to_end`, the custom
+   AABB from `visibility_rect`, and the global transform as the emission transform. What no
+   getter returns starts at the defaults: `restarts` 1 (the constructor's restart: a joiner's
+   emitter starts fresh, PM6a rule 4), `emits` and `process_requests` 0, the last
+   `request_process_time` 0, emitter velocity 0. A local-coordinates emitter's host emission
+   transform is the one of its first transform flush, which can differ from the adopted global
+   transform; GLES3 reads it only for emits and subemitters.
+5. **The subemitter** is the node `get_sub_emitter()` names (a `GPUParticles2D` other than the
+   emitter). Adopted first, it is named at once; adopted later, the parent is linked then, as
+   `particles_set_subemitter` would have (a hook-log line `particles_adopt_subemitter`).
+6. **A pre-arm process material.** A `ShaderMaterial` or `CanvasItemMaterial` takes G8m's recipe.
+   A `ParticleProcessMaterial` has no getter for its shader: the capture makes a duplicate
+   (`Resource.duplicate(false)`, the same key) inside `hooks_internal_begin/end`, and the
+   duplicate's `get_rid()` (which runs `_update_shader`, particle_process_material.cpp:1866) sets
+   the shared shader on the duplicate's own material through the hooks (`material_set_shader`,
+   or `material_create_from_shader` for a build whose material makes its RID lazily), which hand
+   back the shader RID and every parameter name the constructor and the copy sent; nothing of
+   the temporary reaches the mirror, the hook log or `counters.json` (its destructor's
+   `material_set_shader(material, RID())` is ignored). The original's code and values come from
+   the server: `RenderingServer.shader_get_code`, then `material_get_param` for each of those
+   names and each uniform the code declares (unset ones read NIL and are skipped). GLES3 and RD
+   keep both; the headless dummy keeps neither, so a headless capture leaves the material
+   `unknown-material` (`ppm_refused_code`). An engine build whose `ParticleProcessMaterial`
+   assigns its shader outside `get_rid()` names none to the temporary (`ppm_refused_no_shader`):
+   its emitters are adopted `unsupported`/`unknown-material`, as before PM7 they were
+   `unknown-particles` (results/p3/pm7.md: MegaDot 4.5.1.m.12 does this). The builtin is then
+   keyed at the frame boundary as for any process shader (PM5 rule 6).
+7. **Evidence.** `result.json` `stream.gate8.particles.adoption` (under GRC_ADOPT=arm): emitters,
+   the refusals by reason (the process material's too), meshes, process materials, their shaders
+   and parameters, other
+   materials, subemitter links, `adopt_ns`. The hook log gains a `particles_adopt` line per
+   adopted emitter. `counters.json` `captured.array_params` counts every plain-`Array` material
+   parameter by name, element types, size and the form carried (the PM5 rule 5 question).
+8. **PM5 rule 5, confirmed on the game.** STS2's MegaDot passes `particle_flags` as an `Array` of
+   4 `bool` and `use_tex_param` as an `Array` of 18 `bool` (every call of both, counted by
+   `captured.array_params`), and its process shader declares `uniform bool particle_flags[...]`
+   and `uniform bool use_tex_param[...]`. GLES3 converts a `bool` array uniform's value to
+   `PackedInt32Array` (material_storage.cpp `_fill_std140_variant_ubo_value`), which is the
+   `int32` form /12 carries. The capture needed no change.
+9. **Fault.** `GRC_ADOPT_FAULT=no-particles` adopts no emitter: the pre-PM7 capture, the premise
+   of g8pt's late-arm sabotage.
+10. **Fixture and checks** (gate 8 group `g8pt`, `lib/gate8-pt-late-checks.ts`): `late/capture`
+    arms at fixture frame 12 (`fixtures/gate8-pt/loader.gd` `RS_FIXTURE_ARM=late`), after every
+    emitter has drawn; `fault-no-particles/capture`; the native `late/receiver`,
+    `late/receiver-patch` and `fault-no-particles/receiver`. `pt-late-validate`, `pt-late-adopt`,
+    `pt-late-fault`, `pt-late-lifecycle`, `pt-late-coverage` (banded, from frame 46),
+    `pt-late-outside-exact` and `pt-late-lifecycle-catches-no-particles`.
 
 ## Versioning
 

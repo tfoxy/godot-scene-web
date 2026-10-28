@@ -871,7 +871,8 @@ export type ParticlesTransformAlign =
  * freed; see PARTICLES_FLOAT_LAYOUT). */
 export interface TransactionParticles {
   id: number;
-  origin: "created";
+  /** "adopted" for an emitter that existed before arm (PM7, render-stream-12.md "As built (PM7)"). */
+  origin: "created" | "adopted";
   status: ParticlesStatus;
   reason: ParticlesReason | null;
   version: number;
@@ -3298,7 +3299,9 @@ function checkParticlesEntrySchema(p: unknown): string | null {
   const nonNegInt = (x: unknown) => isInt(x) && (x as number) >= 0;
   const optId = (x: unknown) => x === null || (isInt(x) && (x as number) >= 1);
   if (!isInt(p.id) || p.id < 1) return '"id" is not an integer >= 1';
-  if (p.origin !== "created") return '"origin" must be "created"';
+  // PM7 (render-stream-12.md "As built (PM7)"): an emitter that existed before arm is "adopted".
+  if (p.origin !== "created" && p.origin !== "adopted")
+    return '"origin" must be "created" or "adopted"';
   if (!isOneOf(p.status, PARTICLES_STATUSES)) return "has an invalid status";
   if (!(p.reason === null || isOneOf(p.reason, PARTICLES_REASONS)))
     return '"reason" is neither null nor a valid particles reason';
@@ -5100,7 +5103,8 @@ export interface ResolvedParticlesFloats {
  * plus its floats by name (null when freed). An entry a patch does not list keeps its floats. */
 export interface ResolvedParticles {
   id: number;
-  origin: "created";
+  /** "adopted" for an emitter that existed before arm (PM7). */
+  origin: "created" | "adopted";
   status: ParticlesStatus;
   reason: ParticlesReason | null;
   version: number;
@@ -6372,6 +6376,7 @@ function checkAdoptionInvariants(
       ["mesh", state.meshes.values()],
       ["shader", state.shaders.values()],
       ["material", state.materials.values()],
+      ["particles", state.particles.values()],
     ];
     for (const [what, entries] of tables) {
       for (const e of entries) {

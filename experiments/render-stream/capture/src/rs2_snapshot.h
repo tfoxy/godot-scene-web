@@ -1672,6 +1672,7 @@ inline constexpr std::size_t kParticleEmitTail = 4096;    // the emit log's boun
 // mesh wire id, 0 for null.
 struct ParticlesEntry {
   std::uint32_t id = 0;
+  Origin origin = Origin::Created;  // PM7: Adopted for an emitter that existed before arm
   ParticlesStatus status = ParticlesStatus::Ok;
   bool has_reason = false;
   ParticlesReason reason = ParticlesReason::Particles3d;

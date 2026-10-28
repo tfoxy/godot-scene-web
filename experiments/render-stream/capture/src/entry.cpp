@@ -646,6 +646,30 @@ std::string result_json() {
         json.field("shim_synthesized", static_cast<int64_t>(rs::particles_shim().synthesized()));
         json.field("shim_engine_allocated",
                    static_cast<int64_t>(rs::particles_shim().engine_allocated()));
+        if (g_stream.gate8.adopt) {
+          // PM7 (render-stream-12.md "As built (PM7)"): pre-arm emitters, under GRC_ADOPT=arm.
+          const rs::EmitterAdoptStats e = rs::adopt_emitter_stats();
+          json.key("adoption").object_begin();
+          json.field("emitters", static_cast<int64_t>(e.emitters));
+          json.field("refused", static_cast<int64_t>(e.refused));
+          json.field("refused_no_node", static_cast<int64_t>(e.refused_no_node));
+          json.field("refused_not_gpu", static_cast<int64_t>(e.refused_not_gpu));
+          json.field("refused_no_draw", static_cast<int64_t>(e.refused_no_draw));
+          json.field("refused_binds", static_cast<int64_t>(e.refused_binds));
+          json.field("meshes", static_cast<int64_t>(e.meshes));
+          json.field("ppm_materials", static_cast<int64_t>(e.ppm_materials));
+          json.field("ppm_shaders", static_cast<int64_t>(e.ppm_shaders));
+          json.field("ppm_params", static_cast<int64_t>(e.ppm_params));
+          json.field("ppm_refused", static_cast<int64_t>(e.ppm_refused));
+          json.field("ppm_refused_no_shader", static_cast<int64_t>(e.ppm_refused_no_shader));
+          json.field("ppm_refused_created", static_cast<int64_t>(e.ppm_refused_created));
+          json.field("ppm_refused_code", static_cast<int64_t>(e.ppm_refused_code));
+          json.field("ppm_refused_material", static_cast<int64_t>(e.ppm_refused_material));
+          json.field("other_materials", static_cast<int64_t>(e.other_materials));
+          json.field("subemitters", static_cast<int64_t>(e.subemitters));
+          json.field("adopt_ns", static_cast<int64_t>(e.adopt_ns));
+          json.object_end();
+        }
         json.object_end();
       }
     }

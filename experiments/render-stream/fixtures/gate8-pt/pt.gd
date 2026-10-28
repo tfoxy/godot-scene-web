@@ -285,6 +285,15 @@ func _error(text: String) -> void:
 func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
 	if _step_log_file == null:
 		return
+	# PM7: under a late arm (loader.gd RS_FIXTURE_ARM=late) a checkpoint that settles before the arm
+	# has no transaction to pair with, so the log holds only the steps after it.
+	if OS.get_environment("RS_FIXTURE_ARM") == "late":
+		var arm: int = 12
+		var text: String = OS.get_environment("RS_FIXTURE_ARM_FRAME").strip_edges()
+		if text.is_valid_int():
+			arm = text.to_int()
+		if settle_frame <= arm:
+			return
 	_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d}" % [step, applied_frame, settle_frame])
 	_step_log_file.flush()
 
