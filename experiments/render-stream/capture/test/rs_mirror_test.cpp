@@ -3200,6 +3200,92 @@ void test_v11_stable_content_version() {
         "cv-churn: the counter moves on every re-record, as below /11");
 }
 
+// HC2 (host-cost-design.md D1): the mirror's command lists are shared with its snapshots; a /11
+// identical re-record publishes the published list again with no digest; any other change, and
+// every re-record below /11, publishes the new list.
+void test_hc2_shared_command_lists() {
+  using grc::rs2::MeshDynamicMode;
+  const auto draw = [](Mirror *m, const grc::rs2::Color4 &color, uint64_t frame) {
+    m->clear(100, frame);
+    m->add_rect(100, kRect, color, false, frame);
+  };
+  {
+    Mirror m;  // below /11
+    bind_root(&m);
+    m.canvas_item_create(100, 1);
+    draw(&m, kRed, 1);
+    const Snapshot s1 = m.snapshot(1, 1).state;
+    const Snapshot s2 = m.snapshot(2, 2).state;
+    check(item(s2, 1)->commands.shares(item(s1, 1)->commands),
+          "share: an unchanged item's commands are one list in every snapshot");
+    m.add_rect(100, kRect, kGreen, false, 3);
+    const Snapshot s3 = m.snapshot(3, 3).state;
+    check(item(s3, 1)->commands.size() == 2 && item(s2, 1)->commands.size() == 1 &&
+              item(s1, 1)->commands.shares(item(s2, 1)->commands),
+          "divergence: appending after a snapshot leaves the published list untouched");
+    draw(&m, kRed, 4);
+    draw(&m, kRed, 4);
+    const Snapshot s4 = m.snapshot(4, 4).state;
+    check(item(s4, 1)->commands.size() == 1 && item(s3, 1)->commands.size() == 2 &&
+              !item(s4, 1)->commands.shares(item(s1, 1)->commands) &&
+              item(s4, 1)->content_version != item(s1, 1)->content_version,
+          "below /11 an identical re-record is still a change (the counter is the wire's)");
+    check(m.stats().cv_digests == 0 && m.stats().cv_rerecords_kept == 0,
+          "below /11 no digest is made");
+  }
+  {
+    Mirror m;  // /11
+    bind_root(&m);
+    m.set_v11(v11_options(MeshDynamicMode::Auto));
+    m.canvas_item_create(100, 1);
+    draw(&m, kRed, 1);
+    const Snapshot s1 = m.snapshot(1, 1).state;
+    check(m.stats().cv_digests == 1 && m.stats().cv_rerecords_kept == 0, "first publication: a digest");
+    draw(&m, kRed, 2);
+    const Snapshot s2 = m.snapshot(2, 2).state;
+    check(item(s2, 1)->commands.shares(item(s1, 1)->commands) &&
+              item(s2, 1)->content_version == item(s1, 1)->content_version &&
+              m.stats().cv_digests == 1 && m.stats().cv_rerecords_kept == 1,
+          "re-record equal: the published list and digest are kept, no new digest");
+    check(grc::rs2::make_patch(s1, s2).items.empty(), "re-record equal: no patch entry");
+    grc::rs2::Color4 nudged = kRed;
+    nudged[2] = 1e-6f;
+    draw(&m, nudged, 3);
+    const Snapshot s3 = m.snapshot(3, 3).state;
+    check(!item(s3, 1)->commands.shares(item(s2, 1)->commands) &&
+              item(s3, 1)->commands[0].color[2] == 1e-6f &&
+              item(s3, 1)->content_version != item(s2, 1)->content_version &&
+              m.stats().cv_digests == 2,
+          "re-record unequal (one float): the new list and a new digest");
+    const grc::rs2::Transaction t = grc::rs2::make_patch(s2, s3);
+    check(t.items.size() == 1 && !t.items[0].commands_null, "re-record unequal: patched with its list");
+    draw(&m, kRed, 4);
+    draw(&m, nudged, 4);
+    const Snapshot s4 = m.snapshot(4, 4).state;
+    check(item(s4, 1)->commands.shares(item(s3, 1)->commands) && m.stats().cv_rerecords_kept == 2,
+          "two re-records in one frame ending equal to the published list: kept");
+    draw(&m, kRed, 5);
+    const Snapshot s5 = m.snapshot(5, 5).state;
+    check(item(s5, 1)->content_version == item(s1, 1)->content_version && m.stats().cv_digests == 3,
+          "back to the first list (A-B-A): digested again, the first version again");
+  }
+  {
+    Mirror m;  // the rerecord-stale sabotage
+    bind_root(&m);
+    grc::rs::Mirror::V11Options o = v11_options(MeshDynamicMode::Auto);
+    o.rerecord_stale = true;
+    m.set_v11(o);
+    m.canvas_item_create(100, 1);
+    draw(&m, kRed, 1);
+    const Snapshot s1 = m.snapshot(1, 1).state;
+    draw(&m, kGreen, 2);
+    const Snapshot s2 = m.snapshot(2, 2).state;
+    check(item(s2, 1)->commands.shares(item(s1, 1)->commands) &&
+              item(s2, 1)->commands[0].color == kRed,
+          "rerecord-stale: a list differing only in floats keeps the stale one");
+  }
+}
+
 // --- PM1: multimeshes (render-stream-11.md "As built (PM1): decisions") -----------------------
 
 grc::rs::Mirror::MultimeshOptions mm_options(uint64_t max_payload = 1u << 20,
@@ -3875,6 +3961,7 @@ int main() {
   test_v11_mesh_classification();
   test_v11_mesh_modes();
   test_v11_stable_content_version();
+  test_hc2_shared_command_lists();
   test_backbuffer_state();
   test_fresh_session();
   test_ids_and_recycled_rid();

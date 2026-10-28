@@ -14,6 +14,8 @@
 # and the checks are judged on the slowest viewer. The summary adds the host's own cost (frame rate,
 # frame callback, CPU cores, RSS) for every N. --perf samples the host with `perf record -g` for the
 # whole leg (<out>/host/perf.data, kept, and perf-report.txt, the self-time report).
+# RS_BENCH_PERF_ARGS replaces its sampling arguments (default `-F 499`), e.g. `-e instructions -c
+# 1000000` for a retired-instruction profile that machine load barely moves (HC2).
 #
 # KIND is native (receiver/ rendered in a private headless gamescope, lib/gamescope.sh), gsw or web
 # (the gate 7 browser harness, gate7-tool.ts browser-receiver, with --bundle: a GSW bundle or a
@@ -148,7 +150,8 @@ PERF_PID=""
 if [ "$PERF" = 1 ]; then
 	GODOT_PID="$(pgrep -P "$HOST_PID" | head -n 1)"
 	if [ -n "$GODOT_PID" ]; then
-		perf record -g -F 499 -p "$GODOT_PID" -o "$OUT/host/perf.data" >"$OUT/host/perf-record.log" 2>&1 &
+		# shellcheck disable=SC2086 # RS_BENCH_PERF_ARGS is a list of perf words
+		perf record -g ${RS_BENCH_PERF_ARGS:--F 499} -p "$GODOT_PID" -o "$OUT/host/perf.data" >"$OUT/host/perf-record.log" 2>&1 &
 		PERF_PID=$!
 	fi
 fi

@@ -21,7 +21,8 @@
 #   armed-fps        armed fps >= --min-fps-ratio (default 0.95) x unarmed fps
 #   callback-p50     perf.json frame_callback_us p50 <= --budget-callback-ms (default 8)
 # Exits 1 when a check fails. --perf wraps the armed leg in `perf record -g` (perf.data in its dir;
-# its numbers are then not rate numbers). The recording, store and resources.jsonl are deleted after
+# its numbers are then not rate numbers; RS_BENCH_PERF_ARGS replaces its sampling arguments, default
+# `-F 999`, as in bench-live-scale.sh). The recording, store and resources.jsonl are deleted after
 # the summary unless RS_BENCH_KEEP=1.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,7 +83,10 @@ leg() {
 	fi
 	printf '%s\n' "${env[@]}" >"$dir/env.txt"
 	local -a wrap=()
-	[ "$armed" = 1 ] && [ "$PERF" = 1 ] && wrap=(perf record -F 999 -g -o "$dir/perf.data" --)
+	[ "$armed" = 1 ] && [ "$PERF" = 1 ] && {
+		# shellcheck disable=SC2206 # RS_BENCH_PERF_ARGS is a list of perf words
+		wrap=(perf record ${RS_BENCH_PERF_ARGS:--F 999} -g -o "$dir/perf.data" --)
+	}
 	echo "bench-capture-scale: $name ($([ "$armed" = 1 ] && echo "armed, $MODE" || echo unarmed), $FRAMES frames)"
 	bash "$SCRIPT_DIR/lib/quiet.sh" exclusive --label "bench-capture-scale:$name" -- \
 		python3 "$SCRIPT_DIR/lib/bench-capture-scale.py" run "$dir" -- \

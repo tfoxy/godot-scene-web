@@ -947,6 +947,63 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
   return out;
 }
 
+namespace {
+
+template <typename T>
+bool float_vectors_equal_bits(const std::vector<T> &a, const std::vector<T> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!arrays_equal_bits(a[i], b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool command_equal_bits(const Command &a, const Command &b) {
+  return a.kind == b.kind && a.antialiased == b.antialiased && a.has_tex == b.has_tex &&
+         a.tex == b.tex && a.tile == b.tile && a.transpose == b.transpose &&
+         a.clip_uv == b.clip_uv && arrays_equal_bits(a.rect, b.rect) &&
+         arrays_equal_bits(a.src, b.src) && arrays_equal_bits(a.color, b.color) &&
+         arrays_equal_bits(a.modulate, b.modulate) && a.name == b.name &&
+         a.unsupported_reason == b.unsupported_reason && a.msdf_outline == b.msdf_outline &&
+         floats_equal_bits(a.msdf_px_range, b.msdf_px_range) &&
+         floats_equal_bits(a.msdf_scale, b.msdf_scale) &&
+         arrays_equal_bits(a.line_from, b.line_from) && arrays_equal_bits(a.line_to, b.line_to) &&
+         floats_equal_bits(a.width, b.width) && float_vectors_equal_bits(a.points, b.points) &&
+         float_vectors_equal_bits(a.colors, b.colors) && float_vectors_equal_bits(a.uvs, b.uvs) &&
+         a.indices == b.indices && a.triangle_count == b.triangle_count &&
+         arrays_equal_bits(a.circle_position, b.circle_position) &&
+         floats_equal_bits(a.circle_radius, b.circle_radius) &&
+         arrays_equal_bits(a.np_margin_tl, b.np_margin_tl) &&
+         arrays_equal_bits(a.np_margin_br, b.np_margin_br) && a.x_axis == b.x_axis &&
+         a.y_axis == b.y_axis && a.draw_center == b.draw_center && a.mesh == b.mesh &&
+         arrays_equal_bits(a.transform, b.transform) && a.clip_ignore == b.clip_ignore &&
+         a.multimesh == b.multimesh && a.particles == b.particles;
+}
+
+}  // namespace
+
+// Tripwire: a field added to Command must join command_equal_bits above (a field left out could
+// keep a stale /11 digest and command list). Update the size here once it does.
+#if defined(__x86_64__) && defined(__GLIBCXX__)
+static_assert(sizeof(Command) == 328, "Command changed: update command_equal_bits, then this size");
+#endif
+
+bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<Command> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!command_equal_bits(a[i], b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool lower_multimesh_commands(const std::vector<Command> &commands, std::vector<Command> *out) {
   bool any = false;
   for (const Command &command : commands) {
@@ -984,7 +1041,7 @@ Snapshot lower_multimesh(const Snapshot &state) {
   std::vector<std::uint32_t> drawing;  // the items drawing a lowered command, ascending
   for (ItemState &item : out.items) {
     std::vector<Command> lowered;
-    if (!lower_multimesh_commands(item.commands, &lowered)) {
+    if (!lower_multimesh_commands(item.commands.vector(), &lowered)) {
       continue;
     }
     item.commands = std::move(lowered);
@@ -1123,7 +1180,7 @@ Snapshot lower_particles(const Snapshot &state) {
   std::vector<std::uint32_t> drawing;  // the items drawing a lowered command, ascending
   for (ItemState &item : out.items) {
     std::vector<Command> lowered;
-    if (!lower_particles_commands(item.commands, &lowered)) {
+    if (!lower_particles_commands(item.commands.vector(), &lowered)) {
       continue;
     }
     item.commands = std::move(lowered);

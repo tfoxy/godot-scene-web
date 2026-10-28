@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -410,8 +411,106 @@ void test_shared_material_params() {
         "an empty SharedVector iterates nothing");
 }
 
+// HC2 (host-cost-design.md D1): item command lists are shared between snapshots, diverge copy-on-
+// write, and compare bit for bit (command_lists_equal_bits) for /11's identical re-record rule.
+void test_shared_command_lists() {
+  Command rect;
+  rect.kind = CommandKind::AddRect;
+  rect.rect = {1, 2, 3, 4};
+  rect.color = {1, 0, 0, 1};
+  ItemState item;
+  item.id = 1;
+  item.content_version = 7;
+  item.commands = std::vector<Command>{rect};
+  ItemState copy = item;
+  check(copy.commands.shares(item.commands), "copying an item shares its command list");
+  copy.commands.push_back(rect);
+  check(item.commands.size() == 1 && copy.commands.size() == 2 &&
+            !copy.commands.shares(item.commands),
+        "appending to a shared list leaves the other holder untouched");
+  ItemState again = item;
+  again.commands.clear_for_rerecord();
+  again.commands.push_back(rect);
+  check(item.commands.size() == 1 && again.commands.size() == 1 &&
+            !again.commands.shares(item.commands) &&
+            command_lists_equal_bits(again.commands.vector(), item.commands.vector()),
+        "a re-record of a shared list builds its own list, equal bit for bit");
+  ItemState sole;
+  sole.commands = std::vector<Command>{rect, rect};
+  const Command *storage = &sole.commands[0];
+  sole.commands.clear_for_rerecord();
+  sole.commands.push_back(rect);
+  check(sole.commands.size() == 1 && &sole.commands[0] == storage,
+        "a sole holder's re-record reuses its storage");
+  SharedVector<Command> spare = std::vector<Command>{rect, rect, rect};
+  const Command *spare_storage = &spare[0];
+  ItemState held = item;  // shares item's list
+  held.commands.clear_for_rerecord(&spare);
+  held.commands.push_back(rect);
+  check(&held.commands[0] == spare_storage && spare.empty() && item.commands.size() == 1,
+        "a shared list's re-record takes the unshared spare's storage, leaving the other holder");
+  SharedVector<Command> shared_spare = item.commands;
+  ItemState held2 = item;
+  held2.commands.clear_for_rerecord(&shared_spare);
+  check(held2.commands.empty() && shared_spare.shares(item.commands) && item.commands.size() == 1,
+        "a spare someone else holds is not taken");
+
+  // command_lists_equal_bits: every field, floats by pattern.
+  const std::vector<Command> one{rect};
+  Command moved = rect;
+  moved.rect[3] = 4.5f;
+  check(!command_lists_equal_bits(one, {moved}), "one float differs: unequal");
+  Command neg = rect;
+  neg.color[1] = -0.0f;
+  check(!command_lists_equal_bits(one, {neg}), "-0 and +0 differ");
+  Command nan_a = rect;
+  nan_a.width = std::numeric_limits<float>::quiet_NaN();
+  Command nan_b = nan_a;
+  check(command_lists_equal_bits({nan_a}, {nan_b}), "equal NaN patterns are equal");
+  Command other_kind_field = rect;
+  other_kind_field.circle_radius = 3.0f;  // not encoded for add_rect: stricter, never looser
+  check(!command_lists_equal_bits(one, {other_kind_field}), "every field takes part");
+  Command poly;
+  poly.kind = CommandKind::AddPolyline;
+  poly.points = {{0, 0}, {1, 1}};
+  Command poly2 = poly;
+  poly2.points[1][1] = 2.0f;
+  check(command_lists_equal_bits({poly}, {poly}) && !command_lists_equal_bits({poly}, {poly2}),
+        "point vectors compare element by element");
+  Command named;
+  named.kind = CommandKind::Unsupported;
+  named.name = "canvas_item_add_line";
+  Command named2 = named;
+  named2.name = "canvas_item_add_circle";
+  check(!command_lists_equal_bits({named}, {named2}), "names compare");
+  check(!command_lists_equal_bits(one, {rect, rect}) && command_lists_equal_bits({}, {}),
+        "lengths compare");
+
+  // The diff never reads commands when content_version matches; resolve shares the base's list.
+  Snapshot base;
+  base.version = ProtocolVersion::V8;
+  base.seq = 1;
+  base.items = {item};
+  Snapshot cur = base;
+  cur.seq = 2;
+  check(make_patch(base, cur).items.empty(), "an item sharing its commands: no entry");
+  cur.items[0].xform[4] = 9.0f;
+  const Transaction t = make_patch(base, cur);
+  check(t.items.size() == 1 && t.items[0].commands_null, "a moved item: commands null");
+  const Snapshot resolved = resolve(base, t);
+  check(resolved.items.size() == 1 && resolved.items[0].commands.shares(base.items[0].commands),
+        "resolving commands null shares the base's list");
+  cur.items[0].content_version = 8;
+  cur.items[0].commands = std::vector<Command>{moved};
+  const Transaction t2 = make_patch(base, cur);
+  check(t2.items.size() == 1 && !t2.items[0].commands_null &&
+            t2.items[0].state.commands.size() == 1 && t2.items[0].state.commands[0].rect[3] == 4.5f,
+        "a new list under a new content_version is carried");
+}
+
 int main() {
   test_make_patch_table_order();
+  test_shared_command_lists();
   test_shared_material_params();
   test_full_rs2_via_make_full();
   test_patch_rs2_via_make_patch();

@@ -105,6 +105,11 @@ struct MirrorStats {
   std::uint64_t meshes_dynamic = 0;        // dynamic mesh entries now
   std::uint64_t mesh_promotions = 0;       // meshes made dynamic so far
   std::uint64_t mesh_content_changes = 0;  // content changes counted (hook calls)
+  // HC2 (host-cost-design.md D1): /11 content_version digests computed (an item's list really
+  // changed, or its first publication) and re-records whose list matched the published one (no
+  // digest; the published list is kept).
+  std::uint64_t cv_digests = 0;
+  std::uint64_t cv_rerecords_kept = 0;
   // PM1 (render-stream/11 with the multimesh hooks only; zero otherwise).
   std::uint64_t live_multimeshes = 0;     // multimesh table entries now, tombstones included
   std::uint64_t multimesh_unknown = 0;    // a multimesh tap naming a RID the table does not know
@@ -367,15 +372,20 @@ class Mirror {
   //   - a stable content_version: every item's is a 53-bit digest of its encoded command list
   //     (rs2_codec.h encode_command_list), so equal lists carry equal versions whatever lies
   //     between them, and a list that differs moves it.
+  //     HC2: an item whose counter moved since its digest compares its list with the published
+  //     one (rs2_diff.h command_lists_equal_bits); equal, it publishes that very list and digest.
   // Sabotages: `cv_churn` publishes the mirror's own counter instead (every re-record moves it,
   // /10's rule); `stale_dynamic_frame` freezes the content serial of the first dynamic mesh that
-  // changes at or after that frame, so its patches leave `u8` null over changed bytes.
+  // changes at or after that frame, so its patches leave `u8` null over changed bytes;
+  // `rerecord_stale` (HC2, env GRC_HC_SABOTAGE=rerecord-stale, never on the wire) takes a re-record
+  // with the same command kinds as identical, so one differing float keeps the stale list.
   // Disabled (every older stream) the snapshots are exactly what they were.
   struct V11Options {
     bool enabled = false;
     rs2::MeshDynamicPolicy mesh_dynamic;
     bool cv_churn = false;
     std::uint64_t stale_dynamic_frame = 0;  // 0: off
+    bool rerecord_stale = false;
   };
   void set_v11(const V11Options &options);
 
@@ -877,6 +887,12 @@ class Mirror {
     std::uint64_t cv_digest = 0;
     std::uint64_t cv_digest_below = 0;  // PM1: the lowered list's digest (0: no multimesh command)
     std::uint64_t cv_digest_below12 = 0;  // PM5: the /11 list's digest (0: no particles command)
+    // HC2: the command list cv_digest describes (the one last published), shared with the
+    // snapshots; a re-record equal to it publishes it again instead of its own copy.
+    rs2::SharedVector<rs2::Command> cv_commands;
+    // HC2: the storage of the last re-record found equal to cv_commands (no other holder), reused
+    // by the next canvas_item_clear so a steady identical re-record allocates nothing.
+    rs2::SharedVector<rs2::Command> spare_commands;
     // G55d (render-stream-5.md "Item"): the last canvas_item_set_material named a non-null RID
     // the material table does not know -- `material: null` plus the derived `unknown-material`.
     bool unknown_material = false;

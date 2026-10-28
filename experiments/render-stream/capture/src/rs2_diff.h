@@ -58,6 +58,13 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn);
 // lower_multimesh() on it themselves, so a /10 connection of a /11 host sees exactly what it saw
 // before PM1 (rule 7: "Below /11 ... the command is /10's unsupported/unsupported-op").
 
+// HC2 (host-cost-design.md D1, "An identical re-record is not a change (/11)"): true when two
+// command lists are equal field by field, every field of every command whatever its kind, every
+// float by its 32-bit pattern (so 0.0 and -0.0 differ, equal NaN patterns are equal). Equal lists
+// encode to equal bytes (rs2_codec.h encode_command_list), so they carry equal /11 digests; a
+// field the encoder ignores for a kind only makes the answer stricter (a digest more), never wrong.
+bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<Command> &b);
+
 // The command list as below /11: every add_multimesh, and every `unsupported` command named
 // canvas_item_add_multimesh (unknown-multimesh, unknown-texture, ...), becomes
 // {"op":"unsupported","name":"canvas_item_add_multimesh","reason":"unsupported-op"}. Returns
