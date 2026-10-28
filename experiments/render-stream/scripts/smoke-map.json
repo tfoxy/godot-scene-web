@@ -317,6 +317,7 @@
       "paths": [
         "experiments/render-stream/scripts/bench-live-scale.sh",
         "experiments/render-stream/scripts/lib/bench-live-scale.py",
+        "experiments/render-stream/scripts/lib/null-receiver.ts",
         "experiments/render-stream/scripts/test/self-test-bench-live-scale.sh"
       ],
       "reach": ["pure"]
@@ -331,7 +332,10 @@
     },
     {
       "why": "MX's perf attribution tool (results/p3/mx.md): reads a `perf record -g` profile of a host process by hand, not a validate-increment target",
-      "paths": ["experiments/render-stream/scripts/perf-attribute.py"],
+      "paths": [
+        "experiments/render-stream/scripts/perf-attribute.py",
+        "experiments/render-stream/scripts/perf-capture-split.py"
+      ],
       "reach": ["pure"]
     },
     {
