@@ -61,6 +61,10 @@ pub struct Sabotage {
     /// PM2: the pre-PM2 planner -- every `add_multimesh` is counted undrawn
     /// (`multimesh_commands_undrawn`, `multimesh-undrawn`) and no multimesh is made.
     pub undrawn_multimesh: bool,
+    /// UIT: never issue `canvas_item_set_use_identity_transform`, so a global-coordinate
+    /// `CPUParticles2D` draws through its ancestors' transform a second time (the pre-UIT
+    /// receiver).
+    pub ignore_identity_transform: bool,
 }
 
 impl Sabotage {
@@ -88,6 +92,7 @@ impl Sabotage {
             "full-backbuffer-copy" => s.full_backbuffer_copy = true,
             "shader-time-frozen" => s.shader_time_frozen = true,
             "undrawn-multimesh" => s.undrawn_multimesh = true,
+            "ignore-identity-transform" => s.ignore_identity_transform = true,
             _ => {}
         }
         s
@@ -370,6 +375,8 @@ struct ItemM {
     copy_to_backbuffer: Option<[f32; 4]>,
     /// The /10 canvas-group state this receiver last set on the item (`None`: disabled).
     canvas_group: Option<CanvasGroup>,
+    /// UIT: the /11 `use_identity_transform` this receiver last set on the item (RS default false).
+    use_identity_transform: bool,
     /// P3-ST (gate5_5-design.md "Refused materials"): the effective material reads the screen but
     /// is refused, so the item's own commands are not replayed.
     screen_skip: bool,
@@ -1824,6 +1831,7 @@ impl Planner {
                     material_rid: None,
                     copy_to_backbuffer: None,
                     canvas_group: None,
+                    use_identity_transform: false,
                     screen_skip: false,
                     use_parent_material: false,
                     instance_params: Vec::new(),
@@ -3075,6 +3083,17 @@ impl Planner {
             ops.fs(&copy.unwrap_or([0.0; 4]));
             me.copy_to_backbuffer = copy;
             c.backbuffer_copy_sets += 1;
+        }
+
+        // UIT (render-stream-11.md "As built (UIT)"): re-issue the item's identity flag whenever it
+        // differs from what this receiver last set (a fresh RS item starts false); its own Godot
+        // then draws the item with the canvas transform alone, as the host's did.
+        let identity = wire.use_identity_transform && !sab.ignore_identity_transform;
+        if identity != me.use_identity_transform {
+            ops.op(Op::ItemSetUseIdentityTransform, 1);
+            ops.rid(rid);
+            ops.b(identity);
+            me.use_identity_transform = identity;
         }
 
         // P3-ST: a refused screen reader draws nothing (drawn plain it would cover what it reads).

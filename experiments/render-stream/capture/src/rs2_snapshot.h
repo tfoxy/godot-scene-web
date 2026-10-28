@@ -1397,6 +1397,10 @@ struct ItemState {
   CanvasGroupState canvas_group;            // mode Disabled -> "canvas_group": null
   bool copy_to_backbuffer = false;          // false -> "copy_to_backbuffer": null
   Rect4 copy_to_backbuffer_rect = kZeroRect;  // as the engine received it (Rect2() = whole target)
+  // --- UIT (render-stream-11.md "As built (UIT)"): canvas_item_set_use_identity_transform. Item
+  // state, never content_version; kept by canvas_item_clear. Encoded at /11 only, and only when
+  // true ("use_identity_transform": true after copy_to_backbuffer; absent when false).
+  bool use_identity_transform = false;
   // PM1 (render-stream-11.md "As built (PM1)" rule 7): never encoded. The content_version a
   // connection below /11 sees, when it differs from `content_version` (0: it does not): the digest
   // of the command list as it is lowered there (add_multimesh as /10's `unsupported-op` command),

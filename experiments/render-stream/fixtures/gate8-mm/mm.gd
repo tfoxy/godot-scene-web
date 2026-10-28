@@ -12,7 +12,9 @@ extends Node
 ##   C_FLIP     (460,70)   CPUParticles2D, 7 particles, use_fixed_seed, local coordinates, a 4x1
 ##                         flipbook through a CanvasItemMaterial (particles_animation)
 ##   D_GLOBAL   (40..98,180) CPUParticles2D, 9 particles, use_fixed_seed, global coordinates
-##                         (local_coords=false) under a parent Node2D moved every frame
+##                         (local_coords=false) under a parent Node2D moved every frame; UIT adds a
+##                         rect drawn on the emitter's item (global (170,203)) and one on a child
+##                         Node2D of it (local (100,45): it moves with the parent)
 ##   E_VISIBLE  (240,150)  MultiMeshInstance2D, 10 instances with colours, visible_instance_count 4
 ##                         and a custom AABB; step 2 shows 6
 ##   F_REPLACE  (460,150)  MultiMeshInstance2D, 3 instances with colours; step 1 replaces the buffer
@@ -127,6 +129,13 @@ func _ready() -> void:
 	_root.add_child(_d_parent)
 	var d := _particles(9, 777, false)
 	_d_parent.add_child(d)
+	# UIT: a rect on the identity item itself (global coordinates: the canvas transform alone) and
+	# a rect on a child of it (the composed transform: it moves with _d_parent).
+	d.draw.connect(_on_d_draw.bind(d))
+	var d_child := Node2D.new()
+	d_child.position = Vector2(100, 45)
+	d_child.draw.connect(_on_d_child_draw.bind(d_child))
+	d.add_child(d_child)
 
 	# E_VISIBLE: 4 of 10 instances visible, a custom AABB.
 	_e = _multimesh(10, true, false)
@@ -286,6 +295,16 @@ func _particles(amount: int, particle_seed: int, local: bool) -> CPUParticles2D:
 	p.scale_amount_min = 3.0
 	p.scale_amount_max = 3.0
 	return p
+
+
+## UIT: D_GLOBAL's identity item draws this rect where it says, whatever its parent's transform.
+func _on_d_draw(d: CPUParticles2D) -> void:
+	d.draw_rect(Rect2(170, 203, 12, 12), Color(1.0, 0.8, 0.2))
+
+
+## UIT: a child of the identity item keeps the composed transform (_d_parent's, moving).
+func _on_d_child_draw(c: Node2D) -> void:
+	c.draw_rect(Rect2(0, 0, 10, 10), Color(0.2, 0.9, 0.9))
 
 
 ## Instance k's transform: rotation `angle`, uniform scale, at `offset`.

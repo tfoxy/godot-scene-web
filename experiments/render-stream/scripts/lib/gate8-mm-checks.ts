@@ -50,6 +50,11 @@
 //                               recording's resolved state (statesEqual; `multimeshes` included)
 //   mm-reference-catches-undrawn-multimesh  the pre-PM2 planner (receiver sabotage
 //                               undrawn-multimesh) fails mm-reference: it differs in every drawn cell
+//   mm-reference-catches-ignore-identity-transform  UIT: the receiver sabotage
+//                               ignore-identity-transform (the pre-UIT receiver) fails mm-reference
+//                               in D_GLOBAL at every checkpoint (its particles and its identity
+//                               rect drawn through the moving parent a second time), and touches no
+//                               cell but expected.json's identity_transform cells
 //   mm-reference-catches-<kind> the receiver on PM1's sabotaged patch sinks (perturb-instance,
 //                               stale-buffer from frame 30) equals the reference before the
 //                               sabotage frame and differs after it
@@ -131,6 +136,9 @@ export interface MmPixels {
   moving: Record<string, number[]>;
   /** what the receivers do not reproduce yet, and the cells it touches */
   known_gaps: Record<string, { doc: string; cells: string[] }>;
+  /** UIT: the cells use_identity_transform draws (`cells`) and those a receiver that ignores it
+   * may spill into (`spill`: the moving parent's offset lands D_GLOBAL's particles there). */
+  identity_transform?: { doc: string; cells: string[]; spill: string[] };
 }
 export type LegKind = "rendered" | "headless";
 
@@ -780,6 +788,8 @@ const HONEST: [string, LegKind][] = [
   ["capture", "rendered"],
   ["headless/capture", "headless"],
 ];
+/** UIT: the pre-UIT receiver (RS_RECEIVER_SABOTAGE=ignore-identity-transform) on the full sink. */
+export const MM_IGNORE_IDENTITY = "sabotage-ignore-identity-transform/receiver";
 /** PM2: the native receivers on the honest /11 sinks. */
 const RECEIVERS = ["receiver", "receiver-patch"];
 const LEGS = [
@@ -794,6 +804,7 @@ const LEGS = [
   "receiver-v10",
   ...RECEIVERS,
   "sabotage-undrawn-multimesh/receiver",
+  MM_IGNORE_IDENTITY,
   ...MM_SABOTAGES.map((s) => `sabotage-${s}/receiver-patch`),
 ];
 
@@ -1310,7 +1321,7 @@ async function runG8mmReceivers(
     checks.push(
       check(
         "mm-reference",
-        `PM2: the native receiver on the /11 full and patch sinks equals the unarmed reference exactly at every checkpoint and the frame before each (its own Godot draws the re-issued multimeshes) in every cell but the known gaps' (${gapCells.join(", ") || "none"}: mm-identity-transform-gap), and drew every add_multimesh`,
+        `PM2: the native receiver on the /11 full and patch sinks equals the unarmed reference exactly at every checkpoint and the frame before each (its own Godot draws the re-issued multimeshes) in every cell${gapCells.length > 0 ? ` but the known gaps' (${gapCells.join(", ")})` : " (UIT closed PM2's identity-transform gap: D_GLOBAL and G_HIDDEN are judged too)"}, and drew every add_multimesh`,
         problems,
         drawn.join("; ") || undefined,
       ),
@@ -1380,6 +1391,36 @@ async function runG8mmReceivers(
           else for (const p of mmMissingProblems(r.d, px, r.step)) problems.push(`step ${r.step}: ${p}`);
       }
       checks.push(check(id, crit, problems));
+    }
+  }
+
+  // --- mm-reference-catches-ignore-identity-transform (UIT) ---------------------------------
+  {
+    const leg = MM_IGNORE_IDENTITY;
+    const id = "mm-reference-catches-ignore-identity-transform";
+    const it = px.identity_transform;
+    const crit = `UIT: the pre-UIT receiver (receiver sabotage ignore-identity-transform: every /11 use_identity_transform ignored) fails mm-reference: it differs from the reference in ${it?.cells.join(", ") ?? "the identity cells"} at every checkpoint, and in no cell but those and ${it?.spill.join(", ") ?? "their spill cells"}`;
+    const why = skipped(dir(leg));
+    if (why) checks.push(notRun(id, crit, leg, why));
+    else {
+      let problems: string[] | null = null;
+      const caught: string[] = [];
+      if (!it) problems = ["fixtures/gate8-mm/expected.json has no pixels.identity_transform"];
+      else if (ran(leg) && ran("reference")) {
+        problems = [];
+        const allowed = [...it.cells, ...it.spill];
+        for (const r of await diffs(leg)) {
+          if (!r.d) {
+            problems.push(`step ${r.step}: shot missing`);
+            continue;
+          }
+          for (const c of it.cells)
+            if ((r.d.cells[c] ?? 0) === 0) problems.push(`step ${r.step}: ${c} equals the reference (not caught)`);
+            else caught.push(`step ${r.step} ${c} ${r.d.cells[c]} px`);
+          for (const p of mmExactProblems(r.d, allowed)) problems.push(`step ${r.step}: outside the identity cells: ${p}`);
+        }
+      }
+      checks.push(check(id, crit, problems, caught.join("; ") || undefined));
     }
   }
 

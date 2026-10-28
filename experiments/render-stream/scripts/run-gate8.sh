@@ -167,7 +167,8 @@
 #       after the captures, the unarmed `reference` and `reference-repeat` (--fixed-fps 60, shots at
 #       each settle frame and the frame before), and the native receiver: `receiver` and
 #       `receiver-patch` (the /11 sinks, with state dumps), `receiver-v10` (the /10 control),
-#       `sabotage-undrawn-multimesh/receiver` (the pre-PM2 planner) and
+#       `sabotage-undrawn-multimesh/receiver` (the pre-PM2 planner),
+#       `sabotage-ignore-identity-transform/receiver` (UIT: the pre-UIT receiver) and
 #       `sabotage-{perturb-instance,stale-buffer}/receiver-patch` (PM1's sabotaged patch sinks).
 #       Judged by lib/gate8-mm-checks.ts; g7-8's web half replays the receiver legs.
 #   g8pt (PM5, render-stream-12.md "Fixture and checks (gate 8 group g8pt)": GPU particles on /12,
@@ -936,6 +937,9 @@ run_g8mm() {
 	echo "run-gate8: g8mm sabotage-undrawn-multimesh (receiver: the pre-PM2 planner)"
 	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=undrawn-multimesh)
 	run_rendered_receiver "$OUT/g8mm/capture" "$OUT/g8mm/sabotage-undrawn-multimesh/receiver"
+	echo "run-gate8: g8mm sabotage-ignore-identity-transform (receiver: the pre-UIT receiver)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=ignore-identity-transform)
+	run_rendered_receiver "$OUT/g8mm/capture" "$OUT/g8mm/sabotage-ignore-identity-transform/receiver"
 	for s in "${G8MM_SABOTAGES[@]}"; do
 		echo "run-gate8: g8mm sabotage-$s (receiver on the sabotaged patch sink)"
 		prev=""

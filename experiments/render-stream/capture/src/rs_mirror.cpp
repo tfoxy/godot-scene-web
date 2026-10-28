@@ -4665,6 +4665,22 @@ void Mirror::set_copy_to_backbuffer(std::uint64_t rid, bool enable, const Rect4 
   }
 }
 
+void Mirror::set_use_identity_transform(std::uint64_t rid, bool enable, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (const Item *known = find_item(rid);
+      known != nullptr && known->state.use_identity_transform == enable) {
+    // A call that changes nothing moves no epoch: CPUParticles2D's constructor sends false to
+    // every emitter, a local one included, and that must not publish a frame.
+    return;
+  }
+  if (dropped("canvas_item_set_use_identity_transform", frame)) {
+    return;
+  }
+  if (Item *item = item_for(rid, "canvas_item_set_use_identity_transform", frame)) {
+    item->state.use_identity_transform = enable;
+  }
+}
+
 void Mirror::set_instance_shader_parameter(std::uint64_t rid, const std::string &name,
                                            const DecodedParam &value, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);

@@ -1487,6 +1487,11 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (v10) {
       append_backbuffer_state(items_json, item, backbuffer_f32);
     }
+    if (v11 && item.use_identity_transform) {
+      // UIT (render-stream-11.md "As built (UIT)"): an optional key, present only when true, so
+      // a /11 stream whose host never makes the call is byte-identical to before UIT.
+      items_json += ",\"use_identity_transform\":true";
+    }
     items_json += ",\"content_version\":";
     append_json_int(items_json, item.content_version);
 

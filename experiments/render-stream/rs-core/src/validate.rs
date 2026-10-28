@@ -1204,6 +1204,7 @@ fn blank_item() -> Item {
         instance_params: Vec::new(),
         canvas_group: None,
         copy_to_backbuffer: None,
+        use_identity_transform: false,
         content_version: 0,
         xform: [0.0; 6],
         modulate: [0.0; 4],
@@ -1276,6 +1277,7 @@ fn item_head_identical(a: &Item, b: &Item) -> bool {
         && bits_eq(&a.custom_rect_rect, &b.custom_rect_rect)
         && params_identical(&a.instance_params, &b.instance_params)
         && canvas_group_identical(&a.canvas_group, &b.canvas_group)
+        && a.use_identity_transform == b.use_identity_transform
         && match (&a.copy_to_backbuffer, &b.copy_to_backbuffer) {
             (None, None) => true,
             (Some(x), Some(y)) => bits_eq(x, y),
@@ -3229,6 +3231,7 @@ impl Validator {
             item.copy_to_backbuffer = it
                 .copy_to_backbuffer
                 .map(|f| backbuffer_f32.arr::<4>(f as usize));
+            item.use_identity_transform = it.use_identity_transform;
             item.content_version = it.content_version;
             item.xform = item_f32.arr(base);
             item.modulate = item_f32.arr(base + 6);

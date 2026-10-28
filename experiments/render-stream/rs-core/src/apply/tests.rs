@@ -24,6 +24,7 @@ fn item(id: Id, parent: Parent, commands: Commands) -> Item {
         instance_params: Vec::new(),
         canvas_group: None,
         copy_to_backbuffer: None,
+        use_identity_transform: false,
         content_version: 1,
         xform: geom::IDENTITY,
         modulate: [1.0; 4],

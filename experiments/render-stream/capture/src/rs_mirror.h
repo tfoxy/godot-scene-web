@@ -659,6 +659,10 @@ class Mirror {
   // engine received it (Rect2() is the whole target, the receiver's rule).
   void set_copy_to_backbuffer(std::uint64_t item, bool enable, const rs2::Rect4 &rect,
                               std::uint64_t frame);
+  // --- render-stream/11 (UIT, render-stream-11.md "As built (UIT)"): conditional like PM1's ----
+  // canvas_item_set_use_identity_transform: the item flag (renderer_canvas_cull.cpp:703-708). Item
+  // state, never content_version; canvas_item_clear keeps it.
+  void set_use_identity_transform(std::uint64_t item, bool enable, std::uint64_t frame);
   // canvas_item_set_instance_shader_parameter: instance_params[name] set (NIL kept as type nil,
   // OBJECT rejected, an unsupported type drops the name and adds the derived
   // `param-type` item entry until the name is set to a supported value).

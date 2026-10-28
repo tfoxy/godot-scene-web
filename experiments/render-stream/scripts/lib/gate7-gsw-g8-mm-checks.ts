@@ -3,8 +3,8 @@
 // gate 8 source's g8mm/reference shots, PM2), not against the native receiver. A GSW shot is paired
 // with the reference shot of its transaction's host frame (step-<k>.png at a settle frame,
 // step-<k>-prev.png the frame before). The band is gate 8's (lib/gate7-gsw-g8.ts): every pixel of
-// the pair within channel 1, outside the cells expected.json's `pixels.known_gaps` names (PM2's
-// identity-transform gap: D_GLOBAL's particles land in G_HIDDEN's cell on every receiver).
+// the pair within channel 1, outside the cells expected.json's `pixels.known_gaps` names (none
+// since UIT closed PM2's identity-transform gap: D_GLOBAL and G_HIDDEN are judged too).
 //
 //   mm-gsw-band@gsw          the honest /11 legs (g8mm/receiver, g8mm/receiver-patch): every shot
 //                            pairs with a reference shot and is within the band (2D transforms,
@@ -20,6 +20,10 @@
 //                            frame 30 and holds it before
 //   mm-gsw-catches-undrawn-multimesh@gsw  the receiver sabotage `undrawn-multimesh` (no instanced
 //                            draw, as before PM3) fails the band
+//   mm-gsw-catches-ignore-identity-transform@gsw  UIT: the receiver sabotage
+//                            `ignore-identity-transform` (the pre-UIT receiver) fails the band in
+//                            the identity cells (D_GLOBAL) at every shot, and nowhere but those
+//                            and their spill cells (G_HIDDEN)
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -42,6 +46,7 @@ export const MM_HONEST = ["g8mm/receiver", "g8mm/receiver-patch"] as const;
 export const MM_PERTURB = "g8mm/sabotage-perturb-instance/receiver-patch";
 export const MM_UNDRAWN = "g8mm/sabotage-undrawn-multimesh/receiver";
 export const MM_NO_FLIPBOOK = "g8mm/sabotage-gsw-no-flipbook";
+export const MM_IGNORE_IDENTITY = "g8mm/sabotage-ignore-identity-transform/receiver";
 /** PM1's capture sabotage frame (run-gate8.sh G8MM_SABOTAGE_FRAME). */
 const SABOTAGE_FRAME = 30;
 
@@ -59,6 +64,7 @@ async function readJson<T>(path: string): Promise<T | undefined> {
 interface Pixels {
   regions: Record<string, Region>;
   known_gaps?: Record<string, { cells: string[] }>;
+  identity_transform?: { cells: string[]; spill: string[] };
 }
 
 /** One GSW shot against its reference shot. */
@@ -272,6 +278,30 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
         "PM3: the receiver sabotage undrawn-multimesh (every add_multimesh skipped, as GSW drew before PM3) fails mm-gsw-band",
         problems,
         `caught at ${caught.length} of ${pairs.length} shots`,
+      ),
+    );
+  }
+
+  {
+    const problems: string[] = [];
+    const it = px.identity_transform;
+    const pairs = await legPairs(ctx, MM_IGNORE_IDENTITY, px, skip, problems);
+    const allowed = new Set([...(it?.cells ?? []), ...(it?.spill ?? [])]);
+    let caught = 0;
+    if (!it) problems.push("fixtures/gate8-mm/expected.json has no pixels.identity_transform");
+    for (const p of pairs) {
+      const missed = (it?.cells ?? []).filter((c) => (p.other[c] ?? 0) === 0);
+      if (missed.length > 0) problems.push(`${MM_IGNORE_IDENTITY}/${p.shot}: ${missed.join(", ")} within the band (not caught)`);
+      else caught++;
+      const stray = Object.entries(p.other).filter(([c, n]) => n > 0 && !allowed.has(c));
+      if (stray.length > 0) problems.push(`${MM_IGNORE_IDENTITY}/${p.shot}: beyond the band outside the identity cells (${cells(Object.fromEntries(stray))})`);
+    }
+    out.push(
+      mk(
+        "mm-gsw-catches-ignore-identity-transform@gsw",
+        "UIT: the receiver sabotage ignore-identity-transform (every /11 use_identity_transform ignored, as every receiver drew before UIT) fails mm-gsw-band in the identity cells at every shot, and nowhere but those and their spill cells",
+        problems,
+        `caught at ${caught} of ${pairs.length} shots (${pairs.map((p) => cells(p.other)).join("; ")})`,
       ),
     );
   }

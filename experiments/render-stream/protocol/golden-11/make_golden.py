@@ -79,7 +79,15 @@ Every multimesh is origin "created". AABBs are the six floats (position xyz, siz
    21 unchanged, re-sent full as after a resync: multimesh 1 only (aabb_f 0, buffer_f 6, count
       86, every buffer).
 
-full.rs11 encodes the twenty-one states as full transactions (out-of-band); patch.rs11 patch-
+UIT (render-stream-11.md "As built (UIT)") adds the item key `use_identity_transform` (only ever
+true, right after copy_to_backbuffer, absent when false) and two states; every transaction of
+states 1-21 is byte-identical to before UIT:
+   22 (from 21) item 18 is new, a child of item 16 (whose children become [18]): xform x 8 y 64,
+      draw_index 0, content_version 1, one add_rect [0, 0, 8, 8] colour (1, 0.25, 0.5, 1), and
+      use_identity_transform true. The patch carries items 16 and 18.
+   23 item 18's use_identity_transform turns false (the key absent), nothing else: the patch
+      carries item 18 alone, commands null (content_version 1 unchanged).
+full.rs11 encodes the twenty-three states as full transactions (out-of-band); patch.rs11 patch-
 encodes them (seq 1, 5, 16 and 21 full, every other seq a patch; `unsupported` is null in every
 patch except 14, 15, 17 and 19); inline.rs11 encodes them as full transactions with inline
 delivery, each transaction preceded by exactly the records inline(T) minus inline(B), in table
@@ -457,6 +465,9 @@ def _rewrite_transaction(meta: dict, blocks: list) -> tuple[dict, list]:
                 ordered["u8"] = u8
         meshes_json.append(ordered)
     out["meshes"] = meshes_json
+    out["items"] = [_with_identity(entry, cur["items"][entry["id"]].get("use_identity_transform",
+                                                                         False))
+                    for entry in out["items"]]
     mm_f32: list[float] = []
     multimeshes_json, removed_multimeshes = _multimesh_tables(encoding, base, cur, mm_f32)
     if multimeshes_json or removed_multimeshes:  # PM1 rule 1: only when non-empty
@@ -534,6 +545,30 @@ def _patch_transaction_bytes(seq: int, frame: int, base_seq: int, base: dict, cu
 
 g6.full_transaction_bytes = _full_transaction_bytes
 g6.patch_transaction_bytes = _patch_transaction_bytes
+
+g10_item_differs = g6.item_differs
+
+
+def _item_differs(a: dict, b: dict) -> bool:
+    # UIT: use_identity_transform is a JSON value of the entry (absent is false).
+    return (g10_item_differs(a, b)
+            or a.get("use_identity_transform", False) != b.get("use_identity_transform", False))
+
+
+g6.item_differs = _item_differs
+
+
+def _with_identity(entry: dict, flag: bool) -> dict:
+    """UIT: entry with "use_identity_transform": true right after copy_to_backbuffer when flag."""
+    if not flag:
+        return entry
+    out = {}
+    for key, value in entry.items():
+        out[key] = value
+        if key == "copy_to_backbuffer":
+            out["use_identity_transform"] = True
+    assert "use_identity_transform" in out
+    return out
 
 # g8's mesh_differs compares the surface lists, which hold the dynamic bodies: a changed body
 # re-sends the entry. Its version moves too (mesh-version), so this is belt and braces.
@@ -663,9 +698,31 @@ def state21() -> dict:
     return _copy(STATES[19])
 
 
+# --------------------------------------------------------------------------- the two UIT states
+
+
+def state22() -> dict:
+    state = _copy(STATES[20])
+    items = state["items"]
+    items[16] = dict(items[16], children=[18])
+    items[18] = g10._bb_item(parent=("item", 16), children=[], x=8.0, draw_index=0,
+                             content_version=1,
+                             commands=[g6.add_rect([0.0, 0.0, 8.0, 8.0], [1.0, 0.25, 0.5, 1.0])])
+    items[18]["use_identity_transform"] = True
+    return state
+
+
+def state23() -> dict:
+    state = _copy(STATES[21])
+    item = dict(state["items"][18])
+    del item["use_identity_transform"]
+    state["items"][18] = item
+    return state
+
+
 STATES: list[dict] = list(g10.STATES)
 for _make in (state11, state12, state13, state14, state15, state16,
-              state17, state18, state19, state20, state21):
+              state17, state18, state19, state20, state21, state22, state23):
     STATES.append(_make())
 
 # --------------------------------------------------------------------------- decode / resolved
@@ -692,6 +749,8 @@ def resolved_state(state: dict) -> dict:
                 "index_count": s["index_count"],
             })
         entry["surfaces"] = surfaces
+    out["items"] = [_with_identity(entry, state["items"][entry["id"]].get(
+        "use_identity_transform", False)) for entry in out["items"]]
     mms = state.get("multimeshes", {})
     if mms:  # PM1 rule 10: right after "materials", only when non-empty
         assert list(out)[-1] == "materials"
@@ -950,6 +1009,7 @@ def build_invalid_vectors() -> dict[str, tuple[bytes, str, str, int]]:
         mini_recording(None, lambda meta, blocks: (dict(meta, unsupported=None), blocks)),
         "meta-schema", "a full transaction's unsupported is null (legal in a patch only)", 11)
     out.update(build_multimesh_vectors())
+    out.update(build_identity_vectors())
     return out
 
 
@@ -1119,6 +1179,42 @@ def build_multimesh_vectors() -> dict[str, tuple[bytes, str, str, int]]:
         v10, "meta-schema",
         "a render-stream/10 transaction (golden-10's mini scene) carries a \"multimeshes\" key, "
         "which exists only at /11", 10)
+    return out
+
+
+def build_identity_vectors() -> dict[str, tuple[bytes, str, str, int]]:
+    """UIT: the item key's two spellings that are not the wire's."""
+    out: dict[str, tuple[bytes, str, str, int]] = {}
+
+    def identity_key(value):
+        def mutate(meta: dict, blocks: list):
+            items = [_with_identity(entry, True) for entry in meta["items"]]
+            items = [dict(entry, use_identity_transform=value) for entry in items]
+            return dict(meta, items=items), blocks
+        return mutate
+
+    out["identity-transform-false"] = (
+        mini_recording(None, identity_key(False)), "meta-schema",
+        "item 1 carries \"use_identity_transform\": false (the key is present only when true)",
+        11)
+
+    def v10_identity(meta: dict, backbuffer: list[float]):
+        items = []
+        for entry in meta["items"]:
+            item = {}
+            for k, v in entry.items():
+                item[k] = v
+                if k == "copy_to_backbuffer":
+                    item["use_identity_transform"] = True
+            items.append(item)
+        return dict(meta, items=items), backbuffer
+
+    with as_v10():
+        v10 = g10.mini_recording(v10_identity)
+    out["identity-transform-v10"] = (
+        v10, "meta-schema",
+        "a render-stream/10 transaction (golden-10's mini scene) carries an item's "
+        "\"use_identity_transform\": true, which exists only at /11", 10)
     return out
 
 

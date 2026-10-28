@@ -158,8 +158,8 @@ fn replay(data: &[u8], apply_every: usize, retain: bool) -> Run {
 fn golden_11_inline_applies_dynamic_bodies_by_id_and_retains_h() {
     let data = golden("inline.rs11");
     let r = replay(&data, 1, true);
-    // 16 W11a states, then PM1's multimesh states 17 to 21.
-    assert_eq!(r.txs, 21);
+    // 16 W11a states, then PM1's multimesh states 17 to 21 and UIT's 22 and 23.
+    assert_eq!(r.txs, 23);
     assert_eq!(r.mm_undrawn, 0, "{r:?}");
     assert!(r.mm_skipped >= 1, "{r:?}");
     assert!(r.instances_written >= 3, "{r:?}");

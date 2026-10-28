@@ -38,6 +38,8 @@ const CORE_SABOTAGES: Array[String] = [
 	"drop-canvas-group", "full-backbuffer-copy", "shader-time-frozen",
 	# PM2: the pre-PM2 planner (every add_multimesh undrawn).
 	"undrawn-multimesh",
+	# UIT: every /11 use_identity_transform ignored (the pre-UIT receiver).
+	"ignore-identity-transform",
 	# W11d (render-stream-11.md "As built (W11d)"): the /11 receiver sabotages the core implements.
 	"stale-dynamic-rx", "no-prune", "ignore-released",
 ]

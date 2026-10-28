@@ -517,6 +517,10 @@ pub struct Item {
     pub canvas_group: Option<CanvasGroup>,
     /// /10 only: the `canvas_item_set_copy_to_backbuffer` rect (x, y, w, h) while enabled.
     pub copy_to_backbuffer: Option<[f32; 4]>,
+    /// UIT, /11 only (render-stream-11.md "As built (UIT)"): the item made
+    /// `canvas_item_set_use_identity_transform(true)`: it draws with its canvas's transform alone,
+    /// while its children keep the composed one.
+    pub use_identity_transform: bool,
     pub content_version: i64,
     pub xform: [f32; 6],
     pub modulate: [f32; 4],

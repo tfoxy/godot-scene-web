@@ -224,6 +224,9 @@ opcodes! {
     MultimeshSetBuffer = 73,
     // item, rid multimesh, rid tex
     AddMultimesh = 74,
+    // UIT (render-stream-11.md "As built (UIT)"): item, bool. RenderingServer does not bind
+    // canvas_item_set_use_identity_transform, so the shim calls its vtable slot.
+    ItemSetUseIdentityTransform = 75,
 }
 
 /// The planner's output for one call: the op words and the arena their byte operands point into.

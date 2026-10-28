@@ -467,7 +467,8 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
   - No receiver offers `.11` unless asked.
   - Every /2–/10 session is byte-identical to what it was. `golden-2/` to `golden-10/` pass
     unchanged, and `rs_live_window_test`'s window-1 transcripts stay pinned.
-- **Conditional hooks.** The multimesh slots follow CG1's rule (gate8-design.md "Calibration for
+- **Conditional hooks.** The multimesh slots (and UIT's `canvas_item_set_use_identity_transform`)
+  follow CG1's rule (gate8-design.md "Calibration for
   /10 (CG1)"): installed only under `GRC_STREAM_VERSION=11`, and otherwise neither planned nor
   omitted. An older calibration record omits them and keeps the methods unobserved. The
   calibrator version does not move.
@@ -1048,7 +1049,8 @@ code of its own.
      They are local, or their item transform is the identity.
    - The fix is a capture hook (a conditional /11 slot, as PM1's) plus an optional /11 item key,
      and the receivers' `canvas_item_set_use_identity_transform`. That is a follow-up increment,
-     not PM2: it is a wire change, and GSW (PM3) must honour it too.
+     not PM2: it is a wire change, and GSW (PM3) must honour it too. UIT landed it ("As built
+     (UIT)").
 
 ### As built (PM3): decisions
 
@@ -1117,6 +1119,68 @@ the wire. Rule 16's calls are used as written.
 11. **Receiver sabotages** (GSW options): `undrawn-multimesh` (every `add_multimesh` skipped and
     counted as `multimesh-undrawn`, PM2's native name) and the GSW-only `no-flipbook` (a
     `particles_animation` template drawn as its builtin).
+
+### As built (UIT): decisions
+
+UIT closes PM2's capture gap (rule 8 of "As built (PM2)"): it carries
+`canvas_item_set_use_identity_transform` on /11 and every receiver honours it
+([results/p3/uit.md](../results/p3/uit.md)). /11 is unreleased, so the key is additive, as PM1's
+table was: no version bump, the magic stays `GRSB`.
+
+1. **The engine** (`renderer_canvas_cull.cpp` 4.5.1). `_cull_canvas_item` always composes the item's
+   transform as usual (`final_xform = parent_xform · xform`, :330-345) and hands **that** to its
+   children. The flag replaces only what the item itself draws with: `final_transform` is the
+   canvas transform `_current_camera_transform` (the `render_canvas` transform: the viewport's
+   global canvas transform times the canvas's, :76, :257), and its global rect, which the viewport
+   cull and its own `clip` use, is that transform over its local rect (:373-377). A canvas group
+   owner's synthesized rect still uses the composed transform (:228), as written. The flag is item
+   state: `canvas_item_clear` keeps it (`Item::clear` does not reset it), a new item starts false.
+2. **Who calls it.** In 4.5.1 only `CanvasItem::set_canvas_item_use_identity_transform`, which only
+   `CPUParticles2D::set_use_local_coordinates` calls, with `!local_coords`. RenderingServer binds no
+   script method for it (rendering_server.cpp has no ClassDB entry). The constructor calls the
+   setter with `false`, so every `CPUParticles2D` item sends `true` once, and a local one then sends
+   `false`. In the tree it also sends the item transform (`Transform2D()` when enabling,
+   `get_transform()` when disabling, canvas_item.cpp:1079-1086); `Node2D::set_transform` skips the
+   transform while enabled, but `set_position` and the other `_update_transform` setters do not.
+3. **The hook** (record slot 461 on the stock template and on STS2's MegaDot build) is
+   conditional like PM1's: installed only under `GRC_STREAM_VERSION=11` (and `12`: PM5's /12
+   carries every /11 key, this one included), below /11 neither planned nor omitted, and no
+   calibrator version. The call passes through first; the mirror then sets the
+   item's flag, and a call that changes nothing moves no epoch (the constructor's call on every
+   emitter must not publish a frame). Adoption (`GRC_ADOPT=arm`) reads it from every
+   `CPUParticles2D` node (`!get_use_local_coordinates()`) when the hook is planned, and
+   `result.json` `adoption.identity_transforms` counts them (written only then).
+4. **The wire.** An item carries `"use_identity_transform": true` right after
+   `copy_to_backbuffer` (before `content_version`) exactly when the flag is set; the key is absent
+   when false. `false`, or the key below /11, is `meta-schema` (one spelling per state). It is
+   item state, never `content_version`: a patch lists an item whose flag alone changed, with
+   `commands` null. A /10 connection of a /11 host never sees it. The session record does not
+   change (no feature list names the method), except that `capture.hooks_planned` gains
+   `canvas_item_set_use_identity_transform` at /11.
+5. **Byte identity.** A stream whose host never sets the flag is byte-identical to before UIT,
+   transaction for transaction, at /11 and below (results/p3/uit.md "Byte identity").
+6. **Decoded and resolved forms** keep the key verbatim, in the same place and only when true
+   (`render-stream-2.ts`, rs-core's `Item::use_identity_transform`, `canon.rs`, so the native and
+   GSW state dumps carry it too).
+7. **The native and web receivers** (rs-core-capi, opcode 75 `ItemSetUseIdentityTransform`, so
+   `OP_COUNT` is 76) re-issue the call whenever the wire flag differs from what they last set; their
+   own Godot then draws as the host's did, children included. The shim calls the virtual through the
+   RenderingServer singleton's vtable (slot 461; the Itanium layout is the same on wasm), because
+   no method bind exists, and only on Godot 4.5.1 (any other version logs once and leaves the item
+   composed).
+8. **GSW** (rs-core `apply`): the walk keeps two transforms per item, `final_xform` (handed to
+   children, and to a group owner's synthesized rect) and `draw_xform` (its row, its clip and cull
+   rects): the canvas transform (`viewport.global_xform · canvas.xform`) under the flag, else
+   `final_xform`. The rows-only move path does the same, so a moving parent leaves the item's row
+   where it is. The flag is part of the item's structure key: a change re-walks.
+9. **Receiver sabotage** `ignore-identity-transform` (native, web and GSW): every flag ignored,
+   the pre-UIT receiver. `fixtures/gate8-mm`'s D_GLOBAL (a global emitter under a moving parent,
+   plus a rect drawn on its item and one on a child) catches it (`mm-reference-catches-ignore-identity-transform`,
+   `mm-gsw-catches-ignore-identity-transform@gsw`).
+10. **Goldens.** `golden-11/` gains states 22 (item 18, a child of item 16, with the flag) and 23
+    (the flag cleared: a patch entry for that alone) and two invalid vectors,
+    `identity-transform-false.rs11` and `identity-transform-v10.rs10` (both `meta-schema`). Every
+    record of states 1-21 is byte-identical.
 
 ## Predicted cost (STS2, from the kept recordings)
 
@@ -1349,6 +1413,7 @@ sweep.
 | **W11t** | the live transport coding: base-prefix zstd ("Transport", "As built (W11t)"), `GRC_LIVE_CODING`, the hello's `live_coding`, rs-core's decoder (`ruzstd`), the capi and wasm calls | `golden-11/coding/`; g8w11's `coding/` legs (capture-scale, live, Node viewers on rs-core's wasm) | `coding-wire` (capture encoder to rs-core, byte-equal, golden-11 and g8w11 captures), `coding-negotiated`, `coding-lossless` (decoded = the host's tap), `coding-validates`, `coding-applies-as-off`, `coding-smaller`; `rs_live_test` (lockstep viewers share the coded bytes) | `drop-message` (a dropped base) and `coding-wrong-prefix`: `coding`, then resync |
 | **PM1** (in /11) | particles-multimesh-design.md's PM1, with `buffer_f` on W11a's (B, T) rule; adds multimesh states to `golden-11/` before /11 is released | `fixtures/gate8-mm` (hook-log legs), goldens | `mm-hook-census`, `mm-wire`, `mm-frame-pairing` (particles-multimesh-design.md) | `perturb-instance`, `stale-buffer` |
 | PM2, PM3 | receivers (native and web, then GSW), unchanged from particles-multimesh-design.md but on /11 | `gate8-mm` | as there | as there |
+| **UIT** (in /11) | `canvas_item_set_use_identity_transform`: a conditional /11 hook (slot 461), the item key `use_identity_transform`, the native, web and GSW receivers ("As built (UIT)") | `gate8-mm` (D_GLOBAL un-skipped, plus a rect on the identity item and on a child), `golden-11/` states 22-23 | `mm-reference` and `mm-gsw-band` over every cell; byte identity (`cmp-rec.ts`) | `ignore-identity-transform` fails `mm-reference-catches-ignore-identity-transform` and `mm-gsw-catches-ignore-identity-transform@gsw` |
 | **W11z** | STS2 acceptance | none (game leg) | **one GSW viewer, /11, window 2, inline 4096, in combat for ≥ 20 min** (the combat idles; spine keeps animating): wasm heap slope over minutes 2–20 ≤ 1 MB/min (/10: about 400 MB/min); payload store entries ≤ \|names\| + window; zero inline-sized GETs; applies/s and latency no worse than P3-SP's 49.6/s and 16.5 ms (load-gated); combat dB within 0.1 of P3-CT's replay; host RSS flat; `survivors: none` and hash sets unchanged. A 3-minute /10 leg first, as the "before" slope | none in game (the sabotages live on the fixtures) |
 
 Order: W11a → W11b → W11c → W11d and W11e in parallel → W11z. PM1 follows W11b (both touch the

@@ -56,7 +56,7 @@ fn capi_decodes_the_golden_coded_stream() {
         let p = rsc_coding_stats(h, &mut n);
         let stats = std::str::from_utf8(std::slice::from_raw_parts(p, n)).unwrap();
         assert!(
-            stats.contains("\"coded\":true") && stats.contains("\"prefixed\":17"),
+            stats.contains("\"coded\":true") && stats.contains("\"prefixed\":19"),
             "{stats}"
         );
         rsc_coding_free(h);
