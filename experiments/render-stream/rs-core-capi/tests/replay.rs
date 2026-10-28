@@ -318,7 +318,7 @@ fn the_session_is_at_the_streams_version() {
 #[test]
 fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
-    assert_eq!(rs_core_capi::ops::OP_COUNT, 68);
+    assert_eq!(rs_core_capi::ops::OP_COUNT, 75);
 }
 
 /// CG1 (render-stream-10.md "Receivers"): golden-10's states 9 and 10 re-issue the canvas-group
@@ -377,8 +377,8 @@ fn golden_11_draws_dynamic_meshes() {
         assert_eq!(core.session(&data, spans[0].offset, 11), KIND_SESSION);
         core.begin_session();
         let (mut updates, mut rebuilt, mut released, mut checked) = (0, 0, 0usize, 0);
-        // PM1: states 17-21 draw add_multimesh, which the planner types and counts, undrawn.
-        let mut mm_undrawn = 0;
+        // PM1: states 17-21 draw add_multimesh; PM2 draws them (multimesh_resources).
+        let (mut mm_drawn, mut mm_buffers, mut mm_created, mut mm_freed) = (0, 0, 0, 0);
         for s in &spans[1..] {
             let kind = core.accept(&data, s.offset);
             assert_ne!(kind, KIND_ERROR, "{name}");
@@ -405,9 +405,12 @@ fn golden_11_draws_dynamic_meshes() {
             core.apply().unwrap();
             assert!(!mentions(&core.vt.out, "meshes_dynamic_undrawn"), "{name}");
             assert!(!mentions(&core.vt.out, "mesh-dynamic"), "{name}");
-            if mentions(&core.vt.out, "multimesh_commands_undrawn") {
-                mm_undrawn += stat_int(&core.vt.out, "multimesh_commands_undrawn");
-                assert!(mentions(&core.vt.out, "multimesh-undrawn"), "{name}");
+            assert!(!mentions(&core.vt.out, "multimesh_commands_undrawn"), "{name}");
+            if mentions(&core.vt.out, "multimesh_resources") {
+                mm_drawn += stat_int(&core.vt.out, "multimesh_commands");
+                mm_buffers += stat_int(&core.vt.out, "buffer_sets");
+                mm_created += stat_int(&core.vt.out, "multimeshes_created");
+                mm_freed += stat_int(&core.vt.out, "multimeshes_freed");
             }
             updates += stat_int(&core.vt.out, "surface_updates");
             rebuilt += stat_int(&core.vt.out, "meshes_rebuilt");
@@ -434,7 +437,11 @@ fn golden_11_draws_dynamic_meshes() {
                 checked += 1;
             }
         }
-        assert!(mm_undrawn > 0, "{name}: no add_multimesh counted undrawn");
+        assert!(mm_drawn > 0, "{name}: no add_multimesh drawn");
+        assert!(mm_buffers > 0, "{name}: no multimesh_set_buffer");
+        // State 17 makes 1 and 2 (3 is multimesh-3d); 19 frees 3 (never made); 20 removes 2.
+        assert!(mm_created >= 2, "{name}: {mm_created} multimeshes made");
+        assert!(mm_freed >= 1, "{name}: {mm_freed} multimeshes freed");
         assert!(checked > 0, "{name}: no dynamic mesh checked");
         assert!(updates > 0, "{name}: no region upload");
         assert!(rebuilt > 0, "{name}: no rebuild");

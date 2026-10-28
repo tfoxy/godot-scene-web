@@ -26,6 +26,10 @@
 // 7. traceMultimeshRecording on golden-11's full and patch recordings: every transaction's resolved
 //    multimesh table (id, version, buffer_sha256) equals resolved.json's, and the held floats hash
 //    to the resolved digest.
+// 8. PM2's pixel helpers on synthetic 640x360 shots painted per expected.json's cell grid: the
+//    reference's ink passes mm-premise and a hidden cell drawn or a drawn cell blank fails it; a shot
+//    without multimesh fails mm-reference in exactly the drawn cells (mmMissingProblems passes); one
+//    pixel off fails mmExactProblems and is attributed to its cell; a shot of another size is null.
 //
 // Exits non-zero if any assertion fails.
 
@@ -48,6 +52,12 @@ import {
   traceFromTransactions,
   traceMultimeshRecording,
   v10Problems,
+  mmCellDiff,
+  mmExactProblems,
+  mmInk,
+  mmMissingProblems,
+  mmPremiseInkProblems,
+  type Rgba,
 } from "../lib/gate8-mm-checks";
 import {
   multimeshBufferSha256,
@@ -540,6 +550,59 @@ async function main(): Promise<void> {
       }
     }
     expect(withMm > 0, "golden-11: some transaction holds a multimesh (the case proves something)");
+  }
+
+  // 8. PM2's pixel helpers.
+  {
+    const px = expected.pixels;
+    const W = 640;
+    const H = 360;
+    const blank = (): Rgba => {
+      const img: Rgba = { width: W, height: H, data: new Uint8Array(W * H * 4) };
+      for (let i = 0; i < img.data.length; i += 4) img.data.set([77, 77, 77, 255], i);
+      return img;
+    };
+    /** A shot drawing one 4x4 blot at the centre of each cell in `cells`. */
+    const shot = (cells: string[]): Rgba => {
+      const img = blank();
+      for (const c of cells) {
+        const r = px.regions[c];
+        const cx = Math.floor((r[0] + r[2]) / 2);
+        const cy = Math.floor((r[1] + r[3]) / 2);
+        for (let y = cy; y < cy + 4; y++)
+          for (let x = cx; x < cx + 4; x++) img.data.set([200, 30, 30, 255], (y * W + x) * 4);
+      }
+      return img;
+    };
+    const drawnAt = (step: number) =>
+      Object.entries(px.drawn_steps)
+        .filter(([, s]) => s.includes(step))
+        .map(([c]) => c);
+    for (const step of [0, 2]) {
+      const ref = shot(drawnAt(step));
+      expect(mmPremiseInkProblems(mmInk(ref, px), px, step).length === 0, `8: step ${step}: the reference's ink passes`, mmPremiseInkProblems(mmInk(ref, px), px, step));
+      const d = mmCellDiff(blank(), ref, px.regions);
+      expect(d !== null && mmMissingProblems(d, px, step).length === 0, `8: step ${step}: a shot without multimesh differs in exactly the drawn cells`, d && mmMissingProblems(d, px, step));
+      expect(d !== null && mmExactProblems(d).length === 1, `8: step ${step}: a shot without multimesh fails the exact verdict`);
+      expect(mmExactProblems(mmCellDiff(ref, ref, px.regions)!).length === 0, `8: step ${step}: a shot equals itself`);
+    }
+    const hiddenDrawn = shot([...drawnAt(0), "G_HIDDEN"]);
+    expect(mmPremiseInkProblems(mmInk(hiddenDrawn, px), px, 0).some((p) => p.startsWith("G_HIDDEN")), "8: the hidden cell drawn fails the premise");
+    const freedDrawn = shot(drawnAt(1));
+    expect(mmPremiseInkProblems(mmInk(freedDrawn, px), px, 2).some((p) => p.startsWith("H_FREE")), "8: H_FREE drawn at step 2 (after its free) fails the premise");
+    const missingA = shot(drawnAt(0).filter((c) => c !== "A_XFORM"));
+    expect(mmPremiseInkProblems(mmInk(missingA, px), px, 0).some((p) => p.startsWith("A_XFORM")), "8: a drawn cell left blank fails the premise");
+    const ref = shot(drawnAt(0));
+    const off = shot(drawnAt(0));
+    off.data.set([201, 30, 30, 255], (65 * W + 110) * 4);
+    const d1 = mmCellDiff(off, ref, px.regions);
+    expect(d1 !== null && d1.cells.A_XFORM === 1 && mmExactProblems(d1)[0]?.includes("A_XFORM 1") === true, "8: one pixel off fails exactly, in its cell", d1);
+    const partial = mmCellDiff(shot(["C_FLIP"]), ref, px.regions);
+    expect(partial !== null && mmMissingProblems(partial, px, 0).length === 1, "8: a leg that still draws one cell fails mmMissingProblems in that cell only", partial && mmMissingProblems(partial, px, 0));
+    expect(mmCellDiff({ width: 2, height: 2, data: new Uint8Array(16) }, ref, px.regions) === null, "8: shots of different sizes do not compare");
+    expect(Object.entries(px.moving).every(([c, at]) => at.every((k) => px.drawn_steps[c].includes(k))), "8: every moving cell draws where it moves");
+    const gap = mmCellDiff(shot(drawnAt(0).filter((c) => c !== "D_GLOBAL").concat(["G_HIDDEN"])), ref, px.regions);
+    expect(gap !== null && mmExactProblems(gap, ["D_GLOBAL", "G_HIDDEN"]).length === 0 && mmExactProblems(gap).length === 1, "8: the identity-transform gap's cells are ignored only when asked", gap);
   }
 
   console.log(`\nself-test-gate8-mm: ${assertions - failures}/${assertions} assertions passed`);

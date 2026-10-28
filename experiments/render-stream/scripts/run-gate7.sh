@@ -142,7 +142,7 @@
 #             half gets it too, lib/gate7-g6-checks.ts). `--live` with g7-6 runs g6l in both browsers.
 #
 # Group landed (G8g, protocol/gate8-design.md "As built (G8g)"):
-#   g7-8      gate 8's file receiver legs (g8t, g8a, g8h, g8f, g8m, g8c, g8cg, g8w11; G8_FILE_LEGS below) in both
+#   g7-8      gate 8's file receiver legs (g8t, g8a, g8h, g8f, g8m, g8c, g8cg, g8w11, g8mm; G8_FILE_LEGS below) in both
 #             browsers from one native gate 8 source (`--make-sources`: run-gate8.sh --legs
 #             $G8_FILE_LEGS): the web half through G7b's views (lib/gate7b-adapters.ts GATE8_FILE_GROUPS),
 #             the gsw half through lib/gate7-gsw-g8.ts's band against the native legs, both judged by
@@ -969,7 +969,7 @@ fi
 # GATE8_LEGS). G8kwh: the web half replays g8kp's receiver legs again; it does not replay g8ku's
 # (lib/gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS: the web export's npot choice differs from native by
 # design, and gate 8 judges its own g8ku-web legs). The web view stays on GATE8_FILE_GROUPS.
-G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11
+G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11,g8mm
 
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
 CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG" --calibration "$(realpath -m "$CALIBRATION")")

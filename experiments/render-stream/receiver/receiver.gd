@@ -326,7 +326,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -1067,6 +1067,17 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		# W11d: a named dynamic mesh whose body never arrived (0 on an honest /11 stream).
 		_w11_init()
 		_w11["dynamic_undrawn"] = RsWire.as_int(_w11["dynamic_undrawn"]) + RsWire.as_int(mesh_resources["meshes_dynamic_undrawn"])
+	if stats.has("multimesh_resources") or stats.has("multimesh_commands_undrawn"):
+		# PM2 (render-stream-11.md "As built (PM2)"): the /11 multimesh calls this apply made, summed
+		# (the stats carry the key only when one is non-zero); `undrawn` is the pre-PM2 count.
+		_w11_init()
+		var mm_totals: Dictionary = _w11.get("multimesh", {})
+		var mm_resources: Dictionary = stats.get("multimesh_resources", {})
+		for mm_key: String in mm_resources:
+			mm_totals[mm_key] = RsWire.as_int(mm_totals.get(mm_key, 0)) + RsWire.as_int(mm_resources[mm_key])
+		if stats.has("multimesh_commands_undrawn"):
+			mm_totals["undrawn"] = RsWire.as_int(mm_totals.get("undrawn", 0)) + RsWire.as_int(stats["multimesh_commands_undrawn"])
+		_w11["multimesh"] = mm_totals
 	for key: String in ["meshes_created", "meshes_rebuilt", "surface_updates", "mesh_upload_bytes", "skipped_mesh_commands"]:
 		resources[key] = mesh_resources[key]
 		if _summary.has(key):

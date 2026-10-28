@@ -9,6 +9,7 @@
 use crate::ops::OpBuf;
 use crate::plan::{Library, Needed, Payloads, Planner, Sabotage};
 use crate::vt::{gd, Vt};
+use crate::mm::MmStore;
 use render_stream_core::apply::dynamic::{body_sha256, DynamicMeshes};
 use render_stream_core::apply::retention::Retention;
 use render_stream_core::canon;
@@ -77,6 +78,9 @@ pub struct Core {
     /// ingested right after each accepted transaction (the record's bytes are the caller's and are
     /// reused by the next message).
     pub dynamic: DynamicMeshes,
+    /// PM2 (render-stream-11.md "As built (PM2)"): the newest buffer of every `ok` /11
+    /// multimesh, ingested at accept beside the dynamic bodies.
+    pub multimeshes: MmStore,
     /// W11d: the retention rule (H = C ∪ names(S_n) ∪ names(S_d)): queued after each accepted
     /// transaction, swept after each accept and each apply.
     retention: Retention,
@@ -263,6 +267,7 @@ impl Core {
         self.library.clear();
         self.planner.touched.clear();
         self.dynamic.clear();
+        self.multimeshes.clear();
         self.retention.clear();
         self.released_out.clear();
         self.dynamic_checked = 0;
@@ -500,6 +505,8 @@ impl Core {
         } else {
             self.dynamic.ingest(st, v.dynamic_bodies(), record)?;
         }
+        // PM2: the transaction's multimesh buffers, before `record` goes back to the caller.
+        self.multimeshes.ingest(st, v.multimesh_buffers(), record);
         self.retention.note(v);
         self.sweep();
         Ok(())
@@ -763,6 +770,7 @@ impl Core {
             provided: &self.provided,
             library: &self.library,
             dynamic: &self.dynamic,
+            multimeshes: &self.multimeshes,
             version: self.version,
         };
         let r = self

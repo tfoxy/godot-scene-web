@@ -507,7 +507,7 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
   bottleneck 3). The web export does the same through the same capi, with no JavaScriptBridge
   fetch for dynamic meshes.
 - Multimesh (PM2): re-issue the `multimesh_*` calls and `canvas_item_add_multimesh`
-  (particles-multimesh-design.md "Receivers").
+  (particles-multimesh-design.md "Receivers"; as built: "As built (PM2)" below).
 
 ## Golden vectors (`golden-11/`, W11a)
 
@@ -987,6 +987,66 @@ particles-multimesh-design.md "/11: multimesh" or "Multimesh (PM1)" above, they 
     non-zero) and as an `unsupported_commands` row `multimesh-undrawn`; GSW's executor counts a
     `multimesh-undrawn` shortcut. `write_state_godot` (the native dump) already carries
     `multimeshes`, so PM2's `receiver.gd` dump must match it.
+
+### As built (PM2): decisions
+
+PM2 makes the native receiver and the web export draw /11 multimeshes
+([results/p3/pm2.md](../results/p3/pm2.md)). Nothing here changes the wire, rs-core or the capture.
+The capi and the C++ shim are shared, so the web export (the same side module for wasm) needed no
+code of its own.
+
+1. **Buffers at accept, in the capi** (`rs-core-capi/src/mm.rs`, `MmStore`). Inside `rsc_accept`,
+   right after W11d's dynamic bodies, the capi copies each `Validator::multimesh_buffers()` entry
+   (the record buffer is the caller's and is reused). Each copy gets a fresh serial. After each
+   ingest it forgets every multimesh the resolved state no longer holds as `ok`. An `ok` entry that
+   is not listed keeps its floats (rule 3's null `buffer_f`). `session()` clears the store.
+2. **Residency.** A multimesh is resident while an item command names it and its entry is `ok`
+   (unless the `undrawn-multimesh` sabotage is on). Otherwise it is freed. Its mesh is resident as
+   if an `add_mesh` named it: the planner keeps the meshes named through named `ok` multimeshes,
+   and they join the mesh candidates and `needed()`. The planner looks at every resident multimesh
+   on each apply (STS2 combat holds 32), plus the touched (`TxDelta.multimeshes_upserted/_removed`)
+   and newly (un)named ones. A multimesh's mesh RID can change while no multimesh entry moves.
+3. **The calls, each only when it differs from what the planner last sent** (GLES3's model, rule
+   13):
+   - `multimesh_create`;
+   - `multimesh_allocate_data(instances, TRANSFORM_2D, colors, custom, false)`. An identical shape
+     is not re-sent (GLES3 returns early). A new shape forgets the buffer and clamps a
+     non-negative `visible` (GLES3's `MIN`);
+   - `multimesh_set_mesh`, with the mesh's RID, or `RID()` when the mesh is not `ok` and resident;
+   - `multimesh_set_custom_aabb`, from the entry's six floats; all zero is Godot's "none";
+   - `multimesh_set_buffer`, the ingested bytes as a `PackedFloat32Array`, when the serial moved
+     (an empty buffer is not sent);
+   - `multimesh_set_visible_instances`.
+
+   Multimesh handles share the shim's mesh table (`RidRef::Multimesh`, the mesh kind's word), since
+   the 3-bit RID kind space is full. Seven opcodes (68-74) were added, so `OP_COUNT` is 75.
+4. **Order.** Multimeshes are applied after meshes and before items. `canvas_item_add_multimesh`
+   is issued in item replay. An item naming a multimesh that this apply made or freed replays its
+   content, because no item entry changed with it. `dispose()` frees multimeshes before meshes.
+5. **Typed skips** (the `unsupported_commands` rows, like `add_mesh`'s): `unknown-multimesh`,
+   `multimesh-freed` (a `freed` tombstone, which the host draws as nothing and logs as engine
+   errors), `unsupported-multimesh`, `multimesh-not-resident`, and the texture reasons.
+6. **Evidence.** The apply stats carry `multimesh_resources` (made, freed, allocations, mesh,
+   AABB, visible and buffer sets, buffer bytes, draws and skipped draws), but only when one of them
+   is non-zero. Every stream without a multimesh therefore keeps its stats byte-identical.
+   receiver.gd sums them into applied.json's `w11.multimesh`. Under the sabotage, `undrawn` is the
+   count of undrawn commands.
+7. **Receiver sabotage** `undrawn-multimesh` (RS_RECEIVER_SABOTAGE): this is PM1's planner, with
+   every `add_multimesh` counted in `multimesh_commands_undrawn`/`multimesh-undrawn` and no
+   multimesh made. It is the "pre-PM2 receiver" that must fail `mm-reference`.
+8. **A capture gap PM2 found: `canvas_item_set_use_identity_transform`.**
+   - Since Godot 4.0 a `CPUParticles2D` with `local_coords = false` (the default) calls
+     `set_canvas_item_use_identity_transform(true)`. Its buffer holds global particle transforms,
+     and its item draws with the canvas transform alone (`renderer_canvas_cull.cpp`
+     `final_transform`).
+   - The capture does not hook that call: no calibrated slot, no wire field. So the receiver draws
+     a global emitter through its node's transform a second time. That is fixture cell D_GLOBAL,
+     typed in expected.json `pixels.known_gaps` and measured by `mm-identity-transform-gap`.
+   - STS2's emitters are not affected: combat replays at 0 px over 16 against the game's reference.
+     They are local, or their item transform is the identity.
+   - The fix is a capture hook (a conditional /11 slot, as PM1's) plus an optional /11 item key,
+     and the receivers' `canvas_item_set_use_identity_transform`. That is a follow-up increment,
+     not PM2: it is a wire change, and GSW (PM3) must honour it too.
 
 ## Predicted cost (STS2, from the kept recordings)
 

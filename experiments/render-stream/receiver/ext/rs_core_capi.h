@@ -178,7 +178,15 @@ enum Op : uint32_t {
   ItemSetCopyToBackbuffer = 66,
   // item, i64 mode, f32 clear_margin, bool fit_empty, f32 fit_margin, bool blur_mipmaps (CG1, /10)
   ItemSetCanvasGroupMode = 67,
-  OP_COUNT = 68,
+  // PM2: /11 multimesh (multimesh handles live in the KIND_MESH table).
+  MultimeshCreate = 68,
+  MultimeshAllocate = 69,
+  MultimeshSetMesh = 70,
+  MultimeshSetCustomAabb = 71,
+  MultimeshSetVisibleInstances = 72,
+  MultimeshSetBuffer = 73,
+  AddMultimesh = 74,
+  OP_COUNT = 75,
 };
 
 // vt.rs tags.

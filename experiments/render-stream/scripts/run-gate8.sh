@@ -163,8 +163,13 @@
 #       no multimesh on the wire), `sabotage-perturb-instance/capture` and
 #       `sabotage-stale-buffer/capture` (GRC_SABOTAGE at frame 30); last the headless /11
 #       `headless/capture`, whose hook log documents the headless case (script-driven multimeshes
-#       set buffers, CPUParticles2D and frame_pre_draw never do). Hook-log-only legs: the receivers
-#       are PM2's. Judged by lib/gate8-mm-checks.ts.
+#       set buffers, CPUParticles2D and frame_pre_draw never do). PM2 adds, in the same gamescope
+#       after the captures, the unarmed `reference` and `reference-repeat` (--fixed-fps 60, shots at
+#       each settle frame and the frame before), and the native receiver: `receiver` and
+#       `receiver-patch` (the /11 sinks, with state dumps), `receiver-v10` (the /10 control),
+#       `sabotage-undrawn-multimesh/receiver` (the pre-PM2 planner) and
+#       `sabotage-{perturb-instance,stale-buffer}/receiver-patch` (PM1's sabotaged patch sinks).
+#       Judged by lib/gate8-mm-checks.ts; g7-8's web half replays the receiver legs.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -816,14 +821,19 @@ G8MM_SABOTAGE_FRAME=30
 G8MM_SABOTAGES=(perturb-instance stale-buffer)
 
 run_import_g8mm() {
-	echo "run-gate8: g8mm import (fixture)"
+	echo "run-gate8: g8mm import (fixture, receiver)"
 	LEG_ENV=()
 	run_headless "$OUT/g8mm/import/fixture" none -- mise exec -- godot --headless --path "$G8MM_FIXTURE_DIR" --import
-	[ -f "$OUT/g8mm/import/fixture/skipped-by-tier.txt" ] && return 0
-	if [ "$(cat "$OUT/g8mm/import/fixture/exit-code.txt")" != "0" ]; then
-		echo "run-gate8: g8mm import (fixture) failed, see $OUT/g8mm/import/fixture/stdout.log" >&2
-		exit 1
-	fi
+	LEG_ENV=()
+	run_headless "$OUT/g8mm/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in fixture receiver; do
+		[ -f "$OUT/g8mm/import/$leg/skipped-by-tier.txt" ] && continue
+		if [ "$(cat "$OUT/g8mm/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8mm import ($leg) failed, see $OUT/g8mm/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
 }
 
 # run_capture_rendered_g8mm <dir> <env word...>: an armed capture on the rendered host (the private
@@ -843,6 +853,19 @@ run_capture_rendered_g8mm() {
 	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
 	run_rendered "$dir" "$G8MM_FIXTURE_DIR"
 	RENDERED_EXTRA_ARGS=()
+}
+
+# g8mm_prev_seqs <capture dir>: the CSV of the seqs published at each settle frame's previous frame
+# (the receivers shoot them too, beside the reference's step-<k>-prev.png).
+g8mm_prev_seqs() {
+	local f out=""
+	for f in $(python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if l: print(json.loads(l)["settle_frame"])' "$1/steps.jsonl" 2>/dev/null); do
+		out="$out${out:+,}$(seq_at_frame "$1/$RECORDING_NAME" "$((f - 1))")"
+	done
+	echo "$out"
 }
 
 run_g8mm() {
@@ -871,6 +894,45 @@ run_g8mm() {
 	PATCH_RECORDING_NAME=recording-patch.rs10
 	echo "run-gate8: g8mm capture-v10 (/10, the negative control: no multimesh on the wire)"
 	run_capture_rendered_g8mm "$OUT/g8mm/capture-v10" GRC_STREAM_VERSION=10
+	# PM2: the unarmed references and the native receivers, in the same gamescope.
+	legs_par_begin
+	local r
+	for r in reference reference-repeat; do
+		echo "run-gate8: g8mm $r (unarmed, rendered at 640x360, --fixed-fps 60)"
+		mkdir -p "$OUT/g8mm/$r/shots" "$OUT/g8mm/$r/xdg-data"
+		# A private user data dir per reference (CGR: no shared GLES3 shader cache).
+		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8mm/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8mm/$r/steps.jsonl"
+			XDG_DATA_HOME="$OUT/g8mm/$r/xdg-data")
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		run_rendered "$OUT/g8mm/$r" "$G8MM_FIXTURE_DIR"
+	done
+	echo "run-gate8: g8mm receiver-v10 (the /10 capture replayed: no multimesh drawn)"
+	run_rendered_receiver "$OUT/g8mm/capture-v10" "$OUT/g8mm/receiver-v10"
+	RECORDING_NAME=recording.rs11
+	PATCH_RECORDING_NAME=recording-patch.rs11
+	echo "run-gate8: g8mm receivers (/11 full and patch sinks)"
+	local prev=""
+	[ -f "$OUT/g8mm/capture/steps.jsonl" ] && prev="$(g8mm_prev_seqs "$OUT/g8mm/capture")"
+	RECEIVER_STATE=1
+	RECEIVER_EXTRA_SHOTS="$prev"
+	run_rendered_receiver "$OUT/g8mm/capture" "$OUT/g8mm/receiver"
+	RECEIVER_STATE=1
+	RECEIVER_EXTRA_SHOTS="$prev"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8mm/capture" "$OUT/g8mm/receiver-patch"
+	echo "run-gate8: g8mm sabotage-undrawn-multimesh (receiver: the pre-PM2 planner)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=undrawn-multimesh)
+	run_rendered_receiver "$OUT/g8mm/capture" "$OUT/g8mm/sabotage-undrawn-multimesh/receiver"
+	for s in "${G8MM_SABOTAGES[@]}"; do
+		echo "run-gate8: g8mm sabotage-$s (receiver on the sabotaged patch sink)"
+		prev=""
+		[ -f "$OUT/g8mm/sabotage-$s/capture/steps.jsonl" ] && prev="$(g8mm_prev_seqs "$OUT/g8mm/sabotage-$s/capture")"
+		RECEIVER_EXTRA_SHOTS="$prev"
+		RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+		run_rendered_receiver "$OUT/g8mm/sabotage-$s/capture" "$OUT/g8mm/sabotage-$s/receiver-patch"
+	done
+	legs_par_end
+	rm -rf "$OUT/g8mm/reference/xdg-data" "$OUT/g8mm/reference-repeat/xdg-data"
 	gs_teardown "$OUT/gamescope-g8mm"
 	GS_RUN_DIR=""
 	RECORDING_NAME=recording.rs11
