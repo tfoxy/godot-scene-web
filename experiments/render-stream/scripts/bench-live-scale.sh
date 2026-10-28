@@ -19,7 +19,8 @@
 # (the gate 7 browser harness, gate7-tool.ts browser-receiver, with --bundle: a GSW bundle or a
 # Rust-core web export bundle), or null (P3-SP: lib/null-receiver.ts, a WebSocket client that decodes
 # nothing and acks every transaction on arrival, so the leg measures the host's own cost per viewer
-# with every viewer caught up and no receiver competing for the machine). The host runs P3-CAP's armed config (bench-capture-scale.sh, the
+# with every viewer caught up and no receiver competing for the machine; at --protocol 11 it sends
+# the /11 hello offering live_coding, so the host codes as in the product, HC). The host runs P3-CAP's armed config (bench-capture-scale.sh, the
 # product hand-off environment) with GRC_LIVE_LISTEN, the page origin allowed and a live tap.
 # NAME=value words after `--` go to the host when they start with GRC_ or RS_SCALE_ (for example
 # GRC_RESOURCE_INLINE_MAX_BYTES=4096, the hand-off's mesh setting) and to the receiver when they
@@ -182,7 +183,7 @@ run_receiver() {
 		# P3-SP: lib/null-receiver.ts decodes nothing and acks every transaction on arrival.
 		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/null-receiver.ts" \
 			--url "ws://127.0.0.1:$PORT/render-stream" --out "$dir" --window "$WINDOW" \
-			--timeout-s "$((FRAMES / 20 + 120))") >"$dir/launcher.out" 2>&1
+			--protocol "$([ "$PROTOCOL" = 11 ] && echo 11 || echo 8)" --timeout-s "$((FRAMES / 20 + 120))") >"$dir/launcher.out" 2>&1
 		echo "$?" >"$dir/exit.txt"
 		;;
 	esac
