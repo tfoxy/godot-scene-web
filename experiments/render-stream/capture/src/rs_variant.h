@@ -49,6 +49,9 @@ struct DecodedParam {
   // (bools as 1/0), "float64", "vector2", "vector3", "vector4" or "color". /12's mirror carries
   // that form; an empty or mixed Array has none.
   bool array_form = false;
+  // PM7 (evidence only, never the wire): a plain Array's element Variant types, distinct, in
+  // first-seen order and joined by "," (e.g. "bool"), whether or not it has a packed form.
+  std::string array_elements;
   std::string array_type;
   std::int64_t array_n = 0;
   std::vector<double> array_f;

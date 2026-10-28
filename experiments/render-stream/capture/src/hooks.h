@@ -21,6 +21,7 @@
 #include "calib.h"
 #include "rs2_snapshot.h"
 #include "rs_adopt.h"
+#include "rs_mirror.h"
 #include "rs_texture_payload.h"
 #include "rs_texture_worker.h"
 #include "vtable.h"
@@ -121,6 +122,18 @@ bool hooks_adopt_material(uint64_t material, uint64_t shader,
 void hooks_adopt_item_material(uint64_t item, uint64_t material);
 void hooks_adopt_material_shader(uint64_t material, uint64_t shader);
 void hooks_adopt_instance_param(uint64_t item, const std::string &name, const void *variant);
+
+// PM7 (render-stream-12.md "As built (PM7)"; rs_adopt.h adopt_particles_ref): pre-arm emitters.
+// hooks_internal_material, inside hooks_internal_begin/end, also passes material_create,
+// material_create_from_shader, material_set_param and material_set_shader straight through (the
+// capture's temporary ParticleProcessMaterial), recording the parameter names and the first
+// non-null shader RID it is given (either
+// pointer may be null; both null ends the recording). hooks_adopt_particles registers an adopted
+// emitter (Mirror::particles_adopt) with its hook-log line; hooks_adopt_particles_subemitter
+// links an adopted emitter's subemitter once that one is known, as particles_set_subemitter.
+void hooks_internal_material(std::vector<std::string> *param_names_out, uint64_t *shader_out);
+bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt);
+void hooks_adopt_particles_subemitter(uint64_t particles, uint64_t subemitter);
 
 // Serialised counters and captured values.
 std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed);

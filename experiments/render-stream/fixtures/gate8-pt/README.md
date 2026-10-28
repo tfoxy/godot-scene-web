@@ -13,10 +13,14 @@ the cells for the references and the receivers that draw.
 - `project.godot`: 640x360, no stretch, `gl_compatibility`, `msaa_2d=0`, default canvas filter
   nearest, autoload `GrcLoader`, main scene `pt.tscn`.
 - `loader.gd`: loads the capture GDExtension in `_enter_tree` when `GRC_EXTENSION` is set (armed at
-  birth); unarmed otherwise.
+  birth); unarmed otherwise. PM7: `RS_FIXTURE_ARM=late` loads it in `_process` at fixture frame
+  `RS_FIXTURE_ARM_FRAME` (default 12, 8..19) instead, after every emitter has drawn, so the
+  capture adopts them (`GRC_ADOPT=arm`); `pt.gd` then logs only the steps that settle after the
+  arm.
 - `pt.tscn` / `pt.gd`: a plain `Node` that builds every cell in `_ready` and drives the steps.
 - `expected.json`: the hand-derived hook-log census per cell, each cell's MaterialKey and the
-  float-texture shape the checker reads.
+  float-texture shape the checker reads; PM6a's `pixels`; PM7's `late` (the arm frame, the emitter
+  and process-material counts, the subemitter cell, the coverage start).
 
 ## Cells
 

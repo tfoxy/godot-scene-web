@@ -53,6 +53,7 @@ import { join } from "node:path";
 import { check, exitCode, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
 import { censusProblems as mmCensusProblems, type G8mmExpected, mapCells as mmMapCells, parseMmLog } from "./gate8-mm-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { LATE_LEGS, type PtLate, type PtLateTx, runG8ptLate } from "./gate8-pt-late-checks";
 import { type PtPixels, type PtWireTotals, runG8ptReceivers } from "./gate8-pt-receiver-checks";
 import {
   applyTransaction,
@@ -120,6 +121,8 @@ export interface G8ptExpected {
   key_defaults: BuiltinParticleProcessMaterial;
   /** PM6a: the receivers' pixel model (gate8-pt-receiver-checks.ts). */
   pixels: PtPixels;
+  /** PM7: the late arm (gate8-pt-late-checks.ts). */
+  late: PtLate;
 }
 
 /** A cell's full expected MaterialKey (key_defaults overridden by the cell's key). */
@@ -1230,6 +1233,7 @@ const LEGS = [
   "sabotage-undrawn-particles/receiver",
   "sabotage-ignore-particle-emits/receiver",
   "sabotage-drop-restart/receiver-patch",
+  ...LATE_LEGS,
 ];
 
 function rsCoreValidate(path: string, version: number): string {
@@ -1559,6 +1563,28 @@ export async function runG8pt(
     const receivers: Record<string, unknown> = {};
     report.legs.receivers = receivers;
     await runG8ptReceivers(g, expected.checkpoints, expected.pixels, t ? ptWireTotals(t) : null, checks, receivers);
+  }
+
+  // PM7: the late arm (gate8-pt-late-checks.ts)
+  {
+    const late: Record<string, unknown> = {};
+    report.legs.late = late;
+    await runG8ptLate(
+      g,
+      expected.checkpoints,
+      expected.pixels,
+      expected.late,
+      {
+        validate: (path) => validateBoth(path, 12),
+        trace: async (leg, sink) => {
+          const t = await trace(leg, sink, 12);
+          return t ? (t.txs as unknown as PtLateTx[]) : null;
+        },
+        amountOf: (cell) => expected.cells[cell]?.amount,
+      },
+      checks,
+      late,
+    );
   }
 
   // the sabotages: the validators accept the patch sink, pt-wire fails on it

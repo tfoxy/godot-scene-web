@@ -1641,7 +1641,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
       const bool freed = p.status == ParticlesStatus::Freed;
       m += "{\"id\":";
       append_json_int(m, p.id);
-      m += ",\"origin\":\"created\",\"status\":";
+      m += ",\"origin\":";
+      append_json_string(m, to_wire(p.origin));  // PM7: "adopted" for an adopted emitter
+      m += ",\"status\":";
       append_json_string(m, to_wire(p.status));
       m += ",\"reason\":";
       if (p.status == ParticlesStatus::Unsupported && p.has_reason) {

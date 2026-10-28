@@ -686,7 +686,7 @@ pub fn multimesh_stride(colors: bool, custom: bool) -> u64 {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Particles {
     pub id: Id,
-    /// `Created` only at PM5.
+    /// `Created`, or `Adopted` for an emitter that existed before arm (PM7).
     pub origin: Origin,
     pub status: EntryStatus,
     /// The wire's particles reason spelling (`None` exactly when not `unsupported`).

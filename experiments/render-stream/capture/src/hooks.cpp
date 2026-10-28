@@ -1829,6 +1829,25 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 thread_local bool t_internal = false;
 thread_local std::string *t_internal_code = nullptr;
 thread_local uint64_t *t_internal_rid = nullptr;
+// PM7: the temporary ParticleProcessMaterial's parameter names and shader (hooks_internal_material).
+thread_local std::vector<std::string> *t_internal_param_names = nullptr;
+thread_local uint64_t *t_internal_shader = nullptr;
+// PM7: the mesh the last mesh_add_surface on this thread filled (a GPUParticles2D's draw rebuilds
+// its draw-pass quad right before particles_set_trail_bind_poses and canvas_item_add_particles,
+// gpu_particles_2d.cpp:615-725), for adopt_particles_note_draw.
+thread_local uint64_t t_pt_surface_mesh = 0;
+
+// PM7: the plain-Array material parameters the hooks saw (counters.json captured.array_params):
+// per parameter name, per "<element types> x<size> -> <packed form or param-type>", the calls.
+std::mutex g_array_params_mutex;
+std::map<std::string, std::map<std::string, uint64_t>> g_array_params;
+void note_array_param(const std::string &name, const rs::DecodedParam &d) {
+  const std::string key = (d.array_elements.empty() ? std::string("empty") : d.array_elements) +
+                          " x" + std::to_string(d.array_n) + " -> " +
+                          (d.array_form ? d.array_type : std::string("param-type"));
+  std::lock_guard<std::mutex> lock(g_array_params_mutex);
+  ++g_array_params[name][key];
+}
 
 // A material or instance parameter's Variant value (D8), classified applied/rejected/unknown
 // (D6) for the hook log; the decoded name and value never reach counters.json (Q2).
@@ -2493,6 +2512,7 @@ RID hook_mesh_create(void *self) {
 
 void hook_mesh_add_surface(void *self, RID mesh, const SurfaceDataPrefix *surface) {
   bump(kMeshAddSurface);
+  t_pt_surface_mesh = mesh.id;  // PM7: a GPUParticles2D draw's quad (adopt_particles_note_draw)
   if (surface != nullptr) {
     MeshSurfaceKey key;
     zero(&key);
@@ -2841,6 +2861,7 @@ void hook_add_particles(void *self, RID item, RID particles, RID texture) {
     // PM5 ("The command"): /12's add_particles, naming the mirror's emitter (an unknown RID
     // becomes `unsupported`/`unknown-particles`).
     rs::adopt_texture_ref(texture.id);
+    rs::adopt_particles_ref(item.id, particles.id);  // PM7: a pre-arm emitter, adopted here
     if (streaming()) {
       mirror().add_particles(item.id, particles.id, texture.id, current_frame());
     }
@@ -2930,6 +2951,13 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
+  if (t_internal) {  // PM7: the capture's temporary ParticleProcessMaterial
+    if (t_internal_param_names != nullptr) {
+      t_internal_param_names->push_back(rs::decode_string_name(name));
+    }
+    original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
+    return;
+  }
   bump(kMaterialSetParam);
   log_entry(&g_material_params, rids(material.id));
   if (resources().active()) {
@@ -2938,6 +2966,9 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
     if (decoded.type == "rid" && decoded.status == "ok") {
       rs::adopt_texture_ref(decoded.tex_rid);  // G8r: a texture parameter naming a pre-arm texture
+    }
+    if (decoded.type == "array") {
+      note_array_param(param_name, decoded);  // PM7: counters.json captured.array_params
     }
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("material_set_param");
@@ -2992,6 +3023,9 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
 }
 
 RID hook_material_create(void *self) {
+  if (t_internal) {  // PM7: the capture's temporary ParticleProcessMaterial
+    return original<FnCreate>(kMaterialCreate)(self);
+  }
   bump(kMaterialCreate);
   const RID result = original<FnCreate>(kMaterialCreate)(self);
   log_entry(&g_material_create_calls, rids(result.id));
@@ -3007,6 +3041,13 @@ RID hook_material_create(void *self) {
 }
 
 RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority, RID shader) {
+  if (t_internal) {  // PM7: a temporary ParticleProcessMaterial that makes its RID lazily
+    if (t_internal_shader != nullptr && shader.id != 0) {
+      *t_internal_shader = shader.id;
+    }
+    return original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(self, next_pass,
+                                                                            priority, shader);
+  }
   bump(kMaterialCreateFromShader);
   const RID result = original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(
       self, next_pass, priority, shader);
@@ -3027,6 +3068,15 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
 }
 
 void hook_material_set_shader(void *self, RID material, RID shader) {
+  if (t_internal) {  // PM7: the capture's temporary ParticleProcessMaterial
+    // The temporary's destructor clears its shader (material_set_shader(material, RID()),
+    // particle_process_material.cpp:2454): keep the shader it was given.
+    if (t_internal_shader != nullptr && shader.id != 0) {
+      *t_internal_shader = shader.id;
+    }
+    original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
+    return;
+  }
   bump(kMaterialSetShader);
   log_entry(&g_material_set_shaders, rids(material.id, shader.id));
   if (resources().active()) {
@@ -3833,6 +3883,9 @@ void hook_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transfo
       const std::array<float, 12> t = xform3_floats(poses->ptr()[i]);
       a.f.insert(a.f.end(), t.begin(), t.end());
     }
+    // PM7: an emitter the mirror does not know, mid-draw: its draw-pass mesh and poses, for the
+    // adoption its canvas_item_add_particles makes next.
+    rs::adopt_particles_note_draw(p.id, t_pt_surface_mesh, a.f);
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetTrailBindPoses, a, current_frame());
@@ -4854,6 +4907,47 @@ void hooks_internal_end() {
   t_internal = false;
   t_internal_code = nullptr;
   t_internal_rid = nullptr;
+  t_internal_param_names = nullptr;
+  t_internal_shader = nullptr;
+}
+
+void hooks_internal_material(std::vector<std::string> *param_names_out, uint64_t *shader_out) {
+  t_internal_param_names = param_names_out;
+  t_internal_shader = shader_out;
+}
+
+bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt) {
+  if (rid == 0 || !streaming()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const rs::Mirror::ParticlesCall r = mirror().particles_adopt(rid, adopt, current_frame());
+  if (!r.known) {
+    return false;
+  }
+  if (resources().active()) {
+    rs::MultimeshArgs args;
+    args.i64("restarts", static_cast<int64_t>(r.restarts));
+    resources().particles_call(tap_context(), "particles_adopt", rid, r.id, r.accepted, r.version,
+                               args, false);
+  }
+  return true;
+}
+
+void hooks_adopt_particles_subemitter(uint64_t particles, uint64_t subemitter) {
+  if (!streaming()) {
+    return;
+  }
+  rs::Mirror::ParticlesArgs a;
+  a.rid = subemitter;
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const rs::Mirror::ParticlesCall r =
+      mirror().particles_call(particles, PtOp::SetSubemitter, a, current_frame());
+  if (resources().active()) {
+    resources().particles_call(tap_context(), "particles_adopt_subemitter", particles, r.id,
+                               r.accepted, r.version,
+                               rs::MultimeshArgs().id("subemitter", r.ref_id), false);
+  }
 }
 
 bool hooks_adopt_shader(uint64_t rid, const std::string &code) {
@@ -5169,6 +5263,19 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   const Snapshot s = take_snapshot();
 
   json.key("captured").object_begin();
+  {
+    // PM7: plain-Array material parameters by name (element types, size, the form carried).
+    std::lock_guard<std::mutex> lock(g_array_params_mutex);
+    json.key("array_params").object_begin();
+    for (const auto &param : g_array_params) {
+      json.key(param.first).object_begin();
+      for (const auto &form : param.second) {
+        json.field(form.first, static_cast<int64_t>(form.second));
+      }
+      json.object_end();
+    }
+    json.object_end();
+  }
   json.key("canvas_item_add_rect").array_begin();
   for (const RectCapture &capture : s.rects) {
     json.object_begin();

@@ -120,5 +120,13 @@
       "I_TRAILS": ["step-0-prev", "step-0", "step-1-prev", "step-1", "step-2-prev", "step-2", "tail-95", "tail-110"]
     },
     "coverage_band": 2
+  },
+  "late": {
+    "doc": "PM7 (gate8-pt-late-checks.ts, render-stream-12.md \"As built (PM7)\"): the late arm (loader.gd RS_FIXTURE_ARM=late) at fixture frame arm_frame, after every emitter, process material, mesh and texture exists. emitters: the GPUParticles2D nodes adopted (the nine cells and H_CHILD); process_materials: their ParticleProcessMaterials, one each; subemitter: the cell whose entry names another emitter (H_SUB names H_CHILD). The late legs shoot the reference's shots after the arm; pt-late-coverage judges the band from coverage_from_frame on (an adopted emitter starts fresh at the arm, so before that it trails the reference's fill by about arm_frame frames).",
+    "arm_frame": 12,
+    "emitters": 10,
+    "process_materials": 10,
+    "subemitter": "H_SUB",
+    "coverage_from_frame": 46
   }
 }

@@ -4397,6 +4397,11 @@ impl Validator {
                     return Err(adopted("material", m.id));
                 }
             }
+            for p in &tx.particles {
+                if p.origin == Origin::Adopted {
+                    return Err(adopted("particles", p.id));
+                }
+            }
         }
         let decode_engine = self.session.resources.decode == Some("engine");
         for t in &tx.textures {

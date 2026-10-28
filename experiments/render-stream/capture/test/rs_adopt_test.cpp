@@ -387,6 +387,10 @@ bool hooks_adopt_material(uint64_t, uint64_t, const std::vector<rs::AdoptParam> 
 void hooks_adopt_item_material(uint64_t, uint64_t) {}
 void hooks_adopt_material_shader(uint64_t, uint64_t) {}
 void hooks_adopt_instance_param(uint64_t, const std::string &, const void *) {}
+// PM7: the emitter path's hooks (likewise never reached).
+void hooks_internal_material(std::vector<std::string> *, uint64_t *) {}
+bool hooks_adopt_particles(uint64_t, const rs::Mirror::ParticlesAdopt &) { return false; }
+void hooks_adopt_particles_subemitter(uint64_t, uint64_t) {}
 }  // namespace grc
 namespace {
 
@@ -762,6 +766,10 @@ void test_material_scans() {
   check(grc::rs::parse_adopt_fault("no-include-path", true, &f, &error) &&
             f == grc::rs::AdoptFault::NoIncludePath,
         "fault: no-include-path");
+  check(grc::rs::parse_adopt_fault("no-particles", true, &f, &error) &&
+            f == grc::rs::AdoptFault::NoParticles &&
+            std::string(grc::rs::adopt_fault_name(f)) == "no-particles",
+        "fault: no-particles");
   // Inactive: the frame-boundary resolution and the arm pass are no-ops.
   grc::rs::adopt_materials_resolve();
   grc::rs::adopt_materials_at_arm();

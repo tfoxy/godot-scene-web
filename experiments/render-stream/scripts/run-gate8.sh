@@ -187,9 +187,14 @@
 #       then `capture-v11` (the negative control); last, headless:
 #       `headless/capture` (no particles shim: every emitter RID()), `headless-shim/capture`
 #       (GRC_HEADLESS_PARTICLES=synthesize) and, on fixtures/gate8-mm, `headless-pump/capture`
-#       (GRC_PREDRAW_PUMP=1) and its control `headless-nopump/capture`. Judged by
-#       lib/gate8-pt-checks.ts and lib/gate8-pt-receiver-checks.ts; g7-8's web half replays the
-#       receiver legs (run-gate7.sh G8_FILE_LEGS).
+#       (GRC_PREDRAW_PUMP=1) and its control `headless-nopump/capture`. PM7 (render-stream-12.md
+#       "As built (PM7)"), in the same gamescope after the PM6a legs: `late/capture` (armed at
+#       fixture frame 12, RS_FIXTURE_ARM=late, every emitter adopted), `fault-no-particles/capture`
+#       (late, GRC_ADOPT_FAULT=no-particles: the pre-PM7 capture), and the native
+#       `late/receiver`, `late/receiver-patch` and `fault-no-particles/receiver` (G8PT_ONLY_LATE=1
+#       runs only those and the references, a development knob). Judged by
+#       lib/gate8-pt-checks.ts, lib/gate8-pt-receiver-checks.ts and lib/gate8-pt-late-checks.ts;
+#       g7-8's web half replays the receiver legs (run-gate7.sh G8_FILE_LEGS).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -986,6 +991,10 @@ G8PT_TAIL_FRAMES=(95 110)
 # PM6a: the receiver sabotages (render-stream-12.md "As built (PM6a)"): the pre-PM6 planner, and a
 # receiver that ignores particle_emits.
 G8PT_RECEIVER_SABOTAGES=(undrawn-particles ignore-particle-emits)
+# PM7: the late arm (fixtures/gate8-pt/loader.gd RS_FIXTURE_ARM=late at frame 12, after every
+# emitter has drawn), adopted under GRC_ADOPT=arm; GRC_UNKNOWN_ITEM=skip as every late gate 8 leg.
+G8PT_LATE_ENV=(GRC_STREAM_VERSION=12 RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=12 GRC_UNKNOWN_ITEM=skip)
+G8PT_ONLY_LATE="${G8PT_ONLY_LATE:-0}"
 
 # g8pt_extra_seqs <capture dir>: the CSV of the seqs published at each settle frame's previous frame
 # and at each tail frame (the receivers shoot them beside the settle seqs).
@@ -1046,6 +1055,45 @@ run_capture_headless_g8pt() {
 	run_capture "$dir" "" none
 }
 
+# run_g8pt_references: the unarmed references (PM6a), each with its own user data dir.
+run_g8pt_references() {
+	local r
+	for r in reference reference-repeat; do
+		echo "run-gate8: g8pt $r (unarmed, rendered at 640x360, --fixed-fps 60)"
+		mkdir -p "$OUT/g8pt/$r/shots" "$OUT/g8pt/$r/xdg-data"
+		# A private user data dir per reference (CGR: no shared GLES3 shader cache).
+		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8pt/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8pt/$r/steps.jsonl"
+			RS_FIXTURE_QUIT_FRAME="$G8PT_QUIT" XDG_DATA_HOME="$OUT/g8pt/$r/xdg-data")
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		run_rendered "$OUT/g8pt/$r" "$G8PT_FIXTURE_DIR"
+	done
+}
+
+# run_g8pt_late (PM7): the late-armed captures and their native receivers, in g8pt's gamescope
+# (RECORDING_NAME is the /12 one). The fault capture is the pre-PM7 capture: no emitter adopted.
+run_g8pt_late() {
+	echo "run-gate8: g8pt late/capture (/12, armed at frame 12, GRC_ADOPT=arm: emitters adopted)"
+	run_capture_rendered_g8pt "$OUT/g8pt/late/capture" "${G8PT_LATE_ENV[@]}"
+	echo "run-gate8: g8pt fault-no-particles/capture (late, GRC_ADOPT_FAULT=no-particles)"
+	run_capture_rendered_g8pt "$OUT/g8pt/fault-no-particles/capture" "${G8PT_LATE_ENV[@]}" \
+		GRC_ADOPT_FAULT=no-particles
+	legs_par_begin
+	local cap leg extra
+	for leg in late/receiver late/receiver-patch fault-no-particles/receiver; do
+		cap="$OUT/g8pt/${leg%%/*}/capture"
+		extra=""
+		[ -f "$cap/steps.jsonl" ] && extra="$(g8pt_extra_seqs "$cap")"
+		echo "run-gate8: g8pt $leg (native, /12)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+		RECEIVER_EXTRA_SHOTS="$extra"
+		[ "${leg##*/}" = receiver-patch ] && RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		run_rendered_receiver "$cap" "$OUT/g8pt/$leg"
+	done
+	legs_par_end
+	RENDERED_EXTRA_ARGS=()
+}
+
 run_g8pt() {
 	run_import_g8pt
 	echo "run-gate8: g8pt build-rs-core.sh (rs-core-check)"
@@ -1058,9 +1106,18 @@ run_g8pt() {
 	gs_start 640 360 "$OUT/gamescope-g8pt"
 	RECORDING_NAME=recording.rs12
 	PATCH_RECORDING_NAME=recording-patch.rs12
+	local s
+	if [ "$G8PT_ONLY_LATE" = 1 ]; then
+		run_g8pt_references
+		run_g8pt_late
+		gs_teardown "$OUT/gamescope-g8pt"
+		GS_RUN_DIR=""
+		RECORDING_NAME=recording.rs8
+		PATCH_RECORDING_NAME=recording-patch.rs8
+		return 0
+	fi
 	echo "run-gate8: g8pt capture (/12, armed at birth, GRC_ADOPT=arm, rendered, --fixed-fps 60)"
 	run_capture_rendered_g8pt "$OUT/g8pt/capture" GRC_STREAM_VERSION=12
-	local s
 	for s in "${G8PT_SABOTAGES[@]}"; do
 		echo "run-gate8: g8pt sabotage-$s (capture, $s @$G8PT_SABOTAGE_FRAME)"
 		run_capture_rendered_g8pt "$OUT/g8pt/sabotage-$s/capture" GRC_STREAM_VERSION=12 \
@@ -1071,16 +1128,7 @@ run_g8pt() {
 	# RENDERED_EXTRA_ARGS, so each launch sets it): the receivers simulate the emitters on their own
 	# RenderingServer, one transaction a frame.
 	legs_par_begin
-	local r
-	for r in reference reference-repeat; do
-		echo "run-gate8: g8pt $r (unarmed, rendered at 640x360, --fixed-fps 60)"
-		mkdir -p "$OUT/g8pt/$r/shots" "$OUT/g8pt/$r/xdg-data"
-		# A private user data dir per reference (CGR: no shared GLES3 shader cache).
-		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8pt/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8pt/$r/steps.jsonl"
-			RS_FIXTURE_QUIT_FRAME="$G8PT_QUIT" XDG_DATA_HOME="$OUT/g8pt/$r/xdg-data")
-		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
-		run_rendered "$OUT/g8pt/$r" "$G8PT_FIXTURE_DIR"
-	done
+	run_g8pt_references
 	local extra=""
 	[ -f "$OUT/g8pt/capture/steps.jsonl" ] && extra="$(g8pt_extra_seqs "$OUT/g8pt/capture")"
 	echo "run-gate8: g8pt receiver (the /12 full sink replayed natively: the emitters re-issued)"
@@ -1112,6 +1160,7 @@ run_g8pt() {
 	run_rendered_receiver "$OUT/g8pt/sabotage-drop-restart/capture" "$OUT/g8pt/sabotage-drop-restart/receiver-patch"
 	legs_par_end
 	RENDERED_EXTRA_ARGS=()
+	run_g8pt_late
 	rm -rf "$OUT/g8pt/reference/xdg-data" "$OUT/g8pt/reference-repeat/xdg-data"
 	RECORDING_NAME=recording.rs11
 	PATCH_RECORDING_NAME=recording-patch.rs11

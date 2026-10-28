@@ -27,6 +27,9 @@
 // 7. PM6a's receiver helpers (lib/gate8-pt-receiver-checks.ts): ptShots' order, ptInk on a
 //    synthetic image, ptPremiseProblems/ptLifecycleProblems/ptCoverageProblems' verdicts,
 //    particlesTotals and ptReplayProblems (an ignored emit fails), ptWireTotals on a trace.
+// 8. PM7's late-arm helpers: ptLateAdoptProblems on an honest adopted state and each fault (a
+//    short count, no stats, a created entry, an unknown-particles draw, no builtin, an unlinked
+//    subemitter); ptLateFaultProblems; adoptionStats.
 //
 // Exits non-zero if any assertion fails.
 
@@ -35,6 +38,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
+import { adoptionStats, type PtLateTx, ptLateAdoptProblems, ptLateFaultProblems } from "../lib/gate8-pt-late-checks";
 import {
   particlesTotals,
   ptCoverageProblems,
@@ -783,6 +787,65 @@ async function main(): Promise<void> {
       ]),
     );
     expect(wt.emitters === 2 && wt.restarts === 3 && wt.emits === 2, "ptWireTotals: ok emitters, their newest restarts, every emit", wt);
+  }
+
+  // 8. PM7's late-arm helpers (lib/gate8-pt-late-checks.ts).
+  {
+    const late = { arm_frame: 12, emitters: 2, process_materials: 2, subemitter: "H_SUB", coverage_from_frame: 46 };
+    const ent = (id: number, amount: number, sub: number | null, origin = "adopted", status = "ok") => ({
+      id,
+      origin,
+      status,
+      amount,
+      process_material: id,
+      subemitter: sub,
+    });
+    const good = (): PtLateTx => ({
+      table: new Map([
+        [1, ent(1, 12, 2)],
+        [2, ent(2, 2, null)],
+      ]),
+      materials: new Map([
+        [1, { status: "ok", shader: 5 }],
+        [2, { status: "ok", shader: 5 }],
+      ]),
+      shaders: new Map([[5, { status: "ok", builtin: { kind: "particle_process_material" } }]]),
+      items: new Map([
+        [10, { add_particles: 1, unsupported: {} }],
+        [11, { add_particles: 1, unsupported: {} }],
+      ]),
+      item_unsupported: {},
+    });
+    const stats = { emitters: 2, ppm_materials: 2, refused: 0, ppm_refused: 0 };
+    expect(ptLateAdoptProblems(stats, [good()], late, 12).length === 0, "ptLateAdoptProblems: an honest adopted state passes");
+    expect(ptLateAdoptProblems({ ...stats, emitters: 1 }, [good()], late, 12).length === 1, "ptLateAdoptProblems: a short adoption count fails");
+    expect(ptLateAdoptProblems(null, [good()], late, 12).length === 1, "ptLateAdoptProblems: no adoption stats fails");
+    const created = good();
+    created.table.set(2, ent(2, 2, null, "created"));
+    expect(ptLateAdoptProblems(stats, [created], late, 12).some((p) => p.includes("origin created")), "ptLateAdoptProblems: a created entry fails");
+    const unknown = good();
+    unknown.items.set(12, { add_particles: 0, unsupported: { "unknown-particles": 1 } });
+    expect(ptLateAdoptProblems(stats, [unknown], late, 12).some((p) => p.includes("unknown-particles")), "ptLateAdoptProblems: an unknown-particles draw fails");
+    const noBuiltin = good();
+    noBuiltin.shaders.set(5, { status: "unsupported", builtin: null });
+    expect(ptLateAdoptProblems(stats, [noBuiltin], late, 12).length === 2, "ptLateAdoptProblems: a process shader without the builtin fails (per entry)");
+    const unlinked = good();
+    unlinked.table.set(1, ent(1, 12, null));
+    expect(ptLateAdoptProblems(stats, [unlinked], late, 12).some((p) => p.includes("H_SUB")), "ptLateAdoptProblems: an unlinked subemitter fails");
+    const fault: PtLateTx = {
+      ...good(),
+      table: new Map(),
+      items: new Map([
+        [10, { add_particles: 0, unsupported: { "unknown-particles": 1 } }],
+        [11, { add_particles: 0, unsupported: { "unknown-particles": 1 } }],
+      ]),
+    };
+    expect(ptLateFaultProblems({ emitters: 0 }, [fault], late).length === 0, "ptLateFaultProblems: the pre-PM7 state passes");
+    expect(ptLateFaultProblems({ emitters: 0 }, [good()], late).length === 2, "ptLateFaultProblems: an adopted state fails it");
+    expect(
+      adoptionStats({ stream: { gate8: { particles: { adoption: { emitters: 3 } } } } })?.emitters === 3 && adoptionStats({}) === null,
+      "adoptionStats: reads stream.gate8.particles.adoption",
+    );
   }
 
   console.log(`self-test-gate8-pt: ${assertions - failures}/${assertions} assertions passed`);
