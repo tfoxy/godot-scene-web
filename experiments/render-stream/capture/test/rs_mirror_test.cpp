@@ -3525,7 +3525,42 @@ void test_multimesh_lowered_below_v11() {
         "and so is a /10 patch");
 }
 
+// HC1: a set_material that sets the item's current material is no assignment at all: the
+// adoption epoch stays, a different material (or a cleared one coming back) moves it.
+void test_same_value_set_material_keeps_epoch() {
+  Mirror m;
+  bind_root(&m);
+  m.canvas_item_create(100, 1);
+  m.canvas_item_create(101, 1);
+  m.material_create(0x700, 1);
+  m.material_create(0x701, 1);
+  m.set_material(100, 0x700, 1);
+  std::uint64_t epoch = m.material_refs_epoch();
+  m.set_material(100, 0x700, 2);
+  m.set_material(100, 0x700, 3);
+  check(m.material_refs_epoch() == epoch, "the same known material again leaves the epoch");
+  m.set_material(101, 0x700, 3);
+  check(m.material_refs_epoch() == epoch + 1, "another item taking it is an assignment");
+  epoch = m.material_refs_epoch();
+  m.set_material(100, 0x701, 4);
+  check(m.material_refs_epoch() == epoch + 1, "a different material moves the epoch");
+  epoch = m.material_refs_epoch();
+  m.set_material(100, 0, 5);
+  m.set_material(100, 0x701, 6);
+  check(m.material_refs_epoch() == epoch + 1, "null then the old material is a new assignment");
+  epoch = m.material_refs_epoch();
+  m.set_material(100, 0x999, 7);  // unknown RID
+  check(m.material_refs_epoch() == epoch + 1, "an unknown material is an assignment");
+  epoch = m.material_refs_epoch();
+  m.set_material(100, 0x999, 8);
+  check(m.material_refs_epoch() == epoch, "the same unknown RID again leaves the epoch");
+  Snapshot s = m.snapshot(1, 1).state;
+  check(has_material_entry(s, 1) && !item(s, 1)->has_material,
+        "and the item still names an unknown material");
+}
+
 int main() {
+  test_same_value_set_material_keeps_epoch();
   test_multimesh_shadow_and_versions();
   test_multimesh_reasons();
   test_multimesh_publication_and_free();

@@ -1492,6 +1492,16 @@ bool Hub::wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const {
   return false;
 }
 
+bool Hub::has_viewer() const {
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state == State::Streaming || (c.state == State::AwaitHello && c.hello_received)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void Hub::note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns) {
   c.s.max_pending_frames =
       std::max(c.s.max_pending_frames, frame - std::min(frame, c.pending_since_frame));

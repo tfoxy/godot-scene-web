@@ -223,7 +223,7 @@ run_one() {
 			judged=1
 		fi
 		# A rust-core full run with every leg feeds gate 7's source cache.
-		if [ "$rc" = 0 ] && [ "$core" = rust ] && [ "$sab" = true ] && [ "$gate" != gate-minus1 ] &&
+		if [ "$rc" = 0 ] && [ "$core" = rust ] && [ "$sab" = true ] && [ "$gate" != gate-minus1 ] && [ "$gate" != hc1 ] &&
 			[ -z "${RS_VALIDATE_STUB:-}" ]; then
 			(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-tool.ts" \
 				source-provenance --extension "$EXT" --calibration "$CAL" --out "$dir/run/gate7-source.json") >>"$dir/run.log" 2>&1 &&

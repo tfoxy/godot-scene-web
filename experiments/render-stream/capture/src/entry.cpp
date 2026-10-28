@@ -1185,9 +1185,9 @@ std::string root_geometry_json(RootSizePolicy policy, const rs::RootInfo &before
 // evidence/resources.jsonl. Main thread (frame callback, stream end).
 //
 // Always drains (take_lines()), even when the file is not open (GRC_HOOK_LOG=off, or it failed
-// to open): the hooks keep buffering lines into ResourceLog regardless (counters.json and the
-// mirror read from the hooks directly, not from this file, Q3d), so leaving them undrained would
-// grow that buffer without bound over a long run.
+// to open). Since HC1 the log formats no line while no file is open, so that drain is empty; it
+// stays as the one place the buffer is emptied (counters.json and the mirror read from the hooks
+// directly, not from this file, Q3d).
 void resources_drain() {
   const std::string lines = rs::resource_log().take_lines();
   if (lines.empty() || g_stream.resources_file == nullptr) {
@@ -1213,7 +1213,9 @@ void resources_start(uint64_t root_viewport_rid) {
       log_line("resources: cannot open " + g_stream.resources_path);
     }
   }
-  rs::resource_log().start(monotonic_ns(), root_viewport_rid);
+  // HC1: no open file means nobody reads the lines (resources_drain() discards them): the log
+  // keeps its registries but formats nothing.
+  rs::resource_log().start(monotonic_ns(), root_viewport_rid, g_stream.resources_file != nullptr);
 }
 
 void resources_finish() {
@@ -2803,10 +2805,20 @@ void multimesh_states_log() {
   }
 }
 
+// HC1 test knob (see stream_publish): GRC_HC_SABOTAGE=pin-late, read at the first publish.
+bool g_hc_pin_late = false;
+unsigned g_hc_pin_late_frames = 0;
+
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
   }
+  static const bool hc_knob = [] {
+    const char *v = std::getenv("GRC_HC_SABOTAGE");
+    g_hc_pin_late = v != nullptr && std::string(v) == "pin-late";
+    return true;
+  }();
+  (void)hc_knob;
   if (g_stream.spurious_frame != 0 && frame == g_stream.spurious_frame) {
     // spurious-texture-update (gate2-design.md G2b2): a version bump with identical bytes, and
     // its own hook-log line marked "sabotage":true, so the log and the stream still agree.
@@ -2847,9 +2859,15 @@ void stream_publish(uint64_t frame) {
   // P3-TM: this iteration's shader time (a mirror change only while a TIME reader exists).
   rs::mirror_instance().set_shader_time(rs::shader_clock().total);
   const uint64_t epoch = rs::mirror_epoch();
-  // G2c2: with a live server the snapshot is taken at every callback, so the served set always
-  // holds the current state's payloads (D7), even when no connection takes a transaction.
-  const bool serving = g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped;
+  // G2c2: with a live server the served set holds the current state's payloads (D7), pinned
+  // before a transaction naming them goes out. HC1 (host-cost-design.md D6): only while somebody
+  // reads the stream. A listener with no connection that has sent a hello takes no snapshot of
+  // its own (a file sink's still runs), and the first hello's callback is a viewer callback, so
+  // its snapshot is pinned before that connection's first transaction is sent, exactly as when
+  // every callback snapshotted. Payloads an earlier viewer left in the served set stay servable
+  // (in-flight GETs of a viewer that just dropped) until the next viewer's retire() replaces them.
+  const bool serving = g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped &&
+                       g_live.hub->has_viewer();
   if (g_stream.publisher == nullptr && !live_wants && !serving) {
     multimesh_states_log();  // PM1: a free's last state, even without a snapshot
     if (g_live.hub != nullptr) {
@@ -2948,7 +2966,11 @@ void stream_publish(uint64_t frame) {
       published = shared.get();
     }
     std::vector<rs::ServeEvent> events;
-    if (serving) {
+    // HC1 sabotage `pin-late` (env GRC_HC_SABOTAGE, a test knob, never declared on the wire): the
+    // first hello's snapshot is not pinned before the send -- no pin, no retire for the first 30
+    // callbacks with a viewer -- so the first transaction names payloads that answer 404.
+    const bool pin_late = serving && g_hc_pin_late && g_hc_pin_late_frames++ < 30;
+    if (serving && !pin_late) {
       // wrong-hash (G2b2/G2c2): the store corrupted its copy at this publish; serve the same.
       if (g_stream.store != nullptr && !g_stream.store->corrupted_hash().empty()) {
         g_live.served->corrupt(g_stream.store->corrupted_hash());
@@ -2959,7 +2981,7 @@ void stream_publish(uint64_t frame) {
       g_live.served->pin(sendable, frame, &events);
     }
     g_live.hub->on_frame_shared(frame, monotonic_ns(), shared, publish_epoch, snapshot_ns);
-    if (serving) {
+    if (serving && !pin_late) {
       // Phase 2: retained := current ∪ every connection's base; the rest is retired.
       g_live.served->retire(published->payloads, g_live.hub->base_payloads(), frame, &events);
       rs::TapContext ctx;

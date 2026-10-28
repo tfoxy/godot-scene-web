@@ -9,11 +9,18 @@
 //
 //   tsx --conditions=development null-receiver.ts --url ws://127.0.0.1:<port>/render-stream
 //     --out <dir> [--window 1|2] [--protocol 8|11] [--offer zstd-base,zstd|""] [--timeout-s S]
+//     [--delay-ms N] [--fetch-first http://127.0.0.1:<port>]
+//
+// HC1: --delay-ms connects N ms late (a viewer joining a running host). --fetch-first (protocol 8
+// only: plain records) GETs, on the first transaction, every payload hash it names that no inline
+// resource record delivered, and records the HTTP statuses and whether the body hashes to its name
+// (`first_tx` in null-receiver.json). That is HC1's `late-join-served` probe.
 //
 // Writes <dir>/null-receiver.json ({transactions, resource_records, bytes, first_ms, end}) and
 // exits 0 once the end record arrived (1 on a close before it, an error message, or the timeout).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 
 function arg(name: string, fallback?: string): string {
@@ -29,6 +36,10 @@ const window = Number(arg("--window", "2"));
 const timeoutS = Number(arg("--timeout-s", "600"));
 const protocol = arg("--protocol", "8");
 const offer = arg("--offer", "zstd-base,zstd");
+const delayMs = Number(arg("--delay-ms", "0"));
+const fetchFirst = arg("--fetch-first", "");
+if (fetchFirst !== "" && process.argv.includes("--protocol") && protocol !== "8")
+  throw new Error("null-receiver: --fetch-first needs --protocol 8");
 if (protocol !== "8" && protocol !== "11")
   throw new Error("null-receiver: --protocol 8|11");
 // render-stream-11.md "Transport: base-prefix zstd": a coded transaction's envelope (a zstd
@@ -53,11 +64,21 @@ const stats = {
   bytes: 0,
   first_ms: null as number | null,
   end: false,
+  first_tx: null as null | {
+    seq: number;
+    frame: number;
+    hashes: number;
+    statuses: Record<string, number>;
+    bad_sha: number;
+  },
 };
+const inlineHashes = new Set<string>();
+let fetching: Promise<void> | null = null;
 const t0 = performance.now();
 let streamId = "";
 let finished = false;
 
+if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
 const ws = new WebSocket(url, [`render-stream.${protocol}`]);
 ws.binaryType = "arraybuffer";
 const finish = (code: number): void => {
@@ -117,6 +138,36 @@ function ack(seq: number): void {
   }
 }
 
+// Every 64-hex string under a `hash` key in a transaction's meta.
+function namedHashes(node: unknown, out: Set<string>): void {
+  if (Array.isArray(node)) {
+    for (const v of node) namedHashes(v, out);
+  } else if (node !== null && typeof node === "object") {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "hash" && typeof v === "string" && /^[0-9a-f]{64}$/.test(v)) out.add(v);
+      else namedHashes(v, out);
+    }
+  }
+}
+
+async function fetchNamed(meta: Record<string, unknown>): Promise<void> {
+  const named = new Set<string>();
+  namedHashes(meta, named);
+  const todo = [...named].filter((h) => !inlineHashes.has(h));
+  const first = { seq: Number(meta.seq), frame: Number(meta.frame), hashes: todo.length, statuses: {} as Record<string, number>, bad_sha: 0 };
+  stats.first_tx = first;
+  for (const hash of todo) {
+    try {
+      const res = await fetch(`${fetchFirst}/resources/sha256/${hash}`);
+      first.statuses[String(res.status)] = (first.statuses[String(res.status)] ?? 0) + 1;
+      const body = new Uint8Array(await res.arrayBuffer());
+      if (res.status === 200 && createHash("sha256").update(body).digest("hex") !== hash) first.bad_sha += 1;
+    } catch {
+      first.statuses.error = (first.statuses.error ?? 0) + 1;
+    }
+  }
+}
+
 ws.addEventListener("message", (event: MessageEvent) => {
   if (typeof event.data === "string") {
     const message = JSON.parse(event.data) as { type?: string };
@@ -143,12 +194,23 @@ ws.addEventListener("message", (event: MessageEvent) => {
   const meta = recordMeta(bytes, 0);
   if (meta.type === "resource") {
     stats.resource_records += 1;
+    if (typeof meta.hash === "string") inlineHashes.add(meta.hash);
   } else if (meta.type === "transaction") {
+    if (fetchFirst !== "" && fetching === null) {
+      // The first transaction is acked only once its payloads are fetched, as a receiver does
+      // (a base the host moves past retires its payloads); with credit window 1 nothing else is
+      // sent meanwhile.
+      const seq = Number(meta.seq);
+      fetching = fetchNamed(meta).then(() => ack(seq));
+      return;
+    }
     ack(Number(meta.seq));
   } else if (meta.type === "end") {
     stats.end = true;
-    finish(0);
+    void (fetching ?? Promise.resolve()).then(() => finish(0));
   }
 });
-ws.addEventListener("close", () => finish(stats.end ? 0 : 1));
+ws.addEventListener("close", () => {
+  void (fetching ?? Promise.resolve()).then(() => finish(stats.end ? 0 : 1));
+});
 ws.addEventListener("error", () => finish(1));

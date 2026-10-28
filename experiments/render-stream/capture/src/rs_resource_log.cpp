@@ -129,6 +129,9 @@ void ResourceLog::settle(Entry *entry) {
 }
 
 void ResourceLog::emit(const Line &l, const std::shared_ptr<TextureJob> &job) {
+  if (!keep_lines_.load(std::memory_order_relaxed)) {
+    return;  // HC1: nobody reads the line
+  }
   const bool waits = job != nullptr && !job->done() && l.payload != nullptr;
   if (!waits && deferred_.empty()) {
     if (job != nullptr && l.payload != nullptr) {
@@ -167,6 +170,7 @@ void ResourceLog::emit(const Line &l, const std::shared_ptr<TextureJob> &job) {
 }
 
 void ResourceLog::format(std::string *out, const Line &l) const {
+  formatted_.fetch_add(1, std::memory_order_relaxed);
   std::string &o = *out;
   const auto key = [&o](const char *name) {
     o.push_back(',');
@@ -442,9 +446,11 @@ ResourceLog::Entry *ResourceLog::find(std::uint64_t rid) {
   return it == by_rid_.end() ? nullptr : &it->second;
 }
 
-void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid) {
+void ResourceLog::start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid, bool keep_lines) {
   std::lock_guard<std::mutex> lock(mutex_);
   active_ = true;
+  keep_lines_.store(keep_lines, std::memory_order_relaxed);
+  formatted_.store(0, std::memory_order_relaxed);
   t0_ns_ = t0_ns;
   root_viewport_ = root_viewport_rid;
   next_id_ = 1;
@@ -2079,6 +2085,9 @@ MultimeshArgs &MultimeshArgs::floats(const char *key, const float *values, std::
 
 MultimeshArgs &MultimeshArgs::buffer(const char *key, const char *sha_key, const float *data,
                                      std::size_t count) {
+  if (!resource_log().wants_lines()) {
+    return *this;  // HC1: the line is not made, so its digest is not either
+  }
   append_key(&text_, key);
   text_ += std::to_string(count);
   append_key(&text_, sha_key);
@@ -2088,6 +2097,7 @@ MultimeshArgs &MultimeshArgs::buffer(const char *key, const char *sha_key, const
 }
 
 void ResourceLog::emit_text(const std::string &text) {
+  formatted_.fetch_add(1, std::memory_order_relaxed);
   if (deferred_.empty()) {
     pending_ += text;
     return;
@@ -2103,7 +2113,7 @@ void ResourceLog::multimesh_call(const TapContext &ctx, const char *call, std::u
                                  std::uint64_t id, bool accepted, std::uint64_t version,
                                  const MultimeshArgs &args, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!active_) {
+  if (!active_ || !keep_lines_.load(std::memory_order_relaxed)) {
     return;
   }
   std::string o = "{\"frame\":" + std::to_string(ctx.frame);
@@ -2133,7 +2143,7 @@ void ResourceLog::multimesh_call(const TapContext &ctx, const char *call, std::u
 
 void ResourceLog::multimesh_state(const TapContext &ctx, const MultimeshState &state) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!active_) {
+  if (!active_ || !keep_lines_.load(std::memory_order_relaxed)) {
     return;
   }
   std::string o = "{\"frame\":" + std::to_string(state.frame);
