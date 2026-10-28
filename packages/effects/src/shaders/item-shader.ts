@@ -52,6 +52,10 @@
 // the renderer owns the stage's `main()` and does everything around the call. INSTANCE_CUSTOM is
 // the renderer's `GSW_INSTANCE_CUSTOM` when it defines one (an instanced multimesh draw), else
 // `vec4(0.0)`, which is what canvas.glsl has for every draw that is not an instanced multimesh.
+// INSTANCE_ID is `gl_InstanceID` (vertex() only, as Godot): an instanced multimesh draw's instance
+// index, 0 for every draw GSW issues non-instanced (a mesh, a polygon, a rect run). GLES3 numbers a
+// batch of rects by position in the batch (rasterizer_canvas_gles3.cpp:1318), which GSW's merged
+// index ranges do not model: a shader keyed on INSTANCE_ID over rects is the one divergence.
 // `skip_vertex_transform` needs the vertex stage even without a `vertex()` (GLES3 then never applies
 // the model matrix); `world_vertex_coords` without one changes nothing.
 
@@ -256,8 +260,6 @@ const ITEM_UNSUPPORTED_BUILTINS = [
 /** Names `vertex()` (and the helpers it reaches) may not use, each with why. The rest of Godot
  *  4.5.1's canvas_item vertex built-ins (shader_types.cpp:266-280) are admitted. */
 const VERTEX_REFUSED: Record<string, string> = {
-  INSTANCE_ID:
-    "INSTANCE_ID is GLES3's per-batch instance index (one instance per rect), which an item-space draw does not reproduce",
   VERTEX_ID:
     "VERTEX_ID is GLES3's per-batch vertex index, which an item-space draw does not reproduce",
   CUSTOM0:
@@ -765,6 +767,10 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
       );
     if (hasToken(text, "AT_LIGHT_PASS"))
       out.push("#define AT_LIGHT_PASS false");
+    // GLES3 renames it to gl_InstanceID (material_storage.cpp:1248): the index within the draw
+    // call's instances. Only the vertex module reaches this (the fragment refuses the name).
+    if (hasToken(text, "INSTANCE_ID"))
+      out.push("#define INSTANCE_ID gl_InstanceID");
     if (hasToken(text, "INSTANCE_CUSTOM")) {
       const custom = ITEM_SHADER_PRELUDE_NAMES.instanceCustom;
       out.push(
