@@ -2019,6 +2019,15 @@ run_g8ku_live() {
 				i=$((i + 1))
 			done
 			if [ -n "$ktx" ]; then
+				# HC1: the host pins (makes servable) only once a viewer said hello, so a GET right
+				# after the file sink stores the file 404s. Wait for the pin line naming the hash.
+				local j=0 h
+				h="$(basename "$ktx" .ktx2)"
+				while [ "$j" -lt 400 ] &&
+					! grep '"pin"' "$host/evidence/resources.jsonl" 2>/dev/null | grep -q "$h"; do
+					sleep 0.05
+					j=$((j + 1))
+				done
 				curl -s --max-time 5 -H 'Accept-Encoding: zstd, gzip' -D "$host/ktx2-get.headers" \
 					-o "$host/ktx2-get.body" "http://127.0.0.1:$port/resources/sha256/$(basename "$ktx" .ktx2)" ||
 					echo "curl failed: $?" >"$host/ktx2-get.error"
