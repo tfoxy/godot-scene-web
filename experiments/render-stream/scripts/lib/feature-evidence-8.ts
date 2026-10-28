@@ -909,7 +909,7 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
   g8mm:
     "none: /11's multimesh (PM1's capture, PM2's native and web receivers) is render-stream/11, which the /8 manifest does not describe (as g8w11)",
   g8pt:
-    "none: PM5 is the capture side of /12's GPU particles (hook-log-judged legs); the receivers accept /12 and type every particle draw undrawn until PM6, and render-stream/12 is not described by the /8 manifest, so it has no row",
+    "none: /12's GPU particles (PM5's capture, PM6a's native and web receivers) are render-stream/12, which the /8 manifest does not describe (as g8mm)",
   g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",
   g55c: "none: gate 7's carried shader entries (material.*)",
   g55d: "none: gate 7's carried material entries (material.*)",

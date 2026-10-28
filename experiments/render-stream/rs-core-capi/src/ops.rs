@@ -28,6 +28,9 @@ pub enum RidRef {
     /// PM2: a multimesh. Multimeshes share the mesh table and its handle counter (the 3-bit kind
     /// space is full), so this is `Mesh`'s word: the shim frees either with `free_rid`.
     Multimesh(u32),
+    /// PM6a: a /12 particles emitter. Like multimeshes, emitters share the mesh table and its
+    /// handle counter (the 3-bit kind space is full).
+    Particles(u32),
 }
 
 pub const KIND_ITEM: u32 = 0;
@@ -53,6 +56,7 @@ impl RidRef {
             RidRef::Shader(h) => (KIND_SHADER, h),
             RidRef::Material(h) => (KIND_MATERIAL, h),
             RidRef::Multimesh(h) => (KIND_MESH, h),
+            RidRef::Particles(h) => (KIND_MESH, h),
         };
         assert!(handle < (1 << 29), "handle space exhausted");
         (kind << 29) | handle
@@ -227,7 +231,65 @@ opcodes! {
     // UIT (render-stream-11.md "As built (UIT)"): item, bool. RenderingServer does not bind
     // canvas_item_set_use_identity_transform, so the shim calls its vtable slot.
     ItemSetUseIdentityTransform = 75,
+    // PM6a (render-stream-12.md "As built (PM6a)"): /12 GPU particles. Emitter handles live in the
+    // mesh table (RidRef::Particles).
+    // particles handle: particles_create()
+    ParticlesCreate = 76,
+    // particles, u32 which (PT_BOOL_*), bool
+    ParticlesSetBool = 77,
+    // particles, u32 which (PT_INT_*), i64 (enums as their int)
+    ParticlesSetInt = 78,
+    // particles, u32 which (PT_FLOAT_*), f32 (the shim widens it: ptrcall floats are doubles)
+    ParticlesSetFloat = 79,
+    // particles, i64 seed (uint32): particles_set_seed, which 4.5.1 does not bind (the shim calls
+    // the RenderingServer's virtual slot it probed, or counts the call unsettable)
+    ParticlesSetSeed = 80,
+    // particles, aabb6
+    ParticlesSetCustomAabb = 81,
+    // particles, xform12 (Transform3D in memory order)
+    ParticlesSetEmissionTransform = 82,
+    // particles, vec3
+    ParticlesSetEmitterVelocity = 83,
+    // particles, bool enable, f32 length
+    ParticlesSetTrails = 84,
+    // particles, farray of xform12 (an Array of Transform3D)
+    ParticlesSetTrailBindPoses = 85,
+    // particles, u32 which (PT_RID_*), rid
+    ParticlesSetRid = 86,
+    // particles, i64 count
+    ParticlesSetDrawPasses = 87,
+    // particles, i64 pass, rid mesh
+    ParticlesSetDrawPassMesh = 88,
+    // particles
+    ParticlesRestart = 89,
+    // particles, xform12, vec3 velocity, color4, custom4, i64 flags
+    ParticlesEmit = 90,
+    // item, rid particles, rid tex
+    AddParticles = 91,
 }
+
+// PM6a: the `which` operand of the generic particles setters (mirrored in rs_core_capi.h).
+pub const PT_BOOL_EMITTING: u32 = 0;
+pub const PT_BOOL_ONE_SHOT: u32 = 1;
+pub const PT_BOOL_INTERPOLATE: u32 = 2;
+pub const PT_BOOL_FRACTIONAL_DELTA: u32 = 3;
+pub const PT_BOOL_LOCAL: u32 = 4;
+pub const PT_INT_MODE: u32 = 0;
+pub const PT_INT_AMOUNT: u32 = 1;
+pub const PT_INT_FIXED_FPS: u32 = 2;
+pub const PT_INT_DRAW_ORDER: u32 = 3;
+pub const PT_INT_TRANSFORM_ALIGN: u32 = 4;
+pub const PT_FLOAT_AMOUNT_RATIO: u32 = 0;
+pub const PT_FLOAT_LIFETIME: u32 = 1;
+pub const PT_FLOAT_PRE_PROCESS_TIME: u32 = 2;
+pub const PT_FLOAT_EXPLOSIVENESS: u32 = 3;
+pub const PT_FLOAT_RANDOMNESS: u32 = 4;
+pub const PT_FLOAT_SPEED_SCALE: u32 = 5;
+pub const PT_FLOAT_COLLISION_BASE_SIZE: u32 = 6;
+pub const PT_FLOAT_INTERP_TO_END: u32 = 7;
+pub const PT_FLOAT_REQUEST_PROCESS_TIME: u32 = 8;
+pub const PT_RID_PROCESS_MATERIAL: u32 = 0;
+pub const PT_RID_SUBEMITTER: u32 = 1;
 
 /// The planner's output for one call: the op words and the arena their byte operands point into.
 #[derive(Default, Debug)]

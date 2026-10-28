@@ -105,5 +105,20 @@
     "collision": "disabled",
     "collision_scale": false,
     "turbulence": false
+  },
+  "pixels": {
+    "doc": "PM6a (gate8-pt-receiver-checks.ts). regions: each cell's emitter region, inclusive [x0, y0, x1, y1]: the unarmed reference's ink bounds over its eight shots at PM6a plus 16 px, clipped to the cell grid (I_TRAILS, which never draws, a box around its emitter); background: a pixel nothing draws; tail_frames: the fixture's shots after step 2; dark: the shots at which a cell has no ink (D_ONESHOT before its first restart at 20, and at 110, one lifetime after its last restart at 40; I_TRAILS always: 4.5.1's GLES3 does not support particle trails, particles_storage.cpp:301-310, so a trail emitter draws nothing on the gl_compatibility host and receivers alike); coverage_band: pt-coverage's factor.",
+    "regions": {
+      "A_BOX": [58, 30, 194, 97], "B_SPHERE": [244, 21, 367, 116], "C_RING": [502, 17, 630, 119],
+      "D_ONESHOT": [89, 144, 181, 228], "E_FLIP": [293, 140, 393, 221], "F_CURVES": [512, 149, 601, 218],
+      "G_TURB": [85, 276, 148, 334], "H_SUB": [299, 272, 394, 345], "I_TRAILS": [500, 260, 620, 350]
+    },
+    "background": [0, 0],
+    "tail_frames": [95, 110],
+    "dark": {
+      "D_ONESHOT": ["step-0-prev", "step-0", "tail-110"],
+      "I_TRAILS": ["step-0-prev", "step-0", "step-1-prev", "step-1", "step-2-prev", "step-2", "tail-95", "tail-110"]
+    },
+    "coverage_band": 2
   }
 }

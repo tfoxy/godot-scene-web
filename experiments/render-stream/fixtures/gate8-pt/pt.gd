@@ -24,14 +24,20 @@ extends Node
 ## Timeline (fixture frames, --fixed-fps 60): checkpoint 0 is _ready's scene (applied 1, settles
 ## 4); step 1 at 20 (settles 27); step 2 at 40 (settles 47); quit at 90. The step log holds
 ## {"step", "applied_frame", "settle_frame"} per checkpoint. Environment (all optional):
-## RS_FIXTURE_STEP_LOG, RS_FIXTURE_QUIT_FRAME (>= 90).
+## RS_FIXTURE_STEP_LOG, RS_FIXTURE_QUIT_FRAME (>= 90), RS_FIXTURE_SHOT_DIR (PM6a, rendered runs
+## only: step-<k>.png at each settle frame, step-<k>-prev.png at the frame before it, and
+## tail-<f>.png at each TAIL_FRAMES frame the run reaches: D_ONESHOT's second burst is alive at
+## 95 and gone by 110, one lifetime after its restart at 40).
 
 const CHECKPOINTS: Array[Array] = [[1, 4], [20, 27], [40, 47]]
 const QUIT_DEFAULT: int = 90
+## PM6a: the lifecycle shots after the last step (run-gate8.sh's g8pt legs quit at 120).
+const TAIL_FRAMES: Array[int] = [95, 110]
 
 var _frame: int = 0
 var _quit_frame: int = QUIT_DEFAULT
 var _step_log_file: FileAccess
+var _shot_dir: String = ""
 var _failed: bool = false
 var _root: Node2D
 var _dot: ImageTexture
@@ -174,6 +180,12 @@ func _process(_delta: float) -> void:
 			elif k == 2:
 				_step_2()
 			_log_step(k, applied, settle)
+		if _frame == settle - 1:
+			_maybe_take_shot("step-%d-prev.png" % k)
+		if _frame == settle:
+			_maybe_take_shot("step-%d.png" % k)
+	if _frame in TAIL_FRAMES:
+		_maybe_take_shot("tail-%d.png" % _frame)
 	if _frame >= _quit_frame:
 		print("[fixture] quitting frame=%d" % _frame)
 		get_tree().quit(0)
@@ -249,6 +261,11 @@ func _read_environment() -> bool:
 			_error("RS_FIXTURE_QUIT_FRAME must be an integer >= %d (got %s)" % [QUIT_DEFAULT, JSON.stringify(text)])
 			return false
 		_quit_frame = text.to_int()
+	if OS.has_environment("RS_FIXTURE_SHOT_DIR"):
+		_shot_dir = OS.get_environment("RS_FIXTURE_SHOT_DIR")
+		if not _shot_dir.is_absolute_path():
+			_error("RS_FIXTURE_SHOT_DIR must be an absolute path (got %s)" % JSON.stringify(_shot_dir))
+			return false
 	if OS.has_environment("RS_FIXTURE_STEP_LOG"):
 		var step_log: String = OS.get_environment("RS_FIXTURE_STEP_LOG")
 		if not step_log.is_absolute_path():
@@ -270,3 +287,17 @@ func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
 		return
 	_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d}" % [step, applied_frame, settle_frame])
 	_step_log_file.flush()
+
+
+## Rendered runs only: headless has no draw path, so frame_post_draw never fires there.
+func _maybe_take_shot(file_name: String) -> void:
+	if _shot_dir == "":
+		return
+	if DisplayServer.get_name() == "headless":
+		print("[fixture] shot skipped (headless)")
+		return
+	var out_path: String = _shot_dir.path_join(file_name)
+	await RenderingServer.frame_post_draw
+	var image: Image = get_viewport().get_texture().get_image()
+	var err: Error = image.save_png(out_path)
+	print("[fixture] shot saved=%s err=%d" % [out_path, err])

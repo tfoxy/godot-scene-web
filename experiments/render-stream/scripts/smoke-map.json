@@ -116,14 +116,14 @@
       "reach": ["native:gate8@*", "g7:g7-8@web/rust"]
     },
     {
-      "why": "PM5's gate 8 group g8pt (render-stream-12.md \"Fixture and checks (gate 8 group g8pt)\"): fixtures/gate8-pt, its checks and their self-test reach native gate 8 only, which runs g8pt whole; exclusive because g8pt's legs are captures judged against their own hook log plus one native receiver leg that only proves /12 is accepted, and no browser half (g8pt is not in run-gate7.sh's G8_FILE_LEGS: no receiver draws particles until PM6, which drops the exclusivity when it adds g8pt's receiver legs to g7-8)",
+"why": "PM5's gate 8 group g8pt (render-stream-12.md \"Fixture and checks (gate 8 group g8pt)\"; PM6a added the references, the native receivers and their pixel checks): fixtures/gate8-pt, its checks and their self-test reach native gate 8, which runs g8pt whole, and g7-8's web half, which replays g8pt's receiver legs (PM6a dropped PM5's exclusivity)",
       "paths": [
         "experiments/render-stream/fixtures/gate8-pt/**",
         "experiments/render-stream/scripts/lib/gate8-pt-checks.ts",
+        "experiments/render-stream/scripts/lib/gate8-pt-receiver-checks.ts",
         "experiments/render-stream/scripts/test/self-test-gate8-pt.ts"
       ],
-      "reach": ["native:gate8@*"],
-      "exclusive": true
+      "reach": ["native:gate8@*", "g7:g7-8@web/rust"]
     },
     {
       "why": "remote-run plumbing (docs/remote-compute.md): no local leg runs it; remote-determinism.ts has a pure self-test, the wrapper scripts/test-remote-validate.sh",
