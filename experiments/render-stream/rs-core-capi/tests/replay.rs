@@ -325,7 +325,7 @@ fn the_session_is_at_the_streams_version() {
 #[test]
 fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
-    assert_eq!(rs_core_capi::ops::OP_COUNT, 75);
+    assert_eq!(rs_core_capi::ops::OP_COUNT, 76);
 }
 
 /// CG1 (render-stream-10.md "Receivers"): golden-10's states 9 and 10 re-issue the canvas-group
@@ -750,4 +750,31 @@ fn corrupted_payload_is_refused_on_arrival() {
     assert_eq!(core.staged_len(), 0);
     assert_eq!(core.payloads.unstaged, 1);
     assert_eq!(core.payloads.refused, 2);
+}
+
+/// UIT (render-stream-11.md "As built (UIT)"): golden-11's item 18 sets
+/// `canvas_item_set_use_identity_transform` true at 22 and false at 23 (one
+/// `ItemSetUseIdentityTransform` op each, item then the flag), at either encoding; every apply
+/// before 22 is what it was, and the receiver sabotage `ignore-identity-transform` issues neither.
+#[test]
+fn golden_11_reissues_the_identity_flag() {
+    let op = rs_core_capi::ops::Op::ItemSetUseIdentityTransform as u32;
+    let has = |words: &[u32], flag: u32| words.windows(3).any(|w| w[0] == op && w[2] == flag);
+    let g11 = golden().join("../golden-11");
+    for name in ["full.rs11", "patch.rs11", "inline.rs11"] {
+        let path = g11.join(name);
+        let honest = replay_at(&path, 11, false, "");
+        assert!(replay_at(&path, 11, true, "") == honest, "{name}: delta vs full scan");
+        let ignored = replay_at(&path, 11, false, "ignore-identity-transform");
+        // The session's batch, then one per transaction (resources push none), then dispose.
+        assert_eq!(honest.len(), 23 + 2, "{name}");
+        assert_eq!(ignored.len(), honest.len(), "{name}");
+        for n in 0..=21 {
+            assert!(honest[n] == ignored[n], "{name}: apply {n} moved");
+            assert!(!has(&honest[n].0, 1), "{name}: apply {n}");
+        }
+        assert!(has(&honest[22].0, 1), "{name}: 22 sets the flag");
+        assert!(has(&honest[23].0, 0), "{name}: 23 clears it");
+        assert!(!has(&ignored[22].0, 1) && !has(&ignored[23].0, 0), "{name}: sabotage");
+    }
 }

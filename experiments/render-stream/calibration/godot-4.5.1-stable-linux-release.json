@@ -146,7 +146,8 @@
     "particles_set_draw_pass_mesh": 254,
     "particles_set_emission_transform": 256,
     "particles_set_emitter_velocity": 257,
-    "particles_set_interp_to_end": 258
+    "particles_set_interp_to_end": 258,
+    "canvas_item_set_use_identity_transform": 461
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,

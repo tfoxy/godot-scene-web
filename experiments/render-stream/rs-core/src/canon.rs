@@ -642,6 +642,12 @@ fn item(w: &mut W, it: &Item, v: u8) {
             }
         }
     }
+    if it.use_identity_transform {
+        // UIT (render-stream-11.md "As built (UIT)"): present only when true.
+        w.raw(",");
+        w.key("use_identity_transform");
+        w.bool(true);
+    }
     w.raw(",");
     w.key("content_version");
     w.int(it.content_version);

@@ -394,6 +394,32 @@ const ITEM_KEYS_V10: &[&str] = &[
     "content_version",
     "commands",
 ];
+// UIT (render-stream-11.md "As built (UIT)"): /11's optional `use_identity_transform` (only ever
+// `true`), right after copy_to_backbuffer.
+const ITEM_KEYS_V11_IDENTITY: &[&str] = &[
+    "id",
+    "origin",
+    "parent",
+    "children",
+    "visible",
+    "draw_index",
+    "z_index",
+    "z_relative",
+    "behind",
+    "clip",
+    "custom_rect",
+    "visibility_layer",
+    "texture_filter",
+    "texture_repeat",
+    "material",
+    "use_parent_material",
+    "instance_params",
+    "canvas_group",
+    "copy_to_backbuffer",
+    "use_identity_transform",
+    "content_version",
+    "commands",
+];
 const CANVAS_GROUP_KEYS: &[&str] = &["mode", "fit_empty", "blur_mipmaps", "f"];
 const COPY_TO_BACKBUFFER_KEYS: &[&str] = &["f"];
 const PARENT_KEYS: &[&str] = &["kind", "id"];
@@ -2085,6 +2111,8 @@ pub struct ItemMeta {
     pub canvas_group: Option<CanvasGroupMeta>,
     /// /10 only: a non-null `copy_to_backbuffer`'s `f`.
     pub copy_to_backbuffer: Option<u64>,
+    /// UIT, /11 only: the key is present (it is only ever `true`).
+    pub use_identity_transform: bool,
     pub content_version: i64,
     pub commands: Option<Rng>,
 }
@@ -3432,21 +3460,37 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         return Err(ck.schema("\"items\" is not an array"));
     };
     let v10 = version >= 10;
-    let ikeys = if v10 {
-        ITEM_KEYS_V10
-    } else if v5 {
-        ITEM_KEYS_V5
-    } else {
-        ITEM_KEYS
-    };
-    let cv_at = if v10 {
-        19
-    } else if v5 {
-        17
-    } else {
-        14
-    };
+    let v11 = version >= 11;
     for &iv in items {
+        // UIT (render-stream-11.md "As built (UIT)"): one spelling per state, so a present key
+        // must be `true`.
+        let identity = v11 && ck.has_key(iv, "use_identity_transform");
+        if identity {
+            let v = ck.doc.get(iv, "use_identity_transform");
+            if v.and_then(|v| ck.boolean(v)) != Some(true) {
+                return Err(ck.schema(
+                    "an items[] entry has an invalid \"use_identity_transform\" (only true is written)",
+                ));
+            }
+        }
+        let ikeys = if identity {
+            ITEM_KEYS_V11_IDENTITY
+        } else if v10 {
+            ITEM_KEYS_V10
+        } else if v5 {
+            ITEM_KEYS_V5
+        } else {
+            ITEM_KEYS
+        };
+        let cv_at = if identity {
+            20
+        } else if v10 {
+            19
+        } else if v5 {
+            17
+        } else {
+            14
+        };
         let it = (|| {
             let itf = ck.fields(iv, ikeys)?;
             let id = ck.id(itf.at(0))?;
@@ -3488,6 +3532,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
                     instance_params: Rng::default(),
                     canvas_group: None,
                     copy_to_backbuffer: None,
+                    use_identity_transform: identity,
                     content_version,
                     commands: None,
                 },

@@ -1035,6 +1035,10 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
                 c.lit(b"}")?;
             }
         }
+        // UIT (render-stream-11.md "As built (UIT)"): /11's optional key, only ever `true` (any
+        // other spelling falls back to the general path, which reports it).
+        let use_identity_transform =
+            version >= 11 && c.lit(b",\"use_identity_transform\":true").is_some();
         c.lit(b",\"content_version\":")?;
         let content_version = c.int()?;
         c.lit(b",\"commands\":")?;
@@ -1069,6 +1073,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             instance_params,
             canvas_group,
             copy_to_backbuffer,
+            use_identity_transform,
             content_version,
             commands,
         });

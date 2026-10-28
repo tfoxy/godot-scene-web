@@ -36,6 +36,7 @@ namespace {
 struct Gd {
   GDExtensionClassLibraryPtr library = nullptr;
   GDExtensionInterfaceGlobalGetSingleton global_get_singleton = nullptr;
+  GDExtensionInterfaceGetGodotVersion get_godot_version = nullptr;  // UIT
   GDExtensionInterfaceClassdbGetMethodBind classdb_get_method_bind = nullptr;
   GDExtensionInterfaceObjectMethodBindPtrcall ptrcall = nullptr;
   GDExtensionInterfaceObjectDestroy object_destroy = nullptr;
@@ -410,6 +411,42 @@ bool engine_ready() {
 
 inline void rs_call(Rs which, std::initializer_list<const void *> args, void *ret = nullptr) {
   gd.ptrcall(engine.binds[which], engine.rs, args.size() ? args.begin() : nullptr, ret);
+}
+
+// UIT (render-stream-11.md "As built (UIT)"): RenderingServer binds no
+// canvas_item_set_use_identity_transform (rendering_server.cpp has no ClassDB entry; only
+// CPUParticles2D calls it, through CanvasItem), so the shim calls the virtual through the
+// singleton's vtable, as the capture hooks it. 461 is its slot in Godot 4.5.1's RenderingServer
+// (calibration/godot-4.5.1-stable-linux-release.json, the header's declaration order; the Itanium
+// ABI lays the wasm vtable out the same way). RenderingServer derives from Object alone, so the
+// singleton pointer needs no adjustment. A RID is one uint64 passed by value, as hooks.cpp takes
+// it. Any engine other than 4.5.1 refuses the op instead of calling an unknown slot.
+constexpr size_t kUseIdentityTransformSlot = 461;
+struct RidByValue {
+  uint64_t id;
+};
+using FnSetUseIdentityTransform = void (*)(void *, RidByValue, bool);
+
+bool identity_slot_known() {
+  GDExtensionGodotVersion v{};
+  gd.get_godot_version(&v);
+  return v.major == 4 && v.minor == 5 && v.patch == 1;
+}
+
+void set_use_identity_transform(uint64_t item, bool enable) {
+  static const bool known = identity_slot_known();
+  if (!known) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      std::fprintf(stderr, "[rs_core_ext] canvas_item_set_use_identity_transform: no known vtable slot "
+                           "on this engine (4.5.1 only); the item keeps its composed transform\n");
+    }
+    return;
+  }
+  void **vtable = *reinterpret_cast<void ***>(engine.rs);
+  reinterpret_cast<FnSetUseIdentityTransform>(vtable[kUseIdentityTransformSlot])(engine.rs, RidByValue{item},
+                                                                                 enable);
 }
 
 #ifdef __EMSCRIPTEN__
@@ -1585,6 +1622,12 @@ int64_t execute(Instance *inst) {
         rs_call(RS_CANVAS_ITEM_ADD_MULTIMESH, {&item, &mm, &tex});
         break;
       }
+      case rsc::ItemSetUseIdentityTransform: {
+        uint64_t item = r.rid();
+        bool enable = r.b() != 0;
+        set_use_identity_transform(item, enable);
+        break;
+      }
       default:
         std::fprintf(stderr, "[rs_core_ext] unknown op %u at word %zu; the rest of this batch is dropped\n", op,
                      r.at - 1);
@@ -2102,6 +2145,7 @@ bool load(GDExtensionInterfaceGetProcAddress get, GDExtensionClassLibraryPtr lib
   gd.library = library;
   bool ok = true;
   ok &= bind(get, "global_get_singleton", &gd.global_get_singleton);
+  ok &= bind(get, "get_godot_version", &gd.get_godot_version);
   ok &= bind(get, "classdb_get_method_bind", &gd.classdb_get_method_bind);
   ok &= bind(get, "object_method_bind_ptrcall", &gd.ptrcall);
   ok &= bind(get, "object_destroy", &gd.object_destroy);

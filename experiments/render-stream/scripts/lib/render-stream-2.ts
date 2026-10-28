@@ -715,6 +715,8 @@ export interface TransactionItem {
    * order, after instance_params. "f" is the running offset into backbuffer_f32. */
   canvas_group?: TransactionCanvasGroup | null;
   copy_to_backbuffer?: { f: number } | null;
+  /** UIT (render-stream-11.md "As built (UIT)"): /11 only, present only when true. */
+  use_identity_transform?: true;
   content_version: number;
   commands: Command[] | null;
 }
@@ -1456,6 +1458,14 @@ const ITEM_KEYS_V10 = keysWith(
   keysWith(ITEM_KEYS_V5, "instance_params", "canvas_group"),
   "canvas_group",
   "copy_to_backbuffer",
+);
+// UIT (render-stream-11.md "As built (UIT)"): an item that made
+// canvas_item_set_use_identity_transform(true) carries "use_identity_transform": true right after
+// copy_to_backbuffer; the key is absent when false.
+const ITEM_KEYS_V11_IDENTITY = keysWith(
+  ITEM_KEYS_V10,
+  "copy_to_backbuffer",
+  "use_identity_transform",
 );
 const CANVAS_GROUP_KEYS = ["mode", "fit_empty", "blur_mipmaps", "f"];
 const COPY_TO_BACKBUFFER_KEYS = ["f"];
@@ -3629,11 +3639,24 @@ function checkTransactionSchema(
 
   if (!Array.isArray(meta.items)) return err('"items" is not an array');
   for (const it of meta.items) {
+    // UIT (render-stream-11.md "As built (UIT)"): /11's optional use_identity_transform, right
+    // after copy_to_backbuffer, present only when true (one spelling per state).
+    const hasIdentity =
+      isV11 && isPlainObject(it) && "use_identity_transform" in it;
+    if (hasIdentity && it.use_identity_transform !== true) {
+      return err('an items[] entry has an invalid "use_identity_transform" (only true is written)');
+    }
     if (
       !isPlainObject(it) ||
       !hasExactKeys(
         it,
-        isV10 ? ITEM_KEYS_V10 : isV5 ? ITEM_KEYS_V5 : ITEM_KEYS,
+        hasIdentity
+          ? ITEM_KEYS_V11_IDENTITY
+          : isV10
+            ? ITEM_KEYS_V10
+            : isV5
+              ? ITEM_KEYS_V5
+              : ITEM_KEYS,
       ) ||
       !isInt(it.id) ||
       !isOneOf(it.origin, ["created", "root-query", "adopted"] as const) ||
@@ -4977,6 +5000,8 @@ export interface ResolvedItem {
    * at version 10, floats inline in the setter's argument order. */
   canvas_group?: ResolvedCanvasGroup | null;
   copy_to_backbuffer?: { rect: [number, number, number, number] } | null;
+  /** UIT (render-stream-11.md "As built (UIT)"): present (true) only when the item set it. */
+  use_identity_transform?: true;
   content_version: number;
   xform: [number, number, number, number, number, number];
   modulate: [number, number, number, number];
@@ -5561,6 +5586,9 @@ function liftItem(
     ...base,
     ...materialFields,
     ...backbufferFields,
+    ...(it.use_identity_transform === true
+      ? { use_identity_transform: true as const }
+      : {}),
     content_version: it.content_version,
     xform: itemF32.slice(0, 6) as [
       number,

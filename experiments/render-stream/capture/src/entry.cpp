@@ -708,6 +708,11 @@ std::string result_json() {
         json.field("canvas_groups", static_cast<int64_t>(a.canvas_groups));
         json.field("backbuffer_copies", static_cast<int64_t>(a.backbuffer_copies));
       }
+      if (std::find(g_state.plan.planned.begin(), g_state.plan.planned.end(),
+                    "canvas_item_set_use_identity_transform") != g_state.plan.planned.end()) {
+        // UIT (render-stream-11.md "As built (UIT)"): additive, where the hook is planned only.
+        json.field("identity_transforms", static_cast<int64_t>(a.identity_transforms));
+      }
       json.field("non_root_viewports", static_cast<int64_t>(a.non_root_viewports));
       json.field("walk_ns", static_cast<int64_t>(a.walk_ns));
       json.field("apply_ns", static_cast<int64_t>(a.apply_ns));
@@ -2170,6 +2175,7 @@ void stream_start() {
     };
     adopt_config.canvas_group = planned("canvas_item_set_canvas_group_mode");
     adopt_config.copy_to_backbuffer = planned("canvas_item_set_copy_to_backbuffer");
+    adopt_config.identity_transform = planned("canvas_item_set_use_identity_transform");
     switch (sabotage.config.kind) {
     case rs2::SabotageKind::AdoptSkipState: adopt_config.sabotage = rs::AdoptSabotage::SkipState; break;
     case rs2::SabotageKind::AdoptNoRedraw: adopt_config.sabotage = rs::AdoptSabotage::NoRedraw; break;

@@ -45,14 +45,14 @@ const records = async (name: string) =>
 // 1
 {
   const inline = messagesPerTransaction(await records("inline.rs11"), 0);
-  assert(inline.transactions === 21, `inline.rs11: 21 transactions (got ${inline.transactions})`);
+  assert(inline.transactions === 23, `inline.rs11: 23 transactions (got ${inline.transactions})`);
   assert(inline.records > 0 && inline.perTx > 1, `inline.rs11: records counted (${inline.perTx})`);
   const patch = messagesPerTransaction(await records("patch.rs11"), 0);
   assert(patch.records === 0 && patch.perTx === 1, `patch.rs11: one message a transaction (${patch.perTx})`);
-  const warm = messagesPerTransaction(await records("inline.rs11"), 21);
+  const warm = messagesPerTransaction(await records("inline.rs11"), 23);
   assert(warm.transactions === 0 && warm.perTx === 0, "every transaction warm-up: nothing counted");
   const late = messagesPerTransaction(await records("inline.rs11"), 10);
-  assert(late.transactions === 11 && late.records <= inline.records, "warm-up transactions excluded");
+  assert(late.transactions === 13 && late.records <= inline.records, "warm-up transactions excluded");
 }
 
 // 2

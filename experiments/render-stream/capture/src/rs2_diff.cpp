@@ -112,8 +112,12 @@ bool backbuffer_state_equal(const ItemState &a, const ItemState &b) {
          arrays_equal_bits(a.copy_to_backbuffer_rect, b.copy_to_backbuffer_rect);
 }
 
-bool item_state_equal(const ItemState &a, const ItemState &b, bool v10) {
+bool item_state_equal(const ItemState &a, const ItemState &b, bool v10, bool v11) {
   if (v10 && !backbuffer_state_equal(a, b)) {
+    return false;
+  }
+  // UIT (render-stream-11.md "As built (UIT)"): use_identity_transform is on the wire at /11 only.
+  if (v11 && a.use_identity_transform != b.use_identity_transform) {
     return false;
   }
   if (a.parent.kind != b.parent.kind) {
@@ -661,7 +665,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   for (const ItemState &item : cur.items) {
     const ItemState *prev = base_items.find(item.id);
     const bool exists_in_base = prev != nullptr;
-    if (exists_in_base && item_state_equal(*prev, item, v10)) {
+    if (exists_in_base && item_state_equal(*prev, item, v10, v11)) {
       continue;
     }
     ItemEntry entry;

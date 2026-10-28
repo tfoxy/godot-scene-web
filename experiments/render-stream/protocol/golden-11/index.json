@@ -6,19 +6,19 @@
       "file": "full.rs11",
       "hex": "full.hex",
       "decoded": "full.decoded.json",
-      "sha256": "982599ef672f41e79ecc1f1c40ea25b7de772c2b331e38f1943e2efe1979bfc3"
+      "sha256": "ad4e64b1c3779900b12f129ae4ffb81c7c1426eb8c6f1369d816d8be8081ecff"
     },
     {
       "file": "patch.rs11",
       "hex": "patch.hex",
       "decoded": "patch.decoded.json",
-      "sha256": "48b15fd2d58d088f960466c7ed569f2ce21e1b09990a01922662defd424c1f4f"
+      "sha256": "8454fa4732a7fb24c689adab7366e16b82e305242bbf9abff6a05eb126f91e37"
     },
     {
       "file": "inline.rs11",
       "hex": "inline.hex",
       "decoded": "inline.decoded.json",
-      "sha256": "423e21d4e8a3706e40ba48acdaa9bc3c9a3c7d6b2f4bf8bd09200e1753db0679"
+      "sha256": "eccd3ecb63cae59bdec2945a5aa4a3413647a92edf896fd409d1baabb098bfd0"
     }
   ],
   "resolved": "resolved.json",
@@ -431,6 +431,40 @@
         "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
         "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
       ]
+    },
+    {
+      "seq": 22,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 23,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
     }
   ],
   "dynamic_bodies": [
@@ -654,6 +688,18 @@
       "code": "meta-schema",
       "version": 10,
       "description": "a render-stream/10 transaction (golden-10's mini scene) carries a \"multimeshes\" key, which exists only at /11"
+    },
+    {
+      "file": "invalid/identity-transform-false.rs11",
+      "code": "meta-schema",
+      "version": 11,
+      "description": "item 1 carries \"use_identity_transform\": false (the key is present only when true)"
+    },
+    {
+      "file": "invalid/identity-transform-v10.rs10",
+      "code": "meta-schema",
+      "version": 10,
+      "description": "a render-stream/10 transaction (golden-10's mini scene) carries an item's \"use_identity_transform\": true, which exists only at /11"
     }
   ],
   "control": {

@@ -1311,6 +1311,9 @@ async function multimeshCases11(): Promise<void> {
     19: [1, 2, 3],
     20: [1],
     21: [1],
+    // UIT's states 22 and 23 keep multimesh 1.
+    22: [1],
+    23: [1],
   };
   for (const txn of resolved.transactions) {
     const ids = txn.state.multimeshes?.map((m) => m.id);
@@ -1344,7 +1347,26 @@ async function multimeshCases11(): Promise<void> {
       checked++;
     }
   }
-  ok(checked === 11, `golden-11: full.rs11 carries 11 multimesh entries (got ${checked})`);
+  ok(checked === 13, `golden-11: full.rs11 carries 13 multimesh entries (got ${checked})`);
+  // UIT (render-stream-11.md "As built (UIT)"): item 18 resolves with use_identity_transform true
+  // at 22 (right after copy_to_backbuffer) and without the key at 23, at either encoding.
+  for (const name of ["full.rs11", "patch.rs11", "inline.rs11"]) {
+    const r = resolveRecording(await readBytes(GOLDEN11_DIR, name), 11);
+    const item18 = (seq: number) =>
+      r.transactions.find((t) => t.seq === seq)?.state.items.find((i) => i.id === 18);
+    const at22 = item18(22);
+    const keys = at22 ? Object.keys(at22) : [];
+    ok(
+      at22?.use_identity_transform === true &&
+        keys[keys.indexOf("copy_to_backbuffer") + 1] === "use_identity_transform",
+      `golden-11: ${name} seq 22's item 18 resolves with use_identity_transform true after copy_to_backbuffer`,
+    );
+    const at23 = item18(23);
+    ok(
+      at23 !== undefined && !("use_identity_transform" in at23),
+      `golden-11: ${name} seq 23's item 18 resolves without use_identity_transform`,
+    );
+  }
   const patch11 = resolveRecording(await readBytes(GOLDEN11_DIR, "patch.rs11"), 11);
   const mm2 = (seq: number) =>
     patch11.transactions

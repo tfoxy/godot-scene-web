@@ -271,6 +271,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "undrawn-multimesh" => o.apply.lower.undrawn_multimesh = true,
                 // PM3, GSW-only: a particles_animation CanvasItemMaterial drawn as its builtin.
                 "no-flipbook" => o.apply.no_flipbook = true,
+                // UIT: every /11 use_identity_transform ignored, as every receiver drew before UIT.
+                "ignore-identity-transform" => o.apply.ignore_identity_transform = true,
                 "no-evict" => o.no_evict = true,
                 "drop-mesh-surface" => o.apply.mesh.drop_surface = true,
                 "stale-mesh" => o.apply.mesh.stale = true,

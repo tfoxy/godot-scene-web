@@ -469,6 +469,8 @@ enum HookId : size_t {
   kParticlesSetEmissionTransform,
   kParticlesSetEmitterVelocity,
   kParticlesSetInterpToEnd,
+  // UIT (render-stream-11.md "As built (UIT)", record slot 461): conditional like PM1's, /11 only
+  kSetUseIdentityTransform,
   kHookCount,
 };
 
@@ -3292,6 +3294,21 @@ void hook_set_copy_to_backbuffer(void *self, RID item, bool enable, const Rect2 
   }
 }
 
+// --- UIT: canvas_item_set_use_identity_transform (render-stream-11.md "As built (UIT)") -------
+//
+// Conditional like PM1's hooks (/11 only). A global-coordinate CPUParticles2D sends true
+// (cpu_particles_2d.cpp:115 through canvas_item.cpp:1072-1088): its item then draws with the
+// canvas transform alone, while its children keep the composed one (renderer_canvas_cull.cpp:257,
+// :330-333, :373-377). The call passes through first, then the mirror takes the flag.
+
+void hook_set_use_identity_transform(void *self, RID item, bool enable) {
+  bump(kSetUseIdentityTransform);
+  original<FnRidBool>(kSetUseIdentityTransform)(self, item, enable);
+  if (streaming()) {
+    mirror().set_use_identity_transform(item.id, enable, current_frame());
+  }
+}
+
 // --- P3-CK: RenderingServer::draw, the shader clock's source (render-stream-10.md "Shader time")
 //
 // Conditional like CG1's setters (/10 only). GLES3's TIME adds exactly this call's frame_step
@@ -4347,6 +4364,8 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_particles_set_emitter_velocity)},
     {kParticlesSetInterpToEnd, "particles_set_interp_to_end",
      as_ptr(&hook_particles_set_interp_to_end)},
+    {kSetUseIdentityTransform, "canvas_item_set_use_identity_transform",
+     as_ptr(&hook_set_use_identity_transform)},
 };
 
 const char *hook_name(HookId id) { return kSpecs[id].name; }
@@ -4953,6 +4972,12 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
         !backbuffer_hooks_wanted) {
       // CG1 (render-stream-10.md "Capture"): conditional like texture_set_path; neither planned
       // nor omitted below /10. P3-CK's draw (the shader clock) is /10's too.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
+    if (spec.id == kSetUseIdentityTransform && !multimesh_hooks_wanted) {
+      // UIT: conditional like PM1's (the /11 item key); neither planned nor omitted below /11.
       g_skipped[spec.id] = true;
       --g_hooks_total;
       continue;

@@ -112,6 +112,10 @@ pub struct ApplySabotage {
     /// builtin blend, its template's vertex() (the flipbook over INSTANCE_CUSTOM.z) never run:
     /// what GSW drew before PM3.
     pub no_flipbook: bool,
+    /// Native and GSW `ignore-identity-transform` (UIT): every /11 `use_identity_transform` is
+    /// ignored, so a global-coordinate `CPUParticles2D` draws through its ancestors' transform a
+    /// second time: what every receiver drew before UIT.
+    pub ignore_identity_transform: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -265,6 +269,8 @@ struct StructKey {
     /// CG3: the /10 item state (a state-only patch changes the group ranges and copy points).
     canvas_group: Option<CanvasGroup>,
     copy_to_backbuffer: Option<[f32; 4]>,
+    /// UIT: the /11 item flag (what the item draws with, not its children).
+    use_identity_transform: bool,
 }
 
 impl StructKey {
@@ -287,6 +293,7 @@ impl StructKey {
             && self.use_parent_material == it.use_parent_material
             && self.canvas_group == it.canvas_group
             && self.copy_to_backbuffer == it.copy_to_backbuffer
+            && self.use_identity_transform == it.use_identity_transform
     }
 
     fn of(it: &Item) -> Self {
@@ -308,6 +315,7 @@ impl StructKey {
             use_parent_material: it.use_parent_material,
             canvas_group: it.canvas_group,
             copy_to_backbuffer: it.copy_to_backbuffer,
+            use_identity_transform: it.use_identity_transform,
         }
     }
 }
@@ -370,7 +378,12 @@ struct ItemRec {
     /// The walk (`Applier::walk_serial`) that last visited the item: it is visited when that is
     /// the last walk (G7o3: a walk does not reset every record).
     walked: u64,
+    /// The transform handed to children (`parent's · xform`).
     final_xform: Xform,
+    /// UIT: the transform the item draws with (its row, its clip and cull rects): `final_xform`,
+    /// or its canvas's transform alone under `use_identity_transform`
+    /// (renderer_canvas_cull.cpp:257, :373-377).
+    draw_xform: Xform,
     /// The modulate handed to children (`modulate * parent's`).
     child_modulate: [f32; 4],
     /// The canvas modulate this item's row multiplies in (white for unshaded materials).
@@ -505,7 +518,7 @@ fn content_needs_walk(
     }
     let vp = [0.0, 0.0, viewport.width as f32, viewport.height as f32];
     rec.walked == walk_serial
-        && geom::intersects_inclusive(&vp, &geom::xform_rect(&rec.final_xform, &new.rect))
+        && geom::intersects_inclusive(&vp, &geom::xform_rect(&rec.draw_xform, &new.rect))
             != rec.on_screen
 }
 
@@ -513,6 +526,9 @@ fn content_needs_walk(
 struct WalkCanvas {
     id: Id,
     modulate: [f32; 4],
+    /// UIT: the canvas transform (`viewport.global_xform · canvas.xform`), what an item under
+    /// `use_identity_transform` draws with (`_current_camera_transform`).
+    xform: Xform,
 }
 
 /// G7o3: a replaced lowering's buffers (see [`Applier::lower_item`]).
@@ -1841,6 +1857,7 @@ impl Applier {
                     mesh_versions,
                     walked: 0,
                     final_xform: geom::IDENTITY,
+                    draw_xform: geom::IDENTITY,
                     child_modulate: WHITE,
                     canvas_modulate: WHITE,
                     canvas: 0,
@@ -2143,6 +2160,7 @@ impl Applier {
             let canvas_xf = geom::mul(&vp.global_xform, &canvas.xform);
             let cv = WalkCanvas {
                 id: canvas.id,
+                xform: canvas_xf,
                 modulate: if canvas.root && self.sabotage.ignore_canvas_modulate {
                     WHITE
                 } else {
@@ -2433,6 +2451,13 @@ impl Applier {
             return;
         }
         let final_xf = geom::mul(parent_xf, &it.xform);
+        // UIT (renderer_canvas_cull.cpp:330-333, :257, :373-377): the children always get the
+        // composed transform; the item itself draws (and clips and culls) with the canvas's alone.
+        let draw_xf = if it.use_identity_transform && !self.sabotage.ignore_identity_transform {
+            cv.xform
+        } else {
+            final_xf
+        };
         let mut own_clip = clip;
         // G7o3: what the walk reads of the item's record, in one lookup (the walk changes no
         // lowering).
@@ -2453,7 +2478,7 @@ impl Applier {
             } else {
                 content_rect
             };
-            let global = geom::xform_rect(&final_xf, &rect);
+            let global = geom::xform_rect(&draw_xf, &rect);
             let vp = [
                 0.0,
                 0.0,
@@ -2529,7 +2554,7 @@ impl Applier {
         } else {
             content_rect
         };
-        let mut global_rect = geom::xform_rect(&final_xf, &own_rect);
+        let mut global_rect = geom::xform_rect(&draw_xf, &own_rect);
         let mut synth_rect: Option<Rect> = None;
         let mut ranged = false;
         if let (true, Some(g)) = (use_group, group) {
@@ -2596,6 +2621,7 @@ impl Applier {
             rec.walked = self.walk_serial;
             rec.scissor = own_clip;
             rec.final_xform = final_xf;
+            rec.draw_xform = draw_xf;
             rec.child_modulate = modulate;
             rec.canvas = canvas;
             rec.unshaded = unshaded;
@@ -2618,7 +2644,7 @@ impl Applier {
             rec.on_screen = geom::intersects_inclusive(&vp, &global_rect);
             // The item's row (write_row's), now that its walk results are set.
             let row = Row {
-                xform: rec.final_xform,
+                xform: rec.draw_xform,
                 modulate: mul4(
                     mul4(rec.child_modulate, it.self_modulate),
                     rec.canvas_modulate,
@@ -2907,7 +2933,7 @@ impl Applier {
             rec.canvas_modulate,
         );
         let row = Row {
-            xform: rec.final_xform,
+            xform: rec.draw_xform,
             modulate,
             flags: row_flags(&rec.lowered),
             reserved: 0,
@@ -3384,6 +3410,16 @@ impl Applier {
             return true;
         }
         let final_xf = geom::mul(parent_xf, &it.xform);
+        // UIT: the item's own draw transform under `use_identity_transform` is its canvas's, which
+        // a parent's move does not change.
+        let identity = it.use_identity_transform && !self.sabotage.ignore_identity_transform;
+        let draw_xf = match self.items.get(&id) {
+            Some(rec) if identity => state.canvases.get(&rec.canvas).map_or(
+                self.viewport.global_xform,
+                |c| geom::mul(&self.viewport.global_xform, &c.xform),
+            ),
+            _ => final_xf,
+        };
         if let Some(rec) = self.items.get(&id) {
             let rect = if it.custom_rect {
                 it.custom_rect_rect
@@ -3396,7 +3432,7 @@ impl Applier {
                 self.viewport.width as f32,
                 self.viewport.height as f32,
             ];
-            if geom::intersects_inclusive(&vp, &geom::xform_rect(&final_xf, &rect)) != rec.on_screen
+            if geom::intersects_inclusive(&vp, &geom::xform_rect(&draw_xf, &rect)) != rec.on_screen
             {
                 // Moving on or off screen changes what is attached: the walk decides.
                 return false;
@@ -3405,6 +3441,7 @@ impl Applier {
         let ignore_canvas_modulate = self.sabotage.ignore_canvas_modulate;
         if let Some(rec) = self.items.get_mut(&id) {
             rec.final_xform = final_xf;
+            rec.draw_xform = draw_xf;
             rec.child_modulate = modulate;
             rec.canvas_modulate = if rec.unshaded || rec.program_bound {
                 WHITE
@@ -3430,6 +3467,8 @@ mod g7t_tests;
 mod ordering_model;
 #[cfg(test)]
 mod pm3_tests;
+#[cfg(test)]
+mod uit_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

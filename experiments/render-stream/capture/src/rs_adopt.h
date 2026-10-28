@@ -104,6 +104,7 @@ struct AdoptStats {
   std::uint32_t materials = 0;          // adopted items with a material (resolved by G8m)
   std::uint32_t canvas_groups = 0;      // CG1: items given a canvas group (clip_children/CanvasGroup)
   std::uint32_t backbuffer_copies = 0;  // CG1: BackBufferCopy items given a copy
+  std::uint32_t identity_transforms = 0;  // UIT: global-coordinate CPUParticles2D items
   std::uint64_t walk_ns = 0;   // the read-only tree walk
   std::uint64_t apply_ns = 0;  // the mirror application
   std::uint64_t engine_ns = 0; // the redraw requests and the re-raises
@@ -129,6 +130,8 @@ struct AdoptConfig {
   // session that declares the setter unobserved never carries adopted state for it.
   bool canvas_group = false;        // canvas_item_set_canvas_group_mode is hooked
   bool copy_to_backbuffer = false;  // canvas_item_set_copy_to_backbuffer is hooked
+  // UIT (render-stream-11.md "As built (UIT)"): canvas_item_set_use_identity_transform is hooked
+  bool identity_transform = false;
 };
 
 // One adopted CanvasLayer (D5 "Per layer"), in tree order.
@@ -180,6 +183,11 @@ struct AdoptedItem {
   bool blur_mipmaps = false;
   bool copy_to_backbuffer = false;
   rs2::Rect4 copy_rect = rs2::kZeroRect;
+  // UIT, filled only when its hook is planned: a CPUParticles2D with local_coords false sent
+  // canvas_item_set_use_identity_transform(true) (cpu_particles_2d.cpp:110-115). Its RS transform
+  // is still whatever Node2D::_update_transform sent (only set_transform skips it), so `xform`
+  // stays the node's.
+  bool use_identity_transform = false;
 };
 
 struct AdoptPlan {

@@ -4,6 +4,12 @@
 //   cmp-rec.ts [--allow-session <key,...>] [--json] <a> <b>
 //   cmp-rec.ts --tree [--allow-session <key,...>] <dirA> <dirB>   every recording under dirA
 //                                                                 (by relative path) against dirB
+//   --allow-item-key <key>   UIT: a transaction that differs only by `key` on some items (equal
+//                            metas and blocks once the key is deleted from every item, the same
+//                            item entries in the same order) is tolerated and listed as allowed
+//                            (`items[].<key>` with the count of items carrying it); the end
+//                            record's bytes_total may then move by exactly the tolerated records'
+//                            total length change, and its max_record_bytes may grow
 //
 // Two recordings of the same deterministic capture differ only where the run itself differs: the
 // session record's `session_id` and `stream.stream_id`, and the end record's wall-clock stats
@@ -51,7 +57,21 @@ export interface CmpResult {
   allowed: { index: number; type: string; paths: string[] }[];
 }
 
-export function cmpRecordings(a: string, b: string, allowSession: string[]): CmpResult {
+/** `meta` with `key` deleted from every `items[]` entry, and how many entries carried it. */
+function withoutItemKey(meta: Json, key: string): [Json, number] {
+  const m = meta as { items?: Record<string, Json>[] };
+  if (!Array.isArray(m.items)) return [meta, 0];
+  let n = 0;
+  const items = m.items.map((it) => {
+    if (!(key in it)) return it;
+    n++;
+    const { [key]: _drop, ...rest } = it;
+    return rest;
+  });
+  return [{ ...(meta as Record<string, Json>), items } as Json, n];
+}
+
+export function cmpRecordings(a: string, b: string, allowSession: string[], allowItemKey?: string): CmpResult {
   const da = new Uint8Array(readFileSync(a));
   const db = new Uint8Array(readFileSync(b));
   const result: CmpResult = { a, b, identical: false, whole_file_identical: false, records: [0, 0], differing: [], allowed: [] };
@@ -65,6 +85,8 @@ export function cmpRecordings(a: string, b: string, allowSession: string[]): Cmp
   result.records = [ra.length, rb.length];
   const allowed = new Set(["session_id", "stream.stream_id", ...allowSession]);
   const n = Math.max(ra.length, rb.length);
+  // UIT: the length change of the transactions tolerated by --allow-item-key.
+  let itemKeyDelta = 0;
   for (let i = 0; i < n; i++) {
     const x = ra[i];
     const y = rb[i];
@@ -74,8 +96,17 @@ export function cmpRecordings(a: string, b: string, allowSession: string[]): Cmp
     }
     if (x.sha256 === y.sha256) continue;
     const type = String((x.meta as { type?: string }).type ?? "?");
+    if (allowItemKey && type === "transaction") {
+      const [ma, na] = withoutItemKey(x.meta as unknown as Json, allowItemKey);
+      const [mb, nb] = withoutItemKey(y.meta as unknown as Json, allowItemKey);
+      if (JSON.stringify(ma) === JSON.stringify(mb) && JSON.stringify(x.blocks) === JSON.stringify(y.blocks)) {
+        itemKeyDelta += (y.byte_length ?? 0) - (x.byte_length ?? 0);
+        result.allowed.push({ index: i, type, paths: [`items[].${allowItemKey} (a ${na}, b ${nb})`] });
+        continue;
+      }
+    }
     const paths: string[] = [];
-    diffPaths(x.meta as Json, y.meta as Json, "", paths);
+    diffPaths(x.meta as unknown as Json, y.meta as unknown as Json, "", paths);
     if (JSON.stringify(x.blocks) !== JSON.stringify(y.blocks)) paths.push("blocks");
     // An allowed session difference changes the session record's length, and the end record's
     // `bytes_total` (which counts every byte) by exactly that much.
@@ -88,7 +119,12 @@ export function cmpRecordings(a: string, b: string, allowSession: string[]): Cmp
           (p) =>
             (p.startsWith("stats.") && /sha256|digest|_ns_|_us_|_ms_/.test(p)) ||
             (p === "stats.bytes_total" &&
-              (endStats(y).bytes_total ?? 0) - (endStats(x).bytes_total ?? 0) === sessionDelta),
+              (endStats(y).bytes_total ?? 0) - (endStats(x).bytes_total ?? 0) === sessionDelta + itemKeyDelta) ||
+            // UIT: a tolerated item key can grow the largest record, never shrink it.
+            (p === "stats.max_record_bytes" &&
+              itemKeyDelta > 0 &&
+              ((endStats(y) as { max_record_bytes?: number }).max_record_bytes ?? 0) >=
+                ((endStats(x) as { max_record_bytes?: number }).max_record_bytes ?? 0)),
         ));
     (tolerated ? result.allowed : result.differing).push({ index: i, type, paths: paths.length ? paths : ["(bytes only)"] });
   }
@@ -110,17 +146,19 @@ function walk(dir: string): string[] {
 
 function main(argv: string[]): number {
   let allow: string[] = [];
+  let allowItemKey: string | undefined;
   let tree = false;
   let json = false;
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--allow-session") allow = (argv[++i] ?? "").split(",").filter(Boolean);
+    else if (argv[i] === "--allow-item-key") allowItemKey = argv[++i];
     else if (argv[i] === "--tree") tree = true;
     else if (argv[i] === "--json") json = true;
     else rest.push(argv[i]);
   }
   if (rest.length !== 2) {
-    console.error("usage: cmp-rec.ts [--tree] [--allow-session k,...] [--json] <a> <b>");
+    console.error("usage: cmp-rec.ts [--tree] [--allow-session k,...] [--allow-item-key k] [--json] <a> <b>");
     return 2;
   }
   const pairs: [string, string][] = tree
@@ -132,7 +170,7 @@ function main(argv: string[]): number {
     let r: CmpResult;
     try {
       statSync(b);
-      r = cmpRecordings(a, b, allow);
+      r = cmpRecordings(a, b, allow, allowItemKey);
     } catch (e) {
       r = { a, b, identical: false, whole_file_identical: false, records: [0, 0], differing: [{ index: -1, type: "error", paths: [String(e)] }], allowed: [] };
     }

@@ -505,7 +505,9 @@ def state26() -> dict:
     return _copy(STATES[24])
 
 
-STATES: list[dict] = list(g11.STATES)
+# golden-11's states 1-21: UIT's states 22 and 23 (use_identity_transform) stay golden-11's own,
+# so golden-12's 22-26 are PM5's on top of state 21.
+STATES: list[dict] = list(g11.STATES[:21])
 for _make in (state22, state23, state24, state25, state26):
     STATES.append(_make())
 g11.STATES = STATES  # g11.inline_recording's callers pass states explicitly; kept consistent

@@ -102,6 +102,10 @@ void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabot
       mirror.set_copy_to_backbuffer(item.rid, true, item.copy_rect, frame);
       ++stats->backbuffer_copies;
     }
+    if (item.use_identity_transform) {
+      mirror.set_use_identity_transform(item.rid, true, frame);
+      ++stats->identity_transforms;
+    }
     if (item.light) {
       mirror.canvas_light_attach_to_canvas(0, item.light_canvas, frame);
       ++stats->lights;
@@ -196,6 +200,8 @@ enum BindId : int {
   kCanvasGroupIsUsingMipmaps,
   kBackBufferCopyGetCopyMode,
   kBackBufferCopyGetRect,
+  // UIT (render-stream-11.md "As built (UIT)").
+  kCpuParticles2dGetUseLocalCoordinates,
   // G8r: lazy resource adoption (D6, D7).
   kRsTexture2dGet,
   kRsMeshGetSurfaceCount,
@@ -291,6 +297,8 @@ const BindSpec kBinds[kBindCount] = {
     {"CanvasGroup", "is_using_mipmaps", 36873697LL},         // -> bool
     {"BackBufferCopy", "get_copy_mode", 3271169440LL},       // -> BackBufferCopy.CopyMode
     {"BackBufferCopy", "get_rect", 1639390495LL},            // -> Rect2
+    // UIT (render-stream-11.md "As built (UIT)"), const.
+    {"CPUParticles2D", "get_use_local_coordinates", 36873697LL},  // -> bool
     // G8r (gate8-design.md D6, D7), every one read-only.
     {"RenderingServer", "texture_2d_get", 4206205781LL},          // (RID) -> Image
     {"RenderingServer", "mesh_get_surface_count", 2198884583LL},  // (RID) -> int
@@ -469,7 +477,7 @@ std::uint64_t world_canvas_of(void *viewport) {
 struct Tags {
   void *viewport = nullptr, *canvas_item = nullptr, *canvas_layer = nullptr, *light = nullptr,
        *parallax_layer = nullptr, *parallax2d = nullptr, *canvas_modulate = nullptr,
-       *canvas_group = nullptr, *back_buffer_copy = nullptr;
+       *canvas_group = nullptr, *back_buffer_copy = nullptr, *cpu_particles_2d = nullptr;
   static void *tag(const char *name) {
     StringName n(name);
     return g_iface.classdb_get_class_tag(n.ptr());
@@ -484,6 +492,7 @@ struct Tags {
     canvas_modulate = tag("CanvasModulate");
     canvas_group = tag("CanvasGroup");
     back_buffer_copy = tag("BackBufferCopy");
+    cpu_particles_2d = tag("CPUParticles2D");
   }
 };
 
@@ -496,6 +505,7 @@ struct Walker {
   void *root = nullptr;
   bool read_canvas_group = false;        // CG1: AdoptConfig::canvas_group
   bool read_copy_to_backbuffer = false;  // CG1: AdoptConfig::copy_to_backbuffer
+  bool read_identity_transform = false;  // UIT: AdoptConfig::identity_transform
   AdoptPlan plan;
   // canvas RID -> the canvas group's members (top-level items) in tree order
   std::vector<std::pair<std::uint64_t, std::vector<void *>>> groups;
@@ -612,6 +622,11 @@ struct Walker {
             a.canvas_group_mode = static_cast<std::int32_t>(clip);
           }
         }
+      }
+      if (read_identity_transform && as(node, tags.cpu_particles_2d) != nullptr) {
+        // cpu_particles_2d.cpp:110-115: the setter (and the constructor, with false) sends
+        // !local_coords; nothing else in 4.5.1 makes the call.
+        a.use_identity_transform = !get_bool(kCpuParticles2dGetUseLocalCoordinates, node);
       }
       if (read_copy_to_backbuffer && as(node, tags.back_buffer_copy) != nullptr) {
         // back_buffer_copy.cpp:33-45: rect mode sends the rect, viewport mode Rect2(), disabled
@@ -744,6 +759,7 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
   walker.root = root;
   walker.read_canvas_group = config.canvas_group;
   walker.read_copy_to_backbuffer = config.copy_to_backbuffer;
+  walker.read_identity_transform = config.identity_transform;
   walker.visit(root, nullptr, 0, 0);
   const std::uint64_t t1 = now_ns();
   apply_adopt_plan(mirror_instance(), walker.plan, config.sabotage, config.arm_frame, &stats);

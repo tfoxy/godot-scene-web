@@ -8298,20 +8298,354 @@
     },
     {
       "offset": 87090,
+      "byte_length": 1920,
+      "sha256": "1add45dd9473bf1e302e30878708cb01f697ee98ef83135f07e43e452212a27a",
+      "meta": {
+        "type": "transaction",
+        "seq": 22,
+        "frame": 22,
+        "encoding": "patch",
+        "base_seq": 21,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [
+          {
+            "id": 16,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [
+              18
+            ],
+            "visible": true,
+            "draw_index": 12,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 2,
+            "commands": null
+          },
+          {
+            "id": 18,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 16
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "use_identity_transform": true,
+            "content_version": 1,
+            "commands": [
+              {
+                "op": "add_rect",
+                "aa": false,
+                "f": 0
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 36
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 8
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          192.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          8.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [
+          0.0,
+          0.0,
+          8.0,
+          8.0,
+          1.0,
+          0.25,
+          0.5,
+          1.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 89010,
+      "byte_length": 1335,
+      "sha256": "3cc13ddfd75c64af40b2ab9f113bc7598a913d4486e42134010377cdbc3c8d2e",
+      "meta": {
+        "type": "transaction",
+        "seq": 23,
+        "frame": 23,
+        "encoding": "patch",
+        "base_seq": 22,
+        "status": "ok",
+        "failures": [],
+        "unsupported": null,
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "removed_canvases": [],
+        "removed_items": [],
+        "removed_textures": [],
+        "removed_meshes": [],
+        "removed_shaders": [],
+        "removed_materials": [],
+        "canvases": [],
+        "items": [
+          {
+            "id": 18,
+            "origin": "created",
+            "parent": {
+              "kind": "item",
+              "id": 16
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "commands": null
+          }
+        ],
+        "textures": [],
+        "meshes": [],
+        "shaders": [],
+        "materials": [],
+        "blocks": [
+          {
+            "name": "item_f32",
+            "type": "f32",
+            "count": 18
+          },
+          {
+            "name": "canvas_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "cmd_i32",
+            "type": "i32",
+            "count": 0
+          },
+          {
+            "name": "mesh_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "param_f64",
+            "type": "f64",
+            "count": 0
+          },
+          {
+            "name": "backbuffer_f32",
+            "type": "f32",
+            "count": 0
+          },
+          {
+            "name": "mesh_u8",
+            "type": "u8",
+            "count": 0
+          },
+          {
+            "name": "mm_f32",
+            "type": "f32",
+            "count": 0
+          }
+        ]
+      },
+      "blocks": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          8.0,
+          64.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {
+          "u8_bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        []
+      ]
+    },
+    {
+      "offset": 90345,
       "byte_length": 290,
-      "sha256": "75a4682e0ebf159f957025abee8cb8789f1efb9e7a3095c667ee27c4e99c6558",
+      "sha256": "e1c61f873af1daee03b75e6ba095e67c062a3556b3f78f34d9e3f08d6fcaa470",
       "meta": {
         "type": "end",
-        "transactions": 21,
+        "transactions": 23,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 87090,
+          "bytes_total": 90345,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 12345,
           "max_record_bytes": 15097,
           "full_transactions": 4,
-          "patch_transactions": 17,
+          "patch_transactions": 19,
           "resource_records": 0,
           "resource_bytes": 0
         },

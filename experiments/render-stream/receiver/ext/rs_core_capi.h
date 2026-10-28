@@ -186,7 +186,9 @@ enum Op : uint32_t {
   MultimeshSetVisibleInstances = 72,
   MultimeshSetBuffer = 73,
   AddMultimesh = 74,
-  OP_COUNT = 75,
+  // UIT: item, bool (canvas_item_set_use_identity_transform, through its vtable slot).
+  ItemSetUseIdentityTransform = 75,
+  OP_COUNT = 76,
 };
 
 // vt.rs tags.

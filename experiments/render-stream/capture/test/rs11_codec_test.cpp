@@ -48,7 +48,7 @@ using namespace grc::rs2;  // NOLINT
 using namespace grc::rs2;  // NOLINT
 
 int g_failures = 0;
-constexpr int kStates = 21;  // golden-11's states (make_golden.py STATES)
+constexpr int kStates = 23;  // golden-11's states (make_golden.py STATES)
 
 void check(bool condition, const char *what) {
   if (!condition) {
@@ -743,6 +743,15 @@ Snapshot state11(int n) {
   }
   if (n >= 17) {
     add_multimesh_states(&s, n);
+  }
+  if (n >= 22) {
+    // UIT (make_golden.py state22()/state23()): item 18, a child of item 16, with
+    // use_identity_transform true; at 23 it turns false (the key absent), nothing else.
+    find(s, 16)->children = {18};
+    ItemState it = bb_item(18, ParentRef{ParentKind::Item, 16}, {}, 8.0f, 0,
+                           {golden::add_rect({0.0f, 0.0f, 8.0f, 8.0f}, {1.0f, 0.25f, 0.5f, 1.0f})});
+    it.use_identity_transform = n == 22;
+    s.items.push_back(it);
   }
   return s;
 }

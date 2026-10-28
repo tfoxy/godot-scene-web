@@ -96,6 +96,8 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8mm/receiver-patch"),
   leg("g8mm/receiver-v10"),
   leg("g8mm/sabotage-undrawn-multimesh/receiver"),
+  // UIT: the pre-UIT receiver (every /11 use_identity_transform ignored), GSW on the same name.
+  leg("g8mm/sabotage-ignore-identity-transform/receiver"),
   leg("g8mm/sabotage-perturb-instance/receiver-patch"),
   leg("g8mm/sabotage-stale-buffer/receiver-patch"),
   {
@@ -217,6 +219,7 @@ export const GATE8_RECEIVER_CHECKS: {
     "mm-reference",
     "mm-state",
     "mm-reference-catches-undrawn-multimesh",
+    "mm-reference-catches-ignore-identity-transform",
     "mm-reference-catches-perturb-instance",
     "mm-reference-catches-stale-buffer",
     // g8kp (G8kb)

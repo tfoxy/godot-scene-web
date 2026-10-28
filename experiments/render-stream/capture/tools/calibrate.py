@@ -227,6 +227,10 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("particles_set_emission_transform", ("particles_set_emission_transform",)),
     ("particles_set_emitter_velocity", ("particles_set_emitter_velocity",)),
     ("particles_set_interp_to_end", ("particles_set_interp_to_end",)),
+    # UIT (render-stream-11.md "As built (UIT)") -- canvas_item_set_use_identity_transform, the
+    # call a global-coordinate CPUParticles2D makes. Hooked only by a /11 session, like PM1's:
+    # it adds no calibrator version, and below /11 it is neither planned nor omitted.
+    ("canvas_item_set_use_identity_transform", ("canvas_item_set_use_identity_transform",)),
 )
 
 ET_EXEC = 2
