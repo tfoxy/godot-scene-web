@@ -36,6 +36,34 @@ pub struct LDraw {
     /// stores them per instance (rasterizer_canvas_gles3.cpp:999-1004), drawn with
     /// `gsw_canvas_draw_list::DRAW_MSDF`.
     pub msdf: Option<[f32; 2]>,
+    /// PM3: an `add_multimesh` surface, drawn once per instance
+    /// (`gsw_canvas_draw_list::DRAW_INSTANCED`). Its vertices are the mesh's own (mesh-local).
+    pub instanced: Option<LInstanced>,
+}
+
+/// PM3: what an instanced [`LDraw`] draws: `count` instances of `multimesh`, whose instance
+/// transforms the item's draw transform (`add_set_transform`), when set, precedes: GLES3 draws a
+/// multimesh with `base_transform * draw_transform` as the model matrix, times each instance.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct LInstanced {
+    pub multimesh: Id,
+    pub count: u32,
+    pub draw_xform: Option<Xform>,
+}
+
+/// PM3: how an `add_multimesh` draws, as the tables see the multimesh.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct MultimeshDraw {
+    /// The mesh to instance when the multimesh can be drawn (`ok`, `2d`, a mesh set, its buffer
+    /// held); `None` otherwise (Godot draws nothing: a null mesh, a 3D format, a freed RID).
+    pub mesh: Option<Id>,
+    /// `multimesh_get_instances_to_draw`: `visible`, or every instance when it is -1.
+    pub count: u32,
+    /// `multimesh_get_aabb` as a 2D rect: the custom AABB when one is set, else the drawn
+    /// instances' transforms over the mesh's AABB (`_multimesh_re_create_aabb`).
+    pub rect: Rect,
+    /// Everything the lowering read but the buffer's floats: a re-lowering is due when it moves.
+    pub key: u64,
 }
 
 /// The slice's typed approximations and skips (G7x "Scope": every shortcut is listed). Each
@@ -64,9 +92,12 @@ pub enum Shortcut {
     UnsupportedCommand,
     /// An `add_mesh` naming a mesh that is unsupported, freed or has no payload: not drawn.
     MeshUnavailableSkipped,
-    /// /11 (PM1): an `add_multimesh`. The wire carries the multimesh and its buffer, but this
-    /// executor does not draw instances yet (PM3): not drawn, counted.
+    /// /11 (PM1): an `add_multimesh` not drawn, counted: what this executor did before PM3 drew
+    /// instances, and now only the receiver sabotage `undrawn-multimesh`.
     MultimeshUndrawn,
+    /// PM3: an `add_multimesh` that cannot be drawn: an unknown id, a `freed` or `unsupported`
+    /// multimesh, no mesh set, or its buffer not held. Godot draws nothing for the first four too.
+    MultimeshUnavailableSkipped,
 }
 
 impl Shortcut {
@@ -81,6 +112,7 @@ impl Shortcut {
             Shortcut::UnsupportedCommand => "unsupported-command",
             Shortcut::MeshUnavailableSkipped => "mesh-unavailable-skipped",
             Shortcut::MultimeshUndrawn => "multimesh-undrawn",
+            Shortcut::MultimeshUnavailableSkipped => "multimesh-unavailable-skipped",
         }
     }
     /// Whether the shortcut means a command is not drawn at all (a typed skip, for
@@ -93,6 +125,7 @@ impl Shortcut {
                 | Shortcut::UnsupportedCommand
                 | Shortcut::MeshUnavailableSkipped
                 | Shortcut::MultimeshUndrawn
+                | Shortcut::MultimeshUnavailableSkipped
         )
     }
 }
@@ -121,6 +154,9 @@ pub struct LowerSabotage {
     /// GSW-only `msdf-px-range` (G7tm): every MSDF draw takes half the wire's `px_range`, so its
     /// coverage ramps over twice the screen distance (glyph edges blur, thin strokes fade).
     pub msdf_px_range: bool,
+    /// PM3's receiver sabotage `undrawn-multimesh`: every `add_multimesh` is skipped and counted
+    /// as `multimesh-undrawn`, what GSW drew before PM3.
+    pub undrawn_multimesh: bool,
 }
 
 /// One item's lowered content: valid until its `content_version` or a dependency changes.
@@ -137,6 +173,11 @@ pub struct Lowered {
     pub texture_deps: Vec<Id>,
     /// Wire mesh ids whose geometry was used (re-lower when one changes version).
     pub mesh_deps: Vec<Id>,
+    /// PM3: wire multimesh ids drawn, with [`MultimeshDraw::key`] as lowered (re-lower when it
+    /// moves; the instances themselves are written at assembly, not lowered).
+    pub multimesh_deps: Vec<(Id, u64)>,
+    /// PM3: `add_multimesh` commands lowered into instanced draws (evidence).
+    pub multimesh_drawn: u32,
 }
 
 impl Lowered {
@@ -183,6 +224,16 @@ pub trait Tables {
     /// The surfaces of a drawable mesh (`ok`, every payload present), with its `mesh_get_aabb`
     /// rect; `None` when it cannot be drawn.
     fn mesh(&self, id: Id) -> Option<(Vec<&MeshGeometry>, Rect)>;
+    /// PM3: how an `add_multimesh` of wire multimesh `id` draws; `None` for an id the table does
+    /// not hold.
+    fn multimesh(&self, _id: Id) -> Option<MultimeshDraw> {
+        None
+    }
+    /// [`MultimeshDraw::key`] alone (an applier asks it of every multimesh-drawing item when a
+    /// multimesh changes, so an implementation may skip the rect).
+    fn multimesh_key(&self, id: Id) -> Option<u64> {
+        self.multimesh(id).map(|d| d.key)
+    }
 }
 
 struct Builder<'a> {
@@ -226,6 +277,7 @@ impl<'a> Builder<'a> {
             force_repeat,
             clip_ignored: self.ignoring,
             msdf: None,
+            instanced: None,
         });
         self.out.draws.len() - 1
     }
@@ -247,6 +299,66 @@ impl<'a> Builder<'a> {
             item: 0,
         });
         self.out.verts.len() as u32 - 1
+    }
+
+    /// One mesh surface's triangles (GLES3 TYPE_MESH and TYPE_MULTIMESH): `modulate` times the
+    /// colour attribute, through the current draw transform.
+    fn surface(&mut self, s: &MeshGeometry, modulate: &[f32; 4], cols_buf: &mut Vec<[f32; 4]>) {
+        let n = s.positions.len();
+        // GLES3 TYPE_MESH: modulation = base_color · modulate times the colour attribute.
+        // G7o3: without a colour attribute, one colour (what `polygon` makes of one
+        // per vertex or of a single one alike), and the arrays borrowed, not copied.
+        let cols: &[[f32; 4]] = match &s.colors {
+            Some(c) => {
+                cols_buf.clear();
+                cols_buf.extend(c.iter().map(|c| mul4(*c, *modulate)));
+                &cols_buf
+            }
+            None => std::slice::from_ref(modulate),
+        };
+        let uvs: &[[f32; 2]] = s.uvs.as_deref().unwrap_or(&[]);
+        let idx: &[u32] = s.indices.as_deref().unwrap_or(&[]);
+        match s.primitive {
+            Primitive::Triangles => self.polygon(&s.positions, cols, uvs, idx, false),
+            Primitive::TriangleStrip => self.polygon(&s.positions, cols, uvs, idx, true),
+            // GL_LINES, GL_LINE_STRIP and GL_POINTS (size 1): the hairline quads.
+            Primitive::Lines | Primitive::LineStrip | Primitive::Points => {
+                self.out.note(Shortcut::HairlineAsQuads);
+                let order: Vec<usize> = if idx.is_empty() {
+                    (0..n).collect()
+                } else {
+                    idx.iter().map(|&i| i as usize).filter(|&i| i < n).collect()
+                };
+                let at = |i: usize| {
+                    let c = if s.colors.is_some() {
+                        cols[i]
+                    } else {
+                        *modulate
+                    };
+                    (s.positions[i], c)
+                };
+                match s.primitive {
+                    Primitive::Points => {
+                        for &i in &order {
+                            let (p, c) = at(i);
+                            self.point_quad(p, c);
+                        }
+                    }
+                    Primitive::Lines => {
+                        for pair in order.chunks_exact(2) {
+                            let ((p0, c0), (p1, c1)) = (at(pair[0]), at(pair[1]));
+                            self.hairline(p0, p1, c0, c1);
+                        }
+                    }
+                    _ => {
+                        for w in order.windows(2) {
+                            let ((p0, c0), (p1, c1)) = (at(w[0]), at(w[1]));
+                            self.hairline(p0, p1, c0, c1);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Godot's rect quad (canvas.glsl, `vertex_base` order 0:(0,0) 1:(0,1) 2:(1,1) 3:(1,0), drawn
@@ -710,6 +822,8 @@ pub fn lower_reusing(
     spare.shortcuts.clear();
     spare.texture_deps.clear();
     spare.mesh_deps.clear();
+    spare.multimesh_deps.clear();
+    spare.multimesh_drawn = 0;
     let mut b = Builder {
         out: spare,
         xf: None,
@@ -732,8 +846,56 @@ pub fn lower_reusing(
                 }
             }
             Command::Unsupported { .. } => b.out.note(Shortcut::UnsupportedCommand),
-            // PM1: typed as undrawn until PM3 draws instances.
-            Command::Multimesh { .. } => b.out.note(Shortcut::MultimeshUndrawn),
+            Command::Multimesh { .. } if sab.undrawn_multimesh => {
+                b.out.note(Shortcut::MultimeshUndrawn)
+            }
+            Command::Multimesh { multimesh, tex } => {
+                // PM3: GLES3's TYPE_MULTIMESH (rasterizer_canvas_gles3.cpp:1179-1250, 1386-1513):
+                // each mesh surface drawn once per instance, modulate white (the item's alone).
+                let Some(mm) = tables.multimesh(*multimesh) else {
+                    b.out.note(Shortcut::MultimeshUnavailableSkipped);
+                    continue;
+                };
+                b.out.multimesh_deps.push((*multimesh, mm.key));
+                // Item::get_rect: multimesh_get_aabb through the draw transform.
+                let Some(mesh) = mm.mesh else {
+                    b.out.note(Shortcut::MultimeshUnavailableSkipped);
+                    continue;
+                };
+                b.add_rect_bounds(mm.rect);
+                if !b.out.mesh_deps.contains(&mesh) {
+                    b.out.mesh_deps.push(mesh);
+                }
+                if mm.count == 0 {
+                    continue;
+                }
+                let Some((surfaces, _)) = tables.mesh(mesh) else {
+                    b.out.note(Shortcut::MeshUnavailableSkipped);
+                    continue;
+                };
+                let Some((texref, _)) = b.uv_scale(*tex) else {
+                    b.out.note(Shortcut::TextureUnavailableSkipped);
+                    continue;
+                };
+                let saved = b.xf.take();
+                let instanced = LInstanced {
+                    multimesh: *multimesh,
+                    count: mm.count,
+                    draw_xform: saved,
+                };
+                b.out.multimesh_drawn += 1;
+                let mut cols_buf: Vec<[f32; 4]> = Vec::new();
+                for s in surfaces {
+                    // GLES3 draws surface by surface, every instance of one before the next.
+                    let d = b.begin(texref, false);
+                    b.surface(s, &[1.0; 4], &mut cols_buf);
+                    b.end(d);
+                    if let Some(ld) = b.out.draws.get_mut(d) {
+                        ld.instanced = Some(instanced);
+                    }
+                }
+                b.xf = saved;
+            }
             Command::Rect { aa, rect, color } => {
                 // TYPE_RECT untextured: dst normalized to a positive size, src (0,0,1,1).
                 let mut dst = *rect;
@@ -1207,61 +1369,7 @@ pub fn lower_reusing(
                 let d = b.begin(texref, false);
                 let mut cols_buf: Vec<[f32; 4]> = Vec::new();
                 for s in surfaces {
-                    let n = s.positions.len();
-                    // GLES3 TYPE_MESH: modulation = base_color · modulate times the colour attribute.
-                    // G7o3: without a colour attribute, one colour (what `polygon` makes of one
-                    // per vertex or of a single one alike), and the arrays borrowed, not copied.
-                    let cols: &[[f32; 4]] = match &s.colors {
-                        Some(c) => {
-                            cols_buf.clear();
-                            cols_buf.extend(c.iter().map(|c| mul4(*c, *modulate)));
-                            &cols_buf
-                        }
-                        None => std::slice::from_ref(modulate),
-                    };
-                    let uvs: &[[f32; 2]] = s.uvs.as_deref().unwrap_or(&[]);
-                    let idx: &[u32] = s.indices.as_deref().unwrap_or(&[]);
-                    match s.primitive {
-                        Primitive::Triangles => b.polygon(&s.positions, cols, uvs, idx, false),
-                        Primitive::TriangleStrip => b.polygon(&s.positions, cols, uvs, idx, true),
-                        // GL_LINES, GL_LINE_STRIP and GL_POINTS (size 1): the hairline quads.
-                        Primitive::Lines | Primitive::LineStrip | Primitive::Points => {
-                            b.out.note(Shortcut::HairlineAsQuads);
-                            let order: Vec<usize> = if idx.is_empty() {
-                                (0..n).collect()
-                            } else {
-                                idx.iter().map(|&i| i as usize).filter(|&i| i < n).collect()
-                            };
-                            let at = |i: usize| {
-                                let c = if s.colors.is_some() {
-                                    cols[i]
-                                } else {
-                                    *modulate
-                                };
-                                (s.positions[i], c)
-                            };
-                            match s.primitive {
-                                Primitive::Points => {
-                                    for &i in &order {
-                                        let (p, c) = at(i);
-                                        b.point_quad(p, c);
-                                    }
-                                }
-                                Primitive::Lines => {
-                                    for pair in order.chunks_exact(2) {
-                                        let ((p0, c0), (p1, c1)) = (at(pair[0]), at(pair[1]));
-                                        b.hairline(p0, p1, c0, c1);
-                                    }
-                                }
-                                _ => {
-                                    for w in order.windows(2) {
-                                        let ((p0, c0), (p1, c1)) = (at(w[0]), at(w[1]));
-                                        b.hairline(p0, p1, c0, c1);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    b.surface(s, modulate, &mut cols_buf);
                 }
                 b.end(d);
                 b.xf = saved;

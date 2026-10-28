@@ -129,6 +129,10 @@ impl MeshResidency {
                 .iter()
                 .filter_map(|c| match c {
                     crate::state::Command::Mesh { mesh, .. } => Some(*mesh),
+                    // PM3: an instanced draw names its multimesh's mesh.
+                    crate::state::Command::Multimesh { multimesh, .. } => {
+                        state.multimeshes.get(multimesh).and_then(|m| m.mesh)
+                    }
                     _ => None,
                 })
                 .collect();

@@ -222,6 +222,8 @@ export interface RustParts {
   /** G8g: the float payload formats taken as RGBA8 (rs-core's quantization) and the caveat. */
   float_quantized?: string[];
   caveats?: string[];
+  /** PM3: the /11 multimesh counters (applied.json `w11.multimesh`, the native receiver's keys). */
+  w11_multimesh?: Record<string, number>;
   transactions: {
     /** G7l: the connection (1 in file mode). */
     stream?: number;
@@ -545,6 +547,7 @@ export function appliedJson(r: Report): Record<string, unknown> {
     fetches: full ? r.fetches : null,
     uploads: full ? rust.uploads : null,
     mesh_uploads: full ? (rust.mesh_uploads ?? []) : null,
+    ...(rust.w11_multimesh ? { w11: { multimesh: rust.w11_multimesh } } : {}),
     resources_summary: {
       distinct_fetched: r.distinctFetched,
       fetched_bytes: sum((t) => t.fetched_bytes),

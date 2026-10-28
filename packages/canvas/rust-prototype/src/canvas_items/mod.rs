@@ -327,6 +327,12 @@ layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec4 a_color;  // STRAIGHT
 layout(location = 3) in uint a_item;
+// PM3: the draw's instance (identity, white and zero custom unless DRAW_INSTANCED).
+layout(location = 4) in vec4 a_inst0;
+layout(location = 5) in vec4 a_inst1;
+layout(location = 6) in vec4 a_inst_color;
+layout(location = 7) in vec4 a_inst_custom;
+#define GSW_INSTANCE_CUSTOM a_inst_custom
 uniform sampler2D u_items;
 uniform vec4 u_projection;
 uniform bool u_godot_screen;
@@ -346,13 +352,15 @@ void main() {{
   vec4 gsw_t2 = texelFetch(u_items, gsw_at + ivec2(2, 0), 0);
   mat4 gsw_final = mat4(vec4(gsw_t0.xy, 0.0, 0.0), vec4(gsw_t0.zw, 0.0, 0.0),
                         vec4(0.0, 0.0, 1.0, 0.0), vec4(gsw_t1.xy, 0.0, 1.0));
-  mat4 gsw_model = gsw_canvas_inverse * gsw_final;
+  // canvas.glsl's USE_INSTANCING: MODEL_MATRIX = item × instance.
+  mat4 gsw_model = gsw_canvas_inverse * gsw_final
+      * transpose(mat4(a_inst0, a_inst1, vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0)));
   mat4 gsw_screen = u_godot_screen ? u_screen
       : mat4(vec4(u_projection.x, 0.0, 0.0, 0.0), vec4(0.0, u_projection.y, 0.0, 0.0),
              vec4(0.0, 0.0, 1.0, 0.0), vec4(u_projection.zw, 0.0, 1.0));
   vec2 gsw_vertex = a_position;
   vec2 gsw_uv = a_uv;
-  vec4 gsw_color = a_color * vec4(gsw_t1.zw, gsw_t2.xy);
+  vec4 gsw_color = a_color * vec4(gsw_t1.zw, gsw_t2.xy) * a_inst_color;
   float gsw_point_size = 1.0;
 #ifdef GSW_WORLD_VERTEX_COORDS
   gsw_vertex = (gsw_model * vec4(gsw_vertex, 0.0, 1.0)).xy;

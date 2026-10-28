@@ -28,10 +28,10 @@ use crate::present::{
 use glow::HasContext;
 use gsw_canvas_draw_list::{
     ANISOTROPY_TEXTURE, BLACK_TEXTURE, BUILTIN_PROGRAM, Binding, Blend, CompressedFormat,
-    DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_MSDF, DRAW_SCISSOR, DRAW_TO_BACK_BUFFER,
-    DRAW_UNTEXTURED, Draw, DrawList, Format, NORMAL_TEXTURE, SCREEN_TEXTURE, Sampler, ScreenOp,
-    ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp, UniformValue, Vertex, WHITE_TEXTURE,
-    default_texture_texel, premultiplies,
+    DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR,
+    DRAW_TO_BACK_BUFFER, DRAW_UNTEXTURED, Draw, DrawList, Format, Instance, NORMAL_TEXTURE,
+    SCREEN_TEXTURE, Sampler, ScreenOp, ScreenOpKind, TRANSPARENT_TEXTURE, Target, TextureOp,
+    UniformValue, Vertex, WHITE_TEXTURE, default_texture_texel, premultiplies,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -49,6 +49,10 @@ const UNIT_ITEMS: u32 = 1;
 const UNIT_TARGET: u32 = 2;
 const VERTEX_BYTES: usize = std::mem::size_of::<Vertex>();
 const INITIAL_VERTICES: usize = 1024;
+/// PM3: the instance attributes (`a_inst0`, `a_inst1`, `a_inst_color`, `a_inst_custom`).
+const INSTANCE_ATTRIBUTES: u32 = 4;
+const INSTANCE_BYTES: usize = std::mem::size_of::<Instance>();
+const INITIAL_INSTANCES: usize = 64;
 const INITIAL_INDICES: usize = 3072;
 
 /// The draw program's vertex stage. `a_position` is item-local; the item's row gives `xform`
@@ -62,6 +66,11 @@ layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec4 a_color;  // STRAIGHT
 layout(location = 3) in uint a_item;
+// PM3: a DRAW_INSTANCED draw's instance (gsw_canvas_draw_list::Instance); every other draw sees the
+// identity instance as constant attributes, which leaves its arithmetic exact.
+layout(location = 4) in vec4 a_inst0;
+layout(location = 5) in vec4 a_inst1;
+layout(location = 6) in vec4 a_inst_color;
 uniform sampler2D u_items;
 uniform vec4 u_projection;
 // ExecOptions::godot_orientation: Godot's screen_transform as canvas.glsl applies it.
@@ -79,13 +88,19 @@ void main() {
   vec4 t0 = texelFetch(u_items, at, 0);
   vec4 t1 = texelFetch(u_items, at + ivec2(1, 0), 0);
   vec4 t2 = texelFetch(u_items, at + ivec2(2, 0), 0);
-  vec2 design = vec2(t0.x * a_position.x + t0.z * a_position.y + t1.x,
-                     t0.y * a_position.x + t0.w * a_position.y + t1.y);
+  // canvas.glsl's `model_matrix * transpose(mat4(instance_xform0, instance_xform1, ..))`: the
+  // item's 2x3 times the instance's rows.
+  vec4 m = vec4(t0.x * a_inst0.x + t0.z * a_inst1.x, t0.y * a_inst0.x + t0.w * a_inst1.x,
+                t0.x * a_inst0.y + t0.z * a_inst1.y, t0.y * a_inst0.y + t0.w * a_inst1.y);
+  vec2 o = vec2(t0.x * a_inst0.w + t0.z * a_inst1.w + t1.x,
+                t0.y * a_inst0.w + t0.w * a_inst1.w + t1.y);
+  vec2 design = vec2(m.x * a_position.x + m.z * a_position.y + o.x,
+                     m.y * a_position.x + m.w * a_position.y + o.y);
   gl_Position = u_godot_screen ? u_screen * vec4(design, 0.0, 1.0)
                                : vec4(design * u_projection.xy + u_projection.zw, 0.0, 1.0);
   v_uv = a_uv;
   // Interpolated STRAIGHT, as Godot's color_interp is; premultiplied per fragment.
-  v_color = a_color;
+  v_color = a_color * a_inst_color;
   vec4 modulate = vec4(t1.zw, t2.xy);
   v_tint = u_premultiply ? vec4(modulate.rgb * modulate.a, modulate.a) : modulate;
   v_untextured = (floatBitsToUint(t2.z) >> 30) & 1u;
@@ -336,9 +351,12 @@ struct Objects {
     vertex_array: glow::VertexArray,
     vertex_buffer: glow::Buffer,
     index_buffer: glow::Buffer,
-    /// Capacities in vertices and indices.
+    /// PM3: `DrawList::instances`, read by DRAW_INSTANCED draws.
+    instance_buffer: glow::Buffer,
+    /// Capacities in vertices, indices and instances.
     vertex_capacity: usize,
     index_capacity: usize,
+    instance_capacity: usize,
     item_texture: glow::Texture,
     item_rows: u32,
     white: glow::Texture,
@@ -1090,6 +1108,16 @@ impl Objects {
                 glow::DYNAMIC_DRAW,
             );
             gl.bind_vertex_array(None);
+            // PM3: the instance buffer; attributes 4-7 hold the identity instance as constants
+            // except during an instanced call.
+            let instance_buffer = gl.create_buffer()?;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+            gl.buffer_data_size(
+                glow::ARRAY_BUFFER,
+                (INITIAL_INSTANCES * INSTANCE_BYTES) as i32,
+                glow::DYNAMIC_DRAW,
+            );
+            identity_instance(gl);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
             let item_texture = gl.create_texture()?;
@@ -1195,8 +1223,10 @@ impl Objects {
                 vertex_array,
                 vertex_buffer,
                 index_buffer,
+                instance_buffer,
                 vertex_capacity: INITIAL_VERTICES,
                 index_capacity: INITIAL_INDICES,
+                instance_capacity: INITIAL_INSTANCES,
                 item_texture,
                 item_rows: 1,
                 white,
@@ -1206,6 +1236,21 @@ impl Objects {
                 screen: None,
             })
         }
+    }
+}
+
+/// PM3: the identity instance as the constant values of attributes 4-7 (their arrays disabled):
+/// what every draw that is not DRAW_INSTANCED reads.
+fn identity_instance(gl: &glow::Context) {
+    let i = Instance::IDENTITY;
+    let rows = [
+        [i.xform[0], i.xform[1], i.xform[2], i.xform[3]],
+        [i.xform[4], i.xform[5], i.xform[6], i.xform[7]],
+        i.color,
+        i.custom,
+    ];
+    for (k, v) in rows.iter().enumerate() {
+        unsafe { gl.vertex_attrib_4_f32(INSTANCE_ATTRIBUTES + k as u32, v[0], v[1], v[2], v[3]) };
     }
 }
 
@@ -2072,6 +2117,44 @@ impl CanvasItemsExecutor {
             stats.index_bytes += bytes.len() as u32;
             stats.upload_calls += 1;
         }
+
+        // PM3: instances (ARRAY_BUFFER, like the vertices).
+        let mut instances_all = all;
+        if list.instances.len() > objects.instance_capacity {
+            objects.instance_capacity = list.instances.len().next_power_of_two();
+            bind_array_buffer(gl, cache, objects.instance_buffer);
+            unsafe {
+                gl.c().buffer_data_size(
+                    glow::ARRAY_BUFFER,
+                    (objects.instance_capacity * INSTANCE_BYTES) as i32,
+                    glow::DYNAMIC_DRAW,
+                );
+            }
+            instances_all = true;
+        }
+        let instance_ranges = if instances_all {
+            vec![(0, list.instances.len() as u32)]
+        } else {
+            list.dirty.instances.as_slice().to_vec()
+        };
+        for (start, end) in instance_ranges {
+            let end = (end as usize).min(list.instances.len());
+            let start = start as usize;
+            if start >= end {
+                continue;
+            }
+            bind_array_buffer(gl, cache, objects.instance_buffer);
+            let bytes: &[u8] = bytemuck::cast_slice(&list.instances[start..end]);
+            unsafe {
+                gl.c().buffer_sub_data_u8_slice(
+                    glow::ARRAY_BUFFER,
+                    (start * INSTANCE_BYTES) as i32,
+                    bytes,
+                )
+            };
+            stats.vertex_bytes += bytes.len() as u32;
+            stats.upload_calls += 1;
+        }
     }
 
     fn draw(&mut self, list: &DrawList, calls: &[Call], stats: &mut ExecStats) {
@@ -2425,6 +2508,52 @@ impl CanvasItemsExecutor {
                     stats.sampler_binds += 1;
                 }
             }
+            if draw.flags & DRAW_INSTANCED != 0 {
+                // PM3: Godot's TYPE_MULTIMESH call (rasterizer_canvas_gles3.cpp:1478-1513): the
+                // instance attributes from the range's first instance, divisor 1, then
+                // `glDrawElementsInstanced`; the identity constants again after it.
+                let range = list
+                    .instanced
+                    .binary_search_by_key(&call.draw, |r| r.draw)
+                    .ok()
+                    .map(|i| list.instanced[i]);
+                let Some(range) = range.filter(|r| {
+                    r.count > 0
+                        && u64::from(r.first) + u64::from(r.count) <= list.instances.len() as u64
+                }) else {
+                    continue;
+                };
+                bind_array_buffer(gl, cache, objects.instance_buffer);
+                let base = range.first as usize * INSTANCE_BYTES;
+                unsafe {
+                    for k in 0..INSTANCE_ATTRIBUTES {
+                        let location = INSTANCE_ATTRIBUTES + k;
+                        gl.c().enable_vertex_attrib_array(location);
+                        gl.c().vertex_attrib_pointer_f32(
+                            location,
+                            4,
+                            glow::FLOAT,
+                            false,
+                            INSTANCE_BYTES as i32,
+                            (base + 16 * k as usize) as i32,
+                        );
+                        gl.c().vertex_attrib_divisor(location, 1);
+                    }
+                    gl.c().draw_elements_instanced(
+                        glow::TRIANGLES,
+                        call.index_count as i32,
+                        glow::UNSIGNED_INT,
+                        (call.first_index * 4) as i32,
+                        range.count as i32,
+                    );
+                    for k in 0..INSTANCE_ATTRIBUTES {
+                        gl.c().disable_vertex_attrib_array(INSTANCE_ATTRIBUTES + k);
+                    }
+                }
+                identity_instance(gl.c());
+                stats.draw_calls += 1;
+                continue;
+            }
             unsafe {
                 gl.c().draw_elements(
                     glow::TRIANGLES,
@@ -2536,6 +2665,7 @@ impl Drop for CanvasItemsExecutor {
                 gl.delete_vertex_array(o.vertex_array);
                 gl.delete_buffer(o.vertex_buffer);
                 gl.delete_buffer(o.index_buffer);
+                gl.delete_buffer(o.instance_buffer);
                 gl.delete_texture(o.item_texture);
                 gl.delete_texture(o.white);
                 for texture in o.defaults {

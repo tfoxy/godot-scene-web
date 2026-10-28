@@ -23,6 +23,7 @@ pub mod geom;
 pub mod lower;
 pub mod material_residency;
 pub mod meshes;
+pub mod multimesh;
 pub mod payloads;
 pub mod programs;
 pub mod residency;
@@ -35,10 +36,11 @@ use crate::state::{
 };
 use geom::{Rect, Xform};
 use gsw_canvas_draw_list::{
-    Binding, Blend, Draw, DrawList, Format, Item as Row, Sampler, SamplerUniform, ScreenOp,
-    ScreenOpKind, Target, Uniform, UniformValue, Vertex, BUILTIN_PROGRAM, DRAW_GROUP_CLIP,
-    DRAW_GROUP_COMPOSITE, DRAW_MSDF, DRAW_SCISSOR, DRAW_SCREEN_OPS, DRAW_TO_BACK_BUFFER,
-    DRAW_UNTEXTURED, ITEM_UNTEXTURED, SCREEN_TEXTURE, WHITE_TEXTURE,
+    Binding, Blend, Draw, DrawList, Format, Instance, InstancedDraw, Item as Row, Sampler,
+    SamplerUniform, ScreenOp, ScreenOpKind, Target, Uniform, UniformValue, Vertex, BUILTIN_PROGRAM,
+    DRAW_GROUP_CLIP, DRAW_GROUP_COMPOSITE, DRAW_INSTANCED, DRAW_MSDF, DRAW_SCISSOR,
+    DRAW_SCREEN_OPS, DRAW_TO_BACK_BUFFER, DRAW_UNTEXTURED, ITEM_UNTEXTURED, SCREEN_TEXTURE,
+    WHITE_TEXTURE,
 };
 use lower::{LDraw, Lowered, TexRef};
 use payloads::{MeshGeometry, PayloadStore, TexturePixels};
@@ -106,6 +108,10 @@ pub struct ApplySabotage {
     /// Native `full-backbuffer-copy` (CG1, CG3): every /10 `copy_to_backbuffer` copies the whole
     /// target (`Rect2()`), its rect dropped.
     pub full_backbuffer_copy: bool,
+    /// GSW-only `no-flipbook` (PM3): a `particles_animation` CanvasItemMaterial draws as its
+    /// builtin blend, its template's vertex() (the flipbook over INSTANCE_CUSTOM.z) never run:
+    /// what GSW drew before PM3.
+    pub no_flipbook: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -607,6 +613,29 @@ pub struct Applier {
     /// CG3: [`Applier::assemble`]'s scratch lists, reused.
     spare_emits: Vec<Emit>,
     spare_ops: Vec<ScreenOp>,
+    /// PM3: GLES3 stores a multimesh's colours and custom data as half floats
+    /// (mesh_storage.cpp:1808, `Math::make_half_float`): the instances round them so when the
+    /// session's `engine.rendering_method` is `gl_compatibility` (the adapter sets it).
+    pub half_instances: bool,
+    /// PM3: each instanced draw's instance range, from the last `assemble`, in draw order.
+    mm_slots: Vec<MmSlot>,
+    /// PM3: each drawn multimesh's mesh as last seen (a `set_mesh` re-names the mesh residency).
+    mm_mesh: IdMap<Option<Id>>,
+    /// PM3: instances written since the session began (evidence).
+    pub instances_written: u64,
+    /// PM3: `add_multimesh` commands lowered into instanced draws since the session began.
+    pub multimesh_commands: u64,
+}
+
+/// PM3: one instanced draw's range in `list.instances` and what fills it.
+#[derive(Clone, Copy, Debug)]
+struct MmSlot {
+    multimesh: Id,
+    draw_xform: Option<Xform>,
+    first: u32,
+    count: u32,
+    /// The buffer serial ([`multimesh::MmBuffer::serial`]) last written; 0: not yet.
+    written: u64,
 }
 
 /// The texture and mesh tables as the lowering sees them.
@@ -641,6 +670,45 @@ impl TableView<'_> {
             },
             (EntryStatus::Ok, TextureKind::Canvas) => TexDraw::Skip,
         }
+    }
+}
+
+impl TableView<'_> {
+    /// PM3: a multimesh's floats when GLES3 would draw it (`ok`, `TRANSFORM_2D`, a mesh set) and
+    /// the store holds its whole buffer.
+    fn mm_floats(&self, m: &crate::state::Multimesh) -> Option<&[f32]> {
+        if m.status != EntryStatus::Ok
+            || m.format != crate::state::MultimeshFormat::D2
+            || m.mesh.is_none()
+        {
+            return None;
+        }
+        let want = m.instances.max(0) as usize * m.stride() as usize;
+        self.payloads
+            .multimeshes
+            .get(m.id)
+            .map(|b| &b.floats[..])
+            .filter(|f| f.len() == want)
+    }
+
+    /// PM3: what an `add_multimesh` lowering read of `m`, but its floats.
+    fn mm_key(&self, m: &crate::state::Multimesh, drawable: bool) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (
+            drawable,
+            m.status.as_str(),
+            m.mesh,
+            m.instances,
+            m.visible,
+            m.colors,
+            m.custom,
+        )
+            .hash(&mut h);
+        for v in m.custom_aabb.unwrap_or([0.0; 6]) {
+            h.write_u32(v.to_bits());
+        }
+        h.finish()
     }
 }
 
@@ -709,6 +777,45 @@ impl lower::Tables for TableView<'_> {
             [a[0], a[1], a[3], a[4]]
         };
         Some((surfaces, rect))
+    }
+    fn multimesh_key(&self, id: Id) -> Option<u64> {
+        let m = self.state.multimeshes.get(&id)?;
+        Some(self.mm_key(m, self.mm_floats(m).is_some()))
+    }
+    fn multimesh(&self, id: Id) -> Option<lower::MultimeshDraw> {
+        let m = self.state.multimeshes.get(&id)?;
+        let stride = m.stride() as usize;
+        let count = m.drawn_instances().max(0) as usize;
+        let floats = self.mm_floats(m);
+        let drawable = floats.is_some();
+        let mesh = m.mesh.filter(|_| drawable);
+        let custom = m.custom_aabb.unwrap_or([0.0; 6]);
+        let rect = if custom.iter().any(|v| *v != 0.0) {
+            [custom[0], custom[1], custom[3], custom[4]]
+        } else {
+            // _multimesh_re_create_aabb over the drawn instances: each instance's transform of
+            // the mesh's AABB, merged (AABB() when none).
+            let mesh_rect = mesh.and_then(|mid| self.mesh(mid)).map(|(_, r)| r);
+            let mut out: Option<Rect> = None;
+            if let (Some(f), Some(r)) = (floats, mesh_rect) {
+                for i in 0..count {
+                    let d = &f[i * stride..i * stride + 8];
+                    let t: Xform = [d[0], d[4], d[1], d[5], d[3], d[7]];
+                    let b = geom::xform_rect(&t, &r);
+                    out = Some(match out {
+                        Some(a) => geom::merge(&a, &b),
+                        None => b,
+                    });
+                }
+            }
+            out.unwrap_or([0.0; 4])
+        };
+        Some(lower::MultimeshDraw {
+            mesh,
+            count: if drawable { count as u32 } else { 0 },
+            rect,
+            key: self.mm_key(m, drawable),
+        })
     }
 }
 
@@ -823,6 +930,11 @@ impl Applier {
             group_quads: IdMap::default(),
             spare_emits: Vec::new(),
             spare_ops: Vec::new(),
+            half_instances: false,
+            mm_slots: Vec::new(),
+            mm_mesh: IdMap::default(),
+            instances_written: 0,
+            multimesh_commands: 0,
         }
     }
 
@@ -849,7 +961,9 @@ impl Applier {
             let Some(s) = state.shaders.get(&sid) else {
                 continue;
             };
-            if s.builtin.is_some() {
+            // PM3: a CanvasItemMaterial's template runs as code only with `particles_animation`
+            // (its vertex() reads INSTANCE_CUSTOM); every other one is its blend and light mode.
+            if s.builtin.as_ref().is_some_and(|b| !b.particles_animation) {
                 continue;
             }
             let (Some(hash), Some(source)) = (s.hash, s.source) else {
@@ -1131,6 +1245,7 @@ impl Applier {
         for (s, n) in &lowered.shortcuts {
             *self.shortcut_totals.entry(s.as_str()).or_insert(0) += u64::from(*n);
         }
+        self.multimesh_commands += u64::from(lowered.multimesh_drawn);
         let mut tex_sizes = spare.tex_sizes;
         tex_sizes.clear();
         tex_sizes.extend(
@@ -1488,11 +1603,44 @@ impl Applier {
         } else {
             Vec::new()
         };
-        let upserted: &[Id] = if self.first {
+        let mut upserted: &[Id] = if self.first {
             &all_items
         } else {
             &delta.items_upserted
         };
+        // PM3: a multimesh whose mesh moved re-names the mesh residency of the items drawing it.
+        let mut remeshed: Vec<Id> = Vec::new();
+        for id in &delta.multimeshes_removed {
+            self.mm_mesh.remove(id);
+        }
+        let mm_ids: Vec<Id> = if self.first {
+            state.multimeshes.keys().copied().collect()
+        } else {
+            delta.multimeshes_upserted.clone()
+        };
+        for id in mm_ids {
+            let mesh = state.multimeshes.get(&id).and_then(|m| m.mesh);
+            if self.mm_mesh.insert(id, mesh) != Some(mesh) {
+                remeshed.push(id);
+            }
+        }
+        let renamed: Vec<Id>;
+        if !self.first && !remeshed.is_empty() {
+            renamed = state
+                .items
+                .iter()
+                .filter(|(id, it)| {
+                    !upserted.contains(id)
+                        && it.commands.list.iter().any(|c| {
+                            matches!(c, crate::state::Command::Multimesh { multimesh, .. }
+                                if remeshed.contains(multimesh))
+                        })
+                })
+                .map(|(id, _)| *id)
+                .chain(upserted.iter().copied())
+                .collect();
+            upserted = &renamed;
+        }
         mesh_res.sync(state, upserted, &delta.items_removed, self.first, payloads);
         prof::add(prof::MESH_SYNC, t);
         let t = prof::start();
@@ -1777,7 +1925,9 @@ impl Applier {
         // whose resident geometry changed.
         let dep_mesh_changed = !delta.meshes_upserted.is_empty()
             || !delta.meshes_removed.is_empty()
-            || !mesh_res.changed.is_empty();
+            || !mesh_res.changed.is_empty()
+            || !delta.multimeshes_upserted.is_empty()
+            || !delta.multimeshes_removed.is_empty();
         if !resized.is_empty() || dep_mesh_changed {
             let serial = self.serial;
             let stale: Vec<Id> = self
@@ -1790,7 +1940,11 @@ impl Applier {
                     }) || rec.mesh_versions.iter().any(|(m, v)| {
                         state.meshes.get(m).map(|e| e.version).unwrap_or(-1) != *v
                             || mesh_res.changed.contains(m)
-                    })
+                    }) || rec
+                        .lowered
+                        .multimesh_deps
+                        .iter()
+                        .any(|(m, k)| lower::Tables::multimesh_key(&tables, *m) != Some(*k))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -1944,6 +2098,7 @@ impl Applier {
         let t = prof::start();
         self.refresh_bindings(state);
         prof::add(prof::BINDINGS, t);
+        self.write_instances(state, payloads);
         self.first = false;
         self.meshes = mesh_res;
         self.kept = kept;
@@ -2592,7 +2747,14 @@ impl Applier {
             BlendMode::PremulAlpha => Blend::PremulAlpha,
             BlendMode::Disabled => Blend::Disabled,
         };
-        if let Some(b) = &s.builtin {
+        // PM3: a `particles_animation` template draws as its item-space program once one is
+        // defined (the flipbook is its vertex() over INSTANCE_CUSTOM.z); until then, or when
+        // refused, as the builtin it names.
+        let flipbook = !self.sabotage.no_flipbook
+            && s.builtin.as_ref().is_some_and(|b| b.particles_animation)
+            && s.hash
+                .is_some_and(|h| matches!(self.programs.get(&h), Some(ProgramEntry::Ready(_))));
+        if let (Some(b), false) = (&s.builtin, flipbook) {
             return MaterialEff {
                 blend: blend_of(b.blend_mode),
                 unshaded: b.light_mode == LightMode::Unshaded,
@@ -2620,6 +2782,79 @@ impl Applier {
             None => {
                 self.note(ApplyShortcut::ShaderBuiltin.as_str(), 1);
                 refused(reads_screen)
+            }
+        }
+    }
+
+    /// PM3: fill every instanced draw's range from its multimesh's newest buffer, where the
+    /// buffer moved since the range was last written (every range after an assembly), and mark
+    /// the instances that changed. Per instance: the transform rows (preceded by the item's draw
+    /// transform when one is set), the colour (white without colours) and the custom data (zero
+    /// without), the last two through GLES3's half floats when [`Applier::half_instances`].
+    fn write_instances(&mut self, state: &ResolvedState, payloads: &PayloadStore) {
+        let half = self.half_instances;
+        for slot in &mut self.mm_slots {
+            let (Some(buf), Some(m)) = (
+                payloads.multimeshes.get(slot.multimesh),
+                state.multimeshes.get(&slot.multimesh),
+            ) else {
+                continue;
+            };
+            if buf.serial == slot.written {
+                continue;
+            }
+            let stride = m.stride() as usize;
+            let (first, count) = (slot.first as usize, slot.count as usize);
+            if buf.floats.len() < count * stride || self.list.instances.len() < first + count {
+                continue;
+            }
+            slot.written = buf.serial;
+            let round = |c: [f32; 4]| if half { geom::godot_half4(c) } else { c };
+            let mut changed: Option<(u32, u32)> = None;
+            for i in 0..count {
+                let d = &buf.floats[i * stride..(i + 1) * stride];
+                let xform = match &slot.draw_xform {
+                    None => [d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]],
+                    Some(t) => {
+                        // draw × instance, as columns: x = (d0, d4), y = (d1, d5), o = (d3, d7).
+                        let x = [t[0] * d[0] + t[2] * d[4], t[1] * d[0] + t[3] * d[4]];
+                        let y = [t[0] * d[1] + t[2] * d[5], t[1] * d[1] + t[3] * d[5]];
+                        let o = [
+                            t[0] * d[3] + t[2] * d[7] + t[4],
+                            t[1] * d[3] + t[3] * d[7] + t[5],
+                        ];
+                        [x[0], y[0], 0.0, o[0], x[1], y[1], 0.0, o[1]]
+                    }
+                };
+                let mut at = 8;
+                let color = if m.colors {
+                    at += 4;
+                    round([d[8], d[9], d[10], d[11]])
+                } else {
+                    [1.0; 4]
+                };
+                let custom = if m.custom {
+                    round([d[at], d[at + 1], d[at + 2], d[at + 3]])
+                } else {
+                    [0.0; 4]
+                };
+                let inst = Instance {
+                    xform,
+                    color,
+                    custom,
+                };
+                let k = first + i;
+                if self.list.instances[k] != inst {
+                    self.list.instances[k] = inst;
+                    changed = Some(match changed {
+                        Some((a, _)) => (a, k as u32 + 1),
+                        None => (k as u32, k as u32 + 1),
+                    });
+                }
+            }
+            self.instances_written += count as u64;
+            if let Some((a, b)) = changed {
+                self.list.dirty.instances.add(a, b);
             }
         }
     }
@@ -2695,6 +2930,9 @@ impl Applier {
         self.list.draws = std::mem::take(&mut self.spare_draws);
         self.list.indices.clear();
         self.list.draws.clear();
+        self.list.instanced.clear();
+        self.mm_slots.clear();
+        let mut instances = 0u32;
         let mut lowered_draws = 0u32;
         let mut skips = 0u32;
         let mut attached = 0u32;
@@ -2925,6 +3163,7 @@ impl Applier {
                     force_repeat,
                     clip_ignored,
                     msdf,
+                    instanced,
                 } = *ld;
                 let (texture, filter, repeat) = match tex {
                     TexRef::White => (WHITE_TEXTURE, item_filter, item_repeat),
@@ -2995,15 +3234,40 @@ impl Applier {
                         scissor: scissor.unwrap_or([0; 4]),
                         flags: if scissor.is_some() { DRAW_SCISSOR } else { 0 }
                             | if msdf.is_some() { DRAW_MSDF } else { 0 }
+                            | if instanced.is_some() {
+                                DRAW_INSTANCED
+                            } else {
+                                0
+                            }
                             | untextured
                             | extra,
                         msdf: msdf.unwrap_or([0.0; 2]),
                     },
                 );
+                // PM3: the draw's instance range; `write_instances` fills it after the assembly.
+                if let Some(li) = instanced {
+                    self.list.instanced.push(InstancedDraw {
+                        draw: self.list.draws.len() as u32 - 1,
+                        first: instances,
+                        count: li.count,
+                    });
+                    self.mm_slots.push(MmSlot {
+                        multimesh: li.multimesh,
+                        draw_xform: li.draw_xform,
+                        first: instances,
+                        count: li.count,
+                        written: 0,
+                    });
+                    instances += li.count;
+                }
             }
         }
         self.spare_emits = emits;
         self.spare_ops = ops;
+        // PM3: stale contents past a moved slot are rewritten (and marked) by `write_instances`.
+        self.list
+            .instances
+            .resize(instances as usize, Instance::default());
         if skips > 0 {
             self.note(ApplyShortcut::TextureNotResident.as_str(), u64::from(skips));
         }
@@ -3164,6 +3428,8 @@ mod cg3_tests;
 mod g7t_tests;
 #[cfg(test)]
 mod ordering_model;
+#[cfg(test)]
+mod pm3_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

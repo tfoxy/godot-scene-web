@@ -50,6 +50,7 @@
 // reaches, and `void godot_item_vertex(inout vec2 VERTEX, inout vec2 UV, inout vec4 COLOR,
 // inout float POINT_SIZE, in mat4 MODEL_MATRIX, in mat4 CANVAS_MATRIX, in mat4 SCREEN_MATRIX)`;
 // the renderer owns the stage's `main()` and does everything around the call. INSTANCE_CUSTOM is
+// the renderer's `GSW_INSTANCE_CUSTOM` when it defines one (an instanced multimesh draw), else
 // `vec4(0.0)`, which is what canvas.glsl has for every draw that is not an instanced multimesh.
 // `skip_vertex_transform` needs the vertex stage even without a `vertex()` (GLES3 then never applies
 // the model matrix); `world_vertex_coords` without one changes nothing.
@@ -94,6 +95,11 @@ export const ITEM_SHADER_PRELUDE_NAMES = {
   /** Defined by the vertex module under `render_mode world_vertex_coords`: the renderer applies
    *  the model matrix before the call, and not after it. */
   worldVertexCoords: "GSW_WORLD_VERTEX_COORDS",
+  /** Defined BY THE RENDERER before the vertex module, when it draws instances (Godot's
+   *  multimesh): `INSTANCE_CUSTOM` is this expression, the draw's per-instance custom data
+   *  (`#define GSW_INSTANCE_CUSTOM a_instance_custom`). Left undefined, `INSTANCE_CUSTOM` is
+   *  `vec4(0.0)`, which is what canvas.glsl has for every draw that is not an instanced multimesh. */
+  instanceCustom: "GSW_INSTANCE_CUSTOM",
 } as const;
 
 export type ItemShaderBlend =
@@ -759,8 +765,16 @@ export function transpileGodotItemShader(code: string): TranspiledItemShader {
       );
     if (hasToken(text, "AT_LIGHT_PASS"))
       out.push("#define AT_LIGHT_PASS false");
-    if (hasToken(text, "INSTANCE_CUSTOM"))
-      out.push("#define INSTANCE_CUSTOM vec4(0.0)");
+    if (hasToken(text, "INSTANCE_CUSTOM")) {
+      const custom = ITEM_SHADER_PRELUDE_NAMES.instanceCustom;
+      out.push(
+        `#ifdef ${custom}`,
+        `#define INSTANCE_CUSTOM ${custom}`,
+        "#else",
+        "#define INSTANCE_CUSTOM vec4(0.0)",
+        "#endif",
+      );
+    }
     return out;
   };
   const varyingDecl = (v: ItemShaderVarying, storage: "in" | "out" | null) => {

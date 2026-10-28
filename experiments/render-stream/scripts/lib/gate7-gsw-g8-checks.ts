@@ -40,6 +40,9 @@
 //                    gsw-backbuffer-copy row is left, and every checkpoint shot of the honest /10
 //                    legs (receiver, receiver-patch, late/receiver) is within the band (channel 1)
 //                    of the native shot
+//   PM3 (render-stream-11.md "As built (PM3)"; lib/gate7-gsw-g8-mm-checks.ts): mm-gsw-band,
+//   mm-gsw-flipbook, mm-gsw-catches-perturb-instance and mm-gsw-catches-undrawn-multimesh, each
+//   g8mm GSW leg against the unarmed reference
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -50,6 +53,7 @@ import { decodePngRgba } from "./gate-minus1-checks";
 import type { Gate7Check } from "./gate7-adapters";
 import { compositorProblems, mk } from "./gate7-gsw";
 import { type BandShot, GATE8_COMPOSITOR_LEGS } from "./gate7-gsw-g8";
+import { mmGswChecks } from "./gate7-gsw-g8-mm-checks";
 import { BASIS_HALF_MIP, BASIS_REGIONS } from "./gate8-basis-checks";
 
 interface Ctx {
@@ -149,6 +153,8 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
   }
   out.push(...(await g8kuChecks(ctx)));
   out.push(...(await g8cgChecks(ctx)));
+  // PM3: g8mm through GSW against the unarmed reference (lib/gate7-gsw-g8-mm-checks.ts).
+  out.push(...(await mmGswChecks(ctx)));
   return out;
 }
 
