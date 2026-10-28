@@ -576,6 +576,35 @@ int main() {
            has(lines[4], "\"status\":\"unsupported\",\"reason\":\"multimesh-3d\","
                          "\"buffer_sha256\":null}"));
   }
+  // HC1 `hook-log-off-formats-nothing`: with keep_lines false the log formats and buffers no
+  // line, but its registry moves exactly as with lines on (ids, versions, a free retiring ids).
+  {
+    ResourceLog on;
+    ResourceLog off;
+    on.start(1000000, 900, true);
+    off.start(1000000, 900, false);
+    EXPECT(!off.wants_lines() && on.wants_lines());
+    for (ResourceLog *l : {&on, &off}) {
+      l->texture_2d_create(main_ctx, 300, rgba8(8, 8, "bb"));
+      l->texture_2d_update(main_ctx, 300, rgba8(8, 8, "cc"), 0);
+      l->texture_2d_placeholder_create(main_ctx, 301);
+      l->resource_event(main_ctx, "store", "bb", 100, "ok");
+      l->serve_event(main_ctx, "pin", "bb", 100, "current", 0, -1, false);
+      l->free_rid(main_ctx, 300);
+    }
+    EXPECT(on.lines_formatted() == 6);
+    EXPECT(!on.take_lines().empty());
+    EXPECT(off.lines_formatted() == 0);
+    EXPECT(off.take_lines().empty() && off.deferred_lines() == 0);
+    EXPECT(on.texture_id(301) == off.texture_id(301) && off.texture_id(301) == 2);
+    EXPECT(off.texture_id(300) == on.texture_id(300));
+    // A multimesh line (its buffer digest included) is not made either.
+    grc::rs::MultimeshArgs args;
+    args.buffer("floats", "sha256", nullptr, 0);
+    EXPECT(args.text().empty() == !grc::rs::resource_log().wants_lines());
+    off.multimesh_call(main_ctx, "multimesh_set_buffer", 5, 1, true, 2, args, false);
+    EXPECT(off.lines_formatted() == 0 && off.take_lines().empty());
+  }
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);

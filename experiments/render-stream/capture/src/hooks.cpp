@@ -5148,6 +5148,9 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   json.field("image_payload_available", g_image_binds.payload_available);
   json.field("texture_update_unknown",
              static_cast<int64_t>(rs::resource_log().update_unknown()));
+  // HC1: hook-log lines formatted since arm (0 while no resources.jsonl file is open).
+  json.field("hook_log_lines_formatted",
+             static_cast<int64_t>(rs::resource_log().lines_formatted()));
 
   json.object_end();
   return json.take();

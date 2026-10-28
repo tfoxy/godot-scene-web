@@ -513,6 +513,10 @@ class Hub {
   // `now_ns` is unused when every connection is uncapped (GRC_PUBLISH_FPS=uncapped, the default).
   bool wants_snapshot(std::uint64_t frame, std::uint64_t now_ns) const;
 
+  // HC1: true while a connection has sent its hello or is streaming -- somebody who reads the
+  // stream. A connection still awaiting its hello is not a viewer (it names no resource yet).
+  bool has_viewer() const;
+
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
   // before it was copied; `snapshot_ns` its copy time (added to each sending stream's stats).

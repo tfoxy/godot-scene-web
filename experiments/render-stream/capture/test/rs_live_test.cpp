@@ -337,13 +337,16 @@ void test_hello_and_first_transaction() {
   rig.hub.on_event(opened(7), 0);
   check(!rig.hub.wants_snapshot(rig.frame + 1, (rig.frame + 1) * 16000000ULL),
         "no snapshot wanted before hello");
+  check(!rig.hub.has_viewer(), "HC1: a connection awaiting its hello is no viewer");
   rig.step(1);
   rig.step(1);
   check(rig.transport.sent.empty(), "nothing is sent before the hello");
   rig.hub.on_event(text(7, kHelloSubmitted), rig.frame);
   check(rig.hub.wants_snapshot(rig.frame + 1, (rig.frame + 1) * 16000000ULL),
         "a received hello wants a snapshot");
+  check(rig.hub.has_viewer(), "HC1: a connection that sent its hello is a viewer");
   rig.step(1);
+  check(rig.hub.has_viewer(), "HC1: and stays one while streaming");
   const std::vector<Sent> bin = rig.transport.of(Sent::Binary);
   check(bin.size() == 2, "hello -> two binary messages (session, seq 1)");
   if (bin.size() == 2) {

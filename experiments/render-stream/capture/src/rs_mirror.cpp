@@ -3958,6 +3958,19 @@ void Mirror::set_material(std::uint64_t rid, std::uint64_t material, std::uint64
   if (item == nullptr) {
     return;
   }
+  // HC1: setting the material the item already holds gives the adoption pass nothing new, so it
+  // leaves the epoch (and everything else) alone. A set that changes nothing is also what the
+  // lines below would rebuild identically.
+  if (material != 0) {
+    const auto held = material_by_rid_.find(material);
+    if (held != material_by_rid_.end()
+            ? (item->state.has_material && item->state.material == held->second &&
+               !item->unknown_material)
+            : (item->unknown_material && item->unknown_material_rid == material &&
+               !item->state.has_material)) {
+      return;
+    }
+  }
   // D9: item state, never content_version (ci.cpp:1169-1177).
   item->state.has_material = false;
   item->state.material = 0;

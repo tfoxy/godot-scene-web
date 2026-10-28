@@ -12,7 +12,8 @@
       "gate5",
       "gate55",
       "gate6",
-      "gate8"
+      "gate8",
+      "hc1"
     ],
     "cores": ["rust"],
     "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6", "g7-8"],
@@ -58,7 +59,7 @@
   "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. 'refuse.groups' refuses single groups of a gate 7 run (the run keeps its other groups remotely, and is refused whole when none is left). Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
-    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "bench-instr", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55", "native-rust-gate8", "g7-gsw", "g7-web-rust", "g7live-gsw", "g7live-web-rust", "g7live-gsw-g7-1", "g7live-gsw-g7-2", "g7live-gsw-g7-5", "g7live-gsw-g7-55", "g7live-web-rust-g7-1", "g7live-web-rust-g7-2", "g7live-web-rust-g7-5", "g7live-web-rust-g7-55"],
+    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "bench-instr", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55", "native-rust-gate8", "native-rust-hc1", "g7-gsw", "g7-web-rust", "g7live-gsw", "g7live-web-rust", "g7live-gsw-g7-1", "g7live-gsw-g7-2", "g7live-gsw-g7-5", "g7live-gsw-g7-55", "g7live-web-rust-g7-1", "g7live-web-rust-g7-2", "g7live-web-rust-g7-5", "g7live-web-rust-g7-55"],
     "capable_doc": "G8g: gate 8's browser group g7-8 (its file legs in g7-gsw/g7-web-rust and its live g8l legs in g7live-gsw/g7live-web-rust) is remote-capable: --determinism 2,1 (run 40088061009) agreed over 12 runs, 205/205 shots and 70/70 dumps. R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps g7-1 and g7-2 local: on a 4-vCPU runner each failed a check intermittently from credit-window-2 timing, load-sensitive, so local-only and never loosened). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
       "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
@@ -316,10 +317,18 @@
       "paths": [
         "experiments/render-stream/scripts/bench-live-scale.sh",
         "experiments/render-stream/scripts/lib/bench-live-scale.py",
-        "experiments/render-stream/scripts/lib/null-receiver.ts",
         "experiments/render-stream/scripts/test/self-test-bench-live-scale.sh"
       ],
       "reach": ["pure"]
+    },
+    {
+      "why": "HC1's quiet-path legs (results/p3/hc1.md): run-hc1.sh is a native-shaped run (native-rust-hc1) over the capture-scale fixture with a live listener and a late null receiver, judged by hc1-checks.ts; the null receiver is also P3-LV's bench viewer, so it reaches the bench self-test too",
+      "paths": [
+        "experiments/render-stream/scripts/run-hc1.sh",
+        "experiments/render-stream/scripts/lib/hc1-checks.ts",
+        "experiments/render-stream/scripts/lib/null-receiver.ts"
+      ],
+      "reach": ["pure", "native:hc1@*"]
     },
     {
       "why": "WB's offline wire-budget analysis (results/p3/wb.md): run by hand on a kept recording, not a validate-increment target; its arithmetic has a pure synthetic self-test",

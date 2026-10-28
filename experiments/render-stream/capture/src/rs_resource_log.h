@@ -127,6 +127,7 @@
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -277,9 +278,17 @@ class ResourceLog {
  public:
   // Starts a fresh session: ids restart at 1, the registry empties, buffered
   // lines are dropped. `t0_ns` is the origin of every line's t_us.
-  void start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid);
+  // HC1: `keep_lines` false (GRC_HOOK_LOG=off, or no file to write) makes the log a registry only:
+  // every hook still updates its entries (ids, versions, hashes) exactly as before, but no line is
+  // formatted, held or buffered, since nothing would read it (take_lines() is then always empty).
+  void start(std::uint64_t t0_ns, std::uint64_t root_viewport_rid, bool keep_lines = true);
   void stop();
   bool active() const;
+  // True while lines are kept (lock-free): a caller that builds an argument only for a line (the
+  // multimesh buffer digest) skips it when this is false.
+  bool wants_lines() const { return keep_lines_.load(std::memory_order_relaxed); }
+  // HC1 `hook-log-off-formats-nothing`: lines formatted since start() (counters.json).
+  std::uint64_t lines_formatted() const { return formatted_.load(std::memory_order_relaxed); }
 
   // `omitted` (G2b2): the omit-op sabotage dropped this call from the capture.
   // The line is still written, marked "sabotage":true,"omitted":true, with the
@@ -566,6 +575,8 @@ class ResourceLog {
   std::map<std::uint64_t, ShaderEntry> shader_by_rid_;
   std::uint64_t next_material_id_ = 1;
   std::map<std::uint64_t, MaterialEntry> material_by_rid_;
+  std::atomic<bool> keep_lines_{true};
+  mutable std::atomic<std::uint64_t> formatted_{0};
   std::string pending_;
   std::vector<std::shared_ptr<Deferred>> deferred_;  // G8kw, in log order
   std::uint64_t update_unknown_ = 0;
