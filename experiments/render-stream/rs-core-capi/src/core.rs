@@ -84,6 +84,9 @@ pub struct Core {
     /// PM2 (render-stream-11.md "As built (PM2)"): the newest buffer of every `ok` /11
     /// multimesh, ingested at accept beside the dynamic bodies.
     pub multimeshes: MmStore,
+    /// PM6a (render-stream-12.md "As built (PM6a)"): the `particle_emits` of every transaction
+    /// accepted since the last apply (copied at accept, with their floats), applied in order.
+    pub particle_emits: Vec<render_stream_core::state::ParticleEmit>,
     /// W11d: the retention rule (H = C ∪ names(S_n) ∪ names(S_d)): queued after each accepted
     /// transaction, swept after each accept and each apply.
     retention: Retention,
@@ -271,6 +274,7 @@ impl Core {
         self.planner.touched.clear();
         self.dynamic.clear();
         self.multimeshes.clear();
+        self.particle_emits.clear();
         self.retention.clear();
         self.released_out.clear();
         self.dynamic_checked = 0;
@@ -510,6 +514,9 @@ impl Core {
         }
         // PM2: the transaction's multimesh buffers, before `record` goes back to the caller.
         self.multimeshes.ingest(st, v.multimesh_buffers(), record);
+        // PM6a: the transaction's emits, applied in order by the next apply.
+        self.particle_emits
+            .extend(v.particle_emits().iter().cloned());
         self.retention.note(v);
         self.sweep();
         Ok(())
@@ -774,11 +781,13 @@ impl Core {
             library: &self.library,
             dynamic: &self.dynamic,
             multimeshes: &self.multimeshes,
+            particle_emits: &self.particle_emits,
             version: self.version,
         };
         let r = self
             .planner
             .apply(v.state(), &payloads, &mut self.ops, &mut self.vt);
+        self.particle_emits.clear();
         self.provided.clear();
         self.library.clear();
         // W11d: what the apply stopped drawing may now leave the store.

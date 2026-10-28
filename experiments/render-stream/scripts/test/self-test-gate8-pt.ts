@@ -24,6 +24,9 @@
 //    shader-ppm payload derives its decoded builtin; a wrong shape fails builtinDiffs.
 // 6. ptBuiltinProblems, ptV11Problems, ptCurveProblems, ptNoShimProblems, ptShimDistinctProblems,
 //    replayedParticleCommands, receiverUndrawn, ptPumpProblems' control half on hand-built traces.
+// 7. PM6a's receiver helpers (lib/gate8-pt-receiver-checks.ts): ptShots' order, ptInk on a
+//    synthetic image, ptPremiseProblems/ptLifecycleProblems/ptCoverageProblems' verdicts,
+//    particlesTotals and ptReplayProblems (an ignored emit fails), ptWireTotals on a trace.
 //
 // Exits non-zero if any assertion fails.
 
@@ -32,6 +35,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
+import {
+  particlesTotals,
+  ptCoverageProblems,
+  ptInk,
+  ptLifecycleProblems,
+  ptPremiseProblems,
+  ptReplayProblems,
+  ptShots,
+} from "../lib/gate8-pt-receiver-checks";
 import {
   builtinDiffs,
   cellKey,
@@ -55,6 +67,7 @@ import {
   ptTraceFromTransactions,
   ptV11Problems,
   ptWireProblems,
+  ptWireTotals,
   receiverUndrawn,
   replayedParticleCommands,
 } from "../lib/gate8-pt-checks";
@@ -721,6 +734,55 @@ async function main(): Promise<void> {
     expect(ptPumpProblems(undefined, quiet, mmExpected, 90).nopump.length === 0, "ptPumpProblems: no set_buffer without the pump passes");
     expect(ptPumpProblems(undefined, noisy, mmExpected, 90).nopump.some((p) => p.startsWith("C_FLIP")), "ptPumpProblems: a set_buffer without the pump fails");
     expect(ptPumpProblems(undefined, quiet, mmExpected, 90).pump.length > 0, "ptPumpProblems: no pump hook log fails");
+  }
+
+  // 7. PM6a's receiver helpers
+  {
+    const px = expected.pixels;
+    const shots = ptShots(expected.checkpoints, px.tail_frames);
+    expect(
+      shots.map((s) => s.label).join(",") === "step-0-prev,step-0,step-1-prev,step-1,step-2-prev,step-2,tail-95,tail-110",
+      "ptShots: frame order",
+      shots.map((s) => s.label),
+    );
+    expect(Object.keys(px.regions).length === 9, "pixels.regions: one per drawn cell", Object.keys(px.regions));
+    const w = 640;
+    const h = 360;
+    const img = { width: w, height: h, data: new Uint8Array(w * h * 4) };
+    for (let i = 0; i < img.data.length; i += 4) img.data.set([10, 20, 30, 255], i);
+    const [ax, ay] = px.regions.A_BOX;
+    img.data.set([255, 255, 255, 255], (ay * w + ax) * 4);
+    const ink = ptInk(img, px);
+    expect(ink.cells.A_BOX === 1 && ink.outside === 0, "ptInk: one pixel in A_BOX", ink);
+    // I_TRAILS never draws on gl_compatibility (expected.json pixels.dark).
+    const lit = { cells: { ...Object.fromEntries(Object.keys(px.regions).map((c) => [c, 40])), I_TRAILS: 0 }, outside: 0 };
+    const dDark = { ...lit, cells: { ...lit.cells, D_ONESHOT: 0 } };
+    expect(ptPremiseProblems(dDark, px, "step-0").length === 0, "ptPremiseProblems: D dark at step-0 passes");
+    expect(ptPremiseProblems(lit, px, "step-0").some((p) => p.startsWith("D_ONESHOT")), "ptPremiseProblems: D lit at step-0 fails");
+    expect(ptPremiseProblems(dDark, px, "tail-95").some((p) => p.startsWith("D_ONESHOT")), "ptPremiseProblems: D dark at tail-95 fails");
+    expect(ptPremiseProblems({ ...lit, outside: 3 }, px, "tail-95").length === 1, "ptPremiseProblems: ink outside fails");
+    expect(ptLifecycleProblems(lit, lit).length === 0, "ptLifecycleProblems: equal lit cells pass");
+    expect(ptLifecycleProblems(dDark, lit).length === 1, "ptLifecycleProblems: a dark cell the reference lights fails");
+    expect(ptLifecycleProblems(lit, dDark).length === 1, "ptLifecycleProblems: a lit cell the reference leaves dark fails");
+    const half = { cells: { ...lit.cells, A_BOX: 10 } };
+    expect(ptCoverageProblems(half, lit, 2).length === 1, "ptCoverageProblems: a quarter of the ink fails x2");
+    expect(ptCoverageProblems(lit, lit, 2).length === 0, "ptCoverageProblems: equal ink passes");
+    const totals = particlesTotals({ w11: { particles: { particles_created: 10, restarts: 12, emits: 4, emits_dropped: 0, seed_sets: 11 } } });
+    const want = { emitters: 10, restarts: 12, emits: 4, seeds: 10 };
+    expect(ptReplayProblems(totals, want, 0).length === 0, "ptReplayProblems: the honest totals pass", ptReplayProblems(totals, want, 0));
+    const ignored = particlesTotals({ w11: { particles: { particles_created: 10, restarts: 12, emits: 0, emits_dropped: 4, seed_sets: 11 } } });
+    expect(ptReplayProblems(ignored, want, 0).length === 2, "ptReplayProblems: ignored emits fail twice");
+    expect(ptReplayProblems(null, want, 0).length === 1, "ptReplayProblems: no particles totals fail");
+    expect(ptReplayProblems(totals, want, 3).length === 1, "ptReplayProblems: undrawn commands fail");
+    const entry = (id: number, status: string, restarts: number) => ({ id, status, restarts }) as unknown as ResolvedParticles;
+    const emit = { particles: 1 } as unknown as PtTx["emits"][number];
+    const wt = ptWireTotals(
+      traceOf(12, [
+        tx(1, 1, { table: new Map([[1, entry(1, "ok", 1)], [2, entry(2, "ok", 1)]]) }),
+        tx(2, 2, { table: new Map([[1, entry(1, "ok", 2)], [2, entry(2, "freed", 1)], [3, entry(3, "unsupported", 1)]]), emits: [emit, emit] }),
+      ]),
+    );
+    expect(wt.emitters === 2 && wt.restarts === 3 && wt.emits === 2, "ptWireTotals: ok emitters, their newest restarts, every emit", wt);
   }
 
   console.log(`self-test-gate8-pt: ${assertions - failures}/${assertions} assertions passed`);

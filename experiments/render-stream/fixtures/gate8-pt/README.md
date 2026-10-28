@@ -46,9 +46,14 @@ gravity (so `set_process_material` does not rewrite it).
 | 20 | step 1: A_BOX emits two; C_RING requests 0.5 s of processing; D_ONESHOT restarts; settles at 27 |
 | 30 | the capture sabotages start (`GRC_SABOTAGE_FRAME`) |
 | 40 | step 2: A_BOX emits two; C_RING's seed changes; D_ONESHOT restarts (after the sabotage frame: `drop-restart` drops it); settles at 47 |
-| 90 | quit |
+| 90 | quit (the default) |
+| 95, 110 | PM6a's tail shots (`tail-95.png`, `tail-110.png`): D_ONESHOT's second burst alive, then gone one lifetime after its restart at 40 |
+| 120 | quit in run-gate8.sh's rendered g8pt legs (`RS_FIXTURE_QUIT_FRAME=120`) |
 
-`RS_FIXTURE_STEP_LOG` gets `{"step", "applied_frame", "settle_frame"}` per checkpoint.
+`RS_FIXTURE_STEP_LOG` gets `{"step", "applied_frame", "settle_frame"}` per checkpoint. PM6a:
+`RS_FIXTURE_SHOT_DIR` (rendered runs) gets `step-<k>.png` at each settle frame, `step-<k>-prev.png`
+at the frame before it, and the tail shots; expected.json `pixels` is the receivers' pixel model
+(`lib/gate8-pt-receiver-checks.ts`).
 
 ## GLES3 and the MaterialKey
 

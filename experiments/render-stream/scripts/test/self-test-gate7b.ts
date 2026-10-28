@@ -24,10 +24,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  approximateRegions,
   buildMirrorView,
   classifyShot,
   discoverFileReceiverLegs,
   dropMemoryCacheOccupancy,
+  maskApproximate,
 } from "../lib/gate7b-adapters";
 
 let failures = 0;
@@ -68,6 +70,20 @@ function expect(name: string, ok: boolean, detail = ""): void {
     c.other === 2 && c.other_max_delta === 85,
     JSON.stringify(c),
   );
+}
+
+// 3b (PM6a): g8pt's legs mask their emitter regions before P-W1's classes; other legs do not.
+{
+  const regions = approximateRegions("g8pt/receiver");
+  expect("approximate regions: g8pt has nine", regions?.length === 9, JSON.stringify(regions));
+  expect("approximate regions: other groups none", approximateRegions("g8mm/receiver") === null);
+  const native = new Uint8Array(4 * 4 * 4);
+  const web = new Uint8Array(native.length);
+  web.set([200, 0, 0, 255], (1 * 4 + 1) * 4);
+  web.set([200, 0, 0, 255], (3 * 4 + 3) * 4);
+  const n = maskApproximate(native, web, 4, [[0, 0, 1, 1]]);
+  const c = classifyShot(native, web);
+  expect("maskApproximate: one inside masked", n === 1 && c.other === 1, JSON.stringify({ n, c }));
 }
 
 // 4 (W11e): applied-equals-native ignores a /11 document's memory-cache occupancy only.

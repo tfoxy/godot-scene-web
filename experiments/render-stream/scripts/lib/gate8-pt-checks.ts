@@ -35,8 +35,10 @@
 //                               I_PREDRAW set a buffer every frame (the rendered census); without
 //                               it they never do
 //   pt-receiver                 the native receiver (RS_RECEIVER_PROTOCOL=12) accepts the /12
-//                               stream; its particles-undrawn count equals the add_particles
-//                               commands of the items it replayed
+//                               stream and (PM6a) leaves no add_particles undrawn; the pre-PM6
+//                               planner (receiver sabotage undrawn-particles) types exactly the
+//                               add_particles commands of the items it replayed particles-undrawn
+//   (PM6a)                      the receivers' pixel and replay checks: lib/gate8-pt-receiver-checks.ts
 //   pt-bytes                    (informational) pt_f32 bytes per transaction and per frame
 //
 // The hook-log field names are read in ONE place, parsePtLine(), so a refinement of the
@@ -51,6 +53,7 @@ import { join } from "node:path";
 import { check, exitCode, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
 import { censusProblems as mmCensusProblems, type G8mmExpected, mapCells as mmMapCells, parseMmLog } from "./gate8-mm-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
+import { type PtPixels, type PtWireTotals, runG8ptReceivers } from "./gate8-pt-receiver-checks";
 import {
   applyTransaction,
   type BuiltinParticleProcessMaterial,
@@ -115,6 +118,8 @@ export interface G8ptExpected {
   base_teardown: Record<string, number>;
   cells: Record<string, PtCell>;
   key_defaults: BuiltinParticleProcessMaterial;
+  /** PM6a: the receivers' pixel model (gate8-pt-receiver-checks.ts). */
+  pixels: PtPixels;
 }
 
 /** A cell's full expected MaterialKey (key_defaults overridden by the cell's key). */
@@ -1130,6 +1135,20 @@ export function receiverUndrawn(applied: Record<string, unknown> | null, stdout:
   return { count: lines.length, source: "stdout.log" };
 }
 
+/** PM6a: what a receiver replaying `trace` from its first transaction re-issues (pt-replay): one
+ * emitter per entry ever `ok` in the published table (the items draw it or a drawn one names it as
+ * subemitter), their final `restarts` summed, and every listed emit. */
+export function ptWireTotals(trace: PtTrace): PtWireTotals {
+  const restarts = new Map<number, number>();
+  let emits = 0;
+  for (const t of trace.txs) {
+    for (const [id, e] of t.table) if (e.status === "ok") restarts.set(id, Math.max(restarts.get(id) ?? 0, e.restarts));
+    emits += t.emits.length;
+  }
+  const r = [...restarts.values()].reduce((a, b) => a + b, 0);
+  return { emitters: restarts.size, restarts: r, emits, seeds: restarts.size };
+}
+
 // --------------------------------------------------------------------------------- pt-bytes
 
 export interface PtBytes {
@@ -1204,7 +1223,13 @@ const LEGS = [
   "headless-shim/capture",
   "headless-pump/capture",
   "headless-nopump/capture",
+  "reference",
+  "reference-repeat",
   "receiver",
+  "receiver-patch",
+  "sabotage-undrawn-particles/receiver",
+  "sabotage-ignore-particle-emits/receiver",
+  "sabotage-drop-restart/receiver-patch",
 ];
 
 function rsCoreValidate(path: string, version: number): string {
@@ -1480,42 +1505,60 @@ export async function runG8pt(
     }
   }
 
-  // pt-receiver
+  // pt-receiver (PM5's acceptance; PM6a: the honest receiver leaves nothing undrawn, and PM5's
+  // count now holds on the pre-PM6 planner, receiver sabotage undrawn-particles)
   {
+    const appliedOf = async (leg: string) => {
+      try {
+        return JSON.parse((await readText(join(dir(leg), "applied.json"))) ?? "null") as Record<string, unknown> | null;
+      } catch {
+        return null;
+      }
+    };
     const leg = "receiver";
+    const pre = "sabotage-undrawn-particles/receiver";
     if (legSkipped(leg)) checks.push(notRun("pt-receiver", "PM5: the native receiver accepts /12", leg, "skipped"));
     else {
       const problems: string[] = [];
-      let applied: Record<string, unknown> | null = null;
-      try {
-        applied = JSON.parse((await readText(join(dir(leg), "applied.json"))) ?? "null") as Record<string, unknown> | null;
-      } catch {
-        applied = null;
-      }
-      const stdout = (await readText(join(dir(leg), "stdout.log"))) ?? "";
+      const applied = await appliedOf(leg);
       const t = await trace("capture", SINKS_12[0], 12);
+      const want = t ? replayedParticleCommands(t) : null;
       let detail: string | undefined;
       if (!applied) problems.push("no applied.json");
       else {
         if (applied.status !== "ok") problems.push(`applied.json status ${String(applied.status)}`);
         const protocol = (applied.receiver as Record<string, unknown> | undefined)?.protocol;
         if (protocol !== "render-stream/12") problems.push(`receiver protocol ${String(protocol)}`);
-        const u = receiverUndrawn(applied, stdout);
-        const want = t ? replayedParticleCommands(t) : null;
-        if (want === null) problems.push("no /12 capture to count against");
-        else if (u.count !== want) problems.push(`${u.count} particles-undrawn (${u.source}), ${want} add_particles in the replayed items`);
+        const u = receiverUndrawn(applied, (await readText(join(dir(leg), "stdout.log"))) ?? "");
+        if (u.count !== 0) problems.push(`${u.count} particles-undrawn on the honest receiver (${u.source})`);
+        detail = "0 particles-undrawn";
+      }
+      if (!legSkipped(pre)) {
+        const a = await appliedOf(pre);
+        const u = receiverUndrawn(a, (await readText(join(dir(pre), "stdout.log"))) ?? "");
+        if (!a) problems.push(`${pre}: no applied.json`);
+        else if (want === null) problems.push("no /12 capture to count against");
+        else if (u.count !== want) problems.push(`${pre}: ${u.count} particles-undrawn (${u.source}), ${want} add_particles in the replayed items`);
         else if (want === 0) problems.push("no add_particles replayed (proves nothing)");
-        detail = `${u.count} particles-undrawn (${u.source})`;
+        else detail = `${detail ?? ""}; the pre-PM6 planner: ${u.count} particles-undrawn = the replayed add_particles`;
       }
       checks.push(
         check(
           "pt-receiver",
-          "PM5: the native receiver (RS_RECEIVER_PROTOCOL=12) accepts the /12 capture (status ok) and types every replayed add_particles particles-undrawn",
+          "PM5/PM6a: the native receiver (RS_RECEIVER_PROTOCOL=12) accepts the /12 capture (status ok) and leaves no add_particles undrawn; the pre-PM6 planner types every replayed one particles-undrawn",
           problems,
           detail,
         ),
       );
     }
+  }
+
+  // PM6a: the receivers' pixels and replay counts (gate8-pt-receiver-checks.ts)
+  {
+    const t = await trace("capture", SINKS_12[0], 12);
+    const receivers: Record<string, unknown> = {};
+    report.legs.receivers = receivers;
+    await runG8ptReceivers(g, expected.checkpoints, expected.pixels, t ? ptWireTotals(t) : null, checks, receivers);
   }
 
   // the sabotages: the validators accept the patch sink, pt-wire fails on it

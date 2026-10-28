@@ -16,7 +16,7 @@
 //! never equals itself), and a parameter value as its JSON text compares (bit for bit).
 
 use crate::mm::MmStore;
-use crate::ops::{Op, OpBuf, RidRef};
+use crate::ops::{self, Op, OpBuf, RidRef};
 use crate::vt::{gd, Vt};
 use render_stream_core::apply::dynamic::DynamicMeshes;
 use render_stream_core::apply::payloads::MeshGeometry;
@@ -65,6 +65,13 @@ pub struct Sabotage {
     /// `CPUParticles2D` draws through its ancestors' transform a second time (the pre-UIT
     /// receiver).
     pub ignore_identity_transform: bool,
+    /// PM6a: the pre-PM6 planner -- every `add_particles` is counted undrawn
+    /// (`particles_commands_undrawn`, `particles-undrawn`) and no emitter is made.
+    pub undrawn_particles: bool,
+    /// PM6a: the emitters are replayed but `particle_emits` is ignored (no `particles_emit`).
+    pub ignore_particle_emits: bool,
+    /// PM6a: the emitters are replayed but `particles_restart` is never issued.
+    pub drop_particles_restart: bool,
 }
 
 impl Sabotage {
@@ -93,6 +100,9 @@ impl Sabotage {
             "shader-time-frozen" => s.shader_time_frozen = true,
             "undrawn-multimesh" => s.undrawn_multimesh = true,
             "ignore-identity-transform" => s.ignore_identity_transform = true,
+            "undrawn-particles" => s.undrawn_particles = true,
+            "ignore-particle-emits" => s.ignore_particle_emits = true,
+            "drop-particles-restart" => s.drop_particles_restart = true,
             _ => {}
         }
         s
@@ -111,6 +121,8 @@ pub struct Touched {
     pub materials: BTreeSet<Id>,
     /// PM2: /11 multimesh entries carried or removed.
     pub multimeshes: BTreeSet<Id>,
+    /// PM6a: /12 particles entries carried or removed.
+    pub particles: BTreeSet<Id>,
 }
 
 impl Touched {
@@ -129,6 +141,8 @@ impl Touched {
             .extend(d.materials_upserted.iter().chain(&d.materials_removed));
         self.multimeshes
             .extend(d.multimeshes_upserted.iter().chain(&d.multimeshes_removed));
+        self.particles
+            .extend(d.particles_upserted.iter().chain(&d.particles_removed));
     }
     pub fn clear(&mut self) {
         *self = Touched::default();
@@ -152,6 +166,9 @@ pub struct Payloads<'a> {
     pub dynamic: &'a DynamicMeshes,
     /// PM2: the newest buffer of every `ok` /11 multimesh (`Core`'s, ingested at accept).
     pub multimeshes: &'a MmStore,
+    /// PM6a: the `particle_emits` of every transaction accepted since the last apply, in accept
+    /// and list order (`Core`'s, copied at accept); empty below /12.
+    pub particle_emits: &'a [ParticleEmit],
     /// The stream's wire version: from /8 a texture payload may be a float format (D9).
     pub version: u8,
 }
@@ -514,6 +531,24 @@ struct MultimeshM {
     serial: u64,
 }
 
+/// PM6a: one resident /12 emitter as last sent to the RenderingServer.
+#[derive(Debug)]
+struct ParticlesM {
+    /// In the mesh table (`RidRef::Particles`).
+    handle: u32,
+    /// The entry as last configured (None: just created, so every setter is sent once).
+    last: Option<Particles>,
+    /// The process material handle last set (None: `RID()`).
+    material: Option<u32>,
+    /// One slot per draw pass: the mesh handle last set (None: `RID()`).
+    passes: Vec<Option<u32>>,
+    /// The subemitter handle last set (None: `RID()`).
+    sub: Option<u32>,
+    /// The entry's `restarts` and `process_requests` counters as last applied.
+    restarts: i64,
+    process_requests: i64,
+}
+
 #[derive(Debug)]
 struct ShaderM {
     handle: u32,
@@ -537,6 +572,8 @@ struct Named {
     meshes: Vec<Id>,
     /// PM2: the multimeshes its `add_multimesh` commands name.
     multimeshes: Vec<Id>,
+    /// PM6a: the emitters its `add_particles` commands name.
+    particles: Vec<Id>,
     material: Option<Id>,
     rid_params: bool,
 }
@@ -552,6 +589,9 @@ fn named_of(item: &Item, version: u8) -> Named {
         }
         if let Command::Multimesh { multimesh, .. } = c {
             n.multimeshes.push(*multimesh);
+        }
+        if let Command::Particles { particles, .. } = c {
+            n.particles.push(*particles);
         }
     }
     if version >= 5 {
@@ -571,6 +611,8 @@ fn named_of(item: &Item, version: u8) -> Named {
     n.meshes.dedup();
     n.multimeshes.sort_unstable();
     n.multimeshes.dedup();
+    n.particles.sort_unstable();
+    n.particles.dedup();
     n
 }
 
@@ -582,6 +624,7 @@ struct Sync {
     mesh: HashMap<Id, i64>,
     mat: HashMap<Id, i64>,
     mm: HashMap<Id, i64>,
+    pt: HashMap<Id, i64>,
 }
 
 /// What needed() returns: payload hashes in rs_applier.gd's order, and which are meshes and
@@ -640,6 +683,21 @@ struct Counters {
     mm_buffer_bytes: i64,
     multimesh_commands: i64,
     skipped_multimesh_commands: i64,
+    /// PM6a (render-stream-12.md "As built (PM6a)"): `particles_resources`, written only when one
+    /// is non-zero (every stream without an emitter keeps its stats byte-identical).
+    pt_created: i64,
+    pt_freed: i64,
+    pt_setters: i64,
+    pt_seed_sets: i64,
+    pt_material_sets: i64,
+    pt_draw_pass_sets: i64,
+    pt_subemitter_sets: i64,
+    pt_restarts: i64,
+    pt_process_requests: i64,
+    pt_emits: i64,
+    pt_emits_dropped: i64,
+    particles_commands: i64,
+    skipped_particles_commands: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
     shader_code_sets: i64,
@@ -716,6 +774,8 @@ pub struct Planner {
     materials: BTreeMap<Id, MaterialM>,
     /// PM2: the resident multimeshes (named `ok` /11 entries).
     multimeshes: BTreeMap<Id, MultimeshM>,
+    /// PM6a: the resident emitters (named `ok` /12 entries and their `ok` subemitters).
+    particles: BTreeMap<Id, ParticlesM>,
     root_xform: Option<[f32; 6]>,
     root_modulate: [f32; 4],
     default_filter: Option<Filter>,
@@ -733,6 +793,9 @@ pub struct Planner {
     mm_count: HashMap<Id, i64>,
     mm_items: HashMap<Id, BTreeSet<Id>>,
     mm_meshes: BTreeSet<Id>,
+    /// PM6a: how many items name each emitter, and which.
+    pt_count: HashMap<Id, i64>,
+    pt_items: HashMap<Id, BTreeSet<Id>>,
     rid_param_items: BTreeSet<Id>,
     mattex: BTreeSet<Id>,
     /// P3-CT: the texture ids whose entry was a canvas texture as of the last apply.
@@ -820,6 +883,7 @@ impl Planner {
             + self.shaders.len()
             + self.materials.len()
             + self.multimeshes.len()
+            + self.particles.len()
             + self.canvases.values().filter(|c| c.owned).count()) as i64
     }
     pub fn resident(&self) -> [i64; 5] {
@@ -879,6 +943,9 @@ impl Planner {
                 for &m in &o.multimeshes {
                     bump(&mut s.mm, m, -1);
                 }
+                for &p in &o.particles {
+                    bump(&mut s.pt, p, -1);
+                }
             }
             if let Some(n) = &new {
                 for &t in &n.textures {
@@ -892,6 +959,9 @@ impl Planner {
                 }
                 for &m in &n.multimeshes {
                     bump(&mut s.mm, m, 1);
+                }
+                for &p in &n.particles {
+                    bump(&mut s.pt, p, 1);
                 }
             }
             s.items.push((id, new));
@@ -910,6 +980,48 @@ impl Planner {
                     .is_some_and(|m| m.status == EntryStatus::Ok)
             {
                 out.insert(*id);
+            }
+        }
+        // PM6a: the process materials of the resident emitters (no item names them).
+        for p in self.pt_now(st, s) {
+            if let Some(m) = st.particles[&p].process_material {
+                if st
+                    .materials
+                    .get(&m)
+                    .is_some_and(|e| e.status == EntryStatus::Ok)
+                {
+                    out.insert(m);
+                }
+            }
+        }
+        out
+    }
+
+    /// PM6a: the emitters an apply of `st` makes resident: every `ok` entry an item's
+    /// `add_particles` names, and (transitively) the `ok` subemitters they name.
+    fn pt_now(&self, st: &ResolvedState, s: &Sync) -> BTreeSet<Id> {
+        let mut out = BTreeSet::new();
+        if self.sab.undrawn_particles || (self.pt_count.is_empty() && s.pt.is_empty()) {
+            return out;
+        }
+        let ok = |id: &Id| {
+            st.particles
+                .get(id)
+                .is_some_and(|e| e.status == EntryStatus::Ok)
+        };
+        let mut stack: Vec<Id> = Vec::new();
+        for id in self.pt_count.keys().chain(s.pt.keys()) {
+            if count(&self.pt_count, *id) + count(&s.pt, *id) > 0 && ok(id) {
+                stack.push(*id);
+            }
+        }
+        while let Some(id) = stack.pop() {
+            if out.insert(id) {
+                if let Some(sub) = st.particles[&id].subemitter {
+                    if ok(&sub) && !out.contains(&sub) {
+                        stack.push(sub);
+                    }
+                }
             }
         }
         out
@@ -1001,6 +1113,12 @@ impl Planner {
     /// mesh an `add_mesh` names: no command names them, the multimesh does.
     fn mm_meshes_now(&self, st: &ResolvedState, s: &Sync) -> BTreeSet<Id> {
         let mut out = BTreeSet::new();
+        // PM6a: the resident emitters' draw-pass meshes are named the same way.
+        for p in self.pt_now(st, s) {
+            for mesh in st.particles[&p].draw_passes.iter().flatten() {
+                out.insert(*mesh);
+            }
+        }
         if self.mm_count.is_empty() && s.mm.is_empty() {
             return out;
         }
@@ -1100,6 +1218,12 @@ impl Planner {
             }
         }
         self.mm_meshes = mm_meshes_now;
+        for (id, v) in &s.pt {
+            bump(&mut self.pt_count, *id, *v);
+            if self.pt_count[id] == 0 {
+                self.pt_count.remove(id);
+            }
+        }
         for (id, v) in s.tex {
             bump(&mut self.tex_count, id, v);
             if self.tex_count[&id] == 0 {
@@ -1128,6 +1252,14 @@ impl Planner {
                         }
                     }
                 }
+                for p in &old.particles {
+                    if let Some(set) = self.pt_items.get_mut(p) {
+                        set.remove(&id);
+                        if set.is_empty() {
+                            self.pt_items.remove(p);
+                        }
+                    }
+                }
                 if let Some(m) = old.material {
                     if let Some(set) = self.mat_items.get_mut(&m) {
                         set.remove(&id);
@@ -1145,6 +1277,9 @@ impl Planner {
                     }
                     for &m in &n.multimeshes {
                         self.mm_items.entry(m).or_default().insert(id);
+                    }
+                    for &p in &n.particles {
+                        self.pt_items.entry(p).or_default().insert(id);
                     }
                     if n.rid_params {
                         self.rid_param_items.insert(id);
@@ -1366,6 +1501,13 @@ impl Planner {
         if self.full_scan {
             mm_cands.extend(st.multimeshes.keys().copied());
         }
+        // PM6a: the emitters resident after this apply, and every one to look at (resident now
+        // or before: a handful; a resident one's material, mesh or subemitter RID may have
+        // changed with no particles entry moving).
+        let pt_now = self.pt_now(st, &s);
+        let mut pt_cands: BTreeSet<Id> = pt_now.clone();
+        pt_cands.extend(self.particles.keys().copied());
+        pt_cands.extend(touched.particles.iter().copied());
         let mut extra_items: BTreeSet<Id> = s.items.iter().map(|(id, _)| *id).collect();
         self.commit(s, mattex_now, mm_meshes_now);
         let mut tex_rid_changed = false;
@@ -1656,6 +1798,8 @@ impl Planner {
         )?;
         // PM2: multimeshes, once their meshes are resident.
         let mm_rid_changed = self.apply_multimeshes(st, payloads, ops, &mut c, &mm_cands);
+        // PM6a: emitters that stop being resident are freed before their materials may be.
+        let mut pt_rid_changed = self.free_particles(ops, &mut c, &pt_cands, &pt_now);
 
         // Shaders, then materials.
         let mut mat_rid_changed: BTreeSet<Id> = BTreeSet::new();
@@ -1669,6 +1813,8 @@ impl Planner {
             &shaders_now,
         )?;
         self.apply_materials(st, ops, &mut c, &mats_now, &mut mat_rid_changed);
+        // PM6a: emitters, once their process materials and draw-pass meshes are resident.
+        pt_rid_changed.extend(self.apply_particles(st, payloads, ops, &mut c, &pt_now));
 
         // The root viewport's defaults.
         if self.default_filter != Some(st.default_texture_filter) {
@@ -1949,14 +2095,18 @@ impl Planner {
         }
         // PM2: an item naming a multimesh made or freed here replays its content (no item entry
         // changed with it).
+        // PM6a: likewise an item naming an emitter made or freed here.
+        let mut rid_items: BTreeSet<Id> = BTreeSet::new();
         for mm in &mm_rid_changed {
-            if let Some(items) = self.mm_items.get(mm) {
-                for item in items {
-                    if self.items.contains_key(item) && st.items.contains_key(item) {
-                        forced.insert(*item);
-                        visit.insert(*item);
-                    }
-                }
+            rid_items.extend(self.mm_items.get(mm).into_iter().flatten().copied());
+        }
+        for p in &pt_rid_changed {
+            rid_items.extend(self.pt_items.get(p).into_iter().flatten().copied());
+        }
+        for item in &rid_items {
+            if self.items.contains_key(item) && st.items.contains_key(item) {
+                forced.insert(*item);
+                visit.insert(*item);
             }
         }
         for id in visit {
@@ -2556,6 +2706,296 @@ impl Planner {
             }
         }
         changed
+    }
+
+    /// PM6a (render-stream-12.md "As built (PM6a)"): frees every resident emitter in `cands` that
+    /// `now` no longer holds (its entry left the table, turned `freed`/`unsupported`, or nothing
+    /// names it). Runs before shaders and materials, so an emitter never outlives its process
+    /// material. Returns the emitters freed.
+    fn free_particles(
+        &mut self,
+        ops: &mut OpBuf,
+        c: &mut Counters,
+        cands: &BTreeSet<Id>,
+        now: &BTreeSet<Id>,
+    ) -> BTreeSet<Id> {
+        let mut changed = BTreeSet::new();
+        for &id in cands {
+            if now.contains(&id) {
+                continue;
+            }
+            if let Some(m) = self.particles.remove(&id) {
+                ops.op(Op::FreeRid, 1);
+                ops.rid(RidRef::Particles(m.handle));
+                self.freed_by_apply += 1;
+                c.pt_freed += 1;
+                changed.insert(id);
+            }
+        }
+        changed
+    }
+
+    /// PM6a (render-stream-12.md "As built (PM6a)"): the resident emitters `now`. Each new one is
+    /// `particles_create`d, then every emitter is configured in the order the wire prescribes
+    /// ("The emit list"): the setters whose value differs from what this planner last sent (all
+    /// of them once after the create), `particles_set_seed`, the process material, draw passes
+    /// and subemitter (by the RIDs resident now), then `particles_restart` once if `restarts`
+    /// moved since the last apply, `particles_request_process_time` if `process_requests` moved,
+    /// and the accepted `particle_emits` naming it, in order. Returns the emitters made.
+    fn apply_particles(
+        &mut self,
+        st: &ResolvedState,
+        payloads: &Payloads,
+        ops: &mut OpBuf,
+        c: &mut Counters,
+        now: &BTreeSet<Id>,
+    ) -> BTreeSet<Id> {
+        let mut made = BTreeSet::new();
+        for &id in now {
+            if self.particles.contains_key(&id) {
+                continue;
+            }
+            let h = self.handle(3);
+            ops.op(Op::ParticlesCreate, 1);
+            ops.u(h);
+            self.created_rids += 1;
+            c.pt_created += 1;
+            made.insert(id);
+            let e = &st.particles[&id];
+            self.particles.insert(
+                id,
+                ParticlesM {
+                    handle: h,
+                    last: None,
+                    material: None,
+                    passes: Vec::new(),
+                    sub: None,
+                    // A new emitter restarts once if the host's ever did (every GPUParticles2D
+                    // constructor does), but never replays an old process request: a joiner's
+                    // emitter starts fresh.
+                    restarts: 0,
+                    process_requests: e.process_requests,
+                },
+            );
+        }
+        for &id in now {
+            let e = &st.particles[&id];
+            let Some(f) = e.floats.as_ref() else { continue };
+            let material = e
+                .process_material
+                .filter(|m| {
+                    st.materials
+                        .get(m)
+                        .is_some_and(|x| x.status == EntryStatus::Ok)
+                })
+                .and_then(|m| self.materials.get(&m))
+                .map(|m| m.handle);
+            let passes: Vec<Option<u32>> = e
+                .draw_passes
+                .iter()
+                .map(|p| {
+                    p.filter(|mid| {
+                        st.meshes
+                            .get(mid)
+                            .is_some_and(|me| me.status == EntryStatus::Ok)
+                    })
+                    .and_then(|mid| self.meshes.get(&mid))
+                    .map(|me| me.handle)
+                })
+                .collect();
+            let sub = e
+                .subemitter
+                .filter(|p| *p != id)
+                .and_then(|p| self.particles.get(&p))
+                .map(|p| p.handle);
+            let sab = self.sab;
+            let m = self.particles.get_mut(&id).unwrap();
+            let rid = RidRef::Particles(m.handle);
+            let last = m.last.take();
+            let lf = last.as_ref().and_then(|l| l.floats.as_ref());
+            let mut n = 0i64;
+            let mut set_b = |ops: &mut OpBuf, which: u32, v: bool, old: Option<bool>| {
+                if old != Some(v) {
+                    ops.op(Op::ParticlesSetBool, 1);
+                    ops.rid(rid);
+                    ops.u(which);
+                    ops.b(v);
+                    n += 1;
+                }
+            };
+            set_b(ops, ops::PT_BOOL_EMITTING, e.emitting, last.as_ref().map(|l| l.emitting));
+            set_b(ops, ops::PT_BOOL_ONE_SHOT, e.one_shot, last.as_ref().map(|l| l.one_shot));
+            set_b(ops, ops::PT_BOOL_INTERPOLATE, e.interpolate, last.as_ref().map(|l| l.interpolate));
+            set_b(
+                ops,
+                ops::PT_BOOL_FRACTIONAL_DELTA,
+                e.fractional_delta,
+                last.as_ref().map(|l| l.fractional_delta),
+            );
+            set_b(ops, ops::PT_BOOL_LOCAL, e.local, last.as_ref().map(|l| l.local));
+            let mut set_i = |ops: &mut OpBuf, which: u32, v: i64, old: Option<i64>| {
+                if old != Some(v) {
+                    ops.op(Op::ParticlesSetInt, 1);
+                    ops.rid(rid);
+                    ops.u(which);
+                    ops.i64(v);
+                    n += 1;
+                }
+            };
+            set_i(ops, ops::PT_INT_MODE, pt_mode(e), last.as_ref().map(pt_mode));
+            set_i(ops, ops::PT_INT_AMOUNT, e.amount, last.as_ref().map(|l| l.amount));
+            set_i(ops, ops::PT_INT_FIXED_FPS, e.fixed_fps, last.as_ref().map(|l| l.fixed_fps));
+            set_i(ops, ops::PT_INT_DRAW_ORDER, pt_order(e), last.as_ref().map(pt_order));
+            set_i(ops, ops::PT_INT_TRANSFORM_ALIGN, pt_align(e), last.as_ref().map(pt_align));
+            // Floats by bit pattern (the wire's `version` rule): an identical re-set is not sent.
+            let mut set_f = |ops: &mut OpBuf, which: u32, v: f32, old: Option<f32>| {
+                if old.map(f32::to_bits) != Some(v.to_bits()) {
+                    ops.op(Op::ParticlesSetFloat, 1);
+                    ops.rid(rid);
+                    ops.u(which);
+                    ops.f(v);
+                    n += 1;
+                }
+            };
+            set_f(ops, ops::PT_FLOAT_AMOUNT_RATIO, f.amount_ratio, lf.map(|l| l.amount_ratio));
+            set_f(ops, ops::PT_FLOAT_LIFETIME, f.lifetime, lf.map(|l| l.lifetime));
+            set_f(
+                ops,
+                ops::PT_FLOAT_PRE_PROCESS_TIME,
+                f.pre_process_time,
+                lf.map(|l| l.pre_process_time),
+            );
+            set_f(ops, ops::PT_FLOAT_EXPLOSIVENESS, f.explosiveness, lf.map(|l| l.explosiveness));
+            set_f(ops, ops::PT_FLOAT_RANDOMNESS, f.randomness, lf.map(|l| l.randomness));
+            set_f(ops, ops::PT_FLOAT_SPEED_SCALE, f.speed_scale, lf.map(|l| l.speed_scale));
+            set_f(
+                ops,
+                ops::PT_FLOAT_COLLISION_BASE_SIZE,
+                f.collision_base_size,
+                lf.map(|l| l.collision_base_size),
+            );
+            set_f(ops, ops::PT_FLOAT_INTERP_TO_END, f.interp_to_end, lf.map(|l| l.interp_to_end));
+            let bits = |a: &[f32], b: &[f32]| {
+                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+            };
+            if !lf.is_some_and(|l| bits(&l.custom_aabb, &f.custom_aabb)) {
+                ops.op(Op::ParticlesSetCustomAabb, 1);
+                ops.rid(rid);
+                ops.fs(&f.custom_aabb);
+                n += 1;
+            }
+            if !lf.is_some_and(|l| bits(&l.emission_transform, &f.emission_transform)) {
+                ops.op(Op::ParticlesSetEmissionTransform, 1);
+                ops.rid(rid);
+                ops.fs(&f.emission_transform);
+                n += 1;
+            }
+            if !lf.is_some_and(|l| bits(&l.emitter_velocity, &f.emitter_velocity)) {
+                ops.op(Op::ParticlesSetEmitterVelocity, 1);
+                ops.rid(rid);
+                ops.fs(&f.emitter_velocity);
+                n += 1;
+            }
+            if last.as_ref().map(|l| l.trails) != Some(e.trails)
+                || !lf.is_some_and(|l| l.trail_length.to_bits() == f.trail_length.to_bits())
+            {
+                ops.op(Op::ParticlesSetTrails, 1);
+                ops.rid(rid);
+                ops.b(e.trails);
+                ops.f(f.trail_length);
+                n += 1;
+            }
+            // The wire carries no poses while trails are off (PM5 rule 4) but the host keeps
+            // them; the receiver keeps what it set too, so an empty list is never sent.
+            let poses: Vec<f32> = f.trail_poses.iter().flatten().copied().collect();
+            let old_poses: Option<Vec<f32>> =
+                lf.map(|l| l.trail_poses.iter().flatten().copied().collect());
+            if !poses.is_empty() && !old_poses.is_some_and(|o| bits(&o, &poses)) {
+                ops.op(Op::ParticlesSetTrailBindPoses, 1);
+                ops.rid(rid);
+                ops.farray(&poses, 12);
+                n += 1;
+            }
+            c.pt_setters += n;
+            if last.as_ref().map(|l| l.seed) != Some(e.seed) {
+                ops.op(Op::ParticlesSetSeed, 1);
+                ops.rid(rid);
+                ops.i64(e.seed as i64);
+                c.pt_seed_sets += 1;
+            }
+            if last.is_none() || m.material != material {
+                ops.op(Op::ParticlesSetRid, 1);
+                ops.rid(rid);
+                ops.u(ops::PT_RID_PROCESS_MATERIAL);
+                ops.rid(material.map(RidRef::Material).unwrap_or(RidRef::None));
+                m.material = material;
+                c.pt_material_sets += 1;
+            }
+            if m.passes.len() != passes.len() || last.is_none() {
+                ops.op(Op::ParticlesSetDrawPasses, 1);
+                ops.rid(rid);
+                ops.i64(passes.len() as i64);
+                // GLES3 resizes its pass list, keeping what is set.
+                m.passes.resize(passes.len(), None);
+                c.pt_draw_pass_sets += 1;
+            }
+            for (k, want) in passes.iter().enumerate() {
+                if m.passes[k] != *want || (last.is_none() && want.is_some()) {
+                    ops.op(Op::ParticlesSetDrawPassMesh, 1);
+                    ops.rid(rid);
+                    ops.i64(k as i64);
+                    ops.rid(want.map(RidRef::Mesh).unwrap_or(RidRef::None));
+                    m.passes[k] = *want;
+                    c.pt_draw_pass_sets += 1;
+                }
+            }
+            if m.sub != sub {
+                ops.op(Op::ParticlesSetRid, 1);
+                ops.rid(rid);
+                ops.u(ops::PT_RID_SUBEMITTER);
+                ops.rid(sub.map(RidRef::Particles).unwrap_or(RidRef::None));
+                m.sub = sub;
+                c.pt_subemitter_sets += 1;
+            }
+            if e.restarts > m.restarts {
+                if !sab.drop_particles_restart {
+                    ops.op(Op::ParticlesRestart, 1);
+                    ops.rid(rid);
+                    c.pt_restarts += 1;
+                }
+                m.restarts = e.restarts;
+            }
+            if e.process_requests > m.process_requests {
+                ops.op(Op::ParticlesSetFloat, 1);
+                ops.rid(rid);
+                ops.u(ops::PT_FLOAT_REQUEST_PROCESS_TIME);
+                ops.f(f.request_process_time);
+                m.process_requests = e.process_requests;
+                c.pt_process_requests += 1;
+            }
+            for em in payloads.particle_emits.iter().filter(|x| x.particles == id) {
+                if sab.ignore_particle_emits {
+                    c.pt_emits_dropped += 1;
+                    continue;
+                }
+                ops.op(Op::ParticlesEmit, 1);
+                ops.rid(rid);
+                ops.fs(&em.transform);
+                ops.fs(&em.velocity);
+                ops.fs(&em.color);
+                ops.fs(&em.custom);
+                ops.i64(em.flags as i64);
+                c.pt_emits += 1;
+            }
+            m.last = Some(e.clone());
+        }
+        // Emits naming an emitter this receiver does not hold are dropped (counted).
+        c.pt_emits_dropped += payloads
+            .particle_emits
+            .iter()
+            .filter(|x| !now.contains(&x.particles))
+            .count() as i64;
+        made
     }
 
     fn free_shader(&mut self, id: Id, ops: &mut OpBuf, c: &mut Counters) {
@@ -3375,15 +3815,52 @@ impl Planner {
                         reason: reason.as_str(),
                     });
                 }
-                // /12 (PM5): the emitter is carried but not replayed until PM6: typed, counted,
-                // not drawn.
-                Command::Particles { .. } => {
-                    c.particles_commands_undrawn += 1;
-                    unsupported.push(UnsupportedCommand {
-                        item: id,
-                        name: "canvas_item_add_particles".into(),
-                        reason: "particles-undrawn",
-                    });
+                // /12: PM6a draws a resident emitter. The `undrawn-particles` sabotage is the
+                // pre-PM6 planner (PM5): typed, counted, not drawn.
+                Command::Particles { particles, tex } => {
+                    if sab.undrawn_particles {
+                        c.particles_commands_undrawn += 1;
+                        unsupported.push(UnsupportedCommand {
+                            item: id,
+                            name: "canvas_item_add_particles".into(),
+                            reason: "particles-undrawn",
+                        });
+                        continue;
+                    }
+                    let reason = match st.particles.get(particles) {
+                        None => "unknown-particles",
+                        Some(p) if p.status == EntryStatus::Freed => "particles-freed",
+                        Some(p) if p.status != EntryStatus::Ok => "unsupported-particles",
+                        Some(_) if !self.particles.contains_key(particles) => {
+                            "particles-not-resident"
+                        }
+                        Some(_) => "",
+                    };
+                    if !reason.is_empty() {
+                        c.skipped_particles_commands += 1;
+                        unsupported.push(UnsupportedCommand {
+                            item: id,
+                            name: "canvas_item_add_particles".into(),
+                            reason,
+                        });
+                        continue;
+                    }
+                    let (ok, t, reason) = self.texture_for(st, *tex);
+                    if !ok {
+                        c.skipped += 1;
+                        unsupported.push(UnsupportedCommand {
+                            item: id,
+                            name: "canvas_item_add_particles".into(),
+                            reason,
+                        });
+                        continue;
+                    }
+                    ops.op(Op::AddParticles, 1);
+                    ops.rid(rid);
+                    ops.rid(RidRef::Particles(self.particles[particles].handle));
+                    ops.rid(t);
+                    c.replayed += 1;
+                    c.particles_commands += 1;
                 }
                 // /11: PM2 draws a resident multimesh. The `undrawn-multimesh` sabotage is the
                 // pre-PM2 planner (PM1): typed, counted, not drawn.
@@ -3461,6 +3938,13 @@ impl Planner {
             ops.rid(RidRef::Texture(m.handle));
             n += 1;
         }
+        // PM6a: emitters before the materials and meshes they name.
+        let particles = std::mem::take(&mut self.particles);
+        for m in particles.values() {
+            ops.op(Op::FreeRid, 1);
+            ops.rid(RidRef::Particles(m.handle));
+            n += 1;
+        }
         // PM2: multimeshes before the meshes they draw.
         let multimeshes = std::mem::take(&mut self.multimeshes);
         for m in multimeshes.values() {
@@ -3503,6 +3987,8 @@ impl Planner {
         self.mm_count.clear();
         self.mm_items.clear();
         self.mm_meshes.clear();
+        self.pt_count.clear();
+        self.pt_items.clear();
         self.rid_param_items.clear();
         self.mattex.clear();
         self.canvas_ids.clear();
@@ -3748,10 +4234,28 @@ fn write_stats(
         ("skipped_multimesh_commands", c.skipped_multimesh_commands),
     ];
     let mm_any = mm_resources.iter().any(|(_, n)| *n != 0);
+    // PM6a: `particles_resources`, only when one of its counters is non-zero.
+    let pt_resources = [
+        ("particles_created", c.pt_created),
+        ("particles_freed", c.pt_freed),
+        ("setters", c.pt_setters),
+        ("seed_sets", c.pt_seed_sets),
+        ("material_sets", c.pt_material_sets),
+        ("draw_pass_sets", c.pt_draw_pass_sets),
+        ("subemitter_sets", c.pt_subemitter_sets),
+        ("restarts", c.pt_restarts),
+        ("process_requests", c.pt_process_requests),
+        ("emits", c.pt_emits),
+        ("emits_dropped", c.pt_emits_dropped),
+        ("particles_commands", c.particles_commands),
+        ("skipped_particles_commands", c.skipped_particles_commands),
+    ];
+    let pt_any = pt_resources.iter().any(|(_, n)| *n != 0);
     v.dict(
         18 + (c.multimesh_commands_undrawn > 0) as usize
             + mm_any as usize
-            + (c.particles_commands_undrawn > 0) as usize,
+            + (c.particles_commands_undrawn > 0) as usize
+            + pt_any as usize,
     );
     v.key("created");
     v.int(c.created);
@@ -3826,6 +4330,10 @@ fn write_stats(
     if mm_any {
         v.key("multimesh_resources");
         int_dict(v, &mm_resources);
+    }
+    if pt_any {
+        v.key("particles_resources");
+        int_dict(v, &pt_resources);
     }
     v.key("mesh_resources");
     let mut mesh_resources = vec![
@@ -3906,4 +4414,30 @@ fn write_stats(
             ("backbuffer_copy_sets", c.backbuffer_copy_sets),
         ],
     );
+}
+
+/// PM6a: `RS::ParticlesMode`, `RS::ParticlesDrawOrder` and `RS::ParticlesTransformAlign` as ints.
+fn pt_mode(e: &Particles) -> i64 {
+    match e.mode {
+        ParticlesMode::D2 => 0,
+        ParticlesMode::D3 => 1,
+    }
+}
+
+fn pt_order(e: &Particles) -> i64 {
+    match e.draw_order {
+        ParticlesDrawOrder::Index => 0,
+        ParticlesDrawOrder::Lifetime => 1,
+        ParticlesDrawOrder::ReverseLifetime => 2,
+        ParticlesDrawOrder::ViewDepth => 3,
+    }
+}
+
+fn pt_align(e: &Particles) -> i64 {
+    match e.transform_align {
+        ParticlesTransformAlign::Disabled => 0,
+        ParticlesTransformAlign::ZBillboard => 1,
+        ParticlesTransformAlign::YToVelocity => 2,
+        ParticlesTransformAlign::ZBillboardYToVelocity => 3,
+    }
 }

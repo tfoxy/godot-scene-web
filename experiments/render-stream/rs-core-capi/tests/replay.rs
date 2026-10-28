@@ -325,7 +325,7 @@ fn the_session_is_at_the_streams_version() {
 #[test]
 fn op_table_matches_the_shim() {
     // receiver/ext/rs_core_capi.h's OP_COUNT.
-    assert_eq!(rs_core_capi::ops::OP_COUNT, 76);
+    assert_eq!(rs_core_capi::ops::OP_COUNT, 92);
 }
 
 /// CG1 (render-stream-10.md "Receivers"): golden-10's states 9 and 10 re-issue the canvas-group
@@ -473,64 +473,124 @@ fn count_mentions(bytes: &[u8], needle: &str) -> i64 {
     bytes.windows(needle.len()).filter(|w| *w == needle.as_bytes()).count() as i64
 }
 
-/// PM5 (render-stream-12.md "Receivers"): golden-12 replays through the capi at /12. Every
-/// `add_particles` is counted undrawn (`particles_commands_undrawn`, written only when non-zero)
-/// and typed as one `unsupported_commands` row `particles-undrawn`; nothing else about the
-/// replay moves (states 1 to 21 are golden-11's, so the canvas-group and back-buffer totals are
-/// golden-11's), and the delta walk equals the full scan. Item 18 is drawn at states 22 (2
-/// emitters), 24 (3) and 25 (2): 7 commands at either encoding.
+/// PM5 (render-stream-12.md "Receivers"), kept as PM6a's `undrawn-particles` sabotage (the
+/// pre-PM6 planner): every `add_particles` is counted undrawn (`particles_commands_undrawn`,
+/// written only when non-zero) and typed as one `unsupported_commands` row `particles-undrawn`.
+/// Item 18 is drawn at states 22 (2 emitters), 24 (3) and 25 (2): 7 commands at either encoding.
 #[test]
 fn golden_12_counts_particles_undrawn() {
-    let g12 = golden().join("../golden-12");
     for name in ["full.rs12", "patch.rs12", "inline.rs12"] {
-        let path = g12.join(name);
-        let (honest, totals) = replay_counting(&path, 12, false, "");
-        assert_eq!(totals, (5, 3), "{name}");
-        assert!(replay_at(&path, 12, true, "") == honest, "{name}: delta vs full scan");
-        let data = std::fs::read(&path).unwrap();
-        let mut store = g12_payloads();
-        let mut core = Core::new();
-        let spans = wire::split_records(&data, 12).unwrap();
-        assert_eq!(core.session(&data, spans[0].offset, 12), KIND_SESSION);
-        core.begin_session();
-        let (mut undrawn, mut rows, mut applies) = (0, 0, 0);
-        for s in &spans[1..] {
-            let kind = core.accept(&data, s.offset);
-            assert_ne!(kind, KIND_ERROR, "{name}");
-            if kind == KIND_RESOURCE {
-                assert!(core.resource_payload());
-                let p = core.text.clone();
-                store.insert(wire::sha256(&p), p);
-                continue;
-            }
-            if kind != KIND_TRANSACTION {
-                continue;
-            }
-            let (hashes, library) = needed(&mut core);
-            for h in hashes {
-                core.provide(&h, &store[&Hash::from_hex(&h).unwrap()]).unwrap();
-            }
-            for h in library {
-                core.provide_library(&h, false, "no library in the golden test");
-            }
-            core.apply().unwrap();
-            applies += 1;
-            let out = &core.vt.out;
-            let n = if mentions(out, "particles_commands_undrawn") {
-                stat_int(out, "particles_commands_undrawn")
-            } else {
-                0
-            };
-            assert!(n != 0 || !mentions(out, "particles_commands_undrawn"), "{name}: a zero key");
-            let r = count_mentions(out, "particles-undrawn");
-            assert_eq!(r, n, "{name}: rows vs particles_commands_undrawn");
-            undrawn += n;
-            rows += r;
-        }
-        assert_eq!(applies, 26, "{name}");
+        let (undrawn, rows, _) = replay_g12(name, "undrawn-particles");
         assert_eq!(undrawn, 7, "{name}: particles_commands_undrawn");
         assert_eq!(rows, 7, "{name}: particles-undrawn rows");
     }
+}
+
+/// PM6a (render-stream-12.md "As built (PM6a)"): golden-12 draws its emitters. State 22 makes
+/// emitters 1 and 2 (2 is global and names 1 as its subemitter), with the process material and
+/// its `particles` shader resident although no item names them; 23 restarts emitter 1 and
+/// replays its two emits; 24's 3D emitter stays unmade (`unsupported-particles`); 25 frees
+/// emitter 2 (no longer named); the unknown RID stays `unknown-particles`. Nothing is undrawn,
+/// and the delta walk equals the full scan.
+#[test]
+fn golden_12_draws_particles() {
+    for name in ["full.rs12", "patch.rs12", "inline.rs12"] {
+        let (undrawn, rows, t) = replay_g12(name, "");
+        assert_eq!((undrawn, rows), (0, 0), "{name}: undrawn");
+        assert_eq!(t["particles_created"], 2, "{name}: created");
+        assert_eq!(t["particles_freed"], 1, "{name}: freed");
+        assert_eq!(t["emits"], 2, "{name}: emits");
+        assert_eq!(t["emits_dropped"], 0, "{name}: emits dropped");
+        assert!(t["restarts"] >= 1, "{name}: restarts {}", t["restarts"]);
+        assert!(t["material_sets"] >= 2, "{name}: material sets");
+        assert!(t["particles_commands"] >= 5, "{name}: drawn {}", t["particles_commands"]);
+        assert!(t["shaders_created"] >= 1, "{name}: the particles shader");
+        assert_eq!(t["unsupported-particles"], 1, "{name}: the 3D emitter");
+        let (_, _, ignored) = replay_g12(name, "ignore-particle-emits");
+        assert_eq!((ignored["emits"], ignored["emits_dropped"]), (0, 2), "{name}: sabotage");
+        let (_, _, dropped) = replay_g12(name, "drop-particles-restart");
+        assert_eq!(dropped["restarts"], 0, "{name}: drop-particles-restart");
+        assert_eq!(dropped["emits"], 2, "{name}: drop-particles-restart keeps the emits");
+        let delta = replay_at(&golden().join("../golden-12").join(name), 12, false, "");
+        let full = replay_at(&golden().join("../golden-12").join(name), 12, true, "");
+        assert_eq!(delta.len(), full.len(), "{name}: batch counts");
+        for (k, (d, f)) in delta.iter().zip(&full).enumerate() {
+            assert!(d == f, "{name}: call batch {k} differs from the full scan");
+        }
+    }
+}
+
+/// Replays a golden-12 recording under `sabotage`: (particles_commands_undrawn,
+/// particles-undrawn rows, summed particles_resources and a few other totals).
+fn replay_g12(name: &str, sabotage: &str) -> (i64, i64, HashMap<&'static str, i64>) {
+    let path = golden().join("../golden-12").join(name);
+    let data = std::fs::read(&path).unwrap();
+    let mut store = g12_payloads();
+    let mut core = Core::new();
+    core.set_sabotage(sabotage);
+    let spans = wire::split_records(&data, 12).unwrap();
+    assert_eq!(core.session(&data, spans[0].offset, 12), KIND_SESSION);
+    core.begin_session();
+    let (mut undrawn, mut rows, mut applies) = (0, 0, 0);
+    let keys = [
+        "particles_created",
+        "particles_freed",
+        "emits",
+        "emits_dropped",
+        "restarts",
+        "material_sets",
+        "particles_commands",
+        "shaders_created",
+    ];
+    let mut totals: HashMap<&'static str, i64> = HashMap::new();
+    for s in &spans[1..] {
+        let kind = core.accept(&data, s.offset);
+        assert_ne!(kind, KIND_ERROR, "{name}");
+        if kind == KIND_RESOURCE {
+            assert!(core.resource_payload());
+            let p = core.text.clone();
+            store.insert(wire::sha256(&p), p);
+            continue;
+        }
+        if kind != KIND_TRANSACTION {
+            continue;
+        }
+        let (hashes, library) = needed(&mut core);
+        for h in hashes {
+            core.provide(&h, &store[&Hash::from_hex(&h).unwrap()]).unwrap();
+        }
+        for h in library {
+            core.provide_library(&h, false, "no library in the golden test");
+        }
+        core.apply().unwrap();
+        applies += 1;
+        let out = &core.vt.out;
+        let n = if mentions(out, "particles_commands_undrawn") {
+            stat_int(out, "particles_commands_undrawn")
+        } else {
+            0
+        };
+        assert!(n != 0 || !mentions(out, "particles_commands_undrawn"), "{name}: a zero key");
+        let r = count_mentions(out, "particles-undrawn");
+        assert_eq!(r, n, "{name}: rows vs particles_commands_undrawn");
+        undrawn += n;
+        rows += r;
+        *totals.entry("unsupported-particles").or_default() +=
+            count_mentions(out, "unsupported-particles");
+        *totals.entry("shaders_created").or_default() += stat_int(out, "shaders_created");
+        if mentions(out, "particles_resources") {
+            for k in keys {
+                if k != "shaders_created" {
+                    *totals.entry(k).or_default() += stat_int(out, k);
+                }
+            }
+        }
+    }
+    assert_eq!(applies, 26, "{name}");
+    for k in keys {
+        totals.entry(k).or_default();
+    }
+    (undrawn, rows, totals)
 }
 
 /// The number of Strings in a vt Array of Strings (`take_released`): tag 10 (packed strings),

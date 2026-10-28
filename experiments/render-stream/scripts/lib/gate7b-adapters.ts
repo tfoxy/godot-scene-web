@@ -111,6 +111,9 @@ export const GATE8_FILE_GROUPS: readonly string[] = [
   // PM2: /11 multimesh (fixtures/gate8-mm): g8mm's native receiver legs, the /10 negative control
   // and the receiver sabotages, so mm-reference and its catches judge the web export (`@web`)
   "g8mm",
+  // PM6a: /12 GPU particles (fixtures/gate8-pt): g8pt's native receiver legs and the receiver
+  // sabotages, so pt-lifecycle, pt-outside-exact, pt-replay and their catches judge the web export
+  "g8pt",
 ];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's
@@ -682,6 +685,49 @@ export interface LegShotClasses {
   shot: string;
   classes: ShotClasses | null;
   problem?: string;
+  /** PM6a: differing pixels inside the leg's approximate regions (`approximateRegions`), which
+   * are not classified: the web shot takes the native pixel there before `classifyShot`. */
+  approximate?: number;
+}
+
+/** PM6a (render-stream-12.md "As built (PM6a)"): the regions of a leg's shots whose pixels are
+ * declared approximate between two receivers, as [x0, y0, x1, y1] inclusive, or null. g8pt's GPU
+ * particles simulate on each receiver's own GPU (particles-multimesh-design.md "What exact means
+ * here"), so web and native agree there only within g8pt's own banded checks (pt-lifecycle@web,
+ * pt-coverage@web); everywhere else P-W1's classes still hold (pt-outside-exact@web judges the
+ * rest exactly against the reference). */
+export function approximateRegions(leg: string): [number, number, number, number][] | null {
+  if (!leg.startsWith("g8pt/")) return null;
+  const expected = JSON.parse(
+    readFileSync(join(SCRIPT_DIR, "..", "fixtures", "gate8-pt", "expected.json"), "utf8"),
+  ) as { pixels?: { regions?: Record<string, [number, number, number, number]> } };
+  return Object.values(expected.pixels?.regions ?? {});
+}
+
+/** Copies `native`'s pixels into `web` inside `regions`; returns how many differed there. */
+export function maskApproximate(
+  native: Uint8Array,
+  web: Uint8Array,
+  width: number,
+  regions: readonly [number, number, number, number][],
+): number {
+  let n = 0;
+  for (const [x0, y0, x1, y1] of regions)
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * width + x) * 4;
+        if (i + 3 >= web.length) continue;
+        if (
+          web[i] !== native[i] ||
+          web[i + 1] !== native[i + 1] ||
+          web[i + 2] !== native[i + 2] ||
+          web[i + 3] !== native[i + 3]
+        ) {
+          n++;
+          web.set(native.subarray(i, i + 4), i);
+        }
+      }
+  return n;
 }
 
 /** Every shot of a web leg against its native leg's. */
@@ -691,6 +737,7 @@ export async function classifyLegShots(
   webDir: string,
 ): Promise<LegShotClasses[]> {
   const out: LegShotClasses[] = [];
+  const approx = approximateRegions(leg);
   for (const f of filesUnder(join(nativeDir, "shots"))) {
     if (!f.endsWith(".png")) continue;
     const a = await decodePngRgba(join(nativeDir, "shots", f));
@@ -704,6 +751,12 @@ export async function classifyLegShots(
       });
       continue;
     }
+    if (approx) {
+      const web = new Uint8Array(b.data);
+      const approximate = maskApproximate(a.data, web, a.width, approx);
+      out.push({ leg, shot: f, classes: classifyShot(a.data, web), approximate });
+      continue;
+    }
     out.push({ leg, shot: f, classes: classifyShot(a.data, b.data) });
   }
   return out;
@@ -712,7 +765,7 @@ export async function classifyLegShots(
 /** The banded leg (Q7 "As built", G7b): the web leg's own files, except each shot whose every
  * differing pixel is `readback` or `delta1`, which is the native shot instead (the gate's budgets
  * then judge N's pixels, which W equals within the recorded band). A shot with any `other` pixel
- * stays the web's own, so the gate's own check sees it. */
+ * (or, PM6a, any approximate one) stays the web's own, so the gate's own check sees it. */
 async function buildBandedLeg(
   webDir: string,
   nativeDir: string,
@@ -720,9 +773,11 @@ async function buildBandedLeg(
   shots: readonly LegShotClasses[],
 ): Promise<void> {
   await mkdir(bandedDir, { recursive: true });
+  // PM6a: a shot with approximate pixels stays the web's own, so g8pt's banded checks judge the
+  // web export's particles, not the native shot.
   const substitute = new Set(
     shots
-      .filter((s) => s.classes !== null && s.classes.other === 0)
+      .filter((s) => s.classes !== null && s.classes.other === 0 && !s.approximate)
       .map((s) => `shots/${s.shot}`),
   );
   for (const f of filesUnder(webDir)) {
@@ -742,7 +797,7 @@ function resolvedStates(
     // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9; CG1: GRSA).
     const wire = wireVersionOf(data);
     const versions =
-      wire === 8 || wire === 9 || wire === 10 || wire === 11
+      wire === 8 || wire === 9 || wire === 10 || wire === 11 || wire === 12
         ? [wire]
         : ([6, 5, 4, 3, 2] as const);
     for (const version of versions) {
@@ -958,7 +1013,7 @@ export async function checkGateWeb(
   });
   {
     const totals = { shots: 0, identical: 0, readback: 0, delta1: 0, other: 0 };
-    const pxTotals = { readback: 0, delta1: 0, other: 0 };
+    const pxTotals = { readback: 0, delta1: 0, other: 0, approximate: 0 };
     const problems: string[] = [];
     const refusedOther: string[] = [];
     let otherMax = 0;
@@ -984,6 +1039,7 @@ export async function checkGateWeb(
         continue;
       }
       const c = s.classes;
+      pxTotals.approximate += s.approximate ?? 0;
       pxTotals.readback += c.readback;
       pxTotals.delta1 += c.delta1;
       pxTotals.other += c.other;
@@ -1005,7 +1061,7 @@ export async function checkGateWeb(
         "pw1-classes@web",
         "Q7/G7b: every differing web pixel is explained: `readback` (one 10-bit value read back by glGetTexImage natively and by the GLES copy shader on the web) or `delta1` (at most one level per colour channel, alpha equal); no `other` pixel",
         problems,
-        `${totals.shots} shots: ${totals.identical} identical, ${totals.readback} readback-only, ${totals.delta1} with delta1 px; pixels readback ${pxTotals.readback}, delta1 ${pxTotals.delta1}, other ${pxTotals.other}${refusedOther.length > 0 ? ` (all on web-refused legs: ${refusedOther.length} shots, e.g. ${refusedOther.slice(0, 3).join(", ")})` : ""}`,
+        `${totals.shots} shots: ${totals.identical} identical, ${totals.readback} readback-only, ${totals.delta1} with delta1 px; pixels readback ${pxTotals.readback}, delta1 ${pxTotals.delta1}, other ${pxTotals.other}${pxTotals.approximate > 0 ? `, approximate ${pxTotals.approximate} (PM6a: g8pt's emitter regions)` : ""}${refusedOther.length > 0 ? ` (all on web-refused legs: ${refusedOther.length} shots, e.g. ${refusedOther.slice(0, 3).join(", ")})` : ""}`,
       ),
     );
   }

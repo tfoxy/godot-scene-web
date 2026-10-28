@@ -176,14 +176,20 @@
 #       gate8-mm, receiver) and rs-core-check's build; then, in one private 640x360 gamescope,
 #       every gate8-pt capture at --fixed-fps 60 under GRC_ADOPT=arm (the node map the
 #       particle_process_material builtin is read through) with both sinks, the store, the hook log
-#       and the step log: `capture` (GRC_STREAM_VERSION=12), `sabotage-perturb-seed/capture` and
-#       `sabotage-drop-restart/capture` (GRC_SABOTAGE at frame 30), the native `receiver` on
-#       capture's full sink (RS_RECEIVER_PROTOCOL=12: accepted, every particle draw typed
-#       particles-undrawn until PM6) and `capture-v11` (the negative control); last, headless:
+#       and the step log, every rendered leg to frame 120 (RS_FIXTURE_QUIT_FRAME): `capture`
+#       (GRC_STREAM_VERSION=12), `sabotage-perturb-seed/capture` and `sabotage-drop-restart/capture`
+#       (GRC_SABOTAGE at frame 30); PM6a: the unarmed `reference` and `reference-repeat` (fixture
+#       shots at each settle frame, the frame before it, and tails 95 and 110), the native
+#       `receiver` and `receiver-patch` on capture's sinks (RS_RECEIVER_PROTOCOL=12, --fixed-fps 60:
+#       every emitter re-issued on the receiver's RenderingServer), the receiver sabotages
+#       `sabotage-undrawn-particles/receiver` (the pre-PM6 planner) and
+#       `sabotage-ignore-particle-emits/receiver`, and `sabotage-drop-restart/receiver-patch`;
+#       then `capture-v11` (the negative control); last, headless:
 #       `headless/capture` (no particles shim: every emitter RID()), `headless-shim/capture`
 #       (GRC_HEADLESS_PARTICLES=synthesize) and, on fixtures/gate8-mm, `headless-pump/capture`
 #       (GRC_PREDRAW_PUMP=1) and its control `headless-nopump/capture`. Judged by
-#       lib/gate8-pt-checks.ts; not in run-gate7.sh's G8_FILE_LEGS (no receiver draws particles yet).
+#       lib/gate8-pt-checks.ts and lib/gate8-pt-receiver-checks.ts; g7-8's web half replays the
+#       receiver legs (run-gate7.sh G8_FILE_LEGS).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -973,6 +979,26 @@ G8PT_SABOTAGES=(perturb-seed drop-restart)
 # Every g8pt capture: /12 (or the /11 control) with the node map connected (GRC_ADOPT=arm), which
 # the particle_process_material builtin reads through (render-stream-12.md).
 G8PT_ENV=(GRC_ADOPT=arm)
+# PM6a: every rendered g8pt leg runs to frame 120, past the fixture's tail shots (95 and 110:
+# D_ONESHOT's second burst alive, then gone one lifetime after its restart at 40).
+G8PT_QUIT=120
+G8PT_TAIL_FRAMES=(95 110)
+# PM6a: the receiver sabotages (render-stream-12.md "As built (PM6a)"): the pre-PM6 planner, and a
+# receiver that ignores particle_emits.
+G8PT_RECEIVER_SABOTAGES=(undrawn-particles ignore-particle-emits)
+
+# g8pt_extra_seqs <capture dir>: the CSV of the seqs published at each settle frame's previous frame
+# and at each tail frame (the receivers shoot them beside the settle seqs).
+g8pt_extra_seqs() {
+	local f out=""
+	for f in $(python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if l: print(json.loads(l)["settle_frame"] - 1)' "$1/steps.jsonl" 2>/dev/null) "${G8PT_TAIL_FRAMES[@]}"; do
+		out="$out${out:+,}$(seq_at_frame "$1/$RECORDING_NAME" "$f")"
+	done
+	echo "$out"
+}
 
 run_import_g8pt() {
 	echo "run-gate8: g8pt import (fixtures gate8-pt and gate8-mm, receiver)"
@@ -1001,7 +1027,7 @@ run_capture_rendered_g8pt() {
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm "${G8PT_ENV[@]}" "$@"
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
-		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_QUIT_FRAME="$G8PT_QUIT"
 	)
 	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
 	run_rendered "$dir" "$G8PT_FIXTURE_DIR"
@@ -1040,9 +1066,53 @@ run_g8pt() {
 		run_capture_rendered_g8pt "$OUT/g8pt/sabotage-$s/capture" GRC_STREAM_VERSION=12 \
 			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8PT_SABOTAGE_FRAME"
 	done
-	echo "run-gate8: g8pt receiver (the /12 capture replayed natively: accepted, particles undrawn)"
+	# PM6a: the unarmed references and the native receivers (render-stream-12.md "As built
+	# (PM6a)"), every one at --fixed-fps 60 in the same gamescope (run_rendered consumes
+	# RENDERED_EXTRA_ARGS, so each launch sets it): the receivers simulate the emitters on their own
+	# RenderingServer, one transaction a frame.
+	legs_par_begin
+	local r
+	for r in reference reference-repeat; do
+		echo "run-gate8: g8pt $r (unarmed, rendered at 640x360, --fixed-fps 60)"
+		mkdir -p "$OUT/g8pt/$r/shots" "$OUT/g8pt/$r/xdg-data"
+		# A private user data dir per reference (CGR: no shared GLES3 shader cache).
+		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8pt/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8pt/$r/steps.jsonl"
+			RS_FIXTURE_QUIT_FRAME="$G8PT_QUIT" XDG_DATA_HOME="$OUT/g8pt/$r/xdg-data")
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		run_rendered "$OUT/g8pt/$r" "$G8PT_FIXTURE_DIR"
+	done
+	local extra=""
+	[ -f "$OUT/g8pt/capture/steps.jsonl" ] && extra="$(g8pt_extra_seqs "$OUT/g8pt/capture")"
+	echo "run-gate8: g8pt receiver (the /12 full sink replayed natively: the emitters re-issued)"
 	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	RECEIVER_EXTRA_SHOTS="$extra"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
 	run_rendered_receiver "$OUT/g8pt/capture" "$OUT/g8pt/receiver"
+	echo "run-gate8: g8pt receiver-patch (the /12 patch sink)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	RECEIVER_EXTRA_SHOTS="$extra"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered_receiver "$OUT/g8pt/capture" "$OUT/g8pt/receiver-patch"
+	for s in "${G8PT_RECEIVER_SABOTAGES[@]}"; do
+		echo "run-gate8: g8pt sabotage-$s (receiver)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12 RS_RECEIVER_SABOTAGE="$s")
+		RECEIVER_EXTRA_SHOTS="$extra"
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered_receiver "$OUT/g8pt/capture" "$OUT/g8pt/sabotage-$s/receiver"
+	done
+	echo "run-gate8: g8pt sabotage-drop-restart (receiver on the sabotaged patch sink)"
+	extra=""
+	[ -f "$OUT/g8pt/sabotage-drop-restart/capture/steps.jsonl" ] &&
+		extra="$(g8pt_extra_seqs "$OUT/g8pt/sabotage-drop-restart/capture")"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	RECEIVER_EXTRA_SHOTS="$extra"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered_receiver "$OUT/g8pt/sabotage-drop-restart/capture" "$OUT/g8pt/sabotage-drop-restart/receiver-patch"
+	legs_par_end
+	RENDERED_EXTRA_ARGS=()
+	rm -rf "$OUT/g8pt/reference/xdg-data" "$OUT/g8pt/reference-repeat/xdg-data"
 	RECORDING_NAME=recording.rs11
 	PATCH_RECORDING_NAME=recording-patch.rs11
 	echo "run-gate8: g8pt capture-v11 (/11, the negative control: no particles on the wire)"

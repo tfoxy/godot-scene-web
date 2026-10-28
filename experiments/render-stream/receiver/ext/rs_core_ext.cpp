@@ -15,11 +15,13 @@
 // Nothing here interprets render-stream: the decode, validation, resolve and the applier's
 // reconciliation are all the core's.
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gdextension_interface.h"
@@ -257,6 +259,39 @@ enum Rs : int {
   RS_MULTIMESH_SET_VISIBLE_INSTANCES,
   RS_MULTIMESH_SET_BUFFER,
   RS_CANVAS_ITEM_ADD_MULTIMESH,
+  // PM6a: /12 GPU particles.
+  RS_PARTICLES_CREATE,
+  RS_PARTICLES_SET_EMITTING,
+  RS_PARTICLES_SET_ONE_SHOT,
+  RS_PARTICLES_SET_INTERPOLATE,
+  RS_PARTICLES_SET_FRACTIONAL_DELTA,
+  RS_PARTICLES_SET_USE_LOCAL_COORDINATES,
+  RS_PARTICLES_SET_MODE,
+  RS_PARTICLES_SET_AMOUNT,
+  RS_PARTICLES_SET_FIXED_FPS,
+  RS_PARTICLES_SET_DRAW_ORDER,
+  RS_PARTICLES_SET_TRANSFORM_ALIGN,
+  RS_PARTICLES_SET_AMOUNT_RATIO,
+  RS_PARTICLES_SET_LIFETIME,
+  RS_PARTICLES_SET_PRE_PROCESS_TIME,
+  RS_PARTICLES_SET_EXPLOSIVENESS_RATIO,
+  RS_PARTICLES_SET_RANDOMNESS_RATIO,
+  RS_PARTICLES_SET_SPEED_SCALE,
+  RS_PARTICLES_SET_COLLISION_BASE_SIZE,
+  RS_PARTICLES_SET_INTERP_TO_END,
+  RS_PARTICLES_REQUEST_PROCESS_TIME,
+  RS_PARTICLES_SET_CUSTOM_AABB,
+  RS_PARTICLES_SET_EMISSION_TRANSFORM,
+  RS_PARTICLES_SET_EMITTER_VELOCITY,
+  RS_PARTICLES_SET_TRAILS,
+  RS_PARTICLES_SET_TRAIL_BIND_POSES,
+  RS_PARTICLES_SET_PROCESS_MATERIAL,
+  RS_PARTICLES_SET_SUBEMITTER,
+  RS_PARTICLES_SET_DRAW_PASSES,
+  RS_PARTICLES_SET_DRAW_PASS_MESH,
+  RS_PARTICLES_RESTART,
+  RS_PARTICLES_EMIT,
+  RS_CANVAS_ITEM_ADD_PARTICLES,
   RS_COUNT,
 };
 
@@ -342,7 +377,57 @@ constexpr RsBind RS_BINDS[RS_COUNT] = {
     {"multimesh_set_visible_instances", 3411492887},
     {"multimesh_set_buffer", 2960552364},
     {"canvas_item_add_multimesh", 2131855138},
+    {"particles_create", 529393457},
+    {"particles_set_emitting", 1265174801},
+    {"particles_set_one_shot", 1265174801},
+    {"particles_set_interpolate", 1265174801},
+    {"particles_set_fractional_delta", 1265174801},
+    {"particles_set_use_local_coordinates", 1265174801},
+    {"particles_set_mode", 3492270028},
+    {"particles_set_amount", 3411492887},
+    {"particles_set_fixed_fps", 3411492887},
+    {"particles_set_draw_order", 935028487},
+    {"particles_set_transform_align", 3264971368},
+    {"particles_set_amount_ratio", 1794382983},
+    {"particles_set_lifetime", 1794382983},
+    {"particles_set_pre_process_time", 1794382983},
+    {"particles_set_explosiveness_ratio", 1794382983},
+    {"particles_set_randomness_ratio", 1794382983},
+    {"particles_set_speed_scale", 1794382983},
+    {"particles_set_collision_base_size", 1794382983},
+    {"particles_set_interp_to_end", 1794382983},
+    {"particles_request_process_time", 1794382983},
+    {"particles_set_custom_aabb", 3696536120},
+    {"particles_set_emission_transform", 3935195649},
+    {"particles_set_emitter_velocity", 3227306858},
+    {"particles_set_trails", 2010054925},
+    {"particles_set_trail_bind_poses", 684822712},
+    {"particles_set_process_material", 395945892},
+    {"particles_set_subemitter", 395945892},
+    {"particles_set_draw_passes", 3411492887},
+    {"particles_set_draw_pass_mesh", 2310537182},
+    {"particles_restart", 2722037293},
+    {"particles_emit", 4043136117},
+    {"canvas_item_add_particles", 2575754278},
 };
+
+// PM6a (render-stream-12.md "As built (PM6a)"): the generic particles setters' binds, by `which`.
+constexpr Rs PT_BOOL_BINDS[rsc::PT_BOOL_COUNT] = {
+    RS_PARTICLES_SET_EMITTING, RS_PARTICLES_SET_ONE_SHOT, RS_PARTICLES_SET_INTERPOLATE,
+    RS_PARTICLES_SET_FRACTIONAL_DELTA, RS_PARTICLES_SET_USE_LOCAL_COORDINATES,
+};
+constexpr Rs PT_INT_BINDS[rsc::PT_INT_COUNT] = {
+    RS_PARTICLES_SET_MODE, RS_PARTICLES_SET_AMOUNT, RS_PARTICLES_SET_FIXED_FPS,
+    RS_PARTICLES_SET_DRAW_ORDER, RS_PARTICLES_SET_TRANSFORM_ALIGN,
+};
+constexpr Rs PT_FLOAT_BINDS[rsc::PT_FLOAT_COUNT] = {
+    RS_PARTICLES_SET_AMOUNT_RATIO,       RS_PARTICLES_SET_LIFETIME,
+    RS_PARTICLES_SET_PRE_PROCESS_TIME,   RS_PARTICLES_SET_EXPLOSIVENESS_RATIO,
+    RS_PARTICLES_SET_RANDOMNESS_RATIO,   RS_PARTICLES_SET_SPEED_SCALE,
+    RS_PARTICLES_SET_COLLISION_BASE_SIZE, RS_PARTICLES_SET_INTERP_TO_END,
+    RS_PARTICLES_REQUEST_PROCESS_TIME,
+};
+constexpr Rs PT_RID_BINDS[rsc::PT_RID_COUNT] = {RS_PARTICLES_SET_PROCESS_MATERIAL, RS_PARTICLES_SET_SUBEMITTER};
 
 struct Engine {
   bool ready = false;
@@ -447,6 +532,74 @@ void set_use_identity_transform(uint64_t item, bool enable) {
   void **vtable = *reinterpret_cast<void ***>(engine.rs);
   reinterpret_cast<FnSetUseIdentityTransform>(vtable[kUseIdentityTransformSlot])(engine.rs, RidByValue{item},
                                                                                  enable);
+}
+
+// PM6a (render-stream-12.md "As built (PM6a)"): `particles_set_seed`. Godot 4.5.1 declares it a
+// RenderingServer virtual but binds it to no method, so no ptrcall reaches it. The shim calls the
+// virtual itself, at the vtable slot right after `particles_set_collision_base_size`'s (the header
+// declares the two in that order). That slot is not a constant: the Object prefix differs between
+// the editor and a release template. So the shim finds it once, by ptrcalling two bound
+// `(RID, float)` setters on a stand-in object whose vtable is a table of trampolines that each
+// record their own index. The two indices must lie exactly 14 slots apart (the header's distance
+// from `particles_set_amount_ratio`); otherwise the seed is left unset and counted.
+namespace seedprobe {
+constexpr int SLOTS = 640;
+using ProbeFn = void (*)(void *, uint64_t, float);
+using SeedFn = void (*)(void *, uint64_t, uint32_t);
+int g_hit = -1;
+template <int N>
+void tramp(void *, uint64_t, float) {
+  g_hit = N;
+}
+template <int... I>
+constexpr std::array<ProbeFn, sizeof...(I)> make_table(std::integer_sequence<int, I...>) {
+  return {{&tramp<I>...}};
+}
+const std::array<ProbeFn, SLOTS> TABLE = make_table(std::make_integer_sequence<int, SLOTS>{});
+struct alignas(16) Fake {
+  const ProbeFn *vptr;
+  uint8_t zero[8192];
+};
+// -2: not probed yet; -1: the probe failed (the seed is never set).
+int g_slot = -2;
+int g_unset = 0;
+}  // namespace seedprobe
+
+int seed_slot() {
+  using namespace seedprobe;
+  if (g_slot != -2) return g_slot;
+  g_slot = -1;
+  static Fake fake;
+  std::memset(&fake, 0, sizeof(fake));
+  fake.vptr = TABLE.data();
+  uint64_t rid = 0;
+  double v = 0.0;
+  const void *args[2] = {&rid, &v};
+  int hits[2] = {-1, -1};
+  const int binds[2] = {RS_PARTICLES_SET_AMOUNT_RATIO, RS_PARTICLES_SET_COLLISION_BASE_SIZE};
+  for (int k = 0; k < 2; k++) {
+    g_hit = -1;
+    gd.ptrcall(engine.binds[binds[k]], &fake, args, nullptr);
+    hits[k] = g_hit;
+  }
+  if (hits[0] >= 0 && hits[1] == hits[0] + 14 && hits[1] + 1 < SLOTS) {
+    g_slot = hits[1] + 1;
+  } else {
+    std::fprintf(stderr, "[rs_core_ext] particles_set_seed probe failed (slots %d, %d): seeds stay unset\n",
+                 hits[0], hits[1]);
+  }
+  return g_slot;
+}
+
+void particles_set_seed(uint64_t particles, uint32_t seed) {
+  int slot = seed_slot();
+  if (slot < 0) {
+    seedprobe::g_unset++;
+    return;
+  }
+  void **vtable = *reinterpret_cast<void ***>(engine.rs);
+  auto fn = reinterpret_cast<seedprobe::SeedFn>(vtable[slot]);
+  fn(engine.rs, particles, seed);
 }
 
 #ifdef __EMSCRIPTEN__
@@ -1626,6 +1779,131 @@ int64_t execute(Instance *inst) {
         uint64_t item = r.rid();
         bool enable = r.b() != 0;
         set_use_identity_transform(item, enable);
+        break;
+      }
+      // PM6a (render-stream-12.md "As built (PM6a)"): /12 GPU particles; handles in the mesh table.
+      case rsc::ParticlesCreate: {
+        uint32_t h = r.u();
+        uint64_t rid = 0;
+        rs_call(RS_PARTICLES_CREATE, {}, &rid);
+        inst->slot(rsc::KIND_MESH, h) = rid;
+        break;
+      }
+      case rsc::ParticlesSetBool: {
+        uint64_t p = r.rid();
+        uint32_t which = r.u();
+        GDExtensionBool v = r.b();
+        if (which < rsc::PT_BOOL_COUNT) rs_call(PT_BOOL_BINDS[which], {&p, &v});
+        break;
+      }
+      case rsc::ParticlesSetInt: {
+        uint64_t p = r.rid();
+        uint32_t which = r.u();
+        int64_t v = r.i64();
+        if (which < rsc::PT_INT_COUNT) rs_call(PT_INT_BINDS[which], {&p, &v});
+        break;
+      }
+      case rsc::ParticlesSetFloat: {
+        uint64_t p = r.rid();
+        uint32_t which = r.u();
+        double v = r.f();  // ptrcall passes float and double arguments as double
+        if (which < rsc::PT_FLOAT_COUNT) rs_call(PT_FLOAT_BINDS[which], {&p, &v});
+        break;
+      }
+      case rsc::ParticlesSetSeed: {
+        uint64_t p = r.rid();
+        int64_t seed = r.i64();
+        particles_set_seed(p, static_cast<uint32_t>(seed));
+        break;
+      }
+      case rsc::ParticlesSetCustomAabb: {
+        uint64_t p = r.rid();
+        float aabb[6];
+        r.fs(aabb, 6);
+        rs_call(RS_PARTICLES_SET_CUSTOM_AABB, {&p, aabb});
+        break;
+      }
+      case rsc::ParticlesSetEmissionTransform: {
+        uint64_t p = r.rid();
+        float x[12];
+        r.fs(x, 12);
+        rs_call(RS_PARTICLES_SET_EMISSION_TRANSFORM, {&p, x});
+        break;
+      }
+      case rsc::ParticlesSetEmitterVelocity: {
+        uint64_t p = r.rid();
+        float v[3];
+        r.fs(v, 3);
+        rs_call(RS_PARTICLES_SET_EMITTER_VELOCITY, {&p, v});
+        break;
+      }
+      case rsc::ParticlesSetTrails: {
+        uint64_t p = r.rid();
+        GDExtensionBool on = r.b();
+        double length = r.f();
+        rs_call(RS_PARTICLES_SET_TRAILS, {&p, &on, &length});
+        break;
+      }
+      case rsc::ParticlesSetTrailBindPoses: {
+        uint64_t p = r.rid();
+        uint32_t count = r.u();
+        // An untyped Array of Transform3D: the bind's TypedArray<Transform3D> argument converts it.
+        Str arr{};
+        gd.ctor[GDEXTENSION_VARIANT_TYPE_ARRAY](&arr, nullptr);
+        for (uint32_t k = 0; k < count; k++) {
+          float x[12];
+          r.fs(x, 12);
+          Variant v;
+          gd.from[GDEXTENSION_VARIANT_TYPE_TRANSFORM3D](&v, x);
+          const void *args[1] = {&v};
+          gd.array_push_back(&arr, args, nullptr, 1);
+          gd.variant_destroy(&v);
+        }
+        rs_call(RS_PARTICLES_SET_TRAIL_BIND_POSES, {&p, &arr});
+        gd.dtor[GDEXTENSION_VARIANT_TYPE_ARRAY](&arr);
+        break;
+      }
+      case rsc::ParticlesSetRid: {
+        uint64_t p = r.rid();
+        uint32_t which = r.u();
+        uint64_t other = r.rid();
+        if (which < rsc::PT_RID_COUNT) rs_call(PT_RID_BINDS[which], {&p, &other});
+        break;
+      }
+      case rsc::ParticlesSetDrawPasses: {
+        uint64_t p = r.rid();
+        int64_t n = r.i64();
+        rs_call(RS_PARTICLES_SET_DRAW_PASSES, {&p, &n});
+        break;
+      }
+      case rsc::ParticlesSetDrawPassMesh: {
+        uint64_t p = r.rid();
+        int64_t pass = r.i64();
+        uint64_t mesh = r.rid();
+        rs_call(RS_PARTICLES_SET_DRAW_PASS_MESH, {&p, &pass, &mesh});
+        break;
+      }
+      case rsc::ParticlesRestart: {
+        uint64_t p = r.rid();
+        rs_call(RS_PARTICLES_RESTART, {&p});
+        break;
+      }
+      case rsc::ParticlesEmit: {
+        uint64_t p = r.rid();
+        float x[12], vel[3], color[4], custom[4];
+        r.fs(x, 12);
+        r.fs(vel, 3);
+        r.fs(color, 4);
+        r.fs(custom, 4);
+        int64_t flags = r.i64();
+        rs_call(RS_PARTICLES_EMIT, {&p, x, vel, color, custom, &flags});
+        break;
+      }
+      case rsc::AddParticles: {
+        uint64_t item = r.rid();
+        uint64_t p = r.rid();
+        uint64_t tex = r.rid();
+        rs_call(RS_CANVAS_ITEM_ADD_PARTICLES, {&item, &p, &tex});
         break;
       }
       default:

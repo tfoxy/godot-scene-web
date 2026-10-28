@@ -188,8 +188,35 @@ enum Op : uint32_t {
   AddMultimesh = 74,
   // UIT: item, bool (canvas_item_set_use_identity_transform, through its vtable slot).
   ItemSetUseIdentityTransform = 75,
-  OP_COUNT = 76,
+  // PM6a: /12 GPU particles (emitter handles live in the KIND_MESH table); operands in ops.rs.
+  ParticlesCreate = 76,
+  ParticlesSetBool = 77,
+  ParticlesSetInt = 78,
+  ParticlesSetFloat = 79,
+  ParticlesSetSeed = 80,
+  ParticlesSetCustomAabb = 81,
+  ParticlesSetEmissionTransform = 82,
+  ParticlesSetEmitterVelocity = 83,
+  ParticlesSetTrails = 84,
+  ParticlesSetTrailBindPoses = 85,
+  ParticlesSetRid = 86,
+  ParticlesSetDrawPasses = 87,
+  ParticlesSetDrawPassMesh = 88,
+  ParticlesRestart = 89,
+  ParticlesEmit = 90,
+  AddParticles = 91,
+  OP_COUNT = 92,
 };
+
+// PM6a: the `which` operand of the generic particles setters (ops.rs PT_*).
+enum PtBool : uint32_t { PT_BOOL_EMITTING, PT_BOOL_ONE_SHOT, PT_BOOL_INTERPOLATE, PT_BOOL_FRACTIONAL_DELTA, PT_BOOL_LOCAL, PT_BOOL_COUNT };
+enum PtInt : uint32_t { PT_INT_MODE, PT_INT_AMOUNT, PT_INT_FIXED_FPS, PT_INT_DRAW_ORDER, PT_INT_TRANSFORM_ALIGN, PT_INT_COUNT };
+enum PtFloat : uint32_t {
+  PT_FLOAT_AMOUNT_RATIO, PT_FLOAT_LIFETIME, PT_FLOAT_PRE_PROCESS_TIME, PT_FLOAT_EXPLOSIVENESS,
+  PT_FLOAT_RANDOMNESS, PT_FLOAT_SPEED_SCALE, PT_FLOAT_COLLISION_BASE_SIZE, PT_FLOAT_INTERP_TO_END,
+  PT_FLOAT_REQUEST_PROCESS_TIME, PT_FLOAT_COUNT
+};
+enum PtRid : uint32_t { PT_RID_PROCESS_MATERIAL, PT_RID_SUBEMITTER, PT_RID_COUNT };
 
 // vt.rs tags.
 constexpr uint8_t T_NIL = 0;

@@ -331,7 +331,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform", "undrawn-particles", "ignore-particle-emits", "drop-particles-restart"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -1095,6 +1095,15 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		# particles has no `particles_undrawn` in report.w11).
 		_w11_init()
 		_w11["particles_undrawn"] = RsWire.as_int(_w11.get("particles_undrawn", 0)) + RsWire.as_int(stats["particles_commands_undrawn"])
+	if stats.has("particles_resources"):
+		# PM6a (render-stream-12.md "As built (PM6a)"): the /12 emitter calls this apply made,
+		# summed into report.w11.particles (the stats carry the key only when one is non-zero).
+		_w11_init()
+		var pt_totals: Dictionary = _w11.get("particles", {})
+		var pt_resources: Dictionary = stats["particles_resources"]
+		for pt_key: String in pt_resources:
+			pt_totals[pt_key] = RsWire.as_int(pt_totals.get(pt_key, 0)) + RsWire.as_int(pt_resources[pt_key])
+		_w11["particles"] = pt_totals
 	for key: String in ["meshes_created", "meshes_rebuilt", "surface_updates", "mesh_upload_bytes", "skipped_mesh_commands"]:
 		resources[key] = mesh_resources[key]
 		if _summary.has(key):

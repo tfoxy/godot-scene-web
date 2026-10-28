@@ -368,7 +368,8 @@ pump_fired, pump_skipped, shim_synthesized, shim_engine_allocated}`.
   `particles_commands_undrawn` (written only when non-zero) and as an `unsupported_commands` row
   `particles-undrawn`. GSW's executor counts a `particles-undrawn` shortcut. A valid /12 stream
   must never fail a receiver.
-- PM6 replaces the counts with the engine replay (native, web) and the simulation (GSW).
+- PM6 replaces the counts with the engine replay (native, web: PM6a, "As built (PM6a)") and the
+  simulation (GSW: PM6b).
 
 ## Global coordinates and `canvas_item_set_use_identity_transform`
 
@@ -541,6 +542,86 @@ build refined them, these rules are now the wire and the capture. They are froze
     it into `applied.json` `w11.particles_undrawn`; GSW's executor counts
     `Shortcut::ParticlesUndrawn`. The process shader is never compiled by a receiver yet: only a
     particles entry names its material, and no item does.
+
+## As built (PM6a): decisions
+
+PM6a makes the native receiver and the web export replay /12 emitters
+([results/p3/pm6a.md](../results/p3/pm6a.md)). Nothing changes on the wire, in rs-core or in the
+capture. The capi and the C++ shim are shared, so the web export (the same side module for wasm)
+needed no code of its own. GSW is PM6b's.
+
+1. **Emits at accept, in the capi.** Inside `rsc_accept`, right after PM2's multimesh buffers, the
+   capi copies `Validator::particle_emits()` into a queue (`Core.particle_emits`). Every
+   transaction accepted before an apply adds its emits, so a window-2 fold keeps them all, in
+   order. The apply consumes the queue; `session()` clears it.
+2. **Residency.** An emitter is resident while an item's `add_particles` names it and its entry is
+   `ok`, and so is every `ok` subemitter a resident emitter names (transitively). Its process
+   material is resident as if an item named it as its own material: the material's shader (a
+   `particles` shader with the builtin), its parameters, its curve textures and its host time
+   (P3-TM). Its draw-pass meshes are resident like a multimesh's mesh. A process material or mesh
+   that is not `ok` is set as `RID()`.
+3. **Order.** Emitters that stop being resident are freed after the multimeshes and before the
+   shaders and materials (so an emitter never outlives its process material). New emitters are
+   made, and every resident emitter is configured, after the materials and before the items.
+   `canvas_item_add_particles` is issued in item replay, and an item naming an emitter made or
+   freed in this apply replays its content. `dispose()` frees emitters first.
+4. **The calls, per resident emitter, in the wire's order** ("The emit list"):
+   - after `particles_create`, every setter once; after that, each only when its value differs from
+     what the planner last sent (floats by bit pattern, as the wire's `version` rule): `emitting`,
+     `one_shot`, `interpolate`, `fractional_delta`, `use_local_coordinates`, `mode`, `amount`,
+     `fixed_fps`, `draw_order`, `transform_align`, the eight float setters, `custom_aabb`,
+     `emission_transform`, `emitter_velocity`, `trails` (with the trail length), and
+     `trail_bind_poses` (only when the wire carries poses: PM5 rule 4);
+   - `particles_set_seed` when the seed differs;
+   - `particles_set_process_material`, `particles_set_draw_passes` and `_draw_pass_mesh` and
+     `particles_set_subemitter`, by the RIDs resident now;
+   - `particles_restart` once when `restarts` moved since the last apply. A new emitter starts at
+     0, so it restarts once whenever the host's ever did (every `GPUParticles2D` constructor does);
+   - `particles_request_process_time` (the entry's last value) when `process_requests` moved. A
+     new emitter adopts the counter: a joiner's emitter starts fresh and never replays an old
+     request;
+   - the queued emits naming it, in order (`particles_emit`, the wire's 23 floats and flags).
+     Emits naming an emitter this receiver does not hold are dropped and counted.
+5. **`particles_set_seed` is not bound in 4.5.1.** `RenderingServer` declares it a virtual but
+   `_bind_methods` never binds it, so no ptrcall reaches it. The shim calls the virtual directly
+   at the vtable slot after `particles_set_collision_base_size`'s (the header declares the two in
+   that order). The slot is found at the first seed, not hard-coded: the shim ptrcalls two bound
+   `(RID, float)` setters, `particles_set_amount_ratio` and `particles_set_collision_base_size`,
+   on a stand-in object whose vtable is a table of 640 trampolines that each record their index,
+   and requires the two to lie exactly 14 slots apart (the header's distance). That makes it the
+   same code on the editor, a release template and wasm (where a member call is a
+   `call_indirect` through the same table). If the probe fails, the seed stays unset and stderr
+   says so; pt-replay fails on that line.
+6. **Opcodes 76-91** (after UIT's 75). `ParticlesCreate`, the generic `ParticlesSetBool`/`SetInt`/`SetFloat`/
+   `SetRid` (a `which` operand indexes the shim's bind table: `PT_*` in `ops.rs` and
+   `rs_core_capi.h`), `SetSeed`, `SetCustomAabb`, `SetEmissionTransform`, `SetEmitterVelocity`,
+   `SetTrails`, `SetTrailBindPoses` (an untyped `Array` of `Transform3D`, which the bind's
+   `TypedArray` argument converts), `SetDrawPasses`, `SetDrawPassMesh`, `Restart`, `Emit` and
+   `AddParticles`; `OP_COUNT` is 92. Emitter handles share the mesh table (`RidRef::Particles`,
+   the mesh kind's word), as multimeshes do. 32 RenderingServer binds (4.5.1 hashes).
+7. **Typed skips** (`unsupported_commands` rows): `unknown-particles`, `particles-freed` (a
+   `freed` tombstone), `unsupported-particles` (e.g. `particles-3d`), `particles-not-resident`, and
+   the texture reasons.
+8. **Evidence.** The apply stats carry `particles_resources` (made, freed, setters, seed sets,
+   material sets, draw-pass sets, subemitter sets, restarts, process requests, emits, emits
+   dropped, drawn and skipped commands) only when one of them is non-zero, so every stream without
+   an emitter keeps its stats byte-identical. `receiver.gd` sums them into `applied.json`
+   `w11.particles`.
+9. **Receiver sabotages** (`RS_RECEIVER_SABOTAGE`): `undrawn-particles` is PM5's planner (every
+   `add_particles` counted `particles_commands_undrawn`/`particles-undrawn`, no emitter made: the
+   "pre-PM6 receiver"); `ignore-particle-emits` replays the emitters but drops every emit (counted
+   `emits_dropped`); `drop-particles-restart` never issues `particles_restart` (unit-tested only).
+10. **What GLES3 does with it.** `gl_compatibility` (both the fixture's host and the receivers)
+    ignores `particles_emit` and `particles_set_subemitter` (`particles_storage.cpp:370-378`) and
+    draws no trails (`:301-310`). The receiver issues the calls anyway, so a Forward+ receiver
+    would honour them; on GLES3 pixels cannot see an emit, which is why the emit sabotage is judged
+    on the replay counts (`pt-replay`), not on pixels.
+11. **Pacing.** The particles simulate on the receiver's own clock (`get_frame_delta_time()`), one
+    transaction a frame. With `--fixed-fps 60` on both sides the native receiver's pixels equal
+    the unarmed reference exactly at every shot (pt-lockstep, informational). Without it a native
+    receiver that draws faster than real time runs its particles slow (the first PM6a run: D_ONESHOT
+    still lit one lifetime after its restart). So every g8pt receiver leg runs `--fixed-fps 60`,
+    and g7-8's web half passes the native leg's engine arguments through, `--fixed-fps` included.
 
 ## Versioning
 
