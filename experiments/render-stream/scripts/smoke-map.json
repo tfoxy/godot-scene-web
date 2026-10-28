@@ -47,7 +47,7 @@
       "g7-5": { "legs": ["mesh/import", "mesh/reference-live", "mesh/live-mesh"], "full_legs": null },
       "g7-55": { "legs": ["shader-live/import", "shader-live/reference-live", "shader-live/live-shader"], "full_legs": null },
       "g7-6": { "legs": ["live/import", "live/reference-live-frames", "live/live-scene"], "full_legs": null },
-      "g7-8": { "legs": ["import", "g8a/import", "g8h/import", "g8m/import", "g8l/tex"], "full_legs": null }
+      "g7-8": { "legs": ["import", "g8a/import", "g8h/import", "g8m/import", "g8ku/import", "g8l/tex", "g8w11c/native-sabotage-drop-base"], "full_legs": null }
     },
     "defer": ["g7-k"],
     "defer_doc": "Groups smoke never runs (the full tier and --milestone run them whole, listed in smoke_deferred): g7-k's soak legs hold the exclusive quiet lock for 300 s each (about 11 min per browser with startup), and run-gate7.sh has no leg filter for them that tier-verdict.py would accept. Run a g7-k change with --tier full --only g7live-<r>-timing.",

@@ -175,8 +175,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c)
+# GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
+# is not in the default run: g8w11 already runs the native half of those legs.
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c)
 
 EXTENSION=""
 CALIBRATION=""
@@ -252,7 +255,7 @@ fi
 
 GROUPS_RUN=()
 if [ -z "$LEGS_ARG" ]; then
-	GROUPS_RUN=("${LANDED_GROUPS[@]}")
+	GROUPS_RUN=("${DEFAULT_GROUPS[@]}")
 else
 	IFS=',' read -r -a requested <<<"$LEGS_ARG"
 	for group in "${requested[@]}"; do
@@ -892,7 +895,7 @@ run_g8w11_coding_leg() {
 # W11d: native receivers live at /11 on a capture-scale host (as run_g8w11_coding_leg's, headless),
 # one per spec: <name>:<RS_RECEIVER_LIVE_CODING value, "" for the default zstd-base,zstd>.
 run_g8w11_coding_native_leg() {
-	local dir="$OUT/g8w11/coding/$1" waited=0 port="" spec name pid
+	local dir="${G8W11_CODING_DIR:-$OUT/g8w11/coding}/$1" waited=0 port="" spec name pid
 	shift
 	local -a henv=() pids=() names=()
 	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
@@ -929,7 +932,7 @@ run_g8w11_coding_native_leg() {
 				RS_RECEIVER_OUT="$dir/$name/applied.json" RS_RECEIVER_CACHE_DIR="$dir/$name/cache"
 			)
 			[ -n "${spec#*:}" ] && LEG_ENV+=(RS_RECEIVER_LIVE_CODING="${spec#*:}")
-			start_headless_bg "$dir/$name" -- "$BINARY" --headless --path "$RECEIVER_DIR"
+			start_headless_bg "$dir/$name" -- "$BINARY" --headless --path "$RECEIVER_DIR" ${G8W11_RECEIVER_ARGS[@]+"${G8W11_RECEIVER_ARGS[@]}"}
 			pids+=("$BG_PID")
 			names+=("$name")
 		done
@@ -939,6 +942,27 @@ run_g8w11_coding_native_leg() {
 		done
 	fi
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+# GTS: g8w11c, the /11 coding resync legs alone under $OUT/g8w11c (native, or a browser receiver
+# under GATE7_LIVE_KIND, which lib/legs.sh routes a live receiver launch to): a coded receiver is
+# forced to resync (drop-message: the next based patch names a base it never got;
+# coding-wrong-prefix: a broken prefix), then must skip to the full transaction and end ok.
+run_g8w11c() {
+	[ -f "$OUT/g8w11/import/receiver/exit-code.txt" ] || run_import_g8w11
+	G8W11_CODING_DIR="$OUT/g8w11c"
+	# The capture-scale host's session is 1920x1080 logical: a browser receiver's canvas must be that
+	# size too (the web export refuses a 640x360 rect: viewport-mismatch). lib/legs.sh reads
+	# --resolution for the browser launch; the native headless receiver ignores it.
+	G8W11_RECEIVER_ARGS=(--resolution 1920x1080)
+	echo "run-gate8: g8w11c native-sabotage-drop-base (drop-message @120, a coded receiver)"
+	run_g8w11_coding_native_leg native-sabotage-drop-base GRC_SABOTAGE=drop-message \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	echo "run-gate8: g8w11c native-sabotage-wrong-prefix (coding-wrong-prefix @120, a coded receiver)"
+	run_g8w11_coding_native_leg native-sabotage-wrong-prefix GRC_SABOTAGE=coding-wrong-prefix \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	G8W11_CODING_DIR=""
+	G8W11_RECEIVER_ARGS=()
 }
 
 run_g8w11_coding() {
@@ -1814,6 +1838,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8c) run_g8c ;;
 	g8cg) run_g8cg ;;
 	g8w11) run_g8w11 ;;
+	g8w11c) run_g8w11c ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	esac

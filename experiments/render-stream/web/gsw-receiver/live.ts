@@ -1721,6 +1721,8 @@ class LiveReceiver {
   private codingResync(seq: number, err: string): void {
     this.codingResyncs++;
     this.rebuildDue = true;
+    // GTS: the skipped transactions leave a seq gap the next full must be allowed to jump.
+    (this.g as GswRs).transport_skip();
     this.send({
       type: "resync",
       stream_id: this.streamId,
