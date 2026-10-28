@@ -3,7 +3,8 @@
 Status: **design; codecs, validators and capture built** (W11-D, 2026-10-25; W11a, 2026-10-27:
 the C++ encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; W11b,
 2026-10-27: the capture emits /11 under `GRC_STREAM_VERSION=11`, see "As built (W11b): decisions";
-the receivers are W11c to W11e: GSW (W11c) and the native receiver (W11d) apply it). The measurements behind every number here are
+the receivers are W11c to W11e: GSW (W11c), the native receiver (W11d) and the web export (W11e)
+apply it). The measurements behind every number here are
 in [results/p3/w11-d.md](../results/p3/w11-d.md). /11 builds on render-stream/10
 ([render-stream-10.md](render-stream-10.md): CG1's back-buffer item state and P3-TM's
 `shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
@@ -788,6 +789,44 @@ through the same capi.
    directly. Under `RS_RECEIVER_LOG=summary` nothing grows per transaction.
 8. **Receiver sabotages**, W11c's names: `stale-dynamic-rx`, `no-prune` and `ignore-released` in
    the capi, `evict-carried` in receiver.gd (an inline record's payload is not kept).
+
+### As built (W11e): decisions
+
+W11e makes the web export apply /11 ([results/p3/w11e.md](../results/p3/w11e.md)): the 4.5.1
+`web_dlink_nothreads` template with W11d's `rs-core-capi` and shim built for wasm (G7xw's side
+module). Nothing here changes the wire or rs-core; the capi, the shim and W11d's receiver.gd paths
+are the native receiver's, so the web export needed only its own file and live paths opened.
+
+1. **Live at /11 on the web.** `RS_RECEIVER_PROTOCOL=11` is accepted on the web (W11d's guard is
+   gone): the same hello, `live_coding` offer and `coding_decode` before every parse, through the
+   side module's `RscCoding`. The JavaScriptBridge fetcher is reached only through receiver.gd's
+   miss list, which W11d already screens with `check_fetch`, and a dynamic mesh never names a hash,
+   so it never causes a fetch.
+2. **WX's lazy store asks first.** Every lazy-store GET (`_begin_store_fetch`, file mode) calls
+   `check_fetch` before it is issued, as the native store read does in `_obtain_needed`. That read
+   is not reached on the web: the lazy GET has already put the payload in memory. A dynamic body is
+   not in `needed()`, and a carried record is in memory, so an honest /11 replay never asks; under
+   `evict-carried` the replay fails `inline-fetch-zero` before any GET. Without this call it
+   replays `ok`, because the store directory holds the inline-sized payload too.
+3. **WX's 64 KiB drop and the retention rule.** They act on different hashes and do not conflict.
+   The drop forgets an uploaded payload of 64 KiB or more that the state may still name (a re-need
+   GETs it again). The rule forgets a hash that left H (`release` also clears its drop mark). A
+   carried record is never droppable, since only lazy-store GETs are marked. So no hash in C ever
+   leaves memory while it is in C, and `check_fetch` never refuses a re-need after a drop. A hash
+   released and later named again is fetched again as a plain fetch row, as the native receiver
+   reads it again; the `web store:` line's re-read count counts only the drop's.
+4. **The web half of g7-8 replays g8w11.** `g8w11` moved from `GSW_ONLY_SOURCE_GROUPS` to
+   `GATE8_FILE_GROUPS`, so W11d's native checks judge the web export's replay of W11d's native legs
+   (`@web`). W11e adds no check of its own. The web half needed three generic fixes: a planned
+   launch (W11c's GSW `plan` directories, never run natively) is not a leg; a leg's `.rs11`
+   recording resolves; and `applied-equals-native` ignores the
+   memory cache's occupancy (`w11.store_*`, `cache_released*`), which WX's 64 KiB drop makes
+   differ from native's by design.
+5. **Two per-transaction GDScript loops are skipped when they do nothing** (every version, same
+   output). Under a summary log the core's `mesh_uploads` rows are no longer visited (/11 combat: two
+   rows per dynamic mesh, about 200). The resolved `unsupported` list is compared whole with the
+   previous transaction's, and is walked entry by entry only when it differs (STS2: about 50
+   entries, unchanged in almost every transaction).
 
 ## Predicted cost (STS2, from the kept recordings)
 

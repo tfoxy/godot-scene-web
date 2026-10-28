@@ -105,6 +105,9 @@ export const GATE8_FILE_GROUPS: readonly string[] = [
   "g8c",
   // CG1: clip_children, CanvasGroup and BackBufferCopy on /10 (fixtures/gate8-cg)
   "g8cg",
+  // W11e: render-stream/11 (W11d's native receiver legs on W11b's captures and W11c's receiver
+  // sabotages), so g8w11's native checks judge the web export's replay of them (`@web`)
+  "g8w11",
 ];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's
@@ -199,9 +202,9 @@ export type ExcludedReason =
  * `g8l/basis` (a source made with every gate 8 group, e.g. a native gate 8 run reused from the
  * source cache, holds g8l's native file replays) is the same fixture at /9: its replay of the
  * host's sink differs from native the same way; g7-8's live half judges the web export's basis leg
- * (live-replay-equals-live-g8l-basis@web). W11d's g8w11 native legs (render-stream/11) wait for
- * W11e, which makes the web export apply /11. Entries are source leg-path prefixes. */
-export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8ku", "g8l/basis", "g8w11"];
+ * (live-replay-equals-live-g8l-basis@web). W11d's g8w11 native legs (render-stream/11) joined the
+ * web half with W11e (GATE8_FILE_GROUPS). Entries are source leg-path prefixes. */
+export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8ku", "g8l/basis"];
 
 /** G8kwh (texture-delivery-design.md D3, "As built (G8kwh)"): a /9 delivery leg whose native and
  * web receivers state different gpu_formats (each its own context's: a CI runner's llvmpipe GL has
@@ -311,6 +314,13 @@ export function discoverFileReceiverLegs(sourceDir: string): DiscoveredLeg[] {
     const env = envOf(dir);
     if (!env.has("RS_RECEIVER_RECORDING") || env.has("RS_RECEIVER_URL"))
       continue;
+    // W11e: a planned launch that never ran natively (g8w11's GSW legs write their env.txt and
+    // argv.txt to <leg>/plan, as a native leg's would be, and replay only in GSW) is not a leg.
+    if (
+      !existsSync(join(dir, "exit-code.txt")) &&
+      !existsSync(join(dir, "applied.json"))
+    )
+      continue;
     const argv = readLines(join(dir, "argv.txt")).filter((l) => l !== "");
     const pathIdx = argv.indexOf("--path");
     const project = pathIdx >= 0 ? (argv[pathIdx + 1] ?? "") : "";
@@ -363,6 +373,32 @@ function wantsCompositor(leg: DiscoveredLeg): boolean {
   const name = basename(leg.leg);
   if (name === "receiver") return true;
   return leg.resolution !== null && !/patch|inline|at-logical/.test(name);
+}
+
+/** W11e: a /11 applied.json's memory-cache occupancy (`w11`'s most entries and most beyond
+ * |names| + |C|, the cache's own release count and bytes; each transaction's `w11.store_entries`)
+ * is the receiver's memory policy, not what it applied: WX's lazy store forgets an uploaded payload
+ * of 64 KiB or more, which the native cache keeps, so the web holds fewer entries and finds fewer
+ * of the rule's releases still in memory. native-store-bounded@web judges the bound itself.
+ * Mutates the normalized document; a no-op below /11 (no `w11` key). */
+export function dropMemoryCacheOccupancy(
+  normalized: Record<string, unknown>,
+): void {
+  const w11 = normalized.w11 as Record<string, unknown> | null | undefined;
+  if (w11 && typeof w11 === "object")
+    for (const k of [
+      "store_max_entries",
+      "store_max_excess",
+      "cache_released",
+      "cache_released_bytes",
+    ])
+      delete w11[k];
+  const txs = normalized.transactions;
+  if (Array.isArray(txs))
+    for (const t of txs) {
+      const tw = (t as { w11?: Record<string, unknown> } | null)?.w11;
+      if (tw && typeof tw === "object") delete tw.store_entries;
+    }
 }
 
 /** The web leg specs for a gate's source run, under `<webRoot>` (= `<out>/<gate>/web`). */
@@ -703,7 +739,7 @@ function resolvedStates(
     // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9; CG1: GRSA).
     const wire = wireVersionOf(data);
     const versions =
-      wire === 8 || wire === 9 || wire === 10
+      wire === 8 || wire === 9 || wire === 10 || wire === 11
         ? [wire]
         : ([6, 5, 4, 3, 2] as const);
     for (const version of versions) {
@@ -1058,6 +1094,7 @@ export async function checkGateWeb(
         // G7xw: a rust web leg against a gdscript native leg (an older source run since G7gd)
         // compares failure seq and reason.
         if (crossCore) dropCrossCoreDetail(n);
+        dropMemoryCacheOccupancy(n);
         return n;
       };
       const diffs = jsonDiffPaths(
