@@ -133,6 +133,11 @@ impl MeshResidency {
                     crate::state::Command::Multimesh { multimesh, .. } => {
                         state.multimeshes.get(multimesh).and_then(|m| m.mesh)
                     }
+                    // PM6b: a simulated emitter's draw names its first draw pass mesh.
+                    crate::state::Command::Particles { particles, .. } => state
+                        .particles
+                        .get(particles)
+                        .and_then(|p| p.draw_passes.first().copied().flatten()),
                     _ => None,
                 })
                 .collect();

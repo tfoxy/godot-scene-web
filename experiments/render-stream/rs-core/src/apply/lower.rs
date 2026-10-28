@@ -46,7 +46,11 @@ pub struct LDraw {
 /// multimesh with `base_transform * draw_transform` as the model matrix, times each instance.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LInstanced {
+    /// The multimesh id, or the particles id when `particles` (PM6b).
     pub multimesh: Id,
+    /// PM6b: the instances are an emitter's simulated buffer
+    /// ([`super::particles::ParticleBuffers`]), not a multimesh's.
+    pub particles: bool,
     pub count: u32,
     pub draw_xform: Option<Xform>,
 }
@@ -98,9 +102,13 @@ pub enum Shortcut {
     /// PM3: an `add_multimesh` that cannot be drawn: an unknown id, a `freed` or `unsupported`
     /// multimesh, no mesh set, or its buffer not held. Godot draws nothing for the first four too.
     MultimeshUnavailableSkipped,
-    /// /12 (PM5): an `add_particles`. The wire carries the emitter, but this executor does not
-    /// simulate particles yet (PM6): not drawn, counted.
+    /// /12 (PM5): an `add_particles` not drawn, counted: what this executor did before PM6b
+    /// simulated emitters, and now only the receiver sabotage `undrawn-particles`.
     ParticlesUndrawn,
+    /// PM6b: an `add_particles` that cannot be drawn: an unknown id, a `freed` or `unsupported`
+    /// emitter (Godot draws nothing for those either), a 3D emitter, no draw pass mesh, or no
+    /// simulated buffer yet.
+    ParticlesUnavailableSkipped,
 }
 
 impl Shortcut {
@@ -117,6 +125,7 @@ impl Shortcut {
             Shortcut::MultimeshUndrawn => "multimesh-undrawn",
             Shortcut::MultimeshUnavailableSkipped => "multimesh-unavailable-skipped",
             Shortcut::ParticlesUndrawn => "particles-undrawn",
+            Shortcut::ParticlesUnavailableSkipped => "particles-unavailable-skipped",
         }
     }
     /// Whether the shortcut means a command is not drawn at all (a typed skip, for
@@ -131,6 +140,7 @@ impl Shortcut {
                 | Shortcut::MultimeshUndrawn
                 | Shortcut::MultimeshUnavailableSkipped
                 | Shortcut::ParticlesUndrawn
+                | Shortcut::ParticlesUnavailableSkipped
         )
     }
 }
@@ -162,6 +172,9 @@ pub struct LowerSabotage {
     /// PM3's receiver sabotage `undrawn-multimesh`: every `add_multimesh` is skipped and counted
     /// as `multimesh-undrawn`, what GSW drew before PM3.
     pub undrawn_multimesh: bool,
+    /// PM6a's receiver sabotage `undrawn-particles` (the pre-PM6 planner): every `add_particles`
+    /// is skipped and counted as `particles-undrawn`, what GSW drew before PM6b.
+    pub undrawn_particles: bool,
 }
 
 /// One item's lowered content: valid until its `content_version` or a dependency changes.
@@ -183,6 +196,10 @@ pub struct Lowered {
     pub multimesh_deps: Vec<(Id, u64)>,
     /// PM3: `add_multimesh` commands lowered into instanced draws (evidence).
     pub multimesh_drawn: u32,
+    /// PM6b: wire particles ids drawn, with their [`MultimeshDraw::key`] as lowered.
+    pub particles_deps: Vec<(Id, u64)>,
+    /// PM6b: `add_particles` commands lowered into instanced draws (evidence).
+    pub particles_drawn: u32,
 }
 
 impl Lowered {
@@ -238,6 +255,15 @@ pub trait Tables {
     /// multimesh changes, so an implementation may skip the rect).
     fn multimesh_key(&self, id: Id) -> Option<u64> {
         self.multimesh(id).map(|d| d.key)
+    }
+    /// PM6b: how an `add_particles` of wire particles `id` draws (its first draw pass mesh,
+    /// `amount` instances, the custom AABB); `None` for an id the table does not hold.
+    fn particles(&self, _id: Id) -> Option<MultimeshDraw> {
+        None
+    }
+    /// [`Self::particles`]'s key alone.
+    fn particles_key(&self, id: Id) -> Option<u64> {
+        self.particles(id).map(|d| d.key)
     }
 }
 
@@ -829,6 +855,8 @@ pub fn lower_reusing(
     spare.mesh_deps.clear();
     spare.multimesh_deps.clear();
     spare.multimesh_drawn = 0;
+    spare.particles_deps.clear();
+    spare.particles_drawn = 0;
     let mut b = Builder {
         out: spare,
         xf: None,
@@ -885,6 +913,7 @@ pub fn lower_reusing(
                 let saved = b.xf.take();
                 let instanced = LInstanced {
                     multimesh: *multimesh,
+                    particles: false,
                     count: mm.count,
                     draw_xform: saved,
                 };
@@ -901,8 +930,57 @@ pub fn lower_reusing(
                 }
                 b.xf = saved;
             }
-            // PM5: typed as undrawn until PM6 simulates the emitter.
-            Command::Particles { .. } => b.out.note(Shortcut::ParticlesUndrawn),
+            Command::Particles { .. } if sab.undrawn_particles => {
+                b.out.note(Shortcut::ParticlesUndrawn)
+            }
+            Command::Particles { particles, tex } => {
+                // PM6b: GLES3's TYPE_PARTICLES (rasterizer_canvas_gles3.cpp:1426-1450): draw pass
+                // 0's mesh, surface by surface, `amount` instances from the simulated buffer (the
+                // shell writes an inactive emitter's instances as zero, which draws nothing).
+                let Some(pd) = tables.particles(*particles) else {
+                    b.out.note(Shortcut::ParticlesUnavailableSkipped);
+                    continue;
+                };
+                b.out.particles_deps.push((*particles, pd.key));
+                let Some(mesh) = pd.mesh else {
+                    b.out.note(Shortcut::ParticlesUnavailableSkipped);
+                    continue;
+                };
+                // Item::get_rect: particles_get_aabb (the custom AABB) through the draw transform.
+                b.add_rect_bounds(pd.rect);
+                if !b.out.mesh_deps.contains(&mesh) {
+                    b.out.mesh_deps.push(mesh);
+                }
+                if pd.count == 0 {
+                    continue;
+                }
+                let Some((surfaces, _)) = tables.mesh(mesh) else {
+                    b.out.note(Shortcut::MeshUnavailableSkipped);
+                    continue;
+                };
+                let Some((texref, _)) = b.uv_scale(*tex) else {
+                    b.out.note(Shortcut::TextureUnavailableSkipped);
+                    continue;
+                };
+                let saved = b.xf.take();
+                let instanced = LInstanced {
+                    multimesh: *particles,
+                    particles: true,
+                    count: pd.count,
+                    draw_xform: saved,
+                };
+                b.out.particles_drawn += 1;
+                let mut cols_buf: Vec<[f32; 4]> = Vec::new();
+                for s in surfaces {
+                    let d = b.begin(texref, false);
+                    b.surface(s, &[1.0; 4], &mut cols_buf);
+                    b.end(d);
+                    if let Some(ld) = b.out.draws.get_mut(d) {
+                        ld.instanced = Some(instanced);
+                    }
+                }
+                b.xf = saved;
+            }
             Command::Rect { aa, rect, color } => {
                 // TYPE_RECT untextured: dst normalized to a positive size, src (0,0,1,1).
                 let mut dst = *rect;

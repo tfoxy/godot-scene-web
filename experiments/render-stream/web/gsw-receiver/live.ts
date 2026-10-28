@@ -106,6 +106,7 @@ import { type FetchResult, LiveFetcher } from "./fetcher";
 import { foldedFullIndex } from "./fold";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
 import { gpuFormatsOf, helloV9 } from "./hello";
+import { GswParticles } from "./particles";
 import { KtxStager } from "./transcode";
 import { type PayloadVerify, Perf } from "./perf";
 import {
@@ -222,6 +223,8 @@ export async function runLive(
 
 class LiveReceiver {
   private g: GswRs | null = null;
+  /** PM6b: the /12 emitters this receiver simulates (reset with every session). */
+  private particles = new GswParticles();
   /** W11t's LiveCoding constructor (the module's), and this connection's decoder (W11c: one per
    * connection, its bases reset with it; null below /11, where nothing is coded). */
   private codingCtor: GswRsModule["LiveCoding"] | null = null;
@@ -683,6 +686,7 @@ class LiveReceiver {
       len = n;
     }
     if (!this.sessionSeen) {
+      this.particles = new GswParticles();
       if (g.live_session(len, this.cfg.liveProtocol) < 0)
         throw failWith(null, g.error());
       if (this.cfg.liveProtocol >= 9) {
@@ -1464,6 +1468,7 @@ class LiveReceiver {
     }
     const programUs = (performance.now() - q0) * 1000;
     const b = performance.now();
+    this.particles.step(g);
     if (g.apply() < 0) throw failWith(seq, g.error());
     const c = performance.now();
     const appliedUs = us();
@@ -2176,6 +2181,7 @@ class LiveReceiver {
       if (g) {
         try {
           this.report.rust = JSON.parse(g.applied_json_parts()) as RustParts;
+          this.report.particles = this.particles.evidence;
         } catch {
           this.report.rust = null;
         }

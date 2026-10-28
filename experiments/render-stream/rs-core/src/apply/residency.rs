@@ -224,13 +224,27 @@ impl Names {
             || !delta.materials_removed.is_empty()
             || !delta.shaders_upserted.is_empty()
             || !delta.shaders_removed.is_empty()
+            || !delta.particles_upserted.is_empty()
+            || !delta.particles_removed.is_empty()
         {
             self.materials_dirty = false;
             let mut set = BTreeSet::new();
-            for (mid, n) in &self.material_refs {
-                if *n == 0 {
-                    continue;
-                }
+            // PM6b: every `ok` emitter's process material too: GSW's simulation samples its curve
+            // textures (apply/particles.rs), so they are named like a drawn material's.
+            let process: BTreeSet<Id> = state
+                .particles
+                .values()
+                .filter(|p| p.status == EntryStatus::Ok)
+                .filter_map(|p| p.process_material)
+                .collect();
+            let mids = self
+                .material_refs
+                .iter()
+                .filter(|(_, n)| **n > 0)
+                .map(|(m, _)| *m)
+                .chain(process.iter().copied())
+                .collect::<BTreeSet<Id>>();
+            for mid in &mids {
                 let Some(m) = state.materials.get(mid) else {
                     continue;
                 };

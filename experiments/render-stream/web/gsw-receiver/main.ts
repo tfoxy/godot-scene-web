@@ -54,6 +54,7 @@ import {
   type ShellTx,
 } from "./evidence";
 import { runLive, takeToken } from "./live";
+import { GswParticles } from "./particles";
 import { type FrameSample, type PayloadVerify, Perf } from "./perf";
 import { ProgramError, resolvePrograms } from "./programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
@@ -133,6 +134,7 @@ async function run(): Promise<void> {
   let memory: WebAssembly.Memory | null = null;
   const statePaths = new Map<number, string>();
   let lastAppliedSeq = 0;
+  const particles = new GswParticles();
   let lastTxSeq = 0;
   let exitCode = 3;
 
@@ -141,6 +143,7 @@ async function run(): Promise<void> {
       gs.digest();
       try {
         report.rust = JSON.parse(gs.applied_json_parts()) as RustParts;
+        report.particles = particles.evidence;
       } catch {
         report.rust = null;
       }
@@ -444,6 +447,8 @@ async function run(): Promise<void> {
       perf.programs.refused += programs.refused;
       perf.programs.library_reads += programs.library_reads;
       const b = nowUs();
+      // PM6b: the emitters stepped by the host's time, their instances set before the apply.
+      particles.step(g);
       if (g.apply() < 0) throw failWith(seq, g.error());
       const c = nowUs();
       if (g.draw() < 0) throw failWith(seq, g.error());

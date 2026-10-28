@@ -1,4 +1,17 @@
 export type { ParticleConfig, ParticleRenderConfig } from "./config";
+export type {
+  GodotCurveTexture,
+  GodotGpuEmitterConfig,
+  GodotGpuStats,
+  GodotProcessMaterial,
+} from "./godot-gpu";
+export {
+  GODOT_GPU_INSTANCE_FLOATS,
+  GodotGpuEmitter,
+  godotGpuApproximateFeatures,
+  godotParticleHash,
+  godotRandFromSeed,
+} from "./godot-gpu";
 export type { GodotRendererBackend } from "./godot-renderer";
 export {
   DEFAULT_GODOT_RENDERER,

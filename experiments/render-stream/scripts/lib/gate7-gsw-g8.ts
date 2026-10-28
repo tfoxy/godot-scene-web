@@ -106,6 +106,17 @@ export const GATE8_LEGS: GswLegDef[] = [
     env: { RS_RECEIVER_SABOTAGE: "no-flipbook" },
     replaces: false,
   },
+  // g8pt (PM6b, render-stream-12.md "As built (PM6b)"): PM6a's native receiver legs on
+  // fixtures/gate8-pt (/12 full and patch sinks, the receiver sabotages undrawn-particles and
+  // ignore-particle-emits that GSW implements on the same names, and PM5's drop-restart patch
+  // sink). GSW simulates every emitter itself (packages/effects GodotGpuEmitter), the approximate
+  // tier: g8pt's own checks judge it against the unarmed reference through the band, with
+  // expected.json's bands (pt-lifecycle structural, pt-coverage banded, pt-outside-exact exact).
+  leg("g8pt/receiver"),
+  leg("g8pt/receiver-patch"),
+  leg("g8pt/sabotage-undrawn-particles/receiver"),
+  leg("g8pt/sabotage-ignore-particle-emits/receiver"),
+  leg("g8pt/sabotage-drop-restart/receiver-patch"),
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -222,6 +233,16 @@ export const GATE8_RECEIVER_CHECKS: {
     "mm-reference-catches-ignore-identity-transform",
     "mm-reference-catches-perturb-instance",
     "mm-reference-catches-stale-buffer",
+    // g8pt (PM6a's checks over the PM6b GSW legs)
+    "pt-receiver",
+    "pt-lifecycle",
+    "pt-coverage",
+    "pt-outside-exact",
+    "pt-replay",
+    "pt-lockstep",
+    "pt-lifecycle-catches-drop-restart",
+    "pt-lifecycle-catches-undrawn-particles",
+    "pt-replay-catches-ignore-particle-emits",
     // g8kp (G8kb)
     "delivery-select",
     "delivery-pixels-native",
