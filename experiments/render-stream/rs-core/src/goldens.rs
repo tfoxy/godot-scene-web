@@ -680,7 +680,8 @@ impl Suite<'_> {
         // Decision 10: the validator sabotage early-prune drops the records a transaction brings,
         // so inline.rs11 fails resource-missing at its first transaction with records.
         if !self.opts.early_prune {
-            if let Some(data) = self.bytes("inline.rs11") {
+            let inline = format!("inline.rs{}", self.version);
+            if let Some(data) = self.bytes(&inline) {
                 let got = validate_recording(
                     &data,
                     Options {
@@ -690,7 +691,7 @@ impl Suite<'_> {
                 );
                 self.ok(
                     matches!(&got, Err(e) if e.code == "resource-missing"),
-                    "sabotage early-prune: validateRecording(inline.rs11) is rejected with \"resource-missing\"",
+                    format!("sabotage early-prune: validateRecording({inline}) is rejected with \"resource-missing\""),
                     match got {
                         Ok(()) => "accepted".to_string(),
                         Err(e) => e.to_string(),
@@ -752,10 +753,10 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
     suite.checks
 }
 
-/// golden-2 to golden-11 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-12 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=11u8 {
+    for v in 2..=12u8 {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -778,6 +779,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (10, 9),
         (10, 11),
         (11, 10),
+        (11, 12),
+        (12, 11),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

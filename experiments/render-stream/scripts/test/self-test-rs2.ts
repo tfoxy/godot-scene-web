@@ -65,12 +65,18 @@ import {
   expectedDataBytes,
   isPartialUnknownItems,
   multimeshBufferSha256,
+  PARTICLE_EMIT_FLOAT_COUNT,
+  particlesFloatCount,
+  particlesFloatsByName,
+  particlesFloatsInWireOrder,
   payloadSha256,
   recordSha256,
   resolveRecording,
   splitRecords,
   statesEqual,
   transactionMultimeshes,
+  transactionParticleEmits,
+  transactionParticles,
   validateRecording,
   wireVersionOf,
 } from "../lib/render-stream-2";
@@ -95,6 +101,7 @@ const GOLDEN8_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-8");
 const GOLDEN9_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-9");
 const GOLDEN10_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-10");
 const GOLDEN11_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-11");
+const GOLDEN12_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-12");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -118,7 +125,7 @@ interface GoldenIndex {
     file: string;
     code: string;
     description: string;
-    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
   }>;
   // golden-3 has no payload-invalid vectors of its own: render-stream-3.md does not change the
   // render-stream-texture/1 payload format, so golden-2's are the only ones that exist.
@@ -230,9 +237,11 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-11")
+  const label = goldenDir.endsWith("golden-12")
+    ? "golden-12"
+    : goldenDir.endsWith("golden-11")
     ? "golden-11"
     : goldenDir.endsWith("golden-10")
       ? "golden-10"
@@ -551,6 +560,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN9_DIR, 9);
   await runSuite(GOLDEN10_DIR, 10);
   await runSuite(GOLDEN11_DIR, 11);
+  await runSuite(GOLDEN12_DIR, 12);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -675,6 +685,20 @@ async function main(): Promise<void> {
     "wireVersionOf() reads GRSB as 11",
   );
   await version11Cases();
+
+  // a /12 decode refuses /11 and a /11 decode refuses /12 (render-stream-12.md "File layout").
+  const full12 = await readBytes(GOLDEN12_DIR, "full.rs12");
+  ok(
+    validateRecording(full12, 11)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-12/full.rs12 decoded as version 11 is rejected with bad-magic",
+  );
+  ok(
+    Buffer.from(full12.subarray(0, 4)).toString("latin1") === "GRSC" &&
+      wireVersionOf(full12) === 12 &&
+      wireVersionOf(full11) === 11,
+    "wireVersionOf() reads GRSC as 12",
+  );
+  await version12Cases();
 
   unknownItemCases();
   await helloCases();
@@ -1364,10 +1388,196 @@ async function multimeshCases11(): Promise<void> {
   }
 }
 
+// PM5 (render-stream-12.md "Session record"): /12's hello is /11's under "render-stream/12".
+function checkHello12(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return ["hello is not an object"];
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.protocol !== "render-stream/12")
+    return [
+      `"protocol" is ${JSON.stringify(obj.protocol)}, not "render-stream/12"`,
+    ];
+  return checkHello11({ ...obj, protocol: "render-stream/11" });
+}
+
+async function helloCases12(): Promise<void> {
+  const index = JSON.parse(
+    await readFile(join(GOLDEN12_DIR, "index.json"), "utf8"),
+  ) as { control: { valid: string[]; invalid: string[] } };
+  ok(
+    index.control.valid.length === 2 && index.control.invalid.length === 2,
+    "golden-12 index lists 2 valid and 2 invalid control vectors",
+  );
+  for (const file of index.control.valid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN12_DIR, file), "utf8"),
+    );
+    const errors = checkHello12(parsed);
+    ok(
+      errors.length === 0,
+      `golden-12/${file} accepted (got ${JSON.stringify(errors)})`,
+    );
+  }
+  for (const file of index.control.invalid) {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(GOLDEN12_DIR, file), "utf8"),
+    );
+    ok(checkHello12(parsed).length > 0, `golden-12/${file} refused`);
+    if (file.includes("wrong-protocol"))
+      ok(
+        checkHello11(parsed).length === 0,
+        `golden-12/${file} is a valid /11 hello (refused only for its protocol)`,
+      );
+    else
+      ok(
+        checkHello12({ ...(parsed as object), live_coding: "zstd" }).length === 0,
+        `golden-12/${file} is refused only for its live_coding`,
+      );
+  }
+}
+
+// PM5 (render-stream-12.md "Golden vectors"): golden-12's particles states 22-26 resolve to the
+// emitters the generator lists; transactionParticles()/transactionParticleEmits() return the
+// floats the resolved entries carry; seq 23's emits; states 1-21 are golden-11's transactions
+// byte for byte; the /12-only sabotage kinds.
+async function version12Cases(): Promise<void> {
+  const full12 = await readBytes(GOLDEN12_DIR, "full.rs12");
+  const patchBytes = await readBytes(GOLDEN12_DIR, "patch.rs12");
+  const resolved = resolveRecording(full12, 12);
+  const expectedIds: Record<number, number[]> = {
+    22: [1, 2],
+    23: [1, 2],
+    24: [1, 2, 3],
+    25: [1, 3],
+    26: [1, 3],
+  };
+  for (const txn of resolved.transactions) {
+    const ids = txn.state.particles?.map((p) => p.id);
+    ok(
+      isDeepStrictEqual(ids, expectedIds[txn.seq]),
+      `golden-12: seq ${txn.seq}'s resolved particles ids are ${JSON.stringify(expectedIds[txn.seq] ?? "absent")} (got ${JSON.stringify(ids)})`,
+    );
+  }
+  let checked = 0;
+  for (const bytes of [full12, patchBytes]) {
+    const name = bytes === full12 ? "full.rs12" : "patch.rs12";
+    const states = resolveRecording(bytes, 12);
+    for (const record of decodeRecording(bytes, 12).records) {
+      if (record.meta.type !== "transaction") continue;
+      const meta = record.meta;
+      const state = states.transactions.find((t) => t.seq === meta.seq)?.state;
+      for (const { entry, floats } of transactionParticles(meta, record.blocks)) {
+        const r = state?.particles?.find((p) => p.id === entry.id);
+        const want =
+          floats === null ? null : particlesFloatsByName(floats);
+        ok(
+          r !== undefined &&
+            (floats === null) === (entry.status === "freed") &&
+            (floats === null ||
+              floats.length === particlesFloatCount(entry.trail_poses)) &&
+            statesEqual(r.floats, want) &&
+            (want === null ||
+              isDeepStrictEqual(particlesFloatsInWireOrder(want), floats)),
+          `golden-12: ${name} seq ${meta.seq} particles ${entry.id}: the resolved floats are the carried floats`,
+        );
+        checked++;
+      }
+    }
+  }
+  // full.rs12: 2 + 2 + 3 + 2 + 2 entries; patch.rs12: 2 + 2 (patch) + 2 (patch) + 1 (patch) + 2.
+  ok(checked === 11 + 9, `golden-12: full.rs12 and patch.rs12 carry 20 particles entries (got ${checked})`);
+  const emitsBySeq = new Map<number, ReturnType<typeof transactionParticleEmits>>();
+  for (const record of decodeRecording(full12, 12).records)
+    if (record.meta.type === "transaction")
+      emitsBySeq.set(
+        record.meta.seq,
+        transactionParticleEmits(record.meta, record.blocks),
+      );
+  const emits23 = emitsBySeq.get(23) ?? [];
+  ok(
+    emits23.length === 2 &&
+      emits23.every((e) => e.emit.particles === 1 && e.emit.restarts === 1) &&
+      isDeepStrictEqual(
+        emits23.map((e) => e.emit.flags),
+        [5, 31],
+      ) &&
+      isDeepStrictEqual(emits23[0].transform, [1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0]) &&
+      isDeepStrictEqual(emits23[0].velocity, [0, -16, 0]) &&
+      isDeepStrictEqual(emits23[0].color, [1, 1, 1, 1]) &&
+      isDeepStrictEqual(emits23[0].custom, [0, 0, 0, 0]) &&
+      isDeepStrictEqual(emits23[1].transform, [2, 0, 0, 0, 2, 0, 0, 0, 1, -8, 4, 0]) &&
+      isDeepStrictEqual(emits23[1].velocity, [0, -32, 0]) &&
+      isDeepStrictEqual(emits23[1].color, [1, 0.5, 0.25, 1]) &&
+      isDeepStrictEqual(emits23[1].custom, [0.5, 0, 0, 1]) &&
+      emits23[1].emit.f - emits23[0].emit.f === PARTICLE_EMIT_FLOAT_COUNT,
+    "golden-12: full.rs12 seq 23's two emits on emitter 1 carry the generator's floats",
+  );
+  ok(
+    [...emitsBySeq].every(([seq, e]) => (seq === 23) === (e.length > 0)),
+    "golden-12: full.rs12 lists emits at seq 23 only",
+  );
+  const patchSeq25 = decodeRecording(patchBytes, 12).records.find(
+    (r) => r.meta.type === "transaction" && r.meta.seq === 25,
+  );
+  ok(
+    patchSeq25?.meta.type === "transaction" &&
+      patchSeq25.meta.blocks.length === 9 &&
+      isDeepStrictEqual(patchSeq25.meta.removed_particles, [2]) &&
+      transactionParticles(patchSeq25.meta, patchSeq25.blocks).every(
+        (p) => p.floats === null,
+      ),
+    "golden-12: patch.rs12 seq 25 removes emitter 2 and carries only the tombstone, without pt_f32",
+  );
+  const e1at24 = resolved.transactions
+    .find((t) => t.seq === 24)
+    ?.state.particles?.find((p) => p.id === 1);
+  ok(
+    e1at24?.trail_poses === 2 &&
+      e1at24.floats?.trail_poses.length === 2 &&
+      isDeepStrictEqual(e1at24.floats.trail_poses[1], [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -4, 0]),
+    "golden-12: seq 24's emitter 1 resolves its two trail bind poses",
+  );
+
+  // "/12 without particles is transaction-for-transaction /11": seq 1-21's records are
+  // golden-11's bytes.
+  const full11 = await readBytes(GOLDEN11_DIR, "full.rs11");
+  const r11 = splitRecords(full11, 11).records;
+  const r12 = splitRecords(full12, 12).records;
+  let same = 0;
+  for (let i = 1; i <= 21; i++)
+    if (
+      r11[i] !== undefined &&
+      r12[i] !== undefined &&
+      Buffer.from(r11[i].bytes).equals(Buffer.from(r12[i].bytes))
+    )
+      same++;
+  ok(same === 21, `golden-12: full.rs12's seq 1-21 records are golden-11's bytes (${same} of 21)`);
+
+  for (const kind of ["perturb-seed", "drop-restart"]) {
+    const v11 = reframeSession(full11, (meta) => {
+      meta.sabotage = { kind, frame: 1, op: null };
+    });
+    ok(
+      (validateRecording(v11, 11)[0] ?? "").includes("legal only at /12"),
+      `a /11 session declaring the /12-only sabotage kind ${kind} is rejected (meta-schema)`,
+    );
+    const v12 = reframeSession(full12, (meta) => {
+      meta.sabotage = { kind, frame: 1, op: null };
+    });
+    const errors = validateRecording(v12, 12);
+    ok(
+      errors.length === 1 && errors[0].startsWith("end-stats-mismatch: "),
+      `a /12 session declaring sabotage kind ${kind} is accepted (only the re-framed end stats differ; got ${JSON.stringify(errors)})`,
+    );
+  }
+}
+
 async function helloCases(): Promise<void> {
   await helloCases9();
   await helloCases10();
   await helloCases11();
+  await helloCases12();
   const root = join(GOLDEN7_DIR, "control");
   const validDir = join(root, "valid");
   const invalidDir = join(root, "invalid");

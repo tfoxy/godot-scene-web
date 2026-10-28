@@ -445,6 +445,14 @@ fn command(w: &mut W, c: &Command, cmds: &Commands) {
             w.key("tex");
             w.opt_id(*tex);
         }
+        Command::Particles { particles, tex } => {
+            w.raw(",");
+            w.key("particles");
+            w.int(*particles as i64);
+            w.raw(",");
+            w.key("tex");
+            w.opt_id(*tex);
+        }
         Command::Unsupported { name, reason } => {
             w.raw(",");
             w.key("name");
@@ -864,6 +872,190 @@ fn multimesh(w: &mut W, m: &Multimesh) {
     w.raw("}");
 }
 
+/// render-stream-12.md "The `particle_process_material` builtin", keys in the wire's order.
+fn process_builtin(w: &mut W, p: &ProcessBuiltin) {
+    fn strs<T: Copy>(w: &mut W, xs: &[T], name: fn(T) -> &'static str) {
+        w.raw("[");
+        for (i, &x) in xs.iter().enumerate() {
+            if i > 0 {
+                w.raw(",");
+            }
+            w.str(name(x));
+        }
+        w.raw("]");
+    }
+    w.raw("{\"kind\":\"particle_process_material\",");
+    w.key("emission_shape");
+    w.str(p.emission_shape.as_str());
+    w.raw(",");
+    w.key("particle_flags");
+    strs(w, &p.particle_flags, ParticleFlag::as_str);
+    w.raw(",");
+    w.key("textures");
+    strs(w, &p.textures, ProcessParam::as_str);
+    for (k, b) in [
+        ("color_ramp", p.color_ramp),
+        ("color_initial_ramp", p.color_initial_ramp),
+        ("alpha_curve", p.alpha_curve),
+        ("emission_curve", p.emission_curve),
+        ("velocity_limit_curve", p.velocity_limit_curve),
+        ("orbit_velocity_curve_xyz", p.orbit_velocity_curve_xyz),
+        ("emission_color_texture", p.emission_color_texture),
+    ] {
+        w.raw(",");
+        w.key(k);
+        w.bool(b);
+    }
+    w.raw(",");
+    w.key("sub_emitter");
+    w.str(p.sub_emitter.as_str());
+    w.raw(",");
+    w.key("attractor");
+    w.bool(p.attractor);
+    w.raw(",");
+    w.key("collision");
+    w.str(p.collision.as_str());
+    w.raw(",");
+    w.key("collision_scale");
+    w.bool(p.collision_scale);
+    w.raw(",");
+    w.key("turbulence");
+    w.bool(p.turbulence);
+    w.raw("}");
+}
+
+/// render-stream-12.md "Resolved form": the entry's JSON fields (without `f`), then `floats`.
+fn particles(w: &mut W, p: &Particles) {
+    w.raw("{");
+    w.key("id");
+    w.int(p.id as i64);
+    w.raw(",");
+    w.key("origin");
+    w.str(p.origin.as_str());
+    w.raw(",");
+    w.key("status");
+    w.str(p.status.as_str());
+    w.raw(",");
+    w.key("reason");
+    w.opt_str(p.reason);
+    w.raw(",");
+    w.key("version");
+    w.int(p.version);
+    w.raw(",");
+    w.key("mode");
+    w.str(p.mode.as_str());
+    w.raw(",");
+    w.key("emitting");
+    w.bool(p.emitting);
+    w.raw(",");
+    w.key("amount");
+    w.int(p.amount);
+    w.raw(",");
+    w.key("one_shot");
+    w.bool(p.one_shot);
+    w.raw(",");
+    w.key("fixed_fps");
+    w.int(p.fixed_fps);
+    w.raw(",");
+    w.key("interpolate");
+    w.bool(p.interpolate);
+    w.raw(",");
+    w.key("fractional_delta");
+    w.bool(p.fractional_delta);
+    w.raw(",");
+    w.key("local");
+    w.bool(p.local);
+    w.raw(",");
+    w.key("draw_order");
+    w.str(p.draw_order.as_str());
+    w.raw(",");
+    w.key("transform_align");
+    w.str(p.transform_align.as_str());
+    w.raw(",");
+    w.key("trails");
+    w.bool(p.trails);
+    w.raw(",");
+    w.key("trail_poses");
+    w.int(p.trail_poses);
+    w.raw(",");
+    w.key("seed");
+    w.int(p.seed as i64);
+    w.raw(",");
+    w.key("restarts");
+    w.int(p.restarts);
+    w.raw(",");
+    w.key("emits");
+    w.int(p.emits);
+    w.raw(",");
+    w.key("process_requests");
+    w.int(p.process_requests);
+    w.raw(",");
+    w.key("process_material");
+    w.opt_id(p.process_material);
+    w.raw(",");
+    w.key("draw_passes");
+    w.raw("[");
+    for (i, d) in p.draw_passes.iter().enumerate() {
+        if i > 0 {
+            w.raw(",");
+        }
+        w.opt_id(*d);
+    }
+    w.raw("]");
+    w.raw(",");
+    w.key("subemitter");
+    w.opt_id(p.subemitter);
+    w.raw(",");
+    w.key("floats");
+    match &p.floats {
+        None => w.raw("null"),
+        Some(f) => {
+            w.raw("{");
+            for (i, (k, x)) in [
+                ("amount_ratio", f.amount_ratio),
+                ("lifetime", f.lifetime),
+                ("pre_process_time", f.pre_process_time),
+                ("explosiveness", f.explosiveness),
+                ("randomness", f.randomness),
+                ("speed_scale", f.speed_scale),
+                ("collision_base_size", f.collision_base_size),
+                ("trail_length", f.trail_length),
+                ("interp_to_end", f.interp_to_end),
+                ("request_process_time", f.request_process_time),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if i > 0 {
+                    w.raw(",");
+                }
+                w.key(k);
+                w.f32(x);
+            }
+            w.raw(",");
+            w.key("custom_aabb");
+            w.floats(&f.custom_aabb);
+            w.raw(",");
+            w.key("emission_transform");
+            w.floats(&f.emission_transform);
+            w.raw(",");
+            w.key("emitter_velocity");
+            w.floats(&f.emitter_velocity);
+            w.raw(",");
+            w.key("trail_poses");
+            w.raw("[");
+            for (i, t) in f.trail_poses.iter().enumerate() {
+                if i > 0 {
+                    w.raw(",");
+                }
+                w.floats(t);
+            }
+            w.raw("]}");
+        }
+    }
+    w.raw("}");
+}
+
 fn shader(w: &mut W, s: &Shader, v: u8) {
     w.raw("{");
     w.key("id");
@@ -904,7 +1096,10 @@ fn shader(w: &mut W, s: &Shader, v: u8) {
             w.bool(b.particles_animation);
             w.raw("}");
         }
-        None => w.raw("null"),
+        None => match &s.process {
+            Some(p) => process_builtin(w, p),
+            None => w.raw("null"),
+        },
     }
     w.raw(",");
     w.key("uses");
@@ -1069,6 +1264,12 @@ fn write_state_as(out: &mut Vec<u8>, st: &ResolvedState, godot: bool) {
         w.raw(",");
         w.key("multimeshes");
         list(w, st.multimeshes.values(), multimesh);
+    }
+    // PM5 (render-stream-12.md "Resolved form"): right after `multimeshes`, only when non-empty.
+    if v >= 12 && !st.particles.is_empty() {
+        w.raw(",");
+        w.key("particles");
+        list(w, st.particles.values(), particles);
     }
     w.raw("}");
 }

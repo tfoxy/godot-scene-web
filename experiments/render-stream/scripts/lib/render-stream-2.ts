@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -104,7 +104,10 @@ export type UnsupportedReason =
   | "snap-2d"
   // new at /11 (PM1, render-stream-11.md "As built (PM1)", 7)
   | "unknown-multimesh"
-  | "unsupported-multimesh";
+  | "unsupported-multimesh"
+  // new at /12 (PM5, render-stream-12.md "The command")
+  | "unknown-particles"
+  | "unsupported-particles";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
  * storage never allocates a canvas texture (protocol/canvas-texture-headless.md).
  * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
@@ -115,7 +118,9 @@ export type UnsupportedCmdReason =
   | "unknown-mesh"
   | "skinned-geometry"
   // new at /11 (PM1, 7): an add_multimesh naming a RID the mirror never saw created.
-  | "unknown-multimesh";
+  | "unknown-multimesh"
+  // new at /12 (PM5, render-stream-12.md "The command"): an add_particles naming an unknown RID.
+  | "unknown-particles";
 export type SabotageKind =
   | "freeze-frame"
   | "omit-update"
@@ -148,7 +153,10 @@ export type SabotageKind =
   | "keep-carried"
   // new at /11 (PM1, render-stream-11.md "As built (PM1)", 11)
   | "perturb-instance"
-  | "stale-buffer";
+  | "stale-buffer"
+  // new at /12 (PM5, render-stream-12.md "Sabotages")
+  | "perturb-seed"
+  | "drop-restart";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -293,6 +301,75 @@ export interface BuiltinCanvasItemMaterial {
   particles_animation: boolean;
 }
 
+/** new at /12 (PM5, render-stream-12.md "The `particle_process_material` builtin"):
+ * `ParticleProcessMaterial::MaterialKey` spelled out, keys in this order; `particle_flags` and
+ * `textures` list the set bits in enum order. */
+export interface BuiltinParticleProcessMaterial {
+  kind: "particle_process_material";
+  emission_shape: EmissionShape;
+  particle_flags: ParticleFlag[];
+  textures: ProcessParameter[];
+  color_ramp: boolean;
+  color_initial_ramp: boolean;
+  alpha_curve: boolean;
+  emission_curve: boolean;
+  velocity_limit_curve: boolean;
+  orbit_velocity_curve_xyz: boolean;
+  emission_color_texture: boolean;
+  sub_emitter: SubEmitterMode;
+  attractor: boolean;
+  collision: CollisionMode;
+  collision_scale: boolean;
+  turbulence: boolean;
+  // Absent: lets code written for BuiltinCanvasItemMaterial read these as undefined.
+  blend_mode?: undefined;
+  light_mode?: undefined;
+  particles_animation?: undefined;
+}
+export type EmissionShape =
+  | "point"
+  | "sphere"
+  | "sphere_surface"
+  | "box"
+  | "points"
+  | "directed_points"
+  | "ring";
+export type ParticleFlag =
+  | "align_y_to_velocity"
+  | "rotate_y"
+  | "disable_z"
+  | "damping_as_friction";
+export type ProcessParameter =
+  | "initial_linear_velocity"
+  | "angular_velocity"
+  | "orbit_velocity"
+  | "linear_accel"
+  | "radial_accel"
+  | "tangential_accel"
+  | "damping"
+  | "angle"
+  | "scale"
+  | "hue_variation"
+  | "anim_speed"
+  | "anim_offset"
+  | "turb_influence_over_life"
+  | "turb_vel_influence"
+  | "turb_init_displacement"
+  | "radial_velocity"
+  | "directional_velocity"
+  | "scale_over_velocity";
+export type SubEmitterMode =
+  | "disabled"
+  | "constant"
+  | "at_end"
+  | "at_collision"
+  | "at_start";
+export type CollisionMode = "disabled" | "rigid" | "hide_on_contact";
+/** A shader entry's `builtin` (the second kind is /12's). */
+export type ShaderBuiltin =
+  | BuiltinCanvasItemMaterial
+  | BuiltinParticleProcessMaterial;
+
 export interface DefaultTextureRef {
   name: string;
   index: number;
@@ -319,7 +396,7 @@ export interface TransactionShader {
   source: ShaderSource | null;
   hash: string | null;
   payload_bytes: number;
-  builtin: BuiltinCanvasItemMaterial | null;
+  builtin: ShaderBuiltin | null;
   uses: ShaderUse[];
   default_textures: DefaultTextureRef[];
 }
@@ -588,6 +665,12 @@ export interface CommandAddMultimesh {
   multimesh: number;
   tex: number | null;
 }
+/** new at /12 (PM5, render-stream-12.md "The command"): no floats, so no "f". */
+export interface CommandAddParticles {
+  op: "add_particles";
+  particles: number;
+  tex: number | null;
+}
 export type Command =
   | CommandAddRect
   | CommandAddTextureRect
@@ -605,6 +688,7 @@ export type Command =
   | CommandAddSetTransform
   | CommandAddClipIgnore
   | CommandAddMultimesh
+  | CommandAddParticles
   | CommandUnsupported;
 
 export interface TransactionItem {
@@ -761,6 +845,98 @@ export function multimeshStride(m: { colors: boolean; custom: boolean }): number
   return 8 + (m.colors ? 4 : 0) + (m.custom ? 4 : 0);
 }
 
+export type ParticlesStatus = "ok" | "unsupported" | "freed";
+/** render-stream-12.md "Particles table": the reasons, in priority order. */
+export type ParticlesReason =
+  | "particles-3d"
+  | "unknown-material"
+  | "unknown-mesh"
+  | "unknown-particles";
+export type ParticlesMode = "2d" | "3d";
+export type ParticlesDrawOrder =
+  | "index"
+  | "lifetime"
+  | "reverse_lifetime"
+  | "view_depth";
+export type ParticlesTransformAlign =
+  | "disabled"
+  | "z_billboard"
+  | "y_to_velocity"
+  | "z_billboard_y_to_velocity";
+
+/** new at /12 (PM5, render-stream-12.md "Particles table"): one emitter entry, keys in this
+ * order. Its `particlesFloatCount(trail_poses)` floats are at `f` in pt_f32 (null only when
+ * freed; see PARTICLES_FLOAT_LAYOUT). */
+export interface TransactionParticles {
+  id: number;
+  origin: "created";
+  status: ParticlesStatus;
+  reason: ParticlesReason | null;
+  version: number;
+  mode: ParticlesMode;
+  emitting: boolean;
+  amount: number;
+  one_shot: boolean;
+  fixed_fps: number;
+  interpolate: boolean;
+  fractional_delta: boolean;
+  local: boolean;
+  draw_order: ParticlesDrawOrder;
+  transform_align: ParticlesTransformAlign;
+  trails: boolean;
+  trail_poses: number;
+  seed: number;
+  restarts: number;
+  emits: number;
+  process_requests: number;
+  process_material: number | null;
+  draw_passes: Array<number | null>;
+  subemitter: number | null;
+  f: number | null;
+}
+
+/** new at /12 (PM5, render-stream-12.md "The emit list"): one accepted `particles_emit` call.
+ * Its PARTICLE_EMIT_FLOAT_COUNT floats (transform 12, velocity 3, colour 4, custom 4) are at
+ * `f` in pt_f32, after every entry's. */
+export interface TransactionParticleEmit {
+  particles: number;
+  restarts: number;
+  flags: number;
+  f: number;
+}
+
+/** render-stream-12.md "Particles table": an entry's floats before its trail bind poses. */
+export const PARTICLES_BASE_FLOAT_COUNT = 31;
+/** render-stream-12.md "Particles table": floats per trail bind pose (a Transform3D). */
+export const PARTICLES_TRAIL_POSE_FLOATS = 12;
+/** render-stream-12.md "The emit list": floats per emit. */
+export const PARTICLE_EMIT_FLOAT_COUNT = 23;
+/** render-stream-12.md "Particles table": the float layout of an entry, `[name, offset,
+ * length]` (the trail bind poses follow at PARTICLES_BASE_FLOAT_COUNT, 12 each). A Transform3D
+ * is `basis.rows[0..2]` (xyz each), then `origin`. */
+export const PARTICLES_FLOAT_LAYOUT: ReadonlyArray<
+  readonly [keyof ResolvedParticlesFloats, number, number]
+> = [
+  ["amount_ratio", 0, 1],
+  ["lifetime", 1, 1],
+  ["pre_process_time", 2, 1],
+  ["explosiveness", 3, 1],
+  ["randomness", 4, 1],
+  ["speed_scale", 5, 1],
+  ["collision_base_size", 6, 1],
+  ["trail_length", 7, 1],
+  ["interp_to_end", 8, 1],
+  ["request_process_time", 9, 1],
+  ["custom_aabb", 10, 6],
+  ["emission_transform", 16, 12],
+  ["emitter_velocity", 28, 3],
+];
+/** render-stream-12.md "Particles table": floats an entry with `trail_poses` poses carries,
+ * 31 + 12 x trail_poses. */
+export function particlesFloatCount(trailPoses: number): number {
+  return PARTICLES_BASE_FLOAT_COUNT + PARTICLES_TRAIL_POSE_FLOATS * trailPoses;
+}
+
 export interface TransactionMeta {
   type: "transaction";
   seq: number;
@@ -786,6 +962,14 @@ export interface TransactionMeta {
   multimeshes?: TransactionMultimesh[];
   /** new at /11 (PM1, 1): a patch's removed multimesh ids, present only when non-empty. */
   removed_multimeshes?: number[];
+  /** new at /12 (PM5, render-stream-12.md "Particles table"): present only when non-empty,
+   * right after `removed_multimeshes` (or `multimeshes`, or `materials`), then
+   * `removed_particles` and `particle_emits`, then `shader_time`. */
+  particles?: TransactionParticles[];
+  /** new at /12: a patch's removed particles ids, present only when non-empty. */
+  removed_particles?: number[];
+  /** new at /12 (render-stream-12.md "The emit list"): present only when non-empty. */
+  particle_emits?: TransactionParticleEmit[];
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
   removed_canvases: number[];
@@ -882,13 +1066,18 @@ export const MAGIC_V10: Uint8Array = new Uint8Array([
 export const MAGIC_V11: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x42, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
+// render-stream-12.md "File layout": the GRSC magic (byte 3 'C' is 12), selected by `version: 12`
+// (golden-12/; opt-in, never the default).
+export const MAGIC_V12: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x43, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
- * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), else 6 -- so every other magic still meets the
- * /6 decoder's own refusal, exactly as before. */
+ * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), else 6 -- so every other
+ * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -900,6 +1089,7 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V9)) return 9;
   if (startsWith(MAGIC_V10)) return 10;
   if (startsWith(MAGIC_V11)) return 11;
+  if (startsWith(MAGIC_V12)) return 12;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */
@@ -1089,7 +1279,14 @@ const SABOTAGE_KINDS = [
   // new at /11 (PM1, render-stream-11.md "As built (PM1)", 11): legal in a /11 session only.
   "perturb-instance",
   "stale-buffer",
+  // new at /12 (PM5, render-stream-12.md "Sabotages"): legal in a /12 session only.
+  "perturb-seed",
+  "drop-restart",
 ] as const;
+const SABOTAGE_KINDS_V12_ONLY: readonly string[] = [
+  "perturb-seed",
+  "drop-restart",
+];
 const SABOTAGE_KINDS_V11_ONLY: readonly string[] = [
   "cv-churn",
   "stale-dynamic",
@@ -1407,6 +1604,69 @@ const BUILTIN_KEYS = [
   "light_mode",
   "particles_animation",
 ];
+// new at /12 (PM5, render-stream-12.md "The `particle_process_material` builtin"): keys in this
+// order, and the enum spellings in enum order.
+const PROCESS_BUILTIN_KEYS = [
+  "kind",
+  "emission_shape",
+  "particle_flags",
+  "textures",
+  "color_ramp",
+  "color_initial_ramp",
+  "alpha_curve",
+  "emission_curve",
+  "velocity_limit_curve",
+  "orbit_velocity_curve_xyz",
+  "emission_color_texture",
+  "sub_emitter",
+  "attractor",
+  "collision",
+  "collision_scale",
+  "turbulence",
+];
+const EMISSION_SHAPES = [
+  "point",
+  "sphere",
+  "sphere_surface",
+  "box",
+  "points",
+  "directed_points",
+  "ring",
+] as const;
+const PARTICLE_FLAGS = [
+  "align_y_to_velocity",
+  "rotate_y",
+  "disable_z",
+  "damping_as_friction",
+] as const;
+const PROCESS_PARAMETERS = [
+  "initial_linear_velocity",
+  "angular_velocity",
+  "orbit_velocity",
+  "linear_accel",
+  "radial_accel",
+  "tangential_accel",
+  "damping",
+  "angle",
+  "scale",
+  "hue_variation",
+  "anim_speed",
+  "anim_offset",
+  "turb_influence_over_life",
+  "turb_vel_influence",
+  "turb_init_displacement",
+  "radial_velocity",
+  "directional_velocity",
+  "scale_over_velocity",
+] as const;
+const SUB_EMITTER_MODES = [
+  "disabled",
+  "constant",
+  "at_end",
+  "at_collision",
+  "at_start",
+] as const;
+const COLLISION_MODES = ["disabled", "rigid", "hide_on_contact"] as const;
 const DEFAULT_TEXTURE_KEYS = ["name", "index", "tex"];
 const MATERIAL_KEYS = [
   "id",
@@ -1498,6 +1758,15 @@ const TRANSACTION_BLOCK_TYPES_V11: Array<"f32" | "i32" | "f64" | "u8"> = [
   "u8",
   "f32",
 ];
+// render-stream-12.md "Transaction keys and blocks": /11's nine, then pt_f32 (type "f32") only
+// when it holds at least one float.
+const TRANSACTION_BLOCK_NAMES_V12 = [...TRANSACTION_BLOCK_NAMES_V11, "pt_f32"];
+const TRANSACTION_BLOCK_TYPES_V12: Array<"f32" | "i32" | "f64" | "u8"> = [
+  ...TRANSACTION_BLOCK_TYPES_V11,
+  "f32",
+];
+/** render-stream-12.md: the index of the optional tenth transaction block, pt_f32. */
+export const PT_F32_BLOCK = 9;
 
 const FILTERS = [
   "default",
@@ -1537,7 +1806,61 @@ const UNSUPPORTED_CMD_REASONS_V11 = [
   ...UNSUPPORTED_CMD_REASONS,
   "unknown-multimesh",
 ] as const;
+// new at /12 (PM5, render-stream-12.md "The command").
+const UNSUPPORTED_CMD_REASONS_V12 = [
+  ...UNSUPPORTED_CMD_REASONS_V11,
+  "unknown-particles",
+] as const;
 const ADD_MULTIMESH_KEYS = ["op", "multimesh", "tex"];
+const ADD_PARTICLES_KEYS = ["op", "particles", "tex"];
+// PM5, render-stream-12.md "Particles table": the entry, keys in this order.
+const PARTICLES_KEYS = [
+  "id",
+  "origin",
+  "status",
+  "reason",
+  "version",
+  "mode",
+  "emitting",
+  "amount",
+  "one_shot",
+  "fixed_fps",
+  "interpolate",
+  "fractional_delta",
+  "local",
+  "draw_order",
+  "transform_align",
+  "trails",
+  "trail_poses",
+  "seed",
+  "restarts",
+  "emits",
+  "process_requests",
+  "process_material",
+  "draw_passes",
+  "subemitter",
+  "f",
+];
+const PARTICLES_STATUSES = ["ok", "unsupported", "freed"] as const;
+const PARTICLES_REASONS = [
+  "particles-3d",
+  "unknown-material",
+  "unknown-mesh",
+  "unknown-particles",
+] as const;
+const PARTICLES_DRAW_ORDERS = [
+  "index",
+  "lifetime",
+  "reverse_lifetime",
+  "view_depth",
+] as const;
+const PARTICLES_TRANSFORM_ALIGNS = [
+  "disabled",
+  "z_billboard",
+  "y_to_velocity",
+  "z_billboard_y_to_velocity",
+] as const;
+const PARTICLE_EMIT_KEYS = ["particles", "restarts", "flags", "f"];
 // PM1, render-stream-11.md "As built (PM1)", 2: the multimesh entry, keys in this order.
 const MULTIMESH_KEYS = [
   "id",
@@ -1602,6 +1925,12 @@ const ITEM_UNSUPPORTED_REASONS_V11 = [
   ...ITEM_UNSUPPORTED_REASONS_V5,
   "unknown-multimesh",
   "unsupported-multimesh",
+] as const;
+// new at /12 (PM5, render-stream-12.md "The command"): the two particles item reasons.
+const ITEM_UNSUPPORTED_REASONS_V12 = [
+  ...ITEM_UNSUPPORTED_REASONS_V11,
+  "unknown-particles",
+  "unsupported-particles",
 ] as const;
 // new at /5: the session-level ("item": null) canvas-light entry (gate5_5-design.md D10, D16).
 const SESSION_UNSUPPORTED_REASONS_V5 = [
@@ -1987,7 +2316,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2000,7 +2329,8 @@ function checkResourcesSchema(
     version === 8 ||
     version === 9 ||
     version === 10 ||
-    version === 11;
+    version === 11 ||
+    version === 12;
   const keys =
     version >= 11
       ? RESOURCES_KEYS_V11
@@ -2117,14 +2447,17 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
   ];
   // render-stream-11.md "Session record": /11's one new session key (resources.mesh_dynamic) is
-  // checked by checkResourcesSchema; here only the protocol string changes.
-  const isV11 = version === 11;
+  // checked by checkResourcesSchema; here only the protocol string changes. /12 adds no session
+  // key either (render-stream-12.md "Session record": only the protocol and the features).
+  const isV12 = version === 12;
+  // isV11 means "V11 or later".
+  const isV11 = version === 11 || isV12;
   // isV10 means "V10 or later".
   const isV10 = version === 10 || isV11;
   // isV9 means "V9 or later": /10 is /9 plus exactly render-stream-10.md's list (no new
@@ -2167,9 +2500,11 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV11
-    ? "render-stream/11"
-    : isV10
+  const expectedProtocol = isV12
+    ? "render-stream/12"
+    : isV11
+      ? "render-stream/11"
+      : isV10
       ? "render-stream/10"
       : isV9
         ? "render-stream/9"
@@ -2435,6 +2770,9 @@ function checkSessionSchema(
     }
     if (!isV11 && SABOTAGE_KINDS_V11_ONLY.includes(sabotage.kind)) {
       return err(`"sabotage.kind" "${sabotage.kind}" is legal only at /11`);
+    }
+    if (!isV12 && SABOTAGE_KINDS_V12_ONLY.includes(sabotage.kind)) {
+      return err(`"sabotage.kind" "${sabotage.kind}" is legal only at /12`);
     }
   }
 
@@ -2729,6 +3067,51 @@ function checkParamEntrySchema(
   return [];
 }
 
+/** render-stream-12.md "The `particle_process_material` builtin" (builtin-entry): exactly
+ * PROCESS_BUILTIN_KEYS in order, these spellings, and each list strictly increasing in enum
+ * order. Returns what is wrong, or null. */
+function checkProcessBuiltin(b: Record<string, unknown>): string | null {
+  if (!hasExactKeys(b, PROCESS_BUILTIN_KEYS))
+    return "has the wrong keys or key order";
+  if (!isOneOf(b.emission_shape, EMISSION_SHAPES))
+    return '"emission_shape" is not a valid emission shape';
+  const strictlyIncreasing = (
+    value: unknown,
+    spellings: readonly string[],
+  ): boolean => {
+    if (!Array.isArray(value)) return false;
+    let last = -1;
+    for (const x of value) {
+      const i = typeof x === "string" ? spellings.indexOf(x) : -1;
+      if (i <= last) return false;
+      last = i;
+    }
+    return true;
+  };
+  if (!strictlyIncreasing(b.particle_flags, PARTICLE_FLAGS))
+    return '"particle_flags" is not a strictly increasing list of particle flags';
+  if (!strictlyIncreasing(b.textures, PROCESS_PARAMETERS))
+    return '"textures" is not a strictly increasing list of process parameters';
+  for (const key of [
+    "color_ramp",
+    "color_initial_ramp",
+    "alpha_curve",
+    "emission_curve",
+    "velocity_limit_curve",
+    "orbit_velocity_curve_xyz",
+    "emission_color_texture",
+    "attractor",
+    "collision_scale",
+    "turbulence",
+  ])
+    if (typeof b[key] !== "boolean") return `"${key}" is not a boolean`;
+  if (!isOneOf(b.sub_emitter, SUB_EMITTER_MODES))
+    return '"sub_emitter" is not a valid sub-emitter mode';
+  if (!isOneOf(b.collision, COLLISION_MODES))
+    return '"collision" is not a valid collision mode';
+  return null;
+}
+
 function checkShaderEntrySchema(
   s: unknown,
   offset: number,
@@ -2779,7 +3162,26 @@ function checkShaderEntrySchema(
     return err('"payload_bytes" is not a non-negative integer');
   }
   const builtin = s.builtin;
-  if (builtin !== null) {
+  if (
+    isPlainObject(builtin) &&
+    builtin.kind === "particle_process_material"
+  ) {
+    // render-stream-12.md "The `particle_process_material` builtin": the kind is /12's only
+    // (below, meta-schema), self-coded builtin-entry, and only on a "particles"-mode shader.
+    if (version < 12)
+      return [
+        `meta-schema: record at offset ${offset}: a shaders[] entry's builtin kind "particle_process_material" needs render-stream/12`,
+      ];
+    const builtinError = checkProcessBuiltin(builtin);
+    if (builtinError !== null)
+      return [
+        `builtin-entry: record at offset ${offset}: shader ${String(s.id)}'s "particle_process_material" builtin ${builtinError}`,
+      ];
+    if (s.mode !== "particles")
+      return [
+        `builtin-entry: record at offset ${offset}: shader ${String(s.id)} carries a "particle_process_material" builtin, but its mode is ${JSON.stringify(s.mode)}, not "particles"`,
+      ];
+  } else if (builtin !== null) {
     if (
       !isPlainObject(builtin) ||
       !hasExactKeys(builtin, BUILTIN_KEYS) ||
@@ -2877,10 +3279,62 @@ function checkMaterialEntrySchema(
   return [];
 }
 
+/** render-stream-12.md "Particles table": one particles[] entry's key set, order and value
+ * types (meta-schema); the shape rules are the validator's particles-entry. Returns what is
+ * wrong, or null. */
+function checkParticlesEntrySchema(p: unknown): string | null {
+  if (!isPlainObject(p) || !hasExactKeys(p, PARTICLES_KEYS))
+    return "has the wrong keys";
+  const nonNegInt = (x: unknown) => isInt(x) && (x as number) >= 0;
+  const optId = (x: unknown) => x === null || (isInt(x) && (x as number) >= 1);
+  if (!isInt(p.id) || p.id < 1) return '"id" is not an integer >= 1';
+  if (p.origin !== "created") return '"origin" must be "created"';
+  if (!isOneOf(p.status, PARTICLES_STATUSES)) return "has an invalid status";
+  if (!(p.reason === null || isOneOf(p.reason, PARTICLES_REASONS)))
+    return '"reason" is neither null nor a valid particles reason';
+  if (!isInt(p.version) || p.version < 1)
+    return '"version" is not an integer >= 1';
+  if (!isOneOf(p.mode, ["2d", "3d"] as const))
+    return '"mode" must be "2d" or "3d"';
+  for (const key of [
+    "emitting",
+    "one_shot",
+    "interpolate",
+    "fractional_delta",
+    "local",
+    "trails",
+  ])
+    if (typeof p[key] !== "boolean") return `"${key}" is not a boolean`;
+  for (const key of [
+    "amount",
+    "fixed_fps",
+    "trail_poses",
+    "restarts",
+    "emits",
+    "process_requests",
+  ])
+    if (!nonNegInt(p[key])) return `"${key}" is not an integer >= 0`;
+  if (!isOneOf(p.draw_order, PARTICLES_DRAW_ORDERS))
+    return '"draw_order" is not a valid draw order';
+  if (!isOneOf(p.transform_align, PARTICLES_TRANSFORM_ALIGNS))
+    return '"transform_align" is not a valid transform alignment';
+  if (!nonNegInt(p.seed) || (p.seed as number) > 0xffffffff)
+    return '"seed" is not an integer in 0..4294967295';
+  if (!optId(p.process_material))
+    return '"process_material" is neither null nor an integer >= 1';
+  if (!Array.isArray(p.draw_passes) || !p.draw_passes.every(optId))
+    return '"draw_passes" is not an array of null or integers >= 1';
+  if (!optId(p.subemitter))
+    return '"subemitter" is neither null nor an integer >= 1';
+  if (!(p.f === null || nonNegInt(p.f)))
+    return '"f" is neither null nor a non-negative integer';
+  return null;
+}
+
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2892,10 +3346,15 @@ function checkTransactionSchema(
     version === 8 ||
     version === 9 ||
     version === 10 ||
-    version === 11;
+    version === 11 ||
+    version === 12;
+  // render-stream-12.md: the particles table, the emit list, add_particles and the optional
+  // tenth block pt_f32.
+  const isV12 = version === 12;
   // render-stream-11.md: dynamic mesh surfaces (mesh entry key u8, a null surface hash), the
-  // eighth and ninth blocks mesh_u8 (u8) and mm_f32, and a patch's null "unsupported".
-  const isV11 = version === 11;
+  // eighth and ninth blocks mesh_u8 (u8) and mm_f32, and a patch's null "unsupported" (isV11
+  // means "V11 or later").
+  const isV11 = version === 11 || isV12;
   // render-stream-10.md "Item"/"Transaction blocks": the two back-buffer item keys and the
   // seventh block, backbuffer_f32 (isV10 means "V10 or later").
   const isV10 = version === 10 || isV11;
@@ -2925,8 +3384,70 @@ function checkTransactionSchema(
     expectedKeys = keysWith(expectedKeys, "materials", "removed_multimeshes");
   if (hasMultimeshes)
     expectedKeys = keysWith(expectedKeys, "materials", "multimeshes");
+  // PM5 (render-stream-12.md "Transaction keys and blocks"): /12's optional particles,
+  // removed_particles and particle_emits, right after removed_multimeshes (or multimeshes, or
+  // materials) and before shader_time, each only when non-empty.
+  const hasParticles = isV12 && "particles" in meta;
+  const hasRemovedParticles = isV12 && "removed_particles" in meta;
+  const hasParticleEmits = isV12 && "particle_emits" in meta;
+  {
+    const anchor = hasRemovedMultimeshes
+      ? "removed_multimeshes"
+      : hasMultimeshes
+        ? "multimeshes"
+        : "materials";
+    if (hasParticleEmits)
+      expectedKeys = keysWith(expectedKeys, anchor, "particle_emits");
+    if (hasRemovedParticles)
+      expectedKeys = keysWith(expectedKeys, anchor, "removed_particles");
+    if (hasParticles) expectedKeys = keysWith(expectedKeys, anchor, "particles");
+  }
   if (!hasExactKeys(meta, expectedKeys))
     return err("transaction has the wrong top-level keys or order");
+  if (hasParticles) {
+    if (!Array.isArray(meta.particles) || meta.particles.length === 0)
+      return err(
+        '"particles" must be a non-empty array when present (an empty table is the absent key)',
+      );
+    for (const p of meta.particles) {
+      const particlesError = checkParticlesEntrySchema(p);
+      if (particlesError !== null)
+        return err(`a particles[] entry ${particlesError}`);
+    }
+  }
+  if (hasRemovedParticles) {
+    if (
+      !isIntArray(meta.removed_particles) ||
+      meta.removed_particles.length === 0
+    )
+      return err(
+        '"removed_particles" must be a non-empty array of integers when present',
+      );
+  }
+  if (hasParticleEmits) {
+    if (!Array.isArray(meta.particle_emits) || meta.particle_emits.length === 0)
+      return err(
+        '"particle_emits" must be a non-empty array when present (an empty list is the absent key)',
+      );
+    for (const e of meta.particle_emits) {
+      if (
+        !isPlainObject(e) ||
+        !hasExactKeys(e, PARTICLE_EMIT_KEYS) ||
+        !isInt(e.particles) ||
+        e.particles < 1 ||
+        !isInt(e.restarts) ||
+        e.restarts < 0 ||
+        !isInt(e.flags) ||
+        e.flags < 0 ||
+        e.flags > 31 ||
+        !isInt(e.f) ||
+        e.f < 0
+      )
+        return err(
+          "a particle_emits[] element has the wrong keys or an invalid field",
+        );
+    }
+  }
   if (hasMultimeshes) {
     if (!Array.isArray(meta.multimeshes) || meta.multimeshes.length === 0)
       return err('"multimeshes" must be a non-empty array when present');
@@ -3039,9 +3560,11 @@ function checkTransactionSchema(
     const allowedReasons = isV6
       ? u.item === null
         ? SESSION_UNSUPPORTED_REASONS_V6
-        : isV11
-          ? ITEM_UNSUPPORTED_REASONS_V11
-          : ITEM_UNSUPPORTED_REASONS_V5
+        : isV12
+          ? ITEM_UNSUPPORTED_REASONS_V12
+          : isV11
+            ? ITEM_UNSUPPORTED_REASONS_V11
+            : ITEM_UNSUPPORTED_REASONS_V5
       : isV5
         ? u.item === null
           ? SESSION_UNSUPPORTED_REASONS_V5
@@ -3362,13 +3885,27 @@ function checkTransactionSchema(
           ) {
             return err('a commands[] "add_multimesh" entry is malformed');
           }
+        } else if (cmd.op === "add_particles" && isV12) {
+          // PM5 (render-stream-12.md "The command"); below /12 an unknown op.
+          if (
+            !hasExactKeys(cmd, ADD_PARTICLES_KEYS) ||
+            !isInt(cmd.particles) ||
+            cmd.particles < 1 ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1))
+          ) {
+            return err('a commands[] "add_particles" entry is malformed');
+          }
         } else if (cmd.op === "unsupported") {
           if (
             !hasExactKeys(cmd, UNSUPPORTED_CMD_KEYS) ||
             typeof cmd.name !== "string" ||
             !isOneOf(
               cmd.reason,
-              isV11 ? UNSUPPORTED_CMD_REASONS_V11 : UNSUPPORTED_CMD_REASONS,
+              isV12
+                ? UNSUPPORTED_CMD_REASONS_V12
+                : isV11
+                  ? UNSUPPORTED_CMD_REASONS_V11
+                  : UNSUPPORTED_CMD_REASONS,
             )
           ) {
             return err('a commands[] "unsupported" entry is malformed');
@@ -3412,7 +3949,18 @@ function checkTransactionSchema(
 
   const blocksError = checkBlocksField(meta.blocks, offset);
   if (blocksError !== null) return [blocksError];
-  const nameError = isV11
+  // render-stream-12.md: pt_f32 is the optional tenth block (its presence and count are
+  // pt-offset's, checked by the validator).
+  const withPtF32 =
+    isV12 && (meta.blocks as BlockDescriptor[]).length === 10;
+  const nameError = withPtF32
+    ? checkFixedBlockNames(
+        meta.blocks as BlockDescriptor[],
+        TRANSACTION_BLOCK_NAMES_V12,
+        offset,
+        TRANSACTION_BLOCK_TYPES_V12,
+      )
+    : isV11
     ? checkFixedBlockNames(
         meta.blocks as BlockDescriptor[],
         TRANSACTION_BLOCK_NAMES_V11,
@@ -3517,7 +4065,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -3543,13 +4091,15 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 11
+    version === 12
+      ? MAGIC_V12
+      : version === 11
       ? MAGIC_V11
       : version === 10
         ? MAGIC_V10
@@ -3668,7 +4218,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -3687,7 +4237,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -3843,7 +4393,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -3855,7 +4405,8 @@ export function decodeRecording(
     | "render-stream-8-decoded/1"
     | "render-stream-9-decoded/1"
     | "render-stream-10-decoded/1"
-    | "render-stream-11-decoded/1";
+    | "render-stream-11-decoded/1"
+    | "render-stream-12-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
@@ -3873,7 +4424,9 @@ export function decodeRecording(
     records.push(decoded.record);
   }
   const magic =
-    version === 11
+    version === 12
+      ? MAGIC_V12
+      : version === 11
       ? MAGIC_V11
       : version === 10
         ? MAGIC_V10
@@ -3894,7 +4447,9 @@ export function decodeRecording(
                       : MAGIC;
   return {
     schema:
-      version === 11
+      version === 12
+        ? "render-stream-12-decoded/1"
+        : version === 11
         ? "render-stream-11-decoded/1"
         : version === 10
           ? "render-stream-10-decoded/1"
@@ -4332,6 +4887,7 @@ export interface ResolvedCommand {
     | "add_set_transform"
     | "add_clip_ignore"
     | "add_multimesh"
+    | "add_particles"
     | "unsupported";
   aa?: boolean;
   tex?: number | null;
@@ -4369,6 +4925,8 @@ export interface ResolvedCommand {
   ignore?: boolean;
   // --- new at /11 (PM1, render-stream-11.md "As built (PM1)", 10): add_multimesh's id ----------
   multimesh?: number;
+  // --- new at /12 (PM5, render-stream-12.md "Resolved form"): add_particles' id ----------------
+  particles?: number;
 }
 
 export interface ResolvedCanvas {
@@ -4494,6 +5052,55 @@ export interface ResolvedMultimesh {
   buffer_sha256: string | null;
 }
 
+/** new at /12 (PM5, render-stream-12.md "Resolved form"): a resolved particles entry's floats,
+ * by name (PARTICLES_FLOAT_LAYOUT; the trail bind poses as a list of 12-float lists). */
+export interface ResolvedParticlesFloats {
+  amount_ratio: number;
+  lifetime: number;
+  pre_process_time: number;
+  explosiveness: number;
+  randomness: number;
+  speed_scale: number;
+  collision_base_size: number;
+  trail_length: number;
+  interp_to_end: number;
+  request_process_time: number;
+  custom_aabb: number[];
+  emission_transform: number[];
+  emitter_velocity: number[];
+  trail_poses: number[][];
+}
+
+/** new at /12 (PM5, render-stream-12.md "Resolved form"): the entry's JSON fields (without `f`)
+ * plus its floats by name (null when freed). An entry a patch does not list keeps its floats. */
+export interface ResolvedParticles {
+  id: number;
+  origin: "created";
+  status: ParticlesStatus;
+  reason: ParticlesReason | null;
+  version: number;
+  mode: ParticlesMode;
+  emitting: boolean;
+  amount: number;
+  one_shot: boolean;
+  fixed_fps: number;
+  interpolate: boolean;
+  fractional_delta: boolean;
+  local: boolean;
+  draw_order: ParticlesDrawOrder;
+  transform_align: ParticlesTransformAlign;
+  trails: boolean;
+  trail_poses: number;
+  seed: number;
+  restarts: number;
+  emits: number;
+  process_requests: number;
+  process_material: number | null;
+  draw_passes: Array<number | null>;
+  subemitter: number | null;
+  floats: ResolvedParticlesFloats | null;
+}
+
 export interface ResolvedState {
   canvases: Map<number, ResolvedCanvas>;
   items: Map<number, ResolvedItem>;
@@ -4503,6 +5110,8 @@ export interface ResolvedState {
   materials: Map<number, ResolvedMaterial>;
   /** new at /11 (PM1): empty below /11 and in a /11 stream that holds no multimesh. */
   multimeshes: Map<number, ResolvedMultimesh>;
+  /** new at /12 (PM5): empty below /12 and in a /12 stream that holds no emitter. */
+  particles: Map<number, ResolvedParticles>;
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
 }
@@ -4516,6 +5125,7 @@ export function emptyResolvedState(): ResolvedState {
     shaders: new Map(),
     materials: new Map(),
     multimeshes: new Map(),
+    particles: new Map(),
     default_texture_filter: "nearest",
     default_texture_repeat: "disabled",
   };
@@ -4854,6 +5464,9 @@ function liftCommand(
   if (cmd.op === "add_multimesh") {
     return { op: "add_multimesh", multimesh: cmd.multimesh, tex: cmd.tex };
   }
+  if (cmd.op === "add_particles") {
+    return { op: "add_particles", particles: cmd.particles, tex: cmd.tex };
+  }
   return { op: "unsupported", name: cmd.name, reason: cmd.reason };
 }
 
@@ -5126,6 +5739,117 @@ export function transactionMultimeshes(
   }));
 }
 
+/** PM5 (render-stream-12.md "Resolved form"): an entry's floats by name, from its
+ * `particlesFloatCount(trail_poses)` floats in wire order. */
+export function particlesFloatsByName(
+  floats: readonly number[],
+): ResolvedParticlesFloats {
+  const out: Record<string, number | number[] | number[][]> = {};
+  for (const [name, at, n] of PARTICLES_FLOAT_LAYOUT)
+    out[name] = n === 1 ? floats[at] : floats.slice(at, at + n);
+  const poses: number[][] = [];
+  for (
+    let at = PARTICLES_BASE_FLOAT_COUNT;
+    at + PARTICLES_TRAIL_POSE_FLOATS <= floats.length;
+    at += PARTICLES_TRAIL_POSE_FLOATS
+  )
+    poses.push(floats.slice(at, at + PARTICLES_TRAIL_POSE_FLOATS));
+  out.trail_poses = poses;
+  return out as unknown as ResolvedParticlesFloats;
+}
+
+/** PM5: the inverse of particlesFloatsByName, the entry's floats in wire order. */
+export function particlesFloatsInWireOrder(
+  floats: ResolvedParticlesFloats,
+): number[] {
+  const out: number[] = [];
+  for (const [name] of PARTICLES_FLOAT_LAYOUT) {
+    const v = floats[name];
+    if (typeof v === "number") out.push(v);
+    else out.push(...(v as number[]));
+  }
+  for (const pose of floats.trail_poses) out.push(...pose);
+  return out;
+}
+
+/** PM5 (render-stream-12.md "Resolved form"): lifts one particles entry. Its floats come from
+ * pt_f32 at `f`; a freed entry's are null; an `f` null on a non-freed entry (which particles-entry
+ * refuses) keeps the previous entry's. */
+function liftParticles(
+  p: TransactionParticles,
+  ptF32: readonly number[],
+  previous: ResolvedParticles | undefined,
+): ResolvedParticles {
+  const { f, ...fields } = p;
+  const floats =
+    p.status === "freed"
+      ? null
+      : f !== null
+        ? particlesFloatsByName(
+            ptF32.slice(f, f + particlesFloatCount(p.trail_poses)),
+          )
+        : (previous?.floats ?? null);
+  return { ...fields, draw_passes: [...p.draw_passes], floats };
+}
+
+/** One particles entry of a decoded /12 transaction with its floats in wire order (null when
+ * `f` is null, i.e. freed). */
+export interface TransactionParticlesFloats {
+  entry: TransactionParticles;
+  floats: number[] | null;
+}
+
+/** PM5: a decoded /12 transaction's particles entries (in entry order) with the floats each one
+ * claims in pt_f32 (block 9, PT_F32_BLOCK). `blocks` is the decoded form's blocks. Empty when the
+ * transaction carries no "particles" key. */
+export function transactionParticles(
+  meta: TransactionMeta,
+  blocks: DecodedBlock[],
+): TransactionParticlesFloats[] {
+  const ptF32 = (
+    Array.isArray(blocks[PT_F32_BLOCK]) ? blocks[PT_F32_BLOCK] : []
+  ) as number[];
+  return (meta.particles ?? []).map((entry) => ({
+    entry,
+    floats:
+      entry.f === null
+        ? null
+        : ptF32.slice(entry.f, entry.f + particlesFloatCount(entry.trail_poses)),
+  }));
+}
+
+/** One element of a /12 transaction's emit list with its 23 floats split by meaning. */
+export interface TransactionParticleEmitFloats {
+  emit: TransactionParticleEmit;
+  /** The emit transform, a Transform3D (basis.rows[0..2] xyz each, then origin). */
+  transform: number[];
+  velocity: number[];
+  color: number[];
+  custom: number[];
+}
+
+/** PM5 (render-stream-12.md "The emit list"): a decoded /12 transaction's particle_emits, in
+ * list order (the order a receiver applies them), with their floats from pt_f32. Empty when the
+ * transaction carries no "particle_emits" key. */
+export function transactionParticleEmits(
+  meta: TransactionMeta,
+  blocks: DecodedBlock[],
+): TransactionParticleEmitFloats[] {
+  const ptF32 = (
+    Array.isArray(blocks[PT_F32_BLOCK]) ? blocks[PT_F32_BLOCK] : []
+  ) as number[];
+  return (meta.particle_emits ?? []).map((emit) => {
+    const f = ptF32.slice(emit.f, emit.f + PARTICLE_EMIT_FLOAT_COUNT);
+    return {
+      emit,
+      transform: f.slice(0, 12),
+      velocity: f.slice(12, 15),
+      color: f.slice(15, 19),
+      custom: f.slice(19, 23),
+    };
+  });
+}
+
 /** The raw bytes of block `index` of a record that already passed decodeRecord()'s framing
  * checks (decodeRecord() replaces a u8 block with {u8_bytes, sha256}). */
 export function rawRecordBlock(raw: RawRecord, index: number): Uint8Array {
@@ -5186,7 +5910,12 @@ export function applyTransaction(
     meta.encoding === "full"
       ? new Map<number, ResolvedMultimesh>()
       : new Map(base.multimeshes);
+  const particles =
+    meta.encoding === "full"
+      ? new Map<number, ResolvedParticles>()
+      : new Map(base.particles);
   if (meta.encoding === "patch") {
+    for (const id of meta.removed_particles ?? []) particles.delete(id);
     for (const id of meta.removed_multimeshes ?? []) multimeshes.delete(id);
     for (const id of meta.removed_canvases) canvases.delete(id);
     for (const id of meta.removed_items) items.delete(id);
@@ -5260,6 +5989,16 @@ export function applyTransaction(
       ),
     );
   }
+  for (const p of meta.particles ?? []) {
+    particles.set(
+      p.id,
+      liftParticles(
+        p,
+        (blocks[PT_F32_BLOCK] ?? []) as number[],
+        base.particles.get(p.id),
+      ),
+    );
+  }
   return {
     canvases,
     items,
@@ -5268,6 +6007,7 @@ export function applyTransaction(
     shaders,
     materials,
     multimeshes,
+    particles,
     default_texture_filter: meta.default_texture_filter,
     default_texture_repeat: meta.default_texture_repeat,
   };
@@ -5283,6 +6023,12 @@ export function sortedResolvedItems(state: ResolvedState): ResolvedItem[] {
 
 export function sortedResolvedMeshes(state: ResolvedState): ResolvedMesh[] {
   return [...state.meshes.values()].sort((a, b) => a.id - b.id);
+}
+
+export function sortedResolvedParticles(
+  state: ResolvedState,
+): ResolvedParticles[] {
+  return [...state.particles.values()].sort((a, b) => a.id - b.id);
 }
 
 export function sortedResolvedMultimeshes(
@@ -5867,6 +6613,8 @@ function checkResolvedInvariants(
     "add_mesh",
     // PM1 rule 7: add_multimesh's tex follows the same rule (absent below /11).
     "add_multimesh",
+    // render-stream-12.md "The command": add_particles' tex likewise (absent below /12).
+    "add_particles",
   ]);
   for (const item of items) {
     for (const command of item.commands) {
@@ -5955,6 +6703,7 @@ function checkResolvedInvariants(
     add_nine_patch: "canvas_item_add_nine_patch",
     add_mesh: "canvas_item_add_mesh",
     add_multimesh: "canvas_item_add_multimesh",
+    add_particles: "canvas_item_add_particles",
   };
   const actualUnsupportedOps = new Map<string, UnsupportedReason>();
   const actualUnsupportedTexture = new Set<string>();
@@ -5962,6 +6711,10 @@ function checkResolvedInvariants(
   // PM1 rule 7: unsupported-multimesh, one per (item, "canvas_item_add_multimesh") pair whose
   // add_multimesh names an unsupported multimesh (as unsupported-mesh for add_mesh).
   const actualUnsupportedMultimesh = new Set<string>();
+  // render-stream-12.md "The command": unsupported-particles, one per (item,
+  // "canvas_item_add_particles") pair whose add_particles names an unsupported emitter (a freed
+  // tombstone adds none).
+  const actualUnsupportedParticles = new Set<string>();
   // new at /5 (render-stream-5.md "Derived item-level entries"): unsupported-material is the
   // only one of the three new derived reasons that is independently reconstructable from the
   // resolved state (an item's effective material -- D9's use_parent_material walk, below; G55w
@@ -6036,7 +6789,8 @@ function checkResolvedInvariants(
             command.reason === "canvas-texture-headless" ||
             command.reason === "unknown-mesh" ||
             command.reason === "skinned-geometry" ||
-            command.reason === "unknown-multimesh"
+            command.reason === "unknown-multimesh" ||
+            command.reason === "unknown-particles"
               ? command.reason
               : "unsupported-op";
           actualUnsupportedOps.set(`${item.id}:${command.name}`, reason);
@@ -6078,6 +6832,14 @@ function checkResolvedInvariants(
           );
         }
       }
+      if (command.op === "add_particles" && command.particles !== undefined) {
+        const target = state.particles.get(command.particles);
+        if (target !== undefined && target.status === "unsupported") {
+          actualUnsupportedParticles.add(
+            `${item.id}:canvas_item_add_particles`,
+          );
+        }
+      }
     }
   }
 
@@ -6089,6 +6851,7 @@ function checkResolvedInvariants(
   const declaredUnsupportedTexture = new Set<string>();
   const declaredUnsupportedMesh = new Set<string>();
   const declaredUnsupportedMultimesh = new Set<string>();
+  const declaredUnsupportedParticles = new Set<string>();
   const declaredUnsupportedMaterial = new Set<string>();
   let declaredStackingTie = false;
   let declaredSnap2d = false;
@@ -6197,7 +6960,8 @@ function checkResolvedInvariants(
       entry.reason === "canvas-texture-headless" ||
       entry.reason === "unknown-mesh" ||
       entry.reason === "skinned-geometry" ||
-      entry.reason === "unknown-multimesh"
+      entry.reason === "unknown-multimesh" ||
+      entry.reason === "unknown-particles"
     ) {
       const pair = `${entry.item}:${entry.op}`;
       const expected = actualUnsupportedOps.get(pair);
@@ -6262,6 +7026,14 @@ function checkResolvedInvariants(
         ];
       }
       declaredUnsupportedMultimesh.add(pair);
+    } else if (entry.reason === "unsupported-particles") {
+      const pair = `${entry.item}:${entry.op}`;
+      if (!actualUnsupportedParticles.has(pair)) {
+        return [
+          `unsupported-mismatch: ${where}: unsupported-particles entry (${entry.item}, ${entry.op}) does not correspond to an add_particles naming an unsupported emitter`,
+        ];
+      }
+      declaredUnsupportedParticles.add(pair);
     } else if (entry.reason === "unsupported-material") {
       if (entry.op !== "canvas_item_set_material") {
         return [
@@ -6336,6 +7108,13 @@ function checkResolvedInvariants(
     if (!declaredUnsupportedMultimesh.has(pair)) {
       return [
         `unsupported-mismatch: ${where}: add_multimesh command (${pair.replace(":", ", ")}) names an unsupported multimesh, with no unsupported-multimesh entry`,
+      ];
+    }
+  }
+  for (const pair of actualUnsupportedParticles) {
+    if (!declaredUnsupportedParticles.has(pair)) {
+      return [
+        `unsupported-mismatch: ${where}: add_particles command (${pair.replace(":", ", ")}) names an unsupported emitter, with no unsupported-particles entry`,
       ];
     }
   }
@@ -6771,6 +7550,209 @@ function multimeshVersionRegressed(
   return !statesEqual(previous, current);
 }
 
+/** PM5 (particles-version's JSON half): the entry's JSON fields other than `id` and `f`. */
+const PARTICLES_VERSIONED_KEYS = PARTICLES_KEYS.filter(
+  (k) => k !== "id" && k !== "f",
+);
+
+/**
+ * PM5 (render-stream-12.md "Validators: rule changes"), the pre-resolve half over one /12
+ * transaction, in the contract's order: per particles entry particles-entry (the shape rules),
+ * then particles-version's JSON half (against the entry the last transaction carrying the id
+ * resolved to), then particle-emits (each emit names an `ok` or `unsupported` entry of the
+ * resolved table with `restarts` at most the entry's, and per emitter at most `emits` - the
+ * base's `emits` are listed), then pt-offset (entries' non-null `f` in entry order, then the
+ * emits', each the running float count; pt_f32 present exactly when the total is non-zero, with
+ * that count). `base` is the state the transaction applies to.
+ */
+function checkParticlesPreResolve(
+  meta: TransactionMeta,
+  base: ResolvedState,
+  lastSeen: Map<number, ResolvedParticles>,
+  ptFloatCount: number,
+  offset: number,
+): string[] {
+  const entries = meta.particles ?? [];
+  const entryErr = (id: number, detail: string) => [
+    `particles-entry: record at offset ${offset}: particles ${id}: ${detail}`,
+  ];
+  for (const p of entries) {
+    if (p.status === "ok") {
+      if (p.reason !== null) return entryErr(p.id, '"ok" needs reason null');
+      if (p.mode !== "2d") return entryErr(p.id, '"ok" needs mode "2d"');
+      if (p.f === null) return entryErr(p.id, '"ok" needs a non-null f');
+    } else if (p.status === "unsupported") {
+      if (p.reason === null)
+        return entryErr(p.id, '"unsupported" needs a non-null reason');
+      if (p.f === null)
+        return entryErr(p.id, '"unsupported" needs a non-null f');
+    } else if (
+      p.reason !== null ||
+      p.f !== null ||
+      p.process_material !== null ||
+      p.draw_passes.length !== 0 ||
+      p.subemitter !== null
+    ) {
+      return entryErr(
+        p.id,
+        'a "freed" entry needs reason/f/process_material/subemitter null and draw_passes []',
+      );
+    }
+    if (p.trail_poses > 0 && !p.trails)
+      return entryErr(p.id, `trail_poses ${p.trail_poses} needs trails true`);
+  }
+  for (const p of entries) {
+    const previous = lastSeen.get(p.id);
+    if (previous === undefined) continue;
+    const fieldsMoved = PARTICLES_VERSIONED_KEYS.some(
+      (k) =>
+        !jsonBitEqual(
+          (previous as unknown as Record<string, unknown>)[k],
+          (p as unknown as Record<string, unknown>)[k],
+        ),
+    );
+    if (
+      p.version < previous.version ||
+      (p.version === previous.version && fieldsMoved)
+    )
+      return [
+        `particles-version: record at offset ${offset}: particles ${p.id}'s version ${p.version} ${p.version < previous.version ? "decreased" : "did not move, but the entry changed"} (earlier entry: version ${previous.version})`,
+      ];
+  }
+  const full = meta.encoding === "full";
+  const emits = meta.particle_emits ?? [];
+  if (emits.length > 0) {
+    const emitErr = (detail: string) => [
+      `particle-emits: record at offset ${offset}: ${detail}`,
+    ];
+    const listed = new Map(entries.map((p) => [p.id, p] as const));
+    const removed = new Set(meta.removed_particles ?? []);
+    const counts = new Map<number, number>();
+    for (const e of emits) {
+      const target =
+        listed.get(e.particles) ??
+        (full || removed.has(e.particles)
+          ? undefined
+          : base.particles.get(e.particles));
+      if (target === undefined || target.status === "freed")
+        return emitErr(
+          `an emit names particles ${e.particles}, which is not an "ok" or "unsupported" entry`,
+        );
+      if (e.restarts > target.restarts)
+        return emitErr(
+          `an emit on particles ${e.particles} has restarts ${e.restarts}, over the entry's ${target.restarts}`,
+        );
+      const baseEmits = full ? 0 : (base.particles.get(e.particles)?.emits ?? 0);
+      const n = (counts.get(e.particles) ?? 0) + 1;
+      counts.set(e.particles, n);
+      if (n > target.emits - baseEmits)
+        return emitErr(
+          `particles ${e.particles} lists ${n} emits, over its emits ${target.emits} - the base's ${baseEmits}`,
+        );
+    }
+  }
+  const offsetErr = (detail: string) => [
+    `pt-offset: record at offset ${offset}: ${detail}`,
+  ];
+  let running = 0;
+  for (const p of entries) {
+    if (p.f === null) continue;
+    if (p.f !== running)
+      return offsetErr(`particles ${p.id} f=${p.f}, expected ${running}`);
+    running += particlesFloatCount(p.trail_poses);
+  }
+  for (let i = 0; i < emits.length; i++) {
+    if (emits[i].f !== running)
+      return offsetErr(
+        `particle_emits[${i}] f=${emits[i].f}, expected ${running}`,
+      );
+    running += PARTICLE_EMIT_FLOAT_COUNT;
+  }
+  const block = meta.blocks[PT_F32_BLOCK];
+  if (block === undefined) {
+    if (running > 0)
+      return offsetErr(
+        `the particles claim ${running} floats, but there is no "pt_f32" block`,
+      );
+    return [];
+  }
+  if (block.count === 0)
+    return offsetErr(
+      'block "pt_f32" is empty (an empty block is the absent block)',
+    );
+  if (block.count !== running || ptFloatCount !== running)
+    return offsetErr(
+      `block "pt_f32" declares count ${block.count}, the particles claim ${running}`,
+    );
+  return [];
+}
+
+/**
+ * PM5, the resolved half: particles-version's float half (at an unmoved version every float is
+ * the earlier entry's, by bit pattern), then particles-ref (every add_particles of the resolved
+ * items names a resolved particles entry of any status; every resolved entry's non-null
+ * process_material names a resolved material, each non-null draw pass a resolved mesh, a
+ * non-null subemitter a resolved particles entry).
+ */
+function checkParticlesResolved(
+  meta: TransactionMeta,
+  state: ResolvedState,
+  lastSeen: Map<number, ResolvedParticles>,
+  offset: number,
+): string[] {
+  for (const p of meta.particles ?? []) {
+    const previous = lastSeen.get(p.id);
+    const current = state.particles.get(p.id);
+    if (previous === undefined || current === undefined) continue;
+    if (
+      current.version === previous.version &&
+      !jsonBitEqual(previous.floats, current.floats)
+    )
+      return [
+        `particles-version: record at offset ${offset}: particles ${p.id}'s floats changed, but its version ${current.version} did not move`,
+      ];
+  }
+  const refErr = (detail: string) => [
+    `particles-ref: record at offset ${offset}: ${detail}`,
+  ];
+  // The lowest item id with a dangling add_particles (one unsorted pass over the items).
+  let badItem: number | null = null;
+  let badParticles = 0;
+  for (const item of state.items.values()) {
+    if (badItem !== null && item.id > badItem) continue;
+    for (const c of item.commands)
+      if (
+        c.op === "add_particles" &&
+        c.particles !== undefined &&
+        !state.particles.has(c.particles)
+      ) {
+        badItem = item.id;
+        badParticles = c.particles;
+        break;
+      }
+  }
+  if (badItem !== null)
+    return refErr(
+      `item ${badItem}'s add_particles names particles ${badParticles}, which has no entry`,
+    );
+  for (const p of sortedResolvedParticles(state)) {
+    if (p.process_material !== null && !state.materials.has(p.process_material))
+      return refErr(
+        `particles ${p.id} names process material ${p.process_material}, which has no entry`,
+      );
+    for (const mesh of p.draw_passes)
+      if (mesh !== null && !state.meshes.has(mesh))
+        return refErr(
+          `particles ${p.id} names draw pass mesh ${mesh}, which has no entry`,
+        );
+    if (p.subemitter !== null && !state.particles.has(p.subemitter))
+      return refErr(
+        `particles ${p.id} names subemitter particles ${p.subemitter}, which has no entry`,
+      );
+  }
+  return [];
+}
+
 /** render-stream-11.md "Mesh entry" (mesh-dynamic): the four shape fields of two surfaces agree. */
 function sameSurfaceShape(
   a: TransactionMeshSurface,
@@ -6824,7 +7806,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -6839,7 +7821,9 @@ export function createRecordingValidator(
   // render-stream-11.md: the carried-set rules (C is pruned after every transaction,
   // resource-unnamed), dynamic mesh surfaces, the empty mm_f32 block, content-version-stable and
   // a patch's null "unsupported".
-  const isV11 = version === 11;
+  // render-stream-12.md: the particles rules (isV11 means "V11 or later").
+  const isV12 = version === 12;
+  const isV11 = version === 11 || isV12;
   const earlyPrune = isV11 && options?.sabotage === "early-prune";
   // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
   // byte-identical to /6).
@@ -6956,6 +7940,13 @@ export function createRecordingValidator(
   // PM1 rule 8: add_multimesh is legal only in a session whose features.ops lists it.
   const multimeshOp =
     isV11 && sessionMeta.features.ops.includes("add_multimesh");
+  // render-stream-12.md "Session record": the particles keys, particle_emits, pt_f32 and
+  // add_particles are legal only in a session whose features.ops lists add_particles.
+  const particlesOp =
+    isV12 && sessionMeta.features.ops.includes("add_particles");
+  // PM5 (particles-version): each particles entry's resolved entry the last time a transaction
+  // carried it.
+  const lastSeenParticles = new Map<number, ResolvedParticles>();
   let endSeen = false;
   // D31/G7o1: the whole-record digest, off the frame path in "deferred" mode.
   const digests = new Map<number, string>();
@@ -7149,6 +8140,16 @@ export function createRecordingValidator(
               ),
             ]
           : []),
+        ...(isV12
+          ? [
+              ...checkIdOrdering("particles", meta.particles ?? [], offset),
+              ...checkIdListAscendingNoDup(
+                "removed_particles",
+                meta.removed_particles ?? [],
+                offset,
+              ),
+            ]
+          : []),
       ];
       if (idOrderErrors.length > 0) return idOrderErrors;
       // PM1 rule 8: an add_multimesh in a session whose features.ops lacks it.
@@ -7159,6 +8160,30 @@ export function createRecordingValidator(
               return [
                 `meta-schema: record at offset ${offset}: item ${it.id} carries add_multimesh, which the session's features.ops does not list`,
               ];
+      }
+      // render-stream-12.md "Session record": a particles key, particle_emits, a pt_f32 block or
+      // an add_particles command in a session whose features.ops lacks add_particles.
+      if (isV12 && !particlesOp) {
+        const what =
+          meta.particles !== undefined
+            ? 'a "particles" key'
+            : meta.removed_particles !== undefined
+              ? 'a "removed_particles" key'
+              : meta.particle_emits !== undefined
+                ? 'a "particle_emits" key'
+                : meta.blocks.length > PT_F32_BLOCK
+                  ? 'a "pt_f32" block'
+                  : meta.items.some((it) =>
+                        (it.commands ?? []).some(
+                          (c) => c.op === "add_particles",
+                        ),
+                      )
+                    ? "an add_particles command"
+                    : null;
+        if (what !== null)
+          return [
+            `meta-schema: record at offset ${offset}: ${what} in a session whose features.ops lacks "add_particles"`,
+          ];
       }
 
       if (meta.seq !== prevSeq + 1) {
@@ -7192,12 +8217,13 @@ export function createRecordingValidator(
       for (const item of meta.items) {
         if (item.commands === null) continue;
         for (const command of item.commands) {
-          // "unsupported", "add_clip_ignore" and (/11) "add_multimesh" carry no floats and no
-          // "f" key at all.
+          // "unsupported", "add_clip_ignore", (/11) "add_multimesh" and (/12) "add_particles"
+          // carry no floats and no "f" key at all.
           if (
             command.op === "unsupported" ||
             command.op === "add_clip_ignore" ||
-            command.op === "add_multimesh"
+            command.op === "add_multimesh" ||
+            command.op === "add_particles"
           )
             continue;
           const floatCount = commandFloatCount(command);
@@ -7246,6 +8272,18 @@ export function createRecordingValidator(
           offset,
         );
         if (mmErrors.length > 0) return mmErrors;
+      }
+      if (isV12) {
+        // PM5 (render-stream-12.md "Validators: rule changes"): particles-entry, the JSON half
+        // of particles-version, particle-emits and pt-offset, after /11's multimesh rules.
+        const ptErrors = checkParticlesPreResolve(
+          meta,
+          state,
+          lastSeenParticles,
+          ((decoded.record.blocks as number[][])[PT_F32_BLOCK] ?? []).length,
+          offset,
+        );
+        if (ptErrors.length > 0) return ptErrors;
       }
       // param-offset (render-stream-5.md "Material table", gate5_5-design.md D8): a running
       // offset into param_f64 over materials IN TABLE ORDER FIRST, then items' instance_params
@@ -7391,6 +8429,20 @@ export function createRecordingValidator(
         isV11 ? rawRecordBlock(records[i], 8) : undefined,
       );
       if (timer) timer.resolve_us += timer.now() - resolveT0;
+      if (isV12) {
+        // PM5: resolved, the float half of particles-version, then particles-ref.
+        const ptErrors = checkParticlesResolved(
+          meta,
+          nextState,
+          lastSeenParticles,
+          offset,
+        );
+        if (ptErrors.length > 0) return ptErrors;
+        for (const p of meta.particles ?? []) {
+          const resolvedPt = nextState.particles.get(p.id);
+          if (resolvedPt !== undefined) lastSeenParticles.set(p.id, resolvedPt);
+        }
+      }
       // render-stream-11.md "Patched unsupported": a patch's null stands for the base's list.
       const unsupportedNow =
         meta.unsupported === null ? resolvedUnsupported : meta.unsupported;
@@ -7777,7 +8829,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -7811,7 +8863,8 @@ function checkPatchRules(
       (isV5 &&
         ((meta.removed_shaders?.length ?? 0) > 0 ||
           (meta.removed_materials?.length ?? 0) > 0)) ||
-      (meta.removed_multimeshes?.length ?? 0) > 0
+      (meta.removed_multimeshes?.length ?? 0) > 0 ||
+      (meta.removed_particles?.length ?? 0) > 0
     ) {
       return [
         `patch-encoding: record at offset ${offset}: a full transaction carries a non-null base_seq or a non-empty removed list`,
@@ -7988,6 +9041,24 @@ function checkPatchRules(
       ];
     }
   }
+  // render-stream-12.md "Particles table": removed_particles are ids of the base table, never
+  // also in particles.
+  const removedParticlesSet = new Set<number>();
+  for (const id of meta.removed_particles ?? []) {
+    removedParticlesSet.add(id);
+    if (!baseState.particles.has(id)) {
+      return [
+        `patch-removed: record at offset ${offset}: removed particles ${id} is absent from the base`,
+      ];
+    }
+  }
+  for (const p of meta.particles ?? []) {
+    if (removedParticlesSet.has(p.id)) {
+      return [
+        `patch-removed: record at offset ${offset}: particles ${p.id} is both removed and present`,
+      ];
+    }
+  }
 
   for (const it of meta.items) {
     const base = baseState.items.get(it.id);
@@ -8033,6 +9104,9 @@ export interface ResolvedTransaction {
     materials?: ResolvedMaterial[];
     /** new at /11 (PM1, 10): present only when the multimesh table is non-empty. */
     multimeshes?: ResolvedMultimesh[];
+    /** new at /12 (PM5, "Resolved form"): present only when the particles table is non-empty,
+     * right after "multimeshes". */
+    particles?: ResolvedParticles[];
   };
 }
 
@@ -8056,7 +9130,8 @@ export interface ResolvedRecording {
     | "render-stream-8-resolved/1"
     | "render-stream-9-resolved/1"
     | "render-stream-10-resolved/1"
-    | "render-stream-11-resolved/1";
+    | "render-stream-11-resolved/1"
+    | "render-stream-12-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -8065,14 +9140,14 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
   if (sessionRecord.meta.type !== "session")
     throw new Error("missing-session: the first record is not a session");
   const sessionMeta = sessionRecord.meta;
-  const isV11 = version === 11;
+  const isV11 = version === 11 || version === 12;
   // /11 reads each transaction's raw mesh_u8 block (body_sha256), which the decoded form drops.
   const raws = isV11 ? splitRecords(data, version).records : [];
 
@@ -8133,12 +9208,17 @@ export function resolveRecording(
         ...(state.multimeshes.size > 0
           ? { multimeshes: sortedResolvedMultimeshes(state) }
           : {}),
+        ...(state.particles.size > 0
+          ? { particles: sortedResolvedParticles(state) }
+          : {}),
       },
     });
   }
   return {
     schema:
-      version === 11
+      version === 12
+        ? "render-stream-12-resolved/1"
+        : version === 11
         ? "render-stream-11-resolved/1"
         : version === 10
           ? "render-stream-10-resolved/1"

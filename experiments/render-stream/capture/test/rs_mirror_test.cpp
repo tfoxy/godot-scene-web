@@ -3559,8 +3559,314 @@ void test_same_value_set_material_keeps_epoch() {
         "and the item still names an unknown material");
 }
 
+// --- PM5: particles (render-stream-12.md "Particles table", "The emit list", builtin) ---------
+
+grc::rs::Mirror::ParticlesOptions pt_options(uint64_t drop_restart = 0) {
+  grc::rs::Mirror::ParticlesOptions o;
+  o.enabled = true;
+  o.state_notes = true;
+  o.drop_restart_frame = drop_restart;
+  o.param_arrays = true;
+  return o;
+}
+
+const grc::rs2::ParticlesEntry *pt_entry(const Snapshot &s, uint32_t id) {
+  for (const auto &p : s.particles) {
+    if (p.id == id) return &p;
+  }
+  return nullptr;
+}
+
+using PtOp = grc::rs::Mirror::ParticlesOp;
+
+grc::rs::Mirror::ParticlesArgs pt_i(int64_t v, uint64_t rid = 0) {
+  grc::rs::Mirror::ParticlesArgs a;
+  a.i = v;
+  a.rid = rid;
+  return a;
+}
+
+grc::rs::Mirror::ParticlesArgs pt_f(std::vector<float> f) {
+  grc::rs::Mirror::ParticlesArgs a;
+  a.f = std::move(f);
+  return a;
+}
+
+// A /12 mirror: item 100 (rid 100) drawing emitter 1 (rid 0x900), mode 2d, with mesh 1 (0x500).
+void pt_scene(Mirror *m, const grc::rs::Mirror::ParticlesOptions &options = pt_options()) {
+  bind_root(m);
+  m->set_v11(v11_options(grc::rs2::MeshDynamicMode::Auto));
+  m->set_multimesh(mm_options());
+  m->set_particles(options);
+  m->canvas_item_create(100, 1);
+  m->mesh_create(0x500, 1);
+  m->particles_create(0x900, 1);
+  m->particles_call(0x900, PtOp::SetMode, pt_i(0), 1);
+  m->add_particles(100, 0x900, 0, 1);
+}
+
+// "As built (PM5)" rule 4: bind poses set while trails are off are kept but not carried.
+void test_particles_trail_poses_need_trails() {
+  Mirror m;
+  pt_scene(&m);
+  std::vector<float> pose = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -4, 0};
+  m.particles_call(0x900, PtOp::SetTrailBindPoses, pt_f(pose), 1);
+  Snapshot s1 = m.snapshot(1, 1).state;
+  const auto *e = pt_entry(s1, 1);
+  check(e != nullptr && !e->trails && e->trail_poses == 0 && e->floats->size() == 31,
+        "poses while trails are off: trail_poses 0, 31 floats on the wire");
+  grc::rs::Mirror::ParticlesArgs on = pt_i(1);
+  on.f = {0.5f};
+  m.particles_call(0x900, PtOp::SetTrails, on, 2);
+  Snapshot s2 = m.snapshot(2, 2).state;
+  e = pt_entry(s2, 1);
+  check(e != nullptr && e->trails && e->trail_poses == 1 && e->floats->size() == 43 &&
+            (*e->floats)[31 + 10] == -4.0f,
+        "trails on: the kept pose returns (trail_poses 1, 43 floats)");
+}
+
+// GLES3's defaults, version moves by value / bit pattern, the counters always move.
+void test_particles_defaults_and_versions() {
+  using grc::rs2::ParticlesStatus;
+  Mirror m;
+  pt_scene(&m);
+  Snapshot s1 = m.snapshot(1, 1).state;
+  const auto *e = pt_entry(s1, 1);
+  check(e != nullptr && e->status == ParticlesStatus::Ok && e->version == 2 && e->mode_2d &&
+            !e->emitting && e->amount == 0 && e->interpolate && e->draw_order == 0 &&
+            e->seed == 0 && e->fixed_fps == 30 && e->floats != nullptr && e->floats->size() == 31,
+        "create (1) + set_mode 2d (2): ok, GLES3 defaults (fixed_fps 30), 31 floats");
+  check(e != nullptr && (*e->floats)[0] == 1.0f && (*e->floats)[1] == 1.0f &&
+            (*e->floats)[5] == 1.0f && (*e->floats)[6] == 0.01f && (*e->floats)[10] == -4.0f &&
+            (*e->floats)[15] == 8.0f && (*e->floats)[16] == 1.0f && (*e->floats)[20] == 1.0f &&
+            (*e->floats)[24] == 1.0f,
+        "default floats: ratios 1, collision_base_size 0.01, AABB (-4,-4,-4,8,8,8), identity transform");
+  check(s1.particles_commands, "a snapshot with an add_particles is flagged for lowering");
+  auto r = m.particles_call(0x900, PtOp::SetAmount, pt_i(8), 2);
+  check(r.known && r.accepted && r.changed && r.version == 3, "set_amount 8: version 3");
+  r = m.particles_call(0x900, PtOp::SetAmount, pt_i(8), 2);
+  check(r.accepted && !r.changed && r.version == 3, "an identical re-set costs nothing");
+  r = m.particles_call(0x900, PtOp::SetLifetime, pt_f({2.0f}), 2);
+  check(r.changed && r.version == 4, "set_lifetime: a float by bit pattern");
+  std::vector<float> xf = {1, 0, 0, 0, 1, 0, 0, 0, 1, 100, 50, 0};
+  m.particles_call(0x900, PtOp::SetEmissionTransform, pt_f(xf), 2);
+  r = m.particles_call(0x900, PtOp::SetEmissionTransform, pt_f(xf), 2);
+  check(!r.changed && r.version == 5, "the same emission transform each frame costs nothing");
+  r = m.particles_call(0x900, PtOp::Restart, pt_i(0), 2);
+  check(r.changed && r.version == 6, "restart always moves the version");
+  r = m.particles_call(0x900, PtOp::RequestProcessTime, pt_f({0.0f}), 2);
+  check(r.changed && r.version == 7, "request_process_time always moves it");
+  r = m.particles_call(0x900, PtOp::RequestProcess, pt_i(0), 2);
+  check(r.accepted && !r.changed, "request_process: accepted, nothing the entry carries");
+  r = m.particles_call(0x900, PtOp::SetDrawPassMesh, pt_i(0, 0x500), 2);
+  check(!r.accepted && !r.changed, "a draw pass mesh outside the pass list is refused");
+  m.particles_call(0x900, PtOp::SetDrawPasses, pt_i(1), 2);
+  r = m.particles_call(0x900, PtOp::SetDrawPassMesh, pt_i(0, 0x500), 2);
+  check(r.accepted && r.changed && r.ref_id == 1, "set_draw_pass_mesh names mesh 1");
+  r = m.particles_call(0x999, PtOp::SetAmount, pt_i(3), 2);
+  check(!r.known && !r.accepted, "an unknown emitter changes nothing");
+  Snapshot s2 = m.snapshot(2, 2).state;
+  e = pt_entry(s2, 1);
+  check(e != nullptr && e->amount == 8 && e->restarts == 1 && e->process_requests == 1 &&
+            e->draw_passes == std::vector<uint32_t>({1}) && (*e->floats)[1] == 2.0f &&
+            (*e->floats)[25] == 100.0f,
+        "the entry carries the counters, the pass and the floats");
+  const auto notes = m.take_particles_states();
+  check(notes.size() == 2 && notes[0].frame == 1 && notes[1].frame == 2 &&
+            notes[1].entry.version == e->version,
+        "one state note per published frame whose version moved");
+  m.snapshot(3, 3);
+  check(m.take_particles_states().empty(), "no note without a change");
+}
+
+// Reasons, the item-level entries, unknown-particles, publication over subemitters, tombstones.
+void test_particles_reasons_and_publication() {
+  using grc::rs2::ParticlesStatus;
+  using grc::rs2::ParticlesReason;
+  using grc::rs2::UnsupportedReason;
+  Mirror m;
+  pt_scene(&m);
+  m.particles_create(0x901, 1);  // emitter 2: 3d (the default), not drawn yet
+  m.particles_create(0x902, 1);  // emitter 3: 2d, a subemitter of emitter 1 only
+  m.particles_call(0x902, PtOp::SetMode, pt_i(0), 1);
+  m.particles_call(0x900, PtOp::SetSubemitter, pt_i(0, 0x902), 1);
+  m.canvas_item_create(101, 1);
+  m.add_particles(101, 0x901, 0, 1);
+  m.add_particles(101, 0x777, 0, 1);  // unknown
+  Snapshot s = m.snapshot(1, 1).state;
+  check(s.particles.size() == 3 && pt_entry(s, 3) != nullptr && pt_entry(s, 1)->subemitter == 3,
+        "a published entry's subemitter is in the table");
+  const auto *e2 = pt_entry(s, 2);
+  check(e2 != nullptr && e2->status == ParticlesStatus::Unsupported &&
+            e2->reason == ParticlesReason::Particles3d,
+        "a 3d emitter in a canvas: particles-3d");
+  bool unknown = false;
+  bool unsupported = false;
+  for (const auto &u : s.unsupported) {
+    unknown = unknown || (u.op == "canvas_item_add_particles" && u.item == 2 &&
+                          u.reason == UnsupportedReason::UnknownParticles);
+    unsupported = unsupported || (u.op == "canvas_item_add_particles" && u.item == 2 &&
+                                  u.reason == UnsupportedReason::UnsupportedParticles);
+  }
+  check(unknown && unsupported, "unknown-particles and the derived unsupported-particles entries");
+  m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0xabc), 2);
+  Snapshot s2 = m.snapshot(2, 2).state;
+  check(pt_entry(s2, 1)->status == ParticlesStatus::Unsupported &&
+            pt_entry(s2, 1)->reason == ParticlesReason::UnknownMaterial &&
+            pt_entry(s2, 1)->process_material == 0,
+        "an unknown process material: unknown-material, written as null");
+  // Free emitter 2 while drawn: a tombstone; then stop drawing it: it leaves.
+  const auto fr = m.particles_free(0x901, 3);
+  check(fr.known && fr.changed, "free moves the version");
+  Snapshot s3 = m.snapshot(3, 3).state;
+  const auto *t = pt_entry(s3, 2);
+  check(t != nullptr && t->status == ParticlesStatus::Freed && t->floats == nullptr &&
+            !t->mode_2d,
+        "a freed emitter still drawn is a tombstone keeping its JSON fields");
+  m.clear(101, 4);
+  Snapshot s4 = m.snapshot(4, 4).state;
+  check(pt_entry(s4, 2) == nullptr, "a tombstone nothing names leaves");
+  s3.version = s4.version = grc::rs2::ProtocolVersion::V12;
+  const grc::rs2::Transaction p = grc::rs2::make_patch(s3, s4);
+  check(p.removed_particles == std::vector<uint32_t>({2}), "removed_particles [2]");
+}
+
+// The emit log: emits of a frame form one chunk; (B, T] over a gap; drop-restart skews the wire.
+void test_particles_emits_and_drop_restart() {
+  Mirror m;
+  pt_scene(&m, pt_options(3));
+  Snapshot s1 = m.snapshot(1, 1).state;
+  grc::rs::Mirror::ParticlesArgs emit;
+  emit.f.assign(23, 0.5f);
+  emit.flags = 5;
+  m.particles_call(0x900, PtOp::Emit, emit, 2);
+  m.particles_call(0x900, PtOp::Emit, emit, 2);
+  Snapshot s2 = m.snapshot(2, 2).state;
+  m.particles_call(0x900, PtOp::Restart, pt_i(0), 3);  // dropped from the wire (frame 3)
+  const auto r = m.particles_call(0x900, PtOp::Emit, emit, 3);
+  check(r.restarts == 1, "the hook log's emit carries the host's true restarts");
+  Snapshot s3 = m.snapshot(3, 3).state;
+  s1.version = s2.version = s3.version = grc::rs2::ProtocolVersion::V12;
+  check(grc::rs2::make_full(s2).particle_emits.size() == 2 &&
+            grc::rs2::make_full(s3).particle_emits.size() == 1,
+        "a full lists its own frame's emits");
+  const grc::rs2::Transaction p = grc::rs2::make_patch(s1, s3);
+  check(p.particle_emits.size() == 3 && p.particle_emits[0].flags == 5 &&
+            p.particle_emits[2].restarts == 0,
+        "a patch over a gap lists (B, T]; drop-restart: the wire's restarts did not move");
+  const auto *e = pt_entry(s3, 1);
+  check(e != nullptr && e->restarts == 0 && e->emits == 3, "the wire entry misses the restart");
+  const auto notes = m.take_particles_states();
+  check(!notes.empty() && notes.back().entry.restarts == 1 &&
+            notes.back().entry.version == e->version + 1,
+        "the hook log's state line has the host's true restarts and version");
+  // The tail is bounded.
+  for (int f = 4; f < 4 + 5; ++f) {
+    for (int i = 0; i < 1000; ++i) {
+      m.particles_call(0x900, PtOp::Emit, emit, static_cast<uint64_t>(f));
+    }
+    m.snapshot(static_cast<uint64_t>(f), static_cast<uint64_t>(f));
+  }
+  Snapshot last = m.snapshot(9, 9).state;
+  size_t held = 0;
+  for (const auto &chunk : *last.emit_tail) held += chunk->emits.size();
+  check(held == grc::rs2::kParticleEmitTail, "the emit tail holds exactly the last 4,096 emits");
+}
+
+// The particle_process_material builtin, its /11 lowering, and a plain Array parameter's form.
+void test_particles_builtin_and_lowering() {
+  using grc::rs2::ShaderStatus;
+  Mirror m;
+  pt_scene(&m);
+  grc::rs::ShaderCodeInput input = shader_input("shader_type particles;\n", "unsupported",
+                                                "shader-mode");
+  input.copy.mode = "particles";
+  m.shader_create_from_code(0x600, input, 1);
+  m.material_create(0x610, 1);
+  m.material_set_shader(0x610, 0x600, 1);
+  grc::rs::DecodedParam array;
+  array.type = "array";
+  array.status = "unsupported";
+  array.reason = "param-type";
+  array.array_form = true;
+  array.array_type = "int32";
+  array.array_n = 2;
+  array.array_f = {1.0, 0.0};
+  m.material_set_param(0x610, "particle_flags", array, 1);
+  m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+  const auto candidates = m.ppm_candidates();
+  check(candidates.size() == 1 && candidates[0].shader_rid == 0x600 &&
+            candidates[0].pairs.size() == 1 && candidates[0].pairs[0].first == 0x610 &&
+            candidates[0].pairs[0].second == 100,
+        "the candidate: shader, (process material, drawing item)");
+  Snapshot before = m.snapshot(1, 1).state;
+  check(before.shaders[0].status == ShaderStatus::Unsupported && !before.shaders[0].has_ppm,
+        "unkeyed: shader-mode");
+  check(before.materials[0].status == grc::rs2::MaterialStatus::Ok &&
+            before.materials[0].params.size() == 1 && before.materials[0].below_v12 != nullptr &&
+            before.materials[0].below_v12->status == grc::rs2::MaterialStatus::Unsupported,
+        "/12 carries the Array as packed int32; below /12 it stays param-type");
+  grc::rs2::BuiltinParticleProcessMaterial key;
+  key.emission_shape = 3;
+  key.textures = 1u << 8;
+  m.set_shader_ppm(0x600, key);
+  check(m.ppm_candidates().empty(), "a keyed shader is no candidate");
+  Snapshot s = m.snapshot(2, 2).state;
+  const auto &sh = s.shaders[0];
+  check(sh.status == ShaderStatus::Ok && sh.has_ppm && sh.ppm == key && sh.below_v12 != nullptr &&
+            sh.below_v12->status == ShaderStatus::Unsupported && !sh.below_v12->has_ppm,
+        "keyed: ok at /12, shader-mode below /12");
+  check(m.stats().ppm_resolved == 1, "counted");
+  Snapshot v11 = s;
+  v11.version = grc::rs2::ProtocolVersion::V11;
+  const grc::rs2::Transaction t = grc::rs2::make_full(v11);
+  check(t.particles.empty() && !t.shaders[0].has_ppm &&
+            t.shaders[0].status == ShaderStatus::Unsupported &&
+            t.materials[0].status == grc::rs2::MaterialStatus::Unsupported,
+        "a /11 viewer of a /12 host: shader-mode, param-type, no particles");
+  // Byte identity of the /11 view with a mirror that never had particles.
+  Mirror without;
+  bind_root(&without);
+  without.set_v11(v11_options(grc::rs2::MeshDynamicMode::Auto));
+  without.set_multimesh(mm_options());
+  without.canvas_item_create(100, 1);
+  without.mesh_create(0x500, 1);
+  without.add_unsupported(100, "canvas_item_add_particles", 1);
+  Mirror with;
+  pt_scene(&with);
+  Snapshot a = with.snapshot(1, 1).state;
+  Snapshot b = without.snapshot(1, 1).state;
+  check(item(a, 1)->content_version != item(b, 1)->content_version &&
+            item(a, 1)->content_version_below_v12 == item(b, 1)->content_version &&
+            item(a, 1)->content_version_below_v11 == item(b, 1)->content_version,
+        "the /12 digest differs; the /11 and /10 digests are the pre-PM5 one");
+  a.version = b.version = grc::rs2::ProtocolVersion::V11;
+  check(grc::rs2::encode_transaction(grc::rs2::make_full(a)) ==
+            grc::rs2::encode_transaction(grc::rs2::make_full(b)),
+        "a /11 full transaction of a /12 host is the pre-PM5 one");
+  a.version = b.version = grc::rs2::ProtocolVersion::V10;
+  check(grc::rs2::encode_transaction(grc::rs2::make_full(a)) ==
+            grc::rs2::encode_transaction(grc::rs2::make_full(b)),
+        "and so is a /10 one");
+  // Disabled (below /12): add_particles stays /11's unsupported-op command.
+  Mirror off;
+  bind_root(&off);
+  off.canvas_item_create(100, 1);
+  off.particles_create(0x900, 1);
+  off.add_particles(100, 0x900, 0, 1);
+  Snapshot o = off.snapshot(1, 1).state;
+  check(o.particles.empty() && !o.particles_commands && item(o, 1)->commands.size() == 1 &&
+            item(o, 1)->commands[0].kind == CommandKind::Unsupported,
+        "disabled: no table, the command is unsupported-op");
+}
+
 int main() {
   test_same_value_set_material_keeps_epoch();
+  test_particles_defaults_and_versions();
+  test_particles_trail_poses_need_trails();
+  test_particles_reasons_and_publication();
+  test_particles_emits_and_drop_restart();
+  test_particles_builtin_and_lowering();
   test_multimesh_shadow_and_versions();
   test_multimesh_reasons();
   test_multimesh_publication_and_free();

@@ -197,6 +197,9 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       // New at /11 (PM1, render-stream-11.md "As built (PM1)" rule 11; GRC_STREAM_VERSION=11).
       {"perturb-instance", SabotageKind::PerturbInstance},
       {"stale-buffer", SabotageKind::StaleBuffer},
+      // New at /12 (PM5, render-stream-12.md "Sabotages"; GRC_STREAM_VERSION=12).
+      {"perturb-seed", SabotageKind::PerturbSeed},
+      {"drop-restart", SabotageKind::DropRestart},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -496,11 +499,11 @@ bool Publisher::start(const Session &tmpl) {
     lane.session.stream.encoding = lane.encoding;
     lane.session.resources = resources_info(policy_, Fetch::Directory);
     lane.session.resources.mesh_dynamic = tmpl.resources.mesh_dynamic;  // W11b (encoded at /11)
-    if (tmpl.version == ProtocolVersion::V11) {
+    if (is_v11_or_later(tmpl.version)) {
       InlinePolicy inline_policy;
       inline_policy.inline_max_bytes = policy_.inline_max_bytes;
       lane.planner = std::make_unique<RecordPlanner>(
-          ProtocolVersion::V11, inline_policy, sabotage_.kind == SabotageKind::KeepCarried);
+          tmpl.version, inline_policy, sabotage_.kind == SabotageKind::KeepCarried);
     }
     const std::uint64_t t0 = monotonic_ns();
     const std::vector<std::uint8_t> session_bytes = encode_session(lane.session);
@@ -605,7 +608,7 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
 
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
   // W11b: a /11 stream's dynamic surfaces travel in its transactions, never in the store.
-  const bool v11 = stamp_v8_ && stamp_version_ == ProtocolVersion::V11;
+  const bool v11 = stamp_v8_ && is_v11_or_later(stamp_version_);
   for (const rs::PayloadRef &ref : rs::payload_refs(published.state, v11)) {
     const std::string &hash = *ref.hash;
     if (store_ == nullptr) {
@@ -802,12 +805,18 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
   // adds 1.0 to the first multimesh buffer float of every /11 transaction from the frame on.
   const bool perturb_instance = sabotage_.kind == SabotageKind::PerturbInstance &&
                                 sabotage_frame_reached &&
-                                published.state.version == ProtocolVersion::V11;
+                                is_v11_or_later(published.state.version);
+  // PM5 sabotage perturb-seed (render-stream-12.md "Sabotages"): the encoder adds 1 to the seed of
+  // the first particles entry of every /12 transaction from the frame on.
+  const bool perturb_seed = sabotage_.kind == SabotageKind::PerturbSeed &&
+                            sabotage_frame_reached &&
+                            is_v12_or_later(published.state.version);
   Lane &full = lanes_[0];
   if (full.sink != nullptr) {
     const std::uint64_t t0 = monotonic_ns();
     Transaction transaction = make_full(published.state);
     transaction.perturb_instance = perturb_instance;
+    transaction.perturb_seed = perturb_seed;
     const std::uint64_t t1 = monotonic_ns();
     ok = write_inline(&full, published, frame) &&
          write_transaction(&full, transaction, t1 - t0, 0, snapshot_ns) && ok;
@@ -836,6 +845,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
       transaction.items.pop_back();
     }
     transaction.perturb_instance = perturb_instance;
+    transaction.perturb_seed = perturb_seed;
     ok = write_inline(&patch, published, frame) &&
          write_transaction(&patch, transaction, form_ns, diff_ns, snapshot_ns) && ok;
   }

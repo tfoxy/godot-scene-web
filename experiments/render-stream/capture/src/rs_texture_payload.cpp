@@ -166,6 +166,37 @@ bool parse_format_policy(const char *value, FormatPolicy *out, std::string *erro
   return true;
 }
 
+void enable_short_float_formats(FormatPolicy *policy) {
+  policy->short_float = true;
+  for (const char *name : {"RF", "RGF", "RGBF", "RGBAF"}) {
+    if (std::find(policy->names.begin(), policy->names.end(), name) == policy->names.end()) {
+      policy->names.push_back(name);
+    }
+  }
+  std::sort(policy->names.begin(), policy->names.end());
+}
+
+bool format_permitted(const FormatPolicy &policy, std::int64_t format, std::int64_t height) {
+  if (format < 0 || format >= kImageFormatCount) {
+    return false;
+  }
+  if (policy.permitted[format]) {
+    return true;
+  }
+  if (!policy.short_float || height > kShortFloatMaxRows) {
+    return false;
+  }
+  static const std::int64_t kShort[] = {image_format_from_name("RF"), image_format_from_name("RGF"),
+                                        image_format_from_name("RGBF"),
+                                        image_format_from_name("RGBAF")};
+  for (std::int64_t f : kShort) {
+    if (f == format) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool parse_max_payload_bytes(const char *value, std::uint64_t *out, std::string *error) {
   if (value == nullptr || *value == '\0') {
     *out = kDefaultMaxPayloadBytes;

@@ -259,17 +259,22 @@ async function run(): Promise<void> {
     }
     // G8kp: a render-stream/9 recording ("GRS9") states its delivery preference in the report;
     // CG1: so does a render-stream/10 one ("GRSA", /9's delivery included).
-    // W11c: and a render-stream/11 one ("GRSB").
+    // W11c: and a render-stream/11 one ("GRSB"); PM5: and a render-stream/12 one ("GRSC").
     if (
       data.length >= 4 &&
-      (data[3] === 0x39 || data[3] === 0x41 || data[3] === 0x42)
+      (data[3] === 0x39 ||
+        data[3] === 0x41 ||
+        data[3] === 0x42 ||
+        data[3] === 0x43)
     ) {
       report.protocol =
-        data[3] === 0x42
-          ? "render-stream/11"
-          : data[3] === 0x41
-            ? "render-stream/10"
-            : "render-stream/9";
+        data[3] === 0x43
+          ? "render-stream/12"
+          : data[3] === 0x42
+            ? "render-stream/11"
+            : data[3] === 0x41
+              ? "render-stream/10"
+              : "render-stream/9";
       report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
         string,
         unknown

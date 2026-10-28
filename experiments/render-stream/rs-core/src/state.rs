@@ -139,9 +139,70 @@ wire_enum!(UnsupportedCmdReason {
     SkinnedGeometry = "skinned-geometry",
     // render-stream-11.md "As built (PM1)" rule 7: legal at /11 only.
     UnknownMultimesh = "unknown-multimesh",
+    // render-stream-12.md "The command": legal at /12 only.
+    UnknownParticles = "unknown-particles",
 });
 // render-stream-11.md "As built (PM1)" rule 2: a multimesh's transform format.
 wire_enum!(MultimeshFormat { D2 = "2d", D3 = "3d" });
+// render-stream-12.md "Particles table": an emitter's mode, draw order and transform alignment.
+wire_enum!(ParticlesMode { D2 = "2d", D3 = "3d" });
+wire_enum!(ParticlesDrawOrder {
+    Index = "index",
+    Lifetime = "lifetime",
+    ReverseLifetime = "reverse_lifetime",
+    ViewDepth = "view_depth",
+});
+wire_enum!(ParticlesTransformAlign {
+    Disabled = "disabled",
+    ZBillboard = "z_billboard",
+    YToVelocity = "y_to_velocity",
+    ZBillboardYToVelocity = "z_billboard_y_to_velocity",
+});
+// render-stream-12.md "The `particle_process_material` builtin": `ParticleProcessMaterial`'s
+// enums, in enum order (scene/resources/particle_process_material.h).
+wire_enum!(EmissionShape {
+    Point = "point",
+    Sphere = "sphere",
+    SphereSurface = "sphere_surface",
+    Box = "box",
+    Points = "points",
+    DirectedPoints = "directed_points",
+    Ring = "ring",
+});
+wire_enum!(ParticleFlag {
+    AlignYToVelocity = "align_y_to_velocity",
+    RotateY = "rotate_y",
+    DisableZ = "disable_z",
+    DampingAsFriction = "damping_as_friction",
+});
+wire_enum!(ProcessParam {
+    InitialLinearVelocity = "initial_linear_velocity",
+    AngularVelocity = "angular_velocity",
+    OrbitVelocity = "orbit_velocity",
+    LinearAccel = "linear_accel",
+    RadialAccel = "radial_accel",
+    TangentialAccel = "tangential_accel",
+    Damping = "damping",
+    Angle = "angle",
+    Scale = "scale",
+    HueVariation = "hue_variation",
+    AnimSpeed = "anim_speed",
+    AnimOffset = "anim_offset",
+    TurbInfluenceOverLife = "turb_influence_over_life",
+    TurbVelInfluence = "turb_vel_influence",
+    TurbInitDisplacement = "turb_init_displacement",
+    RadialVelocity = "radial_velocity",
+    DirectionalVelocity = "directional_velocity",
+    ScaleOverVelocity = "scale_over_velocity",
+});
+wire_enum!(SubEmitterMode {
+    Disabled = "disabled",
+    Constant = "constant",
+    AtEnd = "at_end",
+    AtCollision = "at_collision",
+    AtStart = "at_start",
+});
+wire_enum!(CollisionMode { Disabled = "disabled", Rigid = "rigid", HideOnContact = "hide_on_contact" });
 wire_enum!(VariantType {
     Nil = "nil",
     Bool = "bool",
@@ -315,6 +376,11 @@ pub enum Command {
         multimesh: Id,
         tex: Option<Id>,
     },
+    /// /12 (render-stream-12.md "The command"): no floats, so no `f`.
+    Particles {
+        particles: Id,
+        tex: Option<Id>,
+    },
     Unsupported {
         name: Box<str>,
         reason: UnsupportedCmdReason,
@@ -341,6 +407,7 @@ impl Command {
             Command::SetTransform { .. } => "add_set_transform",
             Command::ClipIgnore { .. } => "add_clip_ignore",
             Command::Multimesh { .. } => "add_multimesh",
+            Command::Particles { .. } => "add_particles",
             Command::Unsupported { .. } => "unsupported",
         }
     }
@@ -355,7 +422,8 @@ impl Command {
             | Command::TriangleArray { tex, .. }
             | Command::NinePatch { tex, .. }
             | Command::Mesh { tex, .. }
-            | Command::Multimesh { tex, .. } => *tex,
+            | Command::Multimesh { tex, .. }
+            | Command::Particles { tex, .. } => *tex,
             _ => None,
         }
     }
@@ -609,6 +677,193 @@ pub fn multimesh_stride(colors: bool, custom: bool) -> u64 {
     8 + 4 * colors as u64 + 4 * custom as u64
 }
 
+/// /12 (render-stream-12.md "Particles table"): one resolved emitter. The JSON fields are the
+/// host's last accepted `particles_*` values; `floats` is `None` exactly on `freed`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Particles {
+    pub id: Id,
+    /// `Created` only at PM5.
+    pub origin: Origin,
+    pub status: EntryStatus,
+    /// The wire's particles reason spelling (`None` exactly when not `unsupported`).
+    pub reason: Option<&'static str>,
+    pub version: i64,
+    pub mode: ParticlesMode,
+    pub emitting: bool,
+    pub amount: i64,
+    pub one_shot: bool,
+    pub fixed_fps: i64,
+    pub interpolate: bool,
+    pub fractional_delta: bool,
+    pub local: bool,
+    pub draw_order: ParticlesDrawOrder,
+    pub transform_align: ParticlesTransformAlign,
+    pub trails: bool,
+    /// The length of the last `particles_set_trail_bind_poses` array.
+    pub trail_poses: i64,
+    pub seed: u32,
+    /// Accepted `particles_restart` / `particles_emit` / `particles_request_process_time` calls
+    /// since `particles_create`.
+    pub restarts: i64,
+    pub emits: i64,
+    pub process_requests: i64,
+    /// A material id (render-stream-12.md `particles-ref`), or none.
+    pub process_material: Option<Id>,
+    /// One slot per draw pass: the mesh id set for that pass, or none.
+    pub draw_passes: Vec<Option<Id>>,
+    pub subemitter: Option<Id>,
+    pub floats: Option<ParticleFloats>,
+}
+
+/// /12: an emitter's floats (render-stream-12.md "Particles table", offsets 0 to 31 + 12 x
+/// `trail_poses`), in the resolved form's names. Transforms are `Transform3D` in memory order
+/// (`basis.rows[0..2]`, then `origin`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ParticleFloats {
+    pub amount_ratio: f32,
+    pub lifetime: f32,
+    pub pre_process_time: f32,
+    pub explosiveness: f32,
+    pub randomness: f32,
+    pub speed_scale: f32,
+    pub collision_base_size: f32,
+    pub trail_length: f32,
+    pub interp_to_end: f32,
+    pub request_process_time: f32,
+    pub custom_aabb: [f32; 6],
+    pub emission_transform: [f32; 12],
+    pub emitter_velocity: [f32; 3],
+    pub trail_poses: Vec<[f32; 12]>,
+}
+
+/// render-stream-12.md: an entry's float count, 31 + 12 x `trail_poses`.
+pub fn particles_float_count(trail_poses: i64) -> u64 {
+    31u64.saturating_add((trail_poses.max(0) as u64).saturating_mul(12))
+}
+
+/// render-stream-12.md: the floats of one `particle_emits` element.
+pub const PARTICLE_EMIT_FLOATS: u64 = 23;
+
+impl ParticleFloats {
+    /// From the entry's floats in wire order (`f` is at least `particles_float_count` long).
+    pub fn from_wire(f: &[f32]) -> ParticleFloats {
+        let arr = |at: usize| -> [f32; 12] {
+            let mut a = [0f32; 12];
+            a.copy_from_slice(&f[at..at + 12]);
+            a
+        };
+        let mut aabb = [0f32; 6];
+        aabb.copy_from_slice(&f[10..16]);
+        let poses = (f.len().saturating_sub(31)) / 12;
+        ParticleFloats {
+            amount_ratio: f[0],
+            lifetime: f[1],
+            pre_process_time: f[2],
+            explosiveness: f[3],
+            randomness: f[4],
+            speed_scale: f[5],
+            collision_base_size: f[6],
+            trail_length: f[7],
+            interp_to_end: f[8],
+            request_process_time: f[9],
+            custom_aabb: aabb,
+            emission_transform: arr(16),
+            emitter_velocity: [f[28], f[29], f[30]],
+            trail_poses: (0..poses).map(|k| arr(31 + 12 * k)).collect(),
+        }
+    }
+    /// Bitwise equality (`particles-version`'s float half: "a float by bit pattern").
+    pub fn bits_eq(&self, o: &ParticleFloats) -> bool {
+        let b = |x: &[f32], y: &[f32]| {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.to_bits() == b.to_bits())
+        };
+        let s = [
+            self.amount_ratio,
+            self.lifetime,
+            self.pre_process_time,
+            self.explosiveness,
+            self.randomness,
+            self.speed_scale,
+            self.collision_base_size,
+            self.trail_length,
+            self.interp_to_end,
+            self.request_process_time,
+        ];
+        let t = [
+            o.amount_ratio,
+            o.lifetime,
+            o.pre_process_time,
+            o.explosiveness,
+            o.randomness,
+            o.speed_scale,
+            o.collision_base_size,
+            o.trail_length,
+            o.interp_to_end,
+            o.request_process_time,
+        ];
+        b(&s, &t)
+            && b(&self.custom_aabb, &o.custom_aabb)
+            && b(&self.emission_transform, &o.emission_transform)
+            && b(&self.emitter_velocity, &o.emitter_velocity)
+            && self.trail_poses.len() == o.trail_poses.len()
+            && self.trail_poses.iter().zip(&o.trail_poses).all(|(x, y)| b(x, y))
+    }
+}
+
+/// /12 (render-stream-12.md "The emit list"): one accepted `particles_emit` call of the
+/// transaction just accepted ([`crate::validate::Validator::particle_emits`]).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ParticleEmit {
+    pub particles: Id,
+    /// The emitter's `restarts` counter at the call.
+    pub restarts: i64,
+    /// `p_emit_flags` (`RS::ParticlesEmitFlags`, 0..31).
+    pub flags: u32,
+    /// `Transform3D` in memory order.
+    pub transform: [f32; 12],
+    pub velocity: [f32; 3],
+    pub color: [f32; 4],
+    pub custom: [f32; 4],
+}
+
+impl ParticleEmit {
+    /// From the element's 23 floats in wire order.
+    pub fn from_wire(particles: Id, restarts: i64, flags: u32, f: &[f32]) -> ParticleEmit {
+        let mut transform = [0f32; 12];
+        transform.copy_from_slice(&f[0..12]);
+        ParticleEmit {
+            particles,
+            restarts,
+            flags,
+            transform,
+            velocity: [f[12], f[13], f[14]],
+            color: [f[15], f[16], f[17], f[18]],
+            custom: [f[19], f[20], f[21], f[22]],
+        }
+    }
+}
+
+/// /12 (render-stream-12.md "The `particle_process_material` builtin"):
+/// `ParticleProcessMaterial::MaterialKey` spelled out. Lists hold the set bits in enum order.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ProcessBuiltin {
+    pub emission_shape: EmissionShape,
+    pub particle_flags: Vec<ParticleFlag>,
+    pub textures: Vec<ProcessParam>,
+    pub color_ramp: bool,
+    pub color_initial_ramp: bool,
+    pub alpha_curve: bool,
+    pub emission_curve: bool,
+    pub velocity_limit_curve: bool,
+    pub orbit_velocity_curve_xyz: bool,
+    pub emission_color_texture: bool,
+    pub sub_emitter: SubEmitterMode,
+    pub attractor: bool,
+    pub collision: CollisionMode,
+    pub collision_scale: bool,
+    pub turbulence: bool,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Builtin {
     pub blend_mode: BlendMode,
@@ -635,7 +890,11 @@ pub struct Shader {
     pub source: Option<ShaderSource>,
     pub hash: Option<Hash>,
     pub payload_bytes: i64,
+    /// A `canvas_item_material` builtin (render-stream-5.md D4).
     pub builtin: Option<Builtin>,
+    /// /12: a `particle_process_material` builtin (render-stream-12.md); never set together with
+    /// `builtin`.
+    pub process: Option<ProcessBuiltin>,
     pub uses: Vec<ShaderUse>,
     pub default_textures: Vec<DefaultTexture>,
 }
@@ -703,6 +962,8 @@ pub struct ResolvedState {
     pub materials: IdTable<Material>,
     /// /11 (render-stream-11.md "As built (PM1)"): empty below /11.
     pub multimeshes: IdTable<Multimesh>,
+    /// /12 (render-stream-12.md "Particles table"): empty below /12.
+    pub particles: IdTable<Particles>,
 }
 
 impl ResolvedState {
@@ -726,6 +987,7 @@ impl ResolvedState {
             shaders: IdTable::new(),
             materials: IdTable::new(),
             multimeshes: IdTable::new(),
+            particles: IdTable::new(),
         }
     }
 }
@@ -757,6 +1019,9 @@ pub struct TxDelta {
     /// /11: multimesh entries the transaction carried (each counts as upserted) and removed.
     pub multimeshes_upserted: Vec<Id>,
     pub multimeshes_removed: Vec<Id>,
+    /// /12: particles entries the transaction carried (each counts as upserted) and removed.
+    pub particles_upserted: Vec<Id>,
+    pub particles_removed: Vec<Id>,
     /// `default_texture_filter` or `default_texture_repeat` differs from the previous state's.
     pub defaults_changed: bool,
 }
@@ -812,6 +1077,8 @@ impl TxDelta {
         union(&mut self.materials_removed, &later.materials_removed);
         union(&mut self.multimeshes_upserted, &later.multimeshes_upserted);
         union(&mut self.multimeshes_removed, &later.multimeshes_removed);
+        union(&mut self.particles_upserted, &later.particles_upserted);
+        union(&mut self.particles_removed, &later.particles_removed);
         self.defaults_changed |= later.defaults_changed;
     }
 }

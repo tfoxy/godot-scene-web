@@ -599,6 +599,8 @@ void test_parse_sabotage() {
       {"perturb-instance", "31", nullptr, true, SabotageKind::PerturbInstance, 31,
        "perturb-instance (PM1)"},
       {"stale-buffer", "31", nullptr, true, SabotageKind::StaleBuffer, 31, "stale-buffer (PM1)"},
+      {"perturb-seed", "31", nullptr, true, SabotageKind::PerturbSeed, 31, "perturb-seed (PM5)"},
+      {"drop-restart", "31", nullptr, true, SabotageKind::DropRestart, 31, "drop-restart (PM5)"},
       {"not-a-real-kind", nullptr, nullptr, false, SabotageKind::None, 0, "unknown kind"},
       {"", nullptr, nullptr, false, SabotageKind::None, 0, "empty kind"},
       {"freeze-frame", "0", nullptr, false, SabotageKind::None, 0, "frame 0"},
@@ -1251,6 +1253,86 @@ void test_v11_file_sink() {
                                  std::to_string(store.hashes()) + ")");
 }
 
+// PM5 (render-stream-12.md): a /12 file sink carries the particles table from a real mirror -- an
+// identical emission transform re-set every frame costs nothing, a moved one writes its floats, an
+// emit travels in its frame's transaction -- and perturb-seed adds 1 to the first entry's seed.
+void test_v12_particles_file_sink() {
+  using PtOp = grc::rs::Mirror::ParticlesOp;
+  for (const bool perturb : {false, true}) {
+    MemoryRecordSink patch;
+    patch.open("memory://pm5-patch");
+    SabotageConfig sabotage;
+    if (perturb) {
+      sabotage.kind = SabotageKind::PerturbSeed;
+      sabotage.frame = 3;
+    }
+    Publisher publisher(nullptr, &patch, sabotage, golden_policy(16777216), nullptr);
+    Session tmpl = make_template();
+    tmpl.version = ProtocolVersion::V12;
+    observe_multimesh_features(&tmpl.features);
+    observe_particles_features(&tmpl.features);
+    check(publisher.start(tmpl), "a /12 particles publisher starts");
+    check(contains(nth_write(patch, 0), "GRSC") || nth_write(patch, 0)[3] == 'C',
+          "the /12 magic");
+    check(contains(nth_write(patch, 1), "\"add_particles\"") &&
+              contains(nth_write(patch, 1), "\"render-stream/12\""),
+          "the session declares add_particles");
+    Mirror m;
+    m.reset();
+    m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+    grc::rs::Mirror::V11Options o;
+    o.enabled = true;
+    m.set_v11(o);
+    grc::rs::Mirror::ParticlesOptions po;
+    po.enabled = true;
+    m.set_particles(po);
+    std::vector<float> xf = {1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 20, 0};
+    for (int f = 1; f <= 4; ++f) {
+      const std::uint64_t u = static_cast<std::uint64_t>(f);
+      if (f == 1) {
+        m.canvas_item_create(100, u);
+        m.set_parent(100, kRootCanvas, u);
+        m.particles_create(900, u);
+        grc::rs::Mirror::ParticlesArgs mode;
+        mode.i = 0;
+        m.particles_call(900, PtOp::SetMode, mode, u);
+      }
+      if (f == 3) {
+        xf[9] = 11.0f;  // the one move: frame 3
+        grc::rs::Mirror::ParticlesArgs emit;
+        emit.f.assign(23, 0.25f);
+        emit.flags = 1;
+        m.particles_call(900, PtOp::Emit, emit, u);
+      }
+      grc::rs::Mirror::ParticlesArgs a;
+      a.f = xf;
+      m.particles_call(900, PtOp::SetEmissionTransform, a, u);  // re-set every frame
+      m.clear(100, u);
+      m.add_particles(100, 900, 0, u);
+      check(publisher.publish(m.snapshot(0, u), u, 0), "a /12 particles publish");
+    }
+    publisher.finish(EndReason::Shutdown);
+    const std::vector<std::uint8_t> t1 = nth_write(patch, 2);
+    const std::vector<std::uint8_t> t2 = nth_write(patch, 3);
+    const std::vector<std::uint8_t> t3 = nth_write(patch, 4);
+    check(contains(t1, "\"particles\":[{\"id\":1,\"origin\":\"created\",\"status\":\"ok\","
+                       "\"reason\":null,\"version\":3,\"mode\":\"2d\"") &&
+              contains(t1, "{\"op\":\"add_particles\",\"particles\":1,\"tex\":null}") &&
+              contains(t1, "\"name\":\"pt_f32\",\"type\":\"f32\",\"count\":31}"),
+          "seq 1: the entry (create, mode, transform: version 3), the command, 31 floats");
+    check(!contains(t2, "\"particles\"") && !contains(t2, "pt_f32") &&
+              contains(t2, "\"items\":[]"),
+          "seq 2: the same transform re-set and the same draw: nothing to send, no pt_f32");
+    check(contains(t3, "\"version\":5,") && contains(t3, "\"particle_emits\":[{\"particles\":1,"
+                                                     "\"restarts\":0,\"flags\":1,\"f\":31}]") &&
+              contains(t3, "\"count\":54}"),
+          "seq 3: the moved transform and the emit (31 + 23 floats)");
+    check(contains(t3, perturb ? "\"seed\":1," : "\"seed\":0,") &&
+              contains(t1, "\"seed\":0,"),
+          perturb ? "perturb-seed: seed + 1 from its frame" : "no sabotage: seed 0");
+  }
+}
+
 // PM1 (render-stream-11.md "As built (PM1)"): a /11 file sink carries the multimesh table from a
 // real mirror -- an idle buffer re-set costs nothing, a moved one writes its floats -- and
 // perturb-instance adds 1.0 to the first buffer float of every transaction from its frame.
@@ -1756,6 +1838,7 @@ int main() {
   test_patch_drop_item();
   test_parse_sabotage();
   test_v11_multimesh_file_sink();
+  test_v12_particles_file_sink();
   test_generate_id();
   test_gate2_features();
   test_gate2_features_v3();

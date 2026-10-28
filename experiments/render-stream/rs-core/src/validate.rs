@@ -153,6 +153,8 @@ const RS_METHODS: &[&str] = &[
     "canvas_item_add_mesh",
     // /11 (PM1): `add_multimesh`'s `tex` follows the texture rules of every op with a `tex`.
     "canvas_item_add_multimesh",
+    // /12 (PM5): `add_particles`' `tex` likewise.
+    "canvas_item_add_particles",
 ];
 
 fn rs_method(cmd: &Command) -> Option<u8> {
@@ -166,6 +168,7 @@ fn rs_method(cmd: &Command) -> Option<u8> {
         Command::NinePatch { .. } => 6,
         Command::Mesh { .. } => 7,
         Command::Multimesh { .. } => 8,
+        Command::Particles { .. } => 9,
         _ => return None,
     })
 }
@@ -209,6 +212,10 @@ struct ItemIdx {
     mms: Vec<Id>,
     /// /11: an add_multimesh names an `unsupported` multimesh (`unsupported-multimesh`).
     mm_unsup: bool,
+    /// /12: distinct particles ids of the item's add_particles commands, sorted.
+    pts: Vec<Id>,
+    /// /12: an add_particles names an `unsupported` emitter (`unsupported-particles`).
+    pt_unsup: bool,
     eff: Option<Id>,
     mat_unsup: bool,
 }
@@ -219,6 +226,8 @@ struct Index {
     mesh: FastMap<Id, EntryStatus>,
     /// /11: each resolved multimesh's status.
     mm: FastMap<Id, EntryStatus>,
+    /// /12: each resolved particles entry's status.
+    pt: FastMap<Id, EntryStatus>,
     shader_texs: FastMap<Id, Vec<Id>>,
     mat: FastMap<Id, MatIdx>,
     canvas: FastMap<Id, (bool, bool, (i64, i64))>,
@@ -228,6 +237,8 @@ struct Index {
     mesh_users: BTreeSet<(Id, Id)>,
     /// /11: (multimesh, item) for every add_multimesh.
     mm_users: BTreeSet<(Id, Id)>,
+    /// /12: (particles, item) for every add_particles.
+    pt_users: BTreeSet<(Id, Id)>,
     mat_users: BTreeSet<(Id, Id)>,
     eff_users: BTreeSet<(Id, Id)>,
     diffuse_users: BTreeSet<(Id, Id)>,
@@ -243,6 +254,7 @@ struct Index {
     n_tex_unsup: usize,
     n_mesh_unsup: usize,
     n_mm_unsup: usize,
+    n_pt_unsup: usize,
     n_mat_unsup: usize,
     /// Containers whose claim set changed in the last reindex.
     touched: Vec<PKey>,
@@ -320,6 +332,7 @@ struct Dirty {
     shaders: Vec<Id>,
     materials: Vec<Id>,
     multimeshes: Vec<Id>,
+    particles: Vec<Id>,
 }
 
 impl Dirty {
@@ -331,6 +344,7 @@ impl Dirty {
         self.shaders.clear();
         self.materials.clear();
         self.multimeshes.clear();
+        self.particles.clear();
     }
 }
 
@@ -344,6 +358,7 @@ struct Removed {
     shaders: Vec<Id>,
     materials: Vec<Id>,
     multimeshes: Vec<Id>,
+    particles: Vec<Id>,
 }
 
 impl Removed {
@@ -355,6 +370,7 @@ impl Removed {
         self.shaders.clear();
         self.materials.clear();
         self.multimeshes.clear();
+        self.particles.clear();
     }
 }
 
@@ -367,6 +383,7 @@ enum Undo {
     Shader(Id, Option<Shader>),
     Material(Id, Option<Material>),
     Multimesh(Id, Option<Multimesh>),
+    Particles(Id, Option<Particles>),
 }
 
 /// A resource payload's decoded shape, for `resource-payload`.
@@ -525,6 +542,42 @@ fn mm_floats_equal(a: &Multimesh, b: &Multimesh) -> bool {
     aabb && a.buffer_sha256 == b.buffer_sha256
 }
 
+/// /12: the JSON fields of a particles entry other than `f` (render-stream-12.md "`version`"),
+/// for `particles-version`'s pre-resolve half.
+fn pt_fields_equal(a: &Particles, b: &meta::ParticlesMeta) -> bool {
+    a.origin == b.origin
+        && a.status == b.status
+        && a.reason == b.reason
+        && a.mode == b.mode
+        && a.emitting == b.emitting
+        && a.amount == b.amount
+        && a.one_shot == b.one_shot
+        && a.fixed_fps == b.fixed_fps
+        && a.interpolate == b.interpolate
+        && a.fractional_delta == b.fractional_delta
+        && a.local == b.local
+        && a.draw_order == b.draw_order
+        && a.transform_align == b.transform_align
+        && a.trails == b.trails
+        && a.trail_poses == b.trail_poses
+        && a.seed == b.seed
+        && a.restarts == b.restarts
+        && a.emits == b.emits
+        && a.process_requests == b.process_requests
+        && a.process_material == b.process_material
+        && a.draw_passes == b.draw_passes
+        && a.subemitter == b.subemitter
+}
+
+/// /12: the floats' half (by bit pattern; `None` only on `freed`).
+fn pt_floats_equal(a: &Particles, b: &Particles) -> bool {
+    match (&a.floats, &b.floats) {
+        (Some(x), Some(y)) => x.bits_eq(y),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn same_shape(a: &MeshSurface, b: &MeshSurface) -> bool {
     a.primitive == b.primitive
         && a.format == b.format
@@ -572,6 +625,8 @@ pub struct Validator {
     last_material: FastMap<Id, Material>,
     /// /11: each multimesh's resolved entry the last time a transaction carried it.
     last_multimesh: FastMap<Id, Multimesh>,
+    /// /12: each particles entry's resolved entry the last time a transaction carried it.
+    last_particles: FastMap<Id, Particles>,
     end_seen: bool,
     digests: Vec<Option<Hash>>,
     // per-record scratch
@@ -605,6 +660,10 @@ pub struct Validator {
     mm_buffers: Vec<MmBufferRef>,
     /// PM1 rule 8: the session's `features.ops` lists `add_multimesh`.
     mm_op_declared: bool,
+    /// PM5: the last transaction's `particle_emits`, in list order, with their floats.
+    pt_emits: Vec<ParticleEmit>,
+    /// render-stream-12.md "Session record": the session's `features.ops` lists `add_particles`.
+    pt_op_declared: bool,
     /// `content-version-stable` (WB): the first patch item whose commands equal the base's under
     /// a moved `content_version`, found while resolving.
     cv_stable: Option<Id>,
@@ -1031,6 +1090,10 @@ fn lift_commands(cmds: &[CmdMeta], fb: F32s, ib: I32s, out: &mut Commands) {
             Op::ClipIgnore => Command::ClipIgnore { ignore: c.b1 },
             Op::Multimesh => Command::Multimesh {
                 multimesh: c.mesh,
+                tex: c.tex,
+            },
+            Op::Particles => Command::Particles {
+                particles: c.mesh,
                 tex: c.tex,
             },
             Op::Unsupported => Command::Unsupported {
@@ -1483,6 +1546,13 @@ fn command_identical(x: &Command, y: &Command) -> bool {
             },
         ) => multimesh == m2 && tex == t2,
         (
+            C::Particles { particles, tex },
+            C::Particles {
+                particles: p2,
+                tex: t2,
+            },
+        ) => particles == p2 && tex == t2,
+        (
             C::Unsupported { name, reason },
             C::Unsupported {
                 name: n2,
@@ -1509,8 +1579,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=11).contains(&opts.version),
-            "render-stream version 2..=11"
+            (2..=12).contains(&opts.version),
+            "render-stream version 2..=12"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1570,6 +1640,8 @@ impl Validator {
             opts.version >= 6 && session.viewport.snap_2d.is_some_and(|(t, v)| t || v);
         let mm_op_declared =
             opts.version >= 11 && session.features.ops.iter().any(|o| o == "add_multimesh");
+        let pt_op_declared =
+            opts.version >= 12 && session.features.ops.iter().any(|o| o == "add_particles");
         let digest = match opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(session_record)),
             DigestPolicy::Deferred => None,
@@ -1601,6 +1673,7 @@ impl Validator {
             last_shader: FastMap::default(),
             last_material: FastMap::default(),
             last_multimesh: FastMap::default(),
+            last_particles: FastMap::default(),
             end_seen: false,
             digests: vec![digest],
             bufs,
@@ -1620,6 +1693,8 @@ impl Validator {
             bodies: Vec::new(),
             mm_buffers: Vec::new(),
             mm_op_declared,
+            pt_emits: Vec::new(),
+            pt_op_declared,
             cv_stable: None,
         })
     }
@@ -1708,6 +1783,13 @@ impl Validator {
     /// ("the floats you hold"). Empty after a resource or end record.
     pub fn multimesh_buffers(&self) -> &[MmBufferRef] {
         &self.mm_buffers
+    }
+    /// /12 (PM5, render-stream-12.md "Receivers"): the last accepted transaction's
+    /// `particle_emits`, in list order, with their floats. A receiver applies each emitter's
+    /// configuration, then a restart if `restarts` moved, then these. Empty after a resource or
+    /// end record, and below /12.
+    pub fn particle_emits(&self) -> &[ParticleEmit] {
+        &self.pt_emits
     }
 
     /// render-stream-11.md decision 9, `inline-fetch-zero`: may a /11 receiver GET `hash` over
@@ -1804,6 +1886,7 @@ impl Validator {
             self.released.clear();
             self.bodies.clear();
             self.mm_buffers.clear();
+            self.pt_emits.clear();
         }
         let accepted = match decoded {
             Decoded::Session(_) => {
@@ -1989,6 +2072,7 @@ impl Validator {
             blk(6),
             blk(7),
             blk(8),
+            blk(9),
         ];
         let u8_start = blocks.get(7).map(|b| b.start).unwrap_or(0);
         let mm_start = blocks.get(8).map(|b| b.start).unwrap_or(0);
@@ -2024,6 +2108,28 @@ impl Validator {
             return Err(schema(
                 "an add_multimesh command in a session whose features.ops lacks \"add_multimesh\"".into(),
             ));
+        }
+        // render-stream-12.md "Session record": the particles keys, `particle_emits`, `pt_f32` and
+        // add_particles need a session whose features.ops lists add_particles.
+        if v >= 12 && !self.pt_op_declared {
+            let what = if !tx.particles.is_empty() {
+                Some("a \"particles\" key")
+            } else if !tx.removed_particles.is_empty() {
+                Some("a \"removed_particles\" key")
+            } else if !tx.particle_emits.is_empty() {
+                Some("a \"particle_emits\" key")
+            } else if tx.blocks.len() > meta::PT_F32_BLOCK {
+                Some("a \"pt_f32\" block")
+            } else if tx.cmds.iter().any(|c| c.op == Op::Particles) {
+                Some("an add_particles command")
+            } else {
+                None
+            };
+            if let Some(what) = what {
+                return Err(schema(format!(
+                    "{what} in a session whose features.ops lacks \"add_particles\""
+                )));
+            }
         }
         // checkIdOrdering / checkIdListAscendingNoDup, in the TypeScript's concatenation order.
         let ordering = |label: &str, ids: &mut dyn Iterator<Item = i64>| -> Result<(), Error> {
@@ -2070,6 +2176,10 @@ impl Validator {
             ordering("multimeshes", &mut tx.multimeshes.iter().map(|c| c.id as i64))?;
             ascending("removed_multimeshes", &tx.removed_multimeshes)?;
         }
+        if v >= 12 {
+            ordering("particles", &mut tx.particles.iter().map(|c| c.id as i64))?;
+            ascending("removed_particles", &tx.removed_particles)?;
+        }
         // W11d: after a transport skip ([`Validator::transport_skip`]) the next transaction is
         // the full one the resync forces, at any later seq.
         let skipped = self.skipping && tx.is_full() && tx.seq > self.prev_seq;
@@ -2105,7 +2215,10 @@ impl Validator {
         for it in &tx.items {
             let Some(r) = it.commands else { continue };
             for c in r.of(&tx.cmds) {
-                if matches!(c.op, Op::Unsupported | Op::ClipIgnore | Op::Multimesh) {
+                if matches!(
+                    c.op,
+                    Op::Unsupported | Op::ClipIgnore | Op::Multimesh | Op::Particles
+                ) {
                     continue;
                 }
                 if c.f != running {
@@ -2215,6 +2328,9 @@ impl Validator {
         if v >= 11 {
             self.check_dynamic_meshes(offset)?;
             self.check_multimeshes(offset)?;
+        }
+        if v >= 12 {
+            self.check_particles(offset)?;
         }
         let expected_canvas = stride * tx.canvases.len() as u64;
         if count(1) != Some(expected_canvas) {
@@ -2529,6 +2645,175 @@ impl Validator {
     }
 
     /// `checkPatchRules`.
+    /// /12 (render-stream-12.md "Validators: rule changes"): per particles entry
+    /// `particles-entry` (shape), then `particles-version` (the JSON fields against the entry the
+    /// last transaction carrying it resolved to), then `particle-emits` over the emit list, then
+    /// `pt-offset` over the entries, the emits and `pt_f32`'s count. Runs against the base state
+    /// (before resolving); the float half of `particles-version` and `particles-ref` run on the
+    /// resolved state.
+    fn check_particles(&self, offset: usize) -> Result<(), Error> {
+        let tx = &self.tx;
+        let full = tx.is_full();
+        let pe = |id: Id, d: &str| {
+            Error::new(
+                "particles-entry",
+                format!("record at offset {offset}: particles {id}: {d}"),
+            )
+        };
+        for p in &tx.particles {
+            let shape = match p.status {
+                EntryStatus::Ok => {
+                    if p.reason.is_some() {
+                        Some("an \"ok\" entry has a non-null reason")
+                    } else if p.mode != ParticlesMode::D2 {
+                        Some("an \"ok\" entry's mode is not \"2d\"")
+                    } else if p.f.is_none() {
+                        Some("an \"ok\" entry has a null f")
+                    } else {
+                        None
+                    }
+                }
+                EntryStatus::Unsupported => {
+                    if p.reason.is_none() {
+                        Some("an \"unsupported\" entry has a null reason")
+                    } else if p.f.is_none() {
+                        Some("an \"unsupported\" entry has a null f")
+                    } else {
+                        None
+                    }
+                }
+                EntryStatus::Freed => {
+                    if p.reason.is_some()
+                        || p.f.is_some()
+                        || p.process_material.is_some()
+                        || !p.draw_passes.is_empty()
+                        || p.subemitter.is_some()
+                    {
+                        Some("a \"freed\" entry must be {reason: null, process_material: null, draw_passes: [], subemitter: null, f: null}")
+                    } else {
+                        None
+                    }
+                }
+            };
+            let shape = shape.or_else(|| {
+                (p.trail_poses > 0 && !p.trails).then_some("trail_poses > 0 needs trails true")
+            });
+            if let Some(d) = shape {
+                return Err(pe(p.id, d));
+            }
+        }
+        for p in &tx.particles {
+            if let Some(q) = self.last_particles.get(&p.id) {
+                if p.version < q.version || (p.version == q.version && !pt_fields_equal(q, p)) {
+                    return Err(Error::new(
+                        "particles-version",
+                        format!(
+                            "record at offset {offset}: particles {}'s version {} {} (earlier entry: version {})",
+                            p.id,
+                            p.version,
+                            if p.version < q.version {
+                                "decreased"
+                            } else {
+                                "did not move, but the entry changed"
+                            },
+                            q.version
+                        ),
+                    ));
+                }
+            }
+        }
+        // particle-emits: each element names an `ok` or `unsupported` entry of the resolved table
+        // (the transaction's own entry, else the base's kept one), with `restarts` at most the
+        // entry's, and per emitter at most `emits` - the base's `emits` elements.
+        if !tx.particle_emits.is_empty() {
+            let em = |d: String| {
+                Error::new(
+                    "particle-emits",
+                    format!("record at offset {offset}: {d}"),
+                )
+            };
+            let base = &self.state.particles;
+            let mut counts: FastMap<Id, i64> = FastMap::default();
+            for e in &tx.particle_emits {
+                let listed = tx.particles.iter().find(|p| p.id == e.particles);
+                let removed = tx
+                    .removed_particles
+                    .binary_search(&(e.particles as i64))
+                    .is_ok();
+                let target = match listed {
+                    Some(p) => Some((p.status, p.restarts, p.emits)),
+                    None if full || removed => None,
+                    None => base
+                        .get(&e.particles)
+                        .map(|b| (b.status, b.restarts, b.emits)),
+                };
+                let Some((_, restarts, emits)) =
+                    target.filter(|t| t.0 != EntryStatus::Freed)
+                else {
+                    return Err(em(format!(
+                        "an emit names particles {}, which is not an \"ok\" or \"unsupported\" entry",
+                        e.particles
+                    )));
+                };
+                if e.restarts > restarts {
+                    return Err(em(format!(
+                        "an emit on particles {} has restarts {}, over the entry's {restarts}",
+                        e.particles, e.restarts
+                    )));
+                }
+                let base_emits = if full {
+                    0
+                } else {
+                    base.get(&e.particles).map_or(0, |b| b.emits)
+                };
+                let n = counts.entry(e.particles).or_insert(0);
+                *n += 1;
+                if *n > emits - base_emits {
+                    return Err(em(format!(
+                        "particles {} lists {} emits, over its emits {emits} - the base's {base_emits}",
+                        e.particles, *n
+                    )));
+                }
+            }
+        }
+        // pt-offset.
+        let po = |d: String| Error::new("pt-offset", format!("record at offset {offset}: {d}"));
+        let mut running = 0u64;
+        for p in &tx.particles {
+            let Some(f) = p.f else { continue };
+            if f != running {
+                return Err(po(format!(
+                    "particles {} f={f}, expected {running}",
+                    p.id
+                )));
+            }
+            running = running.saturating_add(p.float_count());
+        }
+        for (i, e) in tx.particle_emits.iter().enumerate() {
+            if e.f != running {
+                return Err(po(format!(
+                    "particle_emits[{i}] f={}, expected {running}",
+                    e.f
+                )));
+            }
+            running = running.saturating_add(PARTICLE_EMIT_FLOATS);
+        }
+        match tx.blocks.get(meta::PT_F32_BLOCK) {
+            None if running > 0 => Err(po(format!(
+                "the particles claim {running} floats, but there is no \"pt_f32\" block"
+            ))),
+            None => Ok(()),
+            Some(b) if b.count == 0 => Err(po(
+                "block \"pt_f32\" is empty (an empty block is the absent block)".into(),
+            )),
+            Some(b) if b.count != running => Err(po(format!(
+                "block \"pt_f32\" declares count {}, the particles claim {running}",
+                b.count
+            ))),
+            Some(_) => Ok(()),
+        }
+    }
+
     fn check_patch_rules(&self, offset: usize) -> Result<(), Error> {
         let tx = &self.tx;
         let st = &self.state;
@@ -2544,6 +2829,7 @@ impl Validator {
                 || (v >= 4 && !tx.removed_meshes.is_empty())
                 || (v >= 5 && (!tx.removed_shaders.is_empty() || !tx.removed_materials.is_empty()))
                 || !tx.removed_multimeshes.is_empty()
+                || !tx.removed_particles.is_empty()
             {
                 return Err(e(
                     "patch-encoding",
@@ -2655,6 +2941,14 @@ impl Validator {
                 &mut tx.multimeshes.iter().map(|c| c.id),
             ))?;
         }
+        if v >= 12 {
+            pr(absent("particles", &tx.removed_particles, &st.particles))?;
+            pr(both(
+                "particles",
+                &tx.removed_particles,
+                &mut tx.particles.iter().map(|c| c.id),
+            ))?;
+        }
         for it in &tx.items {
             if it.commands.is_none() {
                 match st.items.get(&it.id) {
@@ -2688,13 +2982,15 @@ impl Validator {
     /// a full transaction costs what it changes beyond reading it.
     /// `u8_start`: where `mesh_u8` (`bl[7]`) starts in the record, for [`BodyRef`]s; `mm_start`
     /// where `mm_f32` (`bl[8]`) starts, for [`MmBufferRef`]s.
-    fn apply(&mut self, bl: [&[u8]; 9], u8_start: usize, mm_start: usize) {
+    /// `bl[9]` is /12's optional `pt_f32` (empty when absent).
+    fn apply(&mut self, bl: [&[u8]; 10], u8_start: usize, mm_start: usize) {
         let v = self.opts.version;
         let tx = &self.tx;
         let st = &mut self.state;
         self.cv_stable = None;
         self.bodies.clear();
         self.mm_buffers.clear();
+        self.pt_emits.clear();
         let mesh_u8 = bl[7];
         self.undo.clear();
         self.dirty.clear();
@@ -2768,6 +3064,11 @@ impl Validator {
                 tx.multimeshes.iter().map(|c| c.id),
                 &mut r.multimeshes,
             );
+            omitted(
+                st.particles.keys().copied(),
+                tx.particles.iter().map(|c| c.id),
+                &mut r.particles,
+            );
         } else {
             r.canvases
                 .extend(tx.removed_canvases.iter().map(|&i| i as Id));
@@ -2781,6 +3082,8 @@ impl Validator {
                 .extend(tx.removed_materials.iter().map(|&i| i as Id));
             r.multimeshes
                 .extend(tx.removed_multimeshes.iter().map(|&i| i as Id));
+            r.particles
+                .extend(tx.removed_particles.iter().map(|&i| i as Id));
         }
         let d = &mut self.dirty;
         let undo = &mut self.undo;
@@ -2811,6 +3114,10 @@ impl Validator {
         for &id in &r.multimeshes {
             undo.push(Undo::Multimesh(id, st.multimeshes.remove(&id)));
             d.multimeshes.push(id);
+        }
+        for &id in &r.particles {
+            undo.push(Undo::Particles(id, st.particles.remove(&id)));
+            d.particles.push(id);
         }
 
         for (i, c) in tx.canvases.iter().enumerate() {
@@ -3129,6 +3436,58 @@ impl Validator {
                 d.multimeshes.push(m.id);
             }
         }
+        // PM5 (render-stream-12.md "Particles table", "The emit list"): every listed `ok` or
+        // `unsupported` entry carries its floats at `f` in `pt_f32`; `freed` carries none. The emit
+        // list is the transaction's, kept for [`Validator::particle_emits`].
+        if v >= 12 {
+            let pt_f32 = F32s(bl[9]);
+            let slice = |at: u64, n: u64| -> Vec<f32> {
+                (at..at + n).map(|i| pt_f32.get(i as usize)).collect()
+            };
+            for p in &tx.particles {
+                let floats = p
+                    .f
+                    .map(|at| ParticleFloats::from_wire(&slice(at, p.float_count())));
+                let pt = Particles {
+                    id: p.id,
+                    origin: p.origin,
+                    status: p.status,
+                    reason: p.reason,
+                    version: p.version,
+                    mode: p.mode,
+                    emitting: p.emitting,
+                    amount: p.amount,
+                    one_shot: p.one_shot,
+                    fixed_fps: p.fixed_fps,
+                    interpolate: p.interpolate,
+                    fractional_delta: p.fractional_delta,
+                    local: p.local,
+                    draw_order: p.draw_order,
+                    transform_align: p.transform_align,
+                    trails: p.trails,
+                    trail_poses: p.trail_poses,
+                    seed: p.seed,
+                    restarts: p.restarts,
+                    emits: p.emits,
+                    process_requests: p.process_requests,
+                    process_material: p.process_material,
+                    draw_passes: p.draw_passes.clone(),
+                    subemitter: p.subemitter,
+                    floats,
+                };
+                if st.particles.get(&p.id).is_some_and(|old| *old == pt) {
+                    continue;
+                }
+                let prev = st.particles.insert(p.id, pt);
+                undo.push(Undo::Particles(p.id, prev));
+                d.particles.push(p.id);
+            }
+            for e in &tx.particle_emits {
+                let f = slice(e.f, PARTICLE_EMIT_FLOATS);
+                self.pt_emits
+                    .push(ParticleEmit::from_wire(e.particles, e.restarts, e.flags, &f));
+            }
+        }
         st.default_texture_filter = tx.default_texture_filter.unwrap_or(Filter::Nearest);
         st.default_texture_repeat = tx.default_texture_repeat.unwrap_or(Repeat::Disabled);
     }
@@ -3185,11 +3544,18 @@ impl Validator {
                         None => st.multimeshes.remove(&id),
                     };
                 }
+                Undo::Particles(id, prev) => {
+                    match prev {
+                        Some(p) => st.particles.insert(id, p),
+                        None => st.particles.remove(&id),
+                    };
+                }
             }
         }
         self.reindex(false);
         self.bodies.clear();
         self.mm_buffers.clear();
+        self.pt_emits.clear();
     }
 
     fn reindex_dirty(&mut self) {
@@ -3304,6 +3670,18 @@ impl Validator {
             }
             if old != new {
                 mm_changed.push(id);
+            }
+        }
+        // Particles (/12).
+        let mut pt_changed: Vec<Id> = Vec::new();
+        for &id in &d.particles {
+            let old = ix.pt.remove(&id);
+            let new = st.particles.get(&id).map(|p| p.status);
+            if let Some(s) = new {
+                ix.pt.insert(id, s);
+            }
+            if old != new {
+                pt_changed.push(id);
             }
         }
 
@@ -3451,18 +3829,23 @@ impl Validator {
                     for &m in &o.mms {
                         ix.mm_users.remove(&(m, id));
                     }
+                    for &p in &o.pts {
+                        ix.pt_users.remove(&(p, id));
+                    }
                     ix.n_ops -= o.ops.len();
                 } else {
                     carried.tex_refs = o.tex_refs;
                     carried.tex_ids = o.tex_ids;
                     carried.meshes = o.meshes;
                     carried.mms = o.mms;
+                    carried.pts = o.pts;
                     carried.ops = o.ops;
                 }
                 if new_item.is_none() {
                     ix.n_tex_unsup -= o.tex_unsup.len();
                     ix.n_mesh_unsup -= o.mesh_unsup as usize;
                     ix.n_mm_unsup -= o.mm_unsup as usize;
+                    ix.n_pt_unsup -= o.pt_unsup as usize;
                     ix.n_mat_unsup -= o.mat_unsup as usize;
                     if let Some(e) = o.eff {
                         ix.eff_users.remove(&(e, id));
@@ -3473,6 +3856,7 @@ impl Validator {
                     carried.tex_unsup = o.tex_unsup;
                     carried.mesh_unsup = o.mesh_unsup;
                     carried.mm_unsup = o.mm_unsup;
+                    carried.pt_unsup = o.pt_unsup;
                     carried.eff = o.eff;
                     carried.mat_unsup = o.mat_unsup;
                     if !same_parent {
@@ -3505,6 +3889,7 @@ impl Validator {
                 e.tex_ids.clear();
                 e.meshes.clear();
                 e.mms.clear();
+                e.pts.clear();
                 e.ops.clear();
                 for (k, c) in it.commands.list.iter().enumerate() {
                     if let (Some(t), Some(m)) = (c.tex(), rs_method(c)) {
@@ -3515,6 +3900,9 @@ impl Validator {
                     }
                     if let Command::Multimesh { multimesh, .. } = c {
                         e.mms.push(*multimesh);
+                    }
+                    if let Command::Particles { particles, .. } = c {
+                        e.pts.push(*particles);
                     }
                     if let Command::Unsupported { name, reason } = c {
                         let commands = &it.commands.list;
@@ -3528,6 +3916,7 @@ impl Validator {
                 e.tex_ids.dedup();
                 sorted_dedup(&mut e.meshes);
                 sorted_dedup(&mut e.mms);
+                sorted_dedup(&mut e.pts);
                 for &t in &e.tex_ids {
                     ix.tex_users.insert((t, id));
                 }
@@ -3536,6 +3925,9 @@ impl Validator {
                 }
                 for &m in &e.mms {
                     ix.mm_users.insert((m, id));
+                }
+                for &p in &e.pts {
+                    ix.pt_users.insert((p, id));
                 }
                 ix.n_ops += e.ops.len();
             }
@@ -3603,6 +3995,9 @@ impl Validator {
         }
         // unsupported-multimesh (/11): the items meshu_check visits, plus the users of every
         // multimesh whose status changed.
+        // unsupported-particles (/12): likewise, with the users of every emitter whose status
+        // changed.
+        let mut ptu_check = if v >= 12 { meshu_check.clone() } else { Vec::new() };
         if v >= 11 {
             let mut mmu_check = meshu_check;
             if !all {
@@ -3624,6 +4019,29 @@ impl Validator {
                         ix.n_mm_unsup -= 1;
                     }
                     e.mm_unsup = nu;
+                }
+            }
+        }
+        if v >= 12 {
+            if !all {
+                for &p in &pt_changed {
+                    ptu_check.extend(users(&ix.pt_users, p));
+                }
+            }
+            for &id in &ptu_check {
+                let Some(e) = ix.item.get(&id) else { continue };
+                let nu = e
+                    .pts
+                    .iter()
+                    .any(|p| ix.pt.get(p) == Some(&EntryStatus::Unsupported));
+                let e = ix.item.get_mut(&id).unwrap();
+                if nu != e.pt_unsup {
+                    if nu {
+                        ix.n_pt_unsup += 1;
+                    } else {
+                        ix.n_pt_unsup -= 1;
+                    }
+                    e.pt_unsup = nu;
                 }
             }
         }
@@ -4351,6 +4769,69 @@ impl Validator {
                 ));
             }
         }
+        // particles-ref (/12, render-stream-12.md "References"): every add_particles names a
+        // resolved particles entry (any status); every entry's process material, draw passes and
+        // subemitter name resolved entries.
+        if v >= 12 {
+            let mut bad: Vec<Id> = Vec::new();
+            for &(i, cmds_changed) in &d.items {
+                if !cmds_changed {
+                    continue;
+                }
+                if let Some(e) = ix.item.get(&i) {
+                    if e.pts.iter().any(|p| !st.particles.contains_key(p)) {
+                        bad.push(i);
+                    }
+                }
+            }
+            for &p in &r.particles {
+                bad.extend(users(&ix.pt_users, p));
+            }
+            if let Some(i) = first(bad) {
+                let p = ix.item[&i]
+                    .pts
+                    .iter()
+                    .copied()
+                    .find(|p| !st.particles.contains_key(p))
+                    .unwrap_or(0);
+                return Err(Error::new(
+                    "particles-ref",
+                    format!("{w}: item {i}'s add_particles names particles {p}, which has no entry"),
+                ));
+            }
+            let dangling = |p: &Particles| -> Option<String> {
+                if let Some(m) = p.process_material.filter(|x| !st.materials.contains_key(x)) {
+                    return Some(format!("process material {m}"));
+                }
+                if let Some(m) = p
+                    .draw_passes
+                    .iter()
+                    .flatten()
+                    .find(|x| !st.meshes.contains_key(x))
+                {
+                    return Some(format!("draw pass mesh {m}"));
+                }
+                p.subemitter
+                    .filter(|x| !st.particles.contains_key(x))
+                    .map(|x| format!("subemitter particles {x}"))
+            };
+            let whole = !(r.materials.is_empty() && r.meshes.is_empty() && r.particles.is_empty());
+            let found = if whole {
+                st.particles
+                    .values()
+                    .find_map(|p| dangling(p).map(|x| (p.id, x)))
+            } else {
+                tx.particles
+                    .iter()
+                    .find_map(|p| dangling(&st.particles[&p.id]).map(|x| (p.id, x)))
+            };
+            if let Some((id, what)) = found {
+                return Err(Error::new(
+                    "particles-ref",
+                    format!("{w}: particles {id} names {what}, which has no entry"),
+                ));
+            }
+        }
         self.check_unsupported(&w)
     }
 
@@ -4368,6 +4849,7 @@ impl Validator {
         let (mut d_ops, mut d_ties, mut d_tex, mut d_mesh, mut d_mat) =
             (0usize, 0usize, 0usize, 0usize, 0usize);
         let mut d_mm = 0usize;
+        let mut d_pt = 0usize;
         let mut declared_stack = false;
         let mut declared_snap = false;
         let actual_stack = v >= 6 && ix.stack_ties > 0;
@@ -4474,7 +4956,8 @@ impl Validator {
                 | "canvas-texture-headless"
                 | "unknown-mesh"
                 | "skinned-geometry"
-                | "unknown-multimesh" => {
+                | "unknown-multimesh"
+                | "unknown-particles" => {
                     let cmds = &st.items[&id].commands.list;
                     let actual = x
                         .ops
@@ -4539,6 +5022,14 @@ impl Validator {
                     }
                     d_mm += 1;
                 }
+                "unsupported-particles" => {
+                    if !(op == "canvas_item_add_particles" && x.pt_unsup) {
+                        return Err(mm(format!(
+                            "unsupported-particles entry ({item}, {op}) does not correspond to an add_particles naming an unsupported emitter"
+                        )));
+                    }
+                    d_pt += 1;
+                }
                 "unsupported-material" => {
                     if op != "canvas_item_set_material" {
                         return Err(mm(format!(
@@ -4594,6 +5085,12 @@ impl Validator {
         if d_mm != ix.n_mm_unsup {
             return Err(mm(
                 "an add_multimesh command names an unsupported multimesh, with no unsupported-multimesh entry"
+                    .into(),
+            ));
+        }
+        if d_pt != ix.n_pt_unsup {
+            return Err(mm(
+                "an add_particles command names an unsupported emitter, with no unsupported-particles entry"
                     .into(),
             ));
         }
@@ -4660,6 +5157,19 @@ impl Validator {
                     return Err(Error::new(
                         "multimesh-version",
                         format!("record at offset {offset}: multimesh {}'s custom AABB or buffer changed, but its version {} did not move", m.id, cur.version),
+                    ));
+                }
+            }
+        }
+        // PM5: the floats' half of `particles-version` (render-stream-12.md "`version`"): at an
+        // unmoved version every float is the earlier entry's, by bit pattern.
+        for p in &tx.particles {
+            if let Some(q) = self.last_particles.get(&p.id) {
+                let cur = &st.particles[&p.id];
+                if cur.version == q.version && !pt_floats_equal(q, cur) {
+                    return Err(Error::new(
+                        "particles-version",
+                        format!("record at offset {offset}: particles {}'s floats changed, but its version {} did not move", p.id, cur.version),
                     ));
                 }
             }
@@ -4945,6 +5455,10 @@ impl Validator {
             self.last_multimesh
                 .insert(m.id, st.multimeshes[&m.id].clone());
         }
+        for p in &tx.particles {
+            self.last_particles
+                .insert(p.id, st.particles[&p.id].clone());
+        }
         let maxes = [
             tx.canvases.iter().map(|c| c.id).max(),
             tx.items.iter().map(|c| c.id).max(),
@@ -4978,6 +5492,8 @@ impl Validator {
             .extend(tx.materials.iter().map(|c| c.id));
         d.multimeshes_upserted
             .extend(tx.multimeshes.iter().map(|c| c.id));
+        d.particles_upserted
+            .extend(tx.particles.iter().map(|c| c.id));
         let r = &self.removed;
         d.canvases_removed.extend(&r.canvases);
         d.items_removed.extend(&r.items);
@@ -4986,6 +5502,7 @@ impl Validator {
         d.shaders_removed.extend(&r.shaders);
         d.materials_removed.extend(&r.materials);
         d.multimeshes_removed.extend(&r.multimeshes);
+        d.particles_removed.extend(&r.particles);
         d.defaults_changed =
             self.old_defaults != (st.default_texture_filter, st.default_texture_repeat);
 
@@ -5122,6 +5639,13 @@ mod tests {
             &next.multimeshes,
             &d.multimeshes_upserted,
             &d.multimeshes_removed,
+        );
+        side(
+            "particles",
+            &prev.particles,
+            &next.particles,
+            &d.particles_upserted,
+            &d.particles_removed,
         );
         for id in &d.items_upserted {
             if d.items_commands.binary_search(id).is_err() {

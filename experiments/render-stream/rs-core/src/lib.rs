@@ -27,3 +27,5 @@ pub mod wire;
 mod carried_tests;
 #[cfg(test)]
 mod pm1_tests;
+#[cfg(test)]
+mod pm5_tests;

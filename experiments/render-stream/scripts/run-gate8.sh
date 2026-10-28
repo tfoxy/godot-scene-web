@@ -170,6 +170,19 @@
 #       `sabotage-undrawn-multimesh/receiver` (the pre-PM2 planner) and
 #       `sabotage-{perturb-instance,stale-buffer}/receiver-patch` (PM1's sabotaged patch sinks).
 #       Judged by lib/gate8-mm-checks.ts; g7-8's web half replays the receiver legs.
+#   g8pt (PM5, render-stream-12.md "Fixture and checks (gate 8 group g8pt)": GPU particles on /12,
+#       the capture side, fixtures/gate8-pt; every leg under g8pt/): the imports (gate8-pt,
+#       gate8-mm, receiver) and rs-core-check's build; then, in one private 640x360 gamescope,
+#       every gate8-pt capture at --fixed-fps 60 under GRC_ADOPT=arm (the node map the
+#       particle_process_material builtin is read through) with both sinks, the store, the hook log
+#       and the step log: `capture` (GRC_STREAM_VERSION=12), `sabotage-perturb-seed/capture` and
+#       `sabotage-drop-restart/capture` (GRC_SABOTAGE at frame 30), the native `receiver` on
+#       capture's full sink (RS_RECEIVER_PROTOCOL=12: accepted, every particle draw typed
+#       particles-undrawn until PM6) and `capture-v11` (the negative control); last, headless:
+#       `headless/capture` (no particles shim: every emitter RID()), `headless-shim/capture`
+#       (GRC_HEADLESS_PARTICLES=synthesize) and, on fixtures/gate8-mm, `headless-pump/capture`
+#       (GRC_PREDRAW_PUMP=1) and its control `headless-nopump/capture`. Judged by
+#       lib/gate8-pt-checks.ts; not in run-gate7.sh's G8_FILE_LEGS (no receiver draws particles yet).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -191,11 +204,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt)
 
 EXTENSION=""
 CALIBRATION=""
@@ -943,6 +956,113 @@ run_g8mm() {
 	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=11 RS_FIXTURE_MM_LOG="$OUT/g8mm/headless/capture/mm-frames.jsonl")
 	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
 	run_capture "$OUT/g8mm/headless/capture" "" none
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
+# ------------------------------------------------------------------------------------ g8pt
+G8PT_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-pt"
+# The frame the capture sabotages start at (fixtures/gate8-pt/expected.json sabotage_frame): every
+# emitter is live by then, and D_ONESHOT's second restart (step 2, frame 40) falls after it.
+G8PT_SABOTAGE_FRAME=30
+G8PT_SABOTAGES=(perturb-seed drop-restart)
+# Every g8pt capture: /12 (or the /11 control) with the node map connected (GRC_ADOPT=arm), which
+# the particle_process_material builtin reads through (render-stream-12.md).
+G8PT_ENV=(GRC_ADOPT=arm)
+
+run_import_g8pt() {
+	echo "run-gate8: g8pt import (fixtures gate8-pt and gate8-mm, receiver)"
+	local leg project
+	for leg in fixture mm-fixture receiver; do
+		project="$G8PT_FIXTURE_DIR"
+		[ "$leg" = mm-fixture ] && project="$G8MM_FIXTURE_DIR"
+		[ "$leg" = receiver ] && project="$RECEIVER_DIR"
+		LEG_ENV=()
+		run_headless "$OUT/g8pt/import/$leg" none -- mise exec -- godot --headless --path "$project" --import
+		[ -f "$OUT/g8pt/import/$leg/skipped-by-tier.txt" ] && continue
+		if [ "$(cat "$OUT/g8pt/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8pt import ($leg) failed, see $OUT/g8pt/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_rendered_g8pt <dir> <env word...>: an armed capture of gate8-pt on the rendered host
+# (the private gamescope) at --fixed-fps 60: both sinks, the store, the hook log and the step log.
+run_capture_rendered_g8pt() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence" "$dir/store"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm "${G8PT_ENV[@]}" "$@"
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl"
+	)
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered "$dir" "$G8PT_FIXTURE_DIR"
+	RENDERED_EXTRA_ARGS=()
+}
+
+# run_capture_headless_g8pt <dir> <fixture dir> <env word...>: an armed headless /12 capture at
+# --fixed-fps 60, both sinks and the store.
+run_capture_headless_g8pt() {
+	local dir="$1" fixture="$2"
+	shift 2
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$fixture"
+	CAPTURE_EXTRA_ENV=("${G8PT_ENV[@]}" "$@")
+	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
+	run_capture "$dir" "" none
+}
+
+run_g8pt() {
+	run_import_g8pt
+	echo "run-gate8: g8pt build-rs-core.sh (rs-core-check)"
+	mkdir -p "$OUT/g8pt"
+	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8pt/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8pt/build-rs-core.log" >&2
+		exit 1
+	}
+	echo "run-gate8: bringing up private gamescope for g8pt's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8pt"
+	RECORDING_NAME=recording.rs12
+	PATCH_RECORDING_NAME=recording-patch.rs12
+	echo "run-gate8: g8pt capture (/12, armed at birth, GRC_ADOPT=arm, rendered, --fixed-fps 60)"
+	run_capture_rendered_g8pt "$OUT/g8pt/capture" GRC_STREAM_VERSION=12
+	local s
+	for s in "${G8PT_SABOTAGES[@]}"; do
+		echo "run-gate8: g8pt sabotage-$s (capture, $s @$G8PT_SABOTAGE_FRAME)"
+		run_capture_rendered_g8pt "$OUT/g8pt/sabotage-$s/capture" GRC_STREAM_VERSION=12 \
+			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8PT_SABOTAGE_FRAME"
+	done
+	echo "run-gate8: g8pt receiver (the /12 capture replayed natively: accepted, particles undrawn)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	run_rendered_receiver "$OUT/g8pt/capture" "$OUT/g8pt/receiver"
+	RECORDING_NAME=recording.rs11
+	PATCH_RECORDING_NAME=recording-patch.rs11
+	echo "run-gate8: g8pt capture-v11 (/11, the negative control: no particles on the wire)"
+	run_capture_rendered_g8pt "$OUT/g8pt/capture-v11" GRC_STREAM_VERSION=11
+	gs_teardown "$OUT/gamescope-g8pt"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs12
+	PATCH_RECORDING_NAME=recording-patch.rs12
+	echo "run-gate8: g8pt headless/capture (/12, headless, no particles shim: every emitter RID())"
+	run_capture_headless_g8pt "$OUT/g8pt/headless/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12
+	echo "run-gate8: g8pt headless-shim/capture (/12, headless, GRC_HEADLESS_PARTICLES=synthesize)"
+	run_capture_headless_g8pt "$OUT/g8pt/headless-shim/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
+		GRC_HEADLESS_PARTICLES=synthesize
+	echo "run-gate8: g8pt headless-pump/capture (gate8-mm, /12, headless, GRC_PREDRAW_PUMP=1)"
+	# The gate8-mm legs run without GRC_ADOPT, exactly as g8mm's headless/capture (/11) does, so
+	# headless-nopump is that leg at /12: the byte-identity witness of a /12 stream without particles
+	# (render-stream-12.md "Byte identity with /11"; results/p3/pm5.md).
+	G8PT_ENV=()
+	run_capture_headless_g8pt "$OUT/g8pt/headless-pump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
+		GRC_PREDRAW_PUMP=1 RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump/capture/mm-frames.jsonl"
+	echo "run-gate8: g8pt headless-nopump/capture (gate8-mm, /12, headless, no pump: pt-pump's control)"
+	run_capture_headless_g8pt "$OUT/g8pt/headless-nopump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
+		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-nopump/capture/mm-frames.jsonl"
+	G8PT_ENV=(GRC_ADOPT=arm)
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }
@@ -1990,6 +2110,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8w11) run_g8w11 ;;
 	g8w11c) run_g8w11c ;;
 	g8mm) run_g8mm ;;
+	g8pt) run_g8pt ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	esac

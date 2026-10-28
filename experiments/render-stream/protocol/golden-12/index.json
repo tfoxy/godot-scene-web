@@ -1,0 +1,742 @@
+{
+  "schema": "render-stream-12-golden-index/1",
+  "protocol": "render-stream/12",
+  "valid": [
+    {
+      "file": "full.rs12",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "e5ffc046f45a0951010c3ca13cc1bdd62697b2afbd2c925e993ab32b7ab20b66"
+    },
+    {
+      "file": "patch.rs12",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "e51dbf9663be30aa78b45464a5268b1951f537f3916a3e350fbc3e8c1fee427d"
+    },
+    {
+      "file": "inline.rs12",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "68641e2b9bf60376e5b4028c535c9e49ee6e61df6902baea33f2ea33358b3827"
+    }
+  ],
+  "resolved": "resolved.json",
+  "inline_resources": [
+    {
+      "hash": "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+      "bytes": 1135,
+      "record_index": 1,
+      "before_seq": 1
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 2,
+      "before_seq": 1
+    },
+    {
+      "hash": "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+      "bytes": 1135,
+      "record_index": 5,
+      "before_seq": 3
+    },
+    {
+      "hash": "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+      "bytes": 171,
+      "record_index": 7,
+      "before_seq": 4
+    },
+    {
+      "hash": "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+      "bytes": 171,
+      "record_index": 8,
+      "before_seq": 4
+    },
+    {
+      "hash": "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+      "bytes": 117,
+      "record_index": 9,
+      "before_seq": 4
+    },
+    {
+      "hash": "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+      "bytes": 256,
+      "record_index": 10,
+      "before_seq": 4
+    },
+    {
+      "hash": "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+      "bytes": 157,
+      "record_index": 11,
+      "before_seq": 4
+    },
+    {
+      "hash": "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+      "bytes": 297,
+      "record_index": 13,
+      "before_seq": 5
+    },
+    {
+      "hash": "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+      "bytes": 122,
+      "record_index": 16,
+      "before_seq": 7
+    },
+    {
+      "hash": "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+      "bytes": 1474,
+      "record_index": 17,
+      "before_seq": 7
+    },
+    {
+      "hash": "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+      "bytes": 476,
+      "record_index": 18,
+      "before_seq": 7
+    },
+    {
+      "hash": "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+      "bytes": 209,
+      "record_index": 20,
+      "before_seq": 8
+    },
+    {
+      "hash": "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+      "bytes": 593,
+      "record_index": 21,
+      "before_seq": 8
+    },
+    {
+      "hash": "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+      "bytes": 137,
+      "record_index": 27,
+      "before_seq": 13
+    },
+    {
+      "hash": "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6",
+      "bytes": 486,
+      "record_index": 37,
+      "before_seq": 22
+    }
+  ],
+  "names": [
+    {
+      "seq": 1,
+      "names": [
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047"
+      ]
+    },
+    {
+      "seq": 2,
+      "names": [
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047"
+      ]
+    },
+    {
+      "seq": 3,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047"
+      ]
+    },
+    {
+      "seq": 4,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "42532dc3a4f775e3426da84ca155a52da8b598594a396e68f364e1b220aa933a",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 5,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 6,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 7,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 8,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 9,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 10,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "4353a1d85e83235c0041d2563ae73b0e54dfe6f37f7a859a5acb88aedae49474",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 11,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 12,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 13,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 14,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 15,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 16,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 17,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 18,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 19,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 20,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 21,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 22,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+        "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6"
+      ]
+    },
+    {
+      "seq": 23,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+        "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6"
+      ]
+    },
+    {
+      "seq": 24,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+        "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6"
+      ]
+    },
+    {
+      "seq": 25,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+        "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6"
+      ]
+    },
+    {
+      "seq": 26,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310",
+        "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6"
+      ]
+    }
+  ],
+  "dynamic_bodies": [
+    {
+      "file": "payloads/mesh1-dyn.body",
+      "source": "mesh1-b moved right by 1",
+      "sha256": "c9b8dac48a06c0f2a04836c78b8c1e20da24c0588d36e21690b009ff8815962e",
+      "bytes": 116
+    },
+    {
+      "file": "payloads/mesh1-tri.body",
+      "source": "textured triangle",
+      "sha256": "3f4e85ad8e66d99d17afd23a0723b2cd72571fa6fe97b7909efe6177fce10fbb",
+      "bytes": 88
+    },
+    {
+      "file": "payloads/mesh2-tri.body",
+      "source": "mesh1-a moved down by 20",
+      "sha256": "1c575bbace3936ea86bf2632827f54d0d655acc5f500990642b76d73b5405e29",
+      "bytes": 76
+    }
+  ],
+  "shader_payloads": [
+    {
+      "file": "payloads/shader-ppm.grp",
+      "hash": "477a6be52f0d151257c48e814014c6dc0f0bfa4270151ed25322c44d18dda5c6",
+      "bytes": 486
+    }
+  ],
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs12",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs12 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs12",
+      "code": "bad-magic",
+      "version": 12,
+      "description": "golden-11's full.rs11: magic byte 3 is 'B' (GRSB), not 'C'"
+    },
+    {
+      "file": "invalid/pt-offset-wrong.rs12",
+      "code": "pt-offset",
+      "version": 12,
+      "description": "emitter 2's f is 32, expected 31 (emitter 1 claims 31 floats)"
+    },
+    {
+      "file": "invalid/pt-offset-short.rs12",
+      "code": "pt-offset",
+      "version": 12,
+      "description": "pt_f32 carries 84 floats (count 84), the entries and the emit claim 85"
+    },
+    {
+      "file": "invalid/pt-offset-empty.rs12",
+      "code": "pt-offset",
+      "version": 12,
+      "description": "seq 2 (a patch that carries no particles float) carries an empty pt_f32 block (the block is present only when non-empty)"
+    },
+    {
+      "file": "invalid/pt-offset-missing.rs12",
+      "code": "pt-offset",
+      "version": 12,
+      "description": "seq 1's entries and emit claim 85 floats, but it carries no pt_f32 block"
+    },
+    {
+      "file": "invalid/particles-entry.rs12",
+      "code": "particles-entry",
+      "version": 12,
+      "description": "emitter 1 is ok with reason \"particles-3d\" (ok needs null)"
+    },
+    {
+      "file": "invalid/particles-entry-freed-floats.rs12",
+      "code": "particles-entry",
+      "version": 12,
+      "description": "emitter 2 is a freed tombstone that carries f 31 and its 31 floats (freed needs f null)"
+    },
+    {
+      "file": "invalid/particles-entry-trails.rs12",
+      "code": "particles-entry",
+      "version": 12,
+      "description": "emitter 2 has trail_poses 1 (and its 43 floats) with trails false"
+    },
+    {
+      "file": "invalid/particles-version.rs12",
+      "code": "particles-version",
+      "version": 12,
+      "description": "seq 2 carries emitter 1 (a moved emission transform) at version 4, below the base's 5"
+    },
+    {
+      "file": "invalid/particles-version-json.rs12",
+      "code": "particles-version",
+      "version": 12,
+      "description": "seq 2 carries emitter 1 with emitting false (and moved floats) at the base's version 5"
+    },
+    {
+      "file": "invalid/particles-version-floats.rs12",
+      "code": "particles-version",
+      "version": 12,
+      "description": "seq 2 carries emitter 1 with a moved emission transform (floats only) at the base's version 5"
+    },
+    {
+      "file": "invalid/particles-ref-command.rs12",
+      "code": "particles-ref",
+      "version": 12,
+      "description": "item 1 also draws add_particles 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/particles-ref-material.rs12",
+      "code": "particles-ref",
+      "version": 12,
+      "description": "emitter 1's process_material is 7, which has no material entry"
+    },
+    {
+      "file": "invalid/particles-ref-mesh.rs12",
+      "code": "particles-ref",
+      "version": 12,
+      "description": "emitter 1's draw pass names mesh 7, which has no mesh entry"
+    },
+    {
+      "file": "invalid/particles-ref-subemitter.rs12",
+      "code": "particles-ref",
+      "version": 12,
+      "description": "emitter 2's subemitter is 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/particle-emits-count.rs12",
+      "code": "particle-emits",
+      "version": 12,
+      "description": "a full transaction lists two emits on emitter 1, whose emits counter is 1"
+    },
+    {
+      "file": "invalid/particle-emits-unknown.rs12",
+      "code": "particle-emits",
+      "version": 12,
+      "description": "the emit names emitter 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/particle-emits-restarts.rs12",
+      "code": "particle-emits",
+      "version": 12,
+      "description": "the emit's restarts is 1, above emitter 1's restarts 0"
+    },
+    {
+      "file": "invalid/builtin-entry-order.rs12",
+      "code": "builtin-entry",
+      "version": 12,
+      "description": "shader 1's particle_process_material builtin has color_ramp before textures"
+    },
+    {
+      "file": "invalid/builtin-entry-list.rs12",
+      "code": "builtin-entry",
+      "version": 12,
+      "description": "shader 1's builtin textures is [\"scale\", \"angle\"], not in Parameter enum order"
+    },
+    {
+      "file": "invalid/builtin-entry-canvas.rs12",
+      "code": "builtin-entry",
+      "version": 12,
+      "description": "shader 1 carries the particle_process_material builtin but its mode is canvas_item"
+    },
+    {
+      "file": "invalid/particles-empty-key.rs12",
+      "code": "meta-schema",
+      "version": 12,
+      "description": "an unchanged patch carries \"particles\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/particles-removed-empty-key.rs12",
+      "code": "meta-schema",
+      "version": 12,
+      "description": "a patch carries \"removed_particles\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/particle-emits-empty-key.rs12",
+      "code": "meta-schema",
+      "version": 12,
+      "description": "a patch carries \"particle_emits\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/particles-removed-full.rs12",
+      "code": "patch-encoding",
+      "version": 12,
+      "description": "a full transaction carries \"removed_particles\": [3]"
+    },
+    {
+      "file": "invalid/particles-feature.rs12",
+      "code": "meta-schema",
+      "version": 12,
+      "description": "item 1 draws add_particles in a session whose features.ops lacks add_particles (the session record from before PM5)"
+    },
+    {
+      "file": "invalid/particles-v11.rs11",
+      "code": "meta-schema",
+      "version": 11,
+      "description": "a render-stream/11 transaction (golden-11's mini scene) carries a \"particles\" key and a pt_f32 block, which exist only at /12"
+    }
+  ],
+  "control": {
+    "valid": [
+      "control/valid/hello-native-block.json",
+      "control/valid/hello-live-coding.json"
+    ],
+    "invalid": [
+      "control/invalid/hello-wrong-protocol.json",
+      "control/invalid/hello-live-coding-grammar.json"
+    ]
+  }
+}

@@ -218,7 +218,12 @@ extends Node
 ##                               replays at /11. Either way the core ingests dynamic mesh bodies
 ##                               and draws them with region uploads, and the retention rule drops
 ##                               every payload that leaves H from memory.
-##   RS_RECEIVER_LIVE_CODING     W11d (W11t's coding, /11 only): unset offers "zstd-base,zstd"
+##                               PM5: 12 is render-stream/12 (render-stream-12.md, /11's
+##                               transport and hello under "render-stream/12"): subprotocol
+##                               render-stream.12, received tap received.rs12. In file mode a GRSC
+##                               recording replays at /12. The core counts every add_particles as
+##                               particles_commands_undrawn (`particles-undrawn`) until PM6.
+##   RS_RECEIVER_LIVE_CODING     W11d (W11t's coding, /11 and /12 only): unset offers "zstd-base,zstd"
 ##                               (base-prefix zstd, then per-message zstd), `zstd` offers zstd only,
 ##                               `off` sends no live_coding. Every binary message is decoded by
 ##                               the core before it is parsed; a `coding` error with a seq sends
@@ -634,6 +639,12 @@ func _ready() -> void:
 		_wire_version = 11
 		var receiver_block_v11: Dictionary = _report["receiver"]
 		receiver_block_v11["protocol"] = RsLiveClient.PROTOCOL_V11
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V12_HEX:
+		# PM5: a render-stream/12 recording (GRC_STREAM_VERSION=12) replays at /12: /11's paths,
+		# and every add_particles counted undrawn (particles_commands_undrawn) until PM6.
+		_wire_version = 12
+		var receiver_block_v12: Dictionary = _report["receiver"]
+		receiver_block_v12["protocol"] = RsLiveClient.PROTOCOL_V12
 	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
 		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
 		# additions to the tables, so it draws exactly as a /6 recording would.
@@ -1078,6 +1089,12 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 		if stats.has("multimesh_commands_undrawn"):
 			mm_totals["undrawn"] = RsWire.as_int(mm_totals.get("undrawn", 0)) + RsWire.as_int(stats["multimesh_commands_undrawn"])
 		_w11["multimesh"] = mm_totals
+	if stats.has("particles_commands_undrawn"):
+		# PM5 (render-stream-12.md "Receivers"): the /12 add_particles commands this apply left
+		# undrawn until PM6, summed (the stats carry the key only when non-zero, so a stream without
+		# particles has no `particles_undrawn` in report.w11).
+		_w11_init()
+		_w11["particles_undrawn"] = RsWire.as_int(_w11.get("particles_undrawn", 0)) + RsWire.as_int(stats["particles_commands_undrawn"])
 	for key: String in ["meshes_created", "meshes_rebuilt", "surface_updates", "mesh_upload_bytes", "skipped_mesh_commands"]:
 		resources[key] = mesh_resources[key]
 		if _summary.has(key):
@@ -1763,11 +1780,11 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if not ["6", "7", "8", "9", "10", "11"].has(protocol_text):
-		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10 or 11 (got %s)" % JSON.stringify(protocol_text))
+	if not ["6", "7", "8", "9", "10", "11", "12"].has(protocol_text):
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10, 11 or 12 (got %s)" % JSON.stringify(protocol_text))
 		return false
-	if RsConfig.is_web() and not ["7", "8", "9", "10", "11"].has(protocol_text):
-		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10 or (W11e) /11 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+	if RsConfig.is_web() and not ["7", "8", "9", "10", "11", "12"].has(protocol_text):
+		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10, (W11e) /11 or (PM5) /12 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
@@ -1794,7 +1811,7 @@ func _parse_wire_env() -> bool:
 			_log("error: RS_RECEIVER_LIVE_CODING must be zstd or off (got %s)" % JSON.stringify(coding_text))
 			return false
 	if coding_text != "" and _wire_version < 11:
-		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11")
+		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11 or 12")
 		return false
 	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
 	if _wire_version >= 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
@@ -1928,7 +1945,8 @@ func _process_live() -> void:
 				if _wire_version >= 11:
 					# W11d: /10's hello under render-stream/11, W11t's live_coding last (golden-11's
 					# control hello); the connection's decoder opens with the same offer.
-					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, RsLiveClient.PROTOCOL_V11)
+					# PM5: /12's hello is /11's under render-stream/12.
+					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, RsLiveClient.PROTOCOL_V12 if _wire_version >= 12 else RsLiveClient.PROTOCOL_V11)
 					if _live_coding != "":
 						hello_v11["live_coding"] = _live_coding
 					_applier.coding_open(_live_coding, _inbound_bytes)

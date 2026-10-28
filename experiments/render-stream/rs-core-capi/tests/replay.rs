@@ -64,7 +64,9 @@ fn replay_at(
     if path.parent().unwrap().ends_with("golden-11") {
         own = path.parent().unwrap().join("../golden-10/payloads");
     }
-    let mut store = if own.is_dir() {
+    let mut store = if path.parent().unwrap().ends_with("golden-12") {
+        g12_payloads()
+    } else if own.is_dir() {
         payloads_in(&own)
     } else {
         payloads()
@@ -301,6 +303,11 @@ fn the_session_is_at_the_streams_version() {
     assert_eq!(session_at(&rs11, 11).0, KIND_SESSION);
     assert_eq!(session_at(&rs11, 10).0, KIND_ERROR);
     assert_eq!(session_at(&rs10, 11).0, KIND_ERROR);
+    // PM5: a /12 file opens at /12 and only at /12.
+    let rs12 = golden7().join("../golden-12/full.rs12");
+    assert_eq!(session_at(&rs12, 12).0, KIND_SESSION);
+    assert_eq!(session_at(&rs12, 11).0, KIND_ERROR);
+    assert_eq!(session_at(&rs11, 12).0, KIND_ERROR);
     assert_eq!(session_at(&rs8, 6).0, KIND_ERROR);
     assert_eq!(session_at(&rs6, 8).0, KIND_ERROR);
     // Only 6, 7 and 8: an older version is not a receiver stream.
@@ -406,6 +413,8 @@ fn golden_11_draws_dynamic_meshes() {
             assert!(!mentions(&core.vt.out, "meshes_dynamic_undrawn"), "{name}");
             assert!(!mentions(&core.vt.out, "mesh-dynamic"), "{name}");
             assert!(!mentions(&core.vt.out, "multimesh_commands_undrawn"), "{name}");
+            // PM5: below /12 the key is never written (the stats stay byte-identical).
+            assert!(!mentions(&core.vt.out, "particles_commands_undrawn"), "{name}");
             if mentions(&core.vt.out, "multimesh_resources") {
                 mm_drawn += stat_int(&core.vt.out, "multimesh_commands");
                 mm_buffers += stat_int(&core.vt.out, "buffer_sets");
@@ -446,6 +455,81 @@ fn golden_11_draws_dynamic_meshes() {
         assert!(updates > 0, "{name}: no region upload");
         assert!(rebuilt > 0, "{name}: no rebuild");
         assert!(released > 0, "{name}: the retention rule released nothing");
+    }
+}
+
+/// golden-12's hashed payloads: golden-10's (states 1 to 21 are golden-11's) plus its own
+/// (state 22's particles shader, and golden-11's dynamic bodies).
+fn g12_payloads() -> HashMap<Hash, Vec<u8>> {
+    let g12 = golden().join("../golden-12");
+    let mut store = payloads_in(&g12.join("../golden-10/payloads"));
+    store.extend(payloads_in(&g12.join("payloads")));
+    store
+}
+
+/// The `unsupported_commands` rows of an apply's stats whose reason is `reason` (each row is a
+/// 3-key dict ending in the reason's string).
+fn count_mentions(bytes: &[u8], needle: &str) -> i64 {
+    bytes.windows(needle.len()).filter(|w| *w == needle.as_bytes()).count() as i64
+}
+
+/// PM5 (render-stream-12.md "Receivers"): golden-12 replays through the capi at /12. Every
+/// `add_particles` is counted undrawn (`particles_commands_undrawn`, written only when non-zero)
+/// and typed as one `unsupported_commands` row `particles-undrawn`; nothing else about the
+/// replay moves (states 1 to 21 are golden-11's, so the canvas-group and back-buffer totals are
+/// golden-11's), and the delta walk equals the full scan. Item 18 is drawn at states 22 (2
+/// emitters), 24 (3) and 25 (2): 7 commands at either encoding.
+#[test]
+fn golden_12_counts_particles_undrawn() {
+    let g12 = golden().join("../golden-12");
+    for name in ["full.rs12", "patch.rs12", "inline.rs12"] {
+        let path = g12.join(name);
+        let (honest, totals) = replay_counting(&path, 12, false, "");
+        assert_eq!(totals, (5, 3), "{name}");
+        assert!(replay_at(&path, 12, true, "") == honest, "{name}: delta vs full scan");
+        let data = std::fs::read(&path).unwrap();
+        let mut store = g12_payloads();
+        let mut core = Core::new();
+        let spans = wire::split_records(&data, 12).unwrap();
+        assert_eq!(core.session(&data, spans[0].offset, 12), KIND_SESSION);
+        core.begin_session();
+        let (mut undrawn, mut rows, mut applies) = (0, 0, 0);
+        for s in &spans[1..] {
+            let kind = core.accept(&data, s.offset);
+            assert_ne!(kind, KIND_ERROR, "{name}");
+            if kind == KIND_RESOURCE {
+                assert!(core.resource_payload());
+                let p = core.text.clone();
+                store.insert(wire::sha256(&p), p);
+                continue;
+            }
+            if kind != KIND_TRANSACTION {
+                continue;
+            }
+            let (hashes, library) = needed(&mut core);
+            for h in hashes {
+                core.provide(&h, &store[&Hash::from_hex(&h).unwrap()]).unwrap();
+            }
+            for h in library {
+                core.provide_library(&h, false, "no library in the golden test");
+            }
+            core.apply().unwrap();
+            applies += 1;
+            let out = &core.vt.out;
+            let n = if mentions(out, "particles_commands_undrawn") {
+                stat_int(out, "particles_commands_undrawn")
+            } else {
+                0
+            };
+            assert!(n != 0 || !mentions(out, "particles_commands_undrawn"), "{name}: a zero key");
+            let r = count_mentions(out, "particles-undrawn");
+            assert_eq!(r, n, "{name}: rows vs particles_commands_undrawn");
+            undrawn += n;
+            rows += r;
+        }
+        assert_eq!(applies, 26, "{name}");
+        assert_eq!(undrawn, 7, "{name}: particles_commands_undrawn");
+        assert_eq!(rows, 7, "{name}: particles-undrawn rows");
     }
 }
 

@@ -110,6 +110,10 @@ struct MirrorStats {
   std::uint64_t multimesh_unknown = 0;    // a multimesh tap naming a RID the table does not know
   std::uint64_t multimesh_rejected = 0;   // taps the engine refuses (GLES3's checks): no change
   std::uint64_t multimesh_unchanged = 0;  // accepted taps that changed nothing (an idle emitter)
+  // PM5 (render-stream/12 with the particles hooks only; zero otherwise).
+  std::uint64_t live_particles = 0;      // particles table entries now, tombstones included
+  std::uint64_t particles_unknown = 0;   // a particles tap naming a RID the table does not know
+  std::uint64_t ppm_resolved = 0;        // particles-mode shaders keyed by the builtin so far
   // Gate 5.5 (G55d).
   std::uint64_t live_shaders = 0;
   std::uint64_t live_materials = 0;
@@ -466,6 +470,90 @@ class Mirror {
   };
   std::vector<MultimeshStateNote> take_multimesh_states();
 
+  // --- particles (PM5; render-stream-12.md "Particles table", "The emit list") --------------
+  //
+  // Set once before arming (survives reset()). `enabled` exactly when the session is /12 and the
+  // capture planned the 33 particles hooks (hooks.h hooks_particles_planned()): add_particles then
+  // records /12's command and snapshots carry the particles table and the emit log; disabled,
+  // every tap is a no-op and every snapshot is what it was before PM5.
+  //
+  // Each emitter is modelled on GLES3's ParticlesStorage::Particles defaults
+  // (drivers/gles3/storage/particles_storage.h) plus the fields /12 carries that GLES3 ignores
+  // (trails, sub-emitter, emits). A call naming an unknown RID changes nothing; set_draw_passes
+  // with a negative count and set_draw_pass_mesh outside the pass list are refused (ERR_FAIL).
+  // `version` starts at 1 and moves by 1 on every accepted call that changes the entry (a JSON
+  // field, or a float by bit pattern); restart, emit and request_process_time always move it.
+  struct ParticlesOptions {
+    bool enabled = false;
+    bool state_notes = false;            // keep a ParticlesStateNote per moved version
+    std::uint64_t drop_restart_frame = 0;  // sabotage drop-restart (0: off)
+    bool param_arrays = false;  // /12: carry a plain-Array material parameter's packed form
+  };
+  void set_particles(const ParticlesOptions &options);
+  const ParticlesOptions &particles_options() const { return pt_options_; }
+  // The calls, rendering_server.h:770-842 (create and free have their own entry points).
+  enum class ParticlesOp : std::uint8_t {
+    SetMode, SetEmitting, SetAmount, SetAmountRatio, SetLifetime, SetOneShot, SetPreProcessTime,
+    RequestProcessTime, SetExplosivenessRatio, SetRandomnessRatio, SetCustomAabb, SetSpeedScale,
+    SetUseLocalCoordinates, SetProcessMaterial, SetFixedFps, SetInterpolate, SetFractionalDelta,
+    SetCollisionBaseSize, SetSeed, SetTransformAlign, SetTrails, SetTrailBindPoses,
+    RequestProcess, Restart, SetSubemitter, Emit, SetDrawOrder, SetDrawPasses, SetDrawPassMesh,
+    SetEmissionTransform, SetEmitterVelocity, SetInterpToEnd,
+  };
+  // One call's arguments: `i` an int/enum/bool (or the pass index), `rid` a RID argument, `f` the
+  // floats in wire order (a double already rounded to float32; a transform as 12, an AABB as 6, a
+  // vector as 3, the trail poses 12 each, an emit's 23), `flags` an emit's flags.
+  struct ParticlesArgs {
+    std::int64_t i = 0;
+    std::uint64_t rid = 0;
+    std::vector<float> f;
+    std::uint32_t flags = 0;
+  };
+  // What one particles tap did: the hook log's `id`, `accepted` and, for an emit, `restarts`.
+  struct ParticlesCall {
+    bool known = false;
+    std::uint32_t id = 0;
+    bool accepted = false;
+    bool changed = false;
+    bool omitted = false;
+    std::uint64_t version = 0;
+    std::uint64_t restarts = 0;   // particles_emit: the emitter's restarts counter at the call
+    std::uint32_t ref_id = 0;     // a RID argument's wire id (0: unknown or none)
+  };
+  ParticlesCall particles_create(std::uint64_t rid, std::uint64_t frame);
+  ParticlesCall particles_call(std::uint64_t rid, ParticlesOp op, const ParticlesArgs &args,
+                               std::uint64_t frame);
+  // free() of an emitter: version + 1, a `freed` tombstone while still named, gone otherwise.
+  ParticlesCall particles_free(std::uint64_t rid, std::uint64_t frame);
+  bool knows_particles(std::uint64_t rid) const;
+  // The wire id of a RID argument as the hook log names it (a material, mesh or emitter).
+  std::uint32_t material_id_of(std::uint64_t rid) const;
+  std::uint32_t mesh_id_of(std::uint64_t rid) const;
+  // canvas_item_add_particles at /12: {"op":"add_particles","particles","tex"}; an unknown RID
+  // becomes `unsupported`/`unknown-particles`. Only when enabled.
+  void add_particles(std::uint64_t item, std::uint64_t particles, std::uint64_t texture,
+                     std::uint64_t frame);
+  // The hook log's `state` lines: one per emitter whose version moved since its last note, taken
+  // at each snapshot (with `state_notes`), stamped with the snapshot's frame. `entry` carries the
+  // host's true counters (the drop-restart sabotage only skews the wire).
+  struct ParticlesStateNote {
+    std::uint64_t frame = 0;
+    std::uint64_t rid = 0;  // 0 once freed
+    rs2::ParticlesEntry entry;
+  };
+  std::vector<ParticlesStateNote> take_particles_states();
+  // The particle_process_material builtin (render-stream-12.md): the particles-mode shaders with
+  // code and no builtin yet, each with candidate (material RID, item RID) pairs: an emitter whose
+  // process material is on the shader, drawn by the item. rs_adopt.cpp resolves them at the frame
+  // boundary through the node map and calls set_shader_ppm().
+  struct PpmCandidate {
+    std::uint64_t shader_rid = 0;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> pairs;  // (material RID, item RID)
+  };
+  std::vector<PpmCandidate> ppm_candidates() const;
+  std::uint64_t ppm_epoch() const;
+  void set_shader_ppm(std::uint64_t shader_rid, const rs2::BuiltinParticleProcessMaterial &key);
+
   // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
   //
   // The mesh table: its own per-session id counter (from 1, never reused), `version` 1 at
@@ -784,6 +872,7 @@ class Mirror {
     std::uint64_t cv_digest_of = 0;
     std::uint64_t cv_digest = 0;
     std::uint64_t cv_digest_below = 0;  // PM1: the lowered list's digest (0: no multimesh command)
+    std::uint64_t cv_digest_below12 = 0;  // PM5: the /11 list's digest (0: no particles command)
     // G55d (render-stream-5.md "Item"): the last canvas_item_set_material named a non-null RID
     // the material table does not know -- `material: null` plus the derived `unknown-material`.
     bool unknown_material = false;
@@ -893,12 +982,19 @@ class Mirror {
     // named an unknown texture RID.
     std::map<std::pair<std::string, std::int32_t>, std::uint32_t> default_textures;
     std::set<std::pair<std::string, std::int32_t>> unresolvable_defaults;
+    // PM5: the particle_process_material key the node map resolved (has_ppm), /12 only.
+    bool has_ppm = false;
+    rs2::BuiltinParticleProcessMaterial ppm;
   };
   // One material parameter as the table keeps it: supported (`param`) or refused (`reason`).
   struct MaterialParam {
     bool ok = true;
     rs2::MaterialReason reason = rs2::MaterialReason::ParamType;
     rs2::Param param;
+    // PM5: a plain Array's packed form (rs_variant.h array_form): /12 carries `v12_param`,
+    // older versions keep the refusal above.
+    bool v12_ok = false;
+    rs2::Param v12_param;
   };
   struct Material {
     std::uint32_t id = 0;
@@ -920,6 +1016,12 @@ class Mirror {
       bool unsupported = false;              // some parameter is not ok ...
       rs2::MaterialReason reason = rs2::MaterialReason::ParamType;  // ... the first one's reason
       std::vector<std::uint32_t> textures;  // the texture ids of the ok rid parameters
+      // PM5: when a parameter has a /12-only form (v12_ok) and the mirror carries it, the /11
+      // form (params, refusal) for below_v12; `has_below` false otherwise.
+      bool has_below = false;
+      rs2::SharedVector<rs2::Param> below_params;
+      bool below_unsupported = false;
+      rs2::MaterialReason below_reason = rs2::MaterialReason::ParamType;
     };
     mutable WireParams wire;
   };
@@ -1042,6 +1144,14 @@ class Mirror {
                        const float *values, std::uint32_t count, std::uint64_t frame);
   rs2::MultimeshEntry wire_multimesh(const Multimesh &mm) const;
   void note_multimesh(const Multimesh &mm, std::uint64_t frame);
+  // Particles (PM5).
+  struct Particles;
+  Particles *find_particles(std::uint64_t rid);
+  bool particles_referenced(std::uint32_t id) const;
+  void particles_moved(Particles *p, ParticlesCall *out);
+  rs2::ParticlesEntry wire_particles(const Particles &p, bool notes) const;
+  void note_particles(const Particles &p, std::uint64_t frame);
+  void retire_particles(Particles *p, std::uint64_t frame);
   // Shaders and materials (G55d).
   Shader *find_shader(std::uint64_t rid);
   Material *find_material(std::uint64_t rid);
@@ -1117,6 +1227,51 @@ class Mirror {
   MultimeshOptions mm_options_;
   std::uint32_t stale_buffer_multimesh_ = 0;  // stale-buffer: the frozen multimesh (0: none yet)
   std::vector<MultimeshStateNote> multimesh_notes_;
+  // PM5: emitters (tombstones included), the options (survive reset()), the state notes and the
+  // emit log (the pending emits of the frame being built, and the published tail).
+  struct Particles {
+    std::uint32_t id = 0;
+    std::uint64_t rid = 0;  // 0 once freed
+    bool freed = false;
+    std::uint64_t version = 1;
+    std::uint64_t wire_version_skew = 0;  // drop-restart: versions the wire does not see
+    std::uint64_t restarts_dropped = 0;   // drop-restart: restarts the wire does not see
+    bool mode_2d = false;
+    bool emitting = false;
+    std::int32_t amount = 0;
+    bool one_shot = false;
+    std::int32_t fixed_fps = 30;  // GLES3's default
+    bool interpolate = true;
+    bool fractional_delta = false;
+    bool local = false;
+    std::int32_t draw_order = 0;
+    std::int32_t transform_align = 0;
+    bool trails = false;
+    std::uint32_t seed = 0;
+    std::uint64_t restarts = 0;
+    std::uint64_t emits = 0;
+    std::uint64_t process_requests = 0;
+    std::uint64_t material_rid = 0;
+    std::uint32_t material_id = 0;
+    bool unknown_material = false;
+    std::vector<std::uint64_t> pass_rids;
+    std::vector<std::uint32_t> pass_ids;
+    std::vector<bool> pass_unknown;
+    std::uint64_t sub_rid = 0;
+    std::uint32_t sub_id = 0;
+    bool unknown_sub = false;
+    std::shared_ptr<std::vector<float>> floats;  // 31 + 12 x poses, wire order
+    std::uint64_t noted_version = 0;
+  };
+  std::map<std::uint32_t, Particles> particles_;
+  std::unordered_map<std::uint64_t, std::uint32_t> particles_by_rid_;
+  std::uint32_t next_particles_id_ = 1;
+  ParticlesOptions pt_options_;
+  bool drop_restart_done_ = false;
+  std::vector<ParticlesStateNote> particles_notes_;
+  std::vector<rs2::ParticleEmit> pending_emits_;
+  std::shared_ptr<const rs2::EmitTail> emit_tail_;
+  std::uint64_t ppm_epoch_ = 0;  // moves when a shader or emitter changes what ppm_candidates sees
   // G55d: shaders and materials (no tombstones, D5).
   std::map<std::uint32_t, Shader> shaders_;
   std::unordered_map<std::uint64_t, std::uint32_t> shader_by_rid_;
@@ -1158,6 +1313,7 @@ void mirror_set_perturb_vertex(std::uint64_t from_frame);
 void mirror_set_perturb_shader(std::uint64_t from_frame);
 void mirror_set_shader_policy(rs2::ShaderPolicy policy);
 void mirror_set_multimesh(const Mirror::MultimeshOptions &options);
+void mirror_set_particles(const Mirror::ParticlesOptions &options);
 std::uint64_t mirror_epoch();
 Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
 MirrorStats mirror_stats();

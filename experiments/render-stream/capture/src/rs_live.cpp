@@ -362,7 +362,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V11   ? kProtocolV11
+  return version == ProtocolVersion::V12   ? kProtocolV12
+         : version == ProtocolVersion::V11 ? kProtocolV11
          : version == ProtocolVersion::V10 ? kProtocolV10
          : version == ProtocolVersion::V9  ? kProtocolV9
          : version == ProtocolVersion::V8 ? kProtocolV8
@@ -476,7 +477,7 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   // W11t (render-stream-11.md "As built (W11t)"): a /11 hello may carry `live_coding`; the only
   // optional key of any control message.
   const bool optional_live_coding =
-      message.type == ControlType::Hello && version == ProtocolVersion::V11;
+      message.type == ControlType::Hello && is_v11_or_later(version);
   for (const auto &field : fields) {
     if (optional_live_coding && field.first == "live_coding") {
       continue;
@@ -801,6 +802,7 @@ struct Hub::V11Records {
   std::shared_ptr<const rs::Captured> target;
   std::vector<PayloadName> records;
   std::uint64_t inline_count = 0;
+  bool lowered = false;  // PM5: planned on the /11 view (lower_particles) of both states
 };
 
 // P3-SP: a transaction one connection formed and encoded in this frame callback. Another connection
@@ -904,9 +906,12 @@ const Hub::TargetRefs &Hub::target_refs(const std::shared_ptr<const rs::Captured
 }
 
 const Hub::V11Records &Hub::v11_records(const std::shared_ptr<const rs::Captured> &base,
-                                        const std::shared_ptr<const rs::Captured> &target) {
+                                        const std::shared_ptr<const rs::Captured> &target,
+                                        bool lower) {
+  lower = lower && (target->state.particles_commands ||
+                    (base != nullptr && base->state.particles_commands));
   for (const auto &r : frame_v11_) {
-    if (r->base == base && r->target == target) {
+    if (r->base == base && r->target == target && r->lowered == lower) {
       return *r;
     }
   }
@@ -915,6 +920,17 @@ const Hub::V11Records &Hub::v11_records(const std::shared_ptr<const rs::Captured
   auto r = std::make_unique<V11Records>();
   r->base = base;
   r->target = target;
+  r->lowered = lower;
+  if (lower) {
+    // PM5: a /11 connection of a /12 host names what its own transactions name (a
+    // process-material shader that is `ok` only at /12 is no payload of its).
+    const Snapshot t = lower_particles(target->state);
+    const Snapshot b = base != nullptr ? lower_particles(base->state) : Snapshot();
+    r->records = records_before(base != nullptr ? &b : nullptr, t, policy);
+    r->inline_count = inline_names(t, policy).size();
+    frame_v11_.push_back(std::move(r));
+    return *frame_v11_.back();
+  }
   r->records = records_before(base != nullptr ? &base->state : nullptr, target->state, policy);
   r->inline_count = inline_names(target->state, policy).size();
   frame_v11_.push_back(std::move(r));
@@ -1158,7 +1174,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // G8k9: render-stream.9 -> /9 (render-stream-9.md "Live transport").
       // CG1: render-stream.10 -> /10 (render-stream-10.md "Live transport").
       // W11b: render-stream.11 -> /11 (render-stream-11.md "Live transport").
-      c.version = event.subprotocol == kSubprotocolV11   ? ProtocolVersion::V11
+      // PM5: render-stream.12 -> /12 (render-stream-12.md).
+      c.version = event.subprotocol == kSubprotocolV12   ? ProtocolVersion::V12
+                  : event.subprotocol == kSubprotocolV11 ? ProtocolVersion::V11
                   : event.subprotocol == kSubprotocolV10 ? ProtocolVersion::V10
                   : event.subprotocol == kSubprotocolV9  ? ProtocolVersion::V9
                   : event.subprotocol == kSubprotocolV8 ? ProtocolVersion::V8
@@ -1313,7 +1331,7 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
         } else {
           hello.null("token_ok");
         }
-        if (c.version == ProtocolVersion::V11) {
+        if (is_v11_or_later(c.version)) {
           // W11t: the receiver offers, the host chooses (rs_live_coding.h negotiate).
           c.s.has_live_coding = message.has_live_coding;
           c.s.live_coding_offer = message.live_coding;
@@ -1582,7 +1600,7 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   // inline(T) not in inline(B), B the last snapshot it sent (rs2_diff.h records_before), in the
   // same table order, and marks nothing: its carried set is inline(B) by L2. keep-carried keeps
   // /10's set instead.
-  const bool v11 = c.version == ProtocolVersion::V11;
+  const bool v11 = is_v11_or_later(c.version);
   std::vector<std::pair<const std::string *, std::uint32_t>> to_send;  // (hash, CarriedIndex id)
   std::vector<PayloadName> kept;  // keep-carried's records (to_send points into it)
   if (v11) {
@@ -1595,7 +1613,8 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
       }
       c.carried_count = c.keep_carried->carried_count();
     } else {
-      const V11Records &records = v11_records(record_base, target);
+      const V11Records &records =
+          v11_records(record_base, target, !is_v12_or_later(c.version));
       for (const PayloadName &name : records.records) {
         to_send.emplace_back(&name.hash, CarriedIndex::kNoId);
       }
@@ -1607,6 +1626,9 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
       const std::uint32_t id = refs.ids[i];
       if (id == CarriedIndex::kNoId || carried_.carried(id, c.carried_slot)) {
         continue;
+      }
+      if (refs.refs[i].shader != nullptr && refs.refs[i].shader->has_ppm) {
+        continue;  // PM5: a process-material shader is a payload only at /12 (lower_particles)
       }
       to_send.emplace_back(refs.refs[i].hash, id);
     }
@@ -1680,6 +1702,9 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   // PM1 sabotage perturb-instance: a function of the frame, so lockstep viewers still share.
   meta.perturb_instance = v11 && config_.perturb_instance_frame != 0 &&
                           frame >= config_.perturb_instance_frame;
+  // PM5 sabotage perturb-seed, likewise (a /12 connection only).
+  meta.perturb_seed = is_v12_or_later(c.version) && config_.perturb_seed_frame != 0 &&
+                      frame >= config_.perturb_seed_frame;
   const bool full = !c.has_base || c.resync;
   const std::shared_ptr<const rs::Captured> base = full ? nullptr : c.base;
   // P3-SP: the same transaction already formed this callback (another connection in lockstep).
@@ -1687,7 +1712,8 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   for (const auto &tx : frame_txs_) {
     if (tx->full == full && tx->base == base && tx->target == target &&
         tx->meta.version == meta.version && tx->meta.frame == meta.frame &&
-        tx->meta.perturb_instance == meta.perturb_instance) {
+        tx->meta.perturb_instance == meta.perturb_instance &&
+        tx->meta.perturb_seed == meta.perturb_seed) {
       shared = tx.get();
       break;
     }
@@ -1905,7 +1931,12 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           // unobserved.
           declare_backbuffer_unobserved(&c.session.features);
         }
-        if (c.version != ProtocolVersion::V11) {
+        if (is_v12_or_later(template_.version) && !is_v12_or_later(c.version)) {
+          // PM5: below /12 the session of a /12 host declares canvas_item_add_particles unsupported, as before
+          // PM5 (make_full/make_patch lower its transactions: rs2_diff.h lower_particles).
+          unobserve_particles_features(&c.session.features);
+        }
+        if (!is_v11_or_later(c.version)) {
           // PM1 rule 8: below /11 the session declares canvas_item_add_multimesh unsupported, as
           // before PM1 (make_full/make_patch lower its transactions: rs2_diff.h lower_multimesh).
           unobserve_multimesh_features(&c.session.features);
@@ -1951,13 +1982,13 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
             std::max<std::uint64_t>(c.stats.max_record_bytes, session_bytes.size());
         c.stats.encode_ns_total = saturating_add(c.stats.encode_ns_total, t1 - t0);
         c.state = State::Streaming;
-        if (c.version != ProtocolVersion::V11) {
+        if (!is_v11_or_later(c.version)) {
           c.carried_slot = carried_.acquire();  // a fresh connection has carried nothing
         } else if (config_.keep_carried) {
           // W11b sabotage keep-carried: /10's lifelong set on a /11 connection.
           InlinePolicy policy;
           policy.inline_max_bytes = template_.resources.inline_max_bytes;
-          c.keep_carried = std::make_unique<RecordPlanner>(ProtocolVersion::V11, policy, true);
+          c.keep_carried = std::make_unique<RecordPlanner>(c.version, policy, true);
         }
         ++c.s.frames_offered;
         sent_json = send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
@@ -2302,13 +2333,13 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       }
     }
     json.field_or_null("origin", s.origin);
-    if (s.version == 9 || s.version == 10 || s.version == 11) {
+    if (s.version == 9 || s.version == 10 || s.version == 11 || s.version == 12) {
       // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 to /11 connections
       // only (render-stream-10.md and -11.md: their hellos are /9's).
       json.field_or_null("texture_encodings", s.texture_encodings);
       json.field_or_null("gpu_formats", s.gpu_formats);
     }
-    if (s.version == 11) {
+    if (s.version == 11 || s.version == 12) {
       // W11t: the live coding (render-stream-11.md "As built (W11t)").
       json.key("live_coding").object_begin();
       if (s.has_live_coding) {

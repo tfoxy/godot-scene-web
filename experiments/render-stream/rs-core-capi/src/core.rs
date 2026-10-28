@@ -39,8 +39,11 @@ pub const VERSION: u8 = 6;
 /// at accept (`DynamicMeshes`), the planner draws them by mesh id with region uploads, the
 /// retention rule hands every hash that left H back to the receiver's cache (`take_released`),
 /// and `check_fetch` is `inline-fetch-zero`; the live hello offers .11 under
-/// RS_RECEIVER_PROTOCOL=11.
-pub const VERSIONS: [u8; 6] = [6, 7, 8, 9, 10, 11];
+/// RS_RECEIVER_PROTOCOL=11. PM5 adds render-stream/12 (render-stream-12.md "Receivers"): rs-core
+/// validates and resolves the particles table and the emit list, and the planner counts every
+/// `add_particles` as `particles_commands_undrawn` (`particles-undrawn`) until PM6 replays it;
+/// the live hello offers .12 under RS_RECEIVER_PROTOCOL=12.
+pub const VERSIONS: [u8; 7] = [6, 7, 8, 9, 10, 11, 12];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
@@ -257,7 +260,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6, /7, /8, /9, /10 and /11, not /{version}"),
+                format!("the receiver core speaks render-stream/6, /7, /8, /9, /10, /11 and /12, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;

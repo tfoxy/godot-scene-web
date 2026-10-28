@@ -124,6 +124,18 @@
 // buffer_sha256 (the SHA-256 of the mirror's shadow buffer as little-endian f32, null unless the
 // status is "ok": exactly the resolved form's rule). This log keeps no multimesh registry of its
 // own: the mirror's verdicts are the evidence, and `state` is what the wire must carry.
+//
+// PM5 (render-stream-12.md "Hook log and counters") adds `kind: "particles"` lines in the same
+// shape as the multimesh lines: frame, t_us, thread, kind ("particles"), call (the RenderingServer
+// method name, `free` for a free of an emitter), rid, id, accepted, version, then the call's own
+// arguments under their header names (a transform as 12 floats in the wire order, an AABB as 6, a
+// vector as 3, a colour as 4, a RID as its wire id under the argument's name plus "<arg>_rid",
+// doubles as the float32-rounded value the wire carries); particles_emit adds `restarts` last.
+// `call: "state"`: one line per emitter per published frame in which its version moved: status,
+// reason, version, mode, emitting, amount, one_shot, fixed_fps, interpolate, fractional_delta,
+// local, draw_order, transform_align, trails, trail_poses, seed, restarts, emits,
+// process_requests, process_material, draw_passes, subemitter, then `floats` (31 + 12 x
+// trail_poses floats in wire order, null when freed); rid is null once freed.
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
@@ -241,6 +253,9 @@ class MultimeshArgs {
   MultimeshArgs &rid(const char *key, std::uint64_t value);   // decimal string, null for 0
   MultimeshArgs &id(const char *key, std::uint64_t value);    // integer, null for 0
   MultimeshArgs &floats(const char *key, const float *values, std::size_t n);  // non-finite: null
+  MultimeshArgs &f32(const char *key, float value);         // PM5: one float, a number (or null)
+  MultimeshArgs &str(const char *key, const char *value);   // PM5: a JSON string (null for null)
+  MultimeshArgs &raw(const char *key, const std::string &json);  // PM5: preformatted JSON
   // `count` floats from `data`: "<key>": count and "<sha_key>": their SHA-256 (LE f32 bytes).
   MultimeshArgs &buffer(const char *key, const char *sha_key, const float *data,
                         std::size_t count);
@@ -463,6 +478,13 @@ class ResourceLog {
                       std::uint64_t id, bool accepted, std::uint64_t version,
                       const MultimeshArgs &args, bool omitted = false);
   void multimesh_state(const TapContext &ctx, const MultimeshState &state);
+  // PM5: one hooked particles call, and one `state` line (`entry_json` is the entry's JSON fields
+  // from "status" on, without braces, as particles_state_fields() writes them).
+  void particles_call(const TapContext &ctx, const char *call, std::uint64_t rid,
+                      std::uint64_t id, bool accepted, std::uint64_t version,
+                      const MultimeshArgs &args, bool omitted = false);
+  void particles_state(const TapContext &ctx, std::uint64_t frame, std::uint64_t rid,
+                       std::uint64_t id, const std::string &entry_json);
 
   // The wire id of a texture RID the log knows, or 0.
   std::uint64_t texture_id(std::uint64_t rid) const;

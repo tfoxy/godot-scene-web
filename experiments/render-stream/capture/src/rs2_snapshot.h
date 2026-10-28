@@ -143,31 +143,49 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV11 = {0x47, 0x52, 0x53, 0x42
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV11 = "render-stream/11";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11 };
+// render-stream/12 (PM5, render-stream-12.md): /11 plus the particles table (`particles`,
+// `removed_particles`), the transaction key `particle_emits`, the add_particles command, the
+// optional tenth block `pt_f32` (present only when it holds a float) and the shader builtin
+// `particle_process_material`. Magic "GRSC". Opt-in like /8 to /11 (GRC_STREAM_VERSION=12).
+inline constexpr std::array<std::uint8_t, 8> kMagicV12 = {0x47, 0x52, 0x53, 0x43,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV12 = "render-stream/12";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12 };
 
 // True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
 // window, CORS). /8 is /7 plus render-stream-8.md's list, /9 is /8 plus render-stream-9.md's and
 // /10 is /9 plus render-stream-10.md's, so every "V7" cascade means "V7 or later".
 inline constexpr bool is_v7_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
-         v == ProtocolVersion::V10 || v == ProtocolVersion::V11;
+         v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
 }
 
 // True for /8 to /11: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
-         v == ProtocolVersion::V11;
+         v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
 }
 
 // True for /9 to /11: the versions that carry render-stream-9.md's keys.
 inline constexpr bool is_v9_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11;
+  return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11 ||
+         v == ProtocolVersion::V12;
 }
 
 // True for /10 and /11: the versions that carry render-stream-10.md's keys.
 inline constexpr bool is_v10_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V10 || v == ProtocolVersion::V11;
+  return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
 }
+
+// True for /11 and /12: the versions that carry render-stream-11.md's keys (PM5: every "/11"
+// cascade means "/11 or later").
+inline constexpr bool is_v11_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
+}
+
+// True for /12: the versions that carry render-stream-12.md's keys.
+inline constexpr bool is_v12_or_later(ProtocolVersion v) { return v == ProtocolVersion::V12; }
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.
@@ -246,6 +264,7 @@ enum class CommandKind : std::uint8_t {
   AddClipIgnore,
   Unsupported,
   AddMultimesh,  // new at /11 (PM1, render-stream-11.md "As built (PM1)" rule 7)
+  AddParticles,  // new at /12 (PM5, render-stream-12.md "The command")
 };
 
 // CanvasTextureHeadless (G2d): a texture draw naming RID() on a headless host, whose dummy
@@ -258,6 +277,7 @@ enum class UnsupportedCmdReason : std::uint8_t {
   UnknownMesh,
   SkinnedGeometry,
   UnknownMultimesh,  // new at /11 (PM1 rule 7): an add_multimesh naming a RID never seen created
+  UnknownParticles,  // new at /12 (PM5): an add_particles naming a RID never seen created
 };
 
 enum class TransactionStatus : std::uint8_t { Ok, CaptureFailure };
@@ -295,6 +315,9 @@ enum class UnsupportedReason : std::uint8_t {
   // --- new at /11 (PM1, render-stream-11.md "As built (PM1)" rule 7) ---------------------------
   UnknownMultimesh,      // derived from an unsupported "unknown-multimesh" command
   UnsupportedMultimesh,  // an add_multimesh command naming an `unsupported` multimesh entry
+  // --- new at /12 (PM5, render-stream-12.md "The command") -----------------------------------
+  UnknownParticles,      // derived from an unsupported "unknown-particles" command
+  UnsupportedParticles,  // an add_particles command naming an `unsupported` particles entry
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -334,6 +357,9 @@ enum class SabotageKind : std::uint8_t {
   // New at /11 (PM1, render-stream-11.md "As built (PM1)" rule 11).
   PerturbInstance,  // the encoder adds 1.0 to the first buffer float it writes, from the frame on
   StaleBuffer,      // the first multimesh whose buffer changes at or after the frame keeps its serial
+  // New at /12 (PM5, render-stream-12.md "Sabotages").
+  PerturbSeed,   // the encoder adds 1 to the seed of the first particles entry it writes
+  DropRestart,   // the first particles_restart at or after the frame is not counted
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -493,6 +519,8 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::Snap2d: return "snap-2d";
   case UnsupportedReason::UnknownMultimesh: return "unknown-multimesh";
   case UnsupportedReason::UnsupportedMultimesh: return "unsupported-multimesh";
+  case UnsupportedReason::UnknownParticles: return "unknown-particles";
+  case UnsupportedReason::UnsupportedParticles: return "unsupported-particles";
   }
   return "unsupported-op";
 }
@@ -504,6 +532,7 @@ inline const char *to_wire(UnsupportedCmdReason v) {
   case UnsupportedCmdReason::UnknownMesh: return "unknown-mesh";
   case UnsupportedCmdReason::SkinnedGeometry: return "skinned-geometry";
   case UnsupportedCmdReason::UnknownMultimesh: return "unknown-multimesh";
+  case UnsupportedCmdReason::UnknownParticles: return "unknown-particles";
   }
   return "unsupported-op";
 }
@@ -539,6 +568,8 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::KeepCarried: return "keep-carried";
   case SabotageKind::PerturbInstance: return "perturb-instance";
   case SabotageKind::StaleBuffer: return "stale-buffer";
+  case SabotageKind::PerturbSeed: return "perturb-seed";
+  case SabotageKind::DropRestart: return "drop-restart";
   }
   return "";
 }
@@ -1101,6 +1132,7 @@ struct Command {
   Xform transform = kIdentityXform;       // AddMesh, AddSetTransform
   bool clip_ignore = false;               // AddClipIgnore
   std::uint32_t multimesh = 0;            // AddMultimesh (/11, PM1): the wire multimesh id
+  std::uint32_t particles = 0;            // AddParticles (/12, PM5): the wire particles id
 };
 
 // --- new at /5: a material or instance-shader-parameter value (render-stream-5.md "Material
@@ -1177,6 +1209,75 @@ struct BuiltinCanvasItemMaterial {
   bool particles_animation = false;
 };
 
+// --- new at /12 (PM5, render-stream-12.md "The `particle_process_material` builtin") ----------
+// ParticleProcessMaterial::MaterialKey (scene/resources/particle_process_material.h _compute_key)
+// spelled out. The enums follow the engine's (EmissionShape, ParticleFlags, Parameter,
+// SubEmitterMode, CollisionMode); `particle_flags` and `textures` are bit masks in enum order.
+inline constexpr int kPpmParamCount = 18;      // ParticleProcessMaterial::PARAM_MAX
+inline constexpr int kPpmFlagCount = 4;        // PARTICLE_FLAG_MAX
+inline constexpr int kPpmEmissionShapes = 7;   // EMISSION_SHAPE_MAX
+inline constexpr int kPpmSubEmitterModes = 5;  // SUB_EMITTER_MAX
+inline constexpr int kPpmCollisionModes = 3;   // COLLISION_MAX
+struct BuiltinParticleProcessMaterial {
+  std::uint8_t emission_shape = 0;   // EMISSION_SHAPE_*
+  std::uint32_t particle_flags = 0;  // bit i: PARTICLE_FLAG_i
+  std::uint32_t textures = 0;        // bit i: Parameter i has a texture (texture_mask)
+  bool color_ramp = false;           // texture_color
+  bool color_initial_ramp = false;   // has_initial_ramp
+  bool alpha_curve = false;
+  bool emission_curve = false;
+  bool velocity_limit_curve = false;      // limiter_curve
+  bool orbit_velocity_curve_xyz = false;  // orbit_uses_curve_xyz
+  bool emission_color_texture = false;    // has_emission_color
+  std::uint8_t sub_emitter = 0;           // SUB_EMITTER_*
+  bool attractor = false;                 // attractor_enabled
+  std::uint8_t collision = 0;             // COLLISION_*
+  bool collision_scale = false;
+  bool turbulence = false;                // turbulence_enabled
+
+  bool operator==(const BuiltinParticleProcessMaterial &o) const {
+    return emission_shape == o.emission_shape && particle_flags == o.particle_flags &&
+           textures == o.textures && color_ramp == o.color_ramp &&
+           color_initial_ramp == o.color_initial_ramp && alpha_curve == o.alpha_curve &&
+           emission_curve == o.emission_curve && velocity_limit_curve == o.velocity_limit_curve &&
+           orbit_velocity_curve_xyz == o.orbit_velocity_curve_xyz &&
+           emission_color_texture == o.emission_color_texture && sub_emitter == o.sub_emitter &&
+           attractor == o.attractor && collision == o.collision &&
+           collision_scale == o.collision_scale && turbulence == o.turbulence;
+  }
+  bool operator!=(const BuiltinParticleProcessMaterial &o) const { return !(*this == o); }
+};
+
+inline const char *ppm_emission_shape_wire(std::uint8_t v) {
+  static const char *const kNames[] = {"point",  "sphere",          "sphere_surface", "box",
+                                       "points", "directed_points", "ring"};
+  return v < kPpmEmissionShapes ? kNames[v] : "point";
+}
+inline const char *ppm_flag_wire(int i) {
+  static const char *const kNames[] = {"align_y_to_velocity", "rotate_y", "disable_z",
+                                       "damping_as_friction"};
+  return i >= 0 && i < kPpmFlagCount ? kNames[i] : "";
+}
+inline const char *ppm_param_wire(int i) {
+  static const char *const kNames[] = {
+      "initial_linear_velocity", "angular_velocity",       "orbit_velocity",
+      "linear_accel",            "radial_accel",           "tangential_accel",
+      "damping",                 "angle",                  "scale",
+      "hue_variation",           "anim_speed",             "anim_offset",
+      "turb_influence_over_life", "turb_vel_influence",    "turb_init_displacement",
+      "radial_velocity",         "directional_velocity",   "scale_over_velocity"};
+  return i >= 0 && i < kPpmParamCount ? kNames[i] : "";
+}
+inline const char *ppm_sub_emitter_wire(std::uint8_t v) {
+  static const char *const kNames[] = {"disabled", "constant", "at_end", "at_collision",
+                                       "at_start"};
+  return v < kPpmSubEmitterModes ? kNames[v] : "disabled";
+}
+inline const char *ppm_collision_wire(std::uint8_t v) {
+  static const char *const kNames[] = {"disabled", "rigid", "hide_on_contact"};
+  return v < kPpmCollisionModes ? kNames[v] : "disabled";
+}
+
 // `shader_set_default_texture_parameter` entries, sorted by (name, index).
 struct DefaultTextureRef {
   std::string name;
@@ -1203,8 +1304,16 @@ struct ShaderEntry {
   std::uint64_t payload_bytes = 0;
   bool has_builtin = false;  // false -> "builtin": null
   BuiltinCanvasItemMaterial builtin;
+  // PM5 (/12): the `particle_process_material` builtin (has_builtin stays false for it). Encoded
+  // at /12 only; the entry is then `ok` (render-stream-12.md "Effect").
+  bool has_ppm = false;
+  BuiltinParticleProcessMaterial ppm;
   std::vector<ShaderUse> uses;                      // sorted ascending by wire spelling (As built)
   std::vector<DefaultTextureRef> default_textures;  // sorted by (name, index)
+  // PM5: never encoded. The entry a connection below /12 sees when it differs from this one (a
+  // resolved particle_process_material builtin is /11's `unsupported`/`shader-mode`), null when
+  // it does not differ. rs2_diff.h lower_particles() substitutes it.
+  std::shared_ptr<const ShaderEntry> below_v12;
 };
 
 // --- new at /5: the material table (render-stream-5.md "Material table") ----------------------
@@ -1221,6 +1330,9 @@ struct MaterialEntry {
   bool has_shader = false;
   std::uint32_t shader = 0;
   SharedVector<Param> params;  // sorted by name (byte order); shared, P3-CAP
+  // PM5: never encoded. The entry a connection below /12 sees when it differs (a parameter /12
+  // carries that older versions refuse as `param-type`: a plain Array), null when it does not.
+  std::shared_ptr<const MaterialEntry> below_v12;
 };
 
 // render-stream-10.md "Item": canvas_item_set_canvas_group_mode's state. Disabled is the RS's
@@ -1291,6 +1403,11 @@ struct ItemState {
   // so a /10 viewer of a /11 host gets the versions it got before PM1. rs2_diff.h
   // lower_multimesh() substitutes it.
   std::uint64_t content_version_below_v11 = 0;
+  // PM5 (render-stream-12.md "The command"): likewise the content_version a /11 connection sees
+  // (add_particles lowered to /11's `unsupported-op` command), 0 when it does not differ. When the
+  // list also holds multimesh commands, content_version_below_v11 is the digest of the list with
+  // both lowered.
+  std::uint64_t content_version_below_v12 = 0;
 };
 
 struct CanvasState {
@@ -1463,6 +1580,92 @@ struct MultimeshEntry {
   std::uint64_t buffer_serial = 0;
 };
 
+// --- new at /12 (PM5): the particles table (render-stream-12.md "Particles table") ------------
+
+enum class ParticlesStatus : std::uint8_t { Ok, Unsupported, Freed };
+// The reasons in priority order (the first that applies).
+enum class ParticlesReason : std::uint8_t {
+  Particles3d, UnknownMaterial, UnknownMesh, UnknownParticles,
+};
+inline const char *to_wire(ParticlesStatus v) {
+  switch (v) {
+  case ParticlesStatus::Ok: return "ok";
+  case ParticlesStatus::Unsupported: return "unsupported";
+  case ParticlesStatus::Freed: return "freed";
+  }
+  return "ok";
+}
+inline const char *to_wire(ParticlesReason v) {
+  switch (v) {
+  case ParticlesReason::Particles3d: return "particles-3d";
+  case ParticlesReason::UnknownMaterial: return "unknown-material";
+  case ParticlesReason::UnknownMesh: return "unknown-mesh";
+  case ParticlesReason::UnknownParticles: return "unknown-particles";
+  }
+  return "particles-3d";
+}
+inline const char *particles_draw_order_wire(std::int32_t v) {
+  static const char *const kNames[] = {"index", "lifetime", "reverse_lifetime", "view_depth"};
+  return v >= 0 && v < 4 ? kNames[v] : "index";
+}
+inline const char *particles_transform_align_wire(std::int32_t v) {
+  static const char *const kNames[] = {"disabled", "z_billboard", "y_to_velocity",
+                                       "z_billboard_y_to_velocity"};
+  return v >= 0 && v < 4 ? kNames[v] : "disabled";
+}
+
+inline constexpr std::size_t kParticlesBaseFloats = 31;  // + 12 per trail bind pose
+inline constexpr std::size_t kParticleEmitFloats = 23;
+inline constexpr std::size_t kParticleEmitTail = 4096;    // the emit log's bounded tail
+
+// One particles-table entry. `floats` holds the 31 + 12 x trail_poses floats in wire order
+// (shared, immutable); it is null exactly for a `freed` entry. `draw_passes` holds each pass's
+// mesh wire id, 0 for null.
+struct ParticlesEntry {
+  std::uint32_t id = 0;
+  ParticlesStatus status = ParticlesStatus::Ok;
+  bool has_reason = false;
+  ParticlesReason reason = ParticlesReason::Particles3d;
+  std::uint64_t version = 1;
+  bool mode_2d = false;  // false: "3d" (GLES3's default)
+  bool emitting = false;
+  std::int32_t amount = 0;
+  bool one_shot = false;
+  std::int32_t fixed_fps = 0;
+  bool interpolate = true;
+  bool fractional_delta = false;
+  bool local = false;
+  std::int32_t draw_order = 0;
+  std::int32_t transform_align = 0;
+  bool trails = false;
+  std::uint32_t trail_poses = 0;
+  std::uint32_t seed = 0;
+  std::uint64_t restarts = 0;
+  std::uint64_t emits = 0;
+  std::uint64_t process_requests = 0;
+  std::uint32_t process_material = 0;  // 0: null
+  std::vector<std::uint32_t> draw_passes;
+  std::uint32_t subemitter = 0;        // 0: null
+  std::shared_ptr<const std::vector<float>> floats;
+};
+
+// One accepted particles_emit (render-stream-12.md "The emit list").
+struct ParticleEmit {
+  std::uint32_t particles = 0;
+  std::uint64_t restarts = 0;
+  std::uint32_t flags = 0;
+  std::array<float, kParticleEmitFloats> floats{};
+};
+
+// One host frame's emits (call order), the unit of the capture's append-only emit log.
+struct EmitChunk {
+  std::uint64_t frame = 0;
+  std::vector<ParticleEmit> emits;
+};
+// The log's bounded tail: the chunks still held, oldest first (at most kParticleEmitTail emits).
+// Shared and immutable; a snapshot copies a pointer.
+using EmitTail = std::vector<std::shared_ptr<const EmitChunk>>;
+
 // Rule 4: floats per instance in a 2d multimesh's buffer.
 inline std::uint32_t multimesh_stride(bool colors, bool custom) {
   return 8u + (colors ? 4u : 0u) + (custom ? 4u : 0u);
@@ -1522,6 +1725,16 @@ struct Snapshot {
   // unsupported command, so a connection below /11 must lower them (rs2_diff.h lower_multimesh);
   // false keeps every older transaction a plain copy, as before PM1.
   bool multimesh_commands = false;
+  // PM5 (render-stream-12.md "Publication"): the emitters an add_particles of this state names, or
+  // a published entry names as its subemitter, sorted by id ascending. Encoded at /12 only.
+  std::vector<ParticlesEntry> particles;
+  // PM5: true when some item's commands hold an add_particles or an `unknown-particles`
+  // unsupported command, or a shader/material holds a /12-only form (below_v12), so a connection
+  // below /12 must lower this snapshot (rs2_diff.h lower_particles).
+  bool particles_commands = false;
+  // PM5: the emit log's tail as of this frame (null: no emit yet). make_full() lists the chunk of
+  // this frame, make_patch() the chunks in (base.frame, frame].
+  std::shared_ptr<const EmitTail> emit_tail;
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;
@@ -1588,6 +1801,14 @@ struct Transaction {
   std::vector<std::uint32_t> multimesh_buffers_held;
   // Sabotage perturb-instance (rule 11): the encoder adds 1.0 to the first buffer float it writes.
   bool perturb_instance = false;
+  // PM5 (render-stream-12.md): the particles entries (full entries, ascending by id), on a patch
+  // the base ids no longer in the table (ascending), and the emits since the base, in call order.
+  // Each key is encoded only when non-empty, at /12 only.
+  std::vector<ParticlesEntry> particles;
+  std::vector<std::uint32_t> removed_particles;
+  std::vector<ParticleEmit> particle_emits;
+  // Sabotage perturb-seed: the encoder adds 1 to the seed of the first particles entry it writes.
+  bool perturb_seed = false;
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;

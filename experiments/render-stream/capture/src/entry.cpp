@@ -158,6 +158,7 @@
 #include "report.h"
 #include "rs_adopt.h"
 #include "rs_canvas_texture_shim.h"
+#include "rs_particles_shim.h"
 #include "rs_gate8_policy.h"
 #include "rs_texture_basis.h"
 #include "rs_texture_delivery.h"
@@ -223,6 +224,16 @@ struct State {
   rs::CanvasTextureShimMode ct_shim_mode = rs::CanvasTextureShimMode::Off;
   std::string ct_shim_state = "off";
   std::string ct_shim_reason;
+
+  // PM5 (render-stream-12.md "Headless shims (opt-in)"): GRC_HEADLESS_PARTICLES and
+  // GRC_PREDRAW_PUMP as given, parsed, and the pump's counters.
+  std::string pt_shim_env;
+  std::string pump_env;
+  rs::ParticlesShimMode pt_shim_mode = rs::ParticlesShimMode::Off;
+  bool pump = false;
+  bool pump_connected = false;
+  uint64_t pump_fired = 0;
+  uint64_t pump_skipped = 0;
 };
 
 // The render-stream/2 file publication (G1b2, G2b2). `status` is result.json
@@ -590,7 +601,8 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v11()   ? 11
+                   g_stream.gate8.speaks_v12()   ? 12
+                   : g_stream.gate8.speaks_v11() ? 11
                    : g_stream.gate8.speaks_v10()
                        ? 10
                        : g_stream.gate8.speaks_v9()
@@ -614,6 +626,21 @@ std::string result_json() {
         json.field("unknown", static_cast<int64_t>(ms.multimesh_unknown));
         json.field("rejected", static_cast<int64_t>(ms.multimesh_rejected));
         json.field("unchanged", static_cast<int64_t>(ms.multimesh_unchanged));
+        json.object_end();
+      }
+      if (rs::mirror_instance().particles_options().enabled) {
+        // PM5 (render-stream-12.md "Hook log and counters"): additive, /12 with the hooks only.
+        const rs::PpmStats ppm = rs::adopt_particles_stats();
+        json.key("particles").object_begin();
+        json.field("live", static_cast<int64_t>(ms.live_particles));
+        json.field("unknown", static_cast<int64_t>(ms.particles_unknown));
+        json.field("builtin_resolved", static_cast<int64_t>(ppm.builtin_resolved));
+        json.field("builtin_unresolved", static_cast<int64_t>(ppm.builtin_unresolved));
+        json.field("pump_fired", static_cast<int64_t>(g_state.pump_fired));
+        json.field("pump_skipped", static_cast<int64_t>(g_state.pump_skipped));
+        json.field("shim_synthesized", static_cast<int64_t>(rs::particles_shim().synthesized()));
+        json.field("shim_engine_allocated",
+                   static_cast<int64_t>(rs::particles_shim().engine_allocated()));
         json.object_end();
       }
     }
@@ -1717,6 +1744,13 @@ void stream_start() {
         error = "resource-store-missing";
       }
     }
+    if (error.empty() && g_stream.gate8.speaks_v12() &&
+        env_string("GRC_RESOURCE_FORMATS").empty()) {
+      // PM5 (render-stream-12.md "Curve textures"): /12's default policy also permits the four
+      // float formats for textures at most 4 rows high; nothing changes below /12, and an
+      // explicit GRC_RESOURCE_FORMATS is honoured as written.
+      rs::enable_short_float_formats(&formats);
+    }
     g_stream.policy.permitted_formats = formats.names;
     g_stream.policy.max_payload_bytes = max_payload_bytes;
     g_stream.policy.inline_max_bytes = inline_max_bytes;
@@ -1894,6 +1928,9 @@ void stream_start() {
     } else if (kind == rs2::SabotageKind::WrongHash &&
                (!files || g_stream.store_dir.empty())) {
       why = "wrong-hash acts on the resource store; set a file sink and GRC_RESOURCE_STORE_DIR";
+    } else if (rs::sabotage_needs_v12(kind) && !g_stream.gate8.speaks_v12()) {
+      // PM5 (render-stream-12.md "Sabotages"): declared by a /12 session only.
+      why = std::string(rs2::to_wire(kind)) + " acts on render-stream/12; set GRC_STREAM_VERSION=12";
     } else if (rs::sabotage_needs_v11(kind) && !g_stream.gate8.speaks_v11()) {
       // W11b (render-stream-11.md "Sabotage kinds"): declared by a /11 session only.
       why = std::string(rs2::to_wire(kind)) + " acts on render-stream/11; set GRC_STREAM_VERSION=11";
@@ -1937,6 +1974,8 @@ void stream_start() {
       live_config.keep_carried = true;  // W11b: the publisher reads its own sabotage config
     } else if (kind == rs2::SabotageKind::PerturbInstance) {
       live_config.perturb_instance_frame = sabotage.config.frame;  // PM1 (the publisher's own too)
+    } else if (kind == rs2::SabotageKind::PerturbSeed) {
+      live_config.perturb_seed_frame = sabotage.config.frame;  // PM5 (the publisher's own too)
     }
   }
   if (!sabotage.ok) {
@@ -1959,7 +1998,9 @@ void stream_start() {
   // G8k9: GRC_STREAM_VERSION=9 selects /9 (render-stream-9.md); the seam declares the delivery mode.
   // CG1: GRC_STREAM_VERSION=10 selects /10 (render-stream-10.md).
   // W11b: GRC_STREAM_VERSION=11 selects /11 (render-stream-11.md).
-  session.version = g_stream.gate8.speaks_v11()  ? rs2::ProtocolVersion::V11
+  // PM5: GRC_STREAM_VERSION=12 selects /12 (render-stream-12.md).
+  session.version = g_stream.gate8.speaks_v12()  ? rs2::ProtocolVersion::V12
+                    : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
                     : g_stream.gate8.speaks_v10() ? rs2::ProtocolVersion::V10
                     : g_stream.gate8.speaks_v9() ? rs2::ProtocolVersion::V9
                     : g_stream.gate8.speaks_v8() ? rs2::ProtocolVersion::V8
@@ -1991,10 +2032,15 @@ void stream_start() {
     // planned (a record without the slot omits the hook and keeps the method unobserved).
     rs2::observe_planned_backbuffer_setters(&session.features, session.capture.hooks_planned);
   }
-  if (session.version == rs2::ProtocolVersion::V11 && hooks_multimesh_planned()) {
+  if (rs2::is_v11_or_later(session.version) && hooks_multimesh_planned()) {
     // render-stream-11.md "As built (PM1)" rule 8: add_multimesh, the multimesh resource, and
     // canvas_item_add_multimesh no longer an observed unsupported op.
     rs2::observe_multimesh_features(&session.features);
+  }
+  if (rs2::is_v12_or_later(session.version) && hooks_particles_planned()) {
+    // render-stream-12.md "Session record": add_particles, the particles resource, and
+    // canvas_item_add_particles no longer an observed unsupported op.
+    rs2::observe_particles_features(&session.features);
   }
   if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
@@ -2273,6 +2319,16 @@ void stream_start() {
         sabotage.config.kind == rs2::SabotageKind::StaleBuffer ? sabotage.config.frame : 0;
     mm.state_notes = mm.enabled;
     rs::mirror_set_multimesh(mm);
+    // PM5 (render-stream-12.md): the particles table and emit log, exactly when the session
+    // declares add_particles; off below /12 and without the 33 hooks. /12 also carries a plain
+    // Array material parameter's packed form (the process materials' param-type cause).
+    rs::Mirror::ParticlesOptions pt;
+    pt.enabled = g_stream.gate8.speaks_v12() && hooks_particles_planned();
+    pt.state_notes = pt.enabled;
+    pt.drop_restart_frame =
+        sabotage.config.kind == rs2::SabotageKind::DropRestart ? sabotage.config.frame : 0;
+    pt.param_arrays = g_stream.gate8.speaks_v12();
+    rs::mirror_set_particles(pt);
   }
   // G8t (gate8-design.md Q3): perturb-decode acts in the decode seam, before the hook hashes.
   rs::texture_decode_set_perturb(
@@ -2358,7 +2414,7 @@ void stream_start() {
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
     server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
-                                                   rs2::kSubprotocolV11};
+                                                   rs2::kSubprotocolV11, rs2::kSubprotocolV12};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";
@@ -2809,6 +2865,65 @@ void multimesh_states_log() {
 bool g_hc_pin_late = false;
 unsigned g_hc_pin_late_frames = 0;
 
+// PM5 (render-stream-12.md "Hook log and counters"): the particles `state` lines, likewise.
+std::string particles_state_json(const rs2::ParticlesEntry &e) {
+  rs::MultimeshArgs a;
+  const bool freed = e.status == rs2::ParticlesStatus::Freed;
+  a.str("status", rs2::to_wire(e.status))
+      .str("reason", e.status == rs2::ParticlesStatus::Unsupported && e.has_reason
+                         ? rs2::to_wire(e.reason)
+                         : nullptr)
+      .i64("version", static_cast<int64_t>(e.version))
+      .str("mode", e.mode_2d ? "2d" : "3d")
+      .boolean("emitting", e.emitting)
+      .i64("amount", e.amount)
+      .boolean("one_shot", e.one_shot)
+      .i64("fixed_fps", e.fixed_fps)
+      .boolean("interpolate", e.interpolate)
+      .boolean("fractional_delta", e.fractional_delta)
+      .boolean("local", e.local)
+      .str("draw_order", rs2::particles_draw_order_wire(e.draw_order))
+      .str("transform_align", rs2::particles_transform_align_wire(e.transform_align))
+      .boolean("trails", e.trails)
+      .i64("trail_poses", e.trail_poses)
+      .i64("seed", e.seed)
+      .i64("restarts", static_cast<int64_t>(e.restarts))
+      .i64("emits", static_cast<int64_t>(e.emits))
+      .i64("process_requests", static_cast<int64_t>(e.process_requests))
+      .id("process_material", freed ? 0 : e.process_material);
+  std::string passes = "[";
+  for (std::size_t k = 0; !freed && k < e.draw_passes.size(); ++k) {
+    passes += k == 0 ? "" : ",";
+    passes += e.draw_passes[k] == 0 ? "null" : std::to_string(e.draw_passes[k]);
+  }
+  passes += "]";
+  a.raw("draw_passes", passes).id("subemitter", freed ? 0 : e.subemitter);
+  if (freed || e.floats == nullptr) {
+    a.raw("floats", "null");
+  } else {
+    a.floats("floats", e.floats->data(), e.floats->size());
+  }
+  return a.text().substr(1);  // without the leading comma
+}
+
+void particles_states_log() {
+  if (!rs::mirror_instance().particles_options().state_notes) {
+    return;
+  }
+  const std::vector<rs::Mirror::ParticlesStateNote> notes =
+      rs::mirror_instance().take_particles_states();
+  if (notes.empty() || !rs::resource_log().active()) {
+    return;
+  }
+  rs::TapContext ctx;
+  ctx.t_ns = monotonic_ns();
+  ctx.main_thread = true;
+  for (const rs::Mirror::ParticlesStateNote &note : notes) {
+    rs::resource_log().particles_state(ctx, note.frame, note.rid, note.entry.id,
+                                       particles_state_json(note.entry));
+  }
+}
+
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
@@ -2869,7 +2984,8 @@ void stream_publish(uint64_t frame) {
   const bool serving = g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped &&
                        g_live.hub->has_viewer();
   if (g_stream.publisher == nullptr && !live_wants && !serving) {
-    multimesh_states_log();  // PM1: a free's last state, even without a snapshot
+    multimesh_states_log();
+    particles_states_log();  // PM1: a free's last state, even without a snapshot
     if (g_live.hub != nullptr) {
       g_live.hub->on_frame(frame, monotonic_ns(), nullptr, epoch, 0);
     }
@@ -2878,7 +2994,8 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
-  multimesh_states_log();  // PM1 rule 12: this frame's `state` lines
+  multimesh_states_log();
+  particles_states_log();  // PM1 rule 12: this frame's `state` lines
   if (g_state.evidence_ready) {
     g_perf.snapshot_us.add(snapshot_ns / 1000);  // Q3d snapshot_us (G6r)
   }
@@ -3091,12 +3208,54 @@ bool attempt(const char *phase) {
     }
   }
 
+  // PM5 (render-stream-12.md "Headless shims (opt-in)"): the particles RID shim and the pre-draw
+  // pump, both off by default and armed only on a `headless` display server; an invalid value, or
+  // either asked for on another display server, refuses the capture like the canvas-texture shim.
+  {
+    std::string why;
+    bool ok = rs::parse_particles_shim_mode(g_state.pt_shim_env.c_str(), &g_state.pt_shim_mode,
+                                            &why) &&
+              rs::parse_predraw_pump(g_state.pump_env.c_str(), &g_state.pump, &why);
+    if (!ok) {
+      log_line("particles shims: " + why);
+      why = "particles-shim-invalid";
+    } else {
+      ok = rs::particles_shim_may_arm(g_state.pt_shim_mode, g_state.display_server, &why);
+      if (ok && g_state.pump && g_state.display_server != "headless") {
+        ok = false;
+        why = "predraw-pump-not-headless";
+      }
+    }
+    if (!g_state.pt_shim_env.empty() || !g_state.pump_env.empty()) {
+      g_state.checks.push_back({"particles_shims", ok,
+                                "GRC_HEADLESS_PARTICLES=" + g_state.pt_shim_env +
+                                    " GRC_PREDRAW_PUMP=" + g_state.pump_env + " display_server=" +
+                                    g_state.display_server + (ok ? std::string() : " -> " + why)});
+    }
+    if (!ok) {
+      rs::particles_shim().configure(rs::ParticlesShimMode::Off);
+      refuse(why);
+      return true;
+    }
+  }
+
   if (g_state.mode != "arm") {
     decide("validated", std::string());
     return true;
   }
 
   hooks_init_image_binds();
+  // PM5: configured before the vptr store, so the first hooked particles_create already sees it.
+  rs::particles_shim().configure(g_state.pt_shim_mode);
+  if (g_state.pt_shim_mode == rs::ParticlesShimMode::Synthesize) {
+    log_line("particles shim: synthesize armed (display server " + g_state.display_server + ")");
+  }
+  if (g_state.pump) {
+    std::string why;
+    g_state.pump_connected = rs::predraw_pump_connect(&why);
+    log_line(g_state.pump_connected ? std::string("predraw pump: connected")
+                                    : "predraw pump: " + why);
+  }
   if (!hooks_image_details_available()) {
     log_line("Image method binds unavailable: texture captures will omit details");
   }
@@ -3137,6 +3296,10 @@ void do_disarm(const char *phase) {
   bool restored = false;
   g_state.shadow.disarm(&was_shadow, &restored);
   g_state.armed = false;
+  if (g_state.pump_connected) {
+    rs::predraw_pump_disconnect();  // PM5
+    g_state.pump_connected = false;
+  }
   g_state.disarmed = true;
   g_state.disarm_was_shadow = was_shadow;
   g_state.disarm_restored = restored;
@@ -3187,6 +3350,17 @@ void on_frame() {
     // G8m (gate8-design.md Q5): references to pre-arm materials and shaders a hooked call named
     // this iteration resolve now, dated this frame, before the transaction is formed.
     rs::adopt_materials_resolve();
+    // PM5: the particle_process_material builtin, through the same node map.
+    rs::adopt_particles_resolve();
+  }
+  if (g_state.armed && g_state.pump_connected) {
+    // PM5 (GRC_PREDRAW_PUMP=1): before the snapshot, frame_pre_draw when the engine did not emit
+    // it this iteration; the listeners' calls are stamped with this frame.
+    if (rs::predraw_pump_frame()) {
+      ++g_state.pump_fired;
+    } else {
+      ++g_state.pump_skipped;
+    }
   }
   hooks_set_frame(g_state.frames_total + 1);
   // Only a library armed before this callback publishes for this frame: one
@@ -3275,6 +3449,8 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_live.listen = env_string("GRC_LIVE_LISTEN");
   g_state.ct_shim_env_set = std::getenv("GRC_HEADLESS_CANVAS_TEXTURE") != nullptr;
   g_state.ct_shim_env = env_string("GRC_HEADLESS_CANVAS_TEXTURE");
+  g_state.pt_shim_env = env_string("GRC_HEADLESS_PARTICLES");
+  g_state.pump_env = env_string("GRC_PREDRAW_PUMP");
   hooks_set_main_thread();
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);

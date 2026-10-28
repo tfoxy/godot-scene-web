@@ -98,6 +98,9 @@ pub enum Shortcut {
     /// PM3: an `add_multimesh` that cannot be drawn: an unknown id, a `freed` or `unsupported`
     /// multimesh, no mesh set, or its buffer not held. Godot draws nothing for the first four too.
     MultimeshUnavailableSkipped,
+    /// /12 (PM5): an `add_particles`. The wire carries the emitter, but this executor does not
+    /// simulate particles yet (PM6): not drawn, counted.
+    ParticlesUndrawn,
 }
 
 impl Shortcut {
@@ -113,6 +116,7 @@ impl Shortcut {
             Shortcut::MeshUnavailableSkipped => "mesh-unavailable-skipped",
             Shortcut::MultimeshUndrawn => "multimesh-undrawn",
             Shortcut::MultimeshUnavailableSkipped => "multimesh-unavailable-skipped",
+            Shortcut::ParticlesUndrawn => "particles-undrawn",
         }
     }
     /// Whether the shortcut means a command is not drawn at all (a typed skip, for
@@ -126,6 +130,7 @@ impl Shortcut {
                 | Shortcut::MeshUnavailableSkipped
                 | Shortcut::MultimeshUndrawn
                 | Shortcut::MultimeshUnavailableSkipped
+                | Shortcut::ParticlesUndrawn
         )
     }
 }
@@ -896,6 +901,8 @@ pub fn lower_reusing(
                 }
                 b.xf = saved;
             }
+            // PM5: typed as undrawn until PM6 simulates the emitter.
+            Command::Particles { .. } => b.out.note(Shortcut::ParticlesUndrawn),
             Command::Rect { aa, rect, color } => {
                 // TYPE_RECT untextured: dst normalized to a positive size, src (0,0,1,1).
                 let mut dst = *rect;

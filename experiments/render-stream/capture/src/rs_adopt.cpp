@@ -2100,5 +2100,293 @@ void adopt_materials_resolve() {
   });
 }
 
+
+// --- PM5: the particle_process_material builtin and the pre-draw pump -----------------------
+
+namespace {
+
+struct PpmBinds {
+  bool tried = false;
+  bool ok = false;
+  GDExtensionMethodBindPtr get_process_material = nullptr;  // GPUParticles2D
+  GDExtensionMethodBindPtr get_emission_shape = nullptr;
+  GDExtensionMethodBindPtr get_particle_flag = nullptr;
+  GDExtensionMethodBindPtr get_param_texture = nullptr;
+  GDExtensionMethodBindPtr get_color_ramp = nullptr;
+  GDExtensionMethodBindPtr get_color_initial_ramp = nullptr;
+  GDExtensionMethodBindPtr get_alpha_curve = nullptr;
+  GDExtensionMethodBindPtr get_emission_curve = nullptr;
+  GDExtensionMethodBindPtr get_velocity_limit_curve = nullptr;
+  GDExtensionMethodBindPtr get_emission_color_texture = nullptr;
+  GDExtensionMethodBindPtr get_sub_emitter_mode = nullptr;
+  GDExtensionMethodBindPtr is_attractor_interaction_enabled = nullptr;
+  GDExtensionMethodBindPtr get_collision_mode = nullptr;
+  GDExtensionMethodBindPtr is_collision_using_scale = nullptr;
+  GDExtensionMethodBindPtr get_turbulence_enabled = nullptr;
+  GDExtensionMethodBindPtr resource_get_rid = nullptr;
+  void *tag_gpu_particles = nullptr;
+  void *tag_ppm = nullptr;
+  void *tag_curve_xyz = nullptr;
+};
+PpmBinds g_ppm;
+std::mutex g_ppm_mutex;
+PpmStats g_ppm_stats;
+std::uint64_t g_ppm_epoch_seen = ~0ull;
+std::set<std::uint64_t> g_ppm_unresolved;  // shader RIDs counted unresolved (once each)
+
+bool ppm_binds() {
+  if (g_ppm.tried) {
+    return g_ppm.ok;
+  }
+  g_ppm.tried = true;
+  if (g_iface.object_method_bind_ptrcall == nullptr || g_iface.classdb_get_class_tag == nullptr ||
+      g_iface.object_cast_to == nullptr || g_iface.ref_get_object == nullptr) {
+    return false;
+  }
+  const char *ppm = "ParticleProcessMaterial";
+  g_ppm.get_process_material = method_bind("GPUParticles2D", "get_process_material", 5934680LL);
+  g_ppm.get_emission_shape = method_bind(ppm, "get_emission_shape", 3719733018LL);
+  g_ppm.get_particle_flag = method_bind(ppm, "get_particle_flag", 3895316907LL);
+  g_ppm.get_param_texture = method_bind(ppm, "get_param_texture", 3489372978LL);
+  g_ppm.get_color_ramp = method_bind(ppm, "get_color_ramp", 3635182373LL);
+  g_ppm.get_color_initial_ramp = method_bind(ppm, "get_color_initial_ramp", 3635182373LL);
+  g_ppm.get_alpha_curve = method_bind(ppm, "get_alpha_curve", 3635182373LL);
+  g_ppm.get_emission_curve = method_bind(ppm, "get_emission_curve", 3635182373LL);
+  g_ppm.get_velocity_limit_curve = method_bind(ppm, "get_velocity_limit_curve", 3635182373LL);
+  g_ppm.get_emission_color_texture = method_bind(ppm, "get_emission_color_texture", 3635182373LL);
+  g_ppm.get_sub_emitter_mode = method_bind(ppm, "get_sub_emitter_mode", 2399052877LL);
+  g_ppm.is_attractor_interaction_enabled =
+      method_bind(ppm, "is_attractor_interaction_enabled", 36873697LL);
+  g_ppm.get_collision_mode = method_bind(ppm, "get_collision_mode", 139371864LL);
+  g_ppm.is_collision_using_scale = method_bind(ppm, "is_collision_using_scale", 36873697LL);
+  g_ppm.get_turbulence_enabled = method_bind(ppm, "get_turbulence_enabled", 36873697LL);
+  g_ppm.resource_get_rid = method_bind("Resource", "get_rid", 2944877500LL);
+  g_ppm.tag_gpu_particles = Tags::tag("GPUParticles2D");
+  g_ppm.tag_ppm = Tags::tag(ppm);
+  g_ppm.tag_curve_xyz = Tags::tag("CurveXYZTexture");
+  g_ppm.ok = g_ppm.get_process_material != nullptr && g_ppm.get_emission_shape != nullptr &&
+             g_ppm.get_particle_flag != nullptr && g_ppm.get_param_texture != nullptr &&
+             g_ppm.get_color_ramp != nullptr && g_ppm.get_color_initial_ramp != nullptr &&
+             g_ppm.get_alpha_curve != nullptr && g_ppm.get_emission_curve != nullptr &&
+             g_ppm.get_velocity_limit_curve != nullptr &&
+             g_ppm.get_emission_color_texture != nullptr &&
+             g_ppm.get_sub_emitter_mode != nullptr &&
+             g_ppm.is_attractor_interaction_enabled != nullptr &&
+             g_ppm.get_collision_mode != nullptr && g_ppm.is_collision_using_scale != nullptr &&
+             g_ppm.get_turbulence_enabled != nullptr && g_ppm.resource_get_rid != nullptr &&
+             g_ppm.tag_gpu_particles != nullptr && g_ppm.tag_ppm != nullptr;
+  return g_ppm.ok;
+}
+
+std::int64_t ppm_int(GDExtensionMethodBindPtr bind, void *object, const std::int64_t *arg) {
+  std::int64_t out = 0;
+  const GDExtensionConstTypePtr args[1] = {arg};
+  g_iface.object_method_bind_ptrcall(bind, object, arg != nullptr ? args : nullptr, &out);
+  return out;
+}
+
+bool ppm_bool(GDExtensionMethodBindPtr bind, void *object, const std::int64_t *arg) {
+  std::uint8_t out = 0;
+  const GDExtensionConstTypePtr args[1] = {arg};
+  g_iface.object_method_bind_ptrcall(bind, object, arg != nullptr ? args : nullptr, &out);
+  return out != 0;
+}
+
+// A Ref<Texture2D> getter: whether it returns a valid texture (and, with `tag`, of that class).
+bool ppm_texture(GDExtensionMethodBindPtr bind, void *object, const std::int64_t *arg,
+                 void *tag = nullptr) {
+  RefSlot slot;
+  const GDExtensionConstTypePtr args[1] = {arg};
+  g_iface.object_method_bind_ptrcall(bind, object, arg != nullptr ? args : nullptr, &slot.slot);
+  void *texture = slot.object();
+  return texture != nullptr && (tag == nullptr || as(texture, tag) != nullptr);
+}
+
+// ParticleProcessMaterial::_compute_key (scene/resources/particle_process_material.h:158-188).
+rs2::BuiltinParticleProcessMaterial ppm_key(void *m) {
+  rs2::BuiltinParticleProcessMaterial k;
+  k.color_ramp = ppm_texture(g_ppm.get_color_ramp, m, nullptr);
+  const std::int64_t shape = ppm_int(g_ppm.get_emission_shape, m, nullptr);
+  k.emission_shape = static_cast<std::uint8_t>(shape >= 0 && shape < rs2::kPpmEmissionShapes ? shape
+                                                                                              : 0);
+  k.emission_color_texture =
+      shape >= 4 /* EMISSION_SHAPE_POINTS */ &&
+      ppm_texture(g_ppm.get_emission_color_texture, m, nullptr);
+  const std::int64_t sub = ppm_int(g_ppm.get_sub_emitter_mode, m, nullptr);
+  k.sub_emitter = static_cast<std::uint8_t>(sub >= 0 && sub < rs2::kPpmSubEmitterModes ? sub : 0);
+  const std::int64_t collision = ppm_int(g_ppm.get_collision_mode, m, nullptr);
+  k.collision = static_cast<std::uint8_t>(
+      collision >= 0 && collision < rs2::kPpmCollisionModes ? collision : 0);
+  k.attractor = ppm_bool(g_ppm.is_attractor_interaction_enabled, m, nullptr);
+  k.collision_scale = ppm_bool(g_ppm.is_collision_using_scale, m, nullptr);
+  k.turbulence = ppm_bool(g_ppm.get_turbulence_enabled, m, nullptr);
+  k.velocity_limit_curve = ppm_texture(g_ppm.get_velocity_limit_curve, m, nullptr);
+  k.alpha_curve = ppm_texture(g_ppm.get_alpha_curve, m, nullptr);
+  k.emission_curve = ppm_texture(g_ppm.get_emission_curve, m, nullptr);
+  k.color_initial_ramp = ppm_texture(g_ppm.get_color_initial_ramp, m, nullptr);
+  const std::int64_t orbit = 2;  // PARAM_ORBIT_VELOCITY
+  k.orbit_velocity_curve_xyz = g_ppm.tag_curve_xyz != nullptr &&
+                               ppm_texture(g_ppm.get_param_texture, m, &orbit, g_ppm.tag_curve_xyz);
+  for (std::int64_t i = 0; i < rs2::kPpmParamCount; ++i) {
+    if (ppm_texture(g_ppm.get_param_texture, m, &i)) {
+      k.textures |= 1u << i;
+    }
+  }
+  for (std::int64_t i = 0; i < rs2::kPpmFlagCount; ++i) {
+    if (ppm_bool(g_ppm.get_particle_flag, m, &i)) {
+      k.particle_flags |= 1u << i;
+    }
+  }
+  return k;
+}
+
+// The pre-draw pump's callable and flag.
+alignas(8) unsigned char g_pump_callable[16] = {};
+bool g_pump_made = false;
+bool g_pump_connected = false;
+int g_pump_userdata = 0;
+std::atomic<bool> g_pump_fired{false};
+std::atomic<bool> g_pump_emitting{false};
+GDExtensionMethodBindPtr g_pump_connect = nullptr;
+GDExtensionMethodBindPtr g_pump_disconnect = nullptr;
+GDExtensionMethodBindPtr g_pump_emit = nullptr;
+
+void pump_call(void * /*userdata*/, const GDExtensionConstVariantPtr * /*args*/,
+               GDExtensionInt /*count*/, GDExtensionVariantPtr /*ret*/,
+               GDExtensionCallError *error) {
+  if (error != nullptr) {
+    error->error = GDEXTENSION_CALL_OK;
+  }
+  if (!g_pump_emitting.load(std::memory_order_acquire)) {
+    g_pump_fired.store(true, std::memory_order_release);  // the engine's own emission
+  }
+}
+
+}  // namespace
+
+void adopt_particles_resolve() {
+  if (!mirror_enabled() || !ppm_binds()) {
+    return;
+  }
+  Mirror &m = mirror_instance();
+  if (!m.particles_options().enabled) {
+    return;
+  }
+  const std::uint64_t epoch = m.ppm_epoch();
+  if (epoch == g_ppm_epoch_seen) {
+    return;
+  }
+  g_ppm_epoch_seen = epoch;
+  for (const Mirror::PpmCandidate &c : m.ppm_candidates()) {
+    bool done = false;
+    for (const auto &pair : c.pairs) {
+      void *node = node_of(pair.second);
+      if (node == nullptr || as(node, g_ppm.tag_gpu_particles) == nullptr) {
+        continue;
+      }
+      RefSlot slot;
+      g_iface.object_method_bind_ptrcall(g_ppm.get_process_material, node, nullptr, &slot.slot);
+      void *material = slot.object();
+      if (material == nullptr || as(material, g_ppm.tag_ppm) == nullptr) {
+        continue;
+      }
+      std::uint64_t rid = 0;
+      g_iface.object_method_bind_ptrcall(g_ppm.resource_get_rid, material, nullptr, &rid);
+      if (rid != pair.first) {
+        continue;
+      }
+      m.set_shader_ppm(c.shader_rid, ppm_key(material));
+      std::lock_guard<std::mutex> lock(g_ppm_mutex);
+      ++g_ppm_stats.builtin_resolved;
+      g_ppm_unresolved.erase(c.shader_rid);
+      done = true;
+      break;
+    }
+    if (!done) {
+      std::lock_guard<std::mutex> lock(g_ppm_mutex);
+      if (g_ppm_unresolved.insert(c.shader_rid).second) {
+        ++g_ppm_stats.builtin_unresolved;
+      }
+    }
+  }
+}
+
+PpmStats adopt_particles_stats() {
+  std::lock_guard<std::mutex> lock(g_ppm_mutex);
+  PpmStats out = g_ppm_stats;
+  // A shader counted unresolved and later keyed is resolved, not both.
+  out.builtin_unresolved = g_ppm_unresolved.size();
+  return out;
+}
+
+bool predraw_pump_connect(std::string *why) {
+  void *rs_singleton = singleton_object("RenderingServer");
+  g_pump_connect = method_bind("Object", "connect", 1518946055LL);
+  g_pump_disconnect = method_bind("Object", "disconnect", 1874754934LL);
+  g_pump_emit = method_bind("Object", "emit_signal", 4047867050LL);
+  if (rs_singleton == nullptr || g_pump_connect == nullptr || g_pump_emit == nullptr ||
+      g_iface.callable_custom_create2 == nullptr || g_iface.object_method_bind_call == nullptr ||
+      g_iface.get_variant_from_type_constructor == nullptr) {
+    *why = "predraw-pump-unavailable";
+    return false;
+  }
+  if (!g_pump_made) {
+    GDExtensionCallableCustomInfo2 info;
+    std::memset(&info, 0, sizeof(info));
+    info.callable_userdata = &g_pump_userdata;
+    info.token = g_iface.library;
+    info.call_func = &pump_call;
+    g_iface.callable_custom_create2(g_pump_callable, &info);
+    g_pump_made = true;
+  }
+  StringName signal("frame_pre_draw");
+  const std::int64_t flags = 0;
+  const GDExtensionConstTypePtr args[3] = {signal.ptr(), g_pump_callable, &flags};
+  std::int64_t result = -1;
+  g_iface.object_method_bind_ptrcall(g_pump_connect, rs_singleton, args, &result);
+  g_pump_connected = result == 0;
+  g_pump_fired.store(false);
+  if (!g_pump_connected) {
+    *why = "predraw-pump-connect-failed";
+  }
+  return g_pump_connected;
+}
+
+void predraw_pump_disconnect() {
+  void *rs_singleton = singleton_object("RenderingServer");
+  if (!g_pump_connected || rs_singleton == nullptr || g_pump_disconnect == nullptr) {
+    return;
+  }
+  StringName signal("frame_pre_draw");
+  const GDExtensionConstTypePtr args[2] = {signal.ptr(), g_pump_callable};
+  g_iface.object_method_bind_ptrcall(g_pump_disconnect, rs_singleton, args, nullptr);
+  g_pump_connected = false;
+}
+
+bool predraw_pump_frame() {
+  if (!g_pump_connected) {
+    return false;
+  }
+  if (g_pump_fired.exchange(false, std::memory_order_acq_rel)) {
+    return false;  // the engine drew this iteration (RenderingServer::draw emitted it)
+  }
+  void *rs_singleton = singleton_object("RenderingServer");
+  if (rs_singleton == nullptr) {
+    return false;
+  }
+  StringName signal("frame_pre_draw");
+  VariantSlot name;
+  g_iface.get_variant_from_type_constructor(GDEXTENSION_VARIANT_TYPE_STRING_NAME)(name.data,
+                                                                                  const_cast<void *>(signal.ptr()));
+  const GDExtensionConstVariantPtr args[1] = {name.data};
+  VariantSlot ret;
+  GDExtensionCallError error;
+  std::memset(&error, 0, sizeof(error));
+  g_pump_emitting.store(true, std::memory_order_release);
+  g_iface.object_method_bind_call(g_pump_emit, rs_singleton, args, 1, ret.data, &error);
+  g_pump_emitting.store(false, std::memory_order_release);
+  return error.error == GDEXTENSION_CALL_OK;
+}
+
 }  // namespace rs
 }  // namespace grc

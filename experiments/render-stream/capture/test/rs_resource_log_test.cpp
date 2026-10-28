@@ -606,6 +606,26 @@ int main() {
     EXPECT(off.lines_formatted() == 0 && off.take_lines().empty());
   }
 
+  // PM5 ("Hook log and counters"): particles lines, the multimesh lines' shape.
+  {
+    const float f = 2.0f;
+    log.particles_call(main_ctx, "particles_set_lifetime", 4300, 1, true, 3,
+                       grc::rs::MultimeshArgs().floats("lifetime", &f, 1));
+    log.particles_call(main_ctx, "particles_set_process_material", 4300, 1, true, 4,
+                       grc::rs::MultimeshArgs().id("material", 2).rid("material_rid", 99));
+    log.particles_state(main_ctx, 11, 0, 1,
+                        "\"status\":\"freed\",\"reason\":null,\"version\":5,\"floats\":null");
+    lines = split_lines(log.take_lines());
+    EXPECT(lines.size() == 3);
+    EXPECT(has(lines[0], ",\"kind\":\"particles\",\"call\":\"particles_set_lifetime\","
+                         "\"rid\":\"4300\",\"id\":1,\"accepted\":true,\"version\":3,"
+                         "\"lifetime\":[2]}"));
+    EXPECT(has(lines[1], "\"material\":2,\"material_rid\":\"99\"}"));
+    EXPECT(has(lines[2], "{\"frame\":11,") &&
+           has(lines[2], "\"kind\":\"particles\",\"call\":\"state\",\"rid\":null,\"id\":1,"
+                         "\"status\":\"freed\",\"reason\":null,\"version\":5,\"floats\":null}"));
+  }
+
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);
     return 1;

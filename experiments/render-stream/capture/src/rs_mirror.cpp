@@ -82,6 +82,13 @@ void Mirror::reset() {
   next_multimesh_id_ = 1;
   stale_buffer_multimesh_ = 0;
   multimesh_notes_.clear();
+  particles_.clear();
+  particles_by_rid_.clear();
+  next_particles_id_ = 1;
+  drop_restart_done_ = false;
+  particles_notes_.clear();
+  pending_emits_.clear();
+  emit_tail_.reset();
   shaders_.clear();
   shader_by_rid_.clear();
   next_shader_id_ = 1;
@@ -598,6 +605,10 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     }
     return;
   }
+  if (Particles *pt = find_particles(rid)) {
+    retire_particles(pt, frame);  // PM5: as particles_free (the hook calls that directly)
+    return;
+  }
   const auto texture_it = texture_by_rid_.find(rid);
   if (texture_it != texture_by_rid_.end()) {
     // gate2-design.md Q3: a texture a command still names becomes a `freed`
@@ -645,6 +656,16 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
       if (state.has_material && state.material == id) {
         state.has_material = false;
         state.material = 0;
+      }
+    }
+    // PM5: an emitter whose process material it was now names an unknown material.
+    for (auto &entry : particles_) {
+      Particles &pt = entry.second;
+      if (!pt.freed && pt.material_id == id) {
+        pt.material_id = 0;
+        pt.unknown_material = true;
+        ParticlesCall ignored;
+        particles_moved(&pt, &ignored);
       }
     }
     material_by_rid_.erase(material_it);
@@ -1062,6 +1083,7 @@ bool names_texture(const Command &command) {
     case CommandKind::AddNinePatch:
     case CommandKind::AddMesh:
     case CommandKind::AddMultimesh:  // PM1 rule 7: `tex` as every /4 op with one
+    case CommandKind::AddParticles:  // PM5: `tex` as every /4 op with one
       return true;
     default:
       return false;
@@ -1087,6 +1109,7 @@ const char *rs_method_name(CommandKind kind) {
     case CommandKind::AddSetTransform: return "canvas_item_add_set_transform";
     case CommandKind::AddClipIgnore: return "canvas_item_add_clip_ignore";
     case CommandKind::AddMultimesh: return "canvas_item_add_multimesh";
+    case CommandKind::AddParticles: return "canvas_item_add_particles";
     case CommandKind::Unsupported: break;
   }
   return "";
@@ -1892,6 +1915,15 @@ bool Mirror::mesh_referenced(std::uint32_t id) const {
     const Multimesh &mm = entry.second;
     if (!mm.freed && !mm.unknown_mesh && mm.mesh_id == id) {
       return true;
+    }
+  }
+  // PM5 (particles-ref): so does an emitter's draw pass mesh.
+  for (const auto &entry : particles_) {
+    const Particles &pt = entry.second;
+    for (std::size_t k = 0; !pt.freed && k < pt.pass_ids.size(); ++k) {
+      if (!pt.pass_unknown[k] && pt.pass_ids[k] == id) {
+        return true;
+      }
     }
   }
   return false;
@@ -2782,6 +2814,542 @@ std::vector<Mirror::MultimeshStateNote> Mirror::take_multimesh_states() {
   return out;
 }
 
+// --- particles (PM5; render-stream-12.md "Particles table", "The emit list") ------------------
+
+namespace {
+
+// GLES3's Particles struct defaults (drivers/gles3/storage/particles_storage.h): amount_ratio 1,
+// lifetime 1, pre_process 0, explosiveness 0, randomness 0, speed_scale 1, collision_base_size
+// 0.01, trail length 0, interp_to_end 0, request_process_time 0, custom AABB (-4,-4,-4, 8,8,8),
+// emission transform identity, velocity 0. (golden-12's generator fills unlisted floats with
+// collision_base_size 1; its states are explicit, so the goldens do not depend on this.)
+std::shared_ptr<std::vector<float>> default_particle_floats() {
+  return std::make_shared<std::vector<float>>(std::vector<float>{
+      1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.01f, 0.0f, 0.0f, 0.0f,         // 0-9
+      -4.0f, -4.0f, -4.0f, 8.0f, 8.0f, 8.0f,                               // 10-15
+      1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,  // 16-27
+      0.0f, 0.0f, 0.0f});                                                   // 28-30
+}
+
+}  // namespace
+
+void Mirror::set_particles(const ParticlesOptions &options) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  pt_options_ = options;
+}
+
+Mirror::Particles *Mirror::find_particles(std::uint64_t rid) {
+  if (rid == 0) {
+    return nullptr;
+  }
+  const auto it = particles_by_rid_.find(rid);
+  return it == particles_by_rid_.end() ? nullptr : &particles_.at(it->second);
+}
+
+bool Mirror::knows_particles(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return rid != 0 && particles_by_rid_.count(rid) != 0;
+}
+
+std::uint32_t Mirror::material_id_of(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = material_by_rid_.find(rid);
+  return rid == 0 || it == material_by_rid_.end() ? 0 : it->second;
+}
+
+std::uint32_t Mirror::mesh_id_of(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = mesh_by_rid_.find(rid);
+  return rid == 0 || it == mesh_by_rid_.end() ? 0 : it->second;
+}
+
+bool Mirror::particles_referenced(std::uint32_t id) const {
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddParticles && command.particles == id) {
+        return true;
+      }
+    }
+  }
+  for (const auto &entry : particles_) {
+    if (!entry.second.freed && !entry.second.unknown_sub && entry.second.sub_id == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Mirror::particles_moved(Particles *p, ParticlesCall *out) {
+  ++epoch_;
+  ++ppm_epoch_;
+  ++p->version;
+  out->changed = true;
+  out->version = p->version;
+}
+
+void Mirror::retire_particles(Particles *p, std::uint64_t frame) {
+  ParticlesCall ignored;
+  particles_by_rid_.erase(p->rid);
+  p->rid = 0;
+  p->freed = true;
+  p->floats.reset();
+  p->material_rid = 0;
+  p->material_id = 0;
+  p->unknown_material = false;
+  p->pass_rids.clear();
+  p->pass_ids.clear();
+  p->pass_unknown.clear();
+  p->sub_rid = 0;
+  p->sub_id = 0;
+  p->unknown_sub = false;
+  particles_moved(p, &ignored);
+  if (!particles_referenced(p->id)) {
+    note_particles(*p, frame);  // its last state, before the entry leaves for good
+    particles_.erase(p->id);
+  }
+}
+
+Mirror::ParticlesCall Mirror::particles_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ParticlesCall out;
+  if (!pt_options_.enabled || rid == 0) {
+    return out;
+  }
+  if (omit_op_matches("particles_create", frame)) {
+    ++stats_.dropped_omit_op;
+    out.omitted = true;
+    out.accepted = true;
+    return out;
+  }
+  if (Particles *stale = find_particles(rid)) {
+    retire_particles(stale, frame);  // a recycled RID value: the old id leaves
+  }
+  ++epoch_;
+  ++ppm_epoch_;
+  Particles p;
+  p.id = next_particles_id_++;
+  p.rid = rid;
+  p.floats = default_particle_floats();
+  particles_by_rid_[rid] = p.id;
+  out.known = true;
+  out.accepted = true;
+  out.changed = true;
+  out.id = p.id;
+  out.version = p.version;
+  particles_.emplace(p.id, std::move(p));
+  return out;
+}
+
+Mirror::ParticlesCall Mirror::particles_free(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ParticlesCall out;
+  if (!pt_options_.enabled) {
+    return out;
+  }
+  Particles *p = find_particles(rid);
+  if (p == nullptr) {
+    ++stats_.particles_unknown;
+    return out;
+  }
+  out.known = true;
+  out.id = p->id;
+  if (omit_op_matches("free", frame)) {
+    ++stats_.dropped_omit_op;
+    out.omitted = true;
+    out.accepted = true;
+    out.version = p->version;
+    return out;
+  }
+  out.accepted = true;
+  retire_particles(p, frame);
+  out.changed = true;
+  const auto it = particles_.find(out.id);
+  out.version = it != particles_.end() ? it->second.version : 0;
+  return out;
+}
+
+Mirror::ParticlesCall Mirror::particles_call(std::uint64_t rid, ParticlesOp op,
+                                             const ParticlesArgs &args, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ParticlesCall out;
+  if (!pt_options_.enabled) {
+    return out;
+  }
+  // RID arguments: their wire ids, for the hook log whether or not the call is accepted.
+  if (op == ParticlesOp::SetProcessMaterial) {
+    const auto it = material_by_rid_.find(args.rid);
+    out.ref_id = args.rid != 0 && it != material_by_rid_.end() ? it->second : 0;
+  } else if (op == ParticlesOp::SetDrawPassMesh) {
+    const auto it = mesh_by_rid_.find(args.rid);
+    out.ref_id = args.rid != 0 && it != mesh_by_rid_.end() ? it->second : 0;
+  } else if (op == ParticlesOp::SetSubemitter) {
+    const auto it = particles_by_rid_.find(args.rid);
+    out.ref_id = args.rid != 0 && it != particles_by_rid_.end() ? it->second : 0;
+  }
+  Particles *p = find_particles(rid);
+  if (p == nullptr) {
+    ++stats_.particles_unknown;
+    return out;
+  }
+  out.known = true;
+  out.id = p->id;
+  out.version = p->version;
+  out.restarts = p->restarts;
+  static const char *const kOpNames[] = {
+      "particles_set_mode", "particles_set_emitting", "particles_set_amount",
+      "particles_set_amount_ratio", "particles_set_lifetime", "particles_set_one_shot",
+      "particles_set_pre_process_time", "particles_request_process_time",
+      "particles_set_explosiveness_ratio", "particles_set_randomness_ratio",
+      "particles_set_custom_aabb", "particles_set_speed_scale",
+      "particles_set_use_local_coordinates", "particles_set_process_material",
+      "particles_set_fixed_fps", "particles_set_interpolate", "particles_set_fractional_delta",
+      "particles_set_collision_base_size", "particles_set_seed", "particles_set_transform_align",
+      "particles_set_trails", "particles_set_trail_bind_poses", "particles_request_process",
+      "particles_restart", "particles_set_subemitter", "particles_emit",
+      "particles_set_draw_order", "particles_set_draw_passes", "particles_set_draw_pass_mesh",
+      "particles_set_emission_transform", "particles_set_emitter_velocity",
+      "particles_set_interp_to_end"};
+  if (omit_op_matches(kOpNames[static_cast<int>(op)], frame)) {
+    ++stats_.dropped_omit_op;
+    out.omitted = true;
+    out.accepted = true;
+    return out;
+  }
+  // The float slots a setter writes (offset, count); count 0 for a non-float setter.
+  std::size_t at = 0;
+  std::size_t count = 0;
+  bool changed = false;
+  const auto set_bool = [&](bool *field) {
+    const bool v = args.i != 0;
+    changed = *field != v;
+    *field = v;
+  };
+  const auto set_int = [&](std::int32_t *field) {
+    const std::int32_t v = static_cast<std::int32_t>(args.i);
+    changed = *field != v;
+    *field = v;
+  };
+  out.accepted = true;
+  switch (op) {
+    case ParticlesOp::SetMode: {
+      const bool v = args.i == 0;  // RS::PARTICLES_MODE_2D
+      changed = p->mode_2d != v;
+      p->mode_2d = v;
+      break;
+    }
+    case ParticlesOp::SetEmitting: set_bool(&p->emitting); break;
+    case ParticlesOp::SetAmount: set_int(&p->amount); break;
+    case ParticlesOp::SetOneShot: set_bool(&p->one_shot); break;
+    case ParticlesOp::SetUseLocalCoordinates: set_bool(&p->local); break;
+    case ParticlesOp::SetFixedFps: set_int(&p->fixed_fps); break;
+    case ParticlesOp::SetInterpolate: set_bool(&p->interpolate); break;
+    case ParticlesOp::SetFractionalDelta: set_bool(&p->fractional_delta); break;
+    case ParticlesOp::SetTransformAlign: set_int(&p->transform_align); break;
+    case ParticlesOp::SetDrawOrder: set_int(&p->draw_order); break;
+    case ParticlesOp::SetSeed: {
+      const std::uint32_t v = static_cast<std::uint32_t>(args.i);
+      changed = p->seed != v;
+      p->seed = v;
+      break;
+    }
+    case ParticlesOp::SetAmountRatio: at = 0; count = 1; break;
+    case ParticlesOp::SetLifetime: at = 1; count = 1; break;
+    case ParticlesOp::SetPreProcessTime: at = 2; count = 1; break;
+    case ParticlesOp::SetExplosivenessRatio: at = 3; count = 1; break;
+    case ParticlesOp::SetRandomnessRatio: at = 4; count = 1; break;
+    case ParticlesOp::SetSpeedScale: at = 5; count = 1; break;
+    case ParticlesOp::SetCollisionBaseSize: at = 6; count = 1; break;
+    case ParticlesOp::SetInterpToEnd: at = 8; count = 1; break;
+    case ParticlesOp::SetCustomAabb: at = 10; count = 6; break;
+    case ParticlesOp::SetEmissionTransform: at = 16; count = 12; break;
+    case ParticlesOp::SetEmitterVelocity: at = 28; count = 3; break;
+    case ParticlesOp::RequestProcessTime:
+      at = 9;
+      count = 1;
+      ++p->process_requests;
+      changed = true;  // always: the counter moves
+      break;
+    case ParticlesOp::SetTrails: {
+      const bool v = args.i != 0;
+      changed = p->trails != v;
+      p->trails = v;
+      at = 7;
+      count = 1;
+      break;
+    }
+    case ParticlesOp::SetTrailBindPoses: {
+      const std::size_t poses = args.f.size() / 12;
+      std::vector<float> next(p->floats->begin(), p->floats->begin() + static_cast<long>(kParticlesBaseFloats));
+      next.insert(next.end(), args.f.begin(), args.f.begin() + static_cast<long>(poses * 12));
+      if (next.size() != p->floats->size() ||
+          std::memcmp(next.data(), p->floats->data(), next.size() * sizeof(float)) != 0) {
+        p->floats = std::make_shared<std::vector<float>>(std::move(next));
+        changed = true;
+      }
+      break;
+    }
+    case ParticlesOp::RequestProcess:
+      break;  // accepted; nothing the entry carries changes
+    case ParticlesOp::Restart:
+      if (pt_options_.drop_restart_frame != 0 && frame >= pt_options_.drop_restart_frame &&
+          !drop_restart_done_) {
+        // Sabotage drop-restart: counted in the host's state (the hook log), not on the wire.
+        drop_restart_done_ = true;
+        ++p->restarts_dropped;
+        ++p->wire_version_skew;
+      }
+      ++p->restarts;
+      changed = true;
+      break;
+    case ParticlesOp::Emit: {
+      ++p->emits;
+      changed = true;
+      rs2::ParticleEmit e;
+      e.particles = p->id;
+      e.restarts = p->restarts - p->restarts_dropped;
+      e.flags = args.flags;
+      for (std::size_t k = 0; k < e.floats.size() && k < args.f.size(); ++k) {
+        e.floats[k] = args.f[k];
+      }
+      pending_emits_.push_back(e);
+      out.restarts = p->restarts;
+      break;
+    }
+    case ParticlesOp::SetProcessMaterial: {
+      const std::uint32_t id = out.ref_id;
+      const bool unknown = args.rid != 0 && id == 0;
+      changed = p->material_rid != args.rid || p->material_id != id || p->unknown_material != unknown;
+      p->material_rid = args.rid;
+      p->material_id = id;
+      p->unknown_material = unknown;
+      ++ppm_epoch_;
+      break;
+    }
+    case ParticlesOp::SetSubemitter: {
+      const std::uint32_t id = out.ref_id;
+      const bool unknown = args.rid != 0 && id == 0;
+      changed = p->sub_rid != args.rid || p->sub_id != id || p->unknown_sub != unknown;
+      p->sub_rid = args.rid;
+      p->sub_id = id;
+      p->unknown_sub = unknown;
+      break;
+    }
+    case ParticlesOp::SetDrawPasses: {
+      if (args.i < 0) {
+        out.accepted = false;  // Vector::resize refuses a negative size
+        break;
+      }
+      const std::size_t n = static_cast<std::size_t>(args.i);
+      changed = p->pass_rids.size() != n;
+      p->pass_rids.resize(n, 0);
+      p->pass_ids.resize(n, 0);
+      p->pass_unknown.resize(n, false);
+      break;
+    }
+    case ParticlesOp::SetDrawPassMesh: {
+      if (args.i < 0 || static_cast<std::size_t>(args.i) >= p->pass_rids.size()) {
+        out.accepted = false;  // ERR_FAIL_INDEX
+        break;
+      }
+      const std::size_t k = static_cast<std::size_t>(args.i);
+      const std::uint32_t id = out.ref_id;
+      const bool unknown = args.rid != 0 && id == 0;
+      changed = p->pass_rids[k] != args.rid || p->pass_ids[k] != id || p->pass_unknown[k] != unknown;
+      p->pass_rids[k] = args.rid;
+      p->pass_ids[k] = id;
+      p->pass_unknown[k] = unknown;
+      break;
+    }
+  }
+  if (count != 0 && args.f.size() >= count) {
+    float *dst = nullptr;
+    if (std::memcmp(p->floats->data() + at, args.f.data(), count * sizeof(float)) != 0) {
+      if (p->floats.use_count() > 1) {
+        p->floats = std::make_shared<std::vector<float>>(*p->floats);  // a note still holds it
+      }
+      dst = p->floats->data() + at;
+      std::memcpy(dst, args.f.data(), count * sizeof(float));
+      changed = true;
+    }
+  }
+  if (out.accepted && changed) {
+    particles_moved(p, &out);
+  }
+  if (op == ParticlesOp::Emit) {
+    out.restarts = p->restarts;
+  }
+  return out;
+}
+
+void Mirror::add_particles(std::uint64_t rid, std::uint64_t particles_rid, std::uint64_t texture,
+                           std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_particles";
+  Item *item = geometry_item(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  const Particles *p = pt_options_.enabled ? find_particles(particles_rid) : nullptr;
+  if (p == nullptr) {
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = pt_options_.enabled ? UnsupportedCmdReason::UnknownParticles
+                                                     : UnsupportedCmdReason::UnsupportedOp;
+  } else if (geometry_texture(texture, kOp, &command)) {
+    command.kind = CommandKind::AddParticles;
+    command.particles = p->id;
+  }
+  ++ppm_epoch_;
+  push_command(item, std::move(command), frame);
+}
+
+ParticlesEntry Mirror::wire_particles(const Particles &p, bool notes) const {
+  ParticlesEntry out;
+  out.id = p.id;
+  out.version = notes ? p.version : p.version - p.wire_version_skew;
+  out.mode_2d = p.mode_2d;
+  out.emitting = p.emitting;
+  out.amount = p.amount;
+  out.one_shot = p.one_shot;
+  out.fixed_fps = p.fixed_fps;
+  out.interpolate = p.interpolate;
+  out.fractional_delta = p.fractional_delta;
+  out.local = p.local;
+  out.draw_order = p.draw_order;
+  out.transform_align = p.transform_align;
+  out.trails = p.trails;
+  out.seed = p.seed;
+  out.restarts = notes ? p.restarts : p.restarts - p.restarts_dropped;
+  out.emits = p.emits;
+  out.process_requests = p.process_requests;
+  if (p.freed) {
+    out.status = ParticlesStatus::Freed;
+    out.trail_poses = 0;
+    return out;
+  }
+  out.floats = p.floats;
+  out.trail_poses =
+      p.floats != nullptr && p.floats->size() > kParticlesBaseFloats
+          ? static_cast<std::uint32_t>((p.floats->size() - kParticlesBaseFloats) / 12)
+          : 0;
+  if (!p.trails && out.trail_poses > 0) {
+    // particles-entry: trail poses need trails. GLES3 keeps bind poses set while trails are off
+    // but never uses them, so the wire (and the hook log's state line) carries none until trails
+    // turn on; the poses come back with them, because the mirror keeps them.
+    out.floats = std::make_shared<const std::vector<float>>(
+        p.floats->begin(), p.floats->begin() + kParticlesBaseFloats);
+    out.trail_poses = 0;
+  }
+  out.process_material = p.unknown_material ? 0 : p.material_id;
+  out.draw_passes.reserve(p.pass_ids.size());
+  bool unknown_mesh = false;
+  for (std::size_t k = 0; k < p.pass_ids.size(); ++k) {
+    unknown_mesh = unknown_mesh || p.pass_unknown[k];
+    out.draw_passes.push_back(p.pass_unknown[k] ? 0 : p.pass_ids[k]);
+  }
+  out.subemitter = p.unknown_sub ? 0 : p.sub_id;
+  out.has_reason = true;
+  if (!p.mode_2d) {
+    out.reason = ParticlesReason::Particles3d;
+  } else if (p.unknown_material) {
+    out.reason = ParticlesReason::UnknownMaterial;
+  } else if (unknown_mesh) {
+    out.reason = ParticlesReason::UnknownMesh;
+  } else if (p.unknown_sub) {
+    out.reason = ParticlesReason::UnknownParticles;
+  } else {
+    out.has_reason = false;
+  }
+  out.status = out.has_reason ? ParticlesStatus::Unsupported : ParticlesStatus::Ok;
+  return out;
+}
+
+void Mirror::note_particles(const Particles &p, std::uint64_t frame) {
+  if (!pt_options_.state_notes || p.noted_version == p.version) {
+    return;
+  }
+  ParticlesStateNote note;
+  note.frame = frame;
+  note.rid = p.rid;
+  note.entry = wire_particles(p, true);
+  particles_notes_.push_back(std::move(note));
+}
+
+std::vector<Mirror::ParticlesStateNote> Mirror::take_particles_states() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<ParticlesStateNote> out;
+  out.swap(particles_notes_);
+  return out;
+}
+
+std::uint64_t Mirror::ppm_epoch() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return ppm_epoch_;
+}
+
+std::vector<Mirror::PpmCandidate> Mirror::ppm_candidates() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<PpmCandidate> out;
+  if (!pt_options_.enabled) {
+    return out;
+  }
+  // The items drawing each emitter id.
+  std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddParticles) {
+        drawn_by[command.particles].push_back(entry.second.rid);
+      }
+    }
+  }
+  std::map<std::uint32_t, std::size_t> index;  // shader id -> out index
+  for (const auto &entry : particles_) {
+    const Particles &p = entry.second;
+    if (p.freed || p.material_id == 0 || p.unknown_material) {
+      continue;
+    }
+    const auto items = drawn_by.find(p.id);
+    if (items == drawn_by.end()) {
+      continue;
+    }
+    const auto material = materials_.find(p.material_id);
+    if (material == materials_.end() || !material->second.has_shader) {
+      continue;
+    }
+    const auto shader = shaders_.find(material->second.shader);
+    if (shader == shaders_.end() || shader->second.has_ppm || !shader->second.has_code ||
+        shader->second.copy.mode != "particles") {
+      continue;
+    }
+    auto at = index.find(shader->first);
+    if (at == index.end()) {
+      at = index.emplace(shader->first, out.size()).first;
+      PpmCandidate c;
+      c.shader_rid = shader->second.rid;
+      out.push_back(std::move(c));
+    }
+    for (std::uint64_t item : items->second) {
+      out[at->second].pairs.emplace_back(p.material_rid, item);
+    }
+  }
+  return out;
+}
+
+void Mirror::set_shader_ppm(std::uint64_t shader_rid,
+                            const rs2::BuiltinParticleProcessMaterial &key) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Shader *shader = find_shader(shader_rid);
+  if (shader == nullptr || (shader->has_ppm && shader->ppm == key)) {
+    return;
+  }
+  shader->has_ppm = true;
+  shader->ppm = key;
+  ++shader->version;
+  ++stats_.ppm_resolved;
+  ++epoch_;
+}
+
 void Mirror::set_texture_filter(std::uint64_t rid, std::int32_t filter, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   static const char kOp[] = "canvas_item_set_default_texture_filter";
@@ -3635,6 +4203,18 @@ ShaderEntry Mirror::wire_shader(const Shader &shader) const {
       out.reason = ShaderReason::ShaderExcluded;
     }
   }
+  if (shader.has_ppm && pt_options_.enabled && mode == ShaderMode::Particles) {
+    // PM5 (render-stream-12.md "Effect"): a particles-mode shader keyed by the
+    // particle_process_material builtin is `ok` at /12, its code never withheld or excluded;
+    // below /12 it is what it was (below_v12).
+    const auto below = std::make_shared<const ShaderEntry>(out);
+    out.status = ShaderStatus::Ok;
+    out.has_reason = false;
+    out.source = ShaderSource::Payload;
+    out.has_ppm = true;
+    out.ppm = shader.ppm;
+    out.below_v12 = below;
+  }
   return out;
 }
 
@@ -3651,11 +4231,26 @@ MaterialEntry Mirror::wire_material(const Material &material) {
     out.reason = MaterialReason::UnknownShader;
   }
   const Material::WireParams &wire = wire_params(material);
+  const MaterialStatus status = out.status;
   out.params = wire.params;
   if (wire.unsupported && out.status == MaterialStatus::Ok) {
     out.status = MaterialStatus::Unsupported;
     out.has_reason = true;
     out.reason = wire.reason;
+  }
+  if (wire.has_below) {
+    // PM5: what a connection below /12 sees (the Array parameter refused, as before PM5).
+    MaterialEntry below = out;
+    below.status = status;
+    below.has_reason = material.shader_unknown;
+    below.reason = MaterialReason::UnknownShader;
+    below.params = wire.below_params;
+    if (wire.below_unsupported && below.status == MaterialStatus::Ok) {
+      below.status = MaterialStatus::Unsupported;
+      below.has_reason = true;
+      below.reason = wire.below_reason;
+    }
+    out.below_v12 = std::make_shared<const MaterialEntry>(std::move(below));
   }
   return out;
 }
@@ -3670,9 +4265,30 @@ const Mirror::Material::WireParams &Mirror::wire_params(const Material &material
   wire.unsupported = false;
   wire.reason = MaterialReason::ParamType;
   wire.textures.clear();
+  // PM5: /12 carries a plain Array parameter's packed form (v12_ok); the /11 form is kept apart.
+  wire.has_below = false;
+  for (const auto &entry : material.params) {
+    if (entry.second.v12_ok) {
+      wire.has_below = true;
+      break;
+    }
+  }
+  std::vector<Param> below_params;
+  wire.below_unsupported = false;
+  wire.below_reason = MaterialReason::ParamType;
   for (const auto &entry : material.params) {
     const MaterialParam &param = entry.second;
-    if (param.ok) {
+    if (wire.has_below) {
+      if (param.ok) {
+        below_params.push_back(param.param);
+      } else if (!wire.below_unsupported) {
+        wire.below_unsupported = true;
+        wire.below_reason = param.reason;
+      }
+    }
+    if (wire.has_below && param.v12_ok) {
+      params.push_back(param.v12_param);
+    } else if (param.ok) {
       params.push_back(param.param);
       if (param.param.has_tex) {
         wire.textures.push_back(param.param.tex);
@@ -3682,6 +4298,7 @@ const Mirror::Material::WireParams &Mirror::wire_params(const Material &material
       wire.reason = param.reason;
     }
   }
+  wire.below_params = std::move(below_params);
   wire.params = std::move(params);
   wire.version = material.version;
   return wire;
@@ -3945,6 +4562,16 @@ void Mirror::material_set_param(std::uint64_t rid, const std::string &name,
   }
   MaterialParam param;
   param.ok = to_param(name, value, &param.param, &param.reason);
+  if (!param.ok && pt_options_.param_arrays && value.type == "array" && value.array_form) {
+    // PM5: the packed form GLES3 converts the Array to, carried at /12 (wire_params()).
+    DecodedParam packed;
+    packed.type = value.array_type;
+    packed.packed = true;
+    packed.n = value.array_n;
+    packed.f = value.array_f;
+    MaterialReason ignored = MaterialReason::ParamType;
+    param.v12_ok = to_param(name, packed, &param.v12_param, &ignored);
+  }
   material->params[name] = std::move(param);
   ++material->version;
 }
@@ -4268,6 +4895,11 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::set<std::uint32_t> multimeshes_named;
   std::set<std::uint32_t> multimeshes_published;
   const bool mm_on = mm_options_.enabled;
+  // PM5 ("Publication"): the emitters any add_particles names (the tombstone rule) and those a
+  // published item's names (the table, closed over subemitters below).
+  std::set<std::uint32_t> particles_named;
+  std::set<std::uint32_t> particles_published;
+  const bool pt_on = pt_options_.enabled;
   // Item-level entries (render-stream-2.md "Item-level unsupported entries"): one per distinct
   // (op, reason) pair of each item -- an unsupported command's name and reason, a texture draw
   // naming an unsupported texture (unsupported-texture), a material (unsupported-state) -- and
@@ -4302,6 +4934,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
         meshes_named.insert(command.mesh);
       } else if (command.kind == CommandKind::AddMultimesh) {
         multimeshes_named.insert(command.multimesh);
+      } else if (command.kind == CommandKind::AddParticles) {
+        particles_named.insert(command.particles);
       }
     }
     for (const auto &param : entry.second.instance_params) {
@@ -4328,6 +4962,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
           reason = UnsupportedReason::UnknownMesh;
         } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMultimesh) {
           reason = UnsupportedReason::UnknownMultimesh;  // PM1 rule 7
+        } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownParticles) {
+          reason = UnsupportedReason::UnknownParticles;  // PM5 "The command"
         }
         add_item_entry(state.id, command.name, reason);
       } else if (names_texture(command) && command.has_tex) {
@@ -4364,6 +5000,15 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
             wire_multimesh(mm->second).status == MultimeshStatus::Unsupported) {
           add_item_entry(state.id, "canvas_item_add_multimesh",
                          UnsupportedReason::UnsupportedMultimesh);
+        }
+      } else if (command.kind == CommandKind::AddParticles) {
+        // PM5: an add_particles naming an `unsupported` emitter (a tombstone adds none).
+        particles_published.insert(command.particles);
+        const auto pt = particles_.find(command.particles);
+        if (pt != particles_.end() &&
+            wire_particles(pt->second, false).status == ParticlesStatus::Unsupported) {
+          add_item_entry(state.id, "canvas_item_add_particles",
+                         UnsupportedReason::UnsupportedParticles);
         }
       }
     }
@@ -4407,13 +5052,33 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
         // PM1: what a connection below /11 sees of a list with multimesh commands (rs2_diff.h
         // lower_multimesh): the digest of the lowered list, as before PM1.
         held.cv_digest_below = 0;
+        held.cv_digest_below12 = 0;
         std::vector<Command> lowered;
-        if (mm_on && lower_multimesh_commands(state.commands, &lowered)) {
+        if (pt_on) {
+          // PM5: /11's view (particles lowered) and /10's (both lowered).
+          if (lower_particles_commands(state.commands, &lowered)) {
+            held.cv_digest_below12 = command_list_digest(lowered);
+          }
+          if (lower_v11_commands(state.commands, &lowered)) {
+            held.cv_digest_below = command_list_digest(lowered);
+          }
+        } else if (mm_on && lower_multimesh_commands(state.commands, &lowered)) {
           held.cv_digest_below = command_list_digest(lowered);
         }
       }
       out.items.back().content_version = held.cv_digest;
       out.items.back().content_version_below_v11 = held.cv_digest_below;
+      out.items.back().content_version_below_v12 = held.cv_digest_below12;
+    }
+    if (pt_on && !out.particles_commands) {
+      for (const Command &command : state.commands) {
+        if (command.kind == CommandKind::AddParticles ||
+            (command.kind == CommandKind::Unsupported &&
+             command.name == "canvas_item_add_particles")) {
+          out.particles_commands = true;  // a /11 connection lowers this snapshot
+          break;
+        }
+      }
     }
     if (mm_on && !out.multimesh_commands) {
       for (const Command &command : state.commands) {
@@ -4460,6 +5125,31 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       meshes_named.insert(mm.mesh_id);
     }
     ++it;
+  }
+  // PM5: an emitter's draw pass meshes keep their tombstones; an emitter tombstone leaves at the
+  // first snapshot nothing names it (no add_particles, no live emitter's subemitter), after its
+  // last state note.
+  if (pt_on) {
+    for (const auto &entry : particles_) {
+      if (!entry.second.freed && !entry.second.unknown_sub && entry.second.sub_id != 0) {
+        particles_named.insert(entry.second.sub_id);
+      }
+    }
+    for (auto it = particles_.begin(); it != particles_.end();) {
+      Particles &pt = it->second;
+      note_particles(pt, frame);
+      pt.noted_version = pt.version;
+      if (pt.freed && particles_named.count(it->first) == 0) {
+        it = particles_.erase(it);
+        continue;
+      }
+      for (std::size_t k = 0; !pt.freed && k < pt.pass_ids.size(); ++k) {
+        if (!pt.pass_unknown[k] && pt.pass_ids[k] != 0) {
+          meshes_named.insert(pt.pass_ids[k]);
+        }
+      }
+      ++it;
+    }
   }
   // G5e: likewise a mesh tombstone leaves at the first snapshot no add_mesh names it.
   for (auto it = meshes_.begin(); it != meshes_.end();) {
@@ -4565,9 +5255,73 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.materials.reserve(materials_.size());
   for (const auto &entry : materials_) {
     out.materials.push_back(wire_material(entry.second));
+    if (out.materials.back().below_v12 != nullptr) {
+      out.particles_commands = true;  // PM5: a /11 connection sees the /11 form
+    }
+  }
+  for (const ShaderEntry &shader : out.shaders) {
+    if (shader.below_v12 != nullptr) {
+      out.particles_commands = true;
+    }
   }
   if (time_read) {
     out.shader_time = shader_time_;
+  }
+  if (pt_on) {
+    // PM5 ("Publication"): the emitters a published add_particles names, closed over the
+    // subemitters of published entries; tombstones included.
+    std::vector<std::uint32_t> work(particles_published.begin(), particles_published.end());
+    while (!work.empty()) {
+      const std::uint32_t id = work.back();
+      work.pop_back();
+      const auto it = particles_.find(id);
+      if (it == particles_.end() || it->second.freed || it->second.unknown_sub) {
+        continue;
+      }
+      const std::uint32_t sub = it->second.sub_id;
+      if (sub != 0 && particles_published.insert(sub).second) {
+        work.push_back(sub);
+      }
+    }
+    out.particles.reserve(particles_published.size());
+    for (std::uint32_t id : particles_published) {
+      const auto it = particles_.find(id);
+      if (it != particles_.end()) {
+        out.particles.push_back(wire_particles(it->second, false));
+      }
+    }
+    // The emit log: this frame's emits become one chunk; the tail keeps the last 4,096 emits.
+    if (!pending_emits_.empty()) {
+      auto chunk = std::make_shared<rs2::EmitChunk>();
+      chunk->frame = frame;
+      chunk->emits.swap(pending_emits_);
+      auto tail = std::make_shared<rs2::EmitTail>();
+      if (emit_tail_ != nullptr) {
+        *tail = *emit_tail_;
+      }
+      tail->push_back(chunk);
+      std::size_t total = 0;
+      for (const auto &c : *tail) {
+        total += c->emits.size();
+      }
+      while (total > rs2::kParticleEmitTail && !tail->empty()) {
+        const std::size_t first = tail->front()->emits.size();
+        if (total - first >= rs2::kParticleEmitTail) {
+          total -= first;
+          tail->erase(tail->begin());
+          continue;
+        }
+        // Trim the oldest chunk to exactly the tail's bound.
+        auto trimmed = std::make_shared<rs2::EmitChunk>(*tail->front());
+        const std::size_t drop = total - rs2::kParticleEmitTail;
+        trimmed->emits.erase(trimmed->emits.begin(),
+                             trimmed->emits.begin() + static_cast<long>(drop));
+        tail->front() = trimmed;
+        total -= drop;
+      }
+      emit_tail_ = tail;
+    }
+    out.emit_tail = emit_tail_;
   }
   // PM1 (rule 9): the multimeshes a published add_multimesh names, tombstones included.
   out.multimeshes.reserve(multimeshes_published.size());
@@ -4609,6 +5363,7 @@ MirrorStats Mirror::stats() const {
   }
   out.live_meshes = meshes_.size();
   out.live_multimeshes = multimeshes_.size();
+  out.live_particles = particles_.size();
   std::set<std::string> mesh_hashes;
   for (const auto &entry : meshes_) {
     if (entry.second.dynamic) {
@@ -4685,6 +5440,9 @@ void mirror_set_perturb_shader(std::uint64_t from_frame) {
 }
 
 void mirror_set_shader_policy(ShaderPolicy policy) { mirror_instance().set_shader_policy(policy); }
+void mirror_set_particles(const Mirror::ParticlesOptions &options) {
+  mirror_instance().set_particles(options);
+}
 void mirror_set_multimesh(const Mirror::MultimeshOptions &options) {
   mirror_instance().set_multimesh(options);
 }

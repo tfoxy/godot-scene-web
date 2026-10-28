@@ -77,6 +77,11 @@ void hooks_set_frame(uint64_t frame);
 // add_multimesh and the mirror's multimesh table is on.
 bool hooks_multimesh_planned();
 
+// PM5 (render-stream-12.md "Session record"): the last hooks_plan() planned all 33 particles hooks
+// (GRC_STREAM_VERSION=12 and a record naming every slot), so the session declares add_particles
+// and the mirror's particles table is on.
+bool hooks_particles_planned();
+
 // P3-TM (render-stream-10.md "Shader time"): set before arming when the session is /10. The
 // shader hooks then classify `TIME` as a use, not the `shader-time` reason.
 void hooks_set_shader_time_carried(bool carried);

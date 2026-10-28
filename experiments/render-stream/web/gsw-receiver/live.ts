@@ -87,6 +87,7 @@ import {
 } from "./common";
 import {
   type LiveConfig,
+  type LiveProtocol,
   type ReceiverConfig,
   relativeToOut,
   underOut,
@@ -116,8 +117,8 @@ import {
 
 /** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
-const SUBPROTOCOL = (v: 7 | 8 | 9 | 10 | 11) => `render-stream.${v}`;
-const PROTOCOL = (v: 7 | 8 | 9 | 10 | 11) => `render-stream/${v}` as const;
+const SUBPROTOCOL = (v: LiveProtocol) => `render-stream.${v}`;
+const PROTOCOL = (v: LiveProtocol) => `render-stream/${v}` as const;
 /** G8kp (texture-delivery-design.md Q3): the compressed families a WebGL2 context on this page
  * exposes, probed on a throwaway canvas before the module's own context exists (the hello goes
  * out first), minus RS_RECEIVER_GPU_FORMAT_MASK; `none` when empty. The module re-derives the same
@@ -490,7 +491,7 @@ class LiveReceiver {
         JSON.parse(this.coding.stats_json()) as Record<string, unknown>,
       );
     this.coding =
-      this.cfg.liveProtocol === 11 && this.codingCtor !== null
+      this.cfg.liveProtocol >= 11 && this.codingCtor !== null
         ? new this.codingCtor(this.L.liveCoding, this.L.inboundBytes)
         : null;
     let ws: WebSocket;
@@ -562,11 +563,13 @@ class LiveReceiver {
             // G8kb: GSW transcodes uastc (the module's default with the worker, Q3).
             this.cfg.textureEncodings ?? "block,uastc,decoded",
             probeGpuFormats(this.cfg.gpuFormatMask),
-            this.cfg.liveProtocol === 11
-              ? "render-stream/11"
-              : this.cfg.liveProtocol === 10
-                ? "render-stream/10"
-                : "render-stream/9",
+            this.cfg.liveProtocol === 12
+              ? "render-stream/12"
+              : this.cfg.liveProtocol === 11
+                ? "render-stream/11"
+                : this.cfg.liveProtocol === 10
+                  ? "render-stream/10"
+                  : "render-stream/9",
             // W11c: W11t's `live_coding` offer, last (golden-11's control hello); none when off.
             this.L.liveCoding,
           )

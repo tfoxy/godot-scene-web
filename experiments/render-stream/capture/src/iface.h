@@ -20,6 +20,8 @@ struct Iface {
   GDExtensionInterfaceGlobalGetSingleton global_get_singleton = nullptr;
   GDExtensionInterfaceClassdbGetMethodBind classdb_get_method_bind = nullptr;
   GDExtensionInterfaceObjectMethodBindPtrcall object_method_bind_ptrcall = nullptr;
+  // PM5: optional (the pre-draw pump's emit_signal, a vararg method); null when unavailable.
+  GDExtensionInterfaceObjectMethodBindCall object_method_bind_call = nullptr;
   GDExtensionInterfaceStringNameNewWithLatin1Chars string_name_new_with_latin1_chars = nullptr;
   GDExtensionInterfaceStringNewWithUtf8Chars string_new_with_utf8_chars = nullptr;
   GDExtensionInterfaceStringToUtf8Chars string_to_utf8_chars = nullptr;
