@@ -39,7 +39,8 @@ bool sabotage_needs_v8(rs2::SabotageKind kind) {
 
 bool sabotage_needs_v11(rs2::SabotageKind kind) {
   return kind == rs2::SabotageKind::CvChurn || kind == rs2::SabotageKind::StaleDynamic ||
-         kind == rs2::SabotageKind::KeepCarried;
+         kind == rs2::SabotageKind::KeepCarried || kind == rs2::SabotageKind::PerturbInstance ||
+         kind == rs2::SabotageKind::StaleBuffer;
 }
 
 bool parse_mesh_dynamic_policy(const char *mode, const char *frames, const char *max_bytes,

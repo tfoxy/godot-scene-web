@@ -109,6 +109,21 @@
 // Point2 and int flattened to `[size.x, size.y, times]`). No status/reason/outcome: unlike G55a's
 // item-material lines, G6k types no refusal (there is nothing yet to refuse against -- that is
 // G6b's mirror).
+//
+// PM1 (render-stream-11.md "As built (PM1): decisions" rule 12) adds `kind: "multimesh"` lines,
+// with a shape of their own (no texture/mesh columns; keys in this order):
+//   frame, t_us, thread, kind ("multimesh"), call, rid (decimal string or null), id (the
+//   multimesh's wire id, or null when the mirror does not know the RID), accepted (the mirror's
+//   GLES3 verdict: false for a refused call or an unknown RID), version (after the call, or
+//   null), then the call's own arguments (MultimeshArgs below), and "omitted":true last on a call
+//   the omit-op sabotage kept from the mirror.
+// `call` is the RenderingServer method name (multimesh_create, multimesh_allocate_data, ...,
+// free) for one hooked call, or "state": one line per multimesh per published frame in which its
+// version moved, written at publication with the snapshot's frame, carrying version, instances,
+// format ("2d" | "3d"), colors, custom, visible, mesh (wire id or null), status, reason and
+// buffer_sha256 (the SHA-256 of the mirror's shadow buffer as little-endian f32, null unless the
+// status is "ok": exactly the resolved form's rule). This log keeps no multimesh registry of its
+// own: the mirror's verdicts are the evidence, and `state` is what the wire must carry.
 #ifndef GRC_RS_RESOURCE_LOG_H
 #define GRC_RS_RESOURCE_LOG_H
 
@@ -217,6 +232,40 @@ struct ShaderCopy {
 
 // What the hook decoded from a material_set_param / canvas_item_set_instance_shader_parameter
 // call's Variant value (gate5_5-design.md D8, Q3a).
+// PM1: a multimesh hook line's own arguments, appended as `,"key":value` pairs in call order.
+class MultimeshArgs {
+ public:
+  MultimeshArgs &i64(const char *key, std::int64_t value);
+  MultimeshArgs &boolean(const char *key, bool value);
+  MultimeshArgs &rid(const char *key, std::uint64_t value);   // decimal string, null for 0
+  MultimeshArgs &id(const char *key, std::uint64_t value);    // integer, null for 0
+  MultimeshArgs &floats(const char *key, const float *values, std::size_t n);  // non-finite: null
+  // `count` floats from `data`: "<key>": count and "<sha_key>": their SHA-256 (LE f32 bytes).
+  MultimeshArgs &buffer(const char *key, const char *sha_key, const float *data,
+                        std::size_t count);
+  const std::string &text() const { return text_; }
+
+ private:
+  std::string text_;
+};
+
+// PM1: one `state` line's values (rs_mirror.h MultimeshStateNote, in plain form).
+struct MultimeshState {
+  std::uint64_t frame = 0;
+  std::uint64_t rid = 0;  // 0: freed (null)
+  std::uint64_t id = 0;
+  std::uint64_t version = 0;
+  std::int64_t instances = 0;
+  const char *format = "2d";
+  bool colors = false;
+  bool custom = false;
+  std::int64_t visible = -1;
+  std::uint64_t mesh = 0;  // 0: null
+  const char *status = "ok";
+  const char *reason = nullptr;  // null
+  const std::vector<float> *buffer = nullptr;  // hashed when status is "ok"
+};
+
 struct MaterialParamCopy {
   std::string type;                  // rs::DecodedParam::type
   std::int64_t n = 0;
@@ -400,6 +449,12 @@ class ResourceLog {
   // `scale` is not logged (see the header comment above); only `parent`'s presence matters here.
   void canvas_set_parent(const TapContext &ctx, std::uint64_t canvas, std::uint64_t parent);
 
+  // PM1 (rule 12): one hooked multimesh call (`call` its method name), and one `state` line.
+  void multimesh_call(const TapContext &ctx, const char *call, std::uint64_t rid,
+                      std::uint64_t id, bool accepted, std::uint64_t version,
+                      const MultimeshArgs &args, bool omitted = false);
+  void multimesh_state(const TapContext &ctx, const MultimeshState &state);
+
   // The wire id of a texture RID the log knows, or 0.
   std::uint64_t texture_id(std::uint64_t rid) const;
   // The wire id of a mesh RID the log knows, or 0.
@@ -438,6 +493,7 @@ class ResourceLog {
   // Formats `line` into the buffer, or (G8kw) holds it behind a pending `job` or behind an
   // earlier held line. Caller holds the mutex.
   void emit(const Line &line, const std::shared_ptr<TextureJob> &job = nullptr);
+  void emit_text(const std::string &text);  // PM1: a preformatted line, in log order
   void format(std::string *out, const Line &line) const;
   // G8kw: a finished job's hash moves into the registry entry. Caller holds the mutex.
   static void settle(Entry *entry);

@@ -64,11 +64,13 @@ import {
   decodeTexturePayload,
   expectedDataBytes,
   isPartialUnknownItems,
+  multimeshBufferSha256,
   payloadSha256,
   recordSha256,
   resolveRecording,
   splitRecords,
   statesEqual,
+  transactionMultimeshes,
   validateRecording,
   wireVersionOf,
 } from "../lib/render-stream-2";
@@ -1269,6 +1271,97 @@ async function version11Cases(): Promise<void> {
     lastNames.every((h) => checkInlineFetch(oobValidator, h) === null),
     "golden-11: checkInlineFetch allows every name of full.rs11 (out-of-band, inline_max_bytes 0)",
   );
+  await multimeshCases11();
+}
+
+// PM1 (render-stream-11.md "As built (PM1)"): golden-11's multimesh states 17-21 resolve to the
+// tables make_golden.py describes; every resolved buffer_sha256 is the digest of the floats the
+// transaction carried (full.rs11: every buffer), a null buffer_f keeps the base's digest
+// (patch.rs11 seq 18), and the two PM1 sabotage kinds are /11-only.
+async function multimeshCases11(): Promise<void> {
+  const full11 = await readBytes(GOLDEN11_DIR, "full.rs11");
+  const resolved = resolveRecording(full11, 11);
+  const expectedIds: Record<number, number[]> = {
+    17: [1, 2, 3],
+    18: [1, 2, 3],
+    19: [1, 2, 3],
+    20: [1],
+    21: [1],
+  };
+  for (const txn of resolved.transactions) {
+    const ids = txn.state.multimeshes?.map((m) => m.id);
+    ok(
+      isDeepStrictEqual(ids, expectedIds[txn.seq]),
+      `golden-11: seq ${txn.seq}'s resolved multimesh ids are ${JSON.stringify(expectedIds[txn.seq] ?? "absent")} (got ${JSON.stringify(ids)})`,
+    );
+  }
+  const decodedFull = decodeRecording(full11, 11);
+  let checked = 0;
+  for (const record of decodedFull.records) {
+    if (record.meta.type !== "transaction") continue;
+    const meta = record.meta;
+    const state = resolved.transactions.find((t) => t.seq === meta.seq)?.state;
+    for (const { entry, buffer, custom_aabb } of transactionMultimeshes(
+      meta,
+      record.blocks,
+    )) {
+      const r = state?.multimeshes?.find((m) => m.id === entry.id);
+      const want =
+        entry.status === "ok" && buffer !== null
+          ? multimeshBufferSha256(buffer)
+          : null;
+      ok(
+        r !== undefined &&
+          (entry.status !== "ok" || buffer !== null) &&
+          r.buffer_sha256 === want &&
+          isDeepStrictEqual(r.custom_aabb, custom_aabb),
+        `golden-11: full.rs11 seq ${meta.seq} multimesh ${entry.id}: buffer_sha256 and custom_aabb are the carried floats'`,
+      );
+      checked++;
+    }
+  }
+  ok(checked === 11, `golden-11: full.rs11 carries 11 multimesh entries (got ${checked})`);
+  const patch11 = resolveRecording(await readBytes(GOLDEN11_DIR, "patch.rs11"), 11);
+  const mm2 = (seq: number) =>
+    patch11.transactions
+      .find((t) => t.seq === seq)
+      ?.state.multimeshes?.find((m) => m.id === 2);
+  const decodedPatch = decodeRecording(await readBytes(GOLDEN11_DIR, "patch.rs11"), 11);
+  const seq18 = decodedPatch.records.find(
+    (r) => r.meta.type === "transaction" && r.meta.seq === 18,
+  );
+  ok(
+    seq18?.meta.type === "transaction" &&
+      seq18.meta.multimeshes?.find((m) => m.id === 2)?.buffer_f === null &&
+      mm2(18)?.buffer_sha256 !== null &&
+      mm2(18)?.buffer_sha256 === mm2(17)?.buffer_sha256 &&
+      !isDeepStrictEqual(mm2(18)?.custom_aabb, mm2(17)?.custom_aabb),
+    "golden-11: patch.rs11 seq 18's multimesh 2 (buffer_f null, new AABB) keeps seq 17's buffer_sha256",
+  );
+  ok(
+    multimeshBufferSha256([]) === payloadSha256(new Uint8Array(0)),
+    "multimeshBufferSha256 of no floats is the SHA-256 of the empty string",
+  );
+
+  const full10 = await readBytes(GOLDEN10_DIR, "full.rs10");
+  for (const kind of ["perturb-instance", "stale-buffer"]) {
+    const v10 = reframeSession(full10, (meta) => {
+      meta.sabotage = { kind, frame: 1, op: null };
+    });
+    ok(
+      (validateRecording(v10, 10)[0] ?? "").includes("legal only at /11"),
+      `a /10 session declaring the /11-only sabotage kind ${kind} is rejected (meta-schema)`,
+    );
+    const v11 = reframeSession(full11, (meta) => {
+      meta.sabotage = { kind, frame: 1, op: null };
+    });
+    // The re-framed session moves bytes_total, so the end record's stats are all that differ.
+    const errors = validateRecording(v11, 11);
+    ok(
+      errors.length === 1 && errors[0].startsWith("end-stats-mismatch: "),
+      `a /11 session declaring sabotage kind ${kind} is accepted (only the re-framed end stats differ; got ${JSON.stringify(errors)})`,
+    );
+  }
 }
 
 async function helloCases(): Promise<void> {

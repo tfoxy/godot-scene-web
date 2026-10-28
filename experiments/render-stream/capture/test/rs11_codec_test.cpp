@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <optional>
@@ -47,6 +48,7 @@ using namespace grc::rs2;  // NOLINT
 using namespace grc::rs2;  // NOLINT
 
 int g_failures = 0;
+constexpr int kStates = 21;  // golden-11's states (make_golden.py STATES)
 
 void check(bool condition, const char *what) {
   if (!condition) {
@@ -529,8 +531,136 @@ TextureEntry *find_texture(Snapshot &s, std::uint32_t id) {
   return nullptr;
 }
 
-// golden-10's ten states at /11 (n <= 10), then golden-11's states 11 to 16 (make_golden.py
-// state11() ... state16()). Content serials move exactly where make_golden.py's bodies change.
+// --------------------------------------------------------------------------- PM1's five states
+
+// make_golden.py mm1_buffer(s, n): colors and custom, stride 16.
+std::shared_ptr<const std::vector<float>> mm1_buffer(int s, int n) {
+  auto out = std::make_shared<std::vector<float>>();
+  for (int i = 0; i < n; ++i) {
+    const float fi = static_cast<float>(i);
+    const float fs = static_cast<float>(s);
+    for (float v : {1.0f, 0.0f, 0.0f, 10.0f * fi + fs, 0.0f, 1.0f, 0.0f, 5.0f * fi + 0.5f,
+                    0.25f * (fi + 1.0f), 0.5f, 0.75f, 1.0f, fs, fi, 0.5f, 0.125f}) {
+      out->push_back(v);
+    }
+  }
+  return out;
+}
+
+// make_golden.py mm2_buffer(s, n): transforms only, stride 8.
+std::shared_ptr<const std::vector<float>> mm2_buffer(int s, int n) {
+  auto out = std::make_shared<std::vector<float>>();
+  for (int i = 0; i < n; ++i) {
+    const float fi = static_cast<float>(i);
+    for (float v : {2.0f, 0.0f, 0.0f, 32.0f + 16.0f * fi, 0.0f, 2.0f, 0.0f,
+                    static_cast<float>(s) + 0.5f * fi}) {
+      out->push_back(v);
+    }
+  }
+  return out;
+}
+
+Command add_multimesh(std::uint32_t id, bool has_tex = false, std::uint32_t tex = 0) {
+  Command c;
+  c.kind = CommandKind::AddMultimesh;
+  c.multimesh = id;
+  c.has_tex = has_tex;
+  c.tex = tex;
+  return c;
+}
+
+MultimeshEntry multimesh(std::uint32_t id, std::uint64_t version, std::int32_t instances,
+                         bool colors, bool custom,
+                         std::shared_ptr<const std::vector<float>> buffer, std::uint64_t serial) {
+  MultimeshEntry m;
+  m.id = id;
+  m.version = version;
+  m.instances = instances;
+  m.colors = colors;
+  m.custom = custom;
+  m.buffer = std::move(buffer);
+  m.buffer_serial = serial;
+  return m;
+}
+
+MultimeshEntry *find_mm(Snapshot &s, std::uint32_t id) {
+  for (MultimeshEntry &m : s.multimeshes) {
+    if (m.id == id) {
+      return &m;
+    }
+  }
+  return nullptr;
+}
+
+UnsupportedRef mm_ref(std::uint32_t item, UnsupportedReason reason) {
+  UnsupportedRef u;
+  u.op = "canvas_item_add_multimesh";
+  u.has_item = true;
+  u.item = item;
+  u.reason = reason;
+  return u;
+}
+
+// make_golden.py state17() ... state21() on top of state 16. Buffer serials move exactly where
+// make_golden.py's buffers change (multimesh 1 at 18 and 19; multimesh 2 never).
+void add_multimesh_states(Snapshot *state, int n) {
+  Snapshot &s = *state;
+  s.multimesh_commands = true;
+  MultimeshEntry mm1 = multimesh(1, 4, 3, true, true, mm1_buffer(17, 3), 1);
+  mm1.has_mesh = true;
+  mm1.mesh = 1;
+  MultimeshEntry mm2 = multimesh(2, 5, 2, false, false, mm2_buffer(17, 2), 1);
+  mm2.visible = 1;
+  mm2.custom_aabb = {-4.0f, -4.0f, 0.0f, 72.0f, 40.0f, 0.0f};
+  MultimeshEntry mm3 = multimesh(3, 2, 4, false, false, nullptr, 0);
+  mm3.status = MultimeshStatus::Unsupported;
+  mm3.has_reason = true;
+  mm3.reason = MultimeshReason::Multimesh3d;
+  mm3.format = MultimeshFormat::ThreeD;
+  s.multimeshes = {mm1, mm2, mm3};
+  s.items.push_back(bb_item(16, ParentRef{ParentKind::Canvas, 1}, {}, 192.0f, 12,
+                            {add_multimesh(1, true, 1), add_multimesh(2), add_multimesh(3)}));
+  s.items.push_back(bb_item(17, ParentRef{ParentKind::Canvas, 1}, {}, 208.0f, 13,
+                            {golden::unsupported_cmd("canvas_item_add_multimesh",
+                                                     UnsupportedCmdReason::UnknownMultimesh)}));
+  s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 17});
+  s.unsupported.push_back(mm_ref(16, UnsupportedReason::UnsupportedMultimesh));
+  s.unsupported.push_back(mm_ref(17, UnsupportedReason::UnknownMultimesh));
+  if (n >= 18) {
+    // 18: multimesh 1's buffer moves; multimesh 2's custom AABB moves over equal floats.
+    MultimeshEntry *m1 = find_mm(s, 1);
+    m1->version = 5;
+    m1->buffer = mm1_buffer(18, 3);
+    m1->buffer_serial = 2;
+    MultimeshEntry *m2 = find_mm(s, 2);
+    m2->version = 6;
+    m2->custom_aabb = {-8.0f, -8.0f, 0.0f, 80.0f, 48.0f, 0.0f};
+  }
+  if (n >= 19) {
+    // 19: multimesh 1 re-allocated to five instances; multimesh 3 freed (a tombstone, still named).
+    MultimeshEntry *m1 = find_mm(s, 1);
+    m1->version = 7;
+    m1->instances = 5;
+    m1->buffer = mm1_buffer(19, 5);
+    m1->buffer_serial = 3;
+    MultimeshEntry freed;
+    freed.id = 3;
+    freed.status = MultimeshStatus::Freed;
+    freed.version = 3;
+    *find_mm(s, 3) = freed;
+    s.unsupported.erase(s.unsupported.end() - 2);  // item 16's unsupported-multimesh entry
+  }
+  if (n >= 20) {
+    // 20 (and 21, unchanged): item 16 draws multimesh 1 only; multimeshes 2 and 3 leave.
+    s.multimeshes.erase(s.multimeshes.begin() + 1, s.multimeshes.end());
+    ItemState *it = find(s, 16);
+    it->content_version = 2;
+    it->commands = {add_multimesh(1, true, 1)};
+  }
+}
+
+// golden-10's ten states at /11 (n <= 10), then golden-11's states 11 to 21 (make_golden.py
+// state11() ... state21()). Content serials move exactly where make_golden.py's bodies change.
 Snapshot state11(int n) {
   Snapshot s = state10(n <= 10 ? n : 10);
   s.version = ProtocolVersion::V11;
@@ -611,6 +741,9 @@ Snapshot state11(int n) {
     s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
     s.unsupported = ten.unsupported;
   }
+  if (n >= 17) {
+    add_multimesh_states(&s, n);
+  }
   return s;
 }
 
@@ -619,6 +752,7 @@ Session session11(Encoding encoding, const std::string &stream_id, const std::st
                   Delivery delivery) {
   Session session = session10(encoding, stream_id, session_id, delivery);
   session.version = ProtocolVersion::V11;
+  observe_multimesh_features(&session.features);  // PM1 rule 8
   return session;
 }
 
@@ -630,30 +764,30 @@ void test_matches_golden_full_rs11() {
   std::vector<std::vector<std::uint8_t>> records;
   records.push_back(magic(ProtocolVersion::V11));
   records.push_back(encode_session(session));
-  for (int n = 1; n <= 16; ++n) {
+  for (int n = 1; n <= kStates; ++n) {
     records.push_back(encode_transaction(make_full(state11(n))));
   }
-  End end = make_end(16, 0, 0, 0, 0, records);
+  End end = make_end(kStates, 0, 0, 0, 0, records);
   std::vector<std::vector<std::uint8_t>> all = records;
   all.push_back(encode_end(end));
   check_against_golden("full.rs11", all);
 }
 
-// Through make_patch(): seq 1, 5 and 16 full, every other seq a patch against its predecessor.
+// Through make_patch(): seq 1, 5, 16 and 21 full, every other seq a patch against its predecessor.
 void test_matches_golden_patch_rs11() {
   const Session session = session11(Encoding::Patch, golden::kPatchStreamId,
                                     golden::kPatchSessionId, Delivery::OutOfBand);
   std::vector<std::vector<std::uint8_t>> records;
   records.push_back(magic(ProtocolVersion::V11));
   records.push_back(encode_session(session));
-  for (int n = 1; n <= 16; ++n) {
-    if (n == 1 || n == 5 || n == 16) {
+  for (int n = 1; n <= kStates; ++n) {
+    if (n == 1 || n == 5 || n == 16 || n == 21) {
       records.push_back(encode_transaction(make_full(state11(n))));
     } else {
       records.push_back(encode_transaction(make_patch(state11(n - 1), state11(n))));
     }
   }
-  End end = make_end(3, 13, 12345, 0, 0, records);
+  End end = make_end(4, kStates - 4, 12345, 0, 0, records);
   std::vector<std::vector<std::uint8_t>> all = records;
   all.push_back(encode_end(end));
   check_against_golden("patch.rs11", all);
@@ -696,7 +830,7 @@ std::vector<std::vector<std::uint8_t>> inline_recording(bool keep_carried) {
   records.push_back(magic(ProtocolVersion::V11));
   records.push_back(encode_session(session));
   std::optional<Snapshot> prev;
-  for (int n = 1; n <= 16; ++n) {
+  for (int n = 1; n <= kStates; ++n) {
     const Snapshot cur = state11(n);
     for (const PayloadName &name : planner.next(prev ? &*prev : nullptr, cur)) {
       const auto file = payload_files().find(name.hash);
@@ -714,7 +848,7 @@ std::vector<std::vector<std::uint8_t>> inline_recording(bool keep_carried) {
     records.push_back(encode_transaction(make_full(cur)));
     prev = cur;
   }
-  End end = make_end(16, 0, 0, resource_count, resource_bytes, records);
+  End end = make_end(kStates, 0, 0, resource_count, resource_bytes, records);
   records.push_back(encode_end(end));
   return records;
 }
@@ -906,9 +1040,75 @@ void test_fields_ignored_at_v10() {
         "a /10 patch carries the complete unsupported list");
 }
 
+// PM1 rules 3, 9 and 11: make_patch's multimesh membership and buffer_f (from the serials), the
+// removed list, the perturb-instance flag, and the lowering below /11 (rule 7).
+void test_multimesh_patch_rules() {
+  const auto mm_of = [](const Transaction &t, std::uint32_t id) -> const MultimeshEntry * {
+    for (const MultimeshEntry &m : t.multimeshes) {
+      if (m.id == id) {
+        return &m;
+      }
+    }
+    return nullptr;
+  };
+  const auto held_in = [](const Transaction &t, std::uint32_t id) {
+    return std::binary_search(t.multimesh_buffers_held.begin(), t.multimesh_buffers_held.end(),
+                              id);
+  };
+  const Transaction p18 = make_patch(state11(17), state11(18));
+  check(mm_of(p18, 1) != nullptr && !held_in(p18, 1), "18: a serial change writes the buffer");
+  check(mm_of(p18, 2) != nullptr && held_in(p18, 2), "18: an AABB change alone holds the floats");
+  check(mm_of(p18, 3) == nullptr, "18: an unchanged entry is not in the patch");
+  Snapshot same = state11(18);
+  find_mm(same, 1)->buffer_serial = 1;  // the base's serial: the floats are the ones it holds
+  const Transaction p18s = make_patch(state11(17), same);
+  check(mm_of(p18s, 1) != nullptr && held_in(p18s, 1),
+        "an equal serial holds the floats (the version still moved)");
+  const Transaction p19 = make_patch(state11(18), state11(19));
+  check(mm_of(p19, 1) != nullptr && !held_in(p19, 1), "19: a re-allocate writes the buffer");
+  check(mm_of(p19, 3) != nullptr && mm_of(p19, 3)->status == MultimeshStatus::Freed,
+        "19: the tombstone is in the patch");
+  const Transaction p20 = make_patch(state11(19), state11(20));
+  check(p20.multimeshes.empty() && p20.removed_multimeshes == std::vector<std::uint32_t>({2, 3}),
+        "20: removed_multimeshes [2, 3], no entry");
+  const std::string t20 = text_of(encode_transaction(p20));
+  check(t20.find("\"removed_multimeshes\":[2,3]") != std::string::npos &&
+            t20.find("\"multimeshes\"") == std::string::npos,
+        "20: the key `multimeshes` is absent, removed_multimeshes present (rule 1)");
+  check(make_patch(state11(20), state11(21)).multimeshes.empty(),
+        "a repeated target carries no multimesh entry");
+  // perturb-instance: +1.0 on the first buffer float (multimesh 1's, mm_f32 float 6).
+  Transaction full17 = make_full(state11(17));
+  const std::vector<std::uint8_t> plain = encode_transaction(full17);
+  full17.perturb_instance = true;
+  const std::vector<std::uint8_t> perturbed = encode_transaction(full17);
+  std::size_t differing = 0;
+  for (std::size_t i = 0; i < plain.size() && i < perturbed.size(); ++i) {
+    differing += plain[i] != perturbed[i] ? 1 : 0;
+  }
+  const float first = (*mm1_buffer(17, 3))[0] + 1.0f;
+  std::uint8_t want[4];
+  std::memcpy(want, &first, 4);
+  const std::size_t at = plain.size() - 4 * (82 - 6);  // mm_f32 is the last block (82 floats)
+  check(plain.size() == perturbed.size() && differing > 0 && differing <= 4 &&
+            std::memcmp(perturbed.data() + at, want, 4) == 0,
+        "perturb-instance adds 1.0 to the first buffer float it writes, nothing else");
+  // Below /11: no table, the commands and entries as before PM1.
+  Snapshot v10 = state11(17);
+  v10.version = ProtocolVersion::V10;
+  const std::string t10 = text_of(encode_transaction(make_full(v10)));
+  check(t10.find("multimesh\":") == std::string::npos &&
+            t10.find("\"add_multimesh\"") == std::string::npos &&
+            t10.find("{\"op\":\"canvas_item_add_multimesh\",\"item\":16,\"reason\":\"unsupported-op\"},"
+                     "{\"op\":\"canvas_item_add_multimesh\",\"item\":17,\"reason\":\"unsupported-op\"}") !=
+                std::string::npos,
+        "a /10 transaction lowers add_multimesh and its entries to unsupported-op");
+}
+
 }  // namespace
 
 int main() {
+  test_multimesh_patch_rules();
   test_magic_and_protocol();
   test_matches_golden_full_rs11();
   test_matches_golden_patch_rs11();

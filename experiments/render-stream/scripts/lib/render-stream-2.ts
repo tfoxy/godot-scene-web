@@ -101,7 +101,10 @@ export type UnsupportedReason =
   | "canvas-repeat"
   | "canvas-follow-viewport"
   | "global-canvas-transform"
-  | "snap-2d";
+  | "snap-2d"
+  // new at /11 (PM1, render-stream-11.md "As built (PM1)", 7)
+  | "unknown-multimesh"
+  | "unsupported-multimesh";
 /** canvas-texture-headless (G2d): a texture draw naming RID() on a headless host, whose dummy
  * storage never allocates a canvas texture (protocol/canvas-texture-headless.md).
  * unknown-mesh/skinned-geometry: new at /4 (render-stream-4.md "Command"). */
@@ -110,7 +113,9 @@ export type UnsupportedCmdReason =
   | "unknown-texture"
   | "canvas-texture-headless"
   | "unknown-mesh"
-  | "skinned-geometry";
+  | "skinned-geometry"
+  // new at /11 (PM1, 7): an add_multimesh naming a RID the mirror never saw created.
+  | "unknown-multimesh";
 export type SabotageKind =
   | "freeze-frame"
   | "omit-update"
@@ -140,7 +145,10 @@ export type SabotageKind =
   // new at /11 (W11b; render-stream-11.md "Sabotage kinds")
   | "cv-churn"
   | "stale-dynamic"
-  | "keep-carried";
+  | "keep-carried"
+  // new at /11 (PM1, render-stream-11.md "As built (PM1)", 11)
+  | "perturb-instance"
+  | "stale-buffer";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -574,6 +582,12 @@ export interface CommandAddClipIgnore {
   op: "add_clip_ignore";
   ignore: boolean;
 }
+/** new at /11 (PM1, render-stream-11.md "As built (PM1)", 7): no floats, so no "f". */
+export interface CommandAddMultimesh {
+  op: "add_multimesh";
+  multimesh: number;
+  tex: number | null;
+}
 export type Command =
   | CommandAddRect
   | CommandAddTextureRect
@@ -590,6 +604,7 @@ export type Command =
   | CommandAddMesh
   | CommandAddSetTransform
   | CommandAddClipIgnore
+  | CommandAddMultimesh
   | CommandUnsupported;
 
 export interface TransactionItem {
@@ -712,6 +727,40 @@ export function surfaceIsDynamic(s: { hash: string | null }): boolean {
   return s.hash === null;
 }
 
+export type MultimeshStatus = "ok" | "unsupported" | "freed";
+export type MultimeshReason =
+  | "multimesh-3d"
+  | "multimesh-indirect"
+  | "multimesh-interpolated"
+  | "unknown-mesh"
+  | "payload-too-large";
+export type MultimeshFormat = "2d" | "3d";
+
+/** new at /11 (PM1, render-stream-11.md "As built (PM1)", 2): one multimesh table entry. Its
+ * six custom-AABB floats are at `aabb_f` in mm_f32 (null only when freed), and, when `buffer_f`
+ * is non-null, its `instances x stride` buffer floats (stride 8 + 4*colors + 4*custom) at
+ * `buffer_f`; a null `buffer_f` keeps the floats the receiver holds. */
+export interface TransactionMultimesh {
+  id: number;
+  origin: TableOrigin;
+  status: MultimeshStatus;
+  reason: MultimeshReason | null;
+  version: number;
+  mesh: number | null;
+  format: MultimeshFormat;
+  colors: boolean;
+  custom: boolean;
+  instances: number;
+  visible: number;
+  aabb_f: number | null;
+  buffer_f: number | null;
+}
+
+/** PM1 rule 4: floats per instance of a multimesh's TRANSFORM_2D buffer. */
+export function multimeshStride(m: { colors: boolean; custom: boolean }): number {
+  return 8 + (m.colors ? 4 : 0) + (m.custom ? 4 : 0);
+}
+
 export interface TransactionMeta {
   type: "transaction";
   seq: number;
@@ -732,6 +781,11 @@ export interface TransactionMeta {
    * exactly when the resolved state holds an ok shader that uses `time`: the host's shader time
    * is param_f64's float at `f` (the last one). */
   shader_time?: { f: number };
+  /** new at /11 (PM1, render-stream-11.md "As built (PM1)", 1): present only when non-empty,
+   * right after `materials` (then `removed_multimeshes`, then `shader_time`). */
+  multimeshes?: TransactionMultimesh[];
+  /** new at /11 (PM1, 1): a patch's removed multimesh ids, present only when non-empty. */
+  removed_multimeshes?: number[];
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
   removed_canvases: number[];
@@ -1032,8 +1086,17 @@ const SABOTAGE_KINDS = [
   "cv-churn",
   "stale-dynamic",
   "keep-carried",
+  // new at /11 (PM1, render-stream-11.md "As built (PM1)", 11): legal in a /11 session only.
+  "perturb-instance",
+  "stale-buffer",
 ] as const;
-const SABOTAGE_KINDS_V11_ONLY: readonly string[] = ["cv-churn", "stale-dynamic", "keep-carried"];
+const SABOTAGE_KINDS_V11_ONLY: readonly string[] = [
+  "cv-churn",
+  "stale-dynamic",
+  "keep-carried",
+  "perturb-instance",
+  "stale-buffer",
+];
 const SABOTAGE_KINDS_V8_ONLY: readonly string[] = [
   "adopt-skip-state",
   "adopt-no-redraw",
@@ -1469,6 +1532,36 @@ const UNSUPPORTED_CMD_REASONS = [
   "unknown-mesh",
   "skinned-geometry",
 ] as const;
+// new at /11 (PM1, render-stream-11.md "As built (PM1)", 7).
+const UNSUPPORTED_CMD_REASONS_V11 = [
+  ...UNSUPPORTED_CMD_REASONS,
+  "unknown-multimesh",
+] as const;
+const ADD_MULTIMESH_KEYS = ["op", "multimesh", "tex"];
+// PM1, render-stream-11.md "As built (PM1)", 2: the multimesh entry, keys in this order.
+const MULTIMESH_KEYS = [
+  "id",
+  "origin",
+  "status",
+  "reason",
+  "version",
+  "mesh",
+  "format",
+  "colors",
+  "custom",
+  "instances",
+  "visible",
+  "aabb_f",
+  "buffer_f",
+];
+const MULTIMESH_STATUSES = ["ok", "unsupported", "freed"] as const;
+const MULTIMESH_REASONS = [
+  "multimesh-3d",
+  "multimesh-indirect",
+  "multimesh-interpolated",
+  "unknown-mesh",
+  "payload-too-large",
+] as const;
 const UNSUPPORTED_RESOURCE_KEYS = ["resource", "reason"];
 const UNSUPPORTED_RESOURCE_REASONS = ["canvas-texture-headless"] as const;
 const SESSION_UNSUPPORTED_REASONS = [
@@ -1503,6 +1596,12 @@ const ITEM_UNSUPPORTED_REASONS_V5 = [
   "unsupported-material",
   "unknown-material",
   "param-type",
+] as const;
+// new at /11 (PM1, render-stream-11.md "As built (PM1)", 7): the two multimesh item reasons.
+const ITEM_UNSUPPORTED_REASONS_V11 = [
+  ...ITEM_UNSUPPORTED_REASONS_V5,
+  "unknown-multimesh",
+  "unsupported-multimesh",
 ] as const;
 // new at /5: the session-level ("item": null) canvas-light entry (gate5_5-design.md D10, D16).
 const SESSION_UNSUPPORTED_REASONS_V5 = [
@@ -2816,10 +2915,55 @@ function checkTransactionSchema(
   let expectedKeys: readonly string[] = hasUnknownItems
     ? keysWith(transactionKeys, "unsupported", UNKNOWN_ITEMS_KEY)
     : transactionKeys;
+  // PM1 (render-stream-11.md "As built (PM1)", 1): /11's optional multimeshes and
+  // removed_multimeshes, right after materials and before shader_time, each only when non-empty.
+  const hasMultimeshes = isV11 && "multimeshes" in meta;
+  const hasRemovedMultimeshes = isV11 && "removed_multimeshes" in meta;
   if (hasShaderTime)
     expectedKeys = keysWith(expectedKeys, "materials", "shader_time");
+  if (hasRemovedMultimeshes)
+    expectedKeys = keysWith(expectedKeys, "materials", "removed_multimeshes");
+  if (hasMultimeshes)
+    expectedKeys = keysWith(expectedKeys, "materials", "multimeshes");
   if (!hasExactKeys(meta, expectedKeys))
     return err("transaction has the wrong top-level keys or order");
+  if (hasMultimeshes) {
+    if (!Array.isArray(meta.multimeshes) || meta.multimeshes.length === 0)
+      return err('"multimeshes" must be a non-empty array when present');
+    for (const m of meta.multimeshes) {
+      if (
+        !isPlainObject(m) ||
+        !hasExactKeys(m, MULTIMESH_KEYS) ||
+        !isInt(m.id) ||
+        m.id < 1 ||
+        !isOneOf(m.origin, ["created", "adopted"] as const) ||
+        !isOneOf(m.status, MULTIMESH_STATUSES) ||
+        !(m.reason === null || isOneOf(m.reason, MULTIMESH_REASONS)) ||
+        !isInt(m.version) ||
+        m.version < 1 ||
+        !(m.mesh === null || (isInt(m.mesh) && m.mesh >= 1)) ||
+        !isOneOf(m.format, ["2d", "3d"] as const) ||
+        typeof m.colors !== "boolean" ||
+        typeof m.custom !== "boolean" ||
+        !isInt(m.instances) ||
+        m.instances < 0 ||
+        !isInt(m.visible) ||
+        m.visible < -1 ||
+        !(m.aabb_f === null || (isInt(m.aabb_f) && m.aabb_f >= 0)) ||
+        !(m.buffer_f === null || (isInt(m.buffer_f) && m.buffer_f >= 0))
+      )
+        return err("a multimeshes[] entry is malformed");
+    }
+  }
+  if (hasRemovedMultimeshes) {
+    if (
+      !isIntArray(meta.removed_multimeshes) ||
+      meta.removed_multimeshes.length === 0
+    )
+      return err(
+        '"removed_multimeshes" must be a non-empty array of integers when present',
+      );
+  }
   if (hasShaderTime) {
     const t = meta.shader_time;
     if (
@@ -2895,7 +3039,9 @@ function checkTransactionSchema(
     const allowedReasons = isV6
       ? u.item === null
         ? SESSION_UNSUPPORTED_REASONS_V6
-        : ITEM_UNSUPPORTED_REASONS_V5
+        : isV11
+          ? ITEM_UNSUPPORTED_REASONS_V11
+          : ITEM_UNSUPPORTED_REASONS_V5
       : isV5
         ? u.item === null
           ? SESSION_UNSUPPORTED_REASONS_V5
@@ -3206,11 +3352,24 @@ function checkTransactionSchema(
           ) {
             return err('a commands[] "add_clip_ignore" entry is malformed');
           }
+        } else if (cmd.op === "add_multimesh" && isV11) {
+          // PM1 (render-stream-11.md "As built (PM1)", 7); below /11 an unknown op.
+          if (
+            !hasExactKeys(cmd, ADD_MULTIMESH_KEYS) ||
+            !isInt(cmd.multimesh) ||
+            cmd.multimesh < 1 ||
+            !(cmd.tex === null || (isInt(cmd.tex) && cmd.tex >= 1))
+          ) {
+            return err('a commands[] "add_multimesh" entry is malformed');
+          }
         } else if (cmd.op === "unsupported") {
           if (
             !hasExactKeys(cmd, UNSUPPORTED_CMD_KEYS) ||
             typeof cmd.name !== "string" ||
-            !isOneOf(cmd.reason, UNSUPPORTED_CMD_REASONS)
+            !isOneOf(
+              cmd.reason,
+              isV11 ? UNSUPPORTED_CMD_REASONS_V11 : UNSUPPORTED_CMD_REASONS,
+            )
           ) {
             return err('a commands[] "unsupported" entry is malformed');
           }
@@ -4172,6 +4331,7 @@ export interface ResolvedCommand {
     | "add_mesh"
     | "add_set_transform"
     | "add_clip_ignore"
+    | "add_multimesh"
     | "unsupported";
   aa?: boolean;
   tex?: number | null;
@@ -4207,6 +4367,8 @@ export interface ResolvedCommand {
   mesh?: number;
   transform?: [number, number, number, number, number, number];
   ignore?: boolean;
+  // --- new at /11 (PM1, render-stream-11.md "As built (PM1)", 10): add_multimesh's id ----------
+  multimesh?: number;
 }
 
 export interface ResolvedCanvas {
@@ -4311,6 +4473,27 @@ export interface ResolvedMaterial {
   params: ResolvedParam[];
 }
 
+/** new at /11 (PM1, render-stream-11.md "As built (PM1)", 10): a resolved multimesh entry.
+ * `custom_aabb` is the six floats (null when freed); `buffer_sha256` is the SHA-256 of the
+ * current buffer's little-endian f32 bytes (null unless ok; an ok entry with 0 instances hashes
+ * the empty string). The floats themselves are not kept: `transactionMultimeshes()` reads them
+ * out of a decoded transaction. */
+export interface ResolvedMultimesh {
+  id: number;
+  origin: TableOrigin;
+  status: MultimeshStatus;
+  reason: MultimeshReason | null;
+  version: number;
+  mesh: number | null;
+  format: MultimeshFormat;
+  colors: boolean;
+  custom: boolean;
+  instances: number;
+  visible: number;
+  custom_aabb: [number, number, number, number, number, number] | null;
+  buffer_sha256: string | null;
+}
+
 export interface ResolvedState {
   canvases: Map<number, ResolvedCanvas>;
   items: Map<number, ResolvedItem>;
@@ -4318,6 +4501,8 @@ export interface ResolvedState {
   meshes: Map<number, ResolvedMesh>;
   shaders: Map<number, ResolvedShader>;
   materials: Map<number, ResolvedMaterial>;
+  /** new at /11 (PM1): empty below /11 and in a /11 stream that holds no multimesh. */
+  multimeshes: Map<number, ResolvedMultimesh>;
   default_texture_filter: Filter;
   default_texture_repeat: Repeat;
 }
@@ -4330,6 +4515,7 @@ export function emptyResolvedState(): ResolvedState {
     meshes: new Map(),
     shaders: new Map(),
     materials: new Map(),
+    multimeshes: new Map(),
     default_texture_filter: "nearest",
     default_texture_repeat: "disabled",
   };
@@ -4665,6 +4851,9 @@ function liftCommand(
   if (cmd.op === "add_clip_ignore") {
     return { op: "add_clip_ignore", ignore: cmd.ignore };
   }
+  if (cmd.op === "add_multimesh") {
+    return { op: "add_multimesh", multimesh: cmd.multimesh, tex: cmd.tex };
+  }
   return { op: "unsupported", name: cmd.name, reason: cmd.reason };
 }
 
@@ -4846,6 +5035,97 @@ function liftSurfacesV11(
   });
 }
 
+/** PM1 (render-stream-11.md "As built (PM1)", 10): the SHA-256 of a multimesh buffer's
+ * little-endian f32 bytes, the resolved form's `buffer_sha256` (the empty buffer hashes the
+ * empty string). Takes the floats as numbers (each written as its nearest float32). */
+export function multimeshBufferSha256(floats: readonly number[]): string {
+  const bytes = new Uint8Array(floats.length * 4);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < floats.length; i++)
+    view.setFloat32(i * 4, floats[i], true);
+  return hashBytes(bytes);
+}
+
+/** PM1 (render-stream-11.md "As built (PM1)", 10): lifts one multimesh entry. The custom AABB
+ * comes from mm_f32 at aabb_f (null when freed). A non-null buffer_f hashes the entry's
+ * `instances x stride` floats there (from `mmF32Bytes`, the raw block, when given, else from the
+ * decoded floats); a null one keeps the previous entry's digest. */
+function liftMultimesh(
+  m: TransactionMultimesh,
+  mmF32: number[],
+  mmF32Bytes: Uint8Array | undefined,
+  previous: ResolvedMultimesh | undefined,
+): ResolvedMultimesh {
+  const custom_aabb =
+    m.aabb_f === null
+      ? null
+      : (mmF32.slice(m.aabb_f, m.aabb_f + 6) as [
+          number,
+          number,
+          number,
+          number,
+          number,
+          number,
+        ]);
+  let buffer_sha256: string | null = null;
+  if (m.status === "ok") {
+    if (m.buffer_f !== null) {
+      const n = m.instances * multimeshStride(m);
+      buffer_sha256 =
+        mmF32Bytes !== undefined && (m.buffer_f + n) * 4 <= mmF32Bytes.length
+          ? hashBytes(mmF32Bytes.subarray(m.buffer_f * 4, (m.buffer_f + n) * 4))
+          : multimeshBufferSha256(mmF32.slice(m.buffer_f, m.buffer_f + n));
+    } else {
+      buffer_sha256 = previous?.buffer_sha256 ?? null;
+    }
+  }
+  return {
+    id: m.id,
+    origin: m.origin,
+    status: m.status,
+    reason: m.reason,
+    version: m.version,
+    mesh: m.mesh,
+    format: m.format,
+    colors: m.colors,
+    custom: m.custom,
+    instances: m.instances,
+    visible: m.visible,
+    custom_aabb,
+    buffer_sha256,
+  };
+}
+
+/** One multimesh entry of a decoded /11 transaction with its floats: `custom_aabb` (null when
+ * freed) and `buffer` (the instances x stride floats, or null when buffer_f is null). */
+export interface TransactionMultimeshFloats {
+  entry: TransactionMultimesh;
+  custom_aabb: number[] | null;
+  buffer: number[] | null;
+}
+
+/** PM1: a decoded /11 transaction's multimesh entries (in entry order) with the floats each one
+ * claims in mm_f32 (block 8). `blocks` is the decoded form's blocks, where mm_f32 is a plain
+ * float array. Empty when the transaction carries no "multimeshes" key. */
+export function transactionMultimeshes(
+  meta: TransactionMeta,
+  blocks: DecodedBlock[],
+): TransactionMultimeshFloats[] {
+  const mmF32 = (Array.isArray(blocks[8]) ? blocks[8] : []) as number[];
+  return (meta.multimeshes ?? []).map((entry) => ({
+    entry,
+    custom_aabb:
+      entry.aabb_f === null ? null : mmF32.slice(entry.aabb_f, entry.aabb_f + 6),
+    buffer:
+      entry.buffer_f === null
+        ? null
+        : mmF32.slice(
+            entry.buffer_f,
+            entry.buffer_f + entry.instances * multimeshStride(entry),
+          ),
+  }));
+}
+
 /** The raw bytes of block `index` of a record that already passed decodeRecord()'s framing
  * checks (decodeRecord() replaces a u8 block with {u8_bytes, sha256}). */
 export function rawRecordBlock(raw: RawRecord, index: number): Uint8Array {
@@ -4872,6 +5152,9 @@ export function applyTransaction(
   blocks: number[][],
   /** /11 only: the transaction's raw mesh_u8 block (rawRecordBlock(raw, 7)), for body_sha256. */
   meshU8?: Uint8Array,
+  /** /11 only: the transaction's raw mm_f32 block (rawRecordBlock(raw, 8)), for buffer_sha256;
+   * without it the digest is computed from the decoded floats (blocks[8]). */
+  mmF32Bytes?: Uint8Array,
 ): ResolvedState {
   const canvases =
     meta.encoding === "full"
@@ -4899,7 +5182,12 @@ export function applyTransaction(
     meta.encoding === "full"
       ? new Map<number, ResolvedMaterial>()
       : new Map(base.materials);
+  const multimeshes =
+    meta.encoding === "full"
+      ? new Map<number, ResolvedMultimesh>()
+      : new Map(base.multimeshes);
   if (meta.encoding === "patch") {
+    for (const id of meta.removed_multimeshes ?? []) multimeshes.delete(id);
     for (const id of meta.removed_canvases) canvases.delete(id);
     for (const id of meta.removed_items) items.delete(id);
     for (const id of meta.removed_textures) textures.delete(id);
@@ -4961,6 +5249,17 @@ export function applyTransaction(
       shaders.set(s.id, liftShader(s));
     }
   }
+  for (const m of meta.multimeshes ?? []) {
+    multimeshes.set(
+      m.id,
+      liftMultimesh(
+        m,
+        (blocks[8] ?? []) as number[],
+        mmF32Bytes,
+        base.multimeshes.get(m.id),
+      ),
+    );
+  }
   return {
     canvases,
     items,
@@ -4968,6 +5267,7 @@ export function applyTransaction(
     meshes,
     shaders,
     materials,
+    multimeshes,
     default_texture_filter: meta.default_texture_filter,
     default_texture_repeat: meta.default_texture_repeat,
   };
@@ -4983,6 +5283,12 @@ export function sortedResolvedItems(state: ResolvedState): ResolvedItem[] {
 
 export function sortedResolvedMeshes(state: ResolvedState): ResolvedMesh[] {
   return [...state.meshes.values()].sort((a, b) => a.id - b.id);
+}
+
+export function sortedResolvedMultimeshes(
+  state: ResolvedState,
+): ResolvedMultimesh[] {
+  return [...state.multimeshes.values()].sort((a, b) => a.id - b.id);
 }
 
 export function sortedResolvedShaders(state: ResolvedState): ResolvedShader[] {
@@ -5559,6 +5865,8 @@ function checkResolvedInvariants(
     "add_triangle_array",
     "add_nine_patch",
     "add_mesh",
+    // PM1 rule 7: add_multimesh's tex follows the same rule (absent below /11).
+    "add_multimesh",
   ]);
   for (const item of items) {
     for (const command of item.commands) {
@@ -5646,10 +5954,14 @@ function checkResolvedInvariants(
     add_triangle_array: "canvas_item_add_triangle_array",
     add_nine_patch: "canvas_item_add_nine_patch",
     add_mesh: "canvas_item_add_mesh",
+    add_multimesh: "canvas_item_add_multimesh",
   };
   const actualUnsupportedOps = new Map<string, UnsupportedReason>();
   const actualUnsupportedTexture = new Set<string>();
   const actualUnsupportedMesh = new Set<string>();
+  // PM1 rule 7: unsupported-multimesh, one per (item, "canvas_item_add_multimesh") pair whose
+  // add_multimesh names an unsupported multimesh (as unsupported-mesh for add_mesh).
+  const actualUnsupportedMultimesh = new Set<string>();
   // new at /5 (render-stream-5.md "Derived item-level entries"): unsupported-material is the
   // only one of the three new derived reasons that is independently reconstructable from the
   // resolved state (an item's effective material -- D9's use_parent_material walk, below; G55w
@@ -5723,7 +6035,8 @@ function checkResolvedInvariants(
             command.reason === "unknown-texture" ||
             command.reason === "canvas-texture-headless" ||
             command.reason === "unknown-mesh" ||
-            command.reason === "skinned-geometry"
+            command.reason === "skinned-geometry" ||
+            command.reason === "unknown-multimesh"
               ? command.reason
               : "unsupported-op";
           actualUnsupportedOps.set(`${item.id}:${command.name}`, reason);
@@ -5757,6 +6070,14 @@ function checkResolvedInvariants(
           actualUnsupportedMesh.add(`${item.id}:canvas_item_add_mesh`);
         }
       }
+      if (command.op === "add_multimesh" && command.multimesh !== undefined) {
+        const target = state.multimeshes.get(command.multimesh);
+        if (target !== undefined && target.status === "unsupported") {
+          actualUnsupportedMultimesh.add(
+            `${item.id}:canvas_item_add_multimesh`,
+          );
+        }
+      }
     }
   }
 
@@ -5767,6 +6088,7 @@ function checkResolvedInvariants(
   const declaredTieItems = new Set<number>();
   const declaredUnsupportedTexture = new Set<string>();
   const declaredUnsupportedMesh = new Set<string>();
+  const declaredUnsupportedMultimesh = new Set<string>();
   const declaredUnsupportedMaterial = new Set<string>();
   let declaredStackingTie = false;
   let declaredSnap2d = false;
@@ -5874,7 +6196,8 @@ function checkResolvedInvariants(
       entry.reason === "unknown-texture" ||
       entry.reason === "canvas-texture-headless" ||
       entry.reason === "unknown-mesh" ||
-      entry.reason === "skinned-geometry"
+      entry.reason === "skinned-geometry" ||
+      entry.reason === "unknown-multimesh"
     ) {
       const pair = `${entry.item}:${entry.op}`;
       const expected = actualUnsupportedOps.get(pair);
@@ -5931,6 +6254,14 @@ function checkResolvedInvariants(
         ];
       }
       declaredUnsupportedMesh.add(pair);
+    } else if (entry.reason === "unsupported-multimesh") {
+      const pair = `${entry.item}:${entry.op}`;
+      if (!actualUnsupportedMultimesh.has(pair)) {
+        return [
+          `unsupported-mismatch: ${where}: unsupported-multimesh entry (${entry.item}, ${entry.op}) does not correspond to an add_multimesh naming an unsupported multimesh`,
+        ];
+      }
+      declaredUnsupportedMultimesh.add(pair);
     } else if (entry.reason === "unsupported-material") {
       if (entry.op !== "canvas_item_set_material") {
         return [
@@ -5998,6 +6329,13 @@ function checkResolvedInvariants(
     if (!declaredUnsupportedMesh.has(pair)) {
       return [
         `unsupported-mismatch: ${where}: add_mesh command (${pair.replace(":", ", ")}) names an unsupported mesh, with no unsupported-mesh entry`,
+      ];
+    }
+  }
+  for (const pair of actualUnsupportedMultimesh) {
+    if (!declaredUnsupportedMultimesh.has(pair)) {
+      return [
+        `unsupported-mismatch: ${where}: add_multimesh command (${pair.replace(":", ", ")}) names an unsupported multimesh, with no unsupported-multimesh entry`,
       ];
     }
   }
@@ -6256,6 +6594,183 @@ function checkDynamicMeshes(
   return [];
 }
 
+/**
+ * PM1 (render-stream-11.md "As built (PM1)", 2-6), in rule 5's order over one /11 transaction:
+ * multimesh-entry (each entry's shape, then the buffer_f rule), multimesh-version (against the
+ * last entry seen for the id in this stream), mm-offset (every non-null offset is the running
+ * float count, and mm_f32's count is the total; a float no entry claims included), then
+ * multimesh-ref (every add_multimesh of the resolved items names a resolved multimesh, and every
+ * resolved multimesh's non-null mesh names a resolved mesh). `base` is the state the transaction
+ * applies to. The float half of multimesh-version (an equal version over a changed AABB or
+ * buffer) is checked after the transaction resolves, by multimeshVersionRegressed().
+ */
+function checkMultimeshes(
+  meta: TransactionMeta,
+  base: ResolvedState,
+  lastSeen: Map<number, ResolvedMultimesh>,
+  mmFloatCount: number,
+  offset: number,
+): string[] {
+  const mms = meta.multimeshes ?? [];
+  const entryErr = (id: number, detail: string) => [
+    `multimesh-entry: record at offset ${offset}: multimesh ${id}: ${detail}`,
+  ];
+  for (const m of mms) {
+    if (m.status === "ok") {
+      if (m.reason !== null) return entryErr(m.id, '"ok" needs reason null');
+      if (m.format !== "2d") return entryErr(m.id, '"ok" needs format "2d"');
+      if (m.aabb_f === null) return entryErr(m.id, '"ok" needs a non-null aabb_f');
+      if (m.visible > m.instances)
+        return entryErr(
+          m.id,
+          `visible ${m.visible} exceeds instances ${m.instances}`,
+        );
+    } else if (m.status === "unsupported") {
+      if (m.reason === null)
+        return entryErr(m.id, '"unsupported" needs a non-null reason');
+      if (m.aabb_f === null)
+        return entryErr(m.id, '"unsupported" needs a non-null aabb_f');
+      if (m.buffer_f !== null)
+        return entryErr(m.id, `"unsupported" carries buffer_f ${m.buffer_f}`);
+    } else if (
+      m.reason !== null ||
+      m.mesh !== null ||
+      m.format !== "2d" ||
+      m.colors ||
+      m.custom ||
+      m.instances !== 0 ||
+      m.visible !== -1 ||
+      m.aabb_f !== null ||
+      m.buffer_f !== null
+    ) {
+      return entryErr(
+        m.id,
+        'a "freed" entry needs reason/mesh/aabb_f/buffer_f null, format "2d", colors/custom false, instances 0 and visible -1',
+      );
+    }
+  }
+  for (const m of mms) {
+    if (m.status !== "ok" || m.buffer_f !== null) continue;
+    // buffer_f null on an ok entry: legal only in a patch over an ok base entry of the same shape.
+    const previous = meta.encoding === "patch" ? base.multimeshes.get(m.id) : undefined;
+    const why =
+      meta.encoding === "full"
+        ? "buffer_f is null in a full transaction"
+        : previous === undefined
+          ? "buffer_f is null on an entry new to the table"
+          : previous.status !== "ok"
+            ? `buffer_f is null but the base entry is "${previous.status}"`
+            : previous.instances !== m.instances ||
+                previous.format !== m.format ||
+                previous.colors !== m.colors ||
+                previous.custom !== m.custom
+              ? "buffer_f is null but instances/format/colors/custom differ from the base entry"
+              : null;
+    if (why !== null) return entryErr(m.id, why);
+  }
+  for (const m of mms) {
+    const previous = lastSeen.get(m.id);
+    if (previous === undefined) continue;
+    const fieldsMoved =
+      previous.origin !== m.origin ||
+      previous.status !== m.status ||
+      previous.reason !== m.reason ||
+      previous.mesh !== m.mesh ||
+      previous.format !== m.format ||
+      previous.colors !== m.colors ||
+      previous.custom !== m.custom ||
+      previous.instances !== m.instances ||
+      previous.visible !== m.visible;
+    if (m.version < previous.version || (m.version === previous.version && fieldsMoved))
+      return [
+        `multimesh-version: record at offset ${offset}: multimesh ${m.id}'s version ${m.version} is inconsistent with its earlier entry (version ${previous.version})`,
+      ];
+  }
+  let running = 0;
+  for (const m of mms) {
+    if (m.aabb_f !== null) {
+      if (m.aabb_f !== running)
+        return [
+          `mm-offset: record at offset ${offset}: multimesh ${m.id} aabb_f=${m.aabb_f}, expected ${running}`,
+        ];
+      running += 6;
+    }
+    if (m.buffer_f !== null) {
+      if (m.buffer_f !== running)
+        return [
+          `mm-offset: record at offset ${offset}: multimesh ${m.id} buffer_f=${m.buffer_f}, expected ${running}`,
+        ];
+      running += m.instances * multimeshStride(m);
+    }
+  }
+  const declared = meta.blocks.find((b) => b.name === "mm_f32")?.count;
+  if (declared !== running || mmFloatCount !== running)
+    return [
+      `mm-offset: record at offset ${offset}: block "mm_f32" declares count ${declared}, expected ${running}${running === 0 ? " (no multimesh entry claims any float)" : ""}`,
+    ];
+  // multimesh-ref, over the resolved tables (base minus removals plus entries, for a patch).
+  const full = meta.encoding === "full";
+  const mmIds = new Set<number>(full ? [] : base.multimeshes.keys());
+  for (const id of meta.removed_multimeshes ?? []) mmIds.delete(id);
+  const meshIds = new Set<number>(full ? [] : base.meshes.keys());
+  for (const id of meta.removed_meshes ?? []) meshIds.delete(id);
+  for (const m of meta.meshes ?? []) meshIds.add(m.id);
+  const resolvedMesh = new Map<number, number | null>();
+  if (!full)
+    for (const [id, m] of base.multimeshes) resolvedMesh.set(id, m.mesh);
+  for (const id of meta.removed_multimeshes ?? []) resolvedMesh.delete(id);
+  for (const m of mms) {
+    mmIds.add(m.id);
+    resolvedMesh.set(m.id, m.mesh);
+  }
+  const refErr = (detail: string) => [
+    `multimesh-ref: record at offset ${offset}: ${detail}`,
+  ];
+  const checkCommands = (
+    itemId: number,
+    commands: ReadonlyArray<{ op: string; multimesh?: number }>,
+  ): string[] => {
+    for (const c of commands)
+      if (c.op === "add_multimesh" && c.multimesh !== undefined && !mmIds.has(c.multimesh))
+        return refErr(
+          `item ${itemId}'s add_multimesh names multimesh ${c.multimesh}, which has no entry`,
+        );
+    return [];
+  };
+  const inPatch = new Set<number>();
+  for (const it of meta.items) {
+    inPatch.add(it.id);
+    const commands =
+      it.commands ?? (full ? [] : (base.items.get(it.id)?.commands ?? []));
+    const e = checkCommands(it.id, commands);
+    if (e.length > 0) return e;
+  }
+  if (!full) {
+    const removedItems = new Set(meta.removed_items);
+    for (const [id, it] of base.items) {
+      if (inPatch.has(id) || removedItems.has(id)) continue;
+      const e = checkCommands(id, it.commands);
+      if (e.length > 0) return e;
+    }
+  }
+  for (const [id, mesh] of [...resolvedMesh].sort((a, b) => a[0] - b[0]))
+    if (mesh !== null && !meshIds.has(mesh))
+      return refErr(`multimesh ${id}'s mesh ${mesh} has no mesh entry`);
+  return [];
+}
+
+/** PM1 (multimesh-version): within one stream an id's version never decreases, and at an equal
+ * version the resolved entry (custom AABB and buffer digest included) is unchanged. */
+function multimeshVersionRegressed(
+  previous: ResolvedMultimesh | undefined,
+  current: ResolvedMultimesh,
+): boolean {
+  if (previous === undefined) return false;
+  if (current.version !== previous.version)
+    return current.version < previous.version;
+  return !statesEqual(previous, current);
+}
+
 /** render-stream-11.md "Mesh entry" (mesh-dynamic): the four shape fields of two surfaces agree. */
 function sameSurfaceShape(
   a: TransactionMeshSurface,
@@ -6437,6 +6952,10 @@ export function createRecordingValidator(
   const shaderPayloadLengths = new Map<string, number>();
   const lastSeenShader = new Map<number, ResolvedShader>();
   const lastSeenMaterial = new Map<number, ResolvedMaterial>();
+  const lastSeenMultimesh = new Map<number, ResolvedMultimesh>();
+  // PM1 rule 8: add_multimesh is legal only in a session whose features.ops lists it.
+  const multimeshOp =
+    isV11 && sessionMeta.features.ops.includes("add_multimesh");
   let endSeen = false;
   // D31/G7o1: the whole-record digest, off the frame path in "deferred" mode.
   const digests = new Map<number, string>();
@@ -6620,8 +7139,27 @@ export function createRecordingValidator(
               ),
             ]
           : []),
+        ...(isV11
+          ? [
+              ...checkIdOrdering("multimeshes", meta.multimeshes ?? [], offset),
+              ...checkIdListAscendingNoDup(
+                "removed_multimeshes",
+                meta.removed_multimeshes ?? [],
+                offset,
+              ),
+            ]
+          : []),
       ];
       if (idOrderErrors.length > 0) return idOrderErrors;
+      // PM1 rule 8: an add_multimesh in a session whose features.ops lacks it.
+      if (isV11 && !multimeshOp) {
+        for (const it of meta.items)
+          for (const c of it.commands ?? [])
+            if (c.op === "add_multimesh")
+              return [
+                `meta-schema: record at offset ${offset}: item ${it.id} carries add_multimesh, which the session's features.ops does not list`,
+              ];
+      }
 
       if (meta.seq !== prevSeq + 1) {
         return [
@@ -6654,8 +7192,13 @@ export function createRecordingValidator(
       for (const item of meta.items) {
         if (item.commands === null) continue;
         for (const command of item.commands) {
-          // "unsupported" and "add_clip_ignore" carry no floats and no "f" key at all.
-          if (command.op === "unsupported" || command.op === "add_clip_ignore")
+          // "unsupported", "add_clip_ignore" and (/11) "add_multimesh" carry no floats and no
+          // "f" key at all.
+          if (
+            command.op === "unsupported" ||
+            command.op === "add_clip_ignore" ||
+            command.op === "add_multimesh"
+          )
             continue;
           const floatCount = commandFloatCount(command);
           if (command.f !== runningOffset) {
@@ -6693,14 +7236,16 @@ export function createRecordingValidator(
       if (isV11) {
         const meshErrors = checkDynamicMeshes(meta, state, offset);
         if (meshErrors.length > 0) return meshErrors;
-        // mm-offset (render-stream-11.md decision 3): until PM1 adds the multimesh table, no
-        // entry claims any mm_f32 float.
-        const mmCount = meta.blocks.find((b) => b.name === "mm_f32")?.count;
-        if (mmCount !== 0) {
-          return [
-            `mm-offset: record at offset ${offset}: block "mm_f32" declares count ${mmCount}, expected 0 (no multimesh entry claims any float)`,
-          ];
-        }
+        // PM1 (render-stream-11.md "As built (PM1)", 5): the multimesh rules, after the mesh
+        // rules; mm-offset generalises W11a's empty-table case (decision 3).
+        const mmErrors = checkMultimeshes(
+          meta,
+          state,
+          lastSeenMultimesh,
+          ((decoded.record.blocks as number[][])[8] ?? []).length,
+          offset,
+        );
+        if (mmErrors.length > 0) return mmErrors;
       }
       // param-offset (render-stream-5.md "Material table", gate5_5-design.md D8): a running
       // offset into param_f64 over materials IN TABLE ORDER FIRST, then items' instance_params
@@ -6843,6 +7388,7 @@ export function createRecordingValidator(
         meta,
         decoded.record.blocks as number[][],
         isV11 ? rawRecordBlock(records[i], 7) : undefined,
+        isV11 ? rawRecordBlock(records[i], 8) : undefined,
       );
       if (timer) timer.resolve_us += timer.now() - resolveT0;
       // render-stream-11.md "Patched unsupported": a patch's null stands for the base's list.
@@ -6956,6 +7502,16 @@ export function createRecordingValidator(
           }
           lastSeenMaterial.set(m.id, resolvedMaterial);
         }
+      }
+      for (const m of meta.multimeshes ?? []) {
+        const resolvedMm = nextState.multimeshes.get(m.id);
+        if (resolvedMm === undefined) continue;
+        if (multimeshVersionRegressed(lastSeenMultimesh.get(m.id), resolvedMm)) {
+          return [
+            `multimesh-version: record at offset ${offset}: multimesh ${m.id}'s version/content is inconsistent with its earlier entry`,
+          ];
+        }
+        lastSeenMultimesh.set(m.id, resolvedMm);
       }
 
       // resource-missing / resource-payload, over the RESOLVED table (every ok image entry, and,
@@ -7254,7 +7810,8 @@ function checkPatchRules(
       (isV4 && (meta.removed_meshes?.length ?? 0) > 0) ||
       (isV5 &&
         ((meta.removed_shaders?.length ?? 0) > 0 ||
-          (meta.removed_materials?.length ?? 0) > 0))
+          (meta.removed_materials?.length ?? 0) > 0)) ||
+      (meta.removed_multimeshes?.length ?? 0) > 0
     ) {
       return [
         `patch-encoding: record at offset ${offset}: a full transaction carries a non-null base_seq or a non-empty removed list`,
@@ -7409,6 +7966,29 @@ function checkPatchRules(
     }
   }
 
+  // PM1 rule 9: removed_multimeshes are ids of the base table, never also in multimeshes.
+  const removedMultimeshSet = new Set<number>();
+  for (const id of meta.removed_multimeshes ?? []) {
+    if (removedMultimeshSet.has(id)) {
+      return [
+        `patch-removed: record at offset ${offset}: multimesh ${id} is removed twice`,
+      ];
+    }
+    removedMultimeshSet.add(id);
+    if (!baseState.multimeshes.has(id)) {
+      return [
+        `patch-removed: record at offset ${offset}: removed multimesh ${id} is absent from the base`,
+      ];
+    }
+  }
+  for (const m of meta.multimeshes ?? []) {
+    if (removedMultimeshSet.has(m.id)) {
+      return [
+        `patch-removed: record at offset ${offset}: multimesh ${m.id} is both removed and present`,
+      ];
+    }
+  }
+
   for (const it of meta.items) {
     const base = baseState.items.get(it.id);
     if (it.commands === null) {
@@ -7451,6 +8031,8 @@ export interface ResolvedTransaction {
     /** new at /5: present only when resolved at version 5. */
     shaders?: ResolvedShader[];
     materials?: ResolvedMaterial[];
+    /** new at /11 (PM1, 10): present only when the multimesh table is non-empty. */
+    multimeshes?: ResolvedMultimesh[];
   };
 }
 
@@ -7516,6 +8098,7 @@ export function resolveRecording(
       meta,
       record.blocks as number[][],
       isV11 ? rawRecordBlock(raws[i], 7) : undefined,
+      isV11 ? rawRecordBlock(raws[i], 8) : undefined,
     );
     // render-stream-11.md "Patched unsupported": a patch's null resolves to the base's list.
     if (meta.unsupported !== null) unsupported = meta.unsupported;
@@ -7546,6 +8129,9 @@ export function resolveRecording(
               shaders: sortedResolvedShaders(state),
               materials: sortedResolvedMaterials(state),
             }
+          : {}),
+        ...(state.multimeshes.size > 0
+          ? { multimeshes: sortedResolvedMultimeshes(state) }
           : {}),
       },
     });

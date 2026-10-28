@@ -596,6 +596,9 @@ void test_parse_sabotage() {
       {"drop-resource", "61", nullptr, true, SabotageKind::DropResource, 61,
        "drop-resource (G2c2)"},
       {"unpin", "361", nullptr, true, SabotageKind::Unpin, 361, "unpin (G2c2)"},
+      {"perturb-instance", "31", nullptr, true, SabotageKind::PerturbInstance, 31,
+       "perturb-instance (PM1)"},
+      {"stale-buffer", "31", nullptr, true, SabotageKind::StaleBuffer, 31, "stale-buffer (PM1)"},
       {"not-a-real-kind", nullptr, nullptr, false, SabotageKind::None, 0, "unknown kind"},
       {"", nullptr, nullptr, false, SabotageKind::None, 0, "empty kind"},
       {"freeze-frame", "0", nullptr, false, SabotageKind::None, 0, "frame 0"},
@@ -1248,6 +1251,84 @@ void test_v11_file_sink() {
                                  std::to_string(store.hashes()) + ")");
 }
 
+// PM1 (render-stream-11.md "As built (PM1)"): a /11 file sink carries the multimesh table from a
+// real mirror -- an idle buffer re-set costs nothing, a moved one writes its floats -- and
+// perturb-instance adds 1.0 to the first buffer float of every transaction from its frame.
+void test_v11_multimesh_file_sink() {
+  for (const bool perturb : {false, true}) {
+    MemoryRecordSink patch;
+    patch.open("memory://pm1-patch");
+    SabotageConfig sabotage;
+    if (perturb) {
+      sabotage.kind = SabotageKind::PerturbInstance;
+      sabotage.frame = 3;
+    }
+    Publisher publisher(nullptr, &patch, sabotage, golden_policy(16777216), nullptr);
+    Session tmpl = make_template();
+    tmpl.version = ProtocolVersion::V11;
+    observe_multimesh_features(&tmpl.features);
+    check(publisher.start(tmpl), "a /11 multimesh publisher starts");
+    check(contains(nth_write(patch, 1), "\"add_multimesh\""), "the session declares add_multimesh");
+    Mirror m;
+    m.reset();
+    m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+    grc::rs::Mirror::V11Options o;
+    o.enabled = true;
+    m.set_v11(o);
+    grc::rs::Mirror::MultimeshOptions mo;
+    mo.enabled = true;
+    m.set_multimesh(mo);
+    std::vector<float> buffer(8, 0.0f);
+    buffer[0] = 1.0f;
+    buffer[5] = 1.0f;
+    for (int f = 1; f <= 4; ++f) {
+      const std::uint64_t u = static_cast<std::uint64_t>(f);
+      if (f == 1) {
+        m.canvas_item_create(100, u);
+        m.set_parent(100, kRootCanvas, u);
+        m.multimesh_create(700, u);
+        m.multimesh_allocate_data(700, 1, 0, false, false, false, u);
+      }
+      if (f == 3) {
+        buffer[3] = 7.0f;  // the one change: frame 3
+      }
+      m.multimesh_set_buffer(700, buffer.data(), buffer.size(), u);  // re-set every frame
+      m.clear(100, u);
+      m.add_multimesh(100, 700, 0, u);
+      check(publisher.publish(m.snapshot(0, u), u, 0), "a /11 multimesh publish");
+    }
+    publisher.finish(EndReason::Shutdown);
+    // writes: 0 magic, 1 session, 2-5 seqs 1-4, 6 end.
+    const std::vector<std::uint8_t> t1 = nth_write(patch, 2);
+    const std::vector<std::uint8_t> t2 = nth_write(patch, 3);
+    const std::vector<std::uint8_t> t3 = nth_write(patch, 4);
+    const std::vector<std::uint8_t> t4 = nth_write(patch, 5);
+    check(contains(t1, "\"multimeshes\":[{\"id\":1,\"origin\":\"created\",\"status\":\"ok\","
+                       "\"reason\":null,\"version\":3,\"mesh\":null,\"format\":\"2d\","
+                       "\"colors\":false,\"custom\":false,\"instances\":1,\"visible\":-1,"
+                       "\"aabb_f\":0,\"buffer_f\":6}]") &&
+              contains(t1, "{\"op\":\"add_multimesh\",\"multimesh\":1,\"tex\":null}") &&
+              contains(t1, "\"name\":\"mm_f32\",\"type\":\"f32\",\"count\":14}"),
+          "seq 1: the entry (create, allocate, set_buffer: version 3), the command, 14 floats");
+    check(!contains(t2, "\"multimeshes\"") && contains(t2, "\"count\":0}]") &&
+              contains(t2, "\"items\":[]"),
+          "seq 2: the same buffer re-set and the same draw: nothing to send");
+    check(contains(t3, "\"version\":4,") && contains(t3, "\"buffer_f\":6}]"),
+          "seq 3: the moved buffer writes its floats");
+    check(!contains(t4, "\"multimeshes\""), "seq 4: idle again");
+    // The first buffer float is mm_f32's float 6, the last 8 floats of the record but 2.
+    const auto first_float = [](const std::vector<std::uint8_t> &t) {
+      float v = 0.0f;
+      std::memcpy(&v, t.data() + t.size() - 4 * 8, 4);
+      return v;
+    };
+    check(first_float(t1) == 1.0f, "seq 1 (before the frame): the host's first float");
+    check(first_float(t3) == (perturb ? 2.0f : 1.0f),
+          perturb ? "perturb-instance: seq 3's first buffer float + 1.0"
+                  : "seq 3: the host's first float");
+  }
+}
+
 void test_wrong_hash() {
   const std::string dir = tmp_dir("wrong-hash");
   grc::rs::ResourceStore store;
@@ -1674,6 +1755,7 @@ int main() {
   test_perturb_transform();
   test_patch_drop_item();
   test_parse_sabotage();
+  test_v11_multimesh_file_sink();
   test_generate_id();
   test_gate2_features();
   test_gate2_features_v3();

@@ -43,6 +43,7 @@ struct Run {
     released: u64,
     max_entries: usize,
     digests: Vec<(i64, Hash)>,
+    mm_undrawn: u64,
 }
 
 /// Replays `data` (/11), applying every `apply_every`-th transaction (a fold of the ones between,
@@ -135,6 +136,12 @@ fn replay(data: &[u8], apply_every: usize, retain: bool) -> Run {
         }
     }
     run.released = retention.released_total;
+    // PM1: states 17-21 draw add_multimesh, which this executor types and counts, undrawn.
+    run.mm_undrawn = a
+        .shortcut_totals
+        .get("multimesh-undrawn")
+        .copied()
+        .unwrap_or(0);
     run
 }
 
@@ -142,7 +149,9 @@ fn replay(data: &[u8], apply_every: usize, retain: bool) -> Run {
 fn golden_11_inline_applies_dynamic_bodies_by_id_and_retains_h() {
     let data = golden("inline.rs11");
     let r = replay(&data, 1, true);
-    assert_eq!(r.txs, 16);
+    // 16 W11a states, then PM1's multimesh states 17 to 21.
+    assert_eq!(r.txs, 21);
+    assert!(r.mm_undrawn >= 3, "{r:?}");
     assert!(r.bodies >= 3, "{r:?}");
     // Texture F leaves at 12: the store drops it (H), and it returns inline before 13.
     assert!(r.released >= 1, "{r:?}");

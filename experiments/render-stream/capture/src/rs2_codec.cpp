@@ -824,6 +824,18 @@ void append_commands(std::string &items_json, const std::vector<Command> &comman
       append_json_bool(items_json, command.clip_ignore);
       items_json += "}";
       break;
+    case CommandKind::AddMultimesh:
+      // render-stream-11.md "As built (PM1)" rule 7: no floats, no "f" key.
+      items_json += "{\"op\":\"add_multimesh\",\"multimesh\":";
+      append_json_int(items_json, command.multimesh);
+      items_json += ",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += "}";
+      break;
     case CommandKind::Unsupported:
       items_json += "{\"op\":\"unsupported\",\"name\":";
       append_json_string(items_json, command.name);
@@ -1466,6 +1478,82 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += "]";
     m += materials_json;
   }
+  // PM1 (render-stream-11.md "As built (PM1)" rules 1, 2 and 4): the multimesh table right after
+  // the materials, then removed_multimeshes, each only when non-empty. mm_f32 runs over the
+  // entries in entry order: the six custom-AABB floats at `aabb_f` (not for a freed entry), then,
+  // when the buffer travels, its instances x stride floats at `buffer_f`.
+  std::vector<float> mm_f32;
+  if (v11 && !transaction.multimeshes.empty()) {
+    bool perturb = transaction.perturb_instance;
+    m += ",\"multimeshes\":[";
+    for (std::size_t i = 0; i < transaction.multimeshes.size(); ++i) {
+      if (i != 0) {
+        m += ",";
+      }
+      const MultimeshEntry &mm = transaction.multimeshes[i];
+      const bool ok = mm.status == MultimeshStatus::Ok;
+      const bool held =
+          ok && std::binary_search(transaction.multimesh_buffers_held.begin(),
+                                   transaction.multimesh_buffers_held.end(), mm.id);
+      m += "{\"id\":";
+      append_json_int(m, mm.id);
+      m += ",\"origin\":";
+      append_json_string(m, to_wire(mm.origin));
+      m += ",\"status\":";
+      append_json_string(m, to_wire(mm.status));
+      m += ",\"reason\":";
+      if (mm.status == MultimeshStatus::Unsupported && mm.has_reason) {
+        append_json_string(m, to_wire(mm.reason));
+      } else {
+        m += "null";
+      }
+      m += ",\"version\":";
+      append_json_int(m, mm.version);
+      m += ",\"mesh\":";
+      if (mm.has_mesh && mm.status != MultimeshStatus::Freed) {
+        append_json_int(m, mm.mesh);
+      } else {
+        m += "null";
+      }
+      m += ",\"format\":";
+      append_json_string(m, to_wire(mm.format));
+      m += ",\"colors\":";
+      append_json_bool(m, mm.colors);
+      m += ",\"custom\":";
+      append_json_bool(m, mm.custom);
+      m += ",\"instances\":";
+      append_json_int(m, mm.instances);
+      m += ",\"visible\":";
+      append_json_int(m, mm.visible);
+      m += ",\"aabb_f\":";
+      if (mm.status == MultimeshStatus::Freed) {
+        m += "null";
+      } else {
+        append_json_int(m, mm_f32.size());
+        mm_f32.insert(mm_f32.end(), mm.custom_aabb.begin(), mm.custom_aabb.end());
+      }
+      m += ",\"buffer_f\":";
+      if (ok && !held) {
+        append_json_int(m, mm_f32.size());
+        const std::size_t first = mm_f32.size();
+        if (mm.buffer != nullptr) {
+          mm_f32.insert(mm_f32.end(), mm.buffer->begin(), mm.buffer->end());
+        }
+        if (perturb && mm_f32.size() > first) {
+          mm_f32[first] += 1.0f;  // rule 11: the first buffer float this transaction writes
+          perturb = false;
+        }
+      } else {
+        m += "null";
+      }
+      m += "}";
+    }
+    m += "]";
+  }
+  if (v11 && !transaction.removed_multimeshes.empty()) {
+    m += ",\"removed_multimeshes\":";
+    append_json_id_array(m, transaction.removed_multimeshes);
+  }
   // P3-TM (render-stream-10.md "Shader time"): the host's shader time, last in param_f64, right
   // after the materials; absent (no key) from a transaction whose state reads no TIME.
   if (v10 && transaction.shader_time.has_value()) {
@@ -1477,7 +1565,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
 
   m += ",";
   if (v11) {
-    // The ninth block mm_f32 is empty until PM1 adds the multimesh table (As built rule 3).
+    // The ninth block mm_f32: the multimesh floats (PM1 rule 4).
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
                                   {"cmd_f32", "f32", cmd_f32.size()},
@@ -1486,7 +1574,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
                                   {"param_f64", "f64", param_f64.size()},
                                   {"backbuffer_f32", "f32", backbuffer_f32.size()},
                                   {"mesh_u8", "u8", mesh_u8.size()},
-                                  {"mm_f32", "f32", 0}});
+                                  {"mm_f32", "f32", mm_f32.size()}});
   } else if (v10) {
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
@@ -1529,7 +1617,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
   if (v11) {
     blocks.push_back(u8_payload(std::move(mesh_u8)));
-    blocks.push_back(f32_payload(std::vector<float>()));
+    blocks.push_back(f32_payload(std::move(mm_f32)));
   }
   return assemble_record(m, blocks);
 }

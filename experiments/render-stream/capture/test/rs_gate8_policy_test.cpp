@@ -237,8 +237,12 @@ void test_v11_policy() {
             grc::rs::sabotage_needs_v11(SabotageKind::StaleDynamic) &&
             grc::rs::sabotage_needs_v11(SabotageKind::KeepCarried) &&
             !grc::rs::sabotage_needs_v11(SabotageKind::PerturbVertex) &&
+            grc::rs::sabotage_needs_v11(SabotageKind::PerturbInstance) &&
+            grc::rs::sabotage_needs_v11(SabotageKind::StaleBuffer) &&
             !grc::rs::sabotage_needs_v8(SabotageKind::CvChurn),
-        "cv-churn, stale-dynamic and keep-carried need /11 (and only they)");
+        "cv-churn, stale-dynamic, keep-carried, perturb-instance and stale-buffer need /11 (and "
+        "only they)");
+
 }
 
 void test_delivery_seam() {

@@ -163,6 +163,7 @@
 #include "rs_texture_delivery.h"
 #include "rs_histogram.h"
 #include "rs_live.h"
+#include "rs2_diff.h"
 #include "rs_mirror.h"
 #include "rs_publish.h"
 #include "rs_resource_log.h"
@@ -606,6 +607,15 @@ std::string result_json() {
       json.field("promotions", static_cast<int64_t>(ms.mesh_promotions));
       json.field("content_changes", static_cast<int64_t>(ms.mesh_content_changes));
       json.object_end();
+      if (rs::mirror_instance().multimesh_options().enabled) {
+        // PM1 (render-stream-11.md "As built (PM1)"): additive, /11 with the multimesh hooks only.
+        json.key("multimesh").object_begin();
+        json.field("live", static_cast<int64_t>(ms.live_multimeshes));
+        json.field("unknown", static_cast<int64_t>(ms.multimesh_unknown));
+        json.field("rejected", static_cast<int64_t>(ms.multimesh_rejected));
+        json.field("unchanged", static_cast<int64_t>(ms.multimesh_unchanged));
+        json.object_end();
+      }
     }
     if (g_stream.gate8.speaks_v9()) {
       json.field("texture_delivery", rs::texture_delivery_policy().mode);
@@ -1923,6 +1933,8 @@ void stream_start() {
       g_stream.spurious_frame = sabotage.config.frame;
     } else if (kind == rs2::SabotageKind::KeepCarried) {
       live_config.keep_carried = true;  // W11b: the publisher reads its own sabotage config
+    } else if (kind == rs2::SabotageKind::PerturbInstance) {
+      live_config.perturb_instance_frame = sabotage.config.frame;  // PM1 (the publisher's own too)
     }
   }
   if (!sabotage.ok) {
@@ -1976,6 +1988,11 @@ void stream_start() {
     // render-stream-10.md "Features": each back-buffer setter leaves unobserved when its hook is
     // planned (a record without the slot omits the hook and keeps the method unobserved).
     rs2::observe_planned_backbuffer_setters(&session.features, session.capture.hooks_planned);
+  }
+  if (session.version == rs2::ProtocolVersion::V11 && hooks_multimesh_planned()) {
+    // render-stream-11.md "As built (PM1)" rule 8: add_multimesh, the multimesh resource, and
+    // canvas_item_add_multimesh no longer an observed unsupported op.
+    rs2::observe_multimesh_features(&session.features);
   }
   if (sabotage.config.kind != rs2::SabotageKind::None) {
     session.sabotage.kind = sabotage.config.kind;
@@ -2245,6 +2262,15 @@ void stream_start() {
     v11.stale_dynamic_frame =
         sabotage.config.kind == rs2::SabotageKind::StaleDynamic ? sabotage.config.frame : 0;
     rs::mirror_instance().set_v11(v11);
+    // PM1 (render-stream-11.md "As built (PM1)"): the multimesh table, exactly when the session
+    // declares it (rule 8). Off below /11 and without the twelve hooks: no snapshot changes.
+    rs::Mirror::MultimeshOptions mm;
+    mm.enabled = g_stream.gate8.speaks_v11() && hooks_multimesh_planned();
+    mm.max_payload_bytes = g_stream.policy.max_payload_bytes;
+    mm.stale_buffer_frame =
+        sabotage.config.kind == rs2::SabotageKind::StaleBuffer ? sabotage.config.frame : 0;
+    mm.state_notes = mm.enabled;
+    rs::mirror_set_multimesh(mm);
   }
   // G8t (gate8-design.md Q3): perturb-decode acts in the decode seam, before the hook hashes.
   rs::texture_decode_set_perturb(
@@ -2740,6 +2766,43 @@ void live_await_first_hello(uint64_t frame) {
 // same published copy when a connection can take a transaction (one snapshot
 // copy per frame either way). Without file sinks the snapshot is taken only
 // when the hub wants one.
+// PM1 (render-stream-11.md "As built (PM1)" rule 12): the mirror's notes of the multimeshes whose
+// version moved, as the hook log's `state` lines (each stamped with the frame of the snapshot that
+// took it). Taken at every publication so they never accumulate; written only with the log open.
+void multimesh_states_log() {
+  if (!rs::mirror_instance().multimesh_options().state_notes) {
+    return;
+  }
+  const std::vector<rs::Mirror::MultimeshStateNote> notes =
+      rs::mirror_instance().take_multimesh_states();
+  if (notes.empty() || !rs::resource_log().active()) {
+    return;
+  }
+  rs::TapContext ctx;
+  ctx.t_ns = monotonic_ns();
+  ctx.main_thread = true;
+  for (const rs::Mirror::MultimeshStateNote &note : notes) {
+    const rs2::MultimeshEntry &e = note.entry;
+    rs::MultimeshState state;
+    state.frame = note.frame;
+    state.rid = note.rid;
+    state.id = e.id;
+    state.version = e.version;
+    state.instances = e.instances;
+    state.format = rs2::to_wire(e.format);
+    state.colors = e.colors;
+    state.custom = e.custom;
+    state.visible = e.visible;
+    state.mesh = e.has_mesh ? e.mesh : 0;
+    state.status = rs2::to_wire(e.status);
+    state.reason = e.status == rs2::MultimeshStatus::Unsupported && e.has_reason
+                       ? rs2::to_wire(e.reason)
+                       : nullptr;
+    state.buffer = note.shadow.get();
+    rs::resource_log().multimesh_state(ctx, state);
+  }
+}
+
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
@@ -2788,6 +2851,7 @@ void stream_publish(uint64_t frame) {
   // holds the current state's payloads (D7), even when no connection takes a transaction.
   const bool serving = g_live.hub != nullptr && g_live.served != nullptr && !g_live.stopped;
   if (g_stream.publisher == nullptr && !live_wants && !serving) {
+    multimesh_states_log();  // PM1: a free's last state, even without a snapshot
     if (g_live.hub != nullptr) {
       g_live.hub->on_frame(frame, monotonic_ns(), nullptr, epoch, 0);
     }
@@ -2796,6 +2860,7 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
+  multimesh_states_log();  // PM1 rule 12: this frame's `state` lines
   if (g_state.evidence_ready) {
     g_perf.snapshot_us.add(snapshot_ns / 1000);  // Q3d snapshot_us (G6r)
   }

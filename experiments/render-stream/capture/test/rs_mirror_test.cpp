@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "rs2_codec.h"
 #include "rs2_diff.h"
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
@@ -3199,7 +3200,337 @@ void test_v11_stable_content_version() {
         "cv-churn: the counter moves on every re-record, as below /11");
 }
 
+// --- PM1: multimeshes (render-stream-11.md "As built (PM1): decisions") -----------------------
+
+grc::rs::Mirror::MultimeshOptions mm_options(uint64_t max_payload = 1u << 20,
+                                             uint64_t stale_frame = 0) {
+  grc::rs::Mirror::MultimeshOptions o;
+  o.enabled = true;
+  o.max_payload_bytes = max_payload;
+  o.stale_buffer_frame = stale_frame;
+  o.state_notes = true;
+  return o;
+}
+
+const grc::rs2::MultimeshEntry *mm_entry(const Snapshot &s, uint32_t id) {
+  for (const auto &m : s.multimeshes) {
+    if (m.id == id) return &m;
+  }
+  return nullptr;
+}
+
+// A /11 mirror with item 100 (rid 100), mesh 1 (rid 0x500) and multimesh 1 (rid 0x700) allocated
+// with `instances` 2d instances, colours and custom data, drawn by item 100.
+void mm_scene(Mirror *m, const grc::rs::Mirror::MultimeshOptions &options = mm_options()) {
+  bind_root(m);
+  m->set_v11(v11_options(grc::rs2::MeshDynamicMode::Auto));
+  m->set_multimesh(options);
+  m->canvas_item_create(100, 1);
+  m->mesh_create(0x500, 1);
+  m->multimesh_create(0x700, 1);
+  m->multimesh_allocate_data(0x700, 2, 0, true, true, false, 1);
+  m->add_multimesh(100, 0x700, 0, 1);
+}
+
+std::vector<float> ramp(std::size_t n, float base) {
+  std::vector<float> out(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    out[i] = base + static_cast<float>(i);
+  }
+  return out;
+}
+
+// allocate zeros the shadow, set_buffer replaces it (an equal one changes nothing), the setters
+// patch set_buffer's layout, refused calls change nothing; version and serial follow rule 2.
+void test_multimesh_shadow_and_versions() {
+  using grc::rs2::MultimeshStatus;
+  Mirror m;
+  mm_scene(&m);
+  grc::rs::Captured c1 = m.snapshot(1, 1);
+  const auto *e = mm_entry(c1.state, 1);
+  check(e != nullptr && e->status == MultimeshStatus::Ok && e->version == 2 &&
+            e->instances == 2 && e->colors && e->custom && e->visible == -1 && !e->has_mesh,
+        "create (1) + allocate (2): ok, 2 instances, visible -1, no mesh");
+  check(e != nullptr && e->buffer != nullptr && e->buffer->size() == 32 &&
+            std::all_of(e->buffer->begin(), e->buffer->end(), [](float v) { return v == 0.0f; }),
+        "allocate: a zero buffer of instances x stride (2 x 16)");
+  const uint64_t serial1 = e != nullptr ? e->buffer_serial : 0;
+  check(c1.state.multimesh_commands, "a snapshot with an add_multimesh is flagged for lowering");
+
+  const std::vector<float> zeros(32, 0.0f);
+  auto r = m.multimesh_set_buffer(0x700, zeros.data(), zeros.size(), 2);
+  check(r.known && r.id == 1 && r.accepted && !r.changed && r.version == 2,
+        "set_buffer with the shadow's own floats: accepted, nothing moves");
+  const std::vector<float> b = ramp(32, 1.0f);
+  r = m.multimesh_set_buffer(0x700, b.data(), b.size(), 2);
+  check(r.accepted && r.changed && r.version == 3, "a new buffer: version 3");
+  r = m.multimesh_set_buffer(0x700, b.data(), 31, 2);
+  check(!r.accepted && !r.changed && r.version == 3, "a size-mismatched set_buffer is refused");
+  grc::rs::Captured c2 = m.snapshot(2, 2);
+  e = mm_entry(c2.state, 1);
+  check(e != nullptr && *e->buffer == b && e->buffer_serial != serial1,
+        "the shadow holds the new floats; the serial moved");
+  const uint64_t serial2 = e != nullptr ? e->buffer_serial : 0;
+  r = m.multimesh_set_buffer(0x700, b.data(), b.size(), 3);
+  check(r.accepted && !r.changed, "the same buffer again (an idle emitter) moves nothing");
+  const grc::rs::Captured c3 = m.snapshot(3, 3);
+  check(mm_entry(c3.state, 1)->buffer_serial == serial2, "nor the serial");
+
+  // Setters: GLES3's 2d layout [xx, yx, 0, ox, xy, yy, 0, oy], colour at 8, custom at 12.
+  const Xform t = {1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f};
+  r = m.multimesh_instance_set_transform_2d(0x700, 1, t, 4);
+  check(r.accepted && r.changed && r.version == 4, "set_transform_2d: version 4");
+  r = m.multimesh_instance_set_transform_2d(0x700, 1, t, 4);
+  check(r.accepted && !r.changed, "the same transform again changes nothing");
+  check(!m.multimesh_instance_set_transform_2d(0x700, 2, t, 4).accepted,
+        "an index out of range is refused");
+  check(!m.multimesh_instance_set_transform(0x700, 0, {}, 4).accepted,
+        "a 3d transform on a 2d multimesh is refused");
+  r = m.multimesh_instance_set_color(0x700, 0, {0.1f, 0.2f, 0.3f, 0.4f}, 4);
+  check(r.accepted && r.changed && r.version == 5, "set_color: version 5");
+  r = m.multimesh_instance_set_custom_data(0x700, 0, {0.5f, 0.6f, 0.7f, 0.8f}, 4);
+  check(r.accepted && r.changed && r.version == 6, "set_custom_data: version 6");
+  const grc::rs::Captured c4 = m.snapshot(4, 4);
+  e = mm_entry(c4.state, 1);
+  const std::vector<float> &s = *e->buffer;
+  check(s[16] == 1.5f && s[17] == 3.5f && s[18] == 0.0f && s[19] == 5.5f && s[20] == 2.5f &&
+            s[21] == 4.5f && s[22] == 0.0f && s[23] == 6.5f,
+        "instance 1's transform is [xx, yx, 0, ox, xy, yy, 0, oy]");
+  check(s[8] == 0.1f && s[11] == 0.4f && s[12] == 0.5f && s[15] == 0.8f && s[24] == b[24],
+        "instance 0's colour at 8, custom at 12; instance 1's colour untouched");
+
+  // visible, custom AABB, mesh: new values only.
+  check(!m.multimesh_set_visible_instances(0x700, 3, 5).accepted, "visible > instances refused");
+  check(!m.multimesh_set_visible_instances(0x700, -2, 5).accepted, "visible < -1 refused");
+  check(m.multimesh_set_visible_instances(0x700, 1, 5).changed, "visible 1 is new");
+  check(!m.multimesh_set_visible_instances(0x700, 1, 5).changed, "visible 1 again is not");
+  check(!m.multimesh_set_custom_aabb(0x700, {0, 0, 0, 0, 0, 0}, 5).changed,
+        "the zero AABB is the current one");
+  check(m.multimesh_set_custom_aabb(0x700, {-1, -1, 0, 4, 4, 0}, 5).changed, "a new custom AABB");
+  check(!m.multimesh_set_mesh(0x700, 0, 5).changed, "set_mesh(RID()) changes nothing (GLES3)");
+  r = m.multimesh_set_mesh(0x700, 0x500, 5);
+  check(r.changed && r.version == 9, "set_mesh: version 9");
+  check(!m.multimesh_set_mesh(0x700, 0x500, 5).changed, "the same mesh again changes nothing");
+  const grc::rs::Captured c5 = m.snapshot(5, 5);
+  e = mm_entry(c5.state, 1);
+  check(e->has_mesh && e->mesh == 1 && e->visible == 1 && e->custom_aabb[3] == 4.0f &&
+            e->version == 9,
+        "mesh 1, visible 1, the custom AABB, version 9");
+
+  // A re-allocate: a new shape zeros the buffer and clamps visible (MIN, -1 stays -1).
+  r = m.multimesh_allocate_data(0x700, 0, 0, true, true, false, 6);
+  check(r.accepted && r.changed, "allocate to 0 instances");
+  const grc::rs::Captured c6 = m.snapshot(6, 6);
+  e = mm_entry(c6.state, 1);
+  check(e->instances == 0 && e->visible == 0 && e->buffer->empty() && e->custom_aabb[3] == 4.0f,
+        "0 instances: visible clamped to 0, an empty buffer, the custom AABB kept");
+  const uint64_t version = e->version;
+  r = m.multimesh_allocate_data(0x700, 0, 0, true, true, false, 7);
+  check(r.accepted && r.changed && r.version == version + 1,
+        "an identical allocate is accepted and moves the version (rule 2: allocate always)");
+  check(!m.multimesh_allocate_data(0x700, -1, 0, false, false, false, 7).accepted,
+        "a negative instance count is refused");
+  check(!m.multimesh_allocate_data(0x700, 1, 2, false, false, false, 7).accepted,
+        "an unknown transform format is refused");
+  check(!m.multimesh_set_buffer(0x999, b.data(), b.size(), 7).known,
+        "a multimesh tap on an unknown RID is not known");
+  check(m.stats().multimesh_unknown == 1 && m.stats().live_multimeshes == 1, "stats");
+}
+
+// Rule 2's reasons, and add_multimesh's derived item-level entries (rule 7).
+void test_multimesh_reasons() {
+  using grc::rs2::MultimeshReason;
+  using grc::rs2::MultimeshStatus;
+  Mirror m;
+  mm_scene(&m);
+  const auto status = [&m](uint64_t frame) {
+    return *mm_entry(m.snapshot(frame, frame).state, 1);
+  };
+  m.multimesh_allocate_data(0x700, 2, 1, false, false, false, 2);
+  auto e = status(2);
+  check(e.status == MultimeshStatus::Unsupported && e.reason == MultimeshReason::Multimesh3d &&
+            e.format == grc::rs2::MultimeshFormat::ThreeD && e.buffer == nullptr,
+        "TRANSFORM_3D: multimesh-3d, no buffer");
+  check(m.multimesh_instance_set_transform(0x700, 1, {}, 2).accepted,
+        "a 3d multimesh takes 3d transforms");
+  const std::vector<Entry> entries = item_entries(m.snapshot(3, 3).state);
+  check(std::find(entries.begin(), entries.end(),
+                  Entry{1, "canvas_item_add_multimesh", UnsupportedReason::UnsupportedMultimesh}) !=
+            entries.end(),
+        "an add_multimesh naming an unsupported multimesh: unsupported-multimesh");
+  m.multimesh_allocate_data(0x700, 2, 0, false, false, true, 4);
+  check(status(4).reason == MultimeshReason::MultimeshIndirect, "use_indirect: multimesh-indirect");
+  m.multimesh_allocate_data(0x700, 2, 0, false, false, false, 5);
+  check(status(5).status == MultimeshStatus::Ok, "re-allocated 2d: ok again");
+  m.multimesh_set_physics_interpolated(0x700, true, 6);
+  check(status(6).reason == MultimeshReason::MultimeshInterpolated,
+        "set_physics_interpolated(true): multimesh-interpolated");
+  m.multimesh_set_physics_interpolated(0x700, false, 7);
+  check(status(7).status == MultimeshStatus::Ok, "and back off: ok");
+  const std::vector<float> b(16, 1.0f);
+  check(m.multimesh_set_buffer_interpolated(0x700, b.data(), 16, 16, 8).changed,
+        "set_buffer_interpolated always moves the version");
+  check(!m.multimesh_set_buffer_interpolated(0x700, b.data(), 16, 15, 8).accepted,
+        "a previous buffer of the wrong size is refused");
+  check(status(8).reason == MultimeshReason::MultimeshInterpolated,
+        "set_buffer_interpolated: multimesh-interpolated ...");
+  m.multimesh_allocate_data(0x700, 2, 0, false, false, false, 9);
+  check(status(9).status == MultimeshStatus::Ok, "... until a re-allocate");
+  m.multimesh_set_mesh(0x700, 0x999, 10);
+  e = status(10);
+  check(e.reason == MultimeshReason::UnknownMesh && !e.has_mesh,
+        "set_mesh on a mesh never seen: unknown-mesh, mesh null");
+  m.multimesh_set_mesh(0x700, 0x500, 11);
+  e = status(11);
+  check(e.status == MultimeshStatus::Ok && e.has_mesh && e.mesh == 1, "a valid set_mesh: ok");
+
+  Mirror small;
+  mm_scene(&small, mm_options(64));  // 64 bytes: 1 instance of stride 16 fits, 2 do not
+  e = *mm_entry(small.snapshot(1, 1).state, 1);
+  check(e.reason == MultimeshReason::PayloadTooLarge && e.buffer == nullptr,
+        "2 x 16 floats (128 B) over max_payload_bytes 64: payload-too-large");
+  check(small.multimesh_set_buffer(0x700, ramp(32, 0).data(), 32, 2).changed,
+        "without a shadow every accepted set_buffer moves the version");
+  small.multimesh_allocate_data(0x700, 1, 0, true, true, false, 3);
+  const grc::rs::Captured s3 = small.snapshot(3, 3);
+  check(mm_entry(s3.state, 1)->status == MultimeshStatus::Ok,
+        "1 x 16 floats (64 B): ok");
+
+  // add_multimesh on a RID the mirror never saw created.
+  Mirror u;
+  mm_scene(&u);
+  u.add_multimesh(100, 0x888, 0, 2);
+  const Snapshot su = u.snapshot(2, 2).state;
+  const auto &cmd = item(su, 1)->commands.back();
+  check(cmd.kind == CommandKind::Unsupported && cmd.name == "canvas_item_add_multimesh" &&
+            cmd.unsupported_reason == grc::rs2::UnsupportedCmdReason::UnknownMultimesh,
+        "an unknown multimesh RID: unsupported / unknown-multimesh");
+  const std::vector<Entry> ue = item_entries(su);
+  check(ue.size() == 1 &&
+            ue[0] == Entry{1, "canvas_item_add_multimesh", UnsupportedReason::UnknownMultimesh},
+        "one derived unknown-multimesh entry");
+}
+
+// Rule 9: published when named; a freed multimesh is a tombstone while named, then leaves; its
+// mesh keeps the mesh's tombstone (rule 6). And the state notes (rule 12).
+void test_multimesh_publication_and_free() {
+  using grc::rs2::MultimeshStatus;
+  Mirror m;
+  mm_scene(&m);
+  m.multimesh_create(0x701, 1);  // never drawn
+  m.multimesh_set_mesh(0x700, 0x500, 1);
+  grc::rs::Captured c1 = m.snapshot(1, 1);
+  check(c1.state.multimeshes.size() == 1 && c1.state.multimeshes[0].id == 1,
+        "only the multimesh an add_multimesh names is in the table");
+  auto notes = m.take_multimesh_states();
+  check(notes.size() == 2 && notes[0].frame == 1 && notes[0].entry.id == 1 &&
+            notes[0].entry.version == 3 && notes[1].entry.id == 2 && notes[1].rid == 0x701,
+        "a state note per multimesh whose version moved, at the snapshot's frame");
+  m.snapshot(2, 2);
+  check(m.take_multimesh_states().empty(), "no version moved: no note");
+
+  m.free_rid(0x500, 3);  // the mesh: its tombstone stays, a multimesh names it
+  grc::rs::Captured c3 = m.snapshot(3, 3);
+  check(mesh(c3.state, 1) != nullptr &&
+            mesh(c3.state, 1)->status == grc::rs2::MeshStatus::Freed &&
+            mm_entry(c3.state, 1)->has_mesh,
+        "a freed mesh a multimesh names stays a tombstone (multimesh-ref)");
+  auto r = m.multimesh_free(0x700, 4);
+  check(r.accepted && r.changed && r.version == 4, "free: version + 1");
+  check(!m.knows_multimesh(0x700), "the RID is forgotten");
+  grc::rs::Captured c4 = m.snapshot(4, 4);
+  const auto *e = mm_entry(c4.state, 1);
+  check(e != nullptr && e->status == MultimeshStatus::Freed && e->version == 4 && !e->has_mesh &&
+            e->instances == 0 && e->visible == -1 && !e->colors && !e->custom &&
+            e->buffer == nullptr,
+        "a named freed multimesh is a tombstone (rule 2's shape)");
+  check(item_entries(c4.state).empty(), "a tombstone is not unsupported");
+  notes = m.take_multimesh_states();
+  check(notes.size() == 1 && notes[0].entry.status == MultimeshStatus::Freed && notes[0].rid == 0,
+        "the free's note");
+  m.clear(100, 5);
+  grc::rs::Captured c5 = m.snapshot(5, 5);
+  check(c5.state.multimeshes.empty() && m.stats().live_multimeshes == 1 &&
+            !c5.state.multimesh_commands,
+        "unnamed, the tombstone leaves (the never-drawn multimesh stays in the mirror)");
+  m.free_rid(0x701, 6);
+  notes = m.take_multimesh_states();
+  check(notes.size() == 1 && notes[0].entry.id == 2 && notes[0].frame == 6 &&
+            m.stats().live_multimeshes == 0,
+        "free_rid of an unnamed multimesh: gone at once, with its last note");
+  m.snapshot(6, 6);
+  check(m.take_multimesh_states().empty(), "and noted once");
+}
+
+// stale-buffer (rule 11): the first multimesh whose buffer changes at or after the frame keeps
+// its serial, so make_patch leaves buffer_f null over new floats.
+void test_multimesh_stale_buffer_and_patch() {
+  Mirror m;
+  mm_scene(&m, mm_options(1u << 20, 3));
+  grc::rs::Captured b = m.snapshot(1, 1);
+  b.state.version = grc::rs2::ProtocolVersion::V11;
+  const std::vector<float> f2 = ramp(32, 2.0f);
+  m.multimesh_set_buffer(0x700, f2.data(), f2.size(), 2);
+  grc::rs::Captured t = m.snapshot(2, 2);
+  t.state.version = grc::rs2::ProtocolVersion::V11;
+  grc::rs2::Transaction p = grc::rs2::make_patch(b.state, t.state);
+  check(p.multimeshes.size() == 1 && p.multimesh_buffers_held.empty(),
+        "before the frame a buffer change writes its floats");
+  const grc::rs2::Transaction same = grc::rs2::make_patch(t.state, t.state);
+  check(same.multimeshes.empty() && same.removed_multimeshes.empty(),
+        "a repeated target (stale-coalesce): no entry, no floats");
+  const std::vector<float> f3 = ramp(32, 3.0f);
+  m.multimesh_set_buffer(0x700, f3.data(), f3.size(), 3);
+  grc::rs::Captured t3 = m.snapshot(3, 3);
+  t3.state.version = grc::rs2::ProtocolVersion::V11;
+  p = grc::rs2::make_patch(t.state, t3.state);
+  check(p.multimeshes.size() == 1 && p.multimesh_buffers_held.size() == 1,
+        "stale-buffer: the entry moves (version) but its buffer_f stays null");
+}
+
+// Rule 7 below /11: a /10 connection of a /11 host sees exactly what it saw before PM1 (the
+// hooks' unsupported-op command, its entry, its content_version, no table).
+void test_multimesh_lowered_below_v11() {
+  Mirror with;
+  mm_scene(&with);
+  with.multimesh_allocate_data(0x700, 2, 1, false, false, false, 1);  // unsupported: 3d
+  with.add_multimesh(100, 0x888, 0, 1);                                // unknown
+  Mirror without;
+  bind_root(&without);
+  without.set_v11(v11_options(grc::rs2::MeshDynamicMode::Auto));
+  without.canvas_item_create(100, 1);
+  without.mesh_create(0x500, 1);
+  without.add_unsupported(100, "canvas_item_add_multimesh", 1);
+  without.add_unsupported(100, "canvas_item_add_multimesh", 1);
+  Snapshot a = with.snapshot(1, 1).state;
+  Snapshot b = without.snapshot(1, 1).state;
+  check(item(a, 1)->content_version != item(b, 1)->content_version &&
+            item(a, 1)->content_version_below_v11 == item(b, 1)->content_version,
+        "the /11 digest differs; the below-/11 digest is the pre-PM1 one");
+  a.version = b.version = grc::rs2::ProtocolVersion::V10;
+  check(grc::rs2::encode_transaction(grc::rs2::make_full(a)) ==
+            grc::rs2::encode_transaction(grc::rs2::make_full(b)),
+        "a /10 full transaction of a /11 host with multimeshes is the pre-PM1 one");
+  Snapshot a0 = a;
+  Snapshot b0 = b;
+  with.clear(100, 2);
+  with.add_rect(100, kRect, kRed, false, 2);
+  without.clear(100, 2);
+  without.add_rect(100, kRect, kRed, false, 2);
+  Snapshot a2 = with.snapshot(2, 2).state;
+  Snapshot b2 = without.snapshot(2, 2).state;
+  a2.version = b2.version = grc::rs2::ProtocolVersion::V10;
+  check(grc::rs2::encode_transaction(grc::rs2::make_patch(a0, a2)) ==
+            grc::rs2::encode_transaction(grc::rs2::make_patch(b0, b2)),
+        "and so is a /10 patch");
+}
+
 int main() {
+  test_multimesh_shadow_and_versions();
+  test_multimesh_reasons();
+  test_multimesh_publication_and_free();
+  test_multimesh_stale_buffer_and_patch();
+  test_multimesh_lowered_below_v11();
   test_v11_mesh_classification();
   test_v11_mesh_modes();
   test_v11_stable_content_version();

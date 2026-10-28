@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "rs2_codec.h"
+#include "rs2_diff.h"
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
@@ -76,6 +77,11 @@ void Mirror::reset() {
   meshes_.clear();
   mesh_by_rid_.clear();
   next_mesh_id_ = 1;
+  multimeshes_.clear();
+  multimesh_by_rid_.clear();
+  next_multimesh_id_ = 1;
+  stale_buffer_multimesh_ = 0;
+  multimesh_notes_.clear();
   shaders_.clear();
   shader_by_rid_.clear();
   next_shader_id_ = 1;
@@ -578,6 +584,20 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     ++epoch_;
     return;
   }
+  if (Multimesh *mm = find_multimesh(rid)) {
+    // PM1 (rule 2): version + 1, a `freed` tombstone while an add_multimesh names it.
+    MultimeshCall ignored;
+    multimesh_by_rid_.erase(rid);
+    mm->rid = 0;
+    mm->freed = true;
+    mm->buffer.reset();
+    multimesh_moved(mm, &ignored);
+    if (!multimesh_referenced(mm->id)) {
+      note_multimesh(*mm, frame);
+      multimeshes_.erase(mm->id);
+    }
+    return;
+  }
   const auto texture_it = texture_by_rid_.find(rid);
   if (texture_it != texture_by_rid_.end()) {
     // gate2-design.md Q3: a texture a command still names becomes a `freed`
@@ -1041,6 +1061,7 @@ bool names_texture(const Command &command) {
     case CommandKind::AddTriangleArray:
     case CommandKind::AddNinePatch:
     case CommandKind::AddMesh:
+    case CommandKind::AddMultimesh:  // PM1 rule 7: `tex` as every /4 op with one
       return true;
     default:
       return false;
@@ -1065,6 +1086,7 @@ const char *rs_method_name(CommandKind kind) {
     case CommandKind::AddMesh: return "canvas_item_add_mesh";
     case CommandKind::AddSetTransform: return "canvas_item_add_set_transform";
     case CommandKind::AddClipIgnore: return "canvas_item_add_clip_ignore";
+    case CommandKind::AddMultimesh: return "canvas_item_add_multimesh";
     case CommandKind::Unsupported: break;
   }
   return "";
@@ -1865,6 +1887,13 @@ bool Mirror::mesh_referenced(std::uint32_t id) const {
       }
     }
   }
+  // PM1 (rule 6, multimesh-ref): a multimesh's mesh keeps its tombstone too.
+  for (const auto &entry : multimeshes_) {
+    const Multimesh &mm = entry.second;
+    if (!mm.freed && !mm.unknown_mesh && mm.mesh_id == id) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -2206,6 +2235,551 @@ void Mirror::add_mesh(std::uint64_t rid, std::uint64_t mesh_rid, const Xform &tr
     command.modulate = modulate;
   }
   push_command(item, std::move(command), frame);
+}
+
+// --- multimeshes (PM1; render-stream-11.md "As built (PM1): decisions") -----------------------
+
+namespace {
+
+bool float_bits_equal(const float *a, const float *b, std::size_t n) {
+  return n == 0 || std::memcmp(a, b, n * sizeof(float)) == 0;
+}
+
+}  // namespace
+
+void Mirror::set_multimesh(const MultimeshOptions &options) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  mm_options_ = options;
+}
+
+Mirror::Multimesh *Mirror::find_multimesh(std::uint64_t rid) {
+  if (rid == 0) {
+    return nullptr;
+  }
+  const auto it = multimesh_by_rid_.find(rid);
+  return it == multimesh_by_rid_.end() ? nullptr : &multimeshes_.at(it->second);
+}
+
+bool Mirror::knows_multimesh(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return rid != 0 && multimesh_by_rid_.count(rid) != 0;
+}
+
+Mirror::Multimesh *Mirror::multimesh_for(std::uint64_t rid, const char *op, std::uint64_t frame,
+                                         MultimeshCall *out) {
+  if (!mm_options_.enabled) {
+    return nullptr;
+  }
+  Multimesh *mm = find_multimesh(rid);
+  if (mm == nullptr) {
+    ++stats_.multimesh_unknown;
+    return nullptr;
+  }
+  out->known = true;
+  out->id = mm->id;
+  out->version = mm->version;
+  if (omit_op_matches(op, frame)) {
+    ++stats_.dropped_omit_op;
+    out->omitted = true;
+    out->accepted = true;  // the engine still takes it; the mirror does not
+    return nullptr;
+  }
+  return mm;
+}
+
+std::uint32_t Mirror::multimesh_stride(const Multimesh &mm) {
+  return (mm.format == 1 ? 12u : 8u) + (mm.colors ? 4u : 0u) + (mm.custom ? 4u : 0u);
+}
+
+bool Mirror::multimesh_referenced(std::uint32_t id) const {
+  for (const auto &entry : items_) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddMultimesh && command.multimesh == id) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void Mirror::multimesh_moved(Multimesh *mm, MultimeshCall *out) {
+  ++epoch_;
+  ++mm->version;
+  out->changed = true;
+  out->version = mm->version;
+}
+
+void Mirror::multimesh_buffer_moved(Multimesh *mm, std::uint64_t frame) {
+  // stale-buffer (rule 11): the first multimesh whose buffer changes at or after the frame keeps
+  // its serial from then on.
+  if (mm_options_.stale_buffer_frame != 0 && frame >= mm_options_.stale_buffer_frame &&
+      (stale_buffer_multimesh_ == 0 || stale_buffer_multimesh_ == mm->id)) {
+    stale_buffer_multimesh_ = mm->id;
+    return;
+  }
+  ++mm->buffer_serial;
+}
+
+std::vector<float> *Mirror::multimesh_writable(Multimesh *mm) {
+  if (mm->buffer == nullptr) {
+    return nullptr;
+  }
+  if (mm->buffer.use_count() > 1) {
+    mm->buffer = std::make_shared<std::vector<float>>(*mm->buffer);  // a snapshot still holds it
+  }
+  return mm->buffer.get();
+}
+
+bool Mirror::multimesh_patch(Multimesh *mm, std::int32_t index, std::uint32_t offset,
+                             const float *values, std::uint32_t count, std::uint64_t frame) {
+  if (mm->buffer == nullptr) {
+    return true;  // payload-too-large keeps no shadow: every accepted call moves the version
+  }
+  const std::size_t at = static_cast<std::size_t>(index) * multimesh_stride(*mm) + offset;
+  if (at + count > mm->buffer->size()) {
+    return false;  // never: the index and the layout were checked
+  }
+  if (float_bits_equal(mm->buffer->data() + at, values, count)) {
+    return false;
+  }
+  std::vector<float> *buffer = multimesh_writable(mm);
+  std::memcpy(buffer->data() + at, values, count * sizeof(float));
+  multimesh_buffer_moved(mm, frame);
+  return true;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_create(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  if (!mm_options_.enabled || rid == 0) {
+    return out;
+  }
+  if (omit_op_matches("multimesh_create", frame)) {
+    ++stats_.dropped_omit_op;
+    out.omitted = true;
+    out.accepted = true;
+    return out;
+  }
+  const auto stale = multimesh_by_rid_.find(rid);
+  if (stale != multimesh_by_rid_.end()) {
+    // A recycled RID value: the old id leaves (a tombstone while named).
+    MultimeshCall ignored;
+    Multimesh &old = multimeshes_.at(stale->second);
+    multimesh_by_rid_.erase(stale);
+    old.rid = 0;
+    old.freed = true;
+    old.buffer.reset();
+    multimesh_moved(&old, &ignored);
+    if (!multimesh_referenced(old.id)) {
+      note_multimesh(old, frame);
+      multimeshes_.erase(old.id);
+    }
+  }
+  ++epoch_;
+  Multimesh mm;
+  mm.id = next_multimesh_id_++;
+  mm.rid = rid;
+  mm.buffer = std::make_shared<std::vector<float>>();  // 0 instances: an empty buffer
+  multimesh_by_rid_[rid] = mm.id;
+  out.known = true;
+  out.accepted = true;
+  out.changed = true;
+  out.id = mm.id;
+  out.version = mm.version;
+  multimeshes_.emplace(mm.id, std::move(mm));
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_allocate_data(std::uint64_t rid, std::int32_t instances,
+                                                      std::int32_t format, bool colors, bool custom,
+                                                      bool indirect, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_allocate_data", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  if (instances < 0 || (format != 0 && format != 1)) {
+    ++stats_.multimesh_rejected;  // MultiMesh::set_instance_count refuses < 0; RS has two formats
+    return out;
+  }
+  out.accepted = true;
+  mm->indirect = indirect;
+  mm->buffer_interpolated = false;  // rule 2: a re-allocate leaves multimesh-interpolated
+  const bool same = mm->instances == instances && mm->format == format && mm->colors == colors &&
+                    mm->custom == custom;
+  if (!same) {
+    // GLES3 _multimesh_allocate_data (mesh_storage.cpp:1536-1581): a new, unset buffer (reads back
+    // as zeros, _multimesh_make_local), visible clamped with MIN; the custom AABB stays.
+    mm->instances = instances;
+    mm->format = format;
+    mm->colors = colors;
+    mm->custom = custom;
+    mm->visible = std::min(mm->visible, mm->instances);
+    const std::uint64_t floats =
+        static_cast<std::uint64_t>(instances) * static_cast<std::uint64_t>(multimesh_stride(*mm));
+    std::shared_ptr<std::vector<float>> before = std::move(mm->buffer);
+    mm->too_large = floats * sizeof(float) > mm_options_.max_payload_bytes;
+    if (!mm->too_large) {
+      mm->buffer = std::make_shared<std::vector<float>>(static_cast<std::size_t>(floats), 0.0f);
+    }
+    const bool bytes_equal =
+        before != nullptr && mm->buffer != nullptr && before->size() == mm->buffer->size() &&
+        float_bits_equal(before->data(), mm->buffer->data(), before->size());
+    if (!bytes_equal) {
+      multimesh_buffer_moved(mm, frame);
+    }
+  }
+  // GLES3 returns early on an identical shape (the buffer is kept); rule 2 moves the version of
+  // every accepted allocate all the same.
+  multimesh_moved(mm, &out);
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_set_mesh(std::uint64_t rid, std::uint64_t mesh_rid,
+                                                 std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_set_mesh", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  out.accepted = true;
+  // GLES3 _multimesh_set_mesh (:1589-1593): the same RID, or RID(), changes nothing.
+  if (mesh_rid == 0 || mesh_rid == mm->mesh_rid) {
+    ++stats_.multimesh_unchanged;
+    return out;
+  }
+  mm->mesh_rid = mesh_rid;
+  const Mesh *mesh = find_mesh(mesh_rid);
+  mm->unknown_mesh = mesh == nullptr;
+  mm->mesh_id = mesh != nullptr ? mesh->id : 0;
+  multimesh_moved(mm, &out);
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_instance_set_transform(
+    std::uint64_t rid, std::int32_t index, const std::array<float, 12> &transform,
+    std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_instance_set_transform", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  if (index < 0 || index >= mm->instances || mm->format != 1) {
+    ++stats_.multimesh_rejected;  // ERR_FAIL_INDEX, ERR_FAIL_COND(format != TRANSFORM_3D)
+    return out;
+  }
+  out.accepted = true;
+  if (multimesh_patch(mm, index, 0, transform.data(), 12, frame)) {
+    multimesh_moved(mm, &out);
+  } else {
+    ++stats_.multimesh_unchanged;
+  }
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_instance_set_transform_2d(std::uint64_t rid,
+                                                                  std::int32_t index,
+                                                                  const Xform &t,
+                                                                  std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_instance_set_transform_2d", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  if (index < 0 || index >= mm->instances || mm->format != 0) {
+    ++stats_.multimesh_rejected;  // ERR_FAIL_INDEX, ERR_FAIL_COND(format != TRANSFORM_2D)
+    return out;
+  }
+  out.accepted = true;
+  // GLES3 _multimesh_instance_set_transform_2d (:1769-1793): [xx, yx, 0, ox, xy, yy, 0, oy] with
+  // Xform = (columns[0].x, columns[0].y, columns[1].x, columns[1].y, columns[2].x, columns[2].y).
+  const float values[8] = {t[0], t[2], 0.0f, t[4], t[1], t[3], 0.0f, t[5]};
+  if (multimesh_patch(mm, index, 0, values, 8, frame)) {
+    multimesh_moved(mm, &out);
+  } else {
+    ++stats_.multimesh_unchanged;
+  }
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_instance_set_color(std::uint64_t rid, std::int32_t index,
+                                                           const Color4 &color,
+                                                           std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_instance_set_color", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  if (index < 0 || index >= mm->instances || !mm->colors) {
+    ++stats_.multimesh_rejected;  // ERR_FAIL_INDEX, ERR_FAIL_COND(!uses_colors)
+    return out;
+  }
+  out.accepted = true;
+  // set_buffer's layout: the colour right after the transform.
+  const std::uint32_t at = mm->format == 1 ? 12u : 8u;
+  if (multimesh_patch(mm, index, at, color.data(), 4, frame)) {
+    multimesh_moved(mm, &out);
+  } else {
+    ++stats_.multimesh_unchanged;
+  }
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_instance_set_custom_data(std::uint64_t rid,
+                                                                 std::int32_t index,
+                                                                 const Color4 &color,
+                                                                 std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_instance_set_custom_data", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  if (index < 0 || index >= mm->instances || !mm->custom) {
+    ++stats_.multimesh_rejected;  // ERR_FAIL_INDEX, ERR_FAIL_COND(!uses_custom_data)
+    return out;
+  }
+  out.accepted = true;
+  // set_buffer's layout: custom data after the colour (when colors).
+  const std::uint32_t at = (mm->format == 1 ? 12u : 8u) + (mm->colors ? 4u : 0u);
+  if (multimesh_patch(mm, index, at, color.data(), 4, frame)) {
+    multimesh_moved(mm, &out);
+  } else {
+    ++stats_.multimesh_unchanged;
+  }
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_set_custom_aabb(std::uint64_t rid,
+                                                        const std::array<float, 6> &aabb,
+                                                        std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_set_custom_aabb", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  out.accepted = true;
+  if (float_bits_equal(mm->custom_aabb.data(), aabb.data(), 6)) {
+    ++stats_.multimesh_unchanged;
+    return out;
+  }
+  mm->custom_aabb = aabb;
+  multimesh_moved(mm, &out);
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_set_buffer(std::uint64_t rid, const float *data,
+                                                   std::size_t count, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_set_buffer", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  const std::uint64_t expected =
+      static_cast<std::uint64_t>(mm->instances) * static_cast<std::uint64_t>(multimesh_stride(*mm));
+  if (count != expected || (count != 0 && data == nullptr)) {
+    ++stats_.multimesh_rejected;  // ERR_FAIL_COND(p_buffer.size() != instances * stride)
+    return out;
+  }
+  out.accepted = true;
+  if (mm->buffer == nullptr) {
+    multimesh_moved(mm, &out);  // payload-too-large: no shadow to compare against
+    return out;
+  }
+  if (float_bits_equal(mm->buffer->data(), data, count)) {
+    ++stats_.multimesh_unchanged;  // an idle emitter re-sets its buffer: nothing moves
+    return out;
+  }
+  if (mm->buffer.use_count() > 1) {
+    mm->buffer = std::make_shared<std::vector<float>>(data, data + count);
+  } else {
+    std::memcpy(mm->buffer->data(), data, count * sizeof(float));
+  }
+  multimesh_buffer_moved(mm, frame);
+  multimesh_moved(mm, &out);
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_set_buffer_interpolated(std::uint64_t rid,
+                                                                const float *data,
+                                                                std::size_t count,
+                                                                std::size_t prev_count,
+                                                                std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_set_buffer_interpolated", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  // RendererMeshStorage::multimesh_set_buffer_interpolated (storage/mesh_storage.cpp:238-256):
+  // both buffers must have the interpolator's size, instances x stride.
+  const std::uint64_t expected =
+      static_cast<std::uint64_t>(mm->instances) * static_cast<std::uint64_t>(multimesh_stride(*mm));
+  if (count != expected || prev_count != expected || (count != 0 && data == nullptr)) {
+    ++stats_.multimesh_rejected;
+    return out;
+  }
+  out.accepted = true;
+  mm->buffer_interpolated = true;
+  if (mm->buffer != nullptr && !float_bits_equal(mm->buffer->data(), data, count)) {
+    std::vector<float> *buffer = multimesh_writable(mm);
+    std::memcpy(buffer->data(), data, count * sizeof(float));
+    multimesh_buffer_moved(mm, frame);
+  }
+  multimesh_moved(mm, &out);  // rule 2: always
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_set_physics_interpolated(std::uint64_t rid,
+                                                                 bool interpolated,
+                                                                 std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_set_physics_interpolated", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  out.accepted = true;
+  if (mm->physics_interpolated == interpolated) {
+    ++stats_.multimesh_unchanged;
+    return out;
+  }
+  mm->physics_interpolated = interpolated;
+  multimesh_moved(mm, &out);
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_set_visible_instances(std::uint64_t rid,
+                                                              std::int32_t visible,
+                                                              std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "multimesh_set_visible_instances", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  // GLES3 _multimesh_set_visible_instances (:2139-2159).
+  if (visible < -1 || visible > mm->instances) {
+    ++stats_.multimesh_rejected;
+    return out;
+  }
+  out.accepted = true;
+  if (mm->visible == visible) {
+    ++stats_.multimesh_unchanged;
+    return out;
+  }
+  mm->visible = visible;
+  multimesh_moved(mm, &out);
+  return out;
+}
+
+Mirror::MultimeshCall Mirror::multimesh_free(std::uint64_t rid, std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  Multimesh *mm = multimesh_for(rid, "free", frame, &out);
+  if (mm == nullptr) {
+    return out;
+  }
+  out.accepted = true;
+  multimesh_by_rid_.erase(rid);
+  mm->rid = 0;
+  mm->freed = true;
+  mm->buffer.reset();
+  multimesh_moved(mm, &out);  // rule 2: free always
+  if (!multimesh_referenced(mm->id)) {
+    note_multimesh(*mm, frame);  // its last state, before the entry leaves for good
+    multimeshes_.erase(mm->id);
+  }
+  return out;
+}
+
+void Mirror::add_multimesh(std::uint64_t rid, std::uint64_t multimesh_rid, std::uint64_t texture,
+                           std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  static const char kOp[] = "canvas_item_add_multimesh";
+  Item *item = geometry_item(rid, kOp, frame);
+  if (item == nullptr) {
+    return;
+  }
+  Command command;
+  const Multimesh *mm = mm_options_.enabled ? find_multimesh(multimesh_rid) : nullptr;
+  if (mm == nullptr) {
+    // Rule 7: a multimesh the capture never saw created (or RID()).
+    command.kind = CommandKind::Unsupported;
+    command.name = kOp;
+    command.unsupported_reason = mm_options_.enabled ? UnsupportedCmdReason::UnknownMultimesh
+                                                     : UnsupportedCmdReason::UnsupportedOp;
+  } else if (geometry_texture(texture, kOp, &command)) {
+    command.kind = CommandKind::AddMultimesh;
+    command.multimesh = mm->id;
+  }
+  push_command(item, std::move(command), frame);
+}
+
+MultimeshEntry Mirror::wire_multimesh(const Multimesh &mm) const {
+  MultimeshEntry out;
+  out.id = mm.id;
+  out.version = mm.version;
+  if (mm.freed) {
+    out.status = MultimeshStatus::Freed;  // rule 2's tombstone: every other field its default
+    return out;
+  }
+  out.has_mesh = mm.mesh_id != 0 && !mm.unknown_mesh;
+  out.mesh = out.has_mesh ? mm.mesh_id : 0;
+  out.format = mm.format == 1 ? MultimeshFormat::ThreeD : MultimeshFormat::TwoD;
+  out.colors = mm.colors;
+  out.custom = mm.custom;
+  out.instances = mm.instances;
+  out.visible = mm.visible;
+  out.custom_aabb = mm.custom_aabb;
+  // Rule 2's reasons, the first that applies.
+  out.has_reason = true;
+  if (mm.format == 1) {
+    out.reason = MultimeshReason::Multimesh3d;
+  } else if (mm.indirect) {
+    out.reason = MultimeshReason::MultimeshIndirect;
+  } else if (mm.physics_interpolated || mm.buffer_interpolated) {
+    out.reason = MultimeshReason::MultimeshInterpolated;
+  } else if (mm.unknown_mesh) {
+    out.reason = MultimeshReason::UnknownMesh;
+  } else if (mm.too_large || mm.buffer == nullptr) {
+    out.reason = MultimeshReason::PayloadTooLarge;
+  } else {
+    out.has_reason = false;
+  }
+  if (out.has_reason) {
+    out.status = MultimeshStatus::Unsupported;
+    return out;
+  }
+  out.buffer = mm.buffer;
+  out.buffer_serial = mm.buffer_serial;
+  return out;
+}
+
+void Mirror::note_multimesh(const Multimesh &mm, std::uint64_t frame) {
+  if (!mm_options_.state_notes || mm.noted_version == mm.version) {
+    return;
+  }
+  MultimeshStateNote note;
+  note.frame = frame;
+  note.rid = mm.rid;
+  note.entry = wire_multimesh(mm);
+  note.shadow = mm.buffer;
+  multimesh_notes_.push_back(std::move(note));
+}
+
+std::vector<Mirror::MultimeshStateNote> Mirror::take_multimesh_states() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<MultimeshStateNote> out;
+  out.swap(multimesh_notes_);
+  return out;
 }
 
 void Mirror::set_texture_filter(std::uint64_t rid, std::int32_t filter, std::uint64_t frame) {
@@ -3676,6 +4250,11 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   // published items. Nothing the item-level entries look up is a tombstone removed below (a
   // removed tombstone is named by nothing), so building them first changes no entry.
   std::set<std::uint32_t> meshes_named;
+  // PM1 (rule 9): the multimeshes any add_multimesh names (the tombstone rule) and those a
+  // published item's names (the table).
+  std::set<std::uint32_t> multimeshes_named;
+  std::set<std::uint32_t> multimeshes_published;
+  const bool mm_on = mm_options_.enabled;
   // Item-level entries (render-stream-2.md "Item-level unsupported entries"): one per distinct
   // (op, reason) pair of each item -- an unsupported command's name and reason, a texture draw
   // naming an unsupported texture (unsupported-texture), a material (unsupported-state) -- and
@@ -3708,6 +4287,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       }
       if (command.kind == CommandKind::AddMesh) {
         meshes_named.insert(command.mesh);
+      } else if (command.kind == CommandKind::AddMultimesh) {
+        multimeshes_named.insert(command.multimesh);
       }
     }
     for (const auto &param : entry.second.instance_params) {
@@ -3732,6 +4313,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
           reason = UnsupportedReason::SkinnedGeometry;  // render-stream-4.md, D16
         } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMesh) {
           reason = UnsupportedReason::UnknownMesh;
+        } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMultimesh) {
+          reason = UnsupportedReason::UnknownMultimesh;  // PM1 rule 7
         }
         add_item_entry(state.id, command.name, reason);
       } else if (names_texture(command) && command.has_tex) {
@@ -3758,6 +4341,16 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
         const auto mesh = meshes_.find(command.mesh);
         if (mesh != meshes_.end() && mesh->second.status == MeshStatus::Unsupported) {
           add_item_entry(state.id, "canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh);
+        }
+      } else if (command.kind == CommandKind::AddMultimesh) {
+        // PM1 rule 7: an add_multimesh naming an `unsupported` multimesh entry (a tombstone is
+        // not unsupported).
+        multimeshes_published.insert(command.multimesh);
+        const auto mm = multimeshes_.find(command.multimesh);
+        if (mm != multimeshes_.end() &&
+            wire_multimesh(mm->second).status == MultimeshStatus::Unsupported) {
+          add_item_entry(state.id, "canvas_item_add_multimesh",
+                         UnsupportedReason::UnsupportedMultimesh);
         }
       }
     }
@@ -3798,8 +4391,26 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
         held.cv_digest = command_list_digest(state.commands);
         held.cv_digest_of = state.content_version;
         held.cv_digest_set = true;
+        // PM1: what a connection below /11 sees of a list with multimesh commands (rs2_diff.h
+        // lower_multimesh): the digest of the lowered list, as before PM1.
+        held.cv_digest_below = 0;
+        std::vector<Command> lowered;
+        if (mm_on && lower_multimesh_commands(state.commands, &lowered)) {
+          held.cv_digest_below = command_list_digest(lowered);
+        }
       }
       out.items.back().content_version = held.cv_digest;
+      out.items.back().content_version_below_v11 = held.cv_digest_below;
+    }
+    if (mm_on && !out.multimesh_commands) {
+      for (const Command &command : state.commands) {
+        if (command.kind == CommandKind::AddMultimesh ||
+            (command.kind == CommandKind::Unsupported &&
+             command.name == "canvas_item_add_multimesh")) {
+          out.multimesh_commands = true;  // a connection below /11 lowers this snapshot
+          break;
+        }
+      }
     }
   }
   for (const auto &entry : canvases_) {
@@ -3821,6 +4432,21 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     } else {
       ++it;
     }
+  }
+  // PM1: a multimesh's mesh keeps its tombstone (rule 6), and a multimesh tombstone leaves at the
+  // first snapshot nothing names it, after its last state note.
+  for (auto it = multimeshes_.begin(); it != multimeshes_.end();) {
+    Multimesh &mm = it->second;
+    note_multimesh(mm, frame);
+    mm.noted_version = mm.version;
+    if (mm.freed && multimeshes_named.count(it->first) == 0) {
+      it = multimeshes_.erase(it);
+      continue;
+    }
+    if (!mm.freed && !mm.unknown_mesh && mm.mesh_id != 0) {
+      meshes_named.insert(mm.mesh_id);
+    }
+    ++it;
   }
   // G5e: likewise a mesh tombstone leaves at the first snapshot no add_mesh names it.
   for (auto it = meshes_.begin(); it != meshes_.end();) {
@@ -3930,6 +4556,14 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   if (time_read) {
     out.shader_time = shader_time_;
   }
+  // PM1 (rule 9): the multimeshes a published add_multimesh names, tombstones included.
+  out.multimeshes.reserve(multimeshes_published.size());
+  for (std::uint32_t id : multimeshes_published) {
+    const auto it = multimeshes_.find(id);
+    if (it != multimeshes_.end()) {
+      out.multimeshes.push_back(wire_multimesh(it->second));
+    }
+  }
   return captured;
 }
 
@@ -3961,6 +4595,7 @@ MirrorStats Mirror::stats() const {
     }
   }
   out.live_meshes = meshes_.size();
+  out.live_multimeshes = multimeshes_.size();
   std::set<std::string> mesh_hashes;
   for (const auto &entry : meshes_) {
     if (entry.second.dynamic) {
@@ -4037,6 +4672,9 @@ void mirror_set_perturb_shader(std::uint64_t from_frame) {
 }
 
 void mirror_set_shader_policy(ShaderPolicy policy) { mirror_instance().set_shader_policy(policy); }
+void mirror_set_multimesh(const Mirror::MultimeshOptions &options) {
+  mirror_instance().set_multimesh(options);
+}
 
 void mirror_set_perturb_glyph(std::uint64_t from_frame) {
   mirror_instance().set_perturb_glyph(from_frame);

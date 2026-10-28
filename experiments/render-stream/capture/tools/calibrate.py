@@ -174,6 +174,22 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # main loop's unclamped scaled_step; the tree's process delta is clamped after a stall).
     # Hooked only by a /10 session, like CG1's two: it adds no calibrator version.
     ("draw", ("draw",)),
+    # calibrator 11 (PM1, render-stream-11.md "As built (PM1)") -- the multimesh_* mutators: the
+    # instance buffer every CPUParticles2D sets each frame, its allocation and the per-instance
+    # setters. Hooked only by a /11 session (GRC_STREAM_VERSION=11), like CG1's: they add no
+    # calibrator version, and below /11 they are neither planned nor omitted.
+    ("multimesh_create", ("multimesh_create",)),
+    ("multimesh_allocate_data", ("multimesh_allocate_data",)),
+    ("multimesh_set_mesh", ("multimesh_set_mesh",)),
+    ("multimesh_instance_set_transform", ("multimesh_instance_set_transform",)),
+    ("multimesh_instance_set_transform_2d", ("multimesh_instance_set_transform_2d",)),
+    ("multimesh_instance_set_color", ("multimesh_instance_set_color",)),
+    ("multimesh_instance_set_custom_data", ("multimesh_instance_set_custom_data",)),
+    ("multimesh_set_custom_aabb", ("multimesh_set_custom_aabb",)),
+    ("multimesh_set_buffer", ("multimesh_set_buffer",)),
+    ("multimesh_set_buffer_interpolated", ("multimesh_set_buffer_interpolated",)),
+    ("multimesh_set_physics_interpolated", ("multimesh_set_physics_interpolated",)),
+    ("multimesh_set_visible_instances", ("multimesh_set_visible_instances",)),
 )
 
 ET_EXEC = 2

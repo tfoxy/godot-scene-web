@@ -4,7 +4,8 @@ Status: **design; codecs, validators and capture built** (W11-D, 2026-10-25; W11
 the C++ encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; W11b,
 2026-10-27: the capture emits /11 under `GRC_STREAM_VERSION=11`, see "As built (W11b): decisions";
 the receivers are W11c to W11e: GSW (W11c), the native receiver (W11d) and the web export (W11e)
-apply it). The measurements behind every number here are
+apply it; PM1, 2026-10-28: multimesh in the capture, the codecs, the validators and `golden-11/`,
+see "As built (PM1): decisions"). The measurements behind every number here are
 in [results/p3/w11-d.md](../results/p3/w11-d.md). /11 builds on render-stream/10
 ([render-stream-10.md](render-stream-10.md): CG1's back-buffer item state and P3-TM's
 `shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
@@ -371,7 +372,7 @@ With one change to align it with dynamic meshes: `buffer_f` follows `u8`'s rule 
 
 A multimesh buffer is state, one per entry, so T1 already covers it. The headless pre-draw pump
 and the particles RID shim stay **opt-in** (`GRC_PREDRAW_PUMP=1`, particles-multimesh-design.md
-"Headless shims"). Without the pump a headless host never calls `multimesh_set_buffer`, and its
+"Headless shims"), and PM1 builds neither ("As built (PM1)" rule 14). Without the pump a headless host never calls `multimesh_set_buffer`, and its
 multimeshes publish their adopted or creation buffer only. That is typed in the hook census, not
 silently wrong. GPU particles stay `/12`.
 
@@ -455,7 +456,7 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
 | `GRC_MESH_DYNAMIC` | `auto` (default at /11), `off`, `all` | classification. `off` gives the prune rule alone. Ignored below /11 |
 | `GRC_MESH_DYNAMIC_FRAMES` | 1–60, default 4 | K |
 | `GRC_MESH_DYNAMIC_MAX_BYTES` | default 65,536 | the largest mesh that may be dynamic |
-| `GRC_PREDRAW_PUMP` | `0` (default), `1` | headless only: emit `frame_pre_draw` before the snapshot (PM1) |
+| `GRC_PREDRAW_PUMP` | `0` (default), `1` | headless only: emit `frame_pre_draw` before the snapshot (not built; PM5, "As built (PM1)" rule 14) |
 | `RS_RECEIVER_PROTOCOL` | `…`, `11` | the native receiver and GSW offer `render-stream.11` |
 | `GRC_LIVE_CODING` | `zstd-base` (default), `zstd`, `off` | W11t: the live coding a /11 hello that offers `live_coding` gets ("As built (W11t)"). Nothing below /11, no file sink and no HTTP body is coded |
 
@@ -827,6 +828,165 @@ are the native receiver's, so the web export needed only its own file and live p
    rows per dynamic mesh, about 200). The resolved `unsupported` list is compared whole with the
    previous transaction's, and is walked entry by entry only when it differs (STS2: about 50
    entries, unchanged in almost every transaction).
+
+### As built (PM1): decisions
+
+PM1 adds multimesh to /11 ([results/p3/pm1.md](../results/p3/pm1.md)), without a version bump:
+/11 is unreleased, and the magic stays `GRSB`. These rules are the wire; where they refine
+particles-multimesh-design.md "/11: multimesh" or "Multimesh (PM1)" above, they win.
+
+1. **Optional keys.** A /11 transaction carries `multimeshes` only when it is non-empty, and
+   `removed_multimeshes` only when it is non-empty (so a full transaction never carries
+   `removed_multimeshes`). They sit right after `materials`, in that order, and before
+   `shader_time`: `…,"materials",["multimeshes"],["removed_multimeshes"],["shader_time"],"blocks"`.
+   An empty list under either key is `meta-schema` (one spelling per state), as is either key below
+   /11; `removed_multimeshes` in a full transaction is `patch-encoding`, like every removed list. A /11 stream that never holds a multimesh is therefore byte-identical, transaction for
+   transaction, to what it was before PM1 (P3-TM's `shader_time` is the precedent).
+2. **The entry**, keys in this order:
+
+   ```json
+   {"id":<int>=1>,"origin":"created"|"adopted","status":"ok"|"unsupported"|"freed",
+    "reason":null|<reason>,"version":<int>=1>,"mesh":<mesh id>|null,"format":"2d"|"3d",
+    "colors":<bool>,"custom":<bool>,"instances":<int>=0>,"visible":<int>=-1>,
+    "aabb_f":<int>|null,"buffer_f":<int>|null}
+   ```
+
+   - `id` has its own per-session counter from 1, never reused (like meshes).
+   - Reasons: `multimesh-3d` (`TRANSFORM_3D`), `multimesh-indirect` (`use_indirect`),
+     `multimesh-interpolated` (`multimesh_set_buffer_interpolated`, or
+     `multimesh_set_physics_interpolated(true)`), `unknown-mesh` (`set_mesh` names a mesh the
+     mirror never saw created), `payload-too-large` (instances × stride × 4 bytes over
+     `resources.max_payload_bytes`). An entry stays `unsupported` until it is re-allocated into a
+     supported shape (3d, indirect, too large) or freed (interpolated, unknown-mesh stay until a
+     re-allocate or a valid `set_mesh` respectively).
+   - `visible` is `multimesh_set_visible_instances`' value: -1 (all) or 0..`instances`.
+   - `mesh` is the multimesh's mesh id, or null when none is set.
+   - Shape rules (`multimesh-entry`):
+     - `ok`: `reason` null, `format` `"2d"`, `aabb_f` non-null, `visible` ≤ `instances`.
+     - `unsupported`: `reason` non-null, `aabb_f` non-null, `buffer_f` null.
+     - `freed`: `reason` null, `mesh` null, `format` `"2d"`, `colors` and `custom` false,
+       `instances` 0, `visible` -1, `aabb_f` and `buffer_f` null.
+   - `version` starts at 1 at `multimesh_create` and moves by 1 on every call the engine accepts
+     that changes the multimesh's state: any entry field, or the buffer's bytes (allocate always;
+     set_buffer and the three instance setters only when a float changes, by bit pattern, against
+     the mirror's shadow buffer; set_mesh, set_visible_instances, set_custom_aabb,
+     set_physics_interpolated only on a new value; set_buffer_interpolated and free always). An
+     idle `CPUParticles2D`, which re-sets an identical buffer every frame, therefore costs nothing.
+     It never decreases (`multimesh-version`, mirroring `mesh-version`), and an equal version over a
+     changed entry (a JSON field, the custom AABB or the buffer digest) is `multimesh-version` too.
+     The buffer serial moves whenever the shadow buffer's bytes change.
+   - A wrongly typed value in an entry (a bad reason or origin, `visible` below -1) is
+     `meta-schema`, as in `check_mesh`; `multimesh-entry` covers the shape rules only. Multimesh ids
+     are not covered by `id-reused`.
+3. **The `buffer_f` rule** (`multimesh-entry`): on an `ok` entry it is non-null in a full
+   transaction, for an entry new to the table, when the base entry was not `ok`, and when
+   `instances`, `format`, `colors` or `custom` differ from the base entry. Otherwise the capture
+   writes it non-null exactly when the multimesh's buffer serial moved between the connection's
+   base and its target, a function of (B, T); a validator cannot see the serial, so there it may be
+   either. A null `buffer_f` means "the floats you hold".
+4. **`mm_f32`** (type `f32`). Over the transaction's `multimeshes` in entry order, each entry
+   contributes its six custom-AABB floats at `aabb_f` (position then size; all zero means none set,
+   as a mesh's `f`), then, when `buffer_f` is non-null, its `instances × stride` buffer floats at
+   `buffer_f`, stride = 8 + 4·colors + 4·custom. `mm-offset`: every non-null offset equals the
+   running float count so far (from 0), and the block's `count` equals the final total. A float no
+   entry claims is `mm-offset` (W11a's rule 3 is the empty case). The buffer is Godot's own
+   `multimesh_set_buffer` layout for `TRANSFORM_2D` (per instance: `[xx, yx, 0, ox, xy, yy, 0, oy]`,
+   then colour RGBA, then custom RGBA), the host's floats bit for bit.
+5. **Check order inside a transaction** (each invalid vector fails one rule): per entry
+   `multimesh-entry` (shape, then the `buffer_f` rule), `multimesh-version` (its JSON half), then
+   `mm-offset`, then, once the transaction resolves, `multimesh-version`'s float half (custom AABB and
+   buffer digest at an equal version) and `multimesh-ref` (after `mesh-ref`). All of them run after
+   the mesh rules (W11a's rule 4).
+6. **`multimesh-ref`**: every `add_multimesh` command's `multimesh` names an entry of the
+   transaction's resolved multimesh table (any status, a `freed` tombstone included), and every
+   non-null `mesh` of a resolved multimesh entry names an entry of the resolved mesh table (any
+   status).
+7. **The command.** `{"op":"add_multimesh","multimesh":<id>,"tex":<id>|null}` (no floats, no `f`;
+   `tex` follows the texture rules of every /4 op with a `tex`). An `add_multimesh` naming a
+   multimesh RID the mirror never saw created is `{"op":"unsupported","name":"canvas_item_add_multimesh","reason":"unknown-multimesh"}`
+   in place, with its item-level entry `{"op":"canvas_item_add_multimesh","item":<id>,"reason":"unknown-multimesh"}`
+   (the ordinary unsupported-command entry). A multimesh that existed before the arm is unknown:
+   PM1 does not adopt multimeshes. One naming an `unsupported` multimesh stays `add_multimesh` and adds the derived
+   item-level entry `{"op":"canvas_item_add_multimesh","item":<id>,"reason":"unsupported-multimesh"}`,
+   as `unsupported-mesh` does for `add_mesh`; a `freed` tombstone adds none. Below /11 (and at /11 without the hooks planned) the
+   command is /10's `unsupported`/`unsupported-op`.
+8. **Session.** When the capture plans the multimesh hooks (/11 only), `features.ops` gains
+   `add_multimesh`, `features.resources` gains `multimesh`, and `features.observed_unsupported_ops`
+   loses `canvas_item_add_multimesh` (each list keeps its sorted order). An `add_multimesh` command
+   in a session whose `features.ops` lacks it is `meta-schema`. So the session record of a /11
+   capture with the hooks planned differs from before PM1 in exactly those three lists and in
+   `capture.hooks_planned`, which gains the twelve hook names. The features switch on only when all
+   twelve hooks are planned. A /10 connection of a /11 host sees /10's features, every
+   `add_multimesh` lowered to `unsupported`/`unsupported-op`, and `content_version`s digested over
+   that lowered list, so its bytes are what they were before PM1.
+9. **Publication** (capture). A multimesh is in a state's table when an `add_multimesh` command
+   of that state names it; a named multimesh that is freed is a `freed` tombstone while it is still
+   named. A patch lists the entries that are new or differ in any JSON value other than the two
+   offsets, plus a non-null `buffer_f` (rule 3) forces the entry in. It is removed
+   (`removed_multimeshes`, ascending, ids of the base table, never also in `multimeshes`) when no
+   command names it any more.
+10. **Decoded and resolved forms.** The decoded form keeps the keys verbatim, and `mm_f32` decodes
+    as a plain float array like every `f32` block. The resolved state (`render-stream-11-resolved/1`)
+    carries `"multimeshes"` right after `"materials"` only when the table is non-empty, entries
+    keyed `id, origin, status, reason, version, mesh, format, colors, custom, instances, visible,
+    custom_aabb, buffer_sha256`: `custom_aabb` the six floats (null for `freed`), `buffer_sha256`
+    the SHA-256 of the current buffer's little-endian f32 bytes (null unless `ok`; an `ok` entry
+    with 0 instances hashes the empty string). The resolved command is
+    `{"op":"add_multimesh","multimesh","tex"}`. Validators keep the digest, not the floats.
+11. **Sabotages** (`session.sabotage.kind`, legal only at /11, need `GRC_STREAM_VERSION=11`):
+
+    | kind | behaviour | caught by |
+    | ---- | --------- | --------- |
+    | `perturb-instance` | from `GRC_SABOTAGE_FRAME` on, the encoder adds 1.0 to the first buffer float of the first multimesh whose buffer it writes, at every transaction | `mm-wire` |
+    | `stale-buffer` | the first multimesh whose buffer changes at or after the frame keeps its serial from then on, so its patches leave `buffer_f` null over new floats | `mm-wire` |
+
+    `perturb-instance` skips an empty buffer. On a full sink the validators already reject it with
+    `multimesh-version` at its first frame (the floats change under an equal version), so g8mm
+    judges `mm-wire` on the patch sink, where the validators accept both sabotages.
+
+12. **The hook log** (`evidence/resources.jsonl`, `kind` `"multimesh"`). One line per hooked
+    `multimesh_*` call (`call`, `frame`, `rid`, the multimesh's wire `id` when known, `accepted`,
+    the call's own arguments; `set_buffer` adds `floats` and `sha256` of the floats it was given),
+    and one `"call":"state"` line per multimesh per host frame in which its version moved,
+    written when the frame is published: `version`, `instances`, `format`, `colors`, `custom`,
+    `visible`, `status`, `reason` and `buffer_sha256` of the mirror's shadow buffer. `mm-wire`
+    compares every transaction's resolved `buffer_sha256` with the newest `state` line at or before
+    its frame. As written: `call` is the RenderingServer method name (`free` for a free), `rid` a
+    decimal string, `id` and `version` null for an unknown RID, `format` the raw enum on
+    `multimesh_allocate_data` and `"2d"`/`"3d"` on `state` lines; a `state` line also carries
+    `mesh` (wire id), its `rid` is null once freed and its `buffer_sha256` null unless `ok`. A call
+    made between frame callbacks F−1 and F is stamped F and published in transaction F.
+    `counters.json` gains the twelve hook counts and `captured.multimesh.<call>`
+    `{mirrored, accepted, changed}`; `result.json` gains `gate8.multimesh{live, unknown, rejected,
+    unchanged}`.
+13. **The shadow models GLES3** (`drivers/gles3/storage/mesh_storage.cpp`), whatever the host's
+    driver. An allocate of an identical shape moves the version but keeps the buffer (GLES3 returns
+    early); a new shape zeroes it, clamps `visible` with `MIN` (-1 stays -1) and keeps the custom
+    AABB. A `set_buffer` whose size is not instances × stride, an index out of range, a setter of
+    the wrong format and a `visible` out of range are rejected (`accepted: false`, nothing moves),
+    even on the dummy server, which stores a wrong-size buffer unchecked. Reason priority: 3d,
+    indirect, interpolated, unknown-mesh, payload-too-large. A re-allocate clears the reason
+    `set_buffer_interpolated` set; `physics_interpolated(true)` keeps it until set false. A
+    `payload-too-large` entry keeps no shadow buffer, so each accepted buffer or setter call moves
+    its version. A freed mesh that a live multimesh names keeps its mesh-table tombstone.
+14. **Headless hosts.** The pre-draw pump and the particles RID shim are not built: they are PM5's,
+    and `GRC_PREDRAW_PUMP` is not parsed. Without `RenderingServer::draw` a headless host never
+    emits `frame_pre_draw`, so a `CPUParticles2D` there never calls `multimesh_set_buffer`; its
+    multimesh publishes its zero allocation buffer, and the hook census shows no `set_buffer` from
+    it (g8mm's `headless/capture` leg). Script-driven multimeshes publish normally. g8mm's
+    captures therefore run on a rendered host in a private headless gamescope, as g8c does.
+15. **Epoch.** A multimesh whose version moves makes the frame publish even when no command names
+    it, so an unnamed multimesh that keeps changing yields an empty patch each frame.
+16. **For PM2/PM3** (rs-core's receiver API): `ResolvedState.multimeshes`
+    (`state::Multimesh`: `stride()`, `drawn_instances()`, `buffer_sha256`), `Command::Multimesh
+    { multimesh, tex }`, `TxDelta.multimeshes_upserted`/`multimeshes_removed`, and
+    `Validator::multimesh_buffers() -> &[MmBufferRef]` (the buffers of the transaction just
+    accepted, in entry order; `MmBufferRef::bytes(record)` slices them; an `ok` entry not listed
+    kept its floats), the way `dynamic_bodies()` serves dynamic meshes. Until then the capi
+    planner counts each `add_multimesh` as `multimesh_commands_undrawn` (written only when
+    non-zero) and as an `unsupported_commands` row `multimesh-undrawn`; GSW's executor counts a
+    `multimesh-undrawn` shortcut. `write_state_godot` (the native dump) already carries
+    `multimeshes`, so PM2's `receiver.gd` dump must match it.
 
 ## Predicted cost (STS2, from the kept recordings)
 

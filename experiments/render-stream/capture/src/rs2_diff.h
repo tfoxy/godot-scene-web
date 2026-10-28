@@ -40,10 +40,41 @@ struct TxMeta {
   std::uint64_t seq = 0;
   std::uint64_t frame = 0;
   std::uint64_t base_seq = 0;  // patch only
+  // PM1 sabotage perturb-instance (render-stream-11.md "As built (PM1)" rule 11), /11 only.
+  bool perturb_instance = false;
 };
 Transaction make_full(const Snapshot &cur, const TxMeta &meta);
 Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta);
 Snapshot resolve(const Snapshot &base, const Transaction &txn);
+
+// ------------------------------------------------------------------ multimesh (/11, PM1)
+//
+// render-stream-11.md "As built (PM1): decisions". A /11 transaction carries the multimesh table
+// (make_full: every entry, every `ok` buffer; make_patch: rule 9's membership and rule 3's
+// buffer_f, decided from the entries' buffer serials, a function of (B, T) alone). Below /11 a
+// snapshot that holds multimesh commands is first lowered: make_full()/make_patch() call
+// lower_multimesh() on it themselves, so a /10 connection of a /11 host sees exactly what it saw
+// before PM1 (rule 7: "Below /11 ... the command is /10's unsupported/unsupported-op").
+
+// The command list as below /11: every add_multimesh, and every `unsupported` command named
+// canvas_item_add_multimesh (unknown-multimesh, unknown-texture, ...), becomes
+// {"op":"unsupported","name":"canvas_item_add_multimesh","reason":"unsupported-op"}. Returns
+// false (and leaves `out` untouched) when the list holds no such command.
+bool lower_multimesh_commands(const std::vector<Command> &commands, std::vector<Command> *out);
+
+// `state` as a connection below /11 sees it: no multimesh table, every item's commands lowered
+// (its content_version_below_v11 substituted where set), and the item-level entries of
+// canvas_item_add_multimesh replaced by one `unsupported-op` entry per item drawing one, in the
+// mirror's order (item id, then op, then reason). A state without multimesh commands is returned
+// unchanged.
+Snapshot lower_multimesh(const Snapshot &state);
+
+// Rule 8: features.ops gains "add_multimesh", features.resources "multimesh", and
+// features.observed_unsupported_ops loses "canvas_item_add_multimesh" (each list stays sorted).
+// unobserve_multimesh_features() is the inverse, for a /10 connection of a /11 host. Both are
+// idempotent.
+void observe_multimesh_features(Features *features);
+void unobserve_multimesh_features(Features *features);
 
 // ------------------------------------------------------------------ resource records (/11)
 //

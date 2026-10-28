@@ -6,19 +6,19 @@
       "file": "full.rs11",
       "hex": "full.hex",
       "decoded": "full.decoded.json",
-      "sha256": "a18ad546fc9b7ab9b11e84d7c1368b0426d86cceb3d7198e6e44b689c6d38092"
+      "sha256": "982599ef672f41e79ecc1f1c40ea25b7de772c2b331e38f1943e2efe1979bfc3"
     },
     {
       "file": "patch.rs11",
       "hex": "patch.hex",
       "decoded": "patch.decoded.json",
-      "sha256": "bc26134ddfd60d1b7822f30079c8840374cd2318908509fbef9443fac75b6e9f"
+      "sha256": "48b15fd2d58d088f960466c7ed569f2ce21e1b09990a01922662defd424c1f4f"
     },
     {
       "file": "inline.rs11",
       "hex": "inline.hex",
       "decoded": "inline.decoded.json",
-      "sha256": "7143a37215cd58aef00c59b7bb878fcbb2d1bc3c01ab78cdfeabbbf6c5017c13"
+      "sha256": "423e21d4e8a3706e40ba48acdaa9bc3c9a3c7d6b2f4bf8bd09200e1753db0679"
     }
   ],
   "resolved": "resolved.json",
@@ -346,6 +346,91 @@
         "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
         "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
       ]
+    },
+    {
+      "seq": 17,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 18,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 19,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 20,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
+    },
+    {
+      "seq": 21,
+      "names": [
+        "2caeb3ac168881aa04708631b7cc1427c452c1a0393d096451a9eef6841bc740",
+        "e65a0caf1a46175e39e501f3000016c9b56958648fda140874f93c9fcbd03fa9",
+        "010fa78f5252bba55d7f689e94974819078dbe444ca78233993e50f709184047",
+        "71b311777cc9812b1443591ca77bc8a8186b5269adc10fca7aff5c4818f9e510",
+        "77810bae65da7b6d99e913b2c9a73d1f11d4d2fd4b4c4e2b3c36fccf20e1f6ba",
+        "75fbf2c59e1204746839864e287467d049762bfbefd43add6a4eb2b7a1bd2203",
+        "9ecc93d4dea0bb489a9801d18d92f58d1095d88cc976d50029c1a21fd195f48e",
+        "d689749c279ef7eb9c13091e1703669d24a69332b06c8b93d8253dad122256a2",
+        "4285398666ce2fb9864bf79a22850c62f303b11d44f2f2811c96f77aa86f5501",
+        "c5389bc4c39e22a05e572659b3a045dbc76d8d88bb19ce177a0cd61c3b8f48b6",
+        "6fd80d9eb05486515b8bc16d087d412cf73d9ea7dbe033cc9b01a4d8a6683f22",
+        "2c874800cd97ba181708fd009b2ec9ab5c49e666c285a39427cf5f8ccf761310"
+      ]
     }
   ],
   "dynamic_bodies": [
@@ -491,6 +576,84 @@
       "code": "meta-schema",
       "version": 11,
       "description": "a full transaction's unsupported is null (legal in a patch only)"
+    },
+    {
+      "file": "invalid/mm-offset-wrong.rs11",
+      "code": "mm-offset",
+      "version": 11,
+      "description": "multimesh 2's buffer_f is 45, expected 44 (6 + 32 + 6 floats before it)"
+    },
+    {
+      "file": "invalid/mm-offset-short.rs11",
+      "code": "mm-offset",
+      "version": 11,
+      "description": "mm_f32 carries 51 floats (count 51), the multimeshes claim 52"
+    },
+    {
+      "file": "invalid/multimesh-entry.rs11",
+      "code": "multimesh-entry",
+      "version": 11,
+      "description": "multimesh 1 is ok with reason \"multimesh-3d\" (ok needs null)"
+    },
+    {
+      "file": "invalid/multimesh-entry-full-null.rs11",
+      "code": "multimesh-entry",
+      "version": 11,
+      "description": "a full transaction carries ok multimesh 1 with buffer_f null (its floats cut from mm_f32, later offsets moved down)"
+    },
+    {
+      "file": "invalid/multimesh-entry-shape-null.rs11",
+      "code": "multimesh-entry",
+      "version": 11,
+      "description": "seq 2 re-allocates multimesh 1 to 3 instances (a shape change) but leaves its buffer_f null"
+    },
+    {
+      "file": "invalid/multimesh-entry-unsupported-buffer.rs11",
+      "code": "multimesh-entry",
+      "version": 11,
+      "description": "multimesh 1 is unsupported (multimesh-interpolated, with its derived item entry) but carries buffer_f 6 and its floats"
+    },
+    {
+      "file": "invalid/multimesh-ref.rs11",
+      "code": "multimesh-ref",
+      "version": 11,
+      "description": "item 1 also draws add_multimesh 9, which has no multimesh entry"
+    },
+    {
+      "file": "invalid/multimesh-ref-mesh.rs11",
+      "code": "multimesh-ref",
+      "version": 11,
+      "description": "multimesh 1's mesh is 7, which has no mesh entry"
+    },
+    {
+      "file": "invalid/multimesh-version.rs11",
+      "code": "multimesh-version",
+      "version": 11,
+      "description": "seq 2 carries multimesh 1 (new floats) at version 2, below the base's 3"
+    },
+    {
+      "file": "invalid/multimesh-empty-key.rs11",
+      "code": "meta-schema",
+      "version": 11,
+      "description": "a transaction carries \"multimeshes\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/multimesh-removed-empty-key.rs11",
+      "code": "meta-schema",
+      "version": 11,
+      "description": "a patch carries \"removed_multimeshes\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/multimesh-feature.rs11",
+      "code": "meta-schema",
+      "version": 11,
+      "description": "item 1 draws add_multimesh in a session whose features.ops lacks add_multimesh (the session record from before PM1)"
+    },
+    {
+      "file": "invalid/multimesh-v10.rs10",
+      "code": "meta-schema",
+      "version": 10,
+      "description": "a render-stream/10 transaction (golden-10's mini scene) carries a \"multimeshes\" key, which exists only at /11"
     }
   ],
   "control": {

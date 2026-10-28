@@ -239,9 +239,10 @@ fn param(c: &mut Cur, params: &mut Vec<ParamMeta>, start: usize) -> O<()> {
     Some(())
 }
 
-fn command(c: &mut Cur, out: &mut Vec<CmdMeta>) -> O<()> {
+fn command(c: &mut Cur, out: &mut Vec<CmdMeta>, version: u8) -> O<()> {
     c.lit(b"{\"op\":")?;
-    let op = Op::parse(c.str()?)?;
+    // PM1: `add_multimesh` is an op from /11 only (the general path's unknown op below).
+    let op = Op::parse(c.str()?).filter(|&op| version >= 11 || op != Op::Multimesh)?;
     let mut m = CmdMeta::new(op);
     match op {
         Op::Rect | Op::Line | Op::Circle => {
@@ -320,11 +321,22 @@ fn command(c: &mut Cur, out: &mut Vec<CmdMeta>) -> O<()> {
             out.push(m);
             return Some(());
         }
+        Op::Multimesh => {
+            c.lit(b",\"multimesh\":")?;
+            m.mesh = c.id1()?;
+            c.lit(b",\"tex\":")?;
+            m.tex = c.opt_id1()?;
+            c.lit(b"}")?;
+            out.push(m);
+            return Some(());
+        }
         Op::Unsupported => {
             c.lit(b",\"name\":")?;
             m.name = Some(c.owned()?);
             c.lit(b",\"reason\":")?;
-            m.reason = c.enum_of(UnsupportedCmdReason::ALL, UnsupportedCmdReason::as_str)?;
+            m.reason = c
+                .enum_of(UnsupportedCmdReason::ALL, UnsupportedCmdReason::as_str)
+                .filter(|&r| version >= 11 || r != UnsupportedCmdReason::UnknownMultimesh)?;
             c.lit(b"}")?;
             out.push(m);
             return Some(());
@@ -642,6 +654,56 @@ fn material(c: &mut Cur, params: &mut Vec<ParamMeta>) -> O<MaterialMeta> {
 /// The fast path for a whole transaction meta: `Some(())` with `tx` filled exactly as
 /// `check_transaction` fills it, or `None` (then `tx` is garbage and the caller runs the general
 /// path, which clears it).
+/// /11: one `multimeshes[]` entry (`check_multimesh`'s schema).
+fn multimesh(c: &mut Cur) -> O<MultimeshMeta> {
+    c.lit(b"{\"id\":")?;
+    let id = c.id1()?;
+    c.lit(b",\"origin\":")?;
+    let origin = Origin::parse(c.one_of(MULTIMESH_ORIGINS)?)?;
+    c.lit(b",\"status\":")?;
+    let status = c.enum_of(EntryStatus::ALL, EntryStatus::as_str)?;
+    c.lit(b",\"reason\":")?;
+    let reason = if c.null() {
+        None
+    } else {
+        Some(c.one_of(MULTIMESH_REASONS)?)
+    };
+    c.lit(b",\"version\":")?;
+    let version = c.int_ge(1)?;
+    c.lit(b",\"mesh\":")?;
+    let mesh = c.opt_id1()?;
+    c.lit(b",\"format\":")?;
+    let format = c.enum_of(MultimeshFormat::ALL, MultimeshFormat::as_str)?;
+    c.lit(b",\"colors\":")?;
+    let colors = c.boolean()?;
+    c.lit(b",\"custom\":")?;
+    let custom = c.boolean()?;
+    c.lit(b",\"instances\":")?;
+    let instances = c.int_ge(0)?;
+    c.lit(b",\"visible\":")?;
+    let visible = c.int_ge(-1)?;
+    c.lit(b",\"aabb_f\":")?;
+    let aabb_f = if c.null() { None } else { Some(c.uint()?) };
+    c.lit(b",\"buffer_f\":")?;
+    let buffer_f = if c.null() { None } else { Some(c.uint()?) };
+    c.lit(b"}")?;
+    Some(MultimeshMeta {
+        id,
+        origin,
+        status,
+        reason,
+        version,
+        mesh,
+        format,
+        colors,
+        custom,
+        instances,
+        visible,
+        aabb_f,
+        buffer_f,
+    })
+}
+
 pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
     tx.clear();
     let v4 = version >= 4;
@@ -689,6 +751,8 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             let allowed = if v6 {
                 if item.is_none() {
                     SESSION_UNSUPPORTED_REASONS_V6
+                } else if version >= 11 {
+                    ITEM_UNSUPPORTED_REASONS_V11
                 } else {
                     ITEM_UNSUPPORTED_REASONS_V5
                 }
@@ -873,7 +937,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             None
         } else {
             let start = cmds.len() as u32;
-            c.list(|c| command(c, cmds))?;
+            c.list(|c| command(c, cmds, version))?;
             Some(Rng {
                 start,
                 end: cmds.len() as u32,
@@ -933,6 +997,25 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             materials.push(material(c, params)?);
             Some(())
         })?;
+    }
+    // PM1 (render-stream-11.md "As built (PM1)" rule 1): /11's optional `multimeshes` and
+    // `removed_multimeshes`, each non-empty when present (an empty list is the general path's
+    // `meta-schema`).
+    if version >= 11 && c.lit(b",\"multimeshes\":").is_some() {
+        let mms = &mut tx.multimeshes;
+        c.list(|c| {
+            mms.push(multimesh(c)?);
+            Some(())
+        })?;
+        if tx.multimeshes.is_empty() {
+            return None;
+        }
+    }
+    if version >= 11 && c.lit(b",\"removed_multimeshes\":").is_some() {
+        ints(c, &mut tx.removed_multimeshes)?;
+        if tx.removed_multimeshes.is_empty() {
+            return None;
+        }
     }
     // P3-TM: /10's optional `shader_time` (render-stream-10.md "Shader time").
     if v10 && c.lit(b",\"shader_time\":{\"f\":").is_some() {

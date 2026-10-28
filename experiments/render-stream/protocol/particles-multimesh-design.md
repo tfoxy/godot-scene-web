@@ -1,6 +1,9 @@
 # Particles and multimesh over render-stream (P3-PM design)
 
-Status: design record, 2026-10-25, written with P3-PM. Nothing here is built yet. The measurements
+Status: design record, 2026-10-25, written with P3-PM. PM1 (2026-10-28) built the multimesh capture
+and wire at /11 (render-stream-11.md "As built (PM1): decisions", which win where they differ from
+this sketch; [results/p3/pm1.md](../results/p3/pm1.md)); the receivers (PM2, PM3) and GPU particles
+are not built yet. The measurements
 behind every STS2 number are in [results/p3/p3-pm.md](../results/p3/p3-pm.md). Source citations
 are `path:line` in the pinned `../godot-4.5.1-stable` checkout. Gates 5, 5.5 and 8 typed
 `canvas_item_add_multimesh` and `canvas_item_add_particles` as `unsupported` and listed them under

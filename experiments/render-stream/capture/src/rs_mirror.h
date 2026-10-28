@@ -105,6 +105,11 @@ struct MirrorStats {
   std::uint64_t meshes_dynamic = 0;        // dynamic mesh entries now
   std::uint64_t mesh_promotions = 0;       // meshes made dynamic so far
   std::uint64_t mesh_content_changes = 0;  // content changes counted (hook calls)
+  // PM1 (render-stream/11 with the multimesh hooks only; zero otherwise).
+  std::uint64_t live_multimeshes = 0;     // multimesh table entries now, tombstones included
+  std::uint64_t multimesh_unknown = 0;    // a multimesh tap naming a RID the table does not know
+  std::uint64_t multimesh_rejected = 0;   // taps the engine refuses (GLES3's checks): no change
+  std::uint64_t multimesh_unchanged = 0;  // accepted taps that changed nothing (an idle emitter)
   // Gate 5.5 (G55d).
   std::uint64_t live_shaders = 0;
   std::uint64_t live_materials = 0;
@@ -369,6 +374,97 @@ class Mirror {
     std::uint64_t stale_dynamic_frame = 0;  // 0: off
   };
   void set_v11(const V11Options &options);
+
+  // --- multimeshes (PM1; render-stream-11.md "As built (PM1): decisions") -------------------
+  //
+  // Set once before arming (survives reset(), like set_v11). `enabled` exactly when the session is
+  // /11 and the capture planned the twelve multimesh hooks (hooks.h multimesh_hooks_planned()):
+  // then add_multimesh records the /11 command and the snapshots carry the multimesh table;
+  // disabled, every tap below is a no-op and every snapshot is what it was before PM1.
+  //
+  // The table keeps a shadow of each multimesh as GLES3's mesh storage holds it
+  // (drivers/gles3/storage/mesh_storage.cpp _multimesh_*), in multimesh_set_buffer's own float
+  // layout (per instance the transform, 8 floats for 2d and 12 for 3d, then colour RGBA when
+  // colors, then custom RGBA when custom: GLES3's half-float packing is its own, not the wire's).
+  // A call the engine refuses (an unknown multimesh, a size-mismatched set_buffer, an index out of
+  // range, a setter of the wrong format or a format the multimesh does not use, a visible count
+  // outside -1..instances, a negative instance count or an unknown format) changes nothing.
+  // `version` starts at 1 and moves by 1 on every accepted call that changes the state (rule 2):
+  // allocate always; set_buffer and the instance setters only when a float changes by bit
+  // pattern; set_mesh, set_visible_instances, set_custom_aabb and set_physics_interpolated only on
+  // a new value; set_buffer_interpolated and free always. The buffer serial moves whenever the
+  // shadow's bytes change (and, under `stale_buffer_frame`, never again for the first multimesh
+  // whose buffer changes at or after that frame: sabotage stale-buffer). A multimesh whose buffer
+  // would exceed `max_payload_bytes` keeps no shadow (`payload-too-large`, every accepted
+  // buffer call then moves the version). allocate_data with GLES3's identical shape keeps the
+  // buffer (GLES3 returns early), otherwise the buffer is zeros and `visible` is clamped to the
+  // new count (MIN, so -1 stays -1); it clears multimesh_set_buffer_interpolated's reason.
+  struct MultimeshOptions {
+    bool enabled = false;
+    std::uint64_t max_payload_bytes = 64ull << 20;  // resources.max_payload_bytes
+    std::uint64_t stale_buffer_frame = 0;           // 0: off
+    bool state_notes = false;  // keep a MultimeshStateNote per moved version (the hook log's)
+  };
+  void set_multimesh(const MultimeshOptions &options);
+  const MultimeshOptions &multimesh_options() const { return mm_options_; }
+
+  // What one multimesh tap did: the hook log's `id` and `accepted` (rs_resource_log.h).
+  struct MultimeshCall {
+    bool known = false;     // the RID names a live multimesh of the table
+    std::uint32_t id = 0;   // its wire id (0 when unknown)
+    bool accepted = false;  // the engine accepts the call (false for an unknown RID too)
+    bool changed = false;   // the version moved
+    bool omitted = false;   // the omit-op sabotage dropped it from the mirror
+    std::uint64_t version = 0;  // the version after the call (0 when unknown)
+  };
+  MultimeshCall multimesh_create(std::uint64_t rid, std::uint64_t frame);
+  // `format` is RS::MultimeshTransformFormat (0 2d, 1 3d).
+  MultimeshCall multimesh_allocate_data(std::uint64_t rid, std::int32_t instances,
+                                        std::int32_t format, bool colors, bool custom,
+                                        bool indirect, std::uint64_t frame);
+  MultimeshCall multimesh_set_mesh(std::uint64_t rid, std::uint64_t mesh, std::uint64_t frame);
+  // Transform3D as the engine lays it out (basis rows, each followed by its origin component).
+  MultimeshCall multimesh_instance_set_transform(std::uint64_t rid, std::int32_t index,
+                                                 const std::array<float, 12> &transform,
+                                                 std::uint64_t frame);
+  MultimeshCall multimesh_instance_set_transform_2d(std::uint64_t rid, std::int32_t index,
+                                                    const rs2::Xform &transform,
+                                                    std::uint64_t frame);
+  MultimeshCall multimesh_instance_set_color(std::uint64_t rid, std::int32_t index,
+                                             const rs2::Color4 &color, std::uint64_t frame);
+  MultimeshCall multimesh_instance_set_custom_data(std::uint64_t rid, std::int32_t index,
+                                                   const rs2::Color4 &color, std::uint64_t frame);
+  MultimeshCall multimesh_set_custom_aabb(std::uint64_t rid, const std::array<float, 6> &aabb,
+                                          std::uint64_t frame);
+  MultimeshCall multimesh_set_buffer(std::uint64_t rid, const float *data, std::size_t count,
+                                     std::uint64_t frame);
+  MultimeshCall multimesh_set_buffer_interpolated(std::uint64_t rid, const float *data,
+                                                  std::size_t count, std::size_t prev_count,
+                                                  std::uint64_t frame);
+  MultimeshCall multimesh_set_physics_interpolated(std::uint64_t rid, bool interpolated,
+                                                   std::uint64_t frame);
+  MultimeshCall multimesh_set_visible_instances(std::uint64_t rid, std::int32_t visible,
+                                                std::uint64_t frame);
+  // free() of a multimesh RID (free_rid's multimesh branch, also reachable through free_rid):
+  // version + 1, a `freed` tombstone while an add_multimesh names it, gone otherwise.
+  MultimeshCall multimesh_free(std::uint64_t rid, std::uint64_t frame);
+  bool knows_multimesh(std::uint64_t rid) const;
+  // canvas_item_add_multimesh at /11 (rule 7): {"op":"add_multimesh","multimesh","tex"} (`tex`
+  // per D11); a multimesh RID the table does not know becomes an `unsupported` command with
+  // `unknown-multimesh`. Bumps content_version like every command. Only when enabled (the hook
+  // records /10's unsupported-op command otherwise).
+  void add_multimesh(std::uint64_t item, std::uint64_t multimesh, std::uint64_t texture,
+                     std::uint64_t frame);
+  // Rule 12's `state` lines: one per multimesh whose version moved since its last note, taken at
+  // each snapshot (with `state_notes`), stamped with the snapshot's frame. `entry` is the
+  // multimesh as a table would carry it; `shadow` its shadow buffer (null when it keeps none).
+  struct MultimeshStateNote {
+    std::uint64_t frame = 0;
+    std::uint64_t rid = 0;  // 0 once freed
+    rs2::MultimeshEntry entry;
+    std::shared_ptr<const std::vector<float>> shadow;
+  };
+  std::vector<MultimeshStateNote> take_multimesh_states();
 
   // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
   //
@@ -687,6 +783,7 @@ class Mirror {
     bool cv_digest_set = false;
     std::uint64_t cv_digest_of = 0;
     std::uint64_t cv_digest = 0;
+    std::uint64_t cv_digest_below = 0;  // PM1: the lowered list's digest (0: no multimesh command)
     // G55d (render-stream-5.md "Item"): the last canvas_item_set_material named a non-null RID
     // the material table does not know -- `material: null` plus the derived `unknown-material`.
     bool unknown_material = false;
@@ -826,6 +923,29 @@ class Mirror {
     };
     mutable WireParams wire;
   };
+  // One multimesh (PM1), the shadow of GLES3's MultiMesh.
+  struct Multimesh {
+    std::uint32_t id = 0;
+    std::uint64_t rid = 0;  // 0 once freed (a tombstone)
+    bool freed = false;
+    std::uint64_t version = 1;
+    std::int32_t instances = 0;
+    std::int32_t format = 0;  // RS::MultimeshTransformFormat
+    bool colors = false;
+    bool custom = false;
+    bool indirect = false;
+    std::int32_t visible = -1;
+    std::uint64_t mesh_rid = 0;   // the last set_mesh RID (0: none)
+    std::uint32_t mesh_id = 0;    // its mesh-table id (0: none, or unknown)
+    bool unknown_mesh = false;    // mesh_rid names no mesh the table knew at set_mesh
+    std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    bool physics_interpolated = false;
+    bool buffer_interpolated = false;  // a set_buffer_interpolated since the last allocate
+    bool too_large = false;            // instances x stride x 4 > max_payload_bytes: no shadow
+    std::shared_ptr<std::vector<float>> buffer;  // the shadow (null when too_large or freed)
+    std::uint64_t buffer_serial = 1;
+    std::uint64_t noted_version = 0;  // the version of its last state note
+  };
   enum class Kind : std::uint8_t { Canvas, Item };
   struct Target {
     Kind kind;
@@ -903,6 +1023,25 @@ class Mirror {
   void mesh_changed(Mesh *mesh, std::uint64_t frame);
   // W11b: promotes `mesh` at the snapshot when V11Options says so.
   void classify_mesh(Mesh *mesh);
+  // Multimeshes (PM1).
+  Multimesh *find_multimesh(std::uint64_t rid);
+  // A multimesh tap's prologue: the entry (null: counted unknown) and omit-op (out->omitted).
+  Multimesh *multimesh_for(std::uint64_t rid, const char *op, std::uint64_t frame,
+                           MultimeshCall *out);
+  // Floats per instance in the shadow (the engine's set_buffer layout for the format).
+  static std::uint32_t multimesh_stride(const Multimesh &mm);
+  bool multimesh_referenced(std::uint32_t id) const;
+  // One accepted change of `mm` (version + 1, the epoch, the result).
+  void multimesh_moved(Multimesh *mm, MultimeshCall *out);
+  // The shadow's bytes changed at `frame`: the serial moves (stale-buffer aside).
+  void multimesh_buffer_moved(Multimesh *mm, std::uint64_t frame);
+  // A writable shadow, copied first when a published snapshot still shares it.
+  std::vector<float> *multimesh_writable(Multimesh *mm);
+  // Patches `count` floats at `offset` of instance `index`'s shadow; true when a bit changed.
+  bool multimesh_patch(Multimesh *mm, std::int32_t index, std::uint32_t offset,
+                       const float *values, std::uint32_t count, std::uint64_t frame);
+  rs2::MultimeshEntry wire_multimesh(const Multimesh &mm) const;
+  void note_multimesh(const Multimesh &mm, std::uint64_t frame);
   // Shaders and materials (G55d).
   Shader *find_shader(std::uint64_t rid);
   Material *find_material(std::uint64_t rid);
@@ -971,6 +1110,13 @@ class Mirror {
   std::map<std::uint32_t, Mesh> meshes_;  // ordered by id, tombstones included (G5e)
   std::unordered_map<std::uint64_t, std::uint32_t> mesh_by_rid_;
   std::uint32_t next_mesh_id_ = 1;
+  // PM1: multimeshes (tombstones included), the options (survive reset()) and the state notes.
+  std::map<std::uint32_t, Multimesh> multimeshes_;
+  std::unordered_map<std::uint64_t, std::uint32_t> multimesh_by_rid_;
+  std::uint32_t next_multimesh_id_ = 1;
+  MultimeshOptions mm_options_;
+  std::uint32_t stale_buffer_multimesh_ = 0;  // stale-buffer: the frozen multimesh (0: none yet)
+  std::vector<MultimeshStateNote> multimesh_notes_;
   // G55d: shaders and materials (no tombstones, D5).
   std::map<std::uint32_t, Shader> shaders_;
   std::unordered_map<std::uint64_t, std::uint32_t> shader_by_rid_;
@@ -1011,6 +1157,7 @@ void mirror_set_perturb_glyph(std::uint64_t from_frame);
 void mirror_set_perturb_vertex(std::uint64_t from_frame);
 void mirror_set_perturb_shader(std::uint64_t from_frame);
 void mirror_set_shader_policy(rs2::ShaderPolicy policy);
+void mirror_set_multimesh(const Mirror::MultimeshOptions &options);
 std::uint64_t mirror_epoch();
 Captured mirror_snapshot(std::uint64_t seq, std::uint64_t frame);
 MirrorStats mirror_stats();

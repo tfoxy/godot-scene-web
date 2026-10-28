@@ -230,8 +230,17 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     "cv-churn",
     "stale-dynamic",
     "keep-carried",
+    // New at /11 with PM1 (render-stream-11.md "As built (PM1)" rule 11).
+    "perturb-instance",
+    "stale-buffer",
 ];
-const SABOTAGE_V11_ONLY: &[&str] = &["cv-churn", "stale-dynamic", "keep-carried"];
+const SABOTAGE_V11_ONLY: &[&str] = &[
+    "cv-churn",
+    "stale-dynamic",
+    "keep-carried",
+    "perturb-instance",
+    "stale-buffer",
+];
 const SABOTAGE_V8_ONLY: &[&str] = &[
     "adopt-skip-state",
     "adopt-no-redraw",
@@ -400,6 +409,32 @@ const ADD_NINE_PATCH_KEYS: &[&str] = &["op", "tex", "x_axis", "y_axis", "draw_ce
 const ADD_MESH_KEYS: &[&str] = &["op", "mesh", "tex", "f"];
 const ADD_SET_TRANSFORM_KEYS: &[&str] = &["op", "f"];
 const ADD_CLIP_IGNORE_KEYS: &[&str] = &["op", "ignore"];
+// render-stream-11.md "As built (PM1)" rule 7: no floats, so no `f`.
+const ADD_MULTIMESH_KEYS: &[&str] = &["op", "multimesh", "tex"];
+// render-stream-11.md "As built (PM1)" rule 2.
+const MULTIMESH_KEYS: &[&str] = &[
+    "id",
+    "origin",
+    "status",
+    "reason",
+    "version",
+    "mesh",
+    "format",
+    "colors",
+    "custom",
+    "instances",
+    "visible",
+    "aabb_f",
+    "buffer_f",
+];
+pub const MULTIMESH_REASONS: &[&str] = &[
+    "multimesh-3d",
+    "multimesh-indirect",
+    "multimesh-interpolated",
+    "unknown-mesh",
+    "payload-too-large",
+];
+const MULTIMESH_ORIGINS: &[&str] = &["created", "adopted"];
 const TEXTURE_KEYS: &[&str] = &[
     "id",
     "origin",
@@ -618,6 +653,23 @@ const ITEM_UNSUPPORTED_REASONS_V5: &[&str] = &[
     "unsupported-material",
     "unknown-material",
     "param-type",
+];
+/// render-stream-11.md "As built (PM1)" rule 7: /11 adds the multimesh command and derived reasons.
+const ITEM_UNSUPPORTED_REASONS_V11: &[&str] = &[
+    "unsupported-op",
+    "unsupported-state",
+    "draw-index-tie",
+    "unknown-texture",
+    "unsupported-texture",
+    "canvas-texture-headless",
+    "unknown-mesh",
+    "skinned-geometry",
+    "unsupported-mesh",
+    "unsupported-material",
+    "unknown-material",
+    "param-type",
+    "unknown-multimesh",
+    "unsupported-multimesh",
 ];
 const SESSION_UNSUPPORTED_REASONS_V5: &[&str] = &[
     "non-root-viewport",
@@ -1768,6 +1820,8 @@ pub enum Op {
     Mesh,
     SetTransform,
     ClipIgnore,
+    /// /11 only (render-stream-11.md "As built (PM1)" rule 7).
+    Multimesh,
     Unsupported,
 }
 
@@ -1789,6 +1843,7 @@ impl Op {
             b"add_mesh" => Op::Mesh,
             b"add_set_transform" => Op::SetTransform,
             b"add_clip_ignore" => Op::ClipIgnore,
+            b"add_multimesh" => Op::Multimesh,
             b"unsupported" => Op::Unsupported,
             _ => return None,
         })
@@ -1810,6 +1865,7 @@ impl Op {
             Op::Mesh => "add_mesh",
             Op::SetTransform => "add_set_transform",
             Op::ClipIgnore => "add_clip_ignore",
+            Op::Multimesh => "add_multimesh",
             Op::Unsupported => "unsupported",
         }
     }
@@ -1833,6 +1889,7 @@ pub struct CmdMeta {
     pub outline: i64,
     pub i: u64,
     pub f: u64,
+    /// `add_mesh`'s mesh, or `add_multimesh`'s multimesh.
     pub mesh: Id,
     pub x_axis: Axis,
     pub y_axis: Axis,
@@ -1881,7 +1938,7 @@ impl CmdMeta {
             Op::NinePatch => 16,
             Op::Mesh => 10,
             Op::SetTransform => 6,
-            Op::ClipIgnore | Op::Unsupported => 0,
+            Op::ClipIgnore | Op::Multimesh | Op::Unsupported => 0,
         }
     }
 }
@@ -1958,6 +2015,37 @@ pub struct MeshMeta {
     pub surfaces: Vec<MeshSurface>,
 }
 
+/// /11: one `multimeshes[]` entry (render-stream-11.md "As built (PM1)" rule 2), keys verbatim.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MultimeshMeta {
+    pub id: Id,
+    pub origin: Origin,
+    pub status: EntryStatus,
+    pub reason: Option<&'static str>,
+    pub version: i64,
+    pub mesh: Option<Id>,
+    pub format: MultimeshFormat,
+    pub colors: bool,
+    pub custom: bool,
+    pub instances: i64,
+    pub visible: i64,
+    /// Offset of the six custom-AABB floats in `mm_f32`.
+    pub aabb_f: Option<u64>,
+    /// Offset of the `instances × stride` buffer floats in `mm_f32` (`None`: "the floats you
+    /// hold").
+    pub buffer_f: Option<u64>,
+}
+
+impl MultimeshMeta {
+    pub fn stride(&self) -> u64 {
+        crate::state::multimesh_stride(self.colors, self.custom)
+    }
+    /// The buffer's float count, `instances × stride` (saturating).
+    pub fn buffer_floats(&self) -> u64 {
+        (self.instances.max(0) as u64).saturating_mul(self.stride())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MaterialMeta {
     pub id: Id,
@@ -2000,6 +2088,8 @@ pub struct TxMeta {
     pub removed_meshes: Vec<i64>,
     pub removed_shaders: Vec<i64>,
     pub removed_materials: Vec<i64>,
+    /// /11: `removed_multimeshes` (absent when empty).
+    pub removed_multimeshes: Vec<i64>,
     pub canvases: Vec<CanvasMeta>,
     pub items: Vec<ItemMeta>,
     pub cmds: Vec<CmdMeta>,
@@ -2009,6 +2099,8 @@ pub struct TxMeta {
     pub meshes: Vec<MeshMeta>,
     pub shaders: Vec<Shader>,
     pub materials: Vec<MaterialMeta>,
+    /// /11: `multimeshes` (absent when empty).
+    pub multimeshes: Vec<MultimeshMeta>,
     pub blocks: Vec<BlockDesc>,
 }
 
@@ -2025,6 +2117,7 @@ impl TxMeta {
         self.removed_meshes.clear();
         self.removed_shaders.clear();
         self.removed_materials.clear();
+        self.removed_multimeshes.clear();
         self.canvases.clear();
         self.items.clear();
         self.cmds.clear();
@@ -2034,6 +2127,7 @@ impl TxMeta {
         self.meshes.clear();
         self.shaders.clear();
         self.materials.clear();
+        self.multimeshes.clear();
         self.blocks.clear();
     }
     pub fn encoding(&self) -> Encoding {
@@ -2731,12 +2825,16 @@ fn check_material(
 }
 
 /// One command of an item (inside `checkTransactionSchema`'s items loop).
-fn check_command(ck: &mut Ck, cmd: Value) -> Result<CmdMeta, Error> {
+fn check_command(ck: &mut Ck, cmd: Value, version: u8) -> Result<CmdMeta, Error> {
     if ck.doc.obj(cmd).is_none() {
         return Err(ck.schema("a commands[] entry is not an object"));
     }
     let op_v = ck.doc.get(cmd, "op");
-    let op = op_v.and_then(|v| ck.string(v)).and_then(Op::parse);
+    // render-stream-11.md "As built (PM1)" rule 7: `add_multimesh` is an op from /11 only.
+    let op = op_v
+        .and_then(|v| ck.string(v))
+        .and_then(Op::parse)
+        .filter(|&op| version >= 11 || op != Op::Multimesh);
     let Some(op) = op else {
         let shown = op_v
             .map(|v| {
@@ -2835,6 +2933,11 @@ fn check_command(ck: &mut Ck, cmd: Value) -> Result<CmdMeta, Error> {
                 let f = ck.fields(cmd, ADD_CLIP_IGNORE_KEYS)?;
                 c.b1 = ck.boolean(f.at(1))?;
             }
+            Op::Multimesh => {
+                let f = ck.fields(cmd, ADD_MULTIMESH_KEYS)?;
+                c.mesh = ck.id1(f.at(1))?;
+                c.tex = ck.opt_id1(f.at(2))?;
+            }
             Op::Unsupported => {
                 let f = ck.fields(cmd, UNSUPPORTED_CMD_KEYS)?;
                 ck.string(f.at(1))?;
@@ -2843,7 +2946,8 @@ fn check_command(ck: &mut Ck, cmd: Value) -> Result<CmdMeta, Error> {
                     f.at(2),
                     UnsupportedCmdReason::ALL,
                     UnsupportedCmdReason::as_str,
-                )?;
+                )
+                .filter(|&r| version >= 11 || r != UnsupportedCmdReason::UnknownMultimesh)?;
                 // Deviation: a name with a lone surrogate cannot live in state.rs (reported here).
                 c.name = Some(ck.owned(f.at(1))?);
             }
@@ -2873,16 +2977,28 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     // P3-TM (render-stream-10.md "Shader time"): /10's optional `shader_time`, right before
     // `blocks`.
     let has_time = version >= 10 && ck.has_key(meta, "shader_time");
+    // PM1 (render-stream-11.md "As built (PM1)" rule 1): /11's optional `multimeshes` and
+    // `removed_multimeshes`, right after `materials` and before `shader_time`. Below /11 either key
+    // is `meta-schema` (the key list does not admit it).
+    let has_mm = version >= 11 && ck.has_key(meta, "multimeshes");
+    let has_rm = version >= 11 && ck.has_key(meta, "removed_multimeshes");
     let mut keys_buf: Vec<&str>;
-    let keys: &[&str] = if has_unknown || has_time {
+    let keys: &[&str] = if has_unknown || has_time || has_mm || has_rm {
         keys_buf = base.to_vec();
         if has_unknown {
             let at = keys_buf.iter().position(|&k| k == "unsupported").unwrap() + 1;
             keys_buf.insert(at, "unknown_items");
         }
-        if has_time {
-            let at = keys_buf.iter().position(|&k| k == "blocks").unwrap();
-            keys_buf.insert(at, "shader_time");
+        let mut at = keys_buf.iter().position(|&k| k == "blocks").unwrap();
+        for (on, k) in [
+            (has_mm, "multimeshes"),
+            (has_rm, "removed_multimeshes"),
+            (has_time, "shader_time"),
+        ] {
+            if on {
+                keys_buf.insert(at, k);
+                at += 1;
+            }
         }
         &keys_buf
     } else {
@@ -2891,12 +3007,14 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     let Some(f) = ck.fields(meta, keys) else {
         return Err(ck.schema("transaction has the wrong top-level keys or order"));
     };
-    // Field positions (the optional unknown_items shifts every later key by one).
+    // Field positions (the optional unknown_items shifts every later key by one; the optional keys
+    // before `blocks` shift it).
     let shift = has_unknown as usize;
+    let before_blocks = has_time as usize + has_mm as usize + has_rm as usize;
     let pos = |name: &str| -> usize {
         let i = base.iter().position(|&k| k == name).unwrap();
         let i = if i >= 8 { i + shift } else { i };
-        i + (has_time && name == "blocks") as usize
+        i + if name == "blocks" { before_blocks } else { 0 }
     };
     if has_unknown {
         let u = (|| {
@@ -3000,6 +3118,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         let allowed = if v6 {
             if item.is_none() {
                 SESSION_UNSUPPORTED_REASONS_V6
+            } else if version >= 11 {
+                ITEM_UNSUPPORTED_REASONS_V11
             } else {
                 ITEM_UNSUPPORTED_REASONS_V5
             }
@@ -3258,7 +3378,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         if let Some(cmds) = ck.arr(cmds_v) {
             let start = tx.cmds.len() as u32;
             for &cmd in cmds {
-                let c = check_command(ck, cmd)?;
+                let c = check_command(ck, cmd, version)?;
                 tx.cmds.push(c);
             }
             it.commands = Some(Rng {
@@ -3301,6 +3421,32 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             tx.materials.push(m);
         }
     }
+    if has_mm {
+        let at = keys.iter().position(|&k| k == "multimeshes").unwrap();
+        let Some(mms) = ck.arr(f.at(at)) else {
+            return Err(ck.schema("\"multimeshes\" is not an array"));
+        };
+        if mms.is_empty() {
+            return Err(ck.schema(
+                "\"multimeshes\" is empty (an empty table is the absent key)",
+            ));
+        }
+        for &m in mms {
+            let m = check_multimesh(ck, m)?;
+            tx.multimeshes.push(m);
+        }
+    }
+    if has_rm {
+        let at = keys.iter().position(|&k| k == "removed_multimeshes").unwrap();
+        if !ck.int_array(f.at(at), &mut tx.removed_multimeshes) {
+            return Err(ck.schema("\"removed_multimeshes\" is not an array of integers"));
+        }
+        if tx.removed_multimeshes.is_empty() {
+            return Err(ck.schema(
+                "\"removed_multimeshes\" is empty (an empty list is the absent key)",
+            ));
+        }
+    }
     if has_time {
         let at = keys.iter().position(|&k| k == "shader_time").unwrap();
         let t = (|| {
@@ -3325,6 +3471,81 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         &mut tx.blocks,
     )?;
     Ok(())
+}
+
+/// /11: one `multimeshes[]` entry's schema (render-stream-11.md "As built (PM1)" rule 2). Key set,
+/// order and value types are `meta-schema`; the shape rules are the validator's `multimesh-entry`.
+fn check_multimesh(ck: &mut Ck, m: Value) -> Result<MultimeshMeta, Error> {
+    let err = |ck: &Ck, d: &str| ck.schema(format!("a multimeshes[] entry {d}"));
+    let Some(f) = ck.fields(m, MULTIMESH_KEYS) else {
+        return Err(err(ck, "has the wrong keys"));
+    };
+    let Some(id) = ck.id1(f.at(0)) else {
+        return Err(err(ck, "\"id\" is not an integer >= 1"));
+    };
+    let Some(origin) = ck.one_of_str(f.at(1), MULTIMESH_ORIGINS).and_then(Origin::parse) else {
+        return Err(err(ck, "\"origin\" must be \"created\" or \"adopted\""));
+    };
+    let Some(status) = enum_of(ck, f.at(2), EntryStatus::ALL, EntryStatus::as_str) else {
+        return Err(err(ck, "has an invalid status"));
+    };
+    let reason = if ck.null(f.at(3)) {
+        None
+    } else if let Some(r) = ck.one_of_str(f.at(3), MULTIMESH_REASONS) {
+        Some(r)
+    } else {
+        return Err(err(
+            ck,
+            "\"reason\" is neither null nor a valid multimesh reason",
+        ));
+    };
+    let Some(version) = ck.int_ge(f.at(4), 1) else {
+        return Err(err(ck, "\"version\" is not an integer >= 1"));
+    };
+    let Some(mesh) = ck.opt_id1(f.at(5)) else {
+        return Err(err(ck, "\"mesh\" is neither null nor an integer >= 1"));
+    };
+    let Some(format) = enum_of(ck, f.at(6), MultimeshFormat::ALL, MultimeshFormat::as_str) else {
+        return Err(err(ck, "\"format\" must be \"2d\" or \"3d\""));
+    };
+    let (Some(colors), Some(custom)) = (ck.boolean(f.at(7)), ck.boolean(f.at(8))) else {
+        return Err(err(ck, "\"colors\"/\"custom\" is not a boolean"));
+    };
+    let Some(instances) = ck.int_ge(f.at(9), 0) else {
+        return Err(err(ck, "\"instances\" is not an integer >= 0"));
+    };
+    let Some(visible) = ck.int_ge(f.at(10), -1) else {
+        return Err(err(ck, "\"visible\" is not an integer >= -1"));
+    };
+    let offset = |i: usize, k: &str| -> Result<Option<u64>, Error> {
+        if ck.null(f.at(i)) {
+            Ok(None)
+        } else if let Some(x) = ck.uint(f.at(i)) {
+            Ok(Some(x))
+        } else {
+            Err(err(
+                ck,
+                &format!("\"{k}\" is neither null nor a non-negative integer"),
+            ))
+        }
+    };
+    let aabb_f = offset(11, "aabb_f")?;
+    let buffer_f = offset(12, "buffer_f")?;
+    Ok(MultimeshMeta {
+        id,
+        origin,
+        status,
+        reason,
+        version,
+        mesh,
+        format,
+        colors,
+        custom,
+        instances,
+        visible,
+        aabb_f,
+        buffer_f,
+    })
 }
 
 // ------------------------------------------------------------------------------------- resource, end

@@ -305,6 +305,9 @@ struct LiveConfig {
   // W11b (render-stream-11.md "Sabotage kinds"): `keep-carried` -- a /11 connection keeps /10's
   // lifelong carried set (rs2_diff.h RecordPlanner), so a hash that returns is never re-carried.
   bool keep_carried = false;
+  // PM1 (render-stream-11.md "As built (PM1)" rule 11): `perturb-instance` -- from this frame on,
+  // a /11 connection's encoder adds 1.0 to the first multimesh buffer float it writes (0: off).
+  std::uint64_t perturb_instance_frame = 0;
   std::uint64_t window_overrun_frame = 0;  // G7q (a listener sabotage, rs_live.h header)
   // W11t (render-stream-11.md "As built (W11t)"): GRC_LIVE_CODING, the coding a /11 connection
   // gets when its hello offers it (rs_live_coding.h negotiate). Off by default here so that a

@@ -257,6 +257,41 @@ bool mesh_entry_equal(const MeshEntry &a, const MeshEntry &b, bool v11) {
   return true;
 }
 
+// PM1 (render-stream-11.md "As built (PM1)" rule 9): a patch lists a multimesh entry that differs
+// in any JSON value other than the two offsets -- its custom AABB floats included (by bit
+// pattern), its buffer not (rule 3 decides that from the serials).
+bool multimesh_entry_equal(const MultimeshEntry &a, const MultimeshEntry &b) {
+  if (a.origin != b.origin || a.status != b.status || a.has_reason != b.has_reason ||
+      (a.has_reason && a.reason != b.reason) || a.version != b.version ||
+      a.has_mesh != b.has_mesh || (a.has_mesh && a.mesh != b.mesh) || a.format != b.format ||
+      a.colors != b.colors || a.custom != b.custom || a.instances != b.instances ||
+      a.visible != b.visible) {
+    return false;
+  }
+  return a.status == MultimeshStatus::Freed || arrays_equal_bits(a.custom_aabb, b.custom_aabb);
+}
+
+// Rule 3: an `ok` entry writes its buffer in a full transaction (base null here too), for an
+// entry new to the table, when the base entry was not `ok`, after a change of instances, format,
+// colors or custom, and otherwise exactly when its buffer serial moved between base and target.
+bool multimesh_buffer_needed(const MultimeshEntry *base, const MultimeshEntry &cur) {
+  if (cur.status != MultimeshStatus::Ok) {
+    return false;
+  }
+  if (base == nullptr || base->status != MultimeshStatus::Ok || base->instances != cur.instances ||
+      base->format != cur.format || base->colors != cur.colors || base->custom != cur.custom) {
+    return true;
+  }
+  return base->buffer_serial != cur.buffer_serial;
+}
+
+const char kAddMultimeshOp[] = "canvas_item_add_multimesh";
+
+bool lowers(const Command &command) {
+  return command.kind == CommandKind::AddMultimesh ||
+         (command.kind == CommandKind::Unsupported && command.name == kAddMultimeshOp);
+}
+
 // render-stream-5.md "Shader table"/"Material table": exactly the texture/mesh table's full,
 // patch and resolve semantics (gate5_5-design.md D1), so every JSON field participates.
 bool default_texture_ref_equal(const DefaultTextureRef &a, const DefaultTextureRef &b) {
@@ -403,6 +438,9 @@ Transaction make_full(const Snapshot &cur) {
 }
 
 Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
+  if (meta.version != ProtocolVersion::V11 && cur.multimesh_commands) {
+    return make_full(lower_multimesh(cur), meta);  // PM1 rule 7
+  }
   Transaction t;
   t.version = meta.version;
   t.seq = meta.seq;
@@ -428,6 +466,11 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
       t.version == ProtocolVersion::V9 || is_v10_or_later(t.version)) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
+  }
+  if (t.version == ProtocolVersion::V11) {
+    // PM1 rules 1 and 3: every entry, every `ok` buffer (multimesh_buffers_held stays empty).
+    t.multimeshes = cur.multimeshes;
+    t.perturb_instance = meta.perturb_instance;
   }
   t.items.reserve(cur.items.size());
   for (const ItemState &item : cur.items) {
@@ -494,6 +537,9 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
 }
 
 Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta) {
+  if (meta.version != ProtocolVersion::V11 && (cur.multimesh_commands || base.multimesh_commands)) {
+    return make_patch(lower_multimesh(base), lower_multimesh(cur), meta);  // PM1 rule 7
+  }
   Transaction t;
   t.version = meta.version;
   t.seq = meta.seq;
@@ -604,6 +650,28 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
     }
   }
 
+  if (v11 && (!cur.multimeshes.empty() || !base.multimeshes.empty())) {
+    // PM1 rules 3 and 9: the entries that are new or differ, or whose buffer the target writes;
+    // removed_multimeshes the base ids the target no longer names.
+    t.perturb_instance = meta.perturb_instance;
+    const IdIndex<MultimeshEntry> base_mms(base.multimeshes);
+    const IdIndex<MultimeshEntry> cur_mms(cur.multimeshes);
+    base_mms.removed_from(cur_mms, &t.removed_multimeshes);
+    for (const MultimeshEntry &mm : cur.multimeshes) {
+      const MultimeshEntry *prev = base_mms.find(mm.id);
+      const bool buffer = multimesh_buffer_needed(prev, mm);
+      if (prev != nullptr && !buffer && multimesh_entry_equal(*prev, mm)) {
+        continue;
+      }
+      if (mm.status == MultimeshStatus::Ok && !buffer) {
+        t.multimesh_buffers_held.push_back(mm.id);  // cur.multimeshes is ascending, so this is too
+      }
+      t.multimeshes.push_back(mm);
+    }
+  } else if (v11) {
+    t.perturb_instance = meta.perturb_instance;
+  }
+
   return t;
 }
 
@@ -634,6 +702,9 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
     if (is_v5) {
       out.shaders = txn.shaders;
       out.materials = txn.materials;
+    }
+    if (txn.version == ProtocolVersion::V11) {
+      out.multimeshes = txn.multimeshes;
     }
     out.items.reserve(txn.items.size());
     for (const ItemEntry &entry : txn.items) {
@@ -748,7 +819,134 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
     (void)id;
     out.materials.push_back(material);
   }
+  if (txn.version == ProtocolVersion::V11) {
+    // PM1: as the mesh table; an entry whose buffer_f is null keeps the floats the base held,
+    // which a capture's entry already carries (its buffer pointer is the target's own).
+    std::map<std::uint32_t, MultimeshEntry> mms;
+    for (const MultimeshEntry &mm : base.multimeshes) {
+      mms[mm.id] = mm;
+    }
+    for (std::uint32_t id : txn.removed_multimeshes) {
+      mms.erase(id);
+    }
+    for (const MultimeshEntry &mm : txn.multimeshes) {
+      mms[mm.id] = mm;
+    }
+    out.multimeshes.reserve(mms.size());
+    for (auto &[id, mm] : mms) {
+      (void)id;
+      out.multimeshes.push_back(mm);
+    }
+  }
   return out;
+}
+
+bool lower_multimesh_commands(const std::vector<Command> &commands, std::vector<Command> *out) {
+  bool any = false;
+  for (const Command &command : commands) {
+    if (lowers(command)) {
+      any = true;
+      break;
+    }
+  }
+  if (!any) {
+    return false;
+  }
+  out->clear();
+  out->reserve(commands.size());
+  for (const Command &command : commands) {
+    if (!lowers(command)) {
+      out->push_back(command);
+      continue;
+    }
+    Command lowered;
+    lowered.kind = CommandKind::Unsupported;
+    lowered.name = kAddMultimeshOp;
+    lowered.unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
+    out->push_back(std::move(lowered));
+  }
+  return true;
+}
+
+Snapshot lower_multimesh(const Snapshot &state) {
+  Snapshot out = state;
+  out.multimeshes.clear();
+  if (!state.multimesh_commands) {
+    return out;
+  }
+  out.multimesh_commands = false;
+  std::vector<std::uint32_t> drawing;  // the items drawing a lowered command, ascending
+  for (ItemState &item : out.items) {
+    std::vector<Command> lowered;
+    if (!lower_multimesh_commands(item.commands, &lowered)) {
+      continue;
+    }
+    item.commands = std::move(lowered);
+    if (item.content_version_below_v11 != 0) {
+      item.content_version = item.content_version_below_v11;
+    }
+    drawing.push_back(item.id);
+  }
+  std::vector<UnsupportedRef> session_level;
+  std::vector<UnsupportedRef> item_level;
+  for (const UnsupportedRef &ref : out.unsupported) {
+    if (!ref.has_item) {
+      session_level.push_back(ref);
+    } else if (ref.op != kAddMultimeshOp) {
+      item_level.push_back(ref);
+    }
+  }
+  for (std::uint32_t id : drawing) {
+    UnsupportedRef ref;
+    ref.op = kAddMultimeshOp;
+    ref.has_item = true;
+    ref.item = id;
+    ref.reason = UnsupportedReason::UnsupportedOp;
+    item_level.push_back(std::move(ref));
+  }
+  // The mirror's order (rs_mirror.cpp snapshot()): item id, then op, then reason, byte order.
+  std::stable_sort(item_level.begin(), item_level.end(),
+                   [](const UnsupportedRef &a, const UnsupportedRef &b) {
+                     if (a.item != b.item) {
+                       return a.item < b.item;
+                     }
+                     if (a.op != b.op) {
+                       return a.op < b.op;
+                     }
+                     return std::string(to_wire(a.reason)) < std::string(to_wire(b.reason));
+                   });
+  out.unsupported = std::move(session_level);
+  out.unsupported.insert(out.unsupported.end(), item_level.begin(), item_level.end());
+  return out;
+}
+
+namespace {
+
+void insert_sorted(std::vector<std::string> *list, const char *name) {
+  if (std::find(list->begin(), list->end(), name) == list->end()) {
+    list->insert(std::lower_bound(list->begin(), list->end(), std::string(name)), name);
+  }
+}
+
+void erase_name(std::vector<std::string> *list, const char *name) {
+  const auto it = std::find(list->begin(), list->end(), name);
+  if (it != list->end()) {
+    list->erase(it);
+  }
+}
+
+}  // namespace
+
+void observe_multimesh_features(Features *features) {
+  insert_sorted(&features->ops, "add_multimesh");
+  insert_sorted(&features->resources, "multimesh");
+  erase_name(&features->observed_unsupported_ops, kAddMultimeshOp);
+}
+
+void unobserve_multimesh_features(Features *features) {
+  erase_name(&features->ops, "add_multimesh");
+  erase_name(&features->resources, "multimesh");
+  insert_sorted(&features->observed_unsupported_ops, kAddMultimeshOp);
 }
 
 namespace {

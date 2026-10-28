@@ -322,6 +322,21 @@ checker down its "no host evidence" paths.
   python3 -I $T compare --save S --name g6 before after
   ```
 
+The capture's own byte identity (a wire change that must not move older streams) is checked with
+`cmp-rec.ts` (PM1): run the same legs from a `create-worktree.sh` checkout of `main` and from the
+worktree, then compare every file sink record by record. It allows only the run's own ids
+(`session_id`, `stream.stream_id`), the end record's wall-clock stats, and session keys you name;
+then `bytes_total` may move by exactly the session's change. Live taps and `received*` streams are
+skipped, because their transaction counts follow pacing.
+
+  ```bash
+  C=experiments/render-stream/scripts/cmp-rec.ts
+  mise exec -- pnpm exec tsx --conditions=development $C --tree <base out>/native-rust-gate5 <out>/native-rust-gate5
+  mise exec -- pnpm exec tsx --conditions=development $C --tree \
+    --allow-session features.ops,features.resources,features.observed_unsupported_ops,capture.hooks_planned \
+    <base gate8 out> <gate8 out>   # /11 with PM1's hooks planned
+  ```
+
 # Gate −1 runner
 
 Drives `../fixtures/spike/` through every leg of the capture library's runtime contract
@@ -3356,7 +3371,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1; g8w11, W11b)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1; g8w11, W11b; g8mm, PM1)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3371,7 +3386,8 @@ mise exec -- pnpm render-stream:gate8 -- \
   `run_import_g8m` and `run_capture_g8m`; `run_g8kp` with `run_g8kp_live`; `run_g8ku` with
   `run_import_g8ku`, `run_capture_g8ku`, `run_reference_g8ku` and `run_g8ku_live`; P3-CT's
   `run_g8c` with `run_import_g8c` and `run_capture_rendered_g8c`; CG1's `run_g8cg` with
-  `run_import_g8cg` and `run_capture_g8cg`).
+  `run_import_g8cg` and `run_capture_g8cg`; PM1's `run_g8mm` with `run_import_g8mm` and
+  `run_capture_rendered_g8mm`).
 - `gate8-delivery-tool.ts` (G8kp): builds the rs-core wasm and the GSW bundle, then replays the
   native leg `g8kp/receiver` in the GSW receiver page three times (as is, BC masked, the
   ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`. G8ku's
@@ -3410,6 +3426,13 @@ mise exec -- pnpm render-stream:gate8 -- \
   pure helpers (`rebuildGrm1`, `traceDynamic`, `dynWireProblems`, `dynClassifyProblems`,
   `inlineNames`, `carriedEqualsNamesProblems`, `resendOnReturn`); `test/self-test-gate8-w11.ts`
   drives them on golden-4's GRM1 payloads and synthetic recordings and hook logs.
+- `lib/gate8-mm-checks.ts` (PM1, render-stream-11.md "As built (PM1)"): the g8mm checks
+  (`runG8mm`) and their pure helpers (`parseMmLine`, the one reader of rule 12's hook-log fields;
+  `mapCells`, `censusProblems`, `traceFromTransactions` / `traceMultimeshRecording`,
+  `mmWireProblems`, `mmNamedProblems`, `framePairingProblems`, `v10Problems`, `mmBytes`);
+  `test/self-test-gate8-mm.ts` drives them on `fixtures/gate8-mm/expected.json` with a simulated
+  capture (hook log, fixture log, both sinks resolved through `applyTransaction`), each sabotage's
+  shape and a one-frame lag included, and on golden-11's recordings.
 - `gate8-w11-tool.ts gsw-legs` (W11c): builds the rs-core wasm and the GSW bundle, then replays
   g8w11's captures in the GSW receiver page (lib/gate7-web-legs.ts), one leg each under
   `g8w11/gsw/<leg>/gsw`, from a planned launch it writes to `g8w11/gsw/<leg>/plan` (g8w11 has no
@@ -3522,6 +3545,35 @@ Headless captures, every one at
 | `scale/off/capture` (W11c) | `scale/capture` under `GRC_MESH_DYNAMIC=off`: every pose a new inline hash |
 | `scale/v10/capture`, `scene/v10/capture`, `mesh/v10/capture` (W11c) | the /10 twins (`GRC_STREAM_VERSION=10`, sinks `.rs10`): same fixture, env and frames |
 | `gsw/<leg>/gsw` (W11c) | GSW's file legs (gate8-w11-tool.ts): `scale`, `scale-off`, `scene`, `scene-off`, `mesh` (/11 patch sinks; `mesh` the full sink) and the twins `scale-v10`, `scene-v10`, `mesh-v10`, shots at up to six frames every capture of the group holds (`gsw/frames.json`), `perf.json` (`gsw.w11`); the receiver sabotages `sabotage-stale-dynamic-rx/scene`, `sabotage-no-prune/scene-off`, `sabotage-evict-carried/scene-off`, `sabotage-ignore-released/scale-off` |
+
+## Gate 8 legs and evidence under `--out/g8mm` (g8mm, PM1)
+
+Every capture runs `fixtures/gate8-mm` at `--fixed-fps 60`, armed at birth, with both sinks, the
+store, the hook log (`evidence/resources.jsonl`), `steps.jsonl` and the fixture's frame log
+`mm-frames.jsonl` (one line per frame-carrying buffer of B_CUSTOM and I_PREDRAW: cell, frame,
+value, the SHA-256 of the whole buffer). Hook-log-only: PM2 adds the references and receivers.
+
+| leg | what |
+| --- | ---- |
+| `import/fixture` | the editor's `--import` of `fixtures/gate8-mm` |
+| `capture` | rendered in the group's private 640x360 gamescope (a headless host never runs `frame_pre_draw`, so no `CPUParticles2D` sets a buffer there), `GRC_STREAM_VERSION=11`: `recording.rs11`, `recording-patch.rs11`, shots `step-<k>.png` |
+| `capture-v10` | the same at `GRC_STREAM_VERSION=10` (`.rs10`): the negative control, no multimesh on the wire |
+| `sabotage-perturb-instance/capture`, `sabotage-stale-buffer/capture` | `capture` with `GRC_SABOTAGE=<kind> GRC_SABOTAGE_FRAME=30` |
+| `headless/capture` | headless at /11: script-driven multimeshes set buffers, `CPUParticles2D` and `frame_pre_draw` never do |
+
+## Gate 8 criteria (g8mm)
+
+`g8mm-legs`, `mm-validate` (the honest /11 legs and the /10 control, both sinks, through
+`validateRecording` and `rs-core-check validate`), `mm-hook-census` (each cell's calls against
+expected.json on the rendered and the headless host), `mm-wire` (every resolved multimesh's
+`buffer_sha256` and fields equal the newest hook-log `state` line at or before the transaction's
+frame; drawn cells are in the table, H_FREE leaves through a freed tombstone, the hidden emitter
+never appears), `mm-frame-pairing` (custom.x minus the transaction frame is one constant per leg,
+equal to the hook log's value minus call frame), `mm-v10`, and per sabotage
+`mm-sabotage-validate-<kind>` (both validators accept it) and `mm-wire-catches-<kind>` (mm-wire
+fails on its patch sink). `mm-bytes` is informational: mm_f32 bytes per transaction (mean, max)
+and per frame per honest leg and sink, also under `g8mm.legs` in `result.json`. The sabotage
+checks are not-run when the smoke tier skips their legs.
 
 ## Gate 8 criteria (g8w11)
 

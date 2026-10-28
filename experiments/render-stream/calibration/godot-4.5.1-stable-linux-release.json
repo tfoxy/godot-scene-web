@@ -101,7 +101,19 @@
     "texture_set_path": 42,
     "canvas_item_set_copy_to_backbuffer": 484,
     "canvas_item_set_canvas_group_mode": 495,
-    "draw": 552
+    "draw": 552,
+    "multimesh_create": 102,
+    "multimesh_allocate_data": 103,
+    "multimesh_set_mesh": 105,
+    "multimesh_instance_set_transform": 106,
+    "multimesh_instance_set_transform_2d": 107,
+    "multimesh_instance_set_color": 108,
+    "multimesh_instance_set_custom_data": 109,
+    "multimesh_set_custom_aabb": 112,
+    "multimesh_set_buffer": 118,
+    "multimesh_set_buffer_interpolated": 122,
+    "multimesh_set_physics_interpolated": 123,
+    "multimesh_set_visible_instances": 126
   },
   "anchors": {
     "_global_shader_parameter_get_list": 23,

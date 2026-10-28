@@ -137,7 +137,11 @@ wire_enum!(UnsupportedCmdReason {
     CanvasTextureHeadless = "canvas-texture-headless",
     UnknownMesh = "unknown-mesh",
     SkinnedGeometry = "skinned-geometry",
+    // render-stream-11.md "As built (PM1)" rule 7: legal at /11 only.
+    UnknownMultimesh = "unknown-multimesh",
 });
+// render-stream-11.md "As built (PM1)" rule 2: a multimesh's transform format.
+wire_enum!(MultimeshFormat { D2 = "2d", D3 = "3d" });
 wire_enum!(VariantType {
     Nil = "nil",
     Bool = "bool",
@@ -306,6 +310,11 @@ pub enum Command {
     ClipIgnore {
         ignore: bool,
     },
+    /// /11 (render-stream-11.md "As built (PM1)" rule 7): no floats, so no `f`.
+    Multimesh {
+        multimesh: Id,
+        tex: Option<Id>,
+    },
     Unsupported {
         name: Box<str>,
         reason: UnsupportedCmdReason,
@@ -331,6 +340,7 @@ impl Command {
             Command::Mesh { .. } => "add_mesh",
             Command::SetTransform { .. } => "add_set_transform",
             Command::ClipIgnore { .. } => "add_clip_ignore",
+            Command::Multimesh { .. } => "add_multimesh",
             Command::Unsupported { .. } => "unsupported",
         }
     }
@@ -344,7 +354,8 @@ impl Command {
             | Command::Polygon { tex, .. }
             | Command::TriangleArray { tex, .. }
             | Command::NinePatch { tex, .. }
-            | Command::Mesh { tex, .. } => *tex,
+            | Command::Mesh { tex, .. }
+            | Command::Multimesh { tex, .. } => *tex,
             _ => None,
         }
     }
@@ -553,6 +564,51 @@ impl Mesh {
     }
 }
 
+/// /11 (render-stream-11.md "As built (PM1)" rules 2 and 10): one resolved multimesh entry. The
+/// validator keeps the digest of the buffer, not its floats ([`crate::validate::Validator::multimesh_buffers`]
+/// locates the floats of the transaction just accepted).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Multimesh {
+    pub id: Id,
+    /// `Created` or `Adopted`.
+    pub origin: Origin,
+    pub status: EntryStatus,
+    /// The wire's multimesh reason spelling (`None` exactly when not `unsupported`).
+    pub reason: Option<&'static str>,
+    pub version: i64,
+    pub mesh: Option<Id>,
+    pub format: MultimeshFormat,
+    pub colors: bool,
+    pub custom: bool,
+    pub instances: i64,
+    /// `multimesh_set_visible_instances`: -1 (all) or 0..`instances`.
+    pub visible: i64,
+    /// The six custom-AABB floats (position, size; all zero when none is set). `None` on `freed`.
+    pub custom_aabb: Option<[f32; 6]>,
+    /// SHA-256 of the current buffer's little-endian f32 bytes; `None` unless `ok`.
+    pub buffer_sha256: Option<Hash>,
+}
+
+impl Multimesh {
+    /// Floats per instance: 8 (`TRANSFORM_2D`) + 4 with colours + 4 with custom data.
+    pub fn stride(&self) -> u64 {
+        multimesh_stride(self.colors, self.custom)
+    }
+    /// The number of instances a draw shows: `visible`, or `instances` when it is -1.
+    pub fn drawn_instances(&self) -> i64 {
+        if self.visible < 0 {
+            self.instances
+        } else {
+            self.visible.min(self.instances)
+        }
+    }
+}
+
+/// render-stream-11.md "As built (PM1)" rule 4: stride = 8 + 4·colors + 4·custom.
+pub fn multimesh_stride(colors: bool, custom: bool) -> u64 {
+    8 + 4 * colors as u64 + 4 * custom as u64
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Builtin {
     pub blend_mode: BlendMode,
@@ -645,6 +701,8 @@ pub struct ResolvedState {
     pub meshes: IdTable<Mesh>,
     pub shaders: IdTable<Shader>,
     pub materials: IdTable<Material>,
+    /// /11 (render-stream-11.md "As built (PM1)"): empty below /11.
+    pub multimeshes: IdTable<Multimesh>,
 }
 
 impl ResolvedState {
@@ -667,6 +725,7 @@ impl ResolvedState {
             meshes: IdTable::new(),
             shaders: IdTable::new(),
             materials: IdTable::new(),
+            multimeshes: IdTable::new(),
         }
     }
 }
@@ -695,6 +754,9 @@ pub struct TxDelta {
     pub shaders_removed: Vec<Id>,
     pub materials_upserted: Vec<Id>,
     pub materials_removed: Vec<Id>,
+    /// /11: multimesh entries the transaction carried (each counts as upserted) and removed.
+    pub multimeshes_upserted: Vec<Id>,
+    pub multimeshes_removed: Vec<Id>,
     /// `default_texture_filter` or `default_texture_repeat` differs from the previous state's.
     pub defaults_changed: bool,
 }
@@ -748,6 +810,8 @@ impl TxDelta {
         union(&mut self.shaders_removed, &later.shaders_removed);
         union(&mut self.materials_upserted, &later.materials_upserted);
         union(&mut self.materials_removed, &later.materials_removed);
+        union(&mut self.multimeshes_upserted, &later.multimeshes_upserted);
+        union(&mut self.multimeshes_removed, &later.multimeshes_removed);
         self.defaults_changed |= later.defaults_changed;
     }
 }
