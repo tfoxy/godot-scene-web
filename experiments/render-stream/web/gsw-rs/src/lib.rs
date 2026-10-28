@@ -1425,6 +1425,16 @@ impl GswRs {
         self.last_digest.as_ptr()
     }
 
+    /// GTS (rs-core `Validator::transport_skip`, render-stream-11.md "As built (W11d)" 1): the
+    /// live coding skipped transactions (a `coding` resync, W11t), so the next one is the full
+    /// transaction the resync forces, at a later seq than the last accepted + 1. The validator
+    /// then accepts the seq jump and prunes C to names(S) after that full.
+    pub fn transport_skip(&mut self) {
+        if let Some(v) = self.validator.as_mut() {
+            v.transport_skip();
+        }
+    }
+
     /// A resync (`RS_RECEIVER_RESYNC`) skipped transactions the applier never saw, and the
     /// applier is delta-driven, so the full transaction that ends it is applied by a fresh
     /// applier that walks the whole resolved state, as the native receiver's reconcile does.

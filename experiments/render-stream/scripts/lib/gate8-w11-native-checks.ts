@@ -412,33 +412,78 @@ interface LiveApplied extends Applied {
   live?: { coding?: { connections?: Record<string, unknown>[]; resyncs?: number } };
 }
 
+async function codingLegsOf(root: string, leg: string) {
+  const dir = join(root, leg);
+  const host = join(dir, "host");
+  const summary = await readJson<{ connections?: { connection: number; stream_id: string | null }[] }>(
+    join(host, "evidence", "live-summary.json"),
+  );
+  if (!summary) return null;
+  const out: { name: string; applied: LiveApplied | null; received: Uint8Array | null; tap: Uint8Array | null }[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (!e.isDirectory() || e.name === "host") continue;
+    const applied = await readJson<LiveApplied>(join(dir, e.name, "applied.json"));
+    const sid = applied?.streams?.[0]?.stream_id ?? null;
+    const c = (summary.connections ?? []).find((x) => x.stream_id === sid);
+    const bytes = async (p: string) => (existsSync(p) ? new Uint8Array(await readFile(p)) : null);
+    out.push({
+      name: e.name,
+      applied,
+      received: await bytes(join(dir, e.name, "received.rs11")),
+      tap: c ? await bytes(join(host, "tap", `stream-${c.connection}.rs2`)) : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * W11d/GTS: under a coding sabotage (`drop-message` drops a base, `coding-wrong-prefix` breaks a
+ * prefix) a coded receiver resyncs (reason coding), skips to the full transaction, validates it
+ * (rs-core Validator::transport_skip: no seq-gap) and ends ok. Judged on the native receiver
+ * (g8w11/coding) and on GSW's browser receiver (the same legs under g8w11c, run-gate7.sh --live).
+ */
+async function resyncCheck(root: string, leg: string, id: string, sabotage: string): Promise<G8aCheck> {
+  const criterion = `W11d: under ${sabotage} a coded receiver resyncs (reason coding), skips to the full transaction, validates it (rs-core Validator::transport_skip) and ends ok`;
+  const dir = join(root, leg);
+  if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
+    return { id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false };
+  }
+  const legs = await codingLegsOf(root, leg);
+  const v = legs?.[0];
+  const problems: string[] | null = v ? [] : null;
+  if (v && problems) {
+    if (v.applied?.status !== "ok") problems.push(`status ${v.applied?.status}: ${v.applied?.failure?.reason} ${v.applied?.failure?.detail?.slice(0, 120)}`);
+    if ((v.applied?.live?.coding?.resyncs ?? 0) < 1) problems.push("no coding resync");
+    if (v.received && v.tap) {
+      const tap = splitRecords(v.tap, 11).records.map((r) => Buffer.from(r.bytes).toString("latin1"));
+      let at = 0;
+      for (const r of splitRecords(v.received, 11).records) {
+        const b = Buffer.from(r.bytes).toString("latin1");
+        while (at < tap.length && tap[at] !== b) at++;
+        if (at === tap.length) {
+          problems.push("a received message is not in the host's tap (in order)");
+          break;
+        }
+      }
+    } else problems.push("no received.rs11 or tap");
+  }
+  return check(id, criterion, problems, `resyncs ${v?.applied?.live?.coding?.resyncs ?? 0}`);
+}
+
+/** GTS: g8w11c, the coding resync legs alone (`$out/g8w11c/<leg>`), native or in a browser. */
+export async function runG8w11cResync(out: string): Promise<G8aCheck[]> {
+  const root = join(out, "g8w11c");
+  return [
+    await resyncCheck(root, "native-sabotage-drop-base", "native-coding-drop-base-caught", "drop-message"),
+    await resyncCheck(root, "native-sabotage-wrong-prefix", "native-coding-wrong-prefix-caught", "coding-wrong-prefix"),
+  ];
+}
+
 /** W11d: the native live coding legs under <run>/g8w11/coding (run_g8w11_coding_native_leg). */
 export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
   const root = join(g, "coding");
-  const legOf = async (leg: string) => {
-    const dir = join(root, leg);
-    const host = join(dir, "host");
-    const summary = await readJson<{ connections?: { connection: number; stream_id: string | null }[] }>(
-      join(host, "evidence", "live-summary.json"),
-    );
-    if (!summary) return null;
-    const out: { name: string; applied: LiveApplied | null; received: Uint8Array | null; tap: Uint8Array | null }[] = [];
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (!e.isDirectory() || e.name === "host") continue;
-      const applied = await readJson<LiveApplied>(join(dir, e.name, "applied.json"));
-      const sid = applied?.streams?.[0]?.stream_id ?? null;
-      const c = (summary.connections ?? []).find((x) => x.stream_id === sid);
-      const bytes = async (p: string) => (existsSync(p) ? new Uint8Array(await readFile(p)) : null);
-      out.push({
-        name: e.name,
-        applied,
-        received: await bytes(join(dir, e.name, "received.rs11")),
-        tap: c ? await bytes(join(host, "tap", `stream-${c.connection}.rs2`)) : null,
-      });
-    }
-    return out;
-  };
+  const legOf = (leg: string) => codingLegsOf(root, leg);
   const eq = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
   const native = await legOf("native");
   {
@@ -491,35 +536,6 @@ export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
       ),
     );
   }
-  {
-    const id = "native-coding-drop-base-caught";
-    const criterion =
-      "W11d: under drop-message a coded native receiver resyncs (reason coding), skips to the full transaction, validates it and ends ok";
-    const dir = join(root, "native-sabotage-drop-base");
-    if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
-      checks.push({ id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false });
-    } else {
-      const legs = await legOf("native-sabotage-drop-base");
-      const v = legs?.[0];
-      const problems: string[] | null = v ? [] : null;
-      if (v && problems) {
-        if (v.applied?.status !== "ok") problems.push(`status ${v.applied?.status}: ${v.applied?.failure?.reason} ${v.applied?.failure?.detail?.slice(0, 120)}`);
-        if ((v.applied?.live?.coding?.resyncs ?? 0) < 1) problems.push("no coding resync");
-        if (v.received && v.tap) {
-          const tap = splitRecords(v.tap, 11).records.map((r) => Buffer.from(r.bytes).toString("latin1"));
-          let at = 0;
-          for (const r of splitRecords(v.received, 11).records) {
-            const b = Buffer.from(r.bytes).toString("latin1");
-            while (at < tap.length && tap[at] !== b) at++;
-            if (at === tap.length) {
-              problems.push("a received message is not in the host's tap (in order)");
-              break;
-            }
-          }
-        } else problems.push("no received.rs11 or tap");
-      }
-      checks.push(check(id, criterion, problems, `resyncs ${v?.applied?.live?.coding?.resyncs ?? 0}`));
-    }
-  }
+  checks.push(await resyncCheck(root, "native-sabotage-drop-base", "native-coding-drop-base-caught", "drop-message"));
   return checks;
 }

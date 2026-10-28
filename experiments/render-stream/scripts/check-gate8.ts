@@ -23,6 +23,7 @@ import { type G8aExpected, runG8a } from "./lib/gate8-adopt-checks";
 import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { runG8l } from "./lib/gate8-live-checks";
+import { runG8w11cResync } from "./lib/gate8-w11-native-checks";
 import { type G8cgExpected, runG8cg } from "./lib/gate8-cg-checks";
 import { runG8w11 } from "./lib/gate8-w11-checks";
 import { type G8cExpected, runG8c } from "./lib/gate8-ct-checks";
@@ -34,7 +35,7 @@ import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c", "g8cg", "g8w11"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c", "g8cg", "g8w11", "g8w11c"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -127,6 +128,9 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8w11 = await runG8w11(out);
     checks.push(...g8w11.checks);
     report.g8w11 = g8w11.report;
+  }
+  if (run.includes("g8w11c")) {
+    checks.push(...(await runG8w11cResync(out)));
   }
   if (run.includes("g8f")) {
     const expected = JSON.parse(

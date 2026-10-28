@@ -112,8 +112,9 @@ export const GATE7L_GATES: readonly LiveGateDef[] = [
     group: "g7-8",
     checker: "check-gate8.ts",
     runner: "run-gate8.sh",
-    runnerLegs: "g8l",
-    liveGroups: ["g8l"],
+    // GTS: g8w11c, the /11 coding resync legs, beside g8l.
+    runnerLegs: "g8l,g8w11c",
+    liveGroups: ["g8l", "g8w11c"],
   },
   // G7g: gate 6's live motion, warm, stall, reconnect and stale-coalesce legs (g6l); its
   // reference-live-frames and reference-file legs are native and run in the same runner.

@@ -669,7 +669,7 @@ if [ "$LIVE" = "1" ]; then
 		fi
 	fi
 	LIVE_RUNS=()
-	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v,g55t g7-6:6:g6l g7-8:8:g8l; do
+	for pair in g7-1:1:g1a,g1c,g1d g7-2:2:g2a,g2c,g2e g7-5:5:g5c,g5f g7-55:55:g55f,g55s,g55v,g55t g7-6:6:g6l g7-8:8:g8l,g8w11c; do
 		group="${pair%%:*}"
 		rest="${pair#*:}"
 		has_group "$group" || continue
