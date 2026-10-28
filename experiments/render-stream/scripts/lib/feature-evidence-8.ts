@@ -907,7 +907,7 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
   g8w11c:
     "none: the /11 live coding resync legs (GTS), a receiver behavior of render-stream/11; no /8 manifest row",
   g8mm:
-    "none: PM1 is the capture side of /11's multimesh (hook-log-only legs); no receiver draws a multimesh until PM2, so the /8 manifest has no row",
+    "none: /11's multimesh (PM1's capture, PM2's native and web receivers) is render-stream/11, which the /8 manifest does not describe (as g8w11)",
   g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",
   g55c: "none: gate 7's carried shader entries (material.*)",
   g55d: "none: gate 7's carried material entries (material.*)",

@@ -13,6 +13,7 @@
 //! The declarations are mirrored by hand in `receiver/ext/rs_core_capi.h`.
 
 pub mod core;
+pub mod mm;
 pub mod ops;
 pub mod plan;
 pub mod vt;

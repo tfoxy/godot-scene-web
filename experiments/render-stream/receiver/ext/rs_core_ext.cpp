@@ -248,6 +248,14 @@ enum Rs : int {
   RS_CANVAS_ITEM_ADD_SET_TRANSFORM,
   RS_CANVAS_ITEM_ADD_CLIP_IGNORE,
   RS_CANVAS_ITEM_ADD_MESH,
+  // PM2: /11 multimesh.
+  RS_MULTIMESH_CREATE,
+  RS_MULTIMESH_ALLOCATE_DATA,
+  RS_MULTIMESH_SET_MESH,
+  RS_MULTIMESH_SET_CUSTOM_AABB,
+  RS_MULTIMESH_SET_VISIBLE_INSTANCES,
+  RS_MULTIMESH_SET_BUFFER,
+  RS_CANVAS_ITEM_ADD_MULTIMESH,
   RS_COUNT,
 };
 
@@ -326,6 +334,13 @@ constexpr RsBind RS_BINDS[RS_COUNT] = {
     {"canvas_item_add_set_transform", 1246044741},
     {"canvas_item_add_clip_ignore", 1265174801},
     {"canvas_item_add_mesh", 316450961},
+    {"multimesh_create", 529393457},
+    {"multimesh_allocate_data", 557240154},
+    {"multimesh_set_mesh", 395945892},
+    {"multimesh_set_custom_aabb", 3696536120},
+    {"multimesh_set_visible_instances", 3411492887},
+    {"multimesh_set_buffer", 2960552364},
+    {"canvas_item_add_multimesh", 2131855138},
 };
 
 struct Engine {
@@ -1516,6 +1531,58 @@ int64_t execute(Instance *inst) {
         r.fs(c, 4);
         uint64_t tex = r.rid();
         rs_call(RS_CANVAS_ITEM_ADD_MESH, {&item, &mesh, x, c, &tex});
+        break;
+      }
+      // PM2 (render-stream-11.md "As built (PM2)"): /11 multimesh; handles in the mesh table.
+      case rsc::MultimeshCreate: {
+        uint32_t h = r.u();
+        uint64_t rid = 0;
+        rs_call(RS_MULTIMESH_CREATE, {}, &rid);
+        inst->slot(rsc::KIND_MESH, h) = rid;
+        break;
+      }
+      case rsc::MultimeshAllocate: {
+        uint64_t mm = r.rid();
+        int64_t instances = r.i64();
+        GDExtensionBool colors = r.b();
+        GDExtensionBool custom = r.b();
+        int64_t format = 0;  // MULTIMESH_TRANSFORM_2D
+        GDExtensionBool indirect = 0;
+        rs_call(RS_MULTIMESH_ALLOCATE_DATA, {&mm, &instances, &format, &colors, &custom, &indirect});
+        break;
+      }
+      case rsc::MultimeshSetMesh: {
+        uint64_t mm = r.rid();
+        uint64_t mesh = r.rid();
+        rs_call(RS_MULTIMESH_SET_MESH, {&mm, &mesh});
+        break;
+      }
+      case rsc::MultimeshSetCustomAabb: {
+        uint64_t mm = r.rid();
+        float aabb[6];
+        r.fs(aabb, 6);
+        rs_call(RS_MULTIMESH_SET_CUSTOM_AABB, {&mm, aabb});
+        break;
+      }
+      case rsc::MultimeshSetVisibleInstances: {
+        uint64_t mm = r.rid();
+        int64_t visible = r.i64();
+        rs_call(RS_MULTIMESH_SET_VISIBLE_INSTANCES, {&mm, &visible});
+        break;
+      }
+      case rsc::MultimeshSetBuffer: {
+        uint64_t mm = r.rid();
+        auto b = r.bytes();
+        PackedArray data(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY);
+        data.fill(b.first, b.second, 4);
+        rs_call(RS_MULTIMESH_SET_BUFFER, {&mm, &data.p});
+        break;
+      }
+      case rsc::AddMultimesh: {
+        uint64_t item = r.rid();
+        uint64_t mm = r.rid();
+        uint64_t tex = r.rid();
+        rs_call(RS_CANVAS_ITEM_ADD_MULTIMESH, {&item, &mm, &tex});
         break;
       }
       default:

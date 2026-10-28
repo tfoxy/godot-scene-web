@@ -36,6 +36,8 @@ const CORE_SABOTAGES: Array[String] = [
 	"refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param",
 	"stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings",
 	"drop-canvas-group", "full-backbuffer-copy", "shader-time-frozen",
+	# PM2: the pre-PM2 planner (every add_multimesh undrawn).
+	"undrawn-multimesh",
 	# W11d (render-stream-11.md "As built (W11d)"): the /11 receiver sabotages the core implements.
 	"stale-dynamic-rx", "no-prune", "ignore-released",
 ]

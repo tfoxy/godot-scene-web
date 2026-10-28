@@ -29,15 +29,44 @@
 //   mm-bytes                    (informational) mm_f32 bytes per transaction (mean, max) and per
 //                               frame, per honest /11 leg and sink (also in the report)
 //
+// PM2 (render-stream-11.md "As built (PM2)") adds the unarmed references and the native receiver
+// (rs-core-capi re-issues multimesh_create/allocate_data/set_mesh/set_buffer/
+// set_visible_instances/set_custom_aabb and canvas_item_add_multimesh), judged on the shots by
+// expected.json's `pixels` cell grid:
+//
+//   mm-premise                  the reference draws every cell at its drawn steps and nothing
+//                               else (G_HIDDEN, H_FREE after its free, outside every cell: the
+//                               background), and the /10 replay (no multimesh on the wire) differs
+//                               from it in exactly the drawn cells: the cells are multimesh pixels
+//   mm-reference-repeat         two unarmed runs are identical at every shot (the particle cells
+//                               are deterministic: use_fixed_seed, --fixed-fps 60)
+//   mm-reference-moving         the reference has teeth: each moving cell differs between the
+//                               settle frame and the frame before, so a receiver one frame off
+//                               cannot pass mm-reference
+//   mm-reference                the native receiver on the /11 full and patch sinks equals the
+//                               unarmed reference exactly at every checkpoint, and drew every
+//                               add_multimesh (applied.json w11.multimesh)
+//   mm-state                    each receiver's state dump at the settle seqs equals the
+//                               recording's resolved state (statesEqual; `multimeshes` included)
+//   mm-reference-catches-undrawn-multimesh  the pre-PM2 planner (receiver sabotage
+//                               undrawn-multimesh) fails mm-reference: it differs in every drawn cell
+//   mm-reference-catches-<kind> the receiver on PM1's sabotaged patch sinks (perturb-instance,
+//                               stale-buffer from frame 30) equals the reference before the
+//                               sabotage frame and differs after it
+//   mm-hidden-cost              (informational) what the hidden emitting G_HIDDEN costs: hook-log
+//                               set_buffer calls, wire appearances and mm_f32 bytes, and what the
+//                               receiver made
+//
 // The hook-log field names of rule 12 are read in ONE place, parseMmLine(), so a refinement of the
 // capture's spelling is a one-function change. The pure helpers are exported for
 // scripts/test/self-test-gate8-mm.ts.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { decodePngRgba } from "./gate-minus1-checks";
 import { check, exitCode, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
 import {
@@ -49,6 +78,8 @@ import {
   type ResolvedMultimesh,
   type ResolvedState,
   rawRecordBlock,
+  resolveRecording,
+  statesEqual,
   splitRecords,
   type TransactionMeta,
   transactionMultimeshes,
@@ -90,6 +121,16 @@ export interface G8mmExpected {
   min_per_frame_frames: number;
   min_paired_transactions: number;
   cells: Record<string, MmCell>;
+  /** PM2: the shot's cell grid (README.md, expected.json `pixels.doc`). */
+  pixels: MmPixels;
+}
+export interface MmPixels {
+  regions: Record<string, [number, number, number, number]>;
+  drawn_steps: Record<string, number[]>;
+  /** per cell, the checkpoints at which it differs from the frame before */
+  moving: Record<string, number[]>;
+  /** what the receivers do not reproduce yet, and the cells it touches */
+  known_gaps: Record<string, { doc: string; cells: string[] }>;
 }
 export type LegKind = "rendered" | "headless";
 
@@ -739,13 +780,116 @@ const HONEST: [string, LegKind][] = [
   ["capture", "rendered"],
   ["headless/capture", "headless"],
 ];
+/** PM2: the native receivers on the honest /11 sinks. */
+const RECEIVERS = ["receiver", "receiver-patch"];
 const LEGS = [
   "import/fixture",
+  "import/receiver",
   "capture",
   "capture-v10",
   ...MM_SABOTAGES.map((s) => `sabotage-${s}/capture`),
   "headless/capture",
+  "reference",
+  "reference-repeat",
+  "receiver-v10",
+  ...RECEIVERS,
+  "sabotage-undrawn-multimesh/receiver",
+  ...MM_SABOTAGES.map((s) => `sabotage-${s}/receiver-patch`),
 ];
+
+// ------------------------------------------------------------------------------ pixels (PM2)
+
+export interface Rgba {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/** Differing pixels per cell (inclusive regions) and outside every cell. */
+export function mmCellDiff(
+  a: Rgba,
+  b: Rgba,
+  regions: MmPixels["regions"],
+): { cells: Record<string, number>; outside: number } | null {
+  if (a.width !== b.width || a.height !== b.height) return null;
+  const cells: Record<string, number> = Object.fromEntries(Object.keys(regions).map((c) => [c, 0]));
+  const entries = Object.entries(regions);
+  let outside = 0;
+  for (let y = 0; y < a.height; y++)
+    for (let x = 0; x < a.width; x++) {
+      const i = (y * a.width + x) * 4;
+      if (
+        a.data[i] === b.data[i] &&
+        a.data[i + 1] === b.data[i + 1] &&
+        a.data[i + 2] === b.data[i + 2] &&
+        a.data[i + 3] === b.data[i + 3]
+      )
+        continue;
+      const hit = entries.find(([, r]) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]);
+      if (hit) cells[hit[0]]++;
+      else outside++;
+    }
+  return { cells, outside };
+}
+
+/** Pixels per cell (and outside) that are not the background colour (the top-left pixel of
+ * G_HIDDEN's cell, which nothing draws). */
+export function mmInk(img: Rgba, pixels: MmPixels): { cells: Record<string, number>; outside: number } {
+  const g = pixels.regions.G_HIDDEN;
+  const bgAt = (g[1] * img.width + g[0]) * 4;
+  const bg = Array.from(img.data.subarray(bgAt, bgAt + 4));
+  const flat: Rgba = { width: img.width, height: img.height, data: new Uint8Array(img.data.length) };
+  for (let i = 0; i < flat.data.length; i += 4) flat.data.set(bg, i);
+  return mmCellDiff(img, flat, pixels.regions) ?? { cells: {}, outside: 0 };
+}
+
+/** The exact verdict: every differing pixel, by cell (cells in `ignore` not counted). */
+export function mmExactProblems(
+  d: { cells: Record<string, number>; outside: number },
+  ignore: readonly string[] = [],
+): string[] {
+  const cells = Object.fromEntries(Object.entries(d.cells).filter(([c]) => !ignore.includes(c)));
+  d = { cells, outside: d.outside };
+  const n = Object.values(d.cells).reduce((s, v) => s + v, 0) + d.outside;
+  if (n === 0) return [];
+  const where = Object.entries(d.cells)
+    .filter(([, v]) => v > 0)
+    .map(([c, v]) => `${c} ${v}`);
+  if (d.outside > 0) where.push(`outside ${d.outside}`);
+  return [`${n} px differ (${where.join(", ")})`];
+}
+
+/** mm-premise's reference half: ink in every cell drawn at `step`, none elsewhere. */
+export function mmPremiseInkProblems(
+  ink: { cells: Record<string, number>; outside: number },
+  pixels: MmPixels,
+  step: number,
+): string[] {
+  const problems: string[] = [];
+  for (const [cell, steps] of Object.entries(pixels.drawn_steps)) {
+    const n = ink.cells[cell] ?? 0;
+    if (steps.includes(step) && n === 0) problems.push(`${cell} draws nothing`);
+    if (!steps.includes(step) && n > 0) problems.push(`${cell}: ${n} px drawn (expected none)`);
+  }
+  if (ink.outside > 0) problems.push(`${ink.outside} px drawn outside every cell`);
+  return problems;
+}
+
+/** A leg that draws no multimesh differs from the reference in exactly the cells drawn at `step`. */
+export function mmMissingProblems(
+  d: { cells: Record<string, number>; outside: number },
+  pixels: MmPixels,
+  step: number,
+): string[] {
+  const problems: string[] = [];
+  for (const [cell, steps] of Object.entries(pixels.drawn_steps)) {
+    const n = d.cells[cell] ?? 0;
+    if (steps.includes(step) && n === 0) problems.push(`${cell} equals the reference (expected a difference)`);
+    if (!steps.includes(step) && n > 0) problems.push(`${cell}: ${n} px differ (expected equal)`);
+  }
+  if (d.outside > 0) problems.push(`${d.outside} px differ outside every cell`);
+  return problems;
+}
 
 function rsCoreValidate(path: string, version: 10 | 11): string {
   if (!existsSync(RS_CORE_CHECK)) return `missing ${RS_CORE_CHECK} (build-rs-core.sh)`;
@@ -973,7 +1117,364 @@ export async function runG8mm(
       ),
     );
   }
+  await runG8mmReceivers(g, expected, checks, report);
   return { checks, report };
+}
+
+/** PM2: the references and the native receivers (the shots by cell, the state dumps). */
+async function runG8mmReceivers(
+  g: string,
+  expected: G8mmExpected,
+  checks: G8aCheck[],
+  report: G8mmReport,
+): Promise<void> {
+  const px = expected.pixels;
+  const steps = expected.checkpoints.map((c) => c.step);
+  // The known gaps' cells (identity-transform): not judged exactly on the receivers, measured.
+  const gapCells = [...new Set(Object.values(px.known_gaps ?? {}).flatMap((g) => g.cells))];
+  const dir = (leg: string) => join(g, leg);
+  const ran = (leg: string) => !skipped(dir(leg)) && existsSync(join(dir(leg), "exit-code.txt"));
+  const refShot = (leg: string, name: string) => decodePngRgba(join(dir(leg), "shots", name));
+  const legSeqs = async (leg: string) =>
+    ((await readText(join(dir(leg), "shot-seqs.txt"))) ?? "").trim().split(",").filter((x) => x !== "");
+  const legShot = async (leg: string, step: number): Promise<Rgba | undefined> => {
+    const seqs = await legSeqs(leg);
+    const i = steps.indexOf(step);
+    if (i < 0 || seqs[i] === undefined) return undefined;
+    return decodePngRgba(join(dir(leg), "shots", `seq-${seqs[i]}.png`));
+  };
+  /** The leg's shot of the frame before step's settle frame: its newest shot seq below the settle
+   * seq that is not itself a settle seq (the runner's RECEIVER_EXTRA_SHOTS; read from the shots,
+   * so a web leg without the runner's files resolves it too). */
+  const legPrevShot = async (leg: string, step: number): Promise<Rgba | undefined> => {
+    const seqs = (await legSeqs(leg)).map(Number);
+    const i = steps.indexOf(step);
+    if (i < 0 || seqs[i] === undefined) return undefined;
+    let names: string[] = [];
+    try {
+      names = readdirSync(join(dir(leg), "shots"));
+    } catch {
+      return undefined;
+    }
+    const shot = names
+      .map((n) => /^seq-(\d+)\.png$/.exec(n))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => Number(m[1]))
+      .filter((n) => n < seqs[i] && (i === 0 || n > seqs[i - 1]) && !seqs.includes(n))
+      .sort((a, b) => b - a)[0];
+    return shot === undefined ? undefined : decodePngRgba(join(dir(leg), "shots", `seq-${shot}.png`));
+  };
+  const pixelsReport: Record<string, unknown> = {};
+  report.legs.pixels = pixelsReport;
+  /** Each step's diff of a receiver leg against the reference (with `prev`, also the frame
+   * before each settle frame, against step-<k>-prev.png; `frame` is the shot's host frame). */
+  const diffs = async (leg: string, prev = false) => {
+    const rows: { step: number; label: string; frame: number; d: ReturnType<typeof mmCellDiff> }[] = [];
+    for (const step of steps) {
+      const settle = expected.checkpoints.find((c) => c.step === step)?.settle ?? 0;
+      if (prev) {
+        const a = await legPrevShot(leg, step);
+        const b = await refShot("reference", `step-${step}-prev.png`);
+        rows.push({ step, label: `step ${step}-prev`, frame: settle - 1, d: a && b ? mmCellDiff(a, b, px.regions) : null });
+      }
+      const a = await legShot(leg, step);
+      const b = await refShot("reference", `step-${step}.png`);
+      rows.push({ step, label: `step ${step}`, frame: settle, d: a && b ? mmCellDiff(a, b, px.regions) : null });
+    }
+    pixelsReport[leg] = rows.map((r) => ({ step: r.step, shot: r.label, ...(r.d ?? { missing: true }) }));
+    return rows;
+  };
+  const appliedOf = async (leg: string) => {
+    try {
+      return JSON.parse((await readText(join(dir(leg), "applied.json"))) ?? "null") as Record<string, unknown> | null;
+    } catch {
+      return null;
+    }
+  };
+
+  // --- mm-premise ---------------------------------------------------------------------------
+  {
+    let problems: string[] | null = null;
+    if (ran("reference")) {
+      problems = [];
+      const inkReport: Record<string, unknown> = {};
+      for (const step of steps) {
+        const img = await refShot("reference", `step-${step}.png`);
+        if (!img) {
+          problems.push(`reference step ${step}: no shot`);
+          continue;
+        }
+        const ink = mmInk(img, px);
+        inkReport[step] = ink;
+        for (const p of mmPremiseInkProblems(ink, px, step)) problems.push(`reference step ${step}: ${p}`);
+      }
+      pixelsReport.reference_ink = inkReport;
+      if (ran("receiver-v10")) {
+        for (const r of await diffs("receiver-v10"))
+          if (!r.d) problems.push(`receiver-v10 step ${r.step}: shot missing`);
+          else for (const p of mmMissingProblems(r.d, px, r.step)) problems.push(`receiver-v10 step ${r.step}: ${p}`);
+      } else problems.push("receiver-v10 did not run");
+    }
+    checks.push(
+      check(
+        "mm-premise",
+        "PM2: the unarmed reference draws every cell at its drawn steps and nothing else (G_HIDDEN, H_FREE after its free and outside every cell are background), and the /10 replay (no multimesh on the wire) differs from it in exactly the drawn cells",
+        problems,
+      ),
+    );
+  }
+
+  // --- mm-reference-repeat ------------------------------------------------------------------
+  {
+    let problems: string[] | null = null;
+    if (ran("reference") && ran("reference-repeat")) {
+      problems = [];
+      for (const step of steps)
+        for (const name of [`step-${step}.png`, `step-${step}-prev.png`]) {
+          const a = await refShot("reference-repeat", name);
+          const b = await refShot("reference", name);
+          const d = a && b ? mmCellDiff(a, b, px.regions) : null;
+          if (!d) problems.push(`${name}: shot missing`);
+          else for (const p of mmExactProblems(d)) problems.push(`${name}: ${p}`);
+        }
+    }
+    checks.push(
+      check(
+        "mm-reference-repeat",
+        "PM2: two unarmed runs of the fixture are identical at every shot (fixed-seed particles at --fixed-fps 60 are deterministic)",
+        problems,
+      ),
+    );
+  }
+
+  // --- mm-reference-moving ------------------------------------------------------------------
+  {
+    let problems: string[] | null = null;
+    if (ran("reference")) {
+      problems = [];
+      const moving: Record<string, unknown> = {};
+      for (const step of steps) {
+        const a = await refShot("reference", `step-${step}-prev.png`);
+        const b = await refShot("reference", `step-${step}.png`);
+        const d = a && b ? mmCellDiff(a, b, px.regions) : null;
+        if (!d) {
+          problems.push(`step ${step}: shot missing`);
+          continue;
+        }
+        moving[step] = d;
+        for (const [cell, at] of Object.entries(px.moving))
+          if (at.includes(step) && (d.cells[cell] ?? 0) === 0)
+            problems.push(`step ${step}: ${cell} did not move from the frame before`);
+      }
+      pixelsReport.reference_moving = moving;
+    }
+    checks.push(
+      check(
+        "mm-reference-moving",
+        `PM2: the reference has teeth: ${Object.entries(px.moving)
+          .map(([c, at]) => `${c} (steps ${at.join(", ")})`)
+          .join(", ")} differ between the settle frame and the frame before, so a receiver one frame off cannot equal it`,
+        problems,
+      ),
+    );
+  }
+
+  // --- mm-reference -------------------------------------------------------------------------
+  {
+    let problems: string[] | null = [];
+    const drawn: string[] = [];
+    for (const leg of RECEIVERS) {
+      if (!ran(leg) || !ran("reference")) {
+        problems = null;
+        break;
+      }
+      for (const r of await diffs(leg, true))
+        if (!r.d) problems.push(`${leg} ${r.label}: shot missing`);
+        else for (const p of mmExactProblems(r.d, gapCells)) problems.push(`${leg} ${r.label}: ${p}`);
+      const applied = await appliedOf(leg);
+      const mm = ((applied?.w11 as Record<string, unknown> | undefined)?.multimesh ?? null) as Record<
+        string,
+        number
+      > | null;
+      if (!applied) problems.push(`${leg}: no applied.json`);
+      else if (applied.status !== "ok") problems.push(`${leg}: applied.json status ${String(applied.status)}`);
+      if (!mm) problems.push(`${leg}: applied.json has no w11.multimesh (no multimesh made)`);
+      else {
+        if ((mm.undrawn ?? 0) > 0) problems.push(`${leg}: ${mm.undrawn} add_multimesh undrawn`);
+        if (!((mm.multimesh_commands ?? 0) > 0)) problems.push(`${leg}: no add_multimesh drawn`);
+        drawn.push(
+          `${leg}: ${mm.multimeshes_created ?? 0} made, ${mm.multimeshes_freed ?? 0} freed, ${mm.buffer_sets ?? 0} buffers (${mm.buffer_bytes ?? 0} B), ${mm.multimesh_commands ?? 0} draws, ${mm.skipped_multimesh_commands ?? 0} skipped`,
+        );
+      }
+    }
+    checks.push(
+      check(
+        "mm-reference",
+        `PM2: the native receiver on the /11 full and patch sinks equals the unarmed reference exactly at every checkpoint and the frame before each (its own Godot draws the re-issued multimeshes) in every cell but the known gaps' (${gapCells.join(", ") || "none"}: mm-identity-transform-gap), and drew every add_multimesh`,
+        problems,
+        drawn.join("; ") || undefined,
+      ),
+    );
+  }
+
+  // --- mm-state -----------------------------------------------------------------------------
+  {
+    let problems: string[] | null = [];
+    let compared = 0;
+    for (const leg of RECEIVERS) {
+      if (!ran(leg)) {
+        problems = null;
+        break;
+      }
+      // run_rendered_receiver copies either sink to <leg>/recording.rs11.
+      const sink = SINKS_11[0];
+      const data = await bytesOf(join(dir(leg), sink));
+      if (!data) {
+        problems.push(`${leg}: ${sink} missing`);
+        continue;
+      }
+      const resolved = resolveRecording(data, 11);
+      for (const seqText of await legSeqs(leg)) {
+        const seq = Number(seqText);
+        const t = resolved.transactions.find((x) => x.seq === seq);
+        const dumpText = await readText(join(dir(leg), "state", `seq-${seq}.json`));
+        if (!t || !dumpText) {
+          problems.push(`${leg} seq ${seq}: ${t ? "state dump" : "transaction"} missing`);
+          continue;
+        }
+        compared++;
+        const dump = JSON.parse(dumpText) as Record<string, unknown>;
+        if (!("multimeshes" in dump)) problems.push(`${leg} seq ${seq}: the dump has no multimeshes`);
+        if (statesEqual(dump, t.state)) continue;
+        const want = t.state as unknown as Record<string, unknown>;
+        const keys = [...new Set([...Object.keys(want), ...Object.keys(dump)])];
+        problems.push(
+          `${leg} seq ${seq}: differs from the resolved state in ${keys.filter((k) => !statesEqual(dump[k], want[k])).join(", ") || "key order"}`,
+        );
+      }
+    }
+    checks.push(
+      check(
+        "mm-state",
+        "PM2: each native receiver's state dump at the settle seqs equals the recording's resolved /11 state (multimeshes included)",
+        problems,
+        `${compared} dumps compared`,
+      ),
+    );
+  }
+
+  // --- mm-reference-catches-undrawn-multimesh -----------------------------------------------
+  {
+    const leg = "sabotage-undrawn-multimesh/receiver";
+    const id = "mm-reference-catches-undrawn-multimesh";
+    const crit =
+      "PM2: the pre-PM2 planner (receiver sabotage undrawn-multimesh) fails mm-reference: it differs from the reference in exactly the drawn cells at every checkpoint";
+    const why = skipped(dir(leg));
+    if (why) checks.push(notRun(id, crit, leg, why));
+    else {
+      let problems: string[] | null = null;
+      if (ran(leg) && ran("reference")) {
+        problems = [];
+        for (const r of await diffs(leg))
+          if (!r.d) problems.push(`step ${r.step}: shot missing`);
+          else for (const p of mmMissingProblems(r.d, px, r.step)) problems.push(`step ${r.step}: ${p}`);
+      }
+      checks.push(check(id, crit, problems));
+    }
+  }
+
+  // --- mm-reference-catches-<kind> ----------------------------------------------------------
+  for (const s of MM_SABOTAGES) {
+    const leg = `sabotage-${s}/receiver-patch`;
+    const id = `mm-reference-catches-${s}`;
+    const crit = `PM2: the receiver on the ${s} patch sink equals the reference at every shot before frame ${expected.sabotage_frame} and differs from it at some shot after (mm-reference fails)`;
+    const why = skipped(dir(leg));
+    if (why) {
+      checks.push(notRun(id, crit, leg, why));
+      continue;
+    }
+    let problems: string[] | null = null;
+    if (ran(leg) && ran("reference")) {
+      problems = [];
+      let caught = 0;
+      let after = 0;
+      for (const r of await diffs(leg, true)) {
+        if (!r.d) {
+          problems.push(`${r.label}: shot missing`);
+          continue;
+        }
+        const n = mmExactProblems(r.d, gapCells);
+        if (r.frame < expected.sabotage_frame && n.length > 0) problems.push(`${r.label} (before the sabotage): ${n[0]}`);
+        if (r.frame >= expected.sabotage_frame) {
+          after++;
+          if (n.length > 0) caught++;
+        }
+      }
+      if (after > 0 && caught === 0) problems.push(`all ${after} shots after the sabotage equal the reference (unseen)`);
+    }
+    checks.push(check(id, crit, problems));
+  }
+
+  // --- mm-identity-transform-gap (informational) ---------------------------------------------
+  for (const [gap, g] of Object.entries(px.known_gaps ?? {})) {
+    const detail: string[] = [];
+    let any = false;
+    for (const leg of RECEIVERS) {
+      if (!ran(leg) || !ran("reference")) continue;
+      const rows = (pixelsReport[leg] as { shot: string; cells?: Record<string, number> }[] | undefined) ?? [];
+      for (const r of rows) {
+        if (!r.cells) continue;
+        any = true;
+        detail.push(`${leg} ${r.shot}: ${g.cells.map((c) => `${c} ${r.cells?.[c] ?? 0} px`).join(", ")}`);
+      }
+    }
+    checks.push({
+      id: `mm-${gap}-gap`,
+      criterion: `PM2 (informational, measured): the known gap ${gap} (${g.cells.join(", ")}): ${g.doc.split(". ")[0]}`,
+      passed: true,
+      status: any ? "pass" : "not-run",
+      detail: detail.join("; ") || "no receiver ran",
+      gating: false,
+    });
+  }
+
+  // --- mm-hidden-cost (informational) -------------------------------------------------------
+  {
+    const leg = "capture";
+    const detail: string[] = [];
+    let status: "pass" | "not-run" = "not-run";
+    if (!skipped(dir(leg))) {
+      const lines = parseMmLog(await readText(join(dir(leg), "evidence", "resources.jsonl")));
+      const cells = mapCells(lines, expected);
+      const rid = cells.ridOfCell.get("G_HIDDEN") ?? null;
+      const gCalls = lines.filter((l) => l.kind === "call" && rid !== null && l.rid === rid);
+      const gBuffers = gCalls.filter((l) => l.kind === "call" && l.call === "set_buffer").length;
+      const gId = cells.idOfCell.get("G_HIDDEN") ?? null;
+      const data = await bytesOf(join(dir(leg), SINKS_11[1]));
+      if (data) {
+        status = "pass";
+        const trace = traceMultimeshRecording(data, 11);
+        const inTable = gId === null ? 0 : trace.txs.filter((t) => t.table.has(gId)).length;
+        const all = mmBytes(trace);
+        detail.push(
+          `G_HIDDEN (rid ${rid ?? "?"}, wire id ${gId ?? "none"}): ${gCalls.length} hook calls, ${gBuffers} set_buffer, in ${inTable} of ${trace.txs.length} patch transactions, 0 B of mm_f32 attributable; all cells: ${all.bytes_per_frame} B/frame`,
+        );
+        report.legs.hidden_cost = { rid, wire_id: gId, hook_calls: gCalls.length, set_buffer: gBuffers, transactions_in_table: inTable, mm_f32_bytes_per_frame_all: all.bytes_per_frame };
+      }
+      const applied = await appliedOf("receiver-patch");
+      const mm = (applied?.w11 as Record<string, unknown> | undefined)?.multimesh as Record<string, number> | undefined;
+      if (mm) detail.push(`receiver-patch made ${mm.multimeshes_created ?? 0} multimeshes for ${Object.values(px.drawn_steps).filter((x) => x.length > 0).length} drawn cells`);
+    }
+    checks.push({
+      id: "mm-hidden-cost",
+      criterion:
+        "PM2 (informational, measured): what the hidden but emitting G_HIDDEN costs the host, the wire and the receiver",
+      passed: true,
+      status,
+      detail: detail.join("; ") || "capture not run",
+      gating: false,
+    });
+  }
 }
 
 function jsonlOf<T>(text: string | undefined): T[] {

@@ -15,6 +15,7 @@
 //! Floats are compared as rs_applier.gd compares PackedFloat32Arrays (IEEE `==`: -0 equals 0, NaN
 //! never equals itself), and a parameter value as its JSON text compares (bit for bit).
 
+use crate::mm::MmStore;
 use crate::ops::{Op, OpBuf, RidRef};
 use crate::vt::{gd, Vt};
 use render_stream_core::apply::dynamic::DynamicMeshes;
@@ -57,6 +58,9 @@ pub struct Sabotage {
     pub full_backbuffer_copy: bool,
     /// P3-TM: the host's shader time is ignored: every `TIME` reads 0.
     pub shader_time_frozen: bool,
+    /// PM2: the pre-PM2 planner -- every `add_multimesh` is counted undrawn
+    /// (`multimesh_commands_undrawn`, `multimesh-undrawn`) and no multimesh is made.
+    pub undrawn_multimesh: bool,
 }
 
 impl Sabotage {
@@ -83,6 +87,7 @@ impl Sabotage {
             "drop-canvas-group" => s.drop_canvas_group = true,
             "full-backbuffer-copy" => s.full_backbuffer_copy = true,
             "shader-time-frozen" => s.shader_time_frozen = true,
+            "undrawn-multimesh" => s.undrawn_multimesh = true,
             _ => {}
         }
         s
@@ -99,6 +104,8 @@ pub struct Touched {
     pub meshes: BTreeSet<Id>,
     pub shaders: BTreeSet<Id>,
     pub materials: BTreeSet<Id>,
+    /// PM2: /11 multimesh entries carried or removed.
+    pub multimeshes: BTreeSet<Id>,
 }
 
 impl Touched {
@@ -115,6 +122,8 @@ impl Touched {
             .extend(d.shaders_upserted.iter().chain(&d.shaders_removed));
         self.materials
             .extend(d.materials_upserted.iter().chain(&d.materials_removed));
+        self.multimeshes
+            .extend(d.multimeshes_upserted.iter().chain(&d.multimeshes_removed));
     }
     pub fn clear(&mut self) {
         *self = Touched::default();
@@ -136,6 +145,8 @@ pub struct Payloads<'a> {
     /// W11d (render-stream-11.md "Receivers"): the newest body of every /11 dynamic mesh surface
     /// (`Core`'s, ingested at accept); empty below /11.
     pub dynamic: &'a DynamicMeshes,
+    /// PM2: the newest buffer of every `ok` /11 multimesh (`Core`'s, ingested at accept).
+    pub multimeshes: &'a MmStore,
     /// The stream's wire version: from /8 a texture payload may be a float format (D9).
     pub version: u8,
 }
@@ -480,6 +491,22 @@ struct MeshM {
     index_bytes: Vec<Vec<u8>>,
 }
 
+/// PM2: one resident multimesh as last sent to the RenderingServer (GLES3's model of it, as
+/// render-stream-11.md "As built (PM1)" rule 13 describes the host's).
+#[derive(Debug)]
+struct MultimeshM {
+    /// In the mesh table (`RidRef::Multimesh`).
+    handle: u32,
+    /// (instances, colors, custom) of the last `multimesh_allocate_data`; None before the first.
+    shape: Option<(i64, bool, bool)>,
+    /// The mesh handle last set (None: `RID()`).
+    mesh: Option<u32>,
+    aabb: [f32; 6],
+    visible: i64,
+    /// The `MmStore` serial of the buffer last set (0: none).
+    serial: u64,
+}
+
 #[derive(Debug)]
 struct ShaderM {
     handle: u32,
@@ -501,6 +528,8 @@ struct MaterialM {
 struct Named {
     textures: Vec<Id>,
     meshes: Vec<Id>,
+    /// PM2: the multimeshes its `add_multimesh` commands name.
+    multimeshes: Vec<Id>,
     material: Option<Id>,
     rid_params: bool,
 }
@@ -513,6 +542,9 @@ fn named_of(item: &Item, version: u8) -> Named {
         }
         if let Command::Mesh { mesh, .. } = c {
             n.meshes.push(*mesh);
+        }
+        if let Command::Multimesh { multimesh, .. } = c {
+            n.multimeshes.push(*multimesh);
         }
     }
     if version >= 5 {
@@ -530,6 +562,8 @@ fn named_of(item: &Item, version: u8) -> Named {
     n.textures.dedup();
     n.meshes.sort_unstable();
     n.meshes.dedup();
+    n.multimeshes.sort_unstable();
+    n.multimeshes.dedup();
     n
 }
 
@@ -540,6 +574,7 @@ struct Sync {
     tex: HashMap<Id, i64>,
     mesh: HashMap<Id, i64>,
     mat: HashMap<Id, i64>,
+    mm: HashMap<Id, i64>,
 }
 
 /// What needed() returns: payload hashes in rs_applier.gd's order, and which are meshes and
@@ -583,6 +618,18 @@ struct Counters {
     /// /11 (PM1): `add_multimesh` commands left undrawn (typed `multimesh-undrawn`) until PM2
     /// re-issues multimeshes.
     multimesh_commands_undrawn: i64,
+    /// PM2 (render-stream-11.md "As built (PM2)"): `multimesh_resources`, written only when one
+    /// is non-zero (so every stream without a multimesh keeps its stats byte-identical).
+    mm_created: i64,
+    mm_freed: i64,
+    mm_allocations: i64,
+    mm_mesh_sets: i64,
+    mm_aabb_sets: i64,
+    mm_visible_sets: i64,
+    mm_buffer_sets: i64,
+    mm_buffer_bytes: i64,
+    multimesh_commands: i64,
+    skipped_multimesh_commands: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
     shader_code_sets: i64,
@@ -657,6 +704,8 @@ pub struct Planner {
     meshes: BTreeMap<Id, MeshM>,
     shaders: BTreeMap<Id, ShaderM>,
     materials: BTreeMap<Id, MaterialM>,
+    /// PM2: the resident multimeshes (named `ok` /11 entries).
+    multimeshes: BTreeMap<Id, MultimeshM>,
     root_xform: Option<[f32; 6]>,
     root_modulate: [f32; 4],
     default_filter: Option<Filter>,
@@ -669,6 +718,11 @@ pub struct Planner {
     mesh_count: HashMap<Id, i64>,
     mat_count: HashMap<Id, i64>,
     mat_items: HashMap<Id, BTreeSet<Id>>,
+    /// PM2: how many items name each multimesh, and which; and the meshes named only through a
+    /// named multimesh as of the last apply (they are resident like an `add_mesh`'s).
+    mm_count: HashMap<Id, i64>,
+    mm_items: HashMap<Id, BTreeSet<Id>>,
+    mm_meshes: BTreeSet<Id>,
     rid_param_items: BTreeSet<Id>,
     mattex: BTreeSet<Id>,
     /// P3-CT: the texture ids whose entry was a canvas texture as of the last apply.
@@ -755,6 +809,7 @@ impl Planner {
             + self.meshes.len()
             + self.shaders.len()
             + self.materials.len()
+            + self.multimeshes.len()
             + self.canvases.values().filter(|c| c.owned).count()) as i64
     }
     pub fn resident(&self) -> [i64; 5] {
@@ -811,6 +866,9 @@ impl Planner {
                 if let Some(m) = o.material {
                     bump(&mut s.mat, m, -1);
                 }
+                for &m in &o.multimeshes {
+                    bump(&mut s.mm, m, -1);
+                }
             }
             if let Some(n) = &new {
                 for &t in &n.textures {
@@ -821,6 +879,9 @@ impl Planner {
                 }
                 if let Some(m) = n.material {
                     bump(&mut s.mat, m, 1);
+                }
+                for &m in &n.multimeshes {
+                    bump(&mut s.mm, m, 1);
                 }
             }
             s.items.push((id, new));
@@ -926,6 +987,28 @@ impl Planner {
         out
     }
 
+    /// PM2: the meshes the named `ok` multimeshes draw (`multimesh_set_mesh`). Resident like a
+    /// mesh an `add_mesh` names: no command names them, the multimesh does.
+    fn mm_meshes_now(&self, st: &ResolvedState, s: &Sync) -> BTreeSet<Id> {
+        let mut out = BTreeSet::new();
+        if self.mm_count.is_empty() && s.mm.is_empty() {
+            return out;
+        }
+        for id in self.mm_count.keys().chain(s.mm.keys()) {
+            if count(&self.mm_count, *id) + count(&s.mm, *id) <= 0 {
+                continue;
+            }
+            if let Some(m) = st.multimeshes.get(id) {
+                if m.status == EntryStatus::Ok {
+                    if let Some(mesh) = m.mesh {
+                        out.insert(mesh);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The named textures and meshes an apply must look at, ascending: every named one under
     /// full_scan (or a sabotage that keeps residency stale on purpose), else those newly named
     /// or whose entry a transaction touched.
@@ -934,6 +1017,7 @@ impl Planner {
         st: &ResolvedState,
         s: &Sync,
         mattex_now: &BTreeSet<Id>,
+        mm_meshes_now: &BTreeSet<Id>,
     ) -> (Vec<Id>, Vec<Id>) {
         let tex_now =
             |x: Id| count(&self.tex_count, x) + count(&s.tex, x) > 0 || mattex_now.contains(&x);
@@ -964,20 +1048,32 @@ impl Planner {
                 }
             }
         }
-        let mesh_now = |x: Id| count(&self.mesh_count, x) + count(&s.mesh, x) > 0;
+        let mesh_now = |x: Id| {
+            count(&self.mesh_count, x) + count(&s.mesh, x) > 0 || mm_meshes_now.contains(&x)
+        };
+        let mesh_last = |x: Id| count(&self.mesh_count, x) > 0 || self.mm_meshes.contains(&x);
         let all_mesh = self.full_scan || self.sab.stale_mesh || self.sab.drop_mesh_surface;
         let mut mesh = BTreeSet::new();
         if all_mesh {
-            for &x in self.mesh_count.keys().chain(s.mesh.keys()) {
+            for &x in self
+                .mesh_count
+                .keys()
+                .chain(s.mesh.keys())
+                .chain(mm_meshes_now.iter())
+            {
                 if mesh_now(x) {
                     mesh.insert(x);
                 }
             }
         } else {
-            for &x in self.touched.meshes.iter().chain(s.mesh.keys()) {
-                if mesh_now(x)
-                    && (self.touched.meshes.contains(&x) || count(&self.mesh_count, x) == 0)
-                {
+            for &x in self
+                .touched
+                .meshes
+                .iter()
+                .chain(s.mesh.keys())
+                .chain(mm_meshes_now.iter())
+            {
+                if mesh_now(x) && (self.touched.meshes.contains(&x) || !mesh_last(x)) {
                     mesh.insert(x);
                 }
             }
@@ -986,7 +1082,14 @@ impl Planner {
         (tex.into_iter().collect(), mesh.into_iter().collect())
     }
 
-    fn commit(&mut self, s: Sync, mattex_now: BTreeSet<Id>) {
+    fn commit(&mut self, s: Sync, mattex_now: BTreeSet<Id>, mm_meshes_now: BTreeSet<Id>) {
+        for (id, v) in &s.mm {
+            bump(&mut self.mm_count, *id, *v);
+            if self.mm_count[id] == 0 {
+                self.mm_count.remove(id);
+            }
+        }
+        self.mm_meshes = mm_meshes_now;
         for (id, v) in s.tex {
             bump(&mut self.tex_count, id, v);
             if self.tex_count[&id] == 0 {
@@ -1007,6 +1110,14 @@ impl Planner {
         }
         for (id, new) in s.items {
             if let Some(old) = self.named.get(&id) {
+                for m in &old.multimeshes {
+                    if let Some(set) = self.mm_items.get_mut(m) {
+                        set.remove(&id);
+                        if set.is_empty() {
+                            self.mm_items.remove(m);
+                        }
+                    }
+                }
                 if let Some(m) = old.material {
                     if let Some(set) = self.mat_items.get_mut(&m) {
                         set.remove(&id);
@@ -1021,6 +1132,9 @@ impl Planner {
                 Some(n) => {
                     if let Some(m) = n.material {
                         self.mat_items.entry(m).or_default().insert(id);
+                    }
+                    for &m in &n.multimeshes {
+                        self.mm_items.entry(m).or_default().insert(id);
                     }
                     if n.rid_params {
                         self.rid_param_items.insert(id);
@@ -1043,7 +1157,8 @@ impl Planner {
         let mats = self.named_materials(st, &s);
         let shaders = Self::named_shaders(st, &mats);
         let mattex_now = self.indirect_textures(st, &s, &mats, &shaders);
-        let (tex, mesh) = self.candidates(st, &s, &mattex_now);
+        let mm_meshes_now = self.mm_meshes_now(st, &s);
+        let (tex, mesh) = self.candidates(st, &s, &mattex_now, &mm_meshes_now);
         let mut out = Needed::default();
         let mut seen: BTreeSet<Hash> = BTreeSet::new();
         for sid in &shaders {
@@ -1219,7 +1334,11 @@ impl Planner {
         let mats_now = self.named_materials(st, &s);
         let shaders_now = Self::named_shaders(st, &mats_now);
         let mattex_now = self.indirect_textures(st, &s, &mats_now, &shaders_now);
-        let (tex_cands, mesh_cands) = self.candidates(st, &s, &mattex_now);
+        let mm_meshes_now = self.mm_meshes_now(st, &s);
+        let (tex_cands, mesh_cands) = self.candidates(st, &s, &mattex_now, &mm_meshes_now);
+        // PM2: every multimesh to look at: touched, newly (un)named, or resident (a handful; a
+        // resident one's mesh RID may have changed with no multimesh entry moving).
+        let mut mm_cands: BTreeSet<Id> = s.mm.keys().copied().collect();
         let touched = std::mem::take(&mut self.touched);
         for &id in &touched.textures {
             if st
@@ -1232,8 +1351,13 @@ impl Planner {
                 self.canvas_ids.remove(&id);
             }
         }
+        mm_cands.extend(touched.multimeshes.iter().copied());
+        mm_cands.extend(self.multimeshes.keys().copied());
+        if self.full_scan {
+            mm_cands.extend(st.multimeshes.keys().copied());
+        }
         let mut extra_items: BTreeSet<Id> = s.items.iter().map(|(id, _)| *id).collect();
-        self.commit(s, mattex_now);
+        self.commit(s, mattex_now, mm_meshes_now);
         let mut tex_rid_changed = false;
         let mut canvas_bind: BTreeSet<Id> = BTreeSet::new();
 
@@ -1520,6 +1644,8 @@ impl Planner {
             &touched,
             &mesh_cands,
         )?;
+        // PM2: multimeshes, once their meshes are resident.
+        let mm_rid_changed = self.apply_multimeshes(st, payloads, ops, &mut c, &mm_cands);
 
         // Shaders, then materials.
         let mut mat_rid_changed: BTreeSet<Id> = BTreeSet::new();
@@ -1809,6 +1935,18 @@ impl Planner {
                 }
             }
             visit.extend(forced.iter().copied());
+        }
+        // PM2: an item naming a multimesh made or freed here replays its content (no item entry
+        // changed with it).
+        for mm in &mm_rid_changed {
+            if let Some(items) = self.mm_items.get(mm) {
+                for item in items {
+                    if self.items.contains_key(item) && st.items.contains_key(item) {
+                        forced.insert(*item);
+                        visit.insert(*item);
+                    }
+                }
+            }
         }
         for id in visit {
             self.apply_item(
@@ -2291,6 +2429,122 @@ impl Planner {
                 bytes: 0,
             });
         }
+    }
+
+    /// PM2 (render-stream-11.md "As built (PM2)"): the multimeshes in `cands`. A named `ok` entry
+    /// is resident: `multimesh_create`, then, each only when it differs from what this planner
+    /// last sent, `multimesh_allocate_data` (TRANSFORM_2D; an identical shape is a no-op on GLES3,
+    /// a new one zeroes the buffer and clamps `visible`), `multimesh_set_mesh` (the mesh's RID, or
+    /// `RID()` when it is not resident), `multimesh_set_custom_aabb`,
+    /// `multimesh_set_visible_instances` and `multimesh_set_buffer` (the newest ingested buffer,
+    /// when its serial moved). Anything else resident is freed. Returns the multimeshes whose RID
+    /// was made or freed, whose items replay.
+    fn apply_multimeshes(
+        &mut self,
+        st: &ResolvedState,
+        payloads: &Payloads,
+        ops: &mut OpBuf,
+        c: &mut Counters,
+        cands: &BTreeSet<Id>,
+    ) -> BTreeSet<Id> {
+        let mut changed = BTreeSet::new();
+        for &id in cands {
+            let e = st.multimeshes.get(&id);
+            let want = !self.sab.undrawn_multimesh
+                && count(&self.mm_count, id) > 0
+                && e.is_some_and(|e| e.status == EntryStatus::Ok);
+            if !want {
+                if let Some(m) = self.multimeshes.remove(&id) {
+                    ops.op(Op::FreeRid, 1);
+                    ops.rid(RidRef::Multimesh(m.handle));
+                    self.freed_by_apply += 1;
+                    c.mm_freed += 1;
+                    changed.insert(id);
+                }
+                continue;
+            }
+            let e = e.unwrap();
+            if !self.multimeshes.contains_key(&id) {
+                let h = self.handle(3);
+                ops.op(Op::MultimeshCreate, 1);
+                ops.u(h);
+                self.created_rids += 1;
+                c.mm_created += 1;
+                changed.insert(id);
+                self.multimeshes.insert(
+                    id,
+                    MultimeshM {
+                        handle: h,
+                        shape: None,
+                        mesh: None,
+                        aabb: [0.0; 6],
+                        visible: -1,
+                        serial: 0,
+                    },
+                );
+            }
+            let mesh = e
+                .mesh
+                .filter(|mid| {
+                    st.meshes
+                        .get(mid)
+                        .is_some_and(|me| me.status == EntryStatus::Ok)
+                })
+                .and_then(|mid| self.meshes.get(&mid))
+                .map(|me| me.handle);
+            let m = self.multimeshes.get_mut(&id).unwrap();
+            let rid = RidRef::Multimesh(m.handle);
+            let shape = (e.instances, e.colors, e.custom);
+            if m.shape != Some(shape) {
+                ops.op(Op::MultimeshAllocate, 1);
+                ops.rid(rid);
+                ops.i64(e.instances);
+                ops.b(e.colors);
+                ops.b(e.custom);
+                c.mm_allocations += 1;
+                m.shape = Some(shape);
+                // GLES3: a new shape zeroes the buffer and clamps a non-negative `visible`.
+                m.serial = 0;
+                if m.visible >= 0 {
+                    m.visible = m.visible.min(e.instances);
+                }
+            }
+            if m.mesh != mesh {
+                ops.op(Op::MultimeshSetMesh, 1);
+                ops.rid(rid);
+                ops.rid(mesh.map(RidRef::Mesh).unwrap_or(RidRef::None));
+                c.mm_mesh_sets += 1;
+                m.mesh = mesh;
+            }
+            let aabb = e.custom_aabb.unwrap_or([0.0; 6]);
+            if !feq(&aabb, &m.aabb) {
+                ops.op(Op::MultimeshSetCustomAabb, 1);
+                ops.rid(rid);
+                ops.fs(&aabb);
+                c.mm_aabb_sets += 1;
+                m.aabb = aabb;
+            }
+            if let Some(b) = payloads.multimeshes.get(id) {
+                if b.serial != m.serial {
+                    if !b.bytes.is_empty() {
+                        ops.op(Op::MultimeshSetBuffer, 1);
+                        ops.rid(rid);
+                        ops.bytes(&b.bytes);
+                        c.mm_buffer_sets += 1;
+                        c.mm_buffer_bytes += b.bytes.len() as i64;
+                    }
+                    m.serial = b.serial;
+                }
+            }
+            if m.visible != e.visible {
+                ops.op(Op::MultimeshSetVisibleInstances, 1);
+                ops.rid(rid);
+                ops.i64(e.visible);
+                c.mm_visible_sets += 1;
+                m.visible = e.visible;
+            }
+        }
+        changed
     }
 
     fn free_shader(&mut self, id: Id, ops: &mut OpBuf, c: &mut Counters) {
@@ -3099,15 +3353,52 @@ impl Planner {
                         reason: reason.as_str(),
                     });
                 }
-                // /11 (PM1): the wire carries the multimesh, but this planner does not re-issue
-                // multimeshes yet (PM2): typed, counted, not drawn.
-                Command::Multimesh { .. } => {
-                    c.multimesh_commands_undrawn += 1;
-                    unsupported.push(UnsupportedCommand {
-                        item: id,
-                        name: "canvas_item_add_multimesh".into(),
-                        reason: "multimesh-undrawn",
-                    });
+                // /11: PM2 draws a resident multimesh. The `undrawn-multimesh` sabotage is the
+                // pre-PM2 planner (PM1): typed, counted, not drawn.
+                Command::Multimesh { multimesh, tex } => {
+                    if sab.undrawn_multimesh {
+                        c.multimesh_commands_undrawn += 1;
+                        unsupported.push(UnsupportedCommand {
+                            item: id,
+                            name: "canvas_item_add_multimesh".into(),
+                            reason: "multimesh-undrawn",
+                        });
+                        continue;
+                    }
+                    let reason = match st.multimeshes.get(multimesh) {
+                        None => "unknown-multimesh",
+                        Some(m) if m.status == EntryStatus::Freed => "multimesh-freed",
+                        Some(m) if m.status != EntryStatus::Ok => "unsupported-multimesh",
+                        Some(_) if !self.multimeshes.contains_key(multimesh) => {
+                            "multimesh-not-resident"
+                        }
+                        Some(_) => "",
+                    };
+                    if !reason.is_empty() {
+                        c.skipped_multimesh_commands += 1;
+                        unsupported.push(UnsupportedCommand {
+                            item: id,
+                            name: "canvas_item_add_multimesh".into(),
+                            reason,
+                        });
+                        continue;
+                    }
+                    let (ok, t, reason) = self.texture_for(st, *tex);
+                    if !ok {
+                        c.skipped += 1;
+                        unsupported.push(UnsupportedCommand {
+                            item: id,
+                            name: "canvas_item_add_multimesh".into(),
+                            reason,
+                        });
+                        continue;
+                    }
+                    ops.op(Op::AddMultimesh, 1);
+                    ops.rid(rid);
+                    ops.rid(RidRef::Multimesh(self.multimeshes[multimesh].handle));
+                    ops.rid(t);
+                    c.replayed += 1;
+                    c.multimesh_commands += 1;
                 }
             }
         }
@@ -3136,6 +3427,13 @@ impl Planner {
         for m in textures.values() {
             ops.op(Op::FreeRid, 1);
             ops.rid(RidRef::Texture(m.handle));
+            n += 1;
+        }
+        // PM2: multimeshes before the meshes they draw.
+        let multimeshes = std::mem::take(&mut self.multimeshes);
+        for m in multimeshes.values() {
+            ops.op(Op::FreeRid, 1);
+            ops.rid(RidRef::Multimesh(m.handle));
             n += 1;
         }
         let meshes = std::mem::take(&mut self.meshes);
@@ -3170,6 +3468,9 @@ impl Planner {
         self.mesh_count.clear();
         self.mat_count.clear();
         self.mat_items.clear();
+        self.mm_count.clear();
+        self.mm_items.clear();
+        self.mm_meshes.clear();
         self.rid_param_items.clear();
         self.mattex.clear();
         self.canvas_ids.clear();
@@ -3400,8 +3701,22 @@ fn write_stats(
     mesh_uploads: &[MeshUpload],
     skipped: &[SkippedShader],
 ) {
-    // PM1: `multimesh_commands_undrawn` is the 19th key only when non-zero.
-    v.dict(18 + (c.multimesh_commands_undrawn > 0) as usize);
+    // PM1: `multimesh_commands_undrawn` is a key only when non-zero; PM2: so is
+    // `multimesh_resources` (only when one of its counters is).
+    let mm_resources = [
+        ("multimeshes_created", c.mm_created),
+        ("multimeshes_freed", c.mm_freed),
+        ("allocations", c.mm_allocations),
+        ("mesh_sets", c.mm_mesh_sets),
+        ("custom_aabb_sets", c.mm_aabb_sets),
+        ("visible_sets", c.mm_visible_sets),
+        ("buffer_sets", c.mm_buffer_sets),
+        ("buffer_bytes", c.mm_buffer_bytes),
+        ("multimesh_commands", c.multimesh_commands),
+        ("skipped_multimesh_commands", c.skipped_multimesh_commands),
+    ];
+    let mm_any = mm_resources.iter().any(|(_, n)| *n != 0);
+    v.dict(18 + (c.multimesh_commands_undrawn > 0) as usize + mm_any as usize);
     v.key("created");
     v.int(c.created);
     v.key("freed");
@@ -3465,6 +3780,10 @@ fn write_stats(
     if c.multimesh_commands_undrawn > 0 {
         v.key("multimesh_commands_undrawn");
         v.int(c.multimesh_commands_undrawn);
+    }
+    if mm_any {
+        v.key("multimesh_resources");
+        int_dict(v, &mm_resources);
     }
     v.key("mesh_resources");
     let mut mesh_resources = vec![

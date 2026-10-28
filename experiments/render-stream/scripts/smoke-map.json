@@ -106,14 +106,13 @@
       "exclusive": true
     },
     {
-      "why": "PM1's gate 8 group g8mm (render-stream-11.md \"As built (PM1)\"): fixtures/gate8-mm, its checks and their self-test reach native gate 8 only, which runs g8mm whole; exclusive because PM1's g8mm has hook-log-only capture legs and no browser half (the generic gate 8 rule below would add g7-8). PM2, which adds g8mm's receiver legs to g7-8, drops the exclusivity",
+      "why": "PM1's gate 8 group g8mm (render-stream-11.md \"As built (PM1)\"; PM2 added the references and the native receivers): fixtures/gate8-mm, its checks and their self-test reach native gate 8, which runs g8mm whole, and g7-8's web half, which replays g8mm's receiver legs (PM2 dropped PM1's exclusivity)",
       "paths": [
         "experiments/render-stream/fixtures/gate8-mm/**",
         "experiments/render-stream/scripts/lib/gate8-mm-checks.ts",
         "experiments/render-stream/scripts/test/self-test-gate8-mm.ts"
       ],
-      "reach": ["native:gate8@*"],
-      "exclusive": true
+      "reach": ["native:gate8@*", "g7:g7-8@web/rust"]
     },
     {
       "why": "remote-run plumbing (docs/remote-compute.md): no local leg runs it; remote-determinism.ts has a pure self-test, the wrapper scripts/test-remote-validate.sh",

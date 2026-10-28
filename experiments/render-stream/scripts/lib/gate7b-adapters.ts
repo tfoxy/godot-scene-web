@@ -108,6 +108,9 @@ export const GATE8_FILE_GROUPS: readonly string[] = [
   // W11e: render-stream/11 (W11d's native receiver legs on W11b's captures and W11c's receiver
   // sabotages), so g8w11's native checks judge the web export's replay of them (`@web`)
   "g8w11",
+  // PM2: /11 multimesh (fixtures/gate8-mm): g8mm's native receiver legs, the /10 negative control
+  // and the receiver sabotages, so mm-reference and its catches judge the web export (`@web`)
+  "g8mm",
 ];
 
 /** Q8's file-leg groups per gate; the live groups (g1c, g1d, g2c, g2e, g5f, g55f, g6l) are G7l's

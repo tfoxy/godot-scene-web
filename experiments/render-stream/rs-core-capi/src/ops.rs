@@ -25,6 +25,9 @@ pub enum RidRef {
     Mesh(u32),
     Shader(u32),
     Material(u32),
+    /// PM2: a multimesh. Multimeshes share the mesh table and its handle counter (the 3-bit kind
+    /// space is full), so this is `Mesh`'s word: the shim frees either with `free_rid`.
+    Multimesh(u32),
 }
 
 pub const KIND_ITEM: u32 = 0;
@@ -49,6 +52,7 @@ impl RidRef {
             RidRef::Mesh(h) => (KIND_MESH, h),
             RidRef::Shader(h) => (KIND_SHADER, h),
             RidRef::Material(h) => (KIND_MATERIAL, h),
+            RidRef::Multimesh(h) => (KIND_MESH, h),
         };
         assert!(handle < (1 << 29), "handle space exhausted");
         (kind << 29) | handle
@@ -203,6 +207,23 @@ opcodes! {
     // item, i64 mode, f32 clear_margin, bool fit_empty, f32 fit_margin, bool blur_mipmaps
     // (a /10 item's `canvas_group`; mode 0 when null)
     ItemSetCanvasGroupMode = 67,
+    // PM2 (render-stream-11.md "As built (PM2)"): /11 multimesh. Multimesh handles live in the
+    // mesh table (RidRef::Multimesh).
+    // multimesh handle: multimesh_create()
+    MultimeshCreate = 68,
+    // multimesh, i64 instances, bool colors, bool custom: multimesh_allocate_data(TRANSFORM_2D,
+    // use_indirect false)
+    MultimeshAllocate = 69,
+    // multimesh, rid mesh
+    MultimeshSetMesh = 70,
+    // multimesh, aabb6
+    MultimeshSetCustomAabb = 71,
+    // multimesh, i64 visible
+    MultimeshSetVisibleInstances = 72,
+    // multimesh, bytes (little-endian f32: a PackedFloat32Array)
+    MultimeshSetBuffer = 73,
+    // item, rid multimesh, rid tex
+    AddMultimesh = 74,
 }
 
 /// The planner's output for one call: the op words and the arena their byte operands point into.

@@ -33,7 +33,8 @@ extends Node
 ## gets one line per frame-carrying buffer of B and I: {"cell", "frame", "value", "sha256"} (the
 ## SHA-256 of the cell's whole buffer as little-endian f32 after the change, the floats the
 ## fixture itself set). Environment (all optional): RS_FIXTURE_STEP_LOG, RS_FIXTURE_MM_LOG,
-## RS_FIXTURE_SHOT_DIR (rendered runs only, shots step-<k>.png), RS_FIXTURE_QUIT_FRAME (>= 90).
+## RS_FIXTURE_SHOT_DIR (rendered runs only, shots step-<k>.png at each settle frame and, PM2,
+## step-<k>-prev.png the frame before), RS_FIXTURE_QUIT_FRAME (>= 90).
 
 const CHECKPOINTS: Array[Array] = [[1, 4], [20, 27], [40, 47]]
 const H_CLEAR_FRAME: int = 41
@@ -202,6 +203,10 @@ func _process(_delta: float) -> void:
 			elif k == 2:
 				_step_2()
 			_log_step(k, applied, settle)
+		# PM2: the frame before each settle frame too (mm-reference-moving: the particle cells
+		# move frame to frame, so a receiver one frame off cannot equal the reference).
+		if _frame == settle - 1:
+			_maybe_take_shot("step-%d-prev.png" % k)
 		if _frame == settle:
 			_maybe_take_shot("step-%d.png" % k)
 	if _frame == H_CLEAR_FRAME:

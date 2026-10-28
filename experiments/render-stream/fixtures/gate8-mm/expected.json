@@ -126,5 +126,24 @@
       "pairing": { "instance": 0, "float": 8, "sentinel": -1, "source": "set_buffer" },
       "headless": { "calls": { "set_buffer": 1 }, "per_frame": [] }
     }
+  },
+  "pixels": {
+    "doc": "PM2 (render-stream-11.md \"As built (PM2)\"): the 640x360 shot is a 3x3 grid of cells (220x130, the last column and row narrower; I_PREDRAW's region starts at x 430, where its first quad reaches), one cell per fixture cell, each region inclusive [x0, y0, x1, y1]; every multimesh draws inside its own cell and nothing is drawn outside the cells. `drawn_steps`: the checkpoints at whose settle frame the cell's multimesh draws (G_HIDDEN never: hidden; H_FREE not at step 2: freed at frame 40, its item cleared at 41). `moving`: per cell, the checkpoints at which its pixels change from the frame before (B_CUSTOM's shader reads INSTANCE_CUSTOM.x, the frame number, by parity; C_FLIP and D_GLOBAL simulate; C_FLIP is still at frame 4, measured), so step-<k>-prev.png differs from step-<k>.png there. `known_gaps`: what PM2's receivers do not reproduce yet, with the cells it touches.",
+    "regions": {
+      "A_XFORM": [0, 0, 219, 129], "B_CUSTOM": [220, 0, 439, 129], "C_FLIP": [440, 0, 639, 129],
+      "D_GLOBAL": [0, 130, 219, 249], "E_VISIBLE": [220, 130, 439, 249], "F_REPLACE": [440, 130, 639, 249],
+      "G_HIDDEN": [0, 250, 219, 359], "H_FREE": [220, 250, 429, 359], "I_PREDRAW": [430, 250, 639, 359]
+    },
+    "drawn_steps": {
+      "A_XFORM": [0, 1, 2], "B_CUSTOM": [0, 1, 2], "C_FLIP": [0, 1, 2], "D_GLOBAL": [0, 1, 2],
+      "E_VISIBLE": [0, 1, 2], "F_REPLACE": [0, 1, 2], "G_HIDDEN": [], "H_FREE": [0, 1], "I_PREDRAW": [0, 1, 2]
+    },
+    "moving": { "B_CUSTOM": [0, 1, 2], "C_FLIP": [1, 2], "D_GLOBAL": [0, 1, 2] },
+    "known_gaps": {
+      "identity-transform": {
+        "doc": "A global-coordinate CPUParticles2D (local_coords false) calls canvas_item_set_use_identity_transform(item, true) (scene/2d/cpu_particles_2d.cpp set_use_local_coordinates): its buffer holds global particle transforms and its item draws with the canvas transform alone. The capture does not hook that call (no calibrated slot, no wire field), so the receiver draws D_GLOBAL's particles through the node's transform a second time: displaced down and right, partly into G_HIDDEN's cell, partly off screen. PM2 types it; the fix is a capture hook and a /11 item field (a follow-up increment). mm-reference ignores these cells on the receivers; mm-identity-transform-gap measures them.",
+        "cells": ["D_GLOBAL", "G_HIDDEN"]
+      }
+    }
   }
 }
