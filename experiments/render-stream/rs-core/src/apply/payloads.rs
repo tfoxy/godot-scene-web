@@ -522,6 +522,9 @@ pub struct PayloadStore {
     /// W11c: /11 dynamic mesh geometry by mesh id (no hash, so no entry here per pose); not
     /// counted by [`Self::len`], [`Self::total_bytes`] or the budget eviction.
     pub dynamic: super::dynamic::DynamicMeshes,
+    /// PM3: /11 multimesh instance buffers by multimesh id ([`super::multimesh`]); not counted by
+    /// [`Self::len`], [`Self::total_bytes`] or the budget eviction.
+    pub multimeshes: super::multimesh::MultimeshBuffers,
 }
 
 /// P3-LV: a decoded payload's bytes as [`PayloadStore::total_bytes`] counts them.
@@ -548,6 +551,7 @@ impl PayloadStore {
         self.touched.clear();
         self.bytes = 0;
         self.dynamic.clear();
+        self.multimeshes.clear();
     }
 
     /// W11c (render-stream-11.md "Receivers"): drop `hash` from the store now (a /11 hash that
@@ -571,6 +575,11 @@ impl PayloadStore {
         v: &crate::validate::Validator,
         record: &[u8],
     ) -> Result<u32, crate::wire::Error> {
+        if !self.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {
+            // PM3: the transaction's multimesh buffers, by multimesh id.
+            self.multimeshes
+                .ingest(v.state(), v.multimesh_buffers(), record);
+        }
         if self.dynamic.is_empty() && v.dynamic_bodies().is_empty() {
             return Ok(0);
         }

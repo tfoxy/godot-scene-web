@@ -264,6 +264,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-nine-patch-axis" => o.apply.lower.ignore_nine_patch_axis = true,
                 "polygon-winding" => o.apply.lower.polygon_winding = true,
                 "msdf-px-range" => o.apply.lower.msdf_px_range = true,
+                // PM3: every add_multimesh skipped and counted, as GSW drew before PM3.
+                "undrawn-multimesh" => o.apply.lower.undrawn_multimesh = true,
+                // PM3, GSW-only: a particles_animation CanvasItemMaterial drawn as its builtin.
+                "no-flipbook" => o.apply.no_flipbook = true,
                 "no-evict" => o.no_evict = true,
                 "drop-mesh-surface" => o.apply.mesh.drop_surface = true,
                 "stale-mesh" => o.apply.mesh.stale = true,
@@ -1106,6 +1110,8 @@ impl GswRs {
         }
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
+        // PM3: GLES3 stores multimesh colours and custom data as half floats.
+        applier.half_instances = s.engine.rendering_method == "gl_compatibility";
         // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
         // minus the mask; the selection uses the stated list unless `ignore-format-mask`.
         let detected = self
@@ -1264,6 +1270,12 @@ impl GswRs {
                     } else {
                         self.payloads.dynamic.ingest(st, v.dynamic_bodies(), bytes)
                     };
+                    // PM3: the transaction's multimesh buffers, by multimesh id, likewise.
+                    if !self.payloads.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {
+                        self.payloads
+                            .multimeshes
+                            .ingest(st, v.multimesh_buffers(), bytes);
+                    }
                     prof::add(prof::PAYLOAD_DECODE, t);
                     if let Err(e) = ingested {
                         self.error = fail(e);
@@ -1446,6 +1458,7 @@ impl GswRs {
         };
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
+        applier.half_instances = v.session().engine.rendering_method == "gl_compatibility";
         applier.prepare(v.state(), v.delta());
         self.applier = Some(applier);
         self.compute_needed()
@@ -2397,7 +2410,28 @@ impl GswRs {
         // G8g: the receiver-side caveat of a quantized float texture (render-stream-8.md "As built
         // (G8f)"; no wire change), with the float formats it was taken for.
         let q: Vec<String> = self.quantized_float.iter().map(|f| format!("\"{f}\"")).collect();
-        out.push_str(&format!("],\"float_quantized\":[{}]", q.join(",")));
+        out.push(']');
+        // PM3: applied.json `w11.multimesh`, the native receiver's keys where GSW has them.
+        if let (true, Some(a)) = (self.version >= 11, self.applier.as_ref()) {
+            let m = &self.payloads.multimeshes;
+            let total = |k: &str| a.shortcut_totals.get(k).copied().unwrap_or(0);
+            let undrawn = total("multimesh-undrawn");
+            let skipped = total("multimesh-unavailable-skipped");
+            if m.buffers_total + a.multimesh_commands + undrawn + skipped > 0 {
+                out.push_str(&format!(
+                    ",\"w11_multimesh\":{{\"multimeshes_created\":{},\"multimeshes_freed\":{},\"buffer_sets\":{},\"buffer_bytes\":{},\"multimesh_commands\":{},\"skipped_multimesh_commands\":{},\"undrawn\":{},\"instances_written\":{}}}",
+                    m.created_total,
+                    m.freed_total,
+                    m.buffers_total,
+                    m.bytes_total,
+                    a.multimesh_commands,
+                    skipped,
+                    undrawn,
+                    a.instances_written
+                ));
+            }
+        }
+        out.push_str(&format!(",\"float_quantized\":[{}]", q.join(",")));
         out.push_str(if q.is_empty() {
             ",\"caveats\":[]}"
         } else {

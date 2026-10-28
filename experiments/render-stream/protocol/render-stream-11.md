@@ -508,6 +508,8 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
   fetch for dynamic meshes.
 - Multimesh (PM2): re-issue the `multimesh_*` calls and `canvas_item_add_multimesh`
   (particles-multimesh-design.md "Receivers"; as built: "As built (PM2)" below).
+- Multimesh in GSW (PM3): an instanced draw per mesh surface from the buffers ingested at accept
+  ("As built (PM3)").
 
 ## Golden vectors (`golden-11/`, W11a)
 
@@ -1047,6 +1049,74 @@ code of its own.
    - The fix is a capture hook (a conditional /11 slot, as PM1's) plus an optional /11 item key,
      and the receivers' `canvas_item_set_use_identity_transform`. That is a follow-up increment,
      not PM2: it is a wire change, and GSW (PM3) must honour it too.
+
+### As built (PM3): decisions
+
+PM3 makes GSW draw /11 multimesh ([results/p3/pm3.md](../results/p3/pm3.md)). Nothing here changes
+the wire. Rule 16's calls are used as written.
+
+1. **Ingest at accept.** `MultimeshBuffers` (`rs-core` `apply::multimesh`, in `PayloadStore`)
+   holds one buffer per multimesh the newest state holds as `ok`, the wire's floats bit for bit,
+   with an ingest serial. GSW ingests `Validator::multimesh_buffers()` right after every accepted
+   /11 transaction, beside the dynamic bodies (W11c rule 1); `PayloadStore::accept_transaction`
+   does the same for the tests. A multimesh that leaves the table, or stops being `ok`, is dropped
+   then, so the store is bounded by the state. It is not a store entry: `len()`, `total_bytes()`
+   and G7k's budget never count it. A fold needs nothing more (a later buffer replaces an earlier
+   one; an unlisted `ok` entry keeps its floats).
+2. **The lowering.** `add_multimesh` lowers each surface of the multimesh's mesh as an `add_mesh`
+   would, mesh-local and with modulate white (GLES3's `TYPE_MULTIMESH` batch,
+   rasterizer_canvas_gles3.cpp:1179-1250), one draw per surface: GLES3 draws every instance of a
+   surface before the next. The draw is `DRAW_INSTANCED` with the instance count
+   `multimesh_get_instances_to_draw` (`visible`, or all at -1). Nothing is drawn, and the command is
+   typed `multimesh-unavailable-skipped`, for an id the table does not hold, a `freed` or
+   `unsupported` entry, no mesh, or a buffer not held; GLES3 draws nothing for the first four
+   either. A count of 0 draws nothing, untyped.
+3. **Instances are written at assembly, not lowered.** The lowering reads only the multimesh's
+   shape (status, mesh, instances, visible, colours, custom, custom AABB, drawability): an item is
+   re-lowered when that key moves. The floats go to `DrawList::instances` after the assembly, and
+   again only for the ranges whose multimesh's buffer serial moved since they were written, so an
+   emitter that changes every frame re-uploads its own instances and nothing else (no re-lowering,
+   no re-assembly). A multimesh whose mesh changes (`set_mesh`) re-names the mesh residency of the
+   items that draw it.
+4. **The instance.** `gsw_canvas_draw_list::Instance` (64 bytes): the transform's two rows as the
+   buffer holds them, the colour (white without colours) and the custom data (zero without). With
+   an `add_set_transform` before the command, the draw transform is composed into each instance on
+   the CPU (`draw × instance`): GLES3's model matrix is `base_transform × draw_transform`, then the
+   instance.
+5. **Half floats.** When the session's `engine.rendering_method` is `gl_compatibility`, colours and
+   custom data go through `Math::make_half_float` and back (`geom::godot_half`: truncated mantissa,
+   values under 2^-14 flushed to zero), as GLES3 stores them (mesh_storage.cpp:1808) and
+   canvas.glsl's `unpackHalf2x16` reads them. The transform stays f32. Any other rendering method
+   keeps the floats.
+6. **The executor** (`canvas_items`, WebGL2). Attributes 4 to 7 are the instance. Every draw that
+   is not instanced reads them as constants holding the identity instance, so its arithmetic is
+   unchanged (an identity product is exact). An instanced call binds the instance buffer at its
+   range (divisor 1), issues `drawElementsInstanced`, then restores the constants. The vertex stage
+   computes canvas.glsl's `model_matrix * transpose(mat4(instance_xform0, instance_xform1, ..))`
+   and `color *= instance_color`; an item-space program's vertex stage gets
+   `MODEL_MATRIX = item × instance` and `INSTANCE_CUSTOM`. An instanced draw never merges.
+   `DrawList::instances` and `DrawList::instanced` are not in a `PDL1` dump.
+7. **`INSTANCE_CUSTOM`** in the transpiler (`@godot-scene-web/effects` `item-shader.ts`): it is the
+   renderer's `GSW_INSTANCE_CUSTOM` when the renderer defines it (the canvas-items vertex stage
+   does), else `vec4(0.0)` as before, which is canvas.glsl's value for every non-instanced draw.
+   `INSTANCE_ID` stays refused: GLES3's value is the batch index for every non-multimesh draw, which
+   a program compiled once cannot tell apart.
+8. **The flipbook.** A `particles_animation` CanvasItemMaterial (`builtin.particles_animation`)
+   draws as its template's item-space program, transpiled from the shader's payload like any custom
+   shader: its `vertex()` divides `VERTEX` and selects the `UV` frame from `INSTANCE_CUSTOM.z` and the
+   material's `particles_anim_*` parameters. Until the program is defined, or when it is refused, it
+   draws as the builtin it names (the blend and light mode), as every other template still does.
+   A non-instanced draw with that material sees `INSTANCE_CUSTOM` zero, frame 0, as on GLES3.
+9. **The custom AABB and culling.** The item's rect (`Item::get_rect`) takes `multimesh_get_aabb`:
+   the custom AABB when one is set, else the drawn instances' transforms over the mesh's AABB
+   (`_multimesh_re_create_aabb`), computed when the item is lowered. Godot caches an item's rect
+   until its commands change (`rect_dirty`), so a buffer change alone does not move it there
+   either.
+10. **Backends.** GSW draws items only through the WebGL2 `canvas_items` executor; it has no WebGPU
+    item backend, so there is no WebGPU half.
+11. **Receiver sabotages** (GSW options): `undrawn-multimesh` (every `add_multimesh` skipped and
+    counted as `multimesh-undrawn`, PM2's native name) and the GSW-only `no-flipbook` (a
+    `particles_animation` template drawn as its builtin).
 
 ## Predicted cost (STS2, from the kept recordings)
 

@@ -87,6 +87,23 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8w11/scene/off/sabotage-no-prune/receiver"),
   leg("g8w11/scene/off/sabotage-evict-carried/receiver"),
   leg("g8w11/scale/off/sabotage-ignore-released/receiver"),
+  // g8mm (PM3, render-stream-11.md "As built (PM3)"): PM2's native receiver legs on fixtures/gate8-mm
+  // (/11 full and patch sinks, the /10 negative control, the receiver sabotage undrawn-multimesh
+  // that GSW implements on the same name, and PM1's sabotaged patch sinks), judged by g8mm's own
+  // checks through the band and by lib/gate7-gsw-g8-mm-checks.ts against the unarmed reference;
+  // plus the GSW-only no-flipbook sabotage (the particles_animation template drawn as its builtin).
+  leg("g8mm/receiver"),
+  leg("g8mm/receiver-patch"),
+  leg("g8mm/receiver-v10"),
+  leg("g8mm/sabotage-undrawn-multimesh/receiver"),
+  leg("g8mm/sabotage-perturb-instance/receiver-patch"),
+  leg("g8mm/sabotage-stale-buffer/receiver-patch"),
+  {
+    leg: "g8mm/sabotage-gsw-no-flipbook",
+    from: "g8mm/receiver",
+    env: { RS_RECEIVER_SABOTAGE: "no-flipbook" },
+    replaces: false,
+  },
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -139,6 +156,7 @@ export const GATE8_NOT_APPLICABLE: NotApplicable[] = [
   { leg: "g8cg/import/receiver", reason: IMPORT_NA },
   { leg: "g8m/import/receiver", reason: IMPORT_NA },
   { leg: "g8w11/import/receiver", reason: IMPORT_NA },
+  { leg: "g8mm/import/receiver", reason: IMPORT_NA },
 ];
 
 /** The checks of check-gate8.ts that read a receiver leg, found mechanically
@@ -193,6 +211,14 @@ export const GATE8_RECEIVER_CHECKS: {
     "native-no-prune-caught",
     "native-evict-carried-caught",
     "native-ignore-released-caught",
+    // g8mm (PM2's checks over the PM3 GSW legs)
+    "g8mm-legs",
+    "mm-premise",
+    "mm-reference",
+    "mm-state",
+    "mm-reference-catches-undrawn-multimesh",
+    "mm-reference-catches-perturb-instance",
+    "mm-reference-catches-stale-buffer",
     // g8kp (G8kb)
     "delivery-select",
     "delivery-pixels-native",

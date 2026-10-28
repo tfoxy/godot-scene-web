@@ -126,6 +126,50 @@ pub const DRAW_GROUP_CLIP: u32 = 32;
 /// (rasterizer_canvas_gles3.cpp:2844-2860: unshaded, `COLOR *=` the un-premultiplied back buffer at
 /// `SCREEN_UV`, level 0).
 pub const DRAW_GROUP_COMPOSITE: u32 = 64;
+/// [`Draw::flags`] (PM3): an instanced draw, Godot's `TYPE_MULTIMESH` (rasterizer_canvas_gles3.cpp
+/// :1386-1530). [`DrawList::instanced`] names its instance range in [`DrawList::instances`]; the
+/// executor draws the index range once per instance, each instance's [`Instance`] composed into
+/// the vertex stage as canvas.glsl's `USE_INSTANCING` does: `MODEL_MATRIX = item × instance`, the
+/// colour times the instance colour, `INSTANCE_CUSTOM` the instance's custom data. Such a draw
+/// never merges with a neighbour ([`mergeable`]). A draw without the flag sees the identity
+/// instance (identity transform, white, zero custom), so its arithmetic is unchanged.
+pub const DRAW_INSTANCED: u32 = 128;
+
+/// One instance of a [`DRAW_INSTANCED`] draw: 64 bytes, Godot's `MULTIMESH_TRANSFORM_2D` instance
+/// as its GLES3 storage hands it to `canvas.glsl` (`instance_xform0`, `instance_xform1`, then the
+/// colour and custom data unpacked).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Pod, Zeroable)]
+pub struct Instance {
+    /// The instance transform's two rows, `[x.x, y.x, 0, origin.x, x.y, y.y, 0, origin.y]`
+    /// (Godot's buffer layout), applied to the item-local vertex before the item transform.
+    pub xform: [f32; 8],
+    /// Straight RGBA multiplied into the vertex colour (white when the multimesh has none).
+    pub color: [f32; 4],
+    /// `INSTANCE_CUSTOM` (zero when the multimesh has none).
+    pub custom: [f32; 4],
+}
+
+impl Instance {
+    /// The instance every non-instanced draw sees.
+    pub const IDENTITY: Instance = Instance {
+        xform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        color: [1.0; 4],
+        custom: [0.0; 4],
+    };
+}
+
+/// The instance range of one [`DRAW_INSTANCED`] draw (PM3). Part of the draw table, like
+/// [`ScreenOp`]: a producer rewrites it with the draws, ascending by `draw`, one per flagged draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct InstancedDraw {
+    /// The index in [`DrawList::draws`] of the flagged draw.
+    pub draw: u32,
+    /// First instance in [`DrawList::instances`].
+    pub first: u32,
+    /// Instances drawn (0 draws nothing).
+    pub count: u32,
+}
 
 /// What a [`ScreenOp`] does to the executor's back buffer (Godot's render-target back buffer).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -506,6 +550,8 @@ pub struct Dirty {
     pub draws: bool,
     /// Changed [`DrawList::bindings`] slots (0-based slot indices).
     pub bindings: Ranges,
+    /// PM3: changed [`DrawList::instances`] elements.
+    pub instances: Ranges,
 }
 
 impl Dirty {
@@ -516,6 +562,7 @@ impl Dirty {
         self.indices.clear();
         self.draws = false;
         self.bindings.clear();
+        self.instances.clear();
     }
     pub fn is_clean(&self) -> bool {
         !self.all
@@ -524,6 +571,7 @@ impl Dirty {
             && self.indices.is_empty()
             && !self.draws
             && self.bindings.is_empty()
+            && self.instances.is_empty()
     }
 }
 
@@ -548,6 +596,12 @@ pub struct DrawList {
     /// [`DRAW_SCREEN_OPS`]). Part of the draw table: a producer rewrites them with the draws. Not
     /// in a `PDL1` dump.
     pub screen_ops: Vec<ScreenOp>,
+    /// PM3: the instances [`DRAW_INSTANCED`] draws read (dirty ranges in [`Dirty::instances`]).
+    /// Not in a `PDL1` dump.
+    pub instances: Vec<Instance>,
+    /// PM3: each [`DRAW_INSTANCED`] draw's instance range, ascending by draw. Part of the draw
+    /// table (a producer rewrites it with the draws). Not in a `PDL1` dump.
+    pub instanced: Vec<InstancedDraw>,
 }
 
 impl DrawList {
@@ -675,7 +729,8 @@ impl DrawList {
 /// Whether `next` can extend the run `prev` (one draw, or a run's state from [`merged`]) into one
 /// draw call: touching index ranges and equal state, where a [`DRAW_UNTEXTURED`] side's texture and
 /// sampler match anything, and a [`DRAW_SCREEN_OPS`] `next` never joins (its operations run before
-/// it). Without untextured draws or screen operations this is plain equality of adjacent draws.
+/// it), nor does a [`DRAW_INSTANCED`] draw on either side (PM3). Without untextured, instanced draws
+/// or screen operations this is plain equality of adjacent draws.
 pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
     let untextured = (prev.flags | next.flags) & DRAW_UNTEXTURED != 0;
     prev.first_index + prev.index_count == next.first_index
@@ -685,6 +740,7 @@ pub fn mergeable(prev: &Draw, next: &Draw) -> bool {
         && (prev.flags & !(DRAW_UNTEXTURED | DRAW_SCREEN_OPS))
             == (next.flags & !(DRAW_UNTEXTURED | DRAW_SCREEN_OPS))
         && next.flags & DRAW_SCREEN_OPS == 0
+        && (prev.flags | next.flags) & DRAW_INSTANCED == 0
         && (prev.flags & DRAW_SCISSOR == 0 || prev.scissor == next.scissor)
         && (prev.flags & DRAW_MSDF == 0 || prev.msdf == next.msdf)
 }
@@ -847,6 +903,8 @@ pub mod pdl1 {
             texture_bytes: Vec::new(),
             shader_time: 0.0,
             screen_ops: Vec::new(),
+            instances: Vec::new(),
+            instanced: Vec::new(),
         })
     }
 }
@@ -854,6 +912,31 @@ pub mod pdl1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instanced_draws_never_merge() {
+        let a = Draw {
+            index_count: 6,
+            ..Draw::default()
+        };
+        let b = Draw {
+            first_index: 6,
+            index_count: 6,
+            ..Draw::default()
+        };
+        assert!(mergeable(&a, &b));
+        for (p, n) in [
+            (DRAW_INSTANCED, 0),
+            (0, DRAW_INSTANCED),
+            (DRAW_INSTANCED, DRAW_INSTANCED),
+        ] {
+            let (mut a, mut b) = (a, b);
+            a.flags |= p;
+            b.flags |= n;
+            assert!(!mergeable(&a, &b));
+        }
+        assert_eq!(std::mem::size_of::<Instance>(), 64);
+    }
 
     #[test]
     fn sizes_are_the_contract() {

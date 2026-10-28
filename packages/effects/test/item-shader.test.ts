@@ -387,7 +387,9 @@ describe("transpileGodotItemShader vertex() (P3-VX)", () => {
       "#define TEXTURE_PIXEL_SIZE (vec2(1.0) / vec2(textureSize(TEXTURE, 0)))",
     );
     expect(v).toContain("#define AT_LIGHT_PASS false");
-    expect(v).toContain("#define INSTANCE_CUSTOM vec4(0.0)");
+    expect(v).toContain(
+      "#ifdef GSW_INSTANCE_CUSTOM\n#define INSTANCE_CUSTOM GSW_INSTANCE_CUSTOM\n#else\n#define INSTANCE_CUSTOM vec4(0.0)\n#endif",
+    );
     // Int literals become float in float arithmetic, as in fragment(), and stay int beside an
     // int constructor call.
     expect(v).toContain("UV = UV * 2.0 - 0.5;");

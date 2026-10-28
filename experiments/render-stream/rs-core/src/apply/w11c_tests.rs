@@ -44,6 +44,8 @@ struct Run {
     max_entries: usize,
     digests: Vec<(i64, Hash)>,
     mm_undrawn: u64,
+    mm_skipped: u64,
+    instances_written: u64,
 }
 
 /// Replays `data` (/11), applying every `apply_every`-th transaction (a fold of the ones between,
@@ -136,12 +138,19 @@ fn replay(data: &[u8], apply_every: usize, retain: bool) -> Run {
         }
     }
     run.released = retention.released_total;
-    // PM1: states 17-21 draw add_multimesh, which this executor types and counts, undrawn.
+    // PM1: states 17-21 draw add_multimesh. PM3 draws the drawable ones (instances written);
+    // the 3D one and the unknown id are typed `multimesh-unavailable-skipped`.
     run.mm_undrawn = a
         .shortcut_totals
         .get("multimesh-undrawn")
         .copied()
         .unwrap_or(0);
+    run.mm_skipped = a
+        .shortcut_totals
+        .get("multimesh-unavailable-skipped")
+        .copied()
+        .unwrap_or(0);
+    run.instances_written = a.instances_written;
     run
 }
 
@@ -151,7 +160,9 @@ fn golden_11_inline_applies_dynamic_bodies_by_id_and_retains_h() {
     let r = replay(&data, 1, true);
     // 16 W11a states, then PM1's multimesh states 17 to 21.
     assert_eq!(r.txs, 21);
-    assert!(r.mm_undrawn >= 3, "{r:?}");
+    assert_eq!(r.mm_undrawn, 0, "{r:?}");
+    assert!(r.mm_skipped >= 1, "{r:?}");
+    assert!(r.instances_written >= 3, "{r:?}");
     assert!(r.bodies >= 3, "{r:?}");
     // Texture F leaves at 12: the store drops it (H), and it returns inline before 13.
     assert!(r.released >= 1, "{r:?}");
