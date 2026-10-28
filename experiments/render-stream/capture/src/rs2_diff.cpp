@@ -292,6 +292,52 @@ bool lowers(const Command &command) {
          (command.kind == CommandKind::Unsupported && command.name == kAddMultimeshOp);
 }
 
+// PM5 (render-stream-12.md "Particles table"): a patch lists an entry whose JSON fields or floats
+// (by bit pattern) differ from the base's.
+bool particles_entry_equal(const ParticlesEntry &a, const ParticlesEntry &b) {
+  if (a.status != b.status || a.has_reason != b.has_reason ||
+      (a.has_reason && a.reason != b.reason) || a.version != b.version ||
+      a.mode_2d != b.mode_2d || a.emitting != b.emitting || a.amount != b.amount ||
+      a.one_shot != b.one_shot || a.fixed_fps != b.fixed_fps || a.interpolate != b.interpolate ||
+      a.fractional_delta != b.fractional_delta || a.local != b.local ||
+      a.draw_order != b.draw_order || a.transform_align != b.transform_align ||
+      a.trails != b.trails || a.trail_poses != b.trail_poses || a.seed != b.seed ||
+      a.restarts != b.restarts || a.emits != b.emits ||
+      a.process_requests != b.process_requests || a.process_material != b.process_material ||
+      a.draw_passes != b.draw_passes || a.subemitter != b.subemitter) {
+    return false;
+  }
+  if ((a.floats == nullptr) != (b.floats == nullptr)) {
+    return false;
+  }
+  if (a.floats == nullptr || a.floats == b.floats) {
+    return true;
+  }
+  return a.floats->size() == b.floats->size() &&
+         (a.floats->empty() ||
+          std::memcmp(a.floats->data(), b.floats->data(), a.floats->size() * sizeof(float)) == 0);
+}
+
+const char kAddParticlesOp[] = "canvas_item_add_particles";
+
+bool lowers_particles(const Command &command) {
+  return command.kind == CommandKind::AddParticles ||
+         (command.kind == CommandKind::Unsupported && command.name == kAddParticlesOp);
+}
+
+// The emits of the chunks in (after, upto] of `tail`, in call order.
+void append_emits(const std::shared_ptr<const EmitTail> &tail, std::uint64_t after,
+                  std::uint64_t upto, std::vector<ParticleEmit> *out) {
+  if (tail == nullptr) {
+    return;
+  }
+  for (const std::shared_ptr<const EmitChunk> &chunk : *tail) {
+    if (chunk != nullptr && chunk->frame > after && chunk->frame <= upto) {
+      out->insert(out->end(), chunk->emits.begin(), chunk->emits.end());
+    }
+  }
+}
+
 // render-stream-5.md "Shader table"/"Material table": exactly the texture/mesh table's full,
 // patch and resolve semantics (gate5_5-design.md D1), so every JSON field participates.
 bool default_texture_ref_equal(const DefaultTextureRef &a, const DefaultTextureRef &b) {
@@ -336,6 +382,9 @@ bool shader_entry_equal(const ShaderEntry &a, const ShaderEntry &b) {
   }
   if (a.has_builtin && !builtin_cim_equal(a.builtin, b.builtin)) {
     return false;
+  }
+  if (a.has_ppm != b.has_ppm || (a.has_ppm && a.ppm != b.ppm)) {
+    return false;  // PM5: the particle_process_material builtin
   }
   if (a.uses != b.uses) {
     return false;
@@ -438,7 +487,10 @@ Transaction make_full(const Snapshot &cur) {
 }
 
 Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
-  if (meta.version != ProtocolVersion::V11 && cur.multimesh_commands) {
+  if (!is_v12_or_later(meta.version) && cur.particles_commands) {
+    return make_full(lower_particles(cur), meta);  // PM5: /11's lowering
+  }
+  if (!is_v11_or_later(meta.version) && cur.multimesh_commands) {
     return make_full(lower_multimesh(cur), meta);  // PM1 rule 7
   }
   Transaction t;
@@ -467,10 +519,16 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
     t.shaders = cur.shaders;
     t.materials = cur.materials;
   }
-  if (t.version == ProtocolVersion::V11) {
+  if (is_v11_or_later(t.version)) {
     // PM1 rules 1 and 3: every entry, every `ok` buffer (multimesh_buffers_held stays empty).
     t.multimeshes = cur.multimeshes;
     t.perturb_instance = meta.perturb_instance;
+  }
+  if (is_v12_or_later(t.version)) {
+    // PM5: every entry; the emits of T's own frame only (a joiner does not replay history).
+    t.particles = cur.particles;
+    append_emits(cur.emit_tail, cur.frame - 1, cur.frame, &t.particle_emits);
+    t.perturb_seed = meta.perturb_seed;
   }
   t.items.reserve(cur.items.size());
   for (const ItemState &item : cur.items) {
@@ -537,7 +595,10 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
 }
 
 Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta) {
-  if (meta.version != ProtocolVersion::V11 && (cur.multimesh_commands || base.multimesh_commands)) {
+  if (!is_v12_or_later(meta.version) && (cur.particles_commands || base.particles_commands)) {
+    return make_patch(lower_particles(base), lower_particles(cur), meta);  // PM5: /11's lowering
+  }
+  if (!is_v11_or_later(meta.version) && (cur.multimesh_commands || base.multimesh_commands)) {
     return make_patch(lower_multimesh(base), lower_multimesh(cur), meta);  // PM1 rule 7
   }
   Transaction t;
@@ -571,7 +632,7 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   base_items.removed_from(cur_item_ids, &t.removed_items);
   base_textures.removed_from(cur_texture_ids, &t.removed_textures);
   const bool v10 = is_v10_or_later(t.version);  // "V10 or later"
-  const bool v11 = t.version == ProtocolVersion::V11;
+  const bool v11 = is_v11_or_later(t.version);
   // render-stream-11.md "Patched `unsupported`": null when the list equals the base's.
   t.unsupported_as_base = v11 && unsupported_equal(base.unsupported, cur.unsupported);
   // is_v5 means "V5 or later" (render-stream-6.md/-7.md are a delta on /5's tables, carrying
@@ -672,6 +733,26 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
     t.perturb_instance = meta.perturb_instance;
   }
 
+  if (is_v12_or_later(t.version)) {
+    // PM5 (render-stream-12.md "Publication", "The emit list"): the entries new or differing
+    // since the base, the base ids the target no longer names, and the emits made in host frames
+    // (B, T] that the target's tail still holds.
+    t.perturb_seed = meta.perturb_seed;
+    if (!cur.particles.empty() || !base.particles.empty()) {
+      const IdIndex<ParticlesEntry> base_pts(base.particles);
+      const IdIndex<ParticlesEntry> cur_pts(cur.particles);
+      base_pts.removed_from(cur_pts, &t.removed_particles);
+      for (const ParticlesEntry &p : cur.particles) {
+        const ParticlesEntry *prev = base_pts.find(p.id);
+        if (prev != nullptr && particles_entry_equal(*prev, p)) {
+          continue;
+        }
+        t.particles.push_back(p);
+      }
+    }
+    append_emits(cur.emit_tail, base.frame, cur.frame, &t.particle_emits);
+  }
+
   return t;
 }
 
@@ -703,8 +784,11 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
       out.shaders = txn.shaders;
       out.materials = txn.materials;
     }
-    if (txn.version == ProtocolVersion::V11) {
+    if (is_v11_or_later(txn.version)) {
       out.multimeshes = txn.multimeshes;
+    }
+    if (is_v12_or_later(txn.version)) {
+      out.particles = txn.particles;
     }
     out.items.reserve(txn.items.size());
     for (const ItemEntry &entry : txn.items) {
@@ -819,7 +903,25 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn) {
     (void)id;
     out.materials.push_back(material);
   }
-  if (txn.version == ProtocolVersion::V11) {
+  if (is_v12_or_later(txn.version)) {
+    // PM5: as the multimesh table (a listed entry always carries its floats).
+    std::map<std::uint32_t, ParticlesEntry> pts;
+    for (const ParticlesEntry &p : base.particles) {
+      pts[p.id] = p;
+    }
+    for (std::uint32_t id : txn.removed_particles) {
+      pts.erase(id);
+    }
+    for (const ParticlesEntry &p : txn.particles) {
+      pts[p.id] = p;
+    }
+    out.particles.reserve(pts.size());
+    for (auto &[id, p] : pts) {
+      (void)id;
+      out.particles.push_back(p);
+    }
+  }
+  if (is_v11_or_later(txn.version)) {
     // PM1: as the mesh table; an entry whose buffer_f is null keeps the floats the base held,
     // which a capture's entry already carries (its buffer pointer is the target's own).
     std::map<std::uint32_t, MultimeshEntry> mms;
@@ -937,6 +1039,131 @@ void erase_name(std::vector<std::string> *list, const char *name) {
 
 }  // namespace
 
+bool lower_particles_commands(const std::vector<Command> &commands, std::vector<Command> *out) {
+  bool any = false;
+  for (const Command &command : commands) {
+    if (lowers_particles(command)) {
+      any = true;
+      break;
+    }
+  }
+  if (!any) {
+    return false;
+  }
+  out->clear();
+  out->reserve(commands.size());
+  for (const Command &command : commands) {
+    if (!lowers_particles(command)) {
+      out->push_back(command);
+      continue;
+    }
+    Command lowered;
+    lowered.kind = CommandKind::Unsupported;
+    lowered.name = kAddParticlesOp;
+    lowered.unsupported_reason = UnsupportedCmdReason::UnsupportedOp;
+    out->push_back(std::move(lowered));
+  }
+  return true;
+}
+
+bool lower_v11_commands(const std::vector<Command> &commands, std::vector<Command> *out) {
+  std::vector<Command> particles_lowered;
+  const bool particles = lower_particles_commands(commands, &particles_lowered);
+  const std::vector<Command> &in = particles ? particles_lowered : commands;
+  std::vector<Command> both;
+  if (lower_multimesh_commands(in, &both)) {
+    *out = std::move(both);
+    return true;
+  }
+  if (particles) {
+    *out = std::move(particles_lowered);
+    return true;
+  }
+  return false;
+}
+
+Snapshot lower_particles(const Snapshot &state) {
+  Snapshot out = state;
+  out.particles.clear();
+  out.emit_tail.reset();
+  if (!state.particles_commands) {
+    return out;
+  }
+  out.particles_commands = false;
+  for (ShaderEntry &shader : out.shaders) {
+    if (shader.below_v12 != nullptr) {
+      const std::shared_ptr<const ShaderEntry> below = shader.below_v12;
+      shader = *below;
+    }
+    shader.has_ppm = false;
+  }
+  for (MaterialEntry &material : out.materials) {
+    if (material.below_v12 != nullptr) {
+      const std::shared_ptr<const MaterialEntry> below = material.below_v12;
+      material = *below;
+    }
+  }
+  if (out.shader_time.has_value()) {
+    // The host's shader time travels only when an `ok` shader reads TIME (render-stream-10.md);
+    // a process-material shader that is `ok` only at /12 does not count below it.
+    bool read = false;
+    for (const ShaderEntry &shader : out.shaders) {
+      read = read || (shader.status == ShaderStatus::Ok &&
+                      std::find(shader.uses.begin(), shader.uses.end(), ShaderUse::Time) !=
+                          shader.uses.end());
+    }
+    if (!read) {
+      out.shader_time.reset();
+    }
+  }
+  std::vector<std::uint32_t> drawing;  // the items drawing a lowered command, ascending
+  for (ItemState &item : out.items) {
+    std::vector<Command> lowered;
+    if (!lower_particles_commands(item.commands, &lowered)) {
+      continue;
+    }
+    item.commands = std::move(lowered);
+    if (item.content_version_below_v12 != 0) {
+      item.content_version = item.content_version_below_v12;
+    }
+    drawing.push_back(item.id);
+  }
+  if (drawing.empty()) {
+    return out;  // only shader/material forms differed: the unsupported list is /11's already
+  }
+  std::vector<UnsupportedRef> session_level;
+  std::vector<UnsupportedRef> item_level;
+  for (const UnsupportedRef &ref : out.unsupported) {
+    if (!ref.has_item) {
+      session_level.push_back(ref);
+    } else if (ref.op != kAddParticlesOp) {
+      item_level.push_back(ref);
+    }
+  }
+  for (std::uint32_t id : drawing) {
+    UnsupportedRef ref;
+    ref.op = kAddParticlesOp;
+    ref.has_item = true;
+    ref.item = id;
+    ref.reason = UnsupportedReason::UnsupportedOp;
+    item_level.push_back(std::move(ref));
+  }
+  // The mirror's order (rs_mirror.cpp snapshot()): item id, then op, then reason, byte order.
+  std::stable_sort(item_level.begin(), item_level.end(),
+                   [](const UnsupportedRef &a, const UnsupportedRef &b) {
+                     if (a.item != b.item) {
+                       return a.item < b.item;
+                     }
+                     if (a.op != b.op) {
+                       return a.op < b.op;
+                     }
+                     return std::string(to_wire(a.reason)) < std::string(to_wire(b.reason));
+                   });
+  out.unsupported = std::move(session_level);
+  out.unsupported.insert(out.unsupported.end(), item_level.begin(), item_level.end());
+  return out;
+}
+
 void observe_multimesh_features(Features *features) {
   insert_sorted(&features->ops, "add_multimesh");
   insert_sorted(&features->resources, "multimesh");
@@ -947,6 +1174,18 @@ void unobserve_multimesh_features(Features *features) {
   erase_name(&features->ops, "add_multimesh");
   erase_name(&features->resources, "multimesh");
   insert_sorted(&features->observed_unsupported_ops, kAddMultimeshOp);
+}
+
+void observe_particles_features(Features *features) {
+  insert_sorted(&features->ops, "add_particles");
+  insert_sorted(&features->resources, "particles");
+  erase_name(&features->observed_unsupported_ops, kAddParticlesOp);
+}
+
+void unobserve_particles_features(Features *features) {
+  erase_name(&features->ops, "add_particles");
+  erase_name(&features->resources, "particles");
+  insert_sorted(&features->observed_unsupported_ops, kAddParticlesOp);
 }
 
 namespace {

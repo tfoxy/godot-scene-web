@@ -190,6 +190,43 @@ WANTED_SLOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("multimesh_set_buffer_interpolated", ("multimesh_set_buffer_interpolated",)),
     ("multimesh_set_physics_interpolated", ("multimesh_set_physics_interpolated",)),
     ("multimesh_set_visible_instances", ("multimesh_set_visible_instances",)),
+    # calibrator 12 (PM5, render-stream-12.md "Calibration") -- the 33 particles_* mutators of
+    # servers/rendering_server.h:770-842 (the getters are not hooked). Hooked only by a /12 session
+    # (GRC_STREAM_VERSION=12), like PM1's: they add no calibrator version, and below /12 they are
+    # neither planned nor omitted.
+    ("particles_create", ("particles_create",)),
+    ("particles_set_mode", ("particles_set_mode",)),
+    ("particles_set_emitting", ("particles_set_emitting",)),
+    ("particles_set_amount", ("particles_set_amount",)),
+    ("particles_set_amount_ratio", ("particles_set_amount_ratio",)),
+    ("particles_set_lifetime", ("particles_set_lifetime",)),
+    ("particles_set_one_shot", ("particles_set_one_shot",)),
+    ("particles_set_pre_process_time", ("particles_set_pre_process_time",)),
+    ("particles_request_process_time", ("particles_request_process_time",)),
+    ("particles_set_explosiveness_ratio", ("particles_set_explosiveness_ratio",)),
+    ("particles_set_randomness_ratio", ("particles_set_randomness_ratio",)),
+    ("particles_set_custom_aabb", ("particles_set_custom_aabb",)),
+    ("particles_set_speed_scale", ("particles_set_speed_scale",)),
+    ("particles_set_use_local_coordinates", ("particles_set_use_local_coordinates",)),
+    ("particles_set_process_material", ("particles_set_process_material",)),
+    ("particles_set_fixed_fps", ("particles_set_fixed_fps",)),
+    ("particles_set_interpolate", ("particles_set_interpolate",)),
+    ("particles_set_fractional_delta", ("particles_set_fractional_delta",)),
+    ("particles_set_collision_base_size", ("particles_set_collision_base_size",)),
+    ("particles_set_seed", ("particles_set_seed",)),
+    ("particles_set_transform_align", ("particles_set_transform_align",)),
+    ("particles_set_trails", ("particles_set_trails",)),
+    ("particles_set_trail_bind_poses", ("particles_set_trail_bind_poses",)),
+    ("particles_request_process", ("particles_request_process",)),
+    ("particles_restart", ("particles_restart",)),
+    ("particles_set_subemitter", ("particles_set_subemitter",)),
+    ("particles_emit", ("particles_emit",)),
+    ("particles_set_draw_order", ("particles_set_draw_order",)),
+    ("particles_set_draw_passes", ("particles_set_draw_passes",)),
+    ("particles_set_draw_pass_mesh", ("particles_set_draw_pass_mesh",)),
+    ("particles_set_emission_transform", ("particles_set_emission_transform",)),
+    ("particles_set_emitter_velocity", ("particles_set_emitter_velocity",)),
+    ("particles_set_interp_to_end", ("particles_set_interp_to_end",)),
 )
 
 ET_EXEC = 2

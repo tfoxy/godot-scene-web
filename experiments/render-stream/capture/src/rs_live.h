@@ -288,6 +288,8 @@ inline constexpr const char *kSubprotocolV10 = "render-stream.10";
 // transport and hello under render-stream/11, with /11's carried-set rules, dynamic mesh surfaces
 // and stable content_version. Opt-in (GRC_STREAM_VERSION=11).
 inline constexpr const char *kSubprotocolV11 = "render-stream.11";
+// PM5 (render-stream-12.md): /11's live transport under render-stream/12.
+inline constexpr const char *kSubprotocolV12 = "render-stream.12";
 
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
@@ -308,6 +310,7 @@ struct LiveConfig {
   // PM1 (render-stream-11.md "As built (PM1)" rule 11): `perturb-instance` -- from this frame on,
   // a /11 connection's encoder adds 1.0 to the first multimesh buffer float it writes (0: off).
   std::uint64_t perturb_instance_frame = 0;
+  std::uint64_t perturb_seed_frame = 0;  // PM5: sabotage perturb-seed's frame (0: off)
   std::uint64_t window_overrun_frame = 0;  // G7q (a listener sabotage, rs_live.h header)
   // W11t (render-stream-11.md "As built (W11t)"): GRC_LIVE_CODING, the coding a /11 connection
   // gets when its hello offers it (rs_live_coding.h negotiate). Off by default here so that a
@@ -630,8 +633,10 @@ class Hub {
   struct V11Records;  // W11b: the /11 records before a target, for one (base, target) pair
   struct CodedTx;     // W11t: a coded transaction, for one (base, target) message pair
   const TargetRefs &target_refs(const std::shared_ptr<const rs::Captured> &target);
+  // PM5: `lower` (a /11 connection of a /12 host) plans on the /11 view of both states.
   const V11Records &v11_records(const std::shared_ptr<const rs::Captured> &base,
-                                const std::shared_ptr<const rs::Captured> &target);
+                                const std::shared_ptr<const rs::Captured> &target,
+                                bool lower = false);
   void clear_frame_memo();
 
   LiveTransport *transport_;

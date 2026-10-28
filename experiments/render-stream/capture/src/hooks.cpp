@@ -17,6 +17,7 @@
 #include "rs_canvas_texture_shim.h"
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
+#include "rs_particles_shim.h"
 #include "rs_resource_log.h"
 #include "rs_sha256.h"
 #include "rs_shader_clock.h"
@@ -111,6 +112,24 @@ using FnMultimeshSetBufferInterpolated = void (*)(void *, RID, const Vector<floa
 //            bool p_interpolated) = 0;                                           (FnRidBool)
 //   515: virtual void multimesh_set_visible_instances(RID p_multimesh, int p_visible) = 0;
 //        (FnRidInt)
+//
+// --- PM5 (render-stream-12.md "Calibration"): the particles API, rendering_server.h:770-842,
+// installed only under GRC_STREAM_VERSION=12 (hooks_plan) ------------------------------------
+//
+//   particles_create (FnCreate); set_mode/set_transform_align/set_draw_order (FnRidEnum);
+//   set_emitting/set_one_shot/set_use_local_coordinates/set_interpolate/set_fractional_delta
+//   (FnRidBool); set_amount/set_fixed_fps/set_draw_passes (FnRidInt); set_seed (FnRidU32);
+//   set_process_material/set_subemitter (FnSetMaterial); request_process/restart (FnRidOnly);
+//   set_custom_aabb (FnMeshSetCustomAabb); and:
+using FnRidFloat = void (*)(void *, RID, float);     // amount_ratio, request_process_time, ...
+using FnRidDouble = void (*)(void *, RID, double);   // lifetime, pre_process_time, speed_scale
+using FnParticlesSetTrails = void (*)(void *, RID, bool, float);
+using FnParticlesSetTrailBindPoses = void (*)(void *, RID, const Vector<Transform3D> *);
+using FnParticlesEmit = void (*)(void *, RID, const Transform3D *, const Vector3 *, const Color *,
+                                 const Color *, uint32_t);
+using FnParticlesSetDrawPassMesh = void (*)(void *, RID, int, RID);
+using FnParticlesSetTransform3d = void (*)(void *, RID, const Transform3D *);
+using FnParticlesSetVector3 = void (*)(void *, RID, const Vector3 *);
 //
 // --- after gate -1 (optional) ------------------------------------------------
 //
@@ -415,12 +434,50 @@ enum HookId : size_t {
   kMultimeshSetBufferInterpolated,
   kMultimeshSetPhysicsInterpolated,
   kMultimeshSetVisibleInstances,
+  // PM5 (render-stream-12.md "Calibration", calibrator record slots 223-258): conditional, see
+  // hooks_plan
+  kParticlesCreate,
+  kParticlesSetMode,
+  kParticlesSetEmitting,
+  kParticlesSetAmount,
+  kParticlesSetAmountRatio,
+  kParticlesSetLifetime,
+  kParticlesSetOneShot,
+  kParticlesSetPreProcessTime,
+  kParticlesRequestProcessTime,
+  kParticlesSetExplosivenessRatio,
+  kParticlesSetRandomnessRatio,
+  kParticlesSetCustomAabb,
+  kParticlesSetSpeedScale,
+  kParticlesSetUseLocalCoordinates,
+  kParticlesSetProcessMaterial,
+  kParticlesSetFixedFps,
+  kParticlesSetInterpolate,
+  kParticlesSetFractionalDelta,
+  kParticlesSetCollisionBaseSize,
+  kParticlesSetSeed,
+  kParticlesSetTransformAlign,
+  kParticlesSetTrails,
+  kParticlesSetTrailBindPoses,
+  kParticlesRequestProcess,
+  kParticlesRestart,
+  kParticlesSetSubemitter,
+  kParticlesEmit,
+  kParticlesSetDrawOrder,
+  kParticlesSetDrawPasses,
+  kParticlesSetDrawPassMesh,
+  kParticlesSetEmissionTransform,
+  kParticlesSetEmitterVelocity,
+  kParticlesSetInterpToEnd,
   kHookCount,
 };
 
 constexpr HookId kFirstMultimeshHook = kMultimeshCreate;
 constexpr HookId kLastMultimeshHook = kMultimeshSetVisibleInstances;
 bool is_multimesh_hook(size_t id) { return id >= kFirstMultimeshHook && id <= kLastMultimeshHook; }
+constexpr HookId kFirstParticlesHook = kParticlesCreate;
+constexpr HookId kLastParticlesHook = kParticlesSetInterpToEnd;
+bool is_particles_hook(size_t id) { return id >= kFirstParticlesHook && id <= kLastParticlesHook; }
 
 void *g_original[kHookCount] = {};
 std::atomic<uint64_t> g_count[kHookCount];
@@ -434,6 +491,12 @@ bool g_multimesh_hooked = false;
 std::atomic<uint64_t> g_mm_seen[kHookCount];
 std::atomic<uint64_t> g_mm_accepted[kHookCount];
 std::atomic<uint64_t> g_mm_changed[kHookCount];
+// PM5: all 33 particles hooks are planned (GRC_STREAM_VERSION=12), so canvas_item_add_particles
+// records /12's add_particles command (hooks_particles_planned()); and the census counters.
+bool g_particles_hooked = false;
+std::atomic<uint64_t> g_pt_seen[kHookCount];
+std::atomic<uint64_t> g_pt_accepted[kHookCount];
+std::atomic<uint64_t> g_pt_changed[kHookCount];
 std::vector<std::string> g_planned_names;
 std::vector<std::string> g_omitted_names;
 
@@ -1401,8 +1464,7 @@ rs::PayloadCopy copy_payload(const ImageFacts &facts, const Ref *image, rs::Payl
     copy.reason = "payload-unavailable";
     return copy;
   }
-  if (facts.format < 0 || facts.format >= rs::kImageFormatCount ||
-      !g_resource_policy.formats.permitted[facts.format]) {
+  if (!rs::format_permitted(g_resource_policy.formats, facts.format, facts.height)) {
     if (rs::texture_decode_enabled() && facts.format >= 0 && facts.format < rs::kImageFormatCount) {
       // G8t (gate8-design.md D8): under GRC_TEXTURE_DECODE=engine the host-decode seam
       // (rs_texture_decode.cpp) turns a block-compressed image into an RGBA8/R8/RG8 payload with
@@ -2087,6 +2149,7 @@ void hook_free(void *self, RID rid) {
   // A private CanvasTexture RID of the headless shim is recorded, then forwarded like any other:
   // every owner of the dummy server rejects its index silently (rs_canvas_texture_shim.h).
   rs::canvas_texture_shim().on_free(rid.id, current_frame());
+  rs::particles_shim().on_free(rid.id);  // PM5: likewise a private emitter RID
   {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("free");
@@ -2104,6 +2167,18 @@ void hook_free(void *self, RID rid) {
           g_mm_changed[kFree].fetch_add(1, std::memory_order_relaxed);
         }
         resources().multimesh_call(tap_context(), "free", rid.id, r.id, r.accepted, r.version,
+                                   rs::MultimeshArgs(), r.omitted);
+      } else if (g_particles_hooked && mirror().knows_particles(rid.id)) {
+        // PM5: an emitter's free moves its version (the `free` line).
+        const rs::Mirror::ParticlesCall r = mirror().particles_free(rid.id, current_frame());
+        g_pt_seen[kFree].fetch_add(1, std::memory_order_relaxed);
+        if (r.accepted && !r.omitted) {
+          g_pt_accepted[kFree].fetch_add(1, std::memory_order_relaxed);
+        }
+        if (r.changed) {
+          g_pt_changed[kFree].fetch_add(1, std::memory_order_relaxed);
+        }
+        resources().particles_call(tap_context(), "free", rid.id, r.id, r.accepted, r.version,
                                    rs::MultimeshArgs(), r.omitted);
       } else {
         mirror().free_rid(rid.id, current_frame());
@@ -2724,7 +2799,16 @@ void hook_add_multiline(void *self, RID item, const Vector<Point2> *points,
 
 void hook_add_particles(void *self, RID item, RID particles, RID texture) {
   bump(kAddParticles);
-  tap_unsupported(item, "canvas_item_add_particles");
+  if (g_particles_hooked) {
+    // PM5 ("The command"): /12's add_particles, naming the mirror's emitter (an unknown RID
+    // becomes `unsupported`/`unknown-particles`).
+    rs::adopt_texture_ref(texture.id);
+    if (streaming()) {
+      mirror().add_particles(item.id, particles.id, texture.id, current_frame());
+    }
+  } else {
+    tap_unsupported(item, "canvas_item_add_particles");
+  }
   log_entry(&g_add_particles, rids(item.id, particles.id, texture.id));
   original<FnAddMultimesh>(kAddParticles)(self, item, particles, texture);
 }
@@ -3453,6 +3537,371 @@ void hook_multimesh_set_visible_instances(void *self, RID multimesh, int visible
   }
 }
 
+// --- PM5: the 33 particles hooks (render-stream-12.md "Calibration", "Hook log and counters") --
+//
+// Conditional like PM1's: planned only under GRC_STREAM_VERSION=12 (hooks_plan). Each passes the
+// call through first (particles_create: then the RID shim), then records it in the mirror and,
+// with a stream's hook log open, writes its `kind: "particles"` line with the mirror's verdict.
+// counters.json counts every call (`counts`) and, under `captured.particles`, how many the mirror
+// saw, accepted and changed.
+
+using PtOp = rs::Mirror::ParticlesOp;
+
+std::array<float, 12> xform3_floats(const Transform3D &t) {
+  // The wire's Transform3D order: basis.rows[0..2] (xyz each), then origin.
+  const float *b = t.basis;
+  return {b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], t.origin.x, t.origin.y,
+          t.origin.z};
+}
+
+void pt_record(HookId id, uint64_t rid, const rs::Mirror::ParticlesCall &r,
+               const rs::MultimeshArgs &args, const char *call = nullptr) {
+  g_pt_seen[id].fetch_add(1, std::memory_order_relaxed);
+  if (r.accepted && !r.omitted) {
+    g_pt_accepted[id].fetch_add(1, std::memory_order_relaxed);
+  }
+  if (r.changed) {
+    g_pt_changed[id].fetch_add(1, std::memory_order_relaxed);
+  }
+  if (resources().active()) {
+    resources().particles_call(tap_context(), call != nullptr ? call : hook_name(id), rid, r.id,
+                               r.accepted, r.version, args, r.omitted);
+  }
+}
+
+// One setter: forward, then the mirror and the log line.
+void pt_tap(HookId id, RID particles, PtOp op, const rs::Mirror::ParticlesArgs &args,
+            const rs::MultimeshArgs &log_args) {
+  if (!streaming()) {
+    return;
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const rs::Mirror::ParticlesCall r = mirror().particles_call(particles.id, op, args,
+                                                              current_frame());
+  pt_record(id, particles.id, r, log_args);
+}
+
+rs::Mirror::ParticlesArgs pt_int(int64_t v) {
+  rs::Mirror::ParticlesArgs a;
+  a.i = v;
+  return a;
+}
+
+rs::Mirror::ParticlesArgs pt_floats(const float *v, std::size_t n) {
+  rs::Mirror::ParticlesArgs a;
+  a.f.assign(v, v + n);
+  return a;
+}
+
+RID hook_particles_create(void *self) {
+  bump(kParticlesCreate);
+  const RID engine = original<FnCreate>(kParticlesCreate)(self);
+  // The headless RID shim (rs_particles_shim.h): a RID() result becomes a private RID.
+  RID result = engine;
+  result.id = rs::particles_shim().on_create(engine.id);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::ParticlesCall r = mirror().particles_create(result.id, current_frame());
+    pt_record(kParticlesCreate, result.id, r, rs::MultimeshArgs());
+  }
+  return result;
+}
+
+void hook_particles_set_mode(void *self, RID p, int32_t mode) {
+  bump(kParticlesSetMode);
+  original<FnRidEnum>(kParticlesSetMode)(self, p, mode);
+  pt_tap(kParticlesSetMode, p, PtOp::SetMode, pt_int(mode),
+         rs::MultimeshArgs().i64("mode", mode));
+}
+
+void hook_particles_set_emitting(void *self, RID p, bool enable) {
+  bump(kParticlesSetEmitting);
+  original<FnRidBool>(kParticlesSetEmitting)(self, p, enable);
+  pt_tap(kParticlesSetEmitting, p, PtOp::SetEmitting, pt_int(enable ? 1 : 0),
+         rs::MultimeshArgs().boolean("enable", enable));
+}
+
+void hook_particles_set_amount(void *self, RID p, int amount) {
+  bump(kParticlesSetAmount);
+  original<FnRidInt>(kParticlesSetAmount)(self, p, amount);
+  pt_tap(kParticlesSetAmount, p, PtOp::SetAmount, pt_int(amount),
+         rs::MultimeshArgs().i64("amount", amount));
+}
+
+void hook_particles_set_amount_ratio(void *self, RID p, float ratio) {
+  bump(kParticlesSetAmountRatio);
+  original<FnRidFloat>(kParticlesSetAmountRatio)(self, p, ratio);
+  pt_tap(kParticlesSetAmountRatio, p, PtOp::SetAmountRatio, pt_floats(&ratio, 1),
+         rs::MultimeshArgs().f32("amount_ratio", ratio));
+}
+
+void hook_particles_set_lifetime(void *self, RID p, double lifetime) {
+  bump(kParticlesSetLifetime);
+  original<FnRidDouble>(kParticlesSetLifetime)(self, p, lifetime);
+  const float f = static_cast<float>(lifetime);  // the wire's float32 rounding (to nearest)
+  pt_tap(kParticlesSetLifetime, p, PtOp::SetLifetime, pt_floats(&f, 1),
+         rs::MultimeshArgs().f32("lifetime", f));
+}
+
+void hook_particles_set_one_shot(void *self, RID p, bool one_shot) {
+  bump(kParticlesSetOneShot);
+  original<FnRidBool>(kParticlesSetOneShot)(self, p, one_shot);
+  pt_tap(kParticlesSetOneShot, p, PtOp::SetOneShot, pt_int(one_shot ? 1 : 0),
+         rs::MultimeshArgs().boolean("one_shot", one_shot));
+}
+
+void hook_particles_set_pre_process_time(void *self, RID p, double time) {
+  bump(kParticlesSetPreProcessTime);
+  original<FnRidDouble>(kParticlesSetPreProcessTime)(self, p, time);
+  const float f = static_cast<float>(time);
+  pt_tap(kParticlesSetPreProcessTime, p, PtOp::SetPreProcessTime, pt_floats(&f, 1),
+         rs::MultimeshArgs().f32("time", f));
+}
+
+void hook_particles_request_process_time(void *self, RID p, float time) {
+  bump(kParticlesRequestProcessTime);
+  original<FnRidFloat>(kParticlesRequestProcessTime)(self, p, time);
+  pt_tap(kParticlesRequestProcessTime, p, PtOp::RequestProcessTime, pt_floats(&time, 1),
+         rs::MultimeshArgs().f32("request_process_time", time));
+}
+
+void hook_particles_set_explosiveness_ratio(void *self, RID p, float ratio) {
+  bump(kParticlesSetExplosivenessRatio);
+  original<FnRidFloat>(kParticlesSetExplosivenessRatio)(self, p, ratio);
+  pt_tap(kParticlesSetExplosivenessRatio, p, PtOp::SetExplosivenessRatio, pt_floats(&ratio, 1),
+         rs::MultimeshArgs().f32("ratio", ratio));
+}
+
+void hook_particles_set_randomness_ratio(void *self, RID p, float ratio) {
+  bump(kParticlesSetRandomnessRatio);
+  original<FnRidFloat>(kParticlesSetRandomnessRatio)(self, p, ratio);
+  pt_tap(kParticlesSetRandomnessRatio, p, PtOp::SetRandomnessRatio, pt_floats(&ratio, 1),
+         rs::MultimeshArgs().f32("ratio", ratio));
+}
+
+void hook_particles_set_custom_aabb(void *self, RID p, const AABB *aabb) {
+  bump(kParticlesSetCustomAabb);
+  original<FnMeshSetCustomAabb>(kParticlesSetCustomAabb)(self, p, aabb);
+  if (aabb != nullptr) {
+    const float a[6] = {aabb->position.x, aabb->position.y, aabb->position.z,
+                        aabb->size.x,     aabb->size.y,     aabb->size.z};
+    pt_tap(kParticlesSetCustomAabb, p, PtOp::SetCustomAabb, pt_floats(a, 6),
+           rs::MultimeshArgs().floats("aabb", a, 6));
+  }
+}
+
+void hook_particles_set_speed_scale(void *self, RID p, double scale) {
+  bump(kParticlesSetSpeedScale);
+  original<FnRidDouble>(kParticlesSetSpeedScale)(self, p, scale);
+  const float f = static_cast<float>(scale);
+  pt_tap(kParticlesSetSpeedScale, p, PtOp::SetSpeedScale, pt_floats(&f, 1),
+         rs::MultimeshArgs().f32("scale", f));
+}
+
+void hook_particles_set_use_local_coordinates(void *self, RID p, bool enable) {
+  bump(kParticlesSetUseLocalCoordinates);
+  original<FnRidBool>(kParticlesSetUseLocalCoordinates)(self, p, enable);
+  pt_tap(kParticlesSetUseLocalCoordinates, p, PtOp::SetUseLocalCoordinates,
+         pt_int(enable ? 1 : 0), rs::MultimeshArgs().boolean("enable", enable));
+}
+
+void hook_particles_set_process_material(void *self, RID p, RID material) {
+  bump(kParticlesSetProcessMaterial);
+  original<FnSetMaterial>(kParticlesSetProcessMaterial)(self, p, material);
+  if (streaming()) {
+    rs::Mirror::ParticlesArgs a;
+    a.rid = material.id;
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::ParticlesCall r =
+        mirror().particles_call(p.id, PtOp::SetProcessMaterial, a, current_frame());
+    pt_record(kParticlesSetProcessMaterial, p.id, r,
+              rs::MultimeshArgs().id("material", r.ref_id).rid("material_rid", material.id));
+  }
+}
+
+void hook_particles_set_fixed_fps(void *self, RID p, int fps) {
+  bump(kParticlesSetFixedFps);
+  original<FnRidInt>(kParticlesSetFixedFps)(self, p, fps);
+  pt_tap(kParticlesSetFixedFps, p, PtOp::SetFixedFps, pt_int(fps),
+         rs::MultimeshArgs().i64("fps", fps));
+}
+
+void hook_particles_set_interpolate(void *self, RID p, bool enable) {
+  bump(kParticlesSetInterpolate);
+  original<FnRidBool>(kParticlesSetInterpolate)(self, p, enable);
+  pt_tap(kParticlesSetInterpolate, p, PtOp::SetInterpolate, pt_int(enable ? 1 : 0),
+         rs::MultimeshArgs().boolean("enable", enable));
+}
+
+void hook_particles_set_fractional_delta(void *self, RID p, bool enable) {
+  bump(kParticlesSetFractionalDelta);
+  original<FnRidBool>(kParticlesSetFractionalDelta)(self, p, enable);
+  pt_tap(kParticlesSetFractionalDelta, p, PtOp::SetFractionalDelta, pt_int(enable ? 1 : 0),
+         rs::MultimeshArgs().boolean("enable", enable));
+}
+
+void hook_particles_set_collision_base_size(void *self, RID p, float size) {
+  bump(kParticlesSetCollisionBaseSize);
+  original<FnRidFloat>(kParticlesSetCollisionBaseSize)(self, p, size);
+  pt_tap(kParticlesSetCollisionBaseSize, p, PtOp::SetCollisionBaseSize, pt_floats(&size, 1),
+         rs::MultimeshArgs().f32("size", size));
+}
+
+void hook_particles_set_seed(void *self, RID p, uint32_t seed) {
+  bump(kParticlesSetSeed);
+  original<FnRidU32>(kParticlesSetSeed)(self, p, seed);
+  pt_tap(kParticlesSetSeed, p, PtOp::SetSeed, pt_int(seed),
+         rs::MultimeshArgs().i64("seed", seed));
+}
+
+void hook_particles_set_transform_align(void *self, RID p, int32_t align) {
+  bump(kParticlesSetTransformAlign);
+  original<FnRidEnum>(kParticlesSetTransformAlign)(self, p, align);
+  pt_tap(kParticlesSetTransformAlign, p, PtOp::SetTransformAlign, pt_int(align),
+         rs::MultimeshArgs().i64("transform_align", align));
+}
+
+void hook_particles_set_trails(void *self, RID p, bool enable, float length) {
+  bump(kParticlesSetTrails);
+  original<FnParticlesSetTrails>(kParticlesSetTrails)(self, p, enable, length);
+  rs::Mirror::ParticlesArgs a = pt_floats(&length, 1);
+  a.i = enable ? 1 : 0;
+  pt_tap(kParticlesSetTrails, p, PtOp::SetTrails, a,
+         rs::MultimeshArgs().boolean("enable", enable).f32("length_sec", length));
+}
+
+void hook_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transform3D> *poses) {
+  bump(kParticlesSetTrailBindPoses);
+  original<FnParticlesSetTrailBindPoses>(kParticlesSetTrailBindPoses)(self, p, poses);
+  if (streaming()) {
+    rs::Mirror::ParticlesArgs a;
+    const int64_t n = poses != nullptr ? poses->size() : 0;
+    for (int64_t i = 0; i < n; ++i) {
+      const std::array<float, 12> t = xform3_floats(poses->ptr()[i]);
+      a.f.insert(a.f.end(), t.begin(), t.end());
+    }
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::ParticlesCall r =
+        mirror().particles_call(p.id, PtOp::SetTrailBindPoses, a, current_frame());
+    pt_record(kParticlesSetTrailBindPoses, p.id, r,
+              rs::MultimeshArgs().floats("bind_poses", a.f.data(), a.f.size()));
+  }
+}
+
+void hook_particles_request_process(void *self, RID p) {
+  bump(kParticlesRequestProcess);
+  original<FnRidOnly>(kParticlesRequestProcess)(self, p);
+  pt_tap(kParticlesRequestProcess, p, PtOp::RequestProcess, rs::Mirror::ParticlesArgs(),
+         rs::MultimeshArgs());
+}
+
+void hook_particles_restart(void *self, RID p) {
+  bump(kParticlesRestart);
+  original<FnRidOnly>(kParticlesRestart)(self, p);
+  pt_tap(kParticlesRestart, p, PtOp::Restart, rs::Mirror::ParticlesArgs(), rs::MultimeshArgs());
+}
+
+void hook_particles_set_subemitter(void *self, RID p, RID sub) {
+  bump(kParticlesSetSubemitter);
+  original<FnSetMaterial>(kParticlesSetSubemitter)(self, p, sub);
+  if (streaming()) {
+    rs::Mirror::ParticlesArgs a;
+    a.rid = sub.id;
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::ParticlesCall r =
+        mirror().particles_call(p.id, PtOp::SetSubemitter, a, current_frame());
+    pt_record(kParticlesSetSubemitter, p.id, r,
+              rs::MultimeshArgs()
+                  .id("subemitter_particles", r.ref_id)
+                  .rid("subemitter_particles_rid", sub.id));
+  }
+}
+
+void hook_particles_emit(void *self, RID p, const Transform3D *transform, const Vector3 *velocity,
+                         const Color *color, const Color *custom, uint32_t flags) {
+  bump(kParticlesEmit);
+  original<FnParticlesEmit>(kParticlesEmit)(self, p, transform, velocity, color, custom, flags);
+  if (streaming() && transform != nullptr && velocity != nullptr && color != nullptr &&
+      custom != nullptr) {
+    rs::Mirror::ParticlesArgs a;
+    const std::array<float, 12> t = xform3_floats(*transform);
+    a.f.assign(t.begin(), t.end());
+    for (float v : {velocity->x, velocity->y, velocity->z, color->r, color->g, color->b, color->a,
+                    custom->r, custom->g, custom->b, custom->a}) {
+      a.f.push_back(v);
+    }
+    a.flags = flags;
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::ParticlesCall r =
+        mirror().particles_call(p.id, PtOp::Emit, a, current_frame());
+    pt_record(kParticlesEmit, p.id, r,
+              rs::MultimeshArgs()
+                  .floats("transform", a.f.data(), 12)
+                  .floats("velocity", a.f.data() + 12, 3)
+                  .floats("color", a.f.data() + 15, 4)
+                  .floats("custom", a.f.data() + 19, 4)
+                  .i64("emit_flags", flags)
+                  .i64("restarts", static_cast<int64_t>(r.restarts)));
+  }
+}
+
+void hook_particles_set_draw_order(void *self, RID p, int32_t order_value) {
+  bump(kParticlesSetDrawOrder);
+  original<FnRidEnum>(kParticlesSetDrawOrder)(self, p, order_value);
+  pt_tap(kParticlesSetDrawOrder, p, PtOp::SetDrawOrder, pt_int(order_value),
+         rs::MultimeshArgs().i64("order", order_value));
+}
+
+void hook_particles_set_draw_passes(void *self, RID p, int count) {
+  bump(kParticlesSetDrawPasses);
+  original<FnRidInt>(kParticlesSetDrawPasses)(self, p, count);
+  pt_tap(kParticlesSetDrawPasses, p, PtOp::SetDrawPasses, pt_int(count),
+         rs::MultimeshArgs().i64("count", count));
+}
+
+void hook_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
+  bump(kParticlesSetDrawPassMesh);
+  rs::adopt_mesh_ref(mesh.id);  // G8r: a pre-arm mesh is adopted at first reference
+  original<FnParticlesSetDrawPassMesh>(kParticlesSetDrawPassMesh)(self, p, pass, mesh);
+  if (streaming()) {
+    rs::Mirror::ParticlesArgs a;
+    a.i = pass;
+    a.rid = mesh.id;
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::ParticlesCall r =
+        mirror().particles_call(p.id, PtOp::SetDrawPassMesh, a, current_frame());
+    pt_record(kParticlesSetDrawPassMesh, p.id, r,
+              rs::MultimeshArgs().i64("pass", pass).id("mesh", r.ref_id).rid("mesh_rid", mesh.id));
+  }
+}
+
+void hook_particles_set_emission_transform(void *self, RID p, const Transform3D *transform) {
+  bump(kParticlesSetEmissionTransform);
+  original<FnParticlesSetTransform3d>(kParticlesSetEmissionTransform)(self, p, transform);
+  if (transform != nullptr) {
+    const std::array<float, 12> t = xform3_floats(*transform);
+    pt_tap(kParticlesSetEmissionTransform, p, PtOp::SetEmissionTransform, pt_floats(t.data(), 12),
+           rs::MultimeshArgs().floats("transform", t.data(), 12));
+  }
+}
+
+void hook_particles_set_emitter_velocity(void *self, RID p, const Vector3 *velocity) {
+  bump(kParticlesSetEmitterVelocity);
+  original<FnParticlesSetVector3>(kParticlesSetEmitterVelocity)(self, p, velocity);
+  if (velocity != nullptr) {
+    const float v[3] = {velocity->x, velocity->y, velocity->z};
+    pt_tap(kParticlesSetEmitterVelocity, p, PtOp::SetEmitterVelocity, pt_floats(v, 3),
+           rs::MultimeshArgs().floats("velocity", v, 3));
+  }
+}
+
+void hook_particles_set_interp_to_end(void *self, RID p, float interp) {
+  bump(kParticlesSetInterpToEnd);
+  original<FnRidFloat>(kParticlesSetInterpToEnd)(self, p, interp);
+  pt_tap(kParticlesSetInterpToEnd, p, PtOp::SetInterpToEnd, pt_floats(&interp, 1),
+         rs::MultimeshArgs().f32("interp", interp));
+}
+
 void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect) {
   bump(kSetCustomRect);
   if (rect != nullptr) {
@@ -3845,6 +4294,59 @@ const HookSpec kSpecs[] = {
      as_ptr(&hook_multimesh_set_physics_interpolated)},
     {kMultimeshSetVisibleInstances, "multimesh_set_visible_instances",
      as_ptr(&hook_multimesh_set_visible_instances)},
+    {kParticlesCreate, "particles_create", as_ptr(&hook_particles_create)},
+    {kParticlesSetMode, "particles_set_mode", as_ptr(&hook_particles_set_mode)},
+    {kParticlesSetEmitting, "particles_set_emitting", as_ptr(&hook_particles_set_emitting)},
+    {kParticlesSetAmount, "particles_set_amount", as_ptr(&hook_particles_set_amount)},
+    {kParticlesSetAmountRatio, "particles_set_amount_ratio",
+     as_ptr(&hook_particles_set_amount_ratio)},
+    {kParticlesSetLifetime, "particles_set_lifetime", as_ptr(&hook_particles_set_lifetime)},
+    {kParticlesSetOneShot, "particles_set_one_shot", as_ptr(&hook_particles_set_one_shot)},
+    {kParticlesSetPreProcessTime, "particles_set_pre_process_time",
+     as_ptr(&hook_particles_set_pre_process_time)},
+    {kParticlesRequestProcessTime, "particles_request_process_time",
+     as_ptr(&hook_particles_request_process_time)},
+    {kParticlesSetExplosivenessRatio, "particles_set_explosiveness_ratio",
+     as_ptr(&hook_particles_set_explosiveness_ratio)},
+    {kParticlesSetRandomnessRatio, "particles_set_randomness_ratio",
+     as_ptr(&hook_particles_set_randomness_ratio)},
+    {kParticlesSetCustomAabb, "particles_set_custom_aabb",
+     as_ptr(&hook_particles_set_custom_aabb)},
+    {kParticlesSetSpeedScale, "particles_set_speed_scale",
+     as_ptr(&hook_particles_set_speed_scale)},
+    {kParticlesSetUseLocalCoordinates, "particles_set_use_local_coordinates",
+     as_ptr(&hook_particles_set_use_local_coordinates)},
+    {kParticlesSetProcessMaterial, "particles_set_process_material",
+     as_ptr(&hook_particles_set_process_material)},
+    {kParticlesSetFixedFps, "particles_set_fixed_fps", as_ptr(&hook_particles_set_fixed_fps)},
+    {kParticlesSetInterpolate, "particles_set_interpolate",
+     as_ptr(&hook_particles_set_interpolate)},
+    {kParticlesSetFractionalDelta, "particles_set_fractional_delta",
+     as_ptr(&hook_particles_set_fractional_delta)},
+    {kParticlesSetCollisionBaseSize, "particles_set_collision_base_size",
+     as_ptr(&hook_particles_set_collision_base_size)},
+    {kParticlesSetSeed, "particles_set_seed", as_ptr(&hook_particles_set_seed)},
+    {kParticlesSetTransformAlign, "particles_set_transform_align",
+     as_ptr(&hook_particles_set_transform_align)},
+    {kParticlesSetTrails, "particles_set_trails", as_ptr(&hook_particles_set_trails)},
+    {kParticlesSetTrailBindPoses, "particles_set_trail_bind_poses",
+     as_ptr(&hook_particles_set_trail_bind_poses)},
+    {kParticlesRequestProcess, "particles_request_process",
+     as_ptr(&hook_particles_request_process)},
+    {kParticlesRestart, "particles_restart", as_ptr(&hook_particles_restart)},
+    {kParticlesSetSubemitter, "particles_set_subemitter", as_ptr(&hook_particles_set_subemitter)},
+    {kParticlesEmit, "particles_emit", as_ptr(&hook_particles_emit)},
+    {kParticlesSetDrawOrder, "particles_set_draw_order", as_ptr(&hook_particles_set_draw_order)},
+    {kParticlesSetDrawPasses, "particles_set_draw_passes",
+     as_ptr(&hook_particles_set_draw_passes)},
+    {kParticlesSetDrawPassMesh, "particles_set_draw_pass_mesh",
+     as_ptr(&hook_particles_set_draw_pass_mesh)},
+    {kParticlesSetEmissionTransform, "particles_set_emission_transform",
+     as_ptr(&hook_particles_set_emission_transform)},
+    {kParticlesSetEmitterVelocity, "particles_set_emitter_velocity",
+     as_ptr(&hook_particles_set_emitter_velocity)},
+    {kParticlesSetInterpToEnd, "particles_set_interp_to_end",
+     as_ptr(&hook_particles_set_interp_to_end)},
 };
 
 const char *hook_name(HookId id) { return kSpecs[id].name; }
@@ -4203,6 +4705,8 @@ void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_re
 
 bool hooks_multimesh_planned() { return g_multimesh_hooked; }
 
+bool hooks_particles_planned() { return g_particles_hooked; }
+
 void hooks_set_shader_time_carried(bool carried) {
   g_shader_time_carried.store(carried, std::memory_order_relaxed);
 }
@@ -4411,17 +4915,25 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   // CG1: the back-buffer hooks exist for /10's item keys only (GRC_STREAM_VERSION=10; W11b: and
   // /11, which carries them too).
   const char *stream_version = std::getenv("GRC_STREAM_VERSION");
+  // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks.
+  const bool v12_wanted = stream_version != nullptr && std::strcmp(stream_version, "12") == 0;
   const bool backbuffer_hooks_wanted =
       stream_version != nullptr &&
-      (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0);
-  // PM1: the twelve multimesh hooks exist for /11's multimesh table only (GRC_STREAM_VERSION=11).
+      (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0 ||
+       v12_wanted);
+  // PM1: the twelve multimesh hooks exist for /11's multimesh table only (GRC_STREAM_VERSION=11;
+  // PM5: and /12).
   const bool multimesh_hooks_wanted =
-      stream_version != nullptr && std::strcmp(stream_version, "11") == 0;
+      stream_version != nullptr && (std::strcmp(stream_version, "11") == 0 || v12_wanted);
+  const bool particles_hooks_wanted = v12_wanted;
   g_canvas_group_mode_invalid.store(0);
   for (size_t i = 0; i < kHookCount; ++i) {
     g_mm_seen[i].store(0);
     g_mm_accepted[i].store(0);
     g_mm_changed[i].store(0);
+    g_pt_seen[i].store(0);
+    g_pt_accepted[i].store(0);
+    g_pt_changed[i].store(0);
   }
   g_hooks_total = kHookCount;
   for (const HookSpec &spec : kSpecs) {
@@ -4451,6 +4963,12 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
       --g_hooks_total;
       continue;
     }
+    if (is_particles_hook(spec.id) && !particles_hooks_wanted) {
+      // PM5: conditional like PM1's; neither planned nor omitted below /12.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
     if (index < 0) {
       if (required) {
         if (plan->missing_required.empty()) {
@@ -4476,6 +4994,11 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   g_multimesh_hooked = multimesh_hooks_wanted;
   for (size_t id = kFirstMultimeshHook; id <= kLastMultimeshHook; ++id) {
     g_multimesh_hooked = g_multimesh_hooked && !g_skipped[id] && !g_omitted[id];
+  }
+  // PM5: likewise /12's command needs every particles hook.
+  g_particles_hooked = particles_hooks_wanted;
+  for (size_t id = kFirstParticlesHook; id <= kLastParticlesHook; ++id) {
+    g_particles_hooked = g_particles_hooked && !g_skipped[id] && !g_omitted[id];
   }
   // P3-CK: the shader clock sums the hooked draws' steps once the host draws (rs_shader_clock.h).
   rs::shader_clock_set_draw_hooked(!g_skipped[kDraw] && !g_omitted[kDraw]);
@@ -4663,6 +5186,22 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
       json.field("mirrored", static_cast<int64_t>(g_mm_seen[spec.id].load()));
       json.field("accepted", static_cast<int64_t>(g_mm_accepted[spec.id].load()));
       json.field("changed", static_cast<int64_t>(g_mm_changed[spec.id].load()));
+      json.object_end();
+    }
+    json.object_end();
+  }
+  if (g_particles_hooked) {
+    // PM5 (`pt-hook-census`): per particles hook (and free of an emitter), the calls the mirror
+    // saw while streaming, those it accepted and those that moved the version.
+    json.key("particles").object_begin();
+    for (const HookSpec &spec : kSpecs) {
+      if (!is_particles_hook(spec.id) && spec.id != kFree) {
+        continue;
+      }
+      json.key(spec.name).object_begin();
+      json.field("mirrored", static_cast<int64_t>(g_pt_seen[spec.id].load()));
+      json.field("accepted", static_cast<int64_t>(g_pt_accepted[spec.id].load()));
+      json.field("changed", static_cast<int64_t>(g_pt_changed[spec.id].load()));
       json.object_end();
     }
     json.object_end();

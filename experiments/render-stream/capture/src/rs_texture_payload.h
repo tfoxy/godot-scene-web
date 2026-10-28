@@ -70,8 +70,18 @@ std::vector<std::uint8_t> encode_payload(std::int64_t format, std::int64_t width
 struct FormatPolicy {
   bool permitted[kImageFormatCount] = {};
   std::vector<std::string> names;
+  // PM5 (render-stream-12.md "Curve textures"): RF, RGF, RGBF and RGBAF are permitted for
+  // textures at most kShortFloatMaxRows rows high (the /12 default policy only).
+  bool short_float = false;
 };
 bool parse_format_policy(const char *value, FormatPolicy *out, std::string *error);
+inline constexpr std::int64_t kShortFloatMaxRows = 4;
+// PM5: /12's default (GRC_RESOURCE_FORMATS unset): also the four float formats, short textures
+// only. Adds them to `names` (kept sorted) and sets short_float; the 32-bit float formats stay out
+// of `permitted`, so a taller float texture is still unsupported-format.
+void enable_short_float_formats(FormatPolicy *policy);
+// Whether `format` at `height` rows is permitted: `permitted`, or short_float's rule.
+bool format_permitted(const FormatPolicy &policy, std::int64_t format, std::int64_t height);
 
 // GRC_RESOURCE_MAX_PAYLOAD_BYTES: a decimal integer >= 1; unset means
 // kDefaultMaxPayloadBytes.

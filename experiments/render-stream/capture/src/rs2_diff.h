@@ -42,6 +42,8 @@ struct TxMeta {
   std::uint64_t base_seq = 0;  // patch only
   // PM1 sabotage perturb-instance (render-stream-11.md "As built (PM1)" rule 11), /11 only.
   bool perturb_instance = false;
+  // PM5 sabotage perturb-seed (render-stream-12.md "Sabotages"), /12 only.
+  bool perturb_seed = false;
 };
 Transaction make_full(const Snapshot &cur, const TxMeta &meta);
 Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &meta);
@@ -75,6 +77,36 @@ Snapshot lower_multimesh(const Snapshot &state);
 // idempotent.
 void observe_multimesh_features(Features *features);
 void unobserve_multimesh_features(Features *features);
+
+// ------------------------------------------------------------------ particles (/12, PM5)
+//
+// render-stream-12.md. A /12 transaction carries the particles table (make_full: every entry and
+// the emits of the target's own frame; make_patch: the entries new or differing since the base,
+// removed_particles, and the emits of host frames (B, T] its emit tail still holds). Below /12 a
+// snapshot that holds particles commands (or /12-only shader/material forms) is first lowered:
+// make_full()/make_patch() call lower_particles() on it themselves.
+
+// The command list as /11 sees it: every add_particles, and every `unsupported` command named
+// canvas_item_add_particles, becomes /11's
+// {"op":"unsupported","name":"canvas_item_add_particles","reason":"unsupported-op"}. Returns false
+// (and leaves `out` untouched) when the list holds no such command.
+bool lower_particles_commands(const std::vector<Command> &commands, std::vector<Command> *out);
+
+// The command list as below /11 sees it: particles and multimesh commands lowered (the list a
+// /10 connection of a /12 host sees). Returns false when nothing lowers.
+bool lower_v11_commands(const std::vector<Command> &commands, std::vector<Command> *out);
+
+// `state` as a /11 connection sees it: no particles table and no emits, every item's commands
+// lowered (its content_version_below_v12 substituted where set), each shader and material
+// replaced by its below_v12 form where set, and the item-level entries of
+// canvas_item_add_particles replaced by one `unsupported-op` entry per item drawing one.
+Snapshot lower_particles(const Snapshot &state);
+
+// features.ops gains "add_particles", features.resources "particles", and
+// features.observed_unsupported_ops loses "canvas_item_add_particles" (each list stays sorted);
+// unobserve_particles_features() is the inverse, for a connection below /12 of a /12 host.
+void observe_particles_features(Features *features);
+void unobserve_particles_features(Features *features);
 
 // ------------------------------------------------------------------ resource records (/11)
 //
@@ -120,7 +152,7 @@ std::vector<PayloadName> records_before(const Snapshot *base, const Snapshot &ta
 class RecordPlanner {
  public:
   RecordPlanner(ProtocolVersion version, InlinePolicy policy, bool keep_carried = false)
-      : lifelong_(version != ProtocolVersion::V11 || keep_carried), policy_(policy) {}
+      : lifelong_(!is_v11_or_later(version) || keep_carried), policy_(policy) {}
 
   // The records to send before `target`, given the stream's previous transaction `base` (null
   // for the first). Marks them carried when the planner is lifelong.

@@ -456,7 +456,7 @@ the receivers' default `inbound_buffer_bytes` of 16 MiB.
 | `GRC_MESH_DYNAMIC` | `auto` (default at /11), `off`, `all` | classification. `off` gives the prune rule alone. Ignored below /11 |
 | `GRC_MESH_DYNAMIC_FRAMES` | 1–60, default 4 | K |
 | `GRC_MESH_DYNAMIC_MAX_BYTES` | default 65,536 | the largest mesh that may be dynamic |
-| `GRC_PREDRAW_PUMP` | `0` (default), `1` | headless only: emit `frame_pre_draw` before the snapshot (not built; PM5, "As built (PM1)" rule 14) |
+| `GRC_PREDRAW_PUMP` | `0` (default), `1` | headless only: emit `frame_pre_draw` before the snapshot. Built at PM5, under /12 only (render-stream-12.md "Headless shims") |
 | `RS_RECEIVER_PROTOCOL` | `…`, `11` | the native receiver and GSW offer `render-stream.11` |
 | `GRC_LIVE_CODING` | `zstd-base` (default), `zstd`, `off` | W11t: the live coding a /11 hello that offers `live_coding` gets ("As built (W11t)"). Nothing below /11, no file sink and no HTTP body is coded |
 

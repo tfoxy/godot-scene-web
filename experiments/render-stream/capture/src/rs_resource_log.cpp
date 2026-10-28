@@ -2083,6 +2083,32 @@ MultimeshArgs &MultimeshArgs::floats(const char *key, const float *values, std::
   return *this;
 }
 
+MultimeshArgs &MultimeshArgs::f32(const char *key, float value) {
+  append_key(&text_, key);
+  if (value != value || value - value != 0.0f) {
+    text_ += "null";
+  } else {
+    append_float(&text_, value);
+  }
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::str(const char *key, const char *value) {
+  append_key(&text_, key);
+  if (value == nullptr) {
+    text_ += "null";
+  } else {
+    append_string(&text_, value);
+  }
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::raw(const char *key, const std::string &json) {
+  append_key(&text_, key);
+  text_ += json;
+  return *this;
+}
+
 MultimeshArgs &MultimeshArgs::buffer(const char *key, const char *sha_key, const float *data,
                                      std::size_t count) {
   if (!resource_log().wants_lines()) {
@@ -2189,6 +2215,63 @@ void ResourceLog::multimesh_state(const TapContext &ctx, const MultimeshState &s
   } else {
     o += "null";
   }
+  o += "}\n";
+  emit_text(o);
+}
+
+void ResourceLog::particles_call(const TapContext &ctx, const char *call, std::uint64_t rid,
+                                 std::uint64_t id, bool accepted, std::uint64_t version,
+                                 const MultimeshArgs &args, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_ || !keep_lines_.load(std::memory_order_relaxed)) {  // HC1
+    return;
+  }
+  std::string o = "{\"frame\":" + std::to_string(ctx.frame);
+  append_key(&o, "t_us");
+  o += std::to_string(ctx.t_ns >= t0_ns_ ? (ctx.t_ns - t0_ns_) / 1000 : 0);
+  append_key(&o, "thread");
+  append_string(&o, ctx.main_thread ? "main" : "other");
+  append_key(&o, "kind");
+  o += "\"particles\"";
+  append_key(&o, "call");
+  append_string(&o, call);
+  append_key(&o, "rid");
+  append_rid(&o, rid);
+  append_key(&o, "id");
+  append_id(&o, id);
+  append_key(&o, "accepted");
+  o += accepted ? "true" : "false";
+  append_key(&o, "version");
+  append_id(&o, version);
+  o += args.text();
+  if (omitted) {
+    o += ",\"omitted\":true";
+  }
+  o += "}\n";
+  emit_text(o);
+}
+
+void ResourceLog::particles_state(const TapContext &ctx, std::uint64_t frame, std::uint64_t rid,
+                                  std::uint64_t id, const std::string &entry_json) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_ || !keep_lines_.load(std::memory_order_relaxed)) {  // HC1
+    return;
+  }
+  std::string o = "{\"frame\":" + std::to_string(frame);
+  append_key(&o, "t_us");
+  o += std::to_string(ctx.t_ns >= t0_ns_ ? (ctx.t_ns - t0_ns_) / 1000 : 0);
+  append_key(&o, "thread");
+  append_string(&o, ctx.main_thread ? "main" : "other");
+  append_key(&o, "kind");
+  o += "\"particles\"";
+  append_key(&o, "call");
+  o += "\"state\"";
+  append_key(&o, "rid");
+  append_rid(&o, rid);
+  append_key(&o, "id");
+  append_id(&o, id);
+  o += ",";
+  o += entry_json;
   o += "}\n";
   emit_text(o);
 }

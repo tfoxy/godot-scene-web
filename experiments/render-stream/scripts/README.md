@@ -3371,7 +3371,7 @@ browser's own `fetch()` through `JavaScriptBridge` (`receiver/rs_resource_fetche
   `body_ms` and `callback_ms` on the page clock after the `fetch()` call, and `process_frames`,
   the main-loop iterations completed before the callback.
 
-## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1; g8w11, W11b; g8mm, PM1)
+## Gate 8 files (g8t, G8t; g8a, G8a and G8r; g8h, G8h; g8f, G8f; g8m, G8m; g8kp, G8kp; g8ku, G8ku; g8kc, G8kc; g8c, P3-CT; g8cg, CG1; g8w11, W11b; g8mm, PM1; g8pt, PM5)
 
 ```bash
 mise exec -- pnpm render-stream:gate8 -- \
@@ -3387,7 +3387,8 @@ mise exec -- pnpm render-stream:gate8 -- \
   `run_import_g8ku`, `run_capture_g8ku`, `run_reference_g8ku` and `run_g8ku_live`; P3-CT's
   `run_g8c` with `run_import_g8c` and `run_capture_rendered_g8c`; CG1's `run_g8cg` with
   `run_import_g8cg` and `run_capture_g8cg`; PM1's `run_g8mm` with `run_import_g8mm` and
-  `run_capture_rendered_g8mm`).
+  `run_capture_rendered_g8mm`; PM5's `run_g8pt` with `run_import_g8pt`,
+  `run_capture_rendered_g8pt` and `run_capture_headless_g8pt`).
 - `gate8-delivery-tool.ts` (G8kp): builds the rs-core wasm and the GSW bundle, then replays the
   native leg `g8kp/receiver` in the GSW receiver page three times (as is, BC masked, the
   ignore-format-mask sabotage) through gate 7's `runWebLegs`, into `g8kp/gsw-run/`. G8ku's
@@ -3433,6 +3434,16 @@ mise exec -- pnpm render-stream:gate8 -- \
   `test/self-test-gate8-mm.ts` drives them on `fixtures/gate8-mm/expected.json` with a simulated
   capture (hook log, fixture log, both sinks resolved through `applyTransaction`), each sabotage's
   shape and a one-frame lag included, and on golden-11's recordings.
+- `lib/gate8-pt-checks.ts` (PM5, render-stream-12.md "Fixture and checks (gate 8 group g8pt)"):
+  the g8pt checks (`runG8pt`) and their pure helpers (`parsePtLine`, the one reader of the
+  particles hook-log fields; `mapPtCells`, `ptCensusProblems`, `ptTraceFromTransactions` /
+  `tracePtRecording`, `callModelAt`, `ptWireProblems`, `ptEmitProblems`, `ptNamedProblems`,
+  `deriveMaterialKey` / `builtinDiffs` / `ptBuiltinProblems`, `ptV11Problems`, `ptCurveProblems`,
+  `ptNoShimProblems`, `ptShimDistinctProblems`, `ptPumpProblems`, `replayedParticleCommands`,
+  `receiverUndrawn`, `ptBytes`); `test/self-test-gate8-pt.ts` drives them on
+  `fixtures/gate8-pt/expected.json` with a simulated capture (hook log, both sinks with the emit
+  list, resolved through `applyTransaction`), both sabotages' shapes, code built the way
+  `_update_shader` builds it for every cell's key, and golden-12's `shader-ppm` payload.
 - `gate8-w11-tool.ts gsw-legs` (W11c): builds the rs-core wasm and the GSW bundle, then replays
   g8w11's captures in the GSW receiver page (lib/gate7-web-legs.ts), one leg each under
   `g8w11/gsw/<leg>/gsw`, from a planned launch it writes to `g8w11/gsw/<leg>/plan` (g8w11 has no
@@ -3574,6 +3585,41 @@ equal to the hook log's value minus call frame), `mm-v10`, and per sabotage
 fails on its patch sink). `mm-bytes` is informational: mm_f32 bytes per transaction (mean, max)
 and per frame per honest leg and sink, also under `g8mm.legs` in `result.json`. The sabotage
 checks are not-run when the smoke tier skips their legs.
+
+## Gate 8 legs and evidence under `--out/g8pt` (g8pt, PM5)
+
+Every gate8-pt capture runs at `--fixed-fps 60`, armed at birth with `GRC_ADOPT=arm` (the node
+map the `particle_process_material` builtin is read through), with both sinks, the store, the hook
+log (`evidence/resources.jsonl`, kind `particles`) and `steps.jsonl`. g8pt is not in
+`run-gate7.sh`'s `G8_FILE_LEGS`: no receiver draws particles until PM6.
+
+| leg | what |
+| --- | ---- |
+| `import/fixture`, `import/mm-fixture`, `import/receiver` | the editor's `--import` of `fixtures/gate8-pt`, `fixtures/gate8-mm` and the receiver |
+| `capture` | rendered in the group's private 640x360 gamescope, `GRC_STREAM_VERSION=12`: `recording.rs12`, `recording-patch.rs12` |
+| `sabotage-perturb-seed/capture`, `sabotage-drop-restart/capture` | `capture` with `GRC_SABOTAGE=<kind> GRC_SABOTAGE_FRAME=30` |
+| `receiver` | the native receiver on `capture`'s full sink, `RS_RECEIVER_PROTOCOL=12`: accepted, every particle draw typed `particles-undrawn` |
+| `capture-v11` | `capture` at `GRC_STREAM_VERSION=11` (`.rs11`): the negative control |
+| `headless/capture` | headless /12 without the particles shim: every emitter is `RID()`, every draw `unknown-particles` |
+| `headless-shim/capture` | headless /12 with `GRC_HEADLESS_PARTICLES=synthesize` |
+| `headless-pump/capture` | `fixtures/gate8-mm` headless /12 with `GRC_PREDRAW_PUMP=1` (and `mm-frames.jsonl`) |
+| `headless-nopump/capture` | the same without the pump: `pt-pump`'s control |
+
+## Gate 8 criteria (g8pt)
+
+`g8pt-legs`, `pt-validate` (every honest /12 leg and the /11 control, both sinks, through
+`validateRecording` and `rs-core-check validate`), `pt-hook-census` (per cell, on `capture` and
+`headless-shim/capture`: every particles call counted against expected.json up to the last
+transaction, the teardown's `set_subemitter` and `free`, and the cell's last state line),
+`pt-wire` (every resolved entry's fields and floats equal the newest hook-log `state` line at or
+before the transaction's frame and the call lines' own values, counters included; the emit list
+equals the `particles_emit` calls in (B, T]; every cell's emitter is an ok entry from its first
+state line), `pt-builtin` (each builtin equals the MaterialKey derived from its stored GRP1 code,
+and each cell's builtin expected.json's key), `pt-v11`, `pt-curve-textures`, `pt-shim`,
+`pt-pump`, `pt-receiver`, and per sabotage `pt-sabotage-validate-<kind>` and
+`pt-wire-catches-<kind>` (pt-wire fails on its patch sink). `pt-bytes` is informational: pt_f32
+bytes per transaction and per frame per honest leg and sink, also under `g8pt.legs` in
+`result.json`. The sabotage checks are not-run when the smoke tier skips their legs.
 
 ## Gate 8 criteria (g8w11)
 

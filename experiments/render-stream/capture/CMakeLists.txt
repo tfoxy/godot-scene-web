@@ -87,6 +87,7 @@ add_library(render_stream_capture SHARED
   src/rs_basis_encode.cpp
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
+  src/rs_particles_shim.cpp
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
@@ -214,6 +215,7 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN9_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-9"
   GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10"
   GRC_GOLDEN11_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11"
+  GRC_GOLDEN12_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
 
@@ -270,6 +272,14 @@ foreach(name full patch inline)
   add_test(NAME rs_live_coding_golden_${name}
     COMMAND sh -c "\"$1\" encode \"$2/$3.rs11\" \"$4/$3.coded\" >/dev/null && cmp \"$4/$3.coded\" \"$2/coding/$3.coded\""
       sh $<TARGET_FILE:rs_live_coding_tool> ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11
+      ${name} ${CMAKE_CURRENT_BINARY_DIR})
+endforeach()
+# PM5: golden-12/coding/ is the same tool's output for golden-12's recordings (render-stream-12.md:
+# /12's live transport is /11's, W11t's coding included).
+foreach(name full patch inline)
+  add_test(NAME rs_live_coding_golden12_${name}
+    COMMAND sh -c "\"$1\" encode \"$2/$3.rs12\" \"$4/$3.12.coded\" >/dev/null && cmp \"$4/$3.12.coded\" \"$2/coding/$3.coded\""
+      sh $<TARGET_FILE:rs_live_coding_tool> ${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12
       ${name} ${CMAKE_CURRENT_BINARY_DIR})
 endforeach()
 
@@ -386,6 +396,19 @@ target_compile_definitions(rs11_codec_test PRIVATE
   GRC_GOLDEN11_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11")
 add_test(NAME rs11_codec COMMAND rs11_codec_test)
 
+# PM5: render-stream/12 is /11 plus the particles table, particle_emits, add_particles, the
+# optional pt_f32 block and the particle_process_material builtin (render-stream-12.md), proven
+# byte-identical to protocol/golden-12/{full,patch,inline}.rs12, with the /11 lowering checked.
+add_executable(rs12_codec_test test/rs12_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp)
+target_include_directories(rs12_codec_test PRIVATE src test)
+target_link_libraries(rs12_codec_test PRIVATE grc_warnings)
+target_compile_definitions(rs12_codec_test PRIVATE
+  GRC_GOLDEN6_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-6"
+  GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10"
+  GRC_GOLDEN11_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11"
+  GRC_GOLDEN12_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12")
+add_test(NAME rs12_codec COMMAND rs12_codec_test)
+
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test
@@ -458,6 +481,13 @@ add_executable(rs_canvas_texture_shim_test
 target_include_directories(rs_canvas_texture_shim_test PRIVATE src)
 target_link_libraries(rs_canvas_texture_shim_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_canvas_texture_shim COMMAND rs_canvas_texture_shim_test)
+
+# PM5: the particles RID shim and the pre-draw pump's option parsing (render-stream-12.md
+# "Headless shims (opt-in)").
+add_executable(rs_particles_shim_test test/rs_particles_shim_test.cpp src/rs_particles_shim.cpp)
+target_include_directories(rs_particles_shim_test PRIVATE src)
+target_link_libraries(rs_particles_shim_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_particles_shim COMMAND rs_particles_shim_test)
 
 add_executable(rs_texture_payload_test
   test/rs_texture_payload_test.cpp src/rs_texture_payload.cpp src/rs_sha256.cpp)

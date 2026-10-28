@@ -12,8 +12,8 @@ extends RefCounted
 ## accepted only when it is finite, integral and within +-(2^53 - 1), then converted with int().
 
 ## The GRS2 to GRS9 magics (render-stream-2.md to render-stream-9.md), GRSA (render-stream-10.md:
-## byte 3 is the version as one uppercase hex digit from /10 on) and GRSB (render-stream-11.md), by
-## wire version.
+## byte 3 is the version as one uppercase hex digit from /10 on), GRSB (render-stream-11.md) and
+## GRSC (render-stream-12.md), by wire version.
 const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	2: "475253320d0a1a0a",
 	3: "475253330d0a1a0a",
@@ -25,6 +25,7 @@ const MAGIC_HEX_BY_VERSION: Dictionary[int, String] = {
 	9: "475253390d0a1a0a",
 	10: "475253410d0a1a0a",
 	11: "475253420d0a1a0a",
+	12: "475253430d0a1a0a",
 }
 const MAGIC_V7_HEX: String = "475253370d0a1a0a"
 ## G8t: render-stream/8 files (gate 8 recordings, render-stream-8.md) replay at /8.
@@ -38,6 +39,9 @@ const MAGIC_V10_HEX: String = "475253410d0a1a0a"
 ## W11d: render-stream/11 files (render-stream-11.md: GRSB, the carried-set rules and dynamic mesh
 ## surfaces) replay at /11.
 const MAGIC_V11_HEX: String = "475253420d0a1a0a"
+## PM5: render-stream/12 files (render-stream-12.md: GRSC, the particles table and emit list)
+## replay at /12; the core counts every add_particles undrawn until PM6.
+const MAGIC_V12_HEX: String = "475253430d0a1a0a"
 const PROTOCOL_V7: String = "render-stream/7"
 const MAX_SAFE_INT: float = 9007199254740991.0
 

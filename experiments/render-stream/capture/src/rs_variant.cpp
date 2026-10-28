@@ -236,6 +236,97 @@ std::string utf8_from_raw_string(const void *string_ptr) {
   return std::string(buffer.data(), static_cast<size_t>(written));
 }
 
+// PM5: an Array's packed form (rs_variant.h `array_form`). The Array is read through
+// array_operator_index_const and Array.size() (the builtin method rs_adopt.cpp uses); nothing in
+// the caller's Variant is modified.
+void decode_array_form(const void *variant_ptr, DecodedParam *out) {
+  if (g_iface.array_operator_index_const == nullptr ||
+      g_iface.variant_get_ptr_builtin_method == nullptr || g_iface.variant_get_type == nullptr) {
+    return;
+  }
+  alignas(8) unsigned char array[16] = {};  // Array is one pointer (ArrayPrivate *)
+  if (!construct_concrete(GDEXTENSION_VARIANT_TYPE_ARRAY, variant_ptr, &array)) {
+    return;
+  }
+  static GDExtensionPtrBuiltInMethod size_fn = nullptr;
+  if (size_fn == nullptr) {
+    // StringName("size") through the String constructor is what rs_adopt does; here the
+    // interface's string_name_new_with_latin1_chars keeps it self-contained.
+    if (g_iface.string_name_new_with_latin1_chars != nullptr) {
+      alignas(8) unsigned char name[8] = {};
+      g_iface.string_name_new_with_latin1_chars(name, "size", 1);
+      size_fn = g_iface.variant_get_ptr_builtin_method(GDEXTENSION_VARIANT_TYPE_ARRAY, name,
+                                                       3173160232LL);
+    }
+  }
+  std::int64_t n = 0;
+  if (size_fn != nullptr) {
+    size_fn(array, nullptr, &n, 0);
+  }
+  enum Kind { kNone, kInt, kFloat, kV2, kV3, kV4, kColor, kMixed };
+  Kind kind = kNone;
+  std::vector<double> f;
+  bool any_float = false;
+  for (std::int64_t i = 0; i < n && kind != kMixed; ++i) {
+    const void *element = g_iface.array_operator_index_const(array, i);
+    if (element == nullptr) {
+      kind = kMixed;
+      break;
+    }
+    const GDExtensionVariantType t = g_iface.variant_get_type(element);
+    DecodedParam one = decode_variant(element);
+    Kind k = kMixed;
+    if (one.status == "ok" && !one.packed) {
+      if (t == GDEXTENSION_VARIANT_TYPE_BOOL || t == GDEXTENSION_VARIANT_TYPE_INT) {
+        k = kInt;
+      } else if (t == GDEXTENSION_VARIANT_TYPE_FLOAT) {
+        k = kInt;  // numeric; any float makes the whole array float64
+        any_float = true;
+      } else if (t == GDEXTENSION_VARIANT_TYPE_VECTOR2) {
+        k = kV2;
+      } else if (t == GDEXTENSION_VARIANT_TYPE_VECTOR3) {
+        k = kV3;
+      } else if (t == GDEXTENSION_VARIANT_TYPE_VECTOR4) {
+        k = kV4;
+      } else if (t == GDEXTENSION_VARIANT_TYPE_COLOR) {
+        k = kColor;
+      }
+    }
+    if (kind == kNone) {
+      kind = k;
+    } else if (kind != k) {
+      kind = kMixed;
+    }
+    f.insert(f.end(), one.f.begin(), one.f.end());
+  }
+  destroy_concrete(GDEXTENSION_VARIANT_TYPE_ARRAY, &array);
+  if (n <= 0 || kind == kNone || kind == kMixed) {
+    return;
+  }
+  const char *type_name = nullptr;
+  switch (kind) {
+    case kInt:
+      if (!any_float) {
+        for (double v : f) {
+          if (v > 2147483647.0 || v < -2147483648.0) {
+            return;  // outside PackedInt32Array: stays param-type
+          }
+        }
+      }
+      type_name = any_float ? "float64" : "int32";
+      break;
+    case kV2: type_name = "vector2"; break;
+    case kV3: type_name = "vector3"; break;
+    case kV4: type_name = "vector4"; break;
+    case kColor: type_name = "color"; break;
+    default: return;
+  }
+  out->array_form = true;
+  out->array_type = type_name;
+  out->array_n = n;
+  out->array_f = std::move(f);
+}
+
 }  // namespace
 
 DecodedParam decode_variant(const void *variant_ptr) {
@@ -370,6 +461,13 @@ DecodedParam decode_variant(const void *variant_ptr) {
       return out;
     case GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY:
       decode_packed<Color>(type, variant_ptr, "color", &out);
+      return out;
+    case GDEXTENSION_VARIANT_TYPE_ARRAY:
+      out.type = "array";
+      out.status = "unsupported";
+      out.reason = "param-type";
+      out.n = 0;
+      decode_array_form(variant_ptr, &out);  // PM5: the packed form /12 carries
       return out;
     default:
       out.type = unsupported_type_name(type);

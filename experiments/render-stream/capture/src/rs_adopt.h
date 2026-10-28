@@ -354,6 +354,27 @@ void adopt_materials_at_arm();
 // Cheap when nothing changed since the last call (one epoch read).
 void adopt_materials_resolve();
 
+// PM5 (render-stream-12.md "The `particle_process_material` builtin"): at the frame boundary
+// (after adopt_materials_resolve), keys every `particles`-mode shader the mirror lists
+// (Mirror::ppm_candidates) through the node map: the drawing item's node is a GPUParticles2D whose
+// process_material is a ParticleProcessMaterial with the emitter's material RID; its class getters
+// give ParticleProcessMaterial::MaterialKey (_compute_key). Cheap when the mirror's ppm epoch did
+// not move. A shader it cannot key stays shader-mode (counted unresolved, once per shader).
+void adopt_particles_resolve();
+struct PpmStats {
+  std::uint64_t builtin_resolved = 0;    // shaders keyed
+  std::uint64_t builtin_unresolved = 0;  // shaders tried with no ParticleProcessMaterial found
+};
+PpmStats adopt_particles_stats();
+
+// PM5 (render-stream-12.md "Headless shims", GRC_PREDRAW_PUMP=1): connects a capture callable to
+// RenderingServer.frame_pre_draw (false, with `*why`, when the binds or the signal are missing).
+bool predraw_pump_connect(std::string *why);
+void predraw_pump_disconnect();
+// The frame callback, before the snapshot: emits frame_pre_draw when the engine did not this
+// iteration (true: the pump fired), then clears the flag.
+bool predraw_pump_frame();
+
 }  // namespace rs
 }  // namespace grc
 

@@ -485,7 +485,56 @@ void append_shader_entry(std::string &out, const ShaderEntry &s, bool v8) {
   out += ",\"payload_bytes\":";
   append_json_int(out, s.payload_bytes);
   out += ",\"builtin\":";
-  if (s.has_builtin) {
+  if (s.has_ppm) {
+    // PM5 (render-stream-12.md "The `particle_process_material` builtin"): only on a /12
+    // transaction (lower_particles() replaces such an entry below /12).
+    const BuiltinParticleProcessMaterial &b = s.ppm;
+    out += "{\"kind\":\"particle_process_material\",\"emission_shape\":";
+    append_json_string(out, ppm_emission_shape_wire(b.emission_shape));
+    out += ",\"particle_flags\":[";
+    bool first = true;
+    for (int i = 0; i < kPpmFlagCount; ++i) {
+      if ((b.particle_flags >> i) & 1u) {
+        out += first ? "" : ",";
+        first = false;
+        append_json_string(out, ppm_flag_wire(i));
+      }
+    }
+    out += "],\"textures\":[";
+    first = true;
+    for (int i = 0; i < kPpmParamCount; ++i) {
+      if ((b.textures >> i) & 1u) {
+        out += first ? "" : ",";
+        first = false;
+        append_json_string(out, ppm_param_wire(i));
+      }
+    }
+    out += "],\"color_ramp\":";
+    append_json_bool(out, b.color_ramp);
+    out += ",\"color_initial_ramp\":";
+    append_json_bool(out, b.color_initial_ramp);
+    out += ",\"alpha_curve\":";
+    append_json_bool(out, b.alpha_curve);
+    out += ",\"emission_curve\":";
+    append_json_bool(out, b.emission_curve);
+    out += ",\"velocity_limit_curve\":";
+    append_json_bool(out, b.velocity_limit_curve);
+    out += ",\"orbit_velocity_curve_xyz\":";
+    append_json_bool(out, b.orbit_velocity_curve_xyz);
+    out += ",\"emission_color_texture\":";
+    append_json_bool(out, b.emission_color_texture);
+    out += ",\"sub_emitter\":";
+    append_json_string(out, ppm_sub_emitter_wire(b.sub_emitter));
+    out += ",\"attractor\":";
+    append_json_bool(out, b.attractor);
+    out += ",\"collision\":";
+    append_json_string(out, ppm_collision_wire(b.collision));
+    out += ",\"collision_scale\":";
+    append_json_bool(out, b.collision_scale);
+    out += ",\"turbulence\":";
+    append_json_bool(out, b.turbulence);
+    out += "}";
+  } else if (s.has_builtin) {
     out += "{\"kind\":\"canvas_item_material\",\"blend_mode\":";
     append_json_string(out, to_wire(s.builtin.blend_mode));
     out += ",\"light_mode\":";
@@ -836,6 +885,18 @@ void append_commands(std::string &items_json, const std::vector<Command> &comman
       }
       items_json += "}";
       break;
+    case CommandKind::AddParticles:
+      // render-stream-12.md "The command": no floats, no "f" key.
+      items_json += "{\"op\":\"add_particles\",\"particles\":";
+      append_json_int(items_json, command.particles);
+      items_json += ",\"tex\":";
+      if (command.has_tex) {
+        append_json_int(items_json, command.tex);
+      } else {
+        items_json += "null";
+      }
+      items_json += "}";
+      break;
     case CommandKind::Unsupported:
       items_json += "{\"op\":\"unsupported\",\"name\":";
       append_json_string(items_json, command.name);
@@ -860,6 +921,9 @@ std::vector<std::uint8_t> magic() {
 }
 
 std::vector<std::uint8_t> magic(ProtocolVersion version) {
+  if (version == ProtocolVersion::V12) {
+    return std::vector<std::uint8_t>(kMagicV12.begin(), kMagicV12.end());
+  }
   if (version == ProtocolVersion::V11) {
     return std::vector<std::uint8_t>(kMagicV11.begin(), kMagicV11.end());
   }
@@ -893,7 +957,9 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
   std::string m;
   m += "{\"type\":\"session\",\"protocol\":";
   const char *protocol =
-      session.version == ProtocolVersion::V11
+      session.version == ProtocolVersion::V12
+          ? kProtocolV12
+          : session.version == ProtocolVersion::V11
           ? kProtocolV11
           : session.version == ProtocolVersion::V10
           ? kProtocolV10
@@ -1057,7 +1123,7 @@ std::vector<std::uint8_t> encode_session(const Session &session) {
                                 session.resources.texture_delivery.encoder);
     m += "}";
   }
-  if (session.version == ProtocolVersion::V11) {
+  if (is_v11_or_later(session.version)) {
     // render-stream-11.md "Session record": mesh_dynamic, last, right after texture_delivery.
     m += ",\"mesh_dynamic\":{\"mode\":";
     append_json_string(m, to_wire(session.resources.mesh_dynamic.mode));
@@ -1182,7 +1248,8 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   // render-stream-10.md: /10 is /9 plus the two back-buffer item keys and the backbuffer_f32 block.
   // v10 means "V10 or later"; render-stream-11.md: /11 is /10 plus the mesh `u8` key, null dynamic
   // surface hashes, a patched `unsupported` and the blocks mesh_u8 and mm_f32.
-  const bool v11 = transaction.version == ProtocolVersion::V11;
+  const bool v12 = is_v12_or_later(transaction.version);
+  const bool v11 = is_v11_or_later(transaction.version);
   const bool v10 = v11 || transaction.version == ProtocolVersion::V10;
   const bool v9 = v10 || transaction.version == ProtocolVersion::V9;
   const bool v8 = v9 || transaction.version == ProtocolVersion::V8;
@@ -1554,6 +1621,125 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     m += ",\"removed_multimeshes\":";
     append_json_id_array(m, transaction.removed_multimeshes);
   }
+  // PM5 (render-stream-12.md "Particles table", "The emit list"): particles, removed_particles
+  // and particle_emits right after removed_multimeshes, each only when non-empty; their floats in
+  // the optional tenth block pt_f32 (entries in entry order, then the emits in list order).
+  std::vector<float> pt_f32;
+  if (v12 && !transaction.particles.empty()) {
+    bool perturb = transaction.perturb_seed;
+    m += ",\"particles\":[";
+    for (std::size_t i = 0; i < transaction.particles.size(); ++i) {
+      if (i != 0) {
+        m += ",";
+      }
+      const ParticlesEntry &p = transaction.particles[i];
+      const bool freed = p.status == ParticlesStatus::Freed;
+      m += "{\"id\":";
+      append_json_int(m, p.id);
+      m += ",\"origin\":\"created\",\"status\":";
+      append_json_string(m, to_wire(p.status));
+      m += ",\"reason\":";
+      if (p.status == ParticlesStatus::Unsupported && p.has_reason) {
+        append_json_string(m, to_wire(p.reason));
+      } else {
+        m += "null";
+      }
+      m += ",\"version\":";
+      append_json_int(m, p.version);
+      m += ",\"mode\":";
+      m += p.mode_2d ? "\"2d\"" : "\"3d\"";
+      m += ",\"emitting\":";
+      append_json_bool(m, p.emitting);
+      m += ",\"amount\":";
+      append_json_int(m, p.amount);
+      m += ",\"one_shot\":";
+      append_json_bool(m, p.one_shot);
+      m += ",\"fixed_fps\":";
+      append_json_int(m, p.fixed_fps);
+      m += ",\"interpolate\":";
+      append_json_bool(m, p.interpolate);
+      m += ",\"fractional_delta\":";
+      append_json_bool(m, p.fractional_delta);
+      m += ",\"local\":";
+      append_json_bool(m, p.local);
+      m += ",\"draw_order\":";
+      append_json_string(m, particles_draw_order_wire(p.draw_order));
+      m += ",\"transform_align\":";
+      append_json_string(m, particles_transform_align_wire(p.transform_align));
+      m += ",\"trails\":";
+      append_json_bool(m, p.trails);
+      m += ",\"trail_poses\":";
+      append_json_int(m, p.trail_poses);
+      m += ",\"seed\":";
+      // Sabotage perturb-seed: + 1 on the first entry this transaction writes (mod 2^32).
+      append_json_int(m, static_cast<std::uint32_t>(p.seed + (perturb ? 1u : 0u)));
+      perturb = false;
+      m += ",\"restarts\":";
+      append_json_int(m, p.restarts);
+      m += ",\"emits\":";
+      append_json_int(m, p.emits);
+      m += ",\"process_requests\":";
+      append_json_int(m, p.process_requests);
+      m += ",\"process_material\":";
+      if (!freed && p.process_material != 0) {
+        append_json_int(m, p.process_material);
+      } else {
+        m += "null";
+      }
+      m += ",\"draw_passes\":[";
+      if (!freed) {
+        for (std::size_t k = 0; k < p.draw_passes.size(); ++k) {
+          if (k != 0) {
+            m += ",";
+          }
+          if (p.draw_passes[k] != 0) {
+            append_json_int(m, p.draw_passes[k]);
+          } else {
+            m += "null";
+          }
+        }
+      }
+      m += "],\"subemitter\":";
+      if (!freed && p.subemitter != 0) {
+        append_json_int(m, p.subemitter);
+      } else {
+        m += "null";
+      }
+      m += ",\"f\":";
+      if (freed || p.floats == nullptr) {
+        m += "null";
+      } else {
+        append_json_int(m, pt_f32.size());
+        pt_f32.insert(pt_f32.end(), p.floats->begin(), p.floats->end());
+      }
+      m += "}";
+    }
+    m += "]";
+  }
+  if (v12 && !transaction.removed_particles.empty()) {
+    m += ",\"removed_particles\":";
+    append_json_id_array(m, transaction.removed_particles);
+  }
+  if (v12 && !transaction.particle_emits.empty()) {
+    m += ",\"particle_emits\":[";
+    for (std::size_t i = 0; i < transaction.particle_emits.size(); ++i) {
+      if (i != 0) {
+        m += ",";
+      }
+      const ParticleEmit &e = transaction.particle_emits[i];
+      m += "{\"particles\":";
+      append_json_int(m, e.particles);
+      m += ",\"restarts\":";
+      append_json_int(m, e.restarts);
+      m += ",\"flags\":";
+      append_json_int(m, e.flags);
+      m += ",\"f\":";
+      append_json_int(m, pt_f32.size());
+      m += "}";
+      pt_f32.insert(pt_f32.end(), e.floats.begin(), e.floats.end());
+    }
+    m += "]";
+  }
   // P3-TM (render-stream-10.md "Shader time"): the host's shader time, last in param_f64, right
   // after the materials; absent (no key) from a transaction whose state reads no TIME.
   if (v10 && transaction.shader_time.has_value()) {
@@ -1564,7 +1750,19 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   }
 
   m += ",";
-  if (v11) {
+  if (v12 && !pt_f32.empty()) {
+    // PM5: the tenth block pt_f32, present only when it holds a float.
+    append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
+                                  {"canvas_f32", "f32", canvas_f32.size()},
+                                  {"cmd_f32", "f32", cmd_f32.size()},
+                                  {"cmd_i32", "i32", cmd_i32.size()},
+                                  {"mesh_f32", "f32", mesh_f32.size()},
+                                  {"param_f64", "f64", param_f64.size()},
+                                  {"backbuffer_f32", "f32", backbuffer_f32.size()},
+                                  {"mesh_u8", "u8", mesh_u8.size()},
+                                  {"mm_f32", "f32", mm_f32.size()},
+                                  {"pt_f32", "f32", pt_f32.size()}});
+  } else if (v11) {
     // The ninth block mm_f32: the multimesh floats (PM1 rule 4).
     append_blocks_descriptor(m, {{"item_f32", "f32", item_f32.size()},
                                   {"canvas_f32", "f32", canvas_f32.size()},
@@ -1618,6 +1816,9 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
   if (v11) {
     blocks.push_back(u8_payload(std::move(mesh_u8)));
     blocks.push_back(f32_payload(std::move(mm_f32)));
+  }
+  if (v12 && !pt_f32.empty()) {
+    blocks.push_back(f32_payload(std::move(pt_f32)));
   }
   return assemble_record(m, blocks);
 }

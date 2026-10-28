@@ -112,7 +112,8 @@ struct Opts {
     /// `shader_set_code`.
     vertex_flat_varyings: bool,
     /// G8kp: `RS_RECEIVER_PROTOCOL=9` (live): offer render-stream.9 and accept a /9 session; CG1:
-    /// 10 the same for render-stream.10. 0 when the options carry no `live_protocol` (7 or 8).
+    /// 10 the same for render-stream.10 (W11c: 11, PM5: 12, likewise). 0 when the options carry no
+    /// `live_protocol` (7 or 8).
     live_protocol: u8,
     /// G8kb (texture-delivery-design.md Q6 "GSW"): the shell runs the KTX2 transcoder worker, so
     /// the default `texture_encodings` lists `uastc` (`block,uastc,decoded`).
@@ -213,7 +214,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
-    o.live_protocol = if json.contains("\"live_protocol\":11") {
+    o.live_protocol = if json.contains("\"live_protocol\":12") {
+        12
+    } else if json.contains("\"live_protocol\":11") {
         11
     } else if json.contains("\"live_protocol\":10") {
         10
@@ -1358,6 +1361,7 @@ impl GswRs {
         // in the options) speaks /9 only, CG1: one that offered render-stream.10 /10 only; G8g: 7
         // or 8 otherwise (the page passes the version it offered).
         // W11c: one that offered render-stream.11 /11 only.
+        // PM5: one that offered render-stream.12 /12 only.
         let ok = match self.opts.live_protocol {
             0 => version == 7 || version == 8,
             p => version == p,

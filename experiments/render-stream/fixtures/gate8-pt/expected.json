@@ -1,0 +1,109 @@
+{
+  "schema": "render-stream-gate8-pt-expected/1",
+  "doc": "Hand-derived from pt.gd and Godot 4.5.1's GPUParticles2D and ParticleProcessMaterial (scene/2d/gpu_particles_2d.cpp, scene/resources/particle_process_material.{h,cpp}), not measured (README.md). A cell's emitter is the hook-log rid whose last accepted particles_set_amount has the cell's `amount` (unique per cell; the GPUParticles2D constructor sets 8 first). `calls` are the exact counts of each hooked particles call per cell up to the last transaction's frame (keys without the `particles_` prefix; the constructor's own calls included: create, set_mode, set_draw_passes, set_draw_pass_mesh, set_emitting, set_one_shot(false) and its restart, set_seed, set_amount 8, set_amount_ratio, set_lifetime, set_fixed_fps twice, set_fractional_delta, set_interpolate, set_pre_process_time, set_explosiveness_ratio, set_randomness_ratio, set_custom_aabb, set_use_local_coordinates, set_draw_order, set_speed_scale, set_collision_base_size; then _particles()'s amount, lifetime, seed, local_coords, process_material and texture, ENTER_TREE's set_speed_scale, one NOTIFICATION_DRAW's set_trail_bind_poses, and one set_emission_transform from the first transform flush: CanvasItem's ENTER_TREE puts every item on the tree's xform_change_list, and GPUParticles2D answers NOTIFICATION_TRANSFORM_CHANGED whatever its local_coords). `teardown` counts the calls after the last transaction (the quit: EXIT_TREE's set_subemitter(RID()) and the destructor's free). `per_frame` names the calls a cell makes every frame from its first such call to its last, over at least `min_per_frame_frames` frames, at most `calls[name]` more than the frames (B_SPHERE's emission transform: its parent moves every frame). `ranges` bounds a call whose count depends on engine timing [min, max] (B_SPHERE's emitter velocity: set only when the per-physics-tick velocity changes, at the start and around each 30-frame wrap). `restarts`, `emits` and `process_requests` are the cell's counters at the last transaction. `key` is the ParticleProcessMaterial::MaterialKey of the cell's process material, spelled as the wire builtin (render-stream-12.md); `textures` names the material's texture parameters that are float textures (F_CURVES: a 64x1 RGBF CurveTexture and a 64x1 RGBAF GradientTexture1D with use_hdr). Headless (the dummy) behaves the same for every particles call (the scene does not know the host); without the particles shim every emitter is RID() there.",
+  "quit_frame": 90,
+  "checkpoints": [
+    { "step": 0, "applied": 1, "settle": 4 },
+    { "step": 1, "applied": 20, "settle": 27 },
+    { "step": 2, "applied": 40, "settle": 47 }
+  ],
+  "sabotage_frame": 30,
+  "min_per_frame_frames": 80,
+  "float_texture": { "width": 64, "height": 1, "formats": ["RF", "RGF", "RGBF", "RGBAF"] },
+  "base_calls": {
+    "create": 1, "set_mode": 1, "set_draw_passes": 1, "set_draw_pass_mesh": 1, "set_emitting": 1,
+    "set_one_shot": 1, "restart": 1, "set_seed": 2, "set_amount": 2, "set_amount_ratio": 1,
+    "set_lifetime": 2, "set_fixed_fps": 2, "set_fractional_delta": 1, "set_interpolate": 1,
+    "set_pre_process_time": 1, "set_explosiveness_ratio": 1, "set_randomness_ratio": 1,
+    "set_custom_aabb": 1, "set_use_local_coordinates": 2, "set_draw_order": 1, "set_speed_scale": 2,
+    "set_collision_base_size": 2, "set_process_material": 1, "set_trail_bind_poses": 1,
+    "set_emission_transform": 1
+  },
+  "base_teardown": { "set_subemitter": 1, "free": 1 },
+  "cells": {
+    "A_BOX": {
+      "amount": 3, "seed": 1001, "local": true, "one_shot": false, "emitting": true,
+      "calls": { "emit": 4 },
+      "restarts": 1, "emits": 4, "process_requests": 0, "trail_poses": 0,
+      "key": { "emission_shape": "box", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "B_SPHERE": {
+      "amount": 5, "seed": 1002, "local": false, "one_shot": false, "emitting": true,
+      "calls": { "set_emission_transform": 2 },
+      "per_frame": ["set_emission_transform"],
+      "ranges": { "set_emitter_velocity": [2, 8] },
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "key": { "emission_shape": "sphere", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "C_RING": {
+      "amount": 6, "seed": 2003, "local": true, "one_shot": false, "emitting": true,
+      "calls": { "set_seed": 3, "request_process_time": 1 },
+      "restarts": 1, "emits": 0, "process_requests": 1, "trail_poses": 0,
+      "key": { "emission_shape": "ring", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "D_ONESHOT": {
+      "amount": 7, "seed": 1004, "local": true, "one_shot": true, "emitting": true,
+      "calls": { "set_one_shot": 2, "set_explosiveness_ratio": 2, "set_emitting": 4, "restart": 3 },
+      "restarts": 3, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "restart_frames": [20, 40],
+      "key": { "emission_shape": "point", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "E_FLIP": {
+      "amount": 9, "seed": 1005, "local": true, "one_shot": false, "emitting": true,
+      "calls": { "set_collision_base_size": 3 },
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "key": { "emission_shape": "point", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "F_CURVES": {
+      "amount": 10, "seed": 1006, "local": true, "one_shot": false, "emitting": true,
+      "calls": {},
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "textures": ["scale_curve", "color_ramp"],
+      "key": { "emission_shape": "point", "textures": ["scale"], "color_ramp": true, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "G_TURB": {
+      "amount": 11, "seed": 1007, "local": true, "one_shot": false, "emitting": true,
+      "calls": {},
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "key": { "emission_shape": "point", "textures": [], "color_ramp": false, "turbulence": true, "sub_emitter": "disabled" }
+    },
+    "H_SUB": {
+      "amount": 12, "seed": 1008, "local": true, "one_shot": false, "emitting": true,
+      "calls": { "set_subemitter": 1 },
+      "subemitter": "H_CHILD",
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "key": { "emission_shape": "point", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "at_end" }
+    },
+    "H_CHILD": {
+      "amount": 2, "seed": 1009, "local": true, "one_shot": false, "emitting": false,
+      "calls": { "set_emitting": 2 },
+      "child_of": "H_SUB",
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 0,
+      "key": { "emission_shape": "point", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    },
+    "I_TRAILS": {
+      "amount": 13, "seed": 1010, "local": true, "one_shot": false, "emitting": true,
+      "calls": { "set_trails": 2, "set_transform_align": 1 },
+      "restarts": 1, "emits": 0, "process_requests": 0, "trail_poses": 5,
+      "key": { "emission_shape": "point", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
+    }
+  },
+  "key_defaults": {
+    "kind": "particle_process_material",
+    "emission_shape": "point",
+    "particle_flags": ["disable_z"],
+    "textures": [],
+    "color_ramp": false,
+    "color_initial_ramp": false,
+    "alpha_curve": false,
+    "emission_curve": false,
+    "velocity_limit_curve": false,
+    "orbit_velocity_curve_xyz": false,
+    "emission_color_texture": false,
+    "sub_emitter": "disabled",
+    "attractor": true,
+    "collision": "disabled",
+    "collision_scale": false,
+    "turbulence": false
+  }
+}

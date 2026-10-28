@@ -3,7 +3,7 @@
 // Pure C++17, no engine types, so it is unit-testable without a Godot process (the ctest
 // rs_gate8_policy_test). The environment variables it reads:
 //
-//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11, default 6. The wire version of FILE sinks only (render-stream-8.md
+//   GRC_STREAM_VERSION    6 | 8 | 9 | 10 | 11 | 12, default 6. The wire version of FILE sinks only (render-stream-8.md
 //                         "Which sinks speak /8"); the live listener negotiates per connection.
 //                         9 (G8k9, render-stream-9.md) is /8 plus the texture-delivery wire; it is the
 //                         only way `render-stream.9` is ever offered. 10 (CG1, render-stream-10.md)
@@ -12,6 +12,9 @@
 //                         ever offered. 11 (W11b, render-stream-11.md) is /10 plus the carried-set
 //                         rules, dynamic mesh surfaces and WB's stable content_version; it keeps
 //                         /10's conditional hooks and is the only way `render-stream.11` is offered.
+//                         12 (PM5, render-stream-12.md) is /11 plus GPU particles; it installs /10's
+//                         and /11's conditional hooks plus the 33 particles hooks, and is the only way
+//                         `render-stream.12` is offered (first, then /11's list).
 //   GRC_ADOPT             off | arm, default off. Late-join adoption at arm (D3-D7).
 //   GRC_TEXTURE_DECODE    off | engine, default off. Host decode of block-compressed textures (D8).
 //   GRC_RESOURCE_FORMATS  a float payload format (RF RGF RGBF RGBAF RH RGH RGBH RGBAH) counts as a
@@ -52,7 +55,10 @@ struct Gate8Policy {
   // W11b: also true at /11, which carries /10's item keys and shader time.
   bool speaks_v10() const { return rs2::is_v10_or_later(file_version); }
   // Whether the stream speaks /11: GRC_STREAM_VERSION=11, and only that (W11b).
-  bool speaks_v11() const { return file_version == rs2::ProtocolVersion::V11; }
+  // PM5: also true at /12, which carries /11's keys.
+  bool speaks_v11() const { return rs2::is_v11_or_later(file_version); }
+  // Whether the stream speaks /12: GRC_STREAM_VERSION=12, and only that (PM5).
+  bool speaks_v12() const { return rs2::is_v12_or_later(file_version); }
 };
 
 // Parses the four variables (each may be null). On a bad value returns false with *error naming
@@ -66,6 +72,8 @@ bool sabotage_needs_v8(rs2::SabotageKind kind);
 // True for the three sabotage kinds new at /11 (W11b, render-stream-11.md "Sabotage kinds"):
 // cv-churn, stale-dynamic and keep-carried. They need GRC_STREAM_VERSION=11.
 bool sabotage_needs_v11(rs2::SabotageKind kind);
+// PM5 (render-stream-12.md "Sabotages"): perturb-seed and drop-restart need GRC_STREAM_VERSION=12.
+bool sabotage_needs_v12(rs2::SabotageKind kind);
 
 // W11b (render-stream-11.md "Opt-in and version policy"): GRC_MESH_DYNAMIC (auto | off | all,
 // default auto), GRC_MESH_DYNAMIC_FRAMES (1..60, default 4) and GRC_MESH_DYNAMIC_MAX_BYTES (an

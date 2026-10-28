@@ -37,6 +37,10 @@ bool sabotage_needs_v8(rs2::SabotageKind kind) {
   }
 }
 
+bool sabotage_needs_v12(rs2::SabotageKind kind) {
+  return kind == rs2::SabotageKind::PerturbSeed || kind == rs2::SabotageKind::DropRestart;
+}
+
 bool sabotage_needs_v11(rs2::SabotageKind kind) {
   return kind == rs2::SabotageKind::CvChurn || kind == rs2::SabotageKind::StaleDynamic ||
          kind == rs2::SabotageKind::KeepCarried || kind == rs2::SabotageKind::PerturbInstance ||
@@ -137,8 +141,10 @@ bool parse_gate8_policy(const char *stream_version, const char *adopt, const cha
       parsed.file_version = rs2::ProtocolVersion::V10;
     } else if (text == "11") {
       parsed.file_version = rs2::ProtocolVersion::V11;
+    } else if (text == "12") {
+      parsed.file_version = rs2::ProtocolVersion::V12;
     } else {
-      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9, 10 or 11)";
+      *error = "invalid GRC_STREAM_VERSION=" + text + " (expected 6, 8, 9, 10, 11 or 12)";
       return false;
     }
     parsed.stream_version_set = true;
@@ -193,6 +199,15 @@ bool gate8_policy_allows(const Gate8Policy &policy, bool files, std::string *err
 }
 
 std::vector<std::string> gate8_live_subprotocols(const Gate8Policy &policy) {
+  if (policy.file_version == rs2::ProtocolVersion::V12) {
+    // render-stream-12.md "Opt-in and version policy": .12 first, then /11's list.
+    if (policy.any()) {
+      return {rs2::kSubprotocolV12, rs2::kSubprotocolV11, rs2::kSubprotocolV10,
+              rs2::kSubprotocolV9, rs2::kSubprotocolV8};
+    }
+    return {rs2::kSubprotocolV12, rs2::kSubprotocolV11, rs2::kSubprotocolV10, rs2::kSubprotocolV9,
+            rs2::kSubprotocolV8,  rs2::kSubprotocolV7,  "render-stream.6"};
+  }
   if (policy.file_version == rs2::ProtocolVersion::V11) {
     // render-stream-11.md "Opt-in and version policy": .11 first, then /10's list.
     if (policy.any()) {

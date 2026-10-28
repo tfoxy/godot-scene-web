@@ -233,7 +233,11 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     // New at /11 with PM1 (render-stream-11.md "As built (PM1)" rule 11).
     "perturb-instance",
     "stale-buffer",
+    // New at /12 (render-stream-12.md "Sabotages"): legal in a /12 session only.
+    "perturb-seed",
+    "drop-restart",
 ];
+const SABOTAGE_V12_ONLY: &[&str] = &["perturb-seed", "drop-restart"];
 const SABOTAGE_V11_ONLY: &[&str] = &[
     "cv-churn",
     "stale-dynamic",
@@ -435,6 +439,65 @@ pub const MULTIMESH_REASONS: &[&str] = &[
     "payload-too-large",
 ];
 const MULTIMESH_ORIGINS: &[&str] = &["created", "adopted"];
+// render-stream-12.md "The command": no floats, so no `f`.
+const ADD_PARTICLES_KEYS: &[&str] = &["op", "particles", "tex"];
+// render-stream-12.md "Particles table".
+const PARTICLES_KEYS: &[&str] = &[
+    "id",
+    "origin",
+    "status",
+    "reason",
+    "version",
+    "mode",
+    "emitting",
+    "amount",
+    "one_shot",
+    "fixed_fps",
+    "interpolate",
+    "fractional_delta",
+    "local",
+    "draw_order",
+    "transform_align",
+    "trails",
+    "trail_poses",
+    "seed",
+    "restarts",
+    "emits",
+    "process_requests",
+    "process_material",
+    "draw_passes",
+    "subemitter",
+    "f",
+];
+/// render-stream-12.md "Particles table", in priority order.
+pub const PARTICLES_REASONS: &[&str] = &[
+    "particles-3d",
+    "unknown-material",
+    "unknown-mesh",
+    "unknown-particles",
+];
+const PARTICLES_ORIGINS: &[&str] = &["created"];
+// render-stream-12.md "The emit list".
+const PARTICLE_EMIT_KEYS: &[&str] = &["particles", "restarts", "flags", "f"];
+// render-stream-12.md "The `particle_process_material` builtin".
+pub(crate) const PROCESS_BUILTIN_KEYS: &[&str] = &[
+    "kind",
+    "emission_shape",
+    "particle_flags",
+    "textures",
+    "color_ramp",
+    "color_initial_ramp",
+    "alpha_curve",
+    "emission_curve",
+    "velocity_limit_curve",
+    "orbit_velocity_curve_xyz",
+    "emission_color_texture",
+    "sub_emitter",
+    "attractor",
+    "collision",
+    "collision_scale",
+    "turbulence",
+];
 const TEXTURE_KEYS: &[&str] = &[
     "id",
     "origin",
@@ -575,6 +638,8 @@ pub const TRANSACTION_BLOCK_NAMES: &[&str] = &[
     "backbuffer_f32",
     "mesh_u8",
     "mm_f32",
+    // /12 only, and only when non-empty (render-stream-12.md "Transaction keys and blocks").
+    "pt_f32",
 ];
 const TRANSACTION_BLOCK_TYPES: &[BlockType] = &[
     BlockType::F32,
@@ -586,10 +651,12 @@ const TRANSACTION_BLOCK_TYPES: &[BlockType] = &[
     BlockType::F32,
     BlockType::U8,
     BlockType::F32,
+    BlockType::F32,
 ];
 
 /// How many transaction blocks a version's transactions carry (render-stream-10.md "Transaction
-/// blocks": seven from /10; render-stream-11.md: nine from /11, `mesh_u8` and `mm_f32` last).
+/// blocks": seven from /10; render-stream-11.md: nine from /11, `mesh_u8` and `mm_f32` last). At
+/// /12 a tenth, `pt_f32`, is optional ([`PT_F32_BLOCK`]).
 pub fn transaction_block_count(version: u8) -> usize {
     match version {
         11.. => 9,
@@ -599,6 +666,9 @@ pub fn transaction_block_count(version: u8) -> usize {
         _ => 3,
     }
 }
+
+/// /12: the index of the optional tenth transaction block `pt_f32`.
+pub const PT_F32_BLOCK: usize = 9;
 
 const FAILURE_REASONS: &[&str] = &[
     "root-query-failed",
@@ -670,6 +740,25 @@ const ITEM_UNSUPPORTED_REASONS_V11: &[&str] = &[
     "param-type",
     "unknown-multimesh",
     "unsupported-multimesh",
+];
+/// render-stream-12.md "The command": /12 adds the particles command and derived reasons.
+const ITEM_UNSUPPORTED_REASONS_V12: &[&str] = &[
+    "unsupported-op",
+    "unsupported-state",
+    "draw-index-tie",
+    "unknown-texture",
+    "unsupported-texture",
+    "canvas-texture-headless",
+    "unknown-mesh",
+    "skinned-geometry",
+    "unsupported-mesh",
+    "unsupported-material",
+    "unknown-material",
+    "param-type",
+    "unknown-multimesh",
+    "unsupported-multimesh",
+    "unknown-particles",
+    "unsupported-particles",
 ];
 const SESSION_UNSUPPORTED_REASONS_V5: &[&str] = &[
     "non-root-viewport",
@@ -1725,6 +1814,12 @@ fn check_session(
                 s.kind
             )));
         }
+        if version < 12 && SABOTAGE_V12_ONLY.contains(&s.kind) {
+            return Err(ck.schema(format!(
+                "\"sabotage.kind\" \"{}\" is legal only at /12",
+                s.kind
+            )));
+        }
         sabotage = Some(s);
     }
 
@@ -1822,6 +1917,8 @@ pub enum Op {
     ClipIgnore,
     /// /11 only (render-stream-11.md "As built (PM1)" rule 7).
     Multimesh,
+    /// /12 only (render-stream-12.md "The command").
+    Particles,
     Unsupported,
 }
 
@@ -1844,6 +1941,7 @@ impl Op {
             b"add_set_transform" => Op::SetTransform,
             b"add_clip_ignore" => Op::ClipIgnore,
             b"add_multimesh" => Op::Multimesh,
+            b"add_particles" => Op::Particles,
             b"unsupported" => Op::Unsupported,
             _ => return None,
         })
@@ -1866,6 +1964,7 @@ impl Op {
             Op::SetTransform => "add_set_transform",
             Op::ClipIgnore => "add_clip_ignore",
             Op::Multimesh => "add_multimesh",
+            Op::Particles => "add_particles",
             Op::Unsupported => "unsupported",
         }
     }
@@ -1889,7 +1988,7 @@ pub struct CmdMeta {
     pub outline: i64,
     pub i: u64,
     pub f: u64,
-    /// `add_mesh`'s mesh, or `add_multimesh`'s multimesh.
+    /// `add_mesh`'s mesh, `add_multimesh`'s multimesh, or `add_particles`' particles.
     pub mesh: Id,
     pub x_axis: Axis,
     pub y_axis: Axis,
@@ -1938,7 +2037,7 @@ impl CmdMeta {
             Op::NinePatch => 16,
             Op::Mesh => 10,
             Op::SetTransform => 6,
-            Op::ClipIgnore | Op::Multimesh | Op::Unsupported => 0,
+            Op::ClipIgnore | Op::Multimesh | Op::Particles | Op::Unsupported => 0,
         }
     }
 }
@@ -2046,6 +2145,54 @@ impl MultimeshMeta {
     }
 }
 
+/// /12: one `particles[]` entry (render-stream-12.md "Particles table"), keys verbatim.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticlesMeta {
+    pub id: Id,
+    pub origin: Origin,
+    pub status: EntryStatus,
+    pub reason: Option<&'static str>,
+    pub version: i64,
+    pub mode: ParticlesMode,
+    pub emitting: bool,
+    pub amount: i64,
+    pub one_shot: bool,
+    pub fixed_fps: i64,
+    pub interpolate: bool,
+    pub fractional_delta: bool,
+    pub local: bool,
+    pub draw_order: ParticlesDrawOrder,
+    pub transform_align: ParticlesTransformAlign,
+    pub trails: bool,
+    pub trail_poses: i64,
+    pub seed: u32,
+    pub restarts: i64,
+    pub emits: i64,
+    pub process_requests: i64,
+    pub process_material: Option<Id>,
+    pub draw_passes: Vec<Option<Id>>,
+    pub subemitter: Option<Id>,
+    /// Offset of the entry's floats in `pt_f32` (`None` on `freed`).
+    pub f: Option<u64>,
+}
+
+impl ParticlesMeta {
+    /// The entry's float count when `f` is non-null, 31 + 12 x `trail_poses` (saturating).
+    pub fn float_count(&self) -> u64 {
+        particles_float_count(self.trail_poses)
+    }
+}
+
+/// /12: one `particle_emits[]` element (render-stream-12.md "The emit list").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmitMeta {
+    pub particles: Id,
+    pub restarts: i64,
+    pub flags: u32,
+    /// Offset of the element's 23 floats in `pt_f32`.
+    pub f: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct MaterialMeta {
     pub id: Id,
@@ -2090,6 +2237,8 @@ pub struct TxMeta {
     pub removed_materials: Vec<i64>,
     /// /11: `removed_multimeshes` (absent when empty).
     pub removed_multimeshes: Vec<i64>,
+    /// /12: `removed_particles` (absent when empty).
+    pub removed_particles: Vec<i64>,
     pub canvases: Vec<CanvasMeta>,
     pub items: Vec<ItemMeta>,
     pub cmds: Vec<CmdMeta>,
@@ -2101,6 +2250,9 @@ pub struct TxMeta {
     pub materials: Vec<MaterialMeta>,
     /// /11: `multimeshes` (absent when empty).
     pub multimeshes: Vec<MultimeshMeta>,
+    /// /12: `particles` and `particle_emits` (each absent when empty).
+    pub particles: Vec<ParticlesMeta>,
+    pub particle_emits: Vec<EmitMeta>,
     pub blocks: Vec<BlockDesc>,
 }
 
@@ -2118,6 +2270,7 @@ impl TxMeta {
         self.removed_shaders.clear();
         self.removed_materials.clear();
         self.removed_multimeshes.clear();
+        self.removed_particles.clear();
         self.canvases.clear();
         self.items.clear();
         self.cmds.clear();
@@ -2128,6 +2281,8 @@ impl TxMeta {
         self.shaders.clear();
         self.materials.clear();
         self.multimeshes.clear();
+        self.particles.clear();
+        self.particle_emits.clear();
         self.blocks.clear();
     }
     pub fn encoding(&self) -> Encoding {
@@ -2580,6 +2735,7 @@ fn check_mesh(ck: &mut Ck, m: Value, version: u8) -> Result<MeshMeta, Error> {
 
 /// `checkShaderEntrySchema` (self-coded `shader-entry`).
 fn check_shader(ck: &mut Ck, s: Value, version: u8) -> Result<Shader, Error> {
+    let proto = version;
     let err = |ck: &Ck, d: &str| ck.err("shader-entry", format!("a shaders[] entry {d}"));
     let Some(f) = ck.fields(s, SHADER_KEYS) else {
         return Err(err(ck, "has the wrong keys"));
@@ -2663,7 +2819,26 @@ fn check_shader(ck: &mut Ck, s: Value, version: u8) -> Result<Shader, Error> {
             "\"reason\" \"shader-adopt-include\" needs render-stream/8, origin \"adopted\" and no code",
         ));
     }
+    let builtin_kind = ck.doc.get(f.at(9), "kind").and_then(|k| ck.string(k));
+    let mut process = None;
     let builtin = if ck.null(f.at(9)) {
+        None
+    } else if builtin_kind == Some(b"particle_process_material") {
+        // render-stream-12.md: the kind is /12's only (below, `meta-schema`), and only on a
+        // `particles`-mode shader (`builtin-entry`).
+        if proto < 12 {
+            return Err(ck.schema(
+                "a shaders[] entry's builtin kind \"particle_process_material\" needs render-stream/12",
+            ));
+        }
+        let b = check_process_builtin(ck, f.at(9))?;
+        if mode != Some(ShaderMode::Particles) {
+            return Err(ck.err(
+                "builtin-entry",
+                "a \"particle_process_material\" builtin on a shader whose mode is not \"particles\"",
+            ));
+        }
+        process = Some(b);
         None
     } else {
         let b = (|| {
@@ -2745,6 +2920,7 @@ fn check_shader(ck: &mut Ck, s: Value, version: u8) -> Result<Shader, Error> {
         hash,
         payload_bytes,
         builtin,
+        process,
         uses,
         default_textures,
     })
@@ -2834,7 +3010,9 @@ fn check_command(ck: &mut Ck, cmd: Value, version: u8) -> Result<CmdMeta, Error>
     let op = op_v
         .and_then(|v| ck.string(v))
         .and_then(Op::parse)
-        .filter(|&op| version >= 11 || op != Op::Multimesh);
+        .filter(|&op| version >= 11 || op != Op::Multimesh)
+        // render-stream-12.md "The command": `add_particles` is an op from /12 only.
+        .filter(|&op| version >= 12 || op != Op::Particles);
     let Some(op) = op else {
         let shown = op_v
             .map(|v| {
@@ -2938,6 +3116,11 @@ fn check_command(ck: &mut Ck, cmd: Value, version: u8) -> Result<CmdMeta, Error>
                 c.mesh = ck.id1(f.at(1))?;
                 c.tex = ck.opt_id1(f.at(2))?;
             }
+            Op::Particles => {
+                let f = ck.fields(cmd, ADD_PARTICLES_KEYS)?;
+                c.mesh = ck.id1(f.at(1))?;
+                c.tex = ck.opt_id1(f.at(2))?;
+            }
             Op::Unsupported => {
                 let f = ck.fields(cmd, UNSUPPORTED_CMD_KEYS)?;
                 ck.string(f.at(1))?;
@@ -2947,7 +3130,8 @@ fn check_command(ck: &mut Ck, cmd: Value, version: u8) -> Result<CmdMeta, Error>
                     UnsupportedCmdReason::ALL,
                     UnsupportedCmdReason::as_str,
                 )
-                .filter(|&r| version >= 11 || r != UnsupportedCmdReason::UnknownMultimesh)?;
+                .filter(|&r| version >= 11 || r != UnsupportedCmdReason::UnknownMultimesh)
+                .filter(|&r| version >= 12 || r != UnsupportedCmdReason::UnknownParticles)?;
                 // Deviation: a name with a lone surrogate cannot live in state.rs (reported here).
                 c.name = Some(ck.owned(f.at(1))?);
             }
@@ -2982,8 +3166,14 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     // is `meta-schema` (the key list does not admit it).
     let has_mm = version >= 11 && ck.has_key(meta, "multimeshes");
     let has_rm = version >= 11 && ck.has_key(meta, "removed_multimeshes");
+    // render-stream-12.md "Transaction keys and blocks": /12's optional `particles`,
+    // `removed_particles` and `particle_emits`, right after `removed_multimeshes`.
+    let has_pt = version >= 12 && ck.has_key(meta, "particles");
+    let has_rp = version >= 12 && ck.has_key(meta, "removed_particles");
+    let has_pe = version >= 12 && ck.has_key(meta, "particle_emits");
     let mut keys_buf: Vec<&str>;
-    let keys: &[&str] = if has_unknown || has_time || has_mm || has_rm {
+    let keys: &[&str] = if has_unknown || has_time || has_mm || has_rm || has_pt || has_rp || has_pe
+    {
         keys_buf = base.to_vec();
         if has_unknown {
             let at = keys_buf.iter().position(|&k| k == "unsupported").unwrap() + 1;
@@ -2993,6 +3183,9 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         for (on, k) in [
             (has_mm, "multimeshes"),
             (has_rm, "removed_multimeshes"),
+            (has_pt, "particles"),
+            (has_rp, "removed_particles"),
+            (has_pe, "particle_emits"),
             (has_time, "shader_time"),
         ] {
             if on {
@@ -3010,7 +3203,12 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     // Field positions (the optional unknown_items shifts every later key by one; the optional keys
     // before `blocks` shift it).
     let shift = has_unknown as usize;
-    let before_blocks = has_time as usize + has_mm as usize + has_rm as usize;
+    let before_blocks = has_time as usize
+        + has_mm as usize
+        + has_rm as usize
+        + has_pt as usize
+        + has_rp as usize
+        + has_pe as usize;
     let pos = |name: &str| -> usize {
         let i = base.iter().position(|&k| k == name).unwrap();
         let i = if i >= 8 { i + shift } else { i };
@@ -3118,6 +3316,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         let allowed = if v6 {
             if item.is_none() {
                 SESSION_UNSUPPORTED_REASONS_V6
+            } else if version >= 12 {
+                ITEM_UNSUPPORTED_REASONS_V12
             } else if version >= 11 {
                 ITEM_UNSUPPORTED_REASONS_V11
             } else {
@@ -3447,6 +3647,64 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             ));
         }
     }
+    if has_pt {
+        let at = keys.iter().position(|&k| k == "particles").unwrap();
+        let Some(pts) = ck.arr(f.at(at)) else {
+            return Err(ck.schema("\"particles\" is not an array"));
+        };
+        if pts.is_empty() {
+            return Err(ck.schema(
+                "\"particles\" is empty (an empty table is the absent key)",
+            ));
+        }
+        for &p in pts {
+            let p = check_particles(ck, p)?;
+            tx.particles.push(p);
+        }
+    }
+    if has_rp {
+        let at = keys.iter().position(|&k| k == "removed_particles").unwrap();
+        if !ck.int_array(f.at(at), &mut tx.removed_particles) {
+            return Err(ck.schema("\"removed_particles\" is not an array of integers"));
+        }
+        if tx.removed_particles.is_empty() {
+            return Err(ck.schema(
+                "\"removed_particles\" is empty (an empty list is the absent key)",
+            ));
+        }
+    }
+    if has_pe {
+        let at = keys.iter().position(|&k| k == "particle_emits").unwrap();
+        let Some(es) = ck.arr(f.at(at)) else {
+            return Err(ck.schema("\"particle_emits\" is not an array"));
+        };
+        if es.is_empty() {
+            return Err(ck.schema(
+                "\"particle_emits\" is empty (an empty list is the absent key)",
+            ));
+        }
+        for &e in es {
+            let e = (|| {
+                let ef = ck.fields(e, PARTICLE_EMIT_KEYS)?;
+                let particles = ck.id1(ef.at(0))?;
+                let restarts = ck.int_ge(ef.at(1), 0)?;
+                let flags = ck.int_ge(ef.at(2), 0).filter(|&x| x <= 31)? as u32;
+                let f = ck.uint(ef.at(3))?;
+                Some(EmitMeta {
+                    particles,
+                    restarts,
+                    flags,
+                    f,
+                })
+            })();
+            let Some(e) = e else {
+                return Err(ck.schema(
+                    "a particle_emits[] element has the wrong keys or an invalid field",
+                ));
+            };
+            tx.particle_emits.push(e);
+        }
+    }
     if has_time {
         let at = keys.iter().position(|&k| k == "shader_time").unwrap();
         let t = (|| {
@@ -3458,7 +3716,11 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         };
         tx.shader_time_f = Some(t as u64);
     }
-    let n = transaction_block_count(version);
+    let mut n = transaction_block_count(version);
+    // /12: the optional tenth block `pt_f32` (its presence and count are `pt-offset`'s).
+    if version >= 12 && ck.arr(f.at(pos("blocks"))).is_some_and(|a| a.len() == n + 1) {
+        n += 1;
+    }
     let types = if v4 {
         Some(&TRANSACTION_BLOCK_TYPES[..n])
     } else {
@@ -3545,6 +3807,174 @@ fn check_multimesh(ck: &mut Ck, m: Value) -> Result<MultimeshMeta, Error> {
         visible,
         aabb_f,
         buffer_f,
+    })
+}
+
+/// /12: one `particles[]` entry's schema (render-stream-12.md "Particles table"). Key set, order
+/// and value types are `meta-schema`; the shape rules are the validator's `particles-entry`.
+fn check_particles(ck: &mut Ck, p: Value) -> Result<ParticlesMeta, Error> {
+    let err = |ck: &Ck, d: &str| ck.schema(format!("a particles[] entry {d}"));
+    let Some(f) = ck.fields(p, PARTICLES_KEYS) else {
+        return Err(err(ck, "has the wrong keys"));
+    };
+    let Some(id) = ck.id1(f.at(0)) else {
+        return Err(err(ck, "\"id\" is not an integer >= 1"));
+    };
+    let Some(origin) = ck.one_of_str(f.at(1), PARTICLES_ORIGINS).and_then(Origin::parse) else {
+        return Err(err(ck, "\"origin\" must be \"created\""));
+    };
+    let Some(status) = enum_of(ck, f.at(2), EntryStatus::ALL, EntryStatus::as_str) else {
+        return Err(err(ck, "has an invalid status"));
+    };
+    let reason = if ck.null(f.at(3)) {
+        None
+    } else if let Some(r) = ck.one_of_str(f.at(3), PARTICLES_REASONS) {
+        Some(r)
+    } else {
+        return Err(err(
+            ck,
+            "\"reason\" is neither null nor a valid particles reason",
+        ));
+    };
+    let Some(version) = ck.int_ge(f.at(4), 1) else {
+        return Err(err(ck, "\"version\" is not an integer >= 1"));
+    };
+    let Some(mode) = enum_of(ck, f.at(5), ParticlesMode::ALL, ParticlesMode::as_str) else {
+        return Err(err(ck, "\"mode\" must be \"2d\" or \"3d\""));
+    };
+    let bools = [6usize, 8, 10, 11, 12, 15].map(|i| ck.boolean(f.at(i)));
+    let [Some(emitting), Some(one_shot), Some(interpolate), Some(fractional_delta), Some(local), Some(trails)] =
+        bools
+    else {
+        return Err(err(ck, "has a boolean field that is not a boolean"));
+    };
+    let ints = [7usize, 9, 16, 18, 19, 20].map(|i| ck.int_ge(f.at(i), 0));
+    let [Some(amount), Some(fixed_fps), Some(trail_poses), Some(restarts), Some(emits), Some(process_requests)] =
+        ints
+    else {
+        return Err(err(ck, "has a counter that is not an integer >= 0"));
+    };
+    let Some(draw_order) = enum_of(
+        ck,
+        f.at(13),
+        ParticlesDrawOrder::ALL,
+        ParticlesDrawOrder::as_str,
+    ) else {
+        return Err(err(ck, "\"draw_order\" is not a valid draw order"));
+    };
+    let Some(transform_align) = enum_of(
+        ck,
+        f.at(14),
+        ParticlesTransformAlign::ALL,
+        ParticlesTransformAlign::as_str,
+    ) else {
+        return Err(err(ck, "\"transform_align\" is not a valid transform alignment"));
+    };
+    let Some(seed) = ck.uint(f.at(17)).filter(|&x| x <= u32::MAX as u64) else {
+        return Err(err(ck, "\"seed\" is not an integer in 0..4294967295"));
+    };
+    let Some(process_material) = ck.opt_id1(f.at(21)) else {
+        return Err(err(ck, "\"process_material\" is neither null nor an integer >= 1"));
+    };
+    let passes = ck.arr(f.at(22)).and_then(|a| {
+        a.iter()
+            .map(|&x| ck.opt_id1(x))
+            .collect::<Option<Vec<Option<Id>>>>()
+    });
+    let Some(draw_passes) = passes else {
+        return Err(err(ck, "\"draw_passes\" is not an array of null or integers >= 1"));
+    };
+    let Some(subemitter) = ck.opt_id1(f.at(23)) else {
+        return Err(err(ck, "\"subemitter\" is neither null nor an integer >= 1"));
+    };
+    let fv = if ck.null(f.at(24)) {
+        None
+    } else if let Some(x) = ck.uint(f.at(24)) {
+        Some(x)
+    } else {
+        return Err(err(ck, "\"f\" is neither null nor a non-negative integer"));
+    };
+    Ok(ParticlesMeta {
+        id,
+        origin,
+        status,
+        reason,
+        version,
+        mode,
+        emitting,
+        amount,
+        one_shot,
+        fixed_fps,
+        interpolate,
+        fractional_delta,
+        local,
+        draw_order,
+        transform_align,
+        trails,
+        trail_poses,
+        seed: seed as u32,
+        restarts,
+        emits,
+        process_requests,
+        process_material,
+        draw_passes,
+        subemitter,
+        f: fv,
+    })
+}
+
+/// /12: a `particle_process_material` builtin (render-stream-12.md), self-coded `builtin-entry`:
+/// exactly [`PROCESS_BUILTIN_KEYS`] in order, these spellings, and each list strictly increasing
+/// in enum order.
+fn check_process_builtin(ck: &mut Ck, b: Value) -> Result<ProcessBuiltin, Error> {
+    let r = (|| {
+        let f = ck.fields(b, PROCESS_BUILTIN_KEYS)?;
+        if ck.string(f.at(0)) != Some(b"particle_process_material") {
+            return None;
+        }
+        fn list<T: Copy + PartialEq>(
+            ck: &Ck,
+            v: Value,
+            all: &[T],
+            name: fn(T) -> &'static str,
+        ) -> Option<Vec<T>> {
+            let mut out = Vec::new();
+            let mut last: Option<usize> = None;
+            for &x in ck.arr(v)? {
+                let s = ck.string(x)?;
+                let i = all.iter().position(|&t| name(t).as_bytes() == s)?;
+                if last.is_some_and(|l| l >= i) {
+                    return None;
+                }
+                last = Some(i);
+                out.push(all[i]);
+            }
+            Some(out)
+        }
+        let bo = |i: usize| ck.boolean(f.at(i));
+        Some(ProcessBuiltin {
+            emission_shape: enum_of(ck, f.at(1), EmissionShape::ALL, EmissionShape::as_str)?,
+            particle_flags: list(ck, f.at(2), ParticleFlag::ALL, ParticleFlag::as_str)?,
+            textures: list(ck, f.at(3), ProcessParam::ALL, ProcessParam::as_str)?,
+            color_ramp: bo(4)?,
+            color_initial_ramp: bo(5)?,
+            alpha_curve: bo(6)?,
+            emission_curve: bo(7)?,
+            velocity_limit_curve: bo(8)?,
+            orbit_velocity_curve_xyz: bo(9)?,
+            emission_color_texture: bo(10)?,
+            sub_emitter: enum_of(ck, f.at(11), SubEmitterMode::ALL, SubEmitterMode::as_str)?,
+            attractor: bo(12)?,
+            collision: enum_of(ck, f.at(13), CollisionMode::ALL, CollisionMode::as_str)?,
+            collision_scale: bo(14)?,
+            turbulence: bo(15)?,
+        })
+    })();
+    r.ok_or_else(|| {
+        ck.err(
+            "builtin-entry",
+            "a shaders[] entry's \"particle_process_material\" builtin has the wrong keys, order or spellings",
+        )
     })
 }
 

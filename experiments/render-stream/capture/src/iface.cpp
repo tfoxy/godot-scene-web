@@ -73,6 +73,8 @@ bool iface_load(GDExtensionInterfaceGetProcAddress get_proc_address,
       get_proc_address("classdb_construct_object2"));
   g_iface.object_destroy =
       reinterpret_cast<GDExtensionInterfaceObjectDestroy>(get_proc_address("object_destroy"));
+  g_iface.object_method_bind_call = reinterpret_cast<GDExtensionInterfaceObjectMethodBindCall>(
+      get_proc_address("object_method_bind_call"));
   g_iface.callable_custom_create2 = reinterpret_cast<GDExtensionInterfaceCallableCustomCreate2>(
       get_proc_address("callable_custom_create2"));
   g_iface.object_get_instance_from_id =

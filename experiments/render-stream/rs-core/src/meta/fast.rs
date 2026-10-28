@@ -242,7 +242,9 @@ fn param(c: &mut Cur, params: &mut Vec<ParamMeta>, start: usize) -> O<()> {
 fn command(c: &mut Cur, out: &mut Vec<CmdMeta>, version: u8) -> O<()> {
     c.lit(b"{\"op\":")?;
     // PM1: `add_multimesh` is an op from /11 only (the general path's unknown op below).
-    let op = Op::parse(c.str()?).filter(|&op| version >= 11 || op != Op::Multimesh)?;
+    let op = Op::parse(c.str()?)
+        .filter(|&op| version >= 11 || op != Op::Multimesh)
+        .filter(|&op| version >= 12 || op != Op::Particles)?;
     let mut m = CmdMeta::new(op);
     match op {
         Op::Rect | Op::Line | Op::Circle => {
@@ -330,13 +332,23 @@ fn command(c: &mut Cur, out: &mut Vec<CmdMeta>, version: u8) -> O<()> {
             out.push(m);
             return Some(());
         }
+        Op::Particles => {
+            c.lit(b",\"particles\":")?;
+            m.mesh = c.id1()?;
+            c.lit(b",\"tex\":")?;
+            m.tex = c.opt_id1()?;
+            c.lit(b"}")?;
+            out.push(m);
+            return Some(());
+        }
         Op::Unsupported => {
             c.lit(b",\"name\":")?;
             m.name = Some(c.owned()?);
             c.lit(b",\"reason\":")?;
             m.reason = c
                 .enum_of(UnsupportedCmdReason::ALL, UnsupportedCmdReason::as_str)
-                .filter(|&r| version >= 11 || r != UnsupportedCmdReason::UnknownMultimesh)?;
+                .filter(|&r| version >= 11 || r != UnsupportedCmdReason::UnknownMultimesh)
+                .filter(|&r| version >= 12 || r != UnsupportedCmdReason::UnknownParticles)?;
             c.lit(b"}")?;
             out.push(m);
             return Some(());
@@ -607,6 +619,8 @@ fn shader(c: &mut Cur) -> O<Shader> {
         hash,
         payload_bytes,
         builtin,
+        // /12's `particle_process_material` builtin is the general path's (the literal above).
+        process: None,
         uses,
         default_textures,
     })
@@ -704,6 +718,95 @@ fn multimesh(c: &mut Cur) -> O<MultimeshMeta> {
     })
 }
 
+/// /12: one `particles[]` entry (`check_particles`' schema).
+fn particles(c: &mut Cur) -> O<ParticlesMeta> {
+    c.lit(b"{\"id\":")?;
+    let id = c.id1()?;
+    c.lit(b",\"origin\":\"created\",\"status\":")?;
+    let status = c.enum_of(EntryStatus::ALL, EntryStatus::as_str)?;
+    c.lit(b",\"reason\":")?;
+    let reason = if c.null() {
+        None
+    } else {
+        Some(c.one_of(PARTICLES_REASONS)?)
+    };
+    c.lit(b",\"version\":")?;
+    let version = c.int_ge(1)?;
+    c.lit(b",\"mode\":")?;
+    let mode = c.enum_of(ParticlesMode::ALL, ParticlesMode::as_str)?;
+    c.lit(b",\"emitting\":")?;
+    let emitting = c.boolean()?;
+    c.lit(b",\"amount\":")?;
+    let amount = c.int_ge(0)?;
+    c.lit(b",\"one_shot\":")?;
+    let one_shot = c.boolean()?;
+    c.lit(b",\"fixed_fps\":")?;
+    let fixed_fps = c.int_ge(0)?;
+    c.lit(b",\"interpolate\":")?;
+    let interpolate = c.boolean()?;
+    c.lit(b",\"fractional_delta\":")?;
+    let fractional_delta = c.boolean()?;
+    c.lit(b",\"local\":")?;
+    let local = c.boolean()?;
+    c.lit(b",\"draw_order\":")?;
+    let draw_order = c.enum_of(ParticlesDrawOrder::ALL, ParticlesDrawOrder::as_str)?;
+    c.lit(b",\"transform_align\":")?;
+    let transform_align =
+        c.enum_of(ParticlesTransformAlign::ALL, ParticlesTransformAlign::as_str)?;
+    c.lit(b",\"trails\":")?;
+    let trails = c.boolean()?;
+    c.lit(b",\"trail_poses\":")?;
+    let trail_poses = c.int_ge(0)?;
+    c.lit(b",\"seed\":")?;
+    let seed = u32::try_from(c.uint()?).ok()?;
+    c.lit(b",\"restarts\":")?;
+    let restarts = c.int_ge(0)?;
+    c.lit(b",\"emits\":")?;
+    let emits = c.int_ge(0)?;
+    c.lit(b",\"process_requests\":")?;
+    let process_requests = c.int_ge(0)?;
+    c.lit(b",\"process_material\":")?;
+    let process_material = c.opt_id1()?;
+    c.lit(b",\"draw_passes\":")?;
+    let mut draw_passes = Vec::new();
+    c.list(|c| {
+        draw_passes.push(c.opt_id1()?);
+        Some(())
+    })?;
+    c.lit(b",\"subemitter\":")?;
+    let subemitter = c.opt_id1()?;
+    c.lit(b",\"f\":")?;
+    let f = if c.null() { None } else { Some(c.uint()?) };
+    c.lit(b"}")?;
+    Some(ParticlesMeta {
+        id,
+        origin: Origin::Created,
+        status,
+        reason,
+        version,
+        mode,
+        emitting,
+        amount,
+        one_shot,
+        fixed_fps,
+        interpolate,
+        fractional_delta,
+        local,
+        draw_order,
+        transform_align,
+        trails,
+        trail_poses,
+        seed,
+        restarts,
+        emits,
+        process_requests,
+        process_material,
+        draw_passes,
+        subemitter,
+        f,
+    })
+}
+
 pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
     tx.clear();
     let v4 = version >= 4;
@@ -751,6 +854,8 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             let allowed = if v6 {
                 if item.is_none() {
                     SESSION_UNSUPPORTED_REASONS_V6
+                } else if version >= 12 {
+                    ITEM_UNSUPPORTED_REASONS_V12
                 } else if version >= 11 {
                     ITEM_UNSUPPORTED_REASONS_V11
                 } else {
@@ -1017,6 +1122,48 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             return None;
         }
     }
+    // /12 (render-stream-12.md "Transaction keys and blocks"): the optional `particles`,
+    // `removed_particles` and `particle_emits`, each non-empty when present.
+    if version >= 12 && c.lit(b",\"particles\":").is_some() {
+        let pts = &mut tx.particles;
+        c.list(|c| {
+            pts.push(particles(c)?);
+            Some(())
+        })?;
+        if tx.particles.is_empty() {
+            return None;
+        }
+    }
+    if version >= 12 && c.lit(b",\"removed_particles\":").is_some() {
+        ints(c, &mut tx.removed_particles)?;
+        if tx.removed_particles.is_empty() {
+            return None;
+        }
+    }
+    if version >= 12 && c.lit(b",\"particle_emits\":").is_some() {
+        let es = &mut tx.particle_emits;
+        c.list(|c| {
+            c.lit(b"{\"particles\":")?;
+            let particles = c.id1()?;
+            c.lit(b",\"restarts\":")?;
+            let restarts = c.int_ge(0)?;
+            c.lit(b",\"flags\":")?;
+            let flags = c.int_ge(0).filter(|&x| x <= 31)? as u32;
+            c.lit(b",\"f\":")?;
+            let f = c.uint()?;
+            c.lit(b"}")?;
+            es.push(EmitMeta {
+                particles,
+                restarts,
+                flags,
+                f,
+            });
+            Some(())
+        })?;
+        if tx.particle_emits.is_empty() {
+            return None;
+        }
+    }
     // P3-TM: /10's optional `shader_time` (render-stream-10.md "Shader time").
     if v10 && c.lit(b",\"shader_time\":{\"f\":").is_some() {
         tx.shader_time_f = Some(c.int_ge(0)? as u64);
@@ -1041,6 +1188,15 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
         let count = c.uint()?;
         c.lit(b"}")?;
         tx.blocks.push(BlockDesc { ty, count });
+    }
+    // /12: the optional tenth block `pt_f32` (type f32).
+    if version >= 12 && c.lit(b",{\"name\":\"pt_f32\",\"type\":\"f32\",\"count\":").is_some() {
+        let count = c.uint()?;
+        c.lit(b"}")?;
+        tx.blocks.push(BlockDesc {
+            ty: BlockType::F32,
+            count,
+        });
     }
     c.lit(b"]}")?;
     (c.p == meta.len()).then_some(())
@@ -1114,7 +1270,7 @@ mod tests {
     fn fast_path_matches_the_general_path() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut hits = 0;
-        for v in 2..=11u8 {
+        for v in 2..=12u8 {
             let dir = base.join(format!("../protocol/golden-{v}"));
             for f in [
                 "full",

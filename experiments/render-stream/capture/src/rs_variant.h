@@ -41,6 +41,17 @@ struct DecodedParam {
   // True for one of the eight packed numeric arrays (G55d): `type` alone is ambiguous there
   // ("vector2" names both a scalar Vector2 and a PackedVector2Array's element type).
   bool packed = false;
+  // PM5 (render-stream-12.md, "param-type"): a plain Array (`type` "array") stays exactly what it
+  // was above (unsupported, param-type) so every version below /12 is unchanged; when its elements
+  // are all bool/int (in int32 range), all numeric with a float, or all Vector2/Vector3/Vector4/
+  // Color, `array_form` is set and `array_type`/`array_n`/`array_f` give the packed array GLES3
+  // converts it to for an array uniform (material_storage.cpp, Variant -> Packed*Array): "int32"
+  // (bools as 1/0), "float64", "vector2", "vector3", "vector4" or "color". /12's mirror carries
+  // that form; an empty or mixed Array has none.
+  bool array_form = false;
+  std::string array_type;
+  std::int64_t array_n = 0;
+  std::vector<double> array_f;
 };
 
 // Decodes a `const Variant *` the engine passed into a hook argument (D8, Q2). `variant_ptr` may

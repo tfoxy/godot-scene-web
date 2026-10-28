@@ -618,6 +618,9 @@ struct Counters {
     /// /11 (PM1): `add_multimesh` commands left undrawn (typed `multimesh-undrawn`) until PM2
     /// re-issues multimeshes.
     multimesh_commands_undrawn: i64,
+    /// /12 (PM5, render-stream-12.md "Receivers"): `add_particles` commands left undrawn (typed
+    /// `particles-undrawn`) until PM6 replays the emitters; a stats key only when non-zero.
+    particles_commands_undrawn: i64,
     /// PM2 (render-stream-11.md "As built (PM2)"): `multimesh_resources`, written only when one
     /// is non-zero (so every stream without a multimesh keeps its stats byte-identical).
     mm_created: i64,
@@ -3353,6 +3356,16 @@ impl Planner {
                         reason: reason.as_str(),
                     });
                 }
+                // /12 (PM5): the emitter is carried but not replayed until PM6: typed, counted,
+                // not drawn.
+                Command::Particles { .. } => {
+                    c.particles_commands_undrawn += 1;
+                    unsupported.push(UnsupportedCommand {
+                        item: id,
+                        name: "canvas_item_add_particles".into(),
+                        reason: "particles-undrawn",
+                    });
+                }
                 // /11: PM2 draws a resident multimesh. The `undrawn-multimesh` sabotage is the
                 // pre-PM2 planner (PM1): typed, counted, not drawn.
                 Command::Multimesh { multimesh, tex } => {
@@ -3716,7 +3729,11 @@ fn write_stats(
         ("skipped_multimesh_commands", c.skipped_multimesh_commands),
     ];
     let mm_any = mm_resources.iter().any(|(_, n)| *n != 0);
-    v.dict(18 + (c.multimesh_commands_undrawn > 0) as usize + mm_any as usize);
+    v.dict(
+        18 + (c.multimesh_commands_undrawn > 0) as usize
+            + mm_any as usize
+            + (c.particles_commands_undrawn > 0) as usize,
+    );
     v.key("created");
     v.int(c.created);
     v.key("freed");
@@ -3780,6 +3797,12 @@ fn write_stats(
     if c.multimesh_commands_undrawn > 0 {
         v.key("multimesh_commands_undrawn");
         v.int(c.multimesh_commands_undrawn);
+    }
+    // /12 (PM5) only in practice: below /12 there is no add_particles, and the stats stay
+    // byte-identical.
+    if c.particles_commands_undrawn > 0 {
+        v.key("particles_commands_undrawn");
+        v.int(c.particles_commands_undrawn);
     }
     if mm_any {
         v.key("multimesh_resources");

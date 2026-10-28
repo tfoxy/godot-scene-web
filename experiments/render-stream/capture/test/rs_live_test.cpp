@@ -2819,6 +2819,112 @@ std::int64_t json_int_after(const std::string &meta, const std::string &key, std
   return std::strtoll(meta.c_str() + v, nullptr, 10);
 }
 
+// PM5 (render-stream-12.md "The command", "Opt-in and version policy"): a /12 host serves a /12
+// connection the particles table, the emit list and add_particles, and a /11 connection of the
+// same host /11's lowering: no particles key, add_particles as unsupported-op, and a session
+// without add_particles.
+std::shared_ptr<const Captured> pm5_state(std::uint64_t frame) {
+  auto c = std::make_shared<Captured>(with_payloads(1));
+  c->state.version = ProtocolVersion::V12;
+  c->state.frame = frame;
+  ParticlesEntry p;
+  p.id = 1;
+  p.version = frame;
+  p.mode_2d = true;
+  p.emitting = true;
+  p.amount = 4;
+  p.emits = frame;
+  p.floats = std::make_shared<const std::vector<float>>(std::vector<float>(31, 1.0f));
+  c->state.particles = {p};
+  c->state.particles_commands = true;
+  auto tail = std::make_shared<EmitTail>();
+  for (std::uint64_t f = 1; f <= frame; ++f) {
+    auto chunk = std::make_shared<EmitChunk>();
+    chunk->frame = f;
+    ParticleEmit e;
+    e.particles = 1;
+    e.flags = 1;
+    chunk->emits.push_back(e);
+    tail->push_back(chunk);
+  }
+  c->state.emit_tail = tail;
+  Command add;
+  add.kind = CommandKind::AddParticles;
+  add.particles = 1;
+  c->state.items.at(0).commands.push_back(add);
+  return c;
+}
+
+void test_pm5_v11_viewer_of_v12_host() {
+  Session tmpl = make_template(Delivery::Inline);
+  tmpl.version = ProtocolVersion::V12;
+  observe_multimesh_features(&tmpl.features);
+  observe_particles_features(&tmpl.features);
+  FakeTransport transport;
+  Hub hub(&transport, LiveConfig(), tmpl);
+  const std::string hello12 =
+      read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+  const std::string hello11 =
+      read_file(std::string(GRC_GOLDEN11_DIR) + "/control/valid/hello-native-block.json");
+  hub.on_event(opened_with(1, "render-stream.12"), 0);
+  hub.on_event(opened_with(2, "render-stream.11"), 0);
+  hub.on_event(text(1, hello12), 0);
+  hub.on_event(text(2, hello11), 0);
+  for (std::uint64_t frame = 1; frame <= 6; ++frame) {
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t conn = 1; conn <= 2; ++conn) {
+      const ConnectionSummary &cs = now.at(conn - 1);
+      if (cs.sent > 0) {
+        hub.on_event(text(conn, ack(cs.stream_id, cs.sent, "submitted")), frame);
+      }
+    }
+    const std::uint64_t t = frame * 16000000ULL;
+    hub.on_frame_shared(frame, t, hub.wants_snapshot(frame, t) ? pm5_state(frame) : nullptr,
+                        frame, 0);
+  }
+  const std::vector<Sent> b12 = of_conn(transport, Sent::Binary, 1);
+  check(b12.size() > 3, "PM5: the /12 connection streamed");
+  const std::string s12 = b12.empty() ? std::string() : meta_at(b12[0].bytes, 8);
+  check(s12.find("\"protocol\":\"render-stream/12\"") != std::string::npos &&
+            s12.find("\"add_particles\"") != std::string::npos,
+        "PM5: the /12 session declares add_particles");
+  int with_emits = 0;
+  int with_adds = 0;
+  for (std::size_t i = 1; i < b12.size(); ++i) {
+    const std::string meta = meta_at(b12[i].bytes, 0);
+    if (meta.find("\"type\":\"transaction\"") == std::string::npos) {
+      continue;
+    }
+    with_adds += meta.find("{\"op\":\"add_particles\",\"particles\":1,\"tex\":null}") !=
+                         std::string::npos
+                     ? 1
+                     : 0;
+    with_emits += meta.find("\"particle_emits\":[") != std::string::npos ? 1 : 0;
+  }
+  check(with_emits > 0, "PM5: /12 transactions carry the emit list");
+  check(with_adds > 0, "PM5: /12 carries add_particles");
+  const std::vector<Sent> b11 = of_conn(transport, Sent::Binary, 2);
+  check(b11.size() > 3, "PM5: the /11 connection streamed");
+  const std::string s11 = b11.empty() ? std::string() : meta_at(b11[0].bytes, 8);
+  check(s11.find("\"protocol\":\"render-stream/11\"") != std::string::npos &&
+            s11.find("\"add_particles\"") == std::string::npos &&
+            s11.find("\"canvas_item_add_particles\"") != std::string::npos &&
+            s11.find("\"add_multimesh\"") != std::string::npos,
+        "PM5: a /11 connection's session declares /11's features");
+  bool lowered = false;
+  for (std::size_t i = 1; i < b11.size(); ++i) {
+    const std::string meta = meta_at(b11[i].bytes, 0);
+    check(meta.find("\"particles\":[") == std::string::npos &&
+              meta.find("particle_emits") == std::string::npos &&
+              meta.find("pt_f32") == std::string::npos &&
+              meta.find("\"op\":\"add_particles\"") == std::string::npos,
+          "PM5: no particles key, block or command below /12");
+    lowered = lowered || meta.find("{\"op\":\"unsupported\",\"name\":\"canvas_item_add_particles\","
+                                   "\"reason\":\"unsupported-op\"}") != std::string::npos;
+  }
+  check(lowered, "PM5: the /11 connection sees add_particles as /11's unsupported-op");
+}
+
 void test_pm1_multimesh_buffer_f() {
   Session tmpl = make_template(Delivery::Inline);
   tmpl.version = ProtocolVersion::V11;
@@ -2916,6 +3022,7 @@ void test_pm1_multimesh_buffer_f() {
 
 int main() {
   test_pm1_multimesh_buffer_f();
+  test_pm5_v11_viewer_of_v12_host();
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
   test_v8_connection();

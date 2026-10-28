@@ -27,7 +27,8 @@ export function gpuFormatsOf(
 /** The /9 hello: the /7 hello's keys in their order under protocol render-stream/9, then
  * texture_encodings and gpu_formats. CG1: `protocol` "render-stream/10" is /10's hello
  * (render-stream-10.md "Live transport"); W11c: "render-stream/11" is /10's again
- * (render-stream-11.md, golden-11's control hello). */
+ * (render-stream-11.md, golden-11's control hello); PM5: "render-stream/12" is /11's (golden-12's
+ * control hello). */
 export function helloV9(
   v7: Record<string, unknown>,
   textureEncodings: string,
@@ -35,7 +36,8 @@ export function helloV9(
   protocol:
     | "render-stream/9"
     | "render-stream/10"
-    | "render-stream/11" = "render-stream/9",
+    | "render-stream/11"
+    | "render-stream/12" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
