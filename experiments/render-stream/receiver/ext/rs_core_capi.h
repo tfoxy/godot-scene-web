@@ -70,8 +70,8 @@ const uint8_t *rsc_ops_arena(RsCore *h, size_t *n);
 // W11t (render-stream-11.md "As built (W11t)"): the /11 live coding's decoder, one handle per
 // connection. rsc_coding_decode on every WebSocket message before rsc_session/rsc_accept:
 // 1 decoded (*out valid until the next call), 2 uncoded (*out = data), 0 skipped (no apply, no
-// ack), -1 error (rsc_coding_error; resync rsc_coding_seq when it is not 0). Not bound by the
-// shim yet (W11d/W11e).
+// ack), -1 error (rsc_coding_error; resync rsc_coding_seq when it is not 0). Bound by the shim
+// since W11d (RsCore.coding_*).
 typedef struct RscCoding RscCoding;
 RscCoding *rsc_coding_new(const uint8_t *offer, size_t len, uint64_t max_bytes);
 void rsc_coding_free(RscCoding *h);
@@ -80,6 +80,17 @@ int32_t rsc_coding_decode(RscCoding *h, const uint8_t *data, size_t len, const u
 uint64_t rsc_coding_seq(RscCoding *h);
 const uint8_t *rsc_coding_error(RscCoding *h, size_t *n);
 const uint8_t *rsc_coding_stats(RscCoding *h, size_t *n);
+
+// W11d (render-stream-11.md "As built (W11d)"): the /11 receiver API. rsc_accept and rsc_apply
+// ingest dynamic bodies and run the retention rule; vt: the hashes it dropped since the last call
+// (an Array of hex Strings) for the receiver's cache to forget.
+void rsc_take_released(RsCore *h);
+// inline-fetch-zero before every origin fetch: 1 allowed, 0 with the error in text.
+int32_t rsc_check_fetch(RsCore *h, const uint8_t *hash, size_t hlen);
+// After a coding error the receiver resyncs: the next transaction is the full one, at any seq.
+void rsc_transport_skip(RsCore *h);
+// Evidence; text: GSW's `dynamic_sha256` digest (hex) of the dynamic bodies held.
+void rsc_dynamic_sha256(RsCore *h);
 
 }  // extern "C"
 

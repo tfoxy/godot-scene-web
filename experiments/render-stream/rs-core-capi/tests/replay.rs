@@ -347,12 +347,14 @@ fn golden_10_reissues_the_backbuffer_state() {
     assert_eq!(totals, (0, 0));
 }
 
-/// W11a (render-stream-11.md decision 12): golden-11 replays through the capi at /11. States 1 to
-/// 10 are golden-10's, so the canvas-group and back-buffer calls are golden-10's; from state 11
-/// the dynamic meshes are left undrawn (typed `mesh-dynamic`, counted `meshes_dynamic_undrawn`)
-/// and the delta walk still equals the full scan.
+/// W11d (render-stream-11.md "As built (W11d)"): golden-11 replays through the capi at /11 with
+/// every dynamic mesh drawn from its newest bodies. States 1 to 10 are golden-10's, so the
+/// canvas-group and back-buffer calls are golden-10's; the delta walk equals the full scan; no
+/// mesh is left undrawn or typed; after every transaction the bodies held hash to the resolved
+/// surfaces' `body_sha256`; a body that moves with its shape kept is a region upload, a shape
+/// change a rebuild of the same RID; and the retention rule hands back every hash that left H.
 #[test]
-fn golden_11_replays_with_dynamic_meshes_undrawn() {
+fn golden_11_draws_dynamic_meshes() {
     let g11 = golden().join("../golden-11");
     for name in ["full.rs11", "patch.rs11", "inline.rs11"] {
         let path = g11.join(name);
@@ -362,44 +364,171 @@ fn golden_11_replays_with_dynamic_meshes_undrawn() {
             replay_at(&path, 11, true, "") == honest,
             "{name}: delta vs full scan"
         );
+        assert!(
+            replay_at(&path, 11, false, "stale-dynamic-rx") != honest,
+            "{name}: stale-dynamic-rx changed no call"
+        );
     }
-    // The stats name the undrawn dynamic meshes at /11.
-    let data = std::fs::read(g11.join("patch.rs11")).unwrap();
-    let mut store = payloads_in(&g11.join("../golden-10/payloads"));
-    let mut core = Core::new();
+    for name in ["patch.rs11", "inline.rs11"] {
+        let data = std::fs::read(g11.join(name)).unwrap();
+        let mut store = payloads_in(&g11.join("../golden-10/payloads"));
+        let mut core = Core::new();
+        let spans = wire::split_records(&data, 11).unwrap();
+        assert_eq!(core.session(&data, spans[0].offset, 11), KIND_SESSION);
+        core.begin_session();
+        let (mut updates, mut rebuilt, mut released, mut checked) = (0, 0, 0usize, 0);
+        for s in &spans[1..] {
+            let kind = core.accept(&data, s.offset);
+            assert_ne!(kind, KIND_ERROR, "{name}");
+            core.take_released();
+            released += count_strings(&core.vt.out);
+            if kind == KIND_RESOURCE {
+                assert!(core.resource_payload());
+                let p = core.text.clone();
+                store.insert(wire::sha256(&p), p);
+                continue;
+            }
+            if kind != KIND_TRANSACTION {
+                continue;
+            }
+            let (hashes, library) = needed(&mut core);
+            for h in hashes {
+                core.check_fetch(&h).ok();
+                core.provide(&h, &store[&Hash::from_hex(&h).unwrap()])
+                    .unwrap();
+            }
+            for h in library {
+                core.provide_library(&h, false, "no library in the golden test");
+            }
+            core.apply().unwrap();
+            assert!(!mentions(&core.vt.out, "meshes_dynamic_undrawn"), "{name}");
+            assert!(!mentions(&core.vt.out, "mesh-dynamic"), "{name}");
+            updates += stat_int(&core.vt.out, "surface_updates");
+            rebuilt += stat_int(&core.vt.out, "meshes_rebuilt");
+            core.take_released();
+            released += count_strings(&core.vt.out);
+            // The bodies held against the resolved form's body_sha256, mesh by mesh.
+            core.state_json();
+            let state: serde_json::Value = serde_json::from_slice(&core.text).unwrap();
+            let held = held_bodies(&mut core);
+            for m in state["meshes"].as_array().unwrap() {
+                let id = &m["id"].to_string();
+                let want: Vec<String> = m["surfaces"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s["body_sha256"].as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if want.is_empty() {
+                    continue;
+                }
+                assert_eq!(held.get(id), Some(&want), "{name}: mesh {id}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "{name}: no dynamic mesh checked");
+        assert!(updates > 0, "{name}: no region upload");
+        assert!(rebuilt > 0, "{name}: no rebuild");
+        assert!(released > 0, "{name}: the retention rule released nothing");
+    }
+}
+
+/// The number of Strings in a vt Array of Strings (`take_released`): tag 10 (packed strings),
+/// then a u32 count.
+fn count_strings(vt: &[u8]) -> usize {
+    assert_eq!(vt[0], 10, "not a String array");
+    u32::from_le_bytes(vt[1..5].try_into().unwrap()) as usize
+}
+
+/// `dynamic_sha256()` as a map, read back through its JSON-free vt: mesh id -> body hashes.
+fn held_bodies(core: &mut Core) -> HashMap<String, Vec<String>> {
+    core.dynamic_sha256();
+    let st = core.state().unwrap();
+    let mut out = HashMap::new();
+    for (id, m) in &st.meshes {
+        if let Some(d) = core.dynamic.get(*id) {
+            let _ = m;
+            out.insert(
+                id.to_string(),
+                d.surfaces
+                    .iter()
+                    .map(|g| {
+                        g.as_ref()
+                            .map(|g| render_stream_core::apply::dynamic::body_sha256(g).to_hex())
+                            .unwrap_or_default()
+                    })
+                    .collect(),
+            );
+        }
+    }
+    out
+}
+
+/// W11d (rs-core `Validator::transport_skip`): a coding resync skips transactions the receiver
+/// never decodes; the records before them were accepted. After `transport_skip` the next full
+/// transaction is accepted at its later seq (no `seq-gap`), a record re-carried against a skipped
+/// base is not `resource-duplicate`, and the stream applies on as the unskipped one: its last
+/// state equals the unskipped replay's.
+#[test]
+fn transport_skip_accepts_the_full_after_a_coding_resync() {
+    let g11 = golden().join("../golden-11");
+    let data = std::fs::read(g11.join("inline.rs11")).unwrap();
     let spans = wire::split_records(&data, 11).unwrap();
+    let kinds: Vec<_> = {
+        let mut c = Core::new();
+        c.session(&data, spans[0].offset, 11);
+        spans[1..]
+            .iter()
+            .map(|s| c.accept(&data, s.offset))
+            .collect()
+    };
+    let tx_at: Vec<usize> = (0..kinds.len())
+        .filter(|&i| kinds[i] == KIND_TRANSACTION)
+        .collect();
+    // Skip the third and fourth transactions (not their records); resume at the next full one.
+    let skip: Vec<usize> = tx_at[2..4].to_vec();
+    let mut core = Core::new();
     assert_eq!(core.session(&data, spans[0].offset, 11), KIND_SESSION);
-    core.begin_session();
-    let mut undrawn = 0;
-    let mut typed = false;
-    for s in &spans[1..] {
+    let mut skipping = false;
+    let mut resumed = false;
+    for (i, s) in spans[1..].iter().enumerate() {
+        if skip.contains(&i) {
+            core.transport_skip();
+            skipping = true;
+            continue;
+        }
+        if skipping && kinds[i] == KIND_TRANSACTION {
+            let f = wire::frame(&data[s.offset..], 0).unwrap();
+            let meta: serde_json::Value = serde_json::from_slice(f.meta).unwrap();
+            if meta["encoding"] != "full" {
+                continue; // the decoder skips every based transaction until the full one
+            }
+            skipping = false;
+            resumed = true;
+        }
         let kind = core.accept(&data, s.offset);
-        assert_ne!(kind, KIND_ERROR);
-        if kind == KIND_RESOURCE {
-            assert!(core.resource_payload());
-            let p = core.text.clone();
-            store.insert(wire::sha256(&p), p);
-            continue;
-        }
-        if kind != KIND_TRANSACTION {
-            continue;
-        }
-        let (hashes, library) = needed(&mut core);
-        for h in hashes {
-            core.provide(&h, &store[&Hash::from_hex(&h).unwrap()])
-                .unwrap();
-        }
-        for h in library {
-            core.provide_library(&h, false, "no library in the golden test");
-        }
-        core.apply().unwrap();
-        if mentions(&core.vt.out, "meshes_dynamic_undrawn") {
-            undrawn += stat_int(&core.vt.out, "meshes_dynamic_undrawn");
-        }
-        typed |= mentions(&core.vt.out, "mesh-dynamic");
+        assert_ne!(
+            kind,
+            KIND_ERROR,
+            "record {i}: {}",
+            String::from_utf8_lossy(&core.vt.out)
+        );
     }
-    assert!(undrawn > 0, "no dynamic mesh was counted undrawn");
-    assert!(typed, "no add_mesh command was typed mesh-dynamic");
+    assert!(
+        resumed,
+        "inline.rs11 has no full transaction after the skip"
+    );
+    // The unskipped stream's final state.
+    let mut plain = Core::new();
+    plain.session(&data, spans[0].offset, 11);
+    for s in &spans[1..] {
+        plain.accept(&data, s.offset);
+    }
+    core.state_json();
+    plain.state_json();
+    assert_eq!(core.text, plain.text);
 }
 
 /// G7o2 (D31): a deferred-digest session answers every record without its sha256, and

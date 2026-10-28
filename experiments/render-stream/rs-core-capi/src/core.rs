@@ -9,6 +9,8 @@
 use crate::ops::OpBuf;
 use crate::plan::{Library, Needed, Payloads, Planner, Sabotage};
 use crate::vt::{gd, Vt};
+use render_stream_core::apply::dynamic::{body_sha256, DynamicMeshes};
+use render_stream_core::apply::retention::Retention;
 use render_stream_core::canon;
 use render_stream_core::meta::{self, DecodeBufs, TxMeta};
 use render_stream_core::payload::{self, PayloadKind};
@@ -32,9 +34,11 @@ pub const VERSION: u8 = 6;
 /// CG1 adds render-stream/10 (render-stream-10.md): the planner re-issues each item's
 /// `canvas_group` and `copy_to_backbuffer` state and the receiver's Godot does the rest. W11a adds
 /// render-stream/11 (render-stream-11.md decision 12): rs-core validates the carried set and the
-/// dynamic meshes, and the planner draws static meshes as before and leaves dynamic ones undrawn
-/// (counted `meshes_dynamic_undrawn`, typed `mesh-dynamic`) until W11d. The live hello does not
-/// offer .11 (W11d).
+/// dynamic meshes. W11d ("As built (W11d)"): the core ingests each transaction's dynamic bodies
+/// at accept (`DynamicMeshes`), the planner draws them by mesh id with region uploads, the
+/// retention rule hands every hash that left H back to the receiver's cache (`take_released`),
+/// and `check_fetch` is `inline-fetch-zero`; the live hello offers .11 under
+/// RS_RECEIVER_PROTOCOL=11.
 pub const VERSIONS: [u8; 6] = [6, 7, 8, 9, 10, 11];
 
 pub const KIND_ERROR: i32 = 0;
@@ -69,6 +73,32 @@ pub struct Core {
     /// G7o2 (D31): the next `session()` defers the per-record digest (`record.sha256` is "" in
     /// every answer; the caller fills it after the frame with `record_digest`).
     pub digest_deferred: bool,
+    /// W11d (render-stream-11.md "Receivers"): the newest body of every /11 dynamic mesh surface,
+    /// ingested right after each accepted transaction (the record's bytes are the caller's and are
+    /// reused by the next message).
+    pub dynamic: DynamicMeshes,
+    /// W11d: the retention rule (H = C ∪ names(S_n) ∪ names(S_d)): queued after each accepted
+    /// transaction, swept after each accept and each apply.
+    retention: Retention,
+    /// W11d: the hashes the rule dropped since the last `take_released`, for the receiver's
+    /// `RsResourceCache` (the store): their staged copies are already gone.
+    released_out: Vec<Hash>,
+    /// W11d receiver sabotages (RS_RECEIVER_SABOTAGE, W11c's kinds): `stale-dynamic-rx` (a body
+    /// whose surface's shape holds is not ingested), `no-prune` (the validator keeps C lifelong)
+    /// and `ignore-released` (the rule hands nothing back: the cache keeps what left H).
+    w11_sab: W11Sabotage,
+    /// W11d evidence (`dynamic_sha256`): dynamic surfaces checked against the resolved
+    /// `body_sha256`, and how many held a different body.
+    dynamic_checked: i64,
+    dynamic_mismatched: i64,
+}
+
+/// W11d: the /11 receiver sabotages the core implements (`evict-carried` is receiver.gd's).
+#[derive(Default, Clone, Copy, Debug)]
+pub struct W11Sabotage {
+    pub stale_dynamic_rx: bool,
+    pub no_prune: bool,
+    pub ignore_released: bool,
 }
 
 /// `_frame()`'s two `truncated` checks: the record at `offset` as a slice, its length prefix
@@ -119,6 +149,15 @@ impl Core {
 
     pub fn set_sabotage(&mut self, name: &str) {
         self.planner.sab = Sabotage::parse(name);
+        self.w11_sab = W11Sabotage {
+            stale_dynamic_rx: name == "stale-dynamic-rx",
+            no_prune: name == "no-prune",
+            ignore_released: name == "ignore-released",
+        };
+        // receiver.gd opens the core (and so names the sabotage) after the session record.
+        if let Some(v) = self.validator.as_mut() {
+            v.set_no_prune(self.w11_sab.no_prune);
+        }
     }
 
     /// G8kp (texture-delivery-design.md D3): the receiver's `texture_encodings` and `gpu_formats`,
@@ -223,6 +262,11 @@ impl Core {
         self.provided.clear();
         self.library.clear();
         self.planner.touched.clear();
+        self.dynamic.clear();
+        self.retention.clear();
+        self.released_out.clear();
+        self.dynamic_checked = 0;
+        self.dynamic_mismatched = 0;
         let record = match frame_at(data, offset) {
             Ok(r) => r,
             Err(e) => {
@@ -240,13 +284,14 @@ impl Core {
             verify_payload_hashes: true,
             early_prune: false,
         };
-        let validator = match Validator::new(record, offset, opts) {
+        let mut validator = match Validator::new(record, offset, opts) {
             Ok(v) => v,
             Err(e) => {
                 self.write_failure(record, offset, &e);
                 return KIND_ERROR;
             }
         };
+        validator.set_no_prune(self.w11_sab.no_prune);
         self.session_meta = wire::frame(record, offset)
             .map(|f| f.meta.to_vec())
             .unwrap_or_default();
@@ -329,6 +374,12 @@ impl Core {
                 return KIND_ERROR;
             }
         };
+        if matches!(accepted, Accepted::Transaction) && self.version >= 11 {
+            if let Err(e) = self.ingest_dynamic(record) {
+                self.write_failure(record, offset, &e);
+                return KIND_ERROR;
+            }
+        }
         let validator = self.validator.as_ref().unwrap();
         let digest = validator
             .record_digests()
@@ -412,6 +463,137 @@ impl Core {
             _ => "transaction",
         });
         kind
+    }
+
+    /// W11d: the accepted transaction's dynamic bodies into `dynamic` (before `record` is gone),
+    /// then the retention rule's queue and sweep. `stale-dynamic-rx` skips each body whose surface
+    /// already holds one of the same shape (so a pose change is ignored, a shape change is not).
+    fn ingest_dynamic(&mut self, record: &[u8]) -> Result<(), Error> {
+        let v = self
+            .validator
+            .as_ref()
+            .expect("an accepted transaction has a validator");
+        let st = v.state();
+        if self.w11_sab.stale_dynamic_rx {
+            let held = &self.dynamic;
+            let bodies: Vec<_> = v
+                .dynamic_bodies()
+                .iter()
+                .filter(|b| {
+                    let now = st
+                        .meshes
+                        .get(&b.mesh)
+                        .and_then(|m| m.surfaces.get(b.surface as usize));
+                    let had = held
+                        .get(b.mesh)
+                        .and_then(|m| m.surfaces.get(b.surface as usize))
+                        .and_then(|g| g.as_ref());
+                    !matches!((now, had), (Some(s), Some(g))
+                        if s.primitive == g.layout.primitive
+                            && s.format == g.layout.format
+                            && s.vertex_count as usize == g.layout.vertex_count
+                            && s.index_count as usize == g.layout.index_count)
+                })
+                .cloned()
+                .collect();
+            self.dynamic.ingest(st, &bodies, record)?;
+        } else {
+            self.dynamic.ingest(st, v.dynamic_bodies(), record)?;
+        }
+        self.retention.note(v);
+        self.sweep();
+        Ok(())
+    }
+
+    /// W11d: drops every queued hash that left H (`Retention::sweep_with`): its staged copy here,
+    /// and it is handed to the receiver (`take_released`), whose cache forgets it.
+    fn sweep(&mut self) {
+        let Some(v) = self.validator.as_ref() else {
+            return;
+        };
+        let planner = &self.planner;
+        let staged = &mut self.staged;
+        let out = &mut self.released_out;
+        let ignore = self.w11_sab.ignore_released;
+        self.retention.sweep_with(
+            v,
+            || planner.displayed_hashes(),
+            |h| {
+                if ignore {
+                    return false;
+                }
+                staged.remove(h);
+                out.push(*h);
+                true
+            },
+        );
+    }
+
+    /// W11d: the hashes the retention rule dropped since the last call (hex, into `vt` as an
+    /// Array of Strings), for the receiver's cache to forget.
+    pub fn take_released(&mut self) {
+        let v = &mut self.vt;
+        v.clear();
+        let hex: Vec<String> = self.released_out.drain(..).map(|h| h.to_hex()).collect();
+        let refs: Vec<&str> = hex.iter().map(|s| s.as_str()).collect();
+        v.strings(&refs);
+    }
+
+    /// W11d (render-stream-11.md decision 9, `inline-fetch-zero`): may the receiver fetch
+    /// `hash_hex` from the origin (HTTP, or the store directory in file mode) now? Err is
+    /// "<code>: <detail>". Every fetch is allowed below /11.
+    pub fn check_fetch(&self, hash_hex: &str) -> Result<(), String> {
+        let (Some(v), Some(h)) = (self.validator.as_ref(), Hash::from_hex(hash_hex)) else {
+            return Ok(());
+        };
+        v.check_fetch(&h).map_err(|e| err_text(&e))
+    }
+
+    /// W11d (rs-core `Validator::transport_skip`): the live coding skipped transactions (a
+    /// `coding` resync); the next must be the full transaction the resync forces.
+    pub fn transport_skip(&mut self) {
+        if let Some(v) = self.validator.as_mut() {
+            v.transport_skip();
+        }
+    }
+
+    /// W11d evidence (GSW's `dynamic_sha256`, W11c): into `text`, the hex SHA-256 over every
+    /// dynamic mesh the newest accepted state holds, ascending by id, each surface's (id u32 LE,
+    /// surface u32 LE, the held body's SHA-256 or 32 zero bytes): equal to the TypeScript
+    /// `resolvedDynamicDigest` of the resolved state exactly when every body held is right. Each
+    /// surface held against the resolved `body_sha256` also counts into `dynamic_checked` and
+    /// `dynamic_mismatched`. Hashes every body: evidence only (a full log).
+    pub fn dynamic_sha256(&mut self) {
+        self.text.clear();
+        let Some(st) = self.validator.as_ref().map(|x| x.state()) else {
+            return;
+        };
+        let mut ids: Vec<_> = st
+            .meshes
+            .iter()
+            .filter(|(_, m)| m.is_dynamic())
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        let mut digest = Vec::new();
+        for id in ids {
+            let m = &st.meshes[&id];
+            let held = self.dynamic.get(id);
+            for (k, s) in m.surfaces.iter().enumerate() {
+                let got = held
+                    .and_then(|d| d.surfaces.get(k))
+                    .and_then(|g| g.as_ref())
+                    .map(body_sha256);
+                self.dynamic_checked += 1;
+                if got != s.body_sha256 {
+                    self.dynamic_mismatched += 1;
+                }
+                digest.extend_from_slice(&id.to_le_bytes());
+                digest.extend_from_slice(&(k as u32).to_le_bytes());
+                digest.extend_from_slice(&got.map_or([0u8; 32], |h| h.0));
+            }
+        }
+        self.text = wire::sha256(&digest).to_hex().into_bytes();
     }
 
     /// The last resource record's verified inline payload, into `text`.
@@ -580,6 +762,7 @@ impl Core {
         let payloads = Payloads {
             provided: &self.provided,
             library: &self.library,
+            dynamic: &self.dynamic,
             version: self.version,
         };
         let r = self
@@ -587,6 +770,10 @@ impl Core {
             .apply(v.state(), &payloads, &mut self.ops, &mut self.vt);
         self.provided.clear();
         self.library.clear();
+        // W11d: what the apply stopped drawing may now leave the store.
+        if self.version >= 11 {
+            self.sweep();
+        }
         r
     }
 
@@ -627,7 +814,25 @@ impl Core {
         v.clear();
         let pc = self.payloads;
         let staged_now = self.staged.len() as i64;
-        v.dict(20);
+        // W11d: the /11 retention and dynamic-geometry counters, at /11 only (the dictionary is
+        // unchanged below it).
+        let w11: Vec<(&str, i64)> = match self.validator.as_ref() {
+            Some(val) if self.version >= 11 => vec![
+                ("w11_names", val.names_len() as i64),
+                ("w11_carried", val.carried_len() as i64),
+                ("w11_dynamic_meshes", self.dynamic.len() as i64),
+                ("w11_dynamic_surfaces", self.dynamic.surfaces() as i64),
+                ("w11_dynamic_bytes", self.dynamic.bytes() as i64),
+                ("w11_bodies_total", self.dynamic.bodies_total as i64),
+                ("w11_body_bytes_total", self.dynamic.body_bytes_total as i64),
+                ("w11_released_total", self.retention.released_total as i64),
+                ("w11_released_pending", self.retention.pending_len() as i64),
+                ("w11_dynamic_checked", self.dynamic_checked),
+                ("w11_dynamic_mismatched", self.dynamic_mismatched),
+            ],
+            _ => vec![],
+        };
+        v.dict(20 + w11.len());
         v.key("rs_calls");
         v.int(p.rs_calls);
         v.key("created_rids");
@@ -662,6 +867,10 @@ impl Core {
             ("payloads_provided_in_frame_bytes", pc.provided_in_frame_bytes),
             ("payloads_staged_now", staged_now),
         ] {
+            v.key(k);
+            v.int(n);
+        }
+        for (k, n) in w11 {
             v.key(k);
             v.int(n);
         }

@@ -34,6 +34,7 @@ import type { ResourceLine } from "./gate2-checks";
 import { replayMeshLog } from "./gate5e-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
 import { runG8w11Gsw } from "./gate8-w11-gsw-checks";
+import { runG8w11Native, runG8w11NativeCoding } from "./gate8-w11-native-checks";
 import {
   check,
   type G8aCheck,
@@ -699,5 +700,8 @@ export async function runG8w11(
   checks.push(...(await runG8w11Coding(g)));
   // W11c: GSW's legs on these captures (lib/gate8-w11-gsw-checks.ts).
   checks.push(...(await runG8w11Gsw(g)));
+  // W11d: the native receiver's legs (lib/gate8-w11-native-checks.ts).
+  checks.push(...(await runG8w11Native(g)));
+  checks.push(...(await runG8w11NativeCoding(g)));
   return { checks, report };
 }

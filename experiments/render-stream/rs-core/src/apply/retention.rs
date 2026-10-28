@@ -51,6 +51,18 @@ impl Retention {
         store: &mut PayloadStore,
         displayed: impl FnOnce() -> HashSet<Hash>,
     ) -> u32 {
+        self.sweep_with(v, displayed, |h| store.release(h))
+    }
+
+    /// [`Self::sweep`] over any store: `release(h)` drops `h` from it and says whether it held
+    /// it (W11d: the native receiver's store is `RsResourceCache`, so `rs-core-capi` hands the
+    /// dropped hashes back to it).
+    pub fn sweep_with(
+        &mut self,
+        v: &Validator,
+        displayed: impl FnOnce() -> HashSet<Hash>,
+        mut release: impl FnMut(&Hash) -> bool,
+    ) -> u32 {
         if self.pending.is_empty() {
             return 0;
         }
@@ -64,7 +76,7 @@ impl Retention {
             if shown.contains(h) {
                 return true;
             }
-            if store.release(h) {
+            if release(h) {
                 dropped += 1;
             }
             false

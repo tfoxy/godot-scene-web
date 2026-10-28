@@ -481,6 +481,12 @@ pub struct Validator {
     opts: Options,
     /// W11c receiver sabotage `no-prune` ([`Validator::set_no_prune`]).
     no_prune: bool,
+    /// W11d: the transport skipped transactions since the last accepted one
+    /// ([`Validator::transport_skip`]); cleared by the full transaction that ends it.
+    skipping: bool,
+    /// W11d: the transactions skipped so far (the seq gaps transport skips ended), which the end
+    /// record's count includes.
+    skipped_tx: i64,
     session: Session,
     snap_declared: bool,
     state: ResolvedState,
@@ -1495,6 +1501,8 @@ impl Validator {
         Ok(Validator {
             opts,
             no_prune: false,
+            skipping: false,
+            skipped_tx: 0,
             session,
             snap_declared,
             state: ResolvedState::empty(opts.version),
@@ -1655,6 +1663,25 @@ impl Validator {
         self.no_prune = on;
     }
 
+    /// W11d (render-stream-11.md "As built (W11d)"): the transport skipped one or more
+    /// transactions (W11t's `coding` resync: a based message whose base is missing or that does
+    /// not decode, and every based one after it until the full transaction the resync forces).
+    /// The records that preceded them were accepted, but the states they named never were, so
+    /// until the next transaction, which must be full: its seq may jump; `resource-duplicate`
+    /// does not refuse a hash already in C (the host computed its records against a skipped
+    /// base, which may have pruned it); `resource-unnamed` does not apply to those records; and
+    /// after it C is pruned to names(S) whole, not by the delta (a skipped record may name
+    /// nothing). C is then inline(S), the host's set (L1 holds again from there). Below /11 it
+    /// only allows the seq jump.
+    pub fn transport_skip(&mut self) {
+        self.skipping = true;
+    }
+
+    /// W11d: whether a transport skip awaits its full transaction.
+    pub fn skipping(&self) -> bool {
+        self.skipping
+    }
+
     /// `finish()`: the end-of-stream verdict.
     pub fn finish(&self) -> Result<(), Error> {
         if self.end_seen {
@@ -1718,8 +1745,9 @@ impl Validator {
         offset: usize,
         r: ResourceMeta,
     ) -> Result<Accepted, Error> {
-        if self.carried.contains_key(&r.hash) {
-            // /11: "h ∈ C" (C is pruned after every transaction); /2-/10: ever carried.
+        if self.carried.contains_key(&r.hash) && !self.skipping {
+            // /11: "h ∈ C" (C is pruned after every transaction); /2-/10: ever carried. W11d:
+            // after a transport skip the host may re-carry a hash a skipped transaction pruned.
             return Err(Error::new(
                 "resource-duplicate",
                 if self.opts.version >= 11 {
@@ -1808,7 +1836,9 @@ impl Validator {
                 ),
             ));
         }
-        if e.transactions != self.tx_count {
+        // W11d: transactions a transport skip never let the validator see count too; their bytes
+        // and kinds are unknown, so the end stats are not checked after one.
+        if e.transactions != self.tx_count + self.skipped_tx {
             return Err(Error::new(
                 "end-count-mismatch",
                 format!(
@@ -1818,6 +1848,10 @@ impl Validator {
             ));
         }
         let s = e.stats;
+        if self.skipped_tx > 0 {
+            self.end_seen = true;
+            return Ok(Accepted::End);
+        }
         if s[0] as u64 != self.bytes_total
             || s[0] < 0
             || s[4] as u64 != self.max_record_bytes
@@ -1937,7 +1971,13 @@ impl Validator {
             ascending("removed_shaders", &tx.removed_shaders)?;
             ascending("removed_materials", &tx.removed_materials)?;
         }
-        if tx.seq != self.prev_seq + 1 {
+        // W11d: after a transport skip ([`Validator::transport_skip`]) the next transaction is
+        // the full one the resync forces, at any later seq.
+        let skipped = self.skipping && tx.is_full() && tx.seq > self.prev_seq;
+        if skipped {
+            self.skipped_tx += tx.seq - self.prev_seq - 1;
+        }
+        if tx.seq != self.prev_seq + 1 && !skipped {
             return Err(Error::new(
                 "seq-gap",
                 format!(
@@ -3350,7 +3390,9 @@ impl Validator {
                 shader_names(s, inline_max, &mut |h, r| add(h, r, 1));
             }
         }
-        for h in &self.since_tx {
+        // W11d: the records before a transport skip named skipped states (transport_skip).
+        let since_tx: &[Hash] = if self.skipping { &[] } else { &self.since_tx };
+        for h in since_tx {
             let now = self.names.get(h).map_or(0, |n| n.all)
                 + self.names_delta.get(h).map_or(0, |n| n.all);
             if now <= 0 {
@@ -3386,7 +3428,22 @@ impl Validator {
                 }
             }
         }
+        if self.skipping && !self.no_prune {
+            // W11d (transport_skip): a record of a skipped transaction may name nothing S names,
+            // so C is pruned to names(S) whole once, here.
+            let names = &self.names;
+            let (released, pruned) = (&mut self.released, &mut self.pruned);
+            self.carried.retain(|h, _| {
+                let keep = names.contains_key(h);
+                if !keep {
+                    released.push(*h);
+                    pruned.push(*h);
+                }
+                keep
+            });
+        }
         self.released.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        self.released.dedup();
         self.pruned.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     }
 
@@ -4493,6 +4550,7 @@ impl Validator {
         if self.opts.version >= 11 {
             self.commit_names();
         }
+        self.skipping = false;
         // Recycle the replaced items' buffers.
         for u in self.undo.drain(..) {
             if let Undo::Item(_, Some(it), _) = u {

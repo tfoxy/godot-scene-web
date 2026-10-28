@@ -146,7 +146,14 @@
 #       `scale/off` (/11, GRC_MESH_DYNAMIC=off), the /10 twins `scale/v10`, `scene/v10` and
 #       `mesh/v10`, and GSW's file legs on them under `g8w11/gsw/` (gate8-w11-tool.ts gsw-legs: the
 #       /11 legs, their /10 twins, and the receiver sabotages stale-dynamic-rx, no-prune,
-#       evict-carried and ignore-released), judged by lib/gate8-w11-gsw-checks.ts.
+#       evict-carried and ignore-released), judged by lib/gate8-w11-gsw-checks.ts. W11d adds the
+#       native receiver on the same captures, frames and sabotages, in one private 640x360
+#       gamescope (`scale/receiver`, `scale/v10/receiver`, `scale/off/receiver`, `scene/...`,
+#       `mesh/...`, `scene/sabotage-stale-dynamic-rx/receiver`,
+#       `scene/off/sabotage-{no-prune,evict-carried}/receiver`,
+#       `scale/off/sabotage-ignore-released/receiver`; gate8-w11-tool.ts native-plan), judged by
+#       lib/gate8-w11-native-checks.ts; gate 7's g7-8 GSW half replays them against native, and
+#       `coding/native` runs a native receiver live at /11 beside an uncoded one.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -804,11 +811,12 @@ G8W11_SCALE_QUIT=60
 G8W11_SCENE_QUIT=300
 
 run_import_g8w11() {
-	echo "run-gate8: g8w11 import (gate6-scene, gate5-mesh)"
+	echo "run-gate8: g8w11 import (gate6-scene, gate5-mesh, receiver)"
 	local project leg
-	for leg in scene mesh; do
+	for leg in scene mesh receiver; do
 		project="$G8W11_SCENE_DIR"
 		[ "$leg" = mesh ] && project="$G8W11_MESH_DIR"
+		[ "$leg" = receiver ] && project="$RECEIVER_DIR"
 		LEG_ENV=()
 		run_headless "$OUT/g8w11/import/$leg" none -- mise exec -- godot --headless --path "$project" --import
 		[ -f "$OUT/g8w11/import/$leg/skipped-by-tier.txt" ] && continue
@@ -881,6 +889,58 @@ run_g8w11_coding_leg() {
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
 }
 
+# W11d: native receivers live at /11 on a capture-scale host (as run_g8w11_coding_leg's, headless),
+# one per spec: <name>:<RS_RECEIVER_LIVE_CODING value, "" for the default zstd-base,zstd>.
+run_g8w11_coding_native_leg() {
+	local dir="$OUT/g8w11/coding/$1" waited=0 port="" spec name pid
+	shift
+	local -a henv=() pids=() names=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		henv+=("$1")
+		shift
+	done
+	shift
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$host/tap"
+		GRC_LIVE_MAX_CONNECTIONS="$#" "${G8W11_ENV[@]}" "${G8W11_SCALE_ENV[@]}"
+		RS_FIXTURE_QUIT_FRAME="$G8W11_CODING_QUIT" "${henv[@]}"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$G8W11_SCALE_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+	else
+		for spec in "$@"; do
+			name="${spec%%:*}"
+			mkdir -p "$dir/$name"
+			LEG_ENV=(
+				RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_PROTOCOL=11
+				RS_RECEIVER_OUT="$dir/$name/applied.json" RS_RECEIVER_CACHE_DIR="$dir/$name/cache"
+			)
+			[ -n "${spec#*:}" ] && LEG_ENV+=(RS_RECEIVER_LIVE_CODING="${spec#*:}")
+			start_headless_bg "$dir/$name" -- "$BINARY" --headless --path "$RECEIVER_DIR"
+			pids+=("$BG_PID")
+			names+=("$name")
+		done
+		local k
+		for k in "${!pids[@]}"; do
+			[ -n "${pids[$k]}" ] && finish_bg "$dir/${names[$k]}" "${pids[$k]}" "$HEADLESS_TIMEOUT_S"
+		done
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
 run_g8w11_coding() {
 	echo "run-gate8: g8w11 coding/live (zstd-base x2 at window 2, off, zstd at window 1)"
 	run_g8w11_coding_leg live -- "zstd-base,zstd:2" "zstd-base,zstd:2" ":2" "zstd:1"
@@ -892,8 +952,51 @@ run_g8w11_coding() {
 	echo "run-gate8: g8w11 coding/sabotage-wrong-prefix (coding-wrong-prefix @120)"
 	run_g8w11_coding_leg sabotage-wrong-prefix GRC_SABOTAGE=coding-wrong-prefix \
 		GRC_SABOTAGE_FRAME=120 -- "zstd-base,zstd:2"
+	echo "run-gate8: g8w11 coding/native (native receivers at /11: coded zstd-base,zstd and uncoded)"
+	run_g8w11_coding_native_leg native -- "coded:" "off:off"
+	echo "run-gate8: g8w11 coding/native-sabotage-drop-base (drop-message @120, a coded native receiver)"
+	run_g8w11_coding_native_leg native-sabotage-drop-base GRC_SABOTAGE=drop-message \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	# The wire-level check (gate8-w11t-checks.ts coding-wire) codes the recordings with the
 	# capture's encoder: rs_live_coding_tool, built with the capture.
+}
+
+# W11d: the native receiver's g8w11 legs (gate8-w11-tool.ts native-plan: the GSW legs' captures,
+# shot frames and sabotages), rendered in one private gamescope at each session's canvas size.
+run_g8w11_receiver() {
+	local dir="$1" capture_dir="$2" sink="$3" shots="$4" sabotage="$5" canvas="$6"
+	# The leg's own copy is recording.rs<v> whichever sink it replays (run_rendered_receiver's
+	# convention, which gate 7's browser legs mirror).
+	RECORDING_NAME="recording.${sink##*.}"
+	prepare_recording "$capture_dir/$sink" "$dir" || return 0
+	mkdir -p "$dir/shots"
+	LEG_ENV=(
+		RS_RECEIVER_RECORDING="$dir/$RECORDING_NAME" RS_RECEIVER_OUT="$dir/applied.json"
+		RS_RECEIVER_CACHE_DIR="$dir/cache" RS_RECEIVER_PERF_OUT="$dir/perf.json"
+	)
+	[ "$shots" != "-" ] && LEG_ENV+=(RS_RECEIVER_SHOT_SEQS="$shots")
+	[ -d "$capture_dir/store" ] && LEG_ENV+=(RS_RECEIVER_STORE_DIR="$capture_dir/store")
+	[ "$sabotage" != "-" ] && LEG_ENV+=(RS_RECEIVER_SABOTAGE="$sabotage")
+	[ "$canvas" != "-" ] && RENDERED_EXTRA_ARGS=(--resolution "$canvas")
+	run_rendered "$dir" "$RECEIVER_DIR"
+}
+
+run_g8w11_native() {
+	echo "run-gate8: g8w11 native receiver legs (gate8-w11-tool.ts native-plan)"
+	local plan="$OUT/g8w11/native-plan.tsv" leg capture sink shots sabotage canvas
+	if ! (cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/gate8-w11-tool.ts" native-plan --source "$OUT") >"$plan" 2>"$OUT/g8w11/native-plan.log"; then
+		echo "run-gate8: g8w11 native-plan failed, see $OUT/g8w11/native-plan.log" >&2
+		return 0
+	fi
+	gs_start 640 360 "$OUT/gamescope-g8w11"
+	while IFS=$'\t' read -r -u 3 leg capture sink shots sabotage canvas; do
+		[ -z "$leg" ] && continue
+		echo "run-gate8: g8w11 $leg ($capture/$sink, sabotage $sabotage)"
+		run_g8w11_receiver "$OUT/g8w11/$leg" "$OUT/g8w11/$capture" "$sink" "$shots" "$sabotage" "$canvas"
+	done 3<"$plan"
+	gs_teardown "$OUT/gamescope-g8w11"
+	GS_RUN_DIR=""
 }
 
 run_g8w11() {
@@ -950,6 +1053,11 @@ run_g8w11() {
 		GRC_ROOT_SIZE=enforce-min-size RS_FIXTURE_VARIANT=animate GRC_STREAM_VERSION=10
 	run_capture_g8w11 "$OUT/g8w11/mesh/v10/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size \
 		GRC_STREAM_VERSION=10
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+
+	# W11d: the native receiver applies /11 (render-stream-11.md "As built (W11d)").
+	run_g8w11_native
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 

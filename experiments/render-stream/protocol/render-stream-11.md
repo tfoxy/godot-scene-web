@@ -3,7 +3,7 @@
 Status: **design; codecs, validators and capture built** (W11-D, 2026-10-25; W11a, 2026-10-27:
 the C++ encoder, TypeScript and rs-core match `golden-11/`, see "As built (W11a): decisions"; W11b,
 2026-10-27: the capture emits /11 under `GRC_STREAM_VERSION=11`, see "As built (W11b): decisions";
-the receivers are W11c to W11e). The measurements behind every number here are
+the receivers are W11c to W11e: GSW (W11c) and the native receiver (W11d) apply it). The measurements behind every number here are
 in [results/p3/w11-d.md](../results/p3/w11-d.md). /11 builds on render-stream/10
 ([render-stream-10.md](render-stream-10.md): CG1's back-buffer item state and P3-TM's
 `shader_time`). Like /8 to /10 it is **opt-in**: nothing below /11 changes, and no default moves
@@ -730,6 +730,64 @@ W11e (the web export) call too.
     `resync` with reason `coding` and the full transaction that ends it is applied by a fresh
     applier (`live_rebuild`); with seq 0 the stream fails. The live block reports each
     connection's coding stats (`live.coding`).
+
+### As built (W11d): decisions
+
+W11d makes the native receiver apply /11 ([results/p3/w11d.md](../results/p3/w11d.md)): the
+Godot template with the Rust core through `rs-core-capi` (`receiver/ext/`). Nothing here changes
+the wire. Decisions 1 and 6 add to rs-core's receiver API, which the web export (W11e) reaches
+through the same capi.
+
+1. **A transport skip in the validator** (`Validator::transport_skip`, `rsc_transport_skip`).
+   W11t's `coding` resync skips every based transaction until the full one, so the validator never
+   sees them: the full arrives with a seq gap, the host computed its records against a skipped
+   base (it may re-carry a hash the skipped states pruned), and the records before a skipped
+   transaction may be named by nothing the validator sees. After `transport_skip` the next
+   transaction must be full and may jump seqs; `resource-duplicate` does not refuse a hash already
+   in C until it; `resource-unnamed` skips those records; and after it C is pruned to names(S)
+   whole. Then C = inline(S), the host's set by L2, so L1 holds again from there. The end record's
+   count includes the skipped transactions, and its byte stats are not checked after a skip (their
+   sizes were never seen). Before W11d no receiver could survive a coding resync at /11: the full
+   failed `seq-gap`. GSW (W11c) does not call it yet.
+2. **Bodies at accept, in the capi.** `rs-core-capi`'s `Core` keeps W11c's `DynamicMeshes` and
+   ingests each accepted transaction's bodies inside `rsc_accept`, before the record's buffer
+   goes back to receiver.gd; `rsc_apply` hands them to the planner. receiver.gd never sees a body.
+3. **Region uploads on the same RID.** A dynamic mesh is `create`d when it first becomes
+   resident; `rebuild`t (`mesh_clear` plus `mesh_add_surface` on its own RID) when it was built
+   from hashed surfaces, or when a surface's layout or a moved body's index bytes change; and
+   otherwise gets `mesh_surface_update_vertex_region` and `_attribute_region` (and `_skin_region`
+   when the format has one) at offset 0, one `update` row per moved surface, as W11c's rows
+   name them. Two refinements of W11c's rule: the layout includes the body's AABB and uv_scale
+   (a region upload keeps the surface's old AABB, and Godot's canvas culls a mesh command by
+   `mesh_get_aabb`; the capture keeps a surface's add-time AABB, so this rebuilds only when the
+   host rebuilt), and a static mesh that turns dynamic (or back) keeps its RID and is rebuilt in
+   place rather than freed and created, because no item command changes with it and the items
+   drawing it are not replayed. A full transaction (a resync, a window-2 full) re-uploads every
+   dynamic body it carries.
+4. **The store is receiver.gd's `RsResourceCache`.** The capi runs W11c's `Retention` with
+   `sweep_with` (a store-agnostic `sweep`: rs-core's one addition for it) after every accept and
+   every apply; the displayed set is the planner's resident hashes (`displayed_hashes`). Each hash
+   it drops leaves the capi's staged copies and is handed back (`rsc_take_released`); receiver.gd
+   drains it after each accept and apply and the cache forgets the bytes (`release`). Disk cache
+   files stay. Below /11 nothing is ever released.
+5. **`inline-fetch-zero`** is asked before every origin read: the store directory in file mode
+   (a read that is not a disk-cache hit) and every HTTP GET live (`rsc_check_fetch`).
+6. **Live.** `RS_RECEIVER_PROTOCOL=11` (native only until W11e) offers `render-stream.11` with
+   /10's hello under `render-stream/11` and, last, `live_coding` (`RS_RECEIVER_LIVE_CODING`:
+   default `zstd-base,zstd`, `zstd`, or `off` for none). The shim owns one `RscCoding` per
+   connection (`coding_open` at each hello); every binary message goes through `coding_decode`
+   before `rsc_session`/`rsc_accept`. A 0 is dropped (no accept, no ack); a -1 with a seq calls
+   `transport_skip` and sends `resync` (reason `coding`); a -1 with seq 0 fails the stream.
+   `received.rs11` holds the decoded messages, so it is the host's tap (minus what a resync
+   skipped). applied.json's `live.coding` has each connection's stats and the resyncs.
+7. **Evidence** (/11 only). applied.json `w11`, bounded, in GSW's `gsw.w11` key names: the cache's
+   most memory entries after an apply and most beyond |names(S)| + |C|, the rule's releases, the
+   bodies ingested, `dynamic_checked`/`dynamic_mismatched`/`dynamic_undrawn`. A full log's
+   transactions also carry `w11` (entries, |names|, |C|, dynamic meshes and surfaces) and GSW's
+   `dynamic_sha256` digest, computed the same way, so the two receivers' applied.json compare
+   directly. Under `RS_RECEIVER_LOG=summary` nothing grows per transaction.
+8. **Receiver sabotages**, W11c's names: `stale-dynamic-rx`, `no-prune` and `ignore-released` in
+   the capi, `evict-carried` in receiver.gd (an inline record's payload is not kept).
 
 ## Predicted cost (STS2, from the kept recordings)
 

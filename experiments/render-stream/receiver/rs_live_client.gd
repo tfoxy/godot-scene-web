@@ -36,6 +36,9 @@ const PROTOCOL_V9: String = "render-stream/9"
 ## protocol render-stream/10.
 const SUBPROTOCOL_V10: String = "render-stream.10"
 const PROTOCOL_V10: String = "render-stream/10"
+## W11d: render-stream/11 (render-stream-11.md "Live transport"): /10's transport under .11.
+const SUBPROTOCOL_V11: String = "render-stream.11"
+const PROTOCOL_V11: String = "render-stream/11"
 const SUBPROTOCOL_V8: String = "render-stream.8"
 const PROTOCOL_V8: String = "render-stream/8"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
@@ -77,6 +80,9 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 	elif version == 10:
 		# CG1: a /10 client offers only render-stream.10; /9's transport.
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V10])
+	elif version == 11:
+		# W11d: a /11 client offers only render-stream.11; /10's transport.
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V11])
 	else:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
 		if token != "":

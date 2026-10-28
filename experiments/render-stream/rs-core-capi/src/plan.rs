@@ -17,6 +17,8 @@
 
 use crate::ops::{Op, OpBuf, RidRef};
 use crate::vt::{gd, Vt};
+use render_stream_core::apply::dynamic::DynamicMeshes;
+use render_stream_core::apply::payloads::MeshGeometry;
 use render_stream_core::delivery::DeliveryPrefs;
 use render_stream_core::payload::{self, MeshPayload, TexturePayload};
 use render_stream_core::state::*;
@@ -131,6 +133,9 @@ pub enum Library {
 pub struct Payloads<'a> {
     pub provided: &'a HashMap<Hash, Vec<u8>>,
     pub library: &'a HashMap<String, Library>,
+    /// W11d (render-stream-11.md "Receivers"): the newest body of every /11 dynamic mesh surface
+    /// (`Core`'s, ingested at accept); empty below /11.
+    pub dynamic: &'a DynamicMeshes,
     /// The stream's wire version: from /8 a texture payload may be a float format (D9).
     pub version: u8,
 }
@@ -417,6 +422,20 @@ fn layout_of(p: &MeshPayload) -> Layout {
     }
 }
 
+/// W11d: a dynamic body's layout, as `layout_of` gives a hashed surface's.
+fn layout_of_geometry(g: &MeshGeometry) -> Layout {
+    let l = &g.layout;
+    Layout {
+        primitive: l.primitive,
+        format: l.format,
+        vertex_count: l.vertex_count as i64,
+        index_count: l.index_count as i64,
+        lens: l.buffer_bytes,
+        aabb: l.aabb_bits,
+        uv_scale: l.uv_scale_bits,
+    }
+}
+
 /// One surface as last built: what `cache.decoded(hash)` gives rs_applier.gd.
 #[derive(Clone, Debug)]
 struct SurfaceBytes {
@@ -452,6 +471,13 @@ struct MeshM {
     layouts: Vec<Layout>,
     surfaces: Vec<SurfaceBytes>,
     custom_aabb: Option<[f32; 6]>,
+    /// W11d: a /11 dynamic mesh's body serials as built or last region-updated
+    /// (`DynMesh::serials`); empty for a mesh built from hashed surfaces. Its `hashes` and
+    /// `surfaces` are empty: the bodies stay in `Core`'s `DynamicMeshes`.
+    serials: Vec<u64>,
+    /// W11d: a dynamic mesh's index bytes per surface as built (an index change rebuilds: Godot
+    /// has no index region upload that resizes, and the rule is W11c's).
+    index_bytes: Vec<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -551,8 +577,8 @@ struct Counters {
     meshes_freed: i64,
     surface_updates: i64,
     mesh_upload_bytes: i64,
-    /// /11 (render-stream-11.md decision 12): named dynamic meshes left undrawn this transaction
-    /// (their bodies travel in `mesh_u8`; W11d adds the region uploads).
+    /// /11: named dynamic meshes left undrawn this transaction because a surface's body was never
+    /// ingested (W11d draws every other one from `Core`'s `DynamicMeshes`).
     meshes_dynamic_undrawn: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
@@ -736,6 +762,19 @@ impl Planner {
             self.shaders.len() as i64,
             self.materials.len() as i64,
         ]
+    }
+
+    /// W11d (render-stream-11.md "Receiver retention"): the payload hashes the display draws from
+    /// (names(S_d) as this receiver holds it): each resident texture's uploaded hash, each mesh's
+    /// hashed surfaces and each shader's code hash. `Retention::sweep_with` keeps these.
+    pub fn displayed_hashes(&self) -> std::collections::HashSet<Hash> {
+        let mut out = std::collections::HashSet::new();
+        out.extend(self.textures.values().filter_map(|t| t.hash));
+        for m in self.meshes.values() {
+            out.extend(m.hashes.iter().copied());
+        }
+        out.extend(self.shaders.values().filter_map(|s| s.hash));
+        out
     }
 
     // ------------------------------------------------------------------------- naming
@@ -1878,11 +1917,12 @@ impl Planner {
                 .collect()
         };
         for id in free {
-            // /11: a mesh that turned dynamic is not drawn until W11d's region uploads.
+            // W11d: a mesh that turns dynamic (or back) keeps its RID and is rebuilt in place, so
+            // the items drawing it need no replay.
             let gone = st
                 .meshes
                 .get(&id)
-                .is_none_or(|e| e.status == EntryStatus::Freed || e.is_dynamic());
+                .is_none_or(|e| e.status == EntryStatus::Freed);
             if !gone {
                 continue;
             }
@@ -1907,7 +1947,7 @@ impl Planner {
                 continue;
             }
             if e.is_dynamic() {
-                c.meshes_dynamic_undrawn += 1;
+                self.apply_dynamic_mesh(id, e, payloads, ops, c, uploads);
                 continue;
             }
             let wire_hashes: Vec<Hash> = e.surfaces.iter().filter_map(|s| s.hash).collect();
@@ -1928,7 +1968,8 @@ impl Planner {
             let custom_aabb = e.custom_aabb;
             let rebuild = match self.meshes.get(&id) {
                 None => true,
-                Some(m) => m.layouts != layouts,
+                // W11d: a mesh last built from dynamic bodies has no hashed surfaces to diff.
+                Some(m) => m.layouts != layouts || !m.serials.is_empty(),
             };
             if rebuild {
                 let op_name = if !self.meshes.contains_key(&id) {
@@ -1944,6 +1985,8 @@ impl Planner {
                             layouts: vec![],
                             surfaces: vec![],
                             custom_aabb: None,
+                            serials: vec![],
+                            index_bytes: vec![],
                         },
                     );
                     c.meshes_created += 1;
@@ -1980,6 +2023,8 @@ impl Planner {
                 m.hashes = wire_hashes;
                 m.layouts = layouts;
                 m.surfaces = decoded;
+                m.serials.clear();
+                m.index_bytes.clear();
                 c.mesh_upload_bytes += built;
                 uploads.push(MeshUpload {
                     id,
@@ -2065,6 +2110,184 @@ impl Planner {
             }
         }
         Ok(())
+    }
+
+    /// W11d (render-stream-11.md "Receivers", W11c's residency rule): one named `ok` dynamic mesh,
+    /// drawn from its newest bodies (`Payloads::dynamic`). `create` when it is not resident;
+    /// `rebuild` (`mesh_clear` plus `mesh_add_surface`, the same RID) when it was built from hashed
+    /// surfaces, or a surface's layout (primitive, format, counts, buffer sizes, the body's AABB
+    /// and uv_scale) or a moved body's index bytes changed; otherwise one `update` per surface
+    /// whose body moved since it was built: `mesh_surface_update_vertex_region` and
+    /// `_attribute_region` (and `_skin_region` when the format has one) at offset 0, in place. The
+    /// AABB is in the layout because a region upload keeps the surface's old one (Godot's canvas
+    /// culls a mesh command by `mesh_get_aabb`); the capture keeps a surface's add-time AABB, so
+    /// it moves only with a rebuild on the host too. `drop-mesh-surface` acts as on a hashed mesh;
+    /// `stale-mesh` does not apply (the receiver sabotage `stale-dynamic-rx` skips the ingest).
+    fn apply_dynamic_mesh(
+        &mut self,
+        id: Id,
+        e: &Mesh,
+        payloads: &Payloads,
+        ops: &mut OpBuf,
+        c: &mut Counters,
+        uploads: &mut Vec<MeshUpload>,
+    ) {
+        let n = e.surfaces.len();
+        let Some(dm) = payloads.dynamic.get(id) else {
+            c.meshes_dynamic_undrawn += 1;
+            return;
+        };
+        let geos: Vec<&MeshGeometry> = dm.surfaces.iter().take(n).flatten().collect();
+        if geos.len() != n || dm.serials.len() < n {
+            c.meshes_dynamic_undrawn += 1;
+            return;
+        }
+        let layouts: Vec<Layout> = geos.iter().map(|g| layout_of_geometry(g)).collect();
+        let custom_aabb = e.custom_aabb;
+        let rebuild = match self.meshes.get(&id) {
+            None => true,
+            Some(m) => {
+                m.serials.is_empty()
+                    || m.layouts != layouts
+                    || (0..n).any(|k| {
+                        m.serials[k] != dm.serials[k]
+                            && m.index_bytes
+                                .get(k)
+                                .is_none_or(|b| b != &geos[k].buffers[3])
+                    })
+            }
+        };
+        if rebuild {
+            let op_name = if !self.meshes.contains_key(&id) {
+                let h = self.handle(3);
+                ops.op(Op::MeshCreate, 1);
+                ops.u(h);
+                self.created_rids += 1;
+                self.meshes.insert(
+                    id,
+                    MeshM {
+                        handle: h,
+                        hashes: vec![],
+                        layouts: vec![],
+                        surfaces: vec![],
+                        custom_aabb: None,
+                        serials: vec![],
+                        index_bytes: vec![],
+                    },
+                );
+                c.meshes_created += 1;
+                "create"
+            } else {
+                let h = self.meshes[&id].handle;
+                ops.op(Op::MeshClear, 1);
+                ops.rid(RidRef::Mesh(h));
+                c.meshes_rebuilt += 1;
+                "rebuild"
+            };
+            let h = self.meshes[&id].handle;
+            let mut added = Vec::new();
+            let mut built = 0i64;
+            for (k, g) in geos.iter().enumerate() {
+                if self.sab.drop_mesh_surface && k == 1 {
+                    continue;
+                }
+                let aabb = g.layout.aabb_bits.map(f32::from_bits);
+                let uv_scale = g.layout.uv_scale_bits.map(f32::from_bits);
+                ops.op(Op::MeshAddSurface, 1);
+                ops.rid(RidRef::Mesh(h));
+                ops.u(primitive_index(g.layout.primitive));
+                ops.i64(g.layout.format);
+                ops.i64(g.layout.vertex_count as i64);
+                ops.i64(g.layout.index_count as i64);
+                ops.fs(&aabb);
+                ops.fs(&uv_scale);
+                for b in &g.buffers {
+                    ops.bytes(b);
+                }
+                added.push(k as i64);
+                built += g.data_bytes() as i64;
+            }
+            let m = self.meshes.get_mut(&id).unwrap();
+            m.hashes.clear();
+            m.surfaces.clear();
+            m.layouts = layouts;
+            m.serials = dm.serials[..n].to_vec();
+            m.index_bytes = geos.iter().map(|g| g.buffers[3].clone()).collect();
+            c.mesh_upload_bytes += built;
+            uploads.push(MeshUpload {
+                id,
+                op: op_name,
+                surfaces: added,
+                buffers: vec![],
+                bytes: built,
+            });
+            let differs = m.custom_aabb.is_none_or(|a| !feq(&a, &custom_aabb));
+            if op_name == "create" || differs {
+                m.custom_aabb = Some(custom_aabb);
+                ops.op(Op::MeshSetCustomAabb, 1);
+                ops.rid(RidRef::Mesh(h));
+                ops.fs(&custom_aabb);
+                if op_name == "rebuild" {
+                    uploads.push(MeshUpload {
+                        id,
+                        op: "custom_aabb",
+                        surfaces: vec![],
+                        buffers: vec![],
+                        bytes: 0,
+                    });
+                }
+            }
+            return;
+        }
+        let h = self.meshes[&id].handle;
+        const NAMES: [&str; 3] = ["vertex", "attribute", "skin"];
+        for (k, g) in geos.iter().enumerate() {
+            if self.meshes[&id].serials[k] == dm.serials[k] {
+                continue;
+            }
+            self.meshes.get_mut(&id).unwrap().serials[k] = dm.serials[k];
+            if self.sab.drop_mesh_surface && k == 1 {
+                continue;
+            }
+            let mut changed = Vec::new();
+            let mut surface_bytes = 0i64;
+            for (b, name) in NAMES.iter().enumerate() {
+                let buf = &g.buffers[b];
+                if buf.is_empty() {
+                    continue;
+                }
+                ops.op(Op::MeshSurfaceUpdateRegion, 1);
+                ops.rid(RidRef::Mesh(h));
+                ops.u(b as u32);
+                ops.u(k as u32);
+                ops.bytes(buf);
+                c.surface_updates += 1;
+                changed.push(*name);
+                surface_bytes += buf.len() as i64;
+            }
+            c.mesh_upload_bytes += surface_bytes;
+            uploads.push(MeshUpload {
+                id,
+                op: "update",
+                surfaces: vec![k as i64],
+                buffers: changed,
+                bytes: surface_bytes,
+            });
+        }
+        let m = self.meshes.get_mut(&id).unwrap();
+        if m.custom_aabb.is_none_or(|a| !feq(&a, &custom_aabb)) {
+            m.custom_aabb = Some(custom_aabb);
+            ops.op(Op::MeshSetCustomAabb, 1);
+            ops.rid(RidRef::Mesh(h));
+            ops.fs(&custom_aabb);
+            uploads.push(MeshUpload {
+                id,
+                op: "custom_aabb",
+                surfaces: vec![],
+                buffers: vec![],
+                bytes: 0,
+            });
+        }
     }
 
     fn free_shader(&mut self, id: Id, ops: &mut OpBuf, c: &mut Counters) {
@@ -2834,8 +3057,6 @@ impl Planner {
                         None => "unknown-mesh",
                         Some(m) if m.status == EntryStatus::Freed => "mesh-freed",
                         Some(m) if m.status != EntryStatus::Ok => "unsupported-mesh",
-                        // /11: typed, until W11d uploads dynamic bodies.
-                        Some(m) if m.is_dynamic() => "mesh-dynamic",
                         Some(_) if !self.meshes.contains_key(mesh) => "mesh-not-resident",
                         Some(_) => "",
                     };
