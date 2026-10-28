@@ -199,8 +199,9 @@ export type ExcludedReason =
  * `g8l/basis` (a source made with every gate 8 group, e.g. a native gate 8 run reused from the
  * source cache, holds g8l's native file replays) is the same fixture at /9: its replay of the
  * host's sink differs from native the same way; g7-8's live half judges the web export's basis leg
- * (live-replay-equals-live-g8l-basis@web). Entries are source leg-path prefixes. */
-export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8ku", "g8l/basis"];
+ * (live-replay-equals-live-g8l-basis@web). W11d's g8w11 native legs (render-stream/11) wait for
+ * W11e, which makes the web export apply /11. Entries are source leg-path prefixes. */
+export const GSW_ONLY_SOURCE_GROUPS: readonly string[] = ["g8ku", "g8l/basis", "g8w11"];
 
 /** G8kwh (texture-delivery-design.md D3, "As built (G8kwh)"): a /9 delivery leg whose native and
  * web receivers state different gpu_formats (each its own context's: a CI runner's llvmpipe GL has

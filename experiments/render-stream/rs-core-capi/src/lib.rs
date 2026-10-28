@@ -509,3 +509,47 @@ pub unsafe extern "C" fn rsc_coding_stats(h: *mut RscCoding, n: *mut usize) -> *
     *n = c.text.len();
     c.text.as_ptr()
 }
+
+// ------------------------------------------------------------------- W11d: the /11 receiver API
+//
+// render-stream-11.md "As built (W11d)": the native receiver's (and the web export's) calls into
+// W11c's rs-core receiver API. The core ingests each transaction's dynamic bodies and runs the
+// retention rule inside `rsc_accept` and `rsc_apply`; the receiver drains the hashes the rule
+// dropped (`rsc_take_released`) after each, asks `rsc_check_fetch` before every origin fetch,
+// and calls `rsc_transport_skip` after a `coding` error it resyncs.
+
+/// The hashes the retention rule dropped since the last call into vt (an Array of hex Strings);
+/// the receiver's cache forgets each.
+#[no_mangle]
+pub extern "C" fn rsc_take_released(h: *mut RsCore) {
+    guard(h, (), |c| c.take_released());
+}
+
+/// `inline-fetch-zero`: 1 when `hash` may be fetched from the origin now, 0 with
+/// "inline-fetch-zero: <detail>" in text.
+///
+/// # Safety
+/// `hash` points to `hlen` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rsc_check_fetch(h: *mut RsCore, hash: *const u8, hlen: usize) -> i32 {
+    let hash = text(hash, hlen).to_string();
+    guard(h, 0, |c| match c.check_fetch(&hash) {
+        Ok(()) => 1,
+        Err(e) => {
+            c.text = e.into_bytes();
+            0
+        }
+    })
+}
+
+/// rs-core `Validator::transport_skip`: the live coding skipped transactions (a `coding` resync).
+#[no_mangle]
+pub extern "C" fn rsc_transport_skip(h: *mut RsCore) {
+    guard(h, (), |c| c.transport_skip());
+}
+
+/// Evidence: GSW's `dynamic_sha256` digest of the dynamic bodies held (hex) into text.
+#[no_mangle]
+pub extern "C" fn rsc_dynamic_sha256(h: *mut RsCore) {
+    guard(h, (), |c| c.dynamic_sha256());
+}

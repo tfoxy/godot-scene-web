@@ -208,6 +208,19 @@ extends Node
 ##                               received tap received.rs10; natively and on the web. In file mode
 ##                               a GRSA recording replays at /10. Either way the core re-issues
 ##                               each item's canvas_group and copy_to_backbuffer.
+##                               W11d: 11 is render-stream/11 (render-stream-11.md "Live
+##                               transport"; native): subprotocol render-stream.11, /10's hello
+##                               under "render-stream/11" plus W11t's `live_coding`, received tap
+##                               received.rs11 (decoded messages). In file mode a GRSB recording
+##                               replays at /11. Either way the core ingests dynamic mesh bodies
+##                               and draws them with region uploads, and the retention rule drops
+##                               every payload that leaves H from memory.
+##   RS_RECEIVER_LIVE_CODING     W11d (W11t's coding, /11 only): unset offers "zstd-base,zstd"
+##                               (base-prefix zstd, then per-message zstd), `zstd` offers zstd only,
+##                               `off` sends no live_coding. Every binary message is decoded by
+##                               the core before it is parsed; a `coding` error with a seq sends
+##                               `resync` (reason `coding`) and the transactions the decoder skips
+##                               until the full one are neither accepted nor acked.
 ##   RS_RECEIVER_TOKEN           G7l, web only: the bearer token itself (the shell takes it from
 ##                               the page's fragment; a browser has no token file). /7 only.
 ##   RS_RECEIVER_CREDIT_WINDOW   G7l: 2 (default since G7wd) or 1, the hello's credit_window (/7 only; the
@@ -310,7 +323,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -534,6 +547,16 @@ var _reconnect_record: Dictionary = {}
 var _resync_step: int = -1
 var _resync_done: bool = false
 var _awaiting_full: bool = false
+## W11d: the /11 hello's live_coding offer ("" sends none), whether this connection decodes, and
+## the coding resyncs asked; the closed connections' coding stats.
+var _live_coding: String = "zstd-base,zstd"
+var _coding_on: bool = false
+var _coding_resyncs: int = 0
+var _coding_reports: Array[Dictionary] = []
+## W11d (render-stream-11.md "Receiver retention"): the /11 store evidence, over the whole replay
+## (bounded; per transaction only under a full log): the most memory entries after an apply, the
+## most beyond |names(S)| + |C|, and the hashes released.
+var _w11: Dictionary = {}
 
 
 func _ready() -> void:
@@ -600,6 +623,12 @@ func _ready() -> void:
 		_wire_version = 10
 		var receiver_block_v10: Dictionary = _report["receiver"]
 		receiver_block_v10["protocol"] = "render-stream/10"
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V11_HEX:
+		# W11d: a render-stream/11 recording (GRC_STREAM_VERSION=11) replays at /11: dynamic mesh
+		# bodies by mesh id, the retention rule, inline-fetch-zero.
+		_wire_version = 11
+		var receiver_block_v11: Dictionary = _report["receiver"]
+		receiver_block_v11["protocol"] = RsLiveClient.PROTOCOL_V11
 	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
 		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
 		# additions to the tables, so it draws exactly as a /6 recording would.
@@ -864,6 +893,11 @@ func _receive_resource(record: Dictionary) -> bool:
 	var meta: Dictionary = record["meta"]
 	var hash: String = meta["hash"]
 	var payload: PackedByteArray = _applier.resource_payload()
+	if _sabotage == "evict-carried" and _wire_version >= 11:
+		# W11d receiver sabotage (W11c's): a carried record is dropped on arrival, so the next
+		# transaction that needs it asks the origin for an inline-sized hash: inline-fetch-zero.
+		_inline_since_applied += 1
+		return true
 	var error: String = _cache.add_inline(hash, payload)
 	if error != "":
 		_fail_with_error(_last_seq_or_null(), error)
@@ -896,6 +930,12 @@ func _obtain_needed(stream_index: int, seq: int, resources: Dictionary) -> Strin
 		var shader: bool = shader_hashes.has(hash)
 		var ktx2: bool = ktx2_hashes.has(hash)
 		var will_fetch: bool = _cache.ignore_cache or not _cache.cache_has(hash, mesh, shader, ktx2)
+		if will_fetch and _wire_version >= 11:
+			# W11d: inline-fetch-zero, before a read from the origin (the store directory).
+			var refused: String = _applier.check_fetch(hash)
+			if refused != "":
+				resources["fetch_us"] = fetch_us
+				return refused
 		if will_fetch and _fetch_delay_ms > 0:
 			OS.delay_msec(_fetch_delay_ms)
 		var got: Dictionary = _cache.obtain(hash, mesh, shader, ktx2)
@@ -990,6 +1030,7 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	var verify_us: int = _cache.take_verify_us()
 	var apply_t0: int = Time.get_ticks_usec() if _perf != null else 0
 	var stats: Dictionary = _applier.apply_state(_cache)
+	_take_released()
 	if _perf != null:
 		var apply_us: int = Time.get_ticks_usec() - apply_t0
 		_perf.apply_us.add(apply_us)
@@ -1017,6 +1058,10 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	for key: String in ["created", "updated", "replaced", "freed", "upload_bytes", "skipped_commands"]:
 		resources[key] = applied[key]
 	var mesh_resources: Dictionary = stats["mesh_resources"]
+	if mesh_resources.has("meshes_dynamic_undrawn"):
+		# W11d: a named dynamic mesh whose body never arrived (0 on an honest /11 stream).
+		_w11_init()
+		_w11["dynamic_undrawn"] = RsWire.as_int(_w11["dynamic_undrawn"]) + RsWire.as_int(mesh_resources["meshes_dynamic_undrawn"])
 	for key: String in ["meshes_created", "meshes_rebuilt", "surface_updates", "mesh_upload_bytes", "skipped_mesh_commands"]:
 		resources[key] = mesh_resources[key]
 		if _summary.has(key):
@@ -1365,6 +1410,8 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 			_unsupported.append({"seq": seq, "item": item, "name": unsupported_entry["op"], "reason": unsupported_entry["reason"]})
 			_log("seq %d: unsupported %s item %s (%s)" % [seq, unsupported_entry["op"], str(item), unsupported_entry["reason"]])
 	_previous_unsupported = current
+	if _wire_version >= 11:
+		_note_w11(entry)
 
 
 func _record_transaction(meta: Dictionary, record: Dictionary, stats: Dictionary) -> void:
@@ -1693,8 +1740,11 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if not ["6", "7", "8", "9", "10"].has(protocol_text):
-		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9 or 10 (got %s)" % JSON.stringify(protocol_text))
+	if not ["6", "7", "8", "9", "10", "11"].has(protocol_text):
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10 or 11 (got %s)" % JSON.stringify(protocol_text))
+		return false
+	if protocol_text == "11" and RsConfig.is_web():
+		_log("error: render-stream/11 live is native only until W11e (RS_RECEIVER_PROTOCOL 11)")
 		return false
 	if RsConfig.is_web() and not ["7", "8", "9", "10"].has(protocol_text):
 		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9 or (CG1) /10 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
@@ -1711,6 +1761,21 @@ func _parse_wire_env() -> bool:
 			_log("error: RS_RECEIVER_CREDIT_WINDOW %s needs RS_RECEIVER_PROTOCOL=7 (render-stream/6 has no window)" % window_text)
 			return false
 		_credit_window = window_text.to_int()
+	# W11d: W11t's live coding offer (/11 only).
+	var coding_text: String = RsConfig.get_env("RS_RECEIVER_LIVE_CODING").strip_edges()
+	match coding_text:
+		"":
+			_live_coding = "zstd-base,zstd"
+		"zstd":
+			_live_coding = "zstd"
+		"off":
+			_live_coding = ""
+		_:
+			_log("error: RS_RECEIVER_LIVE_CODING must be zstd or off (got %s)" % JSON.stringify(coding_text))
+			return false
+	if coding_text != "" and _wire_version < 11:
+		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11")
+		return false
 	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
 	if _wire_version >= 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
 		_log("error: RS_RECEIVER_MANIFEST_SHA256 must be 64 lowercase hex (got %s)" % JSON.stringify(_manifest_sha256))
@@ -1840,7 +1905,16 @@ func _process_live() -> void:
 					_reconnect_record["opened_us"] = Time.get_ticks_usec()
 				if _conn_index == 1:
 					_web_mark("rs-socket-open")
-				if _wire_version >= 9:
+				if _wire_version >= 11:
+					# W11d: /10's hello under render-stream/11, W11t's live_coding last (golden-11's
+					# control hello); the connection's decoder opens with the same offer.
+					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, RsLiveClient.PROTOCOL_V11)
+					if _live_coding != "":
+						hello_v11["live_coding"] = _live_coding
+					_applier.coding_open(_live_coding, _inbound_bytes)
+					_coding_on = true
+					_send(hello_v11)
+				elif _wire_version >= 9:
 					# CG1: /10's hello is /9's under protocol render-stream/10.
 					_send(RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, "render-stream/%d" % _wire_version))
 				elif _wire_version >= 7:
@@ -1992,6 +2066,10 @@ func _start_next_connection() -> void:
 	reconnect["closed_us"] = Time.get_ticks_usec()
 	_log("reconnect: disposed %d RIDs (created %d, freed while applying %d, left %d)" % [freed, _applier.created_rids, _applier.freed_by_apply, leftover])
 
+	if _coding_on:
+		# W11d: the closed connection's coding stats; the next opens its own decoder.
+		_coding_reports.append(_applier.coding_stats())
+		_coding_on = false
 	_conn_index += 1
 	_received_path = "%s-%d.%s" % [_received_base.get_basename(), _conn_index, _received_base.get_extension()]
 	_received_stored = 0
@@ -2053,9 +2131,82 @@ func _drain_packets() -> void:
 				return
 			_fail(_last_seq_or_null(), "host-error", detail)
 			return
+		if _coding_on:
+			# W11d (render-stream-11.md "As built (W11t)" 7, 10): decoded before anything parses it.
+			var code: int = _applier.coding_decode(data)
+			if code == 0:
+				continue  # a based transaction the decoder skips until the resync's full: no accept, no ack
+			if code < 0:
+				var coding_seq: int = _applier.coding_seq()
+				var coding_error: String = _applier.coding_error()
+				if coding_seq == 0:
+					_fail_with_error(_last_seq_or_null(), coding_error)
+					return
+				_coding_resyncs += 1
+				_applier.transport_skip()
+				_send(RsLiveClient.resync(_stream_id, coding_seq, "coding"))
+				_log("coding: seq %d did not decode (%s); resync asked" % [coding_seq, coding_error])
+				continue
+			if code == 1:
+				data = _applier.coding_output()
 		_receive_binary(data)
 		if _finished:
 			return
+
+
+## W11d: forgets from memory every payload the /11 retention rule dropped (the core ran it in the
+## accept or apply just made); a no-op below /11, unless RS_RECEIVER_SABOTAGE=ignore-released (the
+## core then hands nothing back).
+func _take_released() -> void:
+	if _wire_version < 11:
+		return
+	for value: Variant in _applier.take_released():
+		var hash: String = value
+		_cache.release(hash)
+
+
+## W11d: the /11 store evidence after an apply: memory entries against |names(S)| + |C| (the bound
+## `store-bounded` judges), the dynamic geometry held and the rule's drops; the per-transaction row
+## (and, under a full log, the held bodies' SHA-256) on `entry`.
+func _note_w11(entry: Dictionary) -> void:
+	var w: Dictionary = _applier.w11_counters()
+	var entries: int = _cache.memory_entries()
+	var bound: int = RsWire.as_int(w.get("names", 0)) + RsWire.as_int(w.get("carried", 0))
+	_w11_init()
+	_w11["applied"] = RsWire.as_int(_w11["applied"]) + 1
+	_w11["store_max_entries"] = maxi(RsWire.as_int(_w11["store_max_entries"]), entries)
+	_w11["store_max_excess"] = maxi(RsWire.as_int(_w11["store_max_excess"]), entries - bound)
+	_w11["names_max"] = maxi(RsWire.as_int(_w11["names_max"]), RsWire.as_int(w.get("names", 0)))
+	_w11["carried_max"] = maxi(RsWire.as_int(_w11["carried_max"]), RsWire.as_int(w.get("carried", 0)))
+	_w11["dynamic_meshes_max"] = maxi(RsWire.as_int(_w11["dynamic_meshes_max"]), RsWire.as_int(w.get("dynamic_meshes", 0)))
+	_w11["dynamic_bytes_max"] = maxi(RsWire.as_int(_w11["dynamic_bytes_max"]), RsWire.as_int(w.get("dynamic_bytes", 0)))
+	_w11["released_total"] = w.get("released_total", 0)
+	_w11["dynamic_bodies_total"] = w.get("bodies_total", 0)
+	_w11["dynamic_body_bytes_total"] = w.get("body_bytes_total", 0)
+	_w11["cache_released"] = _cache.released
+	_w11["cache_released_bytes"] = _cache.released_bytes
+	if _log_mode != "summary":
+		entry["w11"] = {"store_entries": entries, "names": w.get("names", 0), "carried": w.get("carried", 0), "dynamic_meshes": w.get("dynamic_meshes", 0), "dynamic_surfaces": w.get("dynamic_surfaces", 0)}
+		entry["dynamic_sha256"] = _applier.dynamic_sha256()
+		var after: Dictionary = _applier.w11_counters()
+		_w11["dynamic_checked"] = after.get("dynamic_checked", 0)
+		var mismatched: int = RsWire.as_int(after.get("dynamic_mismatched", 0))
+		if mismatched > RsWire.as_int(_w11["dynamic_mismatched"]) and _w11["first_mismatch_seq"] == null:
+			_w11["first_mismatch_seq"] = entry["seq"]
+		_w11["dynamic_mismatched"] = mismatched
+
+
+## W11d: the /11 evidence block, in GSW's `gsw.w11` key names (W11c) where they mean the same.
+func _w11_init() -> void:
+	if not _w11.is_empty():
+		return
+	_w11 = {
+		"applied": 0, "store_max_entries": 0, "store_max_excess": 0, "released_total": 0,
+		"dynamic_bodies_total": 0, "dynamic_body_bytes_total": 0, "dynamic_checked": 0,
+		"dynamic_mismatched": 0, "first_mismatch_seq": null, "dynamic_undrawn": 0, "names_max": 0,
+		"carried_max": 0, "dynamic_meshes_max": 0, "dynamic_bytes_max": 0, "cache_released": 0,
+		"cache_released_bytes": 0,
+	}
 
 
 func _receive_binary(message: PackedByteArray) -> void:
@@ -2344,6 +2495,13 @@ func _begin_apply(entry: Dictionary, meta: Dictionary, resources: Dictionary) ->
 			break
 		_note_variant_fallbacks(refused, _conn_index, entry_seq)
 	var misses: Array[String] = _http_misses()
+	if _wire_version >= 11:
+		# W11d: inline-fetch-zero, before every GET.
+		for miss: String in misses:
+			var refused: String = _applier.check_fetch(miss)
+			if refused != "":
+				_fail_with_error(entry_seq, refused)
+				return
 	if not misses.is_empty():
 		_pending_apply = {"entry": entry, "meta": meta, "resources": resources}
 		_fetcher.start(misses)
@@ -2806,7 +2964,9 @@ func _accept_session(data: PackedByteArray, offset: int) -> Dictionary:
 
 ## Any later record.
 func _accept_record(data: PackedByteArray, offset: int) -> Dictionary:
-	return _applier.accept(data, offset)
+	var accepted: Dictionary = _applier.accept(data, offset)
+	_take_released()
+	return accepted
 
 
 func _send(message: Dictionary) -> void:
@@ -2863,6 +3023,13 @@ func _write_report() -> void:
 	if _lazy_store:
 		# WX: the lazy store's own line (applied.json is unchanged by it).
 		_log("web store: lazy, %d GETs (%d bytes), %d payloads dropped after upload (%d bytes), %d fetched again after a drop (%d bytes), %d still in memory (%d bytes)" % [_io.store_gets, _io.store_bytes, _cache.dropped, _cache.dropped_bytes, _store_rereads, _store_reread_bytes, _cache.memory_entries(), _cache.memory_bytes()])
+	if _wire_version >= 11:
+		# W11d: the /11 store evidence (bounded), and each connection's coding stats.
+		_report["w11"] = _w11
+		if _live and _coding_on and _applier != null:
+			var connections: Array[Dictionary] = _coding_reports.duplicate()
+			connections.append(_applier.coding_stats())
+			_live_report["coding"] = {"offer": _live_coding, "connections": connections, "resyncs": _coding_resyncs}
 	if _applier != null:
 		var floats: Array[float] = []
 		for value: float in _applier.root_canvas_xform():

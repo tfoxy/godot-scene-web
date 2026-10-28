@@ -6,7 +6,7 @@
 // The file legs are every file-mode receiver leg of the gate 8 groups g8t (host decode), g8f (float
 // payloads), g8a (adoption, with G8r's lazy resources and faults), g8h (presentation size), g8m
 // (materials and shaders) and g8c (P3-CT: canvas-texture diffuses), replayed from a native gate 8
-// source run (D21: run-gate8.sh --legs g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg) and judged by
+// source run (D21: run-gate8.sh --legs g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11) and judged by
 // check-gate8.ts's own checks (`@gsw`). G8kb adds the texture-delivery groups: g8kp's receiver
 // legs (judged by g8kp's checks through the band), g8ku's perturbed-KTX2 sabotage, and four
 // GSW-only g8ku legs judged by lib/gate7-gsw-g8-checks.ts (GSW transcodes in its own worker to its
@@ -70,6 +70,23 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8cg/receiver-v9"),
   leg("g8cg/sabotage-drop-canvas-group/receiver"),
   leg("g8cg/sabotage-full-backbuffer-copy/receiver"),
+  // g8w11 (W11d, render-stream-11.md "As built (W11d)"): the native receiver's /11 legs on W11b's
+  // captures (capture-scale, gate6-scene animate, gate5-mesh at /11 and their /10 twins) and
+  // W11c's receiver sabotages, which GSW implements on the same names; g8w11's native checks judge
+  // GSW's replay of them (GSW against native on /11). The web export joins with W11e
+  // (gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS).
+  leg("g8w11/scale/receiver"),
+  leg("g8w11/scale/v10/receiver"),
+  leg("g8w11/scale/off/receiver"),
+  leg("g8w11/scene/receiver"),
+  leg("g8w11/scene/v10/receiver"),
+  leg("g8w11/scene/off/receiver"),
+  leg("g8w11/mesh/receiver"),
+  leg("g8w11/mesh/v10/receiver"),
+  leg("g8w11/scene/sabotage-stale-dynamic-rx/receiver"),
+  leg("g8w11/scene/off/sabotage-no-prune/receiver"),
+  leg("g8w11/scene/off/sabotage-evict-carried/receiver"),
+  leg("g8w11/scale/off/sabotage-ignore-released/receiver"),
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -121,6 +138,7 @@ export const GATE8_NOT_APPLICABLE: NotApplicable[] = [
   { leg: "g8c/import/receiver", reason: IMPORT_NA },
   { leg: "g8cg/import/receiver", reason: IMPORT_NA },
   { leg: "g8m/import/receiver", reason: IMPORT_NA },
+  { leg: "g8w11/import/receiver", reason: IMPORT_NA },
 ];
 
 /** The checks of check-gate8.ts that read a receiver leg, found mechanically
@@ -165,6 +183,16 @@ export const GATE8_RECEIVER_CHECKS: {
     "cg-sabotage-drop-group",
     "cg-sabotage-full-copy",
     "cg-adopt",
+    // g8w11 (W11d)
+    "native-w11-replays",
+    "native-dynamic-applied",
+    "native-w11-equals-v10",
+    "native-store-bounded",
+    "native-inline-fetch-zero",
+    "native-stale-dynamic-rx-caught",
+    "native-no-prune-caught",
+    "native-evict-carried-caught",
+    "native-ignore-released-caught",
     // g8kp (G8kb)
     "delivery-select",
     "delivery-pixels-native",

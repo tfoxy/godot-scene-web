@@ -1,8 +1,18 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
-// Gate 8 group g8w11's GSW legs (W11c, protocol/render-stream-11.md "Receivers"), called by
-// run-gate8.sh after the g8w11 captures:
+// Gate 8 group g8w11's receiver legs (W11c's GSW legs, W11d's native ones;
+// protocol/render-stream-11.md "Receivers"), called by run-gate8.sh after the g8w11 captures:
 //
 //   gate8-w11-tool.ts gsw-legs --source <gate 8 run> [--rs-build <artifacts/render-stream/rs-core/<sha>>]
+//   gate8-w11-tool.ts native-plan --source <gate 8 run>
+//
+// native-plan (W11d) prints one tab-separated line per leg for run-gate8.sh's native receiver
+// legs (the same legs, captures and shot frames as the GSW legs below): the native leg directory
+// relative to <run>/g8w11 (`<capture's directory>[/sabotage-<kind>]/receiver`), the capture
+// directory, the sink, the shot seqs (CSV), the receiver sabotage ("-" for none) and the session's
+// canvas size (the receiver's --resolution, as the GSW legs' plan has it); and writes
+// <run>/g8w11/native-frames.json ({native leg: {frame: seq}}). Gate 7's g7-8 GSW half replays these
+// native legs (lib/gate7-gsw-g8.ts) and judges them with the native checks
+// (lib/gate8-w11-native-checks.ts).
 //
 // Builds the rs-core wasm (build-rs-core.sh --wasm-only, unless --rs-build names one) and the GSW
 // bundle (lib/gsw-bundle.ts) under <run>/g8w11/gsw-bundle, then replays g8w11's captures in the GSW
@@ -102,6 +112,14 @@ export const W11_GSW_LEGS: W11GswLeg[] = [
 ];
 
 /** The frame groups: which captures' frames the shots must share (the /11 legs and the twin). */
+/** W11d: a leg's native receiver directory under <run>/g8w11. */
+export function nativeLeg(def: W11GswLeg): string {
+  const base = dirname(def.capture);
+  return def.sabotage
+    ? `${base}/sabotage-${def.sabotage}/receiver`
+    : `${base}/receiver`;
+}
+
 const FRAME_GROUPS: Record<string, string[]> = {
   scale: ["scale/capture", "scale/v10/capture", "scale/off/capture"],
   scene: ["scene/capture", "scene/v10/capture", "scene/off/capture"],
@@ -153,13 +171,17 @@ export function sharedFrames(
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  if (argv[0] !== "gsw-legs")
+  if (argv[0] !== "gsw-legs" && argv[0] !== "native-plan")
     throw new Error(
-      "usage: gate8-w11-tool.ts gsw-legs --source <gate 8 run> [--rs-build dir]",
+      "usage: gate8-w11-tool.ts gsw-legs|native-plan --source <gate 8 run> [--rs-build dir]",
     );
   const source = resolve(flag(argv, "--source"));
   const g = join(source, "g8w11");
   const run = join(g, "gsw");
+  if (argv[0] === "native-plan") {
+    await nativePlan(g);
+    return;
+  }
   let rsBuild = argv.includes("--rs-build")
     ? resolve(flag(argv, "--rs-build"))
     : "";
@@ -175,8 +197,12 @@ async function main(): Promise<void> {
     rsBuild = join(REPO_ROOT, "artifacts", "render-stream", "rs-core", sha.trim());
   }
   const bundle = await buildGswBundle(join(g, "gsw-bundle"), rsBuild);
+  const { recOf, groupFrames } = shotPlan(g);
+  await gswLegs(g, run, source, bundle, recOf, groupFrames);
+}
 
-  // Shot frames per group: shared by every capture of the group that exists.
+/** Shot frames per group: shared by every capture of the group that exists. */
+function shotPlan(g: string) {
   const recs = new Map<string, ReturnType<typeof frameSeqs>>();
   const recOf = (capture: string, sink: string, version: 10 | 11) => {
     const key = `${capture}/${sink}`;
@@ -198,7 +224,46 @@ async function main(): Promise<void> {
     }
     groupFrames.set(group, sharedFrames(maps, 6));
   }
+  return { recOf, groupFrames };
+}
 
+/** W11d: native-plan (header). */
+async function nativePlan(g: string): Promise<void> {
+  const { recOf, groupFrames } = shotPlan(g);
+  const frames: Record<string, Record<string, number>> = {};
+  const lines: string[] = [];
+  for (const def of W11_GSW_LEGS) {
+    const r = recOf(def.capture, def.sink, def.version);
+    const shot: Record<string, number> = {};
+    for (const f of groupFrames.get(def.frames) ?? []) {
+      const seq = r?.bySeq.get(f);
+      if (seq !== undefined) shot[String(f)] = seq;
+    }
+    const leg = nativeLeg(def);
+    frames[leg] = shot;
+    lines.push(
+      [
+        leg,
+        def.capture,
+        def.sink,
+        Object.values(shot).join(",") || "-",
+        def.sabotage ?? "-",
+        r ? `${r.canvas[0]}x${r.canvas[1]}` : "-",
+      ].join("\t"),
+    );
+  }
+  await writeFile(join(g, "native-frames.json"), `${JSON.stringify(frames, null, 1)}\n`);
+  console.log(lines.join("\n"));
+}
+
+async function gswLegs(
+  g: string,
+  run: string,
+  source: string,
+  bundle: { dir: string; sha256: string },
+  recOf: ReturnType<typeof shotPlan>["recOf"],
+  groupFrames: Map<string, number[]>,
+): Promise<void> {
   const sabotageSkipped = process.env.RS_SABOTAGE_TIER === "skip";
   const legs: WebLegSpec[] = [];
   const frames: Record<string, Record<string, number>> = {};

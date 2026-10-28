@@ -36,6 +36,8 @@ const CORE_SABOTAGES: Array[String] = [
 	"refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param",
 	"stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings",
 	"drop-canvas-group", "full-backbuffer-copy", "shader-time-frozen",
+	# W11d (render-stream-11.md "As built (W11d)"): the /11 receiver sabotages the core implements.
+	"stale-dynamic-rx", "no-prune", "ignore-released",
 ]
 
 ## The seq of the last accepted transaction.
@@ -288,6 +290,81 @@ func apply_state(cache: RsResourceCache) -> Dictionary:
 func stage(hash: String, payload: PackedByteArray) -> String:
 	var staged: String = _core.call("stage", hash, payload)
 	return staged
+
+
+## W11d (render-stream-11.md "Receiver retention"): the hashes the /11 retention rule dropped since
+## the last call (the core ran it inside accept() and apply_state()); the cache forgets each.
+## Always empty below /11.
+func take_released() -> Array:
+	var hashes: Array = _core.call("take_released")
+	return hashes
+
+
+## W11d: `inline-fetch-zero` before a fetch from the origin (HTTP, or the store directory in file
+## mode): "" when `hash` may be fetched, else the refusal. Every fetch is allowed below /11.
+func check_fetch(hash: String) -> String:
+	var refused: String = _core.call("check_fetch", hash)
+	return refused
+
+
+## W11d: the live coding skipped transactions (a `coding` resync): the next transaction is the
+## full one the resync forces, at a later seq (rs-core Validator::transport_skip).
+func transport_skip() -> void:
+	_core.call("transport_skip")
+
+
+## W11d evidence: GSW's `dynamic_sha256` (W11c): the SHA-256 over every dynamic mesh held, ascending
+## by id, of each surface's (id, surface, body SHA-256); the resolved state's digest when right.
+func dynamic_sha256() -> String:
+	var digest: String = _core.call("dynamic_sha256")
+	return digest
+
+
+## W11d: the /11 retention and dynamic-geometry counters (rs-core-capi `counters`' `w11_*` keys,
+## without the prefix); {} below /11.
+func w11_counters() -> Dictionary:
+	_refresh_counters()
+	var out: Dictionary = {}
+	for key: Variant in _counters:
+		var name: String = key
+		if name.begins_with("w11_"):
+			out[name.trim_prefix("w11_")] = _counters[key]
+	return out
+
+
+## W11t/W11d: a new connection's live-coding decoder; `offer` is the hello's live_coding value.
+func coding_open(offer: String, max_bytes: int) -> void:
+	_core.call("coding_open", offer, max_bytes)
+
+
+## W11t/W11d: decodes one WebSocket message: 1 decoded (coding_output()), 2 uncoded (the message
+## is its own bytes), 0 skipped (a based transaction while a coding resync is pending: no accept,
+## no ack), -1 error (coding_error(); resync coding_seq() when it is not 0, else fail).
+func coding_decode(message: PackedByteArray) -> int:
+	var code: int = _core.call("coding_decode", message)
+	return code
+
+
+func coding_output() -> PackedByteArray:
+	var bytes: PackedByteArray = _core.call("coding_output")
+	return bytes
+
+
+func coding_seq() -> int:
+	var seq: int = _core.call("coding_seq")
+	return seq
+
+
+func coding_error() -> String:
+	var text: String = _core.call("coding_error")
+	return text
+
+
+func coding_stats() -> Dictionary:
+	var text: String = _core.call("coding_stats")
+	var parsed: Variant = JSON.parse_string(text) if text != "" else null
+	var out: Dictionary = parsed if parsed is Dictionary else {}
+	return out
 
 
 ## G7o3: the cache evicted `hash` from memory; the core drops its staged copy, if any.

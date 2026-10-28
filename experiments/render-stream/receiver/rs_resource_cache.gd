@@ -445,6 +445,27 @@ func drop_droppable(keep: Array) -> int:
 	return victims.size()
 
 
+## W11d (render-stream-11.md "Receiver retention"): `hash` left the /11 retention set H, so the
+## core dropped its staged copy and this forgets its bytes (RsRustApplier.take_released()). A disk
+## cache file stays: a returning out-of-band hash is read from it rather than fetched again, and a
+## returning inline-sized one arrives inline again. Nothing per hash is remembered, so memory is
+## bounded by H for as long as the stream runs. `released`/`released_bytes` count the drops.
+var released: int = 0
+var released_bytes: int = 0
+
+
+func release(hash: String) -> void:
+	_droppable.erase(hash)
+	if not _memory.has(hash):
+		return
+	_memory_total -= _lengths[hash]
+	released_bytes += _lengths[hash]
+	_memory.erase(hash)
+	_lengths.erase(hash)
+	_memory_order.erase(hash)
+	released += 1
+
+
 ## Forgets every payload held in memory (a live reconnect: the new session's payloads come from
 ## the stream's inline records, the cache directory or a fetch, never from the old session).
 func clear_memory() -> void:

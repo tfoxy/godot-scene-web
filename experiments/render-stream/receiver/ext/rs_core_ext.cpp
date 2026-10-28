@@ -486,6 +486,11 @@ struct Instance {
   // transcode is (Q3: the entry falls back). Off on the native receiver.
   bool webgl_rules = false;
   std::string gpu_formats;
+  // W11d (render-stream-11.md "As built (W11t)" 10): the connection's live-coding decoder
+  // (coding_open), and its last decoded message (valid until the next coding_decode).
+  RscCoding *coding = nullptr;
+  const uint8_t *coding_out = nullptr;
+  size_t coding_out_len = 0;
 
   uint64_t &slot(uint32_t kind, uint32_t handle) {
     std::vector<uint64_t> &t = rids[kind];
@@ -1614,6 +1619,17 @@ enum Method : int {
   M_PRETRANSCODE,
   M_REFUSE_VARIANT,
   M_SET_WEBGL_RULES,
+  // W11d (render-stream-11.md "As built (W11d)"): the /11 receiver calls and W11t's live coding.
+  M_TAKE_RELEASED,
+  M_CHECK_FETCH,
+  M_TRANSPORT_SKIP,
+  M_DYNAMIC_SHA256,
+  M_CODING_OPEN,
+  M_CODING_DECODE,
+  M_CODING_OUTPUT,
+  M_CODING_SEQ,
+  M_CODING_ERROR,
+  M_CODING_STATS,
   M_COUNT,
 };
 
@@ -1648,6 +1664,17 @@ constexpr MethodSpec METHODS[M_COUNT] = {
     {"pretranscode", 2},     // (hash: String, ktx2: PackedByteArray) -> bool (G8kf: transcode ahead of the apply)
     {"refuse_variant", 1},   // (hash: String) -> void (G8kf: D3 skips this variant; Q3 fallback)
     {"set_webgl_rules", 1},  // (on: bool) -> void (G8kwh: the web export's upload rules)
+    // W11d
+    {"take_released", 0},    // () -> Array[String]: hashes the /11 retention rule dropped since the last call
+    {"check_fetch", 1},      // (hash: String) -> String ("" may fetch; else inline-fetch-zero: ...)
+    {"transport_skip", 0},   // () -> void: a coding resync skipped transactions; the next is full
+    {"dynamic_sha256", 0},   // () -> String: GSW's dynamic_sha256 digest of the bodies held (evidence)
+    {"coding_open", 2},      // (offer: String, max_bytes: int) -> void: a new connection's decoder
+    {"coding_decode", 1},    // (message: PackedByteArray) -> int: 1 decoded, 2 uncoded, 0 skipped, -1 error
+    {"coding_output", 0},    // () -> PackedByteArray: the last decoded message (after a 1)
+    {"coding_seq", 0},       // () -> int: the last message's envelope seq (0: not a transaction)
+    {"coding_error", 0},     // () -> String: the last -1's error
+    {"coding_stats", 0},     // () -> String: the connection's coding stats (JSON)
 };
 
 void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDExtensionConstVariantPtr *args,
@@ -1856,6 +1883,72 @@ void method_call(void *userdata, GDExtensionClassInstancePtr instance, const GDE
       }
       return;
     }
+    case M_TAKE_RELEASED:
+      rsc_take_released(inst->core);
+      vt_variant(inst, static_cast<Variant *>(ret));
+      return;
+    case M_CHECK_FETCH: {
+      std::string hash = arg_string(args[0]);
+      if (rsc_check_fetch(inst->core, reinterpret_cast<const uint8_t *>(hash.data()), hash.size()) == 1) {
+        ret_string(ret, "");
+      } else {
+        text_string(inst, static_cast<Variant *>(ret));
+      }
+      return;
+    }
+    case M_TRANSPORT_SKIP:
+      rsc_transport_skip(inst->core);
+      return;
+    case M_DYNAMIC_SHA256:
+      rsc_dynamic_sha256(inst->core);
+      text_string(inst, static_cast<Variant *>(ret));
+      return;
+    case M_CODING_OPEN: {
+      std::string offer = arg_string(args[0]);
+      int64_t max_bytes = arg_int(args[1]);
+      if (inst->coding != nullptr) rsc_coding_free(inst->coding);
+      inst->coding = rsc_coding_new(reinterpret_cast<const uint8_t *>(offer.data()), offer.size(),
+                                    max_bytes > 0 ? static_cast<uint64_t>(max_bytes) : 0);
+      inst->coding_out = nullptr;
+      inst->coding_out_len = 0;
+      return;
+    }
+    case M_CODING_DECODE: {
+      if (inst->coding == nullptr || !arg_is(args[0], GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)) {
+        ret_int(ret, -1);
+        return;
+      }
+      BytesArg data(args[0]);
+      const uint8_t *out = nullptr;
+      size_t out_len = 0;
+      int32_t code = rsc_coding_decode(inst->coding, data.data, data.size, &out, &out_len);
+      // A 2 points into `data` (gone after this call): the caller keeps its own message then.
+      inst->coding_out = code == 1 ? out : nullptr;
+      inst->coding_out_len = code == 1 ? out_len : 0;
+      ret_int(ret, code);
+      return;
+    }
+    case M_CODING_OUTPUT: {
+      PackedArray arr(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+      arr.fill(inst->coding_out, inst->coding_out_len, 1);
+      gd.from[GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY](ret, &arr.p);
+      return;
+    }
+    case M_CODING_SEQ:
+      ret_int(ret, inst->coding == nullptr ? 0 : static_cast<int64_t>(rsc_coding_seq(inst->coding)));
+      return;
+    case M_CODING_ERROR:
+    case M_CODING_STATS: {
+      if (inst->coding == nullptr) {
+        ret_string(ret, "");
+        return;
+      }
+      size_t n = 0;
+      const uint8_t *b = m == M_CODING_ERROR ? rsc_coding_error(inst->coding, &n)
+                                             : rsc_coding_stats(inst->coding, &n);
+      ret_string(ret, std::string(reinterpret_cast<const char *>(b), n));
+      return;
+    }
     case M_COUNT:
       return;
   }
@@ -1883,6 +1976,7 @@ GDExtensionObjectPtr create_instance(void *, GDExtensionBool) {
 void free_instance(void *, GDExtensionClassInstancePtr instance) {
   release_pretranscoded(static_cast<Instance *>(instance));
   auto *inst = static_cast<Instance *>(instance);
+  if (inst->coding != nullptr) rsc_coding_free(inst->coding);
   rsc_free(inst->core);
   delete inst;
 }
