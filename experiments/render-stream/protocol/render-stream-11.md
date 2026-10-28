@@ -880,6 +880,7 @@ Each measured win and where it belongs:
 | permessage-deflate (context takeover) | → 40,340 B (19.4 Mbps): the 32 KB window cannot reach the previous frame | not the default: Godot's `WebSocketPeer` has no extension support, so it is browser-only |
 | zstd-9 instead of 3 | −1 to −6 %, 5x the host time (2.2 ms) | not worth it |
 | delta-coded transforms and item floats by item id (XOR, then compress) | 12.5 KB + 24.5 KB of floats → 0.26 KB. Base-prefix zstd already gets them to the same size | **not worth it**: no wire change for item or command floats |
+| tween descriptors instead of per-frame item transforms and modulates (TW, 2026-10-28) | ceiling 12,477 → 12,345 B coded (−1.1 %), menu 0 | **not worth it**: no wire change ([tween-descriptors-design.md](tween-descriptors-design.md)) |
 | XOR-delta mesh bodies against the base's body of the same mesh | lean base-prefix 12,471 → 10,322 B (−1 Mbps) | **final binary-structure swap**, with the quantized tier |
 | quantized mesh bodies: AABB-relative u16 positions, u16 UVs | with XOR: → 5,586 B (2.7 Mbps); max error 0.05 px | **final binary-structure swap** |
 | quantized item and command floats (fixed-point positions, u8 colours) | 25 KB raw, < 0.3 KB once compressed | final swap at most; transform linear parts and overbright colours stay f32 |
