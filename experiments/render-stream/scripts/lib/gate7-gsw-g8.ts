@@ -73,8 +73,8 @@ export const GATE8_LEGS: GswLegDef[] = [
   // g8w11 (W11d, render-stream-11.md "As built (W11d)"): the native receiver's /11 legs on W11b's
   // captures (capture-scale, gate6-scene animate, gate5-mesh at /11 and their /10 twins) and
   // W11c's receiver sabotages, which GSW implements on the same names; g8w11's native checks judge
-  // GSW's replay of them (GSW against native on /11). The web export joins with W11e
-  // (gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS).
+  // GSW's replay of them (GSW against native on /11). W11e: the web half replays them too
+  // (gate7b-adapters.ts GATE8_FILE_GROUPS).
   leg("g8w11/scale/receiver"),
   leg("g8w11/scale/v10/receiver"),
   leg("g8w11/scale/off/receiver"),

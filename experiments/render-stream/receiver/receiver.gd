@@ -35,7 +35,9 @@ extends Node
 ##                                as live GETs) and drops it from memory once uploaded (64 KiB
 ##                                and up, RsResourceCache.DROP_MIN_BYTES); staged is
 ##                                the pre-WX path (the whole store fetched into memory before
-##                                _ready). Ignored natively
+##                                _ready). Ignored natively. W11e: at /11 every lazy GET asks the
+##                                core first (inline-fetch-zero), and a payload the /11 retention
+##                                rule releases leaves the drop's bookkeeping with it
 ##   RS_RECEIVER_FETCH_TIMEOUT_MS live, and the web's lazy store (WX): a GET not complete this many
 ##                                ms after it was issued is resource-unavailable (default 10000)
 ##   RS_RECEIVER_ACCEPT_ENCODING  G8kz (render-stream-2.md "HTTP (live)"): the Accept-Encoding a native
@@ -209,7 +211,8 @@ extends Node
 ##                               a GRSA recording replays at /10. Either way the core re-issues
 ##                               each item's canvas_group and copy_to_backbuffer.
 ##                               W11d: 11 is render-stream/11 (render-stream-11.md "Live
-##                               transport"; native): subprotocol render-stream.11, /10's hello
+##                               transport"; native, and the web export since W11e): subprotocol
+##                               render-stream.11, /10's hello
 ##                               under "render-stream/11" plus W11t's `live_coding`, received tap
 ##                               received.rs11 (decoded messages). In file mode a GRSB recording
 ##                               replays at /11. Either way the core ingests dynamic mesh bodies
@@ -557,6 +560,8 @@ var _coding_reports: Array[Dictionary] = []
 ## (bounded; per transaction only under a full log): the most memory entries after an apply, the
 ## most beyond |names(S)| + |C|, and the hashes released.
 var _w11: Dictionary = {}
+## W11e: the previous applied transaction's resolved `unsupported` list (_note_applied).
+var _previous_unsupported_list: Array = []
 
 
 func _ready() -> void:
@@ -1096,12 +1101,14 @@ func _fetch_and_apply(stream_index: int, seq: int, prefetched: Dictionary = {}) 
 	# apply tens of thousands of transactions, and an array appended every one of them, never
 	# trimmed, is exactly the unbounded RSS growth the soak measures (summary counters below are
 	# O(1) running totals and stay unconditional).
-	var mesh_uploads: Array = stats["mesh_uploads"]
-	for value: Variant in mesh_uploads:
-		var mesh_upload: Dictionary = value
-		mesh_upload["stream"] = stream_index
-		mesh_upload["seq"] = seq
-		if _log_mode != "summary":
+	# W11e: under a summary log the rows are never kept, so they are not visited either (a /11
+	# combat transaction has one `update` and one `custom_aabb` row per dynamic mesh, ~200).
+	if _log_mode != "summary":
+		var mesh_uploads: Array = stats["mesh_uploads"]
+		for value: Variant in mesh_uploads:
+			var mesh_upload: Dictionary = value
+			mesh_upload["stream"] = stream_index
+			mesh_upload["seq"] = seq
 			_mesh_uploads.append(mesh_upload)
 	# G8ku: the KTX2 transcodes (D14, D16), each with the transaction that ran it.
 	var transcodes: Array = stats["transcodes"] if stats.has("transcodes") else []
@@ -1400,16 +1407,21 @@ func _note_applied(entry: Dictionary, meta: Dictionary, stats: Dictionary) -> vo
 	for refused: Dictionary in web_refused:
 		_unsupported.append({"seq": seq, "item": null, "name": "mesh_surface_update_index_region", "reason": refused["reason"], "mesh": refused["mesh"], "surface": refused["surface"]})
 		_log("seq %d: mesh %d surface %d: mesh_surface_update_index_region refused (%s)" % [seq, refused["mesh"], refused["surface"], refused["reason"]])
-	var current: Dictionary[String, bool] = {}
-	for value: Variant in meta["unsupported"]:
-		var unsupported_entry: Dictionary = value
-		var key: String = JSON.stringify([unsupported_entry["op"], unsupported_entry["item"], unsupported_entry["reason"]])
-		current[key] = true
-		if not _previous_unsupported.has(key):
-			var item: Variant = null if unsupported_entry["item"] == null else RsWire.as_int(unsupported_entry["item"])
-			_unsupported.append({"seq": seq, "item": item, "name": unsupported_entry["op"], "reason": unsupported_entry["reason"]})
-			_log("seq %d: unsupported %s item %s (%s)" % [seq, unsupported_entry["op"], str(item), unsupported_entry["reason"]])
-	_previous_unsupported = current
+	# W11e: the resolved list is usually the previous transaction's (STS2: ~50 entries every
+	# transaction); an equal list reports nothing new, so its per-entry keys are not rebuilt.
+	var unsupported_list: Array = meta["unsupported"]
+	if unsupported_list != _previous_unsupported_list:
+		_previous_unsupported_list = unsupported_list
+		var current: Dictionary[String, bool] = {}
+		for value: Variant in unsupported_list:
+			var unsupported_entry: Dictionary = value
+			var key: String = JSON.stringify([unsupported_entry["op"], unsupported_entry["item"], unsupported_entry["reason"]])
+			current[key] = true
+			if not _previous_unsupported.has(key):
+				var item: Variant = null if unsupported_entry["item"] == null else RsWire.as_int(unsupported_entry["item"])
+				_unsupported.append({"seq": seq, "item": item, "name": unsupported_entry["op"], "reason": unsupported_entry["reason"]})
+				_log("seq %d: unsupported %s item %s (%s)" % [seq, unsupported_entry["op"], str(item), unsupported_entry["reason"]])
+		_previous_unsupported = current
 	if _wire_version >= 11:
 		_note_w11(entry)
 
@@ -1743,11 +1755,8 @@ func _parse_wire_env() -> bool:
 	if not ["6", "7", "8", "9", "10", "11"].has(protocol_text):
 		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10 or 11 (got %s)" % JSON.stringify(protocol_text))
 		return false
-	if protocol_text == "11" and RsConfig.is_web():
-		_log("error: render-stream/11 live is native only until W11e (RS_RECEIVER_PROTOCOL 11)")
-		return false
-	if RsConfig.is_web() and not ["7", "8", "9", "10"].has(protocol_text):
-		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9 or (CG1) /10 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+	if RsConfig.is_web() and not ["7", "8", "9", "10", "11"].has(protocol_text):
+		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10 or (W11e) /11 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
@@ -2097,6 +2106,7 @@ func _start_next_connection() -> void:
 	_coalesced.clear()
 	_coalesced_drawn = []
 	_previous_unsupported = {}
+	_previous_unsupported_list = []
 	_stream_report = {
 		"stream_id": null,
 		"connection": null,
@@ -2384,6 +2394,14 @@ func _begin_store_fetch(meta: Dictionary, record: Dictionary, seq: int, resource
 		var hash: String = value
 		if _cache.has_in_memory(hash):
 			continue
+		if _wire_version >= 11:
+			# W11e: inline-fetch-zero before every store GET, as natively before a store read. A
+			# dynamic surface is not in needed() (its body came in the transaction), and a carried
+			# record is in memory, so an honest /11 replay never asks for an inline-sized hash.
+			var refused: String = _applier.check_fetch(hash)
+			if refused != "":
+				_fail_with_error(seq, refused)
+				return
 		var mesh: bool = mesh_hashes.has(hash)
 		var shader: bool = shader_hashes.has(hash)
 		var ktx2: bool = ktx2_hashes.has(hash)

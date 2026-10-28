@@ -101,7 +101,7 @@ result under `results/gate7/`; the rest link to their design section under `prot
   dynamic mesh surfaces by id, a stable `content_version`; W11a built the codecs and validators,
   W11b the capture (`GRC_STREAM_VERSION=11`), W11t the live coding; GSW applies it under
   `RS_RECEIVER_PROTOCOL=11` since W11c, offering `live_coding` unless
-  `RS_RECEIVER_LIVE_CODING=off`; the native receiver and the web export follow).
+  `RS_RECEIVER_LIVE_CODING=off`; the native receiver since W11d and the web export since W11e).
 - Feature manifests: `protocol/features/` (`render-stream-6.json`, `render-stream-7/`, `render-stream-8/`). Golden vectors: `protocol/golden/` through
   `protocol/golden-11/`.
 - Topical notes: `protocol/canvas-texture-headless.md`, `protocol/unknown-item-skip.md`.

@@ -7,9 +7,11 @@
 //     difference is `other`.
 //  2. discoverFileReceiverLegs: a file receiver leg is replayed; a live leg (RS_RECEIVER_URL), a
 //     fixture leg and a capture are not legs at all; a traced, an editor-launched, a warm-cache
-//     and a live-derived (its recording is a live receiver's received tap) leg are typed.
+//     and a live-derived (its recording is a live receiver's received tap) leg are typed; a planned
+//     launch that never ran (no exit-code.txt, no applied.json: W11e's g8w11 GSW plans) is no leg.
 //  3. buildMirrorView: replaced legs link to their targets (nested ones too), every other entry
 //     to the source, result.json is dropped and legs.json names only the view's groups.
+//  4. dropMemoryCacheOccupancy (W11e): a /11 applied.json loses only its memory-cache occupancy.
 
 import {
   mkdirSync,
@@ -25,6 +27,7 @@ import {
   buildMirrorView,
   classifyShot,
   discoverFileReceiverLegs,
+  dropMemoryCacheOccupancy,
 } from "../lib/gate7b-adapters";
 
 let failures = 0;
@@ -67,6 +70,36 @@ function expect(name: string, ok: boolean, detail = ""): void {
   );
 }
 
+// 4 (W11e): applied-equals-native ignores a /11 document's memory-cache occupancy only.
+{
+  const doc = {
+    w11: {
+      store_max_entries: 9,
+      store_max_excess: 0,
+      cache_released: 3,
+      cache_released_bytes: 70,
+      released_total: 4,
+    },
+    transactions: [{ seq: 1, w11: { store_entries: 9, names: 7, carried: 2 } }],
+  };
+  dropMemoryCacheOccupancy(doc);
+  expect(
+    "occupancy: only the cache's own counts dropped",
+    JSON.stringify(doc) ===
+      JSON.stringify({
+        w11: { released_total: 4 },
+        transactions: [{ seq: 1, w11: { names: 7, carried: 2 } }],
+      }),
+    JSON.stringify(doc),
+  );
+  const v10 = { transactions: [{ seq: 1 }] };
+  dropMemoryCacheOccupancy(v10);
+  expect(
+    "occupancy: a /10 document is unchanged",
+    JSON.stringify(v10) === '{"transactions":[{"seq":1}]}',
+  );
+}
+
 // 2 and 3: a synthetic source run.
 const root = mkdtempSync(join(tmpdir(), "g7b-selftest-"));
 try {
@@ -78,11 +111,15 @@ try {
     env: string[],
     argv: string[],
     files: Record<string, string> = {},
+    ran = true,
   ) => {
     const d = join(src, rel);
     mkdirSync(d, { recursive: true });
     writeFileSync(join(d, "env.txt"), `# header\n${env.join("\n")}\n`);
     writeFileSync(join(d, "argv.txt"), `${argv.join("\n")}\n`);
+    // A leg that ran writes its exit code (run_rendered, run_headless); W11e: a planned launch
+    // that never ran (`ran: false`) does not.
+    if (ran) writeFileSync(join(d, "exit-code.txt"), "0\n");
     for (const [f, body] of Object.entries(files)) {
       mkdirSync(join(d, f, ".."), { recursive: true });
       writeFileSync(join(d, f), body);
@@ -140,6 +177,8 @@ try {
     [tmpl, "--headless", "--path", "/repo/fixtures/gate1"],
   );
   leg("reference", [], [tmpl, "--path", "/repo/fixtures/gate1"]);
+  // W11e: g8w11's GSW legs plan a native-shaped launch they never run (GSW replays it).
+  leg("gsw/scale/plan", [rec("gsw/scale/plan")], rendered, {}, false);
   writeFileSync(join(src, "result.json"), "{}");
   writeFileSync(
     join(src, "legs.json"),
