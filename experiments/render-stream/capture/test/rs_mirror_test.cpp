@@ -1949,6 +1949,17 @@ grc::rs::MeshSurfaceInput mesh_input(float x0, uint32_t n = 3) {
   return input;
 }
 
+// HC3: a region write that turns a surface's payload into `to`'s (same size): the whole payload,
+// from byte 0 -- the mirror writes any region the hook names. The pointer is valid until the next
+// call (each test passes it straight to mesh_surface_update_region).
+const grc::rs::MeshRegionWrite *whole(const grc::rs::MeshSurfaceInput &to) {
+  static grc::rs::MeshRegionWrite write;
+  write.offset = 0;
+  write.data = to.bytes->data();
+  write.size = to.bytes->size();
+  return &write;
+}
+
 grc::rs::MeshSurfaceInput refused_input(const char *reason) {
   grc::rs::MeshSurfaceInput input;
   input.copy.status = "unsupported";
@@ -2007,11 +2018,11 @@ void test_mesh_table_lifecycle() {
 
   // DF's spine pattern: three accepted calls in one frame give one snapshot, version + 3.
   const auto a2 = mesh_input(1);
-  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &a2, 2);
-  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, &a2, 2);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, whole(a2), 2);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, whole(a2), 2);
   m.mesh_set_custom_aabb(0x500, {0, -2, 0, 128, 68, 0}, 2);
   m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 5, false, nullptr, 2);
-  m.mesh_surface_update_region(0x999, "mesh_surface_update_vertex_region", 0, true, &a2, 2);
+  m.mesh_surface_update_region(0x999, "mesh_surface_update_vertex_region", 0, true, whole(a2), 2);
   cap = m.snapshot(2, 2);
   m1 = mesh(cap.state, 1);
   check(m1 != nullptr && m1->version == 6 && m1->surfaces[0].hash == a2.copy.hash &&
@@ -2135,11 +2146,11 @@ void test_mesh_omit_op_and_perturb_vertex() {
   m.mesh_create(0x500, 1);
   m.mesh_add_surface(0x500, mesh_input(0), 1);
   const auto b = mesh_input(5);
-  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &b, 21);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, whole(b), 21);
   grc::rs::Captured cap = m.snapshot(1, 21);
   check(mesh(cap.state, 1)->version == 2 && mesh(cap.state, 1)->surfaces[0].hash != b.copy.hash,
         "omit-op: the omitted region update changes nothing");
-  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, &b, 21);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, whole(b), 21);
   check(mesh(m.snapshot(2, 21).state, 1)->surfaces[0].hash == b.copy.hash,
         "another op still applies");
 
@@ -3036,7 +3047,7 @@ grc::rs::Mirror::V11Options v11_options(grc::rs2::MeshDynamicMode mode, int fram
 
 void update_vertices(Mirror *m, uint64_t rid, float x0, uint64_t frame) {
   const auto in = mesh_input(x0);
-  m->mesh_surface_update_region(rid, "mesh_surface_update_vertex_region", 0, true, &in, frame);
+  m->mesh_surface_update_region(rid, "mesh_surface_update_vertex_region", 0, true, whole(in), frame);
 }
 
 // auto: the second change frame within K frames promotes; the creation frame and a byte-equal
@@ -3088,6 +3099,168 @@ void test_v11_mesh_classification() {
         "an empty mesh carries no dynamic flag (nothing to carry)");
   m.mesh_add_surface(0x500, mesh_input(9), 401);
   check(mesh(m.snapshot(9, 401).state, 1)->dynamic, "refilled, it is dynamic again");
+}
+
+// --- HC3 (host-cost-design.md D2): lazy mesh surfaces ------------------------------------------
+
+// The vertex-region write the hook makes: the 8*n vertex bytes of `to` at the payload's data
+// offset (12 + meta + 40), the AABB untouched. `to` must outlive the call.
+grc::rs::MeshRegionWrite vertex_write(const grc::rs::MeshSurfaceInput &to) {
+  const std::vector<uint8_t> &p = *to.bytes;
+  const uint32_t meta = p[8] | (p[9] << 8) | (p[10] << 16) | (p[11] << 24);
+  grc::rs::MeshRegionWrite w;
+  w.offset = 12 + meta + 40;
+  w.data = p.data() + w.offset;
+  w.size = p.size() - w.offset;
+  return w;
+}
+
+// `base`'s payload with `to`'s vertex bytes (what the engine's buffers hold after vertex_write).
+std::vector<uint8_t> with_vertices(const grc::rs::MeshSurfaceInput &base,
+                                   const grc::rs::MeshSurfaceInput &to) {
+  std::vector<uint8_t> out = *base.bytes;
+  const grc::rs::MeshRegionWrite w = vertex_write(to);
+  std::memcpy(out.data() + w.offset, w.data, w.size);
+  return out;
+}
+
+void test_hc3_lazy_mesh_surfaces() {
+  using grc::rs2::MeshDynamicMode;
+  // A /11 mirror nobody reads dynamic hashes from: keys, no SHA-256, copy-on-write payloads.
+  Mirror m;
+  bind_root(&m);
+  m.set_v11(v11_options(MeshDynamicMode::All));
+  m.set_dynamic_hash_readers(false);
+  const auto a = mesh_input(0);
+  const auto b = mesh_input(4);
+  const auto c = mesh_input(9);
+  m.mesh_create(0x500, 1);
+  m.mesh_add_surface(0x500, a, 1);
+  grc::rs::Captured s1 = m.snapshot(1, 1);
+  const grc::rs2::MeshEntry *e = mesh(s1.state, 1);
+  check(e != nullptr && e->dynamic && e->surfaces[0].hash_is_key &&
+            e->surfaces[0].hash.rfind("hc3-key:", 0) == 0 && s1.keyed_surfaces,
+        "HC3: a dynamic surface nobody hashes carries a payload key");
+  check(s1.payloads.count(e->surfaces[0].hash) == 1 &&
+            s1.payloads.at(e->surfaces[0].hash).get() == a.bytes.get() &&
+            e->surfaces[0].payload_bytes == a.bytes->size() && e->surfaces[0].body != nullptr,
+        "HC3: the key names the (shared) payload in the map; payload_bytes and body as before");
+  check(m.stats().mesh_surface_hashes == 0 && m.stats().dynamic_surface_hashes == 0,
+        "HC3: no SHA-256 for it");
+  const std::string key1 = e->surfaces[0].hash;
+  const uint64_t serial1 = e->content_serial;
+  const uint64_t changes1 = m.stats().mesh_content_changes;
+
+  // A byte-equal region write is no change: same key, same serial, no copy.
+  const grc::rs::MeshRegionWrite same = vertex_write(a);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &same, 2);
+  grc::rs::Captured s2 = m.snapshot(2, 2);
+  e = mesh(s2.state, 1);
+  check(e->version == 3 && e->content_serial == serial1 && e->surfaces[0].hash == key1 &&
+            m.stats().mesh_payload_copies == 0 && m.stats().mesh_content_changes == changes1,
+        "HC3: a byte-equal write moves the version only (memcmp, no copy, same key)");
+
+  // Two writes in one frame after a publication: one copy, one change, a new key, the published
+  // buffer untouched.
+  const grc::rs::MeshRegionWrite wb = vertex_write(b);
+  const grc::rs::MeshRegionWrite wc = vertex_write(c);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &wb, 3);
+  m.mesh_surface_update_region(0x500, "mesh_surface_update_attribute_region", 0, true, &wc, 3);
+  check(*s1.payloads.at(key1) == *a.bytes, "HC3: a published payload is never written (COW)");
+  grc::rs::Captured s3 = m.snapshot(3, 3);
+  e = mesh(s3.state, 1);
+  const std::vector<uint8_t> want_c = with_vertices(a, c);
+  check(m.stats().mesh_payload_copies == 1 && e->content_serial == serial1 + 2 &&
+            e->surfaces[0].hash != key1 && *s3.payloads.at(e->surfaces[0].hash) == want_c,
+        "HC3: two writes in a frame: one copy, a serial move each (as before), a new key over the new bytes");
+  check(std::equal(e->surfaces[0].body->begin(), e->surfaces[0].body->end(),
+                   want_c.begin() + (want_c.size() - e->surfaces[0].body->size())),
+        "HC3: the body is the written payload's");
+
+  // A reader (a viewer below /11, or the hook log): the SHA-256, computed once per content.
+  m.set_dynamic_hash_readers(true);
+  grc::rs::Captured s4 = m.snapshot(4, 4);
+  e = mesh(s4.state, 1);
+  const std::string sha_c = grc::sha256_hex(want_c.data(), want_c.size());
+  check(!e->surfaces[0].hash_is_key && e->surfaces[0].hash == sha_c && !s4.keyed_surfaces &&
+            s4.payloads.count(sha_c) == 1 && m.stats().dynamic_surface_hashes == 1,
+        "HC3: with a reader the dynamic surface carries its SHA-256");
+  m.snapshot(5, 5);
+  check(m.stats().dynamic_surface_hashes == 1 && m.stats().mesh_surface_hashes == 1,
+        "HC3: an unchanged surface is not hashed again");
+  // make_patch at /11 across the reader's arrival and departure: a key against a hash of the
+  // same content is no change; a real change is.
+  {
+    Snapshot base = s3.state;
+    Snapshot cur = s4.state;
+    base.version = grc::rs2::ProtocolVersion::V11;
+    cur.version = grc::rs2::ProtocolVersion::V11;
+    check(grc::rs2::make_patch(base, cur).meshes.empty() &&
+              grc::rs2::make_patch(cur, base).meshes.empty(),
+          "HC3: a keyed and a hashed snapshot of the same content patch nothing at /11");
+    m.set_dynamic_hash_readers(false);
+    const grc::rs::MeshRegionWrite wa = vertex_write(a);
+    m.mesh_surface_update_region(0x500, "mesh_surface_update_vertex_region", 0, true, &wa, 6);
+    Snapshot moved = m.snapshot(6, 6).state;
+    moved.version = grc::rs2::ProtocolVersion::V11;
+    check(grc::rs2::make_patch(cur, moved).meshes.size() == 1,
+          "HC3: a changed dynamic mesh is patched against a hashed base");
+  }
+
+  // Static meshes (no /11): every region write of a frame is applied, the snapshot hashes once.
+  Mirror st;
+  bind_root(&st);
+  st.set_dynamic_hash_readers(false);  // no effect below /11
+  st.mesh_create(0x600, 1);
+  st.mesh_add_surface(0x600, a, 1);
+  st.snapshot(1, 1);
+  check(st.stats().mesh_surface_hashes == 0, "HC3: the hook's creation hash is reused");
+  st.mesh_surface_update_region(0x600, "mesh_surface_update_vertex_region", 0, true, &wb, 2);
+  st.mesh_surface_update_region(0x600, "mesh_surface_update_vertex_region", 0, true, &wc, 2);
+  grc::rs::Captured t2 = st.snapshot(2, 2);
+  check(mesh(t2.state, 1)->surfaces[0].hash == sha_c && !mesh(t2.state, 1)->surfaces[0].hash_is_key &&
+            st.stats().mesh_surface_hashes == 1 && st.stats().dynamic_surface_hashes == 0,
+        "HC3: below /11 two writes in a frame cost one SHA-256, at the snapshot");
+
+  // stale-dynamic hashes regardless (its patches compare them, as before HC3).
+  Mirror sd;
+  bind_root(&sd);
+  auto o = v11_options(MeshDynamicMode::All);
+  o.stale_dynamic_frame = 100;
+  sd.set_v11(o);
+  sd.set_dynamic_hash_readers(false);
+  sd.mesh_create(0x700, 1);
+  sd.mesh_add_surface(0x700, a, 1);
+  check(!mesh(sd.snapshot(1, 1).state, 1)->surfaces[0].hash_is_key,
+        "HC3: stale-dynamic always hashes");
+
+  // perturb-vertex: starting at an update is a change even when its bytes are equal, and the
+  // published bytes (and hash) are the perturbed copy; the true bytes are kept for the next write.
+  Mirror pv;
+  bind_root(&pv);
+  pv.set_v11(v11_options(MeshDynamicMode::All));
+  pv.set_perturb_vertex(10);
+  pv.mesh_create(0x800, 1);
+  pv.mesh_add_surface(0x800, a, 1);
+  const uint64_t pserial = mesh(pv.snapshot(1, 1).state, 1)->content_serial;
+  pv.mesh_surface_update_region(0x800, "mesh_surface_update_vertex_region", 0, true, &same, 10);
+  grc::rs::Captured p2 = pv.snapshot(2, 10);
+  const auto *pe = mesh(p2.state, 1);
+  std::vector<uint8_t> perturbed = *a.bytes;
+  {
+    const grc::rs::MeshRegionWrite w = vertex_write(a);
+    float x = 0;
+    std::memcpy(&x, perturbed.data() + w.offset, 4);
+    x += 1.0f;
+    std::memcpy(perturbed.data() + w.offset, &x, 4);
+  }
+  check(pe->content_serial == pserial + 1 &&
+            pe->surfaces[0].hash == grc::sha256_hex(perturbed.data(), perturbed.size()) &&
+            *p2.payloads.at(pe->surfaces[0].hash) == perturbed,
+        "HC3 perturb-vertex: an equal write at the frame is a change to the perturbed copy");
+  pv.mesh_surface_update_region(0x800, "mesh_surface_update_vertex_region", 0, true, &same, 11);
+  check(mesh(pv.snapshot(3, 11).state, 1)->content_serial == pserial + 1,
+        "HC3 perturb-vertex: once perturbed, an equal write is no change");
 }
 
 void test_v11_mesh_modes() {
@@ -3962,6 +4135,7 @@ int main() {
   test_v11_mesh_modes();
   test_v11_stable_content_version();
   test_hc2_shared_command_lists();
+  test_hc3_lazy_mesh_surfaces();
   test_backbuffer_state();
   test_fresh_session();
   test_ids_and_recycled_rid();

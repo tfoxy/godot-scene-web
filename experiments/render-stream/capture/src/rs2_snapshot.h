@@ -1538,6 +1538,12 @@ struct MeshSurface {
   // `hash` is then not encoded (null on the wire) and whose `payload_bytes` is the body's length.
   // Shared, never copied by a snapshot (P3-CAP).
   std::shared_ptr<const std::vector<std::uint8_t>> body;
+  // HC3 (host-cost-design.md D2), capture-side only, never encoded: true when `hash` is not the
+  // payload's SHA-256 but a capture-local key naming it in the snapshot's payload map. Only a
+  // dynamic surface of a /11 snapshot that nothing below /11 reads has one; no /11 transaction
+  // encodes a dynamic surface's hash, and make_patch compares such a surface by its mesh's content
+  // serial (rs2_diff.cpp mesh_surface_equal).
+  bool hash_is_key = false;
 };
 
 // One mesh-table entry (render-stream-4.md "Mesh table"). `has_aabb` is false exactly for

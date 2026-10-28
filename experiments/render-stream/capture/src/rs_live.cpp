@@ -1520,6 +1520,16 @@ bool Hub::has_viewer() const {
   return false;
 }
 
+bool Hub::has_connection_below_v11() const {
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state != State::Closed && !is_v11_or_later(c.version)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void Hub::note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns) {
   c.s.max_pending_frames =
       std::max(c.s.max_pending_frames, frame - std::min(frame, c.pending_since_frame));
@@ -1920,6 +1930,11 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
       if (c.hello_received) {
         if (snapshot == nullptr) {
           continue;  // the caller did not provide one; try at the next callback
+        }
+        if (snapshot->keyed_surfaces && !is_v11_or_later(c.version)) {
+          // HC3: a snapshot taken before this connection opened (G8kw's hold-back publishes an
+          // older one) left dynamic surfaces unhashed; every snapshot since is hashed for it.
+          continue;
         }
         c.session = template_;
         // G7n: the connection's own version (render-stream.7 -> /7: the GRS7 magic, the /7

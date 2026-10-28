@@ -1595,9 +1595,15 @@ struct MeshSurfaceBuffer {
   AABB aabb{};
   Vector4 uv_scale{};
   std::vector<uint8_t> vertex_data, attribute_data, skin_data, index_data;
+  // HC3: where vertex_data starts in the surface's GRM1 payload (magic, meta length, meta and the
+  // 40-byte geometry block before it), so a region update names its bytes in the mirror's copy.
+  size_t payload_data_offset = 0;
 };
 
 std::map<uint64_t, std::vector<MeshSurfaceBuffer>> g_mesh_buffers;  // guarded by g_mutex
+// HC3 (host-cost-design.md D2): region updates the hook re-encoded and re-hashed for its own log
+// line (only while resources.jsonl is open; counters.json mesh_region_rehashes).
+std::atomic<uint64_t> g_mesh_region_rehashes{0};
 
 // Classifies and, when ok, copies and hashes one SurfaceData-shaped pointer. `copy_ns`/`hash_ns`
 // time the GRM1 encode and the SHA-256 separately, as copy_payload does for textures. Nothing is
@@ -1703,6 +1709,7 @@ rs::MeshSurfaceCopy copy_mesh_surface(const SurfaceView &sd, MeshSurfaceBuffer *
     copy.reason = "payload-too-large";
     return copy;
   }
+  buffer->payload_data_offset = static_cast<size_t>(rs::mesh_payload_size(meta, 0));
 
   const uint64_t t0 = now_ns();
   assign_bytes(&buffer->vertex_data, sd.vertex, sd.vertex_bytes);
@@ -2603,6 +2610,8 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
   const char *outcome = "unknown";
   rs::MeshSurfaceInput updated;
   const rs::MeshSurfaceInput *new_surface = nullptr;
+  rs::MeshRegionWrite write;
+  const rs::MeshRegionWrite *new_write = nullptr;
   auto it = g_mesh_buffers.find(mesh.id);
   if (it != g_mesh_buffers.end() && surface >= 0 &&
       static_cast<size_t>(surface) < it->second.size()) {
@@ -2620,7 +2629,34 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
         outcome = "applied";
         if (!omit) {
           std::memcpy(field->data() + offset, data->ptr(), static_cast<size_t>(bytes));
-          updated.copy = rehash_mesh_surface(buffer, &updated.bytes);
+          // HC3 (host-cost-design.md D2): the mirror writes the same bytes into its own copy of
+          // the payload; only the hook log's line needs the re-encoded surface's hash.
+          size_t base = buffer.payload_data_offset;
+          if (which != MeshBuffer::kVertex) {
+            base += buffer.vertex_data.size();
+          }
+          if (which == MeshBuffer::kSkin || which == MeshBuffer::kIndex) {
+            base += buffer.attribute_data.size();
+          }
+          if (which == MeshBuffer::kIndex) {
+            base += buffer.skin_data.size();
+          }
+          write.offset = base + static_cast<size_t>(offset);
+          write.data = data->ptr();
+          write.size = static_cast<size_t>(bytes);
+          new_write = &write;
+          if (resources().wants_lines()) {
+            updated.copy = rehash_mesh_surface(buffer, &updated.bytes);
+            updated.bytes.reset();
+            g_mesh_region_rehashes.fetch_add(1, std::memory_order_relaxed);
+          } else {
+            // The log's registry keeps the surface's status only; no line is formatted (HC1).
+            updated.copy.status = "ok";
+            updated.copy.primitive = buffer.primitive;
+            updated.copy.format = buffer.format;
+            updated.copy.vertex_count = buffer.vertex_count;
+            updated.copy.index_count = buffer.index_count;
+          }
           new_surface = &updated;
         }
       }
@@ -2629,7 +2665,7 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
   if (streaming()) {
     // G5e: the mirror takes the hook's verdict (D8) and the re-encoded whole surface.
     mirror().mesh_surface_update_region(mesh.id, mesh_region_op_name(which), surface,
-                                        std::string(outcome) == "applied", new_surface,
+                                        std::string(outcome) == "applied", new_write,
                                         current_frame());
   }
   resources().mesh_surface_update_region(tap_context(), mesh.id, mesh_buffer_name(which), surface,
@@ -5715,6 +5751,19 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
   // HC1: hook-log lines formatted since arm (0 while no resources.jsonl file is open).
   json.field("hook_log_lines_formatted",
              static_cast<int64_t>(rs::resource_log().lines_formatted()));
+  // HC3 (host-cost-design.md D2): mesh surface SHA-256s since arm -- the mirror's (all, and those
+  // over dynamic meshes' surfaces), and the hook's re-hashes of region updates for its log -- and
+  // the mirror's copy-on-write payload copies.
+  {
+    const rs::MirrorStats ms = rs::mirror_stats();
+    json.key("mesh_hashes").object_begin();
+    json.field("mirror_surfaces", static_cast<int64_t>(ms.mesh_surface_hashes));
+    json.field("mirror_dynamic_surfaces", static_cast<int64_t>(ms.dynamic_surface_hashes));
+    json.field("hook_region_rehashes",
+               static_cast<int64_t>(g_mesh_region_rehashes.load(std::memory_order_relaxed)));
+    json.field("mirror_payload_copies", static_cast<int64_t>(ms.mesh_payload_copies));
+    json.object_end();
+  }
 
   json.object_end();
   return json.take();

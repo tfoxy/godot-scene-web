@@ -172,8 +172,14 @@ bool canvas_texture_info_equal(const CanvasTextureInfo &a, const CanvasTextureIn
 // render-stream-2.md "Full and patch transactions": "Its `textures` lists exactly the entries
 // that are new or differ in any JSON value." Textures carry no floats and no content_version
 // exemption, so every field participates.
+//
+// HC3: a surface whose `hash` is a payload key (MeshSurface::hash_is_key) is a dynamic /11 one,
+// whose bytes the content serial already compares (mesh_entry_equal): its key is not compared with
+// a real hash, so a snapshot taken while a viewer below /11 read the hashes and one taken after
+// compare exactly as two hashed ones would (equal serials mean equal bytes).
 bool mesh_surface_equal(const MeshSurface &a, const MeshSurface &b) {
-  return a.hash == b.hash && a.payload_bytes == b.payload_bytes && a.primitive == b.primitive &&
+  return (a.hash_is_key != b.hash_is_key || a.hash == b.hash) &&
+         a.payload_bytes == b.payload_bytes && a.primitive == b.primitive &&
          a.format == b.format && a.vertex_count == b.vertex_count && a.index_count == b.index_count;
 }
 

@@ -2878,6 +2878,9 @@ void multimesh_states_log() {
 // HC1 test knob (see stream_publish): GRC_HC_SABOTAGE=pin-late, read at the first publish.
 bool g_hc_pin_late = false;
 unsigned g_hc_pin_late_frames = 0;
+// HC3 test knob (never declared on the wire): GRC_HC_SABOTAGE=dyn-hash-unread -- a viewer below /11
+// does not count as a reader of dynamic mesh hashes (run-hc1.sh's late-join-v8-on-v11 catches it).
+bool g_hc_dyn_hash_unread = false;
 
 // PM5 (render-stream-12.md "Hook log and counters"): the particles `state` lines, likewise.
 std::string particles_state_json(const rs2::ParticlesEntry &e) {
@@ -2945,6 +2948,7 @@ void stream_publish(uint64_t frame) {
   static const bool hc_knob = [] {
     const char *v = std::getenv("GRC_HC_SABOTAGE");
     g_hc_pin_late = v != nullptr && std::string(v) == "pin-late";
+    g_hc_dyn_hash_unread = v != nullptr && std::string(v) == "dyn-hash-unread";
     return true;
   }();
   (void)hc_knob;
@@ -3005,6 +3009,11 @@ void stream_publish(uint64_t frame) {
     }
     return;
   }
+  // HC3 (host-cost-design.md D2): a /11 snapshot hashes its dynamic mesh surfaces only for a
+  // reader of those hashes -- the hook log (its serve events name payloads) or a viewer below /11.
+  rs::mirror_set_dynamic_hash_readers(
+      rs::resource_log().wants_lines() ||
+      (g_live.hub != nullptr && !g_hc_dyn_hash_unread && g_live.hub->has_connection_below_v11()));
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;

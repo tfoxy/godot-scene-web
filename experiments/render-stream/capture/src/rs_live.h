@@ -520,6 +520,12 @@ class Hub {
   // stream. A connection still awaiting its hello is not a viewer (it names no resource yet).
   bool has_viewer() const;
 
+  // HC3 (host-cost-design.md D2): true while an open connection speaks a version below /11, whose
+  // mesh tables name every surface by its SHA-256 (a /11 host then hashes its dynamic surfaces
+  // too). Counted from the connection's open, before its hello, so the snapshot of its first
+  // transaction already has them.
+  bool has_connection_below_v11() const;
+
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
   // before it was copied; `snapshot_ns` its copy time (added to each sending stream's stats).

@@ -50,6 +50,9 @@ struct Captured {
   PayloadMap payloads;
   // Empty unless GRC_TEXTURE_WORKERS=<N> left a texture's content to a worker (G8kw).
   std::vector<PendingTexture> pending;
+  // HC3 (host-cost-design.md D2): some dynamic mesh surface of `state` carries a payload key, not
+  // its SHA-256 (rs2::MeshSurface::hash_is_key): only a /11-or-later connection may be sent it.
+  bool keyed_surfaces = false;
 };
 
 // One payload a snapshot names (G5e): an `ok` image entry, or one surface of an `ok` mesh entry.

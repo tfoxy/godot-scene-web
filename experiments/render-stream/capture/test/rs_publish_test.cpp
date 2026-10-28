@@ -1033,6 +1033,17 @@ void test_inline_records() {
 // G5e (gate5-design.md D5, Q3a; render-stream-4.md "Mesh payload"): GRM1 surface payloads share
 // the texture payloads' store, inline threshold and order. Frame 1 creates mesh 1 (one surface)
 // and draws it; frame 2 updates its vertices (a new payload, no redraw); frame 3 changes nothing.
+// HC3: a region write that turns a surface's payload into `to`'s (same size): the whole payload,
+// from byte 0 -- the mirror writes any region the hook names. The pointer is valid until the next
+// call (each test passes it straight to mesh_surface_update_region).
+const grc::rs::MeshRegionWrite *whole(const grc::rs::MeshSurfaceInput &to) {
+  static grc::rs::MeshRegionWrite write;
+  write.offset = 0;
+  write.data = to.bytes->data();
+  write.size = to.bytes->size();
+  return &write;
+}
+
 struct MeshScene {
   Mirror m;
   std::string hash_s0, hash_s1;
@@ -1074,7 +1085,7 @@ struct MeshScene {
     } else if (f == 2) {
       const auto s1 = surface(4);
       hash_s1 = s1.copy.hash;
-      m.mesh_surface_update_region(600, "mesh_surface_update_vertex_region", 0, true, &s1, u);
+      m.mesh_surface_update_region(600, "mesh_surface_update_vertex_region", 0, true, whole(s1), u);
     }
     return m.snapshot(0, u);
   }
@@ -1169,11 +1180,11 @@ struct V11Scene {
     }
     if (f >= 2 && f <= 4) {
       const auto s = MeshScene::surface(static_cast<float>(4 * (f - 1)));
-      m.mesh_surface_update_region(600, "mesh_surface_update_vertex_region", 0, true, &s, u);
+      m.mesh_surface_update_region(600, "mesh_surface_update_vertex_region", 0, true, whole(s), u);
     }
     if (f == 5 || f == 15) {
       const auto s = MeshScene::surface(f == 5 ? 200.0f : 100.0f);
-      m.mesh_surface_update_region(601, "mesh_surface_update_vertex_region", 0, true, &s, u);
+      m.mesh_surface_update_region(601, "mesh_surface_update_vertex_region", 0, true, whole(s), u);
     }
     // Every item redraws identically every frame (WB): content_version must not move.
     m.clear(100, u);
