@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // hc1-checks.ts -- judges run-hc1.sh's legs (HC1, results/p3/hc1.md; protocol/host-cost-design.md
-// D5, D6; and HC2's re-record legs, results/p3/hc2.md, D1). Writes <out>/result.json ({schema,
-// checks:[{id, passed, detail}]}); exit 1 on a failure.
+// D5, D6; HC2's re-record legs, results/p3/hc2.md, D1; HC3's lazy mesh surface legs, hc3.md, D2).
+// Writes <out>/result.json ({schema, checks:[{id, passed, detail}]}); exit 1 on a failure.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { summarizeRecording } from "./gate0-checks";
@@ -209,6 +209,82 @@ for (const [id, leg, fn] of [
   if (rrSkipped(leg)) continue;
   const caught = fn(leg);
   add(id, caught.length > 0 ? [] : [`${leg}: the sabotage was not caught`], `caught: ${caught[0] ?? ""}`);
+}
+
+// HC3 (host-cost-design.md D2): lazy mesh surfaces. counters.json mesh_hashes (hooks.cpp) and
+// result.json stream.gate8.mesh_dynamic (entry.cpp, /11 streams).
+const meshHashes = (leg: string) =>
+  counters(leg)?.mesh_hashes as
+    | { mirror_surfaces: number; mirror_dynamic_surfaces: number; hook_region_rehashes: number; mirror_payload_copies: number }
+    | undefined;
+const meshDynamic = (leg: string) =>
+  json(join(out, leg, "evidence", "result.json"))?.stream?.gate8?.mesh_dynamic as
+    | { meshes_dynamic: number; promotions: number; content_changes: number }
+    | undefined;
+// dyn-hash-log-off: a /11 host with its hook log off never hashes a dynamic surface (nothing reads
+// the hash), while its meshes are dynamic and change; the hook-log-on twin hashes them.
+{
+  const problems: string[] = [];
+  const off = meshHashes("dyn-off");
+  const on = meshHashes("dyn-on");
+  const dOff = meshDynamic("dyn-off");
+  if (!off || !on) problems.push("counters.json has no mesh_hashes");
+  if (!dOff) problems.push("dyn-off: result.json has no stream.gate8.mesh_dynamic");
+  else if (!(dOff.promotions > 0 && dOff.content_changes > 100))
+    problems.push(`dyn-off: ${dOff.promotions} promotions, ${dOff.content_changes} content changes (want dynamic, changing meshes)`);
+  if (off && off.mirror_dynamic_surfaces !== 0) problems.push(`dyn-off: ${off.mirror_dynamic_surfaces} dynamic-surface hashes (want 0)`);
+  if (off && off.hook_region_rehashes !== 0) problems.push(`dyn-off: ${off.hook_region_rehashes} hook region re-hashes (want 0)`);
+  if (off && !(off.mirror_payload_copies > 0)) problems.push("dyn-off: no copy-on-write payload copy (region writes never reached the mirror)");
+  if (on && !(on.mirror_dynamic_surfaces > 0 && on.hook_region_rehashes > 0))
+    problems.push(`dyn-on: ${on.mirror_dynamic_surfaces} dynamic-surface hashes, ${on.hook_region_rehashes} hook re-hashes (want > 0: the counter is live)`);
+  add("dyn-hash-log-off", problems, `dyn-off: 0 dynamic-surface hashes, 0 hook re-hashes, ${off?.mirror_payload_copies} COW copies over ${dOff?.content_changes} content changes; dyn-on: ${on?.mirror_dynamic_surfaces} dynamic-surface hashes, ${on?.hook_region_rehashes} hook re-hashes`);
+}
+// dyn-wire-log-independent: the hook log does not move the /11 wire (cmp-rec --tree, run-hc1.sh).
+{
+  const problems: string[] = [];
+  const rc = existsSync(join(out, "dyn-cmp.exit")) ? readFileSync(join(out, "dyn-cmp.exit"), "utf8").trim() : "missing";
+  const text = existsSync(join(out, "dyn-cmp.txt")) ? readFileSync(join(out, "dyn-cmp.txt"), "utf8") : "";
+  const identical = text.split("\n").filter((l) => l.startsWith("IDENTICAL")).length;
+  if (rc !== "0") problems.push(`cmp-rec --tree dyn-off dyn-on exited ${rc}: ${text.split("\n").slice(0, 4).join(" | ")}`);
+  if (identical < 2) problems.push(`only ${identical} recordings compared identical (want full and patch)`);
+  add("dyn-wire-log-independent", problems, `${identical} /11 recordings identical with the hook log off and on`);
+}
+// late-join-v8-on-v11: a /8 viewer on a /11 host (hook log off) is a hash reader. Every mesh
+// surface of every transaction it was sent names a real SHA-256, and its first-transaction GETs
+// all answer 200 with bodies that hash to their names.
+function lateDynV8(leg: string): string[] {
+  const problems: string[] = [];
+  const first = viewer(leg)?.first_tx;
+  const h = meshHashes(leg);
+  if (!first) return [`${leg}: the viewer received no transaction`];
+  if (!(first.frame > 60)) problems.push(`${leg}: the viewer joined at frame ${first.frame} (not late)`);
+  if (first.hashes < 10) problems.push(`${leg}: only ${first.hashes} payloads to fetch`);
+  const bad = Object.entries(first.statuses as Record<string, number>).filter(([k]) => k !== "200");
+  if (bad.length > 0) problems.push(`${leg}: GET statuses ${JSON.stringify(first.statuses)}`);
+  if (first.bad_sha > 0) problems.push(`${leg}: ${first.bad_sha} bodies do not hash to their name`);
+  let surfaces = 0;
+  let notSha = 0;
+  for (const t of tapTransactions(leg)) {
+    for (const m of (t.meta as any).meshes ?? []) {
+      for (const s of m.surfaces ?? []) {
+        surfaces++;
+        if (typeof s.hash !== "string" || !/^[0-9a-f]{64}$/.test(s.hash)) notSha++;
+      }
+    }
+  }
+  if (surfaces < 10) problems.push(`${leg}: only ${surfaces} mesh surfaces in the viewer's transactions`);
+  if (notSha > 0) problems.push(`${leg}: ${notSha} of ${surfaces} mesh surface hashes are not SHA-256s`);
+  if (!h || !(h.mirror_dynamic_surfaces > 0)) problems.push(`${leg}: ${h?.mirror_dynamic_surfaces} dynamic-surface hashes (the /8 viewer reads them)`);
+  return problems;
+}
+{
+  const problems = lateDynV8("late-dyn-v8");
+  const first = viewer("late-dyn-v8")?.first_tx;
+  add("late-join-v8-on-v11", problems, `late-dyn-v8: joined at frame ${first?.frame}; every mesh surface hash a SHA-256; ${first?.hashes} GETs, statuses ${JSON.stringify(first?.statuses)}; ${meshHashes("late-dyn-v8")?.mirror_dynamic_surfaces} dynamic-surface hashes`);
+}
+if (!rrSkipped("sabotage-dyn-hash-unread")) {
+  const caught = lateDynV8("sabotage-dyn-hash-unread");
+  add("sabotage-dyn-hash-unread-caught", caught.length > 0 ? [] : ["sabotage-dyn-hash-unread: the sabotage was not caught"], `caught: ${caught[0] ?? ""}`);
 }
 
 writeFileSync(join(out, "result.json"), `${JSON.stringify({ schema: "render-stream-hc1-result/1", checks }, null, 2)}\n`);

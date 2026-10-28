@@ -634,8 +634,10 @@ touches what a validator sees; it is a refinement of WB's rule, not a new rule.
    connection of a /11 host, a /10 one included: at /10 equal versions over equal lists are what
    /1 always meant.
 2. **Classification.** A content change is a hook call that changes a mesh's surface bytes: a
-   region update whose re-encoded payload hashes differently (the hook's own SHA-256, so no shadow
-   memcmp is kept), a surface added or removed, a clear of a mesh with surfaces. Changes count per
+   region update whose bytes differ from the mirror's copy of the surface (HC3: a memcmp of the
+   region against that copy, which the update is then written into; before HC3 the hook re-encoded
+   and re-hashed the whole payload per update and compared hashes, with the same verdict), a surface
+   added or removed, a clear of a mesh with surfaces. Changes count per
    host frame, never in the frame the mesh was built in (create plus its first surfaces). Under
    `auto` the mesh is promoted at its second change frame f2 with f2 − f1 ≤ `frames`; under `all`
    at its first snapshot with content. Promotion is decided at the snapshot, so a clear and a
@@ -643,11 +645,16 @@ touches what a validator sees; it is a refinement of WB's rule, not a new rule.
    bodies total at most `max_bytes` (checked at promotion only). It is never demoted. A dynamic
    mesh that is empty at a snapshot is encoded like a static one (it has no surface to carry) and is
    dynamic again once refilled. The serial moves at every byte change.
-3. **The hook still hashes dynamic surfaces.** The design's "dynamic surfaces skip SHA-256" is
-   deferred: the hook log (the `dyn-wire` evidence), change detection (rule 2) and a /10 viewer
-   of a /11 host all read the GRM1 hash, so the snapshot keeps each dynamic surface's GRM1 payload
-   and hash beside its body. Skipping the hash when no evidence log and no older viewer exist is a
-   host-cost follow-up (P3-CAP's area).
+3. **Dynamic surfaces are hashed only when read** (HC3, `results/p3/hc3.md`; W11b deferred it).
+   A region update is written into the mirror's copy of the GRM1 payload (copied first when a
+   snapshot published it) and compared by memcmp (rule 2); nothing is re-encoded or hashed at the
+   hook unless the hook log is on. The snapshot computes a dynamic surface's SHA-256 only while
+   something reads it: the hook log (its serve events; the `dyn-wire` evidence) or a connection
+   below /11 (its mesh table names every surface by hash). Otherwise the surface's payload sits in
+   the snapshot's payload map under a capture-local key that no /11 transaction, record, store file
+   or log line carries, and `make_patch` compares it by the content serial. A below-/11 connection
+   is first sent a snapshot taken after it opened (the G8kw hold-back can publish an older one).
+   Static surfaces are hashed as before, once per content, at the snapshot rather than per update.
 4. **`payload_bytes` of a dynamic surface** is written by the /11 encoder from the body's length;
    the snapshot keeps the GRM1 length for /10 connections.
 5. **Records.** File sinks and live connections send `records_before(B, T)` with B the stream's

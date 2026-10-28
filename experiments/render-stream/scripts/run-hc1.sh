@@ -15,6 +15,17 @@
 #                                  float are patched with their new list under a new content_version
 #   sabotage-rerecord-stale        (GRC_HC_SABOTAGE=rerecord-stale) fails rerecord-unequal-patched
 #   sabotage-cv-churn              (GRC_SABOTAGE=cv-churn) fails cv-stable-on-rerecord
+# HC3's legs (results/p3/hc3.md, host-cost-design.md D2; /11, mesh churn: 10 of the 20 meshes take
+# region updates every frame, so they turn dynamic):
+#   dyn-hash-log-off               a hook-log-off /11 file leg's counters.json mesh_hashes shows no
+#                                  SHA-256 over a dynamic surface (mirror or hook) while meshes are
+#                                  dynamic and change; its hook-log-on twin shows them (not vacuous)
+#   dyn-wire-log-independent       the two legs' /11 recordings (full and patch) are cmp-rec-equal
+#   late-join-v8-on-v11            a /8 viewer joining a /11 host (log off) gets real SHA-256s for
+#                                  every mesh surface in every transaction, and every GET answers 200
+#                                  with a body that hashes to its name
+#   sabotage-dyn-hash-unread       (GRC_HC_SABOTAGE=dyn-hash-unread: the /8 viewer is not counted as
+#                                  a hash reader) fails late-join-v8-on-v11
 #
 #   bash experiments/render-stream/scripts/run-hc1.sh --extension EXT [--out DIR] [--calibration PATH]
 #     [--binary PATH]
@@ -115,6 +126,25 @@ else
 	# shellcheck disable=SC2046
 	leg sabotage-rr-cv-churn "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" -- \
 		$(rr_sinks sabotage-rr-cv-churn) GRC_SABOTAGE=cv-churn
+fi
+# HC3: /11 file sinks with mesh churn, hook log off and on; a /8 viewer on a /11 host.
+DYN_FRAMES=150
+dyn_sinks() { echo "GRC_STREAM_VERSION=11 GRC_STREAM_OUT=$OUT/$1/recording.rs11 GRC_STREAM_PATCH_OUT=$OUT/$1/recording-patch.rs11"; }
+# shellcheck disable=SC2046
+leg dyn-off "$DYN_FRAMES" x 0 off "${CHURN[@]}" -- $(dyn_sinks dyn-off)
+# shellcheck disable=SC2046
+leg dyn-on "$DYN_FRAMES" x 0 on "${CHURN[@]}" -- $(dyn_sinks dyn-on)
+mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/cmp-rec.ts" --tree "$OUT/dyn-off" "$OUT/dyn-on" \
+	>"$OUT/dyn-cmp.txt" 2>&1
+echo "$?" >"$OUT/dyn-cmp.exit"
+# shellcheck disable=SC2046
+leg late-dyn-v8 "$FRAMES" 1 0 off "${CHURN[@]}" -- GRC_STREAM_VERSION=11 GRC_STREAM_OUT="$OUT/late-dyn-v8/recording.rs11"
+if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
+	mkdir -p "$OUT/sabotage-dyn-hash-unread"
+	echo "skipped-by-tier: RS_SABOTAGE_TIER=skip" >"$OUT/sabotage-dyn-hash-unread/skipped-by-tier.txt"
+else
+	leg sabotage-dyn-hash-unread "$FRAMES" 1 0 off "${CHURN[@]}" -- GRC_STREAM_VERSION=11 \
+		GRC_STREAM_OUT="$OUT/sabotage-dyn-hash-unread/recording.rs11" GRC_HC_SABOTAGE=dyn-hash-unread
 fi
 
 mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/hc1-checks.ts" "$OUT"

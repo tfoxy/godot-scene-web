@@ -98,6 +98,7 @@ void Mirror::reset() {
   shader_policy_ = ShaderPolicy::Source;
   perturb_shader_frame_ = 0;
   stale_dynamic_mesh_ = 0;
+  dynamic_hash_readers_ = true;  // HC3
   default_filter_ = Filter::Linear;
   default_repeat_ = Repeat::Disabled;
   failures_.clear();
@@ -185,6 +186,15 @@ void Mirror::set_perturb_vertex(std::uint64_t from_frame) {
 void Mirror::set_v11(const V11Options &options) {
   std::lock_guard<std::mutex> lock(mutex_);
   v11_ = options;
+}
+
+void Mirror::set_dynamic_hash_readers(bool readers) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  dynamic_hash_readers_ = readers;
+}
+
+bool Mirror::dynamic_hashes_read() const {
+  return dynamic_hash_readers_ || !v11_.enabled || v11_.stale_dynamic_frame != 0;
 }
 
 void Mirror::set_carry_shader_time(bool carry) {
@@ -1855,7 +1865,7 @@ Mirror::Mesh *Mirror::mesh_for(std::uint64_t rid, const char *op, std::uint64_t 
   return mesh;
 }
 
-Mirror::MeshSurf Mirror::mesh_surface(const MeshSurfaceInput &input, std::uint64_t frame) const {
+Mirror::MeshSurf Mirror::mesh_surface(const MeshSurfaceInput &input, std::uint64_t frame) {
   MeshSurf out;
   out.primitive = input.copy.primitive;
   out.format = static_cast<std::int64_t>(input.copy.format);
@@ -1867,23 +1877,114 @@ Mirror::MeshSurf Mirror::mesh_surface(const MeshSurfaceInput &input, std::uint64
     out.reason = mesh_reason_from_text(input.copy.reason);
     return out;
   }
+  // HC3: the hook's payload, shared with nothing else the mirror keeps (a region write copies it
+  // first, `writable` being null), and the hook's own hash of it.
   out.bytes = input.bytes;
+  out.key = next_surface_key_++;
   out.hash = input.copy.hash;
-  if (perturb_vertex_frame_ != 0 && frame >= perturb_vertex_frame_ && out.vertex_count > 0) {
+  if (perturb_vertex_frame_ != 0 && frame >= perturb_vertex_frame_ && out.vertex_count > 0 &&
+      first_vertex_offset(*input.bytes) != 0) {
     // Q3c (G5e): the recorded payload's first vertex x + 1.0, as a new copy re-hashed; the
-    // engine, the hook's retained buffers and the hook log keep the true bytes.
-    const std::size_t offset = first_vertex_offset(*input.bytes);
-    if (offset != 0) {
-      auto copy = std::make_shared<PayloadBytes>(*input.bytes);
-      float x = 0.0f;
-      std::memcpy(&x, copy->data() + offset, sizeof(x));
-      x += 1.0f;
-      std::memcpy(copy->data() + offset, &x, sizeof(x));
-      out.hash = sha256_hex(copy->data(), copy->size());
-      out.bytes = std::move(copy);
-    }
+    // engine, the hook's retained buffers and the hook log keep the true bytes. HC3: `bytes`
+    // stays true; the copy is built when a snapshot publishes it, its hash when read.
+    out.perturb = true;
+    out.hash.clear();
   }
   return out;
+}
+
+namespace {
+
+// perturb-vertex (Q3c): `payload` with its first vertex x + 1.0, as a new copy.
+PayloadPtr perturbed_copy(const PayloadBytes &payload) {
+  const std::size_t offset = first_vertex_offset(payload);
+  auto copy = std::make_shared<PayloadBytes>(payload);
+  if (offset != 0) {
+    float x = 0.0f;
+    std::memcpy(&x, copy->data() + offset, sizeof(x));
+    x += 1.0f;
+    std::memcpy(copy->data() + offset, &x, sizeof(x));
+  }
+  return copy;
+}
+
+// perturb-vertex: whether x + 1.0 moves a bit of `payload`'s first vertex x (not for |x| >= 2^24,
+// an infinity or a NaN that stays one).
+bool perturb_moves(const PayloadBytes &payload) {
+  const std::size_t offset = first_vertex_offset(payload);
+  if (offset == 0) {
+    return false;
+  }
+  float x = 0.0f;
+  std::memcpy(&x, payload.data() + offset, sizeof(x));
+  const float y = x + 1.0f;
+  return std::memcmp(&x, &y, sizeof(x)) != 0;
+}
+
+}  // namespace
+
+bool Mirror::apply_region(MeshSurf *surface, const MeshRegionWrite &write, std::uint64_t frame) {
+  if (!surface->ok || surface->bytes == nullptr || write.data == nullptr || write.size == 0 ||
+      write.offset > surface->bytes->size() || write.size > surface->bytes->size() - write.offset) {
+    return false;  // never happens: the hook checked the bounds against its own copy (D8)
+  }
+  const bool differs =
+      std::memcmp(surface->bytes->data() + write.offset, write.data, write.size) != 0;
+  // perturb-vertex starts applying to a surface at its first update at or after its frame (as the
+  // re-encoded surface the hook handed over before HC3 did).
+  const bool starts = perturb_vertex_frame_ != 0 && frame >= perturb_vertex_frame_ &&
+                      surface->vertex_count > 0 && !surface->perturb &&
+                      first_vertex_offset(*surface->bytes) != 0;
+  if (differs) {
+    if (surface->writable == nullptr) {
+      // Published (or still the hook's): copy before writing. Once per surface per snapshot.
+      surface->writable = std::make_shared<PayloadBytes>(*surface->bytes);
+      surface->bytes = surface->writable;
+      ++stats_.mesh_payload_copies;
+    }
+    std::memcpy(surface->writable->data() + write.offset, write.data, write.size);
+  }
+  if (starts) {
+    surface->perturb = true;
+  }
+  // W11b: a content change only when the published bytes differ (before HC3: when the re-encoded
+  // payload's SHA-256 did); an update writing the bytes already there changes nothing.
+  const bool changed = differs || (starts && perturb_moves(*surface->bytes));
+  if (changed || starts) {
+    surface->hash.clear();
+    surface->perturbed.reset();
+    surface->body.reset();
+  }
+  if (changed) {
+    surface->key = next_surface_key_++;
+  }
+  return changed;
+}
+
+PayloadPtr Mirror::publish_surface(MeshSurf *surface) {
+  if (surface->bytes == nullptr) {
+    return nullptr;
+  }
+  if (!surface->perturb) {
+    surface->writable.reset();  // a snapshot shares `bytes` now: the next write copies it
+    return surface->bytes;
+  }
+  if (surface->perturbed == nullptr) {
+    surface->perturbed = perturbed_copy(*surface->bytes);
+  }
+  return surface->perturbed;
+}
+
+const std::string &Mirror::surface_hash(MeshSurf *surface, bool dynamic) {
+  if (surface->hash.empty() && surface->bytes != nullptr) {
+    const PayloadPtr published = publish_surface(surface);
+    surface->hash = sha256_hex(published->data(), published->size());
+    ++stats_.mesh_surface_hashes;
+    if (dynamic) {
+      ++stats_.dynamic_surface_hashes;
+    }
+  }
+  return surface->hash;
 }
 
 void Mirror::recompute_mesh_status(Mesh *mesh) {
@@ -2057,12 +2158,12 @@ void Mirror::classify_mesh(Mesh *mesh) {
     return;
   }
   std::uint64_t total = 0;
-  for (const MeshSurf &surface : mesh->surfaces) {
+  for (MeshSurf &surface : mesh->surfaces) {
     if (!surface.ok || surface.bytes == nullptr) {
       return;
     }
     if (surface.body == nullptr) {
-      surface.body = mesh_body(*surface.bytes);
+      surface.body = mesh_body(*publish_surface(&surface));
     }
     total += surface.body->size();
   }
@@ -2073,7 +2174,8 @@ void Mirror::classify_mesh(Mesh *mesh) {
   ++stats_.mesh_promotions;
 }
 
-MeshEntry Mirror::wire_mesh(const Mesh &mesh) const {
+MeshEntry Mirror::wire_mesh(Mesh *mesh_ptr, PayloadMap *payloads) {
+  Mesh &mesh = *mesh_ptr;
   MeshEntry out;
   out.id = mesh.id;
   out.status = mesh.status;
@@ -2087,28 +2189,45 @@ MeshEntry Mirror::wire_mesh(const Mesh &mesh) const {
     out.custom_aabb = mesh.custom_aabb;
   }
   if (mesh.status == MeshStatus::Ok) {
+    // W11b: a dynamic entry's surfaces also carry their bodies (render-stream-11.md).
+    const bool dynamic = v11_.enabled && mesh.dynamic && !mesh.surfaces.empty();
+    // HC3 (host-cost-design.md D2): a static surface's hash names its payload on the wire, so it
+    // is always computed (once per content); a dynamic one's only when something reads it.
+    const bool hashed = !dynamic || dynamic_hashes_read();
     out.surfaces.reserve(mesh.surfaces.size());
-    for (const MeshSurf &surface : mesh.surfaces) {
+    for (MeshSurf &surface : mesh.surfaces) {
       MeshSurface wire;
-      wire.hash = surface.hash;
-      wire.payload_bytes = surface.bytes != nullptr ? surface.bytes->size() : 0;
+      PayloadPtr published;
+      if (surface.bytes != nullptr) {
+        published = publish_surface(&surface);
+        if (hashed) {
+          wire.hash = surface_hash(&surface, dynamic);
+        } else {
+          wire.hash = "hc3-key:" + std::to_string(surface.key);
+          wire.hash_is_key = true;
+        }
+      } else {
+        wire.hash = surface.hash;
+      }
+      wire.payload_bytes = published != nullptr ? published->size() : 0;
       wire.primitive = static_cast<Primitive>(surface.primitive);
       wire.format = surface.format;
       wire.vertex_count = surface.vertex_count;
       wire.index_count = surface.index_count;
+      if (dynamic && published != nullptr) {
+        if (surface.body == nullptr) {
+          surface.body = mesh_body(*published);
+        }
+        wire.body = surface.body;
+      }
+      if (payloads != nullptr && published != nullptr) {
+        payloads->emplace(wire.hash, std::move(published));
+      }
       out.surfaces.push_back(std::move(wire));
     }
-    if (v11_.enabled && mesh.dynamic && !mesh.surfaces.empty()) {
-      // W11b: the entry is dynamic; each surface also carries its body (render-stream-11.md).
+    if (dynamic) {
       out.dynamic = true;
       out.content_serial = mesh.content_serial;
-      for (std::size_t i = 0; i < mesh.surfaces.size(); ++i) {
-        const MeshSurf &surface = mesh.surfaces[i];
-        if (surface.body == nullptr && surface.bytes != nullptr) {
-          surface.body = mesh_body(*surface.bytes);
-        }
-        out.surfaces[i].body = surface.body;
-      }
     }
   }
   return out;
@@ -2191,7 +2310,7 @@ void Mirror::mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface
 }
 
 void Mirror::mesh_surface_update_region(std::uint64_t rid, const char *op, std::int32_t surface,
-                                        bool applied, const MeshSurfaceInput *updated,
+                                        bool applied, const MeshRegionWrite *write,
                                         std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   Mesh *mesh = mesh_for(rid, op, frame);
@@ -2200,15 +2319,10 @@ void Mirror::mesh_surface_update_region(std::uint64_t rid, const char *op, std::
   }
   ++epoch_;
   mesh->version += 1;
-  if (updated != nullptr && surface >= 0 &&
+  if (write != nullptr && surface >= 0 &&
       static_cast<std::size_t>(surface) < mesh->surfaces.size()) {
-    MeshSurf &slot = mesh->surfaces[static_cast<std::size_t>(surface)];
-    MeshSurf next = mesh_surface(*updated, frame);
-    // W11b: a content change only when the re-encoded payload differs (hashes, the hook's own
-    // SHA-256 of the whole payload): an update writing the bytes already there changes nothing.
-    const bool changed = next.ok != slot.ok || next.hash != slot.hash;
-    slot = std::move(next);
-    if (changed) {
+    // HC3: the region lands in the mirror's copy of the payload; no re-encode, no hash here.
+    if (apply_region(&mesh->surfaces[static_cast<std::size_t>(surface)], *write, frame)) {
       mesh_changed(mesh, frame);
     }
   }
@@ -5275,14 +5389,11 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.meshes.reserve(meshes_.size());
   for (auto &entry : meshes_) {
     classify_mesh(&entry.second);  // W11b: no-op unless V11Options.enabled
-    const Mesh &mesh = entry.second;
-    out.meshes.push_back(wire_mesh(mesh));
-    if (mesh.status != MeshStatus::Ok) {
-      continue;
-    }
-    for (const MeshSurf &surface : mesh.surfaces) {
-      if (surface.bytes != nullptr) {
-        captured.payloads.emplace(surface.hash, surface.bytes);
+    // HC3: every `ok` mesh's surfaces join the payload map under their wire hash.
+    out.meshes.push_back(wire_mesh(&entry.second, &captured.payloads));
+    if (!captured.keyed_surfaces) {
+      for (const MeshSurface &surface : out.meshes.back().surfaces) {
+        captured.keyed_surfaces = captured.keyed_surfaces || surface.hash_is_key;
       }
     }
   }
@@ -5416,12 +5527,17 @@ MirrorStats Mirror::stats() const {
   out.live_multimeshes = multimeshes_.size();
   out.live_particles = particles_.size();
   std::set<std::string> mesh_hashes;
+  std::set<const PayloadBytes *> mesh_unhashed;  // HC3: a surface not hashed (yet) counts by buffer
   for (const auto &entry : meshes_) {
     if (entry.second.dynamic) {
       ++out.meshes_dynamic;  // W11b
     }
     for (const MeshSurf &surface : entry.second.surfaces) {
-      if (surface.bytes != nullptr && mesh_hashes.insert(surface.hash).second) {
+      if (surface.bytes == nullptr) {
+        continue;
+      }
+      if (surface.hash.empty() ? mesh_unhashed.insert(surface.bytes.get()).second
+                               : mesh_hashes.insert(surface.hash).second) {
         out.mesh_payload_bytes += surface.bytes->size();
       }
     }
@@ -5484,6 +5600,10 @@ void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame) {
 
 void mirror_set_perturb_vertex(std::uint64_t from_frame) {
   mirror_instance().set_perturb_vertex(from_frame);
+}
+
+void mirror_set_dynamic_hash_readers(bool readers) {
+  mirror_instance().set_dynamic_hash_readers(readers);
 }
 
 void mirror_set_perturb_shader(std::uint64_t from_frame) {

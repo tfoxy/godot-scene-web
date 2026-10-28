@@ -110,6 +110,14 @@ struct MirrorStats {
   // digest; the published list is kept).
   std::uint64_t cv_digests = 0;
   std::uint64_t cv_rerecords_kept = 0;
+  // HC3 (host-cost-design.md D2, lazy mesh surfaces): SHA-256s the mirror computed over mesh
+  // surface payloads (a hash is computed only when something reads it, then kept until the bytes
+  // change), the share of them over surfaces of dynamic meshes (0 on a /11 host whose hook log is
+  // off and that has no viewer below /11), and the payload copies region updates made (one per
+  // surface per snapshot that published its bytes, copy-on-write).
+  std::uint64_t mesh_surface_hashes = 0;
+  std::uint64_t dynamic_surface_hashes = 0;
+  std::uint64_t mesh_payload_copies = 0;
   // PM1 (render-stream/11 with the multimesh hooks only; zero otherwise).
   std::uint64_t live_multimeshes = 0;     // multimesh table entries now, tombstones included
   std::uint64_t multimesh_unknown = 0;    // a multimesh tap naming a RID the table does not know
@@ -139,6 +147,16 @@ struct MirrorStats {
 struct MeshSurfaceInput {
   MeshSurfaceCopy copy;
   PayloadPtr bytes;
+};
+
+// HC3 (host-cost-design.md D2): one applied region update as the hook hands it to the mirror --
+// `size` bytes at `data`, to be written at byte `offset` of the surface's GRM1 payload (the hook
+// adds the header, the meta and the geometry block to the buffer's own offset). The mirror applies
+// it to its own copy of the payload; nothing is re-encoded or hashed at the hook.
+struct MeshRegionWrite {
+  std::size_t offset = 0;
+  const std::uint8_t *data = nullptr;
+  std::size_t size = 0;
 };
 
 // What a shader-code hook hands the mirror (G55d; gate5_5-design.md Q3a, Q3b): the hook log's
@@ -389,6 +407,15 @@ class Mirror {
   };
   void set_v11(const V11Options &options);
 
+  // HC3 (host-cost-design.md D2): whether anything outside a /11 connection reads the SHA-256 of a
+  // dynamic mesh's surfaces -- a viewer below /11 (its tables name them by hash) or the hook log
+  // (its serve events name the payloads). Set before each snapshot; true by default and after
+  // reset(). False, a /11 snapshot leaves those hashes uncomputed: the surface's `hash` is then a
+  // capture-local payload key (MeshSurface::hash_is_key), which no /11 transaction, record, store
+  // file or log line carries. Static meshes are always hashed (the hash names their payload).
+  // The stale-dynamic sabotage always hashes (its patches compare them, as before HC3).
+  void set_dynamic_hash_readers(bool readers);
+
   // --- multimeshes (PM1; render-stream-11.md "As built (PM1): decisions") -------------------
   //
   // Set once before arming (survives reset(), like set_v11). `enabled` exactly when the session is
@@ -590,10 +617,14 @@ class Mirror {
   void mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface, std::uint64_t frame);
   // One of the four mesh_surface_update_*_region taps (`op` its method name). `applied` is the
   // hook's verdict (D8: GLES3's bounds; a rejected or unknown update changes nothing). Applied:
-  // version + 1 and, when `updated` is non-null (an `ok` surface re-encoded by the hook), the
-  // surface takes that payload; a null `updated` (an already-refused surface) is version + 1 only.
+  // version + 1 and, when `write` is non-null (an `ok` surface's bytes), the region is written
+  // into the surface's payload; a null `write` (an already-refused surface, an omitted update) is
+  // version + 1 only. HC3 (host-cost-design.md D2): the write lands in the mirror's own copy of the
+  // GRM1 payload (copied first when a snapshot published it), the change is the memcmp of those
+  // bytes, and the surface's hash and /11 body are dropped, to be rebuilt by the next snapshot
+  // that reads them.
   void mesh_surface_update_region(std::uint64_t rid, const char *op, std::int32_t surface,
-                                  bool applied, const MeshSurfaceInput *updated,
+                                  bool applied, const MeshRegionWrite *write,
                                   std::uint64_t frame);
   // mesh_surface_remove: in range, the surface leaves and later ones renumber, version + 1.
   void mesh_surface_remove(std::uint64_t rid, std::int32_t surface, std::uint64_t frame);
@@ -957,15 +988,25 @@ class Mirror {
     rs2::Repeat repeat = rs2::Repeat::Default;
   };
   // One mesh surface (G5e): `ok` with its payload, or refused (D7) with its reason only.
+  //
+  // HC3 (host-cost-design.md D2): `bytes` is the surface's true GRM1 payload, which region updates
+  // write into (`writable` is the same buffer while no snapshot has published it; a write after a
+  // publication copies it first). `hash`, the perturb-vertex copy and the /11 body are derived
+  // from it on demand and dropped when it changes.
   struct MeshSurf {
     bool ok = false;
     rs2::MeshReason reason = rs2::MeshReason::MeshFormat;
     PayloadPtr bytes;
-    std::string hash;
+    std::shared_ptr<PayloadBytes> writable;  // == bytes while unpublished and mirror-owned
+    bool perturb = false;  // perturb-vertex applies to this surface (taken at or after its frame)
+    std::uint64_t key = 0;  // a fresh number whenever the published bytes change (HC3 payload key)
+    std::string hash;      // the SHA-256 of the published bytes; empty until something reads it
     std::int32_t primitive = 0;
     std::int64_t format = 0;
     std::int32_t vertex_count = 0;
     std::int32_t index_count = 0;
+    // perturb-vertex: the published copy of `bytes` (built when published, dropped on change).
+    mutable PayloadPtr perturbed;
     // W11b: the /11 body of `bytes` (built at the first snapshot that needs it, then shared).
     mutable std::shared_ptr<const std::vector<std::uint8_t>> body;
   };
@@ -1134,13 +1175,26 @@ class Mirror {
   // A mesh tap's prologue: omit-op (and the epoch), then the entry, or nullptr (counted unknown).
   Mesh *mesh_for(std::uint64_t rid, const char *op, std::uint64_t frame);
   // One surface as the table keeps it, perturb-vertex applied when active at `frame`.
-  MeshSurf mesh_surface(const MeshSurfaceInput &input, std::uint64_t frame) const;
+  MeshSurf mesh_surface(const MeshSurfaceInput &input, std::uint64_t frame);
+  // HC3: writes `write` into `surface`'s payload (copy-on-write); true when the published bytes
+  // change (the region's bytes differ, or perturb-vertex starts applying and moves a bit).
+  bool apply_region(MeshSurf *surface, const MeshRegionWrite &write, std::uint64_t frame);
+  // HC3: the bytes a snapshot publishes for `surface` (perturb-vertex's copy when it applies).
+  // Marks `bytes` published: the next region write copies it first.
+  PayloadPtr publish_surface(MeshSurf *surface);
+  // HC3: `surface`'s SHA-256 of its published bytes, computed once per content (`dynamic`: count
+  // it as a dynamic surface's hash).
+  const std::string &surface_hash(MeshSurf *surface, bool dynamic);
+  // HC3: whether this snapshot computes the hashes of dynamic surfaces (set_dynamic_hash_readers).
+  bool dynamic_hashes_read() const;
   static void recompute_mesh_status(Mesh *mesh);
   bool mesh_referenced(std::uint32_t id) const;
   // Takes `id` out of the table: a `freed` tombstone while a command names it, gone otherwise.
   void retire_mesh(std::uint32_t id);
   // W11b: with V11Options enabled, a dynamic mesh's entry carries `dynamic`, its serial and bodies.
-  rs2::MeshEntry wire_mesh(const Mesh &mesh) const;
+  // HC3: publishes each `ok` surface's bytes into `payloads` (when non-null) under the surface's
+  // wire hash -- its SHA-256, or for a dynamic surface nobody hashes, its payload key.
+  rs2::MeshEntry wire_mesh(Mesh *mesh, PayloadMap *payloads);
   // W11b: one content change of `mesh` at `frame` (V11Options): the serial and the classification.
   void mesh_changed(Mesh *mesh, std::uint64_t frame);
   // W11b: promotes `mesh` at the snapshot when V11Options says so.
@@ -1212,6 +1266,8 @@ class Mirror {
   bool carry_shader_time_ = false;  // P3-TM
   V11Options v11_;                  // W11b (survives reset())
   std::uint32_t stale_dynamic_mesh_ = 0;  // W11b stale-dynamic: the frozen mesh (0: none yet)
+  bool dynamic_hash_readers_ = true;      // HC3: set_dynamic_hash_readers (reset() restores it)
+  std::uint64_t next_surface_key_ = 1;    // HC3: MeshSurf::key (never reused in a session)
   double shader_time_ = 0.0;        // P3-TM: the last set_shader_time()
   bool degenerate_host_size_ = false;
   // G6b (Q3a, Q3b): the arm-time global canvas transform reference and the latest value the root
@@ -1330,6 +1386,8 @@ void mirror_set_drop_frame(std::uint64_t frame);
 void mirror_set_omit_op(const std::string &op, std::uint64_t from_frame);
 void mirror_set_perturb_glyph(std::uint64_t from_frame);
 void mirror_set_perturb_vertex(std::uint64_t from_frame);
+// HC3: Mirror::set_dynamic_hash_readers on the process-wide mirror.
+void mirror_set_dynamic_hash_readers(bool readers);
 void mirror_set_perturb_shader(std::uint64_t from_frame);
 void mirror_set_shader_policy(rs2::ShaderPolicy policy);
 void mirror_set_multimesh(const Mirror::MultimeshOptions &options);
