@@ -1014,7 +1014,7 @@ void Mirror::clear(std::uint64_t rid, std::uint64_t frame) {
     // (servers/rendering/renderer_canvas_render.h:455) but keeps custom_rect, so a Control's net
     // clip after a redraw is the set_clip that follows the clear, and a raw item that clears
     // without re-asserting it stops clipping.
-    item->state.commands.clear();
+    item->state.commands.clear_for_rerecord(&item->spare_commands);
     item->state.clip = false;
     ++item->state.content_version;
   }
@@ -1989,6 +1989,20 @@ std::uint64_t command_list_digest(const std::vector<Command> &commands) {
   }
   v &= (std::uint64_t{1} << 53) - 1;
   return v == 0 ? 1 : v;
+}
+
+// HC2 sabotage `rerecord-stale` (V11Options): a re-record counts as identical when its commands
+// have the published list's kinds, so a list that differs in one float keeps the stale list.
+bool same_command_kinds(const std::vector<Command> &a, const std::vector<Command> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].kind != b[i].kind) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::shared_ptr<const std::vector<std::uint8_t>> mesh_body(const PayloadBytes &payload) {
@@ -4963,6 +4977,51 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       continue;
     }
     item_begin = item_level.size();
+    if (v11_.enabled && !v11_.cv_churn) {
+      // W11b: the stable content_version, recomputed only when the item recorded something since
+      // (its counter moved). HC2 (host-cost-design.md D1): a re-record equal to the published list
+      // is not a change -- it publishes that very list (shared with the snapshots that hold it)
+      // and keeps its digest, with no encode and no SHA-256.
+      Item &held = entry.second;
+      if (!held.cv_digest_set || held.cv_digest_of != held.state.content_version) {
+        const SharedVector<Command> &now = held.state.commands;
+        const bool same =
+            held.cv_digest_set &&
+            (now.shares(held.cv_commands) ||
+             (v11_.rerecord_stale ? same_command_kinds(now.vector(), held.cv_commands.vector())
+                                  : command_lists_equal_bits(now.vector(),
+                                                             held.cv_commands.vector())));
+        if (same) {
+          if (!now.shares(held.cv_commands)) {
+            held.spare_commands = std::move(held.state.commands);  // no snapshot holds it yet
+          }
+          held.state.commands = held.cv_commands;
+          ++stats_.cv_rerecords_kept;
+        } else {
+          held.cv_digest = command_list_digest(now.vector());
+          // PM1: what a connection below /11 sees of a list with multimesh commands (rs2_diff.h
+          // lower_multimesh): the digest of the lowered list, as before PM1.
+          held.cv_digest_below = 0;
+          held.cv_digest_below12 = 0;
+          std::vector<Command> lowered;
+          if (pt_on) {
+            // PM5: /11's view (particles lowered) and /10's (both lowered).
+            if (lower_particles_commands(now.vector(), &lowered)) {
+              held.cv_digest_below12 = command_list_digest(lowered);
+            }
+            if (lower_v11_commands(now.vector(), &lowered)) {
+              held.cv_digest_below = command_list_digest(lowered);
+            }
+          } else if (mm_on && lower_multimesh_commands(now.vector(), &lowered)) {
+            held.cv_digest_below = command_list_digest(lowered);
+          }
+          held.cv_commands = now;
+          ++stats_.cv_digests;
+        }
+        held.cv_digest_of = held.state.content_version;
+        held.cv_digest_set = true;
+      }
+    }
     const Item &item = entry.second;
     const ItemState &state = item.state;
     for (const Command &command : state.commands) {
@@ -5058,33 +5117,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     entry.second.published = true;
     out.items.push_back(state);
     if (v11_.enabled && !v11_.cv_churn) {
-      // W11b: the stable content_version, recomputed only when the item recorded something since
-      // (its counter moved): an identical re-record keeps the published value.
-      Item &held = entry.second;
-      if (!held.cv_digest_set || held.cv_digest_of != state.content_version) {
-        held.cv_digest = command_list_digest(state.commands);
-        held.cv_digest_of = state.content_version;
-        held.cv_digest_set = true;
-        // PM1: what a connection below /11 sees of a list with multimesh commands (rs2_diff.h
-        // lower_multimesh): the digest of the lowered list, as before PM1.
-        held.cv_digest_below = 0;
-        held.cv_digest_below12 = 0;
-        std::vector<Command> lowered;
-        if (pt_on) {
-          // PM5: /11's view (particles lowered) and /10's (both lowered).
-          if (lower_particles_commands(state.commands, &lowered)) {
-            held.cv_digest_below12 = command_list_digest(lowered);
-          }
-          if (lower_v11_commands(state.commands, &lowered)) {
-            held.cv_digest_below = command_list_digest(lowered);
-          }
-        } else if (mm_on && lower_multimesh_commands(state.commands, &lowered)) {
-          held.cv_digest_below = command_list_digest(lowered);
-        }
-      }
-      out.items.back().content_version = held.cv_digest;
-      out.items.back().content_version_below_v11 = held.cv_digest_below;
-      out.items.back().content_version_below_v12 = held.cv_digest_below12;
+      out.items.back().content_version = item.cv_digest;
+      out.items.back().content_version_below_v11 = item.cv_digest_below;
+      out.items.back().content_version_below_v12 = item.cv_digest_below12;
     }
     if (pt_on && !out.particles_commands) {
       for (const Command &command : state.commands) {

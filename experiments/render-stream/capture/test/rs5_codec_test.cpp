@@ -82,11 +82,13 @@ Snapshot state5(int n) {
   if (n >= 8) {
     for (ItemState &item : s.items) {
       if (item.id == 7) {
-        for (Command &command : item.commands) {
+        std::vector<Command> commands = item.commands.vector();
+        for (Command &command : commands) {
           if (command.kind == CommandKind::AddTriangleArray) {
             command.triangle_count = 1;
           }
         }
+        item.commands = std::move(commands);
       }
     }
   }
@@ -95,11 +97,13 @@ Snapshot state5(int n) {
 
 ItemState item7_immediate_ops_v5() {
   ItemState item = golden::item7_immediate_ops();
-  for (Command &command : item.commands) {
+  std::vector<Command> commands = item.commands.vector();
+  for (Command &command : commands) {
     if (command.kind == CommandKind::AddTriangleArray) {
       command.triangle_count = 1;
     }
   }
+  item.commands = std::move(commands);
   return item;
 }
 

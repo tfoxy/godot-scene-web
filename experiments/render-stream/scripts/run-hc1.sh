@@ -8,6 +8,13 @@
 #   late-join-served               a viewer joining a running host gets the full state a file sink
 #                                  recorded and every GET it makes answers 200
 #   sabotage-pin-late              (pin-late: no pin before the first transaction) 404s fail the above
+# HC2's legs (results/p3/hc2.md; /11 file sinks, RS_SCALE_REDRAWS=40 of the 60 drawing items):
+#   cv-stable-on-rerecord          identical re-records keep their content_version and stay out of
+#                                  every patch; result.json: one digest per item, none after
+#   rerecord-unequal-patched       RS_SCALE_REDRAW_VARY=8: the 8 re-records a frame that differ in one
+#                                  float are patched with their new list under a new content_version
+#   sabotage-rerecord-stale        (GRC_HC_SABOTAGE=rerecord-stale) fails rerecord-unequal-patched
+#   sabotage-cv-churn              (GRC_SABOTAGE=cv-churn) fails cv-stable-on-rerecord
 #
 #   bash experiments/render-stream/scripts/run-hc1.sh --extension EXT [--out DIR] [--calibration PATH]
 #     [--binary PATH]
@@ -29,7 +36,7 @@ while [ $# -gt 0 ]; do
 	--out) OUT="$2" && shift 2 ;;
 	--calibration) CALIBRATION="$2" && shift 2 ;;
 	--binary) BINARY="$2" && shift 2 ;;
-	-h | --help) sed -n 2,14p "${BASH_SOURCE[0]}" && exit 0 ;;
+	-h | --help) sed -n 2,21p "${BASH_SOURCE[0]}" && exit 0 ;;
 	*) echo "run-hc1: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
@@ -86,12 +93,28 @@ leg idle 120 0 0 on "${STATIC[@]}"
 leg late-static "$FRAMES" 1 0 on "${STATIC[@]}"
 leg late-static-off "$FRAMES" 1 0 off "${STATIC[@]}"
 leg late-churn "$FRAMES" 1 1 on "${CHURN[@]}"
+# HC2: /11 file sinks (full and patch), no listener.
+RR=(RS_SCALE_REDRAWS=40)
+RR_FRAMES=150
+rr_sinks() { echo "GRC_STREAM_VERSION=11 GRC_STREAM_OUT=$OUT/$1/recording.rs11 GRC_STREAM_PATCH_OUT=$OUT/$1/recording-patch.rs11"; }
+# shellcheck disable=SC2046 # word-split on purpose: three VAR=value words
+leg rr-same "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" -- $(rr_sinks rr-same)
+# shellcheck disable=SC2046
+leg rr-vary "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" RS_SCALE_REDRAW_VARY=8 -- $(rr_sinks rr-vary)
 if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
 	# the smoke tier (lib/legs.sh's contract): tier-verdict.py excuses the check naming "sabotage"
-	mkdir -p "$OUT/sabotage-pin-late"
-	echo "skipped-by-tier: RS_SABOTAGE_TIER=skip" >"$OUT/sabotage-pin-late/skipped-by-tier.txt"
+	for s in sabotage-pin-late sabotage-rr-stale sabotage-rr-cv-churn; do
+		mkdir -p "$OUT/$s"
+		echo "skipped-by-tier: RS_SABOTAGE_TIER=skip" >"$OUT/$s/skipped-by-tier.txt"
+	done
 else
 	leg sabotage-pin-late "$FRAMES" 1 0 on "${STATIC[@]}" -- GRC_HC_SABOTAGE=pin-late
+	# shellcheck disable=SC2046
+	leg sabotage-rr-stale "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" RS_SCALE_REDRAW_VARY=8 -- \
+		$(rr_sinks sabotage-rr-stale) GRC_HC_SABOTAGE=rerecord-stale
+	# shellcheck disable=SC2046
+	leg sabotage-rr-cv-churn "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" -- \
+		$(rr_sinks sabotage-rr-cv-churn) GRC_SABOTAGE=cv-churn
 fi
 
 mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/hc1-checks.ts" "$OUT"

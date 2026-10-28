@@ -619,6 +619,11 @@ std::string result_json() {
       json.field("promotions", static_cast<int64_t>(ms.mesh_promotions));
       json.field("content_changes", static_cast<int64_t>(ms.mesh_content_changes));
       json.object_end();
+      // HC2 (host-cost-design.md D1): content_version digests made and identical re-records kept.
+      json.key("content_version").object_begin();
+      json.field("digests", static_cast<int64_t>(ms.cv_digests));
+      json.field("rerecords_kept", static_cast<int64_t>(ms.cv_rerecords_kept));
+      json.object_end();
       if (rs::mirror_instance().multimesh_options().enabled) {
         // PM1 (render-stream-11.md "As built (PM1)"): additive, /11 with the multimesh hooks only.
         json.key("multimesh").object_begin();
@@ -2315,6 +2320,9 @@ void stream_start() {
     v11.cv_churn = sabotage.config.kind == rs2::SabotageKind::CvChurn;
     v11.stale_dynamic_frame =
         sabotage.config.kind == rs2::SabotageKind::StaleDynamic ? sabotage.config.frame : 0;
+    // HC2 test knob (never declared on the wire): GRC_HC_SABOTAGE=rerecord-stale.
+    const char *hc_sabotage = std::getenv("GRC_HC_SABOTAGE");
+    v11.rerecord_stale = hc_sabotage != nullptr && std::string(hc_sabotage) == "rerecord-stale";
     rs::mirror_instance().set_v11(v11);
     // PM1 (render-stream-11.md "As built (PM1)"): the multimesh table, exactly when the session
     // declares it (rule 8). Off below /11 and without the twelve hooks: no snapshot changes.

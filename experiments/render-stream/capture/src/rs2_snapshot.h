@@ -30,6 +30,7 @@
 #define GRC_RS2_SNAPSHOT_H
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -1152,10 +1153,12 @@ struct Param {
 };
 
 // P3-CAP (results/p3/p3-cap.md): an immutable, shared sequence with std::vector's read interface.
-// Copying one copies a pointer, so a published table entry that holds one (MaterialEntry::params)
-// costs O(1) to snapshot, compare against an unchanged base (`shares`) and release. A mutation
-// (push_back, assigning a vector) never touches another holder's copy: it copies first unless this
-// holder is the only one. Not synchronised: mutate only a copy no other thread can reach.
+// Copying one copies a pointer, so a published table entry that holds one (MaterialEntry::params,
+// and since HC2 ItemState::commands) costs O(1) to snapshot, compare against an unchanged base
+// (`shares`) and release. A mutation (push_back, assigning a vector) never touches another holder's
+// copy: it copies first unless this holder is the only one. Not synchronised: mutate only a copy no
+// other thread can reach (another thread may hold and drop its own copy of the same sequence: the
+// sole-holder test below pairs with that drop through an acquire fence).
 template <typename T>
 class SharedVector {
  public:
@@ -1181,17 +1184,51 @@ class SharedVector {
   // True when both hold the very same sequence (then they are equal without a comparison).
   bool shares(const SharedVector &other) const { return data_ == other.data_; }
 
-  void push_back(T value) { own().push_back(std::move(value)); }
+  // HC2: by reference, so a large element (a 320-byte Command on every canvas_item_add_* hook) is
+  // moved once, not twice.
+  void push_back(const T &value) { own().push_back(value); }
+  void push_back(T &&value) { own().push_back(std::move(value)); }
   void reserve(std::size_t n) { own().reserve(n); }
   void clear() { data_.reset(); }
+  // HC2: empty this holder's sequence for a re-record. A sole holder clears in place and keeps its
+  // capacity. A shared sequence (a snapshot or a kept list holds it) is left to its other holders:
+  // this one takes `spare` when it is a sequence nobody else holds (its capacity is reused, so a
+  // steady re-record allocates nothing), else starts a fresh one sized like the old.
+  void clear_for_rerecord(SharedVector *spare = nullptr) {
+    if (data_ != nullptr && sole()) {
+      const_cast<std::vector<T> &>(*data_).clear();
+      return;
+    }
+    if (spare != nullptr && spare->data_ != nullptr && spare->sole()) {
+      data_ = std::move(spare->data_);
+      const_cast<std::vector<T> &>(*data_).clear();
+      return;
+    }
+    if (data_ == nullptr) {
+      return;
+    }
+    const std::size_t n = data_->size();
+    auto fresh = std::make_shared<std::vector<T>>();
+    fresh->reserve(n);
+    data_ = std::move(fresh);
+  }
 
  private:
   static const std::vector<T> &empty_vector() {
     static const std::vector<T> kEmpty;
     return kEmpty;
   }
+  // True when no other SharedVector holds this sequence. The count drops on another thread
+  // (a released snapshot) with acq_rel; the fence orders that holder's last reads before our writes.
+  bool sole() const {
+    if (data_.use_count() != 1) {
+      return false;
+    }
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return true;
+  }
   std::vector<T> &own() {
-    if (data_ == nullptr || data_.use_count() != 1) {
+    if (data_ == nullptr || !sole()) {
       data_ = std::make_shared<const std::vector<T>>(data_ != nullptr ? *data_ : std::vector<T>());
     }
     return const_cast<std::vector<T> &>(*data_);
@@ -1386,7 +1423,9 @@ struct ItemState {
   Filter texture_filter = Filter::Default;   // new at /2
   Repeat texture_repeat = Repeat::Default;   // new at /2
   std::uint64_t content_version = 0;
-  std::vector<Command> commands;
+  // HC2 (host-cost-design.md D1): shared between the mirror, every snapshot and every base a
+  // connection holds until the item records again; an identical /11 re-record keeps the old one.
+  SharedVector<Command> commands;
   // --- new at /5 (render-stream-5.md "Item"): before content_version on the wire --------------
   bool has_material = false;  // false -> "material": null
   std::uint32_t material = 0;

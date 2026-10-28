@@ -1499,7 +1499,7 @@ std::vector<std::uint8_t> encode_transaction(const Transaction &transaction) {
     if (entry.commands_null) {
       items_json += "null";
     } else {
-      append_commands(items_json, item.commands, cmd_f32, cmd_i32);
+      append_commands(items_json, item.commands.vector(), cmd_f32, cmd_i32);
     }
     items_json += "}";
 

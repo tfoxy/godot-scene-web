@@ -31,11 +31,12 @@ game.
 | `material_set_param` per frame | 8 | ~7 |
 | items moved per frame | 100 | |
 | drawing items cleared and re-recorded identically per frame (`RS_SCALE_REDRAWS`, W11b) | 0 | ~170 (WB: 163 of 174 patched items carry nothing new) |
+| of those, re-recorded with one float changed (`RS_SCALE_REDRAW_VARY`, HC2) | 0 | ~11 (WB: 174 − 163) |
 
 Every mesh update carries new vertex values, so each one is a new content-addressed payload, as
 skeletal animation produces. At the quit frame the scene prints, and writes to `RS_SCALE_REPORT`,
 its own frame-time summary over the frames after `RS_SCALE_WARMUP` (default 120): fps, frame-time
-p50/p95/max and the setup time.
+p50/p95/max, the setup time and `redraws_varied` (the varied re-records it made).
 
 ## Use
 

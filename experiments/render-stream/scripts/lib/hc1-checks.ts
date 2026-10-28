@@ -1,10 +1,12 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // hc1-checks.ts -- judges run-hc1.sh's legs (HC1, results/p3/hc1.md; protocol/host-cost-design.md
-// D5, D6). Writes <out>/result.json ({schema, checks:[{id, passed, detail}]}); exit 1 on a failure.
+// D5, D6; and HC2's re-record legs, results/p3/hc2.md, D1). Writes <out>/result.json ({schema,
+// checks:[{id, passed, detail}]}); exit 1 on a failure.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { summarizeRecording } from "./gate0-checks";
 import { stateKey } from "./gate1-live-checks";
+import { decodeRecord, splitRecords } from "./render-stream-2";
 
 const out = process.argv[2];
 if (!out) throw new Error("hc1-checks: pass the run-hc1.sh output directory");
@@ -111,6 +113,102 @@ lateJoin("sabotage-pin-late-caught", "sabotage-pin-late", "ref-static", false, t
   const early = pins.filter((p) => p.frame < first - 1);
   if (early.length > 0) problems.push(`${early.length} pins before the join (frame ${first}), first at ${early[0].frame}`);
   add("no-pin-without-viewer", problems, `${pins.length} pins, all from the join (frame ${first}) on`);
+}
+
+// HC2 (host-cost-design.md D1): the /11 re-record legs. Each patch transaction's items, with
+// whether they carry commands and their content_version against the last one published.
+interface RrTx {
+  frame: number;
+  full: boolean;
+  items: number;
+  withCommands: number;
+  cvMoved: number;
+}
+function rrTrace(leg: string): RrTx[] | null {
+  const file = join(out, leg, "recording-patch.rs11");
+  if (!existsSync(file)) return null;
+  const split = splitRecords(new Uint8Array(readFileSync(file)), 11);
+  const cv = new Map<number, number>();
+  const txs: RrTx[] = [];
+  for (let i = 1; i < split.records.length; i++) {
+    const meta = decodeRecord(split.records[i], 11).record?.meta as any;
+    if (!meta || meta.type !== "transaction") continue;
+    const full = meta.encoding === "full";
+    if (full) cv.clear();
+    let withCommands = 0;
+    let cvMoved = 0;
+    for (const item of meta.items ?? []) {
+      if (item.commands !== null) withCommands++;
+      if (cv.has(item.id) && cv.get(item.id) !== item.content_version) cvMoved++;
+      cv.set(item.id, item.content_version);
+    }
+    for (const id of meta.removed_items ?? []) cv.delete(id);
+    txs.push({ frame: meta.frame, full, items: (meta.items ?? []).length, withCommands, cvMoved });
+  }
+  return txs;
+}
+const rrSkipped = (leg: string): boolean => existsSync(join(out, leg, "skipped-by-tier.txt"));
+// result.json stream.gate8.content_version (entry.cpp, /11 file streams).
+const cvCounters = (leg: string) =>
+  json(join(out, leg, "evidence", "result.json"))?.stream?.gate8?.content_version as
+    | { digests: number; rerecords_kept: number }
+    | undefined;
+const scaleReport = (leg: string) => json(join(out, leg, "scale-report.json"));
+// Patches after the first two (the fixture's setup lands in the first full and its follow-up).
+const steady = (txs: RrTx[]): RrTx[] => txs.filter((t) => !t.full).slice(2);
+
+// cv-stable-on-rerecord: 40 identical re-records a frame never move content_version and never
+// enter a patch; the mirror digests each item once (its first publication) and keeps the rest.
+function cvStable(leg: string): string[] {
+  const problems: string[] = [];
+  const txs = rrTrace(leg);
+  const c = cvCounters(leg);
+  if (!txs) return [`${leg}: no recording-patch.rs11`];
+  const first = txs.find((t) => t.full);
+  const patches = steady(txs);
+  if (!first) problems.push(`${leg}: no full transaction`);
+  if (patches.length < 100) problems.push(`${leg}: only ${patches.length} steady patches`);
+  const patched = patches.reduce((n, t) => n + t.items, 0);
+  const moved = patches.reduce((n, t) => n + t.cvMoved, 0);
+  if (patched !== 0) problems.push(`${leg}: ${patched} items patched over ${patches.length} patches (want 0), ${moved} content_version moves`);
+  if (!c) problems.push(`${leg}: result.json has no stream.gate8.content_version`);
+  else if (first) {
+    if (c.digests !== first.items) problems.push(`${leg}: ${c.digests} digests, want one per item (${first.items})`);
+    if (c.rerecords_kept < 40 * patches.length) problems.push(`${leg}: ${c.rerecords_kept} re-records kept, want >= ${40 * patches.length}`);
+  }
+  return problems;
+}
+// rerecord-unequal-patched: of the 40, the 8 a frame recorded one float different are patched with
+// their list under a moved content_version, and each costs exactly one digest.
+function rerecordUnequal(leg: string): string[] {
+  const problems: string[] = [];
+  const txs = rrTrace(leg);
+  const c = cvCounters(leg);
+  const varied = scaleReport(leg)?.redraws_varied;
+  if (!txs) return [`${leg}: no recording-patch.rs11`];
+  const first = txs.find((t) => t.full);
+  const patches = steady(txs);
+  if (patches.length < 100) problems.push(`${leg}: only ${patches.length} steady patches`);
+  const bad = patches.filter((t) => t.items !== 8 || t.withCommands !== 8 || t.cvMoved !== 8);
+  if (bad.length > 0)
+    problems.push(`${leg}: ${bad.length} patches without exactly 8 re-recorded items carrying lists under new versions (first: frame ${bad[0].frame}, ${bad[0].items} items, ${bad[0].withCommands} with commands, ${bad[0].cvMoved} moved)`);
+  if (!c || !first || typeof varied !== "number") problems.push(`${leg}: counters or scale report missing`);
+  else {
+    const extra = c.digests - first.items;
+    if (extra > varied || extra < varied - 8) problems.push(`${leg}: ${extra} digests after setup for ${varied} varied re-records`);
+    if (c.rerecords_kept < 32 * patches.length) problems.push(`${leg}: ${c.rerecords_kept} re-records kept, want >= ${32 * patches.length}`);
+  }
+  return problems;
+}
+add("cv-stable-on-rerecord", cvStable("rr-same"), "rr-same: 0 items in every steady patch; one digest per item; every identical re-record kept");
+add("rerecord-unequal-patched", rerecordUnequal("rr-vary"), "rr-vary: 8 items a patch, each with its new list under a new content_version; one digest per varied re-record");
+for (const [id, leg, fn] of [
+  ["sabotage-rerecord-stale-caught", "sabotage-rr-stale", rerecordUnequal],
+  ["sabotage-cv-churn-caught", "sabotage-rr-cv-churn", cvStable],
+] as const) {
+  if (rrSkipped(leg)) continue;
+  const caught = fn(leg);
+  add(id, caught.length > 0 ? [] : [`${leg}: the sabotage was not caught`], `caught: ${caught[0] ?? ""}`);
 }
 
 writeFileSync(join(out, "result.json"), `${JSON.stringify({ schema: "render-stream-hc1-result/1", checks }, null, 2)}\n`);

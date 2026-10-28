@@ -28,6 +28,9 @@ extends Node2D
 ##   RS_SCALE_REDRAWS [0]         drawing items cleared and re-recorded with identical commands every
 ##                                frame (round robin), as a game's CanvasItems redraw unchanged (W11b,
 ##                                render-stream-11.md "Warm wire budget": STS2 redraws ~170 a frame)
+##   RS_SCALE_REDRAW_VARY [0]     of those redraws, how many a frame record one float different from
+##                                the item's last recording (its first add_rect's height toggles by
+##                                0.5; needs RS_SCALE_CMDS >= 1): HC2's re-record that is a change
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
@@ -50,6 +53,9 @@ var _mesh_uvs: Array[PackedByteArray] = []
 var _mesh_cursor: int = 0
 var _param_updates: int = 8
 var _redraws: int = 0
+var _redraw_vary: int = 0
+var _vary_toggle: PackedByteArray = PackedByteArray()
+var _redraws_varied: int = 0
 var _cmds: int = 4
 var _n_textures: int = 0
 var _n_float: int = 0
@@ -89,6 +95,7 @@ func _ready() -> void:
 	_mesh_updates = mini(_env_int("RS_SCALE_MESH_UPDATES", 76), n_meshes)
 	_movers = _env_int("RS_SCALE_MOVERS", 100)
 	_redraws = _env_int("RS_SCALE_REDRAWS", 0)
+	_redraw_vary = _env_int("RS_SCALE_REDRAW_VARY", 0)
 	var n_float: int = _env_int("RS_SCALE_FLOAT_TEXTURES", 800)
 	var cmds: int = _env_int("RS_SCALE_CMDS", 4)
 	var n_params: int = _env_int("RS_SCALE_PARAMS", 64)
@@ -196,14 +203,14 @@ func _ready() -> void:
 
 
 ## One drawing item's commands (setup, and each identical redraw).
-func _record(rec: Array) -> void:
+func _record(rec: Array, nudge: float = 0.0) -> void:
 	var item: RID = rec[0]
 	if rec[1] >= 0:
 		RenderingServer.canvas_item_add_mesh(item, _meshes[rec[1]], Transform2D(), Color(1, 1, 1, 1), _textures[rec[1] % maxi(1, _n_textures)].get_rid() if _n_textures > 0 else RID())
 	elif rec[2] >= 0:
 		RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 0, 16, 12), _textures[rec[2]].get_rid())
 	for c: int in _cmds:
-		RenderingServer.canvas_item_add_rect(item, Rect2(c * 3.0, 14.0, 2.0, 2.0), Color8(c * 40, 200, 80, 255))
+		RenderingServer.canvas_item_add_rect(item, Rect2(c * 3.0, 14.0, 2.0, 2.0 + (nudge if c == 0 else 0.0)), Color8(c * 40, 200, 80, 255))
 	if rec[3] >= 0:
 		# an unsupported (RGBF) texture drawn: an item-level unsupported-texture entry
 		RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 20, 8, 4), _textures[rec[3]].get_rid())
@@ -223,9 +230,17 @@ func _process(_delta: float) -> void:
 		var x: float = float((i * 37) % 600) + float((_frame + j) % 16)
 		RenderingServer.canvas_item_set_transform(_items[i], Transform2D(0.0, Vector2(x, (i * 23) % 330)))
 	for r: int in (mini(_redraws, _draws.size()) if _draws.size() > 0 else 0):
-		var rec: Array = _draws[(_redraw_cursor + r) % _draws.size()]
+		var d: int = (_redraw_cursor + r) % _draws.size()
+		var rec: Array = _draws[d]
 		RenderingServer.canvas_item_clear(rec[0])
-		_record(rec)
+		if r < _redraw_vary and _cmds > 0:
+			if _vary_toggle.size() != _draws.size():
+				_vary_toggle.resize(_draws.size())
+			_vary_toggle[d] = 1 - _vary_toggle[d]
+			_redraws_varied += 1
+			_record(rec, 0.5 * _vary_toggle[d])
+		else:
+			_record(rec, 0.5 * (_vary_toggle[d] if d < _vary_toggle.size() else 0))
 	if _draws.size() > 0:
 		_redraw_cursor = (_redraw_cursor + _redraws) % _draws.size()
 	var m: int = _meshes.size()
@@ -264,6 +279,7 @@ func _report() -> void:
 		"frame_us_p95": sorted[mini(count - 1, (count * 95) / 100)] if count > 0 else 0,
 		"frame_us_max": sorted[count - 1] if count > 0 else 0,
 		"setup_ms": _setup_ms,
+		"redraws_varied": _redraws_varied,
 	}
 	var line: String = JSON.stringify(summary)
 	print("[scale] report " + line)
