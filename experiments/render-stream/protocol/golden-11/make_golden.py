@@ -31,12 +31,70 @@ vectors"):
    16 unchanged, re-sent full as after a resync: every dynamic body, and no record (the records
       before a transaction T whose stream predecessor is B are inline(T) minus inline(B)).
 
-full.rs11 encodes the sixteen states as full transactions (out-of-band); patch.rs11 patch-encodes
-them (seq 1, 5 and 16 full, every other seq a patch; `unsupported` is null in every patch except
-14 and 15); inline.rs11 encodes them as full transactions with inline delivery, each transaction
-preceded by exactly the records inline(T) minus inline(B), in table order (textures by id, each
-texture's hash then its variants; meshes by id, static surfaces in order; shaders by id). All
-three resolve to resolved.json.
+PM1 (render-stream-11.md "As built (PM1): decisions") adds the multimesh table to /11 and five
+states. The session record changes per rule 8 in every golden-11 output (features.ops gains
+"add_multimesh", features.resources gains "multimesh", features.observed_unsupported_ops loses
+"canvas_item_add_multimesh"; each list stays sorted); every transaction of states 1-16 is
+byte-identical to before PM1 (no multimesh key, mm_f32 empty). Buffers are f32, Godot's
+TRANSFORM_2D layout per instance [xx, yx, 0, ox, xy, yy, 0, oy] then colour RGBA then custom RGBA:
+
+    mm1_buffer(s, n), stride 16 (colors, custom), instance i = 0..n-1:
+        [1, 0, 0, 10*i + s, 0, 1, 0, 5*i + 0.5,  0.25*(i+1), 0.5, 0.75, 1,  s, i, 0.5, 0.125]
+    mm2_buffer(s, n), stride 8 (transforms only), instance i:
+        [2, 0, 0, 32 + 16*i, 0, 2, 0, s + 0.5*i]
+
+Every multimesh is origin "created". AABBs are the six floats (position xyz, size xyz).
+
+   17 (from 16) three multimeshes and two new items:
+      - multimesh 1: ok, version 4, mesh 1, format 2d, colors true, custom true, instances 3,
+        visible -1, custom AABB all zero (none set), buffer mm1_buffer(17, 3) (48 floats).
+      - multimesh 2: ok, version 5, mesh null, 2d, colors false, custom false, instances 2,
+        visible 1, custom AABB [-4, -4, 0, 72, 40, 0], buffer mm2_buffer(17, 2) (16 floats).
+      - multimesh 3: unsupported, reason multimesh-3d, version 2, mesh null, format "3d", colors
+        false, custom false, instances 4, visible -1, AABB zero, no buffer (buffer_f null).
+      - item 16 (canvas 1, xform x 192 y 64, draw_index 12, content_version 1): commands
+        add_multimesh 1 tex 1 (an ok texture), add_multimesh 2 tex null, add_multimesh 3 tex null.
+      - item 17 (x 208 y 64, draw_index 13, content_version 1): one command
+        {"op":"unsupported","name":"canvas_item_add_multimesh","reason":"unknown-multimesh"} (an
+        add_multimesh on a RID the mirror never saw created). It is a separate item because an
+        item holds one unsupported[] entry per (item, op), and item 16 already holds
+        (16, canvas_item_add_multimesh) for multimesh 3.
+      - canvas 1's items gain 16 and 17; unsupported gains, after golden-10's two entries,
+        {"op":"canvas_item_add_multimesh","item":16,"reason":"unsupported-multimesh"} and
+        {"op":"canvas_item_add_multimesh","item":17,"reason":"unknown-multimesh"}.
+      mm_f32 of the patch (and of full.rs11's seq 17): mm1 aabb_f 0, buffer_f 6; mm2 aabb_f 54,
+      buffer_f 60; mm3 aabb_f 76, buffer_f null; count 82.
+   18 multimesh 1: version 5, buffer mm1_buffer(18, 3). Multimesh 2: version 6, custom AABB
+      [-8, -8, 0, 80, 48, 0], buffer unchanged. No item or unsupported change. The patch carries
+      mm1 (aabb_f 0, buffer_f 6) and mm2 (aabb_f 54, buffer_f null: equal floats); count 60; mm3
+      is absent (unchanged).
+   19 multimesh 1 re-allocated: version 7, instances 5, buffer mm1_buffer(19, 5) (80 floats).
+      Multimesh 3 freed: version 3, the tombstone (status freed, reason null, mesh null, 2d,
+      colors/custom false, instances 0, visible -1, aabb_f and buffer_f null), still named by
+      item 16. unsupported drops item 16's unsupported-multimesh entry (a freed multimesh is not
+      unsupported). The patch carries mm1 (aabb_f 0, buffer_f 6) and mm3 (tombstone); count 86.
+   20 item 16 draws only add_multimesh 1 tex 1 (content_version 2); multimeshes 2 and 3 leave
+      the table: the patch carries removed_multimeshes [2, 3] and no "multimeshes" key (mm1 is
+      unchanged), mm_f32 empty; unsupported is null (as 19).
+   21 unchanged, re-sent full as after a resync: multimesh 1 only (aabb_f 0, buffer_f 6, count
+      86, every buffer).
+
+full.rs11 encodes the twenty-one states as full transactions (out-of-band); patch.rs11 patch-
+encodes them (seq 1, 5, 16 and 21 full, every other seq a patch; `unsupported` is null in every
+patch except 14, 15, 17 and 19); inline.rs11 encodes them as full transactions with inline
+delivery, each transaction preceded by exactly the records inline(T) minus inline(B), in table
+order (textures by id, each texture's hash then its variants; meshes by id, static surfaces in
+order; shaders by id); states 17-21 add no record. All three resolve to resolved.json, whose
+states 17-21 carry "multimeshes" (after "materials"; buffer_sha256 = SHA-256 of the buffer's LE
+f32 bytes, null unless ok; custom_aabb null when freed). coding/*.coded are
+capture/build/rs_live_coding_tool's `encode` of full/patch/inline.rs11 (regenerate them with it
+after any change here).
+
+The multimesh invalid vectors use mini_mm_states() (below): seq 1 full with multimesh 1 (ok,
+colors+custom, 2 instances, mesh 1, version 3, mm1_buffer(101, 2)) and multimesh 2 (ok,
+transforms only, 1 instance, visible 1, AABB [0, 0, 0, 16, 16, 0], version 2, mm2_buffer(101,
+1)), item 1 drawing add_mesh 1, add_multimesh 1, add_multimesh 2; seq 2 a patch where multimesh 1
+gets mm1_buffer(102, 2) at version 4. Each fails exactly one rule (index.json lists them).
 """
 
 from __future__ import annotations
@@ -173,6 +231,146 @@ def mesh2_tri() -> dict:
     return dynamic_surface(MESH2_TRI_PAYLOAD, "triangles", g6.MESH1_SURFACE_A_FORMAT, 3, 0)
 
 
+# --------------------------------------------------------------------------- multimesh (PM1)
+
+NO_AABB = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+SHAPE_MM_KEYS = ("instances", "format", "colors", "custom")
+MM_JSON_KEYS = ("origin", "status", "reason", "version", "mesh", "format", "colors", "custom",
+                "instances", "visible")
+
+
+def mm_stride(m: dict) -> int:
+    return 8 + 4 * int(m["colors"]) + 4 * int(m["custom"])
+
+
+def multimesh(*, version: int, instances: int, colors: bool, custom: bool, buffer: list[float],
+              mesh: int | None = None, visible: int = -1, custom_aabb: list[float] = NO_AABB,
+              status: str = "ok", reason: str | None = None, fmt: str = "2d",
+              origin: str = "created") -> dict:
+    m = {"origin": origin, "status": status, "reason": reason, "version": version, "mesh": mesh,
+         "format": fmt, "colors": colors, "custom": custom, "instances": instances,
+         "visible": visible, "custom_aabb": list(custom_aabb), "buffer": list(buffer)}
+    if status == "ok":
+        assert reason is None and fmt == "2d" and visible <= instances
+        assert len(buffer) == instances * mm_stride(m), (len(buffer), instances)
+    else:
+        assert reason is not None and not buffer
+    return m
+
+
+def freed_multimesh(version: int, origin: str = "created") -> dict:
+    return {"origin": origin, "status": "freed", "reason": None, "version": version,
+            "mesh": None, "format": "2d", "colors": False, "custom": False, "instances": 0,
+            "visible": -1, "custom_aabb": None, "buffer": []}
+
+
+def mm1_buffer(s: int, n: int) -> list[float]:
+    """Multimesh 1's buffer at state s (colors and custom, stride 16): instance i is
+    [1, 0, 0, 10i + s, 0, 1, 0, 5i + 0.5,  0.25(i + 1), 0.5, 0.75, 1,  s, i, 0.5, 0.125]."""
+    out: list[float] = []
+    for i in range(n):
+        out += [1.0, 0.0, 0.0, 10.0 * i + s, 0.0, 1.0, 0.0, 5.0 * i + 0.5,
+                0.25 * (i + 1), 0.5, 0.75, 1.0, float(s), float(i), 0.5, 0.125]
+    return out
+
+
+def mm2_buffer(s: int, n: int) -> list[float]:
+    """Multimesh 2's buffer at state s (transforms only, stride 8): instance i is
+    [2, 0, 0, 32 + 16i, 0, 2, 0, s + 0.5i]."""
+    out: list[float] = []
+    for i in range(n):
+        out += [2.0, 0.0, 0.0, 32.0 + 16.0 * i, 0.0, 2.0, 0.0, s + 0.5 * i]
+    return out
+
+
+def add_multimesh(mm_id: int, tex: int | None = None) -> dict:
+    return {"op": "add_multimesh", "multimesh": mm_id, "tex": tex}
+
+
+g10_command_json = g6._command_json
+
+
+def _command_json(command: dict, cmd_f32: list[float], cmd_i32: list[int]) -> dict:
+    if command["op"] == "add_multimesh":  # PM1 rule 7: no floats, no "f"
+        return {"op": "add_multimesh", "multimesh": command["multimesh"], "tex": command["tex"]}
+    return g10_command_json(command, cmd_f32, cmd_i32)
+
+
+g6._command_json = _command_json
+g10_resolved_command = g6._resolved_command
+
+
+def _resolved_command(command: dict) -> dict:
+    if command["op"] == "add_multimesh":  # PM1 rule 10
+        return {"op": "add_multimesh", "multimesh": command["multimesh"], "tex": command["tex"]}
+    return g10_resolved_command(command)
+
+
+g6._resolved_command = _resolved_command
+
+
+def buffer_needed(full: bool, base: dict | None, cur: dict) -> bool:
+    """PM1 rule 3: an ok entry's buffer_f is non-null in a full, for a new entry, when the base
+    entry was not ok, after a shape change, and (the capture's serial rule) when its floats
+    changed since the base."""
+    if cur["status"] != "ok":
+        return False
+    if full or base is None or base["status"] != "ok":
+        return True
+    if any(base[k] != cur[k] for k in SHAPE_MM_KEYS):
+        return True
+    return g6.f32_pattern(base["buffer"]) != g6.f32_pattern(cur["buffer"])
+
+
+def mm_differs(base: dict, cur: dict) -> bool:
+    return (any(base[k] != cur[k] for k in MM_JSON_KEYS)
+            or (base["custom_aabb"] is None) != (cur["custom_aabb"] is None)
+            or (cur["custom_aabb"] is not None
+                and g6.f32_pattern(base["custom_aabb"]) != g6.f32_pattern(cur["custom_aabb"])))
+
+
+def _mm_entry_json(mm_id: int, m: dict, with_buffer: bool, mm_f32: list[float]) -> dict:
+    aabb_f = None
+    if m["status"] != "freed":
+        aabb_f = len(mm_f32)
+        mm_f32 += m["custom_aabb"]
+    buffer_f = None
+    if with_buffer:
+        buffer_f = len(mm_f32)
+        mm_f32 += m["buffer"]
+    return {"id": mm_id, "origin": m["origin"], "status": m["status"], "reason": m["reason"],
+            "version": m["version"], "mesh": m["mesh"], "format": m["format"],
+            "colors": m["colors"], "custom": m["custom"], "instances": m["instances"],
+            "visible": m["visible"], "aabb_f": aabb_f, "buffer_f": buffer_f}
+
+
+def _multimesh_tables(encoding: str, base: dict | None, cur: dict,
+                      mm_f32: list[float]) -> tuple[list[dict], list[int]]:
+    """(multimeshes, removed_multimeshes) of one /11 transaction (PM1 rules 1-4 and 9)."""
+    cur_mm = cur.get("multimeshes", {})
+    full = encoding == "full"
+    base_mm = {} if full else base.get("multimeshes", {})
+    entries = []
+    for mm_id in sorted(cur_mm):
+        m, b = cur_mm[mm_id], base_mm.get(mm_id)
+        with_buffer = buffer_needed(full, b, m)
+        if not full and b is not None and not with_buffer and not mm_differs(b, m):
+            continue
+        entries.append(_mm_entry_json(mm_id, m, with_buffer, mm_f32))
+    removed = [] if full else sorted(set(base_mm) - set(cur_mm))
+    return entries, removed
+
+
+def resolved_multimesh(mm_id: int, m: dict) -> dict:
+    ok = m["status"] == "ok"
+    return {"id": mm_id, "origin": m["origin"], "status": m["status"], "reason": m["reason"],
+            "version": m["version"], "mesh": m["mesh"], "format": m["format"],
+            "colors": m["colors"], "custom": m["custom"], "instances": m["instances"],
+            "visible": m["visible"],
+            "custom_aabb": None if m["custom_aabb"] is None else list(m["custom_aabb"]),
+            "buffer_sha256": hashlib.sha256(g6.f32s(m["buffer"])).hexdigest() if ok else None}
+
+
 # --------------------------------------------------------------------------- names and records
 
 PAYLOADS = {
@@ -259,10 +457,41 @@ def _rewrite_transaction(meta: dict, blocks: list) -> tuple[dict, list]:
                 ordered["u8"] = u8
         meshes_json.append(ordered)
     out["meshes"] = meshes_json
-    blocks = list(blocks) + [g6.u8block("mesh_u8", bytes(mesh_u8)), g6.f32block("mm_f32", [])]
+    mm_f32: list[float] = []
+    multimeshes_json, removed_multimeshes = _multimesh_tables(encoding, base, cur, mm_f32)
+    if multimeshes_json or removed_multimeshes:  # PM1 rule 1: only when non-empty
+        out = _with_after(out, "materials", [("multimeshes", multimeshes_json),
+                                             ("removed_multimeshes", removed_multimeshes)])
+    blocks = list(blocks) + [g6.u8block("mesh_u8", bytes(mesh_u8)),
+                             g6.f32block("mm_f32", mm_f32)]
     if MUTATE is not None:
         out, blocks = MUTATE(out, blocks)
     return out, blocks
+
+
+def _with_after(meta: dict, after: str, pairs: list[tuple[str, object]]) -> dict:
+    """meta with each non-empty (key, list) of pairs inserted right after key `after`."""
+    out = {}
+    for key, value in meta.items():
+        out[key] = value
+        if key == after:
+            for k, v in pairs:
+                if v:
+                    out[k] = v
+    return out
+
+
+def _pm1_features(features: dict) -> dict:
+    """PM1 rule 8: the session record of a /11 capture with the multimesh hooks planned."""
+    assert "add_multimesh" not in features["ops"]
+    assert "canvas_item_add_multimesh" in features["observed_unsupported_ops"]
+    return dict(
+        features,
+        ops=sorted(list(features["ops"]) + ["add_multimesh"]),
+        resources=sorted(list(features["resources"]) + ["multimesh"]),
+        observed_unsupported_ops=[op for op in features["observed_unsupported_ops"]
+                                  if op != "canvas_item_add_multimesh"],
+    )
 
 
 def _encode_record(meta: dict, blocks: list, short_block: str | None = None) -> bytes:
@@ -270,6 +499,8 @@ def _encode_record(meta: dict, blocks: list, short_block: str | None = None) -> 
         if meta["type"] == "session":
             meta = dict(meta, resources=dict(meta["resources"],
                                              mesh_dynamic=dict(SESSION_MESH_DYNAMIC)))
+            if PM1_FEATURES:
+                meta["features"] = _pm1_features(meta["features"])
         elif meta["type"] == "transaction":
             meta, blocks = _rewrite_transaction(meta, blocks)
     return g10_encode_record(meta, blocks, short_block)
@@ -277,6 +508,7 @@ def _encode_record(meta: dict, blocks: list, short_block: str | None = None) -> 
 
 g6.encode_record = _encode_record
 SESSION_MESH_DYNAMIC = dict(MESH_DYNAMIC)
+PM1_FEATURES = True  # False while writing multimesh-feature (a session from before PM1)
 
 g10_full_transaction_bytes = g6.full_transaction_bytes
 g10_patch_transaction_bytes = g6.patch_transaction_bytes
@@ -372,8 +604,68 @@ def state16() -> dict:
     return _copy(STATES[14])
 
 
+# --------------------------------------------------------------------------- the five multimesh states
+
+MM_UNSUPPORTED_16 = {"op": "canvas_item_add_multimesh", "item": 16,
+                     "reason": "unsupported-multimesh"}
+MM_UNKNOWN_17 = {"op": "canvas_item_add_multimesh", "item": 17, "reason": "unknown-multimesh"}
+
+
+def state17() -> dict:
+    state = _copy(STATES[15])
+    state["multimeshes"] = {
+        1: multimesh(version=4, instances=3, colors=True, custom=True, mesh=1,
+                     buffer=mm1_buffer(17, 3)),
+        2: multimesh(version=5, instances=2, colors=False, custom=False, visible=1,
+                     custom_aabb=[-4.0, -4.0, 0.0, 72.0, 40.0, 0.0], buffer=mm2_buffer(17, 2)),
+        3: multimesh(version=2, instances=4, colors=False, custom=False, status="unsupported",
+                     reason="multimesh-3d", fmt="3d", buffer=[]),
+    }
+    items = state["items"]
+    items[16] = g10._bb_item(parent=("canvas", 1), children=[], x=192.0, draw_index=12,
+                             content_version=1,
+                             commands=[add_multimesh(1, 1), add_multimesh(2), add_multimesh(3)])
+    items[17] = g10._bb_item(parent=("canvas", 1), children=[], x=208.0, draw_index=13,
+                             content_version=1,
+                             commands=[g6.unsupported_cmd("canvas_item_add_multimesh",
+                                                          "unknown-multimesh")])
+    state["canvases"][1] = g6.root_canvas([1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 17])
+    state["unsupported"] = list(state["unsupported"]) + [MM_UNSUPPORTED_16, MM_UNKNOWN_17]
+    return state
+
+
+def state18() -> dict:
+    state = _copy(STATES[16])
+    mms = state["multimeshes"]
+    mms[1] = dict(mms[1], version=5, buffer=mm1_buffer(18, 3))
+    mms[2] = dict(mms[2], version=6, custom_aabb=[-8.0, -8.0, 0.0, 80.0, 48.0, 0.0])
+    return state
+
+
+def state19() -> dict:
+    state = _copy(STATES[17])
+    mms = state["multimeshes"]
+    mms[1] = dict(mms[1], version=7, instances=5, buffer=mm1_buffer(19, 5))
+    mms[3] = freed_multimesh(3)
+    state["unsupported"] = [u for u in state["unsupported"] if u != MM_UNSUPPORTED_16]
+    return state
+
+
+def state20() -> dict:
+    state = _copy(STATES[18])
+    state["multimeshes"] = {1: state["multimeshes"][1]}
+    state["items"][16] = dict(state["items"][16], content_version=2,
+                              commands=[add_multimesh(1, 1)])
+    return state
+
+
+def state21() -> dict:
+    return _copy(STATES[19])
+
+
 STATES: list[dict] = list(g10.STATES)
-for _make in (state11, state12, state13, state14, state15, state16):
+for _make in (state11, state12, state13, state14, state15, state16,
+              state17, state18, state19, state20, state21):
     STATES.append(_make())
 
 # --------------------------------------------------------------------------- decode / resolved
@@ -400,6 +692,10 @@ def resolved_state(state: dict) -> dict:
                 "index_count": s["index_count"],
             })
         entry["surfaces"] = surfaces
+    mms = state.get("multimeshes", {})
+    if mms:  # PM1 rule 10: right after "materials", only when non-empty
+        assert list(out)[-1] == "materials"
+        out["multimeshes"] = [resolved_multimesh(i, mms[i]) for i in sorted(mms)]
     return out
 
 
@@ -653,6 +949,176 @@ def build_invalid_vectors() -> dict[str, tuple[bytes, str, str, int]]:
     out["unsupported-null-full"] = (
         mini_recording(None, lambda meta, blocks: (dict(meta, unsupported=None), blocks)),
         "meta-schema", "a full transaction's unsupported is null (legal in a patch only)", 11)
+    out.update(build_multimesh_vectors())
+    return out
+
+
+# --------------------------------------------------------------------------- multimesh vectors
+
+
+def mini_mm_states() -> list[dict]:
+    """Seq 1 (full): dynamic mesh 1; multimesh 1 (ok, colors and custom, 2 instances, mesh 1,
+    version 3, buffer mm1_buffer(101, 2)) and multimesh 2 (ok, transforms only, 1 instance,
+    visible 1, mesh null, custom AABB [0, 0, 0, 16, 16, 0], version 2, buffer mm2_buffer(101,
+    1)); item 1 draws add_mesh 1, add_multimesh 1 and add_multimesh 2 (tex null). Seq 2 (a
+    patch): multimesh 1's buffer becomes mm1_buffer(102, 2), version 4."""
+    one = mini_state({1: mini_mesh([mesh1_dyn()])})
+    one["items"][1] = dict(one["items"][1], commands=[g6.add_mesh(1, g6.IDENTITY),
+                                                      add_multimesh(1), add_multimesh(2)])
+    one["multimeshes"] = {
+        1: multimesh(version=3, instances=2, colors=True, custom=True, mesh=1,
+                     buffer=mm1_buffer(101, 2)),
+        2: multimesh(version=2, instances=1, colors=False, custom=False, visible=1,
+                     custom_aabb=[0.0, 0.0, 0.0, 16.0, 16.0, 0.0], buffer=mm2_buffer(101, 1)),
+    }
+    two = _copy(one)
+    two["multimeshes"][1] = dict(two["multimeshes"][1], version=4, buffer=mm1_buffer(102, 2))
+    return [one, two]
+
+
+def _mm_entry(mm_id: int, fn):
+    def mutate(meta: dict, blocks: list):
+        mms = []
+        for entry in meta["multimeshes"]:
+            entry = dict(entry)
+            if entry["id"] == mm_id:
+                fn(entry)
+            mms.append(entry)
+        return dict(meta, multimeshes=mms), blocks
+    return mutate
+
+
+def _cut_buffer(mm_id: int):
+    """Null mm_id's buffer_f and cut its floats out of mm_f32 (later offsets move down), so that
+    only the buffer_f rule fails."""
+    def mutate(meta: dict, blocks: list):
+        cut = None
+        mms = []
+        for entry in meta["multimeshes"]:
+            entry = dict(entry)
+            if entry["id"] == mm_id:
+                stride = 8 + 4 * int(entry["colors"]) + 4 * int(entry["custom"])
+                cut = (entry["buffer_f"], entry["buffer_f"] + entry["instances"] * stride)
+                entry["buffer_f"] = None
+            mms.append(entry)
+        assert cut is not None
+        for entry in mms:
+            for key in ("aabb_f", "buffer_f"):
+                if entry[key] is not None and entry[key] >= cut[1]:
+                    entry[key] -= cut[1] - cut[0]
+        blocks = [(b[0], b[1], b[2][:cut[0]] + b[2][cut[1]:]) if b[0] == "mm_f32" else b
+                  for b in blocks]
+        return dict(meta, multimeshes=mms), blocks
+    return mutate
+
+
+def _insert_after_materials(key: str, value):
+    def mutate(meta: dict, blocks: list):
+        out = {}
+        for k, v in meta.items():
+            out[k] = v
+            if k == "materials":
+                out[key] = value
+        return out, blocks
+    return mutate
+
+
+def build_multimesh_vectors() -> dict[str, tuple[bytes, str, str, int]]:
+    global PM1_FEATURES
+    out: dict[str, tuple[bytes, str, str, int]] = {}
+    mm = mini_mm_states()
+    full1 = [mm[0]]
+    # Seq 1's mm_f32: multimesh 1's AABB at 0, its 32 buffer floats at 6, multimesh 2's AABB at
+    # 38, its 8 buffer floats at 44: 52 floats.
+    out["mm-offset-wrong"] = (
+        mini_recording(full1, _mm_entry(2, lambda e: e.update(buffer_f=e["buffer_f"] + 1))),
+        "mm-offset", "multimesh 2's buffer_f is 45, expected 44 (6 + 32 + 6 floats before it)",
+        11)
+    out["mm-offset-short"] = (
+        mini_recording(full1, _block("mm_f32", lambda b: (b[0], b[1], b[2][:-1]))),
+        "mm-offset", "mm_f32 carries 51 floats (count 51), the multimeshes claim 52", 11)
+    out["multimesh-entry"] = (
+        mini_recording(full1, _mm_entry(1, lambda e: e.update(reason="multimesh-3d"))),
+        "multimesh-entry", "multimesh 1 is ok with reason \"multimesh-3d\" (ok needs null)", 11)
+    out["multimesh-entry-full-null"] = (
+        mini_recording(full1, _cut_buffer(1)), "multimesh-entry",
+        "a full transaction carries ok multimesh 1 with buffer_f null (its floats cut from "
+        "mm_f32, later offsets moved down)", 11)
+    shape = mini_mm_states()
+    shape[1]["multimeshes"][1] = dict(shape[1]["multimeshes"][1], version=5, instances=3,
+                                      buffer=mm1_buffer(102, 3))
+    out["multimesh-entry-shape-null"] = (
+        mini_recording(shape, _cut_buffer(1), patch=True, mutate_seq=2), "multimesh-entry",
+        "seq 2 re-allocates multimesh 1 to 3 instances (a shape change) but leaves its buffer_f "
+        "null", 11)
+
+    def unsupported_with_buffer(meta: dict, blocks: list):
+        meta, blocks = _mm_entry(1, lambda e: e.update(status="unsupported",
+                                                       reason="multimesh-interpolated"))(
+            meta, blocks)
+        return dict(meta, unsupported=[{"op": "canvas_item_add_multimesh", "item": 1,
+                                        "reason": "unsupported-multimesh"}]), blocks
+
+    out["multimesh-entry-unsupported-buffer"] = (
+        mini_recording(full1, unsupported_with_buffer), "multimesh-entry",
+        "multimesh 1 is unsupported (multimesh-interpolated, with its derived item entry) but "
+        "carries buffer_f 6 and its floats", 11)
+
+    def extra_command(meta: dict, blocks: list):
+        items = []
+        for entry in meta["items"]:
+            entry = dict(entry)
+            if entry["id"] == 1:
+                entry["commands"] = list(entry["commands"]) + [add_multimesh(9)]
+            items.append(entry)
+        return dict(meta, items=items), blocks
+
+    out["multimesh-ref"] = (
+        mini_recording(full1, extra_command), "multimesh-ref",
+        "item 1 also draws add_multimesh 9, which has no multimesh entry", 11)
+    out["multimesh-ref-mesh"] = (
+        mini_recording(full1, _mm_entry(1, lambda e: e.update(mesh=7))), "multimesh-ref",
+        "multimesh 1's mesh is 7, which has no mesh entry", 11)
+    out["multimesh-version"] = (
+        mini_recording(mm, _mm_entry(1, lambda e: e.update(version=2)), patch=True,
+                       mutate_seq=2), "multimesh-version",
+        "seq 2 carries multimesh 1 (new floats) at version 2, below the base's 3", 11)
+    out["multimesh-empty-key"] = (
+        mini_recording(None, _insert_after_materials("multimeshes", [])), "meta-schema",
+        "a transaction carries \"multimeshes\": [] (the key is present only when non-empty)", 11)
+    out["multimesh-removed-empty-key"] = (
+        mini_recording(None, _insert_after_materials("removed_multimeshes", []), patch=True,
+                       mutate_seq=2), "meta-schema",
+        "a patch carries \"removed_multimeshes\": [] (the key is present only when non-empty)",
+        11)
+    PM1_FEATURES = False
+    try:
+        out["multimesh-feature"] = (
+            mini_recording(full1), "meta-schema",
+            "item 1 draws add_multimesh in a session whose features.ops lacks add_multimesh "
+            "(the session record from before PM1)", 11)
+    finally:
+        PM1_FEATURES = True
+
+    # A /10 stream (golden-10's mini scene) whose transaction carries a multimeshes key.
+    entry = {"id": 1, "origin": "created", "status": "ok", "reason": None, "version": 1,
+             "mesh": None, "format": "2d", "colors": False, "custom": False, "instances": 0,
+             "visible": -1, "aabb_f": 0, "buffer_f": 6}
+
+    def v10_key(meta: dict, backbuffer: list[float]):
+        out10 = {}
+        for k, v in meta.items():
+            out10[k] = v
+            if k == "materials":
+                out10["multimeshes"] = [entry]
+        return out10, backbuffer
+
+    with as_v10():
+        v10 = g10.mini_recording(v10_key)
+    out["multimesh-v10"] = (
+        v10, "meta-schema",
+        "a render-stream/10 transaction (golden-10's mini scene) carries a \"multimeshes\" key, "
+        "which exists only at /11", 10)
     return out
 
 
@@ -716,7 +1182,7 @@ def build() -> dict[str, bytes]:
 
     patch_session = g9.session_record("2" * 32, "file", "patch",
                                       "fedcba9876543210fedcba9876543210", delivery="out-of-band")
-    full_seqs = (1, 5, 16)  # 5 and 16: a resync's full
+    full_seqs = (1, 5, 16, 21)  # 5, 16 and 21: a resync's full
     patch_records = [patch_session]
     for i, state in enumerate(STATES):
         seq = i + 1

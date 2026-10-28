@@ -245,6 +245,7 @@ enum class CommandKind : std::uint8_t {
   AddSetTransform,
   AddClipIgnore,
   Unsupported,
+  AddMultimesh,  // new at /11 (PM1, render-stream-11.md "As built (PM1)" rule 7)
 };
 
 // CanvasTextureHeadless (G2d): a texture draw naming RID() on a headless host, whose dummy
@@ -256,6 +257,7 @@ enum class UnsupportedCmdReason : std::uint8_t {
   CanvasTextureHeadless,
   UnknownMesh,
   SkinnedGeometry,
+  UnknownMultimesh,  // new at /11 (PM1 rule 7): an add_multimesh naming a RID never seen created
 };
 
 enum class TransactionStatus : std::uint8_t { Ok, CaptureFailure };
@@ -290,6 +292,9 @@ enum class UnsupportedReason : std::uint8_t {
   CanvasFollowViewport,     // canvas_set_parent, sticky
   GlobalCanvasTransform,    // viewport_set_global_canvas_transform differs from the arm-time stretch
   Snap2d,                   // viewport_set_snap_2d_transforms_to_pixel/_vertices_to_pixel
+  // --- new at /11 (PM1, render-stream-11.md "As built (PM1)" rule 7) ---------------------------
+  UnknownMultimesh,      // derived from an unsupported "unknown-multimesh" command
+  UnsupportedMultimesh,  // an add_multimesh command naming an `unsupported` multimesh entry
 };
 
 enum class SabotageKind : std::uint8_t {
@@ -326,6 +331,9 @@ enum class SabotageKind : std::uint8_t {
   CvChurn,       // WB: content_version moves on every re-record, equal lists included (/10's rule)
   StaleDynamic,  // u8 stays null for one changed dynamic mesh from the sabotage frame on
   KeepCarried,   // the host keeps /10's lifelong carried set at /11 (W11a's codec flag, live too)
+  // New at /11 (PM1, render-stream-11.md "As built (PM1)" rule 11).
+  PerturbInstance,  // the encoder adds 1.0 to the first buffer float it writes, from the frame on
+  StaleBuffer,      // the first multimesh whose buffer changes at or after the frame keeps its serial
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -483,6 +491,8 @@ inline const char *to_wire(UnsupportedReason v) {
   case UnsupportedReason::CanvasFollowViewport: return "canvas-follow-viewport";
   case UnsupportedReason::GlobalCanvasTransform: return "global-canvas-transform";
   case UnsupportedReason::Snap2d: return "snap-2d";
+  case UnsupportedReason::UnknownMultimesh: return "unknown-multimesh";
+  case UnsupportedReason::UnsupportedMultimesh: return "unsupported-multimesh";
   }
   return "unsupported-op";
 }
@@ -493,6 +503,7 @@ inline const char *to_wire(UnsupportedCmdReason v) {
   case UnsupportedCmdReason::CanvasTextureHeadless: return "canvas-texture-headless";
   case UnsupportedCmdReason::UnknownMesh: return "unknown-mesh";
   case UnsupportedCmdReason::SkinnedGeometry: return "skinned-geometry";
+  case UnsupportedCmdReason::UnknownMultimesh: return "unknown-multimesh";
   }
   return "unsupported-op";
 }
@@ -526,6 +537,8 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::CvChurn: return "cv-churn";
   case SabotageKind::StaleDynamic: return "stale-dynamic";
   case SabotageKind::KeepCarried: return "keep-carried";
+  case SabotageKind::PerturbInstance: return "perturb-instance";
+  case SabotageKind::StaleBuffer: return "stale-buffer";
   }
   return "";
 }
@@ -1087,6 +1100,7 @@ struct Command {
   std::uint32_t mesh = 0;                 // AddMesh: the wire mesh id (always present for this kind)
   Xform transform = kIdentityXform;       // AddMesh, AddSetTransform
   bool clip_ignore = false;               // AddClipIgnore
+  std::uint32_t multimesh = 0;            // AddMultimesh (/11, PM1): the wire multimesh id
 };
 
 // --- new at /5: a material or instance-shader-parameter value (render-stream-5.md "Material
@@ -1271,6 +1285,12 @@ struct ItemState {
   CanvasGroupState canvas_group;            // mode Disabled -> "canvas_group": null
   bool copy_to_backbuffer = false;          // false -> "copy_to_backbuffer": null
   Rect4 copy_to_backbuffer_rect = kZeroRect;  // as the engine received it (Rect2() = whole target)
+  // PM1 (render-stream-11.md "As built (PM1)" rule 7): never encoded. The content_version a
+  // connection below /11 sees, when it differs from `content_version` (0: it does not): the digest
+  // of the command list as it is lowered there (add_multimesh as /10's `unsupported-op` command),
+  // so a /10 viewer of a /11 host gets the versions it got before PM1. rs2_diff.h
+  // lower_multimesh() substitutes it.
+  std::uint64_t content_version_below_v11 = 0;
 };
 
 struct CanvasState {
@@ -1384,6 +1404,70 @@ struct MeshEntry {
   std::uint64_t content_serial = 0;
 };
 
+// --- new at /11 (PM1): the multimesh table (render-stream-11.md "As built (PM1): decisions") ----
+
+enum class MultimeshStatus : std::uint8_t { Ok, Unsupported, Freed };
+// Rule 2's reasons, in the order the mirror decides them (the first that applies).
+enum class MultimeshReason : std::uint8_t {
+  Multimesh3d,
+  MultimeshIndirect,
+  MultimeshInterpolated,
+  UnknownMesh,
+  PayloadTooLarge,
+};
+enum class MultimeshFormat : std::uint8_t { TwoD, ThreeD };
+
+inline const char *to_wire(MultimeshStatus v) {
+  switch (v) {
+  case MultimeshStatus::Ok: return "ok";
+  case MultimeshStatus::Unsupported: return "unsupported";
+  case MultimeshStatus::Freed: return "freed";
+  }
+  return "ok";
+}
+inline const char *to_wire(MultimeshReason v) {
+  switch (v) {
+  case MultimeshReason::Multimesh3d: return "multimesh-3d";
+  case MultimeshReason::MultimeshIndirect: return "multimesh-indirect";
+  case MultimeshReason::MultimeshInterpolated: return "multimesh-interpolated";
+  case MultimeshReason::UnknownMesh: return "unknown-mesh";
+  case MultimeshReason::PayloadTooLarge: return "payload-too-large";
+  }
+  return "multimesh-3d";
+}
+inline const char *to_wire(MultimeshFormat v) { return v == MultimeshFormat::TwoD ? "2d" : "3d"; }
+
+// One multimesh-table entry (rule 2). `custom_aabb` is six floats (position xyz, size xyz), all
+// zero meaning none set; it is not encoded for a `freed` entry (`aabb_f` null). `buffer` is the
+// host's TRANSFORM_2D buffer (per instance [xx, yx, 0, ox, xy, yy, 0, oy], then colour RGBA, then
+// custom RGBA), `instances * multimesh_stride()` floats, set exactly on an `ok` entry; shared and
+// immutable, so a snapshot copies a pointer (P3-CAP). `buffer_serial` moves exactly when the
+// mirror's shadow buffer's bytes change (rule 2), so make_patch() writes the floats (`buffer_f`
+// non-null) when the target's serial differs from the base's (rule 3). Neither is on the wire.
+struct MultimeshEntry {
+  std::uint32_t id = 0;
+  Origin origin = Origin::Created;  // Created or Adopted
+  MultimeshStatus status = MultimeshStatus::Ok;
+  bool has_reason = false;
+  MultimeshReason reason = MultimeshReason::Multimesh3d;
+  std::uint64_t version = 1;
+  bool has_mesh = false;  // false -> "mesh": null
+  std::uint32_t mesh = 0;
+  MultimeshFormat format = MultimeshFormat::TwoD;
+  bool colors = false;
+  bool custom = false;
+  std::int32_t instances = 0;
+  std::int32_t visible = -1;
+  std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  std::shared_ptr<const std::vector<float>> buffer;
+  std::uint64_t buffer_serial = 0;
+};
+
+// Rule 4: floats per instance in a 2d multimesh's buffer.
+inline std::uint32_t multimesh_stride(bool colors, bool custom) {
+  return 8u + (colors ? 4u : 0u) + (custom ? 4u : 0u);
+}
+
 struct Failure {
   FailureReason reason = FailureReason::RootQueryFailed;
   std::string detail;
@@ -1431,6 +1515,13 @@ struct Snapshot {
   std::vector<MeshEntry> meshes;      // sorted by id ascending; new at /4
   std::vector<ShaderEntry> shaders;      // sorted by id ascending; new at /5
   std::vector<MaterialEntry> materials;  // sorted by id ascending; new at /5
+  // PM1 (render-stream-11.md "As built (PM1)" rule 9): the multimeshes an add_multimesh command
+  // of this state names, sorted by id ascending. Encoded at /11 only.
+  std::vector<MultimeshEntry> multimeshes;
+  // PM1: true when some item's commands hold an add_multimesh or an `unknown-multimesh`
+  // unsupported command, so a connection below /11 must lower them (rs2_diff.h lower_multimesh);
+  // false keeps every older transaction a plain copy, as before PM1.
+  bool multimesh_commands = false;
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;
@@ -1486,6 +1577,17 @@ struct Transaction {
   std::vector<std::uint32_t> mesh_bodies_held;
   std::vector<ShaderEntry> shaders;      // ascending by id; new at /5; full entries
   std::vector<MaterialEntry> materials;  // ascending by id; new at /5; full entries
+  // PM1 (render-stream-11.md "As built (PM1)" rules 1-4, 9): the multimesh entries (full
+  // entries, ascending by id) and, on a patch, the base ids no longer in the table (ascending).
+  // Each key is encoded only when non-empty, at /11 only.
+  std::vector<MultimeshEntry> multimeshes;
+  std::vector<std::uint32_t> removed_multimeshes;
+  // The ids (ascending) of the `ok` entries in `multimeshes` whose floats the base already holds,
+  // so their `buffer_f` is null (rule 3). Set only by make_patch() at /11; every other `ok` entry
+  // writes its buffer.
+  std::vector<std::uint32_t> multimesh_buffers_held;
+  // Sabotage perturb-instance (rule 11): the encoder adds 1.0 to the first buffer float it writes.
+  bool perturb_instance = false;
 
   TransactionStatus status() const {
     return failures.empty() ? TransactionStatus::Ok : TransactionStatus::CaptureFailure;

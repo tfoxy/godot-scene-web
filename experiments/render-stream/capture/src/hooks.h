@@ -72,6 +72,11 @@ std::string hooks_plan_detail(const HookPlan &plan);
 // carry it so an expected call can be placed in time.
 void hooks_set_frame(uint64_t frame);
 
+// PM1 (render-stream-11.md "As built (PM1)" rule 8): the last hooks_plan() planned all twelve
+// multimesh hooks (GRC_STREAM_VERSION=11 and a record naming every slot), so the session declares
+// add_multimesh and the mirror's multimesh table is on.
+bool hooks_multimesh_planned();
+
 // P3-TM (render-stream-10.md "Shader time"): set before arming when the session is /10. The
 // shader hooks then classify `TIME` as a use, not the `shader-time` reason.
 void hooks_set_shader_time_carried(bool carried);

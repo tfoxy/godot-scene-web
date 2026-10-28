@@ -64,6 +64,9 @@ pub enum Shortcut {
     UnsupportedCommand,
     /// An `add_mesh` naming a mesh that is unsupported, freed or has no payload: not drawn.
     MeshUnavailableSkipped,
+    /// /11 (PM1): an `add_multimesh`. The wire carries the multimesh and its buffer, but this
+    /// executor does not draw instances yet (PM3): not drawn, counted.
+    MultimeshUndrawn,
 }
 
 impl Shortcut {
@@ -77,6 +80,7 @@ impl Shortcut {
             Shortcut::TextureUnavailableSkipped => "texture-unavailable-skipped",
             Shortcut::UnsupportedCommand => "unsupported-command",
             Shortcut::MeshUnavailableSkipped => "mesh-unavailable-skipped",
+            Shortcut::MultimeshUndrawn => "multimesh-undrawn",
         }
     }
     /// Whether the shortcut means a command is not drawn at all (a typed skip, for
@@ -88,6 +92,7 @@ impl Shortcut {
                 | Shortcut::TextureUnavailableSkipped
                 | Shortcut::UnsupportedCommand
                 | Shortcut::MeshUnavailableSkipped
+                | Shortcut::MultimeshUndrawn
         )
     }
 }
@@ -727,6 +732,8 @@ pub fn lower_reusing(
                 }
             }
             Command::Unsupported { .. } => b.out.note(Shortcut::UnsupportedCommand),
+            // PM1: typed as undrawn until PM3 draws instances.
+            Command::Multimesh { .. } => b.out.note(Shortcut::MultimeshUndrawn),
             Command::Rect { aa, rect, color } => {
                 // TYPE_RECT untextured: dst normalized to a positive size, src (0,0,1,1).
                 let mut dst = *rect;

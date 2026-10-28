@@ -437,6 +437,14 @@ fn command(w: &mut W, c: &Command, cmds: &Commands) {
             w.key("ignore");
             w.bool(*ignore);
         }
+        Command::Multimesh { multimesh, tex } => {
+            w.raw(",");
+            w.key("multimesh");
+            w.int(*multimesh as i64);
+            w.raw(",");
+            w.key("tex");
+            w.opt_id(*tex);
+        }
         Command::Unsupported { name, reason } => {
             w.raw(",");
             w.key("name");
@@ -808,6 +816,54 @@ fn mesh(w: &mut W, m: &Mesh, v: u8) {
     w.raw("]}");
 }
 
+/// render-stream-11.md "As built (PM1)" rule 10: `id, origin, status, reason, version, mesh,
+/// format, colors, custom, instances, visible, custom_aabb, buffer_sha256`.
+fn multimesh(w: &mut W, m: &Multimesh) {
+    w.raw("{");
+    w.key("id");
+    w.int(m.id as i64);
+    w.raw(",");
+    w.key("origin");
+    w.str(m.origin.as_str());
+    w.raw(",");
+    w.key("status");
+    w.str(m.status.as_str());
+    w.raw(",");
+    w.key("reason");
+    w.opt_str(m.reason);
+    w.raw(",");
+    w.key("version");
+    w.int(m.version);
+    w.raw(",");
+    w.key("mesh");
+    w.opt_id(m.mesh);
+    w.raw(",");
+    w.key("format");
+    w.str(m.format.as_str());
+    w.raw(",");
+    w.key("colors");
+    w.bool(m.colors);
+    w.raw(",");
+    w.key("custom");
+    w.bool(m.custom);
+    w.raw(",");
+    w.key("instances");
+    w.int(m.instances);
+    w.raw(",");
+    w.key("visible");
+    w.int(m.visible);
+    w.raw(",");
+    w.key("custom_aabb");
+    match &m.custom_aabb {
+        Some(a) => w.floats(a),
+        None => w.raw("null"),
+    }
+    w.raw(",");
+    w.key("buffer_sha256");
+    w.hash(&m.buffer_sha256);
+    w.raw("}");
+}
+
 fn shader(w: &mut W, s: &Shader, v: u8) {
     w.raw("{");
     w.key("id");
@@ -1007,6 +1063,12 @@ fn write_state_as(out: &mut Vec<u8>, st: &ResolvedState, godot: bool) {
         w.raw(",");
         w.key("materials");
         list(w, st.materials.values(), |w, m| material(w, m, v));
+    }
+    // PM1 (render-stream-11.md "As built (PM1)" rule 10): only when the table is non-empty.
+    if v >= 11 && !st.multimeshes.is_empty() {
+        w.raw(",");
+        w.key("multimeshes");
+        list(w, st.multimeshes.values(), multimesh);
     }
     w.raw("}");
 }

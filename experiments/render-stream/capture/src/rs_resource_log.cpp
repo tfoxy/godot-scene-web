@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "rs_mesh_payload.h"
+#include "rs_sha256.h"
 #include "rs_texture_payload.h"
 
 namespace grc {
@@ -2003,6 +2004,183 @@ void ResourceLog::canvas_set_parent(const TapContext &ctx, std::uint64_t canvas,
     line.parent = parent;
   }
   emit(line);
+}
+
+// --- PM1: multimesh lines (rule 12) -----------------------------------------------------------
+
+namespace {
+
+void append_key(std::string *out, const char *key) {
+  out->push_back(',');
+  out->push_back('"');
+  *out += key;
+  *out += "\":";
+}
+
+void append_rid(std::string *out, std::uint64_t rid) {
+  if (rid == 0) {
+    *out += "null";
+  } else {
+    append_string(out, std::to_string(rid));
+  }
+}
+
+void append_id(std::string *out, std::uint64_t id) {
+  if (id == 0) {
+    *out += "null";
+  } else {
+    *out += std::to_string(id);
+  }
+}
+
+}  // namespace
+
+MultimeshArgs &MultimeshArgs::i64(const char *key, std::int64_t value) {
+  append_key(&text_, key);
+  text_ += std::to_string(value);
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::boolean(const char *key, bool value) {
+  append_key(&text_, key);
+  text_ += value ? "true" : "false";
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::rid(const char *key, std::uint64_t value) {
+  append_key(&text_, key);
+  append_rid(&text_, value);
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::id(const char *key, std::uint64_t value) {
+  append_key(&text_, key);
+  append_id(&text_, value);
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::floats(const char *key, const float *values, std::size_t n) {
+  append_key(&text_, key);
+  text_.push_back('[');
+  for (std::size_t i = 0; i < n; ++i) {
+    if (i != 0) {
+      text_.push_back(',');
+    }
+    const float v = values[i];
+    if (v != v || v - v != 0.0f) {
+      text_ += "null";  // NaN or infinite: JSON has no spelling for it
+    } else {
+      append_float(&text_, v);
+    }
+  }
+  text_.push_back(']');
+  return *this;
+}
+
+MultimeshArgs &MultimeshArgs::buffer(const char *key, const char *sha_key, const float *data,
+                                     std::size_t count) {
+  append_key(&text_, key);
+  text_ += std::to_string(count);
+  append_key(&text_, sha_key);
+  append_string(&text_, sha256_hex(count == 0 ? static_cast<const void *>("") : data,
+                                   count * sizeof(float)));  // the host is little-endian (abi.h)
+  return *this;
+}
+
+void ResourceLog::emit_text(const std::string &text) {
+  if (deferred_.empty()) {
+    pending_ += text;
+    return;
+  }
+  // Behind a held texture line: released in order (emit()'s rule for plain lines).
+  if (deferred_.back()->job != nullptr) {
+    deferred_.push_back(std::make_shared<Deferred>());
+  }
+  deferred_.back()->text += text;
+}
+
+void ResourceLog::multimesh_call(const TapContext &ctx, const char *call, std::uint64_t rid,
+                                 std::uint64_t id, bool accepted, std::uint64_t version,
+                                 const MultimeshArgs &args, bool omitted) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  std::string o = "{\"frame\":" + std::to_string(ctx.frame);
+  append_key(&o, "t_us");
+  o += std::to_string(ctx.t_ns >= t0_ns_ ? (ctx.t_ns - t0_ns_) / 1000 : 0);
+  append_key(&o, "thread");
+  append_string(&o, ctx.main_thread ? "main" : "other");
+  append_key(&o, "kind");
+  o += "\"multimesh\"";
+  append_key(&o, "call");
+  append_string(&o, call);
+  append_key(&o, "rid");
+  append_rid(&o, rid);
+  append_key(&o, "id");
+  append_id(&o, id);
+  append_key(&o, "accepted");
+  o += accepted ? "true" : "false";
+  append_key(&o, "version");
+  append_id(&o, version);
+  o += args.text();
+  if (omitted) {
+    o += ",\"omitted\":true";
+  }
+  o += "}\n";
+  emit_text(o);
+}
+
+void ResourceLog::multimesh_state(const TapContext &ctx, const MultimeshState &state) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_) {
+    return;
+  }
+  std::string o = "{\"frame\":" + std::to_string(state.frame);
+  append_key(&o, "t_us");
+  o += std::to_string(ctx.t_ns >= t0_ns_ ? (ctx.t_ns - t0_ns_) / 1000 : 0);
+  append_key(&o, "thread");
+  append_string(&o, ctx.main_thread ? "main" : "other");
+  append_key(&o, "kind");
+  o += "\"multimesh\"";
+  append_key(&o, "call");
+  o += "\"state\"";
+  append_key(&o, "rid");
+  append_rid(&o, state.rid);
+  append_key(&o, "id");
+  append_id(&o, state.id);
+  append_key(&o, "version");
+  o += std::to_string(state.version);
+  append_key(&o, "instances");
+  o += std::to_string(state.instances);
+  append_key(&o, "format");
+  append_string(&o, state.format);
+  append_key(&o, "colors");
+  o += state.colors ? "true" : "false";
+  append_key(&o, "custom");
+  o += state.custom ? "true" : "false";
+  append_key(&o, "visible");
+  o += std::to_string(state.visible);
+  append_key(&o, "mesh");
+  append_id(&o, state.mesh);
+  append_key(&o, "status");
+  append_string(&o, state.status);
+  append_key(&o, "reason");
+  if (state.reason == nullptr) {
+    o += "null";
+  } else {
+    append_string(&o, state.reason);
+  }
+  append_key(&o, "buffer_sha256");
+  if (std::string(state.status) == "ok" && state.buffer != nullptr) {
+    const std::vector<float> &b = *state.buffer;
+    append_string(&o, sha256_hex(b.empty() ? static_cast<const void *>("") : b.data(),
+                                 b.size() * sizeof(float)));
+  } else {
+    o += "null";
+  }
+  o += "}\n";
+  emit_text(o);
 }
 
 std::uint64_t ResourceLog::texture_id(std::uint64_t rid) const {

@@ -1667,13 +1667,17 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   meta.seq = c.next_seq;
   meta.frame = frame;
   meta.base_seq = c.base_seq;
+  // PM1 sabotage perturb-instance: a function of the frame, so lockstep viewers still share.
+  meta.perturb_instance = v11 && config_.perturb_instance_frame != 0 &&
+                          frame >= config_.perturb_instance_frame;
   const bool full = !c.has_base || c.resync;
   const std::shared_ptr<const rs::Captured> base = full ? nullptr : c.base;
   // P3-SP: the same transaction already formed this callback (another connection in lockstep).
   SharedTx *shared = nullptr;
   for (const auto &tx : frame_txs_) {
     if (tx->full == full && tx->base == base && tx->target == target &&
-        tx->meta.version == meta.version && tx->meta.frame == meta.frame) {
+        tx->meta.version == meta.version && tx->meta.frame == meta.frame &&
+        tx->meta.perturb_instance == meta.perturb_instance) {
       shared = tx.get();
       break;
     }
@@ -1890,6 +1894,11 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           // gets its own version's session, which still declares both back-buffer setters
           // unobserved.
           declare_backbuffer_unobserved(&c.session.features);
+        }
+        if (c.version != ProtocolVersion::V11) {
+          // PM1 rule 8: below /11 the session declares canvas_item_add_multimesh unsupported, as
+          // before PM1 (make_full/make_patch lower its transactions: rs2_diff.h lower_multimesh).
+          unobserve_multimesh_features(&c.session.features);
         }
         c.session.publication.credit_window = static_cast<std::int32_t>(c.s.credit_window);
         c.session.stream.stream_id = c.s.stream_id;

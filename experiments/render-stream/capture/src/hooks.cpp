@@ -79,6 +79,39 @@ using FnDraw = void (*)(void *, bool, double);
 //   1770: virtual void free(RID) = 0;
 using FnFree = void (*)(void *, RID);
 //
+// --- PM1 (render-stream-11.md "As built (PM1)"): the multimesh API, rendering_server.h:466-517,
+// installed only under GRC_STREAM_VERSION=11 (hooks_plan) ----------------------------------------
+//
+//   468: virtual RID multimesh_create() = 0;                                   (FnCreate)
+//   484: virtual void multimesh_allocate_data(RID p_multimesh, int p_instances,
+//            MultimeshTransformFormat p_transform_format, bool p_use_colors = false,
+//            bool p_use_custom_data = false, bool p_use_indirect = false) = 0;
+using FnMultimeshAllocateData = void (*)(void *, RID, int, int32_t, bool, bool, bool);
+//   487: virtual void multimesh_set_mesh(RID p_multimesh, RID p_mesh) = 0;     (FnSetMaterial)
+//   488: virtual void multimesh_instance_set_transform(RID p_multimesh, int p_index,
+//            const Transform3D &p_transform) = 0;
+using FnMultimeshSetTransform = void (*)(void *, RID, int, const Transform3D *);
+//   489: virtual void multimesh_instance_set_transform_2d(RID p_multimesh, int p_index,
+//            const Transform2D &p_transform) = 0;
+using FnMultimeshSetTransform2d = void (*)(void *, RID, int, const Transform2D *);
+//   490: virtual void multimesh_instance_set_color(RID p_multimesh, int p_index,
+//            const Color &p_color) = 0;
+//   491: virtual void multimesh_instance_set_custom_data(RID p_multimesh, int p_index,
+//            const Color &p_color) = 0;
+using FnMultimeshSetColor = void (*)(void *, RID, int, const Color *);
+//   496: virtual void multimesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) = 0;
+//        (FnMeshSetCustomAabb)
+//   504: virtual void multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) = 0;
+using FnMultimeshSetBuffer = void (*)(void *, RID, const Vector<float> *);
+//   510: virtual void multimesh_set_buffer_interpolated(RID p_multimesh,
+//            const Vector<float> &p_buffer_curr, const Vector<float> &p_buffer_prev) = 0;
+using FnMultimeshSetBufferInterpolated = void (*)(void *, RID, const Vector<float> *,
+                                                  const Vector<float> *);
+//   511: virtual void multimesh_set_physics_interpolated(RID p_multimesh,
+//            bool p_interpolated) = 0;                                           (FnRidBool)
+//   515: virtual void multimesh_set_visible_instances(RID p_multimesh, int p_visible) = 0;
+//        (FnRidInt)
+//
 // --- after gate -1 (optional) ------------------------------------------------
 //
 //   1590: virtual void canvas_item_add_triangle_array(RID, const Vector<int> &,
@@ -368,14 +401,39 @@ enum HookId : size_t {
   kSetCanvasGroupMode,
   // P3-CK (render-stream-10.md "Shader time", record slot 552): conditional, see hooks_plan
   kDraw,
+  // PM1 (render-stream-11.md "As built (PM1)", calibrator record slots 102-126): conditional, see
+  // hooks_plan
+  kMultimeshCreate,
+  kMultimeshAllocateData,
+  kMultimeshSetMesh,
+  kMultimeshInstanceSetTransform,
+  kMultimeshInstanceSetTransform2d,
+  kMultimeshInstanceSetColor,
+  kMultimeshInstanceSetCustomData,
+  kMultimeshSetCustomAabb,
+  kMultimeshSetBuffer,
+  kMultimeshSetBufferInterpolated,
+  kMultimeshSetPhysicsInterpolated,
+  kMultimeshSetVisibleInstances,
   kHookCount,
 };
+
+constexpr HookId kFirstMultimeshHook = kMultimeshCreate;
+constexpr HookId kLastMultimeshHook = kMultimeshSetVisibleInstances;
+bool is_multimesh_hook(size_t id) { return id >= kFirstMultimeshHook && id <= kLastMultimeshHook; }
 
 void *g_original[kHookCount] = {};
 std::atomic<uint64_t> g_count[kHookCount];
 bool g_omitted[kHookCount] = {};
 size_t g_hooks_total = kHookCount;
 bool g_skipped[kHookCount] = {};  // conditional hooks left out by configuration (not omitted)
+// PM1: all twelve multimesh hooks are planned (hooks_plan), so canvas_item_add_multimesh records
+// /11's add_multimesh command (multimesh_hooks_planned()).
+bool g_multimesh_hooked = false;
+// PM1 (`mm-hook-census`): per hook id, the multimesh calls the mirror saw, accepted and changed.
+std::atomic<uint64_t> g_mm_seen[kHookCount];
+std::atomic<uint64_t> g_mm_accepted[kHookCount];
+std::atomic<uint64_t> g_mm_changed[kHookCount];
 std::vector<std::string> g_planned_names;
 std::vector<std::string> g_omitted_names;
 
@@ -2035,7 +2093,21 @@ void hook_free(void *self, RID rid) {
     if (streaming()) {
       // Before forwarding, so the mapping is gone before the engine can hand the
       // value out again. (The mirror applies omit-op `free` itself.)
-      mirror().free_rid(rid.id, current_frame());
+      if (g_multimesh_hooked && mirror().knows_multimesh(rid.id)) {
+        // PM1 rule 2: a multimesh's free moves its version (rule 12's free line).
+        const rs::Mirror::MultimeshCall r = mirror().multimesh_free(rid.id, current_frame());
+        g_mm_seen[kFree].fetch_add(1, std::memory_order_relaxed);
+        if (r.accepted && !r.omitted) {
+          g_mm_accepted[kFree].fetch_add(1, std::memory_order_relaxed);
+        }
+        if (r.changed) {
+          g_mm_changed[kFree].fetch_add(1, std::memory_order_relaxed);
+        }
+        resources().multimesh_call(tap_context(), "free", rid.id, r.id, r.accepted, r.version,
+                                   rs::MultimeshArgs(), r.omitted);
+      } else {
+        mirror().free_rid(rid.id, current_frame());
+      }
     }
     // Likewise for the texture and mesh hook logs, which log only RIDs they know.
     resources().free_rid(tap_context(), rid.id, omit);
@@ -2115,7 +2187,16 @@ void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *tra
 
 void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
   bump(kAddMultimesh);
-  tap_unsupported(item, "canvas_item_add_multimesh");
+  if (g_multimesh_hooked) {
+    // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
+    // becomes `unsupported`/`unknown-multimesh`).
+    rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+    if (streaming()) {
+      mirror().add_multimesh(item.id, mesh.id, texture.id, current_frame());
+    }
+  } else {
+    tap_unsupported(item, "canvas_item_add_multimesh");
+  }
   log_entry(&g_add_multimeshes, rids(item.id, mesh.id, texture.id));
   original<FnAddMultimesh>(kAddMultimesh)(self, item, mesh, texture);
 }
@@ -3143,6 +3224,235 @@ void hook_draw(void *self, bool swap_buffers, double frame_step) {
   original<FnDraw>(kDraw)(self, swap_buffers, frame_step);
 }
 
+// --- PM1: the twelve multimesh hooks (render-stream-11.md "As built (PM1): decisions") -------
+//
+// Conditional like CG1's setters: planned only under GRC_STREAM_VERSION=11 (hooks_plan), so every
+// /2-/10 session, plan and counters.json is what it was. Each passes the call through first, then
+// records it in the mirror (the GLES3 shadow, rs_mirror.h "multimeshes") and, with a stream's hook
+// log open, writes its `kind: "multimesh"` line (rule 12) with the mirror's verdict. counters.json
+// counts every call (`counts`) and, under `captured.multimesh`, how many the mirror saw, accepted
+// and changed (`mm-hook-census`).
+
+const char *hook_name(HookId id);
+
+void mm_record(HookId id, uint64_t rid, const rs::Mirror::MultimeshCall &r,
+               const rs::MultimeshArgs &args) {
+  g_mm_seen[id].fetch_add(1, std::memory_order_relaxed);
+  if (r.accepted && !r.omitted) {
+    g_mm_accepted[id].fetch_add(1, std::memory_order_relaxed);
+  }
+  if (r.changed) {
+    g_mm_changed[id].fetch_add(1, std::memory_order_relaxed);
+  }
+  resources().multimesh_call(tap_context(), hook_name(id), rid, r.id, r.accepted, r.version, args,
+                             r.omitted);
+}
+
+bool mm_logging() { return resources().active(); }
+
+RID hook_multimesh_create(void *self) {
+  bump(kMultimeshCreate);
+  const RID result = original<FnCreate>(kMultimeshCreate)(self);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r = mirror().multimesh_create(result.id, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshCreate, result.id, r, rs::MultimeshArgs());
+    }
+  }
+  return result;
+}
+
+void hook_multimesh_allocate_data(void *self, RID multimesh, int instances, int32_t format,
+                                  bool colors, bool custom, bool indirect) {
+  bump(kMultimeshAllocateData);
+  original<FnMultimeshAllocateData>(kMultimeshAllocateData)(self, multimesh, instances, format,
+                                                            colors, custom, indirect);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r = mirror().multimesh_allocate_data(
+        multimesh.id, instances, format, colors, custom, indirect, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshAllocateData, multimesh.id, r,
+                rs::MultimeshArgs()
+                    .i64("instances", instances)
+                    .i64("format", format)
+                    .boolean("colors", colors)
+                    .boolean("custom", custom)
+                    .boolean("indirect", indirect));
+    }
+  }
+}
+
+void hook_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
+  bump(kMultimeshSetMesh);
+  rs::adopt_mesh_ref(mesh.id);  // G8r: a pre-arm mesh is adopted at first reference
+  original<FnSetMaterial>(kMultimeshSetMesh)(self, multimesh, mesh);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_set_mesh(multimesh.id, mesh.id, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshSetMesh, multimesh.id, r, rs::MultimeshArgs().rid("mesh", mesh.id));
+    }
+  }
+}
+
+void hook_multimesh_instance_set_transform(void *self, RID multimesh, int index,
+                                           const Transform3D *transform) {
+  bump(kMultimeshInstanceSetTransform);
+  original<FnMultimeshSetTransform>(kMultimeshInstanceSetTransform)(self, multimesh, index,
+                                                                    transform);
+  if (streaming() && transform != nullptr) {
+    // set_buffer's 3d layout (mesh_storage.cpp:1751-1762): each basis row, then its origin.
+    const float *b = transform->basis;
+    const std::array<float, 12> t = {b[0], b[1], b[2], transform->origin.x,
+                                     b[3], b[4], b[5], transform->origin.y,
+                                     b[6], b[7], b[8], transform->origin.z};
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_instance_set_transform(multimesh.id, index, t, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshInstanceSetTransform, multimesh.id, r,
+                rs::MultimeshArgs().i64("index", index).floats("transform", t.data(), t.size()));
+    }
+  }
+}
+
+void hook_multimesh_instance_set_transform_2d(void *self, RID multimesh, int index,
+                                              const Transform2D *transform) {
+  bump(kMultimeshInstanceSetTransform2d);
+  original<FnMultimeshSetTransform2d>(kMultimeshInstanceSetTransform2d)(self, multimesh, index,
+                                                                        transform);
+  if (streaming() && transform != nullptr) {
+    const rs2::Xform t = to_xform(*transform);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_instance_set_transform_2d(multimesh.id, index, t, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshInstanceSetTransform2d, multimesh.id, r,
+                rs::MultimeshArgs().i64("index", index).floats("transform", t.data(), t.size()));
+    }
+  }
+}
+
+void hook_multimesh_instance_set_color(void *self, RID multimesh, int index, const Color *color) {
+  bump(kMultimeshInstanceSetColor);
+  original<FnMultimeshSetColor>(kMultimeshInstanceSetColor)(self, multimesh, index, color);
+  if (streaming() && color != nullptr) {
+    const rs2::Color4 c = to_color(*color);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_instance_set_color(multimesh.id, index, c, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshInstanceSetColor, multimesh.id, r,
+                rs::MultimeshArgs().i64("index", index).floats("color", c.data(), c.size()));
+    }
+  }
+}
+
+void hook_multimesh_instance_set_custom_data(void *self, RID multimesh, int index,
+                                             const Color *color) {
+  bump(kMultimeshInstanceSetCustomData);
+  original<FnMultimeshSetColor>(kMultimeshInstanceSetCustomData)(self, multimesh, index, color);
+  if (streaming() && color != nullptr) {
+    const rs2::Color4 c = to_color(*color);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_instance_set_custom_data(multimesh.id, index, c, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshInstanceSetCustomData, multimesh.id, r,
+                rs::MultimeshArgs().i64("index", index).floats("color", c.data(), c.size()));
+    }
+  }
+}
+
+void hook_multimesh_set_custom_aabb(void *self, RID multimesh, const AABB *aabb) {
+  bump(kMultimeshSetCustomAabb);
+  original<FnMeshSetCustomAabb>(kMultimeshSetCustomAabb)(self, multimesh, aabb);
+  if (streaming() && aabb != nullptr) {
+    const std::array<float, 6> a = {aabb->position.x, aabb->position.y, aabb->position.z,
+                                    aabb->size.x,     aabb->size.y,     aabb->size.z};
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_set_custom_aabb(multimesh.id, a, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshSetCustomAabb, multimesh.id, r,
+                rs::MultimeshArgs().floats("aabb", a.data(), a.size()));
+    }
+  }
+}
+
+void hook_multimesh_set_buffer(void *self, RID multimesh, const Vector<float> *buffer) {
+  bump(kMultimeshSetBuffer);
+  original<FnMultimeshSetBuffer>(kMultimeshSetBuffer)(self, multimesh, buffer);
+  if (streaming()) {
+    // The two-word Vector ABI (abi.h): CoW-shared, so a later caller write cannot change it.
+    const int64_t n = buffer != nullptr ? buffer->size() : 0;
+    const float *data = buffer != nullptr ? buffer->ptr() : nullptr;
+    const std::size_t count = static_cast<std::size_t>(n > 0 ? n : 0);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_set_buffer(multimesh.id, data, count, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshSetBuffer, multimesh.id, r,
+                rs::MultimeshArgs().buffer("floats", "sha256", data, count));
+    }
+  }
+}
+
+void hook_multimesh_set_buffer_interpolated(void *self, RID multimesh, const Vector<float> *curr,
+                                            const Vector<float> *prev) {
+  bump(kMultimeshSetBufferInterpolated);
+  original<FnMultimeshSetBufferInterpolated>(kMultimeshSetBufferInterpolated)(self, multimesh,
+                                                                              curr, prev);
+  if (streaming()) {
+    const int64_t n = curr != nullptr ? curr->size() : 0;
+    const int64_t pn = prev != nullptr ? prev->size() : 0;
+    const float *data = curr != nullptr ? curr->ptr() : nullptr;
+    const float *prev_data = prev != nullptr ? prev->ptr() : nullptr;
+    const std::size_t count = static_cast<std::size_t>(n > 0 ? n : 0);
+    const std::size_t prev_count = static_cast<std::size_t>(pn > 0 ? pn : 0);
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r = mirror().multimesh_set_buffer_interpolated(
+        multimesh.id, data, count, prev_count, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshSetBufferInterpolated, multimesh.id, r,
+                rs::MultimeshArgs()
+                    .buffer("floats", "sha256", data, count)
+                    .buffer("prev_floats", "prev_sha256", prev_data, prev_count));
+    }
+  }
+}
+
+void hook_multimesh_set_physics_interpolated(void *self, RID multimesh, bool interpolated) {
+  bump(kMultimeshSetPhysicsInterpolated);
+  original<FnRidBool>(kMultimeshSetPhysicsInterpolated)(self, multimesh, interpolated);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_set_physics_interpolated(multimesh.id, interpolated, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshSetPhysicsInterpolated, multimesh.id, r,
+                rs::MultimeshArgs().boolean("interpolated", interpolated));
+    }
+  }
+}
+
+void hook_multimesh_set_visible_instances(void *self, RID multimesh, int visible) {
+  bump(kMultimeshSetVisibleInstances);
+  original<FnRidInt>(kMultimeshSetVisibleInstances)(self, multimesh, visible);
+  if (streaming()) {
+    std::lock_guard<std::mutex> order(g_texture_order);
+    const rs::Mirror::MultimeshCall r =
+        mirror().multimesh_set_visible_instances(multimesh.id, visible, current_frame());
+    if (mm_logging()) {
+      mm_record(kMultimeshSetVisibleInstances, multimesh.id, r,
+                rs::MultimeshArgs().i64("visible", visible));
+    }
+  }
+}
+
 void hook_set_custom_rect(void *self, RID item, bool enabled, const Rect2 *rect) {
   bump(kSetCustomRect);
   if (rect != nullptr) {
@@ -3515,7 +3825,29 @@ const HookSpec kSpecs[] = {
     {kSetCanvasGroupMode, "canvas_item_set_canvas_group_mode",
      as_ptr(&hook_set_canvas_group_mode)},
     {kDraw, "draw", as_ptr(&hook_draw)},
+    {kMultimeshCreate, "multimesh_create", as_ptr(&hook_multimesh_create)},
+    {kMultimeshAllocateData, "multimesh_allocate_data", as_ptr(&hook_multimesh_allocate_data)},
+    {kMultimeshSetMesh, "multimesh_set_mesh", as_ptr(&hook_multimesh_set_mesh)},
+    {kMultimeshInstanceSetTransform, "multimesh_instance_set_transform",
+     as_ptr(&hook_multimesh_instance_set_transform)},
+    {kMultimeshInstanceSetTransform2d, "multimesh_instance_set_transform_2d",
+     as_ptr(&hook_multimesh_instance_set_transform_2d)},
+    {kMultimeshInstanceSetColor, "multimesh_instance_set_color",
+     as_ptr(&hook_multimesh_instance_set_color)},
+    {kMultimeshInstanceSetCustomData, "multimesh_instance_set_custom_data",
+     as_ptr(&hook_multimesh_instance_set_custom_data)},
+    {kMultimeshSetCustomAabb, "multimesh_set_custom_aabb",
+     as_ptr(&hook_multimesh_set_custom_aabb)},
+    {kMultimeshSetBuffer, "multimesh_set_buffer", as_ptr(&hook_multimesh_set_buffer)},
+    {kMultimeshSetBufferInterpolated, "multimesh_set_buffer_interpolated",
+     as_ptr(&hook_multimesh_set_buffer_interpolated)},
+    {kMultimeshSetPhysicsInterpolated, "multimesh_set_physics_interpolated",
+     as_ptr(&hook_multimesh_set_physics_interpolated)},
+    {kMultimeshSetVisibleInstances, "multimesh_set_visible_instances",
+     as_ptr(&hook_multimesh_set_visible_instances)},
 };
+
+const char *hook_name(HookId id) { return kSpecs[id].name; }
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == kHookCount, "one spec per hook id");
 
 // --- JSON --------------------------------------------------------------------
@@ -3869,6 +4201,8 @@ void hooks_set_texture_workers(const rs::TextureWorkerConfig &config) {
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }
 
+bool hooks_multimesh_planned() { return g_multimesh_hooked; }
+
 void hooks_set_shader_time_carried(bool carried) {
   g_shader_time_carried.store(carried, std::memory_order_relaxed);
 }
@@ -4080,7 +4414,15 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   const bool backbuffer_hooks_wanted =
       stream_version != nullptr &&
       (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0);
+  // PM1: the twelve multimesh hooks exist for /11's multimesh table only (GRC_STREAM_VERSION=11).
+  const bool multimesh_hooks_wanted =
+      stream_version != nullptr && std::strcmp(stream_version, "11") == 0;
   g_canvas_group_mode_invalid.store(0);
+  for (size_t i = 0; i < kHookCount; ++i) {
+    g_mm_seen[i].store(0);
+    g_mm_accepted[i].store(0);
+    g_mm_changed[i].store(0);
+  }
   g_hooks_total = kHookCount;
   for (const HookSpec &spec : kSpecs) {
     const int64_t index = calib.slot(spec.name);
@@ -4099,6 +4441,12 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
         !backbuffer_hooks_wanted) {
       // CG1 (render-stream-10.md "Capture"): conditional like texture_set_path; neither planned
       // nor omitted below /10. P3-CK's draw (the shader clock) is /10's too.
+      g_skipped[spec.id] = true;
+      --g_hooks_total;
+      continue;
+    }
+    if (is_multimesh_hook(spec.id) && !multimesh_hooks_wanted) {
+      // PM1: conditional like CG1's; neither planned nor omitted below /11.
       g_skipped[spec.id] = true;
       --g_hooks_total;
       continue;
@@ -4123,6 +4471,12 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   }
   g_planned_names = plan->planned;
   g_omitted_names = plan->omitted;
+  // PM1: the /11 command needs every multimesh hook (a record that names only some of them keeps
+  // canvas_item_add_multimesh `unsupported-op`, and the session's features as before PM1).
+  g_multimesh_hooked = multimesh_hooks_wanted;
+  for (size_t id = kFirstMultimeshHook; id <= kLastMultimeshHook; ++id) {
+    g_multimesh_hooked = g_multimesh_hooked && !g_skipped[id] && !g_omitted[id];
+  }
   // P3-CK: the shader clock sums the hooked draws' steps once the host draws (rs_shader_clock.h).
   rs::shader_clock_set_draw_hooked(!g_skipped[kDraw] && !g_omitted[kDraw]);
   return plan->missing_required.empty();
@@ -4296,6 +4650,22 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
     // CG1 (render-stream-10.md "Capture"): the out-of-range modes passed through unmirrored.
     json.field("canvas_group_mode_invalid",
                static_cast<int64_t>(g_canvas_group_mode_invalid.load()));
+  }
+  if (g_multimesh_hooked) {
+    // PM1 (`mm-hook-census`): per multimesh hook (and free of a multimesh), the calls the mirror
+    // saw while streaming, those it accepted (GLES3's checks) and those that moved the version.
+    json.key("multimesh").object_begin();
+    for (const HookSpec &spec : kSpecs) {
+      if (!is_multimesh_hook(spec.id) && spec.id != kFree) {
+        continue;
+      }
+      json.key(spec.name).object_begin();
+      json.field("mirrored", static_cast<int64_t>(g_mm_seen[spec.id].load()));
+      json.field("accepted", static_cast<int64_t>(g_mm_accepted[spec.id].load()));
+      json.field("changed", static_cast<int64_t>(g_mm_changed[spec.id].load()));
+      json.object_end();
+    }
+    json.object_end();
   }
   if (!g_skipped[kTextureSetPath] && !g_omitted[kTextureSetPath]) {
     // G8kc: every texture_set_path call (the paths of the hook log), in call order.

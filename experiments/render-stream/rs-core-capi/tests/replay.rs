@@ -377,6 +377,8 @@ fn golden_11_draws_dynamic_meshes() {
         assert_eq!(core.session(&data, spans[0].offset, 11), KIND_SESSION);
         core.begin_session();
         let (mut updates, mut rebuilt, mut released, mut checked) = (0, 0, 0usize, 0);
+        // PM1: states 17-21 draw add_multimesh, which the planner types and counts, undrawn.
+        let mut mm_undrawn = 0;
         for s in &spans[1..] {
             let kind = core.accept(&data, s.offset);
             assert_ne!(kind, KIND_ERROR, "{name}");
@@ -403,6 +405,10 @@ fn golden_11_draws_dynamic_meshes() {
             core.apply().unwrap();
             assert!(!mentions(&core.vt.out, "meshes_dynamic_undrawn"), "{name}");
             assert!(!mentions(&core.vt.out, "mesh-dynamic"), "{name}");
+            if mentions(&core.vt.out, "multimesh_commands_undrawn") {
+                mm_undrawn += stat_int(&core.vt.out, "multimesh_commands_undrawn");
+                assert!(mentions(&core.vt.out, "multimesh-undrawn"), "{name}");
+            }
             updates += stat_int(&core.vt.out, "surface_updates");
             rebuilt += stat_int(&core.vt.out, "meshes_rebuilt");
             core.take_released();
@@ -428,6 +434,7 @@ fn golden_11_draws_dynamic_meshes() {
                 checked += 1;
             }
         }
+        assert!(mm_undrawn > 0, "{name}: no add_multimesh counted undrawn");
         assert!(checked > 0, "{name}: no dynamic mesh checked");
         assert!(updates > 0, "{name}: no region upload");
         assert!(rebuilt > 0, "{name}: no rebuild");

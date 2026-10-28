@@ -194,6 +194,9 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       {"cv-churn", SabotageKind::CvChurn},
       {"stale-dynamic", SabotageKind::StaleDynamic},
       {"keep-carried", SabotageKind::KeepCarried},
+      // New at /11 (PM1, render-stream-11.md "As built (PM1)" rule 11; GRC_STREAM_VERSION=11).
+      {"perturb-instance", SabotageKind::PerturbInstance},
+      {"stale-buffer", SabotageKind::StaleBuffer},
   };
   bool known = false;
   for (const auto &entry : kKinds) {
@@ -795,10 +798,16 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
   }
 
   bool ok = true;
+  // PM1 sabotage perturb-instance (render-stream-11.md "As built (PM1)" rule 11): the encoder
+  // adds 1.0 to the first multimesh buffer float of every /11 transaction from the frame on.
+  const bool perturb_instance = sabotage_.kind == SabotageKind::PerturbInstance &&
+                                sabotage_frame_reached &&
+                                published.state.version == ProtocolVersion::V11;
   Lane &full = lanes_[0];
   if (full.sink != nullptr) {
     const std::uint64_t t0 = monotonic_ns();
-    const Transaction transaction = make_full(published.state);
+    Transaction transaction = make_full(published.state);
+    transaction.perturb_instance = perturb_instance;
     const std::uint64_t t1 = monotonic_ns();
     ok = write_inline(&full, published, frame) &&
          write_transaction(&full, transaction, t1 - t0, 0, snapshot_ns) && ok;
@@ -826,6 +835,7 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
       // diverges until that item changes again.
       transaction.items.pop_back();
     }
+    transaction.perturb_instance = perturb_instance;
     ok = write_inline(&patch, published, frame) &&
          write_transaction(&patch, transaction, form_ns, diff_ns, snapshot_ns) && ok;
   }

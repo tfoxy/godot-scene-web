@@ -530,6 +530,53 @@ int main() {
          has(lines[1], "\"rid\":\"800\",\"version\":4,\"kind\":\"material\",\"status\":\"freed\""));
   EXPECT(log.shader_id(700) == 0 && log.material_id(800) == 0);
 
+  // PM1 (rule 12): multimesh lines, their own shape; set_buffer's floats and SHA-256; `state`.
+  {
+    const float buf[2] = {1.0f, 2.5f};
+    log.multimesh_call(main_ctx, "multimesh_set_buffer", 4242, 3, true, 7,
+                       grc::rs::MultimeshArgs().buffer("floats", "sha256", buf, 2));
+    log.multimesh_call(main_ctx, "multimesh_set_visible_instances", 4243, 0, false, 0,
+                       grc::rs::MultimeshArgs().i64("visible", 5), false);
+    log.multimesh_call(main_ctx, "multimesh_set_custom_aabb", 4242, 3, true, 8,
+                       grc::rs::MultimeshArgs().floats("aabb", buf, 2), true);
+    const std::vector<float> shadow = {1.0f, 2.5f};
+    grc::rs::MultimeshState st;
+    st.frame = 9;
+    st.rid = 4242;
+    st.id = 3;
+    st.version = 8;
+    st.instances = 1;
+    st.buffer = &shadow;
+    st.mesh = 2;
+    log.multimesh_state(main_ctx, st);
+    st.status = "unsupported";
+    st.reason = "multimesh-3d";
+    st.format = "3d";
+    log.multimesh_state(main_ctx, st);
+    lines = split_lines(log.take_lines());
+    EXPECT(lines.size() == 5);
+    // sha256 of the LE bytes of {1.0f, 2.5f}: 00 00 80 3f 00 00 20 40.
+    const std::string sha = "\"sha256\":\"";
+    EXPECT(has(lines[0], "{\"frame\":7,\"t_us\":") &&
+           has(lines[0], ",\"thread\":\"main\",\"kind\":\"multimesh\","
+                         "\"call\":\"multimesh_set_buffer\",\"rid\":\"4242\",\"id\":3,"
+                         "\"accepted\":true,\"version\":7,\"floats\":2,\"sha256\":\""));
+    EXPECT(has(lines[1], "\"rid\":\"4243\",\"id\":null,\"accepted\":false,\"version\":null,"
+                         "\"visible\":5}"));
+    EXPECT(has(lines[2], "\"aabb\":[1,2.5],\"omitted\":true}"));
+    EXPECT(has(lines[3], "{\"frame\":9,") &&
+           has(lines[3], "\"call\":\"state\",\"rid\":\"4242\",\"id\":3,\"version\":8,"
+                         "\"instances\":1,\"format\":\"2d\",\"colors\":false,\"custom\":false,"
+                         "\"visible\":-1,\"mesh\":2,\"status\":\"ok\",\"reason\":null,"
+                         "\"buffer_sha256\":\""));
+    const std::size_t a = lines[0].find(sha) + sha.size();
+    const std::size_t b = lines[3].find("\"buffer_sha256\":\"") + 17;
+    EXPECT(lines[0].substr(a, 64) == lines[3].substr(b, 64));
+    EXPECT(has(lines[4], "\"format\":\"3d\",") &&
+           has(lines[4], "\"status\":\"unsupported\",\"reason\":\"multimesh-3d\","
+                         "\"buffer_sha256\":null}"));
+  }
+
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_resource_log_test: %d failure(s)\n", g_failures);
     return 1;

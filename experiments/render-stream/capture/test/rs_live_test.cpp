@@ -17,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -2775,7 +2776,143 @@ void test_v11_live_coding() {
   }
 }
 
+// PM1 (render-stream-11.md "As built (PM1)" rules 3, 7 and 8): a multimesh's buffer_f is a
+// function of (B, T): two /11 connections at different bases each get the floats exactly when the
+// buffer serial moved between their own base and target; a repeated target (the stale-coalesce
+// shape) carries no multimesh entry at all; a /10 connection of the same host sees /10's
+// unsupported-op command, no table, and a session without add_multimesh.
+std::uint64_t pm1_serial(std::uint64_t frame) { return 1 + (frame >= 3) + (frame >= 6) + (frame >= 9); }
+
+std::shared_ptr<const Captured> pm1_state(std::uint64_t frame) {
+  auto c = std::make_shared<Captured>(with_payloads(1));
+  c->state.version = ProtocolVersion::V11;
+  const std::uint64_t serial = pm1_serial(frame);
+  MultimeshEntry mm;
+  mm.id = 1;
+  mm.version = 1 + serial;
+  mm.instances = 1;
+  mm.buffer = std::make_shared<const std::vector<float>>(
+      std::vector<float>{1, 0, 0, static_cast<float>(serial), 0, 1, 0, 0});
+  mm.buffer_serial = serial;
+  c->state.multimeshes = {mm};
+  c->state.multimesh_commands = true;
+  Command add;
+  add.kind = CommandKind::AddMultimesh;
+  add.multimesh = 1;
+  c->state.items.at(0).commands.push_back(add);
+  return c;
+}
+
+// A JSON integer (or null: -1) after `key` in `meta`, from `from`.
+std::int64_t json_int_after(const std::string &meta, const std::string &key, std::size_t from = 0) {
+  const std::size_t at = meta.find("\"" + key + "\":", from);
+  if (at == std::string::npos) {
+    return -2;  // absent
+  }
+  const std::size_t v = at + key.size() + 3;
+  if (meta.compare(v, 4, "null") == 0) {
+    return -1;
+  }
+  return std::strtoll(meta.c_str() + v, nullptr, 10);
+}
+
+void test_pm1_multimesh_buffer_f() {
+  Session tmpl = make_template(Delivery::Inline);
+  tmpl.version = ProtocolVersion::V11;
+  observe_multimesh_features(&tmpl.features);
+  FakeTransport transport;
+  Hub hub(&transport, LiveConfig(), tmpl);
+  const std::string hello11 =
+      read_file(std::string(GRC_GOLDEN11_DIR) + "/control/valid/hello-native-block.json");
+  const std::string hello10 =
+      read_file(std::string(GRC_GOLDEN10_DIR) + "/control/valid/hello-native-block.json");
+  hub.on_event(opened_with(1, "render-stream.11"), 0);
+  hub.on_event(opened_with(2, "render-stream.11"), 0);
+  hub.on_event(opened_with(3, "render-stream.10"), 0);
+  hub.on_event(text(1, hello11), 0);
+  hub.on_event(text(2, hello11), 0);
+  hub.on_event(text(3, hello10), 0);
+  std::shared_ptr<const Captured> state;
+  for (std::uint64_t frame = 1; frame <= 14; ++frame) {
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t conn = 1; conn <= 3; ++conn) {
+      const ConnectionSummary &cs = now.at(conn - 1);
+      const std::uint64_t period = conn == 2 ? 3 : 1;
+      if (cs.sent > 0 && frame % period == 0) {
+        hub.on_event(text(conn, ack(cs.stream_id, cs.sent, "submitted")), frame);
+      }
+    }
+    if (frame != 7) {
+      state = pm1_state(frame);  // frame 7 re-offers frame 6's target: a repeated target
+    }
+    const std::uint64_t t = frame * 16000000ULL;
+    hub.on_frame_shared(frame, t, hub.wants_snapshot(frame, t) ? state : nullptr, frame, 0);
+  }
+  for (std::uint32_t conn = 1; conn <= 2; ++conn) {
+    const std::vector<Sent> bin = of_conn(transport, Sent::Binary, conn);
+    check(bin.size() > 3 && meta_at(bin[0].bytes, 8).find("\"add_multimesh\"") != std::string::npos,
+          "PM1: the /11 session declares add_multimesh");
+    std::map<std::int64_t, std::int64_t> frame_of;  // seq -> frame
+    int with_floats = 0;
+    int held = 0;
+    for (std::size_t i = 1; i < bin.size(); ++i) {
+      const std::string meta = meta_at(bin[i].bytes, 0);
+      if (meta.find("\"type\":\"transaction\"") == std::string::npos) {
+        continue;
+      }
+      const std::int64_t seq = json_int_after(meta, "seq");
+      const std::int64_t frame = json_int_after(meta, "frame");
+      const std::int64_t base = json_int_after(meta, "base_seq");
+      frame_of[seq] = frame;
+      // The target's content frame (frame 7 carried frame 6's state).
+      const auto content = [](std::int64_t f) { return f == 7 ? 6 : f; };
+      const std::size_t mms = meta.find("\"multimeshes\":[");
+      const std::int64_t buffer_f = mms == std::string::npos ? -2 : json_int_after(meta, "buffer_f", mms);
+      if (base < 0) {
+        check(buffer_f >= 0, "PM1: a full transaction writes the buffer (conn " +
+                                 std::to_string(conn) + " seq " + std::to_string(seq) + ")");
+        continue;
+      }
+      const std::uint64_t sb = pm1_serial(static_cast<std::uint64_t>(content(frame_of[base])));
+      const std::uint64_t st = pm1_serial(static_cast<std::uint64_t>(content(frame)));
+      const bool moved = sb != st;
+      check(moved ? buffer_f >= 0 : buffer_f == -2,
+            "PM1: conn " + std::to_string(conn) + " seq " + std::to_string(seq) + " (base " +
+                std::to_string(base) + "): buffer_f " + std::to_string(buffer_f) +
+                (moved ? ", the serial moved" : ", the serial held"));
+      if (moved) {
+        ++with_floats;
+      } else {
+        ++held;
+      }
+      if (frame == 7 && frame_of[base] == 6) {
+        check(mms == std::string::npos, "PM1: a repeated target carries no multimesh entry");
+      }
+    }
+    check(with_floats > 0 && held > 0, "PM1: conn " + std::to_string(conn) +
+                                           " saw both a moved and a held serial");
+  }
+  const std::vector<Sent> b10 = of_conn(transport, Sent::Binary, 3);
+  check(b10.size() > 3, "PM1: the /10 connection streamed");
+  const std::string s10 = b10.empty() ? std::string() : meta_at(b10[0].bytes, 8);
+  check(s10.find("\"add_multimesh\"") == std::string::npos &&
+            s10.find("\"multimesh\"") == std::string::npos &&
+            s10.find("\"canvas_item_add_multimesh\"") != std::string::npos,
+        "PM1: a /10 connection's session declares no multimesh (rule 8 undone)");
+  bool lowered = false;
+  for (std::size_t i = 1; i < b10.size(); ++i) {
+    const std::string meta = meta_at(b10[i].bytes, 0);
+    check(meta.find("\"multimeshes\"") == std::string::npos &&
+              meta.find("\"add_multimesh\"") == std::string::npos,
+          "PM1: no multimesh table or command below /11");
+    lowered = lowered || meta.find("{\"op\":\"unsupported\",\"name\":\"canvas_item_add_multimesh\","
+                                   "\"reason\":\"unsupported-op\"}") != std::string::npos;
+  }
+  check(lowered, "PM1: /10 sees the unsupported-op command");
+}
+
 int main() {
+  test_pm1_multimesh_buffer_f();
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
   test_v6_and_v7_on_one_hub();
   test_v8_connection();

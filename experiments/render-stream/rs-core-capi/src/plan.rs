@@ -580,6 +580,9 @@ struct Counters {
     /// /11: named dynamic meshes left undrawn this transaction because a surface's body was never
     /// ingested (W11d draws every other one from `Core`'s `DynamicMeshes`).
     meshes_dynamic_undrawn: i64,
+    /// /11 (PM1): `add_multimesh` commands left undrawn (typed `multimesh-undrawn`) until PM2
+    /// re-issues multimeshes.
+    multimesh_commands_undrawn: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
     shader_code_sets: i64,
@@ -3096,6 +3099,16 @@ impl Planner {
                         reason: reason.as_str(),
                     });
                 }
+                // /11 (PM1): the wire carries the multimesh, but this planner does not re-issue
+                // multimeshes yet (PM2): typed, counted, not drawn.
+                Command::Multimesh { .. } => {
+                    c.multimesh_commands_undrawn += 1;
+                    unsupported.push(UnsupportedCommand {
+                        item: id,
+                        name: "canvas_item_add_multimesh".into(),
+                        reason: "multimesh-undrawn",
+                    });
+                }
             }
         }
     }
@@ -3387,7 +3400,8 @@ fn write_stats(
     mesh_uploads: &[MeshUpload],
     skipped: &[SkippedShader],
 ) {
-    v.dict(18);
+    // PM1: `multimesh_commands_undrawn` is the 19th key only when non-zero.
+    v.dict(18 + (c.multimesh_commands_undrawn > 0) as usize);
     v.key("created");
     v.int(c.created);
     v.key("freed");
@@ -3446,6 +3460,12 @@ fn write_stats(
     v.int(c.geometry);
     v.key("mesh_commands");
     v.int(c.mesh_commands);
+    // /11 (PM1) only in practice: below /11 there is no add_multimesh, and the stats stay
+    // byte-identical.
+    if c.multimesh_commands_undrawn > 0 {
+        v.key("multimesh_commands_undrawn");
+        v.int(c.multimesh_commands_undrawn);
+    }
     v.key("mesh_resources");
     let mut mesh_resources = vec![
         ("meshes_created", c.meshes_created),

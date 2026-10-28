@@ -1,0 +1,130 @@
+{
+  "schema": "render-stream-gate8-mm-expected/1",
+  "doc": "Hand-derived from mm.gd and Godot 4.5.1's MultiMesh, MultiMeshInstance2D and CPUParticles2D (scene/resources/multimesh.cpp, scene/2d/cpu_particles_2d.cpp), not measured (README.md). A cell's multimesh is the hook-log rid whose last allocation has the cell's `instances` (unique per cell; CPUParticles2D's constructor allocates 8 first). `calls` are the exact counts of each hooked multimesh call per cell on every /11 leg (keys are the call names without the `multimesh_` prefix; `free` is RenderingServer::free on the multimesh), apart from teardown (a `free` or a `set_visible_instances` of 0 at or after the last transaction's frame: node and resource destructors after the quit). `per_frame` names the calls a cell makes every frame: every frame from its first such call to its last carries at least one, over at least `min_per_frame_frames` frames, and the total exceeds the number of those frames by at most `calls[name]` (the one-off calls of the same name). `headless` replaces `calls`/`per_frame` entries on the headless leg, whose host never runs frame_pre_draw (CPUParticles2D and I_PREDRAW never set a buffer there). `visible` is the ordered list of set_visible_instances values. `rejected` counts lines with accepted false: H_FREE's step-1 wrong-size set_buffer (3 floats for 2 x 8), which GLES3 refuses (drivers/gles3/storage/mesh_storage.cpp _multimesh_set_buffer); the dummy storage would store it, so the capture must judge acceptance by Godot's own size rule on both hosts. `drawn`: the cell's multimesh is named by an item from its first state line on (H_FREE until its step-2 free, then a freed tombstone until frame 41's clear, then gone); G_HIDDEN is never named. `pairing`: the buffer float that carries the fixture frame (instance 0's custom.x, at index `float` of the instance), whose value minus the transaction frame must be one constant per leg, equal to the hook log's value minus call frame (`sentinel` before the first frame).",
+  "quit_frame": 90,
+  "checkpoints": [
+    { "step": 0, "applied": 1, "settle": 4 },
+    { "step": 1, "applied": 20, "settle": 27 },
+    { "step": 2, "applied": 40, "settle": 47 }
+  ],
+  "h_clear_frame": 41,
+  "sabotage_frame": 30,
+  "min_per_frame_frames": 80,
+  "min_paired_transactions": 60,
+  "cells": {
+    "A_XFORM": {
+      "node": "MultiMeshInstance2D",
+      "instances": 5,
+      "colors": false,
+      "custom": false,
+      "allocations": [[5, "2d", false, false]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "instance_set_transform_2d": 6 },
+      "per_frame": [],
+      "visible": [],
+      "rejected": 0,
+      "drawn": true
+    },
+    "B_CUSTOM": {
+      "node": "MultiMeshInstance2D",
+      "instances": 6,
+      "colors": true,
+      "custom": true,
+      "allocations": [[6, "2d", true, true]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 1, "instance_set_custom_data": 0 },
+      "per_frame": ["instance_set_custom_data"],
+      "visible": [],
+      "rejected": 0,
+      "drawn": true,
+      "pairing": { "instance": 0, "float": 12, "sentinel": -1, "source": "instance_set_custom_data" }
+    },
+    "C_FLIP": {
+      "node": "CPUParticles2D",
+      "instances": 7,
+      "colors": true,
+      "custom": true,
+      "allocations": [[8, "2d", true, true], [7, "2d", true, true]],
+      "calls": { "create": 1, "allocate_data": 2, "set_mesh": 1, "set_buffer": 0, "set_visible_instances": 1 },
+      "per_frame": ["set_buffer"],
+      "visible": [-1],
+      "rejected": 0,
+      "drawn": true,
+      "headless": { "calls": { "set_buffer": 0 }, "per_frame": [] }
+    },
+    "D_GLOBAL": {
+      "node": "CPUParticles2D",
+      "instances": 9,
+      "colors": true,
+      "custom": true,
+      "allocations": [[8, "2d", true, true], [9, "2d", true, true]],
+      "calls": { "create": 1, "allocate_data": 2, "set_mesh": 1, "set_buffer": 0, "set_visible_instances": 1 },
+      "per_frame": ["set_buffer"],
+      "visible": [-1],
+      "rejected": 0,
+      "drawn": true,
+      "headless": { "calls": { "set_buffer": 0 }, "per_frame": [] }
+    },
+    "E_VISIBLE": {
+      "node": "MultiMeshInstance2D",
+      "instances": 10,
+      "colors": true,
+      "custom": false,
+      "allocations": [[10, "2d", true, false]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 1, "set_visible_instances": 2, "set_custom_aabb": 1 },
+      "per_frame": [],
+      "visible": [4, 6],
+      "rejected": 0,
+      "drawn": true
+    },
+    "F_REPLACE": {
+      "node": "MultiMeshInstance2D",
+      "instances": 3,
+      "colors": true,
+      "custom": false,
+      "allocations": [[3, "2d", true, false]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 3 },
+      "per_frame": [],
+      "visible": [],
+      "rejected": 0,
+      "drawn": true
+    },
+    "G_HIDDEN": {
+      "node": "CPUParticles2D",
+      "instances": 11,
+      "colors": true,
+      "custom": true,
+      "allocations": [[8, "2d", true, true], [11, "2d", true, true]],
+      "calls": { "create": 1, "allocate_data": 2, "set_mesh": 1, "set_buffer": 0 },
+      "per_frame": [],
+      "visible": [],
+      "rejected": 0,
+      "drawn": false
+    },
+    "H_FREE": {
+      "node": "RenderingServer",
+      "instances": 2,
+      "colors": false,
+      "custom": false,
+      "allocations": [[2, "2d", false, false]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 2, "free": 1 },
+      "per_frame": [],
+      "visible": [],
+      "rejected": 1,
+      "drawn": true,
+      "freed_at_step": 2
+    },
+    "I_PREDRAW": {
+      "node": "MultiMeshInstance2D",
+      "instances": 12,
+      "colors": false,
+      "custom": true,
+      "allocations": [[12, "2d", false, true]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 1 },
+      "per_frame": ["set_buffer"],
+      "visible": [],
+      "rejected": 0,
+      "drawn": true,
+      "pairing": { "instance": 0, "float": 8, "sentinel": -1, "source": "set_buffer" },
+      "headless": { "calls": { "set_buffer": 1 }, "per_frame": [] }
+    }
+  }
+}

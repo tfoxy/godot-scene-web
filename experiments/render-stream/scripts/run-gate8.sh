@@ -154,6 +154,17 @@
 #       `scale/off/sabotage-ignore-released/receiver`; gate8-w11-tool.ts native-plan), judged by
 #       lib/gate8-w11-native-checks.ts; gate 7's g7-8 GSW half replays them against native, and
 #       `coding/native` runs a native receiver live at /11 beside an uncoded one.
+#   g8mm (PM1, render-stream-11.md "As built (PM1)": multimesh on /11, the capture side only,
+#       fixtures/gate8-mm; every leg under g8mm/): the fixture import and rs-core-check's build;
+#       then, in one private 640x360 gamescope (a headless host never runs frame_pre_draw, so a
+#       CPUParticles2D never calls multimesh_set_buffer there), every capture at --fixed-fps 60 on
+#       the RENDERED host with both sinks, the store, the hook log and the fixture's frame log
+#       (mm-frames.jsonl): `capture` (GRC_STREAM_VERSION=11), `capture-v10` (the negative control:
+#       no multimesh on the wire), `sabotage-perturb-instance/capture` and
+#       `sabotage-stale-buffer/capture` (GRC_SABOTAGE at frame 30); last the headless /11
+#       `headless/capture`, whose hook log documents the headless case (script-driven multimeshes
+#       set buffers, CPUParticles2D and frame_pre_draw never do). Hook-log-only legs: the receivers
+#       are PM2's. Judged by lib/gate8-mm-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -175,11 +186,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm)
 
 EXTENSION=""
 CALIBRATION=""
@@ -793,6 +804,83 @@ run_g8cg() {
 	rm -rf "$OUT/g8cg/reference/xdg-data" "$OUT/g8cg/reference-repeat/xdg-data"
 	gs_teardown "$OUT/gamescope-g8cg"
 	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
+# ------------------------------------------------------------------------------------ g8mm
+G8MM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-mm"
+# The frame the capture sabotages start at (fixtures/gate8-mm/expected.json sabotage_frame): every
+# cell is live by then, and steps 1 and 2 (frames 20 and 40) fall either side of it.
+G8MM_SABOTAGE_FRAME=30
+G8MM_SABOTAGES=(perturb-instance stale-buffer)
+
+run_import_g8mm() {
+	echo "run-gate8: g8mm import (fixture)"
+	LEG_ENV=()
+	run_headless "$OUT/g8mm/import/fixture" none -- mise exec -- godot --headless --path "$G8MM_FIXTURE_DIR" --import
+	[ -f "$OUT/g8mm/import/fixture/skipped-by-tier.txt" ] && return 0
+	if [ "$(cat "$OUT/g8mm/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8mm import (fixture) failed, see $OUT/g8mm/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+}
+
+# run_capture_rendered_g8mm <dir> <env word...>: an armed capture on the rendered host (the private
+# gamescope) at --fixed-fps 60: both sinks, the store, the hook log, the step log, the fixture's
+# frame log and its shots.
+run_capture_rendered_g8mm() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm "$@"
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_SHOT_DIR="$dir/shots"
+		RS_FIXTURE_MM_LOG="$dir/mm-frames.jsonl"
+	)
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered "$dir" "$G8MM_FIXTURE_DIR"
+	RENDERED_EXTRA_ARGS=()
+}
+
+run_g8mm() {
+	run_import_g8mm
+	# The checker validates every recording through rs-core-check too (incremental, a no-op when
+	# current).
+	echo "run-gate8: g8mm build-rs-core.sh (rs-core-check)"
+	mkdir -p "$OUT/g8mm"
+	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8mm/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8mm/build-rs-core.log" >&2
+		exit 1
+	}
+	echo "run-gate8: bringing up private gamescope for g8mm's rendered captures"
+	gs_start 640 360 "$OUT/gamescope-g8mm"
+	RECORDING_NAME=recording.rs11
+	PATCH_RECORDING_NAME=recording-patch.rs11
+	echo "run-gate8: g8mm capture (/11, armed at birth, rendered, --fixed-fps 60)"
+	run_capture_rendered_g8mm "$OUT/g8mm/capture" GRC_STREAM_VERSION=11
+	local s
+	for s in "${G8MM_SABOTAGES[@]}"; do
+		echo "run-gate8: g8mm sabotage-$s (capture, $s @$G8MM_SABOTAGE_FRAME)"
+		run_capture_rendered_g8mm "$OUT/g8mm/sabotage-$s/capture" GRC_STREAM_VERSION=11 \
+			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8MM_SABOTAGE_FRAME"
+	done
+	RECORDING_NAME=recording.rs10
+	PATCH_RECORDING_NAME=recording-patch.rs10
+	echo "run-gate8: g8mm capture-v10 (/10, the negative control: no multimesh on the wire)"
+	run_capture_rendered_g8mm "$OUT/g8mm/capture-v10" GRC_STREAM_VERSION=10
+	gs_teardown "$OUT/gamescope-g8mm"
+	GS_RUN_DIR=""
+	RECORDING_NAME=recording.rs11
+	PATCH_RECORDING_NAME=recording-patch.rs11
+	echo "run-gate8: g8mm headless/capture (/11, headless: no frame_pre_draw)"
+	mkdir -p "$OUT/g8mm/headless/capture"
+	CAPTURE_FIXTURE_DIR="$G8MM_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=11 RS_FIXTURE_MM_LOG="$OUT/g8mm/headless/capture/mm-frames.jsonl")
+	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
+	run_capture "$OUT/g8mm/headless/capture" "" none
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }
@@ -1839,6 +1927,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8cg) run_g8cg ;;
 	g8w11) run_g8w11 ;;
 	g8w11c) run_g8w11c ;;
+	g8mm) run_g8mm ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	esac

@@ -151,6 +151,8 @@ const RS_METHODS: &[&str] = &[
     "canvas_item_add_triangle_array",
     "canvas_item_add_nine_patch",
     "canvas_item_add_mesh",
+    // /11 (PM1): `add_multimesh`'s `tex` follows the texture rules of every op with a `tex`.
+    "canvas_item_add_multimesh",
 ];
 
 fn rs_method(cmd: &Command) -> Option<u8> {
@@ -163,6 +165,7 @@ fn rs_method(cmd: &Command) -> Option<u8> {
         Command::TriangleArray { .. } => 5,
         Command::NinePatch { .. } => 6,
         Command::Mesh { .. } => 7,
+        Command::Multimesh { .. } => 8,
         _ => return None,
     })
 }
@@ -202,6 +205,10 @@ struct ItemIdx {
     /// Derived `unsupported-texture` methods, sorted.
     tex_unsup: Vec<u8>,
     mesh_unsup: bool,
+    /// /11: distinct multimesh ids of the item's add_multimesh commands, sorted.
+    mms: Vec<Id>,
+    /// /11: an add_multimesh names an `unsupported` multimesh (`unsupported-multimesh`).
+    mm_unsup: bool,
     eff: Option<Id>,
     mat_unsup: bool,
 }
@@ -210,6 +217,8 @@ struct ItemIdx {
 struct Index {
     tex: FastMap<Id, TexIdx>,
     mesh: FastMap<Id, EntryStatus>,
+    /// /11: each resolved multimesh's status.
+    mm: FastMap<Id, EntryStatus>,
     shader_texs: FastMap<Id, Vec<Id>>,
     mat: FastMap<Id, MatIdx>,
     canvas: FastMap<Id, (bool, bool, (i64, i64))>,
@@ -217,6 +226,8 @@ struct Index {
     claims: BTreeSet<(PKey, Id)>,
     tex_users: BTreeSet<(Id, Id)>,
     mesh_users: BTreeSet<(Id, Id)>,
+    /// /11: (multimesh, item) for every add_multimesh.
+    mm_users: BTreeSet<(Id, Id)>,
     mat_users: BTreeSet<(Id, Id)>,
     eff_users: BTreeSet<(Id, Id)>,
     diffuse_users: BTreeSet<(Id, Id)>,
@@ -231,6 +242,7 @@ struct Index {
     n_ops: usize,
     n_tex_unsup: usize,
     n_mesh_unsup: usize,
+    n_mm_unsup: usize,
     n_mat_unsup: usize,
     /// Containers whose claim set changed in the last reindex.
     touched: Vec<PKey>,
@@ -307,6 +319,7 @@ struct Dirty {
     meshes: Vec<Id>,
     shaders: Vec<Id>,
     materials: Vec<Id>,
+    multimeshes: Vec<Id>,
 }
 
 impl Dirty {
@@ -317,6 +330,7 @@ impl Dirty {
         self.meshes.clear();
         self.shaders.clear();
         self.materials.clear();
+        self.multimeshes.clear();
     }
 }
 
@@ -329,6 +343,7 @@ struct Removed {
     meshes: Vec<Id>,
     shaders: Vec<Id>,
     materials: Vec<Id>,
+    multimeshes: Vec<Id>,
 }
 
 impl Removed {
@@ -339,6 +354,7 @@ impl Removed {
         self.meshes.clear();
         self.shaders.clear();
         self.materials.clear();
+        self.multimeshes.clear();
     }
 }
 
@@ -350,6 +366,7 @@ enum Undo {
     Mesh(Id, Option<Mesh>),
     Shader(Id, Option<Shader>),
     Material(Id, Option<Material>),
+    Multimesh(Id, Option<Multimesh>),
 }
 
 /// A resource payload's decoded shape, for `resource-payload`.
@@ -468,6 +485,46 @@ pub fn names_in_table_order(st: &ResolvedState) -> Vec<Hash> {
     out
 }
 
+/// /11 (PM1): one multimesh buffer in the last accepted transaction record: `floats` f32s
+/// (`instances × stride`, little-endian) from byte `start` of the record `accept` was given
+/// (inside its `mm_f32` block), for an entry with a non-null `buffer_f`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MmBufferRef {
+    pub multimesh: Id,
+    pub start: usize,
+    pub floats: usize,
+}
+
+impl MmBufferRef {
+    /// The buffer's bytes in `record` (the record given to `accept`).
+    pub fn bytes<'r>(&self, record: &'r [u8]) -> &'r [u8] {
+        &record[self.start..self.start + 4 * self.floats]
+    }
+}
+
+/// The JSON fields of a multimesh entry other than its two offsets (rule 9's "any JSON value"),
+/// for `multimesh-version`'s pre-resolve half.
+fn mm_fields_equal(a: &Multimesh, b: &meta::MultimeshMeta) -> bool {
+    a.origin == b.origin
+        && a.status == b.status
+        && a.reason == b.reason
+        && a.mesh == b.mesh
+        && a.format == b.format
+        && a.colors == b.colors
+        && a.custom == b.custom
+        && a.instances == b.instances
+        && a.visible == b.visible
+}
+
+fn mm_floats_equal(a: &Multimesh, b: &Multimesh) -> bool {
+    let aabb = match (&a.custom_aabb, &b.custom_aabb) {
+        (Some(x), Some(y)) => bits_eq(x, y),
+        (None, None) => true,
+        _ => false,
+    };
+    aabb && a.buffer_sha256 == b.buffer_sha256
+}
+
 fn same_shape(a: &MeshSurface, b: &MeshSurface) -> bool {
     a.primitive == b.primitive
         && a.format == b.format
@@ -513,6 +570,8 @@ pub struct Validator {
     last_mesh: FastMap<Id, Mesh>,
     last_shader: FastMap<Id, Shader>,
     last_material: FastMap<Id, Material>,
+    /// /11: each multimesh's resolved entry the last time a transaction carried it.
+    last_multimesh: FastMap<Id, Multimesh>,
     end_seen: bool,
     digests: Vec<Option<Hash>>,
     // per-record scratch
@@ -542,6 +601,10 @@ pub struct Validator {
     released: Vec<Hash>,
     /// The last transaction's dynamic mesh bodies, in entry and surface order.
     bodies: Vec<BodyRef>,
+    /// PM1: the last transaction's multimesh buffers, in entry order.
+    mm_buffers: Vec<MmBufferRef>,
+    /// PM1 rule 8: the session's `features.ops` lists `add_multimesh`.
+    mm_op_declared: bool,
     /// `content-version-stable` (WB): the first patch item whose commands equal the base's under
     /// a moved `content_version`, found while resolving.
     cv_stable: Option<Id>,
@@ -966,6 +1029,10 @@ fn lift_commands(cmds: &[CmdMeta], fb: F32s, ib: I32s, out: &mut Commands) {
                 transform: fb.arr(f),
             },
             Op::ClipIgnore => Command::ClipIgnore { ignore: c.b1 },
+            Op::Multimesh => Command::Multimesh {
+                multimesh: c.mesh,
+                tex: c.tex,
+            },
             Op::Unsupported => Command::Unsupported {
                 name: c.name.clone().unwrap_or_default(),
                 reason: c.reason,
@@ -1409,6 +1476,13 @@ fn command_identical(x: &Command, y: &Command) -> bool {
         }
         (C::ClipIgnore { ignore }, C::ClipIgnore { ignore: i2 }) => ignore == i2,
         (
+            C::Multimesh { multimesh, tex },
+            C::Multimesh {
+                multimesh: m2,
+                tex: t2,
+            },
+        ) => multimesh == m2 && tex == t2,
+        (
             C::Unsupported { name, reason },
             C::Unsupported {
                 name: n2,
@@ -1494,6 +1568,8 @@ impl Validator {
         }
         let snap_declared =
             opts.version >= 6 && session.viewport.snap_2d.is_some_and(|(t, v)| t || v);
+        let mm_op_declared =
+            opts.version >= 11 && session.features.ops.iter().any(|o| o == "add_multimesh");
         let digest = match opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(session_record)),
             DigestPolicy::Deferred => None,
@@ -1524,6 +1600,7 @@ impl Validator {
             last_mesh: FastMap::default(),
             last_shader: FastMap::default(),
             last_material: FastMap::default(),
+            last_multimesh: FastMap::default(),
             end_seen: false,
             digests: vec![digest],
             bufs,
@@ -1541,6 +1618,8 @@ impl Validator {
             pruned: Vec::new(),
             released: Vec::new(),
             bodies: Vec::new(),
+            mm_buffers: Vec::new(),
+            mm_op_declared,
             cv_stable: None,
         })
     }
@@ -1622,6 +1701,13 @@ impl Validator {
     /// to `accept`), for each mesh entry with a non-null `u8`, in entry then surface order.
     pub fn dynamic_bodies(&self) -> &[BodyRef] {
         &self.bodies
+    }
+    /// /11 (PM1): the last accepted transaction's multimesh buffers (byte ranges of the record
+    /// given to `accept`), for each multimesh entry with a non-null `buffer_f`, in entry order.
+    /// An `ok` entry of [`ResolvedState::multimeshes`] absent from this list kept its floats
+    /// ("the floats you hold"). Empty after a resource or end record.
+    pub fn multimesh_buffers(&self) -> &[MmBufferRef] {
+        &self.mm_buffers
     }
 
     /// render-stream-11.md decision 9, `inline-fetch-zero`: may a /11 receiver GET `hash` over
@@ -1717,6 +1803,7 @@ impl Validator {
             self.pruned.clear();
             self.released.clear();
             self.bodies.clear();
+            self.mm_buffers.clear();
         }
         let accepted = match decoded {
             Decoded::Session(_) => {
@@ -1901,9 +1988,11 @@ impl Validator {
             blk(5),
             blk(6),
             blk(7),
+            blk(8),
         ];
         let u8_start = blocks.get(7).map(|b| b.start).unwrap_or(0);
-        self.apply(bl, u8_start);
+        let mm_start = blocks.get(8).map(|b| b.start).unwrap_or(0);
+        self.apply(bl, u8_start, mm_start);
         self.reindex_dirty();
         prof::add(prof::RESOLVE, t);
         let t = prof::start();
@@ -1928,6 +2017,12 @@ impl Validator {
         if tx.unknown_items.is_some() != self.session.unknown_item_skip {
             return Err(schema(
                 "\"unknown_items\" must be present exactly when the session declares unknown_item_policy \"skip\"".into(),
+            ));
+        }
+        // PM1 rule 8: an add_multimesh needs a session whose features.ops lists it.
+        if v >= 11 && !self.mm_op_declared && tx.cmds.iter().any(|c| c.op == Op::Multimesh) {
+            return Err(schema(
+                "an add_multimesh command in a session whose features.ops lacks \"add_multimesh\"".into(),
             ));
         }
         // checkIdOrdering / checkIdListAscendingNoDup, in the TypeScript's concatenation order.
@@ -1971,6 +2066,10 @@ impl Validator {
             ascending("removed_shaders", &tx.removed_shaders)?;
             ascending("removed_materials", &tx.removed_materials)?;
         }
+        if v >= 11 {
+            ordering("multimeshes", &mut tx.multimeshes.iter().map(|c| c.id as i64))?;
+            ascending("removed_multimeshes", &tx.removed_multimeshes)?;
+        }
         // W11d: after a transport skip ([`Validator::transport_skip`]) the next transaction is
         // the full one the resync forces, at any later seq.
         let skipped = self.skipping && tx.is_full() && tx.seq > self.prev_seq;
@@ -2006,7 +2105,7 @@ impl Validator {
         for it in &tx.items {
             let Some(r) = it.commands else { continue };
             for c in r.of(&tx.cmds) {
-                if matches!(c.op, Op::Unsupported | Op::ClipIgnore) {
+                if matches!(c.op, Op::Unsupported | Op::ClipIgnore | Op::Multimesh) {
                     continue;
                 }
                 if c.f != running {
@@ -2115,6 +2214,7 @@ impl Validator {
         let count = |i: usize| tx.blocks.get(i).map(|b| b.count);
         if v >= 11 {
             self.check_dynamic_meshes(offset)?;
+            self.check_multimeshes(offset)?;
         }
         let expected_canvas = stride * tx.canvases.len() as u64;
         if count(1) != Some(expected_canvas) {
@@ -2286,12 +2386,142 @@ impl Validator {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// /11 (render-stream-11.md "As built (PM1)" rules 2-5): per multimesh entry
+    /// `multimesh-entry` (its shape, then the `buffer_f` rule), then `multimesh-version` (the JSON
+    /// fields against the entry the last transaction carrying it resolved to), then `mm-offset`
+    /// over the entries and `mm_f32`'s count. Runs against the base state (before resolving),
+    /// after the mesh rules. `multimesh-ref` runs on the resolved state (`check_invariants`).
+    fn check_multimeshes(&self, offset: usize) -> Result<(), Error> {
+        let tx = &self.tx;
+        let full = tx.is_full();
+        let me = |id: Id, d: &str| {
+            Error::new(
+                "multimesh-entry",
+                format!("record at offset {offset}: multimesh {id}: {d}"),
+            )
+        };
+        for m in &tx.multimeshes {
+            let shape = match m.status {
+                EntryStatus::Ok => {
+                    if m.reason.is_some() {
+                        Some("an \"ok\" entry has a non-null reason")
+                    } else if m.format != MultimeshFormat::D2 {
+                        Some("an \"ok\" entry's format is not \"2d\"")
+                    } else if m.aabb_f.is_none() {
+                        Some("an \"ok\" entry has a null aabb_f")
+                    } else if m.visible > m.instances {
+                        Some("an \"ok\" entry's visible exceeds its instances")
+                    } else {
+                        None
+                    }
+                }
+                EntryStatus::Unsupported => {
+                    if m.reason.is_none() {
+                        Some("an \"unsupported\" entry has a null reason")
+                    } else if m.aabb_f.is_none() {
+                        Some("an \"unsupported\" entry has a null aabb_f")
+                    } else if m.buffer_f.is_some() {
+                        Some("an \"unsupported\" entry has a non-null buffer_f")
+                    } else {
+                        None
+                    }
+                }
+                EntryStatus::Freed => {
+                    if m.reason.is_some()
+                        || m.mesh.is_some()
+                        || m.format != MultimeshFormat::D2
+                        || m.colors
+                        || m.custom
+                        || m.instances != 0
+                        || m.visible != -1
+                        || m.aabb_f.is_some()
+                        || m.buffer_f.is_some()
+                    {
+                        Some("a \"freed\" entry must be {reason: null, mesh: null, format: \"2d\", colors: false, custom: false, instances: 0, visible: -1, aabb_f: null, buffer_f: null}")
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(d) = shape {
+                return Err(me(m.id, d));
+            }
+            // Rule 3: a null buffer_f on an `ok` entry means "the floats you hold", legal only in a
+            // patch whose base entry is `ok` with the same instances, format, colors and custom.
+            if m.status == EntryStatus::Ok && m.buffer_f.is_none() {
+                let held = !full
+                    && self.state.multimeshes.get(&m.id).is_some_and(|b| {
+                        b.status == EntryStatus::Ok
+                            && b.instances == m.instances
+                            && b.format == m.format
+                            && b.colors == m.colors
+                            && b.custom == m.custom
+                    });
+                if !held {
+                    return Err(me(
+                        m.id,
+                        &format!(
+                            "an \"ok\" entry has a null buffer_f, but {}",
+                            if full {
+                                "the transaction is full"
+                            } else if !self.state.multimeshes.contains_key(&m.id) {
+                                "the entry is new to the table"
+                            } else {
+                                "its base entry is not \"ok\" with the same instances, format, colors and custom"
+                            }
+                        ),
+                    ));
+                }
+            }
+        }
+        for m in &tx.multimeshes {
+            if let Some(p) = self.last_multimesh.get(&m.id) {
+                if m.version < p.version || (m.version == p.version && !mm_fields_equal(p, m)) {
+                    return Err(Error::new(
+                        "multimesh-version",
+                        format!(
+                            "record at offset {offset}: multimesh {}'s version {} {} (earlier entry: version {})",
+                            m.id,
+                            m.version,
+                            if m.version < p.version {
+                                "decreased"
+                            } else {
+                                "did not move, but the entry changed"
+                            },
+                            p.version
+                        ),
+                    ));
+                }
+            }
+        }
+        let mut running = 0u64;
+        for m in &tx.multimeshes {
+            for (key, at, n) in [
+                ("aabb_f", m.aabb_f, 6u64),
+                ("buffer_f", m.buffer_f, m.buffer_floats()),
+            ] {
+                let Some(at) = at else { continue };
+                if at != running {
+                    return Err(Error::new(
+                        "mm-offset",
+                        format!(
+                            "record at offset {offset}: multimesh {} {key}={at}, expected {running}",
+                            m.id
+                        ),
+                    ));
+                }
+                running = running.saturating_add(n);
+            }
+        }
         let mm = tx.blocks.get(8).map(|b| b.count).unwrap_or(0);
-        if mm != 0 {
+        if mm != running {
             return Err(Error::new(
                 "mm-offset",
                 format!(
-                    "record at offset {offset}: block \"mm_f32\" carries {mm} floats, but no multimesh entry claims any"
+                    "record at offset {offset}: block \"mm_f32\" declares count {mm}, the multimesh entries claim {running}"
                 ),
             ));
         }
@@ -2313,6 +2543,7 @@ impl Validator {
                 || !tx.removed_textures.is_empty()
                 || (v >= 4 && !tx.removed_meshes.is_empty())
                 || (v >= 5 && (!tx.removed_shaders.is_empty() || !tx.removed_materials.is_empty()))
+                || !tx.removed_multimeshes.is_empty()
             {
                 return Err(e(
                     "patch-encoding",
@@ -2412,6 +2643,18 @@ impl Validator {
                 &mut tx.materials.iter().map(|c| c.id),
             ))?;
         }
+        if v >= 11 {
+            pr(absent(
+                "multimesh",
+                &tx.removed_multimeshes,
+                &st.multimeshes,
+            ))?;
+            pr(both(
+                "multimesh",
+                &tx.removed_multimeshes,
+                &mut tx.multimeshes.iter().map(|c| c.id),
+            ))?;
+        }
         for it in &tx.items {
             if it.commands.is_none() {
                 match st.items.get(&it.id) {
@@ -2443,13 +2686,15 @@ impl Validator {
     /// `undo`. A full transaction removes the previous ids it omits; an entry bitwise identical to
     /// the one it replaces (most of a full transaction) is left in place and not marked dirty, so
     /// a full transaction costs what it changes beyond reading it.
-    /// `u8_start`: where `mesh_u8` (`bl[7]`) starts in the record, for [`BodyRef`]s.
-    fn apply(&mut self, bl: [&[u8]; 8], u8_start: usize) {
+    /// `u8_start`: where `mesh_u8` (`bl[7]`) starts in the record, for [`BodyRef`]s; `mm_start`
+    /// where `mm_f32` (`bl[8]`) starts, for [`MmBufferRef`]s.
+    fn apply(&mut self, bl: [&[u8]; 9], u8_start: usize, mm_start: usize) {
         let v = self.opts.version;
         let tx = &self.tx;
         let st = &mut self.state;
         self.cv_stable = None;
         self.bodies.clear();
+        self.mm_buffers.clear();
         let mesh_u8 = bl[7];
         self.undo.clear();
         self.dirty.clear();
@@ -2518,6 +2763,11 @@ impl Validator {
                 tx.materials.iter().map(|c| c.id),
                 &mut r.materials,
             );
+            omitted(
+                st.multimeshes.keys().copied(),
+                tx.multimeshes.iter().map(|c| c.id),
+                &mut r.multimeshes,
+            );
         } else {
             r.canvases
                 .extend(tx.removed_canvases.iter().map(|&i| i as Id));
@@ -2529,6 +2779,8 @@ impl Validator {
                 .extend(tx.removed_shaders.iter().map(|&i| i as Id));
             r.materials
                 .extend(tx.removed_materials.iter().map(|&i| i as Id));
+            r.multimeshes
+                .extend(tx.removed_multimeshes.iter().map(|&i| i as Id));
         }
         let d = &mut self.dirty;
         let undo = &mut self.undo;
@@ -2555,6 +2807,10 @@ impl Validator {
         for &id in &r.materials {
             undo.push(Undo::Material(id, st.materials.remove(&id)));
             d.materials.push(id);
+        }
+        for &id in &r.multimeshes {
+            undo.push(Undo::Multimesh(id, st.multimeshes.remove(&id)));
+            d.multimeshes.push(id);
         }
 
         for (i, c) in tx.canvases.iter().enumerate() {
@@ -2823,6 +3079,56 @@ impl Validator {
                 d.shaders.push(s.id);
             }
         }
+        // PM1 (render-stream-11.md "As built (PM1)" rule 10): an `ok` entry's buffer digest comes
+        // from `mm_f32` when `buffer_f` is non-null, else from the base entry (rule 3 guarantees
+        // it is `ok` with the same shape); `custom_aabb` is null only on `freed`.
+        if v >= 11 {
+            let mm_f32 = F32s(bl[8]);
+            for m in &tx.multimeshes {
+                let custom_aabb = m.aabb_f.map(|f| mm_f32.arr::<6>(f as usize));
+                let buffer_sha256 = if m.status != EntryStatus::Ok {
+                    None
+                } else if let Some(at) = m.buffer_f {
+                    let n = m.buffer_floats() as usize;
+                    let at = at as usize;
+                    let bytes = bl[8].get(4 * at..4 * (at + n)).unwrap_or(&[]);
+                    self.mm_buffers.push(MmBufferRef {
+                        multimesh: m.id,
+                        start: mm_start + 4 * at,
+                        floats: n,
+                    });
+                    Some(wire::sha256(bytes))
+                } else {
+                    st.multimeshes.get(&m.id).and_then(|o| o.buffer_sha256)
+                };
+                let mm = Multimesh {
+                    id: m.id,
+                    origin: m.origin,
+                    status: m.status,
+                    reason: m.reason,
+                    version: m.version,
+                    mesh: m.mesh,
+                    format: m.format,
+                    colors: m.colors,
+                    custom: m.custom,
+                    instances: m.instances,
+                    visible: m.visible,
+                    custom_aabb,
+                    buffer_sha256,
+                };
+                if st.multimeshes.get(&m.id).is_some_and(|old| {
+                    old.version == mm.version
+                        && old.buffer_sha256 == mm.buffer_sha256
+                        && mm_floats_equal(old, &mm)
+                        && mm_fields_equal(old, m)
+                }) {
+                    continue;
+                }
+                let prev = st.multimeshes.insert(m.id, mm);
+                undo.push(Undo::Multimesh(m.id, prev));
+                d.multimeshes.push(m.id);
+            }
+        }
         st.default_texture_filter = tx.default_texture_filter.unwrap_or(Filter::Nearest);
         st.default_texture_repeat = tx.default_texture_repeat.unwrap_or(Repeat::Disabled);
     }
@@ -2873,10 +3179,17 @@ impl Validator {
                         None => st.materials.remove(&id),
                     };
                 }
+                Undo::Multimesh(id, prev) => {
+                    match prev {
+                        Some(p) => st.multimeshes.insert(id, p),
+                        None => st.multimeshes.remove(&id),
+                    };
+                }
             }
         }
         self.reindex(false);
         self.bodies.clear();
+        self.mm_buffers.clear();
     }
 
     fn reindex_dirty(&mut self) {
@@ -2979,6 +3292,18 @@ impl Validator {
             }
             if old != new {
                 mesh_changed.push(id);
+            }
+        }
+        // Multimeshes (/11).
+        let mut mm_changed: Vec<Id> = Vec::new();
+        for &id in &d.multimeshes {
+            let old = ix.mm.remove(&id);
+            let new = st.multimeshes.get(&id).map(|m| m.status);
+            if let Some(s) = new {
+                ix.mm.insert(id, s);
+            }
+            if old != new {
+                mm_changed.push(id);
             }
         }
 
@@ -3123,16 +3448,21 @@ impl Validator {
                     for &m in &o.meshes {
                         ix.mesh_users.remove(&(m, id));
                     }
+                    for &m in &o.mms {
+                        ix.mm_users.remove(&(m, id));
+                    }
                     ix.n_ops -= o.ops.len();
                 } else {
                     carried.tex_refs = o.tex_refs;
                     carried.tex_ids = o.tex_ids;
                     carried.meshes = o.meshes;
+                    carried.mms = o.mms;
                     carried.ops = o.ops;
                 }
                 if new_item.is_none() {
                     ix.n_tex_unsup -= o.tex_unsup.len();
                     ix.n_mesh_unsup -= o.mesh_unsup as usize;
+                    ix.n_mm_unsup -= o.mm_unsup as usize;
                     ix.n_mat_unsup -= o.mat_unsup as usize;
                     if let Some(e) = o.eff {
                         ix.eff_users.remove(&(e, id));
@@ -3142,6 +3472,7 @@ impl Validator {
                 } else {
                     carried.tex_unsup = o.tex_unsup;
                     carried.mesh_unsup = o.mesh_unsup;
+                    carried.mm_unsup = o.mm_unsup;
                     carried.eff = o.eff;
                     carried.mat_unsup = o.mat_unsup;
                     if !same_parent {
@@ -3173,6 +3504,7 @@ impl Validator {
                 e.tex_refs.clear();
                 e.tex_ids.clear();
                 e.meshes.clear();
+                e.mms.clear();
                 e.ops.clear();
                 for (k, c) in it.commands.list.iter().enumerate() {
                     if let (Some(t), Some(m)) = (c.tex(), rs_method(c)) {
@@ -3180,6 +3512,9 @@ impl Validator {
                     }
                     if let Command::Mesh { mesh, .. } = c {
                         e.meshes.push(*mesh);
+                    }
+                    if let Command::Multimesh { multimesh, .. } = c {
+                        e.mms.push(*multimesh);
                     }
                     if let Command::Unsupported { name, reason } = c {
                         let commands = &it.commands.list;
@@ -3192,11 +3527,15 @@ impl Validator {
                 e.tex_ids.extend(e.tex_refs.iter().map(|&(t, _)| t));
                 e.tex_ids.dedup();
                 sorted_dedup(&mut e.meshes);
+                sorted_dedup(&mut e.mms);
                 for &t in &e.tex_ids {
                     ix.tex_users.insert((t, id));
                 }
                 for &m in &e.meshes {
                     ix.mesh_users.insert((m, id));
+                }
+                for &m in &e.mms {
+                    ix.mm_users.insert((m, id));
                 }
                 ix.n_ops += e.ops.len();
             }
@@ -3260,6 +3599,32 @@ impl Validator {
                     ix.n_mesh_unsup -= 1;
                 }
                 e.mesh_unsup = nu;
+            }
+        }
+        // unsupported-multimesh (/11): the items meshu_check visits, plus the users of every
+        // multimesh whose status changed.
+        if v >= 11 {
+            let mut mmu_check = meshu_check;
+            if !all {
+                for &m in &mm_changed {
+                    mmu_check.extend(users(&ix.mm_users, m));
+                }
+            }
+            for &id in &mmu_check {
+                let Some(e) = ix.item.get(&id) else { continue };
+                let nu = e
+                    .mms
+                    .iter()
+                    .any(|m| ix.mm.get(m) == Some(&EntryStatus::Unsupported));
+                let e = ix.item.get_mut(&id).unwrap();
+                if nu != e.mm_unsup {
+                    if nu {
+                        ix.n_mm_unsup += 1;
+                    } else {
+                        ix.n_mm_unsup -= 1;
+                    }
+                    e.mm_unsup = nu;
+                }
             }
         }
         // Effective materials and unsupported-material (/5).
@@ -3937,6 +4302,55 @@ impl Validator {
                 format!("{w}: item {i}'s add_mesh names mesh {m}, which has no entry"),
             ));
         }
+        // multimesh-ref (/11, render-stream-11.md "As built (PM1)" rule 6).
+        if v >= 11 {
+            let mut bad: Vec<Id> = Vec::new();
+            for &(i, cmds_changed) in &d.items {
+                if !cmds_changed {
+                    continue;
+                }
+                if let Some(e) = ix.item.get(&i) {
+                    if e.mms.iter().any(|m| !st.multimeshes.contains_key(m)) {
+                        bad.push(i);
+                    }
+                }
+            }
+            for &m in &r.multimeshes {
+                bad.extend(users(&ix.mm_users, m));
+            }
+            if let Some(i) = first(bad) {
+                let m = ix.item[&i]
+                    .mms
+                    .iter()
+                    .copied()
+                    .find(|m| !st.multimeshes.contains_key(m))
+                    .unwrap_or(0);
+                return Err(Error::new(
+                    "multimesh-ref",
+                    format!(
+                        "{w}: item {i}'s add_multimesh names multimesh {m}, which has no entry"
+                    ),
+                ));
+            }
+            // A multimesh's mesh names an entry of the resolved mesh table (any status): the
+            // entries this transaction carried, and every entry when a mesh left the table.
+            let dangling = |mm: &Multimesh| mm.mesh.filter(|x| !st.meshes.contains_key(x));
+            let found = if r.meshes.is_empty() {
+                tx.multimeshes
+                    .iter()
+                    .find_map(|m| dangling(&st.multimeshes[&m.id]).map(|x| (m.id, x)))
+            } else {
+                st.multimeshes
+                    .values()
+                    .find_map(|m| dangling(m).map(|x| (m.id, x)))
+            };
+            if let Some((id, mesh)) = found {
+                return Err(Error::new(
+                    "multimesh-ref",
+                    format!("{w}: multimesh {id} names mesh {mesh}, which has no entry"),
+                ));
+            }
+        }
         self.check_unsupported(&w)
     }
 
@@ -3953,6 +4367,7 @@ impl Validator {
         let mut item_level = false;
         let (mut d_ops, mut d_ties, mut d_tex, mut d_mesh, mut d_mat) =
             (0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut d_mm = 0usize;
         let mut declared_stack = false;
         let mut declared_snap = false;
         let actual_stack = v >= 6 && ix.stack_ties > 0;
@@ -4058,7 +4473,8 @@ impl Validator {
                 | "unknown-texture"
                 | "canvas-texture-headless"
                 | "unknown-mesh"
-                | "skinned-geometry" => {
+                | "skinned-geometry"
+                | "unknown-multimesh" => {
                     let cmds = &st.items[&id].commands.list;
                     let actual = x
                         .ops
@@ -4115,6 +4531,14 @@ impl Validator {
                     }
                     d_mesh += 1;
                 }
+                "unsupported-multimesh" => {
+                    if !(op == "canvas_item_add_multimesh" && x.mm_unsup) {
+                        return Err(mm(format!(
+                            "unsupported-multimesh entry ({item}, {op}) does not correspond to an add_multimesh naming an unsupported multimesh"
+                        )));
+                    }
+                    d_mm += 1;
+                }
                 "unsupported-material" => {
                     if op != "canvas_item_set_material" {
                         return Err(mm(format!(
@@ -4164,6 +4588,12 @@ impl Validator {
         if d_mesh != ix.n_mesh_unsup {
             return Err(mm(
                 "an add_mesh command names an unsupported mesh, with no unsupported-mesh entry"
+                    .into(),
+            ));
+        }
+        if d_mm != ix.n_mm_unsup {
+            return Err(mm(
+                "an add_multimesh command names an unsupported multimesh, with no unsupported-multimesh entry"
                     .into(),
             ));
         }
@@ -4218,6 +4648,19 @@ impl Validator {
                         && (p.status == EntryStatus::Freed || cur.status != EntryStatus::Freed));
                 if regressed {
                     return Err(e("mesh-version", "mesh", m.id));
+                }
+            }
+        }
+        // PM1: the floats' half of `multimesh-version` (the JSON half ran before resolving): at an
+        // unmoved version the custom AABB and the buffer's digest are the earlier entry's.
+        for m in &tx.multimeshes {
+            if let Some(p) = self.last_multimesh.get(&m.id) {
+                let cur = &st.multimeshes[&m.id];
+                if cur.version == p.version && !mm_floats_equal(p, cur) {
+                    return Err(Error::new(
+                        "multimesh-version",
+                        format!("record at offset {offset}: multimesh {}'s custom AABB or buffer changed, but its version {} did not move", m.id, cur.version),
+                    ));
                 }
             }
         }
@@ -4498,6 +4941,10 @@ impl Validator {
         for m in &tx.materials {
             self.last_material.insert(m.id, st.materials[&m.id].clone());
         }
+        for m in &tx.multimeshes {
+            self.last_multimesh
+                .insert(m.id, st.multimeshes[&m.id].clone());
+        }
         let maxes = [
             tx.canvases.iter().map(|c| c.id).max(),
             tx.items.iter().map(|c| c.id).max(),
@@ -4529,6 +4976,8 @@ impl Validator {
         d.shaders_upserted.extend(tx.shaders.iter().map(|c| c.id));
         d.materials_upserted
             .extend(tx.materials.iter().map(|c| c.id));
+        d.multimeshes_upserted
+            .extend(tx.multimeshes.iter().map(|c| c.id));
         let r = &self.removed;
         d.canvases_removed.extend(&r.canvases);
         d.items_removed.extend(&r.items);
@@ -4536,6 +4985,7 @@ impl Validator {
         d.meshes_removed.extend(&r.meshes);
         d.shaders_removed.extend(&r.shaders);
         d.materials_removed.extend(&r.materials);
+        d.multimeshes_removed.extend(&r.multimeshes);
         d.defaults_changed =
             self.old_defaults != (st.default_texture_filter, st.default_texture_repeat);
 
@@ -4665,6 +5115,13 @@ mod tests {
             &next.materials,
             &d.materials_upserted,
             &d.materials_removed,
+        );
+        side(
+            "multimesh",
+            &prev.multimeshes,
+            &next.multimeshes,
+            &d.multimeshes_upserted,
+            &d.multimeshes_removed,
         );
         for id in &d.items_upserted {
             if d.items_commands.binary_search(id).is_err() {
