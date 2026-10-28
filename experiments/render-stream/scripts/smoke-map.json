@@ -320,6 +320,11 @@
       "reach": ["pure"]
     },
     {
+      "why": "MX's perf attribution tool (results/p3/mx.md): reads a `perf record -g` profile of a host process by hand, not a validate-increment target",
+      "paths": ["experiments/render-stream/scripts/perf-attribute.py"],
+      "reach": ["pure"]
+    },
+    {
       "why": "the legacy decoder prototype crate",
       "paths": ["experiments/render-stream/decode-proto-rs/**"],
       "reach": ["cargo:experiments/render-stream/decode-proto-rs"]
