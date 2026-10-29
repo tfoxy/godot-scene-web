@@ -409,7 +409,15 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
 
 interface LiveApplied extends Applied {
   streams?: { stream_id: string | null }[];
-  live?: { coding?: { connections?: Record<string, unknown>[]; resyncs?: number } };
+  live?: {
+    coding?: {
+      connections?: Record<string, unknown>[];
+      resyncs?: number;
+      heap_at_resync?: number | null;
+      heap_end?: number | null;
+      rebuild_applies?: RebuildApply[];
+    };
+  };
 }
 
 async function codingLegsOf(root: string, leg: string) {
@@ -470,12 +478,95 @@ async function resyncCheck(root: string, leg: string, id: string, sabotage: stri
   return check(id, criterion, problems, `resyncs ${v?.applied?.live?.coding?.resyncs ?? 0}`);
 }
 
+/**
+ * GRH: a GSW coding resync's fresh applier inherits the resident textures (render-stream-11.md "As
+ * built (GRH)"). Before, the resync's full transaction uploaded every texture again into the draw
+ * list's byte arena at once: the wasm heap, which never shrinks, stepped by the whole texture set
+ * (+408 MB, +73%, on STS2 combat; W11z). Two checks on the browser receiver's `rebuild_applies[0]`
+ * (the first transaction drawn after the rebuild, the resync's full):
+ * - `resync-uploads` (`coding-resync-uploads-*`): the full's texture upload bytes are at most half
+ *   of what the viewer had uploaded before it (the defect re-uploads all of it, so equal);
+ * - `resync-heap` (`coding-resync-heap-*`): the heap right after the full is within HEAP_SLACK of the
+ *   heap when the rebuild began (not the leg's end heap, which creeps ~0.2 MB per 12 transactions).
+ *   The slack is the full's own accept (24 MiB measured on STS2, 6 MiB on this fixture) with room;
+ *   the defect adds the whole texture set, so the bound is the one that catches it at game scale,
+ *   and the uploads check is the one that catches it on this small fixture.
+ * A native receiver has no wasm heap: both are not-run there.
+ */
+const HEAP_SLACK = 32 * 1024 * 1024;
+
+interface RebuildApply {
+  seq: number;
+  heap: number | null;
+  heap_before_rebuild: number | null;
+  texture_upload_bytes: number;
+  texture_upload_bytes_before: number;
+}
+
+async function resyncReuploadChecks(root: string, leg: string, suffix: string): Promise<G8aCheck[]> {
+  const dir = join(root, leg);
+  const ids = [`coding-resync-uploads-${suffix}`, `coding-resync-heap-${suffix}`];
+  const criteria = [
+    `GRH: a GSW coding resync (${leg}) does not upload again what the GPU holds: the resync's full uploads at most half of the texture bytes uploaded before it`,
+    `GRH: a GSW coding resync (${leg}) leaves the wasm heap within ${HEAP_SLACK / 1048576} MiB of its size when the rebuild began, measured right after the resync's full is applied`,
+  ];
+  if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
+    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: `skipped-by-tier: ${dir}`, gating: false }));
+  }
+  const legs = await codingLegsOf(root, leg);
+  const c = legs?.[0]?.applied?.live?.coding;
+  if (c && c.heap_at_resync === undefined) {
+    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: "a native receiver has no wasm heap", gating: false }));
+  }
+  const r: RebuildApply | undefined = c?.rebuild_applies?.[0];
+  const up: string[] | null = legs ? [] : null;
+  const hp: string[] | null = legs ? [] : null;
+  if (up && hp && !r) {
+    up.push("no rebuild_applies in applied.json (the resync's full was never drawn)");
+    hp.push("no rebuild_applies in applied.json (the resync's full was never drawn)");
+  } else if (up && hp && r) {
+    if (r.texture_upload_bytes_before <= 0) up.push("the viewer uploaded no texture before the resync: nothing to re-upload (the fixture has lost its textures?)");
+    else if (r.texture_upload_bytes * 2 > r.texture_upload_bytes_before) up.push(`the resync's full uploaded ${r.texture_upload_bytes} B, over half of the ${r.texture_upload_bytes_before} B uploaded before it`);
+    if (r.heap === null || r.heap_before_rebuild === null) hp.push("no heap sample");
+    else if (r.heap > r.heap_before_rebuild + HEAP_SLACK) hp.push(`wasm heap ${r.heap_before_rebuild} -> ${r.heap} B (+${((r.heap - r.heap_before_rebuild) / 1048576).toFixed(1)} MiB) across the resync's full`);
+  }
+  const detail = r ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B, heap ${r.heap_before_rebuild} -> ${r.heap} B` : "no rebuild apply";
+  return [check(ids[0], criteria[0], up, detail), check(ids[1], criteria[1], hp, detail)];
+}
+
+/**
+ * GRH sabotage: a GSW receiver run with `rebuild-reupload` (the fresh applier inherits nothing, as
+ * before GRH) must fail `coding-resync-uploads`: its resync full uploads (at least) half of what the
+ * viewer had uploaded. A browser receiver only: the leg is not run for the native one.
+ */
+async function reuploadCaught(root: string): Promise<G8aCheck> {
+  const id = "coding-resync-reupload-caught";
+  const criterion = "GRH: a GSW receiver whose resync applier inherits no residency (rebuild-reupload) uploads the textures again at the resync's full, which coding-resync-uploads refuses";
+  const dir = join(root, "native-sabotage-drop-base-reupload");
+  if (!existsSync(dir)) return { id, criterion, passed: true, status: "not-run", detail: "no browser receiver leg", gating: false };
+  if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
+    return { id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false };
+  }
+  const legs = await codingLegsOf(root, "native-sabotage-drop-base-reupload");
+  const r = legs?.[0]?.applied?.live?.coding?.rebuild_applies?.[0];
+  const problems: string[] | null = legs ? [] : null;
+  if (problems && !r) problems.push("no rebuild_applies in applied.json");
+  else if (problems && r) {
+    if (r.texture_upload_bytes_before <= 0) problems.push("no texture uploaded before the resync");
+    else if (r.texture_upload_bytes * 2 <= r.texture_upload_bytes_before) problems.push(`the sabotaged resync full uploaded only ${r.texture_upload_bytes} of ${r.texture_upload_bytes_before} B: coding-resync-uploads would pass`);
+  }
+  return check(id, criterion, problems, r ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B` : "no rebuild apply");
+}
+
 /** GTS: g8w11c, the coding resync legs alone (`$out/g8w11c/<leg>`), native or in a browser. */
 export async function runG8w11cResync(out: string): Promise<G8aCheck[]> {
   const root = join(out, "g8w11c");
   return [
     await resyncCheck(root, "native-sabotage-drop-base", "native-coding-drop-base-caught", "drop-message"),
     await resyncCheck(root, "native-sabotage-wrong-prefix", "native-coding-wrong-prefix-caught", "coding-wrong-prefix"),
+    ...(await resyncReuploadChecks(root, "native-sabotage-drop-base", "drop-base")),
+    ...(await resyncReuploadChecks(root, "native-sabotage-wrong-prefix", "wrong-prefix")),
+    await reuploadCaught(root),
   ];
 }
 

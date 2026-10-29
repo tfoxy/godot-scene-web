@@ -341,6 +341,88 @@ fn texture_region_uses_texpixel_size_and_flips() {
     assert_eq!(v2.uv, [1.0, 1.0]);
 }
 
+/// GRH: a fresh applier that replaces another after a live coding resync inherits the resident
+/// textures, so the resync's full transaction uploads nothing the GPU already holds (the defect
+/// re-queued every texture's pixels into the draw list's byte arena at once: +384 MB of wasm heap
+/// on STS2 combat). A texture the new state no longer names is freed, as the native reconcile does.
+#[test]
+fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
+    let mut s = state_with(vec![item(
+        1,
+        ON_ROOT,
+        Commands {
+            list: vec![Command::TextureRectRegion {
+                tex: Some(5),
+                transpose: false,
+                clip_uv: false,
+                rect: [10.0, 4.0, 8.0, 8.0],
+                src: [0.0, 0.0, 16.0, 16.0],
+                modulate: [1.0; 4],
+            }],
+            ..Commands::default()
+        },
+    )]);
+    let hash = Hash([7; 32]);
+    let texture = |id: Id, hash: Hash| Texture {
+        id,
+        origin: Origin::Created,
+        adopted_content: None,
+        kind: TextureKind::Image,
+        status: EntryStatus::Ok,
+        reason: None,
+        version: 1,
+        hash: Some(hash),
+        format: Some("RGBA8".into()),
+        source_format: None,
+        width: 16,
+        height: 16,
+        mipmaps: false,
+        payload_bytes: 100,
+        variants: Vec::new(),
+        canvas: None,
+    };
+    s.textures.insert(5, texture(5, hash));
+    let mut store = PayloadStore::default();
+    store.textures.insert(
+        hash,
+        payloads::TexturePixels {
+            width: 16,
+            height: 16,
+            rgba: vec![255; 16 * 16 * 4],
+            format: "RGBA8".into(),
+            mipmaps: false,
+            data_len: 16 * 16 * 4,
+            compressed: None,
+            half: None,
+            floats: None,
+        },
+    );
+    let mut old = Applier::new(viewport());
+    assert_eq!(old.apply(&s, &full_delta(&s), &store).texture_uploads, 1);
+
+    // Without inheritance the fresh applier uploads the texture again (the defect's shape).
+    let mut fresh = Applier::new(viewport());
+    let st = fresh.apply(&s, &full_delta(&s), &store).clone();
+    assert_eq!((st.texture_uploads, fresh.list.texture_bytes.len()), (1, 1024));
+
+    // With it the same full uploads nothing, and the draw list's arena stays empty.
+    let mut rebuilt = Applier::new(viewport());
+    rebuilt.inherit_residency(old);
+    let st = rebuilt.apply(&s, &full_delta(&s), &store).clone();
+    assert_eq!(st.texture_uploads, 0);
+    assert_eq!(st.texture_frees, 0);
+    assert!(rebuilt.list.texture_bytes.is_empty());
+    assert!(rebuilt.list.texture_ops.is_empty());
+    assert_eq!(rebuilt.list.draws[0].texture, 5);
+
+    // A texture the full no longer holds is freed (the native reconcile).
+    let mut again = Applier::new(viewport());
+    again.inherit_residency(rebuilt);
+    s.textures.remove(&5);
+    let st = again.apply(&s, &full_delta(&s), &store).clone();
+    assert_eq!((st.texture_frees, st.texture_uploads), (1, 0));
+}
+
 #[test]
 fn custom_rect_off_screen_hides_on_screen_content_and_moving_on_screen_rewalks() {
     // _attach_canvas_item_for_draw: the item's global rect (here its custom rect) must touch the

@@ -1189,6 +1189,32 @@ table was: no version bump, the magic stays `GRSB`.
     `identity-transform-false.rs11` and `identity-transform-v10.rs10` (both `meta-schema`). Every
     record of states 1-21 is byte-identical.
 
+### As built (GRH): decisions
+
+GSW's coding resync stepped the wasm heap up for good (W11z: 561.5 -> 969.7 MB on STS2 combat).
+
+1. **Cause.** After a `coding` resync `live_rebuild` builds a fresh `Applier`, and a fresh applier has
+   no resident textures. Its first apply, the resync's full, therefore queued every texture's pixels
+   into the draw list's byte arena (`texture_bytes`) in one transaction, to put back what the GPU
+   already held. A viewer that had built its state transaction by transaction never held that much
+   at once, and wasm memory never shrinks. Heap attribution (a per-call page counter, STS2 combat,
+   `results/p3/grh.md`): `apply` +384.1 MB at the resync; a viewer joining at the same moment pays
+   the same in its first apply (+496 MB), which is a join's cost, not a defect. The decode buffers
+   (`LiveCoding`, `rx`) are not the cause: a full transaction is 1.5 MB on STS2, and the resync's
+   accept costs +24 MB.
+2. **Fix.** `Applier::inherit_residency` hands the old applier's resident table (and kept payloads,
+   delivery preferences and stream version) to the fresh one, so its first apply is the native
+   receiver's reconcile (`sync_textures` with `first`): a texture whose chosen payload is already
+   resident is not uploaded, one the new state does not name is freed. The executor keeps its GL
+   textures across the replacement. `live_rebuild` also never carried the delivery preferences or the
+   stream version across before; it does now.
+3. **Evidence and checks.** applied.json `live.coding.rebuild_applies[]` has, for the first
+   transaction drawn after each rebuild, the heap and the texture bytes it uploaded, with the bytes
+   uploaded before it. `coding-resync-uploads-*` (the full uploads at most half of the earlier
+   uploads) and `coding-resync-heap-*` (heap within 32 MiB of the heap when the rebuild began) judge
+   it; the receiver sabotage `rebuild-reupload` restores the old behaviour and
+   `coding-resync-reupload-caught` requires `coding-resync-uploads` to refuse it.
+
 ## Predicted cost (STS2, from the kept recordings)
 
 One viewer that takes every transaction, `GRC_RESOURCE_INLINE_MAX_BYTES=4096`. Method and both

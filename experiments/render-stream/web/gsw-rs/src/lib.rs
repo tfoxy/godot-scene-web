@@ -134,6 +134,8 @@ struct Opts {
     evict_carried: bool,
     stale_dynamic_rx: bool,
     no_prune: bool,
+    /// GRH `rebuild-reupload`: `live_rebuild` leaves the fresh applier's residency empty.
+    rebuild_reupload: bool,
     /// PM6a's receiver sabotage `ignore-particle-emits` on GSW: every wire emit is dropped
     /// (counted `emits_dropped`) instead of consumed.
     ignore_particle_emits: bool,
@@ -290,6 +292,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "evict-carried" => o.evict_carried = true,
                 "stale-dynamic-rx" => o.stale_dynamic_rx = true,
                 "no-prune" => o.no_prune = true,
+                // GRH: a coding resync's fresh applier does not inherit the resident textures, so
+                // its full transaction uploads every texture again (the pre-GRH behaviour).
+                "rebuild-reupload" => o.rebuild_reupload = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
                     if let Some(s) = Sabotage::parse(other)? {
@@ -1481,6 +1486,13 @@ impl GswRs {
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
         applier.half_instances = v.session().engine.rendering_method == "gl_compatibility";
+        // GRH: the executor still holds the GPU textures; the fresh applier reconciles against
+        // them instead of uploading all of them again. The old applier's other state goes first.
+        if let Some(old) = self.applier.take() {
+            if !self.opts.rebuild_reupload {
+                applier.inherit_residency(old);
+            }
+        }
         applier.prepare(v.state(), v.delta());
         self.applier = Some(applier);
         self.compute_needed()
