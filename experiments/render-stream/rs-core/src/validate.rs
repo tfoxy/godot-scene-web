@@ -1195,7 +1195,7 @@ fn bit_eq(a: f32, b: f32) -> bool {
     a.to_bits() == b.to_bits()
 }
 
-fn blank_item() -> Item {
+pub(crate) fn blank_item() -> Item {
     Item {
         id: 0,
         origin: Origin::Created,
