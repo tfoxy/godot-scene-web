@@ -1703,9 +1703,15 @@ struct WriterRun {
   std::vector<std::uint8_t> patch;
   std::string index;
   std::vector<std::string> stored;  // "<hash>.<ext>:<sha of the file>", in index order
+  std::vector<std::string> events;  // the publisher's resource events, "<op> <hash> <bytes> <ok>"
+  EndStats full_stats;
+  EndStats patch_stats;
 };
 
-WriterRun run_file_sinks(const std::string &name, bool threaded) {
+// HC5: `former` also forms both lanes on the writer (Publisher::set_former); `inline_max` > 0
+// puts the payloads at or under it inline (records in both lanes).
+WriterRun run_file_sinks(const std::string &name, bool threaded, bool former = false,
+                         std::uint64_t inline_max = 0) {
   const std::string dir = tmp_dir(name);
   grc::rs::FileWriter writer;
   grc::rs::ResourceStore store;
@@ -1723,7 +1729,16 @@ WriterRun run_file_sinks(const std::string &name, bool threaded) {
   SabotageConfig sabotage;
   sabotage.kind = SabotageKind::WrongHash;  // the corruption is decided at put(), not by the writer
   sabotage.frame = 3;
-  Publisher publisher(&full, &patch, sabotage, golden_policy(0), &store);
+  Publisher publisher(&full, &patch, sabotage, golden_policy(inline_max), &store);
+  WriterRun out;
+  publisher.set_resource_events([&out](const char *op, const std::string &hash,
+                                       std::uint64_t bytes, bool ok, std::uint64_t frame) {
+    out.events.push_back(std::string(op) + " " + hash + " " + std::to_string(bytes) + " " +
+                         (ok ? "ok" : "failed") + " " + std::to_string(frame));
+  });
+  if (former) {
+    publisher.set_former(&writer);
+  }
   check(publisher.start(make_template()), "start " + name);
   TextureScene textures;
   MeshScene meshes;
@@ -1736,11 +1751,12 @@ WriterRun run_file_sinks(const std::string &name, bool threaded) {
           name + ": publish frame " + std::to_string(f));
   }
   check(writer.drain(), name + ": the writer drains without a failure");
-  WriterRun out;
   // Everything but the end record (its stats carry wall-clock timings).
   out.full = read_bytes(dir + "/recording.rs8");
   out.patch = read_bytes(dir + "/recording-patch.rs8");
   publisher.finish(EndReason::Shutdown);
+  out.full_stats = publisher.stats(Encoding::Full);
+  out.patch_stats = publisher.stats(Encoding::Patch);
   store.close();
   out.index = read_text(dir + "/store/index.jsonl");
   std::istringstream lines(out.index);
@@ -1766,6 +1782,42 @@ bool equal_after_session(const std::vector<std::uint8_t> &a, const std::vector<s
   }
   const auto from = static_cast<std::size_t>(first_tx - a.begin());
   return std::equal(a.begin() + static_cast<long>(from), a.end(), b.begin() + static_cast<long>(from));
+}
+
+// HC5: the lanes formed on the writer (set_former) write what publish() forms itself: the same
+// records and transactions, the same store files, resource events and end-stat counts.
+void test_lane_former() {
+  TextureScene probe;
+  probe.frame(1);
+  for (const std::uint64_t inline_max : {std::uint64_t{0}, probe.bytes_b, std::uint64_t{16777216}}) {
+    const std::string tag = "inline " + std::to_string(inline_max);
+    const WriterRun sync = run_file_sinks("former-sync-" + std::to_string(inline_max), false,
+                                          false, inline_max);
+    const WriterRun formed = run_file_sinks("former-writer-" + std::to_string(inline_max), true,
+                                            true, inline_max);
+    check(equal_after_session(sync.full, formed.full),
+          "HC5 " + tag + ": full lane formed on the writer is byte-identical");
+    check(equal_after_session(sync.patch, formed.patch),
+          "HC5 " + tag + ": patch lane formed on the writer is byte-identical");
+    check(sync.index == formed.index && sync.stored == formed.stored,
+          "HC5 " + tag + ": the store's index and files are identical");
+    check(!sync.events.empty() && sync.events == formed.events,
+          "HC5 " + tag + ": the resource events are identical, in order (" +
+              std::to_string(sync.events.size()) + ")");
+    const auto same_counts = [](const EndStats &a, const EndStats &b) {
+      return a.full_transactions == b.full_transactions &&
+             a.patch_transactions == b.patch_transactions && a.bytes_total == b.bytes_total &&
+             a.resource_records == b.resource_records && a.resource_bytes == b.resource_bytes &&
+             a.max_record_bytes == b.max_record_bytes;
+    };
+    check(same_counts(sync.full_stats, formed.full_stats) &&
+              same_counts(sync.patch_stats, formed.patch_stats),
+          "HC5 " + tag + ": the lanes' end stats count the same records and bytes");
+    if (inline_max != 0) {
+      check(formed.full_stats.resource_records > 0 && formed.patch_stats.resource_records > 0,
+            "HC5 " + tag + ": both lanes carried records");
+    }
+  }
 }
 
 void test_file_writer() {
@@ -1840,6 +1892,7 @@ void test_file_writer() {
 
 int main() {
   test_file_writer();
+  test_lane_former();
   test_start_two_sinks();
   test_sink_presence();
   test_full_and_patch_chain();

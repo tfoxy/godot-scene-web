@@ -286,6 +286,54 @@ frame-paired. What can move: work that is a pure function of immutable published
 Saving: the per-(B, T) work, 1.6 ms of the churn fixture today, after D1 roughly the encode and
 zstd (0.6 ms churn, 0.35 ms STS2 combat).
 
+### As built (HC5: the formation thread; `results/p3/hc5.md`)
+
+- **One job per sending connection per frame callback** (`rs_live.cpp`, `Hub::Job`). The callback
+  decides on the main thread, as before, everything that is frame-paired: which connections
+  send, the target, base, seq, frame and encoding, credit and the window, rate ticks, the
+  drop-message, stale-coalesce, ignore-credit and window-overrun sabotages, the serving pins, and
+  the below-/11 CarriedIndex marks (they mutate host-wide state, so the walk stays). The
+  connection's state advances at once. The job carries the rest: the /11 record plan
+  (`plan_v11_records`), the resource records, `make_full`/`make_patch` and `encode_transaction`
+  (or a lockstep connection's re-stamp), and the live coding. It hands every message to the
+  transport in order: a connection's session message first, then its records, then its
+  transaction.
+- **The jobs of one callback run in submission order on one encode thread** (`Hub::Former`).
+  `LiveConfig::formation` selects `Thread` (entry.cpp's default) or `Inline` (the end of the
+  frame callback, on its thread; the unit tests' default, and `GRC_HC_FORMATION=inline`). The
+  P3-SP, W11b and W11t memos (`Hub::Memo`) belong to the job runner, so the second lockstep
+  connection's job finds the first's transaction, records and coded bytes. A batch-end job hands
+  the memo back to the main thread, which releases its snapshots, and flushes the taps.
+- **A job touches only the memo, its own outputs and its connection's `FormState`.**
+  `FormState` holds the transport id, the tap, the coding and the coding prefix (`last_tx`).
+  The job reports what it did: its counters (`Hub::Counters`), its live-log lines, and a
+  `message-too-large` error, whose text it sends itself so that nothing follows it. The main
+  thread completes jobs (`Hub::sync()`, which waits for the queue) at the top of every entry
+  point (an event, the next frame, finish, close, a GET) and at the top of each frame callback
+  (`live_drain`). Completion applies the counters and writes the lines, the `message-too-large`
+  close, and the frame line with the transaction's bytes, in the order a synchronous hub wrote
+  them. A job's frame line is therefore written one callback later, before any later event line
+  of that connection.
+- **Frame pairing and serving are unchanged.** seq and frame are fixed at enqueue, and the
+  payloads are pinned before `on_frame_shared` (phase 1), so a GET for a record's hash cannot
+  arrive before its pin. Messages leave the transport in the hub's order per connection.
+- **File lanes form on the P3-CAP writer** (`Publisher::set_former`, `form_lane`). Each
+  publication queues one task per lane behind its store writes. The task encodes the lane's
+  records and its transaction (`make_full`/`make_patch`) and writes them with the sinks'
+  `write_direct`. The record plan, the carried set, the inline resource events and the
+  patch-drop-item decision stay in `publish()`. The lanes' end stats belong to the writer until
+  `finish()` drains it. The published snapshot is now held shared (`last_published_shared()`), so
+  the live hub takes it without a copy.
+- **Release on another thread.** Snapshots, records and transactions can now drop their last
+  reference on the encode thread or the writer. Every copy-on-write site that writes in place
+  when `use_count() == 1` takes an acquire fence: `SharedVector`, `SharedTable` (as before),
+  `SharedStrMap::own_root`/`own_chunk`, the mirror's multimesh buffer and material floats.
+- **Sabotage `reorder`** (`GRC_HC_SABOTAGE=reorder`, `LiveConfig::reorder_frame`): every job sends
+  its transaction before its resource records.
+- **W13b's hook:** a per-connection predictor state belongs in `FormState`, beside `last_tx`. It
+  advances in job order, so the T−2 base it predicts from is the connection's own last formed
+  transactions, never the main thread's view.
+
 ## D5. Hook overhead per RenderingServer call
 
 Measured on the fixture (churn, one viewer; `results/p3/hc.md`):

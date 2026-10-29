@@ -18,6 +18,7 @@
 #define GRC_RS_SHARED_MAP_H
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -210,6 +211,9 @@ class SharedStrMap {
       root_ = std::make_shared<Root>();
     } else if (root_.use_count() > 1) {
       root_ = std::make_shared<Root>(*root_);
+    } else {
+      // HC5: another holder may have let go on another thread (acq_rel): order its reads first.
+      std::atomic_thread_fence(std::memory_order_acquire);
     }
     return *root_;
   }
@@ -217,6 +221,8 @@ class SharedStrMap {
     ChunkPtr &chunk = root->chunks[c];
     if (chunk.use_count() > 1) {
       chunk = std::make_shared<Chunk>(*chunk);
+    } else {
+      std::atomic_thread_fence(std::memory_order_acquire);  // HC5: see own_root
     }
     return chunk->entries;
   }

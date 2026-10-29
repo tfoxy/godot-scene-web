@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // hc1-checks.ts -- judges run-hc1.sh's legs (HC1, results/p3/hc1.md; protocol/host-cost-design.md
 // D5, D6; HC2's re-record legs, results/p3/hc2.md, D1; HC3's lazy mesh surface legs, hc3.md, D2;
-// HC4a's shadow oracle and sabotages, hc4a.md, D1).
+// HC4a's shadow oracle and sabotages, hc4a.md, D1; HC5's reorder sabotage, hc5.md, D4).
 // Writes <out>/result.json ({schema, checks:[{id, passed, detail}]}); exit 1 on a failure.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -382,6 +382,17 @@ if (!rrSkipped("sabotage-serve-skip")) {
 if (!rrSkipped("sabotage-serve-skip-gate2")) {
   const caught = gateCaught("sabotage-serve-skip-gate2", HC4B_SERVE_CHECKS);
   add("sabotage-serve-skip-gate2-caught", caught.length > 0 ? [] : ["gate 2's live GET checks did not fail"], `caught: ${caught.join(" | ")}`);
+}
+
+// HC5: reorder (a formation job's transaction before its records) fails the live receiver with
+// resource-missing at seq 1, and gate 2's validation of what it received.
+const HC5_REORDER_CHECKS: Array<[string, string]> = [
+  ["leg-class-live-inline", "resource-missing"],
+  ["live-inline", "resource-missing"],
+];
+if (!rrSkipped("sabotage-reorder-gate2")) {
+  const caught = gateCaught("sabotage-reorder-gate2", HC5_REORDER_CHECKS);
+  add("sabotage-reorder-gate2-caught", caught.length > 0 ? [] : ["gate 2's live-inline checks did not fail with resource-missing"], `caught: ${caught.join(" | ")}`);
 }
 
 writeFileSync(join(out, "result.json"), `${JSON.stringify({ schema: "render-stream-hc1-result/1", checks }, null, 2)}\n`);

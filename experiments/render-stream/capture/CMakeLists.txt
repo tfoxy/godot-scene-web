@@ -221,6 +221,9 @@ target_compile_definitions(rs_live_test PRIVATE
   GRC_GOLDEN12_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_test_tmp")
 add_test(NAME rs_live COMMAND rs_live_test)
+# HC5: the same tests with every hub's formation jobs on the encode thread.
+add_test(NAME rs_live_thread COMMAND rs_live_test --formation=thread)
+set_tests_properties(rs_live rs_live_thread PROPERTIES RESOURCE_LOCK rs_live_tmp)
 
 # G7q: credit window tests (gate7-design.md D4, Q2 "Credit with window w"): window 1 pinned by
 # transcript digests recorded before G7q (test/golden/live-window1-transcripts.txt), and window 2.
@@ -244,6 +247,8 @@ target_compile_definitions(rs_live_window_test PRIVATE
   GRC_WINDOW1_TRANSCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/test/golden/live-window1-transcripts.txt"
   GRC_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/rs_live_window_test_tmp")
 add_test(NAME rs_live_window COMMAND rs_live_window_test)
+add_test(NAME rs_live_window_thread COMMAND rs_live_window_test --formation=thread)
+set_tests_properties(rs_live_window rs_live_window_thread PROPERTIES RESOURCE_LOCK rs_live_window_tmp)
 
 # G7n: test-only live host (rs_ws + the hub around a fixed scene) for the Node interop
 # self-test's /6 + /7, hello token, Origin and CORS checks (scripts/test/self-test-rs-ws.ts).
