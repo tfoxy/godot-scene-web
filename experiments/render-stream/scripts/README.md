@@ -133,8 +133,11 @@ the browser groups, whose own lock wait reached 3.8–4.9 ks of a 6–7 ks run.
 
 **Typed unavailable rows and the summary** (GRT4a). A native or gate 7 run whose runner exits 1 is
 re-judged by `lib/tier-verdict.py --runner-rc 1`: failing rows typed `unavailable` or
-`device-unavailable` (desktop g7-lc's real-suspension rows) do not fail it but are listed; any
-other failing row, a runner exit with every check passing, or an exit >= 2 still fails.
+`device-unavailable` (desktop g7-lc's real-suspension rows) do not fail it but are listed; so do
+rows typed `known-flake` (SWO, listed as `known_flakes`, printed `FLAKE`): today only g7-8's web
+multimesh rows under the CI lavapipe allowance, which `lib/gate7-web-flakes.ts` types only on the
+run's own evidence (results/p3/swo.md); any other failing row, a runner exit with every check
+passing, or an exit >= 2 still fails.
 `validate-summary.json` (`render-stream-validate-summary/2`) gives each run its phase, wall time,
 quiet-lock wait and hold per mode summed over the run's own `quiet-lock-summary.json` files
 (symlinked directories are not followed: a view links its source, often another run's cache
@@ -1089,7 +1092,7 @@ reference; the first class in Q7's precedence wins.
 | `http-gets-match-fetches`                 | the host's `http-get` lines equal the receiver's http fetches, hash for hash, byte for byte, in order; each hash at most once per process; every fetch a verified 200 with the immutable headers                                    |
 | `gets-advertised`                         | every GET names a hash a transaction already sent on its connection (at an earlier frame callback) names                                                                                                                            |
 | `fetch-before-applied`                    | every fetch for seq n ends before n's applied ack (receiver clock), and its GET reached the host no later than that ack (host frames)                                                                                               |
-| `pins-bounded`                            | after every frame callback the servable set (replayed from `pin`/`retire`) equals the full recording's ok hashes united with every open connection's base, within `GRC_RESOURCE_BUDGET_BYTES`                                       |
+| `pins-bounded`                            | after every viewer frame callback (HC1: none between a close and the next hello; SWO) the servable set (replayed from `pin`/`retire`) equals the full recording's ok hashes united with every open connection's base, within `GRC_RESOURCE_BUDGET_BYTES`                                       |
 | `obsolete-retired`                        | nothing stays servable once nothing names it, nothing is retired while something does; live-animate's fetched hashes were all sent, fewer ANIM versions were sent than updated, superseded versions retired (counts reported)       |
 | `stall-newest-texture`                    | live-stall: step 6's update lands in the stall, the first post-stall transaction carries A1, A1 is fetched once (for it), and its shot equals the reference                                                                         |
 | `reconnect-no-refetch`                    | live-reconnect: connection 2 starts full with 0 fetches (cache hits only) and one upload per resident texture; C and D are then fetched once each on connection 2                                                                   |

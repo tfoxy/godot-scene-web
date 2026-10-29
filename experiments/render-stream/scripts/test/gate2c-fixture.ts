@@ -131,7 +131,9 @@ export interface LegFiles {
 }
 
 /** The D7 serving lines of a host: pin when a hash first becomes current, retire after the
- * frame callback at which neither the current state nor an open connection's base names it. */
+ * frame callback at which neither the current state nor an open connection's base names it.
+ * HC1 (SWO): only at viewer callbacks (a connection has said hello, at its first send, and not
+ * closed); between a close and the next hello nothing is pinned or retired. */
 function servingLines(
   spec: LegSpec,
   quit: number,
@@ -146,6 +148,15 @@ function servingLines(
   let maxN = 0;
   let maxB = 0;
   for (let f = 1; f <= quit; f++) {
+    if (
+      !spec.conns.some(
+        (c) =>
+          c.sends.length > 0 &&
+          c.sends[0] <= f &&
+          (c.closed === null || f < c.closed),
+      )
+    )
+      continue;
     const current = okHashes(stateAt(spec.model, f));
     for (const h of current) {
       if (retained.has(h)) continue;

@@ -22,6 +22,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import type { Gate7Check } from "../lib/gate7-adapters";
+import {
+  type RepeatDiff,
+  repeatDiff,
+  typeLavapipeParticleFlake,
+} from "../lib/gate7-web-flakes";
 import { join } from "node:path";
 import {
   approximateRegions,
@@ -75,15 +81,26 @@ function expect(name: string, ok: boolean, detail = ""): void {
 // 3b (PM6a): g8pt's legs mask their emitter regions before P-W1's classes; other legs do not.
 {
   const regions = approximateRegions("g8pt/receiver");
-  expect("approximate regions: g8pt has nine", regions?.length === 9, JSON.stringify(regions));
-  expect("approximate regions: other groups none", approximateRegions("g8mm/receiver") === null);
+  expect(
+    "approximate regions: g8pt has nine",
+    regions?.length === 9,
+    JSON.stringify(regions),
+  );
+  expect(
+    "approximate regions: other groups none",
+    approximateRegions("g8mm/receiver") === null,
+  );
   const native = new Uint8Array(4 * 4 * 4);
   const web = new Uint8Array(native.length);
   web.set([200, 0, 0, 255], (1 * 4 + 1) * 4);
   web.set([200, 0, 0, 255], (3 * 4 + 3) * 4);
   const n = maskApproximate(native, web, 4, [[0, 0, 1, 1]]);
   const c = classifyShot(native, web);
-  expect("maskApproximate: one inside masked", n === 1 && c.other === 1, JSON.stringify({ n, c }));
+  expect(
+    "maskApproximate: one inside masked",
+    n === 1 && c.other === 1,
+    JSON.stringify({ n, c }),
+  );
 }
 
 // 4 (W11e): applied-equals-native ignores a /11 document's memory-cache occupancy only.
@@ -280,6 +297,196 @@ try {
   );
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+// SWO: the CI lavapipe particle flake (lib/gate7-web-flakes.ts) is typed only on its evidence.
+{
+  const lavapipe = {
+    renderer: "lavapipe",
+    github_actions: "true",
+    runner_environment: "github-hosted",
+  } as const;
+  const cellNames = ["C_FLIP", "D_GLOBAL", "G_HIDDEN"];
+  const row = (id: string, detail: string): Gate7Check => ({
+    id,
+    criterion: "",
+    passed: false,
+    gating: true,
+    detail,
+  });
+  const black: RepeatDiff = {
+    leg: "g8mm/receiver",
+    shot: "seq-46.png",
+    inside: 888,
+    outside: 0,
+    black: 888,
+  };
+  const ev = { diffs: [black, { ...black, shot: "seq-47.png" }] };
+  const rows = [
+    row(
+      "mm-reference@web",
+      "2 problem(s): receiver step 2-prev: 851 px differ (C_FLIP 851); receiver step 2: 862 px differ (C_FLIP 853, D_GLOBAL 9)",
+    ),
+    row(
+      "web-repeat-identical@web",
+      "g8mm/receiver/shots/seq-46.png differs between the two web runs; g8mm/receiver/shots/seq-47.png differs between the two web runs",
+    ),
+    row("pw1-classes@web", "g8mm/receiver/seq-46.png: 851 px unexplained"),
+  ];
+  const status = (cs: { id: string; status?: string }[], id: string) =>
+    cs.find((c) => c.id === id)?.status;
+  const t = typeLavapipeParticleFlake(rows, ev, lavapipe, cellNames);
+  expect(
+    "particle flake: lavapipe + black repeat evidence types mm-reference and web-repeat-identical",
+    status(t, "mm-reference@web") === "known-flake" &&
+      status(t, "web-repeat-identical@web") === "known-flake" &&
+      t.every((c) => c.passed === false),
+    JSON.stringify(t.map((c) => [c.id, c.status])),
+  );
+  expect(
+    "particle flake: another row is never typed",
+    status(t, "pw1-classes@web") === undefined,
+  );
+  expect(
+    "particle flake: nothing is typed without the lavapipe allowance (a local NVIDIA run)",
+    typeLavapipeParticleFlake(rows, ev, null, cellNames).every(
+      (c) => (c as { status?: string }).status === undefined,
+    ),
+  );
+  expect(
+    "particle flake: a deterministic failure (the two web runs agree) is never typed",
+    typeLavapipeParticleFlake(rows, { diffs: [] }, lavapipe, cellNames).every(
+      (c) => (c as { status?: string }).status === undefined,
+    ),
+  );
+  const outside = typeLavapipeParticleFlake(
+    rows,
+    {
+      diffs: [
+        ...ev.diffs,
+        { ...black, leg: "g8mm/receiver-patch", outside: 3 },
+      ],
+    },
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: one repeat difference outside the particle cells types nothing",
+    outside.every((c) => (c as { status?: string }).status === undefined),
+  );
+  const noBlack = typeLavapipeParticleFlake(
+    rows,
+    { diffs: ev.diffs.map((d) => ({ ...d, black: 0 })) },
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: a repeat difference without black particle pixels types nothing",
+    noBlack.every((c) => (c as { status?: string }).status === undefined),
+  );
+  const mixed = typeLavapipeParticleFlake(
+    rows,
+    { diffs: [ev.diffs[0], { ...ev.diffs[1], black: 0, inside: 102 }] },
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: a stale-frame shot beside a black one in the same run still types",
+    status(mixed, "mm-reference@web") === "known-flake",
+  );
+  const otherCell = typeLavapipeParticleFlake(
+    [
+      row(
+        "mm-reference@web",
+        "1 problem(s): receiver step 1: 40 px differ (C_FLIP 30, E_VISIBLE 10)",
+      ),
+    ],
+    ev,
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: an mm-reference problem in another cell stays FAIL",
+    (otherCell[0] as { status?: string }).status === undefined,
+  );
+  const otherLeg = typeLavapipeParticleFlake(
+    [
+      row(
+        "mm-reference@web",
+        "1 problem(s): receiver-patch step 1: 40 px differ (C_FLIP 40)",
+      ),
+    ],
+    ev,
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: an mm-reference problem on a leg whose web runs agreed stays FAIL",
+    (otherLeg[0] as { status?: string }).status === undefined,
+  );
+  const missing = typeLavapipeParticleFlake(
+    [
+      row(
+        "mm-reference@web",
+        "2 problem(s): receiver step 2: 40 px differ (C_FLIP 40); receiver step 1: shot missing",
+      ),
+    ],
+    ev,
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: a missing shot beside it keeps the row FAIL",
+    (missing[0] as { status?: string }).status === undefined,
+  );
+  const catches = typeLavapipeParticleFlake(
+    [
+      row(
+        "mm-reference-catches-stale-buffer@web",
+        "1 problem(s): step 1-prev (before the sabotage): 942 px differ (C_FLIP 942)",
+      ),
+    ],
+    { diffs: [{ ...black, leg: "g8mm/sabotage-stale-buffer/receiver-patch" }] },
+    lavapipe,
+    cellNames,
+  );
+  const uncaught = typeLavapipeParticleFlake(
+    [
+      row(
+        "mm-reference-catches-stale-buffer@web",
+        "1 problem(s): all 2 shots after the sabotage equal the reference (unseen)",
+      ),
+    ],
+    { diffs: [{ ...black, leg: "g8mm/sabotage-stale-buffer/receiver-patch" }] },
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake: a catches row before the sabotage is typed, an uncaught sabotage never",
+    (catches[0] as { status?: string }).status === "known-flake" &&
+      (uncaught[0] as { status?: string }).status === undefined,
+  );
+  // repeatDiff: one black pixel inside C_FLIP's region, one difference outside.
+  const img = () => ({
+    width: 4,
+    height: 2,
+    data: new Uint8Array(4 * 2 * 4).fill(60),
+  });
+  const a = img();
+  const b = img();
+  b.data.set([0, 0, 0, 255], 0);
+  const d = repeatDiff("g8mm/receiver", "seq-4.png", a, b, [[0, 0, 1, 1]]);
+  b.data.set([1, 2, 3, 255], (1 * 4 + 3) * 4);
+  const d2 = repeatDiff("g8mm/receiver", "seq-4.png", a, b, [[0, 0, 1, 1]]);
+  expect(
+    "repeatDiff: counts inside, outside and black particle pixels",
+    d?.inside === 1 && d.outside === 0 && d.black === 1 && d2?.outside === 1,
+    JSON.stringify([d, d2]),
+  );
+  expect(
+    "repeatDiff: identical frames are no difference",
+    repeatDiff("g8mm/receiver", "seq-4.png", a, img(), [[0, 0, 1, 1]]) === null,
+  );
 }
 
 console.log(

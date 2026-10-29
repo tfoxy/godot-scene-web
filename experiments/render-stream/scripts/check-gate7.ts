@@ -811,9 +811,11 @@ async function main(): Promise<void> {
         ? "PASS"
         : status === "unavailable"
           ? "UNAV"
-          : c.gating
-            ? "FAIL"
-            : "NOTE";
+          : status === "known-flake"
+            ? "FLAKE"
+            : c.gating
+              ? "FAIL"
+              : "NOTE";
       console.log(
         `${tag}  ${r.group}  ${c.id}${evidence ? `  [${evidence}]` : ""}  ${c.detail}`,
       );

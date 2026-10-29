@@ -331,10 +331,16 @@ const tx = (frame: number, state: unknown) => ({
     [],
     "pinsOfMesh: the last send's surface stays named at a pending quit frame",
   );
+  // SWO: closed before the callback, 851 has no viewer (HC1 serves nothing then): it is not
+  // compared, and a pin logged there is reported instead.
   assertEqual(
-    pinsOfMesh(host(true)).late,
-    ["frame 851: X is servable, named by nothing"],
-    "pinsOfMesh: a connection closed before the callback names nothing",
+    [
+      pinsOfMesh(host(true)).late,
+      pinsOfMesh(host(true)).unviewed_frames,
+      pinsOfMesh(host(true)).unviewed,
+    ],
+    [[], 1, ["frame 851: pin Y with no viewer connected"]],
+    "pinsOfMesh: a connection closed before the callback leaves a viewerless frame",
   );
 }
 

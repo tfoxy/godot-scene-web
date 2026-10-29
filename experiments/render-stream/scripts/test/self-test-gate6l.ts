@@ -19,7 +19,13 @@
 //  6. wireSends, compareAt (HU compared since G6b) and gate 5f's connTimelinesAtCallback as g6l uses it.
 
 import type { LiveLogLine } from "../lib/gate1-live-checks";
-import type { G2cHost } from "../lib/gate2c-checks";
+import type { HookLine } from "../lib/gate2b-checks";
+import type { ResolvedTransaction } from "../lib/render-stream-2";
+import {
+  type ConnTimeline,
+  type G2cHost,
+  pinsReport,
+} from "../lib/gate2c-checks";
 import { connTimelinesAtCallback } from "../lib/gate5f-checks";
 import type { Gate6Expected } from "../lib/gate6-expected";
 import type { Frame6 } from "../lib/gate6a-checks";
@@ -688,6 +694,103 @@ export function selfTestG6l(e: Gate6Expected, h: SelfTestHooks): void {
       "connTimelinesAtCallback: a close logged after its frame's line counts from the next frame",
       after[0].closed === 1081 && before[0].closed === 607,
       `${after[0].closed} ${before[0].closed}`,
+    );
+    const hello = connTimelinesAtCallback(
+      host([
+        { frame: 612, t_us: 1, event: "open" },
+        { frame: 612, t_us: 2, event: "hello" },
+        frameLine(612),
+      ]),
+    );
+    assert(
+      "connTimelines: a connection is a viewer from its hello line's frame (SWO)",
+      hello[0].hello === 612 && after[0].hello === undefined,
+      `${hello[0].hello}`,
+    );
+  }
+
+  // 7. SWO: pins-bounded and obsolete-retired across live-reconnect's viewerless frames. HC1
+  // serves nothing between connection 1's close (frame 4) and connection 2's hello (frame 7); the
+  // state changes every frame (hash "s<f>"), so the served set is stale there by design. The
+  // replay compares viewer frames only; a pin missed or a hash never retired across the gap fails
+  // at the first viewer frame, and a pin or retire with no viewer is reported.
+  {
+    const tx = (frame: number, ...hashes: string[]) =>
+      ({ frame, hashes }) as unknown as ResolvedTransaction;
+    const hashesOf = (t: ResolvedTransaction | undefined): Set<string> =>
+      new Set((t as unknown as { hashes?: string[] } | undefined)?.hashes);
+    const full = [1, 2, 3, 4, 5, 6, 7, 8].map((f) => tx(f, `s${f}`));
+    const line = (frame: number, op: string, hash: string): HookLine =>
+      ({ frame, op, hash, payload_bytes: 10 }) as unknown as HookLine;
+    // Viewer frames 1-3 (sends at 1..3) and 7-8 (sends at 7, 8): pin the new hash, retire the old.
+    const honest: HookLine[] = [line(1, "pin", "s1")];
+    for (const f of [2, 3, 7, 8]) {
+      honest.push(line(f, "pin", `s${f}`));
+      // the frame-3 base is retired at 7 (the first viewer callback after the gap)
+      honest.push(line(f, "retire", `s${f === 7 ? 3 : f - 1}`));
+    }
+    const conns: ConnTimeline[] = [
+      {
+        n: 1,
+        sends: [1, 2, 3].map((f) => tx(f, `s${f}`)),
+        closed: 4,
+        hello: 1,
+      },
+      {
+        n: 2,
+        sends: [7, 8].map((f) => tx(f, `s${f}`)),
+        closed: null,
+        hello: 7,
+      },
+    ];
+    const run = (lines: HookLine[], cs = conns) =>
+      pinsReport(lines, full, cs, 1000, hashesOf);
+    const ok = run(honest);
+    assert(
+      "pinsReport: the viewerless frames of a reconnect are not compared (SWO)",
+      ok.missing.length === 0 &&
+        ok.late.length === 0 &&
+        ok.early.length === 0 &&
+        ok.unviewed.length === 0 &&
+        ok.frames_compared === 5 &&
+        ok.unviewed_frames === 3,
+      JSON.stringify(ok),
+    );
+    // Before SWO (every timeline a viewer throughout): frames 4-6 fail exactly as g6l did.
+    const pre = run(
+      honest,
+      conns.map((c) => ({ ...c, hello: undefined })),
+    );
+    assert(
+      "pinsReport: without hello frames the gap is compared (the pre-SWO failure, frames 4-6)",
+      pre.missing.some((m) => m.startsWith("frame 4:")) &&
+        pre.late.length > 0 &&
+        pre.unviewed_frames === 0,
+      JSON.stringify(pre),
+    );
+    const neverRetired = run(
+      honest.filter((l) => !(l.op === "retire" && l.hash === "s3")),
+    );
+    assert(
+      "pinsReport: a base never retired across the gap is still late at the next hello (SWO)",
+      neverRetired.late.some((m) => m.startsWith("frame 7:")),
+      JSON.stringify(neverRetired.late),
+    );
+    const notPinned = run(
+      honest.filter((l) => !(l.op === "pin" && l.hash === "s7")),
+    );
+    assert(
+      "pinsReport: a state not pinned at the next hello is still missing (SWO)",
+      notPinned.missing.some((m) => m.startsWith("frame 7:")),
+      JSON.stringify(notPinned.missing),
+    );
+    const pinnedUnviewed = run(
+      [...honest, line(5, "pin", "s5")].sort((a, b) => a.frame - b.frame),
+    );
+    assert(
+      "pinsReport: a pin with no viewer is reported (SWO)",
+      pinnedUnviewed.unviewed.some((m) => m.startsWith("frame 5: pin")),
+      JSON.stringify(pinnedUnviewed.unviewed),
     );
   }
 }
