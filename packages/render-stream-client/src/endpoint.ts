@@ -2,8 +2,9 @@
 // listener and its resource GETs are, the token, and the wire version the host streams. A product
 // receives it from its own control channel; the client validates it before it connects.
 
-/** The live protocol versions this client speaks (render-stream/11 and /12, W11t live coding). */
-export type RenderStreamProtocol = 11 | 12;
+/** The live protocol versions this client speaks (render-stream/11, /12 and, W13c, /13 with its
+ * predicted mesh and multimesh blocks; W11t live coding on each). */
+export type RenderStreamProtocol = 11 | 12 | 13;
 
 export interface RenderStreamEndpoint {
   /** ws(s) URL of the host's `/render-stream`, absolute or page-relative (an http(s) page URL's
@@ -61,8 +62,8 @@ export function validateEndpoint(value: unknown): RenderStreamEndpoint {
     (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token))
   )
     fail("token must be 64 lowercase hex or null");
-  if (e.protocol !== 11 && e.protocol !== 12)
-    fail(`protocol must be 11 or 12 (got ${JSON.stringify(e.protocol)})`);
+  if (e.protocol !== 11 && e.protocol !== 12 && e.protocol !== 13)
+    fail(`protocol must be 11, 12 or 13 (got ${JSON.stringify(e.protocol)})`);
   let presentation: [number, number] | undefined;
   if (e.presentation !== undefined) {
     const p = e.presentation;

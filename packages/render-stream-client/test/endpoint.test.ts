@@ -40,11 +40,16 @@ describe("validateEndpoint", () => {
     ["uppercase token", { ...ok, token: "A".repeat(64) }],
     ["short token", { ...ok, token: "a".repeat(63) }],
     ["protocol 10", { ...ok, protocol: 10 }],
+    ["protocol 14", { ...ok, protocol: 14 }],
     ["protocol string", { ...ok, protocol: "12" }],
     ["presentation 0", { ...ok, presentation: [0, 1] }],
     ["presentation shape", { ...ok, presentation: [1] }],
   ])("refuses %s", (_why, value) => {
     expect(() => validateEndpoint(value)).toThrow(RenderStreamEndpointError);
+  });
+
+  it("accepts render-stream/13 (W13c), opt-in beside the default 12", () => {
+    expect(validateEndpoint({ ...ok, protocol: 13 }).protocol).toBe(13);
   });
 
   it("compares descriptors by value", () => {

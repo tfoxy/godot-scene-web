@@ -108,6 +108,8 @@ export const ACCEPT_TRANSACTION = 0;
 export const ACCEPT_RESOURCE = 1;
 export const ACCEPT_END = 2;
 export const ACCEPT_NEEDS_PAYLOADS = 3;
+/** W13c: a /13 patch dropped while a `predict-check` resync awaits its full (no apply, no ack). */
+export const ACCEPT_HELD = 4;
 
 /** lib.rs `Stats`, `#[repr(C)]`, all u32, in this order. */
 export const STAT_FIELDS = [

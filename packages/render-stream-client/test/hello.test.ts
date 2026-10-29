@@ -39,6 +39,21 @@ describe("clientHello", () => {
     });
   });
 
+  it("offers render-stream/13 with /12's hello under the /13 protocol (W13c)", () => {
+    const facts = {
+      creditWindow: 2,
+      token: null,
+      backing: [640, 360],
+      css: [640, 360],
+      dprMilli: 1000,
+      gpuFormats: "s3tc,bptc,rgtc",
+    } as const;
+    const h13 = clientHello({ ...facts, protocol: 13 });
+    const h12 = clientHello({ ...facts, protocol: 12 });
+    expect(Object.keys(h13)).toEqual(Object.keys(h12));
+    expect(h13).toEqual({ ...h12, protocol: "render-stream/13" });
+  });
+
   it("carries the token only in the hello field", () => {
     const token = "a".repeat(64);
     const hello = clientHello({

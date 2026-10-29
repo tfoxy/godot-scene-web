@@ -29,7 +29,7 @@ export function gpuFormatsOf(
  * texture_encodings and gpu_formats. CG1: `protocol` "render-stream/10" is /10's hello
  * (render-stream-10.md "Live transport"); W11c: "render-stream/11" is /10's again
  * (render-stream-11.md, golden-11's control hello); PM5: "render-stream/12" is /11's (golden-12's
- * control hello). */
+ * control hello); W13c: "render-stream/13" is /12's (render-stream-13.md "As built (W13a)"). */
 export function helloV9(
   v7: Record<string, unknown>,
   textureEncodings: string,
@@ -38,7 +38,8 @@ export function helloV9(
     | "render-stream/9"
     | "render-stream/10"
     | "render-stream/11"
-    | "render-stream/12" = "render-stream/9",
+    | "render-stream/12"
+    | "render-stream/13" = "render-stream/9",
   liveCoding = "",
 ): Record<string, unknown> {
   return {
@@ -60,7 +61,7 @@ export const CLIENT_INBOUND_BYTES = 16777216;
 
 /** What the client's hello states about itself (mirror-client-design.md "The loop", "Hello"). */
 export interface ClientHelloFacts {
-  protocol: 11 | 12;
+  protocol: 11 | 12 | 13;
   creditWindow: 1 | 2;
   token: string | null;
   /** The canvas's backing store and CSS box, and the device pixel ratio in thousandths. */
@@ -71,7 +72,7 @@ export interface ClientHelloFacts {
   gpuFormats: string;
 }
 
-/** The client's /11 or /12 hello: the GSW receiver's keys in their order (golden-11/12's control
+/** The client's /11, /12 or (W13c) /13 hello: the GSW receiver's keys in their order (golden-11/12's control
  * hello), `receiver_kind` `gsw-canvas` (the same executor), credit stage `submitted`, texture
  * encodings `decoded` (until the client carries the KTX2 transcoder), no manifest, and the
  * `zstd-base,zstd` live coding offer last. */
@@ -95,7 +96,7 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
     },
     "decoded",
     f.gpuFormats,
-    f.protocol === 12 ? "render-stream/12" : "render-stream/11",
+    `render-stream/${f.protocol}` as const,
     CLIENT_LIVE_CODING,
   );
 }

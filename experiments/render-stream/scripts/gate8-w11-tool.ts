@@ -4,6 +4,7 @@
 //
 //   gate8-w11-tool.ts gsw-legs --source <gate 8 run> [--rs-build <artifacts/render-stream/rs-core/<sha>>]
 //   gate8-w11-tool.ts native-plan --source <gate 8 run>
+//   gate8-w11-tool.ts gsw-legs --set pt13 --source <gate 8 run> [--rs-build ...]   (W13c)
 //
 // native-plan (W11d) prints one tab-separated line per leg for run-gate8.sh's native receiver
 // legs (the same legs, captures and shot frames as the GSW legs below): the native leg directory
@@ -30,6 +31,23 @@
 //   sabotage-no-prune/scene-off           the validator keeps C lifelong
 //   sabotage-evict-carried/scene-off      a carried record is dropped on arrival
 //   sabotage-ignore-released/scale-off    the store never drops what left H
+//
+// W13c (render-stream-13.md "As built (W13c)"): GSW's /13 legs on W13b's /13 captures, with their
+// /12 twins (GSW-only until W13d: native-plan leaves them out, the native receiver refuses /13):
+//
+//   scale13, scale13-v12       capture-scale's patch sink at /13 and its /12 twin
+//   mesh13, mesh13-v12         gate5-mesh's full sink at /13 and its /12 twin; their shot frames
+//                              are the /11 mesh leg's too (frame group mesh13 holds mesh/capture)
+//   sabotage-no-predict-reset/mesh13      a full un-predicted against the history (no reset):
+//                              the second full transaction fails predict-check
+//
+// `--set pt13` (run_g8pt, after the g8pt captures) replays gate 8 g8pt's headless /13 twins the
+// same way under <run>/g8pt/gsw13/<leg>/gsw: pump13 and pump13-v12 (fixtures/gate8-mm under the
+// frame_pre_draw pump: multimesh buffers, shot at g8mm's settle frames when g8mm ran), shim13 and
+// shim13-v12 (fixtures/gate8-pt under the headless particles shim). lib/gate8-w13-gsw-checks.ts
+// judges them too.
+//
+// lib/gate8-w13-gsw-checks.ts judges them.
 //
 // Shots: the frames both twins hold (up to six, evenly spread, the last included), each leg at the
 // seq of that frame in its own recording; every leg writes perf.json (`gsw.w11`, the module's /11
@@ -60,10 +78,12 @@ export interface W11GswLeg {
   leg: string;
   capture: string;
   sink: string;
-  version: 10 | 11;
+  version: 10 | 11 | 12 | 13;
   /** The leg whose frames this one's shots share (its own name for a /11 leg with a twin). */
   frames: string;
   sabotage?: string;
+  /** W13c: a GSW-only leg (no native receiver leg until W13d). */
+  gswOnly?: true;
 }
 
 export const W11_GSW_LEGS: W11GswLeg[] = [
@@ -109,7 +129,34 @@ export const W11_GSW_LEGS: W11GswLeg[] = [
     frames: "scale",
     sabotage: "ignore-released",
   },
+  // W13c: /13 and the /12 twins (GSW-only until W13d).
+  { leg: "scale13", capture: "scale13/capture", sink: "recording-patch.rs13", version: 13, frames: "scale13", gswOnly: true },
+  { leg: "scale13-v12", capture: "scale13/v12/capture", sink: "recording-patch.rs12", version: 12, frames: "scale13", gswOnly: true },
+  { leg: "mesh13", capture: "mesh13/capture", sink: "recording.rs13", version: 13, frames: "mesh13", gswOnly: true },
+  { leg: "mesh13-v12", capture: "mesh13/v12/capture", sink: "recording.rs12", version: 12, frames: "mesh13", gswOnly: true },
+  {
+    // gate5-mesh's full sink: every transaction full, its dynamic units carried across each one.
+    leg: "sabotage-no-predict-reset/mesh13",
+    capture: "mesh13/capture",
+    sink: "recording.rs13",
+    version: 13,
+    frames: "mesh13",
+    sabotage: "no-predict-reset",
+    gswOnly: true,
+  },
 ];
+
+/** W13c (`--set pt13`): g8pt's headless /13 captures and their /12 twins, under <run>/g8pt. */
+export const W13_PT_LEGS: W11GswLeg[] = [
+  { leg: "pump13", capture: "headless-pump13/capture", sink: "recording.rs13", version: 13, frames: "pump13", gswOnly: true },
+  { leg: "pump13-v12", capture: "headless-pump/capture", sink: "recording.rs12", version: 12, frames: "pump13", gswOnly: true },
+  { leg: "shim13", capture: "headless-shim13/capture", sink: "recording.rs13", version: 13, frames: "shim13", gswOnly: true },
+  { leg: "shim13-v12", capture: "headless-shim/capture", sink: "recording.rs12", version: 12, frames: "shim13", gswOnly: true },
+];
+const PT13_FRAME_GROUPS: Record<string, string[]> = {
+  pump13: ["headless-pump13/capture", "headless-pump/capture"],
+  shim13: ["headless-shim13/capture", "headless-shim/capture"],
+};
 
 /** The frame groups: which captures' frames the shots must share (the /11 legs and the twin). */
 /** W11d: a leg's native receiver directory under <run>/g8w11. */
@@ -124,6 +171,9 @@ const FRAME_GROUPS: Record<string, string[]> = {
   scale: ["scale/capture", "scale/v10/capture", "scale/off/capture"],
   scene: ["scene/capture", "scene/v10/capture", "scene/off/capture"],
   mesh: ["mesh/capture", "mesh/v10/capture"],
+  // W13c: the /13 legs, their /12 twins (and, for mesh13, the /11 mesh leg's frames).
+  scale13: ["scale13/capture", "scale13/v12/capture"],
+  mesh13: ["mesh13/capture", "mesh13/v12/capture", "mesh/capture"],
 };
 
 function flag(argv: string[], name: string, fallback?: string): string {
@@ -134,7 +184,7 @@ function flag(argv: string[], name: string, fallback?: string): string {
 }
 
 /** frame -> seq of every transaction of a recording, and the session's canvas size. */
-function frameSeqs(path: string, version: 10 | 11): {
+function frameSeqs(path: string, version: 10 | 11 | 12 | 13): {
   bySeq: Map<number, number>;
   canvas: [number, number];
 } {
@@ -176,8 +226,9 @@ async function main(): Promise<void> {
       "usage: gate8-w11-tool.ts gsw-legs|native-plan --source <gate 8 run> [--rs-build dir]",
     );
   const source = resolve(flag(argv, "--source"));
-  const g = join(source, "g8w11");
-  const run = join(g, "gsw");
+  const pt13 = flag(argv, "--set", "w11") === "pt13";
+  const g = join(source, pt13 ? "g8pt" : "g8w11");
+  const run = join(g, pt13 ? "gsw13" : "gsw");
   if (argv[0] === "native-plan") {
     await nativePlan(g);
     return;
@@ -197,14 +248,41 @@ async function main(): Promise<void> {
     rsBuild = join(REPO_ROOT, "artifacts", "render-stream", "rs-core", sha.trim());
   }
   const bundle = await buildGswBundle(join(g, "gsw-bundle"), rsBuild);
-  const { recOf, groupFrames } = shotPlan(g);
-  await gswLegs(g, run, source, bundle, recOf, groupFrames);
+  const legs = pt13 ? W13_PT_LEGS : W11_GSW_LEGS;
+  const { recOf, groupFrames } = shotPlan(g, legs, pt13 ? PT13_FRAME_GROUPS : FRAME_GROUPS);
+  if (pt13) {
+    // pump13: g8mm's settle frames (and the frame before each), the frames its reference shot.
+    const steps = join(source, "g8mm", "capture", "steps.jsonl");
+    if (existsSync(steps)) {
+      const settle = readFileSync(steps, "utf8")
+        .split("\n")
+        .filter((l) => l.trim())
+        .flatMap((l) => {
+          const f = (JSON.parse(l) as { settle_frame: number }).settle_frame;
+          return [f - 1, f];
+        });
+      const maps = PT13_FRAME_GROUPS.pump13.flatMap((c) => {
+        const def = legs.find((l) => l.capture === c);
+        const r = def ? recOf(def.capture, def.sink, def.version) : null;
+        return r ? [r.bySeq] : [];
+      });
+      groupFrames.set(
+        "pump13",
+        settle.filter((f) => maps.length > 0 && maps.every((m) => m.has(f))),
+      );
+    }
+  }
+  await gswLegs(g, run, source, bundle, recOf, groupFrames, legs);
 }
 
 /** Shot frames per group: shared by every capture of the group that exists. */
-function shotPlan(g: string) {
+function shotPlan(
+  g: string,
+  legs: readonly W11GswLeg[] = W11_GSW_LEGS,
+  groups: Record<string, string[]> = FRAME_GROUPS,
+) {
   const recs = new Map<string, ReturnType<typeof frameSeqs>>();
-  const recOf = (capture: string, sink: string, version: 10 | 11) => {
+  const recOf = (capture: string, sink: string, version: 10 | 11 | 12 | 13) => {
     const key = `${capture}/${sink}`;
     if (!recs.has(key)) {
       const path = join(g, capture, sink);
@@ -214,10 +292,10 @@ function shotPlan(g: string) {
     return recs.get(key) ?? null;
   };
   const groupFrames = new Map<string, number[]>();
-  for (const [group, captures] of Object.entries(FRAME_GROUPS)) {
+  for (const [group, captures] of Object.entries(groups)) {
     const maps: Map<number, number>[] = [];
     for (const capture of captures) {
-      const def = W11_GSW_LEGS.find((l) => l.capture === capture && !l.sabotage);
+      const def = legs.find((l) => l.capture === capture && !l.sabotage);
       if (!def) continue;
       const r = recOf(def.capture, def.sink, def.version);
       if (r) maps.push(r.bySeq);
@@ -233,6 +311,8 @@ async function nativePlan(g: string): Promise<void> {
   const frames: Record<string, Record<string, number>> = {};
   const lines: string[] = [];
   for (const def of W11_GSW_LEGS) {
+    // W13c: the /13 legs are GSW's alone until W13d.
+    if (def.gswOnly) continue;
     const r = recOf(def.capture, def.sink, def.version);
     const shot: Record<string, number> = {};
     for (const f of groupFrames.get(def.frames) ?? []) {
@@ -263,11 +343,12 @@ async function gswLegs(
   bundle: { dir: string; sha256: string },
   recOf: ReturnType<typeof shotPlan>["recOf"],
   groupFrames: Map<string, number[]>,
+  defs: readonly W11GswLeg[] = W11_GSW_LEGS,
 ): Promise<void> {
   const sabotageSkipped = process.env.RS_SABOTAGE_TIER === "skip";
   const legs: WebLegSpec[] = [];
   const frames: Record<string, Record<string, number>> = {};
-  for (const def of W11_GSW_LEGS) {
+  for (const def of defs) {
     const legDir = join(run, def.leg);
     const webDir = join(legDir, "gsw");
     await mkdir(legDir, { recursive: true });

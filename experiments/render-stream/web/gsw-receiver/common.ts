@@ -10,6 +10,7 @@ import type { ReceiverConfig } from "./config";
 
 export {
   ACCEPT_END,
+  ACCEPT_HELD,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
   ACCEPT_TRANSACTION,

@@ -58,6 +58,7 @@ import {
 import { expectedMeshBufferBytes } from "./render-stream-mesh";
 import { runG8w11Coding } from "./gate8-w11t-checks";
 import { runG8w13 } from "./gate8-w13-checks";
+import { runG8w13Gsw } from "./gate8-w13-gsw-checks";
 
 export const HONEST_LEGS = [
   "scale/capture",
@@ -709,6 +710,8 @@ export async function runG8w11(
   checks.push(...(await runG8w13(g)));
   // W11c: GSW's legs on these captures (lib/gate8-w11-gsw-checks.ts).
   checks.push(...(await runG8w11Gsw(g)));
+  // W13c: GSW's /13 legs (lib/gate8-w13-gsw-checks.ts).
+  checks.push(...(await runG8w13Gsw(g)));
   // W11d: the native receiver's legs (lib/gate8-w11-native-checks.ts).
   checks.push(...(await runG8w11Native(g)));
   checks.push(...(await runG8w11NativeCoding(g)));

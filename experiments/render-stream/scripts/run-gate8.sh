@@ -1271,6 +1271,12 @@ run_g8pt() {
 	G8PT_ENV=(GRC_ADOPT=arm)
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
+	# W13c: GSW at /13 on the headless /13 twins and their /12 twins (gate8-w11-tool.ts --set pt13;
+	# lib/gate8-w13-gsw-checks.ts).
+	echo "run-gate8: g8pt gsw13 legs (gate8-w11-tool.ts --set pt13)"
+	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/gate8-w11-tool.ts" gsw-legs --set pt13 --source "$OUT") \
+		>"$OUT/g8pt/gsw13-legs.log" 2>&1 || echo "run-gate8: g8pt gsw13 legs failed, see $OUT/g8pt/gsw13-legs.log" >&2
 }
 
 # ----------------------------------------------------------------------------------- g8w11
@@ -1409,7 +1415,8 @@ run_g8w11_coding_native_leg() {
 			name="${spec%%:*}"
 			mkdir -p "$dir/$name"
 			LEG_ENV=(
-				RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_PROTOCOL=11
+				RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream"
+				RS_RECEIVER_PROTOCOL="${G8W11C_PROTOCOL:-11}"
 				RS_RECEIVER_OUT="$dir/$name/applied.json" RS_RECEIVER_CACHE_DIR="$dir/$name/cache"
 				${RECEIVER_EXTRA_ENV[@]+"${RECEIVER_EXTRA_ENV[@]}"}
 			)
@@ -1453,9 +1460,37 @@ run_g8w11c() {
 		run_g8w11_coding_native_leg native-sabotage-drop-base-reupload GRC_SABOTAGE=drop-message \
 			GRC_SABOTAGE_FRAME=120 -- "coded:"
 		RECEIVER_EXTRA_ENV=()
+		run_g8w11c_gsw13
 	fi
 	G8W11_CODING_DIR=""
 	G8W11_RECEIVER_ARGS=()
+}
+
+# W13c (render-stream-13.md "As built (W13c)"): GSW's /13 resync legs, GSW only until W13d. A /13
+# capture-scale host (every mesh every frame, as W13b's coding13 predict-stale leg) serves one coded
+# GSW receiver at RS_RECEIVER_PROTOCOL=13, which shoots its final state (RS_RECEIVER_SHOT_FINAL):
+#   gsw13-honest                     no sabotage: the final shot's oracle
+#   gsw13-predict-stale              host predict-stale @120: GSW fails predict-check, resyncs (reason
+#                                    coding), drops the patches before the full, and ends on the
+#                                    honest leg's final picture
+#   gsw13-sabotage-no-predict-reset  the same with the receiver sabotage no-predict-reset: the
+#                                    resync's full fails predict-check too, so the picture stays
+run_g8w11c_gsw13() {
+	local -a h13=(GRC_STREAM_VERSION=13 RS_SCALE_MESH_UPDATES=187)
+	G8W11C_PROTOCOL=13
+	echo "run-gate8: g8w11c gsw13-honest (/13, a coded GSW receiver)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SHOT_FINAL=1)
+	run_g8w11_coding_native_leg gsw13-honest "${h13[@]}" -- "coded:"
+	echo "run-gate8: g8w11c gsw13-predict-stale (/13, predict-stale @120)"
+	run_g8w11_coding_native_leg gsw13-predict-stale "${h13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	# A sabotage leg by its path (lib/legs.sh skips it under RS_SABOTAGE_TIER=skip).
+	echo "run-gate8: g8w11c gsw13-sabotage-no-predict-reset (/13, predict-stale @120, no-predict-reset)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SHOT_FINAL=1 RS_RECEIVER_SABOTAGE=no-predict-reset)
+	run_g8w11_coding_native_leg gsw13-sabotage-no-predict-reset "${h13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	RECEIVER_EXTRA_ENV=()
+	G8W11C_PROTOCOL=11
 }
 
 run_g8w11_coding() {
