@@ -1,0 +1,840 @@
+{
+  "schema": "render-stream-13-golden-index/1",
+  "protocol": "render-stream/13",
+  "valid": [
+    {
+      "file": "full.rs13",
+      "hex": "full.hex",
+      "decoded": "full.decoded.json",
+      "sha256": "f56847d9c10394aa6f84d395ec27f6e39084279bf63f3f8632dc0a34b251887b",
+      "rs12": "../golden-12/full.rs12"
+    },
+    {
+      "file": "patch.rs13",
+      "hex": "patch.hex",
+      "decoded": "patch.decoded.json",
+      "sha256": "a51dbddb1b6b901989b567de8e3af813a1ea212117be90812be94e4795bb22de",
+      "rs12": "../golden-12/patch.rs12"
+    },
+    {
+      "file": "inline.rs13",
+      "hex": "inline.hex",
+      "decoded": "inline.decoded.json",
+      "sha256": "7f5e2905cd61b3f253ff1e731b410a5f97fa2442e930e9c3263dd2d835b7b9ec",
+      "rs12": "../golden-12/inline.rs12"
+    }
+  ],
+  "resolved": "resolved.json",
+  "predict": {
+    "file": "predict.rs13",
+    "hex": "predict.hex",
+    "decoded": "predict.decoded.json",
+    "resolved": "predict-resolved.json",
+    "sha256": "47dcc9b1c6755fa764b1819d87ab0dac414b0e423333cbd9a3c5c83bb552ebd7",
+    "rs12": "predict.rs12",
+    "rs12_sha256": "db67180a66780e079401b38d31211fd63a2d1b62920cd4e07cc6dd7d263a5759",
+    "fulls": [
+      1,
+      7
+    ]
+  },
+  "predict_trace": {
+    "patch.rs13": [
+      {
+        "seq": 1,
+        "units": []
+      },
+      {
+        "seq": 2,
+        "units": []
+      },
+      {
+        "seq": 3,
+        "units": []
+      },
+      {
+        "seq": 4,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 5,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 6,
+        "units": []
+      },
+      {
+        "seq": 7,
+        "units": []
+      },
+      {
+        "seq": 8,
+        "units": []
+      },
+      {
+        "seq": 9,
+        "units": []
+      },
+      {
+        "seq": 10,
+        "units": []
+      },
+      {
+        "seq": 11,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 12,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 13,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 14,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 15,
+        "units": []
+      },
+      {
+        "seq": 16,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 17,
+        "units": [
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 18,
+        "units": [
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 19,
+        "units": [
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 20,
+        "units": []
+      },
+      {
+        "seq": 21,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 22,
+        "units": []
+      },
+      {
+        "seq": 23,
+        "units": []
+      },
+      {
+        "seq": 24,
+        "units": []
+      },
+      {
+        "seq": 25,
+        "units": []
+      },
+      {
+        "seq": 26,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      }
+    ],
+    "predict.rs13": [
+      {
+        "seq": 1,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 2,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 1
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 3,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 4,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 5,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 6,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 2
+          }
+        ]
+      },
+      {
+        "seq": 7,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_u8",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 0
+          },
+          {
+            "block": "mesh_f32",
+            "id": 2,
+            "order": 0
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 8,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 1
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 0
+          }
+        ]
+      },
+      {
+        "seq": 9,
+        "units": [
+          {
+            "block": "mesh_u8",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 1
+          }
+        ]
+      },
+      {
+        "seq": 10,
+        "units": [
+          {
+            "block": "mesh_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 1,
+            "order": 2
+          },
+          {
+            "block": "mm_f32",
+            "id": 2,
+            "order": 2
+          }
+        ]
+      }
+    ]
+  },
+  "sabotage": {
+    "predict-stale": {
+      "vector": "invalid/predict-stale.rs13",
+      "code": "predict-check",
+      "seq": 2
+    },
+    "no-predict-reset": {
+      "code": "predict-check",
+      "fails": [
+        {
+          "file": "predict.rs13",
+          "seq": 7
+        },
+        {
+          "file": "patch.rs13",
+          "seq": 16
+        }
+      ]
+    }
+  },
+  "corrupt": [
+    {
+      "file": "corrupt-meta.rs13",
+      "code": "meta-json",
+      "record_index": 3,
+      "seq": 3,
+      "description": "patch.rs13 transaction seq 3: first meta byte set to 0x00; framing intact"
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/bad-magic.rs13",
+      "code": "bad-magic",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's full.rs12: magic byte 3 is 'C' (GRSC), not 'D'"
+    },
+    {
+      "file": "invalid/predict-check-u8.rs13",
+      "code": "predict-check",
+      "version": 13,
+      "seq": 3,
+      "description": "predict.rs13 seq 3: bit 0 of mesh_u8's first residual byte (mesh 1's geometry, second order) flipped"
+    },
+    {
+      "file": "invalid/predict-check-aabb.rs13",
+      "code": "predict-check",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: bit 3 of mesh_f32 byte 5 (a first-order AABB residual, transposed) flipped"
+    },
+    {
+      "file": "invalid/predict-check-mm.rs13",
+      "code": "predict-check",
+      "version": 13,
+      "seq": 5,
+      "description": "predict.rs13 seq 5: bit 1 of mm_f32 byte 0 (multimesh 1, second order) flipped"
+    },
+    {
+      "file": "invalid/predict-check-raw.rs13",
+      "code": "predict-check",
+      "version": 13,
+      "seq": 1,
+      "description": "predict.rs13 seq 1 (full, raw units): bit 7 of mesh_u8 byte 50 flipped"
+    },
+    {
+      "file": "invalid/predict-stale.rs13",
+      "code": "predict-check",
+      "version": 13,
+      "seq": 2,
+      "description": "the predict-stale encoder sabotage over predict.rs12: every patch predicts from T-2 as if it were T-1 (first order); seq 2 is the first it touches"
+    },
+    {
+      "file": "invalid/predict-check-missing.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": 2,
+      "description": "patch.rs13 seq 2 carries no predict_check (a /12 transaction meta at /13)"
+    },
+    {
+      "file": "invalid/predict-check-upper.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": 2,
+      "description": "patch.rs13 seq 2's predict_check in uppercase hex"
+    },
+    {
+      "file": "invalid/predict-check-short.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": 2,
+      "description": "patch.rs13 seq 2's predict_check has 15 hex digits"
+    },
+    {
+      "file": "invalid/pass-mesh-u8-offset.rs13",
+      "code": "mesh-u8-offset",
+      "version": 13,
+      "seq": 3,
+      "description": "predict.rs13 seq 3, mesh 2's u8 is 136, the running count 132: mesh_u8 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/pass-payload-size.rs13",
+      "code": "payload-size",
+      "version": 13,
+      "seq": 3,
+      "description": "predict.rs13 seq 3, mesh 1's surface claims 5 vertices: its shape needs 152 bytes, payload_bytes 132: mesh_u8 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/pass-mesh-offset.rs13",
+      "code": "mesh-offset",
+      "version": 13,
+      "seq": 3,
+      "description": "predict.rs13 seq 3, mesh 2's f is 7, the running count 6: mesh_f32 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/pass-mm-offset.rs13",
+      "code": "mm-offset",
+      "version": 13,
+      "seq": 3,
+      "description": "predict.rs13 seq 3, multimesh 1's buffer_f is 7, the running count 6: mm_f32 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/g12-pt-offset-wrong.rs13",
+      "code": "pt-offset",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-wrong.rs12 transcoded: emitter 2's f is 32, expected 31 (emitter 1 claims 31 floats)"
+    },
+    {
+      "file": "invalid/g12-pt-offset-short.rs13",
+      "code": "pt-offset",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-short.rs12 transcoded: pt_f32 carries 84 floats (count 84), the entries and the emit claim 85"
+    },
+    {
+      "file": "invalid/g12-pt-offset-empty.rs13",
+      "code": "pt-offset",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-empty.rs12 transcoded: seq 2 (a patch that carries no particles float) carries an empty pt_f32 block (the block is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-pt-offset-missing.rs13",
+      "code": "pt-offset",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/pt-offset-missing.rs12 transcoded: seq 1's entries and emit claim 85 floats, but it carries no pt_f32 block"
+    },
+    {
+      "file": "invalid/g12-particles-entry.rs13",
+      "code": "particles-entry",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-entry.rs12 transcoded: emitter 1 is ok with reason \"particles-3d\" (ok needs null)"
+    },
+    {
+      "file": "invalid/g12-particles-entry-freed-floats.rs13",
+      "code": "particles-entry",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-entry-freed-floats.rs12 transcoded: emitter 2 is a freed tombstone that carries f 31 and its 31 floats (freed needs f null)"
+    },
+    {
+      "file": "invalid/g12-particles-entry-trails.rs13",
+      "code": "particles-entry",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-entry-trails.rs12 transcoded: emitter 2 has trail_poses 1 (and its 43 floats) with trails false"
+    },
+    {
+      "file": "invalid/g12-particles-version.rs13",
+      "code": "particles-version",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-version.rs12 transcoded: seq 2 carries emitter 1 (a moved emission transform) at version 4, below the base's 5"
+    },
+    {
+      "file": "invalid/g12-particles-version-json.rs13",
+      "code": "particles-version",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-version-json.rs12 transcoded: seq 2 carries emitter 1 with emitting false (and moved floats) at the base's version 5"
+    },
+    {
+      "file": "invalid/g12-particles-version-floats.rs13",
+      "code": "particles-version",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-version-floats.rs12 transcoded: seq 2 carries emitter 1 with a moved emission transform (floats only) at the base's version 5"
+    },
+    {
+      "file": "invalid/g12-particles-ref-command.rs13",
+      "code": "particles-ref",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-command.rs12 transcoded: item 1 also draws add_particles 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/g12-particles-ref-material.rs13",
+      "code": "particles-ref",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-material.rs12 transcoded: emitter 1's process_material is 7, which has no material entry"
+    },
+    {
+      "file": "invalid/g12-particles-ref-mesh.rs13",
+      "code": "particles-ref",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-mesh.rs12 transcoded: emitter 1's draw pass names mesh 7, which has no mesh entry"
+    },
+    {
+      "file": "invalid/g12-particles-ref-subemitter.rs13",
+      "code": "particles-ref",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-ref-subemitter.rs12 transcoded: emitter 2's subemitter is 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/g12-particle-emits-count.rs13",
+      "code": "particle-emits",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-count.rs12 transcoded: a full transaction lists two emits on emitter 1, whose emits counter is 1"
+    },
+    {
+      "file": "invalid/g12-particle-emits-unknown.rs13",
+      "code": "particle-emits",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-unknown.rs12 transcoded: the emit names emitter 9, which has no particles entry"
+    },
+    {
+      "file": "invalid/g12-particle-emits-restarts.rs13",
+      "code": "particle-emits",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-restarts.rs12 transcoded: the emit's restarts is 1, above emitter 1's restarts 0"
+    },
+    {
+      "file": "invalid/g12-builtin-entry-order.rs13",
+      "code": "builtin-entry",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/builtin-entry-order.rs12 transcoded: shader 1's particle_process_material builtin has color_ramp before textures"
+    },
+    {
+      "file": "invalid/g12-builtin-entry-list.rs13",
+      "code": "builtin-entry",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/builtin-entry-list.rs12 transcoded: shader 1's builtin textures is [\"scale\", \"angle\"], not in Parameter enum order"
+    },
+    {
+      "file": "invalid/g12-builtin-entry-canvas.rs13",
+      "code": "builtin-entry",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/builtin-entry-canvas.rs12 transcoded: shader 1 carries the particle_process_material builtin but its mode is canvas_item"
+    },
+    {
+      "file": "invalid/g12-particles-empty-key.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-empty-key.rs12 transcoded: an unchanged patch carries \"particles\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-particles-removed-empty-key.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-removed-empty-key.rs12 transcoded: a patch carries \"removed_particles\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-particle-emits-empty-key.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particle-emits-empty-key.rs12 transcoded: a patch carries \"particle_emits\": [] (the key is present only when non-empty)"
+    },
+    {
+      "file": "invalid/g12-particles-removed-full.rs13",
+      "code": "patch-encoding",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-removed-full.rs12 transcoded: a full transaction carries \"removed_particles\": [3]"
+    },
+    {
+      "file": "invalid/g12-particles-feature.rs13",
+      "code": "meta-schema",
+      "version": 13,
+      "seq": null,
+      "description": "golden-12's invalid/particles-feature.rs12 transcoded: item 1 draws add_particles in a session whose features.ops lacks add_particles (the session record from before PM5)"
+    }
+  ]
+}

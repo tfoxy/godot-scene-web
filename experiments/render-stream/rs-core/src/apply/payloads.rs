@@ -603,6 +603,8 @@ impl PayloadStore {
         v: &crate::validate::Validator,
         record: &[u8],
     ) -> Result<u32, crate::wire::Error> {
+        // /13: the block ranges index the reconstructed /12 record.
+        let record = v.record_view(record);
         if !self.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {
             // PM3: the transaction's multimesh buffers, by multimesh id.
             self.multimeshes

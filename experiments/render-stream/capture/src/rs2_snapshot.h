@@ -155,41 +155,53 @@ inline constexpr std::array<std::uint8_t, 8> kMagicV12 = {0x47, 0x52, 0x53, 0x43
                                                            0x0D, 0x0A, 0x1A, 0x0A};
 inline constexpr const char *kProtocolV12 = "render-stream/12";
 
-enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12 };
+// render-stream/13 (W13a, render-stream-13.md "As built (W13a): the wire"): /12 plus the magic
+// "GRSD", the transaction key `predict_check` and the predicted blocks mesh_u8, mesh_f32 and mm_f32
+// (rs13_predict.h). encode_transaction() at V13 writes the /12 form; rs13::encode_transaction()
+// predicts it. Every "/12 or later" cascade includes V13.
+inline constexpr std::array<std::uint8_t, 8> kMagicV13 = {0x47, 0x52, 0x53, 0x44,
+                                                           0x0D, 0x0A, 0x1A, 0x0A};
+inline constexpr const char *kProtocolV13 = "render-stream/13";
+
+enum class ProtocolVersion : std::uint8_t { V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13 };
 
 // True for /7 to /11, the versions whose live transport is the /7 one (token hello, credit
 // window, CORS). /8 is /7 plus render-stream-8.md's list, /9 is /8 plus render-stream-9.md's and
 // /10 is /9 plus render-stream-10.md's, so every "V7" cascade means "V7 or later".
 inline constexpr bool is_v7_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V7 || v == ProtocolVersion::V8 || v == ProtocolVersion::V9 ||
-         v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
+         v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
+         v == ProtocolVersion::V13;
 }
 
 // True for /8 to /11: the versions that carry render-stream-8.md's keys.
 inline constexpr bool is_v8_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V8 || v == ProtocolVersion::V9 || v == ProtocolVersion::V10 ||
-         v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
+         v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
 }
 
 // True for /9 to /11: the versions that carry render-stream-9.md's keys.
 inline constexpr bool is_v9_or_later(ProtocolVersion v) {
   return v == ProtocolVersion::V9 || v == ProtocolVersion::V10 || v == ProtocolVersion::V11 ||
-         v == ProtocolVersion::V12;
+         v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
 }
 
 // True for /10 and /11: the versions that carry render-stream-10.md's keys.
 inline constexpr bool is_v10_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
+  return v == ProtocolVersion::V10 || v == ProtocolVersion::V11 || v == ProtocolVersion::V12 ||
+         v == ProtocolVersion::V13;
 }
 
 // True for /11 and /12: the versions that carry render-stream-11.md's keys (PM5: every "/11"
 // cascade means "/11 or later").
 inline constexpr bool is_v11_or_later(ProtocolVersion v) {
-  return v == ProtocolVersion::V11 || v == ProtocolVersion::V12;
+  return v == ProtocolVersion::V11 || v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
 }
 
 // True for /12: the versions that carry render-stream-12.md's keys.
-inline constexpr bool is_v12_or_later(ProtocolVersion v) { return v == ProtocolVersion::V12; }
+inline constexpr bool is_v12_or_later(ProtocolVersion v) {
+  return v == ProtocolVersion::V12 || v == ProtocolVersion::V13;
+}
 
 // Floats per entry in the transaction blocks (render-stream-2.md "Transaction record"). Item and
 // canvas float layouts are unchanged from /1; texture entries carry no floats at all.

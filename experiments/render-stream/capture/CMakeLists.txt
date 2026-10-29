@@ -412,6 +412,21 @@ target_compile_definitions(rs12_codec_test PRIVATE
   GRC_GOLDEN12_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12")
 add_test(NAME rs12_codec COMMAND rs12_codec_test)
 
+# W13a: render-stream/13 is /12 plus the GRSD magic, `predict_check` and the predicted blocks
+# mesh_u8/mesh_f32/mm_f32 (render-stream-13.md "As built (W13a)", src/rs13_predict.{h,cpp}), proven
+# byte-identical to protocol/golden-13 (golden-12's lanes and the prediction lane) both ways.
+add_executable(rs13_codec_test test/rs13_codec_test.cpp src/rs2_codec.cpp src/rs2_diff.cpp
+  src/rs13_predict.cpp)
+target_include_directories(rs13_codec_test PRIVATE src test)
+target_link_libraries(rs13_codec_test PRIVATE grc_warnings grc_codecs)
+target_compile_definitions(rs13_codec_test PRIVATE
+  GRC_GOLDEN6_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-6"
+  GRC_GOLDEN10_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-10"
+  GRC_GOLDEN11_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-11"
+  GRC_GOLDEN12_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-12"
+  GRC_GOLDEN13_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../protocol/golden-13")
+add_test(NAME rs13_codec COMMAND rs13_codec_test)
+
 # Gate 8 (G8w): the GRC_STREAM_VERSION / GRC_ADOPT / GRC_TEXTURE_DECODE parsing, the D2 refusal and
 # the live listener's subprotocol offer, plus the two empty seams.
 add_executable(rs_gate8_policy_test

@@ -47,9 +47,16 @@
 //     unknown_items after unsupported in every transaction) validates and resolves with its
 //     account; the key in a strict session, a skip transaction without it and any policy value
 //     but "skip" are all meta-schema.
+//   - golden-13 (W13a, render-stream-13.md "As built (W13a)"): runSuite at version 13 (every
+//     invalid vector also at its listed seq), then version13Cases(): XXH64's test vectors, every
+//     lane transcoded /13 -> /12 (decodeRs13) and /12 -> /13 (encodeRs13) byte for byte, the
+//     predict lane against predict.decoded.json and predict-resolved.json, the predict-stale
+//     encoder sabotage (= invalid/predict-stale.rs13) and the noPredictReset validator sabotage
+//     (predict-check at predict.rs13 seq 7, patch.rs13 seq 16).
 //
 // Exits non-zero if any assertion fails.
 
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,7 +68,9 @@ import {
   createRecordingValidator,
   decodeKtx2Payload,
   decodeRecording,
+  decodeRs13,
   decodeTexturePayload,
+  encodeRs13,
   expectedDataBytes,
   isPartialUnknownItems,
   multimeshBufferSha256,
@@ -79,6 +88,7 @@ import {
   transactionParticles,
   validateRecording,
   wireVersionOf,
+  xxh64Hex,
 } from "../lib/render-stream-2";
 import {
   decodeMeshPayload,
@@ -102,6 +112,7 @@ const GOLDEN9_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-9");
 const GOLDEN10_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-10");
 const GOLDEN11_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-11");
 const GOLDEN12_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-12");
+const GOLDEN13_DIR = resolve(SCRIPT_DIR, "../../protocol/golden-13");
 
 interface GoldenIndex {
   valid: Array<{ file: string; hex: string; decoded: string; sha256: string }>;
@@ -125,7 +136,9 @@ interface GoldenIndex {
     file: string;
     code: string;
     description: string;
-    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+    version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+    /** golden-13 on: the seq of the transaction the vector fails at (null when not one). */
+    seq?: number | null;
   }>;
   // golden-3 has no payload-invalid vectors of its own: render-stream-3.md does not change the
   // render-stream-texture/1 payload format, so golden-2's are the only ones that exist.
@@ -237,9 +250,11 @@ function stripExcepted(resolved: ReturnType<typeof resolveRecording>): unknown {
 // threaded into decodeRecording()/validateRecording()/resolveRecording() differ.
 async function runSuite(
   goldenDir: string,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
 ): Promise<void> {
-  const label = goldenDir.endsWith("golden-12")
+  const label = goldenDir.endsWith("golden-13")
+    ? "golden-13"
+    : goldenDir.endsWith("golden-12")
     ? "golden-12"
     : goldenDir.endsWith("golden-11")
     ? "golden-11"
@@ -263,6 +278,15 @@ async function runSuite(
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
+  // render-stream-13.md "Forms and transcode": resource records are unchanged at /13, record for
+  // record, so golden-13's inline lane carries golden-12's inline_resources.
+  if (version === 13 && index.inline_resources === undefined) {
+    index.inline_resources = (
+      JSON.parse(
+        await readFile(join(GOLDEN12_DIR, "index.json"), "utf8"),
+      ) as GoldenIndex
+    ).inline_resources;
+  }
 
   for (const entry of index.valid) {
     const bytes = await readBytes(goldenDir, entry.file);
@@ -349,6 +373,14 @@ async function runSuite(
       errors.length === 1 && errors[0].startsWith(`${entry.code}: `),
       `${label}: validateRecording(${entry.file}) is rejected with exactly one error starting with "${entry.code}: " (got ${JSON.stringify(errors)})`,
     );
+    // golden-13 on: the vector fails at its listed transaction.
+    if (typeof entry.seq === "number") {
+      const at = errorSeq(bytes, entry.version ?? version, errors[0] ?? "");
+      ok(
+        at === entry.seq,
+        `${label}: validateRecording(${entry.file}) fails at seq ${entry.seq} (got ${at})`,
+      );
+    }
   }
 
   // --- every payload-invalid/*.grt (or, at /4, *.grm; at /5, *.grp) throws its named code ------
@@ -561,6 +593,7 @@ async function main(): Promise<void> {
   await runSuite(GOLDEN10_DIR, 10);
   await runSuite(GOLDEN11_DIR, 11);
   await runSuite(GOLDEN12_DIR, 12);
+  await runSuite(GOLDEN13_DIR, 13);
 
   // --- a /3 decode refuses a /2-magic stream, and vice versa (render-stream-3.md: "Decoders
   // refuse GRS2 ... any other byte 3 is simply 'any other byte 3' to a /2 decoder"); likewise a
@@ -699,6 +732,23 @@ async function main(): Promise<void> {
     "wireVersionOf() reads GRSC as 12",
   );
   await version12Cases();
+
+  // a /13 decode refuses /12 and a /12 decode refuses /13 (render-stream-13.md "As built
+  // (W13a)": GRSD).
+  const full13 = await readBytes(GOLDEN13_DIR, "full.rs13");
+  ok(
+    validateRecording(full12, 13)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-12/full.rs12 decoded as version 13 is rejected with bad-magic",
+  );
+  ok(
+    validateRecording(full13, 12)[0]?.startsWith("bad-magic: ") ?? false,
+    "golden-13/full.rs13 decoded as version 12 is rejected with bad-magic",
+  );
+  ok(
+    Buffer.from(full13.subarray(0, 4)).toString("latin1") === "GRSD",
+    "golden-13/full.rs13 starts with GRSD",
+  );
+  await version13Cases();
 
   unknownItemCases();
   await helloCases();
@@ -1591,6 +1641,236 @@ async function version12Cases(): Promise<void> {
     ok(
       errors.length === 1 && errors[0].startsWith("end-stats-mismatch: "),
       `a /12 session declaring sabotage kind ${kind} is accepted (only the re-framed end stats differ; got ${JSON.stringify(errors)})`,
+    );
+  }
+}
+
+// The seq of the transaction an error names by its record offset ("record at offset N"), read
+// straight from that record's meta (which may itself be the one decodeRecord refuses); null when
+// the error names no transaction record.
+function errorSeq(
+  bytes: Uint8Array,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  error: string,
+): number | null {
+  const m = /record at offset (\d+)/.exec(error);
+  if (m === null) return null;
+  const raw = splitRecords(bytes, version).records.find(
+    (r) => r.offset === Number(m[1]),
+  );
+  if (raw === undefined) return null;
+  const metaLen = new DataView(
+    raw.bytes.buffer,
+    raw.bytes.byteOffset,
+    raw.bytes.byteLength,
+  ).getUint32(4, true);
+  try {
+    const meta = JSON.parse(
+      Buffer.from(raw.bytes.subarray(8, 8 + metaLen)).toString("latin1"),
+    ) as { type?: unknown; seq?: unknown };
+    return meta.type === "transaction" && typeof meta.seq === "number"
+      ? meta.seq
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+interface Golden13Index {
+  valid: Array<{ file: string; rs12: string }>;
+  predict: {
+    file: string;
+    decoded: string;
+    resolved: string;
+    sha256: string;
+    rs12: string;
+    rs12_sha256: string;
+    fulls: number[];
+  };
+  predict_trace: Record<string, Array<{ seq: number; units: unknown[] }>>;
+  sabotage: {
+    "predict-stale": { vector: string; code: string; seq: number };
+    "no-predict-reset": {
+      code: string;
+      fails: Array<{ file: string; seq: number }>;
+    };
+  };
+}
+
+// W13a (render-stream-13.md "As built (W13a)"): XXH64, the /12 <-> /13 transcode of every lane in
+// both directions, the predict lane (decoded, validated, resolved against predict-resolved.json),
+// the predict-stale encoder sabotage and the no-predict-reset decoder sabotage.
+async function version13Cases(): Promise<void> {
+  ok(
+    xxh64Hex(new Uint8Array(0)) === "ef46db3751d8e999" &&
+      xxh64Hex(new TextEncoder().encode("a")) === "d24ec4f1a98c6e5b",
+    'golden-13: xxh64("") = ef46db3751d8e999 and xxh64("a") = d24ec4f1a98c6e5b',
+  );
+  const index = JSON.parse(
+    await readFile(join(GOLDEN13_DIR, "index.json"), "utf8"),
+  ) as Golden13Index;
+  const lanes = [
+    ...index.valid,
+    { file: index.predict.file, rs12: index.predict.rs12 },
+  ];
+  for (const lane of lanes) {
+    const rs13 = await readBytes(GOLDEN13_DIR, lane.file);
+    const rs12 = await readBytes(GOLDEN13_DIR, lane.rs12);
+    let down: Uint8Array | null = null;
+    try {
+      down = decodeRs13(rs13);
+    } catch (error) {
+      ok(false, `golden-13: decodeRs13(${lane.file}) threw ${String(error)}`);
+    }
+    if (down !== null)
+      ok(
+        sameBytes(down, rs12),
+        `golden-13: decodeRs13(${lane.file}) is ${lane.rs12} byte for byte`,
+      );
+    const trace: NonNullable<Parameters<typeof encodeRs13>[1]>["trace"] = [];
+    let up: Uint8Array | null = null;
+    try {
+      up = encodeRs13(rs12, { trace });
+    } catch (error) {
+      ok(false, `golden-13: encodeRs13(${lane.rs12}) threw ${String(error)}`);
+    }
+    if (up !== null)
+      ok(
+        sameBytes(up, rs13),
+        `golden-13: encodeRs13(${lane.rs12}) is ${lane.file} byte for byte`,
+      );
+    const expectedTrace = index.predict_trace[lane.file];
+    if (expectedTrace !== undefined)
+      ok(
+        isDeepStrictEqual(trace, expectedTrace),
+        `golden-13: encodeRs13(${lane.rs12})'s predicted units and orders are index.json's predict_trace["${lane.file}"]`,
+      );
+  }
+
+  // --- the predict lane: decoded, validated, resolved; its /12 twin resolves alike ------------
+  const predict = index.predict;
+  const p13 = await readBytes(GOLDEN13_DIR, predict.file);
+  const p12 = await readBytes(GOLDEN13_DIR, predict.rs12);
+  ok(
+    sha256Hex(p13) === predict.sha256 && sha256Hex(p12) === predict.rs12_sha256,
+    `golden-13: ${predict.file} and ${predict.rs12} hash to index.json's sha256s`,
+  );
+  const decoded = decodeRecording(p13, 13);
+  ok(
+    isDeepStrictEqual(
+      decoded,
+      JSON.parse(await readFile(join(GOLDEN13_DIR, predict.decoded), "utf8")),
+    ),
+    `golden-13: decodeRecording(${predict.file}) deep-equals ${predict.decoded}`,
+  );
+  ok(
+    decoded.records.every((r) => recordSha256(p13, r.offset) === r.sha256),
+    `golden-13: every ${predict.file} record's sha256 is its /13 bytes' (recordSha256)`,
+  );
+  const p12Decoded = decodeRecording(p12, 12);
+  ok(
+    decoded.records.length === p12Decoded.records.length &&
+      decoded.records.every((r, i) =>
+        isDeepStrictEqual(r.blocks, p12Decoded.records[i].blocks),
+      ),
+    `golden-13: decodeRecording(${predict.file})'s blocks are ${predict.rs12}'s (reconstructed /12 blocks)`,
+  );
+  const errors = validateRecording(p13, 13);
+  ok(
+    errors.length === 0,
+    `golden-13: validateRecording(${predict.file}) is [] (got ${JSON.stringify(errors)})`,
+  );
+  ok(
+    validateRecording(p12, 12).length === 0,
+    `golden-13: validateRecording(${predict.rs12}, 12) is []`,
+  );
+  const expectedResolved = JSON.parse(
+    await readFile(join(GOLDEN13_DIR, predict.resolved), "utf8"),
+  );
+  const resolved = resolveRecording(p13, 13);
+  ok(
+    resolved.schema === "render-stream-13-resolved/1" &&
+      statesEqual(stripExcepted(resolved), expectedResolved),
+    `golden-13: resolveRecording(${predict.file}) deep-equals ${predict.resolved} (excepted fields aside)`,
+  );
+  ok(
+    resolved.transactions
+      .filter((t) => t.encoding === "full")
+      .map((t) => t.seq)
+      .join(",") === predict.fulls.join(","),
+    `golden-13: ${predict.file}'s full transactions are seqs ${predict.fulls.join(", ")}`,
+  );
+  const resolved12 = resolveRecording(p12, 12);
+  ok(
+    statesEqual(
+      resolved12.transactions.map((t) => t.state),
+      resolved.transactions.map((t) => t.state),
+    ),
+    `golden-13: resolveRecording(${predict.rs12}, 12) resolves to the same states`,
+  );
+
+  // --- the live validator, deferred digests: each digest is the /13 record's own ------------
+  {
+    const split = splitRecords(p13, 13);
+    const validator = createRecordingValidator(split.records, 13, {
+      recordDigest: "deferred",
+    });
+    let acceptErrors: string[] | undefined = validator.errors ?? undefined;
+    for (let i = 1; i < split.records.length && !acceptErrors; i++)
+      acceptErrors = validator.accept(i);
+    ok(
+      acceptErrors === undefined &&
+        validator.finish().length === 0 &&
+        split.records.every(
+          (r, i) => validator.digest(i) === sha256Hex(r.bytes),
+        ),
+      `golden-13: createRecordingValidator(${predict.file}, deferred) accepts every record and digests the /13 bytes`,
+    );
+  }
+
+  // --- predict-stale (encoder sabotage) --------------------------------------------------------
+  const staleEntry = index.sabotage["predict-stale"];
+  const stale = encodeRs13(p12, { stale: true });
+  ok(
+    sameBytes(stale, await readBytes(GOLDEN13_DIR, staleEntry.vector)),
+    `golden-13: encodeRs13(${predict.rs12}, { stale: true }) is ${staleEntry.vector} byte for byte`,
+  );
+  const staleErrors = validateRecording(stale, 13);
+  ok(
+    staleErrors.length === 1 &&
+      staleErrors[0].startsWith(`${staleEntry.code}: `) &&
+      errorSeq(stale, 13, staleErrors[0]) === staleEntry.seq,
+    `golden-13: the predict-stale stream fails ${staleEntry.code} at seq ${staleEntry.seq} (got ${JSON.stringify(staleErrors)})`,
+  );
+
+  // --- no-predict-reset (decoder sabotage) -----------------------------------------------------
+  const noReset = index.sabotage["no-predict-reset"];
+  for (const fail of noReset.fails) {
+    const bytes = await readBytes(GOLDEN13_DIR, fail.file);
+    const sabotaged = validateRecording(bytes, 13, { noPredictReset: true });
+    ok(
+      sabotaged.length === 1 &&
+        sabotaged[0].startsWith(`${noReset.code}: `) &&
+        errorSeq(bytes, 13, sabotaged[0]) === fail.seq,
+      `golden-13: validateRecording(${fail.file}, { noPredictReset }) fails ${noReset.code} at seq ${fail.seq} (got ${JSON.stringify(sabotaged)})`,
+    );
+    let threw = "";
+    try {
+      decodeRs13(bytes, { noPredictReset: true });
+    } catch (error) {
+      threw = (error as Error).message;
+    }
+    ok(
+      threw === `${noReset.code}: seq ${fail.seq}`,
+      `golden-13: decodeRs13(${fail.file}, { noPredictReset }) throws "${noReset.code}: seq ${fail.seq}" (got ${JSON.stringify(threw)})`,
     );
   }
 }

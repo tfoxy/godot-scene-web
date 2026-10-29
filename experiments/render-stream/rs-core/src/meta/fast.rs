@@ -1174,6 +1174,18 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
         tx.shader_time_f = Some(c.int_ge(0)? as u64);
         c.lit(b"}")?;
     }
+    // W13a: /13's `predict_check` (16 lowercase hex digits).
+    if version >= 13 {
+        c.lit(b",\"predict_check\":\"")?;
+        let end = c.p + 16;
+        let hex = c.s.get(c.p..end)?;
+        if !hex.iter().all(|h| matches!(h, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        tx.predict_check = Some(u64::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+        c.p = end;
+        c.lit(b"\"")?;
+    }
     c.lit(b",\"blocks\":[")?;
     let n = transaction_block_count(version);
     for i in 0..n {
@@ -1275,9 +1287,10 @@ mod tests {
     fn fast_path_matches_the_general_path() {
         let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut hits = 0;
-        for v in 2..=12u8 {
+        for v in 2..=13u8 {
             let dir = base.join(format!("../protocol/golden-{v}"));
             for f in [
+                "predict",
                 "full",
                 "patch",
                 "inline",

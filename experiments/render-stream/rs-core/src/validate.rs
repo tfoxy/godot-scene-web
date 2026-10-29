@@ -55,7 +55,7 @@ pub enum DigestPolicy {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Options {
-    /// The protocol version, 2 to 11.
+    /// The protocol version, 2 to 13.
     pub version: u8,
     pub digest: DigestPolicy,
     /// Verify a resource record's payload against its declared hash (`resource-hash`). `false` is
@@ -65,6 +65,10 @@ pub struct Options {
     /// names when a transaction arrives, before resolving and checking it. `false` always, except
     /// in the sabotage.
     pub early_prune: bool,
+    /// /13 decoder sabotage `no-predict-reset` (render-stream-13.md "Sabotages"): a full does not
+    /// reset the prediction history (it is un-predicted against H1 and H2 like a patch). `false`
+    /// always, except in the sabotage.
+    pub no_predict_reset: bool,
 }
 
 impl Options {
@@ -74,6 +78,7 @@ impl Options {
             digest: DigestPolicy::Inline,
             verify_payload_hashes: true,
             early_prune: false,
+            no_predict_reset: false,
         }
     }
 }
@@ -667,6 +672,13 @@ pub struct Validator {
     /// `content-version-stable` (WB): the first patch item whose commands equal the base's under
     /// a moved `content_version`, found while resolving.
     cv_stable: Option<Id>,
+    // ---- /13 (render-stream-13.md "As built (W13a)"); unused below /13.
+    /// The prediction history (H1, H2), advanced by each accepted transaction.
+    history: crate::predict::History,
+    pred_scratch: crate::predict::Scratch,
+    /// The last accepted /13 transaction as its /12 record ([`Validator::plain_record`]).
+    plain: Vec<u8>,
+    plain_ok: bool,
 }
 
 fn where_(seq: i64) -> String {
@@ -1581,8 +1593,8 @@ impl Validator {
     /// `missing-session`, `root-canvas` and (/6) `viewport-entry`'s host-size rule.
     pub fn new(session_record: &[u8], offset: usize, opts: Options) -> Result<Validator, Error> {
         assert!(
-            (2..=12).contains(&opts.version),
-            "render-stream version 2..=12"
+            (2..=wire::LATEST).contains(&opts.version),
+            "render-stream version 2..=13"
         );
         let mut bufs = DecodeBufs::default();
         let mut tx = TxMeta::default();
@@ -1698,6 +1710,10 @@ impl Validator {
             pt_emits: Vec::new(),
             pt_op_declared,
             cv_stable: None,
+            history: Default::default(),
+            pred_scratch: Default::default(),
+            plain: Vec::new(),
+            plain_ok: false,
         })
     }
 
@@ -1794,6 +1810,29 @@ impl Validator {
         &self.pt_emits
     }
 
+    /// /13 (render-stream-13.md "As built (W13a)"): the last accepted transaction as its /12
+    /// record: the meta without `predict_check`, the three predicted blocks reconstructed. Every
+    /// byte range this validator reports for that transaction ([`Validator::dynamic_bodies`],
+    /// [`Validator::multimesh_buffers`]) indexes this record, not the /13 one `accept` was given,
+    /// so a /13 receiver feeds it to its /12 path unchanged. `None` below /13, after a resource
+    /// or end record, and after a transaction refused past its meta (like `dynamic_bodies`, it
+    /// is meaningless after any failed accept).
+    pub fn plain_record(&self) -> Option<&[u8]> {
+        self.plain_ok.then_some(self.plain.as_slice())
+    }
+
+    /// The bytes the last accepted record's block ranges index: [`Validator::plain_record`] after
+    /// a /13 transaction, else `record` itself (the record given to `accept`). What a receiver
+    /// passes to `DynamicMeshes::ingest` and friends at every version.
+    pub fn record_view<'a>(&'a self, record: &'a [u8]) -> &'a [u8] {
+        self.plain_record().unwrap_or(record)
+    }
+
+    /// /13: the prediction history (H1, H2) after the last accepted transaction.
+    pub fn prediction_history(&self) -> &crate::predict::History {
+        &self.history
+    }
+
     /// render-stream-11.md decision 9, `inline-fetch-zero`: may a /11 receiver GET `hash` over
     /// HTTP now? Refused when `hash` is a non-variant name of the newest accepted state, or is in
     /// C, with `payload_bytes <= inline_max_bytes` (such a hash always arrives inline). Below /11
@@ -1883,6 +1922,7 @@ impl Validator {
         );
         prof::add(prof::META, t);
         let decoded = decoded?;
+        self.plain_ok = false;
         if self.opts.version >= 11 {
             self.pruned.clear();
             self.released.clear();
@@ -1898,7 +1938,10 @@ impl Validator {
                 ))
             }
             Decoded::Resource(r) => self.accept_resource(record, offset, r)?,
-            Decoded::Transaction => self.accept_transaction(record, offset)?,
+            Decoded::Transaction if self.opts.version >= 13 => {
+                self.accept_transaction13(record, offset)?
+            }
+            Decoded::Transaction => self.accept_transaction(record, offset, record.len())?,
             Decoded::End(e) => self.accept_end(e)?,
         };
         let t = prof::start();
@@ -2045,7 +2088,55 @@ impl Validator {
 
     // --------------------------------------------------------------------------------- transaction
 
-    fn accept_transaction(&mut self, record: &[u8], offset: usize) -> Result<Accepted, Error> {
+    /// /13: un-predict the three blocks against (H1, H2) into the plain /12 record,
+    /// `predict-check`, then every /12 rule on that record ([`Self::accept_transaction`]), then
+    /// R(T). Nothing changes on an error.
+    fn accept_transaction13(&mut self, record: &[u8], offset: usize) -> Result<Accepted, Error> {
+        let t = prof::start();
+        let no_reset = self.opts.no_predict_reset;
+        let (h1, h2) = self.history.refs(self.tx.is_full(), false, no_reset);
+        let mut plain = std::mem::take(&mut self.plain);
+        let r = crate::predict::unpredict_record(
+            record,
+            &self.tx,
+            &mut self.bufs.blocks,
+            h1,
+            h2,
+            &mut self.pred_scratch,
+            &mut plain,
+        );
+        prof::add(prof::PRE_CHECKS, t);
+        let r = match r {
+            Ok((declared, computed)) if declared == computed => {
+                self.accept_transaction(&plain, offset, record.len())
+            }
+            Ok((declared, computed)) => Err(Error::new(
+                "predict-check",
+                format!(
+                    "record at offset {offset}, {}: predict_check {:016x}, the reconstructed blocks hash to {:016x}",
+                    where_(self.tx.seq),
+                    declared,
+                    computed
+                ),
+            )),
+            Err(e) => Err(e),
+        };
+        if r.is_ok() {
+            let b = crate::predict::blocks_of(&plain, &self.bufs.blocks);
+            self.history
+                .accept(&self.tx, b, no_reset, &mut self.pred_scratch);
+            self.plain_ok = true;
+        }
+        self.plain = plain;
+        r
+    }
+
+    fn accept_transaction(
+        &mut self,
+        record: &[u8],
+        offset: usize,
+        wire_len: usize,
+    ) -> Result<Accepted, Error> {
         if self.opts.early_prune {
             // Sabotage `early-prune`: C ← C ∩ names(S_base) before this transaction is resolved,
             // which drops the records it brings.
@@ -2089,8 +2180,8 @@ impl Validator {
         }
         self.commit();
         prof::add(prof::POST_CHECKS, t);
-        self.bytes_total += record.len() as u64;
-        self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
+        self.bytes_total += wire_len as u64;
+        self.max_record_bytes = self.max_record_bytes.max(wire_len as u64);
         Ok(Accepted::Transaction)
     }
 

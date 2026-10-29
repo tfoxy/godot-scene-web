@@ -469,6 +469,115 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
     h
 }
 
+/// Streaming XXH64: `update` over any split of the input, then `digest`, equals [`xxh64`] over
+/// the concatenation (W13a: render-stream/13's `predict_check` hashes three blocks that are not
+/// contiguous in a record).
+#[derive(Clone)]
+pub struct Xxh64 {
+    v: [u64; 4],
+    buf: [u8; 32],
+    buf_len: usize,
+    total: u64,
+    seed: u64,
+}
+
+impl Xxh64 {
+    pub fn new(seed: u64) -> Xxh64 {
+        Xxh64 {
+            v: [
+                seed.wrapping_add(P1).wrapping_add(P2),
+                seed.wrapping_add(P2),
+                seed,
+                seed.wrapping_sub(P1),
+            ],
+            buf: [0; 32],
+            buf_len: 0,
+            total: 0,
+            seed,
+        }
+    }
+
+    #[inline]
+    fn stripe(v: &mut [u64; 4], d: &[u8], p: usize) {
+        v[0] = round(v[0], le_u64(d, p));
+        v[1] = round(v[1], le_u64(d, p + 8));
+        v[2] = round(v[2], le_u64(d, p + 16));
+        v[3] = round(v[3], le_u64(d, p + 24));
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.total += data.len() as u64;
+        if self.buf_len > 0 {
+            let take = (32 - self.buf_len).min(data.len());
+            self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);
+            self.buf_len += take;
+            data = &data[take..];
+            if self.buf_len < 32 {
+                return;
+            }
+            let buf = self.buf;
+            Self::stripe(&mut self.v, &buf, 0);
+            self.buf_len = 0;
+        }
+        let stripes = data.chunks_exact(32);
+        let rest = stripes.remainder();
+        let mut v = self.v;
+        for c in stripes {
+            let c: &[u8; 32] = c.try_into().unwrap();
+            let lane = |k: usize| u64::from_le_bytes(c[8 * k..8 * k + 8].try_into().unwrap());
+            v[0] = round(v[0], lane(0));
+            v[1] = round(v[1], lane(1));
+            v[2] = round(v[2], lane(2));
+            v[3] = round(v[3], lane(3));
+        }
+        self.v = v;
+        self.buf[..rest.len()].copy_from_slice(rest);
+        self.buf_len = rest.len();
+    }
+
+    pub fn digest(&self) -> u64 {
+        let [v1, v2, v3, v4] = self.v;
+        let mut h = if self.total >= 32 {
+            let mut h = v1
+                .rotate_left(1)
+                .wrapping_add(v2.rotate_left(7))
+                .wrapping_add(v3.rotate_left(12))
+                .wrapping_add(v4.rotate_left(18));
+            h = merge(h, v1);
+            h = merge(h, v2);
+            h = merge(h, v3);
+            merge(h, v4)
+        } else {
+            self.seed.wrapping_add(P5)
+        };
+        h = h.wrapping_add(self.total);
+        let data = &self.buf[..self.buf_len];
+        let len = data.len();
+        let mut p = 0;
+        while p + 8 <= len {
+            h ^= round(0, le_u64(data, p));
+            h = h.rotate_left(27).wrapping_mul(P1).wrapping_add(P4);
+            p += 8;
+        }
+        if p + 4 <= len {
+            h ^= (le_u32(data, p) as u64).wrapping_mul(P1);
+            h = h.rotate_left(23).wrapping_mul(P2).wrapping_add(P3);
+            p += 4;
+        }
+        while p < len {
+            h ^= (data[p] as u64).wrapping_mul(P5);
+            h = h.rotate_left(11).wrapping_mul(P1);
+            p += 1;
+        }
+        h ^= h >> 33;
+        h = h.wrapping_mul(P2);
+        h ^= h >> 29;
+        h = h.wrapping_mul(P3);
+        h ^= h >> 32;
+        h
+    }
+}
+
 /// Splits a coded-message file (u32le length, then the message, repeated: what the capture's
 /// `rs_live_coding_tool` and the live legs' clients write) into its messages.
 pub fn split_messages(data: &[u8]) -> Result<Vec<&[u8]>, Error> {
@@ -582,6 +691,27 @@ mod tests {
         assert_eq!(xxh64(b"", 0), 0xEF46_DB37_51D8_E999);
         assert_eq!(xxh64(b"a", 0), 0xD24E_C4F1_A98C_6E5B);
         assert_eq!(xxh64(b"abc", 0), 0x44BC_2CF5_AD77_0999);
+    }
+
+    #[test]
+    fn streaming_xxh64_equals_one_shot_over_any_split() {
+        let data: Vec<u8> = (0..300u32).map(|i| (i * 131 + 7) as u8).collect();
+        for len in [0usize, 1, 3, 4, 7, 8, 31, 32, 33, 63, 64, 65, 100, 300] {
+            let d = &data[..len];
+            let want = xxh64(d, 0);
+            for a in 0..=len.min(40) {
+                for b in [a, (a + len) / 2, len] {
+                    if b < a {
+                        continue;
+                    }
+                    let mut h = Xxh64::new(0);
+                    h.update(&d[..a]);
+                    h.update(&d[a..b]);
+                    h.update(&d[b..]);
+                    assert_eq!(h.digest(), want, "len {len} split {a}/{b}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod idtable;
 pub mod json;
 pub mod meta;
 pub mod payload;
+pub mod predict;
 pub mod prof;
 pub mod validate;
 pub mod wire;
@@ -29,3 +30,5 @@ mod carried_tests;
 mod pm1_tests;
 #[cfg(test)]
 mod pm5_tests;
+#[cfg(test)]
+mod predict_tests;

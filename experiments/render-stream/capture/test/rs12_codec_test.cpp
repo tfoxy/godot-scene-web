@@ -478,7 +478,11 @@ void test_emit_windows() {
 
 }  // namespace
 
-int main() {
+// rs13_codec_test.cpp includes this file with its main() renamed (rs11's is renamed here).
+#ifndef GRC_RS12_CODEC_TEST_MAIN
+#define GRC_RS12_CODEC_TEST_MAIN main
+#endif
+int GRC_RS12_CODEC_TEST_MAIN() {
   test_matches_golden_full_rs12();
   test_matches_golden_patch_rs12();
   test_matches_golden_inline_rs12();

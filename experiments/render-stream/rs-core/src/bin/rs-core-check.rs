@@ -1,7 +1,9 @@
 //! `rs-core-check` (gate7-design.md Q14a/Q14d): the native front end of render-stream-core's decoder.
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
-//!                         [--sabotage skip-payload-hash|early-prune]
+//!                         [--sabotage skip-payload-hash|early-prune|no-predict-reset]
+//!   rs-core-check transcode --to 12|13 [--stale] <in> <out>
+//!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]
 //!   rs-core-check validate <recording>... [--version 2..8] [--recover]
@@ -12,7 +14,11 @@
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
 //!
-//! `goldens` runs golden-2 ... golden-8 (exits non-zero on any failing check). `diff` feeds every
+//! `goldens` runs golden-2 ... golden-13 (exits non-zero on any failing check). `transcode` (W13a,
+//! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
+//! invalid input with the decoder's error code; `--stale` is the encoder sabotage
+//! `predict-stale`; `--roundtrip` checks /12 → /13 → /12 byte for byte and reports the sizes and
+//! the predicted units by order. `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
 //! and per transaction its seq, the sha256 of its canonical resolved JSON and its unsupported list),
 //! the native side of `scripts/test/self-test-rs-core.ts`. `bench` times `accept` per record.
@@ -59,7 +65,9 @@ static GLOBAL: Counting = Counting;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..12>] [--sabotage skip-payload-hash|early-prune]\n  \
+        "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..13>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
+         rs-core-check transcode --to 12|13 [--stale] <in> <out>\n  \
+         rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
          rs-core-check validate <recording>... [--version 2..8]\n  \
@@ -83,7 +91,7 @@ impl Args {
             if let Some(name) = a.strip_prefix("--") {
                 if let Some((k, v)) = name.split_once('=') {
                     flags.push((k.to_string(), v.to_string()));
-                } else if name == "recover" {
+                } else if name == "recover" || name == "stale" || name == "roundtrip" {
                     flags.push((name.to_string(), "1".to_string()));
                 } else {
                     let v = raw.get(i + 1)?.clone();
@@ -126,6 +134,7 @@ fn main() -> ExitCode {
         "state-dump" => cmd_state_dump(&args),
         "validate" => cmd_validate(&args),
         "live-decode" => cmd_live_decode(&args),
+        "transcode" => cmd_transcode(&args),
         _ => usage(),
     }
 }
@@ -137,7 +146,7 @@ fn cmd_goldens(args: &Args) -> ExitCode {
     );
     let only = match args.get("only").map(|s| s.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=12).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=wire::LATEST).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     let opts = match args.get("sabotage") {
@@ -149,6 +158,11 @@ fn cmd_goldens(args: &Args) -> ExitCode {
         // render-stream-11.md decision 10: golden-11's inline recordings must then fail.
         Some("early-prune") => GoldenOptions {
             early_prune: true,
+            ..GoldenOptions::default()
+        },
+        // render-stream-13.md "Sabotages": golden-13's predict.rs13 and patch.rs13 must then fail.
+        Some("no-predict-reset") => GoldenOptions {
+            no_predict_reset: true,
             ..GoldenOptions::default()
         },
         Some(_) => return usage(),
@@ -326,6 +340,7 @@ fn cmd_diff(args: &Args) -> ExitCode {
                 digest: DigestPolicy::Inline,
                 verify_payload_hashes: true,
                 early_prune: false,
+                no_predict_reset: false,
             };
             let session_bytes = first.bytes(&data);
             let mut v = Validator::new(session_bytes, first.offset, opts)?;
@@ -423,6 +438,7 @@ fn bench_one(
             digest,
             verify_payload_hashes: true,
             early_prune: false,
+            no_predict_reset: false,
         };
         let mut v = Validator::new(first.bytes(data), first.offset, opts)?;
         for r in &records[1..] {
@@ -518,10 +534,90 @@ fn cmd_bench(args: &Args) -> ExitCode {
     }
 }
 
+/// `transcode` (W13a): /12 <-> /13, or `--roundtrip` over /12 recordings.
+fn cmd_transcode(args: &Args) -> ExitCode {
+    use render_stream_core::predict;
+    if args.get("roundtrip").is_some() {
+        if args.positional.is_empty() {
+            return usage();
+        }
+        let mut failed = false;
+        println!("file\tbytes12\tbytes13\tratio\ttransactions\traw\tfirst\tsecond\troundtrip");
+        for path in &args.positional {
+            let run = || -> Result<(usize, usize, usize, [usize; 3], bool), wire::Error> {
+                let d12 = std::fs::read(path)
+                    .map_err(|e| wire::Error::new("io-error", e.to_string()))?;
+                let mut trace = Vec::new();
+                let d13 = predict::to13(&d12, false, Some(&mut trace))?;
+                let back = predict::to12(&d13, false)?;
+                Ok((d12.len(), d13.len(), trace.len(), predict::order_counts(&trace), back == d12))
+            };
+            match run() {
+                Ok((b12, b13, txs, [o0, o1, o2], same)) => {
+                    failed |= !same;
+                    println!(
+                        "{path}\t{b12}\t{b13}\t{:.4}\t{txs}\t{o0}\t{o1}\t{o2}\t{}",
+                        b13 as f64 / b12.max(1) as f64,
+                        if same { "identical" } else { "DIFFERS" }
+                    );
+                }
+                Err(e) => {
+                    failed = true;
+                    println!("{path}\t{}\t{}", e.code, e.detail);
+                }
+            }
+        }
+        return if failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    let to = match args.get("to") {
+        Some("12") => 12u8,
+        Some("13") => 13u8,
+        _ => return usage(),
+    };
+    let [input, output] = args.positional.as_slice() else {
+        return usage();
+    };
+    let data = match std::fs::read(input) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("rs-core-check transcode: {input}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let got = if to == 13 {
+        predict::to13(&data, args.get("stale").is_some(), None)
+    } else {
+        predict::to12(&data, false)
+    };
+    match got {
+        Ok(out) => {
+            if let Err(e) = std::fs::write(output, &out) {
+                eprintln!("rs-core-check transcode: {output}: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "{input}\t{}\t{output}\t{}\t{:.4}",
+                data.len(),
+                out.len(),
+                out.len() as f64 / data.len().max(1) as f64
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!("{input}\t{}\t{}", e.code, e.detail);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cmd_validate(args: &Args) -> ExitCode {
     let forced = match args.get("version").map(|v| v.parse::<u8>()) {
         None => None,
-        Some(Ok(v)) if (2..=12).contains(&v) => Some(v),
+        Some(Ok(v)) if (2..=wire::LATEST).contains(&v) => Some(v),
         Some(_) => return usage(),
     };
     if args.positional.is_empty() {

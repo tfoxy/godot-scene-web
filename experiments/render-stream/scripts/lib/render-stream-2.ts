@@ -24,7 +24,7 @@
 //
 // render-stream/3 (../../protocol/render-stream-3.md, G4e1), render-stream/4
 // (../../protocol/render-stream-4.md, G5w) and render-stream/5 (../../protocol/render-stream-5.md,
-// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12` parameter
+// G55w) are implemented IN THIS SAME FILE behind an explicit `version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13` parameter
 // on every exported entry point (splitRecords/decodeRecording/validateRecording/
 // resolveRecording), rather than forked render-stream-3.ts/-4.ts/-5.ts modules -- /3 is /2 plus
 // one draw command (add_msdf_texture_rect_region) and one sabotage kind (perturb-glyph), /4 is /3
@@ -991,6 +991,10 @@ export interface TransactionMeta {
   /** new at /5: present only when decoded at version 5. */
   shaders?: TransactionShader[];
   materials?: TransactionMaterial[];
+  /** new at /13 (W13a, render-stream-13.md "As built (W13a)"): on every transaction, right
+   * before `blocks`: the XXH64 of the reconstructed mesh_f32 || mesh_u8 || mm_f32, 16 lowercase
+   * hex digits. */
+  predict_check?: string;
   blocks: BlockDescriptor[];
 }
 
@@ -1073,6 +1077,11 @@ export const MAGIC_V11: Uint8Array = new Uint8Array([
 // (golden-12/; opt-in, never the default).
 export const MAGIC_V12: Uint8Array = new Uint8Array([
   0x47, 0x52, 0x53, 0x43, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+// render-stream-13.md "As built (W13a)": the GRSD magic (byte 3 'D' is 13), selected by
+// `version: 13` (golden-13/; opt-in, never the default).
+export const MAGIC_V13: Uint8Array = new Uint8Array([
+  0x47, 0x52, 0x53, 0x44, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
@@ -2327,7 +2336,7 @@ function intPair(value: unknown): value is [number, number] {
 function checkResourcesSchema(
   resources: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: resources ${detail}`,
@@ -2341,7 +2350,8 @@ function checkResourcesSchema(
     version === 9 ||
     version === 10 ||
     version === 11 ||
-    version === 12;
+    version === 12 ||
+    version === 13;
   const keys =
     version >= 11
       ? RESOURCES_KEYS_V11
@@ -2458,7 +2468,7 @@ function checkResourcesSchema(
 function checkSessionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -2466,7 +2476,10 @@ function checkSessionSchema(
   // render-stream-11.md "Session record": /11's one new session key (resources.mesh_dynamic) is
   // checked by checkResourcesSchema; here only the protocol string changes. /12 adds no session
   // key either (render-stream-12.md "Session record": only the protocol and the features).
-  const isV12 = version === 12;
+  // render-stream-13.md "As built (W13a)": /13 is /12 plus the predicted blocks (isV12 means
+  // "V12 or later").
+  const isV13 = version === 13;
+  const isV12 = version === 12 || isV13;
   // isV11 means "V11 or later".
   const isV11 = version === 11 || isV12;
   // isV10 means "V10 or later".
@@ -2511,7 +2524,9 @@ function checkSessionSchema(
     return err("session has the wrong top-level keys or order");
   if (skipDeclared && meta.unknown_item_policy !== "skip")
     return err('"unknown_item_policy" must be "skip" when present');
-  const expectedProtocol = isV12
+  const expectedProtocol = isV13
+    ? "render-stream/13"
+    : isV12
     ? "render-stream/12"
     : isV11
       ? "render-stream/11"
@@ -3347,7 +3362,7 @@ function checkParticlesEntrySchema(p: unknown): string | null {
 function checkTransactionSchema(
   meta: Record<string, unknown>,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
 ): string[] {
   const err = (detail: string) => [
     `meta-schema: record at offset ${offset}: ${detail}`,
@@ -3360,10 +3375,14 @@ function checkTransactionSchema(
     version === 9 ||
     version === 10 ||
     version === 11 ||
-    version === 12;
+    version === 12 ||
+    version === 13;
   // render-stream-12.md: the particles table, the emit list, add_particles and the optional
   // tenth block pt_f32.
-  const isV12 = version === 12;
+  // render-stream-13.md "As built (W13a)": /13 is /12 plus the predicted blocks (isV12 means
+  // "V12 or later").
+  const isV13 = version === 13;
+  const isV12 = version === 12 || isV13;
   // render-stream-11.md: dynamic mesh surfaces (mesh entry key u8, a null surface hash), the
   // eighth and ninth blocks mesh_u8 (u8) and mm_f32, and a patch's null "unsupported" (isV11
   // means "V11 or later").
@@ -3415,8 +3434,20 @@ function checkTransactionSchema(
       expectedKeys = keysWith(expectedKeys, anchor, "removed_particles");
     if (hasParticles) expectedKeys = keysWith(expectedKeys, anchor, "particles");
   }
+  // W13a (render-stream-13.md "As built (W13a)"): predict_check on every /13 transaction, right
+  // before "blocks".
+  if (isV13) {
+    const at = expectedKeys.indexOf("blocks");
+    expectedKeys = [
+      ...expectedKeys.slice(0, at),
+      "predict_check",
+      ...expectedKeys.slice(at),
+    ];
+  }
   if (!hasExactKeys(meta, expectedKeys))
     return err("transaction has the wrong top-level keys or order");
+  if (isV13 && !isLowerHex(meta.predict_check, 16))
+    return err('"predict_check" is not 16 lowercase hex digits');
   if (hasParticles) {
     if (!Array.isArray(meta.particles) || meta.particles.length === 0)
       return err(
@@ -4091,7 +4122,7 @@ function checkEndSchema(
 function checkMetaSchema(
   meta: unknown,
   offset: number,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
 ): string[] {
   if (!isPlainObject(meta))
     return [
@@ -4117,13 +4148,15 @@ export interface RawRecord {
 
 export function splitRecords(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
 ): {
   records: RawRecord[];
   errors: string[];
 } {
   const expectedMagic =
-    version === 12
+    version === 13
+      ? MAGIC_V13
+      : version === 12
       ? MAGIC_V12
       : version === 11
       ? MAGIC_V11
@@ -4244,7 +4277,7 @@ export function withRecordMemo<T>(
 
 export function decodeRecord(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const memo = recordMemo;
@@ -4263,7 +4296,7 @@ export function decodeRecord(
 
 function decodeRecordOnce(
   raw: RawRecord,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
   opts?: DecodeRecordOptions,
 ): DecodeRecordResult {
   const view = new DataView(
@@ -4419,7 +4452,7 @@ function decodeRecordOnce(
 
 export function decodeRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
 ): {
   schema:
     | "render-stream-2-decoded/1"
@@ -4432,25 +4465,36 @@ export function decodeRecording(
     | "render-stream-9-decoded/1"
     | "render-stream-10-decoded/1"
     | "render-stream-11-decoded/1"
-    | "render-stream-12-decoded/1";
+    | "render-stream-12-decoded/1"
+    | "render-stream-13-decoded/1";
   magic: string;
   records: DecodedRecord[];
 } {
   const split = splitRecords(data, version);
   if (split.errors.length > 0) throw new Error(split.errors[0]);
+  // render-stream-13.md "Forms and transcode": /13's decoded form is /12's over the reconstructed
+  // blocks, each record's sha256 still the /13 record's own.
+  const plain = version === 13 ? rs13PlainRecords(split.records) : split.records;
   const records: DecodedRecord[] = [];
-  for (const raw of split.records) {
-    const decoded = decodeRecord(raw, version);
+  for (let r = 0; r < split.records.length; r++) {
+    const raw = split.records[r];
+    const decoded = decodeRecord(plain[r], version);
     if (decoded.errors.length > 0 || decoded.record === undefined) {
       throw new Error(
         decoded.errors[0] ??
           `decodeRecord produced no record at offset ${raw.offset}`,
       );
     }
-    records.push(decoded.record);
+    records.push(
+      plain[r] === raw
+        ? decoded.record
+        : { ...decoded.record, sha256: hashBytes(raw.bytes) },
+    );
   }
   const magic =
-    version === 12
+    version === 13
+      ? MAGIC_V13
+      : version === 12
       ? MAGIC_V12
       : version === 11
       ? MAGIC_V11
@@ -4473,7 +4517,9 @@ export function decodeRecording(
                       : MAGIC;
   return {
     schema:
-      version === 12
+      version === 13
+        ? "render-stream-13-decoded/1"
+        : version === 12
         ? "render-stream-12-decoded/1"
         : version === 11
         ? "render-stream-11-decoded/1"
@@ -4497,6 +4543,1110 @@ export function decodeRecording(
     magic: toHex(magic),
     records,
   };
+}
+
+// --------------------------------------------------------------------------------------- render-stream/13 prediction
+//
+// W13a (render-stream-13.md "As built (W13a)": the wire). /13 is /12 plus the GRSD magic, the
+// transaction key `predict_check` and three predicted blocks: mesh_u8, mesh_f32 and mm_f32 carry
+// residuals against the stream's two previous transactions. The reference codec is
+// protocol/golden-13/make_golden.py (`to13`, `to12`, `code_blocks`, `History`, `advance`); every
+// function below mirrors the one of the same name there, byte for byte. Decoding un-predicts the
+// three blocks before any /12 rule runs, so the decoded form, the resolved form and every /12
+// validator rule see /12's blocks.
+
+const XXH_M64 = (1n << 64n) - 1n;
+const XXH_P1 = 0x9e3779b185ebca87n;
+const XXH_P2 = 0xc2b2ae3d27d4eb4fn;
+const XXH_P3 = 0x165667b19e3779f9n;
+const XXH_P4 = 0x85ebca77c2b2ae63n;
+const XXH_P5 = 0x27d4eb2f165667c5n;
+
+function xxhRotl(x: bigint, r: bigint): bigint {
+  return ((x << r) | (x >> (64n - r))) & XXH_M64;
+}
+
+function xxhRound(acc: bigint, lane: bigint): bigint {
+  acc = (acc + lane * XXH_P2) & XXH_M64;
+  return (xxhRotl(acc, 31n) * XXH_P1) & XXH_M64;
+}
+
+function xxhMerge(acc: bigint, val: bigint): bigint {
+  acc ^= xxhRound(0n, val);
+  return (acc * XXH_P1 + XXH_P4) & XXH_M64;
+}
+
+/** XXH64 (xxHash 64-bit) of `data` with `seed` (render-stream-13.md: seed 0). */
+export function xxh64(data: Uint8Array, seed = 0n): bigint {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const n = data.length;
+  let p = 0;
+  let h: bigint;
+  if (n >= 32) {
+    let v1 = (seed + XXH_P1 + XXH_P2) & XXH_M64;
+    let v2 = (seed + XXH_P2) & XXH_M64;
+    let v3 = seed & XXH_M64;
+    let v4 = (seed - XXH_P1) & XXH_M64;
+    while (p + 32 <= n) {
+      v1 = xxhRound(v1, view.getBigUint64(p, true));
+      v2 = xxhRound(v2, view.getBigUint64(p + 8, true));
+      v3 = xxhRound(v3, view.getBigUint64(p + 16, true));
+      v4 = xxhRound(v4, view.getBigUint64(p + 24, true));
+      p += 32;
+    }
+    h =
+      (xxhRotl(v1, 1n) +
+        xxhRotl(v2, 7n) +
+        xxhRotl(v3, 12n) +
+        xxhRotl(v4, 18n)) &
+      XXH_M64;
+    h = xxhMerge(h, v1);
+    h = xxhMerge(h, v2);
+    h = xxhMerge(h, v3);
+    h = xxhMerge(h, v4);
+  } else {
+    h = (seed + XXH_P5) & XXH_M64;
+  }
+  h = (h + BigInt(n)) & XXH_M64;
+  while (p + 8 <= n) {
+    h ^= xxhRound(0n, view.getBigUint64(p, true));
+    h = (xxhRotl(h, 27n) * XXH_P1 + XXH_P4) & XXH_M64;
+    p += 8;
+  }
+  if (p + 4 <= n) {
+    h ^= (BigInt(view.getUint32(p, true)) * XXH_P1) & XXH_M64;
+    h = (xxhRotl(h, 23n) * XXH_P2 + XXH_P3) & XXH_M64;
+    p += 4;
+  }
+  while (p < n) {
+    h ^= (BigInt(data[p]) * XXH_P5) & XXH_M64;
+    h = (xxhRotl(h, 11n) * XXH_P1) & XXH_M64;
+    p += 1;
+  }
+  h ^= h >> 33n;
+  h = (h * XXH_P2) & XXH_M64;
+  h ^= h >> 29n;
+  h = (h * XXH_P3) & XXH_M64;
+  h ^= h >> 32n;
+  return h;
+}
+
+/** xxh64(data) as 16 lowercase hex digits (big-endian, `format!("{:016x}")`). */
+export function xxh64Hex(data: Uint8Array): string {
+  return xxh64(data).toString(16).padStart(16, "0");
+}
+
+// --- word arithmetic (render-stream-13.md "Units and the predictor") ---------------------------
+
+function rs13Ordered(u: number): number {
+  return u < 0x80000000 ? (u ^ 0x80000000) >>> 0 : ~u >>> 0;
+}
+
+function rs13Unordered(o: number): number {
+  return o >= 0x80000000 ? (o ^ 0x80000000) >>> 0 : ~o >>> 0;
+}
+
+/** zz(d) on d mod 2^32 read as a signed 32-bit integer (`d` any exact integer). */
+function rs13Zz(d: number): number {
+  const s = d | 0;
+  return ((s << 1) ^ (s >> 31)) >>> 0;
+}
+
+function rs13Unzz(u: number): number {
+  return ((u >>> 1) ^ -(u & 1)) >>> 0;
+}
+
+function rs13Word(b: Uint8Array, i: number): number {
+  return (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0;
+}
+
+function rs13PutWord(b: Uint8Array, i: number, w: number): void {
+  b[i] = w & 0xff;
+  b[i + 1] = (w >>> 8) & 0xff;
+  b[i + 2] = (w >>> 16) & 0xff;
+  b[i + 3] = (w >>> 24) & 0xff;
+}
+
+/** Residual words of one float unit: raw (no base), first order, or second order. */
+function rs13PredictWords(
+  cur: Uint8Array,
+  base: Uint8Array | null,
+  prev: Uint8Array | null,
+): Uint8Array {
+  if (base === null) return cur;
+  const out = new Uint8Array(cur.length);
+  for (let i = 0; i + 4 <= cur.length; i += 4) {
+    const x = rs13Ordered(rs13Word(cur, i));
+    const y = rs13Ordered(rs13Word(base, i));
+    const r =
+      prev === null
+        ? rs13Zz(x - y)
+        : rs13Zz(x - 2 * y + rs13Ordered(rs13Word(prev, i)));
+    rs13PutWord(out, i, r);
+  }
+  return out;
+}
+
+function rs13UnpredictWords(
+  res: Uint8Array,
+  base: Uint8Array | null,
+  prev: Uint8Array | null,
+): Uint8Array {
+  if (base === null) return res;
+  const out = new Uint8Array(res.length);
+  for (let i = 0; i + 4 <= res.length; i += 4) {
+    const r = rs13Unzz(rs13Word(res, i));
+    const y = rs13Ordered(rs13Word(base, i));
+    const o =
+      prev === null ? r + y : r + 2 * y - rs13Ordered(rs13Word(prev, i));
+    rs13PutWord(out, i, rs13Unordered(o >>> 0));
+  }
+  return out;
+}
+
+function rs13XorBytes(a: Uint8Array, b: Uint8Array | null): Uint8Array {
+  if (b === null) return a;
+  const out = new Uint8Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] ^ b[i];
+  return out;
+}
+
+/** Byte-plane transpose of a word stream: byte j of word k goes to j * n + k. */
+function rs13Transpose4(b: Uint8Array): Uint8Array {
+  const n = b.length >>> 2;
+  const out = new Uint8Array(4 * n);
+  for (let k = 0; k < n; k++)
+    for (let j = 0; j < 4; j++) out[j * n + k] = b[4 * k + j];
+  return out;
+}
+
+function rs13Untranspose4(b: Uint8Array): Uint8Array {
+  const n = b.length >>> 2;
+  const out = new Uint8Array(4 * n);
+  for (let k = 0; k < n; k++)
+    for (let j = 0; j < 4; j++) out[4 * k + j] = b[j * n + k];
+  return out;
+}
+
+function rs13Concat(parts: readonly Uint8Array[]): Uint8Array {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+// --- body partition (render-stream-4.md "Mesh payload") ----------------------------------------
+
+/** The reference codec reads metas with Python semantics: an integer (a bool counts as 0/1),
+ * else the lookup "fails" (KeyError/TypeError there, null here). */
+function rs13Int(v: unknown): number | null {
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (typeof v === "number" && Number.isInteger(v)) return v;
+  return null;
+}
+
+/** Python truthiness of a JSON value. */
+function rs13Truthy(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > 0;
+  if (isPlainObject(v)) return Object.keys(v).length > 0;
+  return Boolean(v);
+}
+
+const RS13_SHAPE_KEYS = ["primitive", "format", "vertex_count", "index_count"];
+
+/** [geometry, positions, colours, UVs, skin, indices] byte sizes of a surface body, plus the
+ * vertex count and the per-vertex colour and UV sizes; null when a field is not an integer. */
+function rs13BodyParts(
+  s: unknown,
+): { n: number; col: number; uv: number; sizes: number[] } | null {
+  if (!isPlainObject(s)) return null;
+  const n = rs13Int(s.vertex_count);
+  const fmt = rs13Int(s.format);
+  const ic = rs13Int(s.index_count);
+  if (n === null || fmt === null || ic === null) return null;
+  const bit = (b: number) => Math.floor(fmt / 2 ** b) % 2 === 1;
+  const col = bit(3) ? 4 : 0;
+  const uv = bit(4) ? 8 : 0;
+  const skin = bit(10) && bit(11) ? n * (bit(27) ? 32 : 16) : 0;
+  const idx = ic === 0 ? 0 : ic * (n <= 65536 ? 2 : 4);
+  return { n, col, uv, sizes: [40, 8 * n, col * n, uv * n, skin, idx] };
+}
+
+function rs13SplitBody(
+  body: Uint8Array,
+  parts: { n: number; col: number; uv: number; sizes: number[] },
+): Uint8Array[] {
+  const { n, col, uv, sizes } = parts;
+  let p = 0;
+  const g = body.subarray(p, p + sizes[0]);
+  p += sizes[0];
+  const ps = body.subarray(p, p + sizes[1]);
+  p += sizes[1];
+  const stride = col + uv;
+  const cs = new Uint8Array(col * n);
+  const us = new Uint8Array(uv * n);
+  for (let k = 0; k < n; k++) {
+    cs.set(body.subarray(p + k * stride, p + k * stride + col), k * col);
+    us.set(body.subarray(p + k * stride + col, p + (k + 1) * stride), k * uv);
+  }
+  p += stride * n;
+  const sk = body.subarray(p, p + sizes[4]);
+  p += sizes[4];
+  const ix = body.subarray(p, p + sizes[5]);
+  return [g, ps, cs, us, sk, ix];
+}
+
+function rs13JoinBody(
+  parts: Uint8Array[],
+  shape: { n: number; col: number; uv: number },
+): Uint8Array {
+  const { n, col, uv } = shape;
+  const [g, ps, cs, us, sk, ix] = parts;
+  const attr = new Uint8Array((col + uv) * n);
+  for (let k = 0; k < n; k++) {
+    attr.set(cs.subarray(k * col, (k + 1) * col), k * (col + uv));
+    attr.set(us.subarray(k * uv, (k + 1) * uv), k * (col + uv) + col);
+  }
+  return rs13Concat([g, ps, attr, sk, ix]);
+}
+
+/** geometry, positions, UVs are word streams; colours, skin, indices bytes. */
+const RS13_WORD_STREAMS = [true, true, false, true, false, false];
+
+function rs13MmStride(e: Record<string, unknown>): number {
+  return (
+    8 + 4 * (rs13Truthy(e.colors) ? 1 : 0) + 4 * (rs13Truthy(e.custom) ? 1 : 0)
+  );
+}
+
+// --- history (render-stream-13.md "History") -----------------------------------------------------
+
+interface Rs13Bodies {
+  /** The shape (per surface primitive, format, vertex_count, index_count) as a comparable key. */
+  shape: string;
+  bodies: Uint8Array[];
+}
+
+interface Rs13Buffer {
+  instances: number;
+  stride: number;
+  bytes: Uint8Array;
+}
+
+/** R(T): the prediction state after a transaction. */
+interface Rs13State {
+  body: Map<unknown, Rs13Bodies>;
+  aabb: Map<unknown, Uint8Array>;
+  mm: Map<unknown, Rs13Buffer>;
+}
+
+function rs13EmptyState(): Rs13State {
+  return { body: new Map(), aabb: new Map(), mm: new Map() };
+}
+
+function rs13CopyState(r: Rs13State): Rs13State {
+  return { body: new Map(r.body), aabb: new Map(r.aabb), mm: new Map(r.mm) };
+}
+
+/** The meta's list under `key` (absent: empty); null when present but not an array. */
+function rs13List(
+  meta: Record<string, unknown>,
+  key: string,
+): unknown[] | null {
+  if (!(key in meta)) return [];
+  const v = meta[key];
+  return Array.isArray(v) ? v : null;
+}
+
+function rs13IsDynamic(e: Record<string, unknown>): boolean {
+  return (
+    e.status === "ok" &&
+    Array.isArray(e.surfaces) &&
+    e.surfaces.length > 0 &&
+    e.surfaces.every(
+      (s) => isPlainObject(s) && (s.hash === null || s.hash === undefined),
+    )
+  );
+}
+
+interface Rs13U8Surface {
+  surface: Record<string, unknown>;
+  parts: { n: number; col: number; uv: number; sizes: number[] };
+  offset: number;
+  bytes: number;
+}
+
+interface Rs13U8Entry {
+  id: unknown;
+  shape: string;
+  surfaces: Rs13U8Surface[];
+}
+
+/** The carried bodies of mesh_u8, or null when its /12 offset rule fails (pass-through). */
+function rs13U8Layout(
+  meta: Record<string, unknown>,
+  u8Len: number,
+): Rs13U8Entry[] | null {
+  const meshes = rs13List(meta, "meshes");
+  if (meshes === null) return null;
+  const out: Rs13U8Entry[] = [];
+  let run = 0;
+  for (const e of meshes) {
+    if (!isPlainObject(e)) return null;
+    if (e.u8 === null || e.u8 === undefined) continue;
+    if (rs13Int(e.u8) !== run) return null;
+    if (!Array.isArray(e.surfaces)) return null;
+    const surfaces: Rs13U8Surface[] = [];
+    const shape: unknown[] = [];
+    for (const s of e.surfaces) {
+      if (!isPlainObject(s) || !("payload_bytes" in s)) return null;
+      const n = rs13Int(s.payload_bytes);
+      const parts = rs13BodyParts(s);
+      if (n === null || parts === null) return null;
+      let len = 0;
+      for (const size of parts.sizes) len += size;
+      if (len !== n) return null;
+      surfaces.push({ surface: s, parts, offset: run, bytes: n });
+      run += n;
+    }
+    for (const s of e.surfaces as Record<string, unknown>[]) {
+      for (const k of RS13_SHAPE_KEYS) if (!(k in s)) return null;
+      shape.push(RS13_SHAPE_KEYS.map((k) => s[k]));
+    }
+    if (!("id" in e)) return null;
+    out.push({ id: e.id, shape: JSON.stringify(shape), surfaces });
+  }
+  return run === u8Len ? out : null;
+}
+
+/** [mesh id, float offset] of the AABB units, or null when mesh_f32's offset rule fails. */
+function rs13F32Layout(
+  meta: Record<string, unknown>,
+  nFloats: number,
+): Array<[unknown, number]> | null {
+  const meshes = rs13List(meta, "meshes");
+  if (meshes === null) return null;
+  const out: Array<[unknown, number]> = [];
+  let run = 0;
+  for (const e of meshes) {
+    if (!isPlainObject(e)) return null;
+    if (e.f === null || e.f === undefined) continue;
+    if (rs13Int(e.f) !== run) return null;
+    if (!("id" in e)) return null;
+    out.push([e.id, run]);
+    run += 6;
+  }
+  return run === nFloats ? out : null;
+}
+
+/** [multimesh id, instances, stride, float offset] of the buffer units, or null when mm_f32's
+ * offset rule fails. */
+function rs13MmLayout(
+  meta: Record<string, unknown>,
+  nFloats: number,
+): Array<[unknown, number, number, number]> | null {
+  const multimeshes = rs13List(meta, "multimeshes");
+  if (multimeshes === null) return null;
+  const out: Array<[unknown, number, number, number]> = [];
+  let run = 0;
+  for (const e of multimeshes) {
+    if (!isPlainObject(e)) return null;
+    if (e.aabb_f !== null && e.aabb_f !== undefined) {
+      if (rs13Int(e.aabb_f) !== run) return null;
+      run += 6;
+    }
+    if (e.buffer_f !== null && e.buffer_f !== undefined) {
+      if (rs13Int(e.buffer_f) !== run) return null;
+      if (!("colors" in e) || !("custom" in e) || !("id" in e)) return null;
+      const stride = rs13MmStride(e);
+      const instances = rs13Int(e.instances);
+      if (instances === null) return null;
+      out.push([e.id, instances, stride, run]);
+      run += instances * stride;
+    }
+  }
+  return run === nFloats ? out : null;
+}
+
+const RS13_EMPTY = new Uint8Array(0);
+
+/** R(T) from R(T-1) (empty for a full) and T's /12 blocks. */
+function rs13Advance(
+  prior: Rs13State,
+  meta: Record<string, unknown>,
+  full: boolean,
+  blocks12: Map<string, Uint8Array>,
+): Rs13State {
+  const r = full ? rs13EmptyState() : rs13CopyState(prior);
+  const u8 = blocks12.get("mesh_u8") ?? RS13_EMPTY;
+  const layout = rs13U8Layout(meta, u8.length);
+  const bodies = new Map<unknown, Rs13Bodies>();
+  if (layout !== null) {
+    for (const entry of layout)
+      bodies.set(entry.id, {
+        shape: entry.shape,
+        bodies: entry.surfaces.map((s) =>
+          u8.slice(s.offset, s.offset + s.bytes),
+        ),
+      });
+  }
+  const mf = blocks12.get("mesh_f32") ?? RS13_EMPTY;
+  for (const e of rs13List(meta, "meshes") ?? []) {
+    if (!isPlainObject(e)) continue;
+    const mid = e.id;
+    if (rs13IsDynamic(e)) {
+      if (e.u8 !== null && e.u8 !== undefined) {
+        const b = bodies.get(mid);
+        if (b !== undefined) r.body.set(mid, b);
+        else r.body.delete(mid);
+      }
+    } else {
+      r.body.delete(mid);
+    }
+    const f = rs13Int(e.f);
+    if (
+      e.f !== null &&
+      e.f !== undefined &&
+      f !== null &&
+      f >= 0 &&
+      4 * f + 24 <= mf.length
+    )
+      r.aabb.set(mid, mf.slice(4 * f, 4 * f + 24));
+    else r.aabb.delete(mid);
+  }
+  for (const mid of rs13List(meta, "removed_meshes") ?? []) {
+    r.body.delete(mid);
+    r.aabb.delete(mid);
+  }
+  const mm = blocks12.get("mm_f32") ?? RS13_EMPTY;
+  for (const e of rs13List(meta, "multimeshes") ?? []) {
+    if (!isPlainObject(e)) continue;
+    const mmid = e.id;
+    if (e.status !== "ok") {
+      r.mm.delete(mmid);
+    } else if (e.buffer_f !== null && e.buffer_f !== undefined) {
+      const stride = rs13MmStride(e);
+      const bufferF = rs13Int(e.buffer_f);
+      const instances = rs13Int(e.instances);
+      if (bufferF === null || instances === null) {
+        r.mm.delete(mmid);
+        continue;
+      }
+      const o = 4 * bufferF;
+      const n = 4 * instances * stride;
+      if (o >= 0 && n >= 0 && o + n <= mm.length)
+        r.mm.set(mmid, { instances, stride, bytes: mm.slice(o, o + n) });
+      else r.mm.delete(mmid);
+    }
+  }
+  for (const mmid of rs13List(meta, "removed_multimeshes") ?? [])
+    r.mm.delete(mmid);
+  return r;
+}
+
+/** One end's prediction history: H1 = R(T-1), H2 = R(T-2), reset by a full. */
+class Rs13History {
+  h1: Rs13State = rs13EmptyState();
+  h2: Rs13State = rs13EmptyState();
+
+  /** (H1, H2) to predict T from. stale (encoder sabotage predict-stale): predict from H2 as if it
+   * were H1, first order. noReset (decoder sabotage no-predict-reset): a full predicts like a
+   * patch. */
+  refs(
+    meta: Record<string, unknown>,
+    opts: { stale?: boolean; noReset?: boolean } = {},
+  ): [Rs13State, Rs13State] {
+    if (meta.encoding === "full" && !opts.noReset)
+      return [rs13EmptyState(), rs13EmptyState()];
+    if (opts.stale) return [this.h2, rs13EmptyState()];
+    return [this.h1, this.h2];
+  }
+
+  accept(
+    meta: Record<string, unknown>,
+    blocks12: Map<string, Uint8Array>,
+    opts: { noReset?: boolean } = {},
+  ): void {
+    const full = meta.encoding === "full" && !opts.noReset;
+    const next = rs13Advance(
+      full ? rs13EmptyState() : this.h1,
+      meta,
+      full,
+      blocks12,
+    );
+    this.h2 = full ? rs13EmptyState() : this.h1;
+    this.h1 = next;
+  }
+}
+
+/** One predicted unit of a transaction (golden-13 index.json "predict_trace"). */
+export interface Rs13TraceUnit {
+  block: "mesh_u8" | "mesh_f32" | "mm_f32";
+  id: unknown;
+  /** 0 raw, 1 first order, 2 second order. */
+  order: 0 | 1 | 2;
+}
+
+function rs13Order(base: unknown, prev: unknown): 0 | 1 | 2 {
+  return base === null ? 0 : prev === null ? 1 : 2;
+}
+
+function rs13BodyRefs(
+  h1: Rs13State,
+  h2: Rs13State,
+  mid: unknown,
+  shape: string,
+): [Uint8Array[] | null, Uint8Array[] | null] {
+  const b = h1.body.get(mid);
+  if (b === undefined || b.shape !== shape) return [null, null];
+  const p = h2.body.get(mid);
+  if (p === undefined || p.shape !== shape) return [b.bodies, null];
+  return [b.bodies, p.bodies];
+}
+
+function rs13AabbRefs(
+  h1: Rs13State,
+  h2: Rs13State,
+  mid: unknown,
+): [Uint8Array | null, Uint8Array | null] {
+  const b = h1.aabb.get(mid);
+  if (b === undefined) return [null, null];
+  return [b, h2.aabb.get(mid) ?? null];
+}
+
+function rs13MmRefs(
+  h1: Rs13State,
+  h2: Rs13State,
+  mmid: unknown,
+  instances: number,
+  stride: number,
+): [Uint8Array | null, Uint8Array | null] {
+  const b = h1.mm.get(mmid);
+  if (b === undefined || b.instances !== instances || b.stride !== stride)
+    return [null, null];
+  const p = h2.mm.get(mmid);
+  if (p === undefined || p.instances !== instances || p.stride !== stride)
+    return [b.bytes, null];
+  return [b.bytes, p.bytes];
+}
+
+/** Predict (/12 -> /13) or un-predict (/13 -> /12) the three blocks of one transaction. */
+function rs13CodeBlocks(
+  meta: Record<string, unknown>,
+  blocks: Map<string, Uint8Array>,
+  h1: Rs13State,
+  h2: Rs13State,
+  inverse: boolean,
+  trace?: Rs13TraceUnit[],
+): Map<string, Uint8Array> {
+  const out = new Map(blocks);
+  // mesh_u8
+  const u8 = blocks.get("mesh_u8");
+  const layout = u8 !== undefined ? rs13U8Layout(meta, u8.length) : null;
+  if (u8 !== undefined && layout !== null) {
+    const surfaces: Array<{
+      id: unknown;
+      shape: string;
+      k: number;
+      s: Rs13U8Surface;
+    }> = [];
+    for (const entry of layout)
+      for (let k = 0; k < entry.surfaces.length; k++)
+        surfaces.push({
+          id: entry.id,
+          shape: entry.shape,
+          k,
+          s: entry.surfaces[k],
+        });
+    if (!inverse) {
+      const streams: Uint8Array[][] = [[], [], [], [], [], []];
+      for (const { id, shape, k, s } of surfaces) {
+        const [base, prev] = rs13BodyRefs(h1, h2, id, shape);
+        const cur = rs13SplitBody(
+          u8.subarray(s.offset, s.offset + s.bytes),
+          s.parts,
+        );
+        const bp = base !== null ? rs13SplitBody(base[k], s.parts) : null;
+        const pp = prev !== null ? rs13SplitBody(prev[k], s.parts) : null;
+        for (let i = 0; i < 6; i++) {
+          const b = bp ? bp[i] : null;
+          streams[i].push(
+            RS13_WORD_STREAMS[i]
+              ? rs13PredictWords(cur[i], b, pp ? pp[i] : null)
+              : rs13XorBytes(cur[i], b),
+          );
+        }
+        if (trace && k === 0)
+          trace.push({ block: "mesh_u8", id, order: rs13Order(base, prev) });
+      }
+      out.set(
+        "mesh_u8",
+        rs13Concat(
+          streams.map((st, i) =>
+            RS13_WORD_STREAMS[i]
+              ? rs13Transpose4(rs13Concat(st))
+              : rs13Concat(st),
+          ),
+        ),
+      );
+    } else {
+      const streams: Uint8Array[] = [];
+      let p = 0;
+      for (let i = 0; i < 6; i++) {
+        let total = 0;
+        for (const { s } of surfaces) total += s.parts.sizes[i];
+        const chunk = u8.subarray(p, p + total);
+        p += total;
+        streams.push(RS13_WORD_STREAMS[i] ? rs13Untranspose4(chunk) : chunk);
+      }
+      const at = [0, 0, 0, 0, 0, 0];
+      const bodies: Uint8Array[] = [];
+      for (const { id, shape, k, s } of surfaces) {
+        const [base, prev] = rs13BodyRefs(h1, h2, id, shape);
+        const bp = base !== null ? rs13SplitBody(base[k], s.parts) : null;
+        const pp = prev !== null ? rs13SplitBody(prev[k], s.parts) : null;
+        const parts: Uint8Array[] = [];
+        for (let i = 0; i < 6; i++) {
+          const size = s.parts.sizes[i];
+          const d = streams[i].subarray(at[i], at[i] + size);
+          at[i] += size;
+          const b = bp ? bp[i] : null;
+          parts.push(
+            RS13_WORD_STREAMS[i]
+              ? rs13UnpredictWords(d, b, pp ? pp[i] : null)
+              : rs13XorBytes(d, b),
+          );
+        }
+        bodies.push(rs13JoinBody(parts, s.parts));
+        if (trace && k === 0)
+          trace.push({ block: "mesh_u8", id, order: rs13Order(base, prev) });
+      }
+      out.set("mesh_u8", rs13Concat(bodies));
+    }
+  }
+  // mesh_f32
+  const mf = blocks.get("mesh_f32");
+  const fl = mf !== undefined ? rs13F32Layout(meta, mf.length >>> 2) : null;
+  if (mf !== undefined && fl !== null) {
+    const buf = inverse ? rs13Untranspose4(mf) : mf.slice();
+    for (const [mid, off] of fl) {
+      const [base, prev] = rs13AabbRefs(h1, h2, mid);
+      const seg = buf.slice(4 * off, 4 * off + 24);
+      buf.set(
+        inverse
+          ? rs13UnpredictWords(seg, base, prev)
+          : rs13PredictWords(seg, base, prev),
+        4 * off,
+      );
+      if (trace)
+        trace.push({
+          block: "mesh_f32",
+          id: mid,
+          order: rs13Order(base, prev),
+        });
+    }
+    out.set("mesh_f32", inverse ? buf : rs13Transpose4(buf));
+  }
+  // mm_f32
+  const mm = blocks.get("mm_f32");
+  const ml = mm !== undefined ? rs13MmLayout(meta, mm.length >>> 2) : null;
+  if (mm !== undefined && ml !== null) {
+    const buf = inverse ? rs13Untranspose4(mm) : mm.slice();
+    for (const [mmid, instances, stride, off] of ml) {
+      const [base, prev] = rs13MmRefs(h1, h2, mmid, instances, stride);
+      const n = 4 * instances * stride;
+      const seg = buf.slice(4 * off, 4 * off + n);
+      buf.set(
+        inverse
+          ? rs13UnpredictWords(seg, base, prev)
+          : rs13PredictWords(seg, base, prev),
+        4 * off,
+      );
+      if (trace)
+        trace.push({ block: "mm_f32", id: mmid, order: rs13Order(base, prev) });
+    }
+    out.set("mm_f32", inverse ? buf : rs13Transpose4(buf));
+  }
+  return out;
+}
+
+/** predict_check: XXH64 of /12's mesh_f32 || mesh_u8 || mm_f32, 16 lowercase hex digits. */
+function rs13CheckHex(blocks12: Map<string, Uint8Array>): string {
+  return xxh64Hex(
+    rs13Concat([
+      blocks12.get("mesh_f32") ?? RS13_EMPTY,
+      blocks12.get("mesh_u8") ?? RS13_EMPTY,
+      blocks12.get("mm_f32") ?? RS13_EMPTY,
+    ]),
+  );
+}
+
+// --- records ---------------------------------------------------------------------------------------
+
+interface Rs13ParsedRecord {
+  metaBytes: Uint8Array;
+  /** Each block's payload, in record order, and its byte position in the record. */
+  blocks: Array<{ bytes: Uint8Array; pos: number }>;
+}
+
+/** (meta bytes, blocks) of one framed record (render-stream-0.md); throws on a framing error. */
+function rs13ParseRecord(rec: Uint8Array): Rs13ParsedRecord {
+  const view = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
+  const metaLen = view.getUint32(4, true);
+  const metaBytes = rec.subarray(8, 8 + metaLen);
+  let p = 8 + metaLen;
+  const count = view.getUint32(p, true);
+  p += 4;
+  const blocks: Array<{ bytes: Uint8Array; pos: number }> = [];
+  for (let i = 0; i < count; i++) {
+    const n = view.getUint32(p, true);
+    p += 4;
+    blocks.push({ bytes: rec.subarray(p, p + n), pos: p });
+    p += n;
+  }
+  if (p !== rec.length) throw new Error("record-length: record framing");
+  return { metaBytes, blocks };
+}
+
+function rs13MakeRecord(
+  metaBytes: Uint8Array,
+  blocks: readonly Uint8Array[],
+): Uint8Array {
+  let n = 4 + metaBytes.length + 4;
+  for (const b of blocks) n += 4 + b.length;
+  const out = new Uint8Array(4 + n);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, n, true);
+  view.setUint32(4, metaBytes.length, true);
+  out.set(metaBytes, 8);
+  let p = 8 + metaBytes.length;
+  view.setUint32(p, blocks.length, true);
+  p += 4;
+  for (const b of blocks) {
+    view.setUint32(p, b.length, true);
+    out.set(b, p + 4);
+    p += 4 + b.length;
+  }
+  return out;
+}
+
+function rs13Binary(bytes: Uint8Array): string {
+  return latin1.decode(bytes);
+}
+
+function rs13Unbinary(text: string): Uint8Array {
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
+  return out;
+}
+
+const RS13_BLOCKS_MARK = ',"blocks":[';
+const RS13_CHECK_KEY = ',"predict_check":"';
+
+function rs13WithCheck(metaBytes: Uint8Array, hex16: string): Uint8Array {
+  const m = rs13Binary(metaBytes);
+  const i = m.lastIndexOf(RS13_BLOCKS_MARK);
+  if (i < 0)
+    throw new Error('meta-schema: a transaction meta without "blocks"');
+  return rs13Unbinary(
+    `${m.slice(0, i)}${RS13_CHECK_KEY}${hex16}"${m.slice(i)}`,
+  );
+}
+
+function rs13WithoutCheck(metaBytes: Uint8Array): [Uint8Array, string | null] {
+  const m = rs13Binary(metaBytes);
+  const i = m.lastIndexOf(RS13_BLOCKS_MARK);
+  const j = i - RS13_CHECK_KEY.length - 17;
+  if (
+    i < 0 ||
+    j < 0 ||
+    m.slice(j, j + RS13_CHECK_KEY.length) !== RS13_CHECK_KEY ||
+    m[i - 1] !== '"'
+  )
+    return [metaBytes, null];
+  return [
+    rs13Unbinary(m.slice(0, j) + m.slice(i)),
+    m.slice(j + RS13_CHECK_KEY.length, i - 1),
+  ];
+}
+
+function rs13SwapProtocol(
+  metaBytes: Uint8Array,
+  from: string,
+  to: string,
+): Uint8Array {
+  const m = rs13Binary(metaBytes);
+  const a = `"protocol":"${from}"`;
+  const at = m.indexOf(a);
+  if (at < 0)
+    throw new Error(`meta-schema: the session's protocol is not "${from}"`);
+  return rs13Unbinary(
+    `${m.slice(0, at)}"protocol":"${to}"${m.slice(at + a.length)}`,
+  );
+}
+
+/** The end record over transcoded records: stats.bytes_total moves by the size change, and
+ * stats.max_record_bytes becomes the output's own maximum when the input's was its own. */
+function rs13FixEnd(
+  metaBytes: Uint8Array,
+  out: readonly Uint8Array[],
+  seen: readonly Uint8Array[],
+): Uint8Array {
+  const meta = JSON.parse(rs13Binary(metaBytes)) as Record<string, unknown>;
+  const stats = meta.stats;
+  if (
+    isPlainObject(stats) &&
+    rs13Int(stats.bytes_total) !== null &&
+    typeof stats.bytes_total === "number"
+  ) {
+    let sumOut = 0;
+    let sumIn = 0;
+    let maxOut = 0;
+    let maxIn = 0;
+    for (const r of out) {
+      sumOut += r.length;
+      maxOut = Math.max(maxOut, r.length);
+    }
+    for (const r of seen) {
+      sumIn += r.length;
+      maxIn = Math.max(maxIn, r.length);
+    }
+    stats.bytes_total = stats.bytes_total + sumOut - sumIn;
+    const mx = stats.max_record_bytes;
+    if (
+      typeof mx === "number" &&
+      Number.isInteger(mx) &&
+      out.length > 0 &&
+      seen.length > 0 &&
+      mx === maxIn
+    )
+      stats.max_record_bytes = maxOut;
+  }
+  return rs13Unbinary(JSON.stringify(meta));
+}
+
+function rs13NamedBlocks(
+  meta: Record<string, unknown>,
+  blocks: ReadonlyArray<{ bytes: Uint8Array }>,
+): Map<string, Uint8Array> {
+  const named = new Map<string, Uint8Array>();
+  const descriptors = Array.isArray(meta.blocks) ? meta.blocks : [];
+  for (let i = 0; i < Math.min(descriptors.length, blocks.length); i++) {
+    const d = descriptors[i];
+    if (isPlainObject(d) && typeof d.name === "string")
+      named.set(d.name, blocks[i].bytes);
+  }
+  return named;
+}
+
+function rs13RebuildBlocks(
+  meta: Record<string, unknown>,
+  blocks: ReadonlyArray<{ bytes: Uint8Array }>,
+  named: Map<string, Uint8Array>,
+): Uint8Array[] {
+  const descriptors = Array.isArray(meta.blocks) ? meta.blocks : [];
+  return blocks.map((b, i) => {
+    const d = descriptors[i];
+    return isPlainObject(d) && typeof d.name === "string"
+      ? (named.get(d.name) ?? b.bytes)
+      : b.bytes;
+  });
+}
+
+function rs13FileRecords(data: Uint8Array, magic: Uint8Array): Uint8Array[] {
+  if (
+    data.length < magic.length ||
+    !bytesEqual(data.subarray(0, magic.length), magic)
+  )
+    throw new Error(
+      `bad-magic: expected ${toHex(magic)}, got ${toHex(data.subarray(0, Math.min(magic.length, data.length)))}`,
+    );
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const out: Uint8Array[] = [];
+  let p = magic.length;
+  while (p < data.length) {
+    if (p + 4 > data.length) throw new Error(`truncated: at ${p}`);
+    const n = view.getUint32(p, true);
+    if (p + 4 + n > data.length) throw new Error(`truncated: at ${p}`);
+    out.push(data.subarray(p, p + 4 + n));
+    p += 4 + n;
+  }
+  return out;
+}
+
+export interface EncodeRs13Options {
+  /** render-stream-13.md "Sabotages" predict-stale: every patch predicts from H2 as if it were
+   * H1, first order. */
+  stale?: boolean;
+  /** When given, receives each transaction's predicted units in order (golden-13 index.json
+   * "predict_trace"). */
+  trace?: Array<{ seq: unknown; units: Rs13TraceUnit[] }>;
+}
+
+/** render-stream-13.md "Forms and transcode": a /12 file transcoded to /13 (the encoder; golden-13
+ * make_golden.py `to13`). Throws on a malformed input (bad magic, framing, meta JSON). */
+export function encodeRs13(
+  data12: Uint8Array,
+  opts: EncodeRs13Options = {},
+): Uint8Array {
+  const hist = new Rs13History();
+  const out: Uint8Array[] = [];
+  const seen: Uint8Array[] = [];
+  for (const rec of rs13FileRecords(data12, MAGIC_V12)) {
+    const { metaBytes, blocks } = rs13ParseRecord(rec);
+    const meta = JSON.parse(rs13Binary(metaBytes)) as Record<string, unknown>;
+    if (meta.type === "session") {
+      out.push(
+        rs13MakeRecord(
+          rs13SwapProtocol(metaBytes, "render-stream/12", "render-stream/13"),
+          blocks.map((b) => b.bytes),
+        ),
+      );
+    } else if (meta.type === "transaction") {
+      const named = rs13NamedBlocks(meta, blocks);
+      const [h1, h2] = hist.refs(meta, { stale: opts.stale });
+      const units: Rs13TraceUnit[] | undefined = opts.trace ? [] : undefined;
+      const coded = rs13CodeBlocks(meta, named, h1, h2, false, units);
+      if (opts.trace && units) opts.trace.push({ seq: meta.seq, units });
+      out.push(
+        rs13MakeRecord(
+          rs13WithCheck(metaBytes, rs13CheckHex(named)),
+          rs13RebuildBlocks(meta, blocks, coded),
+        ),
+      );
+      hist.accept(meta, named);
+    } else if (meta.type === "end") {
+      out.push(
+        rs13MakeRecord(
+          rs13FixEnd(metaBytes, out, seen),
+          blocks.map((b) => b.bytes),
+        ),
+      );
+    } else {
+      out.push(rec);
+    }
+    seen.push(rec);
+  }
+  return rs13Concat([MAGIC_V13, ...out]);
+}
+
+export interface DecodeRs13Options {
+  /** render-stream-13.md "Sabotages" no-predict-reset: a full does not reset the history. */
+  noPredictReset?: boolean;
+}
+
+/** render-stream-13.md "Forms and transcode": a /13 file transcoded to /12 (golden-13
+ * make_golden.py `to12`). Throws `meta-schema: ...` on a missing or malformed predict_check and
+ * `predict-check: ... seq N ...` on a reconstruction mismatch; checks no /12 rule. */
+export function decodeRs13(
+  data13: Uint8Array,
+  opts: DecodeRs13Options = {},
+): Uint8Array {
+  const hist = new Rs13History();
+  const noReset = opts.noPredictReset === true;
+  const out: Uint8Array[] = [];
+  const seen: Uint8Array[] = [];
+  for (const rec of rs13FileRecords(data13, MAGIC_V13)) {
+    const { metaBytes, blocks } = rs13ParseRecord(rec);
+    const meta = JSON.parse(rs13Binary(metaBytes)) as Record<string, unknown>;
+    if (meta.type === "session") {
+      out.push(
+        rs13MakeRecord(
+          rs13SwapProtocol(metaBytes, "render-stream/13", "render-stream/12"),
+          blocks.map((b) => b.bytes),
+        ),
+      );
+    } else if (meta.type === "transaction") {
+      const [plain, check] = rs13WithoutCheck(metaBytes);
+      if (check === null || !/^[0-9a-f]*$/.test(check))
+        throw new Error(`meta-schema: seq ${String(meta.seq)}: predict_check`);
+      const named = rs13NamedBlocks(meta, blocks);
+      const [h1, h2] = hist.refs(meta, { noReset });
+      const decoded = rs13CodeBlocks(meta, named, h1, h2, true);
+      if (rs13CheckHex(decoded) !== check)
+        throw new Error(`predict-check: seq ${String(meta.seq)}`);
+      out.push(rs13MakeRecord(plain, rs13RebuildBlocks(meta, blocks, decoded)));
+      hist.accept(meta, decoded, { noReset });
+    } else if (meta.type === "end") {
+      out.push(
+        rs13MakeRecord(
+          rs13FixEnd(metaBytes, out, seen),
+          blocks.map((b) => b.bytes),
+        ),
+      );
+    } else {
+      out.push(rec);
+    }
+    seen.push(rec);
+  }
+  return rs13Concat([MAGIC_V12, ...out]);
+}
+
+/** A /13 decoder's un-prediction state over one stream (a file, or one live connection): feed
+ * every transaction record in stream order, after decodeRecord() accepted its framing and meta. */
+export interface Rs13Unpredictor {
+  /** The record with its three predicted blocks replaced by /12's (same offset and length; the
+   * meta, predict_check included, unchanged), or the `predict-check` error. Advances the history
+   * when the check holds. */
+  transaction(
+    raw: RawRecord,
+    meta: TransactionMeta,
+  ): { raw: RawRecord } | { error: string };
+}
+
+export function createRs13Unpredictor(
+  opts: DecodeRs13Options = {},
+): Rs13Unpredictor {
+  const hist = new Rs13History();
+  const noReset = opts.noPredictReset === true;
+  return {
+    transaction(raw, meta) {
+      const m = meta as unknown as Record<string, unknown>;
+      const { blocks } = rs13ParseRecord(raw.bytes);
+      const named = rs13NamedBlocks(m, blocks);
+      const [h1, h2] = hist.refs(m, { noReset });
+      const decoded = rs13CodeBlocks(m, named, h1, h2, true);
+      const check = rs13CheckHex(decoded);
+      if (check !== meta.predict_check)
+        return {
+          error: `predict-check: record at offset ${raw.offset}: seq ${meta.seq}: the reconstructed blocks hash to ${check}, predict_check is ${String(meta.predict_check)}`,
+        };
+      hist.accept(m, decoded, { noReset });
+      const bytes = raw.bytes.slice();
+      const descriptors = meta.blocks;
+      for (let i = 0; i < blocks.length; i++) {
+        const plain = decoded.get(descriptors[i]?.name);
+        if (plain !== undefined && plain !== blocks[i].bytes)
+          bytes.set(plain, blocks[i].pos);
+      }
+      return {
+        raw: { offset: raw.offset, byte_length: raw.byte_length, bytes },
+      };
+    },
+  };
+}
+
+/** Every record of a /13 recording with its transactions' blocks un-predicted (the /12 blocks in
+ * the /13 framing); throws the first decode, meta or predict-check error. */
+function rs13PlainRecords(records: RawRecord[]): RawRecord[] {
+  const unpredictor = createRs13Unpredictor();
+  return records.map((raw) => {
+    const decoded = decodeRecord(raw, 13, { recordDigest: "deferred" });
+    if (decoded.errors.length > 0 || decoded.record === undefined)
+      throw new Error(
+        decoded.errors[0] ??
+          `decodeRecord produced no record at offset ${raw.offset}`,
+      );
+    if (decoded.record.meta.type !== "transaction") return raw;
+    const result = unpredictor.transaction(raw, decoded.record.meta);
+    if ("error" in result) throw new Error(result.error);
+    return result.raw;
+  });
 }
 
 // --------------------------------------------------------------------------------------- texture payload
@@ -7224,6 +8374,12 @@ export interface RecordingValidatorOptions extends DecodeRecordOptions {
    * transaction brings, so golden-11's inline.rs11 fails resource-missing at seq 1.
    */
   sabotage?: "early-prune";
+  /**
+   * render-stream-13.md "Sabotages", /13 only: no-predict-reset -- a full does not reset the
+   * prediction history (it is un-predicted against H1 and H2 like a patch), so predict.rs13 fails
+   * predict-check at seq 7 and patch.rs13 at seq 16.
+   */
+  noPredictReset?: boolean;
 }
 
 /** render-stream-11.md "Definitions": names(S), every payload hash the resolved state names --
@@ -7839,7 +8995,7 @@ export function setValidatorPhaseTimer(
 
 export function createRecordingValidator(
   records: RawRecord[],
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
   options?: RecordingValidatorOptions,
 ): RecordingValidator {
   const recordDigest = options?.recordDigest ?? "inline";
@@ -7855,9 +9011,17 @@ export function createRecordingValidator(
   // resource-unnamed), dynamic mesh surfaces, the empty mm_f32 block, content-version-stable and
   // a patch's null "unsupported".
   // render-stream-12.md: the particles rules (isV11 means "V11 or later").
-  const isV12 = version === 12;
+  // render-stream-13.md "As built (W13a)": /13 is /12 plus the predicted blocks (isV12 means
+  // "V12 or later").
+  const isV13 = version === 13;
+  const isV12 = version === 12 || isV13;
   const isV11 = version === 11 || isV12;
   const earlyPrune = isV11 && options?.sabotage === "early-prune";
+  // W13a (render-stream-13.md "Decoding and check order"): a /13 transaction's blocks are
+  // un-predicted, and predict-check holds, before any /12 rule sees them.
+  const unpredictor = isV13
+    ? createRs13Unpredictor({ noPredictReset: options?.noPredictReset })
+    : null;
   // isV6 means "V6 or later" (render-stream-7.md: transactions/items/commands/invariants are
   // byte-identical to /6).
   const isV10 = version === 10 || isV11;
@@ -7988,10 +9152,32 @@ export function createRecordingValidator(
   const accept = (i: number): string[] | undefined => {
     const timer = validatorPhaseTimer;
     const decodeT0 = timer ? timer.now() : 0;
-    const decoded = decodeRecord(records[i], version, { recordDigest });
-    if (timer) timer.decode_us += timer.now() - decodeT0;
-    if (decoded.errors.length > 0 || decoded.record === undefined)
+    let decoded = decodeRecord(records[i], version, { recordDigest });
+    if (decoded.errors.length > 0 || decoded.record === undefined) {
+      if (timer) timer.decode_us += timer.now() - decodeT0;
       return [decoded.errors[0]];
+    }
+    // The record the /12 rules read: /13's with its predicted blocks reconstructed.
+    let raw = records[i];
+    if (unpredictor !== null && decoded.record.meta.type === "transaction") {
+      const result = unpredictor.transaction(raw, decoded.record.meta);
+      if ("error" in result) {
+        if (timer) timer.decode_us += timer.now() - decodeT0;
+        return [result.error];
+      }
+      raw = result.raw;
+      const plain = decodeRecord(raw, version, { recordDigest: "deferred" });
+      if (plain.errors.length > 0 || plain.record === undefined) {
+        if (timer) timer.decode_us += timer.now() - decodeT0;
+        return [plain.errors[0]];
+      }
+      decoded = {
+        record: { ...plain.record, sha256: decoded.record.sha256 },
+        errors: [],
+      };
+    }
+    if (timer) timer.decode_us += timer.now() - decodeT0;
+    if (decoded.record === undefined) return [decoded.errors[0]];
     if (recordDigest === "deferred") pendingDigest.add(i);
     else digests.set(i, decoded.record.sha256);
     const meta = decoded.record.meta;
@@ -8458,8 +9644,8 @@ export function createRecordingValidator(
         state,
         meta,
         decoded.record.blocks as number[][],
-        isV11 ? rawRecordBlock(records[i], 7) : undefined,
-        isV11 ? rawRecordBlock(records[i], 8) : undefined,
+        isV11 ? rawRecordBlock(raw, 7) : undefined,
+        isV11 ? rawRecordBlock(raw, 8) : undefined,
       );
       if (timer) timer.resolve_us += timer.now() - resolveT0;
       if (isV12) {
@@ -8862,7 +10048,7 @@ export function createRecordingValidator(
 /** Whole-file validation: `createRecordingValidator` over every record of `data`, in order. */
 export function validateRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
   options?: RecordingValidatorOptions,
 ): string[] {
   const split = splitRecords(data, version);
@@ -9164,7 +10350,8 @@ export interface ResolvedRecording {
     | "render-stream-9-resolved/1"
     | "render-stream-10-resolved/1"
     | "render-stream-11-resolved/1"
-    | "render-stream-12-resolved/1";
+    | "render-stream-12-resolved/1"
+    | "render-stream-13-resolved/1";
   session_id: string;
   stream_id: string;
   transactions: ResolvedTransaction[];
@@ -9173,16 +10360,18 @@ export interface ResolvedRecording {
 
 export function resolveRecording(
   data: Uint8Array,
-  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 = 6,
+  version: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 = 6,
 ): ResolvedRecording {
   const decoded = decodeRecording(data, version);
   const sessionRecord = decoded.records[0];
   if (sessionRecord.meta.type !== "session")
     throw new Error("missing-session: the first record is not a session");
   const sessionMeta = sessionRecord.meta;
-  const isV11 = version === 11 || version === 12;
-  // /11 reads each transaction's raw mesh_u8 block (body_sha256), which the decoded form drops.
+  const isV11 = version === 11 || version === 12 || version === 13;
+  // /11 reads each transaction's raw mesh_u8 block (body_sha256), which the decoded form drops;
+  // /13 its reconstructed /12 block.
   const raws = isV11 ? splitRecords(data, version).records : [];
+  const plainRaws = version === 13 ? rs13PlainRecords(raws) : raws;
 
   let state = emptyResolvedState();
   const transactions: ResolvedTransaction[] = [];
@@ -9205,8 +10394,8 @@ export function resolveRecording(
       state,
       meta,
       record.blocks as number[][],
-      isV11 ? rawRecordBlock(raws[i], 7) : undefined,
-      isV11 ? rawRecordBlock(raws[i], 8) : undefined,
+      isV11 ? rawRecordBlock(plainRaws[i], 7) : undefined,
+      isV11 ? rawRecordBlock(plainRaws[i], 8) : undefined,
     );
     // render-stream-11.md "Patched unsupported": a patch's null resolves to the base's list.
     if (meta.unsupported !== null) unsupported = meta.unsupported;
@@ -9249,7 +10438,9 @@ export function resolveRecording(
   }
   return {
     schema:
-      version === 12
+      version === 13
+        ? "render-stream-13-resolved/1"
+        : version === 12
         ? "render-stream-12-resolved/1"
         : version === 11
         ? "render-stream-11-resolved/1"

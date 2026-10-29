@@ -1,11 +1,26 @@
 # render-stream/13 wire format (design)
 
-Status: **design** (WB-D, 2026-10-29). Nothing is built. The measurements behind every number are
+Status: **staged.** W13a (2026-10-29) built the predicted blocks under /12's JSON meta at the wire
+level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built. The
+binary transaction syntax below is **deferred** ("Staging"). The rest of this text is WB-D's design
+(2026-10-29). The measurements behind every number are
 in [results/p3/wb-d.md](../results/p3/wb-d.md), made with `scripts/lib/wire-budget.py proto13`, a
 Python prototype of this encoding that decodes every lossless message back to the recording.
 /13 builds on render-stream/12 ([render-stream-12.md](render-stream-12.md)). Like /8 to /12 it is
 **opt-in** until its acceptance increment (W13z) passes. It is meant to be the format that freezes
 ("Versioning").
+
+## Staging
+
+The orchestrator staged /13 after WB-D (2026-10-29): **W13a builds prediction only, under /12's
+existing JSON meta.** Prediction is the measured win (combat 13,311 → 6,412 B a frame coded with
+the JSON meta, 97 % of the full design's 6,171). The binary schema-driven transaction body
+("Binary transaction record", "The syntax", `schema.json`, the `binary-*` error codes) is deferred
+to a later, separate increment that is judged on its own merit (about 240 B a combat frame coded,
+the host's JSON formatting, three more writers and readers) before /13 freezes. Until then the
+sections that describe it are design text, not wire: where they and "As built (W13a)" disagree,
+"As built (W13a)" is the wire. If the binary body lands, it is a further change to /13 made before
+the freeze (W13z), not a new version, since no /13 stream is offered by default until then.
 
 ## Why
 
@@ -79,7 +94,9 @@ magic        8 bytes   47 52 53 44 0D 0A 1A 0A   ("GRSD\r\n\x1a\n")
 then as /12. Byte 3 is the version as one uppercase hex digit: `D` is 13. A /13 decoder refuses
 `GRSC`, and a /12 decoder refuses `GRSD`, both with `bad-magic`. Recording files use `.rs13`.
 
-## Binary transaction record
+## Binary transaction record (deferred)
+
+*Deferred by "Staging": not built at W13a. A /13 transaction keeps /12's JSON meta and framing.*
 
 ```
 u32le   record_len          as /0: bytes after this field
@@ -101,7 +118,7 @@ param_f64, backbuffer_f32, mesh_u8, mm_f32, pt_f32):
 - A session, resource or end record keeps /0's framing with a JSON meta. A transaction with a JSON
   meta at /13 is `meta-schema`; a binary body in any other record is `meta-json`.
 
-### The syntax
+### The syntax (deferred)
 
 The body is the /12 transaction object, written field by field in /12's key order with no key
 names. Each field's type comes from the **schema table** (below), so no value carries a tag.
@@ -379,6 +396,11 @@ sweep.
 | **W13d** | native receiver and web export: capi at /13, the shim unchanged (the planner sees the /12 model) | `gate5-mesh`, `gate8-mm`, `gate8-pt`, g7-5 web | g5c and g5e `reference` exact at /13; `mm-reference`, the g8pt checks; the web half of each | `no-predict-reset` as W13c |
 | **W13z** | STS2 acceptance | none (one game launch) | /13, window 2, W11t coding, GSW and native viewers, menu, map and combat: warm coded bytes within 10 % of the projection above; replay dB equal to /12's on the same recording (transcoded); a /12 and a /13 viewer of one host with equal resolved states at every shared frame; zero `predict-check` errors; host callback and formation split no worse than /12 (load-gated) | none in game |
 
+**W13a as built** ("Staging", "As built (W13a)"): the predicted blocks under /12's JSON meta, with
+`predict_check` as a transaction key; no binary syntax, no `schema.json`, no `binary-*` vectors,
+no capi `VERSIONS` 13 (W13d's); results in [results/p3/w13a.md](../results/p3/w13a.md). W13b to
+W13z apply to that wire; the binary body, if it is built, is its own increment before W13z.
+
 Order: W13a → W13b → W13c and W13d in parallel → W13z. W13b wants HC5 first (the encode thread
 is where formation goes), but does not need it: /13 formation is cheaper than /12's either way.
 
@@ -404,6 +426,134 @@ is where formation goes), but does not need it: /13 formation is cheaper than /1
 - **One recording.** The numbers come from `pm7-a12-1`. The menu's and the map's churn is STS2's;
   another game with more moving items and fewer meshes gains less from prediction and relatively
   more from the structure.
+
+## As built (W13a): the wire
+
+This section is normative for /13 as built. `golden-13/make_golden.py` (`to13`, `to12`) is the
+reference codec; the C++ writer, the TypeScript library and rs-core match its bytes.
+
+**render-stream/13 is render-stream/12 plus exactly:**
+
+1. the magic `GRSD` (`47 52 53 44 0D 0A 1A 0A`), protocol string `render-stream/13`, subprotocol
+   `render-stream.13`, file extension `.rs13`. A /13 decoder refuses `GRSC`, a /12 decoder `GRSD`
+   (`bad-magic`);
+2. the transaction key **`predict_check`**, on every transaction (full and patch), right before
+   `"blocks"` (after `shader_time` when present): 16 lowercase hex digits, the XXH64 (seed 0) of
+   /12's `mesh_f32` ‖ `mesh_u8` ‖ `mm_f32` bytes (the reconstructed blocks, in that order, empty
+   blocks contributing nothing) written big-endian (`format!("{:016x}")`). Missing, not a string,
+   not exactly 16 characters of `[0-9a-f]`: `meta-schema`;
+3. **predicted blocks**: the payloads of `mesh_u8`, `mesh_f32` and `mm_f32` are the coded form
+   below. Their descriptors (`name`, `type`, `count`) and lengths are /12's: a coded block has its
+   plain block's length.
+
+Everything else is /12's byte for byte: framing, canonical JSON, every other key and block,
+resource and end records, the record sha256 (over the /13 record's own bytes). The session record
+differs from /12 only in `protocol`.
+
+### History
+
+R(T) is the prediction state after transaction T: per mesh id, its **bodies** (the surface shape
+list and each surface's body bytes) and its **AABB** (the six `mesh_f32` floats); per multimesh
+id, its **buffer** (`instances`, stride, bytes). H1 = R(T−1) and H2 = R(T−2), where T−1 and T−2
+are the stream's previous transaction records (file order; on a live connection, the previous
+transactions sent on it). Both ends compute R from /12's (reconstructed) blocks, never from coded
+bytes.
+
+- **Reset.** Before a full transaction H1 = H2 = ∅, so a full predicts nothing. After it,
+  H1 = R(full) and H2 = ∅, so the next patch predicts to first order.
+- **R(T)** starts from R(T−1) for a patch and from ∅ for a full, then, in this order:
+  - each entry of `meshes`: if it is `ok` and dynamic (at least one surface, every `hash` null), a
+    non-null `u8` sets its bodies from `mesh_u8` (only when the block's partition, below, holds)
+    and a null `u8` keeps them; any other entry drops them. A non-null `f` sets its AABB, a null
+    one drops it;
+  - `removed_meshes` drops both;
+  - each entry of `multimeshes`: status other than `ok` drops its buffer; `ok` with a non-null
+    `buffer_f` sets it; `ok` with null keeps it;
+  - `removed_multimeshes` drops it.
+
+  So a unit not carried by T keeps its value: a mesh that pauses at T−1 has H1 = H2 and is
+  predicted with zero motion. (WB-D's prototype used "the last two sent bodies" instead.)
+
+### Units and the predictor
+
+- A **body unit** is a carried mesh entry (non-null `u8`). It is predicted from H1 when H1 holds
+  bodies for that id with the same shape (surface count, and `primitive`, `format`, `vertex_count`,
+  `index_count` per surface), and to second order when H2 does too, with the same shape.
+- An **AABB unit** is a mesh entry with non-null `f`: predicted from H1's AABB for that id, second
+  order when H2 has one.
+- A **buffer unit** is a multimesh entry with non-null `buffer_f`: predicted from H1's buffer for
+  that id when it has the same `instances` and stride (8 + 4·`colors` + 4·`custom`), second order
+  when H2's does too.
+- Per 32-bit float word v, with b and p the same word at H1 and H2,
+  `ord(u) = u ^ 0x80000000` when u < 2^31, else `~u`, and `zz(d) = (d << 1) ^ (d >> 31)` on d as
+  signed 32-bit:
+
+  | unit | residual |
+  | ---- | -------- |
+  | second order | `zz(ord(v) − 2·ord(b) + ord(p))` mod 2^32 |
+  | first order | `zz(ord(v) − ord(b))` mod 2^32 |
+  | raw (no H1 match) | `v` itself |
+
+  Byte parts of a body (colours, skin, indices) are XORed with b's same part when the unit has an
+  H1 match, else sent as they are.
+- Everything else in the three blocks (multimesh `aabb_f` floats, entries without a match) is
+  sent as itself, in place.
+
+### Layout
+
+- **`mesh_u8`**: each carried surface body (entries in `meshes` order, surfaces in order) is split
+  into geometry (40 bytes), positions (8·n), colours (4·n if `format` bit 3), UVs (8·n if bit 4,
+  de-interleaved from the attribute section, which interleaves colour then UV per vertex), skin and
+  indices (render-stream-4.md "Mesh payload" sizes). The block is six streams, each the
+  concatenation over all carried surfaces: geometry words, position words, colour bytes, UV words,
+  skin bytes, index bytes. Each word stream (geometry, positions, UVs) is **byte-plane
+  transposed**: for n words, byte j of word k goes to j·n + k.
+- **`mesh_f32`** and **`mm_f32`**: residual words in place of predicted words, then the whole block
+  byte-plane transposed.
+- Fulls use the same layout (every unit raw), so one code path serves every transaction.
+- **Pass-through.** A block whose /12 offset rule does not hold is carried exactly as /12 carries
+  it (no prediction, no transpose), and /12's rule then reports it:
+  - `mesh_u8`: every non-null `u8` equals the running byte count over `meshes`, every surface of
+    those entries has `payload_bytes` equal to its shape's body size, and the total equals the
+    block length (`mesh-u8-offset`, `payload-size`);
+  - `mesh_f32`: every non-null `f` equals the running float count, six floats each, total the
+    block's count (`mesh-offset`);
+  - `mm_f32`: over `multimeshes` in order, a non-null `aabb_f` then a non-null `buffer_f` each
+    equal the running float count (6, then `instances`·stride), total the block's count
+    (`mm-offset`).
+
+### Decoding and check order
+
+framing → meta JSON and schema (/12's plus `predict_check`) → un-predict the three blocks against
+H1, H2 → **`predict-check`** (XXH64 of the reconstructed blocks against `predict_check`) → every
+/12 rule on the /12 meta and blocks, with its /12 code → R(T). A decoder that fails `predict-check`
+applies nothing; a live receiver resyncs with reason `coding` (W13c/W13d wire that).
+
+### Forms and transcode
+
+- The **decoded form** `render-stream-13-decoded/1` is /12's decoded form of the /13 file: metas
+  verbatim (so `predict_check` included), blocks the reconstructed /12 values, `offset`,
+  `byte_length` and `sha256` of the /13 records. The **resolved form** is
+  `render-stream-13-resolved/1`, /12's content unchanged.
+- **Transcode** /12 ↔ /13: the magic, the session's `protocol`, `predict_check` added or removed,
+  the three blocks coded or decoded; resource records unchanged; the end record's
+  `stats.bytes_total` moves by the size change and `stats.max_record_bytes` becomes the output's
+  own maximum when the input's was its own. /12 → /13 → /12 is byte-identical.
+
+### Sabotages
+
+- `predict-stale` (encoder): every patch predicts from H2 as if it were H1, first order. The
+  receiver fails `predict-check` on the first patch it touches (`golden-13/invalid/
+  predict-stale.rs13`, seq 2).
+- `no-predict-reset` (decoder): a full does not reset the history (it is un-predicted against H1
+  and H2 like a patch). The decoder fails `predict-check` at the first full after units exist
+  (`predict.rs13` seq 7, `patch.rs13` seq 16).
+
+### Not changed by W13a
+
+The hello, the live listener, file sinks, W11t's coding, the receivers' accept paths and the
+GDScript codec. /13 is selected only by version 13 in the codecs; no capture or receiver offers or
+emits it (W13b to W13d).
 
 ## Versioning
 
