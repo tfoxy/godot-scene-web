@@ -154,6 +154,11 @@
 #       `scale/off/sabotage-ignore-released/receiver`; gate8-w11-tool.ts native-plan), judged by
 #       lib/gate8-w11-native-checks.ts; gate 7's g7-8 GSW half replays them against native, and
 #       `coding/native` runs a native receiver live at /11 beside an uncoded one.
+#       W13b adds /13 (render-stream-13.md "As built (W13b)"): `scale13/capture` (/13 file sinks;
+#       sabotage `scale13/sabotage-perturb-vertex`), `mesh13/capture`, their /12 twins
+#       `scale13/v12` and `mesh13/v12`, and the coding legs at /13 under `coding13/` (Node viewers
+#       un-predicting each transaction; `live` with a /12 viewer beside them; host sabotage
+#       `sabotage-predict-stale`), judged by lib/gate8-w13-checks.ts.
 #   g8mm (PM1, render-stream-11.md "As built (PM1)": multimesh on /11, the capture side only,
 #       fixtures/gate8-mm; every leg under g8mm/): the fixture import and rs-core-check's build;
 #       then, in one private 640x360 gamescope (a headless host never runs frame_pre_draw, so a
@@ -1243,6 +1248,11 @@ run_g8pt() {
 	echo "run-gate8: g8pt headless-shim/capture (/12, headless, GRC_HEADLESS_PARTICLES=synthesize)"
 	run_capture_headless_g8pt "$OUT/g8pt/headless-shim/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
 		GRC_HEADLESS_PARTICLES=synthesize
+	# W13b: its /13 twin (w13-file-equiv-g8pt: transcoded to /12, it is headless-shim's recording).
+	echo "run-gate8: g8pt headless-shim13/capture (/13 twin of headless-shim)"
+	RECORDING_NAME=recording.rs13 PATCH_RECORDING_NAME=recording-patch.rs13 \
+		run_capture_headless_g8pt "$OUT/g8pt/headless-shim13/capture" "$G8PT_FIXTURE_DIR" \
+		GRC_STREAM_VERSION=13 GRC_HEADLESS_PARTICLES=synthesize
 	echo "run-gate8: g8pt headless-pump/capture (gate8-mm, /12, headless, GRC_PREDRAW_PUMP=1)"
 	# The gate8-mm legs run without GRC_ADOPT, exactly as g8mm's headless/capture (/11) does, so
 	# headless-nopump is that leg at /12: the byte-identity witness of a /12 stream without particles
@@ -1250,6 +1260,11 @@ run_g8pt() {
 	G8PT_ENV=()
 	run_capture_headless_g8pt "$OUT/g8pt/headless-pump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
 		GRC_PREDRAW_PUMP=1 RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump/capture/mm-frames.jsonl"
+	echo "run-gate8: g8pt headless-pump13/capture (/13 twin of headless-pump, W13b)"
+	RECORDING_NAME=recording.rs13 PATCH_RECORDING_NAME=recording-patch.rs13 \
+		run_capture_headless_g8pt "$OUT/g8pt/headless-pump13/capture" "$G8MM_FIXTURE_DIR" \
+		GRC_STREAM_VERSION=13 GRC_PREDRAW_PUMP=1 \
+		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump13/capture/mm-frames.jsonl"
 	echo "run-gate8: g8pt headless-nopump/capture (gate8-mm, /12, headless, no pump: pt-pump's control)"
 	run_capture_headless_g8pt "$OUT/g8pt/headless-nopump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
 		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-nopump/capture/mm-frames.jsonl"
@@ -1307,8 +1322,11 @@ run_capture_g8w11() {
 # (LiveCoding) and acking on arrival. Viewer specs are <offer>:<window> (an empty offer sends no
 # live_coding). Each viewer writes what it decoded; the host's tap holds what it formed.
 G8W11_CODING_QUIT=420
+# W13b: G8W11_CODING_ROOT (default coding) names the legs' directory under g8w11/ (coding13 for the
+# /13 legs), and a spec may name the viewer's version, <offer>:<window>:<version> (default 11).
 run_g8w11_coding_leg() {
-	local dir="$OUT/g8w11/coding/$1" waited=0 port="" k=0 spec pid
+	local dir="$OUT/g8w11/${G8W11_CODING_ROOT:-coding}/$1" waited=0 port="" k=0 spec pid
+	local v_offer v_window v_version
 	shift
 	local -a henv=() pids=()
 	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
@@ -1340,9 +1358,11 @@ run_g8w11_coding_leg() {
 		for spec in "$@"; do
 			k=$((k + 1))
 			mkdir -p "$dir/viewer-$k"
+			IFS=: read -r v_offer v_window v_version <<<"$spec"
 			(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
 				"$SCRIPT_DIR/lib/coding-receiver.ts" --url "ws://127.0.0.1:$port/render-stream" \
-				--out "$dir/viewer-$k" --offer "${spec%:*}" --window "${spec##*:}" --timeout-s 90) \
+				--out "$dir/viewer-$k" --offer "$v_offer" --window "$v_window" \
+				--version "${v_version:-11}" --timeout-s 90) \
 				>"$dir/viewer-$k/stdout.log" 2>&1 &
 			pids+=("$!")
 		done
@@ -1458,6 +1478,61 @@ run_g8w11_coding() {
 	# capture's encoder: rs_live_coding_tool, built with the capture.
 }
 
+# W13b (render-stream-13.md "As built (W13b)"): the coding legs at /13 (a /13 host; Node viewers at
+# /13 un-predicting every transaction), under g8w11/coding13/. `live` adds a /12 viewer of the same
+# host (w13-equiv: its stream against the /13 viewers' transcoded to /12); `sabotage-predict-stale`
+# is the host sabotage (one patch predicted from H2 as H1: the viewer fails predict-check and
+# resyncs, reason coding).
+run_g8w11_coding13() {
+	local G8W11_CODING_ROOT=coding13
+	local -a v13=(GRC_STREAM_VERSION=13)
+	echo "run-gate8: g8w11 coding13/live (/13: zstd-base x2 at window 2, off; a /12 zstd-base viewer)"
+	run_g8w11_coding_leg live "${v13[@]}" -- "zstd-base,zstd:2:13" "zstd-base,zstd:2:13" ":2:13" \
+		"zstd-base,zstd:2:12"
+	echo "run-gate8: g8w11 coding13/host-off (/13, GRC_LIVE_CODING=off)"
+	run_g8w11_coding_leg host-off "${v13[@]}" GRC_LIVE_CODING=off -- "zstd-base,zstd:2:13" "zstd:1:13"
+	echo "run-gate8: g8w11 coding13/sabotage-drop-base (/13, drop-message @120 under zstd-base)"
+	run_g8w11_coding_leg sabotage-drop-base "${v13[@]}" GRC_SABOTAGE=drop-message \
+		GRC_SABOTAGE_FRAME=120 -- "zstd-base,zstd:2:13"
+	echo "run-gate8: g8w11 coding13/sabotage-wrong-prefix (/13, coding-wrong-prefix @120)"
+	run_g8w11_coding_leg sabotage-wrong-prefix "${v13[@]}" GRC_SABOTAGE=coding-wrong-prefix \
+		GRC_SABOTAGE_FRAME=120 -- "zstd-base,zstd:2:13"
+	# Every mesh moves every frame here (RS_SCALE_MESH_UPDATES=187, all of them): with the default
+	# round robin a mesh moved at T did not move at T-1, so H2 = H1 for it and the stale coding
+	# equals the honest one (the host skips such patches); then the first patch from frame 120 on
+	# is the stale one.
+	echo "run-gate8: g8w11 coding13/sabotage-predict-stale (/13, predict-stale @120, every mesh every frame)"
+	run_g8w11_coding_leg sabotage-predict-stale "${v13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 RS_SCALE_MESH_UPDATES=187 -- "zstd-base,zstd:2:13"
+}
+
+# W13b: the /13 file sinks (GRC_STREAM_VERSION=13) on capture-scale and gate5-mesh, with /12 twins
+# of the same fixture, frames and env (w13-file-equiv: the /13 recordings transcoded to /12 are
+# the twins byte for byte, cmp-rec.ts), and perturb-vertex at /13 (dyn-wire still catches it on
+# the transcoded recording).
+run_g8w11_v13() {
+	RECORDING_NAME=recording.rs13
+	PATCH_RECORDING_NAME=recording-patch.rs13
+	echo "run-gate8: g8w11 scale13/capture (capture-scale, /13, auto)"
+	run_capture_g8w11 "$OUT/g8w11/scale13/capture" "$G8W11_SCALE_DIR" "$G8W11_SCALE_QUIT" \
+		"${G8W11_SCALE_ENV[@]}" GRC_STREAM_VERSION=13
+	echo "run-gate8: g8w11 scale13/sabotage-perturb-vertex (capture, /13, perturb-vertex @$G8W11_SABOTAGE_FRAME)"
+	run_capture_g8w11 "$OUT/g8w11/scale13/sabotage-perturb-vertex/capture" "$G8W11_SCALE_DIR" \
+		"$G8W11_SCALE_QUIT" "${G8W11_SCALE_ENV[@]}" GRC_STREAM_VERSION=13 GRC_SABOTAGE=perturb-vertex \
+		GRC_SABOTAGE_FRAME="$G8W11_SABOTAGE_FRAME"
+	echo "run-gate8: g8w11 mesh13/capture (gate5-mesh, /13, auto)"
+	run_capture_g8w11 "$OUT/g8w11/mesh13/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size \
+		GRC_STREAM_VERSION=13
+	RECORDING_NAME=recording.rs12
+	PATCH_RECORDING_NAME=recording-patch.rs12
+	echo "run-gate8: g8w11 /12 twins (scale13/v12, mesh13/v12)"
+	run_capture_g8w11 "$OUT/g8w11/scale13/v12/capture" "$G8W11_SCALE_DIR" "$G8W11_SCALE_QUIT" \
+		"${G8W11_SCALE_ENV[@]}" GRC_STREAM_VERSION=12
+	run_capture_g8w11 "$OUT/g8w11/mesh13/v12/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size \
+		GRC_STREAM_VERSION=12
+	run_g8w11_coding13
+}
+
 # W11d: the native receiver's g8w11 legs (gate8-w11-tool.ts native-plan: the GSW legs' captures,
 # shot frames and sabotages), rendered in one private gamescope at each session's canvas size.
 run_g8w11_receiver() {
@@ -1532,6 +1607,7 @@ run_g8w11() {
 	echo "run-gate8: g8w11 mesh/capture (gate5-mesh, /11, auto)"
 	run_capture_g8w11 "$OUT/g8w11/mesh/capture" "$G8W11_MESH_DIR" "" GRC_ROOT_SIZE=enforce-min-size
 	run_g8w11_coding
+	run_g8w11_v13
 	RECORDING_NAME=recording.rs11
 	PATCH_RECORDING_NAME=recording-patch.rs11
 	# W11c: capture-scale under GRC_MESH_DYNAMIC=off (every pose a new inline hash: what a store

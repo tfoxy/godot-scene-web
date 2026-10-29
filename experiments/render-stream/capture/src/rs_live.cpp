@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "report.h"
+#include "rs13_predict.h"
 #include "rs2_codec.h"
 #include "rs2_diff.h"
 #include "rs_publish.h"
@@ -366,7 +367,8 @@ std::size_t stage_index(AckStage stage) { return static_cast<std::size_t>(stage)
 
 // The hello `protocol` string of a version (render-stream-N.md "Live transport").
 const char *protocol_string(ProtocolVersion version) {
-  return version == ProtocolVersion::V12   ? kProtocolV12
+  return version == ProtocolVersion::V13   ? kProtocolV13
+         : version == ProtocolVersion::V12 ? kProtocolV12
          : version == ProtocolVersion::V11 ? kProtocolV11
          : version == ProtocolVersion::V10 ? kProtocolV10
          : version == ProtocolVersion::V9  ? kProtocolV9
@@ -837,8 +839,7 @@ struct Hub::SharedTx {
 
 // HC5 (rs_live.h header, "Formation"): a connection's state on the formation side, touched only
 // by whichever thread runs the jobs (the main thread creates it at open, and clears `tap` only
-// after a sync, when no job is outstanding). W13b: the per-connection /13 predictor state goes
-// here, beside the coding prefix, and advances in job order like it.
+// after a sync, when no job is outstanding).
 struct Hub::FormState {
   std::uint32_t id = 0;  // the transport connection id
   std::FILE *tap = nullptr;
@@ -846,6 +847,11 @@ struct Hub::FormState {
   // W11t: the uncoded message of the last transaction formed on this connection (sent or
   // dropped): the next patch's coding prefix.
   std::shared_ptr<const std::vector<std::uint8_t>> last_tx;
+  // W13b (render-stream-13.md "As built (W13b)"): a /13 connection's predictor, H1 and H2 the
+  // prediction states after the last two transactions formed on it (sent or dropped), in job
+  // order, as the receiver accepts them. A full transaction resets it (rs13::Predictor::encode),
+  // so a resync needs nothing more. Unused below /13.
+  rs13::Predictor predictor;
 };
 
 // HC5: what a job adds to its connection's summary (`s`) and end stats (`stats`): the fields a
@@ -865,6 +871,12 @@ struct Hub::Counters {
   std::uint64_t record_bytes_total = 0;  // the records' message bytes (EndStats::bytes_total)
   std::uint64_t max_record_bytes = 0;
   std::uint64_t wrong_prefix_seq = 0;
+  std::uint64_t predict_formed = 0;  // W13b
+  std::uint64_t predict_shared = 0;
+  std::uint64_t predict_plain_bytes = 0;
+  std::uint64_t predict_bytes = 0;
+  std::uint64_t predict_ns = 0;
+  std::uint64_t predict_stale_seq = 0;
   std::vector<std::uint64_t> enqueue_us;  // Q3d enqueue_us samples, in send order
 };
 
@@ -909,6 +921,9 @@ struct Hub::Job {
   std::uint64_t inline_count = 0;
   bool error = false;  // message-too-large: the error text went out, nothing after it
   std::string error_detail;
+  // The error's reason: message-too-large, or (W13b) `protocol` for a /13 coding that failed,
+  // which encode_transaction's own output never does.
+  std::string error_reason = "message-too-large";
   bool tx_formed = false;
   std::uint64_t tx_bytes = 0;
   std::uint64_t diff_ns = 0;
@@ -928,6 +943,24 @@ struct Hub::CodedTx {
   std::shared_ptr<const std::vector<std::uint8_t>> coded;
 };
 
+// W13b (render-stream-13.md "As built (W13b)"): a /13 transaction coded in this frame callback.
+// Its predicted blocks are a function of the /12 transaction (SharedTx's key: base, target,
+// version, frame, the perturb flags) and the predictor's history before it (H1, H2: the memo key
+// gains T-2), and its meta's leading fields are re-stamped like SharedTx's. Another connection
+// with the same transaction and an equal history (rs13::same_history: the same states, or equal
+// ones) takes these bytes and `after` as its own predictor: lockstep viewers share the coding,
+// and a viewer whose history differs (a resync, a fold, a late join) codes its own until its
+// history is equal again.
+struct Hub::PredictedTx {
+  std::shared_ptr<const rs::Captured> base;  // null: a full transaction
+  std::shared_ptr<const rs::Captured> target;
+  TxMeta meta;  // the fields the coding was stamped with
+  bool full = false;
+  rs13::Predictor before;  // the history it was coded against (unused for a full)
+  rs13::Predictor after;   // the history after it
+  std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+};
+
 // HC5: one frame callback's formation memo (P3-SP, W11b, W11t), the job runner's. It holds
 // snapshots, so a batch end hands it back to the main thread to release.
 struct Hub::Memo {
@@ -939,6 +972,8 @@ struct Hub::Memo {
   // W11t: the callback's coded transactions, and each /11 record's plain-coded bytes by hash.
   std::vector<std::unique_ptr<CodedTx>> coded;
   std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> records_coded;
+  // W13b: the callback's /13 codings.
+  std::vector<std::unique_ptr<PredictedTx>> predicted;
 };
 
 // HC5: the encode thread. Jobs run strictly in submission order; take() waits until every job
@@ -1374,7 +1409,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
       // CG1: render-stream.10 -> /10 (render-stream-10.md "Live transport").
       // W11b: render-stream.11 -> /11 (render-stream-11.md "Live transport").
       // PM5: render-stream.12 -> /12 (render-stream-12.md).
-      c.version = event.subprotocol == kSubprotocolV12   ? ProtocolVersion::V12
+      // W13b: render-stream.13 -> /13 (render-stream-13.md "As built (W13b)").
+      c.version = event.subprotocol == kSubprotocolV13   ? ProtocolVersion::V13
+                  : event.subprotocol == kSubprotocolV12 ? ProtocolVersion::V12
                   : event.subprotocol == kSubprotocolV11 ? ProtocolVersion::V11
                   : event.subprotocol == kSubprotocolV10 ? ProtocolVersion::V10
                   : event.subprotocol == kSubprotocolV9  ? ProtocolVersion::V9
@@ -1934,6 +1971,78 @@ void Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &t
   }
 }
 
+std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
+    Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &plain) {
+  FormState &f = *job.form;
+  Counters &o = job.out;
+  const TxMeta &meta = job.meta;
+  const bool full = job.full;
+  const std::uint64_t t0 = monotonic_ns();
+  o.predict_plain_bytes += plain->size();
+  // predict-stale: from its frame, the first patch whose stale coding differs from the honest one
+  // (a patch with no predicted unit codes the same either way, and proves nothing).
+  const bool stale = !full && config_.predict_stale_frame != 0 && !predict_stale_done_ &&
+                     job.frame >= config_.predict_stale_frame;
+  if (!stale) {
+    for (const auto &p : memo_->predicted) {
+      if (p->full == full && p->base == job.tx_base && p->target == job.target &&
+          p->meta.version == meta.version && p->meta.frame == meta.frame &&
+          p->meta.perturb_instance == meta.perturb_instance &&
+          p->meta.perturb_seed == meta.perturb_seed &&
+          (full || rs13::same_history(p->before, f.predictor))) {
+        auto out = std::make_shared<std::vector<std::uint8_t>>();
+        if (restamp(*p->bytes, p->meta, meta, full, out.get())) {
+          f.predictor = p->after;
+          ++o.predict_shared;
+          o.predict_bytes += out->size();
+          o.predict_ns = saturating_add(o.predict_ns, monotonic_ns() - t0);
+          return out;
+        }
+      }
+    }
+  }
+  const rs13::Predictor before = f.predictor;  // shares H1 and H2: no copy of their bytes
+  auto out = std::make_shared<std::vector<std::uint8_t>>();
+  if (f.predictor.encode(*plain, out.get()) != rs13::Status::Ok) {
+    return nullptr;  // never for a transaction encode_transaction wrote
+  }
+  bool sabotaged = false;
+  if (stale) {
+    rs13::Predictor wrong_predictor = before;
+    wrong_predictor.predict_stale = true;
+    std::vector<std::uint8_t> wrong;
+    if (wrong_predictor.encode(*plain, &wrong) == rs13::Status::Ok && wrong != *out) {
+      *out = std::move(wrong);  // the history still advanced honestly (f.predictor)
+      sabotaged = true;
+      predict_stale_done_ = true;
+      o.predict_stale_seq = meta.seq;
+      job.lines.push_back(Line()
+                              .num("frame", job.frame)
+                              .num("t_us", job.now_ns / 1000)
+                              .str("event", "sabotage")
+                              .str("kind", "predict-stale")
+                              .num("seq", meta.seq)
+                              .num("base_seq", meta.base_seq)
+                              .take());
+    }
+  }
+  if (!sabotaged) {
+    auto p = std::make_unique<PredictedTx>();
+    p->base = job.tx_base;
+    p->target = job.target;
+    p->meta = meta;
+    p->full = full;
+    p->before = before;
+    p->after = f.predictor;
+    p->bytes = out;
+    memo_->predicted.push_back(std::move(p));
+  }
+  ++o.predict_formed;
+  o.predict_bytes += out->size();
+  o.predict_ns = saturating_add(o.predict_ns, monotonic_ns() - t0);
+  return out;
+}
+
 bool Hub::form_deliver(Job &job, const std::vector<std::uint8_t> &message, bool send,
                        const std::vector<std::uint8_t> *wire) {
   FormState &f = *job.form;
@@ -2091,6 +2200,19 @@ void Hub::run_job(Job &job) {
       memo_->txs.push_back(std::move(tx));
     }
   }
+  if (meta.version == ProtocolVersion::V13) {
+    // W13b: the /12 transaction just formed (encode_transaction writes /12's form at V13) coded
+    // against this connection's history; the coding prefix, the tap and the end stats are the
+    // /13 message's.
+    encoded = form_predicted(job, encoded);
+    if (encoded == nullptr) {
+      job.error = true;
+      job.error_detail = "transaction " + std::to_string(meta.seq) + " has no /13 coding";
+      job.error_reason = "protocol";
+      transport_->send_text(f.id, encode_error(job.error_reason, job.error_detail));
+      return;
+    }
+  }
   const std::uint64_t t2 = monotonic_ns();
   const std::vector<std::uint8_t> &bytes = *encoded;
   if (bytes.size() > job.max_message_bytes) {
@@ -2151,6 +2273,14 @@ void Hub::complete(Job &job) {
   if (o.wrong_prefix_seq != 0) {
     c.s.wrong_prefix_seq = o.wrong_prefix_seq;
   }
+  c.s.predict_formed += o.predict_formed;
+  c.s.predict_shared += o.predict_shared;
+  c.s.predict_plain_bytes += o.predict_plain_bytes;
+  c.s.predict_bytes += o.predict_bytes;
+  c.s.predict_ns = saturating_add(c.s.predict_ns, o.predict_ns);
+  if (o.predict_stale_seq != 0) {
+    c.s.predict_stale_seq = o.predict_stale_seq;
+  }
   c.stats.resource_records += o.resource_records;
   c.stats.resource_bytes += o.resource_bytes;
   c.stats.bytes_total += o.record_bytes_total;
@@ -2180,15 +2310,15 @@ void Hub::complete(Job &job) {
         --c.s.stale_sent;
       }
     }
-    c.s.error_sent = "message-too-large";
+    c.s.error_sent = job.error_reason;
     log_line(c, Line()
                     .num("frame", job.frame)
                     .num("t_us", job.now_ns / 1000)
                     .str("event", "error")
-                    .str("reason", "message-too-large")
+                    .str("reason", job.error_reason)
                     .str("detail", job.error_detail)
                     .take());
-    host_close(c, 1009, "message-too-large");
+    host_close(c, job.error_reason == "protocol" ? 1011 : 1009, job.error_reason);
     frame_ = frame_saved;
     return;
   }
@@ -2776,13 +2906,14 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       }
     }
     json.field_or_null("origin", s.origin);
-    if (s.version == 9 || s.version == 10 || s.version == 11 || s.version == 12) {
+    if (s.version == 9 || s.version == 10 || s.version == 11 || s.version == 12 ||
+        s.version == 13) {
       // render-stream-9.md "Hello": the /9 hello's delivery preferences, /9 to /11 connections
       // only (render-stream-10.md and -11.md: their hellos are /9's).
       json.field_or_null("texture_encodings", s.texture_encodings);
       json.field_or_null("gpu_formats", s.gpu_formats);
     }
-    if (s.version == 11 || s.version == 12) {
+    if (s.version == 11 || s.version == 12 || s.version == 13) {
       // W11t: the live coding (render-stream-11.md "As built (W11t)").
       json.key("live_coding").object_begin();
       if (s.has_live_coding) {
@@ -2801,6 +2932,21 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
         json.field("wrong_prefix_seq", static_cast<int64_t>(s.wrong_prefix_seq));
       } else {
         json.field_null("wrong_prefix_seq");
+      }
+      json.object_end();
+    }
+    if (s.version == 13) {
+      // W13b (render-stream-13.md "As built (W13b)"): the predicted blocks' coding.
+      json.key("predict").object_begin();
+      json.field("formed", static_cast<int64_t>(s.predict_formed));
+      json.field("shared", static_cast<int64_t>(s.predict_shared));
+      json.field("plain_bytes", static_cast<int64_t>(s.predict_plain_bytes));
+      json.field("bytes", static_cast<int64_t>(s.predict_bytes));
+      json.field("encode_us", static_cast<int64_t>(s.predict_ns / 1000));
+      if (s.predict_stale_seq != 0) {
+        json.field("stale_seq", static_cast<int64_t>(s.predict_stale_seq));
+      } else {
+        json.field_null("stale_seq");
       }
       json.object_end();
     }

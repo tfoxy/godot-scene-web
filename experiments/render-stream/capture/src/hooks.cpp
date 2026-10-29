@@ -5065,7 +5065,9 @@ bool hooks_plan(const Calibration &calib, HookPlan *plan) {
   // /11, which carries them too).
   const char *stream_version = std::getenv("GRC_STREAM_VERSION");
   // PM5: /12 installs /10's and /11's conditional hooks too, plus the 33 particles hooks.
-  const bool v12_wanted = stream_version != nullptr && std::strcmp(stream_version, "12") == 0;
+  // W13b: /13 is /12 with predicted blocks: the same hooks.
+  const bool v12_wanted = stream_version != nullptr && (std::strcmp(stream_version, "12") == 0 ||
+                                                        std::strcmp(stream_version, "13") == 0);
   const bool backbuffer_hooks_wanted =
       stream_version != nullptr &&
       (std::strcmp(stream_version, "10") == 0 || std::strcmp(stream_version, "11") == 0 ||

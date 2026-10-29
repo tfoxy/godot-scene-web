@@ -5,18 +5,29 @@
 // viewer of a leg stays in lockstep with the host's frames), and answers a `coding` error on a
 // transaction with `resync` (reason `coding`), as every receiver must.
 //
-//   tsx --conditions=development coding-receiver.ts --url ws://127.0.0.1:<port>/render-stream
-//     --out <dir> [--offer zstd-base,zstd|zstd|""] [--window 1|2] [--build <rs-core build dir>]
-//     [--timeout-s S]
+// W13b (render-stream-13.md "As built (W13b)"): --version 12 or 13 speaks that version's
+// subprotocol and hello instead. At /13 each decoded transaction is also un-predicted
+// (render-stream-2.ts createRs13Unpredictor: the three predicted blocks against this stream's
+// history, then predict-check), and a `predict-check` failure resyncs with reason `coding` too;
+// the patches that arrive before the full are dropped unacked, the history unchanged.
 //
-// Writes <dir>/decoded.rs11 (every message it decoded, in order: magic + session first, so an
-// honest leg's file is a /11 recording equal to the host's tap), <dir>/messages.jsonl (one line per
+//   tsx --conditions=development coding-receiver.ts --url ws://127.0.0.1:<port>/render-stream
+//     --out <dir> [--offer zstd-base,zstd|zstd|""] [--window 1|2] [--version 11|12|13]
+//     [--build <rs-core build dir>] [--timeout-s S]
+//
+// Writes <dir>/decoded.rs<version> (every message it decoded, in order: magic + session first, so
+// an honest leg's file is a recording equal to the host's tap), <dir>/messages.jsonl (one line per
 // message: index, wire and decoded bytes, kind, seq, outcome) and <dir>/coding-receiver.json
 // ({stream_id, transactions, codings: LiveCoding stats, errors, resyncs, end}). Exits 0 once the
 // end record arrived (1 on a close before it, a host error, a fatal coding error or the timeout).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  createRs13Unpredictor,
+  decodeRecord,
+  type TransactionMeta,
+} from "./render-stream-2";
 
 function arg(name: string, fallback?: string): string {
   const i = process.argv.indexOf(name);
@@ -32,6 +43,10 @@ const out = arg("--out");
 const offer = arg("--offer", "zstd-base,zstd");
 const window = Number(arg("--window", "2"));
 const timeoutS = Number(arg("--timeout-s", "120"));
+const version = Number(arg("--version", "11"));
+if (version !== 11 && version !== 12 && version !== 13)
+  throw new Error(`coding-receiver: --version ${version} (11, 12 or 13)`);
+const unpredictor = version === 13 ? createRs13Unpredictor() : null;
 const build = resolve(
   arg("--build", join(root, "artifacts", "render-stream", "rs-core", "latest")),
 );
@@ -76,7 +91,11 @@ const report = {
   stream_id: "",
   offer,
   window,
+  version,
   transactions: 0,
+  // W13b: transactions un-predicted (/13 only), and patches dropped while awaiting the full.
+  unpredicted: 0,
+  dropped_awaiting_full: 0,
   resource_records: 0,
   wire_bytes: 0,
   errors: [] as { index: number; seq: number; detail: string }[],
@@ -91,7 +110,7 @@ let finished = false;
 let awaitingFull = false;
 let index = 0;
 
-const ws = new WebSocket(url, ["render-stream.11"]);
+const ws = new WebSocket(url, [`render-stream.${version}`]);
 ws.binaryType = "arraybuffer";
 const finish = (code: number): void => {
   if (finished) return;
@@ -105,7 +124,7 @@ const finish = (code: number): void => {
     all.set(d, at);
     at += d.byteLength;
   }
-  writeFileSync(join(out, "decoded.rs11"), all);
+  writeFileSync(join(out, `decoded.rs${version}`), all);
   writeFileSync(
     join(out, "messages.jsonl"),
     lines.join("\n") + (lines.length ? "\n" : ""),
@@ -130,7 +149,7 @@ timer.unref();
 ws.addEventListener("open", () => {
   const hello: Record<string, unknown> = {
     type: "hello",
-    protocol: "render-stream/11",
+    protocol: `render-stream/${version}`,
     receiver: "coding-receiver",
     receiver_kind: "gsw-canvas",
     credit_stage: "submitted",
@@ -216,6 +235,42 @@ ws.addEventListener("message", (event: MessageEvent) => {
   const meta = recordMeta(bytes, 0);
   line.kind = meta.type;
   line.outcome = "decoded";
+  if (meta.type === "transaction" && unpredictor !== null) {
+    if (awaitingFull && meta.encoding !== "full") {
+      // W13b: a patch after a predict-check resync predicts from a history this viewer never
+      // accepted: dropped, never acked (its LiveCoding base chain is kept).
+      report.dropped_awaiting_full += 1;
+      line.outcome = "dropped";
+      lines.push(JSON.stringify(line));
+      return;
+    }
+    const raw = { offset: 0, byte_length: bytes.byteLength, bytes };
+    const rec = decodeRecord(raw, 13, { recordDigest: "deferred" });
+    const result =
+      rec.errors.length > 0 || rec.record === undefined
+        ? { error: rec.errors[0] ?? "no record" }
+        : unpredictor.transaction(raw, rec.record.meta as TransactionMeta);
+    if ("error" in result) {
+      line.outcome = "error";
+      line.error = result.error;
+      lines.push(JSON.stringify(line));
+      const seq = meta.seq as number;
+      report.errors.push({ index: i, seq, detail: result.error });
+      // render-stream-13.md "Decoding and check order": predict-check resyncs (reason coding).
+      ws.send(
+        JSON.stringify({
+          type: "resync",
+          stream_id: report.stream_id,
+          seq,
+          reason: "coding",
+        }),
+      );
+      report.resyncs.push(seq);
+      awaitingFull = true;
+      return;
+    }
+    report.unpredicted += 1;
+  }
   lines.push(JSON.stringify(line));
   if (meta.type === "resource") {
     report.resource_records += 1;

@@ -1,7 +1,8 @@
 # render-stream/13 wire format (design)
 
 Status: **staged.** W13a (2026-10-29) built the predicted blocks under /12's JSON meta at the wire
-level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built. The
+level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built.
+W13b (2026-10-29) made the capture emit it ("As built (W13b): capture"). The
 binary transaction syntax below is **deferred** ("Staging"). The rest of this text is WB-D's design
 (2026-10-29). The measurements behind every number are
 in [results/p3/wb-d.md](../results/p3/wb-d.md), made with `scripts/lib/wire-budget.py proto13`, a
@@ -554,6 +555,56 @@ applies nothing; a live receiver resyncs with reason `coding` (W13c/W13d wire th
 The hello, the live listener, file sinks, W11t's coding, the receivers' accept paths and the
 GDScript codec. /13 is selected only by version 13 in the codecs; no capture or receiver offers or
 emits it (W13b to W13d).
+
+## As built (W13b): capture
+
+W13b makes the capture emit /13 (results in [results/p3/w13b.md](../results/p3/w13b.md)). The wire
+is "As built (W13a)"'s, unchanged; this section says what produces it.
+
+- **Opt-in.** `GRC_STREAM_VERSION=13` (`rs_gate8_policy`): file sinks write `.rs13` (`GRSD`,
+  `render-stream/13`) and the listener offers `render-stream.13` first, then /12's list (`.12` to
+  `.6`, or `.12` to `.8` under a gate 8 policy). Nothing else offers `.13`. The snapshots are /12's
+  (every "/12 or later" cascade includes V13), so a /12 (or older) connection of a /13 host gets
+  exactly what a /12 host would send it.
+- **Formation.** A /13 transaction is the /12 transaction (`encode_transaction` writes /12's form at
+  V13) coded by a per-stream `rs13::Predictor`: on a live connection in `Hub::FormState`, advanced
+  in job order on HC5's encode thread (`Hub::form_predicted`), over every transaction formed on it,
+  sent or dropped (drop-message); on a file sink in the publisher's lane, advanced by
+  `write_transaction` in file order (on the writer thread under HC5's `set_former`). A full resets
+  the predictor by itself (`Predictor::encode`), so a resync or a late join needs nothing more.
+  W11t's coding codes the /13 message (its base prefix is the base's uncoded /13 message); the tap,
+  `max_message_bytes`, the end record's stats and the summary's byte counts are the /13 message's.
+- **Shared codings (the memo key).** A live callback memoizes each /13 coding keyed on the /12
+  transaction (P3-SP's key: base, target, version, frame, the perturb flags) and the predictor's
+  history before it, H1 = R(T−1) and H2 = R(T−2): the key gains T−2. Two histories match when they
+  are the same states or equal ones (`rs13::same_history`: every body, AABB and buffer the same
+  bytes; units shared since a common ancestor compare by pointer). A connection that matches takes
+  the bytes (its meta's leading fields re-stamped, as P3-SP's transactions are) and the coding's
+  resulting history, so lockstep viewers share every coding. A full matches on the /12 transaction
+  alone (it predicts nothing). A viewer whose history differs codes its own: after a resync or a
+  late join, its full and its first patch (H2 = ∅ there), after which R(T−1) and R(T−2) are equal
+  again (R is a function of the resolved state for every unit a transaction lists) and it shares
+  again. Content comparison runs only when the pointers differ, and stops at the first differing
+  unit.
+- **Sabotage `predict-stale`** (a listener sabotage, `GRC_SABOTAGE=predict-stale`, needs
+  `GRC_STREAM_VERSION=13`; `GRC_SABOTAGE_FRAME`, default 1): from the frame, the first /13 patch
+  whose stale coding (H2 used as H1, first order: W13a's encoder sabotage) differs from the honest
+  one is sent stale, once per host; the history advances honestly. The live log has a `sabotage`
+  line (`kind` `predict-stale`, its seq), the summary's `predict.stale_seq` the seq. Not memoized.
+- **Evidence.** `live-summary.json` gives a /13 connection `live_coding` (as /11 and /12) and a
+  `predict` object: `formed`, `shared` (codings taken from a lockstep connection), `plain_bytes` and
+  `bytes` (its transactions' /12 and /13 message bytes), `encode_us` (the coding time, also inside
+  `encode_us` of perf.json) and `stale_seq`. `evidence/result.json`'s `gate8.file_stream_version` is
+  13.
+- **The writer's cost.** `rs13::Predictor::encode` re-parses the meta it is given. Since W13b the
+  writer (not the reader) skips the keys it does not read without validating them, and reads numbers
+  with `from_chars`: about −23 % on capture-scale, the same bytes. It still costs more than the
+  design's projection (results/p3/w13b.md "Host cost").
+- **The Node viewer** (`scripts/lib/coding-receiver.ts --version 13`) un-predicts each transaction
+  after W11t's decode (`createRs13Unpredictor`), resyncs with reason `coding` on `predict-check`,
+  and drops the patches that arrive before the full unacked. It is W13b's receiver; GSW (W13c) and
+  the native and web receivers (W13d) are not changed, and nothing on the receiver side offers `.13`
+  yet.
 
 ## Versioning
 

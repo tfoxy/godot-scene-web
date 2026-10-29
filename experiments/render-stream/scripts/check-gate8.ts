@@ -28,6 +28,7 @@ import { type G8cgExpected, runG8cg } from "./lib/gate8-cg-checks";
 import { runG8w11 } from "./lib/gate8-w11-checks";
 import { type G8mmExpected, runG8mm } from "./lib/gate8-mm-checks";
 import { type G8ptExpected, runG8pt } from "./lib/gate8-pt-checks";
+import { fileEquiv } from "./lib/gate8-w13-checks";
 import { type G8cExpected, runG8c } from "./lib/gate8-ct-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { type G8kuExpected, runG8ku } from "./lib/gate8-basis-checks";
@@ -152,6 +153,17 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     ) as G8mmExpected;
     const g8pt = await runG8pt(out, expected, mmExpected);
     checks.push(...g8pt.checks);
+    // W13b: g8pt's /13 headless twins (lib/gate8-w13-checks.ts fileEquiv).
+    const w13 = await fileEquiv(
+      join(out, "g8pt"),
+      [
+        ["headless-shim13/capture", "headless-shim/capture"],
+        ["headless-pump13/capture", "headless-pump/capture"],
+      ],
+      "-g8pt",
+      "gate8-pt headless-shim (particles) and gate8-mm headless-pump (multimesh)",
+    );
+    checks.push(...w13.checks);
     report.g8pt = g8pt.report;
   }
   if (run.includes("g8f")) {

@@ -34,7 +34,10 @@ import type { ResourceLine } from "./gate2-checks";
 import { replayMeshLog } from "./gate5e-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
 import { runG8w11Gsw } from "./gate8-w11-gsw-checks";
-import { runG8w11Native, runG8w11NativeCoding } from "./gate8-w11-native-checks";
+import {
+  runG8w11Native,
+  runG8w11NativeCoding,
+} from "./gate8-w11-native-checks";
 import {
   check,
   type G8aCheck,
@@ -54,6 +57,7 @@ import {
 } from "./render-stream-2";
 import { expectedMeshBufferBytes } from "./render-stream-mesh";
 import { runG8w11Coding } from "./gate8-w11t-checks";
+import { runG8w13 } from "./gate8-w13-checks";
 
 export const HONEST_LEGS = [
   "scale/capture",
@@ -140,8 +144,11 @@ export interface DynamicTrace {
   items_patched: number[];
 }
 
-export function traceDynamic(data: Uint8Array): DynamicTrace {
-  const split = splitRecords(data, 11);
+export function traceDynamic(
+  data: Uint8Array,
+  version: 11 | 12 = 11,
+): DynamicTrace {
+  const split = splitRecords(data, version);
   const held = new Map<number, string[]>();
   const out: DynamicTrace = {
     txs: [],
@@ -151,7 +158,7 @@ export function traceDynamic(data: Uint8Array): DynamicTrace {
   };
   for (let i = 1; i < split.records.length; i++) {
     const raw = split.records[i];
-    const meta = decodeRecord(raw, 11).record?.meta as WireTx | undefined;
+    const meta = decodeRecord(raw, version).record?.meta as WireTx | undefined;
     if (!meta || meta.type !== "transaction") continue;
     const full = meta.encoding === "full";
     if (full) held.clear();
@@ -698,6 +705,8 @@ export async function runG8w11(
   }
   // W11t: the live coding (gate8-w11t-checks.ts).
   checks.push(...(await runG8w11Coding(g)));
+  // W13b: /13 file sinks, the coding legs at /13 and w13-equiv (lib/gate8-w13-checks.ts).
+  checks.push(...(await runG8w13(g)));
   // W11c: GSW's legs on these captures (lib/gate8-w11-gsw-checks.ts).
   checks.push(...(await runG8w11Gsw(g)));
   // W11d: the native receiver's legs (lib/gate8-w11-native-checks.ts).

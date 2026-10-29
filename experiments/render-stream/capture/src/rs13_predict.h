@@ -135,6 +135,13 @@ class Predictor {
   static std::shared_ptr<const PredictState> empty_state();
 };
 
+// W13b: whether two predictors code every transaction alike: their H1 and H2 are the same states
+// or equal ones (every body, AABB and buffer the same bytes; shared units compare by pointer). A
+// live host shares one /13 coding between connections only when this holds (render-stream-13.md
+// "As built (W13b)").
+bool same_state(const PredictState &a, const PredictState &b);
+bool same_history(const Predictor &a, const Predictor &b);
+
 // The /13 transaction writer: rs2::encode_transaction() of `transaction` (whose version is V13)
 // coded by `predictor`, which advances. Use one predictor per stream, in transaction order.
 std::vector<std::uint8_t> encode_transaction(const rs2::Transaction &transaction,

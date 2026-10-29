@@ -111,7 +111,7 @@ void test_v9_policy() {
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) &&
             p.file_version == ProtocolVersion::V9 && !p.any() && p.speaks_v8() && p.speaks_v9(),
         "GRC_STREAM_VERSION=9 is a /9 file sink without a policy (G8k9)");
-  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11 or 12") != std::string::npos,
+  check(!parse("7", nullptr, nullptr, nullptr, &p, &error) && error.find("6, 8, 9, 10, 11, 12 or 13") != std::string::npos,
         "GRC_STREAM_VERSION=7 is still invalid");
   check(parse("8", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v9(), "/8 does not speak /9");
   Gate8Policy policy;
@@ -163,6 +163,34 @@ void test_v12_policy() {
         "perturb-seed and drop-restart need /12");
 }
 
+// W13b (render-stream-13.md "As built (W13b)").
+void test_v13_policy() {
+  Gate8Policy p;
+  std::string error;
+  check(parse("13", nullptr, nullptr, nullptr, &p, &error) &&
+            p.file_version == ProtocolVersion::V13 && !p.any() && p.speaks_v12() &&
+            p.speaks_v13() && p.speaks_v11(),
+        "GRC_STREAM_VERSION=13 is a /13 file sink, speaking /12's tables");
+  check(parse("12", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v13(),
+        "/12 does not speak /13");
+  parse("13", nullptr, nullptr, nullptr, &p, &error);
+  auto offer = grc::rs::gate8_live_subprotocols(p);
+  check(offer.size() == 8 && offer[0] == "render-stream.13" && offer[1] == "render-stream.12" &&
+            offer[7] == "render-stream.6",
+        "/13 offers .13 first, then /12's list");
+  parse("13", "arm", nullptr, nullptr, &p, &error);
+  offer = grc::rs::gate8_live_subprotocols(p);
+  check(offer.size() == 6 && offer[0] == "render-stream.13" && offer[5] == "render-stream.8",
+        "/13 under a gate 8 policy offers .13 to .8");
+  for (const char *version : {static_cast<const char *>(nullptr), "6", "8", "11", "12"}) {
+    Gate8Policy other;
+    parse(version, nullptr, nullptr, nullptr, &other, &error);
+    for (const std::string &name : grc::rs::gate8_live_subprotocols(other)) {
+      check(name != "render-stream.13", "only GRC_STREAM_VERSION=13 offers .13");
+    }
+  }
+}
+
 // CG1 (render-stream-10.md "Capture policy", "Live transport").
 void test_v10_policy() {
   Gate8Policy p;
@@ -173,9 +201,9 @@ void test_v10_policy() {
         "GRC_STREAM_VERSION=10 is a /10 file sink without a policy, speaking /8 and /9's keys");
   check(parse("9", nullptr, nullptr, nullptr, &p, &error) && !p.speaks_v10(),
         "/9 does not speak /10");
-  check(!parse("13", nullptr, nullptr, nullptr, &p, &error) &&
-            error.find("6, 8, 9, 10, 11 or 12") != std::string::npos,
-        "GRC_STREAM_VERSION=13 is invalid");
+  check(!parse("14", nullptr, nullptr, nullptr, &p, &error) &&
+            error.find("6, 8, 9, 10, 11, 12 or 13") != std::string::npos,
+        "GRC_STREAM_VERSION=14 is invalid");
   check(!parse("A", nullptr, nullptr, nullptr, &p, &error), "GRC_STREAM_VERSION=A is invalid");
   Gate8Policy policy;
   parse("10", "arm", nullptr, nullptr, &policy, &error);
@@ -458,6 +486,7 @@ int main() {
   test_v9_policy();
   test_v10_policy();
   test_v12_policy();
+  test_v13_policy();
   test_v11_policy();
   test_delivery_seam();
   test_subprotocols();
