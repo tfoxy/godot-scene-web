@@ -10,6 +10,7 @@
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
+//!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
 //!   rs-core-check scissors <recording> [--store <dir>]
 //!   rs-core-check lowered <recording> --seqs 8,18,... [--store <dir>]
 //!   rs-core-check state-dump <recording> --seqs 8,18,... --out <dir>
@@ -71,6 +72,7 @@ fn usage() -> ExitCode {
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
          rs-core-check validate <recording>... [--version 2..8]\n  \
+         rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -91,7 +93,11 @@ impl Args {
             if let Some(name) = a.strip_prefix("--") {
                 if let Some((k, v)) = name.split_once('=') {
                     flags.push((k.to_string(), v.to_string()));
-                } else if name == "recover" || name == "stale" || name == "roundtrip" {
+                } else if name == "recover"
+                    || name == "stale"
+                    || name == "roundtrip"
+                    || name == "baseline"
+                {
                     flags.push((name.to_string(), "1".to_string()));
                 } else {
                     let v = raw.get(i + 1)?.clone();
@@ -129,6 +135,7 @@ fn main() -> ExitCode {
         "apply-bench" => cmd_apply_bench(&args),
         "profile" => cmd_profile(&args),
         "walk-diff" => cmd_walk_diff(&args),
+        "material-diff" => cmd_material_diff(&args),
         "scissors" => cmd_scissors(&args),
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
@@ -1043,6 +1050,254 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]`
+/// (MRA): replays each recording through two appliers in lockstep, the incremental material
+/// residency and binding refresh and their oracle, the full walk and full refresh before MRA
+/// (`MaterialResidency::full_walk`, `Applier::always_refresh_bindings`), and compares after every
+/// transaction: the needed (fetch) list in order, the material counters, the residency itself
+/// (shader codes, material bindings and parameters, instance parameters), the paint digest and
+/// the stats less their timings. Prints one line per recording (transactions, materials upserted,
+/// parameter sets, the mismatching seqs); exits non-zero on any mismatch.
+/// `--sabotage mra-skip-changed` drops one changed material per transaction from the incremental
+/// visit set, `mra-skip-binding` leaves a binding whose material changed unrefreshed: the run
+/// must then mismatch. Newly named shaders get a synthetic program (`synthetic_program`), so the
+/// binding refresh runs natively. The whole packed list's digest is reported, not judged: two
+/// appliers number their binding slots differently (a released slot goes back in `HashMap`
+/// order), which `--baseline` (the oracle on both sides) shows; the paint digest compares the
+/// draws with their bindings' values, whatever their slots.
+fn cmd_material_diff(args: &Args) -> ExitCode {
+    /// (seq, what differed) per mismatching transaction.
+    type Mismatches = Vec<(i64, &'static str)>;
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::programs::ProgramEntry;
+    use render_stream_core::apply::{Applier, Viewport};
+    if args.positional.is_empty() {
+        return usage();
+    }
+    let store = args.get("store").map(PathBuf::from);
+    let baseline = args.get("baseline").is_some();
+    let (skip_changed, skip_binding) = match args.get("sabotage") {
+        None => (false, false),
+        Some("mra-skip-changed") => (true, false),
+        Some("mra-skip-binding") => (false, true),
+        Some(other) => {
+            eprintln!("rs-core-check material-diff: unknown sabotage {other}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut failed = false;
+    for path in &args.positional {
+        let run = || -> Result<(usize, usize, usize, usize, Mismatches), wire::Error> {
+            let data =
+                std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
+            let version = wire::version_of_magic(&data)
+                .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+            let spans = wire::split_records(&data, version)?;
+            let mut v = Validator::new(
+                spans[0].bytes(&data),
+                spans[0].offset,
+                Options::new(version),
+            )?;
+            let s = v.session();
+            let size = s
+                .viewport
+                .presentation_size
+                .unwrap_or(s.viewport.logical_size);
+            let vp = Viewport {
+                width: size[0].max(1) as u32,
+                height: size[1].max(1) as u32,
+                clear: s.clear_color,
+                global_xform: geom::IDENTITY,
+                cull_mask: s.viewport.canvas_cull_mask as u32,
+                format: gsw_canvas_draw_list::Format::Rgb10A2,
+            };
+            let mut inc = Applier::new(vp);
+            inc.material_residency_mut().skip_changed = skip_changed;
+            inc.skip_binding_refresh = skip_binding;
+            if baseline {
+                inc.material_residency_mut().full_walk = true;
+                inc.always_refresh_bindings = true;
+            }
+            let mut oracle = Applier::new(vp);
+            oracle.material_residency_mut().full_walk = true;
+            oracle.always_refresh_bindings = true;
+            let mut payloads = PayloadStore::default();
+            let (mut need, mut more) = (Vec::new(), Vec::new());
+            let (mut n, mut param_sets, mut materials_upserted) = (0, 0, 0);
+            let mut programs = 1u32;
+            let mut slots_differ = 0usize;
+            let mut bad: Vec<(i64, &'static str)> = Vec::new();
+            for span in &spans[1..] {
+                match v.accept(span.bytes(&data), span.offset)? {
+                    Accepted::Resource { hash } => {
+                        if let Some(b) = v.inline_payload(&hash) {
+                            payloads.provide(b, &hash, version, true)?;
+                        }
+                    }
+                    Accepted::End => {}
+                    Accepted::Transaction => {
+                        payloads.accept_transaction(&v, span.bytes(&data))?;
+                        inc.prepare(v.state(), v.delta());
+                        oracle.prepare(v.state(), v.delta());
+                        // The adapter's part: every newly named shader gets a program. Natively
+                        // there is no transpiler, so it is a synthetic one whose uniforms and
+                        // samplers are its materials' parameters and its items' instance ones.
+                        for (sid, hash, _) in inc.pending_shaders(v.state()) {
+                            let info = synthetic_program(v.state(), sid, &hash, programs);
+                            programs += 1;
+                            inc.set_program(hash, ProgramEntry::Ready(info.clone()));
+                            oracle.set_program(hash, ProgramEntry::Ready(info));
+                        }
+                        inc.needed(v.state(), v.delta(), &payloads, &mut need);
+                        oracle.needed(v.state(), v.delta(), &payloads, &mut more);
+                        let seq = v.state().seq;
+                        if need != more {
+                            bad.push((seq, "needed"));
+                        }
+                        for h in &need {
+                            let dir = store.as_ref().ok_or_else(|| {
+                                wire::Error::new("resource-unavailable", "no --store")
+                            })?;
+                            let b = ["grt", "grm", "grp"]
+                                .iter()
+                                .find_map(|ext| {
+                                    std::fs::read(
+                                        dir.join("sha256").join(format!("{}.{ext}", h.to_hex())),
+                                    )
+                                    .ok()
+                                })
+                                .ok_or_else(|| {
+                                    wire::Error::new("resource-unavailable", h.to_hex())
+                                })?;
+                            payloads.provide(&b, h, version, true)?;
+                        }
+                        let mut a = inc.apply(v.state(), v.delta(), &payloads).clone();
+                        let mut b = oracle.apply(v.state(), v.delta(), &payloads).clone();
+                        n += 1;
+                        materials_upserted += v.delta().materials_upserted.len();
+                        param_sets += inc.material_counts.param_sets as usize;
+                        if inc.material_counts != oracle.material_counts {
+                            bad.push((seq, "material-counts"));
+                        }
+                        if !inc
+                            .material_residency()
+                            .same_residency(oracle.material_residency())
+                        {
+                            bad.push((seq, "residency"));
+                        }
+                        if inc.paint_digest() != oracle.paint_digest() {
+                            bad.push((seq, "paint"));
+                        }
+                        if list_digest(&inc.list) != list_digest(&oracle.list) {
+                            slots_differ += 1;
+                        }
+                        a.walk_us = 0.0;
+                        a.assemble_us = 0.0;
+                        b.walk_us = 0.0;
+                        b.assemble_us = 0.0;
+                        if format!("{a:?}") != format!("{b:?}") {
+                            bad.push((seq, "stats"));
+                        }
+                        inc.list.consumed();
+                        oracle.list.consumed();
+                    }
+                }
+            }
+            Ok((n, materials_upserted, param_sets, slots_differ, bad))
+        };
+        match run() {
+            Ok((n, upserted, param_sets, slots_differ, bad)) => {
+                let seqs: std::collections::BTreeSet<i64> = bad.iter().map(|b| b.0).collect();
+                let mut kinds: Vec<&str> = bad.iter().map(|b| b.1).collect();
+                kinds.sort_unstable();
+                kinds.dedup();
+                println!(
+                    "{path}: {n} transactions, {upserted} materials upserted, {param_sets} param sets, binding slot numbering differs in {slots_differ}; {} mismatching{}",
+                    seqs.len(),
+                    if bad.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (kinds {kinds:?}; seqs {:?})",
+                            seqs.iter().take(20).collect::<Vec<_>>()
+                        )
+                    }
+                );
+                failed |= !bad.is_empty();
+            }
+            Err(e) => {
+                println!("{path}: error {e}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// MRA (`material-diff`): a stand-in for the transpiler's program of shader `sid`: a uniform per
+/// scalar or 2-4 component parameter of the `ok` materials on it (instance uniforms from the
+/// instance parameters of the items drawing them), a sampler per texture parameter, and its own
+/// vertex stage for odd hashes (so its binding reads its canvas transform).
+fn synthetic_program(
+    state: &render_stream_core::state::ResolvedState,
+    sid: render_stream_core::state::Id,
+    hash: &render_stream_core::state::Hash,
+    program: u32,
+) -> render_stream_core::apply::programs::ProgramInfo {
+    use render_stream_core::state::{EntryStatus, Param, ParamValue, VariantType};
+    let mut seen = std::collections::BTreeSet::new();
+    let (mut uniforms, mut samplers) = (Vec::new(), Vec::new());
+    let mut add = |p: &Param, instance: bool| {
+        if !seen.insert(p.name.to_string()) {
+            return;
+        }
+        let (ty, n) = match (&p.value, p.ty) {
+            (ParamValue::Tex(_), _) => {
+                samplers.push(json!({"name": &*p.name, "filter": "linear", "repeat": false}));
+                return;
+            }
+            (ParamValue::Scalar(_), VariantType::Bool) => ("bool", 1),
+            (ParamValue::Scalar(_), VariantType::Int) => ("int", 1),
+            (ParamValue::Scalar(_), _) => ("float", 1),
+            (ParamValue::Flat(v), _) if (2..=4).contains(&v.len()) => {
+                (["vec2", "vec3", "vec4"][v.len() - 2], v.len())
+            }
+            _ => return,
+        };
+        uniforms.push(
+            json!({"name": &*p.name, "type": ty, "components": n, "instance": instance,
+            "integer": false, "unset": vec![0.0; n]}),
+        );
+    };
+    let mats: Vec<_> = state
+        .materials
+        .values()
+        .filter(|m| m.status == EntryStatus::Ok && m.shader == Some(sid))
+        .collect();
+    for m in &mats {
+        for p in &m.params {
+            add(p, false);
+        }
+    }
+    for it in state.items.values() {
+        if it.material.is_some_and(|m| mats.iter().any(|x| x.id == m)) {
+            for p in &it.instance_params {
+                add(p, true);
+            }
+        }
+    }
+    let meta = json!({"blend": "mix", "lightMode": "normal", "uniforms": uniforms,
+        "samplers": samplers, "screenTexture": null, "vertexStage": hash.0[0] & 1 == 1,
+        "time": false});
+    render_stream_core::apply::programs::ProgramInfo::from_meta_json(program, &meta.to_string())
+        .expect("a synthetic program's metadata parses")
 }
 
 /// A digest of a packed list's whole contents as they stand (its `Debug` form, streamed).

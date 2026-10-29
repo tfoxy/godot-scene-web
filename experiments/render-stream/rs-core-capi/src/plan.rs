@@ -771,6 +771,9 @@ pub struct Planner {
     pub sab: Sabotage,
     /// Turns every delta shortcut off (rs_applier.gd's O(state) walk), for the equivalence tests.
     pub full_scan: bool,
+    /// MRA sabotage `mra-skip-changed` (`rs-core-capi-check recordings`): per apply, the lowest-id
+    /// resident material an applied transaction upserted is dropped from the material walk.
+    pub mra_skip_changed: bool,
     pub rs_calls: i64,
     pub created_rids: i64,
     pub freed_by_apply: i64,
@@ -830,6 +833,26 @@ pub struct Planner {
     skipped_items: BTreeMap<Id, BTreeSet<Id>>,
     /// The undrawable texture ids texture_for() met since the last take (replay is `&self`).
     tex_skips: std::cell::RefCell<Vec<Id>>,
+    /// MRA: the material walk's own bookkeeping (`apply_materials` visits only what can send a
+    /// call unless `full_scan`).
+    mat_walk: MatWalk,
+}
+
+/// MRA: what `apply_materials` needs to visit only the materials that can send a call. A
+/// resident, named material sends nothing unless it is newly named, its entry changed, its
+/// shader's entry changed or its shader RID moved, a texture its `rid` parameters name changed
+/// RID, or it is visited every transaction anyway (a shader reading TIME, or a parameter named
+/// twice, whose full walk sets it each time).
+#[derive(Default)]
+struct MatWalk {
+    /// The named materials of the last apply.
+    prev_named: BTreeSet<Id>,
+    /// Materials to visit at every apply.
+    always: BTreeSet<Id>,
+    /// Materials with `rid` parameters -> the texture ids they name.
+    rid_texs: BTreeMap<Id, Vec<Id>>,
+    /// The planner flags a parameter's sent value depends on, as of the last apply.
+    flags: Option<(bool, bool, Sabotage)>,
 }
 
 fn bump(map: &mut HashMap<Id, i64>, id: Id, by: i64) {
@@ -1826,6 +1849,9 @@ impl Planner {
 
         // Shaders, then materials.
         let mut mat_rid_changed: BTreeSet<Id> = BTreeSet::new();
+        // MRA: the shaders whose RID appears, disappears or changes in apply_shaders.
+        let handles_before: BTreeMap<Id, u32> =
+            self.shaders.iter().map(|(id, s)| (*id, s.handle)).collect();
         self.apply_shaders(
             st,
             payloads,
@@ -1835,7 +1861,27 @@ impl Planner {
             &touched,
             &shaders_now,
         )?;
-        self.apply_materials(st, ops, &mut c, &mats_now, &mut mat_rid_changed);
+        let mut shaders_moved: BTreeSet<Id> = touched.shaders.clone();
+        for (id, h) in &handles_before {
+            if self.shaders.get(id).map(|s| s.handle) != Some(*h) {
+                shaders_moved.insert(*id);
+            }
+        }
+        for (id, s) in &self.shaders {
+            if handles_before.get(id) != Some(&s.handle) {
+                shaders_moved.insert(*id);
+            }
+        }
+        self.apply_materials(
+            st,
+            ops,
+            &mut c,
+            &mats_now,
+            &mut mat_rid_changed,
+            &touched,
+            &shaders_moved,
+            tex_rid_changed,
+        );
         // PM6a: emitters, once their process materials and draw-pass meshes are resident.
         pt_rid_changed.extend(self.apply_particles(st, payloads, ops, &mut c, &pt_now));
 
@@ -3184,6 +3230,57 @@ impl Planner {
         Ok(())
     }
 
+    /// MRA: the named materials `apply_materials` visits: all of them under `full_scan` (the walk
+    /// before MRA, the oracle), else only those that can send a call ([`MatWalk`]), ascending.
+    fn material_visits(
+        &mut self,
+        st: &ResolvedState,
+        named: &BTreeSet<Id>,
+        touched: &Touched,
+        shaders_moved: &BTreeSet<Id>,
+        tex_rid_changed: bool,
+    ) -> Vec<Id> {
+        let flags = (self.gl_compatibility, self.host_linear_colors, self.sab);
+        let w = &mut self.mat_walk;
+        let flags_moved = w.flags != Some(flags);
+        w.flags = Some(flags);
+        if self.full_scan || flags_moved {
+            return named.iter().copied().collect();
+        }
+        let mut v: BTreeSet<Id> = named.difference(&w.prev_named).copied().collect();
+        v.extend(touched.materials.iter().filter(|id| named.contains(id)));
+        v.extend(w.always.iter().filter(|id| named.contains(id)));
+        if !shaders_moved.is_empty() {
+            v.extend(named.iter().filter(|id| {
+                st.materials
+                    .get(id)
+                    .and_then(|m| m.shader)
+                    .is_some_and(|s| shaders_moved.contains(&s))
+            }));
+        }
+        if tex_rid_changed || !touched.textures.is_empty() {
+            for (id, texs) in &w.rid_texs {
+                if named.contains(id)
+                    && (tex_rid_changed || texs.iter().any(|t| touched.textures.contains(t)))
+                {
+                    v.insert(*id);
+                }
+            }
+        }
+        if self.mra_skip_changed {
+            let drop = touched
+                .materials
+                .iter()
+                .find(|id| v.contains(id) && self.materials.contains_key(id))
+                .copied();
+            if let Some(id) = drop {
+                v.remove(&id);
+            }
+        }
+        v.into_iter().collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn apply_materials(
         &mut self,
         st: &ResolvedState,
@@ -3191,8 +3288,21 @@ impl Planner {
         c: &mut Counters,
         named: &BTreeSet<Id>,
         rid_changed: &mut BTreeSet<Id>,
+        touched: &Touched,
+        shaders_moved: &BTreeSet<Id>,
+        tex_rid_changed: bool,
     ) {
-        let resident: Vec<Id> = self.materials.keys().copied().collect();
+        // An entry changes only through the applied transactions' upserts and removals.
+        let resident: Vec<Id> = if self.full_scan {
+            self.materials.keys().copied().collect()
+        } else {
+            touched
+                .materials
+                .iter()
+                .copied()
+                .filter(|id| self.materials.contains_key(id))
+                .collect()
+        };
         for id in resident {
             let gone = st
                 .materials
@@ -3207,8 +3317,14 @@ impl Planner {
             self.freed_by_apply += 1;
             c.materials_freed += 1;
             rid_changed.insert(id);
+            self.mat_walk.always.remove(&id);
+            self.mat_walk.rid_texs.remove(&id);
         }
-        for &id in named {
+        let visits = self.material_visits(st, named, touched, shaders_moved, tex_rid_changed);
+        if self.mat_walk.prev_named != *named {
+            self.mat_walk.prev_named = named.clone();
+        }
+        for id in visits {
             let e = &st.materials[&id];
             let is_new = !self.materials.contains_key(&id);
             if is_new {
@@ -3251,7 +3367,7 @@ impl Planner {
                     .shader
                     .and_then(|s| st.shaders.get(&s))
                     .is_some_and(|s| s.mode == Some(ShaderMode::Particles));
-            for p in &e.params {
+            for (i, p) in e.params.iter().enumerate() {
                 wanted.insert(&p.name);
                 let converted;
                 let p = match &p.value {
@@ -3271,7 +3387,15 @@ impl Planner {
                 };
                 let (variant, key) = self.param(st, p);
                 let m = self.materials.get_mut(&id).unwrap();
-                if let Some(entry) = m.params.iter_mut().find(|x| x.0 == p.name) {
+                // MRA: held names are unique and usually in the entry's order, so try the same
+                // position before the scan.
+                let at = if m.params.get(i).is_some_and(|x| x.0 == p.name) {
+                    Some(i)
+                } else {
+                    m.params.iter().position(|x| x.0 == p.name)
+                };
+                if let Some(at) = at {
+                    let entry = &mut m.params[at];
                     if entry.1 == key {
                         continue;
                     }
@@ -3324,6 +3448,26 @@ impl Planner {
                     ops.bytes(&v.out);
                     c.param_sets += 1;
                 }
+            }
+            // MRA: what decides whether a later apply must visit this material again.
+            if timed || wanted.len() < e.params.len() {
+                self.mat_walk.always.insert(id);
+            } else {
+                self.mat_walk.always.remove(&id);
+            }
+            let texs: Vec<Id> = e
+                .params
+                .iter()
+                .filter(|p| p.ty == VariantType::Rid)
+                .filter_map(|p| match p.value {
+                    ParamValue::Tex(t) => Some(t),
+                    _ => None,
+                })
+                .collect();
+            if e.params.iter().any(|p| p.ty == VariantType::Rid) {
+                self.mat_walk.rid_texs.insert(id, texs);
+            } else {
+                self.mat_walk.rid_texs.remove(&id);
             }
             let stale: Vec<Box<str>> = self.materials[&id]
                 .params

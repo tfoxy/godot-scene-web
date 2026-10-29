@@ -2,6 +2,7 @@
 //! compares its apply against the GDScript receiver's own evidence.
 //!
 //!   rs-core-capi-check legs <leg dir>...
+//!   rs-core-capi-check recordings <recording>... --store <dir> [--every N] [--sabotage mra-skip-changed]
 //!
 //! A leg dir holds what a gate runner's receiver leg wrote: `env.txt` (RS_RECEIVER_* words),
 //! `applied.json` and the recording (file mode: RS_RECEIVER_RECORDING; live mode: every
@@ -544,10 +545,181 @@ fn check_leg(dir: &Path) -> Result<String, String> {
     }
 }
 
+/// `recordings <recording>... --store <dir> [--every N] [--sabotage mra-skip-changed]` (MRA):
+/// replays each recording through two adapters in lockstep, the delta planner and `full_scan`
+/// (the O(state) walk), applying after every `N`th transaction (default 1; a larger `N` folds
+/// several transactions' deltas into one apply), and compares every apply's needed list, call
+/// stream (words and arena) and statistics. Payloads come from the inline resource records and
+/// the store's `sha256/<hash>.<ext>` files. `mra-skip-changed` drops one changed material per
+/// apply from the delta planner's material walk: the run must then differ.
+/// (seq, what differed) per mismatching apply.
+type Mismatches = Vec<(i64, &'static str)>;
+
+fn cmd_recordings(args: &[String]) -> i32 {
+    let mut paths = Vec::new();
+    let mut store: Option<PathBuf> = None;
+    let mut every = 1usize;
+    let mut skip_changed = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--store" => {
+                store = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--every" => {
+                every = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1)
+                    .max(1);
+                i += 1;
+            }
+            "--sabotage" => {
+                if args.get(i + 1).map(|s| s.as_str()) != Some("mra-skip-changed") {
+                    eprintln!("rs-core-capi-check recordings: unknown sabotage");
+                    return 2;
+                }
+                skip_changed = true;
+                i += 1;
+            }
+            p => paths.push(PathBuf::from(p)),
+        }
+        i += 1;
+    }
+    let mut failed = false;
+    for path in &paths {
+        let run = || -> Result<(usize, Mismatches), String> {
+            let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let version = wire::version_of_magic(&data).ok_or("not a render-stream recording")?;
+            let spans = wire::split_records(&data, version).map_err(|e| format!("split: {e}"))?;
+            let mut inc = Core::new();
+            inc.planner.mra_skip_changed = skip_changed;
+            let mut full = Core::new();
+            full.planner.full_scan = true;
+            let mut inline: HashMap<Hash, Vec<u8>> = HashMap::new();
+            let mut bad: Vec<(i64, &'static str)> = Vec::new();
+            let (mut txs, mut applies) = (0usize, 0usize);
+            for (ri, span) in spans.iter().enumerate() {
+                if ri == 0 {
+                    for c in [&mut inc, &mut full] {
+                        if c.session(&data, span.offset, version) == KIND_ERROR {
+                            return Err(format!("session: {}", vt(c)["errors"]));
+                        }
+                        c.begin_session();
+                    }
+                    continue;
+                }
+                let kind = inc.accept(&data, span.offset);
+                if full.accept(&data, span.offset) != kind {
+                    return Err(format!(
+                        "record {ri}: the two adapters accepted differently"
+                    ));
+                }
+                if kind == KIND_ERROR {
+                    return Err(format!("accept record {ri}: {}", vt(&inc)["errors"]));
+                }
+                if kind == KIND_RESOURCE {
+                    if inc.resource_payload() {
+                        let p = inc.text.clone();
+                        inline.insert(wire::sha256(&p), p);
+                    }
+                    continue;
+                }
+                if kind != KIND_TRANSACTION {
+                    continue;
+                }
+                let seq = vt(&inc)["record"]["meta"]["seq"].as_i64().unwrap_or(-1);
+                txs += 1;
+                if (txs - 1) % every != 0 {
+                    continue;
+                }
+                let (a, b) = (inc.needed_raw(), full.needed_raw());
+                if format!("{a:?}") != format!("{b:?}") {
+                    bad.push((seq, "needed"));
+                }
+                let mut hashes: Vec<Hash> = a.hashes.clone();
+                for h in &b.hashes {
+                    if !hashes.contains(h) {
+                        hashes.push(*h);
+                    }
+                }
+                for h in hashes {
+                    let bytes = match inline.get(&h) {
+                        Some(b) => b.clone(),
+                        None => {
+                            let dir = store.as_ref().ok_or("no --store")?;
+                            ["grt", "grm", "grp", "gds"]
+                                .iter()
+                                .find_map(|ext| {
+                                    std::fs::read(
+                                        dir.join("sha256").join(format!("{}.{ext}", h.to_hex())),
+                                    )
+                                    .ok()
+                                })
+                                .ok_or_else(|| format!("payload {} not in the store", h.to_hex()))?
+                        }
+                    };
+                    for c in [&mut inc, &mut full] {
+                        c.provide(&h.to_hex(), &bytes)?;
+                    }
+                }
+                for l in a.library.iter().chain(&b.library) {
+                    for c in [&mut inc, &mut full] {
+                        c.provide_library(l, false, "no library in the recording diff");
+                    }
+                }
+                inc.apply().map_err(|e| format!("apply seq {seq}: {e}"))?;
+                full.apply()
+                    .map_err(|e| format!("full_scan apply seq {seq}: {e}"))?;
+                applies += 1;
+                if inc.ops.words != full.ops.words || inc.ops.arena != full.ops.arena {
+                    bad.push((seq, "calls"));
+                }
+                if inc.vt.out != full.vt.out {
+                    bad.push((seq, "stats"));
+                }
+            }
+            let _ = applies;
+            Ok((txs, bad))
+        };
+        match run() {
+            Ok((txs, bad)) => {
+                let seqs: std::collections::BTreeSet<i64> = bad.iter().map(|b| b.0).collect();
+                let mut kinds: Vec<&str> = bad.iter().map(|b| b.1).collect();
+                kinds.sort_unstable();
+                kinds.dedup();
+                println!(
+                    "{}: {txs} transactions, every {every}; {} mismatching applies{}",
+                    path.display(),
+                    seqs.len(),
+                    if bad.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (kinds {kinds:?}; seqs {:?})",
+                            seqs.iter().take(20).collect::<Vec<_>>()
+                        )
+                    }
+                );
+                failed |= !bad.is_empty();
+            }
+            Err(e) => {
+                println!("{}: error {e}", path.display());
+                failed = true;
+            }
+        }
+    }
+    i32::from(failed)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|s| s.as_str()) == Some("recordings") {
+        std::process::exit(cmd_recordings(&args[1..]));
+    }
     if args.first().map(|s| s.as_str()) != Some("legs") || args.len() < 2 {
-        eprintln!("usage: rs-core-capi-check legs <leg dir>...");
+        eprintln!("usage: rs-core-capi-check legs <leg dir>...\n       rs-core-capi-check recordings <recording>... --store <dir> [--every N] [--sabotage mra-skip-changed]");
         std::process::exit(2);
     }
     let mut failed = 0;

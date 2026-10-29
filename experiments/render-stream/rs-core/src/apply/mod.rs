@@ -592,6 +592,18 @@ pub struct Applier {
     /// G7s: the adapter's program (or refusal) per custom shader code hash.
     programs: HashMap<Hash, ProgramEntry, payloads::HashBuild>,
     programs_dirty: bool,
+    /// MRA: a program was registered or replaced since the last binding refresh.
+    programs_changed: bool,
+    /// MRA: per binding slot, the key its values were last computed for, and the texture ids
+    /// they read (sampler parameters, shader defaults, a canvas texture's diffuse): a slot is
+    /// refreshed only when one of its inputs changed ([`Applier::refresh_bindings`]).
+    binding_inputs: Vec<Option<(BindingKey, Vec<Id>)>>,
+    /// MRA diagnostics (`rs-core-check material-diff`): refresh every live binding at every
+    /// apply, the refresh before MRA, the oracle the incremental one is compared against.
+    pub always_refresh_bindings: bool,
+    /// MRA sabotage `mra-skip-binding`: a binding whose material the transaction upserted is not
+    /// refreshed for that reason (the differential must catch it).
+    pub skip_binding_refresh: bool,
     /// Live binding slots by key, each slot's key, and the free slots.
     binding_slots: HashMap<BindingKey, u32>,
     binding_keys: Vec<Option<BindingKey>>,
@@ -885,6 +897,35 @@ fn particles_mesh(state: &ResolvedState, id: Id) -> Option<Id> {
 
 /// A canvas's modulate (white under the `ignore-canvas-modulate` sabotage for the root canvas,
 /// which is the only canvas the native receiver's `canvas_set_modulate` skip touches).
+/// MRA: [`programs::param`] for many names over one parameter list: the first non-`nil`
+/// parameter of each name, from a table built once when the list is long.
+struct ParamIndex<'p> {
+    params: &'p [Param],
+    map: Option<HashMap<&'p str, &'p Param>>,
+}
+
+impl<'p> ParamIndex<'p> {
+    fn new(params: &'p [Param]) -> Self {
+        let map = (params.len() > 8).then(|| {
+            let mut m: HashMap<&'p str, &'p Param> = HashMap::with_capacity(params.len());
+            for p in params {
+                if p.value != crate::state::ParamValue::Nil {
+                    m.entry(&*p.name).or_insert(p);
+                }
+            }
+            m
+        });
+        ParamIndex { params, map }
+    }
+
+    fn get(&self, name: &str) -> Option<&'p Param> {
+        match &self.map {
+            Some(m) => m.get(name).copied(),
+            None => programs::param(self.params, name),
+        }
+    }
+}
+
 fn canvas_modulate(state: &ResolvedState, canvas: Id, ignore_root: bool) -> [f32; 4] {
     match state.canvases.get(&canvas) {
         Some(c) if c.root && ignore_root => WHITE,
@@ -972,6 +1013,10 @@ impl Applier {
             first: true,
             programs: HashMap::default(),
             programs_dirty: false,
+            programs_changed: false,
+            binding_inputs: Vec::new(),
+            always_refresh_bindings: false,
+            skip_binding_refresh: false,
             binding_slots: HashMap::new(),
             binding_keys: Vec::new(),
             free_slots: Vec::new(),
@@ -1131,6 +1176,17 @@ impl Applier {
             self.resident.values().filter_map(|r| r.hash).collect();
         out.extend(self.meshes.resident_hashes());
         out
+    }
+
+    /// MRA diagnostics (`rs-core-check material-diff`): the shader/material residency, whose
+    /// `full_walk` (the oracle) and `skip_changed` (the `mra-skip-changed` sabotage) the tool sets.
+    pub fn material_residency_mut(&mut self) -> &mut material_residency::MaterialResidency {
+        &mut self.material_residency
+    }
+
+    /// MRA diagnostics: the shader/material residency, to compare two appliers'.
+    pub fn material_residency(&self) -> &material_residency::MaterialResidency {
+        &self.material_residency
     }
 
     /// G7o2 diagnostics (`rs-core-check walk-diff`): a digest of what the packed list paints, in
@@ -1845,6 +1901,7 @@ impl Applier {
         // G7s: a program registered or replaced decides blends, light modes and bindings.
         if std::mem::take(&mut self.programs_dirty) {
             why |= Why::MATERIAL;
+            self.programs_changed = true;
         }
         prof::add(prof::TEXTURE_SYNC, t);
         let t = prof::start();
@@ -2214,7 +2271,7 @@ impl Applier {
             }
         }
         let t = prof::start();
-        self.refresh_bindings(state);
+        self.refresh_bindings(state, delta, &resized);
         prof::add(prof::BINDINGS, t);
         self.write_instances(state, payloads);
         self.first = false;
@@ -2348,17 +2405,66 @@ impl Applier {
     /// uniforms from the material's parameters (its instance uniforms from the item's), its
     /// samplers from a texture parameter, else the shader's default texture, else white, and the
     /// canvas modulate unless the code is unshaded. Only slots whose values differ are dirtied.
-    fn refresh_bindings(&mut self, state: &ResolvedState) {
+    ///
+    /// MRA: a binding's values read its program, its material, its item's instance parameters,
+    /// its material's shader (default textures), its canvas (modulate, transform) and the
+    /// entries and residency of the textures it samples. Every slot is recomputed on a fresh
+    /// applier, when a program, shader or canvas changed, or under `stale-param`; else only a
+    /// new or re-keyed slot, one whose material or item the transaction upserted or removed, and
+    /// one that reads a texture the transaction upserted or removed or whose residency changed
+    /// (`resized`, which `sync_textures` fills for every resident image or placeholder that
+    /// appeared, went or changed kind or size).
+    fn refresh_bindings(&mut self, state: &ResolvedState, delta: &TxDelta, resized: &[Id]) {
+        let all = self.first
+            || self.always_refresh_bindings
+            || std::mem::take(&mut self.programs_changed)
+            || self.sabotage.stale_param
+            || !delta.shaders_upserted.is_empty()
+            || !delta.shaders_removed.is_empty()
+            || !delta.canvases_upserted.is_empty()
+            || !delta.canvases_removed.is_empty();
+        let has = |list: &[Id], id: Id| list.binary_search(&id).is_ok();
+        let mut textures: Vec<Id> = Vec::new();
+        if !all {
+            textures.extend(&delta.textures_upserted);
+            textures.extend(&delta.textures_removed);
+            textures.extend(resized);
+            textures.sort_unstable();
+            textures.dedup();
+        }
+        if self.binding_inputs.len() < self.binding_keys.len() {
+            self.binding_inputs.resize(self.binding_keys.len(), None);
+        }
         let mut live = 0u32;
         for slot in 0..self.binding_keys.len() as u32 {
             let Some(key) = self.binding_keys[slot as usize] else {
+                self.binding_inputs[slot as usize] = None;
                 continue;
             };
             live += 1;
+            let stale = all
+                || match &self.binding_inputs[slot as usize] {
+                    None => true,
+                    Some((k, texs)) => {
+                        *k != key
+                            || (!self.skip_binding_refresh
+                                && has(&delta.materials_upserted, key.material))
+                            || has(&delta.materials_removed, key.material)
+                            || key.item.is_some_and(|i| {
+                                has(&delta.items_upserted, i) || has(&delta.items_removed, i)
+                            })
+                            || texs.iter().any(|t| has(&textures, *t))
+                    }
+                };
+            if !stale {
+                continue;
+            }
             let Some(ProgramEntry::Ready(info)) = self.programs.get(&key.hash) else {
+                self.binding_inputs[slot as usize] = Some((key, Vec::new()));
                 continue;
             };
-            let binding = self.binding_of(state, &key, info);
+            let (binding, texs) = self.binding_of(state, &key, info);
+            self.binding_inputs[slot as usize] = Some((key, texs));
             if self.list.set_binding(slot, binding) {
                 self.bindings_changed.push(slot);
             }
@@ -2367,7 +2473,13 @@ impl Applier {
         self.stats.bindings_changed = self.bindings_changed.len() as u32;
     }
 
-    fn binding_of(&self, state: &ResolvedState, key: &BindingKey, info: &ProgramInfo) -> Binding {
+    /// One binding's values, and the texture ids they read (see [`Applier::refresh_bindings`]).
+    fn binding_of(
+        &self,
+        state: &ResolvedState,
+        key: &BindingKey,
+        info: &ProgramInfo,
+    ) -> (Binding, Vec<Id>) {
         let material = state.materials.get(&key.material);
         let params: &[Param] = if self.sabotage.stale_param {
             self.stale_params
@@ -2382,6 +2494,8 @@ impl Applier {
             .and_then(|i| state.items.get(&i))
             .map(|it| it.instance_params.as_slice())
             .unwrap_or(&[]);
+        // MRA: one lookup table per binding, not a scan of the parameters per uniform.
+        let by_name = ParamIndex::new(params);
         let uniforms = info
             .uniforms
             .iter()
@@ -2389,10 +2503,15 @@ impl Applier {
                 name: d.name.clone(),
                 value: programs::uniform_value(
                     d,
-                    programs::param(if d.instance { instance } else { params }, &d.name),
+                    if d.instance {
+                        programs::param(instance, &d.name)
+                    } else {
+                        by_name.get(&d.name)
+                    },
                 ),
             })
             .collect();
+        let mut texs: Vec<Id> = Vec::new();
         let shader = material
             .and_then(|m| m.shader)
             .and_then(|s| state.shaders.get(&s));
@@ -2400,7 +2519,7 @@ impl Applier {
             .samplers
             .iter()
             .map(|s| {
-                let wire = match programs::param(params, &s.name).map(|p| &p.value) {
+                let wire = match by_name.get(&s.name).map(|p| &p.value) {
                     Some(crate::state::ParamValue::Tex(t)) => Some(*t),
                     _ => shader.and_then(|sh| {
                         sh.default_textures
@@ -2420,6 +2539,7 @@ impl Applier {
                         sampler: 0,
                     };
                 };
+                texs.push(wire);
                 let gpu = Some(wire)
                     .map(|t| match state.textures.get(&t) {
                         Some(e) if e.kind == TextureKind::Canvas => {
@@ -2427,6 +2547,7 @@ impl Applier {
                         }
                         _ => t,
                     })
+                    .inspect(|g| texs.push(*g))
                     .filter(|g| {
                         self.resident.get(g).is_some_and(|r| {
                             matches!(r.kind, TextureKind::Image | TextureKind::Placeholder)
@@ -2484,12 +2605,17 @@ impl Applier {
                 ),
             });
         }
-        Binding {
-            program: info.program,
-            post_modulate,
-            uniforms,
-            samplers,
-        }
+        texs.sort_unstable();
+        texs.dedup();
+        (
+            Binding {
+                program: info.program,
+                post_modulate,
+                uniforms,
+                samplers,
+            },
+            texs,
+        )
     }
 
     /// Pushes `children` that the state holds, in draw order, onto `stack` with their items and
