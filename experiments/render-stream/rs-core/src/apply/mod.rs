@@ -1342,6 +1342,21 @@ impl Applier {
         spare.mesh_versions = std::mem::replace(&mut rec.mesh_versions, mesh_versions);
     }
 
+    /// GRH: a fresh applier that replaces `old` after a transport skip (a live coding resync)
+    /// inherits what the GPU still holds: the resident textures and the kept payloads. Its first
+    /// apply is then the native receiver's reconcile: a texture whose chosen payload is the one
+    /// already resident is not uploaded again, and what left the table is freed. Without it the
+    /// full transaction re-queues every texture's pixels into the draw list's byte arena at once
+    /// (+384 MB of wasm heap on STS2 combat) to put back what the GPU holds.
+    pub fn inherit_residency(&mut self, old: Applier) {
+        self.resident = old.resident;
+        self.kept = old.kept;
+        // The session's delivery choices (and the payloads it refused) are the viewer's, not the
+        // applier's: a default `delivery` would pick other variants than the ones resident.
+        self.delivery = old.delivery;
+        self.stream_version = old.stream_version;
+    }
+
     /// Step 2's half of the applier (Q14c): update the named textures from the accepted
     /// transaction and choose which textures this transaction looks at. Must run once between
     /// `accept` and `apply` (`apply` runs it itself when the adapter did not).

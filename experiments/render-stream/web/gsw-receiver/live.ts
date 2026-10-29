@@ -232,6 +232,22 @@ class LiveReceiver {
   /** W11c: every connection's coding stats, and the resyncs a coding error asked for. */
   private readonly codingReports: Record<string, unknown>[] = [];
   private codingResyncs = 0;
+  /** GRH: the wasm heap (bytes) when the first coding resync was asked, before the applier is
+   * rebuilt (evidence only: the leg's end heap also holds the stream's own creep). */
+  private heapAtResync: number | null = null;
+  /** GRH: set at a rebuild; the next drawn transaction (the resync's full) records its heap and
+   * texture uploads in `rebuildApplies`. */
+  private rebuildApplyDue = false;
+  private lastHeapBeforeRebuild: number | null = null;
+  private rebuildApplies: {
+    seq: number;
+    heap: number | null;
+    heap_before_rebuild: number | null;
+    texture_upload_bytes: number;
+    texture_upload_bytes_before: number;
+  }[] = [];
+  /** GRH: the texture bytes the GPU took over the transactions drawn so far. */
+  private uploadedBytes = 0;
   /** G8kb: KTX2 payloads' verify, transcode and stage (transcode.ts). */
   private ktx: KtxStager | null = null;
   private mem: WebAssembly.Memory | null = null;
@@ -1195,7 +1211,9 @@ class LiveReceiver {
     if (this.refuseForResync(item.entry)) return;
     if (rebuild) {
       this.rebuildDue = false;
+      this.lastHeapBeforeRebuild = this.mem?.buffer.byteLength ?? null;
       const code = g.live_rebuild();
+      this.rebuildApplyDue = true;
       if (code < 0) throw failWith(item.entry.seq, g.error());
       item.needed = this.readNeeded(code);
     }
@@ -1637,6 +1655,19 @@ class LiveReceiver {
         performance.mark("rs-first-submitted");
       }
     }
+    if (this.rebuildApplyDue) {
+      // GRH: the resync's full, applied and drawn: what the fresh applier made the GPU take, and
+      // the wasm heap right after it (not the leg's end, which creeps with the stream).
+      this.rebuildApplyDue = false;
+      this.rebuildApplies.push({
+        seq,
+        heap: this.mem?.buffer.byteLength ?? null,
+        heap_before_rebuild: this.lastHeapBeforeRebuild,
+        texture_upload_bytes: st.texture_upload_bytes,
+        texture_upload_bytes_before: this.uploadedBytes,
+      });
+    }
+    this.uploadedBytes += st.texture_upload_bytes;
     this.perf.samples.push({
       seq,
       frame: st.frame,
@@ -1728,6 +1759,7 @@ class LiveReceiver {
    * until the full one, which a fresh applier applies (the applier is delta-driven). */
   private codingResync(seq: number, err: string): void {
     this.codingResyncs++;
+    this.heapAtResync ??= this.mem?.buffer.byteLength ?? null;
     this.rebuildDue = true;
     // GTS: the skipped transactions leave a seq gap the next full must be allowed to jump.
     (this.g as GswRs).transport_skip();
@@ -2201,6 +2233,9 @@ class LiveReceiver {
         this.liveBlock.coding = {
           offer: this.L.liveCoding,
           resyncs: this.codingResyncs,
+          heap_at_resync: this.heapAtResync,
+          heap_end: this.mem?.buffer.byteLength ?? null,
+          rebuild_applies: this.rebuildApplies,
           connections: all,
         };
       }

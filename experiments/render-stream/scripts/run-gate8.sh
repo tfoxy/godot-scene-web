@@ -1323,6 +1323,7 @@ run_g8w11_coding_native_leg() {
 			LEG_ENV=(
 				RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream" RS_RECEIVER_PROTOCOL=11
 				RS_RECEIVER_OUT="$dir/$name/applied.json" RS_RECEIVER_CACHE_DIR="$dir/$name/cache"
+				${RECEIVER_EXTRA_ENV[@]+"${RECEIVER_EXTRA_ENV[@]}"}
 			)
 			[ -n "${spec#*:}" ] && LEG_ENV+=(RS_RECEIVER_LIVE_CODING="${spec#*:}")
 			start_headless_bg "$dir/$name" -- "$BINARY" --headless --path "$RECEIVER_DIR" ${G8W11_RECEIVER_ARGS[@]+"${G8W11_RECEIVER_ARGS[@]}"}
@@ -1354,6 +1355,15 @@ run_g8w11c() {
 	echo "run-gate8: g8w11c native-sabotage-wrong-prefix (coding-wrong-prefix @120, a coded receiver)"
 	run_g8w11_coding_native_leg native-sabotage-wrong-prefix GRC_SABOTAGE=coding-wrong-prefix \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	# GRH: GSW only (the native receiver and the web export have no `rebuild-reupload`): the fresh applier
+	# after the resync inherits no residency, so its full re-uploads every texture.
+	if [ "${GATE7_LIVE_KIND:-}" = gsw ]; then
+		echo "run-gate8: g8w11c native-sabotage-drop-base-reupload (drop-message @120, rebuild-reupload)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=rebuild-reupload)
+		run_g8w11_coding_native_leg native-sabotage-drop-base-reupload GRC_SABOTAGE=drop-message \
+			GRC_SABOTAGE_FRAME=120 -- "coded:"
+		RECEIVER_EXTRA_ENV=()
+	fi
 	G8W11_CODING_DIR=""
 	G8W11_RECEIVER_ARGS=()
 }
