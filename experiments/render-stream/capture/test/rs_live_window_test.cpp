@@ -1010,7 +1010,14 @@ void test_window2_model() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
+  // waiting for its own jobs, so the fake transport is read as before): the same checks hold.
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--formation=thread") {
+      grc::rs2::set_default_formation(grc::rs2::Formation::Thread, true);
+    }
+  }
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/window");
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/w2");
   test_window1_transcripts();

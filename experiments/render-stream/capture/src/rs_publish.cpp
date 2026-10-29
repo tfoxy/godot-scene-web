@@ -110,6 +110,15 @@ bool FileRecordSink::flush() {
   return std::fflush(file_) == 0;
 }
 
+bool FileRecordSink::write_direct(const std::vector<std::uint8_t> &bytes) {
+  if (file_ == nullptr) {
+    return false;
+  }
+  return bytes.empty() || std::fwrite(bytes.data(), 1, bytes.size(), file_) == bytes.size();
+}
+
+bool FileRecordSink::flush_direct() { return file_ != nullptr && std::fflush(file_) == 0; }
+
 void FileRecordSink::close() {
   if (writer_ != nullptr && file_ != nullptr) {
     writer_->drain();  // P3-CAP: every queued record first
@@ -524,14 +533,14 @@ bool Publisher::start(const Session &tmpl) {
 
 bool Publisher::write_transaction(Lane *lane, const Transaction &transaction,
                                   std::uint64_t form_ns, std::uint64_t diff_ns,
-                                  std::uint64_t snapshot_ns) {
+                                  std::uint64_t snapshot_ns, bool direct) {
   const std::uint64_t t0 = monotonic_ns();
   const std::vector<std::uint8_t> bytes = encode_transaction(transaction);
   const std::uint64_t t1 = monotonic_ns();
-  if (!lane->sink->write(bytes) || !lane->sink->flush()) {
+  if (direct ? !lane->sink->write_direct(bytes) || !lane->sink->flush_direct()
+             : !lane->sink->write(bytes) || !lane->sink->flush()) {
     return false;
   }
-  ++lane->transactions;
   if (transaction.encoding == Encoding::Full) {
     ++lane->stats.full_transactions;
   } else {
@@ -544,41 +553,30 @@ bool Publisher::write_transaction(Lane *lane, const Transaction &transaction,
   return true;
 }
 
-bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uint64_t frame) {
+bool Publisher::plan_inline(Lane *lane, const rs::Captured &published,
+                            std::vector<std::string> *records) {
   if (policy_.inline_max_bytes == 0) {
     return true;
   }
   if (lane->planner != nullptr) {
     // W11b (render-stream-11.md "Resource retention"): inline(T) \ inline(B) in table order.
     // HC4b: a /11 planner holds nothing, so it plans over the entries B and T do not share.
-    std::vector<PayloadName> records;
+    std::vector<PayloadName> names;
     if (lane->planner->lifelong()) {
-      records = lane->planner->next(has_previous_ ? &previous_.state : nullptr, published.state);
+      names = lane->planner->next(has_previous_ ? &previous_->state : nullptr, published.state);
     } else {
       InlinePolicy policy;
       policy.inline_max_bytes = policy_.inline_max_bytes;
-      records = rs::plan_v11_records(has_previous_ ? &previous_ : nullptr, published, policy).records;
+      names = rs::plan_v11_records(has_previous_ ? previous_.get() : nullptr, published, policy)
+                  .records;
     }
-    for (const PayloadName &name : records) {
+    for (const PayloadName &name : names) {
       const auto payload = published.payloads.find(name.hash);
       if (payload == published.payloads.end() || payload->second == nullptr) {
         error_ = "resource-store-failed: no payload for hash " + name.hash;
         return false;
       }
-      ResourceRecord record;
-      record.hash = name.hash;
-      record.payload = *payload->second;
-      const std::vector<std::uint8_t> bytes = encode_resource(record);
-      const bool ok = lane->sink->write(bytes) && lane->sink->flush();
-      if (events_) {
-        events_("inline", name.hash, record.payload.size(), ok, frame);
-      }
-      if (!ok) {
-        return false;
-      }
-      ++lane->stats.resource_records;
-      lane->stats.resource_bytes += record.payload.size();
-      note_record_bytes(&lane->stats, bytes);
+      records->push_back(name.hash);
     }
     return true;
   }
@@ -595,23 +593,55 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
       error_ = "resource-store-failed: no payload for hash " + hash;
       return false;
     }
+    lane->carried.insert(hash);
+    records->push_back(hash);
+  }
+  return true;
+}
+
+bool Publisher::form_lane(const LaneJob &job, bool direct) {
+  Lane *lane = job.lane;
+  const rs::Captured &published = *job.target;
+  for (const std::string &hash : job.records) {
+    const auto payload = published.payloads.find(hash);  // planned: present
     ResourceRecord record;
     record.hash = hash;
     record.payload = *payload->second;
     const std::vector<std::uint8_t> bytes = encode_resource(record);
-    const bool ok = lane->sink->write(bytes) && lane->sink->flush();
-    if (events_) {
-      events_("inline", hash, record.payload.size(), ok, frame);
+    const bool ok = direct ? lane->sink->write_direct(bytes) && lane->sink->flush_direct()
+                           : lane->sink->write(bytes) && lane->sink->flush();
+    if (!direct && events_) {
+      events_("inline", hash, record.payload.size(), ok, job.frame);
     }
     if (!ok) {
       return false;
     }
-    lane->carried.insert(hash);
     ++lane->stats.resource_records;
     lane->stats.resource_bytes += record.payload.size();
     note_record_bytes(&lane->stats, bytes);
   }
-  return true;
+  Transaction transaction;
+  std::uint64_t form_ns = 0;
+  std::uint64_t diff_ns = 0;
+  const std::uint64_t t0 = monotonic_ns();
+  if (job.base == nullptr) {
+    // The full lane, and the patch lane's first (render-stream-1.md "Session record": encoding).
+    transaction = make_full(published.state);
+    form_ns = monotonic_ns() - t0;
+  } else {
+    // base_seq = previous seq = seq - 1: both sinks advance together.
+    transaction = make_patch(job.base->state, published.state);
+    diff_ns = monotonic_ns() - t0;
+  }
+  if (job.drop_item && !transaction.items.empty()) {
+    // Entries are ascending by id, so the last one is the highest id. Only this transaction
+    // loses it: the next patch is diffed against the true published snapshot, so the receiver's
+    // state diverges until that item changes again.
+    transaction.items.pop_back();
+  }
+  transaction.perturb_instance = job.perturb_instance;
+  transaction.perturb_seed = job.perturb_seed;
+  return write_transaction(lane, transaction, form_ns, diff_ns, job.snapshot_ns, direct);
 }
 
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
@@ -621,7 +651,7 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
   // named was stored (or, without a store, checked) when it was published, and the store only
   // grows, so only the entries this publication does not share with it can name a new payload.
   // They are visited in payload_refs()'s table order, so the store events keep their order.
-  const rs::Captured *base = has_previous_ ? &previous_ : nullptr;
+  const rs::Captured *base = has_previous_ ? previous_.get() : nullptr;
   const auto store_ref = [&](const rs::PayloadRef &ref) {
     const std::string &hash = *ref.hash;
     if (store_ == nullptr) {
@@ -773,17 +803,17 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
     // version, hash and payload it had before the change (gate2-design.md G2b2).
     for (const TextureEntry &entry : captured->state.textures) {
       const auto before = std::find_if(
-          previous_.state.textures.begin(), previous_.state.textures.end(),
+          previous_->state.textures.begin(), previous_->state.textures.end(),
           [&entry](const TextureEntry &e) { return e.id == entry.id; });
-      if (before == previous_.state.textures.end() || before->version == entry.version) {
+      if (before == previous_->state.textures.end() || before->version == entry.version) {
         continue;
       }
       stale_id_ = entry.id;
       stale_entry_ = *before;
       stale_payload_.reset();
       if (is_ok_image(*before)) {
-        const auto payload = previous_.payloads.find(before->hash);
-        if (payload != previous_.payloads.end()) {
+        const auto payload = previous_->payloads.find(before->hash);
+        if (payload != previous_->payloads.end()) {
           stale_payload_ = payload->second;
         }
       }
@@ -816,8 +846,8 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
       if (v != captured->payloads.end()) {
         payloads.emplace(variant.hash, v->second);
       } else if (entry.id == stale_id_) {
-        const auto old = previous_.payloads.find(variant.hash);
-        if (old != previous_.payloads.end()) {
+        const auto old = previous_->payloads.find(variant.hash);
+        if (old != previous_->payloads.end()) {
           payloads.emplace(variant.hash, old->second);
         }
       }
@@ -881,58 +911,73 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
     return false;
   }
 
+  // HC5: published, it is immutable and shared (the lanes' formation and the live hub hold it).
+  const std::shared_ptr<const rs::Captured> target =
+      std::make_shared<const rs::Captured>(std::move(published));
   bool ok = true;
   // PM1 sabotage perturb-instance (render-stream-11.md "As built (PM1)" rule 11): the encoder
   // adds 1.0 to the first multimesh buffer float of every /11 transaction from the frame on.
   const bool perturb_instance = sabotage_.kind == SabotageKind::PerturbInstance &&
                                 sabotage_frame_reached &&
-                                is_v11_or_later(published.state.version);
+                                is_v11_or_later(target->state.version);
   // PM5 sabotage perturb-seed (render-stream-12.md "Sabotages"): the encoder adds 1 to the seed of
   // the first particles entry of every /12 transaction from the frame on.
   const bool perturb_seed = sabotage_.kind == SabotageKind::PerturbSeed &&
                             sabotage_frame_reached &&
-                            is_v12_or_later(published.state.version);
-  Lane &full = lanes_[0];
-  if (full.sink != nullptr) {
-    const std::uint64_t t0 = monotonic_ns();
-    Transaction transaction = make_full(published.state);
-    transaction.perturb_instance = perturb_instance;
-    transaction.perturb_seed = perturb_seed;
-    const std::uint64_t t1 = monotonic_ns();
-    ok = write_inline(&full, published, frame) &&
-         write_transaction(&full, transaction, t1 - t0, 0, snapshot_ns) && ok;
-  }
-
-  Lane &patch = lanes_[1];
-  if (patch.sink != nullptr) {
-    Transaction transaction;
-    std::uint64_t form_ns = 0;
-    std::uint64_t diff_ns = 0;
-    const std::uint64_t t0 = monotonic_ns();
-    if (!has_previous_) {
-      // A patch stream starts full (render-stream-1.md "Session record": `encoding`).
-      transaction = make_full(published.state);
-      form_ns = monotonic_ns() - t0;
-    } else {
-      // base_seq = previous_.seq = seq - 1: both sinks advance together.
-      transaction = make_patch(previous_.state, published.state);
-      diff_ns = monotonic_ns() - t0;
+                            is_v12_or_later(target->state.version);
+  // Full sink: its new inline records, then make_full every frame. Patch sink: its new inline
+  // records, then make_full the first time and make_patch(previous, published) after it, under
+  // patch-drop-item without the highest-id item at exactly the sabotage frame.
+  for (Lane *lane : {&lanes_[0], &lanes_[1]}) {
+    if (lane->sink == nullptr) {
+      continue;
     }
-    if (sabotage_.kind == SabotageKind::PatchDropItem && frame == sabotage_.frame &&
-        !transaction.items.empty()) {
-      // Entries are ascending by id, so the last one is the highest id. Only this transaction
-      // loses it: `previous_` below stays the true published snapshot, so the receiver's state
-      // diverges until that item changes again.
-      transaction.items.pop_back();
+    LaneJob job;
+    job.lane = lane;
+    job.target = target;
+    if (lane == &lanes_[1] && has_previous_) {
+      job.base = previous_;
     }
-    transaction.perturb_instance = perturb_instance;
-    transaction.perturb_seed = perturb_seed;
-    ok = write_inline(&patch, published, frame) &&
-         write_transaction(&patch, transaction, form_ns, diff_ns, snapshot_ns) && ok;
+    job.drop_item = lane == &lanes_[1] && sabotage_.kind == SabotageKind::PatchDropItem &&
+                    frame == sabotage_.frame;
+    job.perturb_instance = perturb_instance;
+    job.perturb_seed = perturb_seed;
+    job.frame = frame;
+    job.snapshot_ns = snapshot_ns;
+    if (!plan_inline(lane, *target, &job.records)) {
+      ok = false;
+      continue;
+    }
+    ++lane->transactions;
+    if (former_ == nullptr) {
+      ok = form_lane(job, false) && ok;
+      continue;
+    }
+    // HC5: formed on the writer, behind this publication's store writes.
+    std::size_t bytes = 0;
+    for (const std::string &hash : job.records) {
+      bytes += target->payloads.find(hash)->second->size();
+    }
+    const std::vector<std::string> records = job.records;
+    const bool queued = former_->submit(
+        [this, job](std::string *error) {
+          if (!form_lane(job, true)) {
+            *error = "transaction write failed";
+            return false;
+          }
+          return true;
+        },
+        bytes, nullptr);
+    if (events_) {
+      for (const std::string &hash : records) {
+        events_("inline", hash, target->payloads.find(hash)->second->size(), queued, frame);
+      }
+    }
+    ok = queued && ok;
   }
   // Kept with or without a patch sink: the patch sink's next base, and the copy the live
   // adapter delivers (last_published()).
-  previous_ = std::move(published);
+  previous_ = target;
   has_previous_ = true;
   return ok;
 }
@@ -943,6 +988,9 @@ bool Publisher::finish(EndReason reason) {
   }
   finished_ = true;
   bool ok = true;
+  if (former_ != nullptr) {
+    ok = former_->drain();  // HC5: the lanes' stats are the writer's until here
+  }
   for (Lane &lane : lanes_) {
     if (lane.sink == nullptr) {
       continue;

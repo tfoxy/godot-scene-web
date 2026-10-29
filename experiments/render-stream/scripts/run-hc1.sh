@@ -51,6 +51,12 @@
 #                                  pinned) 404s fail late-join-served
 #   sabotage-serve-skip-gate2      the same under run-gate2.sh --legs g2a,g2c fails gate 2's live
 #                                  GET checks
+# HC5's (results/p3/hc5.md; the hub's formation jobs on the encode thread):
+#   sabotage-reorder-gate2         (GRC_HC_SABOTAGE=reorder: every formation job sends its
+#                                  transaction before its resource records) under run-gate2.sh
+#                                  --legs g2a,g2b: the live-inline receiver (rs-core) fails
+#                                  resource-missing at seq 1, and so does gate 2's own validation
+#                                  of its received.rs2
 #
 #   bash experiments/render-stream/scripts/run-hc1.sh --extension EXT [--out DIR] [--calibration PATH]
 #     [--binary PATH]
@@ -188,7 +194,8 @@ nested_gate() { # <name> <gate n> <legs> <hc sabotage> <shadow 0|1>
 }
 HC4A_SABOTAGES=(sabotage-hc-skip-dirty-oracle sabotage-hc-skip-dirty-gate1 sabotage-hc-stale-derived-oracle
 	sabotage-hc-stale-derived-gate2 sabotage-hc-skip-dirty-texture-oracle
-	sabotage-hc-skip-dirty-texture-gate2 sabotage-serve-skip sabotage-serve-skip-gate2)
+	sabotage-hc-skip-dirty-texture-gate2 sabotage-serve-skip sabotage-serve-skip-gate2
+	sabotage-reorder-gate2)
 if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
 	for s in "${HC4A_SABOTAGES[@]}"; do
 		mkdir -p "$OUT/$s"
@@ -206,6 +213,8 @@ else
 	nested_gate sabotage-hc-skip-dirty-texture-gate2 2 g2a,g2b hc-skip-dirty-texture 0
 	leg sabotage-serve-skip "$FRAMES" 1 0 on "${STATIC[@]}" -- GRC_HC_SABOTAGE=serve-skip
 	nested_gate sabotage-serve-skip-gate2 2 g2a,g2c serve-skip 0
+	# HC5.
+	nested_gate sabotage-reorder-gate2 2 g2a,g2b reorder 0
 fi
 
 mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/hc1-checks.ts" "$OUT"

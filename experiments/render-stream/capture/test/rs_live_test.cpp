@@ -19,6 +19,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -3149,7 +3150,294 @@ void test_pm1_multimesh_buffer_f() {
   check(lowered, "PM1: /10 sees the unsupported-op command");
 }
 
-int main() {
+// ----------------------------------------------------------------- HC5: the formation thread
+
+// A FakeTransport the encode thread may call while the test thread reads it (between syncs).
+class LockedTransport : public FakeTransport {
+ public:
+  bool send_binary(std::uint32_t conn, std::vector<std::uint8_t> message) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return FakeTransport::send_binary(conn, std::move(message));
+  }
+  bool send_text(std::uint32_t conn, std::string message) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return FakeTransport::send_text(conn, std::move(message));
+  }
+  void close(std::uint32_t conn, std::uint16_t code, std::string reason) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    FakeTransport::close(conn, code, std::move(reason));
+  }
+  std::uint64_t queued_bytes(std::uint32_t conn) const override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return FakeTransport::queued_bytes(conn);
+  }
+  mutable std::mutex mutex;
+};
+
+struct Hc5Run {
+  std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> binary;  // by connection id
+  std::vector<Sent> sent;  // every transport call, in order
+  std::vector<ConnectionSummary> summaries;
+  std::map<std::string, std::string> files;  // tap dir file -> contents (stream ids masked)
+};
+
+// A mixed hub at /11 with inline records: two lockstep zstd-base viewers (sharing transactions,
+// records and coded bytes), an uncoded /11 viewer acking every other frame with a resync, and a
+// /6 viewer (the main thread's CarriedIndex walk), over 40 callbacks plus finish.
+Hc5Run hc5_run(Formation formation, bool wait, const std::string &tap_dir,
+               std::uint64_t reorder_frame = 0) {
+  LockedTransport transport;
+  Session tmpl = make_template(Delivery::Inline);
+  tmpl.version = ProtocolVersion::V11;
+  LiveConfig config;
+  config.formation = formation;
+  config.formation_wait = wait;
+  config.tap_dir = tap_dir;
+  config.reorder_frame = reorder_frame;
+  config.live_coding = grc::rs::live_coding::Coding::ZstdBase;
+  Hub hub(&transport, config, tmpl);
+  const std::string hello11 =
+      read_file(std::string(GRC_GOLDEN11_DIR) + "/control/valid/hello-native-block.json");
+  const std::string coded = with_live_coding(hello11, "zstd-base,zstd");
+  struct C {
+    const char *sub;
+    std::string hello;
+    std::uint64_t open_frame;
+    std::uint64_t ack_period;
+    std::uint64_t resync_frame;
+  };
+  const std::vector<C> conns = {{"render-stream.11", coded, 1, 1, 0},
+                                {"render-stream.11", coded, 1, 1, 0},
+                                {"render-stream.11", hello11, 2, 2, 17},
+                                {"render-stream.6", kHello6, 3, 1, 0}};
+  for (std::uint64_t frame = 1; frame <= 40; ++frame) {
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (conns[i].open_frame == frame) {
+        hub.on_event(opened_with(i + 1, conns[i].sub), frame);
+        hub.on_event(text(i + 1, conns[i].hello), frame);
+      }
+    }
+    hub.sync();  // the acks below read what the previous callback's jobs sent
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (frame <= conns[i].open_frame) {
+        continue;
+      }
+      const ConnectionSummary &cs = now.at(i);
+      if (conns[i].resync_frame == frame && cs.sent > 0) {
+        hub.on_event(text(i + 1, resync(cs.stream_id, cs.transactions)), frame);
+      } else if ((frame - conns[i].open_frame) % conns[i].ack_period == 0 && cs.sent > 0) {
+        hub.on_event(text(i + 1, ack(cs.stream_id, cs.transactions, "submitted")), frame);
+      }
+    }
+    Captured c = sp_state(frame);
+    c.state.version = ProtocolVersion::V11;
+    hub.on_frame(frame, frame * 16000000ULL,
+                 hub.wants_snapshot(frame, frame * 16000000ULL) ? &c : nullptr, frame, 0);
+  }
+  hub.finish(EndReason::Shutdown, 41, 41 * 16000000ULL);
+  hub.close_open(41);
+  Hc5Run out;
+  out.summaries = hub.summaries();
+  {
+    std::lock_guard<std::mutex> lock(transport.mutex);
+    out.sent = transport.sent;
+  }
+  for (const Sent &x : out.sent) {
+    if (x.kind == Sent::Binary) {
+      // The first message (magic + session) holds the connection's fresh stream id (coded, its
+      // size too): it is compared as a placeholder.
+      std::vector<std::vector<std::uint8_t>> &mine = out.binary[x.conn];
+      mine.push_back(mine.empty() ? std::vector<std::uint8_t>{0} : x.bytes);
+    }
+  }
+  for (auto &entry : out.binary) {
+    entry.second.pop_back();  // the end record (finish): its stats hold timings
+  }
+  if (!tap_dir.empty()) {
+    std::vector<std::string> names;
+    if (DIR *d = opendir(tap_dir.c_str())) {
+      while (dirent *e = readdir(d)) {
+        const std::string name = e->d_name;
+        if (name != "." && name != "..") {
+          names.push_back(name);
+        }
+      }
+      closedir(d);
+    }
+    for (const std::string &name : names) {
+      if (name.rfind("live-", 0) != 0 && name.rfind("stream-", 0) != 0) {
+        continue;
+      }
+      std::string body = read_file(grc::path_join(tap_dir, name));
+      for (const ConnectionSummary &cs : out.summaries) {
+        for (std::size_t at = body.find(cs.stream_id); at != std::string::npos;
+             at = body.find(cs.stream_id, at)) {
+          body.replace(at, cs.stream_id.size(), std::string(cs.stream_id.size(), '#'));
+        }
+      }
+      // The end record's stats hold timings (encode_ns_total): the tap is compared up to it.
+      if (name.rfind("stream-", 0) == 0) {
+        const std::size_t end = body.rfind("{\"type\":\"end\"");
+        out.files[name] = end == std::string::npos || end < 8 ? body : body.substr(0, end - 8);
+        continue;
+      }
+      // A host close line's t_us is the clock's, not the callback's; an end line's bytes count the
+      // end record's timing stats.
+      std::string kept;
+      std::size_t from = 0;
+      while (from < body.size()) {
+        std::size_t nl = body.find('\n', from);
+        if (nl == std::string::npos) {
+          nl = body.size();
+        }
+        const std::string line = body.substr(from, nl - from);
+        kept += has(line, "\"event\":\"close\"") ? "close"
+                : has(line, "\"event\":\"end\"") ? "end"
+                                                    : line;
+        kept += "\n";
+        from = nl + 1;
+      }
+      out.files[name] = kept;
+    }
+  }
+  return out;
+}
+
+std::uint64_t sum_of(const std::vector<ConnectionSummary> &all,
+                     std::uint64_t ConnectionSummary::*field) {
+  std::uint64_t n = 0;
+  for (const ConnectionSummary &cs : all) {
+    n += cs.*field;
+  }
+  return n;
+}
+
+void test_hc5_formation_thread() {
+  const std::string root = std::string(GRC_TEST_TMP_DIR) + "/hc5";
+  grc::make_directories(root + "/inline");
+  grc::make_directories(root + "/thread");
+  grc::make_directories(root + "/reorder");
+  const Hc5Run inline_run = hc5_run(Formation::Inline, false, root + "/inline");
+  const Hc5Run thread_run = hc5_run(Formation::Thread, false, root + "/thread");
+  // Order: every connection's messages, session included, are the inline hub's, byte for byte.
+  check(inline_run.binary.size() == 4 && inline_run.binary == thread_run.binary,
+        "HC5: the encode thread sends every connection the inline hub's messages, in its order");
+  for (const auto &entry : inline_run.binary) {
+    const auto other = thread_run.binary.find(entry.first);
+    check(other != thread_run.binary.end() && other->second.size() == entry.second.size(),
+          "HC5: connection " + std::to_string(entry.first) + " got " +
+              std::to_string(entry.second.size()) + " messages inline");
+  }
+  // Every transport call, texts and closes included, per connection in the same order.
+  for (std::uint32_t conn = 1; conn <= 4; ++conn) {
+    std::vector<std::string> a;
+    std::vector<std::string> b;
+    for (const Sent &x : inline_run.sent) {
+      if (x.conn == conn) {
+        a.push_back(std::to_string(x.kind) + ":" + std::to_string(x.bytes.size()) + x.text);
+      }
+    }
+    for (const Sent &x : thread_run.sent) {
+      if (x.conn == conn) {
+        b.push_back(std::to_string(x.kind) + ":" + std::to_string(x.bytes.size()) + x.text);
+      }
+    }
+    // The first and last binary messages (the session's fresh stream id; the end record's timing
+    // stats) may differ in size.
+    for (std::vector<std::string> *calls : {&a, &b}) {
+      const std::string binary = std::to_string(Sent::Binary) + ":";
+      for (std::size_t k = calls->size(); k-- > 0;) {
+        if ((*calls)[k].rfind(binary, 0) == 0) {
+          calls->erase(calls->begin() + static_cast<std::ptrdiff_t>(k));
+          break;
+        }
+      }
+      for (std::size_t k = 0; k < calls->size(); ++k) {
+        if ((*calls)[k].rfind(binary, 0) == 0) {
+          calls->erase(calls->begin() + static_cast<std::ptrdiff_t>(k));
+          break;
+        }
+      }
+    }
+    check(!a.empty() && a == b, "HC5: connection " + std::to_string(conn) +
+                                    "'s transport calls are the inline hub's");
+  }
+  // The taps and the live logs (stream ids masked, host close lines' clock aside) are equal.
+  check(inline_run.files.size() == 8 && inline_run.files == thread_run.files,
+        "HC5: taps and live logs equal the inline hub's (" +
+            std::to_string(inline_run.files.size()) + " files)");
+  for (const auto &entry : inline_run.files) {
+    const auto other = thread_run.files.find(entry.first);
+    if (other == thread_run.files.end() || other->second != entry.second) {
+      check(false, "HC5: " + entry.first + " differs");
+    }
+  }
+  // Sharing (P3-SP, W11b, W11t) holds on the encode thread: the lockstep pair shares.
+  const auto &a = inline_run.summaries;
+  const auto &b = thread_run.summaries;
+  check(sum_of(a, &ConnectionSummary::shared_sends) > 30 &&
+            sum_of(a, &ConnectionSummary::shared_sends) ==
+                sum_of(b, &ConnectionSummary::shared_sends) &&
+            sum_of(a, &ConnectionSummary::coded_shared) > 30 &&
+            sum_of(a, &ConnectionSummary::coded_shared) ==
+                sum_of(b, &ConnectionSummary::coded_shared),
+        "HC5: lockstep connections share transactions and coded bytes on the encode thread (" +
+            std::to_string(sum_of(b, &ConnectionSummary::shared_sends)) + " shared sends, " +
+            std::to_string(sum_of(b, &ConnectionSummary::coded_shared)) + " coded shares)");
+  bool same = a.size() == b.size();
+  for (std::size_t i = 0; same && i < a.size(); ++i) {
+    same = a[i].sent == b[i].sent && a[i].transactions == b[i].transactions &&
+           a[i].full == b[i].full && a[i].patch == b[i].patch &&
+           a[i].resource_records == b[i].resource_records &&
+           a[i].resource_bytes == b[i].resource_bytes && a[i].carried_size == b[i].carried_size &&
+           a[i].coded_messages == b[i].coded_messages &&
+           a[i].max_message_sent == b[i].max_message_sent && a[i].resyncs == b[i].resyncs &&
+           a[i].end_sent == b[i].end_sent && a[i].credits == b[i].credits;
+  }
+  check(same && a.size() == 4, "HC5: every connection's summary counters equal the inline hub's");
+  check(a.at(0).resource_records > 0 && a.at(3).resource_records > 0 && a.at(2).resyncs == 1,
+        "HC5: the run exercises /11 and /6 records and a resync");
+  // reorder (HC5 sabotage): the transaction leaves before its records, which a receiver refuses
+  // as resource-missing (the model receiver here; rs-core in run-hc1.sh's sabotage-reorder legs).
+  const Hc5Run reordered = hc5_run(Formation::Thread, false, root + "/reorder", 1);
+  std::vector<std::vector<std::uint8_t>> plain;  // connection 3: /11, uncoded
+  for (const std::vector<std::uint8_t> &m : reordered.binary.at(3)) {
+    if (m.size() == 1) {
+      continue;  // the magic + session message (zeroed)
+    }
+    std::string meta = meta_at(m, 0);
+    if (has(meta, "\"type\":\"end\"")) {
+      continue;
+    }
+    plain.push_back(m);
+  }
+  std::size_t recarried = 0;
+  std::string why;
+  check(!model_accepts(plain, make_template(Delivery::Inline).resources.inline_max_bytes, &recarried, &why) &&
+            why.rfind("resource-missing", 0) == 0,
+        "HC5 sabotage reorder: the receiver model refuses the stream with resource-missing: " +
+            why);
+  std::vector<std::vector<std::uint8_t>> honest;
+  for (const std::vector<std::uint8_t> &m : thread_run.binary.at(3)) {
+    if (m.size() == 1 || has(meta_at(m, 0), "\"type\":\"end\"")) {
+      continue;
+    }
+    honest.push_back(m);
+  }
+  why.clear();
+  check(model_accepts(honest, make_template(Delivery::Inline).resources.inline_max_bytes, &recarried, &why),
+        "HC5: the honest encode thread's /11 stream passes the receiver model " + why);
+}
+
+int main(int argc, char **argv) {
+  // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
+  // waiting for its own jobs, so the fake transport is read as before): the same checks hold.
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--formation=thread") {
+      grc::rs2::set_default_formation(grc::rs2::Formation::Thread, true);
+    }
+  }
   test_pm1_multimesh_buffer_f();
   test_pm5_v11_viewer_of_v12_host();
   grc::make_directories(std::string(GRC_TEST_TMP_DIR) + "/drop");
@@ -3188,6 +3476,7 @@ int main() {
   test_records_from_base_and_target();
   test_v11_connections();
   test_v11_live_coding();
+  test_hc5_formation_thread();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

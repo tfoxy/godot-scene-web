@@ -1901,6 +1901,22 @@ void stream_start() {
       live_ok = false;
       why = "sabotage coding-wrong-prefix: invalid GRC_SABOTAGE_FRAME (a positive frame)";
     }
+    // HC5 (host-cost-design.md D4): the hub's formation jobs run on one encode thread; the test
+    // knob GRC_HC_FORMATION=inline runs them on the frame callback's thread instead (the wire is
+    // byte-identical either way). GRC_HC_SABOTAGE=reorder: every job sends its transaction before
+    // its resource records (receivers refuse the stream with resource-missing).
+    {
+      const char *formation = std::getenv("GRC_HC_FORMATION");
+      live_config.formation = formation != nullptr && std::string(formation) == "inline"
+                                  ? rs2::Formation::Inline
+                                  : rs2::Formation::Thread;
+      live_config.formation_wait = false;
+      const char *hc = std::getenv("GRC_HC_SABOTAGE");
+      live_config.reorder_frame = hc != nullptr && std::string(hc) == "reorder" ? 1 : 0;
+      log_line(std::string("live: formation ") +
+               (live_config.formation == rs2::Formation::Thread ? "thread" : "inline") +
+               (live_config.reorder_frame != 0 ? " (sabotage reorder)" : ""));
+    }
     g_live.credit_window_max = live_config.credit_window_max;
     g_live.live_coding = rs::live_coding::to_token(live_config.live_coding);
     g_live.serving.http_encoding =
@@ -2454,6 +2470,18 @@ void stream_start() {
       ctx.main_thread = true;
       rs::resource_log().resource_event(ctx, op, hash, bytes, ok ? "ok" : "failed");
     });
+    // HC5 (host-cost-design.md D4 "File lanes"): with the P3-CAP writer, the lanes' records and
+    // transactions are formed on it too (GRC_HC_FORMATION=inline keeps them here).
+    const char *formation = std::getenv("GRC_HC_FORMATION");
+    if (g_stream.writer != nullptr &&
+        !(formation != nullptr && std::string(formation) == "inline")) {
+      g_stream.publisher->set_former(g_stream.writer.get());
+    }
+    log_line(std::string("stream: lane formation ") +
+             (g_stream.writer != nullptr &&
+                      !(formation != nullptr && std::string(formation) == "inline")
+                  ? "writer"
+                  : "inline"));
     if (!g_stream.publisher->start(session)) {
       log_line("stream: cannot write the session record");
       rs::mirror_enable(false);
@@ -2576,6 +2604,7 @@ void live_drain(uint64_t frame) {
   if (g_live.hub == nullptr || g_live.server == nullptr || g_live.stopped) {
     return;
   }
+  g_live.hub->sync();  // HC5: the previous callback's formation jobs, completed first
   for (const live::Event &event : g_live.server->take_events()) {
     if (event.kind == live::Event::HttpGet && event.method == "OPTIONS") {
       // G7n: a CORS preflight the server answered (204), counted per host (and, with one
@@ -3183,7 +3212,7 @@ void stream_publish(uint64_t frame) {
       if (g_stream.publisher == nullptr) {
         shared = std::make_shared<const rs::Captured>(std::move(snapshot));
       } else {
-        shared = std::make_shared<const rs::Captured>(*published);
+        shared = g_stream.publisher->last_published_shared();  // HC5: no copy
       }
       published = shared.get();
     }

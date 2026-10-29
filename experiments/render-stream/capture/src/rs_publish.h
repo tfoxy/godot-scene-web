@@ -56,6 +56,10 @@ class RecordSink {
   // Appends `bytes`. No implicit flush.
   virtual bool write(const std::vector<std::uint8_t> &bytes) = 0;
   virtual bool flush() = 0;
+  // HC5: write and flush now, on the calling thread, bypassing a FileRecordSink's writer (a
+  // Publisher's lane formation calls them from a task already running on that writer).
+  virtual bool write_direct(const std::vector<std::uint8_t> &bytes) { return write(bytes); }
+  virtual bool flush_direct() { return flush(); }
   virtual void close() = 0;
 };
 
@@ -70,6 +74,8 @@ class FileRecordSink : public RecordSink {
   bool open(const std::string &path) override;
   bool write(const std::vector<std::uint8_t> &bytes) override;
   bool flush() override;
+  bool write_direct(const std::vector<std::uint8_t> &bytes) override;
+  bool flush_direct() override;
   void close() override;
   // P3-CAP: queue every later write and flush on `writer` (nullptr: synchronous). write() and
   // flush() then report whether the writer is still healthy (a failure is seen one call later);
@@ -198,6 +204,15 @@ class Publisher {
 
   void set_resource_events(ResourceEventFn fn) { events_ = std::move(fn); }
 
+  // HC5 (host-cost-design.md D4, "File lanes"): each publish() then forms each lane's records and
+  // transaction (make_full / make_patch, encode_resource, encode_transaction) in one task on
+  // `writer`, queued behind that publication's store writes, and the task writes them with the
+  // sinks' write_direct(). The record plan, the carried set, the resource events and every
+  // decision stay on the calling thread; the bytes on disk are unchanged. The lanes' end stats
+  // are then the writer's until finish() drains it. Every sink must write to `writer` (or not
+  // queue at all). nullptr (the default): formation stays in publish().
+  void set_former(rs::FileWriter *writer) { former_ = writer; }
+
   // Writes the magic and a session record to each sink (one flush per sink). Each sink's session
   // is `tmpl` (same session_id) with its own fresh stream_id, transport file, connection null,
   // encoding full / patch, and the file `resources` object of this publisher's policy. Returns
@@ -234,7 +249,11 @@ class Publisher {
   // The one published copy of the last publish() call (sabotages applied, seq and frame set), or
   // null before the first. The live adapter delivers this same copy (gate1-design.md Q4: one
   // snapshot per frame feeds every sink and every connection).
-  const rs::Captured *last_published() const { return has_previous_ ? &previous_ : nullptr; }
+  const rs::Captured *last_published() const { return has_previous_ ? previous_.get() : nullptr; }
+  // HC5: the same copy, shared (immutable once published), so the live hub holds it as is.
+  std::shared_ptr<const rs::Captured> last_published_shared() const {
+    return has_previous_ ? previous_ : nullptr;
+  }
   // stale-texture: the id it froze (0 until the sabotage found its texture).
   std::uint32_t stale_texture_id() const { return stale_id_; }
 
@@ -255,9 +274,25 @@ class Publisher {
   const Lane &lane(Encoding encoding) const {
     return encoding == Encoding::Full ? lanes_[0] : lanes_[1];
   }
+  // HC5: one lane's formation for one publication (run by publish() or by a writer task).
+  struct LaneJob {
+    Lane *lane = nullptr;
+    std::shared_ptr<const rs::Captured> base;  // the patch lane's base; null: a full transaction
+    std::shared_ptr<const rs::Captured> target;
+    std::vector<std::string> records;  // the inline records' hashes, in order
+    bool drop_item = false;            // patch-drop-item, at its frame
+    bool perturb_instance = false;
+    bool perturb_seed = false;
+    std::uint64_t frame = 0;
+    std::uint64_t snapshot_ns = 0;
+  };
+  // Forms and writes the job's records and transaction. `direct`: on the writer thread (the
+  // sinks' write_direct); otherwise through write() with the resource events per record.
+  bool form_lane(const LaneJob &job, bool direct);
   bool write_transaction(Lane *lane, const Transaction &transaction, std::uint64_t form_ns,
-                         std::uint64_t diff_ns, std::uint64_t snapshot_ns);
-  bool write_inline(Lane *lane, const rs::Captured &published, std::uint64_t frame);
+                         std::uint64_t diff_ns, std::uint64_t snapshot_ns, bool direct);
+  // The lane's inline records before `published` (the hashes, in order), on the calling thread.
+  bool plan_inline(Lane *lane, const rs::Captured &published, std::vector<std::string> *records);
   bool store_payloads(const rs::Captured &published, std::uint64_t frame);
   void apply_stale_texture(rs::Captured *captured, std::uint64_t frame);
 
@@ -271,8 +306,9 @@ class Publisher {
   bool stamp_v8_ = false;  // G8w: the session template speaks /8, /9 or /10 (start())
   ProtocolVersion stamp_version_ = ProtocolVersion::V6;  // the version to stamp when stamp_v8_
   bool finished_ = false;
-  // The previous published snapshot: the patch sink's base and last_published().
-  rs::Captured previous_;
+  // The previous published snapshot: the patch sink's base and last_published(). HC5: shared, so
+  // a lane formation task and the live hub hold it without a copy.
+  std::shared_ptr<const rs::Captured> previous_;
   bool has_previous_ = false;
   // The last published, pre-sabotage content: what freeze-frame republishes once
   // GRC_SABOTAGE_FRAME is reached. Kept only under freeze-frame.
@@ -282,6 +318,7 @@ class Publisher {
   std::uint32_t stale_id_ = 0;
   TextureEntry stale_entry_;
   rs::PayloadPtr stale_payload_;
+  rs::FileWriter *former_ = nullptr;  // HC5: set_former()
 };
 
 }  // namespace rs2

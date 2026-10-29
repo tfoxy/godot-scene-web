@@ -141,6 +141,25 @@
 //     add `in_flight_seqs` (every slot, oldest first; `in_flight` stays the newest). Window 1 is
 //     byte for byte the delivery above (test/rs_live_window_test.cpp's pinned transcripts).
 // A /6 connection is byte for byte what it was before G7n.
+//
+// Formation (HC5, host-cost-design.md D4 "Moving work off the main thread"): the frame callback
+// decides everything that is frame-paired (which connections send, the target, the base, seq and
+// frame, credit, the window, rate ticks, pins, the below-/11 carried marks) and queues one job per
+// sending connection. A job forms what that decision implies -- the /11 record plan, the resource
+// records, the transaction (make_full / make_patch, encode_transaction, or a re-stamp of a
+// lockstep connection's bytes), the live coding (zstd) -- and hands every message to the
+// transport in the hub's order: the session message (a connection's first), its resource records,
+// then its transaction. The jobs of one callback run in submission order, so the P3-SP memo is
+// the job runner's: a second lockstep connection's job finds the first one's bytes. Published
+// states are immutable (HC4a/HC4b), so a job reads its base and target without a lock; it touches
+// no hub state but the memo and its connection's FormState (the coding prefix; W13b's /13
+// predictor rides there too), and reports what it did (counters, live-log lines, a too-large
+// error) in the job itself. The frame callback's thread completes the jobs (`sync()`, at every
+// later entry point: the next event, frame, finish, GET or summary), applying the counters and
+// writing the live log in the order a synchronous hub would have written it. LiveConfig::
+// formation chooses where jobs run: Inline (at the end of the frame callback, on its thread: the
+// tests' default) or Thread (one encode thread: entry.cpp's default, GRC_HC_FORMATION=inline
+// selects Inline). The wire is byte-identical either way; only when the bytes leave differs.
 #ifndef GRC_RS_LIVE_H
 #define GRC_RS_LIVE_H
 
@@ -291,6 +310,15 @@ inline constexpr const char *kSubprotocolV11 = "render-stream.11";
 // PM5 (render-stream-12.md): /11's live transport under render-stream/12.
 inline constexpr const char *kSubprotocolV12 = "render-stream.12";
 
+// HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
+enum class Formation : std::uint8_t { Inline, Thread };
+
+// The formation a default-constructed LiveConfig gets (Inline unless set). The test binaries set
+// Thread to run every hub test through the encode thread (with formation_wait).
+Formation default_formation();
+bool default_formation_wait();
+void set_default_formation(Formation formation, bool wait);
+
 struct LiveConfig {
   std::uint64_t max_message_bytes = 16u << 20;  // GRC_LIVE_MAX_MESSAGE_BYTES
   std::uint64_t hello_timeout_ms = 5000;        // GRC_LIVE_HELLO_TIMEOUT_MS
@@ -327,6 +355,13 @@ struct LiveConfig {
   // empty: no session auth, a /7 hello's token is not checked (`token_ok` null).
   std::string auth_token;
   bool token_ignored = false;  // G7n sabotage token-ignored: a wrong /7 token is not refused.
+  // HC5: the formation jobs' thread. `formation_wait` (tests) makes each frame callback wait for
+  // its own jobs and complete them before it returns, so a test reads the transport at once.
+  Formation formation = default_formation();
+  bool formation_wait = default_formation_wait();
+  // HC5 sabotage `reorder` (GRC_HC_SABOTAGE=reorder, a test knob, never on the wire): from this
+  // frame on, a job sends its transaction before its resource records (0: off).
+  std::uint64_t reorder_frame = 0;
 };
 
 // One connection's transport-level event, as the caller drains it from the server. `t_ns` is
@@ -510,6 +545,11 @@ class Hub {
   // then calls on_frame for the same callback).
   void on_event(const LiveEvent &event, std::uint64_t frame);
 
+  // HC5: waits for every formation job queued so far and completes them (their counters, live-log
+  // lines and errors), in submission order. Every entry point that reads or writes connection
+  // state calls it first; entry.cpp also calls it at the top of each frame callback.
+  void sync();
+
   // True when on_frame needs a snapshot at callback `frame`/`now_ns`: a connection holds a
   // received hello, or is streaming with credit and (under rate control, G6r) a tick due at
   // `now_ns` (or, under the G1d sabotages, would send without credit or keep a stale copy).
@@ -604,21 +644,20 @@ class Hub {
   // W11t: a coded connection's wire bytes for a non-transaction message (memoized by `memo_key`
   // when not empty: a /11 record's hash) and for a transaction (memoized per callback by its
   // uncoded base and target messages and their seqs). Null when the coder failed.
+  // HC5: `coded_shared` and `coding_ns` are the caller's counters (a job's, or a connection's).
   std::shared_ptr<const std::vector<std::uint8_t>> coded_plain(
-      Conn &c, const std::vector<std::uint8_t> &message, const std::string &memo_key);
-  std::shared_ptr<const std::vector<std::uint8_t>> coded_tx(
-      Conn &c, const std::shared_ptr<const std::vector<std::uint8_t>> &message, std::uint64_t seq,
-      std::uint64_t frame, std::uint64_t now_ns);
-  // Forms, encodes and sends (or, under drop-message, only taps) the next transaction. Returns
-  // the live log's `sent` object, or "null" when the connection was closed instead.
+      std::uint64_t *coded_shared, std::uint64_t *coding_ns,
+      const std::vector<std::uint8_t> &message, const std::string &memo_key);
+  // Decides the next transaction (or, under drop-message, a tapped-only one) and queues its
+  // formation in this callback's job for the connection (HC5); the connection's state advances
+  // at once. The live log's `sent` object is written when the job completes.
   // `stale_from` (stale-coalesce) is the frame the snapshot was taken at, 0 otherwise.
   // `capture_ns` (G6r Q3c "Staleness") is the frame callback's time the snapshot was captured at
   // -- `now_ns` for a fresh send, or the earlier time it was set aside for a stale-coalesce send.
-  std::string send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &snapshot,
-                               std::uint64_t frame,
-                               std::uint64_t now_ns, std::uint64_t epoch,
-                               std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
-                               std::uint64_t stale_from = 0);
+  void send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &snapshot,
+                        std::uint64_t frame, std::uint64_t now_ns, std::uint64_t epoch,
+                        std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
+                        std::uint64_t stale_from = 0);
   void note_pending_age(Conn &c, std::uint64_t frame, std::uint64_t now_ns);
   void log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool credit_before,
                  const std::string &sent_json);
@@ -633,7 +672,20 @@ class Hub {
   // `now_ns`. No-op under GRC_PUBLISH_FPS=uncapped.
   void advance_schedule(Conn &c, std::uint64_t now_ns);
 
-  // P3-SP: one frame callback's shared work (cleared at the start and end of on_frame_shared).
+  // P3-SP: one frame callback's shared work. HC5: the formation memo is the job runner's.
+  struct FormState;  // HC5: a connection's state on the formation side (the coding prefix)
+  struct Job;        // HC5: one connection's formation for one frame callback
+  struct Memo;       // HC5: the formation memo of one frame callback (P3-SP, W11b, W11t)
+  struct Counters;   // HC5: what a job adds to its connection's summary and end stats
+  class Former;      // HC5: the encode thread
+  Job &batch_job(Conn &c);
+  void submit_batch();
+  void run_job(Job &job);
+  void complete(Job &job);
+  bool form_deliver(Job &job, const std::vector<std::uint8_t> &message, bool send,
+                    const std::vector<std::uint8_t> *wire);
+  std::shared_ptr<const std::vector<std::uint8_t>> form_coded_tx(
+      Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &message);
   struct TargetRefs;  // a target's payload refs and their CarriedIndex ids
   struct SharedTx;    // an encoded transaction other connections may re-stamp
   struct V11Records;  // W11b: the /11 records before a target, for one (base, target) pair
@@ -643,7 +695,6 @@ class Hub {
   const V11Records &v11_records(const std::shared_ptr<const rs::Captured> &base,
                                 const std::shared_ptr<const rs::Captured> &target,
                                 bool lower = false);
-  void clear_frame_memo();
 
   LiveTransport *transport_;
   LiveConfig config_;
@@ -660,17 +711,15 @@ class Hub {
   std::string finish_reason_;
   std::uint64_t frame_ = 0;  // the frame callback being processed (for log lines)
   CarriedIndex carried_;     // P3-SP: every connection's carried hashes
-  std::vector<std::unique_ptr<TargetRefs>> frame_targets_;
-  std::vector<std::unique_ptr<SharedTx>> frame_txs_;
-  std::map<std::uint32_t, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_;
-  // W11b: /11's per-callback memo, the record list of each (base, target) pair and each record's
-  // encode by hash (a /11 record is never a CarriedIndex entry).
-  std::vector<std::unique_ptr<V11Records>> frame_v11_;
-  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_v11_;
-  // W11t: the callback's coded transactions, and each /11 record's plain-coded bytes by hash.
-  std::vector<std::unique_ptr<CodedTx>> frame_coded_;
-  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> frame_records_coded_;
+  std::vector<std::unique_ptr<TargetRefs>> frame_targets_;  // the callback's (below /11, main)
+  // HC5: the formation side. `memo_` (Memo: P3-SP's shared transactions and below-/11 record
+  // encodes, W11b's record plans and /11 record encodes, W11t's coded messages) and
+  // `wrong_prefix_done_` belong to whichever thread runs the jobs; `batch_` is the jobs this
+  // frame callback is building; `former_` is the encode thread (Formation::Thread only).
+  std::unique_ptr<Memo> memo_;
   bool wrong_prefix_done_ = false;
+  std::vector<std::unique_ptr<Job>> batch_;
+  std::unique_ptr<Former> former_;
 };
 
 }  // namespace rs2

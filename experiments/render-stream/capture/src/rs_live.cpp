@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <utility>
 
 #include "report.h"
@@ -708,6 +711,18 @@ LatencyStats latency_stats(std::vector<std::uint64_t> samples) {
 
 // ----------------------------------------------------------------- hub
 
+namespace {
+Formation g_default_formation = Formation::Inline;
+bool g_default_formation_wait = false;
+}  // namespace
+
+Formation default_formation() { return g_default_formation; }
+bool default_formation_wait() { return g_default_formation_wait; }
+void set_default_formation(Formation formation, bool wait) {
+  g_default_formation = formation;
+  g_default_formation_wait = wait;
+}
+
 struct Hub::Conn {
   std::uint32_t id = 0;
   ConnectionSummary s;
@@ -751,10 +766,13 @@ struct Hub::Conn {
   // W11b: a /11 connection's carried set is inline(base) (L2), never held; only the keep-carried
   // sabotage gives it a lifelong RecordPlanner. `carried_count` then reports |inline(base)|.
   std::unique_ptr<RecordPlanner> keep_carried;
-  // W11t: the connection's live coding (negotiated at the hello, /11 only), and the uncoded
-  // message of the last transaction formed on it (sent or dropped): the next patch's prefix.
+  // W11t: the connection's live coding (negotiated at the hello, /11 only). The uncoded message
+  // of the last transaction formed on it (the next patch's prefix) is `form->last_tx` (HC5).
   rs::live_coding::Coding coding = rs::live_coding::Coding::Off;
-  std::shared_ptr<const std::vector<std::uint8_t>> last_tx;
+  // HC5: the connection's formation-side state (stable: the job runner holds a pointer), and the
+  // job this frame callback is building for it (null outside on_frame_shared).
+  std::unique_ptr<FormState> form;
+  Job *job = nullptr;
   std::uint64_t stale_frame = 0;
   std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
   // G7q, stale-coalesce at window >= 2: the stale target just sent stays the target of every
@@ -817,6 +835,88 @@ struct Hub::SharedTx {
   std::shared_ptr<const std::vector<std::uint8_t>> bytes;
 };
 
+// HC5 (rs_live.h header, "Formation"): a connection's state on the formation side, touched only
+// by whichever thread runs the jobs (the main thread creates it at open, and clears `tap` only
+// after a sync, when no job is outstanding). W13b: the per-connection /13 predictor state goes
+// here, beside the coding prefix, and advances in job order like it.
+struct Hub::FormState {
+  std::uint32_t id = 0;  // the transport connection id
+  std::FILE *tap = nullptr;
+  rs::live_coding::Coding coding = rs::live_coding::Coding::Off;
+  // W11t: the uncoded message of the last transaction formed on this connection (sent or
+  // dropped): the next patch's coding prefix.
+  std::shared_ptr<const std::vector<std::uint8_t>> last_tx;
+};
+
+// HC5: what a job adds to its connection's summary (`s`) and end stats (`stats`): the fields a
+// synchronous send_transaction() used to update while it formed and delivered.
+struct Hub::Counters {
+  std::uint64_t bytes_sent = 0;
+  std::uint64_t max_message_sent = 0;
+  std::uint64_t coded_messages = 0;
+  std::uint64_t coded_prefixed = 0;
+  std::uint64_t coded_shared = 0;
+  std::uint64_t coded_input_bytes = 0;
+  std::uint64_t coded_wire_bytes = 0;
+  std::uint64_t coding_ns = 0;
+  std::uint64_t shared_sends = 0;
+  std::uint64_t resource_records = 0;
+  std::uint64_t resource_bytes = 0;
+  std::uint64_t record_bytes_total = 0;  // the records' message bytes (EndStats::bytes_total)
+  std::uint64_t max_record_bytes = 0;
+  std::uint64_t wrong_prefix_seq = 0;
+  std::vector<std::uint64_t> enqueue_us;  // Q3d enqueue_us samples, in send order
+};
+
+// HC5: one connection's formation for one frame callback. The main thread fills the inputs and
+// the frame line's fields, the job runner fills `out`, the main thread completes it (complete()).
+struct Hub::Job {
+  Conn *conn = nullptr;       // read by complete() only (main thread)
+  FormState *form = nullptr;  // the runner's per-connection state
+  bool batch_end = false;     // the callback's last job: releases the memo, flushes the taps
+  std::uint64_t frame = 0;
+  std::uint64_t now_ns = 0;
+  std::uint64_t max_message_bytes = 0;
+  // A connection's first job: the magic + session message (encoded and size-checked already).
+  std::shared_ptr<const std::vector<std::uint8_t>> session;
+  // The transaction (every job but a batch end has one).
+  bool has_tx = false;
+  std::shared_ptr<const rs::Captured> target;
+  bool v11 = false;
+  // /11 without keep-carried: the runner plans the records before `target` from `record_base`
+  // (W11b, HC4b plan_v11_records); otherwise `given` are the hashes the main thread chose (the
+  // below-/11 CarriedIndex walk, keep-carried's planner) with their CarriedIndex ids.
+  bool plan_v11 = false;
+  bool lower = false;
+  std::shared_ptr<const rs::Captured> record_base;
+  std::vector<std::pair<std::string, std::uint32_t>> given;
+  TxMeta meta;
+  bool full = false;
+  std::shared_ptr<const rs::Captured> tx_base;  // null for a full transaction
+  bool send = true;      // false: drop-message (formed, tapped, never sent)
+  bool reorder = false;  // HC5 sabotage: the transaction goes out before its records
+  // The frame line (log_frame), written when the job completes.
+  bool frame_line = false;
+  bool credit_before = false;
+  bool drop = false;
+  bool had_credit = false;
+  std::uint64_t stale_from = 0;
+  std::uint64_t snapshot_ns = 0;
+  // Out (the runner).
+  Counters out;
+  std::vector<std::string> lines;  // live-log event lines, in the order formed
+  bool planned = false;
+  std::uint64_t inline_count = 0;
+  bool error = false;  // message-too-large: the error text went out, nothing after it
+  std::string error_detail;
+  bool tx_formed = false;
+  std::uint64_t tx_bytes = 0;
+  std::uint64_t diff_ns = 0;
+  std::uint64_t encode_ns = 0;
+  std::unique_ptr<Memo> retired;  // batch end: the callback's memo, released on the main thread
+  std::vector<std::FILE *> flush;  // batch end: the taps to flush
+};
+
 // W11t: a transaction coded in this frame callback. Its coded bytes are a function of the uncoded
 // base and target messages (seq and base_seq included, which the envelope repeats), so another
 // connection with byte-equal ones reuses them: lockstep viewers share the compressed bytes.
@@ -826,6 +926,91 @@ struct Hub::CodedTx {
   std::uint64_t seq = 0;
   std::uint64_t base_seq = 0;
   std::shared_ptr<const std::vector<std::uint8_t>> coded;
+};
+
+// HC5: one frame callback's formation memo (P3-SP, W11b, W11t), the job runner's. It holds
+// snapshots, so a batch end hands it back to the main thread to release.
+struct Hub::Memo {
+  std::vector<std::unique_ptr<SharedTx>> txs;
+  std::map<std::uint32_t, std::shared_ptr<const std::vector<std::uint8_t>>> records;  // by id
+  // W11b: the record list of each (base, target) pair and each /11 record's encode by hash.
+  std::vector<std::unique_ptr<V11Records>> v11;
+  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> records_v11;
+  // W11t: the callback's coded transactions, and each /11 record's plain-coded bytes by hash.
+  std::vector<std::unique_ptr<CodedTx>> coded;
+  std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> records_coded;
+};
+
+// HC5: the encode thread. Jobs run strictly in submission order; take() waits until every job
+// submitted so far has run and returns them in that order, for the main thread to complete.
+class Hub::Former {
+ public:
+  explicit Former(Hub *hub) : hub_(hub) { thread_ = std::thread([this] { run(); }); }
+  ~Former() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_ = true;
+    }
+    work_.notify_all();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+  Former(const Former &) = delete;
+  Former &operator=(const Former &) = delete;
+
+  void submit(std::vector<std::unique_ptr<Job>> jobs) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto &job : jobs) {
+        queue_.push_back(std::move(job));
+      }
+    }
+    work_.notify_one();
+  }
+  bool idle() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.empty() && running_ == 0 && done_.empty();
+  }
+  std::vector<std::unique_ptr<Job>> take() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    idle_.wait(lock, [&] { return queue_.empty() && running_ == 0; });
+    std::vector<std::unique_ptr<Job>> out;
+    std::swap(out, done_);
+    return out;
+  }
+
+ private:
+  void run() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+      work_.wait(lock, [&] { return stopping_ || !queue_.empty(); });
+      if (queue_.empty()) {
+        return;  // stopping, and everything queued has run
+      }
+      std::unique_ptr<Job> job = std::move(queue_.front());
+      queue_.pop_front();
+      ++running_;
+      lock.unlock();
+      hub_->run_job(*job);
+      lock.lock();
+      --running_;
+      done_.push_back(std::move(job));
+      if (queue_.empty() && running_ == 0) {
+        idle_.notify_all();
+      }
+    }
+  }
+
+  Hub *hub_;
+  mutable std::mutex mutex_;
+  std::condition_variable work_;
+  std::condition_variable idle_;
+  std::deque<std::unique_ptr<Job>> queue_;
+  std::vector<std::unique_ptr<Job>> done_;
+  unsigned running_ = 0;
+  bool stopping_ = false;
+  std::thread thread_;
 };
 
 namespace {
@@ -911,7 +1096,7 @@ const Hub::V11Records &Hub::v11_records(const std::shared_ptr<const rs::Captured
                                         bool lower) {
   lower = lower && (target->state.particles_commands ||
                     (base != nullptr && base->state.particles_commands));
-  for (const auto &r : frame_v11_) {
+  for (const auto &r : memo_->v11) {
     if (r->base == base && r->target == target && r->lowered == lower) {
       return *r;
     }
@@ -929,45 +1114,37 @@ const Hub::V11Records &Hub::v11_records(const std::shared_ptr<const rs::Captured
     const Snapshot b = base != nullptr ? lower_particles(base->state) : Snapshot();
     r->records = records_before(base != nullptr ? &b : nullptr, t, policy);
     r->inline_count = inline_names(t, policy).size();
-    frame_v11_.push_back(std::move(r));
-    return *frame_v11_.back();
+    memo_->v11.push_back(std::move(r));
+    return *memo_->v11.back();
   }
   // HC4b: over the entries base and target do not share (rs_records.h).
   rs::RecordPlan plan = rs::plan_v11_records(base.get(), *target, policy);
   r->records = std::move(plan.records);
   r->inline_count = plan.inline_count;
-  frame_v11_.push_back(std::move(r));
-  return *frame_v11_.back();
-}
-
-void Hub::clear_frame_memo() {
-  frame_targets_.clear();
-  frame_txs_.clear();
-  frame_records_.clear();
-  frame_v11_.clear();
-  frame_records_v11_.clear();
-  frame_coded_.clear();
-  frame_records_coded_.clear();
+  memo_->v11.push_back(std::move(r));
+  return *memo_->v11.back();
 }
 
 std::shared_ptr<const std::vector<std::uint8_t>> Hub::coded_plain(
-    Conn &c, const std::vector<std::uint8_t> &message, const std::string &memo_key) {
+    std::uint64_t *coded_shared, std::uint64_t *coding_ns,
+    const std::vector<std::uint8_t> &message, const std::string &memo_key) {
+  // HC5: a non-empty memo_key reads the job runner's memo, so only a job passes one.
   if (!memo_key.empty()) {
-    const auto found = frame_records_coded_.find(memo_key);
-    if (found != frame_records_coded_.end()) {
-      ++c.s.coded_shared;
+    const auto found = memo_->records_coded.find(memo_key);
+    if (found != memo_->records_coded.end()) {
+      ++*coded_shared;
       return found->second;
     }
   }
   const std::uint64_t t0 = monotonic_ns();
   auto out = std::make_shared<std::vector<std::uint8_t>>();
   const bool ok = rs::live_coding::encode_plain(message.data(), message.size(), out.get());
-  c.s.coding_ns = saturating_add(c.s.coding_ns, monotonic_ns() - t0);
+  *coding_ns = saturating_add(*coding_ns, monotonic_ns() - t0);
   if (!ok) {
     return nullptr;
   }
   if (!memo_key.empty()) {
-    frame_records_coded_[memo_key] = out;
+    memo_->records_coded[memo_key] = out;
   }
   return out;
 }
@@ -987,23 +1164,28 @@ bool same_bytes(const std::shared_ptr<const std::vector<std::uint8_t>> &a,
 
 }  // namespace
 
-std::shared_ptr<const std::vector<std::uint8_t>> Hub::coded_tx(
-    Conn &c, const std::shared_ptr<const std::vector<std::uint8_t>> &message, std::uint64_t seq,
-    std::uint64_t frame, std::uint64_t now_ns) {
+std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_coded_tx(
+    Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &message) {
   using rs::live_coding::Coding;
+  FormState &f = *job.form;
+  Counters &o = job.out;
+  const std::uint64_t seq = job.meta.seq;
+  const std::uint64_t frame = job.frame;
+  const std::uint64_t now_ns = job.now_ns;
   const std::shared_ptr<const std::vector<std::uint8_t>> base =
-      c.coding == Coding::ZstdBase ? c.last_tx : nullptr;
-  const std::uint64_t base_seq = base != nullptr ? c.base_seq : 0;
+      f.coding == Coding::ZstdBase ? f.last_tx : nullptr;
+  // The base this patch names: the last transaction formed on the connection (its seq).
+  const std::uint64_t base_seq = base != nullptr ? job.meta.base_seq : 0;
   if (base != nullptr) {
-    ++c.s.coded_prefixed;
+    ++o.coded_prefixed;
   }
   const bool sabotage = base != nullptr && config_.coding_wrong_prefix_frame != 0 &&
                         !wrong_prefix_done_ && frame >= config_.coding_wrong_prefix_frame;
   if (!sabotage) {
-    for (const auto &m : frame_coded_) {
+    for (const auto &m : memo_->coded) {
       if (m->seq == seq && m->base_seq == base_seq && same_bytes(m->target, message) &&
           same_bytes(m->base, base)) {
-        ++c.s.coded_shared;
+        ++o.coded_shared;
         return m->coded;
       }
     }
@@ -1030,18 +1212,18 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::coded_tx(
          decoded != *message)) {
       out = bad;
       wrong_prefix_done_ = true;
-      c.s.wrong_prefix_seq = seq;
-      log_line(c, Line()
-                      .num("frame", frame)
-                      .num("t_us", now_ns / 1000)
-                      .str("event", "sabotage")
-                      .str("kind", "coding-wrong-prefix")
-                      .num("seq", seq)
-                      .num("base_seq", base_seq)
-                      .take());
+      o.wrong_prefix_seq = seq;
+      job.lines.push_back(Line()
+                              .num("frame", frame)
+                              .num("t_us", now_ns / 1000)
+                              .str("event", "sabotage")
+                              .str("kind", "coding-wrong-prefix")
+                              .num("seq", seq)
+                              .num("base_seq", base_seq)
+                              .take());
     }
   }
-  c.s.coding_ns = saturating_add(c.s.coding_ns, monotonic_ns() - t0);
+  o.coding_ns = saturating_add(o.coding_ns, monotonic_ns() - t0);
   if (!ok) {
     return nullptr;
   }
@@ -1052,15 +1234,24 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::coded_tx(
     m->seq = seq;
     m->base_seq = base_seq;
     m->coded = out;
-    frame_coded_.push_back(std::move(m));
+    memo_->coded.push_back(std::move(m));
   }
   return out;
 }
 
 Hub::Hub(LiveTransport *transport, LiveConfig config, Session session_template)
-    : transport_(transport), config_(std::move(config)), template_(std::move(session_template)) {}
+    : transport_(transport),
+      config_(std::move(config)),
+      template_(std::move(session_template)),
+      memo_(std::make_unique<Memo>()) {
+  if (config_.formation == Formation::Thread) {
+    former_ = std::make_unique<Former>(this);
+  }
+}
 
 Hub::~Hub() {
+  former_.reset();  // HC5: runs what is queued, then joins the encode thread
+  batch_.clear();
   for (auto &entry : conns_) {
     close_files(*entry.second);
   }
@@ -1094,6 +1285,10 @@ void Hub::flush_taps() {
 
 void Hub::close_files(Conn &c) {
   if (c.tap != nullptr) {
+    // HC5: only after a sync (no job of this connection outstanding), or at destruction.
+    if (c.form != nullptr) {
+      c.form->tap = nullptr;
+    }
     std::fclose(c.tap);
     c.tap = nullptr;
   }
@@ -1157,6 +1352,7 @@ void Hub::error_close(Conn &c, const std::string &reason, const std::string &det
 }
 
 void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
+  sync();
   frame_ = frame;
   if (finished_ && event.kind == LiveEvent::Opened) {
     // A connection that arrives after finish is closed at once and not tracked. Text and Closed
@@ -1204,6 +1400,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
           std::setvbuf(c.tap, nullptr, _IOFBF, 1u << 20);
         }
       }
+      c.form = std::make_unique<FormState>();
+      c.form->id = c.id;
+      c.form->tap = c.tap;
       conns_[event.conn] = std::move(conn);
       Line open;
       open.num("frame", frame)
@@ -1598,11 +1797,31 @@ void Hub::advance_schedule(Conn &c, std::uint64_t now_ns) {
   c.next_due_ns += steps * config_.publish_period_ns;
 }
 
-std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &target,
-                                  std::uint64_t frame, std::uint64_t now_ns, std::uint64_t epoch,
-                                  std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
-                                  std::uint64_t stale_from) {
+Hub::Job &Hub::batch_job(Conn &c) {
+  if (c.job == nullptr) {
+    auto job = std::make_unique<Job>();
+    job->conn = &c;
+    job->form = c.form.get();
+    batch_.push_back(std::move(job));
+    c.job = batch_.back().get();
+  }
+  return *c.job;
+}
+
+void Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &target,
+                           std::uint64_t frame, std::uint64_t now_ns, std::uint64_t epoch,
+                           std::uint64_t snapshot_ns, bool first, std::uint64_t capture_ns,
+                           std::uint64_t stale_from) {
   const rs::Captured &snapshot = *target;
+  Job &job = batch_job(c);
+  job.frame = frame;
+  job.now_ns = now_ns;
+  job.max_message_bytes = c.s.max_message_bytes;
+  job.has_tx = true;
+  job.target = target;
+  job.snapshot_ns = snapshot_ns;
+  job.stale_from = stale_from;
+  job.reorder = config_.reorder_frame != 0 && frame >= config_.reorder_frame;
   // G2b2: the inline payloads this connection has not carried yet, one resource record per
   // message, ahead of the transaction that needs them (render-stream-2.md "Live transport");
   // since G5e every `ok` mesh's surfaces too, after the textures. P3-SP: the hashes are looked up
@@ -1612,102 +1831,46 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   // W11b (render-stream-11.md "Resource retention"): a /11 connection sends the hashes of
   // inline(T) not in inline(B), B the last snapshot it sent (rs2_diff.h records_before), in the
   // same table order, and marks nothing: its carried set is inline(B) by L2. keep-carried keeps
-  // /10's set instead.
+  // /10's set instead. HC5: the /11 plan is the job's (a function of (B, T) alone); the
+  // below-/11 walk marks the CarriedIndex here, so it stays on the frame callback's thread.
   const bool v11 = is_v11_or_later(c.version);
-  std::vector<std::pair<const std::string *, std::uint32_t>> to_send;  // (hash, CarriedIndex id)
-  std::vector<PayloadName> kept;  // keep-carried's records (to_send points into it)
+  job.v11 = v11;
   if (v11) {
     const std::shared_ptr<const rs::Captured> record_base = c.has_base ? c.base : nullptr;
     if (c.keep_carried != nullptr) {
-      kept = c.keep_carried->next(record_base != nullptr ? &record_base->state : nullptr,
-                                  snapshot.state);
+      const std::vector<PayloadName> kept = c.keep_carried->next(
+          record_base != nullptr ? &record_base->state : nullptr, snapshot.state);
       for (const PayloadName &name : kept) {
-        to_send.emplace_back(&name.hash, CarriedIndex::kNoId);
+        job.given.emplace_back(name.hash, CarriedIndex::kNoId);
       }
       c.carried_count = c.keep_carried->carried_count();
     } else {
-      const V11Records &records =
-          v11_records(record_base, target, !is_v12_or_later(c.version));
-      for (const PayloadName &name : records.records) {
-        to_send.emplace_back(&name.hash, CarriedIndex::kNoId);
-      }
-      c.carried_count = records.inline_count;  // C after this transaction is inline(T) (L2)
+      job.plan_v11 = true;
+      job.lower = !is_v12_or_later(c.version);
+      job.record_base = record_base;
     }
   } else {
     const TargetRefs &refs = target_refs(target);
     for (std::size_t i = 0; i < refs.refs.size(); ++i) {
       const std::uint32_t id = refs.ids[i];
       if (id == CarriedIndex::kNoId || carried_.carried(id, c.carried_slot)) {
-        continue;
+        continue;  // too large, or carried (also: a hash payload_refs names twice, just now)
       }
       if (refs.refs[i].shader != nullptr && refs.refs[i].shader->has_ppm) {
         continue;  // PM5: a process-material shader is a payload only at /12 (lower_particles)
       }
-      to_send.emplace_back(refs.refs[i].hash, id);
-    }
-  }
-  for (const auto &send : to_send) {
-    const std::string &hash = *send.first;
-    const std::uint32_t id = send.second;
-    if (!v11 && carried_.carried(id, c.carried_slot)) {
-      continue;  // a hash payload_refs names twice: carried by its first occurrence just now
-    }
-    const auto payload = snapshot.payloads.find(hash);
-    if (payload == snapshot.payloads.end() || payload->second == nullptr) {
-      continue;  // never happens: a Captured holds every payload its tables name
-    }
-    std::shared_ptr<const std::vector<std::uint8_t>> &record_bytes =
-        v11 ? frame_records_v11_[hash] : frame_records_[id];
-    if (record_bytes == nullptr) {
-      ResourceRecord record;
-      record.hash = hash;
-      record.payload = *payload->second;
-      record_bytes = std::make_shared<const std::vector<std::uint8_t>>(encode_resource(record));
-    }
-    const std::vector<std::uint8_t> &bytes = *record_bytes;
-    const std::uint64_t payload_size = payload->second->size();
-    if (bytes.size() > c.s.max_message_bytes) {
-      const std::string detail = "resource " + hash + " is " +
-                                 std::to_string(bytes.size()) + " bytes, the cap is " +
-                                 std::to_string(c.s.max_message_bytes);
-      transport_->send_text(c.id, encode_error("message-too-large", detail));
-      c.s.error_sent = "message-too-large";
-      log_line(c, Line()
-                      .num("frame", frame)
-                      .num("t_us", now_ns / 1000)
-                      .str("event", "error")
-                      .str("reason", "message-too-large")
-                      .str("detail", detail)
-                      .take());
-      host_close(c, 1009, "message-too-large");
-      return "null";
-    }
-    std::shared_ptr<const std::vector<std::uint8_t>> wire;
-    if (c.coding != rs::live_coding::Coding::Off) {
-      wire = coded_plain(c, bytes, hash);
-    }
-    deliver(c, bytes, true, wire.get());
-    if (!v11) {
+      const auto payload = snapshot.payloads.find(*refs.refs[i].hash);
+      if (payload == snapshot.payloads.end() || payload->second == nullptr) {
+        continue;  // never happens: a Captured holds every payload its tables name
+      }
+      job.given.emplace_back(*refs.refs[i].hash, id);
       carried_.mark(id, c.carried_slot);
       ++c.carried_count;
     }
-    ++c.s.resource_records;
-    c.s.resource_bytes += payload_size;
-    ++c.stats.resource_records;
-    c.stats.resource_bytes += payload_size;
-    c.stats.bytes_total += bytes.size();
-    c.stats.max_record_bytes = std::max<std::uint64_t>(c.stats.max_record_bytes, bytes.size());
-    log_line(c, Line()
-                    .num("frame", frame)
-                    .num("t_us", now_ns / 1000)
-                    .str("event", "resource")
-                    .str("hash", hash)
-                    .num("bytes", payload_size)
-                    .take());
   }
   // /7 is byte-identical to /6 (render-stream-7.md) but faithful; /8 carries the new table fields
   // (render-stream-8.md): a /7-or-later connection's own version stamps its transactions.
-  TxMeta meta;
+  TxMeta &meta = job.meta;
   meta.version = is_v7_or_later(c.version) ? c.version : snapshot.state.version;
   meta.seq = c.next_seq;
   meta.frame = frame;
@@ -1719,105 +1882,16 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
   meta.perturb_seed = is_v12_or_later(c.version) && config_.perturb_seed_frame != 0 &&
                       frame >= config_.perturb_seed_frame;
   const bool full = !c.has_base || c.resync;
-  const std::shared_ptr<const rs::Captured> base = full ? nullptr : c.base;
-  // P3-SP: the same transaction already formed this callback (another connection in lockstep).
-  SharedTx *shared = nullptr;
-  for (const auto &tx : frame_txs_) {
-    if (tx->full == full && tx->base == base && tx->target == target &&
-        tx->meta.version == meta.version && tx->meta.frame == meta.frame &&
-        tx->meta.perturb_instance == meta.perturb_instance &&
-        tx->meta.perturb_seed == meta.perturb_seed) {
-      shared = tx.get();
-      break;
-    }
-  }
-  const std::uint64_t t0 = monotonic_ns();
-  std::uint64_t t1 = t0;
-  std::shared_ptr<const std::vector<std::uint8_t>> encoded;
-  if (shared != nullptr) {
-    auto out = std::make_shared<std::vector<std::uint8_t>>();
-    if (restamp(*shared->bytes, shared->meta, meta, full, out.get())) {
-      encoded = std::move(out);
-      ++c.s.shared_sends;
-    }
-  }
-  if (encoded == nullptr) {
-    const Transaction transaction =
-        full ? make_full(snapshot.state, meta) : make_patch(base->state, snapshot.state, meta);
-    t1 = monotonic_ns();
-    encoded = std::make_shared<const std::vector<std::uint8_t>>(encode_transaction(transaction));
-    if (shared == nullptr) {
-      auto tx = std::make_unique<SharedTx>();
-      tx->base = base;
-      tx->target = target;
-      tx->meta = meta;
-      tx->full = full;
-      tx->bytes = encoded;
-      frame_txs_.push_back(std::move(tx));
-    }
-  }
-  const std::uint64_t t2 = monotonic_ns();
-  const std::vector<std::uint8_t> &bytes = *encoded;
-  if (bytes.size() > c.s.max_message_bytes) {
-    const std::string detail = "transaction " + std::to_string(meta.seq) + " is " +
-                               std::to_string(bytes.size()) + " bytes, the cap is " +
-                               std::to_string(c.s.max_message_bytes);
-    transport_->send_text(c.id, encode_error("message-too-large", detail));
-    c.s.error_sent = "message-too-large";
-    log_line(c, Line()
-                    .num("frame", frame)
-                    .num("t_us", now_ns / 1000)
-                    .str("event", "error")
-                    .str("reason", "message-too-large")
-                    .str("detail", detail)
-                    .take());
-    host_close(c, 1009, "message-too-large");
-    return "null";
-  }
+  job.full = full;
+  job.tx_base = full ? nullptr : c.base;
   const bool drop = !first && config_.drop_message_frame != 0 && !drop_done_ &&
                     frame >= config_.drop_message_frame;
-  std::shared_ptr<const std::vector<std::uint8_t>> wire;
-  if (c.coding != rs::live_coding::Coding::Off) {
-    // W11t: coded against the last transaction formed here (its uncoded message), which is the
-    // base this patch names; a full transaction has none.
-    if (full) {
-      c.last_tx = nullptr;
-    }
-    wire = coded_tx(c, encoded, meta.seq, frame, now_ns);
-  }
-  c.last_tx = encoded;
-  if (!deliver(c, bytes, !drop, wire.get())) {
-    log_line(c, Line()
-                    .num("frame", frame)
-                    .num("t_us", now_ns / 1000)
-                    .str("event", "error")
-                    .str("reason", "send-failed")
-                    .str("detail", "the transport refused seq " + std::to_string(meta.seq))
-                    .take());
-  }
-  ++c.s.transactions;
-  if (full) {
-    ++c.s.full;
-    ++c.stats.full_transactions;
-  } else {
-    ++c.s.patch;
-    ++c.stats.patch_transactions;
-  }
-  c.stats.bytes_total += bytes.size();
-  c.stats.max_record_bytes = std::max<std::uint64_t>(c.stats.max_record_bytes, bytes.size());
-  c.stats.encode_ns_total =
-      saturating_add(c.stats.encode_ns_total, (full ? t1 - t0 : 0) + (t2 - t1));
-  c.stats.diff_ns_total = saturating_add(c.stats.diff_ns_total, full ? 0 : t1 - t0);
-  c.stats.snapshot_ns_total = saturating_add(c.stats.snapshot_ns_total, snapshot_ns);
-  // Q3d encode_us / diff_us (G6r): the same costs just accumulated above, also sampled into the
-  // cross-connection histograms perf.json reports distributions from.
-  encode_hist_.add(((full ? t1 - t0 : 0) + (t2 - t1)) / 1000);
-  if (!full) {
-    diff_hist_.add((t1 - t0) / 1000);
-  }
+  job.drop = drop;
+  job.send = !drop;
 
   const std::uint64_t seq = meta.seq;
   const bool had_credit = c.credit;
+  job.had_credit = had_credit;
   if (c.window_slots > 1 && c.has_base &&
       std::find(c.window.begin(), c.window.end(), c.base_seq) != c.window.end()) {
     // G7q: the last sent is still in flight, so its payloads stay pinned past this send.
@@ -1858,15 +1932,351 @@ std::string Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captu
     c.sent_at[seq] = Conn::Sent{now_ns, frame, 0, capture_ns};
     c.s.max_in_flight = std::max<std::uint64_t>(c.s.max_in_flight, c.uncredited.size());
   }
-  Line sent;
-  sent.num("seq", seq).str("encoding", full ? "full" : "patch").num("bytes", bytes.size());
-  if (drop) {
-    sent.boolean("dropped", true);
+}
+
+bool Hub::form_deliver(Job &job, const std::vector<std::uint8_t> &message, bool send,
+                       const std::vector<std::uint8_t> *wire) {
+  FormState &f = *job.form;
+  Counters &o = job.out;
+  if (f.tap != nullptr) {
+    // The tap holds the uncoded message (W11t), flushed at the callback's batch end.
+    std::fwrite(message.data(), 1, message.size(), f.tap);
   }
-  if (stale_from != 0) {
-    sent.num("stale_from", stale_from);
+  o.max_message_sent = std::max<std::uint64_t>(o.max_message_sent, message.size());
+  if (!send) {
+    return true;
   }
-  return sent.take();
+  const std::vector<std::uint8_t> &out = wire != nullptr ? *wire : message;
+  if (wire != nullptr) {
+    ++o.coded_messages;
+    o.coded_input_bytes += message.size();
+    o.coded_wire_bytes += wire->size();
+  }
+  o.bytes_sent += out.size();
+  const std::uint64_t t0 = monotonic_ns();
+  const bool ok = transport_->send_binary(f.id, out);
+  o.enqueue_us.push_back((monotonic_ns() - t0) / 1000);  // Q3d enqueue_us (G6r)
+  return ok;
+}
+
+void Hub::run_job(Job &job) {
+  if (job.batch_end) {
+    // P3-SP: the shared work lives for one callback; its snapshots are released by the main
+    // thread (complete()), and the taps written this callback are flushed once.
+    job.retired = std::move(memo_);
+    memo_ = std::make_unique<Memo>();
+    for (std::FILE *tap : job.flush) {
+      std::fflush(tap);
+    }
+    return;
+  }
+  FormState &f = *job.form;
+  Counters &o = job.out;
+  const bool coded = f.coding != rs::live_coding::Coding::Off;
+  if (job.session != nullptr) {
+    std::shared_ptr<const std::vector<std::uint8_t>> wire;
+    if (coded) {
+      wire = coded_plain(&o.coded_shared, &o.coding_ns, *job.session, "");  // W11t: coded too
+    }
+    form_deliver(job, *job.session, true, wire.get());
+  }
+  if (!job.has_tx) {
+    return;
+  }
+  const rs::Captured &snapshot = *job.target;
+  const std::uint64_t frame = job.frame;
+  const std::uint64_t now_ns = job.now_ns;
+  std::vector<std::pair<const std::string *, std::uint32_t>> to_send;  // (hash, CarriedIndex id)
+  if (job.plan_v11) {
+    const V11Records &records = v11_records(job.record_base, job.target, job.lower);
+    for (const PayloadName &name : records.records) {
+      to_send.emplace_back(&name.hash, CarriedIndex::kNoId);
+    }
+    job.planned = true;
+    job.inline_count = records.inline_count;  // C after this transaction is inline(T) (L2)
+  } else {
+    for (const auto &given : job.given) {
+      to_send.emplace_back(&given.first, given.second);
+    }
+  }
+  // HC5 sabotage reorder: the records formed, but held until the transaction went out.
+  struct Held {
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+    std::shared_ptr<const std::vector<std::uint8_t>> wire;
+    const std::string *hash;
+    std::uint64_t payload_size;
+  };
+  std::vector<Held> held;
+  const auto deliver_record = [&](const Held &r) {
+    form_deliver(job, *r.bytes, true, r.wire.get());
+    ++o.resource_records;
+    o.resource_bytes += r.payload_size;
+    o.record_bytes_total += r.bytes->size();
+    o.max_record_bytes = std::max<std::uint64_t>(o.max_record_bytes, r.bytes->size());
+    job.lines.push_back(Line()
+                            .num("frame", frame)
+                            .num("t_us", now_ns / 1000)
+                            .str("event", "resource")
+                            .str("hash", *r.hash)
+                            .num("bytes", r.payload_size)
+                            .take());
+  };
+  for (const auto &send : to_send) {
+    const std::string &hash = *send.first;
+    const std::uint32_t id = send.second;
+    const auto payload = snapshot.payloads.find(hash);
+    if (payload == snapshot.payloads.end() || payload->second == nullptr) {
+      continue;  // never happens: a Captured holds every payload its tables name
+    }
+    std::shared_ptr<const std::vector<std::uint8_t>> &record_bytes =
+        job.v11 ? memo_->records_v11[hash] : memo_->records[id];
+    if (record_bytes == nullptr) {
+      ResourceRecord record;
+      record.hash = hash;
+      record.payload = *payload->second;
+      record_bytes = std::make_shared<const std::vector<std::uint8_t>>(encode_resource(record));
+    }
+    if (record_bytes->size() > job.max_message_bytes) {
+      job.error = true;
+      job.error_detail = "resource " + hash + " is " + std::to_string(record_bytes->size()) +
+                         " bytes, the cap is " + std::to_string(job.max_message_bytes);
+      transport_->send_text(f.id, encode_error("message-too-large", job.error_detail));
+      return;
+    }
+    Held r{record_bytes, nullptr, &hash, payload->second->size()};
+    if (coded) {
+      r.wire = coded_plain(&o.coded_shared, &o.coding_ns, *record_bytes, hash);
+    }
+    if (job.reorder) {
+      held.push_back(std::move(r));
+    } else {
+      deliver_record(r);
+    }
+  }
+  const TxMeta &meta = job.meta;
+  const bool full = job.full;
+  // P3-SP: the same transaction already formed this callback (another connection in lockstep).
+  SharedTx *shared = nullptr;
+  for (const auto &tx : memo_->txs) {
+    if (tx->full == full && tx->base == job.tx_base && tx->target == job.target &&
+        tx->meta.version == meta.version && tx->meta.frame == meta.frame &&
+        tx->meta.perturb_instance == meta.perturb_instance &&
+        tx->meta.perturb_seed == meta.perturb_seed) {
+      shared = tx.get();
+      break;
+    }
+  }
+  const std::uint64_t t0 = monotonic_ns();
+  std::uint64_t t1 = t0;
+  std::shared_ptr<const std::vector<std::uint8_t>> encoded;
+  if (shared != nullptr) {
+    auto out = std::make_shared<std::vector<std::uint8_t>>();
+    if (restamp(*shared->bytes, shared->meta, meta, full, out.get())) {
+      encoded = std::move(out);
+      ++o.shared_sends;
+    }
+  }
+  if (encoded == nullptr) {
+    const Transaction transaction = full ? make_full(snapshot.state, meta)
+                                         : make_patch(job.tx_base->state, snapshot.state, meta);
+    t1 = monotonic_ns();
+    encoded = std::make_shared<const std::vector<std::uint8_t>>(encode_transaction(transaction));
+    if (shared == nullptr) {
+      auto tx = std::make_unique<SharedTx>();
+      tx->base = job.tx_base;
+      tx->target = job.target;
+      tx->meta = meta;
+      tx->full = full;
+      tx->bytes = encoded;
+      memo_->txs.push_back(std::move(tx));
+    }
+  }
+  const std::uint64_t t2 = monotonic_ns();
+  const std::vector<std::uint8_t> &bytes = *encoded;
+  if (bytes.size() > job.max_message_bytes) {
+    job.error = true;
+    job.error_detail = "transaction " + std::to_string(meta.seq) + " is " +
+                       std::to_string(bytes.size()) + " bytes, the cap is " +
+                       std::to_string(job.max_message_bytes);
+    transport_->send_text(f.id, encode_error("message-too-large", job.error_detail));
+    return;
+  }
+  std::shared_ptr<const std::vector<std::uint8_t>> wire;
+  if (coded) {
+    // W11t: coded against the last transaction formed here (its uncoded message), which is the
+    // base this patch names; a full transaction has none.
+    if (full) {
+      f.last_tx = nullptr;
+    }
+    wire = form_coded_tx(job, encoded);
+  }
+  f.last_tx = encoded;
+  if (!form_deliver(job, bytes, job.send, wire.get())) {
+    job.lines.push_back(Line()
+                            .num("frame", frame)
+                            .num("t_us", now_ns / 1000)
+                            .str("event", "error")
+                            .str("reason", "send-failed")
+                            .str("detail", "the transport refused seq " + std::to_string(meta.seq))
+                            .take());
+  }
+  for (const Held &r : held) {
+    deliver_record(r);  // reorder: after the transaction that names them
+  }
+  job.tx_formed = true;
+  job.tx_bytes = bytes.size();
+  job.diff_ns = full ? 0 : t1 - t0;
+  job.encode_ns = (full ? t1 - t0 : 0) + (t2 - t1);
+}
+
+void Hub::complete(Job &job) {
+  if (job.batch_end) {
+    return;  // its memo (job.retired) is released with the job, on this thread
+  }
+  Conn &c = *job.conn;
+  const Counters &o = job.out;
+  const std::uint64_t frame_saved = frame_;
+  frame_ = job.frame;  // the close line of an error names the job's frame, as a sync send did
+  c.s.bytes_sent += o.bytes_sent;
+  c.s.max_message_sent = std::max(c.s.max_message_sent, o.max_message_sent);
+  c.s.coded_messages += o.coded_messages;
+  c.s.coded_prefixed += o.coded_prefixed;
+  c.s.coded_shared += o.coded_shared;
+  c.s.coded_input_bytes += o.coded_input_bytes;
+  c.s.coded_wire_bytes += o.coded_wire_bytes;
+  c.s.coding_ns = saturating_add(c.s.coding_ns, o.coding_ns);
+  c.s.shared_sends += o.shared_sends;
+  c.s.resource_records += o.resource_records;
+  c.s.resource_bytes += o.resource_bytes;
+  if (o.wrong_prefix_seq != 0) {
+    c.s.wrong_prefix_seq = o.wrong_prefix_seq;
+  }
+  c.stats.resource_records += o.resource_records;
+  c.stats.resource_bytes += o.resource_bytes;
+  c.stats.bytes_total += o.record_bytes_total;
+  c.stats.max_record_bytes = std::max(c.stats.max_record_bytes, o.max_record_bytes);
+  for (const std::uint64_t us : o.enqueue_us) {
+    enqueue_hist_.add(us);
+  }
+  if (job.planned) {
+    c.carried_count = job.inline_count;
+  }
+  for (const std::string &line : job.lines) {
+    log_line(c, line);
+  }
+  if (job.error) {
+    // message-too-large: the job sent the error text after what it had delivered and nothing
+    // more; the send it was formed for never happened.
+    if (job.has_tx) {
+      if (job.drop) {
+        --c.s.dropped;
+      } else {
+        --c.s.sent;
+        if (!job.had_credit) {
+          --c.s.sent_without_credit;
+        }
+      }
+      if (job.stale_from != 0) {
+        --c.s.stale_sent;
+      }
+    }
+    c.s.error_sent = "message-too-large";
+    log_line(c, Line()
+                    .num("frame", job.frame)
+                    .num("t_us", job.now_ns / 1000)
+                    .str("event", "error")
+                    .str("reason", "message-too-large")
+                    .str("detail", job.error_detail)
+                    .take());
+    host_close(c, 1009, "message-too-large");
+    frame_ = frame_saved;
+    return;
+  }
+  if (job.tx_formed) {
+    ++c.s.transactions;
+    if (job.full) {
+      ++c.s.full;
+      ++c.stats.full_transactions;
+    } else {
+      ++c.s.patch;
+      ++c.stats.patch_transactions;
+    }
+    c.stats.bytes_total += job.tx_bytes;
+    c.stats.max_record_bytes = std::max<std::uint64_t>(c.stats.max_record_bytes, job.tx_bytes);
+    c.stats.encode_ns_total = saturating_add(c.stats.encode_ns_total, job.encode_ns);
+    c.stats.diff_ns_total = saturating_add(c.stats.diff_ns_total, job.diff_ns);
+    c.stats.snapshot_ns_total = saturating_add(c.stats.snapshot_ns_total, job.snapshot_ns);
+    // Q3d encode_us / diff_us (G6r): the same costs, also sampled into the cross-connection
+    // histograms perf.json reports distributions from.
+    encode_hist_.add(job.encode_ns / 1000);
+    if (!job.full) {
+      diff_hist_.add(job.diff_ns / 1000);
+    }
+  }
+  if (job.frame_line && c.state != State::Closed) {
+    Line sent;
+    sent.num("seq", job.meta.seq)
+        .str("encoding", job.full ? "full" : "patch")
+        .num("bytes", job.tx_bytes);
+    if (job.drop) {
+      sent.boolean("dropped", true);
+    }
+    if (job.stale_from != 0) {
+      sent.num("stale_from", job.stale_from);
+    }
+    log_frame(c, job.frame, job.now_ns, job.credit_before, sent.take());
+  }
+  frame_ = frame_saved;
+}
+
+void Hub::submit_batch() {
+  if (batch_.empty()) {
+    return;
+  }
+  auto end = std::make_unique<Job>();
+  end->batch_end = true;
+  for (const auto &job : batch_) {
+    job->conn->job = nullptr;
+    if (job->form != nullptr && job->form->tap != nullptr) {
+      end->flush.push_back(job->form->tap);
+    }
+  }
+  batch_.push_back(std::move(end));
+  std::vector<std::unique_ptr<Job>> jobs;
+  std::swap(jobs, batch_);
+  if (former_ == nullptr) {
+    for (auto &job : jobs) {
+      run_job(*job);
+    }
+    for (auto &job : jobs) {
+      complete(*job);
+    }
+    return;
+  }
+  former_->submit(std::move(jobs));
+  if (config_.formation_wait) {
+    sync();
+  }
+}
+
+void Hub::sync() {
+  if (former_ == nullptr) {
+    return;
+  }
+  std::vector<std::unique_ptr<Job>> done = former_->take();
+  if (done.empty()) {
+    return;
+  }
+  for (auto &job : done) {
+    complete(*job);
+  }
+  done.clear();  // the memo's snapshots and the jobs' inputs are released here, on this thread
+  for (auto &entry : conns_) {
+    Conn &c = *entry.second;
+    if (c.log != nullptr) {
+      std::fflush(c.log);
+    }
+  }
 }
 
 void Hub::log_frame(Conn &c, std::uint64_t frame, std::uint64_t now_ns, bool credit_before,
@@ -1919,16 +2329,16 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
   if (finished_) {
     return;
   }
+  sync();  // HC5: the previous callback's jobs, completed before anything here reads a connection
   frame_ = frame;
   carried_.maintain();
-  clear_frame_memo();
+  frame_targets_.clear();
   for (auto &entry : conns_) {
     Conn &c = *entry.second;
     if (c.state == State::Closed) {
       continue;
     }
     const bool credit_before = c.credit;
-    std::string sent_json = "null";
     if (c.state == State::AwaitHello) {
       if (c.hello_received) {
         if (snapshot == nullptr) {
@@ -1990,12 +2400,11 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           host_close(c, 1009, "message-too-large");
           continue;
         }
-        std::shared_ptr<const std::vector<std::uint8_t>> wire;
-        if (c.coding != rs::live_coding::Coding::Off) {
-          wire = coded_plain(c, message, "");  // W11t: the first message is coded too
-        }
-        deliver(c, message, true, wire.get());
-        c.stats.bytes_total += message.size();  // the magic counts (render-stream-0.md)
+        // HC5: the session message is the first thing the connection's first job sends (coded
+        // too, W11t), ahead of seq 1's records.
+        c.form->coding = c.coding;
+        batch_job(c).session = std::make_shared<const std::vector<std::uint8_t>>(std::move(message));
+        c.stats.bytes_total += c.job->session->size();  // the magic counts (render-stream-0.md)
         c.stats.max_record_bytes =
             std::max<std::uint64_t>(c.stats.max_record_bytes, session_bytes.size());
         c.stats.encode_ns_total = saturating_add(c.stats.encode_ns_total, t1 - t0);
@@ -2009,7 +2418,7 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           c.keep_carried = std::make_unique<RecordPlanner>(c.version, policy, true);
         }
         ++c.s.frames_offered;
-        sent_json = send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
+        send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, true, now_ns);
         // G6r: this very first send starts the connection's rate schedule (its tick 0); it is
         // never itself rate-gated (there is nothing to compare "due" against until now).
         advance_schedule(c, now_ns);
@@ -2052,8 +2461,8 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           const std::uint64_t stale_capture_ns = c.stale_ns;
           c.stale.reset();
           const std::uint64_t sent_before = c.s.sent;
-          sent_json = send_transaction(c, stale, frame, now_ns, epoch, snapshot_ns, false,
-                                       stale_capture_ns, c.stale_frame);
+          send_transaction(c, stale, frame, now_ns, epoch, snapshot_ns, false, stale_capture_ns,
+                           c.stale_frame);
           advance_schedule(c, now_ns);
           if (rate_limited && c.s.sent > sent_before) {
             ++c.s.ticks_sent;
@@ -2083,11 +2492,10 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
           if (c.stale_held != nullptr) {
             // G7q stale-coalesce at window >= 2: repeat the stale target while it is in flight.
             const std::shared_ptr<const rs::Captured> held = c.stale_held;
-            sent_json = send_transaction(c, held, frame, now_ns, epoch, snapshot_ns, false,
-                                         c.stale_held_ns, c.stale_held_frame);
+            send_transaction(c, held, frame, now_ns, epoch, snapshot_ns, false, c.stale_held_ns,
+                             c.stale_held_frame);
           } else {
-            sent_json = send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, false,
-                                         now_ns);
+            send_transaction(c, snapshot, frame, now_ns, epoch, snapshot_ns, false, now_ns);
           }
           advance_schedule(c, now_ns);
           if (rate_limited && c.s.sent > sent_before) {
@@ -2128,16 +2536,31 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
     if (c.state == State::Closed) {
       continue;  // closed by an error above (logged there)
     }
-    log_frame(c, frame, now_ns, credit_before, sent_json);
+    if (c.job != nullptr && c.job->has_tx) {
+      // HC5: the frame line names the transaction's bytes; it is written when the job completes
+      // (complete(): unless the job ended the connection with message-too-large).
+      c.job->frame_line = true;
+      c.job->credit_before = credit_before;
+    } else {
+      log_frame(c, frame, now_ns, credit_before, "null");
+    }
   }
-  clear_frame_memo();  // P3-SP: the shared work holds snapshots; it lives for one callback
-  flush_taps();
+  frame_targets_.clear();  // P3-SP: the shared work holds snapshots; it lives for one callback
+  submit_batch();
+  // HC5: the live logs are flushed here (and at each sync), the taps by the jobs' batch end.
+  for (auto &entry : conns_) {
+    Conn &c = *entry.second;
+    if (c.log != nullptr) {
+      std::fflush(c.log);
+    }
+  }
 }
 
 void Hub::finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns) {
   if (finished_) {
     return;
   }
+  sync();
   frame_ = frame;
   for (auto &entry : conns_) {
     Conn &c = *entry.second;
@@ -2152,7 +2575,7 @@ void Hub::finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns) {
       const std::vector<std::uint8_t> bytes = encode_end(end);
       std::shared_ptr<const std::vector<std::uint8_t>> wire;
       if (c.coding != rs::live_coding::Coding::Off) {
-        wire = coded_plain(c, bytes, "");
+        wire = coded_plain(&c.s.coded_shared, &c.s.coding_ns, bytes, "");
       }
       deliver(c, bytes, true, wire.get());
       c.s.end_sent = true;
@@ -2186,6 +2609,7 @@ std::size_t Hub::open_connections() const {
 }
 
 void Hub::close_open(std::uint64_t frame) {
+  sync();
   frame_ = frame;
   for (auto &entry : conns_) {
     Conn &c = *entry.second;
@@ -2276,6 +2700,7 @@ std::vector<const rs::PayloadMap *> Hub::held_payloads() const {
 
 std::uint32_t Hub::on_http_get(const std::string &hash, std::uint16_t status, std::uint64_t bytes,
                                std::uint64_t t_ns, std::uint64_t frame, bool preflight) {
+  sync();
   // With one receiver, the GET is its own (max_clients 1, today's default). With more than one
   // open connection (GRC_LIVE_MAX_CONNECTIONS > 1, G6r/D13), which receiver asked for it is
   // ambiguous, so it is counted at the host level only (the caller's ServingSummary) and no

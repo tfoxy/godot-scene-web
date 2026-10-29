@@ -2591,6 +2591,10 @@ std::vector<float> *Mirror::multimesh_writable(Multimesh *mm) {
   }
   if (mm->buffer.use_count() > 1) {
     mm->buffer = std::make_shared<std::vector<float>>(*mm->buffer);  // a snapshot still holds it
+  } else {
+    // HC5: a snapshot's last holder may have let go on the encode thread (acq_rel); this orders
+    // its reads before our writes.
+    std::atomic_thread_fence(std::memory_order_acquire);
   }
   return mm->buffer.get();
 }
@@ -2865,6 +2869,7 @@ Mirror::MultimeshCall Mirror::multimesh_set_buffer(std::uint64_t rid, const floa
   if (mm->buffer.use_count() > 1) {
     mm->buffer = std::make_shared<std::vector<float>>(data, data + count);
   } else {
+    std::atomic_thread_fence(std::memory_order_acquire);  // HC5: see multimesh_writable
     std::memcpy(mm->buffer->data(), data, count * sizeof(float));
   }
   multimesh_buffer_moved(mm, frame);
@@ -3460,6 +3465,8 @@ Mirror::ParticlesCall Mirror::particles_call(std::uint64_t rid, ParticlesOp op,
     if (std::memcmp(p->floats->data() + at, args.f.data(), count * sizeof(float)) != 0) {
       if (p->floats.use_count() > 1) {
         p->floats = std::make_shared<std::vector<float>>(*p->floats);  // a note still holds it
+      } else {
+        std::atomic_thread_fence(std::memory_order_acquire);  // HC5: see multimesh_writable
       }
       dst = p->floats->data() + at;
       std::memcpy(dst, args.f.data(), count * sizeof(float));
