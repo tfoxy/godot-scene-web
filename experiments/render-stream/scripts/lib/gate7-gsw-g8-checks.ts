@@ -43,6 +43,11 @@
 //   PM3 (render-stream-11.md "As built (PM3)"; lib/gate7-gsw-g8-mm-checks.ts): mm-gsw-band,
 //   mm-gsw-flipbook, mm-gsw-catches-perturb-instance and mm-gsw-catches-undrawn-multimesh, each
 //   g8mm GSW leg against the unarmed reference
+//   PSE (render-stream-12.md "As built (PSE)"): ptc-gsw-switched-key@gsw, gate8-ptc's switched cells
+//   (two materials on one process shader whose emission shape is a uniform): the honest GSW leg
+//   draws S_BOX and S_SPHERE as the Forward+ reference within PTS_GSW_TOLERANCE_PX pixels, and the
+//   GSW-only sabotage `shared-process-key` (every material keyed by the shader's builtin, the
+//   pre-PSE GSW) does not
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -55,6 +60,7 @@ import { compositorProblems, mk } from "./gate7-gsw";
 import { type BandShot, GATE8_COMPOSITOR_LEGS } from "./gate7-gsw-g8";
 import { mmGswChecks } from "./gate7-gsw-g8-mm-checks";
 import { BASIS_HALF_MIP, BASIS_REGIONS } from "./gate8-basis-checks";
+import { PTS_CELLS, ptsDiff, ptsRegion } from "./gate8-ptc-checks";
 
 interface Ctx {
   out: string;
@@ -155,7 +161,71 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
   out.push(...(await g8cgChecks(ctx)));
   // PM3: g8mm through GSW against the unarmed reference (lib/gate7-gsw-g8-mm-checks.ts).
   out.push(...(await mmGswChecks(ctx)));
+  out.push(...(await ptsGswChecks(ctx)));
   return out;
+}
+
+// --------------------------------------------------------------------------------------- PSE
+
+const PTS_HONEST = "g8pt/ptc/receiver";
+const PTS_SHARED_KEY = "g8pt/ptc/sabotage-gsw-shared-process-key";
+/** The pixels of a switched cell GSW's simulation may differ from the Forward+ reference by: its
+ * port follows the generated code's random draws, so the particles land on the host's pixels. */
+export const PTS_GSW_TOLERANCE_PX = 0;
+
+/** A GSW leg's shots in seq order, each paired with the reference step it settles (the k-th shot
+ * with step-<k>.png, as ptc-receiver pairs them). */
+async function ptsPairs(
+  ctx: Ctx,
+  leg: string,
+  problems: string[],
+): Promise<{ shot: string; diff: Record<string, number>; drawn: Record<string, unknown> }[]> {
+  const { readdir } = await import("node:fs/promises");
+  const dir = join(gswDir(ctx, leg), "shots");
+  const names = (await readdir(dir).catch(() => [] as string[]))
+    .filter((n) => /^seq-\d+\.png$/.test(n))
+    .sort((a, b) => Number(a.slice(4, -4)) - Number(b.slice(4, -4)));
+  if (names.length === 0) problems.push(`${leg}: no shots`);
+  const out: { shot: string; diff: Record<string, number>; drawn: Record<string, unknown> }[] = [];
+  for (const [k, name] of names.entries()) {
+    const a = await decodePngRgba(join(dir, name));
+    const b = await decodePngRgba(join(ctx.sourceDir, "g8pt", "ptc", "reference-fwdplus", "shots", `step-${k}.png`));
+    if (!a || !b) {
+      problems.push(`${leg}/${name}: ${a ? "" : "the gsw shot "}${b ? "" : `the reference step-${k}.png `}missing`);
+      continue;
+    }
+    out.push({
+      shot: name,
+      diff: Object.fromEntries(PTS_CELLS.map((c) => [c.cell, ptsDiff(a, b, c)])),
+      drawn: Object.fromEntries(PTS_CELLS.map((c) => [c.cell, ptsRegion(a, c)])),
+    });
+  }
+  return out;
+}
+
+/** PSE (header). Not emitted when the source ran no ptc reference (a host without Vulkan). */
+async function ptsGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
+  if (!existsSync(join(ctx.sourceDir, "g8pt", "ptc", "reference-fwdplus", "shots"))) return [];
+  const problems: string[] = [];
+  const honest = await ptsPairs(ctx, PTS_HONEST, problems);
+  for (const p of honest)
+    for (const [cell, n] of Object.entries(p.diff))
+      if (n > PTS_GSW_TOLERANCE_PX) problems.push(`${PTS_HONEST}/${p.shot} ${cell}: ${n} px differ from the Forward+ reference`);
+  const sab = await ptsPairs(ctx, PTS_SHARED_KEY, problems);
+  const caught = sab.filter((p) => (p.diff.S_SPHERE ?? 0) > PTS_GSW_TOLERANCE_PX);
+  if (sab.length > 0 && caught.length < sab.length)
+    problems.push(`${PTS_SHARED_KEY}: S_SPHERE within the tolerance at ${sab.length - caught.length} of ${sab.length} shots (the check has no teeth)`);
+  for (const p of sab)
+    if ((p.diff.S_BOX ?? 0) > PTS_GSW_TOLERANCE_PX)
+      problems.push(`${PTS_SHARED_KEY}/${p.shot}: S_BOX ${p.diff.S_BOX} px differ (the first material's key is its own)`);
+  return [
+    mk(
+      "ptc-gsw-switched-key@gsw",
+      "PSE: two ParticleProcessMaterials on one process shader whose emission shape is a uniform each simulate with their own key: GSW draws S_BOX and S_SPHERE as the Forward+ reference does, and the shared-process-key sabotage (every material keyed by the shader's builtin, the pre-PSE GSW) draws S_SPHERE wrong while S_BOX holds",
+      problems,
+      `${honest.length} honest shots within ${PTS_GSW_TOLERANCE_PX} px of the reference in both cells; shared-process-key S_SPHERE off by ${caught.map((p) => p.diff.S_SPHERE).join("/")} px`,
+    ),
+  ];
 }
 
 // --------------------------------------------------------------------------------------- CG1

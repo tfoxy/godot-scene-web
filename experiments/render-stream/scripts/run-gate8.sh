@@ -195,8 +195,9 @@
 #       runs only those and the references, a development knob). PFB (render-stream-12.md "As
 #       built (PFB)"), after the late legs, on fixtures/gate8-ptc: `ptc/reference-gl`,
 #       `ptc/reference-fwdplus` (Forward+ on Vulkan), `ptc/capture` (armed /12 on the Forward+
-#       host) and its gl_compatibility receivers `ptc/receiver` and
-#       `ptc/sabotage-gl-particle-colors/receiver` (G8PT_ONLY_PTC=1 runs only those). Judged by
+#       host) and its gl_compatibility receivers `ptc/receiver`,
+#       `ptc/sabotage-gl-particle-colors/receiver` and (PSE) `ptc/sabotage-no-subparticle-stub/receiver`
+#       (G8PT_ONLY_PTC=1 runs only those). Judged by
 #       lib/gate8-pt-checks.ts, lib/gate8-pt-receiver-checks.ts, lib/gate8-pt-late-checks.ts and
 #       lib/gate8-ptc-checks.ts; g7-8's web half replays the receiver legs (run-gate7.sh
 #       G8_FILE_LEGS).
@@ -1085,7 +1086,8 @@ run_g8pt_references() {
 G8PTC_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-ptc"
 G8PTC_QUIT=40
 G8PTC_FWDPLUS_ARGS=(--rendering-method forward_plus --rendering-driver vulkan)
-G8PTC_RECEIVER_SABOTAGES=(gl-particle-colors)
+# PSE: no-subparticle-stub is the pre-PSE receiver (the switched cells' emit_subparticle left in).
+G8PTC_RECEIVER_SABOTAGES=(gl-particle-colors no-subparticle-stub)
 G8PT_ONLY_PTC="${G8PT_ONLY_PTC:-0}"
 
 run_g8pt_ptc() {

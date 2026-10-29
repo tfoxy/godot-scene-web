@@ -14,6 +14,22 @@ extends Node
 ## Color::srgb_to_linear() and a gl_compatibility host does not, so C_MIX and C_ADD differ between
 ## the two backends and C_RAMP does not.
 ##
+## PSE (render-stream-12.md "As built (PSE)"): two more cells share one uniform-switched process
+## shader, ptc_switched.gdshader (stock 4.5.1's generated code with `emission_shape` and
+## `sub_emitter_mode` made uniforms; its at-end branch calls emit_subparticle, which only
+## RendererRD declares). Each is 48 particles drawing a 4x4 white texture, still, with
+## `use_fixed_seed`:
+##
+##   S_BOX     (200,290)  a ParticleProcessMaterial with emission_shape box, extents (70, 22, 0)
+##   S_SPHERE  (440,290)  a ParticleProcessMaterial with emission_shape sphere, radius 45
+##
+## Each material is made in _ready (its generated shader is set at the end of frame 1, when
+## ParticleProcessMaterial flushes its queue); at frame 2 the switched shader replaces it on the
+## material's RID, `emission_shape` and `sub_emitter_mode` are set as uniforms, and the two emitters
+## are added (so they never run the generated code). The material keeps its own setters' uniforms
+## (both carry emission_sphere_radius and emission_box_extents), and its key (the class getters)
+## stays the generated one. A gl_compatibility host fails to compile the shader and draws neither.
+##
 ## Timeline (fixture frames, --fixed-fps 60): checkpoint 0 is _ready's scene (applied 1, settles
 ## 4); checkpoint 1 at 20 (settles 27), nothing changes (a second shot of the same state); quit at
 ## 40. Environment (all optional): RS_FIXTURE_STEP_LOG ({"step", "applied_frame",
@@ -23,12 +39,23 @@ extends Node
 
 const CHECKPOINTS: Array[Array] = [[1, 4], [20, 27]]
 const QUIT_DEFAULT: int = 40
+## PSE: the frame the switched cells' emitters are added (after the materials' first flush).
+const SWITCHED_FRAME: int = 2
+## PSE: ParticleProcessMaterial.EMISSION_SHAPE_SPHERE / _BOX, and SUB_EMITTER_DISABLED.
+const SHAPE_SPHERE: int = 1
+const SHAPE_BOX: int = 3
+const SUB_EMITTER_DISABLED: int = 0
 
 var _frame: int = 0
 var _quit_frame: int = QUIT_DEFAULT
 var _step_log_file: FileAccess
 var _shot_dir: String = ""
 var _failed: bool = false
+var _root: Node2D
+var _box_pm: ParticleProcessMaterial
+var _sphere_pm: ParticleProcessMaterial
+## PSE: held for the scene's life (a local would free the Shader, and its RID under the materials).
+var _switched_shader: Shader
 
 
 func _ready() -> void:
@@ -38,6 +65,7 @@ func _ready() -> void:
 		return
 	print("[fixture] rendering_method=%s" % RenderingServer.get_current_rendering_method())
 	var root := Node2D.new()
+	_root = root
 	add_child(root)
 	var white := ImageTexture.create_from_image(_white_image())
 
@@ -63,6 +91,14 @@ func _ready() -> void:
 	ramp_pm.color_ramp = ramp
 	root.add_child(_particles(2103, ramp_pm, white, Vector2(480, 180)))
 
+	# PSE: the switched cells' materials, keyed box and sphere by the class (see the header).
+	_box_pm = _process_material()
+	_box_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	_box_pm.emission_box_extents = Vector3(70, 22, 0)
+	_sphere_pm = _process_material()
+	_sphere_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	_sphere_pm.emission_sphere_radius = 45.0
+
 	print("[fixture] gate8-ptc ready: quit=%d" % _quit_frame)
 
 
@@ -70,6 +106,8 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	if _frame == SWITCHED_FRAME:
+		_add_switched_cells()
 	for k: int in range(CHECKPOINTS.size()):
 		var applied: int = CHECKPOINTS[k][0]
 		var settle: int = CHECKPOINTS[k][1]
@@ -80,6 +118,25 @@ func _process(_delta: float) -> void:
 	if _frame >= _quit_frame:
 		print("[fixture] quitting frame=%d" % _frame)
 		get_tree().quit(0)
+
+
+## PSE: ptc_switched.gdshader on both materials' RIDs, their switch uniforms, and their emitters.
+func _add_switched_cells() -> void:
+	_switched_shader = load("res://ptc_switched.gdshader")
+	var shader: Shader = _switched_shader
+	var small := ImageTexture.create_from_image(_white_image(4))
+	for cell: Array in [[_box_pm, SHAPE_BOX, 2104, Vector2(200, 290)], [_sphere_pm, SHAPE_SPHERE, 2105, Vector2(440, 290)]]:
+		var pm: ParticleProcessMaterial = cell[0]
+		var shape: int = cell[1]
+		var particle_seed: int = cell[2]
+		var at: Vector2 = cell[3]
+		RenderingServer.material_set_shader(pm.get_rid(), shader.get_rid())
+		RenderingServer.material_set_param(pm.get_rid(), "emission_shape", shape)
+		RenderingServer.material_set_param(pm.get_rid(), "sub_emitter_mode", SUB_EMITTER_DISABLED)
+		var p := _particles(particle_seed, pm, small, at)
+		p.amount = 48
+		_root.add_child(p)
+	print("[fixture] switched cells added frame=%d" % _frame)
 
 
 ## A 2D ParticleProcessMaterial that holds its particle still: disable_z, an explicit zero gravity
@@ -108,9 +165,9 @@ func _particles(particle_seed: int, pm: ParticleProcessMaterial, texture: Textur
 	return p
 
 
-## A 32x32 opaque white image.
-static func _white_image() -> Image:
-	var image: Image = Image.create_empty(32, 32, false, Image.FORMAT_RGBA8)
+## A size x size opaque white image (32 by default).
+static func _white_image(size: int = 32) -> Image:
+	var image: Image = Image.create_empty(size, size, false, Image.FORMAT_RGBA8)
 	image.fill(Color(1, 1, 1, 1))
 	return image
 

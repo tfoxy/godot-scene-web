@@ -44,6 +44,8 @@ const CORE_SABOTAGES: Array[String] = [
 	"undrawn-particles", "ignore-particle-emits", "drop-particles-restart",
 	# PFB: a particles material's colours set as given whatever the host's rendering method.
 	"gl-particle-colors",
+	# PSE: a particles shader's emit_subparticle calls left in on gl_compatibility (pre-PSE).
+	"no-subparticle-stub",
 	# W11d (render-stream-11.md "As built (W11d)"): the /11 receiver sabotages the core implements.
 	"stale-dynamic-rx", "no-prune", "ignore-released",
 ]
