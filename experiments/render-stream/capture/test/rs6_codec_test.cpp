@@ -76,7 +76,7 @@ ItemEntry entry(const ItemState &state, bool commands_null) {
 Snapshot state6(int n) {
   Snapshot s = golden::state(n);
   if (n >= 8) {
-    for (ItemState &item : s.items) {
+    s.items.mutate_each([&](ItemState &item) {
       if (item.id == 7) {
         std::vector<Command> commands = item.commands.vector();
         for (Command &command : commands) {
@@ -86,7 +86,7 @@ Snapshot state6(int n) {
         }
         item.commands = std::move(commands);
       }
-    }
+    });
   }
   return s;
 }
@@ -114,7 +114,7 @@ Transaction full_txn6(const Snapshot &snap) {
   t.unsupported = snap.unsupported;
   t.default_texture_filter = snap.default_texture_filter;
   t.default_texture_repeat = snap.default_texture_repeat;
-  t.canvases = snap.canvases;
+  t.canvases = snap.canvases.vector();
   t.textures = snap.textures;
   t.meshes = snap.meshes;
   t.shaders = snap.shaders;
@@ -336,7 +336,7 @@ void test_matches_golden_patch_rs6() {
     t.default_texture_filter = Filter::Linear;
     t.default_texture_repeat = Repeat::Disabled;
     const Snapshot twelve = state6(12);
-    t.canvases = twelve.canvases;
+    t.canvases = twelve.canvases.vector();
     t.items = {entry(golden::item11_cim_material(), false),
                entry(golden::item12_custom_material(), false),
                entry(golden::item13_use_parent_material(), false),
@@ -388,7 +388,7 @@ void test_matches_golden_patch_rs6() {
     t.default_texture_filter = Filter::Linear;
     t.default_texture_repeat = Repeat::Disabled;
     const Snapshot fifteen = state6(15);
-    t.canvases = fifteen.canvases;
+    t.canvases = fifteen.canvases.vector();
     t.items = {entry(golden::item15_unsupported_material(), false),
                entry(golden::item16_unknown_material(), false),
                entry(golden::item17_instance_param_type(), false)};

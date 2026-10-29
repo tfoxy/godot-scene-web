@@ -286,10 +286,8 @@ Snapshot state9(int n) {
                                                  golden::kMesh1SurfaceBFormat, 4, 6)};
   }
   if (m >= 6) {
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 6; }),
-                  s.items.end());
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8});
+    s.items.erase_if([](const ItemState &it) { return it.id == 6; });
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8});
     TextureEntry freed;
     freed.id = 10;
     freed.origin = Origin::Adopted;
@@ -312,7 +310,7 @@ Snapshot state9(int n) {
     it9.content_version = 1;
     it9.commands = {golden::add_texture_rect(true, 11, false, false, {0.0f, 0.0f, 16.0f, 16.0f})};
     s.items.push_back(it9);
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
   }
   if (n >= 8) {
     s.textures[6].variants = {block_variant(kHashDxt5x4, 122, "DXT5"), uastc_variant(kHashKtx4, 209)};
@@ -379,9 +377,9 @@ ItemState bb_item(std::uint32_t id, ParentRef parent, std::vector<std::uint32_t>
 }
 
 ItemState *find(Snapshot &s, std::uint32_t id) {
-  for (ItemState &it : s.items) {
-    if (it.id == id) {
-      return &it;
+  for (std::size_t i = 0; i < s.items.size(); ++i) {
+    if (s.items[i].id == id) {
+      return &s.items.mut(i);
     }
   }
   return nullptr;
@@ -417,7 +415,7 @@ Snapshot state10(int n) {
   s.items.push_back(transparent);
   s.items.push_back(rect_copy);
   s.items.push_back(full_copy);
-  s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
+  s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
   if (n >= 10) {
     find(s, 12)->canvas_group.fit_margin = 20.0f;
     ItemState *o = find(s, 10);
@@ -429,9 +427,7 @@ Snapshot state10(int n) {
     ItemState *cleared = find(s, 14);
     cleared->content_version = 2;
     cleared->commands.clear();
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 11; }),
-                  s.items.end());
+    s.items.erase_if([](const ItemState &it) { return it.id == 11; });
   }
   return s;
 }
@@ -623,7 +619,7 @@ void add_multimesh_states(Snapshot *state, int n) {
   s.items.push_back(bb_item(17, ParentRef{ParentKind::Canvas, 1}, {}, 208.0f, 13,
                             {golden::unsupported_cmd("canvas_item_add_multimesh",
                                                      UnsupportedCmdReason::UnknownMultimesh)}));
-  s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 17});
+  s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 17});
   s.unsupported.push_back(mm_ref(16, UnsupportedReason::UnsupportedMultimesh));
   s.unsupported.push_back(mm_ref(17, UnsupportedReason::UnknownMultimesh));
   if (n >= 18) {
@@ -687,7 +683,7 @@ Snapshot state11(int n) {
   s.meshes.push_back(m2);
   s.items.push_back(bb_item(15, ParentRef{ParentKind::Canvas, 1}, {}, 192.0f, 12,
                             {golden::add_mesh(2, kIdentityXform)}));
-  s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 15});
+  s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 15});
   if (n >= 12) {
     // 12: mesh 1's custom AABB changes with equal bytes; texture 5's hash F leaves.
     m1 = find_mesh(s, 1);
@@ -735,10 +731,8 @@ Snapshot state11(int n) {
     MeshEntry freed = golden::mesh_entry(MeshStatus::Freed, 3);
     freed.id = 2;
     *find_mesh(s, 2) = freed;
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 15; }),
-                  s.items.end());
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
+    s.items.erase_if([](const ItemState &it) { return it.id == 15; });
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
     s.unsupported = ten.unsupported;
   }
   if (n >= 17) {

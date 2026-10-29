@@ -91,6 +91,14 @@ def collect_rows(out, plan):
                      "skipped_remote": tier.get("skipped_remote", []),
                      "skipped_remote_groups": tier.get("skipped_remote_groups", []),
                      "unavailable": tier.get("unavailable", []), "failing": tier.get("failing", [])})
+        # HC4a: the shadow oracle's account (lib/hc-shadow-scan.py), where the run had it on.
+        if os.path.exists(os.path.join(d, "hc-shadow.json")):
+            try:
+                hs = json.load(open(os.path.join(d, "hc-shadow.json")))
+                rows[-1]["hc_shadow"] = {k: hs.get(k) for k in
+                                         ("hosts", "hosts_shadow_on", "snapshots_checked", "hosts_mismatched")}
+            except ValueError:
+                rows[-1]["hc_shadow"] = {"unreadable": True}
         if r["id"] == "bench-instr":
             bi = bench_instr_block(d)
             if bi is not None:
@@ -152,6 +160,10 @@ def fold_shards(rows, expected):
             for r in g:
                 seen += [x for x in r.get(k, []) if x not in seen]
             f[k] = seen
+        hss = [r["hc_shadow"] for r in g if isinstance(r.get("hc_shadow"), dict) and "hosts" in r["hc_shadow"]]
+        if hss:  # HC4a: the shards' shadow-oracle accounts, summed
+            f["hc_shadow"] = {k: sum(h.get(k) or 0 for h in hss)
+                              for k in ("hosts", "hosts_shadow_on", "snapshots_checked", "hosts_mismatched")}
         bis = [r["bench_instr"] for r in g if r.get("bench_instr")]
         if len(bis) > 1:
             # --determinism repeats of one job: the first repeat's block stays on top, every repeat's

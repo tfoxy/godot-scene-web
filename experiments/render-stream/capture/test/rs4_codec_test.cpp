@@ -79,7 +79,7 @@ Transaction full_txn4(const Snapshot &snap) {
   t.unsupported = snap.unsupported;
   t.default_texture_filter = snap.default_texture_filter;
   t.default_texture_repeat = snap.default_texture_repeat;
-  t.canvases = snap.canvases;
+  t.canvases = snap.canvases.vector();
   t.textures = snap.textures;
   t.meshes = snap.meshes;
   for (const ItemState &it : snap.items) {

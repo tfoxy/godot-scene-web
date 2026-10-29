@@ -158,6 +158,32 @@ resync). Pointer equality makes them O(changed chunks) for any pair, with no dir
   pointers. An unchanged map is a no-op; a changed one is walked over its differences.
 - **Store bookkeeping** (`store_payloads`) visits only differing texture, mesh and shader chunks.
 
+### As built (HC4a: items and canvases; `results/p3/hc4a.md`)
+
+- **Dirty means touched; a change is decided at the snapshot.** The mirror's items sit in an
+  `ItemMap` whose only mutable accessors (`mut`, `emplace`, `erase`, `mut_all`) mark the item, so
+  the compiler finds every write. The snapshot rebuilds each marked item's entry and republishes
+  it only when `item_state_difference` (every field, floats by bit pattern) finds a difference. A
+  same-value setter therefore costs one compare at the snapshot and publishes nothing; the setters
+  were not given compare-before-write paths of their own. `mut_all` (a material freed) and the
+  first snapshot after `reset()` rebuild every item.
+- **Canvases are compared whole every snapshot** rather than marked: there are a handful, and a
+  compare without a copy costs about what a mark would.
+- **Derived inputs other items read** (a texture or mesh turning unsupported or delivery-pending,
+  a referenced multimesh's, emitter's or effective material's verdict) are fingerprinted each
+  snapshot; a moved fingerprint rederives every item's own entries for that snapshot. The D9
+  effective material is the one parent-chain dependency: when an item's material inputs move,
+  its `use_parent_material` descendants are rederived.
+- **Under Skip**, items parented to an unknown RID are tracked per marked item, so the withheld
+  walk runs only while one exists.
+- `Snapshot::unsupported` stays a `std::vector`: the item-level part is kept sorted per item and
+  concatenated only when an item's entries change, then copied into each snapshot.
+- **The shadow oracle** is `GRC_HC_SHADOW=1` (`HC_SHADOW=1` in a runner's environment;
+  `validate-increment.sh` sets it for every correctness run of the full tier and of a milestone
+  sweep). It compares items, canvases, item-level entries, the items' multimesh and emitter
+  references and the lowering flags, then the encoded `make_patch(previous, current)` at the
+  stream's version, and ends the stream with `hc-shadow-mismatch: <table> id <id>: <field>`.
+
 ## D2. Hashing
 
 | hash | today | after |

@@ -154,12 +154,14 @@
       "reach": ["lock-tests"]
     },
     {
-      "why": "the smoke tier itself and the pure self-tests",
+      "why": "the smoke tier itself, its summary and HC4a's shadow-oracle scan (self-test-validate-tier.sh), and the pure self-tests",
       "paths": [
         "experiments/render-stream/scripts/validate-increment.sh",
         "experiments/render-stream/scripts/smoke-map.json",
         "experiments/render-stream/scripts/lib/smoke-plan.py",
         "experiments/render-stream/scripts/lib/tier-verdict.py",
+        "experiments/render-stream/scripts/lib/validate-summary.py",
+        "experiments/render-stream/scripts/lib/hc-shadow-scan.py",
         "experiments/render-stream/scripts/test/**"
       ],
       "reach": ["pure"]

@@ -138,6 +138,19 @@ struct MirrorStats {
   std::uint64_t unknown_rids = 0;        // unknown RIDs named and not freed, now
   std::uint64_t withheld_items = 0;      // known items withheld from publication, now
   std::uint64_t rekeyed_items = 0;       // published items given a fresh id on entering a withheld subtree
+  // HC4a (host-cost-design.md D1, persistent item and canvas tables): items a snapshot visited
+  // because something marked them (dirty, gone, or entering or leaving a withheld subtree), the
+  // entries it replaced because their published state really changed, the snapshots that rebuilt
+  // every item (the first, or a whole-table change), those whose derived item-level entries were
+  // recomputed for every item (an input another item reads moved), and the shadow oracle's
+  // account (GRC_HC_SHADOW=1): snapshots it compared and those that differed.
+  std::uint64_t hc_items_visited = 0;
+  std::uint64_t hc_items_republished = 0;
+  std::uint64_t hc_full_rebuilds = 0;
+  std::uint64_t hc_derived_all = 0;
+  std::uint64_t hc_dirty_marks_dropped = 0;  // the hc-skip-dirty sabotage only
+  std::uint64_t hc_shadow_checked = 0;
+  std::uint64_t hc_shadow_mismatches = 0;
 };
 
 // What a mesh hook hands the mirror for one surface (G5e; gate5-design.md Q3a, Q3b): the hook
@@ -932,10 +945,33 @@ class Mirror {
 
   MirrorStats stats() const;
 
+  // HC4a (host-cost-design.md "Byte-identity proof method", the shadow oracle; GRC_HC_SHADOW=1, a
+  // test knob, never the product default): every snapshot is also built by the full walk the
+  // persistent tables replaced, and the two must agree entry by entry (items, canvases, the
+  // item-level unsupported entries, the multimesh and particles tables' item references and
+  // flags), and so must make_patch(previous, this)'s encoded bytes at `version` (the stream's).
+  // The first difference is kept (hc_shadow_failure: "<table> id <id>: <what>"); the caller ends
+  // the stream with it.
+  void set_hc_shadow(bool on, rs2::ProtocolVersion version);
+  std::string hc_shadow_failure() const;
+  bool hc_shadow_enabled() const;
+  // The HC4a sabotage this mirror runs ("hc-skip-dirty", "hc-stale-derived"; empty: none).
+  std::string hc_sabotage() const;
+  // Tests: every Mirror constructed after this starts with the shadow oracle on (at V6), and the
+  // number of mismatches every Mirror has found so far.
+  static void set_default_hc_shadow(bool on);
+  static std::uint64_t hc_shadow_mismatches_total();
+  // HC4a sabotages (env GRC_HC_SABOTAGE, never on the wire): `skip_dirty` drops every 16th dirty
+  // mark (the item's change waits for its next mark); `stale_derived` skips one item's
+  // item-level unsupported recompute (the first that would change its entries).
+  void set_hc_sabotage(bool skip_dirty, bool stale_derived);
+
  private:
   struct Item {
     rs2::ItemState state;
     std::uint64_t rid = 0;
+    // HC4a: in its table's dirty set (ItemMap::mut); cleared by the snapshot that visits it.
+    bool dirty = false;
     // W11b: the stable content_version (V11Options) and the mirror counter it was computed at.
     bool cv_digest_set = false;
     std::uint64_t cv_digest_of = 0;
@@ -1147,7 +1183,8 @@ class Mirror {
   // Mutation taps: omit-op, then omit-update. Advances the epoch when not dropped.
   bool dropped(const char *op, std::uint64_t frame);
   bool omit_op_matches(const char *op, std::uint64_t frame) const;
-  Item *find_item(std::uint64_t rid);
+  Item *find_item(std::uint64_t rid);  // HC4a: marks the item dirty
+  const Item *peek_item(std::uint64_t rid) const;  // HC4a: a read, no mark
   bool find_target(std::uint64_t rid, Target *out) const;
   // Looks the item up for a mutating op: unknown -> unknown() (pre-existing-object, or counted
   // under Skip), an item untracked because of the cap -> silently ignored.
@@ -1277,6 +1314,54 @@ class Mirror {
   void find_ties(const std::vector<std::uint32_t> &children,
                  std::vector<rs2::UnsupportedRef> *out) const;
 
+  // --- HC4a (host-cost-design.md D1): the persistent published item and canvas state -----------
+  // What the item references of a snapshot's tables and flags read (the multimesh and particles
+  // tables' item half, PM1/PM5's lowering flags).
+  struct ItemsPublished {
+    std::set<std::uint32_t> multimeshes;
+    std::set<std::uint32_t> particles;
+    bool multimesh_commands = false;
+    bool particles_commands = false;
+  };
+  // What the published state holds of one item, by wire id: whether its entry is in pub_items_,
+  // what it contributes to the counts (published only), its own item-level entries (in the order
+  // the walk adds them), its effective material and the inputs that decide it (D9).
+  struct PubItem {
+    bool counted = false;
+    std::vector<std::uint32_t> multimeshes;  // add_multimesh ids, one per command
+    std::vector<std::uint32_t> particles;    // add_particles ids, one per command
+    bool multimesh_command = false;          // lowered below /11 (PM1)
+    bool particles_command = false;          // lowered below /12 (PM5)
+    std::vector<rs2::UnsupportedRef> own;
+    std::uint32_t material = 0;  // the effective material it counts in material_users_ (0: none)
+    bool has_material_key = false;
+    std::array<std::uint32_t, 5> material_key = {};
+  };
+  // The unknown_items account and the withheld set, as the full walk takes them.
+  void publish_items(const std::set<std::uint32_t> &withheld, ItemsPublished *out);
+  // The W11b/HC2 stable content_version of `item` into `state` (the published entry): updates
+  // the item's digest cache when its counter moved (the incremental walk) ...
+  void refresh_cv(Item *item);
+  void stamp_cv(const Item &item, rs2::ItemState *state) const;
+  // ... or, for the shadow oracle, computes what it would be without touching the cache.
+  void stamp_cv_fresh(const Item &item, rs2::ItemState *state) const;
+  // render-stream-2.md "Item-level unsupported entries", D9, PM1, PM5: an item's own entries (not
+  // draw-index-tie). `memo` holds per-snapshot material verdicts.
+  void own_entries(const Item &item, std::map<std::uint32_t, bool> *memo,
+                   std::vector<rs2::UnsupportedRef> *out) const;
+  // A texture an item-level unsupported-texture entry names (its own status, or its diffuse's).
+  bool texture_entry_unsupported(std::uint32_t id) const;
+  // The shadow oracle's full walk (the snapshot as it was built before HC4a), with no side effect.
+  struct FullWalk {
+    std::vector<rs2::ItemState> items;
+    std::vector<rs2::CanvasState> canvases;
+    std::vector<rs2::UnsupportedRef> item_level;
+    ItemsPublished refs;
+    bool withheld_differs = false;  // the incremental withheld set is not withheld_ids()
+  };
+  void full_walk_items(const std::set<std::uint32_t> &withheld, FullWalk *out) const;
+  void shadow_compare(const FullWalk &walk, const ItemsPublished &refs, rs2::Snapshot *out);
+
   mutable std::mutex mutex_;
   std::uint64_t epoch_ = 0;
   bool publish_pending_ = false;          // G8kf: GRC_TEXTURE_PENDING=publish
@@ -1313,7 +1398,112 @@ class Mirror {
   std::uint32_t next_item_id_ = 1;
   std::uint64_t root_viewport_rid_ = 0;
   std::map<std::uint32_t, Canvas> canvases_;  // ordered by id
-  std::map<std::uint32_t, Item> items_;        // ordered by id
+  // HC4a (host-cost-design.md D1 "Dirty sets"): the items, ordered by id. Every mutable access
+  // marks the item dirty, so the next snapshot revisits exactly the items a hook touched: read
+  // through find()/all(), write through mut()/emplace()/erase(), and mut_all() marks every item
+  // (a rare whole-table change: a material freed, a recycled unknown RID).
+  class ItemMap {
+   public:
+    using Map = std::map<std::uint32_t, Item>;
+    const Item *find(std::uint32_t id) const {
+      const auto it = map_.find(id);
+      return it != map_.end() ? &it->second : nullptr;
+    }
+    Item *mut(std::uint32_t id) {
+      const auto it = map_.find(id);
+      if (it == map_.end()) {
+        return nullptr;
+      }
+      mark(&it->second);
+      return &it->second;
+    }
+    Item &emplace(std::uint32_t id, Item item) {
+      Item &placed = map_.emplace(id, std::move(item)).first->second;
+      placed.dirty = false;
+      mark(&placed);
+      return placed;
+    }
+    void erase(std::uint32_t id) {
+      if (map_.erase(id) != 0) {
+        gone_.push_back(id);
+      }
+    }
+    void clear() {
+      map_.clear();
+      dirty_.clear();
+      gone_.clear();
+      all_dirty_ = true;
+    }
+    const Map &all() const { return map_; }
+    Map &mut_all() {
+      all_dirty_ = true;
+      return map_;
+    }
+    std::size_t size() const { return map_.size(); }
+    bool empty() const { return map_.empty(); }
+    // The snapshot's own bookkeeping writes (digest caches, `published`): no mark.
+    Map &unmarked() { return map_; }
+    void mark(Item *item) {
+      if (item->dirty || all_dirty_) {
+        return;
+      }
+      if (skip_dirty_ && (++skip_counter_ % 16) == 0) {
+        ++dropped_;  // hc-skip-dirty: this mark is lost
+        return;
+      }
+      item->dirty = true;
+      dirty_.push_back(item->state.id);
+    }
+    std::vector<std::uint32_t> dirty_;  // ids marked since the last snapshot (some may be gone)
+    std::vector<std::uint32_t> gone_;   // ids erased since the last snapshot
+    bool all_dirty_ = true;             // every item (and the first snapshot after reset)
+    bool skip_dirty_ = false;           // the hc-skip-dirty sabotage
+    std::uint64_t skip_counter_ = 0;
+    std::uint64_t dropped_ = 0;
+
+   private:
+    Map map_;
+  };
+  ItemMap items_;
+  // HC4a: the published tables (every snapshot shares them, chunk by chunk) and what they derive.
+  bool pub_valid_ = false;  // false: the next snapshot rebuilds everything
+  rs2::SharedTable<rs2::ItemState> pub_items_;
+  rs2::SharedTable<rs2::CanvasState> pub_canvases_;
+  std::unordered_map<std::uint32_t, PubItem> pub_;
+  // Draw-index ties (render-stream-1.md "Invariant 9"): each container's tie representatives, and
+  // how many ties name each representative.
+  std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> item_ties_;
+  std::map<std::uint32_t, std::vector<std::uint32_t>> canvas_ties_;
+  std::unordered_map<std::uint32_t, std::uint32_t> tie_count_;
+  // The item-level unsupported entries by item id (non-empty only), sorted within an item, and
+  // their concatenation (rebuilt only when an item's entries changed).
+  std::map<std::uint32_t, std::vector<rs2::UnsupportedRef>> level_;
+  std::vector<rs2::UnsupportedRef> item_level_;
+  // Counts over the published items: multimesh and particles references, items holding a
+  // lowered command, items per effective material.
+  std::map<std::uint32_t, std::uint32_t> mm_refs_;
+  std::map<std::uint32_t, std::uint32_t> pt_refs_;
+  std::uint64_t mm_command_items_ = 0;
+  std::uint64_t pt_command_items_ = 0;
+  std::map<std::uint32_t, std::uint32_t> material_users_;
+  // The inputs other items' derived entries read, as of the last snapshot: a change recomputes
+  // every item's entries (rare: a texture or mesh turning unsupported, a verdict moving).
+  std::vector<std::uint32_t> bad_textures_;
+  std::vector<std::uint32_t> bad_meshes_;
+  std::map<std::uint32_t, bool> mm_verdicts_;
+  std::map<std::uint32_t, bool> pt_verdicts_;
+  std::map<std::uint32_t, bool> material_verdicts_;
+  std::set<std::uint32_t> withheld_prev_;
+  std::set<std::uint32_t> unknown_parent_ids_;  // Skip: items whose parent is an unknown RID
+  bool hc_stale_derived_ = false;       // the hc-stale-derived sabotage, armed
+  bool hc_stale_derived_used_ = false;  // ... and spent
+  // The shadow oracle (GRC_HC_SHADOW=1).
+  bool hc_shadow_ = false;
+  rs2::ProtocolVersion hc_shadow_version_ = rs2::ProtocolVersion::V6;
+  std::string hc_shadow_failure_;
+  bool hc_shadow_have_prev_ = false;
+  rs2::Snapshot hc_shadow_prev_;       // the previous snapshot as published
+  rs2::Snapshot hc_shadow_prev_full_;  // ... and as the full walk built it
   std::map<std::uint32_t, Texture> textures_;  // ordered by id, tombstones included
   std::unordered_map<std::uint64_t, std::uint32_t> texture_by_rid_;
   std::uint32_t next_texture_id_ = 1;

@@ -273,10 +273,8 @@ Snapshot state9(int n) {
                                                  golden::kMesh1SurfaceBFormat, 4, 6)};
   }
   if (m >= 6) {
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 6; }),
-                  s.items.end());
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8});
+    s.items.erase_if([](const ItemState &it) { return it.id == 6; });
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8});
     TextureEntry freed;
     freed.id = 10;
     freed.origin = Origin::Adopted;
@@ -299,7 +297,7 @@ Snapshot state9(int n) {
     it9.content_version = 1;
     it9.commands = {golden::add_texture_rect(true, 11, false, false, {0.0f, 0.0f, 16.0f, 16.0f})};
     s.items.push_back(it9);
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
   }
   if (n >= 8) {
     s.textures[6].variants = {block_variant(kHashDxt5x4, 122, "DXT5"), uastc_variant(kHashKtx4, 209)};
@@ -366,9 +364,9 @@ ItemState bb_item(std::uint32_t id, ParentRef parent, std::vector<std::uint32_t>
 }
 
 ItemState *find(Snapshot &s, std::uint32_t id) {
-  for (ItemState &it : s.items) {
-    if (it.id == id) {
-      return &it;
+  for (std::size_t i = 0; i < s.items.size(); ++i) {
+    if (s.items[i].id == id) {
+      return &s.items.mut(i);
     }
   }
   return nullptr;
@@ -404,7 +402,7 @@ Snapshot state10(int n) {
   s.items.push_back(transparent);
   s.items.push_back(rect_copy);
   s.items.push_back(full_copy);
-  s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
+  s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14});
   if (n >= 10) {
     find(s, 12)->canvas_group.fit_margin = 20.0f;
     ItemState *o = find(s, 10);
@@ -416,9 +414,7 @@ Snapshot state10(int n) {
     ItemState *cleared = find(s, 14);
     cleared->content_version = 2;
     cleared->commands.clear();
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 11; }),
-                  s.items.end());
+    s.items.erase_if([](const ItemState &it) { return it.id == 11; });
   }
   return s;
 }
@@ -583,11 +579,11 @@ void test_fields_ignored_at_v9() {
   Snapshot with = state10(9);
   with.version = ProtocolVersion::V9;
   Snapshot without = with;
-  for (ItemState &it : without.items) {
+  without.items.mutate_each([&](ItemState &it) {
     it.canvas_group = CanvasGroupState();
     it.copy_to_backbuffer = false;
     it.copy_to_backbuffer_rect = kZeroRect;
-  }
+  });
   const std::string t9 = text_of(encode_transaction(make_full(with)));
   check(encode_transaction(make_full(with)) == encode_transaction(make_full(without)),
         "a /9 transaction ignores both back-buffer keys");

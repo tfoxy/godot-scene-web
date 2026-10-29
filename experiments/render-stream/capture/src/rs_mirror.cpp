@@ -25,6 +25,12 @@ namespace rs {
 using namespace rs2;  // NOLINT: the wire types are the mirror's own types
 
 namespace {
+// HC4a: the shadow oracle's test defaults (Mirror::set_default_hc_shadow) and its account.
+std::atomic<bool> g_default_hc_shadow{false};
+std::atomic<std::uint64_t> g_hc_shadow_mismatches{0};
+}  // namespace
+
+namespace {
 
 std::string u64(std::uint64_t value) { return std::to_string(value); }
 
@@ -42,7 +48,10 @@ void erase_id(std::vector<std::uint32_t> *list, std::uint32_t id) {
 
 }  // namespace
 
-Mirror::Mirror() { reset(); }
+Mirror::Mirror() {
+  reset();
+  hc_shadow_ = g_default_hc_shadow.load();  // HC4a: tests only (set_default_hc_shadow)
+}
 
 void Mirror::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -104,6 +113,14 @@ void Mirror::reset() {
   failures_.clear();
   session_unsupported_.clear();
   stats_ = MirrorStats();
+  // HC4a: the next snapshot rebuilds the published tables (items_.clear() marked every item).
+  pub_valid_ = false;
+  withheld_prev_.clear();
+  hc_stale_derived_used_ = false;
+  hc_shadow_failure_.clear();
+  hc_shadow_have_prev_ = false;
+  hc_shadow_prev_ = Snapshot();
+  hc_shadow_prev_full_ = Snapshot();
 
   // Canvas 1 always exists, so every snapshot has its root canvas
   // (render-stream-0.md invariant `root-canvas`, unchanged at /1), even when the root query
@@ -160,6 +177,7 @@ void Mirror::set_unknown_item_policy(UnknownItemPolicy policy) {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
   unknown_policy_ = policy;
+  pub_valid_ = false;  // HC4a: what is published depends on it; rebuild
 }
 
 void Mirror::set_drop_frame(std::uint64_t frame) {
@@ -186,6 +204,7 @@ void Mirror::set_perturb_vertex(std::uint64_t from_frame) {
 void Mirror::set_v11(const V11Options &options) {
   std::lock_guard<std::mutex> lock(mutex_);
   v11_ = options;
+  pub_valid_ = false;  // HC4a: the published content_versions depend on it; rebuild
 }
 
 void Mirror::set_dynamic_hash_readers(bool readers) {
@@ -254,7 +273,12 @@ Mirror::Item *Mirror::find_item(std::uint64_t rid) {
   if (it == item_by_rid_.end()) {
     return nullptr;
   }
-  return &items_.at(it->second);
+  return items_.mut(it->second);  // HC4a: a hook that looks an item up for writing marks it
+}
+
+const Mirror::Item *Mirror::peek_item(std::uint64_t rid) const {
+  const auto it = item_by_rid_.find(rid);
+  return it != item_by_rid_.end() ? items_.find(it->second) : nullptr;
 }
 
 bool Mirror::find_target(std::uint64_t rid, Target *out) const {
@@ -341,8 +365,8 @@ std::vector<std::uint32_t> *Mirror::children_of(ParentKind kind, std::uint32_t i
     return it != canvases_.end() ? &it->second.state.items : nullptr;
   }
   if (kind == ParentKind::Item) {
-    const auto it = items_.find(id);
-    return it != items_.end() ? &it->second.state.children : nullptr;
+    Item *parent = items_.mut(id);  // HC4a: its child list is about to change
+    return parent != nullptr ? &parent->state.children : nullptr;
   }
   return nullptr;
 }
@@ -368,11 +392,11 @@ bool Mirror::is_withheld(const Item &item) const {
     if (cur->state.parent.kind != ParentKind::Item) {
       return false;
     }
-    const auto it = items_.find(cur->state.parent.id);
-    if (it == items_.end()) {
+    const Item *parent = items_.find(cur->state.parent.id);
+    if (parent == nullptr) {
       return false;
     }
-    cur = &it->second;
+    cur = parent;
   }
   return false;
 }
@@ -385,7 +409,7 @@ std::set<std::uint32_t> Mirror::withheld_ids() const {
   // P3-CAP: is_withheld() is true only on a chain through an item with an unknown parent; with
   // none, nothing is withheld and the per-item parent walks are skipped.
   bool any_unknown_parent = false;
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     if (entry.second.unknown_parent != 0) {
       any_unknown_parent = true;
       break;
@@ -394,7 +418,7 @@ std::set<std::uint32_t> Mirror::withheld_ids() const {
   if (!any_unknown_parent) {
     return out;
   }
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     if (is_withheld(entry.second)) {
       out.insert(entry.first);
     }
@@ -410,12 +434,12 @@ void Mirror::rekey_subtree(std::uint32_t root_id) {
   while (!stack.empty()) {
     const std::uint32_t id = stack.back();
     stack.pop_back();
-    const auto it = items_.find(id);
-    if (it == items_.end() || !seen.insert(id).second) {
+    const Item *found = items_.find(id);
+    if (found == nullptr || !seen.insert(id).second) {
       continue;
     }
     order.push_back(id);
-    const std::vector<std::uint32_t> &children = it->second.state.children;
+    const std::vector<std::uint32_t> &children = found->state.children;
     for (auto child = children.rbegin(); child != children.rend(); ++child) {
       stack.push_back(*child);
     }
@@ -423,7 +447,7 @@ void Mirror::rekey_subtree(std::uint32_t root_id) {
   // Only an id a receiver has seen needs replacing; the others keep theirs.
   std::map<std::uint32_t, std::uint32_t> renamed;
   for (std::uint32_t id : order) {
-    if (items_.at(id).published) {
+    if (items_.find(id)->published) {
       renamed[id] = next_item_id_++;
     }
   }
@@ -435,7 +459,7 @@ void Mirror::rekey_subtree(std::uint32_t root_id) {
     return it == renamed.end() ? id : it->second;
   };
   // The subtree root's own container lies outside the subtree.
-  const Item &root = items_.at(root_id);
+  const Item &root = *items_.find(root_id);
   if (renamed.count(root_id) != 0 &&
       !(root.state.parent.kind == ParentKind::Item && seen.count(root.state.parent.id) != 0)) {
     if (std::vector<std::uint32_t> *list = children_of(root.state.parent.kind, root.state.parent.id)) {
@@ -445,9 +469,9 @@ void Mirror::rekey_subtree(std::uint32_t root_id) {
   std::vector<Item> staged;
   staged.reserve(order.size());
   for (std::uint32_t id : order) {
-    const auto it = items_.find(id);
-    Item item = std::move(it->second);
-    items_.erase(it);
+    // HC4a: the old id leaves the table (gone), the new one is emplaced (dirty).
+    Item item = std::move(*items_.mut(id));
+    items_.erase(id);
     item.state.id = rename(id);
     item.published = false;
     for (std::uint32_t &child : item.state.children) {
@@ -470,10 +494,14 @@ bool Mirror::forget_unknown(std::uint64_t rid) {
   if (!skip_unknown() || unknown_rids_.erase(rid) == 0) {
     return false;
   }
-  for (auto &entry : items_) {
+  std::vector<std::uint32_t> orphans;
+  for (const auto &entry : items_.all()) {
     if (entry.second.unknown_parent == rid) {
-      entry.second.unknown_parent = 0;  // orphaned: no parent, as renderer_canvas_cull.cpp does
+      orphans.push_back(entry.first);
     }
+  }
+  for (std::uint32_t id : orphans) {
+    items_.mut(id)->unknown_parent = 0;  // orphaned: no parent, as renderer_canvas_cull.cpp does
   }
   return true;
 }
@@ -558,9 +586,8 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     // renderer_canvas_cull.cpp:2585-2600: leave the parent, orphan the children.
     detach(item);
     for (std::uint32_t child : item->state.children) {
-      const auto it = items_.find(child);
-      if (it != items_.end()) {
-        it->second.state.parent = ParentRef();
+      if (Item *orphan = items_.mut(child)) {
+        orphan->state.parent = ParentRef();
       }
     }
     const std::uint32_t id = item->state.id;
@@ -574,9 +601,8 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     // renderer_canvas_cull.cpp:2566: the canvas's child items lose their parent.
     Canvas &canvas = canvases_.at(canvas_it->second);
     for (std::uint32_t child : canvas.state.items) {
-      const auto it = items_.find(child);
-      if (it != items_.end()) {
-        it->second.state.parent = ParentRef();
+      if (Item *orphan = items_.mut(child)) {
+        orphan->state.parent = ParentRef();
       }
     }
     canvas.state.items.clear();
@@ -661,12 +687,16 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     // G55d (D5; g3ms.cpp:2394-2411, rcc:61-67): freeing a material resets every item naming it.
     ++epoch_;
     const std::uint32_t id = material_it->second;
-    for (auto &entry : items_) {
-      ItemState &state = entry.second.state;
-      if (state.has_material && state.material == id) {
-        state.has_material = false;
-        state.material = 0;
+    std::vector<std::uint32_t> users;
+    for (const auto &entry : items_.all()) {
+      if (entry.second.state.has_material && entry.second.state.material == id) {
+        users.push_back(entry.first);
       }
+    }
+    for (std::uint32_t user : users) {
+      ItemState &state = items_.mut(user)->state;
+      state.has_material = false;
+      state.material = 0;
     }
     // PM5: an emitter whose process material it was now names an unknown material.
     for (auto &entry : particles_) {
@@ -1197,7 +1227,7 @@ bool Mirror::texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) c
 }
 
 bool Mirror::texture_referenced(std::uint32_t id) const {
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     for (const Command &command : entry.second.state.commands) {
       if (names_texture(command) && command.has_tex && command.tex == id) {
         return true;
@@ -1213,7 +1243,7 @@ bool Mirror::texture_referenced(std::uint32_t id) const {
       }
     }
   }
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     for (const auto &param : entry.second.instance_params) {
       if (param.second.has_tex && param.second.tex == id) {
         return true;
@@ -1416,6 +1446,7 @@ bool Mirror::resolve_pending(Texture *texture) {
 void Mirror::set_publish_pending(bool on) {
   std::lock_guard<std::mutex> lock(mutex_);
   publish_pending_ = on;
+  pub_valid_ = false;  // HC4a: item-level entries read the pending set; rebuild
 }
 
 std::uint64_t Mirror::pending_published() const {
@@ -2004,7 +2035,7 @@ void Mirror::recompute_mesh_status(Mesh *mesh) {
 }
 
 bool Mirror::mesh_referenced(std::uint32_t id) const {
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     for (const Command &command : entry.second.state.commands) {
       if (command.kind == CommandKind::AddMesh && command.mesh == id) {
         return true;
@@ -2410,6 +2441,7 @@ bool float_bits_equal(const float *a, const float *b, std::size_t n) {
 void Mirror::set_multimesh(const MultimeshOptions &options) {
   std::lock_guard<std::mutex> lock(mutex_);
   mm_options_ = options;
+  pub_valid_ = false;  // HC4a: digests and flags depend on it; rebuild
 }
 
 Mirror::Multimesh *Mirror::find_multimesh(std::uint64_t rid) {
@@ -2452,7 +2484,7 @@ std::uint32_t Mirror::multimesh_stride(const Multimesh &mm) {
 }
 
 bool Mirror::multimesh_referenced(std::uint32_t id) const {
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     for (const Command &command : entry.second.state.commands) {
       if (command.kind == CommandKind::AddMultimesh && command.multimesh == id) {
         return true;
@@ -2964,6 +2996,7 @@ std::shared_ptr<std::vector<float>> default_particle_floats() {
 void Mirror::set_particles(const ParticlesOptions &options) {
   std::lock_guard<std::mutex> lock(mutex_);
   pt_options_ = options;
+  pub_valid_ = false;  // HC4a: digests and flags depend on it; rebuild
 }
 
 Mirror::Particles *Mirror::find_particles(std::uint64_t rid) {
@@ -2992,7 +3025,7 @@ std::uint32_t Mirror::mesh_id_of(std::uint64_t rid) const {
 }
 
 bool Mirror::particles_referenced(std::uint32_t id) const {
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     for (const Command &command : entry.second.state.commands) {
       if (command.kind == CommandKind::AddParticles && command.particles == id) {
         return true;
@@ -3485,7 +3518,7 @@ std::vector<Mirror::PpmCandidate> Mirror::ppm_candidates() const {
   }
   // The items drawing each emitter id.
   std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     for (const Command &command : entry.second.state.commands) {
       if (command.kind == CommandKind::AddParticles) {
         drawn_by[command.particles].push_back(entry.second.rid);
@@ -3747,7 +3780,7 @@ Mirror::PendingMaterialRefs Mirror::pending_material_refs() const {
       out.materials.push_back(std::move(ref));
     }
   }
-  for (const auto &entry : items_) {
+  for (const auto &entry : items_.all()) {
     const Item &item = entry.second;
     if (item.rid == 0) {
       continue;
@@ -4545,11 +4578,11 @@ std::uint32_t Mirror::effective_material(const Item &item) const {
   ParentRef parent = item.state.parent;
   std::size_t guard = 0;
   while (parent.kind == ParentKind::Item && guard++ < items_.size()) {
-    const auto it = items_.find(parent.id);
-    if (it == items_.end()) {
+    const Item *found = items_.find(parent.id);
+    if (found == nullptr) {
       break;
     }
-    const ItemState &p = it->second.state;
+    const ItemState &p = found->state;
     material = p.has_material ? p.material : 0;
     if (!p.use_parent_material) {
       break;
@@ -4856,7 +4889,7 @@ void Mirror::set_copy_to_backbuffer(std::uint64_t rid, bool enable, const Rect4 
 
 void Mirror::set_use_identity_transform(std::uint64_t rid, bool enable, std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (const Item *known = find_item(rid);
+  if (const Item *known = peek_item(rid);
       known != nullptr && known->state.use_identity_transform == enable) {
     // A call that changes nothing moves no epoch: CPUParticles2D's constructor sends false to
     // every emitter, a local one included, and that must not publish a frame.
@@ -4945,11 +4978,11 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
   std::vector<std::pair<std::int32_t, std::uint32_t>> drawing;
   drawing.reserve(children.size());
   for (std::uint32_t child : children) {
-    const auto it = items_.find(child);
-    if (it == items_.end()) {
+    const Item *found = items_.find(child);
+    if (found == nullptr) {
       continue;
     }
-    const ItemState &state = it->second.state;
+    const ItemState &state = found->state;
     if (state.commands.empty() && state.children.empty()) {
       continue;  // not drawing
     }
@@ -4970,6 +5003,859 @@ void Mirror::find_ties(const std::vector<std::uint32_t> &children,
       out->push_back(std::move(ref));
     }
     i = end;
+  }
+}
+
+// --- HC4a (host-cost-design.md D1): the persistent published item and canvas state ---------------
+
+namespace {
+
+bool refs_equal(const std::vector<UnsupportedRef> &a, const std::vector<UnsupportedRef> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a[i].op != b[i].op || a[i].has_item != b[i].has_item || a[i].item != b[i].item ||
+        a[i].reason != b[i].reason) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The item-level order (render-stream-2.md "Item-level unsupported entries"): item id, then op,
+// then reason (byte order).
+bool item_level_before(const UnsupportedRef &a, const UnsupportedRef &b) {
+  if (a.item != b.item) {
+    return a.item < b.item;
+  }
+  if (a.op != b.op) {
+    return a.op < b.op;
+  }
+  return std::string(to_wire(a.reason)) < std::string(to_wire(b.reason));
+}
+
+UnsupportedRef tie_entry(std::uint32_t item) {
+  UnsupportedRef ref;
+  ref.op = "canvas_item_set_draw_index";
+  ref.has_item = true;
+  ref.item = item;
+  ref.reason = UnsupportedReason::DrawIndexTie;
+  return ref;
+}
+
+}  // namespace
+
+void Mirror::set_hc_shadow(bool on, ProtocolVersion version) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  hc_shadow_ = on;
+  hc_shadow_version_ = version;
+  hc_shadow_failure_.clear();
+  hc_shadow_have_prev_ = false;
+  hc_shadow_prev_ = Snapshot();
+  hc_shadow_prev_full_ = Snapshot();
+}
+
+std::string Mirror::hc_shadow_failure() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return hc_shadow_failure_;
+}
+
+bool Mirror::hc_shadow_enabled() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return hc_shadow_;
+}
+
+std::string Mirror::hc_sabotage() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return items_.skip_dirty_ ? "hc-skip-dirty" : hc_stale_derived_ ? "hc-stale-derived" : "";
+}
+
+void Mirror::set_default_hc_shadow(bool on) { g_default_hc_shadow.store(on); }
+
+std::uint64_t Mirror::hc_shadow_mismatches_total() { return g_hc_shadow_mismatches.load(); }
+
+void Mirror::set_hc_sabotage(bool skip_dirty, bool stale_derived) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  items_.skip_dirty_ = skip_dirty;
+  hc_stale_derived_ = stale_derived;
+  hc_stale_derived_used_ = false;
+}
+
+bool Mirror::texture_entry_unsupported(std::uint32_t id) const {
+  // render-stream-2.md "Item-level unsupported entries": the command's own tex is unsupported (or
+  // G8kf delivery-pending), or (G2d) it names a canvas entry whose diffuse is.
+  const auto texture = textures_.find(id);
+  if (texture == textures_.end()) {
+    return false;
+  }
+  if (texture->second.status == TextureStatus::Unsupported || pending_ids_.count(id) != 0) {
+    return true;
+  }
+  if (texture->second.kind == TextureKind::Canvas && texture->second.has_diffuse) {
+    const auto diffuse = textures_.find(texture->second.diffuse_id);
+    return diffuse != textures_.end() &&
+           (diffuse->second.status == TextureStatus::Unsupported ||
+            pending_ids_.count(texture->second.diffuse_id) != 0);
+  }
+  return false;
+}
+
+void Mirror::own_entries(const Item &item, std::map<std::uint32_t, bool> *memo,
+                         std::vector<UnsupportedRef> *out) const {
+  // One entry per distinct (op, reason) pair of the item: an unsupported command's name and
+  // reason, a texture draw naming an unsupported texture (unsupported-texture), an unsupported
+  // mesh, multimesh or emitter, a material (unsupported-state, unknown-material,
+  // unsupported-material), a param-type instance parameter, a skeleton.
+  const std::size_t begin = out->size();
+  const ItemState &state = item.state;
+  const auto add = [out, begin, &state](const std::string &op, UnsupportedReason reason) {
+    for (std::size_t i = begin; i < out->size(); ++i) {
+      const UnsupportedRef &ref = (*out)[i];
+      if (ref.has_item && ref.item == state.id && ref.op == op && ref.reason == reason) {
+        return;
+      }
+    }
+    UnsupportedRef ref;
+    ref.op = op;
+    ref.has_item = true;
+    ref.item = state.id;
+    ref.reason = reason;
+    out->push_back(std::move(ref));
+  };
+  for (const Command &command : state.commands) {
+    if (command.kind == CommandKind::Unsupported) {
+      UnsupportedReason reason = UnsupportedReason::UnsupportedOp;
+      if (command.unsupported_reason == UnsupportedCmdReason::UnknownTexture) {
+        reason = UnsupportedReason::UnknownTexture;
+      } else if (command.unsupported_reason == UnsupportedCmdReason::CanvasTextureHeadless) {
+        reason = UnsupportedReason::CanvasTextureHeadless;
+      } else if (command.unsupported_reason == UnsupportedCmdReason::SkinnedGeometry) {
+        reason = UnsupportedReason::SkinnedGeometry;  // render-stream-4.md, D16
+      } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMesh) {
+        reason = UnsupportedReason::UnknownMesh;
+      } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMultimesh) {
+        reason = UnsupportedReason::UnknownMultimesh;  // PM1 rule 7
+      } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownParticles) {
+        reason = UnsupportedReason::UnknownParticles;  // PM5 "The command"
+      }
+      add(command.name, reason);
+    } else if (names_texture(command) && command.has_tex) {
+      if (texture_entry_unsupported(command.tex)) {
+        add(rs_method_name(command.kind), UnsupportedReason::UnsupportedTexture);
+      }
+    }
+    if (command.kind == CommandKind::AddMesh) {
+      // render-stream-4.md "Command": an add_mesh naming an `unsupported` mesh entry.
+      const auto mesh = meshes_.find(command.mesh);
+      if (mesh != meshes_.end() && mesh->second.status == MeshStatus::Unsupported) {
+        add("canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh);
+      }
+    } else if (command.kind == CommandKind::AddMultimesh) {
+      // PM1 rule 7: an add_multimesh naming an `unsupported` multimesh entry (a tombstone is
+      // not unsupported).
+      const auto mm = multimeshes_.find(command.multimesh);
+      if (mm != multimeshes_.end() &&
+          wire_multimesh(mm->second).status == MultimeshStatus::Unsupported) {
+        add("canvas_item_add_multimesh", UnsupportedReason::UnsupportedMultimesh);
+      }
+    } else if (command.kind == CommandKind::AddParticles) {
+      // PM5: an add_particles naming an `unsupported` emitter (a tombstone adds none).
+      const auto pt = particles_.find(command.particles);
+      if (pt != particles_.end() &&
+          wire_particles(pt->second, false).status == ParticlesStatus::Unsupported) {
+        add("canvas_item_add_particles", UnsupportedReason::UnsupportedParticles);
+      }
+    }
+  }
+  // G55d (render-stream-5.md "Derived item-level entries"): at most one canvas_item_set_material
+  // entry per item -- an unknown material RID, else an unsupported effective material (D9) --
+  // and one canvas_item_set_instance_shader_parameter param-type entry.
+  if (item.unknown_material) {
+    add("canvas_item_set_material", UnsupportedReason::UnknownMaterial);
+  } else {
+    const std::uint32_t effective = effective_material(item);
+    if (effective != 0) {
+      // P3-CAP: once per material per snapshot (nothing it reads changes under the lock).
+      auto verdict = memo->find(effective);
+      if (verdict == memo->end()) {
+        verdict = memo->emplace(effective, material_unsupported(effective)).first;
+      }
+      if (verdict->second) {
+        add("canvas_item_set_material", UnsupportedReason::UnsupportedMaterial);
+      }
+    }
+  }
+  if (!item.instance_param_unsupported.empty()) {
+    add("canvas_item_set_instance_shader_parameter", UnsupportedReason::ParamType);
+  }
+  if (item.unsupported_skeleton) {
+    add("canvas_item_attach_skeleton", UnsupportedReason::UnsupportedState);
+  }
+}
+
+void Mirror::refresh_cv(Item *item) {
+  if (!v11_.enabled || v11_.cv_churn) {
+    return;
+  }
+  // W11b: the stable content_version, recomputed only when the item recorded something since
+  // (its counter moved). HC2 (host-cost-design.md D1): a re-record equal to the published list
+  // is not a change -- it publishes that very list (shared with the snapshots that hold it) and
+  // keeps its digest, with no encode and no SHA-256.
+  Item &held = *item;
+  if (held.cv_digest_set && held.cv_digest_of == held.state.content_version) {
+    return;
+  }
+  const SharedVector<Command> &now = held.state.commands;
+  const bool same =
+      held.cv_digest_set &&
+      (now.shares(held.cv_commands) ||
+       (v11_.rerecord_stale ? same_command_kinds(now.vector(), held.cv_commands.vector())
+                            : command_lists_equal_bits(now.vector(), held.cv_commands.vector())));
+  if (same) {
+    if (!now.shares(held.cv_commands)) {
+      held.spare_commands = std::move(held.state.commands);  // no snapshot holds it yet
+    }
+    held.state.commands = held.cv_commands;
+    ++stats_.cv_rerecords_kept;
+  } else {
+    held.cv_digest = command_list_digest(now.vector());
+    // PM1: what a connection below /11 sees of a list with multimesh commands (rs2_diff.h
+    // lower_multimesh): the digest of the lowered list, as before PM1.
+    held.cv_digest_below = 0;
+    held.cv_digest_below12 = 0;
+    std::vector<Command> lowered;
+    if (pt_options_.enabled) {
+      // PM5: /11's view (particles lowered) and /10's (both lowered).
+      if (lower_particles_commands(now.vector(), &lowered)) {
+        held.cv_digest_below12 = command_list_digest(lowered);
+      }
+      if (lower_v11_commands(now.vector(), &lowered)) {
+        held.cv_digest_below = command_list_digest(lowered);
+      }
+    } else if (mm_options_.enabled && lower_multimesh_commands(now.vector(), &lowered)) {
+      held.cv_digest_below = command_list_digest(lowered);
+    }
+    held.cv_commands = now;
+    ++stats_.cv_digests;
+  }
+  held.cv_digest_of = held.state.content_version;
+  held.cv_digest_set = true;
+}
+
+void Mirror::stamp_cv(const Item &item, ItemState *state) const {
+  if (v11_.enabled && !v11_.cv_churn) {
+    state->content_version = item.cv_digest;
+    state->content_version_below_v11 = item.cv_digest_below;
+    state->content_version_below_v12 = item.cv_digest_below12;
+  }
+}
+
+void Mirror::stamp_cv_fresh(const Item &item, ItemState *state) const {
+  if (!v11_.enabled || v11_.cv_churn) {
+    return;
+  }
+  if (item.cv_digest_set && item.cv_digest_of == item.state.content_version) {
+    stamp_cv(item, state);
+    return;
+  }
+  // refresh_cv's decision, computed without touching the item's cache.
+  const SharedVector<Command> &now = item.state.commands;
+  const bool same =
+      item.cv_digest_set &&
+      (now.shares(item.cv_commands) ||
+       (v11_.rerecord_stale ? same_command_kinds(now.vector(), item.cv_commands.vector())
+                            : command_lists_equal_bits(now.vector(), item.cv_commands.vector())));
+  if (same) {
+    state->commands = item.cv_commands;
+    stamp_cv(item, state);
+    return;
+  }
+  state->content_version = command_list_digest(now.vector());
+  state->content_version_below_v11 = 0;
+  state->content_version_below_v12 = 0;
+  std::vector<Command> lowered;
+  if (pt_options_.enabled) {
+    if (lower_particles_commands(now.vector(), &lowered)) {
+      state->content_version_below_v12 = command_list_digest(lowered);
+    }
+    if (lower_v11_commands(now.vector(), &lowered)) {
+      state->content_version_below_v11 = command_list_digest(lowered);
+    }
+  } else if (mm_options_.enabled && lower_multimesh_commands(now.vector(), &lowered)) {
+    state->content_version_below_v11 = command_list_digest(lowered);
+  }
+}
+
+void Mirror::publish_items(const std::set<std::uint32_t> &withheld, ItemsPublished *out) {
+  ItemMap::Map &map = items_.unmarked();
+  const bool full = !pub_valid_ || items_.all_dirty_;
+  // 1. The items to visit: those marked since the last snapshot, those erased, and those entering
+  // or leaving a withheld subtree; every item when the whole table moved.
+  std::vector<std::uint32_t> visit;
+  if (full) {
+    ++stats_.hc_full_rebuilds;
+    pub_items_.clear();
+    pub_canvases_.clear();
+    pub_.clear();
+    item_ties_.clear();
+    canvas_ties_.clear();
+    tie_count_.clear();
+    level_.clear();
+    item_level_.clear();
+    mm_refs_.clear();
+    pt_refs_.clear();
+    mm_command_items_ = 0;
+    pt_command_items_ = 0;
+    material_users_.clear();
+    bad_textures_.clear();
+    bad_meshes_.clear();
+    mm_verdicts_.clear();
+    pt_verdicts_.clear();
+    material_verdicts_.clear();
+    visit.reserve(map.size());
+    for (auto &entry : map) {
+      entry.second.dirty = false;
+      visit.push_back(entry.first);
+    }
+  } else {
+    visit.reserve(items_.dirty_.size() + items_.gone_.size());
+    for (std::uint32_t id : items_.dirty_) {
+      const auto it = map.find(id);
+      if (it != map.end()) {
+        it->second.dirty = false;
+      }
+      visit.push_back(id);
+    }
+    visit.insert(visit.end(), items_.gone_.begin(), items_.gone_.end());
+    if (withheld != withheld_prev_) {
+      std::set_symmetric_difference(withheld.begin(), withheld.end(), withheld_prev_.begin(),
+                                    withheld_prev_.end(), std::back_inserter(visit));
+    }
+    std::sort(visit.begin(), visit.end());
+    visit.erase(std::unique(visit.begin(), visit.end()), visit.end());
+  }
+  stats_.hc_dirty_marks_dropped = items_.dropped_;
+  items_.dirty_.clear();
+  items_.gone_.clear();
+  items_.all_dirty_ = false;
+  pub_valid_ = true;
+  if (withheld != withheld_prev_) {
+    withheld_prev_ = withheld;
+  }
+  stats_.hc_items_visited += visit.size();
+
+  const auto live = [&map, &withheld](std::uint32_t id) -> Item * {
+    const auto it = map.find(id);
+    return it != map.end() && withheld.count(id) == 0 ? &it->second : nullptr;
+  };
+  std::vector<std::uint32_t> derive;  // items whose own entries may have changed
+  std::set<std::uint32_t> tie_items;  // containers whose draw-index ties may have changed
+  std::set<std::uint32_t> tie_canvases;
+  const auto container = [&tie_items, &tie_canvases](const ParentRef &parent) {
+    if (parent.kind == ParentKind::Item) {
+      tie_items.insert(parent.id);
+    } else if (parent.kind == ParentKind::Canvas) {
+      tie_canvases.insert(parent.id);
+    }
+  };
+  const auto uncount = [this](PubItem *pub) {
+    if (!pub->counted) {
+      return;
+    }
+    for (std::uint32_t id : pub->multimeshes) {
+      const auto it = mm_refs_.find(id);
+      if (--it->second == 0) {
+        mm_refs_.erase(it);
+      }
+    }
+    for (std::uint32_t id : pub->particles) {
+      const auto it = pt_refs_.find(id);
+      if (--it->second == 0) {
+        pt_refs_.erase(it);
+      }
+    }
+    mm_command_items_ -= pub->multimesh_command ? 1 : 0;
+    pt_command_items_ -= pub->particles_command ? 1 : 0;
+    pub->multimeshes.clear();
+    pub->particles.clear();
+    pub->multimesh_command = false;
+    pub->particles_command = false;
+    pub->counted = false;
+  };
+
+  // 2. Each visited item: its published entry (republished only when it really differs), its
+  // references, and the containers and items whose derived parts it can move.
+  for (std::uint32_t id : visit) {
+    Item *item = live(id);
+    const auto found = pub_.find(id);
+    PubItem *pub = found != pub_.end() ? &found->second : nullptr;
+    const ItemState *old = pub_items_.find(id);
+    if (old != nullptr) {
+      container(old->parent);
+    }
+    tie_items.insert(id);
+    derive.push_back(id);
+    if (pub != nullptr) {
+      uncount(pub);
+    }
+    if (item == nullptr) {
+      if (old != nullptr) {
+        pub_items_.erase(id);
+        ++stats_.hc_items_republished;
+      }
+      continue;
+    }
+    if (pub == nullptr) {
+      pub = &pub_[id];
+    }
+    refresh_cv(item);
+    ItemState state = item->state;
+    stamp_cv(*item, &state);
+    container(state.parent);
+    if (old == nullptr || item_state_difference(*old, state) != nullptr) {
+      pub_items_.set(std::move(state));
+      ++stats_.hc_items_republished;
+    }
+    item->published = true;
+    for (const Command &command : item->state.commands) {
+      if (command.kind == CommandKind::AddMultimesh) {
+        pub->multimeshes.push_back(command.multimesh);
+        ++mm_refs_[command.multimesh];
+      } else if (command.kind == CommandKind::AddParticles) {
+        pub->particles.push_back(command.particles);
+        ++pt_refs_[command.particles];
+      }
+      if (command.kind == CommandKind::AddMultimesh ||
+          (command.kind == CommandKind::Unsupported && command.name == "canvas_item_add_multimesh")) {
+        pub->multimesh_command = true;
+      }
+      if (command.kind == CommandKind::AddParticles ||
+          (command.kind == CommandKind::Unsupported && command.name == "canvas_item_add_particles")) {
+        pub->particles_command = true;
+      }
+    }
+    mm_command_items_ += pub->multimesh_command ? 1 : 0;
+    pt_command_items_ += pub->particles_command ? 1 : 0;
+    pub->counted = true;
+    // D9: what decides the effective material of this item and of every descendant that uses its
+    // parent's material. When it moved, those descendants' entries are rederived too.
+    const ItemState &now = item->state;
+    const std::array<std::uint32_t, 5> key = {
+        now.has_material ? now.material + 1u : 0u, now.use_parent_material ? 1u : 0u,
+        static_cast<std::uint32_t>(now.parent.kind), now.parent.id,
+        item->unknown_material ? 1u : 0u};
+    if (!pub->has_material_key || pub->material_key != key) {
+      pub->has_material_key = true;
+      pub->material_key = key;
+      std::vector<std::uint32_t> stack(now.children.begin(), now.children.end());
+      for (std::size_t steps = 0; !stack.empty() && steps <= map.size(); ++steps) {
+        const std::uint32_t child = stack.back();
+        stack.pop_back();
+        const Item *c = items_.find(child);
+        if (c == nullptr || !c->state.use_parent_material) {
+          continue;
+        }
+        derive.push_back(child);
+        stack.insert(stack.end(), c->state.children.begin(), c->state.children.end());
+      }
+    }
+  }
+
+  // 3. The inputs other items' entries read. A texture or mesh turning unsupported (or back), or
+  // a referenced multimesh's, emitter's or effective material's verdict moving, rederives every
+  // item: rare, and cheaper than keeping reverse dependencies.
+  bool all = full;
+  {
+    std::vector<std::uint32_t> bad_textures;
+    for (const auto &entry : textures_) {
+      if (texture_entry_unsupported(entry.first)) {
+        bad_textures.push_back(entry.first);
+      }
+    }
+    std::vector<std::uint32_t> bad_meshes;
+    for (const auto &entry : meshes_) {
+      if (entry.second.status == MeshStatus::Unsupported) {
+        bad_meshes.push_back(entry.first);
+      }
+    }
+    if (bad_textures != bad_textures_ || bad_meshes != bad_meshes_) {
+      all = true;
+      bad_textures_.swap(bad_textures);
+      bad_meshes_.swap(bad_meshes);
+    }
+  }
+  std::vector<std::uint32_t> derived;
+  const auto derive_list = [&]() {
+    derived = derive;
+    if (all) {
+      derived.reserve(derived.size() + map.size());
+      for (const auto &entry : map) {
+        derived.push_back(entry.first);
+      }
+    }
+    std::sort(derived.begin(), derived.end());
+    derived.erase(std::unique(derived.begin(), derived.end()), derived.end());
+  };
+  // Each rederived item's effective material, counted per material.
+  const auto count_materials = [&]() {
+    for (std::uint32_t id : derived) {
+      const Item *item = live(id);
+      const std::uint32_t effective =
+          item != nullptr && !item->unknown_material ? effective_material(*item) : 0;
+      auto found = pub_.find(id);
+      if (found == pub_.end()) {
+        if (effective == 0) {
+          continue;
+        }
+        found = pub_.emplace(id, PubItem()).first;
+      }
+      PubItem &pub = found->second;
+      if (pub.material == effective) {
+        continue;
+      }
+      if (pub.material != 0) {
+        const auto it = material_users_.find(pub.material);
+        if (--it->second == 0) {
+          material_users_.erase(it);
+        }
+      }
+      if (effective != 0) {
+        ++material_users_[effective];
+      }
+      pub.material = effective;
+    }
+  };
+  derive_list();
+  count_materials();
+  {
+    // Each referenced id's verdict, updated in place (no per-snapshot map); an id no longer
+    // referenced leaves its map.
+    bool moved = false;
+    const auto update = [&moved](std::map<std::uint32_t, bool> *verdicts,
+                                 const std::map<std::uint32_t, std::uint32_t> &refs,
+                                 const auto &verdict_of) {
+      for (const auto &entry : refs) {
+        const bool bad = verdict_of(entry.first);
+        const auto placed = verdicts->emplace(entry.first, bad);
+        if (!placed.second && placed.first->second != bad) {
+          moved = true;
+          placed.first->second = bad;
+        }
+      }
+      if (verdicts->size() != refs.size()) {
+        for (auto it = verdicts->begin(); it != verdicts->end();) {
+          it = refs.count(it->first) == 0 ? verdicts->erase(it) : std::next(it);
+        }
+      }
+    };
+    update(&mm_verdicts_, mm_refs_, [this](std::uint32_t id) {
+      const auto mm = multimeshes_.find(id);
+      return mm != multimeshes_.end() &&
+             wire_multimesh(mm->second).status == MultimeshStatus::Unsupported;
+    });
+    update(&pt_verdicts_, pt_refs_, [this](std::uint32_t id) {
+      const auto pt = particles_.find(id);
+      return pt != particles_.end() &&
+             wire_particles(pt->second, false).status == ParticlesStatus::Unsupported;
+    });
+    update(&material_verdicts_, material_users_,
+           [this](std::uint32_t id) { return material_unsupported(id); });
+    if (moved && !all) {
+      all = true;
+      derive_list();
+      count_materials();
+    }
+  }
+  // own_entries' material verdicts: those of every effective material in use (an item rederived
+  // below names one of them; a miss is computed and kept until the next update prunes it).
+  std::map<std::uint32_t, bool> &memo = material_verdicts_;
+  if (all) {
+    ++stats_.hc_derived_all;
+  }
+
+  // 4. The own item-level entries of every rederived item.
+  std::vector<std::uint32_t> buckets;  // items whose list of entries may have changed
+  for (std::uint32_t id : derived) {
+    std::vector<UnsupportedRef> own;
+    if (const Item *item = live(id)) {
+      own_entries(*item, &memo, &own);
+    }
+    auto found = pub_.find(id);
+    if (found == pub_.end()) {
+      if (own.empty()) {
+        continue;
+      }
+      found = pub_.emplace(id, PubItem()).first;
+    }
+    if (refs_equal(found->second.own, own)) {
+      continue;
+    }
+    if (hc_stale_derived_ && !hc_stale_derived_used_) {
+      hc_stale_derived_used_ = true;  // hc-stale-derived: this item keeps its stale entries
+      continue;
+    }
+    found->second.own = std::move(own);
+    buckets.push_back(id);
+  }
+
+  // 5. Canvases (a handful: compared whole), then the draw-index ties of every container a
+  // visited item or a changed canvas can move (render-stream-1.md "Invariant 9").
+  for (const auto &entry : canvases_) {
+    const CanvasState *old = pub_canvases_.find(entry.first);
+    if (old == nullptr || canvas_state_difference(*old, entry.second.state) != nullptr) {
+      pub_canvases_.set(entry.second.state);
+      tie_canvases.insert(entry.first);
+    }
+  }
+  {
+    std::vector<std::uint32_t> removed;
+    for (const CanvasState &canvas : pub_canvases_) {
+      if (canvases_.count(canvas.id) == 0) {
+        removed.push_back(canvas.id);
+      }
+    }
+    for (std::uint32_t id : removed) {
+      pub_canvases_.erase(id);
+      tie_canvases.insert(id);
+    }
+  }
+  const auto retie = [this, &buckets](std::vector<std::uint32_t> *cached,
+                                      const std::vector<UnsupportedRef> &ties) {
+    std::vector<std::uint32_t> reps;
+    reps.reserve(ties.size());
+    for (const UnsupportedRef &ref : ties) {
+      reps.push_back(ref.item);
+    }
+    if (*cached == reps) {
+      return;
+    }
+    for (std::uint32_t rep : *cached) {
+      const auto it = tie_count_.find(rep);
+      if (--it->second == 0) {
+        tie_count_.erase(it);
+      }
+      buckets.push_back(rep);
+    }
+    for (std::uint32_t rep : reps) {
+      ++tie_count_[rep];
+      buckets.push_back(rep);
+    }
+    cached->swap(reps);
+  };
+  std::vector<UnsupportedRef> ties;
+  for (std::uint32_t id : tie_items) {
+    ties.clear();
+    if (const Item *item = live(id)) {
+      find_ties(item->state.children, &ties);
+    }
+    const auto found = item_ties_.find(id);
+    if (found == item_ties_.end() && ties.empty()) {
+      continue;
+    }
+    std::vector<std::uint32_t> &cached = found != item_ties_.end() ? found->second : item_ties_[id];
+    retie(&cached, ties);
+    if (cached.empty()) {
+      item_ties_.erase(id);
+    }
+  }
+  for (std::uint32_t id : tie_canvases) {
+    ties.clear();
+    const auto canvas = canvases_.find(id);
+    if (canvas != canvases_.end()) {
+      find_ties(canvas->second.state.items, &ties);
+    }
+    const auto found = canvas_ties_.find(id);
+    if (found == canvas_ties_.end() && ties.empty()) {
+      continue;
+    }
+    std::vector<std::uint32_t> &cached =
+        found != canvas_ties_.end() ? found->second : canvas_ties_[id];
+    retie(&cached, ties);
+    if (cached.empty()) {
+      canvas_ties_.erase(id);
+    }
+  }
+
+  // 6. Each item's entries (its own and the ties naming it, in item-level order), and the
+  // concatenation, rebuilt only when one of them changed.
+  std::sort(buckets.begin(), buckets.end());
+  buckets.erase(std::unique(buckets.begin(), buckets.end()), buckets.end());
+  bool level_changed = full;
+  for (std::uint32_t id : buckets) {
+    std::vector<UnsupportedRef> bucket;
+    const auto pub = pub_.find(id);
+    if (pub != pub_.end()) {
+      bucket = pub->second.own;
+    }
+    const auto count = tie_count_.find(id);
+    for (std::uint32_t k = 0; count != tie_count_.end() && k < count->second; ++k) {
+      bucket.push_back(tie_entry(id));
+    }
+    std::sort(bucket.begin(), bucket.end(), item_level_before);
+    const auto held = level_.find(id);
+    if (bucket.empty()) {
+      if (held != level_.end()) {
+        level_.erase(held);
+        level_changed = true;
+      }
+    } else if (held == level_.end() || !refs_equal(held->second, bucket)) {
+      level_[id] = std::move(bucket);
+      level_changed = true;
+    }
+  }
+  if (level_changed) {
+    item_level_.clear();
+    for (const auto &entry : level_) {
+      item_level_.insert(item_level_.end(), entry.second.begin(), entry.second.end());
+    }
+  }
+  // An erased item leaves nothing behind.
+  for (std::uint32_t id : visit) {
+    if (map.count(id) == 0) {
+      const auto pub = pub_.find(id);
+      if (pub != pub_.end() && pub->second.own.empty() && !pub->second.counted &&
+          pub->second.material == 0) {
+        pub_.erase(pub);
+      }
+    }
+  }
+
+  for (const auto &entry : mm_refs_) {
+    out->multimeshes.insert(out->multimeshes.end(), entry.first);
+  }
+  for (const auto &entry : pt_refs_) {
+    out->particles.insert(out->particles.end(), entry.first);
+  }
+  out->multimesh_commands = mm_options_.enabled && mm_command_items_ != 0;
+  out->particles_commands = pt_options_.enabled && pt_command_items_ != 0;
+}
+
+void Mirror::full_walk_items(const std::set<std::uint32_t> &withheld, FullWalk *out) const {
+  // The items walk as every snapshot ran it before HC4a (P3-CAP's single walk): the published
+  // items with their content_version, the item-level entries and draw-index ties sorted, the
+  // multimeshes and emitters the published items name and the lowering flags.
+  std::map<std::uint32_t, bool> memo;
+  out->items.reserve(items_.size());
+  for (const auto &entry : items_.all()) {
+    if (withheld.count(entry.first) != 0) {
+      continue;
+    }
+    const Item &item = entry.second;
+    ItemState state = item.state;
+    stamp_cv_fresh(item, &state);
+    own_entries(item, &memo, &out->item_level);
+    find_ties(item.state.children, &out->item_level);
+    for (const Command &command : state.commands) {
+      if (command.kind == CommandKind::AddMultimesh) {
+        out->refs.multimeshes.insert(command.multimesh);
+      } else if (command.kind == CommandKind::AddParticles) {
+        out->refs.particles.insert(command.particles);
+      }
+      if (pt_options_.enabled &&
+          (command.kind == CommandKind::AddParticles ||
+           (command.kind == CommandKind::Unsupported && command.name == "canvas_item_add_particles"))) {
+        out->refs.particles_commands = true;
+      }
+      if (mm_options_.enabled &&
+          (command.kind == CommandKind::AddMultimesh ||
+           (command.kind == CommandKind::Unsupported && command.name == "canvas_item_add_multimesh"))) {
+        out->refs.multimesh_commands = true;
+      }
+    }
+    out->items.push_back(std::move(state));
+  }
+  for (const auto &entry : canvases_) {
+    find_ties(entry.second.state.items, &out->item_level);
+    out->canvases.push_back(entry.second.state);
+  }
+  std::sort(out->item_level.begin(), out->item_level.end(), item_level_before);
+}
+
+void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Snapshot *out) {
+  ++stats_.hc_shadow_checked;
+  std::string diff;
+  if (walk.withheld_differs) {
+    diff = "withheld: the items left out differ from the full walk's";
+  }
+  if (diff.empty() && walk.items.size() != out->items.size()) {
+    diff = "items: " + u64(out->items.size()) + " entries, the full walk " + u64(walk.items.size());
+  }
+  std::size_t i = 0;
+  for (auto it = out->items.begin(); diff.empty() && it != out->items.end(); ++it, ++i) {
+    if (it->id != walk.items[i].id) {
+      diff = "items id " + u64(it->id) + ": the full walk has id " + u64(walk.items[i].id) + " there";
+    } else if (const char *field = item_state_difference(walk.items[i], *it)) {
+      diff = "items id " + u64(it->id) + ": " + field;
+    }
+  }
+  if (diff.empty() && walk.canvases.size() != out->canvases.size()) {
+    diff = "canvases: " + u64(out->canvases.size()) + " entries, the full walk " +
+           u64(walk.canvases.size());
+  }
+  i = 0;
+  for (auto it = out->canvases.begin(); diff.empty() && it != out->canvases.end(); ++it, ++i) {
+    if (const char *field = canvas_state_difference(walk.canvases[i], *it)) {
+      diff = "canvases id " + u64(it->id) + ": " + field;
+    }
+  }
+  if (diff.empty() && !refs_equal(walk.item_level, item_level_)) {
+    std::size_t k = 0;
+    while (k < walk.item_level.size() && k < item_level_.size() &&
+           refs_equal({walk.item_level[k]}, {item_level_[k]})) {
+      ++k;
+    }
+    const UnsupportedRef &at = k < walk.item_level.size() ? walk.item_level[k] : item_level_[k];
+    diff = "unsupported id " + u64(at.item) + ": " + at.op + " (" + u64(item_level_.size()) +
+           " item-level entries, the full walk " + u64(walk.item_level.size()) + ")";
+  }
+  if (diff.empty() && walk.refs.multimeshes != refs.multimeshes) {
+    diff = "multimeshes: the items' references differ";
+  }
+  if (diff.empty() && walk.refs.particles != refs.particles) {
+    diff = "particles: the items' references differ";
+  }
+  if (diff.empty() && (walk.refs.multimesh_commands != refs.multimesh_commands ||
+                       walk.refs.particles_commands != refs.particles_commands)) {
+    diff = "flags: multimesh_commands/particles_commands differ";
+  }
+  // The full walk's snapshot: this one with its items, canvases and item-level entries replaced
+  // (fresh entries, so make_patch compares every one of them field by field).
+  Snapshot full = *out;
+  full.items = SharedTable<ItemState>(walk.items);
+  full.canvases = SharedTable<CanvasState>(walk.canvases);
+  full.unsupported.resize(out->unsupported.size() - item_level_.size());
+  full.unsupported.insert(full.unsupported.end(), walk.item_level.begin(), walk.item_level.end());
+  if (diff.empty()) {
+    TxMeta meta;
+    meta.version = hc_shadow_version_;
+    meta.seq = out->seq;
+    meta.frame = out->frame;
+    std::vector<std::uint8_t> a;
+    std::vector<std::uint8_t> b;
+    if (hc_shadow_have_prev_) {
+      meta.base_seq = hc_shadow_prev_.seq;
+      a = encode_transaction(make_patch(hc_shadow_prev_, *out, meta));
+      b = encode_transaction(make_patch(hc_shadow_prev_full_, full, meta));
+    } else {
+      a = encode_transaction(make_full(*out, meta));
+      b = encode_transaction(make_full(full, meta));
+    }
+    if (a != b) {
+      diff = "patch: the encoded transactions differ (" + u64(a.size()) + " bytes, the full walk's " +
+             u64(b.size()) + ")";
+    }
+  }
+  hc_shadow_prev_ = *out;
+  hc_shadow_prev_full_ = std::move(full);
+  hc_shadow_have_prev_ = true;
+  if (!diff.empty()) {
+    ++stats_.hc_shadow_mismatches;
+    g_hc_shadow_mismatches.fetch_add(1);
+    if (hc_shadow_failure_.empty()) {
+      hc_shadow_failure_ = diff + " at frame " + u64(out->frame);
+      log_line("hc-shadow-mismatch: " + hc_shadow_failure_);
+    }
   }
 }
 
@@ -5016,14 +5902,37 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   // entries and its draw-index groups. No published container lists one (a withheld item's parent
   // is unknown or withheld itself), so canvases and the remaining items need no filtering. The
   // texture table is not filtered: a tombstone a withheld command names stays, as under Strict.
-  const std::set<std::uint32_t> withheld = withheld_ids();
+  // HC4a: the items hung from an unknown RID are tracked per marked item, so the withheld walk
+  // (every item's parent chain) runs only while one exists.
+  if (!pub_valid_ || items_.all_dirty_) {
+    unknown_parent_ids_.clear();
+    for (const auto &entry : items_.all()) {
+      if (entry.second.unknown_parent != 0) {
+        unknown_parent_ids_.insert(entry.first);
+      }
+    }
+  } else {
+    for (std::uint32_t id : items_.dirty_) {
+      const Item *item = items_.find(id);
+      if (item != nullptr && item->unknown_parent != 0) {
+        unknown_parent_ids_.insert(id);
+      } else {
+        unknown_parent_ids_.erase(id);
+      }
+    }
+    for (std::uint32_t id : items_.gone_) {
+      unknown_parent_ids_.erase(id);
+    }
+  }
+  const std::set<std::uint32_t> withheld =
+      unknown_parent_ids_.empty() ? std::set<std::uint32_t>() : withheld_ids();
   if (skip_unknown()) {
     UnknownItems &unknown = out.unknown_items;
     unknown.present = true;
     unknown.unknown_rids = unknown_rids_.size();
     unknown.withheld_items = withheld.size();
     for (std::uint32_t id : withheld) {
-      unknown.withheld_commands += items_.at(id).state.commands.size();
+      unknown.withheld_commands += items_.find(id)->state.commands.size();
     }
     unknown.unknown_calls = stats_.unknown_calls;
   }
@@ -5087,239 +5996,70 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
 
   // A tombstone leaves the table at the first snapshot in which nothing names it
   // (gate2-design.md Q3). `referenced` gathers every texture id something names: the items'
-  // commands and rid instance parameters (in the items walk below), a canvas texture's diffuse
-  // (G2d, gathered in the first textures walk above), material rid parameters and shader default
-  // textures (G55d); `meshes_named` every mesh an add_mesh names (G5e).
+  // commands and rid instance parameters, a canvas texture's diffuse (G2d, gathered in the first
+  // textures walk above), material rid parameters and shader default textures (G55d);
+  // `meshes_named` every mesh an add_mesh names (G5e).
   //
-  // P3-CAP: one walk of the items does the tombstone references, the item-level entries and the
-  // published items. Nothing the item-level entries look up is a tombstone removed below (a
-  // removed tombstone is named by nothing), so building them first changes no entry.
+  // HC4a (host-cost-design.md D1 "The snapshot"): the items' half of that walk visits every
+  // item's commands, so it runs only while some tombstone exists (a rare state); without one the
+  // named sets are never read.
   std::set<std::uint32_t> meshes_named;
-  // PM1 (rule 9): the multimeshes any add_multimesh names (the tombstone rule) and those a
-  // published item's names (the table).
+  // PM1 (rule 9): the multimeshes any add_multimesh names (the tombstone rule).
   std::set<std::uint32_t> multimeshes_named;
-  std::set<std::uint32_t> multimeshes_published;
-  const bool mm_on = mm_options_.enabled;
-  // PM5 ("Publication"): the emitters any add_particles names (the tombstone rule) and those a
-  // published item's names (the table, closed over subemitters below).
+  // PM5 ("Publication"): the emitters any add_particles names (the tombstone rule).
   std::set<std::uint32_t> particles_named;
-  std::set<std::uint32_t> particles_published;
   const bool pt_on = pt_options_.enabled;
-  // Item-level entries (render-stream-2.md "Item-level unsupported entries"): one per distinct
-  // (op, reason) pair of each item -- an unsupported command's name and reason, a texture draw
-  // naming an unsupported texture (unsupported-texture), a material (unsupported-state) -- and
-  // draw-index-tie per container; then ordered by item id, then op, then reason (byte order).
-  std::vector<UnsupportedRef> item_level;
-  std::map<std::uint32_t, bool> material_unsupported_memo;
-  // P3-CAP: an item's own entries are the ones added since its walk began (find_ties adds only
-  // draw-index-tie, which add_item_entry never adds), so the distinct-pair check scans just those.
-  std::size_t item_begin = 0;
-  const auto add_item_entry = [&item_level, &item_begin](std::uint32_t item, const std::string &op,
-                                                         UnsupportedReason reason) {
-    for (std::size_t i = item_begin; i < item_level.size(); ++i) {
-      const UnsupportedRef &ref = item_level[i];
-      if (ref.has_item && ref.item == item && ref.op == op && ref.reason == reason) {
-        return;
-      }
-    }
-    UnsupportedRef ref;
-    ref.op = op;
-    ref.has_item = true;
-    ref.item = item;
-    ref.reason = reason;
-    item_level.push_back(std::move(ref));
-  };
-  out.items.reserve(items_.size() - withheld.size());
-  for (auto &entry : items_) {
-    for (const Command &command : entry.second.state.commands) {
-      if (names_texture(command) && command.has_tex) {
-        referenced.insert(command.tex);
-      }
-      if (command.kind == CommandKind::AddMesh) {
-        meshes_named.insert(command.mesh);
-      } else if (command.kind == CommandKind::AddMultimesh) {
-        multimeshes_named.insert(command.multimesh);
-      } else if (command.kind == CommandKind::AddParticles) {
-        particles_named.insert(command.particles);
-      }
-    }
-    for (const auto &param : entry.second.instance_params) {
-      if (param.second.has_tex) {
-        referenced.insert(param.second.tex);
-      }
-    }
-    if (withheld.count(entry.first) != 0) {
-      continue;
-    }
-    item_begin = item_level.size();
-    if (v11_.enabled && !v11_.cv_churn) {
-      // W11b: the stable content_version, recomputed only when the item recorded something since
-      // (its counter moved). HC2 (host-cost-design.md D1): a re-record equal to the published list
-      // is not a change -- it publishes that very list (shared with the snapshots that hold it)
-      // and keeps its digest, with no encode and no SHA-256.
-      Item &held = entry.second;
-      if (!held.cv_digest_set || held.cv_digest_of != held.state.content_version) {
-        const SharedVector<Command> &now = held.state.commands;
-        const bool same =
-            held.cv_digest_set &&
-            (now.shares(held.cv_commands) ||
-             (v11_.rerecord_stale ? same_command_kinds(now.vector(), held.cv_commands.vector())
-                                  : command_lists_equal_bits(now.vector(),
-                                                             held.cv_commands.vector())));
-        if (same) {
-          if (!now.shares(held.cv_commands)) {
-            held.spare_commands = std::move(held.state.commands);  // no snapshot holds it yet
-          }
-          held.state.commands = held.cv_commands;
-          ++stats_.cv_rerecords_kept;
-        } else {
-          held.cv_digest = command_list_digest(now.vector());
-          // PM1: what a connection below /11 sees of a list with multimesh commands (rs2_diff.h
-          // lower_multimesh): the digest of the lowered list, as before PM1.
-          held.cv_digest_below = 0;
-          held.cv_digest_below12 = 0;
-          std::vector<Command> lowered;
-          if (pt_on) {
-            // PM5: /11's view (particles lowered) and /10's (both lowered).
-            if (lower_particles_commands(now.vector(), &lowered)) {
-              held.cv_digest_below12 = command_list_digest(lowered);
-            }
-            if (lower_v11_commands(now.vector(), &lowered)) {
-              held.cv_digest_below = command_list_digest(lowered);
-            }
-          } else if (mm_on && lower_multimesh_commands(now.vector(), &lowered)) {
-            held.cv_digest_below = command_list_digest(lowered);
-          }
-          held.cv_commands = now;
-          ++stats_.cv_digests;
+  bool tombstones = false;
+  for (const auto &entry : textures_) {
+    tombstones = tombstones || entry.second.status == TextureStatus::Freed;
+  }
+  for (const auto &entry : meshes_) {
+    tombstones = tombstones || entry.second.status == MeshStatus::Freed;
+  }
+  for (const auto &entry : multimeshes_) {
+    tombstones = tombstones || entry.second.freed;
+  }
+  for (const auto &entry : particles_) {
+    tombstones = tombstones || entry.second.freed;
+  }
+  if (tombstones) {
+    for (const auto &entry : items_.all()) {
+      for (const Command &command : entry.second.state.commands) {
+        if (names_texture(command) && command.has_tex) {
+          referenced.insert(command.tex);
         }
-        held.cv_digest_of = held.state.content_version;
-        held.cv_digest_set = true;
-      }
-    }
-    const Item &item = entry.second;
-    const ItemState &state = item.state;
-    for (const Command &command : state.commands) {
-      if (command.kind == CommandKind::Unsupported) {
-        UnsupportedReason reason = UnsupportedReason::UnsupportedOp;
-        if (command.unsupported_reason == UnsupportedCmdReason::UnknownTexture) {
-          reason = UnsupportedReason::UnknownTexture;
-        } else if (command.unsupported_reason == UnsupportedCmdReason::CanvasTextureHeadless) {
-          reason = UnsupportedReason::CanvasTextureHeadless;
-        } else if (command.unsupported_reason == UnsupportedCmdReason::SkinnedGeometry) {
-          reason = UnsupportedReason::SkinnedGeometry;  // render-stream-4.md, D16
-        } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMesh) {
-          reason = UnsupportedReason::UnknownMesh;
-        } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownMultimesh) {
-          reason = UnsupportedReason::UnknownMultimesh;  // PM1 rule 7
-        } else if (command.unsupported_reason == UnsupportedCmdReason::UnknownParticles) {
-          reason = UnsupportedReason::UnknownParticles;  // PM5 "The command"
-        }
-        add_item_entry(state.id, command.name, reason);
-      } else if (names_texture(command) && command.has_tex) {
-        // render-stream-2.md "Item-level unsupported entries": the command's own tex is
-        // unsupported, or (G2d) it names a canvas entry whose diffuse names one.
-        const auto texture = textures_.find(command.tex);
-        bool unsupported_ref =
-            texture != textures_.end() && (texture->second.status == TextureStatus::Unsupported ||
-                                           pending_ids.count(command.tex) != 0);
-        if (!unsupported_ref && texture != textures_.end() &&
-            texture->second.kind == TextureKind::Canvas && texture->second.has_diffuse) {
-          const auto diffuse = textures_.find(texture->second.diffuse_id);
-          unsupported_ref =
-              diffuse != textures_.end() && (diffuse->second.status == TextureStatus::Unsupported ||
-                                             pending_ids.count(texture->second.diffuse_id) != 0);
-        }
-        if (unsupported_ref) {
-          add_item_entry(state.id, rs_method_name(command.kind),
-                         UnsupportedReason::UnsupportedTexture);
+        if (command.kind == CommandKind::AddMesh) {
+          meshes_named.insert(command.mesh);
+        } else if (command.kind == CommandKind::AddMultimesh) {
+          multimeshes_named.insert(command.multimesh);
+        } else if (command.kind == CommandKind::AddParticles) {
+          particles_named.insert(command.particles);
         }
       }
-      if (command.kind == CommandKind::AddMesh) {
-        // render-stream-4.md "Command": an add_mesh naming an `unsupported` mesh entry.
-        const auto mesh = meshes_.find(command.mesh);
-        if (mesh != meshes_.end() && mesh->second.status == MeshStatus::Unsupported) {
-          add_item_entry(state.id, "canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh);
-        }
-      } else if (command.kind == CommandKind::AddMultimesh) {
-        // PM1 rule 7: an add_multimesh naming an `unsupported` multimesh entry (a tombstone is
-        // not unsupported).
-        multimeshes_published.insert(command.multimesh);
-        const auto mm = multimeshes_.find(command.multimesh);
-        if (mm != multimeshes_.end() &&
-            wire_multimesh(mm->second).status == MultimeshStatus::Unsupported) {
-          add_item_entry(state.id, "canvas_item_add_multimesh",
-                         UnsupportedReason::UnsupportedMultimesh);
-        }
-      } else if (command.kind == CommandKind::AddParticles) {
-        // PM5: an add_particles naming an `unsupported` emitter (a tombstone adds none).
-        particles_published.insert(command.particles);
-        const auto pt = particles_.find(command.particles);
-        if (pt != particles_.end() &&
-            wire_particles(pt->second, false).status == ParticlesStatus::Unsupported) {
-          add_item_entry(state.id, "canvas_item_add_particles",
-                         UnsupportedReason::UnsupportedParticles);
-        }
-      }
-    }
-    // G55d (render-stream-5.md "Derived item-level entries"): at most one canvas_item_set_material
-    // entry per item -- an unknown material RID, else an unsupported effective material (D9) --
-    // and one canvas_item_set_instance_shader_parameter param-type entry.
-    if (item.unknown_material) {
-      add_item_entry(state.id, "canvas_item_set_material", UnsupportedReason::UnknownMaterial);
-    } else {
-      const std::uint32_t effective = effective_material(item);
-      if (effective != 0) {
-        // P3-CAP: once per material per snapshot (nothing it reads changes under the lock).
-        auto memo = material_unsupported_memo.find(effective);
-        if (memo == material_unsupported_memo.end()) {
-          memo = material_unsupported_memo.emplace(effective, material_unsupported(effective)).first;
-        }
-        if (memo->second) {
-          add_item_entry(state.id, "canvas_item_set_material",
-                         UnsupportedReason::UnsupportedMaterial);
-        }
-      }
-    }
-    if (!item.instance_param_unsupported.empty()) {
-      add_item_entry(state.id, "canvas_item_set_instance_shader_parameter",
-                     UnsupportedReason::ParamType);
-    }
-    if (item.unsupported_skeleton) {
-      add_item_entry(state.id, "canvas_item_attach_skeleton", UnsupportedReason::UnsupportedState);
-    }
-    find_ties(state.children, &item_level);
-    entry.second.published = true;
-    out.items.push_back(state);
-    if (v11_.enabled && !v11_.cv_churn) {
-      out.items.back().content_version = item.cv_digest;
-      out.items.back().content_version_below_v11 = item.cv_digest_below;
-      out.items.back().content_version_below_v12 = item.cv_digest_below12;
-    }
-    if (pt_on && !out.particles_commands) {
-      for (const Command &command : state.commands) {
-        if (command.kind == CommandKind::AddParticles ||
-            (command.kind == CommandKind::Unsupported &&
-             command.name == "canvas_item_add_particles")) {
-          out.particles_commands = true;  // a /11 connection lowers this snapshot
-          break;
-        }
-      }
-    }
-    if (mm_on && !out.multimesh_commands) {
-      for (const Command &command : state.commands) {
-        if (command.kind == CommandKind::AddMultimesh ||
-            (command.kind == CommandKind::Unsupported &&
-             command.name == "canvas_item_add_multimesh")) {
-          out.multimesh_commands = true;  // a connection below /11 lowers this snapshot
-          break;
+      for (const auto &param : entry.second.instance_params) {
+        if (param.second.has_tex) {
+          referenced.insert(param.second.tex);
         }
       }
     }
   }
-  for (const auto &entry : canvases_) {
-    find_ties(entry.second.state.items, &item_level);
+  // HC4a: the published items and canvases, the item-level entries and the items' references,
+  // updated for what changed since the last snapshot (publish_items). The shadow oracle builds
+  // them again by the full walk, here, where the walk always ran.
+  ItemsPublished refs;
+  publish_items(withheld, &refs);
+  FullWalk walk;
+  ItemsPublished walked_refs;  // the incremental references as of the walk (closed over below)
+  if (hc_shadow_) {
+    const std::set<std::uint32_t> withheld_full = withheld_ids();
+    full_walk_items(withheld_full, &walk);
+    walk.withheld_differs = withheld_full != withheld;
+    walked_refs = refs;
   }
+  std::set<std::uint32_t> &multimeshes_published = refs.multimeshes;
+  std::set<std::uint32_t> &particles_published = refs.particles;
+  out.multimesh_commands = refs.multimesh_commands;
+  out.particles_commands = refs.particles_commands;
   for (const auto &entry : materials_) {
     for (std::uint32_t tex : wire_params(entry.second).textures) {
       referenced.insert(tex);
@@ -5385,23 +6125,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       ++it;
     }
   }
-  std::sort(item_level.begin(), item_level.end(),
-            [](const UnsupportedRef &a, const UnsupportedRef &b) {
-              if (a.item != b.item) {
-                return a.item < b.item;
-              }
-              if (a.op != b.op) {
-                return a.op < b.op;
-              }
-              return std::string(to_wire(a.reason)) < std::string(to_wire(b.reason));
-            });
-  out.unsupported.insert(out.unsupported.end(), std::make_move_iterator(item_level.begin()),
-                         std::make_move_iterator(item_level.end()));
-
-  out.canvases.reserve(canvases_.size());
-  for (const auto &entry : canvases_) {
-    out.canvases.push_back(entry.second.state);
-  }
+  out.unsupported.insert(out.unsupported.end(), item_level_.begin(), item_level_.end());
+  out.canvases = pub_canvases_;
+  out.items = pub_items_;
   out.textures.reserve(textures_.size());
   for (auto &entry : textures_) {
     Texture &texture = entry.second;
@@ -5553,6 +6279,9 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     if (it != multimeshes_.end()) {
       out.multimeshes.push_back(wire_multimesh(it->second));
     }
+  }
+  if (hc_shadow_) {
+    shadow_compare(walk, walked_refs, &out);
   }
   return captured;
 }

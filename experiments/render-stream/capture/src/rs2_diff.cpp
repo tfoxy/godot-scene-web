@@ -515,7 +515,7 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   t.shader_time = cur.shader_time;  // P3-TM: complete, never patched
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
-  t.canvases = cur.canvases;
+  t.canvases = cur.canvases.vector();
   t.textures = cur.textures;
   if (t.version == ProtocolVersion::V4 || t.version == ProtocolVersion::V5 ||
       t.version == ProtocolVersion::V6 || t.version == ProtocolVersion::V7 ||
@@ -593,6 +593,58 @@ class IdIndex {
   std::vector<Entry> entries_;
 };
 
+// HC4a (host-cost-design.md D1 "The diff"): walks two tables chunk by chunk, ascending by id.
+// `removed(id)` gets every id of `base` that `cur` does not hold, `changed(entry, prev)` every
+// entry of `cur` that is not the very entry `base` holds (prev: base's entry of that id, or null).
+// A chunk both tables share is skipped whole, an entry both share is skipped.
+template <typename T, typename Removed, typename Changed>
+void diff_tables(const SharedTable<T> &base, const SharedTable<T> &cur, Removed removed,
+                 Changed changed) {
+  const auto &bc = base.chunks();
+  const auto &cc = cur.chunks();
+  std::size_t i = 0;
+  std::size_t j = 0;
+  while (i < bc.size() || j < cc.size()) {
+    if (j == cc.size() || (i < bc.size() && bc[i]->key < cc[j]->key)) {
+      for (const auto &p : bc[i]->entries) {
+        removed(p->id);
+      }
+      ++i;
+      continue;
+    }
+    if (i == bc.size() || cc[j]->key < bc[i]->key) {
+      for (const auto &p : cc[j]->entries) {
+        changed(*p, static_cast<const T *>(nullptr));
+      }
+      ++j;
+      continue;
+    }
+    if (bc[i] != cc[j]) {
+      const auto &be = bc[i]->entries;
+      const auto &ce = cc[j]->entries;
+      std::size_t a = 0;
+      std::size_t b = 0;
+      while (a < be.size() || b < ce.size()) {
+        if (b == ce.size() || (a < be.size() && be[a]->id < ce[b]->id)) {
+          removed(be[a]->id);
+          ++a;
+        } else if (a == be.size() || ce[b]->id < be[a]->id) {
+          changed(*ce[b], static_cast<const T *>(nullptr));
+          ++b;
+        } else {
+          if (be[a] != ce[b]) {
+            changed(*ce[b], be[a].get());
+          }
+          ++a;
+          ++b;
+        }
+      }
+    }
+    ++i;
+    ++j;
+  }
+}
+
 }  // namespace
 
 Transaction make_patch(const Snapshot &base, const Snapshot &cur) {
@@ -625,21 +677,24 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   t.default_texture_repeat = cur.default_texture_repeat;
 
   // P3-CAP: sorted id indexes (one allocation per table) instead of node-based maps and sets.
-  const IdIndex<CanvasState> base_canvases(base.canvases);
-  const IdIndex<ItemState> base_items(base.items);
   const IdIndex<TextureEntry> base_textures(base.textures);
   const IdIndex<MeshEntry> base_meshes(base.meshes);
   const IdIndex<ShaderEntry> base_shaders(base.shaders);
   const IdIndex<MaterialEntry> base_materials(base.materials);
-  const IdIndex<CanvasState> cur_canvas_ids(cur.canvases);
-  const IdIndex<ItemState> cur_item_ids(cur.items);
   const IdIndex<TextureEntry> cur_texture_ids(cur.textures);
   const IdIndex<MeshEntry> cur_mesh_ids(cur.meshes);
   const IdIndex<ShaderEntry> cur_shader_ids(cur.shaders);
   const IdIndex<MaterialEntry> cur_material_ids(cur.materials);
 
-  base_canvases.removed_from(cur_canvas_ids, &t.removed_canvases);
-  base_items.removed_from(cur_item_ids, &t.removed_items);
+  // HC4a: canvases and items by their shared chunks (diff_tables): a chunk or an entry `cur`
+  // shares with `base` is equal without a comparison.
+  diff_tables(
+      base.canvases, cur.canvases, [&t](std::uint32_t id) { t.removed_canvases.push_back(id); },
+      [&t](const CanvasState &canvas, const CanvasState *prev) {
+        if (prev == nullptr || !canvas_state_equal(*prev, canvas)) {
+          t.canvases.push_back(canvas);
+        }
+      });
   base_textures.removed_from(cur_texture_ids, &t.removed_textures);
   const bool v10 = is_v10_or_later(t.version);  // "V10 or later"
   const bool v11 = is_v11_or_later(t.version);
@@ -660,28 +715,21 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   }
   // IdIndex walks ascending by id, so removed_* are already ascending.
 
-  for (const CanvasState &canvas : cur.canvases) {
-    const CanvasState *prev = base_canvases.find(canvas.id);
-    if (prev != nullptr && canvas_state_equal(*prev, canvas)) {
-      continue;
-    }
-    t.canvases.push_back(canvas);
-  }
-
-  for (const ItemState &item : cur.items) {
-    const ItemState *prev = base_items.find(item.id);
-    const bool exists_in_base = prev != nullptr;
-    if (exists_in_base && item_state_equal(*prev, item, v10, v11)) {
-      continue;
-    }
-    ItemEntry entry;
-    entry.state = item;
-    entry.commands_null = exists_in_base && prev->content_version == item.content_version;
-    if (entry.commands_null) {
-      entry.state.commands.clear();  // not encoded; keeping it empty avoids ambiguity
-    }
-    t.items.push_back(std::move(entry));
-  }
+  diff_tables(
+      base.items, cur.items, [&t](std::uint32_t id) { t.removed_items.push_back(id); },
+      [&t, v10, v11](const ItemState &item, const ItemState *prev) {
+        const bool exists_in_base = prev != nullptr;
+        if (exists_in_base && item_state_equal(*prev, item, v10, v11)) {
+          return;
+        }
+        ItemEntry entry;
+        entry.state = item;
+        entry.commands_null = exists_in_base && prev->content_version == item.content_version;
+        if (entry.commands_null) {
+          entry.state.commands.clear();  // not encoded; keeping it empty avoids ambiguity
+        }
+        t.items.push_back(std::move(entry));
+      });
 
   for (const TextureEntry &tex : cur.textures) {
     const TextureEntry *prev = base_textures.find(tex.id);
@@ -1010,6 +1058,88 @@ bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<C
   return true;
 }
 
+namespace {
+
+template <typename A>
+bool bits_equal(const A &a, const A &b) {
+  return std::memcmp(a.data(), b.data(), sizeof(typename A::value_type) * a.size()) == 0;
+}
+
+bool float_bits_equal(float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; }
+
+bool param_identical(const Param &a, const Param &b) {
+  return a.name == b.name && a.type == b.type && a.n == b.n && a.has_tex == b.has_tex &&
+         a.tex == b.tex && double_vectors_equal_bits(a.floats, b.floats);
+}
+
+}  // namespace
+
+// Tripwire: a field added to ItemState or CanvasState must join the difference functions below
+// (a field left out would let the shadow oracle, and the mirror's republish test, miss it).
+#if defined(__x86_64__) && defined(__GLIBCXX__)
+static_assert(sizeof(ItemState) == 264, "ItemState changed: update item_state_difference, then this size");
+static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_state_difference, then this size");
+#endif
+
+const char *item_state_difference(const ItemState &a, const ItemState &b) {
+  if (a.id != b.id) return "id";
+  if (a.origin != b.origin) return "origin";
+  if (a.parent.kind != b.parent.kind || a.parent.id != b.parent.id) return "parent";
+  if (a.children != b.children) return "children";
+  if (!bits_equal(a.xform, b.xform)) return "xform";
+  if (!bits_equal(a.modulate, b.modulate)) return "modulate";
+  if (!bits_equal(a.self_modulate, b.self_modulate)) return "self_modulate";
+  if (a.visible != b.visible) return "visible";
+  if (a.draw_index != b.draw_index) return "draw_index";
+  if (a.z_index != b.z_index) return "z_index";
+  if (a.z_relative != b.z_relative) return "z_relative";
+  if (a.behind != b.behind) return "behind";
+  if (a.clip != b.clip) return "clip";
+  if (a.custom_rect != b.custom_rect) return "custom_rect";
+  if (!bits_equal(a.custom_rect_rect, b.custom_rect_rect)) return "custom_rect_rect";
+  if (a.visibility_layer != b.visibility_layer) return "visibility_layer";
+  if (a.texture_filter != b.texture_filter) return "texture_filter";
+  if (a.texture_repeat != b.texture_repeat) return "texture_repeat";
+  if (a.content_version != b.content_version) return "content_version";
+  if (!a.commands.shares(b.commands) &&
+      !command_lists_equal_bits(a.commands.vector(), b.commands.vector())) {
+    return "commands";
+  }
+  if (a.has_material != b.has_material || a.material != b.material) return "material";
+  if (a.use_parent_material != b.use_parent_material) return "use_parent_material";
+  if (a.instance_params.size() != b.instance_params.size()) return "instance_params";
+  for (std::size_t i = 0; i < a.instance_params.size(); ++i) {
+    if (!param_identical(a.instance_params[i], b.instance_params[i])) return "instance_params";
+  }
+  const CanvasGroupState &ga = a.canvas_group;
+  const CanvasGroupState &gb = b.canvas_group;
+  if (ga.mode != gb.mode || !float_bits_equal(ga.clear_margin, gb.clear_margin) ||
+      ga.fit_empty != gb.fit_empty || !float_bits_equal(ga.fit_margin, gb.fit_margin) ||
+      ga.blur_mipmaps != gb.blur_mipmaps) {
+    return "canvas_group";
+  }
+  if (a.copy_to_backbuffer != b.copy_to_backbuffer ||
+      !bits_equal(a.copy_to_backbuffer_rect, b.copy_to_backbuffer_rect)) {
+    return "copy_to_backbuffer";
+  }
+  if (a.use_identity_transform != b.use_identity_transform) return "use_identity_transform";
+  if (a.content_version_below_v11 != b.content_version_below_v11) return "content_version_below_v11";
+  if (a.content_version_below_v12 != b.content_version_below_v12) return "content_version_below_v12";
+  return nullptr;
+}
+
+const char *canvas_state_difference(const CanvasState &a, const CanvasState &b) {
+  if (a.id != b.id) return "id";
+  if (a.origin != b.origin) return "origin";
+  if (a.role != b.role) return "role";
+  if (a.attached != b.attached) return "attached";
+  if (a.layer != b.layer || a.sublayer != b.sublayer) return "layer";
+  if (!bits_equal(a.xform, b.xform)) return "xform";
+  if (a.items != b.items) return "items";
+  if (!bits_equal(a.modulate, b.modulate)) return "modulate";
+  return nullptr;
+}
+
 bool lower_multimesh_commands(const std::vector<Command> &commands, std::vector<Command> *out) {
   bool any = false;
   for (const Command &command : commands) {
@@ -1045,16 +1175,23 @@ Snapshot lower_multimesh(const Snapshot &state) {
   }
   out.multimesh_commands = false;
   std::vector<std::uint32_t> drawing;  // the items drawing a lowered command, ascending
-  for (ItemState &item : out.items) {
+  // HC4a: only the lowered items are copied; every other entry stays shared with `state`.
+  std::vector<ItemState> lowered_items;
+  for (const ItemState &item : out.items) {
     std::vector<Command> lowered;
     if (!lower_multimesh_commands(item.commands.vector(), &lowered)) {
       continue;
     }
-    item.commands = std::move(lowered);
-    if (item.content_version_below_v11 != 0) {
-      item.content_version = item.content_version_below_v11;
+    ItemState copy = item;
+    copy.commands = std::move(lowered);
+    if (copy.content_version_below_v11 != 0) {
+      copy.content_version = copy.content_version_below_v11;
     }
-    drawing.push_back(item.id);
+    drawing.push_back(copy.id);
+    lowered_items.push_back(std::move(copy));
+  }
+  for (ItemState &item : lowered_items) {
+    out.items.set(std::move(item));
   }
   std::vector<UnsupportedRef> session_level;
   std::vector<UnsupportedRef> item_level;
@@ -1184,16 +1321,23 @@ Snapshot lower_particles(const Snapshot &state) {
     }
   }
   std::vector<std::uint32_t> drawing;  // the items drawing a lowered command, ascending
-  for (ItemState &item : out.items) {
+  // HC4a: only the lowered items are copied; every other entry stays shared with `state`.
+  std::vector<ItemState> lowered_items;
+  for (const ItemState &item : out.items) {
     std::vector<Command> lowered;
     if (!lower_particles_commands(item.commands.vector(), &lowered)) {
       continue;
     }
-    item.commands = std::move(lowered);
-    if (item.content_version_below_v12 != 0) {
-      item.content_version = item.content_version_below_v12;
+    ItemState copy = item;
+    copy.commands = std::move(lowered);
+    if (copy.content_version_below_v12 != 0) {
+      copy.content_version = copy.content_version_below_v12;
     }
-    drawing.push_back(item.id);
+    drawing.push_back(copy.id);
+    lowered_items.push_back(std::move(copy));
+  }
+  for (ItemState &item : lowered_items) {
+    out.items.set(std::move(item));
   }
   if (drawing.empty()) {
     return out;  // only shader/material forms differed: the unsupported list is /11's already

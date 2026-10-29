@@ -330,7 +330,7 @@ void test_randomized_patch_resolve_round_trip() {
 
 // -------------------------------------------------------------------------
 // P3-CAP: make_patch's sorted id indexes keep std::map's semantics on any table order (the last
-// entry of a repeated id wins; removed_* ascending; changed entries in the current table's order),
+// entry of a repeated id wins; removed_* ascending; changed entries ascending: HC4a's item table),
 // and a MaterialEntry's shared parameters compare, copy and diverge like a vector.
 
 ItemState plain_item(std::uint32_t id, float x) {
@@ -353,10 +353,12 @@ void test_make_patch_table_order() {
   cur.items = {plain_item(7, 2), plain_item(4, 0), plain_item(3, 1)};
   const Transaction t = make_patch(base, cur);
   check(t.removed_items == std::vector<std::uint32_t>({5, 9}), "removed_items ascending: 5, 9");
-  check(t.items.size() == 2 && t.items[0].state.id == 4 && t.items[1].state.id == 3,
-        "changed entries in the current table's order (4 new, 3 moved); 7 equals the last base 7");
-  check(t.items[1].commands_null, "an existing item at the same content_version: commands null");
-  check(!t.items[0].commands_null, "a new item carries its commands");
+  // HC4a: a SharedTable is keyed by id, so the table (and the changed entries) are ascending
+  // whatever order it was assigned in.
+  check(t.items.size() == 2 && t.items[0].state.id == 3 && t.items[1].state.id == 4,
+        "changed entries ascending by id (3 moved, 4 new); 7 equals the last base 7");
+  check(t.items[0].commands_null, "an existing item at the same content_version: commands null");
+  check(!t.items[1].commands_null, "a new item carries its commands");
 
   Snapshot unsorted_textures = base;
   TextureEntry a;
@@ -370,6 +372,56 @@ void test_make_patch_table_order() {
   check(make_patch(unsorted_textures, next).removed_textures ==
             std::vector<std::uint32_t>({4}),
         "a texture leaves whatever the base table's order");
+}
+
+// HC4a (host-cost-design.md D1 "Shape"): SharedTable keeps entries ascending by id in chunks of
+// 64 ids; a copy shares every chunk, a write copies one chunk; make_patch over shared chunks
+// equals make_patch over fresh tables.
+void test_shared_table() {
+  SharedTable<ItemState> t;
+  for (std::uint32_t id : {130u, 5u, 64u, 63u, 200u, 5u}) {
+    t.set(plain_item(id, static_cast<float>(id)));
+  }
+  check(t.size() == 5 && t.chunks().size() == 4, "5 ids (5 set twice) in 4 chunks");
+  std::vector<std::uint32_t> order;
+  for (const ItemState &item : t) {
+    order.push_back(item.id);
+  }
+  check(order == std::vector<std::uint32_t>({5, 63, 64, 130, 200}), "iteration ascending by id");
+  check(t[2].id == 64 && t[4].id == 200 && t.front().id == 5 && t.back().id == 200,
+        "indexing across chunks");
+  check(t.find(130) != nullptr && t.find(131) == nullptr, "find by id");
+  SharedTable<ItemState> copy = t;
+  check(copy.shares(t), "a copy shares every chunk");
+  copy.set(plain_item(64, 9.0f));
+  check(t.find(64)->xform[4] == 64.0f && copy.find(64)->xform[4] == 9.0f,
+        "a write to a copy leaves the original");
+  check(copy.chunks()[0] == t.chunks()[0] && copy.chunks()[1] != t.chunks()[1] &&
+            copy.chunks()[2] == t.chunks()[2],
+        "a write copies its own chunk only");
+  check(copy.erase(130) && !copy.erase(130) && copy.size() == 4 && copy.chunks().size() == 3 &&
+            copy[3].id == 200,
+        "erasing a chunk's last entry drops the chunk");
+  copy.mutate_if([](const ItemState &item) { return item.id == 5; },
+                 [](ItemState &item) { item.visible = false; });
+  check(!copy.find(5)->visible && t.find(5)->visible, "mutate_if copies what it changes");
+
+  Snapshot base;
+  base.version = ProtocolVersion::V8;
+  base.seq = 1;
+  base.items = t;
+  Snapshot cur = base;
+  cur.seq = 2;
+  cur.items = copy;
+  Snapshot fresh_base = base;
+  fresh_base.items = SharedTable<ItemState>(base.items.vector());
+  Snapshot fresh_cur = cur;
+  fresh_cur.items = SharedTable<ItemState>(cur.items.vector());
+  const Transaction shared = make_patch(base, cur);
+  check(encode_transaction(shared) == encode_transaction(make_patch(fresh_base, fresh_cur)),
+        "make_patch over shared chunks encodes like make_patch over fresh tables");
+  check(shared.items.size() == 2 && shared.removed_items == std::vector<std::uint32_t>({130}),
+        "the patch: 5 and 64 changed, 130 removed");
 }
 
 void test_shared_material_params() {
@@ -494,14 +546,14 @@ void test_shared_command_lists() {
   Snapshot cur = base;
   cur.seq = 2;
   check(make_patch(base, cur).items.empty(), "an item sharing its commands: no entry");
-  cur.items[0].xform[4] = 9.0f;
+  cur.items.mut(0).xform[4] = 9.0f;
   const Transaction t = make_patch(base, cur);
   check(t.items.size() == 1 && t.items[0].commands_null, "a moved item: commands null");
   const Snapshot resolved = resolve(base, t);
   check(resolved.items.size() == 1 && resolved.items[0].commands.shares(base.items[0].commands),
         "resolving commands null shares the base's list");
-  cur.items[0].content_version = 8;
-  cur.items[0].commands = std::vector<Command>{moved};
+  cur.items.mut(0).content_version = 8;
+  cur.items.mut(0).commands = std::vector<Command>{moved};
   const Transaction t2 = make_patch(base, cur);
   check(t2.items.size() == 1 && !t2.items[0].commands_null &&
             t2.items[0].state.commands.size() == 1 && t2.items[0].state.commands[0].rect[3] == 4.5f,
@@ -510,6 +562,7 @@ void test_shared_command_lists() {
 
 int main() {
   test_make_patch_table_order();
+  test_shared_table();
   test_shared_command_lists();
   test_shared_material_params();
   test_full_rs2_via_make_full();

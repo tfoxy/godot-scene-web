@@ -776,9 +776,10 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
     published = frozen_;
   } else {
     if (sabotage_.kind == SabotageKind::PerturbTransform && sabotage_frame_reached) {
-      for (ItemState &item : captured.state.items) {
+      // HC4a: copies every entry (the mirror's published ones stay untouched).
+      captured.state.items.mutate_each([](ItemState &item) {
         item.xform[4] += 1.0f;  // origin.x
-      }
+      });
     }
     apply_stale_texture(&captured, frame);
     if (sabotage_.kind == SabotageKind::FreezeFrame) {

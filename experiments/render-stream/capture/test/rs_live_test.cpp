@@ -2092,9 +2092,9 @@ void test_v10_connection() {
   Captured snapshot = captured_v6();
   check(!snapshot.state.items.empty(), "the captured state has an item");
   if (!snapshot.state.items.empty()) {
-    snapshot.state.items[0].canvas_group.mode = CanvasGroupMode::ClipOnly;
-    snapshot.state.items[0].canvas_group.clear_margin = 5.0f;
-    snapshot.state.items[0].copy_to_backbuffer = true;
+    snapshot.state.items.mut(0).canvas_group.mode = CanvasGroupMode::ClipOnly;
+    snapshot.state.items.mut(0).canvas_group.clear_margin = 5.0f;
+    snapshot.state.items.mut(0).copy_to_backbuffer = true;
   }
   hub.on_frame(1, 16000000ULL, hub.wants_snapshot(1, 16000000ULL) ? &snapshot : nullptr, 1, 1000);
   const std::vector<Sent> b10 = of_conn(transport, Sent::Binary, 1);
@@ -2802,7 +2802,7 @@ std::shared_ptr<const Captured> pm1_state(std::uint64_t frame) {
   Command add;
   add.kind = CommandKind::AddMultimesh;
   add.multimesh = 1;
-  c->state.items.at(0).commands.push_back(add);
+  c->state.items.mut(0).commands.push_back(add);
   return c;
 }
 
@@ -2851,7 +2851,7 @@ std::shared_ptr<const Captured> pm5_state(std::uint64_t frame) {
   Command add;
   add.kind = CommandKind::AddParticles;
   add.particles = 1;
-  c->state.items.at(0).commands.push_back(add);
+  c->state.items.mut(0).commands.push_back(add);
   return c;
 }
 

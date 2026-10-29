@@ -240,10 +240,8 @@ Snapshot state8(int n) {
                                                  golden::kMesh1SurfaceBFormat, 4, 6)};
   }
   if (n >= 6) {
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 6; }),
-                  s.items.end());
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8});
+    s.items.erase_if([](const ItemState &it) { return it.id == 6; });
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8});
     TextureEntry freed;
     freed.id = 10;
     freed.origin = Origin::Adopted;

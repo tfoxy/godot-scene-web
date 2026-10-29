@@ -469,7 +469,7 @@ void test_perturb_transform() {
     publisher.publish(captured(one_item(static_cast<float>(f) * 10.0f)), f, 0);
   }
   Snapshot perturbed = stamped(one_item(30.0f), 3, 3);
-  perturbed.items[0].xform[4] += 1.0f;  // origin.x, from frame 3 on
+  perturbed.items.mut(0).xform[4] += 1.0f;  // origin.x, from frame 3 on
   check(nth_write(full, 2) == encode_transaction(make_full(stamped(one_item(10.0f), 1, 1))) &&
             nth_write(full, 3) == encode_transaction(make_full(stamped(one_item(20.0f), 2, 2))),
         "perturb: frames before F unperturbed");
