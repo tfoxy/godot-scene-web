@@ -22,6 +22,9 @@ item, canvas and mesh state, and reports per scene, per warm patch transaction:
                          [--warm-skip 30] [--train-frac 0.3] [--quant-every 10] [--out <json>]
   wire-budget.py measure --recording <file> --scene <name>:<f0>-<f1> ... [--warm-skip 30]
                          [--top 12] [--out <json>]
+  wire-budget.py proto13 --recording <file> --scene <name>:<f0>-<f1> ... [--warm-skip 30]
+                         [--codings bin,bin_p2_soa,...] [--attribute ...] [--verify-every 1]
+                         [--quant-every 10] [--max-frame N] [--out <json>]
   wire-budget.py self-test
 
 `measure` (W11b) reads any version, /11 included, and reports what the file's own records cost per
@@ -30,6 +33,13 @@ records just before it, one WebSocket frame each), its parts (mesh_u8, items, un
 records), zstd-3 per message and with the previous transaction record as a raw prefix (W11t's
 base-prefix coding), and the largest transactions (scene transitions). It infers nothing: a /10
 file written without inline records measures the transaction record alone.
+
+`proto13` (WB-D, results/p3/wb-d.md) reads a /11 or /12 recording and re-encodes every transaction
+as the /13 design's binary structure (protocol/render-stream-13.md) under several block codings
+(raw, XOR, subtraction, zigzag of order-preserving integers, second-order prediction, and lossy
+fixed-point positions), measures each warm patch raw, per-message zstd-3 and base-prefix zstd-3,
+splits the /12 record into categories (raw and coded against the base's same category), and decodes
+every lossless coding back to the record to prove the counts are of lossless messages.
 
 zstd needs Python 3.14's `compression.zstd` (run through `mise exec -- python3`); without it the
 zstd rows are reported as unavailable and everything else still runs.
@@ -1174,6 +1184,69 @@ def synth_recording(path, store, frames=80):
         fh.write(out)
 
 
+def proto13_checks(check, rp, td):
+    """WB-D: the /13 prototype's arithmetic (every numeric mode inverts exactly, NaN and signed
+    zero included), a dynamic mesh coded and decoded through three transactions (raw, first
+    order, second order), and the structure round trip over the synthetic recording."""
+    edge = [0, 1, 0x7F7FFFFF, 0x80000000, 0x80000001, 0x7FC00000, 0xFFC00001, 0x3F800000, 0xBF800000, 0xFFFFFFFF]
+    check("WB-D: ordered() is an order-preserving bijection on edge patterns",
+          all(unordered(ordered(u)) == u for u in edge)
+          and ordered(0xBF800000) < ordered(0x80000000) < ordered(0) < ordered(0x3F800000))
+    check("WB-D: zigzag32 inverts", all(unzz32(zz32(d)) == d & M32 for d in (0, 1, -1, 2**31 - 1, -(2**31))))
+    a, b, c = pack_words(edge), pack_words(edge[::-1]), pack_words([(x * 7 + 3) & M32 for x in edge])
+    check("WB-D: every numeric mode inverts exactly",
+          all(num_undelta(num_delta(a, b, c, m), b, c, m) == a for m in ("raw", "xor", "sub", "zz", "p2")))
+    check("WB-D: p2 of a constant-velocity float (one binade) is zero",
+          num_delta(struct.pack("<f", 1.75), struct.pack("<f", 1.5), struct.pack("<f", 1.25), "p2") == b"\0" * 4)
+    check("WB-D: unshuffle4 inverts shuffle4", unshuffle4(shuffle4(bytes(range(23)))) == bytes(range(23)))
+
+    def body(k):
+        geo = struct.pack("<10f", 0, 0, 0, 10, 10, 0, 1, 1, 0, 0)
+        pos = struct.pack("<8f", 0, 0, 10 + k * 0.3, 0, 10, 10 + k * 0.7, 0, 10)
+        attr = b"".join(b"\xff\x80\x00\xff" + struct.pack("<2f", u, v) for u, v in ((0, 0), (1, 0), (1, 1), (0, 1)))
+        return geo + pos + attr + struct.pack("<6H", 0, 1, 2, 0, 2, 3)
+
+    surf = {"hash": None, "payload_bytes": len(body(0)), "primitive": "triangles",
+            "format": (1 << 3) | (1 << 4) | 1 | (1 << 12), "vertex_count": 4, "index_count": 6}
+    metas = []
+    for t in range(3):
+        meta = {"type": "transaction", "seq": t + 1, "encoding": "full" if t == 0 else "patch",
+                "meshes": [{"id": 7, "status": "ok", "f": 0, "u8": 0, "surfaces": [surf]}],
+                "blocks": [{"name": "mesh_f32", "type": "f32", "count": 6}, {"name": "mesh_u8", "type": "u8", "count": len(body(t))}]}
+        blocks = {"mesh_f32": ("f32", 6, struct.pack("<6f", 0, 0, 0, 10 + t, 10, 0)), "mesh_u8": ("u8", len(body(t)), body(t))}
+        metas.append((meta, Record(meta, cj(meta), blocks, 0)))
+    sch = Schema13()
+    for meta, _r in metas:
+        sch.learn({k: v for k, v in meta.items() if k not in ("type", "blocks")}, "tx")
+    sch.freeze()
+    pr = Proto13(sch, True)
+    ok, sizes = True, []
+    for meta, r in metas:
+        sb, _m = pr.structure(meta)
+        segs, *_ = pr.segments(meta, r)
+        for cdg in LOSSLESS13:
+            msg, _n, blocks = pr.encode(meta, r, cdg, sb, segs)
+            ok = ok and pr.check_roundtrip(meta, r, cdg, msg) is None
+            if cdg == "bin_p2_soa":
+                sizes.append(sum(1 for x in blocks["mesh_u8"] if x))
+        pr.advance(meta, r)
+    check("WB-D: a dynamic mesh round-trips under every lossless coding (raw, then first, then second order)", ok)
+    check("WB-D: the second-order residual of a constant-velocity pose is all zero", sizes[2] == 0 and sizes[1] > 0)
+    if zstd is not None:
+        p13 = os.path.join(td, "p13.json")
+        rc = cmd_proto13(["--recording", rp, "--scene", "all:1-80", "--warm-skip", "5", "--out", p13])
+        with open(p13) as fh:
+            r13 = json.load(fh)
+        b13 = r13["scenes"]["all"]["bytes"]
+        check("WB-D: proto13 round-trips all 75 warm patches", rc == 0 and r13["verified_tx"] == 75
+              and r13["roundtrip_failure_count"] == 0)
+        check("WB-D: the binary structure is smaller than the JSON record",
+              b13["bin.raw"]["mean"] < b13["json.record"]["mean"])
+        check("WB-D: json categories sum to the record", abs(b13["json.record"]["mean"] - sum(
+            v["mean"] for k, v in b13.items() if k.startswith("json.") and k not in ("json.record", "json.message")
+            and not k.startswith("json.zstd3"))) < 1.0)
+
+
 def self_test():
     fails = []
 
@@ -1260,6 +1333,7 @@ def self_test():
             check("deflate with context beats without", c["deflate_ctx_whole"]["mean"] < c["deflate_noctx_whole"]["mean"])
         else:
             print("skip zstd rows (no compression.zstd: run under Python 3.14)")
+        proto13_checks(check, rp, td)
     print(f"wire-budget self-test: {'FAIL' if fails else 'ok'} ({len(fails)} failed)")
     return 1 if fails else 0
 
@@ -1363,14 +1437,1004 @@ def cmd_measure(argv):
     return 0
 
 
+# ---------------------------------------------------------------- WB-D: a /13 binary prototype
+#
+# `proto13` (WB-D, results/p3/wb-d.md, protocol/render-stream-13-binary-design.md) reads a /11 or
+# /12 file recording and re-encodes every transaction record as the binary structure the /13 design
+# proposes, under several block codings, then measures each warm patch raw, zstd-3 per message and
+# zstd-3 with the previous message of the same coding as a raw prefix (W11t's base-prefix coding).
+# Every lossless coding is decoded back and compared with the recording (structure by canonical
+# JSON bytes, blocks byte for byte), so the lossless rows are measured, not estimated.
+#
+# The schema is learned from the recording (per JSON path: key tuples, value types, string tables).
+# A real /13 fixes it in the spec; learning it gives the byte count of a schema encoding without
+# writing one per table. Each object pays a shape id only where its path has more than one shape
+# (commands: the op), and each value a type tag only where its path has more than one type, so the
+# counts are those of a fixed schema, give or take enum widths.
+
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+BLOCKS13 = ["item_f32", "canvas_f32", "cmd_f32", "cmd_i32", "mesh_f32", "param_f64", "backbuffer_f32",
+            "mesh_u8", "mm_f32", "pt_f32"]
+BLOCK_TYPE13 = {"cmd_i32": "i32", "param_f64": "f64", "mesh_u8": "u8"}
+OPTIONAL_BLOCKS13 = {"pt_f32"}  # /12: present only when non-empty
+
+
+def uvarint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def read_uvarint(buf, p):
+    n = shift = 0
+    while True:
+        b = buf[p]
+        p += 1
+        n |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return n, p
+
+
+def zz(n: int) -> int:
+    return n * 2 if n >= 0 else -n * 2 - 1
+
+
+def unzz(u: int) -> int:
+    return u >> 1 if not u & 1 else -((u + 1) >> 1)
+
+
+def tname(v) -> str:
+    if v is None:
+        return "n"
+    if isinstance(v, bool):
+        return "b"
+    if isinstance(v, int):
+        return "i"
+    if isinstance(v, str):
+        return "s"
+    if isinstance(v, list):
+        return "l"
+    if isinstance(v, dict):
+        return "d"
+    raise ValueError(f"unexpected JSON value type {type(v).__name__} (floats never appear in meta)")
+
+
+TAGS = "nbisld"
+
+
+class Schema13:
+    """The stand-in for /13's fixed transaction schema (see the section comment)."""
+
+    def __init__(self):
+        self.shapes = {}  # path -> {key tuple: id}
+        self.types = {}  # path -> set of tnames
+        self.strs = {}  # path -> {string: id}
+        self.hex = {}  # path -> (all hex64, any hex64)
+        self.frozen = False
+
+    def learn(self, v, path):
+        t = tname(v)
+        self.types.setdefault(path, set()).add(t)
+        if t == "d":
+            kt = tuple(v.keys())
+            sh = self.shapes.setdefault(path, {})
+            if kt not in sh:
+                sh[kt] = len(sh)
+            for k, x in v.items():
+                self.learn(x, path + "." + k)
+        elif t == "l":
+            for x in v:
+                self.learn(x, path + "[]")
+        elif t == "s":
+            h = bool(HEX64.match(v))
+            a, b = self.hex.get(path, (True, False))
+            self.hex[path] = (a and h, b or h)
+            st = self.strs.setdefault(path, {})
+            if len(st) <= 256 and v not in st:
+                st[v] = len(st)
+
+    def freeze(self):
+        self.mode = {}
+        for path, (allh, anyh) in self.hex.items():
+            if allh:
+                self.mode[path] = "hex"
+            elif not anyh and len(self.strs[path]) <= 255:
+                self.mode[path] = "enum"
+            else:
+                self.mode[path] = "text"
+        self.rshapes = {p: {i: k for k, i in sh.items()} for p, sh in self.shapes.items()}
+        self.rstrs = {p: {i: s for s, i in st.items()} for p, st in self.strs.items()}
+        self.frozen = True
+
+    def enc(self, v, path, out: bytearray):
+        types = self.types[path]
+        t = tname(v)
+        if len(types) > 1:
+            if types == {"n", "i"}:
+                out += uvarint(0 if v is None else zz(v) + 1)
+                return
+            if len(types) == 2 and "n" in types:
+                out.append(0 if v is None else 1)
+            else:
+                out.append(TAGS.index(t))
+        if t == "n":
+            return
+        if t == "b":
+            out.append(1 if v else 0)
+        elif t == "i":
+            out += uvarint(zz(v))
+        elif t == "s":
+            m = self.mode[path]
+            if m == "enum":
+                out += uvarint(self.strs[path][v])
+            elif m == "hex":
+                out += bytes.fromhex(v)
+            else:
+                b = v.encode()
+                out += uvarint(len(b)) + b
+        elif t == "l":
+            out += uvarint(len(v))
+            for x in v:
+                self.enc(x, path + "[]", out)
+        else:
+            sh = self.shapes[path]
+            if len(sh) > 1:
+                out += uvarint(sh[tuple(v.keys())])
+            for k, x in v.items():
+                self.enc(x, path + "." + k, out)
+
+    def dec(self, buf, p, path):
+        types = self.types[path]
+        if len(types) > 1:
+            if types == {"n", "i"}:
+                u, p = read_uvarint(buf, p)
+                return (None if u == 0 else unzz(u - 1)), p
+            if len(types) == 2 and "n" in types:
+                present = buf[p]
+                p += 1
+                if not present:
+                    return None, p
+                t = next(iter(types - {"n"}))
+            else:
+                t = TAGS[buf[p]]
+                p += 1
+        else:
+            t = next(iter(types))
+        if t == "n":
+            return None, p
+        if t == "b":
+            return bool(buf[p]), p + 1
+        if t == "i":
+            u, p = read_uvarint(buf, p)
+            return unzz(u), p
+        if t == "s":
+            m = self.mode[path]
+            if m == "enum":
+                u, p = read_uvarint(buf, p)
+                return self.rstrs[path][u], p
+            if m == "hex":
+                return bytes(buf[p : p + 32]).hex(), p + 32
+            n, p = read_uvarint(buf, p)
+            return bytes(buf[p : p + n]).decode(), p + n
+        if t == "l":
+            n, p = read_uvarint(buf, p)
+            out = []
+            for _ in range(n):
+                x, p = self.dec(buf, p, path + "[]")
+                out.append(x)
+            return out, p
+        sh = self.shapes[path]
+        sid = 0
+        if len(sh) > 1:
+            sid, p = read_uvarint(buf, p)
+        out = {}
+        for k in self.rshapes[path][sid]:
+            out[k], p = self.dec(buf, p, path + "." + k)
+        return out, p
+
+
+def unshuffle4(b: bytes) -> bytes:
+    n = len(b) // 4
+    planes = [b[i * n : (i + 1) * n] for i in range(4)]
+    out = bytearray(4 * n)
+    for i in range(4):
+        out[i::4] = planes[i]
+    return bytes(out) + b[4 * n :]
+
+
+def sub_i32(a: bytes, b: bytes) -> bytes:
+    return sub_words(a, b)
+
+
+def add_i32(d: bytes, b: bytes) -> bytes:
+    n = len(d) // 4
+    vd = struct.unpack(f"<{n}I", d)
+    vb = struct.unpack(f"<{n}I", b)
+    return struct.pack(f"<{n}I", *[(x + y) & 0xFFFFFFFF for x, y in zip(vd, vb)])
+
+
+def surface_parts(s: dict):
+    """Byte lengths of a dynamic surface body's parts: geometry (40), positions, colours, UVs,
+    skin, indices (render-stream-4.md "Mesh payload"). The attribute section interleaves colour
+    and UV per vertex."""
+    n, fmt, ic = s["vertex_count"], s["format"], s["index_count"]
+    has_c, has_uv = bool(fmt & (1 << 3)), bool(fmt & (1 << 4))
+    skin = 0
+    if fmt & (1 << 10) and fmt & (1 << 11):
+        skin = n * (32 if fmt & (1 << 27) else 16)
+    idx = 0 if ic == 0 else ic * (2 if n <= 65536 else 4)
+    return n, has_c, has_uv, skin, idx
+
+
+def split_body(body: bytes, s: dict):
+    """One surface body -> (geo, pos, col, uv, skin, idx) byte strings (colour and UV
+    de-interleaved: the structure-of-arrays the /13 design sends)."""
+    n, has_c, has_uv, skin, idx = surface_parts(s)
+    geo, p = body[:40], 40
+    pos = body[p : p + 8 * n]
+    p += 8 * n
+    stride = (4 if has_c else 0) + (8 if has_uv else 0)
+    attr = body[p : p + stride * n]
+    p += stride * n
+    col = b"".join(attr[k * stride : k * stride + 4] for k in range(n)) if has_c else b""
+    o = 4 if has_c else 0
+    uv = b"".join(attr[k * stride + o : k * stride + o + 8] for k in range(n)) if has_uv else b""
+    sk = body[p : p + skin]
+    p += skin
+    ix = body[p : p + idx]
+    return geo, pos, col, uv, sk, ix
+
+
+def join_body(parts, s: dict) -> bytes:
+    geo, pos, col, uv, sk, ix = parts
+    n, has_c, has_uv, _skin, _idx = surface_parts(s)
+    attr = bytearray()
+    for k in range(n):
+        if has_c:
+            attr += col[4 * k : 4 * k + 4]
+        if has_uv:
+            attr += uv[8 * k : 8 * k + 8]
+    return geo + pos + bytes(attr) + sk + ix
+
+
+def shape_key(surfaces):
+    return tuple((s["primitive"], s["format"], s["vertex_count"], s["index_count"]) for s in surfaces)
+
+
+# Codings: name -> (layout, numeric mode, position step or None). `aos` keeps each body's bytes in
+# place; `soa` gathers every body's geometry, positions, colours, UVs, skin and indices into six
+# streams and byte-plane shuffles the float streams. Numeric modes, per 32-bit word against the
+# same word of the base (the mesh's last sent body, the item's or multimesh's resolved floats):
+#   raw   unchanged;
+#   xor   bit-pattern XOR (WB);
+#   sub   u32 subtraction of the bit patterns;
+#   zz    the float mapped to an order-preserving integer, subtracted, zigzagged;
+#   p2    as zz against the linear prediction 2*last - previous (a dynamic mesh's last two sent
+#         bodies; floats with no history fall back to zz).
+# A position step quantizes dynamic mesh positions to integers of that many local units (lossy,
+# measured as screen error); everything else in that coding is lossless.
+# The fourth field names the float blocks predicted besides mesh_u8. `w13` is the coding the /13
+# design specifies (protocol/render-stream-13.md "Predicted blocks"): the dynamic bodies, the custom
+# AABBs and the multimesh buffers predicted to second order, every other block as /12 sends it.
+# `json_w13` is w13's blocks behind /12's JSON meta and framing (the structure's own share).
+ALL_FLOAT_BLOCKS = ("item_f32", "cmd_f32", "mm_f32", "mesh_f32")
+W13_FLOAT_BLOCKS = ("mm_f32", "mesh_f32")
+CODINGS13 = {
+    "bin": ("aos", "raw", None, ALL_FLOAT_BLOCKS),
+    "bin_xor": ("aos", "xor", None, ALL_FLOAT_BLOCKS),
+    "bin_xor_soa": ("soa", "xor", None, ALL_FLOAT_BLOCKS),
+    "bin_sub_soa": ("soa", "sub", None, ALL_FLOAT_BLOCKS),
+    "bin_zz_soa": ("soa", "zz", None, ALL_FLOAT_BLOCKS),
+    "bin_p2_soa": ("soa", "p2", None, ALL_FLOAT_BLOCKS),
+    "bin_q16": ("soa", "zz", 1 / 16, ALL_FLOAT_BLOCKS),
+    "bin_q64": ("soa", "zz", 1 / 64, ALL_FLOAT_BLOCKS),
+    "bin_q256": ("soa", "zz", 1 / 256, ALL_FLOAT_BLOCKS),
+    "bin_q64p2": ("soa", "p2", 1 / 64, ALL_FLOAT_BLOCKS),
+    "w13": ("soa", "p2", None, W13_FLOAT_BLOCKS),
+    "json_w13": ("soa", "p2", None, W13_FLOAT_BLOCKS),
+    "w13_q16": ("soa", "p2", 1 / 16, W13_FLOAT_BLOCKS),
+    "w13_q64": ("soa", "p2", 1 / 64, W13_FLOAT_BLOCKS),
+    "w13_q256": ("soa", "p2", 1 / 256, W13_FLOAT_BLOCKS),
+}
+LOSSLESS13 = tuple(k for k, v in CODINGS13.items() if v[2] is None and k != "json_w13")
+QSTEPS13 = {k: v[2] for k, v in CODINGS13.items() if v[2] is not None}
+FLOAT_STREAMS = (0, 1, 3)  # geometry, positions, UVs (colours, skin and indices are bytes: XOR)
+M32 = 0xFFFFFFFF
+
+
+def ordered(u: int) -> int:
+    return u ^ 0x80000000 if u < 0x80000000 else (~u) & M32
+
+
+def unordered(o: int) -> int:
+    return o ^ 0x80000000 if o >= 0x80000000 else (~o) & M32
+
+
+def zz32(d: int) -> int:
+    d &= M32
+    s = d - (1 << 32) if d & 0x80000000 else d
+    return ((s << 1) ^ (s >> 31)) & M32
+
+
+def unzz32(u: int) -> int:
+    return ((u >> 1) ^ -(u & 1)) & M32
+
+
+def words(b: bytes):
+    return struct.unpack(f"<{len(b) // 4}I", b)
+
+
+def pack_words(w) -> bytes:
+    return struct.pack(f"<{len(w)}I", *w)
+
+
+def num_delta(cur: bytes, base: bytes | None, prev: bytes | None, mode: str, ints=False) -> bytes:
+    """One float (or, with `ints`, quantized-integer) stream against its base. A missing base is
+    zeros (a body new to the receiver goes raw); a missing previous makes p2 first order."""
+    if mode == "raw":
+        return cur
+    if base is None or len(base) != len(cur):
+        base, prev = bytes(len(cur)), None
+    if prev is not None and len(prev) != len(cur):
+        prev = None
+    if mode == "xor":
+        return xor_bytes(cur, base)
+    c, b = words(cur), words(base)
+    if mode == "sub":
+        return pack_words([(x - y) & M32 for x, y in zip(c, b)])
+    o = (lambda v: v) if ints else ordered
+    if mode == "zz" or prev is None:
+        return pack_words([zz32(o(x) - o(y)) for x, y in zip(c, b)])
+    p = words(prev)
+    return pack_words([zz32(o(x) - (2 * o(y) - o(z))) for x, y, z in zip(c, b, p)])
+
+
+def num_undelta(d: bytes, base: bytes | None, prev: bytes | None, mode: str) -> bytes:
+    if mode == "raw":
+        return d
+    if base is None or len(base) != len(d):
+        base, prev = bytes(len(d)), None
+    if prev is not None and len(prev) != len(d):
+        prev = None
+    if mode == "xor":
+        return xor_bytes(d, base)
+    w, b = words(d), words(base)
+    if mode == "sub":
+        return pack_words([(x + y) & M32 for x, y in zip(w, b)])
+    if mode == "zz" or prev is None:
+        return pack_words([unordered((unzz32(x) + ordered(y)) & M32) for x, y in zip(w, b)])
+    p = words(prev)
+    return pack_words([unordered((unzz32(x) + 2 * ordered(y) - ordered(z)) & M32) for x, y, z in zip(w, b, p)])
+
+
+def q_positions(pos: bytes, step: float) -> bytes:
+    n = len(pos) // 4
+    return struct.pack(f"<{n}i", *[max(-(2**31), min(2**31 - 1, round(v / step))) if math.isfinite(v) else 0
+                                   for v in struct.unpack(f"<{n}f", pos)])
+
+
+def lin_norm(a, b, c, d) -> float:
+    """Spectral norm of the 2x2 linear part [[a, c], [b, d]] (Godot x.x, x.y, y.x, y.y)."""
+    p = a * a + b * b + c * c + d * d
+    q = (a * d - b * c) ** 2
+    return math.sqrt(max(0.0, (p + math.sqrt(max(0.0, p * p - 4 * q))) / 2))
+
+
+class Proto13:
+    """Tracks the resolved state a /13 delta needs (each dynamic mesh's last two sent bodies,
+    multimesh buffers, item and command floats by item) and encodes each transaction under every
+    coding."""
+
+    def __init__(self, schema: Schema13, verify: bool):
+        self.s = schema
+        self.verify = verify
+        self.bodies = {}  # mesh id -> (shape key, [surface body bytes]): the last sent
+        self.prevbodies = {}  # mesh id -> the one sent before it (same shape), for p2
+        self.mm = {}  # multimesh id -> buffer bytes
+        self.meshf = {}  # mesh id -> its 6 mesh_f32 floats (custom AABB)
+        self.meshf_prev, self.mm_prev = {}, {}  # the values before those, for p2
+        self.itemf = {}  # item id -> item_f32 bytes
+        self.cmdf = {}  # item id -> its cmd_f32 slice
+        self.items = {}  # item id -> (parent, xform 6, commands, cmd floats) for the error bound
+        self.canvases = {}
+        self.qhist = {}  # (coding, mesh id, surface) -> (last, previous) quantized positions
+        self.verified = 0
+        self.max_scale = 0.0
+        self.qerr = {k: 0.0 for k in QSTEPS13}
+
+    # -- structure
+    def structure(self, meta):
+        m = {k: v for k, v in meta.items() if k not in ("type", "blocks")}
+        out = bytearray()
+        self.s.enc(m, "tx", out)
+        return bytes(out), m
+
+    def structure_parts(self, meta):
+        """Bytes per top-level key of the binary structure (the sum is the structure)."""
+        parts = {}
+        for k, v in meta.items():
+            if k in ("type", "blocks"):
+                continue
+            out = bytearray()
+            self.s.enc(v, "tx." + k, out)
+            parts[k] = len(out)
+        return parts
+
+    # -- block codings
+    def dyn_jobs(self, meta, u8: bytes | None):
+        """(mesh id, surface index, surface, body or None, base body, previous body) per dynamic
+        surface the transaction carries (u8 non-null), in wire order."""
+        jobs = []
+        for me in meta.get("meshes", []):
+            if me.get("u8") is None:
+                continue
+            sk = shape_key(me["surfaces"])
+            base = self.bodies.get(me["id"])
+            same = base is not None and base[0] == sk
+            prev = self.prevbodies.get(me["id"]) if same else None
+            pv = prev is not None and prev[0] == sk
+            off = me["u8"]
+            for k, s in enumerate(me["surfaces"]):
+                body = u8[off : off + s["payload_bytes"]] if u8 is not None else None
+                off += s["payload_bytes"]
+                jobs.append((me["id"], k, s, body, base[1][k] if same else None, prev[1][k] if pv else None))
+        return jobs
+
+    def mesh_code(self, meta, u8: bytes, coding: str, commit_q: bool) -> bytes:
+        layout, mode, qstep, _fb = CODINGS13[coding]
+        jobs = self.dyn_jobs(meta, u8)
+        if layout == "aos":
+            return b"".join(num_delta(body, bb, None, "raw" if mode == "raw" else "xor") for _m, _k, _s, body, bb, _p in jobs)
+        streams = [bytearray() for _ in range(6)]
+        for mid, k, s, body, bb, pb in jobs:
+            cur = split_body(body, s)
+            ref = split_body(bb, s) if bb is not None else None
+            prv = split_body(pb, s) if pb is not None else None
+            for i in range(6):
+                r = ref[i] if ref else None
+                p = prv[i] if prv else None
+                if i == 1 and qstep is not None:
+                    qc = q_positions(cur[1], qstep)
+                    key = (coding, mid, k)
+                    last, before = self.qhist.get(key, (None, None)) if ref is not None else (None, None)
+                    streams[1] += num_delta(qc, last, before, mode, ints=True)
+                    if commit_q:
+                        self.qhist[key] = (qc, last)
+                elif i in FLOAT_STREAMS:
+                    streams[i] += num_delta(cur[i], r, p, mode)
+                else:
+                    streams[i] += xor_bytes(cur[i], r) if r is not None and len(r) == len(cur[i]) else cur[i]
+        return b"".join(shuffle4(bytes(st)) if i in FLOAT_STREAMS else bytes(st) for i, st in enumerate(streams))
+
+    def mesh_decode(self, meta, data: bytes, coding: str) -> bytes:
+        """The inverse of mesh_code for the lossless codings: the original mesh_u8."""
+        layout, mode, _q, _fb = CODINGS13[coding]
+        jobs = self.dyn_jobs(meta, None)
+        if layout == "aos":
+            out, p = bytearray(), 0
+            for _m, _k, s, _b, bb, _p in jobs:
+                n = s["payload_bytes"]
+                out += num_undelta(data[p : p + n], bb, None, "raw" if mode == "raw" else "xor")
+                p += n
+            return bytes(out)
+        lens = [0] * 6
+        for _m, _k, s, _b, _bb, _p in jobs:
+            for i, part in enumerate(split_body(bytes(s["payload_bytes"]), s)):
+                lens[i] += len(part)
+        streams, p = [], 0
+        for i in range(6):
+            chunk = data[p : p + lens[i]]
+            p += lens[i]
+            streams.append(unshuffle4(chunk) if i in FLOAT_STREAMS else chunk)
+        out, at = bytearray(), [0] * 6
+        for _m, _k, s, _b, bb, pb in jobs:
+            ref = split_body(bb, s) if bb is not None else None
+            prv = split_body(pb, s) if pb is not None else None
+            sizes = [len(x) for x in split_body(bytes(s["payload_bytes"]), s)]
+            parts = []
+            for i in range(6):
+                d = streams[i][at[i] : at[i] + sizes[i]]
+                at[i] += sizes[i]
+                r = ref[i] if ref else None
+                if i in FLOAT_STREAMS:
+                    parts.append(num_undelta(d, r, prv[i] if prv else None, mode))
+                else:
+                    parts.append(xor_bytes(d, r) if r is not None and len(r) == len(d) else d)
+            out += join_body(parts, s)
+        return bytes(out)
+
+    def float_code(self, data: bytes, segs, coding: str, inverse=False) -> bytes:
+        """item_f32 / cmd_f32 / mm_f32 / mesh_f32: each (offset, length, base, previous) segment
+        against its base (p2 uses the previous where one is kept: multimesh buffers and custom
+        AABBs; item and command floats are first order); SoA codings shuffle the block."""
+        layout, mode, _q, _fb = CODINGS13[coding]
+        if mode == "raw":
+            return data
+        if inverse and layout == "soa":
+            data = unshuffle4(data)
+        buf = bytearray(data)
+        for off, n, base, prev in segs:
+            if base is None or len(base) != n:
+                continue
+            cur = bytes(buf[off : off + n])
+            pv = prev if mode == "p2" else None
+            buf[off : off + n] = num_undelta(cur, base, pv, mode) if inverse else num_delta(cur, base, pv, mode)
+        out = bytes(buf)
+        if not inverse and layout == "soa":
+            out = shuffle4(out)
+        return out
+
+    def segments(self, meta, rec):
+        """Delta segments per float block, against the resolved state before this transaction."""
+        full = meta.get("encoding") == "full"
+        items = meta.get("items", [])
+        itf = rec.blocks.get("item_f32", ("f32", 0, b""))[2]
+        per = len(itf) // max(1, len(items)) if items else 0
+        seg_item = [(k * per, per, None if full else self.itemf.get(it["id"]), None) for k, it in enumerate(items)]
+        cmdb = rec.blocks.get("cmd_f32", ("f32", 0, b""))[2]
+        starts = []
+        for it in items:
+            fs = [c["f"] for c in (it.get("commands") or []) if "f" in c]
+            if fs:
+                starts.append((it["id"], 4 * min(fs)))
+        seg_cmd = []
+        for k, (iid, o) in enumerate(starts):
+            end = starts[k + 1][1] if k + 1 < len(starts) else len(cmdb)
+            seg_cmd.append((o, end - o, None if full else self.cmdf.get(iid), None))
+        mmb = rec.blocks.get("mm_f32", ("f32", 0, b""))[2]
+        seg_mm = []
+        for e in meta.get("multimeshes", []):
+            if e.get("buffer_f") is None:
+                continue
+            stride = (12 if e.get("format") == "3d" else 8) + 4 * bool(e.get("colors")) + 4 * bool(e.get("custom"))
+            seg_mm.append((4 * e["buffer_f"], 4 * stride * e["instances"], None if full else self.mm.get(e["id"]),
+                           None if full else self.mm_prev.get(e["id"])))
+        seg_mesh = [(4 * me["f"], 24, None if full else self.meshf.get(me["id"]),
+                     None if full else self.meshf_prev.get(me["id"]))
+                    for me in meta.get("meshes", []) if me.get("f") is not None]
+        return {"item_f32": seg_item, "cmd_f32": seg_cmd, "mm_f32": seg_mm, "mesh_f32": seg_mesh}, itf, cmdb, mmb
+
+    def encode(self, meta, rec, coding, struct_b, segs):
+        """One transaction as a /13 prototype message: type byte, length, structure, then each
+        block as a length and its coded bytes. Returns (message, structure bytes, coded blocks)."""
+        blocks = {}
+        for name in BLOCKS13:
+            data = rec.blocks.get(name, (None, 0, b""))[2]
+            if name == "mesh_u8":
+                data = self.mesh_code(meta, data, coding, commit_q=True)
+            elif name in segs and name in CODINGS13[coding][3]:
+                data = self.float_code(data, segs[name], coding)
+            blocks[name] = data
+        body = bytearray(struct_b)
+        for name in BLOCKS13:
+            body += uvarint(len(blocks[name])) + blocks[name]
+        msg = bytes([2]) + uvarint(len(body)) + bytes(body)
+        return msg, len(struct_b), blocks
+
+    def check_roundtrip(self, meta, rec, coding, msg):
+        """Decode a lossless message back to the record's meta (canonical JSON bytes) and blocks."""
+        p = 1
+        _n, p = read_uvarint(msg, p)
+        m, p = self.s.dec(msg, p, "tx")
+        if cj(m) != cj({k: v for k, v in meta.items() if k not in ("type", "blocks")}):
+            return "structure"
+        segs, _a, _b, _c = self.segments(m, rec)  # the decoder's own view (state before this tx)
+        for name in BLOCKS13:
+            n, p = read_uvarint(msg, p)
+            data = msg[p : p + n]
+            p += n
+            if name == "mesh_u8":
+                data = self.mesh_decode(m, data, coding)
+            elif name in segs and name in CODINGS13[coding][3]:
+                data = self.float_code(data, segs[name], coding, inverse=True)
+            want = rec.blocks.get(name, (None, 0, b""))[2]
+            if data != want:
+                return name
+            d = next((b for b in meta["blocks"] if b["name"] == name), None)
+            if d is None and n:  # an absent block (optional, or not in this version) is empty
+                return name + "-descriptor"
+        return None
+
+    # -- state after the transaction (shared by every coding: the lossless ones reproduce it)
+    def advance(self, meta, rec):
+        full = meta.get("encoding") == "full"
+        if full:
+            self.bodies, self.mm, self.itemf, self.cmdf = {}, {}, {}, {}
+            self.items, self.canvases = {}, {}
+            self.prevbodies, self.qhist, self.meshf = {}, {}, {}
+            self.meshf_prev, self.mm_prev = {}, {}
+        segs, itf, cmdb, mmb = self.segments(meta, rec)
+        for (off, n, _b, _p), it in zip(segs["item_f32"], meta.get("items", [])):
+            self.itemf[it["id"]] = itf[off : off + n]
+        k = 0
+        for it in meta.get("items", []):
+            cmds = it.get("commands")
+            if cmds is None:
+                continue
+            if any("f" in c for c in cmds):
+                off, n, _b, _p = segs["cmd_f32"][k]
+                self.cmdf[it["id"]] = cmdb[off : off + n]
+                k += 1
+            else:
+                self.cmdf.pop(it["id"], None)
+        for iid in meta.get("removed_items", []):
+            self.itemf.pop(iid, None)
+            self.cmdf.pop(iid, None)
+            self.items.pop(iid, None)
+        for (off, n, _b, _p), e in zip(segs["mm_f32"], [e for e in meta.get("multimeshes", []) if e.get("buffer_f") is not None]):
+            old = self.mm.get(e["id"])
+            if old is not None and len(old) == n:
+                self.mm_prev[e["id"]] = old
+            else:
+                self.mm_prev.pop(e["id"], None)
+            self.mm[e["id"]] = mmb[off : off + n]
+        for e in meta.get("multimeshes", []):
+            if e.get("status") != "ok":
+                self.mm.pop(e["id"], None)
+                self.mm_prev.pop(e["id"], None)
+        for mid in meta.get("removed_multimeshes", []):
+            self.mm.pop(mid, None)
+            self.mm_prev.pop(mid, None)
+        new = {}
+        for mid, _k, s, body, _bb, _pb in self.dyn_jobs(meta, rec.blocks.get("mesh_u8", (None, 0, b""))[2]):
+            new.setdefault(mid, []).append((s, body))
+        for me in meta.get("meshes", []):
+            mid = me["id"]
+            if mid in new:
+                sk = shape_key([s for s, _b in new[mid]])
+                old = self.bodies.get(mid)
+                if old is not None and old[0] == sk:
+                    self.prevbodies[mid] = old
+                else:
+                    self.prevbodies.pop(mid, None)
+                self.bodies[mid] = (sk, [b for _s, b in new[mid]])
+            elif me.get("status") != "ok" or any(s.get("hash") for s in me["surfaces"]):
+                self.bodies.pop(mid, None)
+                self.prevbodies.pop(mid, None)
+        mf = rec.blocks.get("mesh_f32", ("f32", 0, b""))[2]
+        for me in meta.get("meshes", []):
+            if me.get("f") is not None:
+                old = self.meshf.get(me["id"])
+                if old is not None:
+                    self.meshf_prev[me["id"]] = old
+                self.meshf[me["id"]] = mf[4 * me["f"] : 4 * me["f"] + 24]
+            else:
+                self.meshf.pop(me["id"], None)
+                self.meshf_prev.pop(me["id"], None)
+        for mid in meta.get("removed_meshes", []):
+            self.bodies.pop(mid, None)
+            self.prevbodies.pop(mid, None)
+            self.meshf.pop(mid, None)
+            self.meshf_prev.pop(mid, None)
+        # the transform chain, for the quantized codings' error bound
+        canv = rec.blocks.get("canvas_f32", ("f32", 0, b""))[2]
+        cs = meta.get("canvases", [])
+        if cs and canv:
+            per = len(canv) // 4 // len(cs)
+            for k2, e in enumerate(cs):
+                self.canvases[e["id"]] = struct.unpack_from("<6f", canv, 4 * per * k2)
+        for (off, n, _b, _p), it in zip(segs["item_f32"], meta.get("items", [])):
+            prev = self.items.get(it["id"])
+            cmds = it.get("commands")
+            if cmds is None:
+                cmds = prev[2] if prev is not None else []
+            self.items[it["id"]] = (it["parent"], struct.unpack_from("<6f", itf, off), cmds, self.cmdf.get(it["id"], b""))
+
+    def gx(self, iid, memo, depth=0):
+        if iid in memo:
+            return memo[iid]
+        it = self.items.get(iid)
+        if it is None or depth > 256:
+            return IDENT
+        par = it[0]
+        if isinstance(par, dict) and par.get("kind") == "item":
+            g = compose(self.gx(par["id"], memo, depth + 1), it[1])
+        elif isinstance(par, dict) and par.get("kind") == "canvas":
+            g = compose(self.canvases.get(par["id"], IDENT), it[1])
+        else:
+            g = it[1]
+        memo[iid] = g
+        return g
+
+    def mesh_scales(self):
+        """Mesh id -> the largest spectral norm of the linear part it is drawn through (canvas,
+        item chain, the item's current set_transform, the add_mesh transform)."""
+        memo, out = {}, {}
+        for iid, (_p, _x, cmds, cf) in self.items.items():
+            if not any(c.get("op") == "add_mesh" for c in cmds):
+                continue
+            g = self.gx(iid, memo)
+            base_f = min((c["f"] for c in cmds if "f" in c), default=0)
+            cur = g
+            for c in cmds:
+                op = c.get("op")
+                if op == "add_set_transform":
+                    o = 4 * (c["f"] - base_f)
+                    if o + 24 <= len(cf):
+                        cur = compose(g, struct.unpack_from("<6f", cf, o))
+                elif op == "add_mesh":
+                    o = 4 * (c["f"] - base_f)
+                    t = struct.unpack_from("<6f", cf, o) if o + 24 <= len(cf) else IDENT
+                    a = compose(cur, t)
+                    nrm = lin_norm(*a[:4])
+                    out[c["mesh"]] = max(out.get(c["mesh"], 0.0), nrm)
+        return out
+
+    def quant_error(self, meta, rec):
+        """Largest screen error (px) of each quantized coding's positions in this transaction:
+        |q*step - v| per vertex through the mesh's largest drawn scale (the norm bound)."""
+        scales = self.mesh_scales()
+        u8 = rec.blocks.get("mesh_u8", (None, 0, b""))[2]
+        for me in meta.get("meshes", []):
+            if me.get("u8") is None:
+                continue
+            sc = scales.get(me["id"], 0.0)
+            self.max_scale = max(self.max_scale, sc)
+            off = me["u8"]
+            for s in me["surfaces"]:
+                body = u8[off : off + s["payload_bytes"]]
+                off += s["payload_bytes"]
+                pos = split_body(body, s)[1]
+                vals = struct.unpack(f"<{len(pos) // 4}f", pos)
+                for name, step in QSTEPS13.items():
+                    e = 0.0
+                    for k in range(0, len(vals) - 1, 2):
+                        ex = abs(round(vals[k] / step) * step - vals[k])
+                        ey = abs(round(vals[k + 1] / step) * step - vals[k + 1])
+                        e = max(e, math.hypot(ex, ey))
+                    self.qerr[name] = max(self.qerr[name], e * sc)
+
+
+JSON_CATS = {"items": None, "meshes": "mesh", "multimeshes": "multimesh", "removed_multimeshes": "multimesh",
+             "particles": "particles", "removed_particles": "particles", "particle_emits": "particles",
+             "textures": "tables_other", "shaders": "tables_other", "materials": "tables_other",
+             "canvases": "tables_other", "unsupported": "unsupported", "blocks": "block_descriptors"}
+BLOCK_CATS = {"item_f32": "item_f32", "cmd_f32": "cmd_f32", "mesh_u8": "mesh_u8", "mm_f32": "mm_f32",
+              "pt_f32": "particles"}
+
+
+def json_categories(meta, rec):
+    """The /12 record split into categories whose byte counts sum to the record (4 + record_len),
+    each with the bytes themselves (for per-category coding against the base's same category)."""
+    cats = {}
+
+    def add(k, b):
+        cats[k] = cats.get(k, b"") + b
+
+    nb = len(meta.get("blocks", []))
+    add("framing", b"\0" * (12 + 4 * nb))
+    first = True
+    for k, v in meta.items():
+        frag = (b"" if first else b",") + cj(k) + b":"
+        first = False
+        cat = JSON_CATS.get(k, "header")
+        if k == "items":
+            add("item_state_json", frag + b"[]")
+            for i, it in enumerate(v):
+                cmds = it.get("commands")
+                if cmds is None:
+                    add("item_state_json", (b"," if i else b"") + cj(it))
+                    continue
+                add("item_state_json", (b"," if i else b"") + cj({**it, "commands": []}))
+                for j, c in enumerate(cmds):
+                    add("cmd_json_" + op_group(c["op"]), (b"," if j else b"") + cj(c))
+            continue
+        if k == "meshes":
+            hs = [s["hash"] for me in v for s in me["surfaces"] if s.get("hash")]
+            nulled = [{**me, "surfaces": [{**s, "hash": None} for s in me["surfaces"]]} for me in v]
+            add("mesh_json", frag + cj(nulled))
+            add("mesh_hash_json", b"".join(h.encode()[:62] for h in hs))
+            continue
+        add(cat + ("_json" if cat not in ("header", "particles", "block_descriptors") else ""), frag + cj(v))
+    add("header", b"{}")
+    for name, (_t, _c, data) in rec.blocks.items():
+        add(BLOCK_CATS.get(name, "blocks_other"), data)
+    return cats
+
+
+def cmd_proto13(argv):
+    ap = argparse.ArgumentParser(prog="wire-budget.py proto13")
+    ap.add_argument("--recording", required=True)
+    ap.add_argument("--scene", action="append", required=True)
+    ap.add_argument("--warm-skip", type=int, default=30)
+    ap.add_argument("--verify-every", type=int, default=1, help="round-trip every Nth warm patch (0: none)")
+    ap.add_argument("--quant-every", type=int, default=10, help="quantization error on every Nth warm patch")
+    ap.add_argument("--codings", default=",".join(CODINGS13))
+    ap.add_argument("--max-frame", type=int, default=0, help="stop after this frame (0: the whole recording)")
+    ap.add_argument("--attribute", default="bin,w13,w13_q64",
+                    help="codings whose structure and blocks are also coded one by one, each against its own base")
+    ap.add_argument("--out")
+    a = ap.parse_args(argv)
+    if zstd is None:
+        print("wire-budget proto13: needs Python 3.14's compression.zstd (mise exec -- python3)", file=sys.stderr)
+        return 2
+    codings = a.codings.split(",")
+    scenes = []
+    for spec in a.scene:
+        name, rng = spec.split(":")
+        f0, f1 = (int(x) for x in rng.split("-"))
+        scenes.append((name, f0, f1))
+    t0 = time.time()
+    schema = Schema13()
+    version = None
+    for ver, rec in read_records(a.recording):
+        version = ver
+        if rec.meta.get("type") == "transaction":
+            schema.learn({k: v for k, v in rec.meta.items() if k not in ("type", "blocks")}, "tx")
+    schema.freeze()
+    pr = Proto13(schema, a.verify_every > 0)
+    rows = {name: {} for name, _f0, _f1 in scenes}
+    prev = {}  # coding -> previous message (the base-prefix coding's prefix)
+    prev_cat = {}
+    prev_parts = {}  # coding -> {part: bytes} of the previous message
+    attribute = [c for c in a.attribute.split(",") if c]
+    pending = []
+    failures = []
+    warm_n = {name: 0 for name, _f0, _f1 in scenes}
+    particles_tx = {name: 0 for name, _f0, _f1 in scenes}
+    for ver, rec in read_records(a.recording):
+        meta = rec.meta
+        kind = meta.get("type")
+        if kind == "resource":
+            pending.append(rec.size)
+            continue
+        if kind != "transaction":
+            continue
+        frame = meta["frame"]
+        if a.max_frame and frame > a.max_frame:
+            break
+        sc = next((s for s in scenes if s[1] + a.warm_skip <= frame <= s[2]), None)
+        warm = sc is not None and meta["encoding"] == "patch"
+        msgs = {}
+        struct_b, _m = pr.structure(meta)
+        segs, _itf, _cmdb, _mmb = pr.segments(meta, rec)
+        parts_now = {}
+        for c in codings:
+            msg, struct_n, blocks = pr.encode(meta, rec, c, struct_b, segs)
+            if c == "json_w13":  # w13's blocks behind /12's JSON meta and framing
+                msg = record_bytes(meta, rec, blocks)
+                struct_n = len(rec.meta_bytes)
+            msgs[c] = (msg, struct_n)
+            if c in attribute:
+                parts_now[c] = {"structure": struct_b, **blocks}
+        if warm:
+            r = rows[sc[0]]
+            warm_n[sc[0]] += 1
+
+            def add(key, v, r=r):
+                r.setdefault(key, []).append(v)
+
+            rec_bytes = sum(n + ws_header(n) for n in pending)
+            add("resource_records", len(pending))
+            add("resource_record_bytes", rec_bytes)
+            if any(k in meta for k in ("particles", "removed_particles", "particle_emits")):
+                particles_tx[sc[0]] += 1
+            # the /12 record as recorded, by category, raw and coded against the base's category
+            cats = json_categories(meta, rec)
+            tot = 0
+            for k, b in cats.items():
+                add("json." + k, len(b))
+                tot += len(b)
+                pb = prev_cat.get(k)
+                if pb:
+                    zc = len(zstd.compress(b, level=3, zstd_dict=zstd.ZstdDict(pb, is_raw=True).as_prefix)) if b else 0
+                else:
+                    zc = len(zstd.compress(b, level=3)) if b else 0
+                add("json_coded." + k, zc)
+            add("json.record", rec.size)
+            if tot != rec.size:
+                failures.append(f"seq {meta['seq']}: categories sum {tot} != record {rec.size}")
+            # the whole /12 record as W11t codes it (+24 B envelope, +4 B checksum)
+            add("json.message", rec.size + ws_header(rec.size) + rec_bytes)
+            for c, (msg, struct_n) in msgs.items():
+                add(c + ".raw", len(msg))
+                add(c + ".structure", struct_n)
+                add(c + ".message", len(msg) + ws_header(len(msg)) + rec_bytes)
+                z = len(zstd.compress(msg, level=3)) + 4
+                add(c + ".zstd3", z + ws_header(z) + rec_bytes)
+                if c in prev:
+                    t1 = time.perf_counter()
+                    zp = len(zstd.compress(msg, level=3, zstd_dict=zstd.ZstdDict(prev[c], is_raw=True).as_prefix)) + 28
+                    add(c + ".zstd3_base_us", (time.perf_counter() - t1) * 1e6)
+                    add(c + ".zstd3_base", zp + ws_header(zp) + rec_bytes)
+            if warm_n[sc[0]] % 5 == 0:
+                for k, n in pr.structure_parts(meta).items():
+                    add("bin_part." + k, n)
+            for c, parts in parts_now.items():
+                for k, b in parts.items():
+                    add(f"{c}.part.{k}", len(b))
+                    pb = prev_parts.get(c, {}).get(k)
+                    if not b:
+                        zc = 0
+                    elif pb:
+                        zc = len(zstd.compress(b, level=3, zstd_dict=zstd.ZstdDict(pb, is_raw=True).as_prefix))
+                    else:
+                        zc = len(zstd.compress(b, level=3))
+                    add(f"{c}.part_coded.{k}", zc)
+            if a.verify_every and warm_n[sc[0]] % a.verify_every == 0:
+                for c in codings:
+                    if c in QSTEPS13 or c == "json_w13":
+                        continue
+                    bad = pr.check_roundtrip(meta, rec, c, msgs[c][0])
+                    if bad:
+                        failures.append(f"seq {meta['seq']} {c}: round trip differs in {bad}")
+                pr.verified += 1
+            if a.quant_every and warm_n[sc[0]] % a.quant_every == 0:
+                pr.quant_error(meta, rec)
+        # the uncoded /12 record's own base-prefix coding needs the record bytes: rebuild them
+        jr = record_bytes(meta, rec)
+        if warm and "_json" in prev:
+            t1 = time.perf_counter()
+            zp = len(zstd.compress(jr, level=3, zstd_dict=zstd.ZstdDict(prev["_json"], is_raw=True).as_prefix)) + 28
+            rows[sc[0]].setdefault("json.zstd3_base_us", []).append((time.perf_counter() - t1) * 1e6)
+            rows[sc[0]].setdefault("json.zstd3_base", []).append(zp + ws_header(zp) + sum(n + ws_header(n) for n in pending))
+            z = len(zstd.compress(jr, level=3)) + 4
+            rows[sc[0]].setdefault("json.zstd3", []).append(z + ws_header(z) + sum(n + ws_header(n) for n in pending))
+        prev["_json"] = jr
+        for c, (msg, _n) in msgs.items():
+            prev[c] = msg
+        prev_cat = json_categories(meta, rec)
+        prev_parts = parts_now
+        pr.advance(meta, rec)
+        pending = []
+    out = {"schema": SCHEMA + "#proto13", "recording": os.path.basename(a.recording), "version": version,
+           "warm_skip": a.warm_skip, "codings": codings, "wall_s": round(time.time() - t0, 1),
+           "verified_tx": pr.verified, "roundtrip_failures": failures[:50], "roundtrip_failure_count": len(failures),
+           "quant": {"max_mesh_scale": round(pr.max_scale, 4),
+                     "max_screen_err_px": {k: round(v, 5) for k, v in pr.qerr.items()},
+                     "steps_local_units": {k: v for k, v in QSTEPS13.items()}},
+           "schema_paths": len(schema.types), "scenes": {}}
+    for name, f0, f1 in scenes:
+        r = rows[name]
+        for k, v in r.items():  # a category absent from a transaction is 0 bytes there
+            if (k.startswith("json.") or k.startswith("json_coded.")) and not k.endswith("_us") and \
+                    not k.startswith("json.zstd3") and len(v) < warm_n[name]:
+                v.extend([0] * (warm_n[name] - len(v)))
+        out["scenes"][name] = {"frames": [f0, f1], "warm_tx": warm_n[name], "particles_tx": particles_tx[name],
+                               "bytes": {k: row(v) for k, v in sorted(r.items())}}
+        b = out["scenes"][name]["bytes"]
+        line = ", ".join(f"{c} {b.get(c + '.raw', {}).get('mean')}/{b.get(c + '.zstd3_base', {}).get('mean')}"
+                         for c in codings)
+        print(f"wire-budget proto13: {name}: {warm_n[name]} warm tx; json {b.get('json.record', {}).get('mean')}/"
+              f"{b.get('json.zstd3_base', {}).get('mean')}; {line}", file=sys.stderr)
+    print(f"wire-budget proto13: verified {pr.verified} tx, {len(failures)} round-trip failures", file=sys.stderr)
+    text = json.dumps(out, indent=1)
+    if a.out:
+        with open(a.out, "w") as fh:
+            fh.write(text + "\n")
+    else:
+        print(text)
+    return 1 if failures else 0
+
+
+def record_bytes(meta, rec, blocks=None) -> bytes:
+    """A record's own bytes rebuilt from its parts (framing, meta, blocks), as on the wire; with
+    `blocks`, those bytes in place of the record's (the same lengths)."""
+    mb = cj(meta)
+    body = struct.pack("<I", len(mb)) + mb + struct.pack("<I", len(meta.get("blocks", [])))
+    for d in meta.get("blocks", []):
+        data = (blocks or {}).get(d["name"], rec.blocks[d["name"]][2])
+        body += struct.pack("<I", len(data)) + data
+    return struct.pack("<I", len(body)) + body
+
+
 def main(argv):
-    if not argv or argv[0] not in ("analyze", "measure", "self-test"):
+    if not argv or argv[0] not in ("analyze", "measure", "proto13", "self-test"):
         print(__doc__, file=sys.stderr)
         return 2
     if argv[0] == "self-test":
         return self_test()
     if argv[0] == "measure":
         return cmd_measure(argv[1:])
+    if argv[0] == "proto13":
+        return cmd_proto13(argv[1:])
     return cmd_analyze(argv[1:])
 
 
