@@ -122,6 +122,17 @@ export const GATE8_LEGS: GswLegDef[] = [
   // particles::describe), and `gl-particle-colors` is the pre-PFB GSW on the same name.
   leg("g8pt/ptc/receiver"),
   leg("g8pt/ptc/sabotage-gl-particle-colors/receiver"),
+  // PSE (render-stream-12.md "As built (PSE)"): the same capture's switched cells (one process
+  // shader whose emission shape is a uniform, two materials); GSW keys each material by its own
+  // uniforms, and the GSW-only sabotage `shared-process-key` is the pre-PSE GSW (every material
+  // keyed by the shader's builtin, the first material's). The native no-subparticle-stub leg is
+  // not replayed: GSW simulates from the key and never compiles the host's process code.
+  {
+    leg: "g8pt/ptc/sabotage-gsw-shared-process-key",
+    from: "g8pt/ptc/receiver",
+    env: { RS_RECEIVER_SABOTAGE: "shared-process-key" },
+    replaces: false,
+  },
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -257,7 +268,13 @@ export const GATE8_RECEIVER_CHECKS: {
     // g8ku (G8kb)
     "sabotage-perturb-ktx2",
   ],
-  notApplicable: {},
+  notApplicable: {
+    // PSE: the native receiver sabotage leaves a RendererRD host's emit_subparticle calls in; GSW
+    // simulates from the builtin key and never compiles the host's process code, so its leg is not
+    // replayed (GSW's own PSE sabotage is shared-process-key, lib/gate7-gsw-g8-checks.ts).
+    "ptc-receiver-catches-no-subparticle-stub":
+      "GSW never compiles the host's process code (no emit_subparticle to stub)",
+  },
 };
 
 /** Q7 for gate 8: no gsw-tolerance.json plan (gate 8's fixtures have no per-pixel model); the

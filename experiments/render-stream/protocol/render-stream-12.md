@@ -821,7 +821,68 @@ too bright (menu 31.4 to 23.2 dB), and so did a GLES3 receiver made to compile t
 7. **What it does not fix.** STS2's process shader (MegaDot, Vulkan) calls `emit_subparticle`,
    which GLES3 does not declare, so the native and web receivers still draw none of STS2's
    emitters (PM7). With it stubbed they would now draw them at the host's colours, but the stub
-   is not shipped here.
+   is not shipped here (PSE ships it: "As built (PSE)" rule 2).
+
+## As built (PSE): decisions
+
+PSE closes the two particle-shader gaps PM7 and PFB left ([results/p3/pse.md](../results/p3/pse.md)):
+the native and web receivers could not compile a RendererRD host's process shader, and GSW keyed
+every material on a shared process shader by the first one. Nothing changes on the wire or in the
+capture.
+
+1. **`emit_subparticle` is the only RendererRD-only particles builtin in 4.5.1.**
+   `shader_types.cpp` declares it for every backend (so the host's shader language accepts it),
+   RD's particles.glsl defines it, GLES3's does not; every other particles built-in (`COLLIDED`,
+   `USERDATA1..6`, `FLAG_EMIT_*`, `EMISSION_TRANSFORM`, `AMOUNT_RATIO`, ...) is renamed by both
+   backends. `ParticleProcessMaterial` writes sub-emitter code only when
+   `!RenderingServer::is_low_end()` (particle_process_material.cpp:293, 942, 1149), so a
+   gl_compatibility host never generates the call and a RendererRD host does whenever its process
+   shader has a sub-emitter branch (STS2's MegaDot uber shader always does). GLES3 then fails:
+   `error C1503: undefined variable "emit_subparticle"`, and the emitter draws nothing.
+2. **The stub (native and web).** When the receiver renders with gl_compatibility (PFB's
+   `Planner::gl_compatibility`, set from `RenderingServer.get_current_rendering_method()`), the
+   planner rewrites a `particles`-mode shader's code before `shader_set_code`
+   (`apply::programs::without_subparticles`): every `emit_subparticle` identifier outside
+   comments and not after `.` calls `rs_emit_subparticle_off`, a top-level function with
+   `emit_subparticle`'s signature (`mat4, vec3, vec4, vec4, uint` returning `bool`) that returns
+   `false`, declared before the first top-level definition. gl_compatibility ignores sub-emitters
+   anyway (PM6a rule 10), so the stub is what a GL host of the same scene would do: the parent
+   emitter draws, its sub-emitter emits nothing. Code without the call is set unchanged; a
+   Forward+ receiver is never rewritten. `particles_resources.shaders_subparticles_stubbed`
+   counts the rewrites (present only when non-zero). It is receiver-only, so it needs no version
+   gate.
+3. **Uniform-switched process shaders (GSW).** Stock 4.5.1 generates one process shader per
+   `MaterialKey`, so the capture's `particle_process_material` builtin (read from the first
+   material that uses the shader) is every material's key. A process shader may instead keep the
+   key's fields as uniforms, one shader for every key (STS2's MegaDot `ParticleProcessMaterial`
+   does; a `ParticleProcessMaterial` whose RID is given another shader does too). Then each
+   material's key is its own uniform values. rs-core `apply::particles` reads the shader code's
+   top-level declarations of the switch uniforms (`SWITCH_UNIFORMS`: `emission_shape` int,
+   `particle_flags` bool[], `use_tex_param` bool[], `use_color_ramp`, `has_initial_ramp`,
+   `use_alpha_curve`, `use_emission_curve`, `use_limiter_curve`, `orbit_uses_curve_xyz`,
+   `has_emission_color`, `sub_emitter_mode` int, `attractor_enabled`, `collision_mode` int,
+   `turbulence_enabled`), and `describe` lists each material's key with every declared field
+   taken from the material's parameter (else the declaration's literal default, else zero) and
+   every other field from the builtin. An out-of-range enum keeps the builtin's.
+4. **Which code GSW fetches.** GSW fetches only the shaders items name (G7s), not process
+   shaders. A process material is a switch *candidate* when a parameter is named as a switch
+   uniform other than `turbulence_enabled` (stock `ParticleProcessMaterial` sets that one on every
+   material, and its generated code never declares it); a candidate's shader code is fetched
+   with the transaction (`Applier::needed`), so its key is right at the emitter's first step, and
+   its declarations are kept per code hash. A stream of stock materials fetches nothing more and
+   describes the same keys as before.
+5. **Receiver sabotages.** `no-subparticle-stub` (native and web): the code is set as given, the
+   pre-PSE receiver. `shared-process-key` (GSW only): every material takes the shader's builtin,
+   the pre-PSE GSW.
+6. **Fixture** `fixtures/gate8-ptc` gains S_BOX and S_SPHERE: 48 still particles each, on one
+   process shader (`ptc_switched.gdshader`: stock 4.5.1's generated code for gate8-ptc's key with
+   `emission_shape` and `sub_emitter_mode` made uniforms, and an at-end `emit_subparticle` call)
+   set on two `ParticleProcessMaterial`s' RIDs, a box and a sphere. Checks: `pts-host-switched`
+   (the premise: Forward+ draws a box and a disc, gl_compatibility neither), `ptc-receiver` now
+   also requires both switched cells to equal the Forward+ reference (0 px more than 16 levels
+   off), `ptc-receiver-catches-no-subparticle-stub` (native and web), and GSW's
+   `ptc-gsw-switched-key@gsw` (honest leg 0 px off; the `shared-process-key` leg draws S_SPHERE
+   as a box of extents (1, 1, 1) while S_BOX holds).
 
 ## Versioning
 

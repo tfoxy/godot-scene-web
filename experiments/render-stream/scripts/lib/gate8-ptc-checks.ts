@@ -17,6 +17,20 @@
 //   ptc-receiver-catches-gl-particle-colors  the sabotage receiver fails ptc-receiver (it draws the
 //                       gl_compatibility colours)
 //
+// PSE (render-stream-12.md "As built (PSE)"): two more cells, S_BOX and S_SPHERE, are 48 still
+// particles each on one uniform-switched process shader (fixtures/gate8-ptc/ptc_switched.gdshader:
+// `emission_shape` a uniform, and an `emit_subparticle` call only RendererRD declares), one
+// material a box and one a sphere:
+//
+//   pts-host-switched   the premise, on the stock engine: reference-fwdplus draws S_BOX as a box
+//                       (wide and flat) and S_SPHERE as a disc (as tall as it is wide), and
+//                       reference-gl draws neither (GLES3 fails to compile emit_subparticle)
+//   ptc-receiver        (extended) every shot's S_BOX and S_SPHERE regions are reference-fwdplus's
+//                       within PTS_TOLERANCE_PX pixels off by more than PTS_LEVEL levels
+//   ptc-receiver-catches-no-subparticle-stub  the receiver that sets a RendererRD host's particles
+//                       code as given (no-subparticle-stub, the pre-PSE receiver) fails
+//                       ptc-receiver (it draws neither switched cell)
+//
 // A host whose Vulkan is unavailable falls back to opengl3 (the fixture prints its rendering
 // method): the checks are then not run (gating false, `unavailable` in the detail).
 
@@ -31,6 +45,7 @@ export const PTC_LEGS = {
   capture: "ptc/capture",
   receiver: "ptc/receiver",
   sabotage: "ptc/sabotage-gl-particle-colors/receiver",
+  sabotageStub: "ptc/sabotage-no-subparticle-stub/receiver",
 } as const;
 
 /** The fixture's cells (ptc.gd): centre, process-material colour, blend, and whether the colour
@@ -48,6 +63,91 @@ export const PTC_BACKGROUND: readonly [number, number] = [40, 40];
 export const PTC_TOLERANCE = 2;
 /** The half-size of the sampled centre patch (the particle's quad is 32x32). */
 const PATCH = 4;
+
+/** PSE: the switched cells (ptc.gd): 48 particles of a 4x4 white quad each, emitted in a box of
+ * extents (70, 22) or a sphere of radius 45 around `at`; `half` bounds the region judged (the
+ * shape plus the quad's half and a margin). */
+export const PTS_CELLS = [
+  { cell: "S_BOX", at: [200, 290], half: [76, 28], shape: "box" },
+  { cell: "S_SPHERE", at: [440, 290], half: [50, 50], shape: "sphere" },
+] as const;
+/** PSE: a pixel is drawn when a channel is more than PTS_LEVEL levels off the clear colour, and
+ * two shots differ at a pixel when a channel differs by more than PTS_LEVEL. */
+export const PTS_LEVEL = 16;
+/** PSE: the pixels of a switched cell a receiver may differ from the reference by. */
+export const PTS_TOLERANCE_PX = 0;
+
+export interface PtsRegion {
+  /** Pixels drawn (off the clear colour by more than PTS_LEVEL). */
+  drawn: number;
+  /** The drawn pixels' bounding box [x0, y0, x1, y1] (inclusive), or null when none is. */
+  bbox: [number, number, number, number] | null;
+}
+
+/** PSE: a switched cell's drawn pixels in `img`. */
+export function ptsRegion(img: Img, c: (typeof PTS_CELLS)[number]): PtsRegion {
+  const clear = Math.round(PTC_CLEAR * 255);
+  let drawn = 0;
+  let bbox: [number, number, number, number] | null = null;
+  for (let y = c.at[1] - c.half[1]; y <= c.at[1] + c.half[1]; y++)
+    for (let x = c.at[0] - c.half[0]; x <= c.at[0] + c.half[0]; x++) {
+      const i = (y * img.width + x) * 4;
+      if (![0, 1, 2].some((k) => Math.abs(img.data[i + k] - clear) > PTS_LEVEL)) continue;
+      drawn++;
+      bbox = bbox ? [Math.min(bbox[0], x), Math.min(bbox[1], y), Math.max(bbox[2], x), Math.max(bbox[3], y)] : [x, y, x, y];
+    }
+  return { drawn, bbox };
+}
+
+/** PSE: the pixels of a switched cell where `img` and `ref` differ by more than PTS_LEVEL. */
+export function ptsDiff(img: Img, ref: Img, c: (typeof PTS_CELLS)[number]): number {
+  let n = 0;
+  for (let y = c.at[1] - c.half[1]; y <= c.at[1] + c.half[1]; y++)
+    for (let x = c.at[0] - c.half[0]; x <= c.at[0] + c.half[0]; x++) {
+      const i = (y * img.width + x) * 4;
+      if ([0, 1, 2].some((k) => Math.abs(img.data[i + k] - ref.data[i + k]) > PTS_LEVEL)) n++;
+    }
+  return n;
+}
+
+/** PSE: problems of `img`'s switched cells against `ref`'s (ptc-receiver's switched half). */
+export function ptsProblems(label: string, img: Img, ref: Img): string[] {
+  const out: string[] = [];
+  for (const c of PTS_CELLS) {
+    const d = ptsDiff(img, ref, c);
+    if (d > PTS_TOLERANCE_PX) {
+      const got = ptsRegion(img, c);
+      const want = ptsRegion(ref, c);
+      out.push(
+        `${label} ${c.cell}: ${d} px differ (drawn ${got.drawn} px in ${JSON.stringify(got.bbox)}, the reference ${want.drawn} px in ${JSON.stringify(want.bbox)})`,
+      );
+    }
+  }
+  return out;
+}
+
+/** PSE: problems of a reference shot's switched cells against the shapes the materials ask for
+ * (`drawn`: the Forward+ host's; else gl_compatibility's, which draws neither). */
+export function ptsShapeProblems(label: string, img: Img, drawn: boolean): string[] {
+  const out: string[] = [];
+  for (const c of PTS_CELLS) {
+    const r = ptsRegion(img, c);
+    if (!drawn) {
+      if (r.drawn > 0) out.push(`${label} ${c.cell}: ${r.drawn} px drawn (gl_compatibility compiles no emit_subparticle)`);
+      continue;
+    }
+    if (!r.bbox || r.drawn < 100) {
+      out.push(`${label} ${c.cell}: ${r.drawn} px drawn`);
+      continue;
+    }
+    const w = r.bbox[2] - r.bbox[0] + 1;
+    const h = r.bbox[3] - r.bbox[1] + 1;
+    // A box of extents (70, 22) is about 144x48 px; a sphere of radius 45 about 94x94.
+    const ok = c.shape === "box" ? w >= 100 && h <= 50 : w >= 60 && h >= 60 && w <= 100 && h <= 100;
+    if (!ok) out.push(`${label} ${c.cell}: drawn ${w}x${h} px, not a ${c.shape}`);
+  }
+  return out;
+}
 
 /** Godot's Color::srgb_to_linear() on one channel (core/math/color.h:191-197). */
 export function srgbToLinear(c: number): number {
@@ -136,6 +236,7 @@ async function receiverProblems(g: string, leg: string, fwd: Img[]): Promise<str
   got.forEach((img, i) => {
     for (const c of PTC_CELLS) problems.push(...patchProblems(`${leg} step ${i} ${c.cell}`, img, c.at, fwd[i], PTC_TOLERANCE));
     problems.push(...patchProblems(`${leg} step ${i} background`, img, PTC_BACKGROUND, fwd[i], PTC_TOLERANCE));
+    problems.push(...ptsProblems(`${leg} step ${i}`, img, fwd[i]));
   });
   return problems;
 }
@@ -144,7 +245,14 @@ export interface PtcDeps {
   validate: (path: string) => Promise<[string, string] | null>;
 }
 
-export const PTC_CHECK_IDS = ["ptc-host-colors", "ptc-validate", "ptc-receiver", "ptc-receiver-catches-gl-particle-colors"] as const;
+export const PTC_CHECK_IDS = [
+  "ptc-host-colors",
+  "pts-host-switched",
+  "ptc-validate",
+  "ptc-receiver",
+  "ptc-receiver-catches-gl-particle-colors",
+  "ptc-receiver-catches-no-subparticle-stub",
+] as const;
 
 export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], report: Record<string, unknown>): Promise<void> {
   const dir = (leg: string) => join(g, leg);
@@ -162,6 +270,12 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
 
   const gl = await shots(dir(PTC_LEGS.referenceGl), true);
   const fwd = await shots(dir(PTC_LEGS.referenceFwd), true);
+  report.switched = Object.fromEntries(
+    [
+      ["reference-gl", gl],
+      ["reference-fwdplus", fwd],
+    ].map(([k, imgs]) => [k, (imgs as Img[] | null)?.[0] ? PTS_CELLS.map((c) => ({ cell: c.cell, ...ptsRegion((imgs as Img[])[0], c) })) : null]),
+  );
   report.samples = Object.fromEntries(
     [
       ["reference-gl", gl],
@@ -197,6 +311,25 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
     );
   }
 
+  // pts-host-switched
+  {
+    let problems: string[] | null = null;
+    if (gl && fwd && gl.length > 0 && fwd.length > 0) {
+      problems = [];
+      gl.forEach((img, i) => problems!.push(...ptsShapeProblems(`reference-gl step ${i}`, img, false)));
+      fwd.forEach((img, i) => problems!.push(...ptsShapeProblems(`reference-fwdplus step ${i}`, img, true)));
+    }
+    const r = fwd?.[0] ? PTS_CELLS.map((c) => `${c.cell} ${JSON.stringify(ptsRegion(fwd[0], c).bbox)}`).join(", ") : "";
+    checks.push(
+      check(
+        "pts-host-switched",
+        "PSE: on the stock engine a process shader shared by two ParticleProcessMaterials whose emission shape is a uniform draws each material's own shape on a Forward+ host (S_BOX a box, S_SPHERE a disc), and gl_compatibility draws neither (GLES3 declares no emit_subparticle)",
+        problems,
+        `forward_plus ${r}; gl_compatibility none`,
+      ),
+    );
+  }
+
   // ptc-validate
   {
     const problems: string[] = [];
@@ -218,7 +351,7 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
     checks.push(
       check(
         "ptc-receiver",
-        `PFB: the gl_compatibility receiver of the Forward+ capture draws every cell as the Forward+ host does (within ${PTC_TOLERANCE} levels)`,
+        `PFB: the gl_compatibility receiver of the Forward+ capture draws every cell as the Forward+ host does (within ${PTC_TOLERANCE} levels); PSE: and the switched cells' particles exactly where the host does (at most ${PTS_TOLERANCE_PX} px more than ${PTS_LEVEL} levels off)`,
         honest,
       ),
     );
@@ -229,6 +362,15 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
         "PFB: the receiver that sets the colours as given (gl-particle-colors, the pre-PFB receiver) fails ptc-receiver",
         sab === null ? null : sab.length > 0 ? [] : ["ptc-receiver passed on the sabotage receiver"],
         sab?.[0],
+      ),
+    );
+    const stub = fwd ? await receiverProblems(g, PTC_LEGS.sabotageStub, fwd) : null;
+    checks.push(
+      check(
+        "ptc-receiver-catches-no-subparticle-stub",
+        "PSE: the receiver that sets a RendererRD host's particles code as given (no-subparticle-stub, the pre-PSE receiver) fails ptc-receiver",
+        stub === null ? null : stub.length > 0 ? [] : ["ptc-receiver passed on the sabotage receiver"],
+        stub?.[0],
       ),
     );
   }

@@ -61,7 +61,7 @@ fn replay(file: &str, buffers: bool, undrawn: bool) -> Seen {
                 store.accept_transaction(&v, rec).unwrap();
                 let st = v.state();
                 store.particles.retain(st);
-                let msg = particles::describe(st, &mut store, false);
+                let msg = particles::describe(st, &mut store, false, false);
                 if buffers {
                     for (id, p) in st.particles.iter() {
                         if p.status == crate::state::EntryStatus::Ok {

@@ -1415,6 +1415,13 @@ impl Applier {
                 push(h, out);
             }
         }
+        // PSE (render-stream-12.md "As built (PSE)"): a process material that sets a switch uniform
+        // keys from its shader's declarations, so that shader's code is fetched too.
+        if !state.particles.is_empty() {
+            for h in particles::switch_candidate_shader_hashes(state) {
+                push(h, out);
+            }
+        }
         let meshes: Vec<Id> = if self.first {
             state.meshes.keys().copied().collect()
         } else {

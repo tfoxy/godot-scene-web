@@ -75,6 +75,10 @@ pub struct Sabotage {
     /// PFB: a particles material's colours are set as the wire gives them, whatever the host's
     /// rendering method (the pre-PFB receiver).
     pub gl_particle_colors: bool,
+    /// PSE: a `particles` shader's code is set as the wire gives it on a gl_compatibility
+    /// receiver, `emit_subparticle` calls and all (the pre-PSE receiver: GLES3 fails to compile a
+    /// RendererRD host's sub-emitter code, so its emitters draw nothing).
+    pub no_subparticle_stub: bool,
 }
 
 impl Sabotage {
@@ -107,6 +111,7 @@ impl Sabotage {
             "ignore-particle-emits" => s.ignore_particle_emits = true,
             "drop-particles-restart" => s.drop_particles_restart = true,
             "gl-particle-colors" => s.gl_particle_colors = true,
+            "no-subparticle-stub" => s.no_subparticle_stub = true,
             _ => {}
         }
         s
@@ -705,6 +710,8 @@ struct Counters {
     /// PFB: particles material `color` parameters set linearized (a RendererRD host's colours on
     /// a gl_compatibility receiver).
     particle_colors_linearized: i64,
+    /// PSE: `particles` shaders whose `emit_subparticle` calls were stubbed (gl_compatibility).
+    shaders_subparticles_stubbed: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
     shader_code_sets: i64,
@@ -3111,6 +3118,22 @@ impl Planner {
                 } else {
                     code
                 };
+                // PSE (render-stream-12.md "As built (PSE)"): a RendererRD host's particles code
+                // on a gl_compatibility receiver, whose GLES3 declares no `emit_subparticle`.
+                let stubbed;
+                let code = match (self.gl_compatibility, e.mode) {
+                    (true, Some(ShaderMode::Particles)) if !self.sab.no_subparticle_stub => {
+                        match render_stream_core::apply::programs::without_subparticles(code) {
+                            Some(s) => {
+                                stubbed = s;
+                                c.shaders_subparticles_stubbed += 1;
+                                stubbed.as_str()
+                            }
+                            None => code,
+                        }
+                    }
+                    _ => code,
+                };
                 if self.sab.vertex_flat_varyings {
                     let flat = render_stream_core::apply::programs::flat_varyings(code);
                     ops.bytes(flat.as_bytes());
@@ -4296,6 +4319,10 @@ fn write_stats(
     // PFB: only when a colour was linearized, so every other stream's stats are unchanged.
     if c.particle_colors_linearized > 0 {
         pt_resources.push(("colors_linearized", c.particle_colors_linearized));
+    }
+    // PSE: likewise only when a shader's emit_subparticle calls were stubbed.
+    if c.shaders_subparticles_stubbed > 0 {
+        pt_resources.push(("shaders_subparticles_stubbed", c.shaders_subparticles_stubbed));
     }
     let pt_any = pt_resources.iter().any(|(_, n)| *n != 0);
     v.dict(

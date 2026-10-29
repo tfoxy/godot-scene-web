@@ -349,6 +349,123 @@ pub fn host_time(code: &str) -> String {
     }
 }
 
+/// PSE: the function a gl_compatibility receiver's rewritten particles code calls in place of
+/// `emit_subparticle` ([`without_subparticles`]).
+pub const NO_SUBPARTICLE_FN: &str = "rs_emit_subparticle_off";
+
+/// PSE (render-stream-12.md "As built (PSE)"): `code` (a `particles` shader) with every
+/// `emit_subparticle` call (an identifier outside comments, not after `.`) calling
+/// [`NO_SUBPARTICLE_FN`] instead, a top-level function with `emit_subparticle`'s signature that
+/// emits nothing and returns `false`, declared before the first top-level definition (the first
+/// `{` at depth 0 begins one: a function or a struct). GLES3 declares no `emit_subparticle`
+/// (its particles template has no sub-emitter buffer; `ParticleProcessMaterial` writes no
+/// sub-emitter code there, particle_process_material.cpp `is_low_end`), so code written for a
+/// RendererRD host (Forward+, Mobile) fails to compile on a gl_compatibility receiver and its
+/// emitters draw nothing. It is the only RendererRD-only particles builtin in 4.5.1
+/// (`shader_types.cpp` declares it for every backend; RD's particles.glsl defines it, GLES3's
+/// does not; every other particles built-in is renamed by both).
+/// GLES3 ignores sub-emitters anyway (PM6a rule 10), so the stub changes no pixel such a
+/// receiver could draw. `None` when the code calls no `emit_subparticle`.
+pub fn without_subparticles(code: &str) -> Option<String> {
+    let bytes = code.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::with_capacity(code.len() + 128);
+    let mut last = 0;
+    let mut i = 0;
+    let mut depth: i32 = 0;
+    let mut stmt_start: usize = 0; // where the current top-level statement began, in `code`
+    let mut define_at: Option<usize> = None;
+    let mut replaced = false;
+    let mut prev_sig: u8 = 0;
+    let mut line_start = true;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if c == b'#' && line_start {
+            // A preprocessor line: skipped whole, and a top-level statement starts after it.
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            if depth == 0 {
+                stmt_start = i;
+            }
+            continue;
+        }
+        if c == b'\n' {
+            line_start = true;
+            i += 1;
+            continue;
+        }
+        if !c.is_ascii_whitespace() {
+            line_start = false;
+        }
+        if word(c) && (i == 0 || !word(bytes[i - 1])) {
+            let mut end = i;
+            while end < bytes.len() && word(bytes[end]) {
+                end += 1;
+            }
+            if &code[i..end] == "emit_subparticle" && prev_sig != b'.' {
+                out.push_str(&code[last..i]);
+                out.push_str(NO_SUBPARTICLE_FN);
+                last = end;
+                replaced = true;
+            }
+            prev_sig = bytes[end - 1];
+            i = end;
+            continue;
+        }
+        match c {
+            b'{' => {
+                if depth == 0 && define_at.is_none() {
+                    define_at = Some(stmt_start);
+                }
+                depth += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    stmt_start = i + 1;
+                }
+            }
+            b';' if depth == 0 => stmt_start = i + 1,
+            _ => {}
+        }
+        if !c.is_ascii_whitespace() {
+            prev_sig = c;
+        }
+        i += 1;
+    }
+    if !replaced {
+        return None;
+    }
+    out.push_str(&code[last..]);
+    let def = format!(
+        "\nbool {NO_SUBPARTICLE_FN}(mat4 xform, vec3 velocity, vec4 color, vec4 custom, uint flags) {{\n\treturn false;\n}}\n"
+    );
+    // `define_at` indexes `code`; no replacement precedes the first top-level definition (a call
+    // sits inside one), so the offsets agree up to there.
+    match define_at {
+        Some(at) if at <= out.len() && code[..at] == out[..at] => {
+            out.insert_str(at, &def);
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// A wire parameter's numbers, flattened (a packed array's elements in order).
 fn numbers(value: &ParamValue) -> Option<&[f64]> {
     match value {
@@ -407,6 +524,32 @@ pub fn param<'p>(params: &'p [Param], name: &str) -> Option<&'p Param> {
 mod tests {
     use super::*;
     use crate::state::VariantType;
+
+    #[test]
+    fn without_subparticles_stubs_every_call() {
+        let code = "shader_type particles;\n#define N 2\nuniform vec4 c = vec4(1.0);\n// emit_subparticle( in a comment\nfloat f(float x) { return x; }\nvoid process() {\n\tif (true) {\n\t\temit_subparticle(TRANSFORM, VELOCITY, vec4(0.0), vec4(0.0), 1u);\n\t}\n}\n";
+        let out = super::without_subparticles(code).expect("a call is rewritten");
+        let def = out.find("bool rs_emit_subparticle_off(").expect("the stub is defined");
+        assert!(def < out.find("float f(").unwrap(), "before the first definition: {out}");
+        assert!(def > out.find("uniform vec4 c").unwrap(), "after the uniforms: {out}");
+        assert!(out.contains("\t\trs_emit_subparticle_off(TRANSFORM"), "the call: {out}");
+        assert!(out.contains("// emit_subparticle( in a comment"), "comments untouched: {out}");
+        assert_eq!(out.matches("emit_subparticle(").count(), 1, "only the comment keeps the name");
+        assert!(super::without_subparticles("shader_type particles;\nvoid process() {}\n").is_none());
+    }
+
+    /// PSE: a struct first (the stub goes before it), a call in a helper, `.emit_subparticle`
+    /// (a member) and an identifier that merely contains the name stay.
+    #[test]
+    fn without_subparticles_struct_first_and_lookalikes() {
+        let code = "shader_type particles;\nuniform int m;\nstruct P {\n\tfloat a;\n};\nvoid start() {\n\tfloat my_emit_subparticle = 1.0;\n\tbool ok = emit_subparticle(TRANSFORM, VELOCITY, vec4(0.0), vec4(0.0), FLAG_EMIT_POSITION);\n}\n";
+        let out = without_subparticles(code).expect("a call is rewritten");
+        let def = out.find("bool rs_emit_subparticle_off(").unwrap();
+        assert!(def < out.find("struct P").unwrap(), "before the struct: {out}");
+        assert!(def > out.find("uniform int m;").unwrap(), "after the uniform: {out}");
+        assert!(out.contains("my_emit_subparticle = 1.0"), "a longer identifier stays: {out}");
+        assert!(out.contains("bool ok = rs_emit_subparticle_off(TRANSFORM"), "{out}");
+    }
 
     fn decl(kind: UniformKind, components: u32, array: Option<u32>, unset: &[f64]) -> UniformDecl {
         UniformDecl {
