@@ -401,7 +401,7 @@ export interface Report {
   residencyEvictions?: number | null;
   /** PM6b: the shell's particle simulation counters (`particles.ts`), merged with the wasm's into
    * applied.json `w11.particles`. */
-  particles?: import("./particles").ParticlesEvidence | null;
+  particles?: import("../../../../packages/render-stream-client/src/particles").ParticlesEvidence | null;
 }
 
 type RustTx = RustParts["transactions"][number];

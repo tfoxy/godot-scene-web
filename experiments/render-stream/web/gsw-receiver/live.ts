@@ -102,11 +102,15 @@ import {
   type RustParts,
   type ShellTx,
 } from "./evidence";
-import { type FetchResult, LiveFetcher } from "./fetcher";
-import { foldedFullIndex } from "./fold";
+import {
+  type FetchResult,
+  LiveFetcher,
+  type ResourceRequest,
+} from "../../../../packages/render-stream-client/src/fetcher";
+import { foldedFullIndex } from "../../../../packages/render-stream-client/src/fold";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
-import { gpuFormatsOf, helloV9 } from "./hello";
-import { GswParticles } from "./particles";
+import { gpuFormatsOf, helloV9 } from "../../../../packages/render-stream-client/src/hello";
+import { GswParticles } from "../../../../packages/render-stream-client/src/particles";
 import { KtxStager } from "./transcode";
 import { type PayloadVerify, Perf } from "./perf";
 import {
@@ -114,7 +118,7 @@ import {
   needsLibrary,
   ProgramError,
   provideLibrary,
-} from "./programs";
+} from "../../../../packages/render-stream-client/src/programs";
 
 /** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
@@ -884,14 +888,17 @@ class LiveReceiver {
       let token = this.L.token;
       if (this.sabotage.has("wrong-http-token") && token !== null)
         token = `${token}-wrong`;
+      const request = harnessRequest(
+        this.L.httpOrigin,
+        token,
+        this.sabotage.has("ignore-cache"),
+      );
       this.makeFetcher = (onBody) =>
         new LiveFetcher(
-          this.L.httpOrigin,
+          request,
           httpPath,
           this.L.fetchTimeoutMs,
           this.cfg.fetchDelayMs,
-          token,
-          this.sabotage.has("ignore-cache"),
           onBody,
         );
       this.fetcher = this.makeFetcher((r) => this.stageFetched(r));
@@ -2319,6 +2326,47 @@ class LiveReceiver {
     }
   }
 }
+
+/** The harness's GET (MIR-1: LiveFetcher's injected request, as the fetcher did it before):
+ * `GET <origin><path>` with `Authorization: Bearer <token>` when a token is set (a CORS non-simple
+ * request: the browser sends the host an OPTIONS preflight first, cached for its Max-Age, which the
+ * host answers without a token), the default cache mode or, for sabotage `ignore-cache`, none (the
+ * native "fetch even on a cache hit"), and no credentials. Sabotage `wrong-http-token` (G2e) is
+ * the caller's token with `-wrong` appended.
+ *
+ * Recorded headers are the native fetcher's four (Content-Type, Content-Length, Cache-Control,
+ * ETag) as far as the browser exposes them: a cross-origin response shows only CORS-safelisted
+ * headers and those in Access-Control-Expose-Headers, so `ETag` is absent unless the host exposes
+ * it. Names are written in the native fetcher's case (the Fetch API lowercases them). */
+function harnessRequest(
+  origin: string,
+  token: string | null,
+  bypassCache: boolean,
+): ResourceRequest {
+  return async (path, signal) => {
+    const headers: Record<string, string> = {};
+    if (token !== null) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${origin}${path}`, {
+      headers,
+      signal,
+      cache: bypassCache ? "no-store" : "default",
+      credentials: "omit",
+    });
+    const kept: Record<string, string> = {};
+    for (const name of KEPT_HEADERS) {
+      const v = res.headers.get(name);
+      if (v !== null) kept[name] = v;
+    }
+    return { status: res.status, headers: kept, body: await res.arrayBuffer() };
+  };
+}
+
+const KEPT_HEADERS = [
+  "Content-Type",
+  "Content-Length",
+  "Cache-Control",
+  "ETag",
+] as const;
 
 /** A failing record's seq (receiver.gd `_receive_binary`): its meta's integer `seq` for a
  * transaction (or a record that did not decode), else the next expected seq; null for a resource

@@ -54,9 +54,9 @@ import {
   type ShellTx,
 } from "./evidence";
 import { runLive, takeToken } from "./live";
-import { GswParticles } from "./particles";
+import { GswParticles } from "../../../../packages/render-stream-client/src/particles";
 import { type FrameSample, type PayloadVerify, Perf } from "./perf";
-import { ProgramError, resolvePrograms } from "./programs";
+import { ProgramError, resolvePrograms } from "../../../../packages/render-stream-client/src/programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
 import { KtxStager } from "./transcode";
 

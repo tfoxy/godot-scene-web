@@ -285,10 +285,11 @@
       ]
     },
     {
-      "why": "G8kp: gate 8's g8kp group replays its /9 passthrough recording in the GSW receiver (gate8-delivery-tool.ts), so the page, its wasm crate and the canvas crates it links reach native gate 8 too",
+      "why": "G8kp: gate 8's g8kp group replays its /9 passthrough recording in the GSW receiver (gate8-delivery-tool.ts), so the page, its wasm crate, the canvas crates it links and (MIR-1) the client package modules it imports reach native gate 8 too",
       "paths": [
         "experiments/render-stream/web/gsw-receiver/**",
         "experiments/render-stream/web/gsw-rs/**",
+        "packages/render-stream-client/**",
         "packages/canvas/rust-draw-list/**",
         "packages/canvas/rust-prototype/**"
       ],
@@ -298,6 +299,11 @@
       "why": "packages: the toolkit's own suite too",
       "paths": ["packages/**"],
       "reach": ["pnpm-test"]
+    },
+    {
+      "why": "MIR-1's client live check (results/p3/mir-1.md): a real-time page driven by hand through bench-live-scale.sh's host-only mode, not a validate-increment target; the package it mounts is reached above",
+      "paths": ["experiments/render-stream/scripts/client-live-check.ts"],
+      "reach": ["pure"]
     },
     {
       "why": "R4's instruction-count bench: its runner, parser, self-test and committed baseline (the cases are goldens and rs-core, reached above)",

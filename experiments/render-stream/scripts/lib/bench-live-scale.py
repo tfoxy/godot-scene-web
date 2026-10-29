@@ -211,7 +211,8 @@ def verdict(out_dir, min_rate, max_rtt_ms):
         tap = tap_stats(load_jsonl(os.path.join(tap_dir, taps[i]))) if i < len(taps) else None
         viewers.append({"rx": name, "tap": tap, "receiver": rx_stats(os.path.join(out_dir, name))})
     taps_ok = all(v["tap"] is not None for v in viewers)
-    rx_ok = all(v["receiver"].get("exit") == "0" for v in viewers)
+    # MIR-1: `host-only` is a host-only leg with no receiver command (judged from the tap alone).
+    rx_ok = all(v["receiver"].get("exit") in ("0", "host-only") for v in viewers)
     ran = taps_ok and host_exit == "0" and rx_ok
     checks = [{"id": "legs-ran", "passed": ran,
                "detail": f"host exit {host_exit}, receiver exit "

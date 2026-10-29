@@ -20,7 +20,10 @@
 //
 // Exits non-zero if any assertion fails.
 
-import { gpuFormatsOf, helloV9 } from "../../web/gsw-receiver/hello";
+import {
+  gpuFormatsOf,
+  helloV9,
+} from "../../../../packages/render-stream-client/src/hello";
 import { deliveryContextDiffers } from "../lib/gate7b-adapters";
 import {
   type DeliveryEntry,

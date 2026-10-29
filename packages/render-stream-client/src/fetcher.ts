@@ -1,25 +1,32 @@
-// The GSW receiver's live HTTP fetcher (gate7-design.md Q5 "Fetch", G7l): the native receiver's
-// RsResourceFetcher with the browser's `fetch`. `GET <origin><http_path><hash>` on the WebSocket's
-// own loopback host and port, ONE at a time, polled from the rAF loop: `poll()` starts the next
-// request when none is in flight (after the injected RS_RECEIVER_FETCH_DELAY_MS, a timed wait,
-// never a blocked loop) and hands back each completed one. G7o2: `onBody` runs in the fetch's own
-// completion (between frames), where the caller copies a 200 body into wasm and `stage_payload`
-// verifies its SHA-256 and decodes it before anything uses it (Q14c); this file never inspects a
-// payload. The transaction that needs them stays unapplied meanwhile, and the canvas keeps the
-// previous frame.
+// The live HTTP fetcher (gate7-design.md Q5 "Fetch", G7l): the native receiver's
+// RsResourceFetcher over an injected request function. `GET <prefix><hash>`, ONE at a time, polled
+// from the rAF loop: `poll()` starts the next request when none is in flight (after an optional
+// delay, a timed wait, never a blocked loop) and hands back each completed one. G7o2: `onBody` runs
+// in the request's own completion (between frames), where the caller copies a 200 body into wasm
+// and `stage_payload` verifies its SHA-256 and decodes it before anything uses it (Q14c); this file
+// never inspects a payload. The transaction that needs them stays unapplied meanwhile, and the
+// canvas keeps the previous frame.
 //
-// A non-200 status, a request that cannot be made, and one not complete within
-// RS_RECEIVER_FETCH_TIMEOUT_MS of its start are `resource-unavailable`; the first error stops the
-// queue (rs_resource_fetcher.gd). With a token the request carries `Authorization: Bearer
-// <token>`, which makes it a CORS non-simple request: the browser sends the host an OPTIONS
-// preflight first (cached for its Max-Age), which the host answers without a token. Sabotage
-// `wrong-http-token` (G2e) sends the token with `-wrong` appended on every GET while the hello
-// carried the right one.
+// A non-200 status, a request that cannot be made, and one not complete within `timeoutMs` of its
+// start are `resource-unavailable`; the first error stops the queue (rs_resource_fetcher.gd).
 //
-// Recorded headers are the native fetcher's four (Content-Type, Content-Length, Cache-Control,
-// ETag) as far as the browser exposes them: a cross-origin response shows only CORS-safelisted
-// headers and those in Access-Control-Expose-Headers, so `ETag` is absent unless the host exposes
-// it. Names are written in the native fetcher's case (the Fetch API lowercases them).
+// MIR-1 moved this file from the harness receiver (web/gsw-receiver/) into the package and made the
+// request injectable: the client passes its transport's `fetchResource`, and the harness passes
+// its own `fetch` with the token, the cache mode its sabotages need and the response headers its
+// evidence records.
+
+/** One GET's answer: its status, its body, and (the harness's evidence) its kept headers. */
+export interface ResourceResponse {
+  status: number;
+  body: ArrayBuffer | null;
+  headers?: Record<string, string>;
+}
+
+/** `GET <path>`, aborted through `signal` (the fetcher's timeout, or `abort`). */
+export type ResourceRequest = (
+  path: string,
+  signal: AbortSignal,
+) => Promise<ResourceResponse>;
 
 export interface FetchResult {
   hash: string;
@@ -40,13 +47,6 @@ export interface FetchResult {
   transcode_fallback?: boolean;
 }
 
-const KEPT_HEADERS = [
-  "Content-Type",
-  "Content-Length",
-  "Cache-Control",
-  "ETag",
-] as const;
-
 const us = (): number => Math.round(performance.now() * 1000);
 
 export class LiveFetcher {
@@ -60,20 +60,20 @@ export class LiveFetcher {
   private staging = new Set<string>();
   private failed = false;
   private generation = 0;
+  /** The in-flight request's abort controller (`abort` aborts it). */
+  private readonly aborts = new Set<AbortController>();
 
   constructor(
-    private readonly origin: string,
+    private readonly request: ResourceRequest,
     private readonly pathPrefix: string,
     private readonly timeoutMs: number,
     private readonly delayMs: number,
-    private readonly token: string | null,
-    /** Sabotage `ignore-cache`: every GET bypasses the HTTP cache (the native "fetch even on a
-     * cache hit"). */
-    private readonly bypassCache = false,
     /** G7o2: called with each 200 result in its completion, before `poll` hands it back. G8kb:
      * it may return a promise (a KTX2's transcode in the worker); the result is handed back when
      * it settles, while the next GET goes out meanwhile. */
-    private readonly onBody: ((r: FetchResult) => void | Promise<void>) | null = null,
+    private readonly onBody:
+      | ((r: FetchResult) => void | Promise<void>)
+      | null = null,
   ) {}
 
   /** Queues one transaction's misses, in the order wasm needs them. */
@@ -126,6 +126,14 @@ export class LiveFetcher {
     this.delayUntil = -1;
   }
 
+  /** MIR-1 (the client's dispose): `cancel`, and the GET in flight is aborted too (a reconnect's
+   * `cancel` lets it complete unseen, as the harness's evidence expects). */
+  abort(): void {
+    this.cancel();
+    for (const a of this.aborts) a.abort();
+    this.aborts.clear();
+  }
+
   /** One rAF step: completed results (in order), and whether the queue is finished. */
   poll(): { results: FetchResult[]; finished: boolean } {
     if (!this.inFlight && !this.failed && this.queue.length > 0) {
@@ -161,12 +169,12 @@ export class LiveFetcher {
       error: "",
     };
     const path = `${this.pathPrefix}${hash}`;
-    const headers: Record<string, string> = {};
-    if (this.token !== null) headers.Authorization = `Bearer ${this.token}`;
     const abort = new AbortController();
+    this.aborts.add(abort);
     const timer = setTimeout(() => abort.abort(), this.timeoutMs);
     const settle = (error: string) => {
       clearTimeout(timer);
+      this.aborts.delete(abort);
       if (gen !== this.generation) return;
       r.end_us = us();
       r.error = error;
@@ -189,19 +197,17 @@ export class LiveFetcher {
       }
       this.done.push(r);
     };
-    fetch(`${this.origin}${path}`, {
-      headers,
-      signal: abort.signal,
-      cache: this.bypassCache ? "no-store" : "default",
-      credentials: "omit",
-    })
-      .then(async (res) => {
+    let started: Promise<ResourceResponse>;
+    try {
+      started = this.request(path, abort.signal);
+    } catch (e) {
+      started = Promise.reject(e);
+    }
+    started
+      .then((res) => {
         r.status = res.status;
-        for (const name of KEPT_HEADERS) {
-          const v = res.headers.get(name);
-          if (v !== null) r.headers[name] = v;
-        }
-        const body = new Uint8Array(await res.arrayBuffer());
+        if (res.headers) r.headers = res.headers;
+        const body = new Uint8Array(res.body ?? new ArrayBuffer(0));
         r.bytes = body.length;
         if (res.status !== 200) {
           settle(
