@@ -26,6 +26,14 @@ passes it) with N != 0 needs the exit explained, so a run whose runner failed wi
 passing stays a failure, and N >= 2 (a usage error or refusal) always fails. A check is any
 `{id, passed}` object, or an `{id, ok}` one (gate 7's harness checks).
 
+Typed `known-flake` rows (SWO): a failing check its own checker typed `known-flake` -- a failure
+the checker matched to a documented runner nondeterminism outside the product, under the condition
+that names it (today only g7-8's web multimesh rows under the CI lavapipe allowance,
+lib/gate7b-adapters.ts typeLavapipeParticleFlake) -- is listed under `known_flakes` and treated like
+an unavailable row: it explains a runner exit 1 and never fails the verdict, never passes it either,
+and never hides a real failure beside it. The checker types it only on evidence; this file only
+trusts the type.
+
 Prints a JSON verdict; exit 0 on pass.
 """
 import json
@@ -35,6 +43,7 @@ import sys
 
 NOT_FAILURES = ("not-run", "not-applicable", "skipped")
 UNAVAILABLE = ("unavailable", "device-unavailable")
+KNOWN_FLAKE = ("known-flake",)
 GENERIC = ("receiver", "host", "capture", "reference", "evidence")
 
 
@@ -89,7 +98,7 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
         pass
     failing = [c for c in checks if c.get("passed") is not True and c.get("gating") is not False
                and str(c.get("status", "")) not in NOT_FAILURES]
-    excused, real, unavailable = [], [], []
+    excused, real, unavailable, flakes = [], [], [], []
     for c in failing:
         text = f"{c['id']} {c.get('detail', '')} {json.dumps(c.get('failures', ''))}"
         if remote_groups:
@@ -98,6 +107,8 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
             text += f" {c.get('criterion', '')}"
         if str(c.get("status", "")) in UNAVAILABLE:
             unavailable.append(c["id"])
+        elif str(c.get("status", "")) in KNOWN_FLAKE:
+            flakes.append(c["id"])
         elif sabotage_skipped and re.search(r"sabotage|catches|caught", c["id"]):
             # a "...-catches-..." / "...-caught" check judges a sabotage leg (its id need not say so)
             excused.append(c["id"])
@@ -115,11 +126,11 @@ def verdict(run, sabotage_skipped, smoke_legs, runner_rc=None):
     if runner_rc is not None and runner_rc != 0:
         if runner_rc >= 2:
             ok, runner = False, f"the runner exited {runner_rc} (a usage error or refusal)"
-        elif not (excused or unavailable or real or missing):
+        elif not (excused or unavailable or flakes or real or missing):
             ok, runner = False, "the runner exited 1 but no check explains it"
     out = {"verdict": "pass" if ok else "fail", "checks": len(checks), "skipped_dirs": len(marked),
            "skipped_by_tier": sorted(set(excused)), "unavailable": sorted(set(unavailable)),
-           "failing": sorted(set(real)), "smoke_legs_not_run": missing,
+           "known_flakes": sorted(set(flakes)), "failing": sorted(set(real)), "smoke_legs_not_run": missing,
            "skipped_remote": sorted(remote_marked), "skipped_remote_groups": sorted(remote_groups)}
     if runner_rc is not None:
         out["runner_rc"] = runner_rc
@@ -213,6 +224,23 @@ def self_test():
         v = verdict(d, False, "", 1)
     ok = v["unavailable"] == ["u1", "u2"] and not v["failing"]
     print(("PASS " if ok else "FAIL ") + "the verdict still lists every unavailable row")
+    fails += not ok
+    # SWO: typed known-flake rows (g7-8's web particle rows under the CI lavapipe allowance).
+    flake = lambda i: {"id": i, "passed": False, "status": "known-flake", "gating": True, "detail": "lavapipe"}
+    case("only typed known-flake rows: the run passes (runner rc 1 explained)",
+         {"result.json": rows({"id": "a", "passed": True}, flake("mm-reference@web")), "x/a.json": "{}"},
+         "pass", rc=1)
+    case("known-flake rows do not hide a real failure",
+         {"result.json": rows(flake("mm-reference@web"), {"id": "b", "passed": False, "detail": "x"}),
+          "x/a.json": "{}"}, "fail", rc=1)
+    case("an untyped failing row with the same id stays real",
+         {"result.json": rows({"id": "mm-reference@web", "passed": False, "detail": "C_FLIP"}), "x/a.json": "{}"},
+         "fail", rc=1)
+    with tempfile.TemporaryDirectory() as d:
+        mk(d, {"result.json": rows(flake("f1"), unav("u1")), "x/a.json": "{}"})
+        v = verdict(d, False, "", 1)
+    ok = v["known_flakes"] == ["f1"] and v["unavailable"] == ["u1"] and not v["failing"]
+    print(("PASS " if ok else "FAIL ") + "the verdict lists known flakes apart from unavailable rows")
     fails += not ok
     print("tier-verdict self-test: " + ("all pass" if not fails else f"{fails} FAIL"))
     return fails == 0

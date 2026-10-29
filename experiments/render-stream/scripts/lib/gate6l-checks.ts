@@ -1986,10 +1986,15 @@ export function checkLiveResources(evals: Evals): Gate6Check[] {
     }
     const p = r.pins;
     if (p.frames_compared === 0) pb.push(`${leg}: no pin or retire lines`);
-    for (const m of [...p.missing, ...p.late, ...p.over_budget].slice(0, 3))
+    for (const m of [
+      ...p.missing,
+      ...p.late,
+      ...p.over_budget,
+      ...p.unviewed,
+    ].slice(0, 3))
       pb.push(`${leg}: ${m}`);
     pbNotes.push(
-      `${leg} ${p.frames_compared} frames, retained max ${p.retained_max} (${p.retained_bytes_max} B)`,
+      `${leg} ${p.frames_compared} frames${p.unviewed_frames > 0 ? ` (+${p.unviewed_frames} with no viewer, not compared)` : ""}, retained max ${p.retained_max} (${p.retained_bytes_max} B)`,
     );
     for (const m of [...p.late, ...p.early].slice(0, 3))
       or.push(`${leg}: ${m}`);
@@ -2012,14 +2017,14 @@ export function checkLiveResources(evals: Evals): Gate6Check[] {
   return [
     check(
       "pins-bounded",
-      "on every honest g6l host, after every frame callback the servable hashes (replayed from the pin and retire lines) equal the full recording's ok texture, mesh-surface and shader hashes at that frame united with every open connection's base (pinned before the send; a close logged after a frame's line counts from the next frame), bytes never over the budget",
+      "on every honest g6l host, after every viewer frame callback (a connection has said hello and not closed) the servable hashes (replayed from the pin and retire lines) equal the full recording's ok texture, mesh-surface and shader hashes at that frame united with every open connection's base (pinned before the send; a close logged after a frame's line counts from the next frame), bytes never over the budget; between a close and the next hello (live-reconnect) HC1 serves nothing, so no pin or retire line may appear there and those frames are not compared (SWO)",
       pb,
       pbNotes.join("; "),
       hookEvidence,
     ),
     check(
       "obsolete-retired",
-      "on every honest g6l host a hash is retired at the first frame callback after which neither the current state nor a connection's base names it, and never while one still does (TEXA's versions every 30 frames, MS's surface every frame, TEXA freed at step 9)",
+      "on every honest g6l host a hash is retired at the first viewer frame callback after which neither the current state nor a connection's base names it (across live-reconnect's viewerless frames: at the next hello's callback), and never while one still does (TEXA's versions every 30 frames, MS's surface every frame, TEXA freed at step 9)",
       or,
       orNotes.join("; "),
       hookEvidence,

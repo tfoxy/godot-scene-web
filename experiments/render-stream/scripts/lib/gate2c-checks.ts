@@ -512,6 +512,10 @@ export interface ConnTimeline {
   n: number;
   sends: ResolvedTransaction[];
   closed: number | null;
+  /** SWO: the frame of the connection's `hello` line, from which the host counts it a viewer
+   * (HC1, host-cost-design.md D6: the first hello's callback is a viewer callback). Absent when
+   * its log has no hello line (a synthesized timeline): a viewer from the start, as before HC1. */
+  hello?: number;
   /** G7q (credit window 2): each frame line's `in_flight_seqs`, by frame (absent at window 1,
    * where the base is the only in-flight transaction). */
   inFlight?: Map<number, number[]>;
@@ -525,10 +529,12 @@ export function connTimelines(host: G2cHost): ConnTimeline[] {
       if (Array.isArray(seqs) && typeof l.state === "string")
         inFlight.set(l.frame, seqs);
     }
+    const hello = (c.host.log ?? []).find((l) => l.event === "hello");
     return {
       n: c.n,
       sends: c.tap.recording?.transactions ?? [],
       closed: closeFrame(c.host.log),
+      ...(hello ? { hello: hello.frame } : {}),
       ...(inFlight.size > 0 ? { inFlight } : {}),
     };
   });
@@ -571,6 +577,11 @@ export interface PinsReport {
   /** retire lines at a frame where the hash was still current or a base's */
   early: string[];
   over_budget: string[];
+  /** SWO: pin or retire lines at a frame callback with no viewer (HC1 serves nothing then) */
+  unviewed: string[];
+  /** SWO: frames not compared because no connection was a viewer (between a close and the next
+   * hello: HC1 leaves the served set as the last viewer callback left it) */
+  unviewed_frames: number;
   retained_max: number;
   retained_bytes_max: number;
   budget: number;
@@ -584,6 +595,14 @@ export interface PinsReport {
  * (the mirror's payloads) united with every open connection's base (its last tapped transaction).
  * Pure. `hashesOf` extracts the resource kind's servable hashes from a resolved transaction
  * (default: image textures); G5f passes `okMeshHashes` for GRM1 mesh surfaces.
+ *
+ * SWO: D7's rule holds at viewer callbacks only. HC1 (host-cost-design.md D6) pins and retires
+ * nothing while no connection is a viewer (from a close to the next hello, ConnTimeline.hello):
+ * the served set stays as the last viewer callback left it, and the first viewer callback after
+ * the gap brings it back to `current ∪ bases`. Those viewerless frames are not compared (a pin or
+ * retire line at one is reported in `unviewed`); the budget is still judged at every frame, and the
+ * first viewer frame after the gap must match exactly, so a pin missed or a hash never retired
+ * across the gap still fails there.
  */
 export function pinsReport(
   hookLines: readonly HookLine[],
@@ -602,6 +621,8 @@ export function pinsReport(
     late: [],
     early: [],
     over_budget: [],
+    unviewed: [],
+    unviewed_frames: 0,
     retained_max: 0,
     retained_bytes_max: 0,
     budget,
@@ -617,7 +638,16 @@ export function pinsReport(
   const lastFrame = full.length > 0 ? full[full.length - 1].frame : firstFrame;
   out.first_frame = firstFrame;
   out.last_frame = lastFrame;
+  // A timeline without a hello line is a viewer from the start (synthesized timelines, pre-HC1).
+  const viewerAt = (f: number): boolean =>
+    conns.length === 0 ||
+    conns.some(
+      (c) =>
+        (c.hello === undefined || c.hello <= f) &&
+        (c.closed === null || f < c.closed),
+    );
   for (let f = firstFrame; f <= lastFrame; f++) {
+    const viewer = viewerAt(f);
     const expected = new Set(hashesOf(byFrame.get(f)));
     for (const c of conns) {
       const base = baseAt(c, f);
@@ -628,6 +658,10 @@ export function pinsReport(
     while (k < serving.length && serving[k].frame === f) {
       const l = serving[k++];
       const h = l.hash ?? "";
+      if (!viewer && out.unviewed.length < 8)
+        out.unviewed.push(
+          `frame ${f}: ${l.op} ${h.slice(0, 12)} with no viewer connected`,
+        );
       if (l.op === "pin") {
         out.pins++;
         retained.set(h, l.payload_bytes ?? 0);
@@ -641,13 +675,17 @@ export function pinsReport(
       }
     }
     if (!byFrame.has(f)) continue;
-    out.frames_compared++;
     let bytes = 0;
     for (const v of retained.values()) bytes += v;
     out.retained_max = Math.max(out.retained_max, retained.size);
     out.retained_bytes_max = Math.max(out.retained_bytes_max, bytes);
     if (bytes > budget && out.over_budget.length < 4)
       out.over_budget.push(`frame ${f}: ${bytes} > ${budget}`);
+    if (!viewer) {
+      out.unviewed_frames++;
+      continue;
+    }
+    out.frames_compared++;
     for (const h of expected)
       if (!retained.has(h) && out.missing.length < 8)
         out.missing.push(`frame ${f}: ${h.slice(0, 12)} must be servable`);
@@ -1689,7 +1727,12 @@ export function checkPinsBounded(
       problems.push(`${leg}: no pin or retire lines to compare`);
       continue;
     }
-    for (const m of [...p.missing, ...p.late, ...p.over_budget].slice(0, 3))
+    for (const m of [
+      ...p.missing,
+      ...p.late,
+      ...p.over_budget,
+      ...p.unviewed,
+    ].slice(0, 3))
       problems.push(`${leg}: ${m}`);
     notes.push(
       `${leg} ${p.frames_compared} frames, retained max ${p.retained_max} (${p.retained_bytes_max} B)`,

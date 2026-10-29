@@ -765,7 +765,12 @@ export function checkPinsBoundedMesh(
       problems.push(`${leg}: no pin or retire lines to compare`);
       continue;
     }
-    for (const m of [...p.missing, ...p.late, ...p.over_budget].slice(0, 3))
+    for (const m of [
+      ...p.missing,
+      ...p.late,
+      ...p.over_budget,
+      ...p.unviewed,
+    ].slice(0, 3))
       problems.push(`${leg}: ${m}`);
     notes.push(
       `${leg} ${p.frames_compared} frames, retained max ${p.retained_max} (${p.retained_bytes_max} B)`,

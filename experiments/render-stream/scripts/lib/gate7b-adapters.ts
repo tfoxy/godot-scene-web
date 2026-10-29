@@ -68,6 +68,11 @@ import {
 } from "./gate7-adapters";
 import { legRecording, type WebLegSpec } from "./gate7-web-legs";
 import {
+  particleCells,
+  particleFlakeEvidence,
+  typeLavapipeParticleFlake,
+} from "./gate7-web-flakes";
+import {
   resolveRecording,
   statesEqual,
   wireVersionOf,
@@ -696,12 +701,19 @@ export interface LegShotClasses {
  * here"), so web and native agree there only within g8pt's own banded checks (pt-lifecycle@web,
  * pt-coverage@web); everywhere else P-W1's classes still hold (pt-outside-exact@web judges the
  * rest exactly against the reference). */
-export function approximateRegions(leg: string): [number, number, number, number][] | null {
+export function approximateRegions(
+  leg: string,
+): [number, number, number, number][] | null {
   // PFB: gate8-ptc's particles hold still (one particle, no velocity), so its legs are exact.
   if (!leg.startsWith("g8pt/") || leg.startsWith("g8pt/ptc/")) return null;
   const expected = JSON.parse(
-    readFileSync(join(SCRIPT_DIR, "..", "fixtures", "gate8-pt", "expected.json"), "utf8"),
-  ) as { pixels?: { regions?: Record<string, [number, number, number, number]> } };
+    readFileSync(
+      join(SCRIPT_DIR, "..", "fixtures", "gate8-pt", "expected.json"),
+      "utf8",
+    ),
+  ) as {
+    pixels?: { regions?: Record<string, [number, number, number, number]> };
+  };
   return Object.values(expected.pixels?.regions ?? {});
 }
 
@@ -755,7 +767,12 @@ export async function classifyLegShots(
     if (approx) {
       const web = new Uint8Array(b.data);
       const approximate = maskApproximate(a.data, web, a.width, approx);
-      out.push({ leg, shot: f, classes: classifyShot(a.data, web), approximate });
+      out.push({
+        leg,
+        shot: f,
+        classes: classifyShot(a.data, web),
+        approximate,
+      });
       continue;
     }
     out.push({ leg, shot: f, classes: classifyShot(a.data, b.data) });
@@ -778,7 +795,9 @@ async function buildBandedLeg(
   // web export's particles, not the native shot.
   const substitute = new Set(
     shots
-      .filter((s) => s.classes !== null && s.classes.other === 0 && !s.approximate)
+      .filter(
+        (s) => s.classes !== null && s.classes.other === 0 && !s.approximate,
+      )
       .map((s) => `shots/${s.shot}`),
   );
   for (const f of filesUnder(webDir)) {
@@ -1342,6 +1361,36 @@ export async function checkGateWeb(
         : excluded.map((d) => `${d.leg}: ${d.excluded}`).join("; "),
   });
 
+  // SWO: the CI lavapipe particle flake (lib/gate7-web-flakes.ts), typed on its evidence only.
+  let typedChecks: Gate7Check[] = checks;
+  const allowance = ciRendererAllowance();
+  if (def.gate === "gate8" && allowance) {
+    const expected = await readJson<{
+      pixels?: Parameters<typeof particleCells>[0];
+    }>(
+      join(
+        REPO_ROOT,
+        "experiments",
+        "render-stream",
+        "fixtures",
+        "gate8-mm",
+        "expected.json",
+      ),
+    );
+    const cells = particleCells(expected?.pixels ?? {});
+    const ev = await particleFlakeEvidence(
+      webRoot,
+      join(gateOut, "web-repeat"),
+      Object.values(cells),
+    );
+    typedChecks = typeLavapipeParticleFlake(
+      checks,
+      ev,
+      allowance,
+      Object.keys(cells),
+    );
+  }
+
   const classification: Gate7bClassification = {
     schema: "render-stream-gate7b-classification/1",
     gate: def.gate,
@@ -1367,8 +1416,8 @@ export async function checkGateWeb(
   return {
     group: def.group,
     kind: "web",
-    passed: checks.every((c) => c.passed || !c.gating),
-    checks,
+    passed: typedChecks.every((c) => c.passed || !c.gating),
+    checks: typedChecks,
     pw1,
     startup,
     classification,

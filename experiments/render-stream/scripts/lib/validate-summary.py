@@ -90,7 +90,8 @@ def collect_rows(out, plan):
                      "skipped_by_tier": len(tier.get("skipped_by_tier", [])),
                      "skipped_remote": tier.get("skipped_remote", []),
                      "skipped_remote_groups": tier.get("skipped_remote_groups", []),
-                     "unavailable": tier.get("unavailable", []), "failing": tier.get("failing", [])})
+                     "unavailable": tier.get("unavailable", []),
+                     "known_flakes": tier.get("known_flakes", []), "failing": tier.get("failing", [])})
         # HC4a: the shadow oracle's account (lib/hc-shadow-scan.py), where the run had it on.
         if os.path.exists(os.path.join(d, "hc-shadow.json")):
             try:
@@ -155,7 +156,7 @@ def fold_shards(rows, expected):
         f["lock"] = {m: {k: round(sum(r["lock"].get(m, {}).get(k, 0) for r in g), 1) for k in ("holds", "wait_s", "hold_s")}
                      for m in ("shared", "exclusive")} if any(r["lock"] for r in g) else {}
         f["skipped_by_tier"] = sum(r["skipped_by_tier"] for r in g)
-        for k in ("unavailable", "failing", "skipped_remote", "skipped_remote_groups"):
+        for k in ("unavailable", "known_flakes", "failing", "skipped_remote", "skipped_remote_groups"):
             seen = []
             for r in g:
                 seen += [x for x in r.get(k, []) if x not in seen]
@@ -182,6 +183,7 @@ def emit(out, summary, rows, failed, t0, t1, n_skipped):
               f"  hold {x['lock_hold_s']:>7.1f} s"
               + (f"  skipped-by-tier {x['skipped_by_tier']}" if x["skipped_by_tier"] else "")
               + (f"  unavailable {len(x['unavailable'])}" if x["unavailable"] else "")
+              + (f"  known-flake {','.join(x['known_flakes'])}" if x.get("known_flakes") else "")
               + (f"  skipped-remote {','.join(x['skipped_remote_groups']) or len(x['skipped_remote'])}"
                  if x.get("skipped_remote") else ""))
     print(f"validate-increment: {len(rows) - failed}/{len(rows)} runs pass in {t1 - t0:.0f} s; "
@@ -240,7 +242,8 @@ def merge_mode(argv):
         if i not in have:
             rows.append({"id": i, "phase": None, "rc": "missing", "wall_s": None, "lock_wait_s": 0.0,
                          "lock_hold_s": 0.0, "lock": {}, "lock_summaries": 0, "skipped_by_tier": 0,
-                         "skipped_remote": [], "skipped_remote_groups": [], "unavailable": [], "failing": []})
+                         "skipped_remote": [], "skipped_remote_groups": [], "unavailable": [], "known_flakes": [],
+                         "failing": []})
     if expect:
         order = {i: n for n, i in enumerate(expect)}
         rows.sort(key=lambda r: (PHASE_ORDER.get(r["phase"], 9), order.get(r["id"], 1 << 30)))
