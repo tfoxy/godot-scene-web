@@ -17,6 +17,7 @@
 #include "rs2_diff.h"
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
+#include "rs_records.h"
 #include "rs_texture_payload.h"
 
 namespace grc {
@@ -121,6 +122,7 @@ void Mirror::reset() {
   hc_shadow_have_prev_ = false;
   hc_shadow_prev_ = Snapshot();
   hc_shadow_prev_full_ = Snapshot();
+  hc_shadow_prev_captured_ = Captured();
 
   // Canvas 1 always exists, so every snapshot has its root canvas
   // (render-stream-0.md invariant `root-canvas`, unchanged at /1), even when the root query
@@ -670,9 +672,10 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     // (version + 1); no tombstone.
     ++epoch_;
     const std::uint32_t id = shader_it->second;
-    for (auto &entry : materials_) {
+    for (auto &entry : materials_.unmarked()) {
       Material &material = entry.second;
       if (material.has_shader && material.shader == id) {
+        materials_.mark(entry.first, &material);  // HC4b
         material.has_shader = false;
         material.shader = 0;
         ++material.version;
@@ -1208,7 +1211,7 @@ bool Mirror::omits(const char *op, std::uint64_t frame) const {
 
 Mirror::Texture *Mirror::find_texture(std::uint64_t rid) {
   const auto it = texture_by_rid_.find(rid);
-  return it == texture_by_rid_.end() ? nullptr : &textures_.at(it->second);
+  return it == texture_by_rid_.end() ? nullptr : textures_.mut(it->second);  // HC4b: marks
 }
 
 bool Mirror::texture_ref(std::uint64_t rid, bool *has_tex, std::uint32_t *tex) const {
@@ -1270,17 +1273,17 @@ bool Mirror::texture_referenced(std::uint32_t id) const {
 }
 
 void Mirror::retire_texture(std::uint32_t id) {
-  const auto it = textures_.find(id);
-  if (it == textures_.end()) {
+  Texture *found = textures_.mut(id);
+  if (found == nullptr) {
     return;
   }
-  Texture &texture = it->second;
+  Texture &texture = *found;
   if (texture.rid != 0) {
     texture_by_rid_.erase(texture.rid);
     texture.rid = 0;
   }
   if (!texture_referenced(id)) {
-    textures_.erase(it);
+    textures_.erase(id);
     return;
   }
   // D11: a tombstone keeps its id and version; a receiver draws its commands with RID().
@@ -1330,8 +1333,10 @@ std::size_t Mirror::service_basis(bool attach, bool wait) {
       }
     }
   }
-  // 1. Start: every settled ok image whose current content has no Basis outcome yet (D12).
-  for (auto &entry : textures_) {
+  // 1. Start: every settled ok image whose current content has no Basis outcome yet (D12). HC4b:
+  // settling and recovering change only textures in tex_jobbed_, which every snapshot revisits;
+  // the attach below marks what it changes.
+  for (auto &entry : textures_.unmarked()) {
     Texture &texture = entry.second;
     settle(&texture);
     if (resolve_pending(&texture)) {
@@ -1381,7 +1386,7 @@ std::size_t Mirror::service_basis(bool attach, bool wait) {
   }
   // 3. Attach: a finished encode of the content the entry still has (D6: equal version).
   std::size_t attached = 0;
-  for (auto &entry : textures_) {
+  for (auto &entry : textures_.unmarked()) {
     Texture &texture = entry.second;
     if (texture.basis == nullptr || !texture.basis->done()) {
       continue;
@@ -1405,6 +1410,7 @@ std::size_t Mirror::service_basis(bool attach, bool wait) {
       texture_delivery_note_basis_result(false, false, *job);
       continue;
     }
+    textures_.mark(entry.first, &texture);  // HC4b: a new variant
     texture.uastc_hash = outcome.hash;
     texture.uastc_params = outcome.params;
     texture.uastc_bytes = outcome.ktx2;
@@ -1457,11 +1463,15 @@ std::uint64_t Mirror::pending_published() const {
 void Mirror::service_pending() {
   std::lock_guard<std::mutex> lock(mutex_);
   bool moved = false;
-  for (auto &entry : textures_) {
-    Texture &texture = entry.second;
-    if (texture.pending_version == 0) {
+  // HC4b: a texture with a pending version is in tex_jobbed_ (the snapshot that carried it
+  // pending put it there), and every snapshot revisits those.
+  Mirror::ResMap<Texture>::Map &textures = textures_.unmarked();
+  for (std::uint32_t id : tex_jobbed_) {
+    const auto it = textures.find(id);
+    if (it == textures.end() || it->second.pending_version == 0) {
       continue;
     }
+    Texture &texture = it->second;
     settle(&texture);
     moved = resolve_pending(&texture) || moved;
   }
@@ -1878,9 +1888,14 @@ std::size_t first_vertex_offset(const PayloadBytes &payload) {
 
 }  // namespace
 
+const Mirror::Mesh *Mirror::peek_mesh(std::uint64_t rid) const {
+  const auto it = mesh_by_rid_.find(rid);
+  return it == mesh_by_rid_.end() ? nullptr : meshes_.find(it->second);
+}
+
 Mirror::Mesh *Mirror::find_mesh(std::uint64_t rid) {
   const auto it = mesh_by_rid_.find(rid);
-  return it == mesh_by_rid_.end() ? nullptr : &meshes_.at(it->second);
+  return it == mesh_by_rid_.end() ? nullptr : meshes_.mut(it->second);  // HC4b: marks
 }
 
 Mirror::Mesh *Mirror::mesh_for(std::uint64_t rid, const char *op, std::uint64_t frame) {
@@ -2062,17 +2077,17 @@ bool Mirror::mesh_referenced(std::uint32_t id) const {
 }
 
 void Mirror::retire_mesh(std::uint32_t id) {
-  const auto it = meshes_.find(id);
-  if (it == meshes_.end()) {
+  Mesh *found = meshes_.mut(id);
+  if (found == nullptr) {
     return;
   }
-  Mesh &mesh = it->second;
+  Mesh &mesh = *found;
   if (mesh.rid != 0) {
     mesh_by_rid_.erase(mesh.rid);
     mesh.rid = 0;
   }
   if (!mesh_referenced(id)) {
-    meshes_.erase(it);
+    meshes_.erase(id);
     return;
   }
   // render-stream-4.md "Mesh table": a tombstone keeps its id and version, drops its surfaces;
@@ -2205,7 +2220,8 @@ void Mirror::classify_mesh(Mesh *mesh) {
   ++stats_.mesh_promotions;
 }
 
-MeshEntry Mirror::wire_mesh(Mesh *mesh_ptr, PayloadMap *payloads) {
+MeshEntry Mirror::wire_mesh(Mesh *mesh_ptr,
+                            std::vector<std::pair<std::string, PayloadPtr>> *payloads) {
   Mesh &mesh = *mesh_ptr;
   MeshEntry out;
   out.id = mesh.id;
@@ -2252,7 +2268,64 @@ MeshEntry Mirror::wire_mesh(Mesh *mesh_ptr, PayloadMap *payloads) {
         wire.body = surface.body;
       }
       if (payloads != nullptr && published != nullptr) {
-        payloads->emplace(wire.hash, std::move(published));
+        payloads->emplace_back(wire.hash, std::move(published));
+      }
+      out.surfaces.push_back(std::move(wire));
+    }
+    if (dynamic) {
+      out.dynamic = true;
+      out.content_serial = mesh.content_serial;
+    }
+  }
+  return out;
+}
+
+MeshEntry Mirror::wire_mesh_peek(const Mesh &mesh,
+                                 std::vector<std::pair<std::string, PayloadPtr>> *payloads) const {
+  // wire_mesh() as the full walk ran it, computing what wire_mesh() caches (the perturbed copy,
+  // the hash, the /11 body) locally when the cache is empty, so the oracle moves no counter.
+  MeshEntry out;
+  out.id = mesh.id;
+  out.status = mesh.status;
+  out.version = mesh.version;
+  out.origin = mesh.origin;
+  out.adopted_content = mesh.adopted_content;
+  out.has_reason = mesh.status == MeshStatus::Unsupported && mesh.has_reason;
+  out.reason = mesh.reason;
+  out.has_aabb = mesh.status != MeshStatus::Freed;
+  if (out.has_aabb) {
+    out.custom_aabb = mesh.custom_aabb;
+  }
+  if (mesh.status == MeshStatus::Ok) {
+    const bool dynamic = v11_.enabled && mesh.dynamic && !mesh.surfaces.empty();
+    const bool hashed = !dynamic || dynamic_hashes_read();
+    for (const MeshSurf &surface : mesh.surfaces) {
+      MeshSurface wire;
+      PayloadPtr published;
+      if (surface.bytes != nullptr) {
+        published = !surface.perturb            ? surface.bytes
+                    : surface.perturbed != nullptr ? surface.perturbed
+                                                   : perturbed_copy(*surface.bytes);
+        if (hashed) {
+          wire.hash = !surface.hash.empty() ? surface.hash
+                                            : sha256_hex(published->data(), published->size());
+        } else {
+          wire.hash = "hc3-key:" + std::to_string(surface.key);
+          wire.hash_is_key = true;
+        }
+      } else {
+        wire.hash = surface.hash;
+      }
+      wire.payload_bytes = published != nullptr ? published->size() : 0;
+      wire.primitive = static_cast<Primitive>(surface.primitive);
+      wire.format = surface.format;
+      wire.vertex_count = surface.vertex_count;
+      wire.index_count = surface.index_count;
+      if (dynamic && published != nullptr) {
+        wire.body = surface.body != nullptr ? surface.body : mesh_body(*published);
+      }
+      if (payloads != nullptr && published != nullptr) {
+        payloads->emplace_back(wire.hash, std::move(published));
       }
       out.surfaces.push_back(std::move(wire));
     }
@@ -2413,7 +2486,7 @@ void Mirror::add_mesh(std::uint64_t rid, std::uint64_t mesh_rid, const Xform &tr
     return;
   }
   Command command;
-  const Mesh *mesh = find_mesh(mesh_rid);
+  const Mesh *mesh = peek_mesh(mesh_rid);  // HC4b: a read, no mark
   if (mesh == nullptr) {
     // render-stream-4.md "Command": a mesh the capture never saw created (or RID()).
     command.kind = CommandKind::Unsupported;
@@ -2643,7 +2716,7 @@ Mirror::MultimeshCall Mirror::multimesh_set_mesh(std::uint64_t rid, std::uint64_
     return out;
   }
   mm->mesh_rid = mesh_rid;
-  const Mesh *mesh = find_mesh(mesh_rid);
+  const Mesh *mesh = peek_mesh(mesh_rid);  // HC4b: a read, no mark
   mm->unknown_mesh = mesh == nullptr;
   mm->mesh_id = mesh != nullptr ? mesh->id : 0;
   multimesh_moved(mm, &out);
@@ -3535,12 +3608,12 @@ std::vector<Mirror::PpmCandidate> Mirror::ppm_candidates() const {
     if (items == drawn_by.end()) {
       continue;
     }
-    const auto material = materials_.find(p.material_id);
-    if (material == materials_.end() || !material->second.has_shader) {
+    const auto material = materials_.all().find(p.material_id);
+    if (material == materials_.all().end() || !material->second.has_shader) {
       continue;
     }
-    const auto shader = shaders_.find(material->second.shader);
-    if (shader == shaders_.end() || shader->second.has_ppm || !shader->second.has_code ||
+    const auto shader = shaders_.all().find(material->second.shader);
+    if (shader == shaders_.all().end() || shader->second.has_ppm || !shader->second.has_code ||
         shader->second.copy.mode != "particles") {
       continue;
     }
@@ -4043,7 +4116,7 @@ void Mirror::canvas_texture_set_repeat(std::uint64_t rid, std::int32_t repeat,
 std::uint64_t Mirror::spurious_texture_update(std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   (void)frame;
-  for (auto &entry : textures_) {
+  for (auto &entry : textures_.unmarked()) {
     Texture &texture = entry.second;
     if (texture.job != nullptr) {
       texture.job->wait();  // G8kw: the sabotage re-copies bytes, so it needs them
@@ -4051,6 +4124,7 @@ std::uint64_t Mirror::spurious_texture_update(std::uint64_t frame) {
     }
     if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
         texture.rid != 0 && texture.bytes != nullptr) {
+      textures_.mark(entry.first, &texture);  // HC4b
       ++epoch_;
       texture.version += 1;
       texture.bytes = std::make_shared<const PayloadBytes>(*texture.bytes);
@@ -4288,13 +4362,14 @@ void Mirror::shader_rebind(std::uint64_t old_rid, std::uint64_t new_rid) {
   const std::uint32_t id = it->second;
   shader_by_rid_.erase(it);
   shader_by_rid_[new_rid] = id;
-  shaders_.at(id).rid = new_rid;
+  shaders_.mut(id)->rid = new_rid;
 }
 
 void Mirror::set_shader_policy(ShaderPolicy policy) {
   std::lock_guard<std::mutex> lock(mutex_);
   ++epoch_;
   shader_policy_ = policy;
+  pub_valid_ = false;  // HC4b: every shader entry depends on it; rebuild
 }
 
 void Mirror::set_perturb_shader(std::uint64_t from_frame) {
@@ -4304,12 +4379,12 @@ void Mirror::set_perturb_shader(std::uint64_t from_frame) {
 
 Mirror::Shader *Mirror::find_shader(std::uint64_t rid) {
   const auto it = shader_by_rid_.find(rid);
-  return it == shader_by_rid_.end() ? nullptr : &shaders_.at(it->second);
+  return it == shader_by_rid_.end() ? nullptr : shaders_.mut(it->second);  // HC4b: marks
 }
 
 Mirror::Material *Mirror::find_material(std::uint64_t rid) {
   const auto it = material_by_rid_.find(rid);
-  return it == material_by_rid_.end() ? nullptr : &materials_.at(it->second);
+  return it == material_by_rid_.end() ? nullptr : materials_.mut(it->second);  // HC4b: marks
 }
 
 void Mirror::take_shader_code(Shader *shader, const ShaderCodeInput &code,
@@ -4593,14 +4668,14 @@ std::uint32_t Mirror::effective_material(const Item &item) const {
 }
 
 bool Mirror::material_unsupported(std::uint32_t material_id) const {
-  const auto it = materials_.find(material_id);
-  if (it == materials_.end()) {
+  const auto it = materials_.all().find(material_id);
+  if (it == materials_.all().end()) {
     return false;
   }
   const Material &material = it->second;
   const auto texture_unsupported = [this](std::uint32_t tex) {
-    const auto t = textures_.find(tex);
-    return t != textures_.end() &&
+    const auto t = textures_.all().find(tex);
+    return t != textures_.all().end() &&
            (t->second.status == TextureStatus::Unsupported || pending_ids_.count(tex) != 0);
   };
   // P3-CAP: wire_material()'s status without building the entry (the same two conditions).
@@ -4614,8 +4689,8 @@ bool Mirror::material_unsupported(std::uint32_t material_id) const {
     }
   }
   if (material.has_shader) {
-    const auto s = shaders_.find(material.shader);
-    if (s != shaders_.end()) {
+    const auto s = shaders_.all().find(material.shader);
+    if (s != shaders_.all().end()) {
       if (wire_shader(s->second).status == ShaderStatus::Unsupported ||
           !s->second.unresolvable_defaults.empty()) {
         return true;
@@ -5054,6 +5129,7 @@ void Mirror::set_hc_shadow(bool on, ProtocolVersion version) {
   hc_shadow_have_prev_ = false;
   hc_shadow_prev_ = Snapshot();
   hc_shadow_prev_full_ = Snapshot();
+  hc_shadow_prev_captured_ = Captured();
 }
 
 std::string Mirror::hc_shadow_failure() const {
@@ -5068,12 +5144,29 @@ bool Mirror::hc_shadow_enabled() const {
 
 std::string Mirror::hc_sabotage() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return items_.skip_dirty_ ? "hc-skip-dirty" : hc_stale_derived_ ? "hc-stale-derived" : "";
+  return items_.skip_dirty_      ? "hc-skip-dirty"
+         : hc_stale_derived_      ? "hc-stale-derived"
+         : textures_.skip_dirty_  ? "hc-skip-dirty-texture"
+                                  : "";
 }
 
 void Mirror::set_default_hc_shadow(bool on) { g_default_hc_shadow.store(on); }
 
 std::uint64_t Mirror::hc_shadow_mismatches_total() { return g_hc_shadow_mismatches.load(); }
+
+void Mirror::set_inline_max(std::uint64_t inline_max_bytes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (inline_max_ != inline_max_bytes) {
+    inline_max_ = inline_max_bytes;
+    pub_valid_ = false;  // HC4b: the inline counts depend on it; rebuild
+  }
+}
+
+void Mirror::set_hc_sabotage_texture(bool skip_dirty_texture) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  textures_.skip_dirty_ = skip_dirty_texture;
+  textures_.skip_id_ = 0;
+}
 
 void Mirror::set_hc_sabotage(bool skip_dirty, bool stale_derived) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -5085,16 +5178,16 @@ void Mirror::set_hc_sabotage(bool skip_dirty, bool stale_derived) {
 bool Mirror::texture_entry_unsupported(std::uint32_t id) const {
   // render-stream-2.md "Item-level unsupported entries": the command's own tex is unsupported (or
   // G8kf delivery-pending), or (G2d) it names a canvas entry whose diffuse is.
-  const auto texture = textures_.find(id);
-  if (texture == textures_.end()) {
+  const auto texture = textures_.all().find(id);
+  if (texture == textures_.all().end()) {
     return false;
   }
   if (texture->second.status == TextureStatus::Unsupported || pending_ids_.count(id) != 0) {
     return true;
   }
   if (texture->second.kind == TextureKind::Canvas && texture->second.has_diffuse) {
-    const auto diffuse = textures_.find(texture->second.diffuse_id);
-    return diffuse != textures_.end() &&
+    const auto diffuse = textures_.all().find(texture->second.diffuse_id);
+    return diffuse != textures_.all().end() &&
            (diffuse->second.status == TextureStatus::Unsupported ||
             pending_ids_.count(texture->second.diffuse_id) != 0);
   }
@@ -5147,8 +5240,8 @@ void Mirror::own_entries(const Item &item, std::map<std::uint32_t, bool> *memo,
     }
     if (command.kind == CommandKind::AddMesh) {
       // render-stream-4.md "Command": an add_mesh naming an `unsupported` mesh entry.
-      const auto mesh = meshes_.find(command.mesh);
-      if (mesh != meshes_.end() && mesh->second.status == MeshStatus::Unsupported) {
+      const auto mesh = meshes_.all().find(command.mesh);
+      if (mesh != meshes_.all().end() && mesh->second.status == MeshStatus::Unsupported) {
         add("canvas_item_add_mesh", UnsupportedReason::UnsupportedMesh);
       }
     } else if (command.kind == CommandKind::AddMultimesh) {
@@ -5308,8 +5401,6 @@ void Mirror::publish_items(const std::set<std::uint32_t> &withheld, ItemsPublish
     mm_command_items_ = 0;
     pt_command_items_ = 0;
     material_users_.clear();
-    bad_textures_.clear();
-    bad_meshes_.clear();
     mm_verdicts_.clear();
     pt_verdicts_.clear();
     material_verdicts_.clear();
@@ -5465,26 +5556,9 @@ void Mirror::publish_items(const std::set<std::uint32_t> &withheld, ItemsPublish
   // 3. The inputs other items' entries read. A texture or mesh turning unsupported (or back), or
   // a referenced multimesh's, emitter's or effective material's verdict moving, rederives every
   // item: rare, and cheaper than keeping reverse dependencies.
-  bool all = full;
-  {
-    std::vector<std::uint32_t> bad_textures;
-    for (const auto &entry : textures_) {
-      if (texture_entry_unsupported(entry.first)) {
-        bad_textures.push_back(entry.first);
-      }
-    }
-    std::vector<std::uint32_t> bad_meshes;
-    for (const auto &entry : meshes_) {
-      if (entry.second.status == MeshStatus::Unsupported) {
-        bad_meshes.push_back(entry.first);
-      }
-    }
-    if (bad_textures != bad_textures_ || bad_meshes != bad_meshes_) {
-      all = true;
-      bad_textures_.swap(bad_textures);
-      bad_meshes_.swap(bad_meshes);
-    }
-  }
+  // HC4b: the snapshot compared the marked textures' and meshes' inputs before this call
+  // (hc_inputs_moved_), instead of a walk over both tables.
+  bool all = full || hc_inputs_moved_;
   std::vector<std::uint32_t> derived;
   const auto derive_list = [&]() {
     derived = derive;
@@ -5559,8 +5633,37 @@ void Mirror::publish_items(const std::set<std::uint32_t> &withheld, ItemsPublish
       return pt != particles_.end() &&
              wire_particles(pt->second, false).status == ParticlesStatus::Unsupported;
     });
-    update(&material_verdicts_, material_users_,
-           [this](std::uint32_t id) { return material_unsupported(id); });
+    // HC4b: a material's verdict reads only the material, its shader and textures (and the
+    // pending set, which moves only with a visited texture), so it is recomputed only in a
+    // snapshot that visited one of them.
+    if (full || hc_verdict_inputs_moved_) {
+      update(&material_verdicts_, material_users_,
+             [this](std::uint32_t id) { return material_unsupported(id); });
+    } else if (!materials_.dirty_.empty() || !materials_.gone_.empty()) {
+      // Only materials moved: only their own verdicts can.
+      const auto one = [&](std::uint32_t id) {
+        const auto verdict = material_verdicts_.find(id);
+        if (material_users_.count(id) == 0) {
+          if (verdict != material_verdicts_.end()) {
+            material_verdicts_.erase(verdict);
+          }
+          return;
+        }
+        const bool bad = material_unsupported(id);
+        if (verdict == material_verdicts_.end()) {
+          material_verdicts_.emplace(id, bad);
+        } else if (verdict->second != bad) {
+          moved = true;
+          verdict->second = bad;
+        }
+      };
+      for (std::uint32_t id : materials_.dirty_) {
+        one(id);
+      }
+      for (std::uint32_t id : materials_.gone_) {
+        one(id);
+      }
+    }
     if (moved && !all) {
       all = true;
       derive_list();
@@ -5772,7 +5875,78 @@ void Mirror::full_walk_items(const std::set<std::uint32_t> &withheld, FullWalk *
   std::sort(out->item_level.begin(), out->item_level.end(), item_level_before);
 }
 
-void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Snapshot *out) {
+void Mirror::full_walk_resources(FullWalk *out) const {
+  // The resource half of every snapshot as it was built before HC4b: every texture, mesh, shader
+  // and material entry rebuilt, the payload map filled in table order (the first entry naming a
+  // hash supplies its bytes), and the name index counted over the entries.
+  const auto count_name = [out](const std::string &hash, std::uint64_t bytes, bool variant) {
+    NameCount &count = out->names[hash];
+    if (count.main == 0 && count.variant == 0) {
+      count.payload_bytes = bytes;
+    }
+    ++(variant ? count.variant : count.main);
+  };
+  for (const auto &entry : textures_.all()) {
+    const Texture &texture = entry.second;
+    if (pending_ids_.count(entry.first) != 0) {
+      Texture shown = texture;
+      shown.status = TextureStatus::Unsupported;
+      shown.has_reason = true;
+      shown.reason = TextureReason::DeliveryPending;
+      out->textures.push_back(wire_entry(shown));
+    } else {
+      out->textures.push_back(wire_entry(texture));
+      if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
+          texture.bytes != nullptr) {
+        out->payloads.emplace(texture.copy.hash, texture.bytes);
+        for (const rs2::TextureVariant &variant : out->textures.back().variants) {
+          if (variant.hash == texture.copy.block_hash && texture.copy.block_bytes != nullptr) {
+            out->payloads.emplace(variant.hash, texture.copy.block_bytes);
+          } else if (variant.hash == texture.uastc_hash && texture.uastc_bytes != nullptr) {
+            out->payloads.emplace(variant.hash, texture.uastc_bytes);
+          }
+        }
+      } else if (texture.job != nullptr && texture.kind == TextureKind::Image &&
+                 texture.status == TextureStatus::Ok) {
+        out->jobs.push_back(entry.first);
+      }
+    }
+    texture_entry_names(out->textures.back(), count_name);
+  }
+  for (const auto &entry : meshes_.all()) {
+    std::vector<std::pair<std::string, PayloadPtr>> pairs;
+    out->meshes.push_back(wire_mesh_peek(entry.second, &pairs));
+    for (auto &pair : pairs) {
+      out->payloads.emplace(pair.first, std::move(pair.second));
+    }
+    for (const MeshSurface &surface : out->meshes.back().surfaces) {
+      out->keyed_surfaces = out->keyed_surfaces || surface.hash_is_key;
+    }
+    mesh_entry_names(out->meshes.back(), count_name);
+  }
+  for (const auto &entry : shaders_.all()) {
+    const Shader &shader = entry.second;
+    ShaderEntry wire = wire_shader(shader);
+    if (carry_shader_time_ && wire.status == ShaderStatus::Ok &&
+        std::find(wire.uses.begin(), wire.uses.end(), ShaderUse::Time) != wire.uses.end()) {
+      out->time_read = true;
+    }
+    if (wire.status == ShaderStatus::Ok && wire.has_source &&
+        wire.source == ShaderSource::Payload && wire.has_hash && shader.bytes != nullptr) {
+      out->payloads.emplace(wire.hash, shader.bytes);
+    }
+    out->below_v12 = out->below_v12 || wire.below_v12 != nullptr;
+    shader_entry_names(wire, count_name);
+    out->shaders.push_back(std::move(wire));
+  }
+  for (const auto &entry : materials_.all()) {
+    out->materials.push_back(wire_material(entry.second));
+    out->below_v12 = out->below_v12 || out->materials.back().below_v12 != nullptr;
+  }
+}
+
+void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Captured *captured) {
+  Snapshot *out = &captured->state;
   ++stats_.hc_shadow_checked;
   std::string diff;
   if (walk.withheld_differs) {
@@ -5819,11 +5993,106 @@ void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Sn
                        walk.refs.particles_commands != refs.particles_commands)) {
     diff = "flags: multimesh_commands/particles_commands differ";
   }
+  // HC4b: the resource tables entry by entry, the payload map, the name index and the flags they
+  // derive.
+  const auto compare_table = [&diff](const char *name, const auto &table, const auto &walked,
+                                     const auto &difference) {
+    if (!diff.empty()) {
+      return;
+    }
+    if (walked.size() != table.size()) {
+      diff = std::string(name) + ": " + u64(table.size()) + " entries, the full walk " +
+             u64(walked.size());
+      return;
+    }
+    std::size_t k = 0;
+    for (auto it = table.begin(); it != table.end(); ++it, ++k) {
+      if (const char *field = difference(walked[k], *it)) {
+        diff = std::string(name) + " id " + u64(it->id) + ": " + field;
+        return;
+      }
+    }
+  };
+  compare_table("textures", out->textures, walk.textures, texture_entry_difference);
+  compare_table("meshes", out->meshes, walk.meshes, mesh_entry_difference);
+  compare_table("shaders", out->shaders, walk.shaders, shader_entry_difference);
+  compare_table("materials", out->materials, walk.materials, material_entry_difference);
+  if (diff.empty()) {
+    if (captured->payloads.size() != walk.payloads.size()) {
+      diff = "payloads: " + u64(captured->payloads.size()) + " hashes, the full walk " +
+             u64(walk.payloads.size());
+    } else {
+      auto w = walk.payloads.begin();
+      for (auto it = captured->payloads.begin(); it != captured->payloads.end(); ++it, ++w) {
+        const bool same_bytes =
+            it->second == w->second ||
+            (it->second != nullptr && w->second != nullptr && *it->second == *w->second);
+        if (it->first != w->first || !same_bytes) {
+          diff = "payloads hash " + it->first.substr(0, 16) + ": differs from the full walk's " +
+                 w->first.substr(0, 16);
+          break;
+        }
+      }
+    }
+  }
+  if (diff.empty() && captured->payloads.weight() != [&walk]() {
+        std::uint64_t total = 0;
+        for (const auto &entry : walk.payloads) {
+          total += entry.second != nullptr ? entry.second->size() : 0;
+        }
+        return total;
+      }()) {
+    diff = "payloads: the map's byte total differs from the full walk's";
+  }
+  if (diff.empty()) {
+    std::uint64_t inline_main = 0;
+    std::uint64_t inline_any = 0;
+    for (const auto &entry : walk.names) {
+      const NameCount &c = entry.second;
+      inline_main += c.main != 0 && c.payload_bytes <= inline_max_ ? 1 : 0;
+      inline_any += c.payload_bytes <= inline_max_ ? 1 : 0;
+      const NameIndex::value_type *found = captured->names.find_entry(entry.first);
+      if (found == nullptr || found->second.main != c.main ||
+          found->second.variant != c.variant || found->second.payload_bytes != c.payload_bytes) {
+        diff = "names hash " + entry.first.substr(0, 16) + ": the index counts differ";
+        break;
+      }
+    }
+    if (diff.empty() && captured->names.size() != walk.names.size()) {
+      diff = "names: " + u64(captured->names.size()) + " hashes, the full walk " +
+             u64(walk.names.size());
+    }
+    if (diff.empty() && (captured->inline_count != inline_main ||
+                         captured->inline_count_variants != inline_any)) {
+      diff = "names: the inline counts differ (" + u64(captured->inline_count) + ", the full walk " +
+             u64(inline_main) + ")";
+    }
+  }
+  if (diff.empty()) {
+    std::vector<std::uint32_t> jobs;
+    for (const PendingTexture &p : captured->pending) {
+      jobs.push_back(p.index < out->textures.size() ? out->textures[p.index].id : 0);
+    }
+    if (jobs != walk.jobs) {
+      diff = "pending: the textures a worker holds differ";
+    } else if (captured->keyed_surfaces != walk.keyed_surfaces) {
+      diff = "flags: keyed_surfaces differs";
+    } else if (out->shader_time.has_value() != walk.time_read) {
+      diff = "flags: shader_time differs";
+    } else if (out->particles_commands !=
+               (walk.refs.particles_commands || walk.below_v12)) {
+      diff = "flags: particles_commands (resources) differs";
+    }
+  }
   // The full walk's snapshot: this one with its items, canvases and item-level entries replaced
   // (fresh entries, so make_patch compares every one of them field by field).
   Snapshot full = *out;
   full.items = SharedTable<ItemState>(walk.items);
   full.canvases = SharedTable<CanvasState>(walk.canvases);
+  full.textures = SharedTable<TextureEntry>(walk.textures);
+  full.meshes = SharedTable<MeshEntry>(walk.meshes);
+  full.shaders = SharedTable<ShaderEntry>(walk.shaders);
+  full.materials = SharedTable<MaterialEntry>(walk.materials);
   full.unsupported.resize(out->unsupported.size() - item_level_.size());
   full.unsupported.insert(full.unsupported.end(), walk.item_level.begin(), walk.item_level.end());
   if (diff.empty()) {
@@ -5846,8 +6115,35 @@ void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Sn
              u64(b.size()) + ")";
     }
   }
+  if (diff.empty()) {
+    // HC4b: the /11 record plan over the differing entries equals records_before's full walk,
+    // with and without texture variants.
+    for (const bool variants : {false, true}) {
+      InlinePolicy policy;
+      policy.inline_max_bytes = inline_max_;
+      policy.inline_variants = variants;
+      const Captured *base = hc_shadow_have_prev_ ? &hc_shadow_prev_captured_ : nullptr;
+      const RecordPlan plan = plan_v11_records(base, *captured, policy);
+      const std::vector<PayloadName> want =
+          records_before(base != nullptr ? &base->state : nullptr, *out, policy);
+      bool same = plan.records.size() == want.size() &&
+                  plan.inline_count == inline_names(*out, policy).size();
+      for (std::size_t k = 0; same && k < want.size(); ++k) {
+        same = plan.records[k].hash == want[k].hash &&
+               plan.records[k].payload_bytes == want[k].payload_bytes;
+      }
+      if (!same) {
+        diff = std::string("records: the plan over the differing entries differs from the full "
+                           "walk's (") +
+               u64(plan.records.size()) + " records, the full walk " + u64(want.size()) +
+               (variants ? ", with variants)" : ")");
+        break;
+      }
+    }
+  }
   hc_shadow_prev_ = *out;
   hc_shadow_prev_full_ = std::move(full);
+  hc_shadow_prev_captured_ = *captured;
   hc_shadow_have_prev_ = true;
   if (!diff.empty()) {
     ++stats_.hc_shadow_mismatches;
@@ -5857,6 +6153,309 @@ void Mirror::shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Sn
       log_line("hc-shadow-mismatch: " + hc_shadow_failure_);
     }
   }
+}
+
+void Mirror::res_clear() {
+  pub_textures_.clear();
+  pub_meshes_.clear();
+  pub_shaders_.clear();
+  pub_materials_.clear();
+  tex_share_.clear();
+  mesh_share_.clear();
+  shader_share_.clear();
+  pub_payloads_.clear();
+  payload_users_.clear();
+  pub_names_.clear();
+  inline_count_ = 0;
+  inline_count_variants_ = 0;
+  tex_jobbed_.clear();
+  keyed_meshes_.clear();
+  time_shaders_.clear();
+  below_v12_shaders_.clear();
+  below_v12_materials_.clear();
+  tex_tombstones_.clear();
+  mesh_tombstones_.clear();
+  tex_key_.clear();
+  bad_meshes_.clear();
+  tex_recheck_.clear();
+  pending_ids_.clear();
+  textures_.published_.clear();
+  res_dynamic_readers_ = dynamic_hashes_read();
+  textures_.mut_all();
+  meshes_.mut_all();
+  shaders_.mut_all();
+  materials_.mut_all();
+}
+
+void Mirror::res_names_add(const ResName &name, int delta) {
+  const auto *found = pub_names_.find_entry(name.hash);
+  NameCount count = found != nullptr ? found->second : NameCount();
+  const NameCount before = count;
+  if (count.main == 0 && count.variant == 0) {
+    count.payload_bytes = name.payload_bytes;
+  }
+  std::uint32_t &slot = name.variant ? count.variant : count.main;
+  slot = delta > 0 ? slot + 1 : slot - std::min<std::uint32_t>(slot, 1);
+  const auto inline_main = [this](const NameCount &c) {
+    return c.main != 0 && c.payload_bytes <= inline_max_;
+  };
+  const auto inline_any = [this](const NameCount &c) {
+    return (c.main != 0 || c.variant != 0) && c.payload_bytes <= inline_max_;
+  };
+  inline_count_ = inline_count_ - (inline_main(before) ? 1 : 0) + (inline_main(count) ? 1 : 0);
+  inline_count_variants_ =
+      inline_count_variants_ - (inline_any(before) ? 1 : 0) + (inline_any(count) ? 1 : 0);
+  if (count.main == 0 && count.variant == 0) {
+    pub_names_.erase(name.hash);
+  } else {
+    pub_names_.set(name.hash, count);
+  }
+}
+
+void Mirror::res_share_update(ResShare *old, ResShare now) {
+  bool same_payloads = old->payloads.size() == now.payloads.size();
+  for (std::size_t i = 0; same_payloads && i < now.payloads.size(); ++i) {
+    same_payloads = old->payloads[i].first == now.payloads[i].first &&
+                    old->payloads[i].second == now.payloads[i].second;
+  }
+  if (!same_payloads) {
+    // Adds first, so a hash both lists hold never leaves the map. The newest bytes a hash is
+    // published with are the ones the map holds (the same content, a fresh copy: the
+    // spurious-texture-update sabotage's re-copy, say).
+    for (const auto &entry : now.payloads) {
+      ++payload_users_[entry.first];
+      const PayloadMap::value_type *held = pub_payloads_.find_entry(entry.first);
+      if (held == nullptr || held->second != entry.second) {
+        pub_payloads_.set(entry.first, entry.second);
+      }
+    }
+    for (const auto &entry : old->payloads) {
+      const auto it = payload_users_.find(entry.first);
+      if (it != payload_users_.end() && --it->second == 0) {
+        payload_users_.erase(it);
+        pub_payloads_.erase(entry.first);
+      }
+    }
+    old->payloads = std::move(now.payloads);
+  }
+  bool same_names = old->names.size() == now.names.size();
+  for (std::size_t i = 0; same_names && i < now.names.size(); ++i) {
+    same_names = old->names[i].hash == now.names[i].hash &&
+                 old->names[i].variant == now.names[i].variant &&
+                 old->names[i].payload_bytes == now.names[i].payload_bytes;
+  }
+  if (!same_names) {
+    for (const ResName &name : now.names) {
+      res_names_add(name, 1);
+    }
+    for (const ResName &name : old->names) {
+      res_names_add(name, -1);
+    }
+    old->names = std::move(now.names);
+  }
+}
+
+void Mirror::res_publish_resources(
+    const std::vector<std::uint32_t> &tex_visit_in,
+    std::vector<std::pair<std::uint32_t, std::shared_ptr<TextureJob>>> *jobs) {
+  const auto share_of = [](std::unordered_map<std::uint32_t, ResShare> *shares,
+                           std::uint32_t id) -> ResShare * {
+    return &(*shares)[id];
+  };
+  const auto drop_share = [this](std::unordered_map<std::uint32_t, ResShare> *shares,
+                                 std::uint32_t id) {
+    const auto it = shares->find(id);
+    if (it != shares->end()) {
+      res_share_update(&it->second, ResShare());
+      shares->erase(it);
+    }
+  };
+  const auto name_adder = [](ResShare *share) {
+    return [share](const std::string &hash, std::uint64_t bytes, bool variant) {
+      share->names.push_back(ResName{hash, bytes, variant});
+    };
+  };
+
+  // Textures: the ones visited before publish_items, and those erased or marked since.
+  bool more_all = false;
+  std::vector<std::uint32_t> tex_visit = textures_.take(&more_all);
+  tex_visit.insert(tex_visit.end(), tex_visit_in.begin(), tex_visit_in.end());
+  std::sort(tex_visit.begin(), tex_visit.end());
+  tex_visit.erase(std::unique(tex_visit.begin(), tex_visit.end()), tex_visit.end());
+  ResMap<Texture>::Map &tex_map = textures_.unmarked();
+  tex_jobbed_.clear();  // every jobbed texture is in tex_visit
+  for (std::uint32_t id : tex_visit) {
+    const auto it = tex_map.find(id);
+    if (it == tex_map.end()) {
+      if (pub_textures_.erase(id)) {
+        ++stats_.hc_resources_republished;
+      }
+      drop_share(&tex_share_, id);
+      pending_ids_.erase(id);
+      tex_tombstones_.erase(id);
+      continue;
+    }
+    ++stats_.hc_resources_visited;
+    Texture &texture = it->second;
+    settle(&texture);  // G8kw: a finished worker's hash and bytes, before they are published
+    ResShare share;
+    TextureEntry entry;
+    if (pending_ids_.count(id) != 0) {
+      // G8kf: not ready, and never published as ok: carry it as `delivery-pending` (the shape the
+      // hook already knows, no hash, no payload) and do not hold the snapshot back for it.
+      Texture shown = texture;
+      shown.status = TextureStatus::Unsupported;
+      shown.has_reason = true;
+      shown.reason = TextureReason::DeliveryPending;
+      entry = wire_entry(shown);
+      if (texture.pending_version != texture.version) {
+        ++pending_published_;  // textures, not snapshots
+      }
+      texture.pending_version = texture.version;
+    } else {
+      if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
+          texture.job == nullptr) {
+        texture.published_ok = true;
+      }
+      entry = wire_entry(texture);
+      if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
+          texture.bytes != nullptr) {
+        share.payloads.emplace_back(texture.copy.hash, texture.bytes);
+        // G8kp: every variant the entry lists travels in the same content-addressed map (store,
+        // HTTP), never as an inline record (rs_captured.h variant_refs).
+        for (const rs2::TextureVariant &variant : entry.variants) {
+          if (variant.hash == texture.copy.block_hash && texture.copy.block_bytes != nullptr) {
+            share.payloads.emplace_back(variant.hash, texture.copy.block_bytes);
+          } else if (variant.hash == texture.uastc_hash && texture.uastc_bytes != nullptr) {
+            share.payloads.emplace_back(variant.hash, texture.uastc_bytes);  // G8ku: a KTX2
+          }
+        }
+      } else if (texture.job != nullptr && texture.kind == TextureKind::Image &&
+                 texture.status == TextureStatus::Ok) {
+        jobs->emplace_back(id, texture.job);
+      }
+    }
+    texture_entry_names(entry, name_adder(&share));
+    const TextureEntry *old = pub_textures_.find(id);
+    if (old == nullptr || texture_entry_difference(*old, entry) != nullptr) {
+      pub_textures_.set(std::move(entry));
+      ++stats_.hc_resources_republished;
+    }
+    res_share_update(share_of(&tex_share_, id), std::move(share));
+    if (texture.status == TextureStatus::Freed) {
+      tex_tombstones_.insert(id);
+    } else {
+      tex_tombstones_.erase(id);
+    }
+    if (texture.job != nullptr || texture.pending_version != 0) {
+      tex_jobbed_.insert(id);
+    }
+    if (textures_.skip_dirty_) {
+      textures_.published_.insert(id);
+    }
+  }
+
+  // Meshes (G5e): each `ok` mesh's surfaces join the payload map under their wire hash (HC3).
+  bool all = false;
+  ResMap<Mesh>::Map &mesh_map = meshes_.unmarked();
+  for (std::uint32_t id : meshes_.take(&all)) {
+    const auto it = mesh_map.find(id);
+    if (it == mesh_map.end()) {
+      if (pub_meshes_.erase(id)) {
+        ++stats_.hc_resources_republished;
+      }
+      drop_share(&mesh_share_, id);
+      keyed_meshes_.erase(id);
+      continue;
+    }
+    ++stats_.hc_resources_visited;
+    classify_mesh(&it->second);  // W11b: no-op unless V11Options.enabled
+    ResShare share;
+    MeshEntry entry = wire_mesh(&it->second, &share.payloads);
+    bool keyed = false;
+    for (const MeshSurface &surface : entry.surfaces) {
+      keyed = keyed || surface.hash_is_key;
+    }
+    if (keyed) {
+      keyed_meshes_.insert(id);
+    } else {
+      keyed_meshes_.erase(id);
+    }
+    mesh_entry_names(entry, name_adder(&share));
+    const MeshEntry *old = pub_meshes_.find(id);
+    if (old == nullptr || mesh_entry_difference(*old, entry) != nullptr) {
+      pub_meshes_.set(std::move(entry));
+      ++stats_.hc_resources_republished;
+    }
+    res_share_update(share_of(&mesh_share_, id), std::move(share));
+  }
+
+  // G55d: shaders; the payload of every `ok` shader whose code travels (`source: "payload"`:
+  // never a withheld one, D4) -- exactly payload_refs' set.
+  ResMap<Shader>::Map &shader_map = shaders_.unmarked();
+  for (std::uint32_t id : shaders_.take(&all)) {
+    const auto it = shader_map.find(id);
+    if (it == shader_map.end()) {
+      if (pub_shaders_.erase(id)) {
+        ++stats_.hc_resources_republished;
+      }
+      drop_share(&shader_share_, id);
+      time_shaders_.erase(id);
+      below_v12_shaders_.erase(id);
+      continue;
+    }
+    ++stats_.hc_resources_visited;
+    const Shader &shader = it->second;
+    ShaderEntry wire = wire_shader(shader);
+    if (wire.status == ShaderStatus::Ok &&
+        std::find(wire.uses.begin(), wire.uses.end(), ShaderUse::Time) != wire.uses.end()) {
+      time_shaders_.insert(id);
+    } else {
+      time_shaders_.erase(id);
+    }
+    if (wire.below_v12 != nullptr) {
+      below_v12_shaders_.insert(id);
+    } else {
+      below_v12_shaders_.erase(id);
+    }
+    ResShare share;
+    if (wire.status == ShaderStatus::Ok && wire.has_source &&
+        wire.source == ShaderSource::Payload && wire.has_hash && shader.bytes != nullptr) {
+      share.payloads.emplace_back(wire.hash, shader.bytes);
+    }
+    shader_entry_names(wire, name_adder(&share));
+    const ShaderEntry *old = pub_shaders_.find(id);
+    if (old == nullptr || shader_entry_difference(*old, wire) != nullptr) {
+      pub_shaders_.set(std::move(wire));
+      ++stats_.hc_resources_republished;
+    }
+    res_share_update(share_of(&shader_share_, id), std::move(share));
+  }
+
+  ResMap<Material>::Map &material_map = materials_.unmarked();
+  for (std::uint32_t id : materials_.take(&all)) {
+    const auto it = material_map.find(id);
+    if (it == material_map.end()) {
+      if (pub_materials_.erase(id)) {
+        ++stats_.hc_resources_republished;
+      }
+      below_v12_materials_.erase(id);
+      continue;
+    }
+    ++stats_.hc_resources_visited;
+    MaterialEntry entry = wire_material(it->second);
+    if (entry.below_v12 != nullptr) {
+      below_v12_materials_.insert(id);
+    } else {
+      below_v12_materials_.erase(id);
+    }
+    const MaterialEntry *old = pub_materials_.find(id);
+    if (old == nullptr || material_entry_difference(*old, entry) != nullptr) {
+      pub_materials_.set(std::move(entry));
+      ++stats_.hc_resources_republished;
+    }
+  }
+  stats_.hc_dirty_marks_dropped_textures = textures_.dropped_;
 }
 
 Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
@@ -5876,26 +6475,136 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.default_texture_filter = default_filter_;
   out.default_texture_repeat = default_repeat_;
 
+  // HC4b (host-cost-design.md D1 "The snapshot"): the resource tables are published state too.
+  // A snapshot after reset() or after a setting the entries depend on rebuilds them; a change of
+  // dynamic_hashes_read() rebuilds the mesh entries (their surface hashes or keys).
+  if (!pub_valid_) {
+    res_clear();
+  }
+  if (dynamic_hashes_read() != res_dynamic_readers_) {
+    res_dynamic_readers_ = dynamic_hashes_read();
+    meshes_.mut_all();
+  }
+  // A material's unsupported verdict reads the material, its shader and textures (and the
+  // pending set, which moves only with a visited texture): every verdict is recomputed when a
+  // texture or shader moved, only the moved materials' when only materials did (publish_items).
+  hc_verdict_inputs_moved_ = textures_.all_dirty_ || !textures_.dirty_.empty() ||
+                             !textures_.gone_.empty() || !tex_jobbed_.empty() ||
+                             !tex_recheck_.empty() || shaders_.all_dirty_ ||
+                             !shaders_.dirty_.empty() || !shaders_.gone_.empty() ||
+                             materials_.all_dirty_;
+  // The textures to visit: the marked and erased ones, and every texture a worker or a pending
+  // recovery still holds (tex_jobbed_: settled and recovered here, as the full walk did for
+  // every texture).
+  bool tex_all = false;
+  std::vector<std::uint32_t> tex_visit = textures_.take(&tex_all);
+  if (!tex_jobbed_.empty() || !tex_recheck_.empty()) {
+    tex_visit.insert(tex_visit.end(), tex_jobbed_.begin(), tex_jobbed_.end());
+    std::sort(tex_visit.begin(), tex_visit.end());
+    tex_visit.erase(std::unique(tex_visit.begin(), tex_visit.end()), tex_visit.end());
+  }
   // G8kf: the textures this snapshot carries as `delivery-pending` (see below). Decided first,
   // because an item naming one needs its derived unsupported-texture entry like any unsupported
-  // texture (render-stream-2.md "Item-level unsupported entries").
+  // texture (render-stream-2.md "Item-level unsupported entries"). HC4b: only a texture with a
+  // job can be pending, and those are all visited, so the set is kept and updated in place.
   std::set<std::uint32_t> &pending_ids = pending_ids_;
-  pending_ids.clear();
-  std::set<std::uint32_t> referenced;  // the tombstone rule's texture references (see below)
-  for (auto &entry : textures_) {
-    Texture &texture = entry.second;
-    if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
-      referenced.insert(texture.diffuse_id);  // G2d: a diffuse keeps its target's tombstone alive
+  ResMap<Texture>::Map &tex_map = textures_.unmarked();
+  for (std::uint32_t id : tex_visit) {
+    const auto it = tex_map.find(id);
+    if (it == tex_map.end()) {
+      pending_ids.erase(id);
+      tex_tombstones_.erase(id);
+      continue;
     }
+    Texture &texture = it->second;
     settle(&texture);
     if (resolve_pending(&texture)) {
       ++epoch_;  // the version moved under a snapshot taken before service_pending ran
     }
     if (publish_pending_ && texture.job != nullptr && texture.kind == TextureKind::Image &&
         texture.status == TextureStatus::Ok && !texture.published_ok) {
-      pending_ids.insert(entry.first);
+      pending_ids.insert(id);
+    } else {
+      pending_ids.erase(id);
+    }
+    if (texture.status == TextureStatus::Freed) {
+      tex_tombstones_.insert(id);
+    } else {
+      tex_tombstones_.erase(id);
     }
   }
+  // The inputs other items' derived entries read (publish_items step 3): a texture's own
+  // unsupported-or-pending bit and its diffuse link, and a mesh's unsupported status, compared for
+  // what moved (and for the textures the previous snapshot erased).
+  hc_inputs_moved_ = false;
+  {
+    const auto tex_key = [&](std::uint32_t id) -> std::uint64_t {
+      const Texture *t = textures_.find(id);
+      if (t == nullptr) {
+        return 0;
+      }
+      std::uint64_t key =
+          t->status == TextureStatus::Unsupported || pending_ids.count(id) != 0 ? 1 : 0;
+      if (t->kind == TextureKind::Canvas && t->has_diffuse) {
+        key |= (static_cast<std::uint64_t>(t->diffuse_id) + 1) << 1;
+      }
+      return key;
+    };
+    const auto check = [&](std::uint32_t id) {
+      const std::uint64_t key = tex_key(id);
+      const auto it = tex_key_.find(id);
+      const std::uint64_t old = it != tex_key_.end() ? it->second : 0;
+      if (key == old) {
+        return;
+      }
+      hc_inputs_moved_ = true;
+      if (key == 0) {
+        tex_key_.erase(it);
+      } else {
+        tex_key_[id] = key;
+      }
+    };
+    for (std::uint32_t id : tex_visit) {
+      check(id);
+    }
+    for (std::uint32_t id : tex_recheck_) {
+      check(id);
+    }
+    tex_recheck_.clear();
+    const auto mesh_check = [&](std::uint32_t id) {
+      const Mesh *m = meshes_.find(id);
+      const bool bad = m != nullptr && m->status == MeshStatus::Unsupported;
+      if (bad ? bad_meshes_.insert(id).second : bad_meshes_.erase(id) != 0) {
+        hc_inputs_moved_ = true;
+      }
+      if (m != nullptr && m->status == MeshStatus::Freed) {
+        mesh_tombstones_.insert(id);
+      } else {
+        mesh_tombstones_.erase(id);
+      }
+    };
+    if (meshes_.all_dirty_) {
+      for (const auto &entry : meshes_.all()) {
+        mesh_check(entry.first);
+      }
+      for (auto it = bad_meshes_.begin(); it != bad_meshes_.end();) {
+        if (meshes_.find(*it) == nullptr) {
+          hc_inputs_moved_ = true;
+          it = bad_meshes_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    } else {
+      for (std::uint32_t id : meshes_.dirty_) {
+        mesh_check(id);
+      }
+      for (std::uint32_t id : meshes_.gone_) {
+        mesh_check(id);
+      }
+    }
+  }
+  std::set<std::uint32_t> referenced;  // the tombstone rule's texture references (see below)
 
   // protocol/unknown-item-skip.md: under Skip, every known item whose parent chain reaches an
   // unknown RID is left out of the published state -- its item entry, its item-level unsupported
@@ -6009,13 +6718,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   // PM5 ("Publication"): the emitters any add_particles names (the tombstone rule).
   std::set<std::uint32_t> particles_named;
   const bool pt_on = pt_options_.enabled;
-  bool tombstones = false;
-  for (const auto &entry : textures_) {
-    tombstones = tombstones || entry.second.status == TextureStatus::Freed;
-  }
-  for (const auto &entry : meshes_) {
-    tombstones = tombstones || entry.second.status == MeshStatus::Freed;
-  }
+  // HC4b: the texture and mesh tombstones are kept as sets (updated above for what moved).
+  bool tombstones = !tex_tombstones_.empty() || !mesh_tombstones_.empty();
   for (const auto &entry : multimeshes_) {
     tombstones = tombstones || entry.second.freed;
   }
@@ -6060,21 +6764,34 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   std::set<std::uint32_t> &particles_published = refs.particles;
   out.multimesh_commands = refs.multimesh_commands;
   out.particles_commands = refs.particles_commands;
-  for (const auto &entry : materials_) {
-    for (std::uint32_t tex : wire_params(entry.second).textures) {
-      referenced.insert(tex);
+  // `referenced` is read only to drop texture tombstones, so (HC4b) the rest of it is gathered
+  // only while one exists: a canvas texture's diffuse (G2d), material rid parameters and shader
+  // default textures (G55d).
+  if (!tex_tombstones_.empty()) {
+    for (const auto &entry : textures_.all()) {
+      const Texture &texture = entry.second;
+      if (texture.kind == TextureKind::Canvas && texture.has_diffuse) {
+        referenced.insert(texture.diffuse_id);
+      }
     }
-  }
-  for (const auto &entry : shaders_) {
-    for (const auto &ref : entry.second.default_textures) {
-      referenced.insert(ref.second);
+    for (const auto &entry : materials_.all()) {
+      for (std::uint32_t tex : wire_params(entry.second).textures) {
+        referenced.insert(tex);
+      }
     }
-  }
-  for (auto it = textures_.begin(); it != textures_.end();) {
-    if (it->second.status == TextureStatus::Freed && referenced.count(it->first) == 0) {
-      it = textures_.erase(it);
-    } else {
-      ++it;
+    for (const auto &entry : shaders_.all()) {
+      for (const auto &ref : entry.second.default_textures) {
+        referenced.insert(ref.second);
+      }
+    }
+    for (auto it = tex_tombstones_.begin(); it != tex_tombstones_.end();) {
+      if (referenced.count(*it) == 0) {
+        textures_.erase(*it);
+        tex_recheck_.push_back(*it);
+        it = tex_tombstones_.erase(it);
+      } else {
+        ++it;
+      }
     }
   }
   // PM1: a multimesh's mesh keeps its tombstone (rule 6), and a multimesh tombstone leaves at the
@@ -6118,9 +6835,10 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     }
   }
   // G5e: likewise a mesh tombstone leaves at the first snapshot no add_mesh names it.
-  for (auto it = meshes_.begin(); it != meshes_.end();) {
-    if (it->second.status == MeshStatus::Freed && meshes_named.count(it->first) == 0) {
-      it = meshes_.erase(it);
+  for (auto it = mesh_tombstones_.begin(); it != mesh_tombstones_.end();) {
+    if (meshes_named.count(*it) == 0) {
+      meshes_.erase(*it);
+      it = mesh_tombstones_.erase(it);
     } else {
       ++it;
     }
@@ -6128,93 +6846,34 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
   out.unsupported.insert(out.unsupported.end(), item_level_.begin(), item_level_.end());
   out.canvases = pub_canvases_;
   out.items = pub_items_;
-  out.textures.reserve(textures_.size());
-  for (auto &entry : textures_) {
-    Texture &texture = entry.second;
-    settle(&texture);  // G8kw: a finished worker's hash and bytes, before they are published
-    if (pending_ids.count(entry.first) != 0) {
-      // G8kf: not ready, and never published as ok: carry it as `delivery-pending` (the shape the
-      // hook already knows, no hash, no payload) and do not hold the snapshot back for it.
-      Texture shown = texture;
-      shown.status = TextureStatus::Unsupported;
-      shown.has_reason = true;
-      shown.reason = TextureReason::DeliveryPending;
-      out.textures.push_back(wire_entry(shown));
-      if (texture.pending_version != texture.version) {
-        ++pending_published_;  // textures, not snapshots
-      }
-      texture.pending_version = texture.version;
-      continue;
-    }
-    if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
-        texture.job == nullptr) {
-      texture.published_ok = true;
-    }
-    out.textures.push_back(wire_entry(texture));
-    if (texture.kind == TextureKind::Image && texture.status == TextureStatus::Ok &&
-        texture.bytes != nullptr) {
-      captured.payloads.emplace(texture.copy.hash, texture.bytes);
-      // G8kp: every variant the entry lists travels in the same content-addressed map (store,
-      // HTTP), never as an inline record (rs_captured.h variant_refs).
-      for (const rs2::TextureVariant &variant : out.textures.back().variants) {
-        if (variant.hash == texture.copy.block_hash && texture.copy.block_bytes != nullptr) {
-          captured.payloads.emplace(variant.hash, texture.copy.block_bytes);
-        } else if (variant.hash == texture.uastc_hash && texture.uastc_bytes != nullptr) {
-          captured.payloads.emplace(variant.hash, texture.uastc_bytes);  // G8ku: a KTX2
-        }
-      }
-    } else if (texture.job != nullptr && texture.kind == TextureKind::Image &&
-               texture.status == TextureStatus::Ok) {
-      // G8kw: still on a worker. The entry is complete but for its hash; the caller holds the
-      // snapshot back until resolve_captured() can fill it (rs_texture_worker.h).
-      PendingTexture pending;
-      pending.index = out.textures.size() - 1;
-      pending.job = texture.job;
-      captured.pending.push_back(std::move(pending));
-    }
+  // HC4b: the resource tables, the payload map and the name index, updated for the entries that
+  // moved (res_publish_resources); this snapshot shares the rest.
+  std::vector<std::pair<std::uint32_t, std::shared_ptr<TextureJob>>> jobs;
+  res_publish_resources(tex_visit, &jobs);
+  out.textures = pub_textures_;
+  out.meshes = pub_meshes_;
+  out.shaders = pub_shaders_;
+  out.materials = pub_materials_;
+  for (auto &job : jobs) {
+    // G8kw: still on a worker. The entry is complete but for its hash; the caller holds the
+    // snapshot back until resolve_captured() can fill it (rs_texture_worker.h).
+    PendingTexture pending;
+    pending.index = out.textures.index_of(job.first);
+    pending.job = std::move(job.second);
+    captured.pending.push_back(std::move(pending));
   }
-  out.meshes.reserve(meshes_.size());
-  for (auto &entry : meshes_) {
-    classify_mesh(&entry.second);  // W11b: no-op unless V11Options.enabled
-    // HC3: every `ok` mesh's surfaces join the payload map under their wire hash.
-    out.meshes.push_back(wire_mesh(&entry.second, &captured.payloads));
-    if (!captured.keyed_surfaces) {
-      for (const MeshSurface &surface : out.meshes.back().surfaces) {
-        captured.keyed_surfaces = captured.keyed_surfaces || surface.hash_is_key;
-      }
-    }
+  captured.payloads = pub_payloads_;
+  captured.keyed_surfaces = !keyed_meshes_.empty();
+  captured.names = pub_names_;
+  captured.names_valid = true;
+  captured.names_inline_max = inline_max_;
+  captured.inline_count = inline_count_;
+  captured.inline_count_variants = inline_count_variants_;
+  if (!below_v12_shaders_.empty() || !below_v12_materials_.empty()) {
+    out.particles_commands = true;  // PM5: a /11 connection sees the /11 form
   }
-  // G55d: the shader and material tables (sorted by id); the payload of every `ok` shader whose
-  // code travels (`source: "payload"`: never a withheld one, D4) -- exactly payload_refs' set.
-  out.shaders.reserve(shaders_.size());
-  bool time_read = false;  // P3-TM
-  for (const auto &entry : shaders_) {
-    const Shader &shader = entry.second;
-    ShaderEntry wire = wire_shader(shader);
-    if (carry_shader_time_ && !time_read && wire.status == ShaderStatus::Ok &&
-        std::find(wire.uses.begin(), wire.uses.end(), ShaderUse::Time) != wire.uses.end()) {
-      time_read = true;
-    }
-    if (wire.status == ShaderStatus::Ok && wire.has_source &&
-        wire.source == ShaderSource::Payload && wire.has_hash && shader.bytes != nullptr) {
-      captured.payloads.emplace(wire.hash, shader.bytes);
-    }
-    out.shaders.push_back(std::move(wire));
-  }
-  out.materials.reserve(materials_.size());
-  for (const auto &entry : materials_) {
-    out.materials.push_back(wire_material(entry.second));
-    if (out.materials.back().below_v12 != nullptr) {
-      out.particles_commands = true;  // PM5: a /11 connection sees the /11 form
-    }
-  }
-  for (const ShaderEntry &shader : out.shaders) {
-    if (shader.below_v12 != nullptr) {
-      out.particles_commands = true;
-    }
-  }
-  if (time_read) {
-    out.shader_time = shader_time_;
+  if (carry_shader_time_ && !time_shaders_.empty()) {
+    out.shader_time = shader_time_;  // P3-TM
   }
   if (pt_on) {
     // PM5 ("Publication"): the emitters a published add_particles names, closed over the
@@ -6281,7 +6940,8 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
     }
   }
   if (hc_shadow_) {
-    shadow_compare(walk, walked_refs, &out);
+    full_walk_resources(&walk);
+    shadow_compare(walk, walked_refs, &captured);
   }
   return captured;
 }

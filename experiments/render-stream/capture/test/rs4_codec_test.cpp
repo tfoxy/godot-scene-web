@@ -80,8 +80,8 @@ Transaction full_txn4(const Snapshot &snap) {
   t.default_texture_filter = snap.default_texture_filter;
   t.default_texture_repeat = snap.default_texture_repeat;
   t.canvases = snap.canvases.vector();
-  t.textures = snap.textures;
-  t.meshes = snap.meshes;
+  t.textures = snap.textures.vector();
+  t.meshes = snap.meshes.vector();
   for (const ItemState &it : snap.items) {
     t.items.push_back(entry(it, false));
   }
@@ -255,7 +255,7 @@ void test_matches_golden_patch_rs4() {
     t.canvases = {golden::root_canvas({1, 2, 3, 4, 5, 6, 7, 8})};
     t.items = {entry(golden::item8_mesh(), false)};
     const Snapshot nine = golden::state(9);
-    t.meshes = nine.meshes;  // both new: new-or-differ vs. base (state 8, no meshes) keeps both
+    t.meshes = nine.meshes.vector();  // both new: new-or-differ vs. base (state 8, no meshes) keeps both
     records.push_back(encode_transaction(t));
   }
   {

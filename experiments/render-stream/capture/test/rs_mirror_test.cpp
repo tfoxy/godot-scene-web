@@ -28,6 +28,7 @@
 #include "rs2_diff.h"
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
+#include "rs_records.h"
 #include "rs_sha256.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
@@ -1238,6 +1239,100 @@ void drawing_item(Mirror *m, uint64_t item_rid, uint64_t tex_rid, uint64_t frame
   m->set_parent(item_rid, kRootCanvas, frame);
   m->set_draw_index(item_rid, static_cast<int32_t>(item_rid), frame);
   m->add_texture_rect(item_rid, kRect, tex_rid, false, kRed, false, frame);
+}
+
+// HC4b (host-cost-design.md D1): the resource tables, the payload map and the name index are
+// shared between snapshots and change by the entries that moved; the record plan over the
+// differing entries equals records_before()'s full walk.
+void test_hc4b_resource_tables() {
+  Mirror m;
+  bind_root(&m);
+  m.set_inline_max(1u << 20);
+  std::vector<grc::rs::PayloadPtr> bytes(130);
+  for (uint64_t i = 0; i < 130; ++i) {
+    // ids 1..130 in three chunks; ids 120 and 121 share their content (one hash, two entries).
+    const auto copy = rgba8_copy(4, 4, fill(4, 4, static_cast<uint8_t>(i == 120 ? 119 : i)),
+                                 &bytes[i]);
+    m.texture_2d_create(600 + i, copy, bytes[i], 1);
+    drawing_item(&m, 2000 + i, 600 + i, 1);
+  }
+  const grc::rs::Captured a = m.snapshot(1, 1);
+  check(a.state.textures.size() == 130 && a.state.textures.chunks().size() == 3,
+        "130 textures in 3 chunks of 64 ids");
+  check(a.payloads.size() == 129 && a.names.size() == 129 && a.names_valid &&
+            a.inline_count == 129,
+        "one payload and one name per distinct hash; the inline count");
+  const auto visited0 = m.stats().hc_resources_visited;
+  const grc::rs::Captured b = m.snapshot(2, 2);
+  check(b.state.textures.shares(a.state.textures) && b.payloads.same(a.payloads) &&
+            b.names.same(a.names),
+        "a static snapshot shares the texture table, the payload map and the name index");
+  check(m.stats().hc_resources_visited == visited0, "a static snapshot visits no resource");
+  grc::rs2::InlinePolicy policy;
+  policy.inline_max_bytes = 1u << 20;
+  check(grc::rs::plan_v11_records(&a, b, policy).records.empty() &&
+            grc::rs::plan_v11_records(&a, b, policy).indexed,
+        "a static plan is empty (indexed)");
+
+  // One texture's new content: one entry of one chunk, one hash in, one out.
+  grc::rs::PayloadPtr new_bytes;
+  const auto changed = rgba8_copy(4, 4, fill(4, 4, 250), &new_bytes);
+  m.texture_2d_update(600 + 70, changed, new_bytes, 0, 3);  // id 71: chunk 1
+  const grc::rs::Captured c = m.snapshot(3, 3);
+  check(c.state.textures.chunks()[0] == b.state.textures.chunks()[0] &&
+            c.state.textures.chunks()[2] == b.state.textures.chunks()[2] &&
+            c.state.textures.chunks()[1] != b.state.textures.chunks()[1],
+        "a texture change replaces its own chunk only");
+  check(c.payloads.count(changed.hash) == 1 && c.payloads.size() == 129 &&
+            b.payloads.count(changed.hash) == 0,
+        "the payload map swaps the one hash, the earlier map keeps its own");
+  const auto plan = grc::rs::plan_v11_records(&b, c, policy);
+  check(plan.indexed && plan.records.size() == 1 && plan.records[0].hash == changed.hash &&
+            plan.inline_count == 129,
+        "the plan names the one new hash");
+  // A hash that leaves one entry but stays named by another (id 121 leaves id 120's content) is
+  // not a record; one new hash named by two entries (ids 121 and 122) is one record.
+  grc::rs::PayloadPtr other;
+  const auto moved = rgba8_copy(4, 4, fill(4, 4, 251), &other);
+  m.texture_2d_update(600 + 121, moved, other, 0, 4);  // id 122
+  m.texture_2d_update(600 + 120, moved, other, 0, 4);  // id 121
+  const grc::rs::Captured d = m.snapshot(4, 4);
+  for (const grc::rs::Captured *base : {&a, &b, &c}) {
+    const auto got = grc::rs::plan_v11_records(base, d, policy);
+    const auto want = grc::rs2::records_before(&base->state, d.state, policy);
+    bool same = got.indexed && got.records.size() == want.size() &&
+                got.inline_count == grc::rs2::inline_names(d.state, policy).size();
+    for (std::size_t k = 0; same && k < want.size(); ++k) {
+      same = got.records[k].hash == want[k].hash;
+    }
+    check(same, "the indexed plan equals records_before() from an older base");
+  }
+  // A freed texture nothing names leaves the table, the map and the index.
+  m.free_rid(2000 + 5, 5);
+  m.free_rid(600 + 5, 5);
+  const grc::rs::Captured e = m.snapshot(5, 5);
+  check(texture(e.state, 6) == nullptr && e.payloads.count(a.state.textures[5].hash) == 0 &&
+            e.names.find_entry(a.state.textures[5].hash) == nullptr,
+        "a freed texture leaves the table, the payload map and the name index");
+}
+
+void test_hc4b_skip_dirty_texture() {
+  // hc-skip-dirty-texture: the first published texture marked loses its marks; the oracle sees it.
+  Mirror m;
+  m.set_hc_shadow(true, grc::rs2::ProtocolVersion::V11);
+  m.set_hc_sabotage_texture(true);
+  bind_root(&m);
+  grc::rs::PayloadPtr a_bytes;
+  m.texture_2d_create(500, rgba8_copy(4, 4, fill(4, 4, 1), &a_bytes), a_bytes, 1);
+  drawing_item(&m, 100, 500, 1);
+  m.snapshot(1, 1);
+  grc::rs::PayloadPtr b_bytes;
+  m.texture_2d_update(500, rgba8_copy(4, 4, fill(4, 4, 2), &b_bytes), b_bytes, 0, 2);
+  m.snapshot(2, 2);
+  check(m.stats().hc_dirty_marks_dropped_textures > 0 &&
+            m.hc_shadow_failure().rfind("textures id 1", 0) == 0,
+        "the shadow oracle catches hc-skip-dirty-texture (" + m.hc_shadow_failure() + ")");
+  g_expected_shadow_mismatches += m.stats().hc_shadow_mismatches;
 }
 
 void test_texture_ids_versions_and_payloads() {
@@ -4312,6 +4407,8 @@ int main() {
   Mirror::set_default_hc_shadow(shadow_on);
   test_hc4a_persistent_tables();
   test_hc4a_shadow_sabotages();
+  test_hc4b_resource_tables();
+  test_hc4b_skip_dirty_texture();
   test_same_value_set_material_keeps_epoch();
   test_particles_defaults_and_versions();
   test_particles_trail_poses_need_trails();

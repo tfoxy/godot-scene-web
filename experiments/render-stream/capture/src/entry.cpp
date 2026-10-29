@@ -1463,6 +1463,8 @@ void live_decided(const std::string &status, const std::string &reason) {
 
 // HC4a test knob: GRC_HC_SHADOW=1, read at stream start (the shadow oracle).
 bool g_hc_shadow = false;
+// HC4b: the first budget or serving shadow-oracle difference (GRC_HC_SHADOW=1).
+std::string g_hc_shadow_budget;
 
 // At arm, right after the vptr store: validates the sabotage environment,
 // opens the recordings, enables the mirror, runs the root query and the
@@ -2357,6 +2359,7 @@ void stream_start() {
     // GRC_HC_SABOTAGE=hc-skip-dirty / hc-stale-derived.
     const char *hc_shadow = std::getenv("GRC_HC_SHADOW");
     g_hc_shadow = hc_shadow != nullptr && std::string(hc_shadow) == "1";
+    g_hc_shadow_budget.clear();
     const rs2::ProtocolVersion shadow_version =
         g_stream.gate8.speaks_v12()   ? rs2::ProtocolVersion::V12
         : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
@@ -2368,6 +2371,9 @@ void stream_start() {
     const std::string hc_sabotage_name = hc_sabotage != nullptr ? hc_sabotage : "";
     rs::mirror_instance().set_hc_sabotage(hc_sabotage_name == "hc-skip-dirty",
                                           hc_sabotage_name == "hc-stale-derived");
+    // HC4b: hc-skip-dirty-texture, and the inline threshold the snapshots' name index counts at.
+    rs::mirror_instance().set_hc_sabotage_texture(hc_sabotage_name == "hc-skip-dirty-texture");
+    rs::mirror_instance().set_inline_max(g_stream.policy.inline_max_bytes);
     if (g_hc_shadow || hc_sabotage_name.rfind("hc-", 0) == 0) {
       log_line("stream: hc4a shadow=" + std::string(g_hc_shadow ? "on" : "off") +
                (hc_sabotage_name.empty() ? std::string() : " sabotage=" + hc_sabotage_name));
@@ -2489,6 +2495,13 @@ void stream_start() {
     std::string error;
     // G2c2: the served payloads answer every resource GET on this listener.
     g_live.served = std::make_unique<rs::ServedResources>();
+    // HC4b: the serve-skip sabotage and the serving half of the shadow oracle.
+    {
+      const char *hc = std::getenv("GRC_HC_SABOTAGE");
+      g_live.served->set_serve_skip(hc != nullptr && std::string(hc) == "serve-skip");
+      const char *shadow = std::getenv("GRC_HC_SHADOW");
+      g_live.served->set_shadow(shadow != nullptr && std::string(shadow) == "1");
+    }
     if (sabotage.config.kind == rs2::SabotageKind::Unpin) {
       g_live.served->set_unpin_frame(sabotage.config.frame);
     } else if (sabotage.config.kind == rs2::SabotageKind::DropResource) {
@@ -3066,8 +3079,12 @@ void stream_publish(uint64_t frame) {
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
   if (g_hc_shadow) {
-    // HC4a: the shadow oracle found the persistent tables and the full walk apart.
-    const std::string mismatch = rs::mirror_instance().hc_shadow_failure();
+    // HC4a: the shadow oracle found the persistent tables and the full walk apart (HC4b: or the
+    // budget's or serving's walks over the payload maps' differences, at an earlier callback).
+    std::string mismatch = rs::mirror_instance().hc_shadow_failure();
+    if (mismatch.empty() && !g_hc_shadow_budget.empty()) {
+      mismatch = g_hc_shadow_budget;
+    }
     if (!mismatch.empty()) {
       log_line("stream: hc-shadow-mismatch at frame " + std::to_string(frame) + ": " + mismatch);
       g_stream.reason = "hc-shadow-mismatch: " + mismatch;
@@ -3123,6 +3140,13 @@ void stream_publish(uint64_t frame) {
       retained.push_back(&g_stream.publisher->last_published()->payloads);
     }
     uint64_t retained_bytes = rs::payload_union_bytes(retained);
+    if (g_hc_shadow && g_hc_shadow_budget.empty() &&
+        retained_bytes != rs::payload_union_bytes_full(retained)) {
+      // HC4b: the union over the maps' differences disagrees with the full walk's.
+      g_hc_shadow_budget = "budget: the retained union's bytes (" + std::to_string(retained_bytes) +
+                           ") differ from the full walk's (" +
+                           std::to_string(rs::payload_union_bytes_full(retained)) + ")";
+    }
     if (serving) {
       retained_bytes += g_live.served->retained_bytes_beyond(retained);
     }
@@ -3182,6 +3206,9 @@ void stream_publish(uint64_t frame) {
     if (serving && !pin_late) {
       // Phase 2: retained := current ∪ every connection's base; the rest is retired.
       g_live.served->retire(published->payloads, g_live.hub->base_payloads(), frame, &events);
+      if (g_hc_shadow && g_hc_shadow_budget.empty()) {
+        g_hc_shadow_budget = g_live.served->shadow_failure();  // HC4b: serving's own oracle
+      }
       rs::TapContext ctx;
       ctx.frame = frame;
       ctx.t_ns = monotonic_ns();

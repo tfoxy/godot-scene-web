@@ -67,7 +67,7 @@ Transaction full_txn(const Snapshot &snap) {
   t.default_texture_filter = snap.default_texture_filter;
   t.default_texture_repeat = snap.default_texture_repeat;
   t.canvases = snap.canvases.vector();
-  t.textures = snap.textures;
+  t.textures = snap.textures.vector();
   for (const ItemState &it : snap.items) {
     t.items.push_back(entry(it, false));
   }

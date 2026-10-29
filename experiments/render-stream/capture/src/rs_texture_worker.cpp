@@ -245,11 +245,14 @@ bool captured_ready(const Captured &captured) {
 }
 
 bool resolve_captured(Captured *captured, bool fault, std::string *error) {
+  if (!captured->pending.empty()) {
+    captured->names_valid = false;  // HC4b: the entries move away from the mirror's name index
+  }
   for (const PendingTexture &p : captured->pending) {
     if (p.index >= captured->state.textures.size() || p.job == nullptr) {
       continue;
     }
-    rs2::TextureEntry &entry = captured->state.textures[p.index];
+    rs2::TextureEntry &entry = captured->state.textures.mut(p.index);  // HC4b: copy-on-write
     if (!p.job->done()) {
       if (!fault) {
         *error = "texture-worker-unready: texture " + std::to_string(entry.id) +

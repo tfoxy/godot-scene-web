@@ -12,6 +12,7 @@
 #include "rs2_codec.h"
 #include "rs2_diff.h"
 #include "rs_publish.h"
+#include "rs_records.h"
 #include "rs_ws.h"
 
 namespace grc {
@@ -931,8 +932,10 @@ const Hub::V11Records &Hub::v11_records(const std::shared_ptr<const rs::Captured
     frame_v11_.push_back(std::move(r));
     return *frame_v11_.back();
   }
-  r->records = records_before(base != nullptr ? &base->state : nullptr, target->state, policy);
-  r->inline_count = inline_names(target->state, policy).size();
+  // HC4b: over the entries base and target do not share (rs_records.h).
+  rs::RecordPlan plan = rs::plan_v11_records(base.get(), *target, policy);
+  r->records = std::move(plan.records);
+  r->inline_count = plan.inline_count;
   frame_v11_.push_back(std::move(r));
   return *frame_v11_.back();
 }

@@ -352,6 +352,38 @@ if (!rrSkipped("sabotage-hc-stale-derived-gate2")) {
   add("sabotage-hc-stale-derived-gate2-caught", caught.length > 0 ? [] : ["gate 2's unsupported checks did not fail"], `caught: ${caught.join(" | ")}`);
 }
 
+// HC4b: the resource tables' sabotage, caught by the oracle and by gate 2's texture checks, and
+// serve-skip, caught by late-join-served and gate 2's live GET checks.
+// The capture holds texture 1 at its pre-update version and hash: gate 2 reads that against the
+// hook log and the receivers' pixels. serve-skip's first payload answers 404 and the live
+// receiver fails resource-unavailable.
+const HC4B_TEXTURE_CHECKS: Array<[string, string]> = [
+  ["texture-versions-current", "the hook log says"],
+  ["receiver-vs-reference", ""],
+  ["expected-image-receiver", ""],
+];
+const HC4B_SERVE_CHECKS: Array<[string, string]> = [
+  ["http-gets-match-fetches", "HTTP 404"],
+  ["leg-class-live", "resource-unavailable"],
+];
+if (!rrSkipped("sabotage-hc-skip-dirty-texture-oracle")) {
+  const s = shadowOf(join(out, "sabotage-hc-skip-dirty-texture-oracle", "gate", "capture"));
+  const ok = s?.mismatches > 0 && typeof s.first === "string" && s.first.startsWith("textures id ");
+  add("sabotage-hc-skip-dirty-texture-oracle-caught", ok ? [] : [`not caught: capture shadow ${JSON.stringify(s)}`],
+    `caught: capture ended at ${s?.first}`);
+}
+if (!rrSkipped("sabotage-hc-skip-dirty-texture-gate2")) {
+  const caught = gateCaught("sabotage-hc-skip-dirty-texture-gate2", HC4B_TEXTURE_CHECKS);
+  add("sabotage-hc-skip-dirty-texture-gate2-caught", caught.length > 0 ? [] : ["gate 2's texture checks did not fail"], `caught: ${caught.join(" | ")}`);
+}
+if (!rrSkipped("sabotage-serve-skip")) {
+  lateJoin("sabotage-serve-skip-caught", "sabotage-serve-skip", "ref-static", false, true);
+}
+if (!rrSkipped("sabotage-serve-skip-gate2")) {
+  const caught = gateCaught("sabotage-serve-skip-gate2", HC4B_SERVE_CHECKS);
+  add("sabotage-serve-skip-gate2-caught", caught.length > 0 ? [] : ["gate 2's live GET checks did not fail"], `caught: ${caught.join(" | ")}`);
+}
+
 writeFileSync(join(out, "result.json"), `${JSON.stringify({ schema: "render-stream-hc1-result/1", checks }, null, 2)}\n`);
 for (const c of checks) console.log(`hc1: ${c.passed ? "pass" : "FAIL"} ${c.id}: ${c.detail}`);
 process.exit(checks.every((c) => c.passed) ? 0 : 1);

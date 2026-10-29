@@ -31,6 +31,14 @@ namespace grc {
 namespace rs2 {
 namespace golden {
 
+// HC4b: the resource tables are keyed by id (SharedTable), so an entry gets its id before it
+// enters one.
+template <typename T>
+inline T with_id(T entry, std::uint32_t id) {
+  entry.id = id;
+  return entry;
+}
+
 inline const std::string kFullSessionId = "0123456789abcdef0123456789abcdef";
 inline const std::string kFullStreamId = std::string(32, '1');
 inline const std::string kPatchSessionId = "fedcba9876543210fedcba9876543210";
@@ -1401,14 +1409,12 @@ inline Snapshot state(int n) {
     s.textures = {texture_a(2, kHashA2), texture_atwin(), texture_u(), texture_p_replaced(),
                   texture_n(), texture_page()};
     s.meshes = {
-        mesh_entry(MeshStatus::Ok, 1,
+        with_id(mesh_entry(MeshStatus::Ok, 1,
                    {mesh_surface(kHashMesh1A, 256, Primitive::Triangles, kMesh1SurfaceAFormat, 3, 0),
-                    mesh_surface(kHashMesh1B, 297, Primitive::Triangles, kMesh1SurfaceBFormat, 4, 6)}),
-        mesh_entry(MeshStatus::Ok, 1,
-                   {mesh_surface(kHashMesh2V1, 281, Primitive::Triangles, kMesh2SurfaceFormat, 4, 6)}),
+                    mesh_surface(kHashMesh1B, 297, Primitive::Triangles, kMesh1SurfaceBFormat, 4, 6)}), 1),
+        with_id(mesh_entry(MeshStatus::Ok, 1,
+                   {mesh_surface(kHashMesh2V1, 281, Primitive::Triangles, kMesh2SurfaceFormat, 4, 6)}), 2),
     };
-    s.meshes[0].id = 1;
-    s.meshes[1].id = 2;
     s.default_texture_filter = Filter::Linear;
     break;
   case 10:
@@ -1417,10 +1423,9 @@ inline Snapshot state(int n) {
     s = state(9);
     s.seq = 10;
     s.frame = 10;
-    s.meshes[1] = mesh_entry(
+    s.meshes.set(with_id(mesh_entry(
         MeshStatus::Ok, 2,
-        {mesh_surface(kHashMesh2V2, 281, Primitive::Triangles, kMesh2SurfaceFormat, 4, 6)});
-    s.meshes[1].id = 2;
+        {mesh_surface(kHashMesh2V2, 281, Primitive::Triangles, kMesh2SurfaceFormat, 4, 6)}), 2));
     break;
   case 11:
     // new at /4: mesh 1 freed (item 8 still names it: a tombstone); mesh 3 created
@@ -1433,8 +1438,7 @@ inline Snapshot state(int n) {
     s.canvases = {root_canvas({1, 2, 3, 4, 5, 6, 7, 8, 9, 10})};
     s.items.push_back(item9_unsupported_mesh());
     s.items.push_back(item10_unknown_mesh());
-    s.meshes[0] = mesh_entry(MeshStatus::Freed, 1);
-    s.meshes[0].id = 1;
+    s.meshes.set(with_id(mesh_entry(MeshStatus::Freed, 1), 1));
     {
       MeshEntry mesh3 = mesh_entry(MeshStatus::Unsupported, 1, {}, true, MeshReason::MeshFormat);
       mesh3.id = 3;
@@ -1456,20 +1460,15 @@ inline Snapshot state(int n) {
     s.items.push_back(item13_use_parent_material());
     s.items.push_back(item14_null_shader_material());
     s.shaders = {
-        shader_entry(ShaderStatus::Ok, 1, kHashShader1, kShader1PayloadBytes, false,
-                     ShaderReason::ShaderMode, true, builtin_cim(BlendMode::Add)),
-        shader_entry(ShaderStatus::Ok, 1, kHashShader2V1, kShader2V1PayloadBytes),
+        with_id(shader_entry(ShaderStatus::Ok, 1, kHashShader1, kShader1PayloadBytes, false,
+                     ShaderReason::ShaderMode, true, builtin_cim(BlendMode::Add)), 1),
+        with_id(shader_entry(ShaderStatus::Ok, 1, kHashShader2V1, kShader2V1PayloadBytes), 2),
     };
-    s.shaders[0].id = 1;
-    s.shaders[1].id = 2;
     s.materials = {
-        material_entry(MaterialStatus::Ok, 1, true, 1, material1_params()),
-        material_entry(MaterialStatus::Ok, 1, true, 2, material2_params_v1()),
-        material_entry(MaterialStatus::Ok, 1, false, 0, {}),
+        with_id(material_entry(MaterialStatus::Ok, 1, true, 1, material1_params()), 1),
+        with_id(material_entry(MaterialStatus::Ok, 1, true, 2, material2_params_v1()), 2),
+        with_id(material_entry(MaterialStatus::Ok, 1, false, 0, {}), 3),
     };
-    s.materials[0].id = 1;
-    s.materials[1].id = 2;
-    s.materials[2].id = 3;
     break;
   case 13:
     // new at /5: ONE parameter change on material 2 (p_float 2.5 -> 9.5) -- the patch carries
@@ -1477,8 +1476,7 @@ inline Snapshot state(int n) {
     s = state(12);
     s.seq = 13;
     s.frame = 13;
-    s.materials[1] = material_entry(MaterialStatus::Ok, 2, true, 2, material2_params_v2());
-    s.materials[1].id = 2;
+    s.materials.set(with_id(material_entry(MaterialStatus::Ok, 2, true, 2, material2_params_v2()), 2));
     break;
   case 14:
     // new at /5: ONE shader code change on shader 2 (new hash) -- the patch carries exactly one
@@ -1486,8 +1484,7 @@ inline Snapshot state(int n) {
     s = state(13);
     s.seq = 14;
     s.frame = 14;
-    s.shaders[1] = shader_entry(ShaderStatus::Ok, 2, kHashShader2V2, kShader2V2PayloadBytes);
-    s.shaders[1].id = 2;
+    s.shaders.set(with_id(shader_entry(ShaderStatus::Ok, 2, kHashShader2V2, kShader2V2PayloadBytes), 2));
     break;
   case 15:
     // new at /5: a TIME-using shader (3, unsupported/shader-time) bound to a new material (4,

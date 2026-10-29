@@ -70,6 +70,13 @@ bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<C
 // null when they are identical. The mirror republishes an item or canvas exactly when it differs.
 const char *item_state_difference(const ItemState &a, const ItemState &b);
 const char *canvas_state_difference(const CanvasState &a, const CanvasState &b);
+// HC4b: the same for the resource entries -- every field, the wire's and the host's own (a mesh
+// surface's body and key flag, a shader's or material's /11 form), whatever the version. The
+// mirror republishes a resource entry exactly when it differs.
+const char *texture_entry_difference(const TextureEntry &a, const TextureEntry &b);
+const char *mesh_entry_difference(const MeshEntry &a, const MeshEntry &b);
+const char *shader_entry_difference(const ShaderEntry &a, const ShaderEntry &b);
+const char *material_entry_difference(const MaterialEntry &a, const MaterialEntry &b);
 
 // The command list as below /11: every add_multimesh, and every `unsupported` command named
 // canvas_item_add_multimesh (unknown-multimesh, unknown-texture, ...), becomes

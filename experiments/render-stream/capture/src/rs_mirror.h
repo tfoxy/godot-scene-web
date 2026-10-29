@@ -149,6 +149,11 @@ struct MirrorStats {
   std::uint64_t hc_full_rebuilds = 0;
   std::uint64_t hc_derived_all = 0;
   std::uint64_t hc_dirty_marks_dropped = 0;  // the hc-skip-dirty sabotage only
+  // HC4b: resource entries (textures, meshes, shaders, materials) a snapshot visited and those it
+  // replaced or removed, and the texture marks hc-skip-dirty-texture dropped.
+  std::uint64_t hc_resources_visited = 0;
+  std::uint64_t hc_resources_republished = 0;
+  std::uint64_t hc_dirty_marks_dropped_textures = 0;
   std::uint64_t hc_shadow_checked = 0;
   std::uint64_t hc_shadow_mismatches = 0;
 };
@@ -965,6 +970,13 @@ class Mirror {
   // mark (the item's change waits for its next mark); `stale_derived` skips one item's
   // item-level unsupported recompute (the first that would change its entries).
   void set_hc_sabotage(bool skip_dirty, bool stale_derived);
+  // HC4b sabotage `hc-skip-dirty-texture` (env GRC_HC_SABOTAGE, never on the wire): the first
+  // texture marked after a snapshot published it loses that mark and every later one, so its
+  // published entry, payload and names stay what they were.
+  void set_hc_sabotage_texture(bool skip_dirty_texture);
+  // HC4b: the inline threshold (GRC_RESOURCE_INLINE_MAX_BYTES) the snapshots' name index counts
+  // |inline(state)| at (Captured::inline_count). Set before arming.
+  void set_inline_max(std::uint64_t inline_max_bytes);
 
  private:
   struct Item {
@@ -1006,6 +1018,7 @@ class Mirror {
   };
   struct Texture {
     std::uint32_t id = 0;
+    bool hc_dirty = false;  // HC4b: in its table's dirty set (ResMap::mark)
     std::uint64_t rid = 0;  // 0 once freed (a tombstone) or retired
     rs2::TextureKind kind = rs2::TextureKind::Image;
     rs2::TextureStatus status = rs2::TextureStatus::Ok;
@@ -1072,6 +1085,7 @@ class Mirror {
   };
   struct Mesh {
     std::uint32_t id = 0;
+    bool hc_dirty = false;  // HC4b: in its table's dirty set (ResMap::mark)
     std::uint64_t rid = 0;  // 0 once freed (a tombstone)
     rs2::MeshStatus status = rs2::MeshStatus::Ok;
     bool has_reason = false;
@@ -1091,6 +1105,7 @@ class Mirror {
   // One shader (G55d). `has_code` false: shader_create'd, no shader_set_code yet.
   struct Shader {
     std::uint32_t id = 0;
+    bool hc_dirty = false;  // HC4b: in its table's dirty set (ResMap::mark)
     std::uint64_t rid = 0;
     std::uint64_t version = 1;
     rs2::Origin origin = rs2::Origin::Created;  // G8m: `adopted` for a pre-arm shader
@@ -1119,6 +1134,7 @@ class Mirror {
   };
   struct Material {
     std::uint32_t id = 0;
+    bool hc_dirty = false;  // HC4b: in its table's dirty set (ResMap::mark)
     std::uint64_t rid = 0;
     std::uint64_t version = 1;
     bool has_shader = false;
@@ -1232,7 +1248,8 @@ class Mirror {
   static void reset_basis(Texture *texture);  // G8ku: a content change drops the Basis state
   BasisSubmit basis_submit_;
   // Meshes (G5e).
-  Mesh *find_mesh(std::uint64_t rid);
+  Mesh *find_mesh(std::uint64_t rid);  // HC4b: marks the mesh (a write)
+  const Mesh *peek_mesh(std::uint64_t rid) const;
   // A mesh tap's prologue: omit-op (and the epoch), then the entry, or nullptr (counted unknown).
   Mesh *mesh_for(std::uint64_t rid, const char *op, std::uint64_t frame);
   // One surface as the table keeps it, perturb-vertex applied when active at `frame`.
@@ -1255,7 +1272,11 @@ class Mirror {
   // W11b: with V11Options enabled, a dynamic mesh's entry carries `dynamic`, its serial and bodies.
   // HC3: publishes each `ok` surface's bytes into `payloads` (when non-null) under the surface's
   // wire hash -- its SHA-256, or for a dynamic surface nobody hashes, its payload key.
-  rs2::MeshEntry wire_mesh(Mesh *mesh, PayloadMap *payloads);
+  // HC4b: `payloads` gets the (hash, bytes) pairs the entry puts in the payload map.
+  rs2::MeshEntry wire_mesh(Mesh *mesh, std::vector<std::pair<std::string, PayloadPtr>> *payloads);
+  // The shadow oracle's twin: the same entry and pairs without touching the mesh's caches.
+  rs2::MeshEntry wire_mesh_peek(const Mesh &mesh,
+                                std::vector<std::pair<std::string, PayloadPtr>> *payloads) const;
   // W11b: one content change of `mesh` at `frame` (V11Options): the serial and the classification.
   void mesh_changed(Mesh *mesh, std::uint64_t frame);
   // W11b: promotes `mesh` at the snapshot when V11Options says so.
@@ -1358,9 +1379,23 @@ class Mirror {
     std::vector<rs2::UnsupportedRef> item_level;
     ItemsPublished refs;
     bool withheld_differs = false;  // the incremental withheld set is not withheld_ids()
+    // HC4b: the resource tables, the payload map, the name index and what they derive, as the
+    // full walk built them (full_walk_resources).
+    std::vector<rs2::TextureEntry> textures;
+    std::vector<rs2::MeshEntry> meshes;
+    std::vector<rs2::ShaderEntry> shaders;
+    std::vector<rs2::MaterialEntry> materials;
+    std::map<std::string, PayloadPtr> payloads;
+    std::map<std::string, NameCount> names;
+    std::vector<std::uint32_t> jobs;  // the texture ids a worker still holds (Captured::pending)
+    bool keyed_surfaces = false;
+    bool time_read = false;
+    bool below_v12 = false;
   };
   void full_walk_items(const std::set<std::uint32_t> &withheld, FullWalk *out) const;
-  void shadow_compare(const FullWalk &walk, const ItemsPublished &refs, rs2::Snapshot *out);
+  void full_walk_resources(FullWalk *out) const;
+  void shadow_compare(const FullWalk &walk, const ItemsPublished &refs, Captured *captured);
+  Captured hc_shadow_prev_captured_;  // HC4b: the previous snapshot with its payloads and names
 
   mutable std::mutex mutex_;
   std::uint64_t epoch_ = 0;
@@ -1465,6 +1500,119 @@ class Mirror {
     Map map_;
   };
   ItemMap items_;
+  // HC4b (host-cost-design.md D1 "Dirty sets"): a resource table (textures, meshes, shaders,
+  // materials), ordered by id, with ItemMap's discipline: read through find()/at()/all(), write
+  // through mut()/emplace()/erase()/mut_all(), each of which marks what it touches, so the next
+  // snapshot revisits exactly those entries. unmarked() is the snapshot's own bookkeeping.
+  template <typename T>
+  class ResMap {
+   public:
+    using Map = std::map<std::uint32_t, T>;
+    const T *find(std::uint32_t id) const {
+      const auto it = map_.find(id);
+      return it != map_.end() ? &it->second : nullptr;
+    }
+    const T &at(std::uint32_t id) const { return map_.at(id); }
+    std::size_t count(std::uint32_t id) const { return map_.count(id); }
+    T *mut(std::uint32_t id) {
+      const auto it = map_.find(id);
+      if (it == map_.end()) {
+        return nullptr;
+      }
+      mark(id, &it->second);
+      return &it->second;
+    }
+    T &emplace(std::uint32_t id, T value) {
+      T &placed = map_.emplace(id, std::move(value)).first->second;
+      placed.hc_dirty = false;
+      mark(id, &placed);
+      return placed;
+    }
+    bool erase(std::uint32_t id) {
+      if (map_.erase(id) == 0) {
+        return false;
+      }
+      gone_.push_back(id);
+      return true;
+    }
+    void clear() {
+      map_.clear();
+      dirty_.clear();
+      gone_.clear();
+      all_dirty_ = true;
+    }
+    const Map &all() const { return map_; }
+    typename Map::const_iterator begin() const { return map_.begin(); }
+    typename Map::const_iterator end() const { return map_.end(); }
+    Map &mut_all() {
+      all_dirty_ = true;
+      return map_;
+    }
+    std::size_t size() const { return map_.size(); }
+    bool empty() const { return map_.empty(); }
+    Map &unmarked() { return map_; }
+    void mark(std::uint32_t id) {
+      const auto it = map_.find(id);
+      if (it != map_.end()) {
+        mark(id, &it->second);
+      }
+    }
+    void mark(std::uint32_t id, T *value) {
+      if (value->hc_dirty || all_dirty_) {
+        return;
+      }
+      if (skip_dirty_ && (skip_id_ == id || (skip_id_ == 0 && published_.count(id) != 0))) {
+        skip_id_ = id;  // hc-skip-dirty-texture: every mark of this entry is lost from here on
+        ++dropped_;
+        return;
+      }
+      value->hc_dirty = true;
+      dirty_.push_back(id);
+    }
+    // The ids to visit (marked or erased since the last call, ascending, unique), and the flags
+    // cleared; every id when the whole table moved (`*all` set).
+    std::vector<std::uint32_t> take(bool *all) {
+      std::vector<std::uint32_t> out;
+      *all = all_dirty_;
+      if (all_dirty_) {
+        out.reserve(map_.size() + gone_.size());
+        for (auto &entry : map_) {
+          entry.second.hc_dirty = false;
+          out.push_back(entry.first);
+        }
+        out.insert(out.end(), gone_.begin(), gone_.end());
+      } else {
+        out.reserve(dirty_.size() + gone_.size());
+        for (std::uint32_t id : dirty_) {
+          const auto it = map_.find(id);
+          if (it != map_.end()) {
+            it->second.hc_dirty = false;
+          }
+          out.push_back(id);
+        }
+        out.insert(out.end(), gone_.begin(), gone_.end());
+      }
+      std::sort(out.begin(), out.end());
+      out.erase(std::unique(out.begin(), out.end()), out.end());
+      dirty_.clear();
+      gone_.clear();
+      all_dirty_ = false;
+      return out;
+    }
+    std::vector<std::uint32_t> dirty_;  // ids marked since the last take() (some may be gone)
+    std::vector<std::uint32_t> gone_;   // ids erased since the last take()
+    bool all_dirty_ = true;
+    // hc-skip-dirty-texture (textures only): the first entry marked after it was published loses
+    // that mark and every later one. `published_` is the snapshot's record of published ids.
+    bool skip_dirty_ = false;
+    std::uint32_t skip_id_ = 0;
+    std::uint64_t dropped_ = 0;
+    std::unordered_set<std::uint32_t> published_;
+
+   private:
+    Map map_;
+  };
+
   // HC4a: the published tables (every snapshot shares them, chunk by chunk) and what they derive.
   bool pub_valid_ = false;  // false: the next snapshot rebuilds everything
   rs2::SharedTable<rs2::ItemState> pub_items_;
@@ -1487,12 +1635,65 @@ class Mirror {
   std::uint64_t pt_command_items_ = 0;
   std::map<std::uint32_t, std::uint32_t> material_users_;
   // The inputs other items' derived entries read, as of the last snapshot: a change recomputes
-  // every item's entries (rare: a texture or mesh turning unsupported, a verdict moving).
-  std::vector<std::uint32_t> bad_textures_;
-  std::vector<std::uint32_t> bad_meshes_;
+  // every item's entries (rare: a texture or mesh turning unsupported, a verdict moving). HC4b:
+  // kept per marked texture and mesh (`tex_key_`: a texture's own unsupported-or-pending bit and
+  // its diffuse link, nonzero only; `bad_meshes_`: the unsupported meshes), so the snapshot
+  // compares only what moved; `hc_inputs_moved_` tells publish_items to rederive every item.
+  std::unordered_map<std::uint32_t, std::uint64_t> tex_key_;
+  std::unordered_set<std::uint32_t> bad_meshes_;
+  bool hc_inputs_moved_ = false;
+  bool hc_verdict_inputs_moved_ = false;  // a texture or shader moved (material verdicts)
   std::map<std::uint32_t, bool> mm_verdicts_;
   std::map<std::uint32_t, bool> pt_verdicts_;
   std::map<std::uint32_t, bool> material_verdicts_;
+  // --- HC4b (host-cost-design.md D1): the published resource tables and what they derive ---
+  // One resource entry's share of the payload map and the name index: the (hash, bytes) pairs it
+  // puts in the map, and the names it adds (rs_captured.h *_entry_names).
+  struct ResName {
+    std::string hash;
+    std::uint64_t payload_bytes = 0;
+    bool variant = false;
+  };
+  struct ResShare {
+    std::vector<std::pair<std::string, PayloadPtr>> payloads;
+    std::vector<ResName> names;
+  };
+  rs2::SharedTable<rs2::TextureEntry> pub_textures_;
+  rs2::SharedTable<rs2::MeshEntry> pub_meshes_;
+  rs2::SharedTable<rs2::ShaderEntry> pub_shaders_;
+  rs2::SharedTable<rs2::MaterialEntry> pub_materials_;
+  std::unordered_map<std::uint32_t, ResShare> tex_share_;
+  std::unordered_map<std::uint32_t, ResShare> mesh_share_;
+  std::unordered_map<std::uint32_t, ResShare> shader_share_;
+  // The payload map every snapshot shares (copy-on-write), with each hash's number of entries
+  // naming it, and the name index (NameIndex) with its inline counts under `inline_max_`.
+  PayloadMap pub_payloads_;
+  std::unordered_map<std::string, std::uint32_t> payload_users_;
+  NameIndex pub_names_;
+  std::uint64_t inline_max_ = 0;
+  std::uint64_t inline_count_ = 0;
+  std::uint64_t inline_count_variants_ = 0;
+  // Textures a worker or a pending recovery still holds (revisited every snapshot), the ids of
+  // the published meshes with keyed surfaces, the published `ok` shaders reading TIME, the
+  // published shaders and materials with a /11 form, and the texture and mesh tombstones.
+  std::set<std::uint32_t> tex_jobbed_;
+  std::unordered_set<std::uint32_t> keyed_meshes_;
+  std::unordered_set<std::uint32_t> time_shaders_;
+  std::unordered_set<std::uint32_t> below_v12_shaders_;
+  std::unordered_set<std::uint32_t> below_v12_materials_;
+  std::unordered_set<std::uint32_t> tex_tombstones_;
+  std::unordered_set<std::uint32_t> mesh_tombstones_;
+  bool res_dynamic_readers_ = true;  // the dynamic_hash_readers_ the published meshes were built at
+  std::vector<std::uint32_t> tex_recheck_;  // textures the last snapshot erased (key recheck)
+  void res_share_update(ResShare *old, ResShare now);
+  void res_names_add(const ResName &name, int delta);
+  // The published resource state cleared (the next snapshot rebuilds every entry).
+  void res_clear();
+  // The resource tables, payload map and name index for the textures `tex_visit` names (and
+  // erased since) and the marked meshes, shaders and materials. `jobs`: the published textures
+  // a worker still holds (G8kw), by id.
+  void res_publish_resources(const std::vector<std::uint32_t> &tex_visit,
+                             std::vector<std::pair<std::uint32_t, std::shared_ptr<TextureJob>>> *jobs);
   std::set<std::uint32_t> withheld_prev_;
   std::set<std::uint32_t> unknown_parent_ids_;  // Skip: items whose parent is an unknown RID
   bool hc_stale_derived_ = false;       // the hc-stale-derived sabotage, armed
@@ -1504,10 +1705,10 @@ class Mirror {
   bool hc_shadow_have_prev_ = false;
   rs2::Snapshot hc_shadow_prev_;       // the previous snapshot as published
   rs2::Snapshot hc_shadow_prev_full_;  // ... and as the full walk built it
-  std::map<std::uint32_t, Texture> textures_;  // ordered by id, tombstones included
+  ResMap<Texture> textures_;  // ordered by id, tombstones included (HC4b: marked writes)
   std::unordered_map<std::uint64_t, std::uint32_t> texture_by_rid_;
   std::uint32_t next_texture_id_ = 1;
-  std::map<std::uint32_t, Mesh> meshes_;  // ordered by id, tombstones included (G5e)
+  ResMap<Mesh> meshes_;  // ordered by id, tombstones included (G5e; HC4b: marked writes)
   std::unordered_map<std::uint64_t, std::uint32_t> mesh_by_rid_;
   std::uint32_t next_mesh_id_ = 1;
   // PM1: multimeshes (tombstones included), the options (survive reset()) and the state notes.
@@ -1564,10 +1765,10 @@ class Mirror {
   std::shared_ptr<const rs2::EmitTail> emit_tail_;
   std::uint64_t ppm_epoch_ = 0;  // moves when a shader or emitter changes what ppm_candidates sees
   // G55d: shaders and materials (no tombstones, D5).
-  std::map<std::uint32_t, Shader> shaders_;
+  ResMap<Shader> shaders_;  // HC4b: marked writes
   std::unordered_map<std::uint64_t, std::uint32_t> shader_by_rid_;
   std::uint32_t next_shader_id_ = 1;
-  std::map<std::uint32_t, Material> materials_;
+  ResMap<Material> materials_;  // HC4b: marked writes
   std::unordered_map<std::uint64_t, std::uint32_t> material_by_rid_;
   std::uint32_t next_material_id_ = 1;
   rs2::ShaderPolicy shader_policy_ = rs2::ShaderPolicy::Source;

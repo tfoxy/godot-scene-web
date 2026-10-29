@@ -184,6 +184,54 @@ resync). Pointer equality makes them O(changed chunks) for any pair, with no dir
   references and the lowering flags, then the encoded `make_patch(previous, current)` at the
   stream's version, and ends the stream with `hc-shadow-mismatch: <table> id <id>: <field>`.
 
+### As built (HC4b: resource tables, payload map, planning, serving; `results/p3/hc4b.md`)
+
+- **Textures, meshes, shaders and materials** are `SharedTable`s in `Snapshot`, and the mirror
+  keeps them in `ResMap`s with `ItemMap`'s discipline (reads through `find`/`all`, writes through
+  `mut`/`emplace`/`erase`/`mut_all`, each marking what it touches). The snapshot rebuilds the
+  marked entries (`wire_entry`, `wire_mesh`, `wire_shader`, `wire_material`) and republishes one
+  only when `*_entry_difference` (every field, the host's own included: a surface's body and key
+  flag, the /11 forms) finds a difference. Textures a worker or a pending recovery still holds are
+  revisited every snapshot (`settle`, `resolve_pending`), as the full walk did for all of them.
+  Multimeshes and emitters stay vectors: their tables follow the items' references, and neither
+  is walked when no item names one.
+- **The payload map** (`Captured::payloads`) is an `rs::SharedStrMap` (`rs_shared_map.h`): a
+  persistent sorted map whose chunks of at most 128 entries are shared copy-on-write, with
+  `std::map`'s read interface and a byte total (`weight()`). Each resource entry keeps its share
+  (the hashes and bytes it puts in the map); a hash stays while some entry names it. A snapshot
+  whose payloads did not move holds the previous snapshot's map root.
+- **The name index** (`Captured::names`, a `SharedStrMap<NameCount>`) counts the entries naming
+  each hash by `payload_names()`'s rule (main and variant roles, payload bytes), with
+  |inline(state)| kept for the stream's inline threshold. `rs_records.h plan_v11_records(B, T)`
+  walks the entries B and T do not share: a candidate from T's differing entries is held by B
+  when one of B's differing entries names it or T counts more entries naming it than its
+  differing ones (a shared entry does). It falls back to `records_before()` when T carries no
+  valid index (a hold-back snapshot `resolve_captured` filled in, a publisher sabotage's table,
+  the PM5 lowering). The hub's `v11_records` and the file publisher's /11 lanes use it.
+- **Store bookkeeping** visits only the entries a publication does not share with the previous
+  one: the store only grows, so every name the previous one held is stored.
+- **Serving and the budget** (`ServedResources`, `payload_union_bytes`): after a `retire()`, the
+  served set is exactly the current map and each base's, so a map that is one of those (or was
+  pinned whole since) pins nothing, and any other is pinned over its differences from the
+  current one. Retirement candidates are the hashes `pin()` added beyond those maps and the
+  hashes the previous current map and dropped bases hold that the new current map lacks, retired
+  in key order (the full walk's event order). `retained_bytes_beyond` and the union's bytes use
+  the same differences. The unpin and retain-superseded sabotages keep the full walk.
+- **Derived inputs** are compared per marked texture and mesh (a texture's unsupported-or-pending
+  bit and diffuse link, a mesh's unsupported status) instead of HC4a's per-snapshot fingerprint
+  walk; tombstones are kept as sets, so the tombstone rule's reference walks (items, materials,
+  shaders, canvas diffuses) run only while one exists. Material verdicts are recomputed when a
+  texture or shader moved, and only the moved materials' when only materials did.
+- **The shadow oracle** also builds the four tables, the payload map (first entry naming a hash
+  supplies its bytes) and the name index by the full walk and compares them entry by entry, then
+  `plan_v11_records` against `records_before` (with and without variants) from the previous
+  snapshot. Serving runs its own twin (the retained set after each `retire()` against current
+  and bases' union, `retained_bytes_beyond` against the walk) and the budget's union against
+  P3-CAP's walk; the frame callback ends the stream on either, like the mirror's.
+- **Sabotages**: `hc-skip-dirty-texture` (the first published texture marked loses that mark and
+  every later one) and `serve-skip` (a payload map that differs from the last retained one pins
+  nothing, from the first map on), both `GRC_HC_SABOTAGE` test knobs.
+
 ## D2. Hashing
 
 | hash | today | after |

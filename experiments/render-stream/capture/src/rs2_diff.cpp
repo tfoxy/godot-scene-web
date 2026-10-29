@@ -516,18 +516,18 @@ Transaction make_full(const Snapshot &cur, const TxMeta &meta) {
   t.default_texture_filter = cur.default_texture_filter;
   t.default_texture_repeat = cur.default_texture_repeat;
   t.canvases = cur.canvases.vector();
-  t.textures = cur.textures;
+  t.textures = cur.textures.vector();
   if (t.version == ProtocolVersion::V4 || t.version == ProtocolVersion::V5 ||
       t.version == ProtocolVersion::V6 || t.version == ProtocolVersion::V7 ||
       t.version == ProtocolVersion::V8 || t.version == ProtocolVersion::V9 ||
       is_v10_or_later(t.version)) {
-    t.meshes = cur.meshes;  // /11: a full sends every dynamic body (mesh_bodies_held empty)
+    t.meshes = cur.meshes.vector();  // /11: a full sends every dynamic body (mesh_bodies_held empty)
   }
   if (t.version == ProtocolVersion::V5 || t.version == ProtocolVersion::V6 ||
       t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
       t.version == ProtocolVersion::V9 || is_v10_or_later(t.version)) {
-    t.shaders = cur.shaders;
-    t.materials = cur.materials;
+    t.shaders = cur.shaders.vector();
+    t.materials = cur.materials.vector();
   }
   if (is_v11_or_later(t.version)) {
     // PM1 rules 1 and 3: every entry, every `ok` buffer (multimesh_buffers_held stays empty).
@@ -677,14 +677,6 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
   t.default_texture_repeat = cur.default_texture_repeat;
 
   // P3-CAP: sorted id indexes (one allocation per table) instead of node-based maps and sets.
-  const IdIndex<TextureEntry> base_textures(base.textures);
-  const IdIndex<MeshEntry> base_meshes(base.meshes);
-  const IdIndex<ShaderEntry> base_shaders(base.shaders);
-  const IdIndex<MaterialEntry> base_materials(base.materials);
-  const IdIndex<TextureEntry> cur_texture_ids(cur.textures);
-  const IdIndex<MeshEntry> cur_mesh_ids(cur.meshes);
-  const IdIndex<ShaderEntry> cur_shader_ids(cur.shaders);
-  const IdIndex<MaterialEntry> cur_material_ids(cur.materials);
 
   // HC4a: canvases and items by their shared chunks (diff_tables): a chunk or an entry `cur`
   // shares with `base` is equal without a comparison.
@@ -695,7 +687,6 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
           t.canvases.push_back(canvas);
         }
       });
-  base_textures.removed_from(cur_texture_ids, &t.removed_textures);
   const bool v10 = is_v10_or_later(t.version);  // "V10 or later"
   const bool v11 = is_v11_or_later(t.version);
   // render-stream-11.md "Patched `unsupported`": null when the list equals the base's.
@@ -706,14 +697,6 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
                       t.version == ProtocolVersion::V7 || t.version == ProtocolVersion::V8 ||
                       t.version == ProtocolVersion::V9 || v10;
   const bool is_v4_or_later = is_v5 || t.version == ProtocolVersion::V4;
-  if (is_v4_or_later) {
-    base_meshes.removed_from(cur_mesh_ids, &t.removed_meshes);
-  }
-  if (is_v5) {
-    base_shaders.removed_from(cur_shader_ids, &t.removed_shaders);
-    base_materials.removed_from(cur_material_ids, &t.removed_materials);
-  }
-  // IdIndex walks ascending by id, so removed_* are already ascending.
 
   diff_tables(
       base.items, cur.items, [&t](std::uint32_t id) { t.removed_items.push_back(id); },
@@ -731,42 +714,46 @@ Transaction make_patch(const Snapshot &base, const Snapshot &cur, const TxMeta &
         t.items.push_back(std::move(entry));
       });
 
-  for (const TextureEntry &tex : cur.textures) {
-    const TextureEntry *prev = base_textures.find(tex.id);
-    if (prev != nullptr && texture_entry_equal(*prev, tex)) {
-      continue;
-    }
-    t.textures.push_back(tex);
-  }
+  // HC4b (host-cost-design.md D1): the resource tables by their shared chunks too; diff_tables
+  // walks ascending by id, so removed_* and mesh_bodies_held are ascending.
+  diff_tables(
+      base.textures, cur.textures, [&t](std::uint32_t id) { t.removed_textures.push_back(id); },
+      [&t](const TextureEntry &tex, const TextureEntry *prev) {
+        if (prev == nullptr || !texture_entry_equal(*prev, tex)) {
+          t.textures.push_back(tex);
+        }
+      });
 
   if (is_v4_or_later) {
-    for (const MeshEntry &mesh : cur.meshes) {
-      const MeshEntry *prev = base_meshes.find(mesh.id);
-      if (prev != nullptr && mesh_entry_equal(*prev, mesh, v11)) {
-        continue;
-      }
-      if (v11 && is_dynamic_mesh(mesh) && !mesh_bodies_needed(prev, mesh)) {
-        t.mesh_bodies_held.push_back(mesh.id);  // cur.meshes is ascending, so this is too
-      }
-      t.meshes.push_back(mesh);
-    }
+    diff_tables(
+        base.meshes, cur.meshes, [&t](std::uint32_t id) { t.removed_meshes.push_back(id); },
+        [&t, v11](const MeshEntry &mesh, const MeshEntry *prev) {
+          if (prev != nullptr && mesh_entry_equal(*prev, mesh, v11)) {
+            return;
+          }
+          if (v11 && is_dynamic_mesh(mesh) && !mesh_bodies_needed(prev, mesh)) {
+            t.mesh_bodies_held.push_back(mesh.id);
+          }
+          t.meshes.push_back(mesh);
+        });
   }
 
   if (is_v5) {
-    for (const ShaderEntry &shader : cur.shaders) {
-      const ShaderEntry *prev = base_shaders.find(shader.id);
-      if (prev != nullptr && shader_entry_equal(*prev, shader)) {
-        continue;
-      }
-      t.shaders.push_back(shader);
-    }
-    for (const MaterialEntry &material : cur.materials) {
-      const MaterialEntry *prev = base_materials.find(material.id);
-      if (prev != nullptr && material_entry_equal(*prev, material)) {
-        continue;
-      }
-      t.materials.push_back(material);
-    }
+    diff_tables(
+        base.shaders, cur.shaders, [&t](std::uint32_t id) { t.removed_shaders.push_back(id); },
+        [&t](const ShaderEntry &shader, const ShaderEntry *prev) {
+          if (prev == nullptr || !shader_entry_equal(*prev, shader)) {
+            t.shaders.push_back(shader);
+          }
+        });
+    diff_tables(
+        base.materials, cur.materials,
+        [&t](std::uint32_t id) { t.removed_materials.push_back(id); },
+        [&t](const MaterialEntry &material, const MaterialEntry *prev) {
+          if (prev == nullptr || !material_entry_equal(*prev, material)) {
+            t.materials.push_back(material);
+          }
+        });
   }
 
   if (v11 && (!cur.multimeshes.empty() || !base.multimeshes.empty())) {
@@ -1081,6 +1068,84 @@ static_assert(sizeof(ItemState) == 264, "ItemState changed: update item_state_di
 static_assert(sizeof(CanvasState) == 80, "CanvasState changed: update canvas_state_difference, then this size");
 #endif
 
+// HC4b: the resource entries' difference functions below compare every field; a field added to
+// one of these structs must be added there too.
+#if defined(__x86_64__) && defined(__GLIBCXX__)
+static_assert(sizeof(TextureEntry) == 208, "TextureEntry changed: update texture_entry_difference");
+static_assert(sizeof(TextureVariant) == 128, "TextureVariant changed: update texture_entry_difference");
+static_assert(sizeof(MeshEntry) == 96, "MeshEntry changed: update mesh_entry_difference");
+static_assert(sizeof(MeshSurface) == 88, "MeshSurface changed: update mesh_entry_difference");
+static_assert(sizeof(ShaderEntry) == 160, "ShaderEntry changed: update shader_entry_difference");
+static_assert(sizeof(MaterialEntry) == 56, "MaterialEntry changed: update material_entry_difference");
+#endif
+
+const char *texture_entry_difference(const TextureEntry &a, const TextureEntry &b) {
+  if (a.id != b.id) {
+    return "id";
+  }
+  // texture_entry_equal compares every other field (kind, status, reason, version, hash, format,
+  // source_format, shape, payload_bytes, variants, canvas, origin, adopted_content).
+  return texture_entry_equal(a, b) ? nullptr : "entry";
+}
+
+const char *mesh_entry_difference(const MeshEntry &a, const MeshEntry &b) {
+  if (a.id != b.id) {
+    return "id";
+  }
+  if (a.dynamic != b.dynamic || a.content_serial != b.content_serial) {
+    return "dynamic";
+  }
+  if (!mesh_entry_equal(a, b, true)) {
+    return "entry";
+  }
+  for (std::size_t i = 0; i < a.surfaces.size(); ++i) {
+    const MeshSurface &x = a.surfaces[i];
+    const MeshSurface &y = b.surfaces[i];
+    if (x.hash_is_key != y.hash_is_key || x.hash != y.hash) {
+      return "surface hash";
+    }
+    if ((x.body == nullptr) != (y.body == nullptr) ||
+        (x.body != nullptr && x.body != y.body && *x.body != *y.body)) {
+      return "surface body";
+    }
+  }
+  return nullptr;
+}
+
+const char *shader_entry_difference(const ShaderEntry &a, const ShaderEntry &b) {
+  if (a.id != b.id) {
+    return "id";
+  }
+  if (!shader_entry_equal(a, b)) {
+    return "entry";
+  }
+  if ((a.below_v12 == nullptr) != (b.below_v12 == nullptr)) {
+    return "below_v12";
+  }
+  if (a.below_v12 != nullptr && a.below_v12 != b.below_v12 &&
+      shader_entry_difference(*a.below_v12, *b.below_v12) != nullptr) {
+    return "below_v12";
+  }
+  return nullptr;
+}
+
+const char *material_entry_difference(const MaterialEntry &a, const MaterialEntry &b) {
+  if (a.id != b.id) {
+    return "id";
+  }
+  if (!material_entry_equal(a, b)) {
+    return "entry";
+  }
+  if ((a.below_v12 == nullptr) != (b.below_v12 == nullptr)) {
+    return "below_v12";
+  }
+  if (a.below_v12 != nullptr && a.below_v12 != b.below_v12 &&
+      material_entry_difference(*a.below_v12, *b.below_v12) != nullptr) {
+    return "below_v12";
+  }
+  return nullptr;
+}
+
 const char *item_state_difference(const ItemState &a, const ItemState &b) {
   if (a.id != b.id) return "id";
   if (a.origin != b.origin) return "origin";
@@ -1294,19 +1359,21 @@ Snapshot lower_particles(const Snapshot &state) {
     return out;
   }
   out.particles_commands = false;
-  for (ShaderEntry &shader : out.shaders) {
-    if (shader.below_v12 != nullptr) {
-      const std::shared_ptr<const ShaderEntry> below = shader.below_v12;
-      shader = *below;
-    }
-    shader.has_ppm = false;
-  }
-  for (MaterialEntry &material : out.materials) {
-    if (material.below_v12 != nullptr) {
-      const std::shared_ptr<const MaterialEntry> below = material.below_v12;
-      material = *below;
-    }
-  }
+  out.shaders.mutate_if(
+      [](const ShaderEntry &shader) { return shader.below_v12 != nullptr || shader.has_ppm; },
+      [](ShaderEntry &shader) {
+        if (shader.below_v12 != nullptr) {
+          const std::shared_ptr<const ShaderEntry> below = shader.below_v12;
+          shader = *below;
+        }
+        shader.has_ppm = false;
+      });
+  out.materials.mutate_if(
+      [](const MaterialEntry &material) { return material.below_v12 != nullptr; },
+      [](MaterialEntry &material) {
+        const std::shared_ptr<const MaterialEntry> below = material.below_v12;
+        material = *below;
+      });
   if (out.shader_time.has_value()) {
     // The host's shader time travels only when an `ok` shader reads TIME (render-stream-10.md);
     // a process-material shader that is `ok` only at /12 does not count below it.

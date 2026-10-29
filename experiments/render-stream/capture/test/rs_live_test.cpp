@@ -1587,6 +1587,135 @@ struct ServeRig {
   }
 };
 
+// HC4b: the shared payload map (copy-on-write chunks, diff over differing chunks), and
+// ServedResources' pin/retire/budget over map differences, against the full walk they replaced:
+// the same events in the same order, the same retained set and byte totals, frame by frame.
+void test_hc4b_shared_maps_and_serving() {
+  std::uint32_t seed = 12345;
+  const auto rnd = [&seed](std::uint32_t n) {
+    seed = seed * 1103515245u + 12345u;
+    return (seed >> 8) % n;
+  };
+  const auto key = [](std::uint32_t k) {
+    char buf[65];
+    std::snprintf(buf, sizeof(buf), "%064x", k * 2654435761u);
+    return std::string(buf);
+  };
+  std::vector<grc::rs::PayloadPtr> bytes;
+  for (std::uint32_t k = 0; k < 600; ++k) {
+    bytes.push_back(grt1(static_cast<int>(k % 200) + 1, 16 + k % 40));
+  }
+  // The map against std::map, over random writes; copies share untouched chunks.
+  grc::rs::PayloadMap map;
+  std::map<std::string, grc::rs::PayloadPtr> want;
+  std::vector<grc::rs::PayloadMap> history;
+  for (int round = 0; round < 60; ++round) {
+    const grc::rs::PayloadMap before = map;
+    const std::map<std::string, grc::rs::PayloadPtr> want_before = want;
+    const int writes = round == 0 ? 400 : static_cast<int>(rnd(20));
+    for (int w = 0; w < writes; ++w) {
+      const std::uint32_t k = rnd(600);
+      if (rnd(3) == 0) {
+        map.erase(key(k));
+        want.erase(key(k));
+      } else {
+        map.emplace(key(k), bytes[k]);
+        want.emplace(key(k), bytes[k]);
+      }
+    }
+    bool same = map.size() == want.size();
+    std::uint64_t weight = 0;
+    auto w = want.begin();
+    for (auto it = map.begin(); same && it != map.end(); ++it, ++w) {
+      same = it->first == w->first && it->second == w->second;
+      weight += w->second->size();
+    }
+    check(same && map.weight() == weight, "the shared map iterates as std::map, with its weight");
+    std::vector<std::string> only_a;
+    std::vector<std::string> only_b;
+    grc::rs::diff_shared_maps(
+        before, map, [&](const auto &e) { only_a.push_back(e.first); },
+        [&](const auto &e) { only_b.push_back(e.first); }, [](const auto &, const auto &) {});
+    std::vector<std::string> want_a;
+    std::vector<std::string> want_b;
+    for (const auto &e : want_before) {
+      if (want.count(e.first) == 0) want_a.push_back(e.first);
+    }
+    for (const auto &e : want) {
+      if (want_before.count(e.first) == 0) want_b.push_back(e.first);
+    }
+    check(only_a == want_a && only_b == want_b, "diff_shared_maps finds exactly the differences");
+    history.push_back(map);
+  }
+  check(history[0].root()->chunks.size() >= 2, "the map spans several chunks");
+
+  // Serving: an incremental ServedResources (shadow on) against the full-walk model.
+  grc::rs::ServedResources served;
+  served.set_shadow(true);
+  std::map<std::string, grc::rs::PayloadPtr> model;
+  bool events_same = true;
+  bool beyond_same = true;
+  bool union_same = true;
+  for (std::size_t f = 1; f < history.size(); ++f) {
+    const grc::rs::PayloadMap &current = history[f];
+    std::vector<const grc::rs::PayloadMap *> bases;
+    const std::size_t nb = rnd(3);
+    for (std::size_t b = 0; b < nb; ++b) {
+      bases.push_back(&history[f - 1 - rnd(static_cast<std::uint32_t>(std::min<std::size_t>(f, 4)))]);
+    }
+    const std::vector<const grc::rs::PayloadMap *> known = {&current, &history[f - 1]};
+    // The budget before the pin, as the frame callback takes it.
+    if (f > 1) {
+      std::uint64_t want_beyond = 0;
+      for (const auto &e : model) {
+        if (current.count(e.first) == 0 && history[f - 1].count(e.first) == 0) {
+          want_beyond += e.second->size();
+        }
+      }
+      beyond_same = beyond_same && served.retained_bytes_beyond(known) == want_beyond;
+    }
+    union_same = union_same && grc::rs::payload_union_bytes(known) ==
+                                   grc::rs::payload_union_bytes_full(known);
+    std::vector<grc::rs::ServeEvent> events;
+    std::vector<const grc::rs::PayloadMap *> sendable = bases;
+    sendable.insert(sendable.begin(), &current);
+    served.pin(sendable, f, &events);
+    served.retire(current, bases, f, &events);
+    std::vector<std::string> want_events;
+    for (const grc::rs::PayloadMap *m : sendable) {
+      for (const auto &e : *m) {
+        if (model.emplace(e.first, e.second).second) want_events.push_back("pin " + e.first);
+      }
+    }
+    for (auto it = model.begin(); it != model.end();) {
+      bool keep = current.count(it->first) != 0;
+      for (const grc::rs::PayloadMap *b : bases) keep = keep || b->count(it->first) != 0;
+      if (keep) {
+        ++it;
+      } else {
+        want_events.push_back("retire " + it->first);
+        it = model.erase(it);
+      }
+    }
+    std::vector<std::string> got_events;
+    for (const grc::rs::ServeEvent &e : events) got_events.push_back(std::string(e.op) + " " + e.hash);
+    events_same = events_same && got_events == want_events && served.retained() == model.size();
+  }
+  check(events_same, "incremental pin/retire make the full walk's events, in its order");
+  check(beyond_same, "retained_bytes_beyond over the differences equals the full walk");
+  check(union_same, "payload_union_bytes over the differences equals the full walk");
+  check(served.shadow_failure().empty(), "the serving oracle agrees (" + served.shadow_failure() + ")");
+
+  // serve-skip: a map never pinned answers 404.
+  grc::rs::ServedResources skip;
+  skip.set_serve_skip(true);
+  std::vector<grc::rs::ServeEvent> events;
+  skip.pin({&history[3]}, 1, &events);
+  skip.retire(history[3], {}, 1, &events);
+  check(skip.retained() == 0 && skip.lookup(history[3].begin()->first) == nullptr,
+        "serve-skip pins nothing of a changed map");
+}
+
 // G8kz: coded bodies of the served set (render-stream-2.md "HTTP (live)").
 void test_served_coded_bodies() {
   using grc::live::Coding;
@@ -3051,6 +3180,7 @@ int main() {
   test_carried_index();
   test_served_resources();
   test_served_coded_bodies();
+  test_hc4b_shared_maps_and_serving();
   test_rate_uncapped_unchanged();
   test_rate_targets();
   test_rate_credit_blocked_and_no_burst();

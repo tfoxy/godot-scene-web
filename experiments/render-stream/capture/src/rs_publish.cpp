@@ -12,6 +12,7 @@
 #include "report.h"
 #include "rs2_codec.h"
 #include "rs2_diff.h"
+#include "rs_records.h"
 
 namespace grc {
 namespace rs2 {
@@ -549,8 +550,15 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
   }
   if (lane->planner != nullptr) {
     // W11b (render-stream-11.md "Resource retention"): inline(T) \ inline(B) in table order.
-    const std::vector<PayloadName> records =
-        lane->planner->next(has_previous_ ? &previous_.state : nullptr, published.state);
+    // HC4b: a /11 planner holds nothing, so it plans over the entries B and T do not share.
+    std::vector<PayloadName> records;
+    if (lane->planner->lifelong()) {
+      records = lane->planner->next(has_previous_ ? &previous_.state : nullptr, published.state);
+    } else {
+      InlinePolicy policy;
+      policy.inline_max_bytes = policy_.inline_max_bytes;
+      records = rs::plan_v11_records(has_previous_ ? &previous_ : nullptr, published, policy).records;
+    }
     for (const PayloadName &name : records) {
       const auto payload = published.payloads.find(name.hash);
       if (payload == published.payloads.end() || payload->second == nullptr) {
@@ -609,7 +617,12 @@ bool Publisher::write_inline(Lane *lane, const rs::Captured &published, std::uin
 bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t frame) {
   // W11b: a /11 stream's dynamic surfaces travel in its transactions, never in the store.
   const bool v11 = stamp_v8_ && is_v11_or_later(stamp_version_);
-  for (const rs::PayloadRef &ref : rs::payload_refs(published.state, v11)) {
+  // HC4b (host-cost-design.md D1 "Store bookkeeping"): every payload the previous publication
+  // named was stored (or, without a store, checked) when it was published, and the store only
+  // grows, so only the entries this publication does not share with it can name a new payload.
+  // They are visited in payload_refs()'s table order, so the store events keep their order.
+  const rs::Captured *base = has_previous_ ? &previous_ : nullptr;
+  const auto store_ref = [&](const rs::PayloadRef &ref) {
     const std::string &hash = *ref.hash;
     if (store_ == nullptr) {
       if (ref.payload_bytes > policy_.inline_max_bytes) {
@@ -618,10 +631,10 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
                  "no store directory is open";
         return false;
       }
-      continue;
+      return true;
     }
     if (store_->has(hash)) {
-      continue;
+      return true;
     }
     const auto payload = published.payloads.find(hash);
     if (payload == published.payloads.end() || payload->second == nullptr) {
@@ -641,6 +654,75 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
       error_ = "resource-store-failed: " + why;
       return false;
     }
+    return true;
+  };
+  // payload_refs()'s rule, one entry at a time.
+  const auto texture_ref = [&](const TextureEntry &entry) {
+    if (entry.kind != rs2::TextureKind::Image || entry.status != rs2::TextureStatus::Ok ||
+        !entry.has_hash) {
+      return true;
+    }
+    rs::PayloadRef ref;
+    ref.hash = &entry.hash;
+    ref.payload_bytes = entry.payload_bytes;
+    ref.texture = &entry;
+    return store_ref(ref);
+  };
+  const auto mesh_refs = [&](const MeshEntry &mesh) {
+    if (mesh.status != rs2::MeshStatus::Ok || (v11 && mesh.dynamic && !mesh.surfaces.empty())) {
+      return true;
+    }
+    for (const MeshSurface &surface : mesh.surfaces) {
+      rs::PayloadRef ref;
+      ref.hash = &surface.hash;
+      ref.payload_bytes = surface.payload_bytes;
+      ref.surface = &surface;
+      if (!store_ref(ref)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto shader_ref = [&](const ShaderEntry &shader) {
+    if (shader.status != rs2::ShaderStatus::Ok || !shader.has_source ||
+        shader.source != rs2::ShaderSource::Payload || !shader.has_hash) {
+      return true;
+    }
+    rs::PayloadRef ref;
+    ref.hash = &shader.hash;
+    ref.payload_bytes = shader.payload_bytes;
+    ref.shader = &shader;
+    return store_ref(ref);
+  };
+  std::vector<const TextureEntry *> textures;  // the textures to visit, for the variants below
+  bool ok = true;
+  if (base == nullptr) {
+    for (const TextureEntry &entry : published.state.textures) {
+      textures.push_back(&entry);
+      ok = ok && texture_ref(entry);
+    }
+    for (const MeshEntry &mesh : published.state.meshes) {
+      ok = ok && mesh_refs(mesh);
+    }
+    for (const ShaderEntry &shader : published.state.shaders) {
+      ok = ok && shader_ref(shader);
+    }
+  } else {
+    const auto none = [](const auto &) {};
+    rs::records_detail::differing_entries(base->state.textures, published.state.textures, none,
+                                          [&](const TextureEntry &entry) {
+                                            textures.push_back(&entry);
+                                            ok = ok && texture_ref(entry);
+                                          });
+    rs::records_detail::differing_entries(base->state.meshes, published.state.meshes, none,
+                                          [&](const MeshEntry &mesh) { ok = ok && mesh_refs(mesh); });
+    rs::records_detail::differing_entries(base->state.shaders, published.state.shaders, none,
+                                          [&](const ShaderEntry &shader) {
+                                            ok = ok && shader_ref(shader);
+                                          });
+  }
+  if (!ok) {
+    return false;
   }
   // G8kp (texture-delivery-design.md Q3 "File sink"): the store holds every variant produced, so a
   // replaying receiver picks by D3 as a live one does. A variant is never inline (D12(c), Q5) and
@@ -648,7 +730,8 @@ bool Publisher::store_payloads(const rs::Captured &published, std::uint64_t fram
   if (store_ == nullptr) {
     return true;
   }
-  for (const TextureEntry &entry : published.state.textures) {
+  for (const TextureEntry *entry_ptr : textures) {
+    const TextureEntry &entry = *entry_ptr;
     if (!is_ok_image(entry)) {
       continue;
     }
@@ -710,13 +793,10 @@ void Publisher::apply_stale_texture(rs::Captured *captured, std::uint64_t frame)
   if (stale_id_ == 0) {
     return;
   }
-  for (TextureEntry &entry : captured->state.textures) {
-    if (entry.id != stale_id_) {
-      continue;
-    }
-    entry = stale_entry_;
-    break;
+  if (captured->state.textures.find(stale_id_) != nullptr) {
+    captured->state.textures.set(stale_entry_);
   }
+  captured->names_valid = false;  // HC4b: the table no longer matches the mirror's name index
   // The payload map holds exactly the ok image hashes of the (sabotaged) table, and (G5e) the
   // mesh surfaces' hashes, which this sabotage never touches.
   rs::PayloadMap payloads;
