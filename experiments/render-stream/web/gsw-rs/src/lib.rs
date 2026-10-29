@@ -139,6 +139,9 @@ struct Opts {
     /// PM6a's receiver sabotage `ignore-particle-emits` on GSW: every wire emit is dropped
     /// (counted `emits_dropped`) instead of consumed.
     ignore_particle_emits: bool,
+    /// PFB's receiver sabotage `gl-particle-colors`: the emitters read the wire's colours, as
+    /// GSW did before PFB, whatever the host's rendering method.
+    gl_particle_colors: bool,
 }
 
 /// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
@@ -278,6 +281,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 // add_particles counted particles-undrawn); `ignore-particle-emits` drops emits.
                 "undrawn-particles" => o.apply.lower.undrawn_particles = true,
                 "ignore-particle-emits" => o.ignore_particle_emits = true,
+                // PFB: the emitters read the wire's colours whatever the host's rendering method.
+                "gl-particle-colors" => o.gl_particle_colors = true,
                 // PM3, GSW-only: a particles_animation CanvasItemMaterial drawn as its builtin.
                 "no-flipbook" => o.apply.no_flipbook = true,
                 // UIT: every /11 use_identity_transform ignored, as every receiver drew before UIT.
@@ -2228,7 +2233,12 @@ impl GswRs {
         if st.particles.is_empty() && self.payloads.particles.is_empty() {
             return String::new();
         }
-        render_stream_core::apply::particles::describe(st, &mut self.payloads)
+        // PFB: a RendererRD host's process shader read its colour uniforms linearized.
+        let linear = !self.opts.gl_particle_colors
+            && render_stream_core::apply::particles::host_linearizes_particle_colors(
+                &v.session().engine.rendering_method,
+            );
+        render_stream_core::apply::particles::describe(st, &mut self.payloads, linear)
     }
 
     /// PM6b: the host's shader time for the newest accepted state (the process material reads

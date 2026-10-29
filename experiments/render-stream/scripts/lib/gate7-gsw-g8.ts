@@ -117,6 +117,11 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8pt/sabotage-undrawn-particles/receiver"),
   leg("g8pt/sabotage-ignore-particle-emits/receiver"),
   leg("g8pt/sabotage-drop-restart/receiver-patch"),
+  // PFB (render-stream-12.md "As built (PFB)"): fixtures/gate8-ptc's Forward+ capture, whose
+  // particles material colours the host linearized; GSW's emitters read them so (rs-core
+  // particles::describe), and `gl-particle-colors` is the pre-PFB GSW on the same name.
+  leg("g8pt/ptc/receiver"),
+  leg("g8pt/ptc/sabotage-gl-particle-colors/receiver"),
   // g8f (gate8-tex's float scene: GSW quantizes every float payload to RGBA8, rs-core's rule)
   leg("g8f/receiver"),
   leg("g8f/receiver-patch"),
@@ -243,6 +248,9 @@ export const GATE8_RECEIVER_CHECKS: {
     "pt-lifecycle-catches-drop-restart",
     "pt-lifecycle-catches-undrawn-particles",
     "pt-replay-catches-ignore-particle-emits",
+    // g8pt ptc (PFB's checks over the GSW legs)
+    "ptc-receiver",
+    "ptc-receiver-catches-gl-particle-colors",
     // g8kp (G8kb)
     "delivery-select",
     "delivery-pixels-native",

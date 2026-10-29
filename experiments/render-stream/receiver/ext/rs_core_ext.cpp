@@ -2351,12 +2351,35 @@ void method_ptrcall(void *, GDExtensionClassInstancePtr, const GDExtensionConstT
 
 const char *CLASS_NAME = "RsCore";
 
+// PFB (render-stream-12.md "As built (PFB)"): RenderingServer.get_current_rendering_method() is
+// "gl_compatibility" (the native receiver's opengl3, the web export's WebGL 2). Read once.
+bool rendering_is_gl_compatibility() {
+  static int known = -1;
+  if (known >= 0) return known == 1;
+  known = 0;
+  StringName rs_name("RenderingServer"), method("get_current_rendering_method");
+  void *rs = gd.global_get_singleton(rs_name.ptr());
+  GDExtensionMethodBindPtr bind =
+      rs != nullptr ? gd.classdb_get_method_bind(rs_name.ptr(), method.ptr(), 201670096) : nullptr;
+  if (bind != nullptr) {
+    Str name{};
+    gd.ptrcall(bind, rs, nullptr, &name);
+    GDExtensionInt n = gd.string_to_utf8(&name, nullptr, 0);
+    std::string text(static_cast<size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0) gd.string_to_utf8(&name, text.data(), n);
+    gd.dtor[GDEXTENSION_VARIANT_TYPE_STRING](&name);
+    known = text == "gl_compatibility" ? 1 : 0;
+  }
+  return known == 1;
+}
+
 GDExtensionObjectPtr create_instance(void *, GDExtensionBool) {
   StringName parent("RefCounted");
   StringName cls(CLASS_NAME);
   GDExtensionObjectPtr object = gd.construct_object(parent.ptr());
   auto *inst = new Instance();
   inst->core = rsc_new();
+  rsc_set_gl_compatibility(inst->core, rendering_is_gl_compatibility() ? 1 : 0);  // PFB
   gd.object_set_instance(object, cls.ptr(), inst);
   return object;
 }

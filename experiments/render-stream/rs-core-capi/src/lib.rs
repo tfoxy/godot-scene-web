@@ -140,6 +140,15 @@ pub extern "C" fn rsc_set_variant_upgrade(h: *mut RsCore, on: i32) {
     guard(h, (), |c| c.planner.delivery.upgrade = on != 0);
 }
 
+/// PFB (render-stream-12.md "As built (PFB)"): the receiver renders with gl_compatibility, which
+/// uploads a particles material's colour uniforms as given: when the session's host linearizes them
+/// (RendererRD), the planner converts a particles material's `color` parameters before
+/// `material_set_param`.
+#[no_mangle]
+pub extern "C" fn rsc_set_gl_compatibility(h: *mut RsCore, on: i32) {
+    guard(h, (), |c| c.planner.gl_compatibility = on != 0);
+}
+
 /// G8kwh (texture-delivery-design.md "As built (G8kwh)"): WebGL's BC alignment rule (`on`: D3 skips
 /// BC `block` variants, and `uastc` variants while a BC family is stated, of a texture whose level
 /// 0 is not 4-aligned). The web export sets it; the native receiver never does.
