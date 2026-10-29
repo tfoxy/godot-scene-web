@@ -46,6 +46,7 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { check, type G8aCheck } from "./gate8-adopt-checks";
 import { dynamicAppliedProblems, STORE_SLACK } from "./gate8-w11-gsw-checks";
+import { runG8w11cGsw13 } from "./gate8-w13-gsw-checks";
 import { decodeRecording, type ResolvedRecording, resolveRecording, splitRecords } from "./render-stream-2";
 
 /** Native leg -> [capture, sink]; the /11 legs with their /10 twins. */
@@ -666,6 +667,8 @@ export async function runG8w11cResync(out: string): Promise<G8aCheck[]> {
     ...(await firstApplyChecks(root, "native-sabotage-drop-base", "drop-base")),
     ...(await firstApplyChecks(root, "native-sabotage-wrong-prefix", "wrong-prefix")),
     await arenaCaught(root),
+    // W13c: GSW's /13 resync legs (lib/gate8-w13-gsw-checks.ts).
+    ...(await runG8w11cGsw13(root)),
   ];
 }
 

@@ -61,7 +61,7 @@ export interface RenderStreamEndpoint {
   url: string;              // ws(s) URL of /render-stream, absolute or page-relative
   resourceBase: string;     // URL prefix, no trailing slash: GET resourceBase + session http_path + hash
   token: string | null;     // 64 hex, or null for GRC_LIVE_AUTH=none
-  protocol: 11 | 12;        // the host's GRC_STREAM_VERSION; the only subprotocol offered
+  protocol: 11 | 12 | 13;   // the host's GRC_STREAM_VERSION; the only subprotocol offered (13: W13c)
   presentation?: [number, number]; // expected presentation size (the session confirms it)
 }
 

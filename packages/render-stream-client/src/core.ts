@@ -5,6 +5,7 @@
 
 import {
   ACCEPT_END,
+  ACCEPT_HELD,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
   type GswRs,
@@ -129,7 +130,7 @@ export class WasmStreamCore implements StreamCore {
     private readonly mod: GswRsModule,
     private readonly memory: WebAssembly.Memory,
     private readonly g: GswRs,
-    private readonly protocol: 11 | 12,
+    private readonly protocol: 11 | 12 | 13,
     private readonly liveCoding: string,
     private readonly inboundBytes: number,
   ) {}
@@ -170,8 +171,23 @@ export class WasmStreamCore implements StreamCore {
     if (code < 0) {
       const err = g.error();
       if (err.startsWith("live-framing")) throw failWith(null, err);
-      throw failWith(failureSeq(data, this.lastAcceptedSeq + 1), err);
+      const seq = failureSeq(data, this.lastAcceptedSeq + 1);
+      // W13c (render-stream-13.md "Decoding and check order"): a /13 transaction whose
+      // reconstructed blocks miss predict_check applied nothing; it resyncs as a coding failure,
+      // and the core drops the patches before the full (ACCEPT_HELD).
+      if (err.startsWith("predict-check"))
+        return {
+          kind: "coding-resync",
+          seq:
+            this.coding !== null
+              ? this.coding.seq()
+              : (seq ?? this.lastAcceptedSeq + 1),
+          error: err,
+        };
+      throw failWith(seq, err);
     }
+    // W13c: a patch dropped while a predict-check resync awaits its full.
+    if (code === ACCEPT_HELD) return { kind: "held" };
     if (code === ACCEPT_RESOURCE) return { kind: "resource" };
     if (code === ACCEPT_END) return { kind: "end" };
     const st = this.stats();

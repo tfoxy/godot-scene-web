@@ -12,8 +12,8 @@
 
 export type ReceiverMode = "file" | "live";
 
-/** A GSW receiver's live wire version (RS_RECEIVER_PROTOCOL): 7 to 12 (PM5 adds 12). */
-export type LiveProtocol = 7 | 8 | 9 | 10 | 11 | 12;
+/** A GSW receiver's live wire version (RS_RECEIVER_PROTOCOL): 7 to 13 (PM5 adds 12, W13c 13). */
+export type LiveProtocol = 7 | 8 | 9 | 10 | 11 | 12 | 13;
 
 export interface ReceiverConfig {
   mode: ReceiverMode;
@@ -60,7 +60,8 @@ export interface ReceiverConfig {
    * CG1: or 10 (offers render-stream.10; /10's back-buffer keys are typed, not composited).
    * W11c: or 11 (offers render-stream.11: dynamic meshes by id, the pruned carried set).
    * PM5: or 12 (offers render-stream.12: /11's transport; each add_particles a typed
-   * `particles-undrawn` shortcut until PM6). */
+   * `particles-undrawn` shortcut until PM6). W13c: or 13 (offers render-stream.13: /12 with
+   * predicted mesh and multimesh blocks, un-predicted by rs-core's /13 accept path). */
   liveProtocol: LiveProtocol;
   canvas: [number, number] | null;
   /** Every RS_RECEIVER_* value as given, for the log. */
@@ -440,7 +441,7 @@ function liveCoding(value: string | undefined, version: number): string {
   if (version < 11) {
     if (v !== "" && v !== "off")
       throw new UsageError(
-        `RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11 or 12 (got ${v} at /${version})`,
+        `RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11, 12 or 13 (got ${v} at /${version})`,
       );
     return "";
   }
@@ -462,8 +463,9 @@ function liveProtocol(value: string | undefined): LiveProtocol {
   if (v === "10") return 10;
   if (v === "11") return 11;
   if (v === "12") return 12;
+  if (v === "13") return 13;
   throw new UsageError(
-    `RS_RECEIVER_PROTOCOL must be 7, 8, 9, 10, 11 or 12 for a GSW receiver (got ${v})`,
+    `RS_RECEIVER_PROTOCOL must be 7, 8, 9, 10, 11, 12 or 13 for a GSW receiver (got ${v})`,
   );
 }
 

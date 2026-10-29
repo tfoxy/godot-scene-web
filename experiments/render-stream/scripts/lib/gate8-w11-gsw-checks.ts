@@ -145,7 +145,7 @@ async function readJson<T>(path: string): Promise<T | null> {
 }
 
 /** Differing pixels between two shots (any RGBA channel), or null when one is missing. */
-async function shotDiff(a: string, b: string): Promise<number | null> {
+export async function shotDiff(a: string, b: string): Promise<number | null> {
   const x = await decodePngRgba(a);
   const y = await decodePngRgba(b);
   if (!x || !y) return null;

@@ -69,6 +69,7 @@
 
 import {
   ACCEPT_END,
+  ACCEPT_HELD,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
   failWith,
@@ -236,6 +237,8 @@ class LiveReceiver {
   /** W11c: every connection's coding stats, and the resyncs a coding error asked for. */
   private readonly codingReports: Record<string, unknown>[] = [];
   private codingResyncs = 0;
+  /** W13c: the coding resyncs a predict-check failure asked for (counted in codingResyncs too). */
+  private predictResyncs = 0;
   /** GRH: the wasm heap (bytes) when the first coding resync was asked, before the applier is
    * rebuilt (evidence only: the leg's end heap also holds the stream's own creep). */
   private heapAtResync: number | null = null;
@@ -601,7 +604,9 @@ class LiveReceiver {
             // G8kb: GSW transcodes uastc (the module's default with the worker, Q3).
             this.cfg.textureEncodings ?? "block,uastc,decoded",
             probeGpuFormats(this.cfg.gpuFormatMask),
-            this.cfg.liveProtocol === 12
+            this.cfg.liveProtocol === 13
+              ? "render-stream/13"
+              : this.cfg.liveProtocol === 12
               ? "render-stream/12"
               : this.cfg.liveProtocol === 11
                 ? "render-stream/11"
@@ -744,8 +749,20 @@ class LiveReceiver {
     if (code < 0) {
       const err = g.error();
       if (err.startsWith("live-framing")) throw failWith(null, err);
+      // W13c (render-stream-13.md "Decoding and check order"): a /13 transaction whose
+      // reconstructed blocks miss predict_check applied nothing: resync it (reason coding), as a
+      // coding failure. The module drops the patches before the full (ACCEPT_HELD).
+      if (err.startsWith("predict-check")) {
+        this.predictResyncs++;
+        const seq =
+          this.coding !== null ? this.coding.seq() : failureSeq(buf, expected);
+        this.codingResync(seq ?? expected, err);
+        return;
+      }
       throw failWith(failureSeq(buf, expected), err);
     }
+    // W13c: a patch dropped while a predict-check resync awaits its full: no apply, no ack.
+    if (code === ACCEPT_HELD) return;
     if (code === ACCEPT_RESOURCE) {
       this.inlineSinceApplied++;
       return;
@@ -2282,6 +2299,12 @@ class LiveReceiver {
           rebuild_applies: this.rebuildApplies,
           connections: all,
         };
+      }
+      // W13c: the /13 accept path's evidence (the module's w13 block: predict-check failures,
+      // the patches dropped awaiting their fulls) and the resyncs this page asked for them.
+      if (this.cfg.liveProtocol === 13 && g) {
+        const ev = JSON.parse(g.evidence_json()) as { w13?: Record<string, unknown> };
+        this.liveBlock.predict = { resyncs: this.predictResyncs, ...(ev.w13 ?? {}) };
       }
       gsw.raf_skipped = this.rafSkipped;
       gsw.drawn_rafs = this.drawnRafs;

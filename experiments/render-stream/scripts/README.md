@@ -3452,6 +3452,11 @@ mise exec -- pnpm render-stream:gate8 -- \
   `g8w11/gsw/<leg>/gsw`, from a planned launch it writes to `g8w11/gsw/<leg>/plan` (g8w11 has no
   native receiver leg). `lib/gate8-w11-gsw-checks.ts` (`runG8w11Gsw`, called by `runG8w11`) judges
   them; `test/self-test-gate8-w11-gsw.ts` drives its digest and frame helpers on golden-11.
+  W13c adds GSW's /13 legs (`scale13`, `mesh13`, their /12 twins, `sabotage-no-predict-reset/
+  mesh13`; GSW-only until W13d, so `native-plan` leaves them out) and `--set pt13`, which run_g8pt
+  calls after its captures to replay g8pt's headless /13 twins under `g8pt/gsw13/<leg>/gsw`.
+  `lib/gate8-w13-gsw-checks.ts` judges both (`runG8w13Gsw` from `runG8w11`, `runG8pt13Gsw` from
+  check-gate8.ts's g8pt block) and g8w11c's GSW /13 resync legs (`runG8w11cGsw13`).
 - `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
   `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
   `canonicalState` compares materials by content since G8m.

@@ -47,6 +47,25 @@ pub const ACCEPT_TRANSACTION: i32 = 0;
 pub const ACCEPT_RESOURCE: i32 = 1;
 pub const ACCEPT_END: i32 = 2;
 pub const ACCEPT_NEEDS_PAYLOADS: i32 = 3;
+/// W13c: `live_accept` dropped a /13 patch that arrived while a `predict-check` resync awaits its
+/// full transaction (render-stream-13.md "As built (W13c)"): no apply, no ack.
+pub const ACCEPT_HELD: i32 = 4;
+
+/// W13c: a transaction message's `seq` and whether it is full, read from its meta's canonical
+/// prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`, every version's key order).
+/// `None` for any other record (or one too short to say).
+fn peek_transaction(record: &[u8]) -> Option<(u64, bool)> {
+    let frame = wire::frame(record, 0).ok()?;
+    let rest = frame
+        .meta
+        .strip_prefix(b"{\"type\":\"transaction\",\"seq\":")?;
+    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+    let seq = std::str::from_utf8(&rest[..digits]).ok()?.parse().ok()?;
+    let rest = rest[digits..].strip_prefix(b",\"frame\":")?;
+    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+    let rest = rest[digits..].strip_prefix(b",\"encoding\":\"")?;
+    Some((seq, rest.starts_with(b"full\"")))
+}
 
 /// The stats block (`web/bench/bench-rs.ts` `STAT_FIELDS`, same order).
 #[repr(C)]
@@ -146,6 +165,10 @@ struct Opts {
     /// takes the shader's builtin key (the first material's), as GSW did before PSE, even when
     /// the shader switches the key's fields by uniforms.
     shared_process_key: bool,
+    /// W13c: the /13 decoder sabotage `no-predict-reset` (render-stream-13.md "As built (W13a)",
+    /// "Sabotages"): a full does not reset the prediction history, so the first full after units
+    /// exist fails `predict-check` (rs-core `Options::no_predict_reset`).
+    no_predict_reset: bool,
 }
 
 /// G8kb: every `uastc` variant hash of the state's textures (the KTX2 payloads).
@@ -226,7 +249,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
         o.gpu_format_mask = mask.split(',').map(str::to_string).collect();
     }
     o.summary_log = json.contains("\"log\":\"summary\"");
-    o.live_protocol = if json.contains("\"live_protocol\":12") {
+    o.live_protocol = if json.contains("\"live_protocol\":13") {
+        13
+    } else if json.contains("\"live_protocol\":12") {
         12
     } else if json.contains("\"live_protocol\":11") {
         11
@@ -303,6 +328,8 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "evict-carried" => o.evict_carried = true,
                 "stale-dynamic-rx" => o.stale_dynamic_rx = true,
                 "no-prune" => o.no_prune = true,
+                // W13c: a /13 full un-predicted against the history (no reset).
+                "no-predict-reset" => o.no_predict_reset = true,
                 // GRH: a coding resync's fresh applier does not inherit the resident textures, so
                 // its full transaction uploads every texture again (the pre-GRH behaviour).
                 "rebuild-reupload" => o.rebuild_reupload = true,
@@ -587,6 +614,13 @@ pub struct GswRs {
     rx: Vec<u8>,
     rx_offset: usize,
     live: bool,
+    /// W13c: a /13 transaction failed `predict-check` on this connection; until its full
+    /// transaction arrives every patch is dropped unaccepted (`ACCEPT_HELD`): it is predicted from
+    /// the failed transaction, which this receiver's history never took.
+    predict_await_full: bool,
+    /// W13c: `predict-check` failures and the patches dropped while awaiting their fulls.
+    predict_failures: u32,
+    predict_dropped: u32,
     stream_index: u32,
     last_digest: [u8; 32],
     /// The session viewport, kept so a resync can rebuild the applier (`live_rebuild`).
@@ -819,6 +853,9 @@ impl GswRs {
             rx: Vec::new(),
             rx_offset: 0,
             live: false,
+            predict_await_full: false,
+            predict_failures: 0,
+            predict_dropped: 0,
             stream_index: 1,
             last_digest: [0; 32],
             viewport: None,
@@ -1077,7 +1114,7 @@ impl GswRs {
             },
             verify_payload_hashes: !self.opts.skip_payload_hash,
             early_prune: false,
-            no_predict_reset: false,
+            no_predict_reset: self.opts.no_predict_reset,
         };
         let mut v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
         v.set_no_prune(self.opts.no_prune);
@@ -1279,6 +1316,9 @@ impl GswRs {
                 if self.version >= 11 {
                     // W11c: the transaction's dynamic bodies replace their surfaces' geometry in
                     // place (by mesh id, no store entry and no hash), while the record is in hand.
+                    // W13c: at /13 the validator's block ranges index the reconstructed /12
+                    // record (`record_view`), not the predicted one it was given.
+                    let rec = v.record_view(bytes);
                     let t = prof::start();
                     let ingested = if self.opts.stale_dynamic_rx {
                         // Sabotage: a body whose surface already holds one of the same shape is
@@ -1303,9 +1343,9 @@ impl GswRs {
                             })
                             .copied()
                             .collect();
-                        self.payloads.dynamic.ingest(st, &keep, bytes)
+                        self.payloads.dynamic.ingest(st, &keep, rec)
                     } else {
-                        self.payloads.dynamic.ingest(st, v.dynamic_bodies(), bytes)
+                        self.payloads.dynamic.ingest(st, v.dynamic_bodies(), rec)
                     };
                     // PM6b: the transaction's emits. gl_compatibility's particles_emit is a no-op
                     // (render-stream-12.md "As built (PM6a)" rule 10), so GSW's simulation consumes
@@ -1320,7 +1360,7 @@ impl GswRs {
                     if !self.payloads.multimeshes.is_empty() || !v.multimesh_buffers().is_empty() {
                         self.payloads
                             .multimeshes
-                            .ingest(st, v.multimesh_buffers(), bytes);
+                            .ingest(st, v.multimesh_buffers(), rec);
                     }
                     prof::add(prof::PAYLOAD_DECODE, t);
                     if let Err(e) = ingested {
@@ -1464,9 +1504,27 @@ impl GswRs {
             );
             return -1;
         }
+        // W13c: while a `predict-check` resync awaits its full transaction, patches are dropped.
+        if self.predict_await_full {
+            match peek_transaction(&self.rx[..byte_length]) {
+                Some((_, false)) => {
+                    self.predict_dropped += 1;
+                    return ACCEPT_HELD;
+                }
+                Some((_, true)) => self.predict_await_full = false,
+                None => {}
+            }
+        }
         let index = self.accepted.len();
         let code = self.accept_bytes(true, 0, byte_length, offset, index);
         if code < 0 {
+            // W13c (render-stream-13.md "Decoding and check order"): a /13 transaction whose
+            // reconstructed blocks miss `predict_check` applied nothing; the caller resyncs it with
+            // reason `coding`, and the patches before the full are dropped here.
+            if self.version >= 13 && self.error.starts_with("predict-check") {
+                self.predict_await_full = true;
+                self.predict_failures += 1;
+            }
             return code;
         }
         self.rx_offset += len;
@@ -1580,6 +1638,7 @@ impl GswRs {
         self.spans.clear();
         self.data.clear();
         self.rx_offset = 0;
+        self.predict_await_full = false;
         self.stream_index += 1;
         self.stats = Stats {
             stream: self.stream_index,
@@ -2703,6 +2762,21 @@ impl GswRs {
                 w.dynamic_mismatched,
                 w.first_mismatch_seq.map_or("null".to_string(), |s| s.to_string()),
                 w.dynamic_undrawn
+            ));
+        }
+        if self.version >= 13 {
+            // W13c: the /13 accept path's evidence (render-stream-13.md "As built (W13c)").
+            let units = self
+                .validator
+                .as_ref()
+                .map(|v| {
+                    let (b, a, m) = v.prediction_history().h1().counts();
+                    b + a + m
+                })
+                .unwrap_or(0);
+            out.push_str(&format!(
+                ",\"w13\":{{\"predict_failures\":{},\"predict_dropped\":{},\"no_predict_reset\":{},\"history_units\":{}}}",
+                self.predict_failures, self.predict_dropped, self.opts.no_predict_reset, units
             ));
         }
         out.push('}');

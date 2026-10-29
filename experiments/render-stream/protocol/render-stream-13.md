@@ -2,7 +2,8 @@
 
 Status: **staged.** W13a (2026-10-29) built the predicted blocks under /12's JSON meta at the wire
 level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built.
-W13b (2026-10-29) made the capture emit it ("As built (W13b): capture"). The
+W13b (2026-10-29) made the capture emit it ("As built (W13b): capture"), W13c (2026-10-29) made
+GSW and the render-stream client accept it ("As built (W13c): GSW"). The
 binary transaction syntax below is **deferred** ("Staging"). The rest of this text is WB-D's design
 (2026-10-29). The measurements behind every number are
 in [results/p3/wb-d.md](../results/p3/wb-d.md), made with `scripts/lib/wire-budget.py proto13`, a
@@ -605,6 +606,40 @@ is "As built (W13a)"'s, unchanged; this section says what produces it.
   and drops the patches that arrive before the full unacked. It is W13b's receiver; GSW (W13c) and
   the native and web receivers (W13d) are not changed, and nothing on the receiver side offers `.13`
   yet.
+
+## As built (W13c): GSW
+
+W13c makes the GSW receiver (`web/gsw-receiver`, `web/gsw-rs`) and the private live client
+(`packages/render-stream-client`) accept /13 (results in [results/p3/w13c.md](../results/p3/w13c.md)).
+The wire is "As built (W13a)"'s; nothing a host sends changes.
+
+- **Opt-in.** `RS_RECEIVER_PROTOCOL=13` (file mode needs nothing: a `GRSD` recording is /13 by its
+  magic) offers `render-stream.13` only, with /12's hello under `"protocol": "render-stream/13"`.
+  The client's endpoint takes `protocol: 13`; 12 stays what a product passes (couch-coop's seat
+  says `GRC_STREAM_VERSION=12`; switching it is W13z's call).
+- **Accept.** rs-core's validator un-predicts (its /13 accept path, W13a); the module feeds
+  `Validator::record_view(record)` (the reconstructed /12 record) to the dynamic-mesh and
+  multimesh ingest, whose ranges index it. Nothing else in the module reads a transaction's blocks.
+  W11t's coding decodes first, so the un-predictor sees the uncoded /13 message.
+- **`predict-check` live.** A /13 transaction that fails `predict-check` applies nothing (the
+  validator changes nothing on an error). The module notes it and returns the error; the page
+  resyncs it with reason `coding` (W11t's `codingResync`: GTS's `transport_skip`, a rebuilt applier
+  for the full). Until the full arrives, `live_accept` drops every patch unaccepted and unacked,
+  reading only its meta's canonical prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":`),
+  and returns the new code `ACCEPT_HELD` (4): such a patch is predicted from the failed
+  transaction, which the history never took. A coded connection's decoder keeps decoding them
+  (their bases are intact); an uncoded one drops them the same way. In file mode `predict-check`
+  fails the replay, as every validation error does.
+- **Receiver sabotage `no-predict-reset`** (W13a's decoder sabotage, `RS_RECEIVER_SABOTAGE`): the
+  module's validator un-predicts a full against H1 and H2. A live receiver then fails the resync's
+  full too, so it never catches up.
+- **Evidence.** perf.json `gsw.w13` (`predict_failures`, `predict_dropped`, `no_predict_reset`,
+  `history_units`: H1's bodies, AABBs and buffers at the end); a live leg's applied.json
+  `live.predict` (the page's `resyncs` for predict-check, and the same counters).
+- **Cost** (`profile-rs-core-wasm.mjs`, pm7-a12-1 and its /13 transcode, wasm in Node, 5 repeats,
+  exclusive lock): `accept_us` p50 216.7 µs at /12, 265.8 at /13 (+22.7 %, +49 µs: 38 in the
+  un-predict, check and plain record, the rest the history); the core's per-transaction total p50
+  608.5 → 659.3 µs (+8.4 %). The design's +10 % on accept is missed (results/p3/w13c.md "Cost").
 
 ## Versioning
 
