@@ -1215,6 +1215,30 @@ GSW's coding resync stepped the wasm heap up for good (W11z: 561.5 -> 969.7 MB o
    it; the receiver sabotage `rebuild-reupload` restores the old behaviour and
    `coding-resync-reupload-caught` requires `coding-resync-uploads` to refuse it.
 
+### As built (GLJ): decisions
+
+A GSW viewer that joins a running scene paid its whole texture set twice in its first apply (GRH:
++496 MiB for a viewer joining STS2 combat; the heap never gives it back).
+
+1. **Cause.** The payload store keeps every texture's decoded pixels, and an upload copied them
+   again into the draw list's byte arena (`texture_bytes`, one `Vec` grown by doubling) until the
+   executor's `texImage2D`. A join's first apply uploads every texture at once, so the arena peaked at
+   the whole texture set (rounded up to a power of two). No wire change was involved.
+2. **Fix.** `TexturePixels` keeps its pixels as `SharedBytes` (`Arc<Vec<u8>>`), and the applier
+   queues each upload by reference (`DrawList::upload_*_shared`, `TextureBytes::Shared`): the draw
+   list holds one more count on the store's own allocation until `consumed`, and the executor
+   uploads straight from it. Nothing is copied, so the first apply's transient memory no longer
+   depends on the texture set; first-frame pixels are unchanged (the same bytes reach the same GL
+   call). The byte arena stays for producers that do not keep their pixels (placeholders, the
+   canvas test harness). The sabotage `arena-upload` (GSW only) copies every upload, as before.
+3. **Evidence and checks.** applied.json `live.gsw.first_apply` records the viewer's first applied
+   transaction: the heap before its apply (every payload resident), after it and after its draw, the
+   texture bytes the draw uploaded and how many came from the arena or shared. g8w11c judges
+   `first-apply-arena-*` (at most half of the first draw's texture bytes from the arena; any scale)
+   and `first-apply-heap-*` (heap after the first draw within 32 MiB of the heap before the apply;
+   game scale), and `first-apply-arena-caught` requires the sabotage leg (`arena-upload`, beside
+   `rebuild-reupload`) to fail the first. `results/p3/glj.md`.
+
 ## Predicted cost (STS2, from the kept recordings)
 
 One viewer that takes every transaction, `GRC_RESOURCE_INLINE_MAX_BYTES=4096`. Method and both

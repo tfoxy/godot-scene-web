@@ -410,6 +410,7 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
 interface LiveApplied extends Applied {
   streams?: { stream_id: string | null }[];
   live?: {
+    gsw?: { first_apply?: FirstApply | null };
     coding?: {
       connections?: Record<string, unknown>[];
       resyncs?: number;
@@ -558,6 +559,101 @@ async function reuploadCaught(root: string): Promise<G8aCheck> {
   return check(id, criterion, problems, r ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B` : "no rebuild apply");
 }
 
+/**
+ * GLJ: a GSW viewer's first apply (a join: every texture the state names uploaded at once) shares
+ * the payload store's pixels with the draw list instead of copying them into its byte arena
+ * (render-stream-11.md "As built (GLJ)"). Before, the arena held a second copy of the whole texture
+ * set at once, and the wasm heap, which never shrinks, kept it for the viewer's lifetime (+496 MiB
+ * for a viewer joining STS2 combat; GRH). Two checks on the browser receiver's
+ * `live.gsw.first_apply`:
+ * - `first-apply-arena` (`first-apply-arena-*`): the first draw took at most half of its texture
+ *   bytes from the arena (the defect copies all of them, so equal; at any scale);
+ * - `first-apply-heap` (`first-apply-heap-*`): the heap after the first draw is within
+ *   FIRST_APPLY_HEAP_SLACK of the heap before the first apply, with every payload already provided
+ *   and resident. The defect adds the texture set (and the arena's doubling), so this is the bound
+ *   that catches it at game scale; the arena check catches it on this small fixture.
+ * A native receiver or the web export has no `live.gsw`: both are not-run there.
+ */
+const FIRST_APPLY_HEAP_SLACK = 32 * 1024 * 1024;
+
+interface FirstApply {
+  seq: number;
+  heap_before_apply: number | null;
+  heap_after_apply: number | null;
+  heap_after_draw: number | null;
+  texture_upload_bytes: number;
+  arena_bytes: number;
+  shared_bytes: number;
+  apply_ms: number;
+  draw_ms: number;
+}
+
+function firstApplyProblems(f: FirstApply | null | undefined): { arena: string[]; heap: string[] } {
+  const arena: string[] = [];
+  const heap: string[] = [];
+  if (!f) {
+    arena.push("no live.gsw.first_apply in applied.json (no transaction was drawn)");
+    heap.push("no live.gsw.first_apply in applied.json (no transaction was drawn)");
+    return { arena, heap };
+  }
+  if (f.texture_upload_bytes <= 0) arena.push("the first draw uploaded no texture: nothing to judge (the fixture has lost its textures?)");
+  else if (f.arena_bytes * 2 > f.texture_upload_bytes) arena.push(`the first apply copied ${f.arena_bytes} B into the draw list's arena, over half of the ${f.texture_upload_bytes} B its draw uploaded`);
+  if (f.heap_before_apply === null || f.heap_after_draw === null) heap.push("no heap sample");
+  else if (f.heap_after_draw > f.heap_before_apply + FIRST_APPLY_HEAP_SLACK) heap.push(`wasm heap ${f.heap_before_apply} -> ${f.heap_after_draw} B (+${((f.heap_after_draw - f.heap_before_apply) / 1048576).toFixed(1)} MiB) across the first apply and draw`);
+  return { arena, heap };
+}
+
+function firstApplyDetail(f: FirstApply | null | undefined): string {
+  return f
+    ? `seq ${f.seq}: uploads ${f.texture_upload_bytes} B (arena ${f.arena_bytes}, shared ${f.shared_bytes}), heap ${f.heap_before_apply} -> ${f.heap_after_apply} -> ${f.heap_after_draw} B, apply ${f.apply_ms.toFixed(1)} ms, draw ${f.draw_ms.toFixed(1)} ms`
+    : "no first apply";
+}
+
+async function firstApplyChecks(root: string, leg: string, suffix: string): Promise<G8aCheck[]> {
+  const dir = join(root, leg);
+  const ids = [`first-apply-arena-${suffix}`, `first-apply-heap-${suffix}`];
+  const criteria = [
+    `GLJ: a GSW viewer's first apply (${leg}) shares the payload store's pixels with the draw list: at most half of the first draw's texture bytes come from the draw list's byte arena`,
+    `GLJ: a GSW viewer's first apply and draw (${leg}) leave the wasm heap within ${FIRST_APPLY_HEAP_SLACK / 1048576} MiB of its size before the apply, every payload already resident`,
+  ];
+  if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
+    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: `skipped-by-tier: ${dir}`, gating: false }));
+  }
+  const legs = await codingLegsOf(root, leg);
+  const live = legs?.[0]?.applied?.live;
+  if (live && live.gsw?.first_apply === undefined) {
+    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: "not a GSW receiver (no live.gsw.first_apply)", gating: false }));
+  }
+  const f = live?.gsw?.first_apply;
+  const p = legs ? firstApplyProblems(f) : null;
+  return [check(ids[0], criteria[0], p ? p.arena : null, firstApplyDetail(f)), check(ids[1], criteria[1], p ? p.heap : null, firstApplyDetail(f))];
+}
+
+/**
+ * GLJ sabotage: the GSW sabotage leg also runs `arena-upload` (every upload copied into the arena,
+ * as before GLJ; independent of `rebuild-reupload`, which acts only at the resync), and its first
+ * apply must fail `first-apply-arena`.
+ */
+async function arenaCaught(root: string): Promise<G8aCheck> {
+  const id = "first-apply-arena-caught";
+  const criterion = "GLJ: a GSW receiver that copies every upload into the draw list's arena (arena-upload) fails first-apply-arena at its first apply";
+  const leg = "native-sabotage-drop-base-reupload";
+  const dir = join(root, leg);
+  if (!existsSync(dir)) return { id, criterion, passed: true, status: "not-run", detail: "no browser receiver leg", gating: false };
+  if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
+    return { id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false };
+  }
+  const legs = await codingLegsOf(root, leg);
+  const f = legs?.[0]?.applied?.live?.gsw?.first_apply;
+  const problems: string[] | null = legs ? [] : null;
+  if (problems) {
+    if (!f) problems.push("no live.gsw.first_apply in applied.json");
+    else if (f.texture_upload_bytes <= 0) problems.push("the first draw uploaded no texture");
+    else if (firstApplyProblems(f).arena.length === 0) problems.push(`the sabotaged first apply copied only ${f.arena_bytes} of ${f.texture_upload_bytes} B: first-apply-arena would pass`);
+  }
+  return check(id, criterion, problems, firstApplyDetail(f));
+}
+
 /** GTS: g8w11c, the coding resync legs alone (`$out/g8w11c/<leg>`), native or in a browser. */
 export async function runG8w11cResync(out: string): Promise<G8aCheck[]> {
   const root = join(out, "g8w11c");
@@ -567,6 +663,9 @@ export async function runG8w11cResync(out: string): Promise<G8aCheck[]> {
     ...(await resyncReuploadChecks(root, "native-sabotage-drop-base", "drop-base")),
     ...(await resyncReuploadChecks(root, "native-sabotage-wrong-prefix", "wrong-prefix")),
     await reuploadCaught(root),
+    ...(await firstApplyChecks(root, "native-sabotage-drop-base", "drop-base")),
+    ...(await firstApplyChecks(root, "native-sabotage-wrong-prefix", "wrong-prefix")),
+    await arenaCaught(root),
   ];
 }
 

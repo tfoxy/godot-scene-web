@@ -248,6 +248,21 @@ class LiveReceiver {
   }[] = [];
   /** GRH: the texture bytes the GPU took over the transactions drawn so far. */
   private uploadedBytes = 0;
+  /** GLJ: the viewer's first applied transaction (a join's whole state at once): the wasm heap
+   * before its apply (every payload it names provided and resident), after the apply and after
+   * its draw; the texture bytes the draw uploaded, and how many of them the apply had copied
+   * into the draw list's byte arena (`arena`) or shared from the payload store (`shared`). */
+  private firstApply: {
+    seq: number;
+    heap_before_apply: number | null;
+    heap_after_apply: number | null;
+    heap_after_draw: number | null;
+    texture_upload_bytes: number;
+    arena_bytes: number;
+    shared_bytes: number;
+    apply_ms: number;
+    draw_ms: number;
+  } | null = null;
   /** G8kb: KTX2 payloads' verify, transcode and stage (transcode.ts). */
   private ktx: KtxStager | null = null;
   private mem: WebAssembly.Memory | null = null;
@@ -1485,10 +1500,14 @@ class LiveReceiver {
       throw e;
     }
     const programUs = (performance.now() - q0) * 1000;
+    const firstHeap =
+      this.firstApply === null ? (this.mem?.buffer.byteLength ?? null) : null;
     const b = performance.now();
     this.particles.step(g);
     if (g.apply() < 0) throw failWith(seq, g.error());
     const c = performance.now();
+    const firstHeapApplied =
+      this.firstApply === null ? (this.mem?.buffer.byteLength ?? null) : null;
     const appliedUs = us();
     entry.applied_us = appliedUs;
     entry.paced.applied_raf = this.rafIndex;
@@ -1654,6 +1673,23 @@ class LiveReceiver {
         this.firstSubmittedMarked = true;
         performance.mark("rs-first-submitted");
       }
+    }
+    if (this.firstApply === null) {
+      const up = JSON.parse(g.last_upload_bytes_json()) as {
+        arena: number;
+        shared: number;
+      };
+      this.firstApply = {
+        seq,
+        heap_before_apply: firstHeap,
+        heap_after_apply: firstHeapApplied,
+        heap_after_draw: this.mem?.buffer.byteLength ?? null,
+        texture_upload_bytes: st.texture_upload_bytes,
+        arena_bytes: up.arena,
+        shared_bytes: up.shared,
+        apply_ms: c - b,
+        draw_ms: d1 - d0,
+      };
     }
     if (this.rebuildApplyDue) {
       // GRH: the resync's full, applied and drawn: what the fresh applier made the GPU take, and
@@ -2225,6 +2261,7 @@ class LiveReceiver {
       this.report.residencyEvictions = this.perf.residencyEvictions;
       const gsw = this.liveBlock.gsw as Record<string, unknown>;
       gsw.raf_callbacks = this.rafIndex;
+      gsw.first_apply = this.firstApply;
       // W11c: W11t's coding, per connection (the live block's own key, /11 only).
       if (this.coding !== null || this.codingReports.length > 0) {
         const all = [...this.codingReports];

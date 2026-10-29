@@ -318,7 +318,7 @@ fn texture_region_uses_texpixel_size_and_flips() {
         payloads::TexturePixels {
             width: 16,
             height: 16,
-            rgba: vec![255; 16 * 16 * 4],
+            rgba: vec![255; 16 * 16 * 4].into(),
             format: "RGBA8".into(),
             mipmaps: false,
             data_len: 16 * 16 * 4,
@@ -388,7 +388,7 @@ fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
         payloads::TexturePixels {
             width: 16,
             height: 16,
-            rgba: vec![255; 16 * 16 * 4],
+            rgba: vec![255; 16 * 16 * 4].into(),
             format: "RGBA8".into(),
             mipmaps: false,
             data_len: 16 * 16 * 4,
@@ -399,11 +399,22 @@ fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
     );
     let mut old = Applier::new(viewport());
     assert_eq!(old.apply(&s, &full_delta(&s), &store).texture_uploads, 1);
+    old.list.consumed();
 
-    // Without inheritance the fresh applier uploads the texture again (the defect's shape).
+    // Without inheritance the fresh applier uploads the texture again (the defect's shape). GLJ:
+    // a first apply's upload shares the store's pixels, so nothing is copied into the arena; the
+    // `arena-upload` sabotage copies them, as before GLJ.
     let mut fresh = Applier::new(viewport());
     let st = fresh.apply(&s, &full_delta(&s), &store).clone();
-    assert_eq!((st.texture_uploads, fresh.list.texture_bytes.len()), (1, 1024));
+    assert_eq!((st.texture_uploads, fresh.list.queued_texture_bytes()), (1, (0, 1024)));
+    let rgba = &store.textures[&hash].rgba;
+    assert_eq!(std::sync::Arc::strong_count(rgba), 2, "the list holds the store's own pixels");
+    fresh.list.consumed();
+    assert_eq!(std::sync::Arc::strong_count(rgba), 1, "consumed releases them");
+    let mut copying = Applier::new(viewport());
+    copying.sabotage.arena_upload = true;
+    let st = copying.apply(&s, &full_delta(&s), &store).clone();
+    assert_eq!((st.texture_uploads, copying.list.queued_texture_bytes()), (1, (1024, 0)));
 
     // With it the same full uploads nothing, and the draw list's arena stays empty.
     let mut rebuilt = Applier::new(viewport());
@@ -411,7 +422,7 @@ fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
     let st = rebuilt.apply(&s, &full_delta(&s), &store).clone();
     assert_eq!(st.texture_uploads, 0);
     assert_eq!(st.texture_frees, 0);
-    assert!(rebuilt.list.texture_bytes.is_empty());
+    assert_eq!(rebuilt.list.queued_texture_bytes(), (0, 0));
     assert!(rebuilt.list.texture_ops.is_empty());
     assert_eq!(rebuilt.list.draws[0].texture, 5);
 
@@ -487,7 +498,7 @@ fn clip_uv_splits_the_quad_where_the_uv_meets_the_half_texel_inset() {
         payloads::TexturePixels {
             width: 16,
             height: 16,
-            rgba: vec![255; 16 * 16 * 4],
+            rgba: vec![255; 16 * 16 * 4].into(),
             format: "RGBA8".into(),
             mipmaps: false,
             data_len: 16 * 16 * 4,

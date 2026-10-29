@@ -117,6 +117,10 @@ pub struct ApplySabotage {
     /// ignored, so a global-coordinate `CPUParticles2D` draws through its ancestors' transform a
     /// second time: what every receiver drew before UIT.
     pub ignore_identity_transform: bool,
+    /// GSW-only `arena-upload` (GLJ): every texture upload is copied into the draw list's byte
+    /// arena instead of shared with the payload store, as before GLJ, so a frame that uploads the
+    /// whole texture set (a viewer's first apply) holds a second copy of it at once.
+    pub arena_upload: bool,
     /// The sabotages that act on the lowering (G7t: `drop-msdf`, `ignore-set-transform`,
     /// `ignore-clip-ignore`, `ignore-nine-patch-axis`, `polygon-winding`).
     pub lower: lower::LowerSabotage,
@@ -1196,7 +1200,7 @@ impl Applier {
             .collect();
         for (id, hash) in ids {
             if let Some(px) = payloads.textures.get(&hash) {
-                upload_pixels(&mut self.list, id, px);
+                upload_pixels(&mut self.list, id, px, self.sabotage.arena_upload);
             }
         }
     }
@@ -1626,7 +1630,7 @@ impl Applier {
                         },
                     );
                     self.kept.remove(&id);
-                    upload_pixels(&mut self.list, id, px);
+                    upload_pixels(&mut self.list, id, px, self.sabotage.arena_upload);
                     self.stats.texture_uploads += 1;
                     self.stats.texture_upload_bytes += px.held_bytes();
                     self.account.upload_bytes += px.data_len as u64;
@@ -3593,17 +3597,35 @@ fn kept_hash(
     (r.kind == TextureKind::Image && delivery.keeps(t, h, r.version)).then_some(h)
 }
 
-fn upload_pixels(list: &mut DrawList, id: Id, px: &TexturePixels) {
+/// GLJ: the upload shares the payload store's own bytes (no copy into the draw list's arena), so a
+/// first apply that uploads every texture at once adds no second copy of the texture set to the
+/// heap; `arena` (the `arena-upload` sabotage) copies them, as before GLJ.
+fn upload_pixels(list: &mut DrawList, id: Id, px: &TexturePixels, arena: bool) {
     if let Some(half) = &px.half {
         // P3-CK: RGBA16F, as GLES3 keeps a half-float image.
-        list.upload_half_texture(id, px.width, px.height, half);
+        if arena {
+            list.upload_half_texture(id, px.width, px.height, half);
+        } else {
+            list.upload_half_texture_shared(id, px.width, px.height, half.clone());
+        }
         return;
     }
     match &px.compressed {
-        None => list.upload_texture(id, px.width, px.height, &px.rgba),
+        None if arena => list.upload_texture(id, px.width, px.height, &px.rgba),
+        None => list.upload_texture_shared(id, px.width, px.height, px.rgba.clone()),
         Some(level0) => {
             if let Some(format) = gsw_canvas_draw_list::CompressedFormat::from_godot(&px.format) {
-                list.upload_compressed_texture(id, px.width, px.height, format, level0);
+                if arena {
+                    list.upload_compressed_texture(id, px.width, px.height, format, level0);
+                } else {
+                    list.upload_compressed_texture_shared(
+                        id,
+                        px.width,
+                        px.height,
+                        format,
+                        level0.clone(),
+                    );
+                }
             }
         }
     }

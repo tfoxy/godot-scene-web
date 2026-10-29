@@ -5,7 +5,7 @@
 //! [`CanvasItemsExecutor::execute`], then the caller's [`DrawList::consumed`]:
 //!
 //! 1. the list's [`TextureOp`](gsw_canvas_draw_list::TextureOp)s, in order: `texImage2D` of straight
-//!    RGBA8 straight from a view of `texture_bytes`, or a delete;
+//!    RGBA8 straight from a view of `texture_bytes` or of a shared payload (GLJ), or a delete;
 //! 2. the dirty uploads, each straight from a view of the list's own memory: item rows
 //!    (`texSubImage2D` into an RGBA32F data texture, three texels per item, [`ITEMS_PER_ROW`] items
 //!    per texture row), vertex and index ranges (`bufferSubData`). `dirty.all`, a grown array or a

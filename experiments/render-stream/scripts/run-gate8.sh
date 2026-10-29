@@ -1356,10 +1356,12 @@ run_g8w11c() {
 	run_g8w11_coding_native_leg native-sabotage-wrong-prefix GRC_SABOTAGE=coding-wrong-prefix \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	# GRH: GSW only (the native receiver and the web export have no `rebuild-reupload`): the fresh applier
-	# after the resync inherits no residency, so its full re-uploads every texture.
+	# after the resync inherits no residency, so its full re-uploads every texture. GLJ: the same leg
+	# runs `arena-upload` (every upload copied into the draw list's arena, as before GLJ), judged at
+	# the viewer's first apply only, so the two sabotages do not mask each other.
 	if [ "${GATE7_LIVE_KIND:-}" = gsw ]; then
-		echo "run-gate8: g8w11c native-sabotage-drop-base-reupload (drop-message @120, rebuild-reupload)"
-		RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=rebuild-reupload)
+		echo "run-gate8: g8w11c native-sabotage-drop-base-reupload (drop-message @120, rebuild-reupload, arena-upload)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_SABOTAGE=rebuild-reupload,arena-upload)
 		run_g8w11_coding_native_leg native-sabotage-drop-base-reupload GRC_SABOTAGE=drop-message \
 			GRC_SABOTAGE_FRAME=120 -- "coded:"
 		RECEIVER_EXTRA_ENV=()

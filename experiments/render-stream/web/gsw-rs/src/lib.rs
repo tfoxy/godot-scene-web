@@ -295,6 +295,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 // GRH: a coding resync's fresh applier does not inherit the resident textures, so
                 // its full transaction uploads every texture again (the pre-GRH behaviour).
                 "rebuild-reupload" => o.rebuild_reupload = true,
+                // GLJ: every texture upload copied into the draw list's byte arena (pre-GLJ), so
+                // a viewer's first apply holds a second copy of the whole texture set at once.
+                "arena-upload" => o.apply.arena_upload = true,
                 shell if SHELL_SABOTAGES.contains(&shell) => {}
                 other => {
                     if let Some(s) = Sabotage::parse(other)? {
@@ -582,6 +585,9 @@ pub struct GswRs {
     presentation: Presentation,
     /// G7u: whether the last `draw` re-sent everything to a restored context.
     last_restore_draw: bool,
+    /// GLJ: the texture bytes the last `draw` uploaded from the draw list's byte arena (copied
+    /// there by `apply`) and from shared payloads (no copy), for `last_upload_bytes_json`.
+    last_upload_bytes: (u64, u64),
 }
 
 /// G7g: the session's presentation as this receiver adopted it (receiver.gd
@@ -807,6 +813,7 @@ impl GswRs {
             window: None,
             presentation: Presentation::default(),
             last_restore_draw: false,
+            last_upload_bytes: (0, 0),
         })
     }
 
@@ -2095,6 +2102,7 @@ impl GswRs {
             return -1;
         };
         let t = prof::start();
+        self.last_upload_bytes = a.list.queued_texture_bytes();
         let mut result = x.execute(&a.list);
         // A restored context (D14, D29): every GL object is new, so the list goes again with
         // `dirty.all` and every resident texture re-queued from the payload store. A list that
@@ -2105,6 +2113,9 @@ impl GswRs {
             || x.context_state() == ContextState::Restored
         {
             a.context_restored(&self.payloads);
+            let (arena, shared) = a.list.queued_texture_bytes();
+            self.last_upload_bytes.0 += arena;
+            self.last_upload_bytes.1 += shared;
             self.totals.restores += 1;
             self.last_restore_draw = true;
             result = x.execute(&a.list);
@@ -2137,6 +2148,13 @@ impl GswRs {
                 -1
             }
         }
+    }
+
+    /// GLJ: `{"arena":A,"shared":S}`, the texture bytes the last `draw` took from the draw list's
+    /// byte arena (a copy `apply` made) and from the payload store's own bytes (shared, no copy).
+    pub fn last_upload_bytes_json(&self) -> String {
+        let (arena, shared) = self.last_upload_bytes;
+        format!("{{\"arena\":{arena},\"shared\":{shared}}}")
     }
 
     /// G7u (D14, D29): the resident textures' payload hashes the store no longer holds, sorted

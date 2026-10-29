@@ -27,6 +27,9 @@ export interface GswRs {
   payload_verify_json(): string;
   apply(): number;
   draw(): number;
+  /** GLJ: `{arena, shared}`, the texture bytes the last draw took from the draw list's byte arena
+   * (copied by apply) and from the payload store's own bytes (shared). */
+  last_upload_bytes_json(): string;
   stats_ptr(): number;
   digest(): number;
   poll_fence(): number;

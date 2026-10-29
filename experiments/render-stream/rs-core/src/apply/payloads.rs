@@ -9,6 +9,7 @@
 //! cannot be skipped by drawing from here.
 
 use crate::state::{Hash, Primitive};
+use gsw_canvas_draw_list::SharedBytes;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A texture's level 0 as straight RGBA8, or (G8kp, a render-stream/9 `block` variant) as the
@@ -18,15 +19,16 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub struct TexturePixels {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    /// GLJ: shared with the draw list's upload of it (no copy), as are `compressed` and `half`.
+    pub rgba: SharedBytes,
     /// G8kp: level 0 of a block-format payload, exactly the payload's bytes (no decode here: the
     /// GPU samples it, texture-delivery-design.md Q6 "GSW").
-    pub compressed: Option<Vec<u8>>,
+    pub compressed: Option<SharedBytes>,
     /// P3-CK: level 0 of a half-float payload (`RH`, `RGH`, `RGBH`, `RGBAH`) as RGBA16F, 8 bytes a
     /// texel (a missing G or B is 0, a missing alpha 1, each half little-endian and bit-exact):
     /// GLES3 samples these images at half precision, which RGBA8 cannot carry (a fine `mod()` over
     /// a half-float distance field reads a different band). `rgba` is then empty.
-    pub half: Option<Vec<u8>>,
+    pub half: Option<SharedBytes>,
     /// PM6b: level 0 of an f32 payload (`RF`, `RGF`, `RGBF`, `RGBAF`) at most 4 rows high, as
     /// RGBA f32 (a missing G or B is 0, a missing alpha 1): the curve and gradient textures a /12
     /// process material names (render-stream-12.md "Curve textures"). GSW's particle simulation
@@ -197,7 +199,7 @@ pub fn texture_rgba8(
         return Ok(TexturePixels {
             width,
             height,
-            rgba,
+            rgba: rgba.into(),
             format: format.to_string(),
             mipmaps: false,
             data_len: data.len(),
@@ -237,7 +239,7 @@ pub fn texture_rgba8(
     Ok(TexturePixels {
         width,
         height,
-        rgba,
+        rgba: rgba.into(),
         format: format.to_string(),
         mipmaps: false,
         data_len: data.len(),
@@ -298,9 +300,9 @@ pub fn texture_rgba16f(
     Some(Ok(TexturePixels {
         width,
         height,
-        rgba: Vec::new(),
+        rgba: SharedBytes::default(),
         compressed: None,
-        half: Some(half),
+        half: Some(half.into()),
         floats: None,
         format: format.to_string(),
         mipmaps: false,
@@ -328,8 +330,8 @@ pub fn texture_block_level0(
     Some(Ok(TexturePixels {
         width,
         height,
-        rgba: Vec::new(),
-        compressed: Some(data[..len].to_vec()),
+        rgba: SharedBytes::default(),
+        compressed: Some(data[..len].to_vec().into()),
         half: None,
         floats: None,
         format: format.to_string(),
@@ -1093,20 +1095,20 @@ mod tests {
         let h = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
         let half = |f: &str, v: &[u16]| texture_rgba16f(f, 1, 1, &h(v)).unwrap().unwrap();
         assert_eq!(
-            half("RH", &[0x3801]).half.unwrap(),
-            h(&[0x3801, 0, 0, 0x3c00])
+            half("RH", &[0x3801]).half.as_deref().unwrap()[..],
+            h(&[0x3801, 0, 0, 0x3c00])[..]
         );
         assert_eq!(
-            half("RGH", &[0x3c00, 0xbc00]).half.unwrap(),
-            h(&[0x3c00, 0xbc00, 0, 0x3c00])
+            half("RGH", &[0x3c00, 0xbc00]).half.as_deref().unwrap()[..],
+            h(&[0x3c00, 0xbc00, 0, 0x3c00])[..]
         );
         assert_eq!(
-            half("RGBH", &[0x3c00, 0x3800, 0x7c00]).half.unwrap(),
-            h(&[0x3c00, 0x3800, 0x7c00, 0x3c00])
+            half("RGBH", &[0x3c00, 0x3800, 0x7c00]).half.as_deref().unwrap()[..],
+            h(&[0x3c00, 0x3800, 0x7c00, 0x3c00])[..]
         );
         let rgbah = half("RGBAH", &[0x3800, 0x3c00, 0x0000, 0x3401]);
         assert_eq!(
-            rgbah.half.as_deref(),
+            rgbah.half.as_deref().map(|v| &v[..]),
             Some(&h(&[0x3800, 0x3c00, 0x0000, 0x3401])[..])
         );
         assert!(rgbah.rgba.is_empty() && rgbah.compressed.is_none());
@@ -1122,30 +1124,30 @@ mod tests {
     fn float_formats_convert_to_straight_rgba8() {
         // RF: (r,0,0,1); the second pixel is out of range and clamps.
         let rf = texture_rgba8("RF", 2, 1, &f32_bytes(&[0.5, 7.0])).unwrap();
-        assert_eq!(rf.rgba, vec![128, 0, 0, 255, 255, 0, 0, 255]);
+        assert_eq!(rf.rgba[..], [128, 0, 0, 255, 255, 0, 0, 255]);
         // RGF: (r,g,0,1)
         let rgf = texture_rgba8("RGF", 1, 1, &f32_bytes(&[1.0, -1.0])).unwrap();
-        assert_eq!(rgf.rgba, vec![255, 0, 0, 255]);
+        assert_eq!(rgf.rgba[..], [255, 0, 0, 255]);
         // RGBF: (r,g,b,1)
         let rgbf = texture_rgba8("RGBF", 1, 1, &f32_bytes(&[0.0, 0.5, f32::NAN])).unwrap();
-        assert_eq!(rgbf.rgba, vec![0, 128, 0, 255]);
+        assert_eq!(rgbf.rgba[..], [0, 128, 0, 255]);
         // RGBAF: alpha is quantized like a colour channel, straight
         let rgbaf = texture_rgba8("RGBAF", 1, 1, &f32_bytes(&[0.2, 4.0, 0.0, 0.5])).unwrap();
-        assert_eq!(rgbaf.rgba, vec![51, 255, 0, 128]);
+        assert_eq!(rgbaf.rgba[..], [51, 255, 0, 128]);
         // The half family: 0x3800 = 0.5, 0x3c00 = 1.0, 0x0000, 0xbc00 = -1
         let h = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-        assert_eq!(texture_rgba8("RH", 1, 1, &h(&[0x3800])).unwrap().rgba, vec![128, 0, 0, 255]);
+        assert_eq!(texture_rgba8("RH", 1, 1, &h(&[0x3800])).unwrap().rgba[..], [128, 0, 0, 255]);
         assert_eq!(
-            texture_rgba8("RGH", 1, 1, &h(&[0x3c00, 0xbc00])).unwrap().rgba,
-            vec![255, 0, 0, 255]
+            texture_rgba8("RGH", 1, 1, &h(&[0x3c00, 0xbc00])).unwrap().rgba[..],
+            [255, 0, 0, 255]
         );
         assert_eq!(
-            texture_rgba8("RGBH", 1, 1, &h(&[0x3c00, 0x3800, 0x7c00])).unwrap().rgba,
-            vec![255, 128, 255, 255]
+            texture_rgba8("RGBH", 1, 1, &h(&[0x3c00, 0x3800, 0x7c00])).unwrap().rgba[..],
+            [255, 128, 255, 255]
         );
         assert_eq!(
-            texture_rgba8("RGBAH", 1, 1, &h(&[0x3800, 0x3c00, 0x0000, 0x3800])).unwrap().rgba,
-            vec![128, 255, 0, 128]
+            texture_rgba8("RGBAH", 1, 1, &h(&[0x3800, 0x3c00, 0x0000, 0x3800])).unwrap().rgba[..],
+            [128, 255, 0, 128]
         );
         // short data is refused, as for the 8-bit formats
         assert!(texture_rgba8("RGBAF", 2, 1, &[0u8; 31]).is_err());
@@ -1178,7 +1180,7 @@ mod tests {
             let data = unhex(&field(chunk, "data_hex"));
             let want = unhex(&field(chunk, "rgba_hex"));
             let got = texture_rgba8(&format, width, height, &data).unwrap();
-            assert_eq!(got.rgba, want, "{format} {}", field(chunk, "name"));
+            assert_eq!(got.rgba[..], want[..], "{format} {}", field(chunk, "name"));
             n += 1;
         }
         assert_eq!(n, 8, "one vector per float format");
@@ -1192,7 +1194,7 @@ mod tests {
         match verify_decode(&bytes, &hash, 8, true).unwrap() {
             Decoded::Texture(t) => {
                 assert_eq!(t.format, "RF");
-                assert_eq!(t.rgba, vec![64, 0, 0, 255, 128, 0, 0, 255, 191, 0, 0, 255]);
+                assert_eq!(t.rgba[..], [64, 0, 0, 255, 128, 0, 0, 255, 191, 0, 0, 255]);
             }
             _ => panic!("a texture"),
         }
@@ -1244,7 +1246,7 @@ mod tests {
         assert!(s.verified);
         assert_eq!(s.bytes, bytes.len());
         store.insert(hash, s.decoded);
-        assert_eq!(store.textures[&hash].rgba, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(store.textures[&hash].rgba[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(stage.is_empty());
     }
 
