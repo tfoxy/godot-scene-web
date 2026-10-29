@@ -448,12 +448,12 @@ void test_shared_material_params() {
   Snapshot cur = base;
   cur.seq = 2;
   check(make_patch(base, cur).materials.empty(), "a material sharing its parameters: no entry");
-  cur.materials[0].params = std::vector<Param>{gain};
+  cur.materials.mut(0).params = std::vector<Param>{gain};
   check(!cur.materials[0].params.shares(m.params) && make_patch(base, cur).materials.empty(),
         "equal parameters in different storage compare equal element by element: no entry");
-  cur.materials[0] = copy;
+  cur.materials.mut(0) = copy;
   check(make_patch(base, cur).materials.size() == 1, "the diverged copy is a patch entry");
-  cur.materials[0].params = std::vector<Param>{more};
+  cur.materials.mut(0).params = std::vector<Param>{more};
   const Transaction t = make_patch(base, cur);
   check(t.materials.size() == 1 && t.materials[0].params.size() == 1 &&
             t.materials[0].params[0].name == "more",

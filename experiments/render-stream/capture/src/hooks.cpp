@@ -5881,6 +5881,10 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
     json.field("full_rebuilds", static_cast<int64_t>(ms.hc_full_rebuilds));
     json.field("derived_all", static_cast<int64_t>(ms.hc_derived_all));
     json.field("dirty_marks_dropped", static_cast<int64_t>(ms.hc_dirty_marks_dropped));
+    json.field("resources_visited", static_cast<int64_t>(ms.hc_resources_visited));
+    json.field("resources_republished", static_cast<int64_t>(ms.hc_resources_republished));
+    json.field("texture_marks_dropped",
+               static_cast<int64_t>(ms.hc_dirty_marks_dropped_textures));
     json.object_end();
     json.key("hc_shadow").object_begin();
     json.field("enabled", rs::mirror_instance().hc_shadow_enabled());

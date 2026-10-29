@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1345,6 +1346,20 @@ class SharedTable {
   }
   // True when both hold the very same chunk array (then they are equal without a comparison).
   bool shares(const SharedTable &other) const { return chunks_ == other.chunks_; }
+  // HC4b: the index of `id`'s entry (as operator[] counts), or size() when absent.
+  std::size_t index_of(std::uint32_t id) const {
+    const std::size_t c = chunk_index(id >> kChunkShift);
+    if (c == chunks_.size() || chunks_[c]->key != (id >> kChunkShift)) {
+      return size_;
+    }
+    const std::vector<Ptr> &entries = chunks_[c]->entries;
+    const auto it = std::lower_bound(entries.begin(), entries.end(), id,
+                                     [](const Ptr &p, std::uint32_t key) { return p->id < key; });
+    if (it == entries.end() || (*it)->id != id) {
+      return size_;
+    }
+    return starts_[c] + static_cast<std::size_t>(it - entries.begin());
+  }
 
   // Writers. Each is copy-on-write of one chunk (in place while no other table holds it).
   void set(Ptr value) {
@@ -1414,6 +1429,21 @@ class SharedTable {
     T *raw = copy.get();
     slot = std::move(copy);
     return *raw;
+  }
+  // HC4b: mutable references to every entry (tests), ascending by id. Every chunk and entry is
+  // copied first; writing a different `id` through one is not supported.
+  std::vector<std::reference_wrapper<T>> mut_refs() {
+    std::vector<std::reference_wrapper<T>> out;
+    out.reserve(size_);
+    for (std::size_t c = 0; c < chunks_.size(); ++c) {
+      for (Ptr &slot : own(c)) {
+        auto copy = std::make_shared<T>(*slot);
+        T *raw = copy.get();
+        slot = std::move(copy);
+        out.emplace_back(*raw);
+      }
+    }
+    return out;
   }
   // Applies `fn` to a copy of every entry for which `pred` holds and stores it (its id unchanged).
   template <typename Pred, typename Fn>
@@ -2014,10 +2044,12 @@ struct Snapshot {
   // HC4a (host-cost-design.md D1): shared, immutable entries; a copy shares every chunk.
   SharedTable<CanvasState> canvases;  // sorted by id ascending
   SharedTable<ItemState> items;       // sorted by id ascending
-  std::vector<TextureEntry> textures; // sorted by id ascending; new at /2
-  std::vector<MeshEntry> meshes;      // sorted by id ascending; new at /4
-  std::vector<ShaderEntry> shaders;      // sorted by id ascending; new at /5
-  std::vector<MaterialEntry> materials;  // sorted by id ascending; new at /5
+  // HC4b (host-cost-design.md D1): the resource tables are shared tables too, so a snapshot
+  // shares every resource entry that did not change since the previous one.
+  SharedTable<TextureEntry> textures;    // sorted by id ascending; new at /2
+  SharedTable<MeshEntry> meshes;         // sorted by id ascending; new at /4
+  SharedTable<ShaderEntry> shaders;      // sorted by id ascending; new at /5
+  SharedTable<MaterialEntry> materials;  // sorted by id ascending; new at /5
   // PM1 (render-stream-11.md "As built (PM1)" rule 9): the multimeshes an add_multimesh command
   // of this state names, sorted by id ascending. Encoded at /11 only.
   std::vector<MultimeshEntry> multimeshes;

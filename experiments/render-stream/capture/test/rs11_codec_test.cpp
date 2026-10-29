@@ -276,13 +276,13 @@ Snapshot state9(int n) {
   s.items.push_back(item8());
   s.canvases = {golden::root_canvas({1, 2, 3, 4, 5, 6, 8}), canvas2()};
   if (m >= 5) {
-    s.textures[5].version = 2;
-    s.textures[5].hash = golden::kHashA2;
-    s.textures[5].payload_bytes = 1135;
-    s.textures[5].adopted_content = AdoptedContent::Current;
-    s.meshes[0].version = 2;
-    s.meshes[0].adopted_content = AdoptedContent::Current;
-    s.meshes[0].surfaces = {golden::mesh_surface(kHashMesh1B, 297, Primitive::Triangles,
+    s.textures.mut(5).version = 2;
+    s.textures.mut(5).hash = golden::kHashA2;
+    s.textures.mut(5).payload_bytes = 1135;
+    s.textures.mut(5).adopted_content = AdoptedContent::Current;
+    s.meshes.mut(0).version = 2;
+    s.meshes.mut(0).adopted_content = AdoptedContent::Current;
+    s.meshes.mut(0).surfaces = {golden::mesh_surface(kHashMesh1B, 297, Primitive::Triangles,
                                                  golden::kMesh1SurfaceBFormat, 4, 6)};
   }
   if (m >= 6) {
@@ -295,10 +295,10 @@ Snapshot state9(int n) {
     freed.kind = TextureKind::Image;
     freed.status = TextureStatus::Freed;
     freed.version = 2;
-    s.textures[9] = freed;
+    s.textures.mut(9) = freed;
   }
   if (n >= 7) {
-    s.textures[6].variants = {block_variant(kHashDxt5x4, 122, "DXT5")};
+    s.textures.mut(6).variants = {block_variant(kHashDxt5x4, 122, "DXT5")};
     TextureEntry mip = image(11, kHashMip16, "RGBA8", 16, 16, true, 1474);
     mip.variants = {block_variant(kHashDxt5x16m, 476, "DXT5")};
     s.textures.push_back(mip);
@@ -313,12 +313,12 @@ Snapshot state9(int n) {
     s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
   }
   if (n >= 8) {
-    s.textures[6].variants = {block_variant(kHashDxt5x4, 122, "DXT5"), uastc_variant(kHashKtx4, 209)};
-    s.textures[10].variants = {block_variant(kHashDxt5x16m, 476, "DXT5"),
+    s.textures.mut(6).variants = {block_variant(kHashDxt5x4, 122, "DXT5"), uastc_variant(kHashKtx4, 209)};
+    s.textures.mut(10).variants = {block_variant(kHashDxt5x16m, 476, "DXT5"),
                                uastc_variant(kHashKtx16, 593)};
-    s.textures[5].version = 3;
-    s.textures[5].hash = golden::kHashA1;
-    s.textures[5].variants.clear();
+    s.textures.mut(5).version = 3;
+    s.textures.mut(5).hash = golden::kHashA1;
+    s.textures.mut(5).variants.clear();
     TextureEntry pending;
     pending.id = 12;
     pending.kind = TextureKind::Image;
@@ -510,7 +510,7 @@ MeshSurface dynamic_surface(const std::shared_ptr<const std::vector<std::uint8_t
 constexpr std::int64_t kMesh1TriFormat = golden::kArrayFormatTexUv | golden::kArrayFlagUse2dVertices;
 
 MeshEntry *find_mesh(Snapshot &s, std::uint32_t id) {
-  for (MeshEntry &m : s.meshes) {
+  for (MeshEntry &m : s.meshes.mut_refs()) {
     if (m.id == id) {
       return &m;
     }
@@ -519,7 +519,7 @@ MeshEntry *find_mesh(Snapshot &s, std::uint32_t id) {
 }
 
 TextureEntry *find_texture(Snapshot &s, std::uint32_t id) {
-  for (TextureEntry &t : s.textures) {
+  for (TextureEntry &t : s.textures.mut_refs()) {
     if (t.id == id) {
       return &t;
     }
@@ -1018,13 +1018,13 @@ void test_magic_and_protocol() {
 void test_fields_ignored_at_v10() {
   Snapshot with = state11(11);
   with.version = ProtocolVersion::V10;
-  for (MeshEntry &mesh : with.meshes) {
+  for (MeshEntry &mesh : with.meshes.mut_refs()) {
     for (MeshSurface &s : mesh.surfaces) {
       s.hash = std::string(64, 'c');
     }
   }
   Snapshot without = with;
-  for (MeshEntry &mesh : without.meshes) {
+  for (MeshEntry &mesh : without.meshes.mut_refs()) {
     mesh.dynamic = false;
     mesh.content_serial = 0;
     for (MeshSurface &s : mesh.surfaces) {

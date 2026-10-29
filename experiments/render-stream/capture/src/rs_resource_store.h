@@ -160,6 +160,13 @@ class ServedResources : public live::ResourceSource {
   void set_retain_superseded_frame(std::uint64_t frame) { retain_superseded_frame_ = frame; }
   // wrong-hash: from now on `hash` is served with its first data byte flipped.
   void corrupt(const std::string &hash);
+  // HC4b sabotage `serve-skip` (env GRC_HC_SABOTAGE, never on the wire): a map that differs from
+  // the last retained one pins nothing new (from the first map on), so its new hashes answer 404.
+  void set_serve_skip(bool on);
+  // HC4b shadow oracle (GRC_HC_SHADOW=1): every retire() and retained_bytes_beyond() is also done
+  // by the full walk and compared; the first difference is kept (shadow_failure()).
+  void set_shadow(bool on);
+  std::string shadow_failure() const;
 
   // Phase 1: every payload of `maps` becomes servable (reason "current"). Appends the new pins.
   void pin(const std::vector<const PayloadMap *> &maps, std::uint64_t frame,
@@ -203,9 +210,14 @@ class ServedResources : public live::ResourceSource {
   std::string dropped_hash() const;
 
  private:
-  void add_locked(const std::string &hash, const PayloadPtr &payload, std::uint64_t frame,
+  bool add_locked(const std::string &hash, const PayloadPtr &payload, std::uint64_t frame,
                   std::vector<ServeEvent> *events);
   void note_max_locked();
+  // HC4b (host-cost-design.md D1 "The diff, record planning, serving and budget"): every hash of
+  // `map` is servable after this, added over its differences from the last retained current map.
+  void add_map_locked(const PayloadMap &map, std::uint64_t frame, std::vector<ServeEvent> *events);
+  bool known_locked(const PayloadMap &map) const;
+  std::uint64_t beyond_full_locked(const std::vector<const PayloadMap *> &known) const;
 
   mutable std::mutex mutex_;
   std::map<std::string, PayloadPtr> served_;  // retained hash -> the bytes it is served with
@@ -223,6 +235,18 @@ class ServedResources : public live::ResourceSource {
   std::string dropped_;
   std::string corrupt_;
   Totals totals_;
+  // HC4b: while `known_valid_`, served_ holds exactly every hash of `last_current_` and of each
+  // of `last_bases_` (the maps the last retire() kept), plus `extras_`, the hashes pin() added
+  // beyond them since; `pinned_` are maps known to be held whole since that retire(). Pin,
+  // retire and the budget then walk only the maps' differences from those.
+  bool known_valid_ = false;
+  PayloadMap last_current_;
+  std::vector<PayloadMap> last_bases_;
+  std::vector<PayloadMap> pinned_;
+  std::set<std::string> extras_;
+  bool serve_skip_ = false;
+  bool shadow_ = false;
+  std::string shadow_failure_;
 };
 
 }  // namespace rs

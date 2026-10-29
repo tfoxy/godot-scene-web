@@ -41,6 +41,16 @@
 #   sabotage-hc-stale-derived-gate2 the same under --legs g2a,g2b fails gate 2's unsupported checks
 #                                  (recordings-decode-2 unsupported-mismatch,
 #                                  leg-class-unsupported-textures)
+# HC4b's (results/p3/hc4b.md; the persistent resource tables, payload map, record planning, serving
+# and budget over the differing entries; the oracle covers them all):
+#   sabotage-hc-skip-dirty-texture-oracle (GRC_HC_SABOTAGE=hc-skip-dirty-texture: a published
+#                                  texture loses every later dirty mark) under run-gate2.sh --legs
+#                                  g2a,g2b with the oracle: capture ends with a `textures` mismatch
+#   sabotage-hc-skip-dirty-texture-gate2 the same without the oracle fails gate 2's texture checks
+#   sabotage-serve-skip            (GRC_HC_SABOTAGE=serve-skip: a changed payload map is never
+#                                  pinned) 404s fail late-join-served
+#   sabotage-serve-skip-gate2      the same under run-gate2.sh --legs g2a,g2c fails gate 2's live
+#                                  GET checks
 #
 #   bash experiments/render-stream/scripts/run-hc1.sh --extension EXT [--out DIR] [--calibration PATH]
 #     [--binary PATH]
@@ -177,7 +187,8 @@ nested_gate() { # <name> <gate n> <legs> <hc sabotage> <shadow 0|1>
 	echo "$?" >"$dir/exit.txt"
 }
 HC4A_SABOTAGES=(sabotage-hc-skip-dirty-oracle sabotage-hc-skip-dirty-gate1 sabotage-hc-stale-derived-oracle
-	sabotage-hc-stale-derived-gate2)
+	sabotage-hc-stale-derived-gate2 sabotage-hc-skip-dirty-texture-oracle
+	sabotage-hc-skip-dirty-texture-gate2 sabotage-serve-skip sabotage-serve-skip-gate2)
 if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
 	for s in "${HC4A_SABOTAGES[@]}"; do
 		mkdir -p "$OUT/$s"
@@ -190,6 +201,11 @@ else
 	nested_gate sabotage-hc-skip-dirty-gate1 1 g1a hc-skip-dirty 0
 	nested_gate sabotage-hc-stale-derived-oracle 2 g2a hc-stale-derived 1
 	nested_gate sabotage-hc-stale-derived-gate2 2 g2a,g2b hc-stale-derived 0
+	# HC4b.
+	nested_gate sabotage-hc-skip-dirty-texture-oracle 2 g2a,g2b hc-skip-dirty-texture 1
+	nested_gate sabotage-hc-skip-dirty-texture-gate2 2 g2a,g2b hc-skip-dirty-texture 0
+	leg sabotage-serve-skip "$FRAMES" 1 0 on "${STATIC[@]}" -- GRC_HC_SABOTAGE=serve-skip
+	nested_gate sabotage-serve-skip-gate2 2 g2a,g2c serve-skip 0
 fi
 
 mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/hc1-checks.ts" "$OUT"

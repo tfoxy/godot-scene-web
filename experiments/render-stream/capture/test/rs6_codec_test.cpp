@@ -115,10 +115,10 @@ Transaction full_txn6(const Snapshot &snap) {
   t.default_texture_filter = snap.default_texture_filter;
   t.default_texture_repeat = snap.default_texture_repeat;
   t.canvases = snap.canvases.vector();
-  t.textures = snap.textures;
-  t.meshes = snap.meshes;
-  t.shaders = snap.shaders;
-  t.materials = snap.materials;
+  t.textures = snap.textures.vector();
+  t.meshes = snap.meshes.vector();
+  t.shaders = snap.shaders.vector();
+  t.materials = snap.materials.vector();
   for (const ItemState &it : snap.items) {
     t.items.push_back(entry(it, false));
   }
@@ -290,7 +290,7 @@ void test_matches_golden_patch_rs6() {
     t.canvases = {golden::root_canvas({1, 2, 3, 4, 5, 6, 7, 8})};
     t.items = {entry(golden::item8_mesh(), false)};
     const Snapshot nine = state6(9);
-    t.meshes = nine.meshes;
+    t.meshes = nine.meshes.vector();
     records.push_back(encode_transaction(t));
   }
   {
@@ -341,8 +341,8 @@ void test_matches_golden_patch_rs6() {
                entry(golden::item12_custom_material(), false),
                entry(golden::item13_use_parent_material(), false),
                entry(golden::item14_null_shader_material(), false)};
-    t.shaders = twelve.shaders;
-    t.materials = twelve.materials;
+    t.shaders = twelve.shaders.vector();
+    t.materials = twelve.materials.vector();
     records.push_back(encode_transaction(t));
   }
   {

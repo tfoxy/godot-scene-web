@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "rs2_snapshot.h"
+#include "rs_shared_map.h"
 
 namespace grc {
 namespace rs {
@@ -29,8 +30,65 @@ namespace rs {
 using PayloadBytes = std::vector<std::uint8_t>;
 using PayloadPtr = std::shared_ptr<const PayloadBytes>;
 // Content hash (64 lowercase hex) -> the complete render-stream-texture/1 or
-// render-stream-mesh/1 payload.
-using PayloadMap = std::map<std::string, PayloadPtr>;
+// render-stream-mesh/1 payload. HC4b (host-cost-design.md D1): a persistent, copy-on-write map
+// (rs_shared_map.h), so a snapshot whose payloads did not move shares the previous one's map, and
+// the serving and budget code walks two maps over their differing chunks only. Its weight() is
+// payload_map_bytes().
+template <>
+struct SharedMapWeight<PayloadPtr> {
+  static std::uint64_t of(const PayloadPtr &payload) {
+    return payload != nullptr ? payload->size() : 0;
+  }
+};
+using PayloadMap = SharedStrMap<PayloadPtr>;
+
+// HC4b (host-cost-design.md D1 "The diff, record planning, serving and budget"): how many
+// entries of a state name a payload hash, by the rule of rs2_diff.h payload_names() -- `main` as
+// an `ok` image's hash, a static `ok` mesh's surface or an `ok` payload-source shader's code,
+// `variant` as an `ok` image's texture variant -- and its payload_bytes. A hash no entry names has
+// no entry. records_before() asks it whether a hash is named by an entry two states share.
+struct NameCount {
+  std::uint32_t main = 0;
+  std::uint32_t variant = 0;
+  std::uint64_t payload_bytes = 0;
+};
+using NameIndex = SharedStrMap<NameCount>;
+
+// The names one table entry adds to payload_names() (rs2_diff.cpp collect_names: the same rule,
+// entry by entry): add(hash, payload_bytes, variant) for each, empty hashes skipped.
+template <typename Add>
+void texture_entry_names(const rs2::TextureEntry &t, Add add) {
+  if (t.kind != rs2::TextureKind::Image || t.status != rs2::TextureStatus::Ok) {
+    return;
+  }
+  if (t.has_hash && !t.hash.empty()) {
+    add(t.hash, t.payload_bytes, false);
+  }
+  for (const rs2::TextureVariant &v : t.variants) {
+    if (!v.hash.empty()) {
+      add(v.hash, v.payload_bytes, true);
+    }
+  }
+}
+template <typename Add>
+void mesh_entry_names(const rs2::MeshEntry &m, Add add) {
+  // A dynamic mesh (W11b: `ok`, flagged, with a surface) names nothing.
+  if (m.status != rs2::MeshStatus::Ok || (m.dynamic && !m.surfaces.empty())) {
+    return;
+  }
+  for (const rs2::MeshSurface &surface : m.surfaces) {
+    if (!surface.hash.empty()) {
+      add(surface.hash, surface.payload_bytes, false);
+    }
+  }
+}
+template <typename Add>
+void shader_entry_names(const rs2::ShaderEntry &sh, Add add) {
+  if (sh.status == rs2::ShaderStatus::Ok && sh.has_source &&
+      sh.source == rs2::ShaderSource::Payload && sh.has_hash && !sh.hash.empty()) {
+    add(sh.hash, sh.payload_bytes, false);
+  }
+}
 
 class TextureJob;  // rs_texture_worker.h
 
@@ -53,6 +111,16 @@ struct Captured {
   // HC3 (host-cost-design.md D2): some dynamic mesh surface of `state` carries a payload key, not
   // its SHA-256 (rs2::MeshSurface::hash_is_key): only a /11-or-later connection may be sent it.
   bool keyed_surfaces = false;
+  // HC4b: the mirror's name index of `state` (NameIndex), valid only while `names_valid` (a
+  // snapshot the mirror built; anything that rewrites the tables or resolves a pending texture
+  // clears it, and records_before() then walks the tables). `inline_count` and
+  // `inline_count_variants` are |inline(state)| without and with texture variants under an inline
+  // threshold of `names_inline_max` bytes.
+  NameIndex names;
+  bool names_valid = false;
+  std::uint64_t names_inline_max = 0;
+  std::uint64_t inline_count = 0;
+  std::uint64_t inline_count_variants = 0;
 };
 
 // One payload a snapshot names (G5e): an `ok` image entry, or one surface of an `ok` mesh entry.
@@ -113,20 +181,50 @@ inline std::vector<PayloadRef> payload_refs(const rs2::Snapshot &state, bool ski
   return out;
 }
 
-// The payload bytes a map holds, each distinct hash once.
-inline std::uint64_t payload_map_bytes(const PayloadMap &map) {
+// The payload bytes a map holds, each distinct hash once (HC4b: kept by the map).
+inline std::uint64_t payload_map_bytes(const PayloadMap &map) { return map.weight(); }
+
+// P3-CAP: payload_map_bytes() of the union of `maps` (each distinct hash once, the first map
+// holding it supplies its bytes), without building the union. HC4b: the first map's bytes are
+// kept by the map, and each later one adds only the hashes it holds beyond the first (its
+// differences from it) that no earlier map holds.
+inline std::uint64_t payload_union_bytes(const std::vector<const PayloadMap *> &maps) {
   std::uint64_t total = 0;
-  for (const auto &entry : map) {
-    if (entry.second != nullptr) {
-      total += entry.second->size();
+  const PayloadMap *first = nullptr;
+  for (std::size_t i = 0; i < maps.size(); ++i) {
+    if (maps[i] == nullptr) {
+      continue;
     }
+    if (first == nullptr) {
+      first = maps[i];
+      total += first->weight();
+      continue;
+    }
+    bool repeat = false;
+    for (std::size_t j = 0; j < i && !repeat; ++j) {
+      repeat = maps[j] != nullptr && maps[j]->same(*maps[i]);
+    }
+    if (repeat) {
+      continue;
+    }
+    diff_shared_maps(
+        *first, *maps[i], [](const PayloadMap::value_type &) {},
+        [&](const PayloadMap::value_type &entry) {
+          bool earlier = false;
+          for (std::size_t j = 0; j < i && !earlier; ++j) {
+            earlier = maps[j] != nullptr && maps[j] != first && maps[j]->count(entry.first) != 0;
+          }
+          if (!earlier && entry.second != nullptr) {
+            total += entry.second->size();
+          }
+        },
+        [](const PayloadMap::value_type &, const PayloadMap::value_type &) {});
   }
   return total;
 }
 
-// P3-CAP: payload_map_bytes() of the union of `maps` (each distinct hash once, the first map
-// holding it supplies its bytes), without building the union.
-inline std::uint64_t payload_union_bytes(const std::vector<const PayloadMap *> &maps) {
+// payload_union_bytes() by the full walk (P3-CAP's), for the HC4b shadow oracle.
+inline std::uint64_t payload_union_bytes_full(const std::vector<const PayloadMap *> &maps) {
   std::uint64_t total = 0;
   for (std::size_t i = 0; i < maps.size(); ++i) {
     if (maps[i] == nullptr) {

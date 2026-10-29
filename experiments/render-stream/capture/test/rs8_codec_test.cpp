@@ -230,13 +230,13 @@ Snapshot state8(int n) {
   s.items.push_back(item8());
   s.canvases = {golden::root_canvas({1, 2, 3, 4, 5, 6, 8}), canvas2()};
   if (n >= 5) {
-    s.textures[5].version = 2;
-    s.textures[5].hash = golden::kHashA2;
-    s.textures[5].payload_bytes = 1135;
-    s.textures[5].adopted_content = AdoptedContent::Current;
-    s.meshes[0].version = 2;
-    s.meshes[0].adopted_content = AdoptedContent::Current;
-    s.meshes[0].surfaces = {golden::mesh_surface(kHashMesh1B, 297, Primitive::Triangles,
+    s.textures.mut(5).version = 2;
+    s.textures.mut(5).hash = golden::kHashA2;
+    s.textures.mut(5).payload_bytes = 1135;
+    s.textures.mut(5).adopted_content = AdoptedContent::Current;
+    s.meshes.mut(0).version = 2;
+    s.meshes.mut(0).adopted_content = AdoptedContent::Current;
+    s.meshes.mut(0).surfaces = {golden::mesh_surface(kHashMesh1B, 297, Primitive::Triangles,
                                                  golden::kMesh1SurfaceBFormat, 4, 6)};
   }
   if (n >= 6) {
@@ -249,7 +249,7 @@ Snapshot state8(int n) {
     freed.kind = TextureKind::Image;
     freed.status = TextureStatus::Freed;
     freed.version = 2;
-    s.textures[9] = freed;
+    s.textures.mut(9) = freed;
   }
   return s;
 }
@@ -413,20 +413,20 @@ void test_fields_ignored_below_v8() {
   Snapshot adopted = state8(4);
   adopted.version = ProtocolVersion::V7;
   Snapshot plain = adopted;
-  for (TextureEntry &t : plain.textures) {
+  for (TextureEntry &t : plain.textures.mut_refs()) {
     t.origin = Origin::Created;
     t.adopted_content = AdoptedContent::None;
     t.has_source_format = false;
     t.source_format.clear();
   }
-  for (MeshEntry &m : plain.meshes) {
+  for (MeshEntry &m : plain.meshes.mut_refs()) {
     m.origin = Origin::Created;
     m.adopted_content = AdoptedContent::None;
   }
-  for (ShaderEntry &s : plain.shaders) {
+  for (ShaderEntry &s : plain.shaders.mut_refs()) {
     s.origin = Origin::Created;
   }
-  for (MaterialEntry &m : plain.materials) {
+  for (MaterialEntry &m : plain.materials.mut_refs()) {
     m.origin = Origin::Created;
   }
   check(encode_transaction(make_full(adopted)) == encode_transaction(make_full(plain)),

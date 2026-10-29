@@ -238,10 +238,10 @@ void ServedResources::corrupt(const std::string &hash) {
   }
 }
 
-void ServedResources::add_locked(const std::string &hash, const PayloadPtr &payload,
+bool ServedResources::add_locked(const std::string &hash, const PayloadPtr &payload,
                                  std::uint64_t frame, std::vector<ServeEvent> *events) {
   if (payload == nullptr || served_.count(hash) != 0) {
-    return;
+    return false;
   }
   ServeEvent event;
   event.op = "pin";
@@ -260,6 +260,71 @@ void ServedResources::add_locked(const std::string &hash, const PayloadPtr &payl
   if (events != nullptr) {
     events->push_back(std::move(event));
   }
+  return true;
+}
+
+void ServedResources::set_serve_skip(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  serve_skip_ = on;
+  if (on) {
+    known_valid_ = true;  // the empty set is what is known: the very first map is "changed"
+  }
+}
+
+void ServedResources::set_shadow(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  shadow_ = on;
+}
+
+std::string ServedResources::shadow_failure() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return shadow_failure_;
+}
+
+bool ServedResources::known_locked(const PayloadMap &map) const {
+  if (!known_valid_) {
+    return false;
+  }
+  if (map.same(last_current_)) {
+    return true;
+  }
+  for (const PayloadMap &base : last_bases_) {
+    if (map.same(base)) {
+      return true;
+    }
+  }
+  for (const PayloadMap &pinned : pinned_) {
+    if (map.same(pinned)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ServedResources::add_map_locked(const PayloadMap &map, std::uint64_t frame,
+                                     std::vector<ServeEvent> *events) {
+  if (known_locked(map)) {
+    return;
+  }
+  if (!known_valid_) {
+    for (const auto &entry : map) {
+      add_locked(entry.first, entry.second, frame, events);
+    }
+    return;
+  }
+  if (!serve_skip_) {
+    // Every hash of last_current_ is served, so only the ones it lacks can be missing (in key
+    // order, as the full walk adds them).
+    diff_shared_maps(
+        last_current_, map, [](const PayloadMap::value_type &) {},
+        [&](const PayloadMap::value_type &entry) {
+          if (add_locked(entry.first, entry.second, frame, events)) {
+            extras_.insert(entry.first);
+          }
+        },
+        [](const PayloadMap::value_type &, const PayloadMap::value_type &) {});
+  }
+  pinned_.push_back(map);
 }
 
 void ServedResources::note_max_locked() {
@@ -271,11 +336,8 @@ void ServedResources::pin(const std::vector<const PayloadMap *> &maps, std::uint
                           std::vector<ServeEvent> *events) {
   std::lock_guard<std::mutex> lock(mutex_);
   for (const PayloadMap *map : maps) {
-    if (map == nullptr) {
-      continue;
-    }
-    for (const auto &entry : *map) {
-      add_locked(entry.first, entry.second, frame, events);
+    if (map != nullptr) {
+      add_map_locked(*map, frame, events);
     }
   }
   note_max_locked();
@@ -289,17 +351,12 @@ void ServedResources::retire(const PayloadMap &current,
   const bool retain_superseded =
       retain_superseded_frame_ != 0 && frame >= retain_superseded_frame_;
   // Whatever must be retained and is not yet (nothing, after a correct pin()).
-  for (const auto &entry : current) {
-    add_locked(entry.first, entry.second, frame, events);
-  }
+  add_map_locked(current, frame, events);
   // P3-SP: the bases are looked up in place (no per-frame set of every base hash).
   if (!unpin) {
     for (const PayloadMap *base : bases) {
-      if (base == nullptr) {
-        continue;
-      }
-      for (const auto &entry : *base) {
-        add_locked(entry.first, entry.second, frame, events);
+      if (base != nullptr) {
+        add_map_locked(*base, frame, events);
       }
     }
   }
@@ -316,15 +373,10 @@ void ServedResources::retire(const PayloadMap &current,
     // Every hash this host ever pinned stays servable: nothing is retired, so served_ (and its
     // bytes_) only grows for as long as content keeps changing. Deliberately not "capped" in any
     // way -- that is the sabotage.
+    known_valid_ = false;
     return;
   }
-  for (auto it = served_.begin(); it != served_.end();) {
-    const bool in_current = current.count(it->first) != 0;
-    const bool in_base = !in_current && in_bases(it->first);
-    if (in_current || (in_base && !unpin)) {
-      ++it;
-      continue;
-    }
+  const auto retire_one = [&](std::map<std::string, PayloadPtr>::iterator it, bool in_base) {
     ServeEvent event;
     event.op = "retire";
     event.hash = it->first;
@@ -339,7 +391,81 @@ void ServedResources::retire(const PayloadMap &current,
       events->push_back(std::move(event));
     }
     coded_.erase(it->first);
-    it = served_.erase(it);
+    return served_.erase(it);
+  };
+  if (!known_valid_ || unpin) {
+    for (auto it = served_.begin(); it != served_.end();) {
+      const bool in_current = current.count(it->first) != 0;
+      const bool in_base = !in_current && in_bases(it->first);
+      if (in_current || (in_base && !unpin)) {
+        ++it;
+        continue;
+      }
+      it = retire_one(it, in_base);
+    }
+  } else {
+    // HC4b: served_ is last_current_, last_bases_ and extras_; what leaves is among the extras
+    // and the hashes of those maps that `current` lacks (their differences from it), retired in
+    // key order as the full walk retires them.
+    std::set<std::string> candidates(extras_.begin(), extras_.end());
+    const auto lost = [&candidates](const PayloadMap::value_type &entry) {
+      candidates.insert(entry.first);
+    };
+    const auto none = [](const PayloadMap::value_type &) {};
+    const auto both = [](const PayloadMap::value_type &, const PayloadMap::value_type &) {};
+    diff_shared_maps(last_current_, current, lost, none, both);
+    for (const PayloadMap &old : last_bases_) {
+      bool kept = old.same(current);
+      for (const PayloadMap *base : bases) {
+        kept = kept || (base != nullptr && old.same(*base));
+      }
+      if (!kept) {
+        diff_shared_maps(old, current, lost, none, both);
+      }
+    }
+    for (const std::string &hash : candidates) {
+      const auto it = served_.find(hash);
+      if (it == served_.end() || current.count(hash) != 0 || in_bases(hash)) {
+        continue;
+      }
+      retire_one(it, false);
+    }
+  }
+  if (unpin) {
+    known_valid_ = false;  // the unpin sabotage keeps the full walk
+  } else {
+    known_valid_ = true;
+    last_current_ = current;
+    last_bases_.clear();
+    for (const PayloadMap *base : bases) {
+      if (base != nullptr) {
+        last_bases_.push_back(*base);
+      }
+    }
+  }
+  extras_.clear();
+  pinned_.clear();
+  if (shadow_ && shadow_failure_.empty() && !unpin && !serve_skip_) {
+    // The full walk's retained set: every hash of `current` and of each base.
+    std::set<std::string> want;
+    for (const auto &entry : current) {
+      want.insert(entry.first);
+    }
+    for (const PayloadMap *base : bases) {
+      for (const auto &entry : *base) {
+        want.insert(entry.first);
+      }
+    }
+    bool same = want.size() == served_.size();
+    auto w = want.begin();
+    for (auto it = served_.begin(); same && it != served_.end(); ++it, ++w) {
+      same = it->first == *w;
+    }
+    if (!same) {
+      shadow_failure_ = "served: the retained set (" + std::to_string(served_.size()) +
+                        " hashes) differs from the full walk's (" + std::to_string(want.size()) +
+                        ") at frame " + std::to_string(frame);
+    }
   }
 }
 
@@ -428,6 +554,51 @@ std::set<std::string> ServedResources::retained_hashes() const {
 std::uint64_t ServedResources::retained_bytes_beyond(
     const std::vector<const PayloadMap *> &known) const {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!known_valid_ || serve_skip_ || known.empty() || known[0] == nullptr) {
+    return beyond_full_locked(known);
+  }
+  // HC4b: served_ is last_current_, last_bases_ and extras_ (pin() has not run since the last
+  // retire()), so a hash beyond `known` is an extra or a hash of one of those maps that known[0]
+  // lacks.
+  const PayloadMap &first = *known[0];
+  std::set<std::string> candidates(extras_.begin(), extras_.end());
+  const auto lost = [&candidates](const PayloadMap::value_type &entry) {
+    candidates.insert(entry.first);
+  };
+  const auto none = [](const PayloadMap::value_type &) {};
+  const auto both = [](const PayloadMap::value_type &, const PayloadMap::value_type &) {};
+  diff_shared_maps(last_current_, first, lost, none, both);
+  for (const PayloadMap &base : last_bases_) {
+    diff_shared_maps(base, first, lost, none, both);
+  }
+  std::uint64_t total = 0;
+  for (const std::string &hash : candidates) {
+    const auto it = served_.find(hash);
+    if (it == served_.end() || it->second == nullptr) {
+      continue;
+    }
+    bool held = false;
+    for (const PayloadMap *map : known) {
+      held = held || (map != nullptr && map->count(hash) != 0);
+    }
+    if (!held) {
+      total += it->second->size();
+    }
+  }
+  if (shadow_ && shadow_failure_.empty()) {
+    const std::uint64_t want = beyond_full_locked(known);
+    if (want != total) {
+      // const member: the failure is reported through the next retire()'s check instead.
+      const_cast<ServedResources *>(this)->shadow_failure_ =
+          "budget: the served bytes beyond the current maps (" + std::to_string(total) +
+          ") differ from the full walk's (" + std::to_string(want) + ")";
+    }
+  }
+  return total;
+}
+
+std::uint64_t ServedResources::beyond_full_locked(
+    const std::vector<const PayloadMap *> &known) const {
   std::uint64_t total = 0;
   for (const auto &entry : served_) {
     bool held = false;

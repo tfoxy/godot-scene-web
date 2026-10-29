@@ -32,14 +32,16 @@ BUCKETS = [
     ("diff (make_patch/make_full)", r"make_patch|make_full|item_state_equal|_entry_equal|IdIndex|"
                                     r"diff_tables"),
     ("record planning (inline/payload refs)", r"RecordPlanner|v11_records|inline_names|collect_names|"
-                                              r"payload_refs|payload_names|target_refs|CarriedIndex"),
+                                              r"payload_refs|payload_names|target_refs|CarriedIndex|"
+                                              r"plan_v11_records"),
     ("store bookkeeping", r"store_payloads|ResourceStore|FileWriter|FileRecordSink"),
     ("budget and serving (pin/retire/union)", r"payload_union_bytes|payload_map_bytes|ServedResources|"
                                               r"retained_bytes_beyond"),
     ("hub (connections, restamp, tap)", r"live::Hub|Hub::|restamp|LiveServer|rs_ws"),
     ("snapshot: material params", r"wire_params|wire_material|material_unsupported|to_param"),
     ("snapshot: textures/meshes/shaders", r"wire_entry|wire_mesh|wire_shader|classify_mesh|settle|"
-                                          r"resolve_pending"),
+                                          r"resolve_pending|res_publish_resources|res_share_update|"
+                                          r"res_names_add|full_walk_resources"),
     ("snapshot: item walk and copies", r"Mirror::snapshot|find_ties|withheld_ids|is_withheld|"
                                        r"publish_items|own_entries|refresh_cv|stamp_cv|_state_difference|"
                                        r"texture_entry_unsupported|full_walk_items|shadow_compare"),
