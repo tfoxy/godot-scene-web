@@ -48,6 +48,7 @@ source does not.
 | `GRC_LIVE_MAX_MESSAGE_BYTES`, `GRC_LIVE_MAX_CONNECTIONS` | per deployment | message ceiling (default 16 MiB); admitted connections (1..4, default 1) |
 | `GRC_RESOURCE_INLINE_MAX_BYTES` | `4096` (P3-LV) | live: a payload of at most this many bytes rides the WebSocket as a resource record ahead of the transaction instead of a GET. Every STS2 mesh surface (max 2,284 B) does, which a game with skeletal animation needs: at the default 0 every pose is a GET, and no receiver kept up in combat (see "Live at game scale") |
 | `GRC_LIVE_AUTH`, `GRC_LIVE_ALLOWED_ORIGINS` | `token`; the page origins | the hello token and the CORS/origin allowlist (gate 7) |
+| `GRC_HEADLESS_CANVAS_TEXTURE`, `GRC_HEADLESS_PARTICLES`, `GRC_PREDRAW_PUMP` | leave unset (`auto`) | a `--headless` seat runs Godot's dummy rasterizer, which allocates no `CanvasTexture` or GPU-particles RID and never emits `frame_pre_draw`. At `GRC_STREAM_VERSION` 12 or later, a headless host therefore synthesizes those identities and pumps `frame_pre_draw` by default (HSD, render-stream-12.md "Headless defaults (HSD)"). Without that, no spine, emitter, CPUParticles2D buffer or AnimatedTexture frame streams. `off`/`0` restores the old refusal. Below /12, or on a rendered host, nothing changes |
 | `GRC_SHADER_POLICY` | the product's choice | `source` (default) serves game shader code to the operator's own receivers only; `params` or `exclude` do not |
 
 `GRC_ADOPT=arm` refuses to arm off the main thread (`adopt-thread`), and any gate 8 policy with a

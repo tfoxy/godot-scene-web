@@ -298,10 +298,11 @@ CG1's slots they are **conditional**: installed only under `GRC_STREAM_VERSION=1
 neither planned nor omitted. An older calibration record omits them and keeps the methods
 unobserved. The calibrator version does not move, so every /2–/11 session record is unchanged.
 
-## Headless shims (opt-in)
+## Headless shims (opt-in until HSD)
 
-Both follow canvas-texture-headless.md's fence: off by default, armed only on a `headless` display
-server (the capture refuses to arm otherwise), engine-free modules a ctest drives.
+Both follow canvas-texture-headless.md's fence: armed only on a `headless` display server (the
+capture refuses to arm otherwise), engine-free modules a ctest drives. Off by default before HSD;
+see "Headless defaults (HSD)" for the default since.
 
 - **Particles RID shim**, `GRC_HEADLESS_PARTICLES=synthesize`. The dummy's `particles_allocate()`
   returns `RID()`, so every emitter shares the null RID. Armed, the `particles_create` hook replaces
@@ -319,8 +320,53 @@ server (the capture refuses to arm otherwise), engine-free modules a ctest drive
   this frame and published in its transaction. A rendered host refuses the pump (rule 8 of "As
   built"); `pump_skipped` counts frames in which the engine emitted the signal itself.
 
-Neither is a default. The canvas-texture shim's criterion 5 (a clean exit on the target game) is
-the bar each must clear before a product seat uses it.
+Neither was a default at PM5. The canvas-texture shim's criterion 5 (a clean exit on the target game) was
+the bar each had to clear before a product seat used it; HSD cleared it and made all three the
+headless default at /12+.
+
+## Headless defaults (HSD)
+
+**Why.** The product's streaming seat (couch-coop MIR-3) is a `--headless` process, so Godot runs
+its dummy rasterizer, and before HSD the three compensations above were off unless asked for. The
+seat's environment did not ask for them. On STS2 that streamed no spine at all: no creature in
+combat, and a black character-select background (the room is one big spine). Every spine draws
+an `add_mesh` through a `CanvasTexture`. On the dummy every `CanvasTexture` is `RID()`
+(`canvas_texture_allocate`, dummy `texture_storage.h:54`), so every such draw was refused
+`canvas-texture-headless` (D11 and the G2d rule). The C3 legs never saw it, because they capture a
+GPU-rendered game. Nothing else about a headless seat was missing for spines: the dummy keeps
+mesh surfaces (`mesh_storage.h` `mesh_add_surface`), the capture takes every surface and region
+update from the hook arguments, not from storage, and spine-godot writes its own vertex buffers.
+
+**Rule.** `GRC_HEADLESS_CANVAS_TEXTURE`, `GRC_HEADLESS_PARTICLES` and `GRC_PREDRAW_PUMP` accept
+`auto`, and unset means `auto`. `auto` resolves to `synthesize` / `synthesize` / `1` when the
+display server is `headless` AND `GRC_STREAM_VERSION` is a plain decimal of at least 12. Otherwise
+it resolves to off, exactly as before (`rs::headless_defaults_apply`,
+`rs::resolve_headless_default`, `rs_canvas_texture_shim_test`). An explicit value always wins:
+`off`/`0` (or empty) restores the pre-HSD refusal, and an explicit `synthesize`/`1` on a rendered
+host still refuses the whole capture. Consequences:
+
+- A rendered host never resolves anything on, so its wire is unchanged (`ct-reference`, and
+  every rendered gate leg).
+- A headless capture below /12 (gates 0–8 and every older golden) is unchanged byte for byte. The
+  version gate is what keeps those legs and their `canvas-texture-headless` refusal checks as they
+  were; /12 is the stream the product runs (`StreamingSeatLaunch` sets it), and /13 inherits it.
+- A headless /12 session declares `canvas_texture` supported (no `unsupported_resources`), like a
+  rendered host, because the shim is armed (`entry.cpp` session features). A `CanvasTexture`
+  created before the arm is still `RID()` and still refused, as with the explicit opt-in.
+- Evidence: `result.json` `canvas_texture_shim` gains `default` (true when `auto` armed it), and
+  the block, `evidence/canvas-texture-shim.json` and the `canvas_texture_shim` calibration check
+  are written whenever the shim was asked for or defaulted on. `particles_shims` is checked
+  whenever either variable resolves to a value. The capture log prints one
+  `headless defaults (/12+ on a headless host)` line.
+
+**Checks.** g8c (fixtures/gate8-ct, the spine shape: an `add_mesh`, a `Polygon2D`, sprites and a
+`TextureRect` drawn only through a `CanvasTexture`) gains two HEADLESS /12 captures:
+`ct-headless-seat` requires the defaults to arm the shim by themselves and the native receiver on
+both sinks to equal the receiver of the rendered host's capture exactly at every checkpoint (0 px);
+`ct-headless-off` (all three explicitly off, the pre-HSD seat) requires every cell to stay the clear
+colour. In g8pt, `headless-shim` and `headless-pump` (and their /13 twins from W13b) now take the defaults (so `pt-shim` and
+`pt-pump` judge the default), and the `headless` and `headless-nopump` controls set all three off
+explicitly (so `headless-nopump` stays the /11 byte-identity witness).
 
 ## Hook log and counters (capture evidence, not wire)
 

@@ -294,6 +294,13 @@ headless shim** (`GRC_HEADLESS_CANVAS_TEXTURE=synthesize`). Pass criteria:
 
 ## Experiment (a) result (2026-10-10)
 
+> **HSD (2026-10-29): the default on a headless host at render-stream/12+.** The product's
+> streaming seat is a `--headless` process at /12 whose environment never set the opt-in, so it
+> streamed no spine (STS2: no creature, a black character-select room). Unset or `auto` now arms
+> this shim, the particles shim and the pre-draw pump on a `headless` display server at /12+;
+> below /12, and on every rendered host, nothing changes, and `off` restores the refusal. See
+> render-stream-12.md "Headless defaults (HSD)" and `results/p3/hsd.md`.
+
 Approved by the user on 2026-10-10 and built on branch `rs/canvas-texture-shim`. **Criteria 1–4 pass on the
 pinned 4.5.1 release template. Criterion 5 (the target game) was run once on 2026-10-10: it arms,
 publishes and disarms by frames, but it cannot exit 0 (see "Criterion 5 result").** The typed refusal is still the default. Without the opt-in, nothing changes,

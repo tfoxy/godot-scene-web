@@ -128,6 +128,35 @@ int main() {
     expect(shim.synthesized() == 0 && shim.on_create(0, 1) == first, "configure resets the table");
   }
 
+  // HSD: the headless defaults apply only to a `headless` display server at /12 or later.
+  {
+    using grc::rs::headless_defaults_apply;
+    using grc::rs::resolve_headless_default;
+    expect(headless_defaults_apply("headless", "12"), "headless /12 defaults on");
+    expect(headless_defaults_apply("headless", "13"), "headless /13 defaults on");
+    expect(!headless_defaults_apply("headless", "11"), "headless /11 stays off");
+    expect(!headless_defaults_apply("headless", "8"), "headless /8 stays off");
+    expect(!headless_defaults_apply("headless", nullptr), "headless, version unset, stays off");
+    expect(!headless_defaults_apply("headless", ""), "headless, empty version, stays off");
+    expect(!headless_defaults_apply("headless", "12x"), "an unparsable version stays off");
+    expect(!headless_defaults_apply("headless", "-12"), "a signed version stays off");
+    expect(!headless_defaults_apply("X11", "12"), "a rendered host stays off at /12");
+    expect(!headless_defaults_apply("Wayland", "13"), "a rendered host stays off at /13");
+    expect(resolve_headless_default(nullptr, true, "synthesize", "") == "synthesize",
+           "unset takes the on value");
+    expect(resolve_headless_default("auto", true, "1", "") == "1", "auto takes the on value");
+    expect(resolve_headless_default(nullptr, false, "synthesize", "").empty(),
+           "unset takes the off value");
+    expect(resolve_headless_default("auto", false, "synthesize", "").empty(),
+           "auto takes the off value");
+    expect(resolve_headless_default("off", true, "synthesize", "") == "off",
+           "an explicit off wins over the default");
+    expect(resolve_headless_default("", true, "synthesize", "").empty(),
+           "an explicit empty value wins over the default");
+    expect(resolve_headless_default("synthesize", false, "synthesize", "") == "synthesize",
+           "an explicit value passes through when the defaults do not apply");
+  }
+
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_canvas_texture_shim_test: %d failure(s)\n", g_failures);
     return 1;
