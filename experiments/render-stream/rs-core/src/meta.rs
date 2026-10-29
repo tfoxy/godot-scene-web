@@ -2256,6 +2256,9 @@ pub struct TxMeta {
     pub unknown_items: Option<UnknownItems>,
     /// P3-TM: `/10`'s `shader_time.f`, the host's shader time's offset in `param_f64`.
     pub shader_time_f: Option<u64>,
+    /// /13 (render-stream-13.md "As built (W13a)"): `predict_check`, the XXH64 of the
+    /// reconstructed `mesh_f32` ‖ `mesh_u8` ‖ `mm_f32`.
+    pub predict_check: Option<u64>,
     pub default_texture_filter: Option<Filter>,
     pub default_texture_repeat: Option<Repeat>,
     pub removed_canvases: Vec<i64>,
@@ -2292,6 +2295,7 @@ impl TxMeta {
         self.unsupported_null = false;
         self.unknown_items = None;
         self.shader_time_f = None;
+        self.predict_check = None;
         self.removed_canvases.clear();
         self.removed_items.clear();
         self.removed_textures.clear();
@@ -3200,8 +3204,18 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
     let has_pt = version >= 12 && ck.has_key(meta, "particles");
     let has_rp = version >= 12 && ck.has_key(meta, "removed_particles");
     let has_pe = version >= 12 && ck.has_key(meta, "particle_emits");
+    // render-stream-13.md "As built (W13a)": /13's `predict_check`, on every transaction, right
+    // before `blocks` (after `shader_time` when present).
+    let has_pc = version >= 13;
     let mut keys_buf: Vec<&str>;
-    let keys: &[&str] = if has_unknown || has_time || has_mm || has_rm || has_pt || has_rp || has_pe
+    let keys: &[&str] = if has_unknown
+        || has_time
+        || has_mm
+        || has_rm
+        || has_pt
+        || has_rp
+        || has_pe
+        || has_pc
     {
         keys_buf = base.to_vec();
         if has_unknown {
@@ -3216,6 +3230,7 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             (has_rp, "removed_particles"),
             (has_pe, "particle_emits"),
             (has_time, "shader_time"),
+            (has_pc, "predict_check"),
         ] {
             if on {
                 keys_buf.insert(at, k);
@@ -3237,7 +3252,8 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
         + has_rm as usize
         + has_pt as usize
         + has_rp as usize
-        + has_pe as usize;
+        + has_pe as usize
+        + has_pc as usize;
     let pos = |name: &str| -> usize {
         let i = base.iter().position(|&k| k == name).unwrap();
         let i = if i >= 8 { i + shift } else { i };
@@ -3761,6 +3777,19 @@ fn check_transaction(ck: &mut Ck, meta: Value, version: u8, tx: &mut TxMeta) -> 
             return Err(ck.schema("\"shader_time\" must be {f}, an integer >= 0"));
         };
         tx.shader_time_f = Some(t as u64);
+    }
+    if has_pc {
+        let at = keys.iter().position(|&k| k == "predict_check").unwrap();
+        let v = ck
+            .string(f.at(at))
+            .filter(|s| s.len() == 16 && s.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
+            .and_then(|s| u64::from_str_radix(std::str::from_utf8(s).ok()?, 16).ok());
+        let Some(v) = v else {
+            return Err(ck.schema(
+                "\"predict_check\" must be 16 lowercase hex digits (render-stream/13)",
+            ));
+        };
+        tx.predict_check = Some(v);
     }
     let mut n = transaction_block_count(version);
     // /12: the optional tenth block `pt_f32` (its presence and count are `pt-offset`'s).

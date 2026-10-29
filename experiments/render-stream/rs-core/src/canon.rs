@@ -1307,16 +1307,28 @@ pub fn decoded_record(
     offset: usize,
     version: u8,
 ) -> Result<serde_json::Value, Error> {
-    use serde_json::{json, Value as J};
     let mut bufs = DecodeBufs::default();
     let mut tx = TxMeta::default();
     meta::decode_record(record, offset, version, &mut bufs, &mut tx)?;
+    decoded_form(record, offset, &bufs.descs, record, &bufs.blocks)
+}
+
+/// [`decoded_record`]'s form of `record` (offset, length, sha256 and meta its own) with its blocks
+/// read from `blocks` of `block_bytes` (at /13 the reconstructed /12 record).
+fn decoded_form(
+    record: &[u8],
+    offset: usize,
+    descs: &[wire::BlockDesc],
+    block_bytes: &[u8],
+    ranges: &[wire::BlockRange],
+) -> Result<serde_json::Value, Error> {
+    use serde_json::{json, Value as J};
     let frame = wire::frame(record, offset)?;
     let meta: J =
         serde_json::from_slice(frame.meta).map_err(|e| Error::new("meta-json", e.to_string()))?;
     let mut blocks = Vec::new();
-    for (d, b) in bufs.descs.iter().zip(&bufs.blocks) {
-        let bytes = &record[b.start..b.start + b.len];
+    for (d, b) in descs.iter().zip(ranges) {
+        let bytes = &block_bytes[b.start..b.start + b.len];
         let num = |x: f64| {
             serde_json::Number::from_f64(x)
                 .map(J::Number)
@@ -1361,8 +1373,44 @@ pub fn decoded_record(
 pub fn decoded_recording(data: &[u8], version: u8) -> Result<serde_json::Value, Error> {
     let records = wire::split_records(data, version)?;
     let mut out = Vec::with_capacity(records.len());
-    for r in &records {
-        out.push(decoded_record(r.bytes(data), r.offset, version)?);
+    if version >= 13 {
+        // render-stream-13-decoded/1: /12's decoded form, metas verbatim (predict_check
+        // included), blocks the reconstructed /12 values (render-stream-13.md "Forms").
+        let mut hist = crate::predict::History::default();
+        let mut sc = crate::predict::Scratch::default();
+        let mut plain = Vec::new();
+        let mut bufs = DecodeBufs::default();
+        let mut tx = TxMeta::default();
+        for r in &records {
+            let rec = r.bytes(data);
+            let d = meta::decode_record(rec, r.offset, version, &mut bufs, &mut tx)?;
+            if !matches!(d, meta::Decoded::Transaction) {
+                out.push(decoded_form(rec, r.offset, &bufs.descs, rec, &bufs.blocks)?);
+                continue;
+            }
+            let (h1, h2) = hist.refs(tx.is_full(), false, false);
+            let (declared, computed) = crate::predict::unpredict_record(
+                rec,
+                &tx,
+                &mut bufs.blocks,
+                h1,
+                h2,
+                &mut sc,
+                &mut plain,
+            )?;
+            if declared != computed {
+                return Err(Error::new(
+                    "predict-check",
+                    format!("record at offset {}: transaction seq {}", r.offset, tx.seq),
+                ));
+            }
+            out.push(decoded_form(rec, r.offset, &bufs.descs, &plain, &bufs.blocks)?);
+            hist.accept(&tx, crate::predict::blocks_of(&plain, &bufs.blocks), false, &mut sc);
+        }
+    } else {
+        for r in &records {
+            out.push(decoded_record(r.bytes(data), r.offset, version)?);
+        }
     }
     Ok(serde_json::json!({
         "schema": format!("render-stream-{version}-decoded/1"),

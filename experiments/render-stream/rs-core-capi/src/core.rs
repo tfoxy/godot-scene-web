@@ -295,6 +295,7 @@ impl Core {
             },
             verify_payload_hashes: true,
             early_prune: false,
+            no_predict_reset: false,
         };
         let mut validator = match Validator::new(record, offset, opts) {
             Ok(v) => v,

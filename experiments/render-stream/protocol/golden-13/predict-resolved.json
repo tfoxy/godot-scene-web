@@ -1,0 +1,2138 @@
+{
+  "schema": "render-stream-13-resolved/1",
+  "transactions": [
+    {
+      "seq": 1,
+      "frame": 1,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "custom_aabb": [
+              66.0,
+              -33.0,
+              0.0,
+              16.25,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "4c6ea818193a17cf4377bff0f945cbf7740cd81ae1a9fecefee1277712b9fabb",
+                "payload_bytes": 132,
+                "primitive": "triangles",
+                "format": 33558552,
+                "vertex_count": 4,
+                "index_count": 6
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "f3df70e9305b7c9d455d79b63d78fbceb2c4acad2d58f835888098d2a8dbb2ee",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 1,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 2,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "d2097f66edf3d792b533f72feead19fc24776e558a131b1608a320c11d2e4080"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 2,
+      "frame": 2,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "custom_aabb": [
+              68.0,
+              -34.0,
+              0.0,
+              16.5,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "78e8e1d104d9c91fd44c6fbc17b73cdd7c52e2ac0476bfe5ece14ef6f1e20a5b",
+                "payload_bytes": 132,
+                "primitive": "triangles",
+                "format": 33558552,
+                "vertex_count": 4,
+                "index_count": 6
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "fdb13a4415d50fd5f24803de10847ba1ff6b77afab8a48dea08fac1e0225d628",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 2,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 2,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "22f190ce41c19fb61e3e89f3ecaf9ef22b503beca47f1120a199209590f08271"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 3,
+      "frame": 3,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "custom_aabb": [
+              70.0,
+              -35.0,
+              0.0,
+              16.75,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "12ac697bceb23c87794c41c0f15c80bc37306b0974887065e1122f8669e78e87",
+                "payload_bytes": 132,
+                "primitive": "triangles",
+                "format": 33558552,
+                "vertex_count": 4,
+                "index_count": 6
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "351c6e24ff98e0aaefa108d8e6d03994a8dd3e787c996330f37ba52006cc12b8",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 3,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "69f5641831479a1b5f22e9aac047536bb9bd2aee1b21ce756b378af97e2ae988"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 4,
+      "frame": 4,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 4,
+            "custom_aabb": [
+              72.0,
+              -36.0,
+              0.0,
+              17.0,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "30b287f7ac2cec8342c4850786f4925da6a5cfe999c3b0f5e7ca3afa0fcb0470",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 4,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "05921a984ceb6c31decf75a349280759f80536fd5d4354e4933d731a740d3b30",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 4,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "365d929dcb3acd406a2b8650b496753c2a914cd52b549e3c4eb8642f01f4867e"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 5,
+      "frame": 5,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 5,
+            "custom_aabb": [
+              74.0,
+              -37.0,
+              0.0,
+              17.25,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "1d37659d21cf840ff79ae0fc979f273ba46e0746239b6365fd7c14813ec72b2c",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 4,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "05921a984ceb6c31decf75a349280759f80536fd5d4354e4933d731a740d3b30",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 5,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "c38b693e8b8f241a702694e9ef69c94df61cd26283e29f26e3b59bfd788fdbaf"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 6,
+      "frame": 6,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 6,
+            "custom_aabb": [
+              76.0,
+              -38.0,
+              0.0,
+              17.5,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "160e386c06efbc61edc4c779a9312cd768feb90aa8eaea981dce3ae61058ec3f",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 6,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "28ff8c5be59d1b088b689209173aa17f9e41bfb4e65efd04ee8c834d0a61d19e",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 5,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "c38b693e8b8f241a702694e9ef69c94df61cd26283e29f26e3b59bfd788fdbaf"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 7,
+      "frame": 7,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 1,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_mesh",
+                "mesh": 2,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 7,
+            "custom_aabb": [
+              78.0,
+              -39.0,
+              0.0,
+              17.75,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "405ecb01a78495eb4ea94195bce8c6b4f1772a5a72f5165dee2d8d131f7718e1",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 7,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              32.0,
+              32.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "0b085d79724cf020ddf494ff585d53a2d6bc9bfc816511482b58c2977e93ca98",
+                "payload_bytes": 142,
+                "primitive": "triangles",
+                "format": 33561616,
+                "vertex_count": 3,
+                "index_count": 3
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 7,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "a9e04a53f5d1591d6a55914b0826a99f888ded6ff83967721d3b02149b5efbe0"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 8,
+      "frame": 8,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 2,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 2,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 8,
+            "custom_aabb": [
+              80.0,
+              -40.0,
+              0.0,
+              18.0,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "458a6803827e9d2be521876c0ff288304b630da824fcad029ed04fa4ac5ed998",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 8,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "8c68a47469222a8ed31669cf4a5c0931bd704a5084e7cb997ea7d9bf68b1f00a"
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 8,
+            "mesh": null,
+            "format": "2d",
+            "colors": false,
+            "custom": false,
+            "instances": 1,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "b810bb6156e022e7b7af507af710e665108a4c039c2bfadbaf45cf8d42b3d722"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 9,
+      "frame": 9,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 2,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 2,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 9,
+            "custom_aabb": [
+              82.0,
+              -41.0,
+              0.0,
+              18.25,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "94cf9c447f9e4a83cf8ab770939d529f92eb09564a3ad88f9aa6f5691bd4b07f",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 9,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "6e8aab8eb85bfe5be03692089c2cb060744331b4366375d9c28313fc4f5aadd6"
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 9,
+            "mesh": null,
+            "format": "2d",
+            "colors": false,
+            "custom": false,
+            "instances": 1,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "268df3aed1a3ea5a1732c69652564b5c9a4b2490f5e9da533d4fad1521973e9d"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 10,
+      "frame": 10,
+      "state": {
+        "status": "ok",
+        "failures": [],
+        "unsupported": [],
+        "default_texture_filter": "nearest",
+        "default_texture_repeat": "disabled",
+        "canvases": [
+          {
+            "id": 1,
+            "origin": "root-query",
+            "role": "root",
+            "attached": true,
+            "layer": 0,
+            "sublayer": 0,
+            "items": [
+              1
+            ],
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ],
+        "items": [
+          {
+            "id": 1,
+            "origin": "created",
+            "parent": {
+              "kind": "canvas",
+              "id": 1
+            },
+            "children": [],
+            "visible": true,
+            "draw_index": 0,
+            "z_index": 0,
+            "z_relative": true,
+            "behind": false,
+            "clip": false,
+            "custom_rect": false,
+            "visibility_layer": 4294967295,
+            "texture_filter": "default",
+            "texture_repeat": "default",
+            "material": null,
+            "use_parent_material": false,
+            "instance_params": [],
+            "canvas_group": null,
+            "copy_to_backbuffer": null,
+            "content_version": 2,
+            "xform": [
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              64.0
+            ],
+            "modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "self_modulate": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "custom_rect_rect": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "commands": [
+              {
+                "op": "add_mesh",
+                "mesh": 1,
+                "tex": null,
+                "transform": [
+                  1.0,
+                  0.0,
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "modulate": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 1,
+                "tex": null
+              },
+              {
+                "op": "add_multimesh",
+                "multimesh": 2,
+                "tex": null
+              }
+            ]
+          }
+        ],
+        "textures": [],
+        "meshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "adopted_content": null,
+            "status": "ok",
+            "reason": null,
+            "version": 10,
+            "custom_aabb": [
+              84.0,
+              -42.0,
+              0.0,
+              18.5,
+              16.0,
+              0.0
+            ],
+            "surfaces": [
+              {
+                "hash": null,
+                "body_sha256": "94cf9c447f9e4a83cf8ab770939d529f92eb09564a3ad88f9aa6f5691bd4b07f",
+                "payload_bytes": 88,
+                "primitive": "triangles",
+                "format": 33554448,
+                "vertex_count": 3,
+                "index_count": 0
+              }
+            ]
+          }
+        ],
+        "shaders": [],
+        "materials": [],
+        "multimeshes": [
+          {
+            "id": 1,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 10,
+            "mesh": null,
+            "format": "2d",
+            "colors": true,
+            "custom": true,
+            "instances": 3,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "cb7837b389cd3748711fbd32f8287a96cc077c084a97aaab7b848c07b3f263e2"
+          },
+          {
+            "id": 2,
+            "origin": "created",
+            "status": "ok",
+            "reason": null,
+            "version": 10,
+            "mesh": null,
+            "format": "2d",
+            "colors": false,
+            "custom": false,
+            "instances": 1,
+            "visible": -1,
+            "custom_aabb": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "buffer_sha256": "577f8844c02b4a2c0c8712f678d3be98025dc011c248e791dce8246b91369d4e"
+          }
+        ]
+      }
+    }
+  ]
+}

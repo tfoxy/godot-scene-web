@@ -21,6 +21,14 @@
 //! its carried set C is inline(S) (names(S) for `inline.*`, empty otherwise: L2); `dynamic_bodies`
 //! hash to their listed digests; each `invalid` entry is decoded at its own `version`; and the
 //! validator sabotage `early-prune` makes `inline.rs11` fail `resource-missing`.
+//!
+//! golden-13 (render-stream-13.md "As built (W13a)") adds, with golden-12's `names` and
+//! `inline_resources` (its content is golden-12's): the `predict` lane (decoded, validated,
+//! resolved to `predict-resolved.json`); every lane transcoded /13 → /12 equals its `rs12` twin
+//! and /12 → /13 its file, byte for byte, the encoder's units equalling `predict_trace`; the
+//! encoder sabotage `predict-stale` writes its vector; the decoder sabotage `no-predict-reset`
+//! fails each listed file at its seq; each invalid vector fails at its listed seq and each corrupt
+//! one at its record.
 
 use crate::canon;
 use crate::payload;
@@ -46,6 +54,9 @@ pub struct GoldenOptions {
     /// `true` is the /11 validator sabotage `early-prune` (render-stream-11.md decision 10): every
     /// golden-11 recording with a resource record must then fail its checks.
     pub early_prune: bool,
+    /// `true` is the /13 decoder sabotage `no-predict-reset` (render-stream-13.md "Sabotages"):
+    /// golden-13's `predict.rs13` and `patch.rs13` must then fail `predict-check`.
+    pub no_predict_reset: bool,
 }
 
 impl Default for GoldenOptions {
@@ -53,6 +64,7 @@ impl Default for GoldenOptions {
         GoldenOptions {
             verify_payload_hashes: true,
             early_prune: false,
+            no_predict_reset: false,
         }
     }
 }
@@ -127,6 +139,7 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
             digest: DigestPolicy::Deferred,
             verify_payload_hashes: opts.verify_payload_hashes,
             early_prune: opts.early_prune,
+            no_predict_reset: opts.no_predict_reset,
         },
     )?;
     let mut transactions = Vec::new();
@@ -186,6 +199,7 @@ impl Suite<'_> {
             digest: DigestPolicy::Deferred,
             verify_payload_hashes: self.opts.verify_payload_hashes,
             early_prune: self.opts.early_prune,
+            no_predict_reset: self.opts.no_predict_reset,
         }
     }
 
@@ -349,6 +363,9 @@ impl Suite<'_> {
         }
         if self.version >= 11 {
             self.run_v11(index, &valid);
+        }
+        if self.version >= 13 {
+            self.run_v13(index, &valid);
         }
         for entry in arr("payload_invalid") {
             let (file, code) = (s(&entry, "file"), s(&entry, "code"));
@@ -702,6 +719,172 @@ impl Suite<'_> {
     }
 }
 
+impl Suite<'_> {
+    /// golden-13's own checks (render-stream-13.md "Validators and golden vectors", "As built
+    /// (W13a)"): transcodes both ways against the /12 twins, the predict lane, the encoder's unit
+    /// trace, both sabotages, and the failing seq of each invalid and corrupt vector.
+    fn run_v13(&mut self, index: &J, valid: &[J]) {
+        let s = |v: &J, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let predict = index.get("predict").cloned().unwrap_or(J::Null);
+        // The predict lane: decodes, validates, resolves to predict-resolved.json.
+        let pfile = s(&predict, "file");
+        if let Some(data) = self.decoded_check(&pfile, &s(&predict, "decoded")) {
+            let got = validate_recording(&data, self.opts());
+            self.ok(
+                got.is_ok(),
+                format!("validateRecording({pfile}) is []"),
+                got.err().map(|e| e.to_string()).unwrap_or_default(),
+            );
+            let want = self.json(&s(&predict, "resolved"));
+            match resolve_recording(&data, self.version, self.opts) {
+                Ok((resolved, _)) => self.ok(
+                    want.as_ref().is_some_and(|w| states_equal(&resolved, w)),
+                    format!(
+                        "resolveRecording({pfile}) deep-equals {} (excepted fields aside)",
+                        s(&predict, "resolved")
+                    ),
+                    "",
+                ),
+                Err(e) => self.ok(
+                    false,
+                    format!("resolveRecording({pfile}) did not throw"),
+                    e.to_string(),
+                ),
+            }
+        }
+        // Transcode /13 -> /12 equals the twin and /12 -> /13 the file, byte for byte; the
+        // encoder's units equal index.json's predict_trace.
+        let traces = index.get("predict_trace").cloned().unwrap_or(J::Null);
+        let mut lanes: Vec<(String, String)> =
+            valid.iter().map(|e| (s(e, "file"), s(e, "rs12"))).collect();
+        lanes.push((pfile.clone(), s(&predict, "rs12")));
+        for (f13, f12) in &lanes {
+            let (Some(d13), Some(d12)) = (self.bytes(f13), self.bytes(f12)) else {
+                self.ok(false, format!("{f13} and {f12} are readable"), "file missing");
+                continue;
+            };
+            match crate::predict::to12(&d13, false) {
+                Ok(got) => self.ok(
+                    got == d12,
+                    format!("transcode {f13} to /12 equals {f12} byte for byte"),
+                    format!("{} vs {} bytes", got.len(), d12.len()),
+                ),
+                Err(e) => self.ok(false, format!("transcode {f13} to /12"), e.to_string()),
+            }
+            let mut trace = Vec::new();
+            match crate::predict::to13(&d12, false, Some(&mut trace)) {
+                Ok(got) => {
+                    self.ok(
+                        got == d13,
+                        format!("transcode {f12} to /13 equals {f13} byte for byte"),
+                        format!("{} vs {} bytes", got.len(), d13.len()),
+                    );
+                    if let Some(want) = traces.get(f13.as_str()) {
+                        let got: J = trace
+                            .iter()
+                            .map(|t| {
+                                json!({"seq": t.seq, "units": t.units.iter().map(|u| json!({
+                                    "block": u.block, "id": u.id, "order": u.order
+                                })).collect::<Vec<_>>()})
+                            })
+                            .collect();
+                        self.ok(
+                            deep_equal(&got, want),
+                            format!("the encoder's predicted units over {f12} are index.json's predict_trace[{f13}]"),
+                            "",
+                        );
+                    }
+                }
+                Err(e) => self.ok(false, format!("transcode {f12} to /13"), e.to_string()),
+            }
+        }
+        // Sabotage predict-stale (encoder): its output is the listed vector.
+        let sab = index.get("sabotage").cloned().unwrap_or(J::Null);
+        if let Some(st) = sab.get("predict-stale") {
+            let vector = s(st, "vector");
+            let p12 = self.bytes(&s(&predict, "rs12"));
+            let want = self.bytes(&vector);
+            let got = p12.as_deref().map(|d| crate::predict::to13(d, true, None));
+            self.ok(
+                matches!((&got, &want), (Some(Ok(g)), Some(w)) if g == w),
+                format!("sabotage predict-stale: the encoder over {} writes {vector} byte for byte", s(&predict, "rs12")),
+                "",
+            );
+        }
+        // Sabotage no-predict-reset (decoder): each listed file fails predict-check at its seq.
+        if !self.opts.no_predict_reset {
+            if let Some(nr) = sab.get("no-predict-reset") {
+                let code = s(nr, "code");
+                for f in nr.get("fails").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+                    let file = s(&f, "file");
+                    let seq = f.get("seq").and_then(|x| x.as_i64());
+                    let opts = Options {
+                        no_predict_reset: true,
+                        ..self.opts()
+                    };
+                    let got = self.bytes(&file).and_then(|d| first_failure(&d, opts));
+                    self.ok(
+                        matches!(&got, Some((e, _, at)) if e.code == code && *at == seq),
+                        format!("sabotage no-predict-reset: validateRecording({file}) fails \"{code}\" at seq {seq:?}"),
+                        got.map(|(e, _, at)| format!("{e} (seq {at:?})")).unwrap_or_else(|| "accepted".into()),
+                    );
+                }
+            }
+        }
+        // Each invalid vector with a seq fails at that seq; the corrupt vectors at their record.
+        for entry in index.get("invalid").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+            let Some(seq) = entry.get("seq").and_then(|x| x.as_i64()) else {
+                continue;
+            };
+            let file = s(&entry, "file");
+            let got = self.bytes(&file).and_then(|d| first_failure(&d, self.opts()));
+            self.ok(
+                matches!(&got, Some((_, _, at)) if *at == Some(seq)),
+                format!("validateRecording({file}) fails at transaction seq {seq}"),
+                got.map(|(e, _, at)| format!("{e} (seq {at:?})")).unwrap_or_else(|| "accepted".into()),
+            );
+        }
+        for entry in index.get("corrupt").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+            let Some(ri) = entry.get("record_index").and_then(|x| x.as_u64()) else {
+                continue;
+            };
+            let file = s(&entry, "file");
+            let got = self.bytes(&file).and_then(|d| first_failure(&d, self.opts()));
+            self.ok(
+                matches!(&got, Some((_, at, _)) if *at == Some(ri as usize)),
+                format!("validateRecording({file}) fails at record {ri}"),
+                got.map(|(e, at, _)| format!("{e} (record {at:?})")).unwrap_or_else(|| "accepted".into()),
+            );
+        }
+    }
+}
+
+/// The first error validating `data`, with the failing record's index and (for a transaction
+/// whose meta parses) its seq; `None` when it validates.
+pub fn first_failure(data: &[u8], opts: Options) -> Option<(Error, Option<usize>, Option<i64>)> {
+    let records = match wire::split_records(data, opts.version) {
+        Ok(r) => r,
+        Err(e) => return Some((e, None, None)),
+    };
+    let first = records.first()?;
+    let mut v = match Validator::new(first.bytes(data), first.offset, opts) {
+        Ok(v) => v,
+        Err(e) => return Some((e, Some(0), None)),
+    };
+    for (i, r) in records.iter().enumerate().skip(1) {
+        if let Err(e) = v.accept(r.bytes(data), r.offset) {
+            let rec = r.bytes(data);
+            let seq = wire::frame(rec, r.offset)
+                .ok()
+                .and_then(|f| serde_json::from_slice::<J>(f.meta).ok())
+                .filter(|m| m.get("type").and_then(|t| t.as_str()) == Some("transaction"))
+                .and_then(|m| m.get("seq").and_then(|s| s.as_i64()));
+            return Some((e, Some(i), seq));
+        }
+    }
+    v.finish().err().map(|e| (e, None, None))
+}
+
 /// One accepted transaction's /11 resource view (`carried_trace`).
 pub struct CarriedStep {
     pub seq: i64,
@@ -747,16 +930,31 @@ pub fn run_golden(version: u8, read: ReadFn, opts: GoldenOptions) -> Vec<Check> 
         checks: Vec::new(),
     };
     match suite.json("index.json") {
-        Some(index) => suite.run(&index),
+        Some(mut index) => {
+            // golden-13 is golden-12's content: its names(S) and inline resources are
+            // golden-12's (render-stream-13.md "Forms and transcode").
+            if version >= 13 {
+                if let Some(J::Object(i12)) = suite.json("../golden-12/index.json") {
+                    for k in ["names", "inline_resources"] {
+                        if index.get(k).is_none() {
+                            if let (Some(v), J::Object(m)) = (i12.get(k), &mut index) {
+                                m.insert(k.to_string(), v.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            suite.run(&index)
+        }
         None => suite.ok(false, "index.json is readable", ""),
     }
     suite.checks
 }
 
-/// golden-2 to golden-12 (or one of them), plus the cross-version `bad-magic` checks.
+/// golden-2 to golden-13 (or one of them), plus the cross-version `bad-magic` checks.
 pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check> {
     let mut checks = Vec::new();
-    for v in 2..=12u8 {
+    for v in 2..=wire::LATEST {
         if only.is_none_or(|o| o == v) {
             checks.extend(run_golden(v, read, opts));
         }
@@ -781,6 +979,8 @@ pub fn run_all(read: ReadFn, only: Option<u8>, opts: GoldenOptions) -> Vec<Check
         (11, 10),
         (11, 12),
         (12, 11),
+        (12, 13),
+        (13, 12),
     ] {
         if only.is_some_and(|o| o != file_v && o != as_v) {
             continue;

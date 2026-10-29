@@ -442,6 +442,7 @@ pub fn core_bench(data: &[u8], digest_inline: bool) -> Result<Vec<f64>, JsValue>
         },
         verify_payload_hashes: true,
         early_prune: false,
+        no_predict_reset: false,
     };
     let mut v = Validator::new(spans[0].bytes(data), spans[0].offset, opts).map_err(err)?;
     let mut out = Vec::with_capacity(spans.len());
@@ -1076,6 +1077,7 @@ impl GswRs {
             },
             verify_payload_hashes: !self.opts.skip_payload_hash,
             early_prune: false,
+            no_predict_reset: false,
         };
         let mut v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
         v.set_no_prune(self.opts.no_prune);
