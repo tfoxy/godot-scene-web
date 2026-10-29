@@ -26,6 +26,21 @@
 #                                  with a body that hashes to its name
 #   sabotage-dyn-hash-unread       (GRC_HC_SABOTAGE=dyn-hash-unread: the /8 viewer is not counted as
 #                                  a hash reader) fails late-join-v8-on-v11
+# HC4a's (results/p3/hc4a.md, host-cost-design.md D1 and "Byte-identity proof method"; the
+# persistent item and canvas tables and their shadow oracle, GRC_HC_SHADOW=1):
+#   shadow-oracle-agrees           rr-vary and dyn-off run with the oracle on: every snapshot of
+#                                  theirs equals the full walk (counters.json hc_shadow)
+#   sabotage-hc-skip-dirty-oracle  (GRC_HC_SABOTAGE=hc-skip-dirty: every 16th dirty mark lost) the
+#                                  oracle ends the stream with hc-shadow-mismatch
+#   sabotage-hc-skip-dirty-gate1   the same sabotage under run-gate1.sh --legs g1a fails gate 1's
+#                                  receiver pixel checks (receiver-vs-reference,
+#                                  expected-image-receiver)
+#   sabotage-hc-stale-derived-oracle (hc-stale-derived: one item keeps stale item-level entries)
+#                                  under run-gate2.sh --legs g2a: the oracle ends capture-unsupported
+#                                  with an `unsupported` mismatch
+#   sabotage-hc-stale-derived-gate2 the same under --legs g2a,g2b fails gate 2's unsupported checks
+#                                  (recordings-decode-2 unsupported-mismatch,
+#                                  leg-class-unsupported-textures)
 #
 #   bash experiments/render-stream/scripts/run-hc1.sh --extension EXT [--out DIR] [--calibration PATH]
 #     [--binary PATH]
@@ -47,7 +62,7 @@ while [ $# -gt 0 ]; do
 	--out) OUT="$2" && shift 2 ;;
 	--calibration) CALIBRATION="$2" && shift 2 ;;
 	--binary) BINARY="$2" && shift 2 ;;
-	-h | --help) sed -n 2,21p "${BASH_SOURCE[0]}" && exit 0 ;;
+	-h | --help) sed -n 2,40p "${BASH_SOURCE[0]}" && exit 0 ;;
 	*) echo "run-hc1: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
@@ -79,6 +94,8 @@ leg() {
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_VERSION=8 GRC_TEXTURE_DECODE=engine
 		GRC_TEXTURE_WORKERS=sync GRC_ROOT_SIZE=presentation:1920x1080 GRC_HOOK_LOG="$hook"
 		GRC_RESOURCE_INLINE_MAX_BYTES=256 GRC_RESOURCE_STORE_DIR="$dir/store")
+	# HC4a: the shadow oracle under HC_SHADOW=1 (lib/gamescope.sh gs_strip_env_args)
+	if [ "${HC_SHADOW:-}" = 1 ]; then env+=(GRC_HC_SHADOW=1); fi
 	if [ "$sink" = 1 ]; then env+=(GRC_STREAM_OUT="$dir/recording-full.rs8"); fi
 	if [ "$viewer" != x ]; then env+=(GRC_LIVE_LISTEN="127.0.0.1:$PORT" GRC_LIVE_TAP_DIR="$dir/tap"); fi
 	[ "${#extra[@]}" -gt 0 ] && env+=("${extra[@]}")
@@ -111,7 +128,7 @@ rr_sinks() { echo "GRC_STREAM_VERSION=11 GRC_STREAM_OUT=$OUT/$1/recording.rs11 G
 # shellcheck disable=SC2046 # word-split on purpose: three VAR=value words
 leg rr-same "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" -- $(rr_sinks rr-same)
 # shellcheck disable=SC2046
-leg rr-vary "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" RS_SCALE_REDRAW_VARY=8 -- $(rr_sinks rr-vary)
+leg rr-vary "$RR_FRAMES" x 0 off "${STATIC[@]}" "${RR[@]}" RS_SCALE_REDRAW_VARY=8 -- $(rr_sinks rr-vary) GRC_HC_SHADOW=1
 if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
 	# the smoke tier (lib/legs.sh's contract): tier-verdict.py excuses the check naming "sabotage"
 	for s in sabotage-pin-late sabotage-rr-stale sabotage-rr-cv-churn; do
@@ -131,7 +148,7 @@ fi
 DYN_FRAMES=150
 dyn_sinks() { echo "GRC_STREAM_VERSION=11 GRC_STREAM_OUT=$OUT/$1/recording.rs11 GRC_STREAM_PATCH_OUT=$OUT/$1/recording-patch.rs11"; }
 # shellcheck disable=SC2046
-leg dyn-off "$DYN_FRAMES" x 0 off "${CHURN[@]}" -- $(dyn_sinks dyn-off)
+leg dyn-off "$DYN_FRAMES" x 0 off "${CHURN[@]}" -- $(dyn_sinks dyn-off) GRC_HC_SHADOW=1
 # shellcheck disable=SC2046
 leg dyn-on "$DYN_FRAMES" x 0 on "${CHURN[@]}" -- $(dyn_sinks dyn-on)
 mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/cmp-rec.ts" --tree "$OUT/dyn-off" "$OUT/dyn-on" \
@@ -145,6 +162,34 @@ if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
 else
 	leg sabotage-dyn-hash-unread "$FRAMES" 1 0 off "${CHURN[@]}" -- GRC_STREAM_VERSION=11 \
 		GRC_STREAM_OUT="$OUT/sabotage-dyn-hash-unread/recording.rs11" GRC_HC_SABOTAGE=dyn-hash-unread
+fi
+
+# HC4a: the sabotages, caught by the shadow oracle and by the gates' own checks. A nested gate run
+# gets the sabotage through HC_SABOTAGE (lib/gamescope.sh), its own sabotage legs skipped, and the
+# oracle only where the leg is the oracle's (HC_SHADOW=0 elsewhere, so the stream runs to its end).
+nested_gate() { # <name> <gate n> <legs> <hc sabotage> <shadow 0|1>
+	local name="$1" n="$2" legs="$3" sab="$4" shadow="$5" dir="$OUT/$1"
+	rm -rf "$dir" && mkdir -p "$dir"
+	echo "run-hc1: $name (run-gate$n.sh --legs $legs, GRC_HC_SABOTAGE=$sab, shadow $shadow)"
+	env HC_SABOTAGE="$sab" HC_SHADOW="$shadow" RS_SABOTAGE_TIER=skip bash "$SCRIPT_DIR/run-gate$n.sh" \
+		--extension "$EXTENSION" --calibration "$CALIBRATION" --binary "$BINARY" --out "$dir/gate" --legs "$legs" \
+		>"$dir/run.log" 2>&1
+	echo "$?" >"$dir/exit.txt"
+}
+HC4A_SABOTAGES=(sabotage-hc-skip-dirty-oracle sabotage-hc-skip-dirty-gate1 sabotage-hc-stale-derived-oracle
+	sabotage-hc-stale-derived-gate2)
+if [ "${RS_SABOTAGE_TIER:-run}" = skip ]; then
+	for s in "${HC4A_SABOTAGES[@]}"; do
+		mkdir -p "$OUT/$s"
+		echo "skipped-by-tier: RS_SABOTAGE_TIER=skip" >"$OUT/$s/skipped-by-tier.txt"
+	done
+else
+	# shellcheck disable=SC2046
+	leg sabotage-hc-skip-dirty-oracle "$DYN_FRAMES" x 0 off "${CHURN[@]}" -- $(dyn_sinks sabotage-hc-skip-dirty-oracle) \
+		GRC_HC_SHADOW=1 GRC_HC_SABOTAGE=hc-skip-dirty
+	nested_gate sabotage-hc-skip-dirty-gate1 1 g1a hc-skip-dirty 0
+	nested_gate sabotage-hc-stale-derived-oracle 2 g2a hc-stale-derived 1
+	nested_gate sabotage-hc-stale-derived-gate2 2 g2a,g2b hc-stale-derived 0
 fi
 
 mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/lib/hc1-checks.ts" "$OUT"

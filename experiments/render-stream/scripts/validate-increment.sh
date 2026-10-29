@@ -139,6 +139,16 @@ echo "validate-increment: fast frames $FAST_FRAMES$([ "$FAST_FRAMES" = on ] && e
 printf 'fast_frames=%s\nfast_fps=%s\n' "$FAST_FRAMES" "$FAST_FPS" >"$OUT/fast-frames.txt"
 FAST_ENV=()
 [ "$FAST_FRAMES" = on ] && FAST_ENV=(RS_FAST_FRAMES=all RS_FAST_FRAMES_MAX_FPS="$FAST_FPS")
+# HC4a (protocol/host-cost-design.md "Byte-identity proof method"): every gate leg of the full tier
+# and of a milestone sweep runs once with the capture's shadow oracle on (HC_SHADOW=1 reaches every
+# host as GRC_HC_SHADOW=1: lib/gamescope.sh gs_strip_env_args, run-hc1.sh). Never in the timing
+# phase, whose legs it would slow (it builds every snapshot twice). After each such run,
+# lib/hc-shadow-scan.py reads every host's counters.json into <run>/hc-shadow.json and fails the run
+# on any mismatch.
+SHADOW_ENV=()
+if [ "$TIER" = full ] || [ "$MILESTONE" = 1 ]; then
+	SHADOW_ENV=(HC_SHADOW=1)
+fi
 
 EXT="$EXPERIMENT_DIR/capture/build/render_stream_capture.gdextension"
 CAL="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
@@ -212,6 +222,7 @@ run_one() {
 		runner="$SCRIPT_DIR/run-${gate}.sh"
 		local -a env=(RS_RECEIVER_CORE="$core" ${FAST_ENV[@]+"${FAST_ENV[@]}"})
 		[ "$sab" = true ] || env+=(RS_SABOTAGE_TIER=skip)
+		[ "$(field phase)" = timing ] || env+=(${SHADOW_ENV[@]+"${SHADOW_ENV[@]}"})
 		launch "$dir" "${env[@]}" -- bash "$runner" --extension "$EXT" --calibration "$CAL" --out "$dir/run" \
 			>"$dir/run.log" 2>&1 || rc=$?
 		# The tier verdict: with sabotage skipped, exactly the checks that name a skipped sabotage
@@ -270,6 +281,7 @@ run_one() {
 		native) args+=(--receiver native) ;;
 		web/*) args+=(--receiver web --web-core "${recv#web/}") ;;
 		esac
+		[ "$(field phase)" = timing ] || genv+=(${SHADOW_ENV[@]+"${SHADOW_ENV[@]}"})
 		launch "$dir" ${genv[@]+"${genv[@]}"} -- bash "$SCRIPT_DIR/run-gate7.sh" "${args[@]}" >"$dir/run.log" 2>&1 || rc=$?
 		if [ -n "$sl_live$sl_file" ]; then
 			python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "$dir/run" --smoke-legs "$sl_live" --runner-rc "$rc" \
@@ -288,6 +300,11 @@ run_one() {
 		# sources excuse theirs inside source-run-valid, so its runner exits 0): the verdict is
 		# recorded for the summary's skipped_remote[], never to change the runner's pass
 		python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "$dir/run" --runner-rc 0 >"$dir/tier-verdict.json" 2>&1 || true
+	fi
+	# HC4a: the shadow oracle's account of a run that had it on; a mismatch fails the run.
+	if [ "${#SHADOW_ENV[@]}" -gt 0 ] && [ -d "$dir/run" ] && [ "$(field phase)" != timing ] &&
+		{ [ "$kind" = native ] || [ "$kind" = g7 ] || [ "$kind" = g7live ]; }; then
+		python3 "$SCRIPT_DIR/lib/hc-shadow-scan.py" "$dir/run" >"$dir/hc-shadow.json" 2>&1 || rc=1
 	fi
 	echo "$rc" >"$dir/rc"
 	python3 -c "import sys; print(round(float(sys.argv[2].replace(',','.')) - float(sys.argv[1].replace(',','.')), 1))" \

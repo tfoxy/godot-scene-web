@@ -1450,7 +1450,7 @@ inline Snapshot state(int n) {
     s.frame = 12;
     s.version = ProtocolVersion::V5;
     s.canvases = {root_canvas({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14})};
-    s.canvases[0].modulate = kCanvas12Modulate;
+    s.canvases.mut(0).modulate = kCanvas12Modulate;
     s.items.push_back(item11_cim_material());
     s.items.push_back(item12_custom_material());
     s.items.push_back(item13_use_parent_material());
@@ -1499,7 +1499,7 @@ inline Snapshot state(int n) {
     s.seq = 15;
     s.frame = 15;
     s.canvases = {root_canvas({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})};
-    s.canvases[0].modulate = kCanvas12Modulate;
+    s.canvases.mut(0).modulate = kCanvas12Modulate;
     s.items.push_back(item15_unsupported_material());
     s.items.push_back(item16_unknown_material());
     s.items.push_back(item17_instance_param_type());
@@ -1544,8 +1544,8 @@ inline Snapshot state(int n) {
     s = state(16);
     s.seq = 17;
     s.frame = 17;
-    s.canvases[1] = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, -1, 0);
-    s.canvases[1].id = 2;
+    s.canvases.mut(1) = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, -1, 0);
+    s.canvases.mut(1).id = 2;
     break;
   case 18:
     // relative to 17: canvas 2 is removed from the viewport (attached: false); its items (18,
@@ -1553,8 +1553,8 @@ inline Snapshot state(int n) {
     s = state(17);
     s.seq = 18;
     s.frame = 18;
-    s.canvases[1] = canvas_entry({18, 19}, false, kCanvas2Xform, kCanvas2Modulate, -1, 0);
-    s.canvases[1].id = 2;
+    s.canvases.mut(1) = canvas_entry({18, 19}, false, kCanvas2Xform, kCanvas2Modulate, -1, 0);
+    s.canvases.mut(1).id = 2;
     break;
   case 19:
     // relative to 18: canvas 2 is reattached (layer 2/sublayer 0, never carrying forward its
@@ -1564,8 +1564,8 @@ inline Snapshot state(int n) {
     s = state(18);
     s.seq = 19;
     s.frame = 19;
-    s.canvases[1] = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, 2, 0);
-    s.canvases[1].id = 2;
+    s.canvases.mut(1) = canvas_entry({18, 19}, true, kCanvas2Xform, kCanvas2Modulate, 2, 0);
+    s.canvases.mut(1).id = 2;
     {
       CanvasState canvas3 = canvas_entry({}, true, kIdentityXform, kWhite, 2, 0);
       canvas3.id = 3;

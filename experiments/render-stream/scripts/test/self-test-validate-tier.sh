@@ -12,7 +12,9 @@
 #     quiet-lock-summary.json files, never from a symlinked source (item 6);
 #   - --milestone gives RS_FAST_FRAMES only to the native runs and the correctness live runs, and
 #     lib/legs.sh under that env makes an allowlisted leg fast and a gate 6 leg real time (item 7);
-#   - --plan --milestone --base REF plans a delta sweep (item 8).
+#   - --plan --milestone --base REF plans a delta sweep (item 8);
+#   - HC4a: HC_SHADOW=1 (the capture's shadow oracle) reaches the correctness runs only, each such
+#     run gets its hc-shadow.json, and lib/gamescope.sh turns it into GRC_HC_SHADOW=1.
 #
 #   bash test/self-test-validate-tier.sh
 set -uo pipefail
@@ -57,7 +59,7 @@ t0="$EPOCHREALTIME"
 bash "$STUB_Q" "$mode" --label "stub:$RS_VALIDATE_ID" --log "$d/run/quiet-lock.jsonl" -- sleep 0.25
 printf '%s %s %s %s\n' "$RS_VALIDATE_ID" "$phase" "$t0" "$EPOCHREALTIME" >>"$STUB_TIMES"
 bash "$STUB_Q" summary "$d/run/quiet-lock.jsonl" --out "$d/run/quiet-lock-summary.json" >/dev/null
-env | grep -E '^(RS_FAST_FRAMES|RS_FAST_FRAMES_MAX_FPS|GATE7_FAST_FRAMES|RS_SABOTAGE_TIER)=' | sort >"$d/stub-env.txt"
+env | grep -E '^(RS_FAST_FRAMES|RS_FAST_FRAMES_MAX_FPS|GATE7_FAST_FRAMES|RS_SABOTAGE_TIER|HC_SHADOW)=' | sort >"$d/stub-env.txt"
 case "$RS_VALIDATE_ID" in
 native-rust-gate0)
 	ln -s "$STUB_FOREIGN" "$d/run/view"
@@ -141,6 +143,14 @@ check "--milestone: timing live runs, file groups and g7x stay real time" \
 	"[ \$(fast_of g7live-gsw-timing) = 0 ] && [ \$(fast_of g7live-native-timing) = 0 ] && [ \$(fast_of g7-gsw) = 0 ] && [ \$(fast_of g7x) = 0 ]"
 check "--milestone: every sabotage leg runs (no RS_SABOTAGE_TIER=skip)" "! grep -q RS_SABOTAGE_TIER '$OUT'/native-*/stub-env.txt"
 check "fast-frames.txt records on for the milestone" "grep -q '^fast_frames=on' '$OUT/fast-frames.txt'"
+# HC4a: the shadow oracle on every correctness run of the milestone (and full tier), never timing.
+shadow_of() { grep -c '^HC_SHADOW=1$' "$OUT/$1/stub-env.txt"; }
+check "--milestone: correctness runs get HC_SHADOW=1 (the shadow oracle), timing runs do not" \
+	"[ \$(shadow_of native-rust-gate1) = 1 ] && [ \$(shadow_of g7live-gsw) = 1 ] && [ \$(shadow_of g7-gsw) = 1 ] && [ \$(shadow_of native-rust-gate6) = 0 ] && [ \$(shadow_of g7live-gsw-timing) = 0 ] && [ \$(shadow_of g7x) = 0 ]"
+check "--milestone: each shadow run has its hc-shadow.json (lib/hc-shadow-scan.py)" \
+	"[ -f '$OUT/native-rust-gate1/hc-shadow.json' ] && [ ! -e '$OUT/native-rust-gate6/hc-shadow.json' ]"
+check "HC_SHADOW=1: gs_strip_env_args ends every launch's env with GRC_HC_SHADOW=1" \
+	"[ \"\$(HC_SHADOW=1 bash -c 'source \"$SCRIPT_DIR/lib/gamescope.sh\"; gs_strip_env_args; echo \"\${GS_STRIP_ARGS[-1]}\"' 2>/dev/null)\" = GRC_HC_SHADOW=1 ]"
 legs_fast() { # <env file> <runner> <timing group> <leg>: lib/legs.sh's decision under that env
 	env $(cat "$1") OUT="$TMP/legs" SCRIPT_DIR="$SCRIPT_DIR" bash -c "
 		LEGS_LOG=$2; source '$SCRIPT_DIR/lib/gamescope.sh'; source '$SCRIPT_DIR/lib/legs.sh'

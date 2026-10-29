@@ -291,6 +291,19 @@ gs_strip_env_args() {
 		*) GS_STRIP_ARGS+=(-u "$name") ;;
 		esac
 	done < <(compgen -e | grep -E '^(RS|GRC)_' || true)
+	# HC4a (protocol/host-cost-design.md "Byte-identity proof method"): HC_SHADOW=1 in a runner's
+	# environment (never an RS_/GRC_ name: those are stripped) turns the capture's shadow oracle on
+	# in every launch (GRC_HC_SHADOW=1: each snapshot also built by the full walk and compared, the
+	# stream ended at the first difference). validate-increment.sh sets it for the full tier's
+	# correctness runs. Last in the list, after the -u words, so a leg's own word still wins.
+	if [ "${HC_SHADOW:-}" = 1 ]; then
+		GS_STRIP_ARGS+=(GRC_HC_SHADOW=1)
+	fi
+	# HC4a: HC_SABOTAGE=<name> likewise reaches every launch as GRC_HC_SABOTAGE=<name> (run-hc1.sh's
+	# nested gate runs under hc-skip-dirty / hc-stale-derived; a test knob, never on the wire).
+	if [ -n "${HC_SABOTAGE:-}" ]; then
+		GS_STRIP_ARGS+=(GRC_HC_SABOTAGE="$HC_SABOTAGE")
+	fi
 }
 
 # G7q/G7wd (gate7-design.md D4, fork F1 resolved 2026-10-22): GATE7_CREDIT_WINDOW=1|2 in a runner's

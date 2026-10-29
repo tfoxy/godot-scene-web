@@ -147,6 +147,9 @@ add_executable(rs_mirror_test test/rs_mirror_test.cpp src/rs_mirror.cpp src/rs_t
 target_include_directories(rs_mirror_test PRIVATE src)
 target_link_libraries(rs_mirror_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_mirror COMMAND rs_mirror_test)
+# HC4a: the same cases with the shadow oracle on (every snapshot compared with the full walk).
+add_test(NAME rs_mirror_shadow COMMAND rs_mirror_test)
+set_tests_properties(rs_mirror_shadow PROPERTIES ENVIRONMENT "RS_MIRROR_TEST_SHADOW=1")
 
 # Gate 1 (G1b2) / gate 2 (G2b2): the render-stream/2 publisher -- full and patch sinks from one
 # snapshot per frame, patch/full equivalence, sabotages, per-sink stats, the store directory and

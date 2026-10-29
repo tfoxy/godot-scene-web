@@ -233,7 +233,7 @@ Snapshot state12(int n) {
   s.items.push_back(bb_item(19, ParentRef{ParentKind::Canvas, 1}, {}, 240.0f, 15,
                             {golden::unsupported_cmd("canvas_item_add_particles",
                                                      UnsupportedCmdReason::UnknownParticles)}));
-  s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 17, 18, 19});
+  s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 17, 18, 19});
   s.unsupported.push_back(pt_ref(19, UnsupportedReason::UnknownParticles));
   sort_unsupported(&s);
   if (n >= 23) {

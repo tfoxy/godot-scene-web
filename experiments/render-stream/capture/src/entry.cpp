@@ -1461,6 +1461,9 @@ void live_decided(const std::string &status, const std::string &reason) {
            (reason.empty() ? std::string() : " (" + reason + ")"));
 }
 
+// HC4a test knob: GRC_HC_SHADOW=1, read at stream start (the shadow oracle).
+bool g_hc_shadow = false;
+
 // At arm, right after the vptr store: validates the sabotage environment,
 // opens the recordings, enables the mirror, runs the root query and the
 // root-size policy, and writes the session records. A refusal or an open
@@ -2348,6 +2351,27 @@ void stream_start() {
     const char *hc_sabotage = std::getenv("GRC_HC_SABOTAGE");
     v11.rerecord_stale = hc_sabotage != nullptr && std::string(hc_sabotage) == "rerecord-stale";
     rs::mirror_instance().set_v11(v11);
+    // HC4a test knobs (never declared on the wire): the shadow oracle, GRC_HC_SHADOW=1 (every
+    // snapshot also built by the full walk and compared, the stream ended at the first
+    // difference: host-cost-design.md "Byte-identity proof method"), and the sabotages
+    // GRC_HC_SABOTAGE=hc-skip-dirty / hc-stale-derived.
+    const char *hc_shadow = std::getenv("GRC_HC_SHADOW");
+    g_hc_shadow = hc_shadow != nullptr && std::string(hc_shadow) == "1";
+    const rs2::ProtocolVersion shadow_version =
+        g_stream.gate8.speaks_v12()   ? rs2::ProtocolVersion::V12
+        : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
+        : g_stream.gate8.speaks_v10() ? rs2::ProtocolVersion::V10
+        : g_stream.gate8.speaks_v9()  ? rs2::ProtocolVersion::V9
+        : g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? rs2::ProtocolVersion::V8
+                                                                   : rs2::ProtocolVersion::V6;
+    rs::mirror_instance().set_hc_shadow(g_hc_shadow, shadow_version);
+    const std::string hc_sabotage_name = hc_sabotage != nullptr ? hc_sabotage : "";
+    rs::mirror_instance().set_hc_sabotage(hc_sabotage_name == "hc-skip-dirty",
+                                          hc_sabotage_name == "hc-stale-derived");
+    if (g_hc_shadow || hc_sabotage_name.rfind("hc-", 0) == 0) {
+      log_line("stream: hc4a shadow=" + std::string(g_hc_shadow ? "on" : "off") +
+               (hc_sabotage_name.empty() ? std::string() : " sabotage=" + hc_sabotage_name));
+    }
     // PM1 (render-stream-11.md "As built (PM1)"): the multimesh table, exactly when the session
     // declares it (rule 8). Off below /11 and without the twelve hooks: no snapshot changes.
     rs::Mirror::MultimeshOptions mm;
@@ -3041,6 +3065,16 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
+  if (g_hc_shadow) {
+    // HC4a: the shadow oracle found the persistent tables and the full walk apart.
+    const std::string mismatch = rs::mirror_instance().hc_shadow_failure();
+    if (!mismatch.empty()) {
+      log_line("stream: hc-shadow-mismatch at frame " + std::to_string(frame) + ": " + mismatch);
+      g_stream.reason = "hc-shadow-mismatch: " + mismatch;
+      stream_finish(rs2::EndReason::Shutdown);
+      return;
+    }
+  }
   multimesh_states_log();
   particles_states_log();  // PM1 rule 12: this frame's `state` lines
   if (g_state.evidence_ready) {

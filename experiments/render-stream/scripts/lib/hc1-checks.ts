@@ -1,6 +1,7 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
 // hc1-checks.ts -- judges run-hc1.sh's legs (HC1, results/p3/hc1.md; protocol/host-cost-design.md
-// D5, D6; HC2's re-record legs, results/p3/hc2.md, D1; HC3's lazy mesh surface legs, hc3.md, D2).
+// D5, D6; HC2's re-record legs, results/p3/hc2.md, D1; HC3's lazy mesh surface legs, hc3.md, D2;
+// HC4a's shadow oracle and sabotages, hc4a.md, D1).
 // Writes <out>/result.json ({schema, checks:[{id, passed, detail}]}); exit 1 on a failure.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -285,6 +286,70 @@ function lateDynV8(leg: string): string[] {
 if (!rrSkipped("sabotage-dyn-hash-unread")) {
   const caught = lateDynV8("sabotage-dyn-hash-unread");
   add("sabotage-dyn-hash-unread-caught", caught.length > 0 ? [] : ["sabotage-dyn-hash-unread: the sabotage was not caught"], `caught: ${caught[0] ?? ""}`);
+}
+
+// HC4a (results/p3/hc4a.md): the shadow oracle agrees with the persistent tables on honest legs,
+// and the two sabotages are caught by the oracle and by the gates' own checks.
+const shadowOf = (dir: string) => json(join(dir, "evidence", "counters.json"))?.hc_shadow;
+{
+  const problems: string[] = [];
+  const seen: string[] = [];
+  for (const leg of ["rr-vary", "dyn-off"]) {
+    const s = shadowOf(join(out, leg));
+    if (!s?.enabled) problems.push(`${leg}: the shadow oracle was off (${JSON.stringify(s)})`);
+    else if (!(s.checked >= 100)) problems.push(`${leg}: only ${s.checked} snapshots compared`);
+    else if (s.mismatches !== 0) problems.push(`${leg}: ${s.mismatches} mismatches, first ${s.first}`);
+    seen.push(`${leg} ${s?.checked} snapshots`);
+  }
+  add("shadow-oracle-agrees", problems, `every snapshot equals the full walk: ${seen.join(", ")}`);
+}
+/** Every {id, passed} object of a nested gate run's result.json, by id. */
+function gateChecks(dir: string): Map<string, { passed: boolean; detail: string }> {
+  const found = new Map<string, { passed: boolean; detail: string }>();
+  const walk = (o: unknown): void => {
+    if (Array.isArray(o)) o.forEach(walk);
+    else if (o && typeof o === "object") {
+      const r = o as Record<string, unknown>;
+      if (typeof r.id === "string" && typeof r.passed === "boolean")
+        found.set(r.id, { passed: r.passed, detail: String(r.detail ?? "") });
+      Object.values(r).forEach(walk);
+    }
+  };
+  walk(json(join(dir, "gate", "result.json")));
+  return found;
+}
+/** The named checks of a nested gate run, when every one of them failed (saying `mention` if set). */
+function gateCaught(leg: string, want: Array<[string, string]>): string[] {
+  const got = gateChecks(join(out, leg));
+  const caught: string[] = [];
+  for (const [id, mention] of want) {
+    const c = got.get(id);
+    if (c && !c.passed && (mention === "" || c.detail.includes(mention))) caught.push(`${id}: ${c.detail.slice(0, 160)}`);
+  }
+  return caught.length === want.length ? caught : [];
+}
+if (!rrSkipped("sabotage-hc-skip-dirty-oracle")) {
+  const s = shadowOf(join(out, "sabotage-hc-skip-dirty-oracle"));
+  const dropped = counters("sabotage-hc-skip-dirty-oracle")?.hc_tables?.dirty_marks_dropped ?? 0;
+  const ended = lines(join(out, "sabotage-hc-skip-dirty-oracle", "stdout.log")).some((l) =>
+    l.includes("stream: hc-shadow-mismatch"));
+  const ok = dropped > 0 && s?.mismatches > 0 && ended;
+  add("sabotage-hc-skip-dirty-oracle-caught", ok ? [] : [`not caught: ${dropped} marks dropped, shadow ${JSON.stringify(s)}, stream ended: ${ended}`],
+    `caught: ${dropped} marks dropped; the stream ended at ${s?.first}`);
+}
+if (!rrSkipped("sabotage-hc-skip-dirty-gate1")) {
+  const caught = gateCaught("sabotage-hc-skip-dirty-gate1", [["receiver-vs-reference", ""], ["expected-image-receiver", ""]]);
+  add("sabotage-hc-skip-dirty-gate1-caught", caught.length > 0 ? [] : ["gate 1's receiver pixel checks did not fail"], `caught: ${caught.join(" | ")}`);
+}
+if (!rrSkipped("sabotage-hc-stale-derived-oracle")) {
+  const s = shadowOf(join(out, "sabotage-hc-stale-derived-oracle", "gate", "capture-unsupported"));
+  const ok = s?.mismatches > 0 && typeof s.first === "string" && s.first.startsWith("unsupported id ");
+  add("sabotage-hc-stale-derived-oracle-caught", ok ? [] : [`not caught: capture-unsupported shadow ${JSON.stringify(s)}`],
+    `caught: capture-unsupported ended at ${s?.first}`);
+}
+if (!rrSkipped("sabotage-hc-stale-derived-gate2")) {
+  const caught = gateCaught("sabotage-hc-stale-derived-gate2", [["recordings-decode-2", "unsupported-mismatch"], ["leg-class-unsupported-textures", "unsupported-texture"]]);
+  add("sabotage-hc-stale-derived-gate2-caught", caught.length > 0 ? [] : ["gate 2's unsupported checks did not fail"], `caught: ${caught.join(" | ")}`);
 }
 
 writeFileSync(join(out, "result.json"), `${JSON.stringify({ schema: "render-stream-hc1-result/1", checks }, null, 2)}\n`);

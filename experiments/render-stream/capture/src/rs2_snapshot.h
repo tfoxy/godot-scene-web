@@ -29,11 +29,13 @@
 #ifndef GRC_RS2_SNAPSHOT_H
 #define GRC_RS2_SNAPSHOT_H
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1236,6 +1238,253 @@ class SharedVector {
   std::shared_ptr<const std::vector<T>> data_;
 };
 
+// HC4a (host-cost-design.md D1 "Shape"): a table of entries sorted by wire id, held as immutable
+// shared entries in chunks of 64 consecutive ids. Copying a table is one refcount bump per chunk;
+// a writer replaces one entry by copying its chunk's pointer array (in place while no other table
+// holds the chunk). Two tables that share a chunk, or an entry, hold equal values there without a
+// comparison (make_patch skips them). The read interface is std::vector's (size, operator[],
+// begin/end yielding const T &, front, back, empty), so the readers compile unchanged. Entries are
+// keyed by T::id: `set` replaces an entry of the same id (the last one wins, as IdIndex keeps the
+// last of a repeated id), and iteration is always ascending by id.
+template <typename T>
+class SharedTable {
+ public:
+  static constexpr unsigned kChunkShift = 6;  // 64 ids a chunk
+  using value_type = T;
+  using size_type = std::size_t;
+  using Ptr = std::shared_ptr<const T>;
+  struct Chunk {
+    std::uint32_t key = 0;     // id >> kChunkShift
+    std::vector<Ptr> entries;  // ascending by id, never empty in a table
+  };
+  using ChunkPtr = std::shared_ptr<const Chunk>;
+
+  class const_iterator {
+   public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const T *;
+    using reference = const T &;
+    const_iterator() = default;
+    const_iterator(const std::vector<ChunkPtr> *chunks, std::size_t c, std::size_t e)
+        : chunks_(chunks), c_(c), e_(e) {}
+    const T &operator*() const { return *(*chunks_)[c_]->entries[e_]; }
+    const T *operator->() const { return (*chunks_)[c_]->entries[e_].get(); }
+    const Ptr &ptr() const { return (*chunks_)[c_]->entries[e_]; }
+    const_iterator &operator++() {
+      if (++e_ == (*chunks_)[c_]->entries.size()) {
+        ++c_;
+        e_ = 0;
+      }
+      return *this;
+    }
+    const_iterator operator++(int) {
+      const_iterator old = *this;
+      ++*this;
+      return old;
+    }
+    bool operator==(const const_iterator &o) const { return c_ == o.c_ && e_ == o.e_; }
+    bool operator!=(const const_iterator &o) const { return !(*this == o); }
+
+   private:
+    const std::vector<ChunkPtr> *chunks_ = nullptr;
+    std::size_t c_ = 0;
+    std::size_t e_ = 0;
+  };
+  using iterator = const_iterator;
+
+  SharedTable() = default;
+  SharedTable(const std::vector<T> &values) {  // NOLINT(google-explicit-constructor): assigned like one
+    for (const T &value : values) {
+      set(value);
+    }
+  }
+  SharedTable(std::initializer_list<T> values) {
+    for (const T &value : values) {
+      set(value);
+    }
+  }
+
+  std::size_t size() const { return size_; }
+  bool empty() const { return size_ == 0; }
+  const_iterator begin() const { return const_iterator(&chunks_, 0, 0); }
+  const_iterator end() const { return const_iterator(&chunks_, chunks_.size(), 0); }
+  const T &front() const { return *chunks_.front()->entries.front(); }
+  const T &back() const { return *chunks_.back()->entries.back(); }
+  const T &operator[](std::size_t i) const { return *ptr_at(i); }
+  const Ptr &ptr_at(std::size_t i) const {
+    // starts_[c] is the index of chunk c's first entry.
+    const auto it = std::upper_bound(starts_.begin(), starts_.end(), i);
+    const std::size_t c = static_cast<std::size_t>(it - starts_.begin()) - 1;
+    return chunks_[c]->entries[i - starts_[c]];
+  }
+  const std::vector<ChunkPtr> &chunks() const { return chunks_; }
+  std::vector<T> vector() const {
+    std::vector<T> out;
+    out.reserve(size_);
+    for (const T &value : *this) {
+      out.push_back(value);
+    }
+    return out;
+  }
+  // The entry of `id`, null when absent.
+  const T *find(std::uint32_t id) const {
+    const Ptr *p = find_ptr(id);
+    return p != nullptr ? p->get() : nullptr;
+  }
+  const Ptr *find_ptr(std::uint32_t id) const {
+    const std::size_t c = chunk_index(id >> kChunkShift);
+    if (c == chunks_.size() || chunks_[c]->key != (id >> kChunkShift)) {
+      return nullptr;
+    }
+    const std::vector<Ptr> &entries = chunks_[c]->entries;
+    const auto it = std::lower_bound(entries.begin(), entries.end(), id,
+                                     [](const Ptr &p, std::uint32_t key) { return p->id < key; });
+    return it != entries.end() && (*it)->id == id ? &*it : nullptr;
+  }
+  // True when both hold the very same chunk array (then they are equal without a comparison).
+  bool shares(const SharedTable &other) const { return chunks_ == other.chunks_; }
+
+  // Writers. Each is copy-on-write of one chunk (in place while no other table holds it).
+  void set(Ptr value) {
+    const std::uint32_t id = value->id;
+    const std::uint32_t key = id >> kChunkShift;
+    const std::size_t c = chunk_index(key);
+    if (c == chunks_.size() || chunks_[c]->key != key) {
+      auto chunk = std::make_shared<Chunk>();
+      chunk->key = key;
+      chunk->entries.push_back(std::move(value));
+      chunks_.insert(chunks_.begin() + static_cast<std::ptrdiff_t>(c), std::move(chunk));
+      ++size_;
+      restart(c);
+      return;
+    }
+    std::vector<Ptr> &entries = own(c);
+    const auto it = std::lower_bound(entries.begin(), entries.end(), id,
+                                     [](const Ptr &p, std::uint32_t k) { return p->id < k; });
+    if (it != entries.end() && (*it)->id == id) {
+      *it = std::move(value);
+      return;
+    }
+    entries.insert(it, std::move(value));
+    ++size_;
+    restart(c);
+  }
+  void set(const T &value) { set(std::make_shared<const T>(value)); }
+  void set(T &&value) { set(std::make_shared<const T>(std::move(value))); }
+  void push_back(const T &value) { set(value); }
+  void push_back(T &&value) { set(std::move(value)); }
+  void reserve(std::size_t) {}
+  bool erase(std::uint32_t id) {
+    const std::size_t c = chunk_index(id >> kChunkShift);
+    if (c == chunks_.size() || chunks_[c]->key != (id >> kChunkShift)) {
+      return false;
+    }
+    const std::vector<Ptr> &held = chunks_[c]->entries;
+    const auto found = std::lower_bound(held.begin(), held.end(), id,
+                                        [](const Ptr &p, std::uint32_t k) { return p->id < k; });
+    if (found == held.end() || (*found)->id != id) {
+      return false;
+    }
+    const std::size_t at = static_cast<std::size_t>(found - held.begin());
+    if (held.size() == 1) {
+      chunks_.erase(chunks_.begin() + static_cast<std::ptrdiff_t>(c));
+    } else {
+      std::vector<Ptr> &entries = own(c);
+      entries.erase(entries.begin() + static_cast<std::ptrdiff_t>(at));
+    }
+    --size_;
+    restart(c);
+    return true;
+  }
+  void clear() {
+    chunks_.clear();
+    starts_.clear();
+    size_ = 0;
+  }
+  // Mutable access to entry i (tests): its chunk and the entry are copied first. Writing a
+  // different `id` through it is not supported.
+  T &mut(std::size_t i) {
+    const auto it = std::upper_bound(starts_.begin(), starts_.end(), i);
+    const std::size_t c = static_cast<std::size_t>(it - starts_.begin()) - 1;
+    std::vector<Ptr> &entries = own(c);
+    Ptr &slot = entries[i - starts_[c]];
+    auto copy = std::make_shared<T>(*slot);
+    T *raw = copy.get();
+    slot = std::move(copy);
+    return *raw;
+  }
+  // Applies `fn` to a copy of every entry for which `pred` holds and stores it (its id unchanged).
+  template <typename Pred, typename Fn>
+  void mutate_if(Pred pred, Fn fn) {
+    for (std::size_t c = 0; c < chunks_.size(); ++c) {
+      bool any = false;
+      for (const Ptr &p : chunks_[c]->entries) {
+        if (pred(static_cast<const T &>(*p))) {
+          any = true;
+          break;
+        }
+      }
+      if (!any) {
+        continue;
+      }
+      for (Ptr &slot : own(c)) {
+        if (pred(static_cast<const T &>(*slot))) {
+          auto copy = std::make_shared<T>(*slot);
+          fn(*copy);
+          slot = std::move(copy);
+        }
+      }
+    }
+  }
+  template <typename Fn>
+  void mutate_each(Fn fn) {
+    mutate_if([](const T &) { return true; }, fn);
+  }
+  template <typename Pred>
+  void erase_if(Pred pred) {
+    std::vector<std::uint32_t> ids;
+    for (const T &value : *this) {
+      if (pred(value)) {
+        ids.push_back(value.id);
+      }
+    }
+    for (std::uint32_t id : ids) {
+      erase(id);
+    }
+  }
+
+ private:
+  std::size_t chunk_index(std::uint32_t key) const {
+    const auto it = std::lower_bound(chunks_.begin(), chunks_.end(), key,
+                                     [](const ChunkPtr &c, std::uint32_t k) { return c->key < k; });
+    return static_cast<std::size_t>(it - chunks_.begin());
+  }
+  // A writable chunk c: copied first when another table still holds it (the count drops on
+  // another thread with acq_rel; the fence orders that holder's last reads before our writes).
+  std::vector<Ptr> &own(std::size_t c) {
+    if (chunks_[c].use_count() == 1) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+    } else {
+      chunks_[c] = std::make_shared<const Chunk>(*chunks_[c]);
+    }
+    return const_cast<Chunk &>(*chunks_[c]).entries;
+  }
+  // Recomputes the chunk start indexes from chunk c on (after an insert or an erase).
+  void restart(std::size_t c) {
+    starts_.resize(chunks_.size());
+    std::size_t at = c == 0 ? 0 : starts_[c - 1] + chunks_[c - 1]->entries.size();
+    for (std::size_t i = c; i < chunks_.size(); ++i) {
+      starts_[i] = at;
+      at += chunks_[i]->entries.size();
+    }
+  }
+  std::vector<ChunkPtr> chunks_;
+  std::vector<std::size_t> starts_;
+  std::size_t size_ = 0;
+};
+
 // --- new at /5: the shader table (render-stream-5.md "Shader table") --------------------------
 
 // gate5_5-design.md D7: a CanvasItemMaterial-recognized engine-generated shader, described rather
@@ -1762,8 +2011,9 @@ struct Snapshot {
   std::optional<double> shader_time;
   Filter default_texture_filter = Filter::Nearest;    // new at /2: never Default on the wire
   Repeat default_texture_repeat = Repeat::Disabled;   // new at /2: never Default on the wire
-  std::vector<CanvasState> canvases;  // sorted by id ascending
-  std::vector<ItemState> items;       // sorted by id ascending
+  // HC4a (host-cost-design.md D1): shared, immutable entries; a copy shares every chunk.
+  SharedTable<CanvasState> canvases;  // sorted by id ascending
+  SharedTable<ItemState> items;       // sorted by id ascending
   std::vector<TextureEntry> textures; // sorted by id ascending; new at /2
   std::vector<MeshEntry> meshes;      // sorted by id ascending; new at /4
   std::vector<ShaderEntry> shaders;      // sorted by id ascending; new at /5

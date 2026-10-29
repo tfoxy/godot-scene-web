@@ -610,6 +610,139 @@ void test_process_wide_gate() {
   mirror_enable(false);
 }
 
+// HC4a (host-cost-design.md D1): the persistent item and canvas tables. A static snapshot shares
+// every chunk with the last one and visits no item; a same-value setter republishes nothing; a
+// real change replaces one entry of one chunk; ties, item-level entries and removals follow the
+// changes; the shadow oracle agrees, and catches both sabotages.
+std::uint64_t g_expected_shadow_mismatches = 0;
+
+void build_hc4a_scene(Mirror *m) {
+  bind_root(m);
+  for (uint64_t i = 0; i < 200; ++i) {
+    const uint64_t rid = 0x5000 + i;
+    m->canvas_item_create(rid, 1);
+    m->set_parent(rid, kRootCanvas, 1);
+    if (i % 2 == 0) {
+      m->add_rect(rid, kRect, kRed, false, 1);
+    }
+    m->set_draw_index(rid, static_cast<int32_t>(i), 1);
+  }
+}
+
+void test_hc4a_persistent_tables() {
+  Mirror m;
+  build_hc4a_scene(&m);
+  const Snapshot a = m.snapshot(1, 1).state;
+  check(a.items.size() == 200 && a.items.chunks().size() == 4, "200 items in 4 chunks of 64 ids");
+  check(a.items[63].id == 64 && a.items[64].id == 65 && a.items.back().id == 200,
+        "indexing crosses chunks in id order");
+  const auto visited0 = m.stats().hc_items_visited;
+  const Snapshot b = m.snapshot(2, 2).state;
+  check(b.items.shares(a.items) && b.canvases.shares(a.canvases),
+        "a static snapshot shares every item and canvas chunk");
+  check(m.stats().hc_items_visited == visited0, "a static snapshot visits no item");
+  const grc::rs2::Transaction still = grc::rs2::make_patch(a, b);
+  check(still.items.empty() && still.removed_items.empty() && still.canvases.empty(),
+        "a static patch is empty");
+
+  // A same-value setter: visited, not republished.
+  const auto republished0 = m.stats().hc_items_republished;
+  m.set_transform(0x5007, kRootXform, 3);
+  const Snapshot c = m.snapshot(3, 3).state;
+  check(m.stats().hc_items_republished == republished0 && c.items.shares(b.items),
+        "a same-value setter republishes nothing");
+
+  // A real change: one entry of one chunk.
+  Xform moved = kRootXform;
+  moved[4] = 5.0f;
+  m.set_transform(0x5000 + 70, moved, 4);  // id 71: chunk 1
+  const Snapshot d = m.snapshot(4, 4).state;
+  check(d.items.chunks()[0] == c.items.chunks()[0] && d.items.chunks()[2] == c.items.chunks()[2] &&
+            d.items.chunks()[1] != c.items.chunks()[1],
+        "a change replaces its own chunk only");
+  check(d.items.chunks()[1]->entries[0] == c.items.chunks()[1]->entries[0],
+        "the other entries of a changed chunk stay shared");
+  const grc::rs2::Transaction one = grc::rs2::make_patch(c, d);
+  check(one.items.size() == 1 && one.items[0].state.id == 71 && one.items[0].commands_null,
+        "the patch carries the one moved item");
+  check(item(c, 71)->xform[4] == 0.0f, "an earlier snapshot keeps its entry");
+
+  // Ties follow draw-index changes (two drawing items at one index), and leave with them.
+  m.set_draw_index(0x5000 + 4, 2, 5);  // id 5 (drawing) joins id 3 (drawing) at index 2
+  const Snapshot e = m.snapshot(5, 5).state;
+  check(ties(e) == std::vector<Entry>{tie(3)}, "a draw-index tie appears at its smallest id");
+  m.set_draw_index(0x5000 + 4, 4, 6);
+  const Snapshot f = m.snapshot(6, 6).state;
+  check(ties(f).empty(), "and leaves with the change");
+
+  // An item-level entry follows its item; a freed item leaves the table and its chunk.
+  m.add_unsupported(0x5000 + 130, "canvas_item_add_lcd_texture_rect_region", 7);
+  const Snapshot g = m.snapshot(7, 7).state;
+  check(item_entries(g).size() == 1 && item_entries(g)[0].item == 131,
+        "an unsupported command's entry appears");
+  m.free_rid(0x5000 + 130, 8);
+  const Snapshot h = m.snapshot(8, 8).state;
+  check(item(h, 131) == nullptr && item_entries(h).empty() && h.items.size() == 199,
+        "a freed item leaves the table with its entries");
+  const grc::rs2::Transaction gone = grc::rs2::make_patch(g, h);
+  check(gone.removed_items == std::vector<uint32_t>({131}) && gone.canvases.size() == 1,
+        "the patch removes it and lists the root canvas's new item list");
+}
+
+void test_hc4a_shadow_sabotages() {
+  // hc-skip-dirty: every 16th mark lost, so some item's change never reaches its entry.
+  {
+    Mirror m;
+    m.set_hc_shadow(true, grc::rs2::ProtocolVersion::V8);
+    m.set_hc_sabotage(true, false);
+    build_hc4a_scene(&m);
+    Xform moved = kRootXform;
+    for (uint64_t frame = 2; frame < 6; ++frame) {
+      moved[4] = static_cast<float>(frame);
+      for (uint64_t i = 0; i < 40; ++i) {
+        m.set_transform(0x5000 + i, moved, frame);
+      }
+      m.snapshot(frame, frame);
+    }
+    check(m.stats().hc_dirty_marks_dropped > 0, "hc-skip-dirty drops marks");
+    check(m.stats().hc_shadow_mismatches > 0 &&
+              m.hc_shadow_failure().rfind("items id ", 0) == 0,
+          "the shadow oracle catches hc-skip-dirty (" + m.hc_shadow_failure() + ")");
+    g_expected_shadow_mismatches += m.stats().hc_shadow_mismatches;
+  }
+  // hc-stale-derived: one item keeps its stale item-level entries.
+  {
+    Mirror m;
+    m.set_hc_shadow(true, grc::rs2::ProtocolVersion::V8);
+    m.set_hc_sabotage(false, true);
+    build_hc4a_scene(&m);
+    m.snapshot(1, 1);
+    m.add_unsupported(0x5000 + 9, "canvas_item_add_lcd_texture_rect_region", 2);
+    const Snapshot s = m.snapshot(2, 2).state;
+    check(item_entries(s).empty(), "hc-stale-derived keeps the item's stale (empty) entries");
+    check(m.hc_shadow_failure().rfind("unsupported id 10", 0) == 0,
+          "the shadow oracle catches hc-stale-derived (" + m.hc_shadow_failure() + ")");
+    g_expected_shadow_mismatches += m.stats().hc_shadow_mismatches;
+  }
+  // The honest twin: the same drive with the oracle on finds nothing.
+  {
+    Mirror m;
+    m.set_hc_shadow(true, grc::rs2::ProtocolVersion::V8);
+    build_hc4a_scene(&m);
+    Xform moved = kRootXform;
+    for (uint64_t frame = 2; frame < 6; ++frame) {
+      moved[4] = static_cast<float>(frame);
+      for (uint64_t i = 0; i < 40; ++i) {
+        m.set_transform(0x5000 + i, moved, frame);
+      }
+      m.add_unsupported(0x5000 + frame, "canvas_item_add_lcd_texture_rect_region", frame);
+      m.snapshot(frame, frame);
+    }
+    check(m.stats().hc_shadow_checked == 4 && m.stats().hc_shadow_mismatches == 0,
+          "the oracle agrees with an honest mirror (" + m.hc_shadow_failure() + ")");
+  }
+}
+
 }  // namespace
 
 // Gate 1 (G1a): a node removed from the tree and added back (`D`, steps 8-9 of
@@ -4172,6 +4305,13 @@ void test_particles_builtin_and_lowering() {
 }
 
 int main() {
+  // HC4a: RS_MIRROR_TEST_SHADOW=1 (the rs_mirror_shadow ctest) runs every case with the shadow
+  // oracle on: every snapshot of every Mirror is also built by the full walk and compared.
+  const char *shadow = std::getenv("RS_MIRROR_TEST_SHADOW");
+  const bool shadow_on = shadow != nullptr && std::string(shadow) == "1";
+  Mirror::set_default_hc_shadow(shadow_on);
+  test_hc4a_persistent_tables();
+  test_hc4a_shadow_sabotages();
   test_same_value_set_material_keeps_epoch();
   test_particles_defaults_and_versions();
   test_particles_trail_poses_need_trails();
@@ -4259,6 +4399,10 @@ int main() {
   test_canvas_session_entries();
   test_shader_policy_and_perturb();
   test_material_omit_op();
+  if (shadow_on) {
+    check(Mirror::hc_shadow_mismatches_total() == g_expected_shadow_mismatches,
+          "HC4a shadow oracle: every snapshot of every case equals the full walk");
+  }
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_mirror_test: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

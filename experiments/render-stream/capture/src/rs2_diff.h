@@ -65,6 +65,12 @@ Snapshot resolve(const Snapshot &base, const Transaction &txn);
 // field the encoder ignores for a kind only makes the answer stricter (a digest more), never wrong.
 bool command_lists_equal_bits(const std::vector<Command> &a, const std::vector<Command> &b);
 
+// HC4a (host-cost-design.md D1, the shadow oracle): the first field in which two entries differ,
+// every field whatever the version, floats by bit pattern, commands by command_lists_equal_bits;
+// null when they are identical. The mirror republishes an item or canvas exactly when it differs.
+const char *item_state_difference(const ItemState &a, const ItemState &b);
+const char *canvas_state_difference(const CanvasState &a, const CanvasState &b);
+
 // The command list as below /11: every add_multimesh, and every `unsupported` command named
 // canvas_item_add_multimesh (unknown-multimesh, unknown-texture, ...), becomes
 // {"op":"unsupported","name":"canvas_item_add_multimesh","reason":"unsupported-op"}. Returns

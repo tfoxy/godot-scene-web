@@ -5871,6 +5871,26 @@ std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed) {
     json.field("mirror_payload_copies", static_cast<int64_t>(ms.mesh_payload_copies));
     json.object_end();
   }
+  // HC4a (host-cost-design.md D1): the persistent item table's account, and the shadow oracle's
+  // (GRC_HC_SHADOW=1: `checked` snapshots compared with the full walk, `mismatches` of them).
+  {
+    const rs::MirrorStats ms = rs::mirror_stats();
+    json.key("hc_tables").object_begin();
+    json.field("items_visited", static_cast<int64_t>(ms.hc_items_visited));
+    json.field("items_republished", static_cast<int64_t>(ms.hc_items_republished));
+    json.field("full_rebuilds", static_cast<int64_t>(ms.hc_full_rebuilds));
+    json.field("derived_all", static_cast<int64_t>(ms.hc_derived_all));
+    json.field("dirty_marks_dropped", static_cast<int64_t>(ms.hc_dirty_marks_dropped));
+    json.object_end();
+    json.key("hc_shadow").object_begin();
+    json.field("enabled", rs::mirror_instance().hc_shadow_enabled());
+    json.field("checked", static_cast<int64_t>(ms.hc_shadow_checked));
+    json.field("mismatches", static_cast<int64_t>(ms.hc_shadow_mismatches));
+    json.field("first", rs::mirror_instance().hc_shadow_failure());
+    // A sabotage leg's mismatches are its point (run-hc1.sh judges them; hc-shadow-scan.py skips it).
+    json.field("sabotage", rs::mirror_instance().hc_sabotage());
+    json.object_end();
+  }
 
   json.object_end();
   return json.take();

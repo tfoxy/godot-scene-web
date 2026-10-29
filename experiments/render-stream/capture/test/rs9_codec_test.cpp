@@ -270,10 +270,8 @@ Snapshot state9(int n) {
                                                  golden::kMesh1SurfaceBFormat, 4, 6)};
   }
   if (m >= 6) {
-    s.items.erase(std::remove_if(s.items.begin(), s.items.end(),
-                                 [](const ItemState &it) { return it.id == 6; }),
-                  s.items.end());
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8});
+    s.items.erase_if([](const ItemState &it) { return it.id == 6; });
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8});
     TextureEntry freed;
     freed.id = 10;
     freed.origin = Origin::Adopted;
@@ -296,7 +294,7 @@ Snapshot state9(int n) {
     it9.content_version = 1;
     it9.commands = {golden::add_texture_rect(true, 11, false, false, {0.0f, 0.0f, 16.0f, 16.0f})};
     s.items.push_back(it9);
-    s.canvases[0] = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
+    s.canvases.mut(0) = golden::root_canvas({1, 2, 3, 4, 5, 8, 9});
   }
   if (n >= 8) {
     s.textures[6].variants = {block_variant(kHashDxt5x4, 122, "DXT5"), uastc_variant(kHashKtx4, 209)};

@@ -29,7 +29,8 @@ BUCKETS = [
     ("cv digest (command_list_digest)", r"command_list_digest"),
     ("encode: JSON and blocks", r"encode_transaction|encode_resource|encode_session|JsonWriter|"
                                 r"rs2::.*encode|write_item|write_command"),
-    ("diff (make_patch/make_full)", r"make_patch|make_full|item_state_equal|_entry_equal|IdIndex"),
+    ("diff (make_patch/make_full)", r"make_patch|make_full|item_state_equal|_entry_equal|IdIndex|"
+                                    r"diff_tables"),
     ("record planning (inline/payload refs)", r"RecordPlanner|v11_records|inline_names|collect_names|"
                                               r"payload_refs|payload_names|target_refs|CarriedIndex"),
     ("store bookkeeping", r"store_payloads|ResourceStore|FileWriter|FileRecordSink"),
@@ -39,7 +40,9 @@ BUCKETS = [
     ("snapshot: material params", r"wire_params|wire_material|material_unsupported|to_param"),
     ("snapshot: textures/meshes/shaders", r"wire_entry|wire_mesh|wire_shader|classify_mesh|settle|"
                                           r"resolve_pending"),
-    ("snapshot: item walk and copies", r"Mirror::snapshot|find_ties|withheld_ids|is_withheld"),
+    ("snapshot: item walk and copies", r"Mirror::snapshot|find_ties|withheld_ids|is_withheld|"
+                                       r"publish_items|own_entries|refresh_cv|stamp_cv|_state_difference|"
+                                       r"texture_entry_unsupported|full_walk_items|shadow_compare"),
     ("adoption (pending material refs)", r"adopt_"),
     ("previous-snapshot release / publish", r"Publisher::publish|Captured::~|Snapshot::~"),
     ("evidence drain and perf timeline", r"resources_drain|perf_timeline|take_lines"),
