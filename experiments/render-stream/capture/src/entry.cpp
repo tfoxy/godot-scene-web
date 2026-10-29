@@ -129,7 +129,9 @@
 // connection keeps publishing at each due tick past a full credit window, the third in flight
 // at window 2 and every one after), and coding-wrong-prefix (W11t: needs GRC_STREAM_VERSION=11
 // and GRC_LIVE_CODING=zstd-base; from GRC_SABOTAGE_FRAME on, default 1, the first based /11
-// transaction is coded against its base plus one byte, render-stream-11.md "As built (W11t)").
+// transaction is coded against its base plus one byte, render-stream-11.md "As built (W11t)"),
+// and predict-stale (W13b: needs GRC_STREAM_VERSION=13; from GRC_SABOTAGE_FRAME on, default 1,
+// the first /13 patch is predicted from H2 as if it were H1, render-stream-13.md "Sabotages").
 // GRC_LIVE_CODING (W11t) = zstd-base (default) | zstd | off: the coding a /11 hello that offers
 // `live_coding` gets; nothing below /11 is coded. They act on the listener only, never on a record, so the
 // wire declares no sabotage for them (the session's `sabotage` stays null): evidence/live.json
@@ -353,7 +355,7 @@ bool is_listener_sabotage(const char *kind) {
   const std::string text(kind);
   return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored" ||
          text == "window-overrun" || text == "corrupt-coded-body" ||
-         text == "coding-wrong-prefix";
+         text == "coding-wrong-prefix" || text == "predict-stale";
 }
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
@@ -601,7 +603,8 @@ std::string result_json() {
   if (g_stream.gate8.speaks_v8()) {
     json.key("gate8").object_begin();
     json.field("file_stream_version", static_cast<int64_t>(
-                   g_stream.gate8.speaks_v12()   ? 12
+                   g_stream.gate8.speaks_v13()   ? 13
+                   : g_stream.gate8.speaks_v12() ? 12
                    : g_stream.gate8.speaks_v11() ? 11
                    : g_stream.gate8.speaks_v10()
                        ? 10
@@ -1900,6 +1903,13 @@ void stream_start() {
                !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.coding_wrong_prefix_frame)) {
       live_ok = false;
       why = "sabotage coding-wrong-prefix: invalid GRC_SABOTAGE_FRAME (a positive frame)";
+    } else if (g_live.listener_sabotage == "predict-stale" && !g_stream.gate8.speaks_v13()) {
+      live_ok = false;
+      why = "sabotage predict-stale needs GRC_STREAM_VERSION=13";
+    } else if (g_live.listener_sabotage == "predict-stale" &&
+               !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.predict_stale_frame)) {
+      live_ok = false;
+      why = "sabotage predict-stale: invalid GRC_SABOTAGE_FRAME (a positive frame)";
     }
     // HC5 (host-cost-design.md D4): the hub's formation jobs run on one encode thread; the test
     // knob GRC_HC_FORMATION=inline runs them on the frame callback's thread instead (the wire is
@@ -2054,7 +2064,10 @@ void stream_start() {
   // CG1: GRC_STREAM_VERSION=10 selects /10 (render-stream-10.md).
   // W11b: GRC_STREAM_VERSION=11 selects /11 (render-stream-11.md).
   // PM5: GRC_STREAM_VERSION=12 selects /12 (render-stream-12.md).
-  session.version = g_stream.gate8.speaks_v12()  ? rs2::ProtocolVersion::V12
+  // W13b: GRC_STREAM_VERSION=13 selects /13 (render-stream-13.md "As built (W13b)"): /12's
+  // snapshots, each sink and connection predicting its own blocks.
+  session.version = g_stream.gate8.speaks_v13()   ? rs2::ProtocolVersion::V13
+                    : g_stream.gate8.speaks_v12() ? rs2::ProtocolVersion::V12
                     : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
                     : g_stream.gate8.speaks_v10() ? rs2::ProtocolVersion::V10
                     : g_stream.gate8.speaks_v9() ? rs2::ProtocolVersion::V9
@@ -2377,7 +2390,8 @@ void stream_start() {
     g_hc_shadow = hc_shadow != nullptr && std::string(hc_shadow) == "1";
     g_hc_shadow_budget.clear();
     const rs2::ProtocolVersion shadow_version =
-        g_stream.gate8.speaks_v12()   ? rs2::ProtocolVersion::V12
+        g_stream.gate8.speaks_v13()   ? rs2::ProtocolVersion::V13
+        : g_stream.gate8.speaks_v12() ? rs2::ProtocolVersion::V12
         : g_stream.gate8.speaks_v11() ? rs2::ProtocolVersion::V11
         : g_stream.gate8.speaks_v10() ? rs2::ProtocolVersion::V10
         : g_stream.gate8.speaks_v9()  ? rs2::ProtocolVersion::V9
@@ -2510,7 +2524,8 @@ void stream_start() {
     server_config.subprotocols = rs::gate8_live_subprotocols(g_stream.gate8);
     server_config.hello_token_subprotocols = {rs2::kSubprotocolV7, rs2::kSubprotocolV8,
                                                    rs2::kSubprotocolV9, rs2::kSubprotocolV10,
-                                                   rs2::kSubprotocolV11, rs2::kSubprotocolV12};
+                                                   rs2::kSubprotocolV11, rs2::kSubprotocolV12,
+                                                   rs2::kSubprotocolV13};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";

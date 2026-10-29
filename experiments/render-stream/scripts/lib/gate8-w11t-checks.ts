@@ -20,6 +20,11 @@
 //                              host logs it, a full transaction follows and decodes like the tap
 //   coding-wrong-prefix-caught coding-wrong-prefix: the checksum catches it, then the same resync
 //   coding-shared          (informative) zstd-base viewers' coded messages shared by the host
+//
+// W13b: runG8w11Coding(g, 13) judges the same checks at /13 on g8w11/coding13/ (ids prefixed
+// `w13-`): golden-13 and the /13 recordings (scale13, mesh13) through the coding tool, the viewers'
+// streams validated at their own version (coding13/live has a /12 viewer beside the /13 ones), the
+// states resolved per viewer version.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
@@ -39,12 +44,15 @@ import { resolveRecording, splitRecords } from "./render-stream-2";
 const EXPERIMENT = resolve(import.meta.dirname, "..", "..");
 const CODING_TOOL = join(EXPERIMENT, "capture", "build", "rs_live_coding_tool");
 const GOLDEN11 = join(EXPERIMENT, "protocol", "golden-11");
+const GOLDEN13 = join(EXPERIMENT, "protocol", "golden-13");
 const WIRE_LEGS = [
   "scale/capture",
   "scene/capture",
   "scene/off/capture",
   "mesh/capture",
 ];
+const WIRE_LEGS13 = ["scale13/capture", "mesh13/capture"];
+type CodingVersion = 11 | 12 | 13;
 
 interface LiveDecodeSummary {
   messages: number;
@@ -84,6 +92,7 @@ interface ViewerReport {
   stream_id: string;
   offer: string;
   window: number;
+  version?: CodingVersion; // W13b: absent before it (11)
   transactions: number;
   wire_bytes: number;
   errors: { index: number; seq: number; detail: string }[];
@@ -108,10 +117,19 @@ interface HostConnection {
     wire_bytes: number;
     wrong_prefix_seq: number | null;
   };
+  predict?: {
+    formed: number;
+    shared: number;
+    plain_bytes: number;
+    bytes: number;
+    encode_us: number;
+    stale_seq: number | null;
+  };
 }
 
-interface Viewer {
+export interface Viewer {
   dir: string;
+  version: CodingVersion;
   report: ViewerReport | null;
   decoded: Uint8Array | null;
   host: HostConnection | null;
@@ -127,7 +145,7 @@ async function bytesOf(path: string): Promise<Uint8Array | null> {
   }
 }
 
-async function viewersOf(leg: string): Promise<Viewer[] | null> {
+export async function viewersOf(leg: string): Promise<Viewer[] | null> {
   const host = join(leg, "host");
   const summary = await readText(join(host, "evidence", "live-summary.json"));
   if (summary === undefined) return null;
@@ -143,10 +161,12 @@ async function viewersOf(leg: string): Promise<Viewer[] | null> {
     const c = report
       ? (conns.find((x) => x.stream_id === report.stream_id) ?? null)
       : null;
+    const version = report?.version ?? 11;
     out.push({
       dir,
+      version,
       report,
-      decoded: await bytesOf(join(dir, "decoded.rs11")),
+      decoded: await bytesOf(join(dir, `decoded.rs${version}`)),
       host: c,
       tap: c
         ? await bytesOf(join(host, "tap", `stream-${c.connection}.rs2`))
@@ -163,16 +183,20 @@ const equalBytes = (a: Uint8Array, b: Uint8Array): boolean =>
   a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** The records of a stream (magic + records) as byte strings, first the session. */
-function records(data: Uint8Array): string[] {
-  return splitRecords(data, 11).records.map((r) =>
+function records(data: Uint8Array, version: CodingVersion = 11): string[] {
+  return splitRecords(data, version).records.map((r) =>
     Buffer.from(r.bytes).toString("latin1"),
   );
 }
 
-function rsCoreValidate(path: string): string {
-  const r = spawnSync(RS_CORE_CHECK, ["validate", path, "--version", "11"], {
-    encoding: "utf8",
-  });
+function rsCoreValidate(path: string, version: CodingVersion = 11): string {
+  const r = spawnSync(
+    RS_CORE_CHECK,
+    ["validate", path, "--version", `${version}`],
+    {
+      encoding: "utf8",
+    },
+  );
   const cols = ((r.stdout ?? "").trim().split("\n").at(-1) ?? "").split("\t");
   return cols[1] === "ok"
     ? "ok"
@@ -187,21 +211,31 @@ function expectedCoding(offer: string, host: string): string {
   return "off";
 }
 
-export async function runG8w11Coding(g: string): Promise<G8aCheck[]> {
+export async function runG8w11Coding(
+  g: string,
+  wire: 11 | 13 = 11,
+): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
-  const coding = join(g, "coding");
+  const v13 = wire === 13;
+  // W13b: the /13 run's ids and legs.
+  const id = (name: string) => (v13 ? `w13-${name}` : name);
+  const tag = v13 ? "W13b (/13)" : "W11t";
+  const coding = join(g, v13 ? "coding13" : "coding");
   const scratch = join(coding, "wire");
   mkdirSync(scratch, { recursive: true });
+  const checks0 = checks.length;
 
   // coding-wire
   {
     const problems: string[] = [];
-    const inputs: [string, string][] = ["full", "patch", "inline"].map((n) => [
-      `golden-11/${n}`,
-      join(GOLDEN11, `${n}.rs11`),
+    const inputs: [string, string][] = (
+      v13 ? ["full", "patch", "inline", "predict"] : ["full", "patch", "inline"]
+    ).map((n) => [
+      `golden-${wire}/${n}`,
+      join(v13 ? GOLDEN13 : GOLDEN11, `${n}.rs${wire}`),
     ]);
-    for (const leg of WIRE_LEGS)
-      for (const sink of ["recording.rs11", "recording-patch.rs11"])
+    for (const leg of v13 ? WIRE_LEGS13 : WIRE_LEGS)
+      for (const sink of [`recording.rs${wire}`, `recording-patch.rs${wire}`])
         if (!skipped(join(g, leg)) && existsSync(join(g, leg, sink)))
           inputs.push([`${leg}/${sink}`, join(g, leg, sink)]);
     let prefixed = 0;
@@ -241,10 +275,15 @@ export async function runG8w11Coding(g: string): Promise<G8aCheck[]> {
   }
   // coding-wire-sabotages
   {
-    const rec = join(g, "scale", "capture", "recording-patch.rs11");
+    const rec = join(
+      g,
+      v13 ? "scale13" : "scale",
+      "capture",
+      `recording-patch.rs${wire}`,
+    );
     const coded = join(
       scratch,
-      "scale_capture_recording-patch.rs11.zstd-base.coded",
+      `${v13 ? "scale13" : "scale"}_capture_recording-patch.rs${wire}.zstd-base.coded`,
     );
     const problems: string[] = [];
     let detail = "";
@@ -331,7 +370,10 @@ export async function runG8w11Coding(g: string): Promise<G8aCheck[]> {
           lossless.push(
             `${v.dir}: decoded ${v.decoded.length} B differs from the tap's ${v.tap.length} B`,
           );
-        const r = rsCoreValidate(join(v.dir, "decoded.rs11"));
+        const r = rsCoreValidate(
+          join(v.dir, `decoded.rs${v.version}`),
+          v.version,
+        );
         if (r !== "ok") validates.push(`${v.dir}: ${r}`);
       }
     }
@@ -358,20 +400,20 @@ export async function runG8w11Coding(g: string): Promise<G8aCheck[]> {
     const based =
       live?.filter((v) => v.report?.offer.includes("zstd-base")) ?? [];
     if (live && off?.decoded && based.length > 0) {
-      const states = (data: Uint8Array) => {
+      const states = (data: Uint8Array, version: CodingVersion) => {
         const m = new Map<number, string>();
-        for (const t of resolveRecording(data, 11).transactions)
+        for (const t of resolveRecording(data, version).transactions)
           m.set(t.frame, JSON.stringify(t.state));
         return m;
       };
-      const ref = states(off.decoded);
+      const ref = states(off.decoded, off.version);
       for (const v of based) {
         if (!v.decoded) {
           problems.push(`${v.dir}: no decoded stream`);
           continue;
         }
         let common = 0;
-        for (const [frame, s] of states(v.decoded)) {
+        for (const [frame, s] of states(v.decoded, v.version)) {
           const o = ref.get(frame);
           if (o === undefined) continue;
           common++;
@@ -481,9 +523,9 @@ export async function runG8w11Coding(g: string): Promise<G8aCheck[]> {
             `the host coded seq ${v.host?.live_coding?.wrong_prefix_seq} wrongly, the viewer failed seq ${e.seq}`,
           );
         // Everything the viewer decoded is the tap's, in order.
-        const tap = records(v.tap);
+        const tap = records(v.tap, v.version);
         let at = 0;
-        for (const r of records(v.decoded).slice(1)) {
+        for (const r of records(v.decoded, v.version).slice(1)) {
           while (at < tap.length && tap[at] !== r) at++;
           if (at === tap.length) {
             problems.push(
@@ -504,5 +546,14 @@ export async function runG8w11Coding(g: string): Promise<G8aCheck[]> {
       ),
     );
   }
+  if (v13)
+    for (const c of checks.slice(checks0)) {
+      c.id = id(c.id);
+      c.criterion = c.criterion
+        .replace(/^W11t/, tag)
+        .replace("golden-11", "golden-13")
+        .replace("g8w11 recording", "/13 g8w11 recording")
+        .replace("at /11", "at its own version");
+    }
   return checks;
 }

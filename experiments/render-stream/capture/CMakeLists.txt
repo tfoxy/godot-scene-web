@@ -95,6 +95,7 @@ add_library(render_stream_capture SHARED
   src/rs_texture_cache.cpp
   src/rs_texture_delivery.cpp
   src/rs_publish.cpp
+  src/rs13_predict.cpp
   src/rs_mesh_payload.cpp
   src/rs_resource_log.cpp
   src/rs_resource_store.cpp
@@ -159,6 +160,7 @@ add_executable(rs_publish_test
   src/rs2_codec.cpp
   src/rs2_diff.cpp
   src/rs_publish.cpp
+  src/rs13_predict.cpp
   src/rs_mirror.cpp
   src/rs_texture_delivery.cpp
   src/rs_shader_payload.cpp
@@ -203,6 +205,7 @@ add_executable(rs_live_test
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_publish.cpp
+  src/rs13_predict.cpp
   src/rs_resource_store.cpp
   src/report.cpp
   src/rs_sha1.cpp
@@ -235,6 +238,7 @@ add_executable(rs_live_window_test
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_publish.cpp
+  src/rs13_predict.cpp
   src/rs_resource_store.cpp
   src/report.cpp
   src/rs_sha1.cpp
@@ -261,6 +265,7 @@ add_executable(rs_live_host
   src/rs_histogram.cpp
   src/rs_live.cpp
   src/rs_publish.cpp
+  src/rs13_predict.cpp
   src/rs_resource_store.cpp
   src/report.cpp
   src/rs_sha1.cpp

@@ -152,8 +152,8 @@
 // then its transaction. The jobs of one callback run in submission order, so the P3-SP memo is
 // the job runner's: a second lockstep connection's job finds the first one's bytes. Published
 // states are immutable (HC4a/HC4b), so a job reads its base and target without a lock; it touches
-// no hub state but the memo and its connection's FormState (the coding prefix; W13b's /13
-// predictor rides there too), and reports what it did (counters, live-log lines, a too-large
+// no hub state but the memo and its connection's FormState (the coding prefix and, W13b, the
+// /13 predictor), and reports what it did (counters, live-log lines, a too-large
 // error) in the job itself. The frame callback's thread completes the jobs (`sync()`, at every
 // later entry point: the next event, frame, finish, GET or summary), applying the counters and
 // writing the live log in the order a synchronous hub would have written it. LiveConfig::
@@ -309,6 +309,10 @@ inline constexpr const char *kSubprotocolV10 = "render-stream.10";
 inline constexpr const char *kSubprotocolV11 = "render-stream.11";
 // PM5 (render-stream-12.md): /11's live transport under render-stream/12.
 inline constexpr const char *kSubprotocolV12 = "render-stream.12";
+// W13b (render-stream-13.md "As built (W13b)"): /12's live transport under render-stream/13, the
+// predicted blocks coded per connection (FormState's rs13::Predictor). Opt-in
+// (GRC_STREAM_VERSION=13).
+inline constexpr const char *kSubprotocolV13 = "render-stream.13";
 
 // HC5: where a frame callback's formation jobs run (rs_live.h header, "Formation").
 enum class Formation : std::uint8_t { Inline, Thread };
@@ -348,6 +352,10 @@ struct LiveConfig {
   // whose frame decodes differently against its true base is coded against that base plus one
   // byte, under the true base_seq (0 disables).
   std::uint64_t coding_wrong_prefix_frame = 0;
+  // W13b listener sabotage predict-stale (render-stream-13.md "Sabotages"): from this frame on,
+  // the first /13 patch is predicted from H2 as if it were H1 (rs13::Predictor::predict_stale),
+  // once per host (0 disables). The receiver fails predict-check and resyncs (reason coding).
+  std::uint64_t predict_stale_frame = 0;
   // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2); every grant is also capped at
   // kHostCreditWindow.
   std::uint64_t credit_window_max = 2;
@@ -479,6 +487,16 @@ struct ConnectionSummary {
   std::uint64_t coded_wire_bytes = 0;
   std::uint64_t coding_ns = 0;
   std::uint64_t wrong_prefix_seq = 0;
+  // W13b (/13 connections; the summary's `predict` object): transactions whose /13 coding this
+  // connection formed itself, those it re-stamped from a lockstep connection's coding in the
+  // same callback (equal predictor history, equal /12 transaction), the /12 and /13 message bytes
+  // of its transactions, the coding time, and the predict-stale sabotage's seq.
+  std::uint64_t predict_formed = 0;
+  std::uint64_t predict_shared = 0;
+  std::uint64_t predict_plain_bytes = 0;
+  std::uint64_t predict_bytes = 0;
+  std::uint64_t predict_ns = 0;
+  std::uint64_t predict_stale_seq = 0;
   // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
   // bytes of the 200 bodies, and how many were not 200.
   std::uint64_t http_gets = 0;
@@ -686,10 +704,15 @@ class Hub {
                     const std::vector<std::uint8_t> *wire);
   std::shared_ptr<const std::vector<std::uint8_t>> form_coded_tx(
       Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &message);
+  // W13b: the /13 message of `plain` (the /12 transaction) on the job's connection: re-stamped
+  // from a lockstep connection's coding in this callback, or coded by its predictor.
+  std::shared_ptr<const std::vector<std::uint8_t>> form_predicted(
+      Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &plain);
   struct TargetRefs;  // a target's payload refs and their CarriedIndex ids
   struct SharedTx;    // an encoded transaction other connections may re-stamp
   struct V11Records;  // W11b: the /11 records before a target, for one (base, target) pair
   struct CodedTx;     // W11t: a coded transaction, for one (base, target) message pair
+  struct PredictedTx;  // W13b: a /13 transaction, for one /12 transaction and predictor history
   const TargetRefs &target_refs(const std::shared_ptr<const rs::Captured> &target);
   // PM5: `lower` (a /11 connection of a /12 host) plans on the /11 view of both states.
   const V11Records &v11_records(const std::shared_ptr<const rs::Captured> &base,
@@ -718,6 +741,7 @@ class Hub {
   // frame callback is building; `former_` is the encode thread (Formation::Thread only).
   std::unique_ptr<Memo> memo_;
   bool wrong_prefix_done_ = false;
+  bool predict_stale_done_ = false;  // W13b: predict-stale acted (once per host)
   std::vector<std::unique_ptr<Job>> batch_;
   std::unique_ptr<Former> former_;
 };

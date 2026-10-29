@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "report.h"
+#include "rs13_predict.h"
 #include "rs2_codec.h"
 #include "rs2_diff.h"
 #include "rs2_golden_states.h"
@@ -1422,6 +1423,101 @@ void test_v11_multimesh_file_sink() {
   }
 }
 
+// W13b (render-stream-13.md "As built (W13b)"): a /13 file sink is the /12 sink's recording with
+// each transaction coded by the sink's own predictor, in file order, formed on the writer
+// (Publisher::set_former) or in publish(). A real mirror's multimesh buffer moves every frame
+// (second order from seq 3 on the patch lane; never predicted on the full lane).
+std::vector<std::vector<std::uint8_t>> w13_sink_writes(ProtocolVersion version, bool former,
+                                                       bool full_lane,
+                                                       std::uint64_t *predicted = nullptr) {
+  MemoryRecordSink sink;
+  sink.open("memory://w13");
+  Publisher publisher(full_lane ? &sink : nullptr, full_lane ? nullptr : &sink, SabotageConfig(),
+                      golden_policy(16777216), nullptr);
+  grc::rs::FileWriter writer;
+  if (former) {
+    publisher.set_former(&writer);
+  }
+  Session tmpl = make_template();
+  tmpl.version = version;
+  observe_multimesh_features(&tmpl.features);
+  publisher.start(tmpl);
+  Mirror m;
+  m.reset();
+  m.set_root(kRootViewport, kRootCanvas, kIdentityXform);
+  grc::rs::Mirror::V11Options o;
+  o.enabled = true;
+  m.set_v11(o);
+  grc::rs::Mirror::MultimeshOptions mo;
+  mo.enabled = true;
+  m.set_multimesh(mo);
+  std::vector<float> buffer(16, 0.0f);
+  for (int f = 1; f <= 8; ++f) {
+    const std::uint64_t u = static_cast<std::uint64_t>(f);
+    if (f == 1) {
+      m.canvas_item_create(100, u);
+      m.set_parent(100, kRootCanvas, u);
+      m.multimesh_create(700, u);
+      m.multimesh_allocate_data(700, 2, 0, false, false, false, u);
+    }
+    for (int i = 0; i < 2; ++i) {
+      buffer[static_cast<std::size_t>(8 * i)] = 1.0f;
+      buffer[static_cast<std::size_t>(8 * i + 5)] = 1.0f;
+      buffer[static_cast<std::size_t>(8 * i + 3)] = 0.5f * static_cast<float>(f) + static_cast<float>(i);
+      buffer[static_cast<std::size_t>(8 * i + 7)] = -0.25f * static_cast<float>(f);
+    }
+    m.multimesh_set_buffer(700, buffer.data(), buffer.size(), u);
+    m.clear(100, u);
+    m.add_multimesh(100, 700, 0, u);
+    publisher.publish(m.snapshot(0, u), u, 0);
+  }
+  publisher.finish(EndReason::Shutdown);
+  std::vector<std::vector<std::uint8_t>> writes;
+  for (std::size_t n = 0; n < sink.writes.size(); ++n) {
+    writes.push_back(nth_write(sink, n));
+  }
+  if (predicted != nullptr && version == ProtocolVersion::V13) {
+    grc::rs13::Predictor p;
+    *predicted = 0;
+    for (std::size_t n = 2; n + 1 < writes.size(); ++n) {
+      std::vector<std::uint8_t> plain;
+      std::vector<grc::rs13::Unit> units;
+      p.decode(writes[n], &plain, &units);
+      for (const grc::rs13::Unit &unit : units) *predicted += unit.order > 0 ? 1 : 0;
+    }
+  }
+  return writes;
+}
+
+void test_v13_file_sinks() {
+  for (const bool full_lane : {false, true}) {
+    const auto w12 = w13_sink_writes(ProtocolVersion::V12, false, full_lane);
+    for (const bool former : {false, true}) {
+      std::uint64_t predicted = 0;
+      const auto w13 = w13_sink_writes(ProtocolVersion::V13, former, full_lane, &predicted);
+      const std::string lane = std::string(full_lane ? "full" : "patch") +
+                               (former ? " lane, formed on the writer" : " lane");
+      check(w13.size() == w12.size() && w13.size() == 11, "W13b: /13 " + lane + ": 11 writes");
+      if (w13.size() != 11 || w12.size() != 11) {
+        continue;
+      }
+      check(w13[0] == magic(ProtocolVersion::V13) && contains(w13[1], "render-stream/13"),
+            "W13b: /13 " + lane + ": GRSD and render-stream/13");
+      grc::rs13::Predictor p;
+      bool equal = true;
+      for (std::size_t n = 2; n < 10; ++n) {
+        std::vector<std::uint8_t> plain;
+        equal = equal && p.decode(w13[n], &plain) == grc::rs13::Status::Ok && plain == w12[n] &&
+                w13[n].size() == w12[n].size() + 35;
+      }
+      check(equal, "W13b: /13 " + lane +
+                       ": every transaction un-predicts to the /12 sink's, 35 bytes larger raw");
+      check(full_lane ? predicted == 0 : predicted >= 6,
+            "W13b: /13 " + lane + ": predicted units " + std::to_string(predicted));
+    }
+  }
+}
+
 void test_wrong_hash() {
   const std::string dir = tmp_dir("wrong-hash");
   grc::rs::ResourceStore store;
@@ -1902,6 +1998,7 @@ int main() {
   test_patch_drop_item();
   test_parse_sabotage();
   test_v11_multimesh_file_sink();
+  test_v13_file_sinks();
   test_v12_particles_file_sink();
   test_generate_id();
   test_gate2_features();

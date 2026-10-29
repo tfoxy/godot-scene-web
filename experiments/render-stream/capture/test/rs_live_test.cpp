@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "report.h"
+#include "rs13_predict.h"
 #include "rs2_codec.h"
 #include "rs2_diff.h"
 #include "rs2_golden_states.h"
@@ -3055,6 +3056,296 @@ void test_pm5_v11_viewer_of_v12_host() {
   check(lowered, "PM5: the /11 connection sees add_particles as /11's unsupported-op");
 }
 
+// W13b (render-stream-13.md "As built (W13b)"): /13 connections of a /13 host. Each connection
+// predicts its own mesh_u8/mesh_f32/mm_f32 against the last two transactions formed on it
+// (FormState's rs13::Predictor); lockstep connections share one coding (the memo keyed on the /12
+// transaction and an equal history); a connection whose history differs (a resync, a late join)
+// codes its own until its history is equal again; a /12 connection of the same host gets exactly
+// the /13 connections' transactions un-predicted.
+std::vector<std::uint8_t> w13_body(float x) {
+  std::vector<std::uint8_t> out;
+  const auto f = [&out](float v) {
+    std::uint32_t w = 0;
+    std::memcpy(&w, &v, 4);
+    for (int k = 0; k < 4; ++k) out.push_back(static_cast<std::uint8_t>(w >> (8 * k)));
+  };
+  for (float v : {x, 0.0f, 0.0f, 16.0f, 16.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f}) f(v);  // geometry
+  for (float v : {x, 0.0f, x + 16.0f, 0.5f * x, x, 16.0f}) f(v);                       // positions
+  for (float v : {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f}) f(v);                           // UVs
+  return out;
+}
+
+// A dynamic triangle moving a quarter unit a frame (with a held pose at frames 20-22), its custom
+// AABB, and a two-instance multimesh whose buffer moves too: every unit kind, every order.
+std::shared_ptr<const Captured> w13_state(std::uint64_t frame) {
+  auto c = std::make_shared<Captured>(with_payloads(1));
+  c->state.version = ProtocolVersion::V13;
+  c->state.frame = frame;
+  const std::uint64_t pose = frame >= 20 && frame <= 22 ? 20 : frame;
+  const float x = 1.0f + 0.25f * static_cast<float>(pose);
+  auto body = std::make_shared<const std::vector<std::uint8_t>>(w13_body(x));
+  MeshSurface s = golden::mesh_surface("", body->size(), Primitive::Triangles,
+                                       golden::kArrayFormatTexUv | golden::kArrayFlagUse2dVertices,
+                                       3, 0);
+  s.body = body;
+  MeshEntry m = golden::mesh_entry(MeshStatus::Ok, pose, {s});
+  m.id = 1;
+  m.dynamic = true;
+  m.content_serial = pose;
+  m.custom_aabb = {x, -x, 0.0f, 16.0f + x, 16.0f, 0.0f};
+  c->state.meshes = {m};
+  MultimeshEntry mm;
+  mm.id = 1;
+  mm.version = 1 + frame;
+  mm.instances = 2;
+  std::vector<float> buffer;
+  for (int i = 0; i < 2; ++i) {
+    for (float v : {1.0f, 0.0f, 0.0f, x + static_cast<float>(i), 0.0f, 1.0f, 0.0f, 0.5f * x}) {
+      buffer.push_back(v);
+    }
+  }
+  mm.buffer = std::make_shared<const std::vector<float>>(std::move(buffer));
+  mm.buffer_serial = frame;
+  c->state.multimeshes = {mm};
+  c->state.multimesh_commands = true;
+  c->state.items.mut(0).commands.push_back(golden::add_mesh(1, kIdentityXform));
+  Command add;
+  add.kind = CommandKind::AddMultimesh;
+  add.multimesh = 1;
+  c->state.items.mut(0).commands.push_back(add);
+  return c;
+}
+
+struct W13Conn {
+  std::uint64_t open_frame;
+  std::uint64_t resync_frame;  // 0: never
+  int version;                 // 12 or 13
+  std::string offer;           // live_coding, "" for none
+};
+
+std::string hello_of(int version, const std::string &offer) {
+  std::string hello =
+      read_file(std::string(GRC_GOLDEN12_DIR) + "/control/valid/hello-native-block.json");
+  if (version == 13) {
+    const std::size_t at = hello.find("render-stream/12");
+    hello.replace(at, 16, "render-stream/13");
+  }
+  return offer.empty() ? hello : with_live_coding(hello, offer);
+}
+
+// Every binary message of each connection (by connection index, 1-based), with the summaries.
+std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> w13_run(
+    const std::vector<W13Conn> &conns, const LiveConfig &config,
+    std::vector<ConnectionSummary> *summaries) {
+  FakeTransport transport;
+  Session tmpl = make_template(Delivery::Inline);
+  tmpl.version = ProtocolVersion::V13;
+  observe_multimesh_features(&tmpl.features);
+  Hub hub(&transport, config, tmpl);
+  std::map<std::uint32_t, std::uint32_t> number;
+  for (std::uint64_t frame = 1; frame <= 40; ++frame) {
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (conns[i].open_frame == frame) {
+        hub.on_event(opened_with(i + 1, conns[i].version == 13 ? "render-stream.13"
+                                                               : "render-stream.12"),
+                     frame);
+        hub.on_event(text(i + 1, hello_of(conns[i].version, conns[i].offer)), frame);
+        number[i + 1] = static_cast<std::uint32_t>(number.size() + 1);
+      }
+    }
+    const std::vector<ConnectionSummary> now = hub.summaries();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      if (number.count(i + 1) == 0 || frame <= conns[i].open_frame) {
+        continue;
+      }
+      const ConnectionSummary &cs = now.at(number[i + 1] - 1);
+      if (conns[i].resync_frame == frame && cs.sent > 0) {
+        hub.on_event(text(i + 1, resync(cs.stream_id, cs.transactions)), frame);
+      } else if (cs.sent > 0) {
+        hub.on_event(text(i + 1, ack(cs.stream_id, cs.transactions, "submitted")), frame);
+      }
+    }
+    const std::uint64_t t = frame * 16000000ULL;
+    hub.on_frame_shared(frame, t, hub.wants_snapshot(frame, t) ? w13_state(frame) : nullptr,
+                        frame, 0);
+  }
+  hub.finish(EndReason::Shutdown, 41, 41 * 16000000ULL);
+  std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> out;
+  for (const Sent &x : transport.of(Sent::Binary)) {
+    out[x.conn].push_back(x.bytes);
+  }
+  if (summaries != nullptr) {
+    const std::vector<ConnectionSummary> all = hub.summaries();
+    summaries->clear();
+    for (std::uint32_t i = 0; i < conns.size(); ++i) {
+      summaries->push_back(all.at(number.at(i + 1) - 1));
+    }
+  }
+  return out;
+}
+
+// A /13 receiver over one connection's uncoded messages: each transaction un-predicted in order
+// (rs13::Predictor::decode). Returns the /12 messages (the session and end as they are), or false
+// with the first failure; `orders` counts the predicted units by order.
+bool w13_decode(const std::vector<std::vector<std::uint8_t>> &messages,
+                std::vector<std::vector<std::uint8_t>> *out, std::string *why,
+                std::array<std::uint64_t, 3> *orders = nullptr, std::uint64_t *fail_seq = nullptr) {
+  grc::rs13::Predictor p;
+  for (const std::vector<std::uint8_t> &m : messages) {
+    if (!m.empty() && m[0] == 'G') {
+      out->push_back(m);
+      continue;
+    }
+    std::vector<std::uint8_t> plain;
+    std::vector<grc::rs13::Unit> units;
+    const grc::rs13::Status st = p.decode(m, &plain, &units);
+    if (st == grc::rs13::Status::NotTransaction) {
+      out->push_back(m);
+      continue;
+    }
+    if (st != grc::rs13::Status::Ok) {
+      *why = std::string(grc::rs13::to_wire(st)) + " at " + meta_at(m, 0).substr(0, 48);
+      if (fail_seq != nullptr) {
+        *fail_seq = static_cast<std::uint64_t>(json_int_after(meta_at(m, 0), "seq"));
+      }
+      return false;
+    }
+    if (orders != nullptr) {
+      for (const grc::rs13::Unit &u : units) ++(*orders)[static_cast<std::size_t>(u.order)];
+    }
+    out->push_back(std::move(plain));
+  }
+  return true;
+}
+
+bool is_end(const std::vector<std::uint8_t> &m) {
+  return m.size() > 8 && m[0] != 'G' && has(meta_at(m, 0), "\"type\":\"end\"");
+}
+
+// Two connections' messages equal but for the session (fresh ids) and the end record (its stats
+// hold encode times).
+bool same_stream(const std::vector<std::vector<std::uint8_t>> &a,
+                 const std::vector<std::vector<std::uint8_t>> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t k = 1; k < a.size(); ++k) {
+    if (is_end(a[k]) ? !is_end(b[k]) : a[k] != b[k]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void test_w13_connections() {
+  // 1, 2: lockstep /13; 3: /12 in lockstep with them; 4: /13, resyncs at frame 17;
+  // 5: /13, joins at frame 3.
+  const std::vector<W13Conn> conns = {
+      {1, 0, 13, ""}, {1, 0, 13, ""}, {1, 0, 12, ""}, {1, 17, 13, ""}, {3, 0, 13, ""}};
+  std::vector<ConnectionSummary> sums;
+  const auto wire = w13_run(conns, LiveConfig(), &sums);
+  check(sums.at(0).version == 13 && sums.at(2).version == 12, "W13b: /13 and /12 negotiated");
+  const std::string s13 = meta_at(wire.at(1).at(0), 8);
+  check(wire.at(1).at(0)[3] == 'D' && has(s13, "\"protocol\":\"render-stream/13\""),
+        "W13b: a /13 connection's session is GRSD, render-stream/13");
+  std::vector<std::vector<std::uint8_t>> plain12 = wire.at(3);
+  std::array<std::uint64_t, 3> orders = {0, 0, 0};
+  for (std::uint32_t i : {1u, 2u, 4u, 5u}) {
+    std::vector<std::vector<std::uint8_t>> decoded;
+    std::string why;
+    check(w13_decode(wire.at(i), &decoded, &why, i == 1 ? &orders : nullptr),
+          "W13b: /13 connection " + std::to_string(i) + " un-predicts in order " + why);
+    const ConnectionSummary &cs = sums.at(i - 1);
+    check(cs.predict_formed + cs.predict_shared == cs.transactions && cs.transactions > 30,
+          "W13b: connection " + std::to_string(i) + " coded every transaction (" +
+              std::to_string(cs.predict_formed) + " formed, " + std::to_string(cs.predict_shared) +
+              " shared, " + std::to_string(cs.transactions) + " transactions)");
+    check(cs.predict_bytes == cs.predict_plain_bytes + 35 * cs.transactions,
+          "W13b: /13 is /12 plus predict_check's 35 bytes a transaction, raw");
+    if (i == 1) {
+      // The /12 connection in lockstep: every message but the session and the end record equal.
+      bool same = decoded.size() == plain12.size();
+      for (std::size_t k = 1; same && k < decoded.size(); ++k) {
+        same = is_end(decoded[k]) ? is_end(plain12[k]) : decoded[k] == plain12[k];
+      }
+      check(same, "W13b: w13-equiv: the /13 connection's transactions un-predicted are the /12 "
+                  "connection's, message for message (" +
+                      std::to_string(decoded.size()) + " vs " + std::to_string(plain12.size()) +
+                      ")");
+    }
+  }
+  check(orders[1] > 0 && orders[2] > 20,
+        "W13b: the stream predicts (first order " + std::to_string(orders[1]) +
+            ", second order " + std::to_string(orders[2]) + ", raw " + std::to_string(orders[0]) +
+            ")");
+  check(same_stream(wire.at(1), wire.at(2)), "W13b: lockstep /13 viewers get byte-equal messages");
+  check(sums.at(0).predict_formed == sums.at(0).transactions && sums.at(1).predict_formed == 0,
+        "W13b: the first lockstep viewer codes, the second shares every coding (" +
+            std::to_string(sums.at(1).predict_shared) + ")");
+  // The resynced viewer codes its full and the patch after it itself (its H2 differs), then its
+  // history equals the others' and it shares again.
+  check(sums.at(3).resyncs == 1 && sums.at(3).predict_formed == 2 &&
+            sums.at(3).predict_shared + 2 == sums.at(3).transactions,
+        "W13b: after a resync a viewer forms its own coding (" +
+            std::to_string(sums.at(3).predict_formed) + " formed), then shares again");
+  check(sums.at(4).predict_formed == 2,
+        "W13b: a late joiner forms its full and first patch, then shares (" +
+            std::to_string(sums.at(4).predict_formed) + " formed)");
+  // Alone, each /13 connection gets the bytes it gets beside the others.
+  for (std::uint32_t i : {1u, 4u, 5u}) {
+    const auto solo = w13_run({conns[i - 1]}, LiveConfig(), nullptr);
+    check(same_stream(solo.at(1), wire.at(i)),
+          "W13b: /13 connection " + std::to_string(i) + " gets the bytes it gets alone");
+  }
+
+  // W11t's coding over /13: lockstep coded viewers share the coded bytes, and decode to exactly
+  // the uncoded /13 messages.
+  {
+    LiveConfig coded;
+    coded.live_coding = grc::rs::live_coding::Coding::ZstdBase;
+    std::vector<ConnectionSummary> cs;
+    const auto cw = w13_run({{1, 0, 13, "zstd-base,zstd"}, {1, 0, 13, "zstd-base,zstd"},
+                             {1, 17, 13, "zstd-base,zstd"}},
+                            coded, &cs);
+    const auto uw = w13_run({{1, 0, 13, ""}, {1, 0, 13, ""}, {1, 17, 13, ""}}, LiveConfig(), nullptr);
+    for (std::uint32_t i = 1; i <= 3; ++i) {
+      std::vector<std::vector<std::uint8_t>> decoded;
+      std::string why;
+      std::uint64_t prefixed = 0;
+      check(model_decode(cw.at(i), &decoded, &why, &prefixed) && prefixed > 0 &&
+                same_stream(decoded, uw.at(i)),
+            "W13b: coded /13 connection " + std::to_string(i) +
+                " decodes to the uncoded /13 messages " + why);
+    }
+    check(cs.at(1).coded_shared > 30 && cs.at(1).predict_shared > 30,
+          "W13b: lockstep coded /13 viewers share the coding and the coded bytes (" +
+              std::to_string(cs.at(1).coded_shared) + ")");
+  }
+
+  // predict-stale: exactly one patch is predicted from H2 as if it were H1; the receiver fails
+  // predict-check there, and every message before it is the honest one.
+  {
+    LiveConfig stale;
+    stale.predict_stale_frame = 12;
+    std::vector<ConnectionSummary> ss;
+    const auto sw = w13_run({{1, 0, 13, ""}}, stale, &ss);
+    const auto hw = w13_run({{1, 0, 13, ""}}, LiveConfig(), nullptr);
+    std::size_t differ = 0;
+    for (std::size_t k = 1; k < sw.at(1).size() && k < hw.at(1).size(); ++k) {
+      differ += sw.at(1)[k] != hw.at(1)[k] && !is_end(sw.at(1)[k]) ? 1 : 0;
+    }
+    std::vector<std::vector<std::uint8_t>> decoded;
+    std::string why;
+    std::uint64_t fail = 0;
+    check(!w13_decode(sw.at(1), &decoded, &why, nullptr, &fail) &&
+              why.find("predict-check") == 0 && fail == ss.at(0).predict_stale_seq && fail > 0,
+          "W13b: predict-stale fails predict-check at its seq (" + why + ", stale seq " +
+              std::to_string(ss.at(0).predict_stale_seq) + ")");
+    check(differ == 1, "W13b: predict-stale changes exactly one message (" +
+                           std::to_string(differ) + ")");
+  }
+}
+
 void test_pm1_multimesh_buffer_f() {
   Session tmpl = make_template(Delivery::Inline);
   tmpl.version = ProtocolVersion::V11;
@@ -3477,6 +3768,7 @@ int main(int argc, char **argv) {
   test_v11_connections();
   test_v11_live_coding();
   test_hc5_formation_thread();
+  test_w13_connections();
   std::printf("rs_live_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

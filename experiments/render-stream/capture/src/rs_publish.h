@@ -35,6 +35,7 @@
 #include <string>
 #include <vector>
 
+#include "rs13_predict.h"
 #include "rs2_diff.h"
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
@@ -269,6 +270,10 @@ class Publisher {
     // inline(T) \ inline(B), B the previous published snapshot (both sinks advance together), so
     // nothing is held -- unless the keep-carried sabotage makes the planner lifelong.
     std::unique_ptr<RecordPlanner> planner;
+    // W13b (render-stream-13.md "As built (W13b)"): a /13 sink's predictor, fed every transaction
+    // record in file order by write_transaction (the full lane's every record is full, so it
+    // never predicts). Only the lane's formation touches it, in publication order.
+    rs13::Predictor predictor;
   };
 
   const Lane &lane(Encoding encoding) const {

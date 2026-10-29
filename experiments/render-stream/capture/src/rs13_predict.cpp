@@ -2,6 +2,8 @@
 // same name in protocol/golden-13/make_golden.py; read the two side by side.
 #include "rs13_predict.h"
 
+#include <charconv>
+
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -225,13 +227,15 @@ class JsonReader {
       }
     }
     if (out != nullptr) {
-      const std::string text(start, p_);
+      // W13b: from_chars (no allocation, no locale); the same values as strtod/strtoll.
       out->kind = JValue::Kind::Num;
-      out->d = std::strtod(text.c_str(), nullptr);
       out->is_int = false;
-      if (integer && text.size() <= 18) {  // fits int64 without overflow checks
+      if (integer && p_ - start <= 18) {  // fits int64 without overflow checks
         out->is_int = true;
-        out->i = std::strtoll(text.c_str(), nullptr, 10);
+        std::from_chars(start, p_, out->i);
+        out->d = out->i == 0 && *start == '-' ? -0.0 : static_cast<double>(out->i);
+      } else {
+        std::from_chars(start, p_, out->d);
       }
     }
     return true;
@@ -243,6 +247,44 @@ class JsonReader {
       return false;
     }
     p_ += n;
+    return true;
+  }
+
+  // W13b: skips one value without validating it -- for the writer, whose input is the meta
+  // encode_transaction just wrote (canonical JSON). Strings by memchr; containers by depth.
+  bool skip_trusted() {
+    ws();
+    if (p_ >= end_) {
+      return false;
+    }
+    const char c = *p_;
+    if (c == '"') {
+      return skip_string_trusted();
+    }
+    if (c == '{' || c == '[') {
+      int depth = 0;
+      while (p_ < end_) {
+        const char ch = *p_;
+        if (ch == '"') {
+          if (!skip_string_trusted()) {
+            return false;
+          }
+          continue;
+        }
+        if (ch == '{' || ch == '[') {
+          ++depth;
+        } else if ((ch == '}' || ch == ']') && --depth == 0) {
+          ++p_;
+          return true;
+        }
+        ++p_;
+      }
+      return false;
+    }
+    while (p_ < end_ && *p_ != ',' && *p_ != '}' && *p_ != ']' && *p_ != ' ' && *p_ != '\n' &&
+           *p_ != '\t' && *p_ != '\r') {
+      ++p_;
+    }
     return true;
   }
 
@@ -337,6 +379,25 @@ class JsonReader {
   }
 
  private:
+  bool skip_string_trusted() {
+    const char *const start = ++p_;  // past the opening quote
+    for (;;) {
+      const void *q = std::memchr(p_, '"', static_cast<std::size_t>(end_ - p_));
+      if (q == nullptr) {
+        return false;
+      }
+      const char *quote = static_cast<const char *>(q);
+      std::size_t backslashes = 0;
+      for (const char *b = quote; b > start && b[-1] == '\\'; --b) {
+        ++backslashes;
+      }
+      p_ = quote + 1;
+      if (backslashes % 2 == 0) {
+        return true;
+      }
+    }
+  }
+
   const char *p_;
   const char *end_;
 };
@@ -352,7 +413,8 @@ struct Meta {
 
 enum class MetaParse { Ok, Json, NotObject };
 
-MetaParse parse_meta(const std::uint8_t *data, std::size_t size, Meta *meta) {
+// `trusted` (the writer): the keys the predictor does not read are skipped unvalidated.
+MetaParse parse_meta(const std::uint8_t *data, std::size_t size, Meta *meta, bool trusted) {
   JsonReader r(reinterpret_cast<const char *>(data), size);
   if (!r.peek('{')) {
     // Not an object: still meta-json unless it is some other valid JSON value.
@@ -385,7 +447,7 @@ MetaParse parse_meta(const std::uint8_t *data, std::size_t size, Meta *meta) {
       if (target != nullptr) {
         *target = JValue();
       }
-      if (!r.value(target)) {
+      if (target == nullptr && trusted ? !r.skip_trusted() : !r.value(target)) {
         return MetaParse::Json;
       }
       if (key == "type") {
@@ -1199,7 +1261,7 @@ Status Predictor::code(const std::uint8_t *record, std::size_t size, bool invers
     return Status::Framing;
   }
   Meta meta;
-  const MetaParse parsed = parse_meta(meta_span.p, meta_span.n, &meta);
+  const MetaParse parsed = parse_meta(meta_span.p, meta_span.n, &meta, !inverse);
   if (parsed == MetaParse::Json) {
     return Status::MetaJson;
   }
@@ -1293,6 +1355,45 @@ Status Predictor::code(const std::uint8_t *record, std::size_t size, bool invers
     *trace = std::move(units);
   }
   return Status::Ok;
+}
+
+namespace {
+
+bool same_bytes(const SharedBytes &a, const SharedBytes &b) {
+  return a == b || (a != nullptr && b != nullptr && *a == *b);
+}
+
+}  // namespace
+
+bool same_state(const PredictState &a, const PredictState &b) {
+  if (&a == &b) {
+    return true;
+  }
+  if (a.body.size() != b.body.size() || a.aabb != b.aabb || a.mm.size() != b.mm.size()) {
+    return false;
+  }
+  for (auto x = a.body.begin(), y = b.body.begin(); x != a.body.end(); ++x, ++y) {
+    if (x->first != y->first || x->second.shape != y->second.shape ||
+        x->second.surfaces.size() != y->second.surfaces.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < x->second.surfaces.size(); ++i) {
+      if (!same_bytes(x->second.surfaces[i], y->second.surfaces[i])) {
+        return false;
+      }
+    }
+  }
+  for (auto x = a.mm.begin(), y = b.mm.begin(); x != a.mm.end(); ++x, ++y) {
+    if (x->first != y->first || x->second.instances != y->second.instances ||
+        x->second.stride != y->second.stride || !same_bytes(x->second.bytes, y->second.bytes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool same_history(const Predictor &a, const Predictor &b) {
+  return same_state(a.h1(), b.h1()) && same_state(a.h2(), b.h2());
 }
 
 std::vector<std::uint8_t> encode_transaction(const rs2::Transaction &transaction,
