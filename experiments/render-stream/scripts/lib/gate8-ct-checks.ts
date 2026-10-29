@@ -206,12 +206,17 @@ export async function runG8c(
   const root = join(out, "g8c");
   const checks: G8aCheck[] = [];
   const receivers = ["receiver", "receiver-patch"];
+  const headlessReceivers = ["headless/receiver", "headless/receiver-patch"];
   const legDirs = [
     "import/fixture",
     "import/receiver",
     "reference",
     "capture",
     ...receivers,
+    "headless/capture",
+    "headless-off/capture",
+    ...headlessReceivers,
+    "headless-off/receiver",
   ];
   const legs: G8cReport["legs"] = {};
   for (const l of legDirs)
@@ -234,7 +239,7 @@ export async function runG8c(
     checks.push(
       check(
         "g8c-legs",
-        "every g8c leg that ran (the imports, the rendered reference, the /8 capture on the rendered host and both receivers) exits 0",
+        "every g8c leg that ran (the imports, the rendered reference, the /8 capture on the rendered host and both receivers; HSD: the two headless /12 captures and their receivers) exits 0",
         problems,
         `${legDirs.filter(ran).length} legs`,
       ),
@@ -411,5 +416,92 @@ export async function runG8c(
     );
   }
 
+  // --- ct-headless-seat (HSD) -----------------------------------------------------------------
+  {
+    let problems: string[] | null = [];
+    for (const l of ["headless/capture", ...headlessReceivers, ...receivers])
+      if (!ran(l)) problems = null;
+    if (problems) {
+      const shim = (await readJson<CaptureShimResult>(join(root, "headless/capture", "evidence", "result.json")))
+        ?.canvas_texture_shim;
+      problems.push(
+        ...headlessShimProblems(shim, true, expected.canvas_ok + expected.canvas_refused).map(
+          (p) => `headless/capture: ${p}`,
+        ),
+      );
+      for (const l of headlessReceivers)
+        for (const c of expected.checkpoints) {
+          const d = await shotDiff(join(root, l), join(root, "receiver"), c.step);
+          if (!d.present) problems.push(`${l} step ${c.step}: shot missing`);
+          else if (d.differing > 0)
+            problems.push(`${l} step ${c.step}: ${d.differing} px differ from receiver (max ${d.max_delta})`);
+        }
+    }
+    checks.push(
+      check(
+        "ct-headless-seat",
+        "HSD: the same fixture captured on a HEADLESS host at /12 with the headless defaults (the streaming seat's shape) arms the canvas-texture shim by itself (result.json canvas_texture_shim: default, armed, one private RID per canvas texture), and the native receiver on its full and patch sinks equals the receiver of the rendered host's capture pixel for pixel at every checkpoint",
+        problems,
+        `${headlessReceivers.length} receivers x ${expected.checkpoints.length} checkpoints`,
+      ),
+    );
+  }
+
+  // --- ct-headless-off (HSD's control) -----------------------------------------------------------
+  {
+    let problems: string[] | null = [];
+    for (const l of ["headless-off/capture", "headless-off/receiver"]) if (!ran(l)) problems = null;
+    if (problems) {
+      const shim = (await readJson<CaptureShimResult>(join(root, "headless-off/capture", "evidence", "result.json")))
+        ?.canvas_texture_shim;
+      problems.push(...headlessShimProblems(shim, false, 0).map((p) => `headless-off/capture: ${p}`));
+      const seqs = (await readText(join(root, "headless-off/receiver", "shot-seqs.txt")))?.trim().split(",") ?? [];
+      for (const c of expected.checkpoints) {
+        const img = await decodePngRgba(join(root, "headless-off/receiver", "shots", `seq-${seqs[c.step]}.png`));
+        if (!img) {
+          problems.push(`headless-off/receiver step ${c.step}: no shot`);
+          continue;
+        }
+        for (const r of [...expected.drawn, ...expected.refused])
+          problems.push(
+            ...regionProblems(img, expected.regions[r], "clear", expected.clear_color).map(
+              (p) => `headless-off/receiver step ${c.step} ${r}: ${p}`,
+            ),
+          );
+      }
+    }
+    checks.push(
+      check(
+        "ct-headless-off",
+        "HSD's control (the pre-HSD streaming seat): the headless /12 capture with GRC_HEADLESS_CANVAS_TEXTURE=off (and the particles shim and pump off) leaves the shim off, every canvas texture is RID() and every draw through one is refused canvas-texture-headless, so every cell stays the clear colour on the receiver -- what ct-headless-seat must not equal",
+        problems,
+      ),
+    );
+  }
+
   return { checks, report };
+}
+
+interface CaptureShimResult {
+  canvas_texture_shim?: { env?: string; default?: boolean; state?: string; synthesized?: number };
+}
+
+/** ct-headless-seat / ct-headless-off: a headless capture's result.json canvas_texture_shim block.
+ * `armed`: the headless default armed it (env synthesize, default true, state armed) and gave
+ * `synthesized` canvas textures a private RID; otherwise it is off (state off, nothing synthesized). */
+export function headlessShimProblems(
+  shim: CaptureShimResult["canvas_texture_shim"] | undefined,
+  armed: boolean,
+  synthesized: number,
+): string[] {
+  if (!shim) return ["result.json has no canvas_texture_shim block"];
+  const problems: string[] = [];
+  const want = armed
+    ? { env: "synthesize", default: true, state: "armed" }
+    : { env: "off", default: false, state: "off" };
+  for (const [k, v] of Object.entries(want))
+    if (shim[k as keyof typeof want] !== v) problems.push(`canvas_texture_shim.${k} ${JSON.stringify(shim[k as keyof typeof want])}, expected ${JSON.stringify(v)}`);
+  if (shim.synthesized !== synthesized)
+    problems.push(`canvas_texture_shim.synthesized ${shim.synthesized}, expected ${synthesized}`);
+  return problems;
 }

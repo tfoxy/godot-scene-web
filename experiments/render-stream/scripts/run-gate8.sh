@@ -122,7 +122,12 @@
 #       in one private 640x360 gamescope, the unarmed `reference`, the /8 `capture` on that
 #       RENDERED host (a headless host's dummy storage allocates no canvas texture,
 #       canvas-texture-headless.md; both sinks and the store; its own shots too), and the native
-#       receiver on the full and patch sinks (`receiver`, `receiver-patch`).
+#       receiver on the full and patch sinks (`receiver`, `receiver-patch`). HSD (render-stream-12.md
+#       "Headless defaults (HSD)"): before the gamescope, two HEADLESS /12 captures of the same
+#       fixture, the streaming seat's shape: `headless/capture` with the headless defaults (the
+#       canvas-texture shim arms by itself) and `headless-off/capture` with all three compensations
+#       off (the pre-HSD control); in the gamescope the /12 native receiver on each (`headless/
+#       receiver`, `headless/receiver-patch`, `headless-off/receiver`).
 #   g8cg (CG1, render-stream-10.md: clip_children, CanvasGroup and BackBufferCopy carried on /10,
 #       fixtures/gate8-cg; every leg under g8cg/): the fixture and receiver imports; headless captures
 #       of the fixture armed at birth at /10 (`capture`, GRC_STREAM_VERSION=10: both sinks, the
@@ -190,9 +195,10 @@
 #       `sabotage-undrawn-particles/receiver` (the pre-PM6 planner) and
 #       `sabotage-ignore-particle-emits/receiver`, and `sabotage-drop-restart/receiver-patch`;
 #       then `capture-v11` (the negative control); last, headless:
-#       `headless/capture` (no particles shim: every emitter RID()), `headless-shim/capture`
-#       (GRC_HEADLESS_PARTICLES=synthesize) and, on fixtures/gate8-mm, `headless-pump/capture`
-#       (GRC_PREDRAW_PUMP=1) and its control `headless-nopump/capture`. PM7 (render-stream-12.md
+#       `headless/capture` (GRC_HEADLESS_PARTICLES=off: every emitter RID()), `headless-shim/capture`
+#       (the /12 headless default, HSD: the particles shim armed) and, on fixtures/gate8-mm,
+#       `headless-pump/capture` (the default pump) and its control `headless-nopump/capture`
+#       (GRC_PREDRAW_PUMP=0, all three compensations off). PM7 (render-stream-12.md
 #       "As built (PM7)"), in the same gamescope after the PM6a legs: `late/capture` (armed at
 #       fixture frame 12, RS_FIXTURE_ARM=late, every emitter adopted), `fault-no-particles/capture`
 #       (late, GRC_ADOPT_FAULT=no-particles: the pre-PM7 capture), and the native
@@ -744,8 +750,49 @@ run_capture_rendered_g8c() {
 	run_rendered "$dir" "$G8C_FIXTURE_DIR"
 }
 
+# HSD (render-stream-12.md "Headless defaults (HSD)"): the same fixture captured on a HEADLESS host
+# at /12 -- the streaming seat's shape. `headless/capture` takes the defaults (the canvas-texture
+# shim arms by itself), `headless-off/capture` is the pre-HSD control (all three compensations
+# explicitly off: every canvas-texture draw refused canvas-texture-headless).
+run_capture_headless_g8c() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	CAPTURE_FIXTURE_DIR="$G8C_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=12 "$@")
+	run_capture "$dir" "" none
+}
+
+run_g8c_headless() {
+	RECORDING_NAME=recording.rs12
+	PATCH_RECORDING_NAME=recording-patch.rs12
+	echo "run-gate8: g8c headless/capture (/12, headless host, headless defaults)"
+	run_capture_headless_g8c "$OUT/g8c/headless/capture"
+	echo "run-gate8: g8c headless-off/capture (/12, headless host, the three compensations off)"
+	run_capture_headless_g8c "$OUT/g8c/headless-off/capture" GRC_HEADLESS_CANVAS_TEXTURE=off \
+		GRC_HEADLESS_PARTICLES=off GRC_PREDRAW_PUMP=0
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
+run_g8c_headless_receivers() {
+	RECORDING_NAME=recording.rs12
+	PATCH_RECORDING_NAME=recording-patch.rs12
+	local leg
+	for leg in headless headless-off; do
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+		run_rendered_receiver "$OUT/g8c/$leg/capture" "$OUT/g8c/$leg/receiver"
+	done
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	run_rendered_receiver "$OUT/g8c/headless/capture" "$OUT/g8c/headless/receiver-patch"
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+}
+
 run_g8c() {
 	run_import_g8c
+	run_g8c_headless
 	echo "run-gate8: bringing up private gamescope for g8c's rendered legs"
 	gs_start 640 360 "$OUT/gamescope-g8c"
 	echo "run-gate8: g8c reference (unarmed, rendered at 640x360)"
@@ -760,6 +807,7 @@ run_g8c() {
 	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
 	run_rendered_receiver "$OUT/g8c/capture" "$OUT/g8c/receiver-patch"
 	legs_par_end
+	run_g8c_headless_receivers
 	gs_teardown "$OUT/gamescope-g8c"
 	GS_RUN_DIR=""
 }
@@ -1243,30 +1291,33 @@ run_g8pt() {
 	GS_RUN_DIR=""
 	RECORDING_NAME=recording.rs12
 	PATCH_RECORDING_NAME=recording-patch.rs12
-	echo "run-gate8: g8pt headless/capture (/12, headless, no particles shim: every emitter RID())"
-	run_capture_headless_g8pt "$OUT/g8pt/headless/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12
-	echo "run-gate8: g8pt headless-shim/capture (/12, headless, GRC_HEADLESS_PARTICLES=synthesize)"
-	run_capture_headless_g8pt "$OUT/g8pt/headless-shim/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
-		GRC_HEADLESS_PARTICLES=synthesize
+	# HSD: at /12 a headless host arms the shims and the pump by default, so the controls switch
+	# them off explicitly and the shim/pump legs (and their /13 twins) take the defaults.
+	echo "run-gate8: g8pt headless/capture (/12, headless, GRC_HEADLESS_PARTICLES=off: every emitter RID())"
+	run_capture_headless_g8pt "$OUT/g8pt/headless/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
+		GRC_HEADLESS_PARTICLES=off GRC_PREDRAW_PUMP=0 GRC_HEADLESS_CANVAS_TEXTURE=off
+	echo "run-gate8: g8pt headless-shim/capture (/12, headless, the particles shim by default)"
+	run_capture_headless_g8pt "$OUT/g8pt/headless-shim/capture" "$G8PT_FIXTURE_DIR" GRC_STREAM_VERSION=12
 	# W13b: its /13 twin (w13-file-equiv-g8pt: transcoded to /12, it is headless-shim's recording).
-	echo "run-gate8: g8pt headless-shim13/capture (/13 twin of headless-shim)"
+	echo "run-gate8: g8pt headless-shim13/capture (/13 twin of headless-shim, the defaults)"
 	RECORDING_NAME=recording.rs13 PATCH_RECORDING_NAME=recording-patch.rs13 \
 		run_capture_headless_g8pt "$OUT/g8pt/headless-shim13/capture" "$G8PT_FIXTURE_DIR" \
-		GRC_STREAM_VERSION=13 GRC_HEADLESS_PARTICLES=synthesize
-	echo "run-gate8: g8pt headless-pump/capture (gate8-mm, /12, headless, GRC_PREDRAW_PUMP=1)"
+		GRC_STREAM_VERSION=13
+	echo "run-gate8: g8pt headless-pump/capture (gate8-mm, /12, headless, the pump by default)"
 	# The gate8-mm legs run without GRC_ADOPT, exactly as g8mm's headless/capture (/11) does, so
 	# headless-nopump is that leg at /12: the byte-identity witness of a /12 stream without particles
 	# (render-stream-12.md "Byte identity with /11"; results/p3/pm5.md).
 	G8PT_ENV=()
 	run_capture_headless_g8pt "$OUT/g8pt/headless-pump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
-		GRC_PREDRAW_PUMP=1 RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump/capture/mm-frames.jsonl"
-	echo "run-gate8: g8pt headless-pump13/capture (/13 twin of headless-pump, W13b)"
+		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump/capture/mm-frames.jsonl"
+	echo "run-gate8: g8pt headless-pump13/capture (/13 twin of headless-pump, W13b; the defaults)"
 	RECORDING_NAME=recording.rs13 PATCH_RECORDING_NAME=recording-patch.rs13 \
 		run_capture_headless_g8pt "$OUT/g8pt/headless-pump13/capture" "$G8MM_FIXTURE_DIR" \
-		GRC_STREAM_VERSION=13 GRC_PREDRAW_PUMP=1 \
+		GRC_STREAM_VERSION=13 \
 		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-pump13/capture/mm-frames.jsonl"
-	echo "run-gate8: g8pt headless-nopump/capture (gate8-mm, /12, headless, no pump: pt-pump's control)"
+	echo "run-gate8: g8pt headless-nopump/capture (gate8-mm, /12, headless, GRC_PREDRAW_PUMP=0: pt-pump's control)"
 	run_capture_headless_g8pt "$OUT/g8pt/headless-nopump/capture" "$G8MM_FIXTURE_DIR" GRC_STREAM_VERSION=12 \
+		GRC_PREDRAW_PUMP=0 GRC_HEADLESS_PARTICLES=off GRC_HEADLESS_CANVAS_TEXTURE=off \
 		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-nopump/capture/mm-frames.jsonl"
 	G8PT_ENV=(GRC_ADOPT=arm)
 	RECORDING_NAME=recording.rs8

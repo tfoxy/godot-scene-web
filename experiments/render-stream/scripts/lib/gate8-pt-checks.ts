@@ -1486,7 +1486,7 @@ export async function runG8pt(
       checks.push(
         check(
           "pt-shim",
-          "PM5: headless without GRC_HEADLESS_PARTICLES no emitter is keyed (no particles entry, every add_particles unknown-particles); with =synthesize every emitter has its own rid and id, and pt-hook-census and pt-wire hold",
+          "PM5: headless with GRC_HEADLESS_PARTICLES=off no emitter is keyed (no particles entry, every add_particles unknown-particles); with the headless /12 default (HSD: synthesize) every emitter has its own rid and id, and pt-hook-census and pt-wire hold",
           ran ? problems : null,
         ),
       );
@@ -1505,7 +1505,7 @@ export async function runG8pt(
       checks.push(
         check(
           "pt-pump",
-          "PM5: on gate8-mm headless with GRC_PREDRAW_PUMP=1 the multimesh census is the rendered host's (C_FLIP, D_GLOBAL and I_PREDRAW set a buffer every frame); without the pump they never do",
+          "PM5: on gate8-mm headless with the /12 default pump (HSD: GRC_PREDRAW_PUMP resolves to 1) the multimesh census is the rendered host's (C_FLIP, D_GLOBAL and I_PREDRAW set a buffer every frame); with GRC_PREDRAW_PUMP=0 they never do",
           problems,
         ),
       );

@@ -12,6 +12,9 @@
 // 3. regionProblems: a patterned cell is textured, a white or clear one is not; a clear cell is
 //    clear, a drawn one is not.
 // 4. uploadProblems: every diffuse created passes; a diffuse never uploaded fails.
+// 5. headlessShimProblems (HSD): an armed default and an off control pass; a shim armed by an
+//    explicit opt-in (not the default), a wrong count, an off shim where one is needed and a missing
+//    block each fail.
 //
 // Exits non-zero if any assertion fails.
 
@@ -21,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   type G8cExpected,
+  headlessShimProblems,
   premiseProblems,
   regionProblems,
   uploadProblems,
@@ -245,6 +249,20 @@ async function main(): Promise<void> {
     uploadProblems(undefined, ok.diffuses).length === 1,
     "no uploads[] fails",
   );
+
+  // 5. headlessShimProblems (HSD)
+  const armed = { env: "synthesize", default: true, state: "armed", synthesized: 8 };
+  const off = { env: "off", default: false, state: "off", synthesized: 0 };
+  assert(headlessShimProblems(armed, true, 8).length === 0, "the default-armed shim passes");
+  assert(headlessShimProblems(off, false, 0).length === 0, "the off control passes");
+  assert(
+    headlessShimProblems({ ...armed, default: false }, true, 8).length === 1,
+    "a shim armed by an explicit opt-in (not the default) fails",
+  );
+  assert(headlessShimProblems({ ...armed, synthesized: 7 }, true, 8).length === 1, "a wrong private-RID count fails");
+  assert(headlessShimProblems(off, true, 8).length > 0, "an off shim where the default must arm fails");
+  assert(headlessShimProblems(armed, false, 0).length > 0, "an armed shim on the control fails");
+  assert(headlessShimProblems(undefined, true, 8).length === 1, "a missing block fails");
 
   console.log(
     `\nself-test-gate8-ct: ${assertions - failures}/${assertions} assertions passed`,

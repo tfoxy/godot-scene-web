@@ -1,6 +1,7 @@
 // The headless CanvasTexture shim (protocol/canvas-texture-headless.md, option (a), "Experiment
-// (a) result"). OPT-IN: GRC_HEADLESS_CANVAS_TEXTURE=synthesize. The default (unset, empty or
-// `off`) keeps the G2d typed refusal (canvas-texture-headless) and leaves this module inert.
+// (a) result"). GRC_HEADLESS_CANVAS_TEXTURE=synthesize, or unset/`auto` on a headless host at
+// render-stream/12+ (HSD, headless_defaults_apply below). `off` or empty, or `auto` below /12, keeps
+// the G2d typed refusal (canvas-texture-headless) and leaves this module inert.
 //
 // A headless host runs the dummy rasterizer, whose canvas_texture_allocate() returns RID()
 // (servers/rendering/dummy/storage/texture_storage.h:54), so every CanvasTexture shares the null
@@ -39,6 +40,23 @@ enum class CanvasTextureShimMode { Off, Synthesize };
 // anything else is invalid (returns false, `*error` set).
 bool parse_canvas_texture_shim_mode(const char *value, CanvasTextureShimMode *out,
                                     std::string *error);
+
+// HSD (render-stream-12.md "Headless defaults (HSD)"): the default of the three headless
+// compensations -- this shim, the particles RID shim and the pre-draw pump -- when their variable
+// is unset or `auto`. They default ON exactly for a `headless` display server whose stream is
+// render-stream/12 or later (GRC_STREAM_VERSION, a plain decimal); everything else (a rendered
+// host, an older stream, an unparsable version) defaults off, so a rendered host's wire and every
+// pre-/12 headless recording are unchanged. A headless seat without them streams no
+// CanvasTexture draw (every spine), no GPU-particles emitter, no CPUParticles2D buffer and no
+// AnimatedTexture frame: a dummy renderer allocates none of those identities and never emits
+// frame_pre_draw.
+bool headless_defaults_apply(const std::string &display_server, const char *stream_version);
+
+// The effective value of one of those variables: `value` itself when it is set to anything but
+// "auto"; otherwise `on_value` when `defaults_on`, else `off_value`. (An explicitly empty value
+// stays empty, which each parser reads as off, as before HSD.)
+std::string resolve_headless_default(const char *value, bool defaults_on, const char *on_value,
+                                     const char *off_value);
 
 // The arm-time decision: may the shim arm on a host whose DisplayServer.get_name() is
 // `display_server`? Off always "may" (nothing arms). Synthesize needs exactly "headless";

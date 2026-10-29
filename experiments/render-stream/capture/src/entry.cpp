@@ -221,8 +221,13 @@ struct State {
   // GRC_HEADLESS_CANVAS_TEXTURE as given (empty: unset), the parsed mode, and the shim's state:
   // "off" (not asked for), "armed", or "refused" with `ct_shim_reason`
   // (protocol/canvas-texture-headless.md "Experiment (a) result"; rs_canvas_texture_shim.h).
+  // HSD: unset or `auto` takes the headless default (rs::headless_defaults_apply), and the
+  // resolved value lands here; `ct_shim_env_set` is then "reported" (asked for, or defaulted on),
+  // `headless_defaults` whether the defaults applied to this host and stream.
   std::string ct_shim_env;
   bool ct_shim_env_set = false;
+  bool ct_shim_defaulted = false;
+  bool headless_defaults = false;
   rs::CanvasTextureShimMode ct_shim_mode = rs::CanvasTextureShimMode::Off;
   std::string ct_shim_state = "off";
   std::string ct_shim_reason;
@@ -875,6 +880,8 @@ std::string result_json() {
   if (g_state.ct_shim_env_set) {
     json.key("canvas_texture_shim").object_begin();
     json.field("env", g_state.ct_shim_env);
+    // HSD: true when the variable was unset (or `auto`) and the headless default armed it
+    json.field("default", g_state.ct_shim_defaulted);
     json.field("state", g_state.ct_shim_state);
     json.field_or_null("reason", g_state.ct_shim_reason);
     json.field("synthesized", static_cast<int64_t>(rs::canvas_texture_shim().synthesized()));
@@ -3331,8 +3338,31 @@ bool attempt(const char *phase) {
     return true;
   }
 
-  // The headless CanvasTexture shim (opt-in; protocol/canvas-texture-headless.md "Experiment (a)
-  // result"). It hands the engine RIDs the server never returned, which only the dummy rasterizer
+  // HSD (render-stream-12.md "Headless defaults (HSD)"): GRC_HEADLESS_CANVAS_TEXTURE,
+  // GRC_HEADLESS_PARTICLES and GRC_PREDRAW_PUMP unset (or `auto`) default on for a headless host at
+  // /12+ and off otherwise; an explicit value is taken as given. Resolved here, where the display
+  // server is known, so validate predicts arm.
+  {
+    const char *ct = std::getenv("GRC_HEADLESS_CANVAS_TEXTURE");
+    const char *pt = std::getenv("GRC_HEADLESS_PARTICLES");
+    const char *pump = std::getenv("GRC_PREDRAW_PUMP");
+    const bool on =
+        rs::headless_defaults_apply(g_state.display_server, std::getenv("GRC_STREAM_VERSION"));
+    g_state.headless_defaults = on;
+    g_state.ct_shim_defaulted = on && (ct == nullptr || std::strcmp(ct, "auto") == 0);
+    g_state.ct_shim_env = rs::resolve_headless_default(ct, on, "synthesize", "");
+    g_state.ct_shim_env_set = ct != nullptr || on;
+    g_state.pt_shim_env = rs::resolve_headless_default(pt, on, "synthesize", "");
+    g_state.pump_env = rs::resolve_headless_default(pump, on, "1", "");
+    if (on) {
+      log_line("headless defaults (/12+ on a headless host): GRC_HEADLESS_CANVAS_TEXTURE=" +
+               g_state.ct_shim_env + " GRC_HEADLESS_PARTICLES=" + g_state.pt_shim_env +
+               " GRC_PREDRAW_PUMP=" + g_state.pump_env);
+    }
+  }
+
+  // The headless CanvasTexture shim (protocol/canvas-texture-headless.md "Experiment (a)
+  // result"; HSD: the default on a headless host at /12+). It hands the engine RIDs the server never returned, which only the dummy rasterizer
   // of a `headless` display server ignores, so an opt-in on any other host refuses the whole
   // capture -- typed, before anything is hooked -- rather than arming without it. Decided in both
   // modes, so validate predicts arm.
@@ -3599,10 +3629,6 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
-  g_state.ct_shim_env_set = std::getenv("GRC_HEADLESS_CANVAS_TEXTURE") != nullptr;
-  g_state.ct_shim_env = env_string("GRC_HEADLESS_CANVAS_TEXTURE");
-  g_state.pt_shim_env = env_string("GRC_HEADLESS_PARTICLES");
-  g_state.pump_env = env_string("GRC_PREDRAW_PUMP");
   hooks_set_main_thread();
   if (!g_state.evidence_dir.empty()) {
     g_state.evidence_ready = make_directories(g_state.evidence_dir);

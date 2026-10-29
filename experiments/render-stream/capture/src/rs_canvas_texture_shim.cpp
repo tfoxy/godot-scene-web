@@ -23,6 +23,28 @@ bool parse_canvas_texture_shim_mode(const char *value, CanvasTextureShimMode *ou
   return false;
 }
 
+bool headless_defaults_apply(const std::string &display_server, const char *stream_version) {
+  if (display_server != "headless" || stream_version == nullptr || *stream_version == '\0') {
+    return false;
+  }
+  long version = 0;
+  for (const char *c = stream_version; *c != '\0'; ++c) {
+    if (*c < '0' || *c > '9' || version > 1000) {
+      return false;
+    }
+    version = version * 10 + (*c - '0');
+  }
+  return version >= 12;
+}
+
+std::string resolve_headless_default(const char *value, bool defaults_on, const char *on_value,
+                                     const char *off_value) {
+  if (value != nullptr && std::strcmp(value, "auto") != 0) {
+    return value;
+  }
+  return defaults_on ? on_value : off_value;
+}
+
 bool canvas_texture_shim_may_arm(CanvasTextureShimMode mode, const std::string &display_server,
                                  std::string *reason) {
   if (mode == CanvasTextureShimMode::Off || display_server == "headless") {
