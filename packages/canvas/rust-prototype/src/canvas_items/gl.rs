@@ -1654,10 +1654,7 @@ impl CanvasItemsExecutor {
         for op in &list.texture_ops {
             match *op {
                 TextureOp::Upload {
-                    id,
-                    width,
-                    height,
-                    offset,
+                    id, width, height, ..
                 } => {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
@@ -1668,12 +1665,7 @@ impl CanvasItemsExecutor {
                             "texture {id}: size {width}x{height}"
                         )));
                     }
-                    let end = u64::from(offset) + 4 * u64::from(width) * u64::from(height);
-                    if end > list.texture_bytes.len() as u64 {
-                        return Err(ExecError::Invalid(format!(
-                            "texture {id}: bytes outside texture_bytes"
-                        )));
-                    }
+                    check_texture_bytes(list, op, id)?;
                 }
                 TextureOp::Free { id } => {
                     if id == WHITE_TEXTURE {
@@ -1681,10 +1673,7 @@ impl CanvasItemsExecutor {
                     }
                 }
                 TextureOp::UploadHalf {
-                    id,
-                    width,
-                    height,
-                    offset,
+                    id, width, height, ..
                 } => {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
@@ -1695,20 +1684,15 @@ impl CanvasItemsExecutor {
                             "texture {id}: size {width}x{height}"
                         )));
                     }
-                    let end = u64::from(offset) + 8 * u64::from(width) * u64::from(height);
-                    if end > list.texture_bytes.len() as u64 {
-                        return Err(ExecError::Invalid(format!(
-                            "texture {id}: bytes outside texture_bytes"
-                        )));
-                    }
+                    check_texture_bytes(list, op, id)?;
                 }
                 TextureOp::UploadCompressed {
                     id,
                     width,
                     height,
                     format,
-                    offset,
                     len,
+                    ..
                 } => {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
@@ -1724,11 +1708,7 @@ impl CanvasItemsExecutor {
                             "texture {id}: {len} bytes is not {format:?}'s level 0 at {width}x{height}"
                         )));
                     }
-                    if u64::from(offset) + u64::from(len) > list.texture_bytes.len() as u64 {
-                        return Err(ExecError::Invalid(format!(
-                            "texture {id}: bytes outside texture_bytes"
-                        )));
-                    }
+                    check_texture_bytes(list, op, id)?;
                 }
             }
         }
@@ -1760,12 +1740,7 @@ impl CanvasItemsExecutor {
     fn texture_ops(&mut self, list: &DrawList, stats: &mut ExecStats) {
         for op in &list.texture_ops {
             match *op {
-                TextureOp::Upload {
-                    id,
-                    width,
-                    height,
-                    offset,
-                } => {
+                TextureOp::Upload { id, width, height, .. } => {
                     let texture = match self.textures.get(&id) {
                         Some(texture) => *texture,
                         None => match unsafe { self.gl.c().create_texture() } {
@@ -1780,9 +1755,7 @@ impl CanvasItemsExecutor {
                         },
                     };
                     self.bind_draw_texture(texture, stats);
-                    let start = offset as usize;
-                    let straight =
-                        &list.texture_bytes[start..start + 4 * width as usize * height as usize];
+                    let straight = op_bytes(list, op);
                     let premultiplied: Vec<u8>;
                     let bytes = if self.options.sabotage == Some(Sabotage::PremultipliedUpload) {
                         premultiplied = straight
@@ -1813,12 +1786,7 @@ impl CanvasItemsExecutor {
                     stats.texture_uploads += 1;
                     stats.texture_upload_bytes += bytes.len() as u32;
                 }
-                TextureOp::UploadHalf {
-                    id,
-                    width,
-                    height,
-                    offset,
-                } => {
+                TextureOp::UploadHalf { id, width, height, .. } => {
                     // P3-CK: a half-float image as GLES3 keeps it (RGBA16F), sampled as RGBA8 is.
                     let texture = match self.textures.get(&id) {
                         Some(texture) => *texture,
@@ -1834,9 +1802,7 @@ impl CanvasItemsExecutor {
                         },
                     };
                     self.bind_draw_texture(texture, stats);
-                    let start = offset as usize;
-                    let bytes =
-                        &list.texture_bytes[start..start + 8 * width as usize * height as usize];
+                    let bytes = op_bytes(list, op);
                     unsafe {
                         self.gl.c().tex_image_2d(
                             glow::TEXTURE_2D,
@@ -1858,8 +1824,8 @@ impl CanvasItemsExecutor {
                     width,
                     height,
                     format,
-                    offset,
                     len,
+                    ..
                 } => {
                     // G8kp (texture-delivery-design.md Q6 "GSW"): a `block` variant's level 0, in
                     // the GL internal format Godot's GLES3 driver uses for it; the texture is then
@@ -1878,8 +1844,7 @@ impl CanvasItemsExecutor {
                         },
                     };
                     self.bind_draw_texture(texture, stats);
-                    let start = offset as usize;
-                    let bytes = &list.texture_bytes[start..start + len as usize];
+                    let bytes = op_bytes(list, op);
                     unsafe {
                         self.gl.c().compressed_tex_image_2d(
                             glow::TEXTURE_2D,
@@ -2856,6 +2821,23 @@ fn set_blend(gl: &Gl, cache: &mut Cache, blend: Blend, opaque: bool, stats: &mut
         cache.blend_func = Some(func);
         stats.blend_changes += 1;
     }
+}
+
+/// An upload's bytes in the list (arena or shared, GLJ), or an `Invalid` naming texture `id`.
+fn check_texture_bytes(list: &DrawList, op: &TextureOp, id: u32) -> Result<(), ExecError> {
+    match op.byte_len() {
+        Some((bytes, len)) if list.texture_data(bytes, len).is_none() => Err(ExecError::Invalid(
+            format!("texture {id}: bytes outside texture_bytes/texture_shared"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A validated upload's bytes (`validate` refused any op [`check_texture_bytes`] does not hold).
+fn op_bytes<'a>(list: &'a DrawList, op: &TextureOp) -> &'a [u8] {
+    op.byte_len()
+        .and_then(|(bytes, len)| list.texture_data(bytes, len))
+        .expect("validated texture bytes")
 }
 
 /// G8kp: the GL internal format of a block-compressed upload, as Godot's GLES3 driver picks it

@@ -55,6 +55,7 @@ impl CanvasItemsTestHarness {
         let mut next = pdl1::decode(pdl).map_err(js)?;
         next.texture_ops = std::mem::take(&mut self.list.texture_ops);
         next.texture_bytes = std::mem::take(&mut self.list.texture_bytes);
+        next.texture_shared = std::mem::take(&mut self.list.texture_shared);
         self.list = next;
         Ok(())
     }

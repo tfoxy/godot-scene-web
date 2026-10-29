@@ -17,7 +17,9 @@
 //!   reorder them; an untextured draw's texture and sampler count as equal to anything
 //!   ([`DRAW_UNTEXTURED`], G7o4).
 //! - [`TextureOp`]s beside the list: uploads of straight RGBA8 pixels (or, from G8kp, of
-//!   block-compressed level-0 bytes, [`CompressedFormat`]) and frees.
+//!   block-compressed level-0 bytes, [`CompressedFormat`]) and frees. An upload's bytes are either
+//!   copied into the list's byte arena or (GLJ) shared with the producer by reference
+//!   ([`TextureBytes`]), so a frame that uploads a large texture set needs no second copy of it.
 //! - [`Binding`]s: item-space programs (Godot's custom `canvas_item` shaders, registered with the
 //!   executor beside the list) with their uniform values, named by a draw's `program`.
 //!
@@ -376,45 +378,83 @@ pub struct Binding {
     pub samplers: Vec<SamplerUniform>,
 }
 
+/// Texel bytes shared with their producer, never copied into the list (GLJ). A producer that
+/// keeps a texture's pixels anyway (a receiver's payload store) queues them by reference: the list
+/// holds one more count on the same allocation until the executor consumed it, so a frame that
+/// uploads every texture at once (a viewer's first frame of a large scene) costs no second copy of
+/// the whole texture set. `Arc<Vec<u8>>`, not `Arc<[u8]>`: wrapping a decoded `Vec` moves it
+/// (`Arc<[u8]>::from` would copy it once more).
+pub type SharedBytes = std::sync::Arc<Vec<u8>>;
+
+/// Where a [`TextureOp`]'s bytes are ([`DrawList::texture_data`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextureBytes {
+    /// `DrawList::texture_bytes[offset..offset + len]`: copied into the list's byte arena.
+    Arena { offset: u32 },
+    /// The whole of `DrawList::texture_shared[index]` (its length is the op's length exactly).
+    Shared { index: u32 },
+}
+
 /// A texture operation to run before the frame's draws, in order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TextureOp {
-    /// (Re)define texture `id` as `width × height` straight RGBA8, from
-    /// `DrawList::texture_bytes[offset..offset + 4·width·height]`.
+    /// (Re)define texture `id` as `width × height` straight RGBA8, from `4·width·height` bytes at
+    /// `bytes`.
     Upload {
         id: u32,
         width: u32,
         height: u32,
-        offset: u32,
+        bytes: TextureBytes,
     },
     Free {
         id: u32,
     },
     /// (Re)define texture `id` as `width × height` block-compressed texels of `format`, level 0
-    /// only, from `DrawList::texture_bytes[offset..offset + len]` (`len` is the format's level-0
-    /// size, [`CompressedFormat::level_bytes`]). The executor uploads it only where the context
+    /// only, from `len` bytes at `bytes` (`len` is the format's level-0 size,
+    /// [`CompressedFormat::level_bytes`]). The executor uploads it only where the context
     /// exposes the format; texture-delivery `block` variants (render-stream/9) are its only source.
     UploadCompressed {
         id: u32,
         width: u32,
         height: u32,
         format: CompressedFormat,
-        offset: u32,
+        bytes: TextureBytes,
         len: u32,
     },
     /// (Re)define texture `id` as `width × height` RGBA half floats (`RGBA16F`, each channel an
-    /// IEEE-754 binary16, little-endian), from `DrawList::texture_bytes[offset..offset +
-    /// 8·width·height]`. Godot's GLES3 driver keeps a half-float image (`RH` to `RGBAH`) as `R16F`
-    /// to `RGBA16F` (`texture_storage.cpp` `_get_gl_image_and_format`), so a shader reads its
-    /// channels at half precision, which straight RGBA8 cannot carry (P3-CK). The texture is then
-    /// sampled exactly as an RGBA8 one (level 0, the draw's own sampler; `RGBA16F` filters in
-    /// WebGL 2 and GL ES 3).
+    /// IEEE-754 binary16, little-endian), from `8·width·height` bytes at `bytes`. Godot's GLES3
+    /// driver keeps a half-float image (`RH` to `RGBAH`) as `R16F` to `RGBA16F`
+    /// (`texture_storage.cpp` `_get_gl_image_and_format`), so a shader reads its channels at half
+    /// precision, which straight RGBA8 cannot carry (P3-CK). The texture is then sampled exactly as
+    /// an RGBA8 one (level 0, the draw's own sampler; `RGBA16F` filters in WebGL 2 and GL ES 3).
     UploadHalf {
         id: u32,
         width: u32,
         height: u32,
-        offset: u32,
+        bytes: TextureBytes,
     },
+}
+
+impl TextureOp {
+    /// The byte length an upload reads at its `bytes` (None for a free).
+    pub fn byte_len(&self) -> Option<(TextureBytes, usize)> {
+        match *self {
+            TextureOp::Upload {
+                width,
+                height,
+                bytes,
+                ..
+            } => Some((bytes, 4 * width as usize * height as usize)),
+            TextureOp::UploadHalf {
+                width,
+                height,
+                bytes,
+                ..
+            } => Some((bytes, 8 * width as usize * height as usize)),
+            TextureOp::UploadCompressed { bytes, len, .. } => Some((bytes, len as usize)),
+            TextureOp::Free { .. } => None,
+        }
+    }
 }
 
 /// A block-compressed texture format, named for Godot's `Image.Format` it carries (the GL internal
@@ -587,7 +627,10 @@ pub struct DrawList {
     pub bindings: Vec<Binding>,
     pub dirty: Dirty,
     pub texture_ops: Vec<TextureOp>,
+    /// The byte arena: uploads queued by copy ([`TextureBytes::Arena`]).
     pub texture_bytes: Vec<u8>,
+    /// GLJ: uploads queued by reference ([`TextureBytes::Shared`]), released by [`Self::consumed`].
+    pub texture_shared: Vec<SharedBytes>,
     /// P3-TM: the host's shader time for this frame, which item-space programs whose code reads
     /// `TIME` see (Godot's `RasterizerGLES3::time_total`, uploaded as a float: canvas.glsl's
     /// `time`). Zero when the producer has none.
@@ -619,13 +662,24 @@ impl DrawList {
     /// Queue an upload of straight RGBA8 pixels (copied once into the list's byte arena).
     pub fn upload_texture(&mut self, id: u32, width: u32, height: u32, rgba: &[u8]) {
         debug_assert_eq!(rgba.len(), 4 * width as usize * height as usize);
-        let offset = self.texture_bytes.len() as u32;
-        self.texture_bytes.extend_from_slice(rgba);
+        let bytes = self.arena(rgba);
         self.texture_ops.push(TextureOp::Upload {
             id,
             width,
             height,
-            offset,
+            bytes,
+        });
+    }
+
+    /// GLJ: queue an upload of straight RGBA8 pixels by reference (no copy; [`SharedBytes`]).
+    pub fn upload_texture_shared(&mut self, id: u32, width: u32, height: u32, rgba: SharedBytes) {
+        debug_assert_eq!(rgba.len(), 4 * width as usize * height as usize);
+        let bytes = self.share(rgba);
+        self.texture_ops.push(TextureOp::Upload {
+            id,
+            width,
+            height,
+            bytes,
         });
     }
 
@@ -638,7 +692,9 @@ impl DrawList {
             id,
             width,
             height,
-            offset: offset as u32,
+            bytes: TextureBytes::Arena {
+                offset: offset as u32,
+            },
         });
         &mut self.texture_bytes[offset..offset + len]
     }
@@ -647,13 +703,30 @@ impl DrawList {
     /// once into the byte arena).
     pub fn upload_half_texture(&mut self, id: u32, width: u32, height: u32, rgba16f: &[u8]) {
         debug_assert_eq!(rgba16f.len(), 8 * width as usize * height as usize);
-        let offset = self.texture_bytes.len() as u32;
-        self.texture_bytes.extend_from_slice(rgba16f);
+        let bytes = self.arena(rgba16f);
         self.texture_ops.push(TextureOp::UploadHalf {
             id,
             width,
             height,
-            offset,
+            bytes,
+        });
+    }
+
+    /// GLJ: [`Self::upload_half_texture`] by reference (no copy).
+    pub fn upload_half_texture_shared(
+        &mut self,
+        id: u32,
+        width: u32,
+        height: u32,
+        rgba16f: SharedBytes,
+    ) {
+        debug_assert_eq!(rgba16f.len(), 8 * width as usize * height as usize);
+        let bytes = self.share(rgba16f);
+        self.texture_ops.push(TextureOp::UploadHalf {
+            id,
+            width,
+            height,
+            bytes,
         });
     }
 
@@ -667,16 +740,74 @@ impl DrawList {
         level0: &[u8],
     ) {
         debug_assert_eq!(level0.len() as u64, format.level_bytes(width, height));
-        let offset = self.texture_bytes.len() as u32;
-        self.texture_bytes.extend_from_slice(level0);
+        let len = level0.len() as u32;
+        let bytes = self.arena(level0);
         self.texture_ops.push(TextureOp::UploadCompressed {
             id,
             width,
             height,
             format,
-            offset,
-            len: level0.len() as u32,
+            bytes,
+            len,
         });
+    }
+
+    /// GLJ: [`Self::upload_compressed_texture`] by reference (no copy).
+    pub fn upload_compressed_texture_shared(
+        &mut self,
+        id: u32,
+        width: u32,
+        height: u32,
+        format: CompressedFormat,
+        level0: SharedBytes,
+    ) {
+        debug_assert_eq!(level0.len() as u64, format.level_bytes(width, height));
+        let len = level0.len() as u32;
+        let bytes = self.share(level0);
+        self.texture_ops.push(TextureOp::UploadCompressed {
+            id,
+            width,
+            height,
+            format,
+            bytes,
+            len,
+        });
+    }
+
+    fn arena(&mut self, data: &[u8]) -> TextureBytes {
+        let offset = self.texture_bytes.len() as u32;
+        self.texture_bytes.extend_from_slice(data);
+        TextureBytes::Arena { offset }
+    }
+
+    fn share(&mut self, data: SharedBytes) -> TextureBytes {
+        let index = self.texture_shared.len() as u32;
+        self.texture_shared.push(data);
+        TextureBytes::Shared { index }
+    }
+
+    /// The `len` bytes an upload reads at `bytes`, or None when they are not in the list (an
+    /// arena range past its end, or a shared entry that is missing or not exactly `len` long).
+    pub fn texture_data(&self, bytes: TextureBytes, len: usize) -> Option<&[u8]> {
+        match bytes {
+            TextureBytes::Arena { offset } => {
+                let start = offset as usize;
+                self.texture_bytes.get(start..start.checked_add(len)?)
+            }
+            TextureBytes::Shared { index } => self
+                .texture_shared
+                .get(index as usize)
+                .filter(|b| b.len() == len)
+                .map(|b| &b[..]),
+        }
+    }
+
+    /// GLJ: the queued uploads' bytes, `(copied into the arena, shared by reference)`.
+    pub fn queued_texture_bytes(&self) -> (u64, u64) {
+        (
+            self.texture_bytes.len() as u64,
+            self.texture_shared.iter().map(|b| b.len() as u64).sum(),
+        )
     }
 
     pub fn free_texture(&mut self, id: u32) {
@@ -703,6 +834,7 @@ impl DrawList {
         self.dirty.clear();
         self.texture_ops.clear();
         self.texture_bytes.clear();
+        self.texture_shared.clear();
     }
 
     /// Draw calls an executor issues for this list once it merges runs of adjacent draws
@@ -901,6 +1033,7 @@ pub mod pdl1 {
             },
             texture_ops: Vec::new(),
             texture_bytes: Vec::new(),
+            texture_shared: Vec::new(),
             shader_time: 0.0,
             screen_ops: Vec::new(),
             instances: Vec::new(),
@@ -1166,5 +1299,36 @@ mod tests {
         assert_eq!(list.merged_draw_count(), 2);
         // ITEM_UNTEXTURED reads as a normal float through a float texel.
         assert!(f32::from_bits(ITEM_UNTEXTURED).is_normal());
+    }
+
+    /// GLJ: a shared upload copies nothing into the arena, reads back exactly its bytes, holds one
+    /// count on the producer's allocation until the list is consumed, and refuses a length that is
+    /// not its own.
+    #[test]
+    fn shared_uploads_copy_nothing_and_release_on_consume() {
+        let mut list = DrawList::new(Target::default());
+        let px: SharedBytes = std::sync::Arc::new(vec![7u8; 16]);
+        list.upload_texture_shared(1, 2, 2, px.clone());
+        list.upload_texture(2, 1, 1, &[1, 2, 3, 4]);
+        assert_eq!(list.queued_texture_bytes(), (4, 16));
+        assert_eq!(std::sync::Arc::strong_count(&px), 2);
+        let (shared, len) = list.texture_ops[0].byte_len().unwrap();
+        assert_eq!(shared, TextureBytes::Shared { index: 0 });
+        assert_eq!(list.texture_data(shared, len), Some(&px[..]));
+        assert_eq!(list.texture_data(shared, len - 1), None);
+        assert_eq!(
+            list.texture_data(TextureBytes::Shared { index: 1 }, len),
+            None
+        );
+        let (arena, len) = list.texture_ops[1].byte_len().unwrap();
+        assert_eq!(list.texture_data(arena, len), Some(&[1u8, 2, 3, 4][..]));
+        assert_eq!(list.texture_data(arena, len + 1), None);
+        assert_eq!(
+            list.texture_data(TextureBytes::Arena { offset: u32::MAX }, 4),
+            None
+        );
+        list.consumed();
+        assert_eq!(list.queued_texture_bytes(), (0, 0));
+        assert_eq!(std::sync::Arc::strong_count(&px), 1);
     }
 }
