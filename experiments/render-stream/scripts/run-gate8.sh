@@ -173,7 +173,7 @@
 #       Judged by lib/gate8-mm-checks.ts; g7-8's web half replays the receiver legs.
 #   g8pt (PM5, render-stream-12.md "Fixture and checks (gate 8 group g8pt)": GPU particles on /12,
 #       the capture side, fixtures/gate8-pt; every leg under g8pt/): the imports (gate8-pt,
-#       gate8-mm, receiver) and rs-core-check's build; then, in one private 640x360 gamescope,
+#       gate8-mm, gate8-ptc, receiver) and rs-core-check's build; then, in one private 640x360 gamescope,
 #       every gate8-pt capture at --fixed-fps 60 under GRC_ADOPT=arm (the node map the
 #       particle_process_material builtin is read through) with both sinks, the store, the hook log
 #       and the step log, every rendered leg to frame 120 (RS_FIXTURE_QUIT_FRAME): `capture`
@@ -192,9 +192,14 @@
 #       fixture frame 12, RS_FIXTURE_ARM=late, every emitter adopted), `fault-no-particles/capture`
 #       (late, GRC_ADOPT_FAULT=no-particles: the pre-PM7 capture), and the native
 #       `late/receiver`, `late/receiver-patch` and `fault-no-particles/receiver` (G8PT_ONLY_LATE=1
-#       runs only those and the references, a development knob). Judged by
-#       lib/gate8-pt-checks.ts, lib/gate8-pt-receiver-checks.ts and lib/gate8-pt-late-checks.ts;
-#       g7-8's web half replays the receiver legs (run-gate7.sh G8_FILE_LEGS).
+#       runs only those and the references, a development knob). PFB (render-stream-12.md "As
+#       built (PFB)"), after the late legs, on fixtures/gate8-ptc: `ptc/reference-gl`,
+#       `ptc/reference-fwdplus` (Forward+ on Vulkan), `ptc/capture` (armed /12 on the Forward+
+#       host) and its gl_compatibility receivers `ptc/receiver` and
+#       `ptc/sabotage-gl-particle-colors/receiver` (G8PT_ONLY_PTC=1 runs only those). Judged by
+#       lib/gate8-pt-checks.ts, lib/gate8-pt-receiver-checks.ts, lib/gate8-pt-late-checks.ts and
+#       lib/gate8-ptc-checks.ts; g7-8's web half replays the receiver legs (run-gate7.sh
+#       G8_FILE_LEGS).
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -1010,11 +1015,12 @@ for l in open(sys.argv[1]):
 }
 
 run_import_g8pt() {
-	echo "run-gate8: g8pt import (fixtures gate8-pt and gate8-mm, receiver)"
+	echo "run-gate8: g8pt import (fixtures gate8-pt, gate8-mm and gate8-ptc, receiver)"
 	local leg project
-	for leg in fixture mm-fixture receiver; do
+	for leg in fixture mm-fixture ptc-fixture receiver; do
 		project="$G8PT_FIXTURE_DIR"
 		[ "$leg" = mm-fixture ] && project="$G8MM_FIXTURE_DIR"
+		[ "$leg" = ptc-fixture ] && project="$G8PTC_FIXTURE_DIR"
 		[ "$leg" = receiver ] && project="$RECEIVER_DIR"
 		LEG_ENV=()
 		run_headless "$OUT/g8pt/import/$leg" none -- mise exec -- godot --headless --path "$project" --import
@@ -1069,6 +1075,57 @@ run_g8pt_references() {
 	done
 }
 
+# PFB (render-stream-12.md "As built (PFB)"): fixtures/gate8-ptc, three emitters whose colour
+# comes from the process material, on both backends: the unarmed references on gl_compatibility
+# (the runner's opengl3) and on Forward+ (the last --rendering-method/--rendering-driver wins), an
+# armed /12 capture on the Forward+ host, and the native gl_compatibility receivers of it (honest,
+# and under the receiver sabotage gl-particle-colors: the pre-PFB receiver). A host without Vulkan
+# falls back to opengl3; the fixture prints its rendering method and the checks type that leg
+# unavailable.
+G8PTC_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-ptc"
+G8PTC_QUIT=40
+G8PTC_FWDPLUS_ARGS=(--rendering-method forward_plus --rendering-driver vulkan)
+G8PTC_RECEIVER_SABOTAGES=(gl-particle-colors)
+G8PT_ONLY_PTC="${G8PT_ONLY_PTC:-0}"
+
+run_g8pt_ptc() {
+	local r
+	for r in reference-gl reference-fwdplus; do
+		echo "run-gate8: g8pt ptc/$r (gate8-ptc unarmed, rendered at 640x360, --fixed-fps 60)"
+		mkdir -p "$OUT/g8pt/ptc/$r/shots" "$OUT/g8pt/ptc/$r/xdg-data"
+		LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8pt/ptc/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8pt/ptc/$r/steps.jsonl"
+			RS_FIXTURE_QUIT_FRAME="$G8PTC_QUIT" XDG_DATA_HOME="$OUT/g8pt/ptc/$r/xdg-data")
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		[ "$r" = reference-fwdplus ] && RENDERED_EXTRA_ARGS+=("${G8PTC_FWDPLUS_ARGS[@]}")
+		run_rendered "$OUT/g8pt/ptc/$r" "$G8PTC_FIXTURE_DIR"
+	done
+	local dir="$OUT/g8pt/ptc/capture"
+	echo "run-gate8: g8pt ptc/capture (/12, armed at birth, Forward+ host)"
+	mkdir -p "$dir/evidence" "$dir/store"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm "${G8PT_ENV[@]}"
+		GRC_STREAM_VERSION=12 GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_QUIT_FRAME="$G8PTC_QUIT"
+		XDG_DATA_HOME="$dir/xdg-data"
+	)
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60 "${G8PTC_FWDPLUS_ARGS[@]}")
+	run_rendered "$dir" "$G8PTC_FIXTURE_DIR"
+	rm -rf "$OUT/g8pt/ptc/reference-gl/xdg-data" "$OUT/g8pt/ptc/reference-fwdplus/xdg-data" "$dir/xdg-data"
+	echo "run-gate8: g8pt ptc/receiver (native gl_compatibility, /12)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered_receiver "$dir" "$OUT/g8pt/ptc/receiver"
+	local s
+	for s in "${G8PTC_RECEIVER_SABOTAGES[@]}"; do
+		echo "run-gate8: g8pt ptc/sabotage-$s (receiver)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12 RS_RECEIVER_SABOTAGE="$s")
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		run_rendered_receiver "$dir" "$OUT/g8pt/ptc/sabotage-$s/receiver"
+	done
+	RENDERED_EXTRA_ARGS=()
+}
+
 # run_g8pt_late (PM7): the late-armed captures and their native receivers, in g8pt's gamescope
 # (RECORDING_NAME is the /12 one). The fault capture is the pre-PM7 capture: no emitter adopted.
 run_g8pt_late() {
@@ -1107,6 +1164,14 @@ run_g8pt() {
 	RECORDING_NAME=recording.rs12
 	PATCH_RECORDING_NAME=recording-patch.rs12
 	local s
+	if [ "$G8PT_ONLY_PTC" = 1 ]; then
+		run_g8pt_ptc
+		gs_teardown "$OUT/gamescope-g8pt"
+		GS_RUN_DIR=""
+		RECORDING_NAME=recording.rs8
+		PATCH_RECORDING_NAME=recording-patch.rs8
+		return 0
+	fi
 	if [ "$G8PT_ONLY_LATE" = 1 ]; then
 		run_g8pt_references
 		run_g8pt_late
@@ -1161,6 +1226,7 @@ run_g8pt() {
 	legs_par_end
 	RENDERED_EXTRA_ARGS=()
 	run_g8pt_late
+	run_g8pt_ptc
 	rm -rf "$OUT/g8pt/reference/xdg-data" "$OUT/g8pt/reference-repeat/xdg-data"
 	RECORDING_NAME=recording.rs11
 	PATCH_RECORDING_NAME=recording-patch.rs11

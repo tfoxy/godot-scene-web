@@ -54,6 +54,7 @@ import { check, exitCode, type G8aCheck, readText, skipped } from "./gate8-adopt
 import { censusProblems as mmCensusProblems, type G8mmExpected, mapCells as mmMapCells, parseMmLog } from "./gate8-mm-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
 import { LATE_LEGS, type PtLate, type PtLateTx, runG8ptLate } from "./gate8-pt-late-checks";
+import { PTC_LEGS, runG8ptPtc } from "./gate8-ptc-checks";
 import { type PtPixels, type PtWireTotals, runG8ptReceivers } from "./gate8-pt-receiver-checks";
 import {
   applyTransaction,
@@ -1234,6 +1235,8 @@ const LEGS = [
   "sabotage-ignore-particle-emits/receiver",
   "sabotage-drop-restart/receiver-patch",
   ...LATE_LEGS,
+  "import/ptc-fixture",
+  ...Object.values(PTC_LEGS),
 ];
 
 function rsCoreValidate(path: string, version: number): string {
@@ -1585,6 +1588,13 @@ export async function runG8pt(
       checks,
       late,
     );
+  }
+
+  // PFB: a RendererRD host's particle colours (gate8-ptc-checks.ts)
+  {
+    const ptc: Record<string, unknown> = {};
+    report.legs.ptc = ptc;
+    await runG8ptPtc(g, { validate: (path) => validateBoth(path, 12) }, checks, ptc);
   }
 
   // the sabotages: the validators accept the patch sink, pt-wire fails on it

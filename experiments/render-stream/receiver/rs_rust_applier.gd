@@ -42,6 +42,8 @@ const CORE_SABOTAGES: Array[String] = [
 	"ignore-identity-transform",
 	# PM6a: the pre-PM6 planner (every add_particles undrawn), and two emitter-replay faults.
 	"undrawn-particles", "ignore-particle-emits", "drop-particles-restart",
+	# PFB: a particles material's colours set as given whatever the host's rendering method.
+	"gl-particle-colors",
 	# W11d (render-stream-11.md "As built (W11d)"): the /11 receiver sabotages the core implements.
 	"stale-dynamic-rx", "no-prune", "ignore-released",
 ]

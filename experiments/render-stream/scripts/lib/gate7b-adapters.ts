@@ -697,7 +697,8 @@ export interface LegShotClasses {
  * pt-coverage@web); everywhere else P-W1's classes still hold (pt-outside-exact@web judges the
  * rest exactly against the reference). */
 export function approximateRegions(leg: string): [number, number, number, number][] | null {
-  if (!leg.startsWith("g8pt/")) return null;
+  // PFB: gate8-ptc's particles hold still (one particle, no velocity), so its legs are exact.
+  if (!leg.startsWith("g8pt/") || leg.startsWith("g8pt/ptc/")) return null;
   const expected = JSON.parse(
     readFileSync(join(SCRIPT_DIR, "..", "fixtures", "gate8-pt", "expected.json"), "utf8"),
   ) as { pixels?: { regions?: Record<string, [number, number, number, number]> } };

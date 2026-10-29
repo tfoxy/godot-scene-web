@@ -771,6 +771,58 @@ menu's stars and fog. The capture, the two validators and the hook log change; t
     `pt-late-fault`, `pt-late-lifecycle`, `pt-late-coverage` (banded, from frame 46),
     `pt-late-outside-exact` and `pt-late-lifecycle-catches-no-particles`.
 
+## As built (PFB): decisions
+
+PFB makes the gl_compatibility-style receivers (the native receiver on opengl3, the web export on
+WebGL 2, and GSW) draw a RendererRD host's particle colours as the host does
+([results/p3/pfb.md](../results/p3/pfb.md)). Before it, GSW drew STS2's menu fog about four times
+too bright (menu 31.4 to 23.2 dB), and so did a GLES3 receiver made to compile the shader.
+
+1. **The cause is the host's backend, not the simulation.** RendererRD (`forward_plus`, `mobile`)
+   fills a particles material's uniform buffer with `p_use_linear_color` true unconditionally
+   (`particles_storage.cpp:1768`), so a `Color` parameter goes through `Color::srgb_to_linear()`
+   (`variant_converters.h:208-213`; a `source_color` default too, `material_storage.cpp:456-459`).
+   GLES3 converts nothing. The 2D canvas is not linear on either backend (`hdr_2d` off: an RGBA8
+   target, no conversion back), so the linearized colour reaches the screen as is. A Forward+
+   host draws `ParticleProcessMaterial.color` (0.5, 0.25, 0.75) as (54, 13, 133), a
+   gl_compatibility host as (127, 63, 191). Alpha, colour ramps and every other colour in 2D are
+   untouched. `packages/effects` `godot-renderer.ts` documents the same rule for the CPU path.
+2. **No wire change.** The session record already carries the host's backend
+   (`engine.rendering_method`, since /1). A receiver reads it: `forward_plus` or `mobile` means
+   the host linearizes (rs-core `apply::particles::host_linearizes_particle_colors`); anything
+   else, `gl_compatibility` included, means it does not. Streams and recordings are unchanged.
+3. **What a receiver converts.** Every `color`-typed parameter (four components) of a material
+   whose shader is `particles` mode: RGB through Godot's `srgb_to_linear` in its float precision
+   (`apply::particles::srgb_to_linear`), alpha untouched. Not converted: other types (a
+   `vector4` is not a `Color` variant), canvas_item materials, and a `source_color` uniform's
+   *default* (no receiver knows a default it was not sent; `ParticleProcessMaterial` sets every
+   colour explicitly). A `color_conversion_disabled` hint is not modelled (no receiver parses
+   uniform hints); a process shader using it on a Forward+ host would be over-converted.
+4. **Where.** GSW: `describe` lists the converted values to the shell's emitters (gsw-rs passes
+   the session's flag), so `GodotGpuEmitter` (a gl_compatibility port) is unchanged. Native and
+   web: the planner converts before `material_set_param`, only when the receiver itself renders
+   with gl_compatibility (`rsc_set_gl_compatibility`, which the adapter sets from
+   `RenderingServer.get_current_rendering_method()`): a Forward+ receiver converts on its own and
+   gets the wire's values. `particles_resources.colors_linearized` in applied.json counts the
+   converted sets (present only when non-zero).
+5. **Receiver sabotage** `gl-particle-colors` (native, web and GSW): the colours are set as given,
+   the pre-PFB receiver.
+6. **Fixture** `fixtures/gate8-ptc` (three still emitters: a colour uniform mixed and added, and a
+   colour ramp as the control) in g8pt: `ptc/reference-gl`, `ptc/reference-fwdplus` (the last
+   `--rendering-method forward_plus --rendering-driver vulkan` wins over the runner's `opengl3`),
+   `ptc/capture` (armed /12 on the Forward+ host), `ptc/receiver` and
+   `ptc/sabotage-gl-particle-colors/receiver`. Checks `ptc-host-colors` (the premise, against the
+   model), `ptc-validate`, `ptc-receiver` (within 2 levels of the Forward+ reference) and
+   `ptc-receiver-catches-gl-particle-colors`; GSW's and the web export's g7-8 judge their own
+   `ptc-receiver`. The hosted runners' Xvfb + lavapipe runs the Forward+ legs too (run
+   40806257199). A host whose Vulkan falls back to opengl3 runs the legs but the checks are
+   `not-run` (the fixture prints its rendering method). The ptc legs are exact on the web export (their particles hold
+   still), so gate 7b's approximate regions do not apply to them.
+7. **What it does not fix.** STS2's process shader (MegaDot, Vulkan) calls `emit_subparticle`,
+   which GLES3 does not declare, so the native and web receivers still draw none of STS2's
+   emitters (PM7). With it stubbed they would now draw them at the host's colours, but the stub
+   is not shipped here.
+
 ## Versioning
 
 As /11: any change to framing, a key, a key order, a block layout, an enum spelling or a payload

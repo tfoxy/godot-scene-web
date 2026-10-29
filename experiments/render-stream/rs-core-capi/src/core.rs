@@ -308,6 +308,11 @@ impl Core {
             .map(|f| f.meta.to_vec())
             .unwrap_or_default();
         let s = validator.session();
+        // PFB: whether the host's particles shaders read their colour uniforms linearized.
+        self.planner.host_linear_colors =
+            render_stream_core::apply::particles::host_linearizes_particle_colors(
+                &s.engine.rendering_method,
+            );
         let digest = validator.record_digests()[0]
             .map(|h| h.to_hex())
             .unwrap_or_default();

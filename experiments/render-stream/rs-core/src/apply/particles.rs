@@ -15,7 +15,7 @@
 
 use std::fmt::Write as _;
 
-use crate::state::{EntryStatus, Id, ParamValue, ParticlesMode, ResolvedState};
+use crate::state::{EntryStatus, Id, ParamValue, ParticlesMode, ResolvedState, VariantType};
 
 /// Floats per simulated instance: transform rows (8), colour (4), custom (4).
 pub const PT_INSTANCE_FLOATS: usize = 16;
@@ -184,7 +184,50 @@ fn simulated(state: &ResolvedState) -> Vec<Id> {
 
 /// The shell's sync message, or an empty string when nothing changed since the last call:
 /// `{"ids":[..], "emitters":[..], "materials":[..]}` (render-stream-12.md "As built (PM6b)").
-pub fn describe(state: &ResolvedState, store: &mut super::payloads::PayloadStore) -> String {
+/// PFB (render-stream-12.md "As built (PFB)"): whether a host rendering with
+/// `engine.rendering_method` uploads a particles material's colour uniforms in linear space.
+/// RendererRD (`forward_plus`, `mobile`) fills a particles material's uniform buffer with
+/// `p_use_linear_color` true unconditionally (particles_storage.cpp:1768): a `Color` value
+/// (variant_converters.h:208-213) and a `source_color` default (material_storage.cpp:456-459) go
+/// through `Color::srgb_to_linear()`. GLES3 converts nothing (gl_compatibility's
+/// material_storage.cpp has no such parameter). The 2D canvas is not linear on either backend
+/// (`hdr_2d` off), so the converted colour reaches the canvas as is: a Forward+ host draws a
+/// `ParticleProcessMaterial.color` of 0.29 as 0.069.
+pub fn host_linearizes_particle_colors(rendering_method: &str) -> bool {
+    matches!(rendering_method, "forward_plus" | "mobile")
+}
+
+/// PFB: Godot's `Color::srgb_to_linear()` on one channel (core/math/color.h:191-197), in its
+/// float precision: the inner expression in double, narrowed to float before `pow`.
+pub fn srgb_to_linear(c: f32) -> f32 {
+    if c < 0.04045 {
+        c * (1.0f32 / 12.92f32)
+    } else {
+        (((f64::from(c) + 0.055) * (1.0 / (1.0 + 0.055))) as f32).powf(2.4)
+    }
+}
+
+/// PFB: a particles material's uniform value as a host that linearizes colours
+/// ([`host_linearizes_particle_colors`]) uploads it: a `color` parameter's RGB through
+/// [`srgb_to_linear`] (alpha untouched), every other parameter unchanged.
+pub fn host_uniform_value(ty: VariantType, v: &[f64], linear_colors: bool) -> Vec<f64> {
+    let mut out = v.to_vec();
+    if linear_colors && ty == VariantType::Color && out.len() == 4 {
+        for c in out.iter_mut().take(3) {
+            *c = f64::from(srgb_to_linear(*c as f32));
+        }
+    }
+    out
+}
+
+/// `linear_colors`: the host linearizes a particles material's colour uniforms
+/// ([`host_linearizes_particle_colors`] of the session's `engine.rendering_method`); the listed
+/// uniforms are then the values the host's process shader read.
+pub fn describe(
+    state: &ResolvedState,
+    store: &mut super::payloads::PayloadStore,
+    linear_colors: bool,
+) -> String {
     let ids = simulated(state);
     // A material's key: its version and how many of its texture params resolve to a curve now
     // (a curve payload may arrive after the material).
@@ -325,7 +368,7 @@ pub fn describe(state: &ResolvedState, store: &mut super::payloads::PayloadStore
         for p in &m.params {
             let v: Option<Vec<f64>> = match &p.value {
                 ParamValue::Scalar(x) => Some(vec![*x]),
-                ParamValue::Flat(v) => Some(v.clone()),
+                ParamValue::Flat(v) => Some(host_uniform_value(p.ty, v, linear_colors)),
                 _ => None,
             };
             let Some(v) = v else { continue };
@@ -380,4 +423,39 @@ pub fn describe(state: &ResolvedState, store: &mut super::payloads::PayloadStore
     }
     d.ids = ids;
     out
+}
+
+#[cfg(test)]
+mod pfb_tests {
+    use super::*;
+
+    #[test]
+    fn host_backends() {
+        assert!(host_linearizes_particle_colors("forward_plus"));
+        assert!(host_linearizes_particle_colors("mobile"));
+        assert!(!host_linearizes_particle_colors("gl_compatibility"));
+        assert!(!host_linearizes_particle_colors("dummy"));
+        assert!(!host_linearizes_particle_colors(""));
+    }
+
+    #[test]
+    fn srgb_to_linear_matches_godot() {
+        assert_eq!(srgb_to_linear(0.0), 0.0);
+        assert_eq!(srgb_to_linear(1.0), 1.0);
+        // The linear segment below 0.04045, and the curve above it (Color::srgb_to_linear).
+        assert_eq!(srgb_to_linear(0.04), 0.04f32 * (1.0f32 / 12.92f32));
+        assert!((srgb_to_linear(0.5) - 0.214_041_14).abs() < 1e-6);
+        assert!((srgb_to_linear(0.2901960015296936) - 0.068_478_6).abs() < 1e-5);
+    }
+
+    #[test]
+    fn only_colours_move_and_alpha_never() {
+        let c = [0.5, 0.25, 0.75, 0.4];
+        let lin = host_uniform_value(VariantType::Color, &c, true);
+        assert_eq!(lin[3], 0.4);
+        assert!((lin[0] - 0.214_041_14).abs() < 1e-6);
+        assert_eq!(host_uniform_value(VariantType::Color, &c, false), c.to_vec());
+        assert_eq!(host_uniform_value(VariantType::Vector4, &c, true), c.to_vec());
+        assert_eq!(host_uniform_value(VariantType::Vector3, &c[..3], true), c[..3].to_vec());
+    }
 }

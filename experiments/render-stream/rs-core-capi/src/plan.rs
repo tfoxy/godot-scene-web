@@ -72,6 +72,9 @@ pub struct Sabotage {
     pub ignore_particle_emits: bool,
     /// PM6a: the emitters are replayed but `particles_restart` is never issued.
     pub drop_particles_restart: bool,
+    /// PFB: a particles material's colours are set as the wire gives them, whatever the host's
+    /// rendering method (the pre-PFB receiver).
+    pub gl_particle_colors: bool,
 }
 
 impl Sabotage {
@@ -103,6 +106,7 @@ impl Sabotage {
             "undrawn-particles" => s.undrawn_particles = true,
             "ignore-particle-emits" => s.ignore_particle_emits = true,
             "drop-particles-restart" => s.drop_particles_restart = true,
+            "gl-particle-colors" => s.gl_particle_colors = true,
             _ => {}
         }
         s
@@ -698,6 +702,9 @@ struct Counters {
     pt_emits_dropped: i64,
     particles_commands: i64,
     skipped_particles_commands: i64,
+    /// PFB: particles material `color` parameters set linearized (a RendererRD host's colours on
+    /// a gl_compatibility receiver).
+    particle_colors_linearized: i64,
     // material_resources, in rs_applier.gd's key order
     shaders_created: i64,
     shader_code_sets: i64,
@@ -765,6 +772,15 @@ pub struct Planner {
     /// G8kp (texture-delivery-design.md D3): which payload of an ok image texture is fetched and
     /// uploaded. The default is `decoded` alone, exactly the base hash, as before /9.
     pub delivery: DeliveryPrefs,
+    /// PFB (render-stream-12.md "As built (PFB)"): the receiver renders with gl_compatibility
+    /// (the adapter sets it from `RenderingServer.get_current_rendering_method()`), which uploads
+    /// a particles material's colour uniforms as given.
+    pub gl_compatibility: bool,
+    /// PFB: the session's host linearizes a particles material's colour uniforms
+    /// (`render_stream_core::apply::particles::host_linearizes_particle_colors` of its
+    /// `engine.rendering_method`). With [`Planner::gl_compatibility`], the planner sets a
+    /// `particles` shader's material `color` parameters as the host's shader read them.
+    pub host_linear_colors: bool,
     version: u8,
     canvases: BTreeMap<Id, CanvasM>,
     items: BTreeMap<Id, ItemM>,
@@ -3204,8 +3220,32 @@ impl Planner {
                 continue;
             }
             let mut wanted: BTreeSet<&str> = BTreeSet::new();
+            // PFB: a RendererRD host's particles shader read its colour uniforms linearized.
+            let linear = self.gl_compatibility
+                && self.host_linear_colors
+                && !self.sab.gl_particle_colors
+                && e
+                    .shader
+                    .and_then(|s| st.shaders.get(&s))
+                    .is_some_and(|s| s.mode == Some(ShaderMode::Particles));
             for p in &e.params {
                 wanted.insert(&p.name);
+                let converted;
+                let p = match &p.value {
+                    ParamValue::Flat(v) if linear && p.ty == VariantType::Color => {
+                        converted = Param {
+                            name: p.name.clone(),
+                            ty: p.ty,
+                            value: ParamValue::Flat(
+                                render_stream_core::apply::particles::host_uniform_value(
+                                    p.ty, v, true,
+                                ),
+                            ),
+                        };
+                        &converted
+                    }
+                    _ => p,
+                };
                 let (variant, key) = self.param(st, p);
                 let m = self.materials.get_mut(&id).unwrap();
                 if let Some(entry) = m.params.iter_mut().find(|x| x.0 == p.name) {
@@ -3221,6 +3261,9 @@ impl Planner {
                 ops.bytes(p.name.as_bytes());
                 ops.bytes(&variant.out);
                 c.param_sets += 1;
+                if linear && p.ty == VariantType::Color {
+                    c.particle_colors_linearized += 1;
+                }
             }
             // P3-TM: the host's shader time, for a material whose shader reads TIME (its code was
             // rewritten to read this parameter, `apply_shaders`).
@@ -4235,7 +4278,7 @@ fn write_stats(
     ];
     let mm_any = mm_resources.iter().any(|(_, n)| *n != 0);
     // PM6a: `particles_resources`, only when one of its counters is non-zero.
-    let pt_resources = [
+    let mut pt_resources = vec![
         ("particles_created", c.pt_created),
         ("particles_freed", c.pt_freed),
         ("setters", c.pt_setters),
@@ -4250,6 +4293,10 @@ fn write_stats(
         ("particles_commands", c.particles_commands),
         ("skipped_particles_commands", c.skipped_particles_commands),
     ];
+    // PFB: only when a colour was linearized, so every other stream's stats are unchanged.
+    if c.particle_colors_linearized > 0 {
+        pt_resources.push(("colors_linearized", c.particle_colors_linearized));
+    }
     let pt_any = pt_resources.iter().any(|(_, n)| *n != 0);
     v.dict(
         18 + (c.multimesh_commands_undrawn > 0) as usize
