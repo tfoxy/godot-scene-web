@@ -7,7 +7,7 @@
 #   bash experiments/render-stream/scripts/bench-live-scale.sh --extension EXT --receiver KIND
 #     [--window 1|2] [--protocol 8|9|10|11] [--bundle DIR] [--out DIR] [--frames N] [--binary PATH]
 #     [--calibration PATH] [--min-rate R] [--max-credit-rtt-ms MS] [--viewers N] [--perf]
-#     [-- NAME=value ...]
+#     [--rx-cmd CMD] [-- NAME=value ...]
 #
 # --viewers N (1..4, P3-SP) subscribes N receivers of KIND at once (GRC_LIVE_MAX_CONNECTIONS=N, one
 # page port each for a browser kind): their directories are <out>/rx1 .. rxN instead of <out>/rx,
@@ -22,7 +22,12 @@
 # Rust-core web export bundle), or null (P3-SP: lib/null-receiver.ts, a WebSocket client that decodes
 # nothing and acks every transaction on arrival, so the leg measures the host's own cost per viewer
 # with every viewer caught up and no receiver competing for the machine; at --protocol 11 it sends
-# the /11 hello offering live_coding, so the host codes as in the product, HC). The host runs P3-CAP's armed config (bench-capture-scale.sh, the
+# the /11 hello offering live_coding, so the host codes as in the product, HC), or host-only (MIR-1:
+# no receiver of the harness's; the host listens with the page origin allowed, and whatever
+# connects -- an external page, or `--rx-cmd CMD`, run with bash in the receiver's place with
+# RS_BENCH_WS_URL, RS_BENCH_HTTP_ORIGIN, RS_BENCH_PAGE_PORT, RS_BENCH_RX_DIR, RS_BENCH_PROTOCOL,
+# RS_BENCH_WINDOW and, under GRC_LIVE_AUTH=token, RS_BENCH_TOKEN_FILE exported; its exit status is
+# the receiver's -- is judged from the host's own tap only). The host runs P3-CAP's armed config (bench-capture-scale.sh, the
 # product hand-off environment) with GRC_LIVE_LISTEN, the page origin allowed and a live tap.
 # NAME=value words after `--` go to the host when they start with GRC_ or RS_SCALE_ (for example
 # GRC_RESOURCE_INLINE_MAX_BYTES=4096, the hand-off's mesh setting) and to the receiver when they
@@ -45,7 +50,7 @@ EXPERIMENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 FIXTURE="$EXPERIMENT_DIR/fixtures/capture-scale"
 
-EXTENSION="" OUT="" KIND="" WINDOW=2 PROTOCOL=8 BUNDLE="" FRAMES=1200
+EXTENSION="" OUT="" KIND="" WINDOW=2 PROTOCOL=8 BUNDLE="" FRAMES=1200 RX_CMD=""
 BINARY="$HOME/.cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"
 CALIBRATION="$EXPERIMENT_DIR/calibration/godot-4.5.1-stable-linux-release.json"
 MIN_RATE=15 MAX_RTT_MS=100 VIEWERS=1 PERF=0
@@ -66,17 +71,19 @@ while [ $# -gt 0 ]; do
 	--max-credit-rtt-ms) MAX_RTT_MS="$2" && shift 2 ;;
 	--viewers) VIEWERS="$2" && shift 2 ;;
 	--perf) PERF=1 && shift ;;
+	--rx-cmd) RX_CMD="$2" && shift 2 ;;
 	-h | --help) sed -n 2,31p "${BASH_SOURCE[0]}" && exit 0 ;;
 	--) shift && EXTRA=("$@") && break ;;
 	*) echo "bench-live-scale: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
 [ -f "$EXTENSION" ] || { echo "bench-live-scale: pass --extension /abs/path/render_stream_capture.gdextension" >&2; exit 2; }
-case "$KIND" in native | gsw | web | null) ;; *) echo "bench-live-scale: --receiver native|gsw|web|null" >&2 && exit 2 ;; esac
+case "$KIND" in native | gsw | web | null | host-only) ;; *) echo "bench-live-scale: --receiver native|gsw|web|null|host-only" >&2 && exit 2 ;; esac
+[ -z "$RX_CMD" ] || [ "$KIND" = host-only ] || { echo "bench-live-scale: --rx-cmd needs --receiver host-only" >&2; exit 2; }
 case "$WINDOW" in 1 | 2) ;; *) echo "bench-live-scale: --window 1|2" >&2 && exit 2 ;; esac
-case "$PROTOCOL" in 8 | 9 | 10 | 11) ;; *) echo "bench-live-scale: --protocol 8|9|10|11" >&2 && exit 2 ;; esac
+case "$PROTOCOL" in 8 | 9 | 10 | 11 | 12) ;; *) echo "bench-live-scale: --protocol 8|9|10|11|12" >&2 && exit 2 ;; esac
 case "$VIEWERS" in 1 | 2 | 3 | 4) ;; *) echo "bench-live-scale: --viewers 1..4" >&2 && exit 2 ;; esac
-case "$KIND" in native | null) ;; *) [ -d "$BUNDLE" ] || { echo "bench-live-scale: --receiver $KIND needs --bundle DIR" >&2; exit 2; } ;; esac
+case "$KIND" in native | null | host-only) ;; *) [ -d "$BUNDLE" ] || { echo "bench-live-scale: --receiver $KIND needs --bundle DIR" >&2; exit 2; } ;; esac
 [ -x "$BINARY" ] || { echo "bench-live-scale: no template at $BINARY" >&2; exit 2; }
 [ -f "$CALIBRATION" ] || { echo "bench-live-scale: no calibration at $CALIBRATION" >&2; exit 2; }
 EXTENSION="$(realpath "$EXTENSION")"
@@ -127,7 +134,7 @@ if [ -z "${RS_BENCH_LIVE_INSIDE:-}" ]; then
 	RS_BENCH_LIVE_INSIDE=1 bash "$SCRIPT_DIR/lib/quiet.sh" exclusive --label "bench-live-scale:$KIND-w$WINDOW-x$VIEWERS" -- \
 		bash "${BASH_SOURCE[0]}" --extension "$EXTENSION" --receiver "$KIND" --window "$WINDOW" --protocol "$PROTOCOL" \
 		${BUNDLE:+--bundle "$BUNDLE"} --out "$OUT" --frames "$FRAMES" --binary "$BINARY" --calibration "$CALIBRATION" \
-		--viewers "$VIEWERS" $([ "$PERF" = 1 ] && echo --perf) -- ${EXTRA[@]+"${EXTRA[@]}"}
+		--viewers "$VIEWERS" $([ "$PERF" = 1 ] && echo --perf) ${RX_CMD:+--rx-cmd "$RX_CMD"} -- ${EXTRA[@]+"${EXTRA[@]}"}
 	if [ "${RS_BENCH_KEEP:-0}" != 1 ]; then
 		for rx in "${RX_NAMES[@]}"; do
 			rm -rf "$OUT/$rx/cache" "$OUT/$rx/received.rs8" "$OUT/$rx/received.rs9" "$OUT/$rx/received.rs10" "$OUT/$rx/received.rs11"
@@ -181,6 +188,21 @@ run_receiver() {
 			--dir "$dir" --kind "$KIND" --bundle "$BUNDLE" --static-root "$OUT" --port "$page" \
 			--timeout-s "$((FRAMES / 20 + 120))") >"$dir/launcher.out" 2>&1
 		echo "$?" >"$dir/exit.txt"
+		;;
+	host-only)
+		# MIR-1: the receiver is not the harness's; --rx-cmd (if any) drives one, else the host runs
+		# alone until it quits and whatever connected is judged from its tap.
+		if [ -n "$RX_CMD" ]; then
+			local token_file=""
+			printf '%s\n' "${HOST_ENV[@]}" | grep -qx 'GRC_LIVE_AUTH=token' && token_file="$OUT/host/evidence/live-token"
+			(cd "$REPO_ROOT" && RS_BENCH_WS_URL="ws://127.0.0.1:$PORT/render-stream" RS_BENCH_HTTP_ORIGIN="http://127.0.0.1:$PORT" \
+				RS_BENCH_PAGE_PORT="$page" RS_BENCH_RX_DIR="$dir" RS_BENCH_PROTOCOL="$PROTOCOL" RS_BENCH_WINDOW="$WINDOW" \
+				RS_BENCH_TOKEN_FILE="$token_file" bash -c "$RX_CMD") >"$dir/launcher.out" 2>&1
+			echo "$?" >"$dir/exit.txt"
+		else
+			while kill -0 "$HOST_PID" 2>/dev/null; do sleep 1; done
+			echo host-only >"$dir/exit.txt"
+		fi
 		;;
 	null)
 		# P3-SP: lib/null-receiver.ts decodes nothing and acks every transaction on arrival.

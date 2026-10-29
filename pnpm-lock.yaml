@@ -216,6 +216,12 @@ importers:
         specifier: workspace:*
         version: link:../tscn-parser
 
+  packages/render-stream-client:
+    dependencies:
+      '@godot-scene-web/effects':
+        specifier: workspace:*
+        version: link:../effects
+
   packages/scene-graph:
     dependencies:
       '@godot-scene-web/core':

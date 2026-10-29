@@ -1,7 +1,7 @@
 // G7rf self-test: the GSW receiver's fold-during-resync-wait decision (web/gsw-receiver/fold.ts
 // foldedFullIndex). receiver.gd's twin is checked by receiver/tests/receiver_selftest.gd.
 
-import { foldedFullIndex } from "../../web/gsw-receiver/fold";
+import { foldedFullIndex } from "../../../../packages/render-stream-client/src/fold";
 
 let failures = 0;
 function check(name: string, got: number, want: number): void {

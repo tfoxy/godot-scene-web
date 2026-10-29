@@ -40,6 +40,7 @@ const allowed: Record<string, string[]> = {
   canvas: ["core", "effects", "canvas-effects", "hb-gpu"],
   vue: ["core", "scene-graph", "layout", "html"],
   "hb-gpu": [],
+  "render-stream-client": ["effects"],
 };
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

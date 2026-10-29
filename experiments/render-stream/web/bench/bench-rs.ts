@@ -39,7 +39,10 @@
 // RGB10_A2 target back (RGBA/UNSIGNED_BYTE) after the transaction of each listed host frame and
 // PUTs the raw bytes (`shot-<name>-f<frame>.rgba`, W×H×4, rows top-down) for the pace checks.
 
-import { type ProgramHost, resolvePrograms } from "../gsw-receiver/programs";
+import {
+  type ProgramHost,
+  resolvePrograms,
+} from "../../../../packages/render-stream-client/src/programs";
 
 interface BenchState {
   state: "running" | "done" | "error";

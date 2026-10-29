@@ -8,14 +8,13 @@
 // wasm against its name; a library read is not a fetch). A transpiler refusal is typed
 // `gsw-shader-transpile` with its message, a GL compile failure the same with GL's log, and missing
 // library code `shader-withheld`: each draws its items without their material, as the native
-// receiver draws a shaderless one. Shared by the receiver page and the bench page.
+// receiver draws a shaderless one. Shared by the client (client.ts), the harness receiver page
+// (experiments/render-stream/web/gsw-receiver) and the bench page (MIR-1 moved it here).
 
-// `@godot-scene-web/effects`' development entry (its source), by path: the experiment is not a
-// workspace package.
 import {
   transpileGodotItemShader,
   UnsupportedShaderError,
-} from "../../../../packages/effects/src/shaders";
+} from "@godot-scene-web/effects/shaders";
 
 /** The part of `rs-gsw-wasm`'s `GswRs` this module drives (web/gsw-rs/src/lib.rs). */
 export interface ProgramHost {

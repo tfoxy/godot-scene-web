@@ -17,7 +17,7 @@ import {
   type GodotGpuEmitterConfig,
   type GodotProcessMaterial,
   godotGpuApproximateFeatures,
-} from "../../../../packages/effects/src/particles";
+} from "@godot-scene-web/effects/particles";
 
 /** The wasm module's particles surface (`GswRs`). */
 export interface ParticlesHost {

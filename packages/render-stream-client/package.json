@@ -1,0 +1,29 @@
+{
+  "name": "@godot-scene-web/render-stream-client",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "description": "A lean live render-stream client: the GSW canvas receiver's product loop over the rs-gsw-wasm core.",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run --config vitest.config.ts packages/render-stream-client/test"
+  },
+  "dependencies": {
+    "@godot-scene-web/effects": "workspace:*"
+  }
+}

@@ -238,3 +238,84 @@ override semantics (local vs global, clip interaction) before the binary `/13`, 
   - It must pass the existing `update-rate` and `credit-rtt` checks.
 - **Remount.** Dispose and mount three times, with a CDP `HeapProfiler.collectGarbage` after each dispose. The renderer
   process RSS must return within 15% of its pre-mount level, and each new instance's heap must start at its baseline.
+
+## As built (MIR-1)
+
+`packages/render-stream-client` (`@godot-scene-web/render-stream-client`, `"private": true`, so
+`pnpm -r publish` and `validate-release-tag.ts` both skip it). Results and measurements:
+[results/p3/mir-1.md](../results/p3/mir-1.md).
+
+**Sharing with the harness.** The modules both need moved into the package, and the harness imports
+them from there by path, as it imports `effects`: `abi.ts` (from `common.ts`: `GswRs`,
+`GswRsModule`, `LiveCoding`, `ACCEPT_*`, `STAT_FIELDS`, `statsReader`; `common.ts` re-exports them),
+`fetcher.ts`, `hello.ts`, `fold.ts`, `particles.ts` and `programs.ts`. The package has its own lean
+loop (`loop.ts`); the harness keeps `LiveReceiver`, unchanged except for its imports and one seam:
+`LiveFetcher` takes an injected request function. The harness passes its old `fetch` call
+(`live.ts` `harnessRequest`: token, the `ignore-cache` sabotage's cache mode, the four kept
+headers), the client passes its transport's `fetchResource`. Rebuilding the harness on the
+package's loop would have put every gate 7 GSW leg's evidence at risk for no product gain; that
+stays the later item the design names.
+
+**API as built.** The design's, with these additions:
+- `RenderStreamCore` has `buildUrl?` (default `build.json` beside `wasmUrl`) and `expectedTree?`.
+- `RenderStreamStatus` `streaming` is reported once per connection with `firstFrame: false` (its
+  session) and once with `firstFrame: true` (its first drawn transaction).
+- `RenderStreamStats.applied` counts over every connection of the client; `creditRttMsP50` is the
+  median of the last 64 intervals from a submitted ack to the next transaction's arrival.
+- Exports: `createRenderStreamClient`, `validateEndpoint`, `RenderStreamEndpointError`,
+  `clientHello`, `CoreLoadError`, `RECONNECT_BACKOFF_MS`, `webSocketTransport`, and the types
+  (pinned by `test/export-surface.test.ts`).
+- `connect()` after `failed` or `ended` starts a fresh session. `setEndpoint` on an active client
+  reconnects at once; on an idle, failed or ended one it is kept for the next `connect()` (the
+  product's `unauthorized` refresh is `setEndpoint(fresh)` then `connect()`).
+- The hello's `receiver` is `gsw-render-stream-client` (a free string at the host).
+
+**Loading: a factory glue, not `?client=<n>`.** Measured in the pinned Chromium: importing the
+`--target web` glue as `glueUrl?client=<n>` keeps every instance. A page's module map never drops a
+module record, and each record's module-level `wasm` holds its instance. Five mounts of a 300 MB
+instance grew the renderer by +287 MiB each: 701, 988, 1274 and 1561 MiB after the dispose and GC
+of mounts 2 to 5.
+So `scripts/build-web.sh` wraps the glue's body in `export default function createGlue()`
+(`scripts/glue-factory.mjs`, which refuses any glue shape it does not know) and writes it as
+`rs_gsw_wasm_client.js`. The client imports that module once per page and calls the factory per
+client. Every client gets a fresh closure with its own instance, and the instance is collectable
+when the client drops it: the same five mounts went back to 126-128 MiB each time. The `.wasm` is
+fetched, checked against `build.json`'s `wasm_sha256`, and compiled once per page.
+
+**ABI handshake.** `build.json` (schema `render-stream-client-core/1`) holds:
+- `rs_core_build`: `sha=<HEAD 12>[-dirty]`, as the design says;
+- `rs_core_tree`: `scripts/core-tree.sh`, the SHA-256 (12 hex) of the git tree ids of the four Rust
+  inputs, plus the same dirty rule. HEAD changes with every commit; the tree changes only when the
+  wasm's sources do;
+- `wasm_sha256`, `wasm_bytes`, `wasm_bindgen`, `glue`, `wasm`.
+
+A consumer that knows which tree its aliased TS matches passes it as `core.expectedTree`; any other
+build is `core-load-failed` `stale core`. Independently, the glue must export every `GswRs` method
+the client calls (`abi.ts` `CLIENT_CORE_METHODS`). A wasm `abi_version()` export would have been a
+Rust change that every GSW leg reaches, for no more than the tree id gives.
+
+**Coding resync.** The package reuses GRH's path unchanged: `transport_skip()` at the coding failure
+(GTS), then `live_rebuild()`, whose fresh applier inherits the old one's GPU residency
+(`Applier::inherit_residency`). The +408 MB step this note listed as open was fixed there.
+
+**Dispose.** Stops rAF and the backoff timer, closes the transport (1000 `dispose`) after
+detaching its message handlers (the WebSocket's `onclose` drops every handler when it fires, so a
+socket the browser still holds keeps nothing reachable), aborts the GET in flight
+(`LiveFetcher.abort`; the harness's reconnect `cancel` still lets one complete), frees `LiveCoding`
+and `GswRs`, removes the canvas listeners, calls `loseContext()` and drops the instance.
+
+**Consuming it (MIR-2).**
+- Alias `@godot-scene-web/render-stream-client` to `packages/render-stream-client/src/index.ts`,
+  above the bare GSW aliases. It needs `@godot-scene-web/effects` (already aliased).
+- Build the core with
+  `GSW_RENDER_STREAM_CLIENT_OUT=<dir> packages/render-stream-client/scripts/build-web.sh` (or the
+  directory as its argument). It needs the cargo registry offline and `wasm-bindgen` 0.2.129.
+- Serve `rs_gsw_wasm_client.js`, `rs_gsw_wasm_bg.wasm` and `build.json` side by side. Pass
+  `{ glueUrl, wasmUrl, expectedTree }` as `core`, with `expectedTree` from
+  `packages/render-stream-client/scripts/core-tree.sh <gsw root>`, which is the staleness check.
+  Never import the glue through an alias or a bundler.
+
+**Live check.** `bench-live-scale.sh --receiver host-only` is the new host-only mode: no harness
+receiver, and the leg is judged from the host's tap. `--rx-cmd` runs a command in the receiver's
+place. `scripts/client-live-check.ts` is that command for MIR-1: `web/client-check/` mounts the
+package and nothing else.
