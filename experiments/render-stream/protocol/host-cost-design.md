@@ -367,6 +367,55 @@ A floor for a hooked call is then the mirror update and a dirty mark: about 0.1�
 combat makes about 1,000–1,500 hooked calls a frame (`fidelity/legs/a8-2` counts average 1,060 over
 the whole route), so the hooks' floor there is about 0.1–0.5 ms.
 
+### As built (HC6: the hook fast path; `results/p3/hc6.md`)
+
+Measured first (capture-scale, /11, churn, one viewer, `perf -e instructions -c 1000000`, every
+main-thread sample under a `hook_*` frame): about 1,460 hooked calls a frame cost 1.9 M
+instructions, 1,300 a call. Where they went was not what the table above assumed: the mirror's two
+lookups per call (`item_by_rid_`'s `std::unordered_map`, then `items_`'s `std::map`) were half of
+`canvas_item_set_transform`, `set_material`, `add_texture_rect` and `add_mesh`; building a
+`Command` and moving it twice was half of `add_rect`; and the hook log, its lines off, still built
+a `Line` (strings, a `std::string` op name, `clock_gettime`) for every mesh region and custom AABB
+call. The uncontended mutexes were 5 % of hook samples. HC6 took what the measurement pointed at:
+
+- **Direct entry pointers** (D5.5). The mirror's RID maps are `RidMap` (`rs_rid_map.h`): an
+  open-addressed flat table, key and value in one slot, Fibonacci hashing, backward-shift deletion,
+  never iterated. `item_by_rid_` and `mesh_by_rid_` hold the entry's node pointer beside its id
+  (`std::map` nodes are stable until erased), so `find_item`, `peek_item`, `find_mesh` and
+  `peek_mesh` make one probe and mark the entry they already hold. The pointer is written where
+  the node is emplaced (`create_item`, `rekey_subtree`, the three mesh creators); every erase
+  leaves the RID map first.
+- **Commands built in place.** `emplace_command` checks the item's command cap and returns a
+  default `Command` at the end of its list; `add_rect`, the three texture-rect ops,
+  `add_set_transform` and `add_clip_ignore` fill it there (nothing between the lookup and the push
+  has a side effect). `push_command` takes the command by rvalue reference, so the other ops move
+  it once.
+- **No line, no line work** (D5.1, finished). With the hook log's lines off,
+  `ResourceLog::mesh_surface_update_region` and `mesh_set_custom_aabb` update the registry exactly
+  as before and build nothing; `canvas_item_set_material`, which keeps no registry, is not called;
+  `tap_context()` reads the clock only for a line.
+- **Fewer locks, not one lock** (D5.4). `ResourceLog::active()` is an atomic read (the methods
+  re-check it under their mutex), and `Mirror::omits()` returns without the mirror's mutex unless an
+  omit-op sabotage is armed. That takes `set_material` from 4 lock pairs to 2, a mesh region update
+  from 7 to 5 and `mesh_set_custom_aabb` from 6 to 4. Merging the census's `g_mutex`, the texture
+  order lock and the mirror's and the log's mutexes into one would save at most the 9 % of hook
+  samples the mutexes now take, for a cross-module locking change; it was not made.
+- **The census stays, indexed** (D5.6). A `PodEntry` census log keeps an open-addressed index of
+  its entries by a hash of the key's bytes, so a call finds its identical entry without comparing
+  it to every kept one. The entries, their order, their counts and the drops are the linear
+  scan's. It matters more on a game than on the fixture: STS2 combat makes 281
+  `canvas_item_add_set_transform` and 121 msdf glyph calls a frame (`fidelity/legs/a8-2`), into
+  logs of 32 and 256 entries.
+- **No same-value early-outs were added** (D5.3). HC1 already returns from a same-material
+  `set_material`; elsewhere a same-value setter still moves the mirror's epoch (the live hub's
+  `coalesced` and pending counters read it) and marks its item, which costs one compare at the
+  snapshot (HC4a).
+
+Result: the hooked calls of a churn frame cost 1.28 M instructions instead of 1.90 (−33 %), 880 a
+call. What is left is mostly the first touch of the item or mesh the call writes (a cache miss the
+direct pointer cannot avoid), the census, and a mesh region's three passes over its bytes (the
+hook's copy, the mirror's compare and the mirror's copy).
+
 ## D6. No viewer, unused features
 
 - **No viewer, no snapshot.** A listener with no connection that has sent a hello, and no file

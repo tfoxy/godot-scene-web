@@ -586,7 +586,9 @@ class ResourceLog {
   void recompute_material_status(MaterialEntry *entry);
 
   mutable std::mutex mutex_;
-  bool active_ = false;
+  // HC6: written under mutex_, read without it by active() (a hook's gate, re-checked under the
+  // lock by every method).
+  std::atomic<bool> active_{false};
   std::uint64_t t0_ns_ = 0;
   std::uint64_t root_viewport_ = 0;
   std::uint64_t next_id_ = 1;

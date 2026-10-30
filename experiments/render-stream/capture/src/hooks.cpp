@@ -574,6 +574,23 @@ struct PodEntry {
   bool same_as(const PodEntry &other) const {
     return std::memcmp(&key, &other.key, sizeof(Key)) == 0;
   }
+  // HC6: a hash of the key's bytes (padding is zero-filled), for Log's index.
+  std::uint64_t hash() const {
+    unsigned char bytes[sizeof(Key)];
+    std::memcpy(bytes, &key, sizeof(Key));
+    std::uint64_t h = 0x9E3779B97F4A7C15ull ^ sizeof(Key);
+    std::size_t i = 0;
+    for (; i + 8 <= sizeof(Key); i += 8) {
+      std::uint64_t word;
+      std::memcpy(&word, bytes + i, 8);
+      h = (h ^ word) * 0xBF58476D1CE4E5B9ull;
+      h ^= h >> 31;
+    }
+    for (; i < sizeof(Key); ++i) {
+      h = (h ^ bytes[i]) * 0x94D049BB133111EBull;
+    }
+    return h ^ (h >> 29);
+  }
 };
 
 // Zero-fills a key in place (padding included) before its fields are set.
@@ -588,6 +605,11 @@ struct Log {
   std::vector<Entry> entries;
   uint64_t dropped = 0;
   size_t cap = kMaxEntries;  // distinct entries kept
+  // HC6: for a hashable entry (PodEntry), an open-addressed index of `entries` (slot = position
+  // + 1, 0 = empty; at least twice `cap` slots, never erased: entries only grow), so a call finds
+  // its identical entry, or learns there is none, without comparing it to every kept entry. The
+  // entries, their order and their counts are what the linear scan gives.
+  std::vector<uint32_t> index;
 };
 
 // The two texture-rect draws (full capture since calibrator 5) keep more
@@ -601,6 +623,37 @@ std::mutex g_mutex;
 template <typename Entry>
 void log_entry(Log<Entry> *log, Entry entry) {
   const uint64_t frame = current_frame();
+  if constexpr (requires { entry.hash(); }) {
+    const uint64_t h = entry.hash();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (log->index.empty()) {
+      size_t slots = 16;
+      while (slots < log->cap * 2) {
+        slots *= 2;
+      }
+      log->index.assign(slots, 0);
+    }
+    const size_t mask = log->index.size() - 1;
+    size_t i = static_cast<size_t>(h) & mask;
+    for (; log->index[i] != 0; i = (i + 1) & mask) {
+      Entry &existing = log->entries[log->index[i] - 1];
+      if (existing.same_as(entry)) {
+        ++existing.seen.calls;
+        existing.seen.last_frame = frame;
+        return;
+      }
+    }
+    if (log->entries.size() >= log->cap) {
+      ++log->dropped;
+      return;
+    }
+    entry.seen.calls = 1;
+    entry.seen.first_frame = frame;
+    entry.seen.last_frame = frame;
+    log->entries.push_back(std::move(entry));
+    log->index[i] = static_cast<uint32_t>(log->entries.size());
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_mutex);
   for (Entry &existing : log->entries) {
     if (existing.same_as(entry)) {
@@ -918,9 +971,9 @@ Log<PodEntry<ItemValueKey>> g_set_draw_indices;
 Log<PodEntry<ItemValueKey>> g_set_z_as_relatives;
 Log<PodEntry<ItemValueKey>> g_set_draw_behinds;
 // calibrator 5
-Log<PodEntry<TextureRectKey>> g_texture_rects{{}, 0, kMaxTextureRectEntries};
-Log<PodEntry<TextureRectRegionKey>> g_texture_rect_regions{{}, 0, kMaxTextureRectEntries};
-Log<PodEntry<MsdfRectKey>> g_msdf_rects{{}, 0, kMaxTextureRectEntries};
+Log<PodEntry<TextureRectKey>> g_texture_rects{{}, 0, kMaxTextureRectEntries, {}};
+Log<PodEntry<TextureRectRegionKey>> g_texture_rect_regions{{}, 0, kMaxTextureRectEntries, {}};
+Log<PodEntry<MsdfRectKey>> g_msdf_rects{{}, 0, kMaxTextureRectEntries, {}};
 Log<PodEntry<RidTripleKey>> g_placeholder_creates;
 Log<PodEntry<RidTripleKey>> g_texture_replaces;
 Log<PodEntry<ItemValueKey>> g_viewport_texture_filters;
@@ -1146,7 +1199,9 @@ uint64_t now_ns() {
 rs::TapContext tap_context() {
   rs::TapContext ctx;
   ctx.frame = current_frame();
-  ctx.t_ns = now_ns();
+  // HC6: the time is a line field only; with the hook log's lines off nothing reads it. (A context
+  // taken before the log starts formats t_us 0 either way: its time precedes t0.)
+  ctx.t_ns = rs::resource_log().wants_lines() ? now_ns() : 0;
   ctx.main_thread = std::this_thread::get_id() == g_main_thread;
   return ctx;
 }
@@ -2484,7 +2539,8 @@ void hook_set_material(void *self, RID item, RID material) {
   }
   // Logged for the material census (gate5_5-design.md Q3d) alongside calibrator 8's own taps;
   // since G55d the mirror keeps it as the item's `material` field (D9).
-  if (resources().active()) {
+  // HC6: the log keeps no registry for this call, so with its lines off there is nothing to do.
+  if (resources().active() && resources().wants_lines()) {
     resources().canvas_item_set_material(tap_context(), item.id, material.id);
   }
   original<FnSetMaterial>(kSetMaterial)(self, item, material);
@@ -2685,7 +2741,7 @@ void handle_mesh_region_update(MeshBuffer which, RID mesh, int32_t surface, int3
   if (streaming()) {
     // G5e: the mirror takes the hook's verdict (D8) and the re-encoded whole surface.
     mirror().mesh_surface_update_region(mesh.id, mesh_region_op_name(which), surface,
-                                        std::string(outcome) == "applied", new_write,
+                                        std::strcmp(outcome, "applied") == 0, new_write,
                                         current_frame());
   }
   resources().mesh_surface_update_region(tap_context(), mesh.id, mesh_buffer_name(which), surface,
