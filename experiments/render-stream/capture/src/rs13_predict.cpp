@@ -2,7 +2,9 @@
 // same name in protocol/golden-13/make_golden.py; read the two side by side.
 #include "rs13_predict.h"
 
+#include <algorithm>
 #include <charconv>
+#include <cstdio>
 
 #include <cstdlib>
 #include <cstring>
@@ -468,6 +470,119 @@ MetaParse parse_meta(const std::uint8_t *data, std::size_t size, Meta *meta, boo
   return r.at_end() ? MetaParse::Ok : MetaParse::Json;
 }
 
+// W13p: the JSON meta as the typed PredictMeta (the reader, and encode() of a bare record).
+MetaNum num_of(const JValue &v) {
+  MetaNum n;
+  switch (v.kind) {
+  case JValue::Kind::Null: break;
+  case JValue::Kind::Bool:
+    n.kind = MetaNum::Kind::Int;
+    n.i = v.b ? 1 : 0;
+    break;
+  case JValue::Kind::Num:
+    if (v.is_int) {
+      n.kind = MetaNum::Kind::Int;
+      n.i = v.i;
+    } else {
+      n.kind = MetaNum::Kind::Float;
+      n.d = v.d;
+    }
+    break;
+  default: n.kind = MetaNum::Kind::Other; break;
+  }
+  return n;
+}
+
+MetaList list_of(const JValue &v) {
+  return v.kind == JValue::Kind::Arr    ? MetaList::Array
+         : v.kind == JValue::Kind::Null ? MetaList::Missing
+                                        : MetaList::Other;
+}
+
+bool is_ok(const JValue &status) {
+  return status.kind == JValue::Kind::Str && status.s == "ok";
+}
+
+void to_typed(const Meta &meta, PredictMeta *out) {
+  out->clear();
+  out->transaction = meta.has_type && meta.type == "transaction";
+  out->full = meta.full;
+  out->meshes_list = list_of(meta.meshes);
+  for (const JValue &e : meta.meshes.a) {
+    MetaMesh m;
+    m.object = e.kind == JValue::Kind::Obj;
+    if (m.object) {
+      m.id = num_of(at(e, "id"));
+      m.status_ok = is_ok(at(e, "status"));
+      m.f = num_of(at(e, "f"));
+      m.u8 = num_of(at(e, "u8"));
+      const JValue &surfaces = at(e, "surfaces");
+      m.surfaces_array = surfaces.kind == JValue::Kind::Arr;
+      m.first_surface = out->surfaces.size();
+      for (const JValue &s : surfaces.a) {
+        MetaSurface ms;
+        ms.object = s.kind == JValue::Kind::Obj;
+        ms.hash_null = at(s, "hash").is_null();
+        if (ms.object) {
+          const JValue &prim = at(s, "primitive");
+          ms.primitive_string = prim.kind == JValue::Kind::Str;
+          ms.primitive = ms.primitive_string ? prim.s : std::string();
+          ms.payload_bytes = num_of(at(s, "payload_bytes"));
+          ms.format = num_of(at(s, "format"));
+          ms.vertex_count = num_of(at(s, "vertex_count"));
+          ms.index_count = num_of(at(s, "index_count"));
+        } else {
+          ms.primitive_string = false;
+        }
+        out->surfaces.push_back(std::move(ms));
+      }
+      m.surface_count = out->surfaces.size() - m.first_surface;
+    } else {
+      m.surfaces_array = false;
+      m.first_surface = out->surfaces.size();
+    }
+    out->meshes.push_back(m);
+  }
+  if (meta.removed_meshes.kind == JValue::Kind::Arr) {
+    for (const JValue &v : meta.removed_meshes.a) {
+      out->removed_meshes.push_back(num_of(v));
+    }
+  }
+  out->multimeshes_list = list_of(meta.multimeshes);
+  for (const JValue &e : meta.multimeshes.a) {
+    MetaMultimesh m;
+    m.object = e.kind == JValue::Kind::Obj;
+    if (m.object) {
+      m.id = num_of(at(e, "id"));
+      m.status_ok = is_ok(at(e, "status"));
+      m.colors = at(e, "colors").truthy();
+      m.custom = at(e, "custom").truthy();
+      m.aabb_f = num_of(at(e, "aabb_f"));
+      m.buffer_f = num_of(at(e, "buffer_f"));
+      m.instances = num_of(at(e, "instances"));
+    }
+    out->multimeshes.push_back(m);
+  }
+  if (meta.removed_multimeshes.kind == JValue::Kind::Arr) {
+    for (const JValue &v : meta.removed_multimeshes.a) {
+      out->removed_multimeshes.push_back(num_of(v));
+    }
+  }
+  if (meta.blocks.kind == JValue::Kind::Arr) {
+    for (const JValue &b : meta.blocks.a) {
+      const JValue &name = at(b, "name");
+      BlockName n = BlockName::Other;
+      if (name.kind == JValue::Kind::Str) {
+        n = name.s == "mesh_u8"    ? BlockName::MeshU8
+            : name.s == "mesh_f32" ? BlockName::MeshF32
+            : name.s == "mm_f32"   ? BlockName::MmF32
+                                   : BlockName::Other;
+      }
+      out->blocks.push_back(n);
+    }
+  }
+}
+
 // --------------------------------------------------------------------------- record framing
 
 struct Span {
@@ -537,20 +652,6 @@ void make_record(const std::string &meta, const std::vector<Span> &blocks,
 constexpr std::string_view kBlocksMark = ",\"blocks\":[";
 constexpr std::string_view kCheckKey = ",\"predict_check\":\"";
 
-// make_golden.py with_check(): the key right before the last `,"blocks":[`.
-bool with_check(std::string_view meta, const std::string &hex16, std::string *out) {
-  const std::size_t i = meta.rfind(kBlocksMark);
-  if (i == std::string_view::npos) {
-    return false;
-  }
-  out->assign(meta.substr(0, i));
-  *out += kCheckKey;
-  *out += hex16;
-  *out += '"';
-  out->append(meta.substr(i));
-  return true;
-}
-
 // make_golden.py without_check(): the plain meta and the check's 16 characters, or false when
 // the key is not exactly where /13 puts it.
 bool without_check(std::string_view meta, std::string *plain, std::string *check) {
@@ -585,44 +686,87 @@ std::uint32_t zz32(std::uint32_t d) {
 }
 std::uint32_t unzz32(std::uint32_t u) { return (u >> 1) ^ (0u - (u & 1u)); }
 
-// make_golden.py predict_words() / unpredict_words(), in place over n bytes (a multiple of 4).
-void code_words(std::uint8_t *buf, std::size_t n, const std::uint8_t *base,
-                const std::uint8_t *prev, bool inverse) {
-  if (base == nullptr) {
-    return;  // raw: the word itself
+// make_golden.py's residual for one word at `off` of a unit of order Order (0 raw, 1 first, 2
+// second): `base`/`prev` are H1's and H2's bytes of the same unit (unused below their order).
+#if defined(__GNUC__)
+#define GRC_RS13_INLINE inline __attribute__((always_inline))
+#else
+#define GRC_RS13_INLINE inline
+#endif
+
+template <int Order>
+GRC_RS13_INLINE std::uint32_t residual(std::uint32_t v, const std::uint8_t *base, const std::uint8_t *prev,
+                       std::size_t off) {
+  if constexpr (Order == 0) {
+    return v;
+  } else {
+    const std::uint32_t b = ordered(word_at(base + off));
+    const std::uint32_t pred = Order == 1 ? b : 2u * b - ordered(word_at(prev + off));
+    return zz32(ordered(v) - pred);
   }
-  for (std::size_t k = 0; k + 4 <= n; k += 4) {
-    const std::uint32_t b = ordered(word_at(base + k));
-    const std::uint32_t pred = prev == nullptr ? b : 2u * b - ordered(word_at(prev + k));
-    const std::uint32_t v = word_at(buf + k);
-    set_word(buf + k, inverse ? unordered(unzz32(v) + pred) : zz32(ordered(v) - pred));
+}
+template <int Order>
+GRC_RS13_INLINE std::uint32_t unresidual(std::uint32_t r, const std::uint8_t *base, const std::uint8_t *prev,
+                         std::size_t off) {
+  if constexpr (Order == 0) {
+    return r;
+  } else {
+    const std::uint32_t b = ordered(word_at(base + off));
+    const std::uint32_t pred = Order == 1 ? b : 2u * b - ordered(word_at(prev + off));
+    return unordered(unzz32(r) + pred);
   }
 }
 
-void xor_bytes(std::uint8_t *buf, std::size_t n, const std::uint8_t *base) {
+// make_golden.py unpredict_words(), in place over n bytes (a multiple of 4).
+void unpredict_words(std::uint8_t *buf, std::size_t n, const std::uint8_t *base,
+                     const std::uint8_t *prev) {
   if (base == nullptr) {
     return;
   }
-  for (std::size_t k = 0; k < n; ++k) {
-    buf[k] ^= base[k];
+  if (prev == nullptr) {
+    for (std::size_t k = 0; k + 4 <= n; k += 4) {
+      set_word(buf + k, unresidual<1>(word_at(buf + k), base, prev, k));
+    }
+  } else {
+    for (std::size_t k = 0; k + 4 <= n; k += 4) {
+      set_word(buf + k, unresidual<2>(word_at(buf + k), base, prev, k));
+    }
+  }
+}
+
+// make_golden.py predict_words() over n bytes of `in`, written transposed: word w (counted from
+// the block's first word) into the block's planes `out` + j * nw + w.
+template <int Order>
+void predict_words_t(const std::uint8_t *in, std::size_t n, const std::uint8_t *base,
+                     const std::uint8_t *prev, std::uint8_t *out, std::size_t nw, std::size_t w) {
+  for (std::size_t k = 0; k + 4 <= n; k += 4, ++w) {
+    const std::uint32_t r = residual<Order>(word_at(in + k), base, prev, k);
+    out[w] = static_cast<std::uint8_t>(r);
+    out[nw + w] = static_cast<std::uint8_t>(r >> 8);
+    out[2 * nw + w] = static_cast<std::uint8_t>(r >> 16);
+    out[3 * nw + w] = static_cast<std::uint8_t>(r >> 24);
   }
 }
 
 // Byte-plane transpose of n words: byte j of word k goes to j * n + k.
 void transpose4(const std::uint8_t *in, std::size_t size, std::uint8_t *out) {
   const std::size_t n = size / 4;
+  std::uint8_t *o0 = out, *o1 = out + n, *o2 = out + 2 * n, *o3 = out + 3 * n;
   for (std::size_t k = 0; k < n; ++k) {
-    for (std::size_t j = 0; j < 4; ++j) {
-      out[j * n + k] = in[4 * k + j];
-    }
+    o0[k] = in[4 * k];
+    o1[k] = in[4 * k + 1];
+    o2[k] = in[4 * k + 2];
+    o3[k] = in[4 * k + 3];
   }
 }
 void untranspose4(const std::uint8_t *in, std::size_t size, std::uint8_t *out) {
   const std::size_t n = size / 4;
+  const std::uint8_t *i0 = in, *i1 = in + n, *i2 = in + 2 * n, *i3 = in + 3 * n;
   for (std::size_t k = 0; k < n; ++k) {
-    for (std::size_t j = 0; j < 4; ++j) {
-      out[4 * k + j] = in[j * n + k];
-    }
+    out[4 * k] = i0[k];
+    out[4 * k + 1] = i1[k];
+    out[4 * k + 2] = i2[k];
+    out[4 * k + 3] = i3[k];
   }
 }
 
@@ -636,17 +780,16 @@ struct BodyParts {
   std::size_t total = 0;
 };
 
-bool body_parts(const JValue &s, SurfaceShape *shape, BodyParts *out) {
+bool body_parts(const MetaSurface &s, SurfaceShape *shape, BodyParts *out) {
   std::int64_t n = 0, fmt = 0, ic = 0;
-  if (!at(s, "vertex_count").as_int(&n) || !at(s, "format").as_int(&fmt) ||
-      !at(s, "index_count").as_int(&ic) || n < 0 || ic < 0 || n > (1 << 28) || ic > (1 << 28)) {
+  if (!s.object || !s.vertex_count.as_int(&n) || !s.format.as_int(&fmt) ||
+      !s.index_count.as_int(&ic) || n < 0 || ic < 0 || n > (1 << 28) || ic > (1 << 28)) {
     return false;
   }
-  const JValue &prim = at(s, "primitive");
-  if (prim.kind != JValue::Kind::Str) {
+  if (!s.primitive_string) {
     return false;
   }
-  shape->primitive = prim.s;
+  shape->primitive = s.primitive;
   shape->format = fmt;
   shape->vertex_count = n;
   shape->index_count = ic;
@@ -668,46 +811,41 @@ bool body_parts(const JValue &s, SurfaceShape *shape, BodyParts *out) {
   return true;
 }
 
-using Parts = std::array<std::vector<std::uint8_t>, 6>;
-
-// make_golden.py split_body(): colour and UV de-interleaved from the attribute section.
-Parts split_body(const std::uint8_t *body, const BodyParts &bp) {
-  Parts out;
-  std::size_t p = 0;
-  out[0].assign(body, body + bp.size[0]);
-  p += bp.size[0];
-  out[1].assign(body + p, body + p + bp.size[1]);
-  p += bp.size[1];
+// Visits one surface body in stream order (make_golden.py split_body()): `word(i, off)` for each
+// word of the word streams (0 geometry, 1 positions, 3 UVs, de-interleaved from the attribute
+// section) and `run(i, off, len)` for each byte run of the byte streams (2 colours, 4 skin, 5
+// indices), `off` the byte offset in the body.
+template <class Word, class Run>
+void for_each_part(const BodyParts &bp, Word &&word, Run &&run) {
+  for (std::size_t k = 0; k < 10; ++k) {
+    word(std::size_t{0}, 4 * k);
+  }
+  const std::size_t n = static_cast<std::size_t>(bp.n);
+  for (std::size_t k = 0; k < 2 * n; ++k) {
+    word(std::size_t{1}, 40 + 4 * k);
+  }
   const std::size_t col = static_cast<std::size_t>(bp.col);
   const std::size_t uv = static_cast<std::size_t>(bp.uv);
   const std::size_t stride = col + uv;
-  out[2].reserve(bp.size[2]);
-  out[3].reserve(bp.size[3]);
-  for (std::int64_t k = 0; k < bp.n; ++k) {
-    const std::uint8_t *v = body + p + static_cast<std::size_t>(k) * stride;
-    out[2].insert(out[2].end(), v, v + col);
-    out[3].insert(out[3].end(), v + col, v + stride);
+  const std::size_t attr = 40 + 8 * n;
+  if (col != 0) {
+    for (std::size_t v = 0; v < n; ++v) {
+      run(std::size_t{2}, attr + v * stride, col);
+    }
   }
-  p += stride * static_cast<std::size_t>(bp.n);
-  out[4].assign(body + p, body + p + bp.size[4]);
-  p += bp.size[4];
-  out[5].assign(body + p, body + p + bp.size[5]);
-  return out;
-}
-
-// make_golden.py join_body().
-void join_body(const Parts &parts, const BodyParts &bp, std::vector<std::uint8_t> *out) {
-  out->insert(out->end(), parts[0].begin(), parts[0].end());
-  out->insert(out->end(), parts[1].begin(), parts[1].end());
-  const std::size_t col = static_cast<std::size_t>(bp.col);
-  const std::size_t uv = static_cast<std::size_t>(bp.uv);
-  for (std::int64_t k = 0; k < bp.n; ++k) {
-    const std::size_t kk = static_cast<std::size_t>(k);
-    out->insert(out->end(), parts[2].begin() + kk * col, parts[2].begin() + (kk + 1) * col);
-    out->insert(out->end(), parts[3].begin() + kk * uv, parts[3].begin() + (kk + 1) * uv);
+  if (uv != 0) {
+    for (std::size_t v = 0; v < n; ++v) {
+      word(std::size_t{3}, attr + v * stride + col);
+      word(std::size_t{3}, attr + v * stride + col + 4);
+    }
   }
-  out->insert(out->end(), parts[4].begin(), parts[4].end());
-  out->insert(out->end(), parts[5].begin(), parts[5].end());
+  const std::size_t tail = attr + n * stride;
+  if (bp.size[4] != 0) {
+    run(std::size_t{4}, tail, bp.size[4]);
+  }
+  if (bp.size[5] != 0) {
+    run(std::size_t{5}, tail + bp.size[4], bp.size[5]);
+  }
 }
 
 constexpr bool is_word_stream(std::size_t i) { return i == 0 || i == 1 || i == 3; }
@@ -716,76 +854,85 @@ constexpr bool is_word_stream(std::size_t i) { return i == 0 || i == 1 || i == 3
 
 struct SurfaceLayout {
   BodyParts parts;
+  SurfaceShape shape;
   std::size_t offset = 0;
 };
 struct EntryLayout {
   std::int64_t id = 0;
-  std::vector<SurfaceShape> shape;
+  std::size_t first = 0;  // into the surface layouts
+  std::size_t count = 0;
+};
+struct U8Layout {
+  std::vector<EntryLayout> entries;
   std::vector<SurfaceLayout> surfaces;
+  std::size_t used = 0;  // surface layouts in use (the vector keeps its strings' storage)
+  std::array<std::size_t, 6> totals{};
 };
 
-bool array_or_missing(const JValue &v) {
-  return v.kind == JValue::Kind::Arr || v.kind == JValue::Kind::Null;
-}
-
 // make_golden.py u8_layout(): the carried bodies, or false when mesh_u8's offset rule fails.
-bool u8_layout(const Meta &meta, std::size_t u8_len, std::vector<EntryLayout> *out) {
-  out->clear();
-  if (!array_or_missing(meta.meshes)) {
+bool u8_layout(const PredictMeta &meta, std::size_t u8_len, U8Layout *out) {
+  out->entries.clear();
+  out->used = 0;
+  out->totals = {};
+  if (meta.meshes_list == MetaList::Other) {
     return false;
   }
   std::int64_t run = 0;
-  for (const JValue &e : meta.meshes.a) {
-    if (e.kind != JValue::Kind::Obj) {
+  for (const MetaMesh &e : meta.meshes) {
+    if (!e.object) {
       return false;
     }
-    const JValue &u8 = at(e, "u8");
-    if (u8.is_null()) {
+    if (e.u8.is_null()) {
       continue;
     }
-    if (!u8.equals_int(run)) {
+    if (!e.u8.equals_int(run)) {
       return false;
     }
     EntryLayout entry;
-    const JValue &surfaces = at(e, "surfaces");
-    if (!at(e, "id").as_int(&entry.id) || surfaces.kind != JValue::Kind::Arr) {
+    if (!e.id.as_int(&entry.id) || !e.surfaces_array) {
       return false;
     }
-    for (const JValue &s : surfaces.a) {
-      SurfaceLayout sl;
-      SurfaceShape shape;
-      if (s.kind != JValue::Kind::Obj || !body_parts(s, &shape, &sl.parts) ||
-          !at(s, "payload_bytes").equals_int(static_cast<std::int64_t>(sl.parts.total))) {
+    entry.first = out->used;
+    for (std::size_t k = 0; k < e.surface_count; ++k) {
+      const MetaSurface &s = meta.surfaces[e.first_surface + k];
+      if (out->used == out->surfaces.size()) {
+        out->surfaces.emplace_back();
+      }
+      SurfaceLayout &sl = out->surfaces[out->used];
+      if (!body_parts(s, &sl.shape, &sl.parts) ||
+          !s.payload_bytes.equals_int(static_cast<std::int64_t>(sl.parts.total))) {
         return false;
       }
+      ++out->used;
       sl.offset = static_cast<std::size_t>(run);
       run += static_cast<std::int64_t>(sl.parts.total);
-      entry.shape.push_back(shape);
-      entry.surfaces.push_back(sl);
+      for (std::size_t i = 0; i < 6; ++i) {
+        out->totals[i] += sl.parts.size[i];
+      }
     }
-    out->push_back(std::move(entry));
+    entry.count = out->used - entry.first;
+    out->entries.push_back(entry);
   }
   return run == static_cast<std::int64_t>(u8_len);
 }
 
 // make_golden.py f32_layout(): (mesh id, float offset) of the AABB units.
-bool f32_layout(const Meta &meta, std::size_t n_floats,
+bool f32_layout(const PredictMeta &meta, std::size_t n_floats,
                 std::vector<std::pair<std::int64_t, std::size_t>> *out) {
   out->clear();
-  if (!array_or_missing(meta.meshes)) {
+  if (meta.meshes_list == MetaList::Other) {
     return false;
   }
   std::int64_t run = 0;
-  for (const JValue &e : meta.meshes.a) {
-    if (e.kind != JValue::Kind::Obj) {
+  for (const MetaMesh &e : meta.meshes) {
+    if (!e.object) {
       return false;
     }
-    const JValue &f = at(e, "f");
-    if (f.is_null()) {
+    if (e.f.is_null()) {
       continue;
     }
     std::int64_t id = 0;
-    if (!f.equals_int(run) || !at(e, "id").as_int(&id)) {
+    if (!e.f.equals_int(run) || !e.id.as_int(&id)) {
       return false;
     }
     out->emplace_back(id, static_cast<std::size_t>(run));
@@ -799,34 +946,31 @@ struct MmLayout {
   std::size_t offset = 0;
 };
 
-std::int64_t mm_stride(const JValue &e) {
-  return 8 + 4 * (at(e, "colors").truthy() ? 1 : 0) + 4 * (at(e, "custom").truthy() ? 1 : 0);
+std::int64_t mm_stride(const MetaMultimesh &e) {
+  return 8 + 4 * (e.colors ? 1 : 0) + 4 * (e.custom ? 1 : 0);
 }
 
 // make_golden.py mm_layout(): the buffer units.
-bool mm_layout(const Meta &meta, std::size_t n_floats, std::vector<MmLayout> *out) {
+bool mm_layout(const PredictMeta &meta, std::size_t n_floats, std::vector<MmLayout> *out) {
   out->clear();
-  if (!array_or_missing(meta.multimeshes)) {
+  if (meta.multimeshes_list == MetaList::Other) {
     return false;
   }
   std::int64_t run = 0;
-  for (const JValue &e : meta.multimeshes.a) {
-    if (e.kind != JValue::Kind::Obj) {
+  for (const MetaMultimesh &e : meta.multimeshes) {
+    if (!e.object) {
       return false;
     }
-    const JValue &aabb = at(e, "aabb_f");
-    if (!aabb.is_null()) {
-      if (!aabb.equals_int(run)) {
+    if (!e.aabb_f.is_null()) {
+      if (!e.aabb_f.equals_int(run)) {
         return false;
       }
       run += 6;
     }
-    const JValue &buf = at(e, "buffer_f");
-    if (!buf.is_null()) {
+    if (!e.buffer_f.is_null()) {
       MmLayout l;
-      if (!buf.equals_int(run) || !at(e, "id").as_int(&l.id) ||
-          !at(e, "instances").as_int(&l.instances) || l.instances < 0 ||
-          l.instances > (1 << 26)) {
+      if (!e.buffer_f.equals_int(run) || !e.id.as_int(&l.id) ||
+          !e.instances.as_int(&l.instances) || l.instances < 0 || l.instances > (1 << 26)) {
         return false;
       }
       l.stride = mm_stride(e);
@@ -838,15 +982,12 @@ bool mm_layout(const Meta &meta, std::size_t n_floats, std::vector<MmLayout> *ou
   return run == static_cast<std::int64_t>(n_floats);
 }
 
-bool is_dynamic(const JValue &e) {
-  const JValue &status = at(e, "status");
-  const JValue &surfaces = at(e, "surfaces");
-  if (status.kind != JValue::Kind::Str || status.s != "ok" || !surfaces.truthy() ||
-      surfaces.kind != JValue::Kind::Arr) {
+bool is_dynamic(const PredictMeta &meta, const MetaMesh &e) {
+  if (!e.status_ok || !e.surfaces_array || e.surface_count == 0) {
     return false;
   }
-  for (const JValue &s : surfaces.a) {
-    if (!at(s, "hash").is_null()) {
+  for (std::size_t k = 0; k < e.surface_count; ++k) {
+    if (!meta.surfaces[e.first_surface + k].hash_null) {
       return false;
     }
   }
@@ -860,135 +1001,51 @@ struct Named {
   int u8 = -1, f32 = -1, mm = -1;
 };
 
-Named named_blocks(const Meta &meta, std::size_t block_count) {
+Named named_blocks(const PredictMeta &meta, std::size_t block_count) {
   Named out;
-  if (meta.blocks.kind != JValue::Kind::Arr) {
-    return out;
-  }
-  for (std::size_t k = 0; k < meta.blocks.a.size() && k < block_count; ++k) {
-    const JValue &name = at(meta.blocks.a[k], "name");
-    if (name.kind != JValue::Kind::Str) {
-      continue;
-    }
+  for (std::size_t k = 0; k < meta.blocks.size() && k < block_count; ++k) {
     const int idx = static_cast<int>(k);
-    if (name.s == "mesh_u8") {
-      out.u8 = idx;
-    } else if (name.s == "mesh_f32") {
-      out.f32 = idx;
-    } else if (name.s == "mm_f32") {
-      out.mm = idx;
+    switch (meta.blocks[k]) {
+    case BlockName::MeshU8: out.u8 = idx; break;
+    case BlockName::MeshF32: out.f32 = idx; break;
+    case BlockName::MmF32: out.mm = idx; break;
+    case BlockName::Other: break;
     }
   }
   return out;
+}
+
+BlockName name_at(const PredictMeta &meta, std::size_t k) {
+  return k < meta.blocks.size() ? meta.blocks[k] : BlockName::Other;
 }
 
 Span block_or_empty(const std::vector<Span> &blocks, int idx) {
   return idx < 0 ? Span{} : blocks[static_cast<std::size_t>(idx)];
 }
 
-// make_golden.py advance(): R(T) from `r` (R(T-1), or empty for a full) and T's /12 blocks.
-void advance(PredictState *r, const Meta &meta, const Span &u8, const Span &mf, const Span &mm) {
-  std::map<std::int64_t, MeshBodies> bodies;
-  std::vector<EntryLayout> layout;
-  if (u8_layout(meta, u8.n, &layout)) {
-    for (const EntryLayout &e : layout) {
-      MeshBodies mb;
-      mb.shape = e.shape;
-      for (const SurfaceLayout &s : e.surfaces) {
-        mb.surfaces.push_back(std::make_shared<const std::vector<std::uint8_t>>(
-            u8.p + s.offset, u8.p + s.offset + s.parts.total));
-      }
-      bodies[e.id] = std::move(mb);
+bool same_shape(const MeshBodies &b, const U8Layout &l, const EntryLayout &e) {
+  if (b.shape.size() != e.count) {
+    return false;
+  }
+  for (std::size_t k = 0; k < e.count; ++k) {
+    if (b.shape[k] != l.surfaces[e.first + k].shape) {
+      return false;
     }
   }
-  if (meta.meshes.kind == JValue::Kind::Arr) {
-    for (const JValue &e : meta.meshes.a) {
-      std::int64_t mid = 0;
-      if (e.kind != JValue::Kind::Obj || !at(e, "id").as_int(&mid)) {
-        continue;
-      }
-      if (is_dynamic(e)) {
-        if (!at(e, "u8").is_null()) {
-          const auto it = bodies.find(mid);
-          if (it != bodies.end()) {
-            r->body[mid] = it->second;
-          } else {
-            r->body.erase(mid);
-          }
-        }
-      } else {
-        r->body.erase(mid);
-      }
-      std::int64_t f = 0;
-      if (at(e, "f").as_int(&f) && f >= 0 && static_cast<std::size_t>(4 * f + 24) <= mf.n) {
-        std::array<std::uint8_t, 24> a{};
-        std::memcpy(a.data(), mf.p + 4 * f, 24);
-        r->aabb[mid] = a;
-      } else {
-        r->aabb.erase(mid);
-      }
-    }
-  }
-  if (meta.removed_meshes.kind == JValue::Kind::Arr) {
-    for (const JValue &v : meta.removed_meshes.a) {
-      std::int64_t mid = 0;
-      if (v.as_int(&mid)) {
-        r->body.erase(mid);
-        r->aabb.erase(mid);
-      }
-    }
-  }
-  if (meta.multimeshes.kind == JValue::Kind::Arr) {
-    for (const JValue &e : meta.multimeshes.a) {
-      std::int64_t mmid = 0;
-      if (e.kind != JValue::Kind::Obj || !at(e, "id").as_int(&mmid)) {
-        continue;
-      }
-      const JValue &status = at(e, "status");
-      if (status.kind != JValue::Kind::Str || status.s != "ok") {
-        r->mm.erase(mmid);
-        continue;
-      }
-      const JValue &buf = at(e, "buffer_f");
-      if (buf.is_null()) {
-        continue;
-      }
-      std::int64_t o = 0, instances = 0;
-      const std::int64_t stride = mm_stride(e);
-      if (buf.as_int(&o) && at(e, "instances").as_int(&instances) && o >= 0 && instances >= 0 &&
-          static_cast<std::size_t>(4 * o + 4 * instances * stride) <= mm.n) {
-        MultimeshBuffer b;
-        b.instances = instances;
-        b.stride = stride;
-        b.bytes = std::make_shared<const std::vector<std::uint8_t>>(
-            mm.p + 4 * o, mm.p + 4 * o + 4 * instances * stride);
-        r->mm[mmid] = std::move(b);
-      } else {
-        r->mm.erase(mmid);
-      }
-    }
-  }
-  if (meta.removed_multimeshes.kind == JValue::Kind::Arr) {
-    for (const JValue &v : meta.removed_multimeshes.a) {
-      std::int64_t mmid = 0;
-      if (v.as_int(&mmid)) {
-        r->mm.erase(mmid);
-      }
-    }
-  }
+  return true;
 }
 
-// make_golden.py _body_refs() / _aabb_refs() / _mm_refs(): (base, prev) bytes or nullptr.
+// make_golden.py _body_refs() / _aabb_refs() / _mm_refs(): (base, prev) or nullptr.
 std::pair<const MeshBodies *, const MeshBodies *> body_refs(const PredictState &h1,
                                                             const PredictState &h2,
-                                                            std::int64_t mid,
-                                                            const std::vector<SurfaceShape> &shape) {
-  const auto b = h1.body.find(mid);
-  if (b == h1.body.end() || b->second.shape != shape) {
+                                                            const U8Layout &l,
+                                                            const EntryLayout &e) {
+  const auto b = h1.body.find(e.id);
+  if (b == h1.body.end() || !same_shape(b->second, l, e)) {
     return {nullptr, nullptr};
   }
-  const auto p = h2.body.find(mid);
-  if (p == h2.body.end() || p->second.shape != shape) {
+  const auto p = h2.body.find(e.id);
+  if (p == h2.body.end() || !same_shape(p->second, l, e)) {
     return {&b->second, nullptr};
   }
   return {&b->second, &p->second};
@@ -1023,178 +1080,254 @@ int order_of(const void *base, const void *prev) {
   return base == nullptr ? 0 : prev == nullptr ? 1 : 2;
 }
 
-// make_golden.py code_blocks(): predict (/12 -> /13) or un-predict (/13 -> /12) the three
-// blocks. A block whose layout fails, or that is absent, keeps its input bytes (out empty).
-struct Coded {
-  std::vector<std::uint8_t> u8, f32, mm;
-  bool has_u8 = false, has_f32 = false, has_mm = false;
-};
+// One surface of mesh_u8, either way, straight between the body (`body`: read when predicting,
+// written when un-predicting) and the six streams (`streams`, the coded block: stream i starts at
+// base[i]; a word stream of nw[i] words is byte-plane transposed). `cur` is each stream's running
+// position (words for a word stream, bytes for a byte stream).
+template <int Order, bool Inverse>
+void code_surface(const BodyParts &bp, const std::uint8_t *in_body, std::uint8_t *out_body,
+                  const std::uint8_t *in_streams, std::uint8_t *out_streams,
+                  const std::uint8_t *base, const std::uint8_t *prev,
+                  const std::array<std::size_t, 6> &start, const std::array<std::size_t, 6> &nw,
+                  std::array<std::size_t, 6> &cur) {
+  for_each_part(
+      bp,
+      [&](std::size_t i, std::size_t off) {
+        const std::size_t w = cur[i]++;
+        const std::size_t n = nw[i];
+        if constexpr (Inverse) {
+          const std::uint8_t *q = in_streams + start[i] + w;
+          const std::uint32_t r = static_cast<std::uint32_t>(q[0]) |
+                                  (static_cast<std::uint32_t>(q[n]) << 8) |
+                                  (static_cast<std::uint32_t>(q[2 * n]) << 16) |
+                                  (static_cast<std::uint32_t>(q[3 * n]) << 24);
+          set_word(out_body + off, unresidual<Order>(r, base, prev, off));
+        } else {
+          const std::uint32_t r = residual<Order>(word_at(in_body + off), base, prev, off);
+          std::uint8_t *q = out_streams + start[i] + w;
+          q[0] = static_cast<std::uint8_t>(r);
+          q[n] = static_cast<std::uint8_t>(r >> 8);
+          q[2 * n] = static_cast<std::uint8_t>(r >> 16);
+          q[3 * n] = static_cast<std::uint8_t>(r >> 24);
+        }
+      },
+      [&](std::size_t i, std::size_t off, std::size_t len) {
+        const std::size_t at_ = start[i] + cur[i];
+        cur[i] += len;
+        const std::uint8_t *src = Inverse ? in_streams + at_ : in_body + off;
+        std::uint8_t *dst = Inverse ? out_body + off : out_streams + at_;
+        if constexpr (Order == 0) {
+          std::memcpy(dst, src, len);
+        } else {
+          const std::uint8_t *b = base + off;
+          for (std::size_t t = 0; t < len; ++t) {
+            dst[t] = static_cast<std::uint8_t>(src[t] ^ b[t]);
+          }
+        }
+      });
+}
 
-void code_blocks(const Meta &meta, const Span &u8, bool u8_present, const Span &mf,
-                 bool mf_present, const Span &mm, bool mm_present, const PredictState &h1,
-                 const PredictState &h2, bool inverse, Coded *out, std::vector<Unit> *trace) {
-  // mesh_u8
-  std::vector<EntryLayout> layout;
-  if (u8_present && u8_layout(meta, u8.n, &layout)) {
-    out->has_u8 = true;
-    std::array<std::size_t, 6> totals{};
-    for (const EntryLayout &e : layout) {
-      for (const SurfaceLayout &s : e.surfaces) {
-        for (std::size_t i = 0; i < 6; ++i) {
-          totals[i] += s.parts.size[i];
-        }
+template <bool Inverse>
+void code_surface_any(int order, const BodyParts &bp, const std::uint8_t *in_body,
+                      std::uint8_t *out_body, const std::uint8_t *in_streams,
+                      std::uint8_t *out_streams, const std::uint8_t *base,
+                      const std::uint8_t *prev, const std::array<std::size_t, 6> &start,
+                      const std::array<std::size_t, 6> &nw, std::array<std::size_t, 6> &cur) {
+  switch (order) {
+  case 0:
+    code_surface<0, Inverse>(bp, in_body, out_body, in_streams, out_streams, base, prev, start,
+                             nw, cur);
+    break;
+  case 1:
+    code_surface<1, Inverse>(bp, in_body, out_body, in_streams, out_streams, base, prev, start,
+                             nw, cur);
+    break;
+  default:
+    code_surface<2, Inverse>(bp, in_body, out_body, in_streams, out_streams, base, prev, start,
+                             nw, cur);
+    break;
+  }
+}
+
+// make_golden.py code_blocks() for mesh_u8: `in` (u8_len bytes) to `out` (the same length), the
+// /12 bodies to the coded streams or back.
+template <bool Inverse>
+void code_u8(const U8Layout &layout, const std::uint8_t *in, std::uint8_t *out,
+             const PredictState &h1, const PredictState &h2, std::vector<Unit> *trace) {
+  std::array<std::size_t, 6> start{}, nw{}, cur{};
+  std::size_t acc = 0;
+  for (std::size_t i = 0; i < 6; ++i) {
+    start[i] = acc;
+    nw[i] = layout.totals[i] / 4;
+    acc += layout.totals[i];
+  }
+  for (const EntryLayout &e : layout.entries) {
+    const auto refs = body_refs(h1, h2, layout, e);
+    const int order = order_of(refs.first, refs.second);
+    for (std::size_t k = 0; k < e.count; ++k) {
+      const SurfaceLayout &s = layout.surfaces[e.first + k];
+      const std::uint8_t *base = refs.first != nullptr ? refs.first->surfaces[k]->data() : nullptr;
+      const std::uint8_t *prev =
+          refs.second != nullptr ? refs.second->surfaces[k]->data() : nullptr;
+      if constexpr (Inverse) {
+        code_surface_any<true>(order, s.parts, nullptr, out + s.offset, in, nullptr, base, prev,
+                               start, nw, cur);
+      } else {
+        code_surface_any<false>(order, s.parts, in + s.offset, nullptr, nullptr, out, base, prev,
+                                start, nw, cur);
       }
     }
-    if (!inverse) {
-      Parts streams;
-      for (std::size_t i = 0; i < 6; ++i) {
-        streams[i].reserve(totals[i]);
-      }
-      for (const EntryLayout &e : layout) {
-        const auto refs = body_refs(h1, h2, e.id, e.shape);
-        for (std::size_t k = 0; k < e.surfaces.size(); ++k) {
-          const SurfaceLayout &s = e.surfaces[k];
-          Parts cur = split_body(u8.p + s.offset, s.parts);
-          Parts bp, pp;
-          if (refs.first != nullptr) {
-            bp = split_body(refs.first->surfaces[k]->data(), s.parts);
-          }
-          if (refs.second != nullptr) {
-            pp = split_body(refs.second->surfaces[k]->data(), s.parts);
-          }
-          for (std::size_t i = 0; i < 6; ++i) {
-            const std::uint8_t *b = refs.first != nullptr ? bp[i].data() : nullptr;
-            if (is_word_stream(i)) {
-              code_words(cur[i].data(), cur[i].size(), b,
-                         refs.second != nullptr ? pp[i].data() : nullptr, false);
-            } else {
-              xor_bytes(cur[i].data(), cur[i].size(), b);
-            }
-            streams[i].insert(streams[i].end(), cur[i].begin(), cur[i].end());
-          }
-        }
-        if (trace != nullptr && !e.surfaces.empty()) {
-          trace->push_back(Unit{UnitBlock::MeshU8, e.id, order_of(refs.first, refs.second)});
-        }
-      }
-      out->u8.resize(u8.n);
-      std::size_t p = 0;
-      for (std::size_t i = 0; i < 6; ++i) {
-        if (is_word_stream(i)) {
-          transpose4(streams[i].data(), streams[i].size(), out->u8.data() + p);
-        } else if (!streams[i].empty()) {
-          std::memcpy(out->u8.data() + p, streams[i].data(), streams[i].size());
-        }
-        p += streams[i].size();
-      }
-    } else {
-      Parts streams;
-      std::size_t p = 0;
-      for (std::size_t i = 0; i < 6; ++i) {
-        streams[i].resize(totals[i]);
-        if (is_word_stream(i)) {
-          untranspose4(u8.p + p, totals[i], streams[i].data());
-        } else if (totals[i] != 0) {
-          std::memcpy(streams[i].data(), u8.p + p, totals[i]);
-        }
-        p += totals[i];
-      }
-      std::array<std::size_t, 6> at_{};
-      out->u8.reserve(u8.n);
-      for (const EntryLayout &e : layout) {
-        const auto refs = body_refs(h1, h2, e.id, e.shape);
-        for (std::size_t k = 0; k < e.surfaces.size(); ++k) {
-          const SurfaceLayout &s = e.surfaces[k];
-          Parts bp, pp, parts;
-          if (refs.first != nullptr) {
-            bp = split_body(refs.first->surfaces[k]->data(), s.parts);
-          }
-          if (refs.second != nullptr) {
-            pp = split_body(refs.second->surfaces[k]->data(), s.parts);
-          }
-          for (std::size_t i = 0; i < 6; ++i) {
-            const std::size_t n = s.parts.size[i];
-            parts[i].assign(streams[i].begin() + static_cast<long>(at_[i]),
-                            streams[i].begin() + static_cast<long>(at_[i] + n));
-            at_[i] += n;
-            const std::uint8_t *b = refs.first != nullptr ? bp[i].data() : nullptr;
-            if (is_word_stream(i)) {
-              code_words(parts[i].data(), n, b, refs.second != nullptr ? pp[i].data() : nullptr,
-                         true);
-            } else {
-              xor_bytes(parts[i].data(), n, b);
-            }
-          }
-          join_body(parts, s.parts, &out->u8);
-        }
-        if (trace != nullptr && !e.surfaces.empty()) {
-          trace->push_back(Unit{UnitBlock::MeshU8, e.id, order_of(refs.first, refs.second)});
-        }
-      }
+    if (trace != nullptr && e.count != 0) {
+      trace->push_back(Unit{UnitBlock::MeshU8, e.id, order});
     }
   }
-  // mesh_f32
-  std::vector<std::pair<std::int64_t, std::size_t>> fl;
-  if (mf_present && mf.n % 4 == 0 && f32_layout(meta, mf.n / 4, &fl)) {
-    out->has_f32 = true;
-    std::vector<std::uint8_t> buf(mf.n);
-    if (inverse) {
-      untranspose4(mf.p, mf.n, buf.data());
-    } else if (mf.n != 0) {
-      std::memcpy(buf.data(), mf.p, mf.n);
-    }
-    for (const auto &[mid, off] : fl) {
-      const auto refs = aabb_refs(h1, h2, mid);
-      code_words(buf.data() + 4 * off, 24, refs.first, refs.second, inverse);
-      if (trace != nullptr) {
-        trace->push_back(Unit{UnitBlock::MeshF32, mid, order_of(refs.first, refs.second)});
-      }
-    }
-    if (inverse) {
-      out->f32 = std::move(buf);
-    } else {
-      out->f32.resize(mf.n);
-      transpose4(buf.data(), buf.size(), out->f32.data());
-    }
+}
+
+// mesh_f32 / mm_f32 predicted: the raw words transposed, then each unit's residual words.
+void predict_unit_t(const std::uint8_t *in, std::size_t bytes, const std::uint8_t *base,
+                    const std::uint8_t *prev, std::uint8_t *out, std::size_t nw, std::size_t w) {
+  if (base == nullptr) {
+    return;  // raw: already transposed
   }
-  // mm_f32
-  std::vector<MmLayout> ml;
-  if (mm_present && mm.n % 4 == 0 && mm_layout(meta, mm.n / 4, &ml)) {
-    out->has_mm = true;
-    std::vector<std::uint8_t> buf(mm.n);
-    if (inverse) {
-      untranspose4(mm.p, mm.n, buf.data());
-    } else if (mm.n != 0) {
-      std::memcpy(buf.data(), mm.p, mm.n);
-    }
-    for (const MmLayout &l : ml) {
-      const auto refs = mm_refs(h1, h2, l);
-      code_words(buf.data() + 4 * l.offset, static_cast<std::size_t>(4 * l.instances * l.stride),
-                 refs.first, refs.second, inverse);
-      if (trace != nullptr) {
-        trace->push_back(Unit{UnitBlock::MmF32, l.id, order_of(refs.first, refs.second)});
-      }
-    }
-    if (inverse) {
-      out->mm = std::move(buf);
-    } else {
-      out->mm.resize(mm.n);
-      transpose4(buf.data(), buf.size(), out->mm.data());
-    }
+  if (prev == nullptr) {
+    predict_words_t<1>(in, bytes, base, prev, out, nw, w);
+  } else {
+    predict_words_t<2>(in, bytes, base, prev, out, nw, w);
   }
 }
 
 // make_golden.py check_hex() over the /12 blocks: mesh_f32 || mesh_u8 || mm_f32.
-std::uint64_t check_of(const Span &mf, const Span &u8, const Span &mm) {
-  std::vector<std::uint8_t> all;
-  all.reserve(mf.n + u8.n + mm.n);
-  all.insert(all.end(), mf.p, mf.p + mf.n);
-  all.insert(all.end(), u8.p, u8.p + u8.n);
-  all.insert(all.end(), mm.p, mm.p + mm.n);
-  return xxh64(all.data(), all.size());
+std::uint64_t check_of(XXH64_state_t *state, const Span &mf, const Span &u8, const Span &mm) {
+  XXH64_reset(state, 0);
+  for (const Span *s : {&mf, &u8, &mm}) {
+    if (s->n != 0) {
+      XXH64_update(state, s->p, s->n);
+    }
+  }
+  return static_cast<std::uint64_t>(XXH64_digest(state));
+}
+
+// W13p: byte vectors of a dropped state no one else holds, reused for the next state's units.
+using BytesPool = std::vector<std::shared_ptr<std::vector<std::uint8_t>>>;
+constexpr std::size_t kPoolMax = 8192;
+
+SharedBytes take_bytes(BytesPool *pool, const std::uint8_t *p, std::size_t n) {
+  if (!pool->empty()) {
+    std::shared_ptr<std::vector<std::uint8_t>> v = std::move(pool->back());
+    pool->pop_back();
+    v->assign(p, p + n);
+    return v;
+  }
+  return std::make_shared<const std::vector<std::uint8_t>>(p, p + n);
+}
+
+void give_bytes(BytesPool *pool, SharedBytes *bytes) {
+  if (*bytes != nullptr && bytes->use_count() == 1 && pool->size() < kPoolMax) {
+    pool->push_back(std::const_pointer_cast<std::vector<std::uint8_t>>(std::move(*bytes)));
+  }
+}
+
+// make_golden.py advance(): R(T) from `r` (R(T-1), or empty for a full) and T's /12 blocks.
+// `layout` is mesh_u8's (nullptr when its offset rule failed or the block is absent).
+void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, const Span &u8,
+             const Span &mf, const Span &mm, BytesPool *pool) {
+  // The layout's entries are the meshes entries with a non-null `u8`, in order; json.loads keeps
+  // the last of duplicate ids (bodies[e.id] = ...), so look for a later one only when ids repeat.
+  bool ascending = true;
+  if (layout != nullptr) {
+    for (std::size_t k = 1; k < layout->entries.size(); ++k) {
+      ascending = ascending && layout->entries[k - 1].id < layout->entries[k].id;
+    }
+  }
+  std::size_t cursor = 0;
+  for (const MetaMesh &e : meta.meshes) {
+    const EntryLayout *carried = nullptr;
+    if (layout != nullptr && e.object && !e.u8.is_null()) {
+      carried = &layout->entries[cursor++];
+      if (!ascending) {
+        for (std::size_t k = layout->entries.size(); k-- > 0;) {
+          if (layout->entries[k].id == carried->id) {
+            carried = &layout->entries[k];
+            break;
+          }
+        }
+      }
+    }
+    std::int64_t mid = 0;
+    if (!e.object || !e.id.as_int(&mid)) {
+      continue;
+    }
+    if (is_dynamic(meta, e)) {
+      if (!e.u8.is_null()) {
+        if (carried != nullptr) {
+          MeshBodies &mb = r->body[mid];  // reuses the node's vectors (R(T-1)'s copy)
+          mb.shape.resize(carried->count);
+          mb.surfaces.resize(carried->count);
+          for (std::size_t k = 0; k < carried->count; ++k) {
+            const SurfaceLayout &s = layout->surfaces[carried->first + k];
+            mb.shape[k] = s.shape;
+            mb.surfaces[k] = take_bytes(pool, u8.p + s.offset, s.parts.total);
+          }
+        } else {
+          r->body.erase(mid);
+        }
+      }
+    } else {
+      r->body.erase(mid);
+    }
+    std::int64_t f = 0;
+    if (e.f.as_int(&f) && f >= 0 && static_cast<std::size_t>(4 * f + 24) <= mf.n) {
+      std::array<std::uint8_t, 24> a{};
+      std::memcpy(a.data(), mf.p + 4 * f, 24);
+      r->aabb[mid] = a;
+    } else {
+      r->aabb.erase(mid);
+    }
+  }
+  for (const MetaNum &v : meta.removed_meshes) {
+    std::int64_t mid = 0;
+    if (v.as_int(&mid)) {
+      r->body.erase(mid);
+      r->aabb.erase(mid);
+    }
+  }
+  for (const MetaMultimesh &e : meta.multimeshes) {
+    std::int64_t mmid = 0;
+    if (!e.object || !e.id.as_int(&mmid)) {
+      continue;
+    }
+    if (!e.status_ok) {
+      r->mm.erase(mmid);
+      continue;
+    }
+    if (e.buffer_f.is_null()) {
+      continue;
+    }
+    std::int64_t o = 0, instances = 0;
+    const std::int64_t stride = mm_stride(e);
+    if (e.buffer_f.as_int(&o) && e.instances.as_int(&instances) && o >= 0 && instances >= 0 &&
+        static_cast<std::size_t>(4 * o + 4 * instances * stride) <= mm.n) {
+      MultimeshBuffer b;
+      b.instances = instances;
+      b.stride = stride;
+      b.bytes = take_bytes(pool, mm.p + 4 * o,
+                           static_cast<std::size_t>(4 * instances * stride));
+      r->mm[mmid] = std::move(b);
+    } else {
+      r->mm.erase(mmid);
+    }
+  }
+  for (const MetaNum &v : meta.removed_multimeshes) {
+    std::int64_t mmid = 0;
+    if (v.as_int(&mmid)) {
+      r->mm.erase(mmid);
+    }
+  }
 }
 
 Span span_of(const std::vector<std::uint8_t> &v) { return Span{v.data(), v.size()}; }
+
+bool verify_meta_flag = false;
 
 }  // namespace
 
@@ -1233,9 +1366,161 @@ const char *to_wire(Status status) {
   return "ok";
 }
 
+
+// --------------------------------------------------------------------------- PredictMeta
+
+void PredictMeta::clear() {
+  transaction = false;
+  full = false;
+  meshes_list = MetaList::Missing;
+  multimeshes_list = MetaList::Missing;
+  meshes.clear();
+  surfaces.clear();
+  removed_meshes.clear();
+  multimeshes.clear();
+  removed_multimeshes.clear();
+  blocks.clear();
+}
+
+bool PredictMeta::operator==(const PredictMeta &o) const {
+  return transaction == o.transaction && full == o.full && meshes_list == o.meshes_list &&
+         multimeshes_list == o.multimeshes_list && meshes == o.meshes && surfaces == o.surfaces &&
+         removed_meshes == o.removed_meshes && multimeshes == o.multimeshes &&
+         removed_multimeshes == o.removed_multimeshes && blocks == o.blocks;
+}
+
+void predict_meta(const rs2::Transaction &t, PredictMeta *out) {
+  out->clear();
+  out->transaction = true;
+  out->full = t.encoding == rs2::Encoding::Full;
+  // encode_transaction() at /11 and later: `meshes` and `removed_meshes` always; mesh_f32 and
+  // mesh_u8 running offsets over the entries (append_mesh_entry()).
+  out->meshes_list = MetaList::Array;
+  std::int64_t f_run = 0;
+  std::int64_t u8_run = 0;
+  for (const rs2::MeshEntry &mesh : t.meshes) {
+    MetaMesh m;
+    m.status_ok = mesh.status == rs2::MeshStatus::Ok;
+    m.id = MetaNum::of(static_cast<std::int64_t>(mesh.id));
+    const bool dynamic = mesh.dynamic && m.status_ok;
+    const bool held =
+        std::binary_search(t.mesh_bodies_held.begin(), t.mesh_bodies_held.end(), mesh.id);
+    if (mesh.has_aabb) {
+      m.f = MetaNum::of(f_run);
+      f_run += static_cast<std::int64_t>(mesh.custom_aabb.size());
+    }
+    if (dynamic && !held) {
+      m.u8 = MetaNum::of(u8_run);
+      for (const rs2::MeshSurface &s : mesh.surfaces) {
+        if (s.body != nullptr) {
+          u8_run += static_cast<std::int64_t>(s.body->size());
+        }
+      }
+    }
+    m.first_surface = out->surfaces.size();
+    m.surface_count = mesh.surfaces.size();
+    for (const rs2::MeshSurface &s : mesh.surfaces) {
+      MetaSurface ms;
+      ms.hash_null = dynamic;
+      ms.primitive = rs2::to_wire(s.primitive);
+      ms.payload_bytes = MetaNum::of(static_cast<std::int64_t>(
+          dynamic && s.body != nullptr ? s.body->size() : s.payload_bytes));
+      ms.format = MetaNum::of(s.format);
+      ms.vertex_count = MetaNum::of(s.vertex_count);
+      ms.index_count = MetaNum::of(s.index_count);
+      out->surfaces.push_back(std::move(ms));
+    }
+    out->meshes.push_back(m);
+  }
+  for (std::uint32_t id : t.removed_meshes) {
+    out->removed_meshes.push_back(MetaNum::of(id));
+  }
+  // `multimeshes` and `removed_multimeshes` only when non-empty; mm_f32 runs over the entries:
+  // the custom AABB unless freed, then the buffer when it travels.
+  if (!t.multimeshes.empty()) {
+    out->multimeshes_list = MetaList::Array;
+    std::int64_t run = 0;
+    for (const rs2::MultimeshEntry &mm : t.multimeshes) {
+      MetaMultimesh m;
+      m.status_ok = mm.status == rs2::MultimeshStatus::Ok;
+      m.id = MetaNum::of(static_cast<std::int64_t>(mm.id));
+      m.colors = mm.colors;
+      m.custom = mm.custom;
+      m.instances = MetaNum::of(static_cast<std::int64_t>(mm.instances));
+      if (mm.status != rs2::MultimeshStatus::Freed) {
+        m.aabb_f = MetaNum::of(run);
+        run += static_cast<std::int64_t>(mm.custom_aabb.size());
+      }
+      const bool held = m.status_ok && std::binary_search(t.multimesh_buffers_held.begin(),
+                                                          t.multimesh_buffers_held.end(), mm.id);
+      if (m.status_ok && !held) {
+        m.buffer_f = MetaNum::of(run);
+        if (mm.buffer != nullptr) {
+          run += static_cast<std::int64_t>(mm.buffer->size());
+        }
+      }
+      out->multimeshes.push_back(m);
+    }
+  }
+  for (std::uint32_t id : t.removed_multimeshes) {
+    out->removed_multimeshes.push_back(MetaNum::of(id));
+  }
+  // The /11 and /12 descriptors: item_f32, canvas_f32, cmd_f32, cmd_i32, mesh_f32, param_f64,
+  // backbuffer_f32, mesh_u8, mm_f32 (then pt_f32 when present, a name the predictor ignores).
+  out->blocks.assign(9, BlockName::Other);
+  out->blocks[4] = BlockName::MeshF32;
+  out->blocks[7] = BlockName::MeshU8;
+  out->blocks[8] = BlockName::MmF32;
+}
+
+void set_verify_meta(bool on) { verify_meta_flag = on; }
+
+// --------------------------------------------------------------------------- the predictor
+
+struct Predictor::Scratch {
+  Scratch() : xxh(XXH64_createState()) {}
+  ~Scratch() { XXH64_freeState(xxh); }
+  Scratch(const Scratch &) = delete;
+  Scratch &operator=(const Scratch &) = delete;
+
+  XXH64_state_t *xxh;
+  std::vector<Span> blocks;
+  PredictMeta meta;    // the reader's (and a bare record's) typed meta
+  PredictMeta verify;  // set_verify_meta(): the JSON's
+  U8Layout u8;
+  bool u8_ok = false;
+  std::vector<std::pair<std::int64_t, std::size_t>> f32;
+  std::vector<MmLayout> mm;
+  std::vector<std::uint8_t> dec_u8, dec_f32, dec_mm;  // the reader's reconstructed blocks
+  std::vector<Span> rebuilt;
+  BytesPool pool;
+};
+
 std::shared_ptr<const PredictState> Predictor::empty_state() {
   static const std::shared_ptr<const PredictState> kEmpty = std::make_shared<PredictState>();
   return kEmpty;
+}
+
+Predictor::Predictor() = default;
+Predictor::~Predictor() = default;
+Predictor::Predictor(const Predictor &other)
+    : predict_stale(other.predict_stale), no_reset(other.no_reset), h1_(other.h1_),
+      h2_(other.h2_) {}
+Predictor &Predictor::operator=(const Predictor &other) {
+  predict_stale = other.predict_stale;
+  no_reset = other.no_reset;
+  h1_ = other.h1_;
+  h2_ = other.h2_;
+  return *this;
+}
+Predictor::Predictor(Predictor &&other) noexcept = default;
+Predictor &Predictor::operator=(Predictor &&other) noexcept = default;
+
+Predictor::Scratch &Predictor::scratch() {
+  if (scratch_ == nullptr) {
+    scratch_ = std::make_unique<Scratch>();
+  }
+  return *scratch_;
 }
 
 void Predictor::reset() {
@@ -1243,110 +1528,359 @@ void Predictor::reset() {
   h2_ = empty_state();
 }
 
-Status Predictor::encode(const std::uint8_t *record12, std::size_t size,
-                         std::vector<std::uint8_t> *out, std::vector<Unit> *trace) {
-  return code(record12, size, false, out, trace);
-}
-
-Status Predictor::decode(const std::uint8_t *record13, std::size_t size,
-                         std::vector<std::uint8_t> *out, std::vector<Unit> *trace) {
-  return code(record13, size, true, out, trace);
-}
-
-Status Predictor::code(const std::uint8_t *record, std::size_t size, bool inverse,
-                       std::vector<std::uint8_t> *out, std::vector<Unit> *trace) {
-  Span meta_span;
-  std::vector<Span> blocks;
-  if (!parse_record(record, size, &meta_span, &blocks)) {
-    return Status::Framing;
+// W13p: R(T)'s storage, R(T-1)'s contents (nothing for a full). The state that drops out of the
+// history (H2) is reused when this predictor is its only holder: its map nodes take R(T-1)'s
+// copy, and its bytes no one else shares go to the pool for the units T carries.
+std::shared_ptr<PredictState> Predictor::next_state(bool full) {
+  const PredictState *empty = empty_state().get();
+  if (h2_.get() != empty && h2_.use_count() == 1) {
+    std::shared_ptr<PredictState> next = std::const_pointer_cast<PredictState>(std::move(h2_));
+    h2_ = empty_state();
+    BytesPool &pool = scratch().pool;
+    for (auto &[id, mb] : next->body) {
+      for (SharedBytes &b : mb.surfaces) {
+        give_bytes(&pool, &b);
+      }
+    }
+    for (auto &[id, buf] : next->mm) {
+      give_bytes(&pool, &buf.bytes);
+    }
+    if (full) {
+      next->body.clear();
+      next->aabb.clear();
+      next->mm.clear();
+    } else {
+      *next = *h1_;
+    }
+    return next;
   }
+  return std::make_shared<PredictState>(full ? PredictState() : *h1_);
+}
+
+namespace {
+
+// Parses a record's meta JSON into the typed meta, with the record's own status.
+Status typed_meta(const Span &meta_span, bool trusted, PredictMeta *out) {
   Meta meta;
-  const MetaParse parsed = parse_meta(meta_span.p, meta_span.n, &meta, !inverse);
+  const MetaParse parsed = parse_meta(meta_span.p, meta_span.n, &meta, trusted);
   if (parsed == MetaParse::Json) {
     return Status::MetaJson;
   }
   if (parsed == MetaParse::NotObject) {
     return Status::MetaSchema;
   }
-  if (!meta.has_type || meta.type != "transaction") {
+  to_typed(meta, out);
+  return out->transaction ? Status::Ok : Status::NotTransaction;
+}
+
+}  // namespace
+
+Status record_meta(const std::uint8_t *record, std::size_t size, PredictMeta *out) {
+  Span meta_span;
+  std::vector<Span> blocks;
+  if (!parse_record(record, size, &meta_span, &blocks)) {
+    return Status::Framing;
+  }
+  return typed_meta(meta_span, false, out);
+}
+
+Status Predictor::encode(const std::uint8_t *record12, std::size_t size,
+                         std::vector<std::uint8_t> *out, std::vector<Unit> *trace) {
+  Scratch &sc = scratch();
+  Span meta_span;
+  if (!parse_record(record12, size, &meta_span, &sc.blocks)) {
+    return Status::Framing;
+  }
+  const Status st = typed_meta(meta_span, true, &sc.meta);
+  if (st != Status::Ok) {
+    return st;
+  }
+  return encode_typed(sc.meta, record12, size, out, trace);
+}
+
+Status Predictor::encode(const PredictMeta &meta, const std::uint8_t *record12, std::size_t size,
+                         std::vector<std::uint8_t> *out, std::vector<Unit> *trace) {
+  Scratch &sc = scratch();
+  Span meta_span;
+  if (!parse_record(record12, size, &meta_span, &sc.blocks)) {
+    return Status::Framing;
+  }
+  if (verify_meta_flag) {
+    const Status st = typed_meta(meta_span, false, &sc.verify);
+    if (st != Status::Ok || !(sc.verify == meta)) {
+      std::fprintf(stderr, "rs13: predict_meta() disagrees with the record's meta JSON\n");
+      std::abort();
+    }
+  }
+  if (!meta.transaction) {
     return Status::NotTransaction;
   }
-  const std::string_view meta_text(reinterpret_cast<const char *>(meta_span.p), meta_span.n);
-  std::string plain;
-  std::string check;
-  if (inverse) {
-    if (!without_check(meta_text, &plain, &check)) {
-      return Status::MetaSchema;
-    }
-    for (char c : check) {
-      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-        return Status::MetaSchema;
-      }
-    }
-  } else if (meta_text.rfind(kBlocksMark) == std::string_view::npos) {
+  return encode_typed(meta, record12, size, out, trace);
+}
+
+Status Predictor::encode(const rs2::Transaction &transaction,
+                         const std::vector<std::uint8_t> &record12, std::vector<std::uint8_t> *out,
+                         std::vector<Unit> *trace) {
+  Scratch &sc = scratch();
+  predict_meta(transaction, &sc.meta);
+  PredictMeta meta = std::move(sc.meta);  // encode() reuses sc.meta for nothing else
+  const Status st = encode(meta, record12.data(), record12.size(), out, trace);
+  sc.meta = std::move(meta);
+  return st;
+}
+
+// The writer: sc.blocks holds the record's blocks (parse_record()).
+Status Predictor::encode_typed(const PredictMeta &meta, const std::uint8_t *record,
+                               std::size_t /*size*/, std::vector<std::uint8_t> *out,
+                               std::vector<Unit> *trace) {
+  Scratch &sc = *scratch_;
+  const std::string_view meta_text(reinterpret_cast<const char *>(record + 8), u32_at(record + 4));
+  const std::size_t mark = meta_text.rfind(kBlocksMark);
+  if (mark == std::string_view::npos) {
     return Status::MetaSchema;
   }
-
-  // History::refs(): a full predicts nothing (unless no-predict-reset at the reader);
-  // predict-stale (writer) predicts every patch from H2, first order.
-  const bool full = meta.full && !(inverse && no_reset);
+  // History::refs(): a full predicts nothing; predict-stale predicts every patch from H2, first
+  // order.
+  const bool full = meta.full;
   const PredictState &empty = *empty_state();
   const PredictState *h1 = h1_.get();
   const PredictState *h2 = h2_.get();
   if (full) {
     h1 = &empty;
     h2 = &empty;
-  } else if (!inverse && predict_stale) {
+  } else if (predict_stale) {
     h1 = h2_.get();
     h2 = &empty;
   }
-
+  const std::vector<Span> &blocks = sc.blocks;
   const Named named = named_blocks(meta, blocks.size());
   const Span u8 = block_or_empty(blocks, named.u8);
   const Span mf = block_or_empty(blocks, named.f32);
   const Span mm = block_or_empty(blocks, named.mm);
-  Coded coded;
-  std::vector<Unit> units;
-  code_blocks(meta, u8, named.u8 >= 0, mf, named.f32 >= 0, mm, named.mm >= 0, *h1, *h2, inverse,
-              &coded, trace != nullptr ? &units : nullptr);
-  // The /12 blocks: the input (writer) or the reconstruction (reader).
-  const Span u8_12 = inverse && coded.has_u8 ? span_of(coded.u8) : u8;
-  const Span mf_12 = inverse && coded.has_f32 ? span_of(coded.f32) : mf;
-  const Span mm_12 = inverse && coded.has_mm ? span_of(coded.mm) : mm;
-  const std::uint64_t hash = check_of(mf_12, u8_12, mm_12);
-  std::string meta_out;
-  if (inverse) {
-    if (check_hex(hash) != check) {
-      return Status::PredictCheck;
-    }
-    meta_out = std::move(plain);
-  } else {
-    with_check(meta_text, check_hex(hash), &meta_out);
-  }
+  sc.u8_ok = named.u8 >= 0 && u8_layout(meta, u8.n, &sc.u8);
+  const bool has_u8 = sc.u8_ok;
+  const bool has_f32 = named.f32 >= 0 && mf.n % 4 == 0 && f32_layout(meta, mf.n / 4, &sc.f32);
+  const bool has_mm = named.mm >= 0 && mm.n % 4 == 0 && mm_layout(meta, mm.n / 4, &sc.mm);
+  const std::uint64_t hash = check_of(sc.xxh, mf, u8, mm);
 
-  // _rebuild_blocks(): every descriptor named like a coded block carries the coded bytes.
-  std::vector<Span> rebuilt = blocks;
-  for (std::size_t k = 0; k < rebuilt.size() && meta.blocks.kind == JValue::Kind::Arr &&
-                          k < meta.blocks.a.size();
-       ++k) {
-    const JValue &name = at(meta.blocks.a[k], "name");
-    if (name.kind != JValue::Kind::Str) {
+  // The /13 record: the meta with `predict_check` before `,"blocks":[`, every block in place;
+  // each descriptor named like a coded block carries the coded bytes (_rebuild_blocks()).
+  auto coded_len = [&](std::size_t k) -> std::size_t {
+    const BlockName n = name_at(meta, k);
+    if (n == BlockName::MeshU8 && has_u8) {
+      return u8.n;
+    }
+    if (n == BlockName::MeshF32 && has_f32) {
+      return mf.n;
+    }
+    if (n == BlockName::MmF32 && has_mm) {
+      return mm.n;
+    }
+    return blocks[k].n;
+  };
+  const std::size_t meta_len = meta_text.size() + kCheckKey.size() + 17;
+  std::size_t body = 4 + meta_len + 4;
+  for (std::size_t k = 0; k < blocks.size(); ++k) {
+    body += 4 + coded_len(k);
+  }
+  out->resize(4 + body);
+  std::uint8_t *w = out->data();
+  auto put = [&](std::uint32_t v) {
+    set_word(w, v);
+    w += 4;
+  };
+  auto put_bytes = [&](const void *p, std::size_t n) {
+    if (n != 0) {
+      std::memcpy(w, p, n);
+      w += n;
+    }
+  };
+  put(static_cast<std::uint32_t>(body));
+  put(static_cast<std::uint32_t>(meta_len));
+  put_bytes(meta_text.data(), mark);
+  put_bytes(kCheckKey.data(), kCheckKey.size());
+  const std::string hex = check_hex(hash);
+  put_bytes(hex.data(), 16);
+  *w++ = '"';
+  put_bytes(meta_text.data() + mark, meta_text.size() - mark);
+  put(static_cast<std::uint32_t>(blocks.size()));
+  std::uint8_t *coded_u8 = nullptr, *coded_f32 = nullptr, *coded_mm = nullptr;
+  std::vector<std::pair<std::uint8_t *, BlockName>> copies;  // duplicate names: copy after
+  for (std::size_t k = 0; k < blocks.size(); ++k) {
+    const std::size_t n = coded_len(k);
+    put(static_cast<std::uint32_t>(n));
+    const BlockName name = name_at(meta, k);
+    const int idx = static_cast<int>(k);
+    if (name == BlockName::MeshU8 && has_u8) {
+      if (idx == named.u8) {
+        coded_u8 = w;
+      } else {
+        copies.emplace_back(w, name);
+      }
+    } else if (name == BlockName::MeshF32 && has_f32) {
+      if (idx == named.f32) {
+        coded_f32 = w;
+      } else {
+        copies.emplace_back(w, name);
+      }
+    } else if (name == BlockName::MmF32 && has_mm) {
+      if (idx == named.mm) {
+        coded_mm = w;
+      } else {
+        copies.emplace_back(w, name);
+      }
+    } else {
+      put_bytes(blocks[k].p, n);
       continue;
     }
-    if (name.s == "mesh_u8" && coded.has_u8) {
-      rebuilt[k] = span_of(coded.u8);
-    } else if (name.s == "mesh_f32" && coded.has_f32) {
-      rebuilt[k] = span_of(coded.f32);
-    } else if (name.s == "mm_f32" && coded.has_mm) {
-      rebuilt[k] = span_of(coded.mm);
+    w += n;
+  }
+
+  std::vector<Unit> units;
+  std::vector<Unit> *tr = trace != nullptr ? &units : nullptr;
+  if (has_u8) {
+    code_u8<false>(sc.u8, u8.p, coded_u8, *h1, *h2, tr);
+  }
+  if (has_f32) {
+    transpose4(mf.p, mf.n, coded_f32);
+    for (const auto &[mid, off] : sc.f32) {
+      const auto refs = aabb_refs(*h1, *h2, mid);
+      predict_unit_t(mf.p + 4 * off, 24, refs.first, refs.second, coded_f32, mf.n / 4, off);
+      if (tr != nullptr) {
+        tr->push_back(Unit{UnitBlock::MeshF32, mid, order_of(refs.first, refs.second)});
+      }
+    }
+  }
+  if (has_mm) {
+    transpose4(mm.p, mm.n, coded_mm);
+    for (const MmLayout &l : sc.mm) {
+      const auto refs = mm_refs(*h1, *h2, l);
+      predict_unit_t(mm.p + 4 * l.offset, static_cast<std::size_t>(4 * l.instances * l.stride),
+                     refs.first, refs.second, coded_mm, mm.n / 4, l.offset);
+      if (tr != nullptr) {
+        tr->push_back(Unit{UnitBlock::MmF32, l.id, order_of(refs.first, refs.second)});
+      }
+    }
+  }
+  for (const auto &[dst, name] : copies) {
+    const std::uint8_t *src = name == BlockName::MeshU8    ? coded_u8
+                              : name == BlockName::MeshF32 ? coded_f32
+                                                           : coded_mm;
+    const std::size_t n = name == BlockName::MeshU8 ? u8.n : name == BlockName::MeshF32 ? mf.n : mm.n;
+    if (n != 0) {
+      std::memcpy(dst, src, n);
+    }
+  }
+
+  // History::accept() from the /12 blocks.
+  std::shared_ptr<PredictState> next = next_state(full);
+  advance(next.get(), meta, sc.u8_ok ? &sc.u8 : nullptr, u8, mf, mm, &sc.pool);
+  h2_ = full ? empty_state() : h1_;
+  h1_ = std::move(next);
+  if (trace != nullptr) {
+    *trace = std::move(units);
+  }
+  return Status::Ok;
+}
+
+Status Predictor::decode(const std::uint8_t *record13, std::size_t size,
+                         std::vector<std::uint8_t> *out, std::vector<Unit> *trace) {
+  Scratch &sc = scratch();
+  Span meta_span;
+  if (!parse_record(record13, size, &meta_span, &sc.blocks)) {
+    return Status::Framing;
+  }
+  const Status st = typed_meta(meta_span, false, &sc.meta);
+  if (st != Status::Ok) {
+    return st;
+  }
+  return decode_typed(sc.meta, record13, size, out, trace);
+}
+
+// The reader: sc.blocks holds the record's blocks (parse_record()).
+Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *record,
+                               std::size_t /*size*/, std::vector<std::uint8_t> *out,
+                               std::vector<Unit> *trace) {
+  Scratch &sc = *scratch_;
+  const std::string_view meta_text(reinterpret_cast<const char *>(record + 8), u32_at(record + 4));
+  std::string plain;
+  std::string check;
+  if (!without_check(meta_text, &plain, &check)) {
+    return Status::MetaSchema;
+  }
+  for (char c : check) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+      return Status::MetaSchema;
+    }
+  }
+  // History::refs(): a full predicts nothing (unless no-predict-reset).
+  const bool full = meta.full && !no_reset;
+  const PredictState &empty = *empty_state();
+  const PredictState *h1 = full ? &empty : h1_.get();
+  const PredictState *h2 = full ? &empty : h2_.get();
+  const std::vector<Span> &blocks = sc.blocks;
+  const Named named = named_blocks(meta, blocks.size());
+  const Span u8 = block_or_empty(blocks, named.u8);
+  const Span mf = block_or_empty(blocks, named.f32);
+  const Span mm = block_or_empty(blocks, named.mm);
+  sc.u8_ok = named.u8 >= 0 && u8_layout(meta, u8.n, &sc.u8);
+  const bool has_u8 = sc.u8_ok;
+  const bool has_f32 = named.f32 >= 0 && mf.n % 4 == 0 && f32_layout(meta, mf.n / 4, &sc.f32);
+  const bool has_mm = named.mm >= 0 && mm.n % 4 == 0 && mm_layout(meta, mm.n / 4, &sc.mm);
+  std::vector<Unit> units;
+  std::vector<Unit> *tr = trace != nullptr ? &units : nullptr;
+  if (has_u8) {
+    sc.dec_u8.resize(u8.n);
+    code_u8<true>(sc.u8, u8.p, sc.dec_u8.data(), *h1, *h2, tr);
+  }
+  if (has_f32) {
+    sc.dec_f32.resize(mf.n);
+    untranspose4(mf.p, mf.n, sc.dec_f32.data());
+    for (const auto &[mid, off] : sc.f32) {
+      const auto refs = aabb_refs(*h1, *h2, mid);
+      unpredict_words(sc.dec_f32.data() + 4 * off, 24, refs.first, refs.second);
+      if (tr != nullptr) {
+        tr->push_back(Unit{UnitBlock::MeshF32, mid, order_of(refs.first, refs.second)});
+      }
+    }
+  }
+  if (has_mm) {
+    sc.dec_mm.resize(mm.n);
+    untranspose4(mm.p, mm.n, sc.dec_mm.data());
+    for (const MmLayout &l : sc.mm) {
+      const auto refs = mm_refs(*h1, *h2, l);
+      unpredict_words(sc.dec_mm.data() + 4 * l.offset,
+                      static_cast<std::size_t>(4 * l.instances * l.stride), refs.first,
+                      refs.second);
+      if (tr != nullptr) {
+        tr->push_back(Unit{UnitBlock::MmF32, l.id, order_of(refs.first, refs.second)});
+      }
+    }
+  }
+  const Span u8_12 = has_u8 ? span_of(sc.dec_u8) : u8;
+  const Span mf_12 = has_f32 ? span_of(sc.dec_f32) : mf;
+  const Span mm_12 = has_mm ? span_of(sc.dec_mm) : mm;
+  if (check_hex(check_of(sc.xxh, mf_12, u8_12, mm_12)) != check) {
+    return Status::PredictCheck;
+  }
+  // _rebuild_blocks(): every descriptor named like a coded block carries the decoded bytes.
+  sc.rebuilt = blocks;
+  for (std::size_t k = 0; k < sc.rebuilt.size() && k < meta.blocks.size(); ++k) {
+    const BlockName n = meta.blocks[k];
+    if (n == BlockName::MeshU8 && has_u8) {
+      sc.rebuilt[k] = u8_12;
+    } else if (n == BlockName::MeshF32 && has_f32) {
+      sc.rebuilt[k] = mf_12;
+    } else if (n == BlockName::MmF32 && has_mm) {
+      sc.rebuilt[k] = mm_12;
     }
   }
   std::vector<std::uint8_t> record_out;
-  make_record(meta_out, rebuilt, &record_out);
+  make_record(plain, sc.rebuilt, &record_out);
 
   // History::accept() from the /12 blocks.
-  auto next = std::make_shared<PredictState>(full ? PredictState() : *h1_);
-  advance(next.get(), meta, u8_12, mf_12, mm_12);
+  std::shared_ptr<PredictState> next = next_state(full);
+  advance(next.get(), meta, sc.u8_ok ? &sc.u8 : nullptr, u8_12, mf_12, mm_12, &sc.pool);
   h2_ = full ? empty_state() : h1_;
   h1_ = std::move(next);
 
@@ -1400,7 +1934,7 @@ std::vector<std::uint8_t> encode_transaction(const rs2::Transaction &transaction
                                              Predictor *predictor) {
   const std::vector<std::uint8_t> plain = rs2::encode_transaction(transaction);
   std::vector<std::uint8_t> out;
-  if (predictor->encode(plain, &out) != Status::Ok) {
+  if (predictor->encode(transaction, plain, &out) != Status::Ok) {
     return plain;  // unreachable for an encoder-written transaction
   }
   return out;

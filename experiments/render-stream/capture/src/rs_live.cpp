@@ -835,6 +835,8 @@ struct Hub::SharedTx {
   TxMeta meta;  // the fields the encode was stamped with
   bool full = false;
   std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+  // W13p: at /13, the transaction's typed meta keys for the predictor (rs13::predict_meta()).
+  std::shared_ptr<const rs13::PredictMeta> predict;
 };
 
 // HC5 (rs_live.h header, "Formation"): a connection's state on the formation side, touched only
@@ -1972,7 +1974,8 @@ void Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &t
 }
 
 std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
-    Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &plain) {
+    Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &plain,
+    const rs13::PredictMeta *predict) {
   FormState &f = *job.form;
   Counters &o = job.out;
   const TxMeta &meta = job.meta;
@@ -2003,7 +2006,11 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
   }
   const rs13::Predictor before = f.predictor;  // shares H1 and H2: no copy of their bytes
   auto out = std::make_shared<std::vector<std::uint8_t>>();
-  if (f.predictor.encode(*plain, out.get()) != rs13::Status::Ok) {
+  auto code = [&](rs13::Predictor &p, std::vector<std::uint8_t> *into) {
+    return predict != nullptr ? p.encode(*predict, plain->data(), plain->size(), into)
+                              : p.encode(*plain, into);
+  };
+  if (code(f.predictor, out.get()) != rs13::Status::Ok) {
     return nullptr;  // never for a transaction encode_transaction wrote
   }
   bool sabotaged = false;
@@ -2011,7 +2018,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
     rs13::Predictor wrong_predictor = before;
     wrong_predictor.predict_stale = true;
     std::vector<std::uint8_t> wrong;
-    if (wrong_predictor.encode(*plain, &wrong) == rs13::Status::Ok && wrong != *out) {
+    if (code(wrong_predictor, &wrong) == rs13::Status::Ok && wrong != *out) {
       *out = std::move(wrong);  // the history still advanced honestly (f.predictor)
       sabotaged = true;
       predict_stale_done_ = true;
@@ -2178,10 +2185,12 @@ void Hub::run_job(Job &job) {
   const std::uint64_t t0 = monotonic_ns();
   std::uint64_t t1 = t0;
   std::shared_ptr<const std::vector<std::uint8_t>> encoded;
+  std::shared_ptr<const rs13::PredictMeta> predict;
   if (shared != nullptr) {
     auto out = std::make_shared<std::vector<std::uint8_t>>();
     if (restamp(*shared->bytes, shared->meta, meta, full, out.get())) {
       encoded = std::move(out);
+      predict = shared->predict;
       ++o.shared_sends;
     }
   }
@@ -2190,6 +2199,11 @@ void Hub::run_job(Job &job) {
                                          : make_patch(job.tx_base->state, snapshot.state, meta);
     t1 = monotonic_ns();
     encoded = std::make_shared<const std::vector<std::uint8_t>>(encode_transaction(transaction));
+    if (meta.version == ProtocolVersion::V13) {
+      auto typed = std::make_shared<rs13::PredictMeta>();
+      rs13::predict_meta(transaction, typed.get());
+      predict = std::move(typed);
+    }
     if (shared == nullptr) {
       auto tx = std::make_unique<SharedTx>();
       tx->base = job.tx_base;
@@ -2197,6 +2211,7 @@ void Hub::run_job(Job &job) {
       tx->meta = meta;
       tx->full = full;
       tx->bytes = encoded;
+      tx->predict = predict;
       memo_->txs.push_back(std::move(tx));
     }
   }
@@ -2204,7 +2219,7 @@ void Hub::run_job(Job &job) {
     // W13b: the /12 transaction just formed (encode_transaction writes /12's form at V13) coded
     // against this connection's history; the coding prefix, the tap and the end stats are the
     // /13 message's.
-    encoded = form_predicted(job, encoded);
+    encoded = form_predicted(job, encoded, predict.get());
     if (encoded == nullptr) {
       job.error = true;
       job.error_detail = "transaction " + std::to_string(meta.seq) + " has no /13 coding";

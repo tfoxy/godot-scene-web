@@ -8,8 +8,8 @@
 //! the per-record un-predictor the validator calls ([`unpredict_record`]) and the /12 ↔ /13
 //! transcoders ([`to13`], [`to12`]).
 //!
-//! History entries are reference-counted (`Arc`): a patch's R(T) starts as a clone of R(T−1)'s
-//! maps (one pointer per id), and only the units T carries are copied.
+//! The history keeps each unit's last two writes ([`History`]): advancing touches only the units a
+//! transaction carries or drops, and each write reuses the storage of the one it supersedes.
 
 use crate::coding::Xxh64;
 use crate::meta::{self, DecodeBufs, Decoded, MeshMeta, TxMeta};
@@ -18,7 +18,6 @@ use crate::validate::{IdHasher, Options, Validator};
 use crate::wire::{self, BlockRange, Error, MAGIC_LEN};
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
-use std::sync::Arc;
 
 type Map<V> = HashMap<Id, V, BuildHasherDefault<IdHasher>>;
 
@@ -38,19 +37,46 @@ const PROTOCOL_13: &[u8] = b"\"protocol\":\"render-stream/13\"";
 
 type Shape = (Primitive, i64, i64, i64);
 
-/// One mesh's bodies in R: its surface shapes and their bodies, concatenated.
-#[derive(PartialEq, Debug)]
+/// `Bodies::rec` of bodies held in `Bodies::bytes`.
+const OWNED: u32 = u32::MAX;
+
+/// One mesh's bodies in R: its surface shapes and their bodies, concatenated, either in place in
+/// a plain record the [`History`] retains (`rec`, `gen`, `at`) or in `bytes`
+/// ([`History::bodies`] resolves them).
+#[derive(Debug)]
 pub struct Bodies {
     shape: Vec<Shape>,
-    bytes: Vec<u8>,
-    /// End offset of each surface's body in `bytes`.
+    /// End offset of each surface's body.
     ends: Vec<usize>,
+    bytes: Vec<u8>,
+    /// The retained record ([`History`]'s `recs` index) holding the bodies at `at`, or [`OWNED`].
+    rec: u32,
+    /// That record's generation (the time of the transaction it is).
+    gen: u64,
+    at: usize,
+}
+
+impl Default for Bodies {
+    fn default() -> Self {
+        Bodies {
+            shape: Vec::new(),
+            ends: Vec::new(),
+            bytes: Vec::new(),
+            rec: OWNED,
+            gen: NEVER,
+            at: 0,
+        }
+    }
 }
 
 impl Bodies {
-    fn surface(&self, k: usize) -> &[u8] {
+    fn len(&self) -> usize {
+        self.ends.last().copied().unwrap_or(0)
+    }
+    /// Surface `k`'s body, of the bodies `all` ([`History::bodies`]).
+    fn surface<'a>(&self, all: &'a [u8], k: usize) -> &'a [u8] {
         let start = if k == 0 { 0 } else { self.ends[k - 1] };
-        &self.bytes[start..self.ends[k]]
+        &all[start..self.ends[k]]
     }
     fn same_shape(&self, e: &MeshMeta) -> bool {
         self.shape.len() == e.surfaces.len()
@@ -63,88 +89,520 @@ impl Bodies {
 }
 
 /// One multimesh's buffer in R.
-#[derive(PartialEq, Debug)]
+#[derive(Default, PartialEq, Debug)]
 pub struct MmBuf {
     instances: i64,
     stride: u64,
     bytes: Vec<u8>,
 }
 
-/// R(T): the prediction state after a transaction.
-#[derive(Clone, Default, PartialEq, Debug)]
-pub struct PredState {
-    body: Map<Arc<Bodies>>,
-    aabb: Map<[u8; 24]>,
-    mm: Map<Arc<MmBuf>>,
+/// A [`Ver`] never written.
+const NEVER: u64 = u64::MAX;
+
+/// One value of a unit, written by the transaction at time `t` (`live` false: dropped there).
+/// `v` keeps its storage when dropped or superseded, for a later write to reuse.
+#[derive(Debug)]
+struct Ver<V> {
+    t: u64,
+    live: bool,
+    v: V,
 }
 
-impl PredState {
+/// A unit's last two writes, `new` after `old`. R at time x is the newest write at or before x,
+/// and H1 and H2 only ever look at the last two times, so two writes are all R needs: a write
+/// at T reuses the storage of the older one (whose value no view can reach any more).
+#[derive(Debug)]
+struct Slot<V> {
+    new: Ver<V>,
+    old: Ver<V>,
+}
+
+impl<V: Default> Slot<V> {
+    fn fresh() -> Self {
+        let never = || Ver {
+            t: NEVER,
+            live: false,
+            v: V::default(),
+        };
+        Slot {
+            new: never(),
+            old: never(),
+        }
+    }
+
+    /// The unit's value in R(x).
+    #[inline]
+    fn at(&self, x: u64) -> Option<&V> {
+        let w = if self.new.t <= x {
+            &self.new
+        } else if self.old.t <= x {
+            &self.old
+        } else {
+            return None;
+        };
+        w.live.then_some(&w.v)
+    }
+
+    /// The write at time `t` (the last one again when T already wrote this unit).
+    #[inline]
+    fn write(&mut self, t: u64) -> &mut Ver<V> {
+        if self.new.t != t {
+            std::mem::swap(&mut self.new, &mut self.old);
+            self.new.t = t;
+        }
+        &mut self.new
+    }
+}
+
+/// Ids below this index a [`Track`]'s slots directly; larger ones go through a hash map.
+const DENSE_IDS: usize = 1 << 16;
+
+/// One kind of unit (bodies, AABBs or buffers) across R's last two times: a slab of slots,
+/// indexed by id. A removed slot keeps its storage for the next unit that needs one.
+#[derive(Debug)]
+struct Track<V> {
+    slots: Vec<(Id, Slot<V>)>,
+    /// Unused entries of `slots`.
+    free: Vec<u32>,
+    /// id → slot index + 1 (0: none), for ids below [`DENSE_IDS`].
+    dense: Vec<u32>,
+    /// id → slot index, for the rest.
+    sparse: Map<u32>,
+    /// Units dropped at the current time and at the one before: once absent from both H1 and
+    /// H2, a slot is removed.
+    dropped: Vec<Id>,
+    dropped_before: Vec<Id>,
+}
+
+impl<V> Default for Track<V> {
+    fn default() -> Self {
+        Track {
+            slots: Vec::new(),
+            free: Vec::new(),
+            dense: Vec::new(),
+            sparse: Map::default(),
+            dropped: Vec::new(),
+            dropped_before: Vec::new(),
+        }
+    }
+}
+
+impl<V: Default> Track<V> {
+    #[inline]
+    fn index(&self, id: Id) -> Option<usize> {
+        if (id as usize) < DENSE_IDS {
+            match self.dense.get(id as usize) {
+                Some(&i) if i > 0 => Some(i as usize - 1),
+                _ => None,
+            }
+        } else {
+            self.sparse.get(&id).map(|&i| i as usize)
+        }
+    }
+
+    #[inline]
+    fn get(&self, id: Id) -> Option<&Slot<V>> {
+        self.index(id).map(|i| &self.slots[i].1)
+    }
+
+    /// Unit `id`'s slot, made (fresh, or a removed one's storage) when it has none.
+    #[inline]
+    fn slot(&mut self, id: Id) -> &mut Slot<V> {
+        let i = match self.index(id) {
+            Some(i) => i,
+            None => self.insert(id),
+        };
+        &mut self.slots[i].1
+    }
+
+    #[cold]
+    fn insert(&mut self, id: Id) -> usize {
+        let i = match self.free.pop() {
+            Some(i) => {
+                let (sid, s) = &mut self.slots[i as usize];
+                *sid = id;
+                s.new.t = NEVER;
+                s.old.t = NEVER;
+                i as usize
+            }
+            None => {
+                self.slots.push((id, Slot::fresh()));
+                self.slots.len() - 1
+            }
+        };
+        if (id as usize) < DENSE_IDS {
+            if self.dense.len() <= id as usize {
+                self.dense.resize(id as usize + 1, 0);
+            }
+            self.dense[id as usize] = i as u32 + 1;
+        } else {
+            self.sparse.insert(id, i as u32);
+        }
+        i
+    }
+
+    fn remove(&mut self, id: Id) {
+        let Some(i) = self.index(id) else { return };
+        if (id as usize) < DENSE_IDS {
+            self.dense[id as usize] = 0;
+        } else {
+            self.sparse.remove(&id);
+        }
+        let s = &mut self.slots[i].1;
+        s.new.t = NEVER;
+        s.old.t = NEVER;
+        self.free.push(i as u32);
+    }
+
+    /// The storage of unit `id`'s new value at time `t`.
+    #[inline]
+    fn set(&mut self, id: Id, t: u64) -> &mut V {
+        let w = self.slot(id).write(t);
+        w.live = true;
+        &mut w.v
+    }
+
+    /// Drops unit `id` at time `t`.
+    #[inline]
+    fn drop_at(&mut self, id: Id, t: u64) {
+        let Some(i) = self.index(id) else { return };
+        let s = &mut self.slots[i].1;
+        if s.new.live {
+            s.write(t).live = false;
+            self.dropped.push(id);
+        }
+    }
+
+    /// After time `t`'s writes: removes the slots of units dropped at `t − 1` and not written
+    /// since (absent from R(t) and R(t − 1)).
+    fn prune(&mut self, t: u64) {
+        let mut dropped = std::mem::take(&mut self.dropped_before);
+        for &id in &dropped {
+            if let Some(s) = self.get(id) {
+                if s.new.t.wrapping_add(1) == t && !s.new.live {
+                    self.remove(id);
+                }
+            }
+        }
+        dropped.clear();
+        self.dropped_before = std::mem::replace(&mut self.dropped, dropped);
+    }
+
+    /// Removes every slot (a full), keeping their storage.
+    fn clear(&mut self) {
+        let ids: Vec<Id> = self.live_ids().collect();
+        for id in ids {
+            self.remove(id);
+        }
+        self.dropped.clear();
+        self.dropped_before.clear();
+    }
+
+    fn live_ids(&self) -> impl Iterator<Item = Id> + '_ {
+        self.slots
+            .iter()
+            .filter(|(_, s)| s.new.t != NEVER)
+            .map(|(id, _)| *id)
+    }
+
+    fn live_at(&self, x: Option<u64>) -> impl Iterator<Item = (Id, &V)> {
+        self.slots
+            .iter()
+            .filter_map(move |(id, s)| Some((*id, s.at(x?)?)))
+    }
+
+    fn len_at(&self, x: Option<u64>) -> usize {
+        self.live_at(x).count()
+    }
+}
+
+impl<V: Default> Track<V> {
+    fn same_at(
+        &self,
+        x: Option<u64>,
+        other: &Track<V>,
+        y: Option<u64>,
+        eq: impl Fn(&V, &V) -> bool,
+    ) -> bool {
+        self.len_at(x) == other.len_at(y)
+            && self.live_at(x).all(|(id, v)| {
+                y.and_then(|y| other.get(id)?.at(y))
+                    .is_some_and(|w| eq(v, w))
+            })
+    }
+}
+
+/// R at one time of a [`History`] (H1, H2 or ∅): what a transaction is coded against.
+#[derive(Clone, Copy)]
+pub struct PredState<'a> {
+    h: &'a History,
+    /// The time; `None` is ∅.
+    at: Option<u64>,
+}
+
+impl PredState<'_> {
     pub fn is_empty(&self) -> bool {
-        self.body.is_empty() && self.aabb.is_empty() && self.mm.is_empty()
+        self.counts() == (0, 0, 0)
     }
     /// (bodies, AABBs, buffers) held.
     pub fn counts(&self) -> (usize, usize, usize) {
-        (self.body.len(), self.aabb.len(), self.mm.len())
+        (
+            self.h.body.len_at(self.at),
+            self.h.aabb.len_at(self.at),
+            self.h.mm.len_at(self.at),
+        )
     }
 }
 
+impl PartialEq for PredState<'_> {
+    fn eq(&self, o: &Self) -> bool {
+        let bodies = |a: &Bodies, b: &Bodies| {
+            a.shape == b.shape && a.ends == b.ends && self.h.bodies(a) == o.h.bodies(b)
+        };
+        self.h.body.same_at(self.at, &o.h.body, o.at, bodies)
+            && self.h.aabb.same_at(self.at, &o.h.aabb, o.at, |a, b| a == b)
+            && self.h.mm.same_at(self.at, &o.h.mm, o.at, |a, b| a == b)
+    }
+}
+
+impl std::fmt::Debug for PredState<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PredState {{ at: {:?}, counts: {:?} }}", self.at, self.counts())
+    }
+}
+
+/// (H1's, H2's) value of unit `id` in `track`: one lookup when both read the same history. H2's
+/// is only looked up when H1 has one (every caller predicts to second order only from a first).
+#[inline]
+fn pair<'a, V: Default>(
+    h1: PredState<'a>,
+    h2: PredState<'a>,
+    track: impl Fn(&'a History) -> &'a Track<V>,
+    id: Id,
+) -> (Option<&'a V>, Option<&'a V>) {
+    let Some(x1) = h1.at else {
+        return (None, None);
+    };
+    let Some(s) = track(h1.h).get(id) else {
+        return (None, None);
+    };
+    let Some(b) = s.at(x1) else {
+        return (None, None);
+    };
+    let p = match h2.at {
+        None => None,
+        Some(x2) if std::ptr::eq(h1.h, h2.h) => s.at(x2),
+        Some(x2) => track(h2.h).get(id).and_then(|s| s.at(x2)),
+    };
+    (Some(b), p)
+}
+
+/// A plain record a [`History`] retains: bodies of the units its transaction carried stay in
+/// place in it.
+#[derive(Debug)]
+struct Rec {
+    /// The transaction's time, or [`NEVER`] for a free buffer.
+    gen: u64,
+    buf: Vec<u8>,
+    /// The units whose bodies were set from it.
+    ids: Vec<Id>,
+}
+
 /// One end's prediction history: H1 = R(T−1), H2 = R(T−2), reset by a full.
+///
+/// Each unit keeps its last two writes (a [`Slot`]), so advancing to R(T) touches only the units
+/// T carries or drops: nothing is cloned per transaction, and in a steady stream every write
+/// reuses the storage of the write it supersedes (no allocation). The validator's path
+/// ([`History::take_plain`], [`History::accept_plain`]) copies no body either: the plain records
+/// rotate through the history, and bodies are read in place in the last two (a unit's bodies
+/// move into owned storage only when an older record they sit in is recycled).
 #[derive(Default, Debug)]
 pub struct History {
-    h1: PredState,
-    h2: PredState,
-    empty: PredState,
-    /// During [`History::accept`]: the outgoing H2's bodies and buffers, which R(T) reuses when
-    /// nothing else holds them (so a steady stream allocates nothing). Empty between calls.
-    spare: PredState,
+    /// The time of R(T−1) (transactions accepted; 0 before the first).
+    now: u64,
+    body: Track<Bodies>,
+    aabb: Track<[u8; 24]>,
+    mm: Track<MmBuf>,
+    recs: Vec<Rec>,
 }
 
 impl History {
     /// (H1, H2) to code a transaction against. `stale` is the encoder sabotage `predict-stale`
     /// (predict from H2 as if it were H1, first order); `no_reset` the decoder sabotage
     /// `no-predict-reset` (a full predicts like a patch).
-    pub fn refs(&self, full: bool, stale: bool, no_reset: bool) -> (&PredState, &PredState) {
+    pub fn refs(&self, full: bool, stale: bool, no_reset: bool) -> (PredState<'_>, PredState<'_>) {
+        let empty = PredState { h: self, at: None };
         if full && !no_reset {
-            (&self.empty, &self.empty)
+            (empty, empty)
         } else if stale {
-            (&self.h2, &self.empty)
+            (self.h2(), empty)
         } else {
-            (&self.h1, &self.h2)
+            (self.h1(), self.h2())
         }
     }
 
     /// Advances the history past an accepted transaction, from its /12 (reconstructed) blocks.
     pub fn accept(&mut self, tx: &TxMeta, b: Blocks<'_>, no_reset: bool, sc: &mut Scratch) {
-        let full = tx.is_full() && !no_reset;
-        // R(T) takes the outgoing H2's tables (their allocations), its entries moved to `spare`.
-        let mut r = std::mem::take(&mut self.h2);
-        std::mem::swap(&mut r.body, &mut self.spare.body);
-        std::mem::swap(&mut r.mm, &mut self.spare.mm);
-        if full {
-            r.aabb.clear();
-        } else {
-            r.body.clone_from(&self.h1.body);
-            r.aabb.clone_from(&self.h1.aabb);
-            r.mm.clone_from(&self.h1.mm);
+        let t = self.now + 1;
+        if tx.is_full() && !no_reset {
+            // R(full) starts from ∅, and H2 = ∅ after it: every slot goes, so every unit's
+            // first write is at `t` and nothing reads as present before it.
+            self.body.clear();
+            self.aabb.clear();
+            self.mm.clear();
         }
-        advance(&mut r, tx, b, sc, &mut self.spare);
-        self.spare.body.clear();
-        self.spare.mm.clear();
-        if full {
-            self.h2 = std::mem::replace(&mut self.h1, r);
-            self.h2.body.clear();
-            self.h2.aabb.clear();
-            self.h2.mm.clear();
+        advance(
+            (&mut self.body, &mut self.aabb, &mut self.mm),
+            t,
+            tx,
+            b,
+            sc,
+            None,
+        );
+        self.finish(t);
+    }
+
+    fn finish(&mut self, t: u64) {
+        self.body.prune(t);
+        self.aabb.prune(t);
+        self.mm.prune(t);
+        self.now = t;
+    }
+
+    /// Bodies' bytes.
+    #[inline]
+    fn bodies<'a>(&'a self, b: &'a Bodies) -> &'a [u8] {
+        if b.rec == OWNED {
+            &b.bytes
         } else {
-            self.h2 = std::mem::replace(&mut self.h1, r);
+            let r = &self.recs[b.rec as usize];
+            debug_assert_eq!(r.gen, b.gen);
+            &r.buf[b.at..b.at + b.len()]
         }
     }
 
-    pub fn h1(&self) -> &PredState {
-        &self.h1
+    /// A buffer for the next transaction's plain record (the validator's /13 path), to give back
+    /// to [`History::accept_plain`] or [`History::return_plain`]. It is a free one, or the
+    /// oldest record no unit of R(T−1) or R(T−2) was set from in that transaction: the bodies of
+    /// units still reading it move into owned storage first.
+    pub fn take_plain(&mut self) -> Vec<u8> {
+        let now = self.now;
+        let evictable = |r: &Rec| r.gen == NEVER || r.gen.saturating_add(1) < now;
+        let pick = self
+            .recs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| evictable(r))
+            .min_by_key(|(_, r)| (r.gen != NEVER, r.buf.capacity() == 0, r.gen))
+            .map(|(i, _)| i);
+        let Some(i) = pick else {
+            return Vec::new();
+        };
+        if self.recs[i].gen != NEVER {
+            self.release(i);
+        }
+        std::mem::take(&mut self.recs[i].buf)
     }
-    pub fn h2(&self) -> &PredState {
-        &self.h2
+
+    /// Moves the bodies still read in place in record `i` into owned storage; frees it.
+    #[cold]
+    fn release(&mut self, i: usize) {
+        let Rec { gen, buf, ids } = &mut self.recs[i];
+        for id in ids.drain(..) {
+            let Some(k) = self.body.index(id) else { continue };
+            let slot = &mut self.body.slots[k].1;
+            for w in [&mut slot.new, &mut slot.old] {
+                let x = &mut w.v;
+                if x.rec == i as u32 && x.gen == *gen {
+                    let len = x.len();
+                    x.bytes.clear();
+                    x.bytes.extend_from_slice(&buf[x.at..x.at + len]);
+                    x.rec = OWNED;
+                }
+            }
+        }
+        *gen = NEVER;
+    }
+
+    /// Takes back a buffer from [`History::take_plain`] whose transaction was not accepted.
+    pub fn return_plain(&mut self, buf: Vec<u8>) {
+        self.store(NEVER, buf);
+    }
+
+    fn store(&mut self, gen: u64, buf: Vec<u8>) -> usize {
+        let i = match self
+            .recs
+            .iter()
+            .position(|r| r.gen == NEVER && r.buf.capacity() == 0)
+        {
+            Some(i) => i,
+            None => {
+                self.recs.push(Rec {
+                    gen: NEVER,
+                    buf: Vec::new(),
+                    ids: Vec::new(),
+                });
+                self.recs.len() - 1
+            }
+        };
+        let r = &mut self.recs[i];
+        r.gen = gen;
+        r.buf = buf;
+        r.ids.clear();
+        i
+    }
+
+    /// [`History::accept`] for the validator: `plain` is the accepted transaction's plain /12
+    /// record (from [`History::take_plain`]) and `blocks` its block ranges. The history keeps it
+    /// ([`History::plain`]) and reads the carried bodies in place.
+    pub fn accept_plain(
+        &mut self,
+        tx: &TxMeta,
+        plain: Vec<u8>,
+        blocks: &[BlockRange],
+        no_reset: bool,
+        sc: &mut Scratch,
+    ) {
+        let t = self.now + 1;
+        if tx.is_full() && !no_reset {
+            self.body.clear();
+            self.aabb.clear();
+            self.mm.clear();
+        }
+        let i = self.store(t, plain);
+        let at = blocks.get(MESH_U8).map_or(0, |b| b.start);
+        let Rec { buf, ids, .. } = &mut self.recs[i];
+        advance(
+            (&mut self.body, &mut self.aabb, &mut self.mm),
+            t,
+            tx,
+            blocks_of(buf, blocks),
+            sc,
+            Some((i as u32, at, ids)),
+        );
+        self.finish(t);
+    }
+
+    /// The plain record of the last transaction when it came through
+    /// [`History::accept_plain`].
+    pub fn plain(&self) -> Option<&[u8]> {
+        self.recs
+            .iter()
+            .find(|r| r.gen == self.now && r.gen != NEVER)
+            .map(|r| r.buf.as_slice())
+    }
+
+    pub fn h1(&self) -> PredState<'_> {
+        PredState {
+            h: self,
+            at: Some(self.now),
+        }
+    }
+    pub fn h2(&self) -> PredState<'_> {
+        PredState {
+            h: self,
+            at: self.now.checked_sub(1),
+        }
     }
 }
 
@@ -283,14 +741,13 @@ fn u8_layout(tx: &TxMeta, u8_len: usize, out: &mut Vec<Surf>) -> bool {
             return false;
         }
         for s in &e.surfaces {
-            if s.payload_bytes < 0
-                || crate::payload::mesh_body_bytes(s.format, s.vertex_count, s.index_count)
-                    != s.payload_bytes as u128
-            {
+            let parts =
+                crate::payload::expected_mesh_buffer_bytes(s.format, s.vertex_count, s.index_count);
+            // `mesh_body_bytes`, from the same parts.
+            if s.payload_bytes < 0 || 40 + parts.iter().sum::<u128>() != s.payload_bytes as u128 {
                 return false;
             }
-            let [pos, attr, skin, idx] =
-                crate::payload::expected_mesh_buffer_bytes(s.format, s.vertex_count, s.index_count);
+            let [pos, attr, skin, idx] = parts;
             let n = s.vertex_count as usize;
             let col = if s.format & crate::payload::ARRAY_FORMAT_COLOR != 0 {
                 4
@@ -384,113 +841,95 @@ fn order(base: bool, prev: bool) -> u8 {
 
 // --------------------------------------------------------------------------- R(T)
 
-/// `advance`: R(T) from R(T−1) (or ∅, the caller's choice) and T's /12 blocks.
-/// Bodies and buffers come from `spare` (by id) when nothing else holds them.
-fn advance(r: &mut PredState, tx: &TxMeta, b: Blocks<'_>, sc: &mut Scratch, spare: &mut PredState) {
+/// `advance`: R(T) (time `t`) from R(T−1) (or ∅: [`History::accept`] cleared it) and T's /12
+/// blocks. Units T does not carry or drop keep their slots untouched. With `rec` (the retained
+/// record index, where `b.mesh_u8` starts in it, and its unit list), carried bodies are read in
+/// place there; without, they are copied.
+fn advance(
+    (body, aabb, mm): (&mut Track<Bodies>, &mut Track<[u8; 24]>, &mut Track<MmBuf>),
+    t: u64,
+    tx: &TxMeta,
+    b: Blocks<'_>,
+    sc: &mut Scratch,
+    mut rec: Option<(u32, usize, &mut Vec<Id>)>,
+) {
     let layout = u8_layout(tx, b.mesh_u8.len(), &mut sc.surfs);
     let mut si = 0;
     for e in &tx.meshes {
-        let mut carried = None;
+        let mut surfs: &[Surf] = &[];
         if layout && e.u8.is_some() {
-            let surfs = &sc.surfs[si..si + e.surfaces.len()];
+            surfs = &sc.surfs[si..si + e.surfaces.len()];
             si += e.surfaces.len();
-            if let Some(first) = surfs.first() {
-                let base = first.start;
-                let mut slot = spare.body.remove(&e.id);
-                let fresh = match slot.as_mut().and_then(Arc::get_mut) {
-                    Some(x) => {
-                        x.shape.clear();
-                        x.bytes.clear();
-                        x.ends.clear();
-                        None
-                    }
-                    None => Some(Bodies {
-                        shape: Vec::with_capacity(surfs.len()),
-                        bytes: Vec::new(),
-                        ends: Vec::with_capacity(surfs.len()),
-                    }),
-                };
-                let mut arc = match fresh {
-                    Some(f) => Arc::new(f),
-                    None => slot.take().unwrap(),
-                };
-                let x = Arc::get_mut(&mut arc).unwrap();
-                let mut end = 0;
-                for s in surfs {
-                    end = s.start + s.sizes.iter().sum::<usize>() - base;
-                    x.ends.push(end);
-                }
-                x.shape.extend(
-                    e.surfaces
-                        .iter()
-                        .map(|s| (s.primitive, s.format, s.vertex_count, s.index_count)),
-                );
-                x.bytes.extend_from_slice(&b.mesh_u8[base..base + end]);
-                carried = Some(arc);
-            }
         }
-        if is_dynamic(e) {
-            if e.u8.is_some() {
-                match carried {
-                    Some(c) => {
-                        r.body.insert(e.id, c);
+        if !is_dynamic(e) {
+            body.drop_at(e.id, t);
+        } else if e.u8.is_some() {
+            match surfs.first() {
+                Some(first) => {
+                    let x = body.set(e.id, t);
+                    x.shape.clear();
+                    x.ends.clear();
+                    let base = first.start;
+                    let mut end = 0;
+                    for s in surfs {
+                        end = s.start + s.sizes.iter().sum::<usize>() - base;
+                        x.ends.push(end);
                     }
-                    None => {
-                        r.body.remove(&e.id);
+                    x.shape.extend(
+                        e.surfaces
+                            .iter()
+                            .map(|s| (s.primitive, s.format, s.vertex_count, s.index_count)),
+                    );
+                    match rec.as_mut() {
+                        Some((i, at, ids)) => {
+                            x.rec = *i;
+                            x.gen = t;
+                            x.at = *at + base;
+                            ids.push(e.id);
+                        }
+                        None => {
+                            x.rec = OWNED;
+                            x.bytes.clear();
+                            x.bytes.extend_from_slice(&b.mesh_u8[base..base + end]);
+                        }
                     }
                 }
+                None => body.drop_at(e.id, t),
             }
-        } else {
-            r.body.remove(&e.id);
         }
         match e.f {
             Some(f) if (4 * f as u128 + 24) <= b.mesh_f32.len() as u128 => {
                 let o = 4 * f as usize;
-                let mut a = [0u8; 24];
-                a.copy_from_slice(&b.mesh_f32[o..o + 24]);
-                r.aabb.insert(e.id, a);
+                aabb.set(e.id, t).copy_from_slice(&b.mesh_f32[o..o + 24]);
             }
-            _ => {
-                r.aabb.remove(&e.id);
-            }
+            _ => aabb.drop_at(e.id, t),
         }
     }
     for id in &tx.removed_meshes {
         let id = *id as Id;
-        r.body.remove(&id);
-        r.aabb.remove(&id);
+        body.drop_at(id, t);
+        aabb.drop_at(id, t);
     }
     for e in &tx.multimeshes {
         if e.status != EntryStatus::Ok {
-            r.mm.remove(&e.id);
+            mm.drop_at(e.id, t);
         } else if let Some(bf) = e.buffer_f {
             let o = 4 * bf as u128;
             let n = 4 * e.buffer_floats() as u128;
             if e.instances >= 0 && o + n <= b.mm_f32.len() as u128 {
                 let (o, n) = (o as usize, n as usize);
-                let mut slot = spare.mm.remove(&e.id);
-                let buf = match slot.as_mut().and_then(Arc::get_mut) {
-                    Some(x) => {
-                        x.instances = e.instances;
-                        x.stride = e.stride();
-                        x.bytes.clear();
-                        x.bytes.extend_from_slice(&b.mm_f32[o..o + n]);
-                        slot.unwrap()
-                    }
-                    None => Arc::new(MmBuf {
-                        instances: e.instances,
-                        stride: e.stride(),
-                        bytes: b.mm_f32[o..o + n].to_vec(),
-                    }),
-                };
-                r.mm.insert(e.id, buf);
+                let x = mm.set(e.id, t);
+                x.instances = e.instances;
+                x.stride = e.stride();
+                x.bytes.clear();
+                x.bytes.extend_from_slice(&b.mm_f32[o..o + n]);
             } else {
-                r.mm.remove(&e.id);
+                mm.drop_at(e.id, t);
             }
         }
     }
     for id in &tx.removed_multimeshes {
-        r.mm.remove(&(*id as Id));
+        mm.drop_at(*id as Id, t);
     }
 }
 
@@ -500,8 +939,8 @@ fn code_u8(
     tx: &TxMeta,
     src: &[u8],
     dst: &mut [u8],
-    h1: &PredState,
-    h2: &PredState,
+    h1: PredState<'_>,
+    h2: PredState<'_>,
     inverse: bool,
     surfs: &mut Vec<Surf>,
     trace: &mut Option<&mut Vec<Unit>>,
@@ -527,8 +966,9 @@ fn code_u8(
             continue;
         }
         let count = e.surfaces.len();
-        let base = h1.body.get(&e.id).filter(|b| b.same_shape(e));
-        let prev = base.and(h2.body.get(&e.id).filter(|b| b.same_shape(e)));
+        let (b1, b2) = pair(h1, h2, |h| &h.body, e.id);
+        let base = b1.filter(|b| b.same_shape(e));
+        let prev = base.and(b2.filter(|b| b.same_shape(e)));
         if count > 0 {
             if let Some(t) = trace.as_deref_mut() {
                 t.push(Unit {
@@ -540,8 +980,8 @@ fn code_u8(
         }
         for k in 0..count {
             let s = surfs[si + k];
-            let bb = base.map(|b| b.surface(k));
-            let pb = prev.map(|b| b.surface(k));
+            let bb = base.map(|b| b.surface(h1.h.bodies(b), k));
+            let pb = prev.map(|b| b.surface(h2.h.bodies(b), k));
             let attr = 40 + 8 * s.n;
             let stride = s.col + s.uv;
             let tail = attr + s.n * stride;
@@ -806,9 +1246,23 @@ fn swap_bits(a: &mut u64, b: &mut u64, s: u32, m: u64) {
     *a ^= t << s;
 }
 
-/// `out` (`4·n` bytes): the `n` words whose byte planes are `q`. Eight words at a time, as two
-/// 4×4 byte transposes in 64-bit registers (delta swaps of bytes, then of byte pairs).
+/// `out` (`4·n` bytes): the `n` words whose byte planes are `q`. Sixteen words at a time as
+/// byte then byte-pair interleaves of 128-bit vectors where the target has them (wasm `simd128`,
+/// x86-64's baseline SSE2), the rest (and every word elsewhere) by [`untranspose_words_u64`].
+#[inline]
 fn untranspose_words(q: [&[u8]; 4], out: &mut [u8]) {
+    let done = lanes::untranspose16(q, out);
+    if done < out.len() / 4 {
+        untranspose_words_u64(
+            [&q[0][done..], &q[1][done..], &q[2][done..], &q[3][done..]],
+            &mut out[4 * done..],
+        );
+    }
+}
+
+/// [`untranspose_words`] eight words at a time, as two 4×4 byte transposes in 64-bit registers
+/// (delta swaps of bytes, then of byte pairs).
+fn untranspose_words_u64(q: [&[u8]; 4], out: &mut [u8]) {
     const M8: u64 = 0x00FF_00FF_00FF_00FF;
     const M16: u64 = 0x0000_FFFF_0000_FFFF;
     const LO: u64 = 0xFFFF_FFFF;
@@ -843,27 +1297,37 @@ fn untranspose_words(q: [&[u8]; 4], out: &mut [u8]) {
 }
 
 /// Four words from 16 bytes.
-#[inline(always)]
+#[cfg(test)]
 fn ld4(d: &[u8], at: usize) -> [u32; 4] {
     let d: &[u8; 16] = d[at..at + 16].try_into().unwrap();
     [word(d, 0), word(d, 1), word(d, 2), word(d, 3)]
 }
 
 /// [`unres`] on four lanes.
-#[inline(always)]
+#[cfg(test)]
 fn unres4<const M: u8>(r: [u32; 4], b: [u32; 4], p: [u32; 4]) -> [u32; 4] {
-    let mut o = [0u32; 4];
-    for i in 0..4 {
-        o[i] = unres::<M>(r[i], b[i], p[i]);
-    }
-    o
+    lanes::to_arr(unres_l::<M>(
+        lanes::from_arr(r),
+        lanes::from_arr(b),
+        lanes::from_arr(p),
+    ))
 }
 
+/// [`unres`] on a vector of four words.
 #[inline(always)]
-fn st4(d: &mut [u8], at: usize, v: [u32; 4]) {
-    let d: &mut [u8; 16] = (&mut d[at..at + 16]).try_into().unwrap();
-    for i in 0..4 {
-        d[4 * i..4 * i + 4].copy_from_slice(&v[i].to_le_bytes());
+fn unres_l<const M: u8>(r: lanes::L, b: lanes::L, p: lanes::L) -> lanes::L {
+    use lanes::*;
+    let sign = splat(0x8000_0000);
+    let ord = |u: L| xor(u, or(sar31(u), sign));
+    let unord = |o: L| xor(o, or(sar31(not(o)), sign));
+    let unzz = |u: L| xor(shr1(u), sub(splat(0), and(u, splat(1))));
+    match M {
+        0 => r,
+        1 => unord(add(unzz(r), ord(b))),
+        _ => {
+            let ob = ord(b);
+            unord(sub(add(unzz(r), add(ob, ob)), ord(p)))
+        }
     }
 }
 
@@ -889,8 +1353,8 @@ fn unres_words<const M: u8>(r: &[u8], b: &[u8], p: &[u8], out: &mut [u8]) {
     }
     let mut at = 0;
     loop {
-        let v = unres4::<M>(ld4(r, at), ld4(b, at), ld4(p, at));
-        st4(out, at, v);
+        let v = unres_l::<M>(lanes::ld(r, at), lanes::ld(b, at), lanes::ld(p, at));
+        lanes::st(out, at, v);
         if at + 16 == 4 * n {
             break;
         }
@@ -898,14 +1362,36 @@ fn unres_words<const M: u8>(r: &[u8], b: &[u8], p: &[u8], out: &mut [u8]) {
     }
 }
 
-/// `out = from ^ base`, or a copy of `from` when `base` is empty (an absent base).
+/// `out = from ^ base`, or a copy of `from` when `base` is empty (an absent base). Sixteen bytes
+/// at a time, a run that is not a multiple of sixteen ending with a block overlapping the one
+/// before (`out` is neither input, so the overlap rewrites equal bytes).
 #[inline(always)]
 fn unxor(from: &[u8], base: &[u8], out: &mut [u8]) {
-    let from = &from[..out.len()];
+    let n = out.len();
+    let from = &from[..n];
     if base.is_empty() {
         out.copy_from_slice(from);
+        return;
+    }
+    let base = &base[..n];
+    if n >= 16 {
+        let mut at = 0;
+        loop {
+            lanes::st(out, at, lanes::xor(lanes::ld(from, at), lanes::ld(base, at)));
+            if at + 16 == n {
+                break;
+            }
+            at = (at + 16).min(n - 16);
+        }
+    } else if n >= 8 {
+        let x = |at: usize| {
+            u64::from_le_bytes(from[at..at + 8].try_into().unwrap())
+                ^ u64::from_le_bytes(base[at..at + 8].try_into().unwrap())
+        };
+        let (lo, hi) = (x(0), x(n - 8));
+        out[n - 8..].copy_from_slice(&hi.to_le_bytes());
+        out[..8].copy_from_slice(&lo.to_le_bytes());
     } else {
-        let base = &base[..out.len()];
         for ((t, f), x) in out.iter_mut().zip(from).zip(base) {
             *t = f ^ x;
         }
@@ -913,63 +1399,62 @@ fn unxor(from: &[u8], base: &[u8], out: &mut [u8]) {
 }
 
 /// The interleaved attribute section of `n` vertices (a colour, then two UV words: 12 bytes a
-/// vertex) from `cols` (XOR H1's colours) and the untransposed UV words `uv`.
+/// vertex) from `cols` (XOR H1's colours) and the untransposed UV words `uv`. Four vertices
+/// (three vectors) at a time: the residuals are interleaved in registers, then each lane XORed (a
+/// colour) or un-residualed (a UV word) by a fixed lane mask; the last `n mod 4` vertices word by
+/// word.
 #[inline(always)]
 fn unpredict_attr<const M: u8>(cols: &[u8], uv: &[u8], b: &[u8], p: &[u8], out: &mut [u8]) {
     let n = out.len() / 12;
     let (cols, uv) = (&cols[..4 * n], &uv[..8 * n]);
-    if M == 0 {
-        for ((o, c), u) in out
-            .chunks_exact_mut(12)
-            .zip(cols.chunks_exact(4))
-            .zip(uv.chunks_exact(8))
-        {
-            o[..4].copy_from_slice(c);
-            o[4..].copy_from_slice(u);
-        }
-        return;
-    }
-    let b = &b[..12 * n];
-    let p = if M >= 2 { &p[..12 * n] } else { b };
-    // Two vertices (four UV words) at a time, the last pair overlapping when `n` is odd.
-    let pair = |k: usize, out: &mut [u8]| {
-        let (o, v) = (12 * k, 8 * k);
-        let bw = [
-            word(b, 3 * k + 1),
-            word(b, 3 * k + 2),
-            word(b, 3 * k + 4),
-            word(b, 3 * k + 5),
-        ];
-        let pw = [
-            word(p, 3 * k + 1),
-            word(p, 3 * k + 2),
-            word(p, 3 * k + 4),
-            word(p, 3 * k + 5),
-        ];
-        let u = unres4::<M>(ld4(uv, v), bw, pw);
-        let c0 = word(cols, k) ^ word(b, 3 * k);
-        let c1 = word(cols, k + 1) ^ word(b, 3 * k + 3);
-        let o: &mut [u8; 24] = (&mut out[o..o + 24]).try_into().unwrap();
-        for (i, x) in [c0, u[0], u[1], c1, u[2], u[3]].into_iter().enumerate() {
-            o[4 * i..4 * i + 4].copy_from_slice(&x.to_le_bytes());
-        }
+    let (b, p) = if M == 0 {
+        (&[][..], &[][..])
+    } else {
+        let b = &b[..12 * n];
+        (b, if M >= 2 { &p[..12 * n] } else { b })
     };
-    if n == 1 {
-        let c = word(cols, 0) ^ word(b, 0);
-        let u0 = unres::<M>(word(uv, 0), word(b, 1), word(p, 1));
-        let u1 = unres::<M>(word(uv, 1), word(b, 2), word(p, 2));
-        for (i, x) in [c, u0, u1].into_iter().enumerate() {
-            out[4 * i..4 * i + 4].copy_from_slice(&x.to_le_bytes());
+    // Four vertices are words c u v c | u v c u | v c u v: the colour lanes of each vector.
+    const C: u32 = u32::MAX;
+    let masks = [
+        lanes::from_arr([C, 0, 0, C]),
+        lanes::from_arr([0, 0, C, 0]),
+        lanes::from_arr([0, C, 0, 0]),
+    ];
+    let groups = n / 4;
+    for g in 0..groups {
+        let r3 = lanes::attr3(
+            lanes::ld(cols, 16 * g),
+            lanes::ld(uv, 32 * g),
+            lanes::ld(uv, 32 * g + 16),
+        );
+        for v in 0..3 {
+            let at = 48 * g + 16 * v;
+            let r = r3[v];
+            if M == 0 {
+                lanes::st(out, at, r);
+                continue;
+            }
+            let (bb, pp) = (lanes::ld(b, at), lanes::ld(p, at));
+            let u = unres_l::<M>(r, bb, pp);
+            let x = lanes::xor(r, bb);
+            // u where the mask is clear, x where it is set.
+            lanes::st(out, at, lanes::xor(u, lanes::and(masks[v], lanes::xor(x, u))));
         }
-        return;
     }
-    let mut k = 0;
-    loop {
-        pair(k, out);
-        if k + 2 == n {
-            break;
+    for k in 4 * groups..n {
+        let (w, c, u0, u1) = (3 * k, word(cols, k), word(uv, 2 * k), word(uv, 2 * k + 1));
+        let v = if M == 0 {
+            [c, u0, u1]
+        } else {
+            [
+                c ^ word(b, w),
+                unres::<M>(u0, word(b, w + 1), word(p, w + 1)),
+                unres::<M>(u1, word(b, w + 2), word(p, w + 2)),
+            ]
+        };
+        for (i, x) in v.into_iter().enumerate() {
+            out[4 * (w + i)..4 * (w + i) + 4].copy_from_slice(&x.to_le_bytes());
         }
-        k = (k + 2).min(n - 2);
     }
 }
 
@@ -1022,8 +1507,8 @@ fn unpredict_u8(
     tx: &TxMeta,
     src: &[u8],
     dst: &mut [u8],
-    h1: &PredState,
-    h2: &PredState,
+    h1: PredState<'_>,
+    h2: PredState<'_>,
     surfs: &mut Vec<Surf>,
     words: &mut Vec<u8>,
     trace: &mut Option<&mut Vec<Unit>>,
@@ -1062,8 +1547,9 @@ fn unpredict_u8(
             continue;
         }
         let count = e.surfaces.len();
-        let base = h1.body.get(&e.id).filter(|b| b.same_shape(e));
-        let prev = base.and(h2.body.get(&e.id).filter(|b| b.same_shape(e)));
+        let (b1, b2) = pair(h1, h2, |h| &h.body, e.id);
+        let base = b1.filter(|b| b.same_shape(e));
+        let prev = base.and(b2.filter(|b| b.same_shape(e)));
         let m = order(base.is_some(), prev.is_some());
         if count > 0 {
             if let Some(t) = trace.as_deref_mut() {
@@ -1077,8 +1563,8 @@ fn unpredict_u8(
         for (k, s) in surfs[si..si + count].iter().enumerate() {
             let len: usize = s.sizes.iter().sum();
             let out = &mut dst[s.start..s.start + len];
-            let bb = base.map_or(&[][..], |b| b.surface(k));
-            let pb = prev.map_or(&[][..], |b| b.surface(k));
+            let bb = base.map_or(&[][..], |b| b.surface(h1.h.bodies(b), k));
+            let pb = prev.map_or(&[][..], |b| b.surface(h2.h.bodies(b), k));
             let at = |i: usize| -> &[u8] {
                 let w = matches!(i, 0 | 1 | 3);
                 let (d, o) = if w {
@@ -1186,8 +1672,8 @@ pub fn code_blocks(
     tx: &TxMeta,
     src: Blocks<'_>,
     dst: BlocksMut<'_>,
-    h1: &PredState,
-    h2: &PredState,
+    h1: PredState<'_>,
+    h2: PredState<'_>,
     inverse: bool,
     sc: &mut Scratch,
     mut trace: Option<&mut Vec<Unit>>,
@@ -1212,8 +1698,8 @@ pub fn code_blocks(
             .f32u
             .iter()
             .map(|&(id, off)| {
-                let b = h1.aabb.get(&id).map(|a| &a[..]);
-                let p = b.and(h2.aabb.get(&id).map(|a| &a[..]));
+                let (b, p) = pair(h1, h2, |h| &h.aabb, id);
+                let (b, p) = (b.map(|a| &a[..]), p.map(|a| &a[..]));
                 if let Some(t) = trace.as_deref_mut() {
                     t.push(Unit {
                         block: "mesh_f32",
@@ -1234,9 +1720,10 @@ pub fn code_blocks(
             .mmu
             .iter()
             .map(|&(id, instances, stride, off)| {
-                let same = |m: &&Arc<MmBuf>| m.instances == instances && m.stride == stride;
-                let b = h1.mm.get(&id).filter(same).map(|m| &m.bytes[..]);
-                let p = b.and(h2.mm.get(&id).filter(same).map(|m| &m.bytes[..]));
+                let same = |m: &&MmBuf| m.instances == instances && m.stride == stride;
+                let (b, p) = pair(h1, h2, |h| &h.mm, id);
+                let b = b.filter(same).map(|m| &m.bytes[..]);
+                let p = b.and(p.filter(same).map(|m| &m.bytes[..]));
                 if let Some(t) = trace.as_deref_mut() {
                     t.push(Unit {
                         block: "mm_f32",
@@ -1258,8 +1745,8 @@ fn unpredict_blocks(
     tx: &TxMeta,
     src: Blocks<'_>,
     dst: BlocksMut<'_>,
-    h1: &PredState,
-    h2: &PredState,
+    h1: PredState<'_>,
+    h2: PredState<'_>,
     sc: &mut Scratch,
     mut trace: Option<&mut Vec<Unit>>,
 ) {
@@ -1276,8 +1763,8 @@ fn unpredict_blocks(
     if f32_layout(tx, src.mesh_f32.len() / 4, &mut sc.f32u) {
         let trace = &mut trace;
         let units = sc.f32u.iter().map(|&(id, off)| {
-            let b = h1.aabb.get(&id).map(|a| &a[..]);
-            let p = b.and(h2.aabb.get(&id).map(|a| &a[..]));
+            let (b, p) = pair(h1, h2, |h| &h.aabb, id);
+            let (b, p) = (b.map(|a| &a[..]), p.map(|a| &a[..]));
             if let Some(t) = trace.as_deref_mut() {
                 t.push(Unit {
                     block: "mesh_f32",
@@ -1294,9 +1781,10 @@ fn unpredict_blocks(
     if mm_layout(tx, src.mm_f32.len() / 4, &mut sc.mmu) {
         let trace = &mut trace;
         let units = sc.mmu.iter().map(|&(id, instances, stride, off)| {
-            let same = |m: &&Arc<MmBuf>| m.instances == instances && m.stride == stride;
-            let b = h1.mm.get(&id).filter(same).map(|m| &m.bytes[..]);
-            let p = b.and(h2.mm.get(&id).filter(same).map(|m| &m.bytes[..]));
+            let same = |m: &&MmBuf| m.instances == instances && m.stride == stride;
+            let (b, p) = pair(h1, h2, |h| &h.mm, id);
+            let b = b.filter(same).map(|m| &m.bytes[..]);
+            let p = b.and(p.filter(same).map(|m| &m.bytes[..]));
             if let Some(t) = trace.as_deref_mut() {
                 t.push(Unit {
                     block: "mm_f32",
@@ -1324,6 +1812,340 @@ pub fn check(b: Blocks<'_>) -> u64 {
 /// 16 lowercase hex digits.
 pub fn check_hex(v: u64) -> String {
     format!("{v:016x}")
+}
+
+// --------------------------------------------------------------------------- lanes
+//
+// Four 32-bit lanes, as one 128-bit vector where the target has one: wasm32 built with `simd128`
+// (scripts/build-rs-core.sh and the render-stream client's build-web.sh enable it) and x86-64
+// (SSE2 is its baseline). Elsewhere (the emscripten side module, aarch64) four plain words, which
+// the compiler vectorizes when it can. Every path computes the same words.
+
+mod lanes {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    mod imp {
+        use core::arch::wasm32::*;
+        pub type L = v128;
+
+        #[inline(always)]
+        pub fn ld(d: &[u8], at: usize) -> L {
+            let a: &[u8; 16] = d[at..at + 16].try_into().unwrap();
+            // SAFETY: 16 readable bytes; wasm loads need no alignment.
+            unsafe { v128_load(a.as_ptr().cast()) }
+        }
+        #[inline(always)]
+        pub fn st(d: &mut [u8], at: usize, v: L) {
+            let a: &mut [u8; 16] = (&mut d[at..at + 16]).try_into().unwrap();
+            // SAFETY: 16 writable bytes; wasm stores need no alignment.
+            unsafe { v128_store(a.as_mut_ptr().cast(), v) }
+        }
+        #[inline(always)]
+        pub fn from_arr(a: [u32; 4]) -> L {
+            u32x4(a[0], a[1], a[2], a[3])
+        }
+        #[cfg(test)]
+        pub fn to_arr(v: L) -> [u32; 4] {
+            [
+                u32x4_extract_lane::<0>(v),
+                u32x4_extract_lane::<1>(v),
+                u32x4_extract_lane::<2>(v),
+                u32x4_extract_lane::<3>(v),
+            ]
+        }
+        #[inline(always)]
+        pub fn splat(x: u32) -> L {
+            u32x4_splat(x)
+        }
+        #[inline(always)]
+        pub fn add(a: L, b: L) -> L {
+            i32x4_add(a, b)
+        }
+        #[inline(always)]
+        pub fn sub(a: L, b: L) -> L {
+            i32x4_sub(a, b)
+        }
+        #[inline(always)]
+        pub fn xor(a: L, b: L) -> L {
+            v128_xor(a, b)
+        }
+        #[inline(always)]
+        pub fn or(a: L, b: L) -> L {
+            v128_or(a, b)
+        }
+        #[inline(always)]
+        pub fn and(a: L, b: L) -> L {
+            v128_and(a, b)
+        }
+        #[inline(always)]
+        pub fn not(a: L) -> L {
+            v128_not(a)
+        }
+        /// Each lane's sign bit, smeared (arithmetic shift right by 31).
+        #[inline(always)]
+        pub fn sar31(a: L) -> L {
+            i32x4_shr(a, 31)
+        }
+        #[inline(always)]
+        pub fn shr1(a: L) -> L {
+            u32x4_shr(a, 1)
+        }
+
+        /// Four vertices' attribute words `c u v c | u v c u | v c u v` from their colours
+        /// `c` and their UV words `u0` (vertices 0, 1) and `u1` (2, 3).
+        #[inline(always)]
+        pub fn attr3(c: L, u0: L, u1: L) -> [L; 3] {
+            let t = i32x4_shuffle::<2, 3, 4, 4>(u0, u1);
+            [
+                i32x4_shuffle::<0, 4, 5, 1>(c, u0),
+                i32x4_shuffle::<0, 1, 6, 2>(t, c),
+                i32x4_shuffle::<1, 7, 2, 3>(u1, c),
+            ]
+        }
+
+        /// The first `16·⌊n/16⌋` of the `n` words whose byte planes are `q` into `out`; returns
+        /// how many words it wrote.
+        #[inline]
+        pub fn untranspose16(q: [&[u8]; 4], out: &mut [u8]) -> usize {
+            let n = out.len() / 4;
+            let full = n - n % 16;
+            let mut w = 0;
+            while w < full {
+                let (a, b, c, d) = (ld(q[0], w), ld(q[1], w), ld(q[2], w), ld(q[3], w));
+                // Bytes j of words w.. as pairs (q0 q1) and (q2 q3), then the pairs joined.
+                let ab_lo = u8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(a, b);
+                let ab_hi =
+                    u8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(a, b);
+                let cd_lo = u8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(c, d);
+                let cd_hi =
+                    u8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(c, d);
+                let o = 4 * w;
+                st(out, o, u16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(ab_lo, cd_lo));
+                st(out, o + 16, u16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(ab_lo, cd_lo));
+                st(out, o + 32, u16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(ab_hi, cd_hi));
+                st(out, o + 48, u16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(ab_hi, cd_hi));
+                w += 16;
+            }
+            full
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[allow(unused_unsafe)]
+    mod imp {
+        use core::arch::x86_64::*;
+        pub type L = __m128i;
+
+        #[inline(always)]
+        pub fn ld(d: &[u8], at: usize) -> L {
+            let a: &[u8; 16] = d[at..at + 16].try_into().unwrap();
+            // SAFETY: 16 readable bytes; loadu needs no alignment; SSE2 is x86-64's baseline.
+            unsafe { _mm_loadu_si128(a.as_ptr().cast()) }
+        }
+        #[inline(always)]
+        pub fn st(d: &mut [u8], at: usize, v: L) {
+            let a: &mut [u8; 16] = (&mut d[at..at + 16]).try_into().unwrap();
+            // SAFETY: 16 writable bytes; storeu needs no alignment.
+            unsafe { _mm_storeu_si128(a.as_mut_ptr().cast(), v) }
+        }
+        #[inline(always)]
+        pub fn from_arr(a: [u32; 4]) -> L {
+            unsafe { _mm_set_epi32(a[3] as i32, a[2] as i32, a[1] as i32, a[0] as i32) }
+        }
+        #[cfg(test)]
+        pub fn to_arr(v: L) -> [u32; 4] {
+            let mut b = [0u8; 16];
+            st(&mut b, 0, v);
+            let w = |i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap());
+            [w(0), w(1), w(2), w(3)]
+        }
+        #[inline(always)]
+        pub fn splat(x: u32) -> L {
+            unsafe { _mm_set1_epi32(x as i32) }
+        }
+        #[inline(always)]
+        pub fn add(a: L, b: L) -> L {
+            unsafe { _mm_add_epi32(a, b) }
+        }
+        #[inline(always)]
+        pub fn sub(a: L, b: L) -> L {
+            unsafe { _mm_sub_epi32(a, b) }
+        }
+        #[inline(always)]
+        pub fn xor(a: L, b: L) -> L {
+            unsafe { _mm_xor_si128(a, b) }
+        }
+        #[inline(always)]
+        pub fn or(a: L, b: L) -> L {
+            unsafe { _mm_or_si128(a, b) }
+        }
+        #[inline(always)]
+        pub fn and(a: L, b: L) -> L {
+            unsafe { _mm_and_si128(a, b) }
+        }
+        #[inline(always)]
+        pub fn not(a: L) -> L {
+            unsafe { _mm_xor_si128(a, _mm_set1_epi32(-1)) }
+        }
+        #[inline(always)]
+        pub fn sar31(a: L) -> L {
+            unsafe { _mm_srai_epi32::<31>(a) }
+        }
+        #[inline(always)]
+        pub fn shr1(a: L) -> L {
+            unsafe { _mm_srli_epi32::<1>(a) }
+        }
+
+        /// As the wasm `attr3`, with SSE's two-source float shuffles (lane moves only).
+        #[inline(always)]
+        pub fn attr3(c: L, u0: L, u1: L) -> [L; 3] {
+            // _MM_SHUFFLE(d, c, b, a): lanes a, b of the first operand, c, d of the second.
+            const fn sh(a: i32, b: i32, c: i32, d: i32) -> i32 {
+                a | b << 2 | c << 4 | d << 6
+            }
+            unsafe {
+                let (cf, u0f, u1f) = (_mm_castsi128_ps(c), _mm_castsi128_ps(u0), _mm_castsi128_ps(u1));
+                // [c0 u0 c1 v0] -> [c0 u0 v0 c1]
+                let o0 = _mm_shuffle_epi32::<{ sh(0, 1, 3, 2) }>(_mm_unpacklo_epi32(c, u0));
+                // [c2 c2 u2 u2], then [u1 v1 c2 u2]
+                let s1 = _mm_shuffle_ps::<{ sh(2, 2, 0, 0) }>(cf, u1f);
+                let o1 = _mm_shuffle_ps::<{ sh(2, 3, 0, 2) }>(u0f, s1);
+                // [v2 v2 c3 c3], then [v2 c3 u3 v3]
+                let s2 = _mm_shuffle_ps::<{ sh(1, 1, 3, 3) }>(u1f, cf);
+                let o2 = _mm_shuffle_ps::<{ sh(0, 2, 2, 3) }>(s2, u1f);
+                [o0, _mm_castps_si128(o1), _mm_castps_si128(o2)]
+            }
+        }
+
+        /// As the wasm `untranspose16`, with SSE2's unpacks.
+        #[inline]
+        pub fn untranspose16(q: [&[u8]; 4], out: &mut [u8]) -> usize {
+            let n = out.len() / 4;
+            let full = n - n % 16;
+            let mut w = 0;
+            while w < full {
+                let (a, b, c, d) = (ld(q[0], w), ld(q[1], w), ld(q[2], w), ld(q[3], w));
+                let (ab_lo, ab_hi, cd_lo, cd_hi) = unsafe {
+                    (
+                        _mm_unpacklo_epi8(a, b),
+                        _mm_unpackhi_epi8(a, b),
+                        _mm_unpacklo_epi8(c, d),
+                        _mm_unpackhi_epi8(c, d),
+                    )
+                };
+                let o = 4 * w;
+                unsafe {
+                    st(out, o, _mm_unpacklo_epi16(ab_lo, cd_lo));
+                    st(out, o + 16, _mm_unpackhi_epi16(ab_lo, cd_lo));
+                    st(out, o + 32, _mm_unpacklo_epi16(ab_hi, cd_hi));
+                    st(out, o + 48, _mm_unpackhi_epi16(ab_hi, cd_hi));
+                }
+                w += 16;
+            }
+            full
+        }
+    }
+
+    #[cfg(not(any(
+        all(target_arch = "wasm32", target_feature = "simd128"),
+        target_arch = "x86_64"
+    )))]
+    use scalar as imp;
+
+    /// The portable lanes (also what the tests hold the vector paths to).
+    #[cfg(any(
+        test,
+        not(any(
+            all(target_arch = "wasm32", target_feature = "simd128"),
+            target_arch = "x86_64"
+        ))
+    ))]
+    #[cfg_attr(test, allow(dead_code))]
+    pub(super) mod scalar {
+        pub type L = [u32; 4];
+
+        #[inline(always)]
+        fn map(a: L, f: impl Fn(u32) -> u32) -> L {
+            [f(a[0]), f(a[1]), f(a[2]), f(a[3])]
+        }
+        #[inline(always)]
+        fn zip(a: L, b: L, f: impl Fn(u32, u32) -> u32) -> L {
+            [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), f(a[3], b[3])]
+        }
+        #[inline(always)]
+        pub fn ld(d: &[u8], at: usize) -> L {
+            let d: &[u8; 16] = d[at..at + 16].try_into().unwrap();
+            let w = |i: usize| u32::from_le_bytes(d[4 * i..4 * i + 4].try_into().unwrap());
+            [w(0), w(1), w(2), w(3)]
+        }
+        #[inline(always)]
+        pub fn st(d: &mut [u8], at: usize, v: L) {
+            let d: &mut [u8; 16] = (&mut d[at..at + 16]).try_into().unwrap();
+            for i in 0..4 {
+                d[4 * i..4 * i + 4].copy_from_slice(&v[i].to_le_bytes());
+            }
+        }
+        #[inline(always)]
+        pub fn from_arr(a: [u32; 4]) -> L {
+            a
+        }
+        #[cfg(test)]
+        pub fn to_arr(v: L) -> [u32; 4] {
+            v
+        }
+        #[inline(always)]
+        pub fn splat(x: u32) -> L {
+            [x; 4]
+        }
+        #[inline(always)]
+        pub fn add(a: L, b: L) -> L {
+            zip(a, b, u32::wrapping_add)
+        }
+        #[inline(always)]
+        pub fn sub(a: L, b: L) -> L {
+            zip(a, b, u32::wrapping_sub)
+        }
+        #[inline(always)]
+        pub fn xor(a: L, b: L) -> L {
+            zip(a, b, |x, y| x ^ y)
+        }
+        #[inline(always)]
+        pub fn or(a: L, b: L) -> L {
+            zip(a, b, |x, y| x | y)
+        }
+        #[inline(always)]
+        pub fn and(a: L, b: L) -> L {
+            zip(a, b, |x, y| x & y)
+        }
+        #[inline(always)]
+        pub fn not(a: L) -> L {
+            map(a, |x| !x)
+        }
+        #[inline(always)]
+        pub fn sar31(a: L) -> L {
+            map(a, |x| ((x as i32) >> 31) as u32)
+        }
+        #[inline(always)]
+        pub fn shr1(a: L) -> L {
+            map(a, |x| x >> 1)
+        }
+
+        #[inline(always)]
+        pub fn attr3(c: L, u0: L, u1: L) -> [L; 3] {
+            [
+                [c[0], u0[0], u0[1], c[1]],
+                [u0[2], u0[3], c[2], u1[0]],
+                [u1[1], c[3], u1[2], u1[3]],
+            ]
+        }
+
+        /// No vector unit: `untranspose_words_u64` does every word.
+        #[inline(always)]
+        pub fn untranspose16(_q: [&[u8]; 4], _out: &mut [u8]) -> usize {
+            0
+        }
+    }
+
+    pub use imp::*;
 }
 
 // --------------------------------------------------------------------------- records
@@ -1384,8 +2206,8 @@ pub fn unpredict_record(
     record: &[u8],
     tx: &TxMeta,
     blocks: &mut [BlockRange],
-    h1: &PredState,
-    h2: &PredState,
+    h1: PredState<'_>,
+    h2: PredState<'_>,
     sc: &mut Scratch,
     plain: &mut Vec<u8>,
 ) -> Result<(u64, u64), Error> {
@@ -1427,8 +2249,8 @@ pub fn predict_record(
     record: &[u8],
     tx: &TxMeta,
     blocks: &[BlockRange],
-    h1: &PredState,
-    h2: &PredState,
+    h1: PredState<'_>,
+    h2: PredState<'_>,
     sc: &mut Scratch,
     trace: Option<&mut Vec<Unit>>,
     out: &mut Vec<u8>,
@@ -1620,4 +2442,111 @@ pub fn order_counts(trace: &[TxTrace]) -> [usize; 3] {
         }
     }
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bytes(seed: u64, n: usize) -> Vec<u8> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let edge = [0u32, 1, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, 0xFFFF_FFFF];
+        (0..n)
+            .map(|i| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                if i % 4 == 0 && x % 5 == 0 {
+                    // Sometimes an edge word's low byte (the rest follows from x).
+                    edge[(x as usize / 5) % edge.len()] as u8
+                } else {
+                    x as u8
+                }
+            })
+            .collect()
+    }
+
+    /// The vector untranspose (16 words a step, then the u64 path) is the byte-plane inverse.
+    #[test]
+    fn untranspose_words_matches_the_reference() {
+        for n in 0..=67usize {
+            let words = bytes(n as u64 + 1, 4 * n);
+            let mut coded = vec![0u8; 4 * n];
+            transpose4(&words, &mut coded);
+            let mut out = vec![0u8; 4 * n];
+            untranspose_words(planes(&coded, 0, n), &mut out);
+            assert_eq!(out, words, "n {n}");
+            let mut out2 = vec![0u8; 4 * n];
+            untranspose_words_u64(planes(&coded, 0, n), &mut out2);
+            assert_eq!(out2, words, "n {n} (u64)");
+        }
+    }
+
+    /// The lanes' un-residual (vector where the target has one) equals the scalar word one, and
+    /// the portable lanes do too.
+    #[test]
+    fn unres_lanes_match_the_scalar_words() {
+        let edge = [0u32, 1, 2, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, 0xFFFF_FFFE, 0xFFFF_FFFF];
+        let mut all: Vec<u32> = edge.to_vec();
+        let r = bytes(7, 4 * 4096);
+        all.extend((0..4096).map(|i| word(&r, i)));
+        let n = all.len();
+        for i in 0..n {
+            let pick = |k: usize| all[(i * 7 + k * 13) % n];
+            let (r, b, p) = ([pick(0), pick(1), pick(2), pick(3)], [pick(4), all[i], pick(5), pick(6)], [pick(7), pick(8), all[(i + 1) % n], pick(9)]);
+            let want1: Vec<u32> = (0..4).map(|k| unres::<1>(r[k], b[k], p[k])).collect();
+            let want2: Vec<u32> = (0..4).map(|k| unres::<2>(r[k], b[k], p[k])).collect();
+            assert_eq!(unres4::<1>(r, b, p).to_vec(), want1);
+            let raw: Vec<u8> = r.iter().flat_map(|w| w.to_le_bytes()).collect();
+            assert_eq!(ld4(&raw, 0), r);
+            assert_eq!(unres4::<2>(r, b, p).to_vec(), want2);
+            for k in 0..4 {
+                assert_eq!(want1[k], unresidual(r[k], Some(b[k]), None));
+                assert_eq!(want2[k], unresidual(r[k], Some(b[k]), Some(p[k])));
+            }
+            use lanes::scalar as s;
+            let ord = |u: s::L| s::xor(u, s::or(s::sar31(u), s::splat(0x8000_0000)));
+            let unord = |o: s::L| s::xor(o, s::or(s::sar31(s::not(o)), s::splat(0x8000_0000)));
+            let unzz = |u: s::L| s::xor(s::shr1(u), s::sub(s::splat(0), s::and(u, s::splat(1))));
+            assert_eq!(unord(s::add(unzz(r), ord(b))).to_vec(), want1);
+        }
+    }
+
+    /// The attribute interleave (vector where the target has one) equals the portable one.
+    #[test]
+    fn attr3_interleaves_colours_and_uvs() {
+        let (c, u0, u1) = ([10, 11, 12, 13], [20, 21, 22, 23], [24, 25, 26, 27]);
+        let want = [[10, 20, 21, 11], [22, 23, 12, 24], [25, 13, 26, 27]];
+        let got = lanes::attr3(lanes::from_arr(c), lanes::from_arr(u0), lanes::from_arr(u1));
+        for v in 0..3 {
+            let mut b = [0u8; 16];
+            lanes::st(&mut b, 0, got[v]);
+            assert_eq!(ld4(&b, 0), want[v], "vector {v}");
+        }
+        assert_eq!(lanes::scalar::attr3(c, u0, u1), want);
+    }
+
+    /// `unres_words` over every run length (the overlapping last block included).
+    #[test]
+    fn unres_words_matches_the_scalar_words() {
+        for n in 0..=41usize {
+            let (r, b, p) = (bytes(3 * n as u64 + 1, 4 * n), bytes(3 * n as u64 + 2, 4 * n), bytes(3 * n as u64 + 3, 4 * n));
+            for m in 0..3u8 {
+                let mut out = vec![0u8; 4 * n];
+                match m {
+                    0 => unres_words::<0>(&r, &b, &p, &mut out),
+                    1 => unres_words::<1>(&r, &b, &p, &mut out),
+                    _ => unres_words::<2>(&r, &b, &p, &mut out),
+                }
+                for w in 0..n {
+                    let want = match m {
+                        0 => word(&r, w),
+                        1 => unres::<1>(word(&r, w), word(&b, w), 0),
+                        _ => unres::<2>(word(&r, w), word(&b, w), word(&p, w)),
+                    };
+                    assert_eq!(word(&out, w), want, "n {n} order {m} word {w}");
+                }
+            }
+        }
+    }
 }

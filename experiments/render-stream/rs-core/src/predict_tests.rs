@@ -88,6 +88,11 @@ const SHAPES: &[(i64, i64, i64)] = &[
     ),
     // positions only, many vertices
     (1 << 25, 40, 0),
+    // W13p: colour + UV + index at vertex counts that leave 1, 2 and 3 vertices after the
+    // un-predictor's four-vertex groups, and index runs past 16 bytes
+    ((1 << 25) | (1 << 3) | (1 << 4) | (1 << 12), 13, 33),
+    ((1 << 25) | (1 << 3) | (1 << 4) | (1 << 12), 7, 15),
+    ((1 << 25) | (1 << 3) | (1 << 4) | (1 << 12), 2, 3),
 ];
 
 fn body_len(s: usize) -> usize {
@@ -421,11 +426,17 @@ fn blocks(t: &Tx) -> Blocks<'_> {
     }
 }
 
+const MESH_F32_I: usize = crate::predict::MESH_F32;
+const MESH_U8_I: usize = crate::predict::MESH_U8;
+const MM_F32_I: usize = crate::predict::MM_F32;
+
 fn run(seed: u64, n: usize) -> Seen {
     let mut rng = Rng(seed);
     let (mut meshes, mut mms) = (BTreeMap::new(), BTreeMap::new());
     let (mut enc, mut dec) = (History::default(), History::default());
     let (mut se, mut sd) = (Scratch::default(), Scratch::default());
+    // W13p: a third end on the validator's path (plain records retained, bodies read in place).
+    let (mut rec, mut sr) = (History::default(), Scratch::default());
     let mut seen = Seen::default();
     for seq in 1..=n as i64 {
         let t = generate(&mut rng, seq, &mut meshes, &mut mms, &mut seen);
@@ -500,6 +511,54 @@ fn run(seed: u64, n: usize) -> Seen {
             }),
             check(blocks(&t))
         );
+        {
+            // The plain record: three predicted blocks between filler, at their block indices.
+            let parts: [&[u8]; 3] = [&t.mesh_f32, &t.mesh_u8, &t.mm_f32];
+            let mut ranges = vec![crate::wire::BlockRange { start: 0, len: 0 }; 9];
+            if rng.chance(10) {
+                // A transaction that fails after un-predicting: its buffer goes back.
+                let mut buf = rec.take_plain();
+                buf.clear();
+                buf.extend_from_slice(&[0xEE; 64]);
+                rec.return_plain(buf);
+            }
+            let mut buf = rec.take_plain();
+            buf.clear();
+            buf.extend_from_slice(&[7u8; 13]);
+            let (d1, d2) = rec.refs(full, false, false);
+            let at = buf.len();
+            buf.resize(at + cf.len() + 5 + cu.len() + 3 + cm.len(), 0xAB);
+            let starts = [at, at + cf.len() + 5, at + cf.len() + 5 + cu.len() + 3];
+            for (k, i) in [MESH_F32_I, MESH_U8_I, MM_F32_I].into_iter().enumerate() {
+                ranges[i] = crate::wire::BlockRange {
+                    start: starts[k],
+                    len: parts[k].len(),
+                };
+            }
+            let dst = crate::predict::blocks_of_mut(&mut buf, &ranges);
+            code_blocks(
+                &t.meta,
+                Blocks {
+                    mesh_f32: &cf,
+                    mesh_u8: &cu,
+                    mm_f32: &cm,
+                },
+                dst,
+                d1,
+                d2,
+                true,
+                &mut sr,
+                None,
+            );
+            let got = crate::predict::blocks_of(&buf, &ranges);
+            assert!(
+                got.mesh_f32 == &t.mesh_f32[..] && got.mesh_u8 == &t.mesh_u8[..] && got.mm_f32 == &t.mm_f32[..],
+                "seed {seed} seq {seq}: retained-record round trip"
+            );
+            let keep = buf.clone();
+            rec.accept_plain(&t.meta, buf, &ranges, false, &mut sr);
+            assert!(rec.plain() == Some(&keep[..]), "seed {seed} seq {seq}: plain kept");
+        }
         enc.accept(&t.meta, blocks(&t), false, &mut se);
         dec.accept(
             &t.meta,
@@ -513,6 +572,8 @@ fn run(seed: u64, n: usize) -> Seen {
         );
         assert!(enc.h1() == dec.h1(), "seed {seed} seq {seq}: H1 differs");
         assert!(enc.h2() == dec.h2(), "seed {seed} seq {seq}: H2 differs");
+        assert!(enc.h1() == rec.h1(), "seed {seed} seq {seq}: retained H1 differs");
+        assert!(enc.h2() == rec.h2(), "seed {seed} seq {seq}: retained H2 differs");
         if full {
             assert!(
                 enc.h2().is_empty(),
@@ -730,7 +791,7 @@ fn predict_phase_bench() {
     for _ in 0..3 {
         let mut hist = History::default();
         let mut sc = Scratch::default();
-        let (mut plain, mut again) = (Vec::new(), Vec::new());
+        let mut again = Vec::new();
         for s in &spans {
             let rec = s.bytes(&data);
             let d = crate::meta::decode_record(rec, s.offset, 13, &mut bufs, &mut tx).unwrap();
@@ -739,6 +800,8 @@ fn predict_phase_bench() {
             }
             let coded = bufs.blocks.clone();
             let t0 = Instant::now();
+            // The validator's path (W13p): the plain record rotates through the history.
+            let mut plain = hist.take_plain();
             let (h1, h2) = hist.refs(tx.is_full(), false, false);
             let (declared, computed) = crate::predict::unpredict_record(
                 rec,
@@ -761,13 +824,9 @@ fn predict_phase_bench() {
             }
             let w1 = Instant::now();
             assert!(again == plain);
+            let u8_len = crate::predict::blocks_of(&plain, &bufs.blocks).mesh_u8.len();
             let a0 = Instant::now();
-            hist.accept(
-                &tx,
-                crate::predict::blocks_of(&plain, &bufs.blocks),
-                false,
-                &mut sc,
-            );
+            hist.accept_plain(&tx, plain, &bufs.blocks, false, &mut sc);
             let a1 = Instant::now();
             un.push(us(t0, t1));
             warm.push(us(w0, w1) / 4.0);
@@ -779,9 +838,7 @@ fn predict_phase_bench() {
                     .flat_map(|e| &e.surfaces)
                     .map(|s| s.vertex_count)
                     .sum::<i64>(),
-                crate::predict::blocks_of(&plain, &bufs.blocks)
-                    .mesh_u8
-                    .len(),
+                u8_len,
             ));
         }
     }

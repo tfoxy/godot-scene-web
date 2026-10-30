@@ -171,6 +171,7 @@
 #include <string>
 #include <vector>
 
+#include "rs13_predict.h"
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_carried.h"
@@ -705,9 +706,12 @@ class Hub {
   std::shared_ptr<const std::vector<std::uint8_t>> form_coded_tx(
       Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &message);
   // W13b: the /13 message of `plain` (the /12 transaction) on the job's connection: re-stamped
-  // from a lockstep connection's coding in this callback, or coded by its predictor.
+  // from a lockstep connection's coding in this callback, or coded by its predictor. W13p:
+  // `predict` is the transaction's typed meta keys (rs13::predict_meta()), so the predictor does
+  // not re-read the meta JSON (nullptr: it does).
   std::shared_ptr<const std::vector<std::uint8_t>> form_predicted(
-      Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &plain);
+      Job &job, const std::shared_ptr<const std::vector<std::uint8_t>> &plain,
+      const rs13::PredictMeta *predict);
   struct TargetRefs;  // a target's payload refs and their CarriedIndex ids
   struct SharedTx;    // an encoded transaction other connections may re-stamp
   struct V11Records;  // W11b: the /11 records before a target, for one (base, target) pair

@@ -683,6 +683,42 @@ C++ shim are unchanged: they see /12's model.
 - **Tools.** `render-stream-2.ts`'s `wireVersionOf()` reads `GRSD` as 13 (W13a held it at 6 until
   a receiver accepted /13), so gate 7's views resolve /13 legs by their magic.
 
+## As built (W13p): cost
+
+W13p cuts what W13b to W13d's prediction cost on the host and the receivers (results in
+[results/p3/w13p.md](../results/p3/w13p.md)). The wire is "As built (W13a)"'s, byte for byte: the
+goldens, the C++ writer against rs-core's transcode on every pm7-a12-1 transaction, and the
+`/12 → /13 → /12` round trips are unchanged.
+
+- **Host: no meta re-parse.** `rs13::Predictor::encode(const PredictMeta &, record)` takes the meta
+  keys the predictor reads as a typed struct (`rs13::PredictMeta`). The writers build it from the
+  `rs2::Transaction` (`rs13::predict_meta()`, the offsets `encode_transaction` writes), so the JSON
+  is not read again: the file lanes through `rs13::encode_transaction()`, the live hub through
+  `SharedTx::predict` (built once per formed /12 transaction and shared with the connections that
+  re-stamp it). A bare record (`encode(record)`, the reader `decode()`) parses the JSON into the same
+  struct, keeping make_golden.py's rules (an int, a float, null or another value; an array, missing
+  or another value), so both sources code every record alike; `rs13::set_verify_meta(true)` (the
+  publish and live tests) aborts when `predict_meta()` and the JSON disagree.
+- **Host: no per-surface allocation.** The writer codes `mesh_u8` straight from each body into the
+  record it returns (each word scattered to its byte planes, colour and UV de-interleaved in
+  place), `mesh_f32` and `mm_f32` likewise, hashes `predict_check` with a streaming XXH64, and
+  keeps its layouts in per-predictor scratch. R(T) reuses the state that leaves the history (H2)
+  when the predictor is its only holder: its map nodes take R(T−1)'s copy and its byte vectors no
+  one else shares are refilled with T's units. Copies of a `Predictor` share H1 and H2, never the
+  scratch.
+- **Receivers.** rs-core's history keeps each unit's last two values in fixed slots (an id-indexed
+  array below 65536, a map above), touched only for the units a transaction carries or drops, and
+  the validator keeps its last plain records and reads H1/H2 bodies in them instead of copying.
+  The un-predict runs on four 32-bit lanes (`predict::lanes`: wasm `simd128`, SSE2 on x86-64, plain
+  words otherwise). The wasm builds of rs-gsw-wasm (`build-rs-core.sh`, the live client's
+  `build-web.sh`, both from `web/gsw-rs/.cargo/config.toml`) enable `+simd128`; the web export's
+  emscripten side module (`build-rs-core-web.sh`) does not and takes the plain-word lanes.
+- **Cost after W13p.** Host: capture-scale's file-lane formation is 3.26 M instructions a
+  transaction at /13 against /12's 3.02 (1.08×; main's /13 was 4.55, 1.51×), the predictor 0.23 M
+  of it (was 1.35), and 2.01 M cycles against /12's 1.60 (1.26×); the predictor alone on pm7-a12-1 5.19 → 0.88 M instructions and 383 → 70 µs a
+  patch (p50). Receivers: wasm accept +13.4 % over /12 (was +23.2 %), native +15.2 % (was
+  +20.6 %). The design's +10 % on wasm accept is still missed (results/p3/w13p.md "Receivers").
+
 ## Versioning
 
 As /12: any change to framing, a key, a key order, a block layout, an enum spelling, a payload

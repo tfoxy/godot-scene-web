@@ -48,7 +48,8 @@ if [ "${native}" = 1 ]; then
 fi
 
 if [ "${wasm}" = 1 ]; then
-  cargo build --offline --release --target wasm32-unknown-unknown --manifest-path "${WASM}/Cargo.toml"
+  # From the crate's directory, so cargo reads web/gsw-rs/.cargo/config.toml (wasm SIMD, W13p).
+  (cd "${WASM}" && cargo build --offline --release --target wasm32-unknown-unknown --manifest-path "${WASM}/Cargo.toml")
   "${WASM_BINDGEN}" --target web --out-name rs_gsw_wasm --out-dir "${OUT}/gsw-rs" \
     "${WASM}/target/wasm32-unknown-unknown/release/rs_gsw_wasm.wasm"
 fi

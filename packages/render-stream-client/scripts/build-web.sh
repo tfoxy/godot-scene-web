@@ -40,7 +40,8 @@ if ! git -C "$ROOT" diff --quiet HEAD -- experiments/render-stream/rs-core exper
 fi
 tree="$(bash "${HERE}/core-tree.sh" "$ROOT")"
 
-cargo build --offline --release --target wasm32-unknown-unknown --manifest-path "${WASM}/Cargo.toml"
+# From the crate's directory, so cargo reads web/gsw-rs/.cargo/config.toml (wasm SIMD, W13p).
+(cd "$WASM" && cargo build --offline --release --target wasm32-unknown-unknown --manifest-path "${WASM}/Cargo.toml")
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 STAGE="$(mktemp -d "${OUT}/.stage.XXXXXX")"

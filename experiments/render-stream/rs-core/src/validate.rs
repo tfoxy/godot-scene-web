@@ -691,8 +691,8 @@ pub struct Validator {
     /// The prediction history (H1, H2), advanced by each accepted transaction.
     history: crate::predict::History,
     pred_scratch: crate::predict::Scratch,
-    /// The last accepted /13 transaction as its /12 record ([`Validator::plain_record`]).
-    plain: Vec<u8>,
+    /// The last accepted record is a /13 transaction whose /12 record
+    /// ([`Validator::plain_record`]) the prediction history holds.
     plain_ok: bool,
 }
 
@@ -1801,7 +1801,6 @@ impl Validator {
             cv_stable: None,
             history: Default::default(),
             pred_scratch: Default::default(),
-            plain: Vec::new(),
             plain_ok: false,
         })
     }
@@ -1907,7 +1906,11 @@ impl Validator {
     /// or end record, and after a transaction refused past its meta (like `dynamic_bodies`, it
     /// is meaningless after any failed accept).
     pub fn plain_record(&self) -> Option<&[u8]> {
-        self.plain_ok.then_some(self.plain.as_slice())
+        if self.plain_ok {
+            self.history.plain()
+        } else {
+            None
+        }
     }
 
     /// The bytes the last accepted record's block ranges index: [`Validator::plain_record`] after
@@ -2195,8 +2198,10 @@ impl Validator {
     fn accept_transaction13(&mut self, record: &[u8], offset: usize) -> Result<Accepted, Error> {
         let t = prof::start();
         let no_reset = self.opts.no_predict_reset;
+        // W13p: the plain record is written into a buffer the history recycles, and kept there
+        // (the bodies it carries are read in place as H1 and H2).
+        let mut plain = self.history.take_plain();
         let (h1, h2) = self.history.refs(self.tx.is_full(), false, no_reset);
-        let mut plain = std::mem::take(&mut self.plain);
         let r = crate::predict::unpredict_record(
             record,
             &self.tx,
@@ -2223,12 +2228,17 @@ impl Validator {
             Err(e) => Err(e),
         };
         if r.is_ok() {
-            let b = crate::predict::blocks_of(&plain, &self.bufs.blocks);
-            self.history
-                .accept(&self.tx, b, no_reset, &mut self.pred_scratch);
+            self.history.accept_plain(
+                &self.tx,
+                plain,
+                &self.bufs.blocks,
+                no_reset,
+                &mut self.pred_scratch,
+            );
             self.plain_ok = true;
+        } else {
+            self.history.return_plain(plain);
         }
-        self.plain = plain;
         r
     }
 

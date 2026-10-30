@@ -252,6 +252,12 @@ fn js_bits(format: i64) -> i64 {
 
 /// `expectedMeshBufferBytes()`: (vertex, attribute, skin, index) byte lengths.
 pub fn expected_mesh_buffer_bytes(format: i64, vertex_count: i64, index_count: i64) -> [u128; 4] {
+    if (0..1 << 31).contains(&vertex_count) && (0..1 << 31).contains(&index_count) {
+        // W13p: the same lengths in 64-bit arithmetic (no product can reach 2^38), which wasm32
+        // does natively where u128 products are library calls.
+        return expected_mesh_buffer_bytes_u64(js_bits(format), vertex_count as u64, index_count as u64)
+            .map(|x| x as u128);
+    }
     let n = vertex_count as u128;
     let f = js_bits(format);
     let vertex = 8 * n;
@@ -272,6 +278,31 @@ pub fn expected_mesh_buffer_bytes(format: i64, vertex_count: i64, index_count: i
         0
     } else {
         index_count as u128 * (if vertex_count <= 65536 { 2 } else { 4 })
+    };
+    [vertex, attribute, skin, index]
+}
+
+/// [`expected_mesh_buffer_bytes`] for counts below 2^31 (`f` is `js_bits(format)`).
+#[inline]
+fn expected_mesh_buffer_bytes_u64(f: i64, n: u64, index_count: u64) -> [u64; 4] {
+    let vertex = 8 * n;
+    let attribute = n
+        * ((if f & ARRAY_FORMAT_COLOR != 0 { 4 } else { 0 })
+            + (if f & ARRAY_FORMAT_TEX_UV != 0 { 8 } else { 0 }));
+    let skinned = f & ARRAY_FORMAT_BONES != 0 && f & ARRAY_FORMAT_WEIGHTS != 0;
+    let skin = if skinned {
+        n * (if f & ARRAY_FLAG_USE_8_BONE_WEIGHTS != 0 {
+            32
+        } else {
+            16
+        })
+    } else {
+        0
+    };
+    let index = if index_count == 0 {
+        0
+    } else {
+        index_count * (if n <= 65536 { 2 } else { 4 })
     };
     [vertex, attribute, skin, index]
 }
