@@ -3,7 +3,8 @@
 Status: **staged.** W13a (2026-10-29) built the predicted blocks under /12's JSON meta at the wire
 level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built.
 W13b (2026-10-29) made the capture emit it ("As built (W13b): capture"), W13c (2026-10-29) made
-GSW and the render-stream client accept it ("As built (W13c): GSW"). The
+GSW and the render-stream client accept it ("As built (W13c): GSW"), W13d the native receiver and
+the web export ("As built (W13d): native and web"). The
 binary transaction syntax below is **deferred** ("Staging"). The rest of this text is WB-D's design
 (2026-10-29). The measurements behind every number are
 in [results/p3/wb-d.md](../results/p3/wb-d.md), made with `scripts/lib/wire-budget.py proto13`, a
@@ -640,6 +641,43 @@ The wire is "As built (W13a)"'s; nothing a host sends changes.
   exclusive lock): `accept_us` p50 216.7 µs at /12, 265.8 at /13 (+22.7 %, +49 µs: 38 in the
   un-predict, check and plain record, the rest the history); the core's per-transaction total p50
   608.5 → 659.3 µs (+8.4 %). The design's +10 % on accept is missed (results/p3/w13c.md "Cost").
+
+## As built (W13d): native and web
+
+W13d makes the native receiver (`receiver/`, the Rust core through `rs-core-capi`) and the web
+export (the same receiver.gd and capi, built as the dlink side module) accept /13 (results in
+[results/p3/w13d.md](../results/p3/w13d.md)). The wire is "As built (W13a)"'s; the planner and the
+C++ shim are unchanged: they see /12's model.
+
+- **Opt-in.** `RS_RECEIVER_PROTOCOL=13` offers `render-stream.13` only, with /12's hello under
+  `"protocol": "render-stream/13"` (native and web); a `GRSD` recording replays at /13 by its magic.
+  The capi's `VERSIONS` gains 13; nothing offers `.13` by default.
+- **Accept.** rs-core's validator un-predicts (W13a's /13 accept path); the capi's ingest
+  (`Core::ingest_dynamic`) feeds `Validator::record_view(record)` (the reconstructed /12 record) to
+  `DynamicMeshes::ingest` and `MmStore::ingest`, whose ranges index it. Nothing else in the capi
+  reads a transaction's blocks. W11t's coding decodes first (`RscCoding`), so the un-predictor sees
+  the uncoded /13 message.
+- **`predict-check` live.** A /13 transaction that fails `predict-check` changes nothing. The capi
+  notes it (`predict_await_full`) and returns the error; receiver.gd answers it as W11t's coding
+  error: `transport_skip`, then `resync` with reason `coding` (counted in `live.coding.resyncs` and
+  `live.predict.resyncs`). Until the full transaction arrives, `accept` holds every patch: it reads
+  only the meta's canonical prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":`, GSW's
+  `peek_transaction`) and returns the new kind `held` (`KIND_HELD`, 5), which receiver.gd neither
+  applies nor acks. A new session (a new connection) clears it. In file mode `predict-check` fails
+  the replay, as every validation error does.
+- **Receiver sabotage `no-predict-reset`** (`RS_RECEIVER_SABOTAGE`, in the capi's sabotage set):
+  the validator un-predicts a full against H1 and H2 (rs-core `Options::no_predict_reset`; the new
+  `Validator::set_no_predict_reset` sets it after the session, as receiver.gd names its sabotage
+  once the session record opened the core).
+- **Evidence.** applied.json `w13` at /13 (`predict_failures`, `predict_dropped`,
+  `no_predict_reset`, `history_units`, `predict_resyncs`: GSW's `gsw.w13` names, from the capi's
+  `counters` `w13_*`); a live leg's `live.predict` (the resyncs and the same counters, GSW's shape).
+- **Cost** (native `Core::accept`, validator, un-predict, ingest and retention sweep, no apply;
+  pm7-a12-1 and its /13 transcode, minimum of 5 repeats per transaction, exclusive lock): p50
+  136.4 µs at /12, 165.1 at /13 (+28.7 µs, +21 %), mean 93.3 → 111.6 µs. The extra is W13a's
+  validator-level +27 µs; the capi adds nothing measurable.
+- **Tools.** `render-stream-2.ts`'s `wireVersionOf()` reads `GRSD` as 13 (W13a held it at 6 until
+  a receiver accepted /13), so gate 7's views resolve /13 legs by their magic.
 
 ## Versioning
 

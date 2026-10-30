@@ -5,6 +5,7 @@
 //   gate8-w11-tool.ts gsw-legs --source <gate 8 run> [--rs-build <artifacts/render-stream/rs-core/<sha>>]
 //   gate8-w11-tool.ts native-plan --source <gate 8 run>
 //   gate8-w11-tool.ts gsw-legs --set pt13 --source <gate 8 run> [--rs-build ...]   (W13c)
+//   gate8-w11-tool.ts native-plan --set pt13 --source <gate 8 run>                  (W13d)
 //
 // native-plan (W11d) prints one tab-separated line per leg for run-gate8.sh's native receiver
 // legs (the same legs, captures and shot frames as the GSW legs below): the native leg directory
@@ -33,7 +34,7 @@
 //   sabotage-ignore-released/scale-off    the store never drops what left H
 //
 // W13c (render-stream-13.md "As built (W13c)"): GSW's /13 legs on W13b's /13 captures, with their
-// /12 twins (GSW-only until W13d: native-plan leaves them out, the native receiver refuses /13):
+// /12 twins; since W13d native-plan plans them too (lib/gate8-w13-native-checks.ts):
 //
 //   scale13, scale13-v12       capture-scale's patch sink at /13 and its /12 twin
 //   mesh13, mesh13-v12         gate5-mesh's full sink at /13 and its /12 twin; their shot frames
@@ -45,7 +46,9 @@
 // same way under <run>/g8pt/gsw13/<leg>/gsw: pump13 and pump13-v12 (fixtures/gate8-mm under the
 // frame_pre_draw pump: multimesh buffers, shot at g8mm's settle frames when g8mm ran), shim13 and
 // shim13-v12 (fixtures/gate8-pt under the headless particles shim). lib/gate8-w13-gsw-checks.ts
-// judges them too.
+// judges them too. W13d: `native-plan --set pt13` plans the same four legs for the native receiver
+// (run_g8pt_native13: <run>/g8pt/<capture's directory>/receiver, frames in
+// <run>/g8pt/native-frames-pt13.json); lib/gate8-w13-native-checks.ts judges them.
 //
 // lib/gate8-w13-gsw-checks.ts judges them.
 //
@@ -82,7 +85,7 @@ export interface W11GswLeg {
   /** The leg whose frames this one's shots share (its own name for a /11 leg with a twin). */
   frames: string;
   sabotage?: string;
-  /** W13c: a GSW-only leg (no native receiver leg until W13d). */
+  /** A GSW-only leg (native-plan leaves it out). W13d planned W13c's /13 legs natively too. */
   gswOnly?: true;
 }
 
@@ -129,11 +132,11 @@ export const W11_GSW_LEGS: W11GswLeg[] = [
     frames: "scale",
     sabotage: "ignore-released",
   },
-  // W13c: /13 and the /12 twins (GSW-only until W13d).
-  { leg: "scale13", capture: "scale13/capture", sink: "recording-patch.rs13", version: 13, frames: "scale13", gswOnly: true },
-  { leg: "scale13-v12", capture: "scale13/v12/capture", sink: "recording-patch.rs12", version: 12, frames: "scale13", gswOnly: true },
-  { leg: "mesh13", capture: "mesh13/capture", sink: "recording.rs13", version: 13, frames: "mesh13", gswOnly: true },
-  { leg: "mesh13-v12", capture: "mesh13/v12/capture", sink: "recording.rs12", version: 12, frames: "mesh13", gswOnly: true },
+  // W13c: /13 and the /12 twins (W13d: the native receiver's legs too).
+  { leg: "scale13", capture: "scale13/capture", sink: "recording-patch.rs13", version: 13, frames: "scale13" },
+  { leg: "scale13-v12", capture: "scale13/v12/capture", sink: "recording-patch.rs12", version: 12, frames: "scale13" },
+  { leg: "mesh13", capture: "mesh13/capture", sink: "recording.rs13", version: 13, frames: "mesh13" },
+  { leg: "mesh13-v12", capture: "mesh13/v12/capture", sink: "recording.rs12", version: 12, frames: "mesh13" },
   {
     // gate5-mesh's full sink: every transaction full, its dynamic units carried across each one.
     leg: "sabotage-no-predict-reset/mesh13",
@@ -142,16 +145,15 @@ export const W11_GSW_LEGS: W11GswLeg[] = [
     version: 13,
     frames: "mesh13",
     sabotage: "no-predict-reset",
-    gswOnly: true,
   },
 ];
 
 /** W13c (`--set pt13`): g8pt's headless /13 captures and their /12 twins, under <run>/g8pt. */
 export const W13_PT_LEGS: W11GswLeg[] = [
-  { leg: "pump13", capture: "headless-pump13/capture", sink: "recording.rs13", version: 13, frames: "pump13", gswOnly: true },
-  { leg: "pump13-v12", capture: "headless-pump/capture", sink: "recording.rs12", version: 12, frames: "pump13", gswOnly: true },
-  { leg: "shim13", capture: "headless-shim13/capture", sink: "recording.rs13", version: 13, frames: "shim13", gswOnly: true },
-  { leg: "shim13-v12", capture: "headless-shim/capture", sink: "recording.rs12", version: 12, frames: "shim13", gswOnly: true },
+  { leg: "pump13", capture: "headless-pump13/capture", sink: "recording.rs13", version: 13, frames: "pump13" },
+  { leg: "pump13-v12", capture: "headless-pump/capture", sink: "recording.rs12", version: 12, frames: "pump13" },
+  { leg: "shim13", capture: "headless-shim13/capture", sink: "recording.rs13", version: 13, frames: "shim13" },
+  { leg: "shim13-v12", capture: "headless-shim/capture", sink: "recording.rs12", version: 12, frames: "shim13" },
 ];
 const PT13_FRAME_GROUPS: Record<string, string[]> = {
   pump13: ["headless-pump13/capture", "headless-pump/capture"],
@@ -229,25 +231,6 @@ async function main(): Promise<void> {
   const pt13 = flag(argv, "--set", "w11") === "pt13";
   const g = join(source, pt13 ? "g8pt" : "g8w11");
   const run = join(g, pt13 ? "gsw13" : "gsw");
-  if (argv[0] === "native-plan") {
-    await nativePlan(g);
-    return;
-  }
-  let rsBuild = argv.includes("--rs-build")
-    ? resolve(flag(argv, "--rs-build"))
-    : "";
-  if (!rsBuild) {
-    const log = execFileSync(
-      "bash",
-      [join(SCRIPT_DIR, "build-rs-core.sh"), "--wasm-only"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
-    );
-    const sha = /^sha=(.+)$/m.exec(log)?.[1];
-    if (!sha)
-      throw new Error(`gate8-w11-tool: build-rs-core.sh printed no sha:\n${log}`);
-    rsBuild = join(REPO_ROOT, "artifacts", "render-stream", "rs-core", sha.trim());
-  }
-  const bundle = await buildGswBundle(join(g, "gsw-bundle"), rsBuild);
   const legs = pt13 ? W13_PT_LEGS : W11_GSW_LEGS;
   const { recOf, groupFrames } = shotPlan(g, legs, pt13 ? PT13_FRAME_GROUPS : FRAME_GROUPS);
   if (pt13) {
@@ -272,6 +255,25 @@ async function main(): Promise<void> {
       );
     }
   }
+  if (argv[0] === "native-plan") {
+    await nativePlan(g, legs, recOf, groupFrames, pt13 ? "native-frames-pt13.json" : "native-frames.json");
+    return;
+  }
+  let rsBuild = argv.includes("--rs-build")
+    ? resolve(flag(argv, "--rs-build"))
+    : "";
+  if (!rsBuild) {
+    const log = execFileSync(
+      "bash",
+      [join(SCRIPT_DIR, "build-rs-core.sh"), "--wasm-only"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+    );
+    const sha = /^sha=(.+)$/m.exec(log)?.[1];
+    if (!sha)
+      throw new Error(`gate8-w11-tool: build-rs-core.sh printed no sha:\n${log}`);
+    rsBuild = join(REPO_ROOT, "artifacts", "render-stream", "rs-core", sha.trim());
+  }
+  const bundle = await buildGswBundle(join(g, "gsw-bundle"), rsBuild);
   await gswLegs(g, run, source, bundle, recOf, groupFrames, legs);
 }
 
@@ -306,12 +308,16 @@ function shotPlan(
 }
 
 /** W11d: native-plan (header). */
-async function nativePlan(g: string): Promise<void> {
-  const { recOf, groupFrames } = shotPlan(g);
+async function nativePlan(
+  g: string,
+  legs: readonly W11GswLeg[],
+  recOf: ReturnType<typeof shotPlan>["recOf"],
+  groupFrames: Map<string, number[]>,
+  framesFile: string,
+): Promise<void> {
   const frames: Record<string, Record<string, number>> = {};
   const lines: string[] = [];
-  for (const def of W11_GSW_LEGS) {
-    // W13c: the /13 legs are GSW's alone until W13d.
+  for (const def of legs) {
     if (def.gswOnly) continue;
     const r = recOf(def.capture, def.sink, def.version);
     const shot: Record<string, number> = {};
@@ -332,7 +338,7 @@ async function nativePlan(g: string): Promise<void> {
       ].join("\t"),
     );
   }
-  await writeFile(join(g, "native-frames.json"), `${JSON.stringify(frames, null, 1)}\n`);
+  await writeFile(join(g, framesFile), `${JSON.stringify(frames, null, 1)}\n`);
   console.log(lines.join("\n"));
 }
 

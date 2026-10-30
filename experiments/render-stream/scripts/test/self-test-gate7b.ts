@@ -409,6 +409,77 @@ try {
     "particle flake: an mm-reference problem in another cell stays FAIL",
     (otherCell[0] as { status?: string }).status === undefined,
   );
+  // W13d: g8pt's headless-pump legs replay gate8-mm, so the same flake types their rows.
+  const pumpEv = {
+    diffs: [
+      { ...black, leg: "g8pt/headless-pump/receiver", shot: "seq-26.png" },
+      { ...black, leg: "g8pt/headless-pump/receiver", shot: "seq-27.png", black: 0, inside: 102 },
+    ],
+  };
+  const pumpRows = [
+    row(
+      "native-pt13-equals-v12@web",
+      "2 problem(s): headless-pump13/receiver: frame 26: 1083 px differ from headless-pump/receiver (C_FLIP 1000, D_GLOBAL 83); headless-pump13/receiver: frame 27: 102 px differ from headless-pump/receiver (C_FLIP 102)",
+    ),
+    row(
+      "web-repeat-identical@web",
+      "g8pt/headless-pump/receiver/shots/seq-26.png differs between the two web runs; g8pt/headless-pump/receiver/shots/seq-27.png differs between the two web runs",
+    ),
+    row(
+      "mm13-reference@web",
+      "1 problem(s): frame 26 (step-1-prev.png): 400 px differ (C_FLIP 400)",
+    ),
+  ];
+  const pump = typeLavapipeParticleFlake(pumpRows, pumpEv, lavapipe, cellNames);
+  expect(
+    "particle flake (W13d): g8pt headless-pump repeat evidence types native-pt13-equals-v12 and web-repeat-identical",
+    status(pump, "native-pt13-equals-v12@web") === "known-flake" &&
+      status(pump, "web-repeat-identical@web") === "known-flake",
+    JSON.stringify(pump.map((c) => [c.id, c.status])),
+  );
+  expect(
+    "particle flake (W13d): mm13-reference is typed only when pump13's own web runs disagree",
+    status(pump, "mm13-reference@web") === undefined &&
+      status(
+        typeLavapipeParticleFlake(
+          pumpRows,
+          { diffs: [...pumpEv.diffs, { ...black, leg: "g8pt/headless-pump13/receiver" }] },
+          lavapipe,
+          cellNames,
+        ),
+        "mm13-reference@web",
+      ) === "known-flake",
+  );
+  const pumpOutside = typeLavapipeParticleFlake(
+    [
+      row(
+        "native-pt13-equals-v12@web",
+        "1 problem(s): headless-pump13/receiver: frame 26: 50 px differ from headless-pump/receiver (C_FLIP 40, outside 10)",
+      ),
+    ],
+    pumpEv,
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake (W13d): a pump twin difference outside the particle cells stays FAIL",
+    (pumpOutside[0] as { status?: string }).status === undefined,
+  );
+  const shimRow = typeLavapipeParticleFlake(
+    [
+      row(
+        "native-pt13-equals-v12@web",
+        "1 problem(s): headless-shim13/receiver: frame 26: 50 px differ from headless-shim/receiver",
+      ),
+    ],
+    pumpEv,
+    lavapipe,
+    cellNames,
+  );
+  expect(
+    "particle flake (W13d): a shim twin difference is never typed",
+    (shimRow[0] as { status?: string }).status === undefined,
+  );
   const otherLeg = typeLavapipeParticleFlake(
     [
       row(

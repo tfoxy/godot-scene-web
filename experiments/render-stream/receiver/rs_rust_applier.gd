@@ -48,6 +48,9 @@ const CORE_SABOTAGES: Array[String] = [
 	"no-subparticle-stub",
 	# W11d (render-stream-11.md "As built (W11d)"): the /11 receiver sabotages the core implements.
 	"stale-dynamic-rx", "no-prune", "ignore-released",
+	# W13d (render-stream-13.md "As built (W13a)", "Sabotages"): a /13 full is un-predicted against
+	# the history like a patch.
+	"no-predict-reset",
 ]
 
 ## The seq of the last accepted transaction.
@@ -339,6 +342,18 @@ func w11_counters() -> Dictionary:
 		var name: String = key
 		if name.begins_with("w11_"):
 			out[name.trim_prefix("w11_")] = _counters[key]
+	return out
+
+
+## W13d: the /13 accept path's counters (rs-core-capi `counters`' `w13_*` keys, without the
+## prefix: predict_failures, predict_dropped, no_predict_reset, history_units); {} below /13.
+func w13_counters() -> Dictionary:
+	_refresh_counters()
+	var out: Dictionary = {}
+	for key: Variant in _counters:
+		var name: String = key
+		if name.begins_with("w13_"):
+			out[name.trim_prefix("w13_")] = _counters[key]
 	return out
 
 
