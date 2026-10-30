@@ -268,6 +268,14 @@ struct CompiledItem {
     u_premultiply_out: Option<glow::UniformLocation>,
     /// Active non-sampler uniforms by declared name: location, GL type, array size.
     uniforms: HashMap<String, (glow::UniformLocation, u32, i32)>,
+    /// PH2: the active uniforms by their position in a binding's uniform list: (position, name,
+    /// location, GL type, array size), and the list's length. Every binding of a program lists
+    /// the program's declared uniforms in the same order, so one plan serves them all; a binding
+    /// whose length differs, or whose name at a planned position differs, re-plans it. A binding
+    /// upload then touches the active uniforms only (a program declares many more than the
+    /// compiler keeps, and every upload used to hash every declared name).
+    uniform_plan: Vec<(usize, Box<str>, glow::UniformLocation, u32, i32)>,
+    uniform_plan_len: Option<usize>,
     /// Active `sampler2D` uniforms (beyond `TEXTURE`) and the unit each samples.
     sampler_units: Vec<(String, u32)>,
     /// Target size and [`ExecOptions::godot_orientation`] the vertex uniforms were set for.
@@ -945,6 +953,8 @@ fn compile_item(
             u_post_modulate: gl.get_uniform_location(program, "gsw_post_modulate"),
             u_premultiply_out: gl.get_uniform_location(program, "gsw_premultiply_out"),
             uniforms,
+            uniform_plan: Vec::new(),
+            uniform_plan_len: None,
             sampler_units,
             projection: None,
             premultiply_out: None,
@@ -2357,10 +2367,29 @@ impl CanvasItemsExecutor {
                         gl.c()
                             .uniform_4_f32(item.u_post_modulate.as_ref(), r, g, b, a)
                     };
-                    for u in &binding.uniforms {
-                        if let Some((location, utype, size)) = item.uniforms.get(&*u.name) {
-                            set_uniform(gl, location, *utype, *size, &u.value);
+                    let us = &binding.uniforms;
+                    let planned = item.uniform_plan_len == Some(us.len())
+                        && item
+                            .uniform_plan
+                            .iter()
+                            .all(|(k, name, ..)| us[*k].name == *name);
+                    if !planned {
+                        item.uniform_plan.clear();
+                        for (k, u) in us.iter().enumerate() {
+                            if let Some((location, utype, size)) = item.uniforms.get(&*u.name) {
+                                item.uniform_plan.push((
+                                    k,
+                                    u.name.clone(),
+                                    location.clone(),
+                                    *utype,
+                                    *size,
+                                ));
+                            }
                         }
+                        item.uniform_plan_len = Some(us.len());
+                    }
+                    for (k, _, location, utype, size) in &item.uniform_plan {
+                        set_uniform(gl, location, *utype, *size, &us[*k].value);
                     }
                     item.applied = Some((slot, version));
                     stats.binding_uploads += 1;

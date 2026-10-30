@@ -59,6 +59,23 @@ export const CLIENT_LIVE_CODING = "zstd-base,zstd";
 /** The inbound buffer the client announces (the harness's default, 16 MiB). */
 export const CLIENT_INBOUND_BYTES = 16777216;
 
+/**
+ * The core's start options (rs-gsw-wasm `parse_options`). PH2: `digest: "none"`, since the client
+ * never reads a record's SHA-256 (`last_digest_ptr`, `digest()`); every check that reads no record
+ * digest stays (resource payload hashes, mesh body digests, W11t's checksum, /13 `predict-check`,
+ * the seq and base rules). The harness receiver keeps `inline`: its checks read the digests.
+ */
+export function coreStartOptions(protocol: number): string {
+  return JSON.stringify({
+    digest: "none",
+    sabotage: [],
+    format: "rgb10a2",
+    texture_encodings: "decoded",
+    live_protocol: protocol,
+    log: "summary",
+  });
+}
+
 /** What the client's hello states about itself (mirror-client-design.md "The loop", "Hello"). */
 export interface ClientHelloFacts {
   protocol: 11 | 12 | 13;

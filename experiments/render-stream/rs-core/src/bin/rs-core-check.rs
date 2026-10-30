@@ -5,10 +5,10 @@
 //!   rs-core-check transcode --to 12|13 [--stale] <in> <out>
 //!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
-//!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]
+//!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
 //!   rs-core-check validate <recording>... [--version 2..8] [--recover]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
-//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]
+//!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
 //!   rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]
 //!   rs-core-check scissors <recording> [--store <dir>]
@@ -70,9 +70,10 @@ fn usage() -> ExitCode {
          rs-core-check transcode --to 12|13 [--stale] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
-         rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred]\n  \
+         rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
          rs-core-check validate <recording>... [--version 2..8]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
+         rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -136,6 +137,7 @@ fn main() -> ExitCode {
         "profile" => cmd_profile(&args),
         "walk-diff" => cmd_walk_diff(&args),
         "material-diff" => cmd_material_diff(&args),
+        "client-diff" => cmd_client_diff(&args),
         "scissors" => cmd_scissors(&args),
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
@@ -481,7 +483,11 @@ fn bench_one(
         "{name}: version {version}, {} bytes, {} records, digest {}, {repeats} repeat(s), pass median {:.2} ms",
         data.len(),
         records.len(),
-        if digest == DigestPolicy::Inline { "inline" } else { "deferred" },
+        match digest {
+            DigestPolicy::Inline => "inline",
+            DigestPolicy::Deferred => "deferred",
+            DigestPolicy::Never => "none",
+        },
         percentile(&pass_ms, 50.0)
     );
     summarize("transactions", &mut all);
@@ -500,6 +506,7 @@ fn cmd_bench(args: &Args) -> ExitCode {
     let digest = match args.get("digest").unwrap_or("deferred") {
         "inline" => DigestPolicy::Inline,
         "deferred" => DigestPolicy::Deferred,
+        "none" => DigestPolicy::Never,
         _ => return usage(),
     };
     let mut targets: Vec<(String, PathBuf)> = Vec::new();
@@ -831,11 +838,12 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `profile <recording> --store <dir> [--repeats N] [--digest inline|deferred]` (G7o2): the GSW
+/// `profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]` (G7o2): the GSW
 /// page's per-transaction pipeline natively (`render_stream_core::prof::replay`: accept, prepare +
 /// needed, provide from the store, apply, then the deferred digest), one JSON line per
 /// transaction with each timer's and each phase's minimum over the repeats (µs) and the
-/// transaction's counts. Store files are read once, before the clock.
+/// transaction's counts. Store files are read once, before the clock. PH2: `--clock allocs` counts
+/// allocations instead of microseconds (every phase and `_us` field is then a count).
 fn cmd_profile(args: &Args) -> ExitCode {
     use render_stream_core::prof;
     use render_stream_core::state::Hash;
@@ -861,9 +869,17 @@ fn cmd_profile(args: &Args) -> ExitCode {
         static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         T0.get_or_init(Instant::now).elapsed().as_secs_f64() * 1e6
     }
-    prof::set_clock(Some(clock));
     fn allocations() -> u64 {
         ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    // PH2: `--clock allocs` makes every phase (and every `_us` field) an allocation count.
+    fn alloc_clock() -> f64 {
+        allocations() as f64
+    }
+    match args.get("clock") {
+        None | Some("time") => prof::set_clock(Some(clock)),
+        Some("allocs") => prof::set_clock(Some(alloc_clock)),
+        Some(_) => return usage(),
     }
     prof::set_alloc_counter(Some(allocations));
     let mut files: HashMap<Hash, Option<Vec<u8>>> = HashMap::new();
@@ -1216,6 +1232,315 @@ fn cmd_material_diff(args: &Args) -> ExitCode {
                 kinds.dedup();
                 println!(
                     "{path}: {n} transactions, {upserted} materials upserted, {param_sets} param sets, binding slot numbering differs in {slots_differ}; {} mismatching{}",
+                    seqs.len(),
+                    if bad.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (kinds {kinds:?}; seqs {:?})",
+                            seqs.iter().take(20).collect::<Vec<_>>()
+                        )
+                    }
+                );
+                failed |= !bad.is_empty();
+            }
+            Err(e) => {
+                println!("{path}: error {e}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]`
+/// (PH2): replays each recording through two whole pipelines in lockstep, each its own validator,
+/// payload store and applier: the harness receiver's (`DigestPolicy::Inline`, every record
+/// digested) with the oracles of PH2's applier paths (`always_scan_dependencies`, `move_walks`,
+/// `Names::always_rebuild_materials`), and the client package's (`DigestPolicy::Never`, the
+/// `DepIndex` pass, parked moves, the named materials' texture fast path). The stats
+/// are compared less `why`, `structural` and `reassembled` (a parked move re-assembles where the
+/// oracle re-walks, or does neither where a move flips an item that draws nothing), and the
+/// assembly's own counters only when both sides assembled. After every transaction it compares the validator's
+/// delta, `pruned` and `released` lists, the needed (fetch) list in order, the material counters,
+/// the material residency, the paint digest and the stats less their timings, the upserted meshes'
+/// and multimeshes' body identities (the client's cheaper digest must change exactly when the
+/// harness's SHA-256 does), and that the harness side digested every record and the client side
+/// none. A refusal must carry the same code on both sides. Newly named shaders get a
+/// synthetic program on both sides (`synthetic_program`), so the binding refresh runs. Prints one
+/// line per recording; exits non-zero on any mismatch. `--sabotage ph2-skip-body-digest` also
+/// drops the client side's dynamic mesh body digests (state identity, which `Never` keeps): the
+/// run must then mismatch (`body-digests`) on a recording with dynamic meshes;
+/// `ph2-skip-dep-texture` makes the client side's dependency pass ignore changed textures'
+/// dependents; `ph2-park-stale` leaves a parked entry unflipped when its item moves on or off
+/// screen; `ph2-skip-material-textures` never re-builds the named materials' textures on the
+/// fast path.
+fn cmd_client_diff(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::programs::ProgramEntry;
+    use render_stream_core::apply::{Applier, Viewport};
+    if args.positional.is_empty() {
+        return usage();
+    }
+    let store = args.get("store").map(PathBuf::from);
+    let sabotage = args.get("sabotage");
+    let skip_material_textures = sabotage == Some("ph2-skip-material-textures");
+    let (skip_bodies, skip_dep_textures, park_stale) = match sabotage {
+        None | Some("ph2-skip-material-textures") => (false, false, false),
+        Some("ph2-skip-body-digest") => (true, false, false),
+        Some("ph2-skip-dep-texture") => (false, true, false),
+        Some("ph2-park-stale") => (false, false, true),
+        Some(other) => {
+            eprintln!("rs-core-check client-diff: unknown sabotage {other}");
+            return ExitCode::from(2);
+        }
+    };
+    struct Side {
+        v: Validator,
+        payloads: PayloadStore,
+        applier: Applier,
+        need: Vec<render_stream_core::state::Hash>,
+    }
+    let mut failed = false;
+    for path in &args.positional {
+        type Run = (
+            usize,
+            usize,
+            Option<&'static str>,
+            (usize, usize),
+            Vec<(i64, &'static str)>,
+        );
+        let run = || -> Result<Run, wire::Error> {
+            let data =
+                std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
+            let version = wire::version_of_magic(&data)
+                .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+            let spans = wire::split_records(&data, version)?;
+            let side = |digest: DigestPolicy| -> Result<Side, wire::Error> {
+                let mut opts = Options::new(version);
+                opts.digest = digest;
+                let v = Validator::new(spans[0].bytes(&data), spans[0].offset, opts)?;
+                let s = v.session();
+                let size = s
+                    .viewport
+                    .presentation_size
+                    .unwrap_or(s.viewport.logical_size);
+                let vp = Viewport {
+                    width: size[0].max(1) as u32,
+                    height: size[1].max(1) as u32,
+                    clear: s.clear_color,
+                    global_xform: geom::IDENTITY,
+                    cull_mask: s.viewport.canvas_cull_mask as u32,
+                    format: gsw_canvas_draw_list::Format::Rgb10A2,
+                };
+                Ok(Side {
+                    v,
+                    payloads: PayloadStore::default(),
+                    applier: Applier::new(vp),
+                    need: Vec::new(),
+                })
+            };
+            let mut h = side(DigestPolicy::Inline)?;
+            let mut c = side(DigestPolicy::Never)?;
+            c.v.set_skip_body_digests(skip_bodies);
+            // The harness side runs the oracles of PH2's applier paths.
+            h.applier.always_scan_dependencies = true;
+            h.applier.move_walks = true;
+            h.applier.names_mut().always_rebuild_materials = true;
+            c.applier.skip_dep_textures = skip_dep_textures;
+            c.applier.park_stale = park_stale;
+            c.applier.names_mut().skip_material_rebuild = skip_material_textures;
+            let (mut parked_moves, mut fallback_walks) = (0usize, 0usize);
+            use std::collections::HashMap;
+            let (mut last_body_h, mut last_body_c) = (HashMap::new(), HashMap::new());
+            let (mut last_mm_h, mut last_mm_c) = (HashMap::new(), HashMap::new());
+            let mut programs = 1u32;
+            let (mut n, mut bodies) = (0usize, 0usize);
+            let mut bad: Vec<(i64, &'static str)> = Vec::new();
+            let mut refused: Option<&'static str> = None;
+            let fetch = |hash: &render_stream_core::state::Hash| -> Result<Vec<u8>, wire::Error> {
+                let dir = store
+                    .as_ref()
+                    .ok_or_else(|| wire::Error::new("resource-unavailable", "no --store"))?;
+                ["grt", "grm", "grp"]
+                    .iter()
+                    .find_map(|ext| {
+                        std::fs::read(dir.join("sha256").join(format!("{}.{ext}", hash.to_hex())))
+                            .ok()
+                    })
+                    .ok_or_else(|| wire::Error::new("resource-unavailable", hash.to_hex()))
+            };
+            for span in &spans[1..] {
+                let rec = span.bytes(&data);
+                // A refusal must be the same on both sides (the client keeps every check that
+                // reads no record digest); then the recording ends there.
+                let (ah, ac) = match (h.v.accept(rec, span.offset), c.v.accept(rec, span.offset)) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(a), Err(b)) if a.code == b.code => {
+                        refused = Some(a.code);
+                        break;
+                    }
+                    _ => {
+                        bad.push((h.v.state().seq, "refusal"));
+                        break;
+                    }
+                };
+                let seq = h.v.state().seq;
+                if ah != ac {
+                    bad.push((seq, "accepted"));
+                    continue;
+                }
+                match ah {
+                    Accepted::Resource { hash } => {
+                        for s in [&mut h, &mut c] {
+                            if let Some(b) = s.v.inline_payload(&hash) {
+                                s.payloads.provide(b, &hash, version, true)?;
+                            }
+                        }
+                    }
+                    Accepted::End => {}
+                    Accepted::Transaction => {
+                        n += 1;
+                        bodies += h.v.dynamic_bodies().len();
+                        if h.v.delta() != c.v.delta() {
+                            bad.push((seq, "delta"));
+                        }
+                        if h.v.pruned() != c.v.pruned() || h.v.released() != c.v.released() {
+                            bad.push((seq, "pruned-released"));
+                        }
+                        // The body digests are state identity (no-op detection, `mesh-version`,
+                        // `multimesh-version`): `Never` keeps them as a cheaper identity, so each
+                        // upserted entry's digests must change exactly when the harness's do (and
+                        // be present exactly where they are), its other surface fields equal.
+                        let (hs, cs) = (h.v.state(), c.v.state());
+                        for &id in &h.v.delta().meshes_upserted {
+                            let (Some(a), Some(b)) = (hs.meshes.get(&id), cs.meshes.get(&id)) else {
+                                bad.push((seq, "body-digests"));
+                                continue;
+                            };
+                            let da: Vec<_> = a.surfaces.iter().map(|x| x.body_sha256).collect();
+                            let db: Vec<_> = b.surfaces.iter().map(|x| x.body_sha256).collect();
+                            let mask = |m: &render_stream_core::state::Mesh| {
+                                let mut m = m.clone();
+                                m.surfaces.iter_mut().for_each(|x| x.body_sha256 = None);
+                                m
+                            };
+                            let changed_a = last_body_h.get(&id) != Some(&da);
+                            let changed_b = last_body_c.get(&id) != Some(&db);
+                            if mask(a) != mask(b)
+                                || changed_a != changed_b
+                                || da.iter().zip(&db).any(|(x, y)| x.is_some() != y.is_some())
+                            {
+                                bad.push((seq, "body-digests"));
+                            }
+                            last_body_h.insert(id, da);
+                            last_body_c.insert(id, db);
+                        }
+                        for &id in &h.v.delta().multimeshes_upserted {
+                            let da = hs.multimeshes.get(&id).map(|m| m.buffer_sha256);
+                            let db = cs.multimeshes.get(&id).map(|m| m.buffer_sha256);
+                            let changed_a = last_mm_h.get(&id) != Some(&da);
+                            let changed_b = last_mm_c.get(&id) != Some(&db);
+                            if changed_a != changed_b
+                                || da.map(|d| d.is_some()) != db.map(|d| d.is_some())
+                            {
+                                bad.push((seq, "body-digests"));
+                            }
+                            last_mm_h.insert(id, da);
+                            last_mm_c.insert(id, db);
+                        }
+                        for s in [&mut h, &mut c] {
+                            s.payloads.accept_transaction(&s.v, rec)?;
+                            s.applier.prepare(s.v.state(), s.v.delta());
+                        }
+                        for (sid, hash, _) in h.applier.pending_shaders(h.v.state()) {
+                            let info = synthetic_program(h.v.state(), sid, &hash, programs);
+                            programs += 1;
+                            h.applier.set_program(hash, ProgramEntry::Ready(info.clone()));
+                            c.applier.set_program(hash, ProgramEntry::Ready(info));
+                        }
+                        for s in [&mut h, &mut c] {
+                            s.applier
+                                .needed(s.v.state(), s.v.delta(), &s.payloads, &mut s.need);
+                        }
+                        if h.need != c.need {
+                            bad.push((seq, "needed"));
+                        }
+                        for s in [&mut h, &mut c] {
+                            for hash in s.need.clone() {
+                                let b = fetch(&hash)?;
+                                s.payloads.provide(&b, &hash, version, true)?;
+                            }
+                        }
+                        let mut a = h.applier.apply(h.v.state(), h.v.delta(), &h.payloads).clone();
+                        let mut b = c.applier.apply(c.v.state(), c.v.delta(), &c.payloads).clone();
+                        if h.applier.material_counts != c.applier.material_counts {
+                            bad.push((seq, "material-counts"));
+                        }
+                        if !h
+                            .applier
+                            .material_residency()
+                            .same_residency(c.applier.material_residency())
+                        {
+                            bad.push((seq, "residency"));
+                        }
+                        if h.applier.paint_digest() != c.applier.paint_digest() {
+                            bad.push((seq, "paint"));
+                        }
+                        // How the two got there may differ (a parked move re-assembles where the
+                        // oracle re-walks); what they drew may not.
+                        use render_stream_core::apply::Why;
+                        parked_moves += usize::from(b.why & Why::MOVE_ATTACH != 0);
+                        fallback_walks += usize::from(a.why & Why::MOVE_FALLBACK != 0);
+                        // The assembly's own counters exist only where it ran.
+                        let both = (a.structural || a.reassembled) && (b.structural || b.reassembled);
+                        for st in [&mut a, &mut b] {
+                            st.walk_us = 0.0;
+                            st.assemble_us = 0.0;
+                            st.why = 0;
+                            st.structural = false;
+                            st.reassembled = false;
+                            if !both {
+                                st.attached_items = 0;
+                                st.lowered_draws = 0;
+                                st.assembly_skips = 0;
+                            }
+                        }
+                        if format!("{a:?}") != format!("{b:?}") {
+                            if !bad.iter().any(|x| x.1 == "stats") {
+                                eprintln!("seq {seq} stats differ:\n  harness {a:?}\n  client  {b:?}");
+                            }
+                            bad.push((seq, "stats"));
+                        }
+                        h.applier.list.consumed();
+                        c.applier.list.consumed();
+                    }
+                }
+            }
+            let digests = |v: &Validator| v.record_digests().iter().filter(|d| d.is_some()).count();
+            let records = h.v.record_digests().len();
+            if digests(&h.v) != records || (refused.is_none() && records != spans.len()) {
+                bad.push((-1, "harness-digests"));
+            }
+            if digests(&c.v) != 0 {
+                bad.push((-1, "client-digests"));
+            }
+            Ok((n, bodies, refused, (parked_moves, fallback_walks), bad))
+        };
+        match run() {
+            Ok((n, bodies, refused, (parked, walks), bad)) => {
+                let seqs: std::collections::BTreeSet<i64> = bad.iter().map(|b| b.0).collect();
+                let mut kinds: Vec<&str> = bad.iter().map(|b| b.1).collect();
+                kinds.sort_unstable();
+                kinds.dedup();
+                println!(
+                    "{path}: {n} transactions, {bodies} dynamic bodies, {parked} parked moves (oracle: {walks} move walks){}; {} mismatching{}",
+                    refused.map_or(String::new(), |c| format!(", both refused {c}")),
                     seqs.len(),
                     if bad.is_empty() {
                         String::new()

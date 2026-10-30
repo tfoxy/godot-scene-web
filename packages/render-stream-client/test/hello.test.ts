@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { clientHello } from "../src/hello";
+import { clientHello, coreStartOptions } from "../src/hello";
 
 const golden = (v: 11 | 12) =>
   JSON.parse(
@@ -69,5 +69,23 @@ describe("clientHello", () => {
     expect(hello.presentation_css_w).toBe(960);
     expect(hello.dpr_milli).toBe(2000);
     expect(hello.credit_window).toBe(1);
+  });
+});
+
+describe("coreStartOptions (PH2)", () => {
+  it("asks the core for no record digests, at the endpoint's protocol", () => {
+    for (const protocol of [11, 12, 13]) {
+      const o = JSON.parse(coreStartOptions(protocol));
+      expect(o).toEqual({
+        digest: "none",
+        sabotage: [],
+        format: "rgb10a2",
+        texture_encodings: "decoded",
+        live_protocol: protocol,
+        log: "summary",
+      });
+    }
+    // rs-gsw-wasm reads the option as the exact text `"digest":"none"` (parse_options).
+    expect(coreStartOptions(12)).toContain('"digest":"none"');
   });
 });

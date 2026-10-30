@@ -189,7 +189,9 @@ impl Why {
     pub const CANVAS: u32 = 1 << 9;
     pub const COMPACT: u32 = 1 << 10;
     pub const MOVE_FALLBACK: u32 = 1 << 11;
-    pub const NAMES: [&'static str; 12] = [
+    /// PH2: a move took a parked item on or off screen (re-assembled, not re-walked).
+    pub const MOVE_ATTACH: u32 = 1 << 12;
+    pub const NAMES: [&'static str; 13] = [
         "first",
         "defaults",
         "material",
@@ -202,6 +204,7 @@ impl Why {
         "canvas",
         "compact",
         "move-fallback",
+        "move-attach",
     ];
 }
 
@@ -366,6 +369,67 @@ const fn refused(reads_screen: bool) -> MaterialEff {
 /// The texture sizes a lowering read (id, drawable size and mipmaps).
 type TexSizes = Vec<(Id, Option<(u32, u32, bool)>)>;
 
+/// PH2: the dependency pass's reverse index. An item is listed under every texture and mesh its
+/// lowering read when the lowering was installed (and in `instanced` when it read a multimesh or
+/// particles), and is never unlisted: a listing can be stale (the item was removed, or no longer
+/// reads it) or repeated, so the pass checks each listed item with the full scan's own test. What
+/// it must never miss is an item whose current lowering reads a changed dependency, and every
+/// installed lowering's dependencies are listed. Rebuilt from the items when the stale listings
+/// outgrow the live ones.
+#[derive(Default)]
+struct DepIndex {
+    tex: IdMap<Vec<Id>>,
+    mesh: IdMap<Vec<Id>>,
+    instanced: Vec<Id>,
+    /// Listings made since the last rebuild.
+    entries: usize,
+    /// Textures upserted or removed by transactions whose dependency pass did not run (no
+    /// texture resized and no mesh, multimesh or particles changed): the full scan would have
+    /// compared their sizes at the next pass that runs, so the index pass does too.
+    pending_tex: Vec<Id>,
+}
+
+impl DepIndex {
+    /// List `id` under each dependency of `new` that `old` (its previous lowering) did not read.
+    fn note(&mut self, id: Id, old: Option<&ItemRec>, new: (&Lowered, &TexSizes, &[(Id, i64)])) {
+        let (lowered, tex_sizes, mesh_versions) = new;
+        for (t, _) in tex_sizes {
+            if !old.is_some_and(|o| o.tex_sizes.iter().any(|(u, _)| u == t)) {
+                self.tex.entry(*t).or_default().push(id);
+                self.entries += 1;
+            }
+        }
+        for (m, _) in mesh_versions {
+            if !old.is_some_and(|o| o.mesh_versions.iter().any(|(n, _)| n == m)) {
+                self.mesh.entry(*m).or_default().push(id);
+                self.entries += 1;
+            }
+        }
+        let instanced = |l: &Lowered| !l.multimesh_deps.is_empty() || !l.particles_deps.is_empty();
+        if instanced(lowered) && !old.is_some_and(|o| instanced(&o.lowered)) {
+            self.instanced.push(id);
+            self.entries += 1;
+        }
+    }
+
+    /// Start over from the live items when the listings are mostly stale.
+    fn maybe_rebuild(&mut self, items: &IdMap<ItemRec>) {
+        if self.entries < 4096 || self.entries < 4 * items.len() {
+            return;
+        }
+        self.tex.clear();
+        self.mesh.clear();
+        self.instanced.clear();
+        self.entries = 0;
+        let mut ids: Vec<Id> = items.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let rec = &items[&id];
+            self.note(id, None, (&rec.lowered, &rec.tex_sizes, &rec.mesh_versions));
+        }
+    }
+}
+
 struct ItemRec {
     row: u32,
     content_version: i64,
@@ -409,6 +473,9 @@ struct ItemRec {
     on_screen: bool,
     /// The [`Applier`] apply serial that last lowered this item's content.
     lowered_at: u64,
+    /// PH2: (walk serial, index) of the item's attach entry in that walk's list, set by a walk
+    /// that parks (`Applier::parking`).
+    attach_at: (u64, u32),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -444,6 +511,13 @@ struct Attach {
     /// CG3: a `fit_empty` owner without commands draws the rect Godot synthesizes for it
     /// (`CANVAS_RECT_IS_GROUP`), from [`Applier::group_quads`].
     synth: bool,
+    /// PH2: whether it emits when on screen (`emit` is this and on screen).
+    would_emit: bool,
+    /// PH2: an off-screen item that would emit, attached only to hold its place in the walk's
+    /// order, so a move that brings it on screen (or takes an on-screen one off) re-assembles
+    /// instead of re-walking. `assemble` skips it as if it were not attached (Godot does not
+    /// attach it: renderer_canvas_cull.cpp:247).
+    parked: bool,
 }
 
 /// CG3: what a walk found of one group owner with a range (Godot's `canvas_group` state on an
@@ -634,6 +708,27 @@ pub struct Applier {
     /// G7o2 diagnostics (`rs-core-check walk-diff`): walk and re-assemble at every apply, the
     /// oracle the incremental paths are compared against.
     pub always_walk: bool,
+    /// PH2: who reads which texture, mesh, multimesh or particles in its lowering, so the
+    /// dependency pass visits the dependents of what changed instead of every item.
+    deps: DepIndex,
+    /// PH2 diagnostics (`rs-core-check client-diff`): the dependency pass scans every item, as
+    /// before PH2 (the oracle of the [`DepIndex`] pass).
+    pub always_scan_dependencies: bool,
+    /// PH2 sabotage `ph2-skip-dep-texture` (`client-diff`): the index pass ignores the
+    /// dependents of textures that changed, so a texture resize leaves stale lowerings.
+    pub skip_dep_textures: bool,
+    /// PH2: the last walk parked off-screen items ([`Attach::parked`]): it ran with no canvas
+    /// group or back-buffer copy in the state (their ranges and rects read the attached entries
+    /// alone) and not under `move_walks`.
+    parking: bool,
+    /// PH2: a move flipped a parked entry this apply (re-assemble).
+    move_attach: bool,
+    /// PH2 diagnostics (`rs-core-check client-diff`): no parking, so a move on or off screen
+    /// re-walks (`Why::MOVE_FALLBACK`), as before PH2 (the oracle).
+    pub move_walks: bool,
+    /// PH2 sabotage `ph2-park-stale` (`client-diff`): a move on or off screen updates the item's
+    /// record but not its parked entry, so it keeps drawing (or not) where it was.
+    pub park_stale: bool,
     /// CG3: items holding /10 `canvas_group` or `copy_to_backbuffer` state. While any does, every
     /// apply walks: a group's range, rect and synthesized rect depend on its descendants' rects,
     /// which the rows-only and in-place paths do not revisit.
@@ -1034,6 +1129,13 @@ impl Applier {
             spare: Spare::default(),
             walk_serial: 1,
             always_walk: false,
+            deps: DepIndex::default(),
+            always_scan_dependencies: false,
+            skip_dep_textures: false,
+            parking: false,
+            move_attach: false,
+            move_walks: false,
+            park_stale: false,
             back_buffer_items: HashSet::new(),
             groups: IdMap::default(),
             group_quads: IdMap::default(),
@@ -1182,6 +1284,12 @@ impl Applier {
     /// `full_walk` (the oracle) and `skip_changed` (the `mra-skip-changed` sabotage) the tool sets.
     pub fn material_residency_mut(&mut self) -> &mut material_residency::MaterialResidency {
         &mut self.material_residency
+    }
+
+    /// PH2 diagnostics (`rs-core-check client-diff`): the named-texture bookkeeping, whose
+    /// `always_rebuild_materials` (the oracle of its material fast path) the tool sets.
+    pub fn names_mut(&mut self) -> &mut residency::Names {
+        &mut self.names
     }
 
     /// MRA diagnostics: the shader/material residency, to compare two appliers'.
@@ -2018,8 +2126,11 @@ impl Applier {
                     scissor: None,
                     on_screen: false,
                     lowered_at: self.serial,
+                    attach_at: (0, 0),
                 };
                 Self::place_vertices(&mut self.list, &mut rec, &mut self.vertex_holes);
+                self.deps
+                    .note(id, None, (&rec.lowered, &rec.tex_sizes, &rec.mesh_versions));
                 self.items.insert(id, rec);
                 self.stats.created += 1;
                 self.count_commands(it);
@@ -2069,6 +2180,8 @@ impl Applier {
                     // re-assembled; the same shape is rewritten in place.
                     let same = lowered.same_shape(&rec.lowered);
                     rec.lowered_at = self.serial;
+                    self.deps
+                        .note(id, Some(rec), (&lowered, &tex_sizes, &mesh_versions));
                     Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
                     rec.content_version = it.content_version;
                     let moved_range =
@@ -2097,12 +2210,60 @@ impl Applier {
             || !delta.particles_upserted.is_empty()
             || !delta.particles_removed.is_empty()
             || payloads.particles.membership != self.pt_membership;
+        let membership_changed = payloads.particles.membership != self.pt_membership;
         self.pt_membership = payloads.particles.membership;
         if !resized.is_empty() || dep_mesh_changed {
             let serial = self.serial;
-            let stale: Vec<Id> = self
-                .items
-                .iter()
+            self.deps.maybe_rebuild(&self.items);
+            // PH2: the dependents of what changed (`DepIndex`), else (the oracle) every item; each
+            // checked with the same test.
+            let candidates: Option<Vec<Id>> = (!self.always_scan_dependencies).then(|| {
+                let d = &mut self.deps;
+                let mut c: Vec<Id> = Vec::new();
+                if !self.skip_dep_textures {
+                    for t in resized
+                        .iter()
+                        .chain(&delta.textures_upserted)
+                        .chain(&delta.textures_removed)
+                        .chain(&d.pending_tex)
+                    {
+                        if let Some(users) = d.tex.get(t) {
+                            c.extend_from_slice(users);
+                        }
+                    }
+                }
+                d.pending_tex.clear();
+                for m in delta
+                    .meshes_upserted
+                    .iter()
+                    .chain(&delta.meshes_removed)
+                    .chain(&mesh_res.changed)
+                {
+                    if let Some(users) = d.mesh.get(m) {
+                        c.extend_from_slice(users);
+                    }
+                }
+                if !delta.meshes_upserted.is_empty()
+                    || !delta.meshes_removed.is_empty()
+                    || !mesh_res.changed.is_empty()
+                    || !delta.multimeshes_upserted.is_empty()
+                    || !delta.multimeshes_removed.is_empty()
+                    || !delta.particles_upserted.is_empty()
+                    || !delta.particles_removed.is_empty()
+                    || membership_changed
+                {
+                    c.extend_from_slice(&d.instanced);
+                }
+                c.sort_unstable();
+                c.dedup();
+                c
+            });
+            let items = &self.items;
+            let listed: Box<dyn Iterator<Item = (&Id, &ItemRec)>> = match &candidates {
+                Some(c) => Box::new(c.iter().filter_map(|id| items.get_key_value(id))),
+                None => Box::new(items.iter()),
+            };
+            let stale: Vec<Id> = listed
                 .filter(|(_, rec)| rec.lowered_at != serial)
                 .filter(|(_, rec)| {
                     rec.tex_sizes.iter().any(|(t, s)| {
@@ -2139,6 +2300,8 @@ impl Applier {
                 }
                 let same = lowered.same_shape(&rec.lowered);
                 rec.lowered_at = self.serial;
+                self.deps
+                    .note(id, Some(rec), (&lowered, &tex_sizes, &mesh_versions));
                 Self::install_lowering(&mut self.spare, rec, lowered, tex_sizes, mesh_versions);
                 let moved_range = Self::place_vertices(&mut self.list, rec, &mut self.vertex_holes);
                 Self::sync_row_flags(&mut self.list, rec, self.walk_serial, &mut self.stats);
@@ -2147,6 +2310,15 @@ impl Applier {
                 } else {
                     why |= Why::CONTENT_SHAPE;
                 }
+            }
+        } else if !self.always_scan_dependencies {
+            // PH2: kept for the next pass that runs (`DepIndex::pending_tex`).
+            let d = &mut self.deps;
+            d.pending_tex.extend(&delta.textures_upserted);
+            d.pending_tex.extend(&delta.textures_removed);
+            if d.pending_tex.len() > 4096 {
+                d.pending_tex.sort_unstable();
+                d.pending_tex.dedup();
             }
         }
 
@@ -2237,6 +2409,7 @@ impl Applier {
                 }
             }
             roots.extend(moved);
+            self.move_attach = false;
             for id in roots {
                 if !self.move_subtree(state, id) {
                     // A clip or the alpha cut changed with the move: fall back to the walk.
@@ -2244,6 +2417,9 @@ impl Applier {
                     walk = true;
                     break;
                 }
+            }
+            if !walk && std::mem::take(&mut self.move_attach) {
+                why |= Why::MOVE_ATTACH;
             }
         }
         prof::add(prof::CLASSIFY, t);
@@ -2293,6 +2469,7 @@ impl Applier {
 
     fn walk(&mut self, state: &ResolvedState) {
         self.stats.structural = true;
+        self.parking = !self.move_walks && self.back_buffer_items.is_empty();
         self.attach.clear();
         self.walk_keys.clear();
         self.walk_serial += 1;
@@ -2338,6 +2515,15 @@ impl Applier {
             if !self.sabotage.ignore_z && self.attach[start..].windows(2).any(|w| w[0].z > w[1].z) {
                 // The stable sort without its scratch allocation: (z, attach order) is unique.
                 self.attach[start..].sort_unstable_by_key(|a| (a.z, a.order));
+            }
+        }
+        // PH2: where each entry landed, for a later move's parking flip.
+        if self.parking {
+            let serial = self.walk_serial;
+            for (k, a) in self.attach.iter().enumerate() {
+                if let Some(rec) = self.items.get_mut(&a.item) {
+                    rec.attach_at = (serial, k as u32);
+                }
             }
         }
         // CG3: a synthesized group rect no owner draws any more gives its vertices back.
@@ -2886,10 +3072,9 @@ impl Applier {
                 self.stats.rows_written += 1;
             }
             let row_index = rec.row;
-            let emit = (!rec.lowered.draws.is_empty() || synth_rect.is_some())
-                && !light_only
-                && !skip
-                && rec.on_screen;
+            let would_emit =
+                (!rec.lowered.draws.is_empty() || synth_rect.is_some()) && !light_only && !skip;
+            let emit = would_emit && rec.on_screen;
             // CG3: a `copy_to_backbuffer` item is attached for its copy whatever it draws
             // (renderer_canvas_cull.cpp:247), and a group owner whenever its range is on screen
             // (its group must close).
@@ -2900,7 +3085,9 @@ impl Applier {
                     r
                 }
             });
-            if emit || copy.is_some() || (ranged && rec.on_screen) {
+            // PH2: parked (see `Attach::parked`); with parking on there is no group or copy.
+            let parked = self.parking && would_emit && !rec.on_screen;
+            if emit || parked || copy.is_some() || (ranged && rec.on_screen) {
                 let scissor =
                     own_clip.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]);
                 let order = self.attach.len() as u32;
@@ -2916,6 +3103,8 @@ impl Applier {
                     has_material: owner.1.is_some(),
                     emit,
                     synth: synth_rect.is_some(),
+                    would_emit,
+                    parked,
                     item: id,
                     z: z as i32,
                     scissor,
@@ -3237,6 +3426,9 @@ impl Applier {
                 sample_mips,
             };
             for (i, a) in self.attach.iter().enumerate() {
+                if a.parked {
+                    continue;
+                }
                 let Some(rec) = self.items.get(&a.item) else {
                     continue;
                 };
@@ -3669,10 +3861,27 @@ impl Applier {
                 self.viewport.width as f32,
                 self.viewport.height as f32,
             ];
-            if geom::intersects_inclusive(&vp, &geom::xform_rect(&draw_xf, &rect)) != rec.on_screen
-            {
-                // Moving on or off screen changes what is attached: the walk decides.
-                return false;
+            let on = geom::intersects_inclusive(&vp, &geom::xform_rect(&draw_xf, &rect));
+            if on != rec.on_screen {
+                // Moving on or off screen changes what is attached: the walk decides, unless it
+                // parked (PH2): then the item's entry is flipped in place and re-assembled.
+                if !self.parking {
+                    return false;
+                }
+                let serial = self.walk_serial;
+                let at = rec.attach_at;
+                if let Some(rec) = self.items.get_mut(&id) {
+                    rec.on_screen = on;
+                }
+                if at.0 == serial && !self.park_stale {
+                    if let Some(a) = self.attach.get_mut(at.1 as usize) {
+                        if a.item == id && a.would_emit {
+                            a.parked = !on;
+                            a.emit = on;
+                            self.move_attach = true;
+                        }
+                    }
+                }
             }
         }
         let ignore_canvas_modulate = self.sabotage.ignore_canvas_modulate;
@@ -3710,6 +3919,8 @@ mod pm6b_tests;
 mod uit_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ph2_tests;
 #[cfg(test)]
 mod window_tests;
 #[cfg(test)]

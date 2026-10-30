@@ -343,19 +343,22 @@ impl MeshResidency {
             self.dynamic_undrawn += 1;
             return;
         };
-        let geos: Vec<&MeshGeometry> = dm.surfaces.iter().take(n).flatten().collect();
-        if geos.len() != n {
+        // PH2: the surfaces' geometries by index, without collecting them (once per dynamic mesh
+        // and transaction).
+        let geos = &dm.surfaces;
+        if geos.len() < n || geos[..n].iter().any(Option::is_none) {
             self.dynamic_undrawn += 1;
             return;
         }
+        let geo = |k: usize| geos[k].as_ref().expect("checked above");
         self.dynamic_resident += 1;
         let custom_aabb = entry.custom_aabb.map(f32::to_bits);
-        let layouts: Vec<_> = geos.iter().map(|g| g.layout.clone()).collect();
         let fresh = !self.resident.contains_key(&id);
         let reshaped = !fresh && {
             let r = &self.resident[&id];
             r.layouts.len() != n
-                || r.layouts.iter().zip(&geos).any(|(l, g)| {
+                || r.layouts.iter().enumerate().any(|(k, l)| {
+                    let g = geo(k);
                     (
                         l.primitive,
                         l.format,
@@ -378,10 +381,12 @@ impl MeshResidency {
                         && r.layouts[k].index_count > 0
                         && r.index_bytes
                             .get(k)
-                            .is_some_and(|b| b != &geos[k].buffers[3])
+                            .is_some_and(|b| b != &geo(k).buffers[3])
                 })
         };
         if fresh || reshaped {
+            let geos: Vec<&MeshGeometry> = (0..n).map(geo).collect();
+            let layouts: Vec<_> = geos.iter().map(|g| g.layout.clone()).collect();
             let mut added = Vec::new();
             let mut drawn = Vec::with_capacity(n);
             let mut bytes = 0u64;
@@ -427,7 +432,8 @@ impl MeshResidency {
         }
         let r = self.resident.get_mut(&id).unwrap();
         {
-            for (k, g) in geos.iter().enumerate() {
+            for k in 0..n {
+                let g = geo(k);
                 if r.serials[k] == dm.serials[k] {
                     continue;
                 }
