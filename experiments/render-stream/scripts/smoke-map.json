@@ -371,6 +371,11 @@
       "reach": ["pure"]
     },
     {
+      "why": "TAG-D's item-creation census (results/p3/tag-d.md): reads a kept recording's transaction metas by hand through wire-budget.py's reader, not a validate-increment target",
+      "paths": ["experiments/render-stream/scripts/item-census.py"],
+      "reach": ["pure"]
+    },
+    {
       "why": "the legacy decoder prototype crate",
       "paths": ["experiments/render-stream/decode-proto-rs/**"],
       "reach": ["cargo:experiments/render-stream/decode-proto-rs"]

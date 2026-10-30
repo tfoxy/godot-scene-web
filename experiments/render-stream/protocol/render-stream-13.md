@@ -25,6 +25,10 @@ sections that describe it are design text, not wire: where they and "As built (W
 "As built (W13a)" is the wire. If the binary body lands, it is a further change to /13 made before
 the freeze (W13z), not a new version, since no /13 stream is offered by default until then.
 
+TAG-D ([client-extensions-design.md](client-extensions-design.md) §4) adds an optional hello key
+(`item_meta`) and a JSON record type (`item_meta`) to /13 before the freeze. It reserves nothing in
+the transaction syntax beyond keeping item ids explicit; W13z waits for TAG1 and TAG2.
+
 ## Why
 
 WB ([results/p3/wb.md](../results/p3/wb.md)) left one item for "the final binary-structure swap":

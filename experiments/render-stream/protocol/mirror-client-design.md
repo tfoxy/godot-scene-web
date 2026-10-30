@@ -219,6 +219,9 @@ export interface RenderStreamExtension {
     and host fps;
   - a product that has no module enabled does not load one: modules are the product's dynamic imports.
 
+**Designed by TAG-D:** [client-extensions-design.md](client-extensions-design.md) (record layout,
+identity rules, override semantics, increments). The sketch's text follows unchanged.
+
 This is a sketch. MIR-TAG designs the record layout, the identity rules (late-join adoption, reparenting) and the
 override semantics (local vs global, clip interaction) before the binary `/13`, which then carries them.
 
