@@ -401,6 +401,11 @@ struct Perf {
   std::FILE *timeline_file = nullptr;
   std::string timeline_path;
   int64_t timeline_last_second = -1;  // the last whole second a timeline line was written for
+  // GRC_PERF_TIMELINE_MAX_BYTES: 0 (unset) = unbounded, the gate default. Otherwise the timeline
+  // rotates: perf-timeline.jsonl holds at most max/2 bytes, and when it fills it becomes
+  // perf-timeline.jsonl.1 (replacing the previous one), so the pair stays near max (a file overshoots its half by at most one line).
+  uint64_t timeline_max_bytes = 0;
+  uint64_t timeline_bytes = 0;
 };
 
 Perf g_perf;
@@ -999,6 +1004,8 @@ void perf_arm() {
       clock_gettime(CLOCK_THREAD_CPUTIME_ID, &g_perf.main_thread_cpu_start) == 0;
 }
 
+bool env_non_negative(const char *name, uint64_t fallback, uint64_t *out);  // defined below
+
 // Writes one evidence/perf-timeline.jsonl line the first time this is called in a new whole
 // second since arm (so at most one line per second, however often the frame callback runs).
 void perf_timeline_tick(uint64_t now_ns) {
@@ -1015,6 +1022,20 @@ void perf_timeline_tick(uint64_t now_ns) {
     g_perf.timeline_file = std::fopen(g_perf.timeline_path.c_str(), "w");
     if (g_perf.timeline_file == nullptr) {
       log_line("perf: cannot open " + g_perf.timeline_path);
+      return;
+    }
+    g_perf.timeline_bytes = 0;
+    if (!env_non_negative("GRC_PERF_TIMELINE_MAX_BYTES", 0, &g_perf.timeline_max_bytes)) {
+      g_perf.timeline_max_bytes = 0;  // malformed: stay unbounded rather than fail a stream
+    }
+  }
+  if (g_perf.timeline_max_bytes > 0 && g_perf.timeline_bytes >= g_perf.timeline_max_bytes / 2) {
+    std::fclose(g_perf.timeline_file);
+    std::rename(g_perf.timeline_path.c_str(), (g_perf.timeline_path + ".1").c_str());
+    g_perf.timeline_file = std::fopen(g_perf.timeline_path.c_str(), "w");
+    g_perf.timeline_bytes = 0;
+    if (g_perf.timeline_file == nullptr) {
+      log_line("perf: cannot reopen " + g_perf.timeline_path);
       return;
     }
   }
@@ -1082,6 +1103,7 @@ void perf_timeline_tick(uint64_t now_ns) {
   std::fwrite(line.data(), 1, line.size(), g_perf.timeline_file);
   std::fputc('\n', g_perf.timeline_file);
   std::fflush(g_perf.timeline_file);
+  g_perf.timeline_bytes += line.size() + 1;
 }
 
 // render-stream-capture-perf/1 (Q3d), written at disarm and shutdown.
