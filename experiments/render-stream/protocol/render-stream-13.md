@@ -402,6 +402,7 @@ sweep.
 | **W13c** | GSW: offers `.13` under `RS_RECEIVER_PROTOCOL=13`; the accept path through rs-core's /13 reader | g7-5 and g7-2 groups at /13; gate 5 meshes; g8mm, g8pt | `gsw-band` on gate 5 meshes at /13; g8mm and g8pt GSW checks at /13; a `predict-check` resync leg; core profile (`profile-rs-core-wasm.mjs`) on `pm7-a12-1` transcoded: accept µs at /13 within +10 % of /12 | `no-predict-reset` (receiver) fails the resync leg's pixel check |
 | **W13d** | native receiver and web export: capi at /13, the shim unchanged (the planner sees the /12 model) | `gate5-mesh`, `gate8-mm`, `gate8-pt`, g7-5 web | g5c and g5e `reference` exact at /13; `mm-reference`, the g8pt checks; the web half of each | `no-predict-reset` as W13c |
 | **W13z** | STS2 acceptance | none (one game launch) | /13, window 2, W11t coding, GSW and native viewers, menu, map and combat: warm coded bytes within 10 % of the projection above; replay dB equal to /12's on the same recording (transcoded); a /12 and a /13 viewer of one host with equal resolved states at every shared frame; zero `predict-check` errors; host callback and formation split no worse than /12 (load-gated) | none in game |
+| **W13f** | capture only, wire unchanged: the live predictor reuses its history beside the memo; /13's state released on the encode thread; SIMD coding | `fixtures/capture-scale`; `pm7-a12-1` (a bench) | `rs_live_test`: a live predictor allocates no history state after its first three transactions; no prediction state is released on the main thread in a frame callback; byte identity (golden-13, `cmp-rec.ts` capture-scale /12 and /13 against `main`, `w13-equiv`); W13z's cost leg re-run | `predict-stale`, `reorder` still caught |
 
 **W13a as built** ("Staging", "As built (W13a)"): the predicted blocks under /12's JSON meta, with
 `predict_check` as a transaction key; no binary syntax, no `schema.json`, no `binary-*` vectors,
@@ -739,10 +740,46 @@ The host-cost criterion **fails**:
 So the product stays at /12 until **W13f** (capture-only, wire unchanged) brings formation to /12's
 or below and moves the release to the encode thread. The couch-coop switch is ready on a branch.
 
+**After W13f** ([results/p3/w13f.md](../results/p3/w13f.md)), the main-thread half passes: no /13
+history is released there. The formation half still fails. Combat formation is +12 % over /12
+across four A/B pairs, about +0.25 M cycles (≈ 0.07 ms) a frame on the encode thread, down from
++31 %; the menu is +13–48 %. The predictor stays at about 0.6 M cycles a combat frame in the game
+because its cost there is cold memory, and zstd saves only 0.15–0.3 M of that. The switch waits
+for the orchestrator's decision on that residual.
+
 W13z does not freeze /13. The freeze is a later step before any release, after TAG1/TAG2 (item
 identity lands at /13, [client-extensions-design.md](client-extensions-design.md)) and the
 binary-syntax decision. A compact residual, which would recover the projected zstd saving, belongs
 with that decision.
+
+## As built (W13f): live formation cost
+
+W13f is capture-only, and the wire is byte for byte W13a's. Results are in
+[results/p3/w13f.md](../results/p3/w13f.md).
+
+- **History reuse beside the memo.** When a predictor cannot refill the H2 that leaves its history
+  (a live hub's memo keys its coding on H1 and H2 until the callback ends, and lockstep connections
+  share states), it keeps that state as its *spare*. The next transaction refills the spare
+  (R(T−3) by then), which nobody else holds any more. The file lanes still reuse H2 directly. A
+  live connection allocates three states (the full, the patch after it, the first patch with an
+  H2) and reuses one a transaction from then on: `Predictor::reuse_stats()`, live-summary
+  `predict.states_reused` and `states_made`.
+- **Release on the encode thread.** The batch-end job resets the memo's /13 codings (`before`,
+  `after`, the bytes) and the typed metas before it hands the memo to the main thread. The spare
+  holds each dropped state's last reference, so states die on the encode thread
+  (`rs13::states_released_here()`, the test's counter).
+- **Coding.** The residual and the byte-plane transpose run 16 and then 4 words a step on SSE2
+  (`code_words`). The writer codes surfaces stream by stream, with an SSE2 XOR for the byte runs.
+  It codes mesh_f32 and mm_f32 once per unit, transposing only the raw words between units.
+  History lookups walk a cursor in id order (`Finder`, `Cursor`; each equals `map.find`).
+- **Live buffers.** Each connection's /13 output buffer and typed meta are refilled once nothing
+  else holds them (`FormState::spare_out`, `spare_meta`). Every reuse after a
+  `use_count() == 1` check takes an acquire fence.
+- **Cost.** The predictor's instructions fell 56 % on `pm7-a12-1` (1.27 → 0.55 M a patch, live
+  pattern), and its warm cycles fell by half. In the game it still takes about 0.6 M cycles a
+  combat frame (166–207 µs), because its H1 and H2 reads are cold there: per-unit heap buffers
+  behind map nodes. The next lever is a history that references the previous /12 records' blocks,
+  which a transaction lists in the same order, so that H1 and H2 become sequential streams.
 
 ## Versioning
 

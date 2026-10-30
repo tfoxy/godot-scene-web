@@ -78,6 +78,22 @@ struct PredictState {
   std::map<std::int64_t, MeshBodies> body;
   std::map<std::int64_t, std::array<std::uint8_t, 24>> aabb;  // six float32 LE
   std::map<std::int64_t, MultimeshBuffer> mm;
+  PredictState() = default;
+  PredictState(const PredictState &) = default;
+  PredictState &operator=(const PredictState &) = default;
+  ~PredictState();  // W13f: counted per thread (states_released_here())
+};
+
+// W13f: how many prediction states this thread has destroyed (tests: a live hub releases /13
+// history on its encode thread, never in the main thread's frame callback).
+std::uint64_t states_released_here();
+
+// W13f: a predictor's history storage. `reused`: states refilled in place (the H2 that left, or
+// the spare); `made`: states allocated. A predictor that is its states' sole holder, or whose
+// co-holders let go within a transaction, allocates only its first few.
+struct ReuseStats {
+  std::uint64_t reused = 0;
+  std::uint64_t made = 0;
 };
 
 // W13p: the meta keys the predictor reads, typed. The writer builds it from the rs2::Transaction
@@ -232,6 +248,8 @@ class Predictor {
   void reset();
 
   const PredictState &h1() const { return *h1_; }
+  // W13f: this predictor's own counts (not copied with it).
+  ReuseStats reuse_stats() const;
   const PredictState &h2() const { return *h2_; }
 
   // Encoder sabotage predict-stale (render-stream-13.md "Sabotages"): every patch predicts from
@@ -249,6 +267,7 @@ class Predictor {
                       std::vector<std::uint8_t> *out, std::vector<Unit> *trace);
   Scratch &scratch();
   std::shared_ptr<PredictState> next_state(bool full);
+  void advance_history(std::shared_ptr<PredictState> next, bool full);
 
   std::unique_ptr<Scratch> scratch_;
 

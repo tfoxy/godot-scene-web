@@ -1,6 +1,7 @@
 #include "rs_live.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -854,7 +855,27 @@ struct Hub::FormState {
   // order, as the receiver accepts them. A full transaction resets it (rs13::Predictor::encode),
   // so a resync needs nothing more. Unused below /13.
   rs13::Predictor predictor;
+  // W13f: the /13 message before last_tx and the last typed meta this connection built: the next
+  // /13 coding writes into the one and predict_meta() into the other (their capacity kept: no
+  // allocation, no zero fill) once nothing else holds them (the memo and W11t's coded memo let go
+  // when their callback ends).
+  std::shared_ptr<const std::vector<std::uint8_t>> spare_out;
+  std::shared_ptr<const rs13::PredictMeta> spare_meta;
 };
+
+namespace {
+// W13f: `spare` back as writable storage when its last holder is `spare` itself, else a fresh one.
+template <class T>
+std::shared_ptr<T> reuse_or_make(std::shared_ptr<const T> *spare) {
+  std::shared_ptr<const T> held = std::move(*spare);
+  if (held != nullptr && held.use_count() == 1) {
+    // The other holders may have let go on the main thread: see their writes first.
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return std::const_pointer_cast<T>(std::move(held));
+  }
+  return std::make_shared<T>();
+}
+}  // namespace
 
 // HC5: what a job adds to its connection's summary (`s`) and end stats (`stats`): the fields a
 // synchronous send_transaction() used to update while it formed and delivered.
@@ -879,6 +900,8 @@ struct Hub::Counters {
   std::uint64_t predict_bytes = 0;
   std::uint64_t predict_ns = 0;
   std::uint64_t predict_stale_seq = 0;
+  std::uint64_t predict_states_reused = 0;  // W13f
+  std::uint64_t predict_states_made = 0;
   std::vector<std::uint64_t> enqueue_us;  // Q3d enqueue_us samples, in send order
 };
 
@@ -1982,6 +2005,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
   const bool full = job.full;
   const std::uint64_t t0 = monotonic_ns();
   o.predict_plain_bytes += plain->size();
+  auto take_spare_out = [](FormState &form) { return reuse_or_make(&form.spare_out); };
   // predict-stale: from its frame, the first patch whose stale coding differs from the honest one
   // (a patch with no predicted unit codes the same either way, and proves nothing).
   const bool stale = !full && config_.predict_stale_frame != 0 && !predict_stale_done_ &&
@@ -1993,7 +2017,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
           p->meta.perturb_instance == meta.perturb_instance &&
           p->meta.perturb_seed == meta.perturb_seed &&
           (full || rs13::same_history(p->before, f.predictor))) {
-        auto out = std::make_shared<std::vector<std::uint8_t>>();
+        std::shared_ptr<std::vector<std::uint8_t>> out = take_spare_out(f);
         if (restamp(*p->bytes, p->meta, meta, full, out.get())) {
           f.predictor = p->after;
           ++o.predict_shared;
@@ -2005,7 +2029,8 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
     }
   }
   const rs13::Predictor before = f.predictor;  // shares H1 and H2: no copy of their bytes
-  auto out = std::make_shared<std::vector<std::uint8_t>>();
+  const rs13::ReuseStats stats0 = f.predictor.reuse_stats();
+  std::shared_ptr<std::vector<std::uint8_t>> out = take_spare_out(f);
   auto code = [&](rs13::Predictor &p, std::vector<std::uint8_t> *into) {
     return predict != nullptr ? p.encode(*predict, plain->data(), plain->size(), into)
                               : p.encode(*plain, into);
@@ -2013,6 +2038,9 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
   if (code(f.predictor, out.get()) != rs13::Status::Ok) {
     return nullptr;  // never for a transaction encode_transaction wrote
   }
+  const rs13::ReuseStats stats1 = f.predictor.reuse_stats();
+  o.predict_states_reused += stats1.reused - stats0.reused;
+  o.predict_states_made += stats1.made - stats0.made;
   bool sabotaged = false;
   if (stale) {
     rs13::Predictor wrong_predictor = before;
@@ -2079,6 +2107,17 @@ void Hub::run_job(Job &job) {
   if (job.batch_end) {
     // P3-SP: the shared work lives for one callback; its snapshots are released by the main
     // thread (complete()), and the taps written this callback are flushed once.
+    // W13f: /13's own state is released here, on the encode thread: the codings' histories
+    // (which also lets each predictor's spare go back to it alone before its next coding), the
+    // /13 messages and the typed metas. The snapshots stay for the main thread.
+    for (const auto &p : memo_->predicted) {
+      p->before.reset();
+      p->after.reset();
+      p->bytes = nullptr;
+    }
+    for (const auto &tx : memo_->txs) {
+      tx->predict = nullptr;
+    }
     job.retired = std::move(memo_);
     memo_ = std::make_unique<Memo>();
     for (std::FILE *tap : job.flush) {
@@ -2200,8 +2239,9 @@ void Hub::run_job(Job &job) {
     t1 = monotonic_ns();
     encoded = std::make_shared<const std::vector<std::uint8_t>>(encode_transaction(transaction));
     if (meta.version == ProtocolVersion::V13) {
-      auto typed = std::make_shared<rs13::PredictMeta>();
+      std::shared_ptr<rs13::PredictMeta> typed = reuse_or_make(&f.spare_meta);  // W13f
       rs13::predict_meta(transaction, typed.get());
+      f.spare_meta = typed;
       predict = std::move(typed);
     }
     if (shared == nullptr) {
@@ -2247,7 +2287,11 @@ void Hub::run_job(Job &job) {
     }
     wire = form_coded_tx(job, encoded);
   }
+  std::shared_ptr<const std::vector<std::uint8_t>> previous = std::move(f.last_tx);
   f.last_tx = encoded;
+  if (meta.version == ProtocolVersion::V13) {
+    f.spare_out = std::move(previous);  // W13f: the next /13 coding's buffer, once it is ours alone
+  }
   if (!form_deliver(job, bytes, job.send, wire.get())) {
     job.lines.push_back(Line()
                             .num("frame", frame)
@@ -2296,6 +2340,8 @@ void Hub::complete(Job &job) {
   if (o.predict_stale_seq != 0) {
     c.s.predict_stale_seq = o.predict_stale_seq;
   }
+  c.s.predict_states_reused += o.predict_states_reused;
+  c.s.predict_states_made += o.predict_states_made;
   c.stats.resource_records += o.resource_records;
   c.stats.resource_bytes += o.resource_bytes;
   c.stats.bytes_total += o.record_bytes_total;
@@ -2958,6 +3004,8 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       json.field("plain_bytes", static_cast<int64_t>(s.predict_plain_bytes));
       json.field("bytes", static_cast<int64_t>(s.predict_bytes));
       json.field("encode_us", static_cast<int64_t>(s.predict_ns / 1000));
+      json.field("states_reused", static_cast<int64_t>(s.predict_states_reused));  // W13f
+      json.field("states_made", static_cast<int64_t>(s.predict_states_made));
       if (s.predict_stale_seq != 0) {
         json.field("stale_seq", static_cast<int64_t>(s.predict_stale_seq));
       } else {
