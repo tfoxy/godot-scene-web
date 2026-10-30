@@ -719,6 +719,31 @@ goldens, the C++ writer against rs-core's transcode on every pm7-a12-1 transacti
   patch (p50). Receivers: wasm accept +13.4 % over /12 (was +23.2 %), native +15.2 % (was
   +20.6 %). The design's +10 % on wasm accept is still missed (results/p3/w13p.md "Receivers").
 
+## W13z: the STS2 acceptance
+
+Results are in [results/p3/w13z.md](../results/p3/w13z.md). Four of the five criteria pass:
+
+- **Bytes.** Combat 5,992.5 coded B a patch (2.88 Mbps), map 315.5 B, menu 390.9 B. The menu sits
+  below the band because that scene instance is lighter.
+- **Replay.** /13 replays are byte-identical to the /12 transcode's on GSW and native.
+- **Equivalence.** A /12 and a /13 viewer of one host resolve alike at all 18,894 shared frames.
+- **predict-check.** Zero failures on every /13 viewer and on the product page.
+
+The host-cost criterion **fails**:
+
+- **Formation.** It costs +20–42 % in combat on HC5's encode thread. The predictor takes 190 µs a
+  combat frame live (the hub's memo keeps W13p's history reuse off). zstd saves 10–15 %, because a
+  /13 message is as large as /12's before coding.
+- **Main thread.** /13's history is released there.
+
+So the product stays at /12 until **W13f** (capture-only, wire unchanged) brings formation to /12's
+or below and moves the release to the encode thread. The couch-coop switch is ready on a branch.
+
+W13z does not freeze /13. The freeze is a later step before any release, after TAG1/TAG2 (item
+identity lands at /13, [client-extensions-design.md](client-extensions-design.md)) and the
+binary-syntax decision. A compact residual, which would recover the projected zstd saving, belongs
+with that decision.
+
 ## Versioning
 
 As /12: any change to framing, a key, a key order, a block layout, an enum spelling, a payload
