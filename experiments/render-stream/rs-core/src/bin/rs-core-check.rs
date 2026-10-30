@@ -7,6 +7,7 @@
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
 //!   rs-core-check validate <recording>... [--version 2..8] [--recover]
+//!                          [--item-meta-asked <request json>|none] [--item-meta-dump <path>]
 //!   rs-core-check apply-bench <recording> --store <dir> [--repeats N]
 //!   rs-core-check profile <recording> --store <dir> [--repeats N] [--digest inline|deferred] [--clock time|allocs]
 //!   rs-core-check walk-diff <recording>... [--store <dir>] [--digests <file>]
@@ -28,11 +29,19 @@
 //! rejected record and keeps going (the validator must leave its state untouched by a failed
 //! accept), printing the rejected and accepted record counts and a digest chaining the canonical
 //! JSON of every accepted transaction: a recording with a rejected record inserted must chain like
-//! the recording without it.
+//! the recording without it. TAG1 (client-extensions-design.md §2.4): `--item-meta-asked` validates
+//! as a live viewer whose hello asked for `{"fields":[..],"groups":[..],"meta_keys":[..]}` (each
+//! grant must be within it), or (`none`) asked for nothing (any item_meta record is
+//! `item-meta-unexpected`); absent, the recording's records are accepted and validated.
+//! `--item-meta-dump <path>` (one recording) writes, after validation (also a failed one, as far as
+//! it got), `{"grant", "strings", "rows": {"<id>": row}, "seen": {"<id>": row}, "full_records",
+//! "delta_records"}`: rows the live table's, seen the last row each id ever had; a row is `null`
+//! (no node) or `{<field>: string|null.., "groups": mask, "meta": {<key>: string|null}}`.
 
 use render_stream_core::canon;
 use render_stream_core::coding::{self, LiveDecoder, Outcome};
 use render_stream_core::goldens::{self, GoldenOptions};
+use render_stream_core::item_meta::{ItemMetaAsk, ItemMetaDump, ItemMetaRequest};
 use render_stream_core::validate::{Accepted, DigestPolicy, Options, Validator};
 use render_stream_core::wire;
 use serde_json::{json, Value as J};
@@ -71,7 +80,7 @@ fn usage() -> ExitCode {
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
-         rs-core-check validate <recording>... [--version 2..8]\n  \
+         rs-core-check validate <recording>... [--version 2..8] [--item-meta-asked <json>|none] [--item-meta-dump <path>]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
          rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
@@ -286,6 +295,7 @@ fn record_type(r: &Accepted) -> &'static str {
         Accepted::Resource { .. } => "resource",
         Accepted::Transaction => "transaction",
         Accepted::End => "end",
+        Accepted::ItemMeta => "item_meta",
     }
 }
 
@@ -352,6 +362,7 @@ fn cmd_diff(args: &Args) -> ExitCode {
                 verify_payload_hashes: true,
                 early_prune: false,
                 no_predict_reset: false,
+                item_meta: Default::default(),
             };
             let session_bytes = first.bytes(&data);
             let mut v = Validator::new(session_bytes, first.offset, opts)?;
@@ -450,6 +461,7 @@ fn bench_one(
             verify_payload_hashes: true,
             early_prune: false,
             no_predict_reset: false,
+            item_meta: Default::default(),
         };
         let mut v = Validator::new(first.bytes(data), first.offset, opts)?;
         for r in &records[1..] {
@@ -639,6 +651,25 @@ fn cmd_validate(args: &Args) -> ExitCode {
     if args.positional.is_empty() {
         return usage();
     }
+    let ask = match args.get("item-meta-asked") {
+        None => ItemMetaAsk::Unknown,
+        Some("none") => ItemMetaAsk::NotAsked,
+        Some(text) => match serde_json::from_str::<J>(text)
+            .map_err(|e| e.to_string())
+            .and_then(|j| ItemMetaRequest::from_json(&j))
+        {
+            Ok(r) => ItemMetaAsk::Asked(r),
+            Err(e) => {
+                eprintln!("rs-core-check validate: --item-meta-asked: {e}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let dump = args.get("item-meta-dump");
+    if dump.is_some() && (args.positional.len() != 1 || args.get("recover").is_some()) {
+        eprintln!("rs-core-check validate: --item-meta-dump takes exactly one recording (no --recover)");
+        return ExitCode::from(2);
+    }
     let mut any_error = false;
     for path in &args.positional {
         let data = match std::fs::read(path) {
@@ -664,7 +695,23 @@ fn cmd_validate(args: &Args) -> ExitCode {
             }
             continue;
         }
-        match render_stream_core::validate::validate_recording(&data, Options::new(version)) {
+        let opts = Options {
+            item_meta: ask.clone(),
+            ..Options::new(version)
+        };
+        let verdict = match dump {
+            None => render_stream_core::validate::validate_recording(&data, opts),
+            Some(out) => {
+                let (verdict, json) = validate_with_item_meta_dump(&data, opts);
+                let text = serde_json::to_string_pretty(&json).unwrap_or_default() + "\n";
+                if let Err(e) = std::fs::write(out, text) {
+                    eprintln!("rs-core-check validate: {out}: {e}");
+                    any_error = true;
+                }
+                verdict
+            }
+        };
+        match verdict {
             Ok(()) => println!("{path}\tok\t"),
             Err(e) => {
                 any_error = true;
@@ -677,6 +724,39 @@ fn cmd_validate(args: &Args) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `validate --item-meta-dump`: the verdict, and the item_meta dump as far as validation got.
+fn validate_with_item_meta_dump(data: &[u8], opts: Options) -> (Result<(), wire::Error>, J) {
+    let mut dump = ItemMetaDump::default();
+    let records = match wire::split_records(data, opts.version) {
+        Ok(r) => r,
+        Err(e) => return (Err(e), J::Null),
+    };
+    let Some(first) = records.first() else {
+        return (
+            Err(wire::Error::new("missing-session", "the recording has no records")),
+            J::Null,
+        );
+    };
+    let mut v = match Validator::new(first.bytes(data), first.offset, opts) {
+        Ok(v) => v,
+        Err(e) => return (Err(e), J::Null),
+    };
+    let mut verdict = Ok(());
+    for r in &records[1..] {
+        match v.accept(r.bytes(data), r.offset) {
+            Ok(a) => dump.observe(&v, a),
+            Err(e) => {
+                verdict = Err(e);
+                break;
+            }
+        }
+    }
+    if verdict.is_ok() {
+        verdict = v.finish();
+    }
+    (verdict, dump.to_json(v.item_meta()))
 }
 
 /// `validate --recover`: (rejected records, accepted records, chained state digest).
@@ -766,7 +846,7 @@ fn cmd_apply_bench(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End => {}
+                Accepted::End | Accepted::ItemMeta => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -981,7 +1061,7 @@ fn cmd_walk_diff(args: &Args) -> ExitCode {
                             payloads.provide(b, &hash, version, true)?;
                         }
                     }
-                    Accepted::End => {}
+                    Accepted::End | Accepted::ItemMeta => {}
                     Accepted::Transaction => {
                         payloads.accept_transaction(&v, span.bytes(&data))?;
                         inc.prepare(v.state(), v.delta());
@@ -1155,7 +1235,7 @@ fn cmd_material_diff(args: &Args) -> ExitCode {
                             payloads.provide(b, &hash, version, true)?;
                         }
                     }
-                    Accepted::End => {}
+                    Accepted::End | Accepted::ItemMeta => {}
                     Accepted::Transaction => {
                         payloads.accept_transaction(&v, span.bytes(&data))?;
                         inc.prepare(v.state(), v.delta());
@@ -1405,7 +1485,7 @@ fn cmd_client_diff(args: &Args) -> ExitCode {
                             }
                         }
                     }
-                    Accepted::End => {}
+                    Accepted::End | Accepted::ItemMeta => {}
                     Accepted::Transaction => {
                         n += 1;
                         bodies += h.v.dynamic_bodies().len();
@@ -1695,7 +1775,7 @@ fn cmd_scissors(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End => {}
+                Accepted::End | Accepted::ItemMeta => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -1781,7 +1861,7 @@ fn cmd_lowered(args: &Args) -> ExitCode {
                         payloads.provide(b, &hash, version, true)?;
                     }
                 }
-                Accepted::End => {}
+                Accepted::End | Accepted::ItemMeta => {}
                 Accepted::Transaction => {
                     payloads.accept_transaction(&v, span.bytes(&data))?;
                     a.prepare(v.state(), v.delta());
@@ -2391,7 +2471,7 @@ fn cmd_draw_skip_diff(args: &Args) -> ExitCode {
                             }
                         }
                     }
-                    Accepted::End => {}
+                    Accepted::End | Accepted::ItemMeta => {}
                     Accepted::Transaction => {
                         n += 1;
                         for s in [&mut o, &mut k] {

@@ -56,7 +56,7 @@ fn replay(file: &str, buffers: bool, undrawn: bool) -> Seen {
                     store.provide(&b, &hash, 12, true).unwrap();
                 }
             }
-            Accepted::End => {}
+            Accepted::End | Accepted::ItemMeta => {}
             Accepted::Transaction => {
                 store.accept_transaction(&v, rec).unwrap();
                 let st = v.state();

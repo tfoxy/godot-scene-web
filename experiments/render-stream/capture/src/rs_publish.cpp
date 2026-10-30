@@ -607,6 +607,9 @@ bool Publisher::plan_inline(Lane *lane, const rs::Captured &published,
 bool Publisher::form_lane(const LaneJob &job, bool direct) {
   Lane *lane = job.lane;
   const rs::Captured &published = *job.target;
+  for (const auto &batch : job.meta_batches) {
+    meta_store_.apply(*batch);  // TAG1
+  }
   for (const std::string &hash : job.records) {
     const auto payload = published.payloads.find(hash);  // planned: present
     ResourceRecord record;
@@ -624,6 +627,29 @@ bool Publisher::form_lane(const LaneJob &job, bool direct) {
     ++lane->stats.resource_records;
     lane->stats.resource_bytes += record.payload.size();
     note_record_bytes(&lane->stats, bytes);
+  }
+  if (meta_on_) {
+    // TAG1: the item_meta record goes after the records, immediately before the transaction.
+    const bool full = job.base == nullptr;
+    if (full) {
+      lane->meta_stamp = 0;
+      lane->meta_strings = 0;
+    }
+    rs::item_meta::Formed formed;
+    if (rs::item_meta::form(meta_store_, &lane->meta_table, full, lane->meta_stamp,
+                            published.state.frame, lane->meta_strings, published.state, 0,
+                            &formed)) {
+      const std::vector<std::uint8_t> &bytes = *formed.bytes;
+      const bool ok = direct ? lane->sink->write_direct(bytes) && lane->sink->flush_direct()
+                             : lane->sink->write(bytes) && lane->sink->flush();
+      if (!ok) {
+        return false;
+      }
+      note_record_bytes(&lane->stats, bytes);
+      lane->meta_strings = formed.strings_after;
+    }
+    lane->meta_stamp = std::max(lane->meta_stamp, published.state.frame);
+    meta_store_.prune(published.state);
   }
   Transaction transaction;
   std::uint64_t form_ns = 0;
@@ -949,6 +975,10 @@ bool Publisher::publish(rs::Captured captured, std::uint64_t frame, std::uint64_
     job.perturb_seed = perturb_seed;
     job.frame = frame;
     job.snapshot_ns = snapshot_ns;
+    if (!meta_batches_.empty()) {
+      job.meta_batches = std::move(meta_batches_);  // TAG1: the first lane applies them
+      meta_batches_.clear();
+    }
     if (!plan_inline(lane, *target, &job.records)) {
       ok = false;
       continue;

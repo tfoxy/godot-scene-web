@@ -176,6 +176,7 @@
 #include "rs_captured.h"
 #include "rs_carried.h"
 #include "rs_histogram.h"
+#include "rs_item_meta.h"
 #include "rs_live_coding.h"
 
 namespace grc {
@@ -227,6 +228,10 @@ struct ControlMessage {
   // none, so the connection stays uncoded.
   bool has_live_coding = false;
   std::string live_coding;
+  // hello, /13 only, optional (TAG1, client-extensions-design.md §2.1): the identity the viewer
+  // asks for. Absent: not asked (the hello is byte for byte a no-extension client's).
+  bool has_item_meta = false;
+  rs::item_meta::Request item_meta;
   // ack, resync
   std::string stream_id;
   std::uint64_t seq = 0;
@@ -357,6 +362,11 @@ struct LiveConfig {
   // the first /13 patch is predicted from H2 as if it were H1 (rs13::Predictor::predict_stale),
   // once per host (0 disables). The receiver fails predict-check and resyncs (reason coding).
   std::uint64_t predict_stale_frame = 0;
+  // TAG1 (client-extensions-design.md §2.1): GRC_ITEM_META, the operator's grant (item_meta::k*
+  // bits; 0: nobody gets identities, whatever a hello asks). `item_meta_sabotage` is
+  // GRC_ITEM_META_SABOTAGE's formation half: in-shared, skip-full or id-off-by-one.
+  std::uint32_t item_meta_grant = 0;
+  std::string item_meta_sabotage;
   // G7n: GRC_LIVE_CREDIT_WINDOW_MAX (1..2, default 2); every grant is also capped at
   // kHostCreditWindow.
   std::uint64_t credit_window_max = 2;
@@ -502,6 +512,17 @@ struct ConnectionSummary {
   // and states allocated, over the transactions it formed itself.
   std::uint64_t predict_states_reused = 0;
   std::uint64_t predict_states_made = 0;
+  // TAG1 (/13 connections whose hello asked; the summary's `item_meta` object): the request, the
+  // grant (empty: refused), the records sent (full, delta), their bytes and rows, the records a
+  // lockstep connection's formation gave it, and the deltas skipped as empty.
+  bool has_item_meta = false;
+  rs::item_meta::Request item_meta_request;
+  rs::item_meta::Request item_meta_grant;
+  std::uint64_t item_meta_full = 0;
+  std::uint64_t item_meta_delta = 0;
+  std::uint64_t item_meta_bytes = 0;
+  std::uint64_t item_meta_rows = 0;
+  std::uint64_t item_meta_shared = 0;
   // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
   // bytes of the 200 bodies, and how many were not 200.
   std::uint64_t http_gets = 0;
@@ -588,6 +609,16 @@ class Hub {
   // too). Counted from the connection's open, before its hello, so the snapshot of its first
   // transaction already has them.
   bool has_connection_below_v11() const;
+
+  // TAG1 (client-extensions-design.md §2.2): the union of what the open, granted connections ask
+  // (empty: nobody, so the capture resolves nothing), and a counter that moves whenever it may
+  // have changed, so the frame callback's check is one compare.
+  std::uint64_t item_meta_version() const { return item_meta_version_; }
+  rs::item_meta::Request item_meta_union() const;
+  // The frame's identities, handed to the formation side with the callback's first job.
+  void item_meta_batch(std::shared_ptr<const rs::item_meta::Batch> batch) {
+    meta_batches_.push_back(std::move(batch));
+  }
 
   // One frame callback. `snapshot` is the published state for `frame` (required when
   // wants_snapshot() was true; may be null otherwise); `epoch` the mirror's mutation epoch read
@@ -750,6 +781,15 @@ class Hub {
   std::unique_ptr<Memo> memo_;
   bool wrong_prefix_done_ = false;
   bool predict_stale_done_ = false;  // W13b: predict-stale acted (once per host)
+  // TAG1: the job's item_meta record (null when a delta would be empty), and its coded bytes.
+  void form_item_meta(Job &job, bool full, std::shared_ptr<const std::vector<std::uint8_t>> *record,
+                      std::shared_ptr<const std::vector<std::uint8_t>> *wire);
+  // TAG1: the main thread's union counter and the batches not yet handed to a job; the formation
+  // side's identity store and per-grant string tables (the job runner's).
+  std::uint64_t item_meta_version_ = 0;
+  std::vector<std::shared_ptr<const rs::item_meta::Batch>> meta_batches_;
+  rs::item_meta::Store meta_store_;
+  std::map<std::string, std::unique_ptr<rs::item_meta::GrantTable>> meta_tables_;
   std::vector<std::unique_ptr<Job>> batch_;
   std::unique_ptr<Former> former_;
 };

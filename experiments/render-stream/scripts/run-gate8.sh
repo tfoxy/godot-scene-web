@@ -164,6 +164,19 @@
 #       `scale13/v12` and `mesh13/v12`, and the coding legs at /13 under `coding13/` (Node viewers
 #       un-predicting each transaction; `live` with a /12 viewer beside them; host sabotage
 #       `sabotage-predict-stale`), judged by lib/gate8-w13-checks.ts.
+#   g8tag (TAG1, client-extensions-design.md "As built (TAG1)": item identity, `item_meta` at /13,
+#       fixtures/tag-scene; every leg under g8tag/): the fixture import; then headless hosts armed
+#       late with GRC_ADOPT=arm and GRC_UNKNOWN_ITEM=skip at /13 under GRC_ITEM_META (all six
+#       names), each writing the fixture's oracle (RS_FIXTURE_TAG_LOG) and the capture's id log
+#       (GRC_ITEM_META_LOG), with lib/coding-receiver.ts viewers: `live` (A and B ask the same
+#       identity, C asks nothing, D joins late), `reconnect` (E closes after 60 transactions, F
+#       connects after it: a fresh session; the listener takes at most 4 connections),
+#       `resync` (drop-message: the coded viewer resyncs and its full carries a full record),
+#       `refused` (GRC_ITEM_META=class: one viewer refused, one granted `class` only), `file` (no
+#       viewer: both /13 file sinks carry the records, GRC_ITEM_META_FILE*), `grant-off` (the
+#       grant set, nobody asks: the host resolves nothing) and the GRC_ITEM_META_SABOTAGE legs
+#       `sabotage-{in-shared,before-ready,skip-full,id-off-by-one}`. Judged by
+#       lib/gate8-tag-checks.ts.
 #   g8mm (PM1, render-stream-11.md "As built (PM1)": multimesh on /11, the capture side only,
 #       fixtures/gate8-mm; every leg under g8mm/): the fixture import and rs-core-check's build;
 #       then, in one private 640x360 gamescope (a headless host never runs frame_pre_draw, so a
@@ -233,11 +246,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt g8tag)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag)
 
 EXTENSION=""
 CALIBRATION=""
@@ -1455,6 +1468,108 @@ run_g8w11_coding_leg() {
 	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
 }
 
+# TAG1 (client-extensions-design.md "As built (TAG1)"): item identity at /13 on fixtures/tag-scene.
+# One headless host per leg (late arm at fixture frame 12, GRC_ADOPT=arm, GRC_UNKNOWN_ITEM=skip, the
+# fixture's steps 90 frames after the first hello so every viewer started beside the host is in),
+# writing the fixture's oracle and the capture's id log, and lib/coding-receiver.ts viewers at /13.
+# A viewer spec is name|offer|window|item_meta request ("" asks nothing)|extra coding-receiver args.
+TAG_DIR="$EXPERIMENT_DIR/fixtures/tag-scene"
+TAG_REQUEST='{"fields":["class","script","scene","path"],"groups":["rs_hand","rs_text","rs_none"],"meta_keys":["rs_tag","rs_slot","rs_missing"]}'
+TAG_QUIT=600
+run_g8tag_leg() {
+	local dir="$OUT/g8tag/$1" waited=0 port="" spec pid k=0 name offer win request extra
+	shift
+	local -a henv=() pids=()
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		henv+=("$1")
+		shift
+	done
+	shift
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip
+		GRC_ROOT_SIZE=presentation:640x360 RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME="$TAG_QUIT"
+		GRC_ITEM_META=class,script,scene,path,groups,meta RS_FIXTURE_TAG_LOG="$host/oracle.jsonl"
+		GRC_ITEM_META_LOG="$host/ids.jsonl"
+	)
+	if [ $# -gt 0 ]; then
+		# The viewers started without a delay say hello in the same held frame (GRC_LIVE_AWAIT_HELLOS),
+		# so their transactions carry the same seqs and lockstep ones share bytes from the first.
+		local together=0
+		for spec in "$@"; do
+			[[ "$spec" == *connect-delay* ]] || together=$((together + 1))
+		done
+		LEG_ENV+=(GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS="$#"
+			RS_FIXTURE_TAG_START=90 GRC_LIVE_AWAIT_HELLO_MS=30000 GRC_LIVE_AWAIT_HELLOS="$together")
+	fi
+	LEG_ENV+=("${henv[@]}")
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	if [ $# -gt 0 ]; then
+		while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+			sleep 0.05
+			waited=$((waited + 1))
+		done
+		if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+			port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+		fi
+		if [ -z "$port" ]; then
+			echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+		else
+			for spec in "$@"; do
+				k=$((k + 1))
+				IFS='|' read -r name offer win request extra <<<"$spec"
+				mkdir -p "$dir/$name"
+				local -a vargs=(--url "ws://127.0.0.1:$port/render-stream" --out "$dir/$name"
+					--offer "$offer" --window "$win" --version 13 --timeout-s 90)
+				[ -n "$request" ] && vargs+=(--item-meta "$request")
+				# shellcheck disable=SC2206 # extra: whitespace-separated coding-receiver flags
+				[ -n "$extra" ] && vargs+=($extra)
+				(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+					"$SCRIPT_DIR/lib/coding-receiver.ts" "${vargs[@]}") >"$dir/$name/stdout.log" 2>&1 &
+				pids+=("$!")
+			done
+			for spec in "${pids[@]}"; do
+				wait "$spec" || true
+			done
+		fi
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8tag() {
+	echo "run-gate8: g8tag import (fixtures/tag-scene)"
+	LEG_ENV=()
+	run_headless "$OUT/g8tag/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	local z="zstd-base,zstd" r="$TAG_REQUEST"
+	echo "run-gate8: g8tag live (A, B ask; C does not; D joins late)"
+	run_g8tag_leg live -- "a|$z|2|$r|" "b|$z|2|$r|" "c|$z|2||" "d|$z|2|$r|--connect-delay-ms 3000"
+	echo "run-gate8: g8tag reconnect (A; E closes after 60 transactions, F connects after it)"
+	run_g8tag_leg reconnect -- "a|$z|2|$r|" "e|$z|1|$r|--close-after-tx 60" "f|$z|2|$r|--connect-delay-ms 5000"
+	echo "run-gate8: g8tag resync (drop-message: the coded viewer resyncs)"
+	run_g8tag_leg resync GRC_SABOTAGE=drop-message GRC_SABOTAGE_FRAME=150 -- "a|$z|1|$r|"
+	echo "run-gate8: g8tag refused (GRC_ITEM_META=class)"
+	run_g8tag_leg refused GRC_ITEM_META=class -- \
+		"a|$z|2|{\"fields\":[],\"groups\":[\"rs_hand\"],\"meta_keys\":[]}|" "b|$z|2|$r|"
+	echo "run-gate8: g8tag file (both /13 file sinks, GRC_ITEM_META_FILE*, no viewer)"
+	run_g8tag_leg file GRC_STREAM_OUT="$OUT/g8tag/file/host/recording.rs13" \
+		GRC_STREAM_PATCH_OUT="$OUT/g8tag/file/host/recording-patch.rs13" \
+		GRC_RESOURCE_STORE_DIR="$OUT/g8tag/file/host/store" GRC_ITEM_META_FILE=class,script,scene,path \
+		GRC_ITEM_META_FILE_GROUPS=rs_hand,rs_text,rs_none GRC_ITEM_META_FILE_KEYS=rs_tag,rs_slot,rs_missing \
+		RS_FIXTURE_TAG_START=20 --
+	echo "run-gate8: g8tag grant-off (the grant set, a viewer that asks nothing)"
+	run_g8tag_leg grant-off -- "c|$z|2||"
+	echo "run-gate8: g8tag sabotages (in-shared, before-ready, skip-full, id-off-by-one)"
+	run_g8tag_leg sabotage-in-shared GRC_ITEM_META_SABOTAGE=in-shared -- "a|$z|2|$r|" "b|$z|2|$r|" "c|$z|2||"
+	run_g8tag_leg sabotage-before-ready GRC_ITEM_META_SABOTAGE=before-ready -- "a|$z|2|$r|"
+	run_g8tag_leg sabotage-skip-full GRC_ITEM_META_SABOTAGE=skip-full GRC_SABOTAGE=drop-message \
+		GRC_SABOTAGE_FRAME=150 -- "a|$z|1|$r|"
+	run_g8tag_leg sabotage-id-off-by-one GRC_ITEM_META_SABOTAGE=id-off-by-one -- "a|$z|2|$r|"
+}
+
 # W11d: native receivers live at /11 on a capture-scale host (as run_g8w11_coding_leg's, headless),
 # one per spec: <name>:<RS_RECEIVER_LIVE_CODING value, "" for the default zstd-base,zstd>.
 run_g8w11_coding_native_leg() {
@@ -2552,6 +2667,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8pt) run_g8pt ;;
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
+	g8tag) run_g8tag ;;
 	esac
 done
 

@@ -31,6 +31,13 @@ extends Node2D
 ##   RS_SCALE_REDRAW_VARY [0]     of those redraws, how many a frame record one float different from
 ##                                the item's last recording (its first add_rect's height toggles by
 ##                                0.5; needs RS_SCALE_CMDS >= 1): HC2's re-record that is a change
+##   RS_SCALE_NODES [0]           TAG1: ColorRect nodes in the scene tree under a Node2D child, each
+##                                tagged as a game would (every other one in group scale_tagged,
+##                                meta scale_tag "n<i>" and scale_slot <i>): items whose identity the
+##                                capture resolves (client-extensions-design.md §2.2)
+##   RS_SCALE_NODE_BURST [0] at RS_SCALE_NODE_BURST_FRAME [warmup + 30]  that many more such nodes
+##                                added in one frame (a screen load)
+##   RS_SCALE_NODE_CHURN [0]      such nodes added, and as many of the oldest freed, every frame
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
@@ -64,6 +71,11 @@ var _draws: Array[Array] = []
 var _redraw_cursor: int = 0
 var _frame: int = 0
 var _quit_frame: int = 600
+var _node_root: Node2D = null
+var _node_serial: int = 0
+var _node_burst: int = 0
+var _node_burst_frame: int = 0
+var _node_churn: int = 0
 var _warmup: int = 120
 var _window_start_us: int = 0
 var _last_us: int = 0
@@ -102,6 +114,15 @@ func _ready() -> void:
 	_param_updates = _env_int("RS_SCALE_PARAM_UPDATES", 8)
 	_quit_frame = maxi(2, _env_int("RS_FIXTURE_QUIT_FRAME", 600))
 	_warmup = mini(_env_int("RS_SCALE_WARMUP", 120), _quit_frame - 1)
+	_node_burst = _env_int("RS_SCALE_NODE_BURST", 0)
+	_node_burst_frame = _env_int("RS_SCALE_NODE_BURST_FRAME", _warmup + 30)
+	_node_churn = _env_int("RS_SCALE_NODE_CHURN", 0)
+	var n_nodes: int = _env_int("RS_SCALE_NODES", 0)
+	if n_nodes > 0 or _node_burst > 0 or _node_churn > 0:
+		_node_root = Node2D.new()
+		_node_root.name = "Nodes"
+		add_child(_node_root)
+		_add_nodes(n_nodes)
 
 	for i: int in n_textures:
 		var image: Image = Image.create_empty(tex_w, tex_h, false, Image.FORMAT_RGBA8)
@@ -261,9 +282,31 @@ func _process(_delta: float) -> void:
 	for u: int in (_param_updates if nm > 0 else 0):
 		var mi: int = (_frame * _param_updates + u) % nm
 		RenderingServer.material_set_param(_materials[mi], "particle_param_00", float(_frame + u))
+	if _node_root != null:
+		if _frame == _node_burst_frame:
+			_add_nodes(_node_burst)
+		if _node_churn > 0:
+			for c: int in mini(_node_churn, _node_root.get_child_count()):
+				_node_root.get_child(c).queue_free()
+			_add_nodes(_node_churn)
 	if _frame >= _quit_frame:
 		_report()
 		get_tree().quit()
+
+
+func _add_nodes(count: int) -> void:
+	for k: int in count:
+		var i: int = _node_serial
+		_node_serial += 1
+		var rect := ColorRect.new()
+		rect.position = Vector2(float((i * 13) % 1800), float((i * 7) % 1000))
+		rect.size = Vector2(12, 12)
+		rect.color = Color8(i & 255, 120, 60, 255)
+		rect.set_meta("scale_tag", "n%d" % i)
+		rect.set_meta("scale_slot", i)
+		if i % 2 == 0:
+			rect.add_to_group("scale_tagged")
+		_node_root.add_child(rect)
 
 
 func _report() -> void:

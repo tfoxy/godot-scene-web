@@ -786,6 +786,20 @@ W13f is capture-only, and the wire is byte for byte W13a's. Results are in
   behind map nodes. The next lever is a history that references the previous /12 records' blocks,
   which a transaction lists in the same order, so that H1 and H2 become sequential streams.
 
+## As built (TAG1): item identity
+
+TAG1 ([client-extensions-design.md](client-extensions-design.md) "As built (TAG1)") adds, before the
+freeze, two optional things to /13. Neither enters the transaction syntax.
+- **The hello key `item_meta`.** It is the second optional key after `live_coding`.
+- **The JSON record type `item_meta`.** It is the end record's framing with `"blocks":[]`. It goes
+  immediately before the transaction it describes, on connections that asked and were granted, and
+  in file sinks only under `GRC_ITEM_META_FILE`.
+
+Its seven error codes have golden-13 vectors: `item-meta.rs13` and `invalid/item-meta-*.rs13`.
+
+A /13 stream without them is byte-identical to before. Every existing golden-13 vector is
+unchanged, and `transcode` (/13 → /12) drops the records.
+
 ## Versioning
 
 As /12: any change to framing, a key, a key order, a block layout, an enum spelling, a payload

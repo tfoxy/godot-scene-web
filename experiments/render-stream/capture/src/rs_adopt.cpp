@@ -245,6 +245,15 @@ enum BindId : int {
   kRsCanvasItemGetInstanceShaderParameterList,
   kRsCanvasItemGetInstanceShaderParameter,
   kRsCanvasItemGetInstanceShaderParameterDefault,
+  // TAG1 (client-extensions-design.md §2.3): an item's identity.
+  kObjectGetClass,
+  kObjectGetScript,
+  kObjectHasMeta,
+  kObjectGetMeta,
+  kNodeGetSceneFilePath,
+  kNodeGetOwner,
+  kNodeGetPathTo,
+  kNodeIsInGroup,
   kBindCount,
 };
 
@@ -343,6 +352,14 @@ const BindSpec kBinds[kBindCount] = {
     {"RenderingServer", "canvas_item_get_instance_shader_parameter_list", 2684255073LL},
     {"RenderingServer", "canvas_item_get_instance_shader_parameter", 2621281810LL},
     {"RenderingServer", "canvas_item_get_instance_shader_parameter_default_value", 2621281810LL},
+    {"Object", "get_class", 201670096LL},               // -> String
+    {"Object", "get_script", 1214101251LL},             // -> Variant
+    {"Object", "has_meta", 2619796661LL},               // (StringName) -> bool
+    {"Object", "get_meta", 3990617847LL},               // (StringName, Variant) -> Variant
+    {"Node", "get_scene_file_path", 201670096LL},       // -> String
+    {"Node", "get_owner", 3160264692LL},                // -> Node
+    {"Node", "get_path_to", 498846349LL},               // (Node, bool) -> NodePath
+    {"Node", "is_in_group", 2619796661LL},              // (StringName) -> bool
 };
 
 GDExtensionMethodBindPtr g_bind[kBindCount] = {};
@@ -1595,6 +1612,12 @@ struct MatTags {
 };
 MatTags g_mat_tags;
 
+// TAG1: the node map's second user (client-extensions-design.md §2.2), and the sabotage
+// meta-before-ready's early identities (resolved in node_added, before the node's _ready).
+std::atomic<bool> g_tag_active{false};
+bool g_tag_before_ready = false;
+void tag_resolve_early(std::uint64_t rid);
+
 // The node_added callable (one per process; connected for a stream's lifetime).
 alignas(8) unsigned char g_node_added_callable[16] = {};
 bool g_node_added_made = false;
@@ -1618,7 +1641,9 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   if (error != nullptr) {
     error->error = GDEXTENSION_CALL_OK;
   }
-  if (count < 1 || args == nullptr || !g_res_active.load(std::memory_order_acquire) ||
+  if (count < 1 || args == nullptr ||
+      !(g_res_active.load(std::memory_order_acquire) ||
+        g_tag_active.load(std::memory_order_acquire)) ||
       g_iface.variant_get_type(const_cast<GDExtensionVariantPtr>(args[0])) !=
           GDEXTENSION_VARIANT_TYPE_OBJECT) {
     return;
@@ -1639,6 +1664,9 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes[rid] = id;
   }
+  if (g_tag_before_ready && g_tag_active.load(std::memory_order_acquire)) {
+    tag_resolve_early(rid);  // sabotage meta-before-ready: the identity before the node's _ready
+  }
   mat_stat([](AdoptMaterialStats &s) { ++s.nodes_added; });
 }
 
@@ -1649,7 +1677,7 @@ void *scene_tree() {
 
 void node_map_connect() {
   void *tree = scene_tree();
-  if (tree == nullptr) {
+  if (tree == nullptr || g_node_added_connected) {  // TAG1: adoption and TAG share one connection
     return;
   }
   if (!g_node_added_made) {
@@ -2046,7 +2074,7 @@ void adopt_instance_params(std::uint64_t item) {
 
 }  // namespace
 
-void node_map_disconnect() {
+void node_map_disconnect_now() {
   if (!g_node_added_connected) {
     return;
   }
@@ -2058,6 +2086,13 @@ void node_map_disconnect() {
     StringName signal("node_added");
     const GDExtensionConstTypePtr args[2] = {signal.ptr(), g_node_added_callable};
     ptrcall(kObjectDisconnect, tree, args, nullptr);
+  }
+}
+
+// G8m: adoption's end. TAG1: the connection stays while TAG still holds the map.
+void node_map_disconnect() {
+  if (!g_tag_active.load(std::memory_order_acquire)) {
+    node_map_disconnect_now();
   }
 }
 
@@ -2833,6 +2868,225 @@ EmitterAdoptStats adopt_emitter_stats() {
   std::lock_guard<std::mutex> lock(g_pta_mutex);
   return g_pta_stats;
 }
+
+// ===================================================================== TAG1: item identity
+//
+// client-extensions-design.md §2.2, §2.3: the node map's second user, and what one item's node
+// says about itself. Main thread only (ObjectDB), in the frame callback.
+
+namespace {
+
+IdentityQuery g_tag_query;
+std::vector<std::unique_ptr<StringName>> g_tag_group_names;
+std::vector<std::unique_ptr<StringName>> g_tag_meta_names;
+std::unordered_map<std::uint64_t, Identity> g_tag_early;  // meta-before-ready
+
+void fill_map(void *node, void *canvas_item_tag) {
+  void *item = as(node, canvas_item_tag);
+  if (item != nullptr) {
+    const std::uint64_t rid = get_rid(kItemGetCanvasItem, item);
+    if (rid != 0) {
+      g_item_nodes[rid] = static_cast<std::uint64_t>(get_int(kObjectGetInstanceId, item));
+    }
+  }
+  const std::int64_t count = child_count(node);
+  for (std::int64_t i = 0; i < count; ++i) {
+    void *child = child_at(node, i);
+    if (child != nullptr) {
+      fill_map(child, canvas_item_tag);
+    }
+  }
+}
+
+std::string string_from(GDExtensionVariantType from, int ctor_index, const void *value) {
+  alignas(8) unsigned char text[8] = {};
+  const GDExtensionPtrConstructor ctor =
+      g_iface.variant_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_STRING, ctor_index);
+  if (ctor == nullptr) {
+    return std::string();
+  }
+  const GDExtensionConstTypePtr args[1] = {value};
+  ctor(text, args);
+  std::string out = utf8_of(text);
+  g_iface.variant_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING)(text);
+  (void)from;
+  return out;
+}
+
+// A meta value: a String or StringName as itself, an int as its decimal string, else null.
+bool meta_text(VariantSlot &v, std::string *out) {
+  switch (v.type()) {
+    case GDEXTENSION_VARIANT_TYPE_STRING: {
+      alignas(8) unsigned char text[8] = {};
+      g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_STRING)(text, v.data);
+      *out = utf8_of(text);
+      g_iface.variant_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING)(text);
+      return true;
+    }
+    case GDEXTENSION_VARIANT_TYPE_STRING_NAME: {
+      alignas(8) unsigned char name[8] = {};
+      g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_STRING_NAME)(name, v.data);
+      *out = string_from(GDEXTENSION_VARIANT_TYPE_STRING_NAME, 2, name);  // String(StringName)
+      g_iface.variant_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING_NAME)(name);
+      return true;
+    }
+    case GDEXTENSION_VARIANT_TYPE_INT: {
+      std::int64_t value = 0;
+      g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_INT)(&value, v.data);
+      *out = std::to_string(value);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+void resolve_node(void *node, Identity *out) {
+  const IdentityQuery &q = g_tag_query;
+  out->node = true;
+  if ((q.fields & 1u) != 0) {  // class: Object.get_class
+    out->field[0] = string_of(kObjectGetClass, node);
+    out->has[0] = true;
+  }
+  if ((q.fields & 2u) != 0) {  // script: the attached script's resource path
+    VariantSlot script;
+    ptrcall(kObjectGetScript, node, nullptr, script.data);
+    if (script.type() == GDEXTENSION_VARIANT_TYPE_OBJECT) {
+      void *object = nullptr;
+      g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_OBJECT)(&object,
+                                                                               script.data);
+      if (object != nullptr) {
+        out->field[1] = string_of(kResourceGetPath, object);
+        out->has[1] = !out->field[1].empty();
+      }
+    }
+  }
+  if ((q.fields & (4u | 8u)) != 0) {
+    // The instance root: the node itself when it has a scene file, else its owner.
+    void *root = node;
+    std::string scene = string_of(kNodeGetSceneFilePath, node);
+    if (scene.empty()) {
+      root = get_object(kNodeGetOwner, node);
+      scene = root != nullptr ? string_of(kNodeGetSceneFilePath, root) : std::string();
+    }
+    if ((q.fields & 4u) != 0 && !scene.empty()) {
+      out->field[2] = scene;
+      out->has[2] = true;
+    }
+    if ((q.fields & 8u) != 0 && root != nullptr) {
+      Builtin path(GDEXTENSION_VARIANT_TYPE_NODE_PATH);
+      const std::uint8_t unique = 0;
+      const GDExtensionConstTypePtr args[2] = {&node, &unique};
+      ptrcall(kNodeGetPathTo, root, args, path.ptr());
+      out->field[3] = string_from(GDEXTENSION_VARIANT_TYPE_NODE_PATH, 3, path.ptr());
+      out->has[3] = true;
+    }
+  }
+  out->in_group.assign(g_tag_group_names.size(), false);
+  for (std::size_t i = 0; i < g_tag_group_names.size(); ++i) {
+    const GDExtensionConstTypePtr args[1] = {g_tag_group_names[i]->ptr()};
+    std::uint8_t in = 0;
+    ptrcall(kNodeIsInGroup, node, args, &in);
+    out->in_group[i] = in != 0;
+  }
+  out->meta.assign(g_tag_meta_names.size(), {false, std::string()});
+  for (std::size_t i = 0; i < g_tag_meta_names.size(); ++i) {
+    const GDExtensionConstTypePtr has_args[1] = {g_tag_meta_names[i]->ptr()};
+    std::uint8_t has = 0;
+    ptrcall(kObjectHasMeta, node, has_args, &has);
+    if (has == 0) {
+      continue;  // get_meta without a default would print an error
+    }
+    VariantSlot fallback;
+    VariantSlot value;
+    const GDExtensionConstTypePtr args[2] = {g_tag_meta_names[i]->ptr(), fallback.data};
+    ptrcall(kObjectGetMeta, node, args, value.data);
+    out->meta[i].first = meta_text(value, &out->meta[i].second);
+  }
+}
+
+void tag_resolve_early(std::uint64_t rid) {
+  void *node = node_of(rid);
+  if (node != nullptr) {
+    Identity identity;
+    resolve_node(node, &identity);
+    g_tag_early[rid] = std::move(identity);
+  }
+}
+
+}  // namespace
+
+bool node_map_acquire_tag(std::string *error) {
+  if (!adopt_binds_ready(error)) {
+    return false;
+  }
+  if (g_tag_active.load(std::memory_order_acquire)) {
+    return true;
+  }
+  g_mat_tags.resolve();
+  void *tree = scene_tree();
+  void *root = tree != nullptr ? get_object(kSceneTreeGetRoot, tree) : nullptr;
+  if (root == nullptr) {
+    if (error != nullptr) {
+      *error = "no SceneTree root";
+    }
+    return false;
+  }
+  g_tag_active.store(true, std::memory_order_release);
+  node_map_connect();
+  {
+    // §2.6 "Late join": the arm walker's visit fills the map before the first resolution.
+    std::lock_guard<std::mutex> lock(g_node_mutex);
+    fill_map(root, g_mat_tags.canvas_item);
+  }
+  return true;
+}
+
+void node_map_release_tag() {
+  if (!g_tag_active.load(std::memory_order_acquire)) {
+    return;
+  }
+  g_tag_active.store(false, std::memory_order_release);
+  g_tag_early.clear();
+  if (!g_res_active.load(std::memory_order_acquire)) {
+    node_map_disconnect_now();
+    std::lock_guard<std::mutex> lock(g_node_mutex);
+    g_item_nodes.clear();
+  }
+}
+
+void tag_set_query(const IdentityQuery &query, bool before_ready) {
+  g_tag_before_ready = before_ready;
+  g_tag_query = query;
+  g_tag_group_names.clear();
+  for (const std::string &name : query.groups) {
+    g_tag_group_names.push_back(std::make_unique<StringName>(name.c_str()));
+  }
+  g_tag_meta_names.clear();
+  for (const std::string &name : query.meta_keys) {
+    g_tag_meta_names.push_back(std::make_unique<StringName>(name.c_str()));
+  }
+  g_tag_early.clear();
+}
+
+bool item_identity(std::uint64_t rid, Identity *out) {
+  if (g_tag_before_ready) {
+    const auto early = g_tag_early.find(rid);
+    if (early != g_tag_early.end()) {
+      *out = std::move(early->second);
+      g_tag_early.erase(early);
+      return true;
+    }
+  }
+  void *node = node_of(rid);
+  if (node == nullptr) {
+    return false;
+  }
+  resolve_node(node, out);
+  return true;
+}
+
+void tag_prune_map() { node_map_prune(); }
 
 }  // namespace rs
 }  // namespace grc

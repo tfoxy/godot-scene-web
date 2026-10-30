@@ -50,6 +50,10 @@ pub const ACCEPT_NEEDS_PAYLOADS: i32 = 3;
 /// W13c: `live_accept` dropped a /13 patch that arrived while a `predict-check` resync awaits its
 /// full transaction (render-stream-13.md "As built (W13c)"): no apply, no ack.
 pub const ACCEPT_HELD: i32 = 4;
+/// TAG1 (client-extensions-design.md §2.4): a /13 `item_meta` record. The validator holds it for
+/// the transaction it describes; nothing to apply, nothing to ack, not a transaction. GSW's
+/// receivers do not opt in, so this only keeps a stream that carries the records playable.
+pub const ACCEPT_ITEM_META: i32 = 5;
 
 /// W13c: a transaction message's `seq` and whether it is full, read from its meta's canonical
 /// prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`, every version's key order).
@@ -475,6 +479,7 @@ pub fn core_bench(data: &[u8], digest_inline: bool) -> Result<Vec<f64>, JsValue>
         verify_payload_hashes: true,
         early_prune: false,
         no_predict_reset: false,
+        item_meta: Default::default(),
     };
     let mut v = Validator::new(spans[0].bytes(data), spans[0].offset, opts).map_err(err)?;
     let mut out = Vec::with_capacity(spans.len());
@@ -1123,6 +1128,7 @@ impl GswRs {
             verify_payload_hashes: !self.opts.skip_payload_hash,
             early_prune: false,
             no_predict_reset: self.opts.no_predict_reset,
+            item_meta: Default::default(),
         };
         let mut v = Validator::new(span.bytes(&self.data), span.offset, opts).map_err(fail)?;
         v.set_no_prune(self.opts.no_prune);
@@ -1311,6 +1317,7 @@ impl GswRs {
                 ACCEPT_RESOURCE
             }
             Accepted::End => ACCEPT_END,
+            Accepted::ItemMeta => ACCEPT_ITEM_META,
             Accepted::Transaction => {
                 self.last_tx_record = self.accepted.len() - 1;
                 let st = v.state();
@@ -1517,6 +1524,10 @@ impl GswRs {
             match peek_transaction(&self.rx[..byte_length]) {
                 Some((_, false)) => {
                     self.predict_dropped += 1;
+                    // TAG1: an item_meta record before this patch described it.
+                    if let Some(v) = self.validator.as_mut() {
+                        v.discard_item_meta_pending();
+                    }
                     return ACCEPT_HELD;
                 }
                 Some((_, true)) => self.predict_await_full = false,

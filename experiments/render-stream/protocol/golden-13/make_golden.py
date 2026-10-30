@@ -58,7 +58,8 @@ Outputs: full.rs13, patch.rs13 and inline.rs13 (golden-12's three recordings tra
 .hex and .decoded.json; resolved.json is golden-12's states under render-stream-13-resolved/1);
 predict.rs12 / predict.rs13 (the prediction lane below, with .hex, .decoded.json and
 predict-resolved.json); corrupt-meta.rs13; invalid/ (index.json lists every vector with its code
-and the seq it fails at); index.json, whose "predict_trace" lists every predicted unit and its
+and the seq it fails at); item-meta.rs13 and the item_meta invalid vectors (TAG1, below
+"item_meta"); index.json, whose "predict_trace" lists every predicted unit and its
 order per transaction of patch.rs13 and predict.rs13.
 
 The prediction lane (predict.rs12/.rs13, a patch file, seqs 1 and 7 full) over one item drawing
@@ -722,6 +723,8 @@ def to12(data13: bytes, *, no_reset: bool = False) -> bytes:
                 raise DecodeError("predict-check", f"seq {meta.get('seq')}")
             out.append(make_record(plain, _rebuild_blocks(meta, blocks, decoded)))
             hist.accept(meta, decoded, no_reset=no_reset)
+        elif kind == "item_meta":
+            pass  # TAG1: /12 has no item_meta record; the end record's stats follow (_fix_end).
         elif kind == "end":
             out.append(make_record(_fix_end(meta_b, out, seen), blocks))
         else:
@@ -1079,6 +1082,343 @@ def build_invalid_vectors(predict13: bytes, patch13: bytes) -> dict[str, tuple[b
     return out
 
 
+# --------------------------------------------------------------------------- item_meta (TAG1)
+#
+# client-extensions-design.md §2.4: the /13 `item_meta` record, a JSON meta with no blocks:
+#   {"type":"item_meta","form":"full"|"delta","grant":{fields,groups,meta_keys}|null,
+#    "strings_from":n,"strings":[...],"items":[[id,col...],...],"blocks":[]}
+# A full goes before every full transaction of a granted stream (the grant, the whole string
+# table, a row per item of the target state); a delta before a patch that adds items (its rows and
+# the strings they introduce). A row is [id] for an item with no node, else one column per granted
+# field (a string index or null), the groups bitmask when groups are granted, then one column per
+# meta key. Validators: rs-core `validate.rs` and render-stream-2.ts, which must agree with
+# `item_meta_check` below on every vector.
+
+ITEM_META_FIELDS = ("class", "script", "scene", "path")
+ITEM_META_REQUEST = {"fields": ["class", "script", "scene", "path"],
+                     "groups": ["rs_hand", "rs_ui"], "meta_keys": ["rs_tag"]}
+# The host's grant is the request intersected with its own (`script` not granted).
+ITEM_META_GRANT = {"fields": ["class", "scene", "path"], "groups": ["rs_hand", "rs_ui"],
+                   "meta_keys": ["rs_tag"]}
+ITEM_META_NO_NODE = (3, 13)  # items with no node: rows [id]
+
+
+def _identity(item: int):
+    """Item `item`'s identity under ITEM_META_GRANT: None (no node) or its column values."""
+    if item in ITEM_META_NO_NODE:
+        return None
+    cls = ("Control", "Label", "Sprite2D", "TextureRect")[item % 4]
+    scene = None if item % 5 == 0 else f"res://scenes/s{item % 3}.tscn"
+    path = None if scene is None else ("." if item % 3 == 0 else f"Box/Node{item % 4}")
+    groups = item % 4  # bit 0 rs_hand, bit 1 rs_ui
+    tag = None if item % 2 else f"tag{item % 6}"
+    return [cls, scene, path, groups, tag]
+
+
+def _row(item: int, table: list[str], index: dict[str, int]) -> list:
+    """The wire row of `item`, adding the strings it introduces to `table` (first-use order)."""
+    ident = _identity(item)
+    if ident is None:
+        return [item]
+    row: list = [item]
+    for k, v in enumerate(ident):
+        if k == 3:
+            row.append(v)
+        elif v is None:
+            row.append(None)
+        else:
+            if v not in index:
+                index[v] = len(table)
+                table.append(v)
+            row.append(index[v])
+    return row
+
+
+def item_meta_record(form: str, grant: dict | None, strings_from: int, strings: list[str],
+                     items: list[list]) -> bytes:
+    meta = {"type": "item_meta", "form": form, "grant": grant, "strings_from": strings_from,
+            "strings": strings, "items": items, "blocks": []}
+    return make_record(g6.canonical_json(meta), [])
+
+
+def _tx_items(meta: dict, prev: set[int]) -> set[int]:
+    ids = {e["id"] for e in meta.get("items", [])}
+    if meta.get("encoding") == "full":
+        return ids
+    return (prev | ids) - set(meta.get("removed_items", []))
+
+
+def _with_end(recs: list[bytes]) -> bytes:
+    """recs (session first, end last) with the end record's bytes_total and max_record_bytes
+    recomputed over every record before it (item_meta records count: they are records)."""
+    meta_b, blocks = parse_record(recs[-1])
+    meta = json.loads(meta_b)
+    assert meta["type"] == "end"
+    body = recs[:-1]
+    meta["stats"]["bytes_total"] = len(MAGIC) + sum(len(r) for r in body)
+    meta["stats"]["max_record_bytes"] = max(len(r) for r in body)
+    return MAGIC + b"".join(body) + make_record(g6.canonical_json(meta), blocks)
+
+
+def item_meta_stream(patch13: bytes) -> tuple[bytes, dict]:
+    """item-meta.rs13: patch.rs13 with a full item_meta before every full transaction and a delta
+    before every patch that adds items. Returns the file and its expected dump."""
+    recs = _records13(patch13)
+    out = [recs[0]]
+    table: list[str] = []
+    index: dict[str, int] = {}
+    items: set[int] = set()
+    fulls = deltas = 0
+    for rec in recs[1:]:
+        meta = json.loads(parse_record(rec)[0])
+        if meta.get("type") == "transaction":
+            after = _tx_items(meta, items)
+            if meta["encoding"] == "full":
+                table, index = [], {}
+                rows = [_row(i, table, index) for i in sorted(after)]
+                out.append(item_meta_record("full", ITEM_META_GRANT, 0, list(table), rows))
+                fulls += 1
+            else:
+                new = sorted(after - items)
+                if new:
+                    start = len(table)
+                    rows = [_row(i, table, index) for i in new]
+                    out.append(item_meta_record("delta", None, start, table[start:], rows))
+                    deltas += 1
+            items = after
+        out.append(rec)
+    data = _with_end(out)
+    dump = item_meta_check(data, ITEM_META_REQUEST)
+    assert dump["error"] is None, dump["error"]
+    assert dump["full_records"] == fulls and dump["delta_records"] == deltas
+    del dump["error"]
+    return data, dump
+
+
+def _resolve_row(row: list, grant: dict, table: list[str]):
+    """A dump row: null for an item with no node, else {field: string|null, ..., "groups": mask,
+    "meta": {key: string|null}} over the grant (groups / meta only when granted)."""
+    if len(row) == 1:
+        return None
+    cols = row[1:]
+    out: dict = {}
+    k = 0
+    for f in grant["fields"]:
+        out[f] = None if cols[k] is None else table[cols[k]]
+        k += 1
+    if grant["groups"]:
+        out["groups"] = cols[k]
+        k += 1
+    if grant["meta_keys"]:
+        out["meta"] = {key: (None if cols[k + j] is None else table[cols[k + j]])
+                       for j, key in enumerate(grant["meta_keys"])}
+    return out
+
+
+def _grant_error(g) -> str | None:
+    if not isinstance(g, dict) or list(g.keys()) != ["fields", "groups", "meta_keys"]:
+        return "grant keys"
+    for key, cap in (("fields", 4), ("groups", 31), ("meta_keys", 8)):
+        v = g[key]
+        if not isinstance(v, list) or len(v) > cap or len(set(map(str, v))) != len(v):
+            return key
+        for s in v:
+            if not isinstance(s, str) or not 1 <= len(s) <= 64 or \
+                    any(not 0x20 <= ord(c) <= 0x7E for c in s):
+                return key
+    if [f for f in ITEM_META_FIELDS if f in g["fields"]] != g["fields"]:
+        return "fields order"
+    if not (g["fields"] or g["groups"] or g["meta_keys"]):
+        return "empty grant"
+    return None
+
+
+def item_meta_check(data: bytes, ask) -> dict:
+    """The reference item_meta rules over a /13 file (only these rules: every other record is
+    taken as valid). `ask`: None (unknown: a recording), "none" (not asked) or a request object.
+    Returns {"error": (code, record index) | None, grant, strings, rows, seen, counts}."""
+    recs = _records13(data)
+    grant = None
+    table: list[str] = []
+    rows: dict[int, list] = {}
+    seen: dict[int, object] = {}
+    pending = None
+    items: set[int] = set()
+    counts = [0, 0]
+
+    def fail(code: str, i: int) -> dict:
+        return {"error": (code, i)}
+
+    for i, rec in enumerate(recs[1:], start=1):
+        meta = json.loads(parse_record(rec)[0])
+        kind = meta.get("type")
+        if kind == "item_meta":
+            if ask == "none":
+                return fail("item-meta-unexpected", i)
+            if pending is not None:
+                return fail("item-meta-orphan", i)
+            full = meta["form"] == "full"
+            g = meta["grant"] if full else grant
+            if full and _grant_error(g) is not None:
+                return fail("item-meta-schema", i)
+            if full and isinstance(ask, dict) and not (
+                    set(g["fields"]) <= set(ask["fields"])
+                    and g["groups"] in ([], ask["groups"])
+                    and g["meta_keys"] in ([], ask["meta_keys"])):
+                return fail("item-meta-schema", i)
+            ids = [r[0] for r in meta["items"]]
+            if ids != sorted(set(ids)) or any(not 1 <= x < 2 ** 32 for x in ids):
+                return fail("item-meta-schema", i)
+            if g is None:
+                return fail("item-meta-form", i)
+            ncols = len(g["fields"]) + (1 if g["groups"] else 0) + len(g["meta_keys"])
+            for r in meta["items"]:
+                if len(r) not in (1, 1 + ncols):
+                    return fail("item-meta-schema", i)
+                if len(r) > 1 and g["groups"]:
+                    m = r[1 + len(g["fields"])]
+                    if not isinstance(m, int) or not 0 <= m < 2 ** len(g["groups"]):
+                        return fail("item-meta-schema", i)
+            size = 0 if full else len(table)
+            if meta["strings_from"] != size:
+                return fail("item-meta-string", i)
+            size += len(meta["strings"])
+            for r in meta["items"]:
+                for k, c in enumerate(r[1:]):
+                    if g["groups"] and k == len(g["fields"]):
+                        continue
+                    if c is not None and not 0 <= c < size:
+                        return fail("item-meta-string", i)
+            pending = meta
+        elif kind == "transaction":
+            full = meta["encoding"] == "full"
+            if pending is not None and (pending["form"] == "full") != full:
+                return fail("item-meta-form", i)
+            if pending is None and full and grant is not None:
+                return fail("item-meta-missing", i)
+            after = _tx_items(meta, items)
+            if pending is not None:
+                if any(r[0] not in after for r in pending["items"]):
+                    return fail("item-meta-id", i)
+                if full:
+                    grant, table, rows = pending["grant"], list(pending["strings"]), {}
+                    counts[0] += 1
+                else:
+                    table += pending["strings"]
+                    counts[1] += 1
+                for r in pending["items"]:
+                    rows[r[0]] = r
+                    seen[r[0]] = _resolve_row(r, grant, table)
+                pending = None
+            rows = {k: v for k, v in rows.items() if k in after}
+            items = after
+        elif pending is not None:
+            return fail("item-meta-orphan", i)
+    return {
+        "error": None,
+        "grant": grant,
+        "strings": table,
+        "rows": {str(k): _resolve_row(rows[k], grant, table) for k in sorted(rows)},
+        "seen": {str(k): seen[k] for k in sorted(seen)},
+        "full_records": counts[0],
+        "delta_records": counts[1],
+    }
+
+
+def _replace_record(data: bytes, i: int, new: bytes | None) -> bytes:
+    recs = _records13(data)
+    if new is None:
+        del recs[i]
+    else:
+        recs[i] = new
+    return _with_end(recs)
+
+
+def _insert_record(data: bytes, i: int, new: bytes) -> bytes:
+    recs = _records13(data)
+    recs.insert(i, new)
+    return _with_end(recs)
+
+
+def _im_index(data: bytes, before_seq: int) -> int:
+    """The index of the item_meta record right before transaction `before_seq`."""
+    recs = _records13(data)
+    i = _tx_index(recs, before_seq) - 1
+    assert json.loads(parse_record(recs[i])[0])["type"] == "item_meta"
+    return i
+
+
+def _im_meta(data: bytes, i: int) -> dict:
+    return json.loads(parse_record(_records13(data)[i])[0])
+
+
+def build_item_meta_vectors(stream: bytes) -> dict[str, tuple[bytes, str, str, object, int | None,
+                                                               int]]:
+    """name -> (bytes, code, description, ask, seq, record_index): one vector per item_meta code,
+    each from item-meta.rs13 with one rule broken."""
+    out = {}
+    recs = _records13(stream)
+    out["item-meta-unexpected"] = (
+        stream, "item-meta-unexpected",
+        "item-meta.rs13 validated as a live viewer that asked for no item_meta (no hello key): "
+        "its first item_meta record is unexpected", "none", None, 1)
+    # orphan: an empty delta after the last transaction, so the end record follows it.
+    end = len(recs) - 1
+    last_full = _im_index(stream, 26)
+    n = len(_im_meta(stream, last_full)["strings"])
+    out["item-meta-orphan"] = (
+        _insert_record(stream, end, item_meta_record("delta", None, n, [], [])),
+        "item-meta-orphan",
+        "item-meta.rs13 with an empty delta after the last transaction: the end record follows "
+        "it, not a transaction", ITEM_META_REQUEST, None, end + 1)
+    # form: the delta before patch seq 4 replaced by a full (of seq 4's target state).
+    d4 = _im_index(stream, 4)
+    table: list[str] = []
+    index: dict[str, int] = {}
+    rows = [_row(i, table, index) for i in range(1, 9)]
+    out["item-meta-form"] = (
+        _replace_record(stream, d4, item_meta_record("full", ITEM_META_GRANT, 0, table, rows)),
+        "item-meta-form",
+        "item-meta.rs13 with the delta before patch seq 4 replaced by a full record",
+        ITEM_META_REQUEST, 4, d4 + 1)
+    # missing: the full before full seq 5 dropped.
+    f5 = _im_index(stream, 5)
+    out["item-meta-missing"] = (
+        _replace_record(stream, f5, None), "item-meta-missing",
+        "item-meta.rs13 without the full item_meta record before full seq 5 (the grant came at "
+        "seq 1)", ITEM_META_REQUEST, 5, f5)
+    # id: the delta before seq 4 also names item 99, which seq 4's target state does not hold.
+    m = _im_meta(stream, d4)
+    out["item-meta-id"] = (
+        _replace_record(stream, d4, item_meta_record(
+            "delta", None, m["strings_from"], m["strings"], m["items"] + [[99]])),
+        "item-meta-id",
+        "item-meta.rs13 with the delta before patch seq 4 also carrying a row for item 99, not an "
+        "item of seq 4's target state", ITEM_META_REQUEST, 4, d4 + 1)
+    # string: the same delta's strings_from one past the table's length.
+    out["item-meta-string"] = (
+        _replace_record(stream, d4, item_meta_record(
+            "delta", None, m["strings_from"] + 1, m["strings"], m["items"])),
+        "item-meta-string",
+        f"item-meta.rs13 with the delta before patch seq 4 at strings_from "
+        f"{m['strings_from'] + 1}, the table holding {m['strings_from']} strings",
+        ITEM_META_REQUEST, None, d4)
+    # schema: the first full's row for item 1 lacks its last column.
+    f1 = _im_index(stream, 1)
+    m1 = _im_meta(stream, f1)
+    rows1 = [r[:-1] if r[0] == 1 else r for r in m1["items"]]
+    out["item-meta-schema"] = (
+        _replace_record(stream, f1, item_meta_record(
+            "full", m1["grant"], 0, m1["strings"], rows1)),
+        "item-meta-schema",
+        "item-meta.rs13 with item 1's row in the first full record one column short of the grant's "
+        "five", ITEM_META_REQUEST, None, f1)
+    for name, (data, code, _d, ask, _seq, at) in out.items():
+        got = item_meta_check(data, None if ask is None else ask)["error"]
+        assert got == (code, at), (name, got)
+    return out
+
+
 # --------------------------------------------------------------------------- build
 
 def _sha256(data: bytes) -> str:
@@ -1109,6 +1449,10 @@ def build() -> dict[str, bytes]:
     corrupt[offset + 8] = 0x00
 
     invalid = build_invalid_vectors(predict13, patch13)
+    item_meta13, item_meta_dump = item_meta_stream(patch13)
+    assert to12(item_meta13) == patch12, "item-meta.rs13 transcodes to patch.rs12"
+    assert item_meta_check(patch13, ITEM_META_REQUEST)["error"] is None  # item-meta-refused
+    im_invalid = build_item_meta_vectors(item_meta13)
     for name, (data, code, _desc, _v, seq) in invalid.items():
         if name == "bad-magic" or name.startswith(("g12-", "pass-")):
             continue
@@ -1152,6 +1496,29 @@ def build() -> dict[str, bytes]:
             {"file": f"invalid/{name}.rs{version}", "code": code, "version": version,
              "seq": seq, "description": description}
             for name, (_, code, description, version, seq) in invalid.items()
+        ] + [
+            # TAG1 (client-extensions-design.md §2.4): `item_meta` is the validator's ask (a
+            # request object; "none" for a live viewer that did not ask; absent for a recording)
+            # and record_index the record the vector fails at.
+            {"file": "item-meta.rs13" if data is item_meta13 else f"invalid/{name}.rs13",
+             "code": code, "version": 13, "seq": seq, "record_index": at,
+             "item_meta": ask, "description": description}
+            for name, (data, code, description, ask, seq, at) in im_invalid.items()
+        ],
+        # TAG1: valid item_meta lanes, each validated with its ask. `dump` is the table after the
+        # last record (rs-core-check --item-meta-dump's format); `rs12` the /12 transcode (which
+        # drops the item_meta records).
+        "item_meta_valid": [
+            {"name": "item-meta", "file": "item-meta.rs13", "item_meta": ITEM_META_REQUEST,
+             "sha256": _sha256(item_meta13), "rs12": "../golden-12/patch.rs12",
+             "dump": item_meta_dump,
+             "description": "patch.rs13 with a full item_meta record before each full transaction "
+                            "and a delta before each patch that adds items (rows with null "
+                            "columns, items 3 and 13 with no node, rows of removed items 6, 11 "
+                            "and 15 dropped); the grant omits the requested `script`"},
+            {"name": "item-meta-refused", "file": "patch.rs13", "item_meta": ITEM_META_REQUEST,
+             "description": "a viewer asked and the host granted nothing: no item_meta record "
+                            "at all is valid"},
         ],
     }
     outputs: dict[str, bytes] = {}
@@ -1167,6 +1534,10 @@ def build() -> dict[str, bytes]:
     outputs["index.json"] = g6.pretty(index)
     for name, (data, _, _, version, _seq) in invalid.items():
         outputs[f"invalid/{name}.rs{version}"] = data
+    outputs["item-meta.rs13"] = item_meta13
+    for name, (data, *_rest) in im_invalid.items():
+        if data is not item_meta13:
+            outputs[f"invalid/{name}.rs13"] = data
     return outputs
 
 

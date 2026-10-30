@@ -31,6 +31,7 @@
 //! one at its record.
 
 use crate::canon;
+use crate::item_meta::{ItemMetaAsk, ItemMetaDump, ItemMetaRequest};
 use crate::payload;
 use crate::validate::{validate_recording, Accepted, DigestPolicy, Options, Validator};
 use crate::wire::{self, Error};
@@ -140,6 +141,7 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
             verify_payload_hashes: opts.verify_payload_hashes,
             early_prune: opts.early_prune,
             no_predict_reset: opts.no_predict_reset,
+            item_meta: Default::default(),
         },
     )?;
     let mut transactions = Vec::new();
@@ -167,7 +169,7 @@ pub fn resolve_recording(data: &[u8], version: u8, opts: GoldenOptions) -> Resul
                 let bytes = v.inline_payload(&hash).map(|p| p.len()).unwrap_or(0);
                 resources.push(json!({"hash": hash.to_hex(), "bytes": bytes, "record_index": i}));
             }
-            Accepted::End => {}
+            Accepted::End | Accepted::ItemMeta => {}
         }
     }
     Ok((
@@ -200,6 +202,7 @@ impl Suite<'_> {
             verify_payload_hashes: self.opts.verify_payload_hashes,
             early_prune: self.opts.early_prune,
             no_predict_reset: self.opts.no_predict_reset,
+            item_meta: Default::default(),
         }
     }
 
@@ -209,6 +212,15 @@ impl Suite<'_> {
 
     /// `expect_code` at a vector's own version (golden-11's `invalid` entries carry `version`).
     fn expect_code_at(&mut self, file: &str, code: &str, what: &str, version: u8) {
+        let opts = Options {
+            version,
+            ..self.opts()
+        };
+        self.expect_code_opts(file, code, what, opts);
+    }
+
+    /// `expect_code` under explicit options.
+    fn expect_code_opts(&mut self, file: &str, code: &str, what: &str, opts: Options) {
         let Some(data) = self.bytes(file) else {
             self.ok(
                 false,
@@ -216,10 +228,6 @@ impl Suite<'_> {
                 "file missing",
             );
             return;
-        };
-        let opts = Options {
-            version,
-            ..self.opts()
         };
         let got = validate_recording(&data, opts);
         let ok = matches!(&got, Err(e) if e.code == code);
@@ -354,11 +362,17 @@ impl Suite<'_> {
                 .get("version")
                 .and_then(|v| v.as_u64())
                 .map_or(self.version, |v| v as u8);
-            self.expect_code_at(
+            // TAG1: golden-13's item_meta vectors carry the validator's ask.
+            let opts = Options {
+                version,
+                item_meta: ask_of(&entry),
+                ..self.opts()
+            };
+            self.expect_code_opts(
                 &s(&entry, "file"),
                 &s(&entry, "code"),
                 "validateRecording",
-                version,
+                opts,
             );
         }
         if self.version >= 11 {
@@ -837,13 +851,35 @@ impl Suite<'_> {
                 continue;
             };
             let file = s(&entry, "file");
-            let got = self.bytes(&file).and_then(|d| first_failure(&d, self.opts()));
+            let opts = Options {
+                item_meta: ask_of(&entry),
+                ..self.opts()
+            };
+            let got = self.bytes(&file).and_then(|d| first_failure(&d, opts));
             self.ok(
                 matches!(&got, Some((_, _, at)) if *at == Some(seq)),
                 format!("validateRecording({file}) fails at transaction seq {seq}"),
                 got.map(|(e, _, at)| format!("{e} (seq {at:?})")).unwrap_or_else(|| "accepted".into()),
             );
         }
+        // TAG1: each item_meta vector fails at its record.
+        for entry in index.get("invalid").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+            let Some(ri) = entry.get("record_index").and_then(|x| x.as_u64()) else {
+                continue;
+            };
+            let file = s(&entry, "file");
+            let opts = Options {
+                item_meta: ask_of(&entry),
+                ..self.opts()
+            };
+            let got = self.bytes(&file).and_then(|d| first_failure(&d, opts));
+            self.ok(
+                matches!(&got, Some((_, at, _)) if *at == Some(ri as usize)),
+                format!("validateRecording({file}) fails at record {ri}"),
+                got.map(|(e, at, _)| format!("{e} (record {at:?})")).unwrap_or_else(|| "accepted".into()),
+            );
+        }
+        self.run_item_meta(index);
         for entry in index.get("corrupt").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
             let Some(ri) = entry.get("record_index").and_then(|x| x.as_u64()) else {
                 continue;
@@ -855,6 +891,101 @@ impl Suite<'_> {
                 format!("validateRecording({file}) fails at record {ri}"),
                 got.map(|(e, at, _)| format!("{e} (record {at:?})")).unwrap_or_else(|| "accepted".into()),
             );
+        }
+    }
+}
+
+/// TAG1: an index entry's validator ask (`item_meta`: a request object, `"none"`, or absent).
+fn ask_of(entry: &J) -> ItemMetaAsk {
+    match entry.get("item_meta") {
+        None | Some(J::Null) => ItemMetaAsk::Unknown,
+        Some(J::String(s)) if s == "none" => ItemMetaAsk::NotAsked,
+        Some(v) => ItemMetaRequest::from_json(v)
+            .map(ItemMetaAsk::Asked)
+            // A malformed request in the index fails every check that reads it.
+            .unwrap_or(ItemMetaAsk::NotAsked),
+    }
+}
+
+/// TAG1: the item_meta dump ([`ItemMetaDump`]) of a whole recording, or its first error.
+pub fn item_meta_dump(data: &[u8], opts: Options) -> Result<J, Error> {
+    let records = wire::split_records(data, opts.version)?;
+    let first = records
+        .first()
+        .ok_or_else(|| Error::new("missing-session", "the recording has no records"))?;
+    let mut v = Validator::new(first.bytes(data), first.offset, opts)?;
+    let mut dump = ItemMetaDump::default();
+    for r in &records[1..] {
+        let a = v.accept(r.bytes(data), r.offset)?;
+        dump.observe(&v, a);
+    }
+    v.finish()?;
+    Ok(dump.to_json(v.item_meta()))
+}
+
+impl Suite<'_> {
+    /// TAG1 (client-extensions-design.md §2.4): golden-13's `item_meta_valid` lanes validate
+    /// clean under their ask and as a recording, dump to their `dump`, and transcode to their
+    /// `rs12` (the item_meta records dropped).
+    fn run_item_meta(&mut self, index: &J) {
+        let s = |v: &J, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        for entry in index
+            .get("item_meta_valid")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            let (name, file) = (s(&entry, "name"), s(&entry, "file"));
+            let Some(data) = self.bytes(&file) else {
+                self.ok(false, format!("{name}: {file} is readable"), "file missing");
+                continue;
+            };
+            let ask = ask_of(&entry);
+            let asked = Options {
+                item_meta: ask,
+                ..self.opts()
+            };
+            let got = validate_recording(&data, asked.clone());
+            self.ok(
+                got.is_ok(),
+                format!("{name}: validateRecording({file}, item_meta asked) is []"),
+                got.err().map(|e| e.to_string()).unwrap_or_default(),
+            );
+            let got = validate_recording(&data, self.opts());
+            self.ok(
+                got.is_ok(),
+                format!("{name}: validateRecording({file}) (a recording) is []"),
+                got.err().map(|e| e.to_string()).unwrap_or_default(),
+            );
+            if let Some(sha) = entry.get("sha256").and_then(|x| x.as_str()) {
+                self.ok(
+                    wire::sha256(&data).to_hex() == sha,
+                    format!("{name}: {file} hashes to its sha256"),
+                    "",
+                );
+            }
+            if let Some(want) = entry.get("dump") {
+                match item_meta_dump(&data, asked) {
+                    Ok(got) => self.ok(
+                        deep_equal(&got, want),
+                        format!("{name}: the item_meta table of {file} is index.json's dump"),
+                        got.to_string(),
+                    ),
+                    Err(e) => self.ok(false, format!("{name}: item_meta dump of {file}"), e.to_string()),
+                }
+            }
+            let rs12 = s(&entry, "rs12");
+            if !rs12.is_empty() {
+                let want = self.bytes(&rs12);
+                match crate::predict::to12(&data, false) {
+                    Ok(got) => self.ok(
+                        want.as_deref() == Some(&got[..]),
+                        format!("{name}: transcode {file} to /12 drops its item_meta records: {rs12} byte for byte"),
+                        "",
+                    ),
+                    Err(e) => self.ok(false, format!("{name}: transcode {file} to /12"), e.to_string()),
+                }
+            }
         }
     }
 }

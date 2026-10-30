@@ -20,6 +20,7 @@
 
 import {
   ACCEPT_END,
+  ACCEPT_ITEM_META,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
   ACCEPT_TRANSACTION,
@@ -335,6 +336,8 @@ async function run(): Promise<void> {
         inlinePending++;
         continue;
       }
+      // TAG1: an item_meta record: the core holds it for its transaction; nothing to apply.
+      if (code === ACCEPT_ITEM_META) continue;
       if (code === ACCEPT_END) {
         ended = true;
         break;

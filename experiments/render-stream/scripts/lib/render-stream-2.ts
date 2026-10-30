@@ -1023,7 +1023,45 @@ export interface EndMeta {
   blocks: BlockDescriptor[];
 }
 
-export type Rs2Meta = SessionMeta | TransactionMeta | ResourceMeta | EndMeta;
+/** TAG1 (client-extensions-design.md §2.4): a viewer's `item_meta` hello request, and (the same
+ * shape) the grant a `full` item_meta record carries. */
+export interface ItemMetaRequest {
+  /** A subset of class, script, scene, path, in that order. */
+  fields: string[];
+  /** At most 31 group names (bit i of a row's groups mask is groups[i]). */
+  groups: string[];
+  /** At most 8 meta keys. */
+  meta_keys: string[];
+}
+
+/** TAG1: the /13 `item_meta` record (a JSON meta, no blocks). A `full` (grant set, strings_from 0)
+ * replaces the receiver's table; a `delta` (grant null) appends strings and upserts rows. A row is
+ * `[id]` (an item with no node) or `[id, col...]`: per granted field a string index or null, the
+ * groups bitmask when groups are granted, then per meta key a string index or null. */
+export interface ItemMetaRecordMeta {
+  type: "item_meta";
+  form: "full" | "delta";
+  grant: ItemMetaRequest | null;
+  strings_from: number;
+  strings: string[];
+  items: Array<Array<number | null>>;
+  blocks: BlockDescriptor[];
+}
+
+/** TAG1: the identity table as of the newest accepted transaction (`RecordingValidator.itemMeta`).
+ * A row is the columns after the id (wire order), or null for an item with no node. */
+export interface ItemMetaTable {
+  grant: ItemMetaRequest | null;
+  strings: string[];
+  rows: Map<number, Array<number | null> | null>;
+}
+
+export type Rs2Meta =
+  | SessionMeta
+  | TransactionMeta
+  | ResourceMeta
+  | EndMeta
+  | ItemMetaRecordMeta;
 
 // --------------------------------------------------------------------------------------- constants
 
@@ -4121,6 +4159,215 @@ function checkEndSchema(
   return [];
 }
 
+// --------------------------------------------------------------------------------------- item_meta (TAG1)
+//
+// client-extensions-design.md §2.4; rs-core's item_meta.rs is the same code, rule for rule, and
+// protocol/golden-13/make_golden.py (`item_meta_check`) the reference.
+
+const ITEM_META_KEYS = [
+  "type",
+  "form",
+  "grant",
+  "strings_from",
+  "strings",
+  "items",
+  "blocks",
+];
+const ITEM_META_GRANT_KEYS = ["fields", "groups", "meta_keys"];
+export const ITEM_META_FIELDS = ["class", "script", "scene", "path"] as const;
+/** The canonical meta's first bytes (`type` is the first key): the validator judges the ask and
+ * an orphan from them before the record's own schema. */
+const ITEM_META_PREFIX = new TextEncoder().encode('{"type":"item_meta",');
+
+/** The hello / grant list rules: null when `r` is valid, else what is wrong. */
+export function itemMetaRequestProblem(r: ItemMetaRequest): string | null {
+  let last = -1;
+  for (const f of r.fields) {
+    const i = (ITEM_META_FIELDS as readonly string[]).indexOf(f);
+    if (i <= last)
+      return '"fields" is not a subset of class, script, scene, path in that order without duplicates';
+    last = i;
+  }
+  if (r.groups.length > 31) return '"groups" holds more than 31 names';
+  if (r.meta_keys.length > 8) return '"meta_keys" holds more than 8 names';
+  for (const list of [r.groups, r.meta_keys]) {
+    const ok =
+      list.every(
+        (s) =>
+          s.length >= 1 &&
+          s.length <= 64 &&
+          [...s].every((c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e),
+      ) && new Set(list).size === list.length;
+    if (!ok)
+      return "a group or meta key is not 1-64 printable ASCII bytes, or repeats";
+  }
+  if (r.fields.length + r.groups.length + r.meta_keys.length === 0)
+    return '"fields", "groups" and "meta_keys" are all empty';
+  return null;
+}
+
+function itemMetaColumns(g: ItemMetaRequest): number {
+  return g.fields.length + (g.groups.length > 0 ? 1 : 0) + g.meta_keys.length;
+}
+
+/** Row shape against a grant (`item-meta-schema` detail, or null). */
+function itemMetaRowsProblem(
+  items: ReadonlyArray<ReadonlyArray<number | null>>,
+  g: ItemMetaRequest,
+): string | null {
+  const n = itemMetaColumns(g);
+  const gc = g.groups.length > 0 ? g.fields.length : -1;
+  for (const row of items) {
+    if (row.length === 1) continue;
+    if (row.length - 1 !== n)
+      return `item ${row[0]}'s row has ${row.length - 1} columns, the grant ${n}`;
+    if (gc >= 0) {
+      const m = row[1 + gc];
+      if (m === null || m >= 2 ** g.groups.length)
+        return `item ${row[0]}'s groups column is not a bitmask below 2^${g.groups.length}`;
+    }
+  }
+  return null;
+}
+
+/** Every string column below `size` (`item-meta-string` detail, or null). */
+function itemMetaIndicesProblem(
+  items: ReadonlyArray<ReadonlyArray<number | null>>,
+  g: ItemMetaRequest,
+  size: number,
+): string | null {
+  const gc = g.groups.length > 0 ? g.fields.length : -1;
+  for (const row of items) {
+    for (let k = 0; k < row.length - 1; k++) {
+      if (k === gc) continue;
+      const i = row[1 + k];
+      if (i !== null && i >= size)
+        return `item ${row[0]}'s column ${k} names string ${i}, the table holds ${size}`;
+    }
+  }
+  return null;
+}
+
+/** Whether grant `g` is within request `r`: fields a subset, groups and meta_keys each empty or
+ * equal to the request's. */
+function itemMetaWithin(g: ItemMetaRequest, r: ItemMetaRequest): boolean {
+  const same = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((x, i) => x === b[i]);
+  return (
+    g.fields.every((f) => r.fields.includes(f)) &&
+    (g.groups.length === 0 || same(g.groups, r.groups)) &&
+    (g.meta_keys.length === 0 || same(g.meta_keys, r.meta_keys))
+  );
+}
+
+/** decodeRecord's item_meta checks (/13 only): the shape (`item-meta-schema`) and, for a full
+ * (whose grant is in the record), its rows against the grant, strings_from 0 and every string
+ * index in range (`item-meta-string`). A delta's rows are read against the stream's grant by the
+ * validator. */
+function checkItemMetaSchema(
+  meta: Record<string, unknown>,
+  offset: number,
+): string[] {
+  const err = (code: string, detail: string) => [
+    `${code}: record at offset ${offset}: ${detail}`,
+  ];
+  const schema = (detail: string) => err("item-meta-schema", detail);
+  if (!hasExactKeys(meta, ITEM_META_KEYS))
+    return schema("item_meta has the wrong top-level keys or order");
+  if (meta.form !== "full" && meta.form !== "delta")
+    return schema('"form" is not "full" or "delta"');
+  const full = meta.form === "full";
+  let grant: ItemMetaRequest | null = null;
+  if (full) {
+    const g = meta.grant;
+    if (!isPlainObject(g) || !hasExactKeys(g, ITEM_META_GRANT_KEYS))
+      return schema(
+        '"grant" is not an object with fields, groups, meta_keys in that order',
+      );
+    for (const k of ITEM_META_GRANT_KEYS) {
+      if (!Array.isArray(g[k])) return schema(`grant.${k} is not an array`);
+      if (!isStringArray(g[k])) return schema(`grant.${k} holds a non-string`);
+    }
+    grant = g as unknown as ItemMetaRequest;
+    const problem = itemMetaRequestProblem(grant);
+    if (problem !== null) return schema(`grant: ${problem}`);
+  } else if (meta.grant !== null) {
+    return schema('a delta\'s "grant" is not null');
+  }
+  if (!isInt(meta.strings_from) || meta.strings_from < 0)
+    return schema('"strings_from" is not a non-negative integer');
+  if (!Array.isArray(meta.strings)) return schema('"strings" is not an array');
+  if (!isStringArray(meta.strings))
+    return schema('"strings" holds a non-string');
+  if (!Array.isArray(meta.items)) return schema('"items" is not an array');
+  let prev = 0;
+  for (const row of meta.items as unknown[]) {
+    if (!Array.isArray(row) || row.length === 0)
+      return schema("an items[] row is not a non-empty array");
+    const id = row[0];
+    if (!isInt(id) || id < 1 || id > 0xffffffff)
+      return schema("an items[] row's id is not an integer in 1..2^32");
+    if (id <= prev)
+      return schema(`items[] ids are not strictly increasing at ${id}`);
+    prev = id;
+    for (let k = 1; k < row.length; k++) {
+      const c = row[k];
+      if (c !== null && !(isInt(c) && c >= 0))
+        return schema(
+          `item ${id}'s row holds a column that is neither null nor a non-negative integer`,
+        );
+    }
+  }
+  if (!Array.isArray(meta.blocks) || meta.blocks.length !== 0)
+    return schema('"blocks" must be an empty array for an item_meta record');
+  if (grant !== null) {
+    const items = meta.items as Array<Array<number | null>>;
+    const rows = itemMetaRowsProblem(items, grant);
+    if (rows !== null) return schema(rows);
+    if (meta.strings_from !== 0)
+      return err(
+        "item-meta-string",
+        `a full's strings_from is ${meta.strings_from}, not 0`,
+      );
+    const indices = itemMetaIndicesProblem(
+      items,
+      grant,
+      (meta.strings as string[]).length,
+    );
+    if (indices !== null) return err("item-meta-string", indices);
+  }
+  return [];
+}
+
+/** TAG1: a row in `rs-core-check --item-meta-dump`'s form against `table`'s grant and strings:
+ * null for an item with no node, else {<field>: string|null.., "groups": mask, "meta":
+ * {<key>: string|null}} (groups and meta only when granted). */
+export function itemMetaRowJson(
+  table: ItemMetaTable,
+  row: ReadonlyArray<number | null> | null,
+): Record<string, unknown> | null {
+  const g = table.grant;
+  if (row === null || g === null) return null;
+  const s = (k: number) => {
+    const i = row[k];
+    return i === null || i === undefined ? null : (table.strings[i] ?? null);
+  };
+  const out: Record<string, unknown> = {};
+  g.fields.forEach((f, k) => {
+    out[f] = s(k);
+  });
+  let k = g.fields.length;
+  if (g.groups.length > 0) out.groups = row[k++] ?? null;
+  if (g.meta_keys.length > 0) {
+    const m: Record<string, string | null> = {};
+    g.meta_keys.forEach((key, j) => {
+      m[key] = s(k + j);
+    });
+    out.meta = m;
+  }
+  return out;
+}
+
 function checkMetaSchema(
   meta: unknown,
   offset: number,
@@ -4135,6 +4382,8 @@ function checkMetaSchema(
     return checkTransactionSchema(meta, offset, version);
   if (meta.type === "resource") return checkResourceSchema(meta, offset);
   if (meta.type === "end") return checkEndSchema(meta, offset);
+  if (meta.type === "item_meta" && version === 13)
+    return checkItemMetaSchema(meta, offset);
   return [
     `meta-schema: record at offset ${offset}: unknown "type" ${JSON.stringify(meta.type)}`,
   ];
@@ -5574,6 +5823,8 @@ export function decodeRs13(
         throw new Error(`predict-check: seq ${String(meta.seq)}`);
       out.push(rs13MakeRecord(plain, rs13RebuildBlocks(meta, blocks, decoded)));
       hist.accept(meta, decoded, { noReset });
+    } else if (meta.type === "item_meta") {
+      // TAG1: /12 has no item_meta record; dropped (the end record's stats follow).
     } else if (meta.type === "end") {
       out.push(
         rs13MakeRecord(
@@ -8350,6 +8601,11 @@ export interface RecordingValidator {
   /** render-stream-11.md decision 9 (`inline-fetch-zero`): null when a GET of `hash` is legal
    * now, else the `inline-fetch-zero` error. Always null below /11. See checkInlineFetch(). */
   checkInlineFetch(hash: string): string | null;
+  /** TAG1: the item_meta identity table as of the newest accepted transaction (empty, grant
+   * null, for a stream without item_meta records). */
+  itemMeta?(): ItemMetaTable;
+  /** TAG1: the accepted item_meta record awaiting its transaction, if any. */
+  itemMetaPending?(): ItemMetaRecordMeta | null;
 }
 
 /**
@@ -8382,6 +8638,13 @@ export interface RecordingValidatorOptions extends DecodeRecordOptions {
    * predict-check at seq 7 and patch.rs13 at seq 16.
    */
   noPredictReset?: boolean;
+  /**
+   * TAG1 (client-extensions-design.md §2.4, /13 only): the viewer's item_meta ask. Absent
+   * (undefined: a recording) accepts and validates item_meta records; null (a live viewer whose
+   * hello had no item_meta key) refuses them (`item-meta-unexpected`); a request checks each
+   * grant against it (`item-meta-schema`).
+   */
+  itemMeta?: ItemMetaRequest | null;
 }
 
 /** render-stream-11.md "Definitions": names(S), every payload hash the resolved state names --
@@ -9147,6 +9410,17 @@ export function createRecordingValidator(
   // carried it.
   const lastSeenParticles = new Map<number, ResolvedParticles>();
   let endSeen = false;
+  // TAG1 (client-extensions-design.md §2.4): the item_meta table and the record awaiting its
+  // transaction. Untouched (one null check per transaction) by a stream without item_meta records.
+  const itemMetaAsk = options?.itemMeta;
+  const imTable: ItemMetaTable = { grant: null, strings: [], rows: new Map() };
+  let imPending: ItemMetaRecordMeta | null = null;
+  const imOrphan = (offset: number, what: string): string[] | undefined =>
+    imPending !== null
+      ? [
+          `item-meta-orphan: record at offset ${offset}: ${what} follows an item_meta record, not a transaction`,
+        ]
+      : undefined;
   // D31/G7o1: the whole-record digest, off the frame path in "deferred" mode.
   const digests = new Map<number, string>();
   const pendingDigest = new Set<number>();
@@ -9154,10 +9428,52 @@ export function createRecordingValidator(
   const accept = (i: number): string[] | undefined => {
     const timer = validatorPhaseTimer;
     const decodeT0 = timer ? timer.now() : 0;
+    // TAG1 rules 1 and 2, from the canonical meta's prefix, before the record's own schema.
+    if (isV13) {
+      const b = records[i].bytes;
+      const n = ITEM_META_PREFIX.length;
+      if (
+        b.length >= 8 + n &&
+        new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(4, true) >=
+          n &&
+        ITEM_META_PREFIX.every((x, k) => b[8 + k] === x)
+      ) {
+        const offset = records[i].offset;
+        if (itemMetaAsk === null)
+          return [
+            `item-meta-unexpected: record at offset ${offset}: an item_meta record on a stream whose viewer did not ask for one`,
+          ];
+        if (imPending !== null)
+          return [
+            `item-meta-orphan: record at offset ${offset}: an item_meta record follows an item_meta record, not a transaction`,
+          ];
+      }
+    }
     let decoded = decodeRecord(records[i], version, { recordDigest });
     if (decoded.errors.length > 0 || decoded.record === undefined) {
       if (timer) timer.decode_us += timer.now() - decodeT0;
       return [decoded.errors[0]];
+    }
+    // TAG1: the transaction's form against the record before it, or a missing full record.
+    if (
+      decoded.record.meta.type === "transaction" &&
+      (imPending !== null || imTable.grant !== null)
+    ) {
+      const tm = decoded.record.meta;
+      const full = tm.encoding === "full";
+      const at = `record at offset ${records[i].offset}, transaction seq ${tm.seq}`;
+      if (imPending !== null && (imPending.form === "full") !== full) {
+        if (timer) timer.decode_us += timer.now() - decodeT0;
+        return [
+          `item-meta-form: ${at}: a ${imPending.form} item_meta record precedes a ${full ? "full" : "patch"} transaction`,
+        ];
+      }
+      if (imPending === null && full) {
+        if (timer) timer.decode_us += timer.now() - decodeT0;
+        return [
+          `item-meta-missing: ${at}: a full transaction on a granted stream without a full item_meta record before it`,
+        ];
+      }
     }
     // The record the /12 rules read: /13's with its predicted blocks reconstructed.
     let raw = records[i];
@@ -9188,7 +9504,53 @@ export function createRecordingValidator(
     if (meta.type === "session")
       return [`duplicate-session: a second session record at offset ${offset}`];
 
+    if (meta.type === "item_meta") {
+      // TAG1 rules 3-5 (the record's own schema held in decodeRecord); it then waits for its
+      // transaction.
+      const err = (code: string, d: string) => [
+        `${code}: record at offset ${offset}: ${d}`,
+      ];
+      if (
+        itemMetaAsk !== undefined &&
+        itemMetaAsk !== null &&
+        meta.grant !== null &&
+        !itemMetaWithin(meta.grant, itemMetaAsk)
+      )
+        return err(
+          "item-meta-schema",
+          `the grant ${JSON.stringify(meta.grant)} is not within the request ${JSON.stringify(itemMetaAsk)}`,
+        );
+      if (meta.form === "delta") {
+        const g = imTable.grant;
+        if (g === null)
+          return err(
+            "item-meta-form",
+            "a delta item_meta record before any full one granted",
+          );
+        const rows = itemMetaRowsProblem(meta.items, g);
+        if (rows !== null) return err("item-meta-schema", rows);
+        const size = imTable.strings.length;
+        if (meta.strings_from !== size)
+          return err(
+            "item-meta-string",
+            `a delta's strings_from is ${meta.strings_from}, the table holds ${size} strings`,
+          );
+        const indices = itemMetaIndicesProblem(
+          meta.items,
+          g,
+          size + meta.strings.length,
+        );
+        if (indices !== null) return err("item-meta-string", indices);
+      }
+      imPending = meta;
+      bytesTotal += decoded.record.byte_length;
+      maxRecordBytes = Math.max(maxRecordBytes, decoded.record.byte_length);
+      return undefined;
+    }
+
     if (meta.type === "resource") {
+      const orphan = imOrphan(offset, "a resource record");
+      if (orphan) return orphan;
       if (carriedHashes.has(meta.hash)) {
         return [
           isV11
@@ -9955,6 +10317,28 @@ export function createRecordingValidator(
           maxIdSeen[kind] = Math.max(maxIdSeen[kind], id);
       }
 
+      // TAG1 item-meta-id: every pending row names an item of the target state.
+      if (imPending !== null) {
+        const missing = imPending.items.find(
+          (row) => !nextState.items.has(row[0] as number),
+        );
+        if (missing !== undefined)
+          return [
+            `item-meta-id: record at offset ${offset}, transaction seq ${meta.seq}: the item_meta record before it has a row for item ${missing[0]}, which its target state does not hold`,
+          ];
+        if (imPending.form === "full") {
+          imTable.grant = imPending.grant;
+          imTable.strings = [...imPending.strings];
+          imTable.rows.clear();
+        } else {
+          imTable.strings.push(...imPending.strings);
+        }
+        for (const row of imPending.items)
+          imTable.rows.set(row[0] as number, row.length === 1 ? null : row.slice(1));
+        imPending = null;
+      }
+      if (imTable.rows.size > 0 && meta.encoding !== "full")
+        for (const id of meta.removed_items) imTable.rows.delete(id);
       state = nextState;
       if (names !== null) {
         // The prune: C <- C ∩ names(S), after S's own checks.
@@ -9978,6 +10362,8 @@ export function createRecordingValidator(
     }
 
     // meta.type === "end"
+    const orphan = imOrphan(offset, "the end record");
+    if (orphan) return orphan;
     if (isV11 && addedSinceTransaction.length > 0) {
       return [
         `resource-unnamed: end record at offset ${offset}: ${addedSinceTransaction.length} resource record(s) follow the last transaction (first: hash ${addedSinceTransaction[0]})`,
@@ -10019,6 +10405,8 @@ export function createRecordingValidator(
         ? []
         : ["recording-incomplete: the recording ends without an end record"],
     digestPending: () => Array.from(pendingDigest).sort((a, b) => a - b),
+    itemMeta: () => imTable,
+    itemMetaPending: () => imPending,
     checkInlineFetch: (hash: string): string | null => {
       if (!isV11) return null;
       const nameBytes = nonVariantNameBytes(state, hash);

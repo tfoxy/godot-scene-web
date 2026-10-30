@@ -360,6 +360,31 @@ AdoptMaterialStats adopt_material_stats();
 // the first transaction): connects the node map to SceneTree.node_added, resolves every adopted
 // item's material and reads the adopted items' instance parameters.
 void adopt_materials_at_arm();
+
+// TAG1 (client-extensions-design.md §2.2, §2.3): item identity through the node map, which is
+// reference-counted between adoption and TAG. node_map_acquire_tag() connects SceneTree.node_added
+// (unless adoption already has) and fills the map with one tree walk; node_map_release_tag()
+// disconnects and clears it unless adoption still holds it. Main thread only.
+struct IdentityQuery {
+  std::uint32_t fields = 0;  // item_meta::kClass..kPath bits
+  std::vector<std::string> groups;
+  std::vector<std::string> meta_keys;
+};
+struct Identity {
+  bool node = false;
+  std::string field[4];  // class, script, scene, path
+  bool has[4] = {false, false, false, false};
+  std::vector<bool> in_group;                          // per query group
+  std::vector<std::pair<bool, std::string>> meta;      // per query meta key: (has value, value)
+};
+bool node_map_acquire_tag(std::string *error);
+void node_map_release_tag();
+// The query every later item_identity() answers; `before_ready` arms the sabotage
+// meta-before-ready (identities resolved in node_added, before the node's _ready).
+void tag_set_query(const IdentityQuery &query, bool before_ready);
+// False when the map has no live node for `rid` (not in the tree yet, or none at all).
+bool item_identity(std::uint64_t rid, Identity *out);
+void tag_prune_map();
 // The frame boundary (entry.cpp's frame callback, main thread, before the transaction is
 // formed): resolves the mirror's pending material and shader references through the node map.
 // Cheap when nothing changed since the last call (one epoch read).

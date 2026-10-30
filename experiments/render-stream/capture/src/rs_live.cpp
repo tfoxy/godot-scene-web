@@ -132,6 +132,10 @@ struct Value {
   bool is_null = false;
   std::string text;
   std::uint64_t number = 0;
+  // TAG1 (client-extensions-design.md §2.1): the one nested value of any control message, the
+  // /13 hello's `item_meta`: an object whose values are arrays of strings.
+  bool is_object = false;
+  std::vector<std::pair<std::string, std::vector<std::string>>> object;
 };
 
 class Parser {
@@ -168,6 +172,11 @@ class Parser {
         } else if (c >= '0' && c <= '9') {
           if (!integer(&value.number)) {
             return fail(error, "\"" + key + "\" is not a non-negative integer <= 2^53-1");
+          }
+        } else if (c == '{' && key == "item_meta") {
+          value.is_object = true;
+          if (!string_lists(&value.object)) {
+            return fail(error, "\"item_meta\" is not an object of arrays of strings");
           }
         } else if (c == 'n') {
           // render-stream-7.md "Hello": `null` is legal only for `token`/`manifest_sha256`,
@@ -209,6 +218,67 @@ class Parser {
   }
 
  private:
+  // TAG1: {"key": ["s", ...], ...} (duplicate keys refused; the caller checks the names).
+  bool string_lists(std::vector<std::pair<std::string, std::vector<std::string>>> *out) {
+    if (!expect('{')) {
+      return false;
+    }
+    skip_ws();
+    if (peek() == '}') {
+      ++p_;
+      return true;
+    }
+    for (;;) {
+      skip_ws();
+      std::string key;
+      if (peek() != '"' || !string(&key)) {
+        return false;
+      }
+      for (const auto &have : *out) {
+        if (have.first == key) {
+          return false;
+        }
+      }
+      skip_ws();
+      if (!expect(':')) {
+        return false;
+      }
+      skip_ws();
+      if (!expect('[')) {
+        return false;
+      }
+      std::vector<std::string> list;
+      skip_ws();
+      if (peek() == ']') {
+        ++p_;
+      } else {
+        for (;;) {
+          skip_ws();
+          std::string item;
+          if (peek() != '"' || !string(&item)) {
+            return false;
+          }
+          list.push_back(std::move(item));
+          skip_ws();
+          if (peek() == ',') {
+            ++p_;
+            continue;
+          }
+          if (!expect(']')) {
+            return false;
+          }
+          break;
+        }
+      }
+      out->emplace_back(std::move(key), std::move(list));
+      skip_ws();
+      if (peek() == ',') {
+        ++p_;
+        continue;
+      }
+      return expect('}');
+    }
+  }
   char peek() const { return p_ < s_.size() ? s_[p_] : '\0'; }
   bool expect(char c) {
     if (peek() != c) {
@@ -485,8 +555,15 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
   // optional key of any control message.
   const bool optional_live_coding =
       message.type == ControlType::Hello && is_v11_or_later(version);
+  // TAG1 (client-extensions-design.md §2.1): a /13 hello may also carry `item_meta`; below /13
+  // the key is unknown (a hello error), as every other key is.
+  const bool optional_item_meta =
+      message.type == ControlType::Hello && version == ProtocolVersion::V13;
   for (const auto &field : fields) {
     if (optional_live_coding && field.first == "live_coding") {
+      continue;
+    }
+    if (optional_item_meta && field.first == "item_meta") {
       continue;
     }
     if (std::find(keys.begin(), keys.end(), field.first) == keys.end()) {
@@ -592,6 +669,37 @@ bool parse_control(const std::string &text, ControlMessage *out, std::string *er
             return fail("\"live_coding\" is not a comma list of [a-z0-9-] names, <= 96 chars");
           }
           message.has_live_coding = true;
+        }
+        if (optional_item_meta && find("item_meta") != nullptr) {
+          const Value *value = find("item_meta");
+          if (!value->is_object) {
+            return fail("\"item_meta\" must be an object (null is not \"not asked\": omit it)");
+          }
+          rs::item_meta::Request request;
+          const char *names[3] = {"fields", "groups", "meta_keys"};
+          std::vector<std::string> *lists[3] = {&request.fields, &request.groups,
+                                                &request.meta_keys};
+          if (value->object.size() != 3) {
+            return fail("\"item_meta\" must have exactly fields, groups and meta_keys");
+          }
+          for (int k = 0; k < 3; ++k) {
+            bool found = false;
+            for (const auto &entry : value->object) {
+              if (entry.first == names[k]) {
+                *lists[k] = entry.second;
+                found = true;
+              }
+            }
+            if (!found) {
+              return fail(std::string("\"item_meta\" has no \"") + names[k] + "\"");
+            }
+          }
+          const std::string problem = rs::item_meta::request_problem(request);
+          if (!problem.empty()) {
+            return fail(problem);
+          }
+          message.has_item_meta = true;
+          message.item_meta = std::move(request);
         }
       }
       // render-stream-2.md "Golden vectors": a hello for another version is invalid.
@@ -776,6 +884,8 @@ struct Hub::Conn {
   // job this frame callback is building for it (null outside on_frame_shared).
   std::unique_ptr<FormState> form;
   Job *job = nullptr;
+  // TAG1: the grant this connection's item_meta records carry (null: not asked, or refused).
+  std::shared_ptr<const rs::item_meta::Request> meta_grant;
   std::uint64_t stale_frame = 0;
   std::uint64_t stale_ns = 0;  // the frame callback's time when `stale` was captured (G6r Q3c)
   // G7q, stale-coalesce at window >= 2: the stale target just sent stays the target of every
@@ -861,6 +971,12 @@ struct Hub::FormState {
   // when their callback ends).
   std::shared_ptr<const std::vector<std::uint8_t>> spare_out;
   std::shared_ptr<const rs13::PredictMeta> spare_meta;
+  // TAG1 (client-extensions-design.md §2.4): what this connection's receiver holds of its grant's
+  // table: the rows stamped up to `meta_stamp` and the first `meta_strings` strings, and whether
+  // a full record went out (sabotage skip-full skips every later one).
+  std::uint64_t meta_stamp = 0;
+  std::uint64_t meta_strings = 0;
+  std::uint64_t meta_fulls = 0;
 };
 
 namespace {
@@ -902,6 +1018,11 @@ struct Hub::Counters {
   std::uint64_t predict_stale_seq = 0;
   std::uint64_t predict_states_reused = 0;  // W13f
   std::uint64_t predict_states_made = 0;
+  std::uint64_t item_meta_full = 0;  // TAG1
+  std::uint64_t item_meta_delta = 0;
+  std::uint64_t item_meta_bytes = 0;
+  std::uint64_t item_meta_rows = 0;
+  std::uint64_t item_meta_shared = 0;
   std::vector<std::uint64_t> enqueue_us;  // Q3d enqueue_us samples, in send order
 };
 
@@ -930,6 +1051,10 @@ struct Hub::Job {
   TxMeta meta;
   bool full = false;
   std::shared_ptr<const rs::Captured> tx_base;  // null for a full transaction
+  // TAG1: the connection's grant (null: no records), and the identities the main thread resolved
+  // since the last submitted job (the callback's first job carries them).
+  std::shared_ptr<const rs::item_meta::Request> meta_grant;
+  std::vector<std::shared_ptr<const rs::item_meta::Batch>> meta_batches;
   bool send = true;      // false: drop-message (formed, tapped, never sent)
   bool reorder = false;  // HC5 sabotage: the transaction goes out before its records
   // The frame line (log_frame), written when the job completes.
@@ -999,6 +1124,19 @@ struct Hub::Memo {
   std::map<std::string, std::shared_ptr<const std::vector<std::uint8_t>>> records_coded;
   // W13b: the callback's /13 codings.
   std::vector<std::unique_ptr<PredictedTx>> predicted;
+  // TAG1 (client-extensions-design.md §2.4 "Order and sharing"): the callback's item_meta
+  // records, keyed by (grant, form, what the receiver holds, target): lockstep viewers of one
+  // grant share the raw and coded bytes.
+  struct MetaRecord {
+    const rs::item_meta::GrantTable *table = nullptr;
+    bool full = false;
+    std::uint64_t from = 0;
+    std::uint64_t strings_have = 0;
+    std::shared_ptr<const rs::Captured> target;
+    rs::item_meta::Formed formed;
+    std::shared_ptr<const std::vector<std::uint8_t>> coded;
+  };
+  std::vector<MetaRecord> item_meta;
 };
 
 // HC5: the encode thread. Jobs run strictly in submission order; take() waits until every job
@@ -1359,6 +1497,9 @@ void Hub::close_files(Conn &c) {
 }
 
 void Hub::release_closed(Conn &c) {
+  if (c.meta_grant != nullptr) {
+    ++item_meta_version_;  // TAG1: the union may shrink to nothing
+  }
   // P3-SP: a closed connection pins nothing and carries nothing any more.
   carried_.release(c.carried_slot);
   c.carried_slot = CarriedIndex::kNoSlot;
@@ -1610,6 +1751,21 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
           }
           hello.str("live_coding_chosen", c.s.live_coding);
         }
+        if (message.has_item_meta) {
+          // TAG1 (client-extensions-design.md §2.1): the operator's grant caps what is asked; an
+          // empty grant is a refusal (the viewer's fulls then arrive with no record before them).
+          c.s.has_item_meta = true;
+          c.s.item_meta_request = message.item_meta;
+          c.s.item_meta_grant = rs::item_meta::grant_for(config_.item_meta_grant, message.item_meta);
+          if (!c.s.item_meta_grant.empty()) {
+            c.meta_grant = std::make_shared<const rs::item_meta::Request>(c.s.item_meta_grant);
+            ++item_meta_version_;
+          }
+          hello.str("item_meta", rs::item_meta::grant_json(message.item_meta))
+              .str("item_meta_grant", c.meta_grant != nullptr
+                                          ? rs::item_meta::grant_json(c.s.item_meta_grant)
+                                          : std::string("refused"));
+        }
       }
       log_line(c, hello.take());
       if (refuse) {
@@ -1784,6 +1940,32 @@ bool Hub::has_viewer() const {
   return false;
 }
 
+rs::item_meta::Request Hub::item_meta_union() const {
+  rs::item_meta::Request out;
+  std::uint32_t fields = 0;
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state == State::Closed || c.meta_grant == nullptr) {
+      continue;
+    }
+    fields |= c.meta_grant->field_bits();
+    for (const auto *pair : {&c.meta_grant->groups, &c.meta_grant->meta_keys}) {
+      std::vector<std::string> &into = pair == &c.meta_grant->groups ? out.groups : out.meta_keys;
+      for (const std::string &name : *pair) {
+        if (std::find(into.begin(), into.end(), name) == into.end()) {
+          into.push_back(name);
+        }
+      }
+    }
+  }
+  for (int i = 0; i < rs::item_meta::kFieldCount; ++i) {
+    if ((fields & (1u << i)) != 0) {
+      out.fields.push_back(rs::item_meta::kFieldNames[i]);
+    }
+  }
+  return out;
+}
+
 bool Hub::has_connection_below_v11() const {
   for (const auto &entry : conns_) {
     const Conn &c = *entry.second;
@@ -1950,6 +2132,7 @@ void Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &t
                     frame >= config_.drop_message_frame;
   job.drop = drop;
   job.send = !drop;
+  job.meta_grant = c.meta_grant;  // TAG1
 
   const std::uint64_t seq = meta.seq;
   const bool had_credit = c.credit;
@@ -2103,6 +2286,89 @@ bool Hub::form_deliver(Job &job, const std::vector<std::uint8_t> &message, bool 
   return ok;
 }
 
+void Hub::form_item_meta(Job &job, bool full,
+                         std::shared_ptr<const std::vector<std::uint8_t>> *record,
+                         std::shared_ptr<const std::vector<std::uint8_t>> *wire) {
+  FormState &f = *job.form;
+  Counters &o = job.out;
+  std::unique_ptr<rs::item_meta::GrantTable> &slot =
+      meta_tables_[rs::item_meta::grant_json(*job.meta_grant)];
+  if (slot == nullptr) {
+    slot = std::make_unique<rs::item_meta::GrantTable>();
+    slot->grant = *job.meta_grant;
+    slot->json = rs::item_meta::grant_json(slot->grant);
+  }
+  rs::item_meta::GrantTable &table = *slot;
+  const rs2::Snapshot &target = job.target->state;
+  const std::uint64_t to = target.frame;
+  if (full) {
+    // A full replaces the receiver's table: every row of the target, every string from 0.
+    const bool skip = config_.item_meta_sabotage == "skip-full" && f.meta_fulls > 0;
+    ++f.meta_fulls;
+    f.meta_stamp = 0;
+    f.meta_strings = 0;
+    if (skip) {
+      f.meta_stamp = to;  // sabotage skip-full: the receiver keeps its old table
+      f.meta_strings = table.local.size();
+      return;
+    }
+  }
+  const std::uint64_t from = f.meta_stamp;
+  Memo::MetaRecord *hit = nullptr;
+  for (Memo::MetaRecord &m : memo_->item_meta) {
+    if (m.table == &table && m.full == full && m.from == from &&
+        m.strings_have == f.meta_strings && m.target == job.target) {
+      hit = &m;
+      break;
+    }
+  }
+  if (hit == nullptr) {
+    memo_->item_meta.emplace_back();
+    hit = &memo_->item_meta.back();
+    hit->table = &table;
+    hit->full = full;
+    hit->from = from;
+    hit->strings_have = f.meta_strings;
+    hit->target = job.target;
+    const std::uint32_t offset = config_.item_meta_sabotage == "id-off-by-one" ? 1 : 0;
+    if (!rs::item_meta::form(meta_store_, &table, full, from, to, f.meta_strings, target, offset,
+                             &hit->formed)) {
+      hit->formed.strings_after = f.meta_strings;  // an empty delta: nothing goes out
+    }
+    meta_store_.prune(target);
+  } else if (hit->formed.bytes != nullptr) {
+    ++o.item_meta_shared;
+  }
+  f.meta_stamp = std::max(f.meta_stamp, to);
+  if (hit->formed.bytes == nullptr) {
+    return;
+  }
+  f.meta_strings = hit->formed.strings_after;
+  const std::vector<std::uint8_t> &bytes = *hit->formed.bytes;
+  if (bytes.size() > job.max_message_bytes) {
+    job.error = true;
+    job.error_detail = "item_meta record is " + std::to_string(bytes.size()) +
+                       " bytes, the cap is " + std::to_string(job.max_message_bytes);
+    transport_->send_text(f.id, encode_error("message-too-large", job.error_detail));
+    return;
+  }
+  *record = hit->formed.bytes;
+  if (f.coding != rs::live_coding::Coding::Off) {
+    // W11t: coded as a resource record is (one plain zstd frame), shared through the memo.
+    if (hit->coded == nullptr) {
+      hit->coded = coded_plain(&o.coded_shared, &o.coding_ns, bytes, "");
+    } else {
+      ++o.coded_shared;
+    }
+    *wire = hit->coded;
+  }
+  ++(full ? o.item_meta_full : o.item_meta_delta);
+  o.item_meta_bytes += bytes.size();
+  o.item_meta_rows += hit->formed.rows;
+  o.record_bytes_total += bytes.size();
+  o.max_record_bytes = std::max<std::uint64_t>(o.max_record_bytes, bytes.size());
+}
+
 void Hub::run_job(Job &job) {
   if (job.batch_end) {
     // P3-SP: the shared work lives for one callback; its snapshots are released by the main
@@ -2125,6 +2391,10 @@ void Hub::run_job(Job &job) {
     }
     return;
   }
+  for (const auto &batch : job.meta_batches) {
+    meta_store_.apply(*batch);  // TAG1: this callback's identities, before its records
+  }
+  job.meta_batches.clear();
   FormState &f = *job.form;
   Counters &o = job.out;
   const bool coded = f.coding != rs::live_coding::Coding::Off;
@@ -2210,6 +2480,21 @@ void Hub::run_job(Job &job) {
   }
   const TxMeta &meta = job.meta;
   const bool full = job.full;
+  // TAG1 (client-extensions-design.md §2.4): the item_meta record goes after the resource records,
+  // immediately before the transaction it describes.
+  std::shared_ptr<const std::vector<std::uint8_t>> meta_record;
+  std::shared_ptr<const std::vector<std::uint8_t>> meta_wire;
+  if (job.meta_grant != nullptr && job.send) {
+    form_item_meta(job, full, &meta_record, &meta_wire);
+    if (job.error) {
+      return;
+    }
+  }
+  const bool meta_in_shared =
+      meta_record != nullptr && config_.item_meta_sabotage == "in-shared";
+  if (meta_record != nullptr && !meta_in_shared) {
+    form_deliver(job, *meta_record, true, meta_wire.get());
+  }
   // P3-SP: the same transaction already formed this callback (another connection in lockstep).
   SharedTx *shared = nullptr;
   for (const auto &tx : memo_->txs) {
@@ -2292,7 +2577,17 @@ void Hub::run_job(Job &job) {
   if (meta.version == ProtocolVersion::V13) {
     f.spare_out = std::move(previous);  // W13f: the next /13 coding's buffer, once it is ours alone
   }
-  if (!form_deliver(job, bytes, job.send, wire.get())) {
+  if (meta_in_shared) {
+    // Sabotage meta-in-shared: the record rides inside the transaction's message, so this
+    // viewer's transaction bytes are no longer the ones its opted-out lockstep peers get.
+    std::vector<std::uint8_t> joined = *meta_record;
+    joined.insert(joined.end(), bytes.begin(), bytes.end());
+    std::shared_ptr<const std::vector<std::uint8_t>> joined_wire;
+    if (coded) {
+      joined_wire = coded_plain(&o.coded_shared, &o.coding_ns, joined, "");
+    }
+    form_deliver(job, joined, job.send, joined_wire.get());
+  } else if (!form_deliver(job, bytes, job.send, wire.get())) {
     job.lines.push_back(Line()
                             .num("frame", frame)
                             .num("t_us", now_ns / 1000)
@@ -2337,6 +2632,11 @@ void Hub::complete(Job &job) {
   c.s.predict_plain_bytes += o.predict_plain_bytes;
   c.s.predict_bytes += o.predict_bytes;
   c.s.predict_ns = saturating_add(c.s.predict_ns, o.predict_ns);
+  c.s.item_meta_full += o.item_meta_full;  // TAG1
+  c.s.item_meta_delta += o.item_meta_delta;
+  c.s.item_meta_bytes += o.item_meta_bytes;
+  c.s.item_meta_rows += o.item_meta_rows;
+  c.s.item_meta_shared += o.item_meta_shared;
   if (o.predict_stale_seq != 0) {
     c.s.predict_stale_seq = o.predict_stale_seq;
   }
@@ -2431,6 +2731,10 @@ void Hub::submit_batch() {
     if (job->form != nullptr && job->form->tap != nullptr) {
       end->flush.push_back(job->form->tap);
     }
+  }
+  if (!meta_batches_.empty()) {
+    batch_.front()->meta_batches = std::move(meta_batches_);  // TAG1: before any record
+    meta_batches_.clear();
   }
   batch_.push_back(std::move(end));
   std::vector<std::unique_ptr<Job>> jobs;
@@ -3011,6 +3315,23 @@ std::string Hub::summary_json(const ServingSummary *resources) const {
       } else {
         json.field_null("stale_seq");
       }
+      json.object_end();
+    }
+    if (s.has_item_meta) {
+      // TAG1 (client-extensions-design.md "As built (TAG1)"): the hello's request, the grant
+      // (null: refused) and the records this connection got.
+      json.field("item_meta_request", rs::item_meta::grant_json(s.item_meta_request));
+      if (s.item_meta_grant.empty()) {
+        json.field_null("item_meta_grant");
+      } else {
+        json.field("item_meta_grant", rs::item_meta::grant_json(s.item_meta_grant));
+      }
+      json.key("item_meta").object_begin();
+      json.field("full", static_cast<int64_t>(s.item_meta_full));
+      json.field("delta", static_cast<int64_t>(s.item_meta_delta));
+      json.field("bytes", static_cast<int64_t>(s.item_meta_bytes));
+      json.field("rows", static_cast<int64_t>(s.item_meta_rows));
+      json.field("shared", static_cast<int64_t>(s.item_meta_shared));
       json.object_end();
     }
     if (s.token_checked) {

@@ -67,12 +67,16 @@ import {
   checkKtx2Shape,
   createRecordingValidator,
   decodeKtx2Payload,
+  decodeRecord,
   decodeRecording,
   decodeRs13,
   decodeTexturePayload,
   encodeRs13,
   expectedDataBytes,
+  type ItemMetaRecordMeta,
+  type ItemMetaRequest,
   isPartialUnknownItems,
+  itemMetaRowJson,
   multimeshBufferSha256,
   PARTICLE_EMIT_FLOAT_COUNT,
   particlesFloatCount,
@@ -139,6 +143,10 @@ interface GoldenIndex {
     version?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
     /** golden-13 on: the seq of the transaction the vector fails at (null when not one). */
     seq?: number | null;
+    /** TAG1 (golden-13): the record the vector fails at. */
+    record_index?: number;
+    /** TAG1 (golden-13): the validator's item_meta ask (absent: a recording; "none": not asked). */
+    item_meta?: ItemMetaRequest | "none";
   }>;
   // golden-3 has no payload-invalid vectors of its own: render-stream-3.md does not change the
   // render-stream-texture/1 payload format, so golden-2's are the only ones that exist.
@@ -368,7 +376,9 @@ async function runSuite(
   // --- every invalid/*.rs2/.rs3 is rejected with exactly its one expected code -----------------
   for (const entry of index.invalid) {
     const bytes = await readBytes(goldenDir, entry.file);
-    const errors = validateRecording(bytes, entry.version ?? version);
+    const errors = validateRecording(bytes, entry.version ?? version, {
+      itemMeta: itemMetaAsk(entry.item_meta),
+    });
     ok(
       errors.length === 1 && errors[0].startsWith(`${entry.code}: `),
       `${label}: validateRecording(${entry.file}) is rejected with exactly one error starting with "${entry.code}: " (got ${JSON.stringify(errors)})`,
@@ -379,6 +389,20 @@ async function runSuite(
       ok(
         at === entry.seq,
         `${label}: validateRecording(${entry.file}) fails at seq ${entry.seq} (got ${at})`,
+      );
+    }
+    // TAG1: the item_meta vectors fail at their listed record.
+    if (typeof entry.record_index === "number") {
+      const m = /record at offset (\d+)/.exec(errors[0] ?? "");
+      const at =
+        m === null
+          ? null
+          : splitRecords(bytes, entry.version ?? version).records.findIndex(
+              (r) => r.offset === Number(m[1]),
+            );
+      ok(
+        at === entry.record_index,
+        `${label}: validateRecording(${entry.file}) fails at record ${entry.record_index} (got ${at})`,
       );
     }
   }
@@ -1678,6 +1702,13 @@ function errorSeq(
   }
 }
 
+/** TAG1: an index entry's item_meta ask as validateRecording's `itemMeta` option. */
+function itemMetaAsk(
+  ask: ItemMetaRequest | "none" | undefined,
+): ItemMetaRequest | null | undefined {
+  return ask === "none" ? null : ask;
+}
+
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
 }
@@ -1704,6 +1735,68 @@ interface Golden13Index {
       code: string;
       fails: Array<{ file: string; seq: number }>;
     };
+  };
+  /** TAG1: the valid item_meta lanes, each validated with its ask. */
+  item_meta_valid: Array<{
+    name: string;
+    file: string;
+    item_meta: ItemMetaRequest;
+    sha256?: string;
+    rs12?: string;
+    dump?: unknown;
+  }>;
+}
+
+/** TAG1: rs-core-check --item-meta-dump's JSON over a whole recording (TypeScript side). */
+function itemMetaDumpOf(
+  data: Uint8Array,
+  ask: ItemMetaRequest | null | undefined,
+): unknown {
+  const split = splitRecords(data, 13);
+  const v = createRecordingValidator(split.records, 13, { itemMeta: ask });
+  if (v.errors) throw new Error(v.errors[0]);
+  const seen = new Map<number, unknown>();
+  let held: ItemMetaRecordMeta | null = null;
+  let fulls = 0;
+  let deltas = 0;
+  for (let i = 1; i < split.records.length; i++) {
+    const errors = v.accept(i);
+    if (errors) throw new Error(errors[0]);
+    const pending = v.itemMetaPending?.() ?? null;
+    if (pending !== null) {
+      held = pending;
+      continue;
+    }
+    if (held !== null) {
+      // The transaction after it was accepted (a record is followed by one, or the stream
+      // fails orphan): the table now holds its rows.
+      const t = v.itemMeta?.();
+      if (t === undefined) throw new Error("no itemMeta accessor");
+      if (held.form === "full") fulls++;
+      else deltas++;
+      for (const row of held.items)
+        seen.set(
+          row[0] as number,
+          itemMetaRowJson(t, row.length === 1 ? null : row.slice(1)),
+        );
+      held = null;
+    }
+  }
+  const finish = v.finish();
+  if (finish.length > 0) throw new Error(finish[0]);
+  const t = v.itemMeta?.();
+  if (t === undefined) throw new Error("no itemMeta accessor");
+  const byId = (m: Map<number, unknown>) =>
+    Object.fromEntries([...m.entries()].sort((a, b) => a[0] - b[0]).map(([k, r]) => [String(k), r]));
+  return {
+    grant: t.grant,
+    strings: t.strings,
+    rows: byId(
+      new Map([...t.rows.entries()].map(([k, r]) => [k, itemMetaRowJson(t, r)])),
+    ),
+    seen: byId(seen),
+    full_records: fulls,
+    delta_records: deltas,
   };
 }
 
@@ -1836,6 +1929,88 @@ async function version13Cases(): Promise<void> {
         ),
       `golden-13: createRecordingValidator(${predict.file}, deferred) accepts every record and digests the /13 bytes`,
     );
+  }
+
+  // --- TAG1: the valid item_meta lanes ---------------------------------------------------------
+  for (const lane of index.item_meta_valid) {
+    const bytes = await readBytes(GOLDEN13_DIR, lane.file);
+    const asked = validateRecording(bytes, 13, { itemMeta: lane.item_meta });
+    ok(
+      asked.length === 0,
+      `golden-13: ${lane.name}: validateRecording(${lane.file}, item_meta asked) is [] (got ${JSON.stringify(asked)})`,
+    );
+    const recording = validateRecording(bytes, 13);
+    ok(
+      recording.length === 0,
+      `golden-13: ${lane.name}: validateRecording(${lane.file}) (a recording) is [] (got ${JSON.stringify(recording)})`,
+    );
+    if (lane.sha256 !== undefined)
+      ok(
+        sha256Hex(bytes) === lane.sha256,
+        `golden-13: ${lane.name}: ${lane.file} hashes to its sha256`,
+      );
+    if (lane.dump !== undefined) {
+      let dump: unknown = null;
+      try {
+        dump = itemMetaDumpOf(bytes, lane.item_meta);
+      } catch (error) {
+        dump = String(error);
+      }
+      ok(
+        isDeepStrictEqual(dump, lane.dump),
+        `golden-13: ${lane.name}: the item_meta table of ${lane.file} is index.json's dump (got ${JSON.stringify(dump).slice(0, 200)})`,
+      );
+    }
+    if (lane.rs12 !== undefined) {
+      const rs12 = await readBytes(GOLDEN13_DIR, lane.rs12);
+      let down: Uint8Array | null = null;
+      try {
+        down = decodeRs13(bytes);
+      } catch (error) {
+        ok(false, `golden-13: ${lane.name}: decodeRs13(${lane.file}) threw ${String(error)}`);
+      }
+      if (down !== null)
+        ok(
+          sameBytes(down, rs12),
+          `golden-13: ${lane.name}: decodeRs13(${lane.file}) drops its item_meta records: ${lane.rs12} byte for byte`,
+        );
+      // The decoded form holds the records (decodeRecording does not throw on them) and
+      // resolves to the twin's states.
+      let resolvedOk = false;
+      try {
+        const decodedLane = decodeRecording(bytes, 13);
+        resolvedOk =
+          decodedLane.records.some((r) => r.meta.type === "item_meta") &&
+          statesEqual(
+            resolveRecording(bytes, 13).transactions.map((t) => t.state),
+            resolveRecording(rs12, 12).transactions.map((t) => t.state),
+          );
+      } catch (error) {
+        ok(false, `golden-13: ${lane.name}: decode/resolve ${lane.file} threw ${String(error)}`);
+      }
+      ok(
+        resolvedOk,
+        `golden-13: ${lane.name}: decodeRecording(${lane.file}) keeps its item_meta records and resolveRecording matches ${lane.rs12}`,
+      );
+    }
+  }
+  // An item_meta record below /13 is an unknown record type.
+  {
+    const lane = index.item_meta_valid.find((l) => l.rs12 !== undefined);
+    if (lane !== undefined) {
+      const bytes = await readBytes(GOLDEN13_DIR, lane.file);
+      const raw = splitRecords(bytes, 13).records.find(
+        (r) =>
+          Buffer.from(r.bytes.subarray(8, 28)).toString("latin1") ===
+          '{"type":"item_meta",',
+      );
+      const errors =
+        raw === undefined ? ["none found"] : decodeRecord(raw, 12).errors;
+      ok(
+        errors.length === 1 && errors[0].startsWith("meta-schema: "),
+        `golden-13: an item_meta record decoded at /12 is meta-schema (unknown type) (got ${JSON.stringify(errors)})`,
+      );
+    }
   }
 
   // --- predict-stale (encoder sabotage) --------------------------------------------------------

@@ -255,7 +255,7 @@ pub fn replay(
                 carry_accept += accept_us + (now() - t);
                 carry_digest += digest_us;
             }
-            Accepted::End => {}
+            Accepted::End | Accepted::ItemMeta => {}
             Accepted::Transaction => {
                 accept_us += std::mem::take(&mut carry_accept);
                 digest_us += std::mem::take(&mut carry_digest);

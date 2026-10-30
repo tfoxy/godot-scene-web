@@ -506,6 +506,11 @@
       "reach": ["native:gate8@*", "g7:g7-8@*", "g7live:g7-8@*"]
     },
     {
+      "why": "TAG1's gate 8 group g8tag (client-extensions-design.md \"As built (TAG1)\"): fixtures/tag-scene (its checks, lib/gate8-tag-checks.ts, are under the gate 8 rule above) runs in native gate 8 only; no browser group replays it",
+      "paths": ["experiments/render-stream/fixtures/tag-scene/**"],
+      "reach": ["native:gate8@*"]
+    },
+    {
       "why": "W11t's live coding (render-stream-11.md \"As built (W11t)\"): the g8w11 coding legs' viewer (rs-core's wasm LiveCoding) runs in gate 8 only; bench-live-coding.mjs is a by-hand wasm decode timing, not a validate-increment target",
       "paths": [
         "experiments/render-stream/scripts/lib/coding-receiver.ts",

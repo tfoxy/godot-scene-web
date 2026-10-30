@@ -58,6 +58,11 @@ pub const KIND_SESSION: i32 = 4;
 /// W13d: a /13 patch that arrived while a `predict-check` failure awaits its full transaction
 /// (render-stream-13.md "As built (W13d)"): not accepted, so neither applied nor acked.
 pub const KIND_HELD: i32 = 5;
+/// TAG1 (client-extensions-design.md §2.4): a /13 `item_meta` record (kind "item_meta"). The
+/// validator holds it for the transaction it describes; nothing to apply and nothing to ack.
+/// The native receiver does not opt in, so this only keeps a recording that carries the records
+/// playable. (5 is `KIND_HELD` here; GSW's wasm ABI calls it `ACCEPT_ITEM_META` = 5.)
+pub const KIND_ITEM_META: i32 = 6;
 
 /// W13d (as GSW's W13c `peek_transaction`): a transaction record's `seq` and whether it is full,
 /// read from its meta's canonical prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`,
@@ -334,6 +339,7 @@ impl Core {
             verify_payload_hashes: true,
             early_prune: false,
             no_predict_reset: self.w11_sab.no_predict_reset,
+            item_meta: Default::default(),
         };
         let mut validator = match Validator::new(record, offset, opts) {
             Ok(v) => v,
@@ -424,6 +430,10 @@ impl Core {
             match peek_transaction(record) {
                 Some((seq, false)) => {
                     self.predict_dropped += 1;
+                    // TAG1: an item_meta record before this patch described it.
+                    if let Some(v) = self.validator.as_mut() {
+                        v.discard_item_meta_pending();
+                    }
                     let v = &mut self.vt;
                     v.clear();
                     v.dict(3);
@@ -508,6 +518,12 @@ impl Core {
                 v.key("type");
                 v.str("end");
             }
+            Accepted::ItemMeta => {
+                kind = KIND_ITEM_META;
+                v.dict(1);
+                v.key("type");
+                v.str("item_meta");
+            }
             Accepted::Transaction => {
                 kind = KIND_TRANSACTION;
                 self.planner.touched.merge(validator.delta());
@@ -551,6 +567,7 @@ impl Core {
         v.str(match kind {
             KIND_RESOURCE => "resource",
             KIND_END => "end",
+            KIND_ITEM_META => "item_meta",
             _ => "transaction",
         });
         kind

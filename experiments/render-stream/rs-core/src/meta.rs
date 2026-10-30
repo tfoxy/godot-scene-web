@@ -4162,6 +4162,8 @@ pub enum Decoded {
     Transaction,
     Resource(ResourceMeta),
     End(EndMeta),
+    /// TAG1 (/13 only): an `item_meta` record, record-locally valid ([`crate::item_meta`]).
+    ItemMeta(Box<crate::item_meta::ItemMetaRecord>),
 }
 
 /// Reusable storage for [`decode_record`].
@@ -4270,7 +4272,7 @@ pub fn decode_record_with(
                 .unwrap_or("?")
                 .to_string(),
             Decoded::Resource(_) => "payload".to_string(),
-            Decoded::End(_) => "?".to_string(),
+            Decoded::End(_) | Decoded::ItemMeta(_) => "?".to_string(),
         }
     };
     let descs = std::mem::take(&mut bufs.descs);
@@ -4317,6 +4319,9 @@ fn check_meta(
         }
         Some(b"resource") => Decoded::Resource(check_resource(&mut ck, meta, descs)?),
         Some(b"end") => Decoded::End(check_end(&mut ck, meta, descs)?),
+        Some(b"item_meta") if version >= 13 => Decoded::ItemMeta(Box::new(
+            crate::item_meta::check_record(&mut ck, meta, descs)?,
+        )),
         _ => {
             let shown = doc
                 .get(meta, "type")
