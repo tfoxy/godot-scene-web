@@ -107,6 +107,12 @@
       "exclusive": true
     },
     {
+      "why": "rs-core's examples (parse_cost, BIN-D's coded_decode): standalone benches run by hand; no receiver links them, so only the crate's own build and tests reach them",
+      "paths": ["experiments/render-stream/rs-core/examples/**"],
+      "reach": ["pure", "cargo:experiments/render-stream/rs-core"],
+      "exclusive": true
+    },
+    {
       "why": "PHN's phone live check (results/p3/phn.md): a real-time device driver and its page, run by hand through bench-live-scale.sh's host-only mode against an adb-attached phone; no gate leg loads them, and the client package they mount is reached by its own rules",
       "paths": ["experiments/render-stream/scripts/client-device-check.ts", "experiments/render-stream/web/client-phone/**"],
       "reach": ["pure"],
@@ -355,9 +361,10 @@
       "reach": ["pure", "native:hc1@*"]
     },
     {
-      "why": "WB's offline wire-budget analysis (results/p3/wb.md): run by hand on a kept recording, not a validate-increment target; its arithmetic has a pure synthetic self-test",
+      "why": "WB's offline wire-budget analysis (results/p3/wb.md) and BIN-D's zstd bench over its dumps (results/p3/bin-d.md): run by hand on a kept recording, not validate-increment targets; the arithmetic has a pure synthetic self-test",
       "paths": [
         "experiments/render-stream/scripts/lib/wire-budget.py",
+        "experiments/render-stream/scripts/lib/bin13-bench.c",
         "experiments/render-stream/scripts/test/self-test-wire-budget.sh"
       ],
       "reach": ["pure"]

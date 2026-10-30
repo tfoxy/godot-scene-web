@@ -25,6 +25,8 @@ item, canvas and mesh state, and reports per scene, per warm patch transaction:
   wire-budget.py proto13 --recording <file> --scene <name>:<f0>-<f1> ... [--warm-skip 30]
                          [--codings bin,bin_p2_soa,...] [--attribute ...] [--verify-every 1]
                          [--quant-every 10] [--max-frame N] [--out <json>]
+  wire-budget.py bin13 --recording <file.rs13> [--plain <file.rs12>] --scene <name>:<f0>-<f1> ...
+                       [--warm-skip 30] [--zr-min 4] [--dump <dir> --dump-n 300] [--out <json>]
   wire-budget.py self-test
 
 `measure` (W11b) reads any version, /11 included, and reports what the file's own records cost per
@@ -40,6 +42,11 @@ as the /13 design's binary structure (protocol/render-stream-13.md) under severa
 fixed-point positions), measures each warm patch raw, per-message zstd-3 and base-prefix zstd-3,
 splits the /12 record into categories (raw and coded against the base's same category), and decodes
 every lossless coding back to the record to prove the counts are of lossless messages.
+
+`bin13` (BIN-D, results/p3/bin-d.md) reads a /13 recording as built (rs-core-check transcode --to
+13) and measures today's wire against the deferred binary syntax and a compact residual (zero runs
+in the three predicted blocks), each decoded back; `--dump` writes the messages `bin13-bench.c`
+times through the capture's zstd and rs-core's `examples/coded_decode.rs` through ruzstd.
 
 zstd needs Python 3.14's `compression.zstd` (run through `mise exec -- python3`); without it the
 zstd rows are reported as unavailable and everything else still runs.
@@ -1334,6 +1341,22 @@ def self_test():
         else:
             print("skip zstd rows (no compression.zstd: run under Python 3.14)")
         proto13_checks(check, rp, td)
+    # BIN-D: the compact residual's zero runs invert on edge buffers, elide only runs >= min,
+    # and a 16-hex predict_check takes 8 bytes in the structure
+    bufs = [b"", bytes(3), bytes(4), bytes(40), b"a", b"\0\0\0a\0\0\0\0b", b"ab" + bytes(9) + b"c" + bytes(5),
+            bytes(range(256)) * 3 + bytes(100)]
+    check("BIN-D: zero runs invert (min 1, 4, 16)",
+          all(zr_decode(zr_encode(b, m), len(b)) == b for b in bufs for m in (1, 4, 16)))
+    check("BIN-D: zero runs: a 3-byte run stays literal at min 4, a 4-byte run goes",
+          zr_encode(b"a\0\0\0b", 4) == b"\0\x05a\0\0\0b" and zr_encode(b"a\0\0\0\0b", 4) == b"\0\x01a\x04\x01b")
+    sch = Schema13()
+    for v in ("00112233445566ff", "ffeeddccbbaa9988"):
+        sch.learn({"seq": 1, "predict_check": v}, "tx")
+    sch.freeze()
+    out = bytearray()
+    sch.enc({"seq": 1, "predict_check": "00112233445566ff"}, "tx", out)
+    check("BIN-D: predict_check is 8 bytes in the structure", len(out) == 9
+          and sch.dec(bytes(out), 0, "tx")[0] == {"seq": 1, "predict_check": "00112233445566ff"})
     print(f"wire-budget self-test: {'FAIL' if fails else 'ok'} ({len(fails)} failed)")
     return 1 if fails else 0
 
@@ -1453,6 +1476,7 @@ def cmd_measure(argv):
 # counts are those of a fixed schema, give or take enum widths.
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HEX16 = re.compile(r"^[0-9a-f]{16}$")  # /13's predict_check (BIN-D): 8 bytes in a binary syntax
 BLOCKS13 = ["item_f32", "canvas_f32", "cmd_f32", "cmd_i32", "mesh_f32", "param_f64", "backbuffer_f32",
             "mesh_u8", "mm_f32", "pt_f32"]
 BLOCK_TYPE13 = {"cmd_i32": "i32", "param_f64": "f64", "mesh_u8": "u8"}
@@ -1517,6 +1541,7 @@ class Schema13:
         self.types = {}  # path -> set of tnames
         self.strs = {}  # path -> {string: id}
         self.hex = {}  # path -> (all hex64, any hex64)
+        self.hex16 = {}  # path -> every value 16 lowercase hex digits
         self.frozen = False
 
     def learn(self, v, path):
@@ -1536,6 +1561,7 @@ class Schema13:
             h = bool(HEX64.match(v))
             a, b = self.hex.get(path, (True, False))
             self.hex[path] = (a and h, b or h)
+            self.hex16[path] = self.hex16.get(path, True) and bool(HEX16.match(v))
             st = self.strs.setdefault(path, {})
             if len(st) <= 256 and v not in st:
                 st[v] = len(st)
@@ -1545,6 +1571,8 @@ class Schema13:
         for path, (allh, anyh) in self.hex.items():
             if allh:
                 self.mode[path] = "hex"
+            elif self.hex16.get(path):
+                self.mode[path] = "hex16"
             elif not anyh and len(self.strs[path]) <= 255:
                 self.mode[path] = "enum"
             else:
@@ -1574,7 +1602,7 @@ class Schema13:
             m = self.mode[path]
             if m == "enum":
                 out += uvarint(self.strs[path][v])
-            elif m == "hex":
+            elif m in ("hex", "hex16"):
                 out += bytes.fromhex(v)
             else:
                 b = v.encode()
@@ -1621,6 +1649,8 @@ class Schema13:
                 return self.rstrs[path][u], p
             if m == "hex":
                 return bytes(buf[p : p + 32]).hex(), p + 32
+            if m == "hex16":
+                return bytes(buf[p : p + 8]).hex(), p + 8
             n, p = read_uvarint(buf, p)
             return bytes(buf[p : p + n]).decode(), p + n
         if t == "l":
@@ -2413,6 +2443,241 @@ def cmd_proto13(argv):
         print(text)
     return 1 if failures else 0
 
+# ---------------------------------------------------------------- BIN-D: today's /13 wire
+
+# BIN-D (results/p3/bin-d.md) measures the /13 wire as built (W13a: /12's JSON meta and framing,
+# the three predicted blocks) from a real /13 recording (`rs-core-check transcode --to 13`), and
+# what two further wire changes would do to it:
+#
+# - `b13`: the deferred binary transaction syntax (render-stream-13.md "The syntax"): the meta as
+#   Schema13's structure (learned, so within a byte or two an object of a fixed table), the blocks
+#   in the design's fixed order, each `uvarint len` + payload, no descriptors;
+# - `_zr`: a compact residual: each predicted block (`mesh_f32`, `mesh_u8`, `mm_f32`) as zero runs,
+#   `uvarint zeros, uvarint n, n literal bytes` repeated until the plain length (the descriptor's
+#   count) is reached. Zero runs shorter than `--zr-min` stay literal. Layout-free: it needs nothing
+#   but the plain length, so the byte-plane transposed residual's empty high planes go whole.
+#
+# Every variant of every warm patch is decoded back (the structure to the record's canonical meta
+# bytes, the zero runs to the plain block) before it is counted.
+
+PRED13 = ("mesh_f32", "mesh_u8", "mm_f32")
+VARIANTS_BIN13 = ("j13", "j13_zr", "b13", "b13_zr")
+ZERO_RUN = {}
+
+
+def zr_encode(b: bytes, minrun: int) -> bytes:
+    """Tokens `uvarint zeros, uvarint n, n literal bytes` until len(b) is covered; the last token's
+    literal may be empty, and a trailing zero run is a token with n = 0."""
+    pat = ZERO_RUN.get(minrun)
+    if pat is None:
+        pat = ZERO_RUN[minrun] = re.compile(b"\x00{%d,}" % minrun)
+    out = bytearray()
+    p = 0
+    zeros = 0
+    for m in pat.finditer(b):
+        lit = b[p : m.start()]
+        if lit or zeros:
+            out += uvarint(zeros) + uvarint(len(lit)) + lit
+        zeros = m.end() - m.start()
+        p = m.end()
+    lit = b[p:]
+    if lit or zeros:
+        out += uvarint(zeros) + uvarint(len(lit)) + lit
+    return bytes(out)
+
+
+def zr_decode(c: bytes, n: int) -> bytes:
+    out = bytearray()
+    p = 0
+    while len(out) < n:
+        z, p = read_uvarint(c, p)
+        k, p = read_uvarint(c, p)
+        out += bytes(z) + c[p : p + k]
+        p += k
+    if len(out) != n or p != len(c):
+        raise ValueError("zr: length")
+    return bytes(out)
+
+
+def bin13_message(sb: bytes, blocks: dict) -> bytes:
+    body = struct.pack("<I", 0) + sb
+    for name in BLOCKS13:
+        d = blocks.get(name, b"")
+        body += uvarint(len(d)) + d
+    return struct.pack("<I", len(body)) + body
+
+
+def cmd_bin13(argv):
+    ap = argparse.ArgumentParser(prog="wire-budget.py bin13")
+    ap.add_argument("--recording", required=True, help="a /13 recording (rs-core-check transcode --to 13)")
+    ap.add_argument("--plain", help="the /12 recording it was transcoded from (adds the /12 rows)")
+    ap.add_argument("--scene", action="append", required=True)
+    ap.add_argument("--warm-skip", type=int, default=30)
+    ap.add_argument("--zr-min", type=int, default=4)
+    ap.add_argument("--dump", help="directory: write each variant's first --dump-n warm messages per scene "
+                                   "(and the one before, the first's base) for bin13-bench.c")
+    ap.add_argument("--dump-n", type=int, default=300)
+    ap.add_argument("--out")
+    a = ap.parse_args(argv)
+    if zstd is None:
+        print("wire-budget bin13: needs Python 3.14's compression.zstd (mise exec -- python3)", file=sys.stderr)
+        return 2
+    scenes = []
+    for spec in a.scene:
+        name, rng = spec.split(":")
+        f0, f1 = (int(x) for x in rng.split("-"))
+        scenes.append((name, f0, f1))
+    t0 = time.time()
+    schema = Schema13()
+    for ver, rec in read_records(a.recording):
+        if ver != 13:
+            print(f"wire-budget bin13: {a.recording} is /{ver}, not /13", file=sys.stderr)
+            return 2
+        if rec.meta.get("type") == "transaction":
+            schema.learn({k: v for k, v in rec.meta.items() if k not in ("type", "blocks")}, "tx")
+    schema.freeze()
+    plain = read_records(a.plain) if a.plain else None
+    variants = list(VARIANTS_BIN13) + (["j12"] if plain else [])
+    rows = {name: {} for name, _f0, _f1 in scenes}
+    warm_n = {name: 0 for name, _f0, _f1 in scenes}
+    prev = {}  # variant -> (message, meta part, blocks part)
+    pending = []
+    failures = []
+    verified = 0
+    dumps = {}  # (variant, scene) -> [messages]
+    dump_open = {}  # scene -> still dumping (consecutive warm patches)
+
+    def code(msg, base):
+        if base is None or len(base) < 8:  # zstd refuses a prefix under 8 bytes: code it alone
+            return len(zstd.compress(msg, level=3)) + 4
+        return len(zstd.compress(msg, level=3, zstd_dict=zstd.ZstdDict(base, is_raw=True).as_prefix)) + 4
+
+    for ver, rec in read_records(a.recording):
+        prec = next(plain)[1] if plain else None
+        meta = rec.meta
+        kind = meta.get("type")
+        if kind == "resource":
+            pending.append(rec.size)
+            continue
+        if kind != "transaction":
+            continue
+        frame = meta["frame"]
+        sc = next((s for s in scenes if s[1] + a.warm_skip <= frame <= s[2]), None)
+        warm = sc is not None and meta["encoding"] == "patch"
+        # the parts of every variant: (message, meta part, blocks part)
+        jm = cj(meta)
+        if jm != rec.meta_bytes:
+            failures.append(f"seq {meta['seq']}: canonical JSON differs from the record's meta")
+        plain_blocks = {n: rec.blocks[n][2] for n in rec.blocks}
+        zr_blocks = dict(plain_blocks)
+        for n in PRED13:
+            if n in zr_blocks:
+                zr_blocks[n] = zr_encode(zr_blocks[n], a.zr_min)
+        sb = bytearray()
+        schema.enc({k: v for k, v in meta.items() if k not in ("type", "blocks")}, "tx", sb)
+        sb = bytes(sb)
+
+        def bl(blocks, meta=meta):
+            return b"".join(blocks[d["name"]] for d in meta.get("blocks", []))
+
+        parts = {
+            "j13": (record_bytes(meta, rec), jm, bl(plain_blocks)),
+            "j13_zr": (record_bytes(meta, rec, zr_blocks), jm, bl(zr_blocks)),
+            "b13": (bin13_message(sb, plain_blocks), sb, bl(plain_blocks)),
+            "b13_zr": (bin13_message(sb, zr_blocks), sb, bl(zr_blocks)),
+        }
+        if len(parts["j13"][0]) != rec.size:
+            failures.append(f"seq {meta['seq']}: rebuilt record {len(parts['j13'][0])} != {rec.size}")
+        if prec is not None:
+            if prec.meta.get("seq") != meta["seq"]:
+                failures.append(f"seq {meta['seq']}: the /12 file is out of step")
+            parts["j12"] = (record_bytes(prec.meta, prec), prec.meta_bytes,
+                            b"".join(prec.blocks[d["name"]][2] for d in prec.meta.get("blocks", [])))
+        if warm:
+            name = sc[0]
+            r = rows[name]
+            warm_n[name] += 1
+
+            def add(key, v, r=r):
+                r.setdefault(key, []).append(v)
+
+            add("records.n", len(pending))
+            add("records.raw", sum(n + ws_header(n) for n in pending))
+            for n in PRED13:
+                if n in plain_blocks:
+                    add(f"block.{n}.raw", len(plain_blocks[n]))
+                    add(f"block.{n}.zr", len(zr_blocks[n]))
+                    pb = prev.get("_blk", {}).get(n)
+                    add(f"block.{n}.coded", code(plain_blocks[n], pb) - 4 if plain_blocks[n] else 0)
+                    pz = prev.get("_zblk", {}).get(n)
+                    add(f"block.{n}.zr_coded", code(zr_blocks[n], pz) - 4 if zr_blocks[n] else 0)
+            for v in variants:
+                msg, mp, bp = parts[v]
+                add(v + ".raw", len(msg))
+                add(v + ".meta_raw", len(mp))
+                add(v + ".blocks_raw", len(bp))
+                if v in prev:
+                    pm, pmp, pbp = prev[v]
+                    z = code(msg, pm) + 24
+                    add(v + ".coded", z + ws_header(z))
+                    add(v + ".meta_coded", code(mp, pmp) - 4)
+                    add(v + ".blocks_coded", code(bp, pbp) - 4)
+            # proof: every variant decodes back
+            dec, p = schema.dec(sb, 0, "tx")
+            if p != len(sb) or cj({"type": "transaction", **dec, "blocks": meta["blocks"]}) != jm:
+                failures.append(f"seq {meta['seq']}: the structure does not decode back")
+            for n in PRED13:
+                if n in plain_blocks and zr_decode(zr_blocks[n], len(plain_blocks[n])) != plain_blocks[n]:
+                    failures.append(f"seq {meta['seq']}: {n} zero runs do not decode back")
+            verified += 1
+            if a.dump and dump_open.get(name, True):
+                if name not in dump_open:
+                    dump_open[name] = True
+                    for v in variants:  # the first warm patch's base
+                        dumps[(v, name)] = [prev[v][0]] if v in prev else []
+                    dumps[("pred", name)] = [b""]
+                    dumps[("pred_zr", name)] = [b""]
+                for v in variants:
+                    dumps[(v, name)].append(parts[v][0])
+                dumps[("pred", name)].append(b"".join(plain_blocks.get(n, b"") for n in PRED13))
+                dumps[("pred_zr", name)].append(b"".join(zr_blocks.get(n, b"") for n in PRED13))
+                if len(dumps[("j13", name)]) > a.dump_n:
+                    dump_open[name] = False
+        elif sc is None:
+            for name in dump_open:
+                dump_open[name] = False
+        for v in variants:
+            prev[v] = parts[v]
+        prev["_blk"] = plain_blocks
+        prev["_zblk"] = zr_blocks
+        pending = []
+    if a.dump:
+        os.makedirs(a.dump, exist_ok=True)
+        for (v, name), msgs in dumps.items():
+            with open(os.path.join(a.dump, f"{v}-{name}.msgs"), "wb") as fh:
+                fh.write(struct.pack("<I", len(msgs)))
+                for m in msgs:
+                    fh.write(struct.pack("<I", len(m)) + m)
+    out = {"schema": SCHEMA + "#bin13", "recording": os.path.basename(a.recording), "warm_skip": a.warm_skip,
+           "zr_min": a.zr_min, "variants": variants, "wall_s": round(time.time() - t0, 1), "verified_tx": verified,
+           "failures": failures[:50], "failure_count": len(failures), "scenes": {}}
+    for name, f0, f1 in scenes:
+        r = rows[name]
+        out["scenes"][name] = {"frames": [f0, f1], "warm_tx": warm_n[name],
+                               "bytes": {k: row(v) for k, v in sorted(r.items())}}
+        b = out["scenes"][name]["bytes"]
+        line = ", ".join(f"{v} {b.get(v + '.raw', {}).get('mean')}/{b.get(v + '.coded', {}).get('mean')}"
+                         for v in variants)
+        print(f"wire-budget bin13: {name}: {warm_n[name]} warm tx; {line}", file=sys.stderr)
+    print(f"wire-budget bin13: verified {verified} tx, {len(failures)} failures", file=sys.stderr)
+    text = json.dumps(out, indent=1)
+    if a.out:
+        with open(a.out, "w") as fh:
+            fh.write(text + "\n")
+    else:
+        print(text)
+    return 1 if failures else 0
+
 
 def record_bytes(meta, rec, blocks=None) -> bytes:
     """A record's own bytes rebuilt from its parts (framing, meta, blocks), as on the wire; with
@@ -2426,7 +2691,7 @@ def record_bytes(meta, rec, blocks=None) -> bytes:
 
 
 def main(argv):
-    if not argv or argv[0] not in ("analyze", "measure", "proto13", "self-test"):
+    if not argv or argv[0] not in ("analyze", "measure", "proto13", "bin13", "self-test"):
         print(__doc__, file=sys.stderr)
         return 2
     if argv[0] == "self-test":
@@ -2435,6 +2700,8 @@ def main(argv):
         return cmd_measure(argv[1:])
     if argv[0] == "proto13":
         return cmd_proto13(argv[1:])
+    if argv[0] == "bin13":
+        return cmd_bin13(argv[1:])
     return cmd_analyze(argv[1:])
 
 
