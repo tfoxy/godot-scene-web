@@ -6,6 +6,7 @@
 import {
   ACCEPT_END,
   ACCEPT_HELD,
+  ACCEPT_ITEM_META,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
   type GswRs,
@@ -57,6 +58,8 @@ export type CoreMessage =
   | { kind: "end" }
   /** W11t: a based transaction while a coding resync is pending (no apply, no ack). */
   | { kind: "held" }
+  /** TAG1: an item_meta record (identities for extensions): nothing to apply, no ack. */
+  | { kind: "item_meta" }
   /** W11t: a based message that did not decode: ask the host for a `coding` resync. */
   | { kind: "coding-resync"; seq: number; error: string };
 
@@ -188,6 +191,7 @@ export class WasmStreamCore implements StreamCore {
     }
     // W13c: a patch dropped while a predict-check resync awaits its full.
     if (code === ACCEPT_HELD) return { kind: "held" };
+    if (code === ACCEPT_ITEM_META) return { kind: "item_meta" };
     if (code === ACCEPT_RESOURCE) return { kind: "resource" };
     if (code === ACCEPT_END) return { kind: "end" };
     const st = this.stats();

@@ -152,8 +152,10 @@ users: adoption and TAG.
 - **TAG disconnects** when the last granted connection closes. The map is then cleared unless
   adoption still holds it.
 
-**When an identity is resolved.** On the main thread, in the frame callback, before the snapshot.
-That is after the frame's `_ready` calls, so tags set in `_ready` are seen. ObjectDB is not safe on
+**When an identity is resolved.** On the main thread, in the frame callback, right after the
+snapshot is built (TAG1: after, not before, so that an item the snapshot withheld is not stamped
+before a snapshot carries it; "As built (TAG1)"). That is after the frame's `_ready` calls, so tags
+set in `_ready` are seen. ObjectDB is not safe on
 HC5's formation thread, and `run_job` must not touch it.
 
 The capture keeps a `meta_watermark`, the highest item id it has resolved, and a short `pending`
@@ -231,9 +233,10 @@ string up to its target.
 - **`full`** goes before every full transaction on a granted connection: first full, resync,
   reconnect and coding resync. It carries `grant` and a row for every item of the target state
   that has an entry. It replaces the receiver's table.
-- **`delta`** goes before a patch transaction with base B and target T. Its `grant` is `null`. It
-  holds the rows of T's items whose stamp is in (frame(B), frame(T)], and the strings introduced
-  in that range.
+- **`delta`** goes before a patch transaction with target T. Its `grant` is `null`. It holds the
+  rows of T's items whose stamp is in (F, frame(T)], F the frame of the previous transaction formed
+  on this connection (TAG1: not the patch's base B, which window 2 shares between two patches;
+  "As built (TAG1)"), and the grant's strings the connection does not hold yet.
   **No delta is sent when it would be empty**, so a warm frame carries no `item_meta` bytes at all.
 
 **Order and sharing.**
@@ -595,3 +598,129 @@ A no-extension client must agree within run-to-run noise. A wire byte must not m
 6. **Retire the rows that never apply to a stream** (`backstopOcclusion`, `tweenReplay`, the three
    freezes, `staticBgEnabled`)? They would show their forced value permanently under the new
    renderer, and leave `STREAM_RENDER_OVERRIDES` for a separate "not applicable" list.
+
+## As built (TAG1)
+
+TAG1 landed the host, the wire record and the validators
+([results/p3/tag1.md](../results/p3/tag1.md)). Receivers do not opt in yet (TAG2). Where the
+design text above met the code and moved, the text was
+corrected in place and the reason is here.
+
+**Opt-in and configuration.**
+- `GRC_ITEM_META` is read at arm (a bad name refuses the listener). `GRC_ITEM_META_BUDGET_US`
+  (default 2000) is the per-frame budget.
+- The /13 hello key is an object with exactly `fields`, `groups` and `meta_keys`, each an array of
+  strings. The capture's control parser accepts that one nested value and nothing else. Below /13
+  the key is unknown, so it is a hello error as before.
+- The grant is the request's fields that `GRC_ITEM_META` names, plus the request's groups and meta
+  keys whole when it names `groups` and `meta`. An empty grant is a refusal: no record. The hello's
+  live-log line gains `item_meta` and `item_meta_grant` only when the hello asked.
+- **Decided: file sinks need their own request.** A recording carries records only under
+  `GRC_ITEM_META_FILE` (fields, a comma list), with `GRC_ITEM_META_FILE_GROUPS` and
+  `GRC_ITEM_META_FILE_KEYS`, capped by the grant, at /13. A grant alone changes no recording. That
+  is what "the grant set and no viewer asking is byte-identical" needs, and a file sink has no hello
+  to name groups.
+
+**Resolution (main thread, `rs_item_meta_host.cpp`, identities in `rs_adopt.cpp`).**
+- **Off, the frame callback costs one branch:** `g_meta.grant != 0`. With a grant and nobody
+  asking, it adds one counter compare (the hub's union version). No node map, no strings, nothing
+  per item.
+- **The node map is reference-counted.** G8m's `node_added` callable records nodes while adoption
+  or TAG holds the map. The first granted hello connects it (unless adoption already has) and fills
+  it with one tree walk. Releasing it disconnects and clears it unless adoption still holds it.
+- **The resolution order changed.** Resolution runs after the snapshot is built. An id above the
+  watermark is resolved only once the mirror has published it (`Item::published`). An item the
+  snapshot withheld (`GRC_UNKNOWN_ITEM=skip`) waits, so its stamp is never older than the first
+  snapshot that carries it. Before the snapshot, a withheld item's row could be stamped in a range
+  its connection had already passed.
+- **Pending items back off.** An item with no node in the map is retried at +1, +2, +4 … frames,
+  not every frame, until 120 frames after its creation. Then it gets `node: null`. Without backoff,
+  capture-scale's 600 RenderingServer-only items cost a retry each per frame for 120 frames.
+- **The union of requests.** The host resolves the union of what the granted connections (and the
+  file request) ask. When the union grows, every live item is resolved again, which is a reset
+  budgeted like a burst. The union only shrinks to nothing, when the last asker leaves.
+- **A rekey copies the entry.** The host keeps the last entry per RID. A fresh id whose RID already
+  has an entry under another id is a re-key (ids never repeat), so the entry is copied and
+  re-stamped, not read again.
+- **Identity fields.**
+  - `class` is `get_class`.
+  - `script` is the script's `resource_path`. An empty path is `null`.
+  - `scene` is the instance root's `scene_file_path`. The instance root is the node when that is
+    non-empty, else its owner.
+  - `path` is `instance_root.get_path_to(node)`, `.` for the root.
+  - Group bits come from `is_in_group`.
+  - Meta values come from `has_meta`, then `get_meta`: a String or StringName as itself, an int in
+    decimal.
+  - Strings are interned in their wire spelling (render-stream-0's printable ASCII, `?` elsewhere).
+
+**Formation (encode thread, `rs_item_meta.cpp`; `rs_live.cpp` `Hub::form_item_meta`).**
+- **Batches move the main thread's entries.** Each frame's new strings, names and entries are one
+  `Batch`, handed to the callback's first job and applied to the hub's `Store` before any record.
+  The file publisher has its own `Store`, applied by the publication's first lane job.
+- **One string table per grant**, not per host. Every connection with the same grant uses its
+  indices, so lockstep viewers of one grant form equal bytes. A grant never receives a string that
+  only another grant's columns name.
+- **The delta range is per connection.** A connection keeps the stamp it has received up to
+  (`meta_stamp`) and its table length (`meta_strings`) in `FormState`. A full resets both.
+  - A delta holds the target's entries stamped in (meta_stamp, frame(T)], and the grant's strings
+    from `meta_strings` on.
+  - The design's (frame(B), frame(T)] was wrong at window 2: two patches can share one base, and
+    the second would re-send the first's rows and strings with a `strings_from` the receiver
+    already passed.
+  - The memo key is (grant table, form, meta_stamp, meta_strings, target). It is the design's
+    (B, T, grant) with "what the receiver holds" in place of B.
+- **A dropped transaction** (`drop-message`) gets no record, and its connection's range does not
+  move.
+- **Record framing.** The record is the end record's framing: canonical JSON with `"blocks":[]`
+  last, and no block. Keys in order are `type, form, grant, strings_from, strings, items, blocks`.
+  The design's key list omitted `blocks`, which every record meta carries. The record counts in
+  the end record's `bytes_total` and `max_record_bytes`.
+- **Coded records.** On a coded connection the record is coded as a resource record is (one plain
+  zstd frame) and kept in the memo with the raw bytes.
+
+**Validators** (rs-core `item_meta.rs` and `validate.rs`; TS `render-stream-2.ts`; seven codes,
+golden-13 `item-meta.rs13` and `invalid/item-meta-*.rs13`).
+- **Three asks.** The option is Unknown (a recording; the default for every receiver), NotAsked
+  (`item-meta-unexpected`), or Asked(request) (the grant must be a subset of the request).
+- **Where errors are reported.** `item-meta-form`, `item-meta-missing` and `item-meta-id` are
+  reported at the transaction. `item-meta-id` is judged on the applied target and rolled back with
+  it.
+- **Error order.** The ask and orphan checks read the record's canonical prefix before decoding.
+  A full's string errors come before the Asked subset check.
+- **An empty delta is valid on the wire.** The host never forms one.
+- **Accept codes.** rs-core returns `Accepted::ItemMeta`. GSW's wasm ABI calls it
+  `ACCEPT_ITEM_META` = 5. The capi calls it `KIND_ITEM_META` = 6, because 5 is already its
+  `KIND_HELD`.
+- **Receivers skip it.** GSW (`main.ts`, `live.ts`, the client package's `core.ts`/`loop.ts`) and
+  the native receiver (`receiver.gd`) skip the record: nothing to apply, no ack. A held /13 patch
+  discards its pending record.
+- **Transcode and tools.** `predict::to12` (/13 → /12) drops the records and fixes the end stats.
+  `rs-core-check validate` takes `--item-meta-asked <request>|none` and `--item-meta-dump <path>`
+  (the final table, plus every id's last row, strings resolved).
+
+**Evidence and test knobs.**
+- **Live summary.** `live-summary.json` gives an asking connection `item_meta_request`,
+  `item_meta_grant` (null when refused) and `item_meta` {full, delta, bytes, rows, shared}.
+- **Host evidence.** `evidence/item-meta.json` (written once TAG ever turned on) holds the host's
+  resolution counters and cost: resolved, no_node, rekey_copies, waits, budget stops, resolve and
+  pass ns, and bursts.
+- **`GRC_ITEM_META_LOG`** writes one line per entry (id, RID, stamp): the RID-to-id map the oracle
+  check joins through.
+- **`GRC_LIVE_AWAIT_HELLOS=N`** (beside GRT3's `GRC_LIVE_AWAIT_HELLO_MS`) holds the frame until N
+  hellos arrived, so viewers started together number their transactions alike.
+- **Sabotages** are `GRC_ITEM_META_SABOTAGE` = `in-shared` (the record inside the transaction's
+  message), `before-ready` (identities read in `node_added`), `skip-full` (no full record after a
+  connection's first) and `id-off-by-one`.
+
+**Fixture and checks.**
+- `fixtures/tag-scene` holds instanced `card.tscn` (script, groups and meta set in `_ready`), a
+  reparented instance, a TileMapLayer (its quadrant has no node), a node created a frame before it
+  enters the tree, a freed and a re-added node, and a node moved through a SubViewport. That move
+  re-keys it under a late arm with skip.
+- `run-gate8.sh` group `g8tag`, judged by `lib/gate8-tag-checks.ts`, checks:
+  - `tag-validate`, `tag-meta-oracle` and `tag-meta-file-oracle`;
+  - `tag-meta-shared`, `tag-late-join` and `tag-reconnect`;
+  - `tag-rekey`, `tag-resync`, `tag-refused` and `tag-off`;
+  - each sabotage `-caught`.
+- `fixtures/capture-scale` gains `RS_SCALE_NODES`, `RS_SCALE_NODE_BURST` and `RS_SCALE_NODE_CHURN`
+  (default 0) for the on-cost.

@@ -910,6 +910,8 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
     "none: /11's multimesh (PM1's capture, PM2's native and web receivers) is render-stream/11, which the /8 manifest does not describe (as g8w11)",
   g8pt:
     "none: /12's GPU particles (PM5's capture, PM6a's native and web receivers) are render-stream/12, which the /8 manifest does not describe (as g8mm)",
+  g8tag:
+    "none: TAG1's item identity (the /13 hello key and item_meta record) is an opt-in client-extension layer of render-stream/13, no receiver applies it yet, and the /8 manifest does not describe it",
   g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",
   g55c: "none: gate 7's carried shader entries (material.*)",
   g55d: "none: gate 7's carried material entries (material.*)",

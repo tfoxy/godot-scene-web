@@ -15,11 +15,20 @@
 //     --out <dir> [--offer zstd-base,zstd|zstd|""] [--window 1|2] [--version 11|12|13]
 //     [--build <rs-core build dir>] [--timeout-s S]
 //
+// TAG1 (client-extensions-design.md §2.1, §2.4): --item-meta '<json request>' (/13 only) adds the
+// hello's optional `item_meta` key. An item_meta record is held until the transaction after it is
+// accepted, and dropped with it (a predict-check failure, a patch dropped awaiting the full), so
+// decoded.rs13 stays a stream rs-core-check validates with --item-meta-asked. --connect-delay-ms D
+// opens the connection D ms after start (a late joiner); --close-after-tx N closes after the N-th
+// accepted transaction (exit 0, report.closed_early) without waiting for the end record. Each
+// messages.jsonl line also carries the wire and decoded bytes' sha256 (meta-shared compares them).
+//
 // Writes <dir>/decoded.rs<version> (every message it decoded, in order: magic + session first, so
 // an honest leg's file is a recording equal to the host's tap), <dir>/messages.jsonl (one line per
 // message: index, wire and decoded bytes, kind, seq, outcome) and <dir>/coding-receiver.json
 // ({stream_id, transactions, codings: LiveCoding stats, errors, resyncs, end}). Exits 0 once the
 // end record arrived (1 on a close before it, a host error, a fatal coding error or the timeout).
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -47,6 +56,13 @@ const version = Number(arg("--version", "11"));
 if (version !== 11 && version !== 12 && version !== 13)
   throw new Error(`coding-receiver: --version ${version} (11, 12 or 13)`);
 const unpredictor = version === 13 ? createRs13Unpredictor() : null;
+const itemMeta = arg("--item-meta", "");
+if (itemMeta !== "" && version !== 13)
+  throw new Error("coding-receiver: --item-meta needs --version 13");
+const connectDelayMs = Number(arg("--connect-delay-ms", "0"));
+const closeAfterTx = Number(arg("--close-after-tx", "0"));
+const sha = (b: Uint8Array): string =>
+  createHash("sha256").update(b).digest("hex");
 const build = resolve(
   arg("--build", join(root, "artifacts", "render-stream", "rs-core", "latest")),
 );
@@ -105,11 +121,24 @@ const report = {
   end: false,
   coding: {} as Record<string, unknown>,
   fatal: null as string | null,
+  // TAG1: the hello's item_meta request (null: not asked), records kept and dropped.
+  item_meta: itemMeta === "" ? null : (JSON.parse(itemMeta) as unknown),
+  item_meta_records: 0,
+  item_meta_dropped: 0,
+  closed_early: false,
+};
+// TAG1: the item_meta record waiting for its transaction (decoded bytes).
+let heldMeta: Uint8Array | null = null;
+const dropHeldMeta = (): void => {
+  if (heldMeta !== null) report.item_meta_dropped += 1;
+  heldMeta = null;
 };
 let finished = false;
 let awaitingFull = false;
 let index = 0;
 
+if (connectDelayMs > 0)
+  await new Promise((done) => setTimeout(done, connectDelayMs));
 const ws = new WebSocket(url, [`render-stream.${version}`]);
 ws.binaryType = "arraybuffer";
 const finish = (code: number): void => {
@@ -166,6 +195,7 @@ ws.addEventListener("open", () => {
     gpu_formats: "none",
   };
   if (offer !== "") hello.live_coding = offer;
+  if (itemMeta !== "") hello.item_meta = JSON.parse(itemMeta) as unknown;
   ws.send(JSON.stringify(hello));
 });
 
@@ -188,6 +218,7 @@ ws.addEventListener("message", (event: MessageEvent) => {
   const line: Record<string, unknown> = {
     index: i,
     wire_bytes: wire.byteLength,
+    wire_sha256: sha(wire),
     envelope_seq: coding.seq(),
     base_seq: coding.base_seq(),
   };
@@ -196,6 +227,7 @@ ws.addEventListener("message", (event: MessageEvent) => {
     if (error === "") {
       // A based transaction while the resync is pending: dropped, never acked.
       report.skipped += 1;
+      dropHeldMeta();
       line.outcome = "skipped";
       lines.push(JSON.stringify(line));
       return;
@@ -203,6 +235,7 @@ ws.addEventListener("message", (event: MessageEvent) => {
     line.outcome = "error";
     line.error = error;
     lines.push(JSON.stringify(line));
+    dropHeldMeta();
     const seq = coding.seq();
     report.errors.push({ index: i, seq, detail: error });
     if (seq === 0 || report.stream_id === "") {
@@ -223,9 +256,10 @@ ws.addEventListener("message", (event: MessageEvent) => {
     awaitingFull = true;
     return;
   }
-  decoded.push(bytes);
   line.decoded_bytes = bytes.byteLength;
+  line.sha256 = sha(bytes);
   if (report.stream_id === "") {
+    decoded.push(bytes);
     const session = recordMeta(bytes, 8) as { stream?: { stream_id?: string } };
     report.stream_id = session.stream?.stream_id ?? "";
     line.kind = "session";
@@ -235,11 +269,32 @@ ws.addEventListener("message", (event: MessageEvent) => {
   const meta = recordMeta(bytes, 0);
   line.kind = meta.type;
   line.outcome = "decoded";
+  if (meta.type === "transaction") {
+    line.seq = meta.seq;
+    line.frame = meta.frame;
+    line.encoding = meta.encoding;
+  }
+  if (meta.type === "item_meta") {
+    // TAG1: held until its transaction is accepted (a second one in a row replaces it: the
+    // validator then reports the first as item-meta-orphan only if it was kept, so keep both).
+    if (heldMeta !== null) decoded.push(heldMeta);
+    heldMeta = bytes;
+    report.item_meta_records += 1;
+    line.form = meta.form;
+    line.rows = Array.isArray(meta.items) ? meta.items.length : null;
+    lines.push(JSON.stringify(line));
+    return;
+  }
+  if (meta.type !== "transaction") {
+    if (heldMeta !== null) decoded.push(heldMeta); // an orphan: the validator says so
+    heldMeta = null;
+  }
   if (meta.type === "transaction" && unpredictor !== null) {
     if (awaitingFull && meta.encoding !== "full") {
       // W13b: a patch after a predict-check resync predicts from a history this viewer never
       // accepted: dropped, never acked (its LiveCoding base chain is kept).
       report.dropped_awaiting_full += 1;
+      dropHeldMeta();
       line.outcome = "dropped";
       lines.push(JSON.stringify(line));
       return;
@@ -251,6 +306,7 @@ ws.addEventListener("message", (event: MessageEvent) => {
         ? { error: rec.errors[0] ?? "no record" }
         : unpredictor.transaction(raw, rec.record.meta as TransactionMeta);
     if ("error" in result) {
+      dropHeldMeta();
       line.outcome = "error";
       line.error = result.error;
       lines.push(JSON.stringify(line));
@@ -271,6 +327,12 @@ ws.addEventListener("message", (event: MessageEvent) => {
     }
     report.unpredicted += 1;
   }
+  if (meta.type === "transaction") {
+    if (awaitingFull && meta.encoding !== "full") dropHeldMeta();
+    if (heldMeta !== null) decoded.push(heldMeta);
+    heldMeta = null;
+  }
+  decoded.push(bytes);
   lines.push(JSON.stringify(line));
   if (meta.type === "resource") {
     report.resource_records += 1;
@@ -292,6 +354,10 @@ ws.addEventListener("message", (event: MessageEvent) => {
           t_us: tUs,
         }),
       );
+    if (closeAfterTx > 0 && report.transactions >= closeAfterTx) {
+      report.closed_early = true; // a deliberate close: exit 0 without the end record
+      finish(0);
+    }
   } else if (meta.type === "end") {
     report.end = true;
     finish(0);

@@ -835,6 +835,519 @@
       "version": 13,
       "seq": null,
       "description": "golden-12's invalid/particles-feature.rs12 transcoded: item 1 draws add_particles in a session whose features.ops lacks add_particles (the session record from before PM5)"
+    },
+    {
+      "file": "item-meta.rs13",
+      "code": "item-meta-unexpected",
+      "version": 13,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": "none",
+      "description": "item-meta.rs13 validated as a live viewer that asked for no item_meta (no hello key): its first item_meta record is unexpected"
+    },
+    {
+      "file": "invalid/item-meta-orphan.rs13",
+      "code": "item-meta-orphan",
+      "version": 13,
+      "seq": null,
+      "record_index": 39,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs13 with an empty delta after the last transaction: the end record follows it, not a transaction"
+    },
+    {
+      "file": "invalid/item-meta-form.rs13",
+      "code": "item-meta-form",
+      "version": 13,
+      "seq": 4,
+      "record_index": 6,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs13 with the delta before patch seq 4 replaced by a full record"
+    },
+    {
+      "file": "invalid/item-meta-missing.rs13",
+      "code": "item-meta-missing",
+      "version": 13,
+      "seq": 5,
+      "record_index": 7,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs13 without the full item_meta record before full seq 5 (the grant came at seq 1)"
+    },
+    {
+      "file": "invalid/item-meta-id.rs13",
+      "code": "item-meta-id",
+      "version": 13,
+      "seq": 4,
+      "record_index": 6,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs13 with the delta before patch seq 4 also carrying a row for item 99, not an item of seq 4's target state"
+    },
+    {
+      "file": "invalid/item-meta-string.rs13",
+      "code": "item-meta-string",
+      "version": 13,
+      "seq": null,
+      "record_index": 5,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs13 with the delta before patch seq 4 at strings_from 11, the table holding 10 strings"
+    },
+    {
+      "file": "invalid/item-meta-schema.rs13",
+      "code": "item-meta-schema",
+      "version": 13,
+      "seq": null,
+      "record_index": 1,
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "item-meta.rs13 with item 1's row in the first full record one column short of the grant's five"
+    }
+  ],
+  "item_meta_valid": [
+    {
+      "name": "item-meta",
+      "file": "item-meta.rs13",
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "sha256": "dd8b809ee50f5c95d4e5794f4e4b182a6b75d87d5bccdfeca6be6f5b90c264cf",
+      "rs12": "../golden-12/patch.rs12",
+      "dump": {
+        "grant": {
+          "fields": [
+            "class",
+            "scene",
+            "path"
+          ],
+          "groups": [
+            "rs_hand",
+            "rs_ui"
+          ],
+          "meta_keys": [
+            "rs_tag"
+          ]
+        },
+        "strings": [
+          "Label",
+          "res://scenes/s1.tscn",
+          "Box/Node1",
+          "Sprite2D",
+          "res://scenes/s2.tscn",
+          "Box/Node2",
+          "tag2",
+          "Control",
+          "Box/Node0",
+          "tag4",
+          "TextureRect",
+          "Box/Node3",
+          "res://scenes/s0.tscn",
+          ".",
+          "tag0"
+        ],
+        "rows": {
+          "1": {
+            "class": "Label",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "2": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "3": null,
+          "4": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "5": {
+            "class": "Label",
+            "scene": null,
+            "path": null,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "7": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "8": {
+            "class": "Control",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "9": {
+            "class": "Label",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "10": {
+            "class": "Sprite2D",
+            "scene": null,
+            "path": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "12": {
+            "class": "Control",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "13": null,
+          "14": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "16": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "17": {
+            "class": "Label",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "18": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "19": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          }
+        },
+        "seen": {
+          "1": {
+            "class": "Label",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "2": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "3": null,
+          "4": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "5": {
+            "class": "Label",
+            "scene": null,
+            "path": null,
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "6": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "7": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "8": {
+            "class": "Control",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "9": {
+            "class": "Label",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "10": {
+            "class": "Sprite2D",
+            "scene": null,
+            "path": null,
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "11": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "12": {
+            "class": "Control",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "13": null,
+          "14": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node2",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag2"
+            }
+          },
+          "15": {
+            "class": "TextureRect",
+            "scene": null,
+            "path": null,
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "16": {
+            "class": "Control",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node0",
+            "groups": 0,
+            "meta": {
+              "rs_tag": "tag4"
+            }
+          },
+          "17": {
+            "class": "Label",
+            "scene": "res://scenes/s2.tscn",
+            "path": "Box/Node1",
+            "groups": 1,
+            "meta": {
+              "rs_tag": null
+            }
+          },
+          "18": {
+            "class": "Sprite2D",
+            "scene": "res://scenes/s0.tscn",
+            "path": ".",
+            "groups": 2,
+            "meta": {
+              "rs_tag": "tag0"
+            }
+          },
+          "19": {
+            "class": "TextureRect",
+            "scene": "res://scenes/s1.tscn",
+            "path": "Box/Node3",
+            "groups": 3,
+            "meta": {
+              "rs_tag": null
+            }
+          }
+        },
+        "full_records": 5,
+        "delta_records": 6
+      },
+      "description": "patch.rs13 with a full item_meta record before each full transaction and a delta before each patch that adds items (rows with null columns, items 3 and 13 with no node, rows of removed items 6, 11 and 15 dropped); the grant omits the requested `script`"
+    },
+    {
+      "name": "item-meta-refused",
+      "file": "patch.rs13",
+      "item_meta": {
+        "fields": [
+          "class",
+          "script",
+          "scene",
+          "path"
+        ],
+        "groups": [
+          "rs_hand",
+          "rs_ui"
+        ],
+        "meta_keys": [
+          "rs_tag"
+        ]
+      },
+      "description": "a viewer asked and the host granted nothing: no item_meta record at all is valid"
     }
   ]
 }

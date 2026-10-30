@@ -2391,6 +2391,8 @@ pub fn to13(
             }
             Decoded::End(_) => fix_end(rec, &out_lens, &in_lens, &mut out),
             Decoded::Resource(_) => out.extend_from_slice(rec),
+            // A /12 decode never yields an item_meta record (an unknown type below /13).
+            Decoded::ItemMeta(_) => unreachable!("item_meta at /12"),
         }
         out_lens.push(out.len() - at);
         in_lens.push(rec.len());
@@ -2425,6 +2427,9 @@ pub fn to12(data13: &[u8], no_reset: bool) -> Result<Vec<u8>, Error> {
             }
             crate::validate::Accepted::End => fix_end(rec, &out_lens, &in_lens, &mut out),
             crate::validate::Accepted::Resource { .. } => out.extend_from_slice(rec),
+            // TAG1: /12 has no item_meta record; dropped, and the end record's bytes_total and
+            // max_record_bytes follow (`fix_end` over the output's record lengths).
+            crate::validate::Accepted::ItemMeta => {}
         }
         out_lens.push(out.len() - at);
         in_lens.push(rec.len());

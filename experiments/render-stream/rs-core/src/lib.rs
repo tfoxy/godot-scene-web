@@ -16,6 +16,7 @@ pub mod coding;
 pub mod delivery;
 pub mod goldens;
 pub mod idtable;
+pub mod item_meta;
 pub mod json;
 pub mod meta;
 pub mod payload;

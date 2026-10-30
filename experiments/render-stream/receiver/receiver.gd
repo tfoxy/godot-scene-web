@@ -1395,6 +1395,10 @@ func _process(_delta: float) -> void:
 				_begin_store_fetch(meta, record, RsWire.as_int(meta["seq"]), _empty_resources())
 				return
 			_apply_file_transaction(meta, record, RsWire.as_int(meta["seq"]), {})
+		"item_meta":
+			# TAG1 (client-extensions-design.md §2.4): identities for client extensions; the core
+			# holds the record for its transaction. Nothing to apply.
+			pass
 		"end":
 			_finish()
 
@@ -2362,6 +2366,10 @@ func _receive_binary(message: PackedByteArray) -> void:
 			_stream_report["end_seen"] = true
 			_report["end_seen"] = true
 			_log("end record after %d transactions" % _applier.transactions)
+		"item_meta":
+			# TAG1: this receiver never asks for item_meta (no hello key); a record is still
+			# validated and held by the core for its transaction. Nothing to apply, no ack.
+			pass
 		_:
 			_fail(null, "live-framing", "unexpected %s record" % kind)
 	# G6s (live-buffer trim): every message after the first is exactly one record (enforced

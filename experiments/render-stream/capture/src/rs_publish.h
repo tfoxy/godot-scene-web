@@ -39,6 +39,7 @@
 #include "rs2_diff.h"
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
+#include "rs_item_meta.h"
 #include "rs_resource_store.h"
 
 namespace grc {
@@ -213,6 +214,22 @@ class Publisher {
   // are then the writer's until finish() drains it. Every sink must write to `writer` (or not
   // queue at all). nullptr (the default): formation stays in publish().
   void set_former(rs::FileWriter *writer) { former_ = writer; }
+  // TAG1 (client-extensions-design.md §2.4 "File sinks"): GRC_ITEM_META_FILE's grant, the file
+  // sinks' request capped by GRC_ITEM_META (a /13 stream only). Each lane then carries a `full`
+  // item_meta record before each full transaction and deltas before its patches. Off by default:
+  // a recording without it is unchanged.
+  void set_item_meta(const rs::item_meta::Request &grant) {
+    meta_on_ = !grant.empty();
+    for (Lane &lane : lanes_) {
+      lane.meta_table.grant = grant;
+      lane.meta_table.json = rs::item_meta::grant_json(grant);
+    }
+  }
+  bool item_meta_on() const { return meta_on_; }
+  // The frame's identities, applied (in order) by this publication's first lane formation.
+  void item_meta_batch(std::shared_ptr<const rs::item_meta::Batch> batch) {
+    meta_batches_.push_back(std::move(batch));
+  }
 
   // Writes the magic and a session record to each sink (one flush per sink). Each sink's session
   // is `tmpl` (same session_id) with its own fresh stream_id, transport file, connection null,
@@ -274,6 +291,10 @@ class Publisher {
     // record in file order by write_transaction (the full lane's every record is full, so it
     // never predicts). Only the lane's formation touches it, in publication order.
     rs13::Predictor predictor;
+    // TAG1: the lane's item_meta table (its own string indices) and what the file holds of it.
+    rs::item_meta::GrantTable meta_table;
+    std::uint64_t meta_stamp = 0;
+    std::uint64_t meta_strings = 0;
   };
 
   const Lane &lane(Encoding encoding) const {
@@ -290,6 +311,7 @@ class Publisher {
     bool perturb_seed = false;
     std::uint64_t frame = 0;
     std::uint64_t snapshot_ns = 0;
+    std::vector<std::shared_ptr<const rs::item_meta::Batch>> meta_batches;  // TAG1
   };
   // Forms and writes the job's records and transaction. `direct`: on the writer thread (the
   // sinks' write_direct); otherwise through write() with the resource events per record.
@@ -302,6 +324,11 @@ class Publisher {
   void apply_stale_texture(rs::Captured *captured, std::uint64_t frame);
 
   Lane lanes_[2];  // [0] full, [1] patch
+  // TAG1: the batches not yet handed to a lane job (main thread), and the formation side's store
+  // (the lanes' formation's, in publication order).
+  bool meta_on_ = false;
+  std::vector<std::shared_ptr<const rs::item_meta::Batch>> meta_batches_;
+  rs::item_meta::Store meta_store_;
   SabotageConfig sabotage_;
   ResourcePolicy policy_;
   rs::ResourceStore *store_ = nullptr;

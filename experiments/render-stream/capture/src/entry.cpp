@@ -176,6 +176,7 @@
 #include "rs_texture_cache.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
+#include "rs_item_meta_host.h"
 #include "rs_ws.h"
 #include "vtable.h"
 
@@ -334,6 +335,39 @@ struct Live {
   std::vector<live::Coding> http_codings;
   bool http_coding_on = false;
 };
+
+// TAG1 (client-extensions-design.md §2.1, §2.2, "As built (TAG1)"): GRC_ITEM_META's grant (0:
+// nobody gets identities), the file sinks' request (GRC_ITEM_META_FILE*: off unless set), the
+// hub's union counter last seen, and the main thread's identity host. The frame callback tests
+// `grant` (one branch when off), then `on` (no viewer and no file asked: nothing per item).
+struct ItemMetaState {
+  bool configured = false;
+  bool config_ok = true;
+  std::string config_error;
+  uint32_t grant = 0;
+  uint64_t budget_us = 2000;
+  std::string sabotage;
+  rs::item_meta::Request file;  // the file sinks' grant (empty: no records in recordings)
+  uint64_t hub_version = ~uint64_t{0};
+  bool on = false;
+  rs::item_meta::Host host;
+};
+ItemMetaState g_meta;
+
+std::vector<std::string> comma_names(const std::string &text) {
+  std::vector<std::string> out;
+  std::size_t start = 0;
+  while (!text.empty() && start <= text.size()) {
+    std::size_t comma = text.find(',', start);
+    if (comma == std::string::npos) {
+      comma = text.size();
+    }
+    out.push_back(text.substr(start, comma - start));
+    start = comma + 1;
+  }
+  return out;
+}
+
 
 // G8kz (texture-delivery-design.md D2): GRC_HTTP_ENCODING = off | zstd | gzip, default zstd (the
 // default is safe because the coding is negotiated per request: a client that sends no
@@ -1420,6 +1454,67 @@ bool env_positive(const char *name, uint64_t fallback, uint64_t *out) {
   return *out >= 1;
 }
 
+// GRC_ITEM_META (the grant), GRC_ITEM_META_BUDGET_US (default 2000 per frame),
+// GRC_ITEM_META_SABOTAGE (in-shared | skip-full | id-off-by-one: formation; before-ready:
+// resolution) and the file sinks' request GRC_ITEM_META_FILE (fields, comma list),
+// GRC_ITEM_META_FILE_GROUPS and GRC_ITEM_META_FILE_KEYS (names, comma lists). Read once, at arm.
+void item_meta_configure() {
+  if (g_meta.configured) {
+    return;
+  }
+  g_meta.configured = true;
+  std::string why;
+  const std::string sabotage = env_string("GRC_ITEM_META_SABOTAGE");
+  if (!rs::item_meta::parse_grant_env(env_string("GRC_ITEM_META"), &g_meta.grant, &why)) {
+    g_meta.config_ok = false;
+  } else if (!env_positive("GRC_ITEM_META_BUDGET_US", 2000, &g_meta.budget_us)) {
+    g_meta.config_ok = false;
+    why = "GRC_ITEM_META_BUDGET_US is not a positive number of microseconds";
+  } else if (!sabotage.empty() && sabotage != "in-shared" && sabotage != "skip-full" &&
+             sabotage != "id-off-by-one" && sabotage != "before-ready") {
+    g_meta.config_ok = false;
+    why = "GRC_ITEM_META_SABOTAGE \"" + sabotage +
+          "\" is not in-shared, skip-full, id-off-by-one or before-ready";
+  }
+  rs::item_meta::Request file;
+  file.fields = comma_names(env_string("GRC_ITEM_META_FILE"));
+  file.groups = comma_names(env_string("GRC_ITEM_META_FILE_GROUPS"));
+  file.meta_keys = comma_names(env_string("GRC_ITEM_META_FILE_KEYS"));
+  if (g_meta.config_ok && !file.empty()) {
+    const std::string problem = rs::item_meta::request_problem(file);
+    if (!problem.empty()) {
+      g_meta.config_ok = false;
+      why = "GRC_ITEM_META_FILE: " + problem;
+    } else {
+      g_meta.file = rs::item_meta::grant_for(g_meta.grant, file);
+    }
+  }
+  if (!g_meta.config_ok) {
+    g_meta.config_error = why;
+    g_meta.grant = 0;
+    g_meta.file = rs::item_meta::Request();
+    log_line("item_meta: refused (" + why + ")");
+    return;
+  }
+  g_meta.sabotage = sabotage;
+  g_meta.host.configure(g_meta.budget_us, sabotage == "before-ready");
+  const std::string log_path = env_string("GRC_ITEM_META_LOG");
+  if (g_meta.grant != 0 && !log_path.empty()) {
+    std::FILE *log = std::fopen(log_path.c_str(), "w");  // closed at exit (a test knob)
+    if (log == nullptr) {
+      log_line("item_meta: cannot open GRC_ITEM_META_LOG " + log_path);
+    }
+    g_meta.host.set_log(log);
+  }
+  if (g_meta.grant != 0) {
+    log_line("item_meta: grant " + rs::item_meta::grant_env_string(g_meta.grant) +
+             " budget_us " + std::to_string(g_meta.budget_us) +
+             (g_meta.file.empty() ? std::string()
+                                  : " file " + rs::item_meta::grant_json(g_meta.file)) +
+             (sabotage.empty() ? std::string() : " (sabotage " + sabotage + ")"));
+  }
+}
+
 // A non-negative decimal environment value, or `fallback` when unset. False
 // when set and malformed.
 bool env_non_negative(const char *name, uint64_t fallback, uint64_t *out) {
@@ -1939,7 +2034,13 @@ void stream_start() {
                !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.predict_stale_frame)) {
       live_ok = false;
       why = "sabotage predict-stale: invalid GRC_SABOTAGE_FRAME (a positive frame)";
+    } else if ((item_meta_configure(), !g_meta.config_ok)) {
+      // TAG1 (client-extensions-design.md §2.1): the operator's grant, empty by default.
+      live_ok = false;
+      why = g_meta.config_error;
     }
+    live_config.item_meta_grant = g_meta.grant;
+    live_config.item_meta_sabotage = g_meta.sabotage;
     // HC5 (host-cost-design.md D4): the hub's formation jobs run on one encode thread; the test
     // knob GRC_HC_FORMATION=inline runs them on the frame callback's thread instead (the wire is
     // byte-identical either way). GRC_HC_SABOTAGE=reorder: every job sends its transaction before
@@ -2505,6 +2606,10 @@ void stream_start() {
     g_stream.publisher = std::make_unique<rs2::Publisher>(
         g_stream.full_sink.get(), g_stream.patch_sink.get(), sabotage.config, g_stream.policy,
         g_stream.store.get());
+    item_meta_configure();
+    if (!g_meta.file.empty() && g_stream.gate8.speaks_v13()) {
+      g_stream.publisher->set_item_meta(g_meta.file);  // TAG1: GRC_ITEM_META_FILE (a /13 sink)
+    }
     g_stream.publisher->set_resource_events([](const char *op, const std::string &hash,
                                                uint64_t bytes, bool ok, uint64_t frame) {
       rs::TapContext ctx;
@@ -2751,6 +2856,11 @@ void live_close_and_stop() {
   }
   emit("live-summary.json",
        g_live.hub->summary_json(g_live.served != nullptr ? &g_live.serving : nullptr));
+  if (g_meta.host.stats().ever_on) {
+    emit("item-meta.json", g_meta.host.stats_json());  // TAG1: the host's resolution cost
+  }
+  g_meta.host.set_union(rs::item_meta::Request(), 0);
+  g_meta.on = false;
   for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
     log_line("live: connection " + std::to_string(s.connection) + " stream " + s.stream_id +
              " offered=" + std::to_string(s.frames_offered) +
@@ -2926,13 +3036,19 @@ struct LiveAwaitHello {
 };
 LiveAwaitHello g_live_await;
 
+// TAG1: GRC_LIVE_AWAIT_HELLOS=N (default 1, a test knob beside GRC_LIVE_AWAIT_HELLO_MS) holds
+// the frame until N connections said hello, so viewers started together share their first frame
+// (and so number their transactions alike).
+uint64_t g_live_await_hellos = 1;
+
 bool live_any_hello() {
+  uint64_t hellos = 0;
   for (const rs2::ConnectionSummary &s : g_live.hub->summaries()) {
     if (!s.stream_id.empty()) {
-      return true;
+      ++hellos;
     }
   }
-  return false;
+  return hellos >= g_live_await_hellos;
 }
 
 void live_await_first_hello(uint64_t frame) {
@@ -2946,6 +3062,9 @@ void live_await_first_hello(uint64_t frame) {
   if (!env_positive("GRC_LIVE_AWAIT_HELLO_MS", 0, &g_live_await.timeout_ms)) {
     log_line("live: await-hello: ignoring an invalid GRC_LIVE_AWAIT_HELLO_MS (a positive ms)");
     return;
+  }
+  if (!env_positive("GRC_LIVE_AWAIT_HELLOS", 1, &g_live_await_hellos)) {
+    g_live_await_hellos = 1;
   }
   if (g_live_await.timeout_ms == 0 || live_any_hello()) {
     return;
@@ -3075,6 +3194,54 @@ void particles_states_log() {
   }
 }
 
+// TAG1 (client-extensions-design.md §2.2): after the snapshot (so a new item's `published` says
+// whether this snapshot carries it), the union the granted viewers ask, then the items created
+// since the watermark, within the budget, handed to the hub's formation side.
+void item_meta_frame(uint64_t frame) {
+  const uint64_t version = g_live.hub != nullptr ? g_live.hub->item_meta_version() : 0;
+  if (version != g_meta.hub_version) {
+    g_meta.hub_version = version;
+    rs::item_meta::Request want =
+        g_live.hub != nullptr ? g_live.hub->item_meta_union() : rs::item_meta::Request();
+    const bool file = g_stream.publisher != nullptr && g_stream.publisher->item_meta_on();
+    if (file) {
+      // The file sinks' request joins the viewers' union.
+      const std::uint32_t fields = want.field_bits() | g_meta.file.field_bits();
+      want.fields.clear();
+      for (int i = 0; i < rs::item_meta::kFieldCount; ++i) {
+        if ((fields & (1u << i)) != 0) {
+          want.fields.push_back(rs::item_meta::kFieldNames[i]);
+        }
+      }
+      for (const std::string &g : g_meta.file.groups) {
+        if (std::find(want.groups.begin(), want.groups.end(), g) == want.groups.end()) {
+          want.groups.push_back(g);
+        }
+      }
+      for (const std::string &k : g_meta.file.meta_keys) {
+        if (std::find(want.meta_keys.begin(), want.meta_keys.end(), k) == want.meta_keys.end()) {
+          want.meta_keys.push_back(k);
+        }
+      }
+    }
+    g_meta.host.set_union(want, frame);
+    g_meta.on = g_meta.host.on();
+  }
+  if (!g_meta.on) {
+    return;
+  }
+  std::shared_ptr<const rs::item_meta::Batch> batch = g_meta.host.pass(rs::mirror_instance(), frame);
+  if (batch == nullptr) {
+    return;
+  }
+  if (g_live.hub != nullptr) {
+    g_live.hub->item_meta_batch(batch);
+  }
+  if (g_stream.publisher != nullptr && g_stream.publisher->item_meta_on()) {
+    g_stream.publisher->item_meta_batch(batch);
+  }
+}
+
 void stream_publish(uint64_t frame) {
   if (g_stream.status != "open") {
     return;
@@ -3151,6 +3318,9 @@ void stream_publish(uint64_t frame) {
   const uint64_t t0 = monotonic_ns();
   rs::Captured snapshot = rs::mirror_snapshot(0, frame);
   uint64_t snapshot_ns = monotonic_ns() - t0;
+  if (g_meta.grant != 0) {
+    item_meta_frame(frame);  // TAG1: off, one branch; on, the frame's new items
+  }
   if (g_hc_shadow) {
     // HC4a: the shadow oracle found the persistent tables and the full walk apart (HC4b: or the
     // budget's or serving's walks over the payload maps' differences, at an earlier callback).

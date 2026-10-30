@@ -110,6 +110,9 @@ export const ACCEPT_END = 2;
 export const ACCEPT_NEEDS_PAYLOADS = 3;
 /** W13c: a /13 patch dropped while a `predict-check` resync awaits its full (no apply, no ack). */
 export const ACCEPT_HELD = 4;
+/** TAG1: a /13 `item_meta` record (client-extensions-design.md §2.4): the core holds it for its
+ * transaction; nothing to apply, nothing to ack, not a transaction. */
+export const ACCEPT_ITEM_META = 5;
 
 /** lib.rs `Stats`, `#[repr(C)]`, all u32, in this order. */
 export const STAT_FIELDS = [

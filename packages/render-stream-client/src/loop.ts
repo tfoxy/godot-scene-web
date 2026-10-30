@@ -403,6 +403,7 @@ export class StreamLoop {
     switch (m.kind) {
       case "held":
       case "resource":
+      case "item_meta":
         return;
       case "coding-resync":
         // W11t: the decoder skips based transactions until the full one, which a rebuilt

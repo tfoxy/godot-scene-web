@@ -38,7 +38,7 @@ fn run(data: &[u8]) -> Result<(usize, u64), wire::Error> {
                     payloads.provide(b, &hash, version, true)?;
                 }
             }
-            Accepted::End => {}
+            Accepted::End | Accepted::ItemMeta => {}
             Accepted::Transaction => {
                 payloads.accept_transaction(&v, span.bytes(data))?;
                 applier.prepare(v.state(), v.delta());

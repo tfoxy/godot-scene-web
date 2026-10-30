@@ -36,12 +36,14 @@
 
 use crate::meta::{self, CmdMeta, DecodeBufs, Decoded, EndMeta, Op, ResourceMeta, Session, TxMeta};
 use crate::payload::{self, PayloadKind};
+use crate::item_meta;
 use crate::prof;
 use crate::state::*;
 use crate::wire::{self, F32s, F64s, I32s, MAGIC_LEN};
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
+pub use crate::item_meta::{ItemMetaAsk, ItemMetaRecord, ItemMetaRequest, ItemMetaTable};
 pub use crate::wire::Error;
 
 /// D31: who computes each record's SHA-256.
@@ -61,7 +63,7 @@ pub enum DigestPolicy {
     Never,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Options {
     /// The protocol version, 2 to 13.
     pub version: u8,
@@ -77,6 +79,10 @@ pub struct Options {
     /// reset the prediction history (it is un-predicted against H1 and H2 like a patch). `false`
     /// always, except in the sabotage.
     pub no_predict_reset: bool,
+    /// TAG1 (client-extensions-design.md §2.4, /13 only): what the stream's viewer asked for.
+    /// `Unknown` (the default: a recording) accepts and validates `item_meta` records; `NotAsked`
+    /// refuses them (`item-meta-unexpected`); `Asked` checks each grant against the request.
+    pub item_meta: ItemMetaAsk,
 }
 
 impl Options {
@@ -87,6 +93,7 @@ impl Options {
             verify_payload_hashes: true,
             early_prune: false,
             no_predict_reset: false,
+            item_meta: ItemMetaAsk::Unknown,
         }
     }
 }
@@ -99,6 +106,9 @@ pub enum Accepted {
     Resource { hash: Hash },
     Transaction,
     End,
+    /// TAG1: an `item_meta` record, held ([`Validator::item_meta_pending`]) until the transaction
+    /// it describes is accepted, which then updates [`Validator::item_meta`]. Nothing to apply.
+    ItemMeta,
 }
 
 // ------------------------------------------------------------------------------------- id hashing
@@ -694,6 +704,11 @@ pub struct Validator {
     /// The last accepted record is a /13 transaction whose /12 record
     /// ([`Validator::plain_record`]) the prediction history holds.
     plain_ok: bool,
+    // ---- TAG1 (client-extensions-design.md §2.4); empty unless the stream has item_meta records.
+    /// The identity table as of the newest accepted transaction.
+    item_meta: ItemMetaTable,
+    /// The accepted `item_meta` record awaiting its transaction.
+    item_meta_pending: Option<Box<ItemMetaRecord>>,
 }
 
 fn where_(seq: i64) -> String {
@@ -1694,6 +1709,7 @@ impl Validator {
                     Decoded::Transaction => "transaction",
                     Decoded::Resource(_) => "resource",
                     Decoded::End(_) => "end",
+                    Decoded::ItemMeta(_) => "item_meta",
                     Decoded::Session(_) => "session",
                 };
                 return Err(Error::new(
@@ -1747,6 +1763,7 @@ impl Validator {
             DigestPolicy::Inline => Some(wire::record_sha256(session_record)),
             DigestPolicy::Deferred | DigestPolicy::Never => None,
         };
+        let version = opts.version;
         Ok(Validator {
             opts,
             no_prune: false,
@@ -1755,7 +1772,7 @@ impl Validator {
             skipped_tx: 0,
             session,
             snap_declared,
-            state: ResolvedState::empty(opts.version),
+            state: ResolvedState::empty(version),
             delta: TxDelta::default(),
             idx: Index::default(),
             bytes_total: (MAGIC_LEN + session_record.len()) as u64,
@@ -1802,11 +1819,30 @@ impl Validator {
             history: Default::default(),
             pred_scratch: Default::default(),
             plain_ok: false,
+            item_meta: ItemMetaTable::default(),
+            item_meta_pending: None,
         })
     }
 
-    pub fn options(&self) -> Options {
-        self.opts
+    pub fn options(&self) -> &Options {
+        &self.opts
+    }
+
+    /// TAG1: the identity table (grant, strings, rows) as of the newest accepted transaction.
+    pub fn item_meta(&self) -> &ItemMetaTable {
+        &self.item_meta
+    }
+
+    /// TAG1: the accepted `item_meta` record awaiting its transaction, if any.
+    pub fn item_meta_pending(&self) -> Option<&ItemMetaRecord> {
+        self.item_meta_pending.as_deref()
+    }
+
+    /// TAG1: forget the `item_meta` record awaiting its transaction, for a receiver that drops
+    /// that transaction unaccepted (W13c/W13d's held patches after a `predict-check` resync). A
+    /// `full` record comes again before the full transaction that ends the resync.
+    pub fn discard_item_meta_pending(&mut self) {
+        self.item_meta_pending = None;
     }
     pub fn session(&self) -> &Session {
         &self.session
@@ -1988,6 +2024,8 @@ impl Validator {
     /// only allows the seq jump.
     pub fn transport_skip(&mut self) {
         self.skipping = true;
+        // TAG1: a pending item_meta record described a transaction the transport skipped.
+        self.item_meta_pending = None;
     }
 
     /// W11d: whether a transport skip awaits its full transaction.
@@ -2016,6 +2054,15 @@ impl Validator {
                 format!("data follows the end record (record at offset {offset})"),
             ));
         }
+        // TAG1: the ask and an orphan are judged from the canonical meta's prefix, before the
+        // record's own schema (an unasked viewer is told `item-meta-unexpected` whatever it holds).
+        if self.opts.version >= 13
+            && record.len() >= 8 + item_meta::PREFIX.len()
+            && wire::le_u32(record, 4) as usize >= item_meta::PREFIX.len()
+            && &record[8..8 + item_meta::PREFIX.len()] == item_meta::PREFIX
+        {
+            self.item_meta_precheck(offset)?;
+        }
         let t = prof::start();
         let decoded = meta::decode_record(
             record,
@@ -2041,12 +2088,19 @@ impl Validator {
                     format!("a second session record at offset {offset}"),
                 ))
             }
-            Decoded::Resource(r) => self.accept_resource(record, offset, r)?,
+            Decoded::Resource(r) => {
+                self.item_meta_orphan(offset, "a resource record")?;
+                self.accept_resource(record, offset, r)?
+            }
             Decoded::Transaction if self.opts.version >= 13 => {
                 self.accept_transaction13(record, offset)?
             }
             Decoded::Transaction => self.accept_transaction(record, offset, record.len())?,
-            Decoded::End(e) => self.accept_end(e)?,
+            Decoded::End(e) => {
+                self.item_meta_orphan(offset, "the end record")?;
+                self.accept_end(e)?
+            }
+            Decoded::ItemMeta(r) => self.accept_item_meta(record, offset, r)?,
         };
         let t = prof::start();
         let digest = match self.opts.digest {
@@ -2196,6 +2250,10 @@ impl Validator {
     /// `predict-check`, then every /12 rule on that record ([`Self::accept_transaction`]), then
     /// R(T). Nothing changes on an error.
     fn accept_transaction13(&mut self, record: &[u8], offset: usize) -> Result<Accepted, Error> {
+        // TAG1: one branch for a stream without item_meta records.
+        if self.item_meta_pending.is_some() || self.item_meta.grant.is_some() {
+            self.item_meta_form(offset)?;
+        }
         let t = prof::start();
         let no_reset = self.opts.no_predict_reset;
         // W13p: the plain record is written into a buffer the history recycles, and kept there
@@ -2284,16 +2342,165 @@ impl Validator {
         self.reindex_dirty();
         prof::add(prof::RESOLVE, t);
         let t = prof::start();
-        let result = self.post_checks(offset);
+        let mut result = self.post_checks(offset);
+        if result.is_ok() && self.item_meta_pending.is_some() {
+            // TAG1 `item-meta-id`: judged on the target state, so after this transaction applied
+            // (and rolled back with it).
+            result = self.item_meta_ids(offset);
+        }
         if let Err(e) = result {
             self.rollback();
             return Err(e);
         }
         self.commit();
+        if self.item_meta_pending.is_some() || !self.item_meta.rows.is_empty() {
+            self.item_meta_commit();
+        }
         prof::add(prof::POST_CHECKS, t);
         self.bytes_total += wire_len as u64;
         self.max_record_bytes = self.max_record_bytes.max(wire_len as u64);
         Ok(Accepted::Transaction)
+    }
+
+    // -------------------------------------------------------------------------------- item_meta
+
+    /// TAG1 rules 1 and 2, before the record is decoded.
+    fn item_meta_precheck(&self, offset: usize) -> Result<(), Error> {
+        if self.opts.item_meta == ItemMetaAsk::NotAsked {
+            return Err(Error::new(
+                "item-meta-unexpected",
+                format!("record at offset {offset}: an item_meta record on a stream whose viewer did not ask for one"),
+            ));
+        }
+        if self.item_meta_pending.is_some() {
+            return Err(Error::new(
+                "item-meta-orphan",
+                format!("record at offset {offset}: an item_meta record follows an item_meta record, not a transaction"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// TAG1: a record while an `item_meta` record awaits its transaction.
+    fn item_meta_orphan(&self, offset: usize, what: &str) -> Result<(), Error> {
+        if self.item_meta_pending.is_some() {
+            return Err(Error::new(
+                "item-meta-orphan",
+                format!("record at offset {offset}: {what} follows an item_meta record, not a transaction"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// TAG1 rules 3-5 on a decoded record (its record-local schema already held), then it waits
+    /// for its transaction. Nothing changes on an error.
+    fn accept_item_meta(
+        &mut self,
+        record: &[u8],
+        offset: usize,
+        r: Box<ItemMetaRecord>,
+    ) -> Result<Accepted, Error> {
+        let err = |code: &'static str, d: String| {
+            Error::new(code, format!("record at offset {offset}: {d}"))
+        };
+        if let (ItemMetaAsk::Asked(req), Some(g)) = (&self.opts.item_meta, &r.grant) {
+            if !g.within(req) {
+                return Err(err(
+                    "item-meta-schema",
+                    format!(
+                        "the grant {} is not within the request {}",
+                        g.to_json(),
+                        req.to_json()
+                    ),
+                ));
+            }
+        }
+        if !r.full {
+            let Some(g) = self.item_meta.grant.as_ref() else {
+                return Err(err(
+                    "item-meta-form",
+                    "a delta item_meta record before any full one granted".into(),
+                ));
+            };
+            item_meta::check_rows(&r.items, g).map_err(|d| err("item-meta-schema", d))?;
+            let size = self.item_meta.strings.len() as u64;
+            if r.strings_from != size {
+                return Err(err(
+                    "item-meta-string",
+                    format!(
+                        "a delta's strings_from is {}, the table holds {size} strings",
+                        r.strings_from
+                    ),
+                ));
+            }
+            item_meta::check_indices(&r.items, g, size + r.strings.len() as u64)
+                .map_err(|d| err("item-meta-string", d))?;
+        }
+        self.item_meta_pending = Some(r);
+        self.bytes_total += record.len() as u64;
+        self.max_record_bytes = self.max_record_bytes.max(record.len() as u64);
+        Ok(Accepted::ItemMeta)
+    }
+
+    /// TAG1: the transaction's form against the record before it (`item-meta-form`), or its
+    /// absence before a full on a granted stream (`item-meta-missing`).
+    fn item_meta_form(&self, offset: usize) -> Result<(), Error> {
+        let full = self.tx.is_full();
+        let at = format!("record at offset {offset}, {}", where_(self.tx.seq));
+        match &self.item_meta_pending {
+            Some(p) if p.full != full => Err(Error::new(
+                "item-meta-form",
+                format!(
+                    "{at}: a {} item_meta record precedes a {} transaction",
+                    if p.full { "full" } else { "delta" },
+                    if full { "full" } else { "patch" }
+                ),
+            )),
+            None if full && self.item_meta.grant.is_some() => Err(Error::new(
+                "item-meta-missing",
+                format!("{at}: a full transaction on a granted stream without a full item_meta record before it"),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// TAG1 `item-meta-id`: every pending row names an item of the (applied) target state.
+    fn item_meta_ids(&self, offset: usize) -> Result<(), Error> {
+        let Some(p) = &self.item_meta_pending else {
+            return Ok(());
+        };
+        match p.items.iter().find(|(id, _)| !self.state.items.contains_key(id)) {
+            Some((id, _)) => Err(Error::new(
+                "item-meta-id",
+                format!(
+                    "record at offset {offset}, {}: the item_meta record before it has a row for item {id}, which its target state does not hold",
+                    where_(self.tx.seq)
+                ),
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// TAG1: after a committed transaction, its record into the table, then the rows of the
+    /// items it removed dropped.
+    fn item_meta_commit(&mut self) {
+        let t = &mut self.item_meta;
+        if let Some(p) = self.item_meta_pending.take() {
+            let p = *p;
+            if p.full {
+                t.grant = p.grant;
+                t.strings = p.strings;
+                t.rows.clear();
+            } else {
+                t.strings.extend(p.strings);
+            }
+            t.rows.extend(p.items);
+        }
+        if !t.rows.is_empty() {
+            for id in &self.delta.items_removed {
+                t.rows.remove(id);
+            }
+        }
     }
 
     /// Everything `accept` checks before `applyTransaction`, in order.

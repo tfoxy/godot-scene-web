@@ -10,7 +10,7 @@
 use render_stream_core::state::Hash;
 use render_stream_core::wire;
 use rs_core_capi::core::{
-    Core, KIND_ERROR, KIND_HELD, KIND_RESOURCE, KIND_SESSION, KIND_TRANSACTION,
+    Core, KIND_ERROR, KIND_HELD, KIND_ITEM_META, KIND_RESOURCE, KIND_SESSION, KIND_TRANSACTION,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -855,6 +855,8 @@ fn golden_13_applies_as_golden_12() {
         ("patch.rs13", g12.join("patch.rs12")),
         ("inline.rs13", g12.join("inline.rs12")),
         ("predict.rs13", g13.join("predict.rs12")),
+        // TAG1: the item_meta records apply nothing.
+        ("item-meta.rs13", g12.join("patch.rs12")),
     ] {
         let a = replay_at(&g13.join(n13), 13, false, "");
         let b = replay_at(&twin, 12, false, "");
@@ -1038,4 +1040,53 @@ fn accept_bench() {
         pct(0.95),
         mean
     );
+}
+
+/// TAG1 (client-extensions-design.md §2.4): item-meta.rs13's records are accepted as
+/// `KIND_ITEM_META` (kind "item_meta"), and a patch held after a `predict-check` failure drops the
+/// delta record before it, so the full record before the resync's full transaction is no orphan.
+#[test]
+fn item_meta_records_are_skipped_and_held_with_their_patch() {
+    let g13 = golden().join("../golden-13");
+    let data = std::fs::read(g13.join("item-meta.rs13")).unwrap();
+    let spans = wire::split_records(&data, 13).unwrap();
+    // Corrupt seq 10's predict_check: seq 11 (held) has a delta item_meta record before it.
+    let mut bad = data.clone();
+    let mut target = None;
+    for s in &spans[1..] {
+        let f = wire::frame(&data[s.offset..], 0).unwrap();
+        let meta: serde_json::Value = serde_json::from_slice(f.meta).unwrap();
+        if meta["type"] == "transaction" && meta["seq"] == 10 {
+            target = Some(s.offset);
+        }
+    }
+    let at = target.expect("item-meta.rs13 has seq 10");
+    let key = b"\"predict_check\":\"";
+    let rec_len = wire::le_u32(&data, at) as usize;
+    let rec = &data[at..at + 4 + rec_len];
+    let k = rec.windows(key.len()).position(|w| w == key).unwrap() + key.len();
+    bad[at + k] = if rec[k] == b'0' { b'1' } else { b'0' };
+    for (stream, want_errors) in [(&data, 0usize), (&bad, 1)] {
+        let mut core = Core::new();
+        assert_eq!(core.session(stream, spans[0].offset, 13), KIND_SESSION);
+        let (mut errors, mut item_meta) = (0, 0);
+        for s in &spans[1..] {
+            let kind = core.accept(stream, s.offset);
+            if kind == KIND_ERROR {
+                assert!(
+                    mentions(&core.vt.out, "predict-check"),
+                    "{}",
+                    String::from_utf8_lossy(&core.vt.out)
+                );
+                errors += 1;
+                core.transport_skip();
+            }
+            if kind == KIND_ITEM_META {
+                assert!(mentions(&core.vt.out, "item_meta"));
+                item_meta += 1;
+            }
+        }
+        assert_eq!(errors, want_errors);
+        assert_eq!(item_meta, 11);
+    }
 }

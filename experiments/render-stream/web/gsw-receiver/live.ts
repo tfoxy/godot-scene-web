@@ -70,6 +70,7 @@
 import {
   ACCEPT_END,
   ACCEPT_HELD,
+  ACCEPT_ITEM_META,
   ACCEPT_NEEDS_PAYLOADS,
   ACCEPT_RESOURCE,
   failWith,
@@ -763,6 +764,8 @@ class LiveReceiver {
     }
     // W13c: a patch dropped while a predict-check resync awaits its full: no apply, no ack.
     if (code === ACCEPT_HELD) return;
+    // TAG1: an item_meta record (this receiver never asks for one): nothing to apply, no ack.
+    if (code === ACCEPT_ITEM_META) return;
     if (code === ACCEPT_RESOURCE) {
       this.inlineSinceApplied++;
       return;

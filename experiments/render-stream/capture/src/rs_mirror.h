@@ -859,6 +859,19 @@ class Mirror {
     std::vector<MaterialRef> materials;
   };
   std::uint64_t material_refs_epoch() const;
+  // TAG1 (client-extensions-design.md §2.2): item ids are dense and never reused, so the ids
+  // from a watermark to next_item_id() - 1 are the items created since; item_info() reads one
+  // (false once it is gone: freed, or re-keyed away) without marking it.
+  std::uint32_t next_item_id() const { return next_item_id_; }
+  bool item_info(std::uint32_t id, std::uint64_t *rid, bool *published) const {
+    const Item *item = items_.find(id);
+    if (item == nullptr) {
+      return false;
+    }
+    *rid = item->rid;
+    *published = item->published;
+    return true;
+  }
   PendingMaterialRefs pending_material_refs() const;
   // texture_2d_placeholder_create: a new id, kind placeholder, version 1.
   void texture_2d_placeholder_create(std::uint64_t rid, std::uint64_t frame);
