@@ -83,6 +83,15 @@ export interface GswRs {
   particles_sync(): string;
   shader_time(): number;
   particles_set(id: number, data: Float32Array): void;
+  // TAG2: client extensions (client-extensions-design.md §3).
+  item_meta_json(): string;
+  set_log_removed(on: boolean): void;
+  take_removed(): Uint32Array;
+  set_overrides(ids: Uint32Array, vals: Float32Array): number;
+  refresh_overrides(): number;
+  query_item(id: number): Float64Array;
+  query_subtree_rect(id: number): Float64Array;
+  query_children(id: number): Uint32Array;
   free(): void;
 }
 
@@ -201,5 +210,13 @@ export const CLIENT_CORE_METHODS = [
   "particles_sync",
   "shader_time",
   "particles_set",
+  "item_meta_json",
+  "set_log_removed",
+  "take_removed",
+  "set_overrides",
+  "refresh_overrides",
+  "query_item",
+  "query_subtree_rect",
+  "query_children",
   "free",
 ] as const satisfies readonly (keyof GswRs)[];

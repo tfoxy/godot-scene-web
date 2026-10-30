@@ -214,16 +214,17 @@ export const ENDPOINT: RenderStreamEndpoint = {
 
 export function harness(
   creditWindow: 1 | 2 = 2,
-  pacing: Pick<LoopOptions, "creditStage" | "applyOn"> = {},
+  pacing: Pick<LoopOptions, "creditStage" | "applyOn" | "ext"> = {},
+  core: FakeCore = new FakeCore(),
+  endpoint: RenderStreamEndpoint = ENDPOINT,
 ) {
-  const core = new FakeCore();
   const clock = new FakeClock();
   const transports: FakeTransport[] = [];
   const statuses: RenderStreamStatus[] = [];
   const loop = new StreamLoop({
     core,
     clock,
-    endpoint: ENDPOINT,
+    endpoint,
     creditWindow,
     ...pacing,
     onStatus: (s) => statuses.push(s),

@@ -30,6 +30,7 @@
 import type { Needed, SessionMeta, StreamCore } from "./core";
 import { failWith, StreamFailure } from "./core";
 import type { RenderStreamEndpoint } from "./endpoint";
+import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
 import { clientHello } from "./hello";
 import type {
@@ -102,6 +103,8 @@ export interface LoopOptions {
   clock: LoopClock;
   connectTimeoutMs?: number;
   fetchTimeoutMs?: number;
+  /** TAG2: the extension list's runtime; null (the pure client) costs one branch per frame. */
+  ext?: ExtensionHost | null;
 }
 
 /** PH3: the ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
@@ -202,10 +205,12 @@ export class StreamLoop {
   private lastCreditAt: number | null = null;
 
   private readonly creditStage: CreditStage;
+  private readonly ext: ExtensionHost | null;
 
   constructor(private readonly o: LoopOptions) {
     this.endpoint = o.endpoint;
     this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
+    this.ext = o.ext ?? null;
   }
 
   // ----------------------------------------------------------------------- public
@@ -336,6 +341,7 @@ export class StreamLoop {
         css: c.css,
         dprMilli: c.dprMilli,
         gpuFormats: c.gpuFormats,
+        itemMeta: this.ext?.request ?? null,
       }),
     );
   }
@@ -401,9 +407,12 @@ export class StreamLoop {
   private onBinary(conn: Connection, buf: ArrayBuffer): void {
     const m = this.o.core.receive(buf, conn.sessionSeen);
     switch (m.kind) {
+      case "item_meta":
+        // TAG2: identities for the extensions, at receipt (no ext: skipped, as before).
+        if (this.ext) this.ext.itemMeta();
+        return;
       case "held":
       case "resource":
-      case "item_meta":
         return;
       case "coding-resync":
         // W11t: the decoder skips based transactions until the full one, which a rebuilt
@@ -427,6 +436,7 @@ export class StreamLoop {
       case "transaction":
         break;
     }
+    if (this.ext) this.ext.transaction();
     const now = this.o.clock.now();
     if (this.lastCreditAt !== null) {
       this.rtts[this.rttCount % RTT_SAMPLES] = now - this.lastCreditAt;
@@ -474,6 +484,8 @@ export class StreamLoop {
 
   private beginSession(conn: Connection, session: SessionMeta): void {
     conn.streamId = session.stream?.stream_id ?? "";
+    if (this.ext)
+      this.ext.beginSession(session.session_id ?? "", conn.streamId);
     this.grantedWindow = session.publication?.credit_window ?? 1;
     const res = session.resources ?? {};
     const fetchKind = res.fetch ?? "none";
@@ -570,6 +582,7 @@ export class StreamLoop {
       this.takeQueued(true);
     }
     if (this.ctx === "ok" && this.undrawn.length > 0) this.drawApplied();
+    else if (this.ext && this.ctx === "ok") this.extensionRedraw(now);
     if (this.phase !== "streaming") return;
     if (
       this.ctx === "ok" &&
@@ -815,6 +828,7 @@ export class StreamLoop {
     const seq = p.item.seq;
     core.prepareApply(seq);
     core.apply(seq);
+    if (this.ext) this.ext.applied();
     const folded = this.coalesced;
     this.coalesced = [];
     const now = this.o.clock.now();
@@ -836,6 +850,7 @@ export class StreamLoop {
   /** Draws the newest applied state and acks submitted every seq applied since the last draw. */
   private drawApplied(): void {
     const seq = this.lastAppliedSeq;
+    if (this.ext) this.ext.beforeDraw(seq, this.o.clock.now());
     this.o.core.draw(seq);
     const now = this.o.clock.now();
     for (const s of this.undrawn) this.ack(s, "submitted", now);
@@ -846,6 +861,18 @@ export class StreamLoop {
       this.firstFrameSent = true;
       this.status({ kind: "streaming", firstFrame: true });
     }
+  }
+
+  /** TAG2 (client-extensions-design.md §3.2 "Redraw"): an extension asked to draw again with no
+   * transaction: `beforeDraw` (seq null), the table composed, one draw. Acks nothing, asks no
+   * credit. */
+  private extensionRedraw(now: number): void {
+    const ext = this.ext as ExtensionHost;
+    if (!ext.wantsRedraw || this.connApplied === 0 || this.pending !== null)
+      return;
+    ext.beforeDraw(null, now);
+    this.o.core.draw(this.lastAppliedSeq);
+    ext.redraws++;
   }
 
   // ----------------------------------------------------------------------- context loss

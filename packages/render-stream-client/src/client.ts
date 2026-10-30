@@ -8,6 +8,7 @@ import {
   sameEndpoint,
   validateEndpoint,
 } from "./endpoint";
+import { ExtensionHost, type RenderStreamExtension } from "./extensions";
 import {
   CLIENT_INBOUND_BYTES,
   CLIENT_LIVE_CODING,
@@ -28,18 +29,15 @@ import {
   webSocketTransport,
 } from "./transport";
 
-/** A product module attached to the stream (MIR-TAG designs it; MIR-1 accepts only `[]`). */
-export interface RenderStreamExtension {
-  id: string;
-}
-
 export interface RenderStreamClientOptions {
   canvas: HTMLCanvasElement;
   core: RenderStreamCore;
   endpoint: RenderStreamEndpoint;
   /** Default: WebSocket + fetch (`webSocketTransport`). */
   transport?: RenderStreamTransportFactory;
-  /** Default []; MIR-1 requires []. */
+  /** TAG2: product modules, composed in this order (client-extensions-design.md §3). Default
+   * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
+   * extension that `wants` identities needs protocol 13. */
   extensions?: readonly RenderStreamExtension[];
   /** The credit window asked in the hello (the session grants it); default 2. */
   creditWindow?: 1 | 2;
@@ -74,14 +72,25 @@ const pageClock: LoopClock = {
 export function createRenderStreamClient(
   options: RenderStreamClientOptions,
 ): RenderStreamClient {
-  if ((options.extensions?.length ?? 0) > 0)
-    throw new TypeError(
-      "render-stream client: extensions are not supported yet (pass [])",
-    );
   const creditWindow = options.creditWindow ?? 2;
   if (creditWindow !== 1 && creditWindow !== 2)
     throw new TypeError("render-stream client: creditWindow must be 1 or 2");
-  return new Client(options, validateEndpoint(options.endpoint), creditWindow);
+  const endpoint = validateEndpoint(options.endpoint);
+  const exts = options.extensions ?? [];
+  const ids = new Set<string>();
+  for (const e of exts) {
+    if (typeof e?.id !== "string" || e.id === "" || ids.has(e.id))
+      throw new TypeError(
+        "render-stream client: every extension needs a unique, non-empty id",
+      );
+    ids.add(e.id);
+  }
+  const ext = exts.length > 0 ? new ExtensionHost(exts) : null;
+  if (ext?.request && endpoint.protocol < 13)
+    throw new TypeError(
+      "render-stream client: an extension that wants item identities needs protocol 13",
+    );
+  return new Client(options, endpoint, creditWindow, ext);
 }
 
 const EMPTY_STATS: RenderStreamStats = Object.freeze({
@@ -107,6 +116,7 @@ class Client implements RenderStreamClient {
     private readonly o: RenderStreamClientOptions,
     private endpoint: RenderStreamEndpoint,
     private readonly creditWindow: 1 | 2,
+    private readonly ext: ExtensionHost | null,
   ) {}
 
   connect(): void {
@@ -131,6 +141,10 @@ class Client implements RenderStreamClient {
 
   setEndpoint(e: RenderStreamEndpoint): void {
     const next = validateEndpoint(e);
+    if (this.ext?.request && next.protocol < 13)
+      throw new TypeError(
+        "render-stream client: an extension that wants item identities needs protocol 13",
+      );
     if (sameEndpoint(next, this.endpoint)) return;
     this.endpoint = next;
     this.loop?.setEndpoint(next);
@@ -146,6 +160,7 @@ class Client implements RenderStreamClient {
     const canvas = this.o.canvas;
     this.loop?.dispose();
     this.loop = null;
+    this.ext?.dispose();
     canvas.removeEventListener("webglcontextlost", this.onLost);
     canvas.removeEventListener("webglcontextrestored", this.onRestored);
     this.core?.dispose();
@@ -194,6 +209,7 @@ class Client implements RenderStreamClient {
       CLIENT_LIVE_CODING,
       CLIENT_INBOUND_BYTES,
     );
+    this.ext?.bind(this.core);
     // The module's own context (getContext returns the one it created).
     const gl = canvas.getContext("webgl2");
     const gpuFormats = gpuFormatsOf(gl?.getSupportedExtensions() ?? [], null);
@@ -206,6 +222,7 @@ class Client implements RenderStreamClient {
       creditWindow: this.creditWindow,
       creditStage: this.o.creditStage,
       applyOn: this.o.applyOn,
+      ext: this.ext,
       onStatus: (s) => this.status(s),
       clock: pageClock,
       canvas: () => {

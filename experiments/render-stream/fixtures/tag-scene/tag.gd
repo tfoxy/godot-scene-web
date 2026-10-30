@@ -18,6 +18,14 @@ extends Node2D
 ##   50      Mover reparented under VP/Holder (a SubViewport: never adopted, so under a late arm
 ##           with GRC_UNKNOWN_ITEM=skip its new parent is unknown and Mover is withheld)
 ##   60      Mover reparented back to Table (late arm: its subtree is re-keyed, fresh ids)
+##   70      TAG2 (RS_FIXTURE_TAG_VARIANT set, README.md "Variants"): the variant's change, the game
+##           making by hand what a client override makes: `moved` Card1 by (0, -119), `scaled`
+##           Card1's DescriptionLabel by 1.24 about its bottom centre, `hidden` Table invisible,
+##           `tinted` Hand's modulate (1, 0.5, 0.5, 0.75); `base` nothing
+##   80      TAG2 (any variant): Hand moves by (10, 0), a transform-only frame under the overrides
+##   100     TAG2 (RS_FIXTURE_TAG_PAUSE_MS): the main thread sleeps that long, so no frame (and no
+##           transaction: /12+ carries the shader time in every frame's patch) is made meanwhile;
+##           override-redraw animates in that window
 ##   RS_FIXTURE_QUIT_FRAME (default 200 + start): quit
 ## RS_FIXTURE_TAG_START (default 0) delays every step (and dump) by that many frames, so that live
 ## viewers started beside the host are all connected before the first step.
@@ -38,6 +46,7 @@ var _log: FileAccess = null
 var _mover: ColorRect = null
 var _early: ColorRect = null
 var _plain_held: Node = null
+var _variant: String = ""
 
 
 func _ready() -> void:
@@ -46,6 +55,7 @@ func _ready() -> void:
 	_quit_frame = 200 + _start
 	if OS.has_environment("RS_FIXTURE_QUIT_FRAME"):
 		_quit_frame = OS.get_environment("RS_FIXTURE_QUIT_FRAME").to_int()
+	_variant = OS.get_environment("RS_FIXTURE_TAG_VARIANT")
 	if OS.has_environment("RS_FIXTURE_TAG_LOG"):
 		_log = FileAccess.open(OS.get_environment("RS_FIXTURE_TAG_LOG"), FileAccess.WRITE)
 	var loose := Label.new()
@@ -119,12 +129,41 @@ func _process(_delta: float) -> void:
 			_mover.reparent($VP/Holder)
 		60:
 			_mover.reparent($Table)
+		70:
+			_apply_variant()
+		80:
+			if _variant != "":
+				($Hand as Node2D).position.x += 10.0
+		100:
+			if OS.has_environment("RS_FIXTURE_TAG_PAUSE_MS"):
+				OS.delay_msec(OS.get_environment("RS_FIXTURE_TAG_PAUSE_MS").to_int())
 	if DUMP_FRAMES.has(_frame - _start) or _frame == 1:
 		_dump()
 	if _frame >= _quit_frame:
 		if _log != null:
 			_log.close()
 		get_tree().quit()
+
+
+## TAG2's variants: what the game does to the node at the top of a subtree, which an extension's
+## override on that item must draw identically (the override-oracle check).
+func _apply_variant() -> void:
+	match _variant:
+		"", "base":
+			pass
+		"moved":
+			($Hand/Card1 as Control).position.y -= 119.0
+		"scaled":
+			var label: Control = $Hand/Card1/CardContainer/DescriptionLabel
+			label.pivot_offset = Vector2(label.size.x / 2.0, label.size.y)
+			label.scale = Vector2(1.24, 1.24)
+		"hidden":
+			($Table as CanvasItem).visible = false
+		"tinted":
+			($Hand as CanvasItem).modulate = Color(1.0, 0.5, 0.5, 0.75)
+		_:
+			push_error("tag.gd: unknown RS_FIXTURE_TAG_VARIANT " + _variant)
+			get_tree().quit(2)
 
 
 func _dump() -> void:

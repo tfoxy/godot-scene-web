@@ -313,6 +313,14 @@
       "reach": ["pnpm-test"]
     },
     {
+      "why": "TAG2's client extension legs (results/p3/tag2.md): gate 8's g8tag2 group drives web/client-ext-check/ (the client package with a test extension) through scripts/client-ext-check.ts against live tag-scene hosts",
+      "paths": [
+        "experiments/render-stream/web/client-ext-check/**",
+        "experiments/render-stream/scripts/client-ext-check.ts"
+      ],
+      "reach": ["native:gate8@*"]
+    },
+    {
       "why": "MIR-1's client live check (results/p3/mir-1.md): a real-time page driven by hand through bench-live-scale.sh's host-only mode, not a validate-increment target; the package it mounts is reached above",
       "paths": ["experiments/render-stream/scripts/client-live-check.ts"],
       "reach": ["pure"]

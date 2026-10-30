@@ -177,6 +177,17 @@
 #       grant set, nobody asks: the host resolves nothing) and the GRC_ITEM_META_SABOTAGE legs
 #       `sabotage-{in-shared,before-ready,skip-full,id-off-by-one}`. Judged by
 #       lib/gate8-tag-checks.ts.
+#   g8tag2 (TAG2, client-extensions-design.md "As built (TAG2)": the GSW client's extension API and
+#       override table; every leg under g8tag2/): the fixture import and the client core
+#       (packages/render-stream-client/scripts/build-web.sh into g8tag2/core); then per leg one headless
+#       fixtures/tag-scene host at /13 (armed late with GRC_ADOPT=arm and GRC_UNKNOWN_ITEM=skip, as g8tag;
+#       GRC_ITEM_META=scene,path,meta, RS_FIXTURE_TAG_START=60, the frame held until the page's hello) and scripts/client-ext-check.ts, the client package
+#       with one test extension in the pinned headless Chromium: `base` and `variant-{moved,scaled,
+#       hidden,tinted}` (RS_FIXTURE_TAG_VARIANT, no extension), `ext-{moved,scaled,hidden,tinted}`
+#       and `identity` (the base scene, the extension making the variant's change by tag), `redraw`
+#       (a 20-frame animated lift while the host sleeps 3 s at step 100: no transaction), `dispose` (three mounts, RSS after each
+#       dispose) and the sabotage legs `sabotage-override-{no-inherit,fast-path-miss,no-damage}`
+#       (the core's start options carry the sabotage). Judged by lib/gate8-tag2-checks.ts.
 #   g8mm (PM1, render-stream-11.md "As built (PM1)": multimesh on /11, the capture side only,
 #       fixtures/gate8-mm; every leg under g8mm/): the fixture import and rs-core-check's build;
 #       then, in one private 640x360 gamescope (a headless host never runs frame_pre_draw, so a
@@ -246,11 +257,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt g8tag)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt g8tag g8tag2)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2)
 
 EXTENSION=""
 CALIBRATION=""
@@ -1570,6 +1581,77 @@ run_g8tag() {
 	run_g8tag_leg sabotage-id-off-by-one GRC_ITEM_META_SABOTAGE=id-off-by-one -- "a|$z|2|$r|"
 }
 
+# TAG2: one headless tag-scene host (RS_FIXTURE_TAG_VARIANT <variant>, quitting at <quit>) and
+# client-ext-check.ts with <extension> against it, its further arguments passed on (--sabotage,
+# --mode). <pause> > 0 sleeps the host's main thread that many ms at step 100 (RS_FIXTURE_TAG_PAUSE_MS:
+# a window with no transaction). run_g8tag2_leg <leg> <variant> <extension> <quit> <pause> [driver args...]
+run_g8tag2_leg() {
+	local dir="$OUT/g8tag2/$1" variant="$2" ext="$3" quit="$4" pause="$5" waited=0 port="" page pid rc
+	shift 5
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	page="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE=presentation:640x360
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME="$quit"
+		RS_FIXTURE_TAG_VARIANT="$variant"
+		RS_FIXTURE_TAG_START=60 GRC_ITEM_META=scene,path,meta GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS=3 GRC_LIVE_AWAIT_HELLO_MS=30000
+		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page"
+	)
+	[ "$pause" -gt 0 ] && LEG_ENV+=(RS_FIXTURE_TAG_PAUSE_MS="$pause")
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+	else
+		mkdir -p "$dir/page"
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/client-ext-check.ts" \
+			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
+			--http "http://127.0.0.1:$port" --core "$OUT/g8tag2/core" --extension "$ext" "$@") \
+			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
+		echo "$rc" >"$dir/page/exit-code.txt"
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8tag2() {
+	echo "run-gate8: g8tag2 import (fixtures/tag-scene) and the client core"
+	LEG_ENV=()
+	run_headless "$OUT/g8tag2/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	mkdir -p "$OUT/g8tag2"
+	bash "$REPO_ROOT/packages/render-stream-client/scripts/build-web.sh" "$OUT/g8tag2/core" \
+		>"$OUT/g8tag2/core-build.log" 2>&1 || echo "run-gate8: g8tag2 core build failed (see core-build.log)"
+	local v
+	for v in base moved scaled hidden tinted; do
+		echo "run-gate8: g8tag2 variant-$v (the game makes the change)"
+		run_g8tag2_leg "variant-$v" "$v" none 300 0
+	done
+	for v in moved scaled hidden tinted; do
+		echo "run-gate8: g8tag2 ext-$v (the base scene, an extension makes the change by tag)"
+		run_g8tag2_leg "ext-$v" base "$v" 300 0
+	done
+	echo "run-gate8: g8tag2 identity (an identity override on every tagged item)"
+	run_g8tag2_leg identity base identity 300 0
+	echo "run-gate8: g8tag2 redraw (a 20-frame lift with no transaction)"
+	run_g8tag2_leg redraw base redraw 300 3000
+	echo "run-gate8: g8tag2 dispose (three mounts: none, moved, moved)"
+	run_g8tag2_leg dispose base moved 3000 0 --mode dispose
+	echo "run-gate8: g8tag2 sabotages (override-no-inherit, override-fast-path-miss, override-no-damage)"
+	run_g8tag2_leg sabotage-override-no-inherit base moved 300 0 --sabotage override-no-inherit
+	run_g8tag2_leg sabotage-override-fast-path-miss base moved 300 0 --sabotage override-fast-path-miss
+	run_g8tag2_leg sabotage-override-no-damage base redraw 300 3000 --sabotage override-no-damage
+}
+
 # W11d: native receivers live at /11 on a capture-scale host (as run_g8w11_coding_leg's, headless),
 # one per spec: <name>:<RS_RECEIVER_LIVE_CODING value, "" for the default zstd-base,zstd>.
 run_g8w11_coding_native_leg() {
@@ -2668,6 +2750,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8m) run_g8m ;;
 	g8l) run_g8l ;;
 	g8tag) run_g8tag ;;
+	g8tag2) run_g8tag2 ;;
 	esac
 done
 

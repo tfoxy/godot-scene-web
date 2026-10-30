@@ -89,6 +89,13 @@ export interface ClientHelloFacts {
   dprMilli: number;
   /** gpuFormatsOf the canvas's own context (`none` when empty). */
   gpuFormats: string;
+  /** TAG2: the extensions' merged `item_meta` request (/13); absent or null: no key, the pure
+   * hello byte for byte. */
+  itemMeta?: {
+    fields: readonly string[];
+    groups: readonly string[];
+    meta_keys: readonly string[];
+  } | null;
 }
 
 /** The client's /11, /12 or (W13c) /13 hello: the GSW receiver's keys in their order (golden-11/12's control
@@ -96,7 +103,7 @@ export interface ClientHelloFacts {
  * encodings `decoded` (until the client carries the KTX2 transcoder), no manifest, and the
  * `zstd-base,zstd` live coding offer last. */
 export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
-  return helloV9(
+  const hello = helloV9(
     {
       type: "hello",
       protocol: `render-stream/${f.protocol}`,
@@ -118,4 +125,18 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
     `render-stream/${f.protocol}` as const,
     CLIENT_LIVE_CODING,
   );
+  // TAG2 (client-extensions-design.md §2.1): the item_meta key last, only when asked (at /13; the
+  // key is a hello error below it).
+  if (f.itemMeta) {
+    if (f.protocol < 13)
+      throw new TypeError(
+        "render-stream client: item_meta (an extension's wants) needs protocol 13",
+      );
+    hello.item_meta = {
+      fields: [...f.itemMeta.fields],
+      groups: [...f.itemMeta.groups],
+      meta_keys: [...f.itemMeta.meta_keys],
+    };
+  }
+  return hello;
 }
