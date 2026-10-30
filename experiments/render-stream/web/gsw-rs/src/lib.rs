@@ -28,6 +28,7 @@ use render_stream_core::apply::payloads::{PayloadStage, PayloadStore};
 use render_stream_core::apply::programs::{ProgramEntry, ProgramInfo};
 use render_stream_core::apply::residency::TextureAccount;
 use render_stream_core::apply::retention::Retention;
+use render_stream_core::apply::overrides::{OverrideSabotage, Refresh};
 use render_stream_core::apply::{Applier, ApplySabotage, BindingKey, Viewport};
 use render_stream_core::canon;
 use render_stream_core::state::VariantEncoding;
@@ -116,6 +117,9 @@ struct Opts {
     format_rgba8: bool,
     exec: ExecOptions,
     apply: ApplySabotage,
+    /// TAG2: the override table's sabotages (`override-no-inherit`, `override-no-damage`,
+    /// `override-fast-path-miss`).
+    ov: OverrideSabotage,
     /// Native `ignore-presentation`: the session's stretch is not adopted (identity transform at
     /// the presentation size).
     ignore_presentation: bool,
@@ -301,6 +305,10 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "ignore-canvas-modulate" => o.apply.ignore_canvas_modulate = true,
                 "ignore-canvas-stacking" => o.apply.ignore_canvas_stacking = true,
                 "ignore-z" => o.apply.ignore_z = true,
+                // TAG2 (client-extensions-design.md §6): the override table's sabotages.
+                "override-no-inherit" => o.ov.no_inherit = true,
+                "override-no-damage" => o.ov.no_damage = true,
+                "override-fast-path-miss" => o.ov.fast_path_miss = true,
                 "stale-param" => o.apply.stale_param = true,
                 "blend-swap" => o.apply.blend_swap = true,
                 "screen-copy-per-reader" => o.apply.screen_copy_per_reader = true,
@@ -562,6 +570,8 @@ pub fn core_profile(
 pub struct GswRs {
     canvas: web_sys::HtmlCanvasElement,
     opts: Opts,
+    /// TAG2: an extension listens for removed items (`onItemsRemoved`): every applier logs them.
+    log_removed: bool,
     data: Vec<u8>,
     version: u8,
     spans: Vec<RecordSpan>,
@@ -824,6 +834,7 @@ impl GswRs {
         Ok(GswRs {
             canvas,
             opts,
+            log_removed: false,
             data: Vec::new(),
             version: 6,
             spans: Vec::new(),
@@ -1198,6 +1209,8 @@ impl GswRs {
         }
         let mut applier = Applier::new(viewport);
         applier.sabotage = self.opts.apply;
+        applier.ov_sabotage = self.opts.ov;
+        applier.log_removed(self.log_removed);
         // PM3: GLES3 stores multimesh colours and custom data as half floats.
         applier.half_instances = s.engine.rendering_method == "gl_compatibility";
         // G8kp (texture-delivery-design.md D3, Q3): gpu_formats from this context's extensions,
@@ -1586,7 +1599,9 @@ impl GswRs {
         applier.half_instances = v.session().engine.rendering_method == "gl_compatibility";
         // GRH: the executor still holds the GPU textures; the fresh applier reconciles against
         // them instead of uploading all of them again. The old applier's other state goes first.
-        if let Some(old) = self.applier.take() {
+        if let Some(mut old) = self.applier.take() {
+            // TAG2: the session's override table and removed-id log survive the rebuild.
+            applier.inherit_overrides(&mut old);
             if !self.opts.rebuild_reupload {
                 applier.inherit_residency(old);
             }
@@ -2242,6 +2257,112 @@ impl GswRs {
                 -1
             }
         }
+    }
+
+    // ------------------------------------------------------------- TAG2: client extensions
+
+    /// TAG2 (client-extensions-design.md §2.4): the `item_meta` record `live_accept` just
+    /// returned `ACCEPT_ITEM_META` for: its meta JSON, read from the receive buffer (valid until
+    /// the next `rx`). Empty when the buffer holds no record.
+    pub fn item_meta_json(&self) -> String {
+        if self.rx.len() < 8 {
+            return String::new();
+        }
+        let len = wire::le_u32(&self.rx, 4) as usize;
+        self.rx
+            .get(8..8 + len)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_default()
+    }
+
+    /// TAG2 `onItemsRemoved`: log the ids each apply removes (this applier and every later one).
+    pub fn set_log_removed(&mut self, on: bool) {
+        self.log_removed = on;
+        if let Some(a) = self.applier.as_mut() {
+            a.log_removed(on);
+        }
+    }
+
+    /// TAG2: the ids removed since the last call (empty unless `set_log_removed(true)`).
+    pub fn take_removed(&mut self) -> Vec<u32> {
+        self.applier
+            .as_mut()
+            .map(Applier::take_removed)
+            .unwrap_or_default()
+    }
+
+    /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 11 floats each).
+    /// 0, or -1 (`error`: `override-table`). Composed at the next apply, or `refresh_overrides`.
+    pub fn set_overrides(&mut self, ids: &[u32], vals: &[f32]) -> i32 {
+        let Some(a) = self.applier.as_mut() else {
+            if ids.is_empty() {
+                return 0;
+            }
+            self.error = "override-table: no session".into();
+            return -1;
+        };
+        match a.set_overrides(ids, vals) {
+            Ok(()) => 0,
+            Err(e) => {
+                self.error = e;
+                -1
+            }
+        }
+    }
+
+    /// TAG2 redraw path: compose a changed table now, with no transaction. 0 clean, 1 deferred
+    /// (a transaction is accepted and not applied: its apply composes the table), 2 moved,
+    /// 3 walked.
+    pub fn refresh_overrides(&mut self) -> i32 {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_mut()) else {
+            return 0;
+        };
+        let r = a.refresh_overrides(v.state(), &self.payloads);
+        self.stats.expected_calls = a.expected_calls();
+        match r {
+            Refresh::Clean => 0,
+            Refresh::Deferred => 1,
+            Refresh::Moved => 2,
+            Refresh::Walked => 3,
+        }
+    }
+
+    /// TAG2 `ItemQuery`: the game's facts of item `id` (no override), from the newest accepted
+    /// state: `[parent (-1: none), visible, has_xform, xform x6, has_rect, rect x4]`, or empty
+    /// when the state holds no such item.
+    pub fn query_item(&self, id: u32) -> Vec<f64> {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return Vec::new();
+        };
+        let Some(f) = a.query_item(v.state(), id) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(14);
+        out.push(f.parent.map_or(-1.0, f64::from));
+        out.push(f64::from(u8::from(f.visible)));
+        out.push(f64::from(u8::from(f.xform.is_some())));
+        out.extend(f.xform.unwrap_or([0.0; 6]).iter().map(|x| f64::from(*x)));
+        out.push(f64::from(u8::from(f.rect.is_some())));
+        out.extend(f.rect.unwrap_or([0.0; 4]).iter().map(|x| f64::from(*x)));
+        out
+    }
+
+    /// TAG2 `ItemQuery.subtreeRect`: `[x, y, w, h]`, or empty.
+    pub fn query_subtree_rect(&self, id: u32) -> Vec<f64> {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return Vec::new();
+        };
+        a.query_subtree_rect(v.state(), id)
+            .map(|r| r.iter().map(|x| f64::from(*x)).collect())
+            .unwrap_or_default()
+    }
+
+    /// TAG2 `ItemQuery.children`, in the state's order.
+    pub fn query_children(&self, id: u32) -> Vec<u32> {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return Vec::new();
+        };
+        a.query_children(v.state(), id)
     }
 
     /// GLJ: `{"arena":A,"shared":S}`, the texture bytes the last `draw` took from the draw list's

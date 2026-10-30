@@ -51,3 +51,16 @@ the capture, and writes its own identity table as the oracle the rows are checke
 
 The fixture needs one editor `--import` before the release template can run it. The `g8tag` group
 runs that import itself.
+
+## Variants (TAG2)
+
+`RS_FIXTURE_TAG_VARIANT` (unset: TAG1's timeline exactly) adds two steps. At step 70 the game
+makes the change a client override makes in the `override-oracle` check
+([`../../results/p3/tag2.md`](../../results/p3/tag2.md)): `moved` moves Card1 by (0, −119),
+`scaled` scales Card1's `DescriptionLabel` by 1.24 about its bottom centre (`pivot_offset`),
+`hidden` hides `Table`, `tinted` sets `Hand`'s modulate to (1, 0.5, 0.5, 0.75), and `base` does
+nothing. At step 80, under any variant, `Hand` moves by (10, 0): a transform-only frame that the
+client's rows-only path must compose with the overrides. At step 100, `RS_FIXTURE_TAG_PAUSE_MS`
+makes the main thread sleep that long: no frame, so no transaction (from /12 every frame's patch
+carries the shader time), which is the window `override-redraw` animates in. The `g8tag2` legs (`run-gate8.sh`) run
+the variants and the base scene beside an extension that makes the same change by tag.

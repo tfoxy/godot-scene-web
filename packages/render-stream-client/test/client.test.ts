@@ -17,16 +17,31 @@ const core = {
 };
 
 describe("createRenderStreamClient", () => {
-  it("refuses extensions (MIR-1), a bad credit window and a bad descriptor", () => {
+  it("refuses bad extensions (TAG2), a bad credit window and a bad descriptor", () => {
     const canvas = document.createElement("canvas");
+    // An extension that wants identities needs /13; ids are unique and non-empty.
     expect(() =>
       createRenderStreamClient({
         canvas,
         core,
         endpoint,
-        extensions: [{ id: "x" }],
+        extensions: [{ id: "x", wants: { groups: ["g"] } }],
       }),
-    ).toThrow(/extensions/);
+    ).toThrow(/protocol 13/);
+    expect(() =>
+      createRenderStreamClient({
+        canvas,
+        core,
+        endpoint,
+        extensions: [{ id: "x" }, { id: "x" }],
+      }),
+    ).toThrow(/unique/);
+    createRenderStreamClient({
+      canvas,
+      core,
+      endpoint,
+      extensions: [{ id: "x" }],
+    }).dispose();
     expect(() =>
       createRenderStreamClient({
         canvas,

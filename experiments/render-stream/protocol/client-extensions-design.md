@@ -748,3 +748,80 @@ golden-13 `item-meta.rs13` and `invalid/item-meta-*.rs13`).
   - each sabotage `-caught`.
 - `fixtures/capture-scale` gains `RS_SCALE_NODES`, `RS_SCALE_NODE_BURST` and `RS_SCALE_NODE_CHURN`
   (default 0) for the on-cost.
+
+## As built (TAG2)
+
+TAG2 landed the GSW client's half ([results/p3/tag2.md](../results/p3/tag2.md)): the extension API
+in `@godot-scene-web/render-stream-client` (`src/extensions.ts`) and the override table in rs-core's
+applier (`apply/overrides.rs`, composed in `apply/mod.rs`). Where the code moved from §3, it is
+here.
+
+**API (§3.1).**
+- `Affine2D` is Godot's `Transform2D` in column order, `[x.x, x.y, y.x, y.y, origin.x, origin.y]`,
+  the core's own `Xform`. `Rect` is `{x, y, w, h}`; `ItemMetaGrant` spells the meta keys `metaKeys`.
+  `mulAffine` and `invertAffine` are exported for modules (and INP1).
+- **Added: `ExtensionSession.requestRedraw()`.** Nothing draws while the host sends nothing, so a
+  module reacting to something outside the stream (a timer, an input) had no way to reach
+  `beforeDraw`. `ExtensionFrame.requestRedraw` only works from inside a frame.
+- **`onSession` is announced at the session's first `full` record (its grant), or at its first
+  transaction when none came (`itemMeta: null`).** The session record does not carry the grant.
+- **Added to `OverrideTable`:** `get(id)`, `size`, and `effective(id)`, the composed override of the
+  item and its ancestors (`E`, below). Writing the values an item already has leaves the table
+  clean, so a module may rewrite every override every frame and the core sees only changes.
+  Non-finite values throw to the module (its error, not the stream's).
+- **Added to `ItemQuery`: `meta(id)`**, the item's `ItemMeta`.
+- **The queries read the game's state, never an override:** `transform` is the item's draw
+  transform from the newest accepted state, `rect` its own lowered commands' AABB under it, `visible`
+  the item, its ancestors and its canvas. While a transaction waits for payloads that state is one
+  ahead of the picture.
+- Every callback runs in a `try`; a module's error is counted and logged once, and the stream goes
+  on. An extension list needs unique ids. A `wants` below /13 is a `TypeError` (the key is a hello
+  error there).
+- **No extension, no work.** `createRenderStreamClient` builds no `ExtensionHost` for `[]`; the
+  loop's hooks are each one `if (this.ext)` (receipt of a record or a transaction, apply, draw).
+  An extension list that `wants` nothing sends the pure hello. The core's start options are the
+  pure client's in every case, so its validator keeps `ItemMetaAsk::Unknown`.
+
+**The table in the core (§3.2).**
+- **Composition.** An override is a left factor in presentation space, so an item draws at
+  `E · F`: `F` the game's transform, `E = O_n · … · O_1` its own and its ancestors' overrides,
+  nearest first. INP1's inverse is `E⁻¹`, which `effective` gives.
+- `cull` takes an `ov` flag, read once per walk from `overrides.is_empty()`, and looks the item up
+  only when it is set. `move_rec` is generic over the table (`move_rec::<false>` is the code before
+  TAG2), picked once per moved root. `cull` was first generic too; the second instance cost
+  6.4 KB of wasm (2,505,405 against 2,499,040 bytes) for a test of a bool argument per walked item.
+- A modulate override multiplies into the inherited modulate; `visible: false` culls the subtree.
+- **Transport.** TS copies the whole table when it is dirty (one `Uint32Array` of ids, one
+  `Float32Array` of 11 values each), before the draw. The core records which ids changed:
+  - At the next apply, they join the rows-only path's moved roots.
+  - Outside an apply (`refresh_overrides`, the redraw path), they are composed at once with
+    `move_subtree`, or deferred to the pending apply while a transaction is accepted and not
+    applied (its state is ahead of the applier's records).
+  - A visibility change, a clip in a moved subtree or a canvas group walks
+    (`Why::OVERRIDE`, a new reason bit).
+- **Damage is the row upload.** GSW's canvas-items executor redraws the list every draw and
+  uploads only the dirty ranges, so the rows it holds are the retained state. Setting, changing
+  or clearing an override rewrites the subtree's rows and marks them dirty (`list.dirty.items`).
+- **Removed items** leave the core's table at the apply that removes them. Their ids are logged
+  for `onItemsRemoved` only while an extension has that callback (`set_log_removed`).
+- A coding resync's rebuilt applier inherits the table and the log (`inherit_overrides`).
+- **Sabotages:** `override-no-inherit` composes into the item's own row only. `override-no-damage`
+  restores the dirty rows after the redraw path's rewrite. `override-fast-path-miss` makes the
+  rows-only path of an apply ignore the table; the redraw path still composes it.
+
+**Ready for the next consumers (not built).**
+- **INP1** needs no new core state. `toGame` is `invertAffine(overrides.effective(hit))` on the
+  point. `presentationToCss` and `cssToPresentation` are the canvas's backing/CSS ratio and the
+  session's presentation size. The hit test needs the drawn order and rects. The applier's last
+  walk already holds both: `attach` is in draw order, and each entry's `global_rect` is composed
+  with the overrides. A `query_hit(x, y)` export can walk it backwards, at no cost to a client that
+  never calls it.
+- **Client-side freeze-subtree (the static-background lever).** The hook is one more value per
+  table entry, `frozen`, with no pure cost:
+  - `apply` would test `frozen.is_empty()` once. Only when it is set, it skips the upserts and
+    removals of items whose nearest frozen ancestor is in the table, keeping their records (rows,
+    lowering, attach entries).
+  - The retention sweep already keeps every payload a record still references.
+  - Unfreezing marks the subtree changed, and the next apply re-reads it from the state, which the
+    validator keeps current regardless.
+  - The item map needs no parent links: `state.items` has them.

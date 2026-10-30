@@ -14,6 +14,7 @@ import {
   type LiveCoding,
   STAT_FIELDS,
 } from "./abi";
+import type { ExtensionCore } from "./extensions";
 import { GswParticles } from "./particles";
 import { definePrograms, type ProgramCounts, ProgramError } from "./programs";
 
@@ -117,7 +118,7 @@ const hex = (bytes: Uint8Array): string => {
 };
 
 /** `StreamCore` over one `GswRs` instance and its memory. */
-export class WasmStreamCore implements StreamCore {
+export class WasmStreamCore implements StreamCore, ExtensionCore {
   private coding: LiveCoding | null = null;
   private particles = new GswParticles();
   private readonly programs: ProgramCounts = {
@@ -276,6 +277,41 @@ export class WasmStreamCore implements StreamCore {
 
   heapBytes(): number {
     return this.disposed ? 0 : this.memory.buffer.byteLength;
+  }
+
+  // TAG2: the extension host's calls (never made by a client with no extension).
+
+  itemMetaJson(): string {
+    return this.g.item_meta_json();
+  }
+
+  setLogRemoved(on: boolean): void {
+    this.g.set_log_removed(on);
+  }
+
+  takeRemoved(): Uint32Array {
+    return this.g.take_removed();
+  }
+
+  setOverrides(ids: Uint32Array, vals: Float32Array): void {
+    if (this.g.set_overrides(ids, vals) < 0)
+      throw failWith(this.seqOrNull(), this.g.error());
+  }
+
+  refreshOverrides(): number {
+    return this.g.refresh_overrides();
+  }
+
+  queryItem(id: number): ArrayLike<number> {
+    return this.g.query_item(id);
+  }
+
+  querySubtreeRect(id: number): ArrayLike<number> {
+    return this.g.query_subtree_rect(id);
+  }
+
+  queryChildren(id: number): Uint32Array {
+    return this.g.query_children(id);
   }
 
   dispose(): void {

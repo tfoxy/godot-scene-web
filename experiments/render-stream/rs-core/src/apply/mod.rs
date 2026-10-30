@@ -24,6 +24,7 @@ pub mod lower;
 pub mod material_residency;
 pub mod meshes;
 pub mod multimesh;
+pub mod overrides;
 pub mod particles;
 pub mod payloads;
 pub mod programs;
@@ -191,7 +192,10 @@ impl Why {
     pub const MOVE_FALLBACK: u32 = 1 << 11;
     /// PH2: a move took a parked item on or off screen (re-assembled, not re-walked).
     pub const MOVE_ATTACH: u32 = 1 << 12;
-    pub const NAMES: [&'static str; 13] = [
+    /// TAG2: the client's override table hid or showed a subtree (or moved one the rows-only
+    /// path cannot follow), so the walk ran.
+    pub const OVERRIDE: u32 = 1 << 13;
+    pub const NAMES: [&'static str; 14] = [
         "first",
         "defaults",
         "material",
@@ -205,6 +209,7 @@ impl Why {
         "compact",
         "move-fallback",
         "move-attach",
+        "override",
     ];
 }
 
@@ -759,6 +764,16 @@ pub struct Applier {
     pt_mesh: IdMap<Option<Id>>,
     /// PM6b: [`particles::ParticleBuffers::membership`] at the last apply.
     pt_membership: u64,
+    /// TAG2 (client-extensions-design.md §3.2): the client's override table, the ids changed
+    /// since it was last composed, and whether a change needs the walk (visibility).
+    overrides: IdMap<overrides::Override>,
+    ov_changed: Vec<Id>,
+    ov_walk: bool,
+    pub ov_sabotage: overrides::OverrideSabotage,
+    /// TAG2 `onItemsRemoved`: the removed ids, logged only while an extension listens.
+    removed_log: Option<Vec<Id>>,
+    /// TAG2: inside `apply` (the sabotage `override-fast-path-miss` acts there only).
+    in_apply: bool,
 }
 
 /// PM3: one instanced draw's range in `list.instances` and what fills it.
@@ -1149,6 +1164,12 @@ impl Applier {
             particles_commands: 0,
             pt_mesh: IdMap::default(),
             pt_membership: 0,
+            overrides: IdMap::default(),
+            ov_changed: Vec::new(),
+            ov_walk: false,
+            ov_sabotage: overrides::OverrideSabotage::default(),
+            removed_log: None,
+            in_apply: false,
         }
     }
 
@@ -2051,6 +2072,15 @@ impl Applier {
         prof::add(prof::MATERIALS, t);
         let t = prof::start();
         let lower0 = prof::get(prof::LOWER);
+        // TAG2: removed items leave the override table, and the log when an extension listens.
+        if !self.overrides.is_empty() {
+            for id in &delta.items_removed {
+                self.overrides.remove(id);
+            }
+        }
+        if let Some(log) = self.removed_log.as_mut() {
+            log.extend_from_slice(&delta.items_removed);
+        }
         // Removed items.
         for id in &delta.items_removed {
             if let Some(rec) = self.items.remove(id) {
@@ -2073,6 +2103,10 @@ impl Applier {
                 .copied()
                 .collect();
             for id in stale {
+                if let Some(log) = self.removed_log.as_mut() {
+                    log.push(id);
+                }
+                self.overrides.remove(&id);
                 let rec = self.items.remove(&id).unwrap();
                 self.free_rows.push(rec.row);
                 self.back_buffer_items.remove(&id);
@@ -2396,6 +2430,12 @@ impl Applier {
 
         // Content changes of shape alone keep the walk's results (attach list, rows): only the
         // index buffer and the draw table are re-assembled (G7a's incremental structural apply).
+        // TAG2: a table changed since it was last composed: its subtrees move with this
+        // transaction's (a visibility change walks).
+        let ov_changed = std::mem::take(&mut self.ov_changed);
+        if std::mem::take(&mut self.ov_walk) {
+            why |= Why::OVERRIDE;
+        }
         let mut walk = why & !Why::CONTENT_SHAPE != 0
             || content_walk
             || self.always_walk
@@ -2409,7 +2449,9 @@ impl Applier {
                 }
             }
             roots.extend(moved);
+            roots.extend(ov_changed);
             self.move_attach = false;
+            self.in_apply = true;
             for id in roots {
                 if !self.move_subtree(state, id) {
                     // A clip or the alpha cut changed with the move: fall back to the walk.
@@ -2418,6 +2460,7 @@ impl Applier {
                     break;
                 }
             }
+            self.in_apply = false;
             if !walk && std::mem::take(&mut self.move_attach) {
                 why |= Why::MOVE_ATTACH;
             }
@@ -2503,10 +2546,13 @@ impl Applier {
                 },
             };
             let (from, to) = self.children_into(state, &canvas.items, &mut stack);
+            // TAG2: the table is looked at once per walk, never per item: an empty table walks
+            // the instance without it.
+            let ov = !self.overrides.is_empty();
             for k in from..to {
                 let (child, it) = stack[k];
                 self.cull(
-                    state, child, it, &canvas_xf, None, WHITE, 0, None, &cv, &mut stack,
+                    state, child, it, &canvas_xf, None, WHITE, 0, None, &cv, &mut stack, ov,
                 );
             }
             stack.truncate(from);
@@ -2855,21 +2901,39 @@ impl Applier {
         material_owner: Option<(Id, Option<Id>)>,
         cv: &WalkCanvas,
         stack: &mut Vec<(Id, &'s Item)>,
+        ov: bool,
     ) {
         if !it.visible || it.visibility_layer & self.viewport.cull_mask == 0 {
             return;
         }
-        let modulate = mul4(it.modulate, parent_modulate);
+        #[allow(unused_mut)]
+        let mut modulate = mul4(it.modulate, parent_modulate);
+        #[allow(unused_mut)]
+        let mut final_xf = geom::mul(parent_xf, &it.xform);
+        let mut own_xf: Option<Xform> = None;
+        // TAG2 (§3.2): `final_xf' = O · (parent_xf · it.xform)`; children, cull and clips follow.
+        if ov {
+            if let Some(o) = self.overrides.get(&id) {
+                if !o.visible {
+                    return;
+                }
+                modulate = mul4(modulate, o.modulate);
+                if self.ov_sabotage.no_inherit {
+                    own_xf = Some(geom::mul(&o.xform, &final_xf));
+                } else {
+                    final_xf = geom::mul(&o.xform, &final_xf);
+                }
+            }
+        }
         if modulate[3] < 0.007 {
             return;
         }
-        let final_xf = geom::mul(parent_xf, &it.xform);
         // UIT (renderer_canvas_cull.cpp:330-333, :257, :373-377): the children always get the
         // composed transform; the item itself draws (and clips and culls) with the canvas's alone.
         let draw_xf = if it.use_identity_transform && !self.sabotage.ignore_identity_transform {
             cv.xform
         } else {
-            final_xf
+            own_xf.unwrap_or(final_xf)
         };
         let mut own_clip = clip;
         // G7o3: what the walk reads of the item's record, in one lookup (the walk changes no
@@ -2954,6 +3018,7 @@ impl Applier {
                     Some(owner),
                     cv,
                     stack,
+                    ov,
                 );
             }
         }
@@ -3137,6 +3202,7 @@ impl Applier {
                     Some(owner),
                     cv,
                     stack,
+                    ov,
                 );
             }
         }
@@ -3807,10 +3873,16 @@ impl Applier {
             },
             None => return true,
         };
-        self.move_rec(state, id, &parent_xf, parent_mod)
+        // TAG2: one table check per moved root. `override-fast-path-miss` forgets the table on a
+        // transaction's rows-only path (the redraw path still composes it).
+        if self.overrides.is_empty() || (self.ov_sabotage.fast_path_miss && self.in_apply) {
+            self.move_rec::<false>(state, id, &parent_xf, parent_mod)
+        } else {
+            self.move_rec::<true>(state, id, &parent_xf, parent_mod)
+        }
     }
 
-    fn move_rec(
+    fn move_rec<const OV: bool>(
         &mut self,
         state: &ResolvedState,
         id: Id,
@@ -3823,10 +3895,18 @@ impl Applier {
         if !it.visible || it.visibility_layer & self.viewport.cull_mask == 0 {
             return true;
         }
+        let ov = if OV { self.overrides.get(&id).copied() } else { None };
+        if ov.is_some_and(|o| !o.visible) {
+            return true;
+        }
         if it.clip && !self.sabotage.ignore_clip {
             return false;
         }
-        let modulate = mul4(it.modulate, parent_mod);
+        #[allow(unused_mut)]
+        let mut modulate = mul4(it.modulate, parent_mod);
+        if let Some(o) = ov {
+            modulate = mul4(modulate, o.modulate);
+        }
         let was_visited = self
             .items
             .get(&id)
@@ -3838,7 +3918,15 @@ impl Applier {
         if !was_visited {
             return true;
         }
-        let final_xf = geom::mul(parent_xf, &it.xform);
+        let mut final_xf = geom::mul(parent_xf, &it.xform);
+        let mut own_xf: Option<Xform> = None;
+        if let Some(o) = ov {
+            if self.ov_sabotage.no_inherit {
+                own_xf = Some(geom::mul(&o.xform, &final_xf));
+            } else {
+                final_xf = geom::mul(&o.xform, &final_xf);
+            }
+        }
         // UIT: the item's own draw transform under `use_identity_transform` is its canvas's, which
         // a parent's move does not change.
         let identity = it.use_identity_transform && !self.sabotage.ignore_identity_transform;
@@ -3847,7 +3935,7 @@ impl Applier {
                 self.viewport.global_xform,
                 |c| geom::mul(&self.viewport.global_xform, &c.xform),
             ),
-            _ => final_xf,
+            _ => own_xf.unwrap_or(final_xf),
         };
         if let Some(rec) = self.items.get(&id) {
             let rect = if it.custom_rect {
@@ -3897,7 +3985,7 @@ impl Applier {
         }
         self.write_row(state, id);
         for &c in &it.children {
-            if !self.move_rec(state, c, &final_xf, modulate) {
+            if !self.move_rec::<OV>(state, c, &final_xf, modulate) {
                 return false;
             }
         }
@@ -3925,6 +4013,8 @@ mod ph2_tests;
 mod window_tests;
 #[cfg(test)]
 mod w11c_tests;
+#[cfg(test)]
+mod override_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
 /// carries (texture-delivery-design.md Q6 "GSW"). A block format the list cannot carry would have

@@ -7,7 +7,7 @@ import indexSource from "../src/index.ts?raw";
 // both runtime and erased type exports are pinned (mirror-client-design.md "The package").
 const VALUE_EXPORTS = `
 createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello CoreLoadError
-RECONNECT_BACKOFF_MS webSocketTransport
+RECONNECT_BACKOFF_MS webSocketTransport invertAffine mulAffine
 `
   .trim()
   .split(/\s+/);
@@ -16,7 +16,8 @@ const TYPE_EXPORTS = `
 RenderStreamClient RenderStreamClientOptions RenderStreamExtension RenderStreamEndpoint
 RenderStreamProtocol ClientHelloFacts CoreBuild RenderStreamCore RenderStreamFailureReason
 RenderStreamStats RenderStreamStatus RenderStreamTransport RenderStreamTransportEvents
-RenderStreamTransportFactory ApplyOn CreditStage
+RenderStreamTransportFactory ApplyOn CreditStage Affine2D ExtensionFrame ExtensionSession ItemMeta
+ItemMetaBatch ItemMetaField ItemMetaGrant ItemQuery OverrideTable OverrideValues Point Rect RGBA
 `
   .trim()
   .split(/\s+/);

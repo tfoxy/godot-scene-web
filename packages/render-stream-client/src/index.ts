@@ -5,7 +5,6 @@ export {
   createRenderStreamClient,
   type RenderStreamClient,
   type RenderStreamClientOptions,
-  type RenderStreamExtension,
 } from "./client";
 export {
   type RenderStreamEndpoint,
@@ -13,6 +12,24 @@ export {
   type RenderStreamProtocol,
   validateEndpoint,
 } from "./endpoint";
+export {
+  type Affine2D,
+  type ExtensionFrame,
+  type ExtensionSession,
+  type ItemMeta,
+  type ItemMetaBatch,
+  type ItemMetaField,
+  type ItemMetaGrant,
+  type ItemQuery,
+  invertAffine,
+  mulAffine,
+  type OverrideTable,
+  type OverrideValues,
+  type Point,
+  type Rect,
+  type RenderStreamExtension,
+  type RGBA,
+} from "./extensions";
 export { type ClientHelloFacts, clientHello } from "./hello";
 export { type CoreBuild, CoreLoadError, type RenderStreamCore } from "./loader";
 export {
