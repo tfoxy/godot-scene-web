@@ -416,6 +416,31 @@ call. What is left is mostly the first touch of the item or mesh the call writes
 direct pointer cannot avoid), the census, and a mesh region's three passes over its bytes (the
 hook's copy, the mirror's compare and the mirror's copy).
 
+### As built (HCz: the STS2 acceptance; `results/p3/hcz.md`)
+
+All targets are met. These are the capture's main-thread ms per frame in STS2, idle, with one
+GSW viewer at /12, window 2, coding on, and the product seat's GRC table, from capture `adf97029`:
+
+| scene | GPU host | headless product seat | target |
+| ----- | -------: | --------------------: | -----: |
+| menu  | 0.40 | 0.70 (lobby) | ≤ 1 |
+| map | 0.32 | 0.23 | ≤ 1 |
+| combat | 1.52 | 1.56 | ≤ 3 |
+
+MX measured 2.7–3.7, 6.2–6.4 and 9.0. The capture's own frame-callback mean is 1.0 ms, against
+MX's 7.0–7.4.
+
+- **Where combat's time goes:** about 0.5 ms in hooks (mesh regions, `canvas_item_clear`, mirror
+  updates), 0.5 ms in the snapshot, 0.26 ms in serving, and the rest in hub, digests and release.
+- **Fidelity and wire are unchanged:** map 65.5 dB, combat 60.4 dB, and the menu's particle
+  remainder; 0.15, 0.43 and 6.1 Mbps on the GPU host.
+- **Measure the GPU host with perf, not `/proc`.** MX's `/proc` on−off no longer works there. The
+  NVIDIA driver spin-waits 3–5 ms a frame on the main thread (vsync, a `[vdso]` `clock_gettime`
+  leaf), and the capture's work displaces that spin. On−off came out at −0.35 to −1.7 ms. So the
+  GPU host's figures are the capture's own perf samples (`perf-capture-split.py`). On the
+  headless seat there is no driver, and `/proc` agrees with perf: combat 1v−0v 0.70 ms, plus
+  0.45 ms of hooks that run with no viewer too.
+
 ## D6. No viewer, unused features
 
 - **No viewer, no snapshot.** A listener with no connection that has sent a hello, and no file
