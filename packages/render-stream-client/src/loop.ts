@@ -3,10 +3,16 @@
 //
 // 1. A message decodes and validates in its own event (one copy into wasm, W11t live coding
 //    first), is acked `received`, and queues.
-// 2. One frame callback (rAF) runs the connection phases, then the pending transaction's fetches
-//    (each payload verified by wasm on arrival, G7o2), then apply, ack `applied`, draw, ack
-//    `submitted`. Credit comes from this paced loop, never on receipt: a hidden page runs no frame
-//    callback, so no credit returns and the hub stops publishing to this connection (G7u).
+// 2. PH3 (`applyOn: "message"`, the default): while frame callbacks run, nothing waits ahead of
+//    it and fewer than MESSAGE_APPLY_MAX_UNDRAWN applies wait for a draw, the same event applies
+//    it (ack `applied`) when it needs no payload, or starts its fetches.
+// 3. Otherwise one frame callback (rAF) runs the connection phases, then the pending
+//    transaction's fetches (each payload verified by wasm on arrival, G7o2), then apply, ack
+//    `applied`. Every frame callback with an apply since its last draw draws the newest applied
+//    state once and acks `submitted` for each of them.
+// Credit (`applied` by default, PH3; `submitted` before) never comes on receipt alone: a hidden
+// page runs no frame callback, so after MESSAGE_APPLY_MAX_FRAME_GAP_MS arrivals wait for one, no
+// credit returns and the hub stops publishing to this connection (G7u).
 //
 // Credit window 2 (G7q): a transaction that arrives while another waits for its payloads folds
 // into it in place, and several queued transactions apply in one callback, drawing the newest;
@@ -56,7 +62,8 @@ export interface RenderStreamStats {
   applied: number;
   /** Applies (drawn frames) over the last second. */
   appliesPerSec: number;
-  /** Median ms from a submitted ack to the next transaction's arrival (the last 64), or null. */
+  /** Median ms from a credit-stage ack (`applied` by default, PH3) to the next transaction's
+   * arrival (the last 64), or null. */
   creditRttMsP50: number | null;
   /** The wasm instance's memory (0 after dispose). */
   heapBytes: number;
@@ -84,12 +91,37 @@ export interface LoopOptions {
   transport: RenderStreamTransportFactory;
   endpoint: RenderStreamEndpoint;
   creditWindow: 1 | 2;
+  /** The hello's credit stage (PH3): the ack the host waits on. Default `applied`. */
+  creditStage?: CreditStage;
+  /** Where a transaction with every payload in is applied (PH3): `frame` (the next frame
+   * callback) or `message` (its own `onmessage`, while frames run; draw stays on the frame
+   * callback). Default `message`. */
+  applyOn?: ApplyOn;
   onStatus: (s: RenderStreamStatus) => void;
   canvas: () => HelloCanvas;
   clock: LoopClock;
   connectTimeoutMs?: number;
   fetchTimeoutMs?: number;
 }
+
+/** PH3: the ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
+export type CreditStage = "submitted" | "applied";
+/** PH3: where a ready transaction is applied. */
+export type ApplyOn = "frame" | "message";
+/** PH3: the defaults (results/p3/ph3.md): crediting at `applied` and applying in `onmessage` take
+ * the wait for the next vsync out of the credit round trip. */
+export const DEFAULT_CREDIT_STAGE: CreditStage = "applied";
+export const DEFAULT_APPLY_ON: ApplyOn = "message";
+
+/** PH3: `applyOn: "message"` applies in `onmessage` only while the frame callbacks run: no frame
+ * callback for this long (a hidden page, G7u) and arrivals queue for the next one, so no credit
+ * returns from a page that draws nothing. */
+export const MESSAGE_APPLY_MAX_FRAME_GAP_MS = 100;
+/** PH3: `applyOn: "message"` applies in `onmessage` while fewer than this many applies wait for a
+ * draw; past it, arrivals wait for the frame callback, so a client whose draws fall behind (a slow
+ * GPU, a busy thread) is paced by its draws again and never applies far more than it shows. Two
+ * absorbs a host frame rate a little above the panel's (60 against the g31's 58.8 Hz). */
+export const MESSAGE_APPLY_MAX_UNDRAWN = 2;
 
 /** Backoff before reconnect attempt n (1-based): 1, 2, 4, 8 s, then 10 s. */
 export const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 10000] as const;
@@ -156,16 +188,24 @@ export class StreamLoop {
   private restoreWant: string[] | null = null;
   private readonly restoreBodies = new Map<string, string | null>();
   private lastAppliedSeq = 0;
+  /** PH3: seqs applied (folded ones included) and not drawn yet; their `submitted` acks wait for
+   * the draw. */
+  private undrawn: number[] = [];
+  /** PH3: the start of the last frame callback (null: none on this loop yet). */
+  private lastFrameAt: number | null = null;
   // Stats: counters and two fixed rings, no per-frame allocation.
   private applied = 0;
   private readonly applyTimes = new Float64Array(APPLY_RING);
   private applyCount = 0;
   private readonly rtts = new Float64Array(RTT_SAMPLES);
   private rttCount = 0;
-  private lastSubmittedAt: number | null = null;
+  private lastCreditAt: number | null = null;
+
+  private readonly creditStage: CreditStage;
 
   constructor(private readonly o: LoopOptions) {
     this.endpoint = o.endpoint;
+    this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
   }
 
   // ----------------------------------------------------------------------- public
@@ -290,6 +330,7 @@ export class StreamLoop {
       clientHello({
         protocol: this.endpoint.protocol,
         creditWindow: this.o.creditWindow,
+        creditStage: this.creditStage,
         token: this.endpoint.token,
         backing: c.backing,
         css: c.css,
@@ -303,13 +344,19 @@ export class StreamLoop {
     this.conn?.transport?.send(JSON.stringify(message));
   }
 
-  private ack(seq: number, stage: "received" | "applied" | "submitted"): void {
+  /** `at` (ms, the loop clock): acks of one apply or one draw share it, so a fold reads as one
+   * instant (the host tap's rule: `applied` acks sharing the receiver's `t_us` applied together). */
+  private ack(
+    seq: number,
+    stage: "received" | "applied" | "submitted",
+    at = this.o.clock.now(),
+  ): void {
     this.send({
       type: "ack",
       stream_id: this.conn?.streamId ?? "",
       seq,
       stage,
-      t_us: Math.round(this.o.clock.now() * 1000),
+      t_us: Math.round(at * 1000),
     });
   }
 
@@ -380,10 +427,10 @@ export class StreamLoop {
         break;
     }
     const now = this.o.clock.now();
-    if (this.lastSubmittedAt !== null) {
-      this.rtts[this.rttCount % RTT_SAMPLES] = now - this.lastSubmittedAt;
+    if (this.lastCreditAt !== null) {
+      this.rtts[this.rttCount % RTT_SAMPLES] = now - this.lastCreditAt;
       this.rttCount++;
-      this.lastSubmittedAt = null;
+      this.lastCreditAt = null;
     }
     this.ack(m.seq, "received");
     const item: Queued = {
@@ -404,6 +451,24 @@ export class StreamLoop {
       this.rebuildDue = true;
     }
     this.queue.push(item);
+    if ((this.o.applyOn ?? DEFAULT_APPLY_ON) === "message")
+      this.applyOnMessage(now);
+  }
+
+  /** PH3 `applyOn: "message"`: the queued transactions go now, not at the next frame callback,
+   * when nothing waits ahead of them and the frame callbacks run. A transaction that needs
+   * payloads starts its fetches here and applies at the frame callback that finds them in. */
+  private applyOnMessage(now: number): void {
+    if (
+      this.ctx !== "ok" ||
+      this.pending !== null ||
+      this.rebuildDue ||
+      this.undrawn.length >= MESSAGE_APPLY_MAX_UNDRAWN ||
+      this.lastFrameAt === null ||
+      now - this.lastFrameAt > MESSAGE_APPLY_MAX_FRAME_GAP_MS
+    )
+      return;
+    this.takeQueued(false);
   }
 
   private beginSession(conn: Connection, session: SessionMeta): void {
@@ -459,6 +524,7 @@ export class StreamLoop {
 
   private readonly onFrame = (): void => {
     this.frameId = null;
+    this.lastFrameAt = this.o.clock.now();
     try {
       this.step();
     } catch (e) {
@@ -498,10 +564,11 @@ export class StreamLoop {
       this.stepContext();
     } else if (this.pending !== null) {
       this.advancePending();
-      if (this.pending?.stage === "ready") this.applyReady();
+      if (this.pending?.stage === "ready") this.applyReady(true);
     } else if (this.queue.length > 0) {
-      this.takeQueued();
+      this.takeQueued(true);
     }
+    if (this.ctx === "ok" && this.undrawn.length > 0) this.drawApplied();
     if (this.phase !== "streaming") return;
     if (
       this.ctx === "ok" &&
@@ -584,9 +651,10 @@ export class StreamLoop {
     this.pending = null;
     this.queue = [];
     this.coalesced = [];
+    this.undrawn.length = 0;
     this.endSeen = false;
     this.rebuildDue = false;
-    this.lastSubmittedAt = null;
+    this.lastCreditAt = null;
     if (conn?.sessionSeen) {
       this.o.core.reset(true);
       this.connApplied = 0;
@@ -644,7 +712,7 @@ export class StreamLoop {
   }
 
   /** The newest queued transaction becomes the one to apply (receiver.gd `_apply_newest`). */
-  private takeQueued(): void {
+  private takeQueued(draw: boolean): void {
     let rebuild = this.rebuildDue;
     const queued = this.queue;
     this.queue = [];
@@ -676,7 +744,7 @@ export class StreamLoop {
       fetcher.start(misses);
     }
     this.advancePending();
-    if (this.pending?.stage === "ready") this.applyReady();
+    if (this.pending?.stage === "ready") this.applyReady(draw);
   }
 
   private needFetcher(seq: number, hash: string): LiveFetcher {
@@ -736,9 +804,10 @@ export class StreamLoop {
     p.stage = "ready";
   }
 
-  /** The pending transaction, every payload in: apply, ack applied, draw, ack submitted, all in
-   * this frame callback. */
-  private applyReady(): void {
+  /** The pending transaction, every payload in: apply and ack applied; then, in a frame callback
+   * (`draw`), draw and ack submitted. From `onmessage` (PH3) the draw waits for the next frame
+   * callback, which draws the newest applied state once for every apply since the last draw. */
+  private applyReady(draw: boolean): void {
     const p = this.pending as Pending;
     this.pending = null;
     const core = this.o.core;
@@ -747,18 +816,30 @@ export class StreamLoop {
     core.apply(seq);
     const folded = this.coalesced;
     this.coalesced = [];
-    for (const f of folded) this.ack(f.seq, "applied");
-    this.ack(seq, "applied");
-    core.draw(seq);
-    for (const f of folded) this.ack(f.seq, "submitted");
-    this.ack(seq, "submitted");
     const now = this.o.clock.now();
-    this.lastSubmittedAt = now;
+    for (const f of folded) {
+      this.ack(f.seq, "applied", now);
+      this.undrawn.push(f.seq);
+    }
+    this.ack(seq, "applied", now);
+    this.undrawn.push(seq);
+    if (this.creditStage === "applied") this.lastCreditAt = now;
     this.lastAppliedSeq = seq;
     this.applied += folded.length + 1;
     this.connApplied += folded.length + 1;
     this.applyTimes[this.applyCount % APPLY_RING] = now;
     this.applyCount++;
+    if (draw) this.drawApplied();
+  }
+
+  /** Draws the newest applied state and acks submitted every seq applied since the last draw. */
+  private drawApplied(): void {
+    const seq = this.lastAppliedSeq;
+    this.o.core.draw(seq);
+    const now = this.o.clock.now();
+    for (const s of this.undrawn) this.ack(s, "submitted", now);
+    this.undrawn.length = 0;
+    if (this.creditStage !== "applied") this.lastCreditAt = now;
     this.attempt = 0;
     if (!this.firstFrameSent) {
       this.firstFrameSent = true;
@@ -812,6 +893,10 @@ export class StreamLoop {
     }
     this.restoreWant = null;
     this.ctx = "ok";
+    // PH3: the redraw drew the newest applied state, so every apply waiting for a draw is in it.
+    const now = this.o.clock.now();
+    for (const s of this.undrawn) this.ack(s, "submitted", now);
+    this.undrawn.length = 0;
   }
 }
 

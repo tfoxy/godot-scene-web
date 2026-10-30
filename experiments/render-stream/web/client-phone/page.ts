@@ -47,6 +47,9 @@ const api = {
     endpoint: RenderStreamEndpoint;
     core: RenderStreamCore;
     creditWindow: 1 | 2;
+    /** PH3: the client's pacing options (undefined: the package's defaults). */
+    creditStage?: "submitted" | "applied";
+    applyOn?: "frame" | "message";
     /** 1 = the device pixel ratio (native resolution); < 1 renders smaller and lets CSS scale. */
     backingScale?: number;
   }) {
@@ -67,6 +70,8 @@ const api = {
       core: o.core,
       endpoint: o.endpoint,
       creditWindow: o.creditWindow,
+      creditStage: o.creditStage,
+      applyOn: o.applyOn,
       onStatus: (s) => {
         statuses.push({ ...s, t: performance.now(), mount });
         if (s.kind === "connecting" && heapAtStart[mount] === undefined) {

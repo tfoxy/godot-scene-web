@@ -11,8 +11,12 @@
 //       experiments/render-stream/scripts/client-device-check.ts --dir "$RS_BENCH_RX_DIR" \
 //       --port "$RS_BENCH_PAGE_PORT" --ws "$RS_BENCH_WS_URL" --http "$RS_BENCH_HTTP_ORIGIN" \
 //       --token-file "$RS_BENCH_TOKEN_FILE" --protocol 12 --window 2 --core <build-web.sh out> \
-//       [--device g31] [--main-s 180] [--remounts 3] [--cycle-s 20] [--attrib-s 10] [--backing-scale 1]' \
+//       [--device g31] [--main-s 180] [--remounts 3] [--cycle-s 20] [--attrib-s 10] [--backing-scale 1] \
+//       [--credit-stage submitted|applied] [--apply-on frame|message]' \
 //     -- GRC_LIVE_AUTH=token
+//
+// --credit-stage and --apply-on (PH3, results/p3/ph3.md) pass the client's pacing options; omitted,
+// the package's defaults.
 //
 // Mount 1 streams for --main-s after its first frame (the measured window: per-second stats(), the
 // page probes of web/client-phone/probe.ts, cpufreq every 15 s; no dumpsys in the window), then the
@@ -225,6 +229,9 @@ async function main(): Promise<number> {
   const tolerance = Number(a.tolerance ?? 0.15);
   const protocol = Number(a.protocol ?? 12) as 11 | 12;
   const creditWindow = Number(a.window ?? 2) as 1 | 2;
+  // PH3: the client's pacing options (omitted: the package's defaults).
+  const creditStage = a["credit-stage"] as "submitted" | "applied" | undefined;
+  const applyOn = a["apply-on"] as "frame" | "message" | undefined;
   const hostPort = Number(new URL(a.http).port);
   const staticDir = join(dir, "static");
   mkdirSync(join(staticDir, "core"), { recursive: true });
@@ -277,6 +284,8 @@ async function main(): Promise<number> {
     ws: a.ws,
     protocol,
     credit_window: creditWindow,
+    credit_stage: creditStage ?? "default",
+    apply_on: applyOn ?? "default",
     backing_scale: backingScale,
     core_build: coreBuild,
     expected_tree: expectedTree,
@@ -386,7 +395,7 @@ async function main(): Promise<number> {
     for (let m = 1; m <= 1 + remounts; m++) {
       const t0 = Date.now();
       const box = await ev<unknown>(
-        `window.__rsc.mount(${JSON.stringify({ endpoint, core, creditWindow, backingScale })})`,
+        `window.__rsc.mount(${JSON.stringify({ endpoint, core, creditWindow, creditStage, applyOn, backingScale })})`,
       );
       let firstFrameMs: number | null = null;
       let firstStats: Stats | null = null;

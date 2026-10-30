@@ -5,7 +5,7 @@
 //
 //   tsx --conditions=development experiments/render-stream/scripts/client-live-check.ts \
 //     --dir <out> --port <page port> --ws ws://127.0.0.1:<p>/render-stream --http http://127.0.0.1:<p> \
-//     [--token-file <evidence>/live-token] [--protocol 11|12] [--window 1|2] [--core <build-web.sh out>] \
+//     [--token-file <evidence>/live-token] [--protocol 11|12] [--window 1|2] [--credit-stage submitted|applied] [--apply-on frame|message] [--core <build-web.sh out>] \
 //     [--mounts 5] [--first-s 20] [--cycle-s 8] [--rss-tolerance 0.15]
 //
 // Run it as bench-live-scale.sh's host-only receiver (`--receiver host-only --rx-cmd ...`), which
@@ -127,6 +127,9 @@ async function main(): Promise<number> {
   const tolerance = Number(a["rss-tolerance"] ?? 0.15);
   const protocol = Number(a.protocol ?? 12) as 11 | 12;
   const creditWindow = Number(a.window ?? 2) as 1 | 2;
+  // PH3: the client's pacing options (omitted: the package's defaults).
+  const creditStage = a["credit-stage"] as "submitted" | "applied" | undefined;
+  const applyOn = a["apply-on"] as "frame" | "message" | undefined;
   const staticDir = join(dir, "static");
   mkdirSync(join(staticDir, "core"), { recursive: true });
 
@@ -197,6 +200,8 @@ async function main(): Promise<number> {
     ws: a.ws,
     protocol,
     credit_window: creditWindow,
+    credit_stage: creditStage ?? "default",
+    apply_on: applyOn ?? "default",
     core_build: coreBuild,
     expected_tree: expectedTree,
     page_inputs: inputs.length,
@@ -306,7 +311,7 @@ async function main(): Promise<number> {
           (
             window as unknown as { __rsc: { mount(o: unknown): void } }
           ).__rsc.mount(o),
-        { endpoint, core, creditWindow },
+        { endpoint, core, creditWindow, creditStage, applyOn },
       );
       const until = t0 + (m === 1 ? firstS : cycleS) * 1000;
       let heapStart: number | null = null;

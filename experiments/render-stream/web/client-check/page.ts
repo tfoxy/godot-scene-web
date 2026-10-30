@@ -30,6 +30,9 @@ const api = {
     endpoint: RenderStreamEndpoint;
     core: RenderStreamCore;
     creditWindow: 1 | 2;
+    /** PH3: the client's pacing options (undefined: the package's defaults). */
+    creditStage?: "submitted" | "applied";
+    applyOn?: "frame" | "message";
   }) {
     if (mounted) throw new Error("already mounted");
     const mount = ++mounts;
@@ -41,6 +44,8 @@ const api = {
       core: o.core,
       endpoint: o.endpoint,
       creditWindow: o.creditWindow,
+      creditStage: o.creditStage,
+      applyOn: o.applyOn,
       onStatus: (s) => {
         statuses.push({ ...s, t: performance.now(), mount });
         if (s.kind === "connecting" && heapAtStart[mount] === undefined) {

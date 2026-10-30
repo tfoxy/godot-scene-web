@@ -16,6 +16,8 @@ import {
 } from "./hello";
 import { CoreLoadError, loadCore, type RenderStreamCore } from "./loader";
 import {
+  type ApplyOn,
+  type CreditStage,
   type LoopClock,
   type RenderStreamStats,
   type RenderStreamStatus,
@@ -41,6 +43,11 @@ export interface RenderStreamClientOptions {
   extensions?: readonly RenderStreamExtension[];
   /** The credit window asked in the hello (the session grants it); default 2. */
   creditWindow?: 1 | 2;
+  /** PH3: the hello's credit stage, the ack the host's credit waits on; default `applied`. */
+  creditStage?: CreditStage;
+  /** PH3: where a ready transaction is applied: the next frame callback (`frame`) or its own
+   * `onmessage` while frames run (`message`, the default; the draw stays on the frame callback). */
+  applyOn?: ApplyOn;
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
@@ -197,6 +204,8 @@ class Client implements RenderStreamClient {
       transport: this.o.transport ?? webSocketTransport,
       endpoint: this.endpoint,
       creditWindow: this.creditWindow,
+      creditStage: this.o.creditStage,
+      applyOn: this.o.applyOn,
       onStatus: (s) => this.status(s),
       clock: pageClock,
       canvas: () => {

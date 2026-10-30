@@ -4,6 +4,7 @@ import type { CoreMessage, StreamCore } from "../src/core";
 import type { RenderStreamEndpoint } from "../src/endpoint";
 import {
   type LoopClock,
+  type LoopOptions,
   type RenderStreamStatus,
   StreamLoop,
 } from "../src/loop";
@@ -154,10 +155,13 @@ export class FakeTransport implements RenderStreamTransport {
 
 export class FakeClock implements LoopClock {
   t = 0;
+  /** Advances `t` on every `now()` (a real clock moves between two reads). */
+  step = 0;
   private frames = new Map<number, (ts: number) => void>();
   private timers = new Map<number, { at: number; cb: () => void }>();
   private next = 1;
   now(): number {
+    this.t += this.step;
     return this.t;
   }
   requestFrame(cb: (ts: number) => void): number {
@@ -208,7 +212,10 @@ export const ENDPOINT: RenderStreamEndpoint = {
   protocol: 12,
 };
 
-export function harness(creditWindow: 1 | 2 = 2) {
+export function harness(
+  creditWindow: 1 | 2 = 2,
+  pacing: Pick<LoopOptions, "creditStage" | "applyOn"> = {},
+) {
   const core = new FakeCore();
   const clock = new FakeClock();
   const transports: FakeTransport[] = [];
@@ -218,6 +225,7 @@ export function harness(creditWindow: 1 | 2 = 2) {
     clock,
     endpoint: ENDPOINT,
     creditWindow,
+    ...pacing,
     onStatus: (s) => statuses.push(s),
     transport: (_e, sub, on) => {
       const t = new FakeTransport(sub, on);

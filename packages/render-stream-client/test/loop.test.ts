@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { RECONNECT_BACKOFF_MS } from "../src/loop";
+import {
+  type LoopOptions,
+  MESSAGE_APPLY_MAX_FRAME_GAP_MS,
+  MESSAGE_APPLY_MAX_UNDRAWN,
+  RECONNECT_BACKOFF_MS,
+} from "../src/loop";
 import { flush, harness, msg, session, tx } from "./fakes";
 
 /** Connects and opens the first connection, then delivers its session. */
-function streaming(window: 1 | 2 = 2) {
-  const h = harness();
+/** The MIR-1 loop (credit at `submitted`, apply in the frame callback) unless `pacing` says. */
+function streaming(
+  window: 1 | 2 = 2,
+  pacing: Pick<LoopOptions, "creditStage" | "applyOn"> = {
+    creditStage: "submitted",
+    applyOn: "frame",
+  },
+) {
+  const h = harness(2, pacing);
   h.loop.connect();
   h.last().on.open();
   h.last().on.message(session(window));
@@ -314,5 +326,152 @@ describe("render-stream client loop", () => {
     expect(h.statuses).toHaveLength(n);
     expect(h.transports).toHaveLength(1);
     expect(h.loop.state).toBe("disposed");
+  });
+  it("PH3 defaults: credit stage applied, apply on message", () => {
+    const h = streaming(2, {});
+    const t = h.last();
+    expect(t.sent[0]).toMatchObject({ credit_stage: "applied" });
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, [], false));
+    expect(h.core.calls.at(-1)).toBe("apply 2");
+  });
+
+  it("PH3 credit stage applied: the hello asks it", () => {
+    const h = streaming(2, { creditStage: "applied" });
+    expect(h.last().sent[0]).toMatchObject({
+      credit_stage: "applied",
+      credit_window: 2,
+    });
+  });
+
+  it("PH3 apply on message: applies in onmessage once frames run, draws once at the frame", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    const t = h.last();
+    t.on.message(tx(1));
+    // No frame callback yet on this loop: the first transaction waits for one.
+    expect(h.core.calls).not.toContain("apply 1");
+    h.clock.frame();
+    expect(t.acks()).toEqual(["received 1", "applied 1", "submitted 1"]);
+    t.on.message(tx(2, [], false));
+    t.on.message(tx(3, [], false));
+    expect(h.core.calls.filter((c) => /^(apply|draw)/.test(c))).toEqual([
+      "apply 1",
+      "draw 1",
+      "apply 2",
+      "apply 3",
+    ]);
+    expect(t.acks().slice(3)).toEqual([
+      "received 2",
+      "applied 2",
+      "received 3",
+      "applied 3",
+    ]);
+    h.clock.frame();
+    expect(h.core.calls.at(-1)).toBe("draw 3");
+    expect(t.acks().slice(7)).toEqual(["submitted 2", "submitted 3"]);
+    expect(h.loop.stats().applied).toBe(3);
+    // A frame with nothing applied draws nothing.
+    h.clock.frame();
+    expect(h.core.calls.at(-1)).toBe("draw 3");
+  });
+
+  it("PH3 apply on message: no frame callback for the gap (a hidden page) holds the apply", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    h.clock.t += MESSAGE_APPLY_MAX_FRAME_GAP_MS + 1;
+    t.on.message(tx(2, [], false));
+    expect(h.core.calls).not.toContain("apply 2");
+    expect(t.acks().at(-1)).toBe("received 2");
+    h.clock.frame();
+    expect(t.acks().slice(-2)).toEqual(["applied 2", "submitted 2"]);
+  });
+
+  it("PH3 apply on message: a transaction with payloads fetches at once and applies at a frame", async () => {
+    const h = streaming(2, { applyOn: "message" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, ["aa"], false));
+    expect(t.gets.map((g) => g.path)).toEqual(["/resources/sha256/aa"]);
+    expect(h.core.calls).not.toContain("apply 2");
+    t.on.message(tx(3, [], false)); // folds into the pending one
+    expect(h.core.calls).not.toContain("apply 3");
+    t.gets[0].resolve(200);
+    await flush();
+    h.clock.frame();
+    expect(h.core.calls.filter((c) => /^(apply|draw)/.test(c))).toEqual([
+      "apply 1",
+      "draw 1",
+      "apply 3",
+      "draw 3",
+    ]);
+    expect(t.acks().slice(-4)).toEqual([
+      "applied 2",
+      "applied 3",
+      "submitted 2",
+      "submitted 3",
+    ]);
+  });
+
+  it("PH3 apply on message: a context loss holds applies; the restore redraw acks the undrawn", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    t.on.message(tx(2, [], false));
+    h.loop.contextLost();
+    t.on.message(tx(3, [], false));
+    expect(h.core.calls).not.toContain("apply 3");
+    h.clock.frame();
+    expect(h.core.calls.at(-1)).toBe("apply 2");
+    h.loop.contextRestored();
+    h.clock.frame();
+    expect(h.core.calls.at(-1)).toBe("redraw 2");
+    expect(t.acks().filter((a) => a.startsWith("submitted"))).toEqual([
+      "submitted 1",
+      "submitted 2",
+    ]);
+    h.clock.frame();
+    expect(h.core.calls.slice(-2)).toEqual(["apply 3", "draw 3"]);
+  });
+
+  it("PH3 apply on message: past the undrawn cap, arrivals wait for the frame callback", () => {
+    const h = streaming(2, { applyOn: "message", creditStage: "applied" });
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    const n = MESSAGE_APPLY_MAX_UNDRAWN;
+    for (let s = 2; s < 2 + n + 2; s++) t.on.message(tx(s, [], false));
+    const applies = () => h.core.calls.filter((c) => c.startsWith("apply"));
+    // The first `n` apply at once; the rest wait, unacked `applied` (no credit), for the frame.
+    expect(applies()).toHaveLength(1 + n);
+    expect(t.acks().filter((a) => a.startsWith("applied"))).toHaveLength(1 + n);
+    h.clock.frame();
+    // The frame applies the newest waiting one (the older folds into it) and draws once.
+    expect(applies().at(-1)).toBe(`apply ${1 + n + 2}`);
+    expect(h.core.calls.at(-1)).toBe(`draw ${1 + n + 2}`);
+    expect(t.acks().filter((a) => a.startsWith("submitted"))).toHaveLength(
+      1 + n + 2,
+    );
+  });
+
+  it("PH3: the acks of one apply, and of one draw, share their t_us (a fold is one instant)", () => {
+    const h = streaming(2);
+    const t = h.last();
+    h.clock.step = 0.3;
+    t.on.message(tx(1));
+    t.on.message(tx(2, [], false));
+    h.clock.frame();
+    const at = (stage: string) =>
+      t.sent
+        .filter((m) => m.type === "ack" && m.stage === stage)
+        .map((m) => m.t_us);
+    expect(at("applied")).toHaveLength(2);
+    expect(new Set(at("applied")).size).toBe(1);
+    expect(new Set(at("submitted")).size).toBe(1);
+    expect(new Set(at("received")).size).toBe(2);
   });
 });

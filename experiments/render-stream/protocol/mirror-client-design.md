@@ -146,19 +146,30 @@ export type RenderStreamTransportFactory = (
 
 ## The loop (product semantics)
 
-It is the harness's live order, minus everything evidence-only:
+It is the harness's live order, minus everything evidence-only, with PH3's pacing (below):
 1. `onmessage` decodes and validates (one copy into wasm, W11t live coding first), acks `received`, and queues.
-2. One rAF callback runs connection phases, then the pending transaction's fetches (verified by wasm before use), then
-   apply.
-3. Then, once MIR-TAG lands, the extension `beforeDraw` (below).
-4. Then draw, then acks `applied` and `submitted`.
+2. PH3: while frame callbacks run (one within the last 100 ms), nothing waits ahead of it, and fewer than two applies
+   wait for a draw, the same `onmessage` applies it at once when it needs no payload, and acks `applied`; one that
+   needs payloads starts its fetches there.
+3. Otherwise one rAF callback runs connection phases, then the pending transaction's fetches (verified by wasm before
+   use), then apply, and acks `applied`.
+4. Then, once MIR-TAG lands, the extension `beforeDraw` (below).
+5. The rAF callback draws the newest applied state, once, and acks `submitted` for every transaction applied since
+   the last draw.
 
-Credit comes from the paced loop, never on receipt.
+Credit comes from the apply, never on receipt alone. The hello's `credit_stage` is `applied` (PH3; it was `submitted`
+before): at window 2 the host can send at its frame rate only while each credit returns within two host frames
+(33.3 ms), and crediting after a rAF callback put the wait for the next vsync (0-17 ms) into every round trip. Applying
+in `onmessage` takes that wait out; the draw stays on rAF. The two gates keep `submitted`'s pacing where it matters:
+a hidden page runs no frame callback, so after 100 ms arrivals wait for one, no `applied` ack returns and the hub stops
+publishing to the connection (G7u); and a client whose draws fall behind applies at most two transactions per draw,
+then is paced by its draws again. `creditStage: "submitted"` and `applyOn: "frame"` keep the MIR-1 loop. Measured on
+the g31: [results/p3/ph3.md](../results/p3/ph3.md).
 
 - **Hello.** The keys are `live.ts`'s, in its order:
   - `receiver_kind` is `"gsw-canvas"` (the same executor);
   - `receiver` names this client: check the hub's hello validation (`rs_live.cpp`) before choosing the string;
-  - `credit_window` is 2, and `credit_stage` is `submitted`;
+  - `credit_window` is 2, and `credit_stage` is `applied` (PH3; MIR-1 sent `submitted`);
   - `texture_encodings` is `decoded`, until the delivery increment adds `block,uastc`;
   - `gpu_formats` comes from the canvas's own context;
   - `live_coding` is `zstd-base,zstd`;
@@ -261,7 +272,8 @@ stays the later item the design names.
 - `RenderStreamStatus` `streaming` is reported once per connection with `firstFrame: false` (its
   session) and once with `firstFrame: true` (its first drawn transaction).
 - `RenderStreamStats.applied` counts over every connection of the client; `creditRttMsP50` is the
-  median of the last 64 intervals from a submitted ack to the next transaction's arrival.
+  median of the last 64 intervals from a credit-stage ack (`applied` since PH3) to the next
+  transaction's arrival.
 - Exports: `createRenderStreamClient`, `validateEndpoint`, `RenderStreamEndpointError`,
   `clientHello`, `CoreLoadError`, `RECONNECT_BACKOFF_MS`, `webSocketTransport`, and the types
   (pinned by `test/export-surface.test.ts`).
