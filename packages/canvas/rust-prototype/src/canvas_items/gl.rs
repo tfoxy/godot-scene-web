@@ -17,7 +17,8 @@
 //! `dirty.all` and every texture re-queued.
 use super::{
     CANVAS_INVERSE_UNIFORM, CANVAS_MATRIX_UNIFORM, Call, ExecOptions, ExecStats,
-    FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW, MAX_PROGRAM_SAMPLERS, Sabotage, gl_scissor,
+    FIRST_SAMPLER_UNIT, ITEM_TEXELS, ITEMS_PER_ROW, MAX_PROGRAM_SAMPLERS, Sabotage,
+    downscale_factor, downscale_rgba8, downscale_texels_nearest, downscaled_size, gl_scissor,
     gl_scissor_y_up, godot_screen_transform, item_program_fragment, item_program_vertex,
     item_rows_for, item_upload_rects, msdf_fragment, plan_calls,
 };
@@ -1669,8 +1670,8 @@ impl CanvasItemsExecutor {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
                     }
-                    if width == 0 || height == 0 || width > self.max_side || height > self.max_side
-                    {
+                    // PHV: an image over MAX_TEXTURE_SIZE is reduced at upload (`downscale_factor`).
+                    if width == 0 || height == 0 {
                         return Err(ExecError::Invalid(format!(
                             "texture {id}: size {width}x{height}"
                         )));
@@ -1688,8 +1689,7 @@ impl CanvasItemsExecutor {
                     if id == WHITE_TEXTURE {
                         return Err(ExecError::Invalid("texture id 0 is the white texel".into()));
                     }
-                    if width == 0 || height == 0 || width > self.max_side || height > self.max_side
-                    {
+                    if width == 0 || height == 0 {
                         return Err(ExecError::Invalid(format!(
                             "texture {id}: size {width}x{height}"
                         )));
@@ -1780,6 +1780,15 @@ impl CanvasItemsExecutor {
                     } else {
                         straight
                     };
+                    let k = downscale_factor(width, height, self.max_side);
+                    let reduced: Vec<u8>;
+                    let (bytes, width, height) = if k > 1 {
+                        reduced = downscale_rgba8(bytes, width, height, k);
+                        let (w, h) = downscaled_size(width, height, k);
+                        (&reduced[..], w, h)
+                    } else {
+                        (bytes, width, height)
+                    };
                     unsafe {
                         self.gl.c().tex_image_2d(
                             glow::TEXTURE_2D,
@@ -1813,6 +1822,15 @@ impl CanvasItemsExecutor {
                     };
                     self.bind_draw_texture(texture, stats);
                     let bytes = op_bytes(list, op);
+                    let k = downscale_factor(width, height, self.max_side);
+                    let reduced: Vec<u8>;
+                    let (bytes, width, height) = if k > 1 {
+                        reduced = downscale_texels_nearest(bytes, width, height, k, 8);
+                        let (w, h) = downscaled_size(width, height, k);
+                        (&reduced[..], w, h)
+                    } else {
+                        (bytes, width, height)
+                    };
                     unsafe {
                         self.gl.c().tex_image_2d(
                             glow::TEXTURE_2D,
