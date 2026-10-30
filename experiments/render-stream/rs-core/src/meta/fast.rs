@@ -209,9 +209,22 @@ fn origin(c: &mut Cur) -> O<Origin> {
     c.enum_of(Origin::ALL, Origin::as_str)
 }
 
-fn param(c: &mut Cur, params: &mut Vec<ParamMeta>, start: usize) -> O<()> {
+fn param(
+    c: &mut Cur,
+    params: &mut Vec<ParamMeta>,
+    spare: &mut [Box<str>],
+    start: usize,
+) -> O<()> {
     c.lit(b"{\"name\":")?;
-    let name = c.owned()?;
+    // PH2: the previous transaction's name at this position, when it is the same (`name_spare`).
+    let name = {
+        let b = c.str()?;
+        match spare.get_mut(params.len()) {
+            Some(old) if old.as_bytes() == b => std::mem::take(old),
+            // Printable ASCII (`str`'s rule) is valid UTF-8.
+            _ => Box::from(std::str::from_utf8(b).ok()?),
+        }
+    };
     c.lit(b",\"type\":")?;
     let ty = c.enum_of(VariantType::ALL, VariantType::as_str)?;
     c.lit(b",\"n\":")?;
@@ -626,7 +639,11 @@ fn shader(c: &mut Cur) -> O<Shader> {
     })
 }
 
-fn material(c: &mut Cur, params: &mut Vec<ParamMeta>) -> O<MaterialMeta> {
+fn material(
+    c: &mut Cur,
+    params: &mut Vec<ParamMeta>,
+    spare: &mut [Box<str>],
+) -> O<MaterialMeta> {
     c.lit(b"{\"id\":")?;
     let id = c.id1()?;
     c.lit(b",\"origin\":\"created\",\"status\":")?;
@@ -649,7 +666,7 @@ fn material(c: &mut Cur, params: &mut Vec<ParamMeta>) -> O<MaterialMeta> {
     let shader = c.opt_id1()?;
     c.lit(b",\"params\":")?;
     let start = params.len();
-    c.list(|c| param(c, params, start))?;
+    c.list(|c| param(c, params, spare, start))?;
     c.lit(b"}")?;
     Some(MaterialMeta {
         id,
@@ -955,6 +972,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
 
     c.lit(b",\"items\":")?;
     let (items, ids_buf, params, cmds) = (&mut tx.items, &mut tx.ids, &mut tx.params, &mut tx.cmds);
+    let spare = &mut tx.name_spare[..];
     c.list(|c| {
         c.lit(b"{\"id\":")?;
         let id = c.id()?;
@@ -1002,7 +1020,7 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             use_parent_material = c.boolean()?;
             c.lit(b",\"instance_params\":")?;
             let start = params.len();
-            c.list(|c| param(c, params, start))?;
+            c.list(|c| param(c, params, spare, start))?;
             instance_params = Rng {
                 start: start as u32,
                 end: params.len() as u32,
@@ -1102,9 +1120,10 @@ pub(super) fn transaction(meta: &[u8], version: u8, tx: &mut TxMeta) -> O<()> {
             Some(())
         })?;
         c.lit(b",\"materials\":")?;
-        let (materials, params) = (&mut tx.materials, &mut tx.params);
+        let (materials, params, spare) =
+            (&mut tx.materials, &mut tx.params, &mut tx.name_spare[..]);
         c.list(|c| {
-            materials.push(material(c, params)?);
+            materials.push(material(c, params, spare)?);
             Some(())
         })?;
     }

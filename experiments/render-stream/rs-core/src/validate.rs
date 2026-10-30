@@ -51,6 +51,14 @@ pub enum DigestPolicy {
     Inline,
     /// `accept` records `None`; the caller fills digests later with `set_record_digest`.
     Deferred,
+    /// PH2: `accept` records `None` and nobody fills it: a live client that never reads a record
+    /// digest (`@godot-scene-web/render-stream-client`). Every check is unchanged: the resource
+    /// payload hash (`resource-hash`, still SHA-256: it is compared with the host's), seq/base
+    /// rules, W11t's checksum and /13's `predict-check`. The dynamic mesh body and multimesh
+    /// buffer digests stay too, as state identity (no-op detection, `mesh-version`,
+    /// `multimesh-version`), but as a cheaper 256-bit identity than SHA-256 (`fast_identity`):
+    /// they are only compared with each other.
+    Never,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -596,6 +604,10 @@ pub struct Validator {
     opts: Options,
     /// W11c receiver sabotage `no-prune` ([`Validator::set_no_prune`]).
     no_prune: bool,
+    /// PH2 sabotage `ph2-skip-body-digest` ([`Validator::set_skip_body_digests`]): a dynamic mesh
+    /// body gets no digest, so a changed body resolves equal to the old one. It shows that the
+    /// body digests are state identity, which [`DigestPolicy::Never`] must keep.
+    skip_body_digests: bool,
     /// W11d: the transport skipped transactions since the last accepted one
     /// ([`Validator::transport_skip`]); cleared by the full transaction that ends it.
     skipping: bool,
@@ -640,6 +652,9 @@ pub struct Validator {
     undo: Vec<Undo>,
     /// Recycled item buffers (replaced entries, after commit).
     item_pool: Vec<Item>,
+    /// PH2: recycled material buffers (replaced entries after commit, and unchanged rebuilds), so
+    /// a material whose parameters change every transaction resolves without reallocating them.
+    material_pool: Vec<Material>,
     old_defaults: (Filter, Repeat),
     /// P3-TM: the transaction's `shader_time` value, read in `apply`, committed with it.
     shader_time: Option<f64>,
@@ -929,6 +944,78 @@ fn mesh_entry_error(m: &Mesh) -> Option<&'static str> {
             .reason
             .is_some()
             .then_some("an \"ok\" entry must have reason null"),
+    }
+}
+
+/// PH2: the dynamic mesh body and multimesh buffer digests under [`DigestPolicy::Never`]. They
+/// are state identity only (no-op detection, `mesh-version`, `multimesh-version`): compared with
+/// each other, never with a host's hash, and never written out by a client. So a 256-bit identity
+/// far cheaper than SHA-256 in wasm serves: two XXH64 lanes seeded apart, the length, and a tag
+/// (a different value from the SHA-256 of the same bytes, so the two never mix).
+fn fast_identity(bytes: &[u8]) -> Hash {
+    let mut out = [0u8; 32];
+    out[..8].copy_from_slice(&crate::coding::xxh64(bytes, 0).to_le_bytes());
+    out[8..16].copy_from_slice(&crate::coding::xxh64(bytes, 0x9e37_79b9_7f4a_7c15).to_le_bytes());
+    out[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    out[24..].copy_from_slice(b"ph2-xxh\0");
+    Hash(out)
+}
+
+/// PH2: `*dst = src.iter().map(|p| lift_param(p, f64b)).collect()`, reusing `dst`'s parameter
+/// list, each name that is already the same, and each packed value's floats.
+fn lift_params_into(dst: &mut Vec<Param>, src: &[meta::ParamMeta], f64b: F64s) {
+    dst.truncate(src.len());
+    for (d, p) in dst.iter_mut().zip(src) {
+        if d.name != p.name {
+            d.name = p.name.clone();
+        }
+        d.ty = p.ty;
+        lift_value_into(&mut d.value, p, f64b);
+    }
+    for p in &src[dst.len()..] {
+        dst.push(lift_param(p, f64b));
+    }
+}
+
+/// [`lift_param`]'s value, into `dst` (reusing its floats when it holds a vector).
+fn lift_value_into(dst: &mut ParamValue, p: &meta::ParamMeta, f64b: F64s) {
+    let comps = p.ty.components() as usize;
+    let f = p.f as usize;
+    let fill = |v: &mut Vec<f64>, n: usize| {
+        v.clear();
+        v.extend((f..f + n).map(|i| f64b.get(i)));
+    };
+    match p.ty {
+        VariantType::Nil => *dst = ParamValue::Nil,
+        VariantType::Rid => *dst = ParamValue::Tex(p.tex.unwrap_or(0)),
+        t if t.is_packed() => {
+            let n = p.n as usize * comps;
+            let mut flat = match std::mem::replace(dst, ParamValue::Nil) {
+                ParamValue::Flat(v) | ParamValue::Nested { values: v, .. } => v,
+                _ => Vec::new(),
+            };
+            fill(&mut flat, n);
+            *dst = if comps == 1 {
+                ParamValue::Flat(flat)
+            } else {
+                ParamValue::Nested {
+                    components: comps as u32,
+                    values: flat,
+                }
+            };
+        }
+        _ => {
+            if comps == 1 {
+                *dst = ParamValue::Scalar(f64b.get(f));
+            } else {
+                let mut flat = match std::mem::replace(dst, ParamValue::Nil) {
+                    ParamValue::Flat(v) | ParamValue::Nested { values: v, .. } => v,
+                    _ => Vec::new(),
+                };
+                fill(&mut flat, comps);
+                *dst = ParamValue::Flat(flat);
+            }
+        }
     }
 }
 
@@ -1658,11 +1745,12 @@ impl Validator {
             opts.version >= 12 && session.features.ops.iter().any(|o| o == "add_particles");
         let digest = match opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(session_record)),
-            DigestPolicy::Deferred => None,
+            DigestPolicy::Deferred | DigestPolicy::Never => None,
         };
         Ok(Validator {
             opts,
             no_prune: false,
+            skip_body_digests: false,
             skipping: false,
             skipped_tx: 0,
             session,
@@ -1694,6 +1782,7 @@ impl Validator {
             tx,
             undo: Vec::new(),
             item_pool: Vec::new(),
+            material_pool: Vec::new(),
             old_defaults: (Filter::Nearest, Repeat::Disabled),
             shader_time: None,
             dirty: Dirty::default(),
@@ -1879,6 +1968,11 @@ impl Validator {
         self.opts.no_predict_reset = on;
     }
 
+    /// PH2 sabotage `ph2-skip-body-digest`: dynamic mesh bodies resolve without a digest.
+    pub fn set_skip_body_digests(&mut self, on: bool) {
+        self.skip_body_digests = on;
+    }
+
     /// W11d (render-stream-11.md "As built (W11d)"): the transport skipped one or more
     /// transactions (W11t's `coding` resync: a based message whose base is missing or that does
     /// not decode, and every based one after it until the full transaction the resync forces).
@@ -1954,7 +2048,7 @@ impl Validator {
         let t = prof::start();
         let digest = match self.opts.digest {
             DigestPolicy::Inline => Some(wire::record_sha256(record)),
-            DigestPolicy::Deferred => None,
+            DigestPolicy::Deferred | DigestPolicy::Never => None,
         };
         prof::add(prof::RECORD_DIGEST, t);
         self.digests.push(digest);
@@ -3085,6 +3179,12 @@ impl Validator {
     /// `bl[9]` is /12's optional `pt_f32` (empty when absent).
     fn apply(&mut self, bl: [&[u8]; 10], u8_start: usize, mm_start: usize) {
         let v = self.opts.version;
+        // PH2: under `DigestPolicy::Never` the body digests are a cheaper identity.
+        let body_digest = if self.opts.digest == DigestPolicy::Never {
+            fast_identity
+        } else {
+            wire::sha256
+        };
         let tx = &self.tx;
         let st = &mut self.state;
         self.cv_stable = None;
@@ -3261,26 +3361,32 @@ impl Validator {
         }
         if v >= 5 {
             for m in &tx.materials {
-                let mat = Material {
-                    id: m.id,
-                    origin: m.origin,
-                    status: m.status,
-                    reason: m.reason,
-                    version: m.version,
-                    shader: m.shader,
-                    params: m
-                        .params
-                        .of(&tx.params)
-                        .iter()
-                        .map(|p| lift_param(p, param_f64))
-                        .collect(),
-                };
+                // PH2: built into a recycled entry (its parameter names and floats reused).
+                let mut mat = self.material_pool.pop().unwrap_or_else(|| Material {
+                    id: 0,
+                    origin: Origin::Created,
+                    status: EntryStatus::Ok,
+                    reason: None,
+                    version: 0,
+                    shader: None,
+                    params: Vec::new(),
+                });
+                mat.id = m.id;
+                mat.origin = m.origin;
+                mat.status = m.status;
+                mat.reason = m.reason;
+                mat.version = m.version;
+                mat.shader = m.shader;
+                lift_params_into(&mut mat.params, m.params.of(&tx.params), param_f64);
                 if st
                     .materials
                     .get(&m.id)
                     .is_some_and(|old| material_identical(old, &mat))
                 {
                     self.was_new[5].push(false);
+                    if self.material_pool.len() < 1024 {
+                        self.material_pool.push(mat);
+                    }
                     continue;
                 }
                 let prev = st.materials.insert(m.id, mat);
@@ -3425,7 +3531,8 @@ impl Validator {
                             for (k, s) in surfaces_buf.iter_mut().enumerate() {
                                 let n = s.payload_bytes as usize;
                                 let body = mesh_u8.get(p..p + n).unwrap_or(&[]);
-                                s.body_sha256 = Some(wire::sha256(body));
+                                s.body_sha256 =
+                                    (!self.skip_body_digests).then(|| body_digest(body));
                                 self.bodies.push(BodyRef {
                                     mesh: m.id,
                                     surface: k as u32,
@@ -3505,7 +3612,7 @@ impl Validator {
                         start: mm_start + 4 * at,
                         floats: n,
                     });
-                    Some(wire::sha256(bytes))
+                    Some(body_digest(bytes))
                 } else {
                     st.multimeshes.get(&m.id).and_then(|o| o.buffer_sha256)
                 };
@@ -5548,14 +5655,27 @@ impl Validator {
         for t in &tx.textures {
             self.last_texture.insert(t.id, t.clone());
         }
+        // PH2: the earlier entries are overwritten in place (no per-transaction reallocation).
         for m in &tx.meshes {
-            self.last_mesh.insert(m.id, st.meshes[&m.id].clone());
+            let cur = &st.meshes[&m.id];
+            match self.last_mesh.get_mut(&m.id) {
+                Some(e) => e.assign_from(cur),
+                None => {
+                    self.last_mesh.insert(m.id, cur.clone());
+                }
+            }
         }
         for s in &tx.shaders {
             self.last_shader.insert(s.id, s.clone());
         }
         for m in &tx.materials {
-            self.last_material.insert(m.id, st.materials[&m.id].clone());
+            let cur = &st.materials[&m.id];
+            match self.last_material.get_mut(&m.id) {
+                Some(e) => e.assign_from(cur),
+                None => {
+                    self.last_material.insert(m.id, cur.clone());
+                }
+            }
         }
         for m in &tx.multimeshes {
             self.last_multimesh
@@ -5624,12 +5744,16 @@ impl Validator {
             self.commit_names();
         }
         self.skipping = false;
-        // Recycle the replaced items' buffers.
+        // Recycle the replaced items' and materials' buffers.
         for u in self.undo.drain(..) {
-            if let Undo::Item(_, Some(it), _) = u {
-                if self.item_pool.len() < 4096 {
+            match u {
+                Undo::Item(_, Some(it), _) if self.item_pool.len() < 4096 => {
                     self.item_pool.push(it);
                 }
+                Undo::Material(_, Some(m)) if self.material_pool.len() < 1024 => {
+                    self.material_pool.push(m);
+                }
+                _ => {}
             }
         }
     }

@@ -83,6 +83,15 @@ pub struct Names {
     material_refs: super::IdMap<u32>,
     /// Textures the named materials' parameters and their shaders' default textures name.
     from_materials: BTreeSet<Id>,
+    /// PH2: each material `from_materials` was last built from, with what it named then
+    /// ([`material_textures`]), so a transaction that only upserts materials re-builds it only
+    /// when one of them names other textures.
+    from_material: super::IdMap<Vec<Id>>,
+    /// PH2 diagnostics: always re-build `from_materials` (the oracle of the fast path).
+    pub always_rebuild_materials: bool,
+    /// PH2 sabotage `ph2-skip-material-textures`: the fast path never re-builds, so a named
+    /// material's new texture parameter is not named.
+    pub skip_material_rebuild: bool,
     /// P3-CT: the directly named (commands, instance parameters, materials) `ok` canvas textures.
     canvas_named: BTreeSet<Id>,
     /// P3-CT: their diffuses, named through them.
@@ -102,6 +111,28 @@ pub struct Names {
 /// address, sequence number and frame: a new transaction, or another state, misses).
 type NamedKey = (u64, usize, i64, i64);
 
+/// PH2: what material `mid` adds to `from_materials` (nothing unless `ok`): its texture
+/// parameters, then its `ok` shader's default textures, in that order.
+fn material_textures(state: &ResolvedState, mid: Id, out: &mut Vec<Id>) {
+    out.clear();
+    let Some(m) = state.materials.get(&mid) else {
+        return;
+    };
+    if m.status != EntryStatus::Ok {
+        return;
+    }
+    for p in &m.params {
+        if let crate::state::ParamValue::Tex(t) = p.value {
+            out.push(t);
+        }
+    }
+    if let Some(sh) = m.shader.and_then(|s| state.shaders.get(&s)) {
+        if sh.status == EntryStatus::Ok {
+            out.extend(sh.default_textures.iter().map(|d| d.tex));
+        }
+    }
+}
+
 fn item_names(it: &crate::state::Item) -> Vec<Id> {
     let mut out: Vec<Id> = it.commands.list.iter().filter_map(|c| c.tex()).collect();
     for p in &it.instance_params {
@@ -117,8 +148,11 @@ fn item_names(it: &crate::state::Item) -> Vec<Id> {
 impl Names {
     pub fn clear(&mut self) {
         let generation = self.generation + 1;
+        let (oracle, sabotage) = (self.always_rebuild_materials, self.skip_material_rebuild);
         *self = Names::default();
         self.generation = generation;
+        self.always_rebuild_materials = oracle;
+        self.skip_material_rebuild = sabotage;
     }
 
     pub fn is_named(&self, id: Id) -> bool {
@@ -218,15 +252,35 @@ impl Names {
                 touch(self, *id, state.items.get(id));
             }
         }
-        if all
-            || self.materials_dirty
-            || !delta.materials_upserted.is_empty()
-            || !delta.materials_removed.is_empty()
-            || !delta.shaders_upserted.is_empty()
-            || !delta.shaders_removed.is_empty()
-            || !delta.particles_upserted.is_empty()
-            || !delta.particles_removed.is_empty()
-        {
+        // PH2: only materials were upserted (no naming, removal, shader or particles change): the
+        // set can change only through what an upserted material it was built from names now.
+        let only_upserts = !all
+            && !self.materials_dirty
+            && !self.always_rebuild_materials
+            && delta.materials_removed.is_empty()
+            && delta.shaders_upserted.is_empty()
+            && delta.shaders_removed.is_empty()
+            && delta.particles_upserted.is_empty()
+            && delta.particles_removed.is_empty();
+        let rebuild = if only_upserts {
+            let mut now = Vec::new();
+            delta.materials_upserted.iter().any(|mid| {
+                !self.skip_material_rebuild
+                    && self.from_material.get(mid).is_some_and(|was| {
+                        material_textures(state, *mid, &mut now);
+                        *was != now
+                    })
+            })
+        } else {
+            all || self.materials_dirty
+                || !delta.materials_upserted.is_empty()
+                || !delta.materials_removed.is_empty()
+                || !delta.shaders_upserted.is_empty()
+                || !delta.shaders_removed.is_empty()
+                || !delta.particles_upserted.is_empty()
+                || !delta.particles_removed.is_empty()
+        };
+        if rebuild {
             self.materials_dirty = false;
             let mut set = BTreeSet::new();
             // PM6b: every `ok` emitter's process material too: GSW's simulation samples its curve
@@ -244,25 +298,12 @@ impl Names {
                 .map(|(m, _)| *m)
                 .chain(process.iter().copied())
                 .collect::<BTreeSet<Id>>();
+            self.from_material.clear();
             for mid in &mids {
-                let Some(m) = state.materials.get(mid) else {
-                    continue;
-                };
-                if m.status != EntryStatus::Ok {
-                    continue;
-                }
-                for p in &m.params {
-                    if let crate::state::ParamValue::Tex(t) = p.value {
-                        set.insert(t);
-                    }
-                }
-                if let Some(sh) = m.shader.and_then(|s| state.shaders.get(&s)) {
-                    if sh.status == EntryStatus::Ok {
-                        for d in &sh.default_textures {
-                            set.insert(d.tex);
-                        }
-                    }
-                }
+                let mut named = Vec::new();
+                material_textures(state, *mid, &mut named);
+                set.extend(named.iter().copied());
+                self.from_material.insert(*mid, named);
             }
             for t in set.symmetric_difference(&self.from_materials) {
                 self.changed.insert(*t);

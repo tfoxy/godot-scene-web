@@ -14,7 +14,7 @@
 //! more: a later transaction's null `u8` keeps the earlier body, and its frees and shape changes are
 //! seen by [`DynamicMeshes::retain`], which `ingest` runs.
 
-use super::payloads::{mesh_geometry, MeshBuffers, MeshGeometry};
+use super::payloads::{mesh_geometry_reusing, MeshBuffers, MeshGeometry};
 use crate::state::{Id, ResolvedState};
 use crate::validate::BodyRef;
 use crate::wire::Error;
@@ -59,6 +59,8 @@ pub struct DynamicMeshes {
     pub bodies_total: u64,
     /// Body bytes ingested since the session began (the `mesh_u8` bytes; evidence).
     pub body_bytes_total: u64,
+    /// PH2: geometries replaced by newer bodies, whose buffers the next bodies decode into.
+    spare: Vec<MeshGeometry>,
 }
 
 impl DynamicMeshes {
@@ -140,7 +142,7 @@ impl DynamicMeshes {
                 surface.vertex_count,
                 surface.index_count,
             )?;
-            let g = mesh_geometry(
+            let g = mesh_geometry_reusing(
                 raw.primitive,
                 raw.format,
                 raw.aabb,
@@ -153,6 +155,7 @@ impl DynamicMeshes {
                     index: raw.index_data,
                     uv_scale: raw.uv_scale,
                 },
+                self.spare.pop(),
             )
             .map_err(|e| Error::new("resource-payload", e))?;
             self.serial += 1;
@@ -167,6 +170,9 @@ impl DynamicMeshes {
             self.bytes += g.data_bytes();
             if let Some(old) = m.surfaces[k].replace(g) {
                 self.bytes = self.bytes.saturating_sub(old.data_bytes());
+                if self.spare.len() < 64 {
+                    self.spare.push(old);
+                }
             }
             m.serials[k] = self.serial;
         }

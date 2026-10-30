@@ -11,6 +11,7 @@ import {
 import {
   CLIENT_INBOUND_BYTES,
   CLIENT_LIVE_CODING,
+  coreStartOptions,
   gpuFormatsOf,
 } from "./hello";
 import { CoreLoadError, loadCore, type RenderStreamCore } from "./loader";
@@ -169,17 +170,7 @@ class Client implements RenderStreamClient {
     }
     let g: GswRs;
     try {
-      g = new mod.GswRs(
-        canvas,
-        JSON.stringify({
-          digest: "inline",
-          sabotage: [],
-          format: "rgb10a2",
-          texture_encodings: "decoded",
-          live_protocol: protocol,
-          log: "summary",
-        }),
-      );
+      g = new mod.GswRs(canvas, coreStartOptions(protocol));
     } catch (e) {
       const probe = document.createElement("canvas").getContext("webgl2");
       probe?.getExtension("WEBGL_lose_context")?.loseContext();

@@ -104,6 +104,9 @@ pub struct Stats {
 #[derive(Clone, Default)]
 struct Opts {
     digest_inline: bool,
+    /// PH2 `"digest":"none"`: no record digest is ever computed (`DigestPolicy::Never`), for a
+    /// caller that never reads one (the client package). The harness receiver never sends it.
+    digest_never: bool,
     skip_payload_hash: bool,
     digest_skip: bool,
     format_rgba8: bool,
@@ -226,9 +229,11 @@ fn find_number(json: &str, key: &str) -> Option<u64> {
 }
 
 fn parse_options(json: &str) -> Result<Opts, String> {
-    // A flat, caller-written object: {"digest":"inline"|"deferred","sabotage":[...],"format":...}.
+    // A flat, caller-written object: {"digest":"inline"|"deferred"|"none","sabotage":[...],
+    // "format":...}.
     let mut o = Opts {
         digest_inline: json.contains("\"digest\":\"inline\""),
+        digest_never: json.contains("\"digest\":\"none\""),
         ..Opts::default()
     };
     // G7t: draw the target in Godot's orientation and screen transform, so pixel-centre ties
@@ -1106,8 +1111,11 @@ impl GswRs {
         let opts = Options {
             version: self.version,
             // Live mode digests inline: a message is not kept after `live_accept`, and D31's
-            // deferred digest needs the bytes, which only file mode holds.
-            digest: if self.opts.digest_inline || self.live {
+            // deferred digest needs the bytes, which only file mode holds. PH2: unless the caller
+            // reads no digest at all.
+            digest: if self.opts.digest_never {
+                DigestPolicy::Never
+            } else if self.opts.digest_inline || self.live {
                 DigestPolicy::Inline
             } else {
                 DigestPolicy::Deferred
@@ -1537,7 +1545,8 @@ impl GswRs {
         code
     }
 
-    /// The last accepted record's SHA-256 (live mode digests inline): 32 bytes.
+    /// The last accepted record's SHA-256 (live mode digests inline): 32 bytes, zeros under
+    /// `"digest":"none"`.
     pub fn last_digest_ptr(&self) -> *const u8 {
         self.last_digest.as_ptr()
     }
@@ -2015,7 +2024,9 @@ impl GswRs {
                 .store_max_excess
                 .max(entries as i64 - (v.names_len() + v.carried_len()) as i64);
             w.dynamic_undrawn += a.meshes.dynamic_undrawn;
-            if !self.opts.summary_log {
+            // PH2: `"digest":"none"` keeps body identities, not SHA-256s, so it has no
+            // `dynamic-applied` evidence to give.
+            if !self.opts.summary_log && !self.opts.digest_never {
                 let st = v.state();
                 let mut ids: Vec<Id> = st
                     .meshes
@@ -2338,6 +2349,10 @@ impl GswRs {
         let Some(v) = self.validator.as_mut() else {
             return 0;
         };
+        if self.opts.digest_never {
+            // PH2: `"digest":"none"` reads no digest, so none is owed.
+            return 0;
+        }
         let mut n = 0;
         let len = v.record_digests().len();
         let stop = if self.opts.digest_skip {

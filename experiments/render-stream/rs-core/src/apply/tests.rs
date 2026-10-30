@@ -435,27 +435,43 @@ fn rebuilt_applier_inherits_resident_textures_and_uploads_nothing_again() {
 }
 
 #[test]
-fn custom_rect_off_screen_hides_on_screen_content_and_moving_on_screen_rewalks() {
+fn custom_rect_off_screen_hides_on_screen_content_and_moving_on_screen_reassembles() {
     // _attach_canvas_item_for_draw: the item's global rect (here its custom rect) must touch the
     // viewport for the item to draw, whatever its commands cover (gate 3's `cull` region).
-    let mut it = item(1, ON_ROOT, rect_cmds([0.0, 0.0, 8.0, 8.0], [1.0; 4]));
-    it.custom_rect = true;
-    it.custom_rect_rect = [-100.0, 0.0, 10.0, 10.0];
-    let mut s = state_with(vec![it]);
-    let mut a = Applier::new(viewport());
-    let store = PayloadStore::default();
-    a.apply(&s, &full_delta(&s), &store);
-    a.list.consumed();
-    assert!(a.list.draws.is_empty());
-    // Touching the viewport's edge counts (Rect2::intersects with borders).
-    s.items.get_mut(&1).unwrap().xform = [1.0, 0.0, 0.0, 1.0, 90.0, 0.0];
-    let delta = TxDelta {
-        items_upserted: vec![1],
-        ..TxDelta::default()
-    };
-    let st = a.apply(&s, &delta, &store).clone();
-    assert!(st.structural, "coming on screen re-walks");
-    assert_eq!(a.list.draws.len(), 1);
+    // PH2: the walk parks the off-screen item, so coming on screen (and going off again) flips
+    // its entry and re-assembles; under `move_walks` (the oracle) it re-walks.
+    for move_walks in [false, true] {
+        let mut it = item(1, ON_ROOT, rect_cmds([0.0, 0.0, 8.0, 8.0], [1.0; 4]));
+        it.custom_rect = true;
+        it.custom_rect_rect = [-100.0, 0.0, 10.0, 10.0];
+        let mut s = state_with(vec![it]);
+        let mut a = Applier::new(viewport());
+        a.move_walks = move_walks;
+        let store = PayloadStore::default();
+        a.apply(&s, &full_delta(&s), &store);
+        a.list.consumed();
+        assert!(a.list.draws.is_empty());
+        // Touching the viewport's edge counts (Rect2::intersects with borders).
+        s.items.get_mut(&1).unwrap().xform = [1.0, 0.0, 0.0, 1.0, 90.0, 0.0];
+        let delta = TxDelta {
+            items_upserted: vec![1],
+            ..TxDelta::default()
+        };
+        let st = a.apply(&s, &delta, &store).clone();
+        a.list.consumed();
+        assert_eq!(a.list.draws.len(), 1);
+        if move_walks {
+            assert!(st.structural, "coming on screen re-walks");
+        } else {
+            assert!(!st.structural && st.reassembled, "coming on screen re-assembles");
+            assert_eq!(st.why, Why::MOVE_ATTACH);
+        }
+        // And off again.
+        s.items.get_mut(&1).unwrap().xform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let st = a.apply(&s, &delta, &store).clone();
+        assert!(a.list.draws.is_empty());
+        assert_eq!(st.structural, move_walks);
+    }
 }
 
 #[test]

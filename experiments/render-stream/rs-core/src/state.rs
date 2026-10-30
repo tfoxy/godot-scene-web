@@ -604,7 +604,8 @@ pub struct MeshSurface {
     /// mesh surfaces"), whose bytes travel in the transaction's `mesh_u8` block.
     pub hash: Option<Hash>,
     /// /11 dynamic surfaces only: the SHA-256 of the surface's current body (the validator keeps
-    /// the digest, not the bytes). `None` on a static surface and below /11.
+    /// the digest, not the bytes). `None` on a static surface and below /11. PH2: under
+    /// `DigestPolicy::Never` a cheaper 256-bit identity of the body instead (state identity only).
     pub body_sha256: Option<Hash>,
     pub payload_bytes: i64,
     pub primitive: Primitive,
@@ -629,6 +630,18 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// PH2: `*self = src.clone()`, reusing the surface list (see [`Material::assign_from`]).
+    pub fn assign_from(&mut self, src: &Mesh) {
+        self.id = src.id;
+        self.origin = src.origin;
+        self.adopted_content = src.adopted_content.clone();
+        self.status = src.status;
+        self.reason = src.reason;
+        self.version = src.version;
+        self.custom_aabb = src.custom_aabb;
+        self.surfaces.clone_from(&src.surfaces);
+    }
+
     /// /11: an `ok` mesh whose surfaces carry no payload hash (render-stream-11.md "Dynamic mesh
     /// surfaces"). The validator guarantees all of its surfaces are dynamic, and that it has one.
     pub fn is_dynamic(&self) -> bool {
@@ -657,7 +670,8 @@ pub struct Multimesh {
     pub visible: i64,
     /// The six custom-AABB floats (position, size; all zero when none is set). `None` on `freed`.
     pub custom_aabb: Option<[f32; 6]>,
-    /// SHA-256 of the current buffer's little-endian f32 bytes; `None` unless `ok`.
+    /// SHA-256 of the current buffer's little-endian f32 bytes; `None` unless `ok`. PH2: under
+    /// `DigestPolicy::Never` a cheaper 256-bit identity of them instead.
     pub buffer_sha256: Option<Hash>,
 }
 
@@ -912,6 +926,58 @@ pub struct Material {
     pub version: i64,
     pub shader: Option<Id>,
     pub params: Vec<Param>,
+}
+
+impl Material {
+    /// PH2: `*self = src.clone()`, reusing this entry's allocations (its parameter list, each
+    /// parameter's name when it is the same, and a packed value's floats): the validator's
+    /// per-transaction bookkeeping copies, which a derived `clone_from` would reallocate.
+    pub fn assign_from(&mut self, src: &Material) {
+        self.id = src.id;
+        self.origin = src.origin;
+        self.status = src.status;
+        self.reason = src.reason;
+        self.version = src.version;
+        self.shader = src.shader;
+        assign_params(&mut self.params, &src.params);
+    }
+}
+
+/// PH2: `*dst = src.to_vec()`, reusing `dst`'s allocations (see [`Material::assign_from`]).
+pub fn assign_params(dst: &mut Vec<Param>, src: &[Param]) {
+    dst.truncate(src.len());
+    for (d, s) in dst.iter_mut().zip(src) {
+        if d.name != s.name {
+            d.name = s.name.clone();
+        }
+        d.ty = s.ty;
+        d.value.assign_from(&s.value);
+    }
+    let have = dst.len();
+    dst.extend_from_slice(&src[have..]);
+}
+
+impl ParamValue {
+    /// PH2: `*self = src.clone()`, reusing a packed value's floats.
+    pub fn assign_from(&mut self, src: &ParamValue) {
+        match (&mut *self, src) {
+            (ParamValue::Flat(d), ParamValue::Flat(s)) => d.clone_from(s),
+            (
+                ParamValue::Nested {
+                    components: dc,
+                    values: dv,
+                },
+                ParamValue::Nested {
+                    components: sc,
+                    values: sv,
+                },
+            ) => {
+                *dc = *sc;
+                dv.clone_from(sv);
+            }
+            (d, s) => *d = s.clone(),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]

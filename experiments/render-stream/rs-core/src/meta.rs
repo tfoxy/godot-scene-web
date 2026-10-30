@@ -2276,6 +2276,10 @@ pub struct TxMeta {
     pub cmds: Vec<CmdMeta>,
     pub ids: Vec<Id>,
     pub params: Vec<ParamMeta>,
+    /// PH2: the previous transaction's parameter names, by position in `params`: the fast parser
+    /// takes the one at its position when the name is the same, instead of allocating it again
+    /// (a material changing every transaction re-sends the same names in the same order).
+    pub(crate) name_spare: Vec<Box<str>>,
     pub textures: Vec<Texture>,
     pub meshes: Vec<MeshMeta>,
     pub shaders: Vec<Shader>,
@@ -2308,7 +2312,8 @@ impl TxMeta {
         self.items.clear();
         self.cmds.clear();
         self.ids.clear();
-        self.params.clear();
+        self.name_spare.clear();
+        self.name_spare.extend(self.params.drain(..).map(|p| p.name));
         self.textures.clear();
         self.meshes.clear();
         self.shaders.clear();

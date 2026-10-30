@@ -415,6 +415,30 @@ pub fn mesh_geometry(
     index_count: usize,
     raw: MeshBuffers<'_>,
 ) -> Result<MeshGeometry, String> {
+    mesh_geometry_reusing(primitive, format, aabb, vertex_count, index_count, raw, None)
+}
+
+/// PH2: [`mesh_geometry`] into a replaced geometry's buffers (`spare`), so a dynamic body that
+/// arrives every transaction is decoded without allocating them again.
+pub fn mesh_geometry_reusing(
+    primitive: Primitive,
+    format: i64,
+    aabb: [f32; 6],
+    vertex_count: usize,
+    index_count: usize,
+    raw: MeshBuffers<'_>,
+    spare: Option<MeshGeometry>,
+) -> Result<MeshGeometry, String> {
+    let (mut positions, mut colors_buf, mut uvs_buf, mut indices_buf, mut buffers) = match spare {
+        Some(g) => (
+            g.positions,
+            g.colors.unwrap_or_default(),
+            g.uvs.unwrap_or_default(),
+            g.indices.unwrap_or_default(),
+            g.buffers,
+        ),
+        None => Default::default(),
+    };
     let (vertex_data, attribute_data, index_data) = (raw.vertex, raw.attribute, raw.index);
     if format & ARRAY_FLAG_COMPRESS_ATTRIBUTES != 0 {
         return Err("compressed attributes".into());
@@ -423,9 +447,9 @@ pub fn mesh_geometry(
     if vertex_data.len() < vertex_count * 8 {
         return Err("short vertex buffer".into());
     }
-    let positions: Vec<[f32; 2]> = (0..vertex_count)
-        .map(|i| [f32_at(vertex_data, 8 * i), f32_at(vertex_data, 8 * i + 4)])
-        .collect();
+    positions.clear();
+    positions
+        .extend((0..vertex_count).map(|i| [f32_at(vertex_data, 8 * i), f32_at(vertex_data, 8 * i + 4)]));
     let has_color = format & ARRAY_FORMAT_COLOR != 0;
     let has_uv = format & ARRAY_FORMAT_TEX_UV != 0;
     let stride = attribute_data.len().checked_div(vertex_count).unwrap_or(0);
@@ -434,27 +458,27 @@ pub fn mesh_geometry(
         return Err("short attribute buffer".into());
     }
     let colors = has_color.then(|| {
-        (0..vertex_count)
-            .map(|i| {
-                let o = i * stride;
-                let c = &attribute_data[o..o + 4];
-                [
-                    c[0] as f32 / 255.0,
-                    c[1] as f32 / 255.0,
-                    c[2] as f32 / 255.0,
-                    c[3] as f32 / 255.0,
-                ]
-            })
-            .collect()
+        colors_buf.clear();
+        colors_buf.extend((0..vertex_count).map(|i| {
+            let o = i * stride;
+            let c = &attribute_data[o..o + 4];
+            [
+                c[0] as f32 / 255.0,
+                c[1] as f32 / 255.0,
+                c[2] as f32 / 255.0,
+                c[3] as f32 / 255.0,
+            ]
+        }));
+        colors_buf
     });
     let uv_offset = if has_color { 4 } else { 0 };
     let uvs = has_uv.then(|| {
-        (0..vertex_count)
-            .map(|i| {
-                let o = i * stride + uv_offset;
-                [f32_at(attribute_data, o), f32_at(attribute_data, o + 4)]
-            })
-            .collect()
+        uvs_buf.clear();
+        uvs_buf.extend((0..vertex_count).map(|i| {
+            let o = i * stride + uv_offset;
+            [f32_at(attribute_data, o), f32_at(attribute_data, o + 4)]
+        }));
+        uvs_buf
     });
     let indices = if index_count > 0 {
         let wide = vertex_count > 65536;
@@ -462,25 +486,30 @@ pub fn mesh_geometry(
         if index_data.len() < index_count * size {
             return Err("short index buffer".into());
         }
-        Some(
-            (0..index_count)
-                .map(|i| {
-                    if wide {
-                        u32::from_le_bytes([
-                            index_data[4 * i],
-                            index_data[4 * i + 1],
-                            index_data[4 * i + 2],
-                            index_data[4 * i + 3],
-                        ])
-                    } else {
-                        u16::from_le_bytes([index_data[2 * i], index_data[2 * i + 1]]) as u32
-                    }
-                })
-                .collect(),
-        )
+        indices_buf.clear();
+        indices_buf.extend((0..index_count).map(|i| {
+            if wide {
+                u32::from_le_bytes([
+                    index_data[4 * i],
+                    index_data[4 * i + 1],
+                    index_data[4 * i + 2],
+                    index_data[4 * i + 3],
+                ])
+            } else {
+                u16::from_le_bytes([index_data[2 * i], index_data[2 * i + 1]]) as u32
+            }
+        }));
+        Some(indices_buf)
     } else {
         None
     };
+    for (b, src) in buffers
+        .iter_mut()
+        .zip([raw.vertex, raw.attribute, raw.skin, raw.index])
+    {
+        b.clear();
+        b.extend_from_slice(src);
+    }
     Ok(MeshGeometry {
         primitive,
         positions,
@@ -502,12 +531,7 @@ pub fn mesh_geometry(
             aabb_bits: aabb.map(f32::to_bits),
             uv_scale_bits: raw.uv_scale.map(f32::to_bits),
         },
-        buffers: [
-            raw.vertex.to_vec(),
-            raw.attribute.to_vec(),
-            raw.skin.to_vec(),
-            raw.index.to_vec(),
-        ],
+        buffers,
     })
 }
 
