@@ -29,6 +29,9 @@ TAG-D ([client-extensions-design.md](client-extensions-design.md) §4) adds an o
 (`item_meta`) and a JSON record type (`item_meta`) to /13 before the freeze. It reserves nothing in
 the transaction syntax beyond keeping item ids explicit; W13z waits for TAG1 and TAG2.
 
+The user lifted the hold on the binary syntax (2026-10-30). Whether to build it, together with the
+compact residual, is decided on its own long-term merit by BIN-D, before the freeze.
+
 ## Why
 
 WB ([results/p3/wb.md](../results/p3/wb.md)) left one item for "the final binary-structure swap":
