@@ -9,7 +9,9 @@
 
 use render_stream_core::state::Hash;
 use render_stream_core::wire;
-use rs_core_capi::core::{Core, KIND_ERROR, KIND_RESOURCE, KIND_SESSION, KIND_TRANSACTION};
+use rs_core_capi::core::{
+    Core, KIND_ERROR, KIND_HELD, KIND_RESOURCE, KIND_SESSION, KIND_TRANSACTION,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -64,7 +66,9 @@ fn replay_at(
     if path.parent().unwrap().ends_with("golden-11") {
         own = path.parent().unwrap().join("../golden-10/payloads");
     }
-    let mut store = if path.parent().unwrap().ends_with("golden-12") {
+    let mut store = if path.parent().unwrap().ends_with("golden-12")
+        || path.parent().unwrap().ends_with("golden-13")
+    {
         g12_payloads()
     } else if own.is_dir() {
         payloads_in(&own)
@@ -837,4 +841,201 @@ fn golden_11_reissues_the_identity_flag() {
         assert!(has(&honest[23].0, 0), "{name}: 23 clears it");
         assert!(!has(&ignored[22].0, 1) && !has(&ignored[23].0, 0), "{name}: sabotage");
     }
+}
+
+/// W13d (render-stream-13.md "As built (W13d)"): a /13 recording applies exactly as its /12
+/// twin: the same RenderingServer call batches after every transaction (the planner sees /12's
+/// model, the ingest reads `record_view`'s reconstructed record), and the same held dynamic bodies.
+#[test]
+fn golden_13_applies_as_golden_12() {
+    let g13 = golden().join("../golden-13");
+    let g12 = golden().join("../golden-12");
+    for (n13, twin) in [
+        ("full.rs13", g12.join("full.rs12")),
+        ("patch.rs13", g12.join("patch.rs12")),
+        ("inline.rs13", g12.join("inline.rs12")),
+        ("predict.rs13", g13.join("predict.rs12")),
+    ] {
+        let a = replay_at(&g13.join(n13), 13, false, "");
+        let b = replay_at(&twin, 12, false, "");
+        assert_eq!(a.len(), b.len(), "{n13}: batch counts");
+        for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+            assert!(x == y, "{n13}: call batch {k} differs from the /12 twin's");
+        }
+        // The held bodies after every transaction.
+        let held = |path: &std::path::Path, version: u8| {
+            let data = std::fs::read(path).unwrap();
+            let spans = wire::split_records(&data, version).unwrap();
+            let mut core = Core::new();
+            assert_eq!(core.session(&data, spans[0].offset, version), KIND_SESSION);
+            let mut out = Vec::new();
+            for s in &spans[1..] {
+                let kind = core.accept(&data, s.offset);
+                assert_ne!(kind, KIND_ERROR, "{}", String::from_utf8_lossy(&core.vt.out));
+                if kind == KIND_TRANSACTION {
+                    let mut h: Vec<_> = held_bodies(&mut core).into_iter().collect();
+                    h.sort();
+                    out.push(h);
+                }
+            }
+            out
+        };
+        let (h13, h12) = (held(&g13.join(n13), 13), held(&twin, 12));
+        assert_eq!(h13, h12, "{n13}: held bodies");
+        if n13 == "predict.rs13" {
+            assert!(h13.iter().any(|h| !h.is_empty()), "{n13}: no dynamic body held");
+        }
+    }
+    // Below /13 the session refuses GRSD, and /13 refuses GRSC (`bad-magic` from the split).
+    let data = std::fs::read(g13.join("patch.rs13")).unwrap();
+    assert!(wire::split_records(&data, 12).is_err());
+}
+
+/// `counters`' integer value of `key` (0 when absent).
+fn counter(core: &mut Core, key: &str) -> i64 {
+    core.counters();
+    if mentions(&core.vt.out, key) {
+        stat_int(&core.vt.out, key)
+    } else {
+        0
+    }
+}
+
+/// W13d: a /13 transaction whose `predict_check` is wrong is refused `predict-check` (nothing
+/// changes); after it every patch is held (`KIND_HELD`, not accepted) until the full transaction,
+/// which `transport_skip` lets in at its later seq; the stream then ends on the unbroken replay's
+/// state. Under `no-predict-reset` the full fails `predict-check` too, so the stream stays held.
+#[test]
+fn predict_check_holds_patches_until_the_full() {
+    let g13 = golden().join("../golden-13");
+    let data = std::fs::read(g13.join("patch.rs13")).unwrap();
+    let spans = wire::split_records(&data, 13).unwrap();
+    // Corrupt seq 12's predict_check (one hex digit; the record keeps its length).
+    let mut bad = data.clone();
+    let mut target = None;
+    for s in &spans[1..] {
+        let f = wire::frame(&data[s.offset..], 0).unwrap();
+        let meta: serde_json::Value = serde_json::from_slice(f.meta).unwrap();
+        if meta["type"] == "transaction" && meta["seq"] == 12 {
+            target = Some(s.offset);
+        }
+    }
+    let at = target.expect("patch.rs13 has seq 12");
+    let key = b"\"predict_check\":\"";
+    let rec_len = wire::le_u32(&data, at) as usize;
+    let rec = &data[at..at + 4 + rec_len];
+    let k = rec.windows(key.len()).position(|w| w == key).unwrap() + key.len();
+    bad[at + k] = if rec[k] == b'0' { b'1' } else { b'0' };
+
+    let run = |sabotage: &str| {
+        let mut core = Core::new();
+        core.set_sabotage(sabotage);
+        assert_eq!(core.session(&bad, spans[0].offset, 13), KIND_SESSION);
+        let mut kinds = Vec::new();
+        for s in &spans[1..] {
+            let kind = core.accept(&bad, s.offset);
+            if kind == KIND_ERROR {
+                if !mentions(&core.vt.out, "predict-check") {
+                    // no-predict-reset: the stream never recovers, so the end record's count is
+                    // refused; the honest run never gets here.
+                    assert!(
+                        sabotage != "" && mentions(&core.vt.out, "end-count-mismatch"),
+                        "{}",
+                        String::from_utf8_lossy(&core.vt.out)
+                    );
+                    break;
+                }
+                core.transport_skip();
+            }
+            kinds.push(kind);
+        }
+        (core, kinds)
+    };
+    let (mut core, kinds) = run("");
+    let errors = kinds.iter().filter(|k| **k == KIND_ERROR).count();
+    let held = kinds.iter().filter(|k| **k == KIND_HELD).count();
+    assert_eq!((errors, held), (1, 3), "seq 12 fails, 13 to 15 are held");
+    assert_eq!(counter(&mut core, "w13_predict_failures"), 1);
+    assert_eq!(counter(&mut core, "w13_predict_dropped"), 3);
+    let mut plain = Core::new();
+    plain.session(&data, spans[0].offset, 13);
+    for s in &spans[1..] {
+        assert_ne!(plain.accept(&data, s.offset), KIND_ERROR);
+    }
+    core.state_json();
+    plain.state_json();
+    assert_eq!(core.text, plain.text, "the resynced stream ends on the unbroken state");
+
+    // no-predict-reset: the honest stream fails at the first full after units exist (seq 16).
+    let mut sab = Core::new();
+    sab.set_sabotage("no-predict-reset");
+    assert_eq!(sab.session(&data, spans[0].offset, 13), KIND_SESSION);
+    let mut first_error = None;
+    for s in &spans[1..] {
+        if sab.accept(&data, s.offset) == KIND_ERROR {
+            first_error = Some(String::from_utf8_lossy(&sab.vt.out).to_string());
+            break;
+        }
+    }
+    let e = first_error.expect("no-predict-reset fails");
+    assert!(e.contains("predict-check") && e.contains("seq 16"), "{e}");
+    let (_, kinds) = run("no-predict-reset");
+    assert!(
+        kinds.iter().filter(|k| **k == KIND_ERROR).count() >= 2,
+        "no-predict-reset: the resync's full fails too"
+    );
+}
+
+/// W13d bench (ignored): `Core::accept` per transaction (rs-core's validator, the /13 un-predict,
+/// the dynamic and multimesh ingest and the retention sweep; no apply) over the recording named by
+/// `RSC_BENCH_RECORDING` at its magic's version, `RSC_BENCH_REPEATS` times (default 5). Prints the
+/// minimum over repeats of each transaction's time, as p50, p95 and mean in µs.
+/// `cargo test --release --test replay -- --ignored --nocapture accept_bench`
+#[test]
+#[ignore]
+fn accept_bench() {
+    let path = std::env::var("RSC_BENCH_RECORDING").expect("RSC_BENCH_RECORDING");
+    let repeats: usize = std::env::var("RSC_BENCH_REPEATS")
+        .ok()
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(5);
+    let data = std::fs::read(&path).unwrap();
+    let version = match &data[..4] {
+        b"GRSD" => 13,
+        b"GRSC" => 12,
+        b"GRSB" => 11,
+        m => panic!("unsupported magic {m:?}"),
+    };
+    let spans = wire::split_records(&data, version).unwrap();
+    let mut best: Vec<u128> = Vec::new();
+    for r in 0..repeats {
+        let mut core = Core::new();
+        assert_eq!(core.session(&data, spans[0].offset, version), KIND_SESSION);
+        let mut k = 0;
+        for s in &spans[1..] {
+            let t = std::time::Instant::now();
+            let kind = core.accept(&data, s.offset);
+            let ns = t.elapsed().as_nanos();
+            assert_ne!(kind, KIND_ERROR, "{}", String::from_utf8_lossy(&core.vt.out));
+            if kind == KIND_TRANSACTION {
+                if r == 0 {
+                    best.push(ns);
+                } else {
+                    best[k] = best[k].min(ns);
+                }
+                k += 1;
+            }
+        }
+    }
+    let mut sorted = best.clone();
+    sorted.sort_unstable();
+    let pct = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize] as f64 / 1000.0;
+    let mean = best.iter().sum::<u128>() as f64 / best.len() as f64 / 1000.0;
+    println!(
+        "accept_bench {path} v{version}: {} transactions, p50 {:.1} us, p95 {:.1} us, mean {:.1} us",
+        best.len(),
+        pct(0.5),
+        pct(0.95),
+        mean
+    );
 }

@@ -339,7 +339,7 @@ export function mapBrowserLeg(
     // G8g: a gate 8 live leg asks for render-stream/8 (the native leg's own word); G8kb: g8l's
     // basis leg asks for /9 (GSW's hello since G8kp, the web export's through receiver.gd since
     // G8ku); W11c: /10 and /11 (GSW's hello; the web export's through receiver.gd since W11e);
-    // W13c: and /12, /13 (GSW's since PM5 and W13c; the web export refuses /13 until W13d);
+    // W13c: and /12, /13 (GSW's since PM5 and W13c; the web export's since PM5 and W13d);
     // every other live leg speaks /7, the browsers' default.
     if (
       env.RS_RECEIVER_PROTOCOL !== undefined &&

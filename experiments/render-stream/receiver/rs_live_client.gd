@@ -43,6 +43,10 @@ const PROTOCOL_V11: String = "render-stream/11"
 ## coding included) under .12.
 const SUBPROTOCOL_V12: String = "render-stream.12"
 const PROTOCOL_V12: String = "render-stream/12"
+## W13d: render-stream/13 (render-stream-13.md "As built (W13a)"): /12's transport and hello under
+## .13 and "render-stream/13".
+const SUBPROTOCOL_V13: String = "render-stream.13"
+const PROTOCOL_V13: String = "render-stream/13"
 const SUBPROTOCOL_V8: String = "render-stream.8"
 const PROTOCOL_V8: String = "render-stream/8"
 const CREDIT_STAGES: Array[String] = ["submitted", "applied"]
@@ -51,7 +55,7 @@ const ACK_STAGES: Array[String] = ["received", "applied", "submitted"]
 var peer: WebSocketPeer = null
 var url: String = ""
 var inbound_buffer_bytes: int = 0
-## 6 to 12: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
+## 6 to 13: the subprotocol offered and the hello sent (RS_RECEIVER_PROTOCOL).
 var version: int = 6
 
 
@@ -90,6 +94,9 @@ func open(target_url: String, inbound_bytes: int, token: String = "", wire_versi
 	elif version == 12:
 		# PM5: a /12 client offers only render-stream.12; /11's transport.
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V12])
+	elif version == 13:
+		# W13d: a /13 client offers only render-stream.13; /12's transport.
+		peer.supported_protocols = PackedStringArray([SUBPROTOCOL_V13])
 	else:
 		peer.supported_protocols = PackedStringArray([SUBPROTOCOL])
 		if token != "":

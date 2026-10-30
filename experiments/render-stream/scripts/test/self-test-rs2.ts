@@ -745,8 +745,10 @@ async function main(): Promise<void> {
     "golden-13/full.rs13 decoded as version 12 is rejected with bad-magic",
   );
   ok(
-    Buffer.from(full13.subarray(0, 4)).toString("latin1") === "GRSD",
-    "golden-13/full.rs13 starts with GRSD",
+    Buffer.from(full13.subarray(0, 4)).toString("latin1") === "GRSD" &&
+      wireVersionOf(full13) === 13 &&
+      wireVersionOf(full12) === 12,
+    "golden-13/full.rs13 starts with GRSD, and wireVersionOf() reads it as 13 (W13d)",
   );
   await version13Cases();
 

@@ -1320,6 +1320,7 @@ run_g8pt() {
 		GRC_PREDRAW_PUMP=0 GRC_HEADLESS_PARTICLES=off GRC_HEADLESS_CANVAS_TEXTURE=off \
 		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-nopump/capture/mm-frames.jsonl"
 	G8PT_ENV=(GRC_ADOPT=arm)
+	run_g8pt_native13
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 	# W13c: GSW at /13 on the headless /13 twins and their /12 twins (gate8-w11-tool.ts --set pt13;
@@ -1328,6 +1329,30 @@ run_g8pt() {
 	(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
 		"$SCRIPT_DIR/gate8-w11-tool.ts" gsw-legs --set pt13 --source "$OUT") \
 		>"$OUT/g8pt/gsw13-legs.log" 2>&1 || echo "run-gate8: g8pt gsw13 legs failed, see $OUT/g8pt/gsw13-legs.log" >&2
+}
+
+# run_g8pt_native13 (W13d, render-stream-13.md "As built (W13d)"): the native receiver at /13 on
+# g8pt's headless /13 twins and their /12 twins (gate8-w11-tool.ts native-plan --set pt13: the four
+# legs W13c's GSW replays, at the same frames), each at --fixed-fps 60 (headless-shim's emitters
+# simulate one 1/60 s step a transaction) under <run>/g8pt/<capture's directory>/receiver;
+# lib/gate8-w13-native-checks.ts judges them (native-pt13-*, mm13-reference).
+run_g8pt_native13() {
+	[ -d "$OUT/g8pt/headless-pump13/capture" ] || [ -d "$OUT/g8pt/headless-shim13/capture" ] || return 0
+	echo "run-gate8: g8pt native13 legs (gate8-w11-tool.ts native-plan --set pt13)"
+	local plan="$OUT/g8pt/native-plan-pt13.tsv" leg capture sink shots sabotage canvas
+	if ! (cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development \
+		"$SCRIPT_DIR/gate8-w11-tool.ts" native-plan --set pt13 --source "$OUT") >"$plan" 2>"$OUT/g8pt/native-plan-pt13.log"; then
+		echo "run-gate8: g8pt native-plan --set pt13 failed, see $OUT/g8pt/native-plan-pt13.log" >&2
+		return 0
+	fi
+	gs_start 640 360 "$OUT/gamescope-g8pt13"
+	while IFS=$'\t' read -r -u 3 leg capture sink shots sabotage canvas; do
+		[ -z "$leg" ] && continue
+		echo "run-gate8: g8pt $leg ($capture/$sink, native, --fixed-fps 60)"
+		run_g8w11_receiver "$OUT/g8pt/$leg" "$OUT/g8pt/$capture" "$sink" "$shots" "$sabotage" "$canvas" --fixed-fps 60
+	done 3<"$plan"
+	gs_teardown "$OUT/gamescope-g8pt13"
+	GS_RUN_DIR=""
 }
 
 # ----------------------------------------------------------------------------------- g8w11
@@ -1512,9 +1537,45 @@ run_g8w11c() {
 			GRC_SABOTAGE_FRAME=120 -- "coded:"
 		RECEIVER_EXTRA_ENV=()
 		run_g8w11c_gsw13
+	else
+		# W13d: the native receiver's (and, under GATE7_LIVE_KIND=web, the web export's) /13 resync
+		# legs; GSW runs W13c's gsw13 legs above instead.
+		run_g8w11c_native13
 	fi
 	G8W11_CODING_DIR=""
 	G8W11_RECEIVER_ARGS=()
+}
+
+# W13d (render-stream-13.md "As built (W13d)"): the native receiver's /13 resync legs, W13c's
+# gsw13 legs for the native receiver (and the web export under GATE7_LIVE_KIND=web): the same /13
+# capture-scale host (every mesh every frame), one coded receiver at RS_RECEIVER_PROTOCOL=13:
+#   native13-honest                     no sabotage: the final state's oracle
+#   native13-predict-stale              host predict-stale @120: the receiver fails predict-check,
+#                                       resyncs (reason coding), holds the patches before the full,
+#                                       and ends on the honest leg's final state
+#   native13-sabotage-no-predict-reset  the same with the receiver sabotage no-predict-reset: the
+#                                       resync's full fails predict-check too, so the state stays
+# A native receiver is headless here (no shot: lib/gate8-w13-native-checks.ts compares the drawn
+# dynamic bodies and the last frame); a browser receiver (GATE7_LIVE_KIND) also shoots its final
+# state (RS_RECEIVER_SHOT_FINAL), and the check compares those pixels too.
+run_g8w11c_native13() {
+	local -a h13=(GRC_STREAM_VERSION=13 RS_SCALE_MESH_UPDATES=187) shot=()
+	[ -n "${GATE7_LIVE_KIND:-}" ] && shot=(RS_RECEIVER_SHOT_FINAL=1)
+	G8W11C_PROTOCOL=13
+	echo "run-gate8: g8w11c native13-honest (/13, a coded receiver)"
+	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
+	run_g8w11_coding_native_leg native13-honest "${h13[@]}" -- "coded:"
+	echo "run-gate8: g8w11c native13-predict-stale (/13, predict-stale @120)"
+	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
+	run_g8w11_coding_native_leg native13-predict-stale "${h13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	# A sabotage leg by its path (lib/legs.sh skips it under RS_SABOTAGE_TIER=skip).
+	echo "run-gate8: g8w11c native13-sabotage-no-predict-reset (/13, predict-stale @120, no-predict-reset)"
+	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"} RS_RECEIVER_SABOTAGE=no-predict-reset)
+	run_g8w11_coding_native_leg native13-sabotage-no-predict-reset "${h13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	RECEIVER_EXTRA_ENV=()
+	G8W11C_PROTOCOL=11
 }
 
 # W13c (render-stream-13.md "As built (W13c)"): GSW's /13 resync legs, GSW only until W13d. A /13
@@ -1623,6 +1684,9 @@ run_g8w11_v13() {
 # shot frames and sabotages), rendered in one private gamescope at each session's canvas size.
 run_g8w11_receiver() {
 	local dir="$1" capture_dir="$2" sink="$3" shots="$4" sabotage="$5" canvas="$6"
+	# W13d: any further words are the receiver's own arguments (g8pt's --fixed-fps 60).
+	shift 6
+	local -a extra=("$@")
 	# The leg's own copy is recording.rs<v> whichever sink it replays (run_rendered_receiver's
 	# convention, which gate 7's browser legs mirror).
 	RECORDING_NAME="recording.${sink##*.}"
@@ -1636,6 +1700,7 @@ run_g8w11_receiver() {
 	[ -d "$capture_dir/store" ] && LEG_ENV+=(RS_RECEIVER_STORE_DIR="$capture_dir/store")
 	[ "$sabotage" != "-" ] && LEG_ENV+=(RS_RECEIVER_SABOTAGE="$sabotage")
 	[ "$canvas" != "-" ] && RENDERED_EXTRA_ARGS=(--resolution "$canvas")
+	[ "${#extra[@]}" -gt 0 ] && RENDERED_EXTRA_ARGS+=("${extra[@]}")
 	run_rendered "$dir" "$RECEIVER_DIR"
 }
 

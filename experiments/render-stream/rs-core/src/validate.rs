@@ -1872,6 +1872,13 @@ impl Validator {
         self.no_prune = on;
     }
 
+    /// W13d: the /13 decoder sabotage `no-predict-reset` ([`Options::no_predict_reset`]) set after
+    /// the session, as a receiver names its sabotage once the session record opened its core.
+    /// Takes effect from the next transaction.
+    pub fn set_no_predict_reset(&mut self, on: bool) {
+        self.opts.no_predict_reset = on;
+    }
+
     /// W11d (render-stream-11.md "As built (W11d)"): the transport skipped one or more
     /// transactions (W11t's `coding` resync: a based message whose base is missing or that does
     /// not decode, and every based one after it until the full transaction the resync forces).

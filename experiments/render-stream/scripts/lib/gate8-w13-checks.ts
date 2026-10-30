@@ -22,8 +22,9 @@
 // plus gate8-w11t-checks.ts's coding checks at /13 (runG8w11Coding(g, 13): `w13-coding-*`).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import type { ResourceLine } from "./gate2-checks";
@@ -80,6 +81,22 @@ function rsCoreValidate(path: string, version: number): string {
   return cols[1] === "ok"
     ? "ok"
     : `${cols[1] ?? "?"}: ${(cols[2] ?? r.stderr ?? "").slice(0, 200)}`;
+}
+
+/** The transcodes' scratch directory: <root>/w13, or (W13d) a fresh temporary one when that is
+ * not writable: gate 7's views link a cached source run's directories, which the cache keeps
+ * read-only, so g7-8's re-judging could not write its transcodes there. Removed at exit. */
+function scratchDir(root: string): string {
+  const dir = join(root, "w13");
+  try {
+    mkdirSync(dir, { recursive: true });
+    accessSync(dir, constants.W_OK);
+    return dir;
+  } catch {
+    const tmp = mkdtempSync(join(tmpdir(), "gate8-w13-"));
+    process.on("exit", () => rmSync(tmp, { recursive: true, force: true }));
+    return tmp;
+  }
 }
 
 /** rs-core-check transcode --to 12 into `out`; null on success, else the error. */
@@ -221,8 +238,7 @@ export async function fileEquiv(
   what: string,
 ): Promise<{ checks: G8aCheck[]; transcoded: Map<string, string> }> {
   const checks: G8aCheck[] = [];
-  const scratch = join(root, "w13");
-  mkdirSync(scratch, { recursive: true });
+  const scratch = scratchDir(root);
   const legDir = (leg: string) => join(root, leg);
   const transcoded = new Map<string, string>(); // "<leg>/<sink>" -> the /12 file
   {
@@ -306,8 +322,7 @@ export async function fileEquiv(
 
 export async function runG8w13(g: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
-  const scratch = join(g, "w13");
-  mkdirSync(scratch, { recursive: true });
+  const scratch = scratchDir(g);
   const legDir = (leg: string) => join(g, leg);
 
   // w13-validate, w13-file-equiv (and the transcoded files the dyn-wire checks read)

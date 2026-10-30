@@ -42,14 +42,38 @@ pub const VERSION: u8 = 6;
 /// RS_RECEIVER_PROTOCOL=11. PM5 adds render-stream/12 (render-stream-12.md "Receivers"): rs-core
 /// validates and resolves the particles table and the emit list, and the planner counts every
 /// `add_particles` as `particles_commands_undrawn` (`particles-undrawn`) until PM6 replays it;
-/// the live hello offers .12 under RS_RECEIVER_PROTOCOL=12.
-pub const VERSIONS: [u8; 7] = [6, 7, 8, 9, 10, 11, 12];
+/// the live hello offers .12 under RS_RECEIVER_PROTOCOL=12. W13d adds render-stream/13
+/// (render-stream-13.md "As built (W13d)"): rs-core un-predicts each transaction's mesh and
+/// multimesh blocks at accept into its /12 record (`Validator::record_view`), which is what the
+/// ingest reads, so the planner sees /12's model; a `predict-check` failure holds every patch
+/// until the full transaction (`KIND_HELD`); the live hello offers .13 under
+/// RS_RECEIVER_PROTOCOL=13.
+pub const VERSIONS: [u8; 8] = [6, 7, 8, 9, 10, 11, 12, 13];
 
 pub const KIND_ERROR: i32 = 0;
 pub const KIND_RESOURCE: i32 = 1;
 pub const KIND_TRANSACTION: i32 = 2;
 pub const KIND_END: i32 = 3;
 pub const KIND_SESSION: i32 = 4;
+/// W13d: a /13 patch that arrived while a `predict-check` failure awaits its full transaction
+/// (render-stream-13.md "As built (W13d)"): not accepted, so neither applied nor acked.
+pub const KIND_HELD: i32 = 5;
+
+/// W13d (as GSW's W13c `peek_transaction`): a transaction record's `seq` and whether it is full,
+/// read from its meta's canonical prefix (`{"type":"transaction","seq":N,"frame":N,"encoding":"…"`,
+/// every version's key order). `None` for any other record (or one too short to say).
+fn peek_transaction(record: &[u8]) -> Option<(i64, bool)> {
+    let frame = wire::frame(record, 0).ok()?;
+    let rest = frame
+        .meta
+        .strip_prefix(b"{\"type\":\"transaction\",\"seq\":")?;
+    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+    let seq = std::str::from_utf8(&rest[..digits]).ok()?.parse().ok()?;
+    let rest = rest[digits..].strip_prefix(b",\"frame\":")?;
+    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+    let rest = rest[digits..].strip_prefix(b",\"encoding\":\"")?;
+    Some((seq, rest.starts_with(b"full\"")))
+}
 
 #[derive(Default)]
 pub struct Core {
@@ -101,6 +125,14 @@ pub struct Core {
     /// `body_sha256`, and how many held a different body.
     dynamic_checked: i64,
     dynamic_mismatched: i64,
+    /// W13d: a /13 transaction failed `predict-check` on this stream; until a full transaction
+    /// arrives every patch is held unaccepted (`KIND_HELD`): it was predicted from the failed
+    /// transaction, which this receiver's history never took. Cleared by the full and by a session.
+    predict_await_full: bool,
+    /// W13d evidence (`counters`' `w13_*`): `predict-check` failures and the patches held after
+    /// them, since the core was made.
+    predict_failures: i64,
+    predict_dropped: i64,
 }
 
 /// W11d: the /11 receiver sabotages the core implements (`evict-carried` is receiver.gd's).
@@ -109,6 +141,9 @@ pub struct W11Sabotage {
     pub stale_dynamic_rx: bool,
     pub no_prune: bool,
     pub ignore_released: bool,
+    /// W13d (render-stream-13.md "As built (W13a)", "Sabotages"): `no-predict-reset`, a full is
+    /// un-predicted against the history like a patch (rs-core `Options::no_predict_reset`).
+    pub no_predict_reset: bool,
 }
 
 /// `_frame()`'s two `truncated` checks: the record at `offset` as a slice, its length prefix
@@ -163,10 +198,12 @@ impl Core {
             stale_dynamic_rx: name == "stale-dynamic-rx",
             no_prune: name == "no-prune",
             ignore_released: name == "ignore-released",
+            no_predict_reset: name == "no-predict-reset",
         };
         // receiver.gd opens the core (and so names the sabotage) after the session record.
         if let Some(v) = self.validator.as_mut() {
             v.set_no_prune(self.w11_sab.no_prune);
+            v.set_no_predict_reset(self.w11_sab.no_predict_reset);
         }
     }
 
@@ -263,7 +300,7 @@ impl Core {
         if !VERSIONS.contains(&version) {
             let e = Error::new(
                 "bad-magic",
-                format!("the receiver core speaks render-stream/6, /7, /8, /9, /10, /11 and /12, not /{version}"),
+                format!("the receiver core speaks render-stream/6, /7, /8, /9, /10, /11, /12 and /13, not /{version}"),
             );
             self.write_failure(&[], offset, &e);
             return KIND_ERROR;
@@ -279,6 +316,7 @@ impl Core {
         self.released_out.clear();
         self.dynamic_checked = 0;
         self.dynamic_mismatched = 0;
+        self.predict_await_full = false;
         let record = match frame_at(data, offset) {
             Ok(r) => r,
             Err(e) => {
@@ -295,7 +333,7 @@ impl Core {
             },
             verify_payload_hashes: true,
             early_prune: false,
-            no_predict_reset: false,
+            no_predict_reset: self.w11_sab.no_predict_reset,
         };
         let mut validator = match Validator::new(record, offset, opts) {
             Ok(v) => v,
@@ -381,6 +419,34 @@ impl Core {
                 return KIND_ERROR;
             }
         };
+        // W13d: while a `predict-check` failure awaits its full transaction, patches are held.
+        if self.predict_await_full {
+            match peek_transaction(record) {
+                Some((seq, false)) => {
+                    self.predict_dropped += 1;
+                    let v = &mut self.vt;
+                    v.clear();
+                    v.dict(3);
+                    v.key("record");
+                    v.dict(3);
+                    v.key("offset");
+                    v.int(offset as i64);
+                    v.key("byte_length");
+                    v.int(record.len() as i64);
+                    v.key("meta");
+                    v.dict(1);
+                    v.key("seq");
+                    v.int(seq);
+                    v.key("errors");
+                    v.strings(&[]);
+                    v.key("kind");
+                    v.str("held");
+                    return KIND_HELD;
+                }
+                Some((_, true)) => self.predict_await_full = false,
+                None => {}
+            }
+        }
         let result = match self.validator.as_mut() {
             Some(v) => v.accept(record, offset),
             None => Err(Error::new("missing-session", "no session")),
@@ -388,6 +454,13 @@ impl Core {
         let accepted = match result {
             Ok(a) => a,
             Err(e) => {
+                // W13d (render-stream-13.md "Decoding and check order"): a /13 transaction whose
+                // reconstructed blocks miss `predict_check` changed nothing; the receiver resyncs
+                // it (reason `coding`) and the patches before the full are held above.
+                if self.version >= 13 && e.code == "predict-check" {
+                    self.predict_await_full = true;
+                    self.predict_failures += 1;
+                }
                 self.write_failure(record, offset, &e);
                 return KIND_ERROR;
             }
@@ -492,6 +565,9 @@ impl Core {
             .as_ref()
             .expect("an accepted transaction has a validator");
         let st = v.state();
+        // W13d: at /13 the validator's block ranges index the reconstructed /12 record
+        // (`record_view`), not the predicted one `accept` was given; below /13 it is `record`.
+        let record = v.record_view(record);
         if self.w11_sab.stale_dynamic_rx {
             let held = &self.dynamic;
             let bodies: Vec<_> = v
@@ -858,6 +934,20 @@ impl Core {
             ],
             _ => vec![],
         };
+        // W13d: the /13 accept path's counters, at /13 only (GSW's `w13` names, W13c).
+        let w13: Vec<(&str, i64)> = match self.validator.as_ref() {
+            Some(val) if self.version >= 13 => {
+                let (b, a, m) = val.prediction_history().h1().counts();
+                vec![
+                    ("w13_predict_failures", self.predict_failures),
+                    ("w13_predict_dropped", self.predict_dropped),
+                    ("w13_no_predict_reset", self.w11_sab.no_predict_reset as i64),
+                    ("w13_history_units", (b + a + m) as i64),
+                ]
+            }
+            _ => vec![],
+        };
+        let w11: Vec<(&str, i64)> = w11.into_iter().chain(w13).collect();
         v.dict(20 + w11.len());
         v.key("rs_calls");
         v.int(p.rs_calls);

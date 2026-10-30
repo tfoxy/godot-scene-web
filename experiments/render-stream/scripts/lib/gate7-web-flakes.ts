@@ -8,6 +8,9 @@
 // (applied.json equal but for wall-clock fields, the same RS calls); NVIDIA never did it (SWO: 0
 // of 330 g8mm web shots over 10 runs, against 4 to 5 runs of 10 on local lavapipe). It fails
 // mm-reference@web, mm-reference-catches-*@web and web-repeat-identical@web on most hosted runs.
+// W13d: g8pt's headless-pump legs replay gate8-mm too (its headless capture at /12 and /13), so the
+// same flake reaches them, and the rows that compare them (native-pt13-equals-v12@web,
+// mm13-reference@web) are typed by the same rule.
 //
 // Such a row is typed `known-flake` (lib/tier-verdict.py lists it, never fails or passes the run
 // on it) only when ALL of these hold, so a real web regression stays loud:
@@ -146,10 +149,20 @@ export async function particleFlakeEvidence(
   return { diffs };
 }
 
+/** A leg that replays fixtures/gate8-mm: g8mm's, and (W13d) g8pt's headless-pump legs. */
+const isMmLeg = (leg: string) =>
+  leg.startsWith("g8mm/") || /^g8pt\/headless-pump[^/]*\//.test(leg);
+
 const FLAKE_ROW =
-  /^(mm-reference(-catches-[a-z-]+)?|web-repeat-identical)@web$/;
+  /^(mm-reference(-catches-[a-z-]+)?|web-repeat-identical|mm13-reference|native-pt13-equals-v12)@web$/;
 const REPEAT_PROBLEM =
-  /^(g8mm\/.+)\/shots\/([^/ ]+\.png) differs between the two web runs$/;
+  /^((?:g8mm|g8pt\/headless-pump[^/]*)\/.+)\/shots\/([^/ ]+\.png) differs between the two web runs$/;
+// W13d: mm13-reference's `frame F (step-k[-prev].png): N px differ (CELL n, ...)` and
+// native-pt13-equals-v12's `headless-pump13/receiver: frame F: N px differ from
+// headless-pump/receiver (CELL n, ...)` (the pump legs only; the shim legs are not gate8-mm).
+const MM13_PROBLEM = /^frame \d+ \(step-\d+(?:-prev)?\.png\): \d+ px differ \(([^()]*)\)$/;
+const PT13_PROBLEM =
+  /^(headless-pump13\/receiver): frame \d+: \d+ px differ from (headless-pump\/receiver) \(([^()]*)\)$/;
 // gate8-mm-checks.ts's pixel problems: `<leg> <label>: N px differ (CELL n, ...)` for
 // mm-reference, `<label> (before the sabotage): ...` and `step k: outside the identity cells: ...`
 // for the catches rows.
@@ -185,7 +198,7 @@ export function typeLavapipeParticleFlake(
   // A run's flake may also move a live particle's flipbook frame without any black pixel in that
   // shot (SWO staged-3: 102 px, the hosted runs' "C_FLIP 102"); the black signature is per run.
   const inCells = (d: RepeatDiff) =>
-    d.leg.startsWith("g8mm/") && d.outside === 0 && d.inside > 0;
+    isMmLeg(d.leg) && d.outside === 0 && d.inside > 0;
   if (
     ev.diffs.length === 0 ||
     !ev.diffs.every(inCells) ||
@@ -207,6 +220,22 @@ export function typeLavapipeParticleFlake(
     const body = c.detail.replace(/^\d+ problem\(s\): /, "");
     if (body === c.detail) return false;
     const ps = body.split("; ");
+    const cellsAllowed = (list: string) =>
+      list.split(", ").every((e) => allowed.has(e.replace(/ \d+$/, "")));
+    if (c.id === "mm13-reference@web")
+      return ps.every((p) => {
+        const m = MM13_PROBLEM.exec(p);
+        return m !== null && cellsAllowed(m[1]) && flakyLegs.includes("g8pt/headless-pump13/receiver");
+      });
+    if (c.id === "native-pt13-equals-v12@web")
+      return ps.every((p) => {
+        const m = PT13_PROBLEM.exec(p);
+        return (
+          m !== null &&
+          cellsAllowed(m[3]) &&
+          (flakyLegs.includes(`g8pt/${m[1]}`) || flakyLegs.includes(`g8pt/${m[2]}`))
+        );
+      });
     return ps.every((p) => {
       const m = PIXEL_PROBLEM.exec(p);
       if (!m) return false;

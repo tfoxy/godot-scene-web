@@ -3457,6 +3457,12 @@ mise exec -- pnpm render-stream:gate8 -- \
   calls after its captures to replay g8pt's headless /13 twins under `g8pt/gsw13/<leg>/gsw`.
   `lib/gate8-w13-gsw-checks.ts` judges both (`runG8w13Gsw` from `runG8w11`, `runG8pt13Gsw` from
   check-gate8.ts's g8pt block) and g8w11c's GSW /13 resync legs (`runG8w11cGsw13`).
+  W13d plans the same /13 legs for the native receiver (`native-plan`, and `native-plan --set pt13`,
+  which run_g8pt_native13 runs at `--fixed-fps 60` under `g8pt/<capture's directory>/receiver`)
+  and adds g8w11c's native13 resync legs (run_g8w11c_native13; the web export runs them under
+  `GATE7_LIVE_KIND=web`, GSW runs W13c's gsw13 legs instead). `lib/gate8-w13-native-checks.ts`
+  judges them (`runG8w13Native` from `runG8w11`, `runG8pt13Native` from check-gate8.ts's g8pt
+  block, `runG8w11cNative13` from `runG8w11cResync`); g7-8's web half replays the file legs.
 - `lib/gate8-mat-checks.ts`: the g8m checks (`runG8m`) and their pure helpers (`shaderHashParity`,
   `paramParity`, `cimBuiltin`, `includeRefused`, `itemAt`); it reuses g8a's `equivalence`, whose
   `canonicalState` compares materials by content since G8m.

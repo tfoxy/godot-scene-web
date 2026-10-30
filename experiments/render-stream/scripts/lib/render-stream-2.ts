@@ -1085,11 +1085,11 @@ export const MAGIC_V13: Uint8Array = new Uint8Array([
 ]);
 /** G7l: the wire version of a live stream's bytes: 7 when they start with GRS7 (a /7 receiver's
  * received.rs7, or a /7 connection's host tap), 8 when they start with GRS8 (G8w), 9 for GRS9
- * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), else 6 -- so every other
+ * (G8k9), 10 for GRSA (CG1), 11 for GRSB (W11a), 12 for GRSC (PM5), 13 for GRSD (W13d), else 6 -- so every other
  * magic still meets the /6 decoder's own refusal, exactly as before. */
 export function wireVersionOf(
   data: Uint8Array | undefined,
-): 6 | 7 | 8 | 9 | 10 | 11 | 12 {
+): 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 {
   if (!data || data.length < MAGIC_V7.length) return 6;
   const startsWith = (magic: Uint8Array) => {
     for (let i = 0; i < magic.length; i++)
@@ -1102,6 +1102,8 @@ export function wireVersionOf(
   if (startsWith(MAGIC_V10)) return 10;
   if (startsWith(MAGIC_V11)) return 11;
   if (startsWith(MAGIC_V12)) return 12;
+  // W13d: every receiver accepts /13 now (GSW W13c, native and web W13d).
+  if (startsWith(MAGIC_V13)) return 13;
   return 6;
 }
 /** render-stream-9.md "KTX2 payload": the 12-byte KTX2 file identifier (KTX 2.0 section 2.1). */

@@ -381,6 +381,9 @@ export function discoverFileReceiverLegs(sourceDir: string): DiscoveredLeg[] {
 function wantsCompositor(leg: DiscoveredLeg): boolean {
   if (leg.sabotage || leg.headless) return false;
   if (leg.leg.includes("sabotage")) return false;
+  // W13d: g8pt's headless-shim emitters keep simulating after the last transaction (the browser
+  // draws on), so the screenshot taken at exit is never the last shot's frame.
+  if (leg.leg.startsWith("g8pt/headless-shim")) return false;
   const name = basename(leg.leg);
   if (name === "receiver") return true;
   return leg.resolution !== null && !/patch|inline|at-logical/.test(name);
@@ -705,7 +708,14 @@ export function approximateRegions(
   leg: string,
 ): [number, number, number, number][] | null {
   // PFB: gate8-ptc's particles hold still (one particle, no velocity), so its legs are exact.
-  if (!leg.startsWith("g8pt/") || leg.startsWith("g8pt/ptc/")) return null;
+  // W13d: g8pt's headless-pump legs replay gate8-mm (multimeshes from the host's buffers, no GPU
+  // particles), whose cells are not gate8-pt's regions: exact under P-W1's classes too.
+  if (
+    !leg.startsWith("g8pt/") ||
+    leg.startsWith("g8pt/ptc/") ||
+    leg.startsWith("g8pt/headless-pump")
+  )
+    return null;
   const expected = JSON.parse(
     readFileSync(
       join(SCRIPT_DIR, "..", "fixtures", "gate8-pt", "expected.json"),
@@ -817,7 +827,12 @@ function resolvedStates(
     // G8g: a gate 8 recording names its version by its magic (GRS8, GRS9; CG1: GRSA).
     const wire = wireVersionOf(data);
     const versions =
-      wire === 8 || wire === 9 || wire === 10 || wire === 11 || wire === 12
+      wire === 8 ||
+      wire === 9 ||
+      wire === 10 ||
+      wire === 11 ||
+      wire === 12 ||
+      wire === 13
         ? [wire]
         : ([6, 5, 4, 3, 2] as const);
     for (const version of versions) {

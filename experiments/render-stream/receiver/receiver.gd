@@ -223,7 +223,14 @@ extends Node
 ##                               render-stream.12, received tap received.rs12. In file mode a GRSC
 ##                               recording replays at /12. The core counts every add_particles as
 ##                               particles_commands_undrawn (`particles-undrawn`) until PM6.
-##   RS_RECEIVER_LIVE_CODING     W11d (W11t's coding, /11 and /12 only): unset offers "zstd-base,zstd"
+##                               W13d: 13 is render-stream/13 (render-stream-13.md, /12's
+##                               transport and hello under "render-stream/13"; native and on the
+##                               web): subprotocol render-stream.13, received tap received.rs13.
+##                               In file mode a GRSD recording replays at /13. The core
+##                               un-predicts every transaction to its /12 record at accept; live,
+##                               a `predict-check` failure sends `resync` (reason `coding`) and
+##                               the patches before the full are held (neither accepted nor acked).
+##   RS_RECEIVER_LIVE_CODING     W11d (W11t's coding, /11 to /13 only): unset offers "zstd-base,zstd"
 ##                               (base-prefix zstd, then per-message zstd), `zstd` offers zstd only,
 ##                               `off` sends no live_coding. Every binary message is decoded by
 ##                               the core before it is parsed; a `coding` error with a seq sends
@@ -331,7 +338,7 @@ const EXIT_REPLAY_FAILURE: int = 3
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
-const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform", "undrawn-particles", "ignore-particle-emits", "drop-particles-restart", "gl-particle-colors", "no-subparticle-stub"]
+const SABOTAGES: Array[String] = ["reupload", "ignore-cache", "wrong-http-token", "ignore-clip", "clip-before-clear", "drop-msdf", "ignore-set-transform", "ignore-clip-ignore", "ignore-nine-patch-axis", "drop-mesh-surface", "stale-mesh", "refuse-canvas-texture", "ignore-material", "ignore-canvas-modulate", "stale-param", "stale-texture", "ignore-canvas-stacking", "screen-copy-per-reader", "vertex-flat-varyings", "shader-time-frozen", "drop-canvas-group", "full-backbuffer-copy", "ignore-presentation", "no-evict", "verify-in-frame", "advertise-etc2", "stale-dynamic-rx", "no-prune", "evict-carried", "ignore-released", "undrawn-multimesh", "ignore-identity-transform", "undrawn-particles", "ignore-particle-emits", "drop-particles-restart", "gl-particle-colors", "no-subparticle-stub", "no-predict-reset"]
 ## The six per-transaction `resources` counters render-stream-receiver-applied/5 adds (G55d).
 const MATERIAL_COUNTERS: Array[String] = ["shaders_created", "shader_code_sets", "shader_payload_fetches", "materials_created", "param_sets", "instance_param_sets"]
 ## The three per-transaction `resources` counters render-stream-receiver-applied/6 adds (G6b).
@@ -560,6 +567,9 @@ var _awaiting_full: bool = false
 var _live_coding: String = "zstd-base,zstd"
 var _coding_on: bool = false
 var _coding_resyncs: int = 0
+## W13d: the `predict-check` resyncs this receiver asked (live /13; also counted in
+## `_coding_resyncs`, as they are W11t's `coding` resyncs).
+var _predict_resyncs: int = 0
 var _coding_reports: Array[Dictionary] = []
 ## W11d (render-stream-11.md "Receiver retention"): the /11 store evidence, over the whole replay
 ## (bounded; per transaction only under a full log): the most memory entries after an apply, the
@@ -645,6 +655,12 @@ func _ready() -> void:
 		_wire_version = 12
 		var receiver_block_v12: Dictionary = _report["receiver"]
 		receiver_block_v12["protocol"] = RsLiveClient.PROTOCOL_V12
+	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V13_HEX:
+		# W13d: a render-stream/13 recording (GRC_STREAM_VERSION=13) replays at /13: the core
+		# un-predicts each transaction's mesh and multimesh blocks, then /12's paths.
+		_wire_version = 13
+		var receiver_block_v13: Dictionary = _report["receiver"]
+		receiver_block_v13["protocol"] = RsLiveClient.PROTOCOL_V13
 	elif _data.size() >= 8 and _data.slice(0, 8).hex_encode() == RsWire.MAGIC_V8_HEX:
 		# G8t: a gate 8 recording (render-stream/8 file sink) replays at /8; the core ignores /8's
 		# additions to the tables, so it draws exactly as a /6 recording would.
@@ -1789,11 +1805,11 @@ func _parse_wire_env() -> bool:
 	var protocol_text: String = RsConfig.get_env("RS_RECEIVER_PROTOCOL").strip_edges()
 	if protocol_text == "":
 		protocol_text = "7" if RsConfig.is_web() else "6"
-	if not ["6", "7", "8", "9", "10", "11", "12"].has(protocol_text):
-		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10, 11 or 12 (got %s)" % JSON.stringify(protocol_text))
+	if not ["6", "7", "8", "9", "10", "11", "12", "13"].has(protocol_text):
+		_log("error: RS_RECEIVER_PROTOCOL must be 6, 7, 8, 9, 10, 11, 12 or 13 (got %s)" % JSON.stringify(protocol_text))
 		return false
-	if RsConfig.is_web() and not ["7", "8", "9", "10", "11", "12"].has(protocol_text):
-		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10, (W11e) /11 or (PM5) /12 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
+	if RsConfig.is_web() and not ["7", "8", "9", "10", "11", "12", "13"].has(protocol_text):
+		_log("error: a web receiver speaks only render-stream/7, /8, (G8ku) /9, (CG1) /10, (W11e) /11, (PM5) /12 or (W13d) /13 (RS_RECEIVER_PROTOCOL %s)" % protocol_text)
 		return false
 	_wire_version = protocol_text.to_int()
 	# G7wd (fork F1): a /7 hello asks for window 2 unless RS_RECEIVER_CREDIT_WINDOW=1; /6 has none.
@@ -1820,7 +1836,7 @@ func _parse_wire_env() -> bool:
 			_log("error: RS_RECEIVER_LIVE_CODING must be zstd or off (got %s)" % JSON.stringify(coding_text))
 			return false
 	if coding_text != "" and _wire_version < 11:
-		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11 or 12")
+		_log("error: RS_RECEIVER_LIVE_CODING needs RS_RECEIVER_PROTOCOL=11, 12 or 13")
 		return false
 	_manifest_sha256 = RsConfig.get_env("RS_RECEIVER_MANIFEST_SHA256").strip_edges()
 	if _wire_version >= 7 and _manifest_sha256 != "" and not RsLiveClient.is_hex64(_manifest_sha256):
@@ -1954,8 +1970,10 @@ func _process_live() -> void:
 				if _wire_version >= 11:
 					# W11d: /10's hello under render-stream/11, W11t's live_coding last (golden-11's
 					# control hello); the connection's decoder opens with the same offer.
-					# PM5: /12's hello is /11's under render-stream/12.
-					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, RsLiveClient.PROTOCOL_V12 if _wire_version >= 12 else RsLiveClient.PROTOCOL_V11)
+					# PM5: /12's hello is /11's under render-stream/12; W13d: /13's is /12's under
+					# render-stream/13.
+					var hello_protocol: String = RsLiveClient.PROTOCOL_V13 if _wire_version >= 13 else (RsLiveClient.PROTOCOL_V12 if _wire_version >= 12 else RsLiveClient.PROTOCOL_V11)
+					var hello_v11: Dictionary = RsLiveClient.hello_v9(_hello_v7(), _texture_encodings, _gpu_formats, hello_protocol)
 					if _live_coding != "":
 						hello_v11["live_coding"] = _live_coding
 					_applier.coding_open(_live_coding, _inbound_bytes)
@@ -2300,7 +2318,22 @@ func _receive_binary(message: PackedByteArray) -> void:
 		var seq: Variant = null
 		if kind == "transaction" or kind == "":
 			seq = RsWire.as_int(meta["seq"]) if RsWire.is_int(meta.get("seq")) else expected_seq
+		if _wire_version >= 13 and RsWire.code_of(errors[0]) == "predict-check" and seq != null:
+			# W13d (render-stream-13.md "Decoding and check order"): the reconstructed blocks
+			# missed `predict_check`, so the core applied nothing; resync as W11t's coding does
+			# (reason `coding`), and the core holds every patch until the full transaction.
+			_predict_resyncs += 1
+			_coding_resyncs += 1
+			_applier.transport_skip()
+			_send(RsLiveClient.resync(_stream_id, RsWire.as_int(seq), "coding"))
+			_log("predict: seq %d failed predict-check (%s); resync asked" % [RsWire.as_int(seq), errors[0]])
+			_data = PackedByteArray()
+			return
 		_fail_with_error(seq, errors[0])
+		return
+	if kind == "held":
+		# W13d: a patch predicted from the transaction that failed predict-check: no accept, no ack.
+		_data = PackedByteArray()
 		return
 	if RsWire.as_int(record["byte_length"]) != message.size():
 		_fail(null, "live-framing", "a message of %d bytes holds a %d-byte record; every message after the first is exactly one record" % [message.size(), RsWire.as_int(record["byte_length"])])
@@ -3086,6 +3119,16 @@ func _write_report() -> void:
 			var connections: Array[Dictionary] = _coding_reports.duplicate()
 			connections.append(_applier.coding_stats())
 			_live_report["coding"] = {"offer": _live_coding, "connections": connections, "resyncs": _coding_resyncs}
+	if _wire_version >= 13 and _applier != null:
+		# W13d: the /13 accept path's evidence, in GSW's `w13` key names (W13c).
+		var w13: Dictionary = _applier.w13_counters()
+		w13["predict_resyncs"] = _predict_resyncs
+		_report["w13"] = w13
+		if _live:
+			# GSW's `live.predict` shape (W13c): the resyncs and the core's w13 counters.
+			var predict: Dictionary = w13.duplicate()
+			predict["resyncs"] = _predict_resyncs
+			_live_report["predict"] = predict
 	if _applier != null:
 		var floats: Array[float] = []
 		for value: float in _applier.root_canvas_xform():
