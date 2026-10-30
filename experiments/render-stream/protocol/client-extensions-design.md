@@ -599,6 +599,30 @@ A no-extension client must agree within run-to-run noise. A wire byte must not m
    freezes, `staticBgEnabled`)? They would show their forced value permanently under the new
    renderer, and leave `STREAM_RENDER_OVERRIDES` for a separate "not applicable" list.
 
+### Answers (user, 2026-10-30)
+
+1. **The hold is lifted.** The binary syntax is judged on its own long-term merit before the freeze
+   (BIN-D).
+2. **Yes, `expand` at the viewer's aspect,** kept generic, with per-client tweaks as modules (STS2
+   combat rooms likely need one or two), and performance and latency first. The user reviews the
+   result. Cap: the product default is 2520 (21:9 at 1080, the old mirror's cap). The game-side
+   route (the seat at the viewer's aspect) is to be measured against a client-side spread on TAG2
+   overrides (PRES-C). The STS2 host's headed instance cannot change its aspect, so a viewer of it
+   needs the client-side route even if the game-side route wins for headless seats.
+3. **Yes, no reflow for now.** Reflow, if ever, is an opt-in module, never paid by every client.
+4. **Yes, interaction comes before release** (INP1 plus couch's input channel).
+5. **Grant minimal fields:** the couch seat grants `scene`, `path`, `script` and the mod's own
+   `groups`. A viewer receives them only when a module on its page asks.
+6. **Do not retire the rows.** They stay visible and disabled, as levers to measure later:
+   - `tweenReplay` is for smooth motion through an intermittent connection, not only bytes;
+   - `backstopOcclusion` and `staticBgEnabled` are worth it if they help a GPU-bound phone (the
+     g31). The static background was a large client win in the old mirror;
+   - the three freezes save **host** cost. A weak host running four instances lags every client,
+     and a frozen effect beats that. Freezing with client-side continuation (Spine poses sent once
+     and played by the client, tweens through `tweenReplay`) is to be designed (FRZ-D).
+7. (PH3) **No playout buffer.** The lowest latency stays the default; a buffer may later be an
+   option.
+
 ## As built (TAG1)
 
 TAG1 landed the host, the wire record and the validators
