@@ -576,6 +576,87 @@ pub fn godot_screen_transform(width: u32, height: u32) -> [f32; 16] {
     ]
 }
 
+/// PHV: the integer factor a `width`x`height` upload is reduced by to fit a context whose
+/// `MAX_TEXTURE_SIZE` is `max_side` (1 when it fits). A GLES3-class phone has 4096 where a desktop
+/// has 16384, and a host can send a wider image (STS2's character-select background is 5380x1320),
+/// which the context would refuse. Draws sample with normalized UVs, so a reduced texture draws the
+/// same image at a lower resolution; only shaders that read the texel size (`TEXTURE_PIXEL_SIZE`,
+/// `textureSize`) see the reduced size. A `max_side` of 0 (a lost context) reduces nothing.
+pub fn downscale_factor(width: u32, height: u32, max_side: u32) -> u32 {
+    let side = width.max(height);
+    if max_side == 0 || side <= max_side {
+        1
+    } else {
+        side.div_ceil(max_side)
+    }
+}
+
+/// The size of a `width`x`height` image reduced by `k` (each side rounded up, so no texel is lost).
+pub fn downscaled_size(width: u32, height: u32, k: u32) -> (u32, u32) {
+    (width.div_ceil(k), height.div_ceil(k))
+}
+
+/// Reduce a straight-alpha RGBA8 image by `k` with a box filter weighted by alpha (the mean of
+/// the premultiplied texels, un-premultiplied), so transparent texels do not darken an edge. A
+/// block with no alpha at all keeps its plain colour mean. Edge blocks average the texels they
+/// have. `src` is `width * height * 4` bytes.
+pub fn downscale_rgba8(src: &[u8], width: u32, height: u32, k: u32) -> Vec<u8> {
+    let (w, h, k) = (width as usize, height as usize, k as usize);
+    let (dw, dh) = (w.div_ceil(k), h.div_ceil(k));
+    let mut out = vec![0u8; dw * dh * 4];
+    for dy in 0..dh {
+        let (y0, y1) = (dy * k, ((dy + 1) * k).min(h));
+        for dx in 0..dw {
+            let (x0, x1) = (dx * k, ((dx + 1) * k).min(w));
+            let (mut a, mut premul, mut plain) = (0u64, [0u64; 3], [0u64; 3]);
+            for y in y0..y1 {
+                let row = &src[(y * w + x0) * 4..(y * w + x1) * 4];
+                for p in row.chunks_exact(4) {
+                    let pa = u64::from(p[3]);
+                    a += pa;
+                    for c in 0..3 {
+                        premul[c] += u64::from(p[c]) * pa;
+                        plain[c] += u64::from(p[c]);
+                    }
+                }
+            }
+            let n = ((x1 - x0) * (y1 - y0)) as u64;
+            let o = &mut out[(dy * dw + dx) * 4..][..4];
+            for c in 0..3 {
+                o[c] = if a > 0 {
+                    ((premul[c] + a / 2) / a) as u8
+                } else {
+                    ((plain[c] + n / 2) / n) as u8
+                };
+            }
+            o[3] = ((a + n / 2) / n) as u8;
+        }
+    }
+    out
+}
+
+/// Reduce an RGBA16F image (8 bytes a texel) by `k`, keeping the first texel of each block (a
+/// half-float box filter would need f16 arithmetic for a format STS2 sends rarely).
+pub fn downscale_texels_nearest(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    k: u32,
+    texel: usize,
+) -> Vec<u8> {
+    let (w, k) = (width as usize, k as usize);
+    let (dw, dh) = downscaled_size(width, height, k as u32);
+    let (dw, dh) = (dw as usize, dh as usize);
+    let mut out = Vec::with_capacity(dw * dh * texel);
+    for dy in 0..dh {
+        for dx in 0..dw {
+            let at = ((dy * k) * w + dx * k) * texel;
+            out.extend_from_slice(&src[at..at + texel]);
+        }
+    }
+    out
+}
+
 /// Replace `held`'s arrays with `next`'s, marking dirty only the elements that differ (or
 /// everything for an array whose length changed) and keeping `held`'s queued texture ops: how a
 /// test turns two `PDL1` dumps into one frame's dirty ranges. The target is replaced too (a target
@@ -985,5 +1066,42 @@ mod tests {
             item_program_fragment("void godot_item_fragment(inout vec4 C, in vec2 U) {}")
                 .contains("if (gsw_msdf_on)")
         );
+    }
+
+    #[test]
+    fn downscale_factor_fits_the_max_side() {
+        assert_eq!(downscale_factor(4096, 4096, 4096), 1);
+        assert_eq!(downscale_factor(5380, 1320, 4096), 2);
+        assert_eq!(downscaled_size(5380, 1320, 2), (2690, 660));
+        assert_eq!(downscale_factor(12289, 10, 4096), 4);
+        assert_eq!(downscaled_size(12289, 10, 4), (3073, 3));
+        assert_eq!(downscale_factor(9000, 9000, 0), 1);
+    }
+
+    #[test]
+    fn downscale_rgba8_weights_by_alpha_and_keeps_edges() {
+        // 3x2 by 2: block (0,0) = red opaque + transparent white + two transparent; block (1,0) is
+        // the odd edge column (2 texels).
+        #[rustfmt::skip]
+        let src = [
+            255, 0, 0, 255,   255, 255, 255, 0,   0, 0, 255, 255,
+            255, 255, 255, 0, 255, 255, 255, 0,   0, 0, 255, 255,
+        ];
+        let out = downscale_rgba8(&src, 3, 2, 2);
+        assert_eq!(out.len(), 2 * 1 * 4);
+        // colour from the opaque texel only (no white bleed), alpha the mean: 255/4 -> 64
+        assert_eq!(&out[0..4], &[255, 0, 0, 64]);
+        assert_eq!(&out[4..8], &[0, 0, 255, 255]);
+        // a fully transparent block keeps its plain colour mean
+        let clear = [10, 20, 30, 0, 30, 40, 50, 0];
+        assert_eq!(downscale_rgba8(&clear, 2, 1, 2), vec![20, 30, 40, 0]);
+    }
+
+    #[test]
+    fn downscale_texels_nearest_keeps_each_blocks_first_texel() {
+        let src: Vec<u8> = (0..5 * 3).flat_map(|i: u8| [i; 8]).collect();
+        let out = downscale_texels_nearest(&src, 5, 3, 2, 8);
+        let firsts: Vec<u8> = out.chunks_exact(8).map(|t| t[0]).collect();
+        assert_eq!(firsts, vec![0, 2, 4, 10, 12, 14]);
     }
 }
