@@ -494,6 +494,12 @@ add_executable(rs_sha256_bench test/rs_sha256_bench.cpp src/rs_sha256.cpp)
 target_include_directories(rs_sha256_bench PRIVATE src)
 target_link_libraries(rs_sha256_bench PRIVATE grc_warnings)
 
+# HC6: the mirror's flat RID map (rs_rid_map.h) against std::unordered_map.
+add_executable(rs_rid_map_test test/rs_rid_map_test.cpp)
+target_include_directories(rs_rid_map_test PRIVATE src)
+target_link_libraries(rs_rid_map_test PRIVATE grc_warnings)
+add_test(NAME rs_rid_map COMMAND rs_rid_map_test)
+
 # Gate 6 (G6r): the fixed-size log-linear histogram (bucket boundaries, the 6.25% relative-error
 # bound, exact aggregates, percentile, JSON shape).
 add_executable(rs_histogram_test test/rs_histogram_test.cpp src/rs_histogram.cpp src/report.cpp)

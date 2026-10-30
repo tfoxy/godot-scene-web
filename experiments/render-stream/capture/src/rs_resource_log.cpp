@@ -3,6 +3,7 @@
 #include "rs_texture_worker.h"
 
 #include <cstdio>
+#include <cstring>
 
 #include "rs_mesh_payload.h"
 #include "rs_sha256.h"
@@ -471,10 +472,7 @@ void ResourceLog::stop() {
   active_ = false;
 }
 
-bool ResourceLog::active() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return active_;
-}
+bool ResourceLog::active() const { return active_.load(std::memory_order_acquire); }
 
 namespace {
 
@@ -1320,6 +1318,19 @@ void ResourceLog::mesh_surface_update_region(const TapContext &ctx, std::uint64_
   if (!active_) {
     return;
   }
+  if (!wants_lines()) {
+    // HC6: no line is formatted (HC1), so none is built; the registry moves exactly as below.
+    MeshEntry *entry = omitted ? nullptr : find_mesh(rid);
+    if (entry != nullptr && std::strcmp(outcome, "applied") == 0) {
+      entry->version += 1;
+      if (new_surface != nullptr && surface >= 0 &&
+          static_cast<std::size_t>(surface) < entry->surfaces.size()) {
+        entry->surfaces[static_cast<std::size_t>(surface)] = *new_surface;
+      }
+      recompute_mesh_status(entry);
+    }
+    return;
+  }
   const std::string op = std::string("mesh_surface_update_") + buffer + "_region";
   Line line = mesh_line(ctx, op.c_str(), rid);
   line.buffer = buffer;
@@ -1449,6 +1460,13 @@ void ResourceLog::mesh_clear(const TapContext &ctx, std::uint64_t rid, bool omit
 void ResourceLog::mesh_set_custom_aabb(const TapContext &ctx, std::uint64_t rid, bool omitted) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!active_) {
+    return;
+  }
+  if (!wants_lines()) {
+    // HC6: no line to build; the registry moves exactly as below.
+    if (MeshEntry *entry = omitted ? nullptr : find_mesh(rid)) {
+      entry->version += 1;
+    }
     return;
   }
   Line line = mesh_line(ctx, "mesh_set_custom_aabb", rid);

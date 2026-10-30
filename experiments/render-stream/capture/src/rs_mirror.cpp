@@ -59,6 +59,7 @@ void Mirror::reset() {
   ++epoch_;
   drop_frame_ = 0;
   omit_op_.clear();
+  omit_armed_.store(false, std::memory_order_release);
   omit_from_frame_ = 0;
   perturb_glyph_frame_ = 0;
   perturb_vertex_frame_ = 0;
@@ -190,6 +191,7 @@ void Mirror::set_drop_frame(std::uint64_t frame) {
 void Mirror::set_omit_op(const std::string &op, std::uint64_t from_frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   omit_op_ = op;
+  omit_armed_.store(!op.empty(), std::memory_order_release);
   omit_from_frame_ = from_frame;
 }
 
@@ -275,12 +277,15 @@ Mirror::Item *Mirror::find_item(std::uint64_t rid) {
   if (it == item_by_rid_.end()) {
     return nullptr;
   }
-  return items_.mut(it->second);  // HC4a: a hook that looks an item up for writing marks it
+  // HC6: the entry pointer directly, no items_ lookup. HC4a: a hook that looks an item up for
+  // writing marks it.
+  items_.mark(it->second.item);
+  return it->second.item;
 }
 
 const Mirror::Item *Mirror::peek_item(std::uint64_t rid) const {
   const auto it = item_by_rid_.find(rid);
-  return it != item_by_rid_.end() ? items_.find(it->second) : nullptr;
+  return it != item_by_rid_.end() ? it->second.item : nullptr;
 }
 
 bool Mirror::find_target(std::uint64_t rid, Target *out) const {
@@ -289,7 +294,7 @@ bool Mirror::find_target(std::uint64_t rid, Target *out) const {
   }
   const auto item = item_by_rid_.find(rid);
   if (item != item_by_rid_.end()) {
-    *out = {Kind::Item, item->second};
+    *out = {Kind::Item, item->second.id};
     return true;
   }
   const auto canvas = canvas_by_rid_.find(rid);
@@ -482,12 +487,12 @@ void Mirror::rekey_subtree(std::uint32_t root_id) {
     if (item.state.parent.kind == ParentKind::Item) {
       item.state.parent.id = rename(item.state.parent.id);
     }
-    item_by_rid_[item.rid] = item.state.id;
     staged.push_back(std::move(item));
   }
   for (Item &item : staged) {
     const std::uint32_t id = item.state.id;
-    items_.emplace(id, std::move(item));
+    Item &placed = items_.emplace(id, std::move(item));
+    item_by_rid_[placed.rid] = {id, &placed};  // HC6: the new node
   }
   stats_.rekeyed_items += renamed.size();
 }
@@ -571,8 +576,9 @@ void Mirror::create_item(std::uint64_t rid, std::uint64_t frame, Origin origin) 
   item.rid = rid;
   item.state.id = next_item_id_++;
   item.state.origin = origin;
-  item_by_rid_[rid] = item.state.id;
-  items_.emplace(item.state.id, std::move(item));
+  const std::uint32_t id = item.state.id;
+  Item &placed = items_.emplace(id, std::move(item));
+  item_by_rid_[rid] = {id, &placed};  // HC6: the entry's node, stable until erased
 }
 
 void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
@@ -662,7 +668,7 @@ void Mirror::free_rid(std::uint64_t rid, std::uint64_t frame) {
     // G5e (gate5-design.md Q3b): a mesh an add_mesh still names becomes a `freed` tombstone
     // (version unchanged, payloads released); otherwise its id leaves the table.
     ++epoch_;
-    const std::uint32_t id = mesh_it->second;
+    const std::uint32_t id = mesh_it->second.id;
     retire_mesh(id);
     return;
   }
@@ -1073,12 +1079,14 @@ void Mirror::add_rect(std::uint64_t rid, const Rect4 &rect, const Color4 &color,
   if (item == nullptr) {
     return;
   }
-  Command command;
-  command.kind = CommandKind::AddRect;
-  command.antialiased = antialiased;
-  command.rect = rect;
-  command.color = color;
-  push_command(item, std::move(command), frame);
+  // HC6: built in place in the item's list (nothing between the lookup and the push has a side
+  // effect, so the capacity check may come first).
+  if (Command *command = emplace_command(item, frame)) {
+    command->kind = CommandKind::AddRect;
+    command->antialiased = antialiased;
+    command->rect = rect;
+    command->color = color;
+  }
 }
 
 void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t frame) {
@@ -1097,15 +1105,31 @@ void Mirror::add_unsupported(std::uint64_t rid, const char *op, std::uint64_t fr
   push_command(item, std::move(command), frame);
 }
 
-void Mirror::push_command(Item *item, Command command, std::uint64_t frame) {
-  if (item->state.commands.size() >= max_commands_) {
-    ++stats_.dropped_capacity;
-    fail(FailureReason::MirrorCapacity, "commands > " + u64(max_commands_) +
-                                            " item=" + u64(item->state.id) + " frame=" + u64(frame));
+// HC6: by reference, so the command moves once (into the list), not twice.
+void Mirror::push_command(Item *item, Command &&command, std::uint64_t frame) {
+  if (!command_room(item, frame)) {
     return;
   }
   item->state.commands.push_back(std::move(command));
   ++item->state.content_version;
+}
+
+Command *Mirror::emplace_command(Item *item, std::uint64_t frame) {
+  if (!command_room(item, frame)) {
+    return nullptr;
+  }
+  ++item->state.content_version;
+  return &item->state.commands.emplace_back();
+}
+
+bool Mirror::command_room(Item *item, std::uint64_t frame) {
+  if (item->state.commands.size() < max_commands_) {
+    return true;
+  }
+  ++stats_.dropped_capacity;
+  fail(FailureReason::MirrorCapacity, "commands > " + u64(max_commands_) +
+                                          " item=" + u64(item->state.id) + " frame=" + u64(frame));
+  return false;
 }
 
 // --- textures (G2b2) ----------------------------------------------------------------
@@ -1205,6 +1229,9 @@ void take_copy(const PayloadCopy &copy, PayloadPtr bytes, TextureStatus *status,
 }  // namespace
 
 bool Mirror::omits(const char *op, std::uint64_t frame) const {
+  if (!omit_armed_.load(std::memory_order_acquire)) {
+    return false;  // HC6: no omit-op sabotage this session; no lock
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   return omit_op_matches(op, frame);
 }
@@ -1564,7 +1591,12 @@ void Mirror::add_texture_rect(std::uint64_t rid, const Rect4 &rect, std::uint64_
   if (item == nullptr) {
     return;
   }
-  Command command;
+  // HC6: built in place (nothing from here to the end of the call has a side effect).
+  Command *placed = emplace_command(item, frame);
+  if (placed == nullptr) {
+    return;
+  }
+  Command &command = *placed;
   if (texture == 0 && canvas_texture_headless_) {
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
@@ -1580,7 +1612,6 @@ void Mirror::add_texture_rect(std::uint64_t rid, const Rect4 &rect, std::uint64_
     command.rect = rect;
     command.modulate = modulate;
   }
-  push_command(item, std::move(command), frame);
 }
 
 void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::uint64_t texture,
@@ -1595,7 +1626,12 @@ void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::
   if (item == nullptr) {
     return;
   }
-  Command command;
+  // HC6: built in place (nothing from here to the end of the call has a side effect).
+  Command *placed = emplace_command(item, frame);
+  if (placed == nullptr) {
+    return;
+  }
+  Command &command = *placed;
   if (texture == 0 && canvas_texture_headless_) {
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
@@ -1612,7 +1648,6 @@ void Mirror::add_texture_rect_region(std::uint64_t rid, const Rect4 &rect, std::
     command.src = src;
     command.modulate = modulate;
   }
-  push_command(item, std::move(command), frame);
 }
 
 void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
@@ -1628,7 +1663,12 @@ void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
   if (item == nullptr) {
     return;
   }
-  Command command;
+  // HC6: built in place (nothing from here to the end of the call has a side effect).
+  Command *placed = emplace_command(item, frame);
+  if (placed == nullptr) {
+    return;
+  }
+  Command &command = *placed;
   if (texture == 0 && canvas_texture_headless_) {
     command.kind = CommandKind::Unsupported;
     command.name = kOp;
@@ -1646,7 +1686,6 @@ void Mirror::add_msdf_texture_rect_region(std::uint64_t rid, const Rect4 &rect,
     command.msdf_px_range = px_range;
     command.msdf_scale = scale;
   }
-  push_command(item, std::move(command), frame);
 }
 
 Rect4 Mirror::perturbed_glyph(const Rect4 &rect, std::uint64_t frame) const {
@@ -1835,10 +1874,14 @@ void Mirror::add_set_transform(std::uint64_t rid, const Xform &transform, std::u
   if (item == nullptr) {
     return;
   }
-  Command command;
+  // HC6: built in place (nothing from here to the end of the call has a side effect).
+  Command *placed = emplace_command(item, frame);
+  if (placed == nullptr) {
+    return;
+  }
+  Command &command = *placed;
   command.kind = CommandKind::AddSetTransform;
   command.transform = transform;
-  push_command(item, std::move(command), frame);
 }
 
 void Mirror::add_clip_ignore(std::uint64_t rid, bool ignore, std::uint64_t frame) {
@@ -1847,10 +1890,14 @@ void Mirror::add_clip_ignore(std::uint64_t rid, bool ignore, std::uint64_t frame
   if (item == nullptr) {
     return;
   }
-  Command command;
+  // HC6: built in place (nothing from here to the end of the call has a side effect).
+  Command *placed = emplace_command(item, frame);
+  if (placed == nullptr) {
+    return;
+  }
+  Command &command = *placed;
   command.kind = CommandKind::AddClipIgnore;
   command.clip_ignore = ignore;
-  push_command(item, std::move(command), frame);
 }
 
 // --- meshes (G5e; gate5-design.md D5-D8, Q3b) ------------------------------------------------
@@ -1890,12 +1937,16 @@ std::size_t first_vertex_offset(const PayloadBytes &payload) {
 
 const Mirror::Mesh *Mirror::peek_mesh(std::uint64_t rid) const {
   const auto it = mesh_by_rid_.find(rid);
-  return it == mesh_by_rid_.end() ? nullptr : meshes_.find(it->second);
+  return it == mesh_by_rid_.end() ? nullptr : it->second.mesh;  // HC6: the entry directly
 }
 
 Mirror::Mesh *Mirror::find_mesh(std::uint64_t rid) {
   const auto it = mesh_by_rid_.find(rid);
-  return it == mesh_by_rid_.end() ? nullptr : meshes_.mut(it->second);  // HC4b: marks
+  if (it == mesh_by_rid_.end()) {
+    return nullptr;
+  }
+  meshes_.mark(it->second.id, it->second.mesh);  // HC4b: marks; HC6: the entry directly
+  return it->second.mesh;
 }
 
 Mirror::Mesh *Mirror::mesh_for(std::uint64_t rid, const char *op, std::uint64_t frame) {
@@ -2344,14 +2395,15 @@ void Mirror::mesh_create(std::uint64_t rid, std::uint64_t frame) {
   }
   const auto stale = mesh_by_rid_.find(rid);
   if (stale != mesh_by_rid_.end()) {
-    retire_mesh(stale->second);  // a recycled RID value: the old id is gone
+    retire_mesh(stale->second.id);  // a recycled RID value: the old id is gone
   }
   Mesh mesh;
   mesh.id = next_mesh_id_++;
   mesh.rid = rid;
   mesh.born_frame = frame;
-  mesh_by_rid_[rid] = mesh.id;
-  meshes_.emplace(mesh.id, std::move(mesh));
+  const std::uint32_t id = mesh.id;
+  Mesh &placed = meshes_.emplace(id, std::move(mesh));
+  mesh_by_rid_[rid] = {id, &placed};  // HC6: the entry's node, stable until erased
 }
 
 void Mirror::mesh_create_from_surfaces(std::uint64_t rid,
@@ -2363,7 +2415,7 @@ void Mirror::mesh_create_from_surfaces(std::uint64_t rid,
   }
   const auto stale = mesh_by_rid_.find(rid);
   if (stale != mesh_by_rid_.end()) {
-    retire_mesh(stale->second);
+    retire_mesh(stale->second.id);
   }
   Mesh mesh;
   mesh.id = next_mesh_id_++;
@@ -2373,8 +2425,9 @@ void Mirror::mesh_create_from_surfaces(std::uint64_t rid,
     mesh.surfaces.push_back(mesh_surface(input, frame));
   }
   recompute_mesh_status(&mesh);
-  mesh_by_rid_[rid] = mesh.id;
-  meshes_.emplace(mesh.id, std::move(mesh));
+  const std::uint32_t id = mesh.id;
+  Mesh &placed = meshes_.emplace(id, std::move(mesh));
+  mesh_by_rid_[rid] = {id, &placed};  // HC6: the entry's node, stable until erased
 }
 
 void Mirror::mesh_adopt(std::uint64_t rid, const std::vector<MeshSurfaceInput> &surfaces,
@@ -2395,8 +2448,9 @@ void Mirror::mesh_adopt(std::uint64_t rid, const std::vector<MeshSurfaceInput> &
     mesh.surfaces.push_back(mesh_surface(input, frame));
   }
   recompute_mesh_status(&mesh);
-  mesh_by_rid_[rid] = mesh.id;
-  meshes_.emplace(mesh.id, std::move(mesh));
+  const std::uint32_t id = mesh.id;
+  Mesh &placed = meshes_.emplace(id, std::move(mesh));
+  mesh_by_rid_[rid] = {id, &placed};  // HC6: the entry's node, stable until erased
 }
 
 void Mirror::mesh_add_surface(std::uint64_t rid, const MeshSurfaceInput &surface,
@@ -3099,7 +3153,7 @@ std::uint32_t Mirror::material_id_of(std::uint64_t rid) const {
 std::uint32_t Mirror::mesh_id_of(std::uint64_t rid) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto it = mesh_by_rid_.find(rid);
-  return rid == 0 || it == mesh_by_rid_.end() ? 0 : it->second;
+  return rid == 0 || it == mesh_by_rid_.end() ? 0 : it->second.id;
 }
 
 bool Mirror::particles_referenced(std::uint32_t id) const {
@@ -3217,7 +3271,7 @@ Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const Particles
   {
     const auto it = mesh_by_rid_.find(a.mesh);
     p.pass_rids.push_back(a.mesh);
-    p.pass_ids.push_back(a.mesh != 0 && it != mesh_by_rid_.end() ? it->second : 0);
+    p.pass_ids.push_back(a.mesh != 0 && it != mesh_by_rid_.end() ? it->second.id : 0);
     p.pass_unknown.push_back(a.mesh != 0 && it == mesh_by_rid_.end());
   }
   if (a.subemitter != 0) {
@@ -3280,7 +3334,7 @@ Mirror::ParticlesCall Mirror::particles_call(std::uint64_t rid, ParticlesOp op,
     out.ref_id = args.rid != 0 && it != material_by_rid_.end() ? it->second : 0;
   } else if (op == ParticlesOp::SetDrawPassMesh) {
     const auto it = mesh_by_rid_.find(args.rid);
-    out.ref_id = args.rid != 0 && it != mesh_by_rid_.end() ? it->second : 0;
+    out.ref_id = args.rid != 0 && it != mesh_by_rid_.end() ? it->second.id : 0;
   } else if (op == ParticlesOp::SetSubemitter) {
     const auto it = particles_by_rid_.find(args.rid);
     out.ref_id = args.rid != 0 && it != particles_by_rid_.end() ? it->second : 0;

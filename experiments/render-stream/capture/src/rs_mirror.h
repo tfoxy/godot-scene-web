@@ -64,6 +64,7 @@
 #define GRC_RS_MIRROR_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -78,6 +79,7 @@
 #include "rs2_snapshot.h"
 #include "rs_captured.h"
 #include "rs_resource_log.h"
+#include "rs_rid_map.h"
 #include "rs_texture_delivery.h"
 #include "rs_variant.h"
 
@@ -1221,7 +1223,11 @@ class Mirror {
   std::vector<std::uint32_t> *children_of(rs2::ParentKind kind, std::uint32_t id);
   void detach(Item *item);
   // Appends one command (cap checked) and bumps content_version.
-  void push_command(Item *item, rs2::Command command, std::uint64_t frame);
+  void push_command(Item *item, rs2::Command &&command, std::uint64_t frame);
+  // HC6: appends a default command (the capacity check of push_command first) and returns it to
+  // be filled in place; null when the item is at its command cap.
+  rs2::Command *emplace_command(Item *item, std::uint64_t frame);
+  bool command_room(Item *item, std::uint64_t frame);  // false: the cap's failure is recorded
   // `rect` with perturb-glyph applied when it is active at `frame`.
   rs2::Rect4 perturbed_glyph(const rs2::Rect4 &rect, std::uint64_t frame) const;
   // `point` with perturb-vertex applied when it is active at `frame` (G5d).
@@ -1404,6 +1410,7 @@ class Mirror {
   std::set<std::uint32_t> pending_ids_;   // the textures the snapshot being taken carries as pending
   std::uint64_t drop_frame_ = 0;
   std::string omit_op_;
+  std::atomic<bool> omit_armed_{false};  // HC6: !omit_op_.empty(), readable without mutex_
   std::uint64_t omit_from_frame_ = 0;
   std::uint64_t perturb_glyph_frame_ = 0;
   std::uint64_t perturb_vertex_frame_ = 0;
@@ -1706,14 +1713,20 @@ class Mirror {
   rs2::Snapshot hc_shadow_prev_;       // the previous snapshot as published
   rs2::Snapshot hc_shadow_prev_full_;  // ... and as the full walk built it
   ResMap<Texture> textures_;  // ordered by id, tombstones included (HC4b: marked writes)
-  std::unordered_map<std::uint64_t, std::uint32_t> texture_by_rid_;
+  RidMap<std::uint32_t> texture_by_rid_;
   std::uint32_t next_texture_id_ = 1;
   ResMap<Mesh> meshes_;  // ordered by id, tombstones included (G5e; HC4b: marked writes)
-  std::unordered_map<std::uint64_t, std::uint32_t> mesh_by_rid_;
+  // HC6: the mesh's id and its node in meshes_ (stable until erased; a mesh leaves this map, its
+  // RID cleared, before its entry can leave the table).
+  struct MeshRef {
+    std::uint32_t id = 0;
+    Mesh *mesh = nullptr;
+  };
+  RidMap<MeshRef> mesh_by_rid_;
   std::uint32_t next_mesh_id_ = 1;
   // PM1: multimeshes (tombstones included), the options (survive reset()) and the state notes.
   std::map<std::uint32_t, Multimesh> multimeshes_;
-  std::unordered_map<std::uint64_t, std::uint32_t> multimesh_by_rid_;
+  RidMap<std::uint32_t> multimesh_by_rid_;
   std::uint32_t next_multimesh_id_ = 1;
   MultimeshOptions mm_options_;
   std::uint32_t stale_buffer_multimesh_ = 0;  // stale-buffer: the frozen multimesh (0: none yet)
@@ -1756,7 +1769,7 @@ class Mirror {
     std::uint64_t noted_version = 0;
   };
   std::map<std::uint32_t, Particles> particles_;
-  std::unordered_map<std::uint64_t, std::uint32_t> particles_by_rid_;
+  RidMap<std::uint32_t> particles_by_rid_;
   std::uint32_t next_particles_id_ = 1;
   ParticlesOptions pt_options_;
   bool drop_restart_done_ = false;
@@ -1766,18 +1779,25 @@ class Mirror {
   std::uint64_t ppm_epoch_ = 0;  // moves when a shader or emitter changes what ppm_candidates sees
   // G55d: shaders and materials (no tombstones, D5).
   ResMap<Shader> shaders_;  // HC4b: marked writes
-  std::unordered_map<std::uint64_t, std::uint32_t> shader_by_rid_;
+  RidMap<std::uint32_t> shader_by_rid_;
   std::uint32_t next_shader_id_ = 1;
   ResMap<Material> materials_;  // HC4b: marked writes
-  std::unordered_map<std::uint64_t, std::uint32_t> material_by_rid_;
+  RidMap<std::uint32_t> material_by_rid_;
   std::uint32_t next_material_id_ = 1;
   rs2::ShaderPolicy shader_policy_ = rs2::ShaderPolicy::Source;
   std::uint64_t material_refs_epoch_ = 0;  // G8m: see pending_material_refs()
   std::uint64_t perturb_shader_frame_ = 0;
   rs2::Filter default_filter_ = rs2::Filter::Linear;   // the server's initial values
   rs2::Repeat default_repeat_ = rs2::Repeat::Disabled;  // (renderer_viewport.h:114-115)
-  std::unordered_map<std::uint64_t, std::uint32_t> canvas_by_rid_;
-  std::unordered_map<std::uint64_t, std::uint32_t> item_by_rid_;
+  RidMap<std::uint32_t> canvas_by_rid_;
+  // HC6 (host-cost-design.md D5.5): the item's id and its node in items_ (a std::map node, stable
+  // until erased), so a hooked call reaches the item with one flat-table probe. Kept in step with
+  // items_ by create_item, rekey_subtree, free_rid and reset.
+  struct ItemRef {
+    std::uint32_t id = 0;
+    Item *item = nullptr;
+  };
+  RidMap<ItemRef> item_by_rid_;
   std::unordered_set<std::uint64_t> untracked_items_;
   std::vector<rs2::Failure> failures_;
   std::vector<rs2::UnsupportedRef> session_unsupported_;

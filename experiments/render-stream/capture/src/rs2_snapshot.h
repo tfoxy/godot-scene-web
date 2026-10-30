@@ -1203,6 +1203,8 @@ class SharedVector {
   // moved once, not twice.
   void push_back(const T &value) { own().push_back(value); }
   void push_back(T &&value) { own().push_back(std::move(value)); }
+  // HC6: a default element built in place (filled by the caller); no move, no temporary.
+  T &emplace_back() { return own().emplace_back(); }
   void reserve(std::size_t n) { own().reserve(n); }
   void clear() { data_.reset(); }
   // HC2: empty this holder's sequence for a re-record. A sole holder clears in place and keeps its
