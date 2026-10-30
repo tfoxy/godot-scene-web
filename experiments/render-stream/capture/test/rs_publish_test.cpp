@@ -1987,6 +1987,7 @@ void test_file_writer() {
 }
 
 int main() {
+  grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
   test_file_writer();
   test_lane_former();
   test_start_two_sinks();

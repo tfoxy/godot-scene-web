@@ -80,6 +80,101 @@ struct PredictState {
   std::map<std::int64_t, MultimeshBuffer> mm;
 };
 
+// W13p: the meta keys the predictor reads, typed. The writer builds it from the rs2::Transaction
+// (predict_meta(), no JSON); the reader (and encode() of a bare record) from the meta JSON. Each
+// field keeps what make_golden.py's rules can tell apart (a number that is an int, a float, null
+// or something else; a list that is an array, missing or something else), so both sources code
+// every record alike.
+struct MetaNum {
+  enum class Kind : std::uint8_t { Null, Int, Float, Other };  // Int includes a JSON bool
+  Kind kind = Kind::Null;
+  std::int64_t i = 0;
+  double d = 0.0;
+  static MetaNum of(std::int64_t v) {
+    MetaNum n;
+    n.kind = Kind::Int;
+    n.i = v;
+    return n;
+  }
+  bool is_null() const { return kind == Kind::Null; }
+  bool as_int(std::int64_t *out) const {
+    if (kind != Kind::Int) {
+      return false;
+    }
+    *out = i;
+    return true;
+  }
+  // `value == n` as Python compares (1.0 == 1).
+  bool equals_int(std::int64_t n) const {
+    return kind == Kind::Int ? i == n : kind == Kind::Float && d == static_cast<double>(n);
+  }
+  bool operator==(const MetaNum &o) const {
+    return kind == o.kind && (kind != Kind::Int || i == o.i) && (kind != Kind::Float || d == o.d);
+  }
+};
+enum class MetaList : std::uint8_t { Missing, Array, Other };  // Missing: absent or null
+enum class BlockName : std::uint8_t { Other, MeshU8, MeshF32, MmF32 };
+struct MetaSurface {
+  bool object = true;
+  bool hash_null = true;
+  bool primitive_string = true;
+  std::string primitive;
+  MetaNum payload_bytes, format, vertex_count, index_count;
+  bool operator==(const MetaSurface &o) const {
+    return object == o.object && hash_null == o.hash_null &&
+           primitive_string == o.primitive_string && primitive == o.primitive &&
+           payload_bytes == o.payload_bytes && format == o.format &&
+           vertex_count == o.vertex_count && index_count == o.index_count;
+  }
+};
+struct MetaMesh {
+  bool object = true;
+  bool status_ok = false;
+  bool surfaces_array = true;
+  MetaNum id, f, u8;
+  std::size_t first_surface = 0;  // into PredictMeta::surfaces
+  std::size_t surface_count = 0;
+  bool operator==(const MetaMesh &o) const {
+    return object == o.object && status_ok == o.status_ok && surfaces_array == o.surfaces_array &&
+           id == o.id && f == o.f && u8 == o.u8 && first_surface == o.first_surface &&
+           surface_count == o.surface_count;
+  }
+};
+struct MetaMultimesh {
+  bool object = true;
+  bool status_ok = false;
+  bool colors = false;  // truthy
+  bool custom = false;  // truthy
+  MetaNum id, aabb_f, buffer_f, instances;
+  bool operator==(const MetaMultimesh &o) const {
+    return object == o.object && status_ok == o.status_ok && colors == o.colors &&
+           custom == o.custom && id == o.id && aabb_f == o.aabb_f && buffer_f == o.buffer_f &&
+           instances == o.instances;
+  }
+};
+struct PredictMeta {
+  bool transaction = false;  // "type" is "transaction"
+  bool full = false;         // "encoding" is "full"
+  MetaList meshes_list = MetaList::Missing;
+  MetaList multimeshes_list = MetaList::Missing;
+  std::vector<MetaMesh> meshes;
+  std::vector<MetaSurface> surfaces;
+  std::vector<MetaNum> removed_meshes;  // an array's elements (empty when not an array)
+  std::vector<MetaMultimesh> multimeshes;
+  std::vector<MetaNum> removed_multimeshes;
+  std::vector<BlockName> blocks;  // the descriptors' names, in order
+  void clear();                   // keeps the vectors' capacity
+  bool operator==(const PredictMeta &o) const;
+};
+
+// What rs2::encode_transaction() writes for these keys, from the transaction itself (its version
+// /11 or later, as a /13 stream's always is).
+void predict_meta(const rs2::Transaction &transaction, PredictMeta *out);
+
+// Tests: every encode() given a PredictMeta also parses the record's meta JSON and aborts unless
+// both agree (predict_meta() against encode_transaction()). Off by default.
+void set_verify_meta(bool on);
+
 // What a record failed with. The codes are the wire's (render-stream-13.md "Decoding and check
 // order"): framing before meta-json before meta-schema before predict-check.
 enum class Status : std::uint8_t {
@@ -92,8 +187,28 @@ enum class Status : std::uint8_t {
 };
 const char *to_wire(Status status);
 
+// The same keys read from a /12 record's meta JSON (what encode() of a bare record does): Ok,
+// NotTransaction, or the record's framing / meta error.
+Status record_meta(const std::uint8_t *record, std::size_t size, PredictMeta *out);
+
 class Predictor {
  public:
+  Predictor();
+  ~Predictor();
+  // Copies share H1 and H2 (no bytes copied) and the flags; each predictor keeps its own scratch.
+  Predictor(const Predictor &other);
+  Predictor &operator=(const Predictor &other);
+  Predictor(Predictor &&other) noexcept;
+  Predictor &operator=(Predictor &&other) noexcept;
+
+  // Writer, W13p: `meta` is the record's meta keys (predict_meta() of the transaction that
+  // encode_transaction() wrote as `record12`), so the meta JSON is not read again. Codes the blocks
+  // straight into `out` (whose capacity it reuses). Same result as encode() of the bare record.
+  Status encode(const PredictMeta &meta, const std::uint8_t *record12, std::size_t size,
+                std::vector<std::uint8_t> *out, std::vector<Unit> *trace = nullptr);
+  Status encode(const rs2::Transaction &transaction, const std::vector<std::uint8_t> &record12,
+                std::vector<std::uint8_t> *out, std::vector<Unit> *trace = nullptr);
+
   // Writer: `record12` is one complete /12 transaction record (length prefix included), as
   // rs2::encode_transaction() writes it; `out` receives the /13 record. Advances the history.
   // Returns NotTransaction (out untouched, history unchanged) for any other record type.
@@ -127,8 +242,15 @@ class Predictor {
   bool no_reset = false;
 
  private:
-  Status code(const std::uint8_t *record, std::size_t size, bool inverse,
-              std::vector<std::uint8_t> *out, std::vector<Unit> *trace);
+  struct Scratch;  // reused buffers (rs13_predict.cpp): layouts, decoded blocks, the hash state
+  Status encode_typed(const PredictMeta &meta, const std::uint8_t *record, std::size_t size,
+                      std::vector<std::uint8_t> *out, std::vector<Unit> *trace);
+  Status decode_typed(const PredictMeta &meta, const std::uint8_t *record, std::size_t size,
+                      std::vector<std::uint8_t> *out, std::vector<Unit> *trace);
+  Scratch &scratch();
+  std::shared_ptr<PredictState> next_state(bool full);
+
+  std::unique_ptr<Scratch> scratch_;
 
   std::shared_ptr<const PredictState> h1_ = empty_state();
   std::shared_ptr<const PredictState> h2_ = empty_state();

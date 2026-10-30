@@ -1,0 +1,11 @@
+# rs-gsw-wasm (the GSW harness build, scripts/build-rs-core.sh, and the render-stream client,
+# packages/render-stream-client/scripts/build-web.sh) is built with wasm SIMD (W13p): rs-core's
+# /13 un-predict uses 128-bit lanes under
+# cfg(target_feature = "simd128"), and LLVM autovectorizes the rest of the module with it. Every
+# browser the module targets has it (the pinned Chromium, the phones' Chrome). Cargo reads this
+# file only when run from this directory (or below): both build scripts `cd` here first.
+#
+# The web export's emscripten side module (scripts/build-rs-core-web.sh, rs-core-capi) does NOT
+# get SIMD: it takes rs-core's portable lanes.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

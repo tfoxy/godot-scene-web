@@ -3722,6 +3722,7 @@ void test_hc5_formation_thread() {
 }
 
 int main(int argc, char **argv) {
+  grc::rs13::set_verify_meta(true);  // W13p: predict_meta() == the meta JSON
   // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
   // waiting for its own jobs, so the fake transport is read as before): the same checks hold.
   for (int i = 1; i < argc; ++i) {
