@@ -744,8 +744,13 @@ or below and moves the release to the encode thread. The couch-coop switch is re
 history is released there. The formation half still fails. Combat formation is +12 % over /12
 across four A/B pairs, about +0.25 M cycles (≈ 0.07 ms) a frame on the encode thread, down from
 +31 %; the menu is +13–48 %. The predictor stays at about 0.6 M cycles a combat frame in the game
-because its cost there is cold memory, and zstd saves only 0.15–0.3 M of that. The switch waits
+because its cost there is cold memory, and zstd saves only 0.15–0.3 M of that. The switch waited
 for the orchestrator's decision on that residual.
+
+**Accepted (2026-10-30).** The orchestrator accepted the residual: W13z's bar guards the main
+thread, which now matches /12, and the remaining ~0.07 ms a frame sits on HC5's encode thread, where
+/13 halves the seat's combat wire (8.45 → 3.49 Mbps). The couch-coop seat streams /13 since couch
+`7124aa83`.
 
 W13z does not freeze /13. The freeze is a later step before any release, after TAG1/TAG2 (item
 identity lands at /13, [client-extensions-design.md](client-extensions-design.md)) and the
