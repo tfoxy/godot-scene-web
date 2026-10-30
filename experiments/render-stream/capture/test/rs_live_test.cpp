@@ -3136,7 +3136,8 @@ std::string hello_of(int version, const std::string &offer) {
 // Every binary message of each connection (by connection index, 1-based), with the summaries.
 std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> w13_run(
     const std::vector<W13Conn> &conns, const LiveConfig &config,
-    std::vector<ConnectionSummary> *summaries) {
+    std::vector<ConnectionSummary> *summaries, std::uint64_t *main_releases = nullptr) {
+  const std::uint64_t released0 = grc::rs13::states_released_here();
   FakeTransport transport;
   Session tmpl = make_template(Delivery::Inline);
   tmpl.version = ProtocolVersion::V13;
@@ -3168,6 +3169,10 @@ std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> w13_run(
     const std::uint64_t t = frame * 16000000ULL;
     hub.on_frame_shared(frame, t, hub.wants_snapshot(frame, t) ? w13_state(frame) : nullptr,
                         frame, 0);
+  }
+  hub.sync();
+  if (main_releases != nullptr) {
+    *main_releases = grc::rs13::states_released_here() - released0;
   }
   hub.finish(EndReason::Shutdown, 41, 41 * 16000000ULL);
   std::map<std::uint32_t, std::vector<std::vector<std::uint8_t>>> out;
@@ -3291,6 +3296,45 @@ void test_w13_connections() {
   check(sums.at(4).predict_formed == 2,
         "W13b: a late joiner forms its full and first patch, then shares (" +
             std::to_string(sums.at(4).predict_formed) + " formed)");
+  // W13f: the coding connection's predictor refills the history state that left it instead of
+  // allocating, although the memo and the lockstep viewers hold its last two states. Alone, it
+  // allocates for its first three transactions only (the full, the patch after it, the first
+  // patch with an H2); beside lockstep viewers (which hold a spare a little longer when they skip
+  // a callback) it still reuses almost every time.
+  {
+    std::vector<ConnectionSummary> one;
+    w13_run({conns[0]}, LiveConfig(), &one);
+    check(one.at(0).predict_states_made == 3 &&
+              one.at(0).predict_states_reused + 3 == one.at(0).predict_formed,
+          "W13f: a lone live predictor reuses its history (" +
+              std::to_string(one.at(0).predict_states_reused) + " reused, " +
+              std::to_string(one.at(0).predict_states_made) + " made, " +
+              std::to_string(one.at(0).predict_formed) + " formed)");
+    check(sums.at(0).predict_states_reused + sums.at(0).predict_states_made ==
+                  sums.at(0).predict_formed &&
+              sums.at(0).predict_states_reused * 4 >= sums.at(0).predict_formed * 3,
+          "W13f: the live predictor reuses its history beside lockstep viewers (" +
+              std::to_string(sums.at(0).predict_states_reused) + " reused, " +
+              std::to_string(sums.at(0).predict_states_made) + " made, " +
+              std::to_string(sums.at(0).predict_formed) + " formed)");
+  }
+  {
+    // W13f: on the encode thread, the frame callbacks release no /13 history on the main thread
+    // (the memo's codings let go of theirs at the batch end, on the encode thread).
+    LiveConfig threaded;
+    threaded.formation = grc::rs2::Formation::Thread;
+    threaded.formation_wait = true;
+    std::uint64_t main_releases = 0;
+    std::vector<ConnectionSummary> ts;
+    const auto tw = w13_run(conns, threaded, &ts, &main_releases);
+    check(main_releases == 0 && ts.at(0).predict_formed > 30,
+          "W13f: no prediction state is released on the main thread in a frame callback (" +
+              std::to_string(main_releases) + ")");
+    for (std::uint32_t i : {1u, 2u, 4u, 5u}) {
+      check(same_stream(tw.at(i), wire.at(i)),
+            "W13f: /13 connection " + std::to_string(i) + " gets the same bytes on the encode thread");
+    }
+  }
   // Alone, each /13 connection gets the bytes it gets beside the others.
   for (std::uint32_t i : {1u, 4u, 5u}) {
     const auto solo = w13_run({conns[i - 1]}, LiveConfig(), nullptr);

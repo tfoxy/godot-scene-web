@@ -3,6 +3,7 @@
 #include "rs13_predict.h"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <cstdio>
 
@@ -10,6 +11,10 @@
 #include <cstring>
 #include <string_view>
 #include <utility>
+
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 #include "common/xxhash.h"
 #include "rs2_codec.h"
@@ -734,31 +739,97 @@ void unpredict_words(std::uint8_t *buf, std::size_t n, const std::uint8_t *base,
   }
 }
 
-// make_golden.py predict_words() over n bytes of `in`, written transposed: word w (counted from
-// the block's first word) into the block's planes `out` + j * nw + w.
+// make_golden.py predict_words() over `words` words of `in` (Order 0: the raw words), written
+// byte-plane transposed to `out` (plane j at out + j * nw). W13f: 16 and then 4 words a step on
+// SSE2, plain words for the rest (the same bytes); the writer's hot loop (mesh positions and UVs,
+// mesh_f32, mm_f32).
+#if defined(__SSE2__)
 template <int Order>
-void predict_words_t(const std::uint8_t *in, std::size_t n, const std::uint8_t *base,
-                     const std::uint8_t *prev, std::uint8_t *out, std::size_t nw, std::size_t w) {
-  for (std::size_t k = 0; k + 4 <= n; k += 4, ++w) {
-    const std::uint32_t r = residual<Order>(word_at(in + k), base, prev, k);
-    out[w] = static_cast<std::uint8_t>(r);
-    out[nw + w] = static_cast<std::uint8_t>(r >> 8);
-    out[2 * nw + w] = static_cast<std::uint8_t>(r >> 16);
-    out[3 * nw + w] = static_cast<std::uint8_t>(r >> 24);
+GRC_RS13_INLINE __m128i residual4(const std::uint8_t *in, const std::uint8_t *base,
+                                  const std::uint8_t *prev, std::size_t at) {
+  const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i *>(in + at));
+  if constexpr (Order == 0) {
+    return v;
+  } else {
+    const __m128i sign = _mm_set1_epi32(static_cast<int>(0x80000000u));
+    // ordered(u): u ^ 0x80000000 when the sign bit is clear, ~u when it is set.
+    auto ordered4 = [&sign](__m128i u) {
+      return _mm_xor_si128(u, _mm_or_si128(_mm_srai_epi32(u, 31), sign));
+    };
+    const __m128i b = ordered4(_mm_loadu_si128(reinterpret_cast<const __m128i *>(base + at)));
+    __m128i pred = b;
+    if constexpr (Order == 2) {
+      pred = _mm_sub_epi32(_mm_add_epi32(b, b),
+                           ordered4(_mm_loadu_si128(reinterpret_cast<const __m128i *>(prev + at))));
+    }
+    const __m128i d = _mm_sub_epi32(ordered4(v), pred);
+    return _mm_xor_si128(_mm_slli_epi32(d, 1), _mm_srai_epi32(d, 31));  // zz32
+  }
+}
+#endif
+
+template <int Order>
+void code_words(const std::uint8_t *in, std::size_t words, const std::uint8_t *base,
+                const std::uint8_t *prev, std::uint8_t *out, std::size_t nw) {
+  std::size_t k = 0;
+#if defined(__SSE2__)
+  for (; k + 16 <= words; k += 16) {
+    const std::size_t b = 4 * k;
+    const __m128i r0 = residual4<Order>(in, base, prev, b);
+    const __m128i r1 = residual4<Order>(in, base, prev, b + 16);
+    const __m128i r2 = residual4<Order>(in, base, prev, b + 32);
+    const __m128i r3 = residual4<Order>(in, base, prev, b + 48);
+    // 16 words (rows) x 4 bytes to 4 planes x 16 bytes.
+    const __m128i t0 = _mm_unpacklo_epi8(r0, r1);  // words 0,4 then 1,5, byte-interleaved
+    const __m128i t1 = _mm_unpackhi_epi8(r0, r1);  // 2,6 then 3,7
+    const __m128i t2 = _mm_unpacklo_epi8(r2, r3);  // 8,12 then 9,13
+    const __m128i t3 = _mm_unpackhi_epi8(r2, r3);  // 10,14 then 11,15
+    const __m128i u0 = _mm_unpacklo_epi8(t0, t1);  // words 0,2,4,6: bytes 0..3
+    const __m128i u1 = _mm_unpackhi_epi8(t0, t1);  // words 1,3,5,7
+    const __m128i u2 = _mm_unpacklo_epi8(t2, t3);  // words 8,10,12,14
+    const __m128i u3 = _mm_unpackhi_epi8(t2, t3);  // words 9,11,13,15
+    const __m128i v0 = _mm_unpacklo_epi8(u0, u1);  // byte 0 of words 0..7, byte 1 of 0..7
+    const __m128i v1 = _mm_unpackhi_epi8(u0, u1);  // bytes 2 and 3 of words 0..7
+    const __m128i v2 = _mm_unpacklo_epi8(u2, u3);  // bytes 0 and 1 of words 8..15
+    const __m128i v3 = _mm_unpackhi_epi8(u2, u3);  // bytes 2 and 3 of words 8..15
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(out + k), _mm_unpacklo_epi64(v0, v2));
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(out + nw + k), _mm_unpackhi_epi64(v0, v2));
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 2 * nw + k), _mm_unpacklo_epi64(v1, v3));
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(out + 3 * nw + k), _mm_unpackhi_epi64(v1, v3));
+  }
+  for (; k + 4 <= words; k += 4) {
+    const __m128i r = residual4<Order>(in, base, prev, 4 * k);
+    const __m128i t = _mm_unpacklo_epi8(r, _mm_srli_si128(r, 8));  // words 0,2 then 1,3
+    const __m128i p = _mm_unpacklo_epi8(t, _mm_srli_si128(t, 8));  // plane 0, 1, 2, 3
+    auto store4 = [](std::uint8_t *at, __m128i v) {
+      const std::uint32_t w = static_cast<std::uint32_t>(_mm_cvtsi128_si32(v));
+      std::memcpy(at, &w, 4);
+    };
+    store4(out + k, p);
+    store4(out + nw + k, _mm_srli_si128(p, 4));
+    store4(out + 2 * nw + k, _mm_srli_si128(p, 8));
+    store4(out + 3 * nw + k, _mm_srli_si128(p, 12));
+  }
+#endif
+  for (; k < words; ++k) {
+    const std::uint32_t r = residual<Order>(word_at(in + 4 * k), base, prev, 4 * k);
+    out[k] = static_cast<std::uint8_t>(r);
+    out[nw + k] = static_cast<std::uint8_t>(r >> 8);
+    out[2 * nw + k] = static_cast<std::uint8_t>(r >> 16);
+    out[3 * nw + k] = static_cast<std::uint8_t>(r >> 24);
   }
 }
 
-// Byte-plane transpose of n words: byte j of word k goes to j * n + k.
-void transpose4(const std::uint8_t *in, std::size_t size, std::uint8_t *out) {
-  const std::size_t n = size / 4;
-  std::uint8_t *o0 = out, *o1 = out + n, *o2 = out + 2 * n, *o3 = out + 3 * n;
-  for (std::size_t k = 0; k < n; ++k) {
-    o0[k] = in[4 * k];
-    o1[k] = in[4 * k + 1];
-    o2[k] = in[4 * k + 2];
-    o3[k] = in[4 * k + 3];
+void code_words_any(int order, const std::uint8_t *in, std::size_t words, const std::uint8_t *base,
+                    const std::uint8_t *prev, std::uint8_t *out, std::size_t nw) {
+  switch (order) {
+  case 0: code_words<0>(in, words, base, prev, out, nw); break;
+  case 1: code_words<1>(in, words, base, prev, out, nw); break;
+  default: code_words<2>(in, words, base, prev, out, nw); break;
   }
 }
+
+// Byte-plane untranspose of n words: byte j of word k comes from j * n + k.
 void untranspose4(const std::uint8_t *in, std::size_t size, std::uint8_t *out) {
   const std::size_t n = size / 4;
   const std::uint8_t *i0 = in, *i1 = in + n, *i2 = in + 2 * n, *i3 = in + 3 * n;
@@ -1035,42 +1106,67 @@ bool same_shape(const MeshBodies &b, const U8Layout &l, const EntryLayout &e) {
   return true;
 }
 
+// W13f: map lookups for a run of ids that mostly ascend (a transaction lists its units in id
+// order, and a history holds nearly the same units): a cursor walks forward a few nodes before
+// falling back to the map's own find, so a lookup touches one or two nodes instead of a root-to-
+// leaf path. Returns exactly map.find(id).
+template <class Map>
+struct Finder {
+  const Map *m;
+  typename Map::const_iterator it;
+  explicit Finder(const Map &map) : m(&map), it(map.begin()) {}
+  typename Map::const_iterator find(std::int64_t id) {
+    for (int k = 0; k < 4 && it != m->end() && it->first < id; ++k) {
+      ++it;
+    }
+    if (it != m->end() && it->first == id) {
+      return it++;
+    }
+    const auto r = m->find(id);
+    if (r != m->end()) {
+      it = std::next(r);
+    }
+    return r;
+  }
+};
+struct Finders {
+  Finder<std::map<std::int64_t, MeshBodies>> body1, body2;
+  Finder<std::map<std::int64_t, std::array<std::uint8_t, 24>>> aabb1, aabb2;
+  Finder<std::map<std::int64_t, MultimeshBuffer>> mm1, mm2;
+  Finders(const PredictState &h1, const PredictState &h2)
+      : body1(h1.body), body2(h2.body), aabb1(h1.aabb), aabb2(h2.aabb), mm1(h1.mm), mm2(h2.mm) {}
+};
+
 // make_golden.py _body_refs() / _aabb_refs() / _mm_refs(): (base, prev) or nullptr.
-std::pair<const MeshBodies *, const MeshBodies *> body_refs(const PredictState &h1,
-                                                            const PredictState &h2,
-                                                            const U8Layout &l,
+std::pair<const MeshBodies *, const MeshBodies *> body_refs(Finders &f, const U8Layout &l,
                                                             const EntryLayout &e) {
-  const auto b = h1.body.find(e.id);
-  if (b == h1.body.end() || !same_shape(b->second, l, e)) {
+  const auto b = f.body1.find(e.id);
+  if (b == f.body1.m->end() || !same_shape(b->second, l, e)) {
     return {nullptr, nullptr};
   }
-  const auto p = h2.body.find(e.id);
-  if (p == h2.body.end() || !same_shape(p->second, l, e)) {
+  const auto p = f.body2.find(e.id);
+  if (p == f.body2.m->end() || !same_shape(p->second, l, e)) {
     return {&b->second, nullptr};
   }
   return {&b->second, &p->second};
 }
 
-std::pair<const std::uint8_t *, const std::uint8_t *> aabb_refs(const PredictState &h1,
-                                                                const PredictState &h2,
-                                                                std::int64_t mid) {
-  const auto b = h1.aabb.find(mid);
-  if (b == h1.aabb.end()) {
+std::pair<const std::uint8_t *, const std::uint8_t *> aabb_refs(Finders &f, std::int64_t mid) {
+  const auto b = f.aabb1.find(mid);
+  if (b == f.aabb1.m->end()) {
     return {nullptr, nullptr};
   }
-  const auto p = h2.aabb.find(mid);
-  return {b->second.data(), p == h2.aabb.end() ? nullptr : p->second.data()};
+  const auto p = f.aabb2.find(mid);
+  return {b->second.data(), p == f.aabb2.m->end() ? nullptr : p->second.data()};
 }
 
-std::pair<const std::uint8_t *, const std::uint8_t *> mm_refs(const PredictState &h1,
-                                                              const PredictState &h2,
-                                                              const MmLayout &l) {
-  const auto b = h1.mm.find(l.id);
-  if (b == h1.mm.end() || b->second.instances != l.instances || b->second.stride != l.stride) {
+std::pair<const std::uint8_t *, const std::uint8_t *> mm_refs(Finders &f, const MmLayout &l) {
+  const auto b = f.mm1.find(l.id);
+  if (b == f.mm1.m->end() || b->second.instances != l.instances || b->second.stride != l.stride) {
     return {nullptr, nullptr};
   }
-  const auto p = h2.mm.find(l.id);
-  if (p == h2.mm.end() || p->second.instances != l.instances || p->second.stride != l.stride) {
+  const auto p = f.mm2.find(l.id);
+  if (p == f.mm2.m->end() || p->second.instances != l.instances || p->second.stride != l.stride) {
     return {b->second.bytes->data(), nullptr};
   }
   return {b->second.bytes->data(), p->second.bytes->data()};
@@ -1127,6 +1223,78 @@ void code_surface(const BodyParts &bp, const std::uint8_t *in_body, std::uint8_t
       });
 }
 
+// dst = a ^ b over n bytes (a byte stream's residual against H1), 16 bytes a step on SSE2.
+void xor_bytes(const std::uint8_t *a, const std::uint8_t *b, std::uint8_t *dst, std::size_t n) {
+  std::size_t t = 0;
+#if defined(__SSE2__)
+  for (; t + 16 <= n; t += 16) {
+    const __m128i x = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + t));
+    const __m128i y = _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + t));
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(dst + t), _mm_xor_si128(x, y));
+  }
+#endif
+  for (; t < n; ++t) {
+    dst[t] = static_cast<std::uint8_t>(a[t] ^ b[t]);
+  }
+}
+
+// W13f: the writer's surface coding, stream by stream (each stream's cursor advances in the
+// order for_each_part visits it, so the bytes are code_surface<Order, false>'s): the geometry and
+// position words, the UV words (contiguous when there are no colours), and the byte runs.
+template <int Order>
+void code_surface_fwd(const BodyParts &bp, const std::uint8_t *in_body, std::uint8_t *out_streams,
+                      const std::uint8_t *base, const std::uint8_t *prev,
+                      const std::array<std::size_t, 6> &start,
+                      const std::array<std::size_t, 6> &nw, std::array<std::size_t, 6> &cur) {
+  const std::size_t n = static_cast<std::size_t>(bp.n);
+  auto words = [&](std::size_t i, std::size_t off, std::size_t count) {
+    code_words<Order>(in_body + off, count, Order >= 1 ? base + off : nullptr,
+                      Order == 2 ? prev + off : nullptr, out_streams + start[i] + cur[i], nw[i]);
+    cur[i] += count;
+  };
+  auto run = [&](std::size_t i, std::size_t off, std::size_t len) {
+    std::uint8_t *dst = out_streams + start[i] + cur[i];
+    cur[i] += len;
+    const std::uint8_t *src = in_body + off;
+    if constexpr (Order == 0) {
+      std::memcpy(dst, src, len);
+    } else {
+      xor_bytes(src, base + off, dst, len);
+    }
+  };
+  words(0, 0, 10);
+  words(1, 40, 2 * n);
+  const std::size_t col = static_cast<std::size_t>(bp.col);
+  const std::size_t uv = static_cast<std::size_t>(bp.uv);
+  const std::size_t stride = col + uv;
+  const std::size_t attr = 40 + 8 * n;
+  if (col != 0) {
+    if (uv == 0) {
+      run(2, attr, n * col);
+    } else {
+      for (std::size_t v = 0; v < n; ++v) {
+        run(2, attr + v * stride, col);
+      }
+    }
+  }
+  if (uv != 0) {
+    if (col == 0) {
+      words(3, attr, 2 * n);
+    } else {
+      for (std::size_t v = 0; v < n; ++v) {
+        words(3, attr + v * stride + col, 2);
+      }
+    }
+  }
+  const std::size_t tail = attr + n * stride;
+  if (bp.size[4] != 0) {
+    run(4, tail, bp.size[4]);
+  }
+  if (bp.size[5] != 0) {
+    run(5, tail + bp.size[4], bp.size[5]);
+  }
+}
+
 template <bool Inverse>
 void code_surface_any(int order, const BodyParts &bp, const std::uint8_t *in_body,
                       std::uint8_t *out_body, const std::uint8_t *in_streams,
@@ -1152,8 +1320,8 @@ void code_surface_any(int order, const BodyParts &bp, const std::uint8_t *in_bod
 // make_golden.py code_blocks() for mesh_u8: `in` (u8_len bytes) to `out` (the same length), the
 // /12 bodies to the coded streams or back.
 template <bool Inverse>
-void code_u8(const U8Layout &layout, const std::uint8_t *in, std::uint8_t *out,
-             const PredictState &h1, const PredictState &h2, std::vector<Unit> *trace) {
+void code_u8(const U8Layout &layout, const std::uint8_t *in, std::uint8_t *out, Finders &finders,
+             std::vector<Unit> *trace) {
   std::array<std::size_t, 6> start{}, nw{}, cur{};
   std::size_t acc = 0;
   for (std::size_t i = 0; i < 6; ++i) {
@@ -1162,7 +1330,7 @@ void code_u8(const U8Layout &layout, const std::uint8_t *in, std::uint8_t *out,
     acc += layout.totals[i];
   }
   for (const EntryLayout &e : layout.entries) {
-    const auto refs = body_refs(h1, h2, layout, e);
+    const auto refs = body_refs(finders, layout, e);
     const int order = order_of(refs.first, refs.second);
     for (std::size_t k = 0; k < e.count; ++k) {
       const SurfaceLayout &s = layout.surfaces[e.first + k];
@@ -1172,27 +1340,17 @@ void code_u8(const U8Layout &layout, const std::uint8_t *in, std::uint8_t *out,
       if constexpr (Inverse) {
         code_surface_any<true>(order, s.parts, nullptr, out + s.offset, in, nullptr, base, prev,
                                start, nw, cur);
+      } else if (order == 0) {
+        code_surface_fwd<0>(s.parts, in + s.offset, out, base, prev, start, nw, cur);
+      } else if (order == 1) {
+        code_surface_fwd<1>(s.parts, in + s.offset, out, base, prev, start, nw, cur);
       } else {
-        code_surface_any<false>(order, s.parts, in + s.offset, nullptr, nullptr, out, base, prev,
-                                start, nw, cur);
+        code_surface_fwd<2>(s.parts, in + s.offset, out, base, prev, start, nw, cur);
       }
     }
     if (trace != nullptr && e.count != 0) {
       trace->push_back(Unit{UnitBlock::MeshU8, e.id, order});
     }
-  }
-}
-
-// mesh_f32 / mm_f32 predicted: the raw words transposed, then each unit's residual words.
-void predict_unit_t(const std::uint8_t *in, std::size_t bytes, const std::uint8_t *base,
-                    const std::uint8_t *prev, std::uint8_t *out, std::size_t nw, std::size_t w) {
-  if (base == nullptr) {
-    return;  // raw: already transposed
-  }
-  if (prev == nullptr) {
-    predict_words_t<1>(in, bytes, base, prev, out, nw, w);
-  } else {
-    predict_words_t<2>(in, bytes, base, prev, out, nw, w);
   }
 }
 
@@ -1223,12 +1381,42 @@ SharedBytes take_bytes(BytesPool *pool, const std::uint8_t *p, std::size_t n) {
 
 void give_bytes(BytesPool *pool, SharedBytes *bytes) {
   if (*bytes != nullptr && bytes->use_count() == 1 && pool->size() < kPoolMax) {
+    std::atomic_thread_fence(std::memory_order_acquire);  // W13f: see sole_holder()
     pool->push_back(std::const_pointer_cast<std::vector<std::uint8_t>>(std::move(*bytes)));
   }
 }
 
 // make_golden.py advance(): R(T) from `r` (R(T-1), or empty for a full) and T's /12 blocks.
 // `layout` is mesh_u8's (nullptr when its offset rule failed or the block is absent).
+// W13f: Finder's writer: operator[] and erase for ids that mostly ascend, from a cursor.
+template <class Map>
+struct Cursor {
+  Map *m;
+  typename Map::iterator it;
+  explicit Cursor(Map &map) : m(&map), it(map.begin()) {}
+  typename Map::mapped_type &at(std::int64_t id) {  // (*m)[id]
+    for (int k = 0; k < 4 && it != m->end() && it->first < id; ++k) {
+      ++it;
+    }
+    if (it != m->end() && it->first == id) {
+      return (it++)->second;
+    }
+    const auto r = m->try_emplace(id).first;
+    it = std::next(r);
+    return r->second;
+  }
+  void erase(std::int64_t id) {  // m->erase(id)
+    const auto f = it != m->end() && it->first == id ? it : m->find(id);
+    if (f == m->end()) {
+      return;
+    }
+    if (f == it) {
+      ++it;
+    }
+    m->erase(f);
+  }
+};
+
 void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, const Span &u8,
              const Span &mf, const Span &mm, BytesPool *pool) {
   // The layout's entries are the meshes entries with a non-null `u8`, in order; json.loads keeps
@@ -1239,6 +1427,9 @@ void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, c
       ascending = ascending && layout->entries[k - 1].id < layout->entries[k].id;
     }
   }
+  Cursor<std::map<std::int64_t, MeshBodies>> bodies(r->body);
+  Cursor<std::map<std::int64_t, std::array<std::uint8_t, 24>>> aabbs(r->aabb);
+  Cursor<std::map<std::int64_t, MultimeshBuffer>> mms(r->mm);
   std::size_t cursor = 0;
   for (const MetaMesh &e : meta.meshes) {
     const EntryLayout *carried = nullptr;
@@ -1260,7 +1451,7 @@ void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, c
     if (is_dynamic(meta, e)) {
       if (!e.u8.is_null()) {
         if (carried != nullptr) {
-          MeshBodies &mb = r->body[mid];  // reuses the node's vectors (R(T-1)'s copy)
+          MeshBodies &mb = bodies.at(mid);  // reuses the node's vectors (R(T-1)'s copy)
           mb.shape.resize(carried->count);
           mb.surfaces.resize(carried->count);
           for (std::size_t k = 0; k < carried->count; ++k) {
@@ -1269,26 +1460,26 @@ void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, c
             mb.surfaces[k] = take_bytes(pool, u8.p + s.offset, s.parts.total);
           }
         } else {
-          r->body.erase(mid);
+          bodies.erase(mid);
         }
       }
     } else {
-      r->body.erase(mid);
+      bodies.erase(mid);
     }
     std::int64_t f = 0;
     if (e.f.as_int(&f) && f >= 0 && static_cast<std::size_t>(4 * f + 24) <= mf.n) {
       std::array<std::uint8_t, 24> a{};
       std::memcpy(a.data(), mf.p + 4 * f, 24);
-      r->aabb[mid] = a;
+      aabbs.at(mid) = a;
     } else {
-      r->aabb.erase(mid);
+      aabbs.erase(mid);
     }
   }
   for (const MetaNum &v : meta.removed_meshes) {
     std::int64_t mid = 0;
     if (v.as_int(&mid)) {
-      r->body.erase(mid);
-      r->aabb.erase(mid);
+      bodies.erase(mid);
+      aabbs.erase(mid);
     }
   }
   for (const MetaMultimesh &e : meta.multimeshes) {
@@ -1297,7 +1488,7 @@ void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, c
       continue;
     }
     if (!e.status_ok) {
-      r->mm.erase(mmid);
+      mms.erase(mmid);
       continue;
     }
     if (e.buffer_f.is_null()) {
@@ -1312,15 +1503,15 @@ void advance(PredictState *r, const PredictMeta &meta, const U8Layout *layout, c
       b.stride = stride;
       b.bytes = take_bytes(pool, mm.p + 4 * o,
                            static_cast<std::size_t>(4 * instances * stride));
-      r->mm[mmid] = std::move(b);
+      mms.at(mmid) = std::move(b);
     } else {
-      r->mm.erase(mmid);
+      mms.erase(mmid);
     }
   }
   for (const MetaNum &v : meta.removed_multimeshes) {
     std::int64_t mmid = 0;
     if (v.as_int(&mmid)) {
-      r->mm.erase(mmid);
+      mms.erase(mmid);
     }
   }
 }
@@ -1494,7 +1685,24 @@ struct Predictor::Scratch {
   std::vector<std::uint8_t> dec_u8, dec_f32, dec_mm;  // the reader's reconstructed blocks
   std::vector<Span> rebuilt;
   BytesPool pool;
+  // W13f: the state that last left this predictor's history while someone else still held it
+  // (a live hub's memo, a lockstep connection), kept to be refilled once it is this predictor's
+  // alone. Not copied with the predictor.
+  std::shared_ptr<const PredictState> spare;
+  ReuseStats stats;
 };
+
+namespace {
+thread_local std::uint64_t released_here = 0;
+}  // namespace
+
+PredictState::~PredictState() { ++released_here; }
+
+std::uint64_t states_released_here() { return released_here; }
+
+ReuseStats Predictor::reuse_stats() const {
+  return scratch_ != nullptr ? scratch_->stats : ReuseStats{};
+}
 
 std::shared_ptr<const PredictState> Predictor::empty_state() {
   static const std::shared_ptr<const PredictState> kEmpty = std::make_shared<PredictState>();
@@ -1530,13 +1738,35 @@ void Predictor::reset() {
 
 // W13p: R(T)'s storage, R(T-1)'s contents (nothing for a full). The state that drops out of the
 // history (H2) is reused when this predictor is its only holder: its map nodes take R(T-1)'s
-// copy, and its bytes no one else shares go to the pool for the units T carries.
+// copy, and its bytes no one else shares go to the pool for the units T carries. W13f: when H2 is
+// still held elsewhere (a live hub's memo keys its coding on H1 and H2 until the callback ends, and
+// lockstep connections share their history), the state that left the history before it (the
+// spare, R(T-3)) is reused instead, which by then the memo and the other connections have let go.
+namespace {
+bool sole_holder(const std::shared_ptr<const PredictState> &s) {
+  if (s == nullptr || s.use_count() != 1) {
+    return false;
+  }
+  // The other holders may have dropped their references on another thread (HC5's encode thread
+  // and the main thread): see their writes before reusing the state in place.
+  std::atomic_thread_fence(std::memory_order_acquire);
+  return true;
+}
+}  // namespace
+
 std::shared_ptr<PredictState> Predictor::next_state(bool full) {
+  Scratch &sc = scratch();
   const PredictState *empty = empty_state().get();
-  if (h2_.get() != empty && h2_.use_count() == 1) {
-    std::shared_ptr<PredictState> next = std::const_pointer_cast<PredictState>(std::move(h2_));
-    h2_ = empty_state();
-    BytesPool &pool = scratch().pool;
+  std::shared_ptr<const PredictState> *reuse = nullptr;
+  if (h2_.get() != empty && sole_holder(h2_)) {
+    reuse = &h2_;
+  } else if (sc.spare.get() != empty && sole_holder(sc.spare)) {
+    reuse = &sc.spare;
+  }
+  if (reuse != nullptr) {
+    std::shared_ptr<PredictState> next = std::const_pointer_cast<PredictState>(std::move(*reuse));
+    *reuse = reuse == &h2_ ? empty_state() : nullptr;
+    BytesPool &pool = sc.pool;
     for (auto &[id, mb] : next->body) {
       for (SharedBytes &b : mb.surfaces) {
         give_bytes(&pool, &b);
@@ -1552,9 +1782,22 @@ std::shared_ptr<PredictState> Predictor::next_state(bool full) {
     } else {
       *next = *h1_;
     }
+    ++sc.stats.reused;
     return next;
   }
+  ++sc.stats.made;
   return std::make_shared<PredictState>(full ? PredictState() : *h1_);
+}
+
+// W13f: H1 and H2 after transaction T (R(T) the new H1); the H2 that leaves becomes the spare when
+// next_state() could not reuse it now.
+void Predictor::advance_history(std::shared_ptr<PredictState> next, bool full) {
+  std::shared_ptr<const PredictState> left = std::move(h2_);
+  h2_ = full ? empty_state() : h1_;
+  h1_ = std::move(next);
+  if (left != nullptr && left.get() != empty_state().get()) {
+    scratch().spare = std::move(left);
+  }
 }
 
 namespace {
@@ -1738,29 +1981,42 @@ Status Predictor::encode_typed(const PredictMeta &meta, const std::uint8_t *reco
 
   std::vector<Unit> units;
   std::vector<Unit> *tr = trace != nullptr ? &units : nullptr;
+  Finders finders(*h1, *h2);
   if (has_u8) {
-    code_u8<false>(sc.u8, u8.p, coded_u8, *h1, *h2, tr);
+    code_u8<false>(sc.u8, u8.p, coded_u8, finders, tr);
   }
+  // W13f: each unit coded once (a raw one transposed), the words between units transposed (the
+  // layouts' offsets ascend without overlap: f32_layout's and mm_layout's running offsets).
   if (has_f32) {
-    transpose4(mf.p, mf.n, coded_f32);
+    const std::size_t nw = mf.n / 4;
+    std::size_t done = 0;
     for (const auto &[mid, off] : sc.f32) {
-      const auto refs = aabb_refs(*h1, *h2, mid);
-      predict_unit_t(mf.p + 4 * off, 24, refs.first, refs.second, coded_f32, mf.n / 4, off);
+      const auto refs = aabb_refs(finders, mid);
+      code_words_any(0, mf.p + 4 * done, off - done, nullptr, nullptr, coded_f32 + done, nw);
+      code_words_any(order_of(refs.first, refs.second), mf.p + 4 * off, 6, refs.first,
+                     refs.second, coded_f32 + off, nw);
+      done = off + 6;
       if (tr != nullptr) {
         tr->push_back(Unit{UnitBlock::MeshF32, mid, order_of(refs.first, refs.second)});
       }
     }
+    code_words_any(0, mf.p + 4 * done, nw - done, nullptr, nullptr, coded_f32 + done, nw);
   }
   if (has_mm) {
-    transpose4(mm.p, mm.n, coded_mm);
+    const std::size_t nw = mm.n / 4;
+    std::size_t done = 0;
     for (const MmLayout &l : sc.mm) {
-      const auto refs = mm_refs(*h1, *h2, l);
-      predict_unit_t(mm.p + 4 * l.offset, static_cast<std::size_t>(4 * l.instances * l.stride),
-                     refs.first, refs.second, coded_mm, mm.n / 4, l.offset);
+      const auto refs = mm_refs(finders, l);
+      const std::size_t words = static_cast<std::size_t>(l.instances * l.stride);
+      code_words_any(0, mm.p + 4 * done, l.offset - done, nullptr, nullptr, coded_mm + done, nw);
+      code_words_any(order_of(refs.first, refs.second), mm.p + 4 * l.offset, words, refs.first,
+                     refs.second, coded_mm + l.offset, nw);
+      done = l.offset + words;
       if (tr != nullptr) {
         tr->push_back(Unit{UnitBlock::MmF32, l.id, order_of(refs.first, refs.second)});
       }
     }
+    code_words_any(0, mm.p + 4 * done, nw - done, nullptr, nullptr, coded_mm + done, nw);
   }
   for (const auto &[dst, name] : copies) {
     const std::uint8_t *src = name == BlockName::MeshU8    ? coded_u8
@@ -1775,8 +2031,7 @@ Status Predictor::encode_typed(const PredictMeta &meta, const std::uint8_t *reco
   // History::accept() from the /12 blocks.
   std::shared_ptr<PredictState> next = next_state(full);
   advance(next.get(), meta, sc.u8_ok ? &sc.u8 : nullptr, u8, mf, mm, &sc.pool);
-  h2_ = full ? empty_state() : h1_;
-  h1_ = std::move(next);
+  advance_history(std::move(next), full);
   if (trace != nullptr) {
     *trace = std::move(units);
   }
@@ -1829,15 +2084,16 @@ Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *reco
   const bool has_mm = named.mm >= 0 && mm.n % 4 == 0 && mm_layout(meta, mm.n / 4, &sc.mm);
   std::vector<Unit> units;
   std::vector<Unit> *tr = trace != nullptr ? &units : nullptr;
+  Finders finders(*h1, *h2);
   if (has_u8) {
     sc.dec_u8.resize(u8.n);
-    code_u8<true>(sc.u8, u8.p, sc.dec_u8.data(), *h1, *h2, tr);
+    code_u8<true>(sc.u8, u8.p, sc.dec_u8.data(), finders, tr);
   }
   if (has_f32) {
     sc.dec_f32.resize(mf.n);
     untranspose4(mf.p, mf.n, sc.dec_f32.data());
     for (const auto &[mid, off] : sc.f32) {
-      const auto refs = aabb_refs(*h1, *h2, mid);
+      const auto refs = aabb_refs(finders, mid);
       unpredict_words(sc.dec_f32.data() + 4 * off, 24, refs.first, refs.second);
       if (tr != nullptr) {
         tr->push_back(Unit{UnitBlock::MeshF32, mid, order_of(refs.first, refs.second)});
@@ -1848,7 +2104,7 @@ Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *reco
     sc.dec_mm.resize(mm.n);
     untranspose4(mm.p, mm.n, sc.dec_mm.data());
     for (const MmLayout &l : sc.mm) {
-      const auto refs = mm_refs(*h1, *h2, l);
+      const auto refs = mm_refs(finders, l);
       unpredict_words(sc.dec_mm.data() + 4 * l.offset,
                       static_cast<std::size_t>(4 * l.instances * l.stride), refs.first,
                       refs.second);
@@ -1881,8 +2137,7 @@ Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *reco
   // History::accept() from the /12 blocks.
   std::shared_ptr<PredictState> next = next_state(full);
   advance(next.get(), meta, sc.u8_ok ? &sc.u8 : nullptr, u8_12, mf_12, mm_12, &sc.pool);
-  h2_ = full ? empty_state() : h1_;
-  h1_ = std::move(next);
+  advance_history(std::move(next), full);
 
   *out = std::move(record_out);
   if (trace != nullptr) {

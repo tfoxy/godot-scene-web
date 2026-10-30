@@ -498,6 +498,10 @@ struct ConnectionSummary {
   std::uint64_t predict_bytes = 0;
   std::uint64_t predict_ns = 0;
   std::uint64_t predict_stale_seq = 0;
+  // W13f: the connection's predictor history storage (rs13::ReuseStats): states refilled in place
+  // and states allocated, over the transactions it formed itself.
+  std::uint64_t predict_states_reused = 0;
+  std::uint64_t predict_states_made = 0;
   // G2c2: resource GETs answered while this connection was the one streaming (on_http_get), the
   // bytes of the 200 bodies, and how many were not 200.
   std::uint64_t http_gets = 0;
