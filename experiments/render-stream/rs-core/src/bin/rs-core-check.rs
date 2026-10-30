@@ -74,6 +74,7 @@ fn usage() -> ExitCode {
          rs-core-check validate <recording>... [--version 2..8]\n  \
          rs-core-check material-diff <recording>... [--store <dir>] [--sabotage mra-skip-changed|mra-skip-binding] [--baseline]\n  \
          rs-core-check client-diff <recording>... [--store <dir>] [--sabotage ph2-skip-body-digest|ph2-skip-dep-texture|ph2-park-stale|ph2-skip-material-textures]\n  \
+         rs-core-check draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]\n  \
          rs-core-check live-decode <coded> [--expect <recording>] [--bases keep|none] [--repeats N] [--stats <jsonl>] [--sabotage drop-base|wrong-prefix]"
     );
     ExitCode::from(2)
@@ -138,6 +139,7 @@ fn main() -> ExitCode {
         "walk-diff" => cmd_walk_diff(&args),
         "material-diff" => cmd_material_diff(&args),
         "client-diff" => cmd_client_diff(&args),
+        "draw-skip-diff" => cmd_draw_skip_diff(&args),
         "scissors" => cmd_scissors(&args),
         "lowered" => cmd_lowered(&args),
         "state-dump" => cmd_state_dump(&args),
@@ -2063,5 +2065,418 @@ fn cmd_live_decode(args: &Args) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    }
+}
+
+/// What an executor holds after consuming draw lists (PH3 `draw-skip-diff`): the GL executor's
+/// upload contract (`canvas_items/gl.rs` `upload`, `version_bindings`, `texture_ops`) on plain
+/// arrays. An array takes everything on `dirty.all`, on the first upload or when it outgrows its
+/// capacity (grown to the next power of two), else only the dirty ranges (clamped to the list's
+/// length); bindings take every slot on `dirty.all` or a slot-count change; texture operations run
+/// in order. After an upload, the array prefixes the list holds must equal the list's.
+#[derive(Default)]
+struct GpuMirror {
+    started: bool,
+    items: Vec<gsw_canvas_draw_list::Item>,
+    vertices: Vec<gsw_canvas_draw_list::Vertex>,
+    indices: Vec<u32>,
+    instances: Vec<gsw_canvas_draw_list::Instance>,
+    bindings: Vec<gsw_canvas_draw_list::Binding>,
+    /// Texture id -> (kind, width, height, SHA-256 of the uploaded bytes).
+    textures: std::collections::BTreeMap<u32, (u8, u32, u32, [u8; 32])>,
+}
+
+impl GpuMirror {
+    fn upload<T: Copy + Default>(
+        gpu: &mut Vec<T>,
+        list: &[T],
+        dirty: &gsw_canvas_draw_list::Ranges,
+        all: bool,
+    ) {
+        let mut all = all;
+        if list.len() > gpu.len() {
+            gpu.resize(list.len().next_power_of_two(), T::default());
+            all = true;
+        }
+        let ranges = if all {
+            vec![(0, list.len() as u32)]
+        } else {
+            dirty.as_slice().to_vec()
+        };
+        for (start, end) in ranges {
+            let end = (end as usize).min(list.len());
+            let start = start as usize;
+            if start < end {
+                gpu[start..end].copy_from_slice(&list[start..end]);
+            }
+        }
+    }
+
+    /// Consumes `list` as the executor does (the caller then calls `list.consumed()`).
+    fn execute(&mut self, list: &gsw_canvas_draw_list::DrawList) -> Result<(), String> {
+        use gsw_canvas_draw_list::TextureOp;
+        use sha2::{Digest, Sha256};
+        for op in &list.texture_ops {
+            let (kind, id, w, h) = match *op {
+                TextureOp::Free { id } => {
+                    self.textures.remove(&id);
+                    continue;
+                }
+                TextureOp::Upload {
+                    id, width, height, ..
+                } => (0u8, id, width, height),
+                TextureOp::UploadHalf {
+                    id, width, height, ..
+                } => (1, id, width, height),
+                TextureOp::UploadCompressed {
+                    id, width, height, ..
+                } => (2, id, width, height),
+            };
+            let (bytes, len) = op.byte_len().expect("an upload");
+            let data = list
+                .texture_data(bytes, len)
+                .ok_or_else(|| format!("texture {id}: {len} bytes not in the list"))?;
+            let mut d = [0u8; 32];
+            d.copy_from_slice(&Sha256::digest(data));
+            self.textures.insert(id, (kind, w, h, d));
+        }
+        let all = list.dirty.all || !self.started;
+        self.started = true;
+        Self::upload(&mut self.items, &list.items, &list.dirty.items, all);
+        Self::upload(
+            &mut self.vertices,
+            &list.vertices,
+            &list.dirty.vertices,
+            all,
+        );
+        Self::upload(&mut self.indices, &list.indices, &list.dirty.indices, all);
+        Self::upload(
+            &mut self.instances,
+            &list.instances,
+            &list.dirty.instances,
+            all,
+        );
+        let n = list.bindings.len();
+        if all || self.bindings.len() != n {
+            self.bindings = list.bindings.clone();
+        } else {
+            for &(start, end) in list.dirty.bindings.as_slice() {
+                for slot in start as usize..(end as usize).min(n) {
+                    self.bindings[slot] = list.bindings[slot].clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The arrays the executor would draw from differ from the list's (named), or None.
+    fn differs(&self, list: &gsw_canvas_draw_list::DrawList) -> Option<&'static str> {
+        if self.items[..list.items.len()] != list.items[..] {
+            return Some("items");
+        }
+        if self.vertices[..list.vertices.len()] != list.vertices[..] {
+            return Some("vertices");
+        }
+        if self.indices[..list.indices.len()] != list.indices[..] {
+            return Some("indices");
+        }
+        if self.instances[..list.instances.len()] != list.instances[..] {
+            return Some("instances");
+        }
+        if self.bindings != list.bindings {
+            return Some("bindings");
+        }
+        None
+    }
+}
+
+/// `draw-skip-diff <recording>... [--store <dir>] [--every N] [--sabotage ph3-drop-pending]`
+/// (PH3): the client's `applyOn: "message"` applies each transaction as it arrives and draws only
+/// at the next frame callback, so one executor consumption can follow several applies. This
+/// replays each recording through two appliers in the client's configuration
+/// (`DigestPolicy::Never`), each with a [`GpuMirror`] executor: the oracle draws after every
+/// apply; the other draws after a pseudo-random run of 1..=N applies (default 3; and after the
+/// last). At every draw of the skipping side it compares that side's mirror with its own list (the
+/// arrays the executor would draw from), its list's arrays, draw table (each draw with the binding
+/// it names: slots are numbered in a per-applier hash order), screen operations and instanced
+/// draws with the oracle's list, and its texture set with the oracle's. Prints one line per
+/// recording; exits non-zero on any mismatch. `--sabotage ph3-drop-pending` drops the pending
+/// dirty ranges and texture operations of an apply that is not drawn (what a list cleared at every
+/// apply would do): the run must then mismatch.
+fn cmd_draw_skip_diff(args: &Args) -> ExitCode {
+    use render_stream_core::apply::geom;
+    use render_stream_core::apply::payloads::PayloadStore;
+    use render_stream_core::apply::programs::ProgramEntry;
+    use render_stream_core::apply::{Applier, Viewport};
+    if args.positional.is_empty() {
+        return usage();
+    }
+    let store = args.get("store").map(PathBuf::from);
+    let every: u64 = match args.get("every").map(str::parse) {
+        None => 3,
+        Some(Ok(n)) if n >= 1 => n,
+        _ => return usage(),
+    };
+    let drop_pending = match args.get("sabotage") {
+        None => false,
+        Some("ph3-drop-pending") => true,
+        Some(other) => {
+            eprintln!("rs-core-check draw-skip-diff: unknown sabotage {other}");
+            return ExitCode::from(2);
+        }
+    };
+    struct Side {
+        v: Validator,
+        payloads: PayloadStore,
+        applier: Applier,
+        need: Vec<render_stream_core::state::Hash>,
+        gpu: GpuMirror,
+    }
+    /// The skipping side's draw: execute on its mirror, then compare (see above).
+    fn draw_k(o: &Side, k: &mut Side, seq: i64, bad: &mut Vec<(i64, String)>) {
+        if let Err(e) = k.gpu.execute(&k.applier.list) {
+            bad.push((seq, format!("execute: {e}")));
+        }
+        let (lo, lk) = (&o.applier.list, &k.applier.list);
+        if let Some(what) = k.gpu.differs(lk) {
+            bad.push((seq, what.into()));
+        }
+        fn first_diff<T: PartialEq + std::fmt::Debug>(a: &[T], b: &[T]) -> Option<String> {
+            if a == b {
+                return None;
+            }
+            let i = a
+                .iter()
+                .zip(b)
+                .position(|(x, y)| x != y)
+                .unwrap_or(a.len().min(b.len()));
+            Some(format!(
+                "len {} vs {}, first at {i}: {:?} vs {:?}",
+                a.len(),
+                b.len(),
+                a.get(i),
+                b.get(i)
+            ))
+        }
+        // Binding slots are assigned in a per-applier hash order, so two appliers' draw tables
+        // agree only with each draw's slot replaced by the binding it names.
+        let canon = |l: &gsw_canvas_draw_list::DrawList| -> Vec<String> {
+            l.draws
+                .iter()
+                .map(|d| {
+                    let b = (d.program as usize)
+                        .checked_sub(1)
+                        .and_then(|i| l.bindings.get(i));
+                    let mut d = *d;
+                    d.program = 0;
+                    format!("{d:?} {b:?}")
+                })
+                .collect()
+        };
+        for (what, d) in [
+            ("list-draws", first_diff(&canon(lo), &canon(lk))),
+            ("list-items", first_diff(&lo.items, &lk.items)),
+            ("list-vertices", first_diff(&lo.vertices, &lk.vertices)),
+            ("list-indices", first_diff(&lo.indices, &lk.indices)),
+            ("list-instances", first_diff(&lo.instances, &lk.instances)),
+            (
+                "list-screen-ops",
+                first_diff(
+                    &[format!("{:?}", lo.screen_ops)],
+                    &[format!("{:?}", lk.screen_ops)],
+                ),
+            ),
+            (
+                "list-instanced",
+                first_diff(
+                    &[format!("{:?}", lo.instanced)],
+                    &[format!("{:?}", lk.instanced)],
+                ),
+            ),
+        ] {
+            if let Some(d) = d {
+                if std::env::var_os("RS_DSD_VERBOSE").is_some() && !bad.iter().any(|b| b.1 == what)
+                {
+                    eprintln!("seq {seq} {what}: {d}");
+                }
+                bad.push((seq, what.into()));
+            }
+        }
+        if o.gpu.textures != k.gpu.textures {
+            bad.push((seq, "textures".into()));
+        }
+        k.applier.list.consumed();
+    }
+    let mut failed = false;
+    for path in &args.positional {
+        let run = || -> Result<(usize, usize, usize, Vec<(i64, String)>), wire::Error> {
+            let data =
+                std::fs::read(path).map_err(|e| wire::Error::new("io", format!("{path}: {e}")))?;
+            let version = wire::version_of_magic(&data)
+                .ok_or_else(|| wire::Error::new("bad-magic", "not a render-stream recording"))?;
+            let spans = wire::split_records(&data, version)?;
+            let side = || -> Result<Side, wire::Error> {
+                let mut opts = Options::new(version);
+                opts.digest = DigestPolicy::Never;
+                let v = Validator::new(spans[0].bytes(&data), spans[0].offset, opts)?;
+                let s = v.session();
+                let size = s
+                    .viewport
+                    .presentation_size
+                    .unwrap_or(s.viewport.logical_size);
+                let vp = Viewport {
+                    width: size[0].max(1) as u32,
+                    height: size[1].max(1) as u32,
+                    clear: s.clear_color,
+                    global_xform: geom::IDENTITY,
+                    cull_mask: s.viewport.canvas_cull_mask as u32,
+                    format: gsw_canvas_draw_list::Format::Rgb10A2,
+                };
+                Ok(Side {
+                    v,
+                    payloads: PayloadStore::default(),
+                    applier: Applier::new(vp),
+                    need: Vec::new(),
+                    gpu: GpuMirror::default(),
+                })
+            };
+            let mut o = side()?;
+            let mut k = side()?;
+            let fetch = |hash: &render_stream_core::state::Hash| -> Result<Vec<u8>, wire::Error> {
+                let dir = store
+                    .as_ref()
+                    .ok_or_else(|| wire::Error::new("resource-unavailable", "no --store"))?;
+                ["grt", "grm", "grp"]
+                    .iter()
+                    .find_map(|ext| {
+                        std::fs::read(dir.join("sha256").join(format!("{}.{ext}", hash.to_hex())))
+                            .ok()
+                    })
+                    .ok_or_else(|| wire::Error::new("resource-unavailable", hash.to_hex()))
+            };
+            // xorshift64: the run length before each draw of the skipping side.
+            let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+            let next_run = |rng: &mut u64| {
+                *rng ^= *rng << 13;
+                *rng ^= *rng >> 7;
+                *rng ^= *rng << 17;
+                1 + *rng % every
+            };
+            let mut run_left = next_run(&mut rng);
+            let (mut n, mut draws, mut multi) = (0usize, 0usize, 0usize);
+            let mut since_draw = 0usize;
+            let mut programs = 1u32;
+            let mut bad: Vec<(i64, String)> = Vec::new();
+            for span in &spans[1..] {
+                let rec = span.bytes(&data);
+                let (ao, ak) = (o.v.accept(rec, span.offset), k.v.accept(rec, span.offset));
+                let (ao, ak) = match (ao, ak) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(a), Err(b)) if a.code == b.code => break,
+                    _ => {
+                        bad.push((o.v.state().seq, "refusal".into()));
+                        break;
+                    }
+                };
+                let seq = o.v.state().seq;
+                if ao != ak {
+                    bad.push((seq, "accepted".into()));
+                    continue;
+                }
+                match ao {
+                    Accepted::Resource { hash } => {
+                        for s in [&mut o, &mut k] {
+                            if let Some(b) = s.v.inline_payload(&hash) {
+                                s.payloads.provide(b, &hash, version, true)?;
+                            }
+                        }
+                    }
+                    Accepted::End => {}
+                    Accepted::Transaction => {
+                        n += 1;
+                        for s in [&mut o, &mut k] {
+                            s.payloads.accept_transaction(&s.v, rec)?;
+                            s.applier.prepare(s.v.state(), s.v.delta());
+                        }
+                        for (sid, hash, _) in o.applier.pending_shaders(o.v.state()) {
+                            let info = synthetic_program(o.v.state(), sid, &hash, programs);
+                            programs += 1;
+                            o.applier
+                                .set_program(hash, ProgramEntry::Ready(info.clone()));
+                            k.applier.set_program(hash, ProgramEntry::Ready(info));
+                        }
+                        for s in [&mut o, &mut k] {
+                            s.applier
+                                .needed(s.v.state(), s.v.delta(), &s.payloads, &mut s.need);
+                            for hash in s.need.clone() {
+                                let b = fetch(&hash)?;
+                                s.payloads.provide(&b, &hash, version, true)?;
+                            }
+                        }
+                        o.applier.apply(o.v.state(), o.v.delta(), &o.payloads);
+                        k.applier.apply(k.v.state(), k.v.delta(), &k.payloads);
+                        // The oracle draws every apply.
+                        o.gpu
+                            .execute(&o.applier.list)
+                            .map_err(|e| wire::Error::new("oracle", e))?;
+                        o.applier.list.consumed();
+                        since_draw += 1;
+                        run_left -= 1;
+                        if run_left > 0 {
+                            if drop_pending {
+                                let l = &mut k.applier.list;
+                                l.dirty.clear();
+                                l.texture_ops.clear();
+                                l.texture_bytes.clear();
+                                l.texture_shared.clear();
+                            }
+                            continue;
+                        }
+                        run_left = next_run(&mut rng);
+                        draws += 1;
+                        multi += usize::from(since_draw > 1);
+                        since_draw = 0;
+                        draw_k(&o, &mut k, seq, &mut bad);
+                    }
+                }
+            }
+            if since_draw > 0 {
+                draws += 1;
+                multi += usize::from(since_draw > 1);
+                let seq = o.v.state().seq;
+                draw_k(&o, &mut k, seq, &mut bad);
+            }
+            Ok((n, draws, multi, bad))
+        };
+        match run() {
+            Ok((n, draws, multi, bad)) => {
+                let seqs: std::collections::BTreeSet<i64> = bad.iter().map(|b| b.0).collect();
+                let mut kinds: Vec<&str> = bad.iter().map(|b| b.1.as_str()).collect();
+                kinds.sort_unstable();
+                kinds.dedup();
+                println!(
+                    "{path}: {n} transactions, {draws} draws ({multi} after several applies, runs of 1..={every}); {} mismatching{}",
+                    seqs.len(),
+                    if bad.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (kinds {kinds:?}; seqs {:?})",
+                            seqs.iter().take(20).collect::<Vec<_>>()
+                        )
+                    }
+                );
+                failed |= !bad.is_empty();
+            }
+            Err(e) => {
+                println!("{path}: error {e}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }

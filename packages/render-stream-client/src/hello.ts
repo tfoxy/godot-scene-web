@@ -80,6 +80,8 @@ export function coreStartOptions(protocol: number): string {
 export interface ClientHelloFacts {
   protocol: 11 | 12 | 13;
   creditWindow: 1 | 2;
+  /** PH3: the credit stage; default `submitted`. */
+  creditStage?: "submitted" | "applied";
   token: string | null;
   /** The canvas's backing store and CSS box, and the device pixel ratio in thousandths. */
   backing: [number, number];
@@ -100,7 +102,7 @@ export function clientHello(f: ClientHelloFacts): Record<string, unknown> {
       protocol: `render-stream/${f.protocol}`,
       receiver: CLIENT_RECEIVER_NAME,
       receiver_kind: "gsw-canvas",
-      credit_stage: "submitted",
+      credit_stage: f.creditStage ?? "submitted",
       credit_window: f.creditWindow,
       inbound_buffer_bytes: CLIENT_INBOUND_BYTES,
       token: f.token,

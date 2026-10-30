@@ -16,7 +16,7 @@ const TYPE_EXPORTS = `
 RenderStreamClient RenderStreamClientOptions RenderStreamExtension RenderStreamEndpoint
 RenderStreamProtocol ClientHelloFacts CoreBuild RenderStreamCore RenderStreamFailureReason
 RenderStreamStats RenderStreamStatus RenderStreamTransport RenderStreamTransportEvents
-RenderStreamTransportFactory
+RenderStreamTransportFactory ApplyOn CreditStage
 `
   .trim()
   .split(/\s+/);

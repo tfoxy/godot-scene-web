@@ -16,6 +16,8 @@ export {
 export { type ClientHelloFacts, clientHello } from "./hello";
 export { type CoreBuild, CoreLoadError, type RenderStreamCore } from "./loader";
 export {
+  type ApplyOn,
+  type CreditStage,
   RECONNECT_BACKOFF_MS,
   type RenderStreamFailureReason,
   type RenderStreamStats,
