@@ -8,6 +8,7 @@ import indexSource from "../src/index.ts?raw";
 const VALUE_EXPORTS = `
 createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello CoreLoadError
 RECONNECT_BACKOFF_MS webSocketTransport invertAffine mulAffine
+computeSpreadItem containerHAlignFactor createSpreadExtension fieldDx rootSpreadContext spreadDelta
 `
   .trim()
   .split(/\s+/);
@@ -18,7 +19,7 @@ RenderStreamProtocol ClientHelloFacts CoreBuild RenderStreamCore RenderStreamFai
 RenderStreamStats RenderStreamStatus RenderStreamTransport RenderStreamTransportEvents
 RenderStreamTransportFactory ApplyOn CreditStage Affine2D ExtensionFrame ExtensionSession ItemMeta
 ItemMetaBatch ItemMetaField ItemMetaGrant ItemQuery OverrideTable OverrideValues Point Rect RGBA
-GamePoint
+GamePoint SpreadBudget SpreadContext SpreadDeps SpreadOptions SpreadOut SpreadShape
 `
   .trim()
   .split(/\s+/);
