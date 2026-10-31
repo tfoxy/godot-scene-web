@@ -402,6 +402,113 @@ export async function runG8ptReceivers(
   );
 }
 
+/** The two burst cells FRZ-P freezes (results/p3/frz-p.md): A_BOX (looping) and D_ONESHOT (one-shot). */
+const FRZP_CELLS = ["A_BOX", "D_ONESHOT"];
+
+/** FRZ-P: a frozen seat's one-shot and looping bursts must replay shot-equal to the reference (the
+ * wire still carries the emitter config + restart/emit events, and the nudge ends the one-shot).
+ * `frzp/receiver` (native, and g7-8's GSW half replays the same leg) is judged against the
+ * reference; `sabotage-freeze-drop-events/receiver` (the events dropped) must differ. */
+export async function runG8ptFrzp(
+  g: string,
+  checkpoints: readonly { step: number; settle: number }[],
+  px: PtPixels,
+  checks: G8aCheck[],
+  report: Record<string, unknown>,
+): Promise<void> {
+  const shots = ptShots(checkpoints, px.tail_frames);
+  const dir = (leg: string) => join(g, leg);
+  const ran = (leg: string) => !skipped(dir(leg)) && readdirSafe(dir(leg)).includes("exit-code.txt");
+
+  const legShots = async (leg: string): Promise<Map<string, Rgba | undefined> | string> => {
+    const seqs = readdirSafe(join(dir(leg), "shots"))
+      .map((n) => /^seq-(\d+)\.png$/.exec(n))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => Number(m[1]))
+      .sort((a, b) => a - b);
+    if (seqs.length !== shots.length) return `${seqs.length} shots, ${shots.length} wanted`;
+    const out = new Map<string, Rgba | undefined>();
+    for (let i = 0; i < shots.length; i++) out.set(shots[i].label, await decodePngRgba(join(dir(leg), "shots", `seq-${seqs[i]}.png`)));
+    return out;
+  };
+
+  /** The frozen cells' ink per shot, compared to the reference's (lit/dark and band). */
+  const frozenCells = (img: Rgba): Record<string, number> => {
+    const ink = ptInk(img, px);
+    const cells: Record<string, number> = {};
+    for (const c of FRZP_CELLS) cells[c] = ink.cells[c] ?? 0;
+    return cells;
+  };
+
+  const refCells = new Map<string, Record<string, number>>();
+  if (ran("reference")) {
+    for (const s of shots) {
+      const img = await decodePngRgba(join(dir("reference"), "shots", `${s.label}.png`));
+      if (img) refCells.set(s.label, frozenCells(img));
+    }
+  }
+
+  const judge = async (leg: string): Promise<{ problems: string[]; rows: Record<string, unknown> | null }> => {
+    const got = await legShots(leg);
+    if (typeof got === "string") return { problems: [`${leg}: ${got}`], rows: null };
+    const problems: string[] = [];
+    const rows: Record<string, unknown> = {};
+    for (const s of shots) {
+      const ref = refCells.get(s.label);
+      const img = got.get(s.label);
+      if (!ref || !img) {
+        problems.push(`${leg} ${s.label}: shot missing`);
+        continue;
+      }
+      const cells = frozenCells(img);
+      rows[s.label] = cells;
+      // lit/dark, then the band on cells lit in both.
+      for (const c of FRZP_CELLS) {
+        const r = ref[c] ?? 0;
+        const n = cells[c] ?? 0;
+        if (r > 0 && n === 0) problems.push(`${leg} ${s.label}: ${c} dark (reference ${r} px)`);
+        if (r === 0 && n > 0) problems.push(`${leg} ${s.label}: ${c} ${n} px inked (reference dark)`);
+        if (r > 0 && n > 0 && (n < r / px.coverage_band || n > r * px.coverage_band)) {
+          problems.push(`${leg} ${s.label}: ${c} ${n} px against the reference's ${r} (band x${px.coverage_band})`);
+        }
+      }
+    }
+    return { problems, rows };
+  };
+
+  {
+    let problems: string[] | null = null;
+    if (ran("frzp/receiver")) {
+      const r = await judge("frzp/receiver");
+      report.receiver = r.rows;
+      problems = r.problems;
+    }
+    checks.push(
+      check(
+        "frzp-frozen-burst",
+        "FRZ-P: a frozen seat's A_BOX (looping) and D_ONESHOT (one-shot) bursts replay shot-equal to the reference (lit/dark and the coverage band), so the freeze costs the stream nothing",
+        ran("frzp/receiver") ? problems : null,
+        ran("frzp/receiver") && problems && problems.length === 0 ? "A_BOX and D_ONESHOT equal the reference at every shot" : undefined,
+      ),
+    );
+  }
+
+  // freeze-drop-events: the events dropped, so the burst cannot replay.
+  {
+    const leg = "sabotage-freeze-drop-events/receiver";
+    if (skipped(dir(leg))) {
+      checks.push({ id: "frzp-catches-freeze-drop-events", criterion: "FRZ-P: the frozen seat's dropped restart/emit events fail the burst", passed: true, status: "not-run", detail: `skipped: ${leg}`, gating: false });
+    } else if (!ran(leg) || !ran("reference")) {
+      checks.push(check("frzp-catches-freeze-drop-events", "FRZ-P: the frozen seat's dropped restart/emit events fail the burst", null));
+    } else {
+      const r = await judge(leg);
+      report.drop_events = r.rows;
+      const caught = r.problems;
+      checks.push(check("frzp-catches-freeze-drop-events", "FRZ-P: the frozen seat's dropped restart/emit events fail the burst", caught.length > 0 ? [] : [`${leg} passed: the sabotage went unseen`], caught[0]));
+    }
+  }
+}
+
 function readdirSafe(path: string): string[] {
   try {
     return readdirSync(path);

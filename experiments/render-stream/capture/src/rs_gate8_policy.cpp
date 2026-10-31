@@ -38,7 +38,9 @@ bool sabotage_needs_v8(rs2::SabotageKind kind) {
 }
 
 bool sabotage_needs_v12(rs2::SabotageKind kind) {
-  return kind == rs2::SabotageKind::PerturbSeed || kind == rs2::SabotageKind::DropRestart;
+  return kind == rs2::SabotageKind::PerturbSeed || kind == rs2::SabotageKind::DropRestart ||
+         kind == rs2::SabotageKind::FreezeDropEvents ||
+         kind == rs2::SabotageKind::FreezeSendPositions;
 }
 
 bool sabotage_needs_v11(rs2::SabotageKind kind) {

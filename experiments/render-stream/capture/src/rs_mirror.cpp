@@ -3451,12 +3451,26 @@ Mirror::ParticlesCall Mirror::particles_call(std::uint64_t rid, ParticlesOp op,
         ++p->restarts_dropped;
         ++p->wire_version_skew;
       }
+      if (pt_options_.drop_events_frame != 0 && frame >= pt_options_.drop_events_frame) {
+        // Sabotage freeze-drop-events (FRZ-P): from the frame on, every restart is dropped on the
+        // wire (the hook log keeps the true count), so the frozen seat's burst cannot be replayed.
+        ++p->restarts_dropped;
+        ++p->wire_version_skew;
+      }
       ++p->restarts;
       changed = true;
       break;
     case ParticlesOp::Emit: {
       ++p->emits;
       changed = true;
+      if (pt_options_.drop_events_frame != 0 && frame >= pt_options_.drop_events_frame) {
+        // Sabotage freeze-drop-events: the emit never reaches the emit log (the wire), so the
+        // frozen seat's emitted particles are missing from the replay.
+        ++p->emits_dropped;
+        ++p->wire_version_skew;
+        out.restarts = p->restarts;
+        break;
+      }
       rs2::ParticleEmit e;
       e.particles = p->id;
       e.restarts = p->restarts - p->restarts_dropped;
@@ -3577,7 +3591,7 @@ ParticlesEntry Mirror::wire_particles(const Particles &p, bool notes) const {
   out.trails = p.trails;
   out.seed = p.seed;
   out.restarts = notes ? p.restarts : p.restarts - p.restarts_dropped;
-  out.emits = p.emits;
+  out.emits = notes ? p.emits : p.emits - p.emits_dropped;
   out.process_requests = p.process_requests;
   if (p.freed) {
     out.status = ParticlesStatus::Freed;
@@ -6950,6 +6964,33 @@ Captured Mirror::snapshot(std::uint64_t seq, std::uint64_t frame) {
       const std::uint32_t sub = it->second.sub_id;
       if (sub != 0 && particles_published.insert(sub).second) {
         work.push_back(sub);
+      }
+    }
+    // Sabotage freeze-send-positions (FRZ-P): from the frame on, the frozen seat's encoder emits
+    // every ok emitter's current emission transform (its position) each frame, the per-frame
+    // positions the freeze forbids. The emit is counted (version and `emits` move) so the wire
+    // stays valid; it changes every transaction's bytes, so the wire-byte-identity check catches it.
+    if (pt_options_.send_positions_frame != 0 && frame >= pt_options_.send_positions_frame) {
+      for (std::uint32_t id : particles_published) {
+        auto it = particles_.find(id);
+        if (it == particles_.end() || it->second.freed || !it->second.mode_2d) {
+          continue;
+        }
+        rs2::ParticleEmit e;
+        e.particles = id;
+        e.restarts = it->second.restarts - it->second.restarts_dropped;
+        e.flags = 0;
+        const std::shared_ptr<std::vector<float>> &fl = it->second.floats;
+        if (fl != nullptr && fl->size() >= kParticlesBaseFloats) {
+          // The emission transform (floats 16..27) is the emitter's position this frame.
+          for (std::size_t k = 0; k < 12; ++k) {
+            e.floats[k] = (*fl)[16 + k];
+          }
+        }
+        e.floats[15] = 1.0f;  // colour alpha (an opaque particle), velocity/custom stay zero
+        pending_emits_.push_back(std::move(e));
+        ++it->second.emits;
+        ++it->second.version;
       }
     }
     out.particles.reserve(particles_published.size());

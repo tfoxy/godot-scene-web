@@ -1267,6 +1267,21 @@ run_g8pt() {
 		run_capture_rendered_g8pt "$OUT/g8pt/sabotage-$s/capture" GRC_STREAM_VERSION=12 \
 			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8PT_SABOTAGE_FRAME"
 	done
+	# FRZ-P (results/p3/frz-p.md): the particle freeze. frzp is the frozen seat (the fixture freezes
+	# A_BOX and D_ONESHOT and nudges the one-shot); frzp-grant is the same scene unfrozen under the
+	# grant (the wire-byte-identity witness: the grant alone must not alter transaction bytes).
+	echo "run-gate8: g8pt frzp/capture (/12, frozen A_BOX+D_ONESHOT, GRC_FREEZE_PARTICLES=on)"
+	run_capture_rendered_g8pt "$OUT/g8pt/frzp/capture" GRC_STREAM_VERSION=12 \
+		GRC_FREEZE_PARTICLES=on RS_FIXTURE_FREEZE=1
+	echo "run-gate8: g8pt frzp-grant/capture (/12, grant only, no game freeze)"
+	run_capture_rendered_g8pt "$OUT/g8pt/frzp-grant/capture" GRC_STREAM_VERSION=12 \
+		GRC_FREEZE_PARTICLES=on
+	for s in freeze-drop-events freeze-send-positions; do
+		echo "run-gate8: g8pt sabotage-$s (capture, frozen seat, $s @$G8PT_SABOTAGE_FRAME)"
+		run_capture_rendered_g8pt "$OUT/g8pt/sabotage-$s/capture" GRC_STREAM_VERSION=12 \
+			GRC_FREEZE_PARTICLES=on RS_FIXTURE_FREEZE=1 \
+			GRC_SABOTAGE="$s" GRC_SABOTAGE_FRAME="$G8PT_SABOTAGE_FRAME"
+	done
 	# PM6a: the unarmed references and the native receivers (render-stream-12.md "As built
 	# (PM6a)"), every one at --fixed-fps 60 in the same gamescope (run_rendered consumes
 	# RENDERED_EXTRA_ARGS, so each launch sets it): the receivers simulate the emitters on their own
@@ -1286,6 +1301,23 @@ run_g8pt() {
 	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
 	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
 	run_rendered_receiver "$OUT/g8pt/capture" "$OUT/g8pt/receiver-patch"
+	# FRZ-P: the frozen seat's full sink replayed natively (the emitters re-issued, A_BOX and
+	# D_ONESHOT's bursts judged against the reference).
+	extra=""
+	[ -f "$OUT/g8pt/frzp/capture/steps.jsonl" ] && extra="$(g8pt_extra_seqs "$OUT/g8pt/frzp/capture")"
+	echo "run-gate8: g8pt frzp/receiver (native, /12, the frozen seat)"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	RECEIVER_EXTRA_SHOTS="$extra"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered_receiver "$OUT/g8pt/frzp/capture" "$OUT/g8pt/frzp/receiver"
+	echo "run-gate8: g8pt sabotage-freeze-drop-events/receiver (native, /12, the frozen seat, events dropped)"
+	extra=""
+	[ -f "$OUT/g8pt/sabotage-freeze-drop-events/capture/steps.jsonl" ] &&
+		extra="$(g8pt_extra_seqs "$OUT/g8pt/sabotage-freeze-drop-events/capture")"
+	RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12)
+	RECEIVER_EXTRA_SHOTS="$extra"
+	RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+	run_rendered_receiver "$OUT/g8pt/sabotage-freeze-drop-events/capture" "$OUT/g8pt/sabotage-freeze-drop-events/receiver"
 	for s in "${G8PT_RECEIVER_SABOTAGES[@]}"; do
 		echo "run-gate8: g8pt sabotage-$s (receiver)"
 		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=12 RS_RECEIVER_SABOTAGE="$s")

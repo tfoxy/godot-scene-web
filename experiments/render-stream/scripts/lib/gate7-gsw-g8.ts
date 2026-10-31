@@ -117,6 +117,10 @@ export const GATE8_LEGS: GswLegDef[] = [
   leg("g8pt/sabotage-undrawn-particles/receiver"),
   leg("g8pt/sabotage-ignore-particle-emits/receiver"),
   leg("g8pt/sabotage-drop-restart/receiver-patch"),
+  // FRZ-P (results/p3/frz-p.md): the frozen seat's bursts through the PM6b simulator, and the
+  // drop-events sabotage that must fail it.
+  leg("g8pt/frzp/receiver"),
+  leg("g8pt/sabotage-freeze-drop-events/receiver"),
   // PFB (render-stream-12.md "As built (PFB)"): fixtures/gate8-ptc's Forward+ capture, whose
   // particles material colours the host linearized; GSW's emitters read them so (rs-core
   // particles::describe), and `gl-particle-colors` is the pre-PFB GSW on the same name.
@@ -259,6 +263,9 @@ export const GATE8_RECEIVER_CHECKS: {
     "pt-lifecycle-catches-drop-restart",
     "pt-lifecycle-catches-undrawn-particles",
     "pt-replay-catches-ignore-particle-emits",
+    // FRZ-P (the frozen seat's bursts through the PM6b simulator)
+    "frzp-frozen-burst",
+    "frzp-catches-freeze-drop-events",
     // g8pt ptc (PFB's checks over the GSW legs)
     "ptc-receiver",
     "ptc-receiver-catches-gl-particle-colors",
