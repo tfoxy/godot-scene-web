@@ -42,6 +42,20 @@ export {
   type RenderStreamStatus,
 } from "./loop";
 export {
+  computeSpreadItem,
+  containerHAlignFactor,
+  createSpreadExtension,
+  fieldDx,
+  rootSpreadContext,
+  type SpreadBudget,
+  type SpreadContext,
+  type SpreadDeps,
+  type SpreadOptions,
+  type SpreadOut,
+  type SpreadShape,
+  spreadDelta,
+} from "./spread";
+export {
   type RenderStreamTransport,
   type RenderStreamTransportEvents,
   type RenderStreamTransportFactory,
