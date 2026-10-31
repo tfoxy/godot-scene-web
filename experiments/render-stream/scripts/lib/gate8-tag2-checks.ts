@@ -18,6 +18,14 @@
 //                         its window, and its last frame is variant-moved's (as override-oracle)
 //   override-dispose-rss  dispose: the renderer RSS after disposing a client with overrides set is
 //                         within MIR-1's 15 % of the RSS after disposing a client with none
+//   pointer-map           INP1: on the `inp` legs (Card1 lifted, Card2 scaled 1.24, Card4 plain; 16:9 and
+//                         21:9 presentations in a 700x500 CSS box): a tap at a raised item's drawn point
+//                         reaches the item's game point, a scaled item's likewise, a plain item maps to
+//                         itself, the spot a raised card left maps to itself and hits no part of it, and
+//                         the drawn point holds the item's pixels in the shot
+//   pointer-letterbox     INP1: points on the bars and outside the box map to null, the picture's corners
+//                         map to the presentation's, and presentationToCss lays an item's rect on the page
+//   inverse-skip-caught   INP1 sabotage inverse-skip (the point returned unmapped) fails pointer-map
 //   override-sabotage-*   override-no-inherit and override-fast-path-miss fail override-oracle on
 //                         moved; override-no-damage fails override-redraw's last frame
 
@@ -26,6 +34,9 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { type G8aCheck, skipped } from "./gate8-adopt-checks";
 
+const INP_LEGS = ["inp", "inp-wide"] as const;
+/** Card.tscn's Art ColorRect colour (0.8, 0.3, 0.2) as the client's canvas shows it. */
+const ART_RGB = [204, 77, 51] as const;
 const VARIANTS = ["moved", "scaled", "hidden", "tinted"] as const;
 const RSS_TOLERANCE = 0.15;
 
@@ -47,11 +58,57 @@ interface LegReport {
       acksDuring: number;
     };
   };
+  probe?: Probe | null;
   mounts?: {
     extension: string;
     renderer_rss_mib: number;
     overrides?: number;
   }[];
+}
+
+type Pt = [number, number];
+interface ProbeCase {
+  name: string;
+  missing?: boolean;
+  slot?: number;
+  item?: number;
+  overridden?: boolean;
+  game?: Pt;
+  drawn?: Pt;
+  got?: {
+    item: number | null;
+    itemSlot: string | null;
+    itemPath: string | null;
+    point: Pt;
+    drawn: Pt;
+  } | null;
+  cssToPresentation?: Pt | null;
+  hitTest?: number | null;
+}
+interface Probe {
+  presentation: Pt;
+  css: Pt;
+  scale: number;
+  cases: ProbeCase[];
+  vacated: {
+    missing?: boolean;
+    game?: Pt;
+    got?: { item: number | null; itemSlot: string | null; point: Pt } | null;
+  };
+  letterbox: {
+    name: string;
+    inBox: boolean;
+    cssToPresentation: unknown;
+    clientToGame: unknown;
+  }[];
+  corners: {
+    a: { x: number; y: number } | null;
+    b: { x: number; y: number } | null;
+  };
+  overlay: {
+    got: { x: number; y: number; w: number; h: number } | null;
+    want: { x: number; y: number; w: number; h: number } | null;
+  };
 }
 
 interface Shot {
@@ -350,6 +407,148 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
     );
   }
 
+  // INP1: pointer mapping.
+  const EPS = 0.02;
+  const near = (a: Pt, b: Pt, e = EPS) =>
+    Math.abs(a[0] - b[0]) <= e && Math.abs(a[1] - b[1]) <= e;
+  const pixel = (sh: Shot, p: Pt): [number, number, number] => {
+    const x = Math.min(sh.width - 1, Math.max(0, Math.floor(p[0])));
+    const y = Math.min(sh.height - 1, Math.max(0, Math.floor(p[1])));
+    const i = (y * sh.width + x) * 4;
+    return [sh.data[i], sh.data[i + 1], sh.data[i + 2]];
+  };
+  const isArt = (c: [number, number, number]) =>
+    c.every((v, k) => Math.abs(v - ART_RGB[k]) <= 6);
+  /** pointer-map's problems on one leg. */
+  const pointerMap = async (leg: string): Promise<string[]> => {
+    const r = report(leg);
+    const out = health(leg, r);
+    const pr = r?.probe;
+    if (!pr) return [...out, `${leg}: no probe`];
+    const sh = await shot(leg);
+    if (!sh) out.push(`${leg}: no shot`);
+    for (const want of [
+      "raised-art-centre",
+      "raised-panel-bottom",
+      "scaled-art-corner",
+      "plain-art-centre",
+    ])
+      if (!pr.cases.some((c) => c.name === want && !c.missing))
+        out.push(`${leg}: case ${want} is missing`);
+    for (const c of pr.cases) {
+      if (c.missing || !c.game || !c.drawn || !c.item) continue;
+      const tag = `${leg} ${c.name}`;
+      if (!c.got) {
+        out.push(`${tag}: toGame gave null`);
+        continue;
+      }
+      if (c.overridden && near(c.game, c.drawn))
+        out.push(
+          `${tag}: the override moved nothing (${c.game} -> ${c.drawn})`,
+        );
+      if (!c.overridden && !near(c.game, c.drawn))
+        out.push(`${tag}: a plain item drawn off its game position`);
+      if (c.got.item !== c.item)
+        out.push(`${tag}: hit item ${c.got.item}, want ${c.item}`);
+      if (c.hitTest !== c.item)
+        out.push(`${tag}: query.hitTest ${c.hitTest}, want ${c.item}`);
+      if (!near(c.got.point, c.game))
+        out.push(`${tag}: game point ${c.got.point}, want ${c.game}`);
+      if (!near(c.got.drawn, c.drawn))
+        out.push(`${tag}: presentation point ${c.got.drawn}, want ${c.drawn}`);
+      if (c.cssToPresentation && !near(c.cssToPresentation, c.drawn))
+        out.push(
+          `${tag}: cssToPresentation ${c.cssToPresentation}, want ${c.drawn}`,
+        );
+      if (c.got.itemSlot !== String(c.slot))
+        out.push(`${tag}: the hit is in card ${c.got.itemSlot}`);
+      if (
+        (sh && c.name.endsWith("art-centre")) ||
+        c.name === "scaled-art-corner"
+      )
+        if (sh && !isArt(pixel(sh, c.drawn)))
+          out.push(
+            `${tag}: the shot at ${c.drawn} is ${pixel(sh, c.drawn)}, not Art`,
+          );
+    }
+    const v = pr.vacated;
+    if (v.missing || !v.game || !v.got) out.push(`${leg}: no vacated probe`);
+    else {
+      if (v.got.itemSlot === "1") out.push(`${leg} vacated: still hits card 1`);
+      if (!near(v.got.point, v.game))
+        out.push(`${leg} vacated: ${v.got.point}, want ${v.game} unmapped`);
+      if (sh && isArt(pixel(sh, v.game)))
+        out.push(`${leg} vacated: the shot still shows Art at ${v.game}`);
+    }
+    return out;
+  };
+  {
+    const problems: string[] = [];
+    const notes: string[] = [];
+    for (const leg of INP_LEGS) {
+      problems.push(...(await pointerMap(leg)));
+      const pr = report(leg)?.probe;
+      if (pr)
+        notes.push(
+          `${leg}: ${pr.presentation.join("x")} in ${pr.css.join("x")} (scale ${pr.scale.toFixed(3)}), ${pr.cases.length} taps`,
+        );
+    }
+    mk(
+      "pointer-map",
+      "INP1: a tap at a raised item's drawn point maps to its game position, a scaled item's likewise, a non-overridden item maps to itself, and the spot a raised card left holds nothing of it; the hit is the item drawn there (query.hitTest) and its pixels are in the shot; at 16:9 and 21:9 presentations in a CSS box of another aspect",
+      problems,
+      notes.join("; "),
+    );
+  }
+  {
+    const problems: string[] = [];
+    const notes: string[] = [];
+    for (const leg of INP_LEGS) {
+      const pr = report(leg)?.probe;
+      if (!pr) {
+        problems.push(`${leg}: no probe`);
+        continue;
+      }
+      let bars = 0;
+      for (const b of pr.letterbox) {
+        if (b.cssToPresentation !== null || b.clientToGame !== null)
+          problems.push(
+            `${leg} ${b.name}: mapped (${JSON.stringify(b.cssToPresentation)})`,
+          );
+        if (b.inBox && b.name !== "outside-box") bars++;
+      }
+      if (bars < 2)
+        problems.push(`${leg}: only ${bars} bar probes inside the box`);
+      const [a, c] = [pr.corners.a, pr.corners.b];
+      if (!a || !c) problems.push(`${leg}: a picture corner mapped to null`);
+      else if (
+        !near([a.x, a.y], [0.5, 0.5], 0.05) ||
+        !near(
+          [c.x, c.y],
+          [pr.presentation[0] - 0.5, pr.presentation[1] - 0.5],
+          0.05,
+        )
+      )
+        problems.push(`${leg}: corners ${JSON.stringify([a, c])}`);
+      const o = pr.overlay;
+      if (!o.got || !o.want) problems.push(`${leg}: no overlay rect`);
+      else if (
+        !near([o.got.x, o.got.y], [o.want.x, o.want.y], 0.05) ||
+        !near([o.got.w, o.got.h], [o.want.w, o.want.h], 0.05)
+      )
+        problems.push(
+          `${leg}: presentationToCss ${JSON.stringify(o.got)}, want ${JSON.stringify(o.want)}`,
+        );
+      notes.push(`${leg}: ${bars} bar probes null`);
+    }
+    mk(
+      "pointer-letterbox",
+      "INP1: a point on a letterbox bar or outside the canvas's box maps to null, the picture's corners map to the presentation's, and presentationToCss lays an item's rect on the page by the same layout",
+      problems,
+      notes.join("; "),
+    );
+  }
+
   // sabotages: each must fail its check.
   const sab = async (
     name: string,
@@ -387,6 +586,14 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
     await oracle(leg, "moved", problems, notes);
     return problems.filter((p) => p.startsWith(`${leg} vs`));
   };
+  await sab(
+    "inverse-skip",
+    "INP1 sabotage inverse-skip (toGame returns the point unmapped): fails pointer-map's raised and scaled taps",
+    async () =>
+      (await pointerMap("sabotage-inverse-skip")).filter((p) =>
+        p.includes("game point"),
+      ),
+  );
   await sab(
     "override-no-inherit",
     "TAG2 sabotage override-no-inherit (the override composed into the item's own row only, as write_row would): fails override-oracle on moved's children",

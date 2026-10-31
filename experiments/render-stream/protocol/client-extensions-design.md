@@ -810,12 +810,7 @@ here.
   rows-only path of an apply ignore the table; the redraw path still composes it.
 
 **Ready for the next consumers (not built).**
-- **INP1** needs no new core state. `toGame` is `invertAffine(overrides.effective(hit))` on the
-  point. `presentationToCss` and `cssToPresentation` are the canvas's backing/CSS ratio and the
-  session's presentation size. The hit test needs the drawn order and rects. The applier's last
-  walk already holds both: `attach` is in draw order, and each entry's `global_rect` is composed
-  with the overrides. A `query_hit(x, y)` export can walk it backwards, at no cost to a client that
-  never calls it.
+- **INP1** is built: see "As built (INP1)" below.
 - **Client-side freeze-subtree (the static-background lever).** The hook is one more value per
   table entry, `frozen`, with no pure cost:
   - `apply` would test `frozen.is_empty()` once. Only when it is set, it skips the upserts and
@@ -849,3 +844,50 @@ Result: `results/p3/pres-a.md`.
   client. But STS2's UI stays in the left 1920 columns on every screen, so the game-side route
   first needs one mod change: size the game's UI root to the visible rect. The per-screen
   candidates and the old spread comparison for PRES-C are in the result doc.
+
+## As built (INP1)
+
+Result: `results/p3/inp1.md`.
+
+INP1 is the pointer-mapping half of interaction (the §6 row). It maps points between the page
+(client CSS px) and the presentation (the host window's px, which is what the game's input takes),
+and hit-tests which drawn item a point is on, so a tap at a raised item's drawn centre reaches its
+game centre. A client that never asks pays nothing: the hit test and the inverse are computed on
+demand, never per frame, and the pure client's hello and loop are today's.
+
+**Page ↔ presentation** (`packages/render-stream-client/src/pointer.ts`, on `RenderStreamClient`).
+- `pictureRect`, `clientToPresentation`, `presentationToClient`, `parseObjectFit`,
+  `parseObjectPosition` and `readLayout` are pure functions over a `PictureLayout`: the canvas's
+  content box, its `object-fit`/`object-position`, its backing store and the session's presentation
+  size. The backing store is the presentation 1:1 (mirror-client-design.md D12) and the product
+  sizes the canvas's CSS box; `contain` letterboxes, `cover` crops, and the bars (or the crop) map
+  to null.
+- `cssToPresentation(clientX, clientY)` reads the canvas's layout on demand and returns the
+  presentation-space point, or null on a bar / outside the box / with no session. `presentationToCss`
+  maps an item's `query.rect` to page px for a DOM overlay. `toGame(x, y)` and `clientToGame` return
+  the game-space point with the item drawn there (and the drawn point, in presentation px).
+
+**Hit test and inverse** (rs-core `apply/overrides.rs`, gsw-rs `lib.rs`).
+- `Applier::hit_test(x, y)` walks the applier's attach list backwards — it is in draw order, and
+  each entry's `global_rect` is composed with the overrides — and returns the topmost item whose
+  own commands cover the point, tested in the item's own space (a rotated or sheared item is not
+  judged by its AABB). It reads the records the walk already keeps; nothing is computed per frame.
+- `Applier::to_game(state, x, y)` is `E⁻¹ · p` on the hit point, `E = O_n · … · O_1` the item's and
+  its ancestors' overrides (nearest first, the order `cull` composes). No item: the point is
+  unchanged and the item is `None`. A singular `E` (or an item under `use_identity_transform`) is
+  returned unmapped. `OverrideTable.effective(id)` is the TS mirror; `invertAffine` and `mulAffine`
+  were already exported (TAG2).
+- `ItemQuery.hitTest` and the client's `toGame`/`clientToGame` join §3.1's query and client
+  surfaces. gsw-rs exports `hit_test` and `to_game`; the native receiver's core does not (it takes
+  its own input). `inverse-skip` is the sabotage.
+
+**Fixture and legs.**
+- `fixtures/tag-scene` gains `RS_FIXTURE_TAG_EXPAND`: the root stretches `canvas_items`/`expand`
+  from 640×360, so a `presentation:<W>x<H>` of another aspect is accepted.
+- gate 8 group `g8tag2` gains `inp` legs (16:9 and 21:9 presentations in a 700×500 CSS box,
+  letterboxed): the `inp` extension lifts Card1 by (0, −119) and scales Card2 1.24 about its
+  subtree's centre. `pointer-map` and `pointer-letterbox` judge the taps, the bars, the corners and
+  `presentationToCss`; `inverse-skip-caught` fails the raised and scaled taps.
+
+The **pure-client-unchanged** check (client) is the §6 one: `extensions: []` apply/draw within
+noise and the hello identical.

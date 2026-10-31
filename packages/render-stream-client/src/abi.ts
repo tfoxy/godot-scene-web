@@ -92,6 +92,9 @@ export interface GswRs {
   query_item(id: number): Float64Array;
   query_subtree_rect(id: number): Float64Array;
   query_children(id: number): Uint32Array;
+  // INP1: pointer mapping (client-extensions-design.md "As built (INP1)").
+  hit_test(x: number, y: number): number;
+  to_game(x: number, y: number): Float64Array;
   free(): void;
 }
 
@@ -218,5 +221,7 @@ export const CLIENT_CORE_METHODS = [
   "query_item",
   "query_subtree_rect",
   "query_children",
+  "hit_test",
+  "to_game",
   "free",
 ] as const satisfies readonly (keyof GswRs)[];

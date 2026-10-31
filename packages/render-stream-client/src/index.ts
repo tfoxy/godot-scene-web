@@ -3,6 +3,7 @@
 
 export {
   createRenderStreamClient,
+  type GamePoint,
   type RenderStreamClient,
   type RenderStreamClientOptions,
 } from "./client";

@@ -18,6 +18,7 @@ RenderStreamProtocol ClientHelloFacts CoreBuild RenderStreamCore RenderStreamFai
 RenderStreamStats RenderStreamStatus RenderStreamTransport RenderStreamTransportEvents
 RenderStreamTransportFactory ApplyOn CreditStage Affine2D ExtensionFrame ExtensionSession ItemMeta
 ItemMetaBatch ItemMetaField ItemMetaGrant ItemQuery OverrideTable OverrideValues Point Rect RGBA
+GamePoint
 `
   .trim()
   .split(/\s+/);

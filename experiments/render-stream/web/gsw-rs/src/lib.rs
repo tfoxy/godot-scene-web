@@ -309,6 +309,7 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "override-no-inherit" => o.ov.no_inherit = true,
                 "override-no-damage" => o.ov.no_damage = true,
                 "override-fast-path-miss" => o.ov.fast_path_miss = true,
+                "inverse-skip" => o.ov.inverse_skip = true,
                 "stale-param" => o.apply.stale_param = true,
                 "blend-swap" => o.apply.blend_swap = true,
                 "screen-copy-per-reader" => o.apply.screen_copy_per_reader = true,
@@ -2357,6 +2358,33 @@ impl GswRs {
         a.query_subtree_rect(v.state(), id)
             .map(|r| r.iter().map(|x| f64::from(*x)).collect())
             .unwrap_or_default()
+    }
+
+    /// INP1 `ItemQuery.hitTest`: the topmost drawn item under the presentation-space point, or
+    /// -1. Reads the last walk's draw order; computes nothing until called. Returns f64 (not the
+    /// core's u32 item id directly): wasm-bindgen maps i64 to BigInt, which the page's JSON would
+    /// refuse to serialise.
+    pub fn hit_test(&self, x: f64, y: f64) -> f64 {
+        self.applier
+            .as_ref()
+            .and_then(|a| a.hit_test(x as f32, y as f32))
+            .map_or(-1.0, f64::from)
+    }
+
+    /// INP1 `toGame`: `[item (-1: none), x, y]`, the point mapped through the inverse of the hit
+    /// item's effective override; empty when that override is singular.
+    pub fn to_game(&self, x: f64, y: f64) -> Vec<f64> {
+        let (Some(v), Some(a)) = (self.validator.as_ref(), self.applier.as_ref()) else {
+            return vec![-1.0, x, y];
+        };
+        match a.to_game(v.state(), x as f32, y as f32) {
+            Some((item, p)) => vec![
+                item.map_or(-1.0, f64::from),
+                f64::from(p[0]),
+                f64::from(p[1]),
+            ],
+            None => Vec::new(),
+        }
     }
 
     /// TAG2 `ItemQuery.children`, in the state's order.

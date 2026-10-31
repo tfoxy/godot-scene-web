@@ -6,6 +6,7 @@
 import {
   createRenderStreamClient,
   type ItemMeta,
+  type ItemQuery,
   type RenderStreamClient,
   type RenderStreamCore,
   type RenderStreamEndpoint,
@@ -33,6 +34,8 @@ HTMLCanvasElement.prototype.getContext = function (
   );
 } as typeof HTMLCanvasElement.prototype.getContext;
 
+const CSS_LEFT = 20;
+const CSS_TOP = 30;
 const CARD = "res://card.tscn";
 const MAIN = "res://tag.tscn";
 const LIFT = -119;
@@ -77,6 +80,27 @@ const transport = { binary: 0, acks: 0, lastBinaryAt: 0 };
 
 const isCard1 = (m: ItemMeta | null) =>
   m?.scene === CARD && m.path === "." && m.meta.rs_slot === "1";
+const isCardSlot = (m: ItemMeta | null, slot: number) =>
+  m?.scene === CARD && m.path === "." && m.meta.rs_slot === String(slot);
+
+/** INP1's `inp` extension: Card1 lifted (as `moved`), Card2 scaled 1.24 about the centre of its
+ * subtree, Card4 untouched. The probe runs during a frame (the core's state is reset when the
+ * stream ends, so `probe()` after the end only reads what `beforeDraw` stored). */
+const inp: {
+  query: ItemQuery | null;
+  tagged: Map<number, ItemMeta> | null;
+  client: RenderStreamClient | null;
+  canvas: HTMLCanvasElement | null;
+  css: [number, number] | null;
+  result: unknown;
+} = {
+  query: null,
+  tagged: null,
+  client: null,
+  canvas: null,
+  css: null,
+  result: null,
+};
 
 /** The test extensions, by name. Each selects its item by tag in onItemMeta and writes the
  * override in beforeDraw (recomputed every frame: the table keeps only real changes). */
@@ -134,6 +158,33 @@ function extensionOf(name: string): RenderStreamExtension[] {
           case "identity":
             for (const id of tagged.keys()) f.overrides.set(id, {});
             break;
+          case "inp": {
+            inp.query = f.query;
+            inp.tagged = tagged;
+            for (const id of find(isCard1)) f.overrides.translate(id, 0, LIFT);
+            for (const id of find((m) => isCardSlot(m, 2))) {
+              const r = f.query.subtreeRect(id);
+              if (r === null) continue;
+              f.overrides.scaleAbout(
+                id,
+                SCALE,
+                SCALE,
+                r.x + r.w / 2,
+                r.y + r.h / 2,
+              );
+            }
+            // The probe runs during a frame: `probe()` after the end reads this stored result
+            // (the core's state is reset at stream end).
+            if (inp.client && inp.canvas && inp.css)
+              inp.result = computeProbe(
+                inp.client,
+                inp.canvas,
+                f.query,
+                tagged,
+                inp.css,
+              );
+            break;
+          }
           case "moved":
             for (const id of find(isCard1)) f.overrides.translate(id, 0, LIFT);
             break;
@@ -206,6 +257,192 @@ function extensionOf(name: string): RenderStreamExtension[] {
   ];
 }
 
+/**
+ * INP1: the pointer mapping against the scene the `inp` extension drew. Computed during a frame
+ * (`beforeDraw`), while the core's state is still live: the tap expectations come from the game's
+ * own state (query.rect, never the override) and the page's CSS box, not from the client's layout
+ * code; the results come from the client's `clientToGame`/`cssToPresentation`/`presentationToCss`.
+ */
+function computeProbe(
+  client: RenderStreamClient,
+  canvas: HTMLCanvasElement,
+  q: ItemQuery,
+  tagged: Map<number, ItemMeta>,
+  css: [number, number],
+): unknown {
+  const W = canvas.width;
+  const H = canvas.height;
+  const s = Math.min(css[0] / W, css[1] / H);
+  const ox = CSS_LEFT + (css[0] - W * s) / 2;
+  const oy = CSS_TOP + (css[1] - H * s) / 2;
+  const toClient = (x: number, y: number): [number, number] => [
+    ox + x * s,
+    oy + y * s,
+  ];
+  const slotOf = (id: number): string | null => {
+    for (let c: number | null = id, g = 0; c !== null && g < 32; g++) {
+      const m = q.meta(c);
+      if (m?.scene === CARD && m.path === ".") return m.meta.rs_slot ?? null;
+      c = q.parent(c);
+    }
+    return null;
+  };
+  const find = (slot: number, path: string) =>
+    [...tagged.values()].find(
+      (m) =>
+        m.scene === CARD && m.path === path && slotOf(m.id) === String(slot),
+    )?.id ?? null;
+  // E for the two overridden cards, as the extension wrote them.
+  const lift = (x: number, y: number): [number, number] => [x, y + LIFT];
+  const pivot2 = (() => {
+    const card = [...tagged.values()].find((m) => isCardSlot(m, 2));
+    const r = card ? q.subtreeRect(card.id) : null;
+    return r ? ([r.x + r.w / 2, r.y + r.h / 2] as const) : null;
+  })();
+  const scale = (x: number, y: number): [number, number] =>
+    pivot2
+      ? [
+          pivot2[0] + SCALE * (x - pivot2[0]),
+          pivot2[1] + SCALE * (y - pivot2[1]),
+        ]
+      : [x, y];
+  interface Spec {
+    name: string;
+    slot: number;
+    path: string;
+    local: [number, number] | null;
+    draw: (x: number, y: number) => [number, number];
+    overridden: boolean;
+  }
+  const specs: Spec[] = [
+    {
+      name: "raised-art-centre",
+      slot: 1,
+      path: "Art",
+      local: null,
+      draw: lift,
+      overridden: true,
+    },
+    {
+      name: "raised-panel-bottom",
+      slot: 1,
+      path: "CardContainer",
+      local: [40, 100],
+      draw: lift,
+      overridden: true,
+    },
+    {
+      name: "scaled-art-corner",
+      slot: 2,
+      path: "Art",
+      local: [10, 10],
+      draw: scale,
+      overridden: true,
+    },
+    {
+      name: "plain-art-centre",
+      slot: 4,
+      path: "Art",
+      local: null,
+      draw: (x, y) => [x, y],
+      overridden: false,
+    },
+  ];
+  const cases = specs.map((sp) => {
+    const id = find(sp.slot, sp.path);
+    const r = id === null ? null : q.rect(id);
+    if (id === null || r === null) return { name: sp.name, missing: true };
+    const game: [number, number] = sp.local
+      ? [r.x + sp.local[0], r.y + sp.local[1]]
+      : [r.x + r.w / 2, r.y + r.h / 2];
+    const drawn = sp.draw(game[0], game[1]);
+    const [cx, cy] = toClient(drawn[0], drawn[1]);
+    const got = client.clientToGame(cx, cy);
+    const viaTwo = client.cssToPresentation(cx, cy);
+    return {
+      name: sp.name,
+      slot: sp.slot,
+      item: id,
+      overridden: sp.overridden,
+      game,
+      drawn,
+      client: [cx, cy],
+      got: got && {
+        item: got.item,
+        itemSlot: got.item === null ? null : slotOf(got.item),
+        itemPath: got.item === null ? null : (q.meta(got.item)?.path ?? null),
+        point: [got.point.x, got.point.y],
+        drawn: [got.drawn.x, got.drawn.y],
+      },
+      cssToPresentation: viaTwo && [viaTwo.x, viaTwo.y],
+      hitTest: q.hitTest(drawn[0], drawn[1]),
+    };
+  });
+  // Where Card1 was, before the lift: nothing of it is drawn.
+  const art1 = find(1, "Art");
+  const r1 = art1 === null ? null : q.rect(art1);
+  let vacated: unknown = { missing: true };
+  if (r1) {
+    const g: [number, number] = [r1.x + r1.w / 2, r1.y + r1.h / 2];
+    const [cx, cy] = toClient(g[0], g[1]);
+    const got = client.clientToGame(cx, cy);
+    vacated = {
+      game: g,
+      got: got && {
+        item: got.item,
+        itemSlot: got.item === null ? null : slotOf(got.item),
+        point: [got.point.x, got.point.y],
+      },
+    };
+  }
+  // The bars (top, bottom, left, right of the picture) and outside the CSS box.
+  const bars: [string, number, number][] = [
+    ["top-bar", ox + (W * s) / 2, oy - 1],
+    ["bottom-bar", ox + (W * s) / 2, oy + H * s + 1],
+    ["left-bar", ox - 1, oy + (H * s) / 2],
+    ["right-bar", ox + W * s + 1, oy + (H * s) / 2],
+    ["outside-box", CSS_LEFT - 5, CSS_TOP - 5],
+  ];
+  const letterbox = bars.map(([name, x, y]) => ({
+    name,
+    client: [x, y],
+    inBox:
+      x >= CSS_LEFT &&
+      x < CSS_LEFT + css[0] &&
+      y >= CSS_TOP &&
+      y < CSS_TOP + css[1],
+    cssToPresentation: client.cssToPresentation(x, y),
+    clientToGame: client.clientToGame(x, y),
+  }));
+  // The picture's corners map to the presentation's.
+  const [ax, ay] = toClient(0.5, 0.5);
+  const [bx, by] = toClient(W - 0.5, H - 0.5);
+  const a = client.cssToPresentation(ax, ay);
+  const b = client.cssToPresentation(bx, by);
+  // presentationToCss round-trips an item's rect.
+  const rr = r1 ? client.presentationToCss(r1) : null;
+  const want = r1
+    ? { x: ox + r1.x * s, y: oy + r1.y * s, w: r1.w * s, h: r1.h * s }
+    : null;
+  const diag = {
+    tagged: tagged.size,
+    cardArts: [...tagged.values()]
+      .filter((m) => m.scene === CARD && m.path === "Art")
+      .map((m) => ({ id: m.id, slot: slotOf(m.id), rect: q.rect(m.id) })),
+  };
+  return {
+    diag,
+    presentation: [W, H],
+    css,
+    scale: s,
+    cases,
+    vacated,
+    letterbox,
+    corners: { a, b },
+    overlay: { got: rr, want },
+  };
+}
+
 let mounted: { client: RenderStreamClient; canvas: HTMLCanvasElement } | null =
   null;
 const statuses: (RenderStreamStatus & { t: number })[] = [];
@@ -221,11 +458,15 @@ const api = {
     extension: string;
     width: number;
     height: number;
+    /** INP1: the canvas's CSS box (px), object-fit contain at (CSS_LEFT, CSS_TOP): a letterbox. */
+    css?: [number, number];
   }) {
     if (mounted) throw new Error("already mounted");
     const canvas = document.createElement("canvas");
     canvas.width = o.width;
     canvas.height = o.height;
+    if (o.css)
+      canvas.style.cssText = `position:absolute;left:${CSS_LEFT}px;top:${CSS_TOP}px;width:${o.css[0]}px;height:${o.css[1]}px;object-fit:contain`;
     document.body.append(canvas);
     const client = createRenderStreamClient({
       canvas,
@@ -256,9 +497,19 @@ const api = {
     });
     client.connect();
     mounted = { client, canvas };
+    inp.client = client;
+    inp.canvas = canvas;
+    inp.css = o.css ?? null;
   },
   stats() {
     return mounted ? { ...mounted.client.stats() } : null;
+  },
+  /**
+   * INP1: the pointer mapping the `inp` extension computed during a frame (`beforeDraw`).
+   * `probe()` after the stream ended only returns it: the core state is reset at end.
+   */
+  probe() {
+    return inp.result;
   },
   /** The drawing buffer, RGBA rows top first, as base64. */
   shot(): { width: number; height: number; rgba: string } | null {
