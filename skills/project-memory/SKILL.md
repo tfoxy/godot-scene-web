@@ -9,8 +9,8 @@ The store is a flat folder of one-fact markdown files plus an index. It is the a
 rounds that went wrong: a fact here is one you would otherwise re-derive from a failed experiment.
 
 Claude Code writes this format natively (its auto-memory directory is pointed at the same folder by
-`scripts/install-agent-config.sh`). This skill exists so Codex reads and writes the *same* store,
-rather than starting a second one that neither tool can see.
+`scripts/install-agent-config.sh`). This skill exists so Codex and DeepSeek Harness read and write the
+*same* store, rather than starting a second one that none of the tools can see.
 
 ## Where
 

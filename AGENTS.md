@@ -134,15 +134,24 @@ declarations. Node's native TypeScript support cannot resolve this repository's 
 Node probes need a TypeScript-aware loader (such as `tsx`) and a resolver hook that maps package specifiers through
 the `development` condition.
 
-Committed agent config lives at [`agents/`](agents/) and [`skills/`](skills/) (`.claude/`, `.agents/` and
-`.codex/` are gitignored). Run `scripts/install-agent-config.sh` after cloning and in every new worktree: it
-links them in for Claude Code, generates the Codex CLI config under `.codex/`, and registers the PreToolUse
-guard for both — `scripts/claude-guard-bash.sh`, self-tested by `scripts/test-claude-guard.sh`, which blocks
-nested `xvfb-run` and warns on: any `git push` outside `scripts/remote-validate.sh` (stronger text for
-main, tags, force, `--all`/`--mirror`, or a bare push); a `tsx` call missing `--conditions=development`
-(that one silently tests `dist/` instead of your edit); and a package manager run from outside the repo
-root. Codex trust is per-hash: re-trust the hook via `/hooks` after every guard edit. Add `--user` to
-mirror home-level config into `~/.codex/`.
+Committed agent config lives at [`agents/`](agents/) and [`skills/`](skills/) (`.claude/`, `.agents/`,
+`.codex/` and `.dsh/` are gitignored). Run `scripts/install-agent-config.sh` after cloning and in every new
+worktree: it links them in for Claude Code, generates the Codex CLI config under `.codex/`, generates the
+DeepSeek Harness overlay under `.dsh/`, and registers the PreToolUse guard for Claude and Codex —
+`scripts/claude-guard-bash.sh`, self-tested by `scripts/test-claude-guard.sh`, which blocks nested
+`xvfb-run` and warns on: any `git push` outside `scripts/remote-validate.sh` (stronger text for main, tags,
+force, `--all`/`--mirror`, or a bare push); a `tsx` call missing `--conditions=development` (that one
+silently tests `dist/` instead of your edit); and a package manager run from outside the repo root. Codex
+trust is per-hash: re-trust the hook via `/hooks` after every guard edit. Add `--user` to mirror home-level
+config into `~/.codex/` and the shared `~/.agents` root.
+
+The three harnesses read the same sources. Claude Code gets `agents/` and `skills/`; Codex gets generated
+TOML; DeepSeek Harness gets `.dsh/profile.patch.yml`, which adds the same MCP servers (from `~/.claude.json`
+and `/.mcp.json`) and exposes every `agents/*.md` as an `agent_preset` of the `subagent_role` tool. Launch
+DSH with `scripts/dsh` (not plain `dsh web`) and restart it after changing agents or MCP config. The overlay
+is repo-scoped, so a session launched here does not inherit the consumer's MCP/subagents; launch
+`../sts2-couch-coop/scripts/dsh` there. Skills and memory are file-based and follow the working directory.
+Details: [`docs/dsh.md`](docs/dsh.md).
 
 Project memory is `.agents/memory/MEMORY.md` (in a worktree, a symlink to the main checkout's store). Read
 that index before non-trivial work; record what you learn with the `project-memory` skill.
