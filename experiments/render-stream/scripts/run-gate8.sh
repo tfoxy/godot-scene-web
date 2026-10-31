@@ -1752,6 +1752,9 @@ run_g8w11c() {
 #                                       and ends on the honest leg's final state
 #   native13-sabotage-no-predict-reset  the same with the receiver sabotage no-predict-reset: the
 #                                       resync's full fails predict-check too, so the state stays
+#   native13-zr-overrun                 W13r: host zr-overrun @120 (a patch's first zero run one
+#                                       zero too long): the receiver fails zr-length and resyncs as
+#                                       under predict-stale
 # A native receiver is headless here (no shot: lib/gate8-w13-native-checks.ts compares the drawn
 # dynamic bodies and the last frame); a browser receiver (GATE7_LIVE_KIND) also shoots its final
 # state (RS_RECEIVER_SHOT_FINAL), and the check compares those pixels too.
@@ -1765,6 +1768,10 @@ run_g8w11c_native13() {
 	echo "run-gate8: g8w11c native13-predict-stale (/13, predict-stale @120)"
 	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
 	run_g8w11_coding_native_leg native13-predict-stale "${h13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	echo "run-gate8: g8w11c native13-zr-overrun (/13, zr-overrun @120)"
+	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
+	run_g8w11_coding_native_leg native13-zr-overrun "${h13[@]}" GRC_SABOTAGE=zr-overrun \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	# A sabotage leg by its path (lib/legs.sh skips it under RS_SABOTAGE_TIER=skip).
 	echo "run-gate8: g8w11c native13-sabotage-no-predict-reset (/13, predict-stale @120, no-predict-reset)"
@@ -1784,6 +1791,8 @@ run_g8w11c_native13() {
 #                                    honest leg's final picture
 #   gsw13-sabotage-no-predict-reset  the same with the receiver sabotage no-predict-reset: the
 #                                    resync's full fails predict-check too, so the picture stays
+#   gsw13-zr-overrun                 W13r: host zr-overrun @120: GSW fails zr-length and resyncs as
+#                                    under predict-stale
 run_g8w11c_gsw13() {
 	local -a h13=(GRC_STREAM_VERSION=13 RS_SCALE_MESH_UPDATES=187)
 	G8W11C_PROTOCOL=13
@@ -1792,6 +1801,9 @@ run_g8w11c_gsw13() {
 	run_g8w11_coding_native_leg gsw13-honest "${h13[@]}" -- "coded:"
 	echo "run-gate8: g8w11c gsw13-predict-stale (/13, predict-stale @120)"
 	run_g8w11_coding_native_leg gsw13-predict-stale "${h13[@]}" GRC_SABOTAGE=predict-stale \
+		GRC_SABOTAGE_FRAME=120 -- "coded:"
+	echo "run-gate8: g8w11c gsw13-zr-overrun (/13, zr-overrun @120)"
+	run_g8w11_coding_native_leg gsw13-zr-overrun "${h13[@]}" GRC_SABOTAGE=zr-overrun \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	# A sabotage leg by its path (lib/legs.sh skips it under RS_SABOTAGE_TIER=skip).
 	echo "run-gate8: g8w11c gsw13-sabotage-no-predict-reset (/13, predict-stale @120, no-predict-reset)"

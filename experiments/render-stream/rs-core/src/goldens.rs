@@ -825,6 +825,77 @@ impl Suite<'_> {
                 "",
             );
         }
+        // W13r: the writer sabotages zr-overrun and zr-short-run write their vectors, which fail
+        // their codes at their seqs.
+        for (name, zr) in [
+            ("zr-overrun", crate::predict::ZrSabotage::Overrun),
+            ("zr-short-run", crate::predict::ZrSabotage::ShortRun),
+        ] {
+            let Some(st) = sab.get(name) else {
+                self.ok(false, format!("index.json lists sabotage {name}"), "missing");
+                continue;
+            };
+            let vector = s(st, "vector");
+            let p12 = self.bytes(&s(&predict, "rs12"));
+            let want = self.bytes(&vector);
+            let got = p12
+                .as_deref()
+                .map(|d| crate::predict::to13_with(d, false, zr, None));
+            self.ok(
+                matches!((&got, &want), (Some(Ok(g)), Some(w)) if g == w),
+                format!("sabotage {name}: the encoder over {} writes {vector} byte for byte", s(&predict, "rs12")),
+                "",
+            );
+            let (code, seq) = (s(st, "code"), st.get("seq").and_then(|x| x.as_i64()));
+            let failed = want.as_deref().and_then(|d| first_failure(d, self.opts()));
+            self.ok(
+                matches!(&failed, Some((e, _, at)) if e.code == code && *at == seq),
+                format!("sabotage {name}: validateRecording({vector}) fails \"{code}\" at seq {seq:?}"),
+                failed.map(|(e, _, at)| format!("{e} (seq {at:?})")).unwrap_or_else(|| "accepted".into()),
+            );
+        }
+        // W13r: zero-runs.json through the token codec alone.
+        let zr_file = index
+            .get("zero_runs")
+            .map(|z| s(z, "file"))
+            .unwrap_or_default();
+        match self.json(&zr_file) {
+            Some(cases) => {
+                let hex = |v: &J, k: &str| {
+                    let t = s(v, k);
+                    (0..t.len() / 2)
+                        .map(|i| u8::from_str_radix(&t[2 * i..2 * i + 2], 16).unwrap_or(0))
+                        .collect::<Vec<u8>>()
+                };
+                let (mut bad, mut n) = (Vec::new(), 0);
+                for c in cases.get("valid").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+                    let (plain, coded) = (hex(&c, "plain"), hex(&c, "coded"));
+                    let mut enc = Vec::new();
+                    crate::predict::zr_encode(&plain, crate::predict::ZrSabotage::None, &mut enc);
+                    let mut dec = Vec::new();
+                    let r = crate::predict::zr_decode(&coded, plain.len(), &mut dec, &|| "case".into());
+                    if enc != coded || r.is_err() || dec != plain {
+                        bad.push(s(&c, "coded"));
+                    }
+                    n += 1;
+                }
+                for c in cases.get("invalid").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+                    let len = c.get("length").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let mut dec = Vec::new();
+                    let r = crate::predict::zr_decode(&hex(&c, "coded"), len, &mut dec, &|| "case".into());
+                    if r.err().map(|e| e.code) != Some(c.get("code").and_then(|x| x.as_str()).unwrap_or("")) {
+                        bad.push(s(&c, "coded"));
+                    }
+                    n += 1;
+                }
+                self.ok(
+                    bad.is_empty() && n > 0,
+                    format!("{zr_file}: the {n} token cases encode and decode as listed"),
+                    bad.join(", "),
+                );
+            }
+            None => self.ok(false, "golden-13 has zero-runs.json", "missing"),
+        }
         // Sabotage no-predict-reset (decoder): each listed file fails predict-check at its seq.
         if !self.opts.no_predict_reset {
             if let Some(nr) = sab.get("no-predict-reset") {

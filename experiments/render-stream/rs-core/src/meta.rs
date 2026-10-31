@@ -4265,7 +4265,15 @@ pub fn decode_record_with(
         };
         bufs.descs.clear();
         bufs.descs.extend_from_slice(&tx.blocks);
-        wire::read_blocks(record, &frame, &tx.blocks, &names, offset, &mut bufs.blocks)?;
+        wire::read_blocks(
+            record,
+            &frame,
+            &tx.blocks,
+            &names,
+            offset,
+            version >= 13,
+            &mut bufs.blocks,
+        )?;
         return Ok(Decoded::Transaction);
     }
     if !printable_ascii(frame.meta) {
@@ -4311,7 +4319,16 @@ pub fn decode_record_with(
         }
     };
     let descs = std::mem::take(&mut bufs.descs);
-    let r = wire::read_blocks(record, &frame, &descs, &names, offset, &mut bufs.blocks);
+    let zero_runs = version >= 13 && matches!(decoded, Decoded::Transaction);
+    let r = wire::read_blocks(
+        record,
+        &frame,
+        &descs,
+        &names,
+        offset,
+        zero_runs,
+        &mut bufs.blocks,
+    );
     bufs.descs = descs;
     r?;
     let mut decoded = decoded;

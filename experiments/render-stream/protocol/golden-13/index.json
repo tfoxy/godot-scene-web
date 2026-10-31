@@ -6,21 +6,21 @@
       "file": "full.rs13",
       "hex": "full.hex",
       "decoded": "full.decoded.json",
-      "sha256": "f56847d9c10394aa6f84d395ec27f6e39084279bf63f3f8632dc0a34b251887b",
+      "sha256": "a26c7b21afaddfe9c098ace08857a4b998c7a28acf0e12509cf5c781683758d8",
       "rs12": "../golden-12/full.rs12"
     },
     {
       "file": "patch.rs13",
       "hex": "patch.hex",
       "decoded": "patch.decoded.json",
-      "sha256": "a51dbddb1b6b901989b567de8e3af813a1ea212117be90812be94e4795bb22de",
+      "sha256": "7a54315ce3da03720bdead07a77f2df87705c087eca081420a758f199cdce0b0",
       "rs12": "../golden-12/patch.rs12"
     },
     {
       "file": "inline.rs13",
       "hex": "inline.hex",
       "decoded": "inline.decoded.json",
-      "sha256": "7f5e2905cd61b3f253ff1e731b410a5f97fa2442e930e9c3263dd2d835b7b9ec",
+      "sha256": "dd79d9379187796321f66734bea40fb3dce05466e84f090f9f14a29815d2131d",
       "rs12": "../golden-12/inline.rs12"
     }
   ],
@@ -30,7 +30,7 @@
     "hex": "predict.hex",
     "decoded": "predict.decoded.json",
     "resolved": "predict-resolved.json",
-    "sha256": "47dcc9b1c6755fa764b1819d87ab0dac414b0e423333cbd9a3c5c83bb552ebd7",
+    "sha256": "3d8677152ee0741eba84fa6aefcd76b65f24508f8de6505300fe12ab3d4741ca",
     "rs12": "predict.rs12",
     "rs12_sha256": "db67180a66780e079401b38d31211fd63a2d1b62920cd4e07cc6dd7d263a5759",
     "fulls": [
@@ -540,11 +540,30 @@
       }
     ]
   },
+  "zero_runs": {
+    "file": "zero-runs.json",
+    "min_run": 4,
+    "blocks": [
+      "mesh_f32",
+      "mesh_u8",
+      "mm_f32"
+    ]
+  },
   "sabotage": {
     "predict-stale": {
       "vector": "invalid/predict-stale.rs13",
       "code": "predict-check",
       "seq": 2
+    },
+    "zr-overrun": {
+      "vector": "invalid/zr-overrun.rs13",
+      "code": "zr-length",
+      "seq": 1
+    },
+    "zr-short-run": {
+      "vector": "invalid/zr-short-run.rs13",
+      "code": "zr-noncanonical",
+      "seq": 1
     },
     "no-predict-reset": {
       "code": "predict-check",
@@ -660,6 +679,55 @@
       "version": 13,
       "seq": 3,
       "description": "predict.rs13 seq 3, multimesh 1's buffer_f is 7, the running count 6: mm_f32 passes through as /12 carries it"
+    },
+    {
+      "file": "invalid/zr-overrun.rs13",
+      "code": "zr-length",
+      "version": 13,
+      "seq": 1,
+      "description": "the zr-overrun writer sabotage over predict.rs12: each transaction's first zero run is one zero too long, so its tokens pass the plain length; seq 1 is the first"
+    },
+    {
+      "file": "invalid/zr-short-run.rs13",
+      "code": "zr-noncanonical",
+      "version": 13,
+      "seq": 1,
+      "description": "the zr-short-run writer sabotage over predict.rs12: each transaction's first 3-byte zero run is elided as a token"
+    },
+    {
+      "file": "invalid/zr-truncated.rs13",
+      "code": "zr-length",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_u8's token stream lacks its last byte (it ends short)"
+    },
+    {
+      "file": "invalid/zr-trailing.rs13",
+      "code": "zr-length",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_u8's token stream has one byte after the plain length is covered"
+    },
+    {
+      "file": "invalid/zr-overlong.rs13",
+      "code": "zr-noncanonical",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_f32's first token codes its zero count in two bytes (not minimal)"
+    },
+    {
+      "file": "invalid/zr-literal-run.rs13",
+      "code": "zr-noncanonical",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mm_f32's first zero-run token is merged into the previous literal (a literal holds four or more zero bytes)"
+    },
+    {
+      "file": "invalid/zr-split-run.rs13",
+      "code": "zr-noncanonical",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_u8's first zero-run token is split in two: an empty literal before a zero run"
     },
     {
       "file": "invalid/g12-pt-offset-wrong.rs13",
@@ -1003,7 +1071,7 @@
           "rs_tag"
         ]
       },
-      "sha256": "dd8b809ee50f5c95d4e5794f4e4b182a6b75d87d5bccdfeca6be6f5b90c264cf",
+      "sha256": "39180ebfeb49b0e2428f91d881a16075686c6809af33a04e62d0af11511fb912",
       "rs12": "../golden-12/patch.rs12",
       "dump": {
         "grant": {

@@ -374,13 +374,15 @@ async function liveLegOf(root: string, leg: string) {
  *   resyncs with reason coding, drops the patches before the full, ends ok, and its final shot
  *   equals the honest /13 leg's pixel for pixel (the pixel check);
  * - `gsw13-no-predict-reset-caught`: the receiver sabotage no-predict-reset fails that pixel
- *   check (the resync's full fails predict-check too, so the picture never catches up).
+ *   check (the resync's full fails predict-check too, so the picture never catches up);
+ * - `gsw13-zr-resync` (W13r): `gsw13-predict-resync`'s check under the host's zr-overrun (GSW
+ *   fails zr-length).
  */
 export async function runG8w11cGsw13(root: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
   const honestDir = join(root, "gsw13-honest");
   if (!existsSync(honestDir)) {
-    return ["gsw13-predict-resync", "gsw13-no-predict-reset-caught"].map(
+    return ["gsw13-predict-resync", "gsw13-no-predict-reset-caught", "gsw13-zr-resync"].map(
       (id) => ({
         id,
         criterion:
@@ -395,11 +397,17 @@ export async function runG8w11cGsw13(root: string): Promise<G8aCheck[]> {
   const honest = await liveLegOf(root, "gsw13-honest");
   const lastFrame = (a: LiveLeg | null | undefined) =>
     a?.transactions.at(-1)?.frame ?? null;
-  {
-    const id = "gsw13-predict-resync";
-    const criterion =
-      "W13c: under the host's predict-stale a coded GSW receiver at /13 fails predict-check, resyncs (reason coding), drops the patches before the full, ends ok, and its final shot equals the honest /13 leg's pixel for pixel";
-    const v = await liveLegOf(root, "gsw13-predict-stale");
+  // W13r: the host's zr-overrun is judged as predict-stale is (GSW fails zr-length instead).
+  for (const [id, leg, what] of [
+    ["gsw13-predict-resync", "gsw13-predict-stale", "W13c: under the host's predict-stale a coded GSW receiver at /13 fails predict-check"],
+    ["gsw13-zr-resync", "gsw13-zr-overrun", "W13r: under the host's zr-overrun a coded GSW receiver at /13 fails zr-length"],
+  ] as const) {
+    const criterion = `${what}, resyncs (reason coding), drops the patches before the full, ends ok, and its final shot equals the honest /13 leg's pixel for pixel`;
+    if (!existsSync(join(root, leg))) {
+      checks.push({ id, criterion, passed: true, status: "not-run" as const, detail: `no ${leg} leg in this run`, gating: false });
+      continue;
+    }
+    const v = await liveLegOf(root, leg);
     const problems: string[] | null = v && honest ? [] : null;
     let detail = "";
     if (v && honest && problems) {

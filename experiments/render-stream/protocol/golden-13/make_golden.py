@@ -585,6 +585,154 @@ def check_hex(blocks12: dict[str, bytes]) -> str:
     return f"{xxh64(data):016x}"
 
 
+# --------------------------------------------------------------------------- zero runs (W13r)
+#
+# The compact residual (render-stream-13.md "As built (W13r)"): each of mesh_u8, mesh_f32 and
+# mm_f32 carries its W13a coded bytes C (the plain length L = the descriptor's count x width) as
+# tokens `uvarint zeros, uvarint n, n literal bytes`, which expand to `zeros` zero bytes then the
+# literal, until L is covered. Canonical form: every maximal run of ZR_MIN or more zero bytes of C
+# is one token's `zeros`, whole; every other byte is literal; a token starts at each such run (and
+# the first at the block's start when C does not start with one). So the first token's `zeros` is
+# 0 or >= ZR_MIN and every later one >= ZR_MIN; only a last token whose run reaches L has n = 0;
+# uvarints are minimal (unsigned LEB128). L = 0 is the empty stream.
+
+ZR_MIN = 4
+PREDICTED = ("mesh_u8", "mesh_f32", "mm_f32")
+TYPE_WIDTH = {"u8": 1, "i32": 4, "f32": 4, "f64": 8}
+
+
+def uvarint(v: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def zr_encode(c: bytes, *, sabotage: str | None = None) -> bytes:
+    """Canonical tokens of `c`. sabotage "overrun": the first zero run one zero too long (the
+    writer emits one zero too many); "short-run": the first 3-byte zero run elided too."""
+    runs, k, n = [], 0, len(c)
+    short_done = False
+    while k < n:
+        if c[k] != 0:
+            k += 1
+            continue
+        j = k
+        while j < n and c[j] == 0:
+            j += 1
+        if j - k >= ZR_MIN or (sabotage == "short-run" and not short_done and j - k == 3):
+            if j - k == 3:
+                short_done = True
+            runs.append((k, j))
+        k = j
+    out = bytearray()
+    extra = 1 if sabotage == "overrun" else 0
+    if runs and runs[0][0] > 0 or not runs and n > 0:
+        end = runs[0][0] if runs else n
+        out += uvarint(0) + uvarint(end) + c[:end]
+    for i, (a, b) in enumerate(runs):
+        end = runs[i + 1][0] if i + 1 < len(runs) else n
+        out += uvarint(b - a + extra) + uvarint(end - b) + c[b:end]
+        extra = 0
+    return bytes(out)
+
+
+def _read_uvarint(s: bytes, p: int, block: str) -> tuple[int, int, bool]:
+    """(value, next position, minimal). Raises zr-length when the stream ends inside it or it
+    has more than 10 bytes."""
+    v, shift, start = 0, 0, p
+    while True:
+        if p >= len(s) or p - start >= 10:
+            raise DecodeError("zr-length", f"{block}: a uvarint runs past the token stream")
+        b = s[p]
+        p += 1
+        v |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return v, p, p - start == 1 or b != 0
+
+
+def zr_decode(s: bytes, length: int, block: str = "block") -> bytes:
+    """The plain bytes of a token stream that must cover exactly `length`. zr-length when it does
+    not (a token passes the length, or the stream ends short or long), whatever else is wrong;
+    else zr-noncanonical at the first token that breaks the canonical form."""
+    out = bytearray()
+    p, i = 0, 0
+    bad = None
+    while len(out) < length:
+        z, p, ok_z = _read_uvarint(s, p, block)
+        if z > length - len(out):
+            raise DecodeError("zr-length", f"{block}: token #{i}'s zero run passes the plain length")
+        n, p, ok_n = _read_uvarint(s, p, block)
+        if n > length - len(out) - z:
+            raise DecodeError("zr-length", f"{block}: token #{i}'s literal passes the plain length")
+        if p + n > len(s):
+            raise DecodeError("zr-length", f"{block}: token #{i}'s literal runs past the stream")
+        lit = s[p:p + n]
+        p += n
+        last = len(out) + z + n == length
+        if bad is None:
+            if not (ok_z and ok_n):
+                bad = f"token #{i}: a uvarint is not minimal"
+            elif (0 < z < ZR_MIN) or (z == 0 and i > 0):
+                bad = f"token #{i}: a zero run of {z}B"
+            elif n == 0 and (z == 0 or not last):
+                bad = f"token #{i}: an empty literal"
+            elif b"\x00" * ZR_MIN in lit:
+                bad = f"token #{i}: a literal holds a run of ZR_MIN zero bytes"
+            elif z > 0 and lit[:1] == b"\x00":
+                bad = f"token #{i}: its literal starts with a zero byte"
+            elif not last and lit[-1:] == b"\x00":
+                bad = f"token #{i}: its literal ends with a zero byte before a zero run"
+        out += bytes(z) + lit
+        i += 1
+    if p != len(s):
+        raise DecodeError("zr-length", f"{block}: bytes follow once the plain length is covered")
+    if bad is not None:
+        raise DecodeError("zr-noncanonical", f"{block}: {bad}")
+    return bytes(out)
+
+
+def _plain_len(meta: dict, name: str) -> int:
+    for d in meta.get("blocks", []):
+        if d.get("name") == name:
+            return int(d["count"]) * TYPE_WIDTH[d["type"]]
+    raise KeyError(name)
+
+
+def zr_blocks(named: dict[str, bytes], *, sabotage: str | None = None) -> dict[str, bytes]:
+    """The three predicted blocks of `named` (W13a coded bytes) as token streams. A sabotage acts
+    on the first block it can (one with a zero run; for short-run, one with a 3-byte run)."""
+    out = dict(named)
+    done = False
+    for name in ("mesh_f32", "mesh_u8", "mm_f32"):
+        if name not in named:
+            continue
+        plain = named[name]
+        s = zr_encode(plain)
+        if sabotage and not done:
+            bad = zr_encode(plain, sabotage=sabotage)
+            if bad != s:
+                s, done = bad, True
+        out[name] = s
+    return out
+
+
+def unzr_blocks(meta: dict, named: dict[str, bytes], seq) -> dict[str, bytes]:
+    """The W13a coded bytes of the three predicted blocks, in descriptor order."""
+    out = dict(named)
+    for d in meta.get("blocks", []):
+        name = d.get("name")
+        if name in PREDICTED and name in named:
+            out[name] = zr_decode(named[name], _plain_len(meta, name), f"seq {seq}: {name}")
+    return out
+
+
 # --------------------------------------------------------------------------- records
 
 def split_records(data: bytes, magic: bytes) -> list[bytes]:
@@ -671,8 +819,10 @@ def _rebuild_blocks(meta: dict, blocks: list[bytes], named: dict[str, bytes]) ->
     return [named.get(d["name"], b) for d, b in zip(meta.get("blocks", []), blocks)]
 
 
-def to13(data12: bytes, *, stale: bool = False, trace: list | None = None) -> bytes:
-    """Transcode a /12 file to /13 (the reference encoder). stale: the predict-stale sabotage."""
+def to13(data12: bytes, *, stale: bool = False, trace: list | None = None,
+         zr_sabotage: str | None = None) -> bytes:
+    """Transcode a /12 file to /13 (the reference encoder). stale: the predict-stale sabotage.
+    zr_sabotage: "overrun" or "short-run" (W13r's writer sabotages, zr_encode)."""
     hist = History()
     out: list[bytes] = []
     seen: list[bytes] = []
@@ -686,7 +836,8 @@ def to13(data12: bytes, *, stale: bool = False, trace: list | None = None) -> by
             named = _named_blocks(meta, blocks)
             h1, h2 = hist.refs(meta, stale=stale)
             tt: list | None = [] if trace is not None else None
-            coded = code_blocks(meta, named, h1, h2, inverse=False, trace=tt)
+            coded = zr_blocks(code_blocks(meta, named, h1, h2, inverse=False, trace=tt),
+                              sabotage=zr_sabotage)
             if trace is not None:
                 trace.append({"seq": meta.get("seq"), "units": tt})
             out.append(make_record(with_check(meta_b, check_hex(named)),
@@ -716,7 +867,7 @@ def to12(data13: bytes, *, no_reset: bool = False) -> bytes:
             plain, check = without_check(meta_b)
             if check is None or any(c not in "0123456789abcdef" for c in check):
                 raise DecodeError("meta-schema", f"seq {meta.get('seq')}: predict_check")
-            named = _named_blocks(meta, blocks)
+            named = unzr_blocks(meta, _named_blocks(meta, blocks), meta.get("seq"))
             h1, h2 = hist.refs(meta, no_reset=no_reset)
             decoded = code_blocks(meta, named, h1, h2, inverse=True)
             if check_hex(decoded) != check:
@@ -740,7 +891,8 @@ def decode(data13: bytes) -> dict:
     values (un-predicted), its metas verbatim (predict_check included)."""
     recs13 = split_records(data13, MAGIC)
     recs12 = split_records(to12(data13), MAGIC_V12)
-    # The un-predicted blocks, in the /13 file's own framing (equal block lengths).
+    # The un-predicted blocks in the /13 file's framing (W13r: the predicted blocks' lengths
+    # differ, so the offsets and lengths are set from the /13 records below).
     rebuilt = []
     for r13, r12 in zip(recs13, recs12):
         meta_b, blocks13 = parse_record(r13)
@@ -755,8 +907,12 @@ def decode(data13: bytes) -> dict:
         out = g6.decode(MAGIC + b"".join(rebuilt))
     finally:
         g6.MAGIC = saved
+    at = len(MAGIC)
     for rec, r13 in zip(out["records"], recs13):
         rec["sha256"] = hashlib.sha256(r13).hexdigest()
+        rec["offset"] = at
+        rec["byte_length"] = len(r13)
+        at += len(r13)
     out["schema"] = "render-stream-13-decoded/1"
     return out
 
@@ -918,15 +1074,20 @@ def _tx_index(recs: list[bytes], seq: int) -> int:
     raise KeyError(seq)
 
 
-def _edit_tx(data13: bytes, seq: int, fn) -> bytes:
+def _edit_tx(data13: bytes, seq: int, fn, *, tokens: bool = False) -> bytes:
     """Apply fn(meta bytes, named blocks) -> (meta bytes, named blocks) to one transaction of a
-    /13 file; the end record's stats follow."""
+    /13 file; the end record's stats follow. fn sees the predicted blocks as W13a coded bytes
+    (zero runs expanded, and coded again after it), or as the token streams when `tokens`."""
     recs = _records13(data13)
     i = _tx_index(recs, seq)
     meta_b, blocks = parse_record(recs[i])
     meta = json.loads(meta_b)
     named = _named_blocks(meta, blocks)
-    meta_b2, named2 = fn(meta_b, dict(named))
+    if tokens:
+        meta_b2, named2 = fn(meta_b, dict(named))
+    else:
+        meta_b2, named2 = fn(meta_b, unzr_blocks(meta, named, seq))
+        named2 = zr_blocks(named2)
     recs[i] = make_record(meta_b2, _rebuild_blocks(meta, blocks, named2))
     end_meta_b, end_blocks = parse_record(recs[-1])
     if json.loads(end_meta_b).get("type") == "end":
@@ -1004,6 +1165,42 @@ def _first_fail(data13: bytes, **kw) -> tuple[str, int | None]:
     return "pass", None
 
 
+def _tokens(s: bytes) -> list[tuple[int, bytes]]:
+    """(zeros, literal) of a canonical token stream."""
+    out, p = [], 0
+    while p < len(s):
+        z, p, _ = _read_uvarint(s, p, "tokens")
+        n, p, _ = _read_uvarint(s, p, "tokens")
+        out.append((z, s[p:p + n]))
+        p += n
+    return out
+
+
+def _join(tokens: list[tuple[int, bytes]]) -> bytes:
+    return b"".join(uvarint(z) + uvarint(len(lit)) + lit for z, lit in tokens)
+
+
+def _overlong_first(s: bytes) -> bytes:
+    t = _tokens(s)
+    z, lit = t[0]
+    assert z < 0x80
+    return bytes([z | 0x80, 0x00]) + uvarint(len(lit)) + lit + _join(t[1:])
+
+
+def _literal_run(s: bytes) -> bytes:
+    t = _tokens(s)
+    k = next(i for i, (z, _l) in enumerate(t) if i > 0 and z >= ZR_MIN)
+    merged = (t[k - 1][0], t[k - 1][1] + bytes(t[k][0]) + t[k][1])
+    return _join(t[:k - 1] + [merged] + t[k + 1:])
+
+
+def _split_run(s: bytes) -> bytes:
+    t = _tokens(s)
+    k = next(i for i, (z, _l) in enumerate(t) if z >= 2 * ZR_MIN and t[i][1])
+    z, lit = t[k]
+    return _join(t[:k] + [(ZR_MIN, b""), (z - ZR_MIN, lit)] + t[k + 1:])
+
+
 def build_invalid_vectors(predict13: bytes, patch13: bytes) -> dict[str, tuple[bytes, str, str, int, int | None]]:
     """name -> (bytes, code, description, version, seq). Every vector fails one rule."""
     out: dict[str, tuple[bytes, str, str, int, int | None]] = {}
@@ -1060,10 +1257,40 @@ def build_invalid_vectors(predict13: bytes, patch13: bytes) -> dict[str, tuple[b
         m12, b12 = parse_record(recs12[i])
         m13, b13 = parse_record(recs13[i])
         names = [d["name"] for d in json.loads(m12)["blocks"]]
-        assert b13[names.index(block)] == b12[names.index(block)], name  # passed through
+        assert zr_decode(b13[names.index(block)], len(b12[names.index(block)])) == \
+            b12[names.index(block)], name  # passed through
         assert to12(bad13) == bad12, name
         out[name] = (bad13, code, f"predict.rs13 seq 3, {desc}: {block} passes through as /12 "
                                   f"carries it", 13, 3)
+    # W13r: the zero runs. The two writer sabotages over predict.rs12, then token-level edits of
+    # predict.rs13 (each to one block of one transaction).
+    out["zr-overrun"] = (
+        to13(predict12, zr_sabotage="overrun"), "zr-length",
+        "the zr-overrun writer sabotage over predict.rs12: each transaction's first zero run is "
+        "one zero too long, so its tokens pass the plain length; seq 1 is the first", 13, 1)
+    short = to13(predict12, zr_sabotage="short-run")
+    out["zr-short-run"] = (
+        short, "zr-noncanonical",
+        "the zr-short-run writer sabotage over predict.rs12: each transaction's first 3-byte zero "
+        "run is elided as a token", 13, _first_fail(short)[1])
+    for name, code, seq, block, fn, desc in (
+            ("zr-truncated", "zr-length", 2, "mesh_u8", lambda s: s[:-1],
+             "mesh_u8's token stream lacks its last byte (it ends short)"),
+            ("zr-trailing", "zr-length", 2, "mesh_u8", lambda s: s + b"\x01",
+             "mesh_u8's token stream has one byte after the plain length is covered"),
+            ("zr-overlong", "zr-noncanonical", 2, "mesh_f32", _overlong_first,
+             "mesh_f32's first token codes its zero count in two bytes (not minimal)"),
+            ("zr-literal-run", "zr-noncanonical", 2, "mm_f32", _literal_run,
+             "mm_f32's first zero-run token is merged into the previous literal (a literal "
+             "holds four or more zero bytes)"),
+            ("zr-split-run", "zr-noncanonical", 2, "mesh_u8", _split_run,
+             "mesh_u8's first zero-run token is split in two: an empty literal before a "
+             "zero run")):
+        def edit(meta_b, named, block=block, fn=fn):
+            named[block] = fn(named[block])
+            return meta_b, named
+        out[name] = (_edit_tx(predict13, seq, edit, tokens=True), code,
+                     f"predict.rs13 seq {seq}: {desc}", 13, seq)
     # golden-12's invalid vectors transcoded: each keeps its /12 code.
     index12 = json.loads((GOLDEN12 / "index.json").read_text())
     for entry in index12["invalid"]:
@@ -1425,6 +1652,58 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def zero_run_cases() -> dict:
+    """zero-runs.json: the token format alone, for each implementation's unit tests. `valid`: a
+    plain buffer and its canonical tokens; `invalid`: a token stream, the plain length it must
+    cover, and the code (render-stream-13.md "As built (W13r)")."""
+    plains = [
+        b"", b"\x00", b"\x00\x00\x00", b"\x00" * 4, b"\x00" * 5, b"\x07", b"a\x00\x00\x00b",
+        b"a\x00\x00\x00\x00b", b"\x00\x00\x00\x00ab", b"ab\x00\x00\x00\x00",
+        b"ab\x00\x00\x00", b"\x00\x00\x00a\x00\x00\x00\x00\x00b\x00\x00c\x00\x00\x00\x00",
+        b"\x00" * 127, b"\x00" * 128, b"\x00" * 300 + b"x", b"y" * 200,
+        b"\x01" + b"\x00" * 16384 + b"\x02" * 130 + b"\x00" * 4,
+        bytes(range(256)) * 2 + b"\x00" * 7 + bytes([0, 1, 0, 0, 2, 0, 0, 0, 3]),
+    ]
+    valid = []
+    for p in plains:
+        s = zr_encode(p)
+        assert zr_decode(s, len(p)) == p
+        valid.append({"plain": p.hex(), "coded": s.hex()})
+    raw = [
+        ("", 1, "zr-length", "an empty stream for one byte"),
+        ("00", 1, "zr-length", "the stream ends inside the first token"),
+        ("0080", 1, "zr-length", "the stream ends inside a uvarint"),
+        ("000161", 0, "zr-length", "a token for a zero-length block"),
+        ("050100", 5, "zr-length", "zeros and literal pass the plain length"),
+        ("0002ab", 3, "zr-length", "the stream ends inside a literal"),
+        ("0001ab0400", 1, "zr-length", "a token after the plain length is covered"),
+        ("06", 5, "zr-length", "a zero run passes the plain length"),
+        ("ffffffffffffffffffff01", 4, "zr-length", "a uvarint of more than ten bytes"),
+        ("0300", 3, "zr-noncanonical", "a 3-byte zero run elided"),
+        ("010161", 2, "zr-noncanonical", "a first token with a 1-byte zero run"),
+        ("0000040161", 5, "zr-noncanonical", "an empty first token"),
+        ("800001610400", 5, "zr-noncanonical", "a first token whose zero count takes two bytes"),
+        ("00810001", 1, "zr-noncanonical", "a literal length in two bytes"),
+        ("000161000162", 2, "zr-noncanonical", "a later token with no zero run"),
+        ("00066100000000 62".replace(" ", ""), 6, "zr-noncanonical", "a literal holding four zero bytes"),
+        ("040200610400", 10, "zr-noncanonical", "a literal that starts with a zero byte"),
+        ("00026100040162", 7, "zr-noncanonical", "a literal ending in a zero byte before a run"),
+        ("04000401 62".replace(" ", ""), 9, "zr-noncanonical", "an empty literal before a run"),
+        ("0300ff", 3, "zr-length", "a length error wins over a non-canonical token before it"),
+    ]
+    invalid = []
+    for s, n, code, desc in raw:
+        try:
+            zr_decode(bytes.fromhex(s), n)
+            got = "pass"
+        except DecodeError as e:
+            got = e.code
+        assert got == code, (s, n, code, got)
+        invalid.append({"coded": s, "length": n, "code": code, "description": desc})
+    return {"schema": "render-stream-13-zero-runs/1", "min_run": ZR_MIN, "valid": valid,
+            "invalid": invalid}
+
+
 def build() -> dict[str, bytes]:
     full12 = (GOLDEN12 / "full.rs12").read_bytes()
     patch12 = (GOLDEN12 / "patch.rs12").read_bytes()
@@ -1480,9 +1759,14 @@ def build() -> dict[str, bytes]:
                     "sha256": _sha256(predict13), "rs12": "predict.rs12",
                     "rs12_sha256": _sha256(predict12), "fulls": list(PREDICT_FULLS)},
         "predict_trace": traces,
+        "zero_runs": {"file": "zero-runs.json", "min_run": ZR_MIN,
+                      "blocks": ["mesh_f32", "mesh_u8", "mm_f32"]},
         "sabotage": {
             "predict-stale": {"vector": "invalid/predict-stale.rs13", "code": "predict-check",
                               "seq": 2},
+            "zr-overrun": {"vector": "invalid/zr-overrun.rs13", "code": "zr-length", "seq": 1},
+            "zr-short-run": {"vector": "invalid/zr-short-run.rs13", "code": "zr-noncanonical",
+                             "seq": invalid["zr-short-run"][4]},
             "no-predict-reset": {"code": "predict-check",
                                  "fails": [{"file": "predict.rs13", "seq": 7},
                                            {"file": "patch.rs13", "seq": no_reset_patch_seq}]},
@@ -1532,6 +1816,7 @@ def build() -> dict[str, bytes]:
     outputs["predict-resolved.json"] = g6.pretty(resolved(PREDICT_STATES))
     outputs["corrupt-meta.rs13"] = bytes(corrupt)
     outputs["index.json"] = g6.pretty(index)
+    outputs["zero-runs.json"] = g6.pretty(zero_run_cases())
     for name, (data, _, _, version, _seq) in invalid.items():
         outputs[f"invalid/{name}.rs{version}"] = data
     outputs["item-meta.rs13"] = item_meta13

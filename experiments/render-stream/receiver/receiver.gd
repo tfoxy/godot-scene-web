@@ -335,6 +335,9 @@ const SCHEMA: String = "render-stream-receiver-applied/7"
 const EXIT_OK: int = 0
 const EXIT_USAGE: int = 2
 const EXIT_REPLAY_FAILURE: int = 3
+# render-stream-13.md "Decoding and check order": the /13 codes a live receiver resyncs on (reason
+# `coding`): predict-check (W13d) and the zero-run codes (W13r).
+const _CODING_CODES_13: Array[String] = ["predict-check", "zr-length", "zr-noncanonical"]
 ## RS_RECEIVER_SABOTAGE's accepted values (gate2-design.md Q5, gate3-design.md Q5, G3b,
 ## gate4-design.md Q5, G4e2, gate5-design.md Q5, G5d, G5g, G5e, gate5_5-design.md Q5, G55d,
 ## gate6-design.md Q6h, G6a).
@@ -2332,10 +2335,11 @@ func _receive_binary(message: PackedByteArray) -> void:
 		var seq: Variant = null
 		if kind == "transaction" or kind == "":
 			seq = RsWire.as_int(meta["seq"]) if RsWire.is_int(meta.get("seq")) else expected_seq
-		if _wire_version >= 13 and RsWire.code_of(errors[0]) == "predict-check" and seq != null:
+		if _wire_version >= 13 and RsWire.code_of(errors[0]) in _CODING_CODES_13 and seq != null:
 			# W13d (render-stream-13.md "Decoding and check order"): the reconstructed blocks
-			# missed `predict_check`, so the core applied nothing; resync as W11t's coding does
-			# (reason `coding`), and the core holds every patch until the full transaction.
+			# missed `predict_check` (W13r: or a block's zero runs failed), so the core applied
+			# nothing; resync as W11t's coding does (reason `coding`), and the core holds every
+			# patch until the full transaction.
 			_predict_resyncs += 1
 			_coding_resyncs += 1
 			_applier.transport_skip()

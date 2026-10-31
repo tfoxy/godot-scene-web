@@ -1551,9 +1551,11 @@ impl GswRs {
         let code = self.accept_bytes(true, 0, byte_length, offset, index);
         if code < 0 {
             // W13c (render-stream-13.md "Decoding and check order"): a /13 transaction whose
-            // reconstructed blocks miss `predict_check` applied nothing; the caller resyncs it with
-            // reason `coding`, and the patches before the full are dropped here.
-            if self.version >= 13 && self.error.starts_with("predict-check") {
+            // reconstructed blocks miss `predict_check` (W13r: or whose zero runs fail) applied
+            // nothing; the caller resyncs it with reason `coding`, and the patches before the
+            // full are dropped here.
+            let err = self.error.split(':').next().unwrap_or("");
+            if self.version >= 13 && render_stream_core::predict::is_coding_error(err) {
                 self.predict_await_full = true;
                 self.predict_failures += 1;
             }

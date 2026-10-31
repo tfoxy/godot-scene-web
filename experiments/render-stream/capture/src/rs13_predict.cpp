@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 
 #include <cstdlib>
@@ -584,6 +585,20 @@ void to_typed(const Meta &meta, PredictMeta *out) {
                                    : BlockName::Other;
       }
       out->blocks.push_back(n);
+      // W13r: the plain length, make_golden.py _plain_len().
+      const JValue &type = at(b, "type");
+      const MetaNum count = num_of(at(b, "count"));
+      std::int64_t width = 0;
+      if (type.kind == JValue::Kind::Str) {
+        width = type.s == "u8" ? 1 : type.s == "f64" ? 8 : type.s == "f32" || type.s == "i32" ? 4 : 0;
+      }
+      std::int64_t c = -1;
+      if (!count.as_int(&c) && count.kind == MetaNum::Kind::Float && count.d >= 0 &&
+          count.d <= 1e12 && count.d == std::floor(count.d)) {
+        c = static_cast<std::int64_t>(count.d);
+      }
+      out->block_bytes.push_back(width != 0 && c >= 0 && c <= (std::int64_t{1} << 40) ? c * width
+                                                                                      : -1);
     }
   }
 }
@@ -1553,9 +1568,217 @@ const char *to_wire(Status status) {
   case Status::MetaJson: return "meta-json";
   case Status::MetaSchema: return "meta-schema";
   case Status::PredictCheck: return "predict-check";
+  case Status::ZrLength: return "zr-length";
+  case Status::ZrNoncanonical: return "zr-noncanonical";
   }
   return "ok";
 }
+
+// --------------------------------------------------------------------------- zero runs (W13r)
+
+namespace {
+
+std::uint8_t *put_uvarint(std::uint8_t *w, std::uint64_t v) {
+  while (v >= 0x80) {
+    *w++ = static_cast<std::uint8_t>(v | 0x80);
+    v >>= 7;
+  }
+  *w++ = static_cast<std::uint8_t>(v);
+  return w;
+}
+
+std::uint8_t *put_token(std::uint8_t *w, std::uint64_t zeros, const std::uint8_t *lit,
+                        std::size_t n) {
+  w = put_uvarint(w, zeros);
+  w = put_uvarint(w, n);
+  if (n != 0) {
+    std::memcpy(w, lit, n);
+  }
+  return w + n;
+}
+
+#if defined(__SSE2__)
+GRC_RS13_INLINE std::uint32_t zero_mask16(const std::uint8_t *p) {
+  return static_cast<std::uint32_t>(_mm_movemask_epi8(
+      _mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p)), _mm_setzero_si128())));
+}
+#endif
+
+// The first maximal run of kZrMinRun or more zero bytes of c[p, n) as [*a, *b), given that p is
+// 0 or c[p] is not a zero inside a run that started before p (the end of the previous run). SSE2:
+// 32 bytes' zero mask a step, 29 run starts tested a step; the run's end 16 bytes a step.
+bool next_run(const std::uint8_t *c, std::size_t n, std::size_t p, std::size_t *a,
+              std::size_t *b) {
+  std::size_t s = n;
+#if defined(__SSE2__)
+  while (p + 32 <= n) {
+    const std::uint32_t m = zero_mask16(c + p) | (zero_mask16(c + p + 16) << 16);
+    const std::uint32_t q = m & (m >> 1) & (m >> 2) & (m >> 3) & 0x1FFFFFFFu;
+    if (q != 0) {
+      s = p + static_cast<std::size_t>(__builtin_ctz(q));
+      break;
+    }
+    p += 29;
+  }
+#endif
+  if (s == n) {
+    for (; p + kZrMinRun <= n; ++p) {
+      if ((c[p] | c[p + 1] | c[p + 2] | c[p + 3]) == 0) {
+        s = p;
+        break;
+      }
+    }
+    if (s == n) {
+      return false;
+    }
+  }
+  std::size_t e = s + kZrMinRun;
+#if defined(__SSE2__)
+  for (; e + 16 <= n; e += 16) {
+    const std::uint32_t m = zero_mask16(c + e);
+    if (m != 0xFFFFu) {
+      e += static_cast<std::size_t>(__builtin_ctz(~m));
+      *a = s;
+      *b = e;
+      return true;
+    }
+  }
+#endif
+  while (e < n && c[e] == 0) {
+    ++e;
+  }
+  *a = s;
+  *b = e;
+  return true;
+}
+
+// make_golden.py zr_encode() with a sabotage, plainly (tests and the sabotage legs only).
+std::size_t zr_encode_sabotaged(const std::uint8_t *c, std::size_t n, std::uint8_t *out,
+                                ZrSabotage sabotage) {
+  std::vector<std::pair<std::size_t, std::size_t>> runs;
+  bool short_done = false;
+  for (std::size_t k = 0; k < n;) {
+    if (c[k] != 0) {
+      ++k;
+      continue;
+    }
+    std::size_t j = k;
+    while (j < n && c[j] == 0) {
+      ++j;
+    }
+    const bool short_run = sabotage == ZrSabotage::ShortRun && !short_done && j - k == 3;
+    if (j - k >= kZrMinRun || short_run) {
+      short_done = short_done || short_run;
+      runs.emplace_back(k, j);
+    }
+    k = j;
+  }
+  std::uint8_t *w = out;
+  std::uint64_t extra = sabotage == ZrSabotage::Overrun ? 1 : 0;
+  if ((!runs.empty() && runs[0].first > 0) || (runs.empty() && n > 0)) {
+    const std::size_t end = runs.empty() ? n : runs[0].first;
+    w = put_token(w, 0, c, end);
+  }
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    const std::size_t end = i + 1 < runs.size() ? runs[i + 1].first : n;
+    w = put_token(w, runs[i].second - runs[i].first + extra, c + runs[i].second,
+                  end - runs[i].second);
+    extra = 0;
+  }
+  return static_cast<std::size_t>(w - out);
+}
+
+// A uvarint at in[*p, size): false when it runs past `size` or has more than 10 bytes (zr-length).
+// `minimal`: one byte, or a last byte that is not 0. A value past 2^64 saturates (it passes any
+// plain length, as make_golden.py's unbounded integer does).
+bool read_uvarint(const std::uint8_t *in, std::size_t size, std::size_t *p, std::uint64_t *v,
+                  bool *minimal) {
+  std::uint64_t value = 0;
+  bool over = false;
+  const std::size_t start = *p;
+  for (unsigned shift = 0;; shift += 7) {
+    if (*p >= size || *p - start >= 10) {
+      return false;
+    }
+    const std::uint8_t b = in[(*p)++];
+    const std::uint64_t bits = b & 0x7Fu;
+    if (shift < 64) {
+      if (shift > 0 && (bits >> (64 - shift)) != 0) {
+        over = true;
+      }
+      value |= bits << shift;
+    } else if (bits != 0) {
+      over = true;
+    }
+    if ((b & 0x80u) == 0) {
+      *v = over ? ~std::uint64_t{0} : value;
+      *minimal = *p - start == 1 || b != 0;
+      return true;
+    }
+  }
+}
+
+}  // namespace
+
+std::size_t zr_bound(std::size_t n) { return n + 32 + (n >> 19); }
+
+std::size_t zr_encode(const std::uint8_t *in, std::size_t n, std::uint8_t *out,
+                      ZrSabotage sabotage) {
+  if (sabotage != ZrSabotage::None) {
+    return zr_encode_sabotaged(in, n, out, sabotage);
+  }
+  std::uint8_t *w = out;
+  std::size_t lit = 0, zeros = 0, a = 0, b = 0;
+  while (next_run(in, n, lit, &a, &b)) {
+    if (a > lit || zeros != 0) {
+      w = put_token(w, zeros, in + lit, a - lit);
+    }
+    zeros = b - a;
+    lit = b;
+  }
+  if (n > lit || zeros != 0) {
+    w = put_token(w, zeros, in + lit, n - lit);
+  }
+  return static_cast<std::size_t>(w - out);
+}
+
+Status zr_decode(const std::uint8_t *in, std::size_t size, std::uint8_t *out,
+                 std::size_t length) {
+  std::size_t p = 0, at = 0;
+  bool bad = false;
+  for (std::size_t i = 0; at < length; ++i) {
+    std::uint64_t z = 0, n = 0;
+    bool min_z = true, min_n = true;
+    if (!read_uvarint(in, size, &p, &z, &min_z) || z > length - at ||
+        !read_uvarint(in, size, &p, &n, &min_n) || n > length - at - z || n > size - p) {
+      return Status::ZrLength;
+    }
+    const std::uint8_t *lit = in + p;
+    p += n;
+    const bool last = at + z + n == length;
+    if (!bad) {
+      bool four = false;
+      for (std::size_t k = 0, run = 0; k < n && !four; ++k) {
+        run = lit[k] == 0 ? run + 1 : 0;
+        four = run >= kZrMinRun;
+      }
+      bad = !min_z || !min_n || (z > 0 && z < kZrMinRun) || (z == 0 && i > 0) ||
+            (n == 0 && (z == 0 || !last)) || four || (z > 0 && n > 0 && lit[0] == 0) ||
+            (!last && n > 0 && lit[n - 1] == 0);
+    }
+    std::memset(out + at, 0, z);
+    at += z;
+    if (n != 0) {
+      std::memcpy(out + at, lit, n);
+    }
+    at += n;
+  }
+  if (p != size) {
+    return Status::ZrLength;
+  }
+  return bad ? Status::ZrNoncanonical : Status::Ok;
+}
+
 
 
 // --------------------------------------------------------------------------- PredictMeta
@@ -1571,6 +1794,7 @@ void PredictMeta::clear() {
   multimeshes.clear();
   removed_multimeshes.clear();
   blocks.clear();
+  block_bytes.clear();
 }
 
 bool PredictMeta::operator==(const PredictMeta &o) const {
@@ -1683,6 +1907,11 @@ struct Predictor::Scratch {
   std::vector<std::pair<std::int64_t, std::size_t>> f32;
   std::vector<MmLayout> mm;
   std::vector<std::uint8_t> dec_u8, dec_f32, dec_mm;  // the reader's reconstructed blocks
+  // W13r, grown only (no zero fill per transaction): the writer's W13a coded blocks and their
+  // tokens, the reader's expanded blocks; each indexed mesh_u8, mesh_f32, mm_f32.
+  std::array<std::vector<std::uint8_t>, 3> coded, tokens, expanded;
+  std::array<std::size_t, 3> token_len{};
+  std::vector<std::uint8_t> sabotaged;
   std::vector<Span> rebuilt;
   BytesPool pool;
   // W13f: the state that last left this predictor's history while someone else still held it
@@ -1906,79 +2135,16 @@ Status Predictor::encode_typed(const PredictMeta &meta, const std::uint8_t *reco
   const bool has_mm = named.mm >= 0 && mm.n % 4 == 0 && mm_layout(meta, mm.n / 4, &sc.mm);
   const std::uint64_t hash = check_of(sc.xxh, mf, u8, mm);
 
-  // The /13 record: the meta with `predict_check` before `,"blocks":[`, every block in place;
-  // each descriptor named like a coded block carries the coded bytes (_rebuild_blocks()).
-  auto coded_len = [&](std::size_t k) -> std::size_t {
-    const BlockName n = name_at(meta, k);
-    if (n == BlockName::MeshU8 && has_u8) {
-      return u8.n;
+  // W13a's coding of the three blocks, into scratch (W13r: the record carries their tokens).
+  auto room = [](std::vector<std::uint8_t> &v, std::size_t n) {
+    if (v.size() < n) {
+      v.resize(n);
     }
-    if (n == BlockName::MeshF32 && has_f32) {
-      return mf.n;
-    }
-    if (n == BlockName::MmF32 && has_mm) {
-      return mm.n;
-    }
-    return blocks[k].n;
+    return v.data();
   };
-  const std::size_t meta_len = meta_text.size() + kCheckKey.size() + 17;
-  std::size_t body = 4 + meta_len + 4;
-  for (std::size_t k = 0; k < blocks.size(); ++k) {
-    body += 4 + coded_len(k);
-  }
-  out->resize(4 + body);
-  std::uint8_t *w = out->data();
-  auto put = [&](std::uint32_t v) {
-    set_word(w, v);
-    w += 4;
-  };
-  auto put_bytes = [&](const void *p, std::size_t n) {
-    if (n != 0) {
-      std::memcpy(w, p, n);
-      w += n;
-    }
-  };
-  put(static_cast<std::uint32_t>(body));
-  put(static_cast<std::uint32_t>(meta_len));
-  put_bytes(meta_text.data(), mark);
-  put_bytes(kCheckKey.data(), kCheckKey.size());
-  const std::string hex = check_hex(hash);
-  put_bytes(hex.data(), 16);
-  *w++ = '"';
-  put_bytes(meta_text.data() + mark, meta_text.size() - mark);
-  put(static_cast<std::uint32_t>(blocks.size()));
-  std::uint8_t *coded_u8 = nullptr, *coded_f32 = nullptr, *coded_mm = nullptr;
-  std::vector<std::pair<std::uint8_t *, BlockName>> copies;  // duplicate names: copy after
-  for (std::size_t k = 0; k < blocks.size(); ++k) {
-    const std::size_t n = coded_len(k);
-    put(static_cast<std::uint32_t>(n));
-    const BlockName name = name_at(meta, k);
-    const int idx = static_cast<int>(k);
-    if (name == BlockName::MeshU8 && has_u8) {
-      if (idx == named.u8) {
-        coded_u8 = w;
-      } else {
-        copies.emplace_back(w, name);
-      }
-    } else if (name == BlockName::MeshF32 && has_f32) {
-      if (idx == named.f32) {
-        coded_f32 = w;
-      } else {
-        copies.emplace_back(w, name);
-      }
-    } else if (name == BlockName::MmF32 && has_mm) {
-      if (idx == named.mm) {
-        coded_mm = w;
-      } else {
-        copies.emplace_back(w, name);
-      }
-    } else {
-      put_bytes(blocks[k].p, n);
-      continue;
-    }
-    w += n;
-  }
-
+  std::uint8_t *coded_u8 = has_u8 ? room(sc.coded[0], u8.n) : nullptr;
+  std::uint8_t *coded_f32 = has_f32 ? room(sc.coded[1], mf.n) : nullptr;
+  std::uint8_t *coded_mm = has_mm ? room(sc.coded[2], mm.n) : nullptr;
   std::vector<Unit> units;
   std::vector<Unit> *tr = trace != nullptr ? &units : nullptr;
   Finders finders(*h1, *h2);
@@ -2018,13 +2184,82 @@ Status Predictor::encode_typed(const PredictMeta &meta, const std::uint8_t *reco
     }
     code_words_any(0, mm.p + 4 * done, nw - done, nullptr, nullptr, coded_mm + done, nw);
   }
-  for (const auto &[dst, name] : copies) {
-    const std::uint8_t *src = name == BlockName::MeshU8    ? coded_u8
-                              : name == BlockName::MeshF32 ? coded_f32
-                                                           : coded_mm;
-    const std::size_t n = name == BlockName::MeshU8 ? u8.n : name == BlockName::MeshF32 ? mf.n : mm.n;
+
+  // W13r: each present block's tokens (a pass-through block's from its /12 bytes), in
+  // make_golden.py zr_blocks()'s order; a sabotage takes the first block it changes.
+  const ZrSabotage sabotage = zr_overrun     ? ZrSabotage::Overrun
+                              : zr_short_run ? ZrSabotage::ShortRun
+                                             : ZrSabotage::None;
+  bool sabotage_done = sabotage == ZrSabotage::None;
+  for (const int i : {1, 0, 2}) {
+    const int idx = i == 0 ? named.u8 : i == 1 ? named.f32 : named.mm;
+    if (idx < 0) {
+      continue;
+    }
+    const Span src = i == 0   ? (has_u8 ? Span{coded_u8, u8.n} : u8)
+                     : i == 1 ? (has_f32 ? Span{coded_f32, mf.n} : mf)
+                              : (has_mm ? Span{coded_mm, mm.n} : mm);
+    std::uint8_t *dst = room(sc.tokens[static_cast<std::size_t>(i)], zr_bound(src.n));
+    std::size_t len = zr_encode(src.p, src.n, dst);
+    if (!sabotage_done) {
+      std::uint8_t *bad = room(sc.sabotaged, zr_bound(src.n) + 16);
+      const std::size_t bad_len = zr_encode(src.p, src.n, bad, sabotage);
+      if (bad_len != len || std::memcmp(bad, dst, len) != 0) {
+        std::memcpy(dst, bad, bad_len);
+        len = bad_len;
+        sabotage_done = true;
+      }
+    }
+    sc.token_len[static_cast<std::size_t>(i)] = len;
+  }
+
+  // The /13 record: the meta with `predict_check` before `,"blocks":[`, every block in place;
+  // each descriptor named like a predicted block carries that block's tokens (_rebuild_blocks()).
+  auto token_index = [&](std::size_t k) -> int {
+    switch (name_at(meta, k)) {
+    case BlockName::MeshU8: return 0;
+    case BlockName::MeshF32: return 1;
+    case BlockName::MmF32: return 2;
+    case BlockName::Other: break;
+    }
+    return -1;
+  };
+  const std::size_t meta_len = meta_text.size() + kCheckKey.size() + 17;
+  std::size_t body = 4 + meta_len + 4;
+  for (std::size_t k = 0; k < blocks.size(); ++k) {
+    const int t = token_index(k);
+    body += 4 + (t >= 0 ? sc.token_len[static_cast<std::size_t>(t)] : blocks[k].n);
+  }
+  out->resize(4 + body);
+  std::uint8_t *w = out->data();
+  auto put = [&](std::uint32_t v) {
+    set_word(w, v);
+    w += 4;
+  };
+  auto put_bytes = [&](const void *p, std::size_t n) {
     if (n != 0) {
-      std::memcpy(dst, src, n);
+      std::memcpy(w, p, n);
+      w += n;
+    }
+  };
+  put(static_cast<std::uint32_t>(body));
+  put(static_cast<std::uint32_t>(meta_len));
+  put_bytes(meta_text.data(), mark);
+  put_bytes(kCheckKey.data(), kCheckKey.size());
+  const std::string hex = check_hex(hash);
+  put_bytes(hex.data(), 16);
+  *w++ = '"';
+  put_bytes(meta_text.data() + mark, meta_text.size() - mark);
+  put(static_cast<std::uint32_t>(blocks.size()));
+  for (std::size_t k = 0; k < blocks.size(); ++k) {
+    const int t = token_index(k);
+    if (t >= 0) {
+      const std::size_t n = sc.token_len[static_cast<std::size_t>(t)];
+      put(static_cast<std::uint32_t>(n));
+      put_bytes(sc.tokens[static_cast<std::size_t>(t)].data(), n);
+    } else {
+      put(static_cast<std::uint32_t>(blocks[k].n));
+      put_bytes(blocks[k].p, blocks[k].n);
     }
   }
 
@@ -2075,9 +2310,43 @@ Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *reco
   const PredictState *h2 = full ? &empty : h2_.get();
   const std::vector<Span> &blocks = sc.blocks;
   const Named named = named_blocks(meta, blocks.size());
-  const Span u8 = block_or_empty(blocks, named.u8);
-  const Span mf = block_or_empty(blocks, named.f32);
-  const Span mm = block_or_empty(blocks, named.mm);
+  // W13r: expand the zero runs (make_golden.py unzr_blocks(): descriptors in order, each the
+  // named block's tokens against the first descriptor of its name's plain length).
+  std::array<Span, 3> expanded{};
+  for (std::size_t k = 0; k < meta.blocks.size() && k < blocks.size(); ++k) {
+    const BlockName name = meta.blocks[k];
+    const int i = name == BlockName::MeshU8    ? 0
+                  : name == BlockName::MeshF32 ? 1
+                  : name == BlockName::MmF32   ? 2
+                                               : -1;
+    if (i < 0) {
+      continue;
+    }
+    const int idx = i == 0 ? named.u8 : i == 1 ? named.f32 : named.mm;
+    std::int64_t length = -1;
+    for (std::size_t d = 0; d < meta.blocks.size(); ++d) {
+      if (meta.blocks[d] == name) {
+        length = d < meta.block_bytes.size() ? meta.block_bytes[d] : -1;
+        break;
+      }
+    }
+    if (length < 0) {
+      return Status::MetaSchema;  // no plain length (/12's meta-schema rejects the descriptor)
+    }
+    std::vector<std::uint8_t> &dst = sc.expanded[static_cast<std::size_t>(i)];
+    if (dst.size() < static_cast<std::size_t>(length)) {
+      dst.resize(static_cast<std::size_t>(length));
+    }
+    const Span &src = blocks[static_cast<std::size_t>(idx)];
+    const Status zr = zr_decode(src.p, src.n, dst.data(), static_cast<std::size_t>(length));
+    if (zr != Status::Ok) {
+      return zr;
+    }
+    expanded[static_cast<std::size_t>(i)] = Span{dst.data(), static_cast<std::size_t>(length)};
+  }
+  const Span u8 = expanded[0];
+  const Span mf = expanded[1];
+  const Span mm = expanded[2];
   sc.u8_ok = named.u8 >= 0 && u8_layout(meta, u8.n, &sc.u8);
   const bool has_u8 = sc.u8_ok;
   const bool has_f32 = named.f32 >= 0 && mf.n % 4 == 0 && f32_layout(meta, mf.n / 4, &sc.f32);
@@ -2119,15 +2388,16 @@ Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *reco
   if (check_hex(check_of(sc.xxh, mf_12, u8_12, mm_12)) != check) {
     return Status::PredictCheck;
   }
-  // _rebuild_blocks(): every descriptor named like a coded block carries the decoded bytes.
+  // _rebuild_blocks(): every descriptor named like a predicted block carries the decoded bytes
+  // (W13r: a pass-through block's too, its tokens expanded).
   sc.rebuilt = blocks;
   for (std::size_t k = 0; k < sc.rebuilt.size() && k < meta.blocks.size(); ++k) {
     const BlockName n = meta.blocks[k];
-    if (n == BlockName::MeshU8 && has_u8) {
+    if (n == BlockName::MeshU8) {
       sc.rebuilt[k] = u8_12;
-    } else if (n == BlockName::MeshF32 && has_f32) {
+    } else if (n == BlockName::MeshF32) {
       sc.rebuilt[k] = mf_12;
-    } else if (n == BlockName::MmF32 && has_mm) {
+    } else if (n == BlockName::MmF32) {
       sc.rebuilt[k] = mm_12;
     }
   }

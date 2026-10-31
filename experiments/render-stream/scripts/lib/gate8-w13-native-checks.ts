@@ -36,6 +36,8 @@
 //                             gate 7's live half) its final shot equals the honest leg's pixel for pixel
 //   native13-no-predict-reset-caught  the receiver sabotage no-predict-reset fails that check (the
 //                             resync's full fails predict-check too, so the receiver never catches up)
+//   native13-zr-resync        W13r: native13-predict-resync's check under the host's zr-overrun (a
+//                             patch's first zero run one zero too long): the receiver fails zr-length
 //
 // Gate 7's g7-8 web half replays the file legs in the web export and judges them with these checks
 // (`@web`); its live half runs g8w11c's native13 legs with the web export (GSW runs W13c's gsw13).
@@ -423,7 +425,7 @@ async function liveLeg(root: string, leg: string) {
 
 /** W13d: g8w11c's native13 resync legs (`root` is <run>/g8w11c). */
 export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
-  const ids = ["native13-predict-resync", "native13-no-predict-reset-caught"];
+  const ids = ["native13-predict-resync", "native13-no-predict-reset-caught", "native13-zr-resync"];
   if (!existsSync(join(root, "native13-honest")))
     return ids.map((id) =>
       notRun(id, "W13d: the native receiver's /13 resync legs (g8w11c; GSW runs W13c's gsw13 legs)", "no native13 leg in this run"),
@@ -431,11 +433,18 @@ export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
   const honest = await liveLeg(root, "native13-honest");
   const browser = existsSync(honest?.finalShot ?? "");
-  {
-    const id = ids[0];
-    const criterion =
-      "W13d: under the host's predict-stale a coded receiver at /13 fails predict-check, resyncs (reason coding), holds the patches before the full, ends ok within two frames of the honest /13 leg's last frame, and at every frame both legs applied after the stale transaction draws the honest leg's dynamic bodies (the host's frames are deterministic; a browser receiver whose last frame is the honest leg's: and its final shot equals that leg's pixel for pixel)";
-    const v = await liveLeg(root, "native13-predict-stale");
+  // W13r: the host's zr-overrun (a patch's first zero run one zero too long) is judged as
+  // predict-stale is: the receiver fails zr-length and resyncs the same way.
+  for (const [id, leg, what] of [
+    [ids[0], "native13-predict-stale", "W13d: under the host's predict-stale a coded receiver at /13 fails predict-check"],
+    [ids[2], "native13-zr-overrun", "W13r: under the host's zr-overrun a coded receiver at /13 fails zr-length"],
+  ] as const) {
+    const criterion = `${what}, resyncs (reason coding), holds the patches before the full, ends ok within two frames of the honest /13 leg's last frame, and at every frame both legs applied after the stale transaction draws the honest leg's dynamic bodies (the host's frames are deterministic; a browser receiver whose last frame is the honest leg's: and its final shot equals that leg's pixel for pixel)`;
+    if (!existsSync(join(root, leg))) {
+      checks.push(notRun(id, criterion, `no ${leg} leg in this run`));
+      continue;
+    }
+    const v = await liveLeg(root, leg);
     const problems: string[] | null = v && honest ? [] : null;
     let detail = "";
     if (v && honest && problems) {

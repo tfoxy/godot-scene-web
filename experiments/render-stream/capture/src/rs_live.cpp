@@ -2227,7 +2227,9 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
   bool sabotaged = false;
   if (stale) {
     rs13::Predictor wrong_predictor = before;
-    wrong_predictor.predict_stale = true;
+    wrong_predictor.predict_stale = config_.predict_zr == rs13::ZrSabotage::None;
+    wrong_predictor.zr_overrun = config_.predict_zr == rs13::ZrSabotage::Overrun;
+    wrong_predictor.zr_short_run = config_.predict_zr == rs13::ZrSabotage::ShortRun;
     std::vector<std::uint8_t> wrong;
     if (code(wrong_predictor, &wrong) == rs13::Status::Ok && wrong != *out) {
       *out = std::move(wrong);  // the history still advanced honestly (f.predictor)
@@ -2238,7 +2240,11 @@ std::shared_ptr<const std::vector<std::uint8_t>> Hub::form_predicted(
                               .num("frame", job.frame)
                               .num("t_us", job.now_ns / 1000)
                               .str("event", "sabotage")
-                              .str("kind", "predict-stale")
+                              .str("kind", config_.predict_zr == rs13::ZrSabotage::Overrun
+                                               ? "zr-overrun"
+                                           : config_.predict_zr == rs13::ZrSabotage::ShortRun
+                                               ? "zr-short-run"
+                                               : "predict-stale")
                               .num("seq", meta.seq)
                               .num("base_seq", meta.base_seq)
                               .take());

@@ -1507,11 +1507,11 @@ void test_v13_file_sinks() {
       bool equal = true;
       for (std::size_t n = 2; n < 10; ++n) {
         std::vector<std::uint8_t> plain;
-        equal = equal && p.decode(w13[n], &plain) == grc::rs13::Status::Ok && plain == w12[n] &&
-                w13[n].size() == w12[n].size() + 35;
+        // W13r: the sizes differ by predict_check's 35 bytes less the elided zero runs
+        // (rs13_codec_test checks the coded bytes against golden-13).
+        equal = equal && p.decode(w13[n], &plain) == grc::rs13::Status::Ok && plain == w12[n];
       }
-      check(equal, "W13b: /13 " + lane +
-                       ": every transaction un-predicts to the /12 sink's, 35 bytes larger raw");
+      check(equal, "W13b: /13 " + lane + ": every transaction un-predicts to the /12 sink's");
       check(full_lane ? predicted == 0 : predicted >= 6,
             "W13b: /13 " + lane + ": predicted units " + std::to_string(predicted));
     }

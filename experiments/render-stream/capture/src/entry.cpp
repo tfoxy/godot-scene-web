@@ -131,7 +131,9 @@
 // and GRC_LIVE_CODING=zstd-base; from GRC_SABOTAGE_FRAME on, default 1, the first based /11
 // transaction is coded against its base plus one byte, render-stream-11.md "As built (W11t)"),
 // and predict-stale (W13b: needs GRC_STREAM_VERSION=13; from GRC_SABOTAGE_FRAME on, default 1,
-// the first /13 patch is predicted from H2 as if it were H1, render-stream-13.md "Sabotages").
+// the first /13 patch is predicted from H2 as if it were H1, render-stream-13.md "Sabotages"),
+// and zr-overrun / zr-short-run (W13r: the same, but that patch carries the writer sabotage's
+// zero-run tokens instead, render-stream-13.md "As built (W13r)").
 // GRC_LIVE_CODING (W11t) = zstd-base (default) | zstd | off: the coding a /11 hello that offers
 // `live_coding` gets; nothing below /11 is coded. They act on the listener only, never on a record, so the
 // wire declares no sabotage for them (the session's `sabotage` stays null): evidence/live.json
@@ -394,7 +396,13 @@ bool is_listener_sabotage(const char *kind) {
   const std::string text(kind);
   return text == "no-cors" || text == "accept-any-origin" || text == "token-ignored" ||
          text == "window-overrun" || text == "corrupt-coded-body" ||
-         text == "coding-wrong-prefix" || text == "predict-stale";
+         text == "coding-wrong-prefix" || text == "predict-stale" || text == "zr-overrun" ||
+         text == "zr-short-run";
+}
+
+// W13b/W13r: the listener sabotages that code one /13 patch wrongly.
+bool is_predict_sabotage(const std::string &kind) {
+  return kind == "predict-stale" || kind == "zr-overrun" || kind == "zr-short-run";
 }
 
 // How long the host waits for receivers to close after their end record (rs_live.h, finish).
@@ -2027,19 +2035,23 @@ void stream_start() {
                !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.coding_wrong_prefix_frame)) {
       live_ok = false;
       why = "sabotage coding-wrong-prefix: invalid GRC_SABOTAGE_FRAME (a positive frame)";
-    } else if (g_live.listener_sabotage == "predict-stale" && !g_stream.gate8.speaks_v13()) {
+    } else if (is_predict_sabotage(g_live.listener_sabotage) && !g_stream.gate8.speaks_v13()) {
       live_ok = false;
-      why = "sabotage predict-stale needs GRC_STREAM_VERSION=13";
-    } else if (g_live.listener_sabotage == "predict-stale" &&
+      why = "sabotage " + g_live.listener_sabotage + " needs GRC_STREAM_VERSION=13";
+    } else if (is_predict_sabotage(g_live.listener_sabotage) &&
                !env_positive("GRC_SABOTAGE_FRAME", 1, &live_config.predict_stale_frame)) {
       live_ok = false;
-      why = "sabotage predict-stale: invalid GRC_SABOTAGE_FRAME (a positive frame)";
+      why = "sabotage " + g_live.listener_sabotage +
+            ": invalid GRC_SABOTAGE_FRAME (a positive frame)";
     } else if ((item_meta_configure(), !g_meta.config_ok)) {
       // TAG1 (client-extensions-design.md §2.1): the operator's grant, empty by default.
       live_ok = false;
       why = g_meta.config_error;
     }
     live_config.item_meta_grant = g_meta.grant;
+    live_config.predict_zr = g_live.listener_sabotage == "zr-overrun"     ? rs13::ZrSabotage::Overrun
+                             : g_live.listener_sabotage == "zr-short-run" ? rs13::ZrSabotage::ShortRun
+                                                                          : rs13::ZrSabotage::None;
     live_config.item_meta_sabotage = g_meta.sabotage;
     // HC5 (host-cost-design.md D4): the hub's formation jobs run on one encode thread; the test
     // knob GRC_HC_FORMATION=inline runs them on the frame callback's thread instead (the wire is

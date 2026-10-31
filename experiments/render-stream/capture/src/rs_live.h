@@ -362,6 +362,10 @@ struct LiveConfig {
   // the first /13 patch is predicted from H2 as if it were H1 (rs13::Predictor::predict_stale),
   // once per host (0 disables). The receiver fails predict-check and resyncs (reason coding).
   std::uint64_t predict_stale_frame = 0;
+  // W13r listener sabotages zr-overrun / zr-short-run: with predict_stale_frame, that first patch
+  // carries the writer sabotage's tokens (rs13::Predictor::zr_overrun, zr_short_run) instead of a
+  // stale prediction. The receiver fails zr-length / zr-noncanonical and resyncs (reason coding).
+  rs13::ZrSabotage predict_zr = rs13::ZrSabotage::None;
   // TAG1 (client-extensions-design.md §2.1): GRC_ITEM_META, the operator's grant (item_meta::k*
   // bits; 0: nobody gets identities, whatever a hello asks). `item_meta_sabotage` is
   // GRC_ITEM_META_SABOTAGE's formation half: in-shared, skip-full or id-off-by-one.

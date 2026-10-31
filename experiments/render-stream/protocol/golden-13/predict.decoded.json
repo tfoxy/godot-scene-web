@@ -305,8 +305,8 @@
     },
     {
       "offset": 4768,
-      "byte_length": 2838,
-      "sha256": "e9a92c45b8642c38b6371f6d8ca6920d4a1fb4354079922946e326721fb6a59a",
+      "byte_length": 2587,
+      "sha256": "90ce2aefb3aff78fe15d45a47bc082c9332a4c3a38ac52292ecc7d3cc372fd73",
       "meta": {
         "type": "transaction",
         "seq": 1,
@@ -613,9 +613,9 @@
       ]
     },
     {
-      "offset": 7606,
-      "byte_length": 2000,
-      "sha256": "1a723245ddd3c74aa7077752740d01f106b8bb217feb0dd30b3976ce48d2f169",
+      "offset": 7355,
+      "byte_length": 1637,
+      "sha256": "f8fbdf39a15c1d9c864c3850530548e86f3e76c6d1ddb466382394048793af51",
       "meta": {
         "type": "transaction",
         "seq": 2,
@@ -814,9 +814,9 @@
       ]
     },
     {
-      "offset": 9606,
-      "byte_length": 2064,
-      "sha256": "f742c2c880d3548fd0700c779c284ae17696736250ea30a60dc55c5275e32546",
+      "offset": 8992,
+      "byte_length": 1669,
+      "sha256": "b3682c463504681c80a9d01ab483df58538f22ebe95a4c6c305ffd4033efffc9",
       "meta": {
         "type": "transaction",
         "seq": 3,
@@ -1031,9 +1031,9 @@
       ]
     },
     {
-      "offset": 11670,
-      "byte_length": 2018,
-      "sha256": "e739e7fe3d0be70a0b314b906b5e7361fc0ad7f8723d03e39ea73ead1665b1fb",
+      "offset": 10661,
+      "byte_length": 1591,
+      "sha256": "ef5a16606f9ecf7b1463664e2aba3457e793fdcef40ec875a90f870356377b5a",
       "meta": {
         "type": "transaction",
         "seq": 4,
@@ -1248,9 +1248,9 @@
       ]
     },
     {
-      "offset": 13688,
-      "byte_length": 1623,
-      "sha256": "ab7cd3031417b49eaebc09608789a95d8d459838c25e30c80dd8e336ddcdbf44",
+      "offset": 12252,
+      "byte_length": 1347,
+      "sha256": "9fb6b0ed5e775c8821068fded58e62cb0f7765dbb4eda073bc43f6a20b70e5bf",
       "meta": {
         "type": "transaction",
         "seq": 5,
@@ -1439,9 +1439,9 @@
       ]
     },
     {
-      "offset": 15311,
-      "byte_length": 1612,
-      "sha256": "a18c3e40ca59ee91f5499c277b4b058724ec51e6ad36cbfb88e8daafe4d53ae7",
+      "offset": 13599,
+      "byte_length": 1341,
+      "sha256": "f9b68f5c50c652ea403137da5ac65afff8de93d993ae73239cd9f273a507f1e5",
       "meta": {
         "type": "transaction",
         "seq": 6,
@@ -1584,9 +1584,9 @@
       ]
     },
     {
-      "offset": 16923,
-      "byte_length": 2856,
-      "sha256": "acfafd3359167f253c6452ae6eb2056a0359e5d28795544a7dc10ac361f6bf3f",
+      "offset": 14940,
+      "byte_length": 2587,
+      "sha256": "ad191df49c525f8027e6f5d76324afdf90287fc16c2d9427195a7c6b1a1c1aa0",
       "meta": {
         "type": "transaction",
         "seq": 7,
@@ -1909,9 +1909,9 @@
       ]
     },
     {
-      "offset": 19779,
-      "byte_length": 2522,
-      "sha256": "d97be6abfdd5cebefa69477f86f3cef1cb5e1abdfcf1a751f3a239e534a1f364",
+      "offset": 17527,
+      "byte_length": 2194,
+      "sha256": "c42dca94fbcef5bbb5651dde4f9054d008b109582bf57a0110e1e42d1816fed6",
       "meta": {
         "type": "transaction",
         "seq": 8,
@@ -2205,9 +2205,9 @@
       ]
     },
     {
-      "offset": 22301,
-      "byte_length": 1856,
-      "sha256": "f422dd8dbd2f18080b2bb82e8fd275986087f91249e463a5316ad6fe6707105d",
+      "offset": 19721,
+      "byte_length": 1517,
+      "sha256": "c7642f50c838117c75b55f8577616c75c192474f6fc5ae14218f5c90d0e072d6",
       "meta": {
         "type": "transaction",
         "seq": 9,
@@ -2425,9 +2425,9 @@
       ]
     },
     {
-      "offset": 24157,
-      "byte_length": 1775,
-      "sha256": "1a4f4ef8f252a00fffb90c0afd1a0e3f8d8e7ff6e7aff2595c7a54ecc6c872ee",
+      "offset": 21238,
+      "byte_length": 1484,
+      "sha256": "61480432c8e93bd4a12b91054d28e674d615480f090f6da8f2c7861fd86a4e7d",
       "meta": {
         "type": "transaction",
         "seq": 10,
@@ -2645,15 +2645,15 @@
       ]
     },
     {
-      "offset": 25932,
+      "offset": 22722,
       "byte_length": 284,
-      "sha256": "fc918ab8cbeaa0f329d64207f78f92389edf3818f480a8991ed51682d53a6598",
+      "sha256": "31d85e84945e9aa64bba5ced3e132b40e0a467a16ede5f0decdcb8dc148e1bb7",
       "meta": {
         "type": "end",
         "transactions": 10,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 25932,
+          "bytes_total": 22722,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 0,

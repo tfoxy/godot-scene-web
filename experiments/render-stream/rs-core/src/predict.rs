@@ -8,6 +8,10 @@
 //! the per-record un-predictor the validator calls ([`unpredict_record`]) and the /12 ↔ /13
 //! transcoders ([`to13`], [`to12`]).
 //!
+//! W13r ("As built (W13r)"): each predicted block travels as zero runs over its coded bytes
+//! ([`zr_encode`], [`zr_decode`]: `zr-length`, `zr-noncanonical`), expanded into
+//! [`Scratch`] before the un-predict reads it.
+//!
 //! The history keeps each unit's last two writes ([`History`]): advancing touches only the units a
 //! transaction carries or drops, and each write reuses the storage of the one it supersedes.
 
@@ -636,6 +640,258 @@ pub struct Scratch {
     f32u: Vec<(Id, usize)>,
     mmu: Vec<(Id, i64, u64, usize)>,
     words: Vec<u8>,
+    /// W13r: the three predicted blocks' W13a coded bytes (`mesh_f32`, `mesh_u8`, `mm_f32`):
+    /// expanded from the zero runs (decoder, every byte written) or the coder's output before
+    /// the runs are formed (encoder).
+    coded: [Vec<u8>; 3],
+}
+
+// --------------------------------------------------------------------------- zero runs (W13r)
+
+/// Whether an error code is a /13 coding failure a live receiver resyncs with reason `coding`
+/// (render-stream-13.md "Decoding and check order", "As built (W13r)"): `predict-check`,
+/// `zr-length`, `zr-noncanonical`. The transaction applied nothing.
+pub fn is_coding_error(code: &str) -> bool {
+    matches!(code, "predict-check" | "zr-length" | "zr-noncanonical")
+}
+
+/// The minimum zero run the compact residual elides (render-stream-13.md "As built (W13r)").
+pub const ZR_MIN: usize = 4;
+
+/// W13r's writer sabotages (make_golden.py `zr_sabotage`): `Overrun` makes the first zero run of
+/// a transaction one zero too long; `ShortRun` elides its first 3-byte zero run as a token.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ZrSabotage {
+    #[default]
+    None,
+    Overrun,
+    ShortRun,
+}
+
+fn put_uvarint(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            return;
+        }
+        out.push(b | 0x80);
+    }
+}
+
+/// `zr_encode`: appends the canonical tokens of `c` to `out` (`sabotage` as make_golden.py's).
+pub fn zr_encode(c: &[u8], sabotage: ZrSabotage, out: &mut Vec<u8>) {
+    let n = c.len();
+    let mut short_done = false;
+    let mut extra = (sabotage == ZrSabotage::Overrun) as u64;
+    // The token being built: its zero run and where its literal starts.
+    let mut first = true;
+    let (mut zeros, mut lit) = (0usize, 0usize);
+    let mut k = 0;
+    while k < n {
+        if c[k] != 0 {
+            k += 1;
+            continue;
+        }
+        let mut j = k;
+        while j < n && c[j] == 0 {
+            j += 1;
+        }
+        let run = j - k;
+        if run >= ZR_MIN || (sabotage == ZrSabotage::ShortRun && !short_done && run == 3) {
+            short_done |= run == 3;
+            // Close the open token (the first one only when it has a literal).
+            if !first || k > 0 {
+                put_uvarint(out, zeros as u64);
+                put_uvarint(out, (k - lit) as u64);
+                out.extend_from_slice(&c[lit..k]);
+            }
+            first = false;
+            zeros = run + extra as usize;
+            extra = 0;
+            lit = j;
+        }
+        k = j;
+    }
+    if !first || n > 0 {
+        put_uvarint(out, zeros as u64);
+        put_uvarint(out, (n - lit) as u64);
+        out.extend_from_slice(&c[lit..n]);
+    }
+}
+
+/// The canonical tokens of `c` with `sabotage` applied when it changes them: `(tokens, acted)`.
+fn zr_encode_sabotaged(c: &[u8], sabotage: ZrSabotage, out: &mut Vec<u8>) -> bool {
+    let at = out.len();
+    zr_encode(c, ZrSabotage::None, out);
+    if sabotage == ZrSabotage::None {
+        return false;
+    }
+    let mut bad = Vec::new();
+    zr_encode(c, sabotage, &mut bad);
+    if bad[..] == out[at..] {
+        return false;
+    }
+    out.truncate(at);
+    out.extend_from_slice(&bad);
+    true
+}
+
+/// One uvarint of `s` at `*p`: `(value, minimal)`, or `None` when it runs past the stream or has
+/// more than 10 bytes (`zr-length`). A value past 2^64 saturates (it passes any length).
+#[inline(always)]
+fn read_uvarint(s: &[u8], p: &mut usize) -> Option<(u64, bool)> {
+    // Almost every count is below 128: one byte.
+    match s.get(*p) {
+        Some(&b) if b < 0x80 => {
+            *p += 1;
+            Some((b as u64, true))
+        }
+        Some(_) => read_uvarint_long(s, p),
+        None => None,
+    }
+}
+
+#[cold]
+fn read_uvarint_long(s: &[u8], p: &mut usize) -> Option<(u64, bool)> {
+    let start = *p;
+    let mut v: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        if *p >= s.len() || *p - start >= 10 {
+            return None;
+        }
+        let b = s[*p];
+        *p += 1;
+        let bits = (b & 0x7f) as u64;
+        if shift < 64 {
+            if shift > 0 && bits >> (64 - shift) != 0 {
+                v = u64::MAX;
+            } else if v != u64::MAX {
+                v |= bits << shift;
+            }
+        } else if bits != 0 {
+            v = u64::MAX;
+        }
+        shift += 7;
+        if b & 0x80 == 0 {
+            return Some((v, *p - start == 1 || b != 0));
+        }
+    }
+}
+
+/// Whether `lit` holds a run of [`ZR_MIN`] (4) zero bytes: 8 bytes a step on an exact zero-byte
+/// mask, branch-free, carrying the zero bytes that end a step into the next.
+#[inline]
+fn has_zero_run(lit: &[u8]) -> bool {
+    const LO7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    let mut carry = 0u32; // zero bytes ending the previous step
+    let mut found = false;
+    let mut chunks = lit.chunks_exact(8);
+    for c in &mut chunks {
+        let w = u64::from_le_bytes(c.try_into().unwrap());
+        // The high bit of each byte of `z` is set exactly where `w`'s byte is zero.
+        let z = !(((w & LO7).wrapping_add(LO7)) | w | LO7);
+        let nz = !z & HI; // the high bit of each nonzero byte
+        found |= (z & (z >> 8) & (z >> 16) & (z >> 24)) != 0;
+        found |= carry + nz.trailing_zeros() / 8 >= ZR_MIN as u32;
+        carry = nz.leading_zeros() / 8;
+    }
+    let mut run = carry as usize;
+    for &b in chunks.remainder() {
+        run = if b == 0 { run + 1 } else { 0 };
+        found |= run >= ZR_MIN;
+    }
+    found
+}
+
+/// `zr_decode`: replaces `out` by the `len` plain bytes of the token stream `s` (its storage
+/// reused, every byte written). `zr-length` when the stream does not cover exactly `len`,
+/// whatever else is wrong; else `zr-noncanonical` at the first token that breaks the canonical
+/// form. `what` labels messages.
+pub fn zr_decode(
+    s: &[u8],
+    len: usize,
+    out: &mut Vec<u8>,
+    what: &dyn Fn() -> String,
+) -> Result<(), Error> {
+    if out.len() < len {
+        out.resize(len, 0);
+    } else {
+        out.truncate(len);
+    }
+    zr_expand(s, out, what)
+}
+
+/// [`zr_decode`] into `out`, whose length is the plain length: writes every byte.
+fn zr_expand(s: &[u8], out: &mut [u8], what: &dyn Fn() -> String) -> Result<(), Error> {
+    let len = out.len();
+    let short = |why: &str| Error::new("zr-length", format!("{}: {why}", what()));
+    let mut p = 0usize;
+    let mut at = 0usize;
+    let mut i = 0usize;
+    let mut bad: Option<(usize, &'static str)> = None;
+    while at < len {
+        let room = (len - at) as u64;
+        let (z, ok_z) =
+            read_uvarint(s, &mut p).ok_or_else(|| short("a uvarint runs past the token stream"))?;
+        if z > room {
+            return Err(short("a zero run passes the plain length"));
+        }
+        let (n, ok_n) =
+            read_uvarint(s, &mut p).ok_or_else(|| short("a uvarint runs past the token stream"))?;
+        if n > room - z {
+            return Err(short("a literal passes the plain length"));
+        }
+        let (z, n) = (z as usize, n as usize);
+        if n > s.len() - p {
+            return Err(short("a literal runs past the token stream"));
+        }
+        let lit = &s[p..p + n];
+        p += n;
+        let last = z + n == len - at;
+        if bad.is_none() {
+            let why = if !(ok_z && ok_n) {
+                Some("a uvarint is not minimal")
+            } else if (z > 0 && z < ZR_MIN) || (z == 0 && i > 0) {
+                Some("a zero run shorter than the minimum")
+            } else if n == 0 && (z == 0 || !last) {
+                Some("an empty literal")
+            } else if z > 0 && lit.first() == Some(&0) {
+                Some("a literal starts with a zero byte")
+            } else if !last && lit.last() == Some(&0) {
+                Some("a literal ends with a zero byte before a zero run")
+            } else if n >= ZR_MIN && has_zero_run(lit) {
+                Some("a literal holds a run of the minimum zero bytes")
+            } else {
+                None
+            };
+            bad = why.map(|w| (i, w));
+        }
+        out[at..at + z].fill(0);
+        at += z;
+        if n <= 8 && at + 8 <= len && p - n + 8 <= s.len() {
+            // A short literal as one word (a wasm memory.copy per token costs more than its
+            // bytes): the bytes past it are written again by the tokens that cover them.
+            out[at..at + 8].copy_from_slice(&s[p - n..p - n + 8]);
+        } else {
+            out[at..at + n].copy_from_slice(lit);
+        }
+        at += n;
+        i += 1;
+    }
+    if p != s.len() {
+        return Err(short("bytes follow once the plain length is covered"));
+    }
+    if let Some((i, why)) = bad {
+        return Err(Error::new(
+            "zr-noncanonical",
+            format!("{}: token {i}: {why}", what()),
+        ));
+    }
+    Ok(())
 }
 
 // --------------------------------------------------------------------------- word arithmetic
@@ -2198,10 +2454,36 @@ fn make_record(out: &mut Vec<u8>, meta_parts: &[&[u8]], body: &[u8]) {
     out.extend_from_slice(body);
 }
 
+/// The plain length (descriptor `count` × width) of each predicted block of `tx`, in
+/// `[mesh_f32, mesh_u8, mm_f32]` order (0 for a block the meta does not list).
+fn plain_lens(tx: &TxMeta) -> [usize; 3] {
+    let len = |i: usize| {
+        tx.blocks
+            .get(i)
+            .map(|d| (d.count * d.ty.width()) as usize)
+            .unwrap_or(0)
+    };
+    [len(MESH_F32), len(MESH_U8), len(MM_F32)]
+}
+
+const PREDICTED: [(usize, &str); 3] = [(MESH_F32, "mesh_f32"), (MESH_U8, "mesh_u8"), (MM_F32, "mm_f32")];
+
+/// The predicted slot (0, 1, 2) of block index `i`, if it is one.
+fn predicted_slot(i: usize) -> Option<usize> {
+    match i {
+        MESH_F32 => Some(0),
+        MESH_U8 => Some(1),
+        MM_F32 => Some(2),
+        _ => None,
+    }
+}
+
 /// The validator's /13 step: writes into `plain` the /12 record equivalent to the /13 transaction
-/// `record` (its meta without `predict_check`, its three predicted blocks un-predicted against
-/// (H1, H2)), shifts `blocks` to index `plain`, and returns `(declared, computed)` check values.
-/// `tx` is the record's checked meta (`predict_check` present).
+/// `record` (its meta without `predict_check`; its three predicted blocks' zero runs expanded
+/// (W13r: `zr-length`, `zr-noncanonical`, blocks in descriptor order) and un-predicted against
+/// (H1, H2)), sets `blocks` to index `plain`, and returns `(declared, computed)` check values.
+/// `tx` is the record's checked meta (`predict_check` present). On an error `blocks` is
+/// unchanged.
 pub fn unpredict_record(
     record: &[u8],
     tx: &TxMeta,
@@ -2223,28 +2505,68 @@ pub fn unpredict_record(
             "a render-stream/13 transaction meta has no \"predict_check\" right before \"blocks\"",
         ));
     };
-    // `plain` keeps its allocation and is overwritten in place: every byte but `mesh_u8`'s from
-    // the record, and `mesh_u8` (written whole by the un-predictor, pass-through included) not
-    // copied at all.
-    let u = blocks[MESH_U8];
-    plain.resize(record.len() - CHECK_BYTES, 0);
+    // W13r: the zero runs, expanded into the buffers the un-predict reads.
+    let lens = plain_lens(tx);
+    let mut coded = std::mem::take(&mut sc.coded);
+    for (slot, &(i, name)) in PREDICTED.iter().enumerate() {
+        let r = zr_decode(block(record, blocks, i), lens[slot], &mut coded[slot], &|| {
+            format!("transaction seq {}: {name}", tx.seq)
+        });
+        if let Err(e) = r {
+            sc.coded = coded;
+            return Err(e);
+        }
+    }
+    // `plain` keeps its allocation: the meta without the check, every other block copied with its
+    // length prefix, each predicted block's prefix its plain length and its bytes written whole
+    // by the un-predictor (pass-through included).
+    // Sized once and overwritten in place (W13p: no zeroing in the steady state).
+    let body = 8 + meta_len;
+    let head = cut + (body + 4 - cut - CHECK_BYTES);
+    let total = head
+        + blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| 4 + predicted_slot(i).map_or(b.len, |slot| lens[slot]))
+            .sum::<usize>();
+    plain.resize(total, 0);
     plain[..cut].copy_from_slice(&record[..cut]);
-    plain[cut..u.start - CHECK_BYTES].copy_from_slice(&record[cut + CHECK_BYTES..u.start]);
-    plain[u.start + u.len - CHECK_BYTES..].copy_from_slice(&record[u.start + u.len..]);
+    plain[cut..head].copy_from_slice(&record[cut + CHECK_BYTES..body + 4]);
+    let mut at = head;
+    for (i, b) in blocks.iter_mut().enumerate() {
+        match predicted_slot(i) {
+            Some(slot) => {
+                plain[at..at + 4].copy_from_slice(&(lens[slot] as u32).to_le_bytes());
+                *b = BlockRange {
+                    start: at + 4,
+                    len: lens[slot],
+                };
+            }
+            None => {
+                plain[at..at + 4 + b.len].copy_from_slice(&record[b.start - 4..b.start + b.len]);
+                b.start = at + 4;
+            }
+        }
+        at += 4 + b.len;
+    }
     let rl = plain.len() as u32 - 4;
     plain[0..4].copy_from_slice(&rl.to_le_bytes());
     plain[4..8].copy_from_slice(&((meta_len - CHECK_BYTES) as u32).to_le_bytes());
-    let src = blocks_of(record, blocks);
-    for b in blocks.iter_mut() {
-        b.start -= CHECK_BYTES;
-    }
+    let src = Blocks {
+        mesh_f32: &coded[0],
+        mesh_u8: &coded[1],
+        mm_f32: &coded[2],
+    };
     let dst = blocks_of_mut(plain, blocks);
     code_blocks(tx, src, dst, h1, h2, true, sc, None);
+    sc.coded = coded;
     let computed = check(blocks_of(plain, blocks));
     Ok((declared, computed))
 }
 
-/// The /13 record of the /12 transaction `record` (predicted against (H1, H2)).
+/// The /13 record of the /12 transaction `record` (predicted against (H1, H2), then its
+/// predicted blocks as zero runs; `zr` a W13r writer sabotage, acting on the first block it
+/// changes).
 pub fn predict_record(
     record: &[u8],
     tx: &TxMeta,
@@ -2253,28 +2575,57 @@ pub fn predict_record(
     h2: PredState<'_>,
     sc: &mut Scratch,
     trace: Option<&mut Vec<Unit>>,
+    zr: ZrSabotage,
     out: &mut Vec<u8>,
 ) {
     let meta_len = wire::le_u32(record, 4) as usize;
     let meta = &record[8..8 + meta_len];
     let i = blocks_mark(meta).expect("a transaction meta has \"blocks\"");
-    let hex = check_hex(check(blocks_of(record, blocks)));
-    let at = out.len();
-    make_record(
-        out,
-        &[&meta[..i], CHECK_KEY, hex.as_bytes(), b"\"", &meta[i..]],
-        &record[8 + meta_len..],
-    );
-    let shifted: Vec<BlockRange> = blocks
-        .iter()
-        .map(|b| BlockRange {
-            start: b.start + CHECK_BYTES,
-            len: b.len,
-        })
-        .collect();
     let src = blocks_of(record, blocks);
-    let dst = blocks_of_mut(&mut out[at..], &shifted);
-    code_blocks(tx, src, dst, h1, h2, false, sc, trace);
+    let hex = check_hex(check(src));
+    let mut coded = std::mem::take(&mut sc.coded);
+    for (c, b) in coded.iter_mut().zip([src.mesh_f32, src.mesh_u8, src.mm_f32]) {
+        c.clear();
+        c.resize(b.len(), 0);
+    }
+    {
+        let [f, u, m] = &mut coded;
+        let dst = BlocksMut {
+            mesh_f32: f,
+            mesh_u8: u,
+            mm_f32: m,
+        };
+        code_blocks(tx, src, dst, h1, h2, false, sc, trace);
+    }
+    let at = out.len();
+    out.extend_from_slice(&[0; 8]);
+    out.extend_from_slice(&meta[..i]);
+    out.extend_from_slice(CHECK_KEY);
+    out.extend_from_slice(hex.as_bytes());
+    out.push(b'"');
+    out.extend_from_slice(&meta[i..]);
+    let new_meta_len = out.len() - at - 8;
+    let body = 8 + meta_len;
+    out.extend_from_slice(&record[body..body + 4]);
+    let mut sabotage = zr;
+    for (k, b) in blocks.iter().enumerate() {
+        match predicted_slot(k) {
+            Some(slot) => {
+                let len_at = out.len();
+                out.extend_from_slice(&[0; 4]);
+                if zr_encode_sabotaged(&coded[slot], sabotage, out) {
+                    sabotage = ZrSabotage::None;
+                }
+                let n = (out.len() - len_at - 4) as u32;
+                out[len_at..len_at + 4].copy_from_slice(&n.to_le_bytes());
+            }
+            None => out.extend_from_slice(&record[b.start - 4..b.start + b.len]),
+        }
+    }
+    let rl = (out.len() - at - 4) as u32;
+    out[at..at + 4].copy_from_slice(&rl.to_le_bytes());
+    out[at + 4..at + 8].copy_from_slice(&(new_meta_len as u32).to_le_bytes());
+    sc.coded = coded;
 }
 
 // --------------------------------------------------------------------------- transcode
@@ -2355,6 +2706,16 @@ pub struct TxTrace {
 pub fn to13(
     data12: &[u8],
     stale: bool,
+    trace: Option<&mut Vec<TxTrace>>,
+) -> Result<Vec<u8>, Error> {
+    to13_with(data12, stale, ZrSabotage::None, trace)
+}
+
+/// [`to13`] with a W13r writer sabotage (`zr-overrun`, `zr-short-run`) on every transaction.
+pub fn to13_with(
+    data12: &[u8],
+    stale: bool,
+    zr: ZrSabotage,
     mut trace: Option<&mut Vec<TxTrace>>,
 ) -> Result<Vec<u8>, Error> {
     crate::validate::validate_recording(data12, Options::new(12))?;
@@ -2382,6 +2743,7 @@ pub fn to13(
                     h2,
                     &mut sc,
                     trace.is_some().then_some(&mut units),
+                    zr,
                     &mut out,
                 );
                 if let Some(t) = trace.as_deref_mut() {
@@ -2469,6 +2831,48 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// W13r: zero runs round-trip on sparse buffers of every small length, the encoder's output
+    /// is canonical (the decoder accepts it), and both sabotages are refused with their codes.
+    #[test]
+    fn zero_runs_round_trip_and_sabotages_fail() {
+        for n in 0..=200usize {
+            for density in [1u64, 3, 9] {
+                let mut x = (n as u64 + 1) * 0x9E37_79B9 + density;
+                let c: Vec<u8> = (0..n)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        if x % 10 < density { (x >> 8) as u8 | 1 } else { 0 }
+                    })
+                    .collect();
+                let naive = c.windows(ZR_MIN).any(|w| w.iter().all(|&b| b == 0));
+                assert_eq!(has_zero_run(&c), naive, "n {n} density {density}");
+                let mut s = Vec::new();
+                zr_encode(&c, ZrSabotage::None, &mut s);
+                let mut out = vec![7u8; 3];
+                zr_decode(&s, n, &mut out, &|| "t".into()).unwrap();
+                assert_eq!(out, c, "n {n}");
+                // Into a reused buffer of other bytes: every byte is written.
+                let mut z = vec![0xa5u8; n + 16];
+                zr_decode(&s, n, &mut z, &|| "t".into()).unwrap();
+                assert_eq!(z, c, "n {n} (reused)");
+                for (sab, code) in [
+                    (ZrSabotage::Overrun, "zr-length"),
+                    (ZrSabotage::ShortRun, "zr-noncanonical"),
+                ] {
+                    let mut bad = Vec::new();
+                    if zr_encode_sabotaged(&c, sab, &mut bad) {
+                        let e = zr_decode(&bad, n, &mut out, &|| "t".into()).unwrap_err();
+                        assert_eq!(e.code, code, "n {n} {sab:?}");
+                    } else {
+                        assert_eq!(bad, s);
+                    }
+                }
+            }
+        }
     }
 
     /// The vector untranspose (16 words a step, then the u64 path) is the byte-plane inverse.

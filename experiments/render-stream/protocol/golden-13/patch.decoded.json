@@ -1072,8 +1072,8 @@
     },
     {
       "offset": 12878,
-      "byte_length": 5614,
-      "sha256": "e939e70a80c8d65d1f3cb5819bd1d1f056c1835196ab17f4fe8b65fb0e0546c1",
+      "byte_length": 5592,
+      "sha256": "6fa9f843c671a8fb696867a39c405c4ec40389f7ac18d1e6e9f43c22bb6d1a4c",
       "meta": {
         "type": "transaction",
         "seq": 4,
@@ -1618,9 +1618,9 @@
       ]
     },
     {
-      "offset": 18492,
-      "byte_length": 10126,
-      "sha256": "39720755f23873adc967f6010888e1088fdd6b70b3c9a7384f6bb686a680c392",
+      "offset": 18470,
+      "byte_length": 10104,
+      "sha256": "1f49eb949fff79bd0f39e38de94bbe7dbed95449fdf6a68dd4451bc7fa05a238",
       "meta": {
         "type": "transaction",
         "seq": 5,
@@ -2560,7 +2560,7 @@
       ]
     },
     {
-      "offset": 28618,
+      "offset": 28574,
       "byte_length": 1272,
       "sha256": "67f4c717d27ce8cb194864962edeb1fd6aaf4006e4f8400efe3ebdd08eebdf90",
       "meta": {
@@ -2700,7 +2700,7 @@
       ]
     },
     {
-      "offset": 29890,
+      "offset": 29846,
       "byte_length": 2514,
       "sha256": "5a83873b19275adf67149cc18cb9c4ba4db023571fb0c14982df73d282986db3",
       "meta": {
@@ -2936,7 +2936,7 @@
       ]
     },
     {
-      "offset": 32404,
+      "offset": 32360,
       "byte_length": 2697,
       "sha256": "d7ce25636a6be9d8bbcfc7dabc38d752699c153bdd3afb05ed7b67dac515f935",
       "meta": {
@@ -3130,7 +3130,7 @@
       ]
     },
     {
-      "offset": 35101,
+      "offset": 35057,
       "byte_length": 3924,
       "sha256": "def12b496add053eb0403330b5aad77cbddf6cb54bfed5fb5ebeacdd7b2e014a",
       "meta": {
@@ -3555,7 +3555,7 @@
       ]
     },
     {
-      "offset": 39025,
+      "offset": 38981,
       "byte_length": 2924,
       "sha256": "c70ddf5f02d63287c1a5945173c8b87e1e811d24590c5e8e5976f401250cd307",
       "meta": {
@@ -3840,9 +3840,9 @@
       ]
     },
     {
-      "offset": 41949,
-      "byte_length": 2526,
-      "sha256": "032aa34be720d06f5100b853fc98dcf06e89e5799648406e0f493ae08f14a99b",
+      "offset": 41905,
+      "byte_length": 2356,
+      "sha256": "8251efb7a04d9b9b53ad46e9fd0a3e461add2af1a500e9852f18b4eda19de64d",
       "meta": {
         "type": "transaction",
         "seq": 11,
@@ -4091,9 +4091,9 @@
       ]
     },
     {
-      "offset": 44475,
-      "byte_length": 1445,
-      "sha256": "6b4aa7d5759e1ad402c851bf5e49dd2c992f21c5adcebe81dfd30ec61b439827",
+      "offset": 44261,
+      "byte_length": 1426,
+      "sha256": "84c02acf545d68ca2df82994f62382bad1284bb3f8afe71abeb000a428f3e505",
       "meta": {
         "type": "transaction",
         "seq": 12,
@@ -4229,9 +4229,9 @@
       ]
     },
     {
-      "offset": 45920,
-      "byte_length": 1718,
-      "sha256": "fd6c84eb62747380330c1a50de45b14be52192f3e2af0151203e17b05b6fd9f0",
+      "offset": 45687,
+      "byte_length": 1560,
+      "sha256": "8c3568ed6e151258d0805bd4418a71c17d8c7a75d880881f20c7d398da4ea139",
       "meta": {
         "type": "transaction",
         "seq": 13,
@@ -4375,9 +4375,9 @@
       ]
     },
     {
-      "offset": 47638,
-      "byte_length": 2128,
-      "sha256": "1d2862394690ec3ba1d409edf90bfda8574d2de6b9abb0b0b8c6b8509257494a",
+      "offset": 47247,
+      "byte_length": 2064,
+      "sha256": "83171be8d6bc73ebfbc14c88ae6cafa780e20010f6ea83578c68c02cf01c5de8",
       "meta": {
         "type": "transaction",
         "seq": 14,
@@ -4589,7 +4589,7 @@
       ]
     },
     {
-      "offset": 49766,
+      "offset": 49311,
       "byte_length": 1320,
       "sha256": "cbf53f6b432160d1516af5da2148f01f52a6a14bb486e30b1836b3282fb08251",
       "meta": {
@@ -4738,9 +4738,9 @@
       ]
     },
     {
-      "offset": 51086,
-      "byte_length": 13419,
-      "sha256": "c0e44cab3ce522e30502716f028804932a3bf9f76a6e36fddb37c8c4d13a592b",
+      "offset": 50631,
+      "byte_length": 13358,
+      "sha256": "5342b07115c5dc4dd4df644ac87fc1c930eb75f2f1a1533d85fda9d226f3405f",
       "meta": {
         "type": "transaction",
         "seq": 16,
@@ -5950,9 +5950,9 @@
       ]
     },
     {
-      "offset": 64505,
-      "byte_length": 3437,
-      "sha256": "f476018a4ed037f8dc3ded90ea363125d24b4740e17a532f73255c324d617235",
+      "offset": 63989,
+      "byte_length": 3250,
+      "sha256": "7ca7fc2ecdf3eff0873ddcd59cc0b1c4cd39a2c4479bd5eae61d47f3b14be669",
       "meta": {
         "type": "transaction",
         "seq": 17,
@@ -6339,9 +6339,9 @@
       ]
     },
     {
-      "offset": 67942,
-      "byte_length": 1488,
-      "sha256": "d41a9e97c769c4b344a56ce8f8cdb6fadff75948422891eae241a1538233193b",
+      "offset": 67239,
+      "byte_length": 1279,
+      "sha256": "04ec5dece11102cd8e3764783180a8a3d08efc688d5229698262f015d3fe4149",
       "meta": {
         "type": "transaction",
         "seq": 18,
@@ -6523,9 +6523,9 @@
       ]
     },
     {
-      "offset": 69430,
-      "byte_length": 1821,
-      "sha256": "652b138dde0f80dffe098ce45c19ab711239dd0be16627b98455e6e362bde326",
+      "offset": 68518,
+      "byte_length": 1640,
+      "sha256": "464f2fadcf28c5dc734f2145364649cbcd0f210262145e102775b12b9e39a853",
       "meta": {
         "type": "transaction",
         "seq": 19,
@@ -6749,7 +6749,7 @@
       ]
     },
     {
-      "offset": 71251,
+      "offset": 70158,
       "byte_length": 1442,
       "sha256": "c9873f510d53d718775e9869b69bf66458d976abaeea823c867ccd58421dd0ac",
       "meta": {
@@ -6896,9 +6896,9 @@
       ]
     },
     {
-      "offset": 72693,
-      "byte_length": 15132,
-      "sha256": "845a3287877b1601f59fef0351bf916906739d27e70e49655dc3015a8f1d9294",
+      "offset": 71600,
+      "byte_length": 14890,
+      "sha256": "29505f1e1152b2a3cd2a53135325f70477b22ce61acf6879f00e8a4d6a42eee4",
       "meta": {
         "type": "transaction",
         "seq": 21,
@@ -8319,7 +8319,7 @@
       ]
     },
     {
-      "offset": 87825,
+      "offset": 86490,
       "byte_length": 4529,
       "sha256": "11d5e6603e27a7b79b7febccc96335b1b42a7d27c64feba31bc7692e807e37f6",
       "meta": {
@@ -8774,7 +8774,7 @@
       ]
     },
     {
-      "offset": 92354,
+      "offset": 91019,
       "byte_length": 2280,
       "sha256": "bb5bf78d2d9270f2affa284d4e30dcb1d5213842ad18eb442b4975f4e1131e33",
       "meta": {
@@ -9054,7 +9054,7 @@
       ]
     },
     {
-      "offset": 94634,
+      "offset": 93299,
       "byte_length": 3100,
       "sha256": "aeba27a2c7d5655077dd9c83fb993b1375510b5e008f3e5d0455353d1897c52f",
       "meta": {
@@ -9384,7 +9384,7 @@
       ]
     },
     {
-      "offset": 97734,
+      "offset": 96399,
       "byte_length": 2198,
       "sha256": "d885ec8424b6bc93021e7e235ecb8a1b9c8d40c17765c86f36bc0b13ac044a3a",
       "meta": {
@@ -9585,9 +9585,9 @@
       ]
     },
     {
-      "offset": 99932,
-      "byte_length": 18369,
-      "sha256": "d4cd7c1bb8737aa396f221b21fb58ad15b74afae984c6ebb548ad5f58c6bad13",
+      "offset": 98597,
+      "byte_length": 18127,
+      "sha256": "cdcedf5497a8ff131fd2b9913f900fbaf3ecf13de95773aaa4f85d9e7b8fb2b4",
       "meta": {
         "type": "transaction",
         "seq": 26,
@@ -11307,19 +11307,19 @@
       ]
     },
     {
-      "offset": 118301,
+      "offset": 116724,
       "byte_length": 291,
-      "sha256": "2cc2835af7849017db2b8b18ba9e6c64f89f90d43aee5e26d3d6e1be66a61458",
+      "sha256": "6964075e5971ea6cd1c73b7800de14dfc82bba6199db66c91acfa312db2e0c29",
       "meta": {
         "type": "end",
         "transactions": 26,
         "reason": "shutdown",
         "stats": {
-          "bytes_total": 118301,
+          "bytes_total": 116724,
           "encode_ns_total": 250000,
           "snapshot_ns_total": 40000,
           "diff_ns_total": 12345,
-          "max_record_bytes": 18369,
+          "max_record_bytes": 18127,
           "full_transactions": 5,
           "patch_transactions": 21,
           "resource_records": 0,
