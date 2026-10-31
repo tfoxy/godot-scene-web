@@ -134,6 +134,9 @@ than the whole file. Redirect any long-running command's output to a file and re
 summary and failures (`tail`, `grep -c`, a targeted `grep` for the failing case), not the full log.
 If nested subagents are useful for broad, open-ended reading (surveying which files reference a
 hook, say), delegate that to an Explore-style subagent rather than reading everything yourself.
+When subagent model selection is available (see the root `AGENTS.md` "Subagent model selection"),
+run those mechanical sub-tasks — file surveys, "run this leg and summarize", cleanup — on the cheaper
+model, and keep the capable model for your own design/uncertain work.
 
 ## Context cap
 

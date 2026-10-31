@@ -40,6 +40,21 @@ agent-preset registry. Use plain `dsh` for `headless`, `sdk`, and `acp`.
 `scripts/dsh --dump-config` is the quickest check that the overlay composes. Regenerate and restart
 after changing `agents/*.md` or MCP config; the overlay is read at boot.
 
+## Subagent model selection
+
+The base web profile already opts the top-level `subagent` tool into model selection
+(`modelSelectionSettings: true`), and each role preset opts its own `subagent` tool in the same way, but the
+capability is gated by a Host setting that is off by default: **Web GUI → Plugins → Subagent → "Allow agents to
+choose models for Subagents"**. It persists and applies to new sessions. When enabled, the `subagent` tool
+exposes `provider`/`model`/`reasoning_effort` and a `list_subagent_models` discovery tool, so an agent can route
+each child to a chosen model. Standard pair:
+
+- `deepseek` / `deepseek-v4-pro` — design/uncertain work.
+- `deepseek` / `deepseek-flash` (DeepSeek V4.1 Flash) — mechanical/finisher work.
+
+`subagent_fork` cannot switch route (it inherits the parent's for KV-cache reuse), and `subagent_role` selects a
+preset but not a model — use `subagent` to choose a route.
+
 ## Shared memory and skills
 
 - `AGENTS.md` (and the `CLAUDE.md` symlink) is loaded by DSH's workspace-instruction plugin.

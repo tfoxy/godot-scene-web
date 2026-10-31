@@ -71,6 +71,22 @@ load 7.x.
 Use [gsw-wgpu-renderer](skills/gsw-wgpu-renderer/SKILL.md) for implementation and review of the Rust/wgpu
 canvas renderer; use [gsw-perf](skills/gsw-perf/SKILL.md) for performance-harness work and measurements.
 
+## Subagent model selection
+
+When delegating to subagents, pick the model per subagent by how much judgement the task needs.
+
+- **Capable model** for design, uncertain or novel work: a new protocol, a tricky bug, a design doc
+  with trade-offs.
+- **Cheaper model** for mechanical, low-uncertainty work: resume a killed worktree and finish its
+  validation/landing, "run this exact leg and summarize", broad file surveys, disk or worktree
+  cleanup.
+
+The model names are harness-specific: Claude Code uses `opus` for design and `sonnet` for finishers and
+hygiene; DeepSeek Harness uses `deepseek-v4-pro` / `deepseek-flash` (see [docs/dsh.md](docs/dsh.md)); Codex has
+its own model configuration. Choose per call. A fork or continuation that inherits the parent's model cannot
+switch route. Evaluate every delegation and hand the mechanical legs to the cheaper model; increment agents
+(`agents/rs-increment.md`) do the same for their own nested sub-tasks.
+
 ## Commits
 
 Full rules, and the release runbook, in [docs/commit-and-release.md](docs/commit-and-release.md).
