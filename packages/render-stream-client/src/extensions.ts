@@ -116,6 +116,11 @@ export interface ItemQuery {
   visible(id: number): boolean;
   /** The item's identity, or null. */
   meta(id: number): ItemMeta | null;
+  /** INP1: the topmost item drawn under the presentation-space point, in the last draw order,
+   * as it is drawn (overrides included); null where only the clear colour shows. The hit is the
+   * item whose own commands cover the point, so for a card it is one of the card's children:
+   * `parent` climbs to the card. Computed on demand, never per frame. */
+  hitTest(x: number, y: number): number | null;
 }
 
 export interface ExtensionFrame {
@@ -165,6 +170,8 @@ export interface ExtensionCore {
   queryItem(id: number): ArrayLike<number>;
   querySubtreeRect(id: number): ArrayLike<number>;
   queryChildren(id: number): Uint32Array;
+  /** INP1: the topmost drawn item under a presentation-space point, or null. */
+  hitTest(x: number, y: number): number | null;
 }
 
 /** The hello's `item_meta` value (render-stream-13.md, TAG1's parser: exactly these keys). */
@@ -409,6 +416,7 @@ export class ExtensionHost {
         return !!f && f.length > 0 && f[1] !== 0;
       },
       meta: (id) => this.metas.get(id) ?? null,
+      hitTest: (x, y) => this.core?.hitTest(x, y) ?? null,
     };
     this.table = new Table(this.query);
   }

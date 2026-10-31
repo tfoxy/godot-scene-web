@@ -376,3 +376,131 @@ fn queries_read_the_game_state() {
     );
     assert!(b.query_item(&s, 99).is_none());
 }
+
+// ------------------------------------------------------------------------- INP1: pointer mapping
+
+fn near(a: [f32; 2], b: [f32; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
+}
+
+fn applied(
+    set: Option<(Vec<u32>, Vec<f32>)>,
+    sabotage: OverrideSabotage,
+) -> (ResolvedState, Applier) {
+    let store = PayloadStore::default();
+    let s = base();
+    let mut b = applier();
+    b.ov_sabotage = sabotage;
+    if let Some((ids, vals)) = set {
+        b.set_overrides(&ids, &vals).unwrap();
+    }
+    b.apply(&s, &full_delta(&s), &store);
+    (s, b)
+}
+
+#[test]
+fn a_tap_on_a_raised_item_reaches_its_game_position() {
+    // C1 is game-rect (17, 203, 30, 20): centre (32, 213). P's lift draws it 119 px higher.
+    let (s, b) = applied(Some(ov(Variant::Moved)), OverrideSabotage::default());
+    assert_eq!(b.hit_test(32.0, 94.0), Some(C1), "C1 is drawn raised");
+    let (item, p) = b.to_game(&s, 32.0, 94.0).unwrap();
+    assert_eq!(item, Some(C1));
+    assert!(near(p, [32.0, 213.0]), "{p:?}");
+    // Where it was before the lift nothing is drawn any more.
+    assert_eq!(b.hit_test(32.0, 213.0), None);
+    assert_eq!(b.to_game(&s, 32.0, 213.0), Some((None, [32.0, 213.0])));
+}
+
+#[test]
+fn a_non_overridden_item_maps_to_itself() {
+    let (s, b) = applied(Some(ov(Variant::Moved)), OverrideSabotage::default());
+    let (item, p) = b.to_game(&s, 310.0, 20.0).unwrap();
+    assert_eq!(item, Some(Q));
+    assert_eq!(p, [310.0, 20.0]);
+    // With no table at all, too.
+    let (s, b) = applied(None, OverrideSabotage::default());
+    assert_eq!(b.to_game(&s, 32.0, 213.0), Some((Some(C1), [32.0, 213.0])));
+}
+
+#[test]
+fn a_scaled_override_inverts_about_its_pivot() {
+    // P scaled 1.24 about its origin (G (10,200) · P (5,0) = (15, 200)): C1's game centre (32, 213)
+    // is drawn at 15 + 1.24·17, 200 + 1.24·13.
+    let xf = scale_about(1.24, 1.24, 15.0, 200.0);
+    let (ids, vals) = table(P, xf, [1.0; 4], true);
+    let (s, b) = applied(Some((ids, vals)), OverrideSabotage::default());
+    let drawn = [15.0 + 1.24 * 17.0, 200.0 + 1.24 * 13.0];
+    let (item, p) = b.to_game(&s, drawn[0], drawn[1]).unwrap();
+    assert_eq!(item, Some(C1));
+    assert!(near(p, [32.0, 213.0]), "{p:?}");
+    // The drawn rect grew: x = 54 is right of C1's unscaled edge (47) and inside its scaled one.
+    assert_eq!(b.hit_test(54.0, drawn[1]), Some(C1));
+}
+
+#[test]
+fn the_nearest_override_composes_with_its_ancestors() {
+    // P lifted, C1 itself nudged: E = O_C1 · O_P, so (0, -119) then (+5, 0) in presentation space.
+    let ids = vec![P, C1];
+    let mut vals = table(P, LIFT, [1.0; 4], true).1;
+    vals.extend(table(C1, [1.0, 0.0, 0.0, 1.0, 5.0, 0.0], [1.0; 4], true).1);
+    let (s, b) = applied(Some((ids, vals)), OverrideSabotage::default());
+    let (item, p) = b.to_game(&s, 37.0, 94.0).unwrap();
+    assert_eq!(item, Some(C1));
+    assert!(near(p, [32.0, 213.0]), "{p:?}");
+}
+
+#[test]
+fn the_topmost_item_in_draw_order_wins() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    // Q (drawn after G) now covers G's top-left corner.
+    s.items.get_mut(&Q).unwrap().commands = Commands {
+        list: vec![Command::Rect {
+            aa: false,
+            rect: [5.0, 195.0, 20.0, 20.0],
+            color: [1.0; 4],
+        }],
+        ..Commands::default()
+    };
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    assert_eq!(b.hit_test(12.0, 202.0), Some(Q));
+    assert_eq!(b.hit_test(7.0, 197.0), Some(Q));
+    // G alone owns nothing Q does not cover here; outside both is bare clear colour.
+    assert_eq!(b.hit_test(100.0, 100.0), None);
+}
+
+#[test]
+fn a_hit_follows_a_transform_only_frame() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    let mut b = applier();
+    let (ids, vals) = ov(Variant::Moved);
+    b.set_overrides(&ids, &vals).unwrap();
+    b.apply(&s, &full_delta(&s), &store);
+    s.items.get_mut(&G).unwrap().xform[4] += 10.0;
+    let delta = TxDelta {
+        seq: 2,
+        items_upserted: vec![G],
+        ..TxDelta::default()
+    };
+    assert_eq!(b.apply(&s, &delta, &store).why, 0, "the rows-only path");
+    let (item, p) = b.to_game(&s, 42.0, 94.0).unwrap();
+    assert_eq!(item, Some(C1));
+    assert!(near(p, [42.0, 213.0]), "{p:?}");
+    assert_eq!(b.hit_test(20.0, 94.0), None);
+}
+
+#[test]
+fn sabotage_inverse_skip_is_caught() {
+    let (s, b) = applied(
+        Some(ov(Variant::Moved)),
+        OverrideSabotage {
+            inverse_skip: true,
+            ..Default::default()
+        },
+    );
+    let (item, p) = b.to_game(&s, 32.0, 94.0).unwrap();
+    assert_eq!(item, Some(C1));
+    assert!(!near(p, [32.0, 213.0]), "inverse-skip not caught");
+}

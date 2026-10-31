@@ -69,6 +69,9 @@ class ExtCore extends FakeCore implements ExtensionCore {
   queryChildren(id: number): Uint32Array {
     return Uint32Array.from(id < 3 ? [id + 1] : []);
   }
+  hitTest(x: number, y: number): number | null {
+    return x >= 10 && x < 14 && y >= 20 && y < 24 ? 3 : null;
+  }
 }
 
 const full = {
@@ -392,5 +395,17 @@ describe("render-stream client extensions (TAG2)", () => {
     expect(() => o.translate(1, Number.NaN, 0)).toThrow(/non-finite/);
     o.clearAll();
     expect(o.size).toBe(0);
+  });
+
+  it("query.hitTest asks the core on demand and is null before it is bound", () => {
+    const core = new ExtCore();
+    const ext = new ExtensionHost([{ id: "x" }]);
+    expect(ext.query.hitTest(11, 21)).toBeNull();
+    ext.bind(core);
+    expect(ext.query.hitTest(11, 21)).toBe(3);
+    expect(ext.query.hitTest(0, 0)).toBeNull();
+    // Nothing was computed by binding or by a table edit.
+    ext.overrides.translate(1, 0, -10);
+    expect(core.calls).toEqual([]);
   });
 });

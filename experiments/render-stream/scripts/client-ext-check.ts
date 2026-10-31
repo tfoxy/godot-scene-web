@@ -6,7 +6,7 @@
 //     --dir <leg out> --port <page port> --ws ws://127.0.0.1:<p>/render-stream --http http://127.0.0.1:<p> \
 //     --core <build-web.sh out> --extension none|identity|moved|scaled|hidden|tinted|redraw \
 //     [--sabotage override-no-inherit|override-no-damage|override-fast-path-miss] \
-//     [--mode shot|dispose] [--timeout-s 60]
+//     [--mode shot|dispose] [--timeout-s 60] [--pres 640x360] [--css 700x500]
 //
 // `shot` mounts once, waits for the stream to end (the host quits) and reads the drawing buffer
 // back: <dir>/shot.png plus <dir>/client-ext.json (statuses, the page's counters, the transport's
@@ -33,8 +33,17 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..", "..");
 const PAGE_DIR = join(HERE, "..", "web", "client-ext-check");
-const W = 640;
-const H = 360;
+// INP1: the presentation (the canvas's backing store, 1:1) and, with --css, a CSS box of another
+// aspect that letterboxes it (object-fit: contain); `inp` reads the pointer mapping back.
+const PRES = (
+  process.argv.includes("--pres")
+    ? process.argv[process.argv.indexOf("--pres") + 1]
+    : "640x360"
+)
+  .split("x")
+  .map(Number);
+const W = PRES[0];
+const H = PRES[1];
 
 function args(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -66,6 +75,7 @@ type Api = {
   mount(o: unknown): void;
   dispose(): void;
   stats(): unknown;
+  probe(): unknown;
   shot(): { width: number; height: number; rgba: string } | null;
   statuses: { kind: string; reason?: string; detail?: string }[];
   counters: unknown;
@@ -88,7 +98,11 @@ async function main(): Promise<number> {
     copyFileSync(join(coreDir, f), join(staticDir, "core", f));
   let glue = "/core/rs_gsw_wasm_client.js";
   if (a.sabotage) {
-    if (!/^override-(no-inherit|no-damage|fast-path-miss)$/.test(a.sabotage))
+    if (
+      !/^(override-(no-inherit|no-damage|fast-path-miss)|inverse-skip)$/.test(
+        a.sabotage,
+      )
+    )
       throw new Error(`client-ext-check: unknown sabotage ${a.sabotage}`);
     writeFileSync(
       join(staticDir, "core", "sabotage.js"),
@@ -140,6 +154,7 @@ export default function () {
   const report: Record<string, unknown> = {
     schema: "render-stream-client-ext-check/1",
     mode,
+    presentation: [W, H],
     extension: a.extension,
     sabotage: a.sabotage ?? null,
     origin,
@@ -174,6 +189,9 @@ export default function () {
       reasons: prov.reasons,
       renderer: prov.renderer,
     };
+    const cssBox = a.css
+      ? (a.css.split("x").map(Number) as [number, number])
+      : undefined;
     const mount = (extension: string) =>
       page.evaluate(
         (o) => (window as unknown as { __rse: Api }).__rse.mount(o),
@@ -193,6 +211,7 @@ export default function () {
           extension,
           width: W,
           height: H,
+          css: cssBox,
         },
       );
     const read = () =>
@@ -226,6 +245,10 @@ export default function () {
         (s) =>
           s.kind === "streaming" && (s as { firstFrame?: boolean }).firstFrame,
       );
+      if (a.extension === "inp" && cssBox)
+        report.probe = await page.evaluate(() =>
+          (window as unknown as { __rse: Api }).__rse.probe(),
+        );
       report.ended = ended;
       report.first_frame = firstFrame;
       if (shot) {

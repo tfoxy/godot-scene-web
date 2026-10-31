@@ -105,6 +105,8 @@ export interface LoopOptions {
   fetchTimeoutMs?: number;
   /** TAG2: the extension list's runtime; null (the pure client) costs one branch per frame. */
   ext?: ExtensionHost | null;
+  /** INP1: the session record, once per session (the client keeps its presentation size). */
+  onSession?: (session: SessionMeta) => void;
 }
 
 /** PH3: the ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
@@ -484,6 +486,7 @@ export class StreamLoop {
 
   private beginSession(conn: Connection, session: SessionMeta): void {
     conn.streamId = session.stream?.stream_id ?? "";
+    this.o.onSession?.(session);
     if (this.ext)
       this.ext.beginSession(session.session_id ?? "", conn.streamId);
     this.grantedWindow = session.publication?.credit_window ?? 1;

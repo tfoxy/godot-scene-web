@@ -39,6 +39,9 @@ pub struct OverrideSabotage {
     /// `override-fast-path-miss`: the rows-only path of a transaction (`move_rec`) ignores the
     /// table, so a transform-only frame under an override draws the game's transform.
     pub fast_path_miss: bool,
+    /// INP1 `inverse-skip`: [`Applier::to_game`] returns the hit item with the point unmapped
+    /// (the inverse of the item's effective override is never applied).
+    pub inverse_skip: bool,
 }
 
 /// What [`Applier::refresh_overrides`] did.
@@ -309,5 +312,91 @@ impl Applier {
             .get(&id)
             .map(|it| it.children.clone())
             .unwrap_or_default()
+    }
+
+    // ------------------------------------------------------------------------- INP1: pointer
+
+    /// INP1: the topmost drawn item under the presentation-space point `(x, y)`, in the last
+    /// walk's draw order (the attach list, walked backwards). An entry counts when it emits, the
+    /// point is inside its scissor, and inside its content rect under its *drawn* transform
+    /// (overrides included; a rotated or sheared item is tested in its own space, not by its
+    /// AABB). Nothing is computed per frame: this reads the records the walk and the rows-only
+    /// path already keep.
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<Id> {
+        for a in self.attach.iter().rev() {
+            if !a.emit || a.parked {
+                continue;
+            }
+            if let Some(s) = a.scissor {
+                let (sx, sy) = (s[0] as f32, s[1] as f32);
+                if x < sx || y < sy || x >= sx + s[2] as f32 || y >= sy + s[3] as f32 {
+                    continue;
+                }
+            }
+            let Some(rec) = self.items.get(&a.item) else {
+                continue;
+            };
+            if rec.lowered.draws.is_empty() {
+                continue;
+            }
+            let xf = rec.draw_xform;
+            let det = xf[0] * xf[3] - xf[1] * xf[2];
+            if det == 0.0 || !det.is_finite() {
+                continue;
+            }
+            let [lx, ly] = geom::xform_point(&geom::affine_inverse(&xf), [x, y]);
+            let [rx, ry, rw, rh] = rec.lowered.rect;
+            if lx >= rx && ly >= ry && lx < rx + rw && ly < ry + rh {
+                return Some(a.item);
+            }
+        }
+        None
+    }
+
+    /// INP1: the game-space point for a drawn point. The hit item (see [`Applier::hit_test`])
+    /// was drawn at `E · F`, with `F` the game's transform and `E` the composed override of the
+    /// item and its ancestors (nearest first, the order `cull` composes); the point the game
+    /// sees is `E⁻¹ · p`. Returns the hit item and that point, or `(None, p)` when no item is
+    /// drawn there (nothing overrides bare clear colour), or `None` for a singular `E`.
+    pub fn to_game(&self, state: &ResolvedState, x: f32, y: f32) -> Option<(Option<Id>, [f32; 2])> {
+        let p = [x, y];
+        let Some(hit) = self.hit_test(x, y) else {
+            return Some((None, p));
+        };
+        if self.overrides.is_empty() || self.ov_sabotage.inverse_skip {
+            return Some((Some(hit), p));
+        }
+        // An item drawn under `use_identity_transform` ignores its ancestors' transforms, and so
+        // their overrides.
+        if state
+            .items
+            .get(&hit)
+            .is_some_and(|it| it.use_identity_transform)
+        {
+            return Some((Some(hit), p));
+        }
+        let mut e = geom::IDENTITY;
+        let mut cur = Some(hit);
+        let mut guard = state.items.len() + 1;
+        while let Some(id) = cur {
+            if let Some(o) = self.overrides.get(&id) {
+                e = geom::mul(&e, &o.xform);
+            }
+            cur = state
+                .items
+                .get(&id)
+                .and_then(|it| it.parent)
+                .filter(|p| p.kind == ParentKind::Item)
+                .map(|p| p.id);
+            guard -= 1;
+            if guard == 0 {
+                break;
+            }
+        }
+        let det = e[0] * e[3] - e[1] * e[2];
+        if det == 0.0 || !det.is_finite() {
+            return None;
+        }
+        Some((Some(hit), geom::xform_point(&geom::affine_inverse(&e), p)))
     }
 }

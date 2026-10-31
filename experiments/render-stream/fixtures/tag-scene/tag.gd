@@ -27,6 +27,8 @@ extends Node2D
 ##           transaction: /12+ carries the shader time in every frame's patch) is made meanwhile;
 ##           override-redraw animates in that window
 ##   RS_FIXTURE_QUIT_FRAME (default 200 + start): quit
+## RS_FIXTURE_TAG_EXPAND (INP1, any value): the root window stretches canvas_items / expand from
+## 640x360, so a GRC_ROOT_SIZE=presentation:<W>x<H> of another aspect is accepted.
 ## RS_FIXTURE_TAG_START (default 0) delays every step (and dump) by that many frames, so that live
 ## viewers started beside the host are all connected before the first step.
 ##
@@ -56,6 +58,14 @@ func _ready() -> void:
 	if OS.has_environment("RS_FIXTURE_QUIT_FRAME"):
 		_quit_frame = OS.get_environment("RS_FIXTURE_QUIT_FRAME").to_int()
 	_variant = OS.get_environment("RS_FIXTURE_TAG_VARIANT")
+	if OS.has_environment("RS_FIXTURE_TAG_EXPAND"):
+		# INP1: a presentation of another aspect than 16:9 (GRC_ROOT_SIZE=presentation:<W>x<H>) needs
+		# a stretch the root size policy accepts: canvas_items / expand, so the viewport takes the
+		# window's aspect and the scene (absolutely positioned) is laid out as it was.
+		var root := get_window()
+		root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		root.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+		root.content_scale_size = Vector2i(640, 360)
 	if OS.has_environment("RS_FIXTURE_TAG_LOG"):
 		_log = FileAccess.open(OS.get_environment("RS_FIXTURE_TAG_LOG"), FileAccess.WRITE)
 	var loose := Label.new()

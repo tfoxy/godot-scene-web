@@ -1593,7 +1593,7 @@ run_g8tag2_leg() {
 	page="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
-		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE=presentation:640x360
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE="presentation:${PRES:-640x360}"
 		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME="$quit"
 		RS_FIXTURE_TAG_VARIANT="$variant"
 		RS_FIXTURE_TAG_START=60 GRC_ITEM_META=scene,path,meta GRC_LIVE_LISTEN=127.0.0.1:0
@@ -1601,6 +1601,7 @@ run_g8tag2_leg() {
 		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page"
 	)
 	[ "$pause" -gt 0 ] && LEG_ENV+=(RS_FIXTURE_TAG_PAUSE_MS="$pause")
+	[ "${PRES:-640x360}" != 640x360 ] && LEG_ENV+=(RS_FIXTURE_TAG_EXPAND=1)
 	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
 	pid="$BG_PID"
 	[ -z "$pid" ] && return 0
@@ -1617,7 +1618,7 @@ run_g8tag2_leg() {
 		mkdir -p "$dir/page"
 		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/client-ext-check.ts" \
 			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
-			--http "http://127.0.0.1:$port" --core "$OUT/g8tag2/core" --extension "$ext" "$@") \
+			--http "http://127.0.0.1:$port" --core "$OUT/g8tag2/core" --extension "$ext" --pres "${PRES:-640x360}" "$@") \
 			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
 		echo "$rc" >"$dir/page/exit-code.txt"
 	fi
@@ -1650,6 +1651,12 @@ run_g8tag2() {
 	run_g8tag2_leg sabotage-override-no-inherit base moved 300 0 --sabotage override-no-inherit
 	run_g8tag2_leg sabotage-override-fast-path-miss base moved 300 0 --sabotage override-fast-path-miss
 	run_g8tag2_leg sabotage-override-no-damage base redraw 300 3000 --sabotage override-no-damage
+	# INP1: pointer mapping on the base scene under the `inp` extension (Card1 lifted, Card2 scaled),
+	# in a CSS box of another aspect than the presentation (a letterbox), at 16:9 and 21:9.
+	echo "run-gate8: g8tag2 inp (pointer mapping: 640x360, 840x360; sabotage inverse-skip)"
+	run_g8tag2_leg inp base inp 300 0 --css 700x500
+	PRES=840x360 run_g8tag2_leg inp-wide base inp 300 0 --css 700x500
+	run_g8tag2_leg sabotage-inverse-skip base inp 300 0 --css 700x500 --sabotage inverse-skip
 }
 
 # W11d: native receivers live at /11 on a capture-scale host (as run_g8w11_coding_leg's, headless),

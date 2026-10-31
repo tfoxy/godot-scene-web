@@ -68,7 +68,10 @@ export type CoreMessage =
 export interface SessionMeta {
   session_id?: string;
   stream?: { stream_id?: string };
-  viewport?: { presentation_size?: [number, number] | null };
+  viewport?: {
+    presentation_size?: [number, number] | null;
+    logical_size?: [number, number] | null;
+  };
   resources?: { fetch?: string; http_path?: string | null };
   publication?: { credit_window?: number } | null;
 }
@@ -312,6 +315,19 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   queryChildren(id: number): Uint32Array {
     return this.g.query_children(id);
+  }
+
+  // INP1: on demand only; nothing here runs per frame.
+
+  hitTest(x: number, y: number): number | null {
+    const id = this.g.hit_test(x, y);
+    return id < 0 ? null : id;
+  }
+
+  /** `[item (-1: none), x, y]` of the drawn point mapped to the game's, or empty (a singular
+   * override). */
+  toGame(x: number, y: number): ArrayLike<number> {
+    return this.g.to_game(x, y);
   }
 
   dispose(): void {

@@ -8,7 +8,12 @@ import {
   sameEndpoint,
   validateEndpoint,
 } from "./endpoint";
-import { ExtensionHost, type RenderStreamExtension } from "./extensions";
+import {
+  ExtensionHost,
+  type Point,
+  type Rect,
+  type RenderStreamExtension,
+} from "./extensions";
 import {
   CLIENT_INBOUND_BYTES,
   CLIENT_LIVE_CODING,
@@ -24,6 +29,11 @@ import {
   type RenderStreamStatus,
   StreamLoop,
 } from "./loop";
+import {
+  clientToPresentation,
+  presentationToClient,
+  readLayout,
+} from "./pointer";
 import {
   type RenderStreamTransportFactory,
   webSocketTransport,
@@ -49,6 +59,16 @@ export interface RenderStreamClientOptions {
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
+/** INP1: a point in the game's input space (the host window's px) and the item drawn there. */
+export interface GamePoint {
+  readonly point: Point;
+  /** The topmost drawn item at the point (a card's child, say: `query.parent` climbs); null on
+   * bare clear colour. */
+  readonly item: number | null;
+  /** The point as it is drawn (presentation space), before the inverse of the override. */
+  readonly drawn: Point;
+}
+
 export interface RenderStreamClient {
   /** Loads the core (once) and connects; again after `failed` or `ended`. */
   connect(): void;
@@ -56,6 +76,20 @@ export interface RenderStreamClient {
    * next `connect`). Throws `RenderStreamEndpointError` for an invalid one. */
   setEndpoint(e: RenderStreamEndpoint): void;
   stats(): Readonly<RenderStreamStats>;
+  /** INP1: the page point `(clientX, clientY)` (an event's, CSS px) as a presentation-space
+   * point (the host window's px), or null where the picture is not: a letterbox bar, outside the
+   * canvas's box, or no session yet. Reads the canvas's layout on demand. */
+  cssToPresentation(clientX: number, clientY: number): Point | null;
+  /** INP1: a presentation-space rect (an item's `query.rect`, say) in page px, for a DOM overlay
+   * anchored to it. Canvas-local: subtract `canvas.getBoundingClientRect()`. */
+  presentationToCss(r: Rect): Rect;
+  /** INP1: a presentation-space point as the game sees it: the topmost drawn item under it, and
+   * the point through the inverse of that item's effective override (so a tap on a raised card
+   * is where the game has the card). With no item under it the point is unchanged and `item` is
+   * null. Null before the core is up. */
+  toGame(x: number, y: number): GamePoint | null;
+  /** INP1: `cssToPresentation` then `toGame`: null on a letterbox bar. */
+  clientToGame(clientX: number, clientY: number): GamePoint | null;
   /** Stops the frame loop, closes the connection (1000), aborts in-flight GETs, frees every
    * wasm-bindgen object, loses the WebGL context and drops the instance. Idempotent. */
   dispose(): void;
@@ -105,6 +139,8 @@ class Client implements RenderStreamClient {
   private core: WasmStreamCore | null = null;
   private loading: Promise<void> | null = null;
   private disposed = false;
+  /** INP1: the session's presentation size (null before its record). */
+  private presentation: [number, number] | null = null;
   private readonly onLost = (e: Event) => {
     // Q5 "Context loss": keep the context restorable; the loop holds until the restore.
     e.preventDefault();
@@ -152,6 +188,36 @@ class Client implements RenderStreamClient {
 
   stats(): Readonly<RenderStreamStats> {
     return this.loop?.stats() ?? EMPTY_STATS;
+  }
+
+  cssToPresentation(clientX: number, clientY: number): Point | null {
+    if (this.disposed || this.presentation === null) return null;
+    return clientToPresentation(
+      readLayout(this.o.canvas, this.presentation),
+      clientX,
+      clientY,
+    );
+  }
+
+  presentationToCss(r: Rect): Rect {
+    const l = readLayout(this.o.canvas, this.presentation);
+    return presentationToClient(l, r);
+  }
+
+  toGame(x: number, y: number): GamePoint | null {
+    if (this.disposed || this.core === null) return null;
+    const m = this.core.toGame(x, y);
+    if (m.length !== 3) return null;
+    return {
+      point: { x: m[1], y: m[2] },
+      item: m[0] < 0 ? null : m[0],
+      drawn: { x, y },
+    };
+  }
+
+  clientToGame(clientX: number, clientY: number): GamePoint | null {
+    const p = this.cssToPresentation(clientX, clientY);
+    return p === null ? null : this.toGame(p.x, p.y);
   }
 
   dispose(): void {
@@ -223,6 +289,10 @@ class Client implements RenderStreamClient {
       creditStage: this.o.creditStage,
       applyOn: this.o.applyOn,
       ext: this.ext,
+      onSession: (m) => {
+        const v = m.viewport;
+        this.presentation = v?.presentation_size ?? v?.logical_size ?? null;
+      },
       onStatus: (s) => this.status(s),
       clock: pageClock,
       canvas: () => {
