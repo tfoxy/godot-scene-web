@@ -825,3 +825,27 @@ here.
   - Unfreezing marks the subtree changed, and the next apply re-reads it from the state, which the
     validator keeps current regardless.
   - The item map needs no parent links: `state.items` has them.
+## As built (PRES-A)
+
+Result: `results/p3/pres-a.md`.
+
+- **"Nothing new" was wrong at the host.** A wide `expand` presentation made the capture call the
+  session `degenerate-visible` and fail it as `root-size-enforce-failed`. host_size_status, the
+  native receiver's `viewport-mismatch` and both validators' `viewport-entry` compared the visible
+  rect with `logical_size`.
+  - gate6-design.md Q3a's amendment (PRES-A) compares it with the stretch's visible size for
+    `presentation_size`, in the engine's float32 arithmetic.
+  - No session byte changes.
+  - The product needs a client core and seat capture built at or after the PRES-A commit.
+- **float32 trap.** At H = 1080 the expand width floors to W − 1 for even
+  W ∈ {1940, 2234, 2260, 2382, 2504, 2530}. Couch's width rule steps off those widths.
+- **Proof:** g6b's `wide/` legs at 2340×1080, 2520×1080 and 1170×540, plus a 16:9 control whose
+  bytes match. In the GSW half, `wide-composition@gsw` composes the wide legs' verdict.
+  - The design's sabotage, `ignore-presentation`, is a no-op at stretch scale 1. It is judged at
+    1170×540, and reported at 2340×1080.
+- **Couch:** `222da86e`. The page sends `aspect`, and the host's cap is
+  `COUCHCOOP_RENDER_STREAM_MAX_WIDTH` (default 2520). A rotation letterboxes until PRES-R.
+- **STS2 result:** the seat's 2520-wide stream costs the same as 1920 on the seat, the wire and the
+  client. But STS2's UI stays in the left 1920 columns on every screen, so the game-side route
+  first needs one mod change: size the game's UI root to the visible rect. The per-screen
+  candidates and the old spread comparison for PRES-C are in the result doc.

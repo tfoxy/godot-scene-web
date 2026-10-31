@@ -50,6 +50,14 @@ export const GATE6_LEGS: GswLegDef[] = [
   { leg: "hd/receiver-half-inline", replaces: true },
   { leg: "hd/receiver-half-at-logical", replaces: true },
   { leg: "hd/sabotage-receiver-ignore-presentation", replaces: true },
+  // PRES-A (g6b's wide/): the HD fixture under aspect expand at the viewer-aspect presentations
+  // 2340x1080, 2520x1080 and 1170x540, and ignore-presentation at 1170x540. Judged raw: no Q7 model
+  // of a wide frame exists, so wide-composition@gsw (lib/gate7-g6-checks.ts) composes the verdict
+  // from the gsw native/half legs' (Q7-judged above) and the wide references.
+  { leg: "wide/receiver-2340x1080", replaces: true },
+  { leg: "wide/receiver-2520x1080", replaces: true },
+  { leg: "wide/receiver-1170x540", replaces: true },
+  { leg: "wide/sabotage-receiver-ignore-presentation", replaces: true },
 ];
 
 export const GATE6_NOT_APPLICABLE: NotApplicable[] = [
@@ -93,8 +101,19 @@ export const GATE6_RECEIVER_CHECKS = {
     "leg-class-sabotage-receiver-ignore-presentation",
     "leg-class-sabotage-receiver-ignore-canvas-stacking",
     "receiver-typed-clean",
+    "leg-class-sabotage-receiver-ignore-presentation-wide",
   ],
-  notApplicable: {} as Record<string, string>,
+  notApplicable: Object.fromEntries(
+    [
+      "leg-class-receiver-wide-2340x1080",
+      "leg-class-receiver-wide-2520x1080",
+      "leg-class-receiver-wide-1170x540",
+      "receiver-vs-reference-wide",
+    ].map((id) => [
+      id,
+      "PRES-A: budget 0 against the native reference; the gsw wide legs are judged by wide-composition@gsw and presentation-check@gsw (no Q7 model of a wide frame)",
+    ]),
+  ) as Record<string, string>,
 };
 
 /** The leg's model (gsw-tolerance.json key) and reference directory, or null (judged raw). */
@@ -102,6 +121,8 @@ function planOf(
   leg: string,
 ): { key: string; reference: string; keepUndecided?: boolean } | null {
   if (leg === "hd/sabotage-receiver-ignore-presentation") return null;
+  // PRES-A: judged raw (wide-composition@gsw).
+  if (leg.startsWith("wide/")) return null;
   // The hazard against reference-hd-half under the half model, its undecided pixels (text, which
   // the hazard rasterizes at oversampling 1) left as drawn: presentation-hazard-measured needs
   // them to differ, and only the delta1 class's one-level differences are Q7's.

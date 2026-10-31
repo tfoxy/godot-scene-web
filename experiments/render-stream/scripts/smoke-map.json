@@ -592,6 +592,7 @@
     },
     {"why": "SWO: the CI lavapipe particle-flake typing, read only by gate7b-adapters.ts for gate 8's web group (and its self-test)", "paths": ["experiments/render-stream/scripts/lib/gate7-web-flakes.ts"], "reach": ["g7:g7-8@web/rust", "pure"]},
     {"why": "G8kb: GSW's KTX2 transcoder (its wasm build and Web Worker) is in every GSW bundle, so it reaches gate 7's GSW half and native gate 8 (g8kp's GSW legs build the bundle)", "paths": ["experiments/render-stream/web/basis-transcoder/**", "experiments/render-stream/scripts/build-basis-transcoder.sh"], "reach": ["g7:*@gsw", "g7live:*@gsw", "native:gate8@*"]},
+    {"why": "G7g/PRES-A: gate 6's browser presentation checks (presentation-check, wide-composition), read by check-gate7.ts and gate 7's GSW and live halves for g7-6 only", "paths": ["experiments/render-stream/scripts/lib/gate7-g6-checks.ts"], "reach": ["g7:g7-6@gsw", "g7:g7-6@web/rust", "g7live:g7-6@gsw", "g7live:g7-6@web/rust"]},
     {
       "why": "gate 7's GSW half",
       "paths": [

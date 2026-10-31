@@ -90,6 +90,10 @@ object). Every other key and value is exactly as render-stream-5.md's `viewport`
   `host_window_size == presentation_size` and the visible rect's size equals `logical_size`;
   `"degenerate-visible"` iff the visible size differs from `logical_size`; `"degenerate-window"`
   otherwise.
+  **PRES-A amendment (gate6-design.md Q3a):** "`logical_size`" in this rule reads "the stretch's
+  visible size for `presentation_size`", which is `logical_size` except under `canvas_items` with
+  aspect `expand`, `keep_width` or `keep_height` at another aspect (wider or taller, in the engine's
+  float32). No byte of any session changes.
 - `font_oversampling` is `Viewport.get_oversampling()` (a float32, always positive) -- the ONLY
   JSON-embedded float this wire carries (see "As built" for its canonical decimal form).
 - `snap_2d` carries the root's `snap_2d_transforms_to_pixel`/`_vertices_to_pixel` project settings

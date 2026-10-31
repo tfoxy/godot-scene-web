@@ -13,6 +13,9 @@
 //    pass, a point 3 ulp off and a missing array fail, 2 ulp passes using the allowance.
 // 6. evaluateAppliedViewport / receiverTyped.
 // 7. hazardKinds on the committed expected.json, and evaluateHazard.
+// 8. PRES-A: stretchVisibleSize (the engine's float32 expand floors, keep stays logical) and
+//    evaluateWideSession (a 2520x1080 expand session passes; a logical visible rect and a keep aspect
+//    fail).
 
 import type { RecordingSummary } from "../lib/gate0-checks";
 import type { ResourceLine } from "../lib/gate2-checks";
@@ -30,7 +33,9 @@ import {
   receiverTyped,
   styleboxItemsHd,
 } from "../lib/gate6b-checks";
+import { evaluateWideSession } from "../lib/gate6b-wide-checks";
 import type { Gate6HdExpected } from "../lib/gate6h-checks";
+import { stretchVisibleSize } from "../lib/render-stream-2";
 import type { Wire5 } from "../lib/gate55-wire";
 
 type Assert = (name: string, ok: boolean, detail?: string) => void;
@@ -409,6 +414,71 @@ export function selfTestGate6b(assert: Assert, hd: Gate6HdExpected): void {
       "no aa-only region differs",
       evaluateHazard({ RT: 5 }, kinds),
       "antialiased",
+    );
+  }
+
+  // 8. PRES-A.
+  {
+    const expand = { mode: "canvas_items", aspect: "expand" };
+    const hdSize: [number, number] = [1920, 1080];
+    const floors: number[] = [];
+    for (let w = 1920; w <= 2600; w += 2)
+      if (stretchVisibleSize(expand, hdSize, [w, 1080])[0] !== w) floors.push(w);
+    assert(
+      "stretchVisibleSize: the float32 W-1 floors at H 1080",
+      JSON.stringify(floors) === "[1940,2234,2260,2382,2504,2530]",
+      JSON.stringify(floors),
+    );
+    assert(
+      "stretchVisibleSize: 1170x540 under expand is 2340x1080; keep stays logical",
+      JSON.stringify(stretchVisibleSize(expand, hdSize, [1170, 540])) ===
+        "[2340,1080]" &&
+        JSON.stringify(
+          stretchVisibleSize(
+            { mode: "canvas_items", aspect: "keep" },
+            hdSize,
+            [2520, 1080],
+          ),
+        ) === "[1920,1080]",
+    );
+    const wide = {
+      present: true,
+      session: {
+        viewport: {
+          logical_size: [1920, 1080],
+          stretch: {
+            mode: "canvas_items",
+            aspect: "expand",
+            scale_mode: "fractional",
+          },
+          root_size_policy: "presentation",
+          presentation_size: [2520, 1080],
+          host_size_status: "match",
+          host_window_size: [2520, 1080],
+          font_oversampling: 1,
+        },
+      },
+      session_blocks: [[], [], [0, 0, 2520, 1080], [1, 0, 0, 1, 0, 0], [1]],
+    } as unknown as RecordingSummary;
+    passes(
+      "evaluateWideSession: a 2520x1080 expand session",
+      evaluateWideSession(wide, [2520, 1080], "w"),
+    );
+    const logicalVisible = clone(wide);
+    (logicalVisible.session_blocks as number[][])[2] = [0, 0, 1920, 1080];
+    fails(
+      "evaluateWideSession: a logical visible rect",
+      evaluateWideSession(logicalVisible, [2520, 1080], "w"),
+      "host_visible_rect",
+    );
+    const keep = clone(wide);
+    (
+      keep.session as unknown as { viewport: { stretch: { aspect: string } } }
+    ).viewport.stretch.aspect = "keep";
+    fails(
+      "evaluateWideSession: aspect keep",
+      evaluateWideSession(keep, [2520, 1080], "w"),
+      "viewport",
     );
   }
 }

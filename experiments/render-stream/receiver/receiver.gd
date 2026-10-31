@@ -1225,9 +1225,19 @@ func _begin_session(accepted: Dictionary) -> bool:
 	_adopt_presentation(session_viewport, blocks_for_stretch)
 	if DisplayServer.get_name() != "headless" and _sabotage != "ignore-presentation":
 		var visible_size: Vector2 = get_viewport().get_visible_rect().size
-		if visible_size != logical_size:
+		# PRES-A (gate6-design.md "Amendment (PRES-A)"): a "match" host's visible rect is the
+		# stretch's visible size for its presentation (wider than logical_size under expand,
+		# keep_width or keep_height at another aspect; the core validated it), so that is what
+		# this window must lay out. Any other host is held to logical_size, as before.
+		var expected_size: Vector2 = logical_size
+		var expected_name: String = "logical_size"
+		if str(session_viewport.get("host_size_status", "")) == "match":
+			var host_visible: PackedFloat32Array = blocks_for_stretch[2]
+			expected_size = Vector2(host_visible[2], host_visible[3])
+			expected_name = "host_visible_rect size"
+		if visible_size != expected_size:
 			_viewport_report["size_check"] = "mismatch"
-			_fail(null, "viewport-mismatch", "visible rect size is %s, the session's logical_size is %s" % [str(visible_size), str(logical_size)])
+			_fail(null, "viewport-mismatch", "visible rect size is %s, the session's %s is %s" % [str(visible_size), expected_name, str(expected_size)])
 			return false
 		_viewport_report["size_check"] = "ok"
 	elif _sabotage == "ignore-presentation" and DisplayServer.get_name() != "headless":

@@ -61,6 +61,52 @@ import { type HashFn, sha256Hex } from "./sha256";
 
 // --------------------------------------------------------------------------------------- wire types
 
+/**
+ * PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size a `canvas_items` root presents
+ * `logical` in a `window`-sized window -- Godot 4.5.1's aspect rule (`Window::_update_viewport_size`,
+ * scene/main/window.cpp:1190-1250) in its own float32 arithmetic (Math.fround), floored. Only
+ * `keep_width`, `keep_height` and `expand` widen or heighten the visible rect past the logical
+ * size, and only when the window's aspect differs (`Math::is_equal_approx`); every other case is the
+ * logical size (the capture's and rs-core's `stretch_visible_size`).
+ */
+export function stretchVisibleSize(
+  stretch: { mode: string; aspect: string },
+  logical: [number, number],
+  window: [number, number],
+): [number, number] {
+  const f = Math.fround;
+  const widens = ["keep_width", "keep_height", "expand"].includes(
+    stretch.aspect,
+  );
+  if (
+    stretch.mode !== "canvas_items" ||
+    !widens ||
+    logical[0] <= 0 ||
+    logical[1] <= 0 ||
+    window[0] <= 0 ||
+    window[1] <= 0
+  )
+    return [logical[0], logical[1]];
+  const [dw, dh] = [f(logical[0]), f(logical[1])];
+  const viewportAspect = f(dw / dh);
+  const videoAspect = f(f(window[0]) / f(window[1]));
+  const tolerance = Math.max(
+    f(f(0.00001) * Math.abs(viewportAspect)),
+    f(0.00001),
+  );
+  if (
+    viewportAspect === videoAspect ||
+    Math.abs(f(viewportAspect - videoAspect)) < tolerance
+  )
+    return [logical[0], logical[1]];
+  if (viewportAspect < videoAspect) {
+    if (stretch.aspect === "keep_height" || stretch.aspect === "expand")
+      return [Math.floor(f(dh * videoAspect)), logical[1]];
+  } else if (stretch.aspect === "keep_width" || stretch.aspect === "expand")
+    return [logical[0], Math.floor(f(dw / videoAspect))];
+  return [logical[0], logical[1]];
+}
+
 export type Origin = "created" | "root-query" | "adopted";
 // render-stream-8.md "Resource tables": the texture, mesh, shader and material tables accept
 // "adopted" beside "created" at /8 (items and canvases have accepted it since /0).
@@ -9328,18 +9374,24 @@ export function createRecordingValidator(
       hostVisibleRect[2],
       hostVisibleRect[3],
     ];
-    const logicalSize = sessionMeta.viewport.logical_size;
     const presentationSize =
       sessionMeta.viewport.presentation_size ??
       sessionMeta.viewport.logical_size;
+    // PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size the stretch gives the
+    // presentation, the logical size unless expand/keep_width/keep_height widen it.
+    const expectedVisible = stretchVisibleSize(
+      sessionMeta.viewport.stretch,
+      sessionMeta.viewport.logical_size,
+      presentationSize,
+    );
     const hostWindowSize = sessionMeta.viewport.host_window_size;
     const samePair = (a: [number, number], b: [number, number]) =>
       a[0] === b[0] && a[1] === b[1];
     const expectedStatus =
       samePair(hostWindowSize, presentationSize) &&
-      samePair(visibleSize, logicalSize)
+      samePair(visibleSize, expectedVisible)
         ? "match"
-        : !samePair(visibleSize, logicalSize)
+        : !samePair(visibleSize, expectedVisible)
           ? "degenerate-visible"
           : "degenerate-window";
     if (sessionMeta.viewport.host_size_status !== expectedStatus) {

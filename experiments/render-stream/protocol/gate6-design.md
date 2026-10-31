@@ -297,6 +297,27 @@ are positive for all six.
   `logical_size` under `observe` and `enforce-min-size`. As before, `enforce-min-size` or
   `presentation:` with a status other than `match` is the sticky capture failure
   `root-size-enforce-failed`.
+- **Amendment (PRES-A, 2026-10-30): the visible size under a widening aspect.** The rule above
+  compared the visible rect with `logical_size`, which holds for aspect `ignore`/`keep` and for any
+  aspect at the logical size's own aspect. Under `expand` (STS2's setting), `keep_width` or
+  `keep_height` at another aspect, Godot widens (or heightens) the visible rect past the logical
+  size by design (`Window::_update_viewport_size`, window.cpp:1190-1250), so a viewer-aspect
+  presentation such as `presentation:2520x1080` of a 1920×1080 `expand` project was a
+  `degenerate-visible` session and failed `root-size-enforce-failed`. The visible size the rule
+  compares against is now the **stretch's visible size for `presentation_size`**: under
+  `canvas_items` with one of those three aspects, and an aspect that differs from the logical
+  size's (`Math::is_equal_approx`), `floor(logical.y × aspect(presentation))` wide (or
+  `floor(logical.x / aspect)` tall), in the engine's own float32 arithmetic; the logical size in
+  every other case. Implemented as `stretch_visible_size` in the capture (`rs_root_query.h`) and
+  rs-core (`meta.rs`), and `stretchVisibleSize` in render-stream-2.ts; the validators' viewport-entry
+  consistency check uses the same rule. No byte changes: every session the old rule called `match`
+  is still `match`, with the same fields; only sessions it called `degenerate-visible` under a
+  widening aspect can now be `match`. A native receiver of a `match` session checks its own visible
+  rect against the session's `host_visible_rect` size (the old rule's `logical_size` otherwise).
+  - **float32 trap:** for even W in 1920..2600 at H = 1080, the floor gives W − 1 at W = 1940,
+    2234, 2260, 2382, 2504 and 2530 (a 1-px horizontal stretch of the whole frame, still exact and
+    `match`); a product picking W from a viewer's aspect steps off those (couch PRES-A does).
+  - Proof: g6b's `wide/` legs (Q7b, `lib/gate6b-wide-checks.ts`, results/p3/pres-a.md).
 
 ### Q3b. Mirror: canvases
 
@@ -692,7 +713,7 @@ G6z quotes its report.
 | ----- | ---- | -------------- |
 | `g6a` | `import`; `capture-scene` (both file sinks), `capture-scene-inline`; `reference-scene`, `-repeat` (oracle), `-armed`; `receiver-scene`, `-patch`, `-inline`; `capture-animate`, `reference-animate`, `receiver-animate`; `capture-refused`, `reference-refused`, `receiver-refused`; `sabotage-freeze`, `-omit-transform`, `-perturb-vertex`, `-perturb-shader`, `-receiver-ignore-clip`, `-receiver-stale-texture` | **before G6b**: `unsupported` with exactly `extra-canvas` (the HUD), `HU` excluded from pixel checks; **from G6b on**: `success` (sabotages: `pixel-mismatch` at their sets; `perturb-shader` `success`); `refused`: `unsupported` |
 | `g6h` | `reference-hd-native`, `-repeat`, `-armed`; `reference-hd-half`, `-repeat`; `capture-hd-native`; `receiver-hd-native`, `-patch` | as `g6a` (HUD layers) |
-| `g6b` | every earlier gate's legs on /6 (the switch); `capture-hd-half` (`presentation:960x540`), `receiver-hd-half`, `-patch`, `-inline`; hazard `capture-hd-half-at-logical` (`enforce-min-size`) + `receiver-hd-half-at-logical` (presented at 960×540); `capture-snap`; `sabotage-receiver-ignore-canvas-stacking`; `sabotage-receiver-ignore-presentation` | `success`; hazard `unsupported` (`presentation-mismatch`); snap `unsupported` (`snap-2d`) |
+| `g6b` | every earlier gate's legs on /6 (the switch); `capture-hd-half` (`presentation:960x540`), `receiver-hd-half`, `-patch`, `-inline`; hazard `capture-hd-half-at-logical` (`enforce-min-size`) + `receiver-hd-half-at-logical` (presented at 960×540); `capture-snap`; `sabotage-receiver-ignore-canvas-stacking`; `sabotage-receiver-ignore-presentation`; PRES-A's `wide/` (gate6-hd + `aspect=expand`: captures at `presentation:` 1920×1080, 2340×1080, 2520×1080, 1170×540, references and receivers at the last three, ignore-presentation at 1170×540 and, reported, 2340×1080) | `success`; hazard `unsupported` (`presentation-mismatch`); snap `unsupported` (`snap-2d`); wide ignore-presentation `unsupported` (`oversampling-mismatch`) |
 | `g6l` | `live-scene` (cold cache, motion sampling), `live-scene-warm`, `live-stall`, `live-reconnect`, `sabotage-live-stale-coalesce`; `reference-live-frames` (shoots the frames the receivers shot) | `success`; sabotage `pixel-mismatch` |
 | `g6s` | `soak-scene` (out of band, 300 s window), `soak-inline` (120 s), `sabotage-soak-no-evict` (120 s), `sabotage-soak-retain-superseded` (120 s) | `success`; sabotages fail exactly `residency-bounded` |
 | `g6c` | `rate-baseline` (armed-idle), `rate-15`, `rate-30`, `rate-60`, `rate-uncapped-host60`, `rate-uncapped`; `mismatch-60-recv30`, `mismatch-15-recv60`, `dual-60-15`; `recv-delay`; `gpu-heavy`; `constrained`; `sabotage-constrained-ignore-credit` | `success`; sabotage fails exactly `queue-bounded` |

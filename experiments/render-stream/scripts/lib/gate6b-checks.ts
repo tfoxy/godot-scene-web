@@ -70,6 +70,7 @@ import {
   requestedSeqs,
   shotFiles,
 } from "./gate6h-checks";
+import { runGate6bWide } from "./gate6b-wide-checks";
 import { loadWire5, txAt, type Wire5 } from "./gate55-wire";
 
 export const G6B_DIRS = {
@@ -1652,6 +1653,22 @@ export async function runGate6b(
       ),
     );
   }
+
+  // PRES-A: the viewer-aspect presentation legs under wide/ (lib/gate6b-wide-checks.ts).
+  const wide = await runGate6bWide(out, hd);
+  if (wide) {
+    checks.push(...wide.checks);
+    Object.assign(legs, wide.legs);
+  } else
+    checks.push(
+      check(
+        "wide-presentation-declared",
+        "PRES-A: g6b's wide/ legs ran (lib/gate6b-legs.sh run_g6b_wide)",
+        [`${join(out, "wide")} missing`],
+        "no wide/ directory",
+        [],
+      ),
+    );
 
   return {
     checks,
