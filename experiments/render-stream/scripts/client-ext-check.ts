@@ -99,7 +99,7 @@ async function main(): Promise<number> {
   let glue = "/core/rs_gsw_wasm_client.js";
   if (a.sabotage) {
     if (
-      !/^(override-(no-inherit|no-damage|fast-path-miss)|inverse-skip)$/.test(
+      !/^(override-(no-inherit|no-damage|fast-path-miss)|inverse-skip|frozen-(still-applies|sweeps))$/.test(
         a.sabotage,
       )
     )

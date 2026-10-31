@@ -285,7 +285,7 @@ describe("render-stream client extensions (TAG2)", () => {
     ]);
     expect(h.core.tables[0]).toEqual({
       ids: [2],
-      vals: [1, 0, 0, 1, 0, -119, 1, 1, 1, 1, 1],
+      vals: [1, 0, 0, 1, 0, -119, 1, 1, 1, 1, 1, 0],
     });
     t.on.message(tx(2));
     h.clock.frame();
@@ -391,10 +391,37 @@ describe("render-stream client extensions (TAG2)", () => {
       transform: [1, 0, 0, 1, 0, 0],
       modulate: [1, 1, 1, 1],
       visible: false,
+      frozen: false,
     });
     expect(() => o.translate(1, Number.NaN, 0)).toThrow(/non-finite/);
     o.clearAll();
     expect(o.size).toBe(0);
+  });
+
+  it("freeze sets the frozen flag and packs it as the 12th value", () => {
+    const core = new ExtCore();
+    const ext = new ExtensionHost([{ id: "x" }]);
+    ext.bind(core);
+    const o = ext.overrides;
+    o.freeze(2, true);
+    expect(o.get(2)).toEqual({
+      transform: [1, 0, 0, 1, 0, 0],
+      modulate: [1, 1, 1, 1],
+      visible: true,
+      frozen: true,
+    });
+    o.freeze(2, false);
+    expect(o.get(2)?.frozen).toBe(false);
+    // The packed table carries 12 floats: 6 affine (identity), 4 modulate (white), 1 visible,
+    // 1 frozen.
+    const h = setup([{ id: "f", beforeDraw: (f) => f.overrides.freeze(2, true) }]);
+    const t = h.last();
+    t.on.message(tx(1));
+    h.clock.frame();
+    expect(h.core.tables[0]).toEqual({
+      ids: [2],
+      vals: [1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1],
+    });
   });
 
   it("query.hitTest asks the core on demand and is null before it is bound", () => {

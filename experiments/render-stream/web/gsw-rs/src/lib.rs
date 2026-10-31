@@ -310,6 +310,9 @@ fn parse_options(json: &str) -> Result<Opts, String> {
                 "override-no-damage" => o.ov.no_damage = true,
                 "override-fast-path-miss" => o.ov.fast_path_miss = true,
                 "inverse-skip" => o.ov.inverse_skip = true,
+                // FRZ-HOOK (frz-d.md §6): the freeze-subtree hook's sabotages.
+                "frozen-still-applies" => o.ov.frozen_still_applies = true,
+                "frozen-sweeps" => o.ov.frozen_sweeps = true,
                 "stale-param" => o.apply.stale_param = true,
                 "blend-swap" => o.apply.blend_swap = true,
                 "screen-copy-per-reader" => o.apply.screen_copy_per_reader = true,
@@ -2294,7 +2297,8 @@ impl GswRs {
             .unwrap_or_default()
     }
 
-    /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 11 floats each).
+    /// TAG2 (§3.2): the client's override table, whole (packed: an id each, 12 floats each:
+    /// 6 affine, 4 modulate, 1 visible, 1 frozen).
     /// 0, or -1 (`error`: `override-table`). Composed at the next apply, or `refresh_overrides`.
     pub fn set_overrides(&mut self, ids: &[u32], vals: &[f32]) -> i32 {
         let Some(a) = self.applier.as_mut() else {

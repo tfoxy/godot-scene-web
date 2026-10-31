@@ -78,6 +78,9 @@ export interface OverrideValues {
   modulate?: RGBA;
   /** false hides the subtree. */
   visible?: boolean;
+  /** FRZ-HOOK (frz-d.md §5): hold the subtree. `apply` keeps its records and skips its upserts
+   * and removals until it is cleared. */
+  frozen?: boolean;
 }
 
 /** Retained: an override stays until changed or cleared. Overrides of an item and its ancestors
@@ -85,6 +88,8 @@ export interface OverrideValues {
 export interface OverrideTable {
   /** Replaces the item's override with these values (absent ones: identity, white, visible). */
   set(id: number, o: OverrideValues): void;
+  /** FRZ-HOOK: set or clear the item's `frozen` flag, leaving the other values as they are. */
+  freeze(id: number, on: boolean): void;
   /** Replaces only the transform. */
   translate(id: number, dx: number, dy: number): void;
   scaleAbout(id: number, sx: number, sy: number, px: number, py: number): void;
@@ -162,7 +167,7 @@ export interface ExtensionCore {
   itemMetaJson(): string;
   setLogRemoved(on: boolean): void;
   takeRemoved(): Uint32Array;
-  /** The whole table: ids and 11 floats each (6 affine, 4 modulate, 1 visible). */
+  /** The whole table: ids and 12 floats each (6 affine, 4 modulate, 1 visible, 1 frozen). */
   setOverrides(ids: Uint32Array, vals: Float32Array): void;
   /** Compose a changed table now (0 clean, 1 deferred to the pending apply, 2 moved, 3 walked). */
   refreshOverrides(): number;
@@ -234,6 +239,7 @@ interface Entry {
   xform: Affine2D;
   modulate: RGBA;
   visible: boolean;
+  frozen: boolean;
 }
 
 const same = (a: readonly number[], b: readonly number[]): boolean =>
@@ -258,6 +264,7 @@ class Table implements OverrideTable {
     if (
       old &&
       old.visible === e.visible &&
+      old.frozen === e.frozen &&
       same(old.xform, e.xform) &&
       same(old.modulate, e.modulate)
     )
@@ -271,6 +278,17 @@ class Table implements OverrideTable {
       xform: o.transform ? ([...o.transform] as Affine2D) : IDENTITY,
       modulate: o.modulate ? ([...o.modulate] as RGBA) : WHITE,
       visible: o.visible ?? true,
+      frozen: o.frozen ?? false,
+    });
+  }
+
+  freeze(id: number, on: boolean): void {
+    const old = this.entries.get(id);
+    this.put(id, {
+      xform: old?.xform ?? IDENTITY,
+      modulate: old?.modulate ?? WHITE,
+      visible: old?.visible ?? true,
+      frozen: on,
     });
   }
 
@@ -280,6 +298,7 @@ class Table implements OverrideTable {
       xform,
       modulate: old?.modulate ?? WHITE,
       visible: old?.visible ?? true,
+      frozen: old?.frozen ?? false,
     });
   }
 
@@ -305,7 +324,12 @@ class Table implements OverrideTable {
   get(id: number): Readonly<Required<OverrideValues>> | null {
     const e = this.entries.get(id);
     return e
-      ? { transform: e.xform, modulate: e.modulate, visible: e.visible }
+      ? {
+          transform: e.xform,
+          modulate: e.modulate,
+          visible: e.visible,
+          frozen: e.frozen,
+        }
       : null;
   }
 
@@ -337,13 +361,14 @@ class Table implements OverrideTable {
 
   pack(): [Uint32Array, Float32Array] {
     const ids = new Uint32Array(this.entries.size);
-    const vals = new Float32Array(this.entries.size * 11);
+    const vals = new Float32Array(this.entries.size * 12);
     let k = 0;
     for (const [id, e] of this.entries) {
       ids[k] = id;
-      vals.set(e.xform, k * 11);
-      vals.set(e.modulate, k * 11 + 6);
-      vals[k * 11 + 10] = e.visible ? 1 : 0;
+      vals.set(e.xform, k * 12);
+      vals.set(e.modulate, k * 12 + 6);
+      vals[k * 12 + 10] = e.visible ? 1 : 0;
+      vals[k * 12 + 11] = e.frozen ? 1 : 0;
       k++;
     }
     return [ids, vals];

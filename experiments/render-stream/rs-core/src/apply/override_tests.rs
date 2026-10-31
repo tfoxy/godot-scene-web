@@ -120,12 +120,13 @@ fn applier() -> Applier {
     })
 }
 
-/// A packed table of one override.
+/// A packed table of one override (frozen false).
 fn table(id: Id, xf: Xform, modulate: [f32; 4], visible: bool) -> (Vec<u32>, Vec<f32>) {
     let mut v = Vec::with_capacity(OVERRIDE_FLOATS);
     v.extend_from_slice(&xf);
     v.extend_from_slice(&modulate);
     v.push(if visible { 1.0 } else { 0.0 });
+    v.push(0.0); // frozen
     (vec![id], v)
 }
 
@@ -241,6 +242,7 @@ fn identity_overrides_paint_nothing_new() {
         vals.extend_from_slice(&geom::IDENTITY);
         vals.extend_from_slice(&[1.0; 4]);
         vals.push(1.0);
+        vals.push(0.0); // frozen
     }
     b.set_overrides(&ids, &vals).unwrap();
     b.apply(&s, &full_delta(&s), &store);
@@ -503,4 +505,238 @@ fn sabotage_inverse_skip_is_caught() {
     let (item, p) = b.to_game(&s, 32.0, 94.0).unwrap();
     assert_eq!(item, Some(C1));
     assert!(!near(p, [32.0, 213.0]), "inverse-skip not caught");
+}
+
+// ------------------------------------------------------------- FRZ-HOOK (frz-d.md §5, §6)
+
+/// A packed table of one frozen override (identity, white, visible).
+fn frozen_table(id: Id) -> (Vec<u32>, Vec<f32>) {
+    let mut v = Vec::with_capacity(OVERRIDE_FLOATS);
+    v.extend_from_slice(&geom::IDENTITY);
+    v.extend_from_slice(&[1.0; 4]);
+    v.push(1.0); // visible
+    v.push(1.0); // frozen
+    (vec![id], v)
+}
+
+/// The base scene with C1 drawing texture 5, and the store holding its payload. Returns the hash.
+fn tex_scene() -> (ResolvedState, PayloadStore, Hash) {
+    let mut s = base();
+    let hash = Hash([7; 32]);
+    s.textures.insert(
+        5,
+        Texture {
+            id: 5,
+            origin: Origin::Created,
+            adopted_content: None,
+            kind: TextureKind::Image,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            hash: Some(hash),
+            format: Some("RGBA8".into()),
+            source_format: None,
+            width: 8,
+            height: 8,
+            mipmaps: false,
+            payload_bytes: 100,
+            variants: Vec::new(),
+            canvas: None,
+        },
+    );
+    let c1 = s.items.get_mut(&C1).unwrap();
+    c1.commands = Commands {
+        list: vec![Command::TextureRectRegion {
+            tex: Some(5),
+            transpose: false,
+            clip_uv: false,
+            rect: [0.0, 0.0, 30.0, 20.0],
+            src: [0.0, 0.0, 30.0, 20.0],
+            modulate: [1.0; 4],
+        }],
+        ..Commands::default()
+    };
+    let mut store = PayloadStore::default();
+    store.textures.insert(
+        hash,
+        payloads::TexturePixels {
+            width: 8,
+            height: 8,
+            rgba: vec![255; 256].into(),
+            format: "RGBA8".into(),
+            mipmaps: false,
+            data_len: 256,
+            compressed: None,
+            half: None,
+            floats: None,
+        },
+    );
+    (s, store, hash)
+}
+
+fn full_delta_tex(s: &ResolvedState) -> TxDelta {
+    TxDelta {
+        full: true,
+        canvases_upserted: vec![CANVAS],
+        items_upserted: s.items.keys().copied().collect(),
+        items_commands: s.items.keys().copied().collect(),
+        textures_upserted: s.textures.keys().copied().collect(),
+        ..TxDelta::default()
+    }
+}
+
+#[test]
+fn frozen_holds_records_through_change_and_removal_then_unfreeze() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    let mut b = applier();
+    // The subtree is already drawn before it is frozen (the freeze holds what is there).
+    b.apply(&s, &full_delta(&s), &store);
+    let held = b.paint_digest();
+    let (ids, vals) = frozen_table(P);
+    b.set_overrides(&ids, &vals).unwrap();
+    // The freeze is composed now (the redraw path), before any change arrives.
+    assert_ne!(b.refresh_overrides(&s, &store), Refresh::Clean);
+
+    // A change while frozen is skipped (the membership syncs at this apply).
+    s.items.get_mut(&C1).unwrap().xform[4] += 40.0;
+    b.apply(&s, &TxDelta { seq: 2, items_upserted: vec![C1], ..TxDelta::default() }, &store);
+    assert!(b.frozen.contains(&P) && b.frozen.contains(&C1) && b.frozen.contains(&C2));
+    assert_eq!(b.paint_digest(), held, "a change applied while frozen");
+
+    // A removal while frozen is skipped: the records stay and still draw.
+    s.items.remove(&P);
+    s.items.remove(&C1);
+    s.items.remove(&C2);
+    s.items.get_mut(&G).unwrap().children.clear();
+    b.apply(
+        &s,
+        &TxDelta { seq: 3, items_upserted: vec![G], items_removed: vec![P, C1, C2], ..TxDelta::default() },
+        &store,
+    );
+    assert!(
+        b.items.contains_key(&P) && b.items.contains_key(&C1) && b.items.contains_key(&C2),
+        "held records dropped by the removal"
+    );
+
+    // Unfreezing marks the subtree changed; the next apply re-reads it from the state (which no
+    // longer holds it), drops the records and matches the state's shot.
+    b.set_overrides(&[], &[]).unwrap();
+    b.apply(&s, &TxDelta { seq: 4, ..TxDelta::default() }, &store);
+    assert!(
+        !b.items.contains_key(&P) && !b.items.contains_key(&C1) && !b.items.contains_key(&C2),
+        "stale records kept after unfreeze"
+    );
+    let mut a = applier();
+    a.apply(&s, &full_delta(&s), &store);
+    assert_eq!(b.paint_digest(), a.paint_digest(), "unfreeze did not match the state");
+}
+
+#[test]
+fn sabotage_frozen_still_applies_is_caught() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    let held = b.paint_digest();
+    let (ids, vals) = frozen_table(P);
+    b.set_overrides(&ids, &vals).unwrap();
+    b.ov_sabotage.frozen_still_applies = true;
+    assert_ne!(b.refresh_overrides(&s, &store), Refresh::Clean);
+    s.items.get_mut(&C1).unwrap().xform[4] += 40.0;
+    b.apply(&s, &TxDelta { seq: 2, items_upserted: vec![C1], ..TxDelta::default() }, &store);
+    assert_ne!(b.paint_digest(), held, "frozen-still-applies not caught");
+}
+
+#[test]
+fn unfreeze_reapplies_a_skipped_change() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    let held = b.paint_digest();
+    let (ids, vals) = frozen_table(P);
+    b.set_overrides(&ids, &vals).unwrap();
+    assert_ne!(b.refresh_overrides(&s, &store), Refresh::Clean);
+
+    s.items.get_mut(&C1).unwrap().xform[4] += 40.0;
+    b.apply(&s, &TxDelta { seq: 2, items_upserted: vec![C1], ..TxDelta::default() }, &store);
+    assert_eq!(b.paint_digest(), held, "the change applied while frozen");
+
+    // Unfreeze: the skipped change is re-read from the (current) state.
+    b.set_overrides(&[], &[]).unwrap();
+    b.apply(&s, &TxDelta { seq: 3, ..TxDelta::default() }, &store);
+    let mut a = applier();
+    a.apply(&s, &full_delta(&s), &store);
+    assert_eq!(b.paint_digest(), a.paint_digest(), "the skipped change was not re-applied");
+    assert_ne!(b.paint_digest(), held, "the change never landed");
+}
+
+#[test]
+fn frozen_payloads_survive_and_frozen_sweeps_drops_them() {
+    let (mut s, store, hash) = tex_scene();
+    let mut b = applier();
+    b.apply(&s, &full_delta_tex(&s), &store);
+    assert!(b.referenced_payload_hashes().contains(&hash), "the texture is not resident");
+    let (ids, vals) = frozen_table(P);
+    b.set_overrides(&ids, &vals).unwrap();
+    assert_ne!(b.refresh_overrides(&s, &store), Refresh::Clean);
+    // A change while frozen syncs the membership (the subtree is still in the state).
+    s.items.get_mut(&C1).unwrap().xform[4] += 40.0;
+    b.apply(&s, &TxDelta { seq: 2, items_upserted: vec![C1], ..TxDelta::default() }, &store);
+
+    // Remove the frozen subtree and its now-unreferenced texture: the held record keeps the
+    // texture resident, so the retention sweep keeps its payload.
+    s.items.remove(&P);
+    s.items.remove(&C1);
+    s.items.remove(&C2);
+    s.items.get_mut(&G).unwrap().children.clear();
+    s.textures.remove(&5);
+    b.apply(
+        &s,
+        &TxDelta {
+            seq: 3,
+            items_upserted: vec![G],
+            items_removed: vec![P, C1, C2],
+            textures_removed: vec![5],
+            ..TxDelta::default()
+        },
+        &store,
+    );
+    assert!(
+        b.referenced_payload_hashes().contains(&hash),
+        "the frozen subtree's payload was dropped by the retention sweep"
+    );
+
+    // The sabotage drops it: the sweep no longer reports the held payload.
+    let mut c = applier();
+    c.ov_sabotage.frozen_sweeps = true;
+    let (s2, store2, hash2) = tex_scene();
+    c.apply(&s2, &full_delta_tex(&s2), &store2);
+    let (ids2, vals2) = frozen_table(P);
+    c.set_overrides(&ids2, &vals2).unwrap();
+    assert_ne!(c.refresh_overrides(&s2, &store2), Refresh::Clean);
+    let mut s2 = s2;
+    s2.items.get_mut(&C1).unwrap().xform[4] += 40.0;
+    c.apply(&s2, &TxDelta { seq: 2, items_upserted: vec![C1], ..TxDelta::default() }, &store2);
+    s2.items.remove(&P);
+    s2.items.remove(&C1);
+    s2.items.remove(&C2);
+    s2.items.get_mut(&G).unwrap().children.clear();
+    s2.textures.remove(&5);
+    c.apply(
+        &s2,
+        &TxDelta {
+            seq: 3,
+            items_upserted: vec![G],
+            items_removed: vec![P, C1, C2],
+            textures_removed: vec![5],
+            ..TxDelta::default()
+        },
+        &store2,
+    );
+    assert!(
+        !c.referenced_payload_hashes().contains(&hash2),
+        "frozen-sweeps was not caught"
+    );
 }

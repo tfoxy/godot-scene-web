@@ -774,6 +774,17 @@ pub struct Applier {
     removed_log: Option<Vec<Id>>,
     /// TAG2: inside `apply` (the sabotage `override-fast-path-miss` acts there only).
     in_apply: bool,
+    /// FRZ-HOOK (frz-d.md §5): the frozen membership -- every item under a frozen root, kept
+    /// across applies so a held subtree survives its own removal until it is unfrozen. `apply`
+    /// tests `frozen.is_empty()` once.
+    frozen: std::collections::HashSet<Id>,
+    /// FRZ-HOOK: the table's `frozen` flags changed since the membership was last synced.
+    frozen_dirty: bool,
+    /// FRZ-HOOK: frozen roots cleared (or removed) since the last apply; a full item reconcile
+    /// at the next apply re-reads their subtrees from the state.
+    unfrozen: Vec<Id>,
+    /// FRZ-HOOK: a root was unfrozen; the next apply re-reads every item and drops stale records.
+    reconcile_frozen: bool,
 }
 
 /// PM3: one instanced draw's range in `list.instances` and what fills it.
@@ -1170,6 +1181,10 @@ impl Applier {
             ov_sabotage: overrides::OverrideSabotage::default(),
             removed_log: None,
             in_apply: false,
+            frozen: std::collections::HashSet::new(),
+            frozen_dirty: false,
+            unfrozen: Vec::new(),
+            reconcile_frozen: false,
         }
     }
 
@@ -1298,6 +1313,21 @@ impl Applier {
         let mut out: std::collections::HashSet<crate::state::Hash> =
             self.resident.values().filter_map(|r| r.hash).collect();
         out.extend(self.meshes.resident_hashes());
+        // FRZ-HOOK sabotage `frozen-sweeps`: the retention sweep drops the held subtree's payloads
+        // even though its records still draw from them (they stay resident, but are not reported).
+        if self.ov_sabotage.frozen_sweeps && !self.frozen.is_empty() {
+            let (tex, mesh) = self.frozen_resources();
+            for t in &tex {
+                if let Some(h) = self.resident.get(t).and_then(|r| r.hash) {
+                    out.remove(&h);
+                }
+            }
+            let dropped: std::collections::HashSet<crate::state::Hash> = mesh
+                .iter()
+                .flat_map(|m| self.meshes.resident_hashes_of(*m))
+                .collect();
+            out.retain(|h| !dropped.contains(h));
+        }
         out
     }
 
@@ -1646,6 +1676,7 @@ impl Applier {
         state: &ResolvedState,
         delta: &TxDelta,
         payloads: &PayloadStore,
+        keep: &std::collections::HashSet<Id>,
     ) -> Vec<Id> {
         use residency::{Resident, Upload};
         let mut resized = Vec::new();
@@ -1663,6 +1694,11 @@ impl Applier {
         gone.sort_unstable();
         gone.dedup();
         for id in gone {
+            // FRZ-HOOK: a held record still draws from this texture; keep it resident so the
+            // retention sweep keeps its payload.
+            if keep.contains(&id) {
+                continue;
+            }
             let is_gone = state
                 .textures
                 .get(&id)
@@ -1867,22 +1903,41 @@ impl Applier {
         // G7q: every transaction prepared since the last apply, merged (one: the caller's).
         let merged = self.merged.take();
         let delta = merged.as_ref().unwrap_or(delta);
+        // FRZ-HOOK (frz-d.md §5): one membership sync per apply. `frozen` (the held items) is
+        // tested once below; only when it is non-empty do the upsert/removal paths look it up.
+        self.sync_frozen(state);
+        let frozen = !self.frozen.is_empty();
+        let reconcile = std::mem::take(&mut self.reconcile_frozen);
         // Mesh residency first (the lowering draws the resident surfaces): the native receiver
         // applies meshes before it replays commands (`rs_applier.gd` step 3b).
         let t = prof::start();
         let mut mesh_res = std::mem::take(&mut self.meshes);
         mesh_res.sabotage = self.sabotage.mesh;
-        // G7o3: a fresh applier lists every id once; a patch borrows the delta's lists.
-        let all_items: Vec<Id> = if self.first {
+        // G7o3: a fresh applier lists every id once; a patch borrows the delta's lists. FRZ-HOOK:
+        // an unfreeze re-reads every item from the state.
+        let all_items: Vec<Id> = if self.first || reconcile {
             state.items.keys().copied().collect()
         } else {
             Vec::new()
         };
-        let mut upserted: &[Id] = if self.first {
+        let mut upserted: &[Id] = if self.first || reconcile {
             &all_items
         } else {
             &delta.items_upserted
         };
+        // FRZ-HOOK: the removed ids actually dropped. Held items stay (their records are kept);
+        // the upsert filter runs after `renamed`, since a rename can re-list upserted items.
+        let removed_vec: Vec<Id> = if frozen {
+            delta
+                .items_removed
+                .iter()
+                .copied()
+                .filter(|id| !self.frozen.contains(id))
+                .collect()
+        } else {
+            delta.items_removed.clone()
+        };
+        let removed: &[Id] = &removed_vec;
         // PM3: a multimesh whose mesh moved re-names the mesh residency of the items drawing it.
         let mut remeshed: Vec<Id> = Vec::new();
         for id in &delta.multimeshes_removed {
@@ -1934,7 +1989,36 @@ impl Applier {
                 .collect();
             upserted = &renamed;
         }
-        mesh_res.sync(state, upserted, &delta.items_removed, self.first, payloads);
+        // FRZ-HOOK: filter the held items out of the classify/mesh lists. A new item under a held
+        // ancestor is held from its first frame. `frozen-still-applies` leaves the upserts in
+        // (it skips only the removals), so the freeze-then-apply shot changes.
+        let up_vec: Vec<Id>;
+        if frozen && !self.ov_sabotage.frozen_still_applies {
+            up_vec = upserted
+                .iter()
+                .copied()
+                .filter(|id| {
+                    if self.frozen.contains(id) {
+                        return false;
+                    }
+                    let parent_frozen = state
+                        .items
+                        .get(id)
+                        .and_then(|it| it.parent)
+                        .filter(|p| p.kind == crate::state::ParentKind::Item)
+                        .is_some_and(|p| self.frozen.contains(&p.id));
+                    if parent_frozen {
+                        self.frozen.insert(*id);
+                    }
+                    !parent_frozen
+                })
+                .collect();
+            upserted = &up_vec;
+        }
+        // FRZ-HOOK: keep the held records' textures and meshes resident, so the retention sweep
+        // keeps their payloads (`frozen-sweeps` drops them instead: see referenced_payload_hashes).
+        let (frozen_tex, frozen_mesh) = self.frozen_resources();
+        mesh_res.sync(state, upserted, removed, self.first, &frozen_mesh, payloads);
         prof::add(prof::MESH_SYNC, t);
         let t = prof::start();
         let mut why = if self.first { Why::FIRST } else { 0 };
@@ -2013,7 +2097,7 @@ impl Applier {
                 }
             }
         }
-        let resized = self.sync_textures(state, delta, payloads);
+        let resized = self.sync_textures(state, delta, payloads, &frozen_tex);
         // G8kb: the kept map after this transaction's residency (restored below, as mesh_res).
         let kept = std::mem::take(&mut self.kept);
         let delivery = self.delivery.clone();
@@ -2073,16 +2157,17 @@ impl Applier {
         let t = prof::start();
         let lower0 = prof::get(prof::LOWER);
         // TAG2: removed items leave the override table, and the log when an extension listens.
+        // FRZ-HOOK: a held item's removal was filtered out above, so its entry stays.
         if !self.overrides.is_empty() {
-            for id in &delta.items_removed {
+            for id in removed {
                 self.overrides.remove(id);
             }
         }
         if let Some(log) = self.removed_log.as_mut() {
-            log.extend_from_slice(&delta.items_removed);
+            log.extend_from_slice(removed);
         }
         // Removed items.
-        for id in &delta.items_removed {
+        for id in removed {
             if let Some(rec) = self.items.remove(id) {
                 self.free_rows.push(rec.row);
                 self.vertex_holes += rec.vcap;
@@ -2094,8 +2179,9 @@ impl Applier {
                 self.vertex_holes += 4;
             }
         }
-        if self.first {
-            // A fresh applier adopts whatever the state holds.
+        // A fresh applier adopts whatever the state holds; FRZ-HOOK: an unfreeze re-reads every
+        // item, so the held records that left the state are dropped here too.
+        if self.first || reconcile {
             let stale: Vec<Id> = self
                 .items
                 .keys()

@@ -1651,6 +1651,12 @@ run_g8tag2() {
 	run_g8tag2_leg sabotage-override-no-inherit base moved 300 0 --sabotage override-no-inherit
 	run_g8tag2_leg sabotage-override-fast-path-miss base moved 300 0 --sabotage override-fast-path-miss
 	run_g8tag2_leg sabotage-override-no-damage base redraw 300 3000 --sabotage override-no-damage
+	# FRZ-HOOK (frz-d.md §6): freeze Hand -- the step-80 move is held -- and its sabotages.
+	echo "run-gate8: g8tag2 frz (freeze Hand: the step-80 move is held)"
+	run_g8tag2_leg ext-frz base frz 300 0
+	echo "run-gate8: g8tag2 frz sabotages (frozen-still-applies, frozen-sweeps)"
+	run_g8tag2_leg sabotage-frozen-still-applies base frz 300 0 --sabotage frozen-still-applies
+	run_g8tag2_leg sabotage-frozen-sweeps base frz 300 0 --sabotage frozen-sweeps
 	# INP1: pointer mapping on the base scene under the `inp` extension (Card1 lifted, Card2 scaled),
 	# in a CSS box of another aspect than the presentation (a letterbox), at 16:9 and 21:9.
 	echo "run-gate8: g8tag2 inp (pointer mapping: 640x360, 840x360; sabotage inverse-skip)"

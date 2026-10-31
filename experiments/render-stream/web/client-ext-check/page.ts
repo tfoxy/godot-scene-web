@@ -218,6 +218,12 @@ function extensionOf(name: string): RenderStreamExtension[] {
             for (const id of find((m) => m.scene === MAIN && m.path === "Hand"))
               f.overrides.set(id, { modulate: TINT });
             break;
+          case "frz":
+            // FRZ-HOOK: freeze Hand (its step-80 move is held: the shot stays at Hand's rest
+            // position while `variant-base` moves it +10).
+            for (const id of find((m) => m.scene === MAIN && m.path === "Hand"))
+              f.overrides.freeze(id, true);
+            break;
           case "redraw": {
             // override-redraw: the host sleeps (RS_FIXTURE_TAG_PAUSE_MS); the session's
             // requestRedraw (below) starts the lift with no transaction: 20 frames, one
