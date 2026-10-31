@@ -1733,9 +1733,15 @@ impl Validator {
                 session.host_visible_rect[2] as f64,
                 session.host_visible_rect[3] as f64,
             ];
-            let logical = [v.logical_size[0] as f64, v.logical_size[1] as f64];
             let presentation = v.presentation_size.unwrap_or(v.logical_size);
-            let visible_matches = visible == logical;
+            // PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size the stretch gives
+            // the presentation; the logical size unless expand/keep_width/keep_height widen it.
+            let expected_visible = crate::meta::stretch_visible_size(
+                &v.stretch,
+                v.logical_size,
+                presentation,
+            );
+            let visible_matches = visible == expected_visible;
             let expected = if v.host_window_size == presentation && visible_matches {
                 "match"
             } else if !visible_matches {

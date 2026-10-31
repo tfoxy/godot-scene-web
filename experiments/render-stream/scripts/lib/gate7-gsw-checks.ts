@@ -33,7 +33,11 @@ import type { Gate2Expected } from "./gate2-expected";
 import { stepWindow, TRANSFORM_ONLY_STEPS } from "./gate2b-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
 import type { Gate7Check } from "./gate7-adapters";
-import { presentationCheck, q7RegionsReport } from "./gate7-g6-checks";
+import {
+  presentationCheck,
+  q7RegionsReport,
+  wideCompositionCheck,
+} from "./gate7-g6-checks";
 import {
   compositorProblems,
   GSW_LEGS,
@@ -967,6 +971,12 @@ export async function gswExtraChecks(
             .filter((d) => d.replaces)
             .map((d) => [d.leg, gswDir(ctx.out, gate, d.leg)]),
         ),
+      ),
+    );
+    // PRES-A: the wide legs, composed from the judged 16:9 legs and the wide references.
+    out.push(
+      await wideCompositionCheck("gsw", ctx.sourceDir, (leg) =>
+        gswDir(ctx.out, gate, leg),
       ),
     );
     const tol = readTolerance();

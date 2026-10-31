@@ -317,6 +317,9 @@ function toleranceKey(group: string, leg: string): string | null {
       return "gate55-shader";
     case "g7-6":
       if (leg.startsWith("hd/receiver-native")) return "gate6-hd-native";
+      // PRES-A: the wide legs are the native frame plus added columns (wide-composition@gsw).
+      if (leg.startsWith("wide/receiver-1170x540")) return "gate6-hd-half";
+      if (leg.startsWith("wide/")) return "gate6-hd-native";
       if (leg.startsWith("hd/")) return "gate6-hd-half";
       if (leg.startsWith("refused/")) return "gate6-refused";
       if (leg.startsWith("animate/")) return "gate6-animate";

@@ -1175,6 +1175,41 @@ pub struct Capture {
     pub hooks_omitted: Vec<String>,
 }
 
+/// PRES-A (gate6-design.md "Amendment (PRES-A)"): the visible size a `canvas_items` root presents
+/// `logical` in a `window`-sized window -- Godot 4.5.1's aspect rule
+/// (`Window::_update_viewport_size`, scene/main/window.cpp:1190-1250) in its own float32
+/// arithmetic, floored. Only `keep_width`, `keep_height` and `expand` widen or heighten the visible
+/// rect past the logical size, and only when the window's aspect differs (`Math::is_equal_approx`);
+/// every other case is the logical size itself (the capture's `stretch_visible_size`).
+pub fn stretch_visible_size(stretch: &Stretch, logical: [i64; 2], window: [i64; 2]) -> [f64; 2] {
+    let out = [logical[0] as f64, logical[1] as f64];
+    let widens = matches!(stretch.aspect, "keep_width" | "keep_height" | "expand");
+    if stretch.mode != "canvas_items"
+        || !widens
+        || logical[0] <= 0
+        || logical[1] <= 0
+        || window[0] <= 0
+        || window[1] <= 0
+    {
+        return out;
+    }
+    let (dw, dh) = (logical[0] as f32, logical[1] as f32);
+    let viewport_aspect = dw / dh;
+    let video_aspect = window[0] as f32 / window[1] as f32;
+    let tolerance = (0.00001_f32 * viewport_aspect.abs()).max(0.00001);
+    if viewport_aspect == video_aspect || (viewport_aspect - video_aspect).abs() < tolerance {
+        return out;
+    }
+    if viewport_aspect < video_aspect {
+        if matches!(stretch.aspect, "keep_height" | "expand") {
+            return [(dh * video_aspect).floor() as f64, out[1]];
+        }
+    } else if matches!(stretch.aspect, "keep_width" | "expand") {
+        return [out[0], (dw / video_aspect).floor() as f64];
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stretch {
     /// "disabled", "canvas_items" or "viewport".
@@ -4331,4 +4366,54 @@ fn check_meta(
         }
     };
     Ok((decoded, ck.dups))
+}
+
+#[cfg(test)]
+mod stretch_visible_tests {
+    use super::{stretch_visible_size, Stretch};
+
+    fn s(mode: &'static str, aspect: &'static str) -> Stretch {
+        Stretch {
+            mode,
+            aspect,
+            scale_mode: "fractional",
+        }
+    }
+
+    #[test]
+    fn expand_widens_in_the_engines_float32() {
+        let e = s("canvas_items", "expand");
+        let hd = [1920, 1080];
+        assert_eq!(stretch_visible_size(&e, hd, [1920, 1080]), [1920.0, 1080.0]);
+        assert_eq!(stretch_visible_size(&e, hd, [2340, 1080]), [2340.0, 1080.0]);
+        assert_eq!(stretch_visible_size(&e, hd, [2520, 1080]), [2520.0, 1080.0]);
+        assert_eq!(stretch_visible_size(&e, hd, [1170, 540]), [2340.0, 1080.0]);
+        // float32 floors these to W - 1 (PRES-A's measured list, 1920..2600 even).
+        for w in [1940, 2234, 2260, 2382, 2504, 2530] {
+            assert_eq!(stretch_visible_size(&e, hd, [w, 1080])[0], (w - 1) as f64);
+        }
+        // taller than 16:9: expand heightens.
+        assert_eq!(stretch_visible_size(&e, hd, [1920, 1440]), [1920.0, 1440.0]);
+    }
+
+    #[test]
+    fn keep_ignore_and_disabled_stay_logical() {
+        let hd = [1920, 1080];
+        for st in [
+            s("canvas_items", "keep"),
+            s("canvas_items", "ignore"),
+            s("disabled", "expand"),
+            s("viewport", "expand"),
+        ] {
+            assert_eq!(stretch_visible_size(&st, hd, [2340, 1080]), [1920.0, 1080.0]);
+        }
+        assert_eq!(
+            stretch_visible_size(&s("canvas_items", "keep_width"), hd, [2340, 1080]),
+            [1920.0, 1080.0]
+        );
+        assert_eq!(
+            stretch_visible_size(&s("canvas_items", "keep_height"), hd, [2340, 1080]),
+            [2340.0, 1080.0]
+        );
+    }
 }

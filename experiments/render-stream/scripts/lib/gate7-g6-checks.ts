@@ -13,9 +13,11 @@
 // lib/gate7-web-legs.ts and lib/gate7-live-legs.ts), never from the receiver's own report.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { decodePngRgba } from "./gate-minus1-checks";
+import { TEXT_REGIONS } from "./gate6b-wide-checks";
 import type { Gate7Check } from "./gate7-adapters";
 import type { BackingStore } from "./gate7-web-legs";
 
@@ -24,6 +26,7 @@ import type { BackingStore } from "./gate7-web-legs";
 const MISMATCH_LEGS = new Set([
   "hd/receiver-half-at-logical",
   "hd/sabotage-receiver-ignore-presentation",
+  "wide/sabotage-receiver-ignore-presentation",
 ]);
 const WINDOW_LEGS = new Set(["hd/receiver-half-at-logical"]);
 
@@ -227,5 +230,163 @@ export async function presentationCheck(
       problems.length === 0
         ? `${legs.size} legs: ${[...sizes].map(([s, n]) => `${n} at ${s}`).join(", ")}`
         : problems.slice(0, 12).join("; "),
+  };
+}
+
+/**
+ * PRES-A: wide-composition@<kind>. A browser's wide legs (g6b's wide/: the HD fixture under aspect
+ * expand) have no Q7 model, so their verdict is composed from what is judged elsewhere:
+ *   - each wide shot's columns [0, base width) equal, pixel for pixel, the same browser's shot of the
+ *     same seq on the 16:9 leg of the same scale (wide/receiver-2340x1080 and -2520x1080 against
+ *     hd/receiver-native, wide/receiver-1170x540 against hd/receiver-half), which Q7 judges against
+ *     its reference (q7-pixel-policy@<kind>);
+ *   - its remaining columns equal the wide reference's (wide/reference-<P>) raw;
+ *   - and the source run's wide-reference-extends-native shows the wide reference's left columns are
+ *     the native reference.
+ * So the browser's wide frame is the 16:9 one plus exactly the reference's added columns.
+ */
+export async function wideCompositionCheck(
+  kind: string,
+  sourceDir: string,
+  legDir: (leg: string) => string,
+): Promise<Gate7Check> {
+  const problems: string[] = [];
+  const parts: string[] = [];
+  const legs: { leg: string; base: string; size: [number, number] }[] = [
+    {
+      leg: "receiver-2340x1080",
+      base: "hd/receiver-native",
+      size: [2340, 1080],
+    },
+    {
+      leg: "receiver-2520x1080",
+      base: "hd/receiver-native",
+      size: [2520, 1080],
+    },
+    { leg: "receiver-1170x540", base: "hd/receiver-half", size: [1170, 540] },
+  ];
+  const seqOfFrame = (dir: string): Map<number, number> => {
+    const a = readJson<{ transactions?: { frame?: number; seq?: number }[] }>(
+      join(dir, "applied.json"),
+    );
+    const m = new Map<number, number>();
+    for (const t of a?.transactions ?? [])
+      if (typeof t.frame === "number" && typeof t.seq === "number")
+        m.set(t.frame, t.seq);
+    return m;
+  };
+  const shotsDoc = readJson<{
+    shots: { id: string; frame: number; regions: Record<string, number[]> }[];
+  }>(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "fixtures",
+      "gate6-hd",
+      "expected.json",
+    ),
+  );
+  for (const l of legs) {
+    const dir = legDir(`wide/${l.leg}`);
+    const baseDir = legDir(l.base);
+    const refDir = join(
+      sourceDir,
+      "wide",
+      `reference-${l.size[0]}x${l.size[1]}`,
+      "shots",
+    );
+    const baseW = l.base === "hd/receiver-half" ? 960 : 1920;
+    // Shots are named by seq; seqs come from the native (source) leg's frame map, which the browser
+    // leg shares (the same recording).
+    const seqs = seqOfFrame(join(sourceDir, "wide", l.leg));
+    let left = 0;
+    let right = 0;
+    let text = 0;
+    let band = 0;
+    let n = 0;
+    for (const shot of shotsDoc?.shots ?? []) {
+      const seq = seqs.get(shot.frame);
+      if (seq === undefined) continue;
+      const scale = l.size[1] / 1080;
+      const textBoxes = Object.entries(shot.regions)
+        .filter(([n]) => TEXT_REGIONS.has(n.replace(/^c\d+\./, "")))
+        .map(([, b]) => b.map((v) => v * scale));
+      const inText = (x: number, y: number) =>
+        textBoxes.some((b) => x >= b[0] && x < b[2] && y >= b[1] && y < b[3]);
+      const wide = await decodePngRgba(join(dir, "shots", `seq-${seq}.png`));
+      const base = await decodePngRgba(
+        join(baseDir, "shots", `seq-${seq}.png`),
+      );
+      const ref = await decodePngRgba(join(refDir, `${shot.id}.png`));
+      if (!wide || !base || !ref) {
+        problems.push(
+          `${l.leg} ${shot.id}: a shot is missing (wide ${!!wide}, base ${!!base}, ref ${!!ref})`,
+        );
+        continue;
+      }
+      if (
+        wide.width !== l.size[0] ||
+        wide.height !== l.size[1] ||
+        ref.width !== l.size[0]
+      ) {
+        problems.push(
+          `${l.leg} ${shot.id}: ${wide.width}x${wide.height}, ref ${ref.width}x${ref.height}`,
+        );
+        continue;
+      }
+      n++;
+      for (let y = 0; y < wide.height; y++)
+        for (let x = 0; x < wide.width; x++) {
+          const i = (y * wide.width + x) * 4;
+          let other: Uint8Array;
+          let j: number;
+          if (x < baseW) {
+            other = base.data;
+            j = (y * base.width + x) * 4;
+          } else {
+            other = ref.data;
+            j = i;
+          }
+          let d = 0;
+          for (let c = 0; c < 4; c++)
+            d = Math.max(d, Math.abs(wide.data[i + c] - other[j + c]));
+          if (d === 0) continue;
+          // As the native wide-reference-extends-native: a wider target's raster is not
+          // bit-stable (the projection divides by the target width), so the base columns may
+          // differ by one level (Q7's delta1): glyph edges on NVIDIA, interpolated colours too on
+          // llvmpipe. Counted, split text regions vs elsewhere.
+          if (x < baseW && d <= 1) {
+            if (inText(x, y)) text++;
+            else band++;
+            continue;
+          }
+          if (x < baseW) left++;
+          else right++;
+        }
+    }
+    if (n === 0) problems.push(`${l.leg}: no shot compared`);
+    if (left > 0)
+      problems.push(
+        `${l.leg}: ${left} px of the left ${baseW} columns differ from ${l.base}`,
+      );
+    if (right > 0)
+      problems.push(
+        `${l.leg}: ${right} px of the added columns differ from the wide reference`,
+      );
+    parts.push(
+      `${l.leg} ${n} shots (${text} px within 1 in text regions, ${band} elsewhere)`,
+    );
+  }
+  return {
+    id: `wide-composition@${kind}`,
+    criterion:
+      "PRES-A: each browser wide shot (aspect expand at 2340x1080, 2520x1080, 1170x540) equals the same browser's 16:9 shot of the same seq (hd/receiver-native, hd/receiver-half: Q7-judged) in the base columns (within one level per channel, Q7's delta1: a wider target's raster is not bit-stable; counted) and the wide reference in the added columns, raw; with wide-reference-extends-native, the wide frame is the judged 16:9 frame plus exactly the reference's added columns",
+    passed: problems.length === 0,
+    gating: true,
+    detail:
+      problems.length === 0
+        ? parts.join(", ")
+        : problems.slice(0, 8).join("; "),
   };
 }

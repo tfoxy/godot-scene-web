@@ -49,6 +49,7 @@
 #ifndef GRC_RS_ROOT_QUERY_H
 #define GRC_RS_ROOT_QUERY_H
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -93,15 +94,64 @@ struct RootInfo {
   void *window = nullptr;
 };
 
-// host_size_status (gate1-design.md Q1 "Policy"; render-stream/6, gate6-design.md Q3a):
-// match: window size == presentation size and visible rect size == logical size;
-// degenerate-visible: visible rect size != logical size (layout input differs);
-// degenerate-window: visible rect right, window size wrong (stretch differs).
-// `presentation` is the policy's W x H under presentation:, the logical size otherwise.
+// The visible size a `canvas_items` root presents `logical` in a `window`-sized window
+// (PRES-A, gate6-design.md "Amendment (PRES-A)"): Godot 4.5.1's aspect rule
+// (Window::_update_viewport_size, scene/main/window.cpp:1190-1250) in its own float32 arithmetic,
+// floored. Only `keep_width`, `keep_height` and `expand` widen or heighten the visible rect past
+// the logical size, and only when the window's aspect differs (Math::is_equal_approx); every
+// other case (stretch `disabled`/`viewport`, aspect `ignore`/`keep`, an equal aspect, a zero
+// size) is the logical size itself, as before.
+inline void stretch_visible_size(std::int64_t mode, std::int64_t aspect,
+                                 const std::int32_t logical[2], const std::int32_t window[2],
+                                 float out[2]) {
+  out[0] = static_cast<float>(logical[0]);
+  out[1] = static_cast<float>(logical[1]);
+  // Window.ContentScaleMode 1 = canvas_items; ContentScaleAspect 2 = keep_width,
+  // 3 = keep_height, 4 = expand.
+  if (mode != 1 || aspect < 2 || aspect > 4 || logical[0] <= 0 || logical[1] <= 0 ||
+      window[0] <= 0 || window[1] <= 0) {
+    return;
+  }
+  const float dw = static_cast<float>(logical[0]);
+  const float dh = static_cast<float>(logical[1]);
+  const float viewport_aspect = dw / dh;
+  const float video_aspect = static_cast<float>(window[0]) / static_cast<float>(window[1]);
+  // Math::is_equal_approx(float, float) (core/math/math_funcs.h).
+  if (viewport_aspect == video_aspect) {
+    return;
+  }
+  float tolerance = 0.00001f * (viewport_aspect < 0 ? -viewport_aspect : viewport_aspect);
+  if (tolerance < 0.00001f) {
+    tolerance = 0.00001f;
+  }
+  const float delta = viewport_aspect - video_aspect;
+  if ((delta < 0 ? -delta : delta) < tolerance) {
+    return;
+  }
+  if (viewport_aspect < video_aspect) {
+    if (aspect == 3 || aspect == 4) {
+      const volatile float wide = dh * video_aspect;  // one float32 rounding, as the engine's
+      out[0] = std::floor(wide);
+    }
+  } else if (aspect == 2 || aspect == 4) {
+    const volatile float tall = dw / video_aspect;
+    out[1] = std::floor(tall);
+  }
+}
+
+// host_size_status (gate1-design.md Q1 "Policy"; render-stream/6, gate6-design.md Q3a, amended
+// by PRES-A): match: window size == presentation size and visible rect size == the stretch's
+// visible size for the presentation (stretch_visible_size: the logical size unless `expand`,
+// `keep_width` or `keep_height` widen it); degenerate-visible: the visible rect size differs from
+// it (layout input differs); degenerate-window: visible rect right, window size wrong (stretch
+// differs). `presentation` is the policy's W x H under presentation:, the logical size otherwise.
 inline rs2::HostSizeStatus host_size_status(const RootInfo &info,
                                             const std::int32_t presentation[2]) {
-  const float lw = static_cast<float>(info.logical_size[0]);
-  const float lh = static_cast<float>(info.logical_size[1]);
+  float visible[2];
+  stretch_visible_size(info.content_scale_mode, info.content_scale_aspect, info.logical_size,
+                       presentation, visible);
+  const float lw = visible[0];
+  const float lh = visible[1];
   if (info.visible_rect[2] != lw || info.visible_rect[3] != lh) {
     return rs2::HostSizeStatus::DegenerateVisible;
   }
