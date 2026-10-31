@@ -45,6 +45,13 @@ var _a: GPUParticles2D
 var _b_parent: Node2D
 var _c: GPUParticles2D
 var _d: GPUParticles2D
+## FRZ-P (results/p3/frz-p.md): RS_FIXTURE_FREEZE=1 freezes A_BOX (the looping burst) and
+## D_ONESHOT (the one-shot burst) with ProcessMode.Disabled, as the couch suspender does, and
+## applies the end-of-burst nudge (clear `emitting` at lifetime*(2-explosiveness)+margin) so the
+## one-shot still ends on the wire. The restart/emit events keep firing: they are explicit calls
+## from this root node's _process, not the emitters' own processing.
+var _freeze: bool = false
+var _d_nudge_frames: Array[int] = []
 
 
 func _ready() -> void:
@@ -162,6 +169,19 @@ func _ready() -> void:
 	i.position = Vector2(533, 300)
 	_root.add_child(i)
 
+	# FRZ-P: freeze the burst emitters the way the couch suspender does (ProcessMode.Disabled).
+	# A_BOX's per-frame loop and D_ONESHOT's internal one-shot timer stop; the explicit restart and
+	# emit calls below still reach the RenderingServer, so the wire keeps the config + events.
+	# ProcessMode.Disabled sends NOTIFICATION_PAUSED, whose GPUParticles2D handler writes
+	# particles_set_speed_scale(0) — a PAUSE side effect, not the freeze. The freeze stops the script
+	# sim only; the browser owns the particle sim, so restore the authored speed (1.0, the default).
+	if _freeze:
+		_a.process_mode = Node.PROCESS_MODE_DISABLED
+		_d.process_mode = Node.PROCESS_MODE_DISABLED
+		_a.speed_scale = 1.0
+		_d.speed_scale = 1.0
+		print("[fixture] gate8-pt freeze: A_BOX and D_ONESHOT frozen (ProcessMode.Disabled)")
+
 	print("[fixture] gate8-pt ready: quit=%d" % _quit_frame)
 
 
@@ -169,6 +189,12 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	# FRZ-P: the end-of-burst nudge. A frozen one-shot's internal timer (ProcessMode.Disabled)
+	# never clears `emitting`, so the suspender clears it at lifetime*(2-explosiveness)+margin; do
+	# the same here so the one-shot still ends on the wire.
+	if _freeze and _d_nudge_frames.has(_frame):
+		_d.emitting = false
+		_d_nudge_frames.erase(_frame)
 	# B_SPHERE: the parent moves 2 px a frame, back every 30 frames.
 	_b_parent.position = Vector2(260.0 + 2.0 * float(_frame % 30), 60.0)
 	for k: int in range(CHECKPOINTS.size()):
@@ -195,12 +221,24 @@ func _step_1() -> void:
 	_emit_two(Vector2(0, 0))
 	_c.request_particles_process(0.5)
 	_d.restart()
+	_d_schedule_nudge()
 
 
 func _step_2() -> void:
 	_emit_two(Vector2(10, 5))
 	_c.seed = 2003
 	_d.restart()
+	_d_schedule_nudge()
+
+
+## FRZ-P: schedule the end-of-burst nudge for D_ONESHOT, at Godot's active_time (lifetime*(2-
+## explosiveness)) plus a one-frame margin, the suspender's nudge (results/p3/frz-p.md).
+func _d_schedule_nudge() -> void:
+	if not _freeze:
+		return
+	var active_time: float = _d.lifetime * (2.0 - _d.explosiveness)
+	var margin: float = 1.0 / 60.0
+	_d_nudge_frames.append(_frame + roundi((active_time + margin) * 60.0))
 
 
 ## A_BOX: two emit_particle calls (position, velocity and colour flags).
@@ -275,6 +313,11 @@ func _read_environment() -> bool:
 		if _step_log_file == null:
 			_error("cannot open RS_FIXTURE_STEP_LOG=%s" % step_log)
 			return false
+	# FRZ-P: RS_FIXTURE_FREEZE=1 freezes the burst emitters (see the member comment).
+	if OS.has_environment("RS_FIXTURE_FREEZE"):
+		var freeze: String = OS.get_environment("RS_FIXTURE_FREEZE").strip_edges()
+		if freeze != "0" and freeze != "" and freeze != "off":
+			_freeze = true
 	return true
 
 

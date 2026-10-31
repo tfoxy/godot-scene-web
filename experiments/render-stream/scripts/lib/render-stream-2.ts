@@ -202,7 +202,10 @@ export type SabotageKind =
   | "stale-buffer"
   // new at /12 (PM5, render-stream-12.md "Sabotages")
   | "perturb-seed"
-  | "drop-restart";
+  | "drop-restart"
+  // new at /12 (FRZ-P, results/p3/frz-p.md): legal in a /12 session only
+  | "freeze-drop-events"
+  | "freeze-send-positions";
 export type EndReason = "shutdown" | "disarm";
 export type Transport = "file" | "websocket";
 export type Encoding = "full" | "patch";
@@ -1380,10 +1383,15 @@ const SABOTAGE_KINDS = [
   // new at /12 (PM5, render-stream-12.md "Sabotages"): legal in a /12 session only.
   "perturb-seed",
   "drop-restart",
+  // new at /12 (FRZ-P, results/p3/frz-p.md): legal in a /12 session only.
+  "freeze-drop-events",
+  "freeze-send-positions",
 ] as const;
 const SABOTAGE_KINDS_V12_ONLY: readonly string[] = [
   "perturb-seed",
   "drop-restart",
+  "freeze-drop-events",
+  "freeze-send-positions",
 ];
 const SABOTAGE_KINDS_V11_ONLY: readonly string[] = [
   "cv-churn",

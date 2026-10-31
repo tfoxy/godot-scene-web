@@ -376,6 +376,10 @@ enum class SabotageKind : std::uint8_t {
   // New at /12 (PM5, render-stream-12.md "Sabotages").
   PerturbSeed,   // the encoder adds 1 to the seed of the first particles entry it writes
   DropRestart,   // the first particles_restart at or after the frame is not counted
+  // New at /12 (FRZ-P, results/p3/frz-p.md): they act on a particle-frozen seat only
+  // (GRC_FREEZE_PARTICLES), which is why they need the grant, not just /12.
+  FreezeDropEvents,    // from the frame on, the frozen seat's restart/emit events never reach the wire
+  FreezeSendPositions, // from the frame on, the frozen seat's encoder emits per-frame positions
 };
 
 enum class EndReason : std::uint8_t { Shutdown, Disarm };
@@ -586,6 +590,8 @@ inline const char *to_wire(SabotageKind v) {
   case SabotageKind::StaleBuffer: return "stale-buffer";
   case SabotageKind::PerturbSeed: return "perturb-seed";
   case SabotageKind::DropRestart: return "drop-restart";
+  case SabotageKind::FreezeDropEvents: return "freeze-drop-events";
+  case SabotageKind::FreezeSendPositions: return "freeze-send-positions";
   }
   return "";
 }

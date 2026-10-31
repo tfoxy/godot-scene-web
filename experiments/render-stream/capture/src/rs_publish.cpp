@@ -210,6 +210,9 @@ ParseResult parse_sabotage(const char *kind, const char *frame, const char *op) 
       // New at /12 (PM5, render-stream-12.md "Sabotages"; GRC_STREAM_VERSION=12).
       {"perturb-seed", SabotageKind::PerturbSeed},
       {"drop-restart", SabotageKind::DropRestart},
+      // New at /12 (FRZ-P, results/p3/frz-p.md); they need GRC_FREEZE_PARTICLES=on too.
+      {"freeze-drop-events", SabotageKind::FreezeDropEvents},
+      {"freeze-send-positions", SabotageKind::FreezeSendPositions},
   };
   bool known = false;
   for (const auto &entry : kKinds) {

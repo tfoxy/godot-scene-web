@@ -302,6 +302,10 @@ struct Stream {
   // written, so a long run's buffer never grows unbounded. Counters, counters.json and the
   // mirror are unaffected either way: they do not read resources.jsonl.
   bool hook_log_on = true;
+  // FRZ-P (results/p3/frz-p.md): GRC_FREEZE_PARTICLES, read at arm. Empty/unset/off/0 = off (the
+  // pure stream, byte-identical to today); on/1 marks the seat particle-frozen. It changes nothing
+  // on the wire: it is recorded in host evidence (result.json) and gates the two FRZ-P sabotages.
+  bool freeze_particles = false;
 };
 
 Stream g_stream;
@@ -512,6 +516,21 @@ bool parse_unknown_item_policy(const char *value, rs2::UnknownItemPolicy *out) {
   return false;
 }
 
+// FRZ-P (results/p3/frz-p.md): GRC_FREEZE_PARTICLES, read at arm. off/0/empty (default) = off;
+// on/1 = the seat is particle-frozen. Any other value refuses.
+bool parse_freeze_particles(const char *value, bool *out) {
+  if (value == nullptr || std::strcmp(value, "") == 0 || std::strcmp(value, "off") == 0 ||
+      std::strcmp(value, "0") == 0) {
+    *out = false;
+    return true;
+  }
+  if (std::strcmp(value, "on") == 0 || std::strcmp(value, "1") == 0) {
+    *out = true;
+    return true;
+  }
+  return false;
+}
+
 // `presentation` receives W x H for presentation:<W>x<H> (decimal, 1..16384 each; G6b,
 // gate6-design.md Q3a) and is left untouched otherwise.
 bool parse_root_size_policy(const char *value, RootSizePolicy *out, int32_t presentation[2]) {
@@ -701,6 +720,11 @@ std::string result_json() {
         json.field("shim_synthesized", static_cast<int64_t>(rs::particles_shim().synthesized()));
         json.field("shim_engine_allocated",
                    static_cast<int64_t>(rs::particles_shim().engine_allocated()));
+        // FRZ-P (results/p3/frz-p.md): additive, written only under GRC_FREEZE_PARTICLES=on, so a
+        // live leg reads the grant from host evidence (the wire carries nothing about it).
+        if (g_stream.freeze_particles) {
+          json.field("frozen", true);
+        }
         if (g_stream.gate8.adopt) {
           // PM7 (render-stream-12.md "As built (PM7)"): pre-arm emitters, under GRC_ADOPT=arm.
           const rs::EmitterAdoptStats e = rs::adopt_emitter_stats();
@@ -1693,6 +1717,20 @@ void stream_start() {
       return;
     }
     g_stream.adopt_fault = adopt_fault;
+    // FRZ-P (results/p3/frz-p.md): GRC_FREEZE_PARTICLES marks the seat particle-frozen. Read at arm;
+    // off (the default) changes nothing, on is recorded in host evidence and gates the FRZ-P
+    // sabotages. It never alters the wire (a frozen emitter still sends its config + events).
+    if (!parse_freeze_particles(std::getenv("GRC_FREEZE_PARTICLES"), &g_stream.freeze_particles)) {
+      const std::string error = std::string("invalid GRC_FREEZE_PARTICLES=") +
+                                std::getenv("GRC_FREEZE_PARTICLES") + " (expected off or on)";
+      log_line("stream: refused particle freeze (" + error + ")");
+      g_stream.status = "refused";
+      g_stream.reason = error;
+      if (!g_live.listen.empty()) {
+        live_decided("refused", "stream refused: " + error);
+      }
+      return;
+    }
     // W11b (render-stream-11.md "Opt-in and version policy"): the dynamic-mesh classification
     // policy, declared by a /11 session only and ignored below it (so never refused there).
     rs2::MeshDynamicPolicy mesh_dynamic;
@@ -2138,6 +2176,12 @@ void stream_start() {
     } else if (rs::sabotage_needs_v12(kind) && !g_stream.gate8.speaks_v12()) {
       // PM5 (render-stream-12.md "Sabotages"): declared by a /12 session only.
       why = std::string(rs2::to_wire(kind)) + " acts on render-stream/12; set GRC_STREAM_VERSION=12";
+    } else if ((kind == rs2::SabotageKind::FreezeDropEvents ||
+                kind == rs2::SabotageKind::FreezeSendPositions) &&
+               !g_stream.freeze_particles) {
+      // FRZ-P (results/p3/frz-p.md): they act on a particle-frozen seat only.
+      why = std::string(rs2::to_wire(kind)) +
+            " acts on a particle-frozen seat; set GRC_FREEZE_PARTICLES=on";
     } else if (rs::sabotage_needs_v11(kind) && !g_stream.gate8.speaks_v11()) {
       // W11b (render-stream-11.md "Sabotage kinds"): declared by a /11 session only.
       why = std::string(rs2::to_wire(kind)) + " acts on render-stream/11; set GRC_STREAM_VERSION=11";
@@ -2567,6 +2611,10 @@ void stream_start() {
     pt.state_notes = pt.enabled;
     pt.drop_restart_frame =
         sabotage.config.kind == rs2::SabotageKind::DropRestart ? sabotage.config.frame : 0;
+    pt.drop_events_frame =
+        sabotage.config.kind == rs2::SabotageKind::FreezeDropEvents ? sabotage.config.frame : 0;
+    pt.send_positions_frame =
+        sabotage.config.kind == rs2::SabotageKind::FreezeSendPositions ? sabotage.config.frame : 0;
     pt.param_arrays = g_stream.gate8.speaks_v12();
     rs::mirror_set_particles(pt);
   }

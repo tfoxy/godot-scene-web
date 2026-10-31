@@ -397,6 +397,7 @@ pump_fired, pump_skipped, shim_synthesized, shim_engine_allocated}`.
 | `GRC_STREAM_VERSION` | `6` (default), `8`, `9`, `10`, `11`, `12` | `12` makes file sinks /12, puts `.12` first in the listener's offer and installs the multimesh and particles hooks |
 | `GRC_HEADLESS_PARTICLES` | `off` (default), `synthesize` | the particles RID shim |
 | `GRC_PREDRAW_PUMP` | `0` (default), `1` | the pre-draw pump |
+| `GRC_FREEZE_PARTICLES` | `off` (default), `on` | marks the seat particle-frozen in host evidence only (FRZ-P); never on the wire |
 | `RS_RECEIVER_PROTOCOL` | `…`, `12` | the native receiver and GSW offer `render-stream.12` |
 
 - **Defaults do not move.** File sinks stay /6. The listener offers `.12` only under
@@ -929,6 +930,35 @@ capture.
    off), `ptc-receiver-catches-no-subparticle-stub` (native and web), and GSW's
    `ptc-gsw-switched-key@gsw` (honest leg 0 px off; the `shared-process-key` leg draws S_SPHERE
    as a box of extents (1, 1, 1) while S_BOX holds).
+
+## As built (FRZ-P): decisions
+
+FRZ-P negotiates and verifies the GPU-particle freeze ([results/p3/frz-p.md](../results/p3/frz-p.md),
+`frz-d.md` §2/§6). Nothing changes on the wire, in the codecs, or in the receivers. The capture
+gains one host grant and two /12 sabotage kinds.
+
+1. **`GRC_FREEZE_PARTICLES` is a host grant, not a wire feature.** Read once at arm: empty/`off`/`0`
+   = off (the default, byte-identical to today); `on`/`1` marks the seat particle-frozen; any other
+   value refuses the capture. It changes nothing the capture sends — a frozen emitter's config,
+   seed, restart/emit/emitting events and process material already travel as the emitter tier, and
+   the freeze never adds per-frame positions. On, it is recorded in host evidence
+   (`result.json` `stream.gate8.particles.frozen: true`, additive, written only under the grant); it
+   is never in the hello or a session record. It is the seat's *observation* of the game-side
+   suspender's freeze, so the pure stream (grant off) is unchanged and the grant on is the same
+   bytes with a different game-side emitter state.
+2. **Sabotages** (new `GRC_SABOTAGE` kinds, legal at /12 **and** under the grant): `freeze-drop-events`
+   drops every `particles_restart` and `particles_emit` from the wire from the frame on (the hook
+   log keeps the true counts, the `drop-restart` skew), so the frozen seat's burst cannot replay;
+   `freeze-send-positions` appends every `ok` emitter's current emission transform as a per-frame
+   emit, the per-frame positions the freeze forbids, which changes every transaction's bytes.
+   `sabotage_needs_v12` covers both; the grant requirement is a separate refusal.
+3. **Fixture and checks.** `fixtures/gate8-pt` gains `RS_FIXTURE_FREEZE=1` (freeze `A_BOX` and
+   `D_ONESHOT` with `ProcessMode.Disabled`, nudge the one-shot at `active_time` + one frame).
+   `g8pt` gains `frzp/capture`, `frzp-grant/capture`, the two sabotage captures, `frzp/receiver`
+   and `sabotage-freeze-drop-events/receiver`; g7-8's GSW half replays both receivers. Checks
+   `frzp-validate`, `frzp-freeze-evidence`, `frzp-wire-byte-identical`, `frzp-frozen-burst`,
+   `frzp-catches-freeze-drop-events` and `frzp-catches-freeze-send-positions`
+   (`lib/gate8-pt-checks.ts`, `lib/gate8-pt-receiver-checks.ts`).
 
 ## Versioning
 

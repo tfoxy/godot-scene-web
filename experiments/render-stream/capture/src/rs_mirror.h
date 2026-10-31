@@ -544,6 +544,8 @@ class Mirror {
     bool enabled = false;
     bool state_notes = false;            // keep a ParticlesStateNote per moved version
     std::uint64_t drop_restart_frame = 0;  // sabotage drop-restart (0: off)
+    std::uint64_t drop_events_frame = 0;   // sabotage freeze-drop-events (0: off)
+    std::uint64_t send_positions_frame = 0;  // sabotage freeze-send-positions (0: off)
     bool param_arrays = false;  // /12: carry a plain-Array material parameter's packed form
   };
   void set_particles(const ParticlesOptions &options);
@@ -1753,7 +1755,8 @@ class Mirror {
     bool freed = false;
     std::uint64_t version = 1;
     std::uint64_t wire_version_skew = 0;  // drop-restart: versions the wire does not see
-    std::uint64_t restarts_dropped = 0;   // drop-restart: restarts the wire does not see
+    std::uint64_t restarts_dropped = 0;   // drop-restart/drop-events: restarts the wire does not see
+    std::uint64_t emits_dropped = 0;      // freeze-drop-events: emits the wire does not see
     bool mode_2d = false;
     bool emitting = false;
     std::int32_t amount = 0;

@@ -236,8 +236,16 @@ pub const SABOTAGE_KINDS: &[&str] = &[
     // New at /12 (render-stream-12.md "Sabotages"): legal in a /12 session only.
     "perturb-seed",
     "drop-restart",
+    // New at /12 (FRZ-P, results/p3/frz-p.md): legal in a /12 session only.
+    "freeze-drop-events",
+    "freeze-send-positions",
 ];
-const SABOTAGE_V12_ONLY: &[&str] = &["perturb-seed", "drop-restart"];
+const SABOTAGE_V12_ONLY: &[&str] = &[
+    "perturb-seed",
+    "drop-restart",
+    "freeze-drop-events",
+    "freeze-send-positions",
+];
 const SABOTAGE_V11_ONLY: &[&str] = &[
     "cv-churn",
     "stale-dynamic",

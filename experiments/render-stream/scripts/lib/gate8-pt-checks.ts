@@ -55,7 +55,7 @@ import { censusProblems as mmCensusProblems, type G8mmExpected, mapCells as mmMa
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
 import { LATE_LEGS, type PtLate, type PtLateTx, runG8ptLate } from "./gate8-pt-late-checks";
 import { PTC_LEGS, runG8ptPtc } from "./gate8-ptc-checks";
-import { type PtPixels, type PtWireTotals, runG8ptReceivers } from "./gate8-pt-receiver-checks";
+import { type PtPixels, type PtWireTotals, runG8ptFrzp, runG8ptReceivers } from "./gate8-pt-receiver-checks";
 import {
   applyTransaction,
   type BuiltinParticleProcessMaterial,
@@ -1234,10 +1234,19 @@ const LEGS = [
   "sabotage-undrawn-particles/receiver",
   "sabotage-ignore-particle-emits/receiver",
   "sabotage-drop-restart/receiver-patch",
+  // FRZ-P (results/p3/frz-p.md)
+  "frzp/capture",
+  "frzp-grant/capture",
+  "sabotage-freeze-drop-events/capture",
+  "sabotage-freeze-send-positions/capture",
+  "frzp/receiver",
+  "sabotage-freeze-drop-events/receiver",
   ...LATE_LEGS,
   "import/ptc-fixture",
   ...Object.values(PTC_LEGS),
 ];
+
+const FRZP_SABOTAGES = ["freeze-drop-events", "freeze-send-positions"] as const;
 
 function rsCoreValidate(path: string, version: number): string {
   if (!existsSync(RS_CORE_CHECK)) return `missing ${RS_CORE_CHECK} (build-rs-core.sh)`;
@@ -1566,6 +1575,109 @@ export async function runG8pt(
     const receivers: Record<string, unknown> = {};
     report.legs.receivers = receivers;
     await runG8ptReceivers(g, expected.checkpoints, expected.pixels, t ? ptWireTotals(t) : null, checks, receivers);
+  }
+
+  // FRZ-P (results/p3/frz-p.md): the particle freeze. frzp's frozen bursts replay shot-equal
+  // (gate8-pt-receiver-checks.ts runG8ptFrzp), the grant alone leaves the wire byte-identical, and
+  // the two sabotages fail (freeze-drop-events the burst, freeze-send-positions the wire identity).
+  {
+    const frzp: Record<string, unknown> = {};
+    report.legs.frzp = frzp;
+
+    // frzp-validate: the honest frozen and grant-only captures pass both validators.
+    {
+      const problems: string[] = [];
+      let any = false;
+      for (const leg of ["frzp/capture", "frzp-grant/capture"]) {
+        if (legSkipped(leg)) continue;
+        for (const sink of SINKS_12) {
+          const v = await validateBoth(join(dir(leg), sink), 12);
+          if (!v) {
+            problems.push(`${leg}/${sink}: missing`);
+            continue;
+          }
+          any = true;
+          if (v[0] !== "ok") problems.push(`${leg}/${sink}: TS ${v[0]}`);
+          if (v[1] !== "ok") problems.push(`${leg}/${sink}: rs-core ${v[1]}`);
+        }
+      }
+      checks.push(check("frzp-validate", "FRZ-P: the frozen and grant-only /12 captures pass the TypeScript validator and rs-core-check", any ? problems : null));
+    }
+
+    // frzp-freeze-evidence: result.json stream.gate8.particles.frozen is true exactly under the grant.
+    {
+      const problems: string[] = [];
+      let any = false;
+      for (const [leg, want] of [
+        ["capture", false],
+        ["frzp-grant/capture", true],
+        ["frzp/capture", true],
+        ["sabotage-freeze-drop-events/capture", true],
+        ["sabotage-freeze-send-positions/capture", true],
+      ] as const) {
+        if (legSkipped(leg)) continue;
+        any = true;
+        const resultText = await readText(join(dir(leg), "evidence", "result.json"));
+        const frozen = /"frozen"\s*:\s*true/.test(resultText ?? "");
+        if (frozen !== want) problems.push(`${leg}: result.json frozen=${frozen}, want ${want}`);
+      }
+      frzp.evidence = problems.length === 0 ? "ok" : problems;
+      checks.push(check("frzp-freeze-evidence", "FRZ-P: result.json records the particle freeze (stream.gate8.particles.frozen) exactly under GRC_FREEZE_PARTICLES=on", any ? problems : null));
+    }
+
+    // frzp-wire-byte-identical: the grant alone (frzp-grant) is byte-identical to the off capture.
+    // Two deterministic captures differ only in the session record's random ids and the end
+    // record's wall-clock timing, so the wire is identical when every other record's bytes match.
+    const wireSame = async (a: string, b: string, sink: string): Promise<boolean | null> => {
+      const x = await bytesOf(join(dir(a), sink));
+      const y = await bytesOf(join(dir(b), sink));
+      if (!x || !y) return null;
+      const sx = splitRecords(x, 12);
+      const sy = splitRecords(y, 12);
+      if (sx.errors.length > 0 || sy.errors.length > 0 || sx.records.length !== sy.records.length) return false;
+      for (let i = 0; i < sx.records.length; i++) {
+        const type = ((decodeRecord(sx.records[i], 12).record?.meta as { type?: string } | undefined)?.type) ?? "?";
+        if (type === "session" || type === "end") continue;
+        const bx = sx.records[i].bytes;
+        const by = sy.records[i].bytes;
+        if (bx.length !== by.length || bx.some((v, k) => v !== by[k])) return false;
+      }
+      return true;
+    };
+    {
+      const problems: string[] = [];
+      let any = false;
+      if (!legSkipped("frzp-grant/capture") && !legSkipped("capture")) {
+        any = true;
+        for (const sink of SINKS_12) {
+          const eq = await wireSame("frzp-grant/capture", "capture", sink);
+          if (eq === null) problems.push(`${sink}: missing`);
+          else if (!eq) problems.push(`${sink}: frzp-grant differs from capture`);
+        }
+      }
+      checks.push(check("frzp-wire-byte-identical", "FRZ-P: the grant alone (frzp-grant) leaves the wire byte-identical to the freeze-off capture (every transaction and resource record); the freeze never alters transaction bytes", any ? problems : null));
+    }
+
+    // frzp-catches-freeze-send-positions: the sabotage's per-frame positions differ from the honest frozen seat.
+    {
+      const leg = "sabotage-freeze-send-positions/capture";
+      const why = legSkipped(leg);
+      if (why) {
+        checks.push(notRun("frzp-catches-freeze-send-positions", "FRZ-P: freeze-send-positions differs from the honest frozen seat's wire", leg, why));
+      } else if (!legSkipped("frzp/capture")) {
+        const diffs: string[] = [];
+        for (const sink of SINKS_12) {
+          const eq = await wireSame(leg, "frzp/capture", sink);
+          if (eq === null) diffs.push(`${sink}: missing`);
+          else if (eq) diffs.push(`${sink}: equal (sabotage went unseen)`);
+        }
+        checks.push(check("frzp-catches-freeze-send-positions", "FRZ-P: freeze-send-positions (per-frame positions under the freeze) changes the wire, failing the byte-identity check", diffs.length === 0 ? [] : diffs, diffs[0]));
+      } else {
+        checks.push(check("frzp-catches-freeze-send-positions", "FRZ-P: freeze-send-positions (per-frame positions under the freeze) changes the wire", null));
+      }
+    }
+
+    await runG8ptFrzp(g, expected.checkpoints, expected.pixels, checks, frzp);
   }
 
   // PM7: the late arm (gate8-pt-late-checks.ts)
