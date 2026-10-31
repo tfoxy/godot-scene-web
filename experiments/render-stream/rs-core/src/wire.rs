@@ -252,13 +252,16 @@ pub struct BlockRange {
 }
 
 /// `decodeRecord()`'s block framing, after the meta checks: `truncated`, `record-length`,
-/// `block-length`. `names` labels messages only.
+/// `block-length`. `names` labels messages only. `zero_runs` (a /13 transaction record, W13r):
+/// blocks 4, 7 and 8 (`mesh_f32`, `mesh_u8`, `mm_f32`) carry token streams, whose length
+/// `block-length` does not judge (`zr-length` does, once they are expanded).
 pub fn read_blocks(
     record: &[u8],
     frame: &Frame<'_>,
     descs: &[BlockDesc],
     names: &dyn Fn(usize) -> String,
     offset: usize,
+    zero_runs: bool,
     out: &mut Vec<BlockRange>,
 ) -> Result<(), Error> {
     out.clear();
@@ -296,7 +299,8 @@ pub fn read_blocks(
         let block_len = le_u32(record, pos) as u64;
         pos += 4;
         let expected = d.count.checked_mul(d.ty.width());
-        if expected != Some(block_len) {
+        let coded = zero_runs && matches!(i, 4 | 7 | 8);
+        if !coded && expected != Some(block_len) {
             return Err(Error::new(
                 "block-length",
                 format!(

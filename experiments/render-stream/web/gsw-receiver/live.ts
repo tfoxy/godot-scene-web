@@ -752,8 +752,13 @@ class LiveReceiver {
       if (err.startsWith("live-framing")) throw failWith(null, err);
       // W13c (render-stream-13.md "Decoding and check order"): a /13 transaction whose
       // reconstructed blocks miss predict_check applied nothing: resync it (reason coding), as a
-      // coding failure. The module drops the patches before the full (ACCEPT_HELD).
-      if (err.startsWith("predict-check")) {
+      // coding failure. The module drops the patches before the full (ACCEPT_HELD). W13r: so
+      // does a /13 block whose zero runs fail (zr-length, zr-noncanonical).
+      if (
+        err.startsWith("predict-check") ||
+        err.startsWith("zr-length") ||
+        err.startsWith("zr-noncanonical")
+      ) {
         this.predictResyncs++;
         const seq =
           this.coding !== null ? this.coding.seq() : failureSeq(buf, expected);

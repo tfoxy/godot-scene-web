@@ -4686,7 +4686,13 @@ function decodeRecordOnce(
         : descriptor.type === "f64"
           ? 8 * descriptor.count
           : descriptor.count;
-    if (blockLen !== expectedLen) {
+    // W13r (render-stream-13.md "As built (W13r)"): a /13 transaction's three predicted blocks
+    // carry zero-run token streams, whose length zr-length checks after the meta.
+    const zeroRuns =
+      version === 13 &&
+      (meta as { type?: unknown }).type === "transaction" &&
+      isRs13PredictedBlock(descriptor.name);
+    if (blockLen !== expectedLen && !zeroRuns) {
       return {
         errors: [
           `block-length: record at offset ${raw.offset} block "${descriptor.name}" declares count ${descriptor.count} (${expectedLen} bytes) but carries ${blockLen} bytes`,
@@ -4700,7 +4706,17 @@ function decodeRecordOnce(
         ],
       };
     }
-    if (descriptor.type === "f32") {
+    if (zeroRuns && blockLen !== expectedLen) {
+      // The token stream itself: the un-predictor reads it, and the /12 rules read the record
+      // it rebuilds (the plain blocks).
+      blocks.push({
+        u8_bytes: blockLen,
+        sha256:
+          opts?.recordDigest === "deferred"
+            ? ""
+            : hashBytes(raw.bytes.subarray(pos, pos + blockLen)),
+      });
+    } else if (descriptor.type === "f32") {
       // GRT4b: sized once and filled, not grown by push (a third of the time).
       const floats = new Array<number>(descriptor.count);
       for (let f = 0; f < descriptor.count; f++)
@@ -4785,7 +4801,11 @@ export function decodeRecording(
     records.push(
       plain[r] === raw
         ? decoded.record
-        : { ...decoded.record, sha256: hashBytes(raw.bytes) },
+        : {
+            ...decoded.record,
+            byte_length: raw.byte_length,
+            sha256: hashBytes(raw.bytes),
+          },
     );
   }
   const magic =
@@ -5583,6 +5603,226 @@ function rs13CheckHex(blocks12: Map<string, Uint8Array>): string {
   );
 }
 
+// --- zero runs (W13r) -----------------------------------------------------------------------------
+//
+// render-stream-13.md "As built (W13r)": each of mesh_u8, mesh_f32 and mm_f32 carries its W13a coded
+// bytes C (plain length L = the descriptor's count x width) as tokens `uvarint zeros, uvarint n, n
+// literal bytes` until L is covered. Canonical: every maximal run of RS13_ZR_MIN or more zero bytes
+// is one token's `zeros`, whole; everything else is literal (make_golden.py zr_encode/zr_decode).
+
+export const RS13_ZR_MIN = 4;
+const RS13_PREDICTED_BLOCKS = ["mesh_f32", "mesh_u8", "mm_f32"] as const;
+const RS13_PREDICTED_SET: ReadonlySet<string> = new Set(RS13_PREDICTED_BLOCKS);
+
+/** Whether `name` is one of /13's three predicted (zero-run coded) blocks. */
+export function isRs13PredictedBlock(name: unknown): boolean {
+  return typeof name === "string" && RS13_PREDICTED_SET.has(name);
+}
+
+/** W13r writer sabotages: "overrun" (the first zero run one zero too long) and "short-run" (the
+ * first 3-byte zero run elided too). */
+export type Rs13ZrSabotage = "overrun" | "short-run";
+
+function rs13PushUvarint(out: number[], v: number): void {
+  for (;;) {
+    const b = v % 128;
+    v = Math.floor(v / 128);
+    if (v > 0) out.push(b | 0x80);
+    else {
+      out.push(b);
+      return;
+    }
+  }
+}
+
+/** The canonical token stream of `c` (make_golden.py zr_encode). */
+export function rs13ZrEncode(
+  c: Uint8Array,
+  sabotage?: Rs13ZrSabotage,
+): Uint8Array {
+  const n = c.length;
+  const runs: Array<[number, number]> = [];
+  let shortDone = false;
+  let k = 0;
+  while (k < n) {
+    if (c[k] !== 0) {
+      k++;
+      continue;
+    }
+    let j = k;
+    while (j < n && c[j] === 0) j++;
+    if (
+      j - k >= RS13_ZR_MIN ||
+      (sabotage === "short-run" && !shortDone && j - k === 3)
+    ) {
+      if (j - k === 3) shortDone = true;
+      runs.push([k, j]);
+    }
+    k = j;
+  }
+  const head: number[] = [];
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  const token = (zeros: number, from: number, to: number) => {
+    head.length = 0;
+    rs13PushUvarint(head, zeros);
+    rs13PushUvarint(head, to - from);
+    const h = Uint8Array.from(head);
+    parts.push(h, c.subarray(from, to));
+    size += h.length + (to - from);
+  };
+  let extra = sabotage === "overrun" ? 1 : 0;
+  if ((runs.length > 0 && runs[0][0] > 0) || (runs.length === 0 && n > 0))
+    token(0, 0, runs.length > 0 ? runs[0][0] : n);
+  for (let i = 0; i < runs.length; i++) {
+    const [a, b] = runs[i];
+    token(b - a + extra, b, i + 1 < runs.length ? runs[i + 1][0] : n);
+    extra = 0;
+  }
+  const out = new Uint8Array(size);
+  let p = 0;
+  for (const part of parts) {
+    out.set(part, p);
+    p += part.length;
+  }
+  return out;
+}
+
+class Rs13ZrError extends Error {}
+
+/** (value, next position, minimal) of the uvarint at `p`; zr-length when the stream ends inside
+ * it or it has more than 10 bytes. */
+function rs13ReadUvarint(
+  s: Uint8Array,
+  p: number,
+  where: string,
+): [number, number, boolean] {
+  let v = 0;
+  let scale = 1;
+  const start = p;
+  for (;;) {
+    if (p >= s.length || p - start >= 10)
+      throw new Rs13ZrError(`zr-length: ${where}: a uvarint runs past the token stream`);
+    const b = s[p++];
+    v += (b & 0x7f) * scale;
+    scale *= 128;
+    if ((b & 0x80) === 0) return [v, p, p - start === 1 || b !== 0];
+  }
+}
+
+function rs13HasZeroRun(lit: Uint8Array): boolean {
+  let run = 0;
+  for (let i = 0; i < lit.length; i++) {
+    run = lit[i] === 0 ? run + 1 : 0;
+    if (run >= RS13_ZR_MIN) return true;
+  }
+  return false;
+}
+
+/** The plain bytes of a token stream that must cover exactly `length` (make_golden.py zr_decode).
+ * Throws `zr-length: ...` when it does not, whatever else is wrong; else `zr-noncanonical: ...`
+ * at the first token that breaks the canonical form. */
+export function rs13ZrDecode(
+  s: Uint8Array,
+  length: number,
+  where = "block",
+): Uint8Array {
+  const out = new Uint8Array(length);
+  let at = 0;
+  let p = 0;
+  let i = 0;
+  let bad: string | null = null;
+  try {
+    while (at < length) {
+      const [z, pz, okZ] = rs13ReadUvarint(s, p, where);
+      p = pz;
+      if (z > length - at)
+        throw new Rs13ZrError(`zr-length: ${where}: token #${i}'s zero run passes the plain length`);
+      const [n, pn, okN] = rs13ReadUvarint(s, p, where);
+      p = pn;
+      if (n > length - at - z)
+        throw new Rs13ZrError(`zr-length: ${where}: token #${i}'s literal passes the plain length`);
+      if (p + n > s.length)
+        throw new Rs13ZrError(`zr-length: ${where}: token #${i}'s literal runs past the stream`);
+      const lit = s.subarray(p, p + n);
+      p += n;
+      const last = at + z + n === length;
+      if (bad === null) {
+        if (!(okZ && okN)) bad = `token #${i}: a uvarint is not minimal`;
+        else if ((z > 0 && z < RS13_ZR_MIN) || (z === 0 && i > 0))
+          bad = `token #${i}: a zero run of ${z}B`;
+        else if (n === 0 && (z === 0 || !last))
+          bad = `token #${i}: an empty literal`;
+        else if (rs13HasZeroRun(lit))
+          bad = `token #${i}: a literal holds a run of ZR_MIN zero bytes`;
+        else if (z > 0 && lit[0] === 0)
+          bad = `token #${i}: its literal starts with a zero byte`;
+        else if (!last && n > 0 && lit[n - 1] === 0)
+          bad = `token #${i}: its literal ends with a zero byte before a zero run`;
+      }
+      at += z; // out is zero-filled
+      out.set(lit, at);
+      at += n;
+      i++;
+    }
+    if (p !== s.length)
+      throw new Rs13ZrError(`zr-length: ${where}: bytes follow once the plain length is covered`);
+  } catch (error) {
+    if (error instanceof Rs13ZrError) throw new Error(error.message);
+    throw error;
+  }
+  if (bad !== null) throw new Error(`zr-noncanonical: ${where}: ${bad}`);
+  return out;
+}
+
+function rs13TypeWidth(type: unknown): number {
+  return type === "f32" || type === "i32" ? 4 : type === "f64" ? 8 : 1;
+}
+
+/** The three predicted blocks of `named` (W13a coded bytes) as token streams; a sabotage acts on
+ * the first block it changes (make_golden.py zr_blocks). */
+function rs13ZrBlocks(
+  named: Map<string, Uint8Array>,
+  sabotage?: Rs13ZrSabotage,
+): Map<string, Uint8Array> {
+  const out = new Map(named);
+  let done = false;
+  for (const name of RS13_PREDICTED_BLOCKS) {
+    const plain = named.get(name);
+    if (plain === undefined) continue;
+    let s = rs13ZrEncode(plain);
+    if (sabotage !== undefined && !done) {
+      const bad = rs13ZrEncode(plain, sabotage);
+      if (!bytesEqual(bad, s)) {
+        s = bad;
+        done = true;
+      }
+    }
+    out.set(name, s);
+  }
+  return out;
+}
+
+/** The W13a coded bytes of the three predicted blocks, expanded in descriptor order; throws the
+ * first block's zr-length / zr-noncanonical (make_golden.py unzr_blocks). */
+function rs13UnzrBlocks(
+  meta: Record<string, unknown>,
+  named: Map<string, Uint8Array>,
+  where: string,
+): Map<string, Uint8Array> {
+  const out = new Map(named);
+  const descriptors = Array.isArray(meta.blocks) ? meta.blocks : [];
+  for (const d of descriptors) {
+    if (!isPlainObject(d) || !isRs13PredictedBlock(d.name)) continue;
+    const name = d.name as string;
+    const s = named.get(name);
+    if (s === undefined) continue;
+    const length = Number(d.count) * rs13TypeWidth(d.type);
+    out.set(name, rs13ZrDecode(s, length, `${where}: ${name}`));
+  }
+  return out;
+}
+
 // --- records ---------------------------------------------------------------------------------------
 
 interface Rs13ParsedRecord {
@@ -5783,6 +6023,8 @@ export interface EncodeRs13Options {
   /** When given, receives each transaction's predicted units in order (golden-13 index.json
    * "predict_trace"). */
   trace?: Array<{ seq: unknown; units: Rs13TraceUnit[] }>;
+  /** W13r writer sabotages (render-stream-13.md "As built (W13r)"): zr-overrun, zr-short-run. */
+  zrSabotage?: Rs13ZrSabotage;
 }
 
 /** render-stream-13.md "Forms and transcode": a /12 file transcoded to /13 (the encoder; golden-13
@@ -5808,7 +6050,10 @@ export function encodeRs13(
       const named = rs13NamedBlocks(meta, blocks);
       const [h1, h2] = hist.refs(meta, { stale: opts.stale });
       const units: Rs13TraceUnit[] | undefined = opts.trace ? [] : undefined;
-      const coded = rs13CodeBlocks(meta, named, h1, h2, false, units);
+      const coded = rs13ZrBlocks(
+        rs13CodeBlocks(meta, named, h1, h2, false, units),
+        opts.zrSabotage,
+      );
       if (opts.trace && units) opts.trace.push({ seq: meta.seq, units });
       out.push(
         rs13MakeRecord(
@@ -5862,7 +6107,11 @@ export function decodeRs13(
       const [plain, check] = rs13WithoutCheck(metaBytes);
       if (check === null || !/^[0-9a-f]*$/.test(check))
         throw new Error(`meta-schema: seq ${String(meta.seq)}: predict_check`);
-      const named = rs13NamedBlocks(meta, blocks);
+      const named = rs13UnzrBlocks(
+        meta,
+        rs13NamedBlocks(meta, blocks),
+        `seq ${String(meta.seq)}`,
+      );
       const [h1, h2] = hist.refs(meta, { noReset });
       const decoded = rs13CodeBlocks(meta, named, h1, h2, true);
       if (rs13CheckHex(decoded) !== check)
@@ -5889,9 +6138,10 @@ export function decodeRs13(
 /** A /13 decoder's un-prediction state over one stream (a file, or one live connection): feed
  * every transaction record in stream order, after decodeRecord() accepted its framing and meta. */
 export interface Rs13Unpredictor {
-  /** The record with its three predicted blocks replaced by /12's (same offset and length; the
-   * meta, predict_check included, unchanged), or the `predict-check` error. Advances the history
-   * when the check holds. */
+  /** The record with its three predicted blocks replaced by /12's (same offset; W13r: its own
+   * byte_length, the plain blocks being longer than the token streams; the meta, predict_check
+   * included, unchanged), or the `zr-length`, `zr-noncanonical` or `predict-check` error. Advances
+   * the history when the check holds. */
   transaction(
     raw: RawRecord,
     meta: TransactionMeta,
@@ -5906,8 +6156,17 @@ export function createRs13Unpredictor(
   return {
     transaction(raw, meta) {
       const m = meta as unknown as Record<string, unknown>;
-      const { blocks } = rs13ParseRecord(raw.bytes);
-      const named = rs13NamedBlocks(m, blocks);
+      const { metaBytes, blocks } = rs13ParseRecord(raw.bytes);
+      let named: Map<string, Uint8Array>;
+      try {
+        named = rs13UnzrBlocks(
+          m,
+          rs13NamedBlocks(m, blocks),
+          `record at offset ${raw.offset}: seq ${meta.seq}`,
+        );
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
       const [h1, h2] = hist.refs(m, { noReset });
       const decoded = rs13CodeBlocks(m, named, h1, h2, true);
       const check = rs13CheckHex(decoded);
@@ -5916,15 +6175,13 @@ export function createRs13Unpredictor(
           error: `predict-check: record at offset ${raw.offset}: seq ${meta.seq}: the reconstructed blocks hash to ${check}, predict_check is ${String(meta.predict_check)}`,
         };
       hist.accept(m, decoded, { noReset });
-      const bytes = raw.bytes.slice();
-      const descriptors = meta.blocks;
-      for (let i = 0; i < blocks.length; i++) {
-        const plain = decoded.get(descriptors[i]?.name);
-        if (plain !== undefined && plain !== blocks[i].bytes)
-          bytes.set(plain, blocks[i].pos);
-      }
+      // W13r: the plain blocks are longer than the token streams, so the record is rebuilt.
+      const bytes = rs13MakeRecord(
+        metaBytes,
+        rs13RebuildBlocks(m, blocks, decoded),
+      );
       return {
-        raw: { offset: raw.offset, byte_length: raw.byte_length, bytes },
+        raw: { offset: raw.offset, byte_length: bytes.length, bytes },
       };
     },
   };
@@ -9541,8 +9798,13 @@ export function createRecordingValidator(
         if (timer) timer.decode_us += timer.now() - decodeT0;
         return [plain.errors[0]];
       }
+      // W13r: the /13 record's own length (the end record's stats count the wire bytes).
       decoded = {
-        record: { ...plain.record, sha256: decoded.record.sha256 },
+        record: {
+          ...plain.record,
+          byte_length: decoded.record.byte_length,
+          sha256: decoded.record.sha256,
+        },
         errors: [],
       };
     }

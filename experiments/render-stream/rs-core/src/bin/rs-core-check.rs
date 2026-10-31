@@ -2,7 +2,7 @@
 //!
 //!   rs-core-check goldens [--dir experiments/render-stream/protocol] [--only 6]
 //!                         [--sabotage skip-payload-hash|early-prune|no-predict-reset]
-//!   rs-core-check transcode --to 12|13 [--stale] <in> <out>
+//!   rs-core-check transcode --to 12|13 [--stale] [--zr-sabotage overrun|short-run] <in> <out>
 //!   rs-core-check transcode --roundtrip <recording.rs12>...
 //!   rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]
 //!   rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]
@@ -19,7 +19,7 @@
 //! `goldens` runs golden-2 ... golden-13 (exits non-zero on any failing check). `transcode` (W13a,
 //! render-stream-13.md "Forms and transcode") converts a /12 recording to /13 or back, refusing an
 //! invalid input with the decoder's error code; `--stale` is the encoder sabotage
-//! `predict-stale`; `--roundtrip` checks /12 → /13 → /12 byte for byte and reports the sizes and
+//! `predict-stale`, `--zr-sabotage` W13r's `zr-overrun` / `zr-short-run`; `--roundtrip` checks /12 → /13 → /12 byte for byte and reports the sizes and
 //! the predicted units by order. `diff` feeds every
 //! record of every input through the validator and writes one JSONL line per record (record sha256,
 //! and per transaction its seq, the sha256 of its canonical resolved JSON and its unsupported list),
@@ -76,7 +76,7 @@ static GLOBAL: Counting = Counting;
 fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  rs-core-check goldens [--dir <protocol dir>] [--only <2..13>] [--sabotage skip-payload-hash|early-prune|no-predict-reset]\n  \
-         rs-core-check transcode --to 12|13 [--stale] <in> <out>\n  \
+         rs-core-check transcode --to 12|13 [--stale] [--zr-sabotage overrun|short-run] <in> <out>\n  \
          rs-core-check transcode --roundtrip <recording.rs12>...\n  \
          rs-core-check diff --inputs <inputs.json> [--out <dir>] [--dump <input>:<seq>]\n  \
          rs-core-check bench (<recording> | --inputs <inputs.json>) [--repeats N] [--digest inline|deferred|none]\n  \
@@ -616,8 +616,14 @@ fn cmd_transcode(args: &Args) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let zr = match args.get("zr-sabotage") {
+        None => predict::ZrSabotage::None,
+        Some("overrun") => predict::ZrSabotage::Overrun,
+        Some("short-run") => predict::ZrSabotage::ShortRun,
+        Some(_) => return usage(),
+    };
     let got = if to == 13 {
-        predict::to13(&data, args.get("stale").is_some(), None)
+        predict::to13_with(&data, args.get("stale").is_some(), zr, None)
     } else {
         predict::to12(&data, false)
     };

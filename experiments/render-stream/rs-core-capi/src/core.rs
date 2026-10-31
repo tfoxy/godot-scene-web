@@ -465,9 +465,10 @@ impl Core {
             Ok(a) => a,
             Err(e) => {
                 // W13d (render-stream-13.md "Decoding and check order"): a /13 transaction whose
-                // reconstructed blocks miss `predict_check` changed nothing; the receiver resyncs
-                // it (reason `coding`) and the patches before the full are held above.
-                if self.version >= 13 && e.code == "predict-check" {
+                // reconstructed blocks miss `predict_check` (W13r: or whose zero runs fail)
+                // changed nothing; the receiver resyncs it (reason `coding`) and the patches
+                // before the full are held above.
+                if self.version >= 13 && render_stream_core::predict::is_coding_error(e.code) {
                     self.predict_await_full = true;
                     self.predict_failures += 1;
                 }

@@ -3265,8 +3265,12 @@ void test_w13_connections() {
           "W13b: connection " + std::to_string(i) + " coded every transaction (" +
               std::to_string(cs.predict_formed) + " formed, " + std::to_string(cs.predict_shared) +
               " shared, " + std::to_string(cs.transactions) + " transactions)");
-    check(cs.predict_bytes == cs.predict_plain_bytes + 35 * cs.transactions,
-          "W13b: /13 is /12 plus predict_check's 35 bytes a transaction, raw");
+    // W13r: plus predict_check's 35 bytes a transaction, less the zero runs the three predicted
+    // blocks elide.
+    check(cs.predict_bytes < cs.predict_plain_bytes + 35 * cs.transactions,
+          "W13r: /13 is /12 plus predict_check's 35 bytes a transaction, less its zero runs (" +
+              std::to_string(cs.predict_bytes) + " against " +
+              std::to_string(cs.predict_plain_bytes + 35 * cs.transactions) + ")");
     if (i == 1) {
       // The /12 connection in lockstep: every message but the session and the end record equal.
       bool same = decoded.size() == plain12.size();

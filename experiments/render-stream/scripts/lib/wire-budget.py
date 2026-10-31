@@ -45,7 +45,9 @@ every lossless coding back to the record to prove the counts are of lossless mes
 
 `bin13` (BIN-D, results/p3/bin-d.md) reads a /13 recording as built (rs-core-check transcode --to
 13) and measures today's wire against the deferred binary syntax and a compact residual (zero runs
-in the three predicted blocks), each decoded back; `--dump` writes the messages `bin13-bench.c`
+in the three predicted blocks), each decoded back. Since W13r the recording's predicted blocks are
+zero runs (`j13_zr` is the recording itself, checked byte for byte; `j13` is W13a's wire, the runs
+expanded); `--wire w13a` reads a recording made before W13r; `--dump` writes the messages `bin13-bench.c`
 times through the capture's zstd and rs-core's `examples/coded_decode.rs` through ruzstd.
 
 zstd needs Python 3.14's `compression.zstd` (run through `mise exec -- python3`); without it the
@@ -2514,6 +2516,8 @@ def cmd_bin13(argv):
     ap.add_argument("--scene", action="append", required=True)
     ap.add_argument("--warm-skip", type=int, default=30)
     ap.add_argument("--zr-min", type=int, default=4)
+    ap.add_argument("--wire", choices=("w13r", "w13a"), default="w13r",
+                    help="the recording's /13: w13r (zero runs, today's) or w13a (before W13r)")
     ap.add_argument("--dump", help="directory: write each variant's first --dump-n warm messages per scene "
                                    "(and the one before, the first's base) for bin13-bench.c")
     ap.add_argument("--dump-n", type=int, default=300)
@@ -2569,6 +2573,11 @@ def cmd_bin13(argv):
         if jm != rec.meta_bytes:
             failures.append(f"seq {meta['seq']}: canonical JSON differs from the record's meta")
         plain_blocks = {n: rec.blocks[n][2] for n in rec.blocks}
+        if a.wire == "w13r":
+            for n in PRED13:
+                if n in plain_blocks:
+                    ty, cnt, _b = rec.blocks[n]
+                    plain_blocks[n] = zr_decode(plain_blocks[n], cnt * (1 if ty == "u8" else 4))
         zr_blocks = dict(plain_blocks)
         for n in PRED13:
             if n in zr_blocks:
@@ -2581,13 +2590,15 @@ def cmd_bin13(argv):
             return b"".join(blocks[d["name"]] for d in meta.get("blocks", []))
 
         parts = {
-            "j13": (record_bytes(meta, rec), jm, bl(plain_blocks)),
+            "j13": (record_bytes(meta, rec, plain_blocks), jm, bl(plain_blocks)),
             "j13_zr": (record_bytes(meta, rec, zr_blocks), jm, bl(zr_blocks)),
             "b13": (bin13_message(sb, plain_blocks), sb, bl(plain_blocks)),
             "b13_zr": (bin13_message(sb, zr_blocks), sb, bl(zr_blocks)),
         }
-        if len(parts["j13"][0]) != rec.size:
-            failures.append(f"seq {meta['seq']}: rebuilt record {len(parts['j13'][0])} != {rec.size}")
+        own = "j13_zr" if a.wire == "w13r" else "j13"
+        if len(parts[own][0]) != rec.size or (a.wire == "w13r" and a.zr_min == 4 and
+                                              parts[own][0] != record_bytes(meta, rec)):
+            failures.append(f"seq {meta['seq']}: rebuilt record {len(parts[own][0])} != {rec.size}")
         if prec is not None:
             if prec.meta.get("seq") != meta["seq"]:
                 failures.append(f"seq {meta['seq']}: the /12 file is out of step")
@@ -2681,7 +2692,7 @@ def cmd_bin13(argv):
 
 def record_bytes(meta, rec, blocks=None) -> bytes:
     """A record's own bytes rebuilt from its parts (framing, meta, blocks), as on the wire; with
-    `blocks`, those bytes in place of the record's (the same lengths)."""
+    `blocks`, those bytes in place of the record's (each with its own length)."""
     mb = cj(meta)
     body = struct.pack("<I", len(mb)) + mb + struct.pack("<I", len(meta.get("blocks", [])))
     for d in meta.get("blocks", []):

@@ -83,8 +83,11 @@ import {
   particlesFloatsByName,
   particlesFloatsInWireOrder,
   payloadSha256,
+  RS13_ZR_MIN,
   recordSha256,
   resolveRecording,
+  rs13ZrDecode,
+  rs13ZrEncode,
   splitRecords,
   statesEqual,
   transactionMultimeshes,
@@ -1729,8 +1732,12 @@ interface Golden13Index {
     fulls: number[];
   };
   predict_trace: Record<string, Array<{ seq: number; units: unknown[] }>>;
+  /** W13r: the zero-run token format's own cases (zero-runs.json). */
+  zero_runs: { file: string; min_run: number; blocks: string[] };
   sabotage: {
     "predict-stale": { vector: string; code: string; seq: number };
+    "zr-overrun": { vector: string; code: string; seq: number };
+    "zr-short-run": { vector: string; code: string; seq: number };
     "no-predict-reset": {
       code: string;
       fails: Array<{ file: string; seq: number }>;
@@ -2027,6 +2034,72 @@ async function version13Cases(): Promise<void> {
       errorSeq(stale, 13, staleErrors[0]) === staleEntry.seq,
     `golden-13: the predict-stale stream fails ${staleEntry.code} at seq ${staleEntry.seq} (got ${JSON.stringify(staleErrors)})`,
   );
+
+  // --- W13r writer sabotages zr-overrun / zr-short-run ----------------------------------------
+  for (const [name, sabotage] of [
+    ["zr-overrun", "overrun"],
+    ["zr-short-run", "short-run"],
+  ] as const) {
+    const entry = index.sabotage[name];
+    const bytes = encodeRs13(p12, { zrSabotage: sabotage });
+    ok(
+      sameBytes(bytes, await readBytes(GOLDEN13_DIR, entry.vector)),
+      `golden-13: encodeRs13(${predict.rs12}, { zrSabotage: "${sabotage}" }) is ${entry.vector} byte for byte`,
+    );
+    const errors = validateRecording(bytes, 13);
+    ok(
+      errors.length === 1 &&
+        errors[0].startsWith(`${entry.code}: `) &&
+        errorSeq(bytes, 13, errors[0]) === entry.seq,
+      `golden-13: the ${name} stream fails ${entry.code} at seq ${entry.seq} (got ${JSON.stringify(errors)})`,
+    );
+    let threw = "";
+    try {
+      decodeRs13(bytes);
+    } catch (error) {
+      threw = (error as Error).message;
+    }
+    ok(
+      threw.startsWith(`${entry.code}: seq ${entry.seq}: `),
+      `golden-13: decodeRs13(${name}) throws ${entry.code} at seq ${entry.seq} (got ${JSON.stringify(threw)})`,
+    );
+  }
+
+  // --- W13r zero-runs.json: the token format alone -------------------------------------------
+  {
+    const zr = JSON.parse(
+      await readFile(join(GOLDEN13_DIR, index.zero_runs.file), "utf8"),
+    ) as {
+      min_run: number;
+      valid: Array<{ plain: string; coded: string }>;
+      invalid: Array<{ coded: string; length: number; code: string; description: string }>;
+    };
+    ok(
+      zr.min_run === RS13_ZR_MIN && index.zero_runs.min_run === RS13_ZR_MIN,
+      `golden-13: zero-runs.json's min_run is ${RS13_ZR_MIN}`,
+    );
+    for (const c of zr.valid) {
+      const plain = Buffer.from(c.plain, "hex");
+      const coded = Buffer.from(c.coded, "hex");
+      ok(
+        sameBytes(rs13ZrEncode(plain), coded) &&
+          sameBytes(rs13ZrDecode(coded, plain.length), plain),
+        `golden-13: zero-runs.json valid ${c.plain.slice(0, 24)}… (${plain.length} B) codes and decodes`,
+      );
+    }
+    for (const c of zr.invalid) {
+      let got = "pass";
+      try {
+        rs13ZrDecode(Buffer.from(c.coded, "hex"), c.length);
+      } catch (error) {
+        got = (error as Error).message.split(":")[0];
+      }
+      ok(
+        got === c.code,
+        `golden-13: zero-runs.json invalid "${c.description}" is ${c.code} (got ${got})`,
+      );
+    }
+  }
 
   // --- no-predict-reset (decoder sabotage) -----------------------------------------------------
   const noReset = index.sabotage["no-predict-reset"];

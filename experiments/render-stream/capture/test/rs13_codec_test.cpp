@@ -172,7 +172,7 @@ std::string trace_text(const std::vector<rs13::Unit> &units) {
 
 // make_golden.py to12() (decode = true) and to13() through rs13::Predictor, record by record.
 Transcoded transcode(const std::vector<std::uint8_t> &data, bool decode, bool stale = false,
-                     bool no_reset = false) {
+                     bool no_reset = false, rs13::ZrSabotage zr = rs13::ZrSabotage::None) {
   Transcoded t;
   const std::vector<std::uint8_t> magic_in =
       grc::rs2::magic(decode ? ProtocolVersion::V13 : ProtocolVersion::V12);
@@ -184,6 +184,8 @@ Transcoded transcode(const std::vector<std::uint8_t> &data, bool decode, bool st
   rs13::Predictor predictor;
   predictor.predict_stale = stale;
   predictor.no_reset = no_reset;
+  predictor.zr_overrun = zr == rs13::ZrSabotage::Overrun;
+  predictor.zr_short_run = zr == rs13::ZrSabotage::ShortRun;
   const char *from = decode ? kProtocolV13 : kProtocolV12;
   const char *to = decode ? kProtocolV12 : kProtocolV13;
   std::vector<std::vector<std::uint8_t>> out;
@@ -605,6 +607,17 @@ void test_reader() {
     const Transcoded st = transcode(read_file(kG13 + "predict.rs12"), false, true);
     check(st.bytes == read_file(kG13 + "invalid/predict-stale.rs13"),
           "the record-level predict-stale writer is invalid/predict-stale.rs13");
+    // W13r: the writer sabotages are make_golden.py's.
+    const Transcoded over =
+        transcode(read_file(kG13 + "predict.rs12"), false, false, false, rs13::ZrSabotage::Overrun);
+    check(over.status == rs13::Status::Ok &&
+              over.bytes == read_file(kG13 + "invalid/zr-overrun.rs13"),
+          "the zr-overrun writer is invalid/zr-overrun.rs13");
+    const Transcoded shortr = transcode(read_file(kG13 + "predict.rs12"), false, false, false,
+                                        rs13::ZrSabotage::ShortRun);
+    check(shortr.status == rs13::Status::Ok &&
+              shortr.bytes == read_file(kG13 + "invalid/zr-short-run.rs13"),
+          "the zr-short-run writer is invalid/zr-short-run.rs13");
   }
   {
     const Transcoded p = transcode(read_file(kG13 + "patch.rs13"), true);
@@ -623,7 +636,15 @@ void test_reader() {
                           Vector{"predict-stale", rs13::Status::PredictCheck, 2},
                           Vector{"predict-check-missing", rs13::Status::MetaSchema, 2},
                           Vector{"predict-check-upper", rs13::Status::MetaSchema, 2},
-                          Vector{"predict-check-short", rs13::Status::MetaSchema, 2}}) {
+                          Vector{"predict-check-short", rs13::Status::MetaSchema, 2},
+                          // W13r: the zero runs (index.json).
+                          Vector{"zr-overrun", rs13::Status::ZrLength, 1},
+                          Vector{"zr-short-run", rs13::Status::ZrNoncanonical, 1},
+                          Vector{"zr-truncated", rs13::Status::ZrLength, 2},
+                          Vector{"zr-trailing", rs13::Status::ZrLength, 2},
+                          Vector{"zr-overlong", rs13::Status::ZrNoncanonical, 2},
+                          Vector{"zr-literal-run", rs13::Status::ZrNoncanonical, 2},
+                          Vector{"zr-split-run", rs13::Status::ZrNoncanonical, 2}}) {
     const Transcoded t =
         transcode(read_file(kG13 + "invalid/" + v.file + ".rs13"), true);
     if (t.status != v.code || t.seq != v.seq) {
@@ -677,6 +698,157 @@ void test_reader() {
   }
 }
 
+// --------------------------------------------------------------------------- (f) zero runs (W13r)
+
+std::vector<std::uint8_t> from_hex(const std::string &h) {
+  std::vector<std::uint8_t> out;
+  for (std::size_t i = 0; i + 1 < h.size(); i += 2) {
+    out.push_back(static_cast<std::uint8_t>(std::stoi(h.substr(i, 2), nullptr, 16)));
+  }
+  return out;
+}
+
+std::vector<std::uint8_t> zr_of(const std::vector<std::uint8_t> &plain) {
+  std::vector<std::uint8_t> out(rs13::zr_bound(plain.size()));
+  out.resize(rs13::zr_encode(plain.data(), plain.size(), out.data()));
+  return out;
+}
+
+// make_golden.py zr_encode() as plainly as it reads (min run 4), for the fuzz below.
+std::vector<std::uint8_t> zr_reference(const std::vector<std::uint8_t> &c) {
+  std::vector<std::uint8_t> out;
+  auto uv = [&out](std::uint64_t v) {
+    while (v >= 0x80) {
+      out.push_back(static_cast<std::uint8_t>(v | 0x80));
+      v >>= 7;
+    }
+    out.push_back(static_cast<std::uint8_t>(v));
+  };
+  std::size_t lit = 0, zeros = 0, k = 0;
+  auto token = [&](std::size_t end) {
+    uv(zeros);
+    uv(end - lit);
+    out.insert(out.end(), c.begin() + static_cast<long>(lit), c.begin() + static_cast<long>(end));
+  };
+  while (k < c.size()) {
+    if (c[k] != 0) {
+      ++k;
+      continue;
+    }
+    std::size_t j = k;
+    while (j < c.size() && c[j] == 0) {
+      ++j;
+    }
+    if (j - k >= 4) {
+      if (k > lit || zeros != 0) {
+        token(k);
+      }
+      zeros = j - k;
+      lit = j;
+    }
+    k = j;
+  }
+  if (c.size() > lit || zeros != 0) {
+    token(c.size());
+  }
+  return out;
+}
+
+// The string value of `"key": "..."` on a line, or false when the line has no such key.
+bool json_string_after(const std::string &line, const char *key, std::string *out) {
+  const std::size_t i = line.find(std::string("\"") + key + "\": \"");
+  if (i == std::string::npos) {
+    return false;
+  }
+  const std::size_t a = i + std::strlen(key) + 5;
+  *out = line.substr(a, line.find('"', a) - a);
+  return true;
+}
+
+void test_zero_runs() {
+  // zero-runs.json, read line by line (g6.pretty: one key a line; `valid` entries plain then
+  // coded, `invalid` entries coded, length, code).
+  const std::vector<std::uint8_t> raw = read_file(kG13 + "zero-runs.json");
+  const std::string text(raw.begin(), raw.end());
+  check(!text.empty(), "zero-runs.json is readable");
+  std::string plain, coded, code;
+  bool have_plain = false;
+  long length = -1;
+  int valid = 0, invalid = 0;
+  std::size_t at = 0;
+  while (at < text.size()) {
+    const std::size_t nl = text.find('\n', at);
+    const std::string line = text.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+    at = nl == std::string::npos ? text.size() : nl + 1;
+    if (json_string_after(line, "plain", &plain)) {
+      have_plain = true;
+      continue;
+    }
+    if (json_string_after(line, "coded", &coded)) {
+      if (have_plain) {
+        const std::vector<std::uint8_t> p = from_hex(plain), c = from_hex(coded);
+        std::vector<std::uint8_t> back(p.size());
+        const bool ok = zr_of(p) == c &&
+                        rs13::zr_decode(c.data(), c.size(), back.data(), back.size()) ==
+                            rs13::Status::Ok &&
+                        back == p;
+        if (!ok) {
+          std::fprintf(stderr, "  zero-runs.json valid %d (plain %s)\n", valid, plain.c_str());
+        }
+        check(ok, "a zero-runs.json valid case codes and expands");
+        ++valid;
+        have_plain = false;
+      }
+      continue;
+    }
+    if (const std::size_t i = line.find("\"length\": "); i != std::string::npos) {
+      length = std::stol(line.substr(i + 10));
+      continue;
+    }
+    if (json_string_after(line, "code", &code)) {
+      const std::vector<std::uint8_t> c = from_hex(coded);
+      std::vector<std::uint8_t> back(static_cast<std::size_t>(length) + 1);
+      const rs13::Status st =
+          rs13::zr_decode(c.data(), c.size(), back.data(), static_cast<std::size_t>(length));
+      if (code != rs13::to_wire(st)) {
+        std::fprintf(stderr, "  zero-runs.json invalid %s/%ld: %s, expected %s\n", coded.c_str(),
+                     length, rs13::to_wire(st), code.c_str());
+      }
+      check(code == rs13::to_wire(st), "a zero-runs.json invalid case fails with its code");
+      ++invalid;
+    }
+  }
+  check(valid >= 18 && invalid >= 20, "zero-runs.json lists its valid and invalid cases");
+  // The SSE2 scan against the plain loop: random buffers of runs of 0-40 zeros between 1-40
+  // nonzero bytes (every alignment of the 16- and 32-byte steps), and a few long ones.
+  std::uint64_t rng = 0x9E3779B97F4A7C15ull;
+  auto next = [&rng](std::uint64_t m) {
+    rng ^= rng << 13;
+    rng ^= rng >> 7;
+    rng ^= rng << 17;
+    return rng % m;
+  };
+  int bad = 0;
+  for (int round = 0; round < 4000; ++round) {
+    std::vector<std::uint8_t> b;
+    const std::size_t target = next(round < 3990 ? 300 : 70000);
+    while (b.size() < target) {
+      b.insert(b.end(), next(round % 7 == 0 ? 600 : 41), 0);
+      for (std::size_t k = next(41); k > 0; --k) {
+        b.push_back(static_cast<std::uint8_t>(next(3) == 0 ? 0 : 1 + next(255)));
+      }
+    }
+    const std::vector<std::uint8_t> c = zr_of(b);
+    std::vector<std::uint8_t> back(b.size());
+    if (c != zr_reference(b) || c.size() > rs13::zr_bound(b.size()) ||
+        rs13::zr_decode(c.data(), c.size(), back.data(), back.size()) != rs13::Status::Ok ||
+        back != b) {
+      ++bad;
+    }
+  }
+  check(bad == 0, "the zero-run scan equals the plain loop on 4000 random buffers");
+}
+
 // --------------------------------------------------------------------------- (e) XXH64
 
 void test_xxh64() {
@@ -695,6 +867,7 @@ int main() {
   test_golden12_states_at_v13();
   test_prediction_lane();
   test_reader();
+  test_zero_runs();
   if (g_failures != 0) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
     return 1;

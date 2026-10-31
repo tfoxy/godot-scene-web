@@ -1090,3 +1090,59 @@ fn item_meta_records_are_skipped_and_held_with_their_patch() {
         assert_eq!(item_meta, 11);
     }
 }
+
+/// W13r: a /13 transaction whose zero runs fail (`zr-length`: seq 12's `mesh_f32` token stream
+/// opens with a zero run one byte too long, the record keeping its length) is refused like a
+/// `predict-check` failure: nothing changes, the patches up to the full are held, and the
+/// resynced stream ends on the unbroken replay's state.
+#[test]
+fn zero_run_failure_holds_patches_until_the_full() {
+    let g13 = golden().join("../golden-13");
+    let data = std::fs::read(g13.join("patch.rs13")).unwrap();
+    let spans = wire::split_records(&data, 13).unwrap();
+    let mut bad = data.clone();
+    let mut target = None;
+    for s in &spans[1..] {
+        let f = wire::frame(&data[s.offset..], 0).unwrap();
+        let meta: serde_json::Value = serde_json::from_slice(f.meta).unwrap();
+        if meta["type"] == "transaction" && meta["seq"] == 12 {
+            // Block 4 (mesh_f32): skip the block count and blocks 0..3 with their prefixes.
+            let mut q = s.offset + f.body + 4;
+            for _ in 0..4 {
+                q += 4 + wire::le_u32(&data, q) as usize;
+            }
+            assert!(wire::le_u32(&data, q) > 0, "seq 12 carries mesh_f32");
+            target = Some(q + 4);
+        }
+    }
+    let at = target.expect("patch.rs13 has seq 12");
+    assert!(bad[at] < 0x7f, "a one-byte zero count");
+    bad[at] += 1;
+    let mut core = Core::new();
+    assert_eq!(core.session(&bad, spans[0].offset, 13), KIND_SESSION);
+    let mut kinds = Vec::new();
+    for s in &spans[1..] {
+        let kind = core.accept(&bad, s.offset);
+        if kind == KIND_ERROR {
+            assert!(
+                mentions(&core.vt.out, "zr-length"),
+                "{}",
+                String::from_utf8_lossy(&core.vt.out)
+            );
+            core.transport_skip();
+        }
+        kinds.push(kind);
+    }
+    let errors = kinds.iter().filter(|k| **k == KIND_ERROR).count();
+    let held = kinds.iter().filter(|k| **k == KIND_HELD).count();
+    assert_eq!((errors, held), (1, 3), "seq 12 fails, 13 to 15 are held");
+    assert_eq!(counter(&mut core, "w13_predict_failures"), 1);
+    let mut plain = Core::new();
+    plain.session(&data, spans[0].offset, 13);
+    for s in &spans[1..] {
+        assert_ne!(plain.accept(&data, s.offset), KIND_ERROR);
+    }
+    core.state_json();
+    plain.state_json();
+    assert_eq!(core.text, plain.text, "the resynced stream ends on the unbroken state");
+}

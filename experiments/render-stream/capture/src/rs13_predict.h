@@ -8,7 +8,9 @@
 // writer takes the /12 record rs2::encode_transaction() writes (at V13 it writes the /12 form),
 // reads the few meta keys the prediction needs (meshes, multimeshes, removed_*, encoding, the
 // block descriptors), codes the three blocks, inserts `predict_check` right before "blocks" and
-// advances the history from the /12 blocks. The reader is the same predictor in reverse. The
+// advances the history from the /12 blocks. W13r: the record carries each predicted block as
+// zero-run tokens (zr_encode below), the reader expands them first. The reader is the same
+// predictor in reverse. The
 // reference codec is protocol/golden-13/make_golden.py (`to13`, `to12`, `code_blocks`,
 // `History`, `advance`); capture/test/rs13_codec_test.cpp checks this file against it byte for
 // byte.
@@ -179,6 +181,10 @@ struct PredictMeta {
   std::vector<MetaMultimesh> multimeshes;
   std::vector<MetaNum> removed_multimeshes;
   std::vector<BlockName> blocks;  // the descriptors' names, in order
+  // W13r: each descriptor's plain byte length (`count` x the type's width), -1 when its count is
+  // not an integer or its type unknown. Filled from the meta JSON only (the reader needs it to
+  // expand the zero runs; the writer codes the blocks it has), so operator== skips it.
+  std::vector<std::int64_t> block_bytes;
   void clear();                   // keeps the vectors' capacity
   bool operator==(const PredictMeta &o) const;
 };
@@ -192,7 +198,8 @@ void predict_meta(const rs2::Transaction &transaction, PredictMeta *out);
 void set_verify_meta(bool on);
 
 // What a record failed with. The codes are the wire's (render-stream-13.md "Decoding and check
-// order"): framing before meta-json before meta-schema before predict-check.
+// order", W13r "As built"): framing before meta-json before meta-schema before the zero runs
+// (zr-length, zr-noncanonical) before predict-check.
 enum class Status : std::uint8_t {
   Ok,
   NotTransaction,  // a well-formed record of another type: not the predictor's (passed through)
@@ -200,8 +207,27 @@ enum class Status : std::uint8_t {
   MetaJson,
   MetaSchema,      // a transaction meta without "blocks", or (reader) a bad `predict_check`
   PredictCheck,
+  ZrLength,        // W13r: a predicted block's tokens do not cover exactly its plain length
+  ZrNoncanonical,  // W13r: they do, but not in the canonical form
 };
 const char *to_wire(Status status);
+
+// W13r, the compact residual (render-stream-13.md "As built (W13r)", make_golden.py zr_encode /
+// zr_decode): a predicted block's W13a coded bytes as tokens `uvarint zeros, uvarint n, n literal
+// bytes`, every maximal run of kZrMinRun or more zero bytes one token's zeros.
+constexpr std::size_t kZrMinRun = 4;
+// Writer sabotages: Overrun, the first zero run one zero too long (zr-length); ShortRun, the first
+// 3-byte zero run elided too (zr-noncanonical).
+enum class ZrSabotage : std::uint8_t { None, Overrun, ShortRun };
+// Room zr_encode() needs for n plain bytes.
+std::size_t zr_bound(std::size_t n);
+// Writes the tokens of in[0, n) at `out` (zr_bound(n) bytes of room) and returns their size.
+std::size_t zr_encode(const std::uint8_t *in, std::size_t n, std::uint8_t *out,
+                      ZrSabotage sabotage = ZrSabotage::None);
+// Expands `size` token bytes into exactly `length` bytes at `out`: Ok, ZrLength (whatever else is
+// wrong) or ZrNoncanonical (the first token out of the canonical form).
+Status zr_decode(const std::uint8_t *in, std::size_t size, std::uint8_t *out,
+                 std::size_t length);
 
 // The same keys read from a /12 record's meta JSON (what encode() of a bare record does): Ok,
 // NotTransaction, or the record's framing / meta error.
@@ -258,6 +284,10 @@ class Predictor {
   // Decoder sabotage no-predict-reset: a full is un-predicted against H1 and H2 like a patch and
   // does not reset the history.
   bool no_reset = false;
+  // W13r writer sabotages (render-stream-13.md "As built (W13r)"): in each transaction, the first
+  // predicted block (mesh_f32, mesh_u8, mm_f32) whose tokens the sabotage changes carries them.
+  bool zr_overrun = false;
+  bool zr_short_run = false;
 
  private:
   struct Scratch;  // reused buffers (rs13_predict.cpp): layouts, decoded blocks, the hash state

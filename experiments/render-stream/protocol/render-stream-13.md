@@ -455,9 +455,12 @@ W13z apply to that wire; the binary body, if it is built, is its own increment b
 
 Order: W13a → W13b → W13c and W13d in parallel → W13z. W13r (BIN-D) lands before the freeze,
 after TAG2 or beside it. The couch-coop seat already streams /13 (couch `7124aa83`), so the seat's
-capture and the client's core must come from the same GSW commit once W13r lands. A mismatch fails
-at the first predicted block (`zr-length` or `predict-check`) and resyncs; it never draws wrong
-geometry. W13b wants HC5 first (the encode thread
+capture and the client's core must come from the same GSW commit once W13r lands. A mismatch
+never draws wrong geometry, but it does not recover either:
+- A W13r client on a pre-W13r stream fails `zr-length` at the first transaction with a predicted
+  block. It resyncs with reason `coding`, and the resync's full fails the same way.
+- A pre-W13r client on a W13r stream fails `block-length` at framing. That is a hard stream
+  error, not a coding resync. W13b wants HC5 first (the encode thread
 is where formation goes), but does not need it: /13 formation is cheaper than /12's either way.
 
 ## Risks
@@ -500,7 +503,8 @@ reference codec; the C++ writer, the TypeScript library and rs-core match its by
    not exactly 16 characters of `[0-9a-f]`: `meta-schema`;
 3. **predicted blocks**: the payloads of `mesh_u8`, `mesh_f32` and `mm_f32` are the coded form
    below. Their descriptors (`name`, `type`, `count`) and lengths are /12's: a coded block has its
-   plain block's length.
+   plain block's length. (W13r replaces the lengths: the coded bytes travel as zero runs, "As
+   built (W13r)".)
 
 Everything else is /12's byte for byte: framing, canonical JSON, every other key and block,
 resource and end records, the record sha256 (over the /13 record's own bytes). The session record
@@ -834,6 +838,55 @@ W13f is capture-only, and the wire is byte for byte W13a's. Results are in
   combat frame (166–207 µs), because its H1 and H2 reads are cold there: per-unit heap buffers
   behind map nodes. The next lever is a history that references the previous /12 records' blocks,
   which a transaction lists in the same order, so that H1 and H2 become sequential streams.
+
+## As built (W13r): the compact residual
+
+W13r (BIN-D, "Decision (BIN-D)") changes the /13 wire in place, before the freeze. Results are in
+[results/p3/w13r.md](../results/p3/w13r.md). `golden-13/make_golden.py` (`zr_encode`, `zr_decode`)
+is the reference; this section is normative and supersedes W13a's "a coded block has its plain
+block's length".
+
+- **Zero runs.** In every /13 transaction record, each of `mesh_u8`, `mesh_f32` and `mm_f32` (by
+  descriptor name; fulls and pass-through blocks too) carries its W13a coded bytes C as a token
+  stream. Its plain length L is the descriptor's `count` × the type's width (`u8` 1, `f32` 4).
+  A token is `uvarint zeros, uvarint n, n literal bytes` (unsigned LEB128, 7 bits a byte, low
+  first) and expands to `zeros` zero bytes, then the literal. Tokens follow one another until L is
+  covered. The record's block length is the token stream's; `count` stays /12's; `predict_check`
+  stays over the reconstructed /12 blocks.
+- **Canonical form** (minimum run 4). Every maximal run of 4 or more zero bytes of C is one token's
+  `zeros`, whole, and every other byte of C is literal. A token starts at each such run, and the
+  first token starts at C's first byte when C does not open with one. So:
+  - the first token's `zeros` is 0 or ≥ 4, and every later token's is ≥ 4;
+  - a literal holds no run of 4 zero bytes, starts with a nonzero byte when its token's `zeros`
+    is nonzero, and ends with a nonzero byte when another token follows;
+  - `n` is 0 only in the last token, and only when its `zeros` is nonzero (a run that reaches L);
+  - each uvarint is minimal (no `0x80`-continued trailing `0x00`);
+  - L = 0 is the empty stream; a C of all zeros (L ≥ 4) is the one token `(L, 0)`.
+- **Decoding** (`zr_decode`). Within one block:
+  - **`zr-length`** when the stream does not cover exactly L: a uvarint or a literal runs past
+    the stream's end, a uvarint is longer than 10 bytes, a token's `zeros` or `zeros + n` passes
+    L, or bytes remain once L is covered. This holds whatever else is wrong with the block.
+  - **`zr-noncanonical`**, otherwise, at the first token that breaks the canonical form.
+  - Blocks go in descriptor order, and the first failing block reports.
+- **Check order** ("Decoding and check order"): framing → meta JSON and schema → zero runs
+  (`zr-length`, `zr-noncanonical`) → un-predict → `predict-check` → every /12 rule.
+  - /12's `block-length` (block bytes = `count` × width) does not apply to the three blocks of a
+    /13 transaction record. `zr-length` covers it there.
+  - A receiver that fails either code applies nothing and resyncs with reason `coding`, as for
+    `predict-check`.
+- **Writer sabotages.**
+  - `zr-overrun`: each transaction's first zero run is one zero too long, so it fails `zr-length`
+    (`invalid/zr-overrun.rs13`, seq 1).
+  - `zr-short-run`: each transaction's first 3-byte zero run is elided as a token, so it fails
+    `zr-noncanonical` (`invalid/zr-short-run.rs13`, seq 1).
+- **Vectors.** Every golden-13 file is regenerated. `zero-runs.json` lists the token format alone:
+  plain buffers with their canonical tokens (`valid`), and token streams with their length and
+  code (`invalid`). `invalid/zr-*.rs13` hold the two sabotages and five token-level edits of
+  `predict.rs13` seq 2: truncated, trailing, overlong, a literal run and a split run.
+- **Decoded form.** `offset` and `byte_length` are the /13 records' own, as before. Since the block
+  lengths now differ from /12's, the reference sets them from the /13 file.
+- **Transcode.** /12 → /13 codes the zero runs after the predictor; /13 → /12 expands them before
+  the un-predict. /12 → /13 → /12 stays byte-identical.
 
 ## As built (TAG1): item identity
 

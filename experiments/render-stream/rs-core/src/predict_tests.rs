@@ -798,6 +798,11 @@ fn predict_phase_bench() {
             if !matches!(d, crate::meta::Decoded::Transaction) {
                 continue;
             }
+            // RS13_BENCH_SEQS=a-b: time only the transactions in [a, b) (all are accepted).
+            let timed = std::env::var("RS13_BENCH_SEQS").ok().map_or(true, |r| {
+                let (a, b) = r.split_once('-').unwrap();
+                tx.seq >= a.parse::<i64>().unwrap() && tx.seq < b.parse::<i64>().unwrap()
+            });
             let coded = bufs.blocks.clone();
             let t0 = Instant::now();
             // The validator's path (W13p): the plain record rotates through the history.
@@ -816,10 +821,27 @@ fn predict_phase_bench() {
             let t1 = Instant::now();
             assert_eq!(declared, computed);
             again.clone_from(&plain);
+            // W13r: the coder's input is the expanded zero runs (not timed).
+            let mut zr: [Vec<u8>; 3] = Default::default();
+            for (k, i) in [crate::predict::MESH_F32, crate::predict::MESH_U8, crate::predict::MM_F32]
+                .into_iter()
+                .enumerate()
+            {
+                let b = coded[i];
+                let n = (tx.blocks[i].count * tx.blocks[i].ty.width()) as usize;
+                crate::predict::zr_decode(&rec[b.start..b.start + b.len], n, &mut zr[k], &|| {
+                    String::new()
+                })
+                .unwrap();
+            }
             let w0 = Instant::now();
             for _ in 0..4 {
                 let dst = crate::predict::blocks_of_mut(&mut again, &bufs.blocks);
-                let src = crate::predict::blocks_of(rec, &coded);
+                let src = crate::predict::Blocks {
+                    mesh_f32: &zr[0],
+                    mesh_u8: &zr[1],
+                    mm_f32: &zr[2],
+                };
                 code_blocks(&tx, src, dst, h1, h2, true, &mut sc, None);
             }
             let w1 = Instant::now();
@@ -828,6 +850,9 @@ fn predict_phase_bench() {
             let a0 = Instant::now();
             hist.accept_plain(&tx, plain, &bufs.blocks, false, &mut sc);
             let a1 = Instant::now();
+            if !timed {
+                continue;
+            }
             un.push(us(t0, t1));
             warm.push(us(w0, w1) / 4.0);
             acc.push(us(a0, a1));
