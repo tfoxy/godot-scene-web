@@ -16,8 +16,9 @@ use crate::apply::payloads::PayloadStore;
 use crate::state::{Id, ParentKind, ResolvedState, TxDelta};
 
 /// Floats per item in [`Applier::set_overrides`]' packed table: 6 affine (Godot's column order:
-/// x axis, y axis, origin), 4 modulate, 1 visible (0 hides the subtree).
-pub const OVERRIDE_FLOATS: usize = 11;
+/// x axis, y axis, origin), 4 modulate, 1 visible (0 hides the subtree), 1 frozen (FRZ-HOOK: hold
+/// the subtree's records across transactions).
+pub const OVERRIDE_FLOATS: usize = 12;
 
 /// One item's override.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,6 +26,9 @@ pub struct Override {
     pub xform: Xform,
     pub modulate: [f32; 4],
     pub visible: bool,
+    /// FRZ-HOOK (frz-d.md §5): hold the subtree. `apply` keeps the records of items whose nearest
+    /// frozen ancestor has this flag, skipping their upserts and removals.
+    pub frozen: bool,
 }
 
 /// TAG2 sabotages (each must fail its check).
@@ -42,6 +46,12 @@ pub struct OverrideSabotage {
     /// INP1 `inverse-skip`: [`Applier::to_game`] returns the hit item with the point unmapped
     /// (the inverse of the item's effective override is never applied).
     pub inverse_skip: bool,
+    /// FRZ-HOOK `frozen-still-applies`: a frozen item's upsert still applies (only the removal is
+    /// skipped), so the freeze-then-apply shot changes. Fails the freeze-then-apply check.
+    pub frozen_still_applies: bool,
+    /// FRZ-HOOK `frozen-sweeps`: [`Applier::referenced_payload_hashes`] omits the frozen
+    /// subtree's payloads, so the retention sweep drops them. Fails the retention check.
+    pub frozen_sweeps: bool,
 }
 
 /// What [`Applier::refresh_overrides`] did.
@@ -94,6 +104,7 @@ impl Applier {
                 xform: [v[0], v[1], v[2], v[3], v[4], v[5]],
                 modulate: [v[6], v[7], v[8], v[9]],
                 visible: v[10] != 0.0,
+                frozen: v[11] != 0.0,
             };
             if next.insert(id, o).is_some() {
                 return Err(format!("override-table: item {id} is listed twice"));
@@ -105,10 +116,19 @@ impl Applier {
                 Some(old) => {
                     self.ov_walk |= old.visible != o.visible;
                     self.ov_changed.push(*id);
+                    if old.frozen != o.frozen {
+                        self.frozen_dirty = true;
+                        if old.frozen && !o.frozen {
+                            self.unfrozen.push(*id);
+                        }
+                    }
                 }
                 None => {
                     self.ov_walk |= !o.visible;
                     self.ov_changed.push(*id);
+                    if o.frozen {
+                        self.frozen_dirty = true;
+                    }
                 }
             }
         }
@@ -116,6 +136,10 @@ impl Applier {
             if !next.contains_key(id) {
                 self.ov_walk |= !old.visible;
                 self.ov_changed.push(*id);
+                if old.frozen {
+                    self.frozen_dirty = true;
+                    self.unfrozen.push(*id);
+                }
             }
         }
         // A table going from empty to set (or back) changes which `cull` instance walks; the
@@ -205,6 +229,61 @@ impl Applier {
         self.overrides = std::mem::take(&mut old.overrides);
         self.removed_log = old.removed_log.take();
         self.ov_sabotage = old.ov_sabotage;
+        // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The fresh
+        // applier's first apply re-syncs when `frozen_dirty` is set.
+        self.frozen = std::mem::take(&mut old.frozen);
+        self.frozen_dirty = old.frozen_dirty;
+        self.unfrozen = std::mem::take(&mut old.unfrozen);
+        self.reconcile_frozen = old.reconcile_frozen;
+    }
+
+    /// FRZ-HOOK (frz-d.md §5): recompute the frozen membership (every item under a frozen root)
+    /// when the table's `frozen` flags changed, and mark a full item reconcile when a root was
+    /// unfrozen. Called once at the top of `apply`; `set_overrides` (which has no state) only
+    /// records the change. The membership persists across applies, so a frozen subtree whose root
+    /// has since left the state stays held until it is unfrozen.
+    pub fn sync_frozen(&mut self, state: &ResolvedState) {
+        let unfreeze = !std::mem::take(&mut self.unfrozen).is_empty();
+        if !self.frozen_dirty && !unfreeze {
+            return;
+        }
+        self.frozen_dirty = false;
+        self.frozen.clear();
+        for (root, o) in &self.overrides {
+            if !o.frozen {
+                continue;
+            }
+            let mut stack = vec![*root];
+            while let Some(cur) = stack.pop() {
+                if !self.frozen.insert(cur) {
+                    continue;
+                }
+                if let Some(it) = state.items.get(&cur) {
+                    stack.extend(it.children.iter().copied());
+                }
+            }
+        }
+        self.reconcile_frozen |= unfreeze;
+    }
+
+    /// FRZ-HOOK: the texture and mesh ids the held (frozen) records still draw from, so the
+    /// retention sweep keeps their payloads (they stay resident).
+    pub fn frozen_resources(
+        &self,
+    ) -> (std::collections::HashSet<Id>, std::collections::HashSet<Id>) {
+        let mut tex = std::collections::HashSet::new();
+        let mut mesh = std::collections::HashSet::new();
+        if self.frozen.is_empty() {
+            return (tex, mesh);
+        }
+        for (id, rec) in &self.items {
+            if !self.frozen.contains(id) {
+                continue;
+            }
+            tex.extend(rec.tex_sizes.iter().map(|(t, _)| *t));
+            mesh.extend(rec.mesh_versions.iter().map(|(m, _)| *m));
+        }
+        (tex, mesh)
     }
 
     // ------------------------------------------------------------------------- queries

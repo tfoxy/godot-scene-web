@@ -95,18 +95,34 @@ impl MeshResidency {
             })
     }
 
+    /// FRZ-HOOK: the hashes one resident mesh draws from (empty when it is not resident or is
+    /// dynamic), for the `frozen-sweeps` sabotage to drop a held subtree's mesh payloads.
+    pub fn resident_hashes_of(&self, id: Id) -> impl Iterator<Item = Hash> + '_ {
+        self.resident
+            .get(&id)
+            .into_iter()
+            .flat_map(|r| r.drawn.iter().flatten())
+            .filter_map(|s| match s {
+                Src::Hash(h) => Some(*h),
+                Src::Dyn(_) => None,
+            })
+    }
+
     fn named(&self) -> BTreeSet<Id> {
         self.named_by.values().flatten().copied().collect()
     }
 
     /// Bring residency in line with the mesh table, after the transaction's item changes. `items`
-    /// are the items upserted (all of them on a fresh applier), `removed` those that left.
+    /// are the items upserted (all of them on a fresh applier), `removed` those that left. `keep`
+    /// (FRZ-HOOK) are meshes a held record still draws from, so they are not freed even when they
+    /// left the mesh table.
     pub fn sync(
         &mut self,
         state: &ResolvedState,
         items: &[Id],
         removed: &[Id],
         first: bool,
+        keep: &std::collections::HashSet<Id>,
         payloads: &PayloadStore,
     ) {
         self.uploads.clear();
@@ -154,6 +170,10 @@ impl MeshResidency {
             self.resident
                 .keys()
                 .filter(|id| {
+                    // FRZ-HOOK: a held record still draws from this mesh; keep it resident.
+                    if keep.contains(id) {
+                        return false;
+                    }
                     // W11c: a mesh also leaves when it turns dynamic (its static build goes) or
                     // stops being dynamic (emptied, or no longer `ok`).
                     let was_dynamic = !self.resident[*id].serials.is_empty();

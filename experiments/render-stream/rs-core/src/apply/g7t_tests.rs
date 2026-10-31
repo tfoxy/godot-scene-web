@@ -467,18 +467,18 @@ fn mesh_residency_writes_the_native_census_rows() {
     let mut r = MeshResidency::default();
     // Named at first: create, every surface.
     let s = mesh_state(&[(1, 3), (4, 3)]);
-    r.sync(&s, &[9], &[], true, &store);
+    r.sync(&s, &[9], &[], true, &std::collections::HashSet::new(), &store);
     assert_eq!(
         rows(&r),
         vec![("create", vec![0, 1], vec![], 2 * (24 + 12))]
     );
     // Surface 0's colours change: an in-place update of the attribute buffer only.
     let s = mesh_state(&[(2, 3), (4, 3)]);
-    r.sync(&s, &[], &[], false, &store);
+    r.sync(&s, &[], &[], false, &std::collections::HashSet::new(), &store);
     assert_eq!(rows(&r), vec![("update", vec![0], vec!["attribute"], 12)]);
     // A layout change rebuilds.
     let s = mesh_state(&[(3, 6), (4, 3)]);
-    r.sync(&s, &[], &[], false, &store);
+    r.sync(&s, &[], &[], false, &std::collections::HashSet::new(), &store);
     assert_eq!(
         rows(&r),
         vec![("rebuild", vec![0, 1], vec![], 48 + 24 + 24 + 12)]
@@ -486,7 +486,7 @@ fn mesh_residency_writes_the_native_census_rows() {
     // Leaving the table frees.
     let mut s = mesh_state(&[(3, 6), (4, 3)]);
     s.meshes.clear();
-    r.sync(&s, &[], &[], false, &store);
+    r.sync(&s, &[], &[], false, &std::collections::HashSet::new(), &store);
     assert_eq!(rows(&r), vec![("free", vec![], vec![], 0)]);
 
     // drop-mesh-surface: surface 1 is never added (nor drawn); stale-mesh: updates are ignored.
@@ -495,7 +495,7 @@ fn mesh_residency_writes_the_native_census_rows() {
         drop_surface: true,
         stale: false,
     };
-    d.sync(&mesh_state(&[(1, 3), (4, 3)]), &[9], &[], true, &store);
+    d.sync(&mesh_state(&[(1, 3), (4, 3)]), &[9], &[], true, &std::collections::HashSet::new(), &store);
     assert_eq!(rows(&d), vec![("create", vec![0], vec![], 24 + 12)]);
     assert_eq!(d.drawn(5, &store).unwrap().0.len(), 1);
     let mut st = MeshResidency::default();
@@ -503,8 +503,8 @@ fn mesh_residency_writes_the_native_census_rows() {
         drop_surface: false,
         stale: true,
     };
-    st.sync(&mesh_state(&[(1, 3)]), &[9], &[], true, &store);
-    st.sync(&mesh_state(&[(2, 3)]), &[], &[], false, &store);
+    st.sync(&mesh_state(&[(1, 3)]), &[9], &[], true, &std::collections::HashSet::new(), &store);
+    st.sync(&mesh_state(&[(2, 3)]), &[], &[], false, &std::collections::HashSet::new(), &store);
     assert!(st.uploads.is_empty());
     let (drawn, _) = st.drawn(5, &store).unwrap();
     assert_eq!(drawn[0].colors.as_ref().unwrap()[0][0], 51.0 / 255.0);
