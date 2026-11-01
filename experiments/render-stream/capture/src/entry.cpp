@@ -3494,6 +3494,10 @@ void stream_publish(uint64_t frame) {
       published = shared.get();
     }
     std::vector<rs::ServeEvent> events;
+    // SERVED-MAP: a serve event is only a hook-log line, and building one spells its key back out.
+    // With the log off (GRC_HOOK_LOG=off, HC1) nothing would read the events, so none is built.
+    std::vector<rs::ServeEvent> *const serve_events =
+        rs::resource_log().wants_lines() ? &events : nullptr;
     // HC1 sabotage `pin-late` (env GRC_HC_SABOTAGE, a test knob, never declared on the wire): the
     // first hello's snapshot is not pinned before the send -- no pin, no retire for the first 30
     // callbacks with a viewer -- so the first transaction names payloads that answer 404.
@@ -3506,12 +3510,12 @@ void stream_publish(uint64_t frame) {
       // Phase 1: everything the hub may send now is servable before it goes out.
       std::vector<const rs::PayloadMap *> sendable = g_live.hub->held_payloads();
       sendable.insert(sendable.begin(), &published->payloads);
-      g_live.served->pin(sendable, frame, &events);
+      g_live.served->pin(sendable, frame, serve_events);
     }
     g_live.hub->on_frame_shared(frame, monotonic_ns(), shared, publish_epoch, snapshot_ns);
     if (serving && !pin_late) {
       // Phase 2: retained := current ∪ every connection's base; the rest is retired.
-      g_live.served->retire(published->payloads, g_live.hub->base_payloads(), frame, &events);
+      g_live.served->retire(published->payloads, g_live.hub->base_payloads(), frame, serve_events);
       if (g_hc_shadow && g_hc_shadow_budget.empty()) {
         g_hc_shadow_budget = g_live.served->shadow_failure();  // HC4b: serving's own oracle
       }

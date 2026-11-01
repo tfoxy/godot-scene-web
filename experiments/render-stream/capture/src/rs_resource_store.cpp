@@ -231,8 +231,9 @@ void ServedResources::corrupt(const std::string &hash) {
     return;
   }
   corrupt_ = hash;
-  coded_.erase(hash);
-  const auto it = served_.find(hash);
+  const ServedKey key = ServedKey::from(hash);
+  coded_.erase(key);
+  const auto it = served_.find(key);
   if (it != served_.end() && it->second != nullptr) {
     it->second = corrupted_copy(it->second);
   }
@@ -240,24 +241,37 @@ void ServedResources::corrupt(const std::string &hash) {
 
 bool ServedResources::add_locked(const std::string &hash, const PayloadPtr &payload,
                                  std::uint64_t frame, std::vector<ServeEvent> *events) {
-  if (payload == nullptr || served_.count(hash) != 0) {
+  if (payload == nullptr) {
     return false;
   }
-  ServeEvent event;
-  event.op = "pin";
-  event.hash = hash;
-  event.bytes = payload->size();
-  event.reason = "current";
+  // SERVED-MAP: decode the key once per pin, then insert with it (one tree walk, no string node).
+  const ServedKey key = ServedKey::from(hash);
+  const auto entry = served_.emplace(key, payload);
+  if (!entry.second) {
+    return false;
+  }
   // P3-SP: `seen_` (every hash ever pinned) only exists for the drop-resource sabotage; without it
   // a long session would keep one string per payload ever published.
+  bool sabotage = false;
   if (drop_frame_ != 0 && dropped_.empty() && seen_.insert(hash).second && frame >= drop_frame_) {
     dropped_ = hash;  // drop-resource: retained like any other hash, but answered 404
-    event.sabotage = true;
+    dropped_key_ = key;
+    sabotage = true;
   }
-  served_[hash] = hash == corrupt_ ? corrupted_copy(payload) : payload;
+  if (hash == corrupt_) {
+    entry.first->second = corrupted_copy(payload);
+  }
   bytes_ += payload->size();
   ++totals_.pinned;
   if (events != nullptr) {
+    // An event is only a line for the hook log, and it costs the key's spelling back, so it is
+    // built only when a reader takes the events (GRC_HOOK_LOG on).
+    ServeEvent event;
+    event.op = "pin";
+    event.hash = hash;
+    event.bytes = payload->size();
+    event.reason = "current";
+    event.sabotage = sabotage;
     events->push_back(std::move(event));
   }
   return true;
@@ -376,18 +390,20 @@ void ServedResources::retire(const PayloadMap &current,
     known_valid_ = false;
     return;
   }
-  const auto retire_one = [&](std::map<std::string, PayloadPtr>::iterator it, bool in_base) {
-    ServeEvent event;
-    event.op = "retire";
-    event.hash = it->first;
-    event.bytes = it->second != nullptr ? it->second->size() : 0;
-    event.reason = in_base ? "unpin" : "superseded";
-    bytes_ -= std::min(bytes_, event.bytes);
+  const auto retire_one = [&](std::map<ServedKey, PayloadPtr>::iterator it, bool in_base) {
+    const std::uint64_t size = it->second != nullptr ? it->second->size() : 0;
+    bytes_ -= std::min(bytes_, size);
     ++totals_.retired;
     if (in_base) {
       ++totals_.retired_unpinned;
     }
     if (events != nullptr) {
+      // SERVED-MAP: only a hook log line needs the key's spelling back.
+      ServeEvent event;
+      event.op = "retire";
+      event.hash = it->first.wire();
+      event.bytes = size;
+      event.reason = in_base ? "unpin" : "superseded";
       events->push_back(std::move(event));
     }
     coded_.erase(it->first);
@@ -395,8 +411,9 @@ void ServedResources::retire(const PayloadMap &current,
   };
   if (!known_valid_ || unpin) {
     for (auto it = served_.begin(); it != served_.end();) {
-      const bool in_current = current.count(it->first) != 0;
-      const bool in_base = !in_current && in_bases(it->first);
+      const std::string hash = it->first.wire();
+      const bool in_current = current.count(hash) != 0;
+      const bool in_base = !in_current && in_bases(hash);
       if (in_current || (in_base && !unpin)) {
         ++it;
         continue;
@@ -424,7 +441,7 @@ void ServedResources::retire(const PayloadMap &current,
       }
     }
     for (const std::string &hash : candidates) {
-      const auto it = served_.find(hash);
+      const auto it = served_.find(ServedKey::from(hash));
       if (it == served_.end() || current.count(hash) != 0 || in_bases(hash)) {
         continue;
       }
@@ -459,7 +476,7 @@ void ServedResources::retire(const PayloadMap &current,
     bool same = want.size() == served_.size();
     auto w = want.begin();
     for (auto it = served_.begin(); same && it != served_.end(); ++it, ++w) {
-      same = it->first == *w;
+      same = it->first == ServedKey::from(*w);
     }
     if (!same) {
       shadow_failure_ = "served: the retained set (" + std::to_string(served_.size()) +
@@ -471,8 +488,9 @@ void ServedResources::retire(const PayloadMap &current,
 
 std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup(std::string_view hash) {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto it = served_.find(std::string(hash));
-  if (it == served_.end() || it->first == dropped_) {
+  // SERVED-MAP: the GET's key decodes in place; no std::string is built for the probe.
+  const auto it = served_.find(ServedKey::from(hash));
+  if (it == served_.end() || (!dropped_.empty() && it->first == dropped_key_)) {
     return nullptr;
   }
   return it->second;
@@ -484,11 +502,13 @@ std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup_coded(
     return nullptr;
   }
   const std::size_t slot = static_cast<std::size_t>(coding);
+  const ServedKey key = ServedKey::from(hash);  // SERVED-MAP: decoded once, probed under both locks
   PayloadPtr identity;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = served_.find(std::string(hash));
-    if (it == served_.end() || it->first == dropped_ || it->second == nullptr) {
+    const auto it = served_.find(key);
+    if (it == served_.end() || (!dropped_.empty() && it->first == dropped_key_) ||
+        it->second == nullptr) {
       return nullptr;
     }
     const auto coded = coded_.find(it->first);
@@ -516,7 +536,7 @@ std::shared_ptr<const std::vector<std::uint8_t>> ServedResources::lookup_coded(
     }
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto it = served_.find(std::string(hash));
+  const auto it = served_.find(key);
   if (it == served_.end() || it->second != identity) {
     return result;  // retired or replaced while compressing: serve this once, keep nothing
   }
@@ -546,7 +566,7 @@ std::set<std::string> ServedResources::retained_hashes() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::set<std::string> out;
   for (const auto &entry : served_) {
-    out.insert(entry.first);
+    out.insert(entry.first.wire());
   }
   return out;
 }
@@ -573,7 +593,7 @@ std::uint64_t ServedResources::retained_bytes_beyond(
   }
   std::uint64_t total = 0;
   for (const std::string &hash : candidates) {
-    const auto it = served_.find(hash);
+    const auto it = served_.find(ServedKey::from(hash));
     if (it == served_.end() || it->second == nullptr) {
       continue;
     }
@@ -601,9 +621,10 @@ std::uint64_t ServedResources::beyond_full_locked(
     const std::vector<const PayloadMap *> &known) const {
   std::uint64_t total = 0;
   for (const auto &entry : served_) {
+    const std::string hash = entry.first.wire();  // only the full walk needs the spelling
     bool held = false;
     for (const PayloadMap *map : known) {
-      if (map != nullptr && map->count(entry.first) != 0) {
+      if (map != nullptr && map->count(hash) != 0) {
         held = true;
         break;
       }
@@ -619,7 +640,7 @@ PayloadMap ServedResources::retained_payloads() const {
   std::lock_guard<std::mutex> lock(mutex_);
   PayloadMap out;
   for (const auto &entry : served_) {
-    out.emplace(entry.first, entry.second);
+    out.emplace(entry.first.wire(), entry.second);
   }
   return out;
 }
