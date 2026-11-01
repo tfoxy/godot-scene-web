@@ -775,6 +775,10 @@ void test_material_scans() {
             f == grc::rs::AdoptFault::NoParticles &&
             std::string(grc::rs::adopt_fault_name(f)) == "no-particles",
         "fault: no-particles");
+  check(grc::rs::parse_adopt_fault("ppm-no-shader", true, &f, &error) &&
+            f == grc::rs::AdoptFault::PpmNoShader &&
+            std::string(grc::rs::adopt_fault_name(f)) == "ppm-no-shader",
+        "fault: ppm-no-shader");
   // Inactive: the frame-boundary resolution and the arm pass are no-ops.
   grc::rs::adopt_materials_resolve();
   grc::rs::adopt_materials_at_arm();

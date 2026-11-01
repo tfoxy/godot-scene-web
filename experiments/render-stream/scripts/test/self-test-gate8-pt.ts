@@ -38,7 +38,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
-import { adoptionStats, type PtLateTx, ptLateAdoptProblems, ptLateFaultProblems } from "../lib/gate8-pt-late-checks";
+import { adoptionStats, type PtLateTx, ptLateAdoptProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems } from "../lib/gate8-pt-late-checks";
 import {
   particlesTotals,
   ptCoverageProblems,
@@ -842,6 +842,10 @@ async function main(): Promise<void> {
     };
     expect(ptLateFaultProblems({ emitters: 0 }, [fault], late).length === 0, "ptLateFaultProblems: the pre-PM7 state passes");
     expect(ptLateFaultProblems({ emitters: 0 }, [good()], late).length === 2, "ptLateFaultProblems: an adopted state fails it");
+    const ppmStats = { emitters: 2, ppm_materials: 2, refused: 0, ppm_refused: 0, ppm_refused_no_shader: 2, ppm_builtin: 2 };
+    expect(ptLatePpmBuiltinProblems(ppmStats, [good()], late, 12).length === 0, "ptLatePpmBuiltinProblems: all builtin-recovered passes");
+    expect(ptLatePpmBuiltinProblems({ ...ppmStats, ppm_builtin: 1 }, [good()], late, 12).some((p) => p.includes("recovered through the builtin")), "ptLatePpmBuiltinProblems: a short builtin count fails");
+    expect(ptLatePpmBuiltinProblems({ ...ppmStats, ppm_refused_no_shader: 0 }, [good()], late, 12).some((p) => p.includes("named no shader")), "ptLatePpmBuiltinProblems: no no-shader diagnosis fails");
     expect(
       adoptionStats({ stream: { gate8: { particles: { adoption: { emitters: 3 } } } } })?.emitters === 3 && adoptionStats({}) === null,
       "adoptionStats: reads stream.gate8.particles.adoption",

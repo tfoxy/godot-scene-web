@@ -238,6 +238,10 @@ enum class AdoptFault : std::uint8_t {
   // PM7: no-particles: no pre-arm emitter is adopted (the pre-PM7 capture: every draw of one is
   // unknown-particles).
   NoParticles,
+  // LATE-PPM: ppm-no-shader: the duplicate names no shader (an engine whose
+  // ParticleProcessMaterial assigns its shader outside get_rid(), as MegaDot 4.5.1.m.12 does), so
+  // the process material is adopted through its particle_process_material builtin key instead.
+  PpmNoShader,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -441,6 +445,8 @@ struct EmitterAdoptStats {
   std::uint32_t ppm_params = 0;        // ... parameters read back
   std::uint32_t ppm_refused = 0;       // process materials nothing could adopt (unknown-material)
   std::uint32_t ppm_refused_no_shader = 0;  // ... the temporary was given no shader
+  std::uint32_t ppm_builtin = 0;            // LATE-PPM: ... recovered through the
+                                            // particle_process_material builtin (no shader named)
   std::uint32_t ppm_refused_created = 0;    // ... the temporary made its own shader
   std::uint32_t ppm_refused_code = 0;       // ... the server returned no code (headless)
   std::uint32_t ppm_refused_material = 0;   // ... the material could not be registered

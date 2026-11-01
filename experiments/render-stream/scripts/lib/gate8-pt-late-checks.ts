@@ -128,6 +128,24 @@ export function ptLateFaultProblems(stats: Record<string, number> | null, txs: r
   return problems;
 }
 
+/** pt-late-ppm-builtin: under GRC_ADOPT_FAULT=ppm-no-shader (an engine that assigns the process
+ *  material's shader outside get_rid()) every process material is recovered through the
+ *  particle_process_material builtin, and the wire is otherwise the same as pt-late-adopt. */
+export function ptLatePpmBuiltinProblems(
+  stats: Record<string, number> | null,
+  txs: readonly PtLateTx[],
+  late: PtLate,
+  subAmount: number | undefined,
+): string[] {
+  const problems: string[] = [];
+  if (!stats) return ["no stream.gate8.particles.adoption in result.json"];
+  if (stats.ppm_refused_no_shader !== late.process_materials)
+    problems.push(`${stats.ppm_refused_no_shader} process materials named no shader, ${late.process_materials} expected`);
+  if (stats.ppm_builtin !== late.process_materials)
+    problems.push(`${stats.ppm_builtin} process materials recovered through the builtin, ${late.process_materials} expected`);
+  return [...problems, ...ptLateAdoptProblems(stats, txs, late, subAmount)];
+}
+
 export interface PtLateDeps {
   validate: (path: string) => Promise<[string, string] | null>;
   trace: (leg: string, sink: string) => Promise<PtLateTx[] | null>;
@@ -137,9 +155,10 @@ export interface PtLateDeps {
 
 const SINKS = ["recording.rs12", "recording-patch.rs12"];
 const CAPTURES = ["late/capture", "fault-no-particles/capture"];
+const PPM_CAPTURE = "fault-ppm-no-shader/capture";
 const RECEIVERS = ["late/receiver", "late/receiver-patch"];
 const FAULT_RECEIVER = "fault-no-particles/receiver";
-export const LATE_LEGS = [...CAPTURES, ...RECEIVERS, FAULT_RECEIVER];
+export const LATE_LEGS = [...CAPTURES, PPM_CAPTURE, ...RECEIVERS, FAULT_RECEIVER];
 
 export async function runG8ptLate(
   g: string,
@@ -159,12 +178,13 @@ export async function runG8ptLate(
       return null;
     }
   };
-  const anySkipped = [...CAPTURES, ...RECEIVERS, FAULT_RECEIVER].find((l) => skipped(dir(l)));
+  const anySkipped = [...CAPTURES, PPM_CAPTURE, ...RECEIVERS, FAULT_RECEIVER].find((l) => skipped(dir(l)));
   if (anySkipped) {
     for (const id of [
       "pt-late-validate",
       "pt-late-adopt",
       "pt-late-fault",
+      "pt-late-ppm-builtin",
       "pt-late-lifecycle",
       "pt-late-coverage",
       "pt-late-outside-exact",
@@ -178,7 +198,7 @@ export async function runG8ptLate(
   {
     const problems: string[] = [];
     let any = false;
-    for (const leg of CAPTURES)
+    for (const leg of [...CAPTURES, PPM_CAPTURE])
       for (const sink of SINKS) {
         if (!ran(leg)) continue;
         const v = await deps.validate(join(dir(leg), sink));
@@ -223,6 +243,31 @@ export async function runG8ptLate(
       fp = t ? ptLateFaultProblems(adoptionStats(await json(join(dir(f), "evidence", "result.json"))), t, late) : ["no recording"];
     }
     checks.push(check("pt-late-fault", "PM7: under GRC_ADOPT_FAULT=no-particles no emitter is adopted and every add_particles is unknown-particles (the pre-PM7 capture)", fp));
+  }
+
+  // pt-late-ppm-builtin (LATE-PPM): the engine names no shader, so adoption falls back to the
+  // particle_process_material builtin; the wire is otherwise the same as pt-late-adopt.
+  {
+    const leg = PPM_CAPTURE;
+    const stats = adoptionStats(await json(join(dir(leg), "evidence", "result.json")));
+    let problems: string[] | null = null;
+    if (ran(leg)) {
+      problems = [];
+      for (const sink of SINKS) {
+        const t = await deps.trace(leg, sink);
+        if (!t) problems.push(`${sink}: missing`);
+        else for (const p of ptLatePpmBuiltinProblems(stats, t, late, deps.amountOf(late.subemitter))) problems.push(`${sink}: ${p}`);
+      }
+      problems = [...new Set(problems)];
+    }
+    checks.push(
+      check(
+        "pt-late-ppm-builtin",
+        "LATE-PPM: under GRC_ADOPT_FAULT=ppm-no-shader (the engine names no shader) every process material is adopted through its particle_process_material builtin, nothing refused, no unknown-particles",
+        problems,
+        stats ? `${stats.ppm_builtin} builtin-recovered, ${stats.ppm_refused_no_shader} no-shader, ${stats.ppm_materials} materials` : undefined,
+      ),
+    );
   }
 
   // The pixels: the reference's shots after the arm.
