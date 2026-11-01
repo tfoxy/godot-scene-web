@@ -36,7 +36,7 @@ source does not.
 | -------- | -------------------------- | ------------ |
 | `GRC_MODE` | `arm` | arms the hooks (the calibration must pass first) |
 | `GRC_LIVE_LISTEN` | `127.0.0.1:<port>` | the live listener; keep it loopback and front it (see "Transport") |
-| `GRC_STREAM_VERSION` | `8`; `9` for Basis/pass-through delivery | wire version of the sinks. Under a gate 8 policy the live listener offers `render-stream.8` only (`.9` then `.8` at 9), so no older decoder sees a field it would reject |
+| `GRC_STREAM_VERSION` | `13` (the product seat streams /13) | wire version of the sinks. At 13 the live listener offers `render-stream.13` first, then /12's list, so no older decoder sees a field it would reject |
 | `GRC_ADOPT` | `arm` | late-join adoption: at arm, walk the scene tree and adopt canvases, layers and items; pre-arm textures, meshes, glyph atlases (lazily), materials and shaders |
 | `GRC_UNKNOWN_ITEM` | `skip` | items the mirror never saw (RS-only objects with no node) are withheld and counted instead of ending the stream (`strict` is the default) |
 | `GRC_TEXTURE_DECODE` | `engine` | block-compressed textures (BC1-BC7, RGTC, ETC2, ASTC) are decoded on the host with the engine's own `Image::decompress`, so every receiver gets RGBA8/R8/RG8 |

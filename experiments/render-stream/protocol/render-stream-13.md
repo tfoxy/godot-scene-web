@@ -1,6 +1,8 @@
-# render-stream/13 wire format (design)
+# render-stream/13 wire format
 
-Status: **staged.** W13a (2026-10-29) built the predicted blocks under /12's JSON meta at the wire
+Status: **frozen** (2026-10-31). The wire is W13r, accepted by W13z after the milestone sweep
+(`scripts/remote-validate.sh --milestone --base bc709e08 --and-local`, run 41236343023). W13a
+(2026-10-29) built the predicted blocks under /12's JSON meta at the wire
 level (codecs, goldens, validators); "As built (W13a)" is the normative spec of what is built.
 W13b (2026-10-29) made the capture emit it ("As built (W13b): capture"), W13c (2026-10-29) made
 GSW and the render-stream client accept it ("As built (W13c): GSW"), W13d the native receiver and
@@ -11,8 +13,7 @@ the compact residual (W13r) instead ("Decision (BIN-D)"). The rest of this text 
 in [results/p3/wb-d.md](../results/p3/wb-d.md), made with `scripts/lib/wire-budget.py proto13`, a
 Python prototype of this encoding that decodes every lossless message back to the recording.
 /13 builds on render-stream/12 ([render-stream-12.md](render-stream-12.md)). Like /8 to /12 it is
-**opt-in** until its acceptance increment (W13z) passes. It is meant to be the format that freezes
-("Versioning").
+**opt-in**. It is the format that freezes ("Versioning").
 
 ## Staging
 
@@ -400,15 +401,15 @@ byte.
 | `GRC_STREAM_VERSION` | `6` (default), …, `12`, `13` | `13` makes file sinks /13 and puts `.13` first in the listener's offer |
 | `RS_RECEIVER_PROTOCOL` | `…`, `13` | the native receiver and GSW offer `render-stream.13` |
 
-- **Defaults do not move** until W13z: file sinks stay /6, the listener offers `.13` only under
+- **Defaults do not move.** File sinks stay /6, the listener offers `.13` only under
   `GRC_STREAM_VERSION=13`, then /12's list. Every /2 to /12 session is byte-identical, and
   `golden-2/` to `golden-12/` pass unchanged.
 - **Receivers keep /11 and /12** (and everything below), as they keep /2 to /10: the decoders are
   version-parameterized, so an older stream costs nothing at runtime, and kept recordings stay
   replayable. A /12 and a /13 viewer on one host share snapshots, never encodes.
-- **The freeze.** After W13z the product hand-off (gate8-product-handoff.md) moves to /13, and
-  /13 is the format that freezes: any later change is a new version, as always, but no further
-  syntax swap is planned. /11 and /12 stay decodable and stop being offered by default.
+- **The freeze.** The product hand-off (gate8-product-handoff.md) streams /13, and /13 is frozen:
+  any later change is a new version, as always, but no further syntax swap is planned. /11 and /12
+  stay decodable and stop being offered by default.
 - The GDScript codec (`rs_wire.gd`) is not touched: the native receiver decodes in rs-core.
 
 ## Byte projection per scene
