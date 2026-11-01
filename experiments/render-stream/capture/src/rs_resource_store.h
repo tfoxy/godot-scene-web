@@ -46,6 +46,8 @@
 #ifndef GRC_RS_RESOURCE_STORE_H
 #define GRC_RS_RESOURCE_STORE_H
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -144,6 +146,91 @@ struct ServeEvent {
   bool sabotage = false;    // drop-resource's pin of the dropped hash
 };
 
+// SERVED-MAP (results/p3/served-map.md): the served set's key, fixed width and binary.
+//
+// The payload map's keys stay `std::string` (they are the wire hashes the mirror and its entries
+// name). The served set is probed by every HTTP GET, every pin, every retirement candidate and the
+// budget, so its key is a content hash's 32 bytes rather than its 64-character spelling: no
+// allocation per node, none per lookup, and no string to copy. The only other key shape the wire
+// produces is a /11 dynamic surface's literal "hc3-key:<n>" (render-stream-11.md), kept byte for
+// byte in the same slot (`ServedKey::wire()` spells either back).
+//
+// The order is the `std::string` order the full walk's pin and retire events use: a hash
+// ('0'-'f') sorts before every hc3-key text ('h'), the digests in hexadecimal order, and the texts
+// byte for byte (a NUL pad sorts a shorter text first, as std::string's prefix rule does).
+class ServedKey {
+ public:
+  static constexpr std::size_t kDigestBytes = 32;
+  static constexpr std::size_t kTextBytes = 32;  // "hc3-key:" plus a uint64's 20 digits is 28
+  static constexpr std::size_t kWidth = 1 + kTextBytes;
+
+  ServedKey() = default;
+
+  // A content hash (64 lowercase hex, the wire spelling) decodes to its 32 bytes; anything else
+  // is kept as its literal text (at most kTextBytes: the only non-hash key is "hc3-key:<n>").
+  static ServedKey from(std::string_view key) {
+    ServedKey out;
+    if (key.size() == 2 * kDigestBytes) {
+      std::size_t i = 0;
+      for (; i < kDigestBytes; ++i) {
+        const int hi = hex_value(key[2 * i]);
+        const int lo = hex_value(key[2 * i + 1]);
+        if (hi < 0 || lo < 0) {
+          break;
+        }
+        out.bytes_[1 + i] = static_cast<std::uint8_t>(hi << 4 | lo);
+      }
+      if (i == kDigestBytes) {
+        return out;  // kind 0: a content hash
+      }
+      out.bytes_ = {};  // 64 characters, not a hash: a text key under a distinct kind
+    }
+    out.bytes_[0] = 1;
+    const std::size_t n = std::min(key.size(), kTextBytes);
+    for (std::size_t i = 0; i < n; ++i) {
+      out.bytes_[1 + i] = static_cast<std::uint8_t>(key[i]);
+    }
+    return out;
+  }
+
+  // The key's wire spelling: 64 lowercase hex for a content hash, the literal text otherwise.
+  std::string wire() const {
+    static const char kDigits[] = "0123456789abcdef";
+    if (bytes_[0] == 0) {
+      std::string out(2 * kDigestBytes, '\0');
+      for (std::size_t i = 0; i < kDigestBytes; ++i) {
+        out[2 * i] = kDigits[bytes_[1 + i] >> 4];
+        out[2 * i + 1] = kDigits[bytes_[1 + i] & 0xf];
+      }
+      return out;
+    }
+    std::size_t n = kTextBytes;
+    while (n > 0 && bytes_[n] == 0) {
+      --n;
+    }
+    return std::string(reinterpret_cast<const char *>(bytes_.data() + 1), n);
+  }
+
+  bool is_hash() const { return bytes_[0] == 0; }
+  bool operator<(const ServedKey &other) const { return bytes_ < other.bytes_; }
+  bool operator==(const ServedKey &other) const { return bytes_ == other.bytes_; }
+  bool operator!=(const ServedKey &other) const { return bytes_ != other.bytes_; }
+
+ private:
+  static int hex_value(char c) {
+    if (c >= '0' && c <= '9') {
+      return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+      return c - 'a' + 10;
+    }
+    return -1;
+  }
+
+  // [0]: kind (0 content hash, 1 text); [1..]: the digest or the text, NUL-padded.
+  std::array<std::uint8_t, kWidth> bytes_{};
+};
+
 class ServedResources : public live::ResourceSource {
  public:
   ServedResources() = default;
@@ -220,19 +307,22 @@ class ServedResources : public live::ResourceSource {
   std::uint64_t beyond_full_locked(const std::vector<const PayloadMap *> &known) const;
 
   mutable std::mutex mutex_;
-  std::map<std::string, PayloadPtr> served_;  // retained hash -> the bytes it is served with
+  // retained hash -> the bytes it is served with (SERVED-MAP: a fixed-width binary key, not its
+  // 64-character spelling).
+  std::map<ServedKey, PayloadPtr> served_;
   // G8kz: retained hash -> its coded bodies (a null slot: tried, not smaller, serve identity).
   struct CodedBodies {
     bool tried[3] = {false, false, false};  // indexed by live::Coding
     PayloadPtr body[3];
   };
-  std::map<std::string, CodedBodies> coded_;
+  std::map<ServedKey, CodedBodies> coded_;
   std::set<std::string> seen_;                // every hash ever pinned (drop-resource)
   std::uint64_t bytes_ = 0;
   std::uint64_t unpin_frame_ = 0;
   std::uint64_t drop_frame_ = 0;
   std::uint64_t retain_superseded_frame_ = 0;
   std::string dropped_;
+  ServedKey dropped_key_;  // `dropped_` as a key, so lookup() compares without spelling it out
   std::string corrupt_;
   Totals totals_;
   // HC4b: while `known_valid_`, served_ holds exactly every hash of `last_current_` and of each

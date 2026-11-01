@@ -1859,6 +1859,66 @@ void test_served_resources() {
   }
 }
 
+// SERVED-MAP: the served set's fixed-width binary key (results/p3/served-map.md).
+void test_served_key() {
+  using grc::rs::ServedKey;
+  // A content hash decodes to its 32 bytes and spells back exactly.
+  std::string ascending;
+  std::string descending;
+  for (int i = 0; i < 64; ++i) {
+    ascending.push_back("0123456789abcdef"[i % 16]);
+    descending.push_back("fedcba9876543210"[i % 16]);
+  }
+  std::vector<std::string> hashes = {kH1,  kH2, kH3, std::string(64, '0'), std::string(64, 'f'),
+                                     ascending, descending};
+  bool round_trip = true;
+  for (const std::string &hash : hashes) {
+    const ServedKey key = ServedKey::from(hash);
+    round_trip = round_trip && key.is_hash() && key.wire() == hash;
+  }
+  check(round_trip, "a content hash decodes and spells back identically");
+
+  // The only other key shape: a /11 dynamic surface's literal text, kept byte for byte.
+  std::vector<std::string> keys = hashes;
+  for (const char *text : {"hc3-key:0", "hc3-key:2", "hc3-key:10", "hc3-key:18446744073709551615",
+                           "hc3-key:7"}) {
+    keys.push_back(text);
+  }
+  std::vector<std::string> want = keys;
+  std::sort(want.begin(), want.end());  // the std::string order the full walk's events use
+  std::vector<std::string> got;
+  for (const std::string &key : keys) {
+    got.push_back(ServedKey::from(key).wire());
+  }
+  std::sort(got.begin(), got.end(), [](const std::string &a, const std::string &b) {
+    return ServedKey::from(a) < ServedKey::from(b);
+  });
+  check(got == want, "ServedKey orders as std::string does (hashes first, texts byte for byte)");
+  check(ServedKey::from("hc3-key:10").wire() == "hc3-key:10" &&
+            ServedKey::from("hc3-key:10") < ServedKey::from("hc3-key:2"),
+        "a text key's spelling survives and sorts as its string does");
+
+  // End to end: a keyed surface's text key is pinned, looked up and retired under its own spelling.
+  grc::rs::ServedResources served;
+  const grc::rs::PayloadPtr payload = grt1(4, 16);
+  const std::string text_key = "hc3-key:12";
+  grc::rs::PayloadMap map = {{kH1, payload}, {text_key, payload}};
+  std::vector<grc::rs::ServeEvent> events;
+  served.pin({&map}, 1, &events);
+  check(served.lookup(text_key) == payload && served.lookup(kH1) == payload,
+        "a text key and a hash key are both servable");
+  check(served.retained_hashes().count(text_key) == 1, "retained_hashes spells a text key back");
+  served.retire(grc::rs::PayloadMap{}, {}, 2, &events);
+  std::string retired;
+  for (const grc::rs::ServeEvent &e : events) {
+    if (std::string(e.op) == "retire") {
+      retired += e.hash + " ";
+    }
+  }
+  check(retired == kH1 + " " + text_key + " ",
+        "retirement events keep their key order and spelling: " + retired);
+}
+
 // ----------------------------------------------------------------- G7n: /6 and /7 per connection
 
 const std::string kToken = std::string(64, 'c');
@@ -3807,6 +3867,7 @@ int main(int argc, char **argv) {
   test_shared_publication_bytes();
   test_carried_index();
   test_served_resources();
+  test_served_key();
   test_served_coded_bodies();
   test_hc4b_shared_maps_and_serving();
   test_rate_uncapped_unchanged();
