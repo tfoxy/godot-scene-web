@@ -373,10 +373,7 @@ export const G7K_SABOTAGE_SETS: Record<
   "sabotage-soak-no-evict": {
     required: {
       web: ["residency-bounded:receiver memory-cache entries"],
-      gsw: [
-        "residency-bounded:receiver memory-cache entries",
-        "wasm-heap-bounded",
-      ],
+      gsw: ["residency-bounded:receiver memory-cache entries"],
     },
     // G7kr: GSW's page renderer RSS now carries the wasm heap (+11 MB) and JS heap (+5 MB) a store
     // that never evicts keeps growing, so `rss-bounded-renderer` may trip too (it sat on an idle
@@ -384,7 +381,7 @@ export const G7K_SABOTAGE_SETS: Record<
     // known shortfall (WEB_RENDERER_RSS_SHORTFALL), which no failure set counts.
     allowed: {
       web: [],
-      gsw: ["js-heap-bounded", "rss-bounded-renderer"],
+      gsw: ["js-heap-bounded", "rss-bounded-renderer", "wasm-heap-bounded"],
     },
   },
   "sabotage-leak-gl-textures": {

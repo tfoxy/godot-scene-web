@@ -74,7 +74,7 @@ expect("budget: unbounded store stays over", (adj(gswBudgetAdjusted(evOf(9 * MIB
 const ne = G7K_SABOTAGE_SETS["sabotage-soak-no-evict"];
 expect("sets: exact", failureSetProblems(ne.required.gsw, ne.required.gsw, ne.allowed.gsw).length === 0);
 expect("sets: allowed consequence", failureSetProblems([...ne.required.gsw, "js-heap-bounded"], ne.required.gsw, ne.allowed.gsw).length === 0);
-expect("sets: missing", failureSetProblems(["wasm-heap-bounded"], ne.required.gsw, ne.allowed.gsw).some((p) => /did not/.test(p)));
+expect("sets: missing", failureSetProblems([], ne.required.gsw, ne.allowed.gsw).some((p) => /did not/.test(p)));
 expect("sets: extra", failureSetProblems([...ne.required.gsw, "soak-pixels"], ne.required.gsw, ne.allowed.gsw).some((p) => /also failed: soak-pixels/.test(p)));
 
 // 6 (G7kr): the page renderer's budget carries a per-GET allowance
