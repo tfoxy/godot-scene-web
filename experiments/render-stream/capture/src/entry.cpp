@@ -741,6 +741,7 @@ std::string result_json() {
           json.field("ppm_params", static_cast<int64_t>(e.ppm_params));
           json.field("ppm_refused", static_cast<int64_t>(e.ppm_refused));
           json.field("ppm_refused_no_shader", static_cast<int64_t>(e.ppm_refused_no_shader));
+          json.field("ppm_builtin", static_cast<int64_t>(e.ppm_builtin));
           json.field("ppm_refused_created", static_cast<int64_t>(e.ppm_refused_created));
           json.field("ppm_refused_code", static_cast<int64_t>(e.ppm_refused_code));
           json.field("ppm_refused_material", static_cast<int64_t>(e.ppm_refused_material));

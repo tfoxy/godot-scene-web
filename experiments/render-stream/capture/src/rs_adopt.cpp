@@ -1495,10 +1495,12 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::NoIncludePath;
   } else if (text == "no-particles") {
     *out = AdoptFault::NoParticles;
+  } else if (text == "ppm-no-shader") {
+    *out = AdoptFault::PpmNoShader;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
-             " (expected no-resources, atlas-from-dummy, claim-current, no-include-path or "
-             "no-particles)";
+             " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
+             "no-particles or ppm-no-shader)";
     return false;
   }
   if (!adopt) {
@@ -1516,6 +1518,7 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::ClaimCurrent: return "claim-current";
   case AdoptFault::NoIncludePath: return "no-include-path";
   case AdoptFault::NoParticles: return "no-particles";
+  case AdoptFault::PpmNoShader: return "ppm-no-shader";
   }
   return "none";
 }
@@ -2784,6 +2787,59 @@ void pta_refuse(std::uint64_t rid, std::uint32_t EmitterAdoptStats::*reason) {
   }
 }
 
+// LATE-PPM: a synthetic process shader's capture-reserved RID and code. An engine whose
+// ParticleProcessMaterial assigns its shader outside get_rid() (MegaDot 4.5.1.m.12) names no
+// shader to the duplicate, and no server getter returns a material's shader
+// (Material.get_shader_rid is not bound, gate8-design.md D12). The particle_process_material
+// builtin key, though, is readable from the material's own getters (ppm_key), so a synthetic
+// `particles` shader carrying that key is adopted under a reserved RID (the top two bits set, which
+// no 31-bit-validator RID takes) and re-keyed if a hooked call ever names the engine's RID. A
+// builtin-driven receiver (GSW) then simulates and draws the emitter; the GL receivers still draw
+// nothing (a Forward+ host's process shader is RD-only, PM7 follow-up 1), as before the fix.
+constexpr std::uint64_t kSyntheticPpmShader = (1ull << 63) | (1ull << 62);
+const char kPpmSyntheticCode[] =
+    "shader_type particles;\n\n"
+    "// Synthetic: this engine assigns the process material's shader outside get_rid().\n"
+    "void process() {\n"
+    "\tfloat _t = TIME;\n"
+    "}\n";
+
+// A stable hash of the builtin key, for the synthetic shader's reserved RID: materials on the same
+// key share one entry, as the engine's shader_map does.
+std::uint64_t ppm_key_hash(const rs2::BuiltinParticleProcessMaterial &k) {
+  std::uint64_t h = 1;
+  auto mix = [&h](std::uint64_t v) { h = (h << 5) - h + v; };  // h = h * 31 + v
+  mix(k.emission_shape);
+  mix(k.particle_flags);
+  mix(k.textures);
+  mix((k.color_ramp ? 1u : 0u) | (k.color_initial_ramp ? 2u : 0u) | (k.alpha_curve ? 4u : 0u) |
+      (k.emission_curve ? 8u : 0u) | (k.velocity_limit_curve ? 16u : 0u) |
+      (k.orbit_velocity_curve_xyz ? 32u : 0u) | (k.emission_color_texture ? 64u : 0u));
+  mix(k.sub_emitter | (k.attractor ? 256u : 0u));
+  mix(k.collision | (k.collision_scale ? 8u : 0u) | (k.turbulence ? 16u : 0u));
+  return h & ((1ull << 62) - 1);  // keep below the two reserved top bits
+}
+
+// Adopts (or returns) the synthetic process shader for `material`'s builtin key: a `particles`
+// shader with the particle_process_material builtin, under a reserved RID. 0 when the key cannot be
+// read or the shader cannot be adopted.
+std::uint64_t adopt_ppm_builtin(void *material) {
+  if (!ppm_binds()) {
+    return 0;
+  }
+  const rs2::BuiltinParticleProcessMaterial key = ppm_key(material);
+  const std::uint64_t synth = kSyntheticPpmShader | ppm_key_hash(key);
+  Mirror &m = mirror_instance();
+  if (!m.knows_shader(synth)) {
+    if (!hooks_adopt_shader(synth, kPpmSyntheticCode)) {
+      return 0;
+    }
+    m.set_shader_ppm(synth, key);
+    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_shaders; });
+  }
+  return synth;
+}
+
 // A pre-arm ParticleProcessMaterial (`material`, RID `rid`): a capture-owned duplicate shares the
 // original's key, so its get_rid() (ParticleProcessMaterial::get_rid runs _update_shader,
 // particle_process_material.cpp:1866) sets the shared shader on the duplicate's own material
@@ -2813,15 +2869,25 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
     }
   }  // the duplicate dies here: its material's free passes straight through
   hooks_internal_end();
+  if (fault() == AdoptFault::PpmNoShader) {
+    shader = 0;  // LATE-PPM fault: an engine that assigns the shader outside get_rid()
+  }
+  bool synthetic = false;
   if (shader == 0) {
     pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_no_shader; });
-    return false;  // the temporary named no shader
-  }
-  if (created != 0) {
+    // LATE-PPM: no shader was named (the engine assigns it outside get_rid()), so adopt a
+    // synthetic particles shader carrying the material's particle_process_material builtin key.
+    shader = adopt_ppm_builtin(material);
+    if (shader == 0) {
+      return false;  // the temporary named no shader and the builtin key could not be read
+    }
+    synthetic = true;
+    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
+  } else if (created != 0) {
     pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_created; });
     return false;  // a shader made (and freed) with the temporary: not the original's
   }
-  if (!m.knows_shader(shader)) {
+  if (!synthetic && !m.knows_shader(shader)) {
     Builtin code(GDEXTENSION_VARIANT_TYPE_STRING);
     const GDExtensionConstTypePtr a1[1] = {&shader};
     g_iface.object_method_bind_ptrcall(g_pta.shader_get_code, rs_singleton, a1, code.ptr());
@@ -2833,8 +2899,9 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
     pta_stat([](EmitterAdoptStats &s) { ++s.ppm_shaders; });
   }
   // The names: every parameter the temporary was given, then every uniform the code declares (an
-  // engine build whose material makes its RID lazily sets some before the RID exists).
-  {
+  // engine build whose material makes its RID lazily sets some before the RID exists). A synthetic
+  // shader's code declares none: its names are the temporary's only.
+  if (!synthetic) {
     std::string code;
     if (m.shader_code_of(shader, &code)) {
       for (const UniformDecl &u : scan_uniforms(code)) names.push_back(u.name);

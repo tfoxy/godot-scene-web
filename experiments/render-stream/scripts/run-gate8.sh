@@ -1265,6 +1265,9 @@ run_g8pt_late() {
 	echo "run-gate8: g8pt fault-no-particles/capture (late, GRC_ADOPT_FAULT=no-particles)"
 	run_capture_rendered_g8pt "$OUT/g8pt/fault-no-particles/capture" "${G8PT_LATE_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-particles
+	echo "run-gate8: g8pt fault-ppm-no-shader/capture (late, GRC_ADOPT_FAULT=ppm-no-shader)"
+	run_capture_rendered_g8pt "$OUT/g8pt/fault-ppm-no-shader/capture" "${G8PT_LATE_ENV[@]}" \
+		GRC_ADOPT_FAULT=ppm-no-shader
 	legs_par_begin
 	local cap leg extra
 	for leg in late/receiver late/receiver-patch fault-no-particles/receiver; do
