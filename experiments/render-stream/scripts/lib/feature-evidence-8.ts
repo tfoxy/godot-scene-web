@@ -901,6 +901,7 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
   g8kc: "none: the receivers' texture cache is internal, no feature row",
   g8l: ["delivery.stream_protocol_8", "delivery.reverse_proxy_fronting"],
   g8c: ["payload.canvas_texture_diffuse"],
+  g8ctl: ["payload.canvas_texture_diffuse"],
   g8cg: ["delivery.canvas_group_state_10"],
   g8w11:
     "none: the capture side of render-stream/11 (W11b); no receiver applies /11 yet, so the /8 manifest has no row",

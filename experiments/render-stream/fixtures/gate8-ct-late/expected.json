@@ -1,0 +1,14 @@
+{
+  "schema": "render-stream-gate8-ct-late-expected/1",
+  "doc": "Hand-derived from ctl.gd, not measured (README.md). Three 64x64 cells, every image built in code at _ready and drawn only through a runtime CanvasTexture's diffuse (no .tres, no command names an image directly). The capture arms late at frame 12 (loader.gd), after every CanvasTexture and item exists, so the capture must adopt each CanvasTexture from the drawing item's node's `texture` (the node map). Regions are inclusive [x0, y0, x1, y1].",
+  "arm_frame": 12,
+  "quit_frame": 30,
+  "canvas_count": 3,
+  "regions": {
+    "SPRITE": [40, 40, 103, 103],
+    "TRECT": [136, 40, 199, 103],
+    "MESH": [232, 40, 295, 103]
+  },
+  "cells": ["SPRITE", "TRECT", "MESH"],
+  "clear_color": [51, 51, 102]
+}

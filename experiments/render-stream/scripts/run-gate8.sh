@@ -257,11 +257,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2 g8rec1)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2 g8rec1)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt g8tag g8tag2 g8rec1)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2 g8rec1)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8cg g8w11 g8mm g8pt g8tag g8tag2 g8rec1)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2 g8rec1)
 
 EXTENSION=""
 CALIBRATION=""
@@ -833,6 +833,55 @@ run_g8c() {
 	legs_par_end
 	run_g8c_headless_receivers
 	gs_teardown "$OUT/gamescope-g8c"
+	GS_RUN_DIR=""
+}
+
+# ------------------------------------------------------------------------------------ g8ctl
+G8CTL_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-ct-late"
+# RT-CTX (late-arm runtime CanvasTexture adoption): the late arm (fixtures/gate8-ct-late/loader.gd
+# at frame 12, after every runtime CanvasTexture and item exists), adopted under GRC_ADOPT=arm from
+# the node map; GRC_UNKNOWN_ITEM=skip as every late gate 8 leg. GRC_ADOPT_FAULT=no-resources is the
+# pre-RT-CTX capture (nothing adopted lazily: every draw through a CanvasTexture unknown-texture).
+G8CTL_LATE_ENV=(GRC_STREAM_VERSION=8 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=12 \
+	GRC_UNKNOWN_ITEM=skip)
+
+run_import_g8ctl() {
+	echo "run-gate8: g8ctl import (fixture)"
+	LEG_ENV=()
+	run_headless "$OUT/g8ctl/import/fixture" none -- mise exec -- godot --headless --path "$G8CTL_FIXTURE_DIR" --import
+	[ -f "$OUT/g8ctl/import/fixture/skipped-by-tier.txt" ] && return 0
+	if [ "$(cat "$OUT/g8ctl/import/fixture/exit-code.txt")" != "0" ]; then
+		echo "run-gate8: g8ctl import (fixture) failed, see $OUT/g8ctl/import/fixture/stdout.log" >&2
+		exit 1
+	fi
+}
+
+# run_capture_rendered_g8ctl <dir> <env word...>: an armed /8 capture on the rendered host (the
+# private gamescope): both sinks, the store and the evidence.
+run_capture_rendered_g8ctl() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir/evidence" "$dir/store"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm "$@"
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+	)
+	run_rendered "$dir" "$G8CTL_FIXTURE_DIR"
+}
+
+run_g8ctl() {
+	run_import_g8ctl
+	echo "run-gate8: bringing up private gamescope for g8ctl's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8ctl"
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+	echo "run-gate8: g8ctl late/capture (/8, armed at frame 12, GRC_ADOPT=arm: CanvasTextures adopted from the node map)"
+	run_capture_rendered_g8ctl "$OUT/g8ctl/late/capture" "${G8CTL_LATE_ENV[@]}"
+	echo "run-gate8: g8ctl fault-no-resources/capture (late, GRC_ADOPT_FAULT=no-resources)"
+	run_capture_rendered_g8ctl "$OUT/g8ctl/fault-no-resources/capture" "${G8CTL_LATE_ENV[@]}" \
+		GRC_ADOPT_FAULT=no-resources
+	gs_teardown "$OUT/gamescope-g8ctl"
 	GS_RUN_DIR=""
 }
 
@@ -2910,6 +2959,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8a) run_g8a ;;
 	g8h) run_g8h ;;
 	g8c) run_g8c ;;
+	g8ctl) run_g8ctl ;;
 	g8cg) run_g8cg ;;
 	g8w11) run_g8w11 ;;
 	g8w11c) run_g8w11c ;;
