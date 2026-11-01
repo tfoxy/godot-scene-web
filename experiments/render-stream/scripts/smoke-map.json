@@ -321,6 +321,15 @@
       "reach": ["native:gate8@*"]
     },
     {
+      "why": "REC1's client recorder legs (results/p3/rec1.md): gate 8's g8rec1 group drives web/client-record-check/ (the client package with the recorder on) through scripts/client-record-check.ts against a live tag-scene host with a tap, judged by lib/gate8-rec1-checks.ts",
+      "paths": [
+        "experiments/render-stream/web/client-record-check/**",
+        "experiments/render-stream/scripts/client-record-check.ts",
+        "experiments/render-stream/scripts/lib/gate8-rec1-checks.ts"
+      ],
+      "reach": ["native:gate8@*"]
+    },
+    {
       "why": "MIR-1's client live check (results/p3/mir-1.md): a real-time page driven by hand through bench-live-scale.sh's host-only mode, not a validate-increment target; the package it mounts is reached above",
       "paths": ["experiments/render-stream/scripts/client-live-check.ts"],
       "reach": ["pure"]

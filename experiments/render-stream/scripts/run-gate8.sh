@@ -257,11 +257,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2 g8rec1)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt g8tag g8tag2)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8mm g8pt g8tag g8tag2 g8rec1)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8cg g8w11 g8w11c g8mm g8pt g8tag g8tag2 g8rec1)
 
 EXTENSION=""
 CALIBRATION=""
@@ -1697,6 +1697,62 @@ run_g8tag2() {
 	run_g8tag2_leg sabotage-inverse-skip base inp 300 0 --css 700x500 --sabotage inverse-skip
 }
 
+# REC1: one headless tag-scene host at /13 with a live tap, and client-record-check.ts (the client
+# package with the recorder on) against it; the driver exports the recording, replays it through
+# rs-core-check, and the checker byte-compares it to the host's tap (lib/gate8-rec1-checks.ts).
+run_g8rec1_leg() {
+	local dir="$OUT/g8rec1/$1" waited=0 port="" page pid rc
+	local host="$dir/host"
+	mkdir -p "$host/evidence" "$host/tap"
+	page="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		GRC_EVIDENCE_DIR="$host/evidence" GRC_STREAM_VERSION=13 GRC_ROOT_SIZE="presentation:${PRES:-640x360}"
+		GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip RS_FIXTURE_ARM=late RS_FIXTURE_QUIT_FRAME=300
+		RS_FIXTURE_TAG_START=60 GRC_LIVE_LISTEN=127.0.0.1:0
+		GRC_LIVE_TAP_DIR="$host/tap" GRC_LIVE_MAX_CONNECTIONS=3 GRC_LIVE_AWAIT_HELLO_MS=30000
+		GRC_LIVE_ALLOWED_ORIGINS="http://127.0.0.1:$page"
+	)
+	start_headless_bg "$host" -- "$BINARY" --headless --max-fps 60 --path "$TAG_DIR"
+	pid="$BG_PID"
+	[ -z "$pid" ] && return 0
+	while [ "$waited" -lt 400 ] && [ ! -s "$host/evidence/live.json" ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		waited=$((waited + 1))
+	done
+	if grep -q '"status": "listening"' "$host/evidence/live.json" 2>/dev/null; then
+		port="$(sed -n 's/^ *"port": \([0-9][0-9]*\),*$/\1/p' "$host/evidence/live.json")"
+	fi
+	if [ -z "$port" ]; then
+		echo "the live host is not listening (see $host/evidence/live.json)" >"$dir/skipped.txt"
+	else
+		mkdir -p "$dir/page"
+		(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/client-record-check.ts" \
+			--dir "$dir/page" --port "$page" --ws "ws://127.0.0.1:$port/render-stream" \
+			--http "http://127.0.0.1:$port" --core "$OUT/g8rec1/core" \
+			--rs-core-check "$RS_CORE_CHECK" --pres "${PRES:-640x360}") \
+			>"$dir/page/stdout.log" 2>&1 && rc=0 || rc=$?
+		echo "$rc" >"$dir/page/exit-code.txt"
+	fi
+	finish_bg "$host" "$pid" "$HEADLESS_TIMEOUT_S"
+}
+
+run_g8rec1() {
+	echo "run-gate8: g8rec1 import (fixtures/tag-scene), the client core and rs-core-check"
+	LEG_ENV=()
+	run_headless "$OUT/g8rec1/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	mkdir -p "$OUT/g8rec1"
+	bash "$REPO_ROOT/packages/render-stream-client/scripts/build-web.sh" "$OUT/g8rec1/core" \
+		>"$OUT/g8rec1/core-build.log" 2>&1 || echo "run-gate8: g8rec1 core build failed (see core-build.log)"
+	bash "$SCRIPT_DIR/build-rs-core.sh" --native-only >"$OUT/g8rec1/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8rec1/build-rs-core.log" >&2
+		exit 1
+	}
+	RS_CORE_CHECK="$REPO_ROOT/artifacts/render-stream/rs-core/$(sed -n 's/^sha=//p' "$OUT/g8rec1/build-rs-core.log" | tail -1)/bin/rs-core-check"
+	echo "run-gate8: g8rec1 live (the client records; the export replays and equals the tap)"
+	run_g8rec1_leg live
+}
+
 # W11d: native receivers live at /11 on a capture-scale host (as run_g8w11_coding_leg's, headless),
 # one per spec: <name>:<RS_RECEIVER_LIVE_CODING value, "" for the default zstd-base,zstd>.
 run_g8w11_coding_native_leg() {
@@ -2808,6 +2864,7 @@ for group in "${GROUPS_RUN[@]}"; do
 	g8l) run_g8l ;;
 	g8tag) run_g8tag ;;
 	g8tag2) run_g8tag2 ;;
+	g8rec1) run_g8rec1 ;;
 	esac
 done
 

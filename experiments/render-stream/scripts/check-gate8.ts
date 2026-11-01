@@ -30,6 +30,7 @@ import { type G8mmExpected, runG8mm } from "./lib/gate8-mm-checks";
 import { type G8ptExpected, runG8pt } from "./lib/gate8-pt-checks";
 import { runG8tag } from "./lib/gate8-tag-checks";
 import { runG8tag2 } from "./lib/gate8-tag2-checks";
+import { runG8rec1 } from "./lib/gate8-rec1-checks";
 import { fileEquiv } from "./lib/gate8-w13-checks";
 import { runG8pt13Gsw } from "./lib/gate8-w13-gsw-checks";
 import { runG8pt13Native } from "./lib/gate8-w13-native-checks";
@@ -42,7 +43,7 @@ import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c", "g8cg", "g8w11", "g8w11c", "g8mm", "g8pt", "g8tag", "g8tag2"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c", "g8cg", "g8w11", "g8w11c", "g8mm", "g8pt", "g8tag", "g8tag2", "g8rec1"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -154,6 +155,10 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
   if (run.includes("g8tag2")) {
     // TAG2: the GSW client's extension API and override table (lib/gate8-tag2-checks.ts).
     checks.push(...(await runG8tag2(join(out, "g8tag2"))));
+  }
+  if (run.includes("g8rec1")) {
+    // REC1: the client recorder (lib/gate8-rec1-checks.ts).
+    checks.push(...(await runG8rec1(join(out, "g8rec1"))));
   }
   if (run.includes("g8pt")) {
     const expected = JSON.parse(

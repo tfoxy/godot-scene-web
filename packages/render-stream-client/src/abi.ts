@@ -60,6 +60,8 @@ export interface GswRs {
   refuse_program(i: number, reason: string, detail: string): number;
   // G7l live mode.
   rx(len: number): number;
+  /** REC1: the receive buffer's current pointer (after `decode_rx`; `rx()` may have grown it). */
+  rx_ptr(): number;
   live_session(len: number, version: number): number;
   live_accept(len: number): number;
   last_digest_ptr(): number;
@@ -181,6 +183,7 @@ export function statsReader(
  * (`core-load-failed`). */
 export const CLIENT_CORE_METHODS = [
   "rx",
+  "rx_ptr",
   "live_session",
   "live_accept",
   "live_rebuild",

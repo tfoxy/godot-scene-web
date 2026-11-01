@@ -1466,6 +1466,12 @@ impl GswRs {
         self.rx.as_mut_ptr()
     }
 
+    /// REC1: the receive buffer's current pointer, without resizing (after `decode_rx` grew it,
+    /// `rx()`'s earlier pointer is stale).
+    pub fn rx_ptr(&self) -> *const u8 {
+        self.rx.as_ptr()
+    }
+
     /// A connection's first message, `len` bytes in `rx`: the magic of `version` (7, or G8g's 8:
     /// render-stream/8's live transport is /7's with /8's tables) followed by exactly the session
     /// record (render-stream-2.md "Live transport"). Starts the session as `start` does.

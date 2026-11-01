@@ -35,6 +35,12 @@ import {
   readLayout,
 } from "./pointer";
 import {
+  createRecorder,
+  type Recording,
+  type RecorderOptions,
+  type RenderStreamRecorder,
+} from "./recorder";
+import {
   type RenderStreamTransportFactory,
   webSocketTransport,
 } from "./transport";
@@ -56,6 +62,10 @@ export interface RenderStreamClientOptions {
   /** PH3: where a ready transaction is applied: the next frame callback (`frame`) or its own
    * `onmessage` while frames run (`message`, the default; the draw stays on the frame callback). */
   applyOn?: ApplyOn;
+  /** REC1: when set, the client records the decoded messages since the last full and the fetched
+   * payloads, exported by `RenderStreamClient.recording()`. Absent: the pure client (no ring, no
+   * copies). */
+  recorder?: RecorderOptions;
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
@@ -93,6 +103,8 @@ export interface RenderStreamClient {
   /** Stops the frame loop, closes the connection (1000), aborts in-flight GETs, frees every
    * wasm-bindgen object, loses the WebGL context and drops the instance. Idempotent. */
   dispose(): void;
+  /** REC1: the recording so far (null when the client was built without `recorder`). */
+  recording(): Recording | null;
 }
 
 const pageClock: LoopClock = {
@@ -124,7 +136,9 @@ export function createRenderStreamClient(
     throw new TypeError(
       "render-stream client: an extension that wants item identities needs protocol 13",
     );
-  return new Client(options, endpoint, creditWindow, ext);
+  // REC1: absent the option there is no recorder (and no per-message copy); present, one ring.
+  const recorder = options.recorder ? createRecorder(options.recorder) : null;
+  return new Client(options, endpoint, creditWindow, ext, recorder);
 }
 
 const EMPTY_STATS: RenderStreamStats = Object.freeze({
@@ -153,6 +167,7 @@ class Client implements RenderStreamClient {
     private endpoint: RenderStreamEndpoint,
     private readonly creditWindow: 1 | 2,
     private readonly ext: ExtensionHost | null,
+    private readonly recorder: RenderStreamRecorder | null,
   ) {}
 
   connect(): void {
@@ -218,6 +233,10 @@ class Client implements RenderStreamClient {
   clientToGame(clientX: number, clientY: number): GamePoint | null {
     const p = this.cssToPresentation(clientX, clientY);
     return p === null ? null : this.toGame(p.x, p.y);
+  }
+
+  recording(): Recording | null {
+    return this.recorder?.export() ?? null;
   }
 
   dispose(): void {
@@ -289,6 +308,7 @@ class Client implements RenderStreamClient {
       creditStage: this.o.creditStage,
       applyOn: this.o.applyOn,
       ext: this.ext,
+      recorder: this.recorder,
       onSession: (m) => {
         const v = m.viewport;
         this.presentation = v?.presentation_size ?? v?.logical_size ?? null;
