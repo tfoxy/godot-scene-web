@@ -219,6 +219,9 @@ enum BindId : int {
   kCtexGetSpecularTexture,
   kCtexGetTextureFilter,
   kCtexGetTextureRepeat,
+  // RT-CTX (late-arm runtime CanvasTexture adoption): Object.get(property) -> Variant, the
+  // generic property read a geometry hook's item node uses for its `texture`.
+  kObjectGet,
   kTsmGetPrimaryInterface,
   kTsFontGetSizeCacheList,
   kTsFontGetTextureCount,
@@ -337,6 +340,9 @@ const BindSpec kBinds[kBindCount] = {
     {"CanvasTexture", "get_specular_texture", 3635182373LL},  // -> Texture2D
     {"CanvasTexture", "get_texture_filter", 121960042LL},     // -> CanvasItem.TextureFilter
     {"CanvasTexture", "get_texture_repeat", 2667158319LL},    // -> CanvasItem.TextureRepeat
+    // RT-CTX: Object.get's enum-free Variant read (the same signature hash as
+    // ShaderMaterial.get_shader_parameter; keyed under Object, not ShaderMaterial).
+    {"Object", "get", 2760726917LL},                          // (StringName) -> Variant
     {"TextServerManager", "get_primary_interface", 905850878LL},  // -> TextServer
     {"TextServer", "font_get_size_cache_list", 2684255073LL},     // (RID) -> Array[Vector2i]
     {"TextServer", "font_get_texture_count", 1311001310LL},       // (RID, Vector2i) -> int
@@ -1215,35 +1221,14 @@ rs2::AdoptedContent declared(rs2::AdoptedContent honest) {
   return fault() == AdoptFault::ClaimCurrent ? rs2::AdoptedContent::Current : honest;
 }
 
-void adopt_texture_locked_out(std::uint64_t rid);  // PM9: forward, for the channel textures
+void adopt_texture_locked_out(std::uint64_t rid, std::uint64_t item_rid = 0);  // forward
+void *node_of(std::uint64_t item_rid);  // RT-CTX: forward (defined in the G8m section, below)
 
-// PM9 (late-arm canvas texture adoption): a pre-arm CanvasTexture whose channels are read from its
-// resource (found in the resource cache by the census). The channel textures are adopted through
-// G8r first, then the canvas texture entry is registered.
-bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
-  std::string path;
-  {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
-    const auto it = g_census.canvas_textures.find(rid);
-    if (it == g_census.canvas_textures.end()) {
-      return false;
-    }
-    path = it->second;
-  }
-  void *loader = singleton_object("ResourceLoader");
-  if (loader == nullptr) {
-    return false;
-  }
-  RefSlot res;
-  {
-    OwnedString arg(path);
-    const GDExtensionConstTypePtr args[1] = {arg.data};
-    ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
-  }
-  void *canvas = res.object();
-  if (canvas == nullptr) {
-    return false;
-  }
+// RT-CTX: read a CanvasTexture resource's channels and register the adopted entry, as
+// canvas_texture_create + set_channel + set_filter + set_repeat would have. Shared by the cached
+// `.tres` path (adopt_canvas_texture_locked_out) and the runtime node-map path
+// (adopt_canvas_texture_via_node). `canvas` is the CanvasTexture resource object.
+bool adopt_canvas_texture_resource(void *canvas, std::uint64_t rid) {
   std::uint64_t diffuse = 0;
   std::uint64_t normal = 0;
   std::uint64_t specular = 0;
@@ -1274,7 +1259,70 @@ bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
                                     static_cast<std::int32_t>(repeat));
 }
 
-void adopt_texture_locked_out(std::uint64_t rid) {
+// PM9 (late-arm canvas texture adoption): a pre-arm CanvasTexture whose channels are read from its
+// resource (found in the resource cache by the census). The channel textures are adopted through
+// G8r first, then the canvas texture entry is registered.
+bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
+  std::string path;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    const auto it = g_census.canvas_textures.find(rid);
+    if (it == g_census.canvas_textures.end()) {
+      return false;
+    }
+    path = it->second;
+  }
+  void *loader = singleton_object("ResourceLoader");
+  if (loader == nullptr) {
+    return false;
+  }
+  RefSlot res;
+  {
+    OwnedString arg(path);
+    const GDExtensionConstTypePtr args[1] = {arg.data};
+    ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
+  }
+  void *canvas = res.object();
+  if (canvas == nullptr) {
+    return false;
+  }
+  return adopt_canvas_texture_resource(canvas, rid);
+}
+
+// RT-CTX (late-arm runtime CanvasTexture adoption): a CanvasTexture built in code has no resource
+// path for the census (adopt_canvas_texture_locked_out fails), and the RenderingServer exposes no
+// canvas-texture channel getter, so its channels are read from the drawing item's node: node_of ->
+// Object.get("texture") -> the CanvasTexture resource whose RID is `rid`. Returns false when the
+// item has no node, the node's texture is not this CanvasTexture, or the entry could not register.
+bool adopt_canvas_texture_via_node(std::uint64_t item_rid, std::uint64_t rid) {
+  if (item_rid == 0) {
+    return false;
+  }
+  void *node = node_of(item_rid);
+  if (node == nullptr) {
+    return false;
+  }
+  void *ct_tag = Tags::tag("CanvasTexture");
+  if (ct_tag == nullptr) {
+    return false;
+  }
+  VariantSlot texture;
+  StringName name("texture");
+  const GDExtensionConstTypePtr args[1] = {name.ptr()};
+  ptrcall(kObjectGet, node, args, texture.data);
+  if (texture.type() != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+    return false;
+  }
+  void *canvas = nullptr;
+  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_OBJECT)(&canvas, texture.data);
+  if (canvas == nullptr || as(canvas, ct_tag) == nullptr ||
+      get_rid(kResourceGetRid, canvas) != rid) {
+    return false;
+  }
+  return adopt_canvas_texture_resource(canvas, rid);
+}
+
+void adopt_texture_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
   const std::uint64_t t0 = now_ns();
   const bool main = std::this_thread::get_id() == g_res_main;
   {
@@ -1293,10 +1341,14 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   }
   void *creation_image = creation.object();
   if (creation_image == nullptr) {
-    // PM9: a pre-arm CanvasTexture (texture_2d_get returns no image for one).
+    // A pre-arm CanvasTexture (texture_2d_get returns no image for one): first the cached `.tres`
+    // (PM9), then the runtime node map (RT-CTX).
     bool adopted_canvas = false;
     if (main && adopt_canvas_texture_locked_out(rid)) {
       adopted_canvas = true;
+    }
+    if (main && !adopted_canvas) {
+      adopted_canvas = adopt_canvas_texture_via_node(item_rid, rid);
     }
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (adopted_canvas) {
@@ -1551,7 +1603,7 @@ AdoptResourceStats adopt_resource_stats() {
   return g_res_stats;
 }
 
-void adopt_texture_ref(std::uint64_t rid) {
+void adopt_texture_ref(std::uint64_t rid, std::uint64_t item_rid) {
   if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
       fault() == AdoptFault::NoResources || !mirror_enabled() ||
       mirror_instance().knows_texture(rid)) {
@@ -1569,7 +1621,7 @@ void adopt_texture_ref(std::uint64_t rid) {
     }
   }
   t_res_inside = true;
-  adopt_texture_locked_out(rid);
+  adopt_texture_locked_out(rid, item_rid);
   t_res_inside = false;
 }
 

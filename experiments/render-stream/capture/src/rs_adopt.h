@@ -44,12 +44,18 @@
 //     an oversampled atlas page D7 cannot address);
 //   - a texture whose first reference is a texture_2d_update: that update's own image, `current`,
 //     source `update` (the hooks then apply the update as usual);
+//   - a CanvasTexture (RT-CTX): a cached `.tres` CanvasTexture is adopted from its resource's
+//     getters (diffuse/normal/specular channels, filter, repeat) with origin `adopted`; a
+//     runtime-built CanvasTexture (built in code, no resource path) is read from the drawing
+//     item's node's `texture` (the node map, threaded through adopt_texture_ref's `item_rid`),
+//     its channels first;
 //   - a mesh: mesh_get_surface per surface and mesh_get_custom_aabb, `creation`, source `dummy`.
 //
 // The bytes go through the hooks' own copy path (G8t's host decode, G8kw's worker and hold-back).
 // What cannot be read (texture_2d_get returns no image: a placeholder, a proxy, a RID that is no
-// dummy texture; a RID that is no mesh) stays the hooks' typed `unknown-texture` /
-// `unknown-mesh`, counted once per RID in AdoptResourceStats.
+// dummy texture; a CanvasTexture whose node map has no node or whose node's `texture` is not it;
+// a RID that is no mesh) stays the hooks' typed `unknown-texture` / `unknown-mesh`, counted once
+// per RID in AdoptResourceStats.
 //
 // G8m (gate8-design.md D11, D12, Q5): pre-arm materials and shaders are resolved through the
 // item's node, at arm (every adopted item's material, before the plan is applied, and its
@@ -281,8 +287,11 @@ bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
 
 // Called by a hook before its mirror tap: adopts `rid` if it is non-null, lazy adoption is
-// active and the mirror does not know it. Cheap otherwise (an atomic load).
-void adopt_texture_ref(std::uint64_t rid);
+// active and the mirror does not know it. Cheap otherwise (an atomic load). `item_rid`, non-zero
+// from a geometry hook, names the drawing CanvasItem: when `rid` is a runtime-built CanvasTexture
+// (RT-CTX, below) it is read from that item's node's `texture`, since the RenderingServer has no
+// canvas-texture channel getter.
+void adopt_texture_ref(std::uint64_t rid, std::uint64_t item_rid = 0);
 void adopt_mesh_ref(std::uint64_t rid);
 // PM9 (late-arm multimesh adoption): called by the add_multimesh hook before its mirror tap; adopts
 // `rid` (a multimesh RID) from the RenderingServer's read-backs when lazy adoption is active and the
