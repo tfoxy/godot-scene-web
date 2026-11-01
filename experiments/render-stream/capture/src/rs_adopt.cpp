@@ -207,6 +207,18 @@ enum BindId : int {
   kRsMeshGetSurfaceCount,
   kRsMeshGetSurface,
   kRsMeshGetCustomAabb,
+  // PM9 (late-arm multimesh adoption): the RenderingServer's multimesh read-backs.
+  kRsMultimeshGetInstanceCount,
+  kRsMultimeshGetVisibleInstances,
+  kRsMultimeshGetMesh,
+  kRsMultimeshGetCustomAabb,
+  kRsMultimeshGetBuffer,
+  // PM9 (late-arm canvas texture adoption): the CanvasTexture resource's getters.
+  kCtexGetDiffuseTexture,
+  kCtexGetNormalTexture,
+  kCtexGetSpecularTexture,
+  kCtexGetTextureFilter,
+  kCtexGetTextureRepeat,
   kTsmGetPrimaryInterface,
   kTsFontGetSizeCacheList,
   kTsFontGetTextureCount,
@@ -313,6 +325,18 @@ const BindSpec kBinds[kBindCount] = {
     {"RenderingServer", "mesh_get_surface_count", 2198884583LL},  // (RID) -> int
     {"RenderingServer", "mesh_get_surface", 186674697LL},         // (RID, int) -> Dictionary
     {"RenderingServer", "mesh_get_custom_aabb", 974181306LL},     // (RID) -> AABB
+    // PM9 (late-arm multimesh adoption), every one read-only and const.
+    {"RenderingServer", "multimesh_get_instance_count", 2198884583LL},     // (RID) -> int
+    {"RenderingServer", "multimesh_get_visible_instances", 2198884583LL},  // (RID) -> int
+    {"RenderingServer", "multimesh_get_mesh", 3814569979LL},               // (RID) -> RID
+    {"RenderingServer", "multimesh_get_custom_aabb", 974181306LL},         // (RID) -> AABB
+    {"RenderingServer", "multimesh_get_buffer", 3964669176LL},             // (RID) -> PackedFloat32Array
+    // PM9 (late-arm canvas texture adoption), every one read-only and const.
+    {"CanvasTexture", "get_diffuse_texture", 3635182373LL},   // -> Texture2D
+    {"CanvasTexture", "get_normal_texture", 3635182373LL},    // -> Texture2D
+    {"CanvasTexture", "get_specular_texture", 3635182373LL},  // -> Texture2D
+    {"CanvasTexture", "get_texture_filter", 121960042LL},     // -> CanvasItem.TextureFilter
+    {"CanvasTexture", "get_texture_repeat", 2667158319LL},    // -> CanvasItem.TextureRepeat
     {"TextServerManager", "get_primary_interface", 905850878LL},  // -> TextServer
     {"TextServer", "font_get_size_cache_list", 2684255073LL},     // (RID) -> Array[Vector2i]
     {"TextServer", "font_get_texture_count", 1311001310LL},       // (RID, Vector2i) -> int
@@ -819,6 +843,7 @@ std::mutex g_res_mutex;  // guards the census, the refused sets and the stats
 AdoptResourceStats g_res_stats;
 std::unordered_set<std::uint64_t> g_res_refused_textures;
 std::unordered_set<std::uint64_t> g_res_refused_meshes;
+std::unordered_set<std::uint64_t> g_res_refused_multimeshes;  // PM9
 thread_local bool t_res_inside = false;
 
 // One glyph atlas page the census found (D7): its font cache and index.
@@ -832,6 +857,7 @@ struct Census {
   bool built = false;
   std::vector<FontPage> pages;
   std::unordered_set<std::uint64_t> compressed;  // CompressedTexture2D RIDs in the cache
+  std::unordered_map<std::uint64_t, std::string> canvas_textures;  // PM9: CanvasTexture RID -> path
 };
 Census g_census;
 
@@ -1010,7 +1036,7 @@ bool page_consistent(const ImageShape &c, const ImageShape &i) {
 // The resource-cache walk (D7: ResourceLoader.list_directory + has_cached + get_cached_ref):
 // every Font found contributes its RIDs, every CompressedTexture2D its RID.
 void scan_directory(void *loader, const std::string &dir, int depth, std::vector<std::uint64_t> *fonts,
-                    void *font_tag, void *ctex_tag, std::uint32_t *paths) {
+                    void *font_tag, void *ctex_tag, void *canvas_tag, std::uint32_t *paths) {
   if (depth > 32 || *paths > 200000) {
     return;
   }
@@ -1032,7 +1058,7 @@ void scan_directory(void *loader, const std::string &dir, int depth, std::vector
   for (const std::string &name : names) {
     const std::string path = dir.back() == '/' ? dir + name : dir + "/" + name;
     if (!name.empty() && name.back() == '/') {
-      scan_directory(loader, path, depth + 1, fonts, font_tag, ctex_tag, paths);
+      scan_directory(loader, path, depth + 1, fonts, font_tag, ctex_tag, canvas_tag, paths);
       continue;
     }
     ++*paths;
@@ -1055,6 +1081,9 @@ void scan_directory(void *loader, const std::string &dir, int depth, std::vector
       }
     } else if (g_iface.object_cast_to(object, ctex_tag) != nullptr) {
       g_census.compressed.insert(get_rid(kResourceGetRid, object));
+    } else if (canvas_tag != nullptr && g_iface.object_cast_to(object, canvas_tag) != nullptr) {
+      // PM9: a cached CanvasTexture, by its RID and path (re-fetched at adoption).
+      g_census.canvas_textures[get_rid(kResourceGetRid, object)] = path;
     }
   }
 }
@@ -1098,10 +1127,12 @@ void build_census() {
   if (loader != nullptr) {
     StringName font_name("Font");
     StringName ctex_name("CompressedTexture2D");
+    StringName canvas_name("CanvasTexture");
     void *font_tag = g_iface.classdb_get_class_tag(font_name.ptr());
     void *ctex_tag = g_iface.classdb_get_class_tag(ctex_name.ptr());
+    void *canvas_tag = g_iface.classdb_get_class_tag(canvas_name.ptr());
     if (font_tag != nullptr && ctex_tag != nullptr) {
-      scan_directory(loader, "res://", 0, &fonts, font_tag, ctex_tag, &paths);
+      scan_directory(loader, "res://", 0, &fonts, font_tag, ctex_tag, canvas_tag, &paths);
     }
   }
   std::vector<std::uint64_t> unique;
@@ -1184,8 +1215,74 @@ rs2::AdoptedContent declared(rs2::AdoptedContent honest) {
   return fault() == AdoptFault::ClaimCurrent ? rs2::AdoptedContent::Current : honest;
 }
 
+void adopt_texture_locked_out(std::uint64_t rid);  // PM9: forward, for the channel textures
+
+// PM9 (late-arm canvas texture adoption): a pre-arm CanvasTexture whose channels are read from its
+// resource (found in the resource cache by the census). The channel textures are adopted through
+// G8r first, then the canvas texture entry is registered.
+bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
+  std::string path;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    const auto it = g_census.canvas_textures.find(rid);
+    if (it == g_census.canvas_textures.end()) {
+      return false;
+    }
+    path = it->second;
+  }
+  void *loader = singleton_object("ResourceLoader");
+  if (loader == nullptr) {
+    return false;
+  }
+  RefSlot res;
+  {
+    OwnedString arg(path);
+    const GDExtensionConstTypePtr args[1] = {arg.data};
+    ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
+  }
+  void *canvas = res.object();
+  if (canvas == nullptr) {
+    return false;
+  }
+  std::uint64_t diffuse = 0;
+  std::uint64_t normal = 0;
+  std::uint64_t specular = 0;
+  {
+    RefSlot slot;
+    ptrcall(kCtexGetDiffuseTexture, canvas, nullptr, &slot.slot);
+    if (slot.object() != nullptr) diffuse = get_rid(kResourceGetRid, slot.object());
+  }
+  {
+    RefSlot slot;
+    ptrcall(kCtexGetNormalTexture, canvas, nullptr, &slot.slot);
+    if (slot.object() != nullptr) normal = get_rid(kResourceGetRid, slot.object());
+  }
+  {
+    RefSlot slot;
+    ptrcall(kCtexGetSpecularTexture, canvas, nullptr, &slot.slot);
+    if (slot.object() != nullptr) specular = get_rid(kResourceGetRid, slot.object());
+  }
+  std::int64_t filter = 0;
+  std::int64_t repeat = 0;
+  ptrcall(kCtexGetTextureFilter, canvas, nullptr, &filter);
+  ptrcall(kCtexGetTextureRepeat, canvas, nullptr, &repeat);
+  // The channel textures are adopted first (a canvas texture's diffuse must be a known texture).
+  if (diffuse != 0) adopt_texture_locked_out(diffuse);
+  if (normal != 0) adopt_texture_locked_out(normal);
+  if (specular != 0) adopt_texture_locked_out(specular);
+  return hooks_adopt_canvas_texture(rid, diffuse, normal, specular, static_cast<std::int32_t>(filter),
+                                    static_cast<std::int32_t>(repeat));
+}
+
 void adopt_texture_locked_out(std::uint64_t rid) {
   const std::uint64_t t0 = now_ns();
+  const bool main = std::this_thread::get_id() == g_res_main;
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    if (main && !g_census.built) {
+      build_census();
+    }
+  }
   RefSlot creation;
   {
     void *rs_singleton = singleton_object("RenderingServer");
@@ -1196,19 +1293,20 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   }
   void *creation_image = creation.object();
   if (creation_image == nullptr) {
+    // PM9: a pre-arm CanvasTexture (texture_2d_get returns no image for one).
+    bool adopted_canvas = false;
+    if (main && adopt_canvas_texture_locked_out(rid)) {
+      adopted_canvas = true;
+    }
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (g_res_refused_textures.insert(rid).second) {
+    if (adopted_canvas) {
+      ++g_res_stats.textures;
+      ++g_res_stats.textures_canvas;
+    } else if (g_res_refused_textures.insert(rid).second) {
       ++g_res_stats.textures_refused;
     }
     g_res_stats.lookup_ns += now_ns() - t0;
     return;
-  }
-  const bool main = std::this_thread::get_id() == g_res_main;
-  {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (main && !g_census.built) {
-      build_census();
-    }
   }
   bool compressed = false;
   {
@@ -1487,6 +1585,111 @@ void adopt_mesh_ref(std::uint64_t rid) {
   t_res_inside = true;
   adopt_mesh_locked_out(rid);
   t_res_inside = false;
+}
+
+// PM9 (late-arm multimesh adoption): the multimesh's transform format is not exposed by the
+// RenderingServer, so it is recovered from the per-instance stride of the buffer GLES3 keeps
+// (stride = (3d ? 12 : 8) + 4 x colors + 4 x custom). A canvas_item_add_multimesh is a 2D draw, so
+// the ambiguous strides prefer the 2D interpretation, and colors over custom.
+bool infer_multimesh_format(std::int32_t instances, std::size_t floats, std::int32_t *format,
+                            bool *colors, bool *custom) {
+  *format = 0;
+  *colors = false;
+  *custom = false;
+  if (instances <= 0) {
+    return true;  // an empty multimesh: the format is moot
+  }
+  if (floats % static_cast<std::size_t>(instances) != 0) {
+    return false;
+  }
+  const std::size_t stride = floats / static_cast<std::size_t>(instances);
+  switch (stride) {
+  case 8:
+    return true;  // 2d, no colours, no custom
+  case 12:
+    *colors = true;  // 2d + colours (or 2d + custom, or 3d: prefer 2d + colours)
+    return true;
+  case 16:
+    *colors = true;  // 2d + colours + custom (or 3d + one of them: prefer 2d)
+    *custom = true;
+    return true;
+  case 20:
+    *format = 1;  // 3d + colours + custom
+    *colors = true;
+    *custom = true;
+    return true;
+  default:
+    return false;
+  }
+}
+
+void adopt_multimesh_locked_out(std::uint64_t rid) {
+  const std::uint64_t t0 = now_ns();
+  void *rs_singleton = singleton_object("RenderingServer");
+  if (rs_singleton == nullptr) {
+    return;
+  }
+  const GDExtensionConstTypePtr a1[1] = {&rid};
+  std::int64_t instances = 0;
+  std::int64_t visible = -1;
+  std::uint64_t mesh = 0;
+  float aabb[6] = {};
+  ptrcall(kRsMultimeshGetInstanceCount, rs_singleton, a1, &instances);
+  ptrcall(kRsMultimeshGetVisibleInstances, rs_singleton, a1, &visible);
+  ptrcall(kRsMultimeshGetMesh, rs_singleton, a1, &mesh);
+  ptrcall(kRsMultimeshGetCustomAabb, rs_singleton, a1, aabb);
+  Builtin buffer(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY);
+  ptrcall(kRsMultimeshGetBuffer, rs_singleton, a1, buffer.ptr());
+  std::vector<float> floats;
+  {
+    const std::uint8_t *cow = nullptr;
+    std::memcpy(&cow, buffer.data + 8, sizeof(cow));
+    const std::int64_t count = cowdata_size(cow);
+    if (cow != nullptr && count > 0) {
+      const float *data = reinterpret_cast<const float *>(cow);
+      floats.assign(data, data + count);
+    }
+  }
+  if (instances < 0) {
+    instances = 0;
+  }
+  Mirror::MultimeshAdopt adopt;
+  adopt.instances = static_cast<std::int32_t>(instances);
+  adopt.visible = static_cast<std::int32_t>(visible);
+  adopt.mesh = mesh;
+  adopt.custom_aabb = {aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]};
+  adopt.buffer = std::move(floats);
+  bool ok = infer_multimesh_format(adopt.instances, adopt.buffer.size(), &adopt.format, &adopt.colors,
+                                   &adopt.custom);
+  bool adopted = false;
+  if (ok) {
+    adopt_mesh_ref(mesh);  // G8r: the multimesh's mesh, before the entry links it
+    adopted = hooks_adopt_multimesh(rid, adopt);
+  }
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  if (adopted) {
+    ++g_res_stats.multimeshes;
+  } else {
+    ++g_res_stats.multimeshes_refused;
+  }
+  g_res_stats.lookup_ns += now_ns() - t0;
+}
+
+void adopt_multimesh_ref(std::uint64_t rid) {
+  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
+      fault() == AdoptFault::NoResources || !mirror_enabled() ||
+      mirror_instance().knows_multimesh(rid) || std::this_thread::get_id() != g_res_main) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    if (g_res_refused_multimeshes.count(rid) != 0) {
+      return;
+    }
+  }
+  // No t_res_inside guard here: the mesh read-back (adopt_mesh_ref) needs it clear, and the
+  // multimesh read-backs cannot re-enter another adoption (they call no hooked method).
+  adopt_multimesh_locked_out(rid);
 }
 
 bool adopt_from_update_begin() {

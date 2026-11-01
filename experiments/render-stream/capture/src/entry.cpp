@@ -835,6 +835,7 @@ std::string result_json() {
       json.field("textures", static_cast<int64_t>(r.textures));
       json.field("textures_current", static_cast<int64_t>(r.textures_current));
       json.field("textures_creation", static_cast<int64_t>(r.textures_creation));
+      json.field("textures_canvas", static_cast<int64_t>(r.textures_canvas));
       json.field("atlas_pages", static_cast<int64_t>(r.atlas_pages));
       json.field("compressed", static_cast<int64_t>(r.compressed));
       json.field("from_update", static_cast<int64_t>(r.from_update));
@@ -843,6 +844,8 @@ std::string result_json() {
       json.field("meshes", static_cast<int64_t>(r.meshes));
       json.field("mesh_surfaces", static_cast<int64_t>(r.mesh_surfaces));
       json.field("meshes_refused", static_cast<int64_t>(r.meshes_refused));
+      json.field("multimeshes", static_cast<int64_t>(r.multimeshes));
+      json.field("multimeshes_refused", static_cast<int64_t>(r.multimeshes_refused));
       json.field("fonts", static_cast<int64_t>(r.fonts));
       json.field("cached_compressed", static_cast<int64_t>(r.cached_compressed));
       json.field("cache_paths", static_cast<int64_t>(r.cache_paths));

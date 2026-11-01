@@ -2713,6 +2713,45 @@ Mirror::MultimeshCall Mirror::multimesh_create(std::uint64_t rid, std::uint64_t 
   return out;
 }
 
+// PM9 (late-arm multimesh adoption): an entry from the RenderingServer's read-backs, as the
+// multimesh_* calls would have declared it. An unknown mesh is the entry's usual reason.
+Mirror::MultimeshCall Mirror::multimesh_adopt(std::uint64_t rid, const MultimeshAdopt &a,
+                                              std::uint64_t frame) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  MultimeshCall out;
+  if (!mm_options_.enabled || rid == 0 || multimesh_by_rid_.count(rid) != 0 ||
+      a.instances < 0 || (a.format != 0 && a.format != 1)) {
+    return out;
+  }
+  (void)frame;
+  ++epoch_;
+  Multimesh mm;
+  mm.id = next_multimesh_id_++;
+  mm.rid = rid;
+  mm.adopted = true;
+  mm.instances = a.instances;
+  mm.format = a.format;
+  mm.colors = a.colors;
+  mm.custom = a.custom;
+  mm.indirect = false;
+  mm.visible = std::min(a.visible, a.instances);
+  mm.custom_aabb = a.custom_aabb;
+  mm.mesh_rid = a.mesh;
+  const Mesh *mesh = peek_mesh(a.mesh);
+  mm.unknown_mesh = a.mesh != 0 && mesh == nullptr;
+  mm.mesh_id = mesh != nullptr ? mesh->id : 0;
+  mm.buffer = std::make_shared<std::vector<float>>(a.buffer);
+  mm.too_large = mm.buffer->size() * sizeof(float) > mm_options_.max_payload_bytes;
+  multimesh_by_rid_[rid] = mm.id;
+  out.known = true;
+  out.accepted = true;
+  out.changed = true;
+  out.id = mm.id;
+  out.version = mm.version;
+  multimeshes_.emplace(mm.id, std::move(mm));
+  return out;
+}
+
 Mirror::MultimeshCall Mirror::multimesh_allocate_data(std::uint64_t rid, std::int32_t instances,
                                                       std::int32_t format, bool colors, bool custom,
                                                       bool indirect, std::uint64_t frame) {
@@ -3051,6 +3090,7 @@ MultimeshEntry Mirror::wire_multimesh(const Multimesh &mm) const {
   MultimeshEntry out;
   out.id = mm.id;
   out.version = mm.version;
+  out.origin = mm.adopted ? Origin::Adopted : Origin::Created;  // PM9
   if (mm.freed) {
     out.status = MultimeshStatus::Freed;  // rule 2's tombstone: every other field its default
     return out;
@@ -4092,6 +4132,47 @@ void Mirror::canvas_texture_create(std::uint64_t rid, std::uint64_t frame) {
   texture.status = TextureStatus::Ok;
   texture.version = 1;
   // diffuse/filter/repeat default to {null, default, default} (Texture's own defaults).
+  texture_by_rid_[rid] = texture.id;
+  textures_.emplace(texture.id, std::move(texture));
+}
+
+// PM9 (late-arm canvas texture adoption): one entry from the CanvasTexture resource's getters,
+// as canvas_texture_create + set_channel + set_filter + set_repeat would have declared it.
+void Mirror::canvas_texture_adopt(std::uint64_t rid, std::uint64_t diffuse, std::uint64_t normal,
+                                  std::uint64_t specular, std::int32_t filter, std::int32_t repeat,
+                                  std::uint64_t frame) {
+  (void)frame;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rid == 0 || texture_by_rid_.count(rid) != 0) {
+    return;
+  }
+  ++epoch_;
+  Texture texture;
+  texture.id = next_texture_id_++;
+  texture.rid = rid;
+  texture.kind = TextureKind::Canvas;
+  texture.version = 1;
+  texture.origin = Origin::Adopted;
+  if (diffuse != 0) {
+    const auto it = texture_by_rid_.find(diffuse);
+    texture.has_diffuse = it != texture_by_rid_.end();
+    texture.diffuse_id = it != texture_by_rid_.end() ? it->second : 0;
+    texture.diffuse_unknown = it == texture_by_rid_.end();
+  }
+  texture.normal_set = normal != 0;
+  texture.specular_set = specular != 0;
+  if (filter >= 0 && filter <= static_cast<std::int32_t>(Filter::LinearMipmapsAnisotropic)) {
+    texture.filter = static_cast<Filter>(filter);
+  }
+  if (repeat >= 0 && repeat <= static_cast<std::int32_t>(Repeat::Mirror)) {
+    texture.repeat = static_cast<Repeat>(repeat);
+  }
+  const bool unsupported = texture.normal_set || texture.specular_set || texture.diffuse_unknown;
+  texture.status = unsupported ? TextureStatus::Unsupported : TextureStatus::Ok;
+  texture.has_reason = unsupported;
+  texture.reason = (texture.normal_set || texture.specular_set)
+                       ? TextureReason::CanvasTextureChannel
+                       : TextureReason::UnknownTexture;
   texture_by_rid_[rid] = texture.id;
   textures_.emplace(texture.id, std::move(texture));
 }

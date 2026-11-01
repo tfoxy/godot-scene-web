@@ -510,6 +510,21 @@ class Mirror {
   // version + 1, a `freed` tombstone while an add_multimesh names it, gone otherwise.
   MultimeshCall multimesh_free(std::uint64_t rid, std::uint64_t frame);
   bool knows_multimesh(std::uint64_t rid) const;
+  // PM9 (late-arm multimesh adoption): a multimesh that existed before arm, adopted at its first
+  // add_multimesh from the RenderingServer's read-backs (rs_adopt.cpp adopt_multimesh_ref), as the
+  // multimesh_* calls would have declared it: origin `adopted`, version 1, one buffer serial.
+  // `mesh` is a RID the mirror must already know (an unknown one is the entry's usual reason).
+  struct MultimeshAdopt {
+    std::int32_t instances = 0;
+    std::int32_t format = 0;  // RS::MultimeshTransformFormat (0 2d, 1 3d)
+    bool colors = false;
+    bool custom = false;
+    std::int32_t visible = -1;
+    std::uint64_t mesh = 0;
+    std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    std::vector<float> buffer;
+  };
+  MultimeshCall multimesh_adopt(std::uint64_t rid, const MultimeshAdopt &a, std::uint64_t frame);
   // canvas_item_add_multimesh at /11 (rule 7): {"op":"add_multimesh","multimesh","tex"} (`tex`
   // per D11); a multimesh RID the table does not know becomes an `unsupported` command with
   // `unknown-multimesh`. Bumps content_version like every command. Only when enabled (the hook
@@ -901,6 +916,15 @@ class Mirror {
   // {diffuse: null, filter: default, repeat: default} (identity tap: only
   // omit-op applies).
   void canvas_texture_create(std::uint64_t rid, std::uint64_t frame);
+  // PM9 (late-arm canvas texture adoption): a canvas texture that existed before arm, adopted from
+  // the CanvasTexture resource's getters (rs_adopt.cpp adopt_canvas_texture_ref), as
+  // canvas_texture_create + set_channel + set_filter + set_repeat would have declared it: origin
+  // `adopted`, one entry. `diffuse`/`normal`/`specular` are RIDs the mirror must already know (an
+  // unknown diffuse is the entry's unknown-texture reason; a non-null normal/specular is the
+  // canvas-texture-channel reason).
+  void canvas_texture_adopt(std::uint64_t rid, std::uint64_t diffuse, std::uint64_t normal,
+                            std::uint64_t specular, std::int32_t filter, std::int32_t repeat,
+                            std::uint64_t frame);
   // canvas_texture_set_channel: channel 0 (DIFFUSE) sets/clears `diffuse` to the
   // wire id of a known RID, null for RID(), or an unresolvable non-null RID
   // (reason unknown-texture, D10). Channel 1 (NORMAL) or 2 (SPECULAR) only ever
@@ -1184,6 +1208,7 @@ class Mirror {
     std::uint32_t id = 0;
     std::uint64_t rid = 0;  // 0 once freed (a tombstone)
     bool freed = false;
+    bool adopted = false;  // PM9: adopted at a late arm (origin Adopted)
     std::uint64_t version = 1;
     std::int32_t instances = 0;
     std::int32_t format = 0;  // RS::MultimeshTransformFormat
