@@ -250,6 +250,7 @@ struct AdoptResourceStats {
   std::uint32_t textures = 0;          // adopted textures, every source
   std::uint32_t textures_current = 0;  // ... declared current
   std::uint32_t textures_creation = 0; // ... declared creation
+  std::uint32_t textures_canvas = 0;   // PM9: ... canvas textures (adopted from the resource)
   std::uint32_t atlas_pages = 0;       // ... of which TextServer readbacks
   std::uint32_t compressed = 0;        // ... of which CompressedTexture2D (resource cache)
   std::uint32_t from_update = 0;       // ... of which first met as a texture_2d_update
@@ -258,6 +259,8 @@ struct AdoptResourceStats {
   std::uint32_t meshes = 0;            // adopted meshes (creation)
   std::uint32_t mesh_surfaces = 0;
   std::uint32_t meshes_refused = 0;    // RIDs mesh_get_surface_count could not read
+  std::uint32_t multimeshes = 0;       // PM9: adopted multimeshes (read back from the server)
+  std::uint32_t multimeshes_refused = 0;  // PM9: multimesh RIDs nothing could adopt
   std::uint32_t fonts = 0;             // TextServer font RIDs the census found
   std::uint32_t cached_compressed = 0; // CompressedTexture2D RIDs the census found
   std::uint32_t cache_paths = 0;       // resource paths the census listed
@@ -277,6 +280,10 @@ AdoptResourceStats adopt_resource_stats();
 // active and the mirror does not know it. Cheap otherwise (an atomic load).
 void adopt_texture_ref(std::uint64_t rid);
 void adopt_mesh_ref(std::uint64_t rid);
+// PM9 (late-arm multimesh adoption): called by the add_multimesh hook before its mirror tap; adopts
+// `rid` (a multimesh RID) from the RenderingServer's read-backs when lazy adoption is active and the
+// mirror does not know it. Cheap otherwise (an atomic load).
+void adopt_multimesh_ref(std::uint64_t rid);
 // Called by the texture_2d_update hook for a whole-image update of a RID the mirror does not
 // know: true (and counted as one `current` adoption from an update) when lazy adoption is active
 // and not faulted off; the hook then registers the texture from the update's own image.

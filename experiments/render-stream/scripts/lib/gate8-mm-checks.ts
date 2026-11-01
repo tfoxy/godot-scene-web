@@ -806,6 +806,12 @@ const LEGS = [
   "sabotage-undrawn-multimesh/receiver",
   MM_IGNORE_IDENTITY,
   ...MM_SABOTAGES.map((s) => `sabotage-${s}/receiver-patch`),
+  // PM9: the late-armed captures and receivers.
+  "late/capture",
+  "fault-no-resources/capture",
+  "late/receiver",
+  "late/receiver-patch",
+  "fault-no-resources/receiver",
 ];
 
 // ------------------------------------------------------------------------------ pixels (PM2)
@@ -1128,8 +1134,107 @@ export async function runG8mm(
       ),
     );
   }
+  await runG8mmLate(g, expected, checks, report);
   await runG8mmReceivers(g, expected, checks, report);
   return { checks, report };
+}
+
+/** PM9 (late-arm multimesh adoption): the late-armed captures. The drawn node-backed multimeshes
+ * (every cell but G_HIDDEN and H_FREE) are adopted at their first add_multimesh after the arm; the
+ * fault capture is the pre-PM9 capture (GRC_ADOPT_FAULT=no-resources: nothing adopted). */
+async function runG8mmLate(
+  g: string,
+  expected: G8mmExpected,
+  checks: G8aCheck[],
+  report: G8mmReport,
+): Promise<void> {
+  const dir = (leg: string) => join(g, leg);
+  const ran = (leg: string) => existsSync(join(dir(leg), "exit-code.txt"));
+  const json = async (path: string) => {
+    try {
+      return JSON.parse((await readText(path)) ?? "null") as Record<string, unknown> | null;
+    } catch {
+      return null;
+    }
+  };
+  const adoption = (r: Record<string, unknown> | null): Record<string, number> | null => {
+    const res = ((r?.stream as Record<string, unknown> | undefined)?.gate8 as
+      | Record<string, unknown>
+      | undefined)?.adopt_stats as Record<string, unknown> | undefined;
+    return res && typeof res.resources === "object"
+      ? (res.resources as Record<string, number>)
+      : null;
+  };
+  const trace = async (leg: string) =>
+    traceMultimeshRecording(await readFile(join(dir(leg), "recording.rs11")), 11);
+  const expectedDrawn = Object.values(expected.cells).filter((c) => c.drawn).length;
+  const expectedAdopted = Object.values(expected.cells).filter((c) => c.drawn && !c.freed_at_step).length;
+
+  // mm-late-adopt
+  {
+    const leg = "late/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (!ran(leg)) {
+      problems = ["late/capture did not run"];
+    } else {
+      problems = [];
+      const r = await json(join(dir(leg), "evidence", "result.json"));
+      const res = adoption(r);
+      if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+      else {
+        if (res.multimeshes !== expectedAdopted)
+          problems.push(`adopted ${res.multimeshes} multimeshes, ${expectedAdopted} expected`);
+        if ((res.multimeshes_refused ?? 0) !== 0) problems.push(`refused ${res.multimeshes_refused}`);
+        detail = `adopted ${res.multimeshes} multimeshes (refused ${res.multimeshes_refused})`;
+      }
+      const t = await trace(leg);
+      const last = t.txs.at(-1);
+      const unknown = t.unsupported_add_multimesh["unknown-multimesh"] ?? 0;
+      if (unknown > 0) problems.push(`${unknown} unknown-multimesh add_multimesh over the recording`);
+      const entries = last ? [...last.table.values()] : [];
+      for (const e of entries) {
+        if (e.origin !== "adopted") problems.push(`multimesh ${e.id}: origin ${e.origin}`);
+        if (e.status !== "ok") problems.push(`multimesh ${e.id}: status ${e.status}`);
+      }
+    }
+    checks.push(
+      check(
+        "mm-late-adopt",
+        "PM9: the late capture adopts every drawn pre-arm multimesh at its first add_multimesh (origin adopted, ok), with no unknown-multimesh",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // mm-late-fault
+  {
+    const leg = "fault-no-resources/capture";
+    let problems: string[] | null = null;
+    if (!ran(leg)) {
+      problems = ["fault-no-resources/capture did not run"];
+    } else {
+      problems = [];
+      const r = await json(join(dir(leg), "evidence", "result.json"));
+      const res = adoption(r);
+      if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+      else if ((res.multimeshes ?? 0) !== 0) problems.push(`adopted ${res.multimeshes} multimeshes under the fault`);
+      const t = await trace(leg);
+      const last = t.txs.at(-1);
+      if (last && last.table.size !== 0) problems.push(`last state: ${last.table.size} multimesh entries`);
+      const unknown = t.unsupported_add_multimesh["unknown-multimesh"] ?? 0;
+      if (unknown === 0) problems.push("no unknown-multimesh add_multimesh under the fault");
+      else if (unknown < expectedDrawn) problems.push(`only ${unknown} unknown-multimesh, ${expectedDrawn} drawn cells`);
+    }
+    checks.push(
+      check(
+        "mm-late-fault",
+        "PM9: under GRC_ADOPT_FAULT=no-resources no multimesh is adopted and every drawn cell's add_multimesh is unknown-multimesh (the pre-PM9 capture)",
+        problems,
+      ),
+    );
+  }
 }
 
 /** PM2: the references and the native receivers (the shots by cell, the state dumps). */

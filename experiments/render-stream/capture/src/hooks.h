@@ -135,6 +135,16 @@ void hooks_internal_material(std::vector<std::string> *param_names_out, uint64_t
 bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt);
 void hooks_adopt_particles_subemitter(uint64_t particles, uint64_t subemitter);
 
+// PM9 (late-arm multimesh adoption; rs_adopt.h adopt_multimesh_ref): registers an adopted
+// multimesh (Mirror::multimesh_adopt) with its hook-log line, as multimesh_create would have.
+bool hooks_adopt_multimesh(uint64_t rid, const rs::Mirror::MultimeshAdopt &adopt);
+
+// PM9 (late-arm canvas texture adoption; rs_adopt.h adopt_canvas_texture_ref): registers an
+// adopted canvas texture (Mirror::canvas_texture_adopt) with its hook-log line, as
+// canvas_texture_create + set_channel would have.
+bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
+                                int32_t filter, int32_t repeat);
+
 // Serialised counters and captured values.
 std::string hooks_counters_json(uint64_t frames_total, uint64_t frames_armed);
 

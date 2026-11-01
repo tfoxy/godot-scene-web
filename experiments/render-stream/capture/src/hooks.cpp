@@ -2348,6 +2348,7 @@ void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
   if (g_multimesh_hooked) {
     // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
     // becomes `unsupported`/`unknown-multimesh`).
+    rs::adopt_multimesh_ref(mesh.id);  // PM9: a pre-arm multimesh, adopted at first reference
     rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
     if (streaming()) {
       mirror().add_multimesh(item.id, mesh.id, texture.id, current_frame());
@@ -4970,6 +4971,46 @@ void hooks_internal_end() {
 void hooks_internal_material(std::vector<std::string> *param_names_out, uint64_t *shader_out) {
   t_internal_param_names = param_names_out;
   t_internal_shader = shader_out;
+}
+
+bool hooks_adopt_multimesh(uint64_t rid, const rs::Mirror::MultimeshAdopt &adopt) {
+  if (rid == 0 || !streaming()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  const rs::Mirror::MultimeshCall r = mirror().multimesh_adopt(rid, adopt, current_frame());
+  if (!r.known) {
+    return false;
+  }
+  if (resources().active()) {
+    rs::MultimeshArgs args;
+    args.i64("instances", static_cast<int64_t>(adopt.instances));
+    args.i64("format", static_cast<int64_t>(adopt.format));
+    args.boolean("colors", adopt.colors);
+    args.boolean("custom", adopt.custom);
+    args.i64("visible", static_cast<int64_t>(adopt.visible));
+    args.rid("mesh", adopt.mesh);
+    resources().multimesh_call(tap_context(), "multimesh_adopt", rid, r.id, r.accepted, r.version,
+                               args, false);
+  }
+  return true;
+}
+
+bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
+                                int32_t filter, int32_t repeat) {
+  if (rid == 0 || !streaming() || !resources().active()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> order(g_texture_order);
+  if (mirror().knows_texture(rid)) {
+    return false;
+  }
+  mirror().canvas_texture_adopt(rid, diffuse, normal, specular, filter, repeat, current_frame());
+  resources().canvas_texture_create(tap_context(), rid, false);
+  resources().canvas_texture_set_channel(tap_context(), rid, 0, diffuse, false);
+  if (normal != 0) resources().canvas_texture_set_channel(tap_context(), rid, 1, normal, false);
+  if (specular != 0) resources().canvas_texture_set_channel(tap_context(), rid, 2, specular, false);
+  return true;
 }
 
 bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &adopt) {

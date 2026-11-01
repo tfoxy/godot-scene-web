@@ -927,6 +927,13 @@ G8MM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-mm"
 # cell is live by then, and steps 1 and 2 (frames 20 and 40) fall either side of it.
 G8MM_SABOTAGE_FRAME=30
 G8MM_SABOTAGES=(perturb-instance stale-buffer)
+# PM9 (late-arm multimesh adoption): the late arm (fixtures/gate8-mm/loader.gd RS_FIXTURE_ARM=late
+# at frame 12, after every multimesh and draw exists), adopted under GRC_ADOPT=arm;
+# GRC_UNKNOWN_ITEM=skip as every late gate 8 leg. GRC_ADOPT_FAULT=no-resources is the pre-PM9
+# capture (nothing adopted lazily: every add_multimesh unknown-multimesh).
+G8MM_LATE_ENV=(GRC_STREAM_VERSION=11 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=12 \
+	GRC_UNKNOWN_ITEM=skip)
+G8MM_ONLY_LATE="${G8MM_ONLY_LATE:-0}"
 
 run_import_g8mm() {
 	echo "run-gate8: g8mm import (fixture, receiver)"
@@ -976,6 +983,31 @@ for l in open(sys.argv[1]):
 	echo "$out"
 }
 
+# run_g8mm_late (PM9): the late-armed captures and their native receivers, in g8mm's gamescope.
+# The fault capture is the pre-PM9 capture: nothing adopted, every add_multimesh unknown-multimesh.
+run_g8mm_late() {
+	echo "run-gate8: g8mm late/capture (/11, armed at frame 12, GRC_ADOPT=arm: multimeshes adopted)"
+	run_capture_rendered_g8mm "$OUT/g8mm/late/capture" "${G8MM_LATE_ENV[@]}"
+	echo "run-gate8: g8mm fault-no-resources/capture (late, GRC_ADOPT_FAULT=no-resources)"
+	run_capture_rendered_g8mm "$OUT/g8mm/fault-no-resources/capture" "${G8MM_LATE_ENV[@]}" \
+		GRC_ADOPT_FAULT=no-resources
+	legs_par_begin
+	local cap leg extra
+	for leg in late/receiver late/receiver-patch fault-no-resources/receiver; do
+		cap="$OUT/g8mm/${leg%%/*}/capture"
+		extra=""
+		[ -f "$cap/steps.jsonl" ] && extra="$(g8mm_prev_seqs "$cap")"
+		echo "run-gate8: g8mm $leg (native, /11)"
+		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=11)
+		RECEIVER_EXTRA_SHOTS="$extra"
+		[ "${leg##*/}" = receiver-patch ] && RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+		RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+		run_rendered_receiver "$cap" "$OUT/g8mm/$leg"
+	done
+	legs_par_end
+	RENDERED_EXTRA_ARGS=()
+}
+
 run_g8mm() {
 	run_import_g8mm
 	# The checker validates every recording through rs-core-check too (incremental, a no-op when
@@ -990,6 +1022,24 @@ run_g8mm() {
 	gs_start 640 360 "$OUT/gamescope-g8mm"
 	RECORDING_NAME=recording.rs11
 	PATCH_RECORDING_NAME=recording-patch.rs11
+	if [ "$G8MM_ONLY_LATE" = 1 ]; then
+		local r
+		for r in reference; do
+			echo "run-gate8: g8mm $r (unarmed, rendered at 640x360, --fixed-fps 60)"
+			mkdir -p "$OUT/g8mm/$r/shots" "$OUT/g8mm/$r/xdg-data"
+			LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8mm/$r/shots" RS_FIXTURE_STEP_LOG="$OUT/g8mm/$r/steps.jsonl"
+				XDG_DATA_HOME="$OUT/g8mm/$r/xdg-data")
+			RENDERED_EXTRA_ARGS=(--fixed-fps 60)
+			run_rendered "$OUT/g8mm/$r" "$G8MM_FIXTURE_DIR"
+		done
+		run_g8mm_late
+		rm -rf "$OUT/g8mm/reference/xdg-data"
+		gs_teardown "$OUT/gamescope-g8mm"
+		GS_RUN_DIR=""
+		RECORDING_NAME=recording.rs8
+		PATCH_RECORDING_NAME=recording-patch.rs8
+		return 0
+	fi
 	echo "run-gate8: g8mm capture (/11, armed at birth, rendered, --fixed-fps 60)"
 	run_capture_rendered_g8mm "$OUT/g8mm/capture" GRC_STREAM_VERSION=11
 	local s
@@ -1043,6 +1093,8 @@ run_g8mm() {
 		run_rendered_receiver "$OUT/g8mm/sabotage-$s/capture" "$OUT/g8mm/sabotage-$s/receiver-patch"
 	done
 	legs_par_end
+	# PM9: the late-armed captures and their native receivers.
+	run_g8mm_late
 	rm -rf "$OUT/g8mm/reference/xdg-data" "$OUT/g8mm/reference-repeat/xdg-data"
 	gs_teardown "$OUT/gamescope-g8mm"
 	GS_RUN_DIR=""

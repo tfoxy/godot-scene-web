@@ -391,6 +391,11 @@ void hooks_adopt_instance_param(uint64_t, const std::string &, const void *) {}
 void hooks_internal_material(std::vector<std::string> *, uint64_t *) {}
 bool hooks_adopt_particles(uint64_t, const rs::Mirror::ParticlesAdopt &) { return false; }
 void hooks_adopt_particles_subemitter(uint64_t, uint64_t) {}
+// PM9: the multimesh and canvas texture paths' hooks (likewise never reached).
+bool hooks_adopt_multimesh(uint64_t, const rs::Mirror::MultimeshAdopt &) { return false; }
+bool hooks_adopt_canvas_texture(uint64_t, uint64_t, uint64_t, uint64_t, int32_t, int32_t) {
+  return false;
+}
 }  // namespace grc
 namespace {
 
