@@ -33,6 +33,7 @@ import type { RenderStreamEndpoint } from "./endpoint";
 import type { ExtensionHost } from "./extensions";
 import { type FetchResult, LiveFetcher } from "./fetcher";
 import { clientHello } from "./hello";
+import type { RenderStreamRecorder } from "./recorder";
 import type {
   RenderStreamTransport,
   RenderStreamTransportFactory,
@@ -107,6 +108,8 @@ export interface LoopOptions {
   ext?: ExtensionHost | null;
   /** INP1: the session record, once per session (the client keeps its presentation size). */
   onSession?: (session: SessionMeta) => void;
+  /** REC1: the recorder (null: the pure client copies nothing). */
+  recorder?: RenderStreamRecorder | null;
 }
 
 /** PH3: the ack the host's credit waits on (render-stream-1.md hello `credit_stage`). */
@@ -208,11 +211,13 @@ export class StreamLoop {
 
   private readonly creditStage: CreditStage;
   private readonly ext: ExtensionHost | null;
+  private readonly recorder: RenderStreamRecorder | null;
 
   constructor(private readonly o: LoopOptions) {
     this.endpoint = o.endpoint;
     this.creditStage = o.creditStage ?? DEFAULT_CREDIT_STAGE;
     this.ext = o.ext ?? null;
+    this.recorder = o.recorder ?? null;
   }
 
   // ----------------------------------------------------------------------- public
@@ -407,7 +412,19 @@ export class StreamLoop {
   }
 
   private onBinary(conn: Connection, buf: ArrayBuffer): void {
-    const m = this.o.core.receive(buf, conn.sessionSeen);
+    const rec = this.recorder;
+    const m = this.o.core.receive(buf, conn.sessionSeen, rec !== null);
+    if (rec) {
+      // REC1: the decoded record, in receipt order (the session carries the magic). `held` and
+      // `coding-resync` are not records: nothing to record.
+      const bytes = this.o.core.takeDecoded() as Uint8Array;
+      if (m.kind === "session") rec.session(bytes);
+      else if (m.kind === "transaction")
+        rec.record(bytes, "transaction", m.full, m.seq);
+      else if (m.kind === "resource") rec.record(bytes, "resource", false, 0);
+      else if (m.kind === "item_meta") rec.record(bytes, "item_meta", false, 0);
+      else if (m.kind === "end") rec.record(bytes, "end", false, 0);
+    }
     switch (m.kind) {
       case "item_meta":
         // TAG2: identities for the extensions, at receipt (no ext: skipped, as before).
@@ -785,6 +802,8 @@ export class StreamLoop {
   /** G7o2: a 200 body in its fetch completion (between frames): verified and decoded by wasm. */
   private stageFetched(r: FetchResult): void {
     if (this.phase === "disposed" || r.data === null) return;
+    // REC1: the recorder keeps the fetched body (before wasm takes ownership and it is dropped).
+    this.recorder?.resource(r.hash, r.data);
     r.stage_error = this.o.core.stage(r.hash, r.data);
     r.data = null; // in wasm now
   }

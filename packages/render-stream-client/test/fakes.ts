@@ -44,14 +44,30 @@ export class FakeCore implements StreamCore {
   missing: string[] = [];
   redrawResult: "ok" | "lost" = "ok";
   disposed = 0;
+  /** REC1: how many `receive` calls asked for a decoded copy (the pure client must be 0). */
+  copyDecoded = 0;
+  private decoded: Uint8Array | null = null;
   beginConnection(): void {
     this.calls.push("begin");
   }
-  receive(data: ArrayBuffer, sessionSeen: boolean): CoreMessage {
+  receive(
+    data: ArrayBuffer,
+    sessionSeen: boolean,
+    copyDecoded = false,
+  ): CoreMessage {
+    if (copyDecoded) {
+      this.copyDecoded++;
+      this.decoded = new Uint8Array(data);
+    } else {
+      this.decoded = null;
+    }
     const m = JSON.parse(new TextDecoder().decode(data)) as CoreMessage;
     if (!sessionSeen && m.kind !== "session")
       throw new Error("first message is not a session");
     return m;
+  }
+  takeDecoded(): Uint8Array | null {
+    return this.decoded;
   }
   transportSkip(): void {
     this.calls.push("transport_skip");
@@ -214,7 +230,7 @@ export const ENDPOINT: RenderStreamEndpoint = {
 
 export function harness(
   creditWindow: 1 | 2 = 2,
-  pacing: Pick<LoopOptions, "creditStage" | "applyOn" | "ext"> = {},
+  pacing: Pick<LoopOptions, "creditStage" | "applyOn" | "ext" | "recorder"> = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,
 ) {

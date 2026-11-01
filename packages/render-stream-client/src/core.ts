@@ -80,8 +80,16 @@ export interface StreamCore {
   /** A fresh connection: a fresh live-coding decoder (W11c: one per connection). */
   beginConnection(): void;
   /** One binary message: decoded (W11t), then the session (a connection's first) or one record.
-   * Throws `StreamFailure`. */
-  receive(data: ArrayBuffer, sessionSeen: boolean): CoreMessage;
+   * Throws `StreamFailure`. `copyDecoded` (REC1, only when a recorder is on) copies the decoded
+   * bytes out of wasm so `takeDecoded` can hand them to the recorder. */
+  receive(
+    data: ArrayBuffer,
+    sessionSeen: boolean,
+    copyDecoded?: boolean,
+  ): CoreMessage;
+  /** REC1: a copy of the last decoded message's bytes (`receive` with `copyDecoded` true), or
+   * null. The pure client never asks, so it never copies. */
+  takeDecoded(): Uint8Array | null;
   /** GTS: the coding skipped transactions; the next full may jump the seq. */
   transportSkip(): void;
   /** A fresh applier over the whole resolved state (inheriting the GPU residency, GRH); returns
@@ -132,6 +140,8 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
   private lastAcceptedSeq = 0;
   private statsView: Uint32Array | null = null;
   private disposed = false;
+  /** REC1: the decoded bytes of the last `receive`, only when `copyDecoded` asked. */
+  private decoded: Uint8Array | null = null;
 
   constructor(
     private readonly mod: GswRsModule,
@@ -151,12 +161,13 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.lastAcceptedSeq = 0;
   }
 
-  receive(data: ArrayBuffer, sessionSeen: boolean): CoreMessage {
+  receive(data: ArrayBuffer, sessionSeen: boolean, copyDecoded = false): CoreMessage {
     const g = this.g;
     let len = data.byteLength;
     // Q14c step 1: one copy into wasm's receive buffer (the pointer after rx(), which may grow).
     const p = g.rx(len);
     new Uint8Array(this.memory.buffer, p, len).set(new Uint8Array(data));
+    this.decoded = null;
     if (this.coding !== null) {
       const n = this.coding.decode_rx(g, len);
       if (n === 0) return { kind: "held" };
@@ -167,6 +178,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
         return { kind: "coding-resync", seq, error };
       }
       len = n;
+    }
+    // REC1: a recorder copies the decoded record out of wasm (decode may have grown rx, so read
+    // the pointer again). The pure client passes `copyDecoded` false and copies nothing.
+    if (copyDecoded) {
+      this.decoded = new Uint8Array(this.memory.buffer, g.rx_ptr(), len).slice();
     }
     if (!sessionSeen) {
       this.particles = new GswParticles();
@@ -280,6 +296,12 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
 
   heapBytes(): number {
     return this.disposed ? 0 : this.memory.buffer.byteLength;
+  }
+
+  // REC1: the recorder's one copy per received message, made only when asked (`copyDecoded`).
+
+  takeDecoded(): Uint8Array | null {
+    return this.decoded;
   }
 
   // TAG2: the extension host's calls (never made by a client with no extension).

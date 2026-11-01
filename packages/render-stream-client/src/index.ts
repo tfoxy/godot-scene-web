@@ -42,6 +42,13 @@ export {
   type RenderStreamStatus,
 } from "./loop";
 export {
+  createRecorder,
+  type Recording,
+  type RecordKind,
+  type RecorderOptions,
+  type RenderStreamRecorder,
+} from "./recorder";
+export {
   computeSpreadItem,
   containerHAlignFactor,
   createSpreadExtension,
