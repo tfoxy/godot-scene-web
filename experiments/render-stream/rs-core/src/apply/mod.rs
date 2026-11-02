@@ -4101,6 +4101,8 @@ mod window_tests;
 mod w11c_tests;
 #[cfg(test)]
 mod override_tests;
+#[cfg(test)]
+mod gap2_rx_tests;
 
 /// G8kp: one texture's upload: RGBA8 pixels, or a `block` variant's level 0 in a format the list
 /// carries (texture-delivery-design.md Q6 "GSW"). A block format the list cannot carry would have

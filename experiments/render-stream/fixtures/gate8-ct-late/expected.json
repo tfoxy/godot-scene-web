@@ -10,5 +10,6 @@
     "MESH": [232, 40, 295, 103]
   },
   "cells": ["SPRITE", "TRECT", "MESH"],
-  "clear_color": [51, 51, 102]
+  "clear_color": [51, 51, 102],
+  "checkpoints": [{ "step": 0, "settle": 17 }]
 }

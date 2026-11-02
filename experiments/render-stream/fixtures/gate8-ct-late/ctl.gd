@@ -16,11 +16,14 @@ extends Node
 ## recording (armed at 12) holds the adopted canvas textures and every post-arm draw.
 
 const SIZE: int = 16
+const CHECKPOINTS: Array[Array] = [[1, 17]]
 const QUIT_DEFAULT: int = 30
 
 var _frame: int = 0
 var _quit_frame: int = QUIT_DEFAULT
 var _failed: bool = false
+var _shot_dir: String = ""
+var _step_log_file: FileAccess
 
 
 func _ready() -> void:
@@ -64,6 +67,13 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	for k: int in range(CHECKPOINTS.size()):
+		var applied: int = CHECKPOINTS[k][0]
+		var settle: int = CHECKPOINTS[k][1]
+		if _frame == applied:
+			_log_step(k, applied, settle)
+		if _frame == settle:
+			_maybe_take_shot("step-%d.png" % k)
 	if _frame >= _quit_frame:
 		print("[fixture] quitting frame=%d" % _frame)
 		get_tree().quit(0)
@@ -103,8 +113,49 @@ func _read_environment() -> bool:
 			_error("RS_FIXTURE_QUIT_FRAME must be an integer >= %d (got %s)" % [QUIT_DEFAULT, JSON.stringify(text)])
 			return false
 		_quit_frame = text.to_int()
+	var step_log: String = _path_env("RS_FIXTURE_STEP_LOG")
+	_shot_dir = _path_env("RS_FIXTURE_SHOT_DIR")
+	if step_log == "!" or _shot_dir == "!":
+		return false
+	if step_log != "":
+		_step_log_file = FileAccess.open(step_log, FileAccess.WRITE)
+		if _step_log_file == null:
+			_error("cannot open RS_FIXTURE_STEP_LOG=%s" % step_log)
+			return false
 	return true
+
+
+## "" when unset, "!" when set but not absolute.
+func _path_env(name: String) -> String:
+	if not OS.has_environment(name):
+		return ""
+	var text: String = OS.get_environment(name)
+	if not text.is_absolute_path():
+		_error("%s must be an absolute path (got %s)" % [name, JSON.stringify(text)])
+		return "!"
+	return text
 
 
 func _error(text: String) -> void:
 	printerr("[fixture] error: " + text)
+
+
+func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
+	if _step_log_file == null:
+		return
+	_step_log_file.store_line("{\"step\":%d,\"applied_frame\":%d,\"settle_frame\":%d}" % [step, applied_frame, settle_frame])
+	_step_log_file.flush()
+
+
+## Rendered runs only: headless has no draw path, so frame_post_draw never fires there.
+func _maybe_take_shot(file_name: String) -> void:
+	if _shot_dir == "":
+		return
+	if DisplayServer.get_name() == "headless":
+		print("[fixture] shot skipped (headless)")
+		return
+	var out_path: String = _shot_dir.path_join(file_name)
+	await RenderingServer.frame_post_draw
+	var image: Image = get_viewport().get_texture().get_image()
+	var err: Error = image.save_png(out_path)
+	print("[fixture] shot saved=%s err=%d" % [out_path, err])

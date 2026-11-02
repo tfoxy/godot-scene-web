@@ -1,20 +1,33 @@
-// Gate 8 g8ctl checks (RT-CTX, results/p3/late-arm.md "Deferred"): a runtime-built CanvasTexture
-// (built in code, no .tres) adopted at a late arm from the drawing item's node's `texture` (the
-// node map), since the RenderingServer has no canvas-texture channel getter. The fixture is
-// fixtures/gate8-ct-late; the check is capture-only, judged on result.json's
-// stream.gate8.adopt_stats.resources and the recording's resolved texture table.
+// Gate 8 g8ctl checks (RT-CTX, results/p3/late-arm.md "Deferred"; GAP2-RX, results/p3/gap2-rx.md):
+// a runtime-built CanvasTexture (built in code, no .tres) adopted at a late arm from the drawing
+// item's node's `texture` (the node map), since the RenderingServer has no canvas-texture channel
+// getter. The fixture is fixtures/gate8-ct-late. RT-CTX judged the capture only; GAP2-RX adds the
+// receiver side: the adopted CanvasTexture's diffuse must be made resident and drawn, exactly as
+// P3-CT's g8c proved for an arm-at-init CanvasTexture.
 //
-//   ctl-legs       every leg that ran exited 0
-//   ct-late-adopt  the late capture adopts every runtime CanvasTexture from the node map (origin
-//                  adopted, status ok, diffuse an ok image), nothing refused, no unknown-texture
-//   ct-late-fault  under GRC_ADOPT_FAULT=no-resources nothing is adopted and the draws through a
-//                  CanvasTexture stay unknown-texture (the pre-RT-CTX capture)
+//   ctl-legs                every leg that ran exited 0
+//   ct-late-adopt           the late capture adopts every runtime CanvasTexture from the node map
+//                           (origin adopted, status ok, diffuse an ok image), nothing refused, no
+//                           unknown-texture
+//   ct-late-fault           under GRC_ADOPT_FAULT=no-resources nothing is adopted and the draws
+//                           through a CanvasTexture stay unknown-texture (the pre-RT-CTX capture)
+//   ct-late-diffuse-uploaded  each receiver makes every adopted canvas texture's diffuse resident
+//                           (an image upload), although no command names the diffuse itself
+//   ct-late-reference       each receiver equals the unarmed reference exactly at every checkpoint
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { check, exitCode, loadRecording, readJson, skipped, type G8aCheck } from "./gate8-adopt-checks";
+import {
+  check,
+  exitCode,
+  loadRecording,
+  readJson,
+  shotDiff,
+  skipped,
+  type G8aCheck,
+} from "./gate8-adopt-checks";
 import { type ResolvedRecording, validateRecording } from "./render-stream-2";
 
 export interface G8ctlExpected {
@@ -25,13 +38,26 @@ export interface G8ctlExpected {
   regions: Record<string, [number, number, number, number]>;
   cells: string[];
   clear_color: [number, number, number];
+  checkpoints: { step: number; settle: number }[];
 }
 
 export interface G8ctlReport {
   legs: Record<string, unknown>;
+  pixels: Record<string, { step: number; differing: number }[]>;
+  diffuses: number[] | null;
 }
 
-const LEGS = ["import/fixture", "late/capture", "fault-no-resources/capture"];
+const LEGS = [
+  "import/fixture",
+  "import/receiver",
+  "reference",
+  "late/capture",
+  "fault-no-resources/capture",
+  "late/receiver",
+  "late/receiver-patch",
+];
+
+const RECEIVERS = ["late/receiver", "late/receiver-patch"];
 
 interface CaptureResult {
   stream?: {
@@ -73,13 +99,33 @@ async function validateSinkProblems(legDir: string): Promise<string[]> {
   return problems;
 }
 
+/** The adopted `ok` canvas textures' diffuse ids in the last state of the capture. */
+function adoptedDiffuses(rec: ResolvedRecording): number[] {
+  const last = rec.transactions.at(-1);
+  if (!last) return [];
+  const byId = new Map(last.state.textures.map((x) => [x.id, x]));
+  const out: number[] = [];
+  for (const c of last.state.textures) {
+    if (c.kind !== "canvas" || c.origin !== "adopted" || c.status !== "ok") continue;
+    const d = c.canvas?.diffuse;
+    const img = d == null ? undefined : byId.get(d);
+    if (d != null && img && img.kind === "image" && img.status === "ok") out.push(d);
+  }
+  return out;
+}
+
+interface UploadRow {
+  id: number;
+  op: string;
+}
+
 export async function runG8ctl(
   out: string,
   expected: G8ctlExpected,
 ): Promise<{ checks: G8aCheck[]; report: G8ctlReport }> {
   const g = join(out, "g8ctl");
   const checks: G8aCheck[] = [];
-  const report: G8ctlReport = { legs: {} };
+  const report: G8ctlReport = { legs: {}, pixels: {}, diffuses: null };
   const dir = (leg: string) => join(g, leg);
   const ran = (leg: string) => existsSync(join(dir(leg), "exit-code.txt"));
   const result = async (leg: string) =>
@@ -179,6 +225,67 @@ export async function runG8ctl(
       check(
         "ct-late-fault",
         "RT-CTX: under GRC_ADOPT_FAULT=no-resources no CanvasTexture is adopted and the draws through one stay unknown-texture (the pre-RT-CTX capture)",
+        problems,
+      ),
+    );
+  }
+
+  // --- GAP2-RX: the receiver side ----------------------------------------------------------------
+  const cap = await loadRecording(dir("late/capture"), 8);
+  const diffuses = cap.rec ? adoptedDiffuses(cap.rec) : [];
+  report.diffuses = diffuses.length > 0 ? diffuses : null;
+
+  // ct-late-diffuse-uploaded
+  {
+    let problems: string[] | null = [];
+    for (const l of RECEIVERS) {
+      if (!ran(l)) {
+        problems = null;
+        break;
+      }
+      const applied = await readJson<{ uploads?: UploadRow[] }>(join(dir(l), "applied.json"));
+      if (!applied?.uploads) {
+        problems.push(`${l}: no uploads[] in applied.json`);
+        continue;
+      }
+      for (const d of diffuses)
+        if (!applied.uploads.some((u) => u.id === d && (u.op === "create" || u.op === "replace")))
+          problems.push(`${l}: diffuse ${d} never uploaded`);
+    }
+    checks.push(
+      check(
+        "ct-late-diffuse-uploaded",
+        "each receiver makes every adopted canvas texture's diffuse resident (an image upload), although no command names the diffuse itself: an adopted canvas texture names its diffuse",
+        problems,
+        `${diffuses.length} diffuses`,
+      ),
+    );
+  }
+
+  // ct-late-reference
+  {
+    let problems: string[] | null = [];
+    for (const l of RECEIVERS) {
+      if (!ran(l) || !ran("reference")) {
+        problems = null;
+        break;
+      }
+      report.pixels[l] = [];
+      for (const c of expected.checkpoints) {
+        const d = await shotDiff(join(dir(l)), join(dir("reference")), c.step);
+        if (!d.present) {
+          problems.push(`${l} step ${c.step}: shot missing`);
+          continue;
+        }
+        if (d.differing > 0)
+          problems.push(`${l} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`);
+        report.pixels[l].push({ step: c.step, differing: d.differing });
+      }
+    }
+    checks.push(
+      check(
+        "ct-late-reference",
+        "each receiver (full and patch sinks) equals the unarmed reference exactly at every checkpoint: the adopted canvas textures draw their diffuses, not Godot's white default",
         problems,
       ),
     );

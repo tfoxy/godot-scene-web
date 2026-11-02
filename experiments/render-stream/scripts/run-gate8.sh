@@ -846,9 +846,10 @@ G8CTL_LATE_ENV=(GRC_STREAM_VERSION=8 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTUR
 	GRC_UNKNOWN_ITEM=skip)
 
 run_import_g8ctl() {
-	echo "run-gate8: g8ctl import (fixture)"
+	echo "run-gate8: g8ctl import (fixture, receiver)"
 	LEG_ENV=()
 	run_headless "$OUT/g8ctl/import/fixture" none -- mise exec -- godot --headless --path "$G8CTL_FIXTURE_DIR" --import
+	run_headless "$OUT/g8ctl/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
 	[ -f "$OUT/g8ctl/import/fixture/skipped-by-tier.txt" ] && return 0
 	if [ "$(cat "$OUT/g8ctl/import/fixture/exit-code.txt")" != "0" ]; then
 		echo "run-gate8: g8ctl import (fixture) failed, see $OUT/g8ctl/import/fixture/stdout.log" >&2
@@ -857,15 +858,16 @@ run_import_g8ctl() {
 }
 
 # run_capture_rendered_g8ctl <dir> <env word...>: an armed /8 capture on the rendered host (the
-# private gamescope): both sinks, the store and the evidence.
+# private gamescope): both sinks, the store, the step log and the fixture's own shots.
 run_capture_rendered_g8ctl() {
 	local dir="$1"
 	shift
-	mkdir -p "$dir/evidence" "$dir/store"
+	mkdir -p "$dir/evidence" "$dir/store" "$dir/shots"
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm "$@"
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
 		GRC_STREAM_PATCH_OUT="$dir/$PATCH_RECORDING_NAME" GRC_RESOURCE_STORE_DIR="$dir/store"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_SHOT_DIR="$dir/shots"
 	)
 	run_rendered "$dir" "$G8CTL_FIXTURE_DIR"
 }
@@ -876,11 +878,19 @@ run_g8ctl() {
 	gs_start 640 360 "$OUT/gamescope-g8ctl"
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
+	echo "run-gate8: g8ctl reference (unarmed, rendered at 640x360)"
+	mkdir -p "$OUT/g8ctl/reference/shots"
+	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8ctl/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8ctl/reference/steps.jsonl")
+	run_rendered "$OUT/g8ctl/reference" "$G8CTL_FIXTURE_DIR"
 	echo "run-gate8: g8ctl late/capture (/8, armed at frame 12, GRC_ADOPT=arm: CanvasTextures adopted from the node map)"
 	run_capture_rendered_g8ctl "$OUT/g8ctl/late/capture" "${G8CTL_LATE_ENV[@]}"
 	echo "run-gate8: g8ctl fault-no-resources/capture (late, GRC_ADOPT_FAULT=no-resources)"
 	run_capture_rendered_g8ctl "$OUT/g8ctl/fault-no-resources/capture" "${G8CTL_LATE_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-resources
+	echo "run-gate8: g8ctl receivers (full and patch sinks)"
+	run_rendered_receiver "$OUT/g8ctl/late/capture" "$OUT/g8ctl/late/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8ctl/late/capture" "$OUT/g8ctl/late/receiver-patch"
 	gs_teardown "$OUT/gamescope-g8ctl"
 	GS_RUN_DIR=""
 }
