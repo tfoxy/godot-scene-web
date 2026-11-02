@@ -396,6 +396,9 @@ bool hooks_adopt_multimesh(uint64_t, const rs::Mirror::MultimeshAdopt &) { retur
 bool hooks_adopt_canvas_texture(uint64_t, uint64_t, uint64_t, uint64_t, int32_t, int32_t) {
   return false;
 }
+// LATE-RES: the node_added adoption stamps its taps with the hook frame; the engine side never
+// runs here.
+uint64_t hooks_current_frame() { return 1; }
 }  // namespace grc
 namespace {
 

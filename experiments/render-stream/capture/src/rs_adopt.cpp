@@ -160,6 +160,7 @@ enum BindId : int {
   kNodeGetChildCount,
   kNodeGetChild,
   kNodeGetIndex,
+  kNodeGetParent,
   kNodeGetViewport,
   kObjectGetInstanceId,
   kViewportGetViewportRid,
@@ -281,6 +282,7 @@ const BindSpec kBinds[kBindCount] = {
     {"Node", "get_child_count", 894402480LL},     // (bool include_internal) -> int
     {"Node", "get_child", 541253412LL},           // (int idx, bool include_internal) -> Node
     {"Node", "get_index", 894402480LL},           // (bool include_internal) -> int
+    {"Node", "get_parent", 3160264692LL},         // -> Node (LATE-RES: the item's node parent)
     {"Node", "get_viewport", 3596683776LL},       // -> Viewport
     {"Object", "get_instance_id", 3905245786LL},
     {"Viewport", "get_viewport_rid", 2944877500LL},
@@ -1975,6 +1977,99 @@ void mat_stat(F f) {
   f(g_mat_stats);
 }
 
+// The RS filter/repeat an item's RS state holds: the scene enum's PARENT_NODE (0) inherits the
+// parent item's resolved value (recursively), or the RS Default (0) without a parent item, exactly
+// as the walk threads parent_filter / parent_repeat (canvas_item.cpp:1585-1599, :1639-1661).
+// [[maybe_unused]]: as adopt_item_node, called only through node_added_call.
+[[maybe_unused]] std::int32_t resolved_filter(void *item) {
+  const std::int32_t raw = static_cast<std::int32_t>(get_int(kItemGetTextureFilter, item));
+  if (raw != 0) {
+    return raw;
+  }
+  void *parent_node = get_object(kNodeGetParent, item);
+  void *parent_item = parent_node != nullptr ? as(parent_node, g_mat_tags.canvas_item) : nullptr;
+  return parent_item != nullptr ? resolved_filter(parent_item) : 0;
+}
+[[maybe_unused]] std::int32_t resolved_repeat(void *item) {
+  const std::int32_t raw = static_cast<std::int32_t>(get_int(kItemGetTextureRepeat, item));
+  if (raw != 0) {
+    return raw;
+  }
+  void *parent_node = get_object(kNodeGetParent, item);
+  void *parent_item = parent_node != nullptr ? as(parent_node, g_mat_tags.canvas_item) : nullptr;
+  return parent_item != nullptr ? resolved_repeat(parent_item) : 0;
+}
+
+// LATE-RES (fidelity gap #5): a pre-arm CanvasItem whose RID the mirror does not know (its
+// canvas_item_create happened before the arm, while the node was pooled or otherwise out of the
+// tree) is adopted at its first node_added after the arm. The node is read exactly as the walk
+// would have read it and driven through the mirror's own setters (apply_adopt_plan's item loop,
+// minus the node-class extras), so a pooled node that enters the tree after the arm draws like
+// one the walk adopted. The item's parent arrives from the tree (get_parent), not from a walk
+// thread: the enter-tree set_parent already fired before node_added (canvas_item.cpp:237-289)
+// and, naming an unknown RID, was dropped under the unknown-item policy. Main thread only.
+// Returns false when the mirror already knew the RID. [[maybe_unused]]: its only call is from
+// node_added_call, which GCC sees as merely address-taken (the node map's callable), so it reports
+// the otherwise-called helper as unused.
+[[maybe_unused]] bool adopt_item_node(void *item, std::uint64_t rid, std::uint64_t frame) {
+  Mirror &mirror = mirror_instance();
+  if (mirror.knows_item(rid)) {
+    return false;
+  }
+  const bool top_level = get_bool(kItemIsTopLevel, item);
+  void *parent_node = get_object(kNodeGetParent, item);
+  void *parent_item =
+      (!top_level && parent_node != nullptr) ? as(parent_node, g_mat_tags.canvas_item) : nullptr;
+  std::uint64_t parent = 0;
+  bool group_member = false;
+  if (parent_item != nullptr) {
+    parent = get_rid(kItemGetCanvasItem, parent_item);
+  } else {
+    parent = get_rid(kItemGetCanvas, item);
+    group_member = true;
+  }
+  mirror.adopt_item(rid, frame);
+  mirror.set_parent(rid, parent, frame);
+  mirror.set_visibility_layer(rid, static_cast<std::uint32_t>(get_int(kItemGetVisibilityLayer, item)),
+                              frame);
+  mirror.set_visible(rid, get_bool(kItemIsVisibleInTree, item), frame);
+  mirror.set_texture_filter(rid, resolved_filter(item), frame);
+  mirror.set_texture_repeat(rid, resolved_repeat(item), frame);
+  if (!group_member) {
+    mirror.set_draw_index(rid, node_index(item), frame);
+  }
+  const rs2::Xform xform = get_xform(kItemGetTransform, item);
+  if (!same_xform(xform, rs2::kIdentityXform)) {
+    mirror.set_transform(rid, xform, frame);
+  }
+  const rs2::Color4 modulate = get_color(kItemGetModulate, item);
+  if (!same_color(modulate, rs2::kWhite)) {
+    mirror.set_modulate(rid, modulate, frame);
+  }
+  const rs2::Color4 self_modulate = get_color(kItemGetSelfModulate, item);
+  if (!same_color(self_modulate, rs2::kWhite)) {
+    mirror.set_self_modulate(rid, self_modulate, frame);
+  }
+  const std::int64_t z = get_int(kItemGetZIndex, item);
+  if (z != 0) {
+    mirror.set_z_index(rid, static_cast<std::int32_t>(z), frame);
+  }
+  if (!get_bool(kItemIsZRelative, item)) {
+    mirror.set_z_relative(rid, false, frame);
+  }
+  if (get_bool(kItemIsBehind, item)) {
+    mirror.set_behind(rid, true, frame);
+  }
+  const std::uint64_t material = ref_rid(kItemGetMaterial, item);
+  if (material != 0) {
+    mirror.set_material(rid, material, frame);  // an unknown RID resolves lazily (G8m)
+  }
+  if (get_bool(kItemGetUseParentMaterial, item)) {
+    mirror.set_use_parent_material(rid, true, frame);
+  }
+  return true;
+}
+
 void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args,
                      GDExtensionInt count, GDExtensionVariantPtr /*ret*/,
                      GDExtensionCallError *error) {
@@ -2003,6 +2098,13 @@ void node_added_call(void * /*userdata*/, const GDExtensionConstVariantPtr *args
   {
     std::lock_guard<std::mutex> lock(g_node_mutex);
     g_item_nodes[rid] = id;
+  }
+  // LATE-RES (gap #5): a pre-arm item not in the tree at arm (a pooled node) is adopted at its
+  // first node_added after the arm, so its enter-tree and draw calls land on a known item.
+  if (g_res_active.load(std::memory_order_acquire) && mirror_enabled() &&
+      fault() != AdoptFault::NoResources && std::this_thread::get_id() == g_res_main &&
+      adopt_item_node(item, rid, hooks_current_frame())) {
+    mat_stat([](AdoptMaterialStats &s) { ++s.items_adopted; });
   }
   if (g_tag_before_ready && g_tag_active.load(std::memory_order_acquire)) {
     tag_resolve_early(rid);  // sabotage meta-before-ready: the identity before the node's _ready
@@ -2824,6 +2926,9 @@ void adopt_particles_resolve() {
     std::lock_guard<std::mutex> lock(g_ppm_mutex);
     ++g_ppm_stats.unknown_shader_keyed;
   }
+  // LATE-RES (gap #5): a pre-arm process material an emitter was given is `unknown-material` (its
+  // material RID was never adopted). Adopt it through the node map and re-link the emitter.
+  adopt_particles_resolve_unknown_material();
 }
 
 PpmStats adopt_particles_stats() {
@@ -3102,8 +3207,16 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
     synthetic = true;
     pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
   } else if (created != 0) {
+    // LATE-RES (gap #5): the duplicate made its own shader (an engine whose process material
+    // assigns a fresh shader to a copy, not the shared one), so the original's shader RID is
+    // unrecoverable: recover through the builtin key, as the no-shader case.
     pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_created; });
-    return false;  // a shader made (and freed) with the temporary: not the original's
+    shader = adopt_ppm_builtin(material);
+    if (shader == 0) {
+      return false;
+    }
+    synthetic = true;
+    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
   }
   if (!synthetic && !m.knows_shader(shader)) {
     Builtin code(GDEXTENSION_VARIANT_TYPE_STRING);
@@ -3111,10 +3224,18 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
     g_iface.object_method_bind_ptrcall(g_pta.shader_get_code, rs_singleton, a1, code.ptr());
     const std::string text = utf8_of(code.ptr());
     if (text.empty() || !hooks_adopt_shader(shader, text)) {
+      // LATE-RES: the named shader's code is unrecoverable (headless, or an engine that never
+      // kept it): recover through the builtin key, as the no-shader case.
       pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_code; });
-      return false;
+      shader = adopt_ppm_builtin(material);
+      if (shader == 0) {
+        return false;
+      }
+      synthetic = true;
+      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
+    } else {
+      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_shaders; });
     }
-    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_shaders; });
   }
   // The names: every parameter the temporary was given, then every uniform the shader's code
   // declares (an engine build whose material makes its RID lazily sets some before the RID
@@ -3378,6 +3499,30 @@ void adopt_emitters_reset() {
 EmitterAdoptStats adopt_emitter_stats() {
   std::lock_guard<std::mutex> lock(g_pta_mutex);
   return g_pta_stats;
+}
+
+// LATE-RES (gap #5): an emitter whose process material is `unknown-material` (a pre-arm
+// ParticleProcessMaterial a post-arm emitter was given). Adopt the material from the node (its
+// getters, as adopt_ppm does) and re-link the emitter's process material (SetProcessMaterial now
+// sees the adopted RID), so a builtin-driven receiver simulates the emitter. Defined here, after
+// the PM7 helpers (pta_process_material, adopt_ppm) it uses.
+void adopt_particles_resolve_unknown_material() {
+  Mirror &m = mirror_instance();
+  for (const Mirror::PpmUnknownMaterialCandidate &c : m.ppm_unknown_material_candidates()) {
+    void *node = node_of(c.item);
+    if (node == nullptr || as(node, g_ppm.tag_gpu_particles) == nullptr) {
+      continue;
+    }
+    const std::uint64_t rid = pta_process_material(node);
+    if (rid == 0 || !m.knows_material(rid)) {
+      continue;  // nothing adoptable: the emitter stays unknown-material
+    }
+    Mirror::ParticlesArgs a;
+    a.rid = rid;
+    m.particles_call(c.particles, Mirror::ParticlesOp::SetProcessMaterial, a, hooks_current_frame());
+    std::lock_guard<std::mutex> lock(g_ppm_mutex);
+    ++g_ppm_stats.unknown_material_keyed;
+  }
 }
 
 // ===================================================================== TAG1: item identity

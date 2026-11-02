@@ -72,6 +72,9 @@ std::string hooks_plan_detail(const HookPlan &plan);
 // frame counter (the frame callback runs after process and draw). Captures
 // carry it so an expected call can be placed in time.
 void hooks_set_frame(uint64_t frame);
+// The current hook stamp (LATE-RES: a post-arm node_added adoption stamps its mirror taps with the
+// same frame the other hooks of the iteration use).
+uint64_t hooks_current_frame();
 
 // PM1 (render-stream-11.md "As built (PM1)" rule 8): the last hooks_plan() planned all twelve
 // multimesh hooks (GRC_STREAM_VERSION=11 and a record naming every slot), so the session declares

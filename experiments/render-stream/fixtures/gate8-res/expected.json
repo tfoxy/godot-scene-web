@@ -1,0 +1,12 @@
+{
+  "schema": "render-stream-gate8-res-expected/1",
+  "doc": "Hand-derived from res.gd, not measured (README.md). Three 64x64 cells drawn only after the arm at fixture frame 12: TEX (a post-arm Sprite2D drawing a pre-arm ImageTexture), PPM (a pre-arm GPUParticles2D + ParticleProcessMaterial, detached until frame 15), ITEM (a pre-arm Node2D whose _draw draws a plain rect, detached until frame 15). The capture must adopt the pre-arm texture (G8r), the pre-arm process material (PM7) and the two pre-arm items (LATE-RES node_added) at their first post-arm reference, leaving no unknown item RIDs (residue 0) and no refused resource.",
+  "arm_frame": 12,
+  "quit_frame": 30,
+  "textures": 1,
+  "items_adopted": 2,
+  "emitters": 1,
+  "process_materials": 1,
+  "unknown_material_keyed": 1,
+  "cells": ["TEX", "PPM", "ITEM", "PPM9"]
+}

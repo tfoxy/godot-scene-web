@@ -716,6 +716,7 @@ std::string result_json() {
         json.field("builtin_resolved", static_cast<int64_t>(ppm.builtin_resolved));
         json.field("builtin_unresolved", static_cast<int64_t>(ppm.builtin_unresolved));
         json.field("unknown_shader_keyed", static_cast<int64_t>(ppm.unknown_shader_keyed));
+        json.field("unknown_material_keyed", static_cast<int64_t>(ppm.unknown_material_keyed));
         json.field("pump_fired", static_cast<int64_t>(g_state.pump_fired));
         json.field("pump_skipped", static_cast<int64_t>(g_state.pump_skipped));
         json.field("shim_synthesized", static_cast<int64_t>(rs::particles_shim().synthesized()));
@@ -873,6 +874,7 @@ std::string result_json() {
       json.field("instance_params", static_cast<int64_t>(ms.instance_params));
       json.field("resolve_passes", static_cast<int64_t>(ms.resolve_passes));
       json.field("nodes_added", static_cast<int64_t>(ms.nodes_added));
+      json.field("items_adopted", static_cast<int64_t>(ms.items_adopted));
       json.field("node_map_connected", ms.node_map_connected);
       json.field("arm_ns", static_cast<int64_t>(ms.arm_ns));
       json.field("resolve_ns", static_cast<int64_t>(ms.resolve_ns));

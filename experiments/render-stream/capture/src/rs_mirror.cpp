@@ -3781,6 +3781,41 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> Mirror::ppm_unknown_candida
   return out;
 }
 
+std::vector<Mirror::PpmUnknownMaterialCandidate> Mirror::ppm_unknown_material_candidates() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<PpmUnknownMaterialCandidate> out;
+  if (!pt_options_.enabled) {
+    return out;
+  }
+  // The items drawing each emitter id.
+  std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
+  for (const auto &entry : items_.all()) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddParticles) {
+        drawn_by[command.particles].push_back(entry.second.rid);
+      }
+    }
+  }
+  for (const auto &entry : particles_) {
+    const Particles &p = entry.second;
+    if (p.freed || !p.unknown_material || p.material_rid == 0) {
+      continue;
+    }
+    const auto items = drawn_by.find(p.id);
+    if (items == drawn_by.end()) {
+      continue;
+    }
+    for (std::uint64_t item : items->second) {
+      PpmUnknownMaterialCandidate c;
+      c.particles = p.rid;
+      c.material = p.material_rid;
+      c.item = item;
+      out.push_back(std::move(c));
+    }
+  }
+  return out;
+}
+
 void Mirror::set_shader_ppm(std::uint64_t shader_rid,
                             const rs2::BuiltinParticleProcessMaterial &key) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -3921,6 +3956,11 @@ void Mirror::texture_adopt(std::uint64_t rid, const PayloadCopy &copy, PayloadPt
 bool Mirror::knows_texture(std::uint64_t rid) const {
   std::lock_guard<std::mutex> lock(mutex_);
   return texture_by_rid_.count(rid) != 0;
+}
+
+bool Mirror::knows_item(std::uint64_t rid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return item_by_rid_.count(rid) != 0;
 }
 
 bool Mirror::knows_mesh(std::uint64_t rid) const {

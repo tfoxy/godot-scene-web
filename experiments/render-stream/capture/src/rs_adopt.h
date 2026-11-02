@@ -377,6 +377,9 @@ struct AdoptMaterialStats {
   std::uint32_t instance_params = 0;       // item instance parameters published
   std::uint32_t resolve_passes = 0;        // frame boundaries with pending references
   std::uint32_t nodes_added = 0;           // CanvasItems node_added mapped after arm
+  // LATE-RES (gap #5): a pre-arm CanvasItem that was not in the tree at arm, adopted at its first
+  // node_added after the arm (a pooled node re-entering the tree), instead of staying unknown.
+  std::uint32_t items_adopted = 0;
   bool node_map_connected = false;         // SceneTree.node_added connected
   std::uint64_t arm_ns = 0;                // the walk's material and instance-parameter reads
   std::uint64_t resolve_ns = 0;            // every frame-boundary resolution
@@ -427,12 +430,20 @@ void adopt_materials_resolve();
 // give ParticleProcessMaterial::MaterialKey (_compute_key). Cheap when the mirror's ppm epoch did
 // not move. A shader it cannot key stays shader-mode (counted unresolved, once per shader).
 void adopt_particles_resolve();
+// LATE-RES (gap #5): at the frame boundary (after adopt_particles_resolve's LATE-CMBT loop), adopts
+// every pre-arm process material the mirror lists as `unknown-material` (Mirror::
+// ppm_unknown_material_candidates) through the node map (adopt_ppm), and re-links the emitter's
+// process material, so a builtin-driven receiver simulates it. Defined after the PM7 helpers it uses.
+void adopt_particles_resolve_unknown_material();
 struct PpmStats {
   std::uint64_t builtin_resolved = 0;    // shaders keyed
   std::uint64_t builtin_unresolved = 0;  // shaders tried with no ParticleProcessMaterial found
   // LATE-CMBT: a post-arm process material that was `unknown-shader` (its material_create_from_shader
   // / material_set_shader named a pre-arm shader RID) re-keyed through the builtin's synthetic shader.
   std::uint64_t unknown_shader_keyed = 0;
+  // LATE-RES: a pre-arm process material an emitter was given that was `unknown-material` (its
+  // material RID was never adopted) adopted at the frame boundary and re-linked.
+  std::uint64_t unknown_material_keyed = 0;
 };
 PpmStats adopt_particles_stats();
 

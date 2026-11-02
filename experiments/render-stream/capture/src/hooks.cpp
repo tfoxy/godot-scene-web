@@ -4868,6 +4868,8 @@ void hooks_set_texture_workers(const rs::TextureWorkerConfig &config) {
 
 void hooks_set_frame(uint64_t frame) { g_frame.store(frame, std::memory_order_relaxed); }
 
+uint64_t hooks_current_frame() { return g_frame.load(std::memory_order_relaxed); }
+
 bool hooks_multimesh_planned() { return g_multimesh_hooked; }
 
 bool hooks_particles_planned() { return g_particles_hooked; }

@@ -655,6 +655,16 @@ class Mirror {
   // adopts a synthetic `particles` shader carrying the material's particle_process_material builtin
   // key, and re-keys the material to it.
   std::vector<std::pair<std::uint64_t, std::uint64_t>> ppm_unknown_candidates() const;
+  // LATE-RES (gap #5): an emitter whose process material is `unknown-material` (its material RID is
+  // not in the mirror at all -- a pre-arm ParticleProcessMaterial a post-arm emitter was given),
+  // drawn by `item`. rs_adopt.cpp resolves them at the frame boundary through the node map: adopt
+  // the material (adopt_ppm) and re-link the emitter's process material.
+  struct PpmUnknownMaterialCandidate {
+    std::uint64_t particles = 0;
+    std::uint64_t material = 0;
+    std::uint64_t item = 0;
+  };
+  std::vector<PpmUnknownMaterialCandidate> ppm_unknown_material_candidates() const;
   std::uint64_t ppm_epoch() const;
   void set_shader_ppm(std::uint64_t shader_rid, const rs2::BuiltinParticleProcessMaterial &key);
 
@@ -848,6 +858,8 @@ class Mirror {
   // G8r: whether `rid` is in the texture / mesh table (a live entry, not a tombstone).
   bool knows_texture(std::uint64_t rid) const;
   bool knows_mesh(std::uint64_t rid) const;
+  // LATE-RES (gap #5): whether `rid` names a live canvas item the mirror tracks.
+  bool knows_item(std::uint64_t rid) const;
 
   // --- G8m (gate8-design.md D11, D12, Q5): pre-arm shaders and materials, adopted with origin
   // `adopted` through the same tables. Identity bookkeeping: no omit-op name, never dropped.
