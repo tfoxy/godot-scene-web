@@ -9,7 +9,8 @@
 // `export function` declarations, and one closing `export { initSync, __wbg_init as default };`.
 // Anything else is refused rather than guessed at.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const TAIL = "export { initSync, __wbg_init as default };";
 
@@ -50,7 +51,7 @@ export function glueFactory(glue) {
   ].join("\n");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [input, output] = process.argv.slice(2);
   if (!input || !output) {
     console.error(
