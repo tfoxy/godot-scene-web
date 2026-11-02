@@ -341,10 +341,20 @@ enum class AdoptMaterialSabotage : std::uint8_t {
 struct UniformDecl {
   std::string name;
   bool sampler = false;  // a sampler type (its default texture is a shader default)
+  // FOG-U: the declared type and default, so an adopted emitter can supply a uniform the shader
+  // declares with a default that no material setter ever set. `kind` selects the Variant to build;
+  // `components` is 1..4 (Float/Int/Bool are scalar, Vector is vec2..vec4). `default_` is valid
+  // when `has_default`.
+  enum class Kind : std::uint8_t { None, Float, Int, Bool, Vector };
+  Kind kind = Kind::None;
+  std::int32_t components = 0;
+  float default_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  bool has_default = false;
 };
 // The token scan G8m reads parameter names with: `//` and `/* */` comments skipped, `uniform`
 // preceded by `instance` or `global` skipped, an optional precision qualifier, then the type and
-// the name. Engine-free.
+// the name. FOG-U: it also reads the type's kind/component count and a `= default` literal
+// (a scalar, `true`/`false`, or a `vecN(...)` constructor, splatted on a single argument). Engine-free.
 std::vector<UniformDecl> scan_uniforms(const std::string &code);
 // True when `code` still holds an `#include` directive (a line whose first token is #include):
 // the preprocessor failed and left the source as it was (Q5's shader-adopt-include).

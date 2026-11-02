@@ -47,11 +47,21 @@ export interface PtLate {
 /** The parts of a resolved state pt-late-adopt reads (gate8-pt-checks.ts PtTx). */
 export interface PtLateTx {
   table: Map<number, { id: number; origin: string; status: string; amount: number; process_material: number | null; subemitter: number | null }>;
-  materials: Map<number, { status: string; shader: number | null }>;
+  materials: Map<number, { status: string; shader: number | null; params?: { name: string; type: string; value: number | number[] | { tex: number } | null }[] }>;
   shaders: Map<number, unknown>;
   items: Map<number, { add_particles: number; unsupported: Record<string, number> }>;
   item_unsupported: Record<string, number>;
 }
+
+// FOG-U: the stock 4.5.1 process shader declares these uniforms with a default and no property
+// setter ever sets them. An adopted emitter (the synthetic builtin path) must carry them with the
+// declared default, as born-GSW's shader would supply.
+export const PPM_DECLARED_DEFAULTS: ReadonlyArray<{ name: string; type: string; value: number | number[] }> = [
+  { name: "inherit_emitter_velocity_ratio", type: "float", value: 0 },
+  { name: "emission_shape_offset", type: "vector3", value: [0, 0, 0] },
+  { name: "emission_shape_scale", type: "vector3", value: [1, 1, 1] },
+  { name: "velocity_pivot", type: "vector3", value: [0, 0, 0] },
+];
 
 /** stream.gate8.particles.adoption of a capture's result.json, or null. */
 export function adoptionStats(result: Record<string, unknown> | null): Record<string, number> | null {
@@ -130,7 +140,9 @@ export function ptLateFaultProblems(stats: Record<string, number> | null, txs: r
 
 /** pt-late-ppm-builtin: under GRC_ADOPT_FAULT=ppm-no-shader (an engine that assigns the process
  *  material's shader outside get_rid()) every process material is recovered through the
- *  particle_process_material builtin, and the wire is otherwise the same as pt-late-adopt. */
+ *  particle_process_material builtin, and the wire is otherwise the same as pt-late-adopt.
+ *  FOG-U: each recovered material also carries the process shader's declared default-valued
+ *  uniforms (a uniform the shader declares with a default that no material setter ever set). */
 export function ptLatePpmBuiltinProblems(
   stats: Record<string, number> | null,
   txs: readonly PtLateTx[],
@@ -143,7 +155,27 @@ export function ptLatePpmBuiltinProblems(
     problems.push(`${stats.ppm_refused_no_shader} process materials named no shader, ${late.process_materials} expected`);
   if (stats.ppm_builtin !== late.process_materials)
     problems.push(`${stats.ppm_builtin} process materials recovered through the builtin, ${late.process_materials} expected`);
-  return [...problems, ...ptLateAdoptProblems(stats, txs, late, subAmount)];
+  return [...problems, ...ptLateAdoptProblems(stats, txs, late, subAmount), ...ppmDeclaredDefaultProblems(txs)];
+}
+
+/** FOG-U: every adopted process material carries the declared default of each process-shader
+ *  uniform no setter ever set (PPM_DECLARED_DEFAULTS). */
+export function ppmDeclaredDefaultProblems(txs: readonly PtLateTx[]): string[] {
+  const problems: string[] = [];
+  const last = txs.at(-1);
+  if (!last) return ["no transaction"];
+  for (const e of last.table.values()) {
+    if (e.process_material === null) continue;
+    const m = last.materials.get(e.process_material);
+    if (!m) continue;
+    for (const d of PPM_DECLARED_DEFAULTS) {
+      const p = m.params?.find((q) => q.name === d.name);
+      if (!p) problems.push(`material ${e.process_material}: ${d.name} absent`);
+      else if (JSON.stringify(p.value) !== JSON.stringify(d.value))
+        problems.push(`material ${e.process_material}: ${d.name} ${JSON.stringify(p.value)}, expected ${JSON.stringify(d.value)}`);
+    }
+  }
+  return problems;
 }
 
 export interface PtLateDeps {

@@ -742,6 +742,23 @@ void test_material_scans() {
   check(u.size() == 3 && u[0].name == "tint" && !u[0].sampler && u[1].name == "pal" &&
             u[1].sampler && u[2].name == "arr",
         "scan: uniform names, samplers, instance/global/comments skipped");
+  // FOG-U: a declared type and default are read (a vec4(1.0) constructor, splatted).
+  check(u[0].kind == grc::rs::UniformDecl::Kind::Vector && u[0].components == 4 &&
+            u[0].has_default && u[0].default_[0] == 1.0f && u[0].default_[3] == 1.0f,
+        "scan: a vecN default is read and splatted");
+  const auto proc = grc::rs::scan_uniforms(
+      "shader_type particles;\nuniform float inherit_emitter_velocity_ratio = 0.0;\n"
+      "uniform vec3 emission_shape_scale = vec3(1.0);\n"
+      "uniform vec3 turbulence_noise_speed = vec3(1.0, 1.0, 1.0);\n"
+      "uniform int collision_mode = 2;\nvoid process() {}\n");
+  check(proc.size() == 4 && proc[0].name == "inherit_emitter_velocity_ratio" &&
+            proc[0].kind == grc::rs::UniformDecl::Kind::Float && proc[0].components == 1 &&
+            proc[0].has_default && proc[0].default_[0] == 0.0f &&
+            proc[1].kind == grc::rs::UniformDecl::Kind::Vector && proc[1].components == 3 &&
+            proc[1].has_default && proc[1].default_[0] == 1.0f && proc[1].default_[2] == 1.0f &&
+            proc[2].has_default && proc[2].default_[0] == 1.0f && proc[2].default_[2] == 1.0f &&
+            proc[3].kind == grc::rs::UniformDecl::Kind::Int && proc[3].default_[0] == 2.0f,
+        "scan: a process shader's float/vec3/int defaults");
   check(grc::rs::has_include_directive("shader_type canvas_item;\n  #include \"x.gdshaderinc\"\n"),
         "include: a left-over directive");
   check(!grc::rs::has_include_directive("shader_type canvas_item;\n@@>res://x\n"),

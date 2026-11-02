@@ -1766,6 +1766,71 @@ bool adopt_from_update_begin() {
 // hooks_adopt_* calls take the hooks' own locks. The node map is the one structure another thread
 // (a node_added emitted off the main thread) may write; g_node_mutex guards it.
 
+// FOG-U: the kind and component count of a GLSL scalar/vector type (sampler/matrix/other -> None).
+void uniform_type(const std::string &type, UniformDecl *decl) {
+  const bool vec = type.rfind("vec", 0) == 0 || type.rfind("ivec", 0) == 0 ||
+                   type.rfind("uvec", 0) == 0 || type.rfind("bvec", 0) == 0;
+  if (vec && type.size() >= 4) {
+    const char c = type[type.size() - 1];
+    decl->kind = UniformDecl::Kind::Vector;
+    decl->components = c >= '2' && c <= '4' ? c - '0' : 0;
+    if (decl->components == 0) decl->kind = UniformDecl::Kind::None;
+    return;
+  }
+  if (type == "float") {
+    decl->kind = UniformDecl::Kind::Float;
+    decl->components = 1;
+  } else if (type == "int" || type == "uint") {
+    decl->kind = UniformDecl::Kind::Int;
+    decl->components = 1;
+  } else if (type == "bool") {
+    decl->kind = UniformDecl::Kind::Bool;
+    decl->components = 1;
+  } else {
+    decl->kind = UniformDecl::Kind::None;
+    decl->components = 0;
+  }
+}
+
+// FOG-U: whether `token` starts a numeric literal (the tokenizer keeps digits and dots together).
+bool uniform_number(const std::string &token) {
+  if (token.empty()) return false;
+  const char c = token[0];
+  return c == '.' || (c >= '0' && c <= '9');
+}
+
+// FOG-U: the default literal of a declaration, from tokens[j] (just after `=`) up to `;` or `:`.
+void uniform_default(UniformDecl *decl, const std::vector<std::string> &tokens, std::size_t j) {
+  if (j >= tokens.size() || decl->components <= 0) return;
+  if (tokens[j] == "true" || tokens[j] == "false") {
+    decl->has_default = true;
+    decl->default_[0] = tokens[j] == "true" ? 1.0f : 0.0f;
+    return;
+  }
+  // A `vecN(...)` / `ivecN(...)` constructor: one number splats, N numbers fill.
+  const bool ctor = tokens[j].rfind("vec", 0) == 0 || tokens[j].rfind("ivec", 0) == 0 ||
+                    tokens[j].rfind("uvec", 0) == 0 || tokens[j].rfind("bvec", 0) == 0;
+  if (ctor && j + 1 < tokens.size() && tokens[j + 1] == "(") {
+    std::vector<float> nums;
+    for (std::size_t p = j + 2; p < tokens.size() && tokens[p] != ")" && tokens[p] != ";" &&
+                              tokens[p] != ":";
+         ++p) {
+      if (uniform_number(tokens[p])) nums.push_back(std::strtof(tokens[p].c_str(), nullptr));
+    }
+    if (nums.empty()) return;
+    decl->has_default = true;
+    for (std::int32_t c = 0; c < decl->components; ++c) {
+      decl->default_[c] = nums.size() == 1 ? nums[0] : nums[static_cast<std::size_t>(c) % nums.size()];
+    }
+    return;
+  }
+  if (uniform_number(tokens[j])) {
+    decl->has_default = true;
+    const float v = std::strtof(tokens[j].c_str(), nullptr);
+    for (int c = 0; c < 4; ++c) decl->default_[c] = v;
+  }
+}
+
 std::vector<UniformDecl> scan_uniforms(const std::string &code) {
   std::vector<UniformDecl> out;
   std::vector<std::string> tokens;
@@ -1793,6 +1858,15 @@ std::vector<UniformDecl> scan_uniforms(const std::string &code) {
       i = j;
       continue;
     }
+    // FOG-U: keep a numeric literal (digits and dots) as one token, so `0.0`/`1.0` parse as a
+    // single default rather than `0`, `.`, `0`.
+    if ((c >= '0' && c <= '9') || (c == '.' && i + 1 < n && code[i + 1] >= '0' && code[i + 1] <= '9')) {
+      std::size_t j = i;
+      while (j < n && ((code[j] >= '0' && code[j] <= '9') || code[j] == '.')) ++j;
+      tokens.push_back(code.substr(i, j - i));
+      i = j;
+      continue;
+    }
     if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
       tokens.push_back(std::string(1, c));
     }
@@ -1814,6 +1888,14 @@ std::vector<UniformDecl> scan_uniforms(const std::string &code) {
     const std::string &type = tokens[t];
     decl.sampler = type.rfind("sampler", 0) == 0 || type.rfind("isampler", 0) == 0 ||
                    type.rfind("usampler", 0) == 0;
+    uniform_type(type, &decl);
+    std::size_t j = t + 2;
+    if (j < tokens.size() && tokens[j] == "[") {  // an array: no default parsed
+      while (j < tokens.size() && tokens[j] != "]") ++j;
+      if (j < tokens.size()) ++j;
+    } else if (j < tokens.size() && tokens[j] == "=") {
+      uniform_default(&decl, tokens, j + 1);
+    }
     out.push_back(std::move(decl));
   }
   return out;
@@ -2134,6 +2216,46 @@ std::unique_ptr<VariantSlot> bool_variant(bool value) {
   GDExtensionBool b = value ? 1 : 0;
   g_iface.get_variant_from_type_constructor(GDEXTENSION_VARIANT_TYPE_BOOL)(v->data, &b);
   return v;
+}
+
+// FOG-U: a declared default as its Variant (null when the declaration has no default or an
+// unsupported kind). A Float is widened to float64, an Int to int64, a Bool to bool, a Vector to
+// Vector2/3/4 of floats -- the types `material_set_param` carries.
+std::unique_ptr<VariantSlot> uniform_default_variant(const UniformDecl &decl) {
+  if (!decl.has_default || decl.kind == UniformDecl::Kind::None || decl.components < 1) {
+    return nullptr;
+  }
+  auto v = std::make_unique<VariantSlot>();
+  switch (decl.kind) {
+    case UniformDecl::Kind::Float: {
+      double value = static_cast<double>(decl.default_[0]);
+      g_iface.get_variant_from_type_constructor(GDEXTENSION_VARIANT_TYPE_FLOAT)(v->data, &value);
+      return v;
+    }
+    case UniformDecl::Kind::Int: {
+      std::int64_t value = static_cast<std::int64_t>(decl.default_[0]);
+      g_iface.get_variant_from_type_constructor(GDEXTENSION_VARIANT_TYPE_INT)(v->data, &value);
+      return v;
+    }
+    case UniformDecl::Kind::Bool: {
+      GDExtensionBool b = decl.default_[0] != 0.0f ? 1 : 0;
+      g_iface.get_variant_from_type_constructor(GDEXTENSION_VARIANT_TYPE_BOOL)(v->data, &b);
+      return v;
+    }
+    case UniformDecl::Kind::Vector: {
+      const GDExtensionVariantType t =
+          decl.components == 2   ? GDEXTENSION_VARIANT_TYPE_VECTOR2
+          : decl.components == 3 ? GDEXTENSION_VARIANT_TYPE_VECTOR3
+                                 : GDEXTENSION_VARIANT_TYPE_VECTOR4;
+      alignas(8) float buf[4] = {decl.default_[0], decl.default_[1], decl.default_[2],
+                                 decl.default_[3]};
+      g_iface.get_variant_from_type_constructor(t)(v->data, buf);
+      return v;
+    }
+    case UniformDecl::Kind::None:
+      return nullptr;
+  }
+  return nullptr;
 }
 
 // A parameter value as the server received it: a texture Object becomes its RID
@@ -2849,9 +2971,18 @@ void pta_refuse(std::uint64_t rid, std::uint32_t EmitterAdoptStats::*reason) {
 // builtin-driven receiver (GSW) then simulates and draws the emitter; the GL receivers still draw
 // nothing (a Forward+ host's process shader is RD-only, PM7 follow-up 1), as before the fix.
 constexpr std::uint64_t kSyntheticPpmShader = (1ull << 63) | (1ull << 62);
+// FOG-U: the synthetic code also declares the process shader's always-declared default-valued
+// uniforms (the stock 4.5.1 `particle_process_material` code declares these with a default and no
+// property setter ever sets them), so the shader-aware read supplies their declared defaults when
+// `material_get_param` has no value. The builtin-driven receivers ignore the code (they simulate
+// from the builtin key), so the extra declarations change nothing for them.
 const char kPpmSyntheticCode[] =
     "shader_type particles;\n\n"
     "// Synthetic: this engine assigns the process material's shader outside get_rid().\n"
+    "uniform float inherit_emitter_velocity_ratio = 0.0;\n"
+    "uniform vec3 emission_shape_offset = vec3(0.0);\n"
+    "uniform vec3 emission_shape_scale = vec3(1.0);\n"
+    "uniform vec3 velocity_pivot = vec3(0.0);\n"
     "void process() {\n"
     "\tfloat _t = TIME;\n"
     "}\n";
@@ -2950,13 +3081,19 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
     }
     pta_stat([](EmitterAdoptStats &s) { ++s.ppm_shaders; });
   }
-  // The names: every parameter the temporary was given, then every uniform the code declares (an
-  // engine build whose material makes its RID lazily sets some before the RID exists). A synthetic
-  // shader's code declares none: its names are the temporary's only.
-  if (!synthetic) {
+  // The names: every parameter the temporary was given, then every uniform the shader's code
+  // declares (an engine build whose material makes its RID lazily sets some before the RID
+  // exists). FOG-U: the declared uniforms are kept with their type and default, so a uniform the
+  // shader declares but no setter ever set is supplied with the shader's declared default instead
+  // of dropped -- a named shader's own code, or the synthetic builtin shader's fixed declarations.
+  std::vector<UniformDecl> declared;
+  {
     std::string code;
     if (m.shader_code_of(shader, &code)) {
-      for (const UniformDecl &u : scan_uniforms(code)) names.push_back(u.name);
+      for (const UniformDecl &u : scan_uniforms(code)) {
+        declared.push_back(u);
+        names.push_back(u.name);
+      }
     }
   }
   std::vector<std::unique_ptr<VariantSlot>> values;
@@ -2968,7 +3105,24 @@ bool adopt_ppm(void *material, std::uint64_t rid) {
     StringName sn(name.c_str());
     const GDExtensionConstTypePtr a2[2] = {&rid, sn.ptr()};
     g_iface.object_method_bind_ptrcall(g_pta.material_get_param, rs_singleton, a2, v->data);
-    if (v->type() == GDEXTENSION_VARIANT_TYPE_NIL) continue;  // never set on the original
+    if (v->type() == GDEXTENSION_VARIANT_TYPE_NIL) {
+      // FOG-U: never set on the original; supply the shader's declared default when it has one.
+      const UniformDecl *d = nullptr;
+      for (const UniformDecl &u : declared) {
+        if (u.name == name) {
+          d = &u;
+          break;
+        }
+      }
+      if (d != nullptr) {
+        auto def = uniform_default_variant(*d);
+        if (def != nullptr) {
+          params.push_back({name, def->data});
+          values.push_back(std::move(def));
+        }
+      }
+      continue;
+    }
     params.push_back({name, v->data});
     values.push_back(std::move(v));
   }

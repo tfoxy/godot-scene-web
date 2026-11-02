@@ -38,7 +38,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
-import { adoptionStats, type PtLateTx, ptLateAdoptProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems } from "../lib/gate8-pt-late-checks";
+import { adoptionStats, PPM_DECLARED_DEFAULTS, type PtLateTx, ptLateAdoptProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems, ppmDeclaredDefaultProblems } from "../lib/gate8-pt-late-checks";
 import {
   particlesTotals,
   ptCoverageProblems,
@@ -806,8 +806,8 @@ async function main(): Promise<void> {
         [2, ent(2, 2, null)],
       ]),
       materials: new Map([
-        [1, { status: "ok", shader: 5 }],
-        [2, { status: "ok", shader: 5 }],
+        [1, { status: "ok", shader: 5, params: PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.value })) }],
+        [2, { status: "ok", shader: 5, params: PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.value })) }],
       ]),
       shaders: new Map([[5, { status: "ok", builtin: { kind: "particle_process_material" } }]]),
       items: new Map([
@@ -846,6 +846,14 @@ async function main(): Promise<void> {
     expect(ptLatePpmBuiltinProblems(ppmStats, [good()], late, 12).length === 0, "ptLatePpmBuiltinProblems: all builtin-recovered passes");
     expect(ptLatePpmBuiltinProblems({ ...ppmStats, ppm_builtin: 1 }, [good()], late, 12).some((p) => p.includes("recovered through the builtin")), "ptLatePpmBuiltinProblems: a short builtin count fails");
     expect(ptLatePpmBuiltinProblems({ ...ppmStats, ppm_refused_no_shader: 0 }, [good()], late, 12).some((p) => p.includes("named no shader")), "ptLatePpmBuiltinProblems: no no-shader diagnosis fails");
+    const missingDefault = good();
+    (missingDefault.materials.get(1) as { status: string; shader: number | null; params: { name: string }[] }).params =
+      PPM_DECLARED_DEFAULTS.slice(1).map((d) => ({ name: d.name, type: d.type, value: d.value }));
+    expect(ppmDeclaredDefaultProblems([missingDefault]).some((p) => p.includes("inherit_emitter_velocity_ratio absent")), "ppmDeclaredDefaultProblems: a missing declared default fails");
+    const wrongDefault = good();
+    (wrongDefault.materials.get(2) as { status: string; shader: number | null; params: { name: string; type: string; value: unknown }[] }).params =
+      PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.name === "emission_shape_scale" ? [2, 2, 2] : d.value }));
+    expect(ppmDeclaredDefaultProblems([wrongDefault]).some((p) => p.includes("emission_shape_scale") && p.includes("expected")), "ppmDeclaredDefaultProblems: a wrong declared default fails");
     expect(
       adoptionStats({ stream: { gate8: { particles: { adoption: { emitters: 3 } } } } })?.emitters === 3 && adoptionStats({}) === null,
       "adoptionStats: reads stream.gate8.particles.adoption",
