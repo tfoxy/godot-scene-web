@@ -69,9 +69,10 @@ env:
   PURE_SHARDS: "6"
   # build-capture.sh defaults to /snap/bin/cmake
   CMAKE: cmake
-  # R3 watchdog: minutes per validate-increment invocation (about 2x the longest observed one, a
-  # 16 min gate 7 group), well under the job's 120, so a hang leaves evidence and a failing row
-  WATCHDOG_MIN: "35"
+  # R3 watchdog: minutes per validate-increment invocation, now a per-shard value set in the plan
+  # job's matrix (matrix.watchdog): 35 min by default (about 2x the longest gate 7 group observed
+  # when the watchdog was set), 60 min for the g7-8 web-rust shard only (see the plan job). It must
+  # stay well under the job's 120-min timeout, so a hang leaves evidence and a failing row.
 
 jobs:
   plan:
@@ -92,6 +93,13 @@ jobs:
           det = [int(x) for x in os.environ["DETERMINISM"].split(",") if x.strip()]
           rg = json.loads(os.environ.get("RUN_GROUPS") or "{}")
           include, shards = [], {}
+          # G78: the per-shard watchdog (minutes). 35 is ~2x the longest gate 7 group observed when
+          # the watchdog was set (R3), but gate 8's web file group g7-8 has since outgrown it: it
+          # passes locally in ~37 min and hosted runners, being slower, blow 35 min and are killed
+          # with exit 124. Raise only that one shard so the guard still fires well under the job's
+          # 120-min timeout (a hang far exceeds either value); every other shard keeps 35.
+          def watchdog(i, g):
+              return "60" if i == "g7-web-rust" and g == "g7-8" else "35"
           for i in json.loads(os.environ["RUNS"]):
               # R3: a gate 7 run of several groups is one job per group (label <id>@<group>); with
               # --determinism, one job per group and repeat count. The merge folds them into one row.
@@ -99,16 +107,16 @@ jobs:
               if det:
                   # one job per repeat count, each on its own runner; the merge folds them into one row
                   shards[i] = len(det) * len(gs)
-                  include += [{"id": i, "shard": "", "group": g, "repeat": r, "label": f"{i}{'@' + g if g else ''}-det{k}x{r}"}
+                  include += [{"id": i, "shard": "", "group": g, "repeat": r, "watchdog": watchdog(i, g), "label": f"{i}{'@' + g if g else ''}-det{k}x{r}"}
                               for g in gs for k, r in enumerate(det, 1)]
               elif gs != [""]:
                   shards[i] = len(gs)
-                  include += [{"id": i, "shard": "", "group": g, "label": f"{i}@{g}"} for g in gs]
+                  include += [{"id": i, "shard": "", "group": g, "watchdog": watchdog(i, g), "label": f"{i}@{g}"} for g in gs]
               elif i == "pure" and n > 1:
                   shards[i] = n
-                  include += [{"id": i, "shard": f"{k}/{n}", "label": f"{i}-{k}of{n}"} for k in range(1, n + 1)]
+                  include += [{"id": i, "shard": f"{k}/{n}", "watchdog": watchdog(i, ""), "label": f"{i}-{k}of{n}"} for k in range(1, n + 1)]
               else:
-                  include.append({"id": i, "shard": "", "label": i})
+                  include.append({"id": i, "shard": "", "watchdog": watchdog(i, ""), "label": i})
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("matrix=" + json.dumps(include) + "\n")
               f.write("shards=" + json.dumps(shards) + "\n")
@@ -192,6 +200,8 @@ jobs:
           REPEAT: ${{ matrix.repeat }}
           LABEL: ${{ matrix.label }}
           RS_VALIDATE_GROUPS: ${{ matrix.group }}
+          # G78: the per-shard watchdog, set in the plan job's matrix (matrix.watchdog).
+          WATCHDOG_MIN: ${{ matrix.watchdog }}
           # native gates (R2): 4 vCPU run two legs at once. The timing groups inside the correctness
           # gates (g1c-rate, g1d, g2c-pins, g5f, g55f) are wall-clock legs a shared VM would only make
           # noisy: they are skipped here (skipped-remote.txt) and stay local. Never set locally.

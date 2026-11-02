@@ -255,13 +255,13 @@ for r in plan["runs"]:
             r["groups"] = keep
             refused.append({"id": r["id"], "groups": sorted(gw), "reason": "; ".join(f"{g}: {w}" for g, w in gw.items())})
     (refused.append({"id": r["id"], "reason": why}) if why else remote.append(r["id"]))
-# R3: a gate 7 run of several groups becomes one job per group (receiver x group); the workflow's
+# R3: a gate 7 run becomes one job per group (receiver x group), even a single-group run, so every
+# job's matrix carries its group (G78 keys the per-shard watchdog on <id>@<group>); the workflow's
 # merge folds them back into the run's one row. A run left with one group by a group refusal still
 # names it, so the job runs only that group.
-partial = {x["id"] for x in refused if x.get("groups")}
 groups = {r["id"]: r["groups"] for r in plan["runs"]
           if r["id"] in remote and r.get("kind") in ("g7", "g7live")
-          and (len(r.get("groups") or []) > 1 or r["id"] in partial)}
+          and len(r.get("groups") or []) > 0}
 json.dump({"remote": remote, "refused": refused, "groups": groups}, sys.stdout)
 PY
 if [ "$TSMOKE" = 1 ]; then
