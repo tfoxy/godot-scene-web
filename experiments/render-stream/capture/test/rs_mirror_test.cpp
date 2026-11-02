@@ -4399,6 +4399,29 @@ void test_particles_builtin_and_lowering() {
         "disabled: no table, the command is unsupported-op");
 }
 
+// LATE-CMBT: a post-arm process material whose material_create_from_shader named a pre-arm shader
+// RID (unknown to the mirror) is `unknown-shader`; ppm_unknown_candidates lists its (material, item)
+// pairs so the frame-boundary resolve can re-key it through the particle_process_material builtin.
+void test_ppm_unknown_candidates() {
+  Mirror m;
+  pt_scene(&m);
+  m.material_create_from_shader(0x610, 0x600, 1);  // 0x600 is never created: unknown shader
+  m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+  const auto unknown = m.ppm_unknown_candidates();
+  check(unknown.size() == 1 && unknown[0].first == 0x610 && unknown[0].second == 100,
+        "an unknown-shader process material is a candidate (material RID, drawing item RID)");
+  const Snapshot s = m.snapshot(1, 1).state;
+  check(s.materials[0].status == grc::rs2::MaterialStatus::Unsupported &&
+            s.materials[0].reason == grc::rs2::MaterialReason::UnknownShader,
+        "the material is unknown-shader until re-keyed");
+  // Re-key it (as the resolve does): once the shader is known the material is no longer a candidate.
+  grc::rs::ShaderCodeInput input = shader_input("shader_type particles;\n", "unsupported",
+                                                "shader-mode");
+  m.shader_create_from_code(0x600, input, 2);
+  m.material_set_shader(0x610, 0x600, 2);
+  check(m.ppm_unknown_candidates().empty(), "a material whose shader is known is no candidate");
+}
+
 int main() {
   // HC4a: RS_MIRROR_TEST_SHADOW=1 (the rs_mirror_shadow ctest) runs every case with the shadow
   // oracle on: every snapshot of every Mirror is also built by the full walk and compared.
@@ -4416,6 +4439,7 @@ int main() {
   test_particles_reasons_and_publication();
   test_particles_emits_and_drop_restart();
   test_particles_builtin_and_lowering();
+  test_ppm_unknown_candidates();
   test_multimesh_shadow_and_versions();
   test_multimesh_reasons();
   test_multimesh_publication_and_free();

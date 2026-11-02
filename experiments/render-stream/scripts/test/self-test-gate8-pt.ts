@@ -38,7 +38,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
-import { adoptionStats, PPM_DECLARED_DEFAULTS, type PtLateTx, ptLateAdoptProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems, ppmDeclaredDefaultProblems } from "../lib/gate8-pt-late-checks";
+import { adoptionStats, PPM_DECLARED_DEFAULTS, ppmStats as readPpmStats, type PtLateTx, ptLateAdoptProblems, ptLateCmbtProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems, ppmDeclaredDefaultProblems } from "../lib/gate8-pt-late-checks";
 import {
   particlesTotals,
   ptCoverageProblems,
@@ -854,6 +854,22 @@ async function main(): Promise<void> {
     (wrongDefault.materials.get(2) as { status: string; shader: number | null; params: { name: string; type: string; value: unknown }[] }).params =
       PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.name === "emission_shape_scale" ? [2, 2, 2] : d.value }));
     expect(ppmDeclaredDefaultProblems([wrongDefault]).some((p) => p.includes("emission_shape_scale") && p.includes("expected")), "ppmDeclaredDefaultProblems: a wrong declared default fails");
+    // LATE-CMBT (results/p3/late-cmbt.md): ptLateCmbtProblems / ppmStats.
+    const lateShader = { amount: 14, seed: 1011, frame: 15, key: { emission_shape: "sphere_surface" } };
+    const cmbt = (): PtLateTx => ({
+      ...good(),
+      table: new Map([[9, ent(9, 14, null, "created")]]),
+      materials: new Map([[9, { status: "ok", shader: 5, params: PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.value })) }]]),
+    });
+    expect(ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbt()], lateShader).length === 0, "ptLateCmbtProblems: a keyed post-arm process material passes");
+    expect(ptLateCmbtProblems({ unknown_shader_keyed: 0 }, [cmbt()], lateShader).some((p) => p.includes("unknown_shader_keyed")), "ptLateCmbtProblems: no re-keyed material fails");
+    const cmbtUnknown = cmbt();
+    cmbtUnknown.materials.set(9, { status: "unsupported", shader: null, params: [] });
+    expect(ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbtUnknown], lateShader).some((p) => p.includes("process material 9 is unsupported")), "ptLateCmbtProblems: an unknown-shader material fails");
+    const cmbtNoBuiltin = cmbt();
+    cmbtNoBuiltin.shaders.set(5, { status: "unsupported", builtin: null });
+    expect(ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbtNoBuiltin], lateShader).some((p) => p.includes("not an ok particle_process_material builtin")), "ptLateCmbtProblems: a process shader without the builtin fails");
+    expect(readPpmStats({ stream: { gate8: { particles: { unknown_shader_keyed: 1 } } } })?.unknown_shader_keyed === 1 && readPpmStats({}) === null, "ppmStats: reads stream.gate8.particles");
     expect(
       adoptionStats({ stream: { gate8: { particles: { adoption: { emitters: 3 } } } } })?.emitters === 3 && adoptionStats({}) === null,
       "adoptionStats: reads stream.gate8.particles.adoption",

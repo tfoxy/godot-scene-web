@@ -2700,6 +2700,50 @@ void pump_call(void * /*userdata*/, const GDExtensionConstVariantPtr * /*args*/,
   }
 }
 
+// LATE-PPM: a synthetic process shader's capture-reserved RID and code. An engine whose
+// ParticleProcessMaterial assigns its shader outside get_rid() (MegaDot 4.5.1.m.12) names no
+// shader to the duplicate, and no server getter returns a material's shader
+// (Material.get_shader_rid is not bound, gate8-design.md D12). The particle_process_material
+// builtin key, though, is readable from the material's own getters (ppm_key), so a synthetic
+// `particles` shader carrying that key is adopted under a reserved RID (the top two bits set, which
+// no 31-bit-validator RID takes) and re-keyed if a hooked call ever names the engine's RID. A
+// builtin-driven receiver (GSW) then simulates and draws the emitter; the GL receivers still draw
+// nothing (a Forward+ host's process shader is RD-only, PM7 follow-up 1), as before the fix.
+// LATE-CMBT reuses the same reserved-RID synthetic shader to key a post-arm process material whose
+// material_create_from_shader / material_set_shader named a pre-arm shader RID.
+constexpr std::uint64_t kSyntheticPpmShader = (1ull << 63) | (1ull << 62);
+// FOG-U: the synthetic code also declares the process shader's always-declared default-valued
+// uniforms (the stock 4.5.1 `particle_process_material` code declares these with a default and no
+// property setter ever sets them), so the shader-aware read supplies their declared defaults when
+// `material_get_param` has no value. The builtin-driven receivers ignore the code (they simulate
+// from the builtin key), so the extra declarations change nothing for them.
+const char kPpmSyntheticCode[] =
+    "shader_type particles;\n\n"
+    "// Synthetic: this engine assigns the process material's shader outside get_rid().\n"
+    "uniform float inherit_emitter_velocity_ratio = 0.0;\n"
+    "uniform vec3 emission_shape_offset = vec3(0.0);\n"
+    "uniform vec3 emission_shape_scale = vec3(1.0);\n"
+    "uniform vec3 velocity_pivot = vec3(0.0);\n"
+    "void process() {\n"
+    "\tfloat _t = TIME;\n"
+    "}\n";
+
+// A stable hash of the builtin key, for the synthetic shader's reserved RID: materials on the same
+// key share one entry, as the engine's shader_map does.
+std::uint64_t ppm_key_hash(const rs2::BuiltinParticleProcessMaterial &k) {
+  std::uint64_t h = 1;
+  auto mix = [&h](std::uint64_t v) { h = (h << 5) - h + v; };  // h = h * 31 + v
+  mix(k.emission_shape);
+  mix(k.particle_flags);
+  mix(k.textures);
+  mix((k.color_ramp ? 1u : 0u) | (k.color_initial_ramp ? 2u : 0u) | (k.alpha_curve ? 4u : 0u) |
+      (k.emission_curve ? 8u : 0u) | (k.velocity_limit_curve ? 16u : 0u) |
+      (k.orbit_velocity_curve_xyz ? 32u : 0u) | (k.emission_color_texture ? 64u : 0u));
+  mix(k.sub_emitter | (k.attractor ? 256u : 0u));
+  mix(k.collision | (k.collision_scale ? 8u : 0u) | (k.turbulence ? 16u : 0u));
+  return h & ((1ull << 62) - 1);  // keep below the two reserved top bits
+}
+
 }  // namespace
 
 void adopt_particles_resolve() {
@@ -2746,6 +2790,39 @@ void adopt_particles_resolve() {
         ++g_ppm_stats.builtin_unresolved;
       }
     }
+  }
+  // LATE-CMBT: a post-arm process material whose material_create_from_shader / material_set_shader
+  // named a pre-arm shader RID is `unknown-shader` (the shader is never keyed: resolve_pending keys
+  // only item materials, and ppm_candidates only materials with a known shader). Key it through its
+  // particle_process_material builtin: adopt a synthetic `particles` shader carrying the key, then
+  // re-key the material to it, so a builtin-driven receiver simulates the emitter.
+  for (const auto &pair : m.ppm_unknown_candidates()) {
+    void *node = node_of(pair.second);
+    if (node == nullptr || as(node, g_ppm.tag_gpu_particles) == nullptr) {
+      continue;
+    }
+    RefSlot slot;
+    g_iface.object_method_bind_ptrcall(g_ppm.get_process_material, node, nullptr, &slot.slot);
+    void *material = slot.object();
+    if (material == nullptr || as(material, g_ppm.tag_ppm) == nullptr) {
+      continue;
+    }
+    std::uint64_t rid = 0;
+    g_iface.object_method_bind_ptrcall(g_ppm.resource_get_rid, material, nullptr, &rid);
+    if (rid != pair.first) {
+      continue;
+    }
+    const rs2::BuiltinParticleProcessMaterial key = ppm_key(material);
+    const std::uint64_t synth = kSyntheticPpmShader | ppm_key_hash(key);
+    if (!m.knows_shader(synth)) {
+      if (!hooks_adopt_shader(synth, kPpmSyntheticCode)) {
+        continue;  // no synthetic shader: the material stays unknown-shader
+      }
+      m.set_shader_ppm(synth, key);
+    }
+    hooks_adopt_material_shader(pair.first, synth);
+    std::lock_guard<std::mutex> lock(g_ppm_mutex);
+    ++g_ppm_stats.unknown_shader_keyed;
   }
 }
 
@@ -2959,48 +3036,6 @@ void pta_refuse(std::uint64_t rid, std::uint32_t EmitterAdoptStats::*reason) {
     ++g_pta_stats.refused;
     ++(g_pta_stats.*reason);
   }
-}
-
-// LATE-PPM: a synthetic process shader's capture-reserved RID and code. An engine whose
-// ParticleProcessMaterial assigns its shader outside get_rid() (MegaDot 4.5.1.m.12) names no
-// shader to the duplicate, and no server getter returns a material's shader
-// (Material.get_shader_rid is not bound, gate8-design.md D12). The particle_process_material
-// builtin key, though, is readable from the material's own getters (ppm_key), so a synthetic
-// `particles` shader carrying that key is adopted under a reserved RID (the top two bits set, which
-// no 31-bit-validator RID takes) and re-keyed if a hooked call ever names the engine's RID. A
-// builtin-driven receiver (GSW) then simulates and draws the emitter; the GL receivers still draw
-// nothing (a Forward+ host's process shader is RD-only, PM7 follow-up 1), as before the fix.
-constexpr std::uint64_t kSyntheticPpmShader = (1ull << 63) | (1ull << 62);
-// FOG-U: the synthetic code also declares the process shader's always-declared default-valued
-// uniforms (the stock 4.5.1 `particle_process_material` code declares these with a default and no
-// property setter ever sets them), so the shader-aware read supplies their declared defaults when
-// `material_get_param` has no value. The builtin-driven receivers ignore the code (they simulate
-// from the builtin key), so the extra declarations change nothing for them.
-const char kPpmSyntheticCode[] =
-    "shader_type particles;\n\n"
-    "// Synthetic: this engine assigns the process material's shader outside get_rid().\n"
-    "uniform float inherit_emitter_velocity_ratio = 0.0;\n"
-    "uniform vec3 emission_shape_offset = vec3(0.0);\n"
-    "uniform vec3 emission_shape_scale = vec3(1.0);\n"
-    "uniform vec3 velocity_pivot = vec3(0.0);\n"
-    "void process() {\n"
-    "\tfloat _t = TIME;\n"
-    "}\n";
-
-// A stable hash of the builtin key, for the synthetic shader's reserved RID: materials on the same
-// key share one entry, as the engine's shader_map does.
-std::uint64_t ppm_key_hash(const rs2::BuiltinParticleProcessMaterial &k) {
-  std::uint64_t h = 1;
-  auto mix = [&h](std::uint64_t v) { h = (h << 5) - h + v; };  // h = h * 31 + v
-  mix(k.emission_shape);
-  mix(k.particle_flags);
-  mix(k.textures);
-  mix((k.color_ramp ? 1u : 0u) | (k.color_initial_ramp ? 2u : 0u) | (k.alpha_curve ? 4u : 0u) |
-      (k.emission_curve ? 8u : 0u) | (k.velocity_limit_curve ? 16u : 0u) |
-      (k.orbit_velocity_curve_xyz ? 32u : 0u) | (k.emission_color_texture ? 64u : 0u));
-  mix(k.sub_emitter | (k.attractor ? 256u : 0u));
-  mix(k.collision | (k.collision_scale ? 8u : 0u) | (k.turbulence ? 16u : 0u));
-  return h & ((1ull << 62) - 1);  // keep below the two reserved top bits
 }
 
 // Adopts (or returns) the synthetic process shader for `material`'s builtin key: a `particles`

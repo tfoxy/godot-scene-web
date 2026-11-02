@@ -53,7 +53,7 @@ import { join } from "node:path";
 import { check, exitCode, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
 import { censusProblems as mmCensusProblems, type G8mmExpected, mapCells as mmMapCells, parseMmLog } from "./gate8-mm-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
-import { LATE_LEGS, type PtLate, type PtLateTx, runG8ptLate } from "./gate8-pt-late-checks";
+import { LATE_LEGS, type PtLate, type PtLateShader, type PtLateTx, runG8ptLate } from "./gate8-pt-late-checks";
 import { PTC_LEGS, runG8ptPtc } from "./gate8-ptc-checks";
 import { type PtPixels, type PtWireTotals, runG8ptFrzp, runG8ptReceivers } from "./gate8-pt-receiver-checks";
 import {
@@ -124,6 +124,8 @@ export interface G8ptExpected {
   pixels: PtPixels;
   /** PM7: the late arm (gate8-pt-late-checks.ts). */
   late: PtLate;
+  /** LATE-CMBT: the post-arm unknown-shader cell (gate8-pt-late-checks.ts). */
+  late_shader: PtLateShader;
 }
 
 /** A cell's full expected MaterialKey (key_defaults overridden by the cell's key). */
@@ -1689,6 +1691,7 @@ export async function runG8pt(
       expected.checkpoints,
       expected.pixels,
       expected.late,
+      expected.late_shader,
       {
         validate: (path) => validateBoth(path, 12),
         trace: async (leg, sink) => {

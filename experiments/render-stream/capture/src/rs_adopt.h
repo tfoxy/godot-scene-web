@@ -430,6 +430,9 @@ void adopt_particles_resolve();
 struct PpmStats {
   std::uint64_t builtin_resolved = 0;    // shaders keyed
   std::uint64_t builtin_unresolved = 0;  // shaders tried with no ParticleProcessMaterial found
+  // LATE-CMBT: a post-arm process material that was `unknown-shader` (its material_create_from_shader
+  // / material_set_shader named a pre-arm shader RID) re-keyed through the builtin's synthetic shader.
+  std::uint64_t unknown_shader_keyed = 0;
 };
 PpmStats adopt_particles_stats();
 

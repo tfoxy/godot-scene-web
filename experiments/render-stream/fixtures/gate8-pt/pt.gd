@@ -52,6 +52,11 @@ var _d: GPUParticles2D
 ## from this root node's _process, not the emitters' own processing.
 var _freeze: bool = false
 var _d_nudge_frames: Array[int] = []
+## LATE-CMBT (results/p3/late-cmbt.md): RS_FIXTURE_LATE_SHADER=1 adds a post-arm cell whose process
+## material reuses a pre-arm shader (the orphan below): its material_set_shader names a pre-arm
+## shader RID, so the material is unknown-shader until the capture keys it through the builtin.
+var _late_shader: bool = false
+var _orphan_pm: ParticleProcessMaterial
 
 
 func _ready() -> void:
@@ -169,6 +174,16 @@ func _ready() -> void:
 	i.position = Vector2(533, 300)
 	_root.add_child(i)
 
+	# LATE-CMBT: a pre-arm process material on no tree node. Setting it on a temporary emitter forces
+	# get_rid() (its shader is created and stays in the engine's shader_map while _orphan_pm is
+	# alive); the temporary is never added to the tree, so the late arm never adopts the shader.
+	if _late_shader:
+		_orphan_pm = _process_material()
+		_orphan_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE_SURFACE
+		var tmp := GPUParticles2D.new()
+		tmp.process_material = _orphan_pm
+		# tmp is a local: it is freed here, but _orphan_pm keeps the shared shader resident.
+
 	# FRZ-P: freeze the burst emitters the way the couch suspender does (ProcessMode.Disabled).
 	# A_BOX's per-frame loop and D_ONESHOT's internal one-shot timer stop; the explicit restart and
 	# emit calls below still reach the RenderingServer, so the wire keeps the config + events.
@@ -189,6 +204,15 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	# LATE-CMBT: the post-arm cell (frame 15, after the arm at 12): a fresh process material with the
+	# orphan's key, so its material_set_shader names the pre-arm shader RID (unknown-shader).
+	if _late_shader and _frame == 15:
+		var j_pm := _process_material()
+		j_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE_SURFACE
+		var j := _particles(14, 1011, true, j_pm)
+		j.position = Vector2(106, 420)
+		_root.add_child(j)
+		print("[fixture] gate8-pt late-shader cell added at frame %d" % _frame)
 	# FRZ-P: the end-of-burst nudge. A frozen one-shot's internal timer (ProcessMode.Disabled)
 	# never clears `emitting`, so the suspender clears it at lifetime*(2-explosiveness)+margin; do
 	# the same here so the one-shot still ends on the wire.
@@ -318,6 +342,11 @@ func _read_environment() -> bool:
 		var freeze: String = OS.get_environment("RS_FIXTURE_FREEZE").strip_edges()
 		if freeze != "0" and freeze != "" and freeze != "off":
 			_freeze = true
+	# LATE-CMBT: RS_FIXTURE_LATE_SHADER=1 adds the post-arm unknown-shader cell (see the member comment).
+	if OS.has_environment("RS_FIXTURE_LATE_SHADER"):
+		var late_shader: String = OS.get_environment("RS_FIXTURE_LATE_SHADER").strip_edges()
+		if late_shader != "0" and late_shader != "" and late_shader != "off":
+			_late_shader = true
 	return true
 
 

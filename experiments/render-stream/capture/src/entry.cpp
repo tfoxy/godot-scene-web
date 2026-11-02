@@ -715,6 +715,7 @@ std::string result_json() {
         json.field("unknown", static_cast<int64_t>(ms.particles_unknown));
         json.field("builtin_resolved", static_cast<int64_t>(ppm.builtin_resolved));
         json.field("builtin_unresolved", static_cast<int64_t>(ppm.builtin_unresolved));
+        json.field("unknown_shader_keyed", static_cast<int64_t>(ppm.unknown_shader_keyed));
         json.field("pump_fired", static_cast<int64_t>(g_state.pump_fired));
         json.field("pump_skipped", static_cast<int64_t>(g_state.pump_skipped));
         json.field("shim_synthesized", static_cast<int64_t>(rs::particles_shim().synthesized()));

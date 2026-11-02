@@ -649,6 +649,12 @@ class Mirror {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> pairs;  // (material RID, item RID)
   };
   std::vector<PpmCandidate> ppm_candidates() const;
+  // LATE-CMBT: an emitter whose process material is `unknown-shader` (its material RID is known but
+  // its shader RID, named by material_create_from_shader / material_set_shader, is not), drawn by
+  // the item of each pair. rs_adopt.cpp resolves them at the frame boundary through the node map,
+  // adopts a synthetic `particles` shader carrying the material's particle_process_material builtin
+  // key, and re-keys the material to it.
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> ppm_unknown_candidates() const;
   std::uint64_t ppm_epoch() const;
   void set_shader_ppm(std::uint64_t shader_rid, const rs2::BuiltinParticleProcessMaterial &key);
 

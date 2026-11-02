@@ -128,5 +128,12 @@
     "process_materials": 10,
     "subemitter": "H_SUB",
     "coverage_from_frame": 46
+  },
+  "late_shader": {
+    "doc": "LATE-CMBT (results/p3/late-cmbt.md): the post-arm cell J_LATE_SHADER, created at fixture frame `frame` (after the arm) when RS_FIXTURE_LATE_SHADER=1: a fresh ParticleProcessMaterial with the orphan's key, whose material_set_shader names the pre-arm shader RID. Before the fix its process material is unknown-shader; after, it is keyed through the particle_process_material builtin. `amount` finds the cell's emitter in the hook log; `key` is the builtin key its shader must carry.",
+    "amount": 14,
+    "seed": 1011,
+    "frame": 15,
+    "key": { "emission_shape": "sphere_surface", "textures": [], "color_ramp": false, "turbulence": false, "sub_emitter": "disabled" }
   }
 }

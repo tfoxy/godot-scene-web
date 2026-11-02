@@ -44,6 +44,14 @@ export interface PtLate {
   coverage_from_frame: number;
 }
 
+/** LATE-CMBT (results/p3/late-cmbt.md): expected.json `late_shader`. */
+export interface PtLateShader {
+  amount: number;
+  seed: number;
+  frame: number;
+  key: Record<string, unknown>;
+}
+
 /** The parts of a resolved state pt-late-adopt reads (gate8-pt-checks.ts PtTx). */
 export interface PtLateTx {
   table: Map<number, { id: number; origin: string; status: string; amount: number; process_material: number | null; subemitter: number | null }>;
@@ -69,6 +77,14 @@ export function adoptionStats(result: Record<string, unknown> | null): Record<st
     | Record<string, unknown>
     | undefined)?.adoption;
   return a && typeof a === "object" ? (a as Record<string, number>) : null;
+}
+
+/** stream.gate8.particles of a capture's result.json (the PM5/PM7 counters), or null. */
+export function ppmStats(result: Record<string, unknown> | null): Record<string, number> | null {
+  const p = ((result?.stream as Record<string, unknown> | undefined)?.gate8 as Record<string, unknown> | undefined)?.particles as
+    | Record<string, unknown>
+    | undefined;
+  return p && typeof p === "object" ? (p as Record<string, number>) : null;
 }
 
 function unknownParticles(txs: readonly PtLateTx[]): number {
@@ -158,6 +174,34 @@ export function ptLatePpmBuiltinProblems(
   return [...problems, ...ptLateAdoptProblems(stats, txs, late, subAmount), ...ppmDeclaredDefaultProblems(txs)];
 }
 
+/** LATE-CMBT: the post-arm cell's process material was `unknown-shader` (its material_set_shader
+ *  named a pre-arm shader RID); the capture re-keys it through the particle_process_material
+ *  builtin, so the entry is ok on an ok process material whose shader carries the builtin. */
+export function ptLateCmbtProblems(
+  stats: Record<string, number> | null,
+  txs: readonly PtLateTx[],
+  lateShader: PtLateShader,
+): string[] {
+  const problems: string[] = [];
+  if (!stats) problems.push("no stream.gate8.particles in result.json");
+  else if ((stats.unknown_shader_keyed ?? 0) < 1) problems.push("unknown_shader_keyed is 0");
+  const last = txs.at(-1);
+  if (!last) return [...problems, "no transaction"];
+  const entry = [...last.table.values()].find((e) => e.amount === lateShader.amount);
+  if (!entry) return [...problems, `no entry with amount ${lateShader.amount}`];
+  if (entry.origin !== "created") problems.push(`entry ${entry.id}: origin ${entry.origin}, expected created`);
+  if (entry.status !== "ok") problems.push(`entry ${entry.id}: status ${entry.status}`);
+  const m = entry.process_material === null ? undefined : last.materials.get(entry.process_material);
+  if (!m) problems.push(`entry ${entry.id}: no process material`);
+  else {
+    if (m.status !== "ok") problems.push(`entry ${entry.id}: process material ${entry.process_material} is ${m.status}`);
+    const s = m.shader === null ? undefined : (last.shaders.get(m.shader) as { status?: string; builtin?: { kind?: string } | null } | undefined);
+    if (!s || s.status !== "ok" || s.builtin?.kind !== "particle_process_material")
+      problems.push(`entry ${entry.id}: process shader ${m.shader} is not an ok particle_process_material builtin`);
+  }
+  return problems;
+}
+
 /** FOG-U: every adopted process material carries the declared default of each process-shader
  *  uniform no setter ever set (PPM_DECLARED_DEFAULTS). */
 export function ppmDeclaredDefaultProblems(txs: readonly PtLateTx[]): string[] {
@@ -188,15 +232,17 @@ export interface PtLateDeps {
 const SINKS = ["recording.rs12", "recording-patch.rs12"];
 const CAPTURES = ["late/capture", "fault-no-particles/capture"];
 const PPM_CAPTURE = "fault-ppm-no-shader/capture";
+const LATE_CMBT_CAPTURE = "late-cmbt/capture";
 const RECEIVERS = ["late/receiver", "late/receiver-patch"];
 const FAULT_RECEIVER = "fault-no-particles/receiver";
-export const LATE_LEGS = [...CAPTURES, PPM_CAPTURE, ...RECEIVERS, FAULT_RECEIVER];
+export const LATE_LEGS = [...CAPTURES, PPM_CAPTURE, LATE_CMBT_CAPTURE, ...RECEIVERS, FAULT_RECEIVER];
 
 export async function runG8ptLate(
   g: string,
   checkpoints: readonly { step: number; settle: number }[],
   px: PtPixels,
   late: PtLate,
+  lateShader: PtLateShader,
   deps: PtLateDeps,
   checks: G8aCheck[],
   report: Record<string, unknown>,
@@ -210,13 +256,14 @@ export async function runG8ptLate(
       return null;
     }
   };
-  const anySkipped = [...CAPTURES, PPM_CAPTURE, ...RECEIVERS, FAULT_RECEIVER].find((l) => skipped(dir(l)));
+  const anySkipped = [...CAPTURES, PPM_CAPTURE, LATE_CMBT_CAPTURE, ...RECEIVERS, FAULT_RECEIVER].find((l) => skipped(dir(l)));
   if (anySkipped) {
     for (const id of [
       "pt-late-validate",
       "pt-late-adopt",
       "pt-late-fault",
       "pt-late-ppm-builtin",
+      "pt-late-cmbt",
       "pt-late-lifecycle",
       "pt-late-coverage",
       "pt-late-outside-exact",
@@ -230,7 +277,7 @@ export async function runG8ptLate(
   {
     const problems: string[] = [];
     let any = false;
-    for (const leg of [...CAPTURES, PPM_CAPTURE])
+    for (const leg of [...CAPTURES, PPM_CAPTURE, LATE_CMBT_CAPTURE])
       for (const sink of SINKS) {
         if (!ran(leg)) continue;
         const v = await deps.validate(join(dir(leg), sink));
@@ -298,6 +345,31 @@ export async function runG8ptLate(
         "LATE-PPM: under GRC_ADOPT_FAULT=ppm-no-shader (the engine names no shader) every process material is adopted through its particle_process_material builtin, nothing refused, no unknown-particles",
         problems,
         stats ? `${stats.ppm_builtin} builtin-recovered, ${stats.ppm_refused_no_shader} no-shader, ${stats.ppm_materials} materials` : undefined,
+      ),
+    );
+  }
+
+  // pt-late-cmbt (LATE-CMBT): a post-arm process material whose material_set_shader named a
+  // pre-arm shader RID is re-keyed through the particle_process_material builtin.
+  {
+    const leg = LATE_CMBT_CAPTURE;
+    const stats = ppmStats(await json(join(dir(leg), "evidence", "result.json")));
+    let problems: string[] | null = null;
+    if (ran(leg)) {
+      problems = [];
+      for (const sink of SINKS) {
+        const t = await deps.trace(leg, sink);
+        if (!t) problems.push(`${sink}: missing`);
+        else for (const p of ptLateCmbtProblems(stats, t, lateShader)) problems.push(`${sink}: ${p}`);
+      }
+      problems = [...new Set(problems)];
+    }
+    checks.push(
+      check(
+        "pt-late-cmbt",
+        "LATE-CMBT: the post-arm cell's process material (material_set_shader names a pre-arm shader RID) is keyed through its particle_process_material builtin, so its emitter is ok on an ok builtin process material",
+        problems,
+        stats ? `${stats.unknown_shader_keyed ?? 0} unknown-shader process materials re-keyed` : undefined,
       ),
     );
   }
