@@ -91,6 +91,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import struct
 import sys
 from pathlib import Path
@@ -597,6 +598,9 @@ def check_hex(blocks12: dict[str, bytes]) -> str:
 # uvarints are minimal (unsigned LEB128). L = 0 is the empty stream.
 
 ZR_MIN = 4
+# A decoder limit (post-freeze hardening, 2026-11-03): a predicted block's plain length above
+# this fails zr-length before any token is read.
+ZR_MAX_PLAIN = 1 << 28
 PREDICTED = ("mesh_u8", "mesh_f32", "mm_f32")
 TYPE_WIDTH = {"u8": 1, "i32": 4, "f32": 4, "f64": 8}
 
@@ -661,6 +665,8 @@ def zr_decode(s: bytes, length: int, block: str = "block") -> bytes:
     """The plain bytes of a token stream that must cover exactly `length`. zr-length when it does
     not (a token passes the length, or the stream ends short or long), whatever else is wrong;
     else zr-noncanonical at the first token that breaks the canonical form."""
+    if length > ZR_MAX_PLAIN:
+        raise DecodeError("zr-length", f"{block}: the plain length passes the decoder cap, 2^28")
     out = bytearray()
     p, i = 0, 0
     bad = None
@@ -1291,6 +1297,39 @@ def build_invalid_vectors(predict13: bytes, patch13: bytes) -> dict[str, tuple[b
             return meta_b, named
         out[name] = (_edit_tx(predict13, seq, edit, tokens=True), code,
                      f"predict.rs13 seq {seq}: {desc}", 13, seq)
+    # The decoder cap: the plain length comes from the descriptor count, so raising it is a meta
+    # edit; the single token (L, 0) is what a hostile writer would send.
+    def set_count(block, count):
+        def edit(meta_b, named):
+            pat = re.compile(rb'("name":"' + block.encode() + rb'"[^{}]*?"count":)\d+')
+            assert len(pat.findall(meta_b)) == 1, block
+            meta_b = pat.sub(lambda m: m.group(1) + str(count).encode(), meta_b)
+            named[block] = uvarint(count * 4) + uvarint(0)
+            return meta_b, named
+        return edit
+
+    def uvarint_overflow(meta_b, named):
+        named["mesh_u8"] = bytes.fromhex("ffffffffffffffffff7f") + named["mesh_u8"][1:]
+        return meta_b, named
+
+    def both(meta_b, named):
+        named["mesh_f32"] = _overlong_first(named["mesh_f32"])
+        named["mesh_u8"] = named["mesh_u8"][:-1]
+        return meta_b, named
+    for name, code, edit, desc in (
+            ("zr-plain-cap", "zr-length", set_count("mesh_f32", (1 << 26) + 1),
+             "mesh_f32's count makes its plain length 2^28 + 4, past the decoder cap; its "
+             "stream is the single token (L, 0)"),
+            ("zr-plain-huge", "zr-length", set_count("mesh_f32", 1_500_000_000),
+             "mesh_f32's count makes its plain length 6e9 (past u32); its stream is the "
+             "single token (L, 0)"),
+            ("zr-uvarint-overflow", "zr-length", uvarint_overflow,
+             "mesh_u8's first token's zero count is a ten-byte uvarint past 2^64"),
+            ("zr-block-order", "zr-noncanonical", both,
+             "mesh_f32 is non-canonical and mesh_u8 truncated: descriptor order reports "
+             "mesh_f32's error first")):
+        out[name] = (_edit_tx(predict13, 2, edit, tokens=True), code,
+                     f"predict.rs13 seq 2: {desc}", 13, 2)
     # golden-12's invalid vectors transcoded: each keeps its /12 code.
     index12 = json.loads((GOLDEN12 / "index.json").read_text())
     for entry in index12["invalid"]:
@@ -1690,6 +1729,11 @@ def zero_run_cases() -> dict:
         ("00026100040162", 7, "zr-noncanonical", "a literal ending in a zero byte before a run"),
         ("04000401 62".replace(" ", ""), 9, "zr-noncanonical", "an empty literal before a run"),
         ("0300ff", 3, "zr-length", "a length error wins over a non-canonical token before it"),
+        (uvarint(ZR_MAX_PLAIN + 1).hex() + "00", ZR_MAX_PLAIN + 1, "zr-length",
+         "a plain length past the decoder cap, 2^28"),
+        (uvarint(6_000_000_000).hex() + "00", 6_000_000_000, "zr-length",
+         "a plain length past u32 and wasm32's usize"),
+        ("ffffffffffffffffff7f" "00", 4, "zr-length", "a ten-byte uvarint past 2^64"),
     ]
     invalid = []
     for s, n, code, desc in raw:

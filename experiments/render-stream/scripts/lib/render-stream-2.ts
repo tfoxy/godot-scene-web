@@ -5619,6 +5619,9 @@ function rs13CheckHex(blocks12: Map<string, Uint8Array>): string {
 // is one token's `zeros`, whole; everything else is literal (make_golden.py zr_encode/zr_decode).
 
 export const RS13_ZR_MIN = 4;
+/** Decoder limit (post-freeze hardening, fix batch B2): the most plain bytes one predicted block
+ * may expand to (2^28). A longer one is `zr-length`, before any token is read or buffer sized. */
+export const RS13_ZR_MAX_PLAIN = 2 ** 28;
 const RS13_PREDICTED_BLOCKS = ["mesh_f32", "mesh_u8", "mm_f32"] as const;
 const RS13_PREDICTED_SET: ReadonlySet<string> = new Set(RS13_PREDICTED_BLOCKS);
 
@@ -5735,6 +5738,9 @@ export function rs13ZrDecode(
   length: number,
   where = "block",
 ): Uint8Array {
+  // `!(<=)` also refuses a NaN length; count x width past 2^53 is only ever larger than the cap.
+  if (!(length <= RS13_ZR_MAX_PLAIN))
+    throw new Rs13ZrError(`zr-length: ${where}: the plain length passes the decoder cap, 2^28`);
   const out = new Uint8Array(length);
   let at = 0;
   let p = 0;

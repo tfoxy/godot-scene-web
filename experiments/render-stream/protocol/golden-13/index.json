@@ -730,6 +730,34 @@
       "description": "predict.rs13 seq 2: mesh_u8's first zero-run token is split in two: an empty literal before a zero run"
     },
     {
+      "file": "invalid/zr-plain-cap.rs13",
+      "code": "zr-length",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_f32's count makes its plain length 2^28 + 4, past the decoder cap; its stream is the single token (L, 0)"
+    },
+    {
+      "file": "invalid/zr-plain-huge.rs13",
+      "code": "zr-length",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_f32's count makes its plain length 6e9 (past u32); its stream is the single token (L, 0)"
+    },
+    {
+      "file": "invalid/zr-uvarint-overflow.rs13",
+      "code": "zr-length",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_u8's first token's zero count is a ten-byte uvarint past 2^64"
+    },
+    {
+      "file": "invalid/zr-block-order.rs13",
+      "code": "zr-noncanonical",
+      "version": 13,
+      "seq": 2,
+      "description": "predict.rs13 seq 2: mesh_f32 is non-canonical and mesh_u8 truncated: descriptor order reports mesh_f32's error first"
+    },
+    {
       "file": "invalid/g12-pt-offset-wrong.rs13",
       "code": "pt-offset",
       "version": 13,

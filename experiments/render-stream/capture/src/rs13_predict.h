@@ -216,6 +216,10 @@ const char *to_wire(Status status);
 // zr_decode): a predicted block's W13a coded bytes as tokens `uvarint zeros, uvarint n, n literal
 // bytes`, every maximal run of kZrMinRun or more zero bytes one token's zeros.
 constexpr std::size_t kZrMinRun = 4;
+// Decoder limit (post-freeze hardening, fix batch B2; render-stream-13.md "As built (W13r)"): the
+// most plain bytes one predicted block may expand to. A longer one is ZrLength before any token
+// is read and before any buffer is sized.
+constexpr std::uint64_t kZrMaxPlain = std::uint64_t{1} << 28;
 // Writer sabotages: Overrun, the first zero run one zero too long (zr-length); ShortRun, the first
 // 3-byte zero run elided too (zr-noncanonical).
 enum class ZrSabotage : std::uint8_t { None, Overrun, ShortRun };
@@ -225,9 +229,10 @@ std::size_t zr_bound(std::size_t n);
 std::size_t zr_encode(const std::uint8_t *in, std::size_t n, std::uint8_t *out,
                       ZrSabotage sabotage = ZrSabotage::None);
 // Expands `size` token bytes into exactly `length` bytes at `out`: Ok, ZrLength (whatever else is
-// wrong) or ZrNoncanonical (the first token out of the canonical form).
+// wrong, and any `length` past kZrMaxPlain, which `out` is never written for) or ZrNoncanonical
+// (the first token out of the canonical form).
 Status zr_decode(const std::uint8_t *in, std::size_t size, std::uint8_t *out,
-                 std::size_t length);
+                 std::uint64_t length);
 
 // The same keys read from a /12 record's meta JSON (what encode() of a bare record does): Ok,
 // NotTransaction, or the record's framing / meta error.

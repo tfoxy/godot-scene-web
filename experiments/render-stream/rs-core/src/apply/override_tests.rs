@@ -601,7 +601,7 @@ fn frozen_holds_records_through_change_and_removal_then_unfreeze() {
     // A change while frozen is skipped (the membership syncs at this apply).
     s.items.get_mut(&C1).unwrap().xform[4] += 40.0;
     b.apply(&s, &TxDelta { seq: 2, items_upserted: vec![C1], ..TxDelta::default() }, &store);
-    assert!(b.frozen.contains(&P) && b.frozen.contains(&C1) && b.frozen.contains(&C2));
+    assert!(b.frozen.contains_key(&P) && b.frozen.contains_key(&C1) && b.frozen.contains_key(&C2));
     assert_eq!(b.paint_digest(), held, "a change applied while frozen");
 
     // A removal while frozen is skipped: the records stay and still draw.
@@ -739,4 +739,183 @@ fn frozen_payloads_survive_and_frozen_sweeps_drops_them() {
         !c.referenced_payload_hashes().contains(&hash2),
         "frozen-sweeps was not caught"
     );
+}
+
+// ------------------------------------------- B2: freeze across a rebuild, held members, order
+
+/// Freeze `id` on `b` (the table, composed now) and sync the membership with an empty patch.
+fn freeze(b: &mut Applier, s: &ResolvedState, store: &PayloadStore, ids: &[Id], seq: i64) {
+    let mut all_ids = Vec::new();
+    let mut all_vals = Vec::new();
+    for &id in ids {
+        let (i, v) = frozen_table(id);
+        all_ids.extend(i);
+        all_vals.extend(v);
+    }
+    b.set_overrides(&all_ids, &all_vals).unwrap();
+    b.refresh_overrides(s, store);
+    b.apply(s, &TxDelta { seq, ..TxDelta::default() }, store);
+}
+
+/// A coding resync's rebuild (gsw-rs `live_rebuild`): a fresh applier inherits the table and
+/// applies the full transaction that ends the resync.
+fn rebuild(old: &mut Applier, s: &ResolvedState, store: &PayloadStore) -> Applier {
+    let mut a = applier();
+    a.inherit_overrides(old);
+    a.apply(s, &full_delta(s), store);
+    a
+}
+
+#[test]
+fn a_freeze_survives_a_coding_rebuild() {
+    let store = PayloadStore::default();
+    let mut s = base();
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    freeze(&mut b, &s, &store, &[P], 2);
+    // A change outside the frozen subtree applies.
+    s.items.get_mut(&Q).unwrap().xform[4] += 7.0;
+    b.apply(&s, &TxDelta { seq: 3, items_upserted: vec![Q], ..TxDelta::default() }, &store);
+    let before = b.paint_digest();
+
+    // The rebuild draws the frozen subtree (from the state at the resync, here unchanged).
+    let mut c = rebuild(&mut b, &s, &store);
+    assert!(c.items.contains_key(&C1) && c.items.contains_key(&C2), "held items not drawn");
+    assert_eq!(c.paint_digest(), before, "the frozen picture was lost across the rebuild");
+    assert!(c.frozen.contains_key(&P) && c.frozen.contains_key(&C1), "membership lost");
+
+    // And holds from there: a later host change under P is skipped.
+    s.items.get_mut(&C1).unwrap().xform[4] += 40.0;
+    c.apply(&s, &TxDelta { seq: 4, items_upserted: vec![C1], ..TxDelta::default() }, &store);
+    assert_eq!(c.paint_digest(), before, "a change applied after the rebuild while frozen");
+
+    // A subtree the host changed while frozen shows the host's state at the resync.
+    let d = rebuild(&mut c, &s, &store);
+    let mut oracle = applier();
+    oracle.apply(&s, &full_delta(&s), &store);
+    assert_eq!(d.paint_digest(), oracle.paint_digest(), "the rebuild did not show the state");
+}
+
+/// The base scene with C1 drawing mesh 5 (one triangle). Returns the store and the mesh's
+/// surface hash.
+fn mesh_scene() -> (ResolvedState, PayloadStore, Hash) {
+    use super::payloads::{mesh_geometry, MeshBuffers};
+    let mut s = base();
+    let h = Hash([9; 32]);
+    s.meshes.insert(
+        5,
+        Mesh {
+            id: 5,
+            origin: Origin::Created,
+            adopted_content: None,
+            status: EntryStatus::Ok,
+            reason: None,
+            version: 1,
+            custom_aabb: [0.0; 6],
+            surfaces: vec![MeshSurface {
+                hash: Some(h),
+                body_sha256: None,
+                payload_bytes: 0,
+                primitive: Primitive::Triangles,
+                format: 1 | (1 << 3),
+                vertex_count: 3,
+                index_count: 0,
+            }],
+        },
+    );
+    s.items.get_mut(&C1).unwrap().commands = Commands {
+        list: vec![Command::Mesh {
+            mesh: 5,
+            tex: None,
+            transform: geom::IDENTITY,
+            modulate: [1.0; 4],
+        }],
+        ..Commands::default()
+    };
+    let points: [[f32; 2]; 3] = [[0.0, 0.0], [8.0, 0.0], [0.0, 8.0]];
+    let vertex: Vec<u8> = points
+        .iter()
+        .flat_map(|p| p.iter().flat_map(|v| v.to_le_bytes()))
+        .collect();
+    let attribute: Vec<u8> = points.iter().flat_map(|_| [51, 51, 51, 255]).collect();
+    let mut store = PayloadStore::default();
+    store.meshes.insert(
+        h,
+        mesh_geometry(
+            Primitive::Triangles,
+            1 | (1 << 3),
+            [0.0; 6],
+            3,
+            0,
+            MeshBuffers {
+                vertex: &vertex,
+                attribute: &attribute,
+                skin: &[],
+                index: &[],
+                uv_scale: [0.0; 4],
+            },
+        )
+        .unwrap(),
+    );
+    (s, store, h)
+}
+
+#[test]
+fn a_held_member_without_a_state_entry_survives_another_freeze() {
+    let (mut s, store, h) = mesh_scene();
+    let mut b = applier();
+    b.apply(&s, &full_delta(&s), &store);
+    assert!(b.referenced_payload_hashes().contains(&h), "the mesh is not resident");
+    freeze(&mut b, &s, &store, &[P], 2);
+    // The host removes C1 and its mesh: the held record keeps the mesh resident.
+    s.items.remove(&C1);
+    s.items.get_mut(&P).unwrap().children = vec![C2];
+    s.meshes.remove(&5);
+    b.apply(
+        &s,
+        &TxDelta { seq: 3, items_upserted: vec![P], items_removed: vec![C1], ..TxDelta::default() },
+        &store,
+    );
+    assert!(b.items.contains_key(&C1) && b.referenced_payload_hashes().contains(&h));
+    // Freezing another root re-syncs the membership: C1 (no state entry, its record held under
+    // the still-frozen P) stays a member, so its mesh stays resident while its record draws.
+    freeze(&mut b, &s, &store, &[P, Q], 4);
+    assert!(b.frozen.contains_key(&C1), "the held member left the membership");
+    assert!(b.items.contains_key(&C1), "the held record was dropped");
+    assert!(
+        b.referenced_payload_hashes().contains(&h),
+        "the held record's mesh was freed by another freeze"
+    );
+    // Unfreezing P (Q still frozen) releases C1: its record and mesh go.
+    freeze(&mut b, &s, &store, &[Q], 5);
+    assert!(!b.frozen.contains_key(&C1) && !b.items.contains_key(&C1));
+    assert!(!b.referenced_payload_hashes().contains(&h), "the released mesh stayed");
+}
+
+#[test]
+fn a_grandchild_added_with_its_parent_under_a_frozen_root_is_held_in_any_order() {
+    // X under P and Y under X arrive in one transaction; the ids decide `items_upserted` order.
+    for (x, y) in [(40, 30), (30, 40)] {
+        let store = PayloadStore::default();
+        let mut s = base();
+        let mut b = applier();
+        b.apply(&s, &full_delta(&s), &store);
+        freeze(&mut b, &s, &store, &[P], 2);
+        let held = b.paint_digest();
+        let mut xi = item(x, in_item(P), vec![y], Some([50.0, 50.0, 10.0, 10.0]));
+        xi.draw_index = 100;
+        let yi = item(y, in_item(x), vec![], Some([70.0, 70.0, 10.0, 10.0]));
+        s.items.insert(x, xi);
+        s.items.insert(y, yi);
+        s.items.get_mut(&P).unwrap().children.push(x);
+        let mut ups = vec![P, x, y];
+        ups.sort_unstable();
+        b.apply(&s, &TxDelta { seq: 3, items_upserted: ups, ..TxDelta::default() }, &store);
+        assert!(
+            b.frozen.contains_key(&x) && b.frozen.contains_key(&y),
+            "({x}, {y}): new items under a frozen root not held"
+        );
+        assert!(!b.items.contains_key(&y), "({x}, {y}): the grandchild was drawn");
+        assert_eq!(b.paint_digest(), held, "({x}, {y}): the frozen picture changed");
+    }
 }

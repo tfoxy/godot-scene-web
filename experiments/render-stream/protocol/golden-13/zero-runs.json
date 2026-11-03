@@ -195,6 +195,24 @@
       "length": 3,
       "code": "zr-length",
       "description": "a length error wins over a non-canonical token before it"
+    },
+    {
+      "coded": "818080800100",
+      "length": 268435457,
+      "code": "zr-length",
+      "description": "a plain length past the decoder cap, 2^28"
+    },
+    {
+      "coded": "80f882ad1600",
+      "length": 6000000000,
+      "code": "zr-length",
+      "description": "a plain length past u32 and wasm32's usize"
+    },
+    {
+      "coded": "ffffffffffffffffff7f00",
+      "length": 4,
+      "code": "zr-length",
+      "description": "a ten-byte uvarint past 2^64"
     }
   ]
 }

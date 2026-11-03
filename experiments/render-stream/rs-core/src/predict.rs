@@ -807,16 +807,31 @@ fn has_zero_run(lit: &[u8]) -> bool {
     found
 }
 
+/// The most plain bytes one predicted block may expand to (2^28): a decoder limit, not a wire
+/// rule. See render-stream-13.md "As built (W13r)".
+pub const ZR_MAX_PLAIN: u64 = 1 << 28;
+
 /// `zr_decode`: replaces `out` by the `len` plain bytes of the token stream `s` (its storage
 /// reused, every byte written). `zr-length` when the stream does not cover exactly `len`,
 /// whatever else is wrong; else `zr-noncanonical` at the first token that breaks the canonical
 /// form. `what` labels messages.
+///
+/// Decoder limit (post-freeze hardening, fix batch B2): a `len` above [`ZR_MAX_PLAIN`] fails
+/// `zr-length` first, before any token is read and before `out` is sized. `len` is a `u64` so a
+/// plain length past wasm32's `usize` reaches that check instead of truncating.
 pub fn zr_decode(
     s: &[u8],
-    len: usize,
+    len: u64,
     out: &mut Vec<u8>,
     what: &dyn Fn() -> String,
 ) -> Result<(), Error> {
+    if len > ZR_MAX_PLAIN {
+        return Err(Error::new(
+            "zr-length",
+            format!("{}: the plain length passes the decoder cap, 2^28", what()),
+        ));
+    }
+    let len = len as usize; // <= 2^28
     if out.len() < len {
         out.resize(len, 0);
     } else {
@@ -2456,11 +2471,12 @@ fn make_record(out: &mut Vec<u8>, meta_parts: &[&[u8]], body: &[u8]) {
 
 /// The plain length (descriptor `count` × width) of each predicted block of `tx`, in
 /// `[mesh_f32, mesh_u8, mm_f32]` order (0 for a block the meta does not list).
-fn plain_lens(tx: &TxMeta) -> [usize; 3] {
+/// A length that overflows `u64` is `u64::MAX`, past [`ZR_MAX_PLAIN`], so `zr_decode` rejects it.
+fn plain_lens(tx: &TxMeta) -> [u64; 3] {
     let len = |i: usize| {
         tx.blocks
             .get(i)
-            .map(|d| (d.count * d.ty.width()) as usize)
+            .map(|d| d.count.checked_mul(d.ty.width()).unwrap_or(u64::MAX))
             .unwrap_or(0)
     };
     [len(MESH_F32), len(MESH_U8), len(MM_F32)]
@@ -2517,6 +2533,8 @@ pub fn unpredict_record(
             return Err(e);
         }
     }
+    // Every length passed the cap in `zr_decode`.
+    let lens = lens.map(|l| l as usize);
     // `plain` keeps its allocation: the meta without the check, every other block copied with its
     // length prefix, each predicted block's prefix its plain length and its bytes written whole
     // by the un-predictor (pass-through included).
@@ -2549,7 +2567,13 @@ pub fn unpredict_record(
         }
         at += 4 + b.len;
     }
-    let rl = plain.len() as u32 - 4;
+    let Ok(rl) = u32::try_from(plain.len() - 4) else {
+        sc.coded = coded;
+        return Err(Error::new(
+            "record-length",
+            "an expanded render-stream/13 transaction passes the u32 record length",
+        ));
+    };
     plain[0..4].copy_from_slice(&rl.to_le_bytes());
     plain[4..8].copy_from_slice(&((meta_len - CHECK_BYTES) as u32).to_le_bytes());
     let src = Blocks {
@@ -2853,11 +2877,11 @@ mod tests {
                 let mut s = Vec::new();
                 zr_encode(&c, ZrSabotage::None, &mut s);
                 let mut out = vec![7u8; 3];
-                zr_decode(&s, n, &mut out, &|| "t".into()).unwrap();
+                zr_decode(&s, n as u64, &mut out, &|| "t".into()).unwrap();
                 assert_eq!(out, c, "n {n}");
                 // Into a reused buffer of other bytes: every byte is written.
                 let mut z = vec![0xa5u8; n + 16];
-                zr_decode(&s, n, &mut z, &|| "t".into()).unwrap();
+                zr_decode(&s, n as u64, &mut z, &|| "t".into()).unwrap();
                 assert_eq!(z, c, "n {n} (reused)");
                 for (sab, code) in [
                     (ZrSabotage::Overrun, "zr-length"),
@@ -2865,7 +2889,7 @@ mod tests {
                 ] {
                     let mut bad = Vec::new();
                     if zr_encode_sabotaged(&c, sab, &mut bad) {
-                        let e = zr_decode(&bad, n, &mut out, &|| "t".into()).unwrap_err();
+                        let e = zr_decode(&bad, n as u64, &mut out, &|| "t".into()).unwrap_err();
                         assert_eq!(e.code, code, "n {n} {sab:?}");
                     } else {
                         assert_eq!(bad, s);

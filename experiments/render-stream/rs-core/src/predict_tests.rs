@@ -768,6 +768,37 @@ fn transcoders_match_the_goldens_and_refuse_invalid_input() {
     );
 }
 
+/// The W13r decoder limit (fix batch B2): a plain length past 2^28 fails `zr-length` before any
+/// buffer is sized, however few bytes the stream has, and a count x width past `u64` or `usize`
+/// reaches the same check.
+#[test]
+fn zr_decode_caps_the_plain_length_before_allocating() {
+    let cap = crate::predict::ZR_MAX_PLAIN;
+    assert_eq!(cap, 1 << 28);
+    for len in [cap + 1, 6_000_000_000, u64::MAX] {
+        let mut out = Vec::new();
+        let e = crate::predict::zr_decode(&[0x01, 0x00], len, &mut out, &|| "t".into())
+            .unwrap_err();
+        assert_eq!(e.code, "zr-length", "len {len}");
+        assert_eq!(out.capacity(), 0, "len {len} sized the buffer");
+    }
+    // The cap itself is a length, not a refusal: the short stream fails on its tokens.
+    let mut out = Vec::new();
+    let e = crate::predict::zr_decode(&[0x00], cap, &mut out, &|| "t".into()).unwrap_err();
+    assert!(e.detail.contains("uvarint"), "{}", e.detail);
+    // End to end: counts of 2^26 + 1 (2^28 + 4 bytes) and 1.5e9 (6e9) in mesh_f32's descriptor,
+    // and a ten-byte uvarint past 2^64 in mesh_u8, are zr-length (no panic, no allocation).
+    for name in ["zr-plain-cap", "zr-plain-huge", "zr-uvarint-overflow"] {
+        let data = golden(&format!("golden-13/invalid/{name}.rs13"));
+        assert_eq!(crate::predict::to12(&data, false).unwrap_err().code, "zr-length", "{name}");
+    }
+    let data = golden("golden-13/invalid/zr-block-order.rs13");
+    assert_eq!(
+        crate::predict::to12(&data, false).unwrap_err().code,
+        "zr-noncanonical"
+    );
+}
+
 /// The /13 extra per transaction, by phase: `unpredict_record` (the plain record, the
 /// un-prediction and `predict_check`) and `History::accept` (R(T)), the two steps a /13 accept
 /// adds to /12's, plus the block coder alone run again warm on the same transaction. Run with
@@ -828,7 +859,7 @@ fn predict_phase_bench() {
                 .enumerate()
             {
                 let b = coded[i];
-                let n = (tx.blocks[i].count * tx.blocks[i].ty.width()) as usize;
+                let n = tx.blocks[i].count * tx.blocks[i].ty.width();
                 crate::predict::zr_decode(&rec[b.start..b.start + b.len], n, &mut zr[k], &|| {
                     String::new()
                 })

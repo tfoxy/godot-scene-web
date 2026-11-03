@@ -299,7 +299,11 @@ pub fn read_blocks(
         let block_len = le_u32(record, pos) as u64;
         pos += 4;
         let expected = d.count.checked_mul(d.ty.width());
-        let coded = zero_runs && matches!(i, 4 | 7 | 8);
+        let coded = zero_runs
+            && matches!(
+                i,
+                crate::predict::MESH_F32 | crate::predict::MESH_U8 | crate::predict::MM_F32
+            );
         if !coded && expected != Some(block_len) {
             return Err(Error::new(
                 "block-length",

@@ -644,7 +644,12 @@ void test_reader() {
                           Vector{"zr-trailing", rs13::Status::ZrLength, 2},
                           Vector{"zr-overlong", rs13::Status::ZrNoncanonical, 2},
                           Vector{"zr-literal-run", rs13::Status::ZrNoncanonical, 2},
-                          Vector{"zr-split-run", rs13::Status::ZrNoncanonical, 2}}) {
+                          Vector{"zr-split-run", rs13::Status::ZrNoncanonical, 2},
+                          // The decoder cap (fix batch B2).
+                          Vector{"zr-plain-cap", rs13::Status::ZrLength, 2},
+                          Vector{"zr-plain-huge", rs13::Status::ZrLength, 2},
+                          Vector{"zr-uvarint-overflow", rs13::Status::ZrLength, 2},
+                          Vector{"zr-block-order", rs13::Status::ZrNoncanonical, 2}}) {
     const Transcoded t =
         transcode(read_file(kG13 + "invalid/" + v.file + ".rs13"), true);
     if (t.status != v.code || t.seq != v.seq) {
@@ -773,7 +778,7 @@ void test_zero_runs() {
   check(!text.empty(), "zero-runs.json is readable");
   std::string plain, coded, code;
   bool have_plain = false;
-  long length = -1;
+  long long length = -1;
   int valid = 0, invalid = 0;
   std::size_t at = 0;
   while (at < text.size()) {
@@ -802,23 +807,36 @@ void test_zero_runs() {
       continue;
     }
     if (const std::size_t i = line.find("\"length\": "); i != std::string::npos) {
-      length = std::stol(line.substr(i + 10));
+      length = std::stoll(line.substr(i + 10));
       continue;
     }
     if (json_string_after(line, "code", &code)) {
       const std::vector<std::uint8_t> c = from_hex(coded);
-      std::vector<std::uint8_t> back(static_cast<std::size_t>(length) + 1);
+      // A length past the cap is refused without writing: a one-byte buffer proves it.
+      std::vector<std::uint8_t> back(
+          length > static_cast<long long>(rs13::kZrMaxPlain) ? 1 : static_cast<std::size_t>(length) + 1);
       const rs13::Status st =
-          rs13::zr_decode(c.data(), c.size(), back.data(), static_cast<std::size_t>(length));
+          rs13::zr_decode(c.data(), c.size(), back.data(), static_cast<std::uint64_t>(length));
       if (code != rs13::to_wire(st)) {
-        std::fprintf(stderr, "  zero-runs.json invalid %s/%ld: %s, expected %s\n", coded.c_str(),
+        std::fprintf(stderr, "  zero-runs.json invalid %s/%lld: %s, expected %s\n", coded.c_str(),
                      length, rs13::to_wire(st), code.c_str());
       }
       check(code == rs13::to_wire(st), "a zero-runs.json invalid case fails with its code");
       ++invalid;
     }
   }
-  check(valid >= 18 && invalid >= 20, "zero-runs.json lists its valid and invalid cases");
+  check(valid >= 18 && invalid >= 23, "zero-runs.json lists its valid and invalid cases");
+  // The decoder cap: past 2^28 is ZrLength with `out` untouched (a null buffer proves no write
+  // and, with the caller's order, no sizing); the cap itself is a length like any other.
+  {
+    const std::uint8_t two[2] = {0x01, 0x00};
+    check(rs13::zr_decode(two, 2, nullptr, rs13::kZrMaxPlain + 1) == rs13::Status::ZrLength,
+          "zr_decode rejects 2^28 + 1");
+    check(rs13::zr_decode(two, 2, nullptr, 6000000000ull) == rs13::Status::ZrLength,
+          "zr_decode rejects 6e9");
+    check(rs13::zr_decode(two, 2, nullptr, ~std::uint64_t{0}) == rs13::Status::ZrLength,
+          "zr_decode rejects 2^64 - 1");
+  }
   // The SSE2 scan against the plain loop: random buffers of runs of 0-40 zeros between 1-40
   // nonzero bytes (every alignment of the 16- and 32-byte steps), and a few long ones.
   std::uint64_t rng = 0x9E3779B97F4A7C15ull;

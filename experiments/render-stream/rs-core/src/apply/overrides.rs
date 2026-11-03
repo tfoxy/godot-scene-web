@@ -229,10 +229,13 @@ impl Applier {
         self.overrides = std::mem::take(&mut old.overrides);
         self.removed_log = old.removed_log.take();
         self.ov_sabotage = old.ov_sabotage;
-        // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The fresh
-        // applier's first apply re-syncs when `frozen_dirty` is set.
+        // FRZ-HOOK: the frozen membership and any pending unfreeze follow the table. The held
+        // records do not (a fresh applier has none): its first apply draws the held items from
+        // the resolved state, i.e. the frozen subtree shows the host's state at the resync, and
+        // holds from there (`hold_upserts`).
         self.frozen = std::mem::take(&mut old.frozen);
         self.frozen_dirty = old.frozen_dirty;
+        self.frozen_res_dirty = true;
         self.unfrozen = std::mem::take(&mut old.unfrozen);
         self.reconcile_frozen = old.reconcile_frozen;
     }
@@ -241,49 +244,115 @@ impl Applier {
     /// when the table's `frozen` flags changed, and mark a full item reconcile when a root was
     /// unfrozen. Called once at the top of `apply`; `set_overrides` (which has no state) only
     /// records the change. The membership persists across applies, so a frozen subtree whose root
-    /// has since left the state stays held until it is unfrozen.
+    /// has since left the state stays held until it is unfrozen: a member whose state entry is
+    /// gone but whose record is held stays while its root is still frozen (the state has no
+    /// parent chain for it to be found again).
     pub fn sync_frozen(&mut self, state: &ResolvedState) {
         let unfreeze = !std::mem::take(&mut self.unfrozen).is_empty();
         if !self.frozen_dirty && !unfreeze {
             return;
         }
         self.frozen_dirty = false;
-        self.frozen.clear();
-        for (root, o) in &self.overrides {
-            if !o.frozen {
-                continue;
-            }
-            let mut stack = vec![*root];
+        self.frozen_res_dirty = true;
+        let old = std::mem::take(&mut self.frozen);
+        let roots: Vec<Id> = self
+            .overrides
+            .iter()
+            .filter(|(_, o)| o.frozen)
+            .map(|(id, _)| *id)
+            .collect();
+        for &root in &roots {
+            let mut stack = vec![root];
             while let Some(cur) = stack.pop() {
-                if !self.frozen.insert(cur) {
+                if self.frozen.contains_key(&cur) {
                     continue;
                 }
+                self.frozen.insert(cur, root);
                 if let Some(it) = state.items.get(&cur) {
                     stack.extend(it.children.iter().copied());
                 }
             }
         }
+        for (id, root) in old {
+            if !state.items.contains_key(&id)
+                && self.items.contains_key(&id)
+                && roots.contains(&root)
+            {
+                self.frozen.entry(id).or_insert(root);
+            }
+        }
         self.reconcile_frozen |= unfreeze;
     }
 
+    /// FRZ-HOOK: the frozen root `id` is held under, if any: `id` itself is a member, or an item
+    /// ancestor in the state is. Every item met on the way to a member joins the membership, so
+    /// one transaction that adds X under a frozen P and Y under X holds both whatever their id
+    /// order. `seen` memoizes the ancestors already found free of any member.
+    pub(super) fn held_root(
+        &mut self,
+        state: &ResolvedState,
+        id: Id,
+        seen: &mut std::collections::HashSet<Id>,
+    ) -> Option<Id> {
+        if let Some(r) = self.frozen.get(&id) {
+            return Some(*r);
+        }
+        let mut path: Vec<Id> = vec![id];
+        let mut cur = id;
+        let root = loop {
+            let parent = state
+                .items
+                .get(&cur)
+                .and_then(|it| it.parent)
+                .filter(|p| p.kind == ParentKind::Item);
+            let Some(p) = parent else { break None };
+            if let Some(r) = self.frozen.get(&p.id) {
+                break Some(*r);
+            }
+            if seen.contains(&p.id) || path.len() > state.items.len() {
+                break None;
+            }
+            path.push(p.id);
+            cur = p.id;
+        };
+        match root {
+            Some(r) => {
+                self.frozen_res_dirty = true;
+                for m in path {
+                    self.frozen.insert(m, r);
+                }
+            }
+            None => seen.extend(path),
+        }
+        root
+    }
+
     /// FRZ-HOOK: the texture and mesh ids the held (frozen) records still draw from, so the
-    /// retention sweep keeps their payloads (they stay resident).
-    pub fn frozen_resources(
+    /// retention sweep keeps their payloads (they stay resident). Read over the members' records
+    /// only (never every record).
+    pub fn compute_frozen_resources(
         &self,
     ) -> (std::collections::HashSet<Id>, std::collections::HashSet<Id>) {
         let mut tex = std::collections::HashSet::new();
         let mut mesh = std::collections::HashSet::new();
-        if self.frozen.is_empty() {
-            return (tex, mesh);
-        }
-        for (id, rec) in &self.items {
-            if !self.frozen.contains(id) {
-                continue;
+        for id in self.frozen.keys() {
+            if let Some(rec) = self.items.get(id) {
+                tex.extend(rec.tex_sizes.iter().map(|(t, _)| *t));
+                mesh.extend(rec.mesh_versions.iter().map(|(m, _)| *m));
             }
-            tex.extend(rec.tex_sizes.iter().map(|(t, _)| *t));
-            mesh.extend(rec.mesh_versions.iter().map(|(m, _)| *m));
         }
         (tex, mesh)
+    }
+
+    /// FRZ-HOOK: [`Applier::compute_frozen_resources`], cached until the membership or a held
+    /// record changes.
+    pub(super) fn frozen_resources(
+        &mut self,
+    ) -> &(std::collections::HashSet<Id>, std::collections::HashSet<Id>) {
+        if std::mem::take(&mut self.frozen_res_dirty) {
+            self.frozen_res = self.compute_frozen_resources();
+        }
+        &self.frozen_res
     }
 
     // ------------------------------------------------------------------------- queries

@@ -873,14 +873,14 @@ impl Suite<'_> {
                     let mut enc = Vec::new();
                     crate::predict::zr_encode(&plain, crate::predict::ZrSabotage::None, &mut enc);
                     let mut dec = Vec::new();
-                    let r = crate::predict::zr_decode(&coded, plain.len(), &mut dec, &|| "case".into());
+                    let r = crate::predict::zr_decode(&coded, plain.len() as u64, &mut dec, &|| "case".into());
                     if enc != coded || r.is_err() || dec != plain {
                         bad.push(s(&c, "coded"));
                     }
                     n += 1;
                 }
                 for c in cases.get("invalid").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
-                    let len = c.get("length").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let len = c.get("length").and_then(|x| x.as_u64()).unwrap_or(0);
                     let mut dec = Vec::new();
                     let r = crate::predict::zr_decode(&hex(&c, "coded"), len, &mut dec, &|| "case".into());
                     if r.err().map(|e| e.code) != Some(c.get("code").and_then(|x| x.as_str()).unwrap_or("")) {

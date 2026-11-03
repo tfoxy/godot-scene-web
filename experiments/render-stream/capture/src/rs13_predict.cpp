@@ -2,6 +2,7 @@
 // same name in protocol/golden-13/make_golden.py; read the two side by side.
 #include "rs13_predict.h"
 
+#include <limits>
 #include <algorithm>
 #include <atomic>
 #include <charconv>
@@ -593,12 +594,16 @@ void to_typed(const Meta &meta, PredictMeta *out) {
         width = type.s == "u8" ? 1 : type.s == "f64" ? 8 : type.s == "f32" || type.s == "i32" ? 4 : 0;
       }
       std::int64_t c = -1;
-      if (!count.as_int(&c) && count.kind == MetaNum::Kind::Float && count.d >= 0 &&
+      bool huge = false;  // an overflowing plain length: past the zr_decode cap, not a schema error
+      if (count.as_int(&c) && c > (std::int64_t{1} << 40)) {
+        huge = true;
+      } else if (!count.as_int(&c) && count.kind == MetaNum::Kind::Float && count.d >= 0 &&
           count.d <= 1e12 && count.d == std::floor(count.d)) {
         c = static_cast<std::int64_t>(count.d);
       }
-      out->block_bytes.push_back(width != 0 && c >= 0 && c <= (std::int64_t{1} << 40) ? c * width
-                                                                                      : -1);
+      out->block_bytes.push_back(width != 0 && huge ? std::numeric_limits<std::int64_t>::max()
+                                 : width != 0 && c >= 0 ? c * width
+                                                        : -1);
     }
   }
 }
@@ -1743,7 +1748,11 @@ std::size_t zr_encode(const std::uint8_t *in, std::size_t n, std::uint8_t *out,
 }
 
 Status zr_decode(const std::uint8_t *in, std::size_t size, std::uint8_t *out,
-                 std::size_t length) {
+                 std::uint64_t length_u64) {
+  if (length_u64 > kZrMaxPlain) {
+    return Status::ZrLength;
+  }
+  const std::size_t length = static_cast<std::size_t>(length_u64);  // <= 2^28
   std::size_t p = 0, at = 0;
   bool bad = false;
   for (std::size_t i = 0; at < length; ++i) {
@@ -2333,12 +2342,15 @@ Status Predictor::decode_typed(const PredictMeta &meta, const std::uint8_t *reco
     if (length < 0) {
       return Status::MetaSchema;  // no plain length (/12's meta-schema rejects the descriptor)
     }
+    if (static_cast<std::uint64_t>(length) > kZrMaxPlain) {
+      return Status::ZrLength;  // before dst is sized: the cap is zr_decode's, checked first here
+    }
     std::vector<std::uint8_t> &dst = sc.expanded[static_cast<std::size_t>(i)];
     if (dst.size() < static_cast<std::size_t>(length)) {
       dst.resize(static_cast<std::size_t>(length));
     }
     const Span &src = blocks[static_cast<std::size_t>(idx)];
-    const Status zr = zr_decode(src.p, src.n, dst.data(), static_cast<std::size_t>(length));
+    const Status zr = zr_decode(src.p, src.n, dst.data(), static_cast<std::uint64_t>(length));
     if (zr != Status::Ok) {
       return zr;
     }

@@ -868,7 +868,22 @@ block's length".
     the stream's end, a uvarint is longer than 10 bytes, a token's `zeros` or `zeros + n` passes
     L, or bytes remain once L is covered. This holds whatever else is wrong with the block.
   - **`zr-noncanonical`**, otherwise, at the first token that breaks the canonical form.
-  - Blocks go in descriptor order, and the first failing block reports.
+  - **`zr-length`** also when L is greater than 2^28 (268435456) bytes: a **decoder limit**,
+    checked first, before any token is read and before any buffer is sized. L is computed without
+    overflow (`count` × width past 2^64, or past what the decoder's integers hold, counts as over
+    the limit), so a plain length of 6e9 fails the same way on a 32-bit `usize` as on a 64-bit one.
+  - Blocks go in descriptor order, and the first failing block reports (the limit is checked when
+    that block is reached).
+  - *Post-freeze hardening amendment (2026-11-03, fix batch B2).* /13 is frozen and the wire is
+    unchanged; only the decoders' limit is new, and no valid stream reaches it. 2^28 is 16× the
+    host's default live message ceiling (`GRC_LIVE_MAX_MESSAGE_BYTES`, 16 MiB) and 4× its default
+    resource payload ceiling (64 MiB). It keeps every block length /12-representable (its u32
+    length prefix) and every L representable in wasm32's `usize`. Zero runs compress without
+    bound (an unchanged mesh's residual is all zeros), so no coded-to-plain ratio can bound L;
+    only an absolute cap can. It bounds what a malicious or corrupt patch (a ~20-byte one with a
+    `count` of 1.5e9 and the one token `(L, 0)`) makes a decoder allocate to 2^28 bytes a block.
+    All four implementations (Rust, C++, the TypeScript validator, the Python reference) apply it
+    inside `zr_decode`.
 - **Check order** ("Decoding and check order"): framing → meta JSON and schema → zero runs
   (`zr-length`, `zr-noncanonical`) → un-predict → `predict-check` → every /12 rule.
   - /12's `block-length` (block bytes = `count` × width) does not apply to the three blocks of a
@@ -883,7 +898,13 @@ block's length".
 - **Vectors.** Every golden-13 file is regenerated. `zero-runs.json` lists the token format alone:
   plain buffers with their canonical tokens (`valid`), and token streams with their length and
   code (`invalid`). `invalid/zr-*.rs13` hold the two sabotages and five token-level edits of
-  `predict.rs13` seq 2: truncated, trailing, overlong, a literal run and a split run.
+  `predict.rs13` seq 2: truncated, trailing, overlong, a literal run and a split run. The decoder
+  limit adds three `invalid` cases to `zero-runs.json` (a length of 2^28 + 1, a length of 6e9, and
+  a ten-byte uvarint past 2^64) and four `.rs13` vectors, all at seq 2: `zr-plain-cap`
+  (`mesh_f32`'s L is 2^28 + 4) and `zr-plain-huge` (`count` 1.5e9, L = 6e9), both with the one
+  token `(L, 0)`, and `zr-uvarint-overflow` (`mesh_u8`'s first `zeros` is past 2^64), all
+  `zr-length`; and `zr-block-order` (`mesh_f32` non-canonical, `mesh_u8` truncated), which reports
+  `zr-noncanonical`, the first block in descriptor order.
 - **Decoded form.** `offset` and `byte_length` are the /13 records' own, as before. Since the block
   lengths now differ from /12's, the reference sets them from the /13 file.
 - **Transcode.** /12 → /13 codes the zero runs after the predictor; /13 → /12 expands them before
