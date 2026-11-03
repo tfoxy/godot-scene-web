@@ -66,6 +66,62 @@ describe("render-stream client recorder (REC1)", () => {
     );
   });
 
+  it("a full after an overflow restarts the ring and recording resumes", () => {
+    const r = createRecorder({ maxBytes: 8 });
+    r.session(bytes("S"));
+    r.record(bytes("d1"), "transaction", false, 1);
+    r.record(bytes("d2xxxxxx"), "transaction", false, 2); // 11 > 8: stop
+    expect(r.active).toBe(false);
+    r.record(bytes("d3"), "transaction", false, 3); // still stopped
+    r.record(bytes("FULL4XXXXX"), "transaction", true, 4); // 11 > 8 even alone: still stopped
+    expect(r.active).toBe(false);
+    expect(new TextDecoder().decode(r.export().bytes as Uint8Array)).toBe(
+      "S" + "d1",
+    );
+    r.record(bytes("F5"), "transaction", true, 5); // fits: the ring restarts here
+    r.record(bytes("d6"), "transaction", false, 6);
+    expect(r.active).toBe(true);
+    const out = r.export();
+    expect(out.overflow).toBe(false);
+    expect(out.fullSeq).toBe(5);
+    expect(new TextDecoder().decode(out.bytes as Uint8Array)).toBe(
+      "S" + "F5" + "d6",
+    );
+  });
+
+  it("a full keeps the records since the transaction before it (its item_meta), also after an overflow", () => {
+    const r = createRecorder({ maxBytes: 12 });
+    r.session(bytes("S"));
+    r.record(bytes("d1"), "transaction", false, 1);
+    r.record(bytes("M"), "item_meta", false, 0);
+    r.record(bytes("R"), "resource", false, 0);
+    r.record(bytes("F2"), "transaction", true, 2);
+    expect(new TextDecoder().decode(r.export().bytes as Uint8Array)).toBe(
+      "S" + "M" + "R" + "F2",
+    );
+    r.record(bytes("d3xxxxxxx"), "transaction", false, 3); // 14 > 12: stop
+    expect(r.active).toBe(false);
+    r.record(bytes("m"), "item_meta", false, 0); // the next full's item_meta, held aside
+    r.record(bytes("F4"), "transaction", true, 4);
+    const out = r.export();
+    expect(out.overflow).toBe(false);
+    expect(new TextDecoder().decode(out.bytes as Uint8Array)).toBe(
+      "S" + "m" + "F4",
+    );
+  });
+
+  it("the export's resources are a snapshot, not the live table", () => {
+    const r = createRecorder();
+    expect(r.export().resources.size).toBe(0);
+    r.session(bytes("S"));
+    r.resource("a", bytes("1"));
+    const first = r.export().resources;
+    r.resource("b", bytes("2"));
+    expect([...first.keys()]).toEqual(["a"]);
+    (first as Map<string, Uint8Array>).delete("a");
+    expect([...r.export().resources.keys()]).toEqual(["a", "b"]);
+  });
+
   it("keeps fetched payloads and drops the oldest past the resource bound", () => {
     const r = createRecorder({ maxResourceBytes: 10 });
     r.session(bytes("S"));
@@ -94,7 +150,10 @@ describe("render-stream loop recorder hook (off is zero copies)", () => {
 
   it("a recorder gets the decoded session and records in receipt order", () => {
     const core = new FakeCore();
-    const seen: { session: Uint8Array[]; records: [Uint8Array, string, boolean, number][] } = {
+    const seen: {
+      session: Uint8Array[];
+      records: [Uint8Array, string, boolean, number][];
+    } = {
       session: [],
       records: [],
     };

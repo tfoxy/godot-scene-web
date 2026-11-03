@@ -414,7 +414,9 @@ describe("render-stream client extensions (TAG2)", () => {
     expect(o.get(2)?.frozen).toBe(false);
     // The packed table carries 12 floats: 6 affine (identity), 4 modulate (white), 1 visible,
     // 1 frozen.
-    const h = setup([{ id: "f", beforeDraw: (f) => f.overrides.freeze(2, true) }]);
+    const h = setup([
+      { id: "f", beforeDraw: (f) => f.overrides.freeze(2, true) },
+    ]);
     const t = h.last();
     t.on.message(tx(1));
     h.clock.frame();
@@ -422,6 +424,77 @@ describe("render-stream client extensions (TAG2)", () => {
       ids: [2],
       vals: [1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1],
     });
+  });
+
+  it("two modules changing the same id warn once per pair; disjoint ids and one module never", () => {
+    const warn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (m: string) => warnings.push(m);
+    try {
+      const core = new ExtCore();
+      let k = 0;
+      const host = new ExtensionHost([
+        { id: "a", beforeDraw: (f) => f.overrides.translate(2, 0, ++k) },
+        { id: "b", beforeDraw: (f) => f.overrides.set(3, { visible: false }) },
+      ]);
+      host.bind(core);
+      host.beforeDraw(1, 0);
+      host.beforeDraw(2, 0);
+      expect(warnings).toEqual([]);
+      const clash = new ExtensionHost([
+        { id: "a", beforeDraw: (f) => f.overrides.translate(2, 0, ++k) },
+        { id: "b", beforeDraw: (f) => f.overrides.set(2, { visible: false }) },
+      ]);
+      clash.bind(core);
+      clash.beforeDraw(1, 0);
+      clash.beforeDraw(2, 0);
+      expect(warnings).toHaveLength(2); // a -> b, then b -> a; each pair once
+      expect(warnings[0]).toMatch(/"a" and "b" both write item 2/);
+      expect(warnings[1]).toMatch(/"b" and "a" both write item 2/);
+      // One drawing module: nothing is tracked.
+      const solo = new ExtensionHost([
+        {
+          id: "s",
+          beforeDraw: (f) => {
+            f.overrides.translate(2, 0, ++k);
+            f.overrides.set(2, { visible: false });
+          },
+        },
+      ]);
+      solo.bind(core);
+      solo.beforeDraw(1, 0);
+      expect(warnings).toHaveLength(2);
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  it("an item read twice in one beforeDraw dispatch is one core query; outside it, each read asks", () => {
+    let queries = 0;
+    class Counting extends ExtCore {
+      override queryItem(id: number): ArrayLike<number> {
+        queries++;
+        return super.queryItem(id);
+      }
+    }
+    const core = new Counting();
+    const host = new ExtensionHost([
+      {
+        id: "q",
+        beforeDraw: (f) => {
+          expect(f.query.transform(3)).toEqual([1, 0, 0, 1, 10, 20]);
+          expect(f.query.rect(3)).toEqual({ x: 10, y: 20, w: 4, h: 4 });
+          expect(f.query.visible(3)).toBe(true);
+          expect(f.query.parent(2)).toBe(1);
+        },
+      },
+    ]);
+    host.bind(core);
+    host.beforeDraw(1, 0);
+    expect(queries).toBe(2); // item 3 once, item 2 once
+    host.query.transform(3);
+    host.query.rect(3);
+    expect(queries).toBe(4);
   });
 
   it("query.hitTest asks the core on demand and is null before it is bound", () => {

@@ -84,13 +84,23 @@ export interface OverrideValues {
 }
 
 /** Retained: an override stays until changed or cleared. Overrides of an item and its ancestors
- * compose (nearest first). Writing the values an item already has changes nothing. */
+ * compose (nearest first), so a module that shifts a parent and wants a child at an absolute shift
+ * writes the child's entry relative to what the ancestors already apply. Writing the values an item
+ * already has changes nothing.
+ *
+ * Single ownership per id: the table holds ONE entry per item (transform, modulate, visible and
+ * frozen together), and `set`, `translate`, `scaleAbout`, `setGlobal`, `freeze` and `clear` all
+ * replace or remove values another module may have written on the same id (`set` and `clear`
+ * replace all four). Modules sharing a client must write disjoint ids (or one module composes the
+ * others' wishes). When two modules' `beforeDraw` change the same id, the host logs one
+ * `console.warn` per module pair. */
 export interface OverrideTable {
-  /** Replaces the item's override with these values (absent ones: identity, white, visible). */
+  /** Replaces the item's whole override with these values (absent ones: identity, white,
+   * visible, not frozen). */
   set(id: number, o: OverrideValues): void;
   /** FRZ-HOOK: set or clear the item's `frozen` flag, leaving the other values as they are. */
   freeze(id: number, on: boolean): void;
-  /** Replaces only the transform. */
+  /** Replaces only the transform (the item's own entry; ancestors' entries still compose). */
   translate(id: number, dx: number, dy: number): void;
   scaleAbout(id: number, sx: number, sy: number, px: number, py: number): void;
   /** The transform that draws the item at the global `xf`: `xf · (E_parent · resolved)⁻¹`. */
@@ -101,7 +111,9 @@ export interface OverrideTable {
    * none): the item draws at `E · query.transform(id)`, and `E⁻¹` maps a drawn point back to
    * the game's. */
   effective(id: number): Affine2D;
+  /** Removes the item's whole entry (every module's values on that id). */
   clear(id: number): void;
+  /** Removes every entry, every module's. */
   clearAll(): void;
   /** Items with an override. */
   readonly size: number;
@@ -161,6 +173,15 @@ export interface RenderStreamExtension {
 
 // --------------------------------------------------------------------------- the host side
 
+/** Internal (not in the package barrel): the host query's raw `queryItem` read, so a whole-scene
+ * walk (the spread module) reads each item once, with no tuple or object per item. The layout is
+ * `ExtensionCore.queryItem`'s. A query without it (a test's hand-made frame) is read through the
+ * public calls instead. */
+export const RAW_ITEM: unique symbol = Symbol("render-stream raw item");
+export interface RawItemQuery {
+  readonly [RAW_ITEM]?: (id: number) => ArrayLike<number>;
+}
+
 /** The core calls the extension host makes (core.ts `WasmStreamCore`). */
 export interface ExtensionCore {
   /** The `item_meta` record just received: its meta JSON. */
@@ -187,6 +208,7 @@ export interface ItemMetaRequestJson {
 }
 
 export const IDENTITY: Affine2D = [1, 0, 0, 1, 0, 0];
+const EMPTY: ArrayLike<number> = new Float64Array(0);
 const WHITE: RGBA = [1, 1, 1, 1];
 
 /** `a · b`. */
@@ -242,12 +264,25 @@ interface Entry {
   frozen: boolean;
 }
 
-const same = (a: readonly number[], b: readonly number[]): boolean =>
-  a.length === b.length && a.every((v, i) => v === b[i]);
+const same = (a: readonly number[], b: readonly number[]): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+
+const finite = (a: readonly number[]): boolean => {
+  for (let i = 0; i < a.length; i++) if (!Number.isFinite(a[i])) return false;
+  return true;
+};
 
 class Table implements OverrideTable {
   readonly entries = new Map<number, Entry>();
   dirty = false;
+  /** The module whose `beforeDraw` runs now (null outside one). */
+  writer: string | null = null;
+  /** The last module that changed each id; null (no tracking) unless two or more modules draw. */
+  owners: Map<number, string> | null = null;
+  private warned: Set<string> | null = null;
 
   constructor(private readonly query: ItemQuery) {}
 
@@ -256,7 +291,7 @@ class Table implements OverrideTable {
   }
 
   private put(id: number, e: Entry): void {
-    if (![...e.xform, ...e.modulate].every(Number.isFinite))
+    if (!finite(e.xform) || !finite(e.modulate))
       throw new TypeError(
         `render-stream override: item ${id} has a non-finite value`,
       );
@@ -269,8 +304,30 @@ class Table implements OverrideTable {
       same(old.modulate, e.modulate)
     )
       return;
+    if (this.owners !== null) this.own(id);
     this.entries.set(id, e);
     this.dirty = true;
+  }
+
+  /** Single ownership per id: the first time a module changes an id another module changed. */
+  private own(id: number): void {
+    const w = this.writer;
+    if (w === null || this.owners === null) return;
+    const prev = this.owners.get(id);
+    this.owners.set(id, w);
+    if (prev === undefined || prev === w) return;
+    const pair = `${prev}\u0000${w}`;
+    this.warned ??= new Set();
+    if (this.warned.has(pair)) return;
+    this.warned.add(pair);
+    console.warn(
+      `render-stream override: modules "${prev}" and "${w}" both write item ${id}; the table keeps one entry per item, so the later write replaces the earlier one`,
+    );
+  }
+
+  /** The table emptied (a session, a dispose): ownership starts over. */
+  resetOwners(): void {
+    this.owners?.clear();
   }
 
   set(id: number, o: OverrideValues): void {
@@ -346,17 +403,24 @@ class Table implements OverrideTable {
   }
 
   clear(id: number): void {
-    if (this.entries.delete(id)) this.dirty = true;
+    if (!this.entries.has(id)) return;
+    if (this.owners !== null) this.own(id);
+    this.entries.delete(id);
+    this.dirty = true;
   }
 
   clearAll(): void {
     if (this.entries.size > 0) this.dirty = true;
     this.entries.clear();
+    this.resetOwners();
   }
 
   /** Removed items leave without a copy (the core dropped them at the same apply). */
   drop(ids: Uint32Array): void {
-    for (const id of ids) this.entries.delete(id);
+    for (const id of ids) {
+      this.entries.delete(id);
+      this.owners?.delete(id);
+    }
   }
 
   pack(): [Uint32Array, Float32Array] {
@@ -404,6 +468,11 @@ export class ExtensionHost {
   readonly query: ItemQuery;
   private readonly listensRemoved: boolean;
   private readonly drawers: RenderStreamExtension[];
+  /** During the `beforeDraw` dispatch the state cannot change, so the last item read is reused:
+   * `transform(id)` then `rect(id)` is one core query, not two. Off outside the dispatch. */
+  private memoOn = false;
+  private memoId = -1;
+  private memo: ArrayLike<number> = EMPTY;
   /** Callback errors caught (evidence; the first is logged). */
   errors = 0;
   /** Redraws drawn (no transaction) and table copies into the core. */
@@ -414,20 +483,20 @@ export class ExtensionHost {
     this.request = mergeWants(exts);
     this.listensRemoved = exts.some((e) => e.onItemsRemoved !== undefined);
     this.drawers = exts.filter((e) => e.beforeDraw !== undefined);
-    this.query = {
+    const query: ItemQuery & RawItemQuery = {
       parent: (id) => {
-        const f = this.core?.queryItem(id);
-        return f && f.length > 0 && f[0] >= 0 ? f[0] : null;
+        const f = this.item(id);
+        return f.length > 0 && f[0] >= 0 ? f[0] : null;
       },
       children: (id) => this.core?.queryChildren(id) ?? new Uint32Array(0),
       transform: (id) => {
-        const f = this.core?.queryItem(id);
-        if (!f || f.length === 0 || f[2] === 0) return null;
+        const f = this.item(id);
+        if (f.length === 0 || f[2] === 0) return null;
         return [f[3], f[4], f[5], f[6], f[7], f[8]];
       },
       rect: (id) => {
-        const f = this.core?.queryItem(id);
-        if (!f || f.length === 0 || f[9] === 0) return null;
+        const f = this.item(id);
+        if (f.length === 0 || f[9] === 0) return null;
         return { x: f[10], y: f[11], w: f[12], h: f[13] };
       },
       subtreeRect: (id) => {
@@ -437,13 +506,27 @@ export class ExtensionHost {
           : null;
       },
       visible: (id) => {
-        const f = this.core?.queryItem(id);
-        return !!f && f.length > 0 && f[1] !== 0;
+        const f = this.item(id);
+        return f.length > 0 && f[1] !== 0;
       },
       meta: (id) => this.metas.get(id) ?? null,
       hitTest: (x, y) => this.core?.hitTest(x, y) ?? null,
+      [RAW_ITEM]: (id) => this.item(id),
     };
+    this.query = query;
     this.table = new Table(this.query);
+    if (this.drawers.length > 1) this.table.owners = new Map();
+  }
+
+  /** The core's `queryItem` layout, or empty; memoized for one id during the draw dispatch. */
+  private item(id: number): ArrayLike<number> {
+    if (this.memoOn && this.memoId === id) return this.memo;
+    const f = this.core?.queryItem(id) ?? EMPTY;
+    if (this.memoOn) {
+      this.memoId = id;
+      this.memo = f;
+    }
+    return f;
   }
 
   get overrides(): OverrideTable {
@@ -464,6 +547,7 @@ export class ExtensionHost {
     this.strings = [];
     this.metas.clear();
     this.table.entries.clear();
+    this.table.resetOwners();
     this.table.dirty = false;
     this.redrawWanted = false;
   }
@@ -570,7 +654,15 @@ export class ExtensionHost {
           this.redrawWanted = true;
         },
       };
-      for (const e of this.drawers) this.call(() => e.beforeDraw?.(frame));
+      this.memoOn = true;
+      for (const e of this.drawers) {
+        this.table.writer = e.id;
+        this.call(() => e.beforeDraw?.(frame));
+      }
+      this.table.writer = null;
+      this.memoOn = false;
+      this.memoId = -1;
+      this.memo = EMPTY;
     }
     if (this.table.dirty && this.core !== null) {
       this.table.dirty = false;
@@ -591,6 +683,7 @@ export class ExtensionHost {
     this.core = null;
     this.metas.clear();
     this.table.entries.clear();
+    this.table.resetOwners();
   }
 
   private call(f: () => void): void {
