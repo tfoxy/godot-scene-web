@@ -1440,7 +1440,7 @@ run_g8pt_late() {
 		RS_FIXTURE_LATE_SHADER=1
 	legs_par_begin
 	local cap leg extra
-	for leg in late/receiver late/receiver-patch fault-no-particles/receiver; do
+	for leg in late/receiver late/receiver-patch fault-no-particles/receiver fault-ppm-no-shader/receiver; do
 		cap="$OUT/g8pt/${leg%%/*}/capture"
 		extra=""
 		[ -f "$cap/steps.jsonl" ] && extra="$(g8pt_extra_seqs "$cap")"

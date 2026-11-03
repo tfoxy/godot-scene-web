@@ -705,6 +705,10 @@ struct Counters {
     pt_process_requests: i64,
     pt_emits: i64,
     pt_emits_dropped: i64,
+    /// FOG-T: emitters whose process shader is the synthetic placeholder (an engine assigns the
+    /// PPM shader outside `get_rid()`); the GL receiver cannot reconstruct the RD-only process
+    /// shader, so they are not drawn.
+    pt_synthetic_skipped: i64,
     particles_commands: i64,
     skipped_particles_commands: i64,
     /// PFB: particles material `color` parameters set linearized (a RendererRD host's colours on
@@ -802,6 +806,10 @@ pub struct Planner {
     multimeshes: BTreeMap<Id, MultimeshM>,
     /// PM6a: the resident emitters (named `ok` /12 entries and their `ok` subemitters).
     particles: BTreeMap<Id, ParticlesM>,
+    /// FOG-T: the shaders whose code is the synthetic process-shader placeholder (an engine whose
+    /// ParticleProcessMaterial assigns its shader outside `get_rid()`); the GL receivers cannot
+    /// reconstruct the RD-only process shader from it, so the emitters that name it are not drawn.
+    synthetic_shaders: BTreeSet<Id>,
     root_xform: Option<[f32; 6]>,
     root_modulate: [f32; 4],
     default_filter: Option<Filter>,
@@ -2810,6 +2818,20 @@ impl Planner {
         changed
     }
 
+    /// FOG-T: whether the emitter's process material names the synthetic process-shader
+    /// placeholder (an engine whose ParticleProcessMaterial assigns its shader outside
+    /// `get_rid()`). The GL receiver cannot reconstruct the RD-only process shader from its empty
+    /// `process()`, so such an emitter is not drawn (GSW's builtin-driven simulation draws the same
+    /// emitter as a handful of tiny, near-invisible particles).
+    fn synthetic_emitter(&self, st: &ResolvedState, id: Id) -> bool {
+        st.particles
+            .get(&id)
+            .and_then(|p| p.process_material)
+            .and_then(|m| st.materials.get(&m))
+            .and_then(|m| m.shader)
+            .is_some_and(|s| self.synthetic_shaders.contains(&s))
+    }
+
     /// PM6a (render-stream-12.md "As built (PM6a)"): the resident emitters `now`. Each new one is
     /// `particles_create`d, then every emitter is configured in the order the wire prescribes
     /// ("The emit list"): the setters whose value differs from what this planner last sent (all
@@ -2827,6 +2849,17 @@ impl Planner {
     ) -> BTreeSet<Id> {
         let mut made = BTreeSet::new();
         for &id in now {
+            // FOG-T: not drawn (see `synthetic_emitter`). A previously made one is freed.
+            if self.synthetic_emitter(st, id) {
+                if let Some(m) = self.particles.remove(&id) {
+                    ops.op(Op::FreeRid, 1);
+                    ops.rid(RidRef::Particles(m.handle));
+                    self.freed_by_apply += 1;
+                    c.pt_freed += 1;
+                }
+                c.pt_synthetic_skipped += 1;
+                continue;
+            }
             if self.particles.contains_key(&id) {
                 continue;
             }
@@ -2854,6 +2887,9 @@ impl Planner {
             );
         }
         for &id in now {
+            if self.synthetic_emitter(st, id) {
+                continue;
+            }
             let e = &st.particles[&id];
             let Some(f) = e.floats.as_ref() else { continue };
             let material = e
@@ -3140,6 +3176,16 @@ impl Planner {
                         }
                         continue;
                     }
+                }
+            }
+            // FOG-T: the synthetic process-shader placeholder (an engine whose ParticleProcessMaterial
+            // assigns its shader outside `get_rid()`); the GL receiver cannot reconstruct the RD-only
+            // process shader from its empty `process()`, so emitters that name it are not drawn.
+            if !current {
+                if code.contains("// Synthetic") {
+                    self.synthetic_shaders.insert(id);
+                } else {
+                    self.synthetic_shaders.remove(&id);
                 }
             }
             if !self.shaders.contains_key(&id) {
@@ -4211,6 +4257,7 @@ impl Planner {
         self.skipped_items.clear();
         self.tex_skips.borrow_mut().clear();
         self.touched.clear();
+        self.synthetic_shaders.clear();
         self.rs_calls += (ops.rs_calls - ops_before) as i64;
         self.disposed_frees = n;
         n
@@ -4466,6 +4513,10 @@ fn write_stats(
         ("particles_commands", c.particles_commands),
         ("skipped_particles_commands", c.skipped_particles_commands),
     ];
+    // FOG-T: only when an emitter was skipped, so every other stream's stats are unchanged.
+    if c.pt_synthetic_skipped > 0 {
+        pt_resources.push(("synthetic_skipped", c.pt_synthetic_skipped));
+    }
     // PFB: only when a colour was linearized, so every other stream's stats are unchanged.
     if c.particle_colors_linearized > 0 {
         pt_resources.push(("colors_linearized", c.particle_colors_linearized));

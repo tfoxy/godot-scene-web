@@ -264,6 +264,7 @@ export async function runG8ptLate(
       "pt-late-fault",
       "pt-late-ppm-builtin",
       "pt-late-cmbt",
+      "pt-late-synthetic-skip",
       "pt-late-lifecycle",
       "pt-late-coverage",
       "pt-late-outside-exact",
@@ -345,6 +346,30 @@ export async function runG8ptLate(
         "LATE-PPM: under GRC_ADOPT_FAULT=ppm-no-shader (the engine names no shader) every process material is adopted through its particle_process_material builtin, nothing refused, no unknown-particles",
         problems,
         stats ? `${stats.ppm_builtin} builtin-recovered, ${stats.ppm_refused_no_shader} no-shader, ${stats.ppm_materials} materials` : undefined,
+      ),
+    );
+  }
+
+  // pt-late-synthetic-skip (native-fog-tint): the native receiver cannot reconstruct the RD-only
+  // process shader from the synthetic placeholder, so it skips every emitter recovered through it.
+  {
+    const leg = "fault-ppm-no-shader/receiver";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran(leg)) {
+      problems = [];
+      const applied = await json(join(dir(leg), "applied.json"));
+      const particles = (applied?.w11 as { particles?: { synthetic_skipped?: number } } | undefined)?.particles;
+      const skipped = particles?.synthetic_skipped ?? 0;
+      detail = `synthetic_skipped ${skipped}`;
+      if (skipped <= 0) problems.push(`${leg}: no emitters skipped (synthetic_skipped ${skipped})`);
+    }
+    checks.push(
+      check(
+        "pt-late-synthetic-skip",
+        "native-fog-tint: under GRC_ADOPT_FAULT=ppm-no-shader the native receiver skips every emitter whose process material is recovered through the synthetic process shader (counted in particles_resources.synthetic_skipped), instead of drawing white defaults",
+        problems,
+        detail,
       ),
     );
   }
