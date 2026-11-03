@@ -4204,6 +4204,7 @@ RID hook_canvas_texture_create(void *self) {
   // the dummy storage's RID() becomes a private RID before anything -- log, mirror, engine --
   // sees it. Off, or a non-null engine result: unchanged.
   result.id = rs::canvas_texture_shim().on_create(result.id, current_frame());
+  rs::canvas_texture_note_create(result.id);  // LATE-SPINE: registry for late-arm adoption
   log_entry(&g_canvas_texture_creates, rids(result.id));
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_create");
@@ -4224,6 +4225,7 @@ void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t cha
   key.channel = channel;
   key.texture = texture.id;
   log_entry(&g_canvas_texture_channels, pod(key));
+  rs::canvas_texture_note_channel(canvas_texture.id, channel, texture.id);  // LATE-SPINE
   original<FnCanvasTextureSetChannel>(kCanvasTextureSetChannel)(self, canvas_texture, channel,
                                                                 texture);
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -4238,6 +4240,7 @@ void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t cha
 void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int32_t filter) {
   bump(kCanvasTextureSetTextureFilter);
   log_entry(&g_canvas_texture_filters, item_value(canvas_texture, filter));
+  rs::canvas_texture_note_filter(canvas_texture.id, filter);  // LATE-SPINE
   original<FnRidEnum>(kCanvasTextureSetTextureFilter)(self, canvas_texture, filter);
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_set_texture_filter");
@@ -4250,6 +4253,7 @@ void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int3
 void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int32_t repeat) {
   bump(kCanvasTextureSetTextureRepeat);
   log_entry(&g_canvas_texture_repeats, item_value(canvas_texture, repeat));
+  rs::canvas_texture_note_repeat(canvas_texture.id, repeat);  // LATE-SPINE
   original<FnRidEnum>(kCanvasTextureSetTextureRepeat)(self, canvas_texture, repeat);
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_set_texture_repeat");

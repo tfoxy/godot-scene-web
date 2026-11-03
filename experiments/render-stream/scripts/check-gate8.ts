@@ -36,6 +36,7 @@ import { runG8pt13Gsw } from "./lib/gate8-w13-gsw-checks";
 import { runG8pt13Native } from "./lib/gate8-w13-native-checks";
 import { type G8cExpected, runG8c } from "./lib/gate8-ct-checks";
 import { type G8ctlExpected, runG8ctl } from "./lib/gate8-ct-late-checks";
+import { type G8ctspExpected, runG8ctsp } from "./lib/gate8-ct-spine-checks";
 import { type G8resExpected, runG8res } from "./lib/gate8-res-checks";
 import { type G8hExpected, runG8h } from "./lib/gate8-size-checks";
 import { type G8kuExpected, runG8ku } from "./lib/gate8-basis-checks";
@@ -45,7 +46,7 @@ import { type G8tExpected, runG8t } from "./lib/gate8-tex-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
-const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c", "g8ctl", "g8cg", "g8w11", "g8w11c", "g8mm", "g8pt", "g8res", "g8tag", "g8tag2", "g8rec1"];
+const KNOWN_GROUPS = ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8ku", "g8kc", "g8l", "g8c", "g8ctl", "g8ctsp", "g8cg", "g8w11", "g8w11c", "g8mm", "g8pt", "g8res", "g8tag", "g8tag2", "g8rec1"];
 
 function parseArgs(argv: string[]): { out: string } {
   let out: string | undefined;
@@ -133,6 +134,14 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
     const g8ctl = await runG8ctl(out, expected);
     checks.push(...g8ctl.checks);
     report.g8ctl = g8ctl.report;
+  }
+  if (run.includes("g8ctsp")) {
+    const expected = JSON.parse(
+      await readFile(join(EXPERIMENT_DIR, "fixtures", "gate8-ct-spine", "expected.json"), "utf8"),
+    ) as G8ctspExpected;
+    const g8ctsp = await runG8ctsp(out, expected);
+    checks.push(...g8ctsp.checks);
+    report.g8ctsp = g8ctsp.report;
   }
   if (run.includes("g8res")) {
     const expected = JSON.parse(

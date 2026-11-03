@@ -869,6 +869,25 @@ struct Census {
 };
 Census g_census;
 
+// LATE-SPINE: a CanvasTexture's channels, as the canvas_texture_* hooks observed them. Filled while
+// the capture is loaded (armed or not), so a runtime-built CanvasTexture whose drawing node's
+// `texture` is not it can be adopted from its own draw reference (the RID).
+struct CanvasChannels {
+  std::uint64_t diffuse = 0;
+  std::uint64_t normal = 0;
+  std::uint64_t specular = 0;
+  bool diffuse_set = false;
+  bool normal_set = false;
+  bool specular_set = false;
+  bool filter_set = false;
+  bool repeat_set = false;
+  std::int32_t filter = 0;
+  std::int32_t repeat = 0;
+};
+
+std::mutex g_ctex_mutex;
+std::unordered_map<std::uint64_t, CanvasChannels> g_ctex_channels;
+
 AdoptFault fault() { return static_cast<AdoptFault>(g_res_fault.load(std::memory_order_acquire)); }
 
 // A Ref<T> return slot: one pointer, released through ref_set_object.
@@ -1324,6 +1343,32 @@ bool adopt_canvas_texture_via_node(std::uint64_t item_rid, std::uint64_t rid) {
   return adopt_canvas_texture_resource(canvas, rid);
 }
 
+// LATE-SPINE (late-arm spine CanvasTexture adoption): the drawing node's `texture` is not the
+// CanvasTexture for a spine mesh (spine-godot draws `canvas_item_add_mesh` with the atlas page's
+// CanvasTexture RID directly, on a node with no `texture` property). The channels are then read
+// from the canvas_texture_* hooks' registry instead -- the draw's own texture reference. Returns
+// false when the hooks never saw the RID's channels.
+bool adopt_canvas_texture_from_registry(std::uint64_t rid) {
+  CanvasChannels channels;
+  {
+    std::lock_guard<std::mutex> lock(g_ctex_mutex);
+    const auto it = g_ctex_channels.find(rid);
+    if (it == g_ctex_channels.end()) {
+      return false;
+    }
+    channels = it->second;
+  }
+  if (!channels.diffuse_set) {
+    return false;  // no diffuse observed: an empty CanvasTexture cannot be adopted
+  }
+  // The channel textures are adopted first (a canvas texture's diffuse must be a known texture).
+  if (channels.diffuse != 0) adopt_texture_locked_out(channels.diffuse);
+  if (channels.normal != 0) adopt_texture_locked_out(channels.normal);
+  if (channels.specular != 0) adopt_texture_locked_out(channels.specular);
+  return hooks_adopt_canvas_texture(rid, channels.diffuse, channels.normal, channels.specular,
+                                    channels.filter, channels.repeat);
+}
+
 void adopt_texture_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
   const std::uint64_t t0 = now_ns();
   const bool main = std::this_thread::get_id() == g_res_main;
@@ -1344,13 +1389,17 @@ void adopt_texture_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
   void *creation_image = creation.object();
   if (creation_image == nullptr) {
     // A pre-arm CanvasTexture (texture_2d_get returns no image for one): first the cached `.tres`
-    // (PM9), then the runtime node map (RT-CTX).
+    // (PM9), then the runtime node map (RT-CTX), then the canvas_texture_* hooks' registry
+    // (LATE-SPINE, the draw's own texture reference: a spine mesh's node has no `texture`).
     bool adopted_canvas = false;
     if (main && adopt_canvas_texture_locked_out(rid)) {
       adopted_canvas = true;
     }
     if (main && !adopted_canvas) {
       adopted_canvas = adopt_canvas_texture_via_node(item_rid, rid);
+    }
+    if (main && !adopted_canvas) {
+      adopted_canvas = adopt_canvas_texture_from_registry(rid);
     }
     std::lock_guard<std::mutex> lock(g_res_mutex);
     if (adopted_canvas) {
@@ -1532,6 +1581,56 @@ void adopt_mesh_locked_out(std::uint64_t rid) {
 }
 
 }  // namespace
+
+// LATE-SPINE: the canvas_texture_* hooks fill the CanvasTexture-channel registry (see
+// adopt_canvas_texture_from_registry, above) from extension load, so a runtime-built CanvasTexture
+// whose drawing node's `texture` is not it is adopted from the draw's own texture reference.
+void canvas_texture_note_create(std::uint64_t rid) {
+  if (rid == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_ctex_mutex);
+  // A fresh entry (a recycled RID value drops the previous owner's stale channels).
+  g_ctex_channels[rid] = CanvasChannels();
+}
+
+void canvas_texture_note_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture) {
+  if (rid == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_ctex_mutex);
+  CanvasChannels &c = g_ctex_channels[rid];
+  if (channel == 0) {  // CANVAS_TEXTURE_CHANNEL_DIFFUSE
+    c.diffuse = texture;
+    c.diffuse_set = true;
+  } else if (channel == 1) {  // CANVAS_TEXTURE_CHANNEL_NORMAL
+    c.normal = texture;
+    c.normal_set = true;
+  } else if (channel == 2) {  // CANVAS_TEXTURE_CHANNEL_SPECULAR
+    c.specular = texture;
+    c.specular_set = true;
+  }
+}
+
+void canvas_texture_note_filter(std::uint64_t rid, std::int32_t filter) {
+  if (rid == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_ctex_mutex);
+  CanvasChannels &c = g_ctex_channels[rid];
+  c.filter = filter;
+  c.filter_set = true;
+}
+
+void canvas_texture_note_repeat(std::uint64_t rid, std::int32_t repeat) {
+  if (rid == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_ctex_mutex);
+  CanvasChannels &c = g_ctex_channels[rid];
+  c.repeat = repeat;
+  c.repeat_set = true;
+}
 
 bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::string *error) {
   *out = AdoptFault::None;

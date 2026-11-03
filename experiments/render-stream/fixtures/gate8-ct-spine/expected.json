@@ -1,0 +1,13 @@
+{
+  "schema": "render-stream-gate8-ct-spine-expected/1",
+  "doc": "Hand-derived from spine.gd, not measured (README.md). One 64x64 cell drawn by a custom Node2D whose _draw calls draw_mesh through a runtime CanvasTexture's diffuse (no .tres, no node `texture`, the spine-godot shape). The capture loads at frame 8 and its arm is deferred (GRC_ARM_DEFER_FRAMES) to frame 14, after the CanvasTexture (frame 10) but before the arm, so the capture adopts the CanvasTexture from the canvas_texture_* hooks' registry (the draw's own texture reference), not the node map. Regions are inclusive [x0, y0, x1, y1].",
+  "arm_frame": 14,
+  "quit_frame": 30,
+  "canvas_count": 1,
+  "regions": {
+    "MESH": [40, 40, 103, 103]
+  },
+  "cells": ["MESH"],
+  "clear_color": [51, 51, 102],
+  "checkpoints": [{ "step": 0, "settle": 17 }]
+}

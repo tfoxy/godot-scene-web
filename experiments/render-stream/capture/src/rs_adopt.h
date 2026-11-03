@@ -293,6 +293,15 @@ AdoptResourceStats adopt_resource_stats();
 // canvas-texture channel getter.
 void adopt_texture_ref(std::uint64_t rid, std::uint64_t item_rid = 0);
 void adopt_mesh_ref(std::uint64_t rid);
+// LATE-SPINE (late-arm spine CanvasTexture adoption): the capture-side registry of CanvasTexture
+// channels, keyed by RID, filled by the canvas_texture_create / set_channel / set_texture_filter /
+// set_texture_repeat hooks as they fire (from extension load, armed or not). A runtime-built
+// CanvasTexture whose drawing node's `texture` is not it (a spine mesh) is adopted from here -- the
+// draw's own texture reference -- instead of the node's `texture` property (RT-CTX).
+void canvas_texture_note_create(std::uint64_t rid);
+void canvas_texture_note_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture);
+void canvas_texture_note_filter(std::uint64_t rid, std::int32_t filter);
+void canvas_texture_note_repeat(std::uint64_t rid, std::int32_t repeat);
 // PM9 (late-arm multimesh adoption): called by the add_multimesh hook before its mirror tap; adopts
 // `rid` (a multimesh RID) from the RenderingServer's read-backs when lazy adoption is active and the
 // mirror does not know it. Cheap otherwise (an atomic load).

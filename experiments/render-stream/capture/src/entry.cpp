@@ -192,6 +192,11 @@ struct State {
   std::string evidence_dir;
   std::string mode = "validate";
   int64_t disarm_after_frames = -1;
+  // LATE-SPINE: GRC_ARM_DEFER_FRAMES=N defers the arm (snapshot/adoption/publish) until the
+  // capture has seen N frame callbacks, while the hooks stay installed from extension load. This
+  // lets a capture armed late still observe pre-arm resource creation (canvas_texture_create /
+  // set_channel, ...), which the adoption path then resolves. 0 (default): arm at load.
+  uint64_t defer_arm_frames = 0;
   bool evidence_ready = false;
 
   Calibration calib;
@@ -204,6 +209,10 @@ struct State {
   bool shader_clock_logged = false;  // P3-TM: the clock's unavailability is logged once
   bool armed = false;
   bool vptr_written = false;
+  // LATE-SPINE: the vtable is patched (hooks installed) before the arm, so resource creation is
+  // observed during a deferred arm's pre-arm frames; the arm itself (adoption/snapshot/publish)
+  // is what GRC_ARM_DEFER_FRAMES defers.
+  bool hooks_patched = false;
   bool disarmed = false;
   bool disarm_was_shadow = false;
   bool disarm_restored = false;
@@ -3542,6 +3551,9 @@ bool attempt(const char *phase) {
   }
   log_line(std::string("attempting at ") + phase + " in mode " + g_state.mode);
 
+  // LATE-SPINE: the checks run once, before the vtable is patched; a deferred arm's later
+  // attempts re-run the slot-mask/behaviour checks on the now-patched vtable and would refuse.
+  if (!g_state.hooks_patched) {
   if (!g_iface.complete) {
     refuse("interface-incomplete");
     return true;
@@ -3688,6 +3700,7 @@ bool attempt(const char *phase) {
     decide("validated", std::string());
     return true;
   }
+  }  // !g_state.hooks_patched: the checks run once
 
   hooks_init_image_binds();
   // PM5: configured before the vptr store, so the first hooked particles_create already sees it.
@@ -3711,19 +3724,29 @@ bool attempt(const char *phase) {
     log_line("canvas texture shim: synthesize armed (display server " + g_state.display_server +
              ")");
   }
-  if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
-                          plan.replacements, &error)) {
-    log_line("arm: " + error);
-    if (g_state.ct_shim_state == "armed") {
-      rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
-      g_state.ct_shim_state = "refused";
-      g_state.ct_shim_reason = "arm-failed";
+  if (!g_state.hooks_patched) {
+    std::string arm_error;
+    if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
+                            g_state.plan.replacements, &arm_error)) {
+      log_line("arm: " + arm_error);
+      if (g_state.ct_shim_state == "armed") {
+        rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
+        g_state.ct_shim_state = "refused";
+        g_state.ct_shim_reason = "arm-failed";
+      }
+      refuse("arm-failed");
+      return true;
     }
-    refuse("arm-failed");
-    return true;
+    g_state.hooks_patched = true;
+    g_state.vptr_written = true;
+  }
+  // LATE-SPINE: the vtable is patched (the hooks observe resource creation) but the arm itself
+  // (adoption/snapshot/publish) is deferred; the frame callback retries and completes it once the
+  // defer frame passes.
+  if (g_state.defer_arm_frames != 0 && g_state.frames_total < g_state.defer_arm_frames) {
+    return false;
   }
   g_state.armed = true;
-  g_state.vptr_written = true;
   perf_arm();
   stream_start();
   if (g_state.evidence_ready) {
@@ -3889,6 +3912,9 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   g_state.mode = mode.empty() ? std::string("validate") : mode;
   const std::string frames = env_string("GRC_DISARM_AFTER_FRAMES");
   g_state.disarm_after_frames = frames.empty() ? -1 : std::strtoll(frames.c_str(), nullptr, 10);
+  const std::string arm_frames = env_string("GRC_ARM_DEFER_FRAMES");  // LATE-SPINE
+  g_state.defer_arm_frames = arm_frames.empty() ? 0 : static_cast<std::uint64_t>(
+                                                          std::strtoull(arm_frames.c_str(), nullptr, 10));
   g_stream.path = env_string("GRC_STREAM_OUT");
   g_stream.patch_path = env_string("GRC_STREAM_PATCH_OUT");
   g_live.listen = env_string("GRC_LIVE_LISTEN");
@@ -3903,6 +3929,7 @@ void initialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
            (g_state.calibration_path.empty() ? "<unset>" : g_state.calibration_path) +
            " evidence=" + (g_state.evidence_dir.empty() ? "<stdout>" : g_state.evidence_dir) +
            " disarm_after_frames=" + std::to_string(g_state.disarm_after_frames) +
+           " arm_defer_frames=" + std::to_string(g_state.defer_arm_frames) +
            " stream=" + (g_stream.path.empty() ? std::string("<off>") : g_stream.path) +
            " live=" + (g_live.listen.empty() ? std::string("<off>") : g_live.listen));
   attempt("scene-init");
