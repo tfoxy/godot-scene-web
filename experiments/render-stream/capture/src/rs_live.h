@@ -277,7 +277,9 @@ class LiveTransport {
   virtual std::uint64_t max_queued_bytes(std::uint32_t conn) const = 0;
 };
 
-// The production transport: grc::live::Server (rs_ws.h).
+// grc::live::Server (rs_ws.h) as a transport on its own. The capture's production transport is
+// the CarrierSet (rs_carrier_set.h, CAR1), whose `ws` carrier is this server; this adapter remains
+// for test hosts (rs_live_host).
 class ServerTransport : public LiveTransport {
  public:
   explicit ServerTransport(live::Server *server) : server_(server) {}
@@ -400,6 +402,9 @@ struct LiveEvent {
   // template's version) and the upgrade's Origin ("" when it carried none).
   std::string subprotocol;
   std::string origin;
+  // Opened only (CAR1, carrier-design.md D13): the carrier's name ("ws", ...), logged on the
+  // connection's `open` line; "" (tests, a bare Server) logs no `carrier` key.
+  std::string carrier;
 };
 LiveEvent to_live_event(const live::Event &event);
 

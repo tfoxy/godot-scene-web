@@ -87,6 +87,7 @@ add_library(render_stream_capture SHARED
   src/rs_basis_encode.cpp
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
+  src/rs_carrier_set.cpp
   src/rs_particles_shim.cpp
   src/rs_registry.cpp
   src/rs_gate8_policy.cpp
@@ -188,6 +189,15 @@ add_executable(rs_ws_test test/rs_ws_test.cpp src/rs_ws.cpp src/rs_sha1.cpp)
 target_include_directories(rs_ws_test PRIVATE src)
 target_link_libraries(rs_ws_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_ws COMMAND rs_ws_test)
+
+# CAR1 (carrier-design.md Q1, Q2, D5, D6): the CarrierSet and the grc_carrier_v1 adapter with two
+# fake C ABI carriers and the real rs_ws server as `ws`; also runs the test-only sabotages
+# (route-by-local, per-carrier admission), which must fail their checks.
+add_executable(rs_carrier_set_test test/rs_carrier_set_test.cpp src/rs_carrier_set.cpp src/rs_ws.cpp
+  src/rs_sha1.cpp)
+target_include_directories(rs_carrier_set_test PRIVATE src)
+target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
+add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
 
 # Test-only echo server for the Node and Godot interop self-tests
 # (scripts/test/self-test-rs-ws.ts, receiver/tests/ws_selftest.gd). Not linked

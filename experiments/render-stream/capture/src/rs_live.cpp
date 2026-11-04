@@ -795,6 +795,7 @@ LiveEvent to_live_event(const live::Event &event) {
   out.conn = event.conn;
   out.subprotocol = event.subprotocol;
   out.origin = event.origin;
+  out.carrier = event.carrier;
   out.text = event.text;
   out.code = event.code;
   out.reason = event.reason;
@@ -1618,6 +1619,9 @@ void Hub::on_event(const LiveEvent &event, std::uint64_t frame) {
         open.null("origin");
       } else {
         open.str("origin", event.origin);
+      }
+      if (!event.carrier.empty()) {
+        open.str("carrier", event.carrier);  // CAR1 (carrier-design.md D13)
       }
       log_line(c, open.take());
       return;

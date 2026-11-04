@@ -146,10 +146,25 @@ const char *coding_token(Coding coding);  // "identity", "zstd" or "gzip"
 // passed as "".
 Coding negotiate_coding(std::string_view accept_encoding, const std::vector<Coding> &offered);
 
+// CAR1 (carrier-design.md D6): the connection-slot counter every live carrier shares. admit()
+// takes one slot (true) or refuses (false); release() returns one. Both are thread-safe and
+// memory-speed: the server calls them on its I/O thread with its own mutex held.
+class Admission {
+ public:
+  virtual ~Admission() = default;
+  virtual bool admit() = 0;
+  virtual void release() = 0;
+};
+
 struct ServerConfig {
   std::string host = "127.0.0.1";
   std::uint16_t port = 0;  // 0 = ephemeral; Server::port() reports the bound one.
   std::size_t max_clients = 1;
+  // CAR1 (D6): when set, a WebSocket upgrade takes its slot from `admission` (503 when refused)
+  // instead of counting this server's own open connections against max_clients, and returns it
+  // when the connection's Closed event is pushed. Never owned; must outlive the server. Null
+  // (default): max_clients, exactly as before.
+  Admission *admission = nullptr;
   std::size_t max_inbound_text = 4096;
   std::string path = "/render-stream";
   // Every accepted subprotocol, most preferred first (G7n; was one `subprotocol` before).
@@ -246,6 +261,9 @@ struct Event {
   std::string origin;
   std::string method;
   std::string route;
+  // CAR1 (carrier-design.md D13): the carrier that observed the event ("ws", "wt" or a
+  // registered name), set by the CarrierSet (rs_carrier_set.h); "" straight from a Server.
+  std::string carrier;
   // steady_clock nanoseconds when the I/O thread observed the event (set by the server; G1c2
   // measures credit round trips from it, independently of when the main thread drains events).
   std::uint64_t t_ns = 0;

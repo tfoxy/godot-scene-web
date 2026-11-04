@@ -359,6 +359,16 @@
       "exclusive": true
     },
     {
+      "why": "CAR1 carrier seam (carrier-design.md Q1, Q2, D5, D6): grc_carrier.h, the CarrierSet with the built-in ws carrier and the C ABI adapter, and their ctest. Every live connection goes through the set, so a change confined to these files reaches the build (whose rs_carrier_set ctest drives the set), the pure self-tests and every gate with live legs: gate 1 (g1c, g1d), gate 2 (g2c, g2e), gate 6 (live and the constrained proxy), gate 8 (g8l and the reverse-proxy leg), hc1 and every g7 live group. Its call sites in entry.cpp are shared capture files and still reach '*'",
+      "paths": [
+        "experiments/render-stream/capture/src/grc_carrier.h",
+        "experiments/render-stream/capture/src/rs_carrier*",
+        "experiments/render-stream/capture/test/rs_carrier*"
+      ],
+      "reach": ["capture-build", "pure", "native:gate1@*", "native:gate2@*", "native:gate6@*", "native:gate8@*", "native:hc1@*", "g7live:*@*"],
+      "exclusive": true
+    },
+    {
       "why": "capture library, calibration, toolchain and lockfiles: every leg of every gate",
       "paths": [
         "experiments/render-stream/capture/**",

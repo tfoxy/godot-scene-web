@@ -583,6 +583,7 @@ struct Conn {
   std::size_t send_off = 0;
   bool opened = false;              // an Opened event was pushed for this connection (WebSocket only).
   bool http_slot_held = false;      // this connection counts against max_http_clients.
+  bool admission_held = false;      // CAR1: holds a ServerConfig::admission slot (D6).
   bool shutdown_after_flush = false;
   std::uint16_t pending_close_code = 1000;
   std::string pending_close_reason;
@@ -667,6 +668,10 @@ struct Server::Impl {
     ::shutdown(c.fd, SHUT_RDWR);
     ::close(c.fd);
     if (c.opened) push_event_locked(make_closed_event(c.id, code, reason));
+    if (c.admission_held) {
+      c.admission_held = false;
+      config.admission->release();
+    }
     c.phase = Conn::Phase::Closed;
   }
 
@@ -951,7 +956,14 @@ struct Server::Impl {
       reject(c, 401, "bad bearer token");
       return;
     }
-    if (count_ws_open(c) >= config.max_clients) {
+    if (config.admission != nullptr) {
+      // CAR1 (carrier-design.md D6): the slot is shared with every other carrier.
+      if (!config.admission->admit()) {
+        reject(c, 503, "max_clients");
+        return;
+      }
+      c.admission_held = true;
+    } else if (count_ws_open(c) >= config.max_clients) {
       reject(c, 503, "max_clients");
       return;
     }

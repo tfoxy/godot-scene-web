@@ -61,6 +61,14 @@
 // quitting); after a disarm it runs across the following frame callbacks, so
 // the simulation never waits on a socket.
 //
+// Carriers (CAR1, carrier-design.md D3-D7, D13): the hub's transport is a CarrierSet
+// (rs_carrier_set.h) whose `ws` carrier (index 0) is that rs_ws server, so connection ids, logs
+// and taps are unchanged. GRC_LIVE_CARRIERS (comma list, default `ws`) names the carriers to
+// start; any list but `ws` is refused for now (`carriers-invalid` for a malformed list,
+// `net-module-missing` for `wt`, `carrier-unregistered` for any other name). GRC_LIVE_MAX_
+// CONNECTIONS is a total across carriers (D6). evidence/live-carriers.json
+// (render-stream-live-carriers/1) records each carrier at listen and again at stop.
+//
 // Textures (G2a, gate2-design.md D3, Q3): whenever a stream is enabled,
 // texture_2d_create and texture_2d_update copy the Image bytes into a GRT1
 // payload and hash it on the calling thread before forwarding, and every
@@ -168,6 +176,7 @@
 #include "rs_texture_basis.h"
 #include "rs_texture_delivery.h"
 #include "rs_histogram.h"
+#include "rs_carrier_set.h"
 #include "rs_live.h"
 #include "rs2_diff.h"
 #include "rs_mirror.h"
@@ -332,8 +341,9 @@ struct Live {
   // it, so it outlives the server.
   std::unique_ptr<rs::ServedResources> served;
   rs2::ServingSummary serving;  // every GET the server answered, for the summary
-  std::unique_ptr<live::Server> server;
-  std::unique_ptr<rs2::ServerTransport> transport;
+  // CAR1: the hub's transport; carrier `ws` (index 0) is the rs_ws server, `ws` points at it.
+  std::unique_ptr<live::CarrierSet> carriers;
+  live::WsCarrier *ws = nullptr;
   std::unique_ptr<rs2::Hub> hub;
   // After the end records went out: wait (bounded) for the receivers to close first
   // (rs2::Hub::finish).
@@ -1646,6 +1656,37 @@ void live_decided(const std::string &status, const std::string &reason) {
            (reason.empty() ? std::string() : " (" + reason + ")"));
 }
 
+// CAR1 (carrier-design.md D7, Q3): GRC_LIVE_CARRIERS, default `ws`. Until CAR3 (the net module's
+// `wt`) and CAR6 (registered carriers) every other name is a typed refusal; *why is its reason.
+bool live_carriers_ok(std::string *why) {
+  std::vector<std::string> names;
+  if (!live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &names, why)) {
+    return false;
+  }
+  for (const std::string &name : names) {
+    if (name == "ws") {
+      continue;
+    }
+    if (name == "wt") {
+      *why = "net-module-missing: GRC_LIVE_CARRIERS lists wt, which needs the net module "
+             "(librender_stream_net), and this capture loads none";
+    } else {
+      *why = "carrier-unregistered: GRC_LIVE_CARRIERS lists " + name +
+             ", which is neither built in nor registered";
+    }
+    return false;
+  }
+  return true;
+}
+
+// CAR1 (carrier-design.md D13): evidence/live-carriers.json, beside live.json, whose shape it
+// leaves alone. Written at listen (or a failed start) and again at stop; never to the log.
+void emit_live_carriers() {
+  if (g_state.evidence_ready && g_live.carriers != nullptr) {
+    emit("live-carriers.json", g_live.carriers->carriers_json());
+  }
+}
+
 // HC4a test knob: GRC_HC_SHADOW=1, read at stream start (the shadow oracle).
 bool g_hc_shadow = false;
 // HC4b: the first budget or serving shadow-oracle difference (GRC_HC_SHADOW=1).
@@ -2022,8 +2063,9 @@ void stream_start() {
   std::string live_host;
   uint16_t live_port = 0;
   rs2::LiveConfig live_config;
-  // GRC_LIVE_MAX_CONNECTIONS (D13, G6r): the WebSocket admission limit (ServerConfig::
-  // max_clients below); the Hub itself already tracks every connection independently.
+  // GRC_LIVE_MAX_CONNECTIONS (D13, G6r): the admission limit, since CAR1 a total across every
+  // carrier (carrier-design.md D6, the CarrierSet's counter); the Hub itself already tracks every
+  // connection independently.
   uint64_t live_max_connections = 1;
   // G2e: empty/None unless GRC_LIVE_AUTH=token successfully generates and writes one below.
   std::string live_auth_token;
@@ -2068,6 +2110,9 @@ void stream_start() {
       // G7n (gate7-design.md Q3): an allowlist entry that is not an exact origin refuses.
       live_ok = false;
       why = "origin-config-invalid: GRC_LIVE_ALLOWED_ORIGINS " + why;
+    } else if (!live_carriers_ok(&why)) {
+      // CAR1 (carrier-design.md D7, Q3): only `ws` exists until CAR3 (wt) and CAR6 (registered).
+      live_ok = false;
     } else if (!env_positive("GRC_LIVE_CREDIT_WINDOW_MAX", 2, &live_config.credit_window_max) ||
                live_config.credit_window_max > 2) {
       live_ok = false;
@@ -2754,7 +2799,6 @@ void stream_start() {
     server_config.corrupt_coded_body = g_live.listener_sabotage == "corrupt-coded-body";
     g_live.http_coding_on = !g_live.http_codings.empty();
     g_live.address = live_host;
-    g_live.server = std::make_unique<live::Server>();
     std::string error;
     // G2c2: the served payloads answer every resource GET on this listener.
     g_live.served = std::make_unique<rs::ServedResources>();
@@ -2773,8 +2817,27 @@ void stream_start() {
       g_live.served->set_retain_superseded_frame(sabotage.config.frame);
     }
     g_live.serving.budget_bytes = g_stream.budget_bytes;
-    if (!g_live.server->start(server_config, g_live.served.get(), &error)) {
-      g_live.server.reset();
+    // CAR1 (carrier-design.md Q2): the set owns the server as carrier `ws`, index 0; the
+    // admission limit becomes the set's total (D6). The 2-second flush budget is the stop's.
+    {
+      live::CarrierServices services;
+      services.auth_token = live_auth_token;
+      services.allowed_origins = g_live.allowed_origins;
+      services.enforce_origins = server_config.enforce_origins;
+      services.resources = g_live.served.get();
+      services.log = [](int, const std::string &line) { log_line(line); };
+      g_live.carriers = std::make_unique<live::CarrierSet>(
+          static_cast<std::size_t>(live_max_connections), std::move(services));
+      auto ws = std::make_unique<live::WsCarrier>(server_config, g_live.served.get(), 2000);
+      g_live.ws = ws.get();
+      if (!g_live.carriers->add(live::kCarrierWs, std::move(ws), &error)) {
+        g_live.ws = nullptr;
+      }
+    }
+    if (g_live.ws == nullptr || !g_live.carriers->start(&error)) {
+      emit_live_carriers();
+      g_live.carriers.reset();
+      g_live.ws = nullptr;
       live_decided(error == "non-loopback" ? "refused" : "failed", error);
       if (!files) {
         rs::mirror_enable(false);
@@ -2783,8 +2846,7 @@ void stream_start() {
         return;
       }
     } else {
-      g_live.port = g_live.server->port();
-      g_live.transport = std::make_unique<rs2::ServerTransport>(g_live.server.get());
+      g_live.port = g_live.ws->port();
       rs2::Session tmpl = session;
       tmpl.stream = rs2::StreamInfo();
       // G2c2: every live connection follows the configured policy; out-of-band payloads come
@@ -2792,8 +2854,9 @@ void stream_start() {
       tmpl.resources = rs2::resources_info(g_stream.policy, rs2::Fetch::Http);
       tmpl.resources.auth = live_auth;  // G2e: "bearer" exactly when GRC_LIVE_AUTH=token.
       tmpl.resources.mesh_dynamic = g_stream.mesh_dynamic;  // W11b: encoded at /11 only
-      g_live.hub = std::make_unique<rs2::Hub>(g_live.transport.get(), live_config, tmpl);
+      g_live.hub = std::make_unique<rs2::Hub>(g_live.carriers.get(), live_config, tmpl);
       live_decided("listening", std::string());
+      emit_live_carriers();
     }
   }
   g_stream.status = "open";
@@ -2836,11 +2899,11 @@ void stream_start() {
 
 // Drains the server's events into the hub (frame callback, main thread).
 void live_drain(uint64_t frame) {
-  if (g_live.hub == nullptr || g_live.server == nullptr || g_live.stopped) {
+  if (g_live.hub == nullptr || g_live.carriers == nullptr || g_live.stopped) {
     return;
   }
   g_live.hub->sync();  // HC5: the previous callback's formation jobs, completed first
-  for (const live::Event &event : g_live.server->take_events()) {
+  for (const live::Event &event : g_live.carriers->take_events()) {
     if (event.kind == live::Event::HttpGet && event.method == "OPTIONS") {
       // G7n: a CORS preflight the server answered (204), counted per host (and, with one
       // connection open, per connection) apart from GETs, and logged as an http-get hook-log line
@@ -2909,8 +2972,9 @@ void live_close_and_stop() {
   }
   live_drain(g_state.frames_total);
   g_live.hub->close_open(g_state.frames_total);
-  if (g_live.server != nullptr) {
-    g_live.server->stop(2000);
+  if (g_live.carriers != nullptr) {
+    g_live.carriers->stop();  // ws: the 2-second flush budget
+    emit_live_carriers();
   }
   g_live.stopped = true;
   g_live.ending = false;
@@ -3142,7 +3206,7 @@ void live_await_first_hello(uint64_t frame) {
     return;
   }
   g_live_await.checked = true;
-  if (g_live.hub == nullptr || g_live.server == nullptr || g_live.stopped) {
+  if (g_live.hub == nullptr || g_live.carriers == nullptr || g_live.stopped) {
     return;
   }
   if (!env_positive("GRC_LIVE_AWAIT_HELLO_MS", 0, &g_live_await.timeout_ms)) {
