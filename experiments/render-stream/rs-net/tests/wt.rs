@@ -1,0 +1,897 @@
+//! The `wt` carrier against an in-crate fake host, driven through the module's C ABI exactly as
+//! the capture drives it (grc_net_module_v1 -> wt_create -> grc_carrier_v1), with a wtransport
+//! client on the other side (carrier-design.md CAR3 "Checks" and "Sabotages").
+
+use std::collections::{HashMap, HashSet};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use render_stream_net::abi::*;
+use render_stream_net::wt::wt_error_to_h3;
+use wtransport::endpoint::ConnectOptions;
+use wtransport::error::{ConnectingError, StreamReadError};
+use wtransport::tls::Sha256Digest;
+use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
+
+const TOKEN: &str = "abababababababababababababababababababababababababababababababab";
+const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const SP: &str = "render-stream.13";
+
+// ------------------------------------------------------------------------------ fake host
+
+#[derive(Clone, Debug, PartialEq)]
+enum Ev {
+    Opened { local: u32, sp: String, origin: String },
+    Text { local: u32, text: String },
+    Closed { local: u32, code: u16, reason: String },
+    Rejected { local: u32, why: c_int, detail: String },
+    Served { hash: String, status: u16, coding: c_int, identity: u64, wire: u64 },
+}
+
+struct Fake {
+    config: HashMap<String, CString>,
+    token: String,
+    origins: Vec<String>,
+    cap: usize,
+    resources: HashMap<String, (Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>,
+    events: Mutex<Vec<Ev>>,
+    slots: Mutex<HashSet<u32>>,
+    outstanding: AtomicI64,
+    logs: Mutex<Vec<String>>,
+}
+
+enum Owner {
+    Msg(#[allow(dead_code)] Vec<u8>),
+    Body(#[allow(dead_code)] Arc<Vec<u8>>),
+}
+
+fn fake(h: *mut c_void) -> &'static Fake {
+    unsafe { &*(h as *const Fake) }
+}
+fn s(p: *const c_char, n: usize) -> String {
+    if p.is_null() || n == 0 {
+        String::new()
+    } else {
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p as *const u8, n) }).into_owned()
+    }
+}
+
+unsafe extern "C" fn h_config(h: *mut c_void, key: *const c_char) -> *const c_char {
+    let k = CStr::from_ptr(key).to_string_lossy();
+    fake(h).config.get(k.as_ref()).map(|v| v.as_ptr()).unwrap_or(std::ptr::null())
+}
+unsafe extern "C" fn h_admit(h: *mut c_void, local: u32) -> c_int {
+    let f = fake(h);
+    let mut slots = f.slots.lock().unwrap();
+    if slots.len() >= f.cap {
+        return 0;
+    }
+    slots.insert(local);
+    1
+}
+unsafe extern "C" fn h_opened(h: *mut c_void, local: u32, sp: *const c_char, spn: usize, o: *const c_char, on: usize) {
+    fake(h).events.lock().unwrap().push(Ev::Opened { local, sp: s(sp, spn), origin: s(o, on) });
+}
+unsafe extern "C" fn h_text(h: *mut c_void, local: u32, d: *const c_char, n: usize) {
+    fake(h).events.lock().unwrap().push(Ev::Text { local, text: s(d, n) });
+}
+unsafe extern "C" fn h_closed(h: *mut c_void, local: u32, code: u16, r: *const c_char, n: usize) {
+    let f = fake(h);
+    f.slots.lock().unwrap().remove(&local);
+    f.events.lock().unwrap().push(Ev::Closed { local, code, reason: s(r, n) });
+}
+unsafe extern "C" fn h_rejected(h: *mut c_void, local: u32, why: c_int, d: *const c_char, n: usize) {
+    let f = fake(h);
+    f.slots.lock().unwrap().remove(&local);
+    f.events.lock().unwrap().push(Ev::Rejected { local, why, detail: s(d, n) });
+}
+unsafe extern "C" fn h_served(h: *mut c_void, _local: u32, hash: *const c_char, status: u16, coding: c_int, id: u64, wire: u64) {
+    fake(h).events.lock().unwrap().push(Ev::Served { hash: s(hash, 64), status, coding, identity: id, wire });
+}
+unsafe extern "C" fn h_token_ok(h: *mut c_void, t: *const c_char, n: usize) -> c_int {
+    let f = fake(h);
+    c_int::from(f.token.is_empty() || s(t, n) == f.token)
+}
+unsafe extern "C" fn h_origin_ok(h: *mut c_void, o: *const c_char, n: usize) -> c_int {
+    let o = s(o, n);
+    c_int::from(o.is_empty() || fake(h).origins.contains(&o))
+}
+unsafe extern "C" fn h_lookup(h: *mut c_void, hash: *const c_char, coding: c_int, out: *mut GrcBuf) -> c_int {
+    let f = fake(h);
+    let Some((id, gz)) = f.resources.get(&s(hash, 64)) else { return 0 };
+    let body = match coding {
+        GRC_CODING_IDENTITY => id.clone(),
+        GRC_CODING_GZIP => match gz {
+            Some(g) => g.clone(),
+            None => return 0,
+        },
+        _ => return 0,
+    };
+    f.outstanding.fetch_add(1, Ordering::AcqRel);
+    *out = GrcBuf { data: body.as_ptr(), len: body.len(), owner: Box::into_raw(Box::new(Owner::Body(body))) as *mut c_void };
+    1
+}
+unsafe extern "C" fn h_release(h: *mut c_void, owner: *mut c_void) {
+    fake(h).outstanding.fetch_sub(1, Ordering::AcqRel);
+    drop(Box::from_raw(owner as *mut Owner));
+}
+unsafe extern "C" fn h_log(h: *mut c_void, _level: c_int, m: *const c_char, n: usize) {
+    fake(h).logs.lock().unwrap().push(s(m, n));
+}
+
+struct Opts {
+    token: String,
+    origins: Vec<String>,
+    cap: usize,
+    extra: Vec<(&'static str, String)>,
+}
+impl Default for Opts {
+    fn default() -> Self {
+        Self { token: String::new(), origins: vec!["http://127.0.0.1:5173".into()], cap: 4, extra: vec![] }
+    }
+}
+
+struct Harness {
+    fake: Box<Fake>,
+    host: Box<GrcCarrierHostV1>,
+    vt: GrcCarrierV1,
+    url: String,
+    hash: String,
+    evidence: tempdir::Dir,
+    stopped: bool,
+}
+
+mod tempdir {
+    pub struct Dir(pub std::path::PathBuf);
+    impl Dir {
+        pub fn new() -> Self {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "rs-net-test-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Dir(p)
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+fn gzip(b: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(b).unwrap();
+    e.finish().unwrap()
+}
+
+fn body(n: usize, seed: u8) -> Vec<u8> {
+    (0..n).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect()
+}
+
+impl Harness {
+    fn start(o: Opts) -> Harness {
+        let evidence = tempdir::Dir::new();
+        let mut config: HashMap<String, CString> = HashMap::new();
+        let mut set = |k: &str, v: &str| {
+            config.insert(k.to_string(), CString::new(v).unwrap());
+        };
+        set("wt_listen", "127.0.0.1:0");
+        set("path", "/render-stream");
+        set("subprotocols", "render-stream.13,render-stream.7,render-stream.6");
+        set("hello_token_subprotocols", "render-stream.7,render-stream.13");
+        set("max_inbound_text", "4096");
+        set("evidence_dir", evidence.0.to_str().unwrap());
+        for (k, v) in &o.extra {
+            set(k, v);
+        }
+        let mut resources = HashMap::new();
+        let a = Arc::new(body(300_000, 7));
+        resources.insert(HASH_A.to_string(), (a.clone(), Some(Arc::new(gzip(&a)))));
+        resources.insert(HASH_B.to_string(), (Arc::new(body(10, 9)), None));
+        let fake = Box::new(Fake {
+            config,
+            token: o.token,
+            origins: o.origins,
+            cap: o.cap,
+            resources,
+            events: Mutex::new(vec![]),
+            slots: Mutex::new(HashSet::new()),
+            outstanding: AtomicI64::new(0),
+            logs: Mutex::new(vec![]),
+        });
+        let host = Box::new(GrcCarrierHostV1 {
+            abi_version: GRC_CARRIER_ABI_VERSION,
+            size: std::mem::size_of::<GrcCarrierHostV1>() as u32,
+            host: &*fake as *const Fake as *mut c_void,
+            config: h_config,
+            admit: h_admit,
+            opened: h_opened,
+            text: h_text,
+            closed: h_closed,
+            rejected: h_rejected,
+            resource_served: h_served,
+            token_ok: h_token_ok,
+            origin_ok: h_origin_ok,
+            lookup: h_lookup,
+            release: h_release,
+            log: h_log,
+        });
+        let module = unsafe { &*render_stream_net::grc_net_module_v1() };
+        assert_eq!(module.abi_version, GRC_NET_MODULE_ABI_VERSION);
+        assert_eq!(module.carrier_abi_version, GRC_CARRIER_ABI_VERSION);
+        let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
+        let mut err = [0 as c_char; 256];
+        assert_eq!(unsafe { (module.wt_create)(vt.as_mut_ptr(), err.as_mut_ptr(), err.len()) }, 1);
+        let vt = unsafe { vt.assume_init() };
+        assert_eq!(unsafe { CStr::from_ptr(vt.name) }.to_str().unwrap(), "wt");
+        let ok = unsafe { (vt.start)(vt.self_, &*host, err.as_mut_ptr(), err.len()) };
+        assert_eq!(ok, 1, "start: {}", unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy());
+        let info = info_of(module, &vt);
+        let hash = std::fs::read_to_string(evidence.0.join("live-cert-sha256")).unwrap();
+        assert_eq!(hash, format!("{}\n", cstr(&info.cert_sha256)), "live-cert-sha256 is wt_info's hash");
+        let url = format!("https://127.0.0.1:{}/render-stream?protocol={SP}", info.port);
+        Harness { fake, host, vt, url, hash: hash.trim().to_string(), evidence, stopped: false }
+    }
+
+    fn info(&self) -> GrcNetWtInfoV1 {
+        info_of(unsafe { &*render_stream_net::grc_net_module_v1() }, &self.vt)
+    }
+
+    fn events(&self) -> Vec<Ev> {
+        self.fake.events.lock().unwrap().clone()
+    }
+
+    fn wait<T>(&self, what: &str, mut f: impl FnMut(&[Ev]) -> Option<T>) -> T {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(t) = f(&self.events()) {
+                return t;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}; events: {:?}", self.events());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_opened(&self, n: usize) -> u32 {
+        self.wait("opened", |e| {
+            e.iter()
+                .filter_map(|e| match e {
+                    Ev::Opened { local, .. } => Some(*local),
+                    _ => None,
+                })
+                .nth(n)
+        })
+    }
+
+    fn wait_closed(&self, local: u32) -> (u16, String) {
+        self.wait("closed", |e| {
+            e.iter().find_map(|e| match e {
+                Ev::Closed { local: l, code, reason } if *l == local => Some((*code, reason.clone())),
+                _ => None,
+            })
+        })
+    }
+
+    fn texts(&self, local: u32) -> Vec<String> {
+        self.events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Ev::Text { local: l, text } if l == local => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn buf(&self, bytes: Vec<u8>) -> GrcBuf {
+        self.fake.outstanding.fetch_add(1, Ordering::AcqRel);
+        let (data, len) = (bytes.as_ptr(), bytes.len());
+        GrcBuf { data, len, owner: Box::into_raw(Box::new(Owner::Msg(bytes))) as *mut c_void }
+    }
+
+    fn send(&self, local: u32, bytes: Vec<u8>) -> bool {
+        let b = self.buf(bytes);
+        unsafe { (self.vt.send_binary)(self.vt.self_, local, b) == 1 }
+    }
+
+    fn send_text(&self, local: u32, text: &str) -> bool {
+        let b = self.buf(text.as_bytes().to_vec());
+        unsafe { (self.vt.send_text)(self.vt.self_, local, b) == 1 }
+    }
+
+    fn close(&self, local: u32, code: u16, reason: &str) {
+        unsafe { (self.vt.close)(self.vt.self_, local, code, reason.as_ptr() as *const c_char, reason.len()) }
+    }
+
+    fn stop(&mut self) {
+        if !self.stopped {
+            self.stopped = true;
+            unsafe { (self.vt.stop)(self.vt.self_) };
+            assert_eq!(self.fake.outstanding.load(Ordering::Acquire), 0, "every host buffer released by stop()");
+        }
+    }
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.stop();
+        } else if !self.stopped {
+            unsafe { (self.vt.stop)(self.vt.self_) };
+        }
+        unsafe { (self.vt.destroy)(self.vt.self_) };
+        let _ = (&self.host, &self.evidence);
+    }
+}
+
+fn cstr(a: &[c_char]) -> String {
+    unsafe { CStr::from_ptr(a.as_ptr()) }.to_string_lossy().into_owned()
+}
+
+fn info_of(module: &GrcNetModuleV1, vt: &GrcCarrierV1) -> GrcNetWtInfoV1 {
+    let mut info = GrcNetWtInfoV1::default();
+    assert_eq!(unsafe { (module.wt_info)(vt.self_, &mut info) }, 1);
+    info
+}
+
+// ------------------------------------------------------------------------------ client side
+
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap()
+}
+
+fn digest(hex: &str) -> Sha256Digest {
+    let mut b = [0u8; 32];
+    for i in 0..32 {
+        b[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
+    }
+    Sha256Digest::new(b)
+}
+
+async fn connect_with(url: &str, hash: &str, headers: &[(&str, &str)]) -> Result<Connection, ConnectingError> {
+    let config = ClientConfig::builder()
+        .with_bind_default()
+        .with_server_certificate_hashes([digest(hash)])
+        .max_idle_timeout(Some(Duration::from_secs(10)))
+        .unwrap()
+        .build();
+    let ep = Endpoint::client(config).unwrap();
+    let mut b = ConnectOptions::builder(url);
+    for (k, v) in headers {
+        b = b.add_header(*k, *v);
+    }
+    ep.connect(b.build()).await
+}
+
+async fn connect(h: &Harness) -> Connection {
+    connect_with(&h.url, &h.hash, &[("origin", "http://127.0.0.1:5173")]).await.expect("connect")
+}
+
+fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut v = vec![kind];
+    v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    v.extend_from_slice(body);
+    v
+}
+
+async fn open_live(c: &Connection) -> (SendStream, RecvStream) {
+    let (mut s, r) = c.open_bi().await.unwrap().await.unwrap();
+    s.write_all(&[0x00]).await.unwrap();
+    (s, r)
+}
+
+/// Reads live messages until the stream ends: (messages, framing error).
+async fn read_messages(r: &mut RecvStream) -> (Vec<(u8, Vec<u8>)>, Option<String>) {
+    match tokio::time::timeout(Duration::from_secs(20), read_messages_inner(r)).await {
+        Ok(v) => v,
+        Err(_) => panic!("read_messages: no end of the live stream within 20 s"),
+    }
+}
+
+async fn read_messages_inner(r: &mut RecvStream) -> (Vec<(u8, Vec<u8>)>, Option<String>) {
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 65536];
+    let mut out = Vec::new();
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(Some(n)) => buf.extend_from_slice(&chunk[..n]),
+            Ok(None) => break,
+            Err(e) => return (out, Some(format!("read: {e}"))),
+        }
+        let mut at = 0;
+        while buf.len() - at >= 5 {
+            let kind = buf[at];
+            if kind > 1 {
+                return (out, Some(format!("unknown kind {kind}")));
+            }
+            let len = u32::from_le_bytes(buf[at + 1..at + 5].try_into().unwrap()) as usize;
+            if buf.len() - at < 5 + len {
+                break;
+            }
+            out.push((kind, buf[at + 5..at + 5 + len].to_vec()));
+            at += 5 + len;
+        }
+        buf.drain(..at);
+    }
+    if !buf.is_empty() {
+        return (out, Some(format!("{} trailing bytes at FIN", buf.len())));
+    }
+    (out, None)
+}
+
+async fn get(c: &Connection, accept: u8, path: &str, token: &str) -> (u16, u8, Vec<u8>) {
+    let (mut s, mut r) = c.open_bi().await.unwrap().await.unwrap();
+    let mut req = vec![0x01, accept];
+    req.extend_from_slice(&(path.len() as u16).to_le_bytes());
+    req.extend_from_slice(path.as_bytes());
+    req.push(token.len() as u8);
+    req.extend_from_slice(token.as_bytes());
+    s.write_all(&req).await.unwrap();
+    s.finish().await.unwrap();
+    let mut res = Vec::new();
+    let mut chunk = vec![0u8; 65536];
+    while let Some(n) = r.read(&mut chunk).await.unwrap() {
+        res.extend_from_slice(&chunk[..n]);
+    }
+    assert!(res.len() >= 7, "response too short");
+    let status = u16::from_le_bytes([res[0], res[1]]);
+    let len = u32::from_le_bytes(res[3..7].try_into().unwrap()) as usize;
+    assert_eq!(res.len(), 7 + len, "body length is the header's");
+    (status, res[2], res[7..].to_vec())
+}
+
+fn gunzip(b: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(b).read_to_end(&mut out).unwrap();
+    out
+}
+
+/// The session's close as the client saw it (CLOSE_WEBTRANSPORT_SESSION), or None.
+async fn close_code(c: &Connection) -> Option<(u64, String)> {
+    tokio::time::timeout(Duration::from_secs(5), c.session_closed())
+        .await
+        .ok()
+        .flatten()
+        .map(|(code, r)| (u64::from(code), String::from_utf8_lossy(&r).into_owned()))
+}
+
+// ------------------------------------------------------------------------------ tests
+
+#[test]
+fn framing_split_and_coalesced_both_ways_and_drain_before_close() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    assert!(matches!(&h.events()[0], Ev::Opened { sp, origin, .. } if sp == SP && origin == "http://127.0.0.1:5173"));
+    // Hub sends before the live stream exists are queued (counted) and flushed in order.
+    assert!(h.send(local, b"magic+session".to_vec()));
+    assert!(unsafe { (h.vt.queued_bytes)(h.vt.self_, local) } >= 13);
+    let (mut s, mut r) = rt.block_on(open_live(&c));
+    // Client to host: one message split over three writes, then two coalesced in one write.
+    let hello = frame(1, br#"{"type":"hello","token":"x"}"#);
+    rt.block_on(async {
+        s.write_all(&hello[..3]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        s.write_all(&hello[3..9]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        s.write_all(&hello[9..]).await.unwrap();
+        let mut two = frame(1, b"{\"type\":\"ack\",\"seq\":1}");
+        two.extend(frame(1, "{\"t\":\"\u{e9}\"}".as_bytes()));
+        s.write_all(&two).await.unwrap();
+    });
+    h.wait("three texts", |_| (h.texts(local).len() == 3).then_some(()));
+    assert_eq!(
+        h.texts(local),
+        vec![r#"{"type":"hello","token":"x"}"#, "{\"type\":\"ack\",\"seq\":1}", "{\"t\":\"\u{e9}\"}"]
+    );
+    // Host to client: sizes around the frame header and the QUIC chunking, a text, then a large
+    // final message and an immediate close: the close must not cut the last message (Q4.5).
+    let sizes = [0usize, 1, 4, 5, 1199, 70_000, 1 << 20];
+    let mut expect: Vec<(u8, Vec<u8>)> = vec![(0, b"magic+session".to_vec())];
+    for (i, n) in sizes.iter().enumerate() {
+        let b = body(*n, i as u8);
+        assert!(h.send(local, b.clone()));
+        expect.push((0, b));
+    }
+    assert!(h.send_text(local, "{\"type\":\"error\"}"));
+    expect.push((1, b"{\"type\":\"error\"}".to_vec()));
+    let last = body(4 << 20, 99);
+    assert!(h.send(local, last.clone()));
+    expect.push((0, last));
+    h.close(local, 1000, "shutdown");
+    assert!(!h.send(local, vec![1]), "a send after close is refused");
+    let (got, err) = rt.block_on(read_messages(&mut r));
+    assert_eq!(err, None);
+    assert_eq!(got.len(), expect.len());
+    assert!(got == expect, "every message, byte for byte, in order");
+    assert_eq!(rt.block_on(close_code(&c)), Some((1000, "shutdown".to_string())), "CLOSE_WEBTRANSPORT_SESSION(1000)");
+    assert_eq!(h.wait_closed(local), (1000, "shutdown".to_string()));
+    assert_eq!(unsafe { (h.vt.queued_bytes)(h.vt.self_, local) }, 0);
+}
+
+#[test]
+fn sabotage_len_off_by_one_fails_the_framing_check() {
+    let h = Harness::start(Opts { extra: vec![("net_fault", "len-off-by-one".into())], ..Default::default() });
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    let (_s, mut r) = rt.block_on(open_live(&c));
+    let sent = vec![body(100, 1), body(200, 2), body(300, 3)];
+    for b in &sent {
+        assert!(h.send(local, b.clone()));
+    }
+    h.close(local, 1000, "");
+    let (got, err) = rt.block_on(read_messages(&mut r));
+    assert!(err.is_some() || got != sent.iter().map(|b| (0u8, b.clone())).collect::<Vec<_>>(), "framing broken");
+}
+
+#[test]
+fn sabotage_no_drain_close_loses_the_last_message() {
+    let h = Harness::start(Opts { extra: vec![("net_fault", "no-drain-close".into())], ..Default::default() });
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    let (_s, mut r) = rt.block_on(open_live(&c));
+    rt.block_on(async { tokio::time::sleep(Duration::from_millis(100)).await });
+    let end = body(8 << 20, 5);
+    assert!(h.send(local, end.clone()));
+    h.close(local, 1000, "shutdown");
+    let (got, _err) = rt.block_on(read_messages(&mut r));
+    assert!(!got.iter().any(|(_, b)| *b == end), "the end message is lost without the drain");
+    assert_eq!(rt.block_on(close_code(&c)), None, "no session close capsule either");
+}
+
+#[test]
+fn client_close_maps_to_host_closed() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    // CLOSE_WEBTRANSPORT_SESSION(4001, "bye") from the client.
+    let c = rt.block_on(connect(&h));
+    let a = h.wait_opened(0);
+    let _live = rt.block_on(open_live(&c));
+    c.close_session(4001, b"bye");
+    assert_eq!(h.wait_closed(a), (4001, "bye".to_string()));
+    // Code 0 maps to 1005.
+    let c = rt.block_on(connect(&h));
+    let b = h.wait_opened(1);
+    c.close_session(0, b"");
+    assert_eq!(h.wait_closed(b).0, 1005);
+    // A QUIC close without the capsule (a transport error) maps to 1006.
+    let c = rt.block_on(connect(&h));
+    let d = h.wait_opened(2);
+    c.close(wtransport::VarInt::from_u32(7), b"gone");
+    assert_eq!(h.wait_closed(d).0, 1006);
+    // Every slot came back.
+    assert!(h.fake.slots.lock().unwrap().is_empty());
+}
+
+#[test]
+fn inbound_limits_close_like_websocket() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let cases: [(Vec<u8>, u16); 4] = [
+        (frame(1, &vec![b'a'; 4097]), 1009),
+        (frame(0, b"binary"), 1003),
+        (frame(7, b"?"), 1002),
+        (frame(1, &[0xff, 0xfe]), 1007),
+    ];
+    for (i, (bytes, code)) in cases.iter().enumerate() {
+        let c = rt.block_on(connect(&h));
+        let local = h.wait_opened(i);
+        let (mut s, _r) = rt.block_on(open_live(&c));
+        rt.block_on(s.write_all(bytes)).unwrap();
+        assert_eq!(h.wait_closed(local).0, *code, "case {i}");
+        assert_eq!(rt.block_on(close_code(&c)).map(|c| c.0), Some(u64::from(*code)));
+    }
+}
+
+#[test]
+fn resource_streams_statuses_and_codings() {
+    let h = Harness::start(Opts { token: TOKEN.into(), ..Default::default() });
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    h.wait_opened(0);
+    let pa = format!("/resources/sha256/{HASH_A}");
+    let pb = format!("/resources/sha256/{HASH_B}");
+    let missing = format!("/resources/sha256/{}", "c".repeat(64));
+    let a = body(300_000, 7);
+    rt.block_on(async {
+        // identity (accept 0)
+        let (st, co, b) = get(&c, 0, &pa, TOKEN).await;
+        assert_eq!((st, co), (200, 0));
+        assert!(b == a);
+        // gzip accepted and offered
+        let (st, co, b) = get(&c, 1, &pa, TOKEN).await;
+        assert_eq!((st, co), (200, 1));
+        assert!(b.len() < a.len());
+        assert!(gunzip(&b) == a);
+        // zstd accepted, not offered -> gzip; gzip accepted, not offered -> identity
+        let (st, co, _) = get(&c, 3, &pa, TOKEN).await;
+        assert_eq!((st, co), (200, 1));
+        let (st, co, b) = get(&c, 1, &pb, TOKEN).await;
+        assert_eq!((st, co, b.len()), (200, 0, 10));
+        // 404, 401 (wrong and missing token), 400 (bad path, bad token)
+        assert_eq!(get(&c, 0, &missing, TOKEN).await.0, 404);
+        assert_eq!(get(&c, 0, &pa, &"0".repeat(64)).await.0, 401);
+        assert_eq!(get(&c, 0, &pa, "").await.0, 401);
+        assert_eq!(get(&c, 0, "/resources/sha256/xyz", TOKEN).await.0, 400);
+        assert_eq!(get(&c, 0, &pa, "short").await.0, 400);
+        assert_eq!(get(&c, 0, &pa.to_uppercase(), TOKEN).await.0, 400);
+        // concurrent GETs on one session
+        let gets: Vec<_> = (0..20)
+            .map(|_| {
+                let (c2, p) = (c.clone(), pa.clone());
+                async move { get(&c2, 1, &p, TOKEN).await }
+            })
+            .collect();
+        for r in futures_join(gets).await {
+            assert_eq!(r.0, 200);
+        }
+    });
+    let served = h.wait("served", |e| {
+        let v: Vec<Ev> = e.iter().filter(|e| matches!(e, Ev::Served { .. })).cloned().collect();
+        (v.len() >= 7 + 20).then_some(v)
+    });
+    assert_eq!(
+        served[0],
+        Ev::Served { hash: HASH_A.into(), status: 200, coding: 0, identity: 300_000, wire: 300_000 }
+    );
+    assert!(matches!(&served[1], Ev::Served { status: 200, coding: 1, identity: 300_000, wire, .. } if *wire < 300_000));
+    assert!(matches!(&served[4], Ev::Served { status: 404, .. }));
+    assert!(matches!(&served[5], Ev::Served { status: 401, identity: 0, wire: 0, .. }));
+}
+
+async fn futures_join<F: std::future::Future + Send + 'static>(fs: Vec<F>) -> Vec<F::Output>
+where
+    F::Output: Send + 'static,
+{
+    let hs: Vec<_> = fs.into_iter().map(tokio::spawn).collect();
+    let mut out = Vec::new();
+    for h in hs {
+        out.push(h.await.unwrap());
+    }
+    out
+}
+
+#[test]
+fn wrong_certificate_hash_is_refused() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let wrong = "0".repeat(64);
+    let r = rt.block_on(connect_with(&h.url, &wrong, &[]));
+    assert!(r.is_err(), "the handshake fails on a hash that is not the certificate's");
+    assert!(!h.events().iter().any(|e| matches!(e, Ev::Opened { .. })));
+}
+
+#[test]
+fn connect_checks_origin_path_subprotocol_negotiation() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let base = h.url.split("/render-stream").next().unwrap().to_string();
+    let status = |r: Result<Connection, ConnectingError>| match r {
+        Err(ConnectingError::SessionRejectedStatus(s)) => s,
+        Ok(_) => 200,
+        Err(e) => panic!("unexpected {e}"),
+    };
+    rt.block_on(async {
+        assert_eq!(status(connect_with(&h.url, &h.hash, &[("origin", "https://evil.example")]).await), 403);
+        assert_eq!(status(connect_with(&format!("{base}/other?protocol={SP}"), &h.hash, &[]).await), 404);
+        assert_eq!(status(connect_with(&format!("{base}/render-stream"), &h.hash, &[]).await), 400);
+        // /6's token is an upgrade header: not offered on wt.
+        assert_eq!(
+            status(connect_with(&format!("{base}/render-stream?protocol=render-stream.6"), &h.hash, &[]).await),
+            400
+        );
+        assert_eq!(
+            status(
+                connect_with(&h.url, &h.hash, &[("wt-available-protocols", "\"render-stream.7\"")]).await
+            ),
+            400,
+            "negotiation must agree with the query"
+        );
+        let ok = connect_with(&h.url, &h.hash, &[("wt-available-protocols", "\"render-stream.7\", \"render-stream.13\"")])
+            .await;
+        assert_eq!(status(ok), 200);
+        // No Origin at all is allowed (a non-browser client).
+        assert_eq!(status(connect_with(&h.url, &h.hash, &[]).await), 200);
+    });
+    let ev = h.events();
+    assert!(ev.contains(&Ev::Rejected { local: 1, why: GRC_REJECT_ORIGIN, detail: "https://evil.example".into() }));
+    assert_eq!(ev.iter().filter(|e| matches!(e, Ev::Opened { .. })).count(), 2);
+    assert_eq!(h.info().sessions_refused, 5);
+}
+
+#[test]
+fn reserved_stream_types_uni_streams_and_datagrams_are_refused() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    let (mut live_s, mut live_r) = rt.block_on(open_live(&c));
+    rt.block_on(async {
+        for t in [0x02u8, 0x0f, 0x10, 0x80, 0xff] {
+            let (mut s, mut r) = c.open_bi().await.unwrap().await.unwrap();
+            s.write_all(&[t, 1, 2, 3]).await.unwrap();
+            let mut b = [0u8; 8];
+            match r.read(&mut b).await {
+                Err(StreamReadError::Reset(code)) => {
+                    assert_eq!(code.into_inner(), wt_error_to_h3(1), "unknown-stream-type")
+                }
+                other => panic!("stream type {t:#x}: expected a reset, got {other:?}"),
+            }
+        }
+        let mut u = c.open_uni().await.unwrap().await.unwrap();
+        let _ = u.write_all(&[0x02, 9, 9]).await;
+        let _ = c.send_datagram(b"audio?");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The session continues: the live stream still carries both ways.
+        live_s.write_all(&frame(1, b"{\"still\":1}")).await.unwrap();
+    });
+    h.wait("text after refusals", |_| (h.texts(local) == vec!["{\"still\":1}"]).then_some(()));
+    assert!(h.send(local, b"ok".to_vec()));
+    h.close(local, 1000, "");
+    let (got, _) = rt.block_on(read_messages(&mut live_r));
+    assert_eq!(got, vec![(0u8, b"ok".to_vec())]);
+    let info = h.info();
+    assert_eq!(info.streams_refused, 6);
+    assert!(info.datagrams_dropped <= 1, "a datagram is dropped and counted (if it arrived)");
+}
+
+#[test]
+fn second_live_stream_closes_1008() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    let _a = rt.block_on(open_live(&c));
+    let _b = rt.block_on(open_live(&c));
+    assert_eq!(h.wait_closed(local), (1008, "second-live-stream".to_string()));
+}
+
+#[test]
+fn admission_cap_is_the_host_total() {
+    let h = Harness::start(Opts { cap: 1, ..Default::default() });
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let a = h.wait_opened(0);
+    match rt.block_on(connect_with(&h.url, &h.hash, &[])) {
+        Err(ConnectingError::SessionRejectedStatus(503)) => {}
+        Err(e) => panic!("expected 503, got {e}"),
+        Ok(_) => panic!("expected 503, got a session"),
+    }
+    c.close_session(1000, b"");
+    h.wait_closed(a);
+    let _again = rt.block_on(connect(&h));
+    h.wait_opened(1);
+}
+
+#[test]
+fn send_queue_cap_closes_1008() {
+    let h = Harness::start(Opts { extra: vec![("max_queued_bytes", "1000".into())], ..Default::default() });
+    let rt = rt();
+    let _c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    assert!(h.send(local, vec![0; 900]));
+    assert!(!h.send(local, vec![0; 200]), "over the cap");
+    assert_eq!(h.wait_closed(local).0, 1008);
+    assert_eq!(unsafe { (h.vt.max_queued_bytes)(h.vt.self_, local) }, 0, "unknown once closed");
+}
+
+#[test]
+fn panic_in_send_is_contained() {
+    let h = Harness::start(Opts { extra: vec![("net_fault", "panic-send".into())], ..Default::default() });
+    let rt = rt();
+    let _c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    assert!(!h.send(local, vec![1, 2, 3]), "the panic is caught; the send fails");
+    assert_eq!(h.wait_closed(local), (1011, "carrier-fault".to_string()));
+    assert_eq!(h.info().faulted, 1);
+    assert_eq!(h.fake.outstanding.load(Ordering::Acquire), 0, "the message was still released");
+    // The carrier refuses new sessions now.
+    assert!(rt.block_on(connect_with(&h.url, &h.hash, &[])).is_err());
+}
+
+#[test]
+fn panic_in_a_session_task_is_contained() {
+    let h = Harness::start(Opts { extra: vec![("net_fault", "panic-session".into())], ..Default::default() });
+    let rt = rt();
+    // The session opens, then its task panics: the connect may or may not see it open.
+    let _c = rt.block_on(connect_with(&h.url, &h.hash, &[]));
+    let local = h.wait_opened(0);
+    assert_eq!(h.wait_closed(local), (1011, "carrier-fault".to_string()));
+    assert_eq!(h.info().faulted, 1);
+}
+
+#[test]
+fn stop_closes_releases_and_goes_quiet() {
+    let mut h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    // Messages the client never reads a live stream for: still released by stop().
+    for _ in 0..10 {
+        assert!(h.send(local, vec![7; 1000]));
+    }
+    h.stop();
+    assert_eq!(h.wait_closed(local).0, 1001);
+    let n = h.events().len();
+    let _ = rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), c.closed()).await });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.events().len(), n, "no callback after stop()");
+}
+
+#[test]
+fn self_signed_certificate_is_pinnable_and_written() {
+    let h = Harness::start(Opts::default());
+    let info = h.info();
+    assert_eq!(cstr(&info.tls), "self-signed");
+    assert_eq!(cstr(&info.address), "127.0.0.1");
+    assert!(info.port > 0);
+    assert_eq!(h.hash.len(), 64);
+    assert!(h.fake.logs.lock().unwrap().iter().any(|l| l.contains(&h.hash)));
+}
+
+#[test]
+fn start_refusals_are_typed() {
+    for (extra, want) in [
+        (vec![("wt_listen", "nonsense".to_string())], "wt-listen-invalid"),
+        (vec![("wt_cert", "tls".to_string())], "tls-config-invalid"),
+        (vec![("hello_token_subprotocols", "".to_string())], "carrier-config-invalid"),
+    ] {
+        let fake = Box::new(Fake {
+            config: {
+                let mut m = HashMap::new();
+                m.insert("wt_listen".to_string(), CString::new("127.0.0.1:0").unwrap());
+                m.insert("subprotocols".to_string(), CString::new(SP).unwrap());
+                m.insert("hello_token_subprotocols".to_string(), CString::new(SP).unwrap());
+                for (k, v) in &extra {
+                    m.insert(k.to_string(), CString::new(v.as_str()).unwrap());
+                }
+                m
+            },
+            token: String::new(),
+            origins: vec![],
+            cap: 1,
+            resources: HashMap::new(),
+            events: Mutex::new(vec![]),
+            slots: Mutex::new(HashSet::new()),
+            outstanding: AtomicI64::new(0),
+            logs: Mutex::new(vec![]),
+        });
+        let host = GrcCarrierHostV1 {
+            abi_version: GRC_CARRIER_ABI_VERSION,
+            size: std::mem::size_of::<GrcCarrierHostV1>() as u32,
+            host: &*fake as *const Fake as *mut c_void,
+            config: h_config,
+            admit: h_admit,
+            opened: h_opened,
+            text: h_text,
+            closed: h_closed,
+            rejected: h_rejected,
+            resource_served: h_served,
+            token_ok: h_token_ok,
+            origin_ok: h_origin_ok,
+            lookup: h_lookup,
+            release: h_release,
+            log: h_log,
+        };
+        let module = unsafe { &*render_stream_net::grc_net_module_v1() };
+        let mut vt = std::mem::MaybeUninit::<GrcCarrierV1>::zeroed();
+        let mut err = [0 as c_char; 256];
+        unsafe { (module.wt_create)(vt.as_mut_ptr(), err.as_mut_ptr(), err.len()) };
+        let vt = unsafe { vt.assume_init() };
+        assert_eq!(unsafe { (vt.start)(vt.self_, &host, err.as_mut_ptr(), err.len()) }, 0);
+        let e = cstr(&err);
+        assert!(e.starts_with(want), "{want}: got {e}");
+        unsafe { (vt.destroy)(vt.self_) };
+    }
+}

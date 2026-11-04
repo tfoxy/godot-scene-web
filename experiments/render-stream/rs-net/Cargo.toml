@@ -1,0 +1,34 @@
+[package]
+name = "render-stream-net"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "render-stream's net module (carrier-design.md D8, CAR3): the `wt` WebTransport live carrier behind grc_carrier_v1"
+
+[lib]
+name = "render_stream_net"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wtransport = { version = "0.7.2", default-features = false, features = ["ring", "quinn"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+time = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
+
+[dev-dependencies]
+flate2 = "1"
+
+[[bin]]
+name = "rs-net-probe"
+path = "src/bin/rs-net-probe.rs"
+
+# wtransport 0.7.2 with the render-stream patch (vendor/wtransport/RENDER-STREAM-PATCH.md):
+# CLOSE_WEBTRANSPORT_SESSION from the server, any rejection status, the status on the client.
+[patch.crates-io]
+wtransport = { path = "vendor/wtransport" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "unwind"

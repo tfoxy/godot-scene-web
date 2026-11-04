@@ -45,7 +45,8 @@
       "experiments/render-stream/rs-core",
       "experiments/render-stream/rs-core-capi",
       "experiments/render-stream/web/gsw-rs",
-      "experiments/render-stream/decode-proto-rs"
+      "experiments/render-stream/decode-proto-rs",
+      "experiments/render-stream/rs-net"
     ],
     "other": ["pure", "lock-tests", "capture-build", "pnpm-test", "bench-instr"]
   },
@@ -372,6 +373,20 @@
         "experiments/render-stream/capture/test/rs_carrier*"
       ],
       "reach": ["capture-build", "pure", "native:gate1@*", "native:gate2@*", "native:gate6@*", "native:gate8@*", "native:hc1@*", "g7live:*@*"],
+      "exclusive": true
+    },
+    {
+      "why": "CAR3 net module (carrier-design.md D8, Q4): the rs-net crate (the wt carrier, its vendored wtransport), the capture's loader and its ctest, build-rs-net.sh and the two wt tests. Nothing here runs unless GRC_LIVE_CARRIERS lists wt, which no gate leg does, so it reaches the crate's tests, the build (rs_net_module ctest) and the pure self-tests (self-test-wt-interop.ts). Its call sites in entry.cpp and rs_live_host.cpp are shared capture files and still reach '*'",
+      "paths": [
+        "experiments/render-stream/rs-net/**",
+        "experiments/render-stream/capture/src/grc_net_module.h",
+        "experiments/render-stream/capture/src/rs_net_module*",
+        "experiments/render-stream/capture/test/rs_net_*",
+        "experiments/render-stream/scripts/build-rs-net.sh",
+        "experiments/render-stream/scripts/test/self-test-wt-interop.ts",
+        "experiments/render-stream/scripts/test/wt-chromium-smoke.ts"
+      ],
+      "reach": ["capture-build", "pure", "cargo:experiments/render-stream/rs-net"],
       "exclusive": true
     },
     {

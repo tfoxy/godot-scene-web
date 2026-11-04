@@ -88,6 +88,7 @@ add_library(render_stream_capture SHARED
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_carrier_set.cpp
+  src/rs_net_module.cpp
   src/rs_particles_shim.cpp
   src/rs_registry.cpp
   src/rs_gate8_policy.cpp
@@ -128,6 +129,8 @@ set_target_properties(render_stream_capture PROPERTIES
 target_compile_options(render_stream_capture PRIVATE -fno-omit-frame-pointer)
 find_package(Threads REQUIRED)
 target_link_libraries(render_stream_capture PRIVATE Threads::Threads)
+# CAR3 (carrier-design.md D8): dlopen of the net module, only when GRC_LIVE_CARRIERS lists wt.
+target_link_libraries(render_stream_capture PRIVATE ${CMAKE_DL_LIBS})
 
 # `.gdextension` file with the absolute path of the library just built, so a
 # fixture can load it with GDExtensionManager.load_extension() from anywhere.
@@ -198,6 +201,23 @@ add_executable(rs_carrier_set_test test/rs_carrier_set_test.cpp src/rs_carrier_s
 target_include_directories(rs_carrier_set_test PRIVATE src)
 target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
+
+# CAR3 (carrier-design.md D8, Q3): the net module loader's refusals (net-module-missing,
+# net-module-abi) against two fake modules, and -- when scripts/build-rs-net.sh has put the real
+# librender_stream_net.so beside the tests -- its table and a wt carrier's start/stop through the
+# CarrierSet. The wire itself is the crate's (rs-net/tests) and the interop leg's
+# (scripts/test/self-test-wt-interop.ts).
+add_library(rs_net_fake_noentry MODULE test/rs_net_fake_module.c)
+target_compile_definitions(rs_net_fake_noentry PRIVATE GRC_FAKE_NO_ENTRY=1)
+add_library(rs_net_fake_badabi MODULE test/rs_net_fake_module.c)
+target_include_directories(rs_net_fake_badabi PRIVATE src)
+add_executable(rs_net_module_test test/rs_net_module_test.cpp src/rs_net_module.cpp
+  src/rs_carrier_set.cpp src/rs_ws.cpp src/rs_sha1.cpp)
+target_include_directories(rs_net_module_test PRIVATE src)
+target_link_libraries(rs_net_module_test PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
+add_dependencies(rs_net_module_test rs_net_fake_noentry rs_net_fake_badabi)
+add_test(NAME rs_net_module COMMAND rs_net_module_test
+  $<TARGET_FILE:rs_net_fake_noentry> $<TARGET_FILE:rs_net_fake_badabi>)
 
 # Test-only echo server for the Node and Godot interop self-tests
 # (scripts/test/self-test-rs-ws.ts, receiver/tests/ws_selftest.gd). Not linked
@@ -287,9 +307,11 @@ add_executable(rs_live_host
   src/report.cpp
   src/rs_sha1.cpp
   src/rs_ws.cpp
+  src/rs_carrier_set.cpp
+  src/rs_net_module.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)
-target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads)
+target_link_libraries(rs_live_host PRIVATE grc_warnings grc_codecs Threads::Threads ${CMAKE_DL_LIBS})
 
 # W11t: the /11 live coding (rs_live_coding.h): unit checks, and the coding tool whose output for
 # golden-11's recordings is pinned byte for byte (protocol/golden-11/coding/).

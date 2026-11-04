@@ -1,0 +1,375 @@
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' a/wtransport-0.7.2/Cargo.toml b/wtransport/Cargo.toml
+--- a/wtransport-0.7.2/Cargo.toml	2006-07-23 22:21:28.000000000 -0300
++++ b/wtransport/Cargo.toml	2026-11-04 17:32:14.743921450 -0300
+@@ -168,6 +168,7 @@
+     "macros",
+     "fs",
+     "io-util",
++    "time",
+ ]
+ default-features = false
+ 
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' a/wtransport-0.7.2/src/connection.rs b/wtransport/src/connection.rs
+--- a/wtransport-0.7.2/src/connection.rs	2006-07-23 22:21:28.000000000 -0300
++++ b/wtransport/src/connection.rs	2026-11-04 17:32:14.744921445 -0300
+@@ -306,6 +306,28 @@
+         self.quic_connection.close(varint_w2q(error_code), reason);
+     }
+ 
++    /// render-stream patch: closes the WebTransport session with
++    /// CLOSE_WEBTRANSPORT_SESSION(error_code, reason) on its CONNECT stream (WebTransport over
++    /// HTTP/3, "Session Termination"), which a browser reports as `closed`'s `closeCode` and
++    /// `reason`. The QUIC connection closes once the peer has acknowledged the capsule; await
++    /// [`closed`](Self::closed) (with a deadline, then [`close`](Self::close)) for that.
++    pub fn close_session(&self, error_code: u32, reason: &[u8]) {
++        self.driver.close_session(error_code, reason);
++    }
++
++    /// render-stream patch: waits for the session to end. `Some((code, reason))` when it ended
++    /// with CLOSE_WEBTRANSPORT_SESSION from either side (a clean FIN of the CONNECT stream counts
++    /// as code 0), `None` when the QUIC connection ended without one ([`closed`](Self::closed)
++    /// reports that QUIC-level reason).
++    pub async fn session_closed(&self) -> Option<(u32, Box<[u8]>)> {
++        match self.driver.result().await {
++            crate::driver::DriverError::ApplicationClosed(close) => {
++                Some((close.code().into_inner() as u32, close.reason().into()))
++            }
++            _ => None,
++        }
++    }
++
+     /// Waits for the connection to be closed for any reason.
+     pub async fn closed(&self) -> ConnectionError {
+         self.quic_connection.closed().await.into()
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' a/wtransport-0.7.2/src/driver/mod.rs b/wtransport/src/driver/mod.rs
+--- a/wtransport-0.7.2/src/driver/mod.rs	2006-07-23 22:21:28.000000000 -0300
++++ b/wtransport/src/driver/mod.rs	2026-11-04 18:20:54.517635813 -0300
+@@ -43,6 +43,8 @@
+     ready_bi_wt_streams: Mutex<mpsc::Receiver<StreamBiRemoteWT>>,
+     ready_datagrams: Mutex<mpsc::Receiver<Datagram>>,
+     driver_result: SharedResultGet<DriverError>,
++    // render-stream patch: CLOSE_WEBTRANSPORT_SESSION requests for the session's CONNECT task.
++    close_session: mpsc::Sender<(u32, Box<[u8]>)>,
+ }
+ 
+ impl Driver {
+@@ -53,6 +55,7 @@
+         let ready_bi_wt_streams = mpsc::channel(1);
+         let ready_datagrams = mpsc::channel(1);
+         let driver_result = shared_result();
++        let close_session = mpsc::channel(1);
+ 
+         tokio::spawn(
+             worker::Worker::new(
+@@ -63,6 +66,7 @@
+                 ready_bi_wt_streams.0,
+                 ready_datagrams.0,
+                 driver_result.0,
++                close_session.1,
+             )
+             .run()
+             .instrument(debug_span!("Driver", quic_id = quic_connection.stable_id())),
+@@ -76,9 +80,20 @@
+             ready_bi_wt_streams: Mutex::new(ready_bi_wt_streams.1),
+             ready_datagrams: Mutex::new(ready_datagrams.1),
+             driver_result: driver_result.1,
++            close_session: close_session.0,
+         }
+     }
+ 
++    /// render-stream patch: asks the session's CONNECT task to send
++    /// CLOSE_WEBTRANSPORT_SESSION(error_code, reason) and finish the stream (a request made
++    /// before the session is registered waits for it). The worker then ends the session and
++    /// closes the QUIC connection once the capsule is acknowledged. A second request is ignored.
++    pub fn close_session(&self, error_code: u32, reason: &[u8]) {
++        let _ = self
++            .close_session
++            .try_send((error_code, reason.to_vec().into_boxed_slice()));
++    }
++
+     pub async fn accept_settings(&self) -> Result<Settings, DriverError> {
+         let mut lock = self.ready_settings.lock().await;
+ 
+@@ -227,7 +242,7 @@
+         }
+     }
+ 
+-    async fn result(&self) -> DriverError {
++    pub(crate) async fn result(&self) -> DriverError {
+         match self.driver_result.result().await {
+             Some(error) => error,
+             None => panic!("Driver worker panic!"),
+@@ -247,7 +262,9 @@
+     use crate::driver::utils::TrySendError;
+     use streams::connect::ConnectStream;
+     use utils::varint_w2q;
++    use tokio::sync::oneshot;
+     use wtransport_proto::frame::FrameKind;
++    use wtransport_proto::varint::VarInt;
+     use wtransport_proto::headers::Headers;
+     use wtransport_proto::session::HeadersParseError;
+     use wtransport_proto::stream_header::StreamHeader;
+@@ -261,6 +278,10 @@
+         ready_bi_wt_streams: mpsc::Sender<StreamBiRemoteWT>,
+         ready_datagrams: mpsc::Sender<Datagram>,
+         driver_result: SharedResultSet<DriverError>,
++        close_session: Option<mpsc::Receiver<(u32, Box<[u8]>)>>,
++        connect_task: Option<oneshot::Receiver<DriverError>>,
++        remote_settings_taken: bool,
++        control_errors: (mpsc::Sender<DriverError>, mpsc::Receiver<DriverError>),
+         local_settings_stream: LocalSettingsStream,
+         remote_settings_stream: RemoteSettingsStream,
+         remote_qpack_enc_stream: RemoteQPackEncStream,
+@@ -277,6 +298,7 @@
+             ready_bi_wt_streams: mpsc::Sender<StreamBiRemoteWT>,
+             ready_datagrams: mpsc::Sender<Datagram>,
+             driver_result: SharedResultSet<DriverError>,
++            close_session: mpsc::Receiver<(u32, Box<[u8]>)>,
+         ) -> Self {
+             Self {
+                 quic_connection,
+@@ -286,6 +308,10 @@
+                 ready_bi_wt_streams,
+                 ready_datagrams,
+                 driver_result,
++                close_session: Some(close_session),
++                connect_task: None,
++                remote_settings_taken: false,
++                control_errors: mpsc::channel(1),
+                 local_settings_stream: LocalSettingsStream::empty(),
+                 remote_settings_stream: RemoteSettingsStream::empty(),
+                 remote_qpack_enc_stream: RemoteQPackEncStream::empty(),
+@@ -297,11 +323,25 @@
+         pub async fn run(mut self) {
+             debug!("Started");
+ 
+-            let error = self
++            let mut error = self
+                 .run_impl()
+                 .await
+                 .expect_err("Worker must return an error");
+ 
++            // render-stream patch: a peer that sends CLOSE_WEBTRANSPORT_SESSION and then closes
++            // the QUIC connection can make another branch see the close first; the capsule is
++            // still in the CONNECT stream's buffer, so the CONNECT task's verdict wins.
++            if !matches!(error, DriverError::ApplicationClosed(_)) {
++                if let Some(connect_task) = self.connect_task.take() {
++                    if let Ok(Ok(DriverError::ApplicationClosed(close))) =
++                        tokio::time::timeout(std::time::Duration::from_millis(500), connect_task)
++                            .await
++                    {
++                        error = DriverError::ApplicationClosed(close);
++                    }
++                }
++            }
++
+             debug!("Ended with error: {:?}", error);
+ 
+             match &error {
+@@ -358,16 +398,27 @@
+                     }
+ 
+ 
+-                    settings = remote_settings_watcher.accept_settings() => {
+-                        let settings = settings.expect("Channel cannot be dropped");
++                    // render-stream patch: the sender lives in the control stream's task now and
++                    // goes with it (its end is reported through control_errors).
++                    Some(settings) = remote_settings_watcher.accept_settings() => {
+                         self.handle_remote_settings(settings)?;
+                     }
+ 
+                     stream_session = self.ready_sessions.recv() => {
+                         match stream_session {
+                             Some(stream_session) => {
+-                                if self.connect_stream.is_empty() {
+-                                    self.connect_stream.set_stream(stream_session);
++                                // render-stream patch: the CONNECT stream is read in a task of
++                                // its own, so no read of a capsule is ever cancelled half-way by
++                                // another branch of this loop (upstream re-creates the read
++                                // future on every iteration and can lose a partial frame).
++                                if self.connect_stream.is_empty() && self.connect_task.is_none() {
++                                    let (tx, rx) = oneshot::channel();
++                                    tokio::spawn(Self::connect_task(
++                                        stream_session,
++                                        self.close_session.take(),
++                                        tx,
++                                    ));
++                                    self.connect_task = Some(rx);
+                                 }
+                             }
+                             None => return Err(DriverError::NotConnected),
+@@ -385,6 +436,17 @@
+                     () = self.driver_result.closed() => {
+                         return Err(DriverError::NotConnected);
+                     }
++
++                    // render-stream patch: the remote control stream's task ended.
++                    Some(error) = self.control_errors.1.recv() => {
++                        return Err(error);
++                    }
++
++                    // render-stream patch: the CONNECT task's end is the session's.
++                    error = async { self.connect_task.as_mut().expect("guarded").await }, if self.connect_task.is_some() => {
++                        self.connect_task = None; // completed: run() must not poll it again
++                        return Err(error.unwrap_or(DriverError::NotConnected));
++                    }
+                 }
+             }
+         }
+@@ -560,11 +622,25 @@
+         fn handle_uni_h3_stream(&mut self, stream: StreamUniRemoteH3) -> Result<(), DriverError> {
+             match stream.kind() {
+                 StreamKind::Control => {
+-                    if !self.remote_settings_stream.is_empty() {
++                    if !self.remote_settings_stream.is_empty() || self.remote_settings_taken {
+                         return Err(DriverError::Proto(ErrorCode::StreamCreation));
+                     }
+ 
+-                    self.remote_settings_stream.set_stream(stream);
++                    // render-stream patch: the peer's control stream is read in a task of its
++                    // own (the watcher subscribed at start keeps its sender), so a SETTINGS
++                    // frame split across reads is never lost half-read when another branch of
++                    // the driver loop fires (upstream: H3_EXCESSIVE_LOAD on a garbage length).
++                    self.remote_settings_taken = true;
++                    let mut remote = std::mem::replace(
++                        &mut self.remote_settings_stream,
++                        RemoteSettingsStream::empty(),
++                    );
++                    remote.set_stream(stream);
++                    let errors = self.control_errors.0.clone();
++                    tokio::spawn(async move {
++                        let error = remote.run().await;
++                        let _ = errors.send(error).await;
++                    });
+                 }
+                 StreamKind::QPackEncoder => {
+                     if !self.remote_qpack_enc_stream.is_empty() {
+@@ -659,6 +735,35 @@
+             }
+         }
+ 
++        /// render-stream patch: the session's CONNECT stream until it ends, or until a local
++        /// close request (CLOSE_WEBTRANSPORT_SESSION, then FIN, acknowledged).
++        async fn connect_task(
++            stream_session: StreamSession,
++            close_session: Option<mpsc::Receiver<(u32, Box<[u8]>)>>,
++            result: oneshot::Sender<DriverError>,
++        ) {
++            let mut connect = ConnectStream::empty();
++            connect.set_stream(stream_session);
++            let mut close_session = close_session;
++            let error = tokio::select! {
++                biased;
++                Some((error_code, reason)) = async {
++                    match close_session.as_mut() {
++                        Some(rx) => rx.recv().await,
++                        None => std::future::pending().await,
++                    }
++                } => {
++                    connect.close_session(error_code, &reason).await;
++                    DriverError::ApplicationClosed(ApplicationClose::new(
++                        VarInt::from_u32(error_code),
++                        reason,
++                    ))
++                }
++                error = connect.run() => error,
++            };
++            let _ = result.send(error);
++        }
++
+         fn handle_remote_settings(&mut self, settings: Settings) -> Result<(), DriverError> {
+             debug!("Received: {:?}", settings);
+ 
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' a/wtransport-0.7.2/src/driver/streams/connect.rs b/wtransport/src/driver/streams/connect.rs
+--- a/wtransport-0.7.2/src/driver/streams/connect.rs	2006-07-23 22:21:28.000000000 -0300
++++ b/wtransport/src/driver/streams/connect.rs	2026-11-04 17:32:14.744921445 -0300
+@@ -4,6 +4,7 @@
+ use wtransport_proto::capsule::Capsule;
+ use wtransport_proto::capsule::{self};
+ use wtransport_proto::error::ErrorCode;
++use wtransport_proto::frame::Frame;
+ use wtransport_proto::frame::FrameKind;
+ use wtransport_proto::varint::VarInt;
+ 
+@@ -30,6 +31,36 @@
+         self.stream = Some(stream);
+     }
+ 
++    /// render-stream patch: writes CLOSE_WEBTRANSPORT_SESSION(error_code, reason) (reason
++    /// truncated to the capsule's 1024 bytes) and finishes the CONNECT stream, waiting for the
++    /// peer to acknowledge it. A no-op when there is no session stream.
++    pub async fn close_session(&mut self, error_code: u32, reason: &[u8]) {
++        let Some(mut stream) = self.stream.take() else {
++            return;
++        };
++        let reason = &reason[..reason.len().min(1024)];
++        let mut payload = Vec::with_capacity(4 + reason.len());
++        payload.extend_from_slice(&error_code.to_be_bytes());
++        payload.extend_from_slice(reason);
++        // Capsule: type 0x2843 (two-byte varint 0x6843), length varint, payload.
++        let mut capsule = Vec::with_capacity(2 + 8 + payload.len());
++        capsule.extend_from_slice(&[0x68, 0x43]);
++        let len = payload.len() as u64;
++        if len < 64 {
++            capsule.push(len as u8);
++        } else {
++            capsule.extend_from_slice(&(0x4000u16 | len as u16).to_be_bytes());
++        }
++        capsule.extend_from_slice(&payload);
++        if stream
++            .write_frame(Frame::new_data(capsule.into()))
++            .await
++            .is_ok()
++        {
++            stream.finish().await;
++        }
++    }
++
+     pub async fn run(&mut self) -> DriverError {
+         let stream = match self.stream.as_mut() {
+             Some(stream) => stream,
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' a/wtransport-0.7.2/src/endpoint.rs b/wtransport/src/endpoint.rs
+--- a/wtransport-0.7.2/src/endpoint.rs	2006-07-23 22:21:28.000000000 -0300
++++ b/wtransport/src/endpoint.rs	2026-11-04 17:32:14.745921440 -0300
+@@ -399,7 +399,10 @@
+                 }
+             }
+         } else {
+-            return Err(ConnectingError::SessionRejected);
++            // render-stream patch: the status is reported.
++            return Err(ConnectingError::SessionRejectedStatus(
++                session_response.code().into_inner(),
++            ));
+         }
+ 
+         Ok(Connection::new(quic_connection, driver, session_id))
+@@ -740,6 +743,15 @@
+         self.reject(SessionResponseProto::too_many_requests()).await;
+     }
+ 
++    /// render-stream patch: rejects the client request with any HTTP status code (400, 503, ...).
++    /// A status outside 100..=599 is answered 400.
++    pub async fn reject_with_status(self, status: u16) {
++        let code = wtransport_proto::ids::StatusCode::try_from_u32(u32::from(status))
++            .or_else(|_| wtransport_proto::ids::StatusCode::try_from_u32(400))
++            .expect("400 is a valid status");
++        self.reject(SessionResponseProto::with_status_code(code)).await;
++    }
++
+     async fn accept_impl(
+         mut self,
+         headers: HashMap<String, String>,
+diff -ru '--exclude=Cargo.lock' '--exclude=Cargo.toml.orig' '--exclude=.cargo_vcs_info.json' '--exclude=.cargo-ok' a/wtransport-0.7.2/src/error.rs b/wtransport/src/error.rs
+--- a/wtransport-0.7.2/src/error.rs	2006-07-23 22:21:28.000000000 -0300
++++ b/wtransport/src/error.rs	2026-11-04 17:32:14.745921440 -0300
+@@ -92,6 +92,10 @@
+     #[error("server rejected WebTransport session request")]
+     SessionRejected,
+ 
++    /// render-stream patch: the server rejected the session request with this HTTP status.
++    #[error("server rejected WebTransport session request with status {0}")]
++    SessionRejectedStatus(u16),
++
+     /// Cannot use reserved key for additional headers.
+     #[error("additional header '{0}' is reserved")]
+     ReservedHeader(String),

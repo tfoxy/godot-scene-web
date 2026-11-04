@@ -18,8 +18,16 @@
 //   --max-clients=N   WebSocket admission limit (default 4)
 //   --summary=PATH    on SIGTERM/SIGINT, write the hub's live-summary.json (with the serving
 //                     totals) to PATH after the linger
-// stdout: "RS_LIVE_HOST_PORT <port>" first, then one line per transport event, in the formats
+//   --carriers=LIST   CAR3: the carriers to start, as GRC_LIVE_CARRIERS (default ws); `wt`
+//                     loads the net module (--net-module=PATH, else beside this binary) and
+//                     binds UDP --wt-port=N (default 0, ephemeral) with a self-signed certificate
+//   --tap-dir=DIR     the hub's tap (rs_live.h LiveConfig::tap_dir; absolute)
+//   --evidence-dir=DIR where wt writes live-cert-sha256, and live-carriers.json at stop
+// stdout: "RS_LIVE_HOST_PORT <port>" first (with wt, then "RS_LIVE_HOST_WT_PORT <port>" and
+// "RS_LIVE_HOST_CERT_SHA256 <hex>"), then one line per transport event, in the formats
 // entry.cpp logs to stdout.log where it has one (`live: 403 origin <origin> <method> <route>`).
+//
+// The transport is the CarrierSet (rs_carrier_set.h) with `ws` at index 0, as in entry.cpp.
 
 #include <chrono>
 #include <csignal>
@@ -35,6 +43,8 @@
 #include "report.h"
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
+#include "rs_carrier_set.h"
+#include "rs_net_module.h"
 #include "rs_live.h"
 #include "rs_publish.h"
 #include "rs_ws.h"
@@ -104,6 +114,11 @@ int main(int argc, char **argv) {
   server_config.max_clients = 4;
   std::string token;
   std::string summary_path;
+  std::string carriers_list = "ws";
+  std::string net_module;
+  std::string tap_dir;
+  std::string evidence_dir;
+  unsigned wt_port = 0;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const auto value_of = [&](const char *flag) -> const char * {
@@ -118,6 +133,16 @@ int main(int argc, char **argv) {
       server_config.max_clients = static_cast<std::size_t>(std::strtoul(v, nullptr, 10));
     } else if (const char *v = value_of("--summary")) {
       summary_path = v;
+    } else if (const char *v = value_of("--carriers")) {
+      carriers_list = v;
+    } else if (const char *v = value_of("--net-module")) {
+      net_module = v;
+    } else if (const char *v = value_of("--tap-dir")) {
+      tap_dir = v;
+    } else if (const char *v = value_of("--evidence-dir")) {
+      evidence_dir = v;
+    } else if (const char *v = value_of("--wt-port")) {
+      wt_port = static_cast<unsigned>(std::strtoul(v, nullptr, 10));
     }
   }
 
@@ -153,17 +178,65 @@ int main(int argc, char **argv) {
   server_config.cors_headers = sabotage != "no-cors";
   live_config.auth_token = token;
   live_config.token_ignored = sabotage == "token-ignored";
+  live_config.tap_dir = tap_dir;
+  std::vector<std::string> carrier_names;
+  if (!grc::live::parse_carrier_list(carriers_list.c_str(), &carrier_names, &error)) {
+    std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+    return 2;
+  }
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
 
   FixedSource source;
-  grc::live::Server server;
-  if (!server.start(server_config, &source, &error)) {
-    std::fprintf(stderr, "rs_live_host: start failed: %s\n", error.c_str());
+  grc::live::CarrierServices services;
+  services.auth_token = token;
+  services.allowed_origins = server_config.allowed_origins;
+  services.enforce_origins = server_config.enforce_origins;
+  services.resources = &source;
+  services.log = [](int, const std::string &line) { std::fprintf(stderr, "%s\n", line.c_str()); };
+  services.config["path"] = server_config.path;
+  services.config["subprotocols"] = "render-stream.7,render-stream.6";
+  services.config["hello_token_subprotocols"] = "render-stream.7";
+  services.config["max_inbound_text"] = std::to_string(server_config.max_inbound_text);
+  services.config["max_queued_bytes"] = std::to_string(server_config.max_queued_bytes);
+  services.config["wt_listen"] = "127.0.0.1:" + std::to_string(wt_port);
+  services.config["wt_cert"] = "self";
+  if (!evidence_dir.empty()) services.config["evidence_dir"] = evidence_dir;
+  grc::live::CarrierSet transport(server_config.max_clients, services);
+  auto ws_carrier = std::make_unique<grc::live::WsCarrier>(server_config, &source, 2000);
+  grc::live::WsCarrier *ws = ws_carrier.get();
+  grc::live::NetWtCarrier *wt = nullptr;
+  for (const std::string &name : carrier_names) {
+    if (name == "ws") {
+      if (!transport.add(grc::live::kCarrierWs, std::move(ws_carrier), &error)) {
+        std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+        return 1;
+      }
+    } else if (name == "wt") {
+      const grc_net_module_table_v1 *m = grc::live::load_net_module(net_module.c_str(), &error);
+      std::unique_ptr<grc::live::NetWtCarrier> c =
+          m != nullptr ? grc::live::NetWtCarrier::create(m, &error) : nullptr;
+      if (c == nullptr) {
+        std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+        return 1;
+      }
+      wt = c.get();
+      if (!transport.add(grc::live::kCarrierWt, std::move(c), &error)) {
+        std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+        return 1;
+      }
+    } else {
+      std::fprintf(stderr, "rs_live_host: carrier-unregistered: %s\n", name.c_str());
+      return 2;
+    }
+  }
+  if (!transport.start(&error) || (wt != nullptr && !transport.started(grc::live::kCarrierWt))) {
+    std::fprintf(stderr, "rs_live_host: start failed: %s\n%s\n", error.c_str(),
+                 transport.carriers_json().c_str());
     return 1;
   }
-  ServerTransport transport(&server);
+  const bool has_ws = transport.started(grc::live::kCarrierWs);
   Session tmpl = golden::golden_session_v6(Encoding::Patch, std::string(), generate_id(), Delivery::OutOfBand);
   tmpl.stream = StreamInfo();
   ResourcePolicy policy;
@@ -174,11 +247,16 @@ int main(int argc, char **argv) {
   Hub hub(&transport, live_config, tmpl);
   ServingSummary serving;
   const grc::rs::Captured snapshot = scene();
-  print("RS_LIVE_HOST_PORT " + std::to_string(server.port()));
+  print("RS_LIVE_HOST_PORT " + std::to_string(has_ws ? ws->port() : 0));
+  if (wt != nullptr) {
+    const grc::live::CarrierInfo info = wt->info();
+    print("RS_LIVE_HOST_WT_PORT " + std::to_string(info.port));
+    print("RS_LIVE_HOST_CERT_SHA256 " + info.cert_sha256);
+  }
 
   std::uint64_t frame = 0;
   const auto drain = [&]() {
-    for (const grc::live::Event &event : server.take_events()) {
+    for (const grc::live::Event &event : transport.take_events()) {
       switch (event.kind) {
         case grc::live::Event::HttpGet: {
           const bool preflight = event.method == "OPTIONS";
@@ -206,7 +284,7 @@ int main(int argc, char **argv) {
           break;
         case grc::live::Event::Opened:
           print("live: opened conn=" + std::to_string(event.conn) + " subprotocol=" + event.subprotocol +
-                " origin=" + event.origin);
+                " origin=" + event.origin + (event.carrier.empty() ? "" : " carrier=" + event.carrier));
           hub.on_event(to_live_event(event), frame);
           break;
         case grc::live::Event::Text:
@@ -236,7 +314,10 @@ int main(int argc, char **argv) {
   }
   drain();
   hub.close_open(frame);
-  server.stop(2000);
+  transport.stop();
+  if (!evidence_dir.empty()) {
+    grc::write_file(evidence_dir + "/live-carriers.json", transport.carriers_json());
+  }
   if (!summary_path.empty()) {
     if (!grc::write_file(summary_path, hub.summary_json(&serving))) {
       std::fprintf(stderr, "rs_live_host: cannot write %s\n", summary_path.c_str());

@@ -64,10 +64,19 @@
 // Carriers (CAR1, carrier-design.md D3-D7, D13): the hub's transport is a CarrierSet
 // (rs_carrier_set.h) whose `ws` carrier (index 0) is that rs_ws server, so connection ids, logs
 // and taps are unchanged. GRC_LIVE_CARRIERS (comma list, default `ws`) names the carriers to
-// start; any list but `ws` is refused for now (`carriers-invalid` for a malformed list,
-// `net-module-missing` for `wt`, `carrier-unregistered` for any other name). GRC_LIVE_MAX_
-// CONNECTIONS is a total across carriers (D6). evidence/live-carriers.json
-// (render-stream-live-carriers/1) records each carrier at listen and again at stop.
+// start (`carriers-invalid` for a malformed list, `carrier-unregistered` for a name neither
+// built in nor registered). GRC_LIVE_MAX_CONNECTIONS is a total across carriers (D6).
+// evidence/live-carriers.json (render-stream-live-carriers/1) records each carrier at listen and
+// again at stop.
+//
+// WebTransport (CAR3, carrier-design.md D8, D9, D11, Q4): `wt` in GRC_LIVE_CARRIERS loads the net
+// module (rs_net_module.h: GRC_LIVE_NET_MODULE, else librender_stream_net.so beside this .so;
+// `net-module-missing` / `net-module-abi` when it cannot) and starts carrier `wt` (index 1,
+// render-stream-wt/1) on GRC_LIVE_WT_LISTEN (UDP <host>:<port>, same syntax and loopback rule as
+// GRC_LIVE_LISTEN, `wt-listen-invalid` when malformed; default GRC_LIVE_LISTEN's host and port).
+// GRC_LIVE_WT_CERT=self (default: a generated ECDSA P-256 certificate, 14 days, its SHA-256 in
+// evidence/live-cert-sha256) or tls (GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY, PEM paths, both or
+// neither; `tls-config-invalid` otherwise). Without `wt` nothing new is loaded.
 //
 // Textures (G2a, gate2-design.md D3, Q3): whenever a stream is enabled,
 // texture_2d_create and texture_2d_update copy the Image bytes into a GRT1
@@ -177,6 +186,7 @@
 #include "rs_texture_delivery.h"
 #include "rs_histogram.h"
 #include "rs_carrier_set.h"
+#include "rs_net_module.h"
 #include "rs_live.h"
 #include "rs2_diff.h"
 #include "rs_mirror.h"
@@ -344,6 +354,13 @@ struct Live {
   // CAR1: the hub's transport; carrier `ws` (index 0) is the rs_ws server, `ws` points at it.
   std::unique_ptr<live::CarrierSet> carriers;
   live::WsCarrier *ws = nullptr;
+  // CAR3: carrier `wt` (index 1) when GRC_LIVE_CARRIERS lists it, from the net module.
+  bool wt_enabled = false;
+  const grc_net_module_table_v1 *net_module = nullptr;
+  std::string wt_listen;  // GRC_LIVE_WT_LISTEN as given ("" = GRC_LIVE_LISTEN's host and port)
+  std::string wt_cert = "self";
+  std::string tls_cert;
+  std::string tls_key;
   std::unique_ptr<rs2::Hub> hub;
   // After the end records went out: wait (bounded) for the receivers to close first
   // (rs2::Hub::finish).
@@ -1663,27 +1680,68 @@ void live_decided(const std::string &status, const std::string &reason) {
            (reason.empty() ? std::string() : " (" + reason + ")"));
 }
 
-// CAR1 (carrier-design.md D7, Q3): GRC_LIVE_CARRIERS, default `ws`. Until CAR3 (the net module's
-// `wt`) and CAR6 (registered carriers) every other name is a typed refusal; *why is its reason.
+// CAR1/CAR3 (carrier-design.md D7-D9, D11, Q3): GRC_LIVE_CARRIERS, default `ws`; `wt` loads the
+// net module and reads GRC_LIVE_WT_LISTEN, GRC_LIVE_WT_CERT and GRC_LIVE_TLS_CERT/KEY. Until CAR6
+// (registered carriers) every other name is `carrier-unregistered`; *why is the refusal.
 bool live_carriers_ok(std::string *why) {
   std::vector<std::string> names;
   if (!live::parse_carrier_list(std::getenv("GRC_LIVE_CARRIERS"), &names, why)) {
     return false;
   }
+  g_live.wt_enabled = false;
   for (const std::string &name : names) {
     if (name == "ws") {
       continue;
     }
     if (name == "wt") {
-      *why = "net-module-missing: GRC_LIVE_CARRIERS lists wt, which needs the net module "
-             "(librender_stream_net), and this capture loads none";
-    } else {
-      *why = "carrier-unregistered: GRC_LIVE_CARRIERS lists " + name +
-             ", which is neither built in nor registered";
+      g_live.wt_enabled = true;
+      continue;
     }
+    *why = "carrier-unregistered: GRC_LIVE_CARRIERS lists " + name +
+           ", which is neither built in nor registered";
     return false;
   }
-  return true;
+  // D11: the consumer's pair, both or neither. Until CAR4 (wss) it can only serve `wt`.
+  g_live.tls_cert = env_string("GRC_LIVE_TLS_CERT");
+  g_live.tls_key = env_string("GRC_LIVE_TLS_KEY");
+  if (g_live.tls_cert.empty() != g_live.tls_key.empty()) {
+    *why = "tls-config-invalid: GRC_LIVE_TLS_CERT and GRC_LIVE_TLS_KEY go together";
+    return false;
+  }
+  const std::string wt_cert = env_string("GRC_LIVE_WT_CERT");
+  g_live.wt_cert = wt_cert.empty() ? "self" : wt_cert;
+  if (g_live.wt_cert != "self" && g_live.wt_cert != "tls") {
+    *why = "tls-config-invalid: GRC_LIVE_WT_CERT must be self or tls (got " + wt_cert + ")";
+    return false;
+  }
+  if (g_live.wt_cert == "tls" && g_live.tls_cert.empty()) {
+    *why = "tls-config-invalid: GRC_LIVE_WT_CERT=tls needs GRC_LIVE_TLS_CERT and GRC_LIVE_TLS_KEY";
+    return false;
+  }
+  if (!g_live.tls_cert.empty() && !(g_live.wt_enabled && g_live.wt_cert == "tls")) {
+    *why = "tls-config-invalid: GRC_LIVE_TLS_CERT serves only wt with GRC_LIVE_WT_CERT=tls "
+           "until wss on ws (CAR4)";
+    return false;
+  }
+  if (!g_live.wt_enabled) {
+    return true;
+  }
+  // D9: same syntax and loopback rule as GRC_LIVE_LISTEN.
+  g_live.wt_listen = env_string("GRC_LIVE_WT_LISTEN");
+  if (!g_live.wt_listen.empty()) {
+    std::string host;
+    uint16_t port = 0;
+    std::string reason;
+    if (!parse_listen(g_live.wt_listen, &host, &port, &reason)) {
+      *why = reason == "non-loopback"
+                 ? std::string("non-loopback")
+                 : "wt-listen-invalid: GRC_LIVE_WT_LISTEN=" + g_live.wt_listen + " (" + reason + ")";
+      return false;
+    }
+  }
+  // D8: loaded only now that `wt` is listed; never unloaded.
+  g_live.net_module = live::load_net_module(std::getenv("GRC_LIVE_NET_MODULE"), why);
+  return g_live.net_module != nullptr;
 }
 
 // CAR1 (carrier-design.md D13): evidence/live-carriers.json, beside live.json, whose shape it
@@ -2834,12 +2892,50 @@ void stream_start() {
       services.enforce_origins = server_config.enforce_origins;
       services.resources = g_live.served.get();
       services.log = [](int, const std::string &line) { log_line(line); };
+      // grc_carrier_host_v1.config (grc_carrier.h): what a C ABI carrier may read.
+      {
+        auto join = [](const std::vector<std::string> &v) {
+          std::string out;
+          for (const std::string &x : v) out += (out.empty() ? "" : ",") + x;
+          return out;
+        };
+        auto hostport = [](const std::string &host, uint16_t port) {
+          return (host.find(':') != std::string::npos ? "[" + host + "]" : host) + ":" +
+                 std::to_string(port);
+        };
+        std::map<std::string, std::string> &c = services.config;
+        c["listen"] = g_live.listen;
+        c["expose"] = "loopback";
+        c["path"] = server_config.path;
+        c["subprotocols"] = join(server_config.subprotocols);
+        c["hello_token_subprotocols"] = join(server_config.hello_token_subprotocols);
+        c["max_inbound_text"] = std::to_string(server_config.max_inbound_text);
+        c["max_queued_bytes"] = std::to_string(server_config.max_queued_bytes);
+        // D9: GRC_LIVE_LISTEN's host and port number unless GRC_LIVE_WT_LISTEN says otherwise
+        // (port 0 stays 0: wt binds its own ephemeral UDP port).
+        c["wt_listen"] = g_live.wt_listen.empty() ? hostport(live_host, live_port) : g_live.wt_listen;
+        c["wt_cert"] = g_live.wt_cert;
+        if (!g_live.tls_cert.empty()) {
+          c["tls_cert"] = g_live.tls_cert;
+          c["tls_key"] = g_live.tls_key;
+        }
+        if (g_state.evidence_ready) c["evidence_dir"] = g_state.evidence_dir;
+      }
       g_live.carriers = std::make_unique<live::CarrierSet>(
           static_cast<std::size_t>(live_max_connections), std::move(services));
       auto ws = std::make_unique<live::WsCarrier>(server_config, g_live.served.get(), 2000);
       g_live.ws = ws.get();
       if (!g_live.carriers->add(live::kCarrierWs, std::move(ws), &error)) {
         g_live.ws = nullptr;
+      }
+      // CAR3 (carrier-design.md D8, D9, Q4): carrier `wt`, index 1, from the net module. A
+      // failure to make it is recorded like a failed start; `ws` still serves.
+      if (g_live.ws != nullptr && g_live.wt_enabled) {
+        std::string wt_error;
+        std::unique_ptr<live::NetWtCarrier> wt = live::NetWtCarrier::create(g_live.net_module, &wt_error);
+        if (wt == nullptr || !g_live.carriers->add(live::kCarrierWt, std::move(wt), &wt_error)) {
+          log_line("live: wt not added (" + wt_error + ")");
+        }
       }
     }
     if (g_live.ws == nullptr || !g_live.carriers->start(&error)) {
