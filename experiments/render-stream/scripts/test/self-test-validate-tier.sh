@@ -88,6 +88,10 @@ vrc=$?
 check "the stubbed milestone sweep passes (rc 0)" "[ $vrc = 0 ]"
 [ "$vrc" = 0 ] || tail -20 "$TMP/validate.log"
 
+check "the cost block lists the timing runs with estimates, the lock status and the load before they start" \
+	"grep -q 'LOCAL TIMING about to run' '$TMP/validate.log' && grep -q 'g7live-gsw-timing .*est idle wall 2300 s' '$TMP/validate.log' && grep -q 'native-rust-gate6 .*unknown' '$TMP/validate.log' && grep -q '  uptime:' '$TMP/validate.log' && grep -q 'quiet lock:' '$TMP/validate.log'"
+check "the summary ends with one local wall / quiet-lock wait total line" \
+	"grep -qE '^local: [0-9]+ s wall, [0-9]+ s quiet-lock wait' '$TMP/validate.log'"
 check "every planned run ran" "[ \$(wc -l <'$TMP/times.txt') = \$(python3 -c 'import json; print(len(json.load(open(\"$OUT/plan.json\"))[\"runs\"]))') ]"
 check "the timing phase starts after every correctness run ended" "python3 - '$TMP/times.txt' <<'PY'
 import sys

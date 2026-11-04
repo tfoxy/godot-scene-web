@@ -106,11 +106,15 @@ else
 		>"$OUT/changed-paths.txt" || exit 2
 fi
 PLAN_ARGS=(--tier "$TIER")
+# Sabotage-by-content reads only the lines the diff adds/removes against BASE (an explicit --paths
+# list has no diff to read: the planner falls back to whole files and says so).
+DIFF_BASE_ARGS=()
+[ -n "$PATHS" ] || DIFF_BASE_ARGS=(--diff-base "$BASE")
 [ "$MILESTONE" = 1 ] && PLAN_ARGS+=(--milestone)
 # --milestone with an explicit --base is the delta sweep (the diff's targets, every leg).
 [ "$MILESTONE" = 1 ] && [ "$BASE_SET" = 1 ] && PLAN_ARGS+=(--base "$BASE")
 python3 "$SCRIPT_DIR/lib/smoke-plan.py" --map "$SCRIPT_DIR/smoke-map.json" --repo "$REPO_ROOT" \
-	"${PLAN_ARGS[@]}" --paths-from "$OUT/changed-paths.txt" >"$OUT/plan.json" || exit 2
+	"${PLAN_ARGS[@]}" ${DIFF_BASE_ARGS[@]+"${DIFF_BASE_ARGS[@]}"} --paths-from "$OUT/changed-paths.txt" >"$OUT/plan.json" || exit 2
 python3 - "$OUT/plan.json" <<'PY'
 import json, sys
 p = json.load(open(sys.argv[1]))
@@ -137,7 +141,36 @@ print(f"validate-increment: tier {p['tier']}; {smoke} representative legs in fil
       f"{len(p['smoke_deferred'])} group targets deferred to the full tier")
 PY
 echo "validate-increment: fast frames $FAST_FRAMES$([ "$FAST_FRAMES" = on ] && echo " (--max-fps $FAST_FPS on allowlisted live legs; lib/legs.sh)")"
-[ "$PLAN_ONLY" = 1 ] && exit 0
+# Cost block: the local timing-phase runs about to start, with idle-machine estimates, who holds or
+# waits on the quiet lock, and the load (agents lost hours to timing they did not need to run).
+cost_block() {
+	local COST_BLOCK
+	COST_BLOCK="$(python3 - "$OUT/plan.json" "$SCRIPT_DIR/smoke-map.json" "$ONLY" <<'PY'
+import json, sys
+p, m = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+only = set(filter(None, sys.argv[3].split(",")))
+t = [r for r in p["runs"] if r["phase"] == "timing" and (not only or r["id"] in only)]
+if t:
+    cost = m.get("local_cost_s", {})
+    print("validate-increment: LOCAL TIMING about to run (agents/rs-increment.md, 'Local timing is a decision'):")
+    known = 0
+    for r in t:
+        c = cost.get(r["id"])
+        known += c or 0
+        print(f"  {r['id']:<28} est idle wall {f'{c} s (~{c / 60:.0f} min)' if c else 'unknown'}")
+    print(f"  estimated idle total {known} s (known runs only; every other agent's lock use adds to it)")
+PY
+)"
+if [ -n "$COST_BLOCK" ]; then
+	echo "$COST_BLOCK"
+	bash "$SCRIPT_DIR/lib/quiet.sh" status 2>&1 | sed 's/^/  quiet lock: /' | head -12 || true
+	uptime | sed 's/^ */  uptime: /'
+fi
+}
+if [ "$PLAN_ONLY" = 1 ]; then
+	cost_block
+	exit 0
+fi
 printf 'fast_frames=%s\nfast_fps=%s\n' "$FAST_FRAMES" "$FAST_FPS" >"$OUT/fast-frames.txt"
 FAST_ENV=()
 [ "$FAST_FRAMES" = on ] && FAST_ENV=(RS_FAST_FRAMES=all RS_FAST_FRAMES_MAX_FPS="$FAST_FPS")
@@ -345,6 +378,7 @@ for r in p['runs']:
     print(f\"{phase[r['phase']]}\t{r['id']}\t{r['kind']}\t{json.dumps(r)}\")
 " "$OUT/plan.json" "$ONLY")
 
+cost_block
 t_all="$EPOCHREALTIME"
 for phase in 0 1 2 3; do
 	limit="$JOBS"

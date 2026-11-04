@@ -176,7 +176,7 @@ def fold_shards(rows, expected):
     return out
 
 
-def emit(out, summary, rows, failed, t0, t1, n_skipped):
+def emit(out, summary, rows, failed, t0, t1, n_skipped, local=False):
     json.dump(summary, open(os.path.join(out, "validate-summary.json"), "w"), indent=2)
     for x in rows:
         print(f"  {x['id']:<28} [{str(x['phase']):<6}] rc={x['rc']:<3} {x['wall_s'] or 0:>8.1f} s  lock wait {x['lock_wait_s']:>7.1f} s"
@@ -186,6 +186,9 @@ def emit(out, summary, rows, failed, t0, t1, n_skipped):
               + (f"  known-flake {','.join(x['known_flakes'])}" if x.get("known_flakes") else "")
               + (f"  skipped-remote {','.join(x['skipped_remote_groups']) or len(x['skipped_remote'])}"
                  if x.get("skipped_remote") else ""))
+    if local:  # a merged remote summary has no quiet-lock wait of ours to total
+        print(f"local: {sum(x['wall_s'] or 0 for x in rows):.0f} s wall, "
+              f"{sum(x['lock_wait_s'] for x in rows):.0f} s quiet-lock wait (summed over {len(rows)} runs)")
     print(f"validate-increment: {len(rows) - failed}/{len(rows)} runs pass in {t1 - t0:.0f} s; "
           f"{n_skipped} targets out of reach; summary {out}/validate-summary.json")
     return 1 if failed else 0
@@ -197,7 +200,7 @@ def write_mode(out, t0, t1):
     summary = {"schema": "render-stream-validate-summary/2", "wall_s": round(t1 - t0, 1), "runs": rows,
                "phases": phase_totals(rows), "milestone": plan.get("milestone"), "base": plan.get("base"),
                "sabotage": plan["sabotage"], "skipped_targets": len(plan["skipped_targets"]), "failed": failed}
-    return emit(out, summary, rows, failed, t0, t1, len(plan["skipped_targets"]))
+    return emit(out, summary, rows, failed, t0, t1, len(plan["skipped_targets"]), local=True)
 
 
 def merge_mode(argv):

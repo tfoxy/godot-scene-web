@@ -110,6 +110,12 @@
     "g7": { "legs": ["@first"] }
   },
   "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
+  "local_cost_doc": "Idle-machine wall seconds per local timing-phase run id, for validate-increment.sh's cost block (printed before the [timing] phase). Starting values are CAR1's idle-equivalent (wall minus quiet-lock wait, 2026-11-04). An id not listed prints 'unknown': measure it from a validate-summary.json (wall_s - lock_wait_s) and add it, never guess.",
+  "local_cost_s": {
+    "g7live-gsw-timing": 2300,
+    "g7live-web-rust-timing": 1900,
+    "g7live-native-timing": 300
+  },
   "timing": [
     "native:gate6@*",
     "g7live:g7-6@*",

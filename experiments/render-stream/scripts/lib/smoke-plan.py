@@ -5,6 +5,7 @@ validation targets they can reach out, from scripts/smoke-map.json.
   smoke-plan.py --map smoke-map.json --repo ROOT [--milestone] [--tier smoke|full]
                 [--base REF] [--paths-from FILE | PATH...]
   smoke-plan.py --repo ROOT --base REF --print-paths
+  (--diff-base REF with --paths-from: sabotage_content reads only the lines the diff adds/removes)
   smoke-plan.py --self-test --map smoke-map.json
 
 Prints a plan (JSON): every changed path with the rules it matched (or `unmatched`, which reaches
@@ -107,8 +108,56 @@ def changed_paths(repo, base):
     return sorted(out)
 
 
-def plan(m, paths, repo, milestone=False, tier="smoke", base=None):
-    """`milestone` True with `base` None: the complete sweep; with `base`: the delta sweep."""
+def diff_lines(repo, base, path):
+    """The lines `path` adds or removes: `git diff -U0 BASE...HEAD` plus the uncommitted diff.
+    None when git cannot say (no repo, a bad base)."""
+    out = []
+    for rng in ([f"{base}...HEAD"], ["HEAD"]):
+        r = subprocess.run(["git", "-C", repo, "diff", "-U0", *rng, "--", path], capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        out += [l[1:] for l in r.stdout.splitlines()
+                if l[:1] in "+-" and not l.startswith(("+++", "---"))]
+    return "\n".join(out)
+
+
+def content_names_sabotage(repo, path, diff_base, rx, untracked):
+    """Why `path` turns the sabotage legs on by content, or "" when it does not. With a base, only
+    the lines the diff adds or removes count (an untracked new file counts whole): a comment that
+    already named a sabotage in capture/CMakeLists.txt must not switch every sabotage leg on for a
+    one-line source addition. Without a base (or when git fails), the whole file counts."""
+    f = os.path.join(repo, path)
+    text, mode = None, "its content names a sabotage/mutation"
+    if diff_base is not None and path not in untracked:
+        text = diff_lines(repo, diff_base, path)
+        mode = "the diff adds or removes a line naming a sabotage/mutation"
+    if text is None:
+        if diff_base is None:
+            mode = "its whole content names a sabotage/mutation (no diff base available)"
+        try:
+            if not (os.path.isfile(f) and os.path.getsize(f) < 32 * 1024 * 1024):
+                return ""
+            with open(f, "rb") as fh:
+                text = fh.read().decode("utf8", "replace")
+        except OSError:
+            return ""
+        if diff_base is not None and path not in untracked:
+            mode = "its whole content names a sabotage/mutation (git diff failed)"
+        elif diff_base is not None:
+            mode = "new untracked file names a sabotage/mutation"
+    return mode if rx.search(text) else ""
+
+
+def untracked_files(repo):
+    r = subprocess.run(["git", "-C", repo, "ls-files", "--others", "--exclude-standard"],
+                       capture_output=True, text=True)
+    return {l.strip() for l in r.stdout.splitlines() if l.strip()} if r.returncode == 0 else set()
+
+
+def plan(m, paths, repo, milestone=False, tier="smoke", base=None, diff_base=None):
+    """`milestone` True with `base` None: the complete sweep; with `base`: the delta sweep.
+    `diff_base`: the ref the diff is taken against; sabotage_content then reads only the changed lines."""
+    untracked = untracked_files(repo) if diff_base is not None else set()
     uni = universe(m)
     rules = [(r, [glob_re(p) for p in r["paths"]]) for r in m["rules"]]
     sab_paths = [glob_re(p) for p in m["sabotage_paths"]]
@@ -134,16 +183,9 @@ def plan(m, paths, repo, milestone=False, tier="smoke", base=None):
         if any(rx.match(p) for rx in sab_paths):
             sabotage_why.append(f"{p}: a checker/runner/sabotage path")
         elif not (matched and all(r.startswith("docs") for r in matched)):
-            f = os.path.join(repo, p)
-            try:
-                if os.path.isfile(f) and os.path.getsize(f) < 32 * 1024 * 1024:
-                    with open(f, "rb") as fh:
-                        if sab_content.search(fh.read().decode("utf8", "replace")):
-                            sabotage_why.append(f"{p}: its content names a sabotage/mutation")
-            except OSError:
-                pass
-            if not matched and not os.path.exists(f):
-                pass
+            why = content_names_sabotage(repo, p, diff_base, sab_content, untracked)
+            if why:
+                sabotage_why.append(f"{p}: {why}")
     if milestone and base is None:
         targets = set(uni)
         sabotage_why = ["--milestone: a sweep runs every leg"]
@@ -299,6 +341,40 @@ def base_self_test():
             and on_second == on_main)
 
 
+def sabotage_diff_self_test(m):
+    """plan() in a throwaway git repo: sabotage_content reads the diff's lines, not whole files."""
+    import tempfile
+    cm = "experiments/render-stream/capture/CMakeLists.txt"
+    src = "experiments/render-stream/capture/src/hooks.cpp"
+    new = "experiments/render-stream/capture/src/new_thing.cpp"
+    res = {}
+    with tempfile.TemporaryDirectory() as d:
+        g = lambda *a: subprocess.run(["git", "-C", d, *a], capture_output=True, text=True, check=True).stdout.strip()
+        w = lambda f, t, mode="w": (os.makedirs(os.path.dirname(os.path.join(d, f)), exist_ok=True),
+                                    open(os.path.join(d, f), mode).write(t))
+        g("init", "-q", "-b", "main")
+        g("config", "user.email", "t@example.invalid")
+        g("config", "user.name", "t")
+        w(cm, "# the sabotage legs link this\nadd_library(a a.cpp)\n")
+        w(src, "int a;\n")
+        g("add", "-A"); g("commit", "-qm", "base")
+        g("checkout", "-qb", "work")
+        P = lambda paths, db="main": plan(m, paths, d, False, "smoke", None, db)["sabotage"]
+        w(cm, "# the sabotage legs link this\nadd_library(a a.cpp)\nadd_library(b b.cpp)\n")
+        g("commit", "-qam", "plain edit")
+        res["plain"] = P([cm])
+        res["nobase"] = P([cm], None)
+        w(src, "int a;\n// sabotage: flip it\n", "w")
+        g("commit", "-qam", "names one")
+        res["named"] = P([src])
+        w(src, "int a;\n// sabotage: flip it\nint b;\n", "w")  # uncommitted edit, line does not name one
+        res["dirty"] = P([cm, src])
+        w(new, "// tamper with it\n")
+        res["untracked"] = P([new])
+        res["badbase"] = P([cm], "no-such-ref")
+    return res
+
+
 def self_test(m):
     fails = 0
 
@@ -439,6 +515,19 @@ def self_test(m):
           set(esc["targets"]) == uni and esc["milestone"] == "delta")
     check("--milestone alone stays the complete sweep", every[0]["milestone"] == "complete")
     check("--base: the diff is base...HEAD plus uncommitted and untracked files", base_self_test())
+    sd = sabotage_diff_self_test(m)
+    check("diff-scoped sabotage: a CMakeLists edit whose changed lines name no sabotage leaves them off",
+          not sd["plain"]["run"])
+    check("diff-scoped sabotage: no diff base keeps the whole-file rule, and the why says so",
+          sd["nobase"]["run"] and "no diff base" in sd["nobase"]["why"][0])
+    check("diff-scoped sabotage: an added line naming a sabotage turns the legs on",
+          sd["named"]["run"] and "diff adds or removes" in sd["named"]["why"][0])
+    check("diff-scoped sabotage: an uncommitted edit counts by its changed lines too (the committed line stays in the base diff)",
+          sd["dirty"]["run"] and len(sd["dirty"]["why"]) == 1 and "hooks.cpp" in sd["dirty"]["why"][0])
+    check("diff-scoped sabotage: an untracked new file naming one counts whole",
+          sd["untracked"]["run"] and "untracked" in sd["untracked"]["why"][0])
+    check("diff-scoped sabotage: an unusable base falls back to the whole file, and the why says so",
+          sd["badbase"]["run"] and "git diff failed" in sd["badbase"]["why"][0])
     dd = P("experiments/render-stream/protocol/gate7-design.md")
     check("a doc naming sabotage does not run the sabotage legs", not dd["sabotage"]["run"])
     print(f"smoke-plan self-test: {'all pass' if not fails else f'{fails} FAIL'}")
@@ -448,7 +537,7 @@ def self_test(m):
 def main():
     args = sys.argv[1:]
     mp, repo, milestone, paths_from, st, tier = None, ".", False, None, False, "smoke"
-    base, print_paths = None, False
+    base, print_paths, diff_base = None, False, None
     paths = []
     i = 0
     while i < len(args):
@@ -467,6 +556,8 @@ def main():
             st = True; i += 1
         elif a == "--base":
             base = args[i + 1]; i += 2
+        elif a == "--diff-base":
+            diff_base = args[i + 1]; i += 2
         elif a == "--print-paths":
             print_paths = True; i += 1
         else:
@@ -481,10 +572,11 @@ def main():
         paths += [l.strip() for l in open(paths_from) if l.strip()]
     elif not paths and base is not None:
         paths = changed_paths(repo, base)
+        diff_base = diff_base or base
     # --base only changes the meaning of --milestone (a delta sweep); without --milestone it only
     # chose the paths above.
     print(json.dumps(plan(m, sorted(set(paths)), repo, milestone, tier,
-                          base if milestone else None), indent=2))
+                          base if milestone else None, diff_base), indent=2))
 
 
 if __name__ == "__main__":
