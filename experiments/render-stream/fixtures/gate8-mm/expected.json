@@ -8,6 +8,7 @@
     { "step": 2, "applied": 40, "settle": 47 }
   ],
   "h_clear_frame": 41,
+  "late_free": { "frame": 60, "count": 1, "cell": "A_XFORM" },
   "sabotage_frame": 30,
   "min_per_frame_frames": 80,
   "min_paired_transactions": 60,

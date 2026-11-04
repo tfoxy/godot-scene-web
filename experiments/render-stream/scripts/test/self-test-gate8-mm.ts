@@ -31,8 +31,13 @@
 //    without multimesh fails mm-reference in exactly the drawn cells (mmMissingProblems passes); one
 //    pixel off fails mmExactProblems and is attributed to its cell; a shot of another size is null.
 //
+// 9. PM9's late-arm verdicts (adopt, free, release, expected.json minimums) on synthetic traces.
+//
 // Exits non-zero if any assertion fails.
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +50,11 @@ import {
   type MmLine,
   type MmTrace,
   mmBytes,
+  mmExpectedProblems,
+  runG8mm,
+  mmLateAdoptProblems,
+  mmLateFreedProblems,
+  mmLateReleaseProblems,
   mmNamedProblems,
   mmWireProblems,
   parseMmLine,
@@ -60,6 +70,7 @@ import {
   type Rgba,
 } from "../lib/gate8-mm-checks";
 import {
+  type ResolvedMultimesh,
   multimeshBufferSha256,
   multimeshStride,
   type TransactionMeta,
@@ -603,6 +614,92 @@ async function main(): Promise<void> {
     expect(Object.entries(px.moving).every(([c, at]) => at.every((k) => px.drawn_steps[c].includes(k))), "8: every moving cell draws where it moves");
     const gap = mmCellDiff(shot(drawnAt(0).filter((c) => c !== "D_GLOBAL").concat(["G_HIDDEN"])), ref, px.regions);
     expect(gap !== null && mmExactProblems(gap, ["D_GLOBAL", "G_HIDDEN"]).length === 0 && mmExactProblems(gap).length === 1, "8: the identity-transform gap's cells are ignored only when asked", gap);
+  }
+
+  // 9. PM9's late-arm verdicts (pure: mmLateAdoptProblems, mmLateFreedProblems, mmLateReleaseProblems,
+  //    mmExpectedProblems) on synthetic traces: a good late capture passes, each defect and every
+  //    empty evidence fails. (runG8mmLate itself needs rendered legs; its file reads are guarded.)
+  {
+    const late = expected.late_free;
+    const adopted = Object.values(expected.cells).filter((c) => c.drawn && !c.freed_at_step).length;
+    const ent = (id: number, o: Partial<ResolvedMultimesh> = {}): ResolvedMultimesh =>
+      ({ id, origin: "adopted", status: "ok", ...o }) as ResolvedMultimesh;
+    const table = (ids: number[], o: Partial<ResolvedMultimesh> = {}) =>
+      new Map(ids.map((id) => [id, ent(id, o)] as [number, ResolvedMultimesh]));
+    const ids = Array.from({ length: adopted }, (_, i) => i + 1);
+    const tx = (frame: number, t: Map<number, ResolvedMultimesh>) =>
+      ({ seq: frame, frame, full: true, mm_floats: 0, has_keys: true, table: t, floats: new Map() }) as MmTrace["txs"][number];
+    const trace = (txs: MmTrace["txs"], unknown = 0, errors: string[] = []): MmTrace => ({
+      txs,
+      add_multimesh: 1,
+      unsupported_add_multimesh: unknown ? { "unknown-multimesh": unknown } : {},
+      errors,
+    });
+    const rest = ids.slice(1);
+    const good = trace([tx(20, table(ids)), tx(late.frame - 1, table(ids)), tx(late.frame + 3, table(rest))]);
+    expect(mmLateAdoptProblems(good, adopted, late.frame).length === 0, "9: a good late capture passes mmLateAdoptProblems", mmLateAdoptProblems(good, adopted, late.frame));
+    const gf = mmLateFreedProblems(good, late);
+    expect(gf.problems.length === 0 && gf.freed.length === 1, "9: a good late capture records the free", gf);
+    // a freed tombstone counts as freed too
+    const tomb = trace([tx(20, table(ids)), tx(late.frame + 3, new Map([...table(rest), [1, ent(1, { status: "freed" })]]))]);
+    expect(mmLateFreedProblems(tomb, late).problems.length === 0, "9: a freed tombstone counts as freed");
+    // empty / missing evidence fails
+    expect(mmLateAdoptProblems(trace([]), adopted, late.frame).length > 0, "9: adopt: no transaction fails");
+    expect(mmLateAdoptProblems(trace([tx(late.frame + 3, table(ids))]), adopted, late.frame).length > 0, "9: adopt: no transaction before the free fails");
+    expect(mmLateAdoptProblems(trace([tx(20, new Map())]), adopted, late.frame).length > 0, "9: adopt: an empty table fails");
+    expect(mmLateAdoptProblems(trace([tx(20, table(ids.slice(0, -1)))]), adopted, late.frame).length > 0, "9: adopt: one entry short fails");
+    expect(mmLateAdoptProblems(trace([tx(20, table(ids, { origin: "created" }))]), adopted, late.frame).length > 0, "9: adopt: origin created fails");
+    expect(mmLateAdoptProblems(trace([tx(20, table(ids, { status: "unsupported" }))]), adopted, late.frame).length > 0, "9: adopt: status unsupported fails");
+    expect(mmLateAdoptProblems(trace([tx(20, table(ids))], 2), adopted, late.frame).length > 0, "9: adopt: unknown-multimesh fails");
+    expect(mmLateAdoptProblems(trace([tx(20, table(ids))], 0, ["record 3: bad"]), adopted, late.frame).length > 0, "9: adopt: a decode error fails");
+    expect(mmLateAdoptProblems(trace([tx(20, table(ids))]), 0, late.frame).length > 0, "9: adopt: a zero expected count fails");
+    expect(mmLateFreedProblems(trace([]), late).problems.length > 0, "9: free: no transaction fails");
+    expect(mmLateFreedProblems(trace([tx(20, table(ids))]), late).problems.length > 0, "9: free: no transaction after the free fails");
+    expect(mmLateFreedProblems(trace([tx(20, table(ids)), tx(late.frame + 3, table(ids))]), late).problems.length > 0, "9: free: nothing freed fails");
+    expect(mmLateFreedProblems(good, { ...late, count: 0 }).problems.length > 0, "9: free: a zero expected count fails");
+    expect(mmLateFreedProblems(good, { ...late, count: 2 }).problems.length > 0, "9: free: too few freed fails");
+    // receivers
+    const applied = (freed: number, status = "ok") => ({ status, w11: { multimesh: { multimeshes_freed: freed } } });
+    expect(mmLateReleaseProblems(applied(1), "r", 1).length === 0, "9: release: a receiver that freed it passes");
+    expect(mmLateReleaseProblems(applied(0), "r", 1).length > 0, "9: release: a receiver that freed nothing fails");
+    expect(mmLateReleaseProblems(null, "r", 1).length > 0, "9: release: no applied.json fails");
+    expect(mmLateReleaseProblems({ status: "ok" }, "r", 1).length > 0, "9: release: no w11.multimesh fails");
+    expect(mmLateReleaseProblems(applied(1, "failed"), "r", 1).length > 0, "9: release: a failed status fails");
+    // expected.json minimums
+    expect(mmExpectedProblems(expected).length === 0, "9: the real expected.json meets its minimums", mmExpectedProblems(expected));
+    expect(mmExpectedProblems({ ...expected, cells: {} }).length > 0, "9: empty cells fail");
+    expect(mmExpectedProblems({ ...expected, checkpoints: [] }).length > 0, "9: empty checkpoints fail");
+    expect(mmExpectedProblems({ ...expected, pixels: { ...expected.pixels, moving: {} } }).length > 0, "9: empty moving fails");
+    expect(mmExpectedProblems({ ...expected, late_free: { frame: 0, count: 0, cell: "" } }).length > 0, "9: a missing late_free fails");
+  }
+
+  // 10. runG8mm on a tree whose late legs ran (exit 0, a result.json) but hold no recording: the
+  //     late checks fail (no crash, no pass), mm-expected passes on the real expected.json and
+  //     fails on an emptied one.
+  {
+    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-mm-"));
+    try {
+      for (const leg of ["late/capture", "fault-no-resources/capture", "late/receiver", "late/receiver-patch"]) {
+        mkdirSync(join(root, "g8mm", leg, "evidence"), { recursive: true });
+        writeFileSync(join(root, "g8mm", leg, "exit-code.txt"), "0\n");
+        // result.json and applied.json honest, so only the missing recording can fail a check
+        const adopted = leg === "late/capture" ? Object.values(expected.cells).filter((c) => c.drawn && !c.freed_at_step).length : 0;
+        writeFileSync(
+          join(root, "g8mm", leg, "evidence", "result.json"),
+          JSON.stringify({ stream: { gate8: { adopt_stats: { resources: { multimeshes: adopted, multimeshes_refused: 0 } } } } }),
+        );
+        writeFileSync(join(root, "g8mm", leg, "applied.json"), JSON.stringify({ status: "ok", w11: { multimesh: { multimeshes_freed: 1 } } }));
+      }
+      const { checks } = await runG8mm(root, expected);
+      const byId = (id: string) => checks.find((c) => c.id === id);
+      for (const id of ["mm-late-adopt", "mm-late-free", "mm-late-fault"])
+        expect(byId(id)?.passed === false, `10: ${id} fails when the late recording is missing`, byId(id));
+      expect(byId("mm-expected")?.passed === true, "10: mm-expected passes on the real expected.json", byId("mm-expected"));
+      const empty = await runG8mm(root, { ...expected, cells: {}, checkpoints: [] });
+      expect(empty.checks.find((c) => c.id === "mm-expected")?.passed === false, "10: mm-expected fails on empty cells/checkpoints");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 
   console.log(`\nself-test-gate8-mm: ${assertions - failures}/${assertions} assertions passed`);

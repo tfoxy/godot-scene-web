@@ -22,6 +22,7 @@ Three cells, each drawn only after the arm:
 | 1..11 | nothing draws (the resources are not in the tree) |
 | 12 | the loader arms the capture (`GRC_ADOPT=arm`): the walk adopts only what is in the tree (the root) |
 | 15 | the three cells enter the tree and draw |
+| 22 | the fixture frees the TEX sprite and texture, the PPM emitter and the ITEM node (`FREE_FRAME`) |
 | 30 | quit |
 
 The capture must run on a rendered host (a private 640x360 gamescope): a headless host's dummy
@@ -34,3 +35,5 @@ and `particles.adoption`, plus the recording's resolved tables); there is no `re
   pre-arm items (2), with no refused texture/material and **no unknown item RIDs** (`residue` 0).
 - `res-late-fault`: under `GRC_ADOPT_FAULT=no-resources` nothing pre-arm is adopted and the
   pre-arm items stay unknown (the pre-LATE-RES capture).
+- `res-free`: after the frame-22 free, the late capture records the freed cells (at least
+  `expected.json`'s `freed_items`, `freed_textures`, `freed_particles` gone or tombstoned).

@@ -42,6 +42,10 @@ extends Node
 const CHECKPOINTS: Array[Array] = [[1, 4], [20, 27], [40, 47]]
 const H_CLEAR_FRAME: int = 41
 const QUIT_DEFAULT: int = 90
+## PM9: on the late legs only (RS_FIXTURE_ARM=late), the frame that frees the adopted A_XFORM cell
+## (its node, and with it its multimesh): the capture records the multimesh freed and the late
+## receivers release it (mm-late-free). Born and reference legs never free it.
+const LATE_FREE_FRAME: int = 60
 ## The custom.x of a frame-carrying instance before its first frame: never a frame number.
 const SENTINEL: float = -1.0
 
@@ -70,6 +74,7 @@ var _failed: bool = false
 var _root: Node2D
 var _quad: ArrayMesh
 var _a: MultiMesh
+var _a_node: MultiMeshInstance2D
 var _b: MultiMesh
 var _b_buffer: PackedFloat32Array
 var _d_parent: Node2D
@@ -95,7 +100,7 @@ func _ready() -> void:
 	_a = _multimesh(5, false, false)
 	for k: int in range(5):
 		_a.set_instance_transform_2d(k, _xform(k, 0.25 * k, 2.0, Vector2(32.0 * k, 20.0)))
-	_instance(_a, Vector2(40, 40), null)
+	_a_node = _instance(_a, Vector2(40, 40), null)
 
 	# B_CUSTOM: colour and custom data, read by a canvas shader.
 	_b = _multimesh(6, true, true)
@@ -221,6 +226,10 @@ func _process(_delta: float) -> void:
 			_maybe_take_shot("step-%d-prev.png" % k)
 		if _frame == settle:
 			_maybe_take_shot("step-%d.png" % k)
+	if _frame == LATE_FREE_FRAME and OS.get_environment("RS_FIXTURE_ARM") == "late" and _a_node != null:
+		_a = null
+		_a_node.queue_free()
+		_a_node = null
 	if _frame == H_CLEAR_FRAME:
 		RenderingServer.canvas_item_clear(_h_item)
 	if _frame >= _quit_frame:

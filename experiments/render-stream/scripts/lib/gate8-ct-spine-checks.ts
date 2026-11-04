@@ -3,7 +3,7 @@
 // property -- the spine-godot shape, whose drawing node has no `texture`. The fixture is
 // fixtures/gate8-ct-spine: the capture loads at frame 8, its arm is deferred (GRC_ARM_DEFER_FRAMES)
 // to frame 14, and the CanvasTexture is created at frame 10 in between, so the hooks observe its
-// channels while it is still pre-arm. Capture-only (the receiver side is GAP2-RX's g8ctl).
+// channels while it is still pre-arm. The receiver legs (full and patch sinks) are judged against the unarmed reference like g8ctl's.
 //
 //   ctsp-legs                every leg that ran exited 0
 //   ct-spine-adopt           the late capture adopts the runtime CanvasTexture from the hooks'
@@ -11,20 +11,24 @@
 //                            refused, no unknown-texture draw
 //   ct-spine-fault           under GRC_ADOPT_FAULT=no-resources nothing is adopted and the draw
 //                            stays unknown-texture (the pre-LATE-SPINE capture)
+//   ct-spine-diffuse-uploaded  each receiver uploads the adopted diffuse
+//   ct-spine-reference       each receiver equals the unarmed reference at every checkpoint and the
+//                            expected.json MESH region holds ink
 
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { check, exitCode, loadRecording, readJson, skipped, type G8aCheck } from "./gate8-adopt-checks";
 import {
-  check,
-  exitCode,
-  loadRecording,
-  readJson,
-  skipped,
-  type G8aCheck,
-} from "./gate8-adopt-checks";
-import { type ResolvedRecording, validateRecording } from "./render-stream-2";
+  adoptedDiffuses,
+  adoptionResources,
+  adoptProblems,
+  type CaptureResult,
+  diffuseUploadProblems,
+  faultProblems,
+  referenceProblems,
+  validateSinkProblems,
+} from "./gate8-ct-late-checks";
 
 export interface G8ctspExpected {
   schema: string;
@@ -34,51 +38,30 @@ export interface G8ctspExpected {
   regions: Record<string, [number, number, number, number]>;
   cells: string[];
   clear_color: [number, number, number];
-  checkpoints: { step: number; settle: number }[];
+  checkpoints: { step: number; settle: number; blank?: string[] }[];
 }
 
 export interface G8ctspReport {
   legs: Record<string, unknown>;
+  pixels: Record<string, { step: number; differing: number }[]>;
+  diffuses: number[] | null;
 }
 
-const LEGS = ["import/fixture", "import/receiver", "reference", "late/capture", "fault-no-resources/capture"];
+const LEGS = [
+  "import/fixture",
+  "import/receiver",
+  "reference",
+  "late/capture",
+  "fault-no-resources/capture",
+  "late/receiver",
+  "late/receiver-patch",
+];
 
-interface CaptureResult {
-  stream?: {
-    gate8?: { adopt_stats?: { resources?: Record<string, number> } };
-  };
-}
+const RECEIVERS = ["late/receiver", "late/receiver-patch"];
 
-function adoptionResources(r: CaptureResult | undefined): Record<string, number> | undefined {
-  return r?.stream?.gate8?.adopt_stats?.resources;
-}
-
-/** The unsupported commands of `rec` with `reason` `unknown-texture`, over every transaction. */
-function unknownTextureCount(rec: ResolvedRecording): number {
-  let n = 0;
-  for (const t of rec.transactions)
-    for (const it of t.state.items)
-      for (const c of it.commands)
-        if (c.op === "unsupported" && c.reason === "unknown-texture") n++;
-  return n;
-}
-
-const SINKS = ["recording.rs8", "recording-patch.rs8"] as const;
-
-async function validateSinkProblems(legDir: string): Promise<string[]> {
-  const problems: string[] = [];
-  for (const sink of SINKS) {
-    let data: Uint8Array;
-    try {
-      data = new Uint8Array(await readFile(join(legDir, sink)));
-    } catch {
-      problems.push(`${sink}: missing`);
-      continue;
-    }
-    const errors = validateRecording(data, 8);
-    if (errors.length > 0) problems.push(`${sink}: ${errors[0].slice(0, 240)}`);
-  }
-  return problems;
+interface UploadRow {
+  id: number;
+  op: string;
 }
 
 export async function runG8ctsp(
@@ -87,7 +70,7 @@ export async function runG8ctsp(
 ): Promise<{ checks: G8aCheck[]; report: G8ctspReport }> {
   const g = join(out, "g8ctsp");
   const checks: G8aCheck[] = [];
-  const report: G8ctspReport = { legs: {} };
+  const report: G8ctspReport = { legs: {}, pixels: {}, diffuses: null };
   const dir = (leg: string) => join(g, leg);
   const ran = (leg: string) => existsSync(join(dir(leg), "exit-code.txt"));
   const result = async (leg: string) =>
@@ -112,43 +95,19 @@ export async function runG8ctsp(
   // ct-spine-adopt
   {
     const leg = "late/capture";
-    let problems: string[] | null = null;
+    let problems: string[];
     let detail: string | undefined;
     if (!ran(leg)) {
       problems = ["late/capture did not run"];
     } else {
-      problems = [];
       const res = adoptionResources(await result(leg));
-      if (!res) problems.push("no stream.gate8.adopt_stats.resources");
-      else {
-        if (res.textures_canvas !== expected.canvas_count)
-          problems.push(`adopted ${res.textures_canvas} canvas textures, ${expected.canvas_count} expected`);
-        if ((res.textures_refused ?? 0) !== 0) problems.push(`refused ${res.textures_refused}`);
-        detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
-      }
-      const rec = await loadRecording(dir(leg), 8);
-      if (!rec.rec) problems.push(rec.error ?? "no recording");
-      else {
-        const last = rec.rec.transactions.at(-1);
-        if (!last) problems.push("no transaction");
-        else {
-          const canvases = last.state.textures.filter((x) => x.kind === "canvas");
-          if (canvases.length !== expected.canvas_count)
-            problems.push(`${canvases.length} canvas textures in the last state, ${expected.canvas_count} expected`);
-          const byId = new Map(last.state.textures.map((x) => [x.id, x]));
-          for (const c of canvases) {
-            if (c.origin !== "adopted") problems.push(`canvas ${c.id}: origin ${c.origin}`);
-            if (c.status !== "ok") problems.push(`canvas ${c.id}: status ${c.status}`);
-            const d = c.canvas?.diffuse;
-            const img = d == null ? undefined : byId.get(d);
-            if (d == null || !img || img.kind !== "image" || img.status !== "ok")
-              problems.push(`canvas ${c.id}: diffuse ${d} is not an ok image`);
-          }
-        }
-        const unknown = unknownTextureCount(rec.rec);
-        if (unknown > 0) problems.push(`${unknown} unknown-texture commands over the recording`);
-      }
-      problems.push(...(await validateSinkProblems(dir(leg))));
+      problems = adoptProblems(
+        res,
+        await loadRecording(dir(leg), 8),
+        expected,
+        await validateSinkProblems(dir(leg)),
+      );
+      if (res) detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
     }
     checks.push(
       check(
@@ -163,30 +122,58 @@ export async function runG8ctsp(
   // ct-spine-fault
   {
     const leg = "fault-no-resources/capture";
-    let problems: string[] | null = null;
+    let problems: string[];
     if (!ran(leg)) {
       problems = ["fault-no-resources/capture did not run"];
     } else {
-      problems = [];
-      const res = adoptionResources(await result(leg));
-      if (!res) problems.push("no stream.gate8.adopt_stats.resources");
-      else if ((res.textures_canvas ?? 0) !== 0)
-        problems.push(`adopted ${res.textures_canvas} canvas textures under the fault`);
-      const rec = await loadRecording(dir(leg), 8);
-      if (!rec.rec) problems.push(rec.error ?? "no recording");
-      else {
-        const last = rec.rec.transactions.at(-1);
-        const canvases = last ? last.state.textures.filter((x) => x.kind === "canvas") : [];
-        if (canvases.length !== 0) problems.push(`last state has ${canvases.length} canvas entries`);
-        const unknown = unknownTextureCount(rec.rec);
-        if (unknown === 0) problems.push("no unknown-texture command under the fault");
-      }
-      problems.push(...(await validateSinkProblems(dir(leg))));
+      problems = faultProblems(
+        adoptionResources(await result(leg)),
+        await loadRecording(dir(leg), 8),
+        await validateSinkProblems(dir(leg)),
+      );
     }
     checks.push(
       check(
         "ct-spine-fault",
         "LATE-SPINE: under GRC_ADOPT_FAULT=no-resources no CanvasTexture is adopted and the draw through one stays unknown-texture (the pre-LATE-SPINE capture)",
+        problems,
+      ),
+    );
+  }
+
+  // --- the receiver side: the adopted diffuse is resident and drawn --------------------------------
+  const cap = await loadRecording(dir("late/capture"), 8);
+  const diffuses = cap.rec ? adoptedDiffuses(cap.rec) : [];
+  report.diffuses = diffuses.length > 0 ? diffuses : null;
+
+  // ct-spine-diffuse-uploaded
+  {
+    let problems: string[] | null = null;
+    if (RECEIVERS.every((l) => ran(l))) {
+      const uploads: Record<string, UploadRow[] | undefined> = {};
+      for (const l of RECEIVERS)
+        uploads[l] = (await readJson<{ uploads?: UploadRow[] }>(join(dir(l), "applied.json")))?.uploads;
+      problems = diffuseUploadProblems(diffuses, expected.canvas_count, uploads);
+    }
+    checks.push(
+      check(
+        "ct-spine-diffuse-uploaded",
+        "each receiver makes the adopted canvas texture's diffuse resident (an image upload) although no command names it",
+        problems,
+        `${diffuses.length} diffuses`,
+      ),
+    );
+  }
+
+  // ct-spine-reference
+  {
+    let problems: string[] | null = null;
+    if (RECEIVERS.every((l) => ran(l)) && ran("reference"))
+      problems = await referenceProblems(g, RECEIVERS, expected, report.pixels);
+    checks.push(
+      check(
+        "ct-spine-reference",
+        "each receiver (full and patch sinks) equals the unarmed reference exactly at every checkpoint, and the declared MESH cell holds the adopted diffuse's ink (not the clear colour, not Godot's white default)",
         problems,
       ),
     );

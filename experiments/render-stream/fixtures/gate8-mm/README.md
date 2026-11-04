@@ -49,6 +49,7 @@ Particles run at the fixed step: every leg is `--fixed-fps 60`, `fixed_fps` stay
 | 30 | the capture sabotages start (`GRC_SABOTAGE_FRAME`) |
 | 40 | step 2: E_VISIBLE shows 6; F_REPLACE re-set with the same floats; H_FREE freed (a tombstone); settles at 47 |
 | 41 | H_FREE's item cleared: the entry leaves the table |
+| 60 | late legs only (`RS_FIXTURE_ARM=late`): A_XFORM's node and multimesh are freed (`LATE_FREE_FRAME`, expected.json `late_free`); `mm-late-free` asserts the capture records it freed and both late receivers release it |
 | 90 | quit |
 
 `RS_FIXTURE_MM_LOG` gets one line per frame-carrying buffer of B_CUSTOM (every frame, from

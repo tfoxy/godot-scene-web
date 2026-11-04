@@ -11,6 +11,7 @@ const SIZE: int = 16
 const CHECKPOINTS: Array[Array] = [[1, 17]]
 const QUIT_DEFAULT: int = 30
 const CT_CREATE_FRAME: int = 10
+const REBUILD_FRAME: int = 15
 
 var _frame: int = 0
 var _quit_frame: int = QUIT_DEFAULT
@@ -42,6 +43,12 @@ func _process(_delta: float) -> void:
 		ct.diffuse_texture = ImageTexture.create_from_image(_pattern(3))
 		_draw.ct = ct
 		_draw.queue_redraw()
+	if _frame == REBUILD_FRAME:
+		# After the arm (frame 14): a fresh mesh, held, so the capture hooks it (known mesh) while the
+		# CanvasTexture (frame 10) stays the late-adopted resource; the fault leg then refuses only
+		# the texture (unknown-texture), not the mesh.
+		_draw._mesh = null
+		_draw.queue_redraw()
 	for k: int in range(CHECKPOINTS.size()):
 		var applied: int = CHECKPOINTS[k][0]
 		var settle: int = CHECKPOINTS[k][1]
@@ -60,12 +67,18 @@ class SpineLike:
 	## a runtime CanvasTexture (as spine-godot's SpineMesh2D does), so RT-CTX's node-map path cannot
 	## reach it and the capture must adopt it from the draw's own texture reference.
 	var ct: CanvasTexture = null
+	## Held for the node's life: draw_mesh keeps only the RID, so a mesh that goes out of scope
+	## inside _draw is freed before the frame renders and draws nothing (as spine-godot's mesh is
+	## held by its SpineMesh2D).
+	var _mesh: ArrayMesh = null
 
 
 	func _draw() -> void:
 		if ct == null:
 			return
-		draw_mesh(_quad_mesh(64.0), ct, Transform2D(), Color.WHITE)
+		if _mesh == null:
+			_mesh = _quad_mesh(64.0)
+		draw_mesh(_mesh, ct, Transform2D(), Color.WHITE)
 
 
 	static func _quad_mesh(side: float) -> ArrayMesh:

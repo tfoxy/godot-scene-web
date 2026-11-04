@@ -336,7 +336,10 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
     let any = false;
     for (const sink of ["recording.rs12", "recording-patch.rs12"]) {
       const v = await deps.validate(join(dir(PTC_LEGS.capture), sink));
-      if (!v) continue;
+      if (!v) {
+        problems.push(`${sink}: missing`);
+        continue;
+      }
       any = true;
       if (v[0] !== "ok") problems.push(`${sink}: TS ${v[0]}`);
       if (v[1] !== "ok") problems.push(`${sink}: rs-core ${v[1]}`);

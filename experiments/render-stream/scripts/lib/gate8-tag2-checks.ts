@@ -266,6 +266,7 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
       ...health(`variant-${v}`, report(`variant-${v}`)),
     );
     const c = r?.counters;
+    if (r !== null && !c) problems.push(`${extLeg}: no counters`);
     if (c && c.overridesSet < 1) problems.push(`${extLeg}: no override set`);
     if (c && !c.sessions.some((s) => s !== null))
       problems.push(`${extLeg}: no item_meta grant`);
@@ -292,7 +293,7 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
         problems.push(`${extLeg} vs variant-${v}: ${fmt(d)}`);
     }
     const dv = diff(b, base);
-    if (dv !== null && dv.differ === 0)
+    if (dv === null || dv.differ === 0)
       problems.push(
         `variant-${v} draws the base scene (the variant made no change)`,
       );
@@ -315,6 +316,7 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
   {
     const problems: string[] = [...health("identity", report("identity"))];
     const c = report("identity")?.counters;
+    if (report("identity") !== null && !c) problems.push("identity: no counters");
     if (c && c.overridesSet < 5)
       problems.push(`identity: only ${c.overridesSet} overrides set`);
     const [a, b] = [await shot("identity"), await shot("variant-base")];
@@ -337,6 +339,7 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
   const frzDiff = async (leg: string): Promise<string[]> => {
     const problems: string[] = [...health(leg, report(leg))];
     const c = report(leg)?.counters;
+    if (report(leg) !== null && !c) problems.push(`${leg}: no counters`);
     if (c && c.overridesSet < 1)
       problems.push(`${leg}: no override set (the freeze never reached the core)`);
     const [a, b] = [await shot(leg), await shot("variant-base")];
@@ -458,7 +461,11 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
       "scaled-art-corner",
       "plain-art-centre",
     ])
-      if (!pr.cases.some((c) => c.name === want && !c.missing))
+      if (
+        !pr.cases.some(
+          (c) => c.name === want && !c.missing && c.game && c.drawn && c.item,
+        )
+      )
         out.push(`${leg}: case ${want} is missing`);
     for (const c of pr.cases) {
       if (c.missing || !c.game || !c.drawn || !c.item) continue;

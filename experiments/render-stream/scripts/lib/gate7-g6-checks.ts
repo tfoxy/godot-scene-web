@@ -20,6 +20,7 @@ import { decodePngRgba } from "./gate-minus1-checks";
 import { TEXT_REGIONS } from "./gate6b-wide-checks";
 import type { Gate7Check } from "./gate7-adapters";
 import type { BackingStore } from "./gate7-web-legs";
+import { pm1Level, widePm1Problems } from "./wide-tolerance";
 
 /** Legs whose applied.json must say presentation_check `mismatch` (gate6-design.md G6b As built 2
  * and 3); the hazard is also the one leg whose backing store is its window, not the presentation. */
@@ -245,14 +246,22 @@ export async function presentationCheck(
  *     the native reference.
  * So the browser's wide frame is the 16:9 one plus exactly the reference's added columns.
  */
+export interface WideCompositionInputs {
+  /** The wide legs (default: gate 6's three). `baseWidth` is the 16:9 base's width in the wide frame. */
+  legs?: { leg: string; base: string; size: [number, number]; baseWidth?: number }[];
+  /** The expected shots (default: fixtures/gate6-hd/expected.json); each needs a seq in the source leg's applied.json. */
+  shots?: { id: string; frame: number; regions: Record<string, number[]> }[];
+}
+
 export async function wideCompositionCheck(
   kind: string,
   sourceDir: string,
   legDir: (leg: string) => string,
+  inputs: WideCompositionInputs = {},
 ): Promise<Gate7Check> {
   const problems: string[] = [];
   const parts: string[] = [];
-  const legs: { leg: string; base: string; size: [number, number] }[] = [
+  const legs: { leg: string; base: string; size: [number, number]; baseWidth?: number }[] = inputs.legs ?? [
     {
       leg: "receiver-2340x1080",
       base: "hd/receiver-native",
@@ -275,7 +284,7 @@ export async function wideCompositionCheck(
         m.set(t.frame, t.seq);
     return m;
   };
-  const shotsDoc = readJson<{
+  const shotsDoc = inputs.shots ? { shots: inputs.shots } : readJson<{
     shots: { id: string; frame: number; regions: Record<string, number[]> }[];
   }>(
     join(
@@ -296,7 +305,7 @@ export async function wideCompositionCheck(
       `reference-${l.size[0]}x${l.size[1]}`,
       "shots",
     );
-    const baseW = l.base === "hd/receiver-half" ? 960 : 1920;
+    const baseW = l.baseWidth ?? (l.base === "hd/receiver-half" ? 960 : 1920);
     // Shots are named by seq; seqs come from the native (source) leg's frame map, which the browser
     // leg shares (the same recording).
     const seqs = seqOfFrame(join(sourceDir, "wide", l.leg));
@@ -305,9 +314,13 @@ export async function wideCompositionCheck(
     let text = 0;
     let band = 0;
     let n = 0;
+    let compared = 0;
     for (const shot of shotsDoc?.shots ?? []) {
       const seq = seqs.get(shot.frame);
-      if (seq === undefined) continue;
+      if (seq === undefined) {
+        problems.push(`${l.leg} ${shot.id}: no seq for frame ${shot.frame} in the source applied.json`);
+        continue;
+      }
       const scale = l.size[1] / 1080;
       const textBoxes = Object.entries(shot.regions)
         .filter(([n]) => TEXT_REGIONS.has(n.replace(/^c\d+\./, "")))
@@ -336,6 +349,7 @@ export async function wideCompositionCheck(
         continue;
       }
       n++;
+      compared += wide.width * wide.height;
       for (let y = 0; y < wide.height; y++)
         for (let x = 0; x < wide.width; x++) {
           const i = (y * wide.width + x) * 4;
@@ -356,7 +370,7 @@ export async function wideCompositionCheck(
           // bit-stable (the projection divides by the target width), so the base columns may
           // differ by one level (Q7's delta1): glyph edges on NVIDIA, interpolated colours too on
           // llvmpipe. Counted, split text regions vs elsewhere.
-          if (x < baseW && d <= 1) {
+          if (x < baseW && pm1Level(d)) {
             if (inText(x, y)) text++;
             else band++;
             continue;
@@ -365,7 +379,15 @@ export async function wideCompositionCheck(
           else right++;
         }
     }
-    if (n === 0) problems.push(`${l.leg}: no shot compared`);
+    // Every expected shot compared (a partial leg fails), and the +-1 pixels bounded as a fraction.
+    problems.push(
+      ...widePm1Problems(l.leg, {
+        shots: n,
+        expectedShots: shotsDoc?.shots.length ?? 0,
+        compared,
+        pm1: text + band,
+      }),
+    );
     if (left > 0)
       problems.push(
         `${l.leg}: ${left} px of the left ${baseW} columns differ from ${l.base}`,

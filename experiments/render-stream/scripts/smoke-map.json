@@ -128,6 +128,15 @@
       "reach": ["native:gate8@*", "g7:g7-8@web/rust"]
     },
     {
+      "why": "LATE-RES's gate 8 group g8res (results/p3/late-res.md): fixtures/gate8-res, its checks and their self-test reach native gate 8, which runs g8res whole (capture-only: no receiver legs)",
+      "paths": [
+        "experiments/render-stream/fixtures/gate8-res/**",
+        "experiments/render-stream/scripts/lib/gate8-res-checks.ts",
+        "experiments/render-stream/scripts/test/self-test-gate8-res.ts"
+      ],
+      "reach": ["native:gate8@*"]
+    },
+    {
 "why": "PM5's gate 8 group g8pt (render-stream-12.md \"Fixture and checks (gate 8 group g8pt)\"; PM6a added the references, the native receivers and their pixel checks): fixtures/gate8-pt, its checks and their self-test reach native gate 8, which runs g8pt whole, and g7-8's web half, which replays g8pt's receiver legs (PM6a dropped PM5's exclusivity)",
       "paths": [
         "experiments/render-stream/fixtures/gate8-pt/**",
@@ -553,6 +562,7 @@
         "experiments/render-stream/scripts/run-gate6.sh",
         "experiments/render-stream/scripts/check-gate6.ts",
         "experiments/render-stream/scripts/lib/gate6*-*.ts",
+        "experiments/render-stream/scripts/lib/wide-tolerance.ts",
         "experiments/render-stream/scripts/lib/gate6*-legs.sh",
         "experiments/render-stream/scripts/report-gate6.ts",
         "experiments/render-stream/scripts/g6l-motion-leg.ts",
@@ -601,7 +611,7 @@
     },
     {"why": "SWO: the CI lavapipe particle-flake typing, read only by gate7b-adapters.ts for gate 8's web group (and its self-test)", "paths": ["experiments/render-stream/scripts/lib/gate7-web-flakes.ts"], "reach": ["g7:g7-8@web/rust", "pure"]},
     {"why": "G8kb: GSW's KTX2 transcoder (its wasm build and Web Worker) is in every GSW bundle, so it reaches gate 7's GSW half and native gate 8 (g8kp's GSW legs build the bundle)", "paths": ["experiments/render-stream/web/basis-transcoder/**", "experiments/render-stream/scripts/build-basis-transcoder.sh"], "reach": ["g7:*@gsw", "g7live:*@gsw", "native:gate8@*"]},
-    {"why": "G7g/PRES-A: gate 6's browser presentation checks (presentation-check, wide-composition), read by check-gate7.ts and gate 7's GSW and live halves for g7-6 only", "paths": ["experiments/render-stream/scripts/lib/gate7-g6-checks.ts"], "reach": ["g7:g7-6@gsw", "g7:g7-6@web/rust", "g7live:g7-6@gsw", "g7live:g7-6@web/rust"]},
+    {"why": "G7g/PRES-A: gate 6's browser presentation checks (presentation-check, wide-composition), read by check-gate7.ts and gate 7's GSW and live halves for g7-6 only", "paths": ["experiments/render-stream/scripts/lib/gate7-g6-checks.ts", "experiments/render-stream/scripts/lib/wide-tolerance.ts"], "reach": ["g7:g7-6@gsw", "g7:g7-6@web/rust", "g7live:g7-6@gsw", "g7live:g7-6@web/rust"]},
     {
       "why": "gate 7's GSW half",
       "paths": [

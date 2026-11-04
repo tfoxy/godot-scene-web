@@ -13,15 +13,21 @@ extends Node
 ##
 ## The root is a plain `Node`: every CanvasItem is created in `_ready`, after the autoload's
 ## `_enter_tree` but before the loader's `_process` arms at frame 12. Timeline: quit at 30. The
-## recording (armed at 12) holds the adopted canvas textures and every post-arm draw.
+## recording (armed at 12) holds the adopted canvas textures and every post-arm draw. At 22 SPRITE's
+## CanvasTexture is released (the free-after-adopt step); checkpoint 1 (23..26) shows its cell empty.
 
 const SIZE: int = 16
-const CHECKPOINTS: Array[Array] = [[1, 17]]
+const CHECKPOINTS: Array[Array] = [[1, 17], [23, 26]]
 const QUIT_DEFAULT: int = 30
+## The frame SPRITE's CanvasTexture is released (after the arm at 12): `texture = null` drops the
+## last reference, so the engine frees the CanvasTexture and its diffuse ImageTexture, and the
+## cell draws nothing from then on.
+const FREE_FRAME: int = 22
 
 var _frame: int = 0
 var _quit_frame: int = QUIT_DEFAULT
 var _failed: bool = false
+var _sprite: Sprite2D
 var _shot_dir: String = ""
 var _step_log_file: FileAccess
 
@@ -42,6 +48,7 @@ func _ready() -> void:
 	sprite.position = Vector2(40, 40)
 	sprite.scale = Vector2(4.0, 4.0)
 	root.add_child(sprite)
+	_sprite = sprite
 	# TRECT: a Control's add_texture_rect through a runtime CanvasTexture.
 	var ct_b := CanvasTexture.new()
 	ct_b.diffuse_texture = ImageTexture.create_from_image(_pattern(2))
@@ -67,6 +74,8 @@ func _process(_delta: float) -> void:
 	if _failed:
 		return
 	_frame += 1
+	if _frame == FREE_FRAME:
+		_sprite.texture = null
 	for k: int in range(CHECKPOINTS.size()):
 		var applied: int = CHECKPOINTS[k][0]
 		var settle: int = CHECKPOINTS[k][1]

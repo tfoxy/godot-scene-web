@@ -59,6 +59,7 @@ import {
   shotFiles,
 } from "./gate6h-checks";
 import { stretchVisibleSize } from "./render-stream-2";
+import { pm1Level, widePm1Problems } from "./wide-tolerance";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -323,6 +324,9 @@ export async function runGate6bWide(
         problems.push(
           `${sizeName(p)}: oracle [visible_size, window_size] ${[...visibles].join(" ") || "none"}, expected ${wantVisible}`,
         );
+      const sizeCompared0 = compared;
+      const sizePm10 = textPx + bandPx;
+      let sizeShots = 0;
       for (const shot of hd.shots) {
         const wide = await loadFrame(join(dir, "shots", `${shot.id}.png`));
         const nat = await loadFrame(
@@ -342,6 +346,7 @@ export async function runGate6bWide(
         // the target width): pixels may differ by one level (Q7's delta1). On NVIDIA only glyph
         // edges in the regions that draw text move (gate 6's undecided RT and LB, and the text of
         // SC, HU, PB, BT and LE); on llvmpipe interpolated colours too. Counted per kind.
+        sizeShots++;
         const undecided = Object.entries(
           shot.regions as Record<string, number[]>,
         )
@@ -358,7 +363,7 @@ export async function runGate6bWide(
               dd = Math.max(dd, Math.abs(wide.rgba[ia + c] - nat.rgba[ib + c]));
             compared++;
             if (dd === 0) continue;
-            if (dd <= 1) {
+            if (pm1Level(dd)) {
               if (inUndecided(x, y)) textPx++;
               else bandPx++;
               continue;
@@ -370,6 +375,15 @@ export async function runGate6bWide(
               );
           }
       }
+      // Every shot compared (a partial size fails), and the +-1 pixels bounded as a fraction.
+      problems.push(
+        ...widePm1Problems(sizeName(p), {
+          shots: sizeShots,
+          expectedShots: hd.shots.length,
+          compared: compared - sizeCompared0,
+          pm1: textPx + bandPx - sizePm10,
+        }),
+      );
     }
     checks.push(
       check(

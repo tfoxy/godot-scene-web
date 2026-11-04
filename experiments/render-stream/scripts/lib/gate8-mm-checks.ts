@@ -126,6 +126,9 @@ export interface G8mmExpected {
   min_per_frame_frames: number;
   min_paired_transactions: number;
   cells: Record<string, MmCell>;
+  /** The adopted multimesh the late legs free after the adoption (mm.gd LATE_FREE_FRAME): the
+   * capture records it freed and the late receivers release it. */
+  late_free: { frame: number; count: number; cell: string };
   /** PM2: the shot's cell grid (README.md, expected.json `pixels.doc`). */
   pixels: MmPixels;
 }
@@ -969,6 +972,17 @@ export async function runG8mm(
     checks.push(check("g8mm-legs", "PM1: every g8mm leg that ran exited 0", any ? problems : null));
   }
 
+  // mm-expected
+  {
+    checks.push(
+      check(
+        "mm-expected",
+        "PM1: expected.json holds the minimums the checks loop over (cells, checkpoints, pixel regions, drawn and moving cells, the late free), so no loop passes on nothing",
+        mmExpectedProblems(expected),
+      ),
+    );
+  }
+
   // mm-validate
   {
     const problems: string[] = [];
@@ -1139,6 +1153,78 @@ export async function runG8mm(
   return { checks, report };
 }
 
+// ----------------------------------------------------------------------------- late-arm (PM9)
+
+/** The late capture's verdict on the adopted table: every drawn pre-arm multimesh is an `adopted`,
+ * `ok` entry in the last transaction before the late free (at least `expectedAdopted` of them),
+ * with no unknown-multimesh add_multimesh. Empty evidence (no transaction, no entry) fails. */
+export function mmLateAdoptProblems(trace: MmTrace, expectedAdopted: number, freeFrame: number): string[] {
+  const problems: string[] = [];
+  if (!(expectedAdopted > 0)) problems.push(`expected adopted multimeshes must be positive (got ${expectedAdopted})`);
+  for (const e of trace.errors.slice(0, 3)) problems.push(`decode ${e}`);
+  if (trace.txs.length === 0) return [...problems, "no transaction in the recording"];
+  let before: MmTx | undefined;
+  for (const t of trace.txs) if (t.frame < freeFrame) before = t;
+  if (!before) return [...problems, `no transaction before the late free at frame ${freeFrame}`];
+  const unknown = trace.unsupported_add_multimesh["unknown-multimesh"] ?? 0;
+  if (unknown > 0) problems.push(`${unknown} unknown-multimesh add_multimesh over the recording`);
+  const entries = [...before.table.values()];
+  if (entries.length < expectedAdopted)
+    problems.push(`${entries.length} multimesh entries before the free (frame ${before.frame}), ${expectedAdopted} expected`);
+  for (const e of entries) {
+    if (e.origin !== "adopted") problems.push(`multimesh ${e.id}: origin ${e.origin}`);
+    if (e.status !== "ok") problems.push(`multimesh ${e.id}: status ${e.status}`);
+  }
+  return problems;
+}
+
+/** After the adoption the fixture frees `count` adopted multimeshes: the capture records them
+ * freed, i.e. at least `count` ids of the last transaction before `freeFrame` are gone from the
+ * last transaction's table or held as `freed` tombstones there. Returns the freed ids too. */
+export function mmLateFreedProblems(
+  trace: MmTrace,
+  late: { frame: number; count: number },
+): { problems: string[]; freed: number[] } {
+  if (!(late.count > 0)) return { problems: [`expected.late_free.count must be positive (got ${late.count})`], freed: [] };
+  let before: MmTx | undefined;
+  for (const t of trace.txs) if (t.frame < late.frame) before = t;
+  const last = trace.txs.at(-1);
+  if (!before || !last || last === before || last.frame < late.frame)
+    return { problems: [`no transaction before and after the late free at frame ${late.frame} (${trace.txs.length} transactions)`], freed: [] };
+  const freed = [...before.table.values()]
+    .filter((e) => e.status === "ok" && last.table.get(e.id)?.status !== "ok")
+    .map((e) => e.id);
+  return {
+    problems: freed.length >= late.count ? [] : [`${freed.length} adopted multimeshes freed after frame ${late.frame}, ${late.count} expected`],
+    freed,
+  };
+}
+
+/** The late receivers release the freed multimesh: applied.json's w11.multimesh.multimeshes_freed. */
+export function mmLateReleaseProblems(applied: Record<string, unknown> | null, leg: string, count: number): string[] {
+  if (!applied) return [`${leg}: no applied.json`];
+  const problems: string[] = [];
+  if (applied.status !== "ok") problems.push(`${leg}: applied.json status ${String(applied.status)}`);
+  const mm = (applied.w11 as Record<string, unknown> | undefined)?.multimesh as Record<string, number> | undefined;
+  if (!mm) problems.push(`${leg}: applied.json has no w11.multimesh`);
+  else if (!((mm.multimeshes_freed ?? 0) >= count))
+    problems.push(`${leg}: ${mm.multimeshes_freed ?? 0} multimeshes freed, ${count} expected`);
+  return problems;
+}
+
+/** expected.json's own minimums: a fixture with no cells, checkpoints or moving cells would let
+ * every loop over them pass on nothing. */
+export function mmExpectedProblems(expected: G8mmExpected): string[] {
+  const problems: string[] = [];
+  if (Object.keys(expected.cells ?? {}).length === 0) problems.push("expected.cells is empty");
+  if ((expected.checkpoints ?? []).length === 0) problems.push("expected.checkpoints is empty");
+  if (Object.keys(expected.pixels?.regions ?? {}).length === 0) problems.push("expected.pixels.regions is empty");
+  if (Object.keys(expected.pixels?.drawn_steps ?? {}).length === 0) problems.push("expected.pixels.drawn_steps is empty");
+  if (Object.keys(expected.pixels?.moving ?? {}).length === 0) problems.push("expected.pixels.moving is empty");
+  if (!(expected.late_free?.count > 0) || !(expected.late_free?.frame > 0)) problems.push("expected.late_free is missing");
+  return problems;
+}
+
 /** PM9 (late-arm multimesh adoption): the late-armed captures. The drawn node-backed multimeshes
  * (every cell but G_HIDDEN and H_FREE) are adopted at their first add_multimesh after the arm; the
  * fault capture is the pre-PM9 capture (GRC_ADOPT_FAULT=no-resources: nothing adopted). */
@@ -1157,6 +1243,7 @@ async function runG8mmLate(
       return null;
     }
   };
+  const appliedJson = async (leg: string) => json(join(dir(leg), "applied.json"));
   const adoption = (r: Record<string, unknown> | null): Record<string, number> | null => {
     const res = ((r?.stream as Record<string, unknown> | undefined)?.gate8 as
       | Record<string, unknown>
@@ -1165,8 +1252,13 @@ async function runG8mmLate(
       ? (res.resources as Record<string, number>)
       : null;
   };
-  const trace = async (leg: string) =>
-    traceMultimeshRecording(await readFile(join(dir(leg), "recording.rs11")), 11);
+  const trace = async (leg: string): Promise<MmTrace | null> => {
+    try {
+      return traceMultimeshRecording(new Uint8Array(await readFile(join(dir(leg), "recording.rs11"))), 11);
+    } catch {
+      return null;
+    }
+  };
   const expectedDrawn = Object.values(expected.cells).filter((c) => c.drawn).length;
   const expectedAdopted = Object.values(expected.cells).filter((c) => c.drawn && !c.freed_at_step).length;
 
@@ -1189,19 +1281,44 @@ async function runG8mmLate(
         detail = `adopted ${res.multimeshes} multimeshes (refused ${res.multimeshes_refused})`;
       }
       const t = await trace(leg);
-      const last = t.txs.at(-1);
-      const unknown = t.unsupported_add_multimesh["unknown-multimesh"] ?? 0;
-      if (unknown > 0) problems.push(`${unknown} unknown-multimesh add_multimesh over the recording`);
-      const entries = last ? [...last.table.values()] : [];
-      for (const e of entries) {
-        if (e.origin !== "adopted") problems.push(`multimesh ${e.id}: origin ${e.origin}`);
-        if (e.status !== "ok") problems.push(`multimesh ${e.id}: status ${e.status}`);
-      }
+      if (!t) problems.push("recording.rs11 missing or undecodable");
+      else problems.push(...mmLateAdoptProblems(t, expectedAdopted, expected.late_free.frame));
     }
     checks.push(
       check(
         "mm-late-adopt",
         "PM9: the late capture adopts every drawn pre-arm multimesh at its first add_multimesh (origin adopted, ok), with no unknown-multimesh",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // mm-late-free
+  {
+    const leg = "late/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (!ran(leg)) {
+      problems = ["late/capture did not run"];
+    } else {
+      problems = [];
+      const t = await trace(leg);
+      if (!t) problems.push("recording.rs11 missing or undecodable");
+      else {
+        const f = mmLateFreedProblems(t, expected.late_free);
+        problems.push(...f.problems);
+        detail = `captured freed multimesh ids ${f.freed.join(", ") || "none"}`;
+      }
+      for (const rl of ["late/receiver", "late/receiver-patch"]) {
+        if (!ran(rl)) problems.push(`${rl} did not run`);
+        else problems.push(...mmLateReleaseProblems(await appliedJson(rl), rl, expected.late_free.count));
+      }
+    }
+    checks.push(
+      check(
+        "mm-late-free",
+        `PM9: after the adoption the fixture frees ${expected.late_free.cell} (frame ${expected.late_free.frame}); the late capture records it freed (gone or a freed tombstone) and both late receivers release it`,
         problems,
         detail,
       ),
@@ -1221,11 +1338,15 @@ async function runG8mmLate(
       if (!res) problems.push("no stream.gate8.adopt_stats.resources");
       else if ((res.multimeshes ?? 0) !== 0) problems.push(`adopted ${res.multimeshes} multimeshes under the fault`);
       const t = await trace(leg);
-      const last = t.txs.at(-1);
-      if (last && last.table.size !== 0) problems.push(`last state: ${last.table.size} multimesh entries`);
-      const unknown = t.unsupported_add_multimesh["unknown-multimesh"] ?? 0;
-      if (unknown === 0) problems.push("no unknown-multimesh add_multimesh under the fault");
-      else if (unknown < expectedDrawn) problems.push(`only ${unknown} unknown-multimesh, ${expectedDrawn} drawn cells`);
+      if (!t) problems.push("recording.rs11 missing or undecodable");
+      else {
+        const last = t.txs.at(-1);
+        if (!last) problems.push("no transaction in the recording");
+        else if (last.table.size !== 0) problems.push(`last state: ${last.table.size} multimesh entries`);
+        const unknown = t.unsupported_add_multimesh["unknown-multimesh"] ?? 0;
+        if (unknown === 0) problems.push("no unknown-multimesh add_multimesh under the fault");
+        else if (unknown < expectedDrawn) problems.push(`only ${unknown} unknown-multimesh, ${expectedDrawn} drawn cells`);
+      }
     }
     checks.push(
       check(

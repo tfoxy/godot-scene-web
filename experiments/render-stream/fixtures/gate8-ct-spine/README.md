@@ -52,5 +52,8 @@ leg runs the same project unarmed in the same private 640x360 gamescope.
 - `ct-spine-fault`: under `GRC_ADOPT_FAULT=no-resources` nothing is adopted and the draw stays
   unknown-texture (the pre-LATE-SPINE capture).
 
-Capture-only: the receiver side of an adopted CanvasTexture (its diffuse made resident and drawn)
-is GAP2-RX's `g8ctl`.
+- `ct-spine-diffuse-uploaded`: each receiver (`late/receiver`, `late/receiver-patch`, the full and
+  patch sinks of the late capture) uploads the adopted diffuse as an image.
+- `ct-spine-reference`: each receiver's shot equals the unarmed `reference` shot at every
+  `expected.json` checkpoint, and the declared `regions` / `cells` (MESH) hold ink (more than half
+  the pixels differ from `clear_color`), so neither Godot's white default nor an empty cell passes.

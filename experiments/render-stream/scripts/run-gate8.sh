@@ -947,6 +947,10 @@ run_g8ctsp() {
 	echo "run-gate8: g8ctsp fault-no-resources/capture (GRC_ADOPT_FAULT=no-resources)"
 	run_capture_rendered_g8ctsp "$OUT/g8ctsp/fault-no-resources/capture" "${G8CTSP_LATE_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-resources
+	echo "run-gate8: g8ctsp receivers (full and patch sinks), judged against the reference shots"
+	run_rendered_receiver "$OUT/g8ctsp/late/capture" "$OUT/g8ctsp/late/receiver"
+	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
+	run_rendered_receiver "$OUT/g8ctsp/late/capture" "$OUT/g8ctsp/late/receiver-patch"
 	gs_teardown "$OUT/gamescope-g8ctsp"
 	GS_RUN_DIR=""
 }

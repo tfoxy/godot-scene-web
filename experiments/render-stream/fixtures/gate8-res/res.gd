@@ -11,9 +11,12 @@ extends Node
 ##
 ## The root is a plain `Node`: every resource is made in `_ready`, before the loader's `_process`
 ## arms at frame 12. The pre-arm nodes enter the tree at frame 15 (after the arm), so the capture
-## must adopt each at its first post-arm reference. Timeline: quit at 30.
+## must adopt each at its first post-arm reference. At frame 22 (FREE_FRAME) the fixture frees the
+## adopted TEX sprite and texture, the PPM emitter and the ITEM node (the capture must record them
+## freed, res-free). Timeline: quit at 30.
 
 const QUIT_DEFAULT: int = 30
+const FREE_FRAME: int = 22
 
 var _frame: int = 0
 var _quit_frame: int = QUIT_DEFAULT
@@ -23,6 +26,7 @@ var _pre_tex: ImageTexture
 var _pre_emitter: GPUParticles2D
 var _pre_item: Node2D
 var _pre_pm9: ParticleProcessMaterial
+var _sprite: Sprite2D
 
 
 func _ready() -> void:
@@ -77,7 +81,8 @@ func _process(_delta: float) -> void:
 		# Post-arm: draw the pre-arm resources. TEX draws a pre-arm texture through a post-arm item;
 		# PPM and ITEM enter the tree with their pre-arm canvas items (the pooled-node shape); PPM9
 		# gives a post-arm emitter the pre-arm process material (the emitter-9 shape).
-		var sprite := Sprite2D.new()
+		_sprite = Sprite2D.new()
+		var sprite := _sprite
 		sprite.texture = _pre_tex
 		sprite.centered = false
 		sprite.position = Vector2(40, 40)
@@ -101,6 +106,17 @@ func _process(_delta: float) -> void:
 		p9.position = Vector2(328, 40)
 		_root.add_child(p9)
 		print("[fixture] gate8-res cells added at frame %d" % _frame)
+	if _frame == FREE_FRAME:
+		# Free the adopted cells (not PPM9): the node frees the items and the particles; dropping the
+		# script's own references lets the texture and process material resources go too.
+		_sprite.queue_free()
+		_pre_emitter.queue_free()
+		_pre_item.queue_free()
+		_sprite = null
+		_pre_emitter = null
+		_pre_item = null
+		_pre_tex = null
+		print("[fixture] gate8-res cells freed at frame %d" % _frame)
 	if _frame >= _quit_frame:
 		print("[fixture] quitting frame=%d" % _frame)
 		get_tree().quit(0)

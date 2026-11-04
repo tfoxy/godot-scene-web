@@ -1,6 +1,6 @@
 {
   "schema": "render-stream-gate8-res-expected/1",
-  "doc": "Hand-derived from res.gd, not measured (README.md). Three 64x64 cells drawn only after the arm at fixture frame 12: TEX (a post-arm Sprite2D drawing a pre-arm ImageTexture), PPM (a pre-arm GPUParticles2D + ParticleProcessMaterial, detached until frame 15), ITEM (a pre-arm Node2D whose _draw draws a plain rect, detached until frame 15). The capture must adopt the pre-arm texture (G8r), the pre-arm process material (PM7) and the two pre-arm items (LATE-RES node_added) at their first post-arm reference, leaving no unknown item RIDs (residue 0) and no refused resource.",
+  "doc": "Hand-derived from res.gd, not measured (README.md). Three 64x64 cells drawn only after the arm at fixture frame 12: TEX (a post-arm Sprite2D drawing a pre-arm ImageTexture), PPM (a pre-arm GPUParticles2D + ParticleProcessMaterial, detached until frame 15), ITEM (a pre-arm Node2D whose _draw draws a plain rect, detached until frame 15). The capture must adopt the pre-arm texture (G8r), the pre-arm process material (PM7) and the two pre-arm items (LATE-RES node_added) at their first post-arm reference, leaving no unknown item RIDs (residue 0) and no refused resource. At free_frame the fixture frees them (the sprite and its texture, the emitter, the ITEM node): the capture must record at least freed_items items, freed_textures texture and freed_particles emitter gone or freed after it.",
   "arm_frame": 12,
   "quit_frame": 30,
   "textures": 1,
@@ -8,5 +8,9 @@
   "emitters": 1,
   "process_materials": 1,
   "unknown_material_keyed": 1,
+  "free_frame": 22,
+  "freed_items": 2,
+  "freed_textures": 1,
+  "freed_particles": 1,
   "cells": ["TEX", "PPM", "ITEM", "PPM9"]
 }

@@ -25,6 +25,8 @@ interface RecReport {
   } | null;
   recording_bytes?: number;
   recording_sha256?: string;
+  page_inputs?: number;
+  page_harness_inputs?: string[];
   checks?: { id: string; passed: boolean; detail: string }[];
 }
 
@@ -48,9 +50,22 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
       gating,
     });
 
+  // run-gate8.sh run_g8rec1_leg writes `live/skipped.txt` when the host never listened. That is a
+  // failure to run, not a tier skip, so it fails (gating); only the tier/remote markers skip.
+  // The runner side stays as is: seven other legs write the same `skipped.txt` at their leg dir.
   const why = skipped(join(g, leg));
   if (why !== null) {
     mk("recorder-streamed", "the leg ran", [why], "skipped", false);
+    return checks;
+  }
+  const noRun = join(g, leg, "skipped.txt");
+  if (existsSync(noRun)) {
+    mk(
+      "recorder-streamed",
+      "REC1: the client streams the live tag-scene host to its end and exports a recording",
+      [`the leg did not run: ${readFileSync(noRun, "utf8").trim()}`],
+      "skipped.txt",
+    );
     return checks;
   }
 
@@ -105,13 +120,14 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
     if (problems.length === 0) {
       const a = readFileSync(rec);
       const b = readFileSync(tap);
-      if (a.equals(b)) detail = `${a.length} bytes, identical`;
+      if (a.length === 0) problems.push("the recording and the tap are empty");
+      else if (a.equals(b)) detail = `${a.length} bytes, identical`;
       else {
         let first = 0;
         const n = Math.min(a.length, b.length);
         while (first < n && a[first] === b[first]) first++;
         problems.push(
-          `${a.length} vs ${tap.length} bytes differ first at ${first}`,
+          `${a.length} vs ${b.length} bytes differ first at ${first}`,
         );
         detail = `recording ${a.length} bytes, tap ${b.length} bytes`;
       }
@@ -127,11 +143,14 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
   // The page must be the package alone (MIR-1's rule).
   {
     const problems: string[] = [];
-    const harnessInputs = report as unknown as {
-      page_harness_inputs?: string[];
-    };
-    const n = harnessInputs.page_harness_inputs?.length ?? 0;
-    if (n !== 0) problems.push(`${n} inputs from web/gsw-receiver/`);
+    const list = report?.page_harness_inputs;
+    // The field is the (expected empty) list of gsw-receiver inputs; a report without it, or one
+    // whose bundle had no inputs at all, is no evidence.
+    const n = Array.isArray(list) ? list.length : 0;
+    if (report === null) problems.push("no client-record.json");
+    else if (!Array.isArray(list)) problems.push("report has no page_harness_inputs array");
+    else if (!((report.page_inputs ?? 0) > 0)) problems.push("report lists no bundle inputs");
+    else if (n !== 0) problems.push(`${n} inputs from web/gsw-receiver/`);
     mk(
       "page-is-package-only",
       "REC1: the page bundle imports nothing from web/gsw-receiver/",

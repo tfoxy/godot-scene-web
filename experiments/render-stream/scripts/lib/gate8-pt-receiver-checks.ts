@@ -276,7 +276,11 @@ export async function runG8ptReceivers(
     let any = false;
     let ratios: number[] = [];
     for (const leg of RECEIVERS) {
-      if (!ran(leg) || !ran("reference")) continue;
+      if (skipped(dir(leg))) continue;
+      if (!ran(leg) || !ran("reference")) {
+        lc.push(`${leg}: the leg (or the reference) did not run`);
+        continue;
+      }
       any = true;
       const { problems, rows } = await lifecycle(leg);
       lc.push(...problems);
@@ -352,7 +356,11 @@ export async function runG8ptReceivers(
     let any = false;
     const totals: Record<string, unknown> = {};
     for (const leg of RECEIVERS) {
-      if (!ran(leg)) continue;
+      if (skipped(dir(leg))) continue;
+      if (!ran(leg)) {
+        problems.push(`${leg}: the leg did not run`);
+        continue;
+      }
       any = true;
       const r = await replayOf(leg);
       totals[leg] = r.totals;
@@ -448,16 +456,19 @@ export async function runG8ptFrzp(
     }
   }
 
-  const judge = async (leg: string): Promise<{ problems: string[]; rows: Record<string, unknown> | null }> => {
+  // `problems` are lit/dark and band findings only; `missing` are absent or short shot sets (the leg
+  // was not fully observed), which are never evidence of anything.
+  const judge = async (leg: string): Promise<{ problems: string[]; missing: string[]; rows: Record<string, unknown> | null }> => {
     const got = await legShots(leg);
-    if (typeof got === "string") return { problems: [`${leg}: ${got}`], rows: null };
+    if (typeof got === "string") return { problems: [], missing: [`${leg}: ${got}`], rows: null };
     const problems: string[] = [];
+    const missing: string[] = [];
     const rows: Record<string, unknown> = {};
     for (const s of shots) {
       const ref = refCells.get(s.label);
       const img = got.get(s.label);
       if (!ref || !img) {
-        problems.push(`${leg} ${s.label}: shot missing`);
+        missing.push(`${leg} ${s.label}: shot missing`);
         continue;
       }
       const cells = frozenCells(img);
@@ -473,7 +484,7 @@ export async function runG8ptFrzp(
         }
       }
     }
-    return { problems, rows };
+    return { problems, missing, rows };
   };
 
   {
@@ -481,7 +492,7 @@ export async function runG8ptFrzp(
     if (ran("frzp/receiver")) {
       const r = await judge("frzp/receiver");
       report.receiver = r.rows;
-      problems = r.problems;
+      problems = [...r.missing, ...r.problems];
     }
     checks.push(
       check(
@@ -503,8 +514,11 @@ export async function runG8ptFrzp(
     } else {
       const r = await judge(leg);
       report.drop_events = r.rows;
+      // Only lit/dark and band findings from a FULLY observed leg count as a catch: a missing or short
+      // shot set is a failure of the evidence, not a detection of the sabotage.
       const caught = r.problems;
-      checks.push(check("frzp-catches-freeze-drop-events", "FRZ-P: the frozen seat's dropped restart/emit events fail the burst", caught.length > 0 ? [] : [`${leg} passed: the sabotage went unseen`], caught[0]));
+      const failures = r.missing.length > 0 ? r.missing : caught.length > 0 ? [] : [`${leg} passed: the sabotage went unseen`];
+      checks.push(check("frzp-catches-freeze-drop-events", "FRZ-P: the frozen seat's dropped restart/emit events fail the burst (a lit/dark or band difference on every expected shot; missing shots fail)", failures, caught[0]));
     }
   }
 }

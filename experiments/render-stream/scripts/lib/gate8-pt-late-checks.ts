@@ -237,6 +237,29 @@ const RECEIVERS = ["late/receiver", "late/receiver-patch"];
 const FAULT_RECEIVER = "fault-no-particles/receiver";
 export const LATE_LEGS = [...CAPTURES, PPM_CAPTURE, LATE_CMBT_CAPTURE, ...RECEIVERS, FAULT_RECEIVER];
 
+/**
+ * pt-late-synthetic-skip's verdict on a receiver's applied.json. The receiver counts one skip per
+ * synthetic-process-shader emitter per applied transaction (plan.rs apply_particles walks every
+ * resident emitter on every apply), and under ppm-no-shader every one of the fixture's
+ * `late.emitters` is recovered through the synthetic shader, so the exact count is
+ * `late.emitters * applied`: 10 emitters x 109 applies = 1090 on the committed run. A bare `> 0`
+ * would pass when only some emitters were skipped.
+ */
+export function ptSyntheticSkipProblems(
+  leg: string,
+  applied: Record<string, unknown> | null,
+  late: Pick<PtLate, "emitters">,
+): { problems: string[]; detail: string } {
+  const w11 = applied?.w11 as { applied?: number; particles?: { synthetic_skipped?: number } } | undefined;
+  const skipped = w11?.particles?.synthetic_skipped;
+  const n = w11?.applied;
+  if (typeof skipped !== "number" || typeof n !== "number" || !(n > 0))
+    return { problems: [`${leg}: applied.json has no w11.applied / particles.synthetic_skipped (${n}, ${skipped})`], detail: "no counters" };
+  const want = late.emitters * n;
+  const detail = `synthetic_skipped ${skipped} (want ${late.emitters} emitters x ${n} applies = ${want})`;
+  return { problems: skipped === want ? [] : [`${leg}: ${detail}`], detail };
+}
+
 export async function runG8ptLate(
   g: string,
   checkpoints: readonly { step: number; settle: number }[],
@@ -280,7 +303,10 @@ export async function runG8ptLate(
     let any = false;
     for (const leg of [...CAPTURES, PPM_CAPTURE, LATE_CMBT_CAPTURE])
       for (const sink of SINKS) {
-        if (!ran(leg)) continue;
+        if (!ran(leg)) {
+          problems.push(`${leg}/${sink}: the leg did not run`);
+          continue;
+        }
         const v = await deps.validate(join(dir(leg), sink));
         if (!v) {
           problems.push(`${leg}/${sink}: missing`);
@@ -359,10 +385,9 @@ export async function runG8ptLate(
     if (ran(leg)) {
       problems = [];
       const applied = await json(join(dir(leg), "applied.json"));
-      const particles = (applied?.w11 as { particles?: { synthetic_skipped?: number } } | undefined)?.particles;
-      const skipped = particles?.synthetic_skipped ?? 0;
-      detail = `synthetic_skipped ${skipped}`;
-      if (skipped <= 0) problems.push(`${leg}: no emitters skipped (synthetic_skipped ${skipped})`);
+      const r = ptSyntheticSkipProblems(leg, applied, late);
+      problems = r.problems;
+      detail = r.detail;
     }
     checks.push(
       check(
@@ -442,7 +467,10 @@ export async function runG8ptLate(
     const ratios: number[] = [];
     let any = false;
     for (const leg of RECEIVERS) {
-      if (!ran(leg) || !ran("reference")) continue;
+      if (!ran(leg) || !ran("reference")) {
+        lc.push(`${leg}: the leg (or the reference) did not run`);
+        continue;
+      }
       any = true;
       const { problems, rows } = await lifecycle(leg);
       lc.push(...problems);

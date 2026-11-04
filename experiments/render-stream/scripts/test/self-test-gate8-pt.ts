@@ -33,12 +33,17 @@
 //
 // Exits non-zero if any assertion fails.
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
-import { adoptionStats, PPM_DECLARED_DEFAULTS, ppmStats as readPpmStats, type PtLateTx, ptLateAdoptProblems, ptLateCmbtProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems, ppmDeclaredDefaultProblems } from "../lib/gate8-pt-late-checks";
+import { runG8ptReceivers } from "../lib/gate8-pt-receiver-checks";
+import { runG8ptPtc } from "../lib/gate8-ptc-checks";
+import { runG8w11 } from "../lib/gate8-w11-checks";
+import { adoptionStats, PPM_DECLARED_DEFAULTS, ppmStats as readPpmStats, type PtLateTx, ptLateAdoptProblems, ptLateCmbtProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems, ptSyntheticSkipProblems, runG8ptLate, ppmDeclaredDefaultProblems } from "../lib/gate8-pt-late-checks";
 import {
   particlesTotals,
   ptCoverageProblems,
@@ -820,6 +825,17 @@ async function main(): Promise<void> {
     expect(ptLateAdoptProblems(stats, [good()], late, 12).length === 0, "ptLateAdoptProblems: an honest adopted state passes");
     expect(ptLateAdoptProblems({ ...stats, emitters: 1 }, [good()], late, 12).length === 1, "ptLateAdoptProblems: a short adoption count fails");
     expect(ptLateAdoptProblems(null, [good()], late, 12).length === 1, "ptLateAdoptProblems: no adoption stats fails");
+    {
+      // pt-late-synthetic-skip: exactly emitters x applies skips (not merely > 0).
+      const ap = (applied: number | undefined, skipped: number | undefined) => ({ w11: { applied, particles: { synthetic_skipped: skipped } } });
+      expect(ptSyntheticSkipProblems("l", ap(109, 218), late).problems.length === 0, "ptSyntheticSkipProblems: emitters x applies passes");
+      expect(ptSyntheticSkipProblems("l", ap(109, 109), late).problems.length === 1, "ptSyntheticSkipProblems: only some emitters skipped (> 0 but short) fails");
+      expect(ptSyntheticSkipProblems("l", ap(109, 219), late).problems.length === 1, "ptSyntheticSkipProblems: too many skips fails");
+      expect(ptSyntheticSkipProblems("l", ap(109, 0), late).problems.length === 1, "ptSyntheticSkipProblems: zero skips fails");
+      expect(ptSyntheticSkipProblems("l", ap(109, undefined), late).problems.length === 1, "ptSyntheticSkipProblems: no counter fails");
+      expect(ptSyntheticSkipProblems("l", ap(0, 0), late).problems.length === 1, "ptSyntheticSkipProblems: zero applies (0 === 0) fails");
+      expect(ptSyntheticSkipProblems("l", null, late).problems.length === 1, "ptSyntheticSkipProblems: no applied.json fails");
+    }
     const created = good();
     created.table.set(2, ent(2, 2, null, "created"));
     expect(ptLateAdoptProblems(stats, [created], late, 12).some((p) => p.includes("origin created")), "ptLateAdoptProblems: a created entry fails");
@@ -874,6 +890,93 @@ async function main(): Promise<void> {
       adoptionStats({ stream: { gate8: { particles: { adoption: { emitters: 3 } } } } })?.emitters === 3 && adoptionStats({}) === null,
       "adoptionStats: reads stream.gate8.particles.adoption",
     );
+  }
+
+  // 9. runG8ptLate: a late leg that did not run is a problem, not a silent skip.
+  {
+    const legs = ["late/capture", "fault-no-particles/capture", "fault-ppm-no-shader/capture", "late-cmbt/capture", "late/receiver", "late/receiver-patch", "fault-no-particles/receiver", "reference"];
+    const drive = async (omit: string | null) => {
+      const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-late-"));
+      for (const l of legs) {
+        mkdirSync(join(root, l), { recursive: true });
+        if (l !== omit) writeFileSync(join(root, l, "exit-code.txt"), "0\n");
+      }
+      const checks: Awaited<ReturnType<typeof ptLateChecks>> = [];
+      const px = { regions: {}, background: [0, 0] as [number, number], tail_frames: [], dark: {}, coverage_band: 2 };
+      const late = { arm_frame: 12, emitters: 10, process_materials: 10, subemitter: "H_SUB", coverage_from_frame: 46 };
+      const lateShader = { amount: 14, seed: 1, frame: 15, key: {} };
+      const deps = { validate: async () => ["ok", "ok"] as [string, string], trace: async () => null, amountOf: () => undefined };
+      try {
+        await runG8ptLate(root, [{ step: 0, settle: 20 }], px, late, lateShader, deps, checks, {});
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+      return checks;
+    };
+    type ptLateChecks = () => Promise<import("../lib/gate8-adopt-checks").G8aCheck[]>;
+    const full = await drive(null);
+    expect(full.find((c) => c.id === "pt-late-validate")?.passed === true, "runG8ptLate: pt-late-validate passes when every capture ran");
+    const noLate = await drive("late/capture");
+    const v = noLate.find((c) => c.id === "pt-late-validate");
+    expect(v !== undefined && !v.passed && /did not run/.test(v.detail ?? ""), "runG8ptLate: pt-late-validate fails when a capture leg did not run", v?.detail);
+    const noRecv = await drive("late/receiver-patch");
+    const lc = noRecv.find((c) => c.id === "pt-late-lifecycle");
+    expect(lc !== undefined && !lc.passed && /did not run/.test(lc.detail ?? ""), "runG8ptLate: pt-late-lifecycle fails when one receiver leg did not run", lc?.detail);
+  }
+
+  // 10. A sink a validator found missing is a named problem (ptc-validate, w11's sabotage checks),
+  // not a silent skip behind the sinks that exist.
+  {
+    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-sinks-"));
+    try {
+      const put = (rel: string, c: string) => {
+        mkdirSync(dirname(join(root, rel)), { recursive: true });
+        writeFileSync(join(root, rel), c);
+      };
+      for (const l of ["ptc/reference-gl", "ptc/reference-fwdplus", "ptc/capture", "ptc/receiver"]) put(`${l}/exit-code.txt`, "0\n");
+      put("ptc/capture/stdout.log", "[fixture] rendering_method=forward_plus\n");
+      const ptcChecks: import("../lib/gate8-adopt-checks").G8aCheck[] = [];
+      await runG8ptPtc(
+        root,
+        { validate: async (path) => (path.endsWith("recording-patch.rs12") ? null : (["ok", "ok"] as [string, string])) },
+        ptcChecks,
+        {},
+      );
+      const pv = ptcChecks.find((c) => c.id === "ptc-validate");
+      expect(pv !== undefined && !pv.passed && /recording-patch\.rs12: missing/.test(pv.detail ?? ""), "ptc-validate: one sink missing fails and names it", pv?.detail);
+      const ptcOk: typeof ptcChecks = [];
+      await runG8ptPtc(root, { validate: async () => ["ok", "ok"] as [string, string] }, ptcOk, {});
+      expect(ptcOk.find((c) => c.id === "ptc-validate")?.passed === true, "ptc-validate: both sinks present passes");
+
+      // w11: keep-carried-caught judges both sinks; only recording.rs11 exists.
+      put("g8w11/scene/sabotage-keep-carried/capture/exit-code.txt", "0\n");
+      put("g8w11/scene/sabotage-keep-carried/capture/recording.rs11", "not a recording");
+      const w = await runG8w11(root);
+      const kc = w.checks.find((c) => c.id === "keep-carried-caught");
+      expect(kc !== undefined && !kc.passed && /recording-patch\.rs11: missing/.test(kc.detail ?? ""), "keep-carried-caught: a missing sink is named, not skipped", kc?.detail);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // 11. runG8ptReceivers: a receiver leg that did not run fails lifecycle and replay (not skipped).
+  {
+    const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-recv-"));
+    try {
+      for (const l of ["reference", "receiver", "receiver-patch"]) {
+        mkdirSync(join(root, l), { recursive: true });
+        if (l !== "receiver-patch") writeFileSync(join(root, l, "exit-code.txt"), "0\n");
+      }
+      const px = { regions: {}, background: [0, 0] as [number, number], tail_frames: [], dark: {}, coverage_band: 2 };
+      const checks: import("../lib/gate8-adopt-checks").G8aCheck[] = [];
+      await runG8ptReceivers(root, [], px, null, checks, {});
+      for (const id of ["pt-lifecycle", "pt-replay"]) {
+        const c = checks.find((x) => x.id === id);
+        expect(c !== undefined && !c.passed && /did not run/.test(c.detail ?? ""), `runG8ptReceivers: ${id} fails when receiver-patch did not run`, c?.detail);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 
   console.log(`self-test-gate8-pt: ${assertions - failures}/${assertions} assertions passed`);

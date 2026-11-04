@@ -527,7 +527,10 @@ export async function runG8w11(
     let any = false;
     for (const sink of sinks) {
       const v = await validateBoth(join(legDir(leg), sink));
-      if (!v) continue;
+      if (!v) {
+        problems.push(`${sink}: missing`);
+        continue;
+      }
       any = true;
       if (!v[0].startsWith(code)) problems.push(`${sink}: TS says ${v[0]}`);
       if (!v[1].startsWith(code))

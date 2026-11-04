@@ -59,7 +59,7 @@ const OUT_DIR = join(
   "artifacts/render-stream/gate7/g7x/self-test-rs-core",
 );
 
-type Version = 2 | 3 | 4 | 5 | 6;
+type Version = 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10;
 
 interface NativeLine {
   index?: number;
@@ -120,8 +120,21 @@ function locateCli(explicit: string | null): string {
 function versionOf(data: Uint8Array): Version | null {
   const head = [0x47, 0x52, 0x53];
   if (data.length < 8 || head.some((b, i) => data[i] !== b)) return null;
-  const v = data[3] - 0x30;
-  return v >= 2 && v <= 6 ? (v as Version) : null;
+  return versionOfMagicByte(data[3]);
+}
+
+// Byte 3 of the magic is the stream version as one uppercase hex digit from /10 on ('8' is 8,
+// 'A' is 10). The legs that record at /8 and /10 (gate 5.5 screen, vertex and time) land in a
+// source run beside the /6 ones, so the recordings this test sees are /2../6 and /8../10.
+// /7 is live-transport-only, and /11+ has no source-run capture here.
+function versionOfMagicByte(byte: number): Version | null {
+  const v =
+    byte >= 0x30 && byte <= 0x39
+      ? byte - 0x30
+      : byte >= 0x41 && byte <= 0x46
+        ? byte - 0x41 + 10
+        : -1;
+  return (v >= 2 && v <= 6) || (v >= 8 && v <= 10) ? (v as Version) : null;
 }
 
 // One element of resolveRecording(data, version).transactions, built exactly as it builds it.
@@ -129,6 +142,7 @@ function resolvedTransaction(
   meta: Parameters<typeof applyTransaction>[1],
   state: ResolvedState,
   version: Version,
+  blocks: number[][],
 ): ResolvedTransaction {
   return {
     seq: meta.seq,
@@ -140,6 +154,9 @@ function resolvedTransaction(
       unsupported: meta.unsupported,
       ...(meta.unknown_items !== undefined
         ? { unknown_items: meta.unknown_items }
+        : {}),
+      ...(meta.shader_time !== undefined
+        ? { shader_time: blocks[5][meta.shader_time.f] }
         : {}),
       default_texture_filter: meta.default_texture_filter,
       default_texture_repeat: meta.default_texture_repeat,
@@ -247,7 +264,7 @@ function checkInput(
   const data = new Uint8Array(readFileSync(recording));
   const version = versionOf(data);
   if (version === null) {
-    expect(`${name}: recording has a render-stream/2..6 magic`, false);
+    expect(`${name}: recording has a render-stream/2..6 or /8../10 magic`, false);
     return;
   }
   const split = splitRecords(data, version);
@@ -309,7 +326,12 @@ function checkInput(
     if (meta.type !== "transaction") continue;
     state = applyTransaction(state, meta, decoded.record.blocks as number[][]);
     transactions++;
-    const text = JSON.stringify(resolvedTransaction(meta, state, version));
+    const text = JSON.stringify(resolvedTransaction(
+        meta,
+        state,
+        version,
+        decoded.record.blocks as number[][],
+      ));
     const stateSha = sha256Hex(text);
     const unsupportedEqual =
       JSON.stringify(meta.unsupported) ===
@@ -360,7 +382,30 @@ function checkInput(
   );
 }
 
+// The magic gate: /8 and /10 source recordings (gate 5.5 screen, vertex, time) are accepted,
+// anything that is not a known GRS<version> header is still refused.
+function magicCases(): void {
+  const magic = (b3: number, head = [0x47, 0x52, 0x53]) =>
+    new Uint8Array([...head, b3, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const cases: [string, Uint8Array, number | null][] = [
+    ["GRS6", magic(0x36), 6],
+    ["GRS8 (screen, vertex)", magic(0x38), 8],
+    ["GRSA (time)", magic(0x41), 10],
+    ["GRS7 (live-transport-only)", magic(0x37), null],
+    ["GRSZ", magic(0x5a), null],
+    ["garbage magic", magic(0x36, [0x00, 0x01, 0x02]), null],
+    ["truncated", new Uint8Array([0x47, 0x52, 0x53, 0x38]), null],
+  ];
+  for (const [name, bytes, want] of cases)
+    expect(
+      `magic: ${name} is ${want === null ? "refused" : `/${want}`}`,
+      versionOf(bytes) === want,
+      `got ${versionOf(bytes)}`,
+    );
+}
+
 function main(): void {
+  magicCases();
   const args = parseArgs(process.argv.slice(2));
   if (args.inputs === null && !args.goldens) {
     console.error(

@@ -527,7 +527,7 @@ interface ProbeLine {
   draws: number;
 }
 
-async function shotPath(dir: string, step: number): Promise<string> {
+export async function shotPath(dir: string, step: number): Promise<string> {
   const seqs = await readText(join(dir, "shot-seqs.txt"));
   if (seqs === undefined) return join(dir, "shots", `step-${step}.png`);
   return join(dir, "shots", `seq-${seqs.trim().split(",")[step]}.png`);

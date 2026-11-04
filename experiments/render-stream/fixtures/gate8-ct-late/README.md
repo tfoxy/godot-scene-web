@@ -41,6 +41,8 @@ seed, every channel in 10..239, never white), drawn only through a CanvasTexture
 | 1..11 | the items draw, unarmed (nothing captured) |
 | 12 | the loader arms the capture (`GRC_ADOPT=arm`): the walk adopts the items, `queue_redraw` re-sends the draws, and each CanvasTexture is adopted at its first post-arm draw from the item's node |
 | 17 | checkpoint 0: the reference saves `step-0.png`; the receivers shoot the sequence the step log maps to this settle frame |
+| 22 | SPRITE's `texture` is set to null: the CanvasTexture and its diffuse are freed (`FREE_FRAME`) |
+| 26 | checkpoint 1: the SPRITE cell is empty (the reference and both receivers agree) |
 | 30 | quit |
 
 The capture must run on a rendered host (a private 640x360 gamescope): a headless host's dummy
@@ -57,5 +59,7 @@ private 640x360 gamescope.
   CanvasTexture stay unknown-texture.
 - `ct-late-diffuse-uploaded` (GAP2-RX): each receiver uploads every adopted canvas texture's
   diffuse as an image, although no command names the diffuse itself.
+- `ct-late-free`: after the free at frame 22 the capture's table drops SPRITE's canvas texture and
+  its diffuse and each receiver's transactions at or after the free release a texture.
 - `ct-late-reference` (GAP2-RX): each receiver (full and patch sinks) equals the unarmed reference
   exactly at the checkpoint.
