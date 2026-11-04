@@ -6,9 +6,11 @@
 // channels while it is still pre-arm. The receiver legs (full and patch sinks) are judged against the unarmed reference like g8ctl's.
 //
 //   ctsp-legs                every leg that ran exited 0
-//   ct-spine-adopt           the late capture adopts the runtime CanvasTexture from the hooks'
-//                            registry (origin adopted, status ok, diffuse an ok image), nothing
-//                            refused, no unknown-texture draw
+//   ct-spine-adopt           the late capture adopts the runtime CanvasTexture from the registry
+//                            (LAR1: canvas_registry; origin adopted, status ok, diffuse an ok
+//                            image), nothing refused, no unknown-texture draw
+//   ct-spine-adopt-named     LAR1, for F2: the adopted canvas texture is named by a command in the
+//                            transaction that first carries it (the spine-godot shape)
 //   ct-spine-fault           under GRC_ADOPT_FAULT=no-resources nothing is adopted and the draw
 //                            stays unknown-texture (the pre-LATE-SPINE capture)
 //   ct-spine-diffuse-uploaded  each receiver uploads the adopted diffuse
@@ -29,6 +31,7 @@ import {
 import {
   adoptedDiffuses,
   adoptionResources,
+  adoptNamedProblems,
   adoptProblems,
   type CaptureResult,
   diffuseUploadProblems,
@@ -120,13 +123,42 @@ export async function runG8ctsp(
         expected,
         await validateSinkProblems(dir(leg)),
       );
+      if (res && res.canvas_registry !== expected.canvas_count)
+        problems.push(
+          `${res.canvas_registry} canvas textures from the registry, ${expected.canvas_count} expected`,
+        );
       if (res)
-        detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
+        detail = `adopted ${res.textures_canvas} canvas textures, ${res.canvas_registry} from the registry (refused ${res.textures_refused})`;
     }
     checks.push(
       check(
         "ct-spine-adopt",
-        "LATE-SPINE: the late capture adopts the runtime CanvasTexture from the canvas_texture_* hooks' registry (origin adopted, status ok, its diffuse an ok image), nothing refused, no unknown-texture draw",
+        "LATE-SPINE, LAR1: the late capture adopts the runtime CanvasTexture from the registry's recorded channels (origin adopted, status ok, its diffuse an ok image), nothing refused, no unknown-texture draw",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // ct-spine-adopt-named (LAR1, for F2)
+  {
+    const leg = "late/capture";
+    let problems: string[];
+    let detail: string | undefined;
+    if (!ran(leg)) {
+      problems = ["late/capture did not run"];
+    } else {
+      const r = adoptNamedProblems(
+        (await loadRecording(dir(leg), 8)).rec,
+        expected.canvas_count,
+      );
+      problems = r.problems;
+      detail = `${r.adopted} adopted canvas textures named`;
+    }
+    checks.push(
+      check(
+        "ct-spine-adopt-named",
+        "LAR1 (for F2): the adopted canvas texture is named by a command in the transaction that first carries it",
         problems,
         detail,
       ),

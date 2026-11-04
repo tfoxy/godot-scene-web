@@ -1,9 +1,12 @@
 extends Node
-## Gate 8 late-arm CanvasTexture autoload (`GrcLoader`, see project.godot): loads the capture
-## GDExtension in `_process` at fixture frame K = RS_FIXTURE_ARM_FRAME (default 12), after the main
-## scene's `_ready` built every runtime CanvasTexture and item (RS_FIXTURE_ARM=late). The capture
-## adopts them from the node map under GRC_ADOPT=arm (RT-CTX). `GRC_EXTENSION` unset: nothing is
-## loaded (no `reference` leg here -- the check is capture-only).
+## Gate 8 late-arm CanvasTexture autoload (`GrcLoader`, see project.godot). RS_FIXTURE_ARM picks
+## when the capture GDExtension loads:
+##   late (the default): in `_process` at fixture frame K = RS_FIXTURE_ARM_FRAME (default 12), after
+##     the main scene's `_ready` built every CanvasTexture and item (load-late, the residual path);
+##   deferred (LAR1): in `_enter_tree`, before the main scene exists, as a born arm loads; the
+##     runner defers the arm with GRC_ARM_DEFER_FRAMES, so every CanvasTexture is created under the
+##     hooks and recorded by the registry before the arm.
+## `GRC_EXTENSION` unset: nothing is loaded (the `reference` leg).
 
 const ARM_FRAME_DEFAULT: int = 12
 
@@ -13,6 +16,12 @@ var _armed: bool = false
 
 
 func _enter_tree() -> void:
+	var mode: String = OS.get_environment("RS_FIXTURE_ARM").strip_edges() if OS.has_environment("RS_FIXTURE_ARM") else "late"
+	if mode == "deferred":
+		_load("deferred enter_tree")
+		return
+	if mode != "late":
+		printerr("[fixture] error: RS_FIXTURE_ARM must be late or deferred (got %s)" % JSON.stringify(mode))
 	if OS.has_environment("RS_FIXTURE_ARM_FRAME"):
 		var text: String = OS.get_environment("RS_FIXTURE_ARM_FRAME").strip_edges()
 		if text.is_valid_int() and text.to_int() >= 8 and text.to_int() < 20:

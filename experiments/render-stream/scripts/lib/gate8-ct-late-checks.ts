@@ -1,16 +1,26 @@
-// Gate 8 g8ctl checks (RT-CTX, results/p3/late-arm.md "Deferred"; GAP2-RX, results/p3/gap2-rx.md):
-// a runtime-built CanvasTexture (built in code, no .tres) adopted at a late arm from the drawing
-// item's node's `texture` (the node map), since the RenderingServer has no canvas-texture channel
-// getter. The fixture is fixtures/gate8-ct-late. RT-CTX judged the capture only; GAP2-RX adds the
-// receiver side: the adopted CanvasTexture's diffuse must be made resident and drawn, exactly as
-// P3-CT's g8c proved for an arm-at-init CanvasTexture.
+// Gate 8 g8ctl checks (RT-CTX, results/p3/late-arm.md "Deferred"; GAP2-RX, results/p3/gap2-rx.md;
+// LAR1, protocol/late-arm-registry-design.md): CanvasTextures adopted at a late arm, three built in
+// code (no .tres) and one cached `.tres`. The fixture is fixtures/gate8-ct-late. Since LAR1 the
+// `deferred` leg (the capture loaded before the scene, the arm deferred to frame 12) adopts every
+// CanvasTexture from the registry's recorded channels, and its receivers are judged against the
+// unarmed reference; the `late` leg (loaded at frame 12, load-late, F1) judges the residual path:
+// the cached `.tres` adopted through the resource cache (PM9), the runtime ones refused, typed.
 //
 //   ctl-legs                every leg that ran exited 0
-//   ct-late-adopt           the late capture adopts every runtime CanvasTexture from the node map
-//                           (origin adopted, status ok, diffuse an ok image), nothing refused, no
-//                           unknown-texture
+//   ct-late-adopt           the deferred capture adopts every CanvasTexture (origin adopted, status
+//                           ok, diffuse an ok image), nothing refused, no unknown-texture
+//   ctl-registry-source     LAR1: on deferred every adopted CanvasTexture came from the registry
+//                           (canvas_registry == canvas_count, canvas_residual 0), and registry.json
+//                           recorded them
+//   ct-adopt-named          LAR1, for F2 (LAR8): every adopted canvas texture is named by a command
+//                           in the transaction that first carries it (deferred and late)
+//   ct-late-residual        LAR1 (F1): the late capture adopts the cached `.tres` from the resource
+//                           cache and refuses the runtime CanvasTextures, every refusal typed
+//                           no-image, their draws unknown-texture
 //   ct-late-fault           under GRC_ADOPT_FAULT=no-resources nothing is adopted and the draws
-//                           through a CanvasTexture stay unknown-texture (the pre-RT-CTX capture)
+//                           through a CanvasTexture stay unknown-texture (late, unchanged)
+//   sabotage-registry-off   LAR1: the deferred capture under GRC_ADOPT_FAULT=registry-off fails
+//                           ctl-registry-source and ct-late-adopt
 //   ct-late-diffuse-uploaded  each receiver makes every adopted canvas texture's diffuse resident
 //                           (an image upload), although no command names the diffuse itself
 //   ct-late-reference       each receiver equals the unarmed reference exactly at every checkpoint,
@@ -19,9 +29,10 @@
 //                           it (and its diffuse) and a later receiver transaction releases a texture
 //
 // The judgements over resolved data are pure exported functions (adoptProblems, faultProblems,
-// freeProblems, diffuseUploadProblems, releaseProblems, regionInkProblems) that
-// test/self-test-gate8-ct-late.ts drives on synthetic ResolvedRecordings; the test encoder cannot emit
-// /8 adopted canvas-texture entries.
+// registrySourceProblems, adoptNamedProblems, residualProblems, freeProblems,
+// diffuseUploadProblems, releaseProblems, regionInkProblems) that test/self-test-gate8-ct-late.ts
+// drives on synthetic ResolvedRecordings; the test encoder cannot emit /8 adopted canvas-texture
+// entries.
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -53,6 +64,15 @@ export interface G8ctlExpected {
   /** the frame the fixture frees a CanvasTexture at (after the arm) and how many it frees */
   free_frame?: number;
   freed_canvas_count?: number;
+  /** LAR1 (F1): the late leg's residual path -- canvas textures adopted from the resource cache,
+   * and the typed no-image refusals (the runtime-built cells, whose draws stay unknown-texture) */
+  late?: LateResidualExpectation;
+}
+
+export interface LateResidualExpectation {
+  canvas_residual: number;
+  refused_no_image: number;
+  unknown_cells?: string[];
 }
 
 export interface G8ctlReport {
@@ -65,13 +85,15 @@ const LEGS = [
   "import/fixture",
   "import/receiver",
   "reference",
+  "deferred/capture",
   "late/capture",
   "fault-no-resources/capture",
-  "late/receiver",
-  "late/receiver-patch",
+  "sabotage-registry-off/capture",
+  "deferred/receiver",
+  "deferred/receiver-patch",
 ];
 
-const RECEIVERS = ["late/receiver", "late/receiver-patch"];
+const RECEIVERS = ["deferred/receiver", "deferred/receiver-patch"];
 
 export interface CaptureResult {
   stream?: {
@@ -212,6 +234,149 @@ export function adoptProblems(
       problems.push(`${unknown} unknown-texture commands over the recording`);
   }
   problems.push(...sinkProblems);
+  return problems;
+}
+
+/** registry.json's canvas texture family (only what ctl-registry-source reads). */
+export interface RegistryEvidence {
+  enabled?: boolean;
+  fault?: string;
+  families?: Record<string, { creates?: number } | undefined>;
+}
+
+/** ctl-registry-source (LAR1): every adopted canvas texture came from the registry -- the capture
+ * adopted `canvasCount`, all of them `canvas_registry`, none through the residual path, nothing
+ * refused -- and registry.json shows a recording registry that saw at least that many
+ * CanvasTexture creates. */
+export function registrySourceProblems(
+  res: Record<string, number> | undefined,
+  reg: RegistryEvidence | undefined,
+  canvasCount: number,
+): string[] {
+  const problems: string[] = [];
+  if (!(canvasCount > 0))
+    problems.push(`expected canvas_count ${canvasCount} is not positive`);
+  if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+  else {
+    if (res.canvas_registry === undefined)
+      problems.push("no canvas_registry counter (pre-LAR1 capture)");
+    else if (res.canvas_registry !== canvasCount)
+      problems.push(
+        `${res.canvas_registry} canvas textures from the registry, ${canvasCount} expected`,
+      );
+    if ((res.canvas_residual ?? 0) !== 0)
+      problems.push(
+        `${res.canvas_residual} canvas textures through the residual path`,
+      );
+    if ((res.textures_canvas ?? 0) !== canvasCount)
+      problems.push(
+        `adopted ${res.textures_canvas} canvas textures, ${canvasCount} expected`,
+      );
+    if ((res.textures_refused ?? 0) !== 0)
+      problems.push(`refused ${res.textures_refused}`);
+  }
+  if (!reg) problems.push("no evidence/registry.json");
+  else {
+    if (reg.enabled !== true)
+      problems.push(`registry not recording (fault ${reg.fault})`);
+    const creates = reg.families?.canvas_texture?.creates ?? 0;
+    if (creates < canvasCount)
+      problems.push(
+        `registry.json: ${creates} canvas texture creates, at least ${canvasCount} expected`,
+      );
+  }
+  return problems;
+}
+
+/** The texture ids a command names (its `tex`). */
+function commandTexture(c: unknown): number | undefined {
+  const t = (c as { tex?: unknown }).tex;
+  return typeof t === "number" ? t : undefined;
+}
+
+/** ct-adopt-named (LAR1, for F2): every adopted canvas texture is named by a command (`tex`) in the
+ * transaction that first carries it, so a receiver needs no "adopted names its diffuse" shortcut
+ * (GAP2-RX) to make its diffuse resident. At least `minAdopted` must be adopted. */
+export function adoptNamedProblems(
+  rec: ResolvedRecording | undefined,
+  minAdopted: number,
+): { problems: string[]; adopted: number } {
+  if (!rec) return { problems: ["no recording"], adopted: 0 };
+  const problems: string[] = [];
+  const seen = new Set<number>();
+  for (const t of rec.transactions) {
+    const named = new Set<number>();
+    for (const it of t.state.items)
+      for (const c of it.commands) {
+        const id = commandTexture(c);
+        if (id !== undefined) named.add(id);
+      }
+    for (const x of t.state.textures) {
+      if (x.kind !== "canvas" || x.origin !== "adopted" || seen.has(x.id))
+        continue;
+      seen.add(x.id);
+      if (!named.has(x.id))
+        problems.push(
+          `canvas ${x.id}: first carried at seq ${t.seq} (frame ${t.frame}) with no command naming it`,
+        );
+    }
+  }
+  if (seen.size < minAdopted)
+    problems.push(
+      `${seen.size} adopted canvas textures, at least ${minAdopted} expected`,
+    );
+  return { problems, adopted: seen.size };
+}
+
+/** ct-late-residual (LAR1, F1): the late capture -- loaded after every CanvasTexture exists, so the
+ * registry holds none -- adopts exactly `late.canvas_residual` canvas textures, all through the
+ * residual path (the resource cache), and refuses `late.refused_no_image`, every refusal typed
+ * no-image; the refused draws stay unknown-texture, and the last state holds the adopted ones. */
+export function residualProblems(
+  res: Record<string, number> | undefined,
+  rec: { rec?: ResolvedRecording; error?: string },
+  late: LateResidualExpectation | undefined,
+): string[] {
+  if (!late) return ["expected.late is missing"];
+  const problems: string[] = [];
+  if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+  else {
+    if (res.canvas_residual !== late.canvas_residual)
+      problems.push(
+        `${res.canvas_residual} canvas textures through the residual path, ${late.canvas_residual} expected`,
+      );
+    if ((res.canvas_registry ?? 0) !== 0)
+      problems.push(`${res.canvas_registry} canvas textures from the registry`);
+    if ((res.textures_canvas ?? 0) !== late.canvas_residual)
+      problems.push(
+        `adopted ${res.textures_canvas} canvas textures, ${late.canvas_residual} expected`,
+      );
+    if (res.refused_no_image !== late.refused_no_image)
+      problems.push(
+        `${res.refused_no_image} no-image refusals, ${late.refused_no_image} expected`,
+      );
+    const typed = (res.refused_no_image ?? 0) + (res.refused_canvas_empty ?? 0);
+    if ((res.textures_refused ?? 0) !== typed)
+      problems.push(
+        `${res.textures_refused} textures refused, only ${typed} of them typed`,
+      );
+  }
+  if (!rec.rec) problems.push(rec.error ?? "no recording");
+  else {
+    const last = rec.rec.transactions.at(-1);
+    const canvases = last
+      ? last.state.textures.filter(
+          (x) =>
+            x.kind === "canvas" && x.origin === "adopted" && x.status === "ok",
+        ).length
+      : 0;
+    if (canvases !== late.canvas_residual)
+      problems.push(
+        `${canvases} adopted ok canvas textures in the last state, ${late.canvas_residual} expected`,
+      );
+    if (late.refused_no_image > 0 && unknownTextureCount(rec.rec) === 0)
+      problems.push("no unknown-texture command for the refused CanvasTextures");
+  }
   return problems;
 }
 
@@ -442,9 +607,12 @@ export async function runG8ctl(
   const checks: G8aCheck[] = [];
   const report: G8ctlReport = { legs: {}, pixels: {}, diffuses: null };
   const dir = (leg: string) => join(g, leg);
-  const ran = (leg: string) => existsSync(join(dir(leg), "exit-code.txt"));
+  const ran = (leg: string) =>
+    existsSync(join(dir(leg), "exit-code.txt")) && skipped(dir(leg)) === null;
   const result = async (leg: string) =>
     readJson<CaptureResult>(join(dir(leg), "evidence", "result.json"));
+  const registry = async (leg: string) =>
+    readJson<RegistryEvidence>(join(dir(leg), "evidence", "registry.json"));
 
   // ctl-legs
   {
@@ -462,20 +630,18 @@ export async function runG8ctl(
     checks.push(
       check(
         "ctl-legs",
-        "RT-CTX: every g8ctl leg that ran exited 0",
+        "every g8ctl leg that ran exited 0",
         any ? problems : null,
       ),
     );
   }
 
-  // ct-late-adopt
+  // ct-late-adopt (LAR1: on deferred)
   {
-    const leg = "late/capture";
-    let problems: string[];
+    const leg = "deferred/capture";
+    let problems: string[] | null = null;
     let detail: string | undefined;
-    if (!ran(leg)) {
-      problems = ["late/capture did not run"];
-    } else {
+    if (ran(leg)) {
       const res = adoptionResources(await result(leg));
       problems = adoptProblems(
         res,
@@ -486,10 +652,95 @@ export async function runG8ctl(
       if (res)
         detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
     }
+    if (problems === null) problems = [`${leg} did not run`];
     checks.push(
       check(
         "ct-late-adopt",
-        "RT-CTX: the late capture adopts every runtime CanvasTexture from the drawing item's node (origin adopted, status ok, its diffuse an ok image), nothing refused, no unknown-texture draw",
+        "LAR1: the deferred capture (loaded before the scene, armed at frame 12) adopts every CanvasTexture, runtime-built and cached (origin adopted, status ok, its diffuse an ok image), nothing refused, no unknown-texture draw",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // ctl-registry-source (LAR1)
+  {
+    const leg = "deferred/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran(leg)) {
+      const res = adoptionResources(await result(leg));
+      problems = registrySourceProblems(
+        res,
+        await registry(leg),
+        expected.canvas_count,
+      );
+      if (res)
+        detail = `${res.canvas_registry} from the registry, ${res.canvas_residual} residual`;
+    }
+    if (problems === null) problems = [`${leg} did not run`];
+    checks.push(
+      check(
+        "ctl-registry-source",
+        "LAR1: on deferred every adopted CanvasTexture came from the registry's recorded channels (canvas_registry == canvas_count, canvas_residual 0, nothing refused) and registry.json recorded their creates",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // ct-adopt-named (LAR1, for F2): deferred (every cell) and late (the cached one)
+  {
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran("deferred/capture") && ran("late/capture")) {
+      const d = adoptNamedProblems(
+        (await loadRecording(dir("deferred/capture"), 8)).rec,
+        expected.canvas_count,
+      );
+      const l = adoptNamedProblems(
+        (await loadRecording(dir("late/capture"), 8)).rec,
+        expected.late?.canvas_residual ?? 1,
+      );
+      problems = [
+        ...d.problems.map((x) => `deferred: ${x}`),
+        ...l.problems.map((x) => `late: ${x}`),
+      ];
+      detail = `deferred ${d.adopted}, late ${l.adopted} adopted canvas textures named`;
+    }
+    if (problems === null)
+      problems = ["deferred/capture or late/capture did not run"];
+    checks.push(
+      check(
+        "ct-adopt-named",
+        "LAR1 (for F2): every adopted canvas texture is named by a command in the transaction that first carries it, on deferred and late",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // ct-late-residual (LAR1, F1)
+  {
+    const leg = "late/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran(leg)) {
+      const res = adoptionResources(await result(leg));
+      problems = residualProblems(
+        res,
+        await loadRecording(dir(leg), 8),
+        expected.late,
+      );
+      problems.push(...(await validateSinkProblems(dir(leg))));
+      if (res)
+        detail = `${res.canvas_residual} residual (PM9), ${res.refused_no_image} refused no-image of ${res.textures_refused}`;
+    }
+    if (problems === null) problems = [`${leg} did not run`];
+    checks.push(
+      check(
+        "ct-late-residual",
+        "LAR1 (F1): the late capture (loaded after every CanvasTexture exists) adopts the cached .tres through the resource cache (PM9) and refuses the runtime-built CanvasTextures, every refusal typed no-image, their draws unknown-texture",
         problems,
         detail,
       ),
@@ -499,27 +750,58 @@ export async function runG8ctl(
   // ct-late-fault
   {
     const leg = "fault-no-resources/capture";
-    let problems: string[];
-    if (!ran(leg)) {
-      problems = ["fault-no-resources/capture did not run"];
-    } else {
+    let problems: string[] | null = null;
+    if (ran(leg)) {
       problems = faultProblems(
         adoptionResources(await result(leg)),
         await loadRecording(dir(leg), 8),
         await validateSinkProblems(dir(leg)),
       );
     }
+    if (problems === null) problems = [`${leg} did not run`];
     checks.push(
       check(
         "ct-late-fault",
-        "RT-CTX: under GRC_ADOPT_FAULT=no-resources no CanvasTexture is adopted and the draws through one stay unknown-texture (the pre-RT-CTX capture)",
+        "under GRC_ADOPT_FAULT=no-resources (late) no CanvasTexture is adopted and the draws through one stay unknown-texture",
         problems,
       ),
     );
   }
 
+  // sabotage-registry-off (LAR1)
+  {
+    const leg = "sabotage-registry-off/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran(leg)) {
+      problems = [];
+      const res = adoptionResources(await result(leg));
+      const reg = await registry(leg);
+      const rec = await loadRecording(dir(leg), 8);
+      // The sabotage's own evidence must exist, or both checks would fail vacuously.
+      if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+      if (reg?.fault !== "registry-off")
+        problems.push(`its registry.json names fault ${reg?.fault}`);
+      if (!rec.rec) problems.push(rec.error ?? "no recording");
+      const source = registrySourceProblems(res, reg, expected.canvas_count);
+      const adopt = adoptProblems(res, rec, expected, []);
+      if (source.length === 0) problems.push("ctl-registry-source did not fail");
+      if (adopt.length === 0) problems.push("ct-late-adopt did not fail");
+      detail = `ctl-registry-source ${source.length} problems, ct-late-adopt ${adopt.length}`;
+    }
+    if (problems === null) problems = [`${leg} did not run`];
+    checks.push(
+      check(
+        "sabotage-registry-off",
+        "LAR1: the deferred capture under GRC_ADOPT_FAULT=registry-off (the registry records nothing, so the deferred leg is a load-late one) fails ctl-registry-source and ct-late-adopt",
+        problems,
+        detail,
+      ),
+    );
+  }
+
   // --- GAP2-RX: the receiver side ----------------------------------------------------------------
-  const cap = await loadRecording(dir("late/capture"), 8);
+  const cap = await loadRecording(dir("deferred/capture"), 8);
   const diffuses = cap.rec ? adoptedDiffuses(cap.rec) : [];
   report.diffuses = diffuses.length > 0 ? diffuses : null;
 
@@ -567,7 +849,7 @@ export async function runG8ctl(
   // ct-late-free
   {
     let problems: string[] | null = null;
-    if (ran("late/capture") && RECEIVERS.every((l) => ran(l))) {
+    if (ran("deferred/capture") && RECEIVERS.every((l) => ran(l))) {
       problems = freeProblems(cap.rec, expected);
       for (const l of RECEIVERS) {
         const applied = await readJson<{ transactions?: unknown }>(

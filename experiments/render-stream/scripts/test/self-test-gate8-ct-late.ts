@@ -17,13 +17,16 @@ import sharp from "../../../../packages/test-harness/node_modules/sharp/lib/inde
 
 import {
   adoptedDiffuses,
+  adoptNamedProblems,
   adoptProblems,
   diffuseUploadProblems,
   faultProblems,
   freeProblems,
   type G8ctlExpected,
   referenceProblems,
+  registrySourceProblems,
   releaseProblems,
+  residualProblems,
   runG8ctl,
 } from "../lib/gate8-ct-late-checks";
 import type { ResolvedRecording } from "../lib/render-stream-2";
@@ -249,6 +252,201 @@ expect(
   adoptProblems(RES, OKREC, { ...EXPECTED, canvas_count: 0 }, []).length > 0,
   "adopt: a zero expected count fails",
 );
+
+// ---- LAR1: registrySourceProblems -------------------------------------------------------------
+{
+  const res = {
+    textures_canvas: 3,
+    canvas_registry: 3,
+    canvas_residual: 0,
+    textures_refused: 0,
+  };
+  const reg = {
+    enabled: true,
+    fault: "none",
+    families: { canvas_texture: { creates: 3 } },
+  };
+  expect(
+    registrySourceProblems(res, reg, 3).length === 0,
+    "source: every canvas texture from the registry passes",
+  );
+  expect(
+    registrySourceProblems({ ...res, canvas_registry: 2, canvas_residual: 1 }, reg, 3)
+      .length > 0,
+    "source: one through the residual path fails",
+  );
+  expect(
+    registrySourceProblems(
+      { textures_canvas: 3, textures_refused: 0 },
+      reg,
+      3,
+    ).length > 0,
+    "source: a pre-LAR1 capture (no canvas_registry) fails",
+  );
+  expect(
+    registrySourceProblems({ ...res, textures_refused: 1 }, reg, 3).length > 0,
+    "source: a refusal fails",
+  );
+  expect(
+    registrySourceProblems(res, { ...reg, enabled: false }, 3).length > 0,
+    "source: a registry that was not recording fails",
+  );
+  expect(
+    registrySourceProblems(
+      res,
+      { ...reg, families: { canvas_texture: { creates: 2 } } },
+      3,
+    ).length > 0,
+    "source: fewer recorded creates than adoptions fails",
+  );
+  expect(
+    registrySourceProblems(res, undefined, 3).length > 0,
+    "source: no registry.json fails",
+  );
+  // registry-off on deferred: the runtime ones refused, the cached one residual
+  expect(
+    registrySourceProblems(
+      {
+        textures_canvas: 1,
+        canvas_registry: 0,
+        canvas_residual: 1,
+        textures_refused: 2,
+      },
+      { enabled: false, fault: "registry-off", families: {} },
+      3,
+    ).length > 0,
+    "source: the registry-off sabotage fails",
+  );
+}
+
+// ---- LAR1: adoptNamedProblems -----------------------------------------------------------------
+{
+  const named = (
+    txs: { textures: Tex[]; tex: (number | null)[] }[],
+  ): ResolvedRecording =>
+    ({
+      transactions: txs.map((t, i) => ({
+        seq: i + 1,
+        frame: 12 + i,
+        state: {
+          textures: t.textures,
+          items: [
+            {
+              commands: t.tex.map((x) => ({ op: "add_texture_rect", tex: x })),
+            },
+          ],
+        },
+      })),
+    }) as unknown as ResolvedRecording;
+  const ok = named([
+    { textures: [image(1), canvas(10, 1)], tex: [10] },
+    { textures: [image(1), canvas(10, 1), image(2), canvas(11, 2)], tex: [11] },
+  ]);
+  const r = adoptNamedProblems(ok, 2);
+  expect(
+    r.problems.length === 0 && r.adopted === 2,
+    "named: each adopted canvas named in its first transaction passes (later ones need not repeat)",
+  );
+  expect(
+    adoptNamedProblems(
+      named([{ textures: [image(1), canvas(10, 1)], tex: [1] }]),
+      1,
+    ).problems.length > 0,
+    "named: only the diffuse named (the GAP2-RX shape) fails",
+  );
+  expect(
+    adoptNamedProblems(
+      named([
+        { textures: [image(1), canvas(10, 1)], tex: [null] },
+        { textures: [image(1), canvas(10, 1)], tex: [10] },
+      ]),
+      1,
+    ).problems.length > 0,
+    "named: named only in a later transaction fails",
+  );
+  expect(
+    adoptNamedProblems(
+      named([
+        {
+          textures: [image(1), canvas(10, 1, { origin: "created" })],
+          tex: [],
+        },
+      ]),
+      0,
+    ).problems.length === 0,
+    "named: a created (not adopted) canvas texture is not judged",
+  );
+  expect(
+    adoptNamedProblems(ok, 3).problems.length > 0,
+    "named: fewer adopted than the minimum fails",
+  );
+  expect(
+    adoptNamedProblems(undefined, 1).problems.length > 0,
+    "named: no recording fails",
+  );
+}
+
+// ---- LAR1: residualProblems (the late leg under F1) -------------------------------------------
+{
+  const LATE = { canvas_residual: 1, refused_no_image: 3 };
+  const res = {
+    textures_canvas: 1,
+    canvas_registry: 0,
+    canvas_residual: 1,
+    textures_refused: 3,
+    refused_no_image: 3,
+    refused_canvas_empty: 0,
+  };
+  const late = recording([
+    { frame: 13, textures: [image(4), canvas(13, 4)], unknown: 3 },
+    { frame: 28, textures: [image(4), canvas(13, 4)], unknown: 3 },
+  ]);
+  expect(
+    residualProblems(res, { rec: late }, LATE).length === 0,
+    "residual: PM9 adopted, runtime refused typed, unknown-texture draws passes",
+  );
+  expect(
+    residualProblems({ ...res, refused_no_image: 2 }, { rec: late }, LATE)
+      .length > 0,
+    "residual: an untyped refusal fails",
+  );
+  expect(
+    residualProblems(
+      { ...res, textures_canvas: 4, canvas_residual: 4, textures_refused: 0, refused_no_image: 0 },
+      { rec: late },
+      LATE,
+    ).length > 0,
+    "residual: the runtime ones adopted (RT-CTX's node read) fails",
+  );
+  expect(
+    residualProblems(
+      { ...res, canvas_registry: 1, canvas_residual: 0 },
+      { rec: late },
+      LATE,
+    ).length > 0,
+    "residual: an adoption from the registry on late fails",
+  );
+  expect(
+    residualProblems(
+      res,
+      {
+        rec: recording([
+          { frame: 13, textures: [image(4), canvas(13, 4)], unknown: 0 },
+        ]),
+      },
+      LATE,
+    ).length > 0,
+    "residual: no unknown-texture draw for the refused ones fails",
+  );
+  expect(
+    residualProblems(res, { rec: late }, undefined).length > 0,
+    "residual: no expected.late fails",
+  );
+  expect(
+    residualProblems(res, { error: "missing" }, LATE).length > 0,
+    "residual: no recording fails",
+  );
+}
 
 // ---- faultProblems ----------------------------------------------------------------------------
 const FAULT = recording([{ frame: 13, textures: [], unknown: 3 }]);
@@ -481,11 +679,14 @@ const LEGS = [
   "import/fixture",
   "import/receiver",
   "reference",
+  "deferred/capture",
   "late/capture",
   "fault-no-resources/capture",
-  "late/receiver",
-  "late/receiver-patch",
+  "sabotage-registry-off/capture",
+  "deferred/receiver",
+  "deferred/receiver-patch",
 ];
+const RX = ["deferred/receiver", "deferred/receiver-patch"];
 const CLEAR = [51, 51, 102];
 const INK = [200, 80, 30];
 const inA = (x: number, y: number) => x <= 7 && y <= 7;
@@ -504,11 +705,11 @@ async function tree(
     if (o.skip?.includes(l)) put(out, `${l}/skipped-by-tier.txt`, "tier\n");
     else put(out, `${l}/exit-code.txt`, `${o.exit?.[l] ?? "0"}\n`);
   }
-  for (const l of ["reference", ...["late/receiver", "late/receiver-patch"]]) {
+  for (const l of ["reference", ...RX]) {
     await png(out, l, 0, ink(false));
     await png(out, l, 1, ink(true));
   }
-  for (const l of ["late/receiver", "late/receiver-patch"])
+  for (const l of RX)
     put(
       out,
       `${l}/applied.json`,
@@ -536,7 +737,11 @@ const byId = (cs: { id: string; passed: boolean }[], id: string) =>
   // no recordings: the recording-dependent checks must fail, not pass vacuously
   for (const id of [
     "ct-late-adopt",
+    "ctl-registry-source",
+    "ct-adopt-named",
+    "ct-late-residual",
     "ct-late-fault",
+    "sabotage-registry-off",
     "ct-late-diffuse-uploaded",
     "ct-late-free",
   ])
@@ -560,6 +765,20 @@ const byId = (cs: { id: string; passed: boolean }[], id: string) =>
   );
 }
 {
+  // a skipped leg is named in the failing check's detail (lib/tier-verdict.py excuses it)
+  const out = await tree("skipdeferred", {
+    skip: ["deferred/capture", "sabotage-registry-off/capture"],
+  });
+  const { checks } = await runG8ctl(out, EXPECTED);
+  for (const id of ["ct-late-adopt", "ctl-registry-source"])
+    expect(
+      /deferred\/capture did not run/.test(
+        (checks.find((c) => c.id === id) as { detail?: string })?.detail ?? "",
+      ),
+      `fs: ${id} names the skipped deferred leg`,
+    );
+}
+{
   const out = join(root, "empty");
   mkdirSync(join(out, "g8ctl"), { recursive: true });
   const { checks } = await runG8ctl(out, EXPECTED);
@@ -570,8 +789,7 @@ const byId = (cs: { id: string; passed: boolean }[], id: string) =>
 }
 {
   const out = await tree("blank");
-  for (const l of ["reference", "late/receiver", "late/receiver-patch"])
-    await png(out, l, 0, () => CLEAR);
+  for (const l of ["reference", ...RX]) await png(out, l, 0, () => CLEAR);
   expect(
     byId((await runG8ctl(out, EXPECTED)).checks, "ct-late-reference")
       ?.passed === false,
@@ -580,7 +798,7 @@ const byId = (cs: { id: string; passed: boolean }[], id: string) =>
 }
 {
   const out = await tree("differ");
-  await png(out, "late/receiver-patch", 0, (x, y) =>
+  await png(out, "deferred/receiver-patch", 0, (x, y) =>
     x === 15 && y === 15 ? [0, 0, 0] : ink(false)(x, y),
   );
   expect(
@@ -591,8 +809,7 @@ const byId = (cs: { id: string; passed: boolean }[], id: string) =>
 }
 {
   const out = await tree("notblank");
-  for (const l of ["reference", "late/receiver", "late/receiver-patch"])
-    await png(out, l, 1, ink(false));
+  for (const l of ["reference", ...RX]) await png(out, l, 1, ink(false));
   expect(
     byId((await runG8ctl(out, EXPECTED)).checks, "ct-late-reference")
       ?.passed === false,
@@ -601,7 +818,7 @@ const byId = (cs: { id: string; passed: boolean }[], id: string) =>
 }
 {
   const out = await tree("noshot");
-  rmSync(join(out, "g8ctl", "late/receiver", "shots", "step-1.png"));
+  rmSync(join(out, "g8ctl", "deferred/receiver", "shots", "step-1.png"));
   expect(
     byId((await runG8ctl(out, EXPECTED)).checks, "ct-late-reference")
       ?.passed === false,
@@ -628,7 +845,7 @@ expect(
   (
     await referenceProblems(
       join(root, "good", "g8ctl"),
-      ["late/receiver"],
+      ["deferred/receiver"],
       EXPECTED,
     )
   ).length === 0,

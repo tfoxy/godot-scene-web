@@ -6,7 +6,7 @@
 // and at the end, a create the registry missed, overflow, a dropped row, no pre-arm free, missing
 // evidence); and registry-cost on synthetic samples: within noise passes, a registry that costs
 // more than the noise fails against both references, a missing config fails. And K1's coverage pin
-// for LAR0: every create hook REGISTRY_CREATE_HOOKS names records into the registry
+// for LAR0 and LAR1: every create hook REGISTRY_CREATE_HOOKS names records into the registry
 // (capture/src/hooks.cpp: its hook_<name> body calls registry_create with a kind of that family), and
 // hook_free / hook_texture_replace erase.
 //
@@ -228,6 +228,27 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
     /registry_note_replace\(texture\.id, by_texture\.id\)/.test(body("texture_replace") ?? ""),
     "hook_texture_replace erases the by-texture",
   );
+  // LAR1 (K1 for the CanvasTexture payload): every hooked canvas_texture_set_* records into the
+  // registry, and the adoption hands the mirror exactly the recorded fields, so the registry's
+  // field set equals canvas_texture_adopt's arguments.
+  const setters = [...src.matchAll(/\nvoid hook_(canvas_texture_set_\w+)\(/g)].map((m) => m[1]);
+  expect(setters.length === 3, `three hooked canvas_texture setters (${setters.join(", ")})`);
+  for (const h of setters)
+    expect(
+      /rs::registry_note_canvas_(channel|filter|repeat)\(canvas_texture\.id, /.test(body(h) ?? ""),
+      `hook_${h} records into the registry`,
+    );
+  const adopt = readFileSync(join(here, "../../capture/src/rs_adopt.cpp"), "utf8");
+  expect(
+    /hooks_adopt_canvas_texture\(rid, c\.diffuse, c\.normal, c\.specular, c\.filter, c\.repeat\)/.test(
+      adopt,
+    ),
+    "a registered CanvasTexture is adopted with every recorded field",
+  );
+  const header = readFileSync(join(here, "../../capture/src/rs_registry.h"), "utf8");
+  const struct = /struct RegistryCanvasTexture \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  for (const f of ["diffuse", "normal", "specular", "filter", "repeat"])
+    expect(new RegExp(`\\b${f} = 0;`).test(struct), `RegistryCanvasTexture records ${f}`);
 }
 
 if (failures > 0) {

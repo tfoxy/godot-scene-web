@@ -4223,8 +4223,8 @@ void Mirror::canvas_texture_adopt(std::uint64_t rid, std::uint64_t diffuse, std:
   texture.kind = TextureKind::Canvas;
   texture.version = 1;
   texture.origin = Origin::Adopted;
-  // RT-CTX/PM9: the channels, filter and repeat are the live resource's getters (there is no
-  // creation copy of a CanvasTexture), so the entry's content is `current`.
+  // LAR1/PM9: the channels, filter and repeat are the registry's last recorded values or a cached
+  // resource's getters (there is no creation copy of a CanvasTexture), so the entry is `current`.
   texture.adopted_content = AdoptedContent::Current;
   if (diffuse != 0) {
     const auto it = texture_by_rid_.find(diffuse);

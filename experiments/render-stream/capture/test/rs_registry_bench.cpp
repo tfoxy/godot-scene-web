@@ -5,6 +5,9 @@
 //   free     registry_note_free of those entries
 //   pair4    create+free pairs from 4 threads at once (lock contention; per pair, wall / pairs)
 //   bytes_per_entry  the registry's bytes_estimate / entries with `live` textures registered
+//   ctex     LAR1: a CanvasTexture's registry life -- create, set_channel (diffuse),
+//            set_texture_filter, the adoption's registry_canvas_texture read, free -- per call
+//            (5 calls), uncontended, `live` CanvasTextures
 // Usage: rs_registry_bench [live=20000] [rounds=50]
 #include <atomic>
 #include <chrono>
@@ -39,6 +42,7 @@ int main(int argc, char **argv) {
   const int rounds = argc > 2 ? std::atoi(argv[2]) : 50;
   std::uint64_t node_bytes = 0;
   double best_off = 1e30, best_create = 1e30, best_free = 1e30, best_pair4 = 1e30;
+  double best_ctex = 1e30;
   for (int r = 0; r < rounds; ++r) {
     registry_configure(false, RegistryFault::None);
     std::uint64_t t0 = now_ns();
@@ -79,12 +83,33 @@ int main(int argc, char **argv) {
       th.join();
     }
     best_pair4 = std::min(best_pair4, double(now_ns() - t0) / double(live));
+
+    registry_configure(true, RegistryFault::None);
+    RegistryCanvasTexture c;
+    std::uint64_t sink = 0;
+    t0 = now_ns();
+    for (std::uint64_t i = 1; i <= live; ++i) {
+      const std::uint64_t rid = (std::uint64_t{3} << 40) | i;
+      registry_note_create(rid, RegistryKind::CanvasTexture);
+      registry_note_canvas_channel(rid, 0, rid + 1);
+      registry_note_canvas_filter(rid, 1);
+    }
+    for (std::uint64_t i = 1; i <= live; ++i) {
+      const std::uint64_t rid = (std::uint64_t{3} << 40) | i;
+      if (registry_canvas_texture(rid, &c)) sink += c.diffuse;
+      registry_note_free(rid);
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    best_ctex = std::min(best_ctex, double(now_ns() - t0) / double(live * 5));
+    if (sink == 1) {
+      std::puts("");  // keeps the reads live
+    }
   }
   std::printf(
       "{\"schema\":\"render-stream-registry-bench/1\",\"live\":%llu,\"rounds\":%d,"
       "\"off_ns\":%.2f,\"create_ns\":%.2f,\"free_ns\":%.2f,\"pair4_ns\":%.2f,"
-      "\"bytes_per_entry\":%llu}\n",
+      "\"bytes_per_entry\":%llu,\"ctex_ns\":%.2f}\n",
       static_cast<unsigned long long>(live), rounds, best_off, best_create, best_free, best_pair4,
-      static_cast<unsigned long long>(node_bytes));
+      static_cast<unsigned long long>(node_bytes), best_ctex);
   return 0;
 }

@@ -2,17 +2,19 @@ extends Node
 ## Gate 8 late-arm runtime CanvasTexture fixture (RT-CTX, the deferred follow-up in
 ## results/p3/late-arm.md): every image is built in code at `_ready` and drawn ONLY through a
 ## CanvasTexture assigned to the item's `texture` -- no .tres, no command names an image directly.
-## The loader arms the capture LATE (RS_FIXTURE_ARM=late at frame 12), after every CanvasTexture
-## and item already exists, so the capture must adopt each CanvasTexture from the drawing item's
-## node (`texture`) -- the node map -- since the RenderingServer has no canvas-texture channel
-## getter and the resource cache has no path for a runtime-built CanvasTexture. Three 64x64 cells:
+## Two arm modes (loader.gd, LAR1): `deferred` loads the capture before this scene exists and arms
+## it at frame 12, so every CanvasTexture is in the capture's registry (late-arm-registry-design.md)
+## and is adopted from its recorded channels; `late` loads it at frame 12, after everything exists
+## (load-late, design F1): only the cached `.tres` (PM9, through the resource cache) can be adopted,
+## and the three runtime-built CanvasTextures are refused, typed `no-image`. Four 64x64 cells:
 ##
 ##   SPRITE (40,40)    Sprite2D at scale 4, through CT_A (add_texture_rect)
 ##   TRECT  (136,40)   TextureRect, through CT_B (a Control's add_texture_rect)
 ##   MESH   (232,40)   MeshInstance2D, an ArrayMesh quad, through CT_C (add_mesh, the spine shape)
+##   CACHED (328,40)   Sprite2D at scale 4, through cached_ct.tres (a cached CanvasTexture, PM9)
 ##
 ## The root is a plain `Node`: every CanvasItem is created in `_ready`, after the autoload's
-## `_enter_tree` but before the loader's `_process` arms at frame 12. Timeline: quit at 30. The
+## `_enter_tree` (where `deferred` loads the capture) but before frame 12. Timeline: quit at 30. The
 ## recording (armed at 12) holds the adopted canvas textures and every post-arm draw. At 22 SPRITE's
 ## CanvasTexture is released (the free-after-adopt step); checkpoint 1 (23..26) shows its cell empty.
 
@@ -67,6 +69,14 @@ func _ready() -> void:
 	mesh_instance.texture = ct_c
 	mesh_instance.position = Vector2(232, 40)
 	root.add_child(mesh_instance)
+	# CACHED (LAR1): a `.tres` CanvasTexture, loaded by path into the resource cache (the census's
+	# PM9 residual path when the capture loads late); its diffuse is an embedded ImageTexture.
+	var cached := Sprite2D.new()
+	cached.texture = load("res://cached_ct.tres") as CanvasTexture
+	cached.centered = false
+	cached.position = Vector2(328, 40)
+	cached.scale = Vector2(4.0, 4.0)
+	root.add_child(cached)
 	print("[fixture] gate8-ct-late ready: quit=%d" % _quit_frame)
 
 

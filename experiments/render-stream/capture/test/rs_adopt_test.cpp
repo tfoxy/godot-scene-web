@@ -17,6 +17,7 @@
 #include "fake_godot_iface.h"
 #include "hooks.h"
 #include "rs_adopt.h"
+#include "rs_registry.h"
 #include "rs_mirror.h"
 #include "rs_resource_log.h"
 #include "rs_shader_payload.h"
@@ -376,6 +377,7 @@ void test_seam_without_engine() {
 namespace {
 struct CanvasTextureHookCall {
   uint64_t rid = 0, diffuse = 0, normal = 0, specular = 0;
+  int32_t filter = 0, repeat = 0;
 };
 std::vector<CanvasTextureHookCall> g_ctex_hook_calls;
 std::vector<uint64_t> g_multimesh_hook_calls;
@@ -411,8 +413,8 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt) {
   return false;
 }
 bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
-                                int32_t, int32_t) {
-  g_ctex_hook_calls.push_back({rid, diffuse, normal, specular});
+                                int32_t filter, int32_t repeat) {
+  g_ctex_hook_calls.push_back({rid, diffuse, normal, specular, filter, repeat});
   return false;
 }
 // LATE-RES: the node_added adoption stamps its taps with the hook frame; the engine side never
@@ -1026,25 +1028,26 @@ void test_refused_multimesh_not_reread() {
   stream_end();
 }
 
-// LATE-SPINE: CanvasTextures adopted from the hooks' registry share atlas pages. A channel
-// texture the mirror already knows is never read back (texture_2d_get is asked only for the
-// CanvasTexture RIDs themselves), and one this stream refused is read once across every
-// CanvasTexture that names it.
+// LAR1: CanvasTextures adopted from the registry share atlas pages. No getter runs on a registered
+// CanvasTexture's own RID (its kind is the registry's), a channel texture the mirror already knows
+// is never read back, and one this stream refused is read once across every CanvasTexture that
+// names it.
 void test_canvas_texture_channels_not_reread() {
   constexpr uint64_t kCtexA = 0x8001, kCtexB = 0x8002, kKnown = 0x8010;
   constexpr uint64_t kCtexC = 0x8003, kCtexD = 0x8004, kUnreadable = 0x8011;
   fake::World &w = fake::world();
   std::vector<uint64_t> reads;
   fake_rendering_server(&reads);
-  // The registry fills before the arm (mirror disabled), as from extension load.
+  // GRC_ADOPT=arm: the registry records from the vptr store, before the arm (mirror disabled).
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
   grc::rs::mirror_enable(false);
   for (uint64_t ctex : {kCtexA, kCtexB}) {
-    grc::rs::canvas_texture_note_create(ctex);
-    grc::rs::canvas_texture_note_channel(ctex, 0, kKnown);
+    grc::rs::registry_note_create(ctex, grc::rs::RegistryKind::CanvasTexture);
+    grc::rs::registry_note_canvas_channel(ctex, 0, kKnown);
   }
   for (uint64_t ctex : {kCtexC, kCtexD}) {
-    grc::rs::canvas_texture_note_create(ctex);
-    grc::rs::canvas_texture_note_channel(ctex, 0, kUnreadable);
+    grc::rs::registry_note_create(ctex, grc::rs::RegistryKind::CanvasTexture);
+    grc::rs::registry_note_canvas_channel(ctex, 0, kUnreadable);
   }
   stream_begin();
   Mirror &m = grc::rs::mirror_instance();
@@ -1052,60 +1055,81 @@ void test_canvas_texture_channels_not_reread() {
   check(m.knows_texture(kKnown), "ctex: the shared diffuse is known");
   grc::rs::adopt_texture_ref(kCtexA);
   grc::rs::adopt_texture_ref(kCtexB);
-  check(reads == std::vector<uint64_t>({kCtexA, kCtexB}),
-        "ctex: texture_2d_get only for the two CanvasTextures, never the known diffuse");
+  check(reads.empty(),
+        "ctex: no texture_2d_get on a registered CanvasTexture, nor on the known diffuse");
   check(g_ctex_hook_calls.size() == 2 && g_ctex_hook_calls[0].rid == kCtexA &&
             g_ctex_hook_calls[0].diffuse == kKnown && g_ctex_hook_calls[1].rid == kCtexB &&
             g_ctex_hook_calls[1].diffuse == kKnown,
         "ctex: both handed to the hook from the registry, with the shared diffuse");
-  reads.clear();
   grc::rs::adopt_texture_ref(kCtexC);
   grc::rs::adopt_texture_ref(kCtexD);
-  check(reads == std::vector<uint64_t>({kCtexC, kUnreadable, kCtexD}),
+  check(reads == std::vector<uint64_t>({kUnreadable}),
         "ctex: an unreadable diffuse is read once across both CanvasTextures");
-  check(grc::rs::adopt_resource_stats().textures_refused == 5,
-        "ctex: four CanvasTextures (the stub hook refuses) and the diffuse refused");
+  const grc::rs::AdoptResourceStats st = grc::rs::adopt_resource_stats();
+  check(st.textures_refused == 5 && st.refused_no_image == 1 && st.refused_canvas_empty == 0,
+        "ctex: four CanvasTextures (the stub hook refuses) and the diffuse refused (no-image)");
   reads.clear();
   grc::rs::adopt_texture_ref(kCtexA);
   grc::rs::adopt_texture_ref(kUnreadable);
   check(reads.empty(), "ctex: a refused RID is not read again by a later reference");
   check(w.null_bind_calls == 0, "ctex: no call through a null bind");
   stream_end();
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
-// The registry gating: once the mirror streams, canvas_texture_note_create registers nothing (a
-// CanvasTexture created under the hooks is one the mirror knows) and a set_* call updates only a
-// pre-arm entry; adopt_resource_freed drops an entry.
+// LAR1 (design R1, R5): the registry records armed or not -- a CanvasTexture created after the
+// arm, and a set_* call after it, are recorded like pre-arm ones -- with filter and repeat; a free
+// erases the entry (the freed RID then takes the residual path); a registered CanvasTexture with
+// no diffuse is refused typed `canvas-empty`. With GRC_ADOPT=off or registry-off the gate is closed.
 void test_canvas_texture_registry_gating() {
   constexpr uint64_t kPre = 0x8101, kPreDiffuse = 0x8111, kNew = 0x8102, kNewDiffuse = 0x8112;
-  constexpr uint64_t kFreed = 0x8103, kFreedDiffuse = 0x8113;
+  constexpr uint64_t kFreed = 0x8103, kFreedDiffuse = 0x8113, kEmpty = 0x8104;
   fake::World &w = fake::world();
   std::vector<uint64_t> reads;
   fake_rendering_server(&reads);
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
   grc::rs::mirror_enable(false);
-  grc::rs::canvas_texture_note_create(kPre);  // pre-arm; its channel is set after the arm
-  grc::rs::canvas_texture_note_create(kFreed);
-  grc::rs::canvas_texture_note_channel(kFreed, 0, kFreedDiffuse);
+  grc::rs::registry_note_create(kPre, grc::rs::RegistryKind::CanvasTexture);  // pre-arm
+  grc::rs::registry_note_create(kFreed, grc::rs::RegistryKind::CanvasTexture);
+  grc::rs::registry_note_canvas_channel(kFreed, 0, kFreedDiffuse);
+  grc::rs::registry_note_create(kEmpty, grc::rs::RegistryKind::CanvasTexture);
   stream_begin();
-  grc::rs::canvas_texture_note_create(kNew);
-  grc::rs::canvas_texture_note_channel(kNew, 0, kNewDiffuse);
-  grc::rs::canvas_texture_note_channel(kPre, 0, kPreDiffuse);
+  grc::rs::registry_note_create(kNew, grc::rs::RegistryKind::CanvasTexture);  // armed
+  grc::rs::registry_note_canvas_channel(kNew, 0, kNewDiffuse);
+  grc::rs::registry_note_canvas_channel(kPre, 0, kPreDiffuse);  // armed, on a pre-arm entry
+  grc::rs::registry_note_canvas_filter(kPre, 1);
+  grc::rs::registry_note_canvas_repeat(kPre, 2);
+  grc::rs::registry_note_free(kFreed);
   grc::rs::adopt_resource_freed(kFreed);
   grc::rs::adopt_texture_ref(kNew);
-  check(reads == std::vector<uint64_t>({kNew}) && g_ctex_hook_calls.empty(),
-        "registry: a post-arm create registers nothing (refused, its channel never read)");
+  check(reads == std::vector<uint64_t>({kNewDiffuse}) && g_ctex_hook_calls.size() == 1 &&
+            g_ctex_hook_calls[0].rid == kNew && g_ctex_hook_calls[0].diffuse == kNewDiffuse,
+        "registry: a post-arm create is recorded (its diffuse read, then the hook)");
   grc::rs::adopt_texture_ref(kPre);
-  check(reads == std::vector<uint64_t>({kNew, kPre, kPreDiffuse}) &&
-            g_ctex_hook_calls.size() == 1 && g_ctex_hook_calls[0].rid == kPre &&
-            g_ctex_hook_calls[0].diffuse == kPreDiffuse,
-        "registry: a post-arm set_channel updates the pre-arm entry");
+  check(reads == std::vector<uint64_t>({kNewDiffuse, kPreDiffuse}) &&
+            g_ctex_hook_calls.size() == 2 && g_ctex_hook_calls[1].rid == kPre &&
+            g_ctex_hook_calls[1].diffuse == kPreDiffuse && g_ctex_hook_calls[1].filter == 1 &&
+            g_ctex_hook_calls[1].repeat == 2,
+        "registry: post-arm setters update the pre-arm entry, filter and repeat included");
   grc::rs::adopt_texture_ref(kFreed);
-  check(reads.size() == 4 && reads.back() == kFreed && g_ctex_hook_calls.size() == 1,
-        "registry: a freed CanvasTexture's entry is gone (its channel is never read)");
-  check(grc::rs::adopt_resource_stats().textures_refused == 4,
-        "registry: kNew, kPre (the stub hook), kPreDiffuse and kFreed refused");
+  check(reads.size() == 3 && reads.back() == kFreed && g_ctex_hook_calls.size() == 2,
+        "registry: a freed CanvasTexture's entry is gone (the residual path reads its RID)");
+  grc::rs::adopt_texture_ref(kEmpty);
+  check(reads.size() == 3 && g_ctex_hook_calls.size() == 2,
+        "registry: a CanvasTexture with no diffuse is neither read nor handed over");
+  const grc::rs::AdoptResourceStats st = grc::rs::adopt_resource_stats();
+  check(st.textures_refused == 6 && st.refused_no_image == 3 && st.refused_canvas_empty == 1 &&
+            st.canvas_registry == 0 && st.canvas_residual == 0,
+        "registry: kNew, kPre (the stub hook), both diffuses and kFreed (no-image), kEmpty "
+        "(canvas-empty) refused");
   check(w.null_bind_calls == 0, "registry: no call through a null bind");
   stream_end();
+  // GRC_ADOPT=off, and registry-off: the hooks' gate is closed, so nothing is recorded.
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+  check(!grc::rs::registry_on(), "registry: GRC_ADOPT=off closes the gate");
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::Off);
+  check(!grc::rs::registry_on(), "registry: registry-off closes the gate");
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
 // LATE-RES: a post-arm emitter drawing with a pre-arm ParticleProcessMaterial is

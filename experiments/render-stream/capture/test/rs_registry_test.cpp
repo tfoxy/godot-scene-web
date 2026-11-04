@@ -2,7 +2,7 @@
 // kinds and families, erase on free and texture_replace, recreate, null creates, the per-family
 // cap and overflow, the accounting identity registry-live-bound judges (entries == creates - frees
 // - replaced - recreated, on every timeline row), the timeline, both fault knobs, the evidence
-// shape, and concurrent creates and frees from several threads.
+// shape, concurrent creates and frees from several threads, and (LAR1) the CanvasTexture payload.
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -257,9 +257,77 @@ int main() {
     expect(identity_holds(), "threads: identity holds on every row");
   }
 
+  // LAR1: the CanvasTexture payload (channels, filter, repeat), recorded for registered
+  // CanvasTextures only, last writer wins, erased with the entry.
+  registry_configure(true, RegistryFault::None);
+  {
+    constexpr std::uint64_t kCt = 0x300000001, kCt2 = 0x300000002, kTex = 0x300000010;
+    constexpr std::uint64_t kNormal = 0x300000011, kPre = 0x300000020;
+    registry_note_create(kTex, RegistryKind::Texture2d);
+    registry_note_create(kCt, RegistryKind::CanvasTexture);
+    RegistryCanvasTexture c;
+    expect(registry_canvas_texture(kCt, &c) && !c.diffuse_set && !c.normal_set &&
+               !c.specular_set && !c.filter_set && !c.repeat_set && c.diffuse == 0 &&
+               c.filter == 0 && c.repeat == 0,
+           "ctex: a fresh CanvasTexture is all default and unset");
+    registry_note_canvas_channel(kCt, 0, kTex);
+    registry_note_canvas_channel(kCt, 1, kNormal);
+    registry_note_canvas_channel(kCt, 7, 0x9);  // not a channel: nothing recorded
+    registry_note_canvas_filter(kCt, 1);
+    registry_note_canvas_repeat(kCt, 2);
+    registry_note_canvas_filter(kCt, 3);  // last writer wins
+    expect(registry_canvas_texture(kCt, &c) && c.diffuse_set && c.diffuse == kTex &&
+               c.normal_set && c.normal == kNormal && !c.specular_set && c.filter_set &&
+               c.filter == 3 && c.repeat_set && c.repeat == 2,
+           "ctex: channels, filter and repeat recorded, last writer wins");
+    expect(registry_stats().canvas_payload_sets == 5 && registry_stats().canvas_payloads == 1,
+           "ctex: five setter calls recorded, one payload");
+    // A setter on a RID the registry never saw created (a pre-load CanvasTexture) records nothing:
+    // no partial entry.
+    registry_note_canvas_channel(kPre, 0, kTex);
+    registry_note_canvas_filter(kTex, 1);  // a texture, not a CanvasTexture
+    expect(!registry_canvas_texture(kPre, &c) && !registry_canvas_texture(kTex, &c),
+           "ctex: no payload for an unregistered RID or another kind");
+    // Recreated as a CanvasTexture: a fresh payload. Recreated as another kind: gone.
+    registry_note_create(kCt, RegistryKind::CanvasTexture);
+    expect(registry_canvas_texture(kCt, &c) && !c.diffuse_set && !c.filter_set,
+           "ctex: a recreate starts fresh");
+    registry_note_canvas_channel(kCt, 0, kTex);
+    registry_note_create(kCt, RegistryKind::Mesh);
+    expect(!registry_canvas_texture(kCt, &c), "ctex: recreated as a mesh, no payload");
+    // A free erases the payload with the kind entry.
+    registry_note_create(kCt2, RegistryKind::CanvasTexture);
+    registry_note_canvas_channel(kCt2, 2, kTex);
+    registry_note_free(kCt2);
+    expect(!registry_canvas_texture(kCt2, &c) && registry_stats().canvas_payloads == 0,
+           "ctex: a free erases the payload");
+    const RegistryStats st = registry_stats();
+    expect(st.canvas_payload_bytes > 0 && st.bytes_estimate >= st.canvas_payload_bytes,
+           "ctex: the payload map is in bytes_estimate");
+    expect(contains(registry_json(), "\"payloads\"") &&
+               contains(registry_json(), "\"canvas_texture\": {"),
+           "ctex: evidence has the payload block");
+    expect(identity_holds(), "ctex: identity holds");
+  }
+  // registry-keep-freed keeps the payload too (the sabotage keeps the whole entry).
+  registry_configure(true, RegistryFault::KeepFreed);
+  {
+    registry_note_create(0x300000031, RegistryKind::CanvasTexture);
+    registry_note_canvas_channel(0x300000031, 0, 0x300000032);
+    registry_note_free(0x300000031);
+    RegistryCanvasTexture c;
+    expect(registry_canvas_texture(0x300000031, &c) && c.diffuse == 0x300000032,
+           "ctex keep-freed: the payload stays");
+  }
+  // registry-off: nothing recorded, so a deferred arm has no payload (LAR1's sabotage).
+  registry_configure(true, RegistryFault::Off);
+  expect(!registry_on(), "ctex registry-off: gate closed");
+
   // Reconfigure resets everything (a test-only path: the capture configures once).
   registry_configure(false, RegistryFault::None);
-  expect(registry_stats().entries == 0 && registry_timeline(nullptr).empty(), "reset");
+  expect(registry_stats().entries == 0 && registry_timeline(nullptr).empty() &&
+             registry_stats().canvas_payloads == 0 && !registry_canvas_texture(0x300000031, nullptr),
+         "reset");
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_registry_test: %d failure(s)\n", g_failures);

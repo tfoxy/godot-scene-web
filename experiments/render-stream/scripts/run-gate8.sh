@@ -900,12 +900,19 @@ run_g8c() {
 
 # ------------------------------------------------------------------------------------ g8ctl
 G8CTL_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-ct-late"
-# RT-CTX (late-arm runtime CanvasTexture adoption): the late arm (fixtures/gate8-ct-late/loader.gd
-# at frame 12, after every runtime CanvasTexture and item exists), adopted under GRC_ADOPT=arm from
-# the node map; GRC_UNKNOWN_ITEM=skip as every late gate 8 leg. GRC_ADOPT_FAULT=no-resources is the
-# pre-RT-CTX capture (nothing adopted lazily: every draw through a CanvasTexture unknown-texture).
-G8CTL_LATE_ENV=(GRC_STREAM_VERSION=8 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=12 \
+# LAR1 (late-arm-registry-design.md): the `deferred` leg loads the capture in the loader's
+# `_enter_tree`, before any CanvasTexture exists, and defers the arm to frame 12
+# (GRC_ARM_DEFER_FRAMES=11), so every CanvasTexture is adopted from the registry's recorded channels;
+# its receivers are judged against the unarmed reference. The `late` leg loads the capture at frame
+# 12, after everything exists (load-late, the residual path under F1): the cached `.tres` is adopted
+# from the resource cache (PM9) and the runtime CanvasTextures are refused, typed no-image.
+# GRC_UNKNOWN_ITEM=skip as every late gate 8 leg. GRC_ADOPT_FAULT=no-resources (on `late`) is the
+# capture with no lazy adoption; registry-off (on `deferred`) records nothing, LAR1's sabotage.
+G8CTL_ARM_FRAME=12
+G8CTL_LATE_ENV=(GRC_STREAM_VERSION=8 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=$G8CTL_ARM_FRAME \
 	GRC_UNKNOWN_ITEM=skip)
+G8CTL_DEFERRED_ENV=(GRC_STREAM_VERSION=8 GRC_ADOPT=arm RS_FIXTURE_ARM=deferred \
+	GRC_ARM_DEFER_FRAMES=$((G8CTL_ARM_FRAME - 1)) GRC_UNKNOWN_ITEM=skip)
 
 run_import_g8ctl() {
 	echo "run-gate8: g8ctl import (fixture, receiver)"
@@ -944,15 +951,20 @@ run_g8ctl() {
 	mkdir -p "$OUT/g8ctl/reference/shots"
 	LEG_ENV=(RS_FIXTURE_SHOT_DIR="$OUT/g8ctl/reference/shots" RS_FIXTURE_STEP_LOG="$OUT/g8ctl/reference/steps.jsonl")
 	run_rendered "$OUT/g8ctl/reference" "$G8CTL_FIXTURE_DIR"
-	echo "run-gate8: g8ctl late/capture (/8, armed at frame 12, GRC_ADOPT=arm: CanvasTextures adopted from the node map)"
+	echo "run-gate8: g8ctl deferred/capture (/8, loaded at birth, armed at frame $G8CTL_ARM_FRAME: CanvasTextures adopted from the registry)"
+	run_capture_rendered_g8ctl "$OUT/g8ctl/deferred/capture" "${G8CTL_DEFERRED_ENV[@]}"
+	echo "run-gate8: g8ctl late/capture (/8, loaded at frame $G8CTL_ARM_FRAME: the residual path, PM9 adopted, runtime refused)"
 	run_capture_rendered_g8ctl "$OUT/g8ctl/late/capture" "${G8CTL_LATE_ENV[@]}"
 	echo "run-gate8: g8ctl fault-no-resources/capture (late, GRC_ADOPT_FAULT=no-resources)"
 	run_capture_rendered_g8ctl "$OUT/g8ctl/fault-no-resources/capture" "${G8CTL_LATE_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-resources
-	echo "run-gate8: g8ctl receivers (full and patch sinks)"
-	run_rendered_receiver "$OUT/g8ctl/late/capture" "$OUT/g8ctl/late/receiver"
+	echo "run-gate8: g8ctl sabotage-registry-off/capture (deferred, GRC_ADOPT_FAULT=registry-off)"
+	run_capture_rendered_g8ctl "$OUT/g8ctl/sabotage-registry-off/capture" "${G8CTL_DEFERRED_ENV[@]}" \
+		GRC_ADOPT_FAULT=registry-off
+	echo "run-gate8: g8ctl receivers of the deferred capture (full and patch sinks)"
+	run_rendered_receiver "$OUT/g8ctl/deferred/capture" "$OUT/g8ctl/deferred/receiver"
 	RECEIVER_SOURCE="$PATCH_RECORDING_NAME"
-	run_rendered_receiver "$OUT/g8ctl/late/capture" "$OUT/g8ctl/late/receiver-patch"
+	run_rendered_receiver "$OUT/g8ctl/deferred/capture" "$OUT/g8ctl/deferred/receiver-patch"
 	gs_teardown "$OUT/gamescope-g8ctl"
 	GS_RUN_DIR=""
 }

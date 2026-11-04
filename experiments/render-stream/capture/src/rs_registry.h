@@ -2,10 +2,11 @@
 // RID the hooks saw created, so a later arm can tell what each referenced RID is without
 // inferring it from a failed getter.
 //
-// LAR0 is the core only: every tracked create records its kind, a free erases its entry, and the
+// LAR0 is the core: every tracked create records its kind, a free erases its entry, and the
 // evidence (evidence/registry.json) reports entries, peak, creates, frees and overflow per family
-// plus a change timeline. Nothing reads it yet: the resource families move onto it in LAR1-LAR5,
-// so adoption is unchanged by this file.
+// plus a change timeline. The resource families move onto it one row at a time: LAR1 adds the
+// CanvasTexture payload (channels, filter, repeat; RegistryCanvasTexture), which rs_adopt.cpp
+// adopts a registered CanvasTexture from, whatever the arm state was when it was recorded.
 //
 // Rules (design R1, R3, R5, R6):
 //   - Gating: registry_configure() runs once, before the vptr store, from GRC_ADOPT. With
@@ -101,6 +102,10 @@ struct RegistryStats {
   // follows the peak).
   std::uint64_t bytes_estimate = 0;
   std::uint64_t entry_bytes = 0;  // the per-entry part of bytes_estimate
+  // LAR1: the CanvasTexture payload map (its own flat map; part of bytes_estimate).
+  std::uint64_t canvas_payloads = 0;      // live RegistryCanvasTexture entries
+  std::uint64_t canvas_payload_sets = 0;  // set_channel/filter/repeat calls recorded
+  std::uint64_t canvas_payload_bytes = 0; // its slot array (in bytes_estimate)
 };
 
 // One timeline row: the per-family counts after a frame in which the registry changed. `frame` is
@@ -127,6 +132,34 @@ void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture);
 
 // LAR1+: the recorded kind of a live RID (false: not registered).
 bool registry_lookup(std::uint64_t rid, RegistryKind *kind);
+
+// LAR1 (design R2): a CanvasTexture's payload -- the state RenderingServer has no getter for
+// (memory rs-canvastexture-no-rid-getter): its three channels, filter and repeat, and which of
+// them a setter named. A fresh CanvasTexture is all DEFAULT (0) and unset, as the engine's
+// CanvasTextureStorage creates one. Recorded for a registered CanvasTexture only (one whose create
+// the hooks saw); a setter on any other RID records nothing, so an entry is never a partial view
+// of a pre-load CanvasTexture. Last writer wins (R5); the free erases it with the kind entry.
+struct RegistryCanvasTexture {
+  std::uint64_t diffuse = 0;
+  std::uint64_t normal = 0;
+  std::uint64_t specular = 0;
+  std::int32_t filter = 0;  // RS::CanvasItemTextureFilter, DEFAULT until set
+  std::int32_t repeat = 0;  // RS::CanvasItemTextureRepeat, DEFAULT until set
+  bool diffuse_set = false;
+  bool normal_set = false;
+  bool specular_set = false;
+  bool filter_set = false;
+  bool repeat_set = false;
+};
+
+// The canvas_texture_set_* hooks (only when registry_on()). `channel` is
+// RS::CanvasTextureChannel (0 diffuse, 1 normal, 2 specular; any other value records nothing).
+void registry_note_canvas_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture);
+void registry_note_canvas_filter(std::uint64_t rid, std::int32_t filter);
+void registry_note_canvas_repeat(std::uint64_t rid, std::int32_t repeat);
+
+// The recorded CanvasTexture of a live RID (false: `rid` is not a registered CanvasTexture).
+bool registry_canvas_texture(std::uint64_t rid, RegistryCanvasTexture *out);
 
 // The frame callback (entry.cpp on_frame): appends a timeline row when anything changed since the
 // last row. Cheap when nothing did (one relaxed load).

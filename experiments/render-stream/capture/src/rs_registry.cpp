@@ -30,6 +30,12 @@ struct State {
   // The map's slot count, followed with RidMap's own growth rule (it doubles from 64 when an
   // insertion would make it more than half full, and never shrinks), for bytes_estimate.
   std::uint64_t capacity = 0;
+  // LAR1: the CanvasTexture payload, one slot per registered CanvasTexture (a subset of `map`'s
+  // keys: created with the kind entry, erased with it). A separate map, so the kind map's slots
+  // stay 16 B for every other family.
+  RidMap<RegistryCanvasTexture> canvas;
+  std::uint64_t canvas_capacity = 0;
+  std::uint64_t canvas_sets = 0;
   RegistryFamilyStats family[kRegistryFamilies];
   std::uint64_t entries = 0;
   std::uint64_t peak = 0;
@@ -50,6 +56,24 @@ std::size_t index(RegistryFamily family) { return static_cast<std::size_t>(famil
 
 // One slot of the flat map (key and kind, padded).
 constexpr std::uint64_t kNodeBytes = sizeof(RidMap<Entry>::value_type);
+// One slot of the CanvasTexture payload map (key and RegistryCanvasTexture).
+constexpr std::uint64_t kCanvasNodeBytes = sizeof(RidMap<RegistryCanvasTexture>::value_type);
+
+// Follows RidMap's growth rule (it doubles from 64 when an insertion would make it more than half
+// full, and never shrinks) for bytes_estimate. Call before inserting a new key into a map of `size`.
+void track_growth(std::size_t size, std::uint64_t *capacity) {
+  if ((size + 1) * 2 > *capacity) {
+    *capacity = *capacity == 0 ? 64 : *capacity * 2;
+  }
+}
+
+// A CanvasTexture create: a fresh payload (a recycled value drops the previous owner's channels).
+void canvas_create_locked(State &s, std::uint64_t rid) {
+  if (s.canvas.find(rid) == s.canvas.end()) {
+    track_growth(s.canvas.size(), &s.canvas_capacity);
+  }
+  s.canvas[rid] = RegistryCanvasTexture();
+}
 
 void add_entry_locked(State &s, RegistryFamily family) {
   RegistryFamilyStats &f = s.family[index(family)];
@@ -136,6 +160,9 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   s.cap = cap;
   s.map.clear();
   s.capacity = 0;
+  s.canvas.clear();
+  s.canvas_capacity = 0;
+  s.canvas_sets = 0;
   for (RegistryFamilyStats &f : s.family) {
     f = RegistryFamilyStats();
   }
@@ -166,6 +193,11 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     it->second.kind = kind;
     ++f.creates;
     add_entry_locked(s, family);
+    if (kind == RegistryKind::CanvasTexture) {
+      canvas_create_locked(s, rid);
+    } else if (old == RegistryFamily::CanvasTexture) {
+      s.canvas.erase(rid);
+    }
     changed_locked(s);
     return;
   }
@@ -173,10 +205,11 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     ++f.overflow;  // its later references fall to the residual path (design Q3)
     return;
   }
-  if ((s.map.size() + 1) * 2 > s.capacity) {
-    s.capacity = s.capacity == 0 ? 64 : s.capacity * 2;
-  }
+  track_growth(s.map.size(), &s.capacity);
   s.map[rid] = Entry{kind};
+  if (kind == RegistryKind::CanvasTexture) {
+    canvas_create_locked(s, rid);
+  }
   ++f.creates;
   add_entry_locked(s, family);
   changed_locked(s);
@@ -193,6 +226,9 @@ void registry_note_free(std::uint64_t rid) {
   ++s.family[index(family)].frees;
   if (s.fault != RegistryFault::KeepFreed) {
     s.map.erase(rid);
+    if (family == RegistryFamily::CanvasTexture) {
+      s.canvas.erase(rid);
+    }
     remove_entry_locked(s, family);
   }
   changed_locked(s);
@@ -238,6 +274,76 @@ bool registry_lookup(std::uint64_t rid, RegistryKind *kind) {
   return true;
 }
 
+namespace {
+
+// The registered CanvasTexture `rid`'s payload, or null (not a registered CanvasTexture: pre-load,
+// overflowed, freed, or no CanvasTexture at all). Under the lock.
+RegistryCanvasTexture *canvas_locked(State &s, std::uint64_t rid) {
+  const auto it = s.canvas.find(rid);
+  return it != s.canvas.end() ? &it->second : nullptr;
+}
+
+}  // namespace
+
+void registry_note_canvas_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryCanvasTexture *c = canvas_locked(s, rid);
+  if (c == nullptr) {
+    return;
+  }
+  if (channel == 0) {  // RS::CANVAS_TEXTURE_CHANNEL_DIFFUSE
+    c->diffuse = texture;
+    c->diffuse_set = true;
+  } else if (channel == 1) {  // RS::CANVAS_TEXTURE_CHANNEL_NORMAL
+    c->normal = texture;
+    c->normal_set = true;
+  } else if (channel == 2) {  // RS::CANVAS_TEXTURE_CHANNEL_SPECULAR
+    c->specular = texture;
+    c->specular_set = true;
+  } else {
+    return;
+  }
+  ++s.canvas_sets;
+}
+
+void registry_note_canvas_filter(std::uint64_t rid, std::int32_t filter) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryCanvasTexture *c = canvas_locked(s, rid);
+  if (c == nullptr) {
+    return;
+  }
+  c->filter = filter;
+  c->filter_set = true;
+  ++s.canvas_sets;
+}
+
+void registry_note_canvas_repeat(std::uint64_t rid, std::int32_t repeat) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryCanvasTexture *c = canvas_locked(s, rid);
+  if (c == nullptr) {
+    return;
+  }
+  c->repeat = repeat;
+  c->repeat_set = true;
+  ++s.canvas_sets;
+}
+
+bool registry_canvas_texture(std::uint64_t rid, RegistryCanvasTexture *out) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const RegistryCanvasTexture *c = canvas_locked(s, rid);
+  if (c == nullptr) {
+    return false;
+  }
+  if (out != nullptr) {
+    *out = *c;
+  }
+  return true;
+}
+
 void registry_frame(std::uint64_t frame) {
   State &s = state();
   const std::uint64_t generation = s.generation.load(std::memory_order_relaxed);
@@ -274,10 +380,14 @@ RegistryStats registry_stats() {
   }
   out.entries = s.entries;
   out.peak = s.peak;
-  out.entry_bytes = static_cast<std::uint64_t>(s.map.size()) * kNodeBytes;
-  // The slot array, empty slots included (at most half full, never shrinking: bounded by the
+  out.entry_bytes = static_cast<std::uint64_t>(s.map.size()) * kNodeBytes +
+                    static_cast<std::uint64_t>(s.canvas.size()) * kCanvasNodeBytes;
+  out.canvas_payloads = s.canvas.size();
+  out.canvas_payload_sets = s.canvas_sets;
+  out.canvas_payload_bytes = s.canvas_capacity * kCanvasNodeBytes;
+  // The slot arrays, empty slots included (at most half full, never shrinking: bounded by the
   // peak, not by the current entries).
-  out.bytes_estimate = s.capacity * kNodeBytes;
+  out.bytes_estimate = s.capacity * kNodeBytes + out.canvas_payload_bytes;
   return out;
 }
 
@@ -318,9 +428,22 @@ std::string registry_json() {
     json.key("recreated").unsigned_integer(f.recreated);
     json.key("null_creates").unsigned_integer(f.null_creates);
     json.key("overflow").unsigned_integer(f.overflow);
-    json.key("bytes_estimate").unsigned_integer(f.entries * kNodeBytes);
+    json.key("bytes_estimate")
+        .unsigned_integer(f.entries * kNodeBytes +
+                          (static_cast<RegistryFamily>(i) == RegistryFamily::CanvasTexture
+                               ? stats.canvas_payloads * kCanvasNodeBytes
+                               : 0));
     json.object_end();
   }
+  json.object_end();
+  // LAR1: the CanvasTexture payload (channels, filter, repeat per registered CanvasTexture).
+  json.key("payloads").object_begin();
+  json.key("canvas_texture").object_begin();
+  json.key("entries").unsigned_integer(stats.canvas_payloads);
+  json.key("sets").unsigned_integer(stats.canvas_payload_sets);
+  json.key("node_bytes").unsigned_integer(kCanvasNodeBytes);
+  json.key("bytes_estimate").unsigned_integer(stats.canvas_payload_bytes);
+  json.object_end();
   json.object_end();
   // The change timeline: one row per frame callback after which the registry had changed. Columns
   // are per family in `family_order`; `frees` is frees + replaced + recreated.

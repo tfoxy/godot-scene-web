@@ -44,17 +44,17 @@
 //     an oversampled atlas page D7 cannot address);
 //   - a texture whose first reference is a texture_2d_update: that update's own image, `current`,
 //     source `update` (the hooks then apply the update as usual);
-//   - a CanvasTexture (RT-CTX): a cached `.tres` CanvasTexture is adopted from its resource's
-//     getters (diffuse/normal/specular channels, filter, repeat) with origin `adopted`; a
-//     runtime-built CanvasTexture (built in code, no resource path) is read from the drawing
-//     item's node's `texture` (the node map, threaded through adopt_texture_ref's `item_rid`),
-//     its channels first;
+//   - a CanvasTexture (LAR1): one the hooks saw created (GRC_ADOPT=arm records it from the vptr
+//     store on, armed or not) is adopted from the registry's recorded channels, filter and repeat
+//     (rs_registry.h), its channels first; one created before the extension loaded (the residual,
+//     design Q3) only from a cached `.tres` CanvasTexture's getters (PM9). A runtime-built
+//     CanvasTexture the hooks never saw (a load-late arm) is refused, typed `no-image` (F1);
 //   - a mesh: mesh_get_surface per surface and mesh_get_custom_aabb, `creation`, source `dummy`.
 //
 // The bytes go through the hooks' own copy path (G8t's host decode, G8kw's worker and hold-back).
 // What cannot be read (texture_2d_get returns no image: a placeholder, a proxy, a RID that is no
-// dummy texture; a CanvasTexture whose node map has no node or whose node's `texture` is not it;
-// a RID that is no mesh) stays the hooks' typed `unknown-texture` / `unknown-mesh`, counted once
+// dummy texture, an unregistered CanvasTexture with no cached `.tres`; a registered CanvasTexture
+// with no diffuse; a RID that is no mesh) stays the hooks' typed `unknown-texture` / `unknown-mesh`, counted once
 // per RID in AdoptResourceStats.
 //
 // G8m (gate8-design.md D11, D12, Q5): pre-arm materials and shaders are resolved through the
@@ -266,12 +266,16 @@ struct AdoptResourceStats {
   std::uint32_t textures = 0;          // adopted textures, every source
   std::uint32_t textures_current = 0;  // ... declared current
   std::uint32_t textures_creation = 0; // ... declared creation
-  std::uint32_t textures_canvas = 0;   // PM9: ... canvas textures (adopted from the resource)
+  std::uint32_t textures_canvas = 0;   // ... canvas textures, every source:
+  std::uint32_t canvas_registry = 0;   //   LAR1: from the registry's recorded channels
+  std::uint32_t canvas_residual = 0;   //   PM9: from a cached `.tres` (unregistered: pre-load)
   std::uint32_t atlas_pages = 0;       // ... of which TextServer readbacks
   std::uint32_t compressed = 0;        // ... of which CompressedTexture2D (resource cache)
   std::uint32_t from_update = 0;       // ... of which first met as a texture_2d_update
   std::uint32_t decoded = 0;           // ... whose payload is a host decode (G8t)
-  std::uint32_t textures_refused = 0;  // RIDs nothing could read: unknown-texture stays
+  std::uint32_t textures_refused = 0;  // RIDs nothing could read: unknown-texture stays; typed:
+  std::uint32_t refused_no_image = 0;  //   unregistered, no image, no cached `.tres` (F1)
+  std::uint32_t refused_canvas_empty = 0;  // a registered CanvasTexture with no diffuse set
   std::uint32_t meshes = 0;            // adopted meshes (creation)
   std::uint32_t mesh_surfaces = 0;
   std::uint32_t meshes_refused = 0;    // RIDs mesh_get_surface_count could not read
@@ -293,27 +297,16 @@ bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
 
 // Called by a hook before its mirror tap: adopts `rid` if it is non-null, lazy adoption is
-// active and the mirror does not know it. Cheap otherwise (an atomic load). `item_rid`, non-zero
-// from a geometry hook, names the drawing CanvasItem: when `rid` is a runtime-built CanvasTexture
-// (RT-CTX, below) it is read from that item's node's `texture`, since the RenderingServer has no
-// canvas-texture channel getter.
-void adopt_texture_ref(std::uint64_t rid, std::uint64_t item_rid = 0);
+// active and the mirror does not know it. Cheap otherwise (an atomic load). A CanvasTexture is
+// adopted from the registry (LAR1), so no drawing item is needed to find its channels.
+void adopt_texture_ref(std::uint64_t rid);
 void adopt_mesh_ref(std::uint64_t rid);
-// LATE-SPINE (late-arm spine CanvasTexture adoption): the capture-side registry of CanvasTexture
-// channels, keyed by RID, filled by the canvas_texture_create / set_channel / set_texture_filter /
-// set_texture_repeat hooks as they fire (from extension load, armed or not). A runtime-built
-// CanvasTexture whose drawing node's `texture` is not it (a spine mesh) is adopted from here -- the
-// draw's own texture reference -- instead of the node's `texture` property (RT-CTX).
-void canvas_texture_note_create(std::uint64_t rid);
-void canvas_texture_note_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture);
-void canvas_texture_note_filter(std::uint64_t rid, std::int32_t filter);
-void canvas_texture_note_repeat(std::uint64_t rid, std::int32_t repeat);
 // PM9 (late-arm multimesh adoption): called by the add_multimesh hook before its mirror tap; adopts
 // `rid` (a multimesh RID) from the RenderingServer's read-backs when lazy adoption is active and the
 // mirror does not know it. Cheap otherwise (an atomic load).
 void adopt_multimesh_ref(std::uint64_t rid, std::uint64_t item_rid = 0);
 // Called by the free hook: forgets the RID's per-stream adoption refusals (textures, meshes,
-// multimeshes, process materials, emitters) and its CanvasTexture-registry entry.
+// multimeshes, process materials, emitters). The registry's entry goes through its own free tap.
 void adopt_resource_freed(std::uint64_t rid);
 // The synthetic process shader's key bits (LATE-PPM / LATE-CMBT): the builtin key packed exactly
 // (40 bits), so distinct keys never share a reserved RID.

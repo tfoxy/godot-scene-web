@@ -1967,7 +1967,7 @@ void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, 
 void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture, bool tile,
                            const Color *modulate, bool transpose) {
   bump(kAddTextureRect);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && modulate != nullptr) {
     // A mirror tap since G2b2 (gate2-design.md Q3): the raw arguments, flips included.
     mirror().add_texture_rect(item.id, to_rect(*rect), texture.id, tile, to_color(*modulate),
@@ -1994,7 +1994,7 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
                                   const Rect2 *source, const Color *modulate, bool transpose,
                                   bool clip_uv) {
   bump(kAddTextureRectRegion);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
                                      to_color(*modulate), transpose, clip_uv, current_frame());
@@ -2019,7 +2019,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
                                        const Rect2 *source, const Color *modulate,
                                        int outline_size, float px_range, float scale) {
   bump(kAddMsdfTextureRectRegion);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   // G4e2 (gate4-design.md Q3 "MSDF tap"): the /3 command, no longer a typed refusal.
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_msdf_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
@@ -2046,7 +2046,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
 void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
                       const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPolygon);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/true, current_frame());
@@ -2244,7 +2244,7 @@ void hook_free(void *self, RID rid) {
   // every owner of the dummy server rejects its index silently (rs_canvas_texture_shim.h).
   rs::canvas_texture_shim().on_free(rid.id, current_frame());
   rs::particles_shim().on_free(rid.id);  // PM5: likewise a private emitter RID
-  rs::adopt_resource_freed(rid.id);      // late-arm adoption's refusals and CanvasTexture registry
+  rs::adopt_resource_freed(rid.id);      // late-arm adoption's per-stream refusals
   if (rs::registry_on()) {
     rs::registry_note_free(rid.id);  // LAR0 (design R5): erased before the call is forwarded
   }
@@ -2303,7 +2303,7 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                              const Vector<Point2> *uvs, const Vector<int32_t> *bones,
                              const Vector<float> *weights, RID texture, int count) {
   bump(kAddTriangleArray);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     const bool skinned =
         (bones != nullptr && bones->size() > 0) || (weights != nullptr && weights->size() > 0);
@@ -2334,7 +2334,7 @@ void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *tra
   if (mesh != nullptr) {
     rs::adopt_mesh_ref(mesh->id);  // G8r: a pre-arm mesh is adopted at first reference
   }
-  rs::adopt_texture_ref(texture.id, item.id);
+  rs::adopt_texture_ref(texture.id);
   // G5e (gate5-design.md Q3b, render-stream-4.md "Command"): the /4 add_mesh command, naming the
   // mirror's mesh table entry (an unknown mesh RID becomes `unsupported`/`unknown-mesh`).
   if (streaming()) {
@@ -2364,7 +2364,7 @@ void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
     // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
     // becomes `unsupported`/`unknown-multimesh`).
     rs::adopt_multimesh_ref(mesh.id, item.id);  // PM9: a pre-arm multimesh, adopted at first reference
-    rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+    rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
     if (streaming()) {
       mirror().add_multimesh(item.id, mesh.id, texture.id, current_frame());
     }
@@ -2380,7 +2380,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
                          int32_t x_axis_mode, int32_t y_axis_mode, bool draw_center,
                          const Color *modulate) {
   bump(kAddNinePatch);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && topleft != nullptr &&
       bottomright != nullptr && modulate != nullptr) {
     mirror().add_nine_patch(item.id, to_rect(*rect), to_rect(*source), texture.id,
@@ -2410,7 +2410,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
 void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPrimitive);
-  rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/false, current_frame());
@@ -2934,7 +2934,7 @@ void hook_add_particles(void *self, RID item, RID particles, RID texture) {
   if (g_particles_hooked) {
     // PM5 ("The command"): /12's add_particles, naming the mirror's emitter (an unknown RID
     // becomes `unsupported`/`unknown-particles`).
-    rs::adopt_texture_ref(texture.id, item.id);
+    rs::adopt_texture_ref(texture.id);
     rs::adopt_particles_ref(item.id, particles.id);  // PM7: a pre-arm emitter, adopted here
     if (streaming()) {
       mirror().add_particles(item.id, particles.id, texture.id, current_frame());
@@ -4232,8 +4232,8 @@ RID hook_canvas_texture_create(void *self) {
   // the dummy storage's RID() becomes a private RID before anything -- log, mirror, engine --
   // sees it. Off, or a non-null engine result: unchanged.
   result.id = rs::canvas_texture_shim().on_create(result.id, current_frame());
-  rs::canvas_texture_note_create(result.id);  // LATE-SPINE: registry for late-arm adoption
-  registry_create(result.id, rs::RegistryKind::CanvasTexture);  // LAR0 (LAR1 folds LATE-SPINE's into it)
+  // LAR1: the registry's CanvasTexture entry (kind and a fresh, all-default payload).
+  registry_create(result.id, rs::RegistryKind::CanvasTexture);
   log_entry(&g_canvas_texture_creates, rids(result.id));
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_create");
@@ -4254,7 +4254,9 @@ void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t cha
   key.channel = channel;
   key.texture = texture.id;
   log_entry(&g_canvas_texture_channels, pod(key));
-  rs::canvas_texture_note_channel(canvas_texture.id, channel, texture.id);  // LATE-SPINE
+  if (rs::registry_on()) {
+    rs::registry_note_canvas_channel(canvas_texture.id, channel, texture.id);  // LAR1
+  }
   original<FnCanvasTextureSetChannel>(kCanvasTextureSetChannel)(self, canvas_texture, channel,
                                                                 texture);
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -4269,7 +4271,9 @@ void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t cha
 void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int32_t filter) {
   bump(kCanvasTextureSetTextureFilter);
   log_entry(&g_canvas_texture_filters, item_value(canvas_texture, filter));
-  rs::canvas_texture_note_filter(canvas_texture.id, filter);  // LATE-SPINE
+  if (rs::registry_on()) {
+    rs::registry_note_canvas_filter(canvas_texture.id, filter);  // LAR1
+  }
   original<FnRidEnum>(kCanvasTextureSetTextureFilter)(self, canvas_texture, filter);
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_set_texture_filter");
@@ -4282,7 +4286,9 @@ void hook_canvas_texture_set_texture_filter(void *self, RID canvas_texture, int3
 void hook_canvas_texture_set_texture_repeat(void *self, RID canvas_texture, int32_t repeat) {
   bump(kCanvasTextureSetTextureRepeat);
   log_entry(&g_canvas_texture_repeats, item_value(canvas_texture, repeat));
-  rs::canvas_texture_note_repeat(canvas_texture.id, repeat);  // LATE-SPINE
+  if (rs::registry_on()) {
+    rs::registry_note_canvas_repeat(canvas_texture.id, repeat);  // LAR1
+  }
   original<FnRidEnum>(kCanvasTextureSetTextureRepeat)(self, canvas_texture, repeat);
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_set_texture_repeat");
@@ -5054,6 +5060,10 @@ bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal,
   resources().canvas_texture_set_channel(tap_context(), rid, 0, diffuse, false);
   if (normal != 0) resources().canvas_texture_set_channel(tap_context(), rid, 1, normal, false);
   if (specular != 0) resources().canvas_texture_set_channel(tap_context(), rid, 2, specular, false);
+  // LAR1 (design O4, verified): the mirror's adopt carries filter and repeat, and so does the
+  // resource log now, for a non-default value (a fresh CanvasTexture is DEFAULT for both).
+  if (filter != 0) resources().canvas_texture_set_filter(tap_context(), rid, filter, false);
+  if (repeat != 0) resources().canvas_texture_set_repeat(tap_context(), rid, repeat, false);
   return true;
 }
 

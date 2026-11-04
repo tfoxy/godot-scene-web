@@ -868,11 +868,15 @@ std::string result_json() {
       json.field("textures_current", static_cast<int64_t>(r.textures_current));
       json.field("textures_creation", static_cast<int64_t>(r.textures_creation));
       json.field("textures_canvas", static_cast<int64_t>(r.textures_canvas));
+      json.field("canvas_registry", static_cast<int64_t>(r.canvas_registry));
+      json.field("canvas_residual", static_cast<int64_t>(r.canvas_residual));
       json.field("atlas_pages", static_cast<int64_t>(r.atlas_pages));
       json.field("compressed", static_cast<int64_t>(r.compressed));
       json.field("from_update", static_cast<int64_t>(r.from_update));
       json.field("decoded", static_cast<int64_t>(r.decoded));
       json.field("textures_refused", static_cast<int64_t>(r.textures_refused));
+      json.field("refused_no_image", static_cast<int64_t>(r.refused_no_image));
+      json.field("refused_canvas_empty", static_cast<int64_t>(r.refused_canvas_empty));
       json.field("meshes", static_cast<int64_t>(r.meshes));
       json.field("mesh_surfaces", static_cast<int64_t>(r.mesh_surfaces));
       json.field("meshes_refused", static_cast<int64_t>(r.meshes_refused));
