@@ -49,7 +49,11 @@
 //     (rs_registry.h), its channels first; one created before the extension loaded (the residual,
 //     design Q3) only from a cached `.tres` CanvasTexture's getters (PM9). A runtime-built
 //     CanvasTexture the hooks never saw (a load-late arm) is refused, typed `no-image` (F1);
-//   - a mesh: mesh_get_surface per surface and mesh_get_custom_aabb, `creation`, source `dummy`.
+//   - a mesh: mesh_get_surface per surface and mesh_get_custom_aabb, `creation`, source `dummy`;
+//   - a multimesh (LAR2): the registry's recorded allocation (format, colors, custom, indirect,
+//     instances), mesh, visible count and custom AABB, and multimesh_get_buffer. No format is
+//     guessed: an unregistered multimesh (load-late) is refused `preload-multimesh`; on the dummy
+//     host one edited per instance is refused (O3), and one never given a buffer is zeros.
 //
 // The bytes go through the hooks' own copy path (G8t's host decode, G8kw's worker and hold-back).
 // What cannot be read (texture_2d_get returns no image: a placeholder, a proxy, a RID that is no
@@ -254,6 +258,10 @@ enum class AdoptFault : std::uint8_t {
   RegistryOff,
   // registry-keep-freed: the free hook keeps the registry entry (fails registry-live-bound).
   RegistryKeepFreed,
+  // LAR2: registry-mm-stride: a multimesh adoption ignores the recorded format, colors and custom
+  // and guesses them from the buffer's per-instance stride, as PM9 did (the 12-float stride reads
+  // as 2d + colors: 2d + custom and 3d are misread; fails mm-registry-exact).
+  RegistryMmStride,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -279,8 +287,11 @@ struct AdoptResourceStats {
   std::uint32_t meshes = 0;            // adopted meshes (creation)
   std::uint32_t mesh_surfaces = 0;
   std::uint32_t meshes_refused = 0;    // RIDs mesh_get_surface_count could not read
-  std::uint32_t multimeshes = 0;       // PM9: adopted multimeshes (read back from the server)
-  std::uint32_t multimeshes_refused = 0;  // PM9: multimesh RIDs nothing could adopt
+  std::uint32_t multimeshes = 0;       // adopted multimeshes (LAR2: every one from the registry)
+  std::uint32_t multimeshes_refused = 0;  // multimesh RIDs nothing could adopt; typed (LAR2):
+  std::uint32_t refused_preload_multimesh = 0;  // not registered: older than the hooks (F1)
+  std::uint32_t refused_mm_edited_dummy = 0;    // instance setters on the dummy host (design O3)
+  std::uint32_t refused_mm_buffer = 0;  // the buffer getter's size is not the recorded allocation's
   std::uint32_t fonts = 0;             // TextServer font RIDs the census found
   std::uint32_t cached_compressed = 0; // CompressedTexture2D RIDs the census found
   std::uint32_t cache_paths = 0;       // resource paths the census listed
@@ -291,7 +302,9 @@ struct AdoptResourceStats {
 // Starts lazy adoption for this stream (GRC_ADOPT=arm, after the walk; the TextServer and
 // resource-cache reads run on the main thread only, any other thread gets the dummy's copy).
 // Ends with the stream.
-void adopt_resources_begin(AdoptFault fault);
+// `dummy_host`: the RenderingServer is the dummy (a headless display server), whose multimesh
+// instance setters are no-ops and whose buffer getter holds only the last set_buffer (LAR2, O3).
+void adopt_resources_begin(AdoptFault fault, bool dummy_host = false);
 void adopt_resources_end();
 bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
@@ -301,10 +314,12 @@ AdoptResourceStats adopt_resource_stats();
 // adopted from the registry (LAR1), so no drawing item is needed to find its channels.
 void adopt_texture_ref(std::uint64_t rid);
 void adopt_mesh_ref(std::uint64_t rid);
-// PM9 (late-arm multimesh adoption): called by the add_multimesh hook before its mirror tap; adopts
-// `rid` (a multimesh RID) from the RenderingServer's read-backs when lazy adoption is active and the
-// mirror does not know it. Cheap otherwise (an atomic load).
-void adopt_multimesh_ref(std::uint64_t rid, std::uint64_t item_rid = 0);
+// PM9 (late-arm multimesh adoption), LAR2: called by the add_multimesh hook before its mirror tap;
+// adopts `rid` (a multimesh RID) when lazy adoption is active and the mirror does not know it: the
+// allocation, mesh, visible count and custom AABB from the registry, the buffer from
+// RenderingServer.multimesh_get_buffer. A multimesh the registry does not hold (created before the
+// hooks) is refused, typed `preload-multimesh` (F1). Cheap otherwise (an atomic load).
+void adopt_multimesh_ref(std::uint64_t rid);
 // Called by the free hook: forgets the RID's per-stream adoption refusals (textures, meshes,
 // multimeshes, process materials, emitters). The registry's entry goes through its own free tap.
 void adopt_resource_freed(std::uint64_t rid);

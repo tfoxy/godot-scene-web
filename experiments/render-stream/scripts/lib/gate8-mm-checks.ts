@@ -122,6 +122,13 @@ export interface MmCell extends MmCellCalls {
   pairing?: MmPairing;
   freed_at_step?: number;
   headless?: Partial<MmCellCalls>;
+  /** LAR2: the allocation's transform format (default "2d") */
+  format?: "2d" | "3d";
+  /** LAR2: what the wire carries for the cell, born or adopted (default ok, no reason) */
+  status?: string;
+  reason?: string;
+  /** LAR2: instance setters after the last buffer (refused on the dummy host, design O3) */
+  edited?: boolean;
 }
 export interface G8mmExpected {
   schema: string;
@@ -135,6 +142,8 @@ export interface G8mmExpected {
   /** The adopted multimesh the late legs free after the adoption (mm.gd LATE_FREE_FRAME): the
    * capture records it freed and the late receivers release it. */
   late_free: { frame: number; count: number; cell: string };
+  /** LAR2: the deferred arm's frame (late-arm-registry-design.md, the multimesh row). */
+  late_arm?: { doc?: string; arm_frame: number };
   /** PM2: the shot's cell grid (README.md, expected.json `pixels.doc`). */
   pixels: MmPixels;
 }
@@ -704,15 +713,19 @@ export function mmNamedProblems(
       continue;
     }
     const freeFrame = freeLine?.frame ?? Number.POSITIVE_INFINITY;
-    const missing = trace.txs.filter(
-      (t) =>
-        t.frame >= firstState &&
-        t.frame < freeFrame &&
-        t.table.get(id)?.status !== "ok",
-    );
+    // LAR2: a cell the wire carries as unsupported (J_3D: multimesh-3d) is named all the same.
+    const status = cell.status ?? "ok";
+    const missing = trace.txs.filter((t) => {
+      if (t.frame < firstState || t.frame >= freeFrame) return false;
+      const e = t.table.get(id);
+      return (
+        e?.status !== status ||
+        (cell.reason !== undefined && e.reason !== cell.reason)
+      );
+    });
     if (missing.length > 0)
       problems.push(
-        `${name} (multimesh ${id}) is not an ok entry at ${missing.length} transaction(s) from frame ${firstState} (first: seq ${missing[0].seq})`,
+        `${name} (multimesh ${id}) is not an ${status}${cell.reason ? `/${cell.reason}` : ""} entry at ${missing.length} transaction(s) from frame ${firstState} (first: seq ${missing[0].seq})`,
       );
     if (freeLine) {
       if (
@@ -894,6 +907,14 @@ export function mmBytes(trace: MmTrace): MmBytes {
 // --------------------------------------------------------------------------------- the runner
 
 export const MM_SABOTAGES = ["perturb-instance", "stale-buffer"] as const;
+/** LAR2: the deferred-arm captures (late-arm-registry-design.md, the multimesh row). */
+const MM_DEFERRED_CAPTURES = [
+  "deferred/capture",
+  "fault-no-resources/capture",
+  "sabotage-registry-off/capture",
+  "sabotage-registry-mm-stride/capture",
+  "headless-deferred/capture",
+];
 const SINKS_11 = ["recording.rs11", "recording-patch.rs11"];
 const SINKS_10 = ["recording.rs10", "recording-patch.rs10"];
 const HONEST: [string, LegKind][] = [
@@ -918,12 +939,11 @@ const LEGS = [
   "sabotage-undrawn-multimesh/receiver",
   MM_IGNORE_IDENTITY,
   ...MM_SABOTAGES.map((s) => `sabotage-${s}/receiver-patch`),
-  // PM9: the late-armed captures and receivers.
+  // LAR2: the deferred captures (registry), their receivers, and the load-late residual.
+  ...MM_DEFERRED_CAPTURES,
+  "deferred/receiver",
+  "deferred/receiver-patch",
   "late/capture",
-  "fault-no-resources/capture",
-  "late/receiver",
-  "late/receiver-patch",
-  "fault-no-resources/receiver",
 ];
 
 // ------------------------------------------------------------------------------ pixels (PM2)
@@ -1144,6 +1164,9 @@ export async function runG8mm(
       ["capture", 11, SINKS_11],
       ["headless/capture", 11, SINKS_11],
       ["capture-v10", 10, SINKS_10],
+      // LAR2: the adoption sessions (registry-adopted multimeshes).
+      ["deferred/capture", 11, SINKS_11],
+      ["headless-deferred/capture", 11, SINKS_11],
     ] as const) {
       if (legSkipped(leg)) continue;
       for (const sink of sinks) {
@@ -1160,7 +1183,7 @@ export async function runG8mm(
     checks.push(
       check(
         "mm-validate",
-        "PM1: every honest g8mm recording (/11 rendered and headless, the /10 control; both sinks) passes the TypeScript validator and rs-core-check",
+        "PM1: every honest g8mm recording (/11 rendered and headless, the /10 control, LAR2's rendered and headless deferred captures; both sinks) passes the TypeScript validator and rs-core-check",
         any ? problems : null,
       ),
     );
@@ -1327,26 +1350,56 @@ export async function runG8mm(
   return { checks, report };
 }
 
-// ----------------------------------------------------------------------------- late-arm (PM9)
+// ------------------------------------------------------------------- late-arm (PM9, LAR2)
 
-/** The late capture's verdict on the adopted table: every drawn pre-arm multimesh is an `adopted`,
- * `ok` entry in the last transaction before the late free (at least `expectedAdopted` of them),
- * with no unknown-multimesh add_multimesh. Empty evidence (no transaction, no entry) fails. */
+/** The last transaction before `frame`. */
+function txBefore(trace: MmTrace, frame: number): MmTx | undefined {
+  let before: MmTx | undefined;
+  for (const t of trace.txs) if (t.frame < frame) before = t;
+  return before;
+}
+
+/** LAR2: the cells adopted on a deferred arm -- every drawn cell but those freed at a step (H_FREE:
+ * its raw item is withheld at the arm and never redrawn) -- and, on the dummy host, without the
+ * `edited` ones (design O3). */
+export function mmAdoptedCells(
+  expected: G8mmExpected,
+  host: "rendered" | "headless" = "rendered",
+): string[] {
+  return Object.entries(expected.cells)
+    .filter(
+      ([, c]) =>
+        c.drawn &&
+        c.freed_at_step === undefined &&
+        !(host === "headless" && c.edited),
+    )
+    .map(([name]) => name);
+}
+
+/** The table entries of `tx` whose instance count is `cell`'s (cells have unique counts). */
+function entriesOfCell(tx: MmTx, cell: MmCell): ResolvedMultimesh[] {
+  return [...tx.table.values()].filter(
+    (e) => e.instances === cell.instances && e.status !== "freed",
+  );
+}
+
+/** The deferred capture's verdict on the adopted table, in the last transaction before the late
+ * free: each of `cells` is exactly one `adopted` entry with the cell's status and reason (ok, or
+ * J_3D's unsupported/multimesh-3d), no entry belongs to no cell (an adoption at the wrong instance
+ * count, as the dummy's getter gave), and no add_multimesh is unknown-multimesh. Empty evidence
+ * (no transaction, no cell) fails. */
 export function mmLateAdoptProblems(
   trace: MmTrace,
-  expectedAdopted: number,
+  expected: G8mmExpected,
+  cells: readonly string[],
   freeFrame: number,
 ): string[] {
   const problems: string[] = [];
-  if (!(expectedAdopted > 0))
-    problems.push(
-      `expected adopted multimeshes must be positive (got ${expectedAdopted})`,
-    );
+  if (cells.length === 0) problems.push("no cell expected adopted");
   for (const e of trace.errors.slice(0, 3)) problems.push(`decode ${e}`);
   if (trace.txs.length === 0)
     return [...problems, "no transaction in the recording"];
-  let before: MmTx | undefined;
-  for (const t of trace.txs) if (t.frame < freeFrame) before = t;
+  const before = txBefore(trace, freeFrame);
   if (!before)
     return [
       ...problems,
@@ -1357,17 +1410,181 @@ export function mmLateAdoptProblems(
     problems.push(
       `${unknown} unknown-multimesh add_multimesh over the recording`,
     );
-  const entries = [...before.table.values()];
-  if (entries.length < expectedAdopted)
-    problems.push(
-      `${entries.length} multimesh entries before the free (frame ${before.frame}), ${expectedAdopted} expected`,
-    );
-  for (const e of entries) {
+  const claimed = new Set<number>();
+  for (const name of cells) {
+    const cell = expected.cells[name];
+    const found = entriesOfCell(before, cell);
+    if (found.length !== 1) {
+      problems.push(
+        `${name}: ${found.length} entries with ${cell.instances} instances (frame ${before.frame}), 1 expected`,
+      );
+      continue;
+    }
+    const e = found[0];
+    claimed.add(e.id);
+    const status = cell.status ?? "ok";
     if (e.origin !== "adopted")
-      problems.push(`multimesh ${e.id}: origin ${e.origin}`);
-    if (e.status !== "ok")
-      problems.push(`multimesh ${e.id}: status ${e.status}`);
+      problems.push(`${name} (multimesh ${e.id}): origin ${e.origin}`);
+    if (e.status !== status || (e.reason ?? undefined) !== cell.reason)
+      problems.push(
+        `${name} (multimesh ${e.id}): ${e.status}/${e.reason ?? "-"}, ${status}/${cell.reason ?? "-"} expected`,
+      );
   }
+  for (const e of before.table.values())
+    if (!claimed.has(e.id) && e.status !== "freed")
+      problems.push(
+        `multimesh ${e.id}: ${e.instances} instances, no adopted cell has them`,
+      );
+  return problems;
+}
+
+/** LAR2 `mm-registry-exact`: each of `cells` in the adopted leg's last transaction before
+ * `freeFrame` carries exactly the born leg's allocation and verdict there -- instances, format,
+ * colors, custom, visible, status, reason -- so a guessed format (PM9's stride) or a dummy's
+ * instance count (0) fails. Also counts the cells whose buffer hash equals the born one
+ * (informational: the frames match only when both legs published at the same frame). */
+export function mmRegistryExactProblems(
+  born: MmTrace,
+  adopted: MmTrace,
+  expected: G8mmExpected,
+  cells: readonly string[],
+  freeFrame: number,
+): {
+  problems: string[];
+  compared: number;
+  buffersEqual: number;
+  cellsFailed: string[];
+} {
+  const problems: string[] = [];
+  const cellsFailed: string[] = [];
+  const b = txBefore(born, freeFrame);
+  const a = txBefore(adopted, freeFrame);
+  if (!b || !a)
+    return {
+      problems: [
+        `no transaction before frame ${freeFrame} (born ${b ? "ok" : "none"}, adopted ${a ? "ok" : "none"})`,
+      ],
+      compared: 0,
+      buffersEqual: 0,
+      cellsFailed: [...cells],
+    };
+  if (cells.length === 0) problems.push("no cell to compare");
+  let compared = 0;
+  let buffersEqual = 0;
+  const fields = [
+    "instances",
+    "format",
+    "colors",
+    "custom",
+    "visible",
+    "status",
+    "reason",
+  ] as const;
+  const claimed = new Set<number>();
+  for (const name of cells) {
+    const cell = expected.cells[name];
+    const be = entriesOfCell(b, cell);
+    const ae = entriesOfCell(a, cell);
+    if (be.length !== 1 || ae.length !== 1) {
+      problems.push(
+        `${name}: ${be.length} born and ${ae.length} adopted entries with ${cell.instances} instances, 1 each expected`,
+      );
+      cellsFailed.push(name);
+      continue;
+    }
+    claimed.add(ae[0].id);
+    const diffs = fields.filter((f) => be[0][f] !== ae[0][f]);
+    if (diffs.length > 0) {
+      problems.push(
+        `${name}: ${diffs.map((f) => `${f} adopted ${String(ae[0][f])}, born ${String(be[0][f])}`).join("; ")}`,
+      );
+      cellsFailed.push(name);
+    }
+    compared++;
+    if (
+      a.frame === b.frame &&
+      ae[0].buffer_sha256 !== null &&
+      ae[0].buffer_sha256 === be[0].buffer_sha256
+    )
+      buffersEqual++;
+  }
+  for (const e of a.table.values())
+    if (!claimed.has(e.id) && e.status !== "freed") {
+      problems.push(
+        `adopted multimesh ${e.id}: ${e.instances} instances (${e.format}), no cell has them`,
+      );
+      cellsFailed.push(`#${e.id}`);
+    }
+  return { problems, compared, buffersEqual, cellsFailed };
+}
+
+/** LAR2 `mm-registry-source`: every adopted multimesh came from the registry -- `expectedAdopted`
+ * adopted, none refused (so none preload) -- and registry.json shows the multimesh family
+ * recorded (at least `cellCount` creates, payload calls recorded). */
+export function mmRegistrySourceProblems(
+  res: Record<string, number> | null,
+  registry: Record<string, unknown> | null,
+  expectedAdopted: number,
+  cellCount: number,
+): string[] {
+  const problems: string[] = [];
+  if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+  else {
+    if (res.multimeshes !== expectedAdopted)
+      problems.push(
+        `adopted ${res.multimeshes} multimeshes, ${expectedAdopted} expected`,
+      );
+    if ((res.multimeshes_refused ?? 0) !== 0)
+      problems.push(`refused ${res.multimeshes_refused}`);
+    if ((res.refused_preload_multimesh ?? 0) !== 0)
+      problems.push(
+        `${res.refused_preload_multimesh} refused preload-multimesh (not in the registry)`,
+      );
+  }
+  if (!registry) problems.push("no evidence/registry.json");
+  else {
+    if (registry.configured !== true || registry.enabled !== true)
+      problems.push(
+        `registry configured ${String(registry.configured)}, enabled ${String(registry.enabled)}`,
+      );
+    const fam = (
+      registry.families as Record<string, Record<string, number>> | undefined
+    )?.multimesh;
+    const pay = (
+      registry.payloads as Record<string, Record<string, number>> | undefined
+    )?.multimesh;
+    if (!fam || !((fam.creates ?? 0) >= cellCount))
+      problems.push(
+        `registry multimesh creates ${fam?.creates ?? "none"}, at least ${cellCount} expected`,
+      );
+    if (!pay || !((pay.sets ?? 0) > 0))
+      problems.push("registry multimesh payload recorded no call");
+  }
+  return problems;
+}
+
+/** LAR2 `mm-late-residual` (F1): the load-late capture refuses each drawn pre-load multimesh,
+ * typed preload-multimesh, and adopts none. */
+export function mmLateResidualProblems(
+  res: Record<string, number> | null,
+  expectedRefused: number,
+): string[] {
+  if (!res) return ["no stream.gate8.adopt_stats.resources"];
+  const problems: string[] = [];
+  if (!(expectedRefused > 0))
+    problems.push(
+      `expected refusals must be positive (got ${expectedRefused})`,
+    );
+  if ((res.multimeshes ?? 0) !== 0)
+    problems.push(`adopted ${res.multimeshes} multimeshes (none expected)`);
+  if (res.refused_preload_multimesh !== expectedRefused)
+    problems.push(
+      `${res.refused_preload_multimesh ?? "no"} refused preload-multimesh, ${expectedRefused} expected (the cells')`,
+    );
+  if (res.multimeshes_refused !== expectedRefused)
+    problems.push(
+      `${res.multimeshes_refused ?? "no"} multimeshes refused, ${expectedRefused} expected (all typed preload)`,
+    );
   return problems;
 }
 
@@ -1446,12 +1663,20 @@ export function mmExpectedProblems(expected: G8mmExpected): string[] {
     problems.push("expected.pixels.moving is empty");
   if (!(expected.late_free?.count > 0) || !(expected.late_free?.frame > 0))
     problems.push("expected.late_free is missing");
+  if (!((expected.late_arm?.arm_frame ?? 0) > 0))
+    problems.push("expected.late_arm.arm_frame is missing");
+  if (!Object.values(expected.cells ?? {}).some((c) => c.format === "3d"))
+    problems.push("expected.cells has no 3d-format cell (LAR2's J_3D)");
   return problems;
 }
 
-/** PM9 (late-arm multimesh adoption): the late-armed captures. The drawn node-backed multimeshes
- * (every cell but G_HIDDEN and H_FREE) are adopted at their first add_multimesh after the arm; the
- * fault capture is the pre-PM9 capture (GRC_ADOPT_FAULT=no-resources: nothing adopted). */
+/** PM9, LAR2 (late-arm-registry-design.md, the multimesh row): the late-armed captures. The
+ * `deferred` captures load the capture at birth and arm at frame 12: every drawn cell is adopted
+ * from the registry's recorded allocation (mmAdoptedCells), judged against the born capture
+ * (`capture`, `headless/capture`); the `late` capture loads at frame 12 (load-late) and, under F1,
+ * refuses every one of them typed preload-multimesh. The fault capture (deferred,
+ * GRC_ADOPT_FAULT=no-resources) adopts nothing; the two registry sabotages fail
+ * mm-registry-source (registry-off) and mm-registry-exact (registry-mm-stride). */
 async function runG8mmLate(
   g: string,
   expected: G8mmExpected,
@@ -1459,7 +1684,8 @@ async function runG8mmLate(
   report: G8mmReport,
 ): Promise<void> {
   const dir = (leg: string) => join(g, leg);
-  const ran = (leg: string) => existsSync(join(dir(leg), "exit-code.txt"));
+  const ran = (leg: string) =>
+    !skipped(dir(leg)) && existsSync(join(dir(leg), "exit-code.txt"));
   const json = async (path: string) => {
     try {
       return JSON.parse((await readText(path)) ?? "null") as Record<
@@ -1472,9 +1698,10 @@ async function runG8mmLate(
   };
   const appliedJson = async (leg: string) =>
     json(join(dir(leg), "applied.json"));
-  const adoption = (
-    r: Record<string, unknown> | null,
-  ): Record<string, number> | null => {
+  const adoption = async (
+    leg: string,
+  ): Promise<Record<string, number> | null> => {
+    const r = await json(join(dir(leg), "evidence", "result.json"));
     const res = (
       (r?.stream as Record<string, unknown> | undefined)?.gate8 as
         | Record<string, unknown>
@@ -1484,70 +1711,229 @@ async function runG8mmLate(
       ? (res.resources as Record<string, number>)
       : null;
   };
+  const registryOf = async (leg: string) =>
+    json(join(dir(leg), "evidence", "registry.json"));
+  const traceCache = new Map<string, MmTrace | null>();
   const trace = async (leg: string): Promise<MmTrace | null> => {
+    if (traceCache.has(leg)) return traceCache.get(leg) ?? null;
+    let t: MmTrace | null = null;
     try {
-      return traceMultimeshRecording(
+      t = traceMultimeshRecording(
         new Uint8Array(await readFile(join(dir(leg), "recording.rs11"))),
         11,
       );
     } catch {
-      return null;
+      t = null;
     }
+    traceCache.set(leg, t);
+    return t;
   };
+  const freeFrame = expected.late_free.frame;
+  const cellCount = Object.keys(expected.cells).length;
+  const adopted = mmAdoptedCells(expected);
+  const adoptedHeadless = mmAdoptedCells(expected, "headless");
+  const editedHeadless = adopted.filter((c) => !adoptedHeadless.includes(c));
   const expectedDrawn = Object.values(expected.cells).filter(
     (c) => c.drawn,
   ).length;
-  const expectedAdopted = Object.values(expected.cells).filter(
-    (c) => c.drawn && !c.freed_at_step,
-  ).length;
+  const late: Record<string, unknown> = {};
+  report.legs.late_arm = late;
+  /** A check's problems over `legs`: each one that did not run, named (so the tier verdict can
+   * excuse a leg skipped by tier), else none yet. */
+  const needs = (legs: string[]): string[] => {
+    const missing = legs.filter((l) => !ran(l));
+    return missing.length > 0 ? missing.map((l) => `${l} did not run`) : [];
+  };
 
-  // mm-late-adopt
+  // mm-late-adopt (deferred)
   {
-    const leg = "late/capture";
-    let problems: string[] | null = null;
+    const leg = "deferred/capture";
+    const problems = needs([leg]);
     let detail: string | undefined;
-    if (!ran(leg)) {
-      problems = ["late/capture did not run"];
-    } else {
-      problems = [];
-      const r = await json(join(dir(leg), "evidence", "result.json"));
-      const res = adoption(r);
+    if (problems.length === 0) {
+      const res = await adoption(leg);
       if (!res) problems.push("no stream.gate8.adopt_stats.resources");
       else {
-        if (res.multimeshes !== expectedAdopted)
+        if (res.multimeshes !== adopted.length)
           problems.push(
-            `adopted ${res.multimeshes} multimeshes, ${expectedAdopted} expected`,
+            `adopted ${res.multimeshes} multimeshes, ${adopted.length} expected`,
           );
         if ((res.multimeshes_refused ?? 0) !== 0)
           problems.push(`refused ${res.multimeshes_refused}`);
-        detail = `adopted ${res.multimeshes} multimeshes (refused ${res.multimeshes_refused})`;
+        detail = `adopted ${res.multimeshes} multimeshes (refused ${res.multimeshes_refused}): ${adopted.join(", ")}`;
       }
       const t = await trace(leg);
       if (!t) problems.push("recording.rs11 missing or undecodable");
       else
-        problems.push(
-          ...mmLateAdoptProblems(t, expectedAdopted, expected.late_free.frame),
-        );
+        problems.push(...mmLateAdoptProblems(t, expected, adopted, freeFrame));
     }
     checks.push(
       check(
         "mm-late-adopt",
-        "PM9: the late capture adopts every drawn pre-arm multimesh at its first add_multimesh (origin adopted, ok), with no unknown-multimesh",
+        "PM9, LAR2: the deferred capture adopts every drawn pre-arm multimesh at its first add_multimesh after the arm (origin adopted; ok, J_3D unsupported/multimesh-3d), one entry per cell at its instance count, with no unknown-multimesh",
         problems,
         detail,
       ),
     );
   }
 
-  // mm-late-free
+  // mm-registry-source (deferred), and its sabotage registry-off
   {
-    const leg = "late/capture";
-    let problems: string[] | null = null;
+    const leg = "deferred/capture";
+    const problems = needs([leg]);
     let detail: string | undefined;
-    if (!ran(leg)) {
-      problems = ["late/capture did not run"];
-    } else {
-      problems = [];
+    if (problems.length === 0) {
+      const res = await adoption(leg);
+      const reg = await registryOf(leg);
+      problems.push(
+        ...mmRegistrySourceProblems(res, reg, adopted.length, cellCount),
+      );
+      const fam = (
+        reg?.families as Record<string, Record<string, number>> | undefined
+      )?.multimesh;
+      const pay = (
+        reg?.payloads as Record<string, Record<string, number>> | undefined
+      )?.multimesh;
+      detail = `${res?.multimeshes ?? "?"} adopted from the registry, ${res?.refused_preload_multimesh ?? "?"} preload; registry.json multimesh creates ${fam?.creates ?? "?"}, payload entries ${pay?.entries ?? "?"}, sets ${pay?.sets ?? "?"}`;
+      late.registry_source = detail;
+    }
+    checks.push(
+      check(
+        "mm-registry-source",
+        "LAR2: every multimesh the deferred capture adopted came from the registry (all of them adopted, none refused, 0 preload-multimesh), and registry.json shows the family recorded (a create per cell, payload calls)",
+        problems,
+        detail,
+      ),
+    );
+    const sab = "sabotage-registry-off/capture";
+    const sp = needs([sab]);
+    if (sp.length === 0) {
+      const res = await adoption(sab);
+      const caught = mmRegistrySourceProblems(
+        res,
+        await registryOf(sab),
+        adopted.length,
+        cellCount,
+      );
+      if (caught.length === 0)
+        sp.push("mm-registry-source passes on the registry-off capture");
+      if (res && res.refused_preload_multimesh !== adopted.length)
+        sp.push(
+          `${res.refused_preload_multimesh} refused preload-multimesh, ${adopted.length} expected (every cell, as load-late)`,
+        );
+      late.registry_off = caught.slice(0, 3);
+    }
+    checks.push(
+      check(
+        "mm-registry-source-catches-registry-off",
+        "LAR2: under GRC_ADOPT_FAULT=registry-off (nothing recorded: the deferred arm becomes a load-late one) mm-registry-source fails, every cell refused preload-multimesh",
+        sp,
+      ),
+    );
+  }
+
+  // mm-registry-exact (deferred against born), and its sabotage registry-mm-stride
+  {
+    const leg = "deferred/capture";
+    const problems = needs([leg, "capture"]);
+    let detail: string | undefined;
+    if (problems.length === 0) {
+      const a = await trace(leg);
+      const b = await trace("capture");
+      if (!a || !b) problems.push("recording.rs11 missing or undecodable");
+      else {
+        const r = mmRegistryExactProblems(b, a, expected, adopted, freeFrame);
+        problems.push(...r.problems);
+        detail = `${r.compared} cells compared, ${r.buffersEqual} buffer hashes equal born`;
+        late.registry_exact = detail;
+      }
+    }
+    checks.push(
+      check(
+        "mm-registry-exact",
+        "LAR2: each multimesh the deferred capture adopted carries the born capture's allocation and verdict (instances, format, colors, custom, visible, status, reason) in the last transaction before the late free, so no format is guessed",
+        problems,
+        detail,
+      ),
+    );
+    const sab = "sabotage-registry-mm-stride/capture";
+    const sp = needs([sab, "capture"]);
+    if (sp.length === 0) {
+      const a = await trace(sab);
+      const b = await trace("capture");
+      if (!a || !b) sp.push("recording.rs11 missing or undecodable");
+      else {
+        const r = mmRegistryExactProblems(b, a, expected, adopted, freeFrame);
+        for (const c of ["J_CUSTOM", "J_3D"])
+          if (!r.cellsFailed.includes(c))
+            sp.push(`mm-registry-exact passes ${c} on the stride guess`);
+        late.registry_mm_stride = r.problems.slice(0, 4);
+      }
+    }
+    checks.push(
+      check(
+        "mm-registry-exact-catches-mm-stride",
+        "LAR2: under GRC_ADOPT_FAULT=registry-mm-stride (PM9's stride guess instead of the recorded format) mm-registry-exact fails on the new cell: J_CUSTOM (2d + custom) and J_3D (3d), both 12 floats an instance, read as 2d + colors",
+        sp,
+      ),
+    );
+  }
+
+  // mm-registry-headless (the dummy host: instance counts and formats equal born, O3's refusals)
+  {
+    const leg = "headless-deferred/capture";
+    const problems = needs([leg, "headless/capture"]);
+    let detail: string | undefined;
+    if (problems.length === 0) {
+      const res = await adoption(leg);
+      if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+      else {
+        if (res.multimeshes !== adoptedHeadless.length)
+          problems.push(
+            `adopted ${res.multimeshes} multimeshes, ${adoptedHeadless.length} expected`,
+          );
+        if ((res.refused_mm_edited_dummy ?? 0) !== editedHeadless.length)
+          problems.push(
+            `${res.refused_mm_edited_dummy ?? "no"} refused edited-dummy, ${editedHeadless.length} expected (${editedHeadless.join(", ")})`,
+          );
+        if ((res.multimeshes_refused ?? 0) !== editedHeadless.length)
+          problems.push(
+            `${res.multimeshes_refused} refused in all, ${editedHeadless.length} expected`,
+          );
+      }
+      const a = await trace(leg);
+      const b = await trace("headless/capture");
+      if (!a || !b) problems.push("recording.rs11 missing or undecodable");
+      else {
+        const r = mmRegistryExactProblems(
+          b,
+          a,
+          expected,
+          adoptedHeadless,
+          freeFrame,
+        );
+        problems.push(...r.problems);
+        detail = `adopted ${res?.multimeshes ?? "?"} (refused edited-dummy ${res?.refused_mm_edited_dummy ?? "?"}: ${editedHeadless.join(", ")}); ${r.compared} cells equal born headless, ${r.buffersEqual} buffer hashes equal`;
+        late.registry_headless = detail;
+      }
+    }
+    checks.push(
+      check(
+        "mm-registry-headless",
+        "LAR2: on the dummy host (headless, deferred) every adopted multimesh carries the born headless capture's instance count and allocation (the dummy's getter answers 0 instances), and the cells edited per instance after their last buffer are refused, typed edited-dummy (design O3)",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // mm-late-free (deferred)
+  {
+    const leg = "deferred/capture";
+    const rls = ["deferred/receiver", "deferred/receiver-patch"];
+    const problems = needs([leg, ...rls]);
+    let detail: string | undefined;
+    if (problems.length === 0) {
       const t = await trace(leg);
       if (!t) problems.push("recording.rs11 missing or undecodable");
       else {
@@ -1555,38 +1941,62 @@ async function runG8mmLate(
         problems.push(...f.problems);
         detail = `captured freed multimesh ids ${f.freed.join(", ") || "none"}`;
       }
-      for (const rl of ["late/receiver", "late/receiver-patch"]) {
-        if (!ran(rl)) problems.push(`${rl} did not run`);
-        else
-          problems.push(
-            ...mmLateReleaseProblems(
-              await appliedJson(rl),
-              rl,
-              expected.late_free.count,
-            ),
-          );
-      }
+      for (const rl of rls)
+        problems.push(
+          ...mmLateReleaseProblems(
+            await appliedJson(rl),
+            rl,
+            expected.late_free.count,
+          ),
+        );
     }
     checks.push(
       check(
         "mm-late-free",
-        `PM9: after the adoption the fixture frees ${expected.late_free.cell} (frame ${expected.late_free.frame}); the late capture records it freed (gone or a freed tombstone) and both late receivers release it`,
+        `PM9, LAR2: after the adoption the fixture frees ${expected.late_free.cell} (frame ${expected.late_free.frame}); the deferred capture records it freed (gone or a freed tombstone) and both deferred receivers (full and patch sinks) release it`,
         problems,
         detail,
       ),
     );
   }
 
-  // mm-late-fault
+  // mm-late-residual (late: F1)
+  {
+    const leg = "late/capture";
+    const problems = needs([leg]);
+    let detail: string | undefined;
+    if (problems.length === 0) {
+      const res = await adoption(leg);
+      problems.push(...mmLateResidualProblems(res, adopted.length));
+      detail = `refused ${res?.multimeshes_refused ?? "?"}, preload-multimesh ${res?.refused_preload_multimesh ?? "?"}, adopted ${res?.multimeshes ?? "?"}`;
+      const t = await trace(leg);
+      if (!t) problems.push("recording.rs11 missing or undecodable");
+      else {
+        const before = txBefore(t, freeFrame);
+        if (!before) problems.push("no transaction before the late free");
+        else if (before.table.size !== 0)
+          problems.push(
+            `${before.table.size} multimesh entries before the free (none expected)`,
+          );
+      }
+      late.residual = detail;
+    }
+    checks.push(
+      check(
+        "mm-late-residual",
+        "LAR2 (F1): the load-late capture refuses each drawn pre-load multimesh, typed preload-multimesh (as many as the cells), and adopts none: no format is guessed",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // mm-late-fault (deferred, no-resources)
   {
     const leg = "fault-no-resources/capture";
-    let problems: string[] | null = null;
-    if (!ran(leg)) {
-      problems = ["fault-no-resources/capture did not run"];
-    } else {
-      problems = [];
-      const r = await json(join(dir(leg), "evidence", "result.json"));
-      const res = adoption(r);
+    const problems = needs([leg]);
+    if (problems.length === 0) {
+      const res = await adoption(leg);
       if (!res) problems.push("no stream.gate8.adopt_stats.resources");
       else if ((res.multimeshes ?? 0) !== 0)
         problems.push(`adopted ${res.multimeshes} multimeshes under the fault`);
@@ -1609,7 +2019,7 @@ async function runG8mmLate(
     checks.push(
       check(
         "mm-late-fault",
-        "PM9: under GRC_ADOPT_FAULT=no-resources no multimesh is adopted and every drawn cell's add_multimesh is unknown-multimesh (the pre-PM9 capture)",
+        "PM9: under GRC_ADOPT_FAULT=no-resources (on the deferred arm: the registry records, nothing is adopted) no multimesh is adopted and every drawn cell's add_multimesh is unknown-multimesh",
         problems,
       ),
     );

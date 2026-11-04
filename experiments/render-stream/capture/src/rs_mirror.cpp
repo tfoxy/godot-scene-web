@@ -2733,7 +2733,7 @@ Mirror::MultimeshCall Mirror::multimesh_adopt(std::uint64_t rid, MultimeshAdopt 
   mm.format = a.format;
   mm.colors = a.colors;
   mm.custom = a.custom;
-  mm.indirect = false;
+  mm.indirect = a.indirect;
   mm.visible = std::min(a.visible, a.instances);
   mm.custom_aabb = a.custom_aabb;
   mm.mesh_rid = a.mesh;

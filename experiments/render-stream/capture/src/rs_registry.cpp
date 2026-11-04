@@ -36,6 +36,11 @@ struct State {
   RidMap<RegistryCanvasTexture> canvas;
   std::uint64_t canvas_capacity = 0;
   std::uint64_t canvas_sets = 0;
+  // LAR2: the multimesh payload, one slot per registered multimesh (likewise a subset of `map`'s
+  // keys, created and erased with the kind entry).
+  RidMap<RegistryMultimesh> multimesh;
+  std::uint64_t multimesh_capacity = 0;
+  std::uint64_t multimesh_sets = 0;
   RegistryFamilyStats family[kRegistryFamilies];
   std::uint64_t entries = 0;
   std::uint64_t peak = 0;
@@ -58,6 +63,8 @@ std::size_t index(RegistryFamily family) { return static_cast<std::size_t>(famil
 constexpr std::uint64_t kNodeBytes = sizeof(RidMap<Entry>::value_type);
 // One slot of the CanvasTexture payload map (key and RegistryCanvasTexture).
 constexpr std::uint64_t kCanvasNodeBytes = sizeof(RidMap<RegistryCanvasTexture>::value_type);
+// One slot of the multimesh payload map (key and RegistryMultimesh).
+constexpr std::uint64_t kMultimeshNodeBytes = sizeof(RidMap<RegistryMultimesh>::value_type);
 
 // Follows RidMap's growth rule (it doubles from 64 when an insertion would make it more than half
 // full, and never shrinks) for bytes_estimate. Call before inserting a new key into a map of `size`.
@@ -73,6 +80,31 @@ void canvas_create_locked(State &s, std::uint64_t rid) {
     track_growth(s.canvas.size(), &s.canvas_capacity);
   }
   s.canvas[rid] = RegistryCanvasTexture();
+}
+
+// A multimesh create: a fresh payload (the engine's new multimesh: nothing allocated).
+void multimesh_create_locked(State &s, std::uint64_t rid) {
+  if (s.multimesh.find(rid) == s.multimesh.end()) {
+    track_growth(s.multimesh.size(), &s.multimesh_capacity);
+  }
+  s.multimesh[rid] = RegistryMultimesh();
+}
+
+// A create of `kind` on `rid` (fresh or recreated): the payload maps follow the kind entry.
+void payload_create_locked(State &s, std::uint64_t rid, RegistryKind kind) {
+  if (kind == RegistryKind::CanvasTexture) {
+    canvas_create_locked(s, rid);
+  } else if (kind == RegistryKind::Multimesh) {
+    multimesh_create_locked(s, rid);
+  }
+}
+
+void payload_erase_locked(State &s, std::uint64_t rid, RegistryFamily family) {
+  if (family == RegistryFamily::CanvasTexture) {
+    s.canvas.erase(rid);
+  } else if (family == RegistryFamily::Multimesh) {
+    s.multimesh.erase(rid);
+  }
 }
 
 void add_entry_locked(State &s, RegistryFamily family) {
@@ -163,6 +195,9 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   s.canvas.clear();
   s.canvas_capacity = 0;
   s.canvas_sets = 0;
+  s.multimesh.clear();
+  s.multimesh_capacity = 0;
+  s.multimesh_sets = 0;
   for (RegistryFamilyStats &f : s.family) {
     f = RegistryFamilyStats();
   }
@@ -193,11 +228,10 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     it->second.kind = kind;
     ++f.creates;
     add_entry_locked(s, family);
-    if (kind == RegistryKind::CanvasTexture) {
-      canvas_create_locked(s, rid);
-    } else if (old == RegistryFamily::CanvasTexture) {
-      s.canvas.erase(rid);
+    if (old != family) {
+      payload_erase_locked(s, rid, old);
     }
+    payload_create_locked(s, rid, kind);
     changed_locked(s);
     return;
   }
@@ -207,9 +241,7 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
   }
   track_growth(s.map.size(), &s.capacity);
   s.map[rid] = Entry{kind};
-  if (kind == RegistryKind::CanvasTexture) {
-    canvas_create_locked(s, rid);
-  }
+  payload_create_locked(s, rid, kind);
   ++f.creates;
   add_entry_locked(s, family);
   changed_locked(s);
@@ -226,9 +258,7 @@ void registry_note_free(std::uint64_t rid) {
   ++s.family[index(family)].frees;
   if (s.fault != RegistryFault::KeepFreed) {
     s.map.erase(rid);
-    if (family == RegistryFamily::CanvasTexture) {
-      s.canvas.erase(rid);
-    }
+    payload_erase_locked(s, rid, family);
     remove_entry_locked(s, family);
   }
   changed_locked(s);
@@ -344,6 +374,122 @@ bool registry_canvas_texture(std::uint64_t rid, RegistryCanvasTexture *out) {
   return true;
 }
 
+// --- LAR2: the multimesh payload ---------------------------------------------------------------
+
+namespace {
+
+// The registered multimesh `rid`'s payload, or null. Under the lock.
+RegistryMultimesh *multimesh_locked(State &s, std::uint64_t rid) {
+  const auto it = s.multimesh.find(rid);
+  return it != s.multimesh.end() ? &it->second : nullptr;
+}
+
+}  // namespace
+
+std::int32_t registry_multimesh_stride(std::int32_t format, bool colors, bool custom) {
+  return (format == 1 ? 12 : 8) + (colors ? 4 : 0) + (custom ? 4 : 0);
+}
+
+void registry_note_multimesh_allocate(std::uint64_t rid, std::int32_t instances,
+                                      std::int32_t format, bool colors, bool custom,
+                                      bool indirect) {
+  if (instances < 0 || (format != 0 && format != 1)) {
+    return;  // the engine refuses both (MultiMesh and RS have two formats, no negative count)
+  }
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr) {
+    return;
+  }
+  m->indirect = indirect;
+  const bool same = m->allocated && m->instances == instances && m->format == format &&
+                    m->colors == colors && m->custom == custom;
+  if (!same) {
+    m->instances = instances;
+    m->format = format;
+    m->colors = colors;
+    m->custom = custom;
+    m->visible = m->visible < instances ? m->visible : instances;
+    m->edited = false;  // a new, zeroed buffer
+  }
+  m->allocated = true;
+  ++s.multimesh_sets;
+}
+
+void registry_note_multimesh_mesh(std::uint64_t rid, std::uint64_t mesh) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr) {
+    return;
+  }
+  m->mesh = mesh;
+  ++s.multimesh_sets;
+}
+
+void registry_note_multimesh_visible(std::uint64_t rid, std::int32_t visible) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr || visible < -1 || visible > m->instances) {
+    return;  // the engine refuses a count outside -1..instances
+  }
+  m->visible = visible;
+  ++s.multimesh_sets;
+}
+
+void registry_note_multimesh_custom_aabb(std::uint64_t rid, const std::array<float, 6> &aabb) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr) {
+    return;
+  }
+  m->custom_aabb = aabb;
+  ++s.multimesh_sets;
+}
+
+void registry_note_multimesh_buffer(std::uint64_t rid, std::size_t floats) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr) {
+    return;
+  }
+  const std::size_t expected =
+      static_cast<std::size_t>(m->instances) *
+      static_cast<std::size_t>(registry_multimesh_stride(m->format, m->colors, m->custom));
+  if (floats == expected) {
+    m->edited = false;
+  }
+  ++s.multimesh_sets;
+}
+
+void registry_note_multimesh_instance_edit(std::uint64_t rid) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr) {
+    return;
+  }
+  m->edited = true;
+  ++s.multimesh_sets;
+}
+
+bool registry_multimesh(std::uint64_t rid, RegistryMultimesh *out) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const RegistryMultimesh *m = multimesh_locked(s, rid);
+  if (m == nullptr) {
+    return false;
+  }
+  if (out != nullptr) {
+    *out = *m;
+  }
+  return true;
+}
+
 void registry_frame(std::uint64_t frame) {
   State &s = state();
   const std::uint64_t generation = s.generation.load(std::memory_order_relaxed);
@@ -381,13 +527,18 @@ RegistryStats registry_stats() {
   out.entries = s.entries;
   out.peak = s.peak;
   out.entry_bytes = static_cast<std::uint64_t>(s.map.size()) * kNodeBytes +
-                    static_cast<std::uint64_t>(s.canvas.size()) * kCanvasNodeBytes;
+                    static_cast<std::uint64_t>(s.canvas.size()) * kCanvasNodeBytes +
+                    static_cast<std::uint64_t>(s.multimesh.size()) * kMultimeshNodeBytes;
   out.canvas_payloads = s.canvas.size();
   out.canvas_payload_sets = s.canvas_sets;
   out.canvas_payload_bytes = s.canvas_capacity * kCanvasNodeBytes;
+  out.multimesh_payloads = s.multimesh.size();
+  out.multimesh_payload_sets = s.multimesh_sets;
+  out.multimesh_payload_bytes = s.multimesh_capacity * kMultimeshNodeBytes;
   // The slot arrays, empty slots included (at most half full, never shrinking: bounded by the
   // peak, not by the current entries).
-  out.bytes_estimate = s.capacity * kNodeBytes + out.canvas_payload_bytes;
+  out.bytes_estimate =
+      s.capacity * kNodeBytes + out.canvas_payload_bytes + out.multimesh_payload_bytes;
   return out;
 }
 
@@ -432,6 +583,8 @@ std::string registry_json() {
         .unsigned_integer(f.entries * kNodeBytes +
                           (static_cast<RegistryFamily>(i) == RegistryFamily::CanvasTexture
                                ? stats.canvas_payloads * kCanvasNodeBytes
+                           : static_cast<RegistryFamily>(i) == RegistryFamily::Multimesh
+                               ? stats.multimesh_payloads * kMultimeshNodeBytes
                                : 0));
     json.object_end();
   }
@@ -443,6 +596,13 @@ std::string registry_json() {
   json.key("sets").unsigned_integer(stats.canvas_payload_sets);
   json.key("node_bytes").unsigned_integer(kCanvasNodeBytes);
   json.key("bytes_estimate").unsigned_integer(stats.canvas_payload_bytes);
+  json.object_end();
+  // LAR2: the multimesh payload (allocation, mesh, visible, custom AABB, edited per multimesh).
+  json.key("multimesh").object_begin();
+  json.key("entries").unsigned_integer(stats.multimesh_payloads);
+  json.key("sets").unsigned_integer(stats.multimesh_payload_sets);
+  json.key("node_bytes").unsigned_integer(kMultimeshNodeBytes);
+  json.key("bytes_estimate").unsigned_integer(stats.multimesh_payload_bytes);
   json.object_end();
   json.object_end();
   // The change timeline: one row per frame callback after which the registry had changed. Columns

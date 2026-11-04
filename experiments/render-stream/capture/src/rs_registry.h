@@ -6,7 +6,9 @@
 // evidence (evidence/registry.json) reports entries, peak, creates, frees and overflow per family
 // plus a change timeline. The resource families move onto it one row at a time: LAR1 adds the
 // CanvasTexture payload (channels, filter, repeat; RegistryCanvasTexture), which rs_adopt.cpp
-// adopts a registered CanvasTexture from, whatever the arm state was when it was recorded.
+// adopts a registered CanvasTexture from, whatever the arm state was when it was recorded. LAR2
+// adds the multimesh payload (allocation, mesh, visible count, custom AABB, the `edited` bit;
+// RegistryMultimesh): the format RenderingServer has no getter for.
 //
 // Rules (design R1, R3, R5, R6):
 //   - Gating: registry_configure() runs once, before the vptr store, from GRC_ADOPT. With
@@ -32,6 +34,7 @@
 #ifndef GRC_RS_REGISTRY_H
 #define GRC_RS_REGISTRY_H
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -106,6 +109,10 @@ struct RegistryStats {
   std::uint64_t canvas_payloads = 0;      // live RegistryCanvasTexture entries
   std::uint64_t canvas_payload_sets = 0;  // set_channel/filter/repeat calls recorded
   std::uint64_t canvas_payload_bytes = 0; // its slot array (in bytes_estimate)
+  // LAR2: the multimesh payload map (likewise its own flat map; part of bytes_estimate).
+  std::uint64_t multimesh_payloads = 0;      // live RegistryMultimesh entries
+  std::uint64_t multimesh_payload_sets = 0;  // allocate/mesh/visible/aabb/buffer/instance calls recorded
+  std::uint64_t multimesh_payload_bytes = 0; // its slot array (in bytes_estimate)
 };
 
 // One timeline row: the per-family counts after a frame in which the registry changed. `frame` is
@@ -160,6 +167,46 @@ void registry_note_canvas_repeat(std::uint64_t rid, std::int32_t repeat);
 
 // The recorded CanvasTexture of a live RID (false: `rid` is not a registered CanvasTexture).
 bool registry_canvas_texture(std::uint64_t rid, RegistryCanvasTexture *out);
+
+// LAR2 (design R2, R5): a multimesh's payload -- its allocation (RenderingServer has a getter for
+// the instance count, which the dummy renderer answers 0, and none for the transform format, the
+// colors, the custom data or indirect), its mesh, visible count and custom AABB (the dummy answers
+// RID(), 0 and AABB() for those), and `edited`: an instance setter ran since the last allocation
+// or valid buffer set (design O3: on the dummy, whose instance setters are no-ops, the buffer
+// getter is then stale). The buffer itself is payload-sized and stays a getter at adoption.
+// A fresh multimesh is what the engine creates: 0 instances, 2d, no colors or custom, visible -1,
+// a zero AABB. Recorded for a registered multimesh only, as RegistryCanvasTexture is.
+struct RegistryMultimesh {
+  std::int32_t instances = 0;
+  std::int32_t format = 0;  // RS::MultimeshTransformFormat (0 2d, 1 3d)
+  bool colors = false;
+  bool custom = false;
+  bool indirect = false;
+  bool allocated = false;  // multimesh_allocate_data was recorded at least once
+  bool edited = false;
+  std::int32_t visible = -1;
+  std::uint64_t mesh = 0;
+  std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+// Floats per instance in the engine's buffer layout ((3d ? 12 : 8) + 4 x colors + 4 x custom).
+std::int32_t registry_multimesh_stride(std::int32_t format, bool colors, bool custom);
+
+// The multimesh_* hooks (only when registry_on()), after the engine call. allocate_data follows
+// GLES3 (mesh_storage.cpp _multimesh_allocate_data): an unchanged instances/format/colors/custom
+// keeps the buffer (and `edited`); any other replaces it with a zeroed one (clears `edited`) and
+// clamps `visible` to the instances; `indirect` is always taken. A buffer set clears `edited` only
+// when its size is the allocation's (`floats` == instances x stride; the engine refuses any other).
+void registry_note_multimesh_allocate(std::uint64_t rid, std::int32_t instances,
+                                      std::int32_t format, bool colors, bool custom, bool indirect);
+void registry_note_multimesh_mesh(std::uint64_t rid, std::uint64_t mesh);
+void registry_note_multimesh_visible(std::uint64_t rid, std::int32_t visible);
+void registry_note_multimesh_custom_aabb(std::uint64_t rid, const std::array<float, 6> &aabb);
+void registry_note_multimesh_buffer(std::uint64_t rid, std::size_t floats);
+void registry_note_multimesh_instance_edit(std::uint64_t rid);
+
+// The recorded multimesh of a live RID (false: `rid` is not a registered multimesh).
+bool registry_multimesh(std::uint64_t rid, RegistryMultimesh *out);
 
 // The frame callback (entry.cpp on_frame): appends a timeline row when anything changed since the
 // last row. Cheap when nothing did (one relaxed load).

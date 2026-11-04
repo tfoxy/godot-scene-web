@@ -215,11 +215,8 @@ enum BindId : int {
   kRsMeshGetSurfaceCount,
   kRsMeshGetSurface,
   kRsMeshGetCustomAabb,
-  // PM9 (late-arm multimesh adoption): the RenderingServer's multimesh read-backs.
-  kRsMultimeshGetInstanceCount,
-  kRsMultimeshGetVisibleInstances,
-  kRsMultimeshGetMesh,
-  kRsMultimeshGetCustomAabb,
+  // PM9 (late-arm multimesh adoption): the multimesh buffer read-back (LAR2: the allocation, mesh,
+  // visible count and custom AABB come from the registry).
   kRsMultimeshGetBuffer,
   // PM9 (late-arm canvas texture adoption): the CanvasTexture resource's getters.
   kCtexGetDiffuseTexture,
@@ -227,8 +224,6 @@ enum BindId : int {
   kCtexGetSpecularTexture,
   kCtexGetTextureFilter,
   kCtexGetTextureRepeat,
-  // Object.get(property) -> Variant, the generic property read (the multimesh node route, PM9).
-  kObjectGet,
   kTsmGetPrimaryInterface,
   kTsFontGetSizeCacheList,
   kTsFontGetTextureCount,
@@ -336,21 +331,14 @@ const BindSpec kBinds[kBindCount] = {
     {"RenderingServer", "mesh_get_surface_count", 2198884583LL},  // (RID) -> int
     {"RenderingServer", "mesh_get_surface", 186674697LL},         // (RID, int) -> Dictionary
     {"RenderingServer", "mesh_get_custom_aabb", 974181306LL},     // (RID) -> AABB
-    // PM9 (late-arm multimesh adoption), every one read-only and const.
-    {"RenderingServer", "multimesh_get_instance_count", 2198884583LL},     // (RID) -> int
-    {"RenderingServer", "multimesh_get_visible_instances", 2198884583LL},  // (RID) -> int
-    {"RenderingServer", "multimesh_get_mesh", 3814569979LL},               // (RID) -> RID
-    {"RenderingServer", "multimesh_get_custom_aabb", 974181306LL},         // (RID) -> AABB
-    {"RenderingServer", "multimesh_get_buffer", 3964669176LL},             // (RID) -> PackedFloat32Array
+    // PM9 (late-arm multimesh adoption), read-only and const.
+    {"RenderingServer", "multimesh_get_buffer", 3964669176LL},  // (RID) -> PackedFloat32Array
     // PM9 (late-arm canvas texture adoption), every one read-only and const.
     {"CanvasTexture", "get_diffuse_texture", 3635182373LL},   // -> Texture2D
     {"CanvasTexture", "get_normal_texture", 3635182373LL},    // -> Texture2D
     {"CanvasTexture", "get_specular_texture", 3635182373LL},  // -> Texture2D
     {"CanvasTexture", "get_texture_filter", 121960042LL},     // -> CanvasItem.TextureFilter
     {"CanvasTexture", "get_texture_repeat", 2667158319LL},    // -> CanvasItem.TextureRepeat
-    // Object.get's enum-free Variant read (the same signature hash as
-    // ShaderMaterial.get_shader_parameter; keyed under Object, not ShaderMaterial).
-    {"Object", "get", 2760726917LL},                          // (StringName) -> Variant
     {"TextServerManager", "get_primary_interface", 905850878LL},  // -> TextServer
     {"TextServer", "font_get_size_cache_list", 2684255073LL},     // (RID) -> Array[Vector2i]
     {"TextServer", "font_get_texture_count", 1311001310LL},       // (RID, Vector2i) -> int
@@ -875,6 +863,8 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
 namespace {
 
 std::atomic<bool> g_res_active{false};
+// LAR2: the RenderingServer is the dummy (adopt_resources_begin), for the multimesh rules (O3).
+std::atomic<bool> g_res_dummy_host{false};
 std::atomic<int> g_res_fault{0};
 std::thread::id g_res_main;
 std::mutex g_res_mutex;  // guards the census, the refused sets and the stats
@@ -1616,12 +1606,14 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::PpmNoShader;
   } else if (text == "registry-off") {
     *out = AdoptFault::RegistryOff;
+  } else if (text == "registry-mm-stride") {
+    *out = AdoptFault::RegistryMmStride;
   } else if (text == "registry-keep-freed") {
     *out = AdoptFault::RegistryKeepFreed;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
-             "no-particles, ppm-no-shader, registry-off or registry-keep-freed)";
+             "no-particles, ppm-no-shader, registry-off, registry-keep-freed or registry-mm-stride)";
     return false;
   }
   if (!adopt) {
@@ -1642,6 +1634,7 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::PpmNoShader: return "ppm-no-shader";
   case AdoptFault::RegistryOff: return "registry-off";
   case AdoptFault::RegistryKeepFreed: return "registry-keep-freed";
+  case AdoptFault::RegistryMmStride: return "registry-mm-stride";
   }
   return "none";
 }
@@ -1649,7 +1642,7 @@ const char *adopt_fault_name(AdoptFault f) {
 void adopt_emitters_reset();                  // PM7, below
 void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 
-void adopt_resources_begin(AdoptFault f) {
+void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   adopt_emitters_reset();
   std::lock_guard<std::mutex> lock(g_res_mutex);
   g_res_stats = AdoptResourceStats();
@@ -1659,6 +1652,7 @@ void adopt_resources_begin(AdoptFault f) {
   g_census = Census();
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
+  g_res_dummy_host.store(dummy_host, std::memory_order_relaxed);
   g_res_active.store(true, std::memory_order_release);
 }
 
@@ -1709,35 +1703,33 @@ void adopt_mesh_ref(std::uint64_t rid) {
   t_res_inside = false;
 }
 
-// PM9 (late-arm multimesh adoption): the RenderingServer exposes no multimesh format getter, so
-// the fallback recovers it from the per-instance stride of the buffer GLES3 keeps (stride =
-// (3d ? 12 : 8) + 4 x colors + 4 x custom). A canvas_item_add_multimesh is a 2D draw, so the
-// ambiguous strides prefer the 2D interpretation, and colors over custom. Used only when the
-// drawing node's MultiMesh could not be read (multimesh_format_via_node, below).
-bool infer_multimesh_format(std::int32_t instances, std::size_t floats, std::int32_t *format,
-                            bool *colors, bool *custom) {
+// LAR2's sabotage only (registry-mm-stride): PM9's format guess from the buffer's per-instance
+// stride ((3d ? 12 : 8) + 4 x colors + 4 x custom). The ambiguous strides prefer the 2D reading,
+// and colors over custom, so 2d + custom (12) and 3d (12) read as 2d + colors, and 3d + one of
+// them (16) as 2d + both. The honest adoption never guesses: the registry recorded the allocation.
+bool stride_guess_sabotage(std::int32_t instances, std::size_t floats, std::int32_t *format,
+                           bool *colors, bool *custom) {
   *format = 0;
   *colors = false;
   *custom = false;
   if (instances <= 0) {
-    return true;  // an empty multimesh: the format is moot
+    return true;
   }
   if (floats % static_cast<std::size_t>(instances) != 0) {
     return false;
   }
-  const std::size_t stride = floats / static_cast<std::size_t>(instances);
-  switch (stride) {
+  switch (floats / static_cast<std::size_t>(instances)) {
   case 8:
-    return true;  // 2d, no colours, no custom
+    return true;
   case 12:
-    *colors = true;  // 2d + colours (or 2d + custom, or 3d: prefer 2d + colours)
+    *colors = true;
     return true;
   case 16:
-    *colors = true;  // 2d + colours + custom (or 3d + one of them: prefer 2d)
+    *colors = true;
     *custom = true;
     return true;
   case 20:
-    *format = 1;  // 3d + colours + custom
+    *format = 1;
     *colors = true;
     *custom = true;
     return true;
@@ -1746,117 +1738,76 @@ bool infer_multimesh_format(std::int32_t instances, std::size_t floats, std::int
   }
 }
 
-// Object.get(`property`) on `object`, into `out`.
-void object_get(void *object, const char *property, VariantSlot *out) {
-  StringName name(property);
-  const GDExtensionConstTypePtr args[1] = {name.ptr()};
-  ptrcall(kObjectGet, object, args, out->data);
-}
+// Why a multimesh adoption refused (AdoptResourceStats' typed counters).
+enum class MultimeshRefusal { None, Preload, EditedDummy, Buffer };
 
-// PM9 follow-up: the exact multimesh format, read from the drawing item's node when its
-// `multimesh` property is the MultiMesh whose RID is `rid` (a MultiMeshInstance2D): its
-// transform_format, use_colors and use_custom_data, as multimesh_allocate_data was given them.
-// False -- the caller falls back to the stride -- when the item has no node, the node draws
-// another multimesh (a custom _draw), or a property does not read back with its type.
-bool multimesh_format_via_node(std::uint64_t item_rid, std::uint64_t rid, std::int32_t *format,
-                               bool *colors, bool *custom) {
-  if (item_rid == 0) {
-    return false;
-  }
-  void *node = node_of(item_rid);
-  static void *const mm_tag = Tags::tag("MultiMesh");
-  if (node == nullptr || mm_tag == nullptr) {
-    return false;
-  }
-  VariantSlot mm_v;
-  object_get(node, "multimesh", &mm_v);
-  if (mm_v.type() != GDEXTENSION_VARIANT_TYPE_OBJECT) {
-    return false;
-  }
-  void *multimesh = nullptr;
-  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_OBJECT)(&multimesh, mm_v.data);
-  if (multimesh == nullptr || as(multimesh, mm_tag) == nullptr ||
-      get_rid(kResourceGetRid, multimesh) != rid) {
-    return false;
-  }
-  VariantSlot f_v;
-  VariantSlot c_v;
-  VariantSlot u_v;
-  object_get(multimesh, "transform_format", &f_v);
-  object_get(multimesh, "use_colors", &c_v);
-  object_get(multimesh, "use_custom_data", &u_v);
-  if (f_v.type() != GDEXTENSION_VARIANT_TYPE_INT || c_v.type() != GDEXTENSION_VARIANT_TYPE_BOOL ||
-      u_v.type() != GDEXTENSION_VARIANT_TYPE_BOOL) {
-    return false;
-  }
-  std::int64_t f = 0;
-  std::uint8_t c = 0;
-  std::uint8_t u = 0;
-  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_INT)(&f, f_v.data);
-  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_BOOL)(&c, c_v.data);
-  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_BOOL)(&u, u_v.data);
-  if (f != 0 && f != 1) {
-    return false;
-  }
-  *format = static_cast<std::int32_t>(f);  // MultiMesh::TransformFormat == RS's (0 2d, 1 3d)
-  *colors = c != 0;
-  *custom = u != 0;
-  return true;
-}
-
-void adopt_multimesh_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
+// LAR2 (late-arm-registry-design.md R2, R4, O3, F1): a multimesh is adopted from the registry's
+// recorded allocation, mesh, visible count and custom AABB -- exact on every renderer, where the
+// getters answer 0 / RID() / AABB() on the dummy -- with the buffer from multimesh_get_buffer
+// (payload-sized, so never recorded). PM9's stride guess and its read of the drawing node's
+// MultiMesh are gone:
+//   - not registered (created before the hooks: a load-late arm, or GRC_ADOPT_FAULT=registry-off):
+//     refused, typed `preload-multimesh` (F1: a guessed format is worse than a refusal);
+//   - on the dummy host, edited per instance since its last buffer (`edited`): the dummy dropped
+//     those setters, so the getter is stale; refused, typed (O3);
+//   - a buffer of the allocation's size: adopted with it (GLES3 always, the dummy after a
+//     set_buffer); an empty one on the dummy (never set): the allocation's zeros, which is what
+//     the engine holds; any other size: refused, typed `buffer`.
+void adopt_multimesh_locked_out(std::uint64_t rid) {
   const std::uint64_t t0 = now_ns();
-  void *rs_singleton = singleton_object("RenderingServer");
-  if (rs_singleton == nullptr) {
-    return;
-  }
-  const GDExtensionConstTypePtr a1[1] = {&rid};
-  std::int64_t instances = 0;
-  std::int64_t visible = -1;
-  std::uint64_t mesh = 0;
-  float aabb[6] = {};
-  ptrcall(kRsMultimeshGetInstanceCount, rs_singleton, a1, &instances);
-  ptrcall(kRsMultimeshGetVisibleInstances, rs_singleton, a1, &visible);
-  ptrcall(kRsMultimeshGetMesh, rs_singleton, a1, &mesh);
-  ptrcall(kRsMultimeshGetCustomAabb, rs_singleton, a1, aabb);
-  Builtin buffer(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY);
-  ptrcall(kRsMultimeshGetBuffer, rs_singleton, a1, buffer.ptr());
-  std::vector<float> floats;
-  {
-    const std::uint8_t *cow = nullptr;
-    std::memcpy(&cow, buffer.data + 8, sizeof(cow));
-    const std::int64_t count = cowdata_size(cow);
-    if (cow != nullptr && count > 0) {
-      const float *data = reinterpret_cast<const float *>(cow);
-      floats.assign(data, data + count);
-    }
-  }
-  if (instances < 0) {
-    instances = 0;
-  }
-  Mirror::MultimeshAdopt adopt;
-  adopt.instances = static_cast<std::int32_t>(instances);
-  adopt.visible = static_cast<std::int32_t>(visible);
-  adopt.mesh = mesh;
-  adopt.custom_aabb = {aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]};
-  adopt.buffer = std::move(floats);
-  // The node's own format when it names this multimesh and its stride matches the buffer; the
-  // stride's guess otherwise.
-  bool ok = false;
-  if (multimesh_format_via_node(item_rid, rid, &adopt.format, &adopt.colors, &adopt.custom)) {
-    const std::size_t stride = static_cast<std::size_t>((adopt.format == 1 ? 12 : 8) +
-                                                        (adopt.colors ? 4 : 0) +
-                                                        (adopt.custom ? 4 : 0));
-    ok = adopt.buffer.size() == stride * static_cast<std::size_t>(adopt.instances);
-  }
-  if (!ok) {
-    ok = infer_multimesh_format(adopt.instances, adopt.buffer.size(), &adopt.format, &adopt.colors,
-                                &adopt.custom);
-  }
+  rs::RegistryMultimesh reg;
+  MultimeshRefusal refusal = MultimeshRefusal::None;
   bool adopted = false;
-  if (ok) {
-    adopt_mesh_ref(mesh);  // G8r: the multimesh's mesh, before the entry links it
-    adopted = hooks_adopt_multimesh(rid, std::move(adopt));
+  if (!registry_multimesh(rid, &reg)) {
+    refusal = MultimeshRefusal::Preload;
+  } else if (g_res_dummy_host.load(std::memory_order_relaxed) && reg.edited) {
+    refusal = MultimeshRefusal::EditedDummy;
+  } else {
+    void *rs_singleton = singleton_object("RenderingServer");
+    if (rs_singleton == nullptr) {
+      return;
+    }
+    const GDExtensionConstTypePtr a1[1] = {&rid};
+    Builtin buffer(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY);
+    ptrcall(kRsMultimeshGetBuffer, rs_singleton, a1, buffer.ptr());
+    std::vector<float> floats;
+    {
+      const std::uint8_t *cow = nullptr;
+      std::memcpy(&cow, buffer.data + 8, sizeof(cow));
+      const std::int64_t count = cowdata_size(cow);
+      if (cow != nullptr && count > 0) {
+        const float *data = reinterpret_cast<const float *>(cow);
+        floats.assign(data, data + count);
+      }
+    }
+    const std::size_t expected =
+        static_cast<std::size_t>(reg.instances) *
+        static_cast<std::size_t>(rs::registry_multimesh_stride(reg.format, reg.colors, reg.custom));
+    if (floats.empty() && expected > 0 && g_res_dummy_host.load(std::memory_order_relaxed)) {
+      floats.assign(expected, 0.0f);  // the dummy keeps no buffer until a set_buffer
+    }
+    Mirror::MultimeshAdopt adopt;
+    adopt.instances = reg.instances;
+    adopt.format = reg.format;
+    adopt.colors = reg.colors;
+    adopt.custom = reg.custom;
+    adopt.indirect = reg.indirect;
+    adopt.visible = reg.visible;
+    adopt.mesh = reg.mesh;
+    adopt.custom_aabb = reg.custom_aabb;
+    bool ok = floats.size() == expected;
+    if (fault() == AdoptFault::RegistryMmStride) {
+      // The sabotage: the recorded format ignored, PM9's guess from the buffer's stride instead.
+      ok = stride_guess_sabotage(reg.instances, floats.size(), &adopt.format, &adopt.colors,
+                                 &adopt.custom);
+    }
+    adopt.buffer = std::move(floats);
+    if (!ok) {
+      refusal = MultimeshRefusal::Buffer;
+    } else {
+      adopt_mesh_ref(reg.mesh);  // G8r: the multimesh's mesh, before the entry links it
+      adopted = hooks_adopt_multimesh(rid, std::move(adopt));
+    }
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (adopted) {
@@ -1865,11 +1816,18 @@ void adopt_multimesh_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
     // Refused once: a refused multimesh is never read back again this stream (the buffer read is
     // a GPU stall on GLES3 and blocks the main thread on a threaded RenderingServer).
     ++g_res_stats.multimeshes_refused;
+    if (refusal == MultimeshRefusal::Preload) {
+      ++g_res_stats.refused_preload_multimesh;
+    } else if (refusal == MultimeshRefusal::EditedDummy) {
+      ++g_res_stats.refused_mm_edited_dummy;
+    } else if (refusal == MultimeshRefusal::Buffer) {
+      ++g_res_stats.refused_mm_buffer;
+    }
   }
   g_res_stats.lookup_ns += now_ns() - t0;
 }
 
-void adopt_multimesh_ref(std::uint64_t rid, std::uint64_t item_rid) {
+void adopt_multimesh_ref(std::uint64_t rid) {
   if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
       fault() == AdoptFault::NoResources || !mirror_enabled() ||
       mirror_instance().knows_multimesh(rid) || std::this_thread::get_id() != g_res_main) {
@@ -1882,8 +1840,8 @@ void adopt_multimesh_ref(std::uint64_t rid, std::uint64_t item_rid) {
     }
   }
   // No t_res_inside guard here: the mesh read-back (adopt_mesh_ref) needs it clear, and the
-  // multimesh read-backs cannot re-enter another adoption (they call no hooked method).
-  adopt_multimesh_locked_out(rid, item_rid);
+  // multimesh read-back cannot re-enter another adoption (it calls no hooked method).
+  adopt_multimesh_locked_out(rid);
 }
 
 // Forgets a freed RID's per-stream refusal (a RID value the engine hands out again starts fresh,

@@ -381,6 +381,15 @@ struct CanvasTextureHookCall {
 };
 std::vector<CanvasTextureHookCall> g_ctex_hook_calls;
 std::vector<uint64_t> g_multimesh_hook_calls;
+// LAR2: what the multimesh hook was handed (the buffer by size).
+struct MultimeshHookCall {
+  uint64_t rid = 0, mesh = 0;
+  int32_t instances = 0, format = 0, visible = 0;
+  bool colors = false, custom = false, indirect = false;
+  size_t floats = 0;
+  float first = 0.0f;
+};
+std::vector<MultimeshHookCall> g_multimesh_hook_args;
 }  // namespace
 
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
@@ -408,8 +417,11 @@ void hooks_internal_material(std::vector<std::string> *, uint64_t *) {}
 bool hooks_adopt_particles(uint64_t, const rs::Mirror::ParticlesAdopt &) { return false; }
 void hooks_adopt_particles_subemitter(uint64_t, uint64_t) {}
 // PM9: the multimesh and canvas texture paths' hooks (likewise never reached).
-bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt) {
+bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt a) {
   g_multimesh_hook_calls.push_back(rid);
+  g_multimesh_hook_args.push_back({rid, a.mesh, a.instances, a.format, a.visible, a.colors,
+                                   a.custom, a.indirect, a.buffer.size(),
+                                   a.buffer.empty() ? 0.0f : a.buffer[0]});
   return false;
 }
 bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
@@ -831,6 +843,13 @@ void test_material_scans() {
         "fault: registry-keep-freed");
   check(!grc::rs::parse_adopt_fault("registry-keep-freed", false, &f, &error),
         "fault: registry-keep-freed needs GRC_ADOPT=arm");
+  // LAR2: registry-mm-stride (the multimesh adoption guesses the format from the stride).
+  check(grc::rs::parse_adopt_fault("registry-mm-stride", true, &f, &error) &&
+            f == grc::rs::AdoptFault::RegistryMmStride &&
+            std::string(grc::rs::adopt_fault_name(f)) == "registry-mm-stride",
+        "fault: registry-mm-stride");
+  check(!grc::rs::parse_adopt_fault("registry-mm-stride", false, &f, &error),
+        "fault: registry-mm-stride needs GRC_ADOPT=arm");
   // Inactive: the frame-boundary resolution and the arm pass are no-ops.
   grc::rs::adopt_materials_resolve();
   grc::rs::adopt_materials_at_arm();
@@ -960,6 +979,7 @@ void stream_end() {
   fake::world().reset_calls();
   g_ctex_hook_calls.clear();
   g_multimesh_hook_calls.clear();
+  g_multimesh_hook_args.clear();
 }
 
 // The RenderingServer singleton, and texture_2d_get answering no image (a CanvasTexture, or a
@@ -978,54 +998,133 @@ void test_fake_binds() {
   check(grc::rs::adopt_binds_ready(&missing), "fake: every bind resolves (" + missing + ")");
 }
 
-// PM9 follow-up: a multimesh adoption that fails (a stride that fits no format, or the hook's
-// refusal) is refused once per stream; RenderingServer.multimesh_get_buffer -- a GPU stall on
-// GLES3 -- is not repeated at the next draw, nor at a draw that names the item. A freed RID is
-// forgotten and read again.
-void test_refused_multimesh_not_reread() {
-  constexpr uint64_t kStride = 0x7001, kHook = 0x7002, kItem = 0x40;
+// LAR2 (late-arm-registry-design.md R2, O3, F1): a multimesh is adopted from the registry's
+// recorded allocation, mesh, visible count and custom AABB, with only the buffer read back.
+//   - 2d + custom and 3d (both 12 floats an instance, which PM9's stride guess read as 2d +
+//     colors) reach the hook with their recorded format;
+//   - an unregistered multimesh (pre-load) is refused `preload-multimesh` without a read;
+//   - a buffer of another size than the allocation's is refused `buffer`, read once per stream;
+//   - on the dummy host: an `edited` multimesh is refused without a read (O3), and an empty
+//     buffer is the allocation's zeros;
+//   - registry-mm-stride guesses again (the sabotage), registry-off refuses everything preload.
+// A freed RID is forgotten and read again.
+void test_multimesh_from_registry() {
+  constexpr uint64_t kCustom = 0x7001, k3d = 0x7002, kPre = 0x7003, kEdited = 0x7004;
+  constexpr uint64_t kBad = 0x7005, kEmpty = 0x7006, kMesh = 0x7010;
   fake::World &w = fake::world();
   std::vector<uint64_t> unused;
-  fake_rendering_server(&unused);
   std::map<uint64_t, std::vector<float>> buffers = {
-      {kStride, std::vector<float>(7, 1.0f)},   // 2 instances, 7 floats: no stride fits
-      {kHook, std::vector<float>(16, 1.0f)}};   // 2 instances x 8: 2d, no colors, no custom
+      {kCustom, std::vector<float>(13 * 12, 1.0f)}, {k3d, std::vector<float>(14 * 12, 2.0f)},
+      {kPre, std::vector<float>(2 * 8, 1.0f)},      {kEdited, std::vector<float>(2 * 8, 3.0f)},
+      {kBad, std::vector<float>(7, 1.0f)},          {kEmpty, std::vector<float>()}};
   std::vector<uint64_t> reads;
-  w.overrides["RenderingServer.multimesh_get_instance_count"] = [](fake::Object *, FakeArgs,
-                                                                   void *ret) {
-    fake::put_int(ret, 2);
+  // stream_end() resets the fake world, so each stream installs the server again.
+  const auto install = [&]() {
+    fake_rendering_server(&unused);
+    w.overrides["RenderingServer.multimesh_get_buffer"] = [&](fake::Object *, FakeArgs args,
+                                                              void *ret) {
+      const uint64_t rid = fake::arg_u64(args, 0);
+      reads.push_back(rid);
+      fake::put_packed_floats(ret, buffers[rid]);
+    };
   };
-  w.overrides["RenderingServer.multimesh_get_visible_instances"] = [](fake::Object *, FakeArgs,
-                                                                      void *ret) {
-    fake::put_int(ret, -1);
+  const auto record = [&]() {
+    grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+    for (uint64_t rid : {kCustom, k3d, kEdited, kBad, kEmpty}) {
+      grc::rs::registry_note_create(rid, grc::rs::RegistryKind::Multimesh);
+    }
+    grc::rs::registry_note_multimesh_allocate(kCustom, 13, 0, false, true, false);
+    grc::rs::registry_note_multimesh_mesh(kCustom, kMesh);
+    grc::rs::registry_note_multimesh_visible(kCustom, 9);
+    grc::rs::registry_note_multimesh_allocate(k3d, 14, 1, false, false, false);
+    grc::rs::registry_note_multimesh_allocate(kEdited, 2, 0, false, false, false);
+    grc::rs::registry_note_multimesh_buffer(kEdited, 16);
+    grc::rs::registry_note_multimesh_instance_edit(kEdited);
+    grc::rs::registry_note_multimesh_allocate(kBad, 2, 0, false, false, false);
+    grc::rs::registry_note_multimesh_allocate(kEmpty, 3, 0, true, false, false);
   };
-  w.overrides["RenderingServer.multimesh_get_buffer"] = [&](fake::Object *, FakeArgs args,
-                                                            void *ret) {
-    const uint64_t rid = fake::arg_u64(args, 0);
-    reads.push_back(rid);
-    fake::put_packed_floats(ret, buffers[rid]);
+  const auto begin = [&](grc::rs::AdoptFault f, bool dummy) {
+    install();
+    grc::rs::mirror_enable(false);
+    grc::rs::mirror_enable(true);
+    grc::rs::mirror_instance().set_root(kRootViewport, kRootCanvas, kIdentity);
+    grc::rs::adopt_resources_begin(f, dummy);
+    reads.clear();
   };
-  stream_begin();
-  grc::rs::adopt_multimesh_ref(kStride);
-  grc::rs::adopt_multimesh_ref(kStride);
-  grc::rs::adopt_multimesh_ref(kStride, kItem);
-  check(reads == std::vector<uint64_t>({kStride}),
-        "mm refused: the buffer is read once over three draws");
-  check(grc::rs::adopt_resource_stats().multimeshes_refused == 1 && g_multimesh_hook_calls.empty(),
-        "mm refused: counted once, refused by the stride before the hook");
-  grc::rs::adopt_multimesh_ref(kHook);
-  grc::rs::adopt_multimesh_ref(kHook, kItem);
-  check(reads == std::vector<uint64_t>({kStride, kHook}) &&
-            g_multimesh_hook_calls == std::vector<uint64_t>({kHook}),
-        "mm refused by the hook: read and handed over once");
-  check(grc::rs::adopt_resource_stats().multimeshes_refused == 2, "mm refused: two RIDs refused");
-  grc::rs::adopt_resource_freed(kStride);
-  grc::rs::adopt_multimesh_ref(kStride);
-  check(reads == std::vector<uint64_t>({kStride, kHook, kStride}) &&
-            grc::rs::adopt_resource_stats().multimeshes_refused == 3,
-        "mm refused: a freed RID is forgotten and read again");
-  check(w.null_bind_calls == 0, "mm refused: no call through a null bind");
+
+  // A GPU host (GLES3): every registered multimesh's buffer is the allocation's size.
+  record();
+  grc::rs::mirror_enable(false);
+  begin(grc::rs::AdoptFault::None, false);
+  grc::rs::adopt_multimesh_ref(kCustom);
+  grc::rs::adopt_multimesh_ref(k3d);
+  check(g_multimesh_hook_args.size() == 2 && g_multimesh_hook_args[0].rid == kCustom &&
+            g_multimesh_hook_args[0].format == 0 && !g_multimesh_hook_args[0].colors &&
+            g_multimesh_hook_args[0].custom && g_multimesh_hook_args[0].instances == 13 &&
+            g_multimesh_hook_args[0].mesh == kMesh && g_multimesh_hook_args[0].visible == 9 &&
+            g_multimesh_hook_args[0].floats == 13 * 12 && g_multimesh_hook_args[1].rid == k3d &&
+            g_multimesh_hook_args[1].format == 1 && !g_multimesh_hook_args[1].colors &&
+            !g_multimesh_hook_args[1].custom && g_multimesh_hook_args[1].instances == 14,
+        "mm registry: 2d + custom and 3d handed over with the recorded allocation");
+  grc::rs::adopt_multimesh_ref(kPre);
+  grc::rs::adopt_multimesh_ref(kPre);
+  check(reads == std::vector<uint64_t>({kCustom, k3d}) && g_multimesh_hook_args.size() == 2,
+        "mm registry: an unregistered multimesh is refused without a read, once");
+  grc::rs::adopt_multimesh_ref(kEdited);
+  check(g_multimesh_hook_args.size() == 3 && g_multimesh_hook_args[2].rid == kEdited &&
+            g_multimesh_hook_args[2].first == 3.0f,
+        "mm registry: edited on a GPU host: the getter's buffer is exact");
+  grc::rs::adopt_multimesh_ref(kBad);
+  grc::rs::adopt_multimesh_ref(kBad);
+  grc::rs::adopt_multimesh_ref(kEmpty);
+  check(reads == std::vector<uint64_t>({kCustom, k3d, kEdited, kBad, kEmpty}) &&
+            g_multimesh_hook_args.size() == 3,
+        "mm registry: a buffer of the wrong size (or none, off the dummy) is refused, read once");
+  grc::rs::AdoptResourceStats st = grc::rs::adopt_resource_stats();
+  // The stub hook refuses kCustom, k3d and kEdited too (untyped).
+  check(st.multimeshes == 0 && st.multimeshes_refused == 6 && st.refused_preload_multimesh == 1 &&
+            st.refused_mm_buffer == 2 && st.refused_mm_edited_dummy == 0,
+        "mm registry: typed refusals (preload 1, buffer 2)");
+  grc::rs::adopt_resource_freed(kBad);
+  grc::rs::adopt_multimesh_ref(kBad);
+  check(reads.back() == kBad && reads.size() == 6, "mm registry: a freed RID is read again");
+  check(w.null_bind_calls == 0, "mm registry: no call through a null bind");
   stream_end();
+
+  // The dummy host: edited is refused without a read (O3); never set is zeros.
+  begin(grc::rs::AdoptFault::None, true);
+  grc::rs::adopt_multimesh_ref(kEdited);
+  grc::rs::adopt_multimesh_ref(kEmpty);
+  check(reads == std::vector<uint64_t>({kEmpty}) && g_multimesh_hook_args.size() == 1 &&
+            g_multimesh_hook_args[0].rid == kEmpty && g_multimesh_hook_args[0].floats == 3 * 12 &&
+            g_multimesh_hook_args[0].first == 0.0f && g_multimesh_hook_args[0].colors,
+        "mm dummy: edited refused unread, an unset buffer is the allocation's zeros");
+  st = grc::rs::adopt_resource_stats();
+  check(st.refused_mm_edited_dummy == 1 && st.refused_mm_buffer == 0,
+        "mm dummy: typed edited-dummy");
+  stream_end();
+
+  // registry-mm-stride: the recorded format ignored, the 12-float stride read as 2d + colors.
+  begin(grc::rs::AdoptFault::RegistryMmStride, false);
+  grc::rs::adopt_multimesh_ref(kCustom);
+  grc::rs::adopt_multimesh_ref(k3d);
+  check(g_multimesh_hook_args.size() == 2 && g_multimesh_hook_args[0].format == 0 &&
+            g_multimesh_hook_args[0].colors && !g_multimesh_hook_args[0].custom &&
+            g_multimesh_hook_args[1].format == 0 && g_multimesh_hook_args[1].colors &&
+            g_multimesh_hook_args[1].instances == 14,
+        "mm registry-mm-stride: both misread as 2d + colors (the count kept)");
+  stream_end();
+
+  // registry-off: nothing recorded, so every multimesh is preload.
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::Off);
+  begin(grc::rs::AdoptFault::RegistryOff, false);
+  grc::rs::adopt_multimesh_ref(kCustom);
+  grc::rs::adopt_multimesh_ref(k3d);
+  st = grc::rs::adopt_resource_stats();
+  check(reads.empty() && g_multimesh_hook_args.empty() && st.refused_preload_multimesh == 2,
+        "mm registry-off: every multimesh refused preload, unread");
+  stream_end();
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
 }
 
 // LAR1: CanvasTextures adopted from the registry share atlas pages. No getter runs on a registered
@@ -1223,7 +1322,7 @@ int main() {
   test_ppm_key_bits();
   // From here the fake engine is installed (process-wide): the engine-free tests above run first.
   test_fake_binds();
-  test_refused_multimesh_not_reread();
+  test_multimesh_from_registry();
   test_canvas_texture_channels_not_reread();
   test_canvas_texture_registry_gating();
   test_refused_ppm_not_retried();

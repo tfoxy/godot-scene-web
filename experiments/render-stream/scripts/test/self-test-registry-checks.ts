@@ -249,6 +249,41 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
   const struct = /struct RegistryCanvasTexture \{([^}]*)\}/.exec(header)?.[1] ?? "";
   for (const f of ["diffuse", "normal", "specular", "filter", "repeat"])
     expect(new RegExp(`\\b${f} = 0;`).test(struct), `RegistryCanvasTexture records ${f}`);
+  // LAR2 (K1 for the multimesh payload): every hooked multimesh setter that changes the state an
+  // adoption carries records into the registry (allocate, mesh, visible, custom AABB, both buffer
+  // sets, the four instance setters), and the adoption hands Mirror::MultimeshAdopt every recorded
+  // field -- no getter but the buffer's.
+  const mmTaps: Record<string, RegExp> = {
+    multimesh_allocate_data:
+      /rs::registry_note_multimesh_allocate\(multimesh\.id, instances, format, colors, custom, indirect\)/,
+    multimesh_set_mesh: /rs::registry_note_multimesh_mesh\(multimesh\.id, mesh\.id\)/,
+    multimesh_set_visible_instances: /rs::registry_note_multimesh_visible\(multimesh\.id, visible\)/,
+    multimesh_set_custom_aabb: /rs::registry_note_multimesh_custom_aabb\(/,
+    multimesh_set_buffer: /rs::registry_note_multimesh_buffer\(multimesh\.id, /,
+    multimesh_set_buffer_interpolated: /rs::registry_note_multimesh_buffer\(multimesh\.id, /,
+    multimesh_instance_set_transform: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_instance_set_transform_2d: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_instance_set_color: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+    multimesh_instance_set_custom_data: /rs::registry_note_multimesh_instance_edit\(multimesh\.id\)/,
+  };
+  for (const [h, re] of Object.entries(mmTaps))
+    expect(re.test(body(h) ?? ""), `hook_${h} records into the registry`);
+  const mirrorHeader = readFileSync(join(here, "../../capture/src/rs_mirror.h"), "utf8");
+  const mmStruct = /struct MultimeshAdopt \{([^}]*)\}/.exec(mirrorHeader)?.[1] ?? "";
+  const regStruct = /struct RegistryMultimesh \{([^}]*)\}/.exec(header)?.[1] ?? "";
+  for (const f of ["instances", "format", "colors", "custom", "indirect", "visible", "mesh", "custom_aabb"]) {
+    expect(new RegExp(`\\b${f}\\b`).test(regStruct), `RegistryMultimesh records ${f}`);
+    expect(new RegExp(`\\b${f}\\b`).test(mmStruct), `MultimeshAdopt carries ${f}`);
+    expect(
+      new RegExp(`adopt\\.${f} = reg\\.${f};`).test(adopt),
+      `a registered multimesh is adopted with its recorded ${f}`,
+    );
+  }
+  expect(
+    !/kRsMultimeshGet(InstanceCount|VisibleInstances|Mesh|CustomAabb)\b/.test(adopt) &&
+      !/multimesh_format_via_node|infer_multimesh_format/.test(adopt),
+    "no multimesh getter but the buffer's, no node format read, no honest stride guess (LAR2)",
+  );
 }
 
 if (failures > 0) {

@@ -8,6 +8,10 @@
 //   ctex     LAR1: a CanvasTexture's registry life -- create, set_channel (diffuse),
 //            set_texture_filter, the adoption's registry_canvas_texture read, free -- per call
 //            (5 calls), uncontended, `live` CanvasTextures
+//   mm       LAR2: a multimesh's registry life -- create, allocate_data, set_mesh, set_buffer, an
+//            instance setter, the adoption's registry_multimesh read, free -- per call (7 calls),
+//            uncontended, `live` multimeshes
+//   mm_edit  LAR2: one instance setter's tap on a live multimesh (the per-instance hot path)
 // Usage: rs_registry_bench [live=20000] [rounds=50]
 #include <atomic>
 #include <chrono>
@@ -42,7 +46,7 @@ int main(int argc, char **argv) {
   const int rounds = argc > 2 ? std::atoi(argv[2]) : 50;
   std::uint64_t node_bytes = 0;
   double best_off = 1e30, best_create = 1e30, best_free = 1e30, best_pair4 = 1e30;
-  double best_ctex = 1e30;
+  double best_ctex = 1e30, best_mm = 1e30, best_mm_edit = 1e30;
   for (int r = 0; r < rounds; ++r) {
     registry_configure(false, RegistryFault::None);
     std::uint64_t t0 = now_ns();
@@ -101,6 +105,33 @@ int main(int argc, char **argv) {
     }
     std::atomic_signal_fence(std::memory_order_seq_cst);
     best_ctex = std::min(best_ctex, double(now_ns() - t0) / double(live * 5));
+
+    registry_configure(true, RegistryFault::None);
+    RegistryMultimesh m;
+    t0 = now_ns();
+    for (std::uint64_t i = 1; i <= live; ++i) {
+      const std::uint64_t rid = (std::uint64_t{4} << 40) | i;
+      registry_note_create(rid, RegistryKind::Multimesh);
+      registry_note_multimesh_allocate(rid, 16, 0, true, true, false);
+      registry_note_multimesh_mesh(rid, rid + 1);
+      registry_note_multimesh_buffer(rid, 16 * 16);
+      registry_note_multimesh_instance_edit(rid);
+    }
+    for (std::uint64_t i = 1; i <= live; ++i) {
+      const std::uint64_t rid = (std::uint64_t{4} << 40) | i;
+      if (registry_multimesh(rid, &m)) sink += m.mesh;
+      registry_note_free(rid);
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    best_mm = std::min(best_mm, double(now_ns() - t0) / double(live * 7));
+    const std::uint64_t one = (std::uint64_t{4} << 40) | 1;
+    registry_note_create(one, RegistryKind::Multimesh);
+    t0 = now_ns();
+    for (std::uint64_t i = 1; i <= live; ++i) {
+      registry_note_multimesh_instance_edit(one);
+    }
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    best_mm_edit = std::min(best_mm_edit, double(now_ns() - t0) / double(live));
     if (sink == 1) {
       std::puts("");  // keeps the reads live
     }
@@ -108,8 +139,8 @@ int main(int argc, char **argv) {
   std::printf(
       "{\"schema\":\"render-stream-registry-bench/1\",\"live\":%llu,\"rounds\":%d,"
       "\"off_ns\":%.2f,\"create_ns\":%.2f,\"free_ns\":%.2f,\"pair4_ns\":%.2f,"
-      "\"bytes_per_entry\":%llu,\"ctex_ns\":%.2f}\n",
+      "\"bytes_per_entry\":%llu,\"ctex_ns\":%.2f,\"mm_ns\":%.2f,\"mm_edit_ns\":%.2f}\n",
       static_cast<unsigned long long>(live), rounds, best_off, best_create, best_free, best_pair4,
-      static_cast<unsigned long long>(node_bytes), best_ctex);
+      static_cast<unsigned long long>(node_bytes), best_ctex, best_mm, best_mm_edit);
   return 0;
 }

@@ -323,10 +323,77 @@ int main() {
   registry_configure(true, RegistryFault::Off);
   expect(!registry_on(), "ctex registry-off: gate closed");
 
+  // LAR2: the multimesh payload -- the allocation (GLES3's same-allocation rule), mesh, visible,
+  // custom AABB and `edited` -- for registered multimeshes only, erased with the entry.
+  registry_configure(true, RegistryFault::None);
+  {
+    constexpr std::uint64_t kMm = 0x400000001, kMm2 = 0x400000002, kMesh = 0x400000010;
+    constexpr std::uint64_t kPre = 0x400000020;
+    registry_note_create(kMm, RegistryKind::Multimesh);
+    RegistryMultimesh m;
+    expect(registry_multimesh(kMm, &m) && !m.allocated && m.instances == 0 && m.format == 0 &&
+               !m.colors && !m.custom && !m.indirect && !m.edited && m.visible == -1 &&
+               m.mesh == 0,
+           "mm: a fresh multimesh is the engine's (nothing allocated, visible -1)");
+    expect(registry_multimesh_stride(0, false, false) == 8 &&
+               registry_multimesh_stride(0, false, true) == 12 &&
+               registry_multimesh_stride(1, false, false) == 12 &&
+               registry_multimesh_stride(1, true, true) == 20,
+           "mm: the engine's strides (2d+custom and 3d are both 12)");
+    registry_note_multimesh_allocate(kMm, 13, 0, false, true, false);
+    registry_note_multimesh_mesh(kMm, kMesh);
+    registry_note_multimesh_visible(kMm, 4);
+    registry_note_multimesh_custom_aabb(kMm, {1, 2, 3, 4, 5, 6});
+    expect(registry_multimesh(kMm, &m) && m.allocated && m.instances == 13 && m.format == 0 &&
+               !m.colors && m.custom && m.mesh == kMesh && m.visible == 4 &&
+               m.custom_aabb[0] == 1 && m.custom_aabb[5] == 6,
+           "mm: allocation, mesh, visible and custom AABB recorded");
+    registry_note_multimesh_visible(kMm, 14);  // > instances: the engine refuses it
+    registry_note_multimesh_allocate(kMm, -1, 0, false, false, false);  // refused likewise
+    registry_note_multimesh_allocate(kMm, 3, 2, false, false, false);   // no format 2
+    expect(registry_multimesh(kMm, &m) && m.visible == 4 && m.instances == 13 && m.custom,
+           "mm: calls the engine refuses record nothing");
+    registry_note_multimesh_instance_edit(kMm);
+    expect(registry_multimesh(kMm, &m) && m.edited, "mm: an instance setter sets edited");
+    registry_note_multimesh_buffer(kMm, 13 * 12 - 1);  // the wrong size: the engine refuses it
+    expect(registry_multimesh(kMm, &m) && m.edited, "mm: a refused buffer keeps edited");
+    registry_note_multimesh_buffer(kMm, 13 * 12);
+    expect(registry_multimesh(kMm, &m) && !m.edited, "mm: a valid buffer clears edited");
+    registry_note_multimesh_instance_edit(kMm);
+    registry_note_multimesh_allocate(kMm, 13, 0, false, true, true);  // same allocation
+    expect(registry_multimesh(kMm, &m) && m.edited && m.indirect && m.visible == 4,
+           "mm: the same allocation keeps the buffer (edited) but takes indirect");
+    registry_note_multimesh_allocate(kMm, 3, 1, false, false, false);  // a new one, 3d
+    expect(registry_multimesh(kMm, &m) && !m.edited && m.instances == 3 && m.format == 1 &&
+               !m.custom && !m.indirect && m.visible == 3 && m.mesh == kMesh,
+           "mm: a new allocation zeroes the buffer, clamps visible, keeps the mesh");
+    expect(registry_stats().multimesh_payloads == 1 && registry_stats().multimesh_payload_sets == 10,
+           "mm: one payload, ten recorded calls");
+    // Unregistered (pre-load) or another kind: nothing recorded.
+    registry_note_multimesh_allocate(kPre, 5, 0, false, false, false);
+    registry_note_multimesh_allocate(kMesh, 5, 0, false, false, false);
+    expect(!registry_multimesh(kPre, &m) && !registry_multimesh(kMesh, &m),
+           "mm: no payload for an unregistered RID or another kind");
+    // Recreated as another kind: gone. A free erases it.
+    registry_note_create(kMm, RegistryKind::Mesh);
+    expect(!registry_multimesh(kMm, &m), "mm: recreated as a mesh, no payload");
+    registry_note_create(kMm2, RegistryKind::Multimesh);
+    registry_note_multimesh_allocate(kMm2, 2, 0, false, false, false);
+    registry_note_free(kMm2);
+    expect(!registry_multimesh(kMm2, &m) && registry_stats().multimesh_payloads == 0,
+           "mm: a free erases the payload");
+    const RegistryStats st = registry_stats();
+    expect(st.multimesh_payload_bytes > 0 && st.bytes_estimate >= st.multimesh_payload_bytes,
+           "mm: the payload map is in bytes_estimate");
+    expect(contains(registry_json(), "\"multimesh\": {"), "mm: evidence has the payload block");
+    expect(identity_holds(), "mm: identity holds");
+  }
+
   // Reconfigure resets everything (a test-only path: the capture configures once).
   registry_configure(false, RegistryFault::None);
   expect(registry_stats().entries == 0 && registry_timeline(nullptr).empty() &&
-             registry_stats().canvas_payloads == 0 && !registry_canvas_texture(0x300000031, nullptr),
+             registry_stats().canvas_payloads == 0 && !registry_canvas_texture(0x300000031, nullptr) &&
+             registry_stats().multimesh_payloads == 0,
          "reset");
 
   if (g_failures != 0) {

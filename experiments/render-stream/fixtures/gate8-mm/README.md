@@ -13,8 +13,9 @@ reuses every cell for the references and receivers.
 
 - `project.godot`: 640x360, no stretch, `gl_compatibility`, `msaa_2d=0`, default canvas filter
   nearest, autoload `GrcLoader`, main scene `mm.tscn`.
-- `loader.gd`: loads the capture GDExtension in `_enter_tree` when `GRC_EXTENSION` is set (armed at
-  birth); unarmed otherwise.
+- `loader.gd`: loads the capture GDExtension when `GRC_EXTENSION` is set; unarmed otherwise.
+  `RS_FIXTURE_ARM` picks when: `born` (default) and `deferred` (LAR2: the runner defers the arm with
+  `GRC_ARM_DEFER_FRAMES`) in `_enter_tree`, `late` in `_process` at frame `RS_FIXTURE_ARM_FRAME`.
 - `mm.tscn` / `mm.gd`: a plain `Node` that builds every cell in `_ready` and drives the steps.
 - `expected.json`: the hand-derived hook-log census per cell and the frame-pairing floats the
   checker reads.
@@ -36,6 +37,12 @@ the fixture sets `amount`, so no cell uses 8.
 | `G_HIDDEN` | (40,280) | `CPUParticles2D`, emitting, `visible = false` | 11 (16) | a hidden emitter never draws and never sets a buffer (PM2's `mm-hidden-cost`) |
 | `H_FREE` | (240,270) | a raw `RenderingServer` multimesh on a raw canvas item (`canvas_item_add_multimesh`); step 1 a wrong-size `multimesh_set_buffer` (3 floats for 2 x 8: GLES3 refuses it); step 2 `free_rid` while the item still names it; frame 41 `canvas_item_clear` | 2 (8) | a rejected call moves nothing; a `freed` tombstone, then `removed_multimeshes` |
 | `I_PREDRAW` | (440,270) | custom data only; its buffer set from `RenderingServer.frame_pre_draw` with instance 0's custom.x = the fixture frame (an initial buffer with -1 in `_ready`) | 12 (12) | frame pairing at `CPUParticles2D`'s own timing: the pre-draw buffer belongs to the frame it was set in |
+| `J_CUSTOM` | (130,262) | LAR2: custom data only, no colours, one `set_buffer` in `_ready`; drawn white | 13 (12) | the registry's recorded format: PM9's stride guess read 12 floats as 2d + colours |
+| `J_3D` | (130,300) | LAR2: `TRANSFORM_3D`, one `set_buffer` in `_ready`; the 2D canvas never draws it, the wire carries it `unsupported`/`multimesh-3d` | 14 (12) | likewise: the stride guess read it as 2d + colours, an `ok` entry |
+
+`J_CUSTOM` and `J_3D` sit in two sub-rects of G_HIDDEN's grid cell (expected.json
+`pixels.regions` lists them first). `A_XFORM` and `B_CUSTOM` are `edited`: they set instance data
+per instance after their last buffer, which the dummy renderer drops.
 
 Particles run at the fixed step: every leg is `--fixed-fps 60`, `fixed_fps` stays 0 (one
 `_particles_process(1/60)` a frame) and every emitter has `use_fixed_seed`.
@@ -49,7 +56,7 @@ Particles run at the fixed step: every leg is `--fixed-fps 60`, `fixed_fps` stay
 | 30 | the capture sabotages start (`GRC_SABOTAGE_FRAME`) |
 | 40 | step 2: E_VISIBLE shows 6; F_REPLACE re-set with the same floats; H_FREE freed (a tombstone); settles at 47 |
 | 41 | H_FREE's item cleared: the entry leaves the table |
-| 60 | late legs only (`RS_FIXTURE_ARM=late`): A_XFORM's node and multimesh are freed (`LATE_FREE_FRAME`, expected.json `late_free`); `mm-late-free` asserts the capture records it freed and both late receivers release it |
+| 60 | late and deferred legs only (`RS_FIXTURE_ARM=late` or `deferred`): A_XFORM's node and multimesh are freed (`LATE_FREE_FRAME`, expected.json `late_free`); `mm-late-free` asserts the deferred capture records it freed and both deferred receivers release it |
 | 90 | quit |
 
 `RS_FIXTURE_MM_LOG` gets one line per frame-carrying buffer of B_CUSTOM (every frame, from
@@ -66,6 +73,17 @@ drawn), while A_XFORM, B_CUSTOM, E_VISIBLE, F_REPLACE and H_FREE behave as rende
 `headless/capture` leg's census pins that (expected.json `headless`). Godot's dummy storage stores
 H_FREE's wrong-size buffer without a check; the hook log must still mark it rejected, by Godot's
 own size rule (`instances x stride`, MultiMesh and GLES3).
+
+## Late arms (PM9, LAR2)
+
+The `deferred` legs load the capture at birth and arm at frame 12 (`GRC_ARM_DEFER_FRAMES=11`):
+every drawn multimesh but H_FREE (its raw item is withheld at the arm and never redrawn) is
+adopted from the registry's recorded allocation at its first `add_multimesh`, and must equal the
+born capture's (`mm-registry-exact`). On the headless host (`headless-deferred/capture`) the
+dummy renderer answers `multimesh_get_instance_count` 0, so only the registry gives the count;
+`A_XFORM` and `B_CUSTOM`, edited per instance, are refused there (design O3). The `late` leg loads
+the capture at frame 12, after every multimesh exists: under F1 each one is refused, typed
+`preload-multimesh`.
 
 ## Teardown
 

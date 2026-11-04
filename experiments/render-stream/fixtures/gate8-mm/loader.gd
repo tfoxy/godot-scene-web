@@ -5,8 +5,11 @@ extends Node
 ##                         multimesh, mesh, texture, material and item of mm.tscn is created under
 ##                         the hooks (gate 0's rule; PM1's legs)
 ##   RS_FIXTURE_ARM=late   in `_process` at fixture frame K = RS_FIXTURE_ARM_FRAME (default 12),
-##                         after every multimesh and draw exists: the capture adopts them
-##                         (GRC_ADOPT=arm, PM9's late legs)
+##                         after every multimesh and draw exists (load-late: under F1 the capture
+##                         refuses every multimesh, typed preload-multimesh; PM9's late legs)
+##   RS_FIXTURE_ARM=deferred  (LAR2) in `_enter_tree`, as `born` loads; the runner defers the arm
+##                         with GRC_ARM_DEFER_FRAMES, so every multimesh is created under the hooks
+##                         and its allocation recorded by the registry before the arm
 ##
 ## An autoload processes ahead of the main scene, so at frame K the capture arms before the scene's
 ## own `_process` of that frame. `GRC_EXTENSION` unset: nothing is loaded (PM2's `reference` legs).
@@ -28,11 +31,11 @@ func _enter_tree() -> void:
 			_arm_frame = text.to_int()
 		else:
 			printerr("[fixture] error: RS_FIXTURE_ARM_FRAME must be an integer in 8..19 (got %s)" % JSON.stringify(text))
-	if _arm_mode != "born" and _arm_mode != "late":
-		printerr("[fixture] error: RS_FIXTURE_ARM must be born or late (got %s)" % JSON.stringify(_arm_mode))
+	if _arm_mode != "born" and _arm_mode != "late" and _arm_mode != "deferred":
+		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late or deferred (got %s)" % JSON.stringify(_arm_mode))
 		_arm_mode = "born"
-	if _arm_mode == "born":
-		_load("born")
+	if _arm_mode == "born" or _arm_mode == "deferred":
+		_load(_arm_mode)
 
 
 func _process(_delta: float) -> void:

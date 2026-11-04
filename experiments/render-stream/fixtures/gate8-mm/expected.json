@@ -9,6 +9,10 @@
   ],
   "h_clear_frame": 41,
   "late_free": { "frame": 60, "count": 1, "cell": "A_XFORM" },
+  "late_arm": {
+    "doc": "LAR2 (late-arm-registry-design.md, the multimesh row): the `deferred` legs load the capture in the loader's _enter_tree and arm at frame `arm_frame` (GRC_ARM_DEFER_FRAMES = arm_frame - 1), so every multimesh is created under the hooks and adopted from the registry's recorded allocation at its first add_multimesh after the arm: every `drawn` cell but those with `freed_at_step` (H_FREE's raw item is withheld, never redrawn). A cell's `format` (default 2d), `colors` and `custom` are its allocation; `status`/`reason` (default ok) are what the wire carries for it, born or adopted (J_3D: a 3D-format multimesh is unsupported/multimesh-3d). `edited` cells set instance data per instance after their last buffer: on the dummy host (the headless deferred leg) those are refused, typed edited-dummy (design O3), since the dummy dropped the setters; every other adopted cell keeps its born instance count there. The `late` leg loads the capture at frame `arm_frame`, after every multimesh exists: under F1 each of those cells is refused, typed preload-multimesh.",
+    "arm_frame": 12
+  },
   "sabotage_frame": 30,
   "min_per_frame_frames": 80,
   "min_paired_transactions": 60,
@@ -23,7 +27,8 @@
       "per_frame": [],
       "visible": [],
       "rejected": 0,
-      "drawn": true
+      "drawn": true,
+      "edited": true
     },
     "B_CUSTOM": {
       "node": "MultiMeshInstance2D",
@@ -36,7 +41,8 @@
       "visible": [],
       "rejected": 0,
       "drawn": true,
-      "pairing": { "instance": 0, "float": 12, "sentinel": -1, "source": "instance_set_custom_data" }
+      "pairing": { "instance": 0, "float": 12, "sentinel": -1, "source": "instance_set_custom_data" },
+      "edited": true
     },
     "C_FLIP": {
       "node": "CPUParticles2D",
@@ -126,18 +132,47 @@
       "drawn": true,
       "pairing": { "instance": 0, "float": 8, "sentinel": -1, "source": "set_buffer" },
       "headless": { "calls": { "set_buffer": 1 }, "per_frame": [] }
+    },
+    "J_CUSTOM": {
+      "node": "MultiMeshInstance2D",
+      "instances": 13,
+      "colors": false,
+      "custom": true,
+      "allocations": [[13, "2d", false, true]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 1 },
+      "per_frame": [],
+      "visible": [],
+      "rejected": 0,
+      "drawn": true
+    },
+    "J_3D": {
+      "node": "MultiMeshInstance2D",
+      "instances": 14,
+      "format": "3d",
+      "colors": false,
+      "custom": false,
+      "allocations": [[14, "3d", false, false]],
+      "calls": { "create": 1, "allocate_data": 1, "set_mesh": 1, "set_buffer": 1 },
+      "per_frame": [],
+      "visible": [],
+      "rejected": 0,
+      "drawn": true,
+      "status": "unsupported",
+      "reason": "multimesh-3d"
     }
   },
   "pixels": {
-    "doc": "PM2 (render-stream-11.md \"As built (PM2)\"): the 640x360 shot is a 3x3 grid of cells (220x130, the last column and row narrower; I_PREDRAW's region starts at x 430, where its first quad reaches), one cell per fixture cell, each region inclusive [x0, y0, x1, y1]; every multimesh draws inside its own cell and nothing is drawn outside the cells. `drawn_steps`: the checkpoints at whose settle frame the cell's multimesh draws (G_HIDDEN never: hidden; H_FREE not at step 2: freed at frame 40, its item cleared at 41). `moving`: per cell, the checkpoints at which its pixels change from the frame before (B_CUSTOM's shader reads INSTANCE_CUSTOM.x, the frame number, by parity; C_FLIP and D_GLOBAL simulate; C_FLIP is still at frame 4, measured), so step-<k>-prev.png differs from step-<k>.png there. `known_gaps`: what the receivers do not reproduce yet, with the cells it touches (none since UIT, which closed PM2's identity-transform gap). `identity_transform`: UIT's cells.",
+    "doc": "PM2 (render-stream-11.md \"As built (PM2)\"): the 640x360 shot is a 3x3 grid of cells (220x130, the last column and row narrower; I_PREDRAW's region starts at x 430, where its first quad reaches), one cell per fixture cell, each region inclusive [x0, y0, x1, y1]; LAR2's J_CUSTOM and J_3D are two sub-rects inside G_HIDDEN's grid cell, listed before it (a pixel counts for the first region holding it; G_HIDDEN's top-left pixel, the background sample, stays outside them; J_3D is never drawn: the 2D canvas skips a 3D-format multimesh); every multimesh draws inside its own cell and nothing is drawn outside the cells. `drawn_steps`: the checkpoints at whose settle frame the cell's multimesh draws (G_HIDDEN never: hidden; H_FREE not at step 2: freed at frame 40, its item cleared at 41). `moving`: per cell, the checkpoints at which its pixels change from the frame before (B_CUSTOM's shader reads INSTANCE_CUSTOM.x, the frame number, by parity; C_FLIP and D_GLOBAL simulate; C_FLIP is still at frame 4, measured), so step-<k>-prev.png differs from step-<k>.png there. `known_gaps`: what the receivers do not reproduce yet, with the cells it touches (none since UIT, which closed PM2's identity-transform gap). `identity_transform`: UIT's cells.",
     "regions": {
       "A_XFORM": [0, 0, 219, 129], "B_CUSTOM": [220, 0, 439, 129], "C_FLIP": [440, 0, 639, 129],
       "D_GLOBAL": [0, 130, 219, 249], "E_VISIBLE": [220, 130, 439, 249], "F_REPLACE": [440, 130, 639, 249],
+      "J_CUSTOM": [120, 252, 215, 286], "J_3D": [120, 290, 215, 330],
       "G_HIDDEN": [0, 250, 219, 359], "H_FREE": [220, 250, 429, 359], "I_PREDRAW": [430, 250, 639, 359]
     },
     "drawn_steps": {
       "A_XFORM": [0, 1, 2], "B_CUSTOM": [0, 1, 2], "C_FLIP": [0, 1, 2], "D_GLOBAL": [0, 1, 2],
-      "E_VISIBLE": [0, 1, 2], "F_REPLACE": [0, 1, 2], "G_HIDDEN": [], "H_FREE": [0, 1], "I_PREDRAW": [0, 1, 2]
+      "E_VISIBLE": [0, 1, 2], "F_REPLACE": [0, 1, 2], "G_HIDDEN": [], "H_FREE": [0, 1], "I_PREDRAW": [0, 1, 2],
+      "J_CUSTOM": [0, 1, 2], "J_3D": []
     },
     "moving": { "B_CUSTOM": [0, 1, 2], "C_FLIP": [1, 2], "D_GLOBAL": [0, 1, 2] },
     "known_gaps": {},

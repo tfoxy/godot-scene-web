@@ -882,6 +882,9 @@ std::string result_json() {
       json.field("meshes_refused", static_cast<int64_t>(r.meshes_refused));
       json.field("multimeshes", static_cast<int64_t>(r.multimeshes));
       json.field("multimeshes_refused", static_cast<int64_t>(r.multimeshes_refused));
+      json.field("refused_preload_multimesh", static_cast<int64_t>(r.refused_preload_multimesh));
+      json.field("refused_mm_edited_dummy", static_cast<int64_t>(r.refused_mm_edited_dummy));
+      json.field("refused_mm_buffer", static_cast<int64_t>(r.refused_mm_buffer));
       json.field("fonts", static_cast<int64_t>(r.fonts));
       json.field("cached_compressed", static_cast<int64_t>(r.cached_compressed));
       json.field("cache_paths", static_cast<int64_t>(r.cache_paths));
@@ -2516,7 +2519,8 @@ void stream_start() {
     }
     // G8r (D6, D7): lazy resource adoption is on from the walk to the stream's end; the walk's
     // redraws (this iteration's flush) are the first hooked calls to name pre-arm resources.
-    rs::adopt_resources_begin(g_stream.adopt_fault);
+    // LAR2: a headless display server runs the dummy RenderingServer (multimesh rules, O3).
+    rs::adopt_resources_begin(g_stream.adopt_fault, g_state.display_server == "headless");
     // G8m (D11, D12): materials and shaders resolve after the hook log opens (below) and at every
     // frame boundary; the two Q5 sabotages act there.
     rs::adopt_materials_configure(

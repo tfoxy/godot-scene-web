@@ -519,6 +519,7 @@ class Mirror {
     std::int32_t format = 0;  // RS::MultimeshTransformFormat (0 2d, 1 3d)
     bool colors = false;
     bool custom = false;
+    bool indirect = false;  // LAR2: recorded (an indirect multimesh is `multimesh-indirect`, as born)
     std::int32_t visible = -1;
     std::uint64_t mesh = 0;
     std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};

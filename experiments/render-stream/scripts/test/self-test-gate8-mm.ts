@@ -6,7 +6,7 @@
 //   mise exec -- pnpm exec tsx --conditions=development \
 //     experiments/render-stream/scripts/test/self-test-gate8-mm.ts
 //
-// A small simulator plays mm.gd's nine cells through a capture that follows render-stream-11.md
+// A small simulator plays mm.gd's eleven cells (LAR2's J_CUSTOM and the unsupported J_3D included) through a capture that follows render-stream-11.md
 // "As built (PM1)" rules 2-4, 9 and 12: per-call hook lines, one state line per multimesh per frame
 // its version moved, and both sinks (every transaction full; seq 1 full then patches).
 //
@@ -31,7 +31,9 @@
 //    without multimesh fails mm-reference in exactly the drawn cells (mmMissingProblems passes); one
 //    pixel off fails mmExactProblems and is attributed to its cell; a shot of another size is null.
 //
-// 9. PM9's late-arm verdicts (adopt, free, release, expected.json minimums) on synthetic traces.
+// 9. PM9's late-arm verdicts (adopt, free, release, expected.json minimums) on synthetic traces,
+//    and LAR2's (the adopted cells, mm-registry-exact and its stride-guess sabotage, a 0-instance
+//    adoption, mm-registry-source and registry-off, mm-late-residual).
 //
 // Exits non-zero if any assertion fails.
 
@@ -53,9 +55,13 @@ import {
   mmExactProblems,
   mmExpectedProblems,
   mmInk,
+  mmAdoptedCells,
   mmLateAdoptProblems,
   mmLateFreedProblems,
   mmLateReleaseProblems,
+  mmLateResidualProblems,
+  mmRegistryExactProblems,
+  mmRegistrySourceProblems,
   mmMissingProblems,
   mmNamedProblems,
   mmPremiseInkProblems,
@@ -128,8 +134,12 @@ interface CellState {
   rid: string;
   id: number;
   instances: number;
+  format: "2d" | "3d";
   colors: boolean;
   custom: boolean;
+  /** LAR2: what the wire carries (J_3D: unsupported/multimesh-3d) */
+  status: "ok" | "unsupported";
+  reason: string | null;
   stride: number;
   version: number;
   visible: number;
@@ -195,9 +205,12 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
       rid: `rid-${name}`,
       id: nextId++,
       instances: 0,
+      format: e.format ?? "2d",
       colors: e.colors,
       custom: e.custom,
-      stride: multimeshStride(e),
+      status: e.status === "unsupported" ? "unsupported" : "ok",
+      reason: e.reason ?? null,
+      stride: multimeshStride(e) + (e.format === "3d" ? 4 : 0),
       version: 1,
       visible: -1,
       buffer: [],
@@ -262,6 +275,27 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
   setBuffer(H, xbuf(H, 4));
   const I = make("I_PREDRAW");
   setBuffer(I, xbuf(I, 5, -1));
+  // LAR2: J_CUSTOM (2d, custom only) and J_3D (3d: unsupported on the wire), one buffer each.
+  const JC = make("J_CUSTOM");
+  setBuffer(JC, xbuf(JC, 6));
+  const J3 = make("J_3D");
+  setBuffer(
+    J3,
+    Array.from({ length: J3.instances }, (_, k) => [
+      1,
+      0,
+      0,
+      k,
+      0,
+      1,
+      0,
+      2,
+      0,
+      0,
+      1,
+      0,
+    ]).flat(),
+  );
   if (o.strayRid) {
     raw.push({
       kind: "multimesh",
@@ -362,16 +396,16 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
         id: c.id,
         version: c.version,
         instances: c.freed ? 0 : c.instances,
-        format: "2d",
+        format: c.freed ? "2d" : c.format,
         colors: c.freed ? false : c.colors,
         custom: c.freed ? false : c.custom,
         visible: c.freed ? -1 : c.visible,
-        status: c.freed ? "freed" : "ok",
-        reason: null,
+        status: c.freed ? "freed" : c.status,
+        reason: c.freed ? null : c.reason,
         buffer_sha256: c.freed ? null : multimeshBufferSha256(c.buffer),
       });
     }
-    const named = [A, B, C, D, E, Fc, I];
+    const named = [A, B, C, D, E, Fc, I, JC, J3];
     if (o.drawHidden) named.push(G);
     if (frame <= 40 && !(o.noTombstone && H.freed)) named.push(H);
     named.sort((a, b) => a.id - b.id);
@@ -422,7 +456,10 @@ function encode(
       if (!full && b && b.version === c.version) continue;
       const aabb_f = c.freed ? null : mm.length;
       if (!c.freed) mm.push(...c.aabb);
-      let carry = !c.freed && (full || !b || b.freed || b.serial !== c.serial);
+      let carry =
+        !c.freed &&
+        c.status === "ok" &&
+        (full || !b || b.freed || b.serial !== c.serial);
       if (
         sab === "stale" &&
         !full &&
@@ -446,11 +483,11 @@ function encode(
       entries.push({
         id: c.id,
         origin: "created",
-        status: c.freed ? "freed" : "ok",
-        reason: null,
+        status: c.freed ? "freed" : c.status,
+        reason: c.freed ? null : (c.reason as TransactionMultimesh["reason"]),
         version: c.version,
         mesh: c.freed ? null : 1,
-        format: "2d",
+        format: c.freed ? "2d" : c.format,
         colors: c.freed ? false : c.colors,
         custom: c.freed ? false : c.custom,
         instances: c.freed ? 0 : c.instances,
@@ -987,17 +1024,38 @@ async function main(): Promise<void> {
   //    empty evidence fails. (runG8mmLate itself needs rendered legs; its file reads are guarded.)
   {
     const late = expected.late_free;
-    const adopted = Object.values(expected.cells).filter(
-      (c) => c.drawn && !c.freed_at_step,
-    ).length;
+    // LAR2: the adopted cells, each entry at its cell's instance count, format and verdict.
+    const cells = mmAdoptedCells(expected);
+    const cellEnt = (
+      name: string,
+      id: number,
+      o: Partial<ResolvedMultimesh> = {},
+    ) => {
+      const c = expected.cells[name];
+      return {
+        id,
+        origin: "adopted",
+        status: c.status ?? "ok",
+        reason: c.reason ?? null,
+        version: 1,
+        mesh: 1,
+        format: c.format ?? "2d",
+        colors: c.colors,
+        custom: c.custom,
+        instances: c.instances,
+        visible: -1,
+        custom_aabb: null,
+        buffer_sha256: null,
+        ...o,
+      } as ResolvedMultimesh;
+    };
     const ent = (
       id: number,
       o: Partial<ResolvedMultimesh> = {},
-    ): ResolvedMultimesh =>
-      ({ id, origin: "adopted", status: "ok", ...o }) as ResolvedMultimesh;
+    ): ResolvedMultimesh => cellEnt(cells[(id - 1) % cells.length], id, o);
     const table = (ids: number[], o: Partial<ResolvedMultimesh> = {}) =>
       new Map(ids.map((id) => [id, ent(id, o)] as [number, ResolvedMultimesh]));
-    const ids = Array.from({ length: adopted }, (_, i) => i + 1);
+    const ids = Array.from({ length: cells.length }, (_, i) => i + 1);
     const tx = (frame: number, t: Map<number, ResolvedMultimesh>) =>
       ({
         seq: frame,
@@ -1020,16 +1078,28 @@ async function main(): Promise<void> {
         : {},
       errors,
     });
+    expect(
+      cells.includes("J_CUSTOM") &&
+        cells.includes("J_3D") &&
+        !cells.includes("H_FREE") &&
+        !cells.includes("G_HIDDEN") &&
+        mmAdoptedCells(expected, "headless").length === cells.length - 2 &&
+        !mmAdoptedCells(expected, "headless").includes("A_XFORM"),
+      "9: the adopted cells: J_* in, H_FREE and G_HIDDEN out; headless without the edited A and B",
+      cells,
+    );
     const rest = ids.slice(1);
     const good = trace([
       tx(20, table(ids)),
       tx(late.frame - 1, table(ids)),
       tx(late.frame + 3, table(rest)),
     ]);
+    const adopt = (t: MmTrace, c: readonly string[] = cells) =>
+      mmLateAdoptProblems(t, expected, c, late.frame);
     expect(
-      mmLateAdoptProblems(good, adopted, late.frame).length === 0,
-      "9: a good late capture passes mmLateAdoptProblems",
-      mmLateAdoptProblems(good, adopted, late.frame),
+      adopt(good).length === 0,
+      "9: a good deferred capture passes mmLateAdoptProblems",
+      adopt(good),
     );
     const gf = mmLateFreedProblems(good, late);
     expect(
@@ -1050,64 +1120,183 @@ async function main(): Promise<void> {
       "9: a freed tombstone counts as freed",
     );
     // empty / missing evidence fails
+    expect(adopt(trace([])).length > 0, "9: adopt: no transaction fails");
     expect(
-      mmLateAdoptProblems(trace([]), adopted, late.frame).length > 0,
-      "9: adopt: no transaction fails",
-    );
-    expect(
-      mmLateAdoptProblems(
-        trace([tx(late.frame + 3, table(ids))]),
-        adopted,
-        late.frame,
-      ).length > 0,
+      adopt(trace([tx(late.frame + 3, table(ids))])).length > 0,
       "9: adopt: no transaction before the free fails",
     );
     expect(
-      mmLateAdoptProblems(trace([tx(20, new Map())]), adopted, late.frame)
-        .length > 0,
+      adopt(trace([tx(20, new Map())])).length > 0,
       "9: adopt: an empty table fails",
     );
     expect(
-      mmLateAdoptProblems(
-        trace([tx(20, table(ids.slice(0, -1)))]),
-        adopted,
-        late.frame,
-      ).length > 0,
+      adopt(trace([tx(20, table(ids.slice(0, -1)))])).length > 0,
       "9: adopt: one entry short fails",
     );
     expect(
-      mmLateAdoptProblems(
-        trace([tx(20, table(ids, { origin: "created" }))]),
-        adopted,
-        late.frame,
-      ).length > 0,
+      adopt(trace([tx(20, table(ids, { origin: "created" }))])).length > 0,
       "9: adopt: origin created fails",
     );
+    const j3 = cells.indexOf("J_3D") + 1;
     expect(
-      mmLateAdoptProblems(
-        trace([tx(20, table(ids, { status: "unsupported" }))]),
-        adopted,
-        late.frame,
+      adopt(
+        trace([
+          tx(
+            20,
+            new Map([
+              ...table(ids),
+              [j3, ent(j3, { status: "ok", reason: null })],
+            ]),
+          ),
+        ]),
       ).length > 0,
-      "9: adopt: status unsupported fails",
+      "9: adopt: J_3D ok (not unsupported/multimesh-3d) fails",
     );
     expect(
-      mmLateAdoptProblems(trace([tx(20, table(ids))], 2), adopted, late.frame)
-        .length > 0,
+      adopt(
+        trace([
+          tx(
+            20,
+            new Map([
+              ...table(ids),
+              [1, ent(1, { status: "unsupported", reason: "unknown-mesh" })],
+            ]),
+          ),
+        ]),
+      ).length > 0,
+      "9: adopt: an ok cell unsupported fails",
+    );
+    expect(
+      adopt(
+        trace([
+          tx(20, new Map([...table(ids), [99, ent(99, { instances: 0 })]])),
+        ]),
+      ).length > 0,
+      "9: adopt: an entry at no cell's instance count (the dummy's 0) fails",
+    );
+    expect(
+      adopt(trace([tx(20, table(ids))], 2)).length > 0,
       "9: adopt: unknown-multimesh fails",
     );
     expect(
-      mmLateAdoptProblems(
-        trace([tx(20, table(ids))], 0, ["record 3: bad"]),
-        adopted,
-        late.frame,
-      ).length > 0,
+      adopt(trace([tx(20, table(ids))], 0, ["record 3: bad"])).length > 0,
       "9: adopt: a decode error fails",
     );
     expect(
-      mmLateAdoptProblems(trace([tx(20, table(ids))]), 0, late.frame).length >
-        0,
-      "9: adopt: a zero expected count fails",
+      adopt(trace([tx(20, table(ids))]), []).length > 0,
+      "9: adopt: no expected cell fails",
+    );
+
+    // LAR2 mm-registry-exact: the adopted table equals born; a guessed format fails on its cell.
+    const born = trace([tx(late.frame - 1, table(ids, { origin: "created" }))]);
+    const exact = (a: MmTrace, c: readonly string[] = cells) =>
+      mmRegistryExactProblems(born, a, expected, c, late.frame);
+    const ex = exact(good);
+    expect(
+      ex.problems.length === 0 && ex.compared === cells.length,
+      "9: registry-exact: the adopted table equals born",
+      ex,
+    );
+    const jc = cells.indexOf("J_CUSTOM") + 1;
+    const guessed = trace([
+      tx(
+        late.frame - 1,
+        new Map([
+          ...table(ids),
+          [jc, ent(jc, { colors: true, custom: false })],
+          [
+            j3,
+            ent(j3, { format: "2d", colors: true, status: "ok", reason: null }),
+          ],
+        ]),
+      ),
+    ]);
+    const gx = exact(guessed);
+    expect(
+      gx.cellsFailed.includes("J_CUSTOM") &&
+        gx.cellsFailed.includes("J_3D") &&
+        gx.cellsFailed.length === 2,
+      "9: registry-exact: the stride guess fails exactly J_CUSTOM and J_3D",
+      gx,
+    );
+    const zero = trace([
+      tx(
+        late.frame - 1,
+        new Map([...table(rest), [1, ent(1, { instances: 0 })]]),
+      ),
+    ]);
+    expect(
+      exact(zero).problems.length >= 2,
+      "9: registry-exact: a 0-instance adoption fails (its cell missing, a stray entry)",
+      exact(zero),
+    );
+    expect(
+      exact(trace([])).problems.length > 0,
+      "9: registry-exact: no transaction fails",
+    );
+    expect(
+      exact(good, []).problems.length > 0,
+      "9: registry-exact: no cell fails",
+    );
+
+    // LAR2 mm-registry-source and mm-late-residual on adopt_stats and registry.json.
+    const reg = {
+      configured: true,
+      enabled: true,
+      families: { multimesh: { creates: 11 } },
+      payloads: { multimesh: { entries: 11, sets: 40 } },
+    };
+    const n = Object.keys(expected.cells).length;
+    const resOk = {
+      multimeshes: cells.length,
+      multimeshes_refused: 0,
+      refused_preload_multimesh: 0,
+    };
+    expect(
+      mmRegistrySourceProblems(resOk, reg, cells.length, n).length === 0,
+      "9: registry-source: all adopted, none preload passes",
+      mmRegistrySourceProblems(resOk, reg, cells.length, n),
+    );
+    const resOff = {
+      multimeshes: 0,
+      multimeshes_refused: cells.length,
+      refused_preload_multimesh: cells.length,
+    };
+    expect(
+      mmRegistrySourceProblems(
+        resOff,
+        { ...reg, enabled: false },
+        cells.length,
+        n,
+      ).length > 0,
+      "9: registry-source: registry-off (preload refusals) fails",
+    );
+    expect(
+      mmRegistrySourceProblems(resOk, null, cells.length, n).length > 0 &&
+        mmRegistrySourceProblems(null, reg, cells.length, n).length > 0,
+      "9: registry-source: missing evidence fails",
+    );
+    expect(
+      mmRegistrySourceProblems(
+        resOk,
+        { ...reg, families: { multimesh: { creates: 3 } } },
+        cells.length,
+        n,
+      ).length > 0,
+      "9: registry-source: too few recorded creates fails",
+    );
+    expect(
+      mmLateResidualProblems(resOff, cells.length).length === 0,
+      "9: late-residual: every cell refused preload passes",
+    );
+    expect(
+      mmLateResidualProblems(resOk, cells.length).length > 0 &&
+        mmLateResidualProblems(
+          { ...resOff, refused_preload_multimesh: 1 },
+          cells.length,
+        ).length > 0 &&
+        mmLateResidualProblems(null, cells.length).length > 0,
+      "9: late-residual: an adoption, a short count or no evidence fails",
     );
     expect(
       mmLateFreedProblems(trace([]), late).problems.length > 0,
@@ -1195,20 +1384,16 @@ async function main(): Promise<void> {
     const root = mkdtempSync(join(tmpdir(), "self-test-gate8-mm-"));
     try {
       for (const leg of [
-        "late/capture",
+        "deferred/capture",
         "fault-no-resources/capture",
-        "late/receiver",
-        "late/receiver-patch",
+        "deferred/receiver",
+        "deferred/receiver-patch",
       ]) {
         mkdirSync(join(root, "g8mm", leg, "evidence"), { recursive: true });
         writeFileSync(join(root, "g8mm", leg, "exit-code.txt"), "0\n");
         // result.json and applied.json honest, so only the missing recording can fail a check
         const adopted =
-          leg === "late/capture"
-            ? Object.values(expected.cells).filter(
-                (c) => c.drawn && !c.freed_at_step,
-              ).length
-            : 0;
+          leg === "deferred/capture" ? mmAdoptedCells(expected).length : 0;
         writeFileSync(
           join(root, "g8mm", leg, "evidence", "result.json"),
           JSON.stringify({

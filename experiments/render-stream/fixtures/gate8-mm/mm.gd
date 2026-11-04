@@ -1,5 +1,5 @@
 extends Node
-## Gate 8 multimesh fixture (PM1, render-stream-11.md "As built (PM1)", README.md). Nine cells, each
+## Gate 8 multimesh fixture (PM1, render-stream-11.md "As built (PM1)", README.md). Eleven cells, each
 ## multimesh with its own instance count (the checker finds a cell's multimesh in the hook log by
 ## its last allocation's count; CPUParticles2D's constructor first allocates 8, so no cell uses 8):
 ##
@@ -29,6 +29,12 @@ extends Node
 ##   I_PREDRAW  (440,270)  MultiMeshInstance2D, 12 instances with custom data only; its buffer is
 ##                         set from RenderingServer.frame_pre_draw (CPUParticles2D's own timing)
 ##                         with instance 0's custom.x = the fixture frame
+##   J_CUSTOM   (130,262)  LAR2: MultiMeshInstance2D, 13 instances, custom data only (stride 12, as
+##                         2d + colors and 3d), one set_buffer in _ready; drawn white (no colours)
+##   J_3D       (130,300)  LAR2: MultiMeshInstance2D, 14 instances, TRANSFORM_3D (stride 12), one
+##                         set_buffer in _ready; Godot's 2D canvas never draws a 3D-format multimesh
+##                         and the wire carries it `unsupported` (`multimesh-3d`). PM9's stride
+##                         guess read both J multimeshes as 2d + colors (LAR2's registry-mm-stride)
 ##
 ## Timeline (fixture frames, --fixed-fps 60): checkpoint 0 is _ready's scene (applied 1, settles 4);
 ## step 1 at 20 (settles 27); step 2 at 40 (settles 47); H's item cleared at 41; quit at 90. The
@@ -42,9 +48,10 @@ extends Node
 const CHECKPOINTS: Array[Array] = [[1, 4], [20, 27], [40, 47]]
 const H_CLEAR_FRAME: int = 41
 const QUIT_DEFAULT: int = 90
-## PM9: on the late legs only (RS_FIXTURE_ARM=late), the frame that frees the adopted A_XFORM cell
-## (its node, and with it its multimesh): the capture records the multimesh freed and the late
-## receivers release it (mm-late-free). Born and reference legs never free it.
+## PM9, LAR2: on the late and deferred legs only (RS_FIXTURE_ARM=late or deferred), the frame that
+## frees the A_XFORM cell (its node, and with it its multimesh): the deferred capture records the
+## adopted multimesh freed and its receivers release it (mm-late-free). Born and reference legs
+## never free it.
 const LATE_FREE_FRAME: int = 60
 ## The custom.x of a frame-carrying instance before its first frame: never a frame number.
 const SENTINEL: float = -1.0
@@ -85,6 +92,7 @@ var _h_mm: RID
 var _h_item: RID
 var _i: MultiMesh
 var _i_buffer: PackedFloat32Array
+var _late_arm: bool = false
 
 
 func _ready() -> void:
@@ -92,6 +100,7 @@ func _ready() -> void:
 		_failed = true
 		get_tree().quit(2)
 		return
+	_late_arm = OS.get_environment("RS_FIXTURE_ARM") in ["late", "deferred"]
 	_root = Node2D.new()
 	add_child(_root)
 	_quad = _quad_mesh(8.0)
@@ -194,6 +203,28 @@ func _ready() -> void:
 	_instance(_i, Vector2(440, 270), null)
 	RenderingServer.frame_pre_draw.connect(_on_frame_pre_draw)
 
+	# J_CUSTOM (LAR2): custom data only, 13 instances in two rows; the custom floats would tint the
+	# white quads if read as colours (the stride guess's 2d + colors).
+	var j_custom := _multimesh(13, false, true)
+	var j_custom_buffer := PackedFloat32Array()
+	for k: int in range(13):
+		_append_xform(j_custom_buffer, _xform(k, 0.0, 1.0, Vector2(12.0 * (k % 7), 12.0 * (k / 7))))
+		j_custom_buffer.append_array(PackedFloat32Array([0.9, 0.2 * float(k % 5), 0.5, 1.0]))
+	j_custom.buffer = j_custom_buffer
+	_instance(j_custom, Vector2(130, 262), null)
+
+	# J_3D (LAR2): a 3D-format multimesh on a 2D node, 14 instances; never drawn by the canvas.
+	var j_3d := MultiMesh.new()
+	j_3d.transform_format = MultiMesh.TRANSFORM_3D
+	j_3d.instance_count = 14
+	j_3d.mesh = _quad
+	var j_3d_buffer := PackedFloat32Array()
+	for k: int in range(14):
+		# set_buffer's 3d layout: each basis row, then its origin component.
+		j_3d_buffer.append_array(PackedFloat32Array([1.0, 0.0, 0.0, 12.0 * (k % 7), 0.0, 1.0, 0.0, 12.0 * (k / 7), 0.0, 0.0, 1.0, 0.0]))
+	j_3d.buffer = j_3d_buffer
+	_instance(j_3d, Vector2(130, 300), null)
+
 	print("[fixture] gate8-mm ready: quit=%d" % _quit_frame)
 
 
@@ -226,7 +257,7 @@ func _process(_delta: float) -> void:
 			_maybe_take_shot("step-%d-prev.png" % k)
 		if _frame == settle:
 			_maybe_take_shot("step-%d.png" % k)
-	if _frame == LATE_FREE_FRAME and OS.get_environment("RS_FIXTURE_ARM") == "late" and _a_node != null:
+	if _frame == LATE_FREE_FRAME and _late_arm and _a_node != null:
 		_a = null
 		_a_node.queue_free()
 		_a_node = null
@@ -405,9 +436,10 @@ func _error(text: String) -> void:
 func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
 	if _step_log_file == null:
 		return
-	# PM9: under a late arm (loader.gd RS_FIXTURE_ARM=late) a checkpoint that settles before the arm
-	# has no transaction to pair with, so the log holds only the steps after it.
-	if OS.get_environment("RS_FIXTURE_ARM") == "late":
+	# PM9, LAR2: under a late or deferred arm (loader.gd RS_FIXTURE_ARM) a checkpoint that settles
+	# before the arm has no transaction to pair with, so the log holds only the steps after it (the
+	# deferred arm's frame is the runner's GRC_ARM_DEFER_FRAMES + 1, 12 as the late default).
+	if _late_arm:
 		var arm: int = 12
 		var text: String = OS.get_environment("RS_FIXTURE_ARM_FRAME").strip_edges()
 		if text.is_valid_int():

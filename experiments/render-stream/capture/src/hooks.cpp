@@ -2363,7 +2363,7 @@ void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
   if (g_multimesh_hooked) {
     // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
     // becomes `unsupported`/`unknown-multimesh`).
-    rs::adopt_multimesh_ref(mesh.id, item.id);  // PM9: a pre-arm multimesh, adopted at first reference
+    rs::adopt_multimesh_ref(mesh.id);  // PM9/LAR2: a pre-arm multimesh, adopted at first reference
     rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
     if (streaming()) {
       mirror().add_multimesh(item.id, mesh.id, texture.id, current_frame());
@@ -3534,6 +3534,9 @@ void hook_multimesh_allocate_data(void *self, RID multimesh, int instances, int3
   bump(kMultimeshAllocateData);
   original<FnMultimeshAllocateData>(kMultimeshAllocateData)(self, multimesh, instances, format,
                                                             colors, custom, indirect);
+  if (rs::registry_on()) {  // LAR2: the allocation RenderingServer has no getter for
+    rs::registry_note_multimesh_allocate(multimesh.id, instances, format, colors, custom, indirect);
+  }
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::MultimeshCall r = mirror().multimesh_allocate_data(
@@ -3554,6 +3557,9 @@ void hook_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
   bump(kMultimeshSetMesh);
   rs::adopt_mesh_ref(mesh.id);  // G8r: a pre-arm mesh is adopted at first reference
   original<FnSetMaterial>(kMultimeshSetMesh)(self, multimesh, mesh);
+  if (rs::registry_on()) {
+    rs::registry_note_multimesh_mesh(multimesh.id, mesh.id);
+  }
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::MultimeshCall r =
@@ -3569,6 +3575,9 @@ void hook_multimesh_instance_set_transform(void *self, RID multimesh, int index,
   bump(kMultimeshInstanceSetTransform);
   original<FnMultimeshSetTransform>(kMultimeshInstanceSetTransform)(self, multimesh, index,
                                                                     transform);
+  if (rs::registry_on()) {  // LAR2: the dummy drops instance setters (design O3)
+    rs::registry_note_multimesh_instance_edit(multimesh.id);
+  }
   if (streaming() && transform != nullptr) {
     // set_buffer's 3d layout (mesh_storage.cpp:1751-1762): each basis row, then its origin.
     const float *b = transform->basis;
@@ -3590,6 +3599,9 @@ void hook_multimesh_instance_set_transform_2d(void *self, RID multimesh, int ind
   bump(kMultimeshInstanceSetTransform2d);
   original<FnMultimeshSetTransform2d>(kMultimeshInstanceSetTransform2d)(self, multimesh, index,
                                                                         transform);
+  if (rs::registry_on()) {  // LAR2: the dummy drops instance setters (design O3)
+    rs::registry_note_multimesh_instance_edit(multimesh.id);
+  }
   if (streaming() && transform != nullptr) {
     const rs2::Xform t = to_xform(*transform);
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3605,6 +3617,9 @@ void hook_multimesh_instance_set_transform_2d(void *self, RID multimesh, int ind
 void hook_multimesh_instance_set_color(void *self, RID multimesh, int index, const Color *color) {
   bump(kMultimeshInstanceSetColor);
   original<FnMultimeshSetColor>(kMultimeshInstanceSetColor)(self, multimesh, index, color);
+  if (rs::registry_on()) {  // LAR2: the dummy drops instance setters (design O3)
+    rs::registry_note_multimesh_instance_edit(multimesh.id);
+  }
   if (streaming() && color != nullptr) {
     const rs2::Color4 c = to_color(*color);
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3621,6 +3636,9 @@ void hook_multimesh_instance_set_custom_data(void *self, RID multimesh, int inde
                                              const Color *color) {
   bump(kMultimeshInstanceSetCustomData);
   original<FnMultimeshSetColor>(kMultimeshInstanceSetCustomData)(self, multimesh, index, color);
+  if (rs::registry_on()) {  // LAR2: the dummy drops instance setters (design O3)
+    rs::registry_note_multimesh_instance_edit(multimesh.id);
+  }
   if (streaming() && color != nullptr) {
     const rs2::Color4 c = to_color(*color);
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3636,6 +3654,11 @@ void hook_multimesh_instance_set_custom_data(void *self, RID multimesh, int inde
 void hook_multimesh_set_custom_aabb(void *self, RID multimesh, const AABB *aabb) {
   bump(kMultimeshSetCustomAabb);
   original<FnMeshSetCustomAabb>(kMultimeshSetCustomAabb)(self, multimesh, aabb);
+  if (rs::registry_on() && aabb != nullptr) {
+    rs::registry_note_multimesh_custom_aabb(
+        multimesh.id, {aabb->position.x, aabb->position.y, aabb->position.z, aabb->size.x,
+                       aabb->size.y, aabb->size.z});
+  }
   if (streaming() && aabb != nullptr) {
     const std::array<float, 6> a = {aabb->position.x, aabb->position.y, aabb->position.z,
                                     aabb->size.x,     aabb->size.y,     aabb->size.z};
@@ -3652,6 +3675,10 @@ void hook_multimesh_set_custom_aabb(void *self, RID multimesh, const AABB *aabb)
 void hook_multimesh_set_buffer(void *self, RID multimesh, const Vector<float> *buffer) {
   bump(kMultimeshSetBuffer);
   original<FnMultimeshSetBuffer>(kMultimeshSetBuffer)(self, multimesh, buffer);
+  if (rs::registry_on()) {
+    const int64_t n = buffer != nullptr ? buffer->size() : 0;
+    rs::registry_note_multimesh_buffer(multimesh.id, static_cast<std::size_t>(n > 0 ? n : 0));
+  }
   if (streaming()) {
     // The two-word Vector ABI (abi.h): CoW-shared, so a later caller write cannot change it.
     const int64_t n = buffer != nullptr ? buffer->size() : 0;
@@ -3672,6 +3699,10 @@ void hook_multimesh_set_buffer_interpolated(void *self, RID multimesh, const Vec
   bump(kMultimeshSetBufferInterpolated);
   original<FnMultimeshSetBufferInterpolated>(kMultimeshSetBufferInterpolated)(self, multimesh,
                                                                               curr, prev);
+  if (rs::registry_on()) {
+    const int64_t n = curr != nullptr ? curr->size() : 0;
+    rs::registry_note_multimesh_buffer(multimesh.id, static_cast<std::size_t>(n > 0 ? n : 0));
+  }
   if (streaming()) {
     const int64_t n = curr != nullptr ? curr->size() : 0;
     const int64_t pn = prev != nullptr ? prev->size() : 0;
@@ -3708,6 +3739,9 @@ void hook_multimesh_set_physics_interpolated(void *self, RID multimesh, bool int
 void hook_multimesh_set_visible_instances(void *self, RID multimesh, int visible) {
   bump(kMultimeshSetVisibleInstances);
   original<FnRidInt>(kMultimeshSetVisibleInstances)(self, multimesh, visible);
+  if (rs::registry_on()) {
+    rs::registry_note_multimesh_visible(multimesh.id, visible);
+  }
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::MultimeshCall r =
@@ -5025,6 +5059,7 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {
   facts.format = adopt.format;
   facts.colors = adopt.colors;
   facts.custom = adopt.custom;
+  facts.indirect = adopt.indirect;
   facts.visible = adopt.visible;
   facts.mesh = adopt.mesh;
   const rs::Mirror::MultimeshCall r =
@@ -5038,6 +5073,7 @@ bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {
     args.i64("format", static_cast<int64_t>(facts.format));
     args.boolean("colors", facts.colors);
     args.boolean("custom", facts.custom);
+    args.boolean("indirect", facts.indirect);
     args.i64("visible", static_cast<int64_t>(facts.visible));
     args.rid("mesh", facts.mesh);
     resources().multimesh_call(tap_context(), "multimesh_adopt", rid, r.id, r.accepted, r.version,

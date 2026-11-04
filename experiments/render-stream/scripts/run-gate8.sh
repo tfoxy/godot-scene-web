@@ -204,6 +204,13 @@
 #       `sabotage-undrawn-multimesh/receiver` (the pre-PM2 planner),
 #       `sabotage-ignore-identity-transform/receiver` (UIT: the pre-UIT receiver) and
 #       `sabotage-{perturb-instance,stale-buffer}/receiver-patch` (PM1's sabotaged patch sinks).
+#       LAR2 (late-arm-registry-design.md, the multimesh row), in the same gamescope:
+#       `deferred/capture` (loaded at birth, armed at frame 12: adopted from the registry),
+#       `fault-no-resources/capture`, `sabotage-registry-off/capture` and
+#       `sabotage-registry-mm-stride/capture` (deferred, GRC_ADOPT_FAULT), `late/capture` (load-late:
+#       every multimesh refused preload-multimesh), the native `deferred/receiver` and
+#       `deferred/receiver-patch`; after `headless/capture`, `headless-deferred/capture` (the dummy
+#       host). G8MM_ONLY_LATE=1 runs only the references, `capture`, those and `headless/capture`.
 #       Judged by lib/gate8-mm-checks.ts; g7-8's web half replays the receiver legs.
 #   g8pt (PM5, render-stream-12.md "Fixture and checks (gate 8 group g8pt)": GPU particles on /12,
 #       the capture side, fixtures/gate8-pt; every leg under g8pt/): the imports (gate8-pt,
@@ -1172,12 +1179,19 @@ G8MM_FIXTURE_DIR="$EXPERIMENT_DIR/fixtures/gate8-mm"
 # cell is live by then, and steps 1 and 2 (frames 20 and 40) fall either side of it.
 G8MM_SABOTAGE_FRAME=30
 G8MM_SABOTAGES=(perturb-instance stale-buffer)
-# PM9 (late-arm multimesh adoption): the late arm (fixtures/gate8-mm/loader.gd RS_FIXTURE_ARM=late
-# at frame 12, after every multimesh and draw exists), adopted under GRC_ADOPT=arm;
-# GRC_UNKNOWN_ITEM=skip as every late gate 8 leg. GRC_ADOPT_FAULT=no-resources is the pre-PM9
-# capture (nothing adopted lazily: every add_multimesh unknown-multimesh).
-G8MM_LATE_ENV=(GRC_STREAM_VERSION=11 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=12 \
+# PM9, LAR2 (late-arm-registry-design.md, the multimesh row): the `deferred` arm loads the capture
+# in the loader's _enter_tree and defers the arm to frame 12 (GRC_ARM_DEFER_FRAMES=11), so every
+# multimesh is adopted from the registry's recorded allocation; the `late` arm
+# (fixtures/gate8-mm/loader.gd RS_FIXTURE_ARM=late at frame 12, after every multimesh and draw
+# exists: load-late) refuses every one, typed preload-multimesh (F1). Both under GRC_ADOPT=arm,
+# GRC_UNKNOWN_ITEM=skip as every late gate 8 leg. On `deferred`: GRC_ADOPT_FAULT=no-resources (no
+# lazy adoption: every add_multimesh unknown-multimesh), registry-off (nothing recorded: fails
+# mm-registry-source) and registry-mm-stride (PM9's stride guess: fails mm-registry-exact).
+G8MM_ARM_FRAME=12
+G8MM_LATE_ENV=(GRC_STREAM_VERSION=11 GRC_ADOPT=arm RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=$G8MM_ARM_FRAME \
 	GRC_UNKNOWN_ITEM=skip)
+G8MM_DEFERRED_ENV=(GRC_STREAM_VERSION=11 GRC_ADOPT=arm RS_FIXTURE_ARM=deferred \
+	GRC_ARM_DEFER_FRAMES=$((G8MM_ARM_FRAME - 1)) GRC_UNKNOWN_ITEM=skip)
 G8MM_ONLY_LATE="${G8MM_ONLY_LATE:-0}"
 
 run_import_g8mm() {
@@ -1228,20 +1242,28 @@ for l in open(sys.argv[1]):
 	echo "$out"
 }
 
-# run_g8mm_late (PM9): the late-armed captures and their native receivers, in g8mm's gamescope.
-# The fault capture is the pre-PM9 capture: nothing adopted, every add_multimesh unknown-multimesh.
+# run_g8mm_late (PM9, LAR2): the late-armed captures and the deferred capture's native receivers,
+# in g8mm's gamescope.
 run_g8mm_late() {
-	echo "run-gate8: g8mm late/capture (/11, armed at frame 12, GRC_ADOPT=arm: multimeshes adopted)"
-	run_capture_rendered_g8mm "$OUT/g8mm/late/capture" "${G8MM_LATE_ENV[@]}"
-	echo "run-gate8: g8mm fault-no-resources/capture (late, GRC_ADOPT_FAULT=no-resources)"
-	run_capture_rendered_g8mm "$OUT/g8mm/fault-no-resources/capture" "${G8MM_LATE_ENV[@]}" \
+	echo "run-gate8: g8mm deferred/capture (/11, loaded at birth, armed at frame $G8MM_ARM_FRAME: multimeshes adopted from the registry)"
+	run_capture_rendered_g8mm "$OUT/g8mm/deferred/capture" "${G8MM_DEFERRED_ENV[@]}"
+	echo "run-gate8: g8mm fault-no-resources/capture (deferred, GRC_ADOPT_FAULT=no-resources)"
+	run_capture_rendered_g8mm "$OUT/g8mm/fault-no-resources/capture" "${G8MM_DEFERRED_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-resources
+	local s
+	for s in registry-off registry-mm-stride; do
+		echo "run-gate8: g8mm sabotage-$s/capture (deferred, GRC_ADOPT_FAULT=$s)"
+		run_capture_rendered_g8mm "$OUT/g8mm/sabotage-$s/capture" "${G8MM_DEFERRED_ENV[@]}" \
+			GRC_ADOPT_FAULT="$s"
+	done
+	echo "run-gate8: g8mm late/capture (/11, loaded at frame $G8MM_ARM_FRAME: the residual, every multimesh refused preload-multimesh)"
+	run_capture_rendered_g8mm "$OUT/g8mm/late/capture" "${G8MM_LATE_ENV[@]}"
 	legs_par_begin
 	local cap leg extra
-	for leg in late/receiver late/receiver-patch fault-no-resources/receiver; do
-		cap="$OUT/g8mm/${leg%%/*}/capture"
-		extra=""
-		[ -f "$cap/steps.jsonl" ] && extra="$(g8mm_prev_seqs "$cap")"
+	cap="$OUT/g8mm/deferred/capture"
+	extra=""
+	[ -f "$cap/steps.jsonl" ] && extra="$(g8mm_prev_seqs "$cap")"
+	for leg in deferred/receiver deferred/receiver-patch; do
 		echo "run-gate8: g8mm $leg (native, /11)"
 		RECEIVER_EXTRA_ENV=(RS_RECEIVER_PROTOCOL=11)
 		RECEIVER_EXTRA_SHOTS="$extra"
@@ -1251,6 +1273,18 @@ run_g8mm_late() {
 	done
 	legs_par_end
 	RENDERED_EXTRA_ARGS=()
+}
+
+# run_g8mm_headless_deferred (LAR2): the deferred arm on the dummy host, whose multimesh getters
+# answer 0 instances: the registry's allocation is what the adoption carries (mm-registry-headless).
+run_g8mm_headless_deferred() {
+	echo "run-gate8: g8mm headless-deferred/capture (/11, headless, loaded at birth, armed at frame $G8MM_ARM_FRAME)"
+	mkdir -p "$OUT/g8mm/headless-deferred/capture"
+	CAPTURE_FIXTURE_DIR="$G8MM_FIXTURE_DIR"
+	CAPTURE_EXTRA_ENV=("${G8MM_DEFERRED_ENV[@]}"
+		RS_FIXTURE_MM_LOG="$OUT/g8mm/headless-deferred/capture/mm-frames.jsonl")
+	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
+	run_capture "$OUT/g8mm/headless-deferred/capture" "" none
 }
 
 run_g8mm() {
@@ -1277,10 +1311,20 @@ run_g8mm() {
 			RENDERED_EXTRA_ARGS=(--fixed-fps 60)
 			run_rendered "$OUT/g8mm/$r" "$G8MM_FIXTURE_DIR"
 		done
+		# LAR2: the born capture mm-registry-exact compares the deferred one with.
+		echo "run-gate8: g8mm capture (/11, armed at birth, rendered, --fixed-fps 60)"
+		run_capture_rendered_g8mm "$OUT/g8mm/capture" GRC_STREAM_VERSION=11
 		run_g8mm_late
 		rm -rf "$OUT/g8mm/reference/xdg-data"
 		gs_teardown "$OUT/gamescope-g8mm"
 		GS_RUN_DIR=""
+		echo "run-gate8: g8mm headless/capture (/11, headless: no frame_pre_draw)"
+		mkdir -p "$OUT/g8mm/headless/capture"
+		CAPTURE_FIXTURE_DIR="$G8MM_FIXTURE_DIR"
+		CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=11 RS_FIXTURE_MM_LOG="$OUT/g8mm/headless/capture/mm-frames.jsonl")
+		CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
+		run_capture "$OUT/g8mm/headless/capture" "" none
+		run_g8mm_headless_deferred
 		RECORDING_NAME=recording.rs8
 		PATCH_RECORDING_NAME=recording-patch.rs8
 		return 0
@@ -1351,6 +1395,7 @@ run_g8mm() {
 	CAPTURE_EXTRA_ENV=(GRC_STREAM_VERSION=11 RS_FIXTURE_MM_LOG="$OUT/g8mm/headless/capture/mm-frames.jsonl")
 	CAPTURE_EXTRA_ARGS=(--fixed-fps 60)
 	run_capture "$OUT/g8mm/headless/capture" "" none
+	run_g8mm_headless_deferred
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8
 }
