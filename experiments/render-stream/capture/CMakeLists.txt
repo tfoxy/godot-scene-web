@@ -88,6 +88,7 @@ add_library(render_stream_capture SHARED
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_carrier_set.cpp
+  src/rs_expose.cpp
   src/rs_net_module.cpp
   src/rs_particles_shim.cpp
   src/rs_registry.cpp
@@ -202,6 +203,12 @@ target_include_directories(rs_carrier_set_test PRIVATE src)
 target_link_libraries(rs_carrier_set_test PRIVATE grc_warnings grc_codecs Threads::Threads)
 add_test(NAME rs_carrier_set COMMAND rs_carrier_set_test)
 
+# CAR2 (carrier-design.md D10, Q3): the LAN exposure policy's refusal matrix.
+add_executable(rs_expose_test test/rs_expose_test.cpp src/rs_expose.cpp)
+target_include_directories(rs_expose_test PRIVATE src)
+target_link_libraries(rs_expose_test PRIVATE grc_warnings)
+add_test(NAME rs_expose COMMAND rs_expose_test)
+
 # CAR3 (carrier-design.md D8, Q3): the net module loader's refusals (net-module-missing,
 # net-module-abi) against two fake modules, and -- when scripts/build-rs-net.sh has put the real
 # librender_stream_net.so beside the tests -- its table and a wt carrier's start/stop through the
@@ -308,6 +315,7 @@ add_executable(rs_live_host
   src/rs_sha1.cpp
   src/rs_ws.cpp
   src/rs_carrier_set.cpp
+  src/rs_expose.cpp
   src/rs_net_module.cpp
 )
 target_include_directories(rs_live_host PRIVATE src test)

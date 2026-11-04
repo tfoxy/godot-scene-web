@@ -43,7 +43,10 @@
 // (render-stream-root-geometry/1).
 //
 // Live delivery (G1c2, gate1-design.md Q3, Q4, "G1c2"): GRC_LIVE_LISTEN
-// (127.0.0.1:<port> or [::1]:<port>; port 0 = ephemeral) also enables the
+// (127.0.0.1:<port> or [::1]:<port>; port 0 = ephemeral; with GRC_LIVE_EXPOSE=lan, CAR2,
+// carrier-design.md D10, also 0.0.0.0, :: or a host IP, which then requires GRC_LIVE_AUTH=token
+// and a non-empty GRC_LIVE_ALLOWED_ORIGINS: expose-invalid, lan-needs-token, lan-needs-origins;
+// the exposure is recorded in evidence/live-carriers.json, never in live.json) also enables the
 // mirror and the root query, with or without file sinks, and starts the rs_ws
 // server (own I/O thread) at arm; evidence/live.json says what the listener
 // became (render-stream-live/1). Each frame callback drains the server's
@@ -72,7 +75,7 @@
 // WebTransport (CAR3, carrier-design.md D8, D9, D11, Q4): `wt` in GRC_LIVE_CARRIERS loads the net
 // module (rs_net_module.h: GRC_LIVE_NET_MODULE, else librender_stream_net.so beside this .so;
 // `net-module-missing` / `net-module-abi` when it cannot) and starts carrier `wt` (index 1,
-// render-stream-wt/1) on GRC_LIVE_WT_LISTEN (UDP <host>:<port>, same syntax and loopback rule as
+// render-stream-wt/1) on GRC_LIVE_WT_LISTEN (UDP <host>:<port>, same syntax and exposure rule as
 // GRC_LIVE_LISTEN, `wt-listen-invalid` when malformed; default GRC_LIVE_LISTEN's host and port).
 // GRC_LIVE_WT_CERT=self (default: a generated ECDSA P-256 certificate, 14 days, its SHA-256 in
 // evidence/live-cert-sha256) or tls (GRC_LIVE_TLS_CERT/GRC_LIVE_TLS_KEY, PEM paths, both or
@@ -187,6 +190,7 @@
 #include "rs_histogram.h"
 #include "rs_carrier_set.h"
 #include "rs_net_module.h"
+#include "rs_expose.h"
 #include "rs_live.h"
 #include "rs2_diff.h"
 #include "rs_mirror.h"
@@ -371,6 +375,8 @@ struct Live {
   // listener sabotage (no-cors | accept-any-origin | token-ignored | window-overrun; empty when
   // none).
   std::vector<std::string> allowed_origins;
+  // CAR2 (carrier-design.md D10): GRC_LIVE_EXPOSE. Recorded in live-carriers.json only.
+  live::Expose expose = live::Expose::Loopback;
   uint64_t credit_window_max = 2;
   std::string listener_sabotage;
   std::string live_coding = "zstd-base";  // W11t: GRC_LIVE_CODING (what /11 hellos may get)
@@ -1493,41 +1499,13 @@ std::string sabotage_text(const rs2::SabotageConfig &config) {
   return text;
 }
 
-// GRC_LIVE_LISTEN: "127.0.0.1:<port>" or "[::1]:<port>" (gate1-design.md
-// "G1c2"). Returns false with *reason "non-loopback" for any other host, or
-// a description of the malformation.
-bool parse_listen(const std::string &text, std::string *host, uint16_t *port, std::string *reason) {
-  std::string h;
-  std::string p;
-  if (!text.empty() && text[0] == '[') {
-    const std::size_t close = text.find(']');
-    if (close == std::string::npos || close + 1 >= text.size() || text[close + 1] != ':') {
-      *reason = "invalid GRC_LIVE_LISTEN=" + text + " (expected [::1]:<port>)";
-      return false;
-    }
-    h = text.substr(1, close - 1);
-    p = text.substr(close + 2);
-  } else {
-    const std::size_t colon = text.rfind(':');
-    if (colon == std::string::npos) {
-      *reason = "invalid GRC_LIVE_LISTEN=" + text + " (expected 127.0.0.1:<port>)";
-      return false;
-    }
-    h = text.substr(0, colon);
-    p = text.substr(colon + 1);
-  }
-  if (p.empty() || p.size() > 5 || p.find_first_not_of("0123456789") != std::string::npos ||
-      std::stoul(p) > 65535) {
-    *reason = "invalid GRC_LIVE_LISTEN port \"" + p + "\"";
-    return false;
-  }
-  if (h != "127.0.0.1" && h != "::1") {
-    *reason = "non-loopback";
-    return false;
-  }
-  *host = h;
-  *port = static_cast<uint16_t>(std::stoul(p));
-  return true;
+// GRC_LIVE_LISTEN: "127.0.0.1:<port>" or "[::1]:<port>" (gate1-design.md "G1c2"); with
+// GRC_LIVE_EXPOSE=lan (CAR2, carrier-design.md D10) also "0.0.0.0", "::" or a host IP literal.
+// Returns false with *reason "non-loopback" for any other host, or a description of the
+// malformation. The rule itself is rs_expose.cpp's, shared with rs_live_host.
+bool parse_listen(const std::string &text, live::Expose expose, const char *var, std::string *host,
+                  uint16_t *port, std::string *reason) {
+  return live::parse_listen_address(text, expose, var, host, port, reason);
 }
 
 // A positive decimal environment value, or `fallback` when unset. False when
@@ -1732,7 +1710,7 @@ bool live_carriers_ok(std::string *why) {
     std::string host;
     uint16_t port = 0;
     std::string reason;
-    if (!parse_listen(g_live.wt_listen, &host, &port, &reason)) {
+    if (!parse_listen(g_live.wt_listen, g_live.expose, "GRC_LIVE_WT_LISTEN", &host, &port, &reason)) {
       *why = reason == "non-loopback"
                  ? std::string("non-loopback")
                  : "wt-listen-invalid: GRC_LIVE_WT_LISTEN=" + g_live.wt_listen + " (" + reason + ")";
@@ -2141,7 +2119,11 @@ void stream_start() {
     const char *tap = std::getenv("GRC_LIVE_TAP_DIR");
     live_config.tap_dir = tap != nullptr ? std::string(tap) : std::string();
     const std::string auth_mode = env_string("GRC_LIVE_AUTH");
-    if (!parse_listen(g_live.listen, &live_host, &live_port, &why)) {
+    if (!live::parse_expose(std::getenv("GRC_LIVE_EXPOSE"), &g_live.expose, &why)) {
+      // CAR2 (carrier-design.md D10, Q3): expose-invalid.
+      live_ok = false;
+    } else if (!parse_listen(g_live.listen, g_live.expose, "GRC_LIVE_LISTEN", &live_host, &live_port,
+                             &why)) {
       live_ok = false;
     } else if (!env_positive("GRC_LIVE_MAX_MESSAGE_BYTES", 16u << 20,
                              &live_config.max_message_bytes)) {
@@ -2175,6 +2157,10 @@ void stream_start() {
       // G7n (gate7-design.md Q3): an allowlist entry that is not an exact origin refuses.
       live_ok = false;
       why = "origin-config-invalid: GRC_LIVE_ALLOWED_ORIGINS " + why;
+    } else if (!live::check_expose(g_live.expose, auth_mode == "token", g_live.allowed_origins.size(),
+                                   &why)) {
+      // CAR2: lan-needs-token, lan-needs-origins.
+      live_ok = false;
     } else if (!live_carriers_ok(&why)) {
       // CAR1 (carrier-design.md D7, Q3): only `ws` exists until CAR3 (wt) and CAR6 (registered).
       live_ok = false;
@@ -2859,6 +2845,7 @@ void stream_start() {
                                                    rs2::kSubprotocolV13};
     server_config.auth_token = live_auth_token;  // G2e: empty unless GRC_LIVE_AUTH=token.
     server_config.allowed_origins = g_live.allowed_origins;  // G7n
+    server_config.allow_non_loopback = g_live.expose == live::Expose::Lan;  // CAR2 (checked above)
     server_config.enforce_origins = g_live.listener_sabotage != "accept-any-origin";
     server_config.cors_headers = g_live.listener_sabotage != "no-cors";
     server_config.codings = g_live.http_codings;  // G8kz
@@ -2905,7 +2892,7 @@ void stream_start() {
         };
         std::map<std::string, std::string> &c = services.config;
         c["listen"] = g_live.listen;
-        c["expose"] = "loopback";
+        c["expose"] = g_live.expose == live::Expose::Lan ? "lan" : "loopback";
         c["path"] = server_config.path;
         c["subprotocols"] = join(server_config.subprotocols);
         c["hello_token_subprotocols"] = join(server_config.hello_token_subprotocols);

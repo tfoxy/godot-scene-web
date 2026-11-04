@@ -811,6 +811,11 @@ std::string CarrierSet::carriers_json() const {
   std::string out;
   out.append("{\"schema\":\"render-stream-live-carriers/1\",\"abi_version\":");
   out.append(std::to_string(GRC_CARRIER_ABI_VERSION));
+  // CAR2 (D10, D13): the exposure the listeners were configured with ("loopback" when unset).
+  // live.json never carries it; its shape and its loopback assertion are unchanged.
+  const auto expose = services_.config.find("expose");
+  out.append(",\"expose\":");
+  json_string(&out, expose != services_.config.end() && !expose->second.empty() ? expose->second : "loopback");
   out.append(",\"max_connections\":");
   out.append(std::to_string(max_connections_));
   out.append(",\"admitted_max\":");

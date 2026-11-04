@@ -109,6 +109,8 @@ export interface G8lReport {
   } | null;
   /** G8kb: fixtures the runner did not run for this receiver, with its reason. */
   not_applicable?: Partial<Record<G8lFixture, string>>;
+  /** CAR2: the lan leg (native only), or why this machine could not run it. */
+  lan?: { status: "ran" | "unavailable"; address?: string; reason?: string };
 }
 
 interface LiveSummary {
@@ -553,6 +555,131 @@ export async function runG8l(
         `1 upgrade, ${gets.length} GETs, ${lines.filter((l) => l.method === "OPTIONS").length} preflights through port ${ports?.listen_port}; final shot equals tex's`,
       ),
     );
+  }
+  // CAR2 (carrier-design.md D10, F6): the lan leg is tex served on 0.0.0.0 under
+  // GRC_LIVE_EXPOSE=lan, its receiver connected through this machine's non-loopback address with
+  // the token. It exists only in a native run (run-gate8.sh run_g8l_lan); no directory, no check.
+  // This is not a g8l fixture (the browsers' groups replay none), and it does not go through
+  // gate1-live-checks.ts, whose `live-listening` asserts a loopback live.json address for gate
+  // 1's own legs: exposure is recorded in live-carriers.json only, live.json keeps its shape.
+  {
+    const leg = join(out, "g8l", "lan");
+    if (existsSync(leg)) {
+      const unavailable = await readText(join(leg, "unavailable.txt"));
+      if (unavailable !== undefined) {
+        // A typed `unavailable` (no non-loopback address on the runner) is not a failure.
+        report.lan = { status: "unavailable", reason: unavailable.trim() };
+      } else {
+        const host = join(leg, "host");
+        const receiver = join(leg, "receiver");
+        const problems: string[] = [];
+        const address = (
+          (await readText(join(leg, "lan-address.txt"))) ?? ""
+        ).trim();
+        report.lan = { status: "ran", address };
+        const live = await readJson<Record<string, unknown>>(
+          join(host, "evidence", "live.json"),
+        );
+        const carriers = await readJson<{
+          expose?: string;
+          carriers?: Array<{
+            name?: string;
+            address?: string | null;
+            tls?: string;
+            sessions?: number;
+          }>;
+        }>(join(host, "evidence", "live-carriers.json"));
+        const hostPort = typeof live?.port === "number" ? live.port : null;
+        if (live?.status !== "listening")
+          problems.push(`live.json status ${JSON.stringify(live?.status)}`);
+        if (live && "expose" in live)
+          problems.push(
+            "live.json carries an `expose` key (exposure belongs in live-carriers.json)",
+          );
+        if (carriers?.expose !== "lan")
+          problems.push(
+            `live-carriers.json expose ${JSON.stringify(carriers?.expose)}, expected "lan"`,
+          );
+        const ws = carriers?.carriers?.find((c) => c.name === "ws");
+        if (ws?.address !== "0.0.0.0")
+          problems.push(
+            `ws carrier address ${JSON.stringify(ws?.address)}, expected "0.0.0.0"`,
+          );
+        if (ws?.tls !== "none")
+          problems.push(
+            `ws carrier tls ${JSON.stringify(ws?.tls)}, expected "none" (F6: plain ws on the LAN)`,
+          );
+        if (!existsSync(join(host, "evidence", "live-token")))
+          problems.push(
+            "no evidence/live-token (the lan leg requires GRC_LIVE_AUTH=token)",
+          );
+        const envTxt = (await readText(join(receiver, "env.txt"))) ?? "";
+        const url = /^RS_RECEIVER_URL=(.*)$/m.exec(envTxt)?.[1] ?? "";
+        const m = /^ws:\/\/([^:/]+):(\d+)\//.exec(url);
+        if (!m)
+          problems.push(
+            `receiver URL ${JSON.stringify(url)} is not ws://<host>:<port>/`,
+          );
+        else {
+          if (/^127\./.test(m[1]) || m[1] === "0.0.0.0" || m[1] === "localhost")
+            problems.push(
+              `the receiver connected through ${m[1]}, not a non-loopback address`,
+            );
+          if (m[1] !== address)
+            problems.push(
+              `the receiver connected to ${m[1]}, the leg's address is ${address}`,
+            );
+          if (hostPort !== null && Number(m[2]) !== hostPort)
+            problems.push(
+              `the receiver connected to port ${m[2]}, the host listened on ${hostPort}`,
+            );
+        }
+        if (
+          !existsSync(join(receiver, "env.txt")) ||
+          !/RS_RECEIVER_TOKEN_FILE=/.test(envTxt)
+        )
+          problems.push("the receiver was given no token file");
+        const applied = await readJson<Applied>(join(receiver, "applied.json"));
+        if (!applied) problems.push("receiver applied.json missing");
+        else problems.push(...failuresOf(applied));
+        const code = await exitCode(receiver);
+        if (code !== "0") problems.push(`receiver exit ${code ?? "missing"}`);
+        const lanTap = await loadTap(receiver, 8);
+        const texTap = await loadTap(join(out, "g8l", "tex", "receiver"), 8);
+        if (lanTap.error) problems.push(`lan tap: ${lanTap.error}`);
+        if (texTap.error) problems.push(`tex tap: ${texTap.error}`);
+        // A live receiver's transaction count depends on coalescing (credit timing), so the
+        // loopback leg is matched by its end state: the last frame and the final shot.
+        if (lanTap.rec && lanTap.rec.transactions.length === 0)
+          problems.push("the lan tap holds no transaction");
+        if (lanTap.rec && texTap.rec) {
+          const last = (r: { transactions: Array<{ frame: number }> }) =>
+            r.transactions[r.transactions.length - 1]?.frame;
+          if (last(lanTap.rec) !== last(texTap.rec))
+            problems.push(
+              `the last transaction is frame ${last(lanTap.rec)} over the LAN, ${last(texTap.rec)} over loopback`,
+            );
+        }
+        const d = await pixelDiff(
+          join(receiver, "shots", "final.png"),
+          join(out, "g8l", "tex", "receiver", "shots", "final.png"),
+        );
+        if (d === null)
+          problems.push("the lan leg's or the tex leg's final shot is missing");
+        else if (d > 0)
+          problems.push(
+            `${d} px differ from the loopback tex leg's final shot`,
+          );
+        checks.push(
+          check(
+            "g8l-lan-served",
+            "CAR2, D10, F6: tex served on 0.0.0.0 under GRC_LIVE_EXPOSE=lan (token and origins required) reaches a receiver through the machine's non-loopback address with the loopback leg's last frame and final pixels; the exposure is in live-carriers.json (ws, tls none), not live.json",
+            absent(receiver) || absent(host) ? null : problems,
+            `${lanTap.rec?.transactions.length ?? 0} transactions through ${address}:${hostPort}, final shot equals tex's`,
+          ),
+        );
+      }
+    }
   }
   return { checks, report };
 }

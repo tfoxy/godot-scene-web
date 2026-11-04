@@ -2858,6 +2858,12 @@ G8L_FIXTURES=(tex float adopt size mat proxy basis)
 # at 60 fps the linger is about 4 s.
 G8L_QUIT_FRAME=300
 G8L_AWAIT_HELLO_MS=60000
+# CAR2: the lan leg's overrides of the host's listen address and environment, and of the address
+# and environment its receiver connects with (all empty for every other leg).
+G8L_LISTEN=""
+G8L_HOST_EXTRA_ENV=()
+G8L_RECEIVER_HOST=""
+G8L_RECEIVER_EXTRA_ENV=()
 
 # g8l_spec <fixture>: G8L_PROJECT, G8L_SCENE (empty: the project's main scene) and G8L_ENV (the
 # host's policy and fixture words) for one fixture, from its file group's own captures.
@@ -2905,9 +2911,10 @@ start_g8l_host() {
 	LEG_ENV=(
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/recording.rs$G8L_VERSION"
-		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_LIVE_LISTEN=127.0.0.1:0 GRC_LIVE_TAP_DIR="$dir/tap"
+		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_LIVE_LISTEN="${G8L_LISTEN:-127.0.0.1:0}" GRC_LIVE_TAP_DIR="$dir/tap"
 		GRC_LIVE_AWAIT_HELLO_MS="$G8L_AWAIT_HELLO_MS"
 		RS_FIXTURE_QUIT_FRAME="$G8L_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "${G8L_ENV[@]}"
+		${G8L_HOST_EXTRA_ENV[@]+"${G8L_HOST_EXTRA_ENV[@]}"}
 	)
 	local -a argv=("$BINARY" --headless --max-fps 60 --path "$G8L_PROJECT")
 	[ -n "$G8L_SCENE" ] && argv+=("$G8L_SCENE")
@@ -2934,8 +2941,9 @@ g8l_receiver() {
 		return 0
 	fi
 	LEG_ENV=(
-		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://127.0.0.1:$port/render-stream"
+		RS_RECEIVER_MODE=live RS_RECEIVER_URL="ws://${G8L_RECEIVER_HOST:-127.0.0.1}:$port/render-stream"
 		RS_RECEIVER_PROTOCOL="$G8L_VERSION" "${G8L_RECEIVER_ENV[@]}"
+		${G8L_RECEIVER_EXTRA_ENV[@]+"${G8L_RECEIVER_EXTRA_ENV[@]}"}
 		RS_RECEIVER_OUT="$dir/applied.json" RS_RECEIVER_CACHE_DIR="$dir/cache" RS_RECEIVER_SHOT_FINAL=1
 	)
 	# G8z (manifest-matches-hello): RS_G8_MANIFEST_HELLO=1 sends protocol/features/render-stream-8/
@@ -3021,8 +3029,57 @@ run_g8l() {
 		run_rendered_receiver "$leg/host" "$leg/replay"
 		RECORDING_NAME="$recording_name"
 	done
+	run_g8l_lan
 	gs_teardown "$OUT/gamescope-g8l"
 	GS_RUN_DIR=""
+}
+
+# CAR2 (protocol/carrier-design.md D10, F6): tex once more, served on the LAN. The host binds
+# 0.0.0.0 under GRC_LIVE_EXPOSE=lan with GRC_LIVE_AUTH=token and an Origin allow-list; its receiver
+# connects through this machine's non-loopback address with the token. No wss: F6 allows plain ws
+# on the LAN, recorded as `tls: none` in live-carriers.json (never in live.json, whose
+# render-stream-live/1 shape and loopback assertion by g1c stay as they are). A machine with no
+# non-loopback IPv4 address leaves g8l/lan/unavailable.txt, typed `unavailable` for the checker.
+# Native only: a browser receiver (GATE7_LIVE_KIND) runs the fixtures above and no lan leg.
+g8l_lan_address() {
+	python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(("192.0.2.1", 9))  # no packet is sent: this only picks the source address
+    a = s.getsockname()[0]
+    if not a.startswith("127.") and a != "0.0.0.0":
+        print(a)
+except OSError:
+    pass
+PY
+}
+
+run_g8l_lan() {
+	[ -z "${GATE7_LIVE_KIND:-}" ] || return 0
+	local leg="$OUT/g8l/lan" ip
+	ip="$(g8l_lan_address)"
+	if [ -z "$ip" ]; then
+		mkdir -p "$leg"
+		echo "unavailable: this machine has no non-loopback IPv4 address" >"$leg/unavailable.txt"
+		echo "run-gate8: g8l lan unavailable: no non-loopback IPv4 address"
+		return 0
+	fi
+	echo "run-gate8: g8l lan (host on 0.0.0.0, receiver through $ip, token and origins required)"
+	mkdir -p "$leg"
+	printf '%s\n' "$ip" >"$leg/lan-address.txt"
+	G8L_LISTEN="0.0.0.0:0"
+	G8L_HOST_EXTRA_ENV=(GRC_LIVE_EXPOSE=lan GRC_LIVE_AUTH=token "GRC_LIVE_ALLOWED_ORIGINS=http://$ip:8080")
+	start_g8l_host "$leg/host" tex
+	G8L_RECEIVER_HOST="$ip"
+	G8L_RECEIVER_EXTRA_ENV=(RS_RECEIVER_ALLOW_LAN=1 RS_RECEIVER_TOKEN_FILE="$leg/host/evidence/live-token")
+	g8l_receiver "$leg" "$LIVE_PORT"
+	finish_bg "$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"
+	LIVE_HOST_PID=""
+	G8L_LISTEN=""
+	G8L_HOST_EXTRA_ENV=()
+	G8L_RECEIVER_HOST=""
+	G8L_RECEIVER_EXTRA_ENV=()
 }
 
 # ------------------------------------------------------------------------------------ g8ku

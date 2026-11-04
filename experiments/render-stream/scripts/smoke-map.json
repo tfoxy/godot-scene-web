@@ -376,6 +376,16 @@
       "exclusive": true
     },
     {
+      "why": "CAR2 LAN exposure policy (carrier-design.md D10, Q3): rs_expose.{h,cpp}, its ctest and the pure self-test that launches rs_live_host over a non-loopback address. Wiring in entry.cpp, rs_ws.* and rs_live_host.cpp is shared capture code and still reaches '*'; the g8l/lan leg is gate 8's",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_expose*",
+        "experiments/render-stream/capture/test/rs_expose_test.cpp",
+        "experiments/render-stream/scripts/test/self-test-lan.ts"
+      ],
+      "reach": ["capture-build", "pure"],
+      "exclusive": true
+    },
+    {
       "why": "CAR3 net module (carrier-design.md D8, Q4): the rs-net crate (the wt carrier, its vendored wtransport), the capture's loader and its ctest, build-rs-net.sh and the two wt tests. Nothing here runs unless GRC_LIVE_CARRIERS lists wt, which no gate leg does, so it reaches the crate's tests, the build (rs_net_module ctest) and the pure self-tests (self-test-wt-interop.ts). Its call sites in entry.cpp and rs_live_host.cpp are shared capture files and still reach '*'",
       "paths": [
         "experiments/render-stream/rs-net/**",

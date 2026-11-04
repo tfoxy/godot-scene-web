@@ -125,6 +125,18 @@ impl Config {
             .ok_or_else(|| "wt-listen-invalid: no wt_listen address".to_string())?;
         let listen = parse_listen(&wt_listen)
             .ok_or_else(|| format!("wt-listen-invalid: {wt_listen} is not <host>:<port>"))?;
+        // CAR2 (carrier-design.md D10): the same rule as the capture's rs_expose.cpp, held again
+        // here so the module never binds a non-loopback address the host did not expose.
+        let expose = host.config("expose").unwrap_or_else(|| "loopback".to_string());
+        match expose.as_str() {
+            "loopback" | "" => {
+                if !listen.ip().is_loopback() {
+                    return Err("non-loopback".to_string());
+                }
+            }
+            "lan" => {}
+            other => return Err(format!("expose-invalid: expose={other} (loopback or lan)")),
+        }
         let path = host.config("path").unwrap_or_else(|| "/render-stream".to_string());
         let offered = split_list(&host.config("subprotocols").unwrap_or_default());
         let hello_token = split_list(&host.config("hello_token_subprotocols").unwrap_or_default());

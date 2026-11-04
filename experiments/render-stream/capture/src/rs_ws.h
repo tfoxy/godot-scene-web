@@ -53,7 +53,10 @@
 //     Q4) never approaches it; a sabotage that ignores credit (G1d) is
 //     expected to.
 //   - Bind is loopback-only: ServerConfig::host must be exactly "127.0.0.1"
-//     or "::1"; start() refuses (error "non-loopback") for anything else.
+//     or "::1"; start() refuses (error "non-loopback") for anything else, unless
+//     ServerConfig::allow_non_loopback (CAR2, carrier-design.md D10) also admits an IPv4 or
+//     IPv6 literal ("0.0.0.0", "::", a host address). The caller decides that flag from
+//     GRC_LIVE_EXPOSE=lan plus the token and origin checks (rs_expose.h); this file never does.
 //
 // HTTP GET subset implemented (gate2-design.md G2c1, render-stream-2.md
 // "HTTP (live)"):
@@ -159,6 +162,8 @@ class Admission {
 struct ServerConfig {
   std::string host = "127.0.0.1";
   std::uint16_t port = 0;  // 0 = ephemeral; Server::port() reports the bound one.
+  // CAR2 (D10): admit any IP literal as `host`. Default false: loopback literals only.
+  bool allow_non_loopback = false;
   std::size_t max_clients = 1;
   // CAR1 (D6): when set, a WebSocket upgrade takes its slot from `admission` (503 when refused)
   // instead of counting this server's own open connections against max_clients, and returns it
@@ -280,7 +285,7 @@ class Server {
   // it may be null, in which case every resource GET answers 404. `source`
   // is never owned by the Server and must outlive it. Returns false and
   // sets *error without starting anything if host is not a loopback literal
-  // ("non-loopback"), the bind/listen fails (errno text), or start() was
+  // ("non-loopback"; with allow_non_loopback, if it is not an IP literal either), the bind/listen fails (errno text), or start() was
   // already called.
   bool start(const ServerConfig &config, ResourceSource *source, std::string *error);
 

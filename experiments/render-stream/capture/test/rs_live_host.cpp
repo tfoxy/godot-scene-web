@@ -11,6 +11,12 @@
 //   GRC_LIVE_ALLOWED_ORIGINS    comma list (rs_ws.h parse_allowed_origins); invalid -> exit 2
 //   GRC_LIVE_CREDIT_WINDOW_MAX  1 or 2 (default 2); invalid -> exit 2
 //   GRC_SABOTAGE                no-cors | accept-any-origin | token-ignored (anything else -> 2)
+//   GRC_LIVE_EXPOSE             CAR2: loopback (default) | lan; with --token and
+//                               GRC_LIVE_ALLOWED_ORIGINS it follows entry.cpp's refusals
+//                               (expose-invalid, lan-needs-token, lan-needs-origins; exit 2)
+//   GRC_LIVE_LISTEN             CAR2: <host>:<port> of `ws` (default 127.0.0.1 and --port); the
+//                               host needs GRC_LIVE_EXPOSE=lan unless loopback (non-loopback; 2)
+//   GRC_LIVE_WT_LISTEN          CAR2: the same for `wt` (default 127.0.0.1 and --wt-port)
 // and from flags:
 //   --port=N          0 (default) binds an ephemeral port
 //   --token=VALUE     a bearer session: VALUE is required on /6 upgrades and on GETs, and in a
@@ -44,6 +50,7 @@
 #include "rs2_golden_states.h"
 #include "rs2_snapshot.h"
 #include "rs_carrier_set.h"
+#include "rs_expose.h"
 #include "rs_net_module.h"
 #include "rs_live.h"
 #include "rs_publish.h"
@@ -149,12 +156,45 @@ int main(int argc, char **argv) {
   // entry.cpp's live configuration, from the same variables.
   LiveConfig live_config;
   std::string error;
+  // CAR2 (carrier-design.md D10): GRC_LIVE_EXPOSE, GRC_LIVE_LISTEN and GRC_LIVE_WT_LISTEN, through
+  // the same functions entry.cpp calls (rs_expose.h).
+  grc::live::Expose expose = grc::live::Expose::Loopback;
+  std::string wt_host = "127.0.0.1";
+  {
+    std::string why;
+    const auto refuse = [&]() {
+      std::fprintf(stderr, "rs_live_host: %s\n", why.c_str());
+      std::exit(2);
+    };
+    if (!grc::live::parse_expose(std::getenv("GRC_LIVE_EXPOSE"), &expose, &why)) refuse();
+    const char *listen = std::getenv("GRC_LIVE_LISTEN");
+    if (listen != nullptr && *listen != '\0') {
+      std::uint16_t port = 0;
+      if (!grc::live::parse_listen_address(listen, expose, "GRC_LIVE_LISTEN", &server_config.host, &port, &why)) {
+        refuse();
+      }
+      server_config.port = port;
+    }
+    const char *wt_listen = std::getenv("GRC_LIVE_WT_LISTEN");
+    if (wt_listen != nullptr && *wt_listen != '\0') {
+      std::uint16_t port = 0;
+      if (!grc::live::parse_listen_address(wt_listen, expose, "GRC_LIVE_WT_LISTEN", &wt_host, &port, &why)) {
+        refuse();
+      }
+      wt_port = port;
+    }
+  }
   const char *origins = std::getenv("GRC_LIVE_ALLOWED_ORIGINS");
   if (!grc::live::parse_allowed_origins(origins != nullptr ? origins : "", &server_config.allowed_origins,
                                         &error)) {
     std::fprintf(stderr, "rs_live_host: origin-config-invalid: %s\n", error.c_str());
     return 2;
   }
+  if (!grc::live::check_expose(expose, !token.empty(), server_config.allowed_origins.size(), &error)) {
+    std::fprintf(stderr, "rs_live_host: %s\n", error.c_str());
+    return 2;
+  }
+  server_config.allow_non_loopback = expose == grc::live::Expose::Lan;
   const char *window = std::getenv("GRC_LIVE_CREDIT_WINDOW_MAX");
   if (window != nullptr && *window != '\0') {
     const std::string w(window);
@@ -200,7 +240,9 @@ int main(int argc, char **argv) {
   services.config["hello_token_subprotocols"] = "render-stream.7";
   services.config["max_inbound_text"] = std::to_string(server_config.max_inbound_text);
   services.config["max_queued_bytes"] = std::to_string(server_config.max_queued_bytes);
-  services.config["wt_listen"] = "127.0.0.1:" + std::to_string(wt_port);
+  services.config["wt_listen"] =
+      (wt_host.find(':') != std::string::npos ? "[" + wt_host + "]" : wt_host) + ":" + std::to_string(wt_port);
+  services.config["expose"] = expose == grc::live::Expose::Lan ? "lan" : "loopback";
   services.config["wt_cert"] = "self";
   if (!evidence_dir.empty()) services.config["evidence_dir"] = evidence_dir;
   grc::live::CarrierSet transport(server_config.max_clients, services);

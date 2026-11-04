@@ -31,6 +31,11 @@
 //     OriginRejected event on the upgrade, GET and OPTIONS; exact matching), CORS headers on an
 //     allowed GET (200, 404, 401), the exact 204 preflight for any hash, the accept-any-origin and
 //     no-cors switches, and parse_allowed_origins.
+//   - CAR2 (carrier-design.md D10, Security): allow_non_loopback binds 0.0.0.0, "::" and a host
+//     address and serves through a non-loopback address; a hostname still refuses; the Origin
+//     allow-list holds there; and a malformed-input set (headers over 8 KiB, bad lengths,
+//     reserved bits, unmasked and non-UTF-8 frames) is answered with the right status or close
+//     code and leaves the server serving.
 //
 // The raw-socket client below is a second, independent implementation of
 // the wire format (client side): it is deliberately not shared code with
@@ -38,6 +43,8 @@
 // not cancel out.
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -1579,6 +1586,232 @@ void test_g7n_parse_allowed_origins() {
 
 }  // namespace
 
+// The first non-loopback IPv4 address of this machine, or "" (the LAN legs then skip).
+std::string first_lan_ipv4() {
+  ifaddrs *list = nullptr;
+  if (::getifaddrs(&list) != 0) return "";
+  std::string found;
+  for (ifaddrs *a = list; a != nullptr && found.empty(); a = a->ifa_next) {
+    if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET || (a->ifa_flags & IFF_UP) == 0) continue;
+    const auto *sin = reinterpret_cast<const sockaddr_in *>(a->ifa_addr);
+    if ((ntohl(sin->sin_addr.s_addr) >> 24) == 127) continue;
+    char buf[INET_ADDRSTRLEN];
+    if (::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)) != nullptr) found = buf;
+  }
+  ::freeifaddrs(list);
+  return found;
+}
+
+int connect_ipv4(const std::string &host, std::uint16_t port) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  timeval tv{};
+  tv.tv_sec = 5;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  ::inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+  if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+// CAR2 (D10): ServerConfig::allow_non_loopback is the one switch; without it nothing changes.
+void test_lan_bind() {
+  {
+    grc::live::Server server;
+    grc::live::ServerConfig config = g7n_config();
+    config.host = "0.0.0.0";
+    std::string error;
+    check(!server.start(config, nullptr, &error) && error == "non-loopback",
+          "0.0.0.0 without allow_non_loopback -> non-loopback");
+  }
+  for (const char *host : {"::", "::ffff:0:0", "not-an-ip", "example.com", "", "0.0.0.0:80", "[::]"}) {
+    grc::live::Server server;
+    grc::live::ServerConfig config = g7n_config();
+    config.host = host;
+    config.allow_non_loopback = true;
+    std::string error;
+    const bool started = server.start(config, nullptr, &error);
+    const std::string h = host;
+    if (h == "::" || h == "::ffff:0:0") {
+      // IPv6 may be absent on a runner: a socket/bind failure is not a policy result.
+      check(started || error.rfind("socket:", 0) == 0 || error.rfind("bind:", 0) == 0,
+            "host '" + h + "' with allow_non_loopback binds or fails in the OS, got '" + error + "'");
+    } else {
+      check(!started && error == "non-loopback", "host '" + h + "' is not an IP literal -> non-loopback, got '" + error + "'");
+    }
+    if (started) server.stop(1000);
+  }
+  grc::live::Server server;
+  grc::live::ServerConfig config = g7n_config();
+  config.host = "0.0.0.0";
+  config.allow_non_loopback = true;
+  std::string error;
+  check(server.start(config, nullptr, &error), "0.0.0.0 with allow_non_loopback starts: " + error);
+  const std::string lan = first_lan_ipv4();
+  std::vector<std::string> via = {"127.0.0.1"};
+  if (!lan.empty()) via.push_back(lan);
+  else std::printf("rs_ws_test: no non-loopback IPv4 address; the LAN-address connection is skipped\n");
+  for (const std::string &host : via) {
+    const int fd = connect_ipv4(host, server.port());
+    check(fd >= 0, "connects to 0.0.0.0's listener through " + host);
+    if (fd < 0) continue;
+    const Handshake ok = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                       {{"Origin", kOrigin}});
+    check(ok.status == 101, "an allowed Origin's upgrade through " + host + " -> 101, got " + std::to_string(ok.status));
+    wait_events(server, 1, 2000);
+    ::close(fd);
+    const int fd2 = connect_ipv4(host, server.port());
+    const Handshake bad = do_handshake(fd2, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                        {{"Origin", kForeign}});
+    check(bad.status == 403, "a foreign Origin through " + host + " -> 403, got " + std::to_string(bad.status));
+    wait_events(server, 1, 2000);
+    ::close(fd2);
+    // The same listener also enforces the bearer token on resources and the upgrade rules.
+    const int fd3 = connect_ipv4(host, server.port());
+    const Handshake nosub = do_handshake(fd3, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "", {{"Origin", kOrigin}});
+    check(nosub.status == 400, "no subprotocol through " + host + " -> 400, got " + std::to_string(nosub.status));
+    ::close(fd3);
+  }
+  server.stop(1000);
+  if (!lan.empty()) {
+    // A listener bound to the host address itself.
+    grc::live::Server bound;
+    grc::live::ServerConfig c2 = g7n_config();
+    c2.host = lan;
+    c2.allow_non_loopback = true;
+    check(bound.start(c2, nullptr, &error), "the host address binds with allow_non_loopback: " + error);
+    const int fd = connect_ipv4(lan, bound.port());
+    check(fd >= 0, "connects to " + lan);
+    if (fd >= 0) ::close(fd);
+    check(connect_loopback(bound.port()) < 0, "a listener bound to " + lan + " is not on 127.0.0.1");
+    bound.stop(1000);
+  }
+}
+
+// Reads until the peer closes or `ms` passes; the first frame, if any.
+ServerFrame first_frame_or_close(int fd) { return read_server_frame(fd); }
+
+std::uint16_t close_code_of(const ServerFrame &f) {
+  return f.ok && f.opcode == 0x8 && f.payload.size() >= 2
+             ? static_cast<std::uint16_t>((static_cast<std::uint16_t>(f.payload[0]) << 8) | f.payload[1])
+             : 0;
+}
+
+// Security (carrier-design.md): the parser the LAN can now reach. Each case gets its own
+// connection; after all of them a fresh handshake still gets a 101.
+void test_malformed_inputs_on_lan_listener() {
+  grc::live::Server server;
+  grc::live::ServerConfig config = g7n_config();
+  config.host = "0.0.0.0";
+  config.allow_non_loopback = true;
+  std::string error;
+  check(server.start(config, nullptr, &error), "malformed-input server starts: " + error);
+  const auto upgraded = [&]() {
+    const int fd = connect_loopback(server.port());
+    const Handshake hs = do_handshake(fd, "dGhlIHNhbXBsZSBub25jZQ==", "/render-stream", "render-stream.7",
+                                       {{"Origin", kOrigin}});
+    if (hs.status != 101) {
+      ::close(fd);
+      return -1;
+    }
+    wait_events(server, 1, 2000);
+    return fd;
+  };
+  // Headers over 8 KiB without a terminator, then with one.
+  for (const bool terminated : {false, true}) {
+    const int fd = connect_loopback(server.port());
+    std::string req = "GET /render-stream HTTP/1.1\r\nHost: x\r\nX-Pad: " + std::string(9000, 'a') + (terminated ? "\r\n\r\n" : "");
+    ::send(fd, req.data(), req.size(), MSG_NOSIGNAL);
+    const auto bytes = recv_some(fd);
+    const std::string raw(bytes.begin(), bytes.end());
+    check(raw.rfind("HTTP/1.1 400", 0) == 0 || raw.rfind("HTTP/1.1 431", 0) == 0 || raw.empty(),
+          std::string("headers over 8 KiB (") + (terminated ? "terminated" : "unterminated") + ") -> 400 or closed, got " + raw.substr(0, 40));
+    ::close(fd);
+  }
+  // A NUL in the request line, a lone LF head, an absurd method and a 70000-byte target.
+  for (const std::string &req : {std::string("GET /render\0stream HTTP/1.1\r\n\r\n", 32), std::string("GET / HTTP/1.1\n\n"),
+                                 std::string(300, 'M') + " / HTTP/1.1\r\n\r\n",
+                                 "GET /" + std::string(70000, 'p') + " HTTP/1.1\r\n\r\n"}) {
+    const int fd = connect_loopback(server.port());
+    ::send(fd, req.data(), req.size(), MSG_NOSIGNAL);
+    const auto bytes = recv_some(fd);
+    const std::string raw(bytes.begin(), bytes.end());
+    check(raw.empty() || raw.rfind("HTTP/1.1 4", 0) == 0, "a malformed head -> 4xx or closed, got " + raw.substr(0, 40));
+    ::close(fd);
+  }
+  // Frame headers: {description, bytes, expected close code (0: the server just closes)}.
+  struct Case {
+    const char *what;
+    std::vector<std::uint8_t> bytes;
+    std::uint16_t code;
+  };
+  const std::uint8_t k[4] = {1, 2, 3, 4};
+  const auto with_key = [&](std::vector<std::uint8_t> v) {
+    v.insert(v.end(), k, k + 4);
+    return v;
+  };
+  const Case cases[] = {
+      {"RSV1 set", with_key({0xC1, 0x80}), 1002},
+      {"RSV2|RSV3 set", with_key({0xB1, 0x80}), 1002},
+      {"unmasked frame", {0x81, 0x00}, 1002},
+      {"64-bit length with the top bit set", with_key({0x81, 0xFF, 0x80, 0, 0, 0, 0, 0, 0, 0}), 1002},
+      {"64-bit length 2^40 text", with_key({0x81, 0xFF, 0, 0, 1, 0, 0, 0, 0, 0}), 1009},
+      {"16-bit length 65535 text", with_key({0x81, 0xFE, 0xFF, 0xFF}), 1009},
+      {"ping with the 16-bit length form", with_key({0x89, 0xFE, 0x00, 0x7E}), 1002},
+      {"close with the 64-bit length form", with_key({0x88, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0x7E}), 1002},
+      {"fragmented control frame", with_key({0x09, 0x80}), 1002},
+      {"reserved opcode 0x3", with_key({0x83, 0x80}), 1002},
+      {"reserved opcode 0xB", with_key({0x8B, 0x80}), 1002},
+      {"continuation without a start", with_key({0x80, 0x80}), 1002},
+      {"binary frame", with_key({0x82, 0x80}), 1003},
+  };
+  for (const Case &c : cases) {
+    const int fd = upgraded();
+    check(fd >= 0, std::string("upgrade before: ") + c.what);
+    if (fd < 0) continue;
+    ::send(fd, c.bytes.data(), c.bytes.size(), MSG_NOSIGNAL);
+    const ServerFrame f = first_frame_or_close(fd);
+    check(close_code_of(f) == c.code, std::string(c.what) + " closes " + std::to_string(c.code) + ", got " +
+                                          std::to_string(close_code_of(f)));
+    ::close(fd);
+  }
+  {
+    // A masked text frame whose payload is not UTF-8.
+    const int fd = upgraded();
+    if (fd >= 0) {
+      const auto f = client_frame(0x1, {0xC3, 0x28, 0xFF});
+      ::send(fd, f.data(), f.size(), MSG_NOSIGNAL);
+      const ServerFrame r = first_frame_or_close(fd);
+      check(close_code_of(r) == 1007 || close_code_of(r) == 1002 || close_code_of(r) == 0,
+            "non-UTF-8 text is closed or tolerated without a crash, got " + std::to_string(close_code_of(r)));
+      ::close(fd);
+    }
+  }
+  {
+    // A header cut off mid-way and an abrupt close; a frame header cut off and a close.
+    const int fd = connect_loopback(server.port());
+    const std::string half = "GET /render-stream HTTP/1.1\r\nHost: x\r\nUpg";
+    ::send(fd, half.data(), half.size(), MSG_NOSIGNAL);
+    ::close(fd);
+    const int fd2 = upgraded();
+    if (fd2 >= 0) {
+      const std::uint8_t part[3] = {0x81, 0xFE, 0x01};
+      ::send(fd2, part, sizeof(part), MSG_NOSIGNAL);
+      ::close(fd2);
+    }
+    wait_events(server, 1, 500);
+  }
+  const int after = upgraded();
+  check(after >= 0, "the server still upgrades after every malformed input");
+  if (after >= 0) ::close(after);
+  server.stop(1000);
+}
+
 int main() {
   test_sha1_vectors();
   test_handshake_accept_key_rfc_vector();
@@ -1625,6 +1858,8 @@ int main() {
   test_g7n_origin_and_cors_on_resources();
   test_g7n_sabotage_switches();
   test_g7n_parse_allowed_origins();
+  test_lan_bind();
+  test_malformed_inputs_on_lan_listener();
 
   if (g_failures != 0) {
     std::fprintf(stderr, "rs_ws_test: %d of %d checks failed\n", g_failures, g_checks);

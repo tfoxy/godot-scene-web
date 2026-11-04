@@ -1272,6 +1272,16 @@ bool Server::start(const ServerConfig &config, ResourceSource *source, std::stri
     addr6.sin6_family = AF_INET6;
     addr6.sin6_port = htons(config.port);
     addr6.sin6_addr = in6addr_loopback;
+  } else if (config.allow_non_loopback && inet_pton(AF_INET, config.host.c_str(), &addr4.sin_addr) == 1) {
+    // CAR2 (carrier-design.md D10): 0.0.0.0 or a host address, only when the entry point has
+    // checked GRC_LIVE_EXPOSE=lan, the token and the origins.
+    family = AF_INET;
+    addr4.sin_family = AF_INET;
+    addr4.sin_port = htons(config.port);
+  } else if (config.allow_non_loopback && inet_pton(AF_INET6, config.host.c_str(), &addr6.sin6_addr) == 1) {
+    family = AF_INET6;
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_port = htons(config.port);
   } else {
     if (error) *error = "non-loopback";
     return false;

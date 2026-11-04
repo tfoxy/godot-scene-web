@@ -829,6 +829,46 @@ fn stop_closes_releases_and_goes_quiet() {
     assert_eq!(h.events().len(), n, "no callback after stop()");
 }
 
+/// The address a LAN client would use: the interface the default route leaves by. A UDP socket
+/// "connected" to a documentation address sends nothing and only picks the source address.
+fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    match s.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(a) if !a.is_loopback() && !a.is_unspecified() => Some(a),
+        _ => None,
+    }
+}
+
+#[test]
+fn lan_listen_needs_expose_lan_and_serves_through_a_lan_address() {
+    // CAR2 (carrier-design.md D10): with expose=lan, 0.0.0.0 binds, the session works on the
+    // loopback address and, when this machine has one, through its LAN address.
+    let h = Harness::start(Opts {
+        extra: vec![("wt_listen", "0.0.0.0:0".to_string()), ("expose", "lan".to_string())],
+        ..Opts::default()
+    });
+    let info = h.info();
+    assert_eq!(cstr(&info.address), "0.0.0.0");
+    assert_eq!(cstr(&info.tls), "self-signed", "wt is always encrypted, on the LAN too");
+    let rt = rt();
+    let mut urls = vec![h.url.clone()];
+    match lan_ipv4() {
+        Some(ip) => urls.push(format!("https://{ip}:{}/render-stream?protocol={SP}", info.port)),
+        None => eprintln!("no non-loopback IPv4 address: the LAN-address connection is skipped"),
+    }
+    let mut keep = Vec::new();
+    for (i, url) in urls.iter().enumerate() {
+        let c = rt.block_on(async {
+            let c = connect_with(url, &h.hash, &[("origin", "http://127.0.0.1:5173")]).await.expect(url);
+            let _ = open_live(&c).await;
+            c
+        });
+        h.wait_opened(i);
+        keep.push(c);
+    }
+}
+
 #[test]
 fn self_signed_certificate_is_pinnable_and_written() {
     let h = Harness::start(Opts::default());
@@ -845,6 +885,11 @@ fn start_refusals_are_typed() {
     for (extra, want) in [
         (vec![("wt_listen", "nonsense".to_string())], "wt-listen-invalid"),
         (vec![("wt_cert", "tls".to_string())], "tls-config-invalid"),
+        // CAR2 (D10): a non-loopback listen needs expose=lan, whatever its spelling.
+        (vec![("wt_listen", "0.0.0.0:0".to_string())], "non-loopback"),
+        (vec![("wt_listen", "[::]:0".to_string())], "non-loopback"),
+        (vec![("wt_listen", "192.168.1.5:9".to_string()), ("expose", "loopback".to_string())], "non-loopback"),
+        (vec![("wt_listen", "0.0.0.0:0".to_string()), ("expose", "wan".to_string())], "expose-invalid"),
         (vec![("hello_token_subprotocols", "".to_string())], "carrier-config-invalid"),
     ] {
         let fake = Box::new(Fake {

@@ -183,6 +183,8 @@ extends Node
 ##   RS_RECEIVER_RESYNC          <step> (G1d): refuse the first transaction in that step's window
 ##                               unapplied, send `resync` for it, and ignore patches until a full
 ##                               transaction arrives
+##   RS_RECEIVER_ALLOW_LAN       CAR2 (carrier-design.md D10): "1" lets RS_RECEIVER_URL be
+##                               ws://<IPv4>:<port>/... (the gate 8 lan leg); default: loopback only
 ##   RS_RECEIVER_TOKEN_FILE      G2e (gate2-design.md D13): absolute path to a file holding the
 ##                               bearer token, sent as "Authorization: Bearer <token>" on the
 ##                               WebSocket upgrade and on every resource GET. Unset: no token sent
@@ -1637,8 +1639,12 @@ func _ready_live() -> void:
 			_quit(EXIT_USAGE)
 			return
 	_url = RsConfig.get_env("RS_RECEIVER_URL").strip_edges()
-	if not (_url.begins_with("ws://127.0.0.1:") or _url.begins_with("ws://[::1]:")):
-		_log("error: RS_RECEIVER_URL must be ws://127.0.0.1:<port>/... or ws://[::1]:<port>/... (loopback only; got %s)" % JSON.stringify(_url))
+	# CAR2 (carrier-design.md D10): RS_RECEIVER_ALLOW_LAN=1 accepts ws://<IPv4>:<port>/..., the
+	# gate 8 lan leg's host address; the default stays loopback only.
+	var allow_lan: bool = RsConfig.get_env("RS_RECEIVER_ALLOW_LAN").strip_edges() == "1"
+	var lan_url: RegEx = RegEx.create_from_string("^ws://[0-9]{1,3}(\\.[0-9]{1,3}){3}:[0-9]+/")
+	if not (_url.begins_with("ws://127.0.0.1:") or _url.begins_with("ws://[::1]:") or (allow_lan and lan_url.search(_url) != null)):
+		_log("error: RS_RECEIVER_URL must be ws://127.0.0.1:<port>/... or ws://[::1]:<port>/... (loopback only, unless RS_RECEIVER_ALLOW_LAN=1 for ws://<IPv4>:<port>/; got %s)" % JSON.stringify(_url))
 		_quit(EXIT_USAGE)
 		return
 	_shot_dir = _out_path.get_base_dir().path_join("shots")
@@ -2878,6 +2884,13 @@ static func _url_origin(url: String) -> Dictionary:
 	elif rest.begins_with("127.0.0.1:"):
 		host = "127.0.0.1"
 		port_text = rest.substr(10)
+	elif RsConfig.get_env("RS_RECEIVER_ALLOW_LAN").strip_edges() == "1":
+		# CAR2: ws://<IPv4>:<port>/... (the gate 8 lan leg).
+		var m: RegExMatch = RegEx.create_from_string("^([0-9]{1,3}(\\.[0-9]{1,3}){3}):(.*)$").search(rest)
+		if m == null:
+			return {}
+		host = m.get_string(1)
+		port_text = m.get_string(3)
 	else:
 		return {}
 	var slash: int = port_text.find("/")
