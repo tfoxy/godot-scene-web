@@ -18,6 +18,7 @@
 #include "rs_mesh_payload.h"
 #include "rs_mirror.h"
 #include "rs_particles_shim.h"
+#include "rs_registry.h"
 #include "rs_resource_log.h"
 #include "rs_sha256.h"
 #include "rs_shader_clock.h"
@@ -510,6 +511,15 @@ Fn original(HookId id) {
 }
 
 void bump(HookId id) { g_count[id].fetch_add(1, std::memory_order_relaxed); }
+
+// LAR0 (late-arm-registry-design.md R1): the registry's create tap, beside bump() in every tracked
+// create hook and at the same guard level (t_internal creates are neither counted nor recorded).
+// GRC_ADOPT=off: one relaxed load and a predictable branch.
+void registry_create(uint64_t rid, rs::RegistryKind kind) {
+  if (rs::registry_on()) {
+    rs::registry_note_create(rid, kind);
+  }
+}
 
 uint64_t current_frame() { return g_frame.load(std::memory_order_relaxed); }
 
@@ -2157,6 +2167,7 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   const uint64_t t_forward = now_ns();
   const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, image);
   const uint64_t forward_ns = now_ns() - t_forward;
+  registry_create(result.id, rs::RegistryKind::Texture2d);
   capture.rid = result.id;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -2234,6 +2245,9 @@ void hook_free(void *self, RID rid) {
   rs::canvas_texture_shim().on_free(rid.id, current_frame());
   rs::particles_shim().on_free(rid.id);  // PM5: likewise a private emitter RID
   rs::adopt_resource_freed(rid.id);      // late-arm adoption's refusals and CanvasTexture registry
+  if (rs::registry_on()) {
+    rs::registry_note_free(rid.id);  // LAR0 (design R5): erased before the call is forwarded
+  }
   {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("free");
@@ -2551,6 +2565,7 @@ void hook_set_material(void *self, RID item, RID material) {
 RID hook_mesh_create(void *self) {
   bump(kMeshCreate);
   const RID result = original<FnCreate>(kMeshCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Mesh);
   log_entry(&g_mesh_creates, rids(result.id));
   const bool logging = resources().active();
   if (logging) {
@@ -2823,6 +2838,7 @@ RID hook_mesh_create_from_surfaces(void *self, const Vector<SurfaceDataPrefix> *
   bump(kMeshCreateFromSurfaces);
   const RID result =
       original<FnMeshCreateFromSurfaces>(kMeshCreateFromSurfaces)(self, surfaces, blend_shape_count);
+  registry_create(result.id, rs::RegistryKind::Mesh);
   log_entry(&g_mesh_create_from_surfaces_calls,
            rids(result.id, surfaces != nullptr ? static_cast<uint64_t>(surfaces->size()) : 0));
   if (resources().active()) {
@@ -2973,6 +2989,7 @@ RID hook_shader_create_from_code(void *self, const void *code, const void *path_
   bump(kShaderCreateFromCode);
   const RID result =
       original<FnShaderCreateFromCode>(kShaderCreateFromCode)(self, code, path_hint);
+  registry_create(result.id, rs::RegistryKind::Shader);
   log_entry(&g_shader_creates, rids(result.id));
   if (resources().active()) {
     rs::ShaderCodeInput input;
@@ -3043,6 +3060,7 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
 RID hook_shader_create(void *self) {
   bump(kShaderCreate);
   const RID result = original<FnCreate>(kShaderCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Shader);
   log_entry(&g_shader_create_calls, rids(result.id));
   if (resources().active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3086,6 +3104,7 @@ RID hook_material_create(void *self) {
   }
   bump(kMaterialCreate);
   const RID result = original<FnCreate>(kMaterialCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Material);
   log_entry(&g_material_create_calls, rids(result.id));
   if (resources().active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3109,6 +3128,7 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
   bump(kMaterialCreateFromShader);
   const RID result = original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(
       self, next_pass, priority, shader);
+  registry_create(result.id, rs::RegistryKind::Material);
   MaterialShaderKey key;
   zero(&key);
   key.material = result.id;
@@ -3498,6 +3518,7 @@ bool mm_logging() { return resources().active(); }
 RID hook_multimesh_create(void *self) {
   bump(kMultimeshCreate);
   const RID result = original<FnCreate>(kMultimeshCreate)(self);
+  registry_create(result.id, rs::RegistryKind::Multimesh);
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::MultimeshCall r = mirror().multimesh_create(result.id, current_frame());
@@ -3760,6 +3781,7 @@ RID hook_particles_create(void *self) {
   // The headless RID shim (rs_particles_shim.h): a RID() result becomes a private RID.
   RID result = engine;
   result.id = rs::particles_shim().on_create(engine.id);
+  registry_create(result.id, rs::RegistryKind::Particles);
   if (streaming()) {
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::ParticlesCall r = mirror().particles_create(result.id, current_frame());
@@ -4153,6 +4175,7 @@ void hook_set_draw_behind_parent(void *self, RID item, bool behind) {
 RID hook_texture_2d_placeholder_create(void *self) {
   bump(kTexture2dPlaceholderCreate);
   const RID result = original<FnCreate>(kTexture2dPlaceholderCreate)(self);
+  registry_create(result.id, rs::RegistryKind::TexturePlaceholder);
   log_entry(&g_placeholder_creates, rids(result.id));
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("texture_2d_placeholder_create");
@@ -4169,6 +4192,10 @@ void hook_texture_replace(void *self, RID texture, RID by_texture) {
   rs::adopt_texture_ref(texture.id);
   rs::adopt_texture_ref(by_texture.id);
   log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
+  if (rs::registry_on()) {
+    // LAR0 (design R5): the engine frees by_texture inside the call, with no free of its own.
+    rs::registry_note_replace(texture.id, by_texture.id);
+  }
   original<FnSetMaterial>(kTextureReplace)(self, texture, by_texture);
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("texture_replace");
@@ -4206,6 +4233,7 @@ RID hook_canvas_texture_create(void *self) {
   // sees it. Off, or a non-null engine result: unchanged.
   result.id = rs::canvas_texture_shim().on_create(result.id, current_frame());
   rs::canvas_texture_note_create(result.id);  // LATE-SPINE: registry for late-arm adoption
+  registry_create(result.id, rs::RegistryKind::CanvasTexture);  // LAR0 (LAR1 folds LATE-SPINE's into it)
   log_entry(&g_canvas_texture_creates, rids(result.id));
   std::lock_guard<std::mutex> order(g_texture_order);
   const bool omit = omitted("canvas_texture_create");

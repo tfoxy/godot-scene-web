@@ -35,6 +35,12 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { compareWorkerRecordings } from "./gate8-tex-checks";
 import {
+  type CostSample,
+  type RegistryEvidence,
+  registryCost,
+  registryLiveBound,
+} from "./registry-checks";
+import {
   decodeRecording,
   type ResolvedItem,
   type ResolvedRecording,
@@ -131,6 +137,11 @@ export interface G8aReport {
     string,
     { equivalence_problems: number; differing_px: number }
   >;
+  /** LAR0: the late-arm registry (registry-live-bound, registry-cost). */
+  registry?: {
+    live: Record<string, unknown>;
+    cost: Record<string, unknown> | null;
+  };
   /** G8r: lazy resource adoption. */
   resources: {
     late: Record<string, unknown> | null;
@@ -784,6 +795,23 @@ const SABOTAGES = [
 // G8r: the GRC_ADOPT_FAULT captures (run-gate8.sh G8R_FAULTS); the first two also rendered.
 const FAULTS = ["no-resources", "atlas-from-dummy", "claim-current"] as const;
 const FAULTS_RENDERED = ["no-resources", "atlas-from-dummy"] as const;
+// LAR0: the registry-cost timing group (run-gate8.sh G8A_COST_CONFIGS x G8A_COST_ROUNDS).
+const REGISTRY_COST_CONFIGS = ["off", "on", "regoff"] as const;
+const REGISTRY_COST_ROUNDS = 5;
+const REGISTRY_COST_DIRS = Array.from({ length: REGISTRY_COST_ROUNDS }, (_, r) =>
+  REGISTRY_COST_CONFIGS.map((c) => `registry-cost/${c}-${r + 1}`),
+).flat();
+// The adopt_stats fields that are timings (differ run to run), left out of a deferred = late
+// comparison.
+const isTiming = (k: string) => k.endsWith("_ns");
+function stripTimings(v: unknown): unknown {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+  return Object.fromEntries(
+    Object.entries(v as Record<string, unknown>)
+      .filter(([k]) => !isTiming(k))
+      .map(([k, x]) => [k, stripTimings(x)]),
+  );
+}
 
 export async function runG8a(
   out: string,
@@ -800,6 +828,9 @@ export async function runG8a(
     "late-strict/capture",
     "late-thread/capture",
     "late-workers/capture",
+    "deferred/capture",
+    "sabotage-registry-keep-freed/capture",
+    ...REGISTRY_COST_DIRS,
     ...SABOTAGES.map((s) => `sabotage-${s}/capture`),
     ...FAULTS.map((s) => `fault-${s}/capture`),
     "reference",
@@ -962,6 +993,145 @@ export async function runG8a(
       ),
     );
   }
+
+  // --- LAR0: adopt-equivalence on the deferred leg ------------------------------------------
+  // Loaded at birth (the hooks see every create, the registry records them), armed at K by
+  // GRC_ARM_DEFER_FRAMES: from K on it must equal born exactly as late does, and -- adoption is
+  // unchanged by LAR0 -- its adoption account must be late's, timings aside.
+  const deferred = await loadRecording(join(root, "deferred/capture"));
+  const deferredResult = await readJson<CaptureResult>(
+    join(root, "deferred/capture/evidence/result.json"),
+  );
+  {
+    let problems: string[] | null = null;
+    if (born.rec && deferred.rec && deferred.bytes) {
+      problems = [];
+      const errors = validateRecording(deferred.bytes, 8);
+      if (errors.length > 0) problems.push(`invalid /8 recording: ${errors[0]}`);
+      const decoded = decodeRecording(deferred.bytes, 8) as unknown as {
+        records: { meta: Record<string, unknown> }[];
+      };
+      const adoption = decoded.records[0]?.meta.adoption as
+        | { mode: string; frame: number }
+        | null
+        | undefined;
+      if (adoption?.mode !== "arm" || adoption.frame !== K)
+        problems.push(
+          `session adoption ${JSON.stringify(adoption)}, expected {"mode":"arm","frame":${K}}`,
+        );
+      const first = deferred.rec.transactions[0];
+      if (!first || first.frame !== K)
+        problems.push(`first transaction at frame ${first?.frame}, expected ${K}`);
+      const e = equivalence(born.rec, deferred.rec, K, expected.residue, allow);
+      problems.push(...e.problems.slice(0, 20));
+      if (e.problems.length > 20) problems.push(`... ${e.problems.length - 20} more`);
+      const a = stripTimings(deferredResult?.stream?.gate8?.adopt_stats);
+      const b = stripTimings(lateResult?.stream?.gate8?.adopt_stats);
+      if (a === undefined || JSON.stringify(a) !== JSON.stringify(b))
+        problems.push(
+          `adopt_stats differ from late's (timings aside): deferred ${JSON.stringify(a)} late ${JSON.stringify(b)}`,
+        );
+    }
+    checks.push(
+      check(
+        "adopt-equivalence-deferred",
+        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and exceptions, and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged)`,
+        problems,
+      ),
+    );
+  }
+
+  // --- LAR0: registry-live-bound -------------------------------------------------------------
+  const registryOf = async (leg: string) => ({
+    reg: await readJson<RegistryEvidence>(join(root, leg, "capture/evidence/registry.json")),
+    counts:
+      (
+        await readJson<{ counts: Record<string, number | null> }>(
+          join(root, leg, "capture/evidence/counters.json"),
+        )
+      )?.counts ?? null,
+  });
+  const liveSummary: Record<string, unknown> = {};
+  {
+    let problems: string[] | null = null;
+    if (ran("deferred/capture") && ran("born-adopt/capture") && ran("late/capture")) {
+      problems = [];
+      for (const [leg, opts] of [
+        ["deferred", { preArmFreesBefore: K }],
+        ["born-adopt", {}],
+        ["late", {}],
+      ] as const) {
+        const { reg, counts } = await registryOf(leg);
+        const r = registryLiveBound(leg, reg, counts, opts);
+        problems.push(...r.problems);
+        liveSummary[leg] = r.summary;
+      }
+      // The pure path (GRC_ADOPT unset) records nothing and writes no registry evidence.
+      if (existsSync(join(root, "born/capture/evidence/registry.json")))
+        problems.push("born (GRC_ADOPT=off) wrote evidence/registry.json");
+    }
+    const d = liveSummary.deferred as { rows: number; creates: number; frees: number; peak: number; bytes_estimate: number; pre_arm_frees: number } | undefined;
+    checks.push(
+      check(
+        "registry-live-bound",
+        "on the deferred, born-adopt and late captures (GRC_ADOPT=arm), evidence/registry.json holds entries == creates - frees - replaced - recreated per family on every timeline row and at the end (a free always erases: the registry is bounded by live engine resources), records every tracked create (creates + overflow + null_creates == the family's create-hook calls in counters.json), never overflows or drops a row; the deferred leg records a tracked free before its arm; born (GRC_ADOPT=off) writes no registry evidence",
+        problems,
+        d
+          ? `deferred: ${d.rows} rows, ${d.creates} creates, ${d.frees} frees (${d.pre_arm_frees} before the arm), peak ${d.peak}, ~${d.bytes_estimate} B`
+          : undefined,
+      ),
+    );
+  }
+
+  // --- LAR0: registry-cost (timing group, local) ---------------------------------------------
+  let costReport: Record<string, unknown> | null = null;
+  {
+    let problems: string[] | null = null;
+    if (REGISTRY_COST_DIRS.every((l) => ran(l))) {
+      const samples: Record<string, CostSample[]> = {};
+      const missing: string[] = [];
+      for (const l of REGISTRY_COST_DIRS) {
+        const config = l.split("/")[1].replace(/-\d+$/, "");
+        const scale = await readJson<{
+          frame_us_p50: number;
+          churn_us_mean: number;
+        }>(join(root, l, "scale-report.json"));
+        const perf = await readJson<{
+          histograms: { frame_callback_us: { mean: number } };
+        }>(join(root, l, "evidence/perf.json"));
+        if (!scale || scale.churn_us_mean === undefined || !perf) {
+          missing.push(l);
+          continue;
+        }
+        (samples[config] ??= []).push({
+          frame_us_p50: scale.frame_us_p50,
+          churn_us_mean: scale.churn_us_mean,
+          callback_us_mean: perf.histograms.frame_callback_us.mean,
+        });
+      }
+      const r = registryCost(samples);
+      problems = [...missing.map((l) => `${l}: no scale report or perf.json`), ...r.problems];
+      costReport = { samples, comparisons: r.comparisons };
+    }
+    const cmp = (costReport?.comparisons ?? []) as {
+      metric: string;
+      against: string;
+      on: number;
+      ref: number;
+      delta: number;
+    }[];
+    checks.push(
+      check(
+        "registry-cost",
+        "the registry-cost timing group (capture-scale born at a tenth of its scale plus 16 mesh/shader/material triples created and freed a frame, headless, 5 interleaved rounds): with the registry recording (GRC_ADOPT=arm), the churned create/free block's churn_us_mean (the hook path) and perf.json's frame_callback_us mean are within noise (max of either side's spread, 5% of the reference, a µs floor) of GRC_ADOPT=off and of GRC_ADOPT_FAULT=registry-off (frame_us_p50 is reported, not judged: sleep-paced)",
+        problems,
+        cmp
+          .map((c) => `${c.metric} on-${c.against} ${c.delta >= 0 ? "+" : ""}${c.delta.toFixed(1)}µs (${c.on.toFixed(1)}/${c.ref.toFixed(1)})`)
+          .join("; ") || undefined,
+      ),
+    );
+  }
+  report.registry = { live: liveSummary, cost: costReport };
 
   // --- adopt-noop-at-birth: GRC_ADOPT=arm on the born layout adopts nothing ------------------
   {
@@ -1539,6 +1709,35 @@ export async function runG8a(
         problems,
         report.sabotages[s]
           ? `${report.sabotages[s].equivalence_problems} state problems, ${report.sabotages[s].differing_px} px`
+          : undefined,
+      ),
+    );
+  }
+
+  // --- LAR0: sabotage-registry-keep-freed -----------------------------------------------------
+  {
+    let problems: string[] | null = null;
+    if (ran("sabotage-registry-keep-freed/capture")) {
+      problems = [];
+      const { reg, counts } = await registryOf("sabotage-registry-keep-freed");
+      if (reg?.fault !== "registry-keep-freed")
+        problems.push(`its registry.json names fault ${reg?.fault}`);
+      const r = registryLiveBound("sabotage-registry-keep-freed", reg, counts, {
+        preArmFreesBefore: K,
+      });
+      report.sabotages["registry-keep-freed"] = {
+        equivalence_problems: r.problems.length,
+        differing_px: 0,
+      };
+      if (r.problems.length === 0) problems.push("registry-live-bound did not fail");
+    }
+    checks.push(
+      check(
+        "sabotage-registry-keep-freed",
+        "the deferred capture under GRC_ADOPT_FAULT=registry-keep-freed (the free hook keeps registry entries) fails registry-live-bound",
+        problems,
+        report.sabotages["registry-keep-freed"]
+          ? `${report.sabotages["registry-keep-freed"].equivalence_problems} registry-live-bound problems`
           : undefined,
       ),
     );

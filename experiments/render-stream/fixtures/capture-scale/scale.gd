@@ -38,6 +38,14 @@ extends Node2D
 ##   RS_SCALE_NODE_BURST [0] at RS_SCALE_NODE_BURST_FRAME [warmup + 30]  that many more such nodes
 ##                                added in one frame (a screen load)
 ##   RS_SCALE_NODE_CHURN [0]      such nodes added, and as many of the oldest freed, every frame
+##   RS_SCALE_RESOURCE_CHURN [0]  LAR0 (registry-cost): that many resource triples (a mesh_create,
+##                                a shader_create and a material_create; no texture, whose payload
+##                                copy, hash and store write would drown the registry in I/O noise
+##                                and the recording in bytes) made every frame, and as many of the
+##                                oldest freed (4 frames' worth stay live), none drawn: the tracked
+##                                creates and frees the late-arm registry records. The report's
+##                                churn_us_p50/_mean time that block (the hook path, engine work
+##                                included)
 ##   RS_FIXTURE_QUIT_FRAME [600]  quit after this many frames
 ##   RS_SCALE_WARMUP [120]        frames before the frame-time window opens
 ##   RS_SCALE_REPORT              optional absolute path: the frame-time summary (JSON) at quit
@@ -81,6 +89,9 @@ var _window_start_us: int = 0
 var _last_us: int = 0
 var _deltas_us: PackedInt64Array = PackedInt64Array()
 var _setup_ms: float = 0.0
+var _churn: int = 0
+var _churn_rids: Array[RID] = []
+var _churn_us: PackedInt64Array = PackedInt64Array()
 
 
 func _env_int(name: String, fallback: int) -> int:
@@ -117,6 +128,7 @@ func _ready() -> void:
 	_node_burst = _env_int("RS_SCALE_NODE_BURST", 0)
 	_node_burst_frame = _env_int("RS_SCALE_NODE_BURST_FRAME", _warmup + 30)
 	_node_churn = _env_int("RS_SCALE_NODE_CHURN", 0)
+	_churn = _env_int("RS_SCALE_RESOURCE_CHURN", 0)
 	var n_nodes: int = _env_int("RS_SCALE_NODES", 0)
 	if n_nodes > 0 or _node_burst > 0 or _node_churn > 0:
 		_node_root = Node2D.new()
@@ -282,6 +294,16 @@ func _process(_delta: float) -> void:
 	for u: int in (_param_updates if nm > 0 else 0):
 		var mi: int = (_frame * _param_updates + u) % nm
 		RenderingServer.material_set_param(_materials[mi], "particle_param_00", float(_frame + u))
+	if _churn > 0:
+		var c0: int = Time.get_ticks_usec()
+		for c: int in _churn:
+			_churn_rids.append(RenderingServer.mesh_create())
+			_churn_rids.append(RenderingServer.shader_create())
+			_churn_rids.append(RenderingServer.material_create())
+		while _churn_rids.size() > _churn * 3 * 4:
+			RenderingServer.free_rid(_churn_rids.pop_front())
+		if _frame > _warmup + 1:
+			_churn_us.append(Time.get_ticks_usec() - c0)
 	if _node_root != null:
 		if _frame == _node_burst_frame:
 			_add_nodes(_node_burst)
@@ -324,6 +346,15 @@ func _report() -> void:
 		"setup_ms": _setup_ms,
 		"redraws_varied": _redraws_varied,
 	}
+	if _churn > 0:
+		var churn_sorted: PackedInt64Array = _churn_us.duplicate()
+		churn_sorted.sort()
+		var churn_total: int = 0
+		for v: int in churn_sorted:
+			churn_total += v
+		summary["churn"] = _churn
+		summary["churn_us_p50"] = churn_sorted[churn_sorted.size() / 2] if churn_sorted.size() > 0 else 0
+		summary["churn_us_mean"] = (float(churn_total) / churn_sorted.size()) if churn_sorted.size() > 0 else 0.0
 	var line: String = JSON.stringify(summary)
 	print("[scale] report " + line)
 	if OS.has_environment("RS_SCALE_REPORT"):

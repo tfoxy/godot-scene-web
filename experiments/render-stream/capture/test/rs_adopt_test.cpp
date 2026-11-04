@@ -818,6 +818,17 @@ void test_material_scans() {
             f == grc::rs::AdoptFault::PpmNoShader &&
             std::string(grc::rs::adopt_fault_name(f)) == "ppm-no-shader",
         "fault: ppm-no-shader");
+  // LAR0: the registry's knobs parse like the others and also need GRC_ADOPT=arm.
+  check(grc::rs::parse_adopt_fault("registry-off", true, &f, &error) &&
+            f == grc::rs::AdoptFault::RegistryOff &&
+            std::string(grc::rs::adopt_fault_name(f)) == "registry-off",
+        "fault: registry-off");
+  check(grc::rs::parse_adopt_fault("registry-keep-freed", true, &f, &error) &&
+            f == grc::rs::AdoptFault::RegistryKeepFreed &&
+            std::string(grc::rs::adopt_fault_name(f)) == "registry-keep-freed",
+        "fault: registry-keep-freed");
+  check(!grc::rs::parse_adopt_fault("registry-keep-freed", false, &f, &error),
+        "fault: registry-keep-freed needs GRC_ADOPT=arm");
   // Inactive: the frame-boundary resolution and the arm pass are no-ops.
   grc::rs::adopt_materials_resolve();
   grc::rs::adopt_materials_at_arm();

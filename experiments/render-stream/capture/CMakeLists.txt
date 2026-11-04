@@ -88,6 +88,7 @@ add_library(render_stream_capture SHARED
   src/rs_texture_basis.cpp
   src/rs_canvas_texture_shim.cpp
   src/rs_particles_shim.cpp
+  src/rs_registry.cpp
   src/rs_gate8_policy.cpp
   src/rs_histogram.cpp
   src/rs_live.cpp
@@ -521,6 +522,20 @@ add_executable(rs_canvas_texture_shim_test
 target_include_directories(rs_canvas_texture_shim_test PRIVATE src)
 target_link_libraries(rs_canvas_texture_shim_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_canvas_texture_shim COMMAND rs_canvas_texture_shim_test)
+
+# LAR0 (late-arm-registry-design.md): the resource registry -- kinds per tracked create, erase on
+# free and texture_replace, the per-family cap and overflow, the accounting identity
+# registry-live-bound judges, the timeline, the two fault knobs, the off gate, threads.
+add_executable(rs_registry_test test/rs_registry_test.cpp src/rs_registry.cpp src/report.cpp)
+target_include_directories(rs_registry_test PRIVATE src)
+target_link_libraries(rs_registry_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_registry COMMAND rs_registry_test)
+
+# LAR0: the registry's per-call cost (ns per create+free pair, uncontended and with 4 threads, and
+# the off gate). Built, never run by ctest: it measures, it does not judge.
+add_executable(rs_registry_bench test/rs_registry_bench.cpp src/rs_registry.cpp src/report.cpp)
+target_include_directories(rs_registry_bench PRIVATE src)
+target_link_libraries(rs_registry_bench PRIVATE grc_warnings Threads::Threads)
 
 # PM5: the particles RID shim and the pre-draw pump's option parsing (render-stream-12.md
 # "Headless shims (opt-in)").

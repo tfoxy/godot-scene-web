@@ -1736,10 +1736,14 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::NoParticles;
   } else if (text == "ppm-no-shader") {
     *out = AdoptFault::PpmNoShader;
+  } else if (text == "registry-off") {
+    *out = AdoptFault::RegistryOff;
+  } else if (text == "registry-keep-freed") {
+    *out = AdoptFault::RegistryKeepFreed;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
-             "no-particles or ppm-no-shader)";
+             "no-particles, ppm-no-shader, registry-off or registry-keep-freed)";
     return false;
   }
   if (!adopt) {
@@ -1758,6 +1762,8 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::NoIncludePath: return "no-include-path";
   case AdoptFault::NoParticles: return "no-particles";
   case AdoptFault::PpmNoShader: return "ppm-no-shader";
+  case AdoptFault::RegistryOff: return "registry-off";
+  case AdoptFault::RegistryKeepFreed: return "registry-keep-freed";
   }
   return "none";
 }

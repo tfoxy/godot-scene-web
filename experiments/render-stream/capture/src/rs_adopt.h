@@ -248,6 +248,12 @@ enum class AdoptFault : std::uint8_t {
   // ParticleProcessMaterial assigns its shader outside get_rid(), as MegaDot 4.5.1.m.12 does), so
   // the process material is adopted through its particle_process_material builtin key instead.
   PpmNoShader,
+  // LAR0 (late-arm-registry-design.md): the registry's knobs, read before the vptr store
+  // (rs_registry.h RegistryFault); lazy adoption ignores them until LAR1-LAR5 read the registry.
+  // registry-off: the registry records nothing (a deferred leg turns into a load-late one).
+  RegistryOff,
+  // registry-keep-freed: the free hook keeps the registry entry (fails registry-live-bound).
+  RegistryKeepFreed,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or

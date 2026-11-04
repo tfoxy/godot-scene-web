@@ -606,9 +606,11 @@ run_import_g8a() {
 	done
 }
 
-# run_capture_g8a <dir> <born|late|thread> <env word...>: a headless capture of the fixture, armed
-# at birth (main scene res://born.tscn) or late (adopt.tscn at frame K, from the main thread or a
-# worker thread), with the probe log beside it.
+# run_capture_g8a <dir> <born|late|thread|deferred> <env word...>: a headless capture of the
+# fixture, armed at birth (main scene res://born.tscn) or late (adopt.tscn at frame K, from the main
+# thread or a worker thread), or deferred (LAR0: adopt.tscn, the extension loaded at birth so the
+# hooks see every create, the arm itself deferred to frame K by GRC_ARM_DEFER_FRAMES=K-1), with the
+# probe log beside it.
 run_capture_g8a() {
 	local dir="$1" arm="$2" scene=""
 	shift 2
@@ -617,7 +619,45 @@ run_capture_g8a() {
 	CAPTURE_FIXTURE_DIR="$G8A_FIXTURE_DIR"
 	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_ARM="$arm" RS_FIXTURE_ARM_FRAME="$G8A_ARM_FRAME"
 		RS_FIXTURE_PROBE_LOG="$dir/probe.jsonl")
+	[ "$arm" = deferred ] && CAPTURE_EXTRA_ENV+=(GRC_ARM_DEFER_FRAMES=$((G8A_ARM_FRAME - 1)))
 	run_capture "$dir" "" none "$scene"
+}
+
+# LAR0 registry-cost (a timing group, local only): fixtures/capture-scale armed at birth at W11's
+# tenth scale, plus RS_SCALE_RESOURCE_CHURN mesh/shader/material triples created and freed every
+# frame (the tracked creates and frees the registry records), headless. The scale report's churn_us
+# times that block (the hook path) and perf.json times the frame callback; its frame_us is paced by
+# the capture's low-processor sleep (~6.9 ms), so it is reported, not judged. Three configs,
+# interleaved over G8A_COST_ROUNDS rounds: `off` (GRC_ADOPT=off: the pure path, nothing recorded),
+# `on` (GRC_ADOPT=arm: the registry records) and `regoff` (GRC_ADOPT=arm,
+# GRC_ADOPT_FAULT=registry-off: adoption on, the registry off, so on-regoff isolates the registry
+# from lazy adoption's own lookups).
+G8A_COST_DIR="$EXPERIMENT_DIR/fixtures/capture-scale"
+G8A_COST_ROUNDS=5
+G8A_COST_CONFIGS=(off on regoff)
+G8A_COST_ENV=(RS_FIXTURE_ARM=born GRC_STREAM_VERSION=8 GRC_UNKNOWN_ITEM=skip
+	GRC_ROOT_SIZE=presentation:1920x1080 RS_SCALE_ITEMS=600 RS_SCALE_TEXTURES=24 RS_SCALE_TEX_W=64
+	RS_SCALE_TEX_H=64 RS_SCALE_DRAWN_TEXTURES=24 RS_SCALE_FLOAT_TEXTURES=16 RS_SCALE_SHADERS=8
+	RS_SCALE_MATERIALS=80 RS_SCALE_WARMUP=60 RS_SCALE_RESOURCE_CHURN=16)
+G8A_COST_QUIT=420
+
+# run_registry_cost_capture <dir> <off|on|regoff>: one registry-cost leg (under timing_leg).
+run_registry_cost_capture() {
+	local dir="$1" config="$2"
+	mkdir -p "$dir"
+	cat /proc/loadavg >"$dir/loadavg.txt" 2>/dev/null || true
+	CAPTURE_FIXTURE_DIR="$G8A_COST_DIR"
+	CAPTURE_EXTRA_ENV=("${G8A_COST_ENV[@]}" RS_SCALE_REPORT="$dir/scale-report.json")
+	case "$config" in
+	on) CAPTURE_EXTRA_ENV+=(GRC_ADOPT=arm) ;;
+	regoff) CAPTURE_EXTRA_ENV+=(GRC_ADOPT=arm GRC_ADOPT_FAULT=registry-off) ;;
+	esac
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "$G8A_COST_QUIT" none
+	CAPTURE_WITH_PATCH=1
+	# Only the scale report and evidence/perf.json are judged: the recording, the store and the
+	# hook log (~145 MB a leg) go.
+	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store" "${dir:?}/evidence/resources.jsonl"
 }
 
 run_g8a() {
@@ -634,6 +674,11 @@ run_g8a() {
 	run_capture_g8a "$OUT/g8a/late-thread/capture" thread "${G8A_ENV[@]}" GRC_ADOPT=arm
 	echo "run-gate8: g8a late-workers (late at GRC_TEXTURE_WORKERS=2: adopted textures on workers)"
 	run_capture_g8a "$OUT/g8a/late-workers/capture" late "${G8A_ENV[@]}" GRC_ADOPT=arm "${G8T_WORKERS_ENV[@]}"
+	echo "run-gate8: g8a deferred (loaded at birth, armed at frame $G8A_ARM_FRAME by GRC_ARM_DEFER_FRAMES; LAR0)"
+	run_capture_g8a "$OUT/g8a/deferred/capture" deferred "${G8A_ENV[@]}" GRC_ADOPT=arm
+	echo "run-gate8: g8a sabotage-registry-keep-freed (deferred, the free hook keeps registry entries)"
+	run_capture_g8a "$OUT/g8a/sabotage-registry-keep-freed/capture" deferred "${G8A_ENV[@]}" GRC_ADOPT=arm \
+		GRC_ADOPT_FAULT=registry-keep-freed
 	local s
 	for s in adopt-skip-state adopt-no-redraw adopt-skip-layers; do
 		echo "run-gate8: g8a sabotage-$s (capture)"
@@ -669,6 +714,23 @@ run_g8a() {
 	legs_par_end
 	gs_teardown "$OUT/gamescope-g8a"
 	GS_RUN_DIR=""
+
+	# registry-cost (LAR0, a timing group): real time, each leg under the exclusive quiet lock.
+	local -a cost_dirs=()
+	local r c
+	for r in $(seq 1 "$G8A_COST_ROUNDS"); do
+		for c in "${G8A_COST_CONFIGS[@]}"; do
+			cost_dirs+=("$OUT/g8a/registry-cost/$c-$r")
+		done
+	done
+	if ! legs_skip_group registry-cost "${cost_dirs[@]}"; then
+		for r in $(seq 1 "$G8A_COST_ROUNDS"); do
+			for c in "${G8A_COST_CONFIGS[@]}"; do
+				echo "run-gate8: g8a registry-cost/$c-$r (capture-scale, born, GRC_ADOPT config $c)"
+				timing_leg "g8a-registry-cost-$c-$r" run_registry_cost_capture "$OUT/g8a/registry-cost/$c-$r" "$c"
+			done
+		done
+	fi
 }
 
 # ------------------------------------------------------------------------------------- g8h

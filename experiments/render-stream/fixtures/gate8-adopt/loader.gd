@@ -11,6 +11,16 @@ extends Node
 ##                              capture adopts the scene, GRC_ADOPT=arm)
 ##   RS_FIXTURE_ARM=thread      at frame K too, but from a worker Thread (the `late-thread` leg:
 ##                              adoption refuses `adopt-thread`, gate8-design.md D4)
+##   RS_FIXTURE_ARM=deferred    in `_enter_tree`, as `born`, but with adopt.tscn as the main scene
+##                              (the `deferred` leg, late-arm-registry-design.md LAR0): the hooks
+##                              see every object created, and the capture itself defers its arm to
+##                              frame K (the runner sets GRC_ARM_DEFER_FRAMES=K-1: the arm runs in
+##                              the frame callback ending iteration K-1, so the walk is dated K).
+##                              The loader also creates a texture, a mesh, a shader, a material and
+##                              a canvas texture at frame 4 and frees them at frame 6, through
+##                              RenderingServer, before the arm and outside the scene: the registry
+##                              must see pre-arm frees (registry-live-bound); nothing reaches the
+##                              stream, so the leg still equals `born` from K on
 ##
 ## An autoload enters the tree, and processes, ahead of the main scene, so at frame K the capture
 ## arms before the scene's own `_process` of that frame. `GRC_EXTENSION` unset: nothing is loaded
@@ -23,6 +33,7 @@ var arm_frame: int = ARM_FRAME_DEFAULT
 var _frame: int = 0
 var _armed: bool = false
 var _thread: Thread
+var _churn: Array[RID] = []
 
 
 func _enter_tree() -> void:
@@ -34,21 +45,39 @@ func _enter_tree() -> void:
 			arm_frame = text.to_int()
 		else:
 			printerr("[fixture] error: RS_FIXTURE_ARM_FRAME must be an integer >= 8 (got %s)" % JSON.stringify(text))
-	if arm_mode != "born" and arm_mode != "late" and arm_mode != "thread":
-		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late or thread (got %s)" % JSON.stringify(arm_mode))
+	if arm_mode != "born" and arm_mode != "late" and arm_mode != "thread" and arm_mode != "deferred":
+		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late, thread or deferred (got %s)" % JSON.stringify(arm_mode))
 		arm_mode = "late"
-	if arm_mode == "born":
-		_load("born")
+	if arm_mode == "born" or arm_mode == "deferred":
+		_load(arm_mode)
 
 
 func _process(_delta: float) -> void:
 	_frame += 1
+	if arm_mode == "deferred":
+		_registry_churn()
 	if arm_mode == "late" and _frame == arm_frame:
 		_load("late frame=%d" % _frame)
 	elif arm_mode == "thread" and _frame == arm_frame:
 		_thread = Thread.new()
 		_thread.start(_load.bind("thread frame=%d" % _frame))
 		_thread.wait_to_finish()
+
+
+## LAR0: tracked creates and frees before the deferred arm (late-arm-registry-design.md R5).
+func _registry_churn() -> void:
+	if _frame == 4:
+		var image: Image = Image.create(2, 2, false, Image.FORMAT_RGBA8)
+		image.fill(Color8(40, 80, 160, 255))
+		var shader: RID = RenderingServer.shader_create()
+		_churn = [RenderingServer.texture_2d_create(image), RenderingServer.mesh_create(), shader,
+			RenderingServer.material_create(), RenderingServer.canvas_texture_create()]
+		RenderingServer.material_set_shader(_churn[3], shader)
+	elif _frame == 6:
+		for rid: RID in _churn:
+			if rid.is_valid():
+				RenderingServer.free_rid(rid)
+		_churn.clear()
 
 
 func _load(when: String) -> void:

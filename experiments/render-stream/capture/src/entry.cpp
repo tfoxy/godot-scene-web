@@ -163,6 +163,7 @@
 #include "rs_adopt.h"
 #include "rs_canvas_texture_shim.h"
 #include "rs_particles_shim.h"
+#include "rs_registry.h"
 #include "rs_gate8_policy.h"
 #include "rs_texture_basis.h"
 #include "rs_texture_delivery.h"
@@ -643,6 +644,15 @@ void emit(const std::string &name, const std::string &text) {
     return;
   }
   log_line("evidence " + name + " " + text);
+}
+
+// LAR0: evidence/registry.json, beside counters.json, when GRC_ADOPT=arm configured the registry
+// (registry-off included: it reports `enabled: false`). GRC_ADOPT=off, or no evidence directory,
+// writes nothing (its timeline is no stdout line).
+void emit_registry() {
+  if (g_state.evidence_ready && rs::registry_stats().configured) {
+    emit("registry.json", rs::registry_json());
+  }
 }
 
 std::string result_json() {
@@ -3730,6 +3740,29 @@ bool attempt(const char *phase) {
       log_line("canvas texture shim: synthesize armed (display server " + g_state.display_server +
                ")");
     }
+    // LAR0 (late-arm-registry-design.md R1): the registry records from the vptr store on, so it
+    // is configured here from GRC_ADOPT (and its two GRC_ADOPT_FAULT knobs), before the first
+    // hooked create. The stream setup parses and validates both again at the arm; an invalid
+    // value refuses the stream there, so here it only leaves the registry off.
+    {
+      const char *adopt_env = std::getenv("GRC_ADOPT");
+      const bool adopt = adopt_env != nullptr && std::string(adopt_env) == "arm";
+      rs::AdoptFault fault = rs::AdoptFault::None;
+      std::string fault_error;
+      rs::RegistryFault registry_fault = rs::RegistryFault::None;
+      if (rs::parse_adopt_fault(std::getenv("GRC_ADOPT_FAULT"), adopt, &fault, &fault_error)) {
+        if (fault == rs::AdoptFault::RegistryOff) {
+          registry_fault = rs::RegistryFault::Off;
+        } else if (fault == rs::AdoptFault::RegistryKeepFreed) {
+          registry_fault = rs::RegistryFault::KeepFreed;
+        }
+      }
+      rs::registry_configure(adopt, registry_fault);
+      if (adopt) {
+        log_line(std::string("registry: ") + (rs::registry_on() ? "recording" : "off") +
+                 " (fault " + rs::registry_fault_name(registry_fault) + ")");
+      }
+    }
     std::string arm_error;
     if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
                             g_state.plan.replacements, &arm_error)) {
@@ -3740,6 +3773,7 @@ bool attempt(const char *phase) {
         g_state.ct_shim_reason = "arm-failed";
       }
       rs::particles_shim().configure(rs::ParticlesShimMode::Off);
+      rs::registry_configure(false, rs::RegistryFault::None);
       if (g_state.pump_connected) {
         rs::predraw_pump_disconnect();
         g_state.pump_connected = false;
@@ -3796,6 +3830,7 @@ void do_disarm(const char *phase) {
   }
   emit("disarm.json", disarm_json());
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  emit_registry();
   if (rs::texture_cache().enabled()) {
     emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
   }
@@ -3823,6 +3858,11 @@ void on_frame() {
     g_perf.last_frame_ns = frame_start_ns;
   }
   ++g_state.frames_total;
+  // LAR0: a registry timeline row for the calls this iteration carried (label frames_total, set
+  // by the previous callback's hooks_set_frame), when any changed it. Off: one relaxed load.
+  if (rs::registry_on()) {
+    rs::registry_frame(g_state.frames_total);
+  }
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   if (g_state.armed && g_stream.gate8.adopt) {
     // G8m (gate8-design.md Q5): references to pre-arm materials and shaders a hooked call named
@@ -3871,6 +3911,7 @@ void on_shutdown() {
   live_linger(true);  // a linger still running after a disarm ends here
   do_disarm("shutdown");
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));
+  emit_registry();
   if (rs::texture_cache().enabled()) {
     emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
   }
