@@ -3702,29 +3702,34 @@ bool attempt(const char *phase) {
   }
   }  // !g_state.hooks_patched: the checks run once
 
-  hooks_init_image_binds();
-  // PM5: configured before the vptr store, so the first hooked particles_create already sees it.
-  rs::particles_shim().configure(g_state.pt_shim_mode);
-  if (g_state.pt_shim_mode == rs::ParticlesShimMode::Synthesize) {
-    log_line("particles shim: synthesize armed (display server " + g_state.display_server + ")");
-  }
-  if (g_state.pump) {
-    std::string why;
-    g_state.pump_connected = rs::predraw_pump_connect(&why);
-    log_line(g_state.pump_connected ? std::string("predraw pump: connected")
-                                    : "predraw pump: " + why);
-  }
-  if (!hooks_image_details_available()) {
-    log_line("Image method binds unavailable: texture captures will omit details");
-  }
-  // Configured before the vptr store, so the first hooked canvas_texture_create already sees it.
-  rs::canvas_texture_shim().configure(g_state.ct_shim_mode, g_state.display_server);
-  if (g_state.ct_shim_mode == rs::CanvasTextureShimMode::Synthesize) {
-    g_state.ct_shim_state = "armed";
-    log_line("canvas texture shim: synthesize armed (display server " + g_state.display_server +
-             ")");
-  }
+  // One-time setup, run with the vptr store only: with GRC_ARM_DEFER_FRAMES the attempt returns
+  // false each deferred frame and is re-called, and none of this is idempotent -- the shims'
+  // configure() resets their RID tables (two CanvasTextures made in different deferred frames
+  // would share a private RID) and a second predraw_pump_connect fails (the engine then logs an
+  // error every frame).
   if (!g_state.hooks_patched) {
+    hooks_init_image_binds();
+    // PM5: configured before the vptr store, so the first hooked particles_create already sees it.
+    rs::particles_shim().configure(g_state.pt_shim_mode);
+    if (g_state.pt_shim_mode == rs::ParticlesShimMode::Synthesize) {
+      log_line("particles shim: synthesize armed (display server " + g_state.display_server + ")");
+    }
+    if (g_state.pump) {
+      std::string why;
+      g_state.pump_connected = rs::predraw_pump_connect(&why);
+      log_line(g_state.pump_connected ? std::string("predraw pump: connected")
+                                      : "predraw pump: " + why);
+    }
+    if (!hooks_image_details_available()) {
+      log_line("Image method binds unavailable: texture captures will omit details");
+    }
+    // Configured before the vptr store, so the first hooked canvas_texture_create already sees it.
+    rs::canvas_texture_shim().configure(g_state.ct_shim_mode, g_state.display_server);
+    if (g_state.ct_shim_mode == rs::CanvasTextureShimMode::Synthesize) {
+      g_state.ct_shim_state = "armed";
+      log_line("canvas texture shim: synthesize armed (display server " + g_state.display_server +
+               ")");
+    }
     std::string arm_error;
     if (!g_state.shadow.arm(g_state.facts.singleton, static_cast<size_t>(g_state.calib.slot_count),
                             g_state.plan.replacements, &arm_error)) {
@@ -3733,6 +3738,11 @@ bool attempt(const char *phase) {
         rs::canvas_texture_shim().configure(rs::CanvasTextureShimMode::Off, g_state.display_server);
         g_state.ct_shim_state = "refused";
         g_state.ct_shim_reason = "arm-failed";
+      }
+      rs::particles_shim().configure(rs::ParticlesShimMode::Off);
+      if (g_state.pump_connected) {
+        rs::predraw_pump_disconnect();
+        g_state.pump_connected = false;
       }
       refuse("arm-failed");
       return true;

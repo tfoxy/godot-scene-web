@@ -305,7 +305,13 @@ void canvas_texture_note_repeat(std::uint64_t rid, std::int32_t repeat);
 // PM9 (late-arm multimesh adoption): called by the add_multimesh hook before its mirror tap; adopts
 // `rid` (a multimesh RID) from the RenderingServer's read-backs when lazy adoption is active and the
 // mirror does not know it. Cheap otherwise (an atomic load).
-void adopt_multimesh_ref(std::uint64_t rid);
+void adopt_multimesh_ref(std::uint64_t rid, std::uint64_t item_rid = 0);
+// Called by the free hook: forgets the RID's per-stream adoption refusals (textures, meshes,
+// multimeshes, process materials, emitters) and its CanvasTexture-registry entry.
+void adopt_resource_freed(std::uint64_t rid);
+// The synthetic process shader's key bits (LATE-PPM / LATE-CMBT): the builtin key packed exactly
+// (40 bits), so distinct keys never share a reserved RID.
+std::uint64_t ppm_key_bits(const rs2::BuiltinParticleProcessMaterial &key);
 // Called by the texture_2d_update hook for a whole-image update of a RID the mirror does not
 // know: true (and counted as one `current` adoption from an update) when lazy adoption is active
 // and not faulted off; the hook then registers the texture from the update's own image.
@@ -439,11 +445,10 @@ void adopt_materials_resolve();
 // give ParticleProcessMaterial::MaterialKey (_compute_key). Cheap when the mirror's ppm epoch did
 // not move. A shader it cannot key stays shader-mode (counted unresolved, once per shader).
 void adopt_particles_resolve();
-// LATE-RES (gap #5): at the frame boundary (after adopt_particles_resolve's LATE-CMBT loop), adopts
-// every pre-arm process material the mirror lists as `unknown-material` (Mirror::
-// ppm_unknown_material_candidates) through the node map (adopt_ppm), and re-links the emitter's
-// process material, so a builtin-driven receiver simulates it. Defined after the PM7 helpers it uses.
-void adopt_particles_resolve_unknown_material();
+// LATE-RES (gap #5): adopt_particles_resolve also adopts every pre-arm process material the mirror
+// lists as `unknown-material` (Mirror::ppm_unknown_material_candidates) through the node map
+// (adopt_ppm), and re-links the emitter's process material, so a builtin-driven receiver simulates
+// it.
 struct PpmStats {
   std::uint64_t builtin_resolved = 0;    // shaders keyed
   std::uint64_t builtin_unresolved = 0;  // shaders tried with no ParticleProcessMaterial found

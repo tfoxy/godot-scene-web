@@ -7,10 +7,14 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <memory>
+#include <random>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "fake_godot_iface.h"
 #include "hooks.h"
 #include "rs_adopt.h"
 #include "rs_mirror.h"
@@ -367,6 +371,16 @@ void test_seam_without_engine() {
 
 // ------------------------------------------------------------------ G8r: resources by RID
 
+// B3: what the stubbed canvas-texture and multimesh hooks were handed (the fake-engine tests
+// below reach them; every stub still refuses, as the engine side never runs here).
+namespace {
+struct CanvasTextureHookCall {
+  uint64_t rid = 0, diffuse = 0, normal = 0, specular = 0;
+};
+std::vector<CanvasTextureHookCall> g_ctex_hook_calls;
+std::vector<uint64_t> g_multimesh_hook_calls;
+}  // namespace
+
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
 namespace grc {
 bool hooks_adopt_texture(uint64_t, void *, rs2::AdoptedContent, const char *, bool *) {
@@ -392,8 +406,13 @@ void hooks_internal_material(std::vector<std::string> *, uint64_t *) {}
 bool hooks_adopt_particles(uint64_t, const rs::Mirror::ParticlesAdopt &) { return false; }
 void hooks_adopt_particles_subemitter(uint64_t, uint64_t) {}
 // PM9: the multimesh and canvas texture paths' hooks (likewise never reached).
-bool hooks_adopt_multimesh(uint64_t, const rs::Mirror::MultimeshAdopt &) { return false; }
-bool hooks_adopt_canvas_texture(uint64_t, uint64_t, uint64_t, uint64_t, int32_t, int32_t) {
+bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt) {
+  g_multimesh_hook_calls.push_back(rid);
+  return false;
+}
+bool hooks_adopt_canvas_texture(uint64_t rid, uint64_t diffuse, uint64_t normal, uint64_t specular,
+                                int32_t, int32_t) {
+  g_ctex_hook_calls.push_back({rid, diffuse, normal, specular});
   return false;
 }
 // LATE-RES: the node_added adoption stamps its taps with the hook frame; the engine side never
@@ -807,6 +826,353 @@ void test_material_scans() {
 
 }  // namespace
 
+// ------------------------------------------------------------------ B3: adoption failure paths
+
+namespace {
+
+using Key = grc::rs2::BuiltinParticleProcessMaterial;
+
+// The synthetic process shader's key bits must be injective: two keys share a reserved shader RID
+// only when they are equal. The h*31 hash it replaced mapped {textures 1} and {the five ramp/curve
+// flags} to one value, so two different emitters drew with one key.
+void test_ppm_key_bits() {
+  using grc::rs::ppm_key_bits;
+  Key textures;
+  textures.textures = 1;
+  Key curves;
+  curves.color_ramp = curves.color_initial_ramp = curves.alpha_curve = curves.emission_curve =
+      curves.velocity_limit_curve = true;
+  // The replaced hash (rs_adopt.cpp before B3), kept here to show the pair did collide.
+  auto old_hash = [](const Key &k) {
+    uint64_t h = 1;
+    auto mix = [&h](uint64_t v) { h = h * 31 + v; };
+    mix(k.emission_shape);
+    mix(k.particle_flags);
+    mix(k.textures);
+    mix((k.color_ramp ? 1u : 0u) | (k.color_initial_ramp ? 2u : 0u) | (k.alpha_curve ? 4u : 0u) |
+        (k.emission_curve ? 8u : 0u) | (k.velocity_limit_curve ? 16u : 0u) |
+        (k.orbit_velocity_curve_xyz ? 32u : 0u) | (k.emission_color_texture ? 64u : 0u));
+    mix(k.sub_emitter | (k.attractor ? 256u : 0u));
+    mix(k.collision | (k.collision_scale ? 8u : 0u) | (k.turbulence ? 16u : 0u));
+    return h & ((1ull << 62) - 1);
+  };
+  check(old_hash(textures) == old_hash(curves), "ppm bits: the pair collided under the old hash");
+  check(ppm_key_bits(textures) != ppm_key_bits(curves), "ppm bits: the colliding pair differs");
+
+  // Every single-field variation of the default key: all distinct, none the default's bits.
+  std::vector<Key> keys(1);
+  for (uint8_t s = 1; s < grc::rs2::kPpmEmissionShapes; ++s) {
+    keys.emplace_back();
+    keys.back().emission_shape = s;
+  }
+  for (int i = 0; i < grc::rs2::kPpmFlagCount; ++i) {
+    keys.emplace_back();
+    keys.back().particle_flags = 1u << i;
+  }
+  for (int i = 0; i < grc::rs2::kPpmParamCount; ++i) {
+    keys.emplace_back();
+    keys.back().textures = 1u << i;
+  }
+  for (bool Key::*flag :
+       {&Key::color_ramp, &Key::color_initial_ramp, &Key::alpha_curve, &Key::emission_curve,
+        &Key::velocity_limit_curve, &Key::orbit_velocity_curve_xyz, &Key::emission_color_texture,
+        &Key::attractor, &Key::collision_scale, &Key::turbulence}) {
+    keys.emplace_back();
+    keys.back().*flag = true;
+  }
+  for (uint8_t s = 1; s < grc::rs2::kPpmSubEmitterModes; ++s) {
+    keys.emplace_back();
+    keys.back().sub_emitter = s;
+  }
+  for (uint8_t c = 1; c < grc::rs2::kPpmCollisionModes; ++c) {
+    keys.emplace_back();
+    keys.back().collision = c;
+  }
+  std::set<uint64_t> single;
+  bool in_40_bits = true;
+  for (const Key &k : keys) {
+    single.insert(ppm_key_bits(k));
+    in_40_bits = in_40_bits && (ppm_key_bits(k) >> 40) == 0;
+  }
+  check(single.size() == keys.size(), "ppm bits: every single-field variation is distinct");
+  check(ppm_key_bits(Key()) == 0, "ppm bits: the default key is 0");
+
+  // Random in-range keys: equal bits only for equal keys, and never into the reserved top bits.
+  std::mt19937_64 rng(0xB3);
+  std::map<uint64_t, Key> seen;
+  bool injective = true;
+  for (int n = 0; n < 200000; ++n) {
+    const uint64_t r = rng();
+    Key k;
+    k.emission_shape = static_cast<uint8_t>(r % grc::rs2::kPpmEmissionShapes);
+    k.particle_flags = static_cast<uint32_t>((r >> 3) & 0xf);
+    k.textures = static_cast<uint32_t>((r >> 7) & 0x3ffff);
+    k.color_ramp = (r >> 25) & 1;
+    k.color_initial_ramp = (r >> 26) & 1;
+    k.alpha_curve = (r >> 27) & 1;
+    k.emission_curve = (r >> 28) & 1;
+    k.velocity_limit_curve = (r >> 29) & 1;
+    k.orbit_velocity_curve_xyz = (r >> 30) & 1;
+    k.emission_color_texture = (r >> 31) & 1;
+    k.sub_emitter = static_cast<uint8_t>((r >> 32) % grc::rs2::kPpmSubEmitterModes);
+    k.attractor = (r >> 40) & 1;
+    k.collision = static_cast<uint8_t>((r >> 41) % grc::rs2::kPpmCollisionModes);
+    k.collision_scale = (r >> 50) & 1;
+    k.turbulence = (r >> 51) & 1;
+    const uint64_t bits = ppm_key_bits(k);
+    in_40_bits = in_40_bits && (bits >> 40) == 0;
+    const auto at = seen.emplace(bits, k);
+    injective = injective && (at.second || at.first->second == k);
+  }
+  check(injective, "ppm bits: 200000 random keys, equal bits only for equal keys");
+  check(in_40_bits, "ppm bits: every key fits 40 bits (below the reserved top bits)");
+}
+
+// --- the engine paths, over test/fake_godot_iface.h --------------------------------------------
+
+using FakeArgs = const GDExtensionConstTypePtr *;
+
+// A stream as entry.cpp arms one: a fresh mirror session with the root bound, then lazy adoption
+// on this (the main) thread.
+void stream_begin() {
+  grc::rs::mirror_enable(false);
+  grc::rs::mirror_enable(true);
+  grc::rs::mirror_instance().set_root(kRootViewport, kRootCanvas, kIdentity);
+  grc::rs::adopt_resources_begin(grc::rs::AdoptFault::None);
+}
+
+void stream_end() {
+  grc::rs::adopt_resources_end();
+  grc::rs::mirror_enable(false);
+  fake::world().reset_calls();
+  g_ctex_hook_calls.clear();
+  g_multimesh_hook_calls.clear();
+}
+
+// The RenderingServer singleton, and texture_2d_get answering no image (a CanvasTexture, or a
+// texture nothing can read back), with each RID it was asked for in `reads`.
+void fake_rendering_server(std::vector<uint64_t> *reads) {
+  fake::World &w = fake::world();
+  w.singletons["RenderingServer"] = &w.make({"Object", "RenderingServer"});
+  w.overrides["RenderingServer.texture_2d_get"] = [reads](fake::Object *, FakeArgs args, void *) {
+    reads->push_back(fake::arg_u64(args, 0));
+  };
+}
+
+void test_fake_binds() {
+  fake::install();
+  std::string missing;
+  check(grc::rs::adopt_binds_ready(&missing), "fake: every bind resolves (" + missing + ")");
+}
+
+// PM9 follow-up: a multimesh adoption that fails (a stride that fits no format, or the hook's
+// refusal) is refused once per stream; RenderingServer.multimesh_get_buffer -- a GPU stall on
+// GLES3 -- is not repeated at the next draw, nor at a draw that names the item. A freed RID is
+// forgotten and read again.
+void test_refused_multimesh_not_reread() {
+  constexpr uint64_t kStride = 0x7001, kHook = 0x7002, kItem = 0x40;
+  fake::World &w = fake::world();
+  std::vector<uint64_t> unused;
+  fake_rendering_server(&unused);
+  std::map<uint64_t, std::vector<float>> buffers = {
+      {kStride, std::vector<float>(7, 1.0f)},   // 2 instances, 7 floats: no stride fits
+      {kHook, std::vector<float>(16, 1.0f)}};   // 2 instances x 8: 2d, no colors, no custom
+  std::vector<uint64_t> reads;
+  w.overrides["RenderingServer.multimesh_get_instance_count"] = [](fake::Object *, FakeArgs,
+                                                                   void *ret) {
+    fake::put_int(ret, 2);
+  };
+  w.overrides["RenderingServer.multimesh_get_visible_instances"] = [](fake::Object *, FakeArgs,
+                                                                      void *ret) {
+    fake::put_int(ret, -1);
+  };
+  w.overrides["RenderingServer.multimesh_get_buffer"] = [&](fake::Object *, FakeArgs args,
+                                                            void *ret) {
+    const uint64_t rid = fake::arg_u64(args, 0);
+    reads.push_back(rid);
+    fake::put_packed_floats(ret, buffers[rid]);
+  };
+  stream_begin();
+  grc::rs::adopt_multimesh_ref(kStride);
+  grc::rs::adopt_multimesh_ref(kStride);
+  grc::rs::adopt_multimesh_ref(kStride, kItem);
+  check(reads == std::vector<uint64_t>({kStride}),
+        "mm refused: the buffer is read once over three draws");
+  check(grc::rs::adopt_resource_stats().multimeshes_refused == 1 && g_multimesh_hook_calls.empty(),
+        "mm refused: counted once, refused by the stride before the hook");
+  grc::rs::adopt_multimesh_ref(kHook);
+  grc::rs::adopt_multimesh_ref(kHook, kItem);
+  check(reads == std::vector<uint64_t>({kStride, kHook}) &&
+            g_multimesh_hook_calls == std::vector<uint64_t>({kHook}),
+        "mm refused by the hook: read and handed over once");
+  check(grc::rs::adopt_resource_stats().multimeshes_refused == 2, "mm refused: two RIDs refused");
+  grc::rs::adopt_resource_freed(kStride);
+  grc::rs::adopt_multimesh_ref(kStride);
+  check(reads == std::vector<uint64_t>({kStride, kHook, kStride}) &&
+            grc::rs::adopt_resource_stats().multimeshes_refused == 3,
+        "mm refused: a freed RID is forgotten and read again");
+  check(w.null_bind_calls == 0, "mm refused: no call through a null bind");
+  stream_end();
+}
+
+// LATE-SPINE: CanvasTextures adopted from the hooks' registry share atlas pages. A channel
+// texture the mirror already knows is never read back (texture_2d_get is asked only for the
+// CanvasTexture RIDs themselves), and one this stream refused is read once across every
+// CanvasTexture that names it.
+void test_canvas_texture_channels_not_reread() {
+  constexpr uint64_t kCtexA = 0x8001, kCtexB = 0x8002, kKnown = 0x8010;
+  constexpr uint64_t kCtexC = 0x8003, kCtexD = 0x8004, kUnreadable = 0x8011;
+  fake::World &w = fake::world();
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  // The registry fills before the arm (mirror disabled), as from extension load.
+  grc::rs::mirror_enable(false);
+  for (uint64_t ctex : {kCtexA, kCtexB}) {
+    grc::rs::canvas_texture_note_create(ctex);
+    grc::rs::canvas_texture_note_channel(ctex, 0, kKnown);
+  }
+  for (uint64_t ctex : {kCtexC, kCtexD}) {
+    grc::rs::canvas_texture_note_create(ctex);
+    grc::rs::canvas_texture_note_channel(ctex, 0, kUnreadable);
+  }
+  stream_begin();
+  Mirror &m = grc::rs::mirror_instance();
+  m.texture_2d_create(kKnown, rgba_copy(kHashA), some_bytes(), 1);  // the shared, known diffuse
+  check(m.knows_texture(kKnown), "ctex: the shared diffuse is known");
+  grc::rs::adopt_texture_ref(kCtexA);
+  grc::rs::adopt_texture_ref(kCtexB);
+  check(reads == std::vector<uint64_t>({kCtexA, kCtexB}),
+        "ctex: texture_2d_get only for the two CanvasTextures, never the known diffuse");
+  check(g_ctex_hook_calls.size() == 2 && g_ctex_hook_calls[0].rid == kCtexA &&
+            g_ctex_hook_calls[0].diffuse == kKnown && g_ctex_hook_calls[1].rid == kCtexB &&
+            g_ctex_hook_calls[1].diffuse == kKnown,
+        "ctex: both handed to the hook from the registry, with the shared diffuse");
+  reads.clear();
+  grc::rs::adopt_texture_ref(kCtexC);
+  grc::rs::adopt_texture_ref(kCtexD);
+  check(reads == std::vector<uint64_t>({kCtexC, kUnreadable, kCtexD}),
+        "ctex: an unreadable diffuse is read once across both CanvasTextures");
+  check(grc::rs::adopt_resource_stats().textures_refused == 5,
+        "ctex: four CanvasTextures (the stub hook refuses) and the diffuse refused");
+  reads.clear();
+  grc::rs::adopt_texture_ref(kCtexA);
+  grc::rs::adopt_texture_ref(kUnreadable);
+  check(reads.empty(), "ctex: a refused RID is not read again by a later reference");
+  check(w.null_bind_calls == 0, "ctex: no call through a null bind");
+  stream_end();
+}
+
+// The registry gating: once the mirror streams, canvas_texture_note_create registers nothing (a
+// CanvasTexture created under the hooks is one the mirror knows) and a set_* call updates only a
+// pre-arm entry; adopt_resource_freed drops an entry.
+void test_canvas_texture_registry_gating() {
+  constexpr uint64_t kPre = 0x8101, kPreDiffuse = 0x8111, kNew = 0x8102, kNewDiffuse = 0x8112;
+  constexpr uint64_t kFreed = 0x8103, kFreedDiffuse = 0x8113;
+  fake::World &w = fake::world();
+  std::vector<uint64_t> reads;
+  fake_rendering_server(&reads);
+  grc::rs::mirror_enable(false);
+  grc::rs::canvas_texture_note_create(kPre);  // pre-arm; its channel is set after the arm
+  grc::rs::canvas_texture_note_create(kFreed);
+  grc::rs::canvas_texture_note_channel(kFreed, 0, kFreedDiffuse);
+  stream_begin();
+  grc::rs::canvas_texture_note_create(kNew);
+  grc::rs::canvas_texture_note_channel(kNew, 0, kNewDiffuse);
+  grc::rs::canvas_texture_note_channel(kPre, 0, kPreDiffuse);
+  grc::rs::adopt_resource_freed(kFreed);
+  grc::rs::adopt_texture_ref(kNew);
+  check(reads == std::vector<uint64_t>({kNew}) && g_ctex_hook_calls.empty(),
+        "registry: a post-arm create registers nothing (refused, its channel never read)");
+  grc::rs::adopt_texture_ref(kPre);
+  check(reads == std::vector<uint64_t>({kNew, kPre, kPreDiffuse}) &&
+            g_ctex_hook_calls.size() == 1 && g_ctex_hook_calls[0].rid == kPre &&
+            g_ctex_hook_calls[0].diffuse == kPreDiffuse,
+        "registry: a post-arm set_channel updates the pre-arm entry");
+  grc::rs::adopt_texture_ref(kFreed);
+  check(reads.size() == 4 && reads.back() == kFreed && g_ctex_hook_calls.size() == 1,
+        "registry: a freed CanvasTexture's entry is gone (its channel is never read)");
+  check(grc::rs::adopt_resource_stats().textures_refused == 4,
+        "registry: kNew, kPre (the stub hook), kPreDiffuse and kFreed refused");
+  check(w.null_bind_calls == 0, "registry: no call through a null bind");
+  stream_end();
+}
+
+// LATE-RES: a post-arm emitter drawing with a pre-arm ParticleProcessMaterial is
+// `unknown-material`; adopt_particles_resolve adopts it through the node map (adopt_ppm, whose
+// Resource.duplicate makes and frees an RS material and reads every parameter back). A failed
+// adoption is refused for the stream: the next resolve (another ppm epoch) still lists the
+// emitter but does not duplicate again. A freed material RID is forgotten.
+void test_refused_ppm_not_retried() {
+  constexpr uint64_t kItem = 0x40, kEmitter = 0x900, kMaterial = 0x777;
+  fake::World &w = fake::world();
+  std::vector<uint64_t> unused;
+  fake_rendering_server(&unused);
+  // The scene: SceneTree > root Viewport > a GPUParticles2D (item kItem) whose process material
+  // is a ParticleProcessMaterial the mirror never saw.
+  fake::Object &engine = w.make({"Object", "Engine"});
+  fake::Object &tree = w.make({"Object", "MainLoop", "SceneTree"});
+  fake::Object &root = w.make({"Object", "Node", "Viewport", "Window"});
+  fake::Object &node = w.make({"Object", "Node", "CanvasItem", "Node2D", "GPUParticles2D"}, kItem);
+  fake::Object &material =
+      w.make({"Object", "RefCounted", "Resource", "Material", "ParticleProcessMaterial"}, kMaterial);
+  node.canvas = kRootCanvas;
+  w.adopt_child(root, node);
+  w.singletons["Engine"] = &engine;
+  w.overrides["Engine.get_main_loop"] = [&tree](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &tree);
+  };
+  w.overrides["SceneTree.get_root"] = [&root](fake::Object *, FakeArgs, void *ret) {
+    fake::put_object(ret, &root);
+  };
+  w.overrides["GPUParticles2D.get_process_material"] = [&material](fake::Object *, FakeArgs,
+                                                                   void *ret) {
+    fake::put_object(ret, &material);  // a Ref<Material> slot
+  };
+  stream_begin();
+  grc::rs::AdoptConfig config;
+  const AdoptStats arm = grc::rs::adopt_at_arm(config);  // the walk maps kItem to the node
+  check(arm.error.empty() && arm.items == 1 && grc::rs::adopted_item_nodes().count(kItem) == 1,
+        "ppm: the walk adopts the emitter's item and maps its node (" + arm.error + ")");
+  Mirror &m = grc::rs::mirror_instance();
+  Mirror::ParticlesOptions options;
+  options.enabled = true;
+  m.set_particles(options);
+  grc::rs::adopt_materials_at_arm();  // the arm's material pass (resolves the node map's tags)
+  // Post-arm: the emitter is created under the hooks and given the pre-arm material.
+  Mirror::ParticlesArgs mode;
+  m.particles_create(kEmitter, 2);
+  m.particles_call(kEmitter, Mirror::ParticlesOp::SetMode, mode, 2);
+  Mirror::ParticlesArgs pm;
+  pm.rid = kMaterial;
+  m.particles_call(kEmitter, Mirror::ParticlesOp::SetProcessMaterial, pm, 2);
+  m.add_particles(kItem, kEmitter, 0, 2);
+  check(m.ppm_resolve_candidates().unknown_material.size() == 1,
+        "ppm: the emitter is an unknown-material candidate");
+  // No adopt_particles_ref primes the PM7 binds: the LATE-RES resolve resolves them itself (it
+  // once read through null binds when no pre-arm emitter had been adopted yet).
+  const uint64_t e0 = m.ppm_epoch();
+  grc::rs::adopt_particles_resolve();
+  check(w.count("Resource.duplicate") == 1 && grc::rs::adopt_emitter_stats().ppm_refused == 1,
+        "ppm: the first resolve tries the material once (duplicate) and refuses it");
+  m.clear(kItem, 3);  // the emitter's next redraw (clear, add_particles) moves the epoch
+  m.add_particles(kItem, kEmitter, 0, 3);
+  check(m.ppm_epoch() != e0, "ppm: another epoch");
+  grc::rs::adopt_particles_resolve();
+  check(w.count("GPUParticles2D.get_process_material") == 2,
+        "ppm: the second resolve still reaches the emitter's node");
+  check(w.count("Resource.duplicate") == 1 && grc::rs::adopt_emitter_stats().ppm_refused == 1,
+        "ppm: the refused material is not duplicated again");
+  grc::rs::adopt_resource_freed(kMaterial);
+  m.clear(kItem, 4);
+  m.add_particles(kItem, kEmitter, 0, 4);
+  grc::rs::adopt_particles_resolve();
+  check(w.count("Resource.duplicate") == 2, "ppm: a freed material RID is forgotten");
+  check(w.null_bind_calls == 0, "ppm: no call through a null bind");
+  stream_end();
+}
+
+}  // namespace
+
 int main() {
   test_born_equals_adopted();
   test_sabotages();
@@ -819,6 +1185,13 @@ int main() {
   test_adopt_fault_parse();
   test_materials_born_equals_adopted();
   test_material_scans();
+  test_ppm_key_bits();
+  // From here the fake engine is installed (process-wide): the engine-free tests above run first.
+  test_fake_binds();
+  test_refused_multimesh_not_reread();
+  test_canvas_texture_channels_not_reread();
+  test_canvas_texture_registry_gating();
+  test_refused_ppm_not_retried();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

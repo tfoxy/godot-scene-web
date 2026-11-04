@@ -4422,6 +4422,126 @@ void test_ppm_unknown_candidates() {
   check(m.ppm_unknown_candidates().empty(), "a material whose shader is known is no candidate");
 }
 
+// B3: ppm_resolve_candidates gives rs_adopt.cpp's frame-boundary resolve all three lists in one
+// pass. Each list equals its single-list function (ppm_candidates, ppm_unknown_candidates,
+// ppm_unknown_material_candidates) and the lists the old per-list walks built: a builtin candidate
+// per unkeyed particles shader with a (material, item) pair per drawing item, an (unknown-shader
+// material, item) pair, and an (emitter, unknown material, item) triple. An emitter nothing draws,
+// a freed one, and one with no process material are in no list.
+void test_ppm_resolve_candidates() {
+  using Candidates = grc::rs::Mirror::PpmResolveCandidates;
+  auto same = [](const Candidates &c, const Mirror &m) {
+    const auto builtin = m.ppm_candidates();
+    const auto unknown_material = m.ppm_unknown_material_candidates();
+    bool ok = c.builtin.size() == builtin.size() && c.unknown_shader == m.ppm_unknown_candidates() &&
+              c.unknown_material.size() == unknown_material.size();
+    for (size_t i = 0; ok && i < builtin.size(); ++i) {
+      ok = c.builtin[i].shader_rid == builtin[i].shader_rid &&
+           c.builtin[i].pairs == builtin[i].pairs;
+    }
+    for (size_t i = 0; ok && i < unknown_material.size(); ++i) {
+      ok = c.unknown_material[i].particles == unknown_material[i].particles &&
+           c.unknown_material[i].material == unknown_material[i].material &&
+           c.unknown_material[i].item == unknown_material[i].item;
+    }
+    return ok;
+  };
+  {
+    // pt_scene alone: one emitter, drawn, with no process material: nothing to resolve.
+    Mirror m;
+    pt_scene(&m);
+    const Candidates c = m.ppm_resolve_candidates();
+    check(c.builtin.empty() && c.unknown_shader.empty() && c.unknown_material.empty(),
+          "resolve candidates: no emitter needs resolving, all three lists empty");
+    check(same(c, m), "resolve candidates: empty agrees with the single lists");
+    Mirror off;
+    bind_root(&off);  // particles disabled: never a candidate
+    check(off.ppm_resolve_candidates().builtin.empty(), "resolve candidates: disabled, empty");
+  }
+  {
+    // The existing fixtures, through the combined call.
+    Mirror m;
+    pt_scene(&m);
+    grc::rs::ShaderCodeInput input = shader_input("shader_type particles;\n", "unsupported",
+                                                  "shader-mode");
+    input.copy.mode = "particles";
+    m.shader_create_from_code(0x600, input, 1);
+    m.material_create(0x610, 1);
+    m.material_set_shader(0x610, 0x600, 1);
+    m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+    Candidates c = m.ppm_resolve_candidates();
+    check(c.builtin.size() == 1 && c.builtin[0].shader_rid == 0x600 &&
+              c.builtin[0].pairs.size() == 1 && c.builtin[0].pairs[0].first == 0x610 &&
+              c.builtin[0].pairs[0].second == 100 && c.unknown_shader.empty() &&
+              c.unknown_material.empty(),
+          "resolve candidates: the builtin fixture (shader, (material, item))");
+    check(same(c, m), "resolve candidates: the builtin fixture agrees with ppm_candidates");
+    m.set_shader_ppm(0x600, grc::rs2::BuiltinParticleProcessMaterial());
+    c = m.ppm_resolve_candidates();
+    check(c.builtin.empty() && c.unknown_shader.empty() && c.unknown_material.empty(),
+          "resolve candidates: a keyed shader leaves every list empty");
+  }
+  {
+    Mirror m;
+    pt_scene(&m);
+    m.material_create_from_shader(0x610, 0x600, 1);  // unknown shader
+    m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+    const Candidates c = m.ppm_resolve_candidates();
+    check(c.builtin.empty() && c.unknown_shader.size() == 1 && c.unknown_shader[0].first == 0x610 &&
+              c.unknown_shader[0].second == 100 && c.unknown_material.empty(),
+          "resolve candidates: the unknown-shader fixture (material, item)");
+    check(same(c, m), "resolve candidates: the unknown-shader fixture agrees");
+  }
+  {
+    // The mix: emitter 0x900 (item 100) and 0x903 (items 101 and 102) on one unkeyed particles
+    // shader; 0x901 (item 101) on an unknown-shader material; 0x902 (item 102) on an unknown
+    // material; 0x904 on an unknown material but drawn by nothing; 0x905 on an unknown material,
+    // drawn, then freed.
+    Mirror m;
+    pt_scene(&m);
+    for (uint64_t item_rid : {101u, 102u}) m.canvas_item_create(item_rid, 1);
+    for (uint64_t rid : {0x901u, 0x902u, 0x903u, 0x904u, 0x905u}) {
+      m.particles_create(rid, 1);
+      m.particles_call(rid, PtOp::SetMode, pt_i(0), 1);
+    }
+    grc::rs::ShaderCodeInput input = shader_input("shader_type particles;\n", "unsupported",
+                                                  "shader-mode");
+    input.copy.mode = "particles";
+    m.shader_create_from_code(0x600, input, 1);
+    m.material_create(0x610, 1);
+    m.material_set_shader(0x610, 0x600, 1);
+    m.material_create(0x613, 1);
+    m.material_set_shader(0x613, 0x600, 1);
+    m.material_create_from_shader(0x611, 0x6ff, 1);  // 0x6ff never created: unknown-shader
+    m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+    m.particles_call(0x903, PtOp::SetProcessMaterial, pt_i(0, 0x613), 1);
+    m.particles_call(0x901, PtOp::SetProcessMaterial, pt_i(0, 0x611), 1);
+    m.particles_call(0x902, PtOp::SetProcessMaterial, pt_i(0, 0x777), 1);  // unknown material
+    m.particles_call(0x904, PtOp::SetProcessMaterial, pt_i(0, 0x778), 1);  // unknown, not drawn
+    m.particles_call(0x905, PtOp::SetProcessMaterial, pt_i(0, 0x779), 1);  // unknown, freed
+    m.add_particles(101, 0x901, 0, 1);
+    m.add_particles(101, 0x903, 0, 1);
+    m.add_particles(102, 0x902, 0, 1);
+    m.add_particles(102, 0x903, 0, 1);
+    m.add_particles(102, 0x905, 0, 1);
+    m.particles_free(0x905, 1);
+    const Candidates c = m.ppm_resolve_candidates();
+    check(same(c, m), "resolve candidates: the mix agrees with the three single lists");
+    std::vector<std::pair<uint64_t, uint64_t>> pairs;
+    if (c.builtin.size() == 1) pairs = c.builtin[0].pairs;
+    std::sort(pairs.begin(), pairs.end());
+    check(c.builtin.size() == 1 && c.builtin[0].shader_rid == 0x600 &&
+              pairs == std::vector<std::pair<uint64_t, uint64_t>>(
+                           {{0x610, 100}, {0x613, 101}, {0x613, 102}}),
+          "resolve candidates: one builtin shader, a pair per (material, drawing item)");
+    check(c.unknown_shader == std::vector<std::pair<uint64_t, uint64_t>>({{0x611, 101}}),
+          "resolve candidates: the unknown-shader material and its item");
+    check(c.unknown_material.size() == 1 && c.unknown_material[0].particles == 0x902 &&
+              c.unknown_material[0].material == 0x777 && c.unknown_material[0].item == 102,
+          "resolve candidates: the drawn live unknown-material emitter only");
+  }
+}
+
 int main() {
   // HC4a: RS_MIRROR_TEST_SHADOW=1 (the rs_mirror_shadow ctest) runs every case with the shadow
   // oracle on: every snapshot of every Mirror is also built by the full walk and compared.
@@ -4440,6 +4560,7 @@ int main() {
   test_particles_emits_and_drop_restart();
   test_particles_builtin_and_lowering();
   test_ppm_unknown_candidates();
+  test_ppm_resolve_candidates();
   test_multimesh_shadow_and_versions();
   test_multimesh_reasons();
   test_multimesh_publication_and_free();

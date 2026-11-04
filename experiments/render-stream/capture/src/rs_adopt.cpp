@@ -29,6 +29,84 @@ namespace {
 bool same_xform(const rs2::Xform &a, const rs2::Xform &b) { return a == b; }
 bool same_color(const rs2::Color4 &a, const rs2::Color4 &b) { return a == b; }
 
+// One adopted item through the mirror's own setters: the calls CanvasItem's
+// NOTIFICATION_ENTER_TREE makes (canvas_item.cpp:237-289 set_parent and visibility layer, :354
+// visible, :357-358 filter and repeat), the deferred update_draw_order of a child item (:444 draw
+// index = get_index()), and each setter whose value differs from the RenderingServer default, as a
+// setter only calls the server on a change. Shared by apply_adopt_plan and the node_added adoption.
+void apply_adopted_item(Mirror &mirror, const AdoptedItem &item, AdoptSabotage sabotage,
+                        std::uint64_t frame, AdoptStats *stats) {
+  mirror.adopt_item(item.rid, frame);
+  mirror.set_parent(item.rid, item.parent, frame);
+  mirror.set_visibility_layer(item.rid, item.visibility_layer, frame);
+  mirror.set_visible(item.rid, item.visible, frame);
+  mirror.set_texture_filter(item.rid, item.texture_filter, frame);
+  mirror.set_texture_repeat(item.rid, item.texture_repeat, frame);
+  if (!item.group_member) {
+    mirror.set_draw_index(item.rid, item.child_index, frame);
+  }
+  if (sabotage != AdoptSabotage::SkipState) {
+    if (!same_xform(item.xform, rs2::kIdentityXform)) {
+      mirror.set_transform(item.rid, item.xform, frame);
+    }
+    if (!same_color(item.modulate, rs2::kWhite)) {
+      mirror.set_modulate(item.rid, item.modulate, frame);
+    }
+    if (!same_color(item.self_modulate, rs2::kWhite)) {
+      mirror.set_self_modulate(item.rid, item.self_modulate, frame);
+    }
+  }
+  if (item.z_index != 0) {
+    mirror.set_z_index(item.rid, item.z_index, frame);
+  }
+  if (!item.z_relative) {
+    mirror.set_z_relative(item.rid, false, frame);
+  }
+  if (item.behind) {
+    mirror.set_behind(item.rid, true, frame);
+  }
+  if (item.material != 0) {
+    mirror.set_material(item.rid, item.material, frame);
+    ++stats->materials;
+  }
+  if (item.use_parent_material) {
+    mirror.set_use_parent_material(item.rid, true, frame);
+  }
+  // CG1: the back-buffer state a node set through its setters (render-stream-10.md "Capture").
+  if (item.canvas_group_mode != 0) {
+    mirror.set_canvas_group_mode(item.rid, item.canvas_group_mode, item.clear_margin,
+                                 item.fit_empty, item.fit_margin, item.blur_mipmaps, frame);
+    ++stats->canvas_groups;
+  }
+  if (item.copy_to_backbuffer) {
+    mirror.set_copy_to_backbuffer(item.rid, true, item.copy_rect, frame);
+    ++stats->backbuffer_copies;
+  }
+  if (item.use_identity_transform) {
+    mirror.set_use_identity_transform(item.rid, true, frame);
+    ++stats->identity_transforms;
+  }
+  if (item.light) {
+    mirror.canvas_light_attach_to_canvas(0, item.light_canvas, frame);
+    ++stats->lights;
+  }
+  if (item.mirroring) {
+    mirror.canvas_set_item_mirroring(item.parent, item.rid, item.mirroring_xy[0],
+                                     item.mirroring_xy[1], frame);
+  }
+  if (item.repeat) {
+    mirror.canvas_set_item_repeat(item.rid, item.repeat_xy[0], item.repeat_xy[1],
+                                  item.repeat_times, frame);
+  }
+  ++stats->items;
+  if (!item.visible) {
+    ++stats->hidden;
+  }
+  if (item.group_member) {
+    ++stats->top_level;
+  }
+}
+
 }  // namespace
 
 void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabotage,
@@ -50,81 +128,9 @@ void apply_adopt_plan(Mirror &mirror, const AdoptPlan &plan, AdoptSabotage sabot
       ++stats->layers;
     }
   }
-  // Items in tree order, so every parent exists before its children are appended to it: the
-  // calls CanvasItem's NOTIFICATION_ENTER_TREE makes (canvas_item.cpp:237-289 set_parent and
-  // visibility layer, :354 visible, :357-358 filter and repeat), the deferred update_draw_order
-  // of a child item (:444 draw index = get_index()), and each setter whose value differs from the
-  // RenderingServer default, as a setter only calls the server on a change.
+  // Items in tree order, so every parent exists before its children are appended to it.
   for (const AdoptedItem &item : plan.items) {
-    mirror.adopt_item(item.rid, frame);
-    mirror.set_parent(item.rid, item.parent, frame);
-    mirror.set_visibility_layer(item.rid, item.visibility_layer, frame);
-    mirror.set_visible(item.rid, item.visible, frame);
-    mirror.set_texture_filter(item.rid, item.texture_filter, frame);
-    mirror.set_texture_repeat(item.rid, item.texture_repeat, frame);
-    if (!item.group_member) {
-      mirror.set_draw_index(item.rid, item.child_index, frame);
-    }
-    if (sabotage != AdoptSabotage::SkipState) {
-      if (!same_xform(item.xform, rs2::kIdentityXform)) {
-        mirror.set_transform(item.rid, item.xform, frame);
-      }
-      if (!same_color(item.modulate, rs2::kWhite)) {
-        mirror.set_modulate(item.rid, item.modulate, frame);
-      }
-      if (!same_color(item.self_modulate, rs2::kWhite)) {
-        mirror.set_self_modulate(item.rid, item.self_modulate, frame);
-      }
-    }
-    if (item.z_index != 0) {
-      mirror.set_z_index(item.rid, item.z_index, frame);
-    }
-    if (!item.z_relative) {
-      mirror.set_z_relative(item.rid, false, frame);
-    }
-    if (item.behind) {
-      mirror.set_behind(item.rid, true, frame);
-    }
-    if (item.material != 0) {
-      mirror.set_material(item.rid, item.material, frame);
-      ++stats->materials;
-    }
-    if (item.use_parent_material) {
-      mirror.set_use_parent_material(item.rid, true, frame);
-    }
-    // CG1: the back-buffer state a node set through its setters (render-stream-10.md "Capture").
-    if (item.canvas_group_mode != 0) {
-      mirror.set_canvas_group_mode(item.rid, item.canvas_group_mode, item.clear_margin,
-                                   item.fit_empty, item.fit_margin, item.blur_mipmaps, frame);
-      ++stats->canvas_groups;
-    }
-    if (item.copy_to_backbuffer) {
-      mirror.set_copy_to_backbuffer(item.rid, true, item.copy_rect, frame);
-      ++stats->backbuffer_copies;
-    }
-    if (item.use_identity_transform) {
-      mirror.set_use_identity_transform(item.rid, true, frame);
-      ++stats->identity_transforms;
-    }
-    if (item.light) {
-      mirror.canvas_light_attach_to_canvas(0, item.light_canvas, frame);
-      ++stats->lights;
-    }
-    if (item.mirroring) {
-      mirror.canvas_set_item_mirroring(item.parent, item.rid, item.mirroring_xy[0],
-                                       item.mirroring_xy[1], frame);
-    }
-    if (item.repeat) {
-      mirror.canvas_set_item_repeat(item.rid, item.repeat_xy[0], item.repeat_xy[1],
-                                    item.repeat_times, frame);
-    }
-    ++stats->items;
-    if (!item.visible) {
-      ++stats->hidden;
-    }
-    if (item.group_member) {
-      ++stats->top_level;
-    }
+    apply_adopted_item(mirror, item, sabotage, frame, stats);
   }
   // CanvasModulate (canvas_modulate.cpp:33-60): the active one per canvas sets its colour.
   for (const auto &entry : plan.canvas_modulates) {
@@ -549,12 +555,117 @@ void *as(void *object, void *tag) {
   return object != nullptr && tag != nullptr ? g_iface.object_cast_to(object, tag) : nullptr;
 }
 
+// Which node-class extras read_item reads (AdoptConfig's planned hooks, CG1/UIT).
+struct ItemReadOptions {
+  bool canvas_group = false;        // CG1: AdoptConfig::canvas_group
+  bool copy_to_backbuffer = false;  // CG1: AdoptConfig::copy_to_backbuffer
+  bool identity_transform = false;  // UIT: AdoptConfig::identity_transform
+};
+
+// One CanvasItem node's RS state, as its setters and NOTIFICATION_ENTER_TREE declared it to the
+// server -- shared by the arm-time walk and the node_added adoption of a pooled pre-arm item
+// (LATE-RES), so both read an item the same way. `parent_item`: the node's parent when it is a
+// CanvasItem (else null); `parent_filter` / `parent_repeat` that parent's resolved texture
+// filter/repeat caches. A top-level item has no parent item (CanvasItem::get_parent_item,
+// canvas_item.cpp:547), so it neither hangs under nor inherits from its node parent.
+AdoptedItem read_item(void *node, void *item, void *parent_item, std::int32_t parent_filter,
+                      std::int32_t parent_repeat, const Tags &tags, const ItemReadOptions &opts) {
+  AdoptedItem a;
+  a.rid = get_rid(kItemGetCanvasItem, item);
+  const bool top_level = get_bool(kItemIsTopLevel, item);
+  // canvas_item.cpp:237-289: the parent item is null for a top-level item and for one whose
+  // node parent is not a CanvasItem; such an item joins its canvas's group.
+  void *effective_parent = top_level ? nullptr : parent_item;
+  if (effective_parent != nullptr) {
+    a.parent = get_rid(kItemGetCanvasItem, effective_parent);
+    a.child_index = node_index(item);
+  } else {
+    a.parent = get_rid(kItemGetCanvas, item);
+    a.group_member = true;
+  }
+  a.xform = get_xform(kItemGetTransform, item);
+  a.modulate = get_color(kItemGetModulate, item);
+  a.self_modulate = get_color(kItemGetSelfModulate, item);
+  a.visible = get_bool(kItemIsVisibleInTree, item);
+  a.z_index = static_cast<std::int32_t>(get_int(kItemGetZIndex, item));
+  a.z_relative = get_bool(kItemIsZRelative, item);
+  a.behind = get_bool(kItemIsBehind, item);
+  a.visibility_layer = static_cast<std::uint32_t>(get_int(kItemGetVisibilityLayer, item));
+  // _refresh_texture_filter_cache (canvas_item.cpp:1585-1599): PARENT_NODE (0) inherits the
+  // parent item's cache, or DEFAULT (0) without a parent item; the scene enum's other values
+  // equal the server's.
+  const std::int32_t filter = static_cast<std::int32_t>(get_int(kItemGetTextureFilter, item));
+  const std::int32_t repeat = static_cast<std::int32_t>(get_int(kItemGetTextureRepeat, item));
+  a.texture_filter = filter != 0 ? filter : (effective_parent != nullptr ? parent_filter : 0);
+  a.texture_repeat = repeat != 0 ? repeat : (effective_parent != nullptr ? parent_repeat : 0);
+  a.material = ref_rid(kItemGetMaterial, item);
+  a.use_parent_material = get_bool(kItemGetUseParentMaterial, item);
+  if (as(node, tags.light) != nullptr) {
+    a.light = true;  // light_2d.cpp:206 attaches on every enter
+    a.light_canvas = get_rid(kItemGetCanvas, item);
+  }
+  if (as(node, tags.parallax_layer) != nullptr) {
+    get_vector2(kParallaxLayerGetMirroring, node, a.mirroring_xy);
+    a.mirroring = a.mirroring_xy[0] != 0.0f || a.mirroring_xy[1] != 0.0f;
+  }
+  if (as(node, tags.parallax2d) != nullptr) {
+    get_vector2(kParallax2dGetRepeatSize, node, a.repeat_xy);
+    a.repeat_times = static_cast<std::int32_t>(get_int(kParallax2dGetRepeatTimes, node));
+    a.repeat = a.repeat_xy[0] != 0.0f || a.repeat_xy[1] != 0.0f;
+  }
+  if (opts.canvas_group) {
+    if (as(node, tags.canvas_group) != nullptr) {
+      // canvas_group.cpp:33-60, :115: every CanvasGroup setter (and its constructor) sends
+      // the whole transparent group with fit_empty true; it ignores clip_children
+      // (canvas_item.cpp:1699).
+      double clear = 5.0;
+      double fit = 10.0;
+      ptrcall(kCanvasGroupGetClearMargin, node, nullptr, &clear);
+      ptrcall(kCanvasGroupGetFitMargin, node, nullptr, &fit);
+      a.canvas_group_mode = 3;
+      a.clear_margin = static_cast<float>(clear);
+      a.fit_empty = true;
+      a.fit_margin = static_cast<float>(fit);
+      a.blur_mipmaps = get_bool(kCanvasGroupIsUsingMipmaps, node);
+    } else {
+      // canvas_item.cpp:1688-1704: clip_children_mode 1/2 is the RS mode of the same value,
+      // sent with the RS defaults (rendering_server.h:1626).
+      const std::int64_t clip = get_int(kItemGetClipChildrenMode, item);
+      if (clip == 1 || clip == 2) {
+        a.canvas_group_mode = static_cast<std::int32_t>(clip);
+      }
+    }
+  }
+  if (opts.identity_transform && as(node, tags.cpu_particles_2d) != nullptr) {
+    // cpu_particles_2d.cpp:110-115: the setter (and the constructor, with false) sends
+    // !local_coords; nothing else in 4.5.1 makes the call.
+    a.use_identity_transform = !get_bool(kCpuParticles2dGetUseLocalCoordinates, node);
+  }
+  if (opts.copy_to_backbuffer && as(node, tags.back_buffer_copy) != nullptr) {
+    // back_buffer_copy.cpp:33-45: rect mode sends the rect, viewport mode Rect2(), disabled
+    // nothing the mirror has not already got (null).
+    const std::int64_t copy_mode = get_int(kBackBufferCopyGetCopyMode, node);
+    if (copy_mode == 1) {
+      alignas(16) float raw[4] = {};
+      ptrcall(kBackBufferCopyGetRect, node, nullptr, raw);
+      a.copy_to_backbuffer = true;
+      a.copy_rect = {raw[0], raw[1], raw[2], raw[3]};
+    } else if (copy_mode == 2) {
+      a.copy_to_backbuffer = true;
+      a.copy_rect = rs2::kZeroRect;
+    }
+  }
+  return a;
+}
+
+// The tags and options the arm's walk read with, kept for the node_added adoption (LATE-RES).
+Tags g_item_tags;
+ItemReadOptions g_item_read;
+
 struct Walker {
   Tags tags;
   void *root = nullptr;
-  bool read_canvas_group = false;        // CG1: AdoptConfig::canvas_group
-  bool read_copy_to_backbuffer = false;  // CG1: AdoptConfig::copy_to_backbuffer
-  bool read_identity_transform = false;  // UIT: AdoptConfig::identity_transform
+  ItemReadOptions opts;
   AdoptPlan plan;
   // canvas RID -> the canvas group's members (top-level items) in tree order
   std::vector<std::pair<std::uint64_t, std::vector<void *>>> groups;
@@ -604,93 +715,10 @@ struct Walker {
         plan.layers.push_back(layer);
       }
     } else if (item != nullptr) {
-      AdoptedItem a;
-      a.rid = get_rid(kItemGetCanvasItem, item);
-      const bool top_level = get_bool(kItemIsTopLevel, item);
-      // canvas_item.cpp:237-289: the parent item is null for a top-level item and for one whose
-      // node parent is not a CanvasItem; such an item joins its canvas's group.
-      void *effective_parent = top_level ? nullptr : parent_item;
-      if (effective_parent != nullptr) {
-        a.parent = get_rid(kItemGetCanvasItem, effective_parent);
-        a.child_index = node_index(item);
-      } else {
-        a.parent = get_rid(kItemGetCanvas, item);
-        a.group_member = true;
-      }
-      a.xform = get_xform(kItemGetTransform, item);
-      a.modulate = get_color(kItemGetModulate, item);
-      a.self_modulate = get_color(kItemGetSelfModulate, item);
-      a.visible = get_bool(kItemIsVisibleInTree, item);
-      a.z_index = static_cast<std::int32_t>(get_int(kItemGetZIndex, item));
-      a.z_relative = get_bool(kItemIsZRelative, item);
-      a.behind = get_bool(kItemIsBehind, item);
-      a.visibility_layer = static_cast<std::uint32_t>(get_int(kItemGetVisibilityLayer, item));
-      // _refresh_texture_filter_cache (canvas_item.cpp:1585-1599): PARENT_NODE (0) inherits the
-      // parent item's cache, or DEFAULT (0) without a parent item; the scene enum's other values
-      // equal the server's.
-      const std::int32_t filter = static_cast<std::int32_t>(get_int(kItemGetTextureFilter, item));
-      const std::int32_t repeat = static_cast<std::int32_t>(get_int(kItemGetTextureRepeat, item));
-      filter_cache = filter != 0 ? filter : (effective_parent != nullptr ? parent_filter : 0);
-      repeat_cache = repeat != 0 ? repeat : (effective_parent != nullptr ? parent_repeat : 0);
-      a.texture_filter = filter_cache;
-      a.texture_repeat = repeat_cache;
-      a.material = ref_rid(kItemGetMaterial, item);
-      a.use_parent_material = get_bool(kItemGetUseParentMaterial, item);
-      if (as(node, tags.light) != nullptr) {
-        a.light = true;  // light_2d.cpp:206 attaches on every enter
-        a.light_canvas = get_rid(kItemGetCanvas, item);
-      }
-      if (as(node, tags.parallax_layer) != nullptr) {
-        get_vector2(kParallaxLayerGetMirroring, node, a.mirroring_xy);
-        a.mirroring = a.mirroring_xy[0] != 0.0f || a.mirroring_xy[1] != 0.0f;
-      }
-      if (as(node, tags.parallax2d) != nullptr) {
-        get_vector2(kParallax2dGetRepeatSize, node, a.repeat_xy);
-        a.repeat_times = static_cast<std::int32_t>(get_int(kParallax2dGetRepeatTimes, node));
-        a.repeat = a.repeat_xy[0] != 0.0f || a.repeat_xy[1] != 0.0f;
-      }
-      if (read_canvas_group) {
-        if (as(node, tags.canvas_group) != nullptr) {
-          // canvas_group.cpp:33-60, :115: every CanvasGroup setter (and its constructor) sends
-          // the whole transparent group with fit_empty true; it ignores clip_children
-          // (canvas_item.cpp:1699).
-          double clear = 5.0;
-          double fit = 10.0;
-          ptrcall(kCanvasGroupGetClearMargin, node, nullptr, &clear);
-          ptrcall(kCanvasGroupGetFitMargin, node, nullptr, &fit);
-          a.canvas_group_mode = 3;
-          a.clear_margin = static_cast<float>(clear);
-          a.fit_empty = true;
-          a.fit_margin = static_cast<float>(fit);
-          a.blur_mipmaps = get_bool(kCanvasGroupIsUsingMipmaps, node);
-        } else {
-          // canvas_item.cpp:1688-1704: clip_children_mode 1/2 is the RS mode of the same value,
-          // sent with the RS defaults (rendering_server.h:1626).
-          const std::int64_t clip = get_int(kItemGetClipChildrenMode, item);
-          if (clip == 1 || clip == 2) {
-            a.canvas_group_mode = static_cast<std::int32_t>(clip);
-          }
-        }
-      }
-      if (read_identity_transform && as(node, tags.cpu_particles_2d) != nullptr) {
-        // cpu_particles_2d.cpp:110-115: the setter (and the constructor, with false) sends
-        // !local_coords; nothing else in 4.5.1 makes the call.
-        a.use_identity_transform = !get_bool(kCpuParticles2dGetUseLocalCoordinates, node);
-      }
-      if (read_copy_to_backbuffer && as(node, tags.back_buffer_copy) != nullptr) {
-        // back_buffer_copy.cpp:33-45: rect mode sends the rect, viewport mode Rect2(), disabled
-        // nothing the mirror has not already got (null).
-        const std::int64_t copy_mode = get_int(kBackBufferCopyGetCopyMode, node);
-        if (copy_mode == 1) {
-          alignas(16) float raw[4] = {};
-          ptrcall(kBackBufferCopyGetRect, node, nullptr, raw);
-          a.copy_to_backbuffer = true;
-          a.copy_rect = {raw[0], raw[1], raw[2], raw[3]};
-        } else if (copy_mode == 2) {
-          a.copy_to_backbuffer = true;
-          a.copy_rect = rs2::kZeroRect;
-        }
-      }
+      const AdoptedItem a =
+          read_item(node, item, parent_item, parent_filter, parent_repeat, tags, opts);
+      filter_cache = a.texture_filter;
+      repeat_cache = a.texture_repeat;
       if (as(node, tags.canvas_modulate) != nullptr && a.visible) {
         const std::uint64_t canvas = get_rid(kItemGetCanvas, item);
         bool seen = false;
@@ -806,9 +834,11 @@ AdoptStats adopt_at_arm(const AdoptConfig &config) {
   Walker walker;
   walker.tags.resolve();
   walker.root = root;
-  walker.read_canvas_group = config.canvas_group;
-  walker.read_copy_to_backbuffer = config.copy_to_backbuffer;
-  walker.read_identity_transform = config.identity_transform;
+  walker.opts.canvas_group = config.canvas_group;
+  walker.opts.copy_to_backbuffer = config.copy_to_backbuffer;
+  walker.opts.identity_transform = config.identity_transform;
+  g_item_tags = walker.tags;  // LATE-RES: node_added reads a pooled item as the walk does
+  g_item_read = walker.opts;
   walker.visit(root, nullptr, 0, 0);
   const std::uint64_t t1 = now_ns();
   apply_adopt_plan(mirror_instance(), walker.plan, config.sabotage, config.arm_frame, &stats);
@@ -1243,6 +1273,7 @@ rs2::AdoptedContent declared(rs2::AdoptedContent honest) {
 }
 
 void adopt_texture_locked_out(std::uint64_t rid, std::uint64_t item_rid = 0);  // forward
+void adopt_texture_if_unknown(std::uint64_t rid, std::uint64_t item_rid = 0);  // forward
 void *node_of(std::uint64_t item_rid);  // RT-CTX: forward (defined in the G8m section, below)
 
 // RT-CTX: read a CanvasTexture resource's channels and register the adopted entry, as
@@ -1272,10 +1303,12 @@ bool adopt_canvas_texture_resource(void *canvas, std::uint64_t rid) {
   std::int64_t repeat = 0;
   ptrcall(kCtexGetTextureFilter, canvas, nullptr, &filter);
   ptrcall(kCtexGetTextureRepeat, canvas, nullptr, &repeat);
-  // The channel textures are adopted first (a canvas texture's diffuse must be a known texture).
-  if (diffuse != 0) adopt_texture_locked_out(diffuse);
-  if (normal != 0) adopt_texture_locked_out(normal);
-  if (specular != 0) adopt_texture_locked_out(specular);
+  // The channel textures are adopted first (a canvas texture's diffuse must be a known texture);
+  // one the mirror knows or this stream refused is not read back again (CanvasTextures share
+  // atlas pages).
+  adopt_texture_if_unknown(diffuse);
+  adopt_texture_if_unknown(normal);
+  adopt_texture_if_unknown(specular);
   return hooks_adopt_canvas_texture(rid, diffuse, normal, specular, static_cast<std::int32_t>(filter),
                                     static_cast<std::int32_t>(repeat));
 }
@@ -1304,7 +1337,11 @@ bool adopt_canvas_texture_locked_out(std::uint64_t rid) {
     ptrcall(kLoaderGetCachedRef, loader, args, &res.slot);
   }
   void *canvas = res.object();
-  if (canvas == nullptr) {
+  void *ct_tag = Tags::tag("CanvasTexture");
+  // As the node path: the cached resource at the census path must still be this CanvasTexture
+  // (the path may have been re-cached by another resource since the census).
+  if (canvas == nullptr || ct_tag == nullptr || as(canvas, ct_tag) == nullptr ||
+      get_rid(kResourceGetRid, canvas) != rid) {
     return false;
   }
   return adopt_canvas_texture_resource(canvas, rid);
@@ -1362,9 +1399,9 @@ bool adopt_canvas_texture_from_registry(std::uint64_t rid) {
     return false;  // no diffuse observed: an empty CanvasTexture cannot be adopted
   }
   // The channel textures are adopted first (a canvas texture's diffuse must be a known texture).
-  if (channels.diffuse != 0) adopt_texture_locked_out(channels.diffuse);
-  if (channels.normal != 0) adopt_texture_locked_out(channels.normal);
-  if (channels.specular != 0) adopt_texture_locked_out(channels.specular);
+  adopt_texture_if_unknown(channels.diffuse);
+  adopt_texture_if_unknown(channels.normal);
+  adopt_texture_if_unknown(channels.specular);
   return hooks_adopt_canvas_texture(rid, channels.diffuse, channels.normal, channels.specular,
                                     channels.filter, channels.repeat);
 }
@@ -1457,6 +1494,21 @@ void adopt_texture_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
     if (decoded) ++g_res_stats.decoded;
   }
   g_res_stats.lookup_ns += now_ns() - t0;
+}
+
+// The one internal entry to a texture's read-back (adopt_texture_ref, the CanvasTexture channel
+// paths): a RID the mirror already knows, or one this stream refused, is never read back again.
+void adopt_texture_if_unknown(std::uint64_t rid, std::uint64_t item_rid) {
+  if (rid == 0 || mirror_instance().knows_texture(rid)) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    if (g_res_refused_textures.count(rid) != 0) {
+      return;
+    }
+  }
+  adopt_texture_locked_out(rid, item_rid);
 }
 
 // mesh_get_surface's Dictionary value under `key`, into `out` (a Variant slot).
@@ -1576,6 +1628,8 @@ void adopt_mesh_locked_out(std::uint64_t rid) {
   if (adopted) {
     ++g_res_stats.meshes;
     g_res_stats.mesh_surfaces += static_cast<std::uint32_t>(surfaces.size());
+  } else if (g_res_refused_meshes.insert(rid).second) {
+    ++g_res_stats.meshes_refused;  // never read back again this stream
   }
   g_res_stats.lookup_ns += now_ns() - t0;
 }
@@ -1585,21 +1639,45 @@ void adopt_mesh_locked_out(std::uint64_t rid) {
 // LATE-SPINE: the canvas_texture_* hooks fill the CanvasTexture-channel registry (see
 // adopt_canvas_texture_from_registry, above) from extension load, so a runtime-built CanvasTexture
 // whose drawing node's `texture` is not it is adopted from the draw's own texture reference.
+// Filled before the arm only: once the mirror streams, a CanvasTexture created under the hooks is
+// one the mirror knows, so a new RID is never registered (a recycled one drops its stale entry),
+// and a set_* call updates only a pre-arm CanvasTexture's existing entry.
 void canvas_texture_note_create(std::uint64_t rid) {
   if (rid == 0) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_ctex_mutex);
+  if (mirror_enabled()) {
+    g_ctex_channels.erase(rid);
+    return;
+  }
   // A fresh entry (a recycled RID value drops the previous owner's stale channels).
   g_ctex_channels[rid] = CanvasChannels();
 }
+
+namespace {
+
+// The registry entry a set_* call updates: any before the arm, an existing one after it.
+CanvasChannels *ctex_entry_locked(std::uint64_t rid) {
+  if (!mirror_enabled()) {
+    return &g_ctex_channels[rid];
+  }
+  const auto it = g_ctex_channels.find(rid);
+  return it != g_ctex_channels.end() ? &it->second : nullptr;
+}
+
+}  // namespace
 
 void canvas_texture_note_channel(std::uint64_t rid, std::int32_t channel, std::uint64_t texture) {
   if (rid == 0) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_ctex_mutex);
-  CanvasChannels &c = g_ctex_channels[rid];
+  CanvasChannels *entry = ctex_entry_locked(rid);
+  if (entry == nullptr) {
+    return;
+  }
+  CanvasChannels &c = *entry;
   if (channel == 0) {  // CANVAS_TEXTURE_CHANNEL_DIFFUSE
     c.diffuse = texture;
     c.diffuse_set = true;
@@ -1617,7 +1695,11 @@ void canvas_texture_note_filter(std::uint64_t rid, std::int32_t filter) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_ctex_mutex);
-  CanvasChannels &c = g_ctex_channels[rid];
+  CanvasChannels *entry = ctex_entry_locked(rid);
+  if (entry == nullptr) {
+    return;
+  }
+  CanvasChannels &c = *entry;
   c.filter = filter;
   c.filter_set = true;
 }
@@ -1627,7 +1709,11 @@ void canvas_texture_note_repeat(std::uint64_t rid, std::int32_t repeat) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_ctex_mutex);
-  CanvasChannels &c = g_ctex_channels[rid];
+  CanvasChannels *entry = ctex_entry_locked(rid);
+  if (entry == nullptr) {
+    return;
+  }
+  CanvasChannels &c = *entry;
   c.repeat = repeat;
   c.repeat_set = true;
 }
@@ -1676,7 +1762,8 @@ const char *adopt_fault_name(AdoptFault f) {
   return "none";
 }
 
-void adopt_emitters_reset();  // PM7, below
+void adopt_emitters_reset();                  // PM7, below
+void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 
 void adopt_resources_begin(AdoptFault f) {
   adopt_emitters_reset();
@@ -1684,6 +1771,7 @@ void adopt_resources_begin(AdoptFault f) {
   g_res_stats = AdoptResourceStats();
   g_res_refused_textures.clear();
   g_res_refused_meshes.clear();
+  g_res_refused_multimeshes.clear();
   g_census = Census();
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
@@ -1715,14 +1803,8 @@ void adopt_texture_ref(std::uint64_t rid, std::uint64_t item_rid) {
   if (std::this_thread::get_id() != g_res_main) {
     return;
   }
-  {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (g_res_refused_textures.count(rid) != 0) {
-      return;
-    }
-  }
   t_res_inside = true;
-  adopt_texture_locked_out(rid, item_rid);
+  adopt_texture_if_unknown(rid, item_rid);
   t_res_inside = false;
 }
 
@@ -1743,10 +1825,11 @@ void adopt_mesh_ref(std::uint64_t rid) {
   t_res_inside = false;
 }
 
-// PM9 (late-arm multimesh adoption): the multimesh's transform format is not exposed by the
-// RenderingServer, so it is recovered from the per-instance stride of the buffer GLES3 keeps
-// (stride = (3d ? 12 : 8) + 4 x colors + 4 x custom). A canvas_item_add_multimesh is a 2D draw, so
-// the ambiguous strides prefer the 2D interpretation, and colors over custom.
+// PM9 (late-arm multimesh adoption): the RenderingServer exposes no multimesh format getter, so
+// the fallback recovers it from the per-instance stride of the buffer GLES3 keeps (stride =
+// (3d ? 12 : 8) + 4 x colors + 4 x custom). A canvas_item_add_multimesh is a 2D draw, so the
+// ambiguous strides prefer the 2D interpretation, and colors over custom. Used only when the
+// drawing node's MultiMesh could not be read (multimesh_format_via_node, below).
 bool infer_multimesh_format(std::int32_t instances, std::size_t floats, std::int32_t *format,
                             bool *colors, bool *custom) {
   *format = 0;
@@ -1779,7 +1862,65 @@ bool infer_multimesh_format(std::int32_t instances, std::size_t floats, std::int
   }
 }
 
-void adopt_multimesh_locked_out(std::uint64_t rid) {
+// Object.get(`property`) on `object`, into `out`.
+void object_get(void *object, const char *property, VariantSlot *out) {
+  StringName name(property);
+  const GDExtensionConstTypePtr args[1] = {name.ptr()};
+  ptrcall(kObjectGet, object, args, out->data);
+}
+
+// PM9 follow-up: the exact multimesh format, read from the drawing item's node when its
+// `multimesh` property is the MultiMesh whose RID is `rid` (a MultiMeshInstance2D): its
+// transform_format, use_colors and use_custom_data, as multimesh_allocate_data was given them.
+// False -- the caller falls back to the stride -- when the item has no node, the node draws
+// another multimesh (a custom _draw), or a property does not read back with its type.
+bool multimesh_format_via_node(std::uint64_t item_rid, std::uint64_t rid, std::int32_t *format,
+                               bool *colors, bool *custom) {
+  if (item_rid == 0) {
+    return false;
+  }
+  void *node = node_of(item_rid);
+  static void *const mm_tag = Tags::tag("MultiMesh");
+  if (node == nullptr || mm_tag == nullptr) {
+    return false;
+  }
+  VariantSlot mm_v;
+  object_get(node, "multimesh", &mm_v);
+  if (mm_v.type() != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+    return false;
+  }
+  void *multimesh = nullptr;
+  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_OBJECT)(&multimesh, mm_v.data);
+  if (multimesh == nullptr || as(multimesh, mm_tag) == nullptr ||
+      get_rid(kResourceGetRid, multimesh) != rid) {
+    return false;
+  }
+  VariantSlot f_v;
+  VariantSlot c_v;
+  VariantSlot u_v;
+  object_get(multimesh, "transform_format", &f_v);
+  object_get(multimesh, "use_colors", &c_v);
+  object_get(multimesh, "use_custom_data", &u_v);
+  if (f_v.type() != GDEXTENSION_VARIANT_TYPE_INT || c_v.type() != GDEXTENSION_VARIANT_TYPE_BOOL ||
+      u_v.type() != GDEXTENSION_VARIANT_TYPE_BOOL) {
+    return false;
+  }
+  std::int64_t f = 0;
+  std::uint8_t c = 0;
+  std::uint8_t u = 0;
+  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_INT)(&f, f_v.data);
+  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_BOOL)(&c, c_v.data);
+  g_iface.get_variant_to_type_constructor(GDEXTENSION_VARIANT_TYPE_BOOL)(&u, u_v.data);
+  if (f != 0 && f != 1) {
+    return false;
+  }
+  *format = static_cast<std::int32_t>(f);  // MultiMesh::TransformFormat == RS's (0 2d, 1 3d)
+  *colors = c != 0;
+  *custom = u != 0;
+  return true;
+}
+
+void adopt_multimesh_locked_out(std::uint64_t rid, std::uint64_t item_rid) {
   const std::uint64_t t0 = now_ns();
   void *rs_singleton = singleton_object("RenderingServer");
   if (rs_singleton == nullptr) {
@@ -1815,23 +1956,36 @@ void adopt_multimesh_locked_out(std::uint64_t rid) {
   adopt.mesh = mesh;
   adopt.custom_aabb = {aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]};
   adopt.buffer = std::move(floats);
-  bool ok = infer_multimesh_format(adopt.instances, adopt.buffer.size(), &adopt.format, &adopt.colors,
-                                   &adopt.custom);
+  // The node's own format when it names this multimesh and its stride matches the buffer; the
+  // stride's guess otherwise.
+  bool ok = false;
+  if (multimesh_format_via_node(item_rid, rid, &adopt.format, &adopt.colors, &adopt.custom)) {
+    const std::size_t stride = static_cast<std::size_t>((adopt.format == 1 ? 12 : 8) +
+                                                        (adopt.colors ? 4 : 0) +
+                                                        (adopt.custom ? 4 : 0));
+    ok = adopt.buffer.size() == stride * static_cast<std::size_t>(adopt.instances);
+  }
+  if (!ok) {
+    ok = infer_multimesh_format(adopt.instances, adopt.buffer.size(), &adopt.format, &adopt.colors,
+                                &adopt.custom);
+  }
   bool adopted = false;
   if (ok) {
     adopt_mesh_ref(mesh);  // G8r: the multimesh's mesh, before the entry links it
-    adopted = hooks_adopt_multimesh(rid, adopt);
+    adopted = hooks_adopt_multimesh(rid, std::move(adopt));
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (adopted) {
     ++g_res_stats.multimeshes;
-  } else {
+  } else if (g_res_refused_multimeshes.insert(rid).second) {
+    // Refused once: a refused multimesh is never read back again this stream (the buffer read is
+    // a GPU stall on GLES3 and blocks the main thread on a threaded RenderingServer).
     ++g_res_stats.multimeshes_refused;
   }
   g_res_stats.lookup_ns += now_ns() - t0;
 }
 
-void adopt_multimesh_ref(std::uint64_t rid) {
+void adopt_multimesh_ref(std::uint64_t rid, std::uint64_t item_rid) {
   if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
       fault() == AdoptFault::NoResources || !mirror_enabled() ||
       mirror_instance().knows_multimesh(rid) || std::this_thread::get_id() != g_res_main) {
@@ -1845,7 +1999,29 @@ void adopt_multimesh_ref(std::uint64_t rid) {
   }
   // No t_res_inside guard here: the mesh read-back (adopt_mesh_ref) needs it clear, and the
   // multimesh read-backs cannot re-enter another adoption (they call no hooked method).
-  adopt_multimesh_locked_out(rid);
+  adopt_multimesh_locked_out(rid, item_rid);
+}
+
+// Forgets a freed RID's per-stream refusal and its CanvasTexture channels (a RID value the
+// engine hands out again starts fresh, and neither set grows with freed resources).
+void adopt_resource_freed(std::uint64_t rid) {
+  if (rid == 0) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_ctex_mutex);
+    g_ctex_channels.erase(rid);
+  }
+  if (!g_res_active.load(std::memory_order_acquire)) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    g_res_refused_textures.erase(rid);
+    g_res_refused_meshes.erase(rid);
+    g_res_refused_multimeshes.erase(rid);
+  }
+  adopt_emitters_forget(rid);
 }
 
 bool adopt_from_update_begin() {
@@ -2076,95 +2252,56 @@ void mat_stat(F f) {
   f(g_mat_stats);
 }
 
-// The RS filter/repeat an item's RS state holds: the scene enum's PARENT_NODE (0) inherits the
-// parent item's resolved value (recursively), or the RS Default (0) without a parent item, exactly
-// as the walk threads parent_filter / parent_repeat (canvas_item.cpp:1585-1599, :1639-1661).
-// [[maybe_unused]]: as adopt_item_node, called only through node_added_call.
-[[maybe_unused]] std::int32_t resolved_filter(void *item) {
-  const std::int32_t raw = static_cast<std::int32_t>(get_int(kItemGetTextureFilter, item));
-  if (raw != 0) {
+void adopt_instance_params(std::uint64_t item);  // G8m, below
+
+// The RS filter/repeat an item's RS state holds (CanvasItem::_refresh_texture_filter_cache,
+// canvas_item.cpp:1585-1599, :1639-1661): the scene enum's PARENT_NODE (0) inherits the parent
+// item's resolved value (recursively), or the RS Default (0) without a parent item. A top-level
+// item has no parent item (get_parent_item, canvas_item.cpp:547), exactly as the walk's
+// effective_parent threads parent_filter / parent_repeat.
+std::int32_t resolved_cache(void *item, BindId getter) {
+  const std::int32_t raw = static_cast<std::int32_t>(get_int(getter, item));
+  if (raw != 0 || get_bool(kItemIsTopLevel, item)) {
     return raw;
   }
   void *parent_node = get_object(kNodeGetParent, item);
-  void *parent_item = parent_node != nullptr ? as(parent_node, g_mat_tags.canvas_item) : nullptr;
-  return parent_item != nullptr ? resolved_filter(parent_item) : 0;
-}
-[[maybe_unused]] std::int32_t resolved_repeat(void *item) {
-  const std::int32_t raw = static_cast<std::int32_t>(get_int(kItemGetTextureRepeat, item));
-  if (raw != 0) {
-    return raw;
-  }
-  void *parent_node = get_object(kNodeGetParent, item);
-  void *parent_item = parent_node != nullptr ? as(parent_node, g_mat_tags.canvas_item) : nullptr;
-  return parent_item != nullptr ? resolved_repeat(parent_item) : 0;
+  void *parent_item = parent_node != nullptr ? as(parent_node, g_item_tags.canvas_item) : nullptr;
+  return parent_item != nullptr ? resolved_cache(parent_item, getter) : 0;
 }
 
 // LATE-RES (fidelity gap #5): a pre-arm CanvasItem whose RID the mirror does not know (its
 // canvas_item_create happened before the arm, while the node was pooled or otherwise out of the
-// tree) is adopted at its first node_added after the arm. The node is read exactly as the walk
-// would have read it and driven through the mirror's own setters (apply_adopt_plan's item loop,
-// minus the node-class extras), so a pooled node that enters the tree after the arm draws like
-// one the walk adopted. The item's parent arrives from the tree (get_parent), not from a walk
-// thread: the enter-tree set_parent already fired before node_added (canvas_item.cpp:237-289)
-// and, naming an unknown RID, was dropped under the unknown-item policy. Main thread only.
-// Returns false when the mirror already knew the RID. [[maybe_unused]]: its only call is from
-// node_added_call, which GCC sees as merely address-taken (the node map's callable), so it reports
-// the otherwise-called helper as unused.
+// tree) is adopted at its first node_added after the arm. The node is read by the walk's own
+// read_item and applied by apply_adopt_plan's own apply_adopted_item, so a pooled node that
+// enters the tree after the arm draws like one the walk adopted (node-class extras included).
+// The item's parent arrives from the tree (get_parent), not from a walk thread: the enter-tree
+// set_parent already fired before node_added (canvas_item.cpp:237-289) and, naming an unknown
+// RID, was dropped under the unknown-item policy. Main thread only. Returns false when the
+// mirror already knew the RID. [[maybe_unused]]: its only call is from node_added_call, which
+// GCC sees as merely address-taken (the node map's callable), so it reports the otherwise-called
+// helper as unused.
 [[maybe_unused]] bool adopt_item_node(void *item, std::uint64_t rid, std::uint64_t frame) {
   Mirror &mirror = mirror_instance();
   if (mirror.knows_item(rid)) {
     return false;
   }
-  const bool top_level = get_bool(kItemIsTopLevel, item);
+  if (g_item_tags.canvas_item == nullptr) {
+    g_item_tags.resolve();
+  }
   void *parent_node = get_object(kNodeGetParent, item);
-  void *parent_item =
-      (!top_level && parent_node != nullptr) ? as(parent_node, g_mat_tags.canvas_item) : nullptr;
-  std::uint64_t parent = 0;
-  bool group_member = false;
-  if (parent_item != nullptr) {
-    parent = get_rid(kItemGetCanvasItem, parent_item);
-  } else {
-    parent = get_rid(kItemGetCanvas, item);
-    group_member = true;
-  }
-  mirror.adopt_item(rid, frame);
-  mirror.set_parent(rid, parent, frame);
-  mirror.set_visibility_layer(rid, static_cast<std::uint32_t>(get_int(kItemGetVisibilityLayer, item)),
-                              frame);
-  mirror.set_visible(rid, get_bool(kItemIsVisibleInTree, item), frame);
-  mirror.set_texture_filter(rid, resolved_filter(item), frame);
-  mirror.set_texture_repeat(rid, resolved_repeat(item), frame);
-  if (!group_member) {
-    mirror.set_draw_index(rid, node_index(item), frame);
-  }
-  const rs2::Xform xform = get_xform(kItemGetTransform, item);
-  if (!same_xform(xform, rs2::kIdentityXform)) {
-    mirror.set_transform(rid, xform, frame);
-  }
-  const rs2::Color4 modulate = get_color(kItemGetModulate, item);
-  if (!same_color(modulate, rs2::kWhite)) {
-    mirror.set_modulate(rid, modulate, frame);
-  }
-  const rs2::Color4 self_modulate = get_color(kItemGetSelfModulate, item);
-  if (!same_color(self_modulate, rs2::kWhite)) {
-    mirror.set_self_modulate(rid, self_modulate, frame);
-  }
-  const std::int64_t z = get_int(kItemGetZIndex, item);
-  if (z != 0) {
-    mirror.set_z_index(rid, static_cast<std::int32_t>(z), frame);
-  }
-  if (!get_bool(kItemIsZRelative, item)) {
-    mirror.set_z_relative(rid, false, frame);
-  }
-  if (get_bool(kItemIsBehind, item)) {
-    mirror.set_behind(rid, true, frame);
-  }
-  const std::uint64_t material = ref_rid(kItemGetMaterial, item);
-  if (material != 0) {
-    mirror.set_material(rid, material, frame);  // an unknown RID resolves lazily (G8m)
-  }
-  if (get_bool(kItemGetUseParentMaterial, item)) {
-    mirror.set_use_parent_material(rid, true, frame);
+  void *parent_item = parent_node != nullptr ? as(parent_node, g_item_tags.canvas_item) : nullptr;
+  const std::int32_t parent_filter =
+      parent_item != nullptr ? resolved_cache(parent_item, kItemGetTextureFilter) : 0;
+  const std::int32_t parent_repeat =
+      parent_item != nullptr ? resolved_cache(parent_item, kItemGetTextureRepeat) : 0;
+  AdoptedItem a = read_item(item, item, parent_item, parent_filter, parent_repeat, g_item_tags,
+                            g_item_read);
+  a.rid = rid;
+  AdoptStats stats;
+  apply_adopted_item(mirror, a, AdoptSabotage::None, frame, &stats);
+  if ((a.material != 0 || a.use_parent_material) &&
+      mat_sabotage() != AdoptMaterialSabotage::SkipParams) {
+    adopt_instance_params(rid);  // as adopt_materials_at_arm does for the walk's material items
   }
   return true;
 }
@@ -2929,23 +3066,45 @@ const char kPpmSyntheticCode[] =
     "\tfloat _t = TIME;\n"
     "}\n";
 
-// A stable hash of the builtin key, for the synthetic shader's reserved RID: materials on the same
-// key share one entry, as the engine's shader_map does.
-std::uint64_t ppm_key_hash(const rs2::BuiltinParticleProcessMaterial &k) {
-  std::uint64_t h = 1;
-  auto mix = [&h](std::uint64_t v) { h = (h << 5) - h + v; };  // h = h * 31 + v
-  mix(k.emission_shape);
-  mix(k.particle_flags);
-  mix(k.textures);
-  mix((k.color_ramp ? 1u : 0u) | (k.color_initial_ramp ? 2u : 0u) | (k.alpha_curve ? 4u : 0u) |
-      (k.emission_curve ? 8u : 0u) | (k.velocity_limit_curve ? 16u : 0u) |
-      (k.orbit_velocity_curve_xyz ? 32u : 0u) | (k.emission_color_texture ? 64u : 0u));
-  mix(k.sub_emitter | (k.attractor ? 256u : 0u));
-  mix(k.collision | (k.collision_scale ? 8u : 0u) | (k.turbulence ? 16u : 0u));
-  return h & ((1ull << 62) - 1);  // keep below the two reserved top bits
-}
+std::uint64_t adopt_ppm_builtin(void *material);  // PM7, below
 
 }  // namespace
+
+// LATE-RES (gap #5): at the frame boundary, after the LATE-CMBT loop. Defined after the PM7
+// helpers it uses (pta_process_material, adopt_ppm).
+void adopt_particles_resolve_unknown_material(
+    const std::vector<Mirror::PpmUnknownMaterialCandidate> &candidates);
+
+std::uint64_t ppm_key_bits(const rs2::BuiltinParticleProcessMaterial &k) {
+  // 40 bits, each field in its own range (ppm_key clamps the enums), so two keys share a synthetic
+  // RID exactly when they are equal -- materials on one key share one entry, as the engine's
+  // shader_map does, and a hit never needs a key comparison.
+  std::uint64_t bits = 0;
+  int at = 0;
+  auto put = [&bits, &at](std::uint64_t value, int width) {
+    bits |= (value & ((1ull << width) - 1)) << at;
+    at += width;
+  };
+  put(k.emission_shape, 3);                     // < kPpmEmissionShapes (7)
+  put(k.particle_flags, rs2::kPpmFlagCount);    // 4
+  put(k.textures, rs2::kPpmParamCount);         // 18
+  put(k.color_ramp ? 1 : 0, 1);
+  put(k.color_initial_ramp ? 1 : 0, 1);
+  put(k.alpha_curve ? 1 : 0, 1);
+  put(k.emission_curve ? 1 : 0, 1);
+  put(k.velocity_limit_curve ? 1 : 0, 1);
+  put(k.orbit_velocity_curve_xyz ? 1 : 0, 1);
+  put(k.emission_color_texture ? 1 : 0, 1);
+  put(k.sub_emitter, 3);                        // < kPpmSubEmitterModes (5)
+  put(k.attractor ? 1 : 0, 1);
+  put(k.collision, 2);                          // < kPpmCollisionModes (3)
+  put(k.collision_scale ? 1 : 0, 1);
+  put(k.turbulence ? 1 : 0, 1);
+  return bits;  // at == 40: far below the two reserved top bits
+}
+static_assert(rs2::kPpmEmissionShapes <= 8 && rs2::kPpmSubEmitterModes <= 8 &&
+                  rs2::kPpmCollisionModes <= 4 && rs2::kPpmFlagCount + rs2::kPpmParamCount <= 32,
+              "ppm_key_bits: a builtin key field outgrew its width");
 
 void adopt_particles_resolve() {
   if (!mirror_enabled() || !ppm_binds()) {
@@ -2960,7 +3119,10 @@ void adopt_particles_resolve() {
     return;
   }
   g_ppm_epoch_seen = epoch;
-  for (const Mirror::PpmCandidate &c : m.ppm_candidates()) {
+  // One pass over the mirror for all three lists, and none over its items when no live emitter
+  // needs resolving (the epoch moves on every add_particles, so this runs most frames).
+  const Mirror::PpmResolveCandidates candidates = m.ppm_resolve_candidates();
+  for (const Mirror::PpmCandidate &c : candidates.builtin) {
     bool done = false;
     for (const auto &pair : c.pairs) {
       void *node = node_of(pair.second);
@@ -2997,7 +3159,7 @@ void adopt_particles_resolve() {
   // only item materials, and ppm_candidates only materials with a known shader). Key it through its
   // particle_process_material builtin: adopt a synthetic `particles` shader carrying the key, then
   // re-key the material to it, so a builtin-driven receiver simulates the emitter.
-  for (const auto &pair : m.ppm_unknown_candidates()) {
+  for (const auto &pair : candidates.unknown_shader) {
     void *node = node_of(pair.second);
     if (node == nullptr || as(node, g_ppm.tag_gpu_particles) == nullptr) {
       continue;
@@ -3013,13 +3175,9 @@ void adopt_particles_resolve() {
     if (rid != pair.first) {
       continue;
     }
-    const rs2::BuiltinParticleProcessMaterial key = ppm_key(material);
-    const std::uint64_t synth = kSyntheticPpmShader | ppm_key_hash(key);
-    if (!m.knows_shader(synth)) {
-      if (!hooks_adopt_shader(synth, kPpmSyntheticCode)) {
-        continue;  // no synthetic shader: the material stays unknown-shader
-      }
-      m.set_shader_ppm(synth, key);
+    const std::uint64_t synth = adopt_ppm_builtin(material);
+    if (synth == 0) {
+      continue;  // no synthetic shader: the material stays unknown-shader
     }
     hooks_adopt_material_shader(pair.first, synth);
     std::lock_guard<std::mutex> lock(g_ppm_mutex);
@@ -3027,7 +3185,7 @@ void adopt_particles_resolve() {
   }
   // LATE-RES (gap #5): a pre-arm process material an emitter was given is `unknown-material` (its
   // material RID was never adopted). Adopt it through the node map and re-link the emitter.
-  adopt_particles_resolve_unknown_material();
+  adopt_particles_resolve_unknown_material(candidates.unknown_material);
 }
 
 PpmStats adopt_particles_stats() {
@@ -3133,6 +3291,9 @@ PtaBinds g_pta;
 std::mutex g_pta_mutex;  // the stats and the node maps
 EmitterAdoptStats g_pta_stats;
 std::set<std::uint64_t> g_pta_refused;                      // emitter RIDs refused (counted once)
+// Process-material RIDs whose adoption failed this stream: never retried (each try duplicates the
+// Resource, creates and frees an RS material and reads every parameter back synchronously).
+std::set<std::uint64_t> g_pta_refused_materials;
 std::map<std::uint64_t, std::uint64_t> g_pta_node_rid;      // adopted emitter node id -> RID
 std::multimap<std::uint64_t, std::uint64_t> g_pta_sub_wait;  // subemitter node id -> parent RID
 // The draw being made on this thread (adopt_particles_note_draw): the emitter, its quad mesh and
@@ -3250,7 +3411,7 @@ std::uint64_t adopt_ppm_builtin(void *material) {
     return 0;
   }
   const rs2::BuiltinParticleProcessMaterial key = ppm_key(material);
-  const std::uint64_t synth = kSyntheticPpmShader | ppm_key_hash(key);
+  const std::uint64_t synth = kSyntheticPpmShader | ppm_key_bits(key);
   Mirror &m = mirror_instance();
   if (!m.knows_shader(synth)) {
     if (!hooks_adopt_shader(synth, kPpmSyntheticCode)) {
@@ -3406,6 +3567,12 @@ std::uint64_t pta_process_material(void *node) {
   if (rid == 0 || m.knows_material(rid)) {
     return rid;
   }
+  {
+    std::lock_guard<std::mutex> lock(g_pta_mutex);
+    if (g_pta_refused_materials.count(rid) != 0) {
+      return rid;  // refused before: still unknown-material, not read again
+    }
+  }
   bool adopted = false;
   if (g_pta.tag_ppm != nullptr && as(material, g_pta.tag_ppm) != nullptr) {
     adopted = adopt_ppm(material, rid);
@@ -3415,7 +3582,9 @@ std::uint64_t pta_process_material(void *node) {
     if (adopted) pta_stat([](EmitterAdoptStats &s) { ++s.other_materials; });
   }
   if (!adopted) {
-    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused; });
+    std::lock_guard<std::mutex> lock(g_pta_mutex);
+    g_pta_refused_materials.insert(rid);
+    ++g_pta_stats.ppm_refused;
   }
   return rid;  // an unknown one makes the entry unknown-material, as a hooked call would
 }
@@ -3591,8 +3760,15 @@ void adopt_emitters_reset() {
   std::lock_guard<std::mutex> lock(g_pta_mutex);
   g_pta_stats = EmitterAdoptStats();
   g_pta_refused.clear();
+  g_pta_refused_materials.clear();
   g_pta_node_rid.clear();
   g_pta_sub_wait.clear();
+}
+
+void adopt_emitters_forget(std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(g_pta_mutex);
+  g_pta_refused.erase(rid);
+  g_pta_refused_materials.erase(rid);
 }
 
 EmitterAdoptStats adopt_emitter_stats() {
@@ -3605,9 +3781,16 @@ EmitterAdoptStats adopt_emitter_stats() {
 // getters, as adopt_ppm does) and re-link the emitter's process material (SetProcessMaterial now
 // sees the adopted RID), so a builtin-driven receiver simulates the emitter. Defined here, after
 // the PM7 helpers (pta_process_material, adopt_ppm) it uses.
-void adopt_particles_resolve_unknown_material() {
+void adopt_particles_resolve_unknown_material(
+    const std::vector<Mirror::PpmUnknownMaterialCandidate> &candidates) {
+  // pta_process_material reads through the PM7 binds, which only adopt_particles_ref resolved
+  // before: a post-arm emitter given a pre-arm process material, with no pre-arm emitter adopted
+  // yet, would otherwise call the engine through a null method bind.
+  if (candidates.empty() || !pta_binds()) {
+    return;
+  }
   Mirror &m = mirror_instance();
-  for (const Mirror::PpmUnknownMaterialCandidate &c : m.ppm_unknown_material_candidates()) {
+  for (const Mirror::PpmUnknownMaterialCandidate &c : candidates) {
     void *node = node_of(c.item);
     if (node == nullptr || as(node, g_ppm.tag_gpu_particles) == nullptr) {
       continue;

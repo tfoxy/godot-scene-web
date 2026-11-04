@@ -524,7 +524,7 @@ class Mirror {
     std::array<float, 6> custom_aabb = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     std::vector<float> buffer;
   };
-  MultimeshCall multimesh_adopt(std::uint64_t rid, const MultimeshAdopt &a, std::uint64_t frame);
+  MultimeshCall multimesh_adopt(std::uint64_t rid, MultimeshAdopt a, std::uint64_t frame);
   // canvas_item_add_multimesh at /11 (rule 7): {"op":"add_multimesh","multimesh","tex"} (`tex`
   // per D11); a multimesh RID the table does not know becomes an `unsupported` command with
   // `unknown-multimesh`. Bumps content_version like every command. Only when enabled (the hook
@@ -665,6 +665,15 @@ class Mirror {
     std::uint64_t item = 0;
   };
   std::vector<PpmUnknownMaterialCandidate> ppm_unknown_material_candidates() const;
+  // The three candidate lists at once, for rs_adopt.cpp's frame-boundary resolve: the items'
+  // AddParticles commands are walked once, and not at all when no live emitter needs resolving
+  // (the usual case: ppm_epoch() moves on every add_particles, i.e. every redraw of an emitter).
+  struct PpmResolveCandidates {
+    std::vector<PpmCandidate> builtin;                                  // ppm_candidates()
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> unknown_shader;  // ppm_unknown_candidates()
+    std::vector<PpmUnknownMaterialCandidate> unknown_material;  // ppm_unknown_material_candidates()
+  };
+  PpmResolveCandidates ppm_resolve_candidates() const;
   std::uint64_t ppm_epoch() const;
   void set_shader_ppm(std::uint64_t shader_rid, const rs2::BuiltinParticleProcessMaterial &key);
 
@@ -1836,6 +1845,7 @@ class Mirror {
   std::vector<rs2::ParticleEmit> pending_emits_;
   std::shared_ptr<const rs2::EmitTail> emit_tail_;
   std::uint64_t ppm_epoch_ = 0;  // moves when a shader or emitter changes what ppm_candidates sees
+  PpmResolveCandidates ppm_resolve_candidates_locked() const;
   // G55d: shaders and materials (no tombstones, D5).
   ResMap<Shader> shaders_;  // HC4b: marked writes
   RidMap<std::uint32_t> shader_by_rid_;

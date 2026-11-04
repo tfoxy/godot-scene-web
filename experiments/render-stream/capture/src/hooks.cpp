@@ -2233,6 +2233,7 @@ void hook_free(void *self, RID rid) {
   // every owner of the dummy server rejects its index silently (rs_canvas_texture_shim.h).
   rs::canvas_texture_shim().on_free(rid.id, current_frame());
   rs::particles_shim().on_free(rid.id);  // PM5: likewise a private emitter RID
+  rs::adopt_resource_freed(rid.id);      // late-arm adoption's refusals and CanvasTexture registry
   {
     std::lock_guard<std::mutex> order(g_texture_order);
     const bool omit = omitted("free");
@@ -2348,7 +2349,7 @@ void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
   if (g_multimesh_hooked) {
     // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
     // becomes `unsupported`/`unknown-multimesh`).
-    rs::adopt_multimesh_ref(mesh.id);  // PM9: a pre-arm multimesh, adopted at first reference
+    rs::adopt_multimesh_ref(mesh.id, item.id);  // PM9: a pre-arm multimesh, adopted at first reference
     rs::adopt_texture_ref(texture.id, item.id);  // G8r: a pre-arm texture is adopted at first reference
     if (streaming()) {
       mirror().add_multimesh(item.id, mesh.id, texture.id, current_frame());
@@ -4979,23 +4980,32 @@ void hooks_internal_material(std::vector<std::string> *param_names_out, uint64_t
   t_internal_shader = shader_out;
 }
 
-bool hooks_adopt_multimesh(uint64_t rid, const rs::Mirror::MultimeshAdopt &adopt) {
+bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {
   if (rid == 0 || !streaming()) {
     return false;
   }
   std::lock_guard<std::mutex> order(g_texture_order);
-  const rs::Mirror::MultimeshCall r = mirror().multimesh_adopt(rid, adopt, current_frame());
+  // The hook-log line reads only the scalars: the read-back buffer moves into the mirror.
+  rs::Mirror::MultimeshAdopt facts;
+  facts.instances = adopt.instances;
+  facts.format = adopt.format;
+  facts.colors = adopt.colors;
+  facts.custom = adopt.custom;
+  facts.visible = adopt.visible;
+  facts.mesh = adopt.mesh;
+  const rs::Mirror::MultimeshCall r =
+      mirror().multimesh_adopt(rid, std::move(adopt), current_frame());
   if (!r.known) {
     return false;
   }
   if (resources().active()) {
     rs::MultimeshArgs args;
-    args.i64("instances", static_cast<int64_t>(adopt.instances));
-    args.i64("format", static_cast<int64_t>(adopt.format));
-    args.boolean("colors", adopt.colors);
-    args.boolean("custom", adopt.custom);
-    args.i64("visible", static_cast<int64_t>(adopt.visible));
-    args.rid("mesh", adopt.mesh);
+    args.i64("instances", static_cast<int64_t>(facts.instances));
+    args.i64("format", static_cast<int64_t>(facts.format));
+    args.boolean("colors", facts.colors);
+    args.boolean("custom", facts.custom);
+    args.i64("visible", static_cast<int64_t>(facts.visible));
+    args.rid("mesh", facts.mesh);
     resources().multimesh_call(tap_context(), "multimesh_adopt", rid, r.id, r.accepted, r.version,
                                args, false);
   }

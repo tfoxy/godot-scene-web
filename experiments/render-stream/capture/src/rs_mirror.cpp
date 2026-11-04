@@ -2715,7 +2715,7 @@ Mirror::MultimeshCall Mirror::multimesh_create(std::uint64_t rid, std::uint64_t 
 
 // PM9 (late-arm multimesh adoption): an entry from the RenderingServer's read-backs, as the
 // multimesh_* calls would have declared it. An unknown mesh is the entry's usual reason.
-Mirror::MultimeshCall Mirror::multimesh_adopt(std::uint64_t rid, const MultimeshAdopt &a,
+Mirror::MultimeshCall Mirror::multimesh_adopt(std::uint64_t rid, MultimeshAdopt a,
                                               std::uint64_t frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   MultimeshCall out;
@@ -2740,7 +2740,7 @@ Mirror::MultimeshCall Mirror::multimesh_adopt(std::uint64_t rid, const Multimesh
   const Mesh *mesh = peek_mesh(a.mesh);
   mm.unknown_mesh = a.mesh != 0 && mesh == nullptr;
   mm.mesh_id = mesh != nullptr ? mesh->id : 0;
-  mm.buffer = std::make_shared<std::vector<float>>(a.buffer);
+  mm.buffer = std::make_shared<std::vector<float>>(std::move(a.buffer));  // the read-back, moved
   mm.too_large = mm.buffer->size() * sizeof(float) > mm_options_.max_payload_bytes;
   multimesh_by_rid_[rid] = mm.id;
   out.known = true;
@@ -3698,122 +3698,117 @@ std::uint64_t Mirror::ppm_epoch() const {
   return ppm_epoch_;
 }
 
-std::vector<Mirror::PpmCandidate> Mirror::ppm_candidates() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<PpmCandidate> out;
+Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates_locked() const {
+  PpmResolveCandidates out;
   if (!pt_options_.enabled) {
     return out;
   }
-  // The items drawing each emitter id.
-  std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
-  for (const auto &entry : items_.all()) {
-    for (const Command &command : entry.second.state.commands) {
-      if (command.kind == CommandKind::AddParticles) {
-        drawn_by[command.particles].push_back(entry.second.rid);
-      }
-    }
-  }
-  std::map<std::uint32_t, std::size_t> index;  // shader id -> out index
+  // What each live emitter needs, from its own material and shader (no item walk): the
+  // particle_process_material builtin of a keyable particles shader, a re-key of an unknown-shader
+  // material (LATE-CMBT), or the adoption of an unknown material (LATE-RES).
+  enum class Need { None, Builtin, UnknownShader, UnknownMaterial };
+  std::vector<std::pair<const Particles *, Need>> needs;
   for (const auto &entry : particles_) {
     const Particles &p = entry.second;
-    if (p.freed || p.material_id == 0 || p.unknown_material) {
+    if (p.freed) {
       continue;
     }
-    const auto items = drawn_by.find(p.id);
-    if (items == drawn_by.end()) {
+    if (p.unknown_material) {
+      if (p.material_rid != 0) needs.emplace_back(&p, Need::UnknownMaterial);
+      continue;
+    }
+    if (p.material_id == 0) {
       continue;
     }
     const auto material = materials_.all().find(p.material_id);
-    if (material == materials_.all().end() || !material->second.has_shader) {
+    if (material == materials_.all().end()) {
+      continue;
+    }
+    if (material->second.shader_unknown) {
+      needs.emplace_back(&p, Need::UnknownShader);
+    }
+    if (!material->second.has_shader) {
       continue;
     }
     const auto shader = shaders_.all().find(material->second.shader);
-    if (shader == shaders_.all().end() || shader->second.has_ppm || !shader->second.has_code ||
-        shader->second.copy.mode != "particles") {
+    if (shader != shaders_.all().end() && !shader->second.has_ppm && shader->second.has_code &&
+        shader->second.copy.mode == "particles") {
+      needs.emplace_back(&p, Need::Builtin);
+    }
+  }
+  if (needs.empty()) {
+    return out;  // nothing to resolve: the items' commands are never walked
+  }
+  // The items drawing each emitter id, walked once for all three lists.
+  std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
+  for (const auto &entry : items_.all()) {
+    for (const Command &command : entry.second.state.commands) {
+      if (command.kind == CommandKind::AddParticles) {
+        drawn_by[command.particles].push_back(entry.second.rid);
+      }
+    }
+  }
+  std::map<std::uint32_t, std::size_t> index;  // shader id -> out.builtin index
+  for (const auto &need : needs) {
+    const Particles &p = *need.first;
+    const auto items = drawn_by.find(p.id);
+    if (items == drawn_by.end()) {
       continue;
     }
-    auto at = index.find(shader->first);
-    if (at == index.end()) {
-      at = index.emplace(shader->first, out.size()).first;
-      PpmCandidate c;
-      c.shader_rid = shader->second.rid;
-      out.push_back(std::move(c));
-    }
-    for (std::uint64_t item : items->second) {
-      out[at->second].pairs.emplace_back(p.material_rid, item);
+    switch (need.second) {
+      case Need::Builtin: {
+        const auto material = materials_.all().find(p.material_id);
+        const auto shader = shaders_.all().find(material->second.shader);
+        auto at = index.find(shader->first);
+        if (at == index.end()) {
+          at = index.emplace(shader->first, out.builtin.size()).first;
+          PpmCandidate c;
+          c.shader_rid = shader->second.rid;
+          out.builtin.push_back(std::move(c));
+        }
+        for (std::uint64_t item : items->second) {
+          out.builtin[at->second].pairs.emplace_back(p.material_rid, item);
+        }
+        break;
+      }
+      case Need::UnknownShader: {
+        const auto material = materials_.all().find(p.material_id);
+        for (std::uint64_t item : items->second) {
+          out.unknown_shader.emplace_back(material->second.rid, item);
+        }
+        break;
+      }
+      case Need::UnknownMaterial:
+        for (std::uint64_t item : items->second) {
+          PpmUnknownMaterialCandidate c;
+          c.particles = p.rid;
+          c.material = p.material_rid;
+          c.item = item;
+          out.unknown_material.push_back(std::move(c));
+        }
+        break;
+      case Need::None:
+        break;
     }
   }
   return out;
+}
+
+Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return ppm_resolve_candidates_locked();
+}
+
+std::vector<Mirror::PpmCandidate> Mirror::ppm_candidates() const {
+  return ppm_resolve_candidates().builtin;
 }
 
 std::vector<std::pair<std::uint64_t, std::uint64_t>> Mirror::ppm_unknown_candidates() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> out;
-  if (!pt_options_.enabled) {
-    return out;
-  }
-  // The items drawing each emitter id.
-  std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
-  for (const auto &entry : items_.all()) {
-    for (const Command &command : entry.second.state.commands) {
-      if (command.kind == CommandKind::AddParticles) {
-        drawn_by[command.particles].push_back(entry.second.rid);
-      }
-    }
-  }
-  for (const auto &entry : particles_) {
-    const Particles &p = entry.second;
-    if (p.freed || p.material_id == 0 || p.unknown_material) {
-      continue;
-    }
-    const auto material = materials_.all().find(p.material_id);
-    if (material == materials_.all().end() || !material->second.shader_unknown) {
-      continue;
-    }
-    const auto items = drawn_by.find(p.id);
-    if (items == drawn_by.end()) {
-      continue;
-    }
-    for (std::uint64_t item : items->second) {
-      out.emplace_back(material->second.rid, item);
-    }
-  }
-  return out;
+  return ppm_resolve_candidates().unknown_shader;
 }
 
 std::vector<Mirror::PpmUnknownMaterialCandidate> Mirror::ppm_unknown_material_candidates() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  std::vector<PpmUnknownMaterialCandidate> out;
-  if (!pt_options_.enabled) {
-    return out;
-  }
-  // The items drawing each emitter id.
-  std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
-  for (const auto &entry : items_.all()) {
-    for (const Command &command : entry.second.state.commands) {
-      if (command.kind == CommandKind::AddParticles) {
-        drawn_by[command.particles].push_back(entry.second.rid);
-      }
-    }
-  }
-  for (const auto &entry : particles_) {
-    const Particles &p = entry.second;
-    if (p.freed || !p.unknown_material || p.material_rid == 0) {
-      continue;
-    }
-    const auto items = drawn_by.find(p.id);
-    if (items == drawn_by.end()) {
-      continue;
-    }
-    for (std::uint64_t item : items->second) {
-      PpmUnknownMaterialCandidate c;
-      c.particles = p.rid;
-      c.material = p.material_rid;
-      c.item = item;
-      out.push_back(std::move(c));
-    }
-  }
-  return out;
+  return ppm_resolve_candidates().unknown_material;
 }
 
 void Mirror::set_shader_ppm(std::uint64_t shader_rid,
