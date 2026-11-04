@@ -21,6 +21,12 @@ export interface RenderStreamEndpoint {
   /** The expected presentation size (the session confirms it). When set, the canvas's backing
    * store starts at this size before the hello. */
   presentation?: [number, number];
+  /** CAR5: where the host's WebTransport carrier (`render-stream-wt/1`, carrier-design.md Q4) is,
+   * when it offers one. `url` is the `https:` URL of `/render-stream` (the transport appends
+   * `?protocol=render-stream.<N>`). `certificateHashes` (1..4 SHA-256 digests, 64 lowercase hex
+   * each) pin a self-signed host certificate (`serverCertificateHashes`); omit them for a
+   * certificate the browser trusts. `url` above stays required: it is the WebSocket fallback. */
+  webTransport?: { url: string; certificateHashes?: string[] };
 }
 
 const KEYS = new Set([
@@ -29,7 +35,9 @@ const KEYS = new Set([
   "token",
   "protocol",
   "presentation",
+  "webTransport",
 ]);
+const WT_KEYS = new Set(["url", "certificateHashes"]);
 
 /** A descriptor that cannot be used, and why. */
 export class RenderStreamEndpointError extends Error {
@@ -75,12 +83,54 @@ export function validateEndpoint(value: unknown): RenderStreamEndpoint {
       fail("presentation must be [width, height], integers in 1..16384");
     presentation = [(p as number[])[0], (p as number[])[1]];
   }
+  let webTransport: RenderStreamEndpoint["webTransport"];
+  if (e.webTransport !== undefined) {
+    const w = e.webTransport;
+    if (typeof w !== "object" || w === null || Array.isArray(w))
+      fail("webTransport must be an object");
+    const wo = w as Record<string, unknown>;
+    for (const k of Object.keys(wo))
+      if (!WT_KEYS.has(k))
+        fail(`unknown webTransport key ${JSON.stringify(k)}`);
+    if (typeof wo.url !== "string") fail("webTransport.url must be a string");
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(wo.url as string);
+    } catch {
+      // reported below
+    }
+    if (
+      parsed === null ||
+      parsed.protocol !== "https:" ||
+      parsed.hostname === ""
+    )
+      fail("webTransport.url must be an absolute https URL with a host");
+    let certificateHashes: string[] | undefined;
+    if (wo.certificateHashes !== undefined) {
+      const h = wo.certificateHashes;
+      if (
+        !Array.isArray(h) ||
+        h.length < 1 ||
+        h.length > 4 ||
+        !h.every((x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x))
+      )
+        fail(
+          "webTransport.certificateHashes must be 1..4 SHA-256 digests, 64 lowercase hex each",
+        );
+      certificateHashes = Object.freeze([...(h as string[])]) as string[];
+    }
+    webTransport = Object.freeze({
+      url: wo.url as string,
+      ...(certificateHashes ? { certificateHashes } : {}),
+    });
+  }
   return Object.freeze({
     url,
     resourceBase,
     token: token as string | null,
     protocol: e.protocol as RenderStreamProtocol,
     ...(presentation ? { presentation } : {}),
+    ...(webTransport ? { webTransport } : {}),
   });
 }
 
@@ -95,7 +145,10 @@ export function sameEndpoint(
     a.token === b.token &&
     a.protocol === b.protocol &&
     a.presentation?.[0] === b.presentation?.[0] &&
-    a.presentation?.[1] === b.presentation?.[1]
+    a.presentation?.[1] === b.presentation?.[1] &&
+    a.webTransport?.url === b.webTransport?.url &&
+    (a.webTransport?.certificateHashes ?? []).join() ===
+      (b.webTransport?.certificateHashes ?? []).join()
   );
 }
 

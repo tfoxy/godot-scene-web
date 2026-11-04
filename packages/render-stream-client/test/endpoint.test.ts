@@ -48,6 +48,67 @@ describe("validateEndpoint", () => {
     expect(() => validateEndpoint(value)).toThrow(RenderStreamEndpointError);
   });
 
+  const wtOk = { url: "https://127.0.0.1:4433/render-stream" };
+  it.each([
+    ["webTransport not an object", "https://h/x"],
+    ["webTransport array", []],
+    ["webTransport without url", {}],
+    ["webTransport http url", { url: "http://h/x" }],
+    ["webTransport wss url", { url: "wss://h/x" }],
+    ["webTransport relative url", { url: "/render-stream" }],
+    ["webTransport unknown key", { ...wtOk, protocols: [] }],
+    ["empty hash list", { ...wtOk, certificateHashes: [] }],
+    [
+      "five hashes",
+      { ...wtOk, certificateHashes: Array(5).fill("a".repeat(64)) },
+    ],
+    ["uppercase hash", { ...wtOk, certificateHashes: ["A".repeat(64)] }],
+    ["short hash", { ...wtOk, certificateHashes: ["a".repeat(63)] }],
+    ["hash not a string", { ...wtOk, certificateHashes: [1] }],
+    ["hashes not an array", { ...wtOk, certificateHashes: "a".repeat(64) }],
+  ])("refuses %s", (_why, webTransport) => {
+    expect(() => validateEndpoint({ ...ok, webTransport })).toThrow(
+      RenderStreamEndpointError,
+    );
+  });
+
+  it("accepts a webTransport key, frozen, and compares it by value", () => {
+    const hashes = ["a".repeat(64), "b".repeat(64)];
+    const e = validateEndpoint({
+      ...ok,
+      webTransport: { ...wtOk, certificateHashes: hashes },
+    });
+    expect(e.webTransport).toEqual({ ...wtOk, certificateHashes: hashes });
+    expect(Object.isFrozen(e.webTransport)).toBe(true);
+    expect(
+      validateEndpoint({ ...ok, webTransport: wtOk }).webTransport,
+    ).toEqual(wtOk);
+    expect(validateEndpoint(ok).webTransport).toBeUndefined();
+    expect("webTransport" in validateEndpoint(ok)).toBe(false);
+    expect(
+      sameEndpoint(
+        e,
+        validateEndpoint({
+          ...ok,
+          webTransport: { ...wtOk, certificateHashes: [...hashes] },
+        }),
+      ),
+    ).toBe(true);
+    expect(sameEndpoint(e, validateEndpoint(ok))).toBe(false);
+    expect(
+      sameEndpoint(e, validateEndpoint({ ...ok, webTransport: wtOk })),
+    ).toBe(false);
+    expect(
+      sameEndpoint(
+        validateEndpoint({ ...ok, webTransport: wtOk }),
+        validateEndpoint({
+          ...ok,
+          webTransport: { url: "https://h:1/render-stream" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("accepts render-stream/13 (W13c), opt-in beside the default 12", () => {
     expect(validateEndpoint({ ...ok, protocol: 13 }).protocol).toBe(13);
   });

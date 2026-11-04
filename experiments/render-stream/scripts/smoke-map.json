@@ -481,6 +481,15 @@
       "reach": ["pure"]
     },
     {
+      "why": "CAR5's client carrier check (carrier-design.md \"As built (CAR5)\"): a real-time headless-Chromium page driven by hand through run-client-carrier-check.sh against a tag-scene capture with GRC_LIVE_CARRIERS=ws,wt, not a validate-increment target; the package it mounts is reached above",
+      "paths": [
+        "experiments/render-stream/scripts/client-carrier-check.ts",
+        "experiments/render-stream/scripts/run-client-carrier-check.sh",
+        "experiments/render-stream/web/client-carrier-check/**"
+      ],
+      "reach": ["pure"]
+    },
+    {
       "why": "R4's instruction-count bench: its runner, parser, self-test and committed baseline (the cases are goldens and rs-core, reached above)",
       "paths": [
         "experiments/render-stream/scripts/bench-instr.sh",

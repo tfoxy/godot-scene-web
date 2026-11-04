@@ -265,3 +265,154 @@ export function harness(
 
 /** Lets settled promises (a fetch's completion) run. */
 export const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+// ---------------------------------------------------------------------------- WebTransport
+
+export interface FakeBidi {
+  /** Bytes the client wrote, concatenated. */
+  written(): Uint8Array;
+  /** Whether the client finished (FIN) its write side. */
+  finished(): boolean;
+  /** The host sends bytes on the stream. */
+  serverSend(bytes: Uint8Array): void;
+  serverFin(): void;
+  serverReset(e?: unknown): void;
+  cancelled(): boolean;
+}
+
+/** A WebTransport double: `ready`/`closed` settled by the test, bidirectional streams the test
+ * drives. Install with `vi.stubGlobal("WebTransport", FakeWebTransport)`; instances register in
+ * `FakeWebTransport.instances`. */
+export class FakeWebTransport {
+  static instances: FakeWebTransport[] = [];
+  static reset(): void {
+    FakeWebTransport.instances = [];
+  }
+  readonly streams: FakeBidi[] = [];
+  readonly closeCalls: { closeCode?: number; reason?: string }[] = [];
+  protocol = "";
+  /** Set to make `createBidirectionalStream` reject. */
+  streamError: unknown = null;
+  readonly ready: Promise<void>;
+  readonly closed: Promise<{ closeCode?: number; reason?: string }>;
+  private resolveReady!: () => void;
+  private rejectReady!: (e: unknown) => void;
+  private resolveClosed!: (i: { closeCode?: number; reason?: string }) => void;
+  private rejectClosed!: (e: unknown) => void;
+  private readonly resets: ((e: unknown) => void)[] = [];
+  constructor(
+    readonly url: string,
+    readonly options: Record<string, unknown> = {},
+  ) {
+    this.ready = new Promise((res, rej) => {
+      this.resolveReady = res;
+      this.rejectReady = rej;
+    });
+    this.closed = new Promise((res, rej) => {
+      this.resolveClosed = res;
+      this.rejectClosed = rej;
+    });
+    this.ready.catch(() => {});
+    this.closed.catch(() => {});
+    FakeWebTransport.instances.push(this);
+  }
+  /** The session is established. */
+  establish(): void {
+    this.resolveReady();
+  }
+  /** The attempt failed (before or after ready). */
+  fail(e: unknown = new Error("net::ERR_QUIC")): void {
+    this.rejectReady(e);
+    this.rejectClosed(e);
+    for (const r of this.resets) r(e);
+  }
+  /** The host closes the session cleanly. */
+  serverClose(info: { closeCode?: number; reason?: string } = {}): void {
+    this.end(info);
+  }
+  close(info: { closeCode?: number; reason?: string } = {}): void {
+    this.closeCalls.push(info);
+    this.end(info);
+  }
+  /** Like a browser: a session that ends resets its streams, and rejects `ready` if it never
+   * established. */
+  private end(info: { closeCode?: number; reason?: string }): void {
+    this.rejectReady(new Error("session closed"));
+    this.resolveClosed(info);
+    for (const r of this.resets) r(new Error("session closed"));
+  }
+  async createBidirectionalStream() {
+    if (this.streamError) throw this.streamError;
+    let rc!: ReadableStreamDefaultController<Uint8Array>;
+    let cancelled = false;
+    const chunks: Uint8Array[] = [];
+    let fin = false;
+    const readable = new ReadableStream<Uint8Array>({
+      start: (c) => {
+        rc = c;
+      },
+      cancel: () => {
+        cancelled = true;
+      },
+    });
+    const writable = new WritableStream<Uint8Array>({
+      write: (c) => {
+        chunks.push(c);
+      },
+      close: () => {
+        fin = true;
+      },
+    });
+    this.resets.push((e) => {
+      try {
+        rc.error(e);
+      } catch {
+        // already closed
+      }
+    });
+    this.streams.push({
+      written: () => {
+        const n = chunks.reduce((a, c) => a + c.length, 0);
+        const out = new Uint8Array(n);
+        let at = 0;
+        for (const c of chunks) {
+          out.set(c, at);
+          at += c.length;
+        }
+        return out;
+      },
+      finished: () => fin,
+      serverSend: (b) => rc.enqueue(b),
+      serverFin: () => rc.close(),
+      serverReset: (e = new Error("reset")) => rc.error(e),
+      cancelled: () => cancelled,
+    });
+    return { readable, writable };
+  }
+}
+
+/** A live-stream frame as the host sends it. */
+export function frame(kind: 0 | 1, body: Uint8Array | string): Uint8Array {
+  const b = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const out = new Uint8Array(5 + b.length);
+  out[0] = kind;
+  new DataView(out.buffer).setUint32(1, b.length, true);
+  out.set(b, 5);
+  return out;
+}
+
+/** A resource response as the host sends it. */
+export function resourceResponse(
+  status: number,
+  coding: number,
+  body: Uint8Array,
+  lenOverride?: number,
+): Uint8Array {
+  const out = new Uint8Array(7 + body.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint16(0, status, true);
+  out[2] = coding;
+  dv.setUint32(3, lenOverride ?? body.length, true);
+  out.set(body, 7);
+  return out;
+}

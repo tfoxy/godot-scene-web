@@ -41,16 +41,23 @@ import {
   type RenderStreamRecorder,
 } from "./recorder";
 import {
+  carrierTransport,
+  type RenderStreamCarrier,
   type RenderStreamTransportFactory,
-  webSocketTransport,
 } from "./transport";
 
 export interface RenderStreamClientOptions {
   canvas: HTMLCanvasElement;
   core: RenderStreamCore;
   endpoint: RenderStreamEndpoint;
-  /** Default: WebSocket + fetch (`webSocketTransport`). */
+  /** Default: the `carrier` below. An explicit factory overrides it. */
   transport?: RenderStreamTransportFactory;
+  /** CAR5: which live carrier to use. `auto` (default): WebTransport when the descriptor has
+   * `webTransport`, `globalThis.WebTransport` exists and the page is a secure context, else
+   * WebSocket + fetch; a WebTransport attempt that fails before `open` is retried over WebSocket
+   * and the client then stays on WebSocket. `websocket`: always WebSocket. `webtransport`: never
+   * falls back (a failure is `live-connect-failed`). */
+  carrier?: RenderStreamCarrier;
   /** TAG2: product modules, composed in this order (client-extensions-design.md §3). Default
    * `[]`: the pure client (no `item_meta` hello key, nothing loaded, one branch per frame). An
    * extension that `wants` identities needs protocol 13. */
@@ -118,6 +125,15 @@ const pageClock: LoopClock = {
 export function createRenderStreamClient(
   options: RenderStreamClientOptions,
 ): RenderStreamClient {
+  const carrier = options.carrier ?? "auto";
+  if (
+    carrier !== "auto" &&
+    carrier !== "websocket" &&
+    carrier !== "webtransport"
+  )
+    throw new TypeError(
+      'render-stream client: carrier must be "auto", "websocket" or "webtransport"',
+    );
   const creditWindow = options.creditWindow ?? 2;
   if (creditWindow !== 1 && creditWindow !== 2)
     throw new TypeError("render-stream client: creditWindow must be 1 or 2");
@@ -152,6 +168,8 @@ class Client implements RenderStreamClient {
   private loop: StreamLoop | null = null;
   private core: WasmStreamCore | null = null;
   private loading: Promise<void> | null = null;
+  /** One factory per client: the sticky fallback and the WebTransport cache live in it. */
+  private readonly carrierFactory: RenderStreamTransportFactory;
   private disposed = false;
   /** INP1: the session's presentation size (null before its record). */
   private presentation: [number, number] | null = null;
@@ -168,7 +186,9 @@ class Client implements RenderStreamClient {
     private readonly creditWindow: 1 | 2,
     private readonly ext: ExtensionHost | null,
     private readonly recorder: RenderStreamRecorder | null,
-  ) {}
+  ) {
+    this.carrierFactory = o.transport ?? carrierTransport(o.carrier ?? "auto");
+  }
 
   connect(): void {
     if (this.disposed) return;
@@ -302,7 +322,7 @@ class Client implements RenderStreamClient {
     canvas.addEventListener("webglcontextrestored", this.onRestored);
     this.loop = new StreamLoop({
       core: this.core,
-      transport: this.o.transport ?? webSocketTransport,
+      transport: this.carrierFactory,
       endpoint: this.endpoint,
       creditWindow: this.creditWindow,
       creditStage: this.o.creditStage,

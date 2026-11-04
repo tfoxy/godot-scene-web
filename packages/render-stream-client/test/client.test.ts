@@ -57,6 +57,16 @@ describe("createRenderStreamClient", () => {
         endpoint: { ...endpoint, protocol: 9 as never },
       }),
     ).toThrow(RenderStreamEndpointError);
+    expect(() =>
+      createRenderStreamClient({
+        canvas,
+        core,
+        endpoint,
+        carrier: "quic" as never,
+      }),
+    ).toThrow(/carrier/);
+    for (const carrier of ["auto", "websocket", "webtransport"] as const)
+      createRenderStreamClient({ canvas, core, endpoint, carrier }).dispose();
   });
 
   it("dispose is idempotent, before or after connect, and silences the client", async () => {

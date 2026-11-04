@@ -63,8 +63,10 @@ export {
   spreadDelta,
 } from "./spread";
 export {
+  type RenderStreamCarrier,
   type RenderStreamTransport,
   type RenderStreamTransportEvents,
   type RenderStreamTransportFactory,
   webSocketTransport,
+  webTransportAvailable,
 } from "./transport";
