@@ -892,7 +892,10 @@ export interface TransactionMultimesh {
 }
 
 /** PM1 rule 4: floats per instance of a multimesh's TRANSFORM_2D buffer. */
-export function multimeshStride(m: { colors: boolean; custom: boolean }): number {
+export function multimeshStride(m: {
+  colors: boolean;
+  custom: boolean;
+}): number {
   return 8 + (m.colors ? 4 : 0) + (m.custom ? 4 : 0);
 }
 
@@ -2621,26 +2624,26 @@ function checkSessionSchema(
   const expectedProtocol = isV13
     ? "render-stream/13"
     : isV12
-    ? "render-stream/12"
-    : isV11
-      ? "render-stream/11"
-      : isV10
-      ? "render-stream/10"
-      : isV9
-        ? "render-stream/9"
-        : isV8
-          ? "render-stream/8"
-          : isV7
-            ? "render-stream/7"
-            : isV6
-              ? "render-stream/6"
-              : isV5
-                ? "render-stream/5"
-                : version === 4
-                  ? "render-stream/4"
-                  : version === 3
-                    ? "render-stream/3"
-                    : "render-stream/2";
+      ? "render-stream/12"
+      : isV11
+        ? "render-stream/11"
+        : isV10
+          ? "render-stream/10"
+          : isV9
+            ? "render-stream/9"
+            : isV8
+              ? "render-stream/8"
+              : isV7
+                ? "render-stream/7"
+                : isV6
+                  ? "render-stream/6"
+                  : isV5
+                    ? "render-stream/5"
+                    : version === 4
+                      ? "render-stream/4"
+                      : version === 3
+                        ? "render-stream/3"
+                        : "render-stream/2";
   if (meta.protocol !== expectedProtocol)
     return err(`unknown protocol ${JSON.stringify(meta.protocol)}`);
   if (typeof meta.session_id !== "string")
@@ -3282,10 +3285,7 @@ function checkShaderEntrySchema(
     return err('"payload_bytes" is not a non-negative integer');
   }
   const builtin = s.builtin;
-  if (
-    isPlainObject(builtin) &&
-    builtin.kind === "particle_process_material"
-  ) {
+  if (isPlainObject(builtin) && builtin.kind === "particle_process_material") {
     // render-stream-12.md "The `particle_process_material` builtin": the kind is /12's only
     // (below, meta-schema), self-coded builtin-entry, and only on a "particles"-mode shader.
     if (version < 12)
@@ -3526,7 +3526,8 @@ function checkTransactionSchema(
       expectedKeys = keysWith(expectedKeys, anchor, "particle_emits");
     if (hasRemovedParticles)
       expectedKeys = keysWith(expectedKeys, anchor, "removed_particles");
-    if (hasParticles) expectedKeys = keysWith(expectedKeys, anchor, "particles");
+    if (hasParticles)
+      expectedKeys = keysWith(expectedKeys, anchor, "particles");
   }
   // W13a (render-stream-13.md "As built (W13a)"): predict_check on every /13 transaction, right
   // before "blocks".
@@ -3772,7 +3773,9 @@ function checkTransactionSchema(
     const hasIdentity =
       isV11 && isPlainObject(it) && "use_identity_transform" in it;
     if (hasIdentity && it.use_identity_transform !== true) {
-      return err('an items[] entry has an invalid "use_identity_transform" (only true is written)');
+      return err(
+        'an items[] entry has an invalid "use_identity_transform" (only true is written)',
+      );
     }
     if (
       !isPlainObject(it) ||
@@ -4102,8 +4105,7 @@ function checkTransactionSchema(
   if (blocksError !== null) return [blocksError];
   // render-stream-12.md: pt_f32 is the optional tenth block (its presence and count are
   // pt-offset's, checked by the validator).
-  const withPtF32 =
-    isV12 && (meta.blocks as BlockDescriptor[]).length === 10;
+  const withPtF32 = isV12 && (meta.blocks as BlockDescriptor[]).length === 10;
   const nameError = withPtF32
     ? checkFixedBlockNames(
         meta.blocks as BlockDescriptor[],
@@ -4112,38 +4114,38 @@ function checkTransactionSchema(
         TRANSACTION_BLOCK_TYPES_V12,
       )
     : isV11
-    ? checkFixedBlockNames(
-        meta.blocks as BlockDescriptor[],
-        TRANSACTION_BLOCK_NAMES_V11,
-        offset,
-        TRANSACTION_BLOCK_TYPES_V11,
-      )
-    : isV10
       ? checkFixedBlockNames(
           meta.blocks as BlockDescriptor[],
-          TRANSACTION_BLOCK_NAMES_V10,
+          TRANSACTION_BLOCK_NAMES_V11,
           offset,
-          TRANSACTION_BLOCK_TYPES_V10,
+          TRANSACTION_BLOCK_TYPES_V11,
         )
-      : isV5
+      : isV10
         ? checkFixedBlockNames(
             meta.blocks as BlockDescriptor[],
-            TRANSACTION_BLOCK_NAMES_V5,
+            TRANSACTION_BLOCK_NAMES_V10,
             offset,
-            TRANSACTION_BLOCK_TYPES_V5,
+            TRANSACTION_BLOCK_TYPES_V10,
           )
-        : isV4
+        : isV5
           ? checkFixedBlockNames(
               meta.blocks as BlockDescriptor[],
-              TRANSACTION_BLOCK_NAMES_V4,
+              TRANSACTION_BLOCK_NAMES_V5,
               offset,
-              TRANSACTION_BLOCK_TYPES_V4,
+              TRANSACTION_BLOCK_TYPES_V5,
             )
-          : checkFixedBlockNames(
-              meta.blocks as BlockDescriptor[],
-              TRANSACTION_BLOCK_NAMES,
-              offset,
-            );
+          : isV4
+            ? checkFixedBlockNames(
+                meta.blocks as BlockDescriptor[],
+                TRANSACTION_BLOCK_NAMES_V4,
+                offset,
+                TRANSACTION_BLOCK_TYPES_V4,
+              )
+            : checkFixedBlockNames(
+                meta.blocks as BlockDescriptor[],
+                TRANSACTION_BLOCK_NAMES,
+                offset,
+              );
   if (nameError !== null) return [nameError];
   return [];
 }
@@ -4250,7 +4252,9 @@ export function itemMetaRequestProblem(r: ItemMetaRequest): string | null {
         (s) =>
           s.length >= 1 &&
           s.length <= 64 &&
-          [...s].every((c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e),
+          [...s].every(
+            (c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e,
+          ),
       ) && new Set(list).size === list.length;
     if (!ok)
       return "a group or meta key is not 1-64 printable ASCII bytes, or repeats";
@@ -4462,26 +4466,26 @@ export function splitRecords(
     version === 13
       ? MAGIC_V13
       : version === 12
-      ? MAGIC_V12
-      : version === 11
-      ? MAGIC_V11
-      : version === 10
-        ? MAGIC_V10
-        : version === 9
-          ? MAGIC_V9
-          : version === 8
-            ? MAGIC_V8
-            : version === 7
-              ? MAGIC_V7
-              : version === 6
-                ? MAGIC_V6
-                : version === 5
-                  ? MAGIC_V5
-                  : version === 4
-                    ? MAGIC_V4
-                    : version === 3
-                      ? MAGIC_V3
-                      : MAGIC;
+        ? MAGIC_V12
+        : version === 11
+          ? MAGIC_V11
+          : version === 10
+            ? MAGIC_V10
+            : version === 9
+              ? MAGIC_V9
+              : version === 8
+                ? MAGIC_V8
+                : version === 7
+                  ? MAGIC_V7
+                  : version === 6
+                    ? MAGIC_V6
+                    : version === 5
+                      ? MAGIC_V5
+                      : version === 4
+                        ? MAGIC_V4
+                        : version === 3
+                          ? MAGIC_V3
+                          : MAGIC;
   if (
     data.length < expectedMagic.length ||
     !bytesEqual(data.subarray(0, expectedMagic.length), expectedMagic)
@@ -4795,7 +4799,8 @@ export function decodeRecording(
   if (split.errors.length > 0) throw new Error(split.errors[0]);
   // render-stream-13.md "Forms and transcode": /13's decoded form is /12's over the reconstructed
   // blocks, each record's sha256 still the /13 record's own.
-  const plain = version === 13 ? rs13PlainRecords(split.records) : split.records;
+  const plain =
+    version === 13 ? rs13PlainRecords(split.records) : split.records;
   const records: DecodedRecord[] = [];
   for (let r = 0; r < split.records.length; r++) {
     const raw = split.records[r];
@@ -4820,51 +4825,51 @@ export function decodeRecording(
     version === 13
       ? MAGIC_V13
       : version === 12
-      ? MAGIC_V12
-      : version === 11
-      ? MAGIC_V11
-      : version === 10
-        ? MAGIC_V10
-        : version === 9
-          ? MAGIC_V9
-          : version === 8
-            ? MAGIC_V8
-            : version === 7
-              ? MAGIC_V7
-              : version === 6
-                ? MAGIC_V6
-                : version === 5
-                  ? MAGIC_V5
-                  : version === 4
-                    ? MAGIC_V4
-                    : version === 3
-                      ? MAGIC_V3
-                      : MAGIC;
+        ? MAGIC_V12
+        : version === 11
+          ? MAGIC_V11
+          : version === 10
+            ? MAGIC_V10
+            : version === 9
+              ? MAGIC_V9
+              : version === 8
+                ? MAGIC_V8
+                : version === 7
+                  ? MAGIC_V7
+                  : version === 6
+                    ? MAGIC_V6
+                    : version === 5
+                      ? MAGIC_V5
+                      : version === 4
+                        ? MAGIC_V4
+                        : version === 3
+                          ? MAGIC_V3
+                          : MAGIC;
   return {
     schema:
       version === 13
         ? "render-stream-13-decoded/1"
         : version === 12
-        ? "render-stream-12-decoded/1"
-        : version === 11
-        ? "render-stream-11-decoded/1"
-        : version === 10
-          ? "render-stream-10-decoded/1"
-          : version === 9
-            ? "render-stream-9-decoded/1"
-            : version === 8
-              ? "render-stream-8-decoded/1"
-              : version === 7
-                ? "render-stream-7-decoded/1"
-                : version === 6
-                  ? "render-stream-6-decoded/1"
-                  : version === 5
-                    ? "render-stream-5-decoded/1"
-                    : version === 4
-                      ? "render-stream-4-decoded/1"
-                      : version === 3
-                        ? "render-stream-3-decoded/1"
-                        : "render-stream-2-decoded/1",
+          ? "render-stream-12-decoded/1"
+          : version === 11
+            ? "render-stream-11-decoded/1"
+            : version === 10
+              ? "render-stream-10-decoded/1"
+              : version === 9
+                ? "render-stream-9-decoded/1"
+                : version === 8
+                  ? "render-stream-8-decoded/1"
+                  : version === 7
+                    ? "render-stream-7-decoded/1"
+                    : version === 6
+                      ? "render-stream-6-decoded/1"
+                      : version === 5
+                        ? "render-stream-5-decoded/1"
+                        : version === 4
+                          ? "render-stream-4-decoded/1"
+                          : version === 3
+                            ? "render-stream-3-decoded/1"
+                            : "render-stream-2-decoded/1",
     magic: toHex(magic),
     records,
   };
@@ -5713,7 +5718,9 @@ function rs13ReadUvarint(
   const start = p;
   for (;;) {
     if (p >= s.length || p - start >= 10)
-      throw new Rs13ZrError(`zr-length: ${where}: a uvarint runs past the token stream`);
+      throw new Rs13ZrError(
+        `zr-length: ${where}: a uvarint runs past the token stream`,
+      );
     const b = s[p++];
     v += (b & 0x7f) * scale;
     scale *= 128;
@@ -5740,7 +5747,9 @@ export function rs13ZrDecode(
 ): Uint8Array {
   // `!(<=)` also refuses a NaN length; count x width past 2^53 is only ever larger than the cap.
   if (!(length <= RS13_ZR_MAX_PLAIN))
-    throw new Rs13ZrError(`zr-length: ${where}: the plain length passes the decoder cap, 2^28`);
+    throw new Rs13ZrError(
+      `zr-length: ${where}: the plain length passes the decoder cap, 2^28`,
+    );
   const out = new Uint8Array(length);
   let at = 0;
   let p = 0;
@@ -5751,13 +5760,19 @@ export function rs13ZrDecode(
       const [z, pz, okZ] = rs13ReadUvarint(s, p, where);
       p = pz;
       if (z > length - at)
-        throw new Rs13ZrError(`zr-length: ${where}: token #${i}'s zero run passes the plain length`);
+        throw new Rs13ZrError(
+          `zr-length: ${where}: token #${i}'s zero run passes the plain length`,
+        );
       const [n, pn, okN] = rs13ReadUvarint(s, p, where);
       p = pn;
       if (n > length - at - z)
-        throw new Rs13ZrError(`zr-length: ${where}: token #${i}'s literal passes the plain length`);
+        throw new Rs13ZrError(
+          `zr-length: ${where}: token #${i}'s literal passes the plain length`,
+        );
       if (p + n > s.length)
-        throw new Rs13ZrError(`zr-length: ${where}: token #${i}'s literal runs past the stream`);
+        throw new Rs13ZrError(
+          `zr-length: ${where}: token #${i}'s literal runs past the stream`,
+        );
       const lit = s.subarray(p, p + n);
       p += n;
       const last = at + z + n === length;
@@ -5780,7 +5795,9 @@ export function rs13ZrDecode(
       i++;
     }
     if (p !== s.length)
-      throw new Rs13ZrError(`zr-length: ${where}: bytes follow once the plain length is covered`);
+      throw new Rs13ZrError(
+        `zr-length: ${where}: bytes follow once the plain length is covered`,
+      );
   } catch (error) {
     if (error instanceof Rs13ZrError) throw new Error(error.message);
     throw error;
@@ -6179,7 +6196,9 @@ export function createRs13Unpredictor(
           `record at offset ${raw.offset}: seq ${meta.seq}`,
         );
       } catch (error) {
-        return { error: error instanceof Error ? error.message : String(error) };
+        return {
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
       const [h1, h2] = hist.refs(m, { noReset });
       const decoded = rs13CodeBlocks(m, named, h1, h2, true);
@@ -7480,7 +7499,9 @@ export function transactionMultimeshes(
   return (meta.multimeshes ?? []).map((entry) => ({
     entry,
     custom_aabb:
-      entry.aabb_f === null ? null : mmF32.slice(entry.aabb_f, entry.aabb_f + 6),
+      entry.aabb_f === null
+        ? null
+        : mmF32.slice(entry.aabb_f, entry.aabb_f + 6),
     buffer:
       entry.buffer_f === null
         ? null
@@ -7566,7 +7587,10 @@ export function transactionParticles(
     floats:
       entry.f === null
         ? null
-        : ptF32.slice(entry.f, entry.f + particlesFloatCount(entry.trail_poses)),
+        : ptF32.slice(
+            entry.f,
+            entry.f + particlesFloatCount(entry.trail_poses),
+          ),
   }));
 }
 
@@ -9169,7 +9193,8 @@ function checkMultimeshes(
     if (m.status === "ok") {
       if (m.reason !== null) return entryErr(m.id, '"ok" needs reason null');
       if (m.format !== "2d") return entryErr(m.id, '"ok" needs format "2d"');
-      if (m.aabb_f === null) return entryErr(m.id, '"ok" needs a non-null aabb_f');
+      if (m.aabb_f === null)
+        return entryErr(m.id, '"ok" needs a non-null aabb_f');
       if (m.visible > m.instances)
         return entryErr(
           m.id,
@@ -9202,7 +9227,8 @@ function checkMultimeshes(
   for (const m of mms) {
     if (m.status !== "ok" || m.buffer_f !== null) continue;
     // buffer_f null on an ok entry: legal only in a patch over an ok base entry of the same shape.
-    const previous = meta.encoding === "patch" ? base.multimeshes.get(m.id) : undefined;
+    const previous =
+      meta.encoding === "patch" ? base.multimeshes.get(m.id) : undefined;
     const why =
       meta.encoding === "full"
         ? "buffer_f is null in a full transaction"
@@ -9231,7 +9257,10 @@ function checkMultimeshes(
       previous.custom !== m.custom ||
       previous.instances !== m.instances ||
       previous.visible !== m.visible;
-    if (m.version < previous.version || (m.version === previous.version && fieldsMoved))
+    if (
+      m.version < previous.version ||
+      (m.version === previous.version && fieldsMoved)
+    )
       return [
         `multimesh-version: record at offset ${offset}: multimesh ${m.id}'s version ${m.version} is inconsistent with its earlier entry (version ${previous.version})`,
       ];
@@ -9281,7 +9310,11 @@ function checkMultimeshes(
     commands: ReadonlyArray<{ op: string; multimesh?: number }>,
   ): string[] => {
     for (const c of commands)
-      if (c.op === "add_multimesh" && c.multimesh !== undefined && !mmIds.has(c.multimesh))
+      if (
+        c.op === "add_multimesh" &&
+        c.multimesh !== undefined &&
+        !mmIds.has(c.multimesh)
+      )
         return refErr(
           `item ${itemId}'s add_multimesh names multimesh ${c.multimesh}, which has no entry`,
         );
@@ -9413,7 +9446,9 @@ function checkParticlesPreResolve(
         return emitErr(
           `an emit on particles ${e.particles} has restarts ${e.restarts}, over the entry's ${target.restarts}`,
         );
-      const baseEmits = full ? 0 : (base.particles.get(e.particles)?.emits ?? 0);
+      const baseEmits = full
+        ? 0
+        : (base.particles.get(e.particles)?.emits ?? 0);
       const n = (counts.get(e.particles) ?? 0) + 1;
       counts.set(e.particles, n);
       if (n > target.emits - baseEmits)
@@ -10469,7 +10504,9 @@ export function createRecordingValidator(
       for (const m of meta.multimeshes ?? []) {
         const resolvedMm = nextState.multimeshes.get(m.id);
         if (resolvedMm === undefined) continue;
-        if (multimeshVersionRegressed(lastSeenMultimesh.get(m.id), resolvedMm)) {
+        if (
+          multimeshVersionRegressed(lastSeenMultimesh.get(m.id), resolvedMm)
+        ) {
           return [
             `multimesh-version: record at offset ${offset}: multimesh ${m.id}'s version/content is inconsistent with its earlier entry`,
           ];
@@ -10662,7 +10699,10 @@ export function createRecordingValidator(
           imTable.strings.push(...imPending.strings);
         }
         for (const row of imPending.items)
-          imTable.rows.set(row[0] as number, row.length === 1 ? null : row.slice(1));
+          imTable.rows.set(
+            row[0] as number,
+            row.length === 1 ? null : row.slice(1),
+          );
         imPending = null;
       }
       if (imTable.rows.size > 0 && meta.encoding !== "full")
@@ -11159,26 +11199,26 @@ export function resolveRecording(
       version === 13
         ? "render-stream-13-resolved/1"
         : version === 12
-        ? "render-stream-12-resolved/1"
-        : version === 11
-        ? "render-stream-11-resolved/1"
-        : version === 10
-          ? "render-stream-10-resolved/1"
-          : version === 9
-            ? "render-stream-9-resolved/1"
-            : version === 8
-              ? "render-stream-8-resolved/1"
-              : version === 7
-                ? "render-stream-7-resolved/1"
-                : version === 6
-                  ? "render-stream-6-resolved/1"
-                  : version === 5
-                    ? "render-stream-5-resolved/1"
-                    : version === 4
-                      ? "render-stream-4-resolved/1"
-                      : version === 3
-                        ? "render-stream-3-resolved/1"
-                        : "render-stream-2-resolved/1",
+          ? "render-stream-12-resolved/1"
+          : version === 11
+            ? "render-stream-11-resolved/1"
+            : version === 10
+              ? "render-stream-10-resolved/1"
+              : version === 9
+                ? "render-stream-9-resolved/1"
+                : version === 8
+                  ? "render-stream-8-resolved/1"
+                  : version === 7
+                    ? "render-stream-7-resolved/1"
+                    : version === 6
+                      ? "render-stream-6-resolved/1"
+                      : version === 5
+                        ? "render-stream-5-resolved/1"
+                        : version === 4
+                          ? "render-stream-4-resolved/1"
+                          : version === 3
+                            ? "render-stream-3-resolved/1"
+                            : "render-stream-2-resolved/1",
     session_id: sessionMeta.session_id,
     stream_id: sessionMeta.stream.stream_id,
     transactions,

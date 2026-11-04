@@ -74,7 +74,9 @@ export interface KtxOutcome {
 }
 
 const hex = (b: ArrayBuffer): string =>
-  Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join("");
+  Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join(
+    "",
+  );
 
 let shared: BasisTranscoder | null = null;
 
@@ -99,7 +101,11 @@ export class KtxStager {
   constructor(
     private readonly g: GswRs,
     private readonly mem: WebAssembly.Memory,
-    private readonly opts: { log: boolean; fault: "fail" | null; stream: () => number },
+    private readonly opts: {
+      log: boolean;
+      fault: "fail" | null;
+      stream: () => number;
+    },
   ) {}
 
   /** The context's stated gpu_formats (after the mask): D14's input. */
@@ -119,7 +125,11 @@ export class KtxStager {
   }
 
   /** Steps 1-3 above for one fetched KTX2 body. */
-  async stage(hash: string, bytes: Uint8Array, seq: number | null): Promise<KtxOutcome> {
+  async stage(
+    hash: string,
+    bytes: Uint8Array,
+    seq: number | null,
+  ): Promise<KtxOutcome> {
     const g = this.g;
     if (g.stage_ktx2(this.write(bytes), hash) < 0)
       return { error: g.error(), fallback: false, code: 0 };
@@ -129,7 +139,12 @@ export class KtxStager {
         throw new Error("RS_RECEIVER_TRANSCODE_FAULT=fail (test fault)");
       t = await pageTranscoder().transcode(bytes, this.families());
     } catch (e) {
-      return this.fail(hash, bytes.length, seq, e instanceof Error ? e.message : String(e));
+      return this.fail(
+        hash,
+        bytes.length,
+        seq,
+        e instanceof Error ? e.message : String(e),
+      );
     }
     if (g.stage_transcoded(this.write(t.data), hash, t.format) < 0)
       return this.fail(hash, bytes.length, seq, g.error());
@@ -157,7 +172,12 @@ export class KtxStager {
     return { error: null, fallback: false, code: 0 };
   }
 
-  private fail(hash: string, ktx2Bytes: number, seq: number | null, detail: string): KtxOutcome {
+  private fail(
+    hash: string,
+    ktx2Bytes: number,
+    seq: number | null,
+    detail: string,
+  ): KtxOutcome {
     this.transcodes.push({
       hash,
       ok: false,

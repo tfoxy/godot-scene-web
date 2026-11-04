@@ -36,10 +36,9 @@
 // Exits non-zero if any assertion fails.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -50,35 +49,42 @@ import {
   type MmLine,
   type MmTrace,
   mmBytes,
+  mmCellDiff,
+  mmExactProblems,
   mmExpectedProblems,
-  runG8mm,
+  mmInk,
   mmLateAdoptProblems,
   mmLateFreedProblems,
   mmLateReleaseProblems,
+  mmMissingProblems,
   mmNamedProblems,
+  mmPremiseInkProblems,
   mmWireProblems,
   parseMmLine,
   parseMmLog,
+  type Rgba,
+  runG8mm,
   traceFromTransactions,
   traceMultimeshRecording,
   v10Problems,
-  mmCellDiff,
-  mmExactProblems,
-  mmInk,
-  mmMissingProblems,
-  mmPremiseInkProblems,
-  type Rgba,
 } from "../lib/gate8-mm-checks";
 import {
-  type ResolvedMultimesh,
   multimeshBufferSha256,
   multimeshStride,
+  type ResolvedMultimesh,
   type TransactionMeta,
   type TransactionMultimesh,
 } from "../lib/render-stream-2";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const EXPECTED_PATH = resolve(HERE, "..", "..", "fixtures", "gate8-mm", "expected.json");
+const EXPECTED_PATH = resolve(
+  HERE,
+  "..",
+  "..",
+  "fixtures",
+  "gate8-mm",
+  "expected.json",
+);
 const GOLDEN_11 = resolve(HERE, "..", "..", "protocol", "golden-11");
 
 let assertions = 0;
@@ -87,7 +93,9 @@ function expect(ok: boolean, what: string, detail?: unknown): void {
   assertions++;
   if (!ok) {
     failures++;
-    console.log(`FAIL ${what}${detail === undefined ? "" : ` -- ${JSON.stringify(detail).slice(0, 600)}`}`);
+    console.log(
+      `FAIL ${what}${detail === undefined ? "" : ` -- ${JSON.stringify(detail).slice(0, 600)}`}`,
+    );
   }
 }
 
@@ -143,8 +151,21 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
   const cells = new Map<string, CellState>();
   let nextId = 1;
   let frame = 1;
-  const call = (c: CellState, name: string, extra: Record<string, unknown> = {}, accepted = true) =>
-    raw.push({ kind: "multimesh", call: name, frame, rid: c.rid, id: c.id, accepted, ...extra });
+  const call = (
+    c: CellState,
+    name: string,
+    extra: Record<string, unknown> = {},
+    accepted = true,
+  ) =>
+    raw.push({
+      kind: "multimesh",
+      call: name,
+      frame,
+      rid: c.rid,
+      id: c.id,
+      accepted,
+      ...extra,
+    });
   const bump = (c: CellState) => {
     c.version += 1;
     c.moved = true;
@@ -188,7 +209,12 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
     cells.set(name, c);
     call(c, "multimesh_create");
     for (const [n, fmt, colors, custom] of e.allocations) {
-      call(c, "multimesh_allocate_data", { instances: n, format: fmt === "2d" ? 0 : 1, use_colors: colors, use_custom_data: custom });
+      call(c, "multimesh_allocate_data", {
+        instances: n,
+        format: fmt === "2d" ? 0 : 1,
+        use_colors: colors,
+        use_custom_data: custom,
+      });
       c.instances = n;
       c.buffer = new Array(n * c.stride).fill(0);
       bump(c);
@@ -202,7 +228,8 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
     for (let k = 0; k < c.instances; k++) {
       out.push(1, 0, 0, 10 * k + seed, 0, 1, 0, 5 + seed / 7);
       if (c.colors) out.push(0.5, 0.25, 0.125, 1);
-      if (c.custom) out.push(k === 0 && customX !== undefined ? customX : k, 0.25, 0, 0);
+      if (c.custom)
+        out.push(k === 0 && customX !== undefined ? customX : k, 0.25, 0, 0);
     }
     return out;
   };
@@ -218,7 +245,8 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
   const C = make("C_FLIP");
   const D = make("D_GLOBAL");
   // CPUParticles2D's _set_do_redraw(true): visible -1, already the value (no version move)
-  for (const c of [C, D]) call(c, "multimesh_set_visible_instances", { visible: -1 });
+  for (const c of [C, D])
+    call(c, "multimesh_set_visible_instances", { visible: -1 });
   const E = make("E_VISIBLE");
   setBuffer(E, xbuf(E, 2));
   call(E, "multimesh_set_visible_instances", { visible: 4 });
@@ -235,12 +263,23 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
   const I = make("I_PREDRAW");
   setBuffer(I, xbuf(I, 5, -1));
   if (o.strayRid) {
-    raw.push({ kind: "multimesh", call: "multimesh_create", frame, rid: "rid-stray", id: 99, accepted: true });
+    raw.push({
+      kind: "multimesh",
+      call: "multimesh_create",
+      frame,
+      rid: "rid-stray",
+      id: 99,
+      accepted: true,
+    });
   }
   // the lagged pre-draw buffer (sabotage "lag"): applied one frame late
   let pendingI: number[] | null = null;
 
-  const tables: { frame: number; entries: CellState[]; snapshot: Map<string, CellState> }[] = [];
+  const tables: {
+    frame: number;
+    entries: CellState[];
+    snapshot: Map<string, CellState>;
+  }[] = [];
   for (frame = 1; frame <= QUIT; frame++) {
     if (pendingI) {
       setBuffer(I, pendingI, frame - 1);
@@ -248,21 +287,34 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
       pendingI = null;
     }
     // _process: B's frame number
-    call(B, "multimesh_instance_set_custom_data", { index: 0, custom: [frame, 0, 0, 0] });
+    call(B, "multimesh_instance_set_custom_data", {
+      index: 0,
+      custom: [frame, 0, 0, 0],
+    });
     if (B.buffer[12] !== frame) {
       B.buffer[12] = frame;
       B.serial += 1;
       bump(B);
     }
     const bb = B.buffer.slice();
-    fixture.push({ cell: "B_CUSTOM", frame, value: frame, sha256: multimeshBufferSha256(bb) });
+    fixture.push({
+      cell: "B_CUSTOM",
+      frame,
+      value: frame,
+      sha256: multimeshBufferSha256(bb),
+    });
     if (frame === 20) {
       call(A, "multimesh_instance_set_transform_2d", { index: 2 });
       A.buffer[2 * 8 + 7] = F(44);
       A.serial += 1;
       bump(A);
       setBuffer(Fc, xbuf(Fc, 30));
-      call(H, "multimesh_set_buffer", { floats: 3, sha256: multimeshBufferSha256([1, 2, 3]) }, o.acceptAll === true);
+      call(
+        H,
+        "multimesh_set_buffer",
+        { floats: 3, sha256: multimeshBufferSha256([1, 2, 3]) },
+        o.acceptAll === true,
+      );
     }
     if (frame === 40) {
       call(E, "multimesh_set_visible_instances", { visible: 6 });
@@ -278,9 +330,23 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
       if (frame !== o.dropFrame) setBuffer(C, xbuf(C, frame * 3));
       setBuffer(D, xbuf(D, 100 + frame));
       const ib = xbuf(I, 5, frame).map(F);
-      fixture.push({ cell: "I_PREDRAW", frame, value: frame, sha256: multimeshBufferSha256(ib) });
+      fixture.push({
+        cell: "I_PREDRAW",
+        frame,
+        value: frame,
+        sha256: multimeshBufferSha256(ib),
+      });
       if (sab === "lag") {
-        raw.push({ kind: "multimesh", call: "multimesh_set_buffer", frame, rid: I.rid, id: I.id, accepted: true, floats: ib.length, sha256: multimeshBufferSha256(ib) });
+        raw.push({
+          kind: "multimesh",
+          call: "multimesh_set_buffer",
+          frame,
+          rid: I.rid,
+          id: I.id,
+          accepted: true,
+          floats: ib.length,
+          sha256: multimeshBufferSha256(ib),
+        });
         pendingI = ib;
       } else setBuffer(I, ib);
     }
@@ -310,15 +376,23 @@ function simulate(expected: G8mmExpected, o: SimOptions): Sim {
     if (frame <= 40 && !(o.noTombstone && H.freed)) named.push(H);
     named.sort((a, b) => a.id - b.id);
     const snapshot = new Map<string, CellState>();
-    for (const c of named) snapshot.set(c.name, { ...c, buffer: c.buffer.slice(), aabb: c.aabb.slice() });
+    for (const c of named)
+      snapshot.set(c.name, {
+        ...c,
+        buffer: c.buffer.slice(),
+        aabb: c.aabb.slice(),
+      });
     tables.push({ frame, entries: named, snapshot });
   }
   // teardown (frame 91: destructors after the quit)
   frame = QUIT + 1;
-  for (const c of [C, D]) call(c, "multimesh_set_visible_instances", { visible: 0 });
+  for (const c of [C, D])
+    call(c, "multimesh_set_visible_instances", { visible: 0 });
   for (const c of cells.values()) if (!c.freed) call(c, "free");
 
-  const lines = raw.map((r) => parseMmLine(r)).filter((l): l is MmLine => l !== null);
+  const lines = raw
+    .map((r) => parseMmLine(r))
+    .filter((l): l is MmLine => l !== null);
   return {
     lines,
     fixture,
@@ -349,7 +423,14 @@ function encode(
       const aabb_f = c.freed ? null : mm.length;
       if (!c.freed) mm.push(...c.aabb);
       let carry = !c.freed && (full || !b || b.freed || b.serial !== c.serial);
-      if (sab === "stale" && !full && carry && t.frame >= SAB_FRAME && b && !b.freed) {
+      if (
+        sab === "stale" &&
+        !full &&
+        carry &&
+        t.frame >= SAB_FRAME &&
+        b &&
+        !b.freed
+      ) {
         staleId ??= c.id;
         if (staleId === c.id) carry = false;
       }
@@ -378,7 +459,9 @@ function encode(
         buffer_f,
       });
     }
-    const removed = full ? [] : [...base.keys()].filter((id) => !ids.has(id)).sort((a, b) => a - b);
+    const removed = full
+      ? []
+      : [...base.keys()].filter((id) => !ids.has(id)).sort((a, b) => a - b);
     const meta = {
       type: "transaction",
       seq: i + 1,
@@ -408,20 +491,81 @@ function encode(
 // ------------------------------------------------------------------------------------- tests
 
 async function main(): Promise<void> {
-  const expected = JSON.parse(await readFile(EXPECTED_PATH, "utf8")) as G8mmExpected;
+  const expected = JSON.parse(
+    await readFile(EXPECTED_PATH, "utf8"),
+  ) as G8mmExpected;
   const TEARDOWN = QUIT;
 
   // 1. parseMmLine
   {
-    const a = parseMmLine({ kind: "multimesh", call: "multimesh_allocate_data", frame: 3, rid: 7, id: 2, accepted: true, instances: 5, format: 0, use_colors: true, use_custom_data: false });
-    const b = parseMmLine({ kind: "multimesh", op: "allocate_data", frame: 3, rid: "7", id: 2, count: 5, format: "2d", colors: true, custom: false });
-    expect(JSON.stringify(a) === JSON.stringify(b), "parseMmLine: rule-12 and RS spellings normalize alike", [a, b]);
-    expect(a?.kind === "call" && a.call === "allocate_data" && a.rid === "7", "parseMmLine: call name and rid", a);
-    expect(parseMmLine({ kind: "mesh", op: "mesh_create", frame: 1 }) === null, "parseMmLine: a mesh line is not a multimesh line");
-    const f = parseMmLine({ kind: "multimesh", call: "free_rid", frame: 1, rid: "1" });
-    expect(f?.kind === "call" && f.call === "free" && f.accepted, "parseMmLine: free_rid is free, accepted by default");
-    const s = parseMmLine({ kind: "multimesh", call: "state", frame: 4, rid: "1", id: 1, version: 3, instances: 2, format: "2d", colors: false, custom: false, visible: -1, status: "ok", reason: null, buffer_sha256: "ab" });
-    expect(s?.kind === "state" && s.version === 3 && s.buffer_sha256 === "ab", "parseMmLine: a state line", s);
+    const a = parseMmLine({
+      kind: "multimesh",
+      call: "multimesh_allocate_data",
+      frame: 3,
+      rid: 7,
+      id: 2,
+      accepted: true,
+      instances: 5,
+      format: 0,
+      use_colors: true,
+      use_custom_data: false,
+    });
+    const b = parseMmLine({
+      kind: "multimesh",
+      op: "allocate_data",
+      frame: 3,
+      rid: "7",
+      id: 2,
+      count: 5,
+      format: "2d",
+      colors: true,
+      custom: false,
+    });
+    expect(
+      JSON.stringify(a) === JSON.stringify(b),
+      "parseMmLine: rule-12 and RS spellings normalize alike",
+      [a, b],
+    );
+    expect(
+      a?.kind === "call" && a.call === "allocate_data" && a.rid === "7",
+      "parseMmLine: call name and rid",
+      a,
+    );
+    expect(
+      parseMmLine({ kind: "mesh", op: "mesh_create", frame: 1 }) === null,
+      "parseMmLine: a mesh line is not a multimesh line",
+    );
+    const f = parseMmLine({
+      kind: "multimesh",
+      call: "free_rid",
+      frame: 1,
+      rid: "1",
+    });
+    expect(
+      f?.kind === "call" && f.call === "free" && f.accepted,
+      "parseMmLine: free_rid is free, accepted by default",
+    );
+    const s = parseMmLine({
+      kind: "multimesh",
+      call: "state",
+      frame: 4,
+      rid: "1",
+      id: 1,
+      version: 3,
+      instances: 2,
+      format: "2d",
+      colors: false,
+      custom: false,
+      visible: -1,
+      status: "ok",
+      reason: null,
+      buffer_sha256: "ab",
+    });
+    expect(
+      s?.kind === "state" && s.version === 3 && s.buffer_sha256 === "ab",
+      "parseMmLine: a state line",
+      s,
+    );
     const log = parseMmLog(
       [
         '{"frame":1,"kind":"multimesh","call":"multimesh_create","rid":"55","id":8,"accepted":true,"version":1}',
@@ -430,7 +574,11 @@ async function main(): Promise<void> {
         "not json",
       ].join("\n"),
     );
-    expect(log.length === 2 && log[1].rid === "55", "parseMmLog: a freed state line's null rid resolves through its wire id", log);
+    expect(
+      log.length === 2 && log[1].rid === "55",
+      "parseMmLog: a freed state line's null rid resolves through its wire id",
+      log,
+    );
   }
 
   // 2. honest legs
@@ -438,70 +586,152 @@ async function main(): Promise<void> {
     const sim = simulate(expected, { leg });
     const census = censusProblems(sim.lines, expected, leg, TEARDOWN);
     expect(census.length === 0, `honest ${leg}: mm-hook-census passes`, census);
-    for (const [sink, trace] of [["full", sim.full], ["patch", sim.patch]] as const) {
+    for (const [sink, trace] of [
+      ["full", sim.full],
+      ["patch", sim.patch],
+    ] as const) {
       const w = mmWireProblems(trace, sim.lines);
       expect(w.length === 0, `honest ${leg}/${sink}: mm-wire passes`, w);
       const n = mmNamedProblems(trace, sim.lines, expected);
       expect(n.length === 0, `honest ${leg}/${sink}: mm-wire naming passes`, n);
       const p = framePairingProblems(trace, sim.lines, expected, sim.fixture);
-      expect(p.problems.length === 0, `honest ${leg}/${sink}: mm-frame-pairing passes`, p);
-      expect(p.cells.B_CUSTOM?.wire === 0 && p.cells.B_CUSTOM?.hook === 0, `honest ${leg}/${sink}: B pairs at offset 0`, p.cells);
-      expect((leg === "rendered") === (p.cells.I_PREDRAW !== undefined), `honest ${leg}/${sink}: I_PREDRAW paired only when rendered`, p.cells);
+      expect(
+        p.problems.length === 0,
+        `honest ${leg}/${sink}: mm-frame-pairing passes`,
+        p,
+      );
+      expect(
+        p.cells.B_CUSTOM?.wire === 0 && p.cells.B_CUSTOM?.hook === 0,
+        `honest ${leg}/${sink}: B pairs at offset 0`,
+        p.cells,
+      );
+      expect(
+        (leg === "rendered") === (p.cells.I_PREDRAW !== undefined),
+        `honest ${leg}/${sink}: I_PREDRAW paired only when rendered`,
+        p.cells,
+      );
       const b = mmBytes(trace);
-      expect(b.transactions === QUIT && b.frames === QUIT && b.max_bytes_per_transaction > 0, `honest ${leg}/${sink}: mm_f32 bytes measured`, b);
+      expect(
+        b.transactions === QUIT &&
+          b.frames === QUIT &&
+          b.max_bytes_per_transaction > 0,
+        `honest ${leg}/${sink}: mm_f32 bytes measured`,
+        b,
+      );
     }
     // patches carry fewer floats than full transactions
-    expect(mmBytes(sim.patch).total_bytes < mmBytes(sim.full).total_bytes, `honest ${leg}: patches carry fewer mm_f32 bytes`);
+    expect(
+      mmBytes(sim.patch).total_bytes < mmBytes(sim.full).total_bytes,
+      `honest ${leg}: patches carry fewer mm_f32 bytes`,
+    );
   }
   {
     // headless: C/D/I set no buffer; the headless census must refuse a rendered log
     const rendered = simulate(expected, { leg: "rendered" });
     const p = censusProblems(rendered.lines, expected, "headless", TEARDOWN);
-    expect(p.some((x) => x.startsWith("C_FLIP:") && x.includes("set_buffer")), "census: a CPUParticles2D set_buffer on the headless leg fails", p);
+    expect(
+      p.some((x) => x.startsWith("C_FLIP:") && x.includes("set_buffer")),
+      "census: a CPUParticles2D set_buffer on the headless leg fails",
+      p,
+    );
     const headless = simulate(expected, { leg: "headless" });
     const q = censusProblems(headless.lines, expected, "rendered", TEARDOWN);
-    expect(q.some((x) => x.startsWith("C_FLIP:") && x.includes("no set_buffer")), "census: a rendered leg without CPUParticles2D buffers fails", q);
+    expect(
+      q.some((x) => x.startsWith("C_FLIP:") && x.includes("no set_buffer")),
+      "census: a rendered leg without CPUParticles2D buffers fails",
+      q,
+    );
   }
 
   // 3. census failures
   {
     const drop = simulate(expected, { leg: "rendered", dropFrame: 50 });
     const p = censusProblems(drop.lines, expected, "rendered", TEARDOWN);
-    expect(p.some((x) => x.startsWith("C_FLIP:") && x.includes("missing on 1")), "census: a missing C_FLIP frame fails", p);
+    expect(
+      p.some((x) => x.startsWith("C_FLIP:") && x.includes("missing on 1")),
+      "census: a missing C_FLIP frame fails",
+      p,
+    );
     const stray = simulate(expected, { leg: "rendered", strayRid: true });
     const q = censusProblems(stray.lines, expected, "rendered", TEARDOWN);
-    expect(q.some((x) => x.includes("rid-stray")), "census: an unknown rid fails", q);
+    expect(
+      q.some((x) => x.includes("rid-stray")),
+      "census: an unknown rid fails",
+      q,
+    );
     const acc = simulate(expected, { leg: "rendered", acceptAll: true });
     const r = censusProblems(acc.lines, expected, "rendered", TEARDOWN);
-    expect(r.some((x) => x.startsWith("H_FREE:") && x.includes("rejected")), "census: H_FREE's rejected call missing fails", r);
+    expect(
+      r.some((x) => x.startsWith("H_FREE:") && x.includes("rejected")),
+      "census: H_FREE's rejected call missing fails",
+      r,
+    );
   }
 
   // 4. mm-wire failures
   {
-    const perturb = simulate(expected, { leg: "rendered", sabotage: "perturb" });
-    for (const [sink, trace] of [["full", perturb.full], ["patch", perturb.patch]] as const) {
+    const perturb = simulate(expected, {
+      leg: "rendered",
+      sabotage: "perturb",
+    });
+    for (const [sink, trace] of [
+      ["full", perturb.full],
+      ["patch", perturb.patch],
+    ] as const) {
       const w = mmWireProblems(trace, perturb.lines);
-      expect(w.some((x) => x.includes("buffer_sha256")), `perturb-instance/${sink}: one float perturbed fails mm-wire`, w);
+      expect(
+        w.some((x) => x.includes("buffer_sha256")),
+        `perturb-instance/${sink}: one float perturbed fails mm-wire`,
+        w,
+      );
     }
     const stale = simulate(expected, { leg: "rendered", sabotage: "stale" });
     const ws = mmWireProblems(stale.patch, stale.lines);
-    expect(ws.some((x) => x.includes("buffer_sha256")), "stale-buffer/patch: buffer_f null over changed floats fails mm-wire", ws);
-    expect(mmWireProblems(stale.full, stale.lines).length === 0, "stale-buffer/full: a full sink carries every buffer (passes)");
+    expect(
+      ws.some((x) => x.includes("buffer_sha256")),
+      "stale-buffer/patch: buffer_f null over changed floats fails mm-wire",
+      ws,
+    );
+    expect(
+      mmWireProblems(stale.full, stale.lines).length === 0,
+      "stale-buffer/full: a full sink carries every buffer (passes)",
+    );
     const hidden = simulate(expected, { leg: "rendered", drawHidden: true });
     const nh = mmNamedProblems(hidden.full, hidden.lines, expected);
-    expect(nh.some((x) => x.startsWith("G_HIDDEN")), "mm-wire: the hidden emitter in the table fails", nh);
+    expect(
+      nh.some((x) => x.startsWith("G_HIDDEN")),
+      "mm-wire: the hidden emitter in the table fails",
+      nh,
+    );
     const tomb = simulate(expected, { leg: "rendered", noTombstone: true });
     const nt = mmNamedProblems(tomb.full, tomb.lines, expected);
-    expect(nt.some((x) => x.includes("tombstone")), "mm-wire: no freed tombstone after H_FREE's free fails", nt);
+    expect(
+      nt.some((x) => x.includes("tombstone")),
+      "mm-wire: no freed tombstone after H_FREE's free fails",
+      nt,
+    );
   }
 
   // 5. a one-frame lag
   {
     const lag = simulate(expected, { leg: "rendered", sabotage: "lag" });
-    expect(mmWireProblems(lag.full, lag.lines).length === 0, "lag: mm-wire alone passes (the state lines lag with the wire)");
+    expect(
+      mmWireProblems(lag.full, lag.lines).length === 0,
+      "lag: mm-wire alone passes (the state lines lag with the wire)",
+    );
     const p = framePairingProblems(lag.full, lag.lines, expected, lag.fixture);
-    expect(p.problems.some((x) => x.startsWith("I_PREDRAW") && x.includes("lag of 1")), "lag: mm-frame-pairing fails on I_PREDRAW", p);
-    expect(!p.problems.some((x) => x.startsWith("B_CUSTOM")), "lag: B_CUSTOM (set in _process) still pairs", p);
+    expect(
+      p.problems.some(
+        (x) => x.startsWith("I_PREDRAW") && x.includes("lag of 1"),
+      ),
+      "lag: mm-frame-pairing fails on I_PREDRAW",
+      p,
+    );
+    expect(
+      !p.problems.some((x) => x.startsWith("B_CUSTOM")),
+      "lag: B_CUSTOM (set in _process) still pairs",
+      p,
+    );
   }
 
   // 6. v10Problems
@@ -518,49 +748,114 @@ async function main(): Promise<void> {
         removed_canvases: [],
         removed_items: [],
         removed_textures: [],
-        items: [{ id: 1, commands: [{ op: "unsupported", name: "canvas_item_add_multimesh", reason }] }],
+        items: [
+          {
+            id: 1,
+            commands: [
+              { op: "unsupported", name: "canvas_item_add_multimesh", reason },
+            ],
+          },
+        ],
         ...extra,
       }) as unknown as TransactionMeta;
     const blocks = [[], [], [], [], [], [], [], [], []];
     const honest = traceFromTransactions([{ meta: tx({}), blocks }]);
-    expect(v10Problems(honest, []).length === 0, "v10: an honest /10 trace passes", v10Problems(honest, []));
-    const keyed = traceFromTransactions([{ meta: tx({ removed_multimeshes: [1] }), blocks }]);
-    expect(v10Problems(keyed, []).some((x) => x.includes("carry")), "v10: a multimesh key fails");
-    const typed = traceFromTransactions([{ meta: tx({}, "unknown-multimesh"), blocks }]);
-    expect(v10Problems(typed, []).some((x) => x.includes("unknown-multimesh")), "v10: a non-op reason fails");
-    const line = parseMmLine({ kind: "multimesh", call: "multimesh_create", frame: 1, rid: "1" }) as MmLine;
-    expect(v10Problems(honest, [line]).some((x) => x.includes("hook line")), "v10: a multimesh hook line fails");
+    expect(
+      v10Problems(honest, []).length === 0,
+      "v10: an honest /10 trace passes",
+      v10Problems(honest, []),
+    );
+    const keyed = traceFromTransactions([
+      { meta: tx({ removed_multimeshes: [1] }), blocks },
+    ]);
+    expect(
+      v10Problems(keyed, []).some((x) => x.includes("carry")),
+      "v10: a multimesh key fails",
+    );
+    const typed = traceFromTransactions([
+      { meta: tx({}, "unknown-multimesh"), blocks },
+    ]);
+    expect(
+      v10Problems(typed, []).some((x) => x.includes("unknown-multimesh")),
+      "v10: a non-op reason fails",
+    );
+    const line = parseMmLine({
+      kind: "multimesh",
+      call: "multimesh_create",
+      frame: 1,
+      rid: "1",
+    }) as MmLine;
+    expect(
+      v10Problems(honest, [line]).some((x) => x.includes("hook line")),
+      "v10: a multimesh hook line fails",
+    );
   }
 
   // 7. golden-11's bytes
   {
-    const resolved = JSON.parse(await readFile(resolve(GOLDEN_11, "resolved.json"), "utf8")) as {
-      transactions: { seq: number; state: { multimeshes?: { id: number; version: number; buffer_sha256: string | null }[] } }[];
+    const resolved = JSON.parse(
+      await readFile(resolve(GOLDEN_11, "resolved.json"), "utf8"),
+    ) as {
+      transactions: {
+        seq: number;
+        state: {
+          multimeshes?: {
+            id: number;
+            version: number;
+            buffer_sha256: string | null;
+          }[];
+        };
+      }[];
     };
     const want = new Map(
       resolved.transactions.map((t) => [
         t.seq,
-        JSON.stringify((t.state.multimeshes ?? []).map((m) => [m.id, m.version, m.buffer_sha256])),
+        JSON.stringify(
+          (t.state.multimeshes ?? []).map((m) => [
+            m.id,
+            m.version,
+            m.buffer_sha256,
+          ]),
+        ),
       ]),
     );
     let withMm = 0;
     for (const name of ["full.rs11", "patch.rs11"]) {
-      const trace = traceMultimeshRecording(new Uint8Array(await readFile(resolve(GOLDEN_11, name))), 11);
-      expect(trace.errors.length === 0, `golden-11 ${name}: decodes`, trace.errors);
+      const trace = traceMultimeshRecording(
+        new Uint8Array(await readFile(resolve(GOLDEN_11, name))),
+        11,
+      );
+      expect(
+        trace.errors.length === 0,
+        `golden-11 ${name}: decodes`,
+        trace.errors,
+      );
       for (const t of trace.txs) {
         const got = JSON.stringify(
-          [...t.table.values()].sort((a, b) => a.id - b.id).map((m) => [m.id, m.version, m.buffer_sha256]),
+          [...t.table.values()]
+            .sort((a, b) => a.id - b.id)
+            .map((m) => [m.id, m.version, m.buffer_sha256]),
         );
         if (got !== "[]") withMm++;
-        expect(got === want.get(t.seq), `golden-11 ${name} seq ${t.seq}: the resolved table equals resolved.json`, [got, want.get(t.seq)]);
+        expect(
+          got === want.get(t.seq),
+          `golden-11 ${name} seq ${t.seq}: the resolved table equals resolved.json`,
+          [got, want.get(t.seq)],
+        );
         for (const m of t.table.values()) {
           const f = t.floats.get(m.id);
           if (m.status === "ok" && f)
-            expect(multimeshBufferSha256(f) === m.buffer_sha256, `golden-11 ${name} seq ${t.seq}: multimesh ${m.id}'s held floats hash to its digest`);
+            expect(
+              multimeshBufferSha256(f) === m.buffer_sha256,
+              `golden-11 ${name} seq ${t.seq}: multimesh ${m.id}'s held floats hash to its digest`,
+            );
         }
       }
     }
-    expect(withMm > 0, "golden-11: some transaction holds a multimesh (the case proves something)");
+    expect(
+      withMm > 0,
+      "golden-11: some transaction holds a multimesh (the case proves something)",
+    );
   }
 
   // 8. PM2's pixel helpers.
@@ -569,8 +864,13 @@ async function main(): Promise<void> {
     const W = 640;
     const H = 360;
     const blank = (): Rgba => {
-      const img: Rgba = { width: W, height: H, data: new Uint8Array(W * H * 4) };
-      for (let i = 0; i < img.data.length; i += 4) img.data.set([77, 77, 77, 255], i);
+      const img: Rgba = {
+        width: W,
+        height: H,
+        data: new Uint8Array(W * H * 4),
+      };
+      for (let i = 0; i < img.data.length; i += 4)
+        img.data.set([77, 77, 77, 255], i);
       return img;
     };
     /** A shot drawing one 4x4 blot at the centre of each cell in `cells`. */
@@ -581,7 +881,8 @@ async function main(): Promise<void> {
         const cx = Math.floor((r[0] + r[2]) / 2);
         const cy = Math.floor((r[1] + r[3]) / 2);
         for (let y = cy; y < cy + 4; y++)
-          for (let x = cx; x < cx + 4; x++) img.data.set([200, 30, 30, 255], (y * W + x) * 4);
+          for (let x = cx; x < cx + 4; x++)
+            img.data.set([200, 30, 30, 255], (y * W + x) * 4);
       }
       return img;
     };
@@ -591,29 +892,94 @@ async function main(): Promise<void> {
         .map(([c]) => c);
     for (const step of [0, 2]) {
       const ref = shot(drawnAt(step));
-      expect(mmPremiseInkProblems(mmInk(ref, px), px, step).length === 0, `8: step ${step}: the reference's ink passes`, mmPremiseInkProblems(mmInk(ref, px), px, step));
+      expect(
+        mmPremiseInkProblems(mmInk(ref, px), px, step).length === 0,
+        `8: step ${step}: the reference's ink passes`,
+        mmPremiseInkProblems(mmInk(ref, px), px, step),
+      );
       const d = mmCellDiff(blank(), ref, px.regions);
-      expect(d !== null && mmMissingProblems(d, px, step).length === 0, `8: step ${step}: a shot without multimesh differs in exactly the drawn cells`, d && mmMissingProblems(d, px, step));
-      expect(d !== null && mmExactProblems(d).length === 1, `8: step ${step}: a shot without multimesh fails the exact verdict`);
-      expect(mmExactProblems(mmCellDiff(ref, ref, px.regions)!).length === 0, `8: step ${step}: a shot equals itself`);
+      expect(
+        d !== null && mmMissingProblems(d, px, step).length === 0,
+        `8: step ${step}: a shot without multimesh differs in exactly the drawn cells`,
+        d && mmMissingProblems(d, px, step),
+      );
+      expect(
+        d !== null && mmExactProblems(d).length === 1,
+        `8: step ${step}: a shot without multimesh fails the exact verdict`,
+      );
+      expect(
+        mmExactProblems(mmCellDiff(ref, ref, px.regions)!).length === 0,
+        `8: step ${step}: a shot equals itself`,
+      );
     }
     const hiddenDrawn = shot([...drawnAt(0), "G_HIDDEN"]);
-    expect(mmPremiseInkProblems(mmInk(hiddenDrawn, px), px, 0).some((p) => p.startsWith("G_HIDDEN")), "8: the hidden cell drawn fails the premise");
+    expect(
+      mmPremiseInkProblems(mmInk(hiddenDrawn, px), px, 0).some((p) =>
+        p.startsWith("G_HIDDEN"),
+      ),
+      "8: the hidden cell drawn fails the premise",
+    );
     const freedDrawn = shot(drawnAt(1));
-    expect(mmPremiseInkProblems(mmInk(freedDrawn, px), px, 2).some((p) => p.startsWith("H_FREE")), "8: H_FREE drawn at step 2 (after its free) fails the premise");
+    expect(
+      mmPremiseInkProblems(mmInk(freedDrawn, px), px, 2).some((p) =>
+        p.startsWith("H_FREE"),
+      ),
+      "8: H_FREE drawn at step 2 (after its free) fails the premise",
+    );
     const missingA = shot(drawnAt(0).filter((c) => c !== "A_XFORM"));
-    expect(mmPremiseInkProblems(mmInk(missingA, px), px, 0).some((p) => p.startsWith("A_XFORM")), "8: a drawn cell left blank fails the premise");
+    expect(
+      mmPremiseInkProblems(mmInk(missingA, px), px, 0).some((p) =>
+        p.startsWith("A_XFORM"),
+      ),
+      "8: a drawn cell left blank fails the premise",
+    );
     const ref = shot(drawnAt(0));
     const off = shot(drawnAt(0));
     off.data.set([201, 30, 30, 255], (65 * W + 110) * 4);
     const d1 = mmCellDiff(off, ref, px.regions);
-    expect(d1 !== null && d1.cells.A_XFORM === 1 && mmExactProblems(d1)[0]?.includes("A_XFORM 1") === true, "8: one pixel off fails exactly, in its cell", d1);
+    expect(
+      d1 !== null &&
+        d1.cells.A_XFORM === 1 &&
+        mmExactProblems(d1)[0]?.includes("A_XFORM 1") === true,
+      "8: one pixel off fails exactly, in its cell",
+      d1,
+    );
     const partial = mmCellDiff(shot(["C_FLIP"]), ref, px.regions);
-    expect(partial !== null && mmMissingProblems(partial, px, 0).length === 1, "8: a leg that still draws one cell fails mmMissingProblems in that cell only", partial && mmMissingProblems(partial, px, 0));
-    expect(mmCellDiff({ width: 2, height: 2, data: new Uint8Array(16) }, ref, px.regions) === null, "8: shots of different sizes do not compare");
-    expect(Object.entries(px.moving).every(([c, at]) => at.every((k) => px.drawn_steps[c].includes(k))), "8: every moving cell draws where it moves");
-    const gap = mmCellDiff(shot(drawnAt(0).filter((c) => c !== "D_GLOBAL").concat(["G_HIDDEN"])), ref, px.regions);
-    expect(gap !== null && mmExactProblems(gap, ["D_GLOBAL", "G_HIDDEN"]).length === 0 && mmExactProblems(gap).length === 1, "8: the identity-transform gap's cells are ignored only when asked", gap);
+    expect(
+      partial !== null && mmMissingProblems(partial, px, 0).length === 1,
+      "8: a leg that still draws one cell fails mmMissingProblems in that cell only",
+      partial && mmMissingProblems(partial, px, 0),
+    );
+    expect(
+      mmCellDiff(
+        { width: 2, height: 2, data: new Uint8Array(16) },
+        ref,
+        px.regions,
+      ) === null,
+      "8: shots of different sizes do not compare",
+    );
+    expect(
+      Object.entries(px.moving).every(([c, at]) =>
+        at.every((k) => px.drawn_steps[c].includes(k)),
+      ),
+      "8: every moving cell draws where it moves",
+    );
+    const gap = mmCellDiff(
+      shot(
+        drawnAt(0)
+          .filter((c) => c !== "D_GLOBAL")
+          .concat(["G_HIDDEN"]),
+      ),
+      ref,
+      px.regions,
+    );
+    expect(
+      gap !== null &&
+        mmExactProblems(gap, ["D_GLOBAL", "G_HIDDEN"]).length === 0 &&
+        mmExactProblems(gap).length === 1,
+      "8: the identity-transform gap's cells are ignored only when asked",
+      gap,
+    );
   }
 
   // 9. PM9's late-arm verdicts (pure: mmLateAdoptProblems, mmLateFreedProblems, mmLateReleaseProblems,
@@ -621,56 +987,205 @@ async function main(): Promise<void> {
   //    empty evidence fails. (runG8mmLate itself needs rendered legs; its file reads are guarded.)
   {
     const late = expected.late_free;
-    const adopted = Object.values(expected.cells).filter((c) => c.drawn && !c.freed_at_step).length;
-    const ent = (id: number, o: Partial<ResolvedMultimesh> = {}): ResolvedMultimesh =>
+    const adopted = Object.values(expected.cells).filter(
+      (c) => c.drawn && !c.freed_at_step,
+    ).length;
+    const ent = (
+      id: number,
+      o: Partial<ResolvedMultimesh> = {},
+    ): ResolvedMultimesh =>
       ({ id, origin: "adopted", status: "ok", ...o }) as ResolvedMultimesh;
     const table = (ids: number[], o: Partial<ResolvedMultimesh> = {}) =>
       new Map(ids.map((id) => [id, ent(id, o)] as [number, ResolvedMultimesh]));
     const ids = Array.from({ length: adopted }, (_, i) => i + 1);
     const tx = (frame: number, t: Map<number, ResolvedMultimesh>) =>
-      ({ seq: frame, frame, full: true, mm_floats: 0, has_keys: true, table: t, floats: new Map() }) as MmTrace["txs"][number];
-    const trace = (txs: MmTrace["txs"], unknown = 0, errors: string[] = []): MmTrace => ({
+      ({
+        seq: frame,
+        frame,
+        full: true,
+        mm_floats: 0,
+        has_keys: true,
+        table: t,
+        floats: new Map(),
+      }) as MmTrace["txs"][number];
+    const trace = (
+      txs: MmTrace["txs"],
+      unknown = 0,
+      errors: string[] = [],
+    ): MmTrace => ({
       txs,
       add_multimesh: 1,
-      unsupported_add_multimesh: unknown ? { "unknown-multimesh": unknown } : {},
+      unsupported_add_multimesh: unknown
+        ? { "unknown-multimesh": unknown }
+        : {},
       errors,
     });
     const rest = ids.slice(1);
-    const good = trace([tx(20, table(ids)), tx(late.frame - 1, table(ids)), tx(late.frame + 3, table(rest))]);
-    expect(mmLateAdoptProblems(good, adopted, late.frame).length === 0, "9: a good late capture passes mmLateAdoptProblems", mmLateAdoptProblems(good, adopted, late.frame));
+    const good = trace([
+      tx(20, table(ids)),
+      tx(late.frame - 1, table(ids)),
+      tx(late.frame + 3, table(rest)),
+    ]);
+    expect(
+      mmLateAdoptProblems(good, adopted, late.frame).length === 0,
+      "9: a good late capture passes mmLateAdoptProblems",
+      mmLateAdoptProblems(good, adopted, late.frame),
+    );
     const gf = mmLateFreedProblems(good, late);
-    expect(gf.problems.length === 0 && gf.freed.length === 1, "9: a good late capture records the free", gf);
+    expect(
+      gf.problems.length === 0 && gf.freed.length === 1,
+      "9: a good late capture records the free",
+      gf,
+    );
     // a freed tombstone counts as freed too
-    const tomb = trace([tx(20, table(ids)), tx(late.frame + 3, new Map([...table(rest), [1, ent(1, { status: "freed" })]]))]);
-    expect(mmLateFreedProblems(tomb, late).problems.length === 0, "9: a freed tombstone counts as freed");
+    const tomb = trace([
+      tx(20, table(ids)),
+      tx(
+        late.frame + 3,
+        new Map([...table(rest), [1, ent(1, { status: "freed" })]]),
+      ),
+    ]);
+    expect(
+      mmLateFreedProblems(tomb, late).problems.length === 0,
+      "9: a freed tombstone counts as freed",
+    );
     // empty / missing evidence fails
-    expect(mmLateAdoptProblems(trace([]), adopted, late.frame).length > 0, "9: adopt: no transaction fails");
-    expect(mmLateAdoptProblems(trace([tx(late.frame + 3, table(ids))]), adopted, late.frame).length > 0, "9: adopt: no transaction before the free fails");
-    expect(mmLateAdoptProblems(trace([tx(20, new Map())]), adopted, late.frame).length > 0, "9: adopt: an empty table fails");
-    expect(mmLateAdoptProblems(trace([tx(20, table(ids.slice(0, -1)))]), adopted, late.frame).length > 0, "9: adopt: one entry short fails");
-    expect(mmLateAdoptProblems(trace([tx(20, table(ids, { origin: "created" }))]), adopted, late.frame).length > 0, "9: adopt: origin created fails");
-    expect(mmLateAdoptProblems(trace([tx(20, table(ids, { status: "unsupported" }))]), adopted, late.frame).length > 0, "9: adopt: status unsupported fails");
-    expect(mmLateAdoptProblems(trace([tx(20, table(ids))], 2), adopted, late.frame).length > 0, "9: adopt: unknown-multimesh fails");
-    expect(mmLateAdoptProblems(trace([tx(20, table(ids))], 0, ["record 3: bad"]), adopted, late.frame).length > 0, "9: adopt: a decode error fails");
-    expect(mmLateAdoptProblems(trace([tx(20, table(ids))]), 0, late.frame).length > 0, "9: adopt: a zero expected count fails");
-    expect(mmLateFreedProblems(trace([]), late).problems.length > 0, "9: free: no transaction fails");
-    expect(mmLateFreedProblems(trace([tx(20, table(ids))]), late).problems.length > 0, "9: free: no transaction after the free fails");
-    expect(mmLateFreedProblems(trace([tx(20, table(ids)), tx(late.frame + 3, table(ids))]), late).problems.length > 0, "9: free: nothing freed fails");
-    expect(mmLateFreedProblems(good, { ...late, count: 0 }).problems.length > 0, "9: free: a zero expected count fails");
-    expect(mmLateFreedProblems(good, { ...late, count: 2 }).problems.length > 0, "9: free: too few freed fails");
+    expect(
+      mmLateAdoptProblems(trace([]), adopted, late.frame).length > 0,
+      "9: adopt: no transaction fails",
+    );
+    expect(
+      mmLateAdoptProblems(
+        trace([tx(late.frame + 3, table(ids))]),
+        adopted,
+        late.frame,
+      ).length > 0,
+      "9: adopt: no transaction before the free fails",
+    );
+    expect(
+      mmLateAdoptProblems(trace([tx(20, new Map())]), adopted, late.frame)
+        .length > 0,
+      "9: adopt: an empty table fails",
+    );
+    expect(
+      mmLateAdoptProblems(
+        trace([tx(20, table(ids.slice(0, -1)))]),
+        adopted,
+        late.frame,
+      ).length > 0,
+      "9: adopt: one entry short fails",
+    );
+    expect(
+      mmLateAdoptProblems(
+        trace([tx(20, table(ids, { origin: "created" }))]),
+        adopted,
+        late.frame,
+      ).length > 0,
+      "9: adopt: origin created fails",
+    );
+    expect(
+      mmLateAdoptProblems(
+        trace([tx(20, table(ids, { status: "unsupported" }))]),
+        adopted,
+        late.frame,
+      ).length > 0,
+      "9: adopt: status unsupported fails",
+    );
+    expect(
+      mmLateAdoptProblems(trace([tx(20, table(ids))], 2), adopted, late.frame)
+        .length > 0,
+      "9: adopt: unknown-multimesh fails",
+    );
+    expect(
+      mmLateAdoptProblems(
+        trace([tx(20, table(ids))], 0, ["record 3: bad"]),
+        adopted,
+        late.frame,
+      ).length > 0,
+      "9: adopt: a decode error fails",
+    );
+    expect(
+      mmLateAdoptProblems(trace([tx(20, table(ids))]), 0, late.frame).length >
+        0,
+      "9: adopt: a zero expected count fails",
+    );
+    expect(
+      mmLateFreedProblems(trace([]), late).problems.length > 0,
+      "9: free: no transaction fails",
+    );
+    expect(
+      mmLateFreedProblems(trace([tx(20, table(ids))]), late).problems.length >
+        0,
+      "9: free: no transaction after the free fails",
+    );
+    expect(
+      mmLateFreedProblems(
+        trace([tx(20, table(ids)), tx(late.frame + 3, table(ids))]),
+        late,
+      ).problems.length > 0,
+      "9: free: nothing freed fails",
+    );
+    expect(
+      mmLateFreedProblems(good, { ...late, count: 0 }).problems.length > 0,
+      "9: free: a zero expected count fails",
+    );
+    expect(
+      mmLateFreedProblems(good, { ...late, count: 2 }).problems.length > 0,
+      "9: free: too few freed fails",
+    );
     // receivers
-    const applied = (freed: number, status = "ok") => ({ status, w11: { multimesh: { multimeshes_freed: freed } } });
-    expect(mmLateReleaseProblems(applied(1), "r", 1).length === 0, "9: release: a receiver that freed it passes");
-    expect(mmLateReleaseProblems(applied(0), "r", 1).length > 0, "9: release: a receiver that freed nothing fails");
-    expect(mmLateReleaseProblems(null, "r", 1).length > 0, "9: release: no applied.json fails");
-    expect(mmLateReleaseProblems({ status: "ok" }, "r", 1).length > 0, "9: release: no w11.multimesh fails");
-    expect(mmLateReleaseProblems(applied(1, "failed"), "r", 1).length > 0, "9: release: a failed status fails");
+    const applied = (freed: number, status = "ok") => ({
+      status,
+      w11: { multimesh: { multimeshes_freed: freed } },
+    });
+    expect(
+      mmLateReleaseProblems(applied(1), "r", 1).length === 0,
+      "9: release: a receiver that freed it passes",
+    );
+    expect(
+      mmLateReleaseProblems(applied(0), "r", 1).length > 0,
+      "9: release: a receiver that freed nothing fails",
+    );
+    expect(
+      mmLateReleaseProblems(null, "r", 1).length > 0,
+      "9: release: no applied.json fails",
+    );
+    expect(
+      mmLateReleaseProblems({ status: "ok" }, "r", 1).length > 0,
+      "9: release: no w11.multimesh fails",
+    );
+    expect(
+      mmLateReleaseProblems(applied(1, "failed"), "r", 1).length > 0,
+      "9: release: a failed status fails",
+    );
     // expected.json minimums
-    expect(mmExpectedProblems(expected).length === 0, "9: the real expected.json meets its minimums", mmExpectedProblems(expected));
-    expect(mmExpectedProblems({ ...expected, cells: {} }).length > 0, "9: empty cells fail");
-    expect(mmExpectedProblems({ ...expected, checkpoints: [] }).length > 0, "9: empty checkpoints fail");
-    expect(mmExpectedProblems({ ...expected, pixels: { ...expected.pixels, moving: {} } }).length > 0, "9: empty moving fails");
-    expect(mmExpectedProblems({ ...expected, late_free: { frame: 0, count: 0, cell: "" } }).length > 0, "9: a missing late_free fails");
+    expect(
+      mmExpectedProblems(expected).length === 0,
+      "9: the real expected.json meets its minimums",
+      mmExpectedProblems(expected),
+    );
+    expect(
+      mmExpectedProblems({ ...expected, cells: {} }).length > 0,
+      "9: empty cells fail",
+    );
+    expect(
+      mmExpectedProblems({ ...expected, checkpoints: [] }).length > 0,
+      "9: empty checkpoints fail",
+    );
+    expect(
+      mmExpectedProblems({
+        ...expected,
+        pixels: { ...expected.pixels, moving: {} },
+      }).length > 0,
+      "9: empty moving fails",
+    );
+    expect(
+      mmExpectedProblems({
+        ...expected,
+        late_free: { frame: 0, count: 0, cell: "" },
+      }).length > 0,
+      "9: a missing late_free fails",
+    );
   }
 
   // 10. runG8mm on a tree whose late legs ran (exit 0, a result.json) but hold no recording: the
@@ -679,30 +1194,71 @@ async function main(): Promise<void> {
   {
     const root = mkdtempSync(join(tmpdir(), "self-test-gate8-mm-"));
     try {
-      for (const leg of ["late/capture", "fault-no-resources/capture", "late/receiver", "late/receiver-patch"]) {
+      for (const leg of [
+        "late/capture",
+        "fault-no-resources/capture",
+        "late/receiver",
+        "late/receiver-patch",
+      ]) {
         mkdirSync(join(root, "g8mm", leg, "evidence"), { recursive: true });
         writeFileSync(join(root, "g8mm", leg, "exit-code.txt"), "0\n");
         // result.json and applied.json honest, so only the missing recording can fail a check
-        const adopted = leg === "late/capture" ? Object.values(expected.cells).filter((c) => c.drawn && !c.freed_at_step).length : 0;
+        const adopted =
+          leg === "late/capture"
+            ? Object.values(expected.cells).filter(
+                (c) => c.drawn && !c.freed_at_step,
+              ).length
+            : 0;
         writeFileSync(
           join(root, "g8mm", leg, "evidence", "result.json"),
-          JSON.stringify({ stream: { gate8: { adopt_stats: { resources: { multimeshes: adopted, multimeshes_refused: 0 } } } } }),
+          JSON.stringify({
+            stream: {
+              gate8: {
+                adopt_stats: {
+                  resources: { multimeshes: adopted, multimeshes_refused: 0 },
+                },
+              },
+            },
+          }),
         );
-        writeFileSync(join(root, "g8mm", leg, "applied.json"), JSON.stringify({ status: "ok", w11: { multimesh: { multimeshes_freed: 1 } } }));
+        writeFileSync(
+          join(root, "g8mm", leg, "applied.json"),
+          JSON.stringify({
+            status: "ok",
+            w11: { multimesh: { multimeshes_freed: 1 } },
+          }),
+        );
       }
       const { checks } = await runG8mm(root, expected);
       const byId = (id: string) => checks.find((c) => c.id === id);
       for (const id of ["mm-late-adopt", "mm-late-free", "mm-late-fault"])
-        expect(byId(id)?.passed === false, `10: ${id} fails when the late recording is missing`, byId(id));
-      expect(byId("mm-expected")?.passed === true, "10: mm-expected passes on the real expected.json", byId("mm-expected"));
-      const empty = await runG8mm(root, { ...expected, cells: {}, checkpoints: [] });
-      expect(empty.checks.find((c) => c.id === "mm-expected")?.passed === false, "10: mm-expected fails on empty cells/checkpoints");
+        expect(
+          byId(id)?.passed === false,
+          `10: ${id} fails when the late recording is missing`,
+          byId(id),
+        );
+      expect(
+        byId("mm-expected")?.passed === true,
+        "10: mm-expected passes on the real expected.json",
+        byId("mm-expected"),
+      );
+      const empty = await runG8mm(root, {
+        ...expected,
+        cells: {},
+        checkpoints: [],
+      });
+      expect(
+        empty.checks.find((c) => c.id === "mm-expected")?.passed === false,
+        "10: mm-expected fails on empty cells/checkpoints",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }
 
-  console.log(`\nself-test-gate8-mm: ${assertions - failures}/${assertions} assertions passed`);
+  console.log(
+    `\nself-test-gate8-mm: ${assertions - failures}/${assertions} assertions passed`,
+  );
   if (failures > 0) process.exitCode = 1;
 }
 

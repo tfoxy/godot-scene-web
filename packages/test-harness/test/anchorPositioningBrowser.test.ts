@@ -5,7 +5,7 @@
 // Chromium render before being encoded here as a lasting regression, per this repo's convention
 // of running real browser-launching assertions through vitest (see `parity.ts`'s `chromium.launch()`
 // usage) rather than a separate `@playwright/test` runner config.
-import { chromium, type Browser } from "@playwright/test";
+import { type Browser, chromium } from "@playwright/test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 let browser: Browser;
@@ -30,7 +30,14 @@ async function render(html: string): Promise<import("@playwright/test").Page> {
 async function rect(page: import("@playwright/test").Page, selector: string) {
   return page.$eval(selector, (el) => {
     const r = el.getBoundingClientRect();
-    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    return {
+      left: r.left,
+      top: r.top,
+      right: r.right,
+      bottom: r.bottom,
+      width: r.width,
+      height: r.height,
+    };
   });
 }
 

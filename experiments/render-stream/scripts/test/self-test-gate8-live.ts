@@ -25,7 +25,11 @@ import { join } from "node:path";
 
 import { gate8BandRegions } from "../lib/gate7-gsw-g8";
 import { runG8l } from "../lib/gate8-live-checks";
-import { createReverseProxy, type ProxyLogLine, upstreamHeaders } from "../lib/reverse-proxy";
+import {
+  createReverseProxy,
+  type ProxyLogLine,
+  upstreamHeaders,
+} from "../lib/reverse-proxy";
 
 let assertions = 0;
 let failures = 0;
@@ -44,7 +48,10 @@ function assert(condition: boolean, what: string): void {
   }
 }
 
-const listen = (s: { listen: (p: number, h: string, cb: () => void) => unknown; address: () => unknown }) =>
+const listen = (s: {
+  listen: (p: number, h: string, cb: () => void) => unknown;
+  address: () => unknown;
+}) =>
   new Promise<number>((done) => {
     s.listen(0, "127.0.0.1", () => {
       const a = s.address() as { port: number };
@@ -52,15 +59,26 @@ const listen = (s: { listen: (p: number, h: string, cb: () => void) => unknown; 
     });
   });
 
-function get(port: number, path: string): Promise<{ status: number; body: string }> {
+function get(
+  port: number,
+  path: string,
+): Promise<{ status: number; body: string }> {
   return new Promise((done, fail) => {
-    const r = request({ host: "127.0.0.1", port, path, headers: { host: `127.0.0.1:${port}`, connection: "keep-alive" } }, (res) => {
-      let body = "";
-      res.on("data", (c: Buffer) => {
-        body += c.toString();
-      });
-      res.on("end", () => done({ status: res.statusCode ?? 0, body }));
-    });
+    const r = request(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        headers: { host: `127.0.0.1:${port}`, connection: "keep-alive" },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (c: Buffer) => {
+          body += c.toString();
+        });
+        res.on("end", () => done({ status: res.statusCode ?? 0, body }));
+      },
+    );
     r.on("error", fail);
     r.end();
   });
@@ -70,17 +88,41 @@ async function main(): Promise<void> {
   // 1.
   {
     const h = upstreamHeaders(
-      { host: "proxy:1", connection: "keep-alive", "keep-alive": "5", origin: "http://page", accept: "*/*" },
+      {
+        host: "proxy:1",
+        connection: "keep-alive",
+        "keep-alive": "5",
+        origin: "http://page",
+        accept: "*/*",
+      },
       "127.0.0.1:9",
       "10.0.0.2",
       false,
     );
     assert(h.host === "127.0.0.1:9", "Host is the upstream");
-    assert(h["x-forwarded-host"] === "proxy:1" && h["x-forwarded-for"] === "10.0.0.2", "X-Forwarded-* added");
-    assert(h.origin === "http://page" && h.accept === "*/*", "end-to-end headers kept");
-    assert(h.connection === undefined && h["keep-alive"] === undefined, "hop-by-hop headers dropped");
-    const u = upstreamHeaders({ host: "p", connection: "Upgrade", upgrade: "websocket" }, "u:2", "x", true);
-    assert(u.connection === "Upgrade" && u.upgrade === "websocket", "an upgrade keeps Connection/Upgrade");
+    assert(
+      h["x-forwarded-host"] === "proxy:1" &&
+        h["x-forwarded-for"] === "10.0.0.2",
+      "X-Forwarded-* added",
+    );
+    assert(
+      h.origin === "http://page" && h.accept === "*/*",
+      "end-to-end headers kept",
+    );
+    assert(
+      h.connection === undefined && h["keep-alive"] === undefined,
+      "hop-by-hop headers dropped",
+    );
+    const u = upstreamHeaders(
+      { host: "p", connection: "Upgrade", upgrade: "websocket" },
+      "u:2",
+      "x",
+      true,
+    );
+    assert(
+      u.connection === "Upgrade" && u.upgrade === "websocket",
+      "an upgrade keeps Connection/Upgrade",
+    );
   }
 
   // 2.
@@ -93,15 +135,29 @@ async function main(): Promise<void> {
     });
     upstream.on("upgrade", (req, socket) => {
       seen.push(`upgrade ${req.headers.host} ${req.headers.upgrade}`);
-      socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
-      socket.on("data", (c: Buffer) => socket.write(Buffer.concat([Buffer.from("echo:"), c])));
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+      );
+      socket.on("data", (c: Buffer) =>
+        socket.write(Buffer.concat([Buffer.from("echo:"), c])),
+      );
     });
     const upPort = await listen(upstream);
-    const log = join(mkdtempSync(join(tmpdir(), "g8g-proxy-")), "requests.jsonl");
-    const { server, stats } = createReverseProxy({ targetHost: "127.0.0.1", targetPort: upPort, log });
+    const log = join(
+      mkdtempSync(join(tmpdir(), "g8g-proxy-")),
+      "requests.jsonl",
+    );
+    const { server, stats } = createReverseProxy({
+      targetHost: "127.0.0.1",
+      targetPort: upPort,
+      log,
+    });
     const port = await listen(server);
     const r = await get(port, "/resources/sha256/abc");
-    assert(r.status === 200 && r.body === "ok /resources/sha256/abc", "a GET is forwarded");
+    assert(
+      r.status === 200 && r.body === "ok /resources/sha256/abc",
+      "a GET is forwarded",
+    );
     assert(seen[0] === `127.0.0.1:${upPort}`, "the upstream sees its own Host");
     const echoed = await new Promise<string>((done) => {
       const s = connect(port, "127.0.0.1", () => {
@@ -123,16 +179,31 @@ async function main(): Promise<void> {
         }
       });
     });
-    assert(echoed.startsWith("HTTP/1.1 101"), "the upgrade gets the upstream's 101");
-    assert(seen.includes(`upgrade 127.0.0.1:${upPort} websocket`), "the upstream sees the upgrade with its own Host");
+    assert(
+      echoed.startsWith("HTTP/1.1 101"),
+      "the upgrade gets the upstream's 101",
+    );
+    assert(
+      seen.includes(`upgrade 127.0.0.1:${upPort} websocket`),
+      "the upstream sees the upgrade with its own Host",
+    );
     await new Promise((d) => setTimeout(d, 100));
     const lines = readFileSync(log, "utf8")
       .split("\n")
       .filter(Boolean)
       .map((l) => JSON.parse(l) as ProxyLogLine);
-    assert(lines.some((l) => !l.upgrade && l.method === "GET" && l.status === 200), "the GET is logged 200");
-    assert(lines.some((l) => l.upgrade && l.status === 101), "the upgrade is logged 101");
-    assert(stats.gets === 1 && stats.upgrades === 1, "stats count one GET and one upgrade");
+    assert(
+      lines.some((l) => !l.upgrade && l.method === "GET" && l.status === 200),
+      "the GET is logged 200",
+    );
+    assert(
+      lines.some((l) => l.upgrade && l.status === 101),
+      "the upgrade is logged 101",
+    );
+    assert(
+      stats.gets === 1 && stats.upgrades === 1,
+      "stats count one GET and one upgrade",
+    );
     upstream.close();
     upstream.closeAllConnections();
     await new Promise((d) => setTimeout(d, 50));
@@ -146,23 +217,49 @@ async function main(): Promise<void> {
   {
     const empty = mkdtempSync(join(tmpdir(), "g8g-empty-"));
     const { checks } = await runG8l(empty);
-    assert(checks.length >= 6 * 4 + 1, `every g8l check reported (${checks.length})`);
-    assert(checks.every((c) => !c.passed), "none passes on an empty run");
-    assert(checks.some((c) => c.id === "g8l-proxy-fronted"), "the proxy check is reported");
+    assert(
+      checks.length >= 6 * 4 + 1,
+      `every g8l check reported (${checks.length})`,
+    );
+    assert(
+      checks.every((c) => !c.passed),
+      "none passes on an empty run",
+    );
+    assert(
+      checks.some((c) => c.id === "g8l-proxy-fronted"),
+      "the proxy check is reported",
+    );
   }
 
   // 4.
   {
     const tex = gate8BandRegions("receiver");
-    assert(tex.length === 21 && tex.every((r) => r.class === "undecided"), "g8t: rows B, C and D of 7 columns");
-    assert(gate8BandRegions("sabotage-perturb-decode/receiver").length === 21, "g8t's sabotage leg too");
+    assert(
+      tex.length === 21 && tex.every((r) => r.class === "undecided"),
+      "g8t: rows B, C and D of 7 columns",
+    );
+    assert(
+      gate8BandRegions("sabotage-perturb-decode/receiver").length === 21,
+      "g8t's sabotage leg too",
+    );
     const fl = gate8BandRegions("g8f/receiver");
-    assert(fl.length === 2 && fl.every((r) => r.class === "excluded"), "g8f: the two gain strips, excluded");
-    assert(gate8BandRegions("g8a/late/receiver").length === 0, "g8a: no region");
-    assert(gate8BandRegions("g8m/late/receiver-patch").length === 0, "g8m: no region");
+    assert(
+      fl.length === 2 && fl.every((r) => r.class === "excluded"),
+      "g8f: the two gain strips, excluded",
+    );
+    assert(
+      gate8BandRegions("g8a/late/receiver").length === 0,
+      "g8a: no region",
+    );
+    assert(
+      gate8BandRegions("g8m/late/receiver-patch").length === 0,
+      "g8m: no region",
+    );
   }
 
-  console.log(`\nself-test-gate8-live: ${assertions - failures}/${assertions} assertions passed`);
+  console.log(
+    `\nself-test-gate8-live: ${assertions - failures}/${assertions} assertions passed`,
+  );
   process.exit(failures > 0 ? 1 : 0);
 }
 

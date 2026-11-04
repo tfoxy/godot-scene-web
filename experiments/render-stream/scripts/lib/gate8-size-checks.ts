@@ -27,9 +27,17 @@ export interface G8hExpected {
   arm_frame: number;
   logical_size: [number, number];
   /** what the headless host reports before a late presentation arm (the 64x64 SceneTree minimum). */
-  pre_arm: { window: [number, number]; visible: [number, number]; oversampling: number };
+  pre_arm: {
+    window: [number, number];
+    visible: [number, number];
+    oversampling: number;
+  };
   /** what the engine reports after the arm. */
-  post_arm: { window: [number, number]; visible: [number, number]; oversampling: number };
+  post_arm: {
+    window: [number, number];
+    visible: [number, number];
+    oversampling: number;
+  };
   /** frames after the arm that the receivers' first checkpoint settles (late-size-reference). */
   settle_frames: number;
   checkpoints: { step: number; applied: number; settle: number }[];
@@ -43,7 +51,10 @@ export interface G8hReport {
   legs: Record<string, { exit_code: string | null; skipped: string | null }>;
   sizes: Record<string, unknown>;
   equivalence: { frames_compared: number; first_problems: string[] } | null;
-  pixels: Record<string, { step: number; differing: number; max_delta: number }[]>;
+  pixels: Record<
+    string,
+    { step: number; differing: number; max_delta: number }[]
+  >;
   atlas: { textures_drawn: number; frames: number } | null;
   sabotages: Record<string, Record<string, number | string>>;
 }
@@ -69,33 +80,56 @@ const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
 
 /** late-size-match, the session half: the declared viewport of a presentation capture. */
-export function sizeProblems(vp: SessionViewport | undefined, expected: G8hExpected): string[] {
+export function sizeProblems(
+  vp: SessionViewport | undefined,
+  expected: G8hExpected,
+): string[] {
   if (!vp) return ["no session viewport"];
   const problems: string[] = [];
-  if (vp.root_size_policy !== "presentation") problems.push(`policy ${vp.root_size_policy}`);
-  if (vp.host_size_status !== "match") problems.push(`host_size_status ${vp.host_size_status}, expected match`);
+  if (vp.root_size_policy !== "presentation")
+    problems.push(`policy ${vp.root_size_policy}`);
+  if (vp.host_size_status !== "match")
+    problems.push(`host_size_status ${vp.host_size_status}, expected match`);
   if (!eq(vp.presentation_size, expected.logical_size))
     problems.push(`presentation_size ${JSON.stringify(vp.presentation_size)}`);
   if (!eq(vp.host_window_size, expected.post_arm.window))
     problems.push(`host_window_size ${JSON.stringify(vp.host_window_size)}`);
-  if (typeof vp.font_oversampling !== "number" || !near(vp.font_oversampling, expected.post_arm.oversampling))
-    problems.push(`font_oversampling ${vp.font_oversampling}, expected ${expected.post_arm.oversampling}`);
+  if (
+    typeof vp.font_oversampling !== "number" ||
+    !near(vp.font_oversampling, expected.post_arm.oversampling)
+  )
+    problems.push(
+      `font_oversampling ${vp.font_oversampling}, expected ${expected.post_arm.oversampling}`,
+    );
   return problems;
 }
 
 /** late-size-match, the engine half: the fixture's own read at K-1 and K+1. `late` is true for the
  * captures armed after the scene existed; a born capture reads the post-arm state at both. */
-export function probeProblems(lines: SizeProbe[], expected: G8hExpected, late: boolean): string[] {
+export function probeProblems(
+  lines: SizeProbe[],
+  expected: G8hExpected,
+  late: boolean,
+): string[] {
   const K = expected.arm_frame;
   const before = lines.find((l) => l.frame === K - 1);
   const after = lines.find((l) => l.frame === K + 1);
-  if (!before || !after) return [`size probe lines at ${K - 1} and ${K + 1} missing`];
+  if (!before || !after)
+    return [`size probe lines at ${K - 1} and ${K + 1} missing`];
   const problems: string[] = [];
   const want = (l: SizeProbe, w: G8hExpected["pre_arm"], name: string) => {
-    if (!eq(l.window, w.window)) problems.push(`${name}: window ${JSON.stringify(l.window)}, expected ${JSON.stringify(w.window)}`);
-    if (!eq(l.visible, w.visible)) problems.push(`${name}: visible ${JSON.stringify(l.visible)}, expected ${JSON.stringify(w.visible)}`);
+    if (!eq(l.window, w.window))
+      problems.push(
+        `${name}: window ${JSON.stringify(l.window)}, expected ${JSON.stringify(w.window)}`,
+      );
+    if (!eq(l.visible, w.visible))
+      problems.push(
+        `${name}: visible ${JSON.stringify(l.visible)}, expected ${JSON.stringify(w.visible)}`,
+      );
     if (Math.abs(l.oversampling - w.oversampling) > 1e-6)
-      problems.push(`${name}: oversampling ${l.oversampling}, expected ${w.oversampling}`);
+      problems.push(
+        `${name}: oversampling ${l.oversampling}, expected ${w.oversampling}`,
+      );
   };
   want(before, late ? expected.pre_arm : expected.post_arm, `K-1`);
   want(after, expected.post_arm, `K+1`);
@@ -116,51 +150,92 @@ export function atlasProblems(
     frames++;
     const textures = new Map(t.state.textures.map((x) => [x.id, x]));
     for (const u of t.state.unsupported)
-      if (/texture/.test(u.reason)) problems.push(`frame ${t.frame}: unsupported ${u.op}|${u.reason}`);
+      if (/texture/.test(u.reason))
+        problems.push(`frame ${t.frame}: unsupported ${u.op}|${u.reason}`);
     for (const it of t.state.items)
       for (const c of it.commands) {
         if (typeof c.tex !== "number") continue;
         const tex = textures.get(c.tex);
         if (!tex) {
-          problems.push(`frame ${t.frame}: command names texture ${c.tex} missing from the table`);
+          problems.push(
+            `frame ${t.frame}: command names texture ${c.tex} missing from the table`,
+          );
           continue;
         }
         drawn.add(c.tex);
-        if (tex.origin !== "created") problems.push(`frame ${t.frame}: texture ${c.tex} origin ${tex.origin}`);
-        if (tex.status !== "ok") problems.push(`frame ${t.frame}: texture ${c.tex} status ${tex.status}`);
+        if (tex.origin !== "created")
+          problems.push(
+            `frame ${t.frame}: texture ${c.tex} origin ${tex.origin}`,
+          );
+        if (tex.status !== "ok")
+          problems.push(
+            `frame ${t.frame}: texture ${c.tex} status ${tex.status}`,
+          );
       }
   }
   if (frames === 0) problems.push("no frame from the arm");
-  if (drawn.size === 0) problems.push("no texture drawn after the arm (the fixture's Labels draw glyphs)");
+  if (drawn.size === 0)
+    problems.push(
+      "no texture drawn after the arm (the fixture's Labels draw glyphs)",
+    );
   return { problems: [...new Set(problems)], textures: drawn.size, frames };
 }
 
 /** late-size-account: the adoption walk adopted every item and the size's relayout named no
  * unadopted RID (D3: read the nodes, then size). */
-export function accountProblems(r: CaptureResult, expected: G8hExpected): string[] {
+export function accountProblems(
+  r: CaptureResult,
+  expected: G8hExpected,
+): string[] {
   const problems: string[] = [];
   const st = r.stream?.gate8?.adopt_stats;
-  if (!st || st.ran !== true || st.items !== expected.adopted) problems.push(`adopt_stats ${JSON.stringify(st)}`);
-  if (r.stream?.status === "refused") problems.push(`stream refused: ${r.stream.reason}`);
+  if (!st || st.ran !== true || st.items !== expected.adopted)
+    problems.push(`adopt_stats ${JSON.stringify(st)}`);
+  if (r.stream?.status === "refused")
+    problems.push(`stream refused: ${r.stream.reason}`);
   const ui = r.stream?.unknown_items;
-  if (!ui || ui.unknown_calls !== 0 || ui.unknown_rids_named !== 0 || ui.withheld_items !== 0)
+  if (
+    !ui ||
+    ui.unknown_calls !== 0 ||
+    ui.unknown_rids_named !== 0 ||
+    ui.withheld_items !== 0
+  )
     problems.push(`unknown_items ${JSON.stringify(ui)}`);
   return problems;
 }
 
-function sessionViewport(rec: { bytes?: Uint8Array } | undefined): SessionViewport | undefined {
+function sessionViewport(
+  rec: { bytes?: Uint8Array } | undefined,
+): SessionViewport | undefined {
   if (!rec?.bytes) return undefined;
-  const decoded = decodeRecording(rec.bytes, 8) as unknown as { records: { meta: { viewport?: SessionViewport } }[] };
+  const decoded = decodeRecording(rec.bytes, 8) as unknown as {
+    records: { meta: { viewport?: SessionViewport } }[];
+  };
   return decoded.records[0]?.meta.viewport;
 }
 
 export interface CaptureResult {
-  stream?: { status?: string; reason?: string | null; unknown_items?: { unknown_calls: number; unknown_rids_named: number; withheld_items: number } | null; gate8?: { adopt?: string; adopt_stats?: Record<string, number | string | boolean | null> } };
+  stream?: {
+    status?: string;
+    reason?: string | null;
+    unknown_items?: {
+      unknown_calls: number;
+      unknown_rids_named: number;
+      withheld_items: number;
+    } | null;
+    gate8?: {
+      adopt?: string;
+      adopt_stats?: Record<string, number | string | boolean | null>;
+    };
+  };
 }
 
 const SABOTAGES = ["size-before-adopt", "size-before-adopt-strict"] as const;
 
-export async function runG8h(out: string, expected: G8hExpected): Promise<{ checks: G8aCheck[]; report: G8hReport }> {
+export async function runG8h(
+  out: string,
+  expected: G8hExpected,
+): Promise<{ checks: G8aCheck[]; report: G8hReport }> {
   const root = join(out, "g8h");
   const checks: G8aCheck[] = [];
   const K = expected.arm_frame;
@@ -179,15 +254,28 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
     "late-observe/receiver",
   ];
   const legs: G8hReport["legs"] = {};
-  for (const l of legDirs) legs[l] = { exit_code: await exitCode(join(root, l)), skipped: skipped(join(root, l)) };
-  const ran = (l: string) => legs[l].exit_code !== null && legs[l].skipped === null;
-  const report: G8hReport = { legs, sizes: {}, equivalence: null, pixels: {}, atlas: null, sabotages: {} };
+  for (const l of legDirs)
+    legs[l] = {
+      exit_code: await exitCode(join(root, l)),
+      skipped: skipped(join(root, l)),
+    };
+  const ran = (l: string) =>
+    legs[l].exit_code !== null && legs[l].skipped === null;
+  const report: G8hReport = {
+    legs,
+    sizes: {},
+    equivalence: null,
+    pixels: {},
+    atlas: null,
+    sabotages: {},
+  };
 
   {
     const problems: string[] = [];
     for (const l of legDirs) {
       if (legs[l].skipped !== null) continue;
-      if (legs[l].exit_code !== "0") problems.push(`${l} exit ${legs[l].exit_code}`);
+      if (legs[l].exit_code !== "0")
+        problems.push(`${l} exit ${legs[l].exit_code}`);
     }
     checks.push(
       check(
@@ -210,17 +298,41 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
       problems = [];
       const lateVp = sessionViewport(late);
       problems.push(...sizeProblems(lateVp, expected).map((p) => `late: ${p}`));
-      problems.push(...sizeProblems(sessionViewport(born), expected).map((p) => `born: ${p}`));
-      const lateProbe = jsonl<SizeProbe>(await readText(join(root, "late/capture/size.jsonl")));
-      const bornProbe = jsonl<SizeProbe>(await readText(join(root, "born/capture/size.jsonl")));
-      problems.push(...probeProblems(lateProbe, expected, true).map((p) => `late probe: ${p}`));
-      problems.push(...probeProblems(bornProbe, expected, false).map((p) => `born probe: ${p}`));
+      problems.push(
+        ...sizeProblems(sessionViewport(born), expected).map(
+          (p) => `born: ${p}`,
+        ),
+      );
+      const lateProbe = jsonl<SizeProbe>(
+        await readText(join(root, "late/capture/size.jsonl")),
+      );
+      const bornProbe = jsonl<SizeProbe>(
+        await readText(join(root, "born/capture/size.jsonl")),
+      );
+      problems.push(
+        ...probeProblems(lateProbe, expected, true).map(
+          (p) => `late probe: ${p}`,
+        ),
+      );
+      problems.push(
+        ...probeProblems(bornProbe, expected, false).map(
+          (p) => `born probe: ${p}`,
+        ),
+      );
       // the control: the same late arm without the policy stays degenerate and says so.
       const ovp = sessionViewport(observe);
       if (!observe.bytes) problems.push("late-observe: no recording");
-      else if (ovp?.host_size_status !== "degenerate-visible" || !near(ovp.font_oversampling ?? 0, expected.pre_arm.oversampling))
+      else if (
+        ovp?.host_size_status !== "degenerate-visible" ||
+        !near(ovp.font_oversampling ?? 0, expected.pre_arm.oversampling)
+      )
         problems.push(`late-observe: ${JSON.stringify(ovp)}`);
-      report.sizes = { late: lateVp ?? null, observe: ovp ?? null, late_probe: lateProbe, born_probe: bornProbe };
+      report.sizes = {
+        late: lateVp ?? null,
+        observe: ovp ?? null,
+        late_probe: lateProbe,
+        born_probe: bornProbe,
+      };
     }
     checks.push(
       check(
@@ -249,9 +361,17 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
       const rows = [];
       for (const c of expected.checkpoints) {
         const d = await shotDiff(join(root, a), join(root, b), c.step);
-        rows.push({ step: c.step, differing: d.differing, max_delta: d.max_delta });
-        if (!d.present) problems?.push(`${a} vs ${b} step ${c.step}: shot missing`);
-        else if (d.differing > 0) problems?.push(`${a} vs ${b} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`);
+        rows.push({
+          step: c.step,
+          differing: d.differing,
+          max_delta: d.max_delta,
+        });
+        if (!d.present)
+          problems?.push(`${a} vs ${b} step ${c.step}: shot missing`);
+        else if (d.differing > 0)
+          problems?.push(
+            `${a} vs ${b} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`,
+          );
       }
       report.pixels[`${a} vs ${b}`] = rows;
     }
@@ -272,16 +392,27 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
       problems = [];
       let differing = 0;
       for (const c of expected.checkpoints)
-        differing += (await shotDiff(join(root, "late-observe/receiver"), join(root, "reference"), c.step)).differing;
+        differing += (
+          await shotDiff(
+            join(root, "late-observe/receiver"),
+            join(root, "reference"),
+            c.step,
+          )
+        ).differing;
       report.sabotages["late-observe"] = { differing_px: differing };
-      if (differing === 0) problems.push("the unpresented late arm already equals the reference: the fixture cannot tell the policy");
+      if (differing === 0)
+        problems.push(
+          "the unpresented late arm already equals the reference: the fixture cannot tell the policy",
+        );
     }
     checks.push(
       check(
         "late-size-needed",
         "the same late arm without presentation: (the 64x64 host's scale-0.1, square-visible-rect evaluation) differs from the 640x360 reference at some checkpoint, so late-size-reference has teeth",
         problems,
-        report.sabotages["late-observe"] ? `${report.sabotages["late-observe"].differing_px} px differ` : undefined,
+        report.sabotages["late-observe"]
+          ? `${report.sabotages["late-observe"].differing_px} px differ`
+          : undefined,
       ),
     );
   }
@@ -292,7 +423,10 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
     if (born.rec && late.rec) {
       const e = equivalence(born.rec, late.rec, K, 0);
       problems = e.problems;
-      report.equivalence = { frames_compared: e.frames, first_problems: e.problems.slice(0, 20) };
+      report.equivalence = {
+        frames_compared: e.frames,
+        first_problems: e.problems.slice(0, 20),
+      };
     }
     checks.push(
       check(
@@ -317,22 +451,30 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
         "late-size-atlas",
         "every texture a command draws from the arm on (the Labels' glyph atlas pages) is a post-arm create, usable, and no unknown-texture is reported",
         problems,
-        report.atlas ? `${report.atlas.textures_drawn} textures drawn over ${report.atlas.frames} frames` : undefined,
+        report.atlas
+          ? `${report.atlas.textures_drawn} textures drawn over ${report.atlas.frames} frames`
+          : undefined,
       ),
     );
   }
 
   // --- late-size-account -----------------------------------------------------------------
   {
-    const r = await readJson<CaptureResult>(join(root, "late/capture/evidence/result.json"));
+    const r = await readJson<CaptureResult>(
+      join(root, "late/capture/evidence/result.json"),
+    );
     let problems: string[] | null = null;
     if (r) {
       problems = accountProblems(r, expected);
       if (late.rec) {
         const first = late.rec.transactions[0];
-        if (!first || first.frame !== K) problems.push(`first transaction at frame ${first?.frame}, expected ${K}`);
+        if (!first || first.frame !== K)
+          problems.push(
+            `first transaction at frame ${first?.frame}, expected ${K}`,
+          );
         const f = stateAt(late.rec, K);
-        if (f && f.state.failures.length > 0) problems.push(`failures ${f.state.failures.map((x) => x.reason)}`);
+        if (f && f.state.failures.length > 0)
+          problems.push(`failures ${f.state.failures.map((x) => x.reason)}`);
       }
     }
     checks.push(
@@ -349,15 +491,25 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
     const dir = join(root, "sabotage-size-before-adopt");
     let problems: string[] | null = null;
     const cap = await loadRecording(join(dir, "capture"));
-    if (cap.rec && born.rec && ran("sabotage-size-before-adopt/receiver") && ran("reference")) {
+    if (
+      cap.rec &&
+      born.rec &&
+      ran("sabotage-size-before-adopt/receiver") &&
+      ran("reference")
+    ) {
       problems = [];
       const e = equivalence(born.rec, cap.rec, K, 0);
       let differing = 0;
       for (const c of expected.checkpoints)
-        differing += (await shotDiff(join(dir, "receiver"), join(root, "reference"), c.step)).differing;
+        differing += (
+          await shotDiff(join(dir, "receiver"), join(root, "reference"), c.step)
+        ).differing;
       const failures = new Set<string>();
-      for (const t of cap.rec.transactions) for (const f of t.state.failures) failures.add(f.reason);
-      const r = await readJson<CaptureResult>(join(dir, "capture/evidence/result.json"));
+      for (const t of cap.rec.transactions)
+        for (const f of t.state.failures) failures.add(f.reason);
+      const r = await readJson<CaptureResult>(
+        join(dir, "capture/evidence/result.json"),
+      );
       const unknownCalls = r?.stream?.unknown_items?.unknown_calls ?? 0;
       report.sabotages["size-before-adopt"] = {
         equivalence_problems: e.problems.length,
@@ -366,7 +518,9 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
         unknown_calls: unknownCalls,
       };
       if (r && accountProblems(r, expected).length === 0)
-        problems.push("the account did not change: late-size-account would pass the sabotaged capture");
+        problems.push(
+          "the account did not change: late-size-account would pass the sabotaged capture",
+        );
     }
     checks.push(
       check(
@@ -378,15 +532,22 @@ export async function runG8h(out: string, expected: G8hExpected): Promise<{ chec
           : undefined,
       ),
     );
-    const strict = await loadRecording(join(root, "sabotage-size-before-adopt-strict/capture"));
+    const strict = await loadRecording(
+      join(root, "sabotage-size-before-adopt-strict/capture"),
+    );
     let sp: string[] | null = null;
     if (strict.rec) {
       sp = [];
       const reasons = new Set<string>();
-      for (const t of strict.rec.transactions) for (const f of t.state.failures) reasons.add(f.reason);
-      report.sabotages["size-before-adopt-strict"] = { failures: [...reasons].join(",") };
+      for (const t of strict.rec.transactions)
+        for (const f of t.state.failures) reasons.add(f.reason);
+      report.sabotages["size-before-adopt-strict"] = {
+        failures: [...reasons].join(","),
+      };
       if (!reasons.has(expected.strict.reason))
-        sp.push(`strict failures [${[...reasons]}], expected ${expected.strict.reason}`);
+        sp.push(
+          `strict failures [${[...reasons]}], expected ${expected.strict.reason}`,
+        );
     }
     checks.push(
       check(

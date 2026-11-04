@@ -131,7 +131,8 @@ export function dynamicAppliedProblems(
       continue;
     }
     compared++;
-    if (t.dynamic_sha256 !== w) problems.push(`seq ${t.seq}: applied bodies differ`);
+    if (t.dynamic_sha256 !== w)
+      problems.push(`seq ${t.seq}: applied bodies differ`);
   }
   return { problems, compared, dynamicTxs };
 }
@@ -172,11 +173,15 @@ export async function runG8w11Gsw(g: string): Promise<G8aCheck[]> {
   const applied = (leg: string) =>
     readJson<Applied>(join(web(leg), "applied.json"));
   const w11 = async (leg: string) =>
-    (await readJson<{ gsw?: { w11?: W11Evidence } }>(join(web(leg), "perf.json")))
-      ?.gsw?.w11 ?? null;
-  const frames = (await readJson<Record<string, Record<string, number>>>(
-    join(root, "frames.json"),
-  )) ?? {};
+    (
+      await readJson<{ gsw?: { w11?: W11Evidence } }>(
+        join(web(leg), "perf.json"),
+      )
+    )?.gsw?.w11 ?? null;
+  const frames =
+    (await readJson<Record<string, Record<string, number>>>(
+      join(root, "frames.json"),
+    )) ?? {};
   const recs = new Map<string, ResolvedRecording>();
   const recOf = async (leg: string) => {
     if (!recs.has(leg)) {
@@ -209,7 +214,9 @@ export async function runG8w11Gsw(g: string): Promise<G8aCheck[]> {
         continue;
       }
       if (a.status !== "ok")
-        problems.push(`${leg}: ${a.failure?.reason}: ${a.failure?.detail?.slice(0, 160)}`);
+        problems.push(
+          `${leg}: ${a.failure?.reason}: ${a.failure?.detail?.slice(0, 160)}`,
+        );
       else if (a.transactions.length !== rec.transactions.length)
         problems.push(
           `${leg}: ${a.transactions.length} applied of ${rec.transactions.length}`,
@@ -242,12 +249,19 @@ export async function runG8w11Gsw(g: string): Promise<G8aCheck[]> {
       dynamic += r.dynamicTxs;
       problems.push(...r.problems.slice(0, 4).map((p) => `${leg}: ${p}`));
       if (e.dynamic_mismatched > 0)
-        problems.push(`${leg}: ${e.dynamic_mismatched} surface(s) mismatched in wasm`);
+        problems.push(
+          `${leg}: ${e.dynamic_mismatched} surface(s) mismatched in wasm`,
+        );
       if (e.dynamic_undrawn > 0)
-        problems.push(`${leg}: ${e.dynamic_undrawn} dynamic mesh(es) left undrawn`);
-      notes.push(`${leg} ${r.compared} txs (${r.dynamicTxs} dynamic), ${e.dynamic_bodies_total} bodies`);
+        problems.push(
+          `${leg}: ${e.dynamic_undrawn} dynamic mesh(es) left undrawn`,
+        );
+      notes.push(
+        `${leg} ${r.compared} txs (${r.dynamicTxs} dynamic), ${e.dynamic_bodies_total} bodies`,
+      );
     }
-    if (dynamic === 0) problems.push("no transaction held a dynamic mesh (vacuous)");
+    if (dynamic === 0)
+      problems.push("no transaction held a dynamic mesh (vacuous)");
     checks.push(
       check(
         "gsw-dynamic-applied",
@@ -281,10 +295,12 @@ export async function runG8w11Gsw(g: string): Promise<G8aCheck[]> {
     const notes: string[] = [];
     for (const [leg, twin] of W11_TWINS) {
       const d = await twinDiff(leg, twin);
-      if (d.length === 0) problems.push(`${leg}: no shared shot frames with ${twin}`);
+      if (d.length === 0)
+        problems.push(`${leg}: no shared shot frames with ${twin}`);
       for (const { frame, px } of d)
         if (px === null) problems.push(`${leg}: frame ${frame}: shot missing`);
-        else if (px > 0) problems.push(`${leg}: frame ${frame}: ${px} px differ from ${twin}`);
+        else if (px > 0)
+          problems.push(`${leg}: frame ${frame}: ${px} px differ from ${twin}`);
       notes.push(`${leg} ${d.length} frames`);
     }
     checks.push(
@@ -308,8 +324,12 @@ export async function runG8w11Gsw(g: string): Promise<G8aCheck[]> {
         continue;
       }
       if (e.store_max_excess > STORE_SLACK)
-        problems.push(`${leg}: ${e.store_max_excess} entries beyond |names| + |C|`);
-      notes.push(`${leg} max ${e.store_max_entries} (excess ${e.store_max_excess}, released ${e.released_total})`);
+        problems.push(
+          `${leg}: ${e.store_max_excess} entries beyond |names| + |C|`,
+        );
+      notes.push(
+        `${leg} max ${e.store_max_entries} (excess ${e.store_max_excess}, released ${e.released_total})`,
+      );
     }
     checks.push(
       check(

@@ -53,7 +53,15 @@ export function upstreamHeaders(
   upgrade: boolean,
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  const hop = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
+  const hop = new Set([
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ]);
   for (const [k, v] of Object.entries(h)) {
     if (v === undefined) continue;
     if (hop.has(k.toLowerCase())) continue;
@@ -86,7 +94,8 @@ function parseArgs(argv: string[]): {
   const log = get("--log");
   if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)
     throw new Error("reverse-proxy: --target-port <port> is required");
-  if (!log) throw new Error("reverse-proxy: --log <requests.jsonl> is required");
+  if (!log)
+    throw new Error("reverse-proxy: --log <requests.jsonl> is required");
   return {
     targetHost: get("--target-host") ?? "127.0.0.1",
     targetPort,
@@ -106,13 +115,24 @@ export interface ProxyStats {
 }
 
 /** The proxy itself (the CLI below and test/self-test-gate8-live.ts use it). */
-export function createReverseProxy(a: { targetHost: string; targetPort: number; log: string }): {
+export function createReverseProxy(a: {
+  targetHost: string;
+  targetPort: number;
+  log: string;
+}): {
   server: Server;
   stats: ProxyStats;
 } {
   const target = `${a.targetHost}:${a.targetPort}`;
   const t0 = Date.now();
-  const stats: ProxyStats = { target, requests: 0, upgrades: 0, gets: 0, options: 0, statuses: {} };
+  const stats: ProxyStats = {
+    target,
+    requests: 0,
+    upgrades: 0,
+    gets: 0,
+    options: 0,
+    statuses: {},
+  };
   writeFileSync(a.log, "");
   const record = (line: ProxyLogLine) => {
     stats.requests++;
@@ -155,7 +175,8 @@ export function createReverseProxy(a: { targetHost: string; targetPort: number; 
     up.on("error", (e) => {
       line.status = 502;
       record(line);
-      if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+      if (!res.headersSent)
+        res.writeHead(502, { "content-type": "text/plain" });
       res.end(`reverse-proxy: upstream ${target}: ${e.message}`);
     });
     req.pipe(up);
@@ -188,7 +209,9 @@ export function createReverseProxy(a: { targetHost: string; targetPort: number; 
     };
     upstream.on("data", (c: Buffer) => {
       if (!logged) {
-        const m = /^HTTP\/1\.1 (\d{3})/.exec(c.subarray(0, 16).toString("latin1"));
+        const m = /^HTTP\/1\.1 (\d{3})/.exec(
+          c.subarray(0, 16).toString("latin1"),
+        );
         line.status = m ? Number(m[1]) : null;
         line.bytes_out = c.length;
         log();
@@ -215,7 +238,8 @@ function main(): void {
   const { server, stats } = createReverseProxy(a);
   const stop = () => {
     server.close();
-    if (a.statsOut) writeFileSync(a.statsOut, `${JSON.stringify(stats, null, 2)}\n`);
+    if (a.statsOut)
+      writeFileSync(a.statsOut, `${JSON.stringify(stats, null, 2)}\n`);
     process.exit(0);
   };
   process.on("SIGTERM", stop);
@@ -223,7 +247,9 @@ function main(): void {
   server.listen(a.listenPort, "127.0.0.1", () => {
     const addr = server.address();
     const port = typeof addr === "object" && addr ? addr.port : 0;
-    process.stdout.write(`${JSON.stringify({ listening_port: port, pid: process.pid })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ listening_port: port, pid: process.pid })}\n`,
+    );
   });
 }
 

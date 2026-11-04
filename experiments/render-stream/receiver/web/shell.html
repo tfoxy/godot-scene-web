@@ -37,7 +37,7 @@ $GODOT_HEAD_INCLUDE
 <body>
 <canvas id="canvas"></canvas>
 <script>
-(function () {
+((() => {
 	"use strict";
 	const shell = { config: null, token: false, exit: null, lines: [], error: null, contextLost: false };
 	window.__rsShell = shell;
@@ -154,11 +154,11 @@ $GODOT_HEAD_INCLUDE
 	}
 	shell.args = args.filter((a) => !a.startsWith("--rs-env=RS_RECEIVER_TOKEN="));
 	shell.start = () => args;
-}());
+})());
 </script>
 <script src="$GODOT_URL"></script>
 <script>
-(function () {
+((() => {
 	"use strict";
 	const shell = window.__rsShell;
 	const GODOT_CONFIG = $GODOT_CONFIG;
@@ -197,7 +197,7 @@ $GODOT_HEAD_INCLUDE
 		shell.error = String(err && err.message ? err.message : err);
 		console.error(`[shell] ${shell.error}`);
 	});
-}());
+})());
 </script>
 </body>
 </html>

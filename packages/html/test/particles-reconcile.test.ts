@@ -5,11 +5,20 @@
 // simulation — ambient emitter or in-flight one-shot — is NOT reset by an unrelated re-render),
 // re-inits ONLY a node whose spec changed, and disposes a node that left the DOM. These tests
 // stub a fake WebGL2/2D context + a no-op rAF so only the create/reconcile bookkeeping runs.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import { createParticleRuntime } from "../src/particles/runtime";
-import { __resetSharedForTest } from "../src/webgl/shared-gl";
 import { SELF_LAYER_CLASS } from "../src/render-structure";
+import { __resetSharedForTest } from "../src/webgl/shared-gl";
 import { makeResizeObserverStub } from "./support/resize-observer-stub";
 
 const options = { enableParticles: true } as never;
@@ -30,7 +39,9 @@ function fakeGl(): unknown {
     createBuffer: () => ({}),
     createVertexArray: () => ({}),
   };
-  return new Proxy(overrides, { get: (t, k: string) => (k in t ? t[k] : () => undefined) });
+  return new Proxy(overrides, {
+    get: (t, k: string) => (k in t ? t[k] : () => undefined),
+  });
 }
 
 let origGetContext: typeof HTMLCanvasElement.prototype.getContext;
@@ -40,15 +51,17 @@ let origRO: typeof globalThis.ResizeObserver;
 
 beforeAll(() => {
   origGetContext = HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.getContext = function (kind: string) {
+  HTMLCanvasElement.prototype.getContext = ((kind: string) => {
     if (kind === "webgl2") return fakeGl();
     if (kind === "2d") return new Proxy({}, { get: () => () => undefined });
     return null;
-  } as typeof HTMLCanvasElement.prototype.getContext;
+  }) as typeof HTMLCanvasElement.prototype.getContext;
   origRAF = globalThis.requestAnimationFrame;
   origCAF = globalThis.cancelAnimationFrame;
-  globalThis.requestAnimationFrame = (() => 1) as typeof globalThis.requestAnimationFrame;
-  globalThis.cancelAnimationFrame = (() => {}) as typeof globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = (() =>
+    1) as typeof globalThis.requestAnimationFrame;
+  globalThis.cancelAnimationFrame =
+    (() => {}) as typeof globalThis.cancelAnimationFrame;
   origRO = globalThis.ResizeObserver;
 });
 
@@ -70,10 +83,19 @@ afterEach(() => {
 });
 
 function spec(over: Record<string, unknown> = {}): string {
-  return JSON.stringify({ kind: "GPUParticles2D", amount: 4, lifetime: 1, emitting: true, ...over });
+  return JSON.stringify({
+    kind: "GPUParticles2D",
+    amount: 4,
+    lifetime: 1,
+    emitting: true,
+    ...over,
+  });
 }
 
-function particleNode(specJson: string): { node: HTMLElement; self: HTMLElement } {
+function particleNode(specJson: string): {
+  node: HTMLElement;
+  self: HTMLElement;
+} {
   const node = document.createElement("div");
   node.setAttribute("data-godot-particle-runtime", "1");
   node.setAttribute("data-godot-particle-specs", specJson);

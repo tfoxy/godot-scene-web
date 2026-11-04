@@ -64,10 +64,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { decodeRecording, resolveRecording } from "./lib/render-stream-2";
 import { runWebLegs, type WebLegSpec } from "./lib/gate7-web-legs";
 import { buildGswBundle } from "./lib/gsw-bundle";
+import { decodeRecording, resolveRecording } from "./lib/render-stream-2";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
@@ -90,14 +89,62 @@ export interface W11GswLeg {
 }
 
 export const W11_GSW_LEGS: W11GswLeg[] = [
-  { leg: "scale", capture: "scale/capture", sink: "recording-patch.rs11", version: 11, frames: "scale" },
-  { leg: "scale-v10", capture: "scale/v10/capture", sink: "recording-patch.rs10", version: 10, frames: "scale" },
-  { leg: "scale-off", capture: "scale/off/capture", sink: "recording-patch.rs11", version: 11, frames: "scale" },
-  { leg: "scene", capture: "scene/capture", sink: "recording-patch.rs11", version: 11, frames: "scene" },
-  { leg: "scene-v10", capture: "scene/v10/capture", sink: "recording-patch.rs10", version: 10, frames: "scene" },
-  { leg: "scene-off", capture: "scene/off/capture", sink: "recording-patch.rs11", version: 11, frames: "scene" },
-  { leg: "mesh", capture: "mesh/capture", sink: "recording.rs11", version: 11, frames: "mesh" },
-  { leg: "mesh-v10", capture: "mesh/v10/capture", sink: "recording.rs10", version: 10, frames: "mesh" },
+  {
+    leg: "scale",
+    capture: "scale/capture",
+    sink: "recording-patch.rs11",
+    version: 11,
+    frames: "scale",
+  },
+  {
+    leg: "scale-v10",
+    capture: "scale/v10/capture",
+    sink: "recording-patch.rs10",
+    version: 10,
+    frames: "scale",
+  },
+  {
+    leg: "scale-off",
+    capture: "scale/off/capture",
+    sink: "recording-patch.rs11",
+    version: 11,
+    frames: "scale",
+  },
+  {
+    leg: "scene",
+    capture: "scene/capture",
+    sink: "recording-patch.rs11",
+    version: 11,
+    frames: "scene",
+  },
+  {
+    leg: "scene-v10",
+    capture: "scene/v10/capture",
+    sink: "recording-patch.rs10",
+    version: 10,
+    frames: "scene",
+  },
+  {
+    leg: "scene-off",
+    capture: "scene/off/capture",
+    sink: "recording-patch.rs11",
+    version: 11,
+    frames: "scene",
+  },
+  {
+    leg: "mesh",
+    capture: "mesh/capture",
+    sink: "recording.rs11",
+    version: 11,
+    frames: "mesh",
+  },
+  {
+    leg: "mesh-v10",
+    capture: "mesh/v10/capture",
+    sink: "recording.rs10",
+    version: 10,
+    frames: "mesh",
+  },
   {
     // gate6-scene's MS moves visibly between poses; capture-scale's heights move by frame * 0.001,
     // under a pixel, so a stale pose there leaves the shots unchanged.
@@ -133,10 +180,34 @@ export const W11_GSW_LEGS: W11GswLeg[] = [
     sabotage: "ignore-released",
   },
   // W13c: /13 and the /12 twins (W13d: the native receiver's legs too).
-  { leg: "scale13", capture: "scale13/capture", sink: "recording-patch.rs13", version: 13, frames: "scale13" },
-  { leg: "scale13-v12", capture: "scale13/v12/capture", sink: "recording-patch.rs12", version: 12, frames: "scale13" },
-  { leg: "mesh13", capture: "mesh13/capture", sink: "recording.rs13", version: 13, frames: "mesh13" },
-  { leg: "mesh13-v12", capture: "mesh13/v12/capture", sink: "recording.rs12", version: 12, frames: "mesh13" },
+  {
+    leg: "scale13",
+    capture: "scale13/capture",
+    sink: "recording-patch.rs13",
+    version: 13,
+    frames: "scale13",
+  },
+  {
+    leg: "scale13-v12",
+    capture: "scale13/v12/capture",
+    sink: "recording-patch.rs12",
+    version: 12,
+    frames: "scale13",
+  },
+  {
+    leg: "mesh13",
+    capture: "mesh13/capture",
+    sink: "recording.rs13",
+    version: 13,
+    frames: "mesh13",
+  },
+  {
+    leg: "mesh13-v12",
+    capture: "mesh13/v12/capture",
+    sink: "recording.rs12",
+    version: 12,
+    frames: "mesh13",
+  },
   {
     // gate5-mesh's full sink: every transaction full, its dynamic units carried across each one.
     leg: "sabotage-no-predict-reset/mesh13",
@@ -150,10 +221,34 @@ export const W11_GSW_LEGS: W11GswLeg[] = [
 
 /** W13c (`--set pt13`): g8pt's headless /13 captures and their /12 twins, under <run>/g8pt. */
 export const W13_PT_LEGS: W11GswLeg[] = [
-  { leg: "pump13", capture: "headless-pump13/capture", sink: "recording.rs13", version: 13, frames: "pump13" },
-  { leg: "pump13-v12", capture: "headless-pump/capture", sink: "recording.rs12", version: 12, frames: "pump13" },
-  { leg: "shim13", capture: "headless-shim13/capture", sink: "recording.rs13", version: 13, frames: "shim13" },
-  { leg: "shim13-v12", capture: "headless-shim/capture", sink: "recording.rs12", version: 12, frames: "shim13" },
+  {
+    leg: "pump13",
+    capture: "headless-pump13/capture",
+    sink: "recording.rs13",
+    version: 13,
+    frames: "pump13",
+  },
+  {
+    leg: "pump13-v12",
+    capture: "headless-pump/capture",
+    sink: "recording.rs12",
+    version: 12,
+    frames: "pump13",
+  },
+  {
+    leg: "shim13",
+    capture: "headless-shim13/capture",
+    sink: "recording.rs13",
+    version: 13,
+    frames: "shim13",
+  },
+  {
+    leg: "shim13-v12",
+    capture: "headless-shim/capture",
+    sink: "recording.rs12",
+    version: 12,
+    frames: "shim13",
+  },
 ];
 const PT13_FRAME_GROUPS: Record<string, string[]> = {
   pump13: ["headless-pump13/capture", "headless-pump/capture"],
@@ -186,7 +281,10 @@ function flag(argv: string[], name: string, fallback?: string): string {
 }
 
 /** frame -> seq of every transaction of a recording, and the session's canvas size. */
-function frameSeqs(path: string, version: 10 | 11 | 12 | 13): {
+function frameSeqs(
+  path: string,
+  version: 10 | 11 | 12 | 13,
+): {
   bySeq: Map<number, number>;
   canvas: [number, number];
 } {
@@ -232,7 +330,11 @@ async function main(): Promise<void> {
   const g = join(source, pt13 ? "g8pt" : "g8w11");
   const run = join(g, pt13 ? "gsw13" : "gsw");
   const legs = pt13 ? W13_PT_LEGS : W11_GSW_LEGS;
-  const { recOf, groupFrames } = shotPlan(g, legs, pt13 ? PT13_FRAME_GROUPS : FRAME_GROUPS);
+  const { recOf, groupFrames } = shotPlan(
+    g,
+    legs,
+    pt13 ? PT13_FRAME_GROUPS : FRAME_GROUPS,
+  );
   if (pt13) {
     // pump13: g8mm's settle frames (and the frame before each), the frames its reference shot.
     const steps = join(source, "g8mm", "capture", "steps.jsonl");
@@ -256,7 +358,13 @@ async function main(): Promise<void> {
     }
   }
   if (argv[0] === "native-plan") {
-    await nativePlan(g, legs, recOf, groupFrames, pt13 ? "native-frames-pt13.json" : "native-frames.json");
+    await nativePlan(
+      g,
+      legs,
+      recOf,
+      groupFrames,
+      pt13 ? "native-frames-pt13.json" : "native-frames.json",
+    );
     return;
   }
   let rsBuild = argv.includes("--rs-build")
@@ -270,8 +378,16 @@ async function main(): Promise<void> {
     );
     const sha = /^sha=(.+)$/m.exec(log)?.[1];
     if (!sha)
-      throw new Error(`gate8-w11-tool: build-rs-core.sh printed no sha:\n${log}`);
-    rsBuild = join(REPO_ROOT, "artifacts", "render-stream", "rs-core", sha.trim());
+      throw new Error(
+        `gate8-w11-tool: build-rs-core.sh printed no sha:\n${log}`,
+      );
+    rsBuild = join(
+      REPO_ROOT,
+      "artifacts",
+      "render-stream",
+      "rs-core",
+      sha.trim(),
+    );
   }
   const bundle = await buildGswBundle(join(g, "gsw-bundle"), rsBuild);
   await gswLegs(g, run, source, bundle, recOf, groupFrames, legs);
@@ -414,10 +530,16 @@ async function gswLegs(
     console.log(
       `gate8-w11-tool: ${r.leg} exit ${r.exitCode}${r.provenanceOk ? "" : " (harness-refused: browser-provenance)"} ${r.wallMs} ms`,
     );
-  await writeFile(join(run, "frames.json"), `${JSON.stringify(frames, null, 1)}\n`);
+  await writeFile(
+    join(run, "frames.json"),
+    `${JSON.stringify(frames, null, 1)}\n`,
+  );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+)
   main().catch((e: unknown) => {
     console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
     process.exit(1);

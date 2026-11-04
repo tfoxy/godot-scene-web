@@ -34,36 +34,23 @@
 // Exits non-zero if any assertion fails.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { G8mmExpected } from "../lib/gate8-mm-checks";
-import { runG8ptReceivers } from "../lib/gate8-pt-receiver-checks";
-import { runG8ptPtc } from "../lib/gate8-ptc-checks";
-import { runG8w11 } from "../lib/gate8-w11-checks";
-import { adoptionStats, PPM_DECLARED_DEFAULTS, ppmStats as readPpmStats, type PtLateTx, ptLateAdoptProblems, ptLateCmbtProblems, ptLateFaultProblems, ptLatePpmBuiltinProblems, ptSyntheticSkipProblems, runG8ptLate, ppmDeclaredDefaultProblems } from "../lib/gate8-pt-late-checks";
-import {
-  particlesTotals,
-  ptCoverageProblems,
-  ptInk,
-  ptLifecycleProblems,
-  ptPremiseProblems,
-  ptReplayProblems,
-  ptShots,
-} from "../lib/gate8-pt-receiver-checks";
 import {
   builtinDiffs,
   cellKey,
   deriveMaterialKey,
   type G8ptExpected,
   mapPtCells,
-  parsePtLine,
-  parsePtLog,
   type PtLine,
   type PtTrace,
   type PtTx,
+  parsePtLine,
+  parsePtLog,
   ptBuiltinProblems,
   ptBytes,
   ptCensusProblems,
@@ -80,6 +67,31 @@ import {
   receiverUndrawn,
   replayedParticleCommands,
 } from "../lib/gate8-pt-checks";
+import {
+  adoptionStats,
+  PPM_DECLARED_DEFAULTS,
+  type PtLateTx,
+  ppmDeclaredDefaultProblems,
+  ptLateAdoptProblems,
+  ptLateCmbtProblems,
+  ptLateFaultProblems,
+  ptLatePpmBuiltinProblems,
+  ptSyntheticSkipProblems,
+  ppmStats as readPpmStats,
+  runG8ptLate,
+} from "../lib/gate8-pt-late-checks";
+import {
+  particlesTotals,
+  ptCoverageProblems,
+  ptInk,
+  ptLifecycleProblems,
+  ptPremiseProblems,
+  ptReplayProblems,
+  ptShots,
+  runG8ptReceivers,
+} from "../lib/gate8-pt-receiver-checks";
+import { runG8ptPtc } from "../lib/gate8-ptc-checks";
+import { runG8w11 } from "../lib/gate8-w11-checks";
 import type {
   BuiltinParticleProcessMaterial,
   ResolvedMaterial,
@@ -92,8 +104,22 @@ import type {
 import { decodeShaderPayload } from "../lib/render-stream-shader";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const EXPECTED_PATH = resolve(HERE, "..", "..", "fixtures", "gate8-pt", "expected.json");
-const MM_EXPECTED_PATH = resolve(HERE, "..", "..", "fixtures", "gate8-mm", "expected.json");
+const EXPECTED_PATH = resolve(
+  HERE,
+  "..",
+  "..",
+  "fixtures",
+  "gate8-pt",
+  "expected.json",
+);
+const MM_EXPECTED_PATH = resolve(
+  HERE,
+  "..",
+  "..",
+  "fixtures",
+  "gate8-mm",
+  "expected.json",
+);
 const GOLDEN_12 = resolve(HERE, "..", "..", "protocol", "golden-12");
 
 let assertions = 0;
@@ -102,7 +128,9 @@ function expect(ok: boolean, what: string, detail?: unknown): void {
   assertions++;
   if (!ok) {
     failures++;
-    console.log(`FAIL ${what}${detail === undefined ? "" : ` -- ${JSON.stringify(detail).slice(0, 700)}`}`);
+    console.log(
+      `FAIL ${what}${detail === undefined ? "" : ` -- ${JSON.stringify(detail).slice(0, 700)}`}`,
+    );
   }
 }
 
@@ -158,7 +186,15 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
   let frame = 1;
   let nextId = 1;
   const call = (e: Emitter, name: string, args: Record<string, unknown> = {}) =>
-    raw.push({ kind: "particles", call: `particles_${name}`, frame, rid: e.rid, id: e.id, accepted: true, ...args });
+    raw.push({
+      kind: "particles",
+      call: `particles_${name}`,
+      frame,
+      rid: e.rid,
+      id: e.id,
+      accepted: true,
+      ...args,
+    });
   const set = (e: Emitter, k: string, v: unknown) => {
     if (JSON.stringify(e.fields[k]) !== JSON.stringify(v)) {
       e.fields[k] = v;
@@ -188,12 +224,51 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
       rid: `${1000 + nextId}`,
       id: nextId++,
       fields: {
-        status: "ok", reason: null, version: 1, mode: "3d", emitting: false, amount: 0, one_shot: false,
-        fixed_fps: 0, interpolate: true, fractional_delta: false, local: false, draw_order: "index",
-        transform_align: "disabled", trails: false, trail_poses: 0, seed: 0, restarts: 0, emits: 0,
-        process_requests: 0, process_material: null, draw_passes: [], subemitter: null,
+        status: "ok",
+        reason: null,
+        version: 1,
+        mode: "3d",
+        emitting: false,
+        amount: 0,
+        one_shot: false,
+        fixed_fps: 0,
+        interpolate: true,
+        fractional_delta: false,
+        local: false,
+        draw_order: "index",
+        transform_align: "disabled",
+        trails: false,
+        trail_poses: 0,
+        seed: 0,
+        restarts: 0,
+        emits: 0,
+        process_requests: 0,
+        process_material: null,
+        draw_passes: [],
+        subemitter: null,
       },
-      floats: [1, 1, 0, 0, 0, 1, 0.01, 0, 0, 0, -4, -4, -4, 8, 8, 8, ...IDENT, 0, 0, 0].map(F),
+      floats: [
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0.01,
+        0,
+        0,
+        0,
+        -4,
+        -4,
+        -4,
+        8,
+        8,
+        8,
+        ...IDENT,
+        0,
+        0,
+        0,
+      ].map(F),
       moved: true,
     };
     emitters.push(e);
@@ -241,7 +316,10 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
     set(e, "seed", name === "C_RING" ? 1003 : c.seed);
     call(e, "set_use_local_coordinates", { enable: c.local });
     set(e, "local", c.local);
-    call(e, "set_process_material", { material: 200 + e.id, material_rid: "5" });
+    call(e, "set_process_material", {
+      material: 200 + e.id,
+      material_rid: "5",
+    });
     set(e, "process_material", 200 + e.id);
     const size = name === "E_FLIP" ? 10 : 2;
     call(e, "set_collision_base_size", { size: 2 });
@@ -271,7 +349,15 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
   set(I, "transform_align", "y_to_velocity");
   call(I, "set_trails", { enable: true, length_sec: 0.3 });
   setF(I, 7, [0.3]);
-  if (o.stray) raw.push({ kind: "particles", call: "particles_create", frame, rid: "4242", id: 99, accepted: true });
+  if (o.stray)
+    raw.push({
+      kind: "particles",
+      call: "particles_create",
+      frame,
+      rid: "4242",
+      id: 99,
+      accepted: true,
+    });
   // ENTER_TREE, then the first transform flush (every item, local or not)
   for (const e of emitters) call(e, "set_speed_scale", { scale: 1 });
   emitters.forEach((e, k) => {
@@ -280,7 +366,10 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
     setF(e, 16, t);
   });
   const H = byName.get("H_SUB") as Emitter;
-  call(H, "set_subemitter", { subemitter_particles: HC.id, subemitter_particles_rid: HC.rid });
+  call(H, "set_subemitter", {
+    subemitter_particles: HC.id,
+    subemitter_particles_rid: HC.rid,
+  });
   set(H, "subemitter", HC.id);
   // the first draw
   for (const e of emitters) {
@@ -295,7 +384,23 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
   const B = byName.get("B_SPHERE") as Emitter;
   const C = byName.get("C_RING") as Emitter;
   const emit = (at: number[]) => {
-    const floats = [...IDENT.slice(0, 9), at[0], at[1], 0, 20, 0, 0, 1, 0.2, 0.2, 1, 0, 0, 0, 0].map(F);
+    const floats = [
+      ...IDENT.slice(0, 9),
+      at[0],
+      at[1],
+      0,
+      20,
+      0,
+      0,
+      1,
+      0.2,
+      0.2,
+      1,
+      0,
+      0,
+      0,
+      0,
+    ].map(F);
     call(A, "emit", {
       transform: floats.slice(0, 12),
       velocity: floats.slice(12, 15),
@@ -305,7 +410,13 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
       restarts: A.fields.restarts,
     });
     count(A, "emits");
-    emits.push({ frame, id: A.id, restarts: A.fields.restarts as number, flags: 7, floats });
+    emits.push({
+      frame,
+      id: A.id,
+      restarts: A.fields.restarts as number,
+      flags: 7,
+      floats,
+    });
   };
 
   const tables: { frame: number; snapshot: Map<number, Emitter> }[] = [];
@@ -347,17 +458,44 @@ function simulate(expected: G8ptExpected, o: SimOptions = {}): Sim {
     for (const e of emitters) {
       if (!e.moved) continue;
       e.moved = false;
-      raw.push({ kind: "particles", call: "state", frame, rid: e.rid, id: e.id, ...e.fields, floats: e.floats.slice() });
+      raw.push({
+        kind: "particles",
+        call: "state",
+        frame,
+        rid: e.rid,
+        id: e.id,
+        ...e.fields,
+        floats: e.floats.slice(),
+      });
     }
     const snapshot = new Map<number, Emitter>();
     for (const e of emitters)
-      if (!(o.hideI && e === I)) snapshot.set(e.id, { ...e, fields: { ...e.fields }, floats: e.floats.slice() });
+      if (!(o.hideI && e === I))
+        snapshot.set(e.id, {
+          ...e,
+          fields: { ...e.fields },
+          floats: e.floats.slice(),
+        });
     tables.push({ frame, snapshot });
   }
   frame = QUIT + 1;
-  for (const e of emitters) call(e, "set_subemitter", { subemitter_particles: null, subemitter_particles_rid: "0" });
-  for (const e of emitters) raw.push({ kind: "particles", call: "free", frame, rid: e.rid, id: e.id, accepted: true });
-  const lines = raw.map((r) => parsePtLine(r)).filter((l): l is PtLine => l !== null);
+  for (const e of emitters)
+    call(e, "set_subemitter", {
+      subemitter_particles: null,
+      subemitter_particles_rid: "0",
+    });
+  for (const e of emitters)
+    raw.push({
+      kind: "particles",
+      call: "free",
+      frame,
+      rid: e.rid,
+      id: e.id,
+      accepted: true,
+    });
+  const lines = raw
+    .map((r) => parsePtLine(r))
+    .filter((l): l is PtLine => l !== null);
   return {
     lines,
     full: ptTraceFromTransactions(encode(tables, emits, "full", sab, o), 12),
@@ -385,22 +523,33 @@ function encode(
       const b = base.get(e.id);
       if (!full && b && b.fields.version === e.fields.version) continue;
       const floats = e.floats.slice();
-      if (o.perturbFloat && e.name === "E_FLIP" && t.frame >= SAB_FRAME) floats[1] = F(floats[1] + 0.5);
-      const entry = { id: e.id, origin: "created", ...e.fields, f: pt.length } as unknown as TransactionParticles;
-      if (sab === "perturb-seed" && t.frame >= SAB_FRAME && first) entry.seed += 1;
+      if (o.perturbFloat && e.name === "E_FLIP" && t.frame >= SAB_FRAME)
+        floats[1] = F(floats[1] + 0.5);
+      const entry = {
+        id: e.id,
+        origin: "created",
+        ...e.fields,
+        f: pt.length,
+      } as unknown as TransactionParticles;
+      if (sab === "perturb-seed" && t.frame >= SAB_FRAME && first)
+        entry.seed += 1;
       first = false;
       pt.push(...floats);
       entries.push(entry);
     }
     const from = full ? t.frame - 1 : prevFrame;
-    const listed = emits.filter((m) => m.frame > from && m.frame <= t.frame).filter((_, k) => !(o.dropEmit && k === 1));
+    const listed = emits
+      .filter((m) => m.frame > from && m.frame <= t.frame)
+      .filter((_, k) => !(o.dropEmit && k === 1));
     const pe = listed.map((m) => {
       const f = pt.length;
       pt.push(...m.floats);
       return { particles: m.id, restarts: m.restarts, flags: m.flags, f };
     });
     const ids = new Set(t.snapshot.keys());
-    const removed = full ? [] : [...base.keys()].filter((id) => !ids.has(id)).sort((a, b) => a - b);
+    const removed = full
+      ? []
+      : [...base.keys()].filter((id) => !ids.has(id)).sort((a, b) => a - b);
     const meta = {
       type: "transaction",
       seq: i + 1,
@@ -442,18 +591,29 @@ function codeFor(k: BuiltinParticleProcessMaterial, lowEnd: boolean): string {
   ];
   if (k.collision_scale) L.push("render_mode collision_use_scale;");
   L.push("uniform vec3 direction;", "uniform float spread;");
-  if (k.textures.includes("scale_over_velocity")) L.push("uniform float scale_over_velocity_min = 0.0;");
+  if (k.textures.includes("scale_over_velocity"))
+    L.push("uniform float scale_over_velocity_min = 0.0;");
   const shape: Record<string, string[]> = {
     point: [],
     sphere: ["uniform float emission_sphere_radius;"],
     sphere_surface: ["uniform float emission_sphere_radius;"],
     box: ["uniform vec3 emission_box_extents;"],
-    points: ["uniform sampler2D emission_texture_points : hint_default_black;", "uniform int emission_texture_point_count;"],
-    directed_points: ["uniform sampler2D emission_texture_normal : hint_default_black;", "uniform sampler2D emission_texture_points : hint_default_black;"],
-    ring: ["uniform vec3 emission_ring_axis;", "uniform float emission_ring_height;"],
+    points: [
+      "uniform sampler2D emission_texture_points : hint_default_black;",
+      "uniform int emission_texture_point_count;",
+    ],
+    directed_points: [
+      "uniform sampler2D emission_texture_normal : hint_default_black;",
+      "uniform sampler2D emission_texture_points : hint_default_black;",
+    ],
+    ring: [
+      "uniform vec3 emission_ring_axis;",
+      "uniform float emission_ring_height;",
+    ],
   };
   L.push(...shape[k.emission_shape]);
-  if (k.emission_color_texture) L.push("uniform sampler2D emission_texture_color : hint_default_white;");
+  if (k.emission_color_texture)
+    L.push("uniform sampler2D emission_texture_color : hint_default_white;");
   if (k.sub_emitter !== "disabled" && !lowEnd) {
     L.push(
       {
@@ -467,40 +627,69 @@ function codeFor(k: BuiltinParticleProcessMaterial, lowEnd: boolean): string {
   }
   L.push("uniform vec4 color_value : source_color;");
   if (k.color_ramp) L.push("uniform sampler2D color_ramp : repeat_disable;");
-  if (k.color_initial_ramp) L.push("uniform sampler2D color_initial_ramp : repeat_disable;");
+  if (k.color_initial_ramp)
+    L.push("uniform sampler2D color_initial_ramp : repeat_disable;");
   if (k.alpha_curve) L.push("uniform sampler2D alpha_curve : repeat_disable;");
-  if (k.emission_curve) L.push("uniform sampler2D emission_curve : repeat_disable;");
+  if (k.emission_curve)
+    L.push("uniform sampler2D emission_curve : repeat_disable;");
   const samplers: Record<string, string> = {
-    initial_linear_velocity: "linear_velocity_texture", orbit_velocity: "orbit_velocity_curve",
-    angular_velocity: "angular_velocity_texture", linear_accel: "linear_accel_texture",
-    radial_accel: "radial_accel_texture", tangential_accel: "tangent_accel_texture",
-    damping: "damping_texture", angle: "angle_texture", scale: "scale_curve",
-    hue_variation: "hue_rot_curve", anim_speed: "animation_speed_curve",
-    anim_offset: "animation_offset_curve", radial_velocity: "radial_velocity_curve",
-    scale_over_velocity: "scale_over_velocity_curve", directional_velocity: "directional_velocity_curve",
+    initial_linear_velocity: "linear_velocity_texture",
+    orbit_velocity: "orbit_velocity_curve",
+    angular_velocity: "angular_velocity_texture",
+    linear_accel: "linear_accel_texture",
+    radial_accel: "radial_accel_texture",
+    tangential_accel: "tangent_accel_texture",
+    damping: "damping_texture",
+    angle: "angle_texture",
+    scale: "scale_curve",
+    hue_variation: "hue_rot_curve",
+    anim_speed: "animation_speed_curve",
+    anim_offset: "animation_offset_curve",
+    radial_velocity: "radial_velocity_curve",
+    scale_over_velocity: "scale_over_velocity_curve",
+    directional_velocity: "directional_velocity_curve",
   };
-  for (const p of k.textures) if (samplers[p]) L.push(`uniform sampler2D ${samplers[p]} : repeat_disable;`);
-  if (k.velocity_limit_curve) L.push("uniform sampler2D velocity_limit_curve : repeat_disable;");
-  if (k.collision === "rigid") L.push("uniform float collision_friction;", "uniform float collision_bounce;");
+  for (const p of k.textures)
+    if (samplers[p])
+      L.push(`uniform sampler2D ${samplers[p]} : repeat_disable;`);
+  if (k.velocity_limit_curve)
+    L.push("uniform sampler2D velocity_limit_curve : repeat_disable;");
+  if (k.collision === "rigid")
+    L.push(
+      "uniform float collision_friction;",
+      "uniform float collision_bounce;",
+    );
   if (k.turbulence) {
     L.push("uniform float turbulence_noise_strength;");
-    if (k.textures.includes("turb_influence_over_life")) L.push("uniform sampler2D turbulence_influence_over_life;");
+    if (k.textures.includes("turb_influence_over_life"))
+      L.push("uniform sampler2D turbulence_influence_over_life;");
   }
   const disableZ = k.particle_flags.includes("disable_z");
   if (k.emission_shape === "sphere")
-    L.push("\t\tpos = mix(vec3(0.0, 0.0, 0.0), vec3(radius * cos(t), radius * sin(t), emission_sphere_radius * s), p);");
+    L.push(
+      "\t\tpos = mix(vec3(0.0, 0.0, 0.0), vec3(radius * cos(t), radius * sin(t), emission_sphere_radius * s), p);",
+    );
   if (k.emission_shape === "sphere_surface")
-    L.push("\t\tpos = vec3(radius * cos(t), radius * sin(t), emission_sphere_radius * s);");
+    L.push(
+      "\t\tpos = vec3(radius * cos(t), radius * sin(t), emission_sphere_radius * s);",
+    );
   if (k.textures.includes("orbit_velocity") && disableZ)
-    L.push(`\torbit_amount *= texture(orbit_velocity_curve, vec2(lifetime)).${k.orbit_velocity_curve_xyz ? "b" : "r"};`);
+    L.push(
+      `\torbit_amount *= texture(orbit_velocity_curve, vec2(lifetime)).${k.orbit_velocity_curve_xyz ? "b" : "r"};`,
+    );
   if (k.attractor) L.push("\t\tforce += ATTRACTOR_FORCE;");
   if (disableZ) L.push("\t\tforce.z = 0.0;");
   if (k.particle_flags.includes("damping_as_friction"))
-    L.push("\t\t\t\tfloat damp = v * v * physics_params.damping * 0.05 * DELTA;");
+    L.push(
+      "\t\t\t\tfloat damp = v * v * physics_params.damping * 0.05 * DELTA;",
+    );
   else L.push("\t\t\tv -= physics_params.damping * DELTA;");
-  if (k.collision === "hide_on_contact") L.push("\tif (COLLIDED) {", "\t\tACTIVE = false;", "\t}");
-  if (k.particle_flags.includes("align_y_to_velocity")) L.push("\t\tTRANSFORM[1].xyz = normalize(final_velocity);");
-  if (!disableZ && k.particle_flags.includes("rotate_y")) L.push("\tvec4 origin = TRANSFORM[3];");
+  if (k.collision === "hide_on_contact")
+    L.push("\tif (COLLIDED) {", "\t\tACTIVE = false;", "\t}");
+  if (k.particle_flags.includes("align_y_to_velocity"))
+    L.push("\t\tTRANSFORM[1].xyz = normalize(final_velocity);");
+  if (!disableZ && k.particle_flags.includes("rotate_y"))
+    L.push("\tvec4 origin = TRANSFORM[3];");
   if (disableZ) L.push("\tTRANSFORM[3].z = 0.0;");
   return `${L.join("\n")}\n`;
 }
@@ -532,19 +721,68 @@ function traceOf(version: number, txs: PtTx[]): PtTrace {
 // ------------------------------------------------------------------------------------- tests
 
 async function main(): Promise<void> {
-  const expected = JSON.parse(await readFile(EXPECTED_PATH, "utf8")) as G8ptExpected;
-  const mmExpected = JSON.parse(await readFile(MM_EXPECTED_PATH, "utf8")) as G8mmExpected;
+  const expected = JSON.parse(
+    await readFile(EXPECTED_PATH, "utf8"),
+  ) as G8ptExpected;
+  const mmExpected = JSON.parse(
+    await readFile(MM_EXPECTED_PATH, "utf8"),
+  ) as G8mmExpected;
   const LAST = QUIT;
 
   // 1. parsePtLine
   {
-    const a = parsePtLine({ kind: "particles", call: "particles_set_amount", frame: 3, rid: 7, id: 2, accepted: true, amount: 5 });
-    expect(a?.kind === "call" && a.call === "set_amount" && a.rid === "7" && a.args.amount === 5, "parsePtLine: a call line", a);
-    const f = parsePtLine({ kind: "particles", call: "free", frame: 9, rid: "7", id: 2 });
-    expect(f?.kind === "call" && f.call === "free" && f.accepted, "parsePtLine: free, accepted by default", f);
-    expect(parsePtLine({ kind: "multimesh", call: "state", frame: 1 }) === null, "parsePtLine: a multimesh line is not a particles line");
-    const s = parsePtLine({ kind: "particles", call: "state", frame: 4, rid: "7", id: 2, status: "ok", version: 3, seed: 9, floats: [1, 2] });
-    expect(s?.kind === "state" && s.fields.version === 3 && s.fields.seed === 9 && s.floats?.length === 2, "parsePtLine: a state line", s);
+    const a = parsePtLine({
+      kind: "particles",
+      call: "particles_set_amount",
+      frame: 3,
+      rid: 7,
+      id: 2,
+      accepted: true,
+      amount: 5,
+    });
+    expect(
+      a?.kind === "call" &&
+        a.call === "set_amount" &&
+        a.rid === "7" &&
+        a.args.amount === 5,
+      "parsePtLine: a call line",
+      a,
+    );
+    const f = parsePtLine({
+      kind: "particles",
+      call: "free",
+      frame: 9,
+      rid: "7",
+      id: 2,
+    });
+    expect(
+      f?.kind === "call" && f.call === "free" && f.accepted,
+      "parsePtLine: free, accepted by default",
+      f,
+    );
+    expect(
+      parsePtLine({ kind: "multimesh", call: "state", frame: 1 }) === null,
+      "parsePtLine: a multimesh line is not a particles line",
+    );
+    const s = parsePtLine({
+      kind: "particles",
+      call: "state",
+      frame: 4,
+      rid: "7",
+      id: 2,
+      status: "ok",
+      version: 3,
+      seed: 9,
+      floats: [1, 2],
+    });
+    expect(
+      s?.kind === "state" &&
+        s.fields.version === 3 &&
+        s.fields.seed === 9 &&
+        s.floats?.length === 2,
+      "parsePtLine: a state line",
+      s,
+    );
     const log = parsePtLog(
       [
         '{"frame":1,"kind":"particles","call":"particles_create","rid":"55","id":8,"accepted":true}',
@@ -553,18 +791,37 @@ async function main(): Promise<void> {
         "not json",
       ].join("\n"),
     );
-    expect(log.length === 2 && log[1].rid === "55" && log[1].kind === "state" && log[1].floats === null, "parsePtLog: a freed state line gets its rid by id", log);
+    expect(
+      log.length === 2 &&
+        log[1].rid === "55" &&
+        log[1].kind === "state" &&
+        log[1].floats === null,
+      "parsePtLog: a freed state line gets its rid by id",
+      log,
+    );
   }
 
   // 2. honest legs
   const honest = simulate(expected);
   {
     const map = mapPtCells(honest.lines, expected);
-    expect(map.problems.length === 0 && map.ridOfCell.size === Object.keys(expected.cells).length, "mapPtCells: every cell by its amount", map.problems);
+    expect(
+      map.problems.length === 0 &&
+        map.ridOfCell.size === Object.keys(expected.cells).length,
+      "mapPtCells: every cell by its amount",
+      map.problems,
+    );
     const census = ptCensusProblems(honest.lines, expected, LAST);
     expect(census.length === 0, "honest: pt-hook-census passes", census);
-    for (const [sink, t] of [["full", honest.full], ["patch", honest.patch]] as const) {
-      expect(t.errors.length === 0, `honest ${sink}: trace without errors`, t.errors);
+    for (const [sink, t] of [
+      ["full", honest.full],
+      ["patch", honest.patch],
+    ] as const) {
+      expect(
+        t.errors.length === 0,
+        `honest ${sink}: trace without errors`,
+        t.errors,
+      );
       const w = ptWireProblems(t, honest.lines);
       expect(w.length === 0, `honest ${sink}: pt-wire table half passes`, w);
       const e = ptEmitProblems(t, honest.lines);
@@ -573,39 +830,95 @@ async function main(): Promise<void> {
       expect(n.length === 0, `honest ${sink}: pt-wire naming half passes`, n);
     }
     const listed = honest.patch.txs.reduce((x, t) => x + t.emits.length, 0);
-    expect(listed === 4, "honest patch: four emits listed over the run", listed);
+    expect(
+      listed === 4,
+      "honest patch: four emits listed over the run",
+      listed,
+    );
     const fb = ptBytes(honest.full);
     const pb = ptBytes(honest.patch);
-    expect(fb.transactions === QUIT && fb.max_bytes_per_transaction > 0, "ptBytes: full sink measured", fb);
-    expect(pb.mean_bytes_per_patch !== null && pb.mean_bytes_per_patch < fb.mean_bytes_per_transaction, "ptBytes: patches carry fewer floats than fulls", [fb, pb]);
+    expect(
+      fb.transactions === QUIT && fb.max_bytes_per_transaction > 0,
+      "ptBytes: full sink measured",
+      fb,
+    );
+    expect(
+      pb.mean_bytes_per_patch !== null &&
+        pb.mean_bytes_per_patch < fb.mean_bytes_per_transaction,
+      "ptBytes: patches carry fewer floats than fulls",
+      [fb, pb],
+    );
   }
 
   // 3. census failures
   {
     const noRestart = simulate(expected, { dropRestartLine: true });
-    expect(ptCensusProblems(noRestart.lines, expected, LAST).some((p) => p.startsWith("D_ONESHOT")), "census: a missing restart fails");
+    expect(
+      ptCensusProblems(noRestart.lines, expected, LAST).some((p) =>
+        p.startsWith("D_ONESHOT"),
+      ),
+      "census: a missing restart fails",
+    );
     const skip = simulate(expected, { skipTransformFrame: 50 });
-    expect(ptCensusProblems(skip.lines, expected, LAST).some((p) => p.includes("set_emission_transform missing")), "census: a missing per-frame emission transform fails");
+    expect(
+      ptCensusProblems(skip.lines, expected, LAST).some((p) =>
+        p.includes("set_emission_transform missing"),
+      ),
+      "census: a missing per-frame emission transform fails",
+    );
     const stray = simulate(expected, { stray: true });
-    expect(ptCensusProblems(stray.lines, expected, LAST).some((p) => p.includes("no cell")), "census: a stray emitter fails");
-    const bad = honest.lines.map((l) => (l.kind === "state" && l.id === 1 ? { ...l, fields: { ...l.fields, seed: 5 } } : l));
-    expect(ptCensusProblems(bad, expected, LAST).some((p) => p.includes("last state seed")), "census: a wrong last-state seed fails");
+    expect(
+      ptCensusProblems(stray.lines, expected, LAST).some((p) =>
+        p.includes("no cell"),
+      ),
+      "census: a stray emitter fails",
+    );
+    const bad = honest.lines.map((l) =>
+      l.kind === "state" && l.id === 1
+        ? { ...l, fields: { ...l.fields, seed: 5 } }
+        : l,
+    );
+    expect(
+      ptCensusProblems(bad, expected, LAST).some((p) =>
+        p.includes("last state seed"),
+      ),
+      "census: a wrong last-state seed fails",
+    );
   }
 
   // 4. pt-wire catches
   {
     const ps = simulate(expected, { sabotage: "perturb-seed" });
     const w = ptWireProblems(ps.patch, ps.lines);
-    expect(w.some((p) => p.includes("seed")), "pt-wire: perturb-seed fails on the patch sink", w.slice(0, 2));
+    expect(
+      w.some((p) => p.includes("seed")),
+      "pt-wire: perturb-seed fails on the patch sink",
+      w.slice(0, 2),
+    );
     const dr = simulate(expected, { sabotage: "drop-restart" });
     const dw = ptWireProblems(dr.patch, dr.lines);
-    expect(dw.some((p) => p.includes("restarts")), "pt-wire: drop-restart fails on the patch sink (the call lines' counter)", dw.slice(0, 2));
+    expect(
+      dw.some((p) => p.includes("restarts")),
+      "pt-wire: drop-restart fails on the patch sink (the call lines' counter)",
+      dw.slice(0, 2),
+    );
     const de = simulate(expected, { dropEmit: true });
-    expect(ptEmitProblems(de.patch, de.lines).length > 0, "pt-wire: a dropped emit fails");
+    expect(
+      ptEmitProblems(de.patch, de.lines).length > 0,
+      "pt-wire: a dropped emit fails",
+    );
     const pf = simulate(expected, { perturbFloat: true });
-    expect(ptWireProblems(pf.full, pf.lines).some((p) => p.includes("float 1")), "pt-wire: a perturbed float fails (full sink)");
+    expect(
+      ptWireProblems(pf.full, pf.lines).some((p) => p.includes("float 1")),
+      "pt-wire: a perturbed float fails (full sink)",
+    );
     const hi = simulate(expected, { hideI: true });
-    expect(ptNamedProblems(hi.full, hi.lines, expected).some((p) => p.startsWith("I_TRAILS")), "pt-wire: a missing emitter fails");
+    expect(
+      ptNamedProblems(hi.full, hi.lines, expected).some((p) =>
+        p.startsWith("I_TRAILS"),
+      ),
+      "pt-wire: a missing emitter fails",
+    );
   }
 
   // 5. deriveMaterialKey
@@ -613,12 +926,24 @@ async function main(): Promise<void> {
     for (const [name, cell] of Object.entries(expected.cells)) {
       const k = cellKey(expected, cell);
       const low = deriveMaterialKey(codeFor(k, true));
-      expect(builtinDiffs(k, low).length === 0, `deriveMaterialKey: ${name} round-trips (low end)`, [builtinDiffs(k, low), low]);
-      expect(low.underivable.includes("sub_emitter"), `deriveMaterialKey: ${name}: sub_emitter underivable on a low-end host`);
+      expect(
+        builtinDiffs(k, low).length === 0,
+        `deriveMaterialKey: ${name} round-trips (low end)`,
+        [builtinDiffs(k, low), low],
+      );
+      expect(
+        low.underivable.includes("sub_emitter"),
+        `deriveMaterialKey: ${name}: sub_emitter underivable on a low-end host`,
+      );
       const hi = deriveMaterialKey(codeFor(k, false));
       // a disabled sub-emitter writes no line on any host, so it reads as "disabled or low-end"
       const shown = k.sub_emitter !== "disabled";
-      expect(builtinDiffs(k, hi).length === 0 && hi.underivable.includes("sub_emitter") !== shown, `deriveMaterialKey: ${name} round-trips (not low end)`, [builtinDiffs(k, hi), hi.underivable]);
+      expect(
+        builtinDiffs(k, hi).length === 0 &&
+          hi.underivable.includes("sub_emitter") !== shown,
+        `deriveMaterialKey: ${name} round-trips (not low end)`,
+        [builtinDiffs(k, hi), hi.underivable],
+      );
     }
     const variety: BuiltinParticleProcessMaterial = {
       ...expected.key_defaults,
@@ -635,29 +960,65 @@ async function main(): Promise<void> {
       collision_scale: true,
     } as BuiltinParticleProcessMaterial;
     const dv = deriveMaterialKey(codeFor(variety, false));
-    expect(builtinDiffs(variety, dv).length === 0, "deriveMaterialKey: a varied 3D key round-trips", builtinDiffs(variety, dv));
-    const rigid = { ...variety, emission_shape: "directed_points", emission_color_texture: true, collision: "rigid", particle_flags: ["rotate_y"] } as BuiltinParticleProcessMaterial;
-    expect(builtinDiffs(rigid, deriveMaterialKey(codeFor(rigid, false))).length === 0, "deriveMaterialKey: directed points, rigid collision, rotate_y");
-    const wrong = { ...cellKey(expected, expected.cells.A_BOX), emission_shape: "ring" } as BuiltinParticleProcessMaterial;
-    const box = deriveMaterialKey(codeFor(cellKey(expected, expected.cells.A_BOX), true));
-    expect(builtinDiffs(wrong, box).some((d) => d.startsWith("emission_shape")), "builtinDiffs: a wrong shape fails");
+    expect(
+      builtinDiffs(variety, dv).length === 0,
+      "deriveMaterialKey: a varied 3D key round-trips",
+      builtinDiffs(variety, dv),
+    );
+    const rigid = {
+      ...variety,
+      emission_shape: "directed_points",
+      emission_color_texture: true,
+      collision: "rigid",
+      particle_flags: ["rotate_y"],
+    } as BuiltinParticleProcessMaterial;
+    expect(
+      builtinDiffs(rigid, deriveMaterialKey(codeFor(rigid, false))).length ===
+        0,
+      "deriveMaterialKey: directed points, rigid collision, rotate_y",
+    );
+    const wrong = {
+      ...cellKey(expected, expected.cells.A_BOX),
+      emission_shape: "ring",
+    } as BuiltinParticleProcessMaterial;
+    const box = deriveMaterialKey(
+      codeFor(cellKey(expected, expected.cells.A_BOX), true),
+    );
+    expect(
+      builtinDiffs(wrong, box).some((d) => d.startsWith("emission_shape")),
+      "builtinDiffs: a wrong shape fails",
+    );
     // golden-12's shader-ppm payload against its decoded builtin
-    const payload = decodeShaderPayload(new Uint8Array(await readFile(resolve(GOLDEN_12, "payloads", "shader-ppm.grp"))));
-    const decoded = JSON.parse(await readFile(resolve(GOLDEN_12, "patch.decoded.json"), "utf8")) as unknown;
+    const payload = decodeShaderPayload(
+      new Uint8Array(
+        await readFile(resolve(GOLDEN_12, "payloads", "shader-ppm.grp")),
+      ),
+    );
+    const decoded = JSON.parse(
+      await readFile(resolve(GOLDEN_12, "patch.decoded.json"), "utf8"),
+    ) as unknown;
     const builtins: BuiltinParticleProcessMaterial[] = [];
     const walk = (o: unknown) => {
       if (Array.isArray(o)) o.forEach(walk);
       else if (o && typeof o === "object") {
         const r = o as Record<string, unknown>;
-        if (r.kind === "particle_process_material") builtins.push(r as unknown as BuiltinParticleProcessMaterial);
+        if (r.kind === "particle_process_material")
+          builtins.push(r as unknown as BuiltinParticleProcessMaterial);
         else Object.values(r).forEach(walk);
       }
     };
     walk(decoded);
-    expect(builtins.length > 0, "golden-12: a decoded particle_process_material builtin");
+    expect(
+      builtins.length > 0,
+      "golden-12: a decoded particle_process_material builtin",
+    );
     if (builtins.length > 0) {
       const d = builtinDiffs(builtins[0], deriveMaterialKey(payload.code));
-      expect(d.length === 0, "golden-12: shader-ppm's code derives its builtin", d);
+      expect(
+        d.length === 0,
+        "golden-12: shader-ppm's code derives its builtin",
+        d,
+      );
     }
   }
 
@@ -673,76 +1034,345 @@ async function main(): Promise<void> {
       const k = cellKey(expected, cell);
       const hash = `h${id}`;
       codes.set(hash, codeFor(k, true));
-      shaders.set(id, { id, origin: "created", status: "ok", reason: null, version: 1, mode: "particles", source: "payload", hash, payload_bytes: 1, builtin: k, uses: ["time"], default_textures: [] } as unknown as ResolvedShader);
-      materials.set(200 + id, { id: 200 + id, origin: "created", status: "ok", reason: null, version: 1, shader: id, params: [] });
-      table.set(id, { id, process_material: 200 + id, status: "ok" } as unknown as ResolvedParticles);
+      shaders.set(id, {
+        id,
+        origin: "created",
+        status: "ok",
+        reason: null,
+        version: 1,
+        mode: "particles",
+        source: "payload",
+        hash,
+        payload_bytes: 1,
+        builtin: k,
+        uses: ["time"],
+        default_textures: [],
+      } as unknown as ResolvedShader);
+      materials.set(200 + id, {
+        id: 200 + id,
+        origin: "created",
+        status: "ok",
+        reason: null,
+        version: 1,
+        shader: id,
+        params: [],
+      });
+      table.set(id, {
+        id,
+        process_material: 200 + id,
+        status: "ok",
+      } as unknown as ResolvedParticles);
     }
     const t = traceOf(12, [tx(1, 90, { shaders, materials, table })]);
-    const ok = ptBuiltinProblems(t, honest.lines, expected, (h) => codes.get(h) ?? null);
-    expect(ok.problems.length === 0 && ok.shaders === Object.keys(expected.cells).length, "ptBuiltinProblems: honest builtins pass", ok.problems);
+    const ok = ptBuiltinProblems(
+      t,
+      honest.lines,
+      expected,
+      (h) => codes.get(h) ?? null,
+    );
+    expect(
+      ok.problems.length === 0 &&
+        ok.shaders === Object.keys(expected.cells).length,
+      "ptBuiltinProblems: honest builtins pass",
+      ok.problems,
+    );
     const aId = map.idOfCell.get("A_BOX") as number;
     const sh2 = new Map(shaders);
-    sh2.set(aId, { ...(shaders.get(aId) as ResolvedShader), builtin: { ...(shaders.get(aId)?.builtin as BuiltinParticleProcessMaterial), emission_shape: "sphere" } });
-    const bad = ptBuiltinProblems(traceOf(12, [tx(1, 90, { shaders: sh2, materials, table })]), honest.lines, expected, (h) => codes.get(h) ?? null);
-    expect(bad.problems.some((p) => p.includes("emission_shape")), "ptBuiltinProblems: a wrong builtin fails (code and expected key)", bad.problems);
+    sh2.set(aId, {
+      ...(shaders.get(aId) as ResolvedShader),
+      builtin: {
+        ...(shaders.get(aId)?.builtin as BuiltinParticleProcessMaterial),
+        emission_shape: "sphere",
+      },
+    });
+    const bad = ptBuiltinProblems(
+      traceOf(12, [tx(1, 90, { shaders: sh2, materials, table })]),
+      honest.lines,
+      expected,
+      (h) => codes.get(h) ?? null,
+    );
+    expect(
+      bad.problems.some((p) => p.includes("emission_shape")),
+      "ptBuiltinProblems: a wrong builtin fails (code and expected key)",
+      bad.problems,
+    );
     const sh3 = new Map(shaders);
-    sh3.set(aId, { ...(shaders.get(aId) as ResolvedShader), status: "unsupported", reason: "shader-mode", builtin: null } as unknown as ResolvedShader);
-    expect(ptBuiltinProblems(traceOf(12, [tx(1, 90, { shaders: sh3, materials, table })]), honest.lines, expected, (h) => codes.get(h) ?? null).problems.length > 0, "ptBuiltinProblems: an unkeyed particles shader fails");
+    sh3.set(aId, {
+      ...(shaders.get(aId) as ResolvedShader),
+      status: "unsupported",
+      reason: "shader-mode",
+      builtin: null,
+    } as unknown as ResolvedShader);
+    expect(
+      ptBuiltinProblems(
+        traceOf(12, [tx(1, 90, { shaders: sh3, materials, table })]),
+        honest.lines,
+        expected,
+        (h) => codes.get(h) ?? null,
+      ).problems.length > 0,
+      "ptBuiltinProblems: an unkeyed particles shader fails",
+    );
 
     // pt-v11
     const v11ok = traceOf(11, [
       tx(1, 1, {
-        items: new Map([[1, { content_version: 1, add_particles: 0, unsupported: { "unsupported-op": 2 } }]]),
-        shaders: new Map([[1, { id: 1, mode: "particles", status: "unsupported", reason: "shader-mode", builtin: null } as unknown as ResolvedShader]]),
+        items: new Map([
+          [
+            1,
+            {
+              content_version: 1,
+              add_particles: 0,
+              unsupported: { "unsupported-op": 2 },
+            },
+          ],
+        ]),
+        shaders: new Map([
+          [
+            1,
+            {
+              id: 1,
+              mode: "particles",
+              status: "unsupported",
+              reason: "shader-mode",
+              builtin: null,
+            } as unknown as ResolvedShader,
+          ],
+        ]),
       }),
     ]);
-    expect(ptV11Problems(v11ok, []).length === 0, "ptV11Problems: an honest /11 trace passes", ptV11Problems(v11ok, []));
-    expect(ptV11Problems(traceOf(11, [tx(1, 1, { has_keys: true })]), []).length > 0, "ptV11Problems: a particles key fails");
-    expect(ptV11Problems(v11ok, honest.lines.slice(0, 1)).length > 0, "ptV11Problems: a particles hook line fails");
-    const v11bad = traceOf(11, [tx(1, 1, { items: new Map([[1, { content_version: 1, add_particles: 0, unsupported: { "unknown-particles": 1 } }]]) })]);
-    expect(ptV11Problems(v11bad, []).some((p) => p.includes("unknown-particles")), "ptV11Problems: a non-op reason fails");
+    expect(
+      ptV11Problems(v11ok, []).length === 0,
+      "ptV11Problems: an honest /11 trace passes",
+      ptV11Problems(v11ok, []),
+    );
+    expect(
+      ptV11Problems(traceOf(11, [tx(1, 1, { has_keys: true })]), []).length > 0,
+      "ptV11Problems: a particles key fails",
+    );
+    expect(
+      ptV11Problems(v11ok, honest.lines.slice(0, 1)).length > 0,
+      "ptV11Problems: a particles hook line fails",
+    );
+    const v11bad = traceOf(11, [
+      tx(1, 1, {
+        items: new Map([
+          [
+            1,
+            {
+              content_version: 1,
+              add_particles: 0,
+              unsupported: { "unknown-particles": 1 },
+            },
+          ],
+        ]),
+      }),
+    ]);
+    expect(
+      ptV11Problems(v11bad, []).some((p) => p.includes("unknown-particles")),
+      "ptV11Problems: a non-op reason fails",
+    );
 
     // pt-curve-textures
-    const tex = (id: number, status: string, format: string | null, reason: string | null) =>
-      ({ id, width: 64, height: 1, status, format, reason }) as unknown as ResolvedTexture;
+    const tex = (
+      id: number,
+      status: string,
+      format: string | null,
+      reason: string | null,
+    ) =>
+      ({
+        id,
+        width: 64,
+        height: 1,
+        status,
+        format,
+        reason,
+      }) as unknown as ResolvedTexture;
     const curveMats = new Map<number, ResolvedMaterial>([
-      [9, { id: 9, origin: "created", status: "ok", reason: null, version: 1, shader: 3, params: [{ name: "scale_curve", type: "sampler2D" as never, value: { tex: 1 } }, { name: "color_ramp", type: "sampler2D" as never, value: { tex: 2 } }] }],
+      [
+        9,
+        {
+          id: 9,
+          origin: "created",
+          status: "ok",
+          reason: null,
+          version: 1,
+          shader: 3,
+          params: [
+            {
+              name: "scale_curve",
+              type: "sampler2D" as never,
+              value: { tex: 1 },
+            },
+            {
+              name: "color_ramp",
+              type: "sampler2D" as never,
+              value: { tex: 2 },
+            },
+          ],
+        },
+      ],
     ]);
-    const curveShaders = new Map([[3, { id: 3, mode: "particles" } as unknown as ResolvedShader]]);
-    const t12 = traceOf(12, [tx(1, 1, { textures: new Map([[1, tex(1, "ok", "RGBF", null)], [2, tex(2, "ok", "RGBAF", null)]]), materials: curveMats, shaders: curveShaders })]);
-    expect(ptCurveProblems(t12, expected, 2).problems.length === 0, "ptCurveProblems: /12 float textures pass", ptCurveProblems(t12, expected, 2));
-    const t12bad = traceOf(12, [tx(1, 1, { textures: new Map([[1, tex(1, "unsupported", null, "unsupported-format")], [2, tex(2, "ok", "RGBA8", null)]]), materials: curveMats, shaders: curveShaders })]);
-    expect(ptCurveProblems(t12bad, expected, 2).problems.length === 2, "ptCurveProblems: an unsupported or non-float /12 texture fails", ptCurveProblems(t12bad, expected, 2));
-    const t11 = traceOf(11, [tx(1, 1, { textures: new Map([[1, tex(1, "unsupported", null, "unsupported-format")]]) })]);
-    expect(ptCurveProblems(t11, expected, 2).problems.length === 0, "ptCurveProblems: /11 unsupported-format passes");
-    const t11bad = traceOf(11, [tx(1, 1, { textures: new Map([[1, tex(1, "ok", "RGBF", null)]]) })]);
-    expect(ptCurveProblems(t11bad, expected, 2).problems.length > 0, "ptCurveProblems: an ok /11 curve fails");
+    const curveShaders = new Map([
+      [3, { id: 3, mode: "particles" } as unknown as ResolvedShader],
+    ]);
+    const t12 = traceOf(12, [
+      tx(1, 1, {
+        textures: new Map([
+          [1, tex(1, "ok", "RGBF", null)],
+          [2, tex(2, "ok", "RGBAF", null)],
+        ]),
+        materials: curveMats,
+        shaders: curveShaders,
+      }),
+    ]);
+    expect(
+      ptCurveProblems(t12, expected, 2).problems.length === 0,
+      "ptCurveProblems: /12 float textures pass",
+      ptCurveProblems(t12, expected, 2),
+    );
+    const t12bad = traceOf(12, [
+      tx(1, 1, {
+        textures: new Map([
+          [1, tex(1, "unsupported", null, "unsupported-format")],
+          [2, tex(2, "ok", "RGBA8", null)],
+        ]),
+        materials: curveMats,
+        shaders: curveShaders,
+      }),
+    ]);
+    expect(
+      ptCurveProblems(t12bad, expected, 2).problems.length === 2,
+      "ptCurveProblems: an unsupported or non-float /12 texture fails",
+      ptCurveProblems(t12bad, expected, 2),
+    );
+    const t11 = traceOf(11, [
+      tx(1, 1, {
+        textures: new Map([
+          [1, tex(1, "unsupported", null, "unsupported-format")],
+        ]),
+      }),
+    ]);
+    expect(
+      ptCurveProblems(t11, expected, 2).problems.length === 0,
+      "ptCurveProblems: /11 unsupported-format passes",
+    );
+    const t11bad = traceOf(11, [
+      tx(1, 1, { textures: new Map([[1, tex(1, "ok", "RGBF", null)]]) }),
+    ]);
+    expect(
+      ptCurveProblems(t11bad, expected, 2).problems.length > 0,
+      "ptCurveProblems: an ok /11 curve fails",
+    );
 
     // pt-shim
-    const noShim = traceOf(12, [tx(1, 1, { items: new Map([[1, { content_version: 1, add_particles: 0, unsupported: { "unknown-particles": 10 } }]]) })]);
-    expect(ptNoShimProblems(noShim).length === 0, "ptNoShimProblems: every add_particles unknown passes");
-    expect(ptNoShimProblems(traceOf(12, [tx(1, 1, { table: new Map([[1, {} as ResolvedParticles]]) })])).length > 0, "ptNoShimProblems: an entry without the shim fails");
-    expect(ptShimDistinctProblems(honest.lines, expected).length === 0, "ptShimDistinctProblems: distinct rids pass", ptShimDistinctProblems(honest.lines, expected));
-    const nullRids = honest.lines.map((l) => (l.kind === "call" && l.call === "create" ? { ...l, rid: "0" } : l));
-    expect(ptShimDistinctProblems(nullRids, expected).length > 0, "ptShimDistinctProblems: shared null rids fail");
+    const noShim = traceOf(12, [
+      tx(1, 1, {
+        items: new Map([
+          [
+            1,
+            {
+              content_version: 1,
+              add_particles: 0,
+              unsupported: { "unknown-particles": 10 },
+            },
+          ],
+        ]),
+      }),
+    ]);
+    expect(
+      ptNoShimProblems(noShim).length === 0,
+      "ptNoShimProblems: every add_particles unknown passes",
+    );
+    expect(
+      ptNoShimProblems(
+        traceOf(12, [
+          tx(1, 1, { table: new Map([[1, {} as ResolvedParticles]]) }),
+        ]),
+      ).length > 0,
+      "ptNoShimProblems: an entry without the shim fails",
+    );
+    expect(
+      ptShimDistinctProblems(honest.lines, expected).length === 0,
+      "ptShimDistinctProblems: distinct rids pass",
+      ptShimDistinctProblems(honest.lines, expected),
+    );
+    const nullRids = honest.lines.map((l) =>
+      l.kind === "call" && l.call === "create" ? { ...l, rid: "0" } : l,
+    );
+    expect(
+      ptShimDistinctProblems(nullRids, expected).length > 0,
+      "ptShimDistinctProblems: shared null rids fail",
+    );
 
     // pt-receiver
-    const items1 = new Map([[1, { content_version: 1, add_particles: 2, unsupported: {} }], [2, { content_version: 1, add_particles: 1, unsupported: {} }]]);
-    const items2 = new Map([[1, { content_version: 2, add_particles: 2, unsupported: {} }], [2, { content_version: 1, add_particles: 1, unsupported: {} }]]);
-    const rt = traceOf(12, [tx(1, 1, { items: items1 }), tx(2, 2, { items: items1 }), tx(3, 3, { items: items2 })]);
-    expect(replayedParticleCommands(rt) === 5, "replayedParticleCommands: new items, then the item whose content moved", replayedParticleCommands(rt));
-    expect(receiverUndrawn({ w12: { particles: { particles_commands_undrawn: 5 } } }, "").count === 5, "receiverUndrawn: applied.json's total");
-    const so = "seq 1 item 3: unsupported command canvas_item_add_particles (particles-undrawn) logged, not drawn\n".repeat(3);
-    expect(receiverUndrawn({ status: "ok" }, so).count === 3, "receiverUndrawn: stdout's lines");
+    const items1 = new Map([
+      [1, { content_version: 1, add_particles: 2, unsupported: {} }],
+      [2, { content_version: 1, add_particles: 1, unsupported: {} }],
+    ]);
+    const items2 = new Map([
+      [1, { content_version: 2, add_particles: 2, unsupported: {} }],
+      [2, { content_version: 1, add_particles: 1, unsupported: {} }],
+    ]);
+    const rt = traceOf(12, [
+      tx(1, 1, { items: items1 }),
+      tx(2, 2, { items: items1 }),
+      tx(3, 3, { items: items2 }),
+    ]);
+    expect(
+      replayedParticleCommands(rt) === 5,
+      "replayedParticleCommands: new items, then the item whose content moved",
+      replayedParticleCommands(rt),
+    );
+    expect(
+      receiverUndrawn(
+        { w12: { particles: { particles_commands_undrawn: 5 } } },
+        "",
+      ).count === 5,
+      "receiverUndrawn: applied.json's total",
+    );
+    const so =
+      "seq 1 item 3: unsupported command canvas_item_add_particles (particles-undrawn) logged, not drawn\n".repeat(
+        3,
+      );
+    expect(
+      receiverUndrawn({ status: "ok" }, so).count === 3,
+      "receiverUndrawn: stdout's lines",
+    );
 
     // pt-pump's control half
-    const mmLine = (call: string, frame: number, rid: string, extra: Record<string, unknown> = {}) =>
-      JSON.stringify({ kind: "multimesh", call, frame, rid, id: Number(rid), accepted: true, ...extra });
-    const quiet = [mmLine("multimesh_allocate_data", 1, "7", { instances: 7, format: 0 })].join("\n");
+    const mmLine = (
+      call: string,
+      frame: number,
+      rid: string,
+      extra: Record<string, unknown> = {},
+    ) =>
+      JSON.stringify({
+        kind: "multimesh",
+        call,
+        frame,
+        rid,
+        id: Number(rid),
+        accepted: true,
+        ...extra,
+      });
+    const quiet = [
+      mmLine("multimesh_allocate_data", 1, "7", { instances: 7, format: 0 }),
+    ].join("\n");
     const noisy = [quiet, mmLine("multimesh_set_buffer", 5, "7")].join("\n");
-    expect(ptPumpProblems(undefined, quiet, mmExpected, 90).nopump.length === 0, "ptPumpProblems: no set_buffer without the pump passes");
-    expect(ptPumpProblems(undefined, noisy, mmExpected, 90).nopump.some((p) => p.startsWith("C_FLIP")), "ptPumpProblems: a set_buffer without the pump fails");
-    expect(ptPumpProblems(undefined, quiet, mmExpected, 90).pump.length > 0, "ptPumpProblems: no pump hook log fails");
+    expect(
+      ptPumpProblems(undefined, quiet, mmExpected, 90).nopump.length === 0,
+      "ptPumpProblems: no set_buffer without the pump passes",
+    );
+    expect(
+      ptPumpProblems(undefined, noisy, mmExpected, 90).nopump.some((p) =>
+        p.startsWith("C_FLIP"),
+      ),
+      "ptPumpProblems: a set_buffer without the pump fails",
+    );
+    expect(
+      ptPumpProblems(undefined, quiet, mmExpected, 90).pump.length > 0,
+      "ptPumpProblems: no pump hook log fails",
+    );
   }
 
   // 7. PM6a's receiver helpers
@@ -750,54 +1380,163 @@ async function main(): Promise<void> {
     const px = expected.pixels;
     const shots = ptShots(expected.checkpoints, px.tail_frames);
     expect(
-      shots.map((s) => s.label).join(",") === "step-0-prev,step-0,step-1-prev,step-1,step-2-prev,step-2,tail-95,tail-110",
+      shots.map((s) => s.label).join(",") ===
+        "step-0-prev,step-0,step-1-prev,step-1,step-2-prev,step-2,tail-95,tail-110",
       "ptShots: frame order",
       shots.map((s) => s.label),
     );
-    expect(Object.keys(px.regions).length === 9, "pixels.regions: one per drawn cell", Object.keys(px.regions));
+    expect(
+      Object.keys(px.regions).length === 9,
+      "pixels.regions: one per drawn cell",
+      Object.keys(px.regions),
+    );
     const w = 640;
     const h = 360;
     const img = { width: w, height: h, data: new Uint8Array(w * h * 4) };
-    for (let i = 0; i < img.data.length; i += 4) img.data.set([10, 20, 30, 255], i);
+    for (let i = 0; i < img.data.length; i += 4)
+      img.data.set([10, 20, 30, 255], i);
     const [ax, ay] = px.regions.A_BOX;
     img.data.set([255, 255, 255, 255], (ay * w + ax) * 4);
     const ink = ptInk(img, px);
-    expect(ink.cells.A_BOX === 1 && ink.outside === 0, "ptInk: one pixel in A_BOX", ink);
+    expect(
+      ink.cells.A_BOX === 1 && ink.outside === 0,
+      "ptInk: one pixel in A_BOX",
+      ink,
+    );
     // I_TRAILS never draws on gl_compatibility (expected.json pixels.dark).
-    const lit = { cells: { ...Object.fromEntries(Object.keys(px.regions).map((c) => [c, 40])), I_TRAILS: 0 }, outside: 0 };
+    const lit = {
+      cells: {
+        ...Object.fromEntries(Object.keys(px.regions).map((c) => [c, 40])),
+        I_TRAILS: 0,
+      },
+      outside: 0,
+    };
     const dDark = { ...lit, cells: { ...lit.cells, D_ONESHOT: 0 } };
-    expect(ptPremiseProblems(dDark, px, "step-0").length === 0, "ptPremiseProblems: D dark at step-0 passes");
-    expect(ptPremiseProblems(lit, px, "step-0").some((p) => p.startsWith("D_ONESHOT")), "ptPremiseProblems: D lit at step-0 fails");
-    expect(ptPremiseProblems(dDark, px, "tail-95").some((p) => p.startsWith("D_ONESHOT")), "ptPremiseProblems: D dark at tail-95 fails");
-    expect(ptPremiseProblems({ ...lit, outside: 3 }, px, "tail-95").length === 1, "ptPremiseProblems: ink outside fails");
-    expect(ptLifecycleProblems(lit, lit).length === 0, "ptLifecycleProblems: equal lit cells pass");
-    expect(ptLifecycleProblems(dDark, lit).length === 1, "ptLifecycleProblems: a dark cell the reference lights fails");
-    expect(ptLifecycleProblems(lit, dDark).length === 1, "ptLifecycleProblems: a lit cell the reference leaves dark fails");
+    expect(
+      ptPremiseProblems(dDark, px, "step-0").length === 0,
+      "ptPremiseProblems: D dark at step-0 passes",
+    );
+    expect(
+      ptPremiseProblems(lit, px, "step-0").some((p) =>
+        p.startsWith("D_ONESHOT"),
+      ),
+      "ptPremiseProblems: D lit at step-0 fails",
+    );
+    expect(
+      ptPremiseProblems(dDark, px, "tail-95").some((p) =>
+        p.startsWith("D_ONESHOT"),
+      ),
+      "ptPremiseProblems: D dark at tail-95 fails",
+    );
+    expect(
+      ptPremiseProblems({ ...lit, outside: 3 }, px, "tail-95").length === 1,
+      "ptPremiseProblems: ink outside fails",
+    );
+    expect(
+      ptLifecycleProblems(lit, lit).length === 0,
+      "ptLifecycleProblems: equal lit cells pass",
+    );
+    expect(
+      ptLifecycleProblems(dDark, lit).length === 1,
+      "ptLifecycleProblems: a dark cell the reference lights fails",
+    );
+    expect(
+      ptLifecycleProblems(lit, dDark).length === 1,
+      "ptLifecycleProblems: a lit cell the reference leaves dark fails",
+    );
     const half = { cells: { ...lit.cells, A_BOX: 10 } };
-    expect(ptCoverageProblems(half, lit, 2).length === 1, "ptCoverageProblems: a quarter of the ink fails x2");
-    expect(ptCoverageProblems(lit, lit, 2).length === 0, "ptCoverageProblems: equal ink passes");
-    const totals = particlesTotals({ w11: { particles: { particles_created: 10, restarts: 12, emits: 4, emits_dropped: 0, seed_sets: 11 } } });
+    expect(
+      ptCoverageProblems(half, lit, 2).length === 1,
+      "ptCoverageProblems: a quarter of the ink fails x2",
+    );
+    expect(
+      ptCoverageProblems(lit, lit, 2).length === 0,
+      "ptCoverageProblems: equal ink passes",
+    );
+    const totals = particlesTotals({
+      w11: {
+        particles: {
+          particles_created: 10,
+          restarts: 12,
+          emits: 4,
+          emits_dropped: 0,
+          seed_sets: 11,
+        },
+      },
+    });
     const want = { emitters: 10, restarts: 12, emits: 4, seeds: 10 };
-    expect(ptReplayProblems(totals, want, 0).length === 0, "ptReplayProblems: the honest totals pass", ptReplayProblems(totals, want, 0));
-    const ignored = particlesTotals({ w11: { particles: { particles_created: 10, restarts: 12, emits: 0, emits_dropped: 4, seed_sets: 11 } } });
-    expect(ptReplayProblems(ignored, want, 0).length === 2, "ptReplayProblems: ignored emits fail twice");
-    expect(ptReplayProblems(null, want, 0).length === 1, "ptReplayProblems: no particles totals fail");
-    expect(ptReplayProblems(totals, want, 3).length === 1, "ptReplayProblems: undrawn commands fail");
-    const entry = (id: number, status: string, restarts: number) => ({ id, status, restarts }) as unknown as ResolvedParticles;
+    expect(
+      ptReplayProblems(totals, want, 0).length === 0,
+      "ptReplayProblems: the honest totals pass",
+      ptReplayProblems(totals, want, 0),
+    );
+    const ignored = particlesTotals({
+      w11: {
+        particles: {
+          particles_created: 10,
+          restarts: 12,
+          emits: 0,
+          emits_dropped: 4,
+          seed_sets: 11,
+        },
+      },
+    });
+    expect(
+      ptReplayProblems(ignored, want, 0).length === 2,
+      "ptReplayProblems: ignored emits fail twice",
+    );
+    expect(
+      ptReplayProblems(null, want, 0).length === 1,
+      "ptReplayProblems: no particles totals fail",
+    );
+    expect(
+      ptReplayProblems(totals, want, 3).length === 1,
+      "ptReplayProblems: undrawn commands fail",
+    );
+    const entry = (id: number, status: string, restarts: number) =>
+      ({ id, status, restarts }) as unknown as ResolvedParticles;
     const emit = { particles: 1 } as unknown as PtTx["emits"][number];
     const wt = ptWireTotals(
       traceOf(12, [
-        tx(1, 1, { table: new Map([[1, entry(1, "ok", 1)], [2, entry(2, "ok", 1)]]) }),
-        tx(2, 2, { table: new Map([[1, entry(1, "ok", 2)], [2, entry(2, "freed", 1)], [3, entry(3, "unsupported", 1)]]), emits: [emit, emit] }),
+        tx(1, 1, {
+          table: new Map([
+            [1, entry(1, "ok", 1)],
+            [2, entry(2, "ok", 1)],
+          ]),
+        }),
+        tx(2, 2, {
+          table: new Map([
+            [1, entry(1, "ok", 2)],
+            [2, entry(2, "freed", 1)],
+            [3, entry(3, "unsupported", 1)],
+          ]),
+          emits: [emit, emit],
+        }),
       ]),
     );
-    expect(wt.emitters === 2 && wt.restarts === 3 && wt.emits === 2, "ptWireTotals: ok emitters, their newest restarts, every emit", wt);
+    expect(
+      wt.emitters === 2 && wt.restarts === 3 && wt.emits === 2,
+      "ptWireTotals: ok emitters, their newest restarts, every emit",
+      wt,
+    );
   }
 
   // 8. PM7's late-arm helpers (lib/gate8-pt-late-checks.ts).
   {
-    const late = { arm_frame: 12, emitters: 2, process_materials: 2, subemitter: "H_SUB", coverage_from_frame: 46 };
-    const ent = (id: number, amount: number, sub: number | null, origin = "adopted", status = "ok") => ({
+    const late = {
+      arm_frame: 12,
+      emitters: 2,
+      process_materials: 2,
+      subemitter: "H_SUB",
+      coverage_from_frame: 46,
+    };
+    const ent = (
+      id: number,
+      amount: number,
+      sub: number | null,
+      origin = "adopted",
+      status = "ok",
+    ) => ({
       id,
       origin,
       status,
@@ -811,10 +1550,34 @@ async function main(): Promise<void> {
         [2, ent(2, 2, null)],
       ]),
       materials: new Map([
-        [1, { status: "ok", shader: 5, params: PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.value })) }],
-        [2, { status: "ok", shader: 5, params: PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.value })) }],
+        [
+          1,
+          {
+            status: "ok",
+            shader: 5,
+            params: PPM_DECLARED_DEFAULTS.map((d) => ({
+              name: d.name,
+              type: d.type,
+              value: d.value,
+            })),
+          },
+        ],
+        [
+          2,
+          {
+            status: "ok",
+            shader: 5,
+            params: PPM_DECLARED_DEFAULTS.map((d) => ({
+              name: d.name,
+              type: d.type,
+              value: d.value,
+            })),
+          },
+        ],
       ]),
-      shaders: new Map([[5, { status: "ok", builtin: { kind: "particle_process_material" } }]]),
+      shaders: new Map([
+        [5, { status: "ok", builtin: { kind: "particle_process_material" } }],
+      ]),
       items: new Map([
         [10, { add_particles: 1, unsupported: {} }],
         [11, { add_particles: 1, unsupported: {} }],
@@ -822,32 +1585,88 @@ async function main(): Promise<void> {
       item_unsupported: {},
     });
     const stats = { emitters: 2, ppm_materials: 2, refused: 0, ppm_refused: 0 };
-    expect(ptLateAdoptProblems(stats, [good()], late, 12).length === 0, "ptLateAdoptProblems: an honest adopted state passes");
-    expect(ptLateAdoptProblems({ ...stats, emitters: 1 }, [good()], late, 12).length === 1, "ptLateAdoptProblems: a short adoption count fails");
-    expect(ptLateAdoptProblems(null, [good()], late, 12).length === 1, "ptLateAdoptProblems: no adoption stats fails");
+    expect(
+      ptLateAdoptProblems(stats, [good()], late, 12).length === 0,
+      "ptLateAdoptProblems: an honest adopted state passes",
+    );
+    expect(
+      ptLateAdoptProblems({ ...stats, emitters: 1 }, [good()], late, 12)
+        .length === 1,
+      "ptLateAdoptProblems: a short adoption count fails",
+    );
+    expect(
+      ptLateAdoptProblems(null, [good()], late, 12).length === 1,
+      "ptLateAdoptProblems: no adoption stats fails",
+    );
     {
       // pt-late-synthetic-skip: exactly emitters x applies skips (not merely > 0).
-      const ap = (applied: number | undefined, skipped: number | undefined) => ({ w11: { applied, particles: { synthetic_skipped: skipped } } });
-      expect(ptSyntheticSkipProblems("l", ap(109, 218), late).problems.length === 0, "ptSyntheticSkipProblems: emitters x applies passes");
-      expect(ptSyntheticSkipProblems("l", ap(109, 109), late).problems.length === 1, "ptSyntheticSkipProblems: only some emitters skipped (> 0 but short) fails");
-      expect(ptSyntheticSkipProblems("l", ap(109, 219), late).problems.length === 1, "ptSyntheticSkipProblems: too many skips fails");
-      expect(ptSyntheticSkipProblems("l", ap(109, 0), late).problems.length === 1, "ptSyntheticSkipProblems: zero skips fails");
-      expect(ptSyntheticSkipProblems("l", ap(109, undefined), late).problems.length === 1, "ptSyntheticSkipProblems: no counter fails");
-      expect(ptSyntheticSkipProblems("l", ap(0, 0), late).problems.length === 1, "ptSyntheticSkipProblems: zero applies (0 === 0) fails");
-      expect(ptSyntheticSkipProblems("l", null, late).problems.length === 1, "ptSyntheticSkipProblems: no applied.json fails");
+      const ap = (
+        applied: number | undefined,
+        skipped: number | undefined,
+      ) => ({ w11: { applied, particles: { synthetic_skipped: skipped } } });
+      expect(
+        ptSyntheticSkipProblems("l", ap(109, 218), late).problems.length === 0,
+        "ptSyntheticSkipProblems: emitters x applies passes",
+      );
+      expect(
+        ptSyntheticSkipProblems("l", ap(109, 109), late).problems.length === 1,
+        "ptSyntheticSkipProblems: only some emitters skipped (> 0 but short) fails",
+      );
+      expect(
+        ptSyntheticSkipProblems("l", ap(109, 219), late).problems.length === 1,
+        "ptSyntheticSkipProblems: too many skips fails",
+      );
+      expect(
+        ptSyntheticSkipProblems("l", ap(109, 0), late).problems.length === 1,
+        "ptSyntheticSkipProblems: zero skips fails",
+      );
+      expect(
+        ptSyntheticSkipProblems("l", ap(109, undefined), late).problems
+          .length === 1,
+        "ptSyntheticSkipProblems: no counter fails",
+      );
+      expect(
+        ptSyntheticSkipProblems("l", ap(0, 0), late).problems.length === 1,
+        "ptSyntheticSkipProblems: zero applies (0 === 0) fails",
+      );
+      expect(
+        ptSyntheticSkipProblems("l", null, late).problems.length === 1,
+        "ptSyntheticSkipProblems: no applied.json fails",
+      );
     }
     const created = good();
     created.table.set(2, ent(2, 2, null, "created"));
-    expect(ptLateAdoptProblems(stats, [created], late, 12).some((p) => p.includes("origin created")), "ptLateAdoptProblems: a created entry fails");
+    expect(
+      ptLateAdoptProblems(stats, [created], late, 12).some((p) =>
+        p.includes("origin created"),
+      ),
+      "ptLateAdoptProblems: a created entry fails",
+    );
     const unknown = good();
-    unknown.items.set(12, { add_particles: 0, unsupported: { "unknown-particles": 1 } });
-    expect(ptLateAdoptProblems(stats, [unknown], late, 12).some((p) => p.includes("unknown-particles")), "ptLateAdoptProblems: an unknown-particles draw fails");
+    unknown.items.set(12, {
+      add_particles: 0,
+      unsupported: { "unknown-particles": 1 },
+    });
+    expect(
+      ptLateAdoptProblems(stats, [unknown], late, 12).some((p) =>
+        p.includes("unknown-particles"),
+      ),
+      "ptLateAdoptProblems: an unknown-particles draw fails",
+    );
     const noBuiltin = good();
     noBuiltin.shaders.set(5, { status: "unsupported", builtin: null });
-    expect(ptLateAdoptProblems(stats, [noBuiltin], late, 12).length === 2, "ptLateAdoptProblems: a process shader without the builtin fails (per entry)");
+    expect(
+      ptLateAdoptProblems(stats, [noBuiltin], late, 12).length === 2,
+      "ptLateAdoptProblems: a process shader without the builtin fails (per entry)",
+    );
     const unlinked = good();
     unlinked.table.set(1, ent(1, 12, null));
-    expect(ptLateAdoptProblems(stats, [unlinked], late, 12).some((p) => p.includes("H_SUB")), "ptLateAdoptProblems: an unlinked subemitter fails");
+    expect(
+      ptLateAdoptProblems(stats, [unlinked], late, 12).some((p) =>
+        p.includes("H_SUB"),
+      ),
+      "ptLateAdoptProblems: an unlinked subemitter fails",
+    );
     const fault: PtLateTx = {
       ...good(),
       table: new Map(),
@@ -856,45 +1675,168 @@ async function main(): Promise<void> {
         [11, { add_particles: 0, unsupported: { "unknown-particles": 1 } }],
       ]),
     };
-    expect(ptLateFaultProblems({ emitters: 0 }, [fault], late).length === 0, "ptLateFaultProblems: the pre-PM7 state passes");
-    expect(ptLateFaultProblems({ emitters: 0 }, [good()], late).length === 2, "ptLateFaultProblems: an adopted state fails it");
-    const ppmStats = { emitters: 2, ppm_materials: 2, refused: 0, ppm_refused: 0, ppm_refused_no_shader: 2, ppm_builtin: 2 };
-    expect(ptLatePpmBuiltinProblems(ppmStats, [good()], late, 12).length === 0, "ptLatePpmBuiltinProblems: all builtin-recovered passes");
-    expect(ptLatePpmBuiltinProblems({ ...ppmStats, ppm_builtin: 1 }, [good()], late, 12).some((p) => p.includes("recovered through the builtin")), "ptLatePpmBuiltinProblems: a short builtin count fails");
-    expect(ptLatePpmBuiltinProblems({ ...ppmStats, ppm_refused_no_shader: 0 }, [good()], late, 12).some((p) => p.includes("named no shader")), "ptLatePpmBuiltinProblems: no no-shader diagnosis fails");
+    expect(
+      ptLateFaultProblems({ emitters: 0 }, [fault], late).length === 0,
+      "ptLateFaultProblems: the pre-PM7 state passes",
+    );
+    expect(
+      ptLateFaultProblems({ emitters: 0 }, [good()], late).length === 2,
+      "ptLateFaultProblems: an adopted state fails it",
+    );
+    const ppmStats = {
+      emitters: 2,
+      ppm_materials: 2,
+      refused: 0,
+      ppm_refused: 0,
+      ppm_refused_no_shader: 2,
+      ppm_builtin: 2,
+    };
+    expect(
+      ptLatePpmBuiltinProblems(ppmStats, [good()], late, 12).length === 0,
+      "ptLatePpmBuiltinProblems: all builtin-recovered passes",
+    );
+    expect(
+      ptLatePpmBuiltinProblems(
+        { ...ppmStats, ppm_builtin: 1 },
+        [good()],
+        late,
+        12,
+      ).some((p) => p.includes("recovered through the builtin")),
+      "ptLatePpmBuiltinProblems: a short builtin count fails",
+    );
+    expect(
+      ptLatePpmBuiltinProblems(
+        { ...ppmStats, ppm_refused_no_shader: 0 },
+        [good()],
+        late,
+        12,
+      ).some((p) => p.includes("named no shader")),
+      "ptLatePpmBuiltinProblems: no no-shader diagnosis fails",
+    );
     const missingDefault = good();
-    (missingDefault.materials.get(1) as { status: string; shader: number | null; params: { name: string }[] }).params =
-      PPM_DECLARED_DEFAULTS.slice(1).map((d) => ({ name: d.name, type: d.type, value: d.value }));
-    expect(ppmDeclaredDefaultProblems([missingDefault]).some((p) => p.includes("inherit_emitter_velocity_ratio absent")), "ppmDeclaredDefaultProblems: a missing declared default fails");
+    (
+      missingDefault.materials.get(1) as {
+        status: string;
+        shader: number | null;
+        params: { name: string }[];
+      }
+    ).params = PPM_DECLARED_DEFAULTS.slice(1).map((d) => ({
+      name: d.name,
+      type: d.type,
+      value: d.value,
+    }));
+    expect(
+      ppmDeclaredDefaultProblems([missingDefault]).some((p) =>
+        p.includes("inherit_emitter_velocity_ratio absent"),
+      ),
+      "ppmDeclaredDefaultProblems: a missing declared default fails",
+    );
     const wrongDefault = good();
-    (wrongDefault.materials.get(2) as { status: string; shader: number | null; params: { name: string; type: string; value: unknown }[] }).params =
-      PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.name === "emission_shape_scale" ? [2, 2, 2] : d.value }));
-    expect(ppmDeclaredDefaultProblems([wrongDefault]).some((p) => p.includes("emission_shape_scale") && p.includes("expected")), "ppmDeclaredDefaultProblems: a wrong declared default fails");
+    (
+      wrongDefault.materials.get(2) as {
+        status: string;
+        shader: number | null;
+        params: { name: string; type: string; value: unknown }[];
+      }
+    ).params = PPM_DECLARED_DEFAULTS.map((d) => ({
+      name: d.name,
+      type: d.type,
+      value: d.name === "emission_shape_scale" ? [2, 2, 2] : d.value,
+    }));
+    expect(
+      ppmDeclaredDefaultProblems([wrongDefault]).some(
+        (p) => p.includes("emission_shape_scale") && p.includes("expected"),
+      ),
+      "ppmDeclaredDefaultProblems: a wrong declared default fails",
+    );
     // LATE-CMBT (results/p3/late-cmbt.md): ptLateCmbtProblems / ppmStats.
-    const lateShader = { amount: 14, seed: 1011, frame: 15, key: { emission_shape: "sphere_surface" } };
+    const lateShader = {
+      amount: 14,
+      seed: 1011,
+      frame: 15,
+      key: { emission_shape: "sphere_surface" },
+    };
     const cmbt = (): PtLateTx => ({
       ...good(),
       table: new Map([[9, ent(9, 14, null, "created")]]),
-      materials: new Map([[9, { status: "ok", shader: 5, params: PPM_DECLARED_DEFAULTS.map((d) => ({ name: d.name, type: d.type, value: d.value })) }]]),
+      materials: new Map([
+        [
+          9,
+          {
+            status: "ok",
+            shader: 5,
+            params: PPM_DECLARED_DEFAULTS.map((d) => ({
+              name: d.name,
+              type: d.type,
+              value: d.value,
+            })),
+          },
+        ],
+      ]),
     });
-    expect(ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbt()], lateShader).length === 0, "ptLateCmbtProblems: a keyed post-arm process material passes");
-    expect(ptLateCmbtProblems({ unknown_shader_keyed: 0 }, [cmbt()], lateShader).some((p) => p.includes("unknown_shader_keyed")), "ptLateCmbtProblems: no re-keyed material fails");
+    expect(
+      ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbt()], lateShader)
+        .length === 0,
+      "ptLateCmbtProblems: a keyed post-arm process material passes",
+    );
+    expect(
+      ptLateCmbtProblems(
+        { unknown_shader_keyed: 0 },
+        [cmbt()],
+        lateShader,
+      ).some((p) => p.includes("unknown_shader_keyed")),
+      "ptLateCmbtProblems: no re-keyed material fails",
+    );
     const cmbtUnknown = cmbt();
-    cmbtUnknown.materials.set(9, { status: "unsupported", shader: null, params: [] });
-    expect(ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbtUnknown], lateShader).some((p) => p.includes("process material 9 is unsupported")), "ptLateCmbtProblems: an unknown-shader material fails");
+    cmbtUnknown.materials.set(9, {
+      status: "unsupported",
+      shader: null,
+      params: [],
+    });
+    expect(
+      ptLateCmbtProblems(
+        { unknown_shader_keyed: 1 },
+        [cmbtUnknown],
+        lateShader,
+      ).some((p) => p.includes("process material 9 is unsupported")),
+      "ptLateCmbtProblems: an unknown-shader material fails",
+    );
     const cmbtNoBuiltin = cmbt();
     cmbtNoBuiltin.shaders.set(5, { status: "unsupported", builtin: null });
-    expect(ptLateCmbtProblems({ unknown_shader_keyed: 1 }, [cmbtNoBuiltin], lateShader).some((p) => p.includes("not an ok particle_process_material builtin")), "ptLateCmbtProblems: a process shader without the builtin fails");
-    expect(readPpmStats({ stream: { gate8: { particles: { unknown_shader_keyed: 1 } } } })?.unknown_shader_keyed === 1 && readPpmStats({}) === null, "ppmStats: reads stream.gate8.particles");
     expect(
-      adoptionStats({ stream: { gate8: { particles: { adoption: { emitters: 3 } } } } })?.emitters === 3 && adoptionStats({}) === null,
+      ptLateCmbtProblems(
+        { unknown_shader_keyed: 1 },
+        [cmbtNoBuiltin],
+        lateShader,
+      ).some((p) => p.includes("not an ok particle_process_material builtin")),
+      "ptLateCmbtProblems: a process shader without the builtin fails",
+    );
+    expect(
+      readPpmStats({
+        stream: { gate8: { particles: { unknown_shader_keyed: 1 } } },
+      })?.unknown_shader_keyed === 1 && readPpmStats({}) === null,
+      "ppmStats: reads stream.gate8.particles",
+    );
+    expect(
+      adoptionStats({
+        stream: { gate8: { particles: { adoption: { emitters: 3 } } } },
+      })?.emitters === 3 && adoptionStats({}) === null,
       "adoptionStats: reads stream.gate8.particles.adoption",
     );
   }
 
   // 9. runG8ptLate: a late leg that did not run is a problem, not a silent skip.
   {
-    const legs = ["late/capture", "fault-no-particles/capture", "fault-ppm-no-shader/capture", "late-cmbt/capture", "late/receiver", "late/receiver-patch", "fault-no-particles/receiver", "reference"];
+    const legs = [
+      "late/capture",
+      "fault-no-particles/capture",
+      "fault-ppm-no-shader/capture",
+      "late-cmbt/capture",
+      "late/receiver",
+      "late/receiver-patch",
+      "fault-no-particles/receiver",
+      "reference",
+    ];
     const drive = async (omit: string | null) => {
       const root = mkdtempSync(join(tmpdir(), "self-test-gate8-pt-late-"));
       for (const l of legs) {
@@ -902,26 +1844,64 @@ async function main(): Promise<void> {
         if (l !== omit) writeFileSync(join(root, l, "exit-code.txt"), "0\n");
       }
       const checks: Awaited<ReturnType<typeof ptLateChecks>> = [];
-      const px = { regions: {}, background: [0, 0] as [number, number], tail_frames: [], dark: {}, coverage_band: 2 };
-      const late = { arm_frame: 12, emitters: 10, process_materials: 10, subemitter: "H_SUB", coverage_from_frame: 46 };
+      const px = {
+        regions: {},
+        background: [0, 0] as [number, number],
+        tail_frames: [],
+        dark: {},
+        coverage_band: 2,
+      };
+      const late = {
+        arm_frame: 12,
+        emitters: 10,
+        process_materials: 10,
+        subemitter: "H_SUB",
+        coverage_from_frame: 46,
+      };
       const lateShader = { amount: 14, seed: 1, frame: 15, key: {} };
-      const deps = { validate: async () => ["ok", "ok"] as [string, string], trace: async () => null, amountOf: () => undefined };
+      const deps = {
+        validate: async () => ["ok", "ok"] as [string, string],
+        trace: async () => null,
+        amountOf: () => undefined,
+      };
       try {
-        await runG8ptLate(root, [{ step: 0, settle: 20 }], px, late, lateShader, deps, checks, {});
+        await runG8ptLate(
+          root,
+          [{ step: 0, settle: 20 }],
+          px,
+          late,
+          lateShader,
+          deps,
+          checks,
+          {},
+        );
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
       return checks;
     };
-    type ptLateChecks = () => Promise<import("../lib/gate8-adopt-checks").G8aCheck[]>;
+    type ptLateChecks = () => Promise<
+      import("../lib/gate8-adopt-checks").G8aCheck[]
+    >;
     const full = await drive(null);
-    expect(full.find((c) => c.id === "pt-late-validate")?.passed === true, "runG8ptLate: pt-late-validate passes when every capture ran");
+    expect(
+      full.find((c) => c.id === "pt-late-validate")?.passed === true,
+      "runG8ptLate: pt-late-validate passes when every capture ran",
+    );
     const noLate = await drive("late/capture");
     const v = noLate.find((c) => c.id === "pt-late-validate");
-    expect(v !== undefined && !v.passed && /did not run/.test(v.detail ?? ""), "runG8ptLate: pt-late-validate fails when a capture leg did not run", v?.detail);
+    expect(
+      v !== undefined && !v.passed && /did not run/.test(v.detail ?? ""),
+      "runG8ptLate: pt-late-validate fails when a capture leg did not run",
+      v?.detail,
+    );
     const noRecv = await drive("late/receiver-patch");
     const lc = noRecv.find((c) => c.id === "pt-late-lifecycle");
-    expect(lc !== undefined && !lc.passed && /did not run/.test(lc.detail ?? ""), "runG8ptLate: pt-late-lifecycle fails when one receiver leg did not run", lc?.detail);
+    expect(
+      lc !== undefined && !lc.passed && /did not run/.test(lc.detail ?? ""),
+      "runG8ptLate: pt-late-lifecycle fails when one receiver leg did not run",
+      lc?.detail,
+    );
   }
 
   // 10. A sink a validator found missing is a named problem (ptc-validate, w11's sabotage checks),
@@ -933,27 +1913,64 @@ async function main(): Promise<void> {
         mkdirSync(dirname(join(root, rel)), { recursive: true });
         writeFileSync(join(root, rel), c);
       };
-      for (const l of ["ptc/reference-gl", "ptc/reference-fwdplus", "ptc/capture", "ptc/receiver"]) put(`${l}/exit-code.txt`, "0\n");
-      put("ptc/capture/stdout.log", "[fixture] rendering_method=forward_plus\n");
+      for (const l of [
+        "ptc/reference-gl",
+        "ptc/reference-fwdplus",
+        "ptc/capture",
+        "ptc/receiver",
+      ])
+        put(`${l}/exit-code.txt`, "0\n");
+      put(
+        "ptc/capture/stdout.log",
+        "[fixture] rendering_method=forward_plus\n",
+      );
       const ptcChecks: import("../lib/gate8-adopt-checks").G8aCheck[] = [];
       await runG8ptPtc(
         root,
-        { validate: async (path) => (path.endsWith("recording-patch.rs12") ? null : (["ok", "ok"] as [string, string])) },
+        {
+          validate: async (path) =>
+            path.endsWith("recording-patch.rs12")
+              ? null
+              : (["ok", "ok"] as [string, string]),
+        },
         ptcChecks,
         {},
       );
       const pv = ptcChecks.find((c) => c.id === "ptc-validate");
-      expect(pv !== undefined && !pv.passed && /recording-patch\.rs12: missing/.test(pv.detail ?? ""), "ptc-validate: one sink missing fails and names it", pv?.detail);
+      expect(
+        pv !== undefined &&
+          !pv.passed &&
+          /recording-patch\.rs12: missing/.test(pv.detail ?? ""),
+        "ptc-validate: one sink missing fails and names it",
+        pv?.detail,
+      );
       const ptcOk: typeof ptcChecks = [];
-      await runG8ptPtc(root, { validate: async () => ["ok", "ok"] as [string, string] }, ptcOk, {});
-      expect(ptcOk.find((c) => c.id === "ptc-validate")?.passed === true, "ptc-validate: both sinks present passes");
+      await runG8ptPtc(
+        root,
+        { validate: async () => ["ok", "ok"] as [string, string] },
+        ptcOk,
+        {},
+      );
+      expect(
+        ptcOk.find((c) => c.id === "ptc-validate")?.passed === true,
+        "ptc-validate: both sinks present passes",
+      );
 
       // w11: keep-carried-caught judges both sinks; only recording.rs11 exists.
       put("g8w11/scene/sabotage-keep-carried/capture/exit-code.txt", "0\n");
-      put("g8w11/scene/sabotage-keep-carried/capture/recording.rs11", "not a recording");
+      put(
+        "g8w11/scene/sabotage-keep-carried/capture/recording.rs11",
+        "not a recording",
+      );
       const w = await runG8w11(root);
       const kc = w.checks.find((c) => c.id === "keep-carried-caught");
-      expect(kc !== undefined && !kc.passed && /recording-patch\.rs11: missing/.test(kc.detail ?? ""), "keep-carried-caught: a missing sink is named, not skipped", kc?.detail);
+      expect(
+        kc !== undefined &&
+          !kc.passed &&
+          /recording-patch\.rs11: missing/.test(kc.detail ?? ""),
+        "keep-carried-caught: a missing sink is named, not skipped",
+        kc?.detail,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -965,21 +1982,34 @@ async function main(): Promise<void> {
     try {
       for (const l of ["reference", "receiver", "receiver-patch"]) {
         mkdirSync(join(root, l), { recursive: true });
-        if (l !== "receiver-patch") writeFileSync(join(root, l, "exit-code.txt"), "0\n");
+        if (l !== "receiver-patch")
+          writeFileSync(join(root, l, "exit-code.txt"), "0\n");
       }
-      const px = { regions: {}, background: [0, 0] as [number, number], tail_frames: [], dark: {}, coverage_band: 2 };
+      const px = {
+        regions: {},
+        background: [0, 0] as [number, number],
+        tail_frames: [],
+        dark: {},
+        coverage_band: 2,
+      };
       const checks: import("../lib/gate8-adopt-checks").G8aCheck[] = [];
       await runG8ptReceivers(root, [], px, null, checks, {});
       for (const id of ["pt-lifecycle", "pt-replay"]) {
         const c = checks.find((x) => x.id === id);
-        expect(c !== undefined && !c.passed && /did not run/.test(c.detail ?? ""), `runG8ptReceivers: ${id} fails when receiver-patch did not run`, c?.detail);
+        expect(
+          c !== undefined && !c.passed && /did not run/.test(c.detail ?? ""),
+          `runG8ptReceivers: ${id} fails when receiver-patch did not run`,
+          c?.detail,
+        );
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }
 
-  console.log(`self-test-gate8-pt: ${assertions - failures}/${assertions} assertions passed`);
+  console.log(
+    `self-test-gate8-pt: ${assertions - failures}/${assertions} assertions passed`,
+  );
   if (failures > 0) process.exitCode = 1;
 }
 

@@ -2,11 +2,7 @@
 // worker.ts). One worker per page, started once; transcodes are queued in the worker's own message
 // order and resolved by id.
 
-import {
-  familyBits,
-  TARGET_FORMAT,
-  type TranscodeReply,
-} from "./protocol";
+import { familyBits, TARGET_FORMAT, type TranscodeReply } from "./protocol";
 
 export interface Transcoded {
   /** The Image.Format name of the output (protocol.ts TARGET_FORMAT). */
@@ -29,12 +25,19 @@ export class TranscodeError extends Error {}
  * EXT_texture_compression_bptc and _rgtc refuse a level 0 whose width or height is not a multiple
  * of 4 (INVALID_OPERATION; measured in the pinned Chromium, G8kb), where desktop GL, Godot's
  * native target, accepts it. ETC2 and ASTC have no such rule. */
-export const BLOCK_ALIGNED_FAMILIES: readonly string[] = ["s3tc", "bptc", "rgtc"];
+export const BLOCK_ALIGNED_FAMILIES: readonly string[] = [
+  "s3tc",
+  "bptc",
+  "rgtc",
+];
 
 /** D14's input for one KTX2 in a WebGL context: the stated families, minus the BC ones when the
  * KTX2's level 0 (header pixelWidth/pixelHeight, bytes 20-27) is not 4-aligned, so Godot's rule
  * falls through to the next target it would take without them (at worst RGBA8). */
-export function webglFamilies(ktx2: Uint8Array, families: readonly string[]): string[] {
+export function webglFamilies(
+  ktx2: Uint8Array,
+  families: readonly string[],
+): string[] {
   if (ktx2.length < 28) return [...families];
   const view = new DataView(ktx2.buffer, ktx2.byteOffset, 28);
   const w = view.getUint32(20, true);
@@ -57,11 +60,21 @@ export class BasisTranscoder {
     this.worker = new Worker(workerUrl, { type: "module" });
     this.ready = new Promise<number>((resolve, reject) => {
       this.worker.onmessage = (ev: MessageEvent): void => {
-        const msg = ev.data as { type: string; init_ms?: number; error?: string };
+        const msg = ev.data as {
+          type: string;
+          init_ms?: number;
+          error?: string;
+        };
         if (msg.type === "ready") {
-          this.worker.onmessage = (e: MessageEvent): void => this.reply(e.data as TranscodeReply);
+          this.worker.onmessage = (e: MessageEvent): void =>
+            this.reply(e.data as TranscodeReply);
           resolve(msg.init_ms ?? 0);
-        } else reject(new TranscodeError(`basis transcoder worker: ${msg.error ?? msg.type}`));
+        } else
+          reject(
+            new TranscodeError(
+              `basis transcoder worker: ${msg.error ?? msg.type}`,
+            ),
+          );
       };
       this.worker.onerror = (ev: ErrorEvent): void =>
         reject(new TranscodeError(`basis transcoder worker: ${ev.message}`));
@@ -79,7 +92,10 @@ export class BasisTranscoder {
   /** Transcode one verified KTX2 (a copy of `bytes` is transferred) to D14's target for
    * `families`, the context's stated gpu_formats (after the mask). Rejects with TranscodeError
    * when basisu refuses it or the target is unknown. */
-  async transcode(bytes: Uint8Array, families: readonly string[]): Promise<Transcoded> {
+  async transcode(
+    bytes: Uint8Array,
+    families: readonly string[],
+  ): Promise<Transcoded> {
     await this.ready;
     families = webglFamilies(bytes, families);
     const id = this.nextId++;
@@ -93,9 +109,13 @@ export class BasisTranscoder {
       );
     });
     const roundTripMs = performance.now() - t0;
-    if (!r.ok || !r.data) throw new TranscodeError(r.error ?? "transcode failed");
+    if (!r.ok || !r.data)
+      throw new TranscodeError(r.error ?? "transcode failed");
     const format = TARGET_FORMAT[r.target ?? -1];
-    if (!format) throw new TranscodeError(`transcode target ${r.target} has no upload format`);
+    if (!format)
+      throw new TranscodeError(
+        `transcode target ${r.target} has no upload format`,
+      );
     return {
       format,
       width: r.width ?? 0,
@@ -112,7 +132,12 @@ export class BasisTranscoder {
   terminate(): void {
     this.worker.terminate();
     for (const w of this.waiting.values())
-      w.resolve({ type: "result", id: 0, ok: false, error: "the transcoder was terminated" });
+      w.resolve({
+        type: "result",
+        id: 0,
+        ok: false,
+        error: "the transcoder was terminated",
+      });
     this.waiting.clear();
   }
 }

@@ -33,11 +33,6 @@ import { join } from "node:path";
 import type { ResourceLine } from "./gate2-checks";
 import { replayMeshLog } from "./gate5e-checks";
 import { RS_CORE_CHECK } from "./gate7-gsw-checks";
-import { runG8w11Gsw } from "./gate8-w11-gsw-checks";
-import {
-  runG8w11Native,
-  runG8w11NativeCoding,
-} from "./gate8-w11-native-checks";
 import {
   check,
   type G8aCheck,
@@ -45,6 +40,15 @@ import {
   readText,
   skipped,
 } from "./gate8-adopt-checks";
+import { runG8w11Gsw } from "./gate8-w11-gsw-checks";
+import {
+  runG8w11Native,
+  runG8w11NativeCoding,
+} from "./gate8-w11-native-checks";
+import { runG8w11Coding } from "./gate8-w11t-checks";
+import { runG8w13 } from "./gate8-w13-checks";
+import { runG8w13Gsw } from "./gate8-w13-gsw-checks";
+import { runG8w13Native } from "./gate8-w13-native-checks";
 import {
   decodeRecord,
   type ResolvedRecording,
@@ -56,10 +60,6 @@ import {
   withRecordMemo,
 } from "./render-stream-2";
 import { expectedMeshBufferBytes } from "./render-stream-mesh";
-import { runG8w11Coding } from "./gate8-w11t-checks";
-import { runG8w13 } from "./gate8-w13-checks";
-import { runG8w13Gsw } from "./gate8-w13-gsw-checks";
-import { runG8w13Native } from "./gate8-w13-native-checks";
 
 export const HONEST_LEGS = [
   "scale/capture",

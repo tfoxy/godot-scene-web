@@ -55,21 +55,32 @@ const EXTENSIONS: [string, string][] = [
 ];
 
 async function inputs(): Promise<{ entry: Entry; bytes: Uint8Array }[]> {
-  const manifest = (await (await fetch("inputs/basis/manifest.json")).json()) as Entry[];
+  const manifest = (await (
+    await fetch("inputs/basis/manifest.json")
+  ).json()) as Entry[];
   const out: { entry: Entry; bytes: Uint8Array }[] = [];
   for (const entry of manifest)
-    out.push({ entry, bytes: new Uint8Array(await (await fetch(`inputs/basis/${entry.file}`)).arrayBuffer()) });
+    out.push({
+      entry,
+      bytes: new Uint8Array(
+        await (await fetch(`inputs/basis/${entry.file}`)).arrayBuffer(),
+      ),
+    });
   return out;
 }
 
 function transcoder(): BasisTranscoder {
-  return new BasisTranscoder(new URL("basis-worker.js", location.href).href, new URL("basis/basis_transcoder.wasm", location.href).href);
+  return new BasisTranscoder(
+    new URL("basis-worker.js", location.href).href,
+    new URL("basis/basis_transcoder.wasm", location.href).href,
+  );
 }
 
 /** Texels of every level (the work a transcode does). */
 function texels(w: number, h: number, levels: number): number {
   let n = 0;
-  for (let l = 0; l < levels; l++) n += Math.max(1, w >> l) * Math.max(1, h >> l);
+  for (let l = 0; l < levels; l++)
+    n += Math.max(1, w >> l) * Math.max(1, h >> l);
   return n;
 }
 
@@ -88,22 +99,41 @@ async function transcodeMode(): Promise<void> {
   ];
   const byFormat: Record<string, { ms: number; mpx: number; n: number }> = {};
   const rows: unknown[] = [];
-  const totals: Record<string, { ms: number; rtt: number; mpx: number; n: number; formats: string[] }> = {};
+  const totals: Record<
+    string,
+    { ms: number; rtt: number; mpx: number; n: number; formats: string[] }
+  > = {};
   for (const [label, fams] of sets) {
     const tot = { ms: 0, rtt: 0, mpx: 0, n: 0, formats: [] as string[] };
     for (let r = 0; r < warmup + repeats; r++)
       for (const f of files) {
-        set({ state: "running", detail: `${label} ${r < warmup ? "warmup" : `repeat ${r - warmup + 1}`} ${f.entry.name.slice(0, 12)}` });
+        set({
+          state: "running",
+          detail: `${label} ${r < warmup ? "warmup" : `repeat ${r - warmup + 1}`} ${f.entry.name.slice(0, 12)}`,
+        });
         const x = await t.transcode(f.bytes, fams);
         if (r < warmup) continue;
         const mpx = texels(x.width, x.height, x.levels) / 1e6;
-        rows.push({ set: label, file: f.entry.name, format: x.format, width: x.width, height: x.height, levels: x.levels, components: x.components, ms: x.ms, round_trip_ms: x.roundTripMs, mpx, repeat: r - warmup + 1 });
+        rows.push({
+          set: label,
+          file: f.entry.name,
+          format: x.format,
+          width: x.width,
+          height: x.height,
+          levels: x.levels,
+          components: x.components,
+          ms: x.ms,
+          round_trip_ms: x.roundTripMs,
+          mpx,
+          repeat: r - warmup + 1,
+        });
         tot.ms += x.ms;
         tot.rtt += x.roundTripMs;
         tot.mpx += mpx;
         tot.n++;
         if (!tot.formats.includes(x.format)) tot.formats.push(x.format);
-        const b = (byFormat[x.format] ??= { ms: 0, mpx: 0, n: 0 });
+        byFormat[x.format] ??= { ms: 0, mpx: 0, n: 0 };
+        const b = byFormat[x.format];
         b.ms += x.ms;
         b.mpx += mpx;
         b.n++;
@@ -112,12 +142,36 @@ async function transcodeMode(): Promise<void> {
   }
   t.terminate();
   const summary = Object.fromEntries(
-    Object.entries(totals).map(([k, v]) => [k, { formats: v.formats, transcodes: v.n, mpx: v.mpx, ms: v.ms, ms_per_mpx: v.ms / v.mpx, round_trip_ms_per_mpx: v.rtt / v.mpx }]),
+    Object.entries(totals).map(([k, v]) => [
+      k,
+      {
+        formats: v.formats,
+        transcodes: v.n,
+        mpx: v.mpx,
+        ms: v.ms,
+        ms_per_mpx: v.ms / v.mpx,
+        round_trip_ms_per_mpx: v.rtt / v.mpx,
+      },
+    ]),
   );
   const formats = Object.fromEntries(
-    Object.entries(byFormat).map(([k, v]) => [k, { transcodes: v.n, mpx: v.mpx, ms: v.ms, ms_per_mpx: v.ms / v.mpx }]),
+    Object.entries(byFormat).map(([k, v]) => [
+      k,
+      { transcodes: v.n, mpx: v.mpx, ms: v.ms, ms_per_mpx: v.ms / v.mpx },
+    ]),
   );
-  set({ state: "done", detail: "transcode done", result: { init_ms: initMs, summary, formats, rows, user_agent: navigator.userAgent, cross_origin_isolated: crossOriginIsolated } });
+  set({
+    state: "done",
+    detail: "transcode done",
+    result: {
+      init_ms: initMs,
+      summary,
+      formats,
+      rows,
+      user_agent: navigator.userAgent,
+      cross_origin_isolated: crossOriginIsolated,
+    },
+  });
 }
 
 async function gpuMode(): Promise<void> {
@@ -153,17 +207,42 @@ async function gpuMode(): Promise<void> {
   for (const { f, x } of transcoded) {
     const level0 = x.data.subarray(0, x.level0Bytes);
     for (let c = 0; c < copies; c++) {
-      set({ state: "running", detail: `upload ${f.entry.name.slice(0, 12)} copy ${c + 1}/${copies}` });
+      set({
+        state: "running",
+        detail: `upload ${f.entry.name.slice(0, 12)} copy ${c + 1}/${copies}`,
+      });
       const tex = gl.createTexture();
       if (!tex) throw new Error("createTexture failed");
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       if (x.format === "RGBA8")
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, x.width, x.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, level0);
-      else gl.compressedTexImage2D(gl.TEXTURE_2D, 0, GL_FORMAT[x.format], x.width, x.height, 0, level0);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA8,
+          x.width,
+          x.height,
+          0,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          level0,
+        );
+      else
+        gl.compressedTexImage2D(
+          gl.TEXTURE_2D,
+          0,
+          GL_FORMAT[x.format],
+          x.width,
+          x.height,
+          0,
+          level0,
+        );
       const err = gl.getError();
-      if (err !== 0) throw new Error(`upload ${x.format} ${x.width}x${x.height}: GL error ${err}`);
+      if (err !== 0)
+        throw new Error(
+          `upload ${x.format} ${x.width}x${x.height}: GL error ${err}`,
+        );
       textures.push(tex);
       bytes += level0.length;
       texelsUploaded += x.width * x.height;
@@ -172,10 +251,16 @@ async function gpuMode(): Promise<void> {
   }
   // One draw per texture so the driver makes it resident (a 1x1 point sampling it).
   const vs = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
-  gl.shaderSource(vs, "#version 300 es\nvoid main(){gl_Position=vec4(0.0,0.0,0.0,1.0);gl_PointSize=1.0;}");
+  gl.shaderSource(
+    vs,
+    "#version 300 es\nvoid main(){gl_Position=vec4(0.0,0.0,0.0,1.0);gl_PointSize=1.0;}",
+  );
   gl.compileShader(vs);
   const fs = gl.createShader(gl.FRAGMENT_SHADER) as WebGLShader;
-  gl.shaderSource(fs, "#version 300 es\nprecision mediump float;uniform sampler2D t;out vec4 o;void main(){o=texture(t,vec2(0.5));}");
+  gl.shaderSource(
+    fs,
+    "#version 300 es\nprecision mediump float;uniform sampler2D t;out vec4 o;void main(){o=texture(t,vec2(0.5));}",
+  );
   gl.compileShader(fs);
   const prog = gl.createProgram() as WebGLProgram;
   gl.attachShader(prog, vs);
@@ -191,13 +276,27 @@ async function gpuMode(): Promise<void> {
   set({
     state: "holding",
     detail: `${textures.length} textures resident`,
-    result: { delivery, copies, families, textures: textures.length, level0_bytes: bytes, texels: texelsUploaded, formats, renderer: gl.getParameter(gl.RENDERER) },
+    result: {
+      delivery,
+      copies,
+      families,
+      textures: textures.length,
+      level0_bytes: bytes,
+      texels: texelsUploaded,
+      formats,
+      renderer: gl.getParameter(gl.RENDERER),
+    },
   });
   (window as unknown as { __keep: unknown }).__keep = textures;
 }
 
 /** G8kb2: PSNR (RGB, plus alpha when the reference has it) of `got` (RGBA8, row 0 first) against a reference. */
-function psnr(got: Uint8Array, ref: Uint8Array, refChannels: number, n: number): number {
+function psnr(
+  got: Uint8Array,
+  ref: Uint8Array,
+  refChannels: number,
+  n: number,
+): number {
   const ch = refChannels === 4 ? 4 : 3;
   let se = 0;
   for (let i = 0; i < n; i++)
@@ -214,19 +313,29 @@ function psnr(got: Uint8Array, ref: Uint8Array, refChannels: number, n: number):
  * 1:1 texelFetch draw read back), and compared with the UASTC decode (cTFRGBA32) and the source. */
 async function qualityMode(): Promise<void> {
   const canvas = document.getElementById("c") as HTMLCanvasElement;
-  const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+  const gl = canvas.getContext("webgl2", {
+    antialias: false,
+    preserveDrawingBuffer: true,
+  });
   if (!gl) throw new Error("no webgl2");
   const supported = gl.getSupportedExtensions() ?? [];
   const families: string[] = [];
-  for (const [f, ext] of EXTENSIONS) if (supported.includes(ext) && gl.getExtension(ext)) families.push(f);
+  for (const [f, ext] of EXTENSIONS)
+    if (supported.includes(ext) && gl.getExtension(ext)) families.push(f);
   const files = await inputs();
   const t = transcoder();
   await t.ready;
   const vs = gl.createShader(gl.VERTEX_SHADER) as WebGLShader;
-  gl.shaderSource(vs, "#version 300 es\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0.0,1.0);}");
+  gl.shaderSource(
+    vs,
+    "#version 300 es\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0.0,1.0);}",
+  );
   gl.compileShader(vs);
   const fs = gl.createShader(gl.FRAGMENT_SHADER) as WebGLShader;
-  gl.shaderSource(fs, "#version 300 es\nprecision highp float;uniform highp sampler2D t;out vec4 o;void main(){o=texelFetch(t,ivec2(gl_FragCoord.xy),0);}");
+  gl.shaderSource(
+    fs,
+    "#version 300 es\nprecision highp float;uniform highp sampler2D t;out vec4 o;void main(){o=texelFetch(t,ivec2(gl_FragCoord.xy),0);}",
+  );
   gl.compileShader(fs);
   const prog = gl.createProgram() as WebGLProgram;
   gl.attachShader(prog, vs);
@@ -237,26 +346,49 @@ async function qualityMode(): Promise<void> {
   for (const f of files) {
     set({ state: "running", detail: `quality ${f.entry.name.slice(0, 12)}` });
     const ref = await t.transcode(f.bytes, []);
-    if (ref.format !== "RGBA8") throw new Error(`reference transcode is ${ref.format}`);
+    if (ref.format !== "RGBA8")
+      throw new Error(`reference transcode is ${ref.format}`);
     const w = ref.width;
     const h = ref.height;
     const refPx = ref.data.subarray(0, w * h * 4);
     const src = f.entry.source
-      ? new Uint8Array(await (await fetch(`inputs/basis/${f.entry.source.file}`)).arrayBuffer())
+      ? new Uint8Array(
+          await (
+            await fetch(`inputs/basis/${f.entry.source.file}`)
+          ).arrayBuffer(),
+        )
       : null;
     canvas.width = w;
     canvas.height = h;
     gl.viewport(0, 0, w, h);
-    for (const [label, fams] of [["etc2", ["etc2"]], ["phone", ["etc2", "astc"]]] as [string, string[]][]) {
-      const x = await t.transcode(f.bytes, webglFamilies(f.bytes, fams.filter((q) => families.includes(q))));
+    for (const [label, fams] of [
+      ["etc2", ["etc2"]],
+      ["phone", ["etc2", "astc"]],
+    ] as [string, string[]][]) {
+      const x = await t.transcode(
+        f.bytes,
+        webglFamilies(
+          f.bytes,
+          fams.filter((q) => families.includes(q)),
+        ),
+      );
       if (x.format === "RGBA8") continue; // the context has neither family
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.compressedTexImage2D(gl.TEXTURE_2D, 0, GL_FORMAT[x.format], w, h, 0, x.data.subarray(0, x.level0Bytes));
+      gl.compressedTexImage2D(
+        gl.TEXTURE_2D,
+        0,
+        GL_FORMAT[x.format],
+        w,
+        h,
+        0,
+        x.data.subarray(0, x.level0Bytes),
+      );
       const err = gl.getError();
-      if (err !== 0) throw new Error(`upload ${x.format} ${w}x${h}: GL error ${err}`);
+      if (err !== 0)
+        throw new Error(`upload ${x.format} ${w}x${h}: GL error ${err}`);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       const px = new Uint8Array(w * h * 4);
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -270,16 +402,31 @@ async function qualityMode(): Promise<void> {
         height: h,
         bytes_per_px: x.level0Bytes / (w * h),
         psnr_vs_uastc: psnr(px, refPx, 4, w * h),
-        psnr_vs_source: src && f.entry.source ? psnr(px, src, f.entry.source.channels, w * h) : null,
-        uastc_psnr_vs_source: src && f.entry.source ? psnr(refPx, src, f.entry.source.channels, w * h) : null,
+        psnr_vs_source:
+          src && f.entry.source
+            ? psnr(px, src, f.entry.source.channels, w * h)
+            : null,
+        uastc_psnr_vs_source:
+          src && f.entry.source
+            ? psnr(refPx, src, f.entry.source.channels, w * h)
+            : null,
       });
     }
   }
   t.terminate();
-  set({ state: "done", detail: "quality done", result: { families, rows, user_agent: navigator.userAgent } });
+  set({
+    state: "done",
+    detail: "quality done",
+    result: { families, rows, user_agent: navigator.userAgent },
+  });
 }
 
 const mode = params.get("mode") ?? "transcode";
-(mode === "gpu" ? gpuMode() : mode === "quality" ? qualityMode() : transcodeMode()).catch((e: unknown) => {
+(mode === "gpu"
+  ? gpuMode()
+  : mode === "quality"
+    ? qualityMode()
+    : transcodeMode()
+).catch((e: unknown) => {
   set({ state: "error", detail: e instanceof Error ? e.message : String(e) });
 });

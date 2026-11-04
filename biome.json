@@ -11,7 +11,10 @@
       "!packages/hb-gpu/vendor/hb-gpu.mjs",
       "!experiments/render-stream/protocol/golden",
       "!experiments/render-stream/protocol/golden-1",
-      "!experiments/render-stream/protocol/golden-2"
+      "!experiments/render-stream/protocol/golden-2",
+      "!experiments/render-stream/protocol/golden-*",
+      "!experiments/render-stream/protocol/features",
+      "!experiments/render-stream/fixtures/**/*.json"
     ]
   },
   "formatter": {

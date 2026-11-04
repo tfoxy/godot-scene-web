@@ -161,7 +161,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     this.lastAcceptedSeq = 0;
   }
 
-  receive(data: ArrayBuffer, sessionSeen: boolean, copyDecoded = false): CoreMessage {
+  receive(
+    data: ArrayBuffer,
+    sessionSeen: boolean,
+    copyDecoded = false,
+  ): CoreMessage {
     const g = this.g;
     let len = data.byteLength;
     // Q14c step 1: one copy into wasm's receive buffer (the pointer after rx(), which may grow).
@@ -182,7 +186,11 @@ export class WasmStreamCore implements StreamCore, ExtensionCore {
     // REC1: a recorder copies the decoded record out of wasm (decode may have grown rx, so read
     // the pointer again). The pure client passes `copyDecoded` false and copies nothing.
     if (copyDecoded) {
-      this.decoded = new Uint8Array(this.memory.buffer, g.rx_ptr(), len).slice();
+      this.decoded = new Uint8Array(
+        this.memory.buffer,
+        g.rx_ptr(),
+        len,
+      ).slice();
     }
     if (!sessionSeen) {
       this.particles = new GswParticles();

@@ -562,7 +562,8 @@ async function stallLeg(dir: string): Promise<StallLeg> {
   } catch {
     problems.push("no stdout.log");
   }
-  const source = /shader-clock: carried; source=([a-z-]+)/.exec(log)?.[1] ?? "none";
+  const source =
+    /shader-clock: carried; source=([a-z-]+)/.exec(log)?.[1] ?? "none";
   const stalls = [
     ...log.matchAll(
       /\[fixture\] stall frame=(\d+) ms=\d+ next_frame=\d+ next_delta=([0-9.e+-]+)/g,

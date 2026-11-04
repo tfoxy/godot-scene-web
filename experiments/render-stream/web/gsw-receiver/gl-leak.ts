@@ -12,7 +12,9 @@
 // window, without approaching this box's VRAM.
 
 const LEAK_TEXTURE_SIZE = 512;
-const LEAK_PIXELS = new Uint8Array(LEAK_TEXTURE_SIZE * LEAK_TEXTURE_SIZE * 4).fill(127);
+const LEAK_PIXELS = new Uint8Array(
+  LEAK_TEXTURE_SIZE * LEAK_TEXTURE_SIZE * 4,
+).fill(127);
 const LEAK_INTERVAL_MS = 2000;
 
 let gl: WebGL2RenderingContext | null = null;
@@ -60,7 +62,13 @@ export function leakOneIfDue(nowMs: number): number {
   // driver cannot keep the allocation lazy (an unbound/undrawn texture may never get memory).
   const fbo = g.createFramebuffer();
   g.bindFramebuffer(g.FRAMEBUFFER, fbo);
-  g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, texture, 0);
+  g.framebufferTexture2D(
+    g.FRAMEBUFFER,
+    g.COLOR_ATTACHMENT0,
+    g.TEXTURE_2D,
+    texture,
+    0,
+  );
   g.clearColor(0.25, 0.5, 0.75, 1);
   g.clear(g.COLOR_BUFFER_BIT);
   g.readPixels(0, 0, 1, 1, g.RGBA, g.UNSIGNED_BYTE, new Uint8Array(4));

@@ -36,8 +36,8 @@ import { join } from "node:path";
 
 import { decodePngRgba } from "./gate-minus1-checks";
 import {
-  connectionRates,
   type ConnRates,
+  connectionRates,
   finalShotPath,
   type HostWindow,
   interpolate,
@@ -198,7 +198,8 @@ export function devHostWindow(
   const first = timeline.find((l) =>
     l.connections.some((c) => c.connection === connection),
   );
-  if (!first) return `connection ${connection} never appears in perf-timeline.jsonl`;
+  if (!first)
+    return `connection ${connection} never appears in perf-timeline.jsonl`;
   const startT = first.t_us + startS * 1e6;
   const endT = startT + lengthS * 1e6;
   const inside = timeline.filter((l) => l.t_us >= startT && l.t_us <= endT);
@@ -231,7 +232,10 @@ export function newFrames(
         folded.set(t.coalesced_into, (folded.get(t.coalesced_into) ?? 0) + 1);
     return ev.samples
       .filter((s) => typeof s.raf_ts_ms === "number")
-      .map((s) => ({ t_ms: s.raf_ts_ms as number, seqs: 1 + (folded.get(s.seq) ?? 0) }))
+      .map((s) => ({
+        t_ms: s.raf_ts_ms as number,
+        seqs: 1 + (folded.get(s.seq) ?? 0),
+      }))
       .sort((a, b) => a.t_ms - b.t_ms);
   }
   const byFrame = new Map<number, { t_us: number; seqs: number }>();
@@ -275,7 +279,12 @@ export interface DevRepeat {
     hist_ms: Record<string, number>;
   };
   multi_apply_ticks: number;
-  main_thread_ms: { p50: number | null; p95: number | null; p99: number | null; count: number };
+  main_thread_ms: {
+    p50: number | null;
+    p95: number | null;
+    p99: number | null;
+    count: number;
+  };
   /** the page script's busy share of the window (rAF callbacks plus message handlers) */
   page_busy_fraction: number | null;
   gsw_total_p95_ms: number | null;
@@ -296,7 +305,9 @@ function median(values: readonly number[]): number | null {
   return quantile(values, 0.5);
 }
 
-const condOf = (c: unknown): { thermal: string | null; battery: number | null } => {
+const condOf = (
+  c: unknown,
+): { thermal: string | null; battery: number | null } => {
   const o = (c ?? {}) as Record<string, unknown>;
   const thermal =
     typeof o.thermalStatus === "string"
@@ -343,11 +354,17 @@ export function measureDevRepeat(
   }
   const drawn =
     hw && offset !== null && inWin.length > 1
-      ? (inWin.length - 1) / ((inWin[inWin.length - 1].t_ms - inWin[0].t_ms) / 1000)
+      ? (inWin.length - 1) /
+        ((inWin[inWin.length - 1].t_ms - inWin[0].t_ms) / 1000)
       : null;
   // Holds (G6c's: received to submitted).
-  const holds = ((ev.applied?.transactions ?? []) as Array<Record<string, unknown>>)
-    .filter((t) => typeof t.submitted_us === "number" && typeof t.received_us === "number")
+  const holds = (
+    (ev.applied?.transactions ?? []) as Array<Record<string, unknown>>
+  )
+    .filter(
+      (t) =>
+        typeof t.submitted_us === "number" && typeof t.received_us === "number",
+    )
     .map((t) => (t.submitted_us as number) - (t.received_us as number));
   // Page clock: the probe.
   const probe = ev.probe;
@@ -367,10 +384,17 @@ export function measureDevRepeat(
     const p1 = p0 + windowS * 1000;
     const raf: { ts: number; start: number; dur: number }[] = [];
     for (let i = 0; i + 2 < probe.raf.length; i += 3)
-      raf.push({ ts: probe.raf[i], start: probe.raf[i + 1], dur: probe.raf[i + 2] });
+      raf.push({
+        ts: probe.raf[i],
+        start: probe.raf[i + 1],
+        dur: probe.raf[i + 2],
+      });
     const ws: { start: number; dur: number }[] = [];
     for (let i = 0; i + 1 < (probe.ws ?? []).length; i += 2)
-      ws.push({ start: (probe.ws as number[])[i], dur: (probe.ws as number[])[i + 1] });
+      ws.push({
+        start: (probe.ws as number[])[i],
+        dur: (probe.ws as number[])[i + 1],
+      });
     const inside = raf.filter((r) => r.start >= p0 && r.start <= p1);
     rafCount = inside.length;
     const ints: number[] = [];
@@ -381,7 +405,8 @@ export function measureDevRepeat(
       ints.push(gap);
       if (gap > gapMax) gapMax = gap;
       // A gap the receiver caused: its own previous callback took most of it.
-      if (inside[i - 1].dur < gap / 2 && gap > gapUnexplained) gapUnexplained = gap;
+      if (inside[i - 1].dur < gap / 2 && gap > gapUnexplained)
+        gapUnexplained = gap;
     }
     tp = median(ints);
     maxGap = inside.length > 1 ? gapMax : null;
@@ -389,7 +414,11 @@ export function measureDevRepeat(
     // Main-thread work per drawn frame.
     const drawing =
       kind === "gsw"
-        ? new Set(ev.samples.map((s) => s.raf_ts_ms).filter((t) => typeof t === "number"))
+        ? new Set(
+            ev.samples
+              .map((s) => s.raf_ts_ms)
+              .filter((t) => typeof t === "number"),
+          )
         : null;
     let wi = 0;
     let wsSince = 0;
@@ -407,7 +436,8 @@ export function measureDevRepeat(
       wsSince = 0;
     }
     busy = busySum / (windowS * 1000);
-    if (rafCount < 10) probeProblem = `only ${rafCount} rAF callbacks inside the probe window`;
+    if (rafCount < 10)
+      probeProblem = `only ${rafCount} rAF callbacks inside the probe window`;
   }
   mainThread = mainThread.filter((v) => Number.isFinite(v));
   // GSW's own timers, in the receiver window.
@@ -416,20 +446,31 @@ export function measureDevRepeat(
     const t0 = (hw.start_t_us + offset) / 1000;
     const t1 = (hw.end_t_us + offset) / 1000;
     const tot = ev.samples
-      .filter((s) => typeof s.raf_ts_ms === "number" && (s.raf_ts_ms as number) >= t0 && (s.raf_ts_ms as number) <= t1)
+      .filter(
+        (s) =>
+          typeof s.raf_ts_ms === "number" &&
+          (s.raf_ts_ms as number) >= t0 &&
+          (s.raf_ts_ms as number) <= t1,
+      )
       .map((s) => s.total_us / 1000);
     gswTotal = quantile(tot, 0.95);
   }
-  const hists = (ev.perf?.histograms ?? {}) as Record<string, { p95?: number; count?: number }>;
+  const hists = (ev.perf?.histograms ?? {}) as Record<
+    string,
+    { p95?: number; count?: number }
+  >;
   const gpuComplete =
     kind === "gsw" && (hists.gpu_complete_us?.count ?? 0) > 0
       ? (hists.gpu_complete_us?.p95 ?? 0) / 1000
       : null;
   const before = condOf(ev.device?.conditions_before);
   const after = condOf(ev.device?.conditions_after);
-  const samples = (ev.device?.samples ?? null) as { device?: { derated?: boolean } } | null;
+  const samples = (ev.device?.samples ?? null) as {
+    device?: { derated?: boolean };
+  } | null;
   const marks = (ev.timings?.marks ?? []) as { name: string; t: number }[];
-  const firstSubmitted = marks.find((m) => m.name === "rs-first-submitted")?.t ?? null;
+  const firstSubmitted =
+    marks.find((m) => m.name === "rs-first-submitted")?.t ?? null;
   const rtt = rates?.credit_rtt_mean_frames ?? null;
   return {
     leg: ev.leg.leg,
@@ -444,7 +485,13 @@ export function measureDevRepeat(
     credit_rtt_mean_frames: rtt,
     credit_window: rates?.credit_window ?? 1,
     phase_class:
-      rtt === null ? null : rtt <= GOOD_MAX_FRAMES ? "good" : rtt >= BAD_MIN_FRAMES ? "bad" : "between",
+      rtt === null
+        ? null
+        : rtt <= GOOD_MAX_FRAMES
+          ? "good"
+          : rtt >= BAD_MIN_FRAMES
+            ? "bad"
+            : "between",
     hold_p50_us: median(holds),
     hold_p95_us: quantile(holds, 0.95),
     tp_ms: tp,
@@ -501,56 +548,81 @@ export function devRateProblems(m: DevRepeat): string[] {
   if (m.sent === null || m.applied_count === null)
     p.push(`r${m.run}: no applied ack count`);
   else if (Math.abs(m.applied_count - m.sent) > 0.01 * m.sent)
-    p.push(`r${m.run}: applied ${m.applied_count} not published ${m.sent} +- 1 %`);
+    p.push(
+      `r${m.run}: applied ${m.applied_count} not published ${m.sent} +- 1 %`,
+    );
   return p;
 }
 
 export function devCadenceProblems(m: DevRepeat): string[] {
   if (m.window_problem) return [`r${m.run}: ${m.window_problem}`];
-  if (m.tp_ms === null) return [`r${m.run}: T_p unmeasured (${m.probe_problem ?? "?"})`];
+  if (m.tp_ms === null)
+    return [`r${m.run}: T_p unmeasured (${m.probe_problem ?? "?"})`];
   const k = ticksPerHostFrame(m.tp_ms);
   const p: string[] = [];
   const iv = m.new_frame_interval_ms;
   const bound = k * m.tp_ms + 1;
   if (iv.p95 === null || iv.p95 > bound)
-    p.push(`r${m.run}: new-frame interval p95 ${f2(iv.p95)} ms > ${k}*T_p+1 = ${f2(bound)} ms`);
+    p.push(
+      `r${m.run}: new-frame interval p95 ${f2(iv.p95)} ms > ${k}*T_p+1 = ${f2(bound)} ms`,
+    );
   if (iv.max === null || iv.max > CADENCE_MAX_MS)
-    p.push(`r${m.run}: new-frame interval max ${f2(iv.max)} ms > ${CADENCE_MAX_MS}`);
+    p.push(
+      `r${m.run}: new-frame interval max ${f2(iv.max)} ms > ${CADENCE_MAX_MS}`,
+    );
   const drawnCount = Object.values(iv.hist_ms).reduce((a, b) => a + b, 0) + 1;
   if (iv.over_34 > CADENCE_LONG_FRACTION * drawnCount)
-    p.push(`r${m.run}: ${iv.over_34} intervals > ${CADENCE_LONG_MS} ms (> 0.5 % of ${drawnCount})`);
+    p.push(
+      `r${m.run}: ${iv.over_34} intervals > ${CADENCE_LONG_MS} ms (> 0.5 % of ${drawnCount})`,
+    );
   return p;
 }
 
 export function devMainThreadProblems(m: DevRepeat): string[] {
-  if (m.tp_ms === null) return [`r${m.run}: T_p unmeasured (${m.probe_problem ?? "?"})`];
+  if (m.tp_ms === null)
+    return [`r${m.run}: T_p unmeasured (${m.probe_problem ?? "?"})`];
   const p: string[] = [];
   const mt = m.main_thread_ms;
   if (mt.count === 0) return [`r${m.run}: no drawn frame in the probe window`];
   if ((mt.p95 ?? Infinity) > 0.5 * m.tp_ms)
-    p.push(`r${m.run}: main thread p95 ${f2(mt.p95)} ms > 0.5*T_p = ${f2(0.5 * m.tp_ms)}`);
+    p.push(
+      `r${m.run}: main thread p95 ${f2(mt.p95)} ms > 0.5*T_p = ${f2(0.5 * m.tp_ms)}`,
+    );
   if ((mt.p99 ?? Infinity) > m.tp_ms)
-    p.push(`r${m.run}: main thread p99 ${f2(mt.p99)} ms > T_p = ${f2(m.tp_ms)}`);
+    p.push(
+      `r${m.run}: main thread p99 ${f2(mt.p99)} ms > T_p = ${f2(m.tp_ms)}`,
+    );
   if (m.page_busy_fraction !== null && m.page_busy_fraction > 0.5)
-    p.push(`r${m.run}: page script busy ${f2(100 * m.page_busy_fraction, 1)} % of wall > 50 %`);
+    p.push(
+      `r${m.run}: page script busy ${f2(100 * m.page_busy_fraction, 1)} % of wall > 50 %`,
+    );
   return p;
 }
 
 export function devGpuProblems(kind: DevKind, m: DevRepeat): string[] {
   if (kind !== "gsw") return [];
   if (m.tp_ms === null) return [`r${m.run}: T_p unmeasured`];
-  if (m.gpu_complete_p95_ms === null) return [`r${m.run}: no gpu_complete samples`];
+  if (m.gpu_complete_p95_ms === null)
+    return [`r${m.run}: no gpu_complete samples`];
   return m.gpu_complete_p95_ms > 2 * m.tp_ms
-    ? [`r${m.run}: gpu_complete p95 ${f2(m.gpu_complete_p95_ms)} ms > 2*T_p = ${f2(2 * m.tp_ms)}`]
+    ? [
+        `r${m.run}: gpu_complete p95 ${f2(m.gpu_complete_p95_ms)} ms > 2*T_p = ${f2(2 * m.tp_ms)}`,
+      ]
     : [];
 }
 
-export function devUnthrottledProblems(m: DevRepeat, device: boolean): string[] {
+export function devUnthrottledProblems(
+  m: DevRepeat,
+  device: boolean,
+): string[] {
   const p: string[] = [];
   if (m.hidden_ms === null) p.push(`r${m.run}: no hidden-time record`);
-  else if (m.hidden_ms > 0) p.push(`r${m.run}: hidden ${f2(m.hidden_ms, 0)} ms`);
+  else if (m.hidden_ms > 0)
+    p.push(`r${m.run}: hidden ${f2(m.hidden_ms, 0)} ms`);
   if (m.unexplained_gap_ms !== null && m.unexplained_gap_ms > WATCHDOG_GAP_MS)
-    p.push(`r${m.run}: a ${f2(m.unexplained_gap_ms, 0)}-ms rAF gap the receiver did not cause`);
+    p.push(
+      `r${m.run}: a ${f2(m.unexplained_gap_ms, 0)}-ms rAF gap the receiver did not cause`,
+    );
   if (device) {
     for (const [when, t] of [
       ["before", m.thermal_before],
@@ -570,14 +642,25 @@ export async function devPresenceProblems(
   device: boolean,
 ): Promise<{ problems: string[]; detail: string }> {
   const name = `r${ev.leg.run}`;
-  const shot = ((ev.applied as { shots?: { final?: boolean; path?: string }[] } | undefined)
-    ?.shots ?? []).find((s) => s.final === true);
+  const shot = (
+    (ev.applied as { shots?: { final?: boolean; path?: string }[] } | undefined)
+      ?.shots ?? []
+  ).find((s) => s.final === true);
   if (!shot?.path) return { problems: [`${name}: no final shot`], detail: "" };
-  const got = await decodePngRgba(finalShotPath(join(ev.dir, "receiver"), shot.path));
-  if (!got) return { problems: [`${name}: the final shot is unreadable`], detail: "" };
+  const got = await decodePngRgba(
+    finalShotPath(join(ev.dir, "receiver"), shot.path),
+  );
+  if (!got)
+    return { problems: [`${name}: the final shot is unreadable`], detail: "" };
   if (ev.leg.workload === "pace") {
-    const fin = (ev.steps as unknown as Record<string, unknown>[]).find((s) => s.final === true);
-    if (!fin) return { problems: [`${name}: the pace host logged no final position`], detail: "" };
+    const fin = (ev.steps as unknown as Record<string, unknown>[]).find(
+      (s) => s.final === true,
+    );
+    if (!fin)
+      return {
+        problems: [`${name}: the pace host logged no final position`],
+        detail: "",
+      };
     const y = Number(fin.y) + 8;
     const px = (x: number, yy: number) => {
       const i = (yy * got.width + x) * 4;
@@ -592,29 +675,48 @@ export async function devPresenceProblems(
         left = x;
         break;
       }
-    if (left < 0) return { problems: [`${name}: no square on row ${y}`], detail: "" };
+    if (left < 0)
+      return { problems: [`${name}: no square on row ${y}`], detail: "" };
     const p: string[] = [];
-    if (!isGreen(px(left + 24, y))) p.push(`${name}: the square's top-right quadrant is not green`);
+    if (!isGreen(px(left + 24, y)))
+      p.push(`${name}: the square's top-right quadrant is not green`);
     const blue = px(left + 8, y + 16);
-    if (!(blue[2] > 200 && blue[0] < 60)) p.push(`${name}: the bottom-left quadrant is not blue`);
+    if (!(blue[2] > 200 && blue[0] < 60))
+      p.push(`${name}: the bottom-left quadrant is not blue`);
     const dx = Math.abs(left - Number(fin.x));
-    if (dx > 2) p.push(`${name}: the square is at x ${left}, the host's last x ${fin.x} (${dx} px)`);
-    return { problems: p, detail: `${name}: square at x ${left} (host's last ${fin.x})` };
+    if (dx > 2)
+      p.push(
+        `${name}: the square is at x ${left}, the host's last x ${fin.x} (${dx} px)`,
+      );
+    return {
+      problems: p,
+      detail: `${name}: square at x ${left} (host's last ${fin.x})`,
+    };
   }
   const refPath = join(ev.dir, "reference", "shots", "step-11.png");
   const ref = existsSync(refPath) ? await decodePngRgba(refPath) : undefined;
-  if (!ref) return { problems: [`${name}: no reference (reference/shots/step-11.png)`], detail: "" };
+  if (!ref)
+    return {
+      problems: [`${name}: no reference (reference/shots/step-11.png)`],
+      detail: "",
+    };
   if (ref.width !== got.width || ref.height !== got.height)
     return {
-      problems: [`${name}: ${got.width}x${got.height} vs reference ${ref.width}x${ref.height}`],
+      problems: [
+        `${name}: ${got.width}x${got.height} vs reference ${ref.width}x${ref.height}`,
+      ],
       detail: "",
     };
   const c = classifyShot(ref.data, got.data);
-  const allowed = device ? Math.floor(DEVICE_PRESENCE_OTHER_FRACTION * c.pixels) : 0;
+  const allowed = device
+    ? Math.floor(DEVICE_PRESENCE_OTHER_FRACTION * c.pixels)
+    : 0;
   return {
     problems:
       c.other > allowed
-        ? [`${name}: ${c.other} px beyond Q7's band (allowed ${allowed}; max delta ${c.other_max_delta})`]
+        ? [
+            `${name}: ${c.other} px beyond Q7's band (allowed ${allowed}; max delta ${c.other_max_delta})`,
+          ]
         : [],
     detail: `${name}: ${c.identical} identical, ${c.readback} readback, ${c.delta1} delta1, ${c.other} other of ${c.pixels}`,
   };
@@ -624,14 +726,23 @@ export function presentationTypedProblems(ev: DevLegEvidence): {
   problems: string[];
   detail: string;
 } {
-  const v = (ev.applied as { viewport?: Record<string, unknown> } | undefined)?.viewport;
-  const conns = (ev.summary?.connections ?? []) as unknown as Record<string, unknown>[];
+  const v = (ev.applied as { viewport?: Record<string, unknown> } | undefined)
+    ?.viewport;
+  const conns = (ev.summary?.connections ?? []) as unknown as Record<
+    string,
+    unknown
+  >[];
   const hello = conns[0];
   const p: string[] = [];
   const check = v?.presentation_check;
   if (check !== "ok" && check !== "mismatch")
-    p.push(`r${ev.leg.run}: presentation_check ${JSON.stringify(check)} (not typed ok/mismatch)`);
-  if (typeof hello?.dpr_milli !== "number" || typeof hello?.presentation_css_w !== "number")
+    p.push(
+      `r${ev.leg.run}: presentation_check ${JSON.stringify(check)} (not typed ok/mismatch)`,
+    );
+  if (
+    typeof hello?.dpr_milli !== "number" ||
+    typeof hello?.presentation_css_w !== "number"
+  )
     p.push(`r${ev.leg.run}: the host recorded no hello dpr_milli / CSS size`);
   return {
     problems: p,
@@ -673,7 +784,8 @@ const SABOTAGE_FAILS: Record<string, readonly string[]> = {
   "sabotage-draw-repeat-8-hd": ["dev-gpu-headroom", "dev-rate"],
 };
 
-const isSoak = (base: string) => base.startsWith("soak-") || base.startsWith("sabotage-soak-");
+const isSoak = (base: string) =>
+  base.startsWith("soak-") || base.startsWith("sabotage-soak-");
 const isStartup = (base: string) => base.startsWith("startup-");
 
 /** The decided soak clauses (Q13d dev-soak) over one soak repeat. */
@@ -690,7 +802,9 @@ export function soakClauses(
     clause: "rate-last-60s",
     problems:
       last.drawn === null || last.drawn < DEV_RATE_MIN
-        ? [`drawn over the last 60 s ${f2(last.drawn)}/s < ${DEV_RATE_MIN}${last.window_problem ? ` (${last.window_problem})` : ""}`]
+        ? [
+            `drawn over the last 60 s ${f2(last.drawn)}/s < ${DEV_RATE_MIN}${last.window_problem ? ` (${last.window_problem})` : ""}`,
+          ]
         : [],
     detail: `drawn first/last 60 s ${f2(first.drawn)}/${f2(last.drawn)}/s`,
   });
@@ -708,8 +822,19 @@ export function soakClauses(
   });
   const samples = (ev.device?.samples ?? null) as {
     device?: {
-      conditions?: { t_ms: number; thermalStatusCode?: number; thermalStatus?: string }[];
-      meminfo?: { t_ms: number; samples: { pid: number; process: string | null; pss_kb: number | null }[] }[];
+      conditions?: {
+        t_ms: number;
+        thermalStatusCode?: number;
+        thermalStatus?: string;
+      }[];
+      meminfo?: {
+        t_ms: number;
+        samples: {
+          pid: number;
+          process: string | null;
+          pss_kb: number | null;
+        }[];
+      }[];
       gpu_memory?: { t_ms: number; bytes: number | null }[];
       derated?: boolean;
     };
@@ -719,16 +844,24 @@ export function soakClauses(
     out.push({
       clause: "device-samplers",
       problems: [],
-      detail: "desktop control arm: thermal, PSS and gfxinfo are device-only (unavailable)",
+      detail:
+        "desktop control arm: thermal, PSS and gfxinfo are device-only (unavailable)",
     });
     return out;
   }
   const d = samples?.device;
   const cond = d?.conditions ?? [];
-  const hot = cond.filter((c) => (c.thermalStatusCode ?? (c.thermalStatus === "none" ? 0 : 1)) !== 0);
+  const hot = cond.filter(
+    (c) => (c.thermalStatusCode ?? (c.thermalStatus === "none" ? 0 : 1)) !== 0,
+  );
   out.push({
     clause: "thermal",
-    problems: cond.length === 0 ? ["no condition samples"] : hot.length > 0 ? [`${hot.length} sample(s) with thermal status above none`] : [],
+    problems:
+      cond.length === 0
+        ? ["no condition samples"]
+        : hot.length > 0
+          ? [`${hot.length} sample(s) with thermal status above none`]
+          : [],
     detail: `${cond.length} samples, derated ${d?.derated ?? "?"}`,
   });
   // PSS per process name: renderer / gpu (first and last 30 s medians, slope, peak).
@@ -746,23 +879,40 @@ export function soakClauses(
   const pssProblems: string[] = [];
   const pssDetail: string[] = [];
   for (const [proc, pts] of byProc) {
-    if (/browser/.test(proc) && !/sandboxed|privileged|gpu/i.test(proc)) continue;
-    const firstMed = median(pts.filter(([t]) => t <= (pts[0]?.[0] ?? 0) + 30_000).map(([, v]) => v));
-    const lastMed = median(pts.filter(([t]) => t >= endT - 30_000).map(([, v]) => v));
+    if (/browser/.test(proc) && !/sandboxed|privileged|gpu/i.test(proc))
+      continue;
+    const firstMed = median(
+      pts.filter(([t]) => t <= (pts[0]?.[0] ?? 0) + 30_000).map(([, v]) => v),
+    );
+    const lastMed = median(
+      pts.filter(([t]) => t >= endT - 30_000).map(([, v]) => v),
+    );
     const peak = Math.max(...pts.map(([, v]) => v));
     const n = pts.length;
     const mt = pts.reduce((a, [t]) => a + t, 0) / n;
     const mv = pts.reduce((a, [, v]) => a + v, 0) / n;
     const slope =
       pts.reduce((a, [t, v]) => a + (t - mt) * (v - mv), 0) /
-      Math.max(1, pts.reduce((a, [t]) => a + (t - mt) ** 2, 0)); // bytes per ms
+      Math.max(
+        1,
+        pts.reduce((a, [t]) => a + (t - mt) ** 2, 0),
+      ); // bytes per ms
     const slopeMiBMin = (slope * 60_000) / 2 ** 20;
-    const growMiB = firstMed !== null && lastMed !== null ? (lastMed - firstMed) / 2 ** 20 : null;
-    pssDetail.push(`${proc}: +${f2(growMiB, 1)} MiB, ${f2(slopeMiBMin, 2)} MiB/min, peak ${f2(peak / 2 ** 20, 0)} MiB`);
-    if (growMiB === null || growMiB > 16) pssProblems.push(`${proc}: PSS grew ${f2(growMiB, 1)} MiB > 16`);
-    if (slopeMiBMin > 2) pssProblems.push(`${proc}: PSS slope ${f2(slopeMiBMin, 2)} MiB/min > 2`);
+    const growMiB =
+      firstMed !== null && lastMed !== null
+        ? (lastMed - firstMed) / 2 ** 20
+        : null;
+    pssDetail.push(
+      `${proc}: +${f2(growMiB, 1)} MiB, ${f2(slopeMiBMin, 2)} MiB/min, peak ${f2(peak / 2 ** 20, 0)} MiB`,
+    );
+    if (growMiB === null || growMiB > 16)
+      pssProblems.push(`${proc}: PSS grew ${f2(growMiB, 1)} MiB > 16`);
+    if (slopeMiBMin > 2)
+      pssProblems.push(`${proc}: PSS slope ${f2(slopeMiBMin, 2)} MiB/min > 2`);
     if (/sandboxed|renderer/.test(proc) && peak > 512 * 2 ** 20)
-      pssProblems.push(`${proc}: renderer PSS peak ${f2(peak / 2 ** 20, 0)} MiB > 512`);
+      pssProblems.push(
+        `${proc}: renderer PSS peak ${f2(peak / 2 ** 20, 0)} MiB > 512`,
+      );
   }
   out.push({
     clause: "pss",
@@ -770,7 +920,10 @@ export function soakClauses(
     detail: pssDetail.join("; "),
   });
   // gfxinfo GPU memory: end vs its value at 60 s (+8 MiB).
-  const gm = (d?.gpu_memory ?? []).filter((g) => g.bytes !== null) as { t_ms: number; bytes: number }[];
+  const gm = (d?.gpu_memory ?? []).filter((g) => g.bytes !== null) as {
+    t_ms: number;
+    bytes: number;
+  }[];
   const at60 = gm.find((g) => g.t_ms >= 60_000) ?? gm[0];
   const gEnd = gm[gm.length - 1];
   out.push({
@@ -779,12 +932,19 @@ export function soakClauses(
       !at60 || !gEnd
         ? ["no gfxinfo GPU memory samples"]
         : gEnd.bytes > at60.bytes + 8 * 2 ** 20
-          ? [`gfxinfo GPU memory ${f2(gEnd.bytes / 2 ** 20, 1)} MiB at the end > ${f2(at60.bytes / 2 ** 20, 1)} at 60 s + 8 MiB`]
+          ? [
+              `gfxinfo GPU memory ${f2(gEnd.bytes / 2 ** 20, 1)} MiB at the end > ${f2(at60.bytes / 2 ** 20, 1)} at 60 s + 8 MiB`,
+            ]
           : [],
-    detail: at60 && gEnd ? `gfxinfo GPU memory ${f2(at60.bytes / 2 ** 20, 1)} -> ${f2(gEnd.bytes / 2 ** 20, 1)} MiB` : "",
+    detail:
+      at60 && gEnd
+        ? `gfxinfo GPU memory ${f2(at60.bytes / 2 ** 20, 1)} -> ${f2(gEnd.bytes / 2 ** 20, 1)} MiB`
+        : "",
   });
   if (kind === "gsw") {
-    const js = (samples?.js_heap ?? []).filter((x) => x.used_bytes !== null) as { t_ms: number; used_bytes: number }[];
+    const js = (samples?.js_heap ?? []).filter(
+      (x) => x.used_bytes !== null,
+    ) as { t_ms: number; used_bytes: number }[];
     const j0 = js.find((x) => x.t_ms >= 60_000) ?? js[0];
     const j1 = js[js.length - 1];
     const minutes = j0 && j1 ? (j1.t_ms - j0.t_ms) / 60_000 : 0;
@@ -795,9 +955,14 @@ export function soakClauses(
         grow === null
           ? ["no JS heap samples"]
           : grow > 4 || (minutes > 0 && grow / minutes > 0.5)
-            ? [`JS heap grew ${f2(grow, 2)} MiB (${f2(minutes > 0 ? grow / minutes : 0, 2)} MiB/min)`]
+            ? [
+                `JS heap grew ${f2(grow, 2)} MiB (${f2(minutes > 0 ? grow / minutes : 0, 2)} MiB/min)`,
+              ]
             : [],
-      detail: grow === null ? "" : `JS heap +${f2(grow, 2)} MiB over ${f2(minutes, 1)} min`,
+      detail:
+        grow === null
+          ? ""
+          : `JS heap +${f2(grow, 2)} MiB over ${f2(minutes, 1)} min`,
     });
   } else {
     const memArr = ev.probe?.mem ?? [];
@@ -813,9 +978,14 @@ export function soakClauses(
         !w60 || !wEnd
           ? ["no wasm heap samples"]
           : wEnd[1] > w60[1] + 16 * 2 ** 20
-            ? [`wasm heap ${f2(wEnd[1] / 2 ** 20, 1)} MiB > ${f2(w60[1] / 2 ** 20, 1)} at 60 s + 16`]
+            ? [
+                `wasm heap ${f2(wEnd[1] / 2 ** 20, 1)} MiB > ${f2(w60[1] / 2 ** 20, 1)} at 60 s + 16`,
+              ]
             : [],
-      detail: w60 && wEnd ? `wasm heap ${f2(w60[1] / 2 ** 20, 1)} -> ${f2(wEnd[1] / 2 ** 20, 1)} MiB` : "",
+      detail:
+        w60 && wEnd
+          ? `wasm heap ${f2(w60[1] / 2 ** 20, 1)} -> ${f2(wEnd[1] / 2 ** 20, 1)} MiB`
+          : "",
     });
   }
   return out;
@@ -831,7 +1001,9 @@ export async function checkDevRun(
 ): Promise<DevRunResult> {
   const g6c = join(runDir, "rates");
   const legDirs = existsSync(g6c)
-    ? readdirSync(g6c).filter((d) => d.startsWith("dev-") && existsSync(join(g6c, d, "dev-leg.json")))
+    ? readdirSync(g6c).filter(
+        (d) => d.startsWith("dev-") && existsSync(join(g6c, d, "dev-leg.json")),
+      )
     : [];
   const evs = legDirs
     .map((d) => loadDevLeg(join(g6c, d)))
@@ -841,13 +1013,16 @@ export async function checkDevRun(
   const legs: DevLegRow[] = [];
   const runChecks: Gate7Check[] = [];
   for (const base of bases) {
-    const all = evs.filter((e) => e.leg.base === base).sort((a, b) => a.leg.run - b.leg.run);
+    const all = evs
+      .filter((e) => e.leg.base === base)
+      .sort((a, b) => a.leg.run - b.leg.run);
     // r0 is the discarded warmup (a soak or sabotage leg has one run, r1).
     const judged = all.filter((e) => e.leg.run >= 1);
     const workload = all[0].leg.workload;
     const sabotage = base.startsWith("sabotage-");
     const reportOnly =
-      base.startsWith("maxfps60-") || (!requiredWorkloads.includes(workload) && !isStartup(base));
+      base.startsWith("maxfps60-") ||
+      (!requiredWorkloads.includes(workload) && !isStartup(base));
     const required = !reportOnly && !sabotage;
     const repeats = judged.map((e) => measureDevRepeat(kind, e));
     const checks: Gate7Check[] = [];
@@ -855,57 +1030,112 @@ export async function checkDevRun(
     const gating = !reportOnly && !sabotage;
     const provenance: string[] = [];
     for (const e of judged) {
-      if (e.refused) provenance.push(`r${e.leg.run}: harness-refused ${e.refused}`);
-      else if (isDevice && (e.provenance as { ok?: boolean } | undefined)?.ok !== true)
+      if (e.refused)
+        provenance.push(`r${e.leg.run}: harness-refused ${e.refused}`);
+      else if (
+        isDevice &&
+        (e.provenance as { ok?: boolean } | undefined)?.ok !== true
+      )
         provenance.push(`r${e.leg.run}: device-provenance not ok`);
-      if (e.exitCode !== "0") provenance.push(`r${e.leg.run}: receiver exit ${e.exitCode}`);
+      if (e.exitCode !== "0")
+        provenance.push(`r${e.leg.run}: receiver exit ${e.exitCode}`);
     }
     checks.push(
-      mk(id(isDevice ? "device-provenance" : "receiver-ran"), "every repeat ran (device: device-provenance held)", provenance, `${judged.length} repeat(s) ran`, gating),
+      mk(
+        id(isDevice ? "device-provenance" : "receiver-ran"),
+        "every repeat ran (device: device-provenance held)",
+        provenance,
+        `${judged.length} repeat(s) ran`,
+        gating,
+      ),
     );
     const presence: string[] = [];
     const presenceDetail: string[] = [];
     if (isStartup(base)) {
-      const ms = repeats.map((r) => r.first_submitted_ms).filter((v): v is number => v !== null);
+      const ms = repeats
+        .map((r) => r.first_submitted_ms)
+        .filter((v): v is number => v !== null);
       const med = median(ms);
       const max = ms.length ? Math.max(...ms) : null;
       const warm = base === "startup-warm";
       checks.push(
         mk(
           id("dev-startup"),
-          warm ? "warm: navigation -> first submitted median <= 3 s and max <= 5 s over five repeats" : "cold: reported (D15's marks)",
+          warm
+            ? "warm: navigation -> first submitted median <= 3 s and max <= 5 s over five repeats"
+            : "cold: reported (D15's marks)",
           !warm
             ? []
             : ms.length < judged.length
-              ? [`${judged.length - ms.length} repeat(s) without rs-first-submitted`]
+              ? [
+                  `${judged.length - ms.length} repeat(s) without rs-first-submitted`,
+                ]
               : [
-                  ...((med ?? Infinity) > 3000 ? [`median ${f2(med, 0)} ms > 3000`] : []),
-                  ...((max ?? Infinity) > 5000 ? [`max ${f2(max, 0)} ms > 5000`] : []),
+                  ...((med ?? Infinity) > 3000
+                    ? [`median ${f2(med, 0)} ms > 3000`]
+                    : []),
+                  ...((max ?? Infinity) > 5000
+                    ? [`max ${f2(max, 0)} ms > 5000`]
+                    : []),
                 ],
           `navigation -> first submitted median ${f2(med, 0)} ms, max ${f2(max, 0)} ms (${ms.map((v) => v.toFixed(0)).join(", ")})`,
           warm,
         ),
       );
-      legs.push({ base, workload, required: warm, report_only: !warm, repeats, checks, presence_detail: [] });
+      legs.push({
+        base,
+        workload,
+        required: warm,
+        report_only: !warm,
+        repeats,
+        checks,
+        presence_detail: [],
+      });
       continue;
     }
     if (isSoak(base)) {
       const e = judged[0];
       if (!e) continue;
       const clauses = soakClauses(kind, e, isDevice);
-      const failing = clauses.filter((c) => c.problems.length > 0).map((c) => c.clause);
+      const failing = clauses
+        .filter((c) => c.problems.length > 0)
+        .map((c) => c.clause);
       if (base.startsWith("sabotage-soak-leak-gl-textures")) {
         const want = isDevice ? ["gpu-memory"] : [];
         const exact = JSON.stringify(failing) === JSON.stringify(want);
         checks.push(
-          mk(id("sabotage-fails-exactly"), "leak-gl-textures fails exactly dev-soak's GPU-memory clause", exact ? [] : [`failed ${JSON.stringify(failing)}, want ${JSON.stringify(want)}`], `failed exactly ${JSON.stringify(failing)}`, isDevice),
+          mk(
+            id("sabotage-fails-exactly"),
+            "leak-gl-textures fails exactly dev-soak's GPU-memory clause",
+            exact
+              ? []
+              : [
+                  `failed ${JSON.stringify(failing)}, want ${JSON.stringify(want)}`,
+                ],
+            `failed exactly ${JSON.stringify(failing)}`,
+            isDevice,
+          ),
         );
       } else {
         checks.push(
-          mk(id("dev-soak"), "Q13d dev-soak's decided clauses", clauses.flatMap((c) => c.problems.map((p) => `${c.clause}: ${p}`)), clauses.map((c) => `${c.clause}: ${c.detail}`).join("; "), gating),
+          mk(
+            id("dev-soak"),
+            "Q13d dev-soak's decided clauses",
+            clauses.flatMap((c) => c.problems.map((p) => `${c.clause}: ${p}`)),
+            clauses.map((c) => `${c.clause}: ${c.detail}`).join("; "),
+            gating,
+          ),
         );
       }
-      legs.push({ base, workload, required, report_only: reportOnly, repeats, checks, presence_detail: clauses.map((c) => `${c.clause}: ${c.detail}`) });
+      legs.push({
+        base,
+        workload,
+        required,
+        report_only: reportOnly,
+        repeats,
+        checks,
+        presence_detail: clauses.map((c) => `${c.clause}: ${c.detail}`),
+      });
       continue;
     }
     for (const e of judged) {
@@ -921,37 +1151,84 @@ export async function checkDevRun(
       "dev-cadence": cadence,
       "dev-main-thread": repeats.flatMap(devMainThreadProblems),
       "dev-gpu": repeats.flatMap((m) => devGpuProblems(kind, m)),
-      "dev-unthrottled": repeats.flatMap((m) => devUnthrottledProblems(m, isDevice)),
+      "dev-unthrottled": repeats.flatMap((m) =>
+        devUnthrottledProblems(m, isDevice),
+      ),
       "dev-presence": presence,
-      "dev-presentation-typed": judged.flatMap((e) => presentationTypedProblems(e).problems),
-      "credit-from-paced-loop": judged.flatMap((e) => pacedLoopProblems(`r${e.leg.run}`, e.applied)),
+      "dev-presentation-typed": judged.flatMap(
+        (e) => presentationTypedProblems(e).problems,
+      ),
+      "credit-from-paced-loop": judged.flatMap((e) =>
+        pacedLoopProblems(`r${e.leg.run}`, e.applied),
+      ),
     };
-    if (base.startsWith("gpu-headroom-") || base.startsWith("sabotage-draw-repeat-"))
+    if (
+      base.startsWith("gpu-headroom-") ||
+      base.startsWith("sabotage-draw-repeat-")
+    )
       fail["dev-gpu-headroom"] = [...rate, ...cadence];
     const crit: Record<string, string> = {
-      "dev-rate": "drawn >= 57/s, published >= 57/s, applied = published +- 1 %, every repeat",
-      "dev-cadence": "new-frame interval p95 <= k*T_p + 1 ms, max <= 50 ms, > 34 ms on <= 0.5 % (trace contentUpdateHz: unavailable, not traced)",
-      "dev-main-thread": "main-thread work per drawn frame p95 <= 0.5*T_p, p99 <= T_p; page-script busy <= 50 % (CrRendererMain tdur: unavailable, not traced)",
-      "dev-gpu": "gsw gpu_complete p95 <= 2*T_p (GPU time per drawn frame: unavailable, no timer query)",
-      "dev-unthrottled": "Q13b watchdog: no hidden time, no rAF gap > 250 ms the receiver did not cause; thermal none before and after (device)",
-      "dev-presence": "the final readback holds the workload's presence and freshness markers",
-      "dev-presentation-typed": "the presentation check is typed (ok/mismatch) and the hello's CSS size and dpr_milli recorded (Q13a: mismatch expected on a phone, never a failure)",
+      "dev-rate":
+        "drawn >= 57/s, published >= 57/s, applied = published +- 1 %, every repeat",
+      "dev-cadence":
+        "new-frame interval p95 <= k*T_p + 1 ms, max <= 50 ms, > 34 ms on <= 0.5 % (trace contentUpdateHz: unavailable, not traced)",
+      "dev-main-thread":
+        "main-thread work per drawn frame p95 <= 0.5*T_p, p99 <= T_p; page-script busy <= 50 % (CrRendererMain tdur: unavailable, not traced)",
+      "dev-gpu":
+        "gsw gpu_complete p95 <= 2*T_p (GPU time per drawn frame: unavailable, no timer query)",
+      "dev-unthrottled":
+        "Q13b watchdog: no hidden time, no rAF gap > 250 ms the receiver did not cause; thermal none before and after (device)",
+      "dev-presence":
+        "the final readback holds the workload's presence and freshness markers",
+      "dev-presentation-typed":
+        "the presentation check is typed (ok/mismatch) and the hello's CSS size and dpr_milli recorded (Q13a: mismatch expected on a phone, never a failure)",
       "credit-from-paced-loop": "Q9: every submitted ack from the paced loop",
-      "dev-gpu-headroom": "with RS_RECEIVER_DRAW_REPEAT, dev-rate and dev-cadence still pass",
+      "dev-gpu-headroom":
+        "with RS_RECEIVER_DRAW_REPEAT, dev-rate and dev-cadence still pass",
     };
     const ok: Record<string, string> = {
-      "dev-rate": repeats.map((r) => `r${r.run} pub ${f2(r.published)} drawn ${f2(r.drawn)}`).join("; "),
-      "dev-cadence": repeats.map((r) => `r${r.run} p95 ${f2(r.new_frame_interval_ms.p95)} max ${f2(r.new_frame_interval_ms.max)} (T_p ${f2(r.tp_ms)})`).join("; "),
-      "dev-main-thread": repeats.map((r) => `r${r.run} p95 ${f2(r.main_thread_ms.p95)} p99 ${f2(r.main_thread_ms.p99)}`).join("; "),
-      "dev-gpu": kind === "gsw" ? repeats.map((r) => `r${r.run} gpu_complete p95 ${f2(r.gpu_complete_p95_ms)}`).join("; ") : "web: GPU time unavailable (no timer query read)",
+      "dev-rate": repeats
+        .map((r) => `r${r.run} pub ${f2(r.published)} drawn ${f2(r.drawn)}`)
+        .join("; "),
+      "dev-cadence": repeats
+        .map(
+          (r) =>
+            `r${r.run} p95 ${f2(r.new_frame_interval_ms.p95)} max ${f2(r.new_frame_interval_ms.max)} (T_p ${f2(r.tp_ms)})`,
+        )
+        .join("; "),
+      "dev-main-thread": repeats
+        .map(
+          (r) =>
+            `r${r.run} p95 ${f2(r.main_thread_ms.p95)} p99 ${f2(r.main_thread_ms.p99)}`,
+        )
+        .join("; "),
+      "dev-gpu":
+        kind === "gsw"
+          ? repeats
+              .map(
+                (r) =>
+                  `r${r.run} gpu_complete p95 ${f2(r.gpu_complete_p95_ms)}`,
+              )
+              .join("; ")
+          : "web: GPU time unavailable (no timer query read)",
       "dev-unthrottled": `hidden 0, max rAF gap ${repeats.map((r) => f2(r.max_raf_gap_ms, 0)).join("/")} ms`,
       "dev-presence": presenceDetail.join("; "),
-      "dev-presentation-typed": judged.map((e) => presentationTypedProblems(e).detail).join("; "),
+      "dev-presentation-typed": judged
+        .map((e) => presentationTypedProblems(e).detail)
+        .join("; "),
       "credit-from-paced-loop": "every submitted ack from the paced loop",
       "dev-gpu-headroom": `T_p ${tpLabel}`,
     };
     for (const [c, problems] of Object.entries(fail))
-      checks.push(mk(id(c), crit[c] ?? c, problems, ok[c] ?? "", gating && c !== "credit-from-paced-loop" ? true : gating));
+      checks.push(
+        mk(
+          id(c),
+          crit[c] ?? c,
+          problems,
+          ok[c] ?? "",
+          gating && c !== "credit-from-paced-loop" ? true : gating,
+        ),
+      );
     if (sabotage) {
       const want = SABOTAGE_FAILS[base] ?? [];
       const failing = Object.entries(fail)
@@ -967,15 +1244,35 @@ export async function checkDevRun(
         mk(
           id(exact ? "sabotage-fails-exactly" : "sabotage-fails"),
           `${base} fails ${exact ? "exactly " : ""}${JSON.stringify(want)}`,
-          [...(missing.length ? [`did not fail ${missing.join(", ")}`] : []), ...(extra.length ? [`also failed ${extra.join(", ")}`] : [])],
+          [
+            ...(missing.length ? [`did not fail ${missing.join(", ")}`] : []),
+            ...(extra.length ? [`also failed ${extra.join(", ")}`] : []),
+          ],
           `failed ${JSON.stringify(failing)}`,
           true,
         ),
       );
     }
-    legs.push({ base, workload, required, report_only: reportOnly, repeats, checks, presence_detail: presenceDetail });
+    legs.push({
+      base,
+      workload,
+      required,
+      report_only: reportOnly,
+      repeats,
+      checks,
+      presence_detail: presenceDetail,
+    });
   }
-  if (legs.length === 0) runChecks.push(mk(`g7-dev-ran@${kind}-w${window}`, "the run holds dev legs", ["no dev-* leg with dev-leg.json"], "", true));
+  if (legs.length === 0)
+    runChecks.push(
+      mk(
+        `g7-dev-ran@${kind}-w${window}`,
+        "the run holds dev legs",
+        ["no dev-* leg with dev-leg.json"],
+        "",
+        true,
+      ),
+    );
   const checks = [...runChecks, ...legs.flatMap((l) => l.checks)];
   // Desktop control arms are report-only (Q13d): their checks never gate.
   if (!isDevice) for (const c of checks) c.gating = false;
@@ -1003,9 +1300,15 @@ export function acceptance(
   for (const kind of ["gsw", "web"] as const) {
     const runs = results.filter((r) => r.kind === kind);
     if (runs.length === 0) continue;
-    const startup = runs.flatMap((r) => r.legs).filter((l) => l.base === "startup-warm");
-    const soak = runs.flatMap((r) => r.legs).filter((l) => l.base.startsWith("soak-"));
-    const headroom = runs.flatMap((r) => r.legs).filter((l) => l.base.startsWith("gpu-headroom-"));
+    const startup = runs
+      .flatMap((r) => r.legs)
+      .filter((l) => l.base === "startup-warm");
+    const soak = runs
+      .flatMap((r) => r.legs)
+      .filter((l) => l.base.startsWith("soak-"));
+    const headroom = runs
+      .flatMap((r) => r.legs)
+      .filter((l) => l.base.startsWith("gpu-headroom-"));
     const perWindow: Record<string, unknown> = {};
     let metAt: number | null = null;
     for (const w of [1, 2]) {
@@ -1019,12 +1322,16 @@ export function acceptance(
           continue;
         }
         for (const c of leg.checks)
-          if (!c.passed && c.id.split("@")[0] !== "credit-from-paced-loop") failing.push(c.id);
+          if (!c.passed && c.id.split("@")[0] !== "credit-from-paced-loop")
+            failing.push(c.id);
           else if (!c.passed) failing.push(c.id);
         if (kind === "gsw") {
           const h = headroom.find((l) => l.base === `gpu-headroom-${wl}`);
           if (!h) failing.push(`dev-gpu-headroom:${wl}: not run`);
-          else for (const c of h.checks) if (!c.passed && c.id.startsWith("dev-gpu-headroom")) failing.push(c.id);
+          else
+            for (const c of h.checks)
+              if (!c.passed && c.id.startsWith("dev-gpu-headroom"))
+                failing.push(c.id);
         }
       }
       for (const l of [...startup, ...soak])
@@ -1037,11 +1344,23 @@ export function acceptance(
     const stretch: Record<string, unknown> = {};
     for (const run of runs)
       for (const l of run.legs)
-        if (!requiredWorkloads.includes(l.workload) && !l.base.startsWith("maxfps") && !l.base.startsWith("startup") && !l.base.startsWith("sabotage"))
-          stretch[`${l.base}@w${run.window}`] = l.checks.filter((c) => !c.passed).map((c) => c.id);
+        if (
+          !requiredWorkloads.includes(l.workload) &&
+          !l.base.startsWith("maxfps") &&
+          !l.base.startsWith("startup") &&
+          !l.base.startsWith("sabotage")
+        )
+          stretch[`${l.base}@w${run.window}`] = l.checks
+            .filter((c) => !c.passed)
+            .map((c) => c.id);
     out.push({
       kind,
-      statement: metAt === 1 ? "met at window 1" : metAt === 2 ? "met at window 2 only (opt-in, F1)" : "not met",
+      statement:
+        metAt === 1
+          ? "met at window 1"
+          : metAt === 2
+            ? "met at window 2 only (opt-in, F1)"
+            : "not met",
       windows: perWindow,
       stretch_failing: stretch,
     });
@@ -1050,13 +1369,24 @@ export function acceptance(
 }
 
 /** The report's device rows (Q12 "Device rows"), one per repeat, in /2's stage names. */
-export function deviceRows(results: readonly DevRunResult[]): Record<string, unknown>[] {
+export function deviceRows(
+  results: readonly DevRunResult[],
+): Record<string, unknown>[] {
   const rows: Record<string, unknown>[] = [];
   for (const r of results)
     for (const l of r.legs)
       for (const m of l.repeats)
         rows.push({
-          provenance_env: { kind: r.device ? "device" : "desktop", device_id: r.device, panel: { raf_interval_p50_us: m.tp_ms === null ? null : Math.round(m.tp_ms * 1000), mode_hz: m.tp_ms ? Math.round(1000 / m.tp_ms) : null, mode_source: "raf" } },
+          provenance_env: {
+            kind: r.device ? "device" : "desktop",
+            device_id: r.device,
+            panel: {
+              raf_interval_p50_us:
+                m.tp_ms === null ? null : Math.round(m.tp_ms * 1000),
+              mode_hz: m.tp_ms ? Math.round(1000 / m.tp_ms) : null,
+              mode_source: "raf",
+            },
+          },
           receiver_kind: r.kind === "gsw" ? "gsw-canvas" : "web-export",
           credit_window: r.window,
           leg: `${r.arm}:${l.base}`,
@@ -1065,10 +1395,40 @@ export function deviceRows(results: readonly DevRunResult[]): Record<string, unk
             published_hz: m.published,
             applied_hz: m.applied,
             drawn_hz: m.drawn,
-            recv_main_thread_us: { p50: m.main_thread_ms.p50 === null ? null : m.main_thread_ms.p50 * 1000, p95: m.main_thread_ms.p95 === null ? null : m.main_thread_ms.p95 * 1000, p99: m.main_thread_ms.p99 === null ? null : m.main_thread_ms.p99 * 1000 },
+            recv_main_thread_us: {
+              p50:
+                m.main_thread_ms.p50 === null
+                  ? null
+                  : m.main_thread_ms.p50 * 1000,
+              p95:
+                m.main_thread_ms.p95 === null
+                  ? null
+                  : m.main_thread_ms.p95 * 1000,
+              p99:
+                m.main_thread_ms.p99 === null
+                  ? null
+                  : m.main_thread_ms.p99 * 1000,
+            },
             recv_gpu_time_us: "unavailable",
-            recv_gpu_complete_us: m.gpu_complete_p95_ms === null ? null : { p95: m.gpu_complete_p95_ms * 1000 },
-            recv_new_frame_interval_us: { p50: m.new_frame_interval_ms.p50 === null ? null : m.new_frame_interval_ms.p50 * 1000, p95: m.new_frame_interval_ms.p95 === null ? null : m.new_frame_interval_ms.p95 * 1000, max: m.new_frame_interval_ms.max === null ? null : m.new_frame_interval_ms.max * 1000, hist_ms: m.new_frame_interval_ms.hist_ms },
+            recv_gpu_complete_us:
+              m.gpu_complete_p95_ms === null
+                ? null
+                : { p95: m.gpu_complete_p95_ms * 1000 },
+            recv_new_frame_interval_us: {
+              p50:
+                m.new_frame_interval_ms.p50 === null
+                  ? null
+                  : m.new_frame_interval_ms.p50 * 1000,
+              p95:
+                m.new_frame_interval_ms.p95 === null
+                  ? null
+                  : m.new_frame_interval_ms.p95 * 1000,
+              max:
+                m.new_frame_interval_ms.max === null
+                  ? null
+                  : m.new_frame_interval_ms.max * 1000,
+              hist_ms: m.new_frame_interval_ms.hist_ms,
+            },
             recv_credit_rtt_host_frames: m.credit_rtt_mean_frames,
             recv_multi_apply_ticks: m.multi_apply_ticks,
             recv_hold_us: { p50: m.hold_p50_us, p95: m.hold_p95_us },
@@ -1076,8 +1436,19 @@ export function deviceRows(results: readonly DevRunResult[]): Record<string, unk
             activation_gap_ms: "unavailable",
           },
           phase_class: r.window === 1 ? m.phase_class : null,
-          device: { thermal_before: m.thermal_before, thermal_after: m.thermal_after, battery_before: m.battery_before, battery_after: m.battery_after, derated: m.derated, hidden_ms: m.hidden_ms, max_raf_gap_ms: m.max_raf_gap_ms },
-          startup: m.first_submitted_ms === null ? null : { first_submitted_ms: m.first_submitted_ms },
+          device: {
+            thermal_before: m.thermal_before,
+            thermal_after: m.thermal_after,
+            battery_before: m.battery_before,
+            battery_after: m.battery_after,
+            derated: m.derated,
+            hidden_ms: m.hidden_ms,
+            max_raf_gap_ms: m.max_raf_gap_ms,
+          },
+          startup:
+            m.first_submitted_ms === null
+              ? null
+              : { first_submitted_ms: m.first_submitted_ms },
         });
   return rows;
 }
@@ -1092,8 +1463,14 @@ export async function writeDevSummary(
     `${JSON.stringify(
       {
         schema: "render-stream-gate7-dev-summary/1",
-        acceptance: acceptance(results.filter((r) => r.device !== null), requiredWorkloads),
-        control_acceptance: acceptance(results.filter((r) => r.device === null), requiredWorkloads),
+        acceptance: acceptance(
+          results.filter((r) => r.device !== null),
+          requiredWorkloads,
+        ),
+        control_acceptance: acceptance(
+          results.filter((r) => r.device === null),
+          requiredWorkloads,
+        ),
         device_rows: deviceRows(results),
       },
       null,

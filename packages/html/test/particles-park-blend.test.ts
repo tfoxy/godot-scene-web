@@ -6,21 +6,35 @@
 // change. With the option, the runtime forces the node's inline blend to `normal` while parked and
 // restores the saved value on unpark (live resume, dispose). Default OFF must be byte-identical.
 // Same fake-GL + hand-flushed rAF harness as `particles-static.test.ts`.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 
 import { createParticleRuntime } from "../src/particles/runtime";
 import { __resetStaticParticleFrameCacheForTest } from "../src/particles/static-frame-cache";
-import { __resetSharedForTest } from "../src/webgl/shared-gl";
 import { SELF_LAYER_CLASS } from "../src/render-structure";
+import { __resetSharedForTest } from "../src/webgl/shared-gl";
 import { makeResizeObserverStub } from "./support/resize-observer-stub";
 
-const animatedOptions = { enableParticles: true, parkStaticParticleBlend: true } as never;
+const animatedOptions = {
+  enableParticles: true,
+  parkStaticParticleBlend: true,
+} as never;
 const parkOptions = {
   enableParticles: true,
   staticParticles: true,
   parkStaticParticleBlend: true,
 } as never;
-const legacyStaticOptions = { enableParticles: true, staticParticles: true } as never;
+const legacyStaticOptions = {
+  enableParticles: true,
+  staticParticles: true,
+} as never;
 
 // A fake WebGL2 context: methods that must return truthy do; everything else is a harmless no-op.
 function fakeGl(): unknown {
@@ -37,7 +51,9 @@ function fakeGl(): unknown {
     createBuffer: () => ({}),
     createVertexArray: () => ({}),
   };
-  return new Proxy(overrides, { get: (t, k: string) => (k in t ? t[k] : () => undefined) });
+  return new Proxy(overrides, {
+    get: (t, k: string) => (k in t ? t[k] : () => undefined),
+  });
 }
 
 // Controllable rAF: queue callbacks, flush them by hand so park/unpark timing is observable.
@@ -56,16 +72,17 @@ let origRO: typeof globalThis.ResizeObserver;
 
 beforeAll(() => {
   origGetContext = HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.getContext = function (kind: string) {
+  HTMLCanvasElement.prototype.getContext = ((kind: string) => {
     if (kind === "webgl2") return fakeGl();
     if (kind === "2d") return new Proxy({}, { get: () => () => undefined });
     return null;
-  } as typeof HTMLCanvasElement.prototype.getContext;
+  }) as typeof HTMLCanvasElement.prototype.getContext;
   origRAF = globalThis.requestAnimationFrame;
   origCAF = globalThis.cancelAnimationFrame;
   globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) =>
     rafQueue.push(cb)) as typeof globalThis.requestAnimationFrame;
-  globalThis.cancelAnimationFrame = (() => {}) as typeof globalThis.cancelAnimationFrame;
+  globalThis.cancelAnimationFrame =
+    (() => {}) as typeof globalThis.cancelAnimationFrame;
   origRO = globalThis.ResizeObserver;
 });
 
@@ -113,8 +130,14 @@ function particleNode(
   if (blend !== undefined) node.style.mixBlendMode = blend;
   const self = document.createElement("div");
   self.className = SELF_LAYER_CLASS;
-  Object.defineProperty(self, "clientWidth", { get: () => 100, configurable: true });
-  Object.defineProperty(self, "clientHeight", { get: () => 100, configurable: true });
+  Object.defineProperty(self, "clientWidth", {
+    get: () => 100,
+    configurable: true,
+  });
+  Object.defineProperty(self, "clientHeight", {
+    get: () => 100,
+    configurable: true,
+  });
   node.appendChild(self);
   return { node, self };
 }

@@ -1,11 +1,12 @@
 #!/usr/bin/env -S pnpm exec tsx --conditions=development
+
 // Pure self-test for P3-HX: the GSW receiver's `prettyJsonParts` (evidence.ts) concatenates to
 // exactly `JSON.stringify(value, null, 2)`, so splitting applied.json into pieces and PUTting it in
 // parts leaves every byte the checkers read unchanged. Also: `put` of a string list larger than a
 // part is sent as ordered `?part=k&of=n` PUTs whose concatenation is the original bytes.
 
-import { prettyJsonParts, put } from "../../web/gsw-receiver/evidence";
 import type { ReceiverConfig } from "../../web/gsw-receiver/config";
+import { prettyJsonParts, put } from "../../web/gsw-receiver/evidence";
 
 let failed = 0;
 const check = (id: string, ok: boolean, detail = ""): void => {

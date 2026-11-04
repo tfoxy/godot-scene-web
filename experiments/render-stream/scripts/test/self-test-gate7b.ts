@@ -22,13 +22,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Gate7Check } from "../lib/gate7-adapters";
 import {
   type RepeatDiff,
   repeatDiff,
   typeLavapipeParticleFlake,
 } from "../lib/gate7-web-flakes";
-import { join } from "node:path";
 import {
   approximateRegions,
   buildMirrorView,
@@ -413,7 +413,13 @@ try {
   const pumpEv = {
     diffs: [
       { ...black, leg: "g8pt/headless-pump/receiver", shot: "seq-26.png" },
-      { ...black, leg: "g8pt/headless-pump/receiver", shot: "seq-27.png", black: 0, inside: 102 },
+      {
+        ...black,
+        leg: "g8pt/headless-pump/receiver",
+        shot: "seq-27.png",
+        black: 0,
+        inside: 102,
+      },
     ],
   };
   const pumpRows = [
@@ -443,7 +449,12 @@ try {
       status(
         typeLavapipeParticleFlake(
           pumpRows,
-          { diffs: [...pumpEv.diffs, { ...black, leg: "g8pt/headless-pump13/receiver" }] },
+          {
+            diffs: [
+              ...pumpEv.diffs,
+              { ...black, leg: "g8pt/headless-pump13/receiver" },
+            ],
+          },
           lavapipe,
           cellNames,
         ),

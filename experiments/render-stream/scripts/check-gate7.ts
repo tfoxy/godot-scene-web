@@ -37,9 +37,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildGate4Report } from "./check-gate4";
-import { buildGate8Report } from "./check-gate8";
 import { buildGate5Report } from "./check-gate5";
 import { buildGate6Report } from "./check-gate6";
+import { buildGate8Report } from "./check-gate8";
 import { loadDeviceTable } from "./lib/browser-harness";
 import { type Gate0Expected, runGate0 } from "./lib/gate0-checks";
 import { runGate1 } from "./lib/gate1-checks";

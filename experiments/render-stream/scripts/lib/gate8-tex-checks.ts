@@ -178,7 +178,11 @@ export interface G8tReport {
   checks: G8tCheck[];
   legs: Record<string, { exit_code: string | null; skipped: string | null }>;
   decode_cost: CostRow[];
-  workers?: { full: WorkerCompare | null; patch: WorkerCompare | null; stats: WorkerStats | null };
+  workers?: {
+    full: WorkerCompare | null;
+    patch: WorkerCompare | null;
+    stats: WorkerStats | null;
+  };
   hitch: { name: string; source_format: string; total_ms: number } | null;
   hardware_band: ShotDiff[];
 }
@@ -255,17 +259,23 @@ export interface WorkerCompare {
  * frame, state for state (seq aside: a held frame takes none); the last frames and states agree;
  * and both resolve. Pure, for the self-test.
  */
-export function compareWorkerRecordings(sync: ResolvedRecording, workers: ResolvedRecording): WorkerCompare {
+export function compareWorkerRecordings(
+  sync: ResolvedRecording,
+  workers: ResolvedRecording,
+): WorkerCompare {
   const problems: string[] = [];
   const byFrame = new Map(sync.transactions.map((t) => [t.frame, t]));
   const asyncFrames = new Set(workers.transactions.map((t) => t.frame));
   let previous = -1;
   for (const t of workers.transactions) {
-    if (t.frame <= previous) problems.push(`async frame ${t.frame} after ${previous}`);
+    if (t.frame <= previous)
+      problems.push(`async frame ${t.frame} after ${previous}`);
     previous = t.frame;
     const s = byFrame.get(t.frame);
     if (!s) {
-      problems.push(`async seq ${t.seq} is frame ${t.frame}, which the synchronous recording never published`);
+      problems.push(
+        `async seq ${t.seq} is frame ${t.frame}, which the synchronous recording never published`,
+      );
       continue;
     }
     if (JSON.stringify(s.state) !== JSON.stringify(t.state)) {
@@ -274,18 +284,24 @@ export function compareWorkerRecordings(sync: ResolvedRecording, workers: Resolv
           JSON.stringify((s.state as Record<string, unknown>)[k]) !==
           JSON.stringify((t.state as Record<string, unknown>)[k]),
       );
-      problems.push(`frame ${t.frame}: the async state differs from the synchronous one in ${parts.join(", ")}`);
+      problems.push(
+        `frame ${t.frame}: the async state differs from the synchronous one in ${parts.join(", ")}`,
+      );
     }
   }
   const lastSync = sync.transactions.at(-1);
   const lastAsync = workers.transactions.at(-1);
   if (!lastAsync) problems.push("the async recording has no transaction");
   else if (lastSync && lastSync.frame !== lastAsync.frame)
-    problems.push(`the async recording ends at frame ${lastAsync.frame}, the synchronous one at ${lastSync.frame}`);
+    problems.push(
+      `the async recording ends at frame ${lastAsync.frame}, the synchronous one at ${lastSync.frame}`,
+    );
   return {
     sync_transactions: sync.transactions.length,
     async_transactions: workers.transactions.length,
-    held_frames: sync.transactions.map((t) => t.frame).filter((f) => !asyncFrames.has(f)),
+    held_frames: sync.transactions
+      .map((t) => t.frame)
+      .filter((f) => !asyncFrames.has(f)),
     problems,
   };
 }
@@ -293,17 +309,34 @@ export function compareWorkerRecordings(sync: ResolvedRecording, workers: Resolv
 /** G8kw: a hook log's texture lines with the cost columns and the worker keys dropped (their
  * order and every fact must match the synchronous log); store/inline/serve lines are listed apart,
  * as a hold-back moves them to the frame that published. */
-export function maskedHookLog(text: string | undefined): { texture: string[]; stores: string[] } {
+export function maskedHookLog(text: string | undefined): {
+  texture: string[];
+  stores: string[];
+} {
   const texture: string[] = [];
   const stores: string[] = [];
   for (const l of jsonl<Record<string, unknown>>(text)) {
     const op = String(l.op);
-    if (op === "store" || op === "inline" || op.startsWith("http") || op.startsWith("serve")) {
+    if (
+      op === "store" ||
+      op === "inline" ||
+      op.startsWith("http") ||
+      op.startsWith("serve")
+    ) {
       stores.push(`${op} ${l.hash}`);
       continue;
     }
     const m = { ...l };
-    for (const k of ["t_us", "copy_ns", "hash_ns", "decode_ns", "worker", "hook_ns", "dup_ns"]) delete m[k];
+    for (const k of [
+      "t_us",
+      "copy_ns",
+      "hash_ns",
+      "decode_ns",
+      "worker",
+      "hook_ns",
+      "dup_ns",
+    ])
+      delete m[k];
     texture.push(JSON.stringify(m));
   }
   stores.sort();
@@ -370,21 +403,29 @@ export function censusProblems(
   const out: string[] = [];
   if (fam.refused !== undefined) {
     if (h.status !== "unsupported" || h.reason !== fam.refused)
-      out.push(`${name}: ${h.status}/${h.reason}, expected unsupported/${fam.refused}`);
+      out.push(
+        `${name}: ${h.status}/${h.reason}, expected unsupported/${fam.refused}`,
+      );
     if (h.source_format !== undefined)
       out.push(`${name}: a refusal carries source_format ${h.source_format}`);
     if (h.format !== fam.source_format)
-      out.push(`${name}: refused format ${h.format}, expected ${fam.source_format}`);
+      out.push(
+        `${name}: refused format ${h.format}, expected ${fam.source_format}`,
+      );
     return out;
   }
-  if (h.status !== "ok") out.push(`${name}: ${h.status}/${h.reason}, expected ok`);
+  if (h.status !== "ok")
+    out.push(`${name}: ${h.status}/${h.reason}, expected ok`);
   if (h.format !== fam.format)
     out.push(`${name}: payload format ${h.format}, expected ${fam.format}`);
   if ((h.source_format ?? null) !== fam.source_format)
     out.push(
       `${name}: source_format ${h.source_format ?? null}, expected ${fam.source_format}`,
     );
-  if (fam.source_format !== null && !(typeof h.decode_ns === "number" && h.decode_ns >= 0))
+  if (
+    fam.source_format !== null &&
+    !(typeof h.decode_ns === "number" && h.decode_ns >= 0)
+  )
     out.push(`${name}: no decode_ns on a decoded texture`);
   return out;
 }
@@ -401,14 +442,21 @@ export function oracleProblems(
   const h = p.hook;
   if (!h) return [`${name}: no hook create`];
   if (e.source_format !== hookSourceFormat(h))
-    return [`${name}: oracle source ${e.source_format}, hook ${hookSourceFormat(h)}`];
+    return [
+      `${name}: oracle source ${e.source_format}, hook ${hookSourceFormat(h)}`,
+    ];
   if (e.payload_sha256 === null || e.payload_sha256 === undefined)
     return h.status === "ok"
-      ? [`${name}: the oracle cannot carry ${e.source_format} but the hook published it`]
+      ? [
+          `${name}: the oracle cannot carry ${e.source_format} but the hook published it`,
+        ]
       : [];
-  if (h.status !== "ok") return [`${name}: the oracle decodes it, the hook refused (${h.reason})`];
+  if (h.status !== "ok")
+    return [`${name}: the oracle decodes it, the hook refused (${h.reason})`];
   if (h.hash !== e.payload_sha256)
-    return [`${name}: hook payload ${h.hash?.slice(0, 12)} != oracle ${e.payload_sha256.slice(0, 12)}`];
+    return [
+      `${name}: hook payload ${h.hash?.slice(0, 12)} != oracle ${e.payload_sha256.slice(0, 12)}`,
+    ];
   return [];
 }
 
@@ -423,7 +471,13 @@ function check(
     // A failure, not "not-run": a leg skipped by tier or on a remote runner (skipped-by-tier.txt,
     // skipped-remote.txt) leaves no evidence, and lib/tier-verdict.py excuses exactly the checks
     // whose id or detail names such a leg; anything else missing stays a failure.
-    return { id, criterion, passed: false, status: "fail", detail: `evidence missing (${missing})` };
+    return {
+      id,
+      criterion,
+      passed: false,
+      status: "fail",
+      detail: `evidence missing (${missing})`,
+    };
   const passed = problems.length === 0;
   return {
     id,
@@ -444,21 +498,26 @@ async function shotPath(dir: string, step: number): Promise<string> {
   return join(dir, "shots", `seq-${seq}.png`);
 }
 
-async function shotDiff(
-  a: string,
-  b: string,
-  step: number,
-): Promise<ShotDiff> {
+async function shotDiff(a: string, b: string, step: number): Promise<ShotDiff> {
   const pa = await shotPath(a, step);
   const pb = await shotPath(b, step);
   const ia = existsSync(pa) ? await decodePngRgba(pa) : undefined;
   const ib = existsSync(pb) ? await decodePngRgba(pb) : undefined;
-  const out: ShotDiff = { step, a: pa, b: pb, present: false, differing: 0, max_delta: 0 };
-  if (!ia || !ib || ia.width !== ib.width || ia.height !== ib.height) return out;
+  const out: ShotDiff = {
+    step,
+    a: pa,
+    b: pb,
+    present: false,
+    differing: 0,
+    max_delta: 0,
+  };
+  if (!ia || !ib || ia.width !== ib.width || ia.height !== ib.height)
+    return out;
   out.present = true;
   for (let i = 0; i < ia.data.length; i += 4) {
     let d = 0;
-    for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(ia.data[i + c] - ib.data[i + c]));
+    for (let c = 0; c < 4; c++)
+      d = Math.max(d, Math.abs(ia.data[i + c] - ib.data[i + c]));
     if (d > 0) {
       out.differing++;
       out.max_delta = Math.max(out.max_delta, d);
@@ -496,26 +555,53 @@ export async function runG8t(
   ];
   const legs: G8tReport["legs"] = {};
   for (const l of legDirs)
-    legs[l] = { exit_code: await exitCode(join(out, l)), skipped: skipped(join(out, l)) };
-  const ran = (l: string) => legs[l].exit_code !== null && legs[l].skipped === null;
+    legs[l] = {
+      exit_code: await exitCode(join(out, l)),
+      skipped: skipped(join(out, l)),
+    };
+  const ran = (l: string) =>
+    legs[l].exit_code !== null && legs[l].skipped === null;
   const steps = expected.steps;
 
   // --- import and the oracle: the editor produced the formats the design names --------------
-  const oracle = await readJson<OracleReport>(join(out, "oracle", "oracle.json"));
+  const oracle = await readJson<OracleReport>(
+    join(out, "oracle", "oracle.json"),
+  );
   {
     const problems: string[] = [];
-    for (const l of ["import/sources", "import/fixture", "import/receiver", "oracle"])
-      if (legs[l].exit_code !== "0") problems.push(`${l} exit ${legs[l].exit_code}`);
+    for (const l of [
+      "import/sources",
+      "import/fixture",
+      "import/receiver",
+      "oracle",
+    ])
+      if (legs[l].exit_code !== "0")
+        problems.push(`${l} exit ${legs[l].exit_code}`);
     if (!oracle) problems.push("oracle/oracle.json missing");
-    for (const [name, tex] of Object.entries({ ...expected.textures, ...expected.cost }))
+    for (const [name, tex] of Object.entries({
+      ...expected.textures,
+      ...expected.cost,
+    }))
       for (const family of ["desktop", "mobile"] as const) {
         const fam = tex[family];
-        const e = oracleEntry(oracle, name, fam.source_format === null ? "desktop" : family);
+        const e = oracleEntry(
+          oracle,
+          name,
+          fam.source_format === null ? "desktop" : family,
+        );
         if (!e) problems.push(`${name}/${family}: not imported`);
         else if ((e.source_format ?? null) !== (fam.source_format ?? "RGBA8"))
-          problems.push(`${name}/${family}: imported as ${e.source_format}, expected ${fam.source_format ?? "RGBA8"}`);
-        else if (e.width !== tex.width || e.height !== tex.height || e.mipmaps !== tex.mipmaps)
-          problems.push(`${name}/${family}: imported ${e.width}x${e.height} mipmaps ${e.mipmaps}`);
+          problems.push(
+            `${name}/${family}: imported as ${e.source_format}, expected ${fam.source_format ?? "RGBA8"}`,
+          );
+        else if (
+          e.width !== tex.width ||
+          e.height !== tex.height ||
+          e.mipmaps !== tex.mipmaps
+        )
+          problems.push(
+            `${name}/${family}: imported ${e.width}x${e.height} mipmaps ${e.mipmaps}`,
+          );
       }
     checks.push(
       check(
@@ -536,10 +622,13 @@ export async function runG8t(
   {
     // decode-census
     const problems: string[] = [];
-    if (legs.capture.exit_code !== "0") problems.push(`capture exit ${legs.capture.exit_code}`);
+    if (legs.capture.exit_code !== "0")
+      problems.push(`capture exit ${legs.capture.exit_code}`);
     for (const s of steps)
       for (const [name, tex] of Object.entries(expected.textures)) {
-        const p = capPairs.find((x) => x.fixture.name === name && x.fixture.step === s.step);
+        const p = capPairs.find(
+          (x) => x.fixture.name === name && x.fixture.step === s.step,
+        );
         if (!p) {
           problems.push(`${name}: no fixture create at step ${s.step}`);
           continue;
@@ -551,16 +640,34 @@ export async function runG8t(
       const ex = expectedFor(expected, p.fixture.name, p.fixture.family);
       return ex?.fam.refused !== undefined;
     }).length;
-    const refused = capHook.filter((h) => h.reason === "unsupported-format").length;
+    const refused = capHook.filter(
+      (h) => h.reason === "unsupported-format",
+    ).length;
     if (refused !== declared)
-      problems.push(`${refused} unsupported-format creates, ${declared} declared`);
+      problems.push(
+        `${refused} unsupported-format creates, ${declared} declared`,
+      );
     for (const e of expected.engine_textures)
-      if (!capHook.some((h) => h.format === e.format && h.width === e.width && h.height === e.height && h.status === "ok"))
-        problems.push(`engine texture ${e.format} ${e.width}x${e.height} missing`);
+      if (
+        !capHook.some(
+          (h) =>
+            h.format === e.format &&
+            h.width === e.width &&
+            h.height === e.height &&
+            h.status === "ok",
+        )
+      )
+        problems.push(
+          `engine texture ${e.format} ${e.width}x${e.height} missing`,
+        );
     const unpaired = capHook.filter(
-      (h) => h.source_format !== undefined && !capPairs.some((p) => p.hook === h),
+      (h) =>
+        h.source_format !== undefined && !capPairs.some((p) => p.hook === h),
     );
-    if (unpaired.length > 0) problems.push(`${unpaired.length} decoded creates the fixture did not make`);
+    if (unpaired.length > 0)
+      problems.push(
+        `${unpaired.length} decoded creates the fixture did not make`,
+      );
     const decoded = capHook.filter((h) => h.source_format !== undefined).length;
     checks.push(
       check(
@@ -591,10 +698,12 @@ export async function runG8t(
       ? new Uint8Array(await readFile(join(capDir, "recording.rs8")))
       : undefined;
     if (!bytes) problems.push("capture/recording.rs8 missing");
-    else if (wireVersionOf(bytes) !== 8) problems.push("capture/recording.rs8 is not GRS8");
+    else if (wireVersionOf(bytes) !== 8)
+      problems.push("capture/recording.rs8 is not GRS8");
     else {
       const errors = validateRecording(bytes, 8);
-      if (errors.length > 0) problems.push(`invalid /8 recording: ${errors[0]}`);
+      if (errors.length > 0)
+        problems.push(`invalid /8 recording: ${errors[0]}`);
       const decoded = decodeRecording(bytes, 8) as unknown as {
         records: { meta: Record<string, unknown> }[];
       };
@@ -608,25 +717,37 @@ export async function runG8t(
       let entries = 0;
       for (const r of decoded.records) {
         const textures = r.meta.textures as
-          | { status: string; hash: string | null; format: string | null; source_format: string | null }[]
+          | {
+              status: string;
+              hash: string | null;
+              format: string | null;
+              source_format: string | null;
+            }[]
           | undefined;
         for (const t of textures ?? []) {
           if (t.status !== "ok" || !t.hash) continue;
           entries++;
           const h = byHash.get(t.hash);
-          if (!h) problems.push(`table entry ${t.hash.slice(0, 12)} has no hook create`);
-          else if (t.format !== h.format || (t.source_format ?? undefined) !== h.source_format)
+          if (!h)
+            problems.push(
+              `table entry ${t.hash.slice(0, 12)} has no hook create`,
+            );
+          else if (
+            t.format !== h.format ||
+            (t.source_format ?? undefined) !== h.source_format
+          )
             problems.push(
               `table entry ${t.hash.slice(0, 12)}: ${t.format}/${t.source_format} vs hook ${h.format}/${h.source_format}`,
             );
         }
       }
-      if (entries === 0) problems.push("no ok texture entries in the recording");
+      if (entries === 0)
+        problems.push("no ok texture entries in the recording");
     }
     checks.push(
       check(
         "decode-wire",
-        "the decode capture writes a valid render-stream/8 recording whose session declares resources.decode \"engine\" and whose texture entries carry the payload format and source_format the hook logged",
+        'the decode capture writes a valid render-stream/8 recording whose session declares resources.decode "engine" and whose texture entries carry the payload format and source_format the hook logged',
         capRan ? problems : null,
       ),
     );
@@ -643,7 +764,8 @@ export async function runG8t(
     const bytes = existsSync(join(dir, "recording.rs2"))
       ? new Uint8Array(await readFile(join(dir, "recording.rs2")))
       : undefined;
-    if (!bytes || wireVersionOf(bytes) !== 6) problems.push("decode-off/capture/recording.rs2 is not GRS6");
+    if (!bytes || wireVersionOf(bytes) !== 6)
+      problems.push("decode-off/capture/recording.rs2 is not GRS6");
     for (const p of pairs) {
       const ex = expectedFor(expected, p.fixture.name, p.fixture.family);
       if (!ex) continue;
@@ -654,7 +776,8 @@ export async function runG8t(
         continue;
       }
       if (ex.fam.source_format === null) {
-        if (h.status !== "ok") problems.push(`${name}: the lossless control is ${h.status}`);
+        if (h.status !== "ok")
+          problems.push(`${name}: the lossless control is ${h.status}`);
       } else if (
         h.status !== "unsupported" ||
         h.reason !== "unsupported-format" ||
@@ -662,10 +785,14 @@ export async function runG8t(
         h.source_format !== undefined ||
         h.decode_ns !== null
       )
-        problems.push(`${name}: ${h.status}/${h.reason} format ${h.format} source ${h.source_format} decode_ns ${h.decode_ns}`);
+        problems.push(
+          `${name}: ${h.status}/${h.reason} format ${h.format} source ${h.source_format} decode_ns ${h.decode_ns}`,
+        );
     }
     if (pairs.length !== capPairs.length && capRan)
-      problems.push(`${pairs.length} creates with decode off, ${capPairs.length} with decode on`);
+      problems.push(
+        `${pairs.length} creates with decode off, ${capPairs.length} with decode on`,
+      );
     checks.push(
       check(
         "decode-off",
@@ -682,21 +809,35 @@ export async function runG8t(
     const problems: string[] = [];
     let compared = 0;
     for (const leg of ["receiver", "receiver-patch"]) {
-      if (legs[leg].exit_code !== "0") problems.push(`${leg} exit ${legs[leg].exit_code}`);
-      const applied = await readJson<{ result?: { class?: string }; errors?: unknown[] }>(
-        join(out, leg, "applied.json"),
-      );
+      if (legs[leg].exit_code !== "0")
+        problems.push(`${leg} exit ${legs[leg].exit_code}`);
+      const applied = await readJson<{
+        result?: { class?: string };
+        errors?: unknown[];
+      }>(join(out, leg, "applied.json"));
       if (!applied) problems.push(`${leg}/applied.json missing`);
       for (const s of steps) {
-        const d = await shotDiff(join(out, "reference"), join(out, leg), s.step);
+        const d = await shotDiff(
+          join(out, "reference"),
+          join(out, leg),
+          s.step,
+        );
         compared++;
         if (!d.present) problems.push(`${leg} step ${s.step}: shot missing`);
         else if (d.differing > 0)
-          problems.push(`${leg} step ${s.step}: ${d.differing} px differ (max delta ${d.max_delta})`);
+          problems.push(
+            `${leg} step ${s.step}: ${d.differing} px differ (max delta ${d.max_delta})`,
+          );
       }
     }
     for (const s of steps)
-      hardware_band.push(await shotDiff(join(out, "reference"), join(out, "reference-hw"), s.step));
+      hardware_band.push(
+        await shotDiff(
+          join(out, "reference"),
+          join(out, "reference-hw"),
+          s.step,
+        ),
+      );
     checks.push(
       check(
         "decode-reference",
@@ -707,12 +848,16 @@ export async function runG8t(
     );
     checks.push({
       id: "decode-hardware-band",
-      criterion: "informative (gate8-design.md Q3): the reference drawing the .ctex itself (GPU-sampled or GLES3's own CPU fallback) against the CPU-decoded reference",
+      criterion:
+        "informative (gate8-design.md Q3): the reference drawing the .ctex itself (GPU-sampled or GLES3's own CPU fallback) against the CPU-decoded reference",
       passed: true,
       status: "pass",
       gating: false,
       detail: hardware_band
-        .map((d) => `step ${d.step}: ${d.present ? `${d.differing} px, max delta ${d.max_delta}` : "missing"}`)
+        .map(
+          (d) =>
+            `step ${d.step}: ${d.present ? `${d.differing} px, max delta ${d.max_delta}` : "missing"}`,
+        )
         .join("; "),
     });
   }
@@ -720,7 +865,10 @@ export async function runG8t(
   // --- perturb-decode: the oracle and the pixels must both catch it ------------------------
   {
     const dir = join(out, "sabotage-perturb-decode", "capture");
-    const pairs = pairTextures(await fixtureTextures(dir), await hookTextureCreates(dir));
+    const pairs = pairTextures(
+      await fixtureTextures(dir),
+      await hookTextureCreates(dir),
+    );
     const fromFrame =
       expected.start_frame + expected.step_frames * expected.perturb_from_step;
     const problems: string[] = [];
@@ -730,9 +878,13 @@ export async function runG8t(
       const bad = oracleProblems(p, oracle).length > 0;
       if (bad) mismatched++;
       if (decodedHere && p.fixture.frame >= fromFrame && !bad)
-        problems.push(`${p.fixture.name}/${p.fixture.family}: perturbed payload still matches the oracle`);
+        problems.push(
+          `${p.fixture.name}/${p.fixture.family}: perturbed payload still matches the oracle`,
+        );
       if (p.fixture.frame < fromFrame && bad)
-        problems.push(`${p.fixture.name}/${p.fixture.family}: a payload before the sabotage frame mismatches`);
+        problems.push(
+          `${p.fixture.name}/${p.fixture.family}: a payload before the sabotage frame mismatches`,
+        );
     }
     if (mismatched === 0) problems.push("the oracle caught nothing");
     for (const s of steps) {
@@ -744,9 +896,13 @@ export async function runG8t(
       const perturbed = s.step >= expected.perturb_from_step;
       if (!d.present) problems.push(`receiver step ${s.step}: shot missing`);
       else if (perturbed && d.differing === 0)
-        problems.push(`receiver step ${s.step}: the perturbed texel is invisible`);
+        problems.push(
+          `receiver step ${s.step}: the perturbed texel is invisible`,
+        );
       else if (!perturbed && d.differing > 0)
-        problems.push(`receiver step ${s.step}: ${d.differing} px differ before the sabotage`);
+        problems.push(
+          `receiver step ${s.step}: ${d.differing} px differ before the sabotage`,
+        );
     }
     checks.push(
       check(
@@ -759,7 +915,10 @@ export async function runG8t(
   }
 
   // --- G8kw: texture workers (texture-delivery-design.md D11, Q7) ----------------------------
-  const resolved = async (dir: string, name: string): Promise<{ rec?: ResolvedRecording; error?: string }> => {
+  const resolved = async (
+    dir: string,
+    name: string,
+  ): Promise<{ rec?: ResolvedRecording; error?: string }> => {
     const path = join(dir, name);
     if (!existsSync(path)) return { error: `${name} missing` };
     const bytes = new Uint8Array(await readFile(path));
@@ -772,9 +931,9 @@ export async function runG8t(
     }
   };
   const workerStats = async (dir: string): Promise<WorkerStats | null> => {
-    const r = await readJson<{ stream?: { texture_workers?: WorkerStats; reason?: string | null } }>(
-      join(dir, "evidence", "result.json"),
-    );
+    const r = await readJson<{
+      stream?: { texture_workers?: WorkerStats; reason?: string | null };
+    }>(join(dir, "evidence", "result.json"));
     return r?.stream?.texture_workers ?? null;
   };
   const workersDir = join(out, "workers", "capture");
@@ -782,9 +941,18 @@ export async function runG8t(
   {
     // worker-states-equal: the async recordings against the synchronous capture/ of the same run
     const problems: string[] = [];
-    const cmp: { full: WorkerCompare | null; patch: WorkerCompare | null } = { full: null, patch: null };
-    if (legs["workers/capture"].exit_code !== "0") problems.push(`workers/capture exit ${legs["workers/capture"].exit_code}`);
-    for (const [key, name] of [["full", "recording.rs8"], ["patch", "recording-patch.rs8"]] as const) {
+    const cmp: { full: WorkerCompare | null; patch: WorkerCompare | null } = {
+      full: null,
+      patch: null,
+    };
+    if (legs["workers/capture"].exit_code !== "0")
+      problems.push(
+        `workers/capture exit ${legs["workers/capture"].exit_code}`,
+      );
+    for (const [key, name] of [
+      ["full", "recording.rs8"],
+      ["patch", "recording-patch.rs8"],
+    ] as const) {
       const a = await resolved(capDir, name);
       const b = await resolved(workersDir, name);
       if (a.error || !a.rec) problems.push(`capture/${a.error}`);
@@ -795,13 +963,19 @@ export async function runG8t(
       problems.push(...c.problems.map((p) => `${name}: ${p}`));
     }
     const stats = await workerStats(workersDir);
-    if (!stats) problems.push("workers/capture result.json has no stream.texture_workers");
+    if (!stats)
+      problems.push(
+        "workers/capture result.json has no stream.texture_workers",
+      );
     else {
-      if (stats.workers !== 2) problems.push(`${stats.workers} workers, expected 2`);
+      if (stats.workers !== 2)
+        problems.push(`${stats.workers} workers, expected 2`);
       if (stats.jobs === 0 || stats.completed !== stats.jobs)
         problems.push(`${stats.completed}/${stats.jobs} jobs completed`);
       if (stats.held_callbacks === 0)
-        problems.push("no callback was held back: the hold-back was never exercised");
+        problems.push(
+          "no callback was held back: the hold-back was never exercised",
+        );
     }
     if (cmp.full && cmp.full.held_frames.length === 0)
       problems.push("the async full recording held no frame back");
@@ -819,22 +993,38 @@ export async function runG8t(
   {
     // worker-hook-log: the hook log's texture lines are the synchronous ones, in order
     const problems: string[] = [];
-    const a = maskedHookLog(await readText(join(capDir, "evidence", "resources.jsonl")));
-    const b = maskedHookLog(await readText(join(workersDir, "evidence", "resources.jsonl")));
+    const a = maskedHookLog(
+      await readText(join(capDir, "evidence", "resources.jsonl")),
+    );
+    const b = maskedHookLog(
+      await readText(join(workersDir, "evidence", "resources.jsonl")),
+    );
     if (a.texture.length === 0) problems.push("capture/ hook log has no lines");
     if (a.texture.length !== b.texture.length)
-      problems.push(`${b.texture.length} texture lines, the synchronous log has ${a.texture.length}`);
+      problems.push(
+        `${b.texture.length} texture lines, the synchronous log has ${a.texture.length}`,
+      );
     for (let i = 0; i < Math.min(a.texture.length, b.texture.length); i++)
       if (a.texture[i] !== b.texture[i]) {
-        problems.push(`line ${i + 1} differs: ${b.texture[i].slice(0, 160)} vs ${a.texture[i].slice(0, 160)}`);
+        problems.push(
+          `line ${i + 1} differs: ${b.texture[i].slice(0, 160)} vs ${a.texture[i].slice(0, 160)}`,
+        );
         break;
       }
     if (JSON.stringify(a.stores) !== JSON.stringify(b.stores))
-      problems.push(`the stored hashes differ (${b.stores.length} vs ${a.stores.length})`);
-    const creates = (await hookTextureCreates(workersDir)).filter((h) => h.status === "ok");
-    const onWorker = creates.filter((h) => h.worker === true && typeof h.hook_ns === "number");
+      problems.push(
+        `the stored hashes differ (${b.stores.length} vs ${a.stores.length})`,
+      );
+    const creates = (await hookTextureCreates(workersDir)).filter(
+      (h) => h.status === "ok",
+    );
+    const onWorker = creates.filter(
+      (h) => h.worker === true && typeof h.hook_ns === "number",
+    );
     if (onWorker.length !== creates.length)
-      problems.push(`${creates.length - onWorker.length} of ${creates.length} ok creates were not worker copies`);
+      problems.push(
+        `${creates.length - onWorker.length} of ${creates.length} ok creates were not worker copies`,
+      );
     checks.push(
       check(
         "worker-hook-log",
@@ -847,13 +1037,21 @@ export async function runG8t(
   }
   {
     // sabotage-publish-before-ready: publishing without waiting must be caught
-    const dir = join(out, "workers", "sabotage-publish-before-ready", "capture");
+    const dir = join(
+      out,
+      "workers",
+      "sabotage-publish-before-ready",
+      "capture",
+    );
     const caught: string[] = [];
     const a = await resolved(capDir, "recording.rs8");
     const b = await resolved(dir, "recording.rs8");
     if (b.error) caught.push(b.error);
-    if (a.rec && b.rec) caught.push(...compareWorkerRecordings(a.rec, b.rec).problems);
-    const r = await readJson<{ stream?: { reason?: string | null } }>(join(dir, "evidence", "result.json"));
+    if (a.rec && b.rec)
+      caught.push(...compareWorkerRecordings(a.rec, b.rec).problems);
+    const r = await readJson<{ stream?: { reason?: string | null } }>(
+      join(dir, "evidence", "result.json"),
+    );
     if (r?.stream?.reason) caught.push(`stream: ${r.stream.reason}`);
     checks.push(
       check(
@@ -862,7 +1060,9 @@ export async function runG8t(
         ran("workers/sabotage-publish-before-ready/capture") && ran("capture")
           ? caught.length > 0
             ? []
-            : ["the fault went unnoticed: the recording equals the synchronous one"]
+            : [
+                "the fault went unnoticed: the recording equals the synchronous one",
+              ]
           : null,
         `caught: ${caught.slice(0, 2).join("; ")}`,
         "workers/sabotage-publish-before-ready/capture",
@@ -879,17 +1079,27 @@ export async function runG8t(
     let variantsSeen = 0;
     let texturesSeen = 0;
     const strip = (state: unknown): unknown => {
-      const s = state as { textures: Array<Record<string, unknown>> } & Record<string, unknown>;
-      return { ...s, textures: s.textures.map(({ variants: _v, ...rest }) => rest) };
+      const s = state as { textures: Array<Record<string, unknown>> } & Record<
+        string,
+        unknown
+      >;
+      return {
+        ...s,
+        textures: s.textures.map(({ variants: _v, ...rest }) => rest),
+      };
     };
-    for (const [name, base] of [["recording.rs9", "recording.rs8"], ["recording-patch.rs9", "recording-patch.rs8"]] as const) {
+    for (const [name, base] of [
+      ["recording.rs9", "recording.rs8"],
+      ["recording-patch.rs9", "recording-patch.rs8"],
+    ] as const) {
       const path = join(dir, name);
       if (!existsSync(path)) {
         problems.push(`${name} missing`);
         continue;
       }
       const bytes = new Uint8Array(await readFile(path));
-      if (wireVersionOf(bytes) !== 9) problems.push(`${name} does not start with GRS9`);
+      if (wireVersionOf(bytes) !== 9)
+        problems.push(`${name} does not start with GRS9`);
       const errors = validateRecording(bytes, 9);
       if (errors.length > 0) {
         problems.push(`${name} invalid at /9: ${errors[0]}`);
@@ -898,17 +1108,25 @@ export async function runG8t(
       const rec = resolveRecording(bytes, 9);
       const session = decodeRecording(bytes, 9).records[0].meta as unknown as {
         protocol: string;
-        resources: { texture_delivery?: { mode: string; encoder: string | null } };
+        resources: {
+          texture_delivery?: { mode: string; encoder: string | null };
+        };
       };
-      if (session.protocol !== "render-stream/9") problems.push(`${name} session protocol ${session.protocol}`);
+      if (session.protocol !== "render-stream/9")
+        problems.push(`${name} session protocol ${session.protocol}`);
       const declared = session.resources.texture_delivery;
       if (declared?.mode !== "rgba" || declared.encoder !== null)
-        problems.push(`${name} declares ${JSON.stringify(declared)}, not {"mode":"rgba","encoder":null}`);
+        problems.push(
+          `${name} declares ${JSON.stringify(declared)}, not {"mode":"rgba","encoder":null}`,
+        );
       for (const t of rec.transactions)
         for (const tex of t.state.textures) {
           texturesSeen++;
           variantsSeen += (tex.variants ?? []).length;
-          if (!Array.isArray(tex.variants)) problems.push(`${name} seq ${t.seq}: texture ${tex.id} has no variants list`);
+          if (!Array.isArray(tex.variants))
+            problems.push(
+              `${name} seq ${t.seq}: texture ${tex.id} has no variants list`,
+            );
         }
       const reference = await resolved(capDir, base);
       if (reference.error || !reference.rec) {
@@ -917,18 +1135,33 @@ export async function runG8t(
       }
       const stripped: ResolvedRecording = {
         ...rec,
-        transactions: rec.transactions.map((t) => ({ ...t, state: strip(t.state) as typeof t.state })),
+        transactions: rec.transactions.map((t) => ({
+          ...t,
+          state: strip(t.state) as typeof t.state,
+        })),
       };
-      problems.push(...compareWorkerRecordings(reference.rec, stripped).problems.map((p) => `${name}: ${p}`));
+      problems.push(
+        ...compareWorkerRecordings(reference.rec, stripped).problems.map(
+          (p) => `${name}: ${p}`,
+        ),
+      );
     }
-    if (variantsSeen > 0) problems.push(`${variantsSeen} variants offered by an empty seam`);
+    if (variantsSeen > 0)
+      problems.push(`${variantsSeen} variants offered by an empty seam`);
     if (texturesSeen === 0) problems.push("no texture entry was seen");
-    const r = await readJson<{ stream?: { gate8?: { file_stream_version?: number; texture_delivery?: string } } }>(
-      join(dir, "evidence", "result.json"),
-    );
-    if (r?.stream?.gate8?.file_stream_version !== 9) problems.push(`result.json file_stream_version ${r?.stream?.gate8?.file_stream_version}`);
+    const r = await readJson<{
+      stream?: {
+        gate8?: { file_stream_version?: number; texture_delivery?: string };
+      };
+    }>(join(dir, "evidence", "result.json"));
+    if (r?.stream?.gate8?.file_stream_version !== 9)
+      problems.push(
+        `result.json file_stream_version ${r?.stream?.gate8?.file_stream_version}`,
+      );
     if (r?.stream?.gate8?.texture_delivery !== "rgba")
-      problems.push(`result.json texture_delivery ${r?.stream?.gate8?.texture_delivery}`);
+      problems.push(
+        `result.json texture_delivery ${r?.stream?.gate8?.texture_delivery}`,
+      );
     checks.push(
       check(
         "delivery-v9-wire",
@@ -948,16 +1181,24 @@ export async function runG8t(
       join(out, "decode-cost", "oracle-timing", "oracle.json"),
     );
     const dir = join(out, "decode-cost", "capture");
-    const pairs = pairTextures(await fixtureTextures(dir), await hookTextureCreates(dir));
+    const pairs = pairTextures(
+      await fixtureTextures(dir),
+      await hookTextureCreates(dir),
+    );
     const wdir = join(out, "decode-cost", "capture-workers");
-    const workerPairs = pairTextures(await fixtureTextures(wdir), await hookTextureCreates(wdir));
+    const workerPairs = pairTextures(
+      await fixtureTextures(wdir),
+      await hookTextureCreates(wdir),
+    );
     const workerProblems: string[] = [];
     const problems: string[] = [];
     for (const [name, tex] of Object.entries(expected.cost))
       for (const family of ["desktop", "mobile"] as const) {
         const fam = tex[family];
         const e = oracleEntry(timing, name, family);
-        const p = pairs.find((x) => x.fixture.name === name && x.fixture.family === family);
+        const p = pairs.find(
+          (x) => x.fixture.name === name && x.fixture.family === family,
+        );
         const h = p?.hook;
         const design = expected.design_cost[fam.source_format ?? ""];
         const ms = (ns: number | null | undefined) =>
@@ -967,7 +1208,10 @@ export async function runG8t(
           source_format: fam.source_format ?? "",
           width: tex.width,
           height: tex.height,
-          oracle_best_ms: e?.decompress_best_us !== undefined ? e.decompress_best_us / 1000 : null,
+          oracle_best_ms:
+            e?.decompress_best_us !== undefined
+              ? e.decompress_best_us / 1000
+              : null,
           oracle_mpx_per_s: e?.mpx_per_s ?? null,
           hook_decode_ms: ms(h?.decode_ns),
           hook_copy_ms: ms(h?.copy_ns),
@@ -975,33 +1219,62 @@ export async function runG8t(
           hook_total_ms: null,
           thread: h?.thread ?? null,
           design_ms: typeof design === "object" ? design.ms : null,
-          design_mpx_per_s: typeof design === "object" ? design.mpx_per_s : null,
+          design_mpx_per_s:
+            typeof design === "object" ? design.mpx_per_s : null,
         };
-        if (row.hook_decode_ms !== null && row.hook_copy_ms !== null && row.hook_hash_ms !== null)
-          row.hook_total_ms = row.hook_decode_ms + row.hook_copy_ms + row.hook_hash_ms;
-        if (row.oracle_best_ms === null) problems.push(`${name}/${family}: no oracle timing`);
-        if (row.hook_total_ms === null) problems.push(`${name}/${family}: no hook decode/copy/hash times`);
-        if (h && h.status !== "ok") problems.push(`${name}/${family}: ${h.status}/${h.reason}`);
+        if (
+          row.hook_decode_ms !== null &&
+          row.hook_copy_ms !== null &&
+          row.hook_hash_ms !== null
+        )
+          row.hook_total_ms =
+            row.hook_decode_ms + row.hook_copy_ms + row.hook_hash_ms;
+        if (row.oracle_best_ms === null)
+          problems.push(`${name}/${family}: no oracle timing`);
+        if (row.hook_total_ms === null)
+          problems.push(`${name}/${family}: no hook decode/copy/hash times`);
+        if (h && h.status !== "ok")
+          problems.push(`${name}/${family}: ${h.status}/${h.reason}`);
         if (p && oracleProblems(p, timing).length > 0)
           problems.push(`${name}/${family}: ${oracleProblems(p, timing)[0]}`);
-        if (row.hook_total_ms !== null && row.thread === "main" && (hitch === null || row.hook_total_ms > hitch.total_ms))
-          hitch = { name, source_format: row.source_format, total_ms: row.hook_total_ms };
-        const w = workerPairs.find((x) => x.fixture.name === name && x.fixture.family === family)?.hook;
+        if (
+          row.hook_total_ms !== null &&
+          row.thread === "main" &&
+          (hitch === null || row.hook_total_ms > hitch.total_ms)
+        )
+          hitch = {
+            name,
+            source_format: row.source_format,
+            total_ms: row.hook_total_ms,
+          };
+        const w = workerPairs.find(
+          (x) => x.fixture.name === name && x.fixture.family === family,
+        )?.hook;
         row.workers_hook_ms = ms(w?.hook_ns);
         row.workers_dup_ms = ms(w?.dup_ns);
         row.workers_job_ms =
           ms(w?.copy_ns) !== null && ms(w?.hash_ns) !== null
-            ? (ms(w?.copy_ns) ?? 0) + (ms(w?.hash_ns) ?? 0) + (ms(w?.decode_ns) ?? 0)
+            ? (ms(w?.copy_ns) ?? 0) +
+              (ms(w?.hash_ns) ?? 0) +
+              (ms(w?.decode_ns) ?? 0)
             : null;
         if (ran("decode-cost/capture-workers")) {
-          if (!w) workerProblems.push(`${name}/${family}: no create in decode-cost/capture-workers`);
+          if (!w)
+            workerProblems.push(
+              `${name}/${family}: no create in decode-cost/capture-workers`,
+            );
           else if (w.worker !== true || row.workers_hook_ms === null)
             workerProblems.push(`${name}/${family}: not a worker copy`);
-          else if (w.thread !== "main") workerProblems.push(`${name}/${family}: created on ${w.thread}`);
+          else if (w.thread !== "main")
+            workerProblems.push(`${name}/${family}: created on ${w.thread}`);
           else if (row.workers_hook_ms > 2)
-            workerProblems.push(`${name}/${family}: ${row.workers_hook_ms.toFixed(2)} ms on the calling thread (budget 2 ms)`);
+            workerProblems.push(
+              `${name}/${family}: ${row.workers_hook_ms.toFixed(2)} ms on the calling thread (budget 2 ms)`,
+            );
           else if (w.hash !== p?.hook?.hash)
-            workerProblems.push(`${name}/${family}: the worker's hash differs from the synchronous one`);
+            workerProblems.push(
+              `${name}/${family}: the worker's hash differs from the synchronous one`,
+            );
         }
         decode_cost.push(row);
       }
@@ -1009,9 +1282,14 @@ export async function runG8t(
       check(
         "decode-cost",
         "measured, no budget (gate8-design.md Q3): per cost format the best-of-3 Image.decompress time and Mpx/s on the release template, and the hook's own decode, copy and hash times with the largest calling-thread hitch",
-        ran("decode-cost/capture") && ran("decode-cost/oracle-timing") ? problems : null,
+        ran("decode-cost/capture") && ran("decode-cost/oracle-timing")
+          ? problems
+          : null,
         decode_cost
-          .map((r) => `${r.source_format} ${r.oracle_best_ms?.toFixed(1)} ms (${r.oracle_mpx_per_s?.toFixed(0)} Mpx/s), hook ${r.hook_decode_ms?.toFixed(1)}+${r.hook_copy_ms?.toFixed(1)}+${r.hook_hash_ms?.toFixed(1)} ms`)
+          .map(
+            (r) =>
+              `${r.source_format} ${r.oracle_best_ms?.toFixed(1)} ms (${r.oracle_mpx_per_s?.toFixed(0)} Mpx/s), hook ${r.hook_decode_ms?.toFixed(1)}+${r.hook_copy_ms?.toFixed(1)}+${r.hook_hash_ms?.toFixed(1)} ms`,
+          )
           .join("; "),
       ),
     );
@@ -1019,13 +1297,25 @@ export async function runG8t(
       check(
         "worker-hook-time",
         "G8kw (texture-delivery-design.md G8kw row): at GRC_TEXTURE_WORKERS=2 every 2048x2048 cost create costs the calling (main) thread at most 2 ms (facts, prediction, copy-on-write duplicate, hand-off, mirror), its decode/copy/hash run on a worker, and the worker's hash equals the synchronous capture's",
-        ran("decode-cost/capture-workers") && ran("decode-cost/capture") ? workerProblems : null,
+        ran("decode-cost/capture-workers") && ran("decode-cost/capture")
+          ? workerProblems
+          : null,
         decode_cost
-          .map((r) => `${r.source_format} ${r.workers_hook_ms?.toFixed(3)} ms (dup ${r.workers_dup_ms?.toFixed(3)}; worker ${r.workers_job_ms?.toFixed(1)} ms)`)
+          .map(
+            (r) =>
+              `${r.source_format} ${r.workers_hook_ms?.toFixed(3)} ms (dup ${r.workers_dup_ms?.toFixed(3)}; worker ${r.workers_job_ms?.toFixed(1)} ms)`,
+          )
           .join("; "),
         "decode-cost/capture-workers",
       ),
     );
   }
-  return { checks, legs, decode_cost, hitch, hardware_band, workers: workersReport };
+  return {
+    checks,
+    legs,
+    decode_cost,
+    hitch,
+    hardware_band,
+    workers: workersReport,
+  };
 }

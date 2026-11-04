@@ -125,8 +125,7 @@ function series<T>(
     const v =
       shape === "flat"
         ? flatValue
-        : flatValue +
-          Math.max(0, t - G6S_WINDOW_START_S) * growthPerSecond;
+        : flatValue + Math.max(0, t - G6S_WINDOW_START_S) * growthPerSecond;
     out.push(make(t, v));
   }
   return out;
@@ -174,7 +173,11 @@ function evidenceFor(
   // "runaway": 10x that, as if every frame wrongly minted a new entry instead of a bounded,
   // repeating set (MS/SM/CM/PB) that stops contributing once each hash has been seen once.
   const carriedPerSecond =
-    opts.carriedShape === "runaway" ? 20 : opts.carriedShape === "normal" ? 2 : 0;
+    opts.carriedShape === "runaway"
+      ? 20
+      : opts.carriedShape === "normal"
+        ? 2
+        : 0;
   if (carriedPerSecond > 0) {
     for (const line of hostTimeline) {
       const t = line.t_us / 1e6;
@@ -235,7 +238,10 @@ function evidenceFor(
     leg: leg.leg,
     hostTimeline,
     hostProc,
-    receiverPerf: { schema: "render-stream-receiver-perf/1", timeline: receiverTimeline },
+    receiverPerf: {
+      schema: "render-stream-receiver-perf/1",
+      timeline: receiverTimeline,
+    },
     receiverProc,
     applied: {
       shots: [],
@@ -351,9 +357,13 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     const noEvictGrown = evidenceFor(NO_EVICT, { hostShape: "flat" });
     for (const line of noEvictGrown.receiverPerf?.timeline ?? []) {
       const t = line.t_us / 1e6;
-      line.cache_entries_memory = Math.round(10 + Math.max(0, t - G6S_WINDOW_START_S) * 1);
+      line.cache_entries_memory = Math.round(
+        10 + Math.max(0, t - G6S_WINDOW_START_S) * 1,
+      );
       line.cache_bytes_memory =
-        G6S_MEMORY_BUDGET_BYTES + 1 + Math.max(0, t - G6S_WINDOW_START_S) * 1000;
+        G6S_MEMORY_BUDGET_BYTES +
+        1 +
+        Math.max(0, t - G6S_WINDOW_START_S) * 1000;
     }
     const noEvictCheck = checkResidencyBounded(NO_EVICT, noEvictGrown);
     assert(
@@ -364,9 +374,7 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     const noEvictWrong = evidenceFor(NO_EVICT, { hostShape: "flat" }); // nothing grew at all
     fails(
       "checkResidencyBounded on no-evict when nothing grew",
-      checkResidencyBounded(NO_EVICT, noEvictWrong).passed
-        ? []
-        : ["expected"],
+      checkResidencyBounded(NO_EVICT, noEvictWrong).passed ? [] : ["expected"],
       "expected",
     );
     const retainGrown = evidenceFor(RETAIN, {
@@ -399,7 +407,8 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     // perfectly flat afterward, so first-third-max-vs-last-third-max alone never sees it. These
     // cases reproduce that shape and prove the budget-derived-bound half catches it anyway.
     const retainFlatElevated = evidenceFor(RETAIN, { hostShape: "flat" });
-    for (const line of retainFlatElevated.hostTimeline) line.host_retained = 139;
+    for (const line of retainFlatElevated.hostTimeline)
+      line.host_retained = 139;
     const retainFlatCheck = checkResidencyBounded(RETAIN, retainFlatElevated);
     assert(
       "checkResidencyBounded catches retain-superseded's plateau via the budget-derived bound",
@@ -409,14 +418,18 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     const noEvictFlatElevated = evidenceFor(NO_EVICT, { hostShape: "flat" });
     for (const line of noEvictFlatElevated.receiverPerf?.timeline ?? [])
       line.cache_bytes_memory = 2_000_000; // past the 1 MiB budget plus one payload
-    const noEvictFlatCheck = checkResidencyBounded(NO_EVICT, noEvictFlatElevated);
+    const noEvictFlatCheck = checkResidencyBounded(
+      NO_EVICT,
+      noEvictFlatElevated,
+    );
     assert(
       "checkResidencyBounded catches no-evict's plateau via the budget-derived bound",
       noEvictFlatCheck.passed,
       noEvictFlatCheck.detail,
     );
     const honestFlatElevated = evidenceFor(HONEST, { hostShape: "flat" });
-    for (const line of honestFlatElevated.hostTimeline) line.host_retained = 139;
+    for (const line of honestFlatElevated.hostTimeline)
+      line.host_retained = 139;
     const honestFlatCheck = checkResidencyBounded(HONEST, honestFlatElevated);
     fails(
       "checkResidencyBounded fails an honest leg whose host-retained plateau exceeds the bound",
@@ -436,7 +449,9 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     const neverEvicted = evidenceFor(HONEST, { evictionsMemory: 0 });
     fails(
       "checkCacheBudgetRespected fails when the budget was never exercised",
-      checkCacheBudgetRespected(HONEST, neverEvicted).passed ? [] : ["never exercised"],
+      checkCacheBudgetRespected(HONEST, neverEvicted).passed
+        ? []
+        : ["never exercised"],
       "never exercised",
     );
     const overBudget = evidenceFor(HONEST, {});
@@ -464,10 +479,15 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     const noEvictBroken = evidenceFor(NO_EVICT, { evictionsMemory: 3 });
     fails(
       "checkCacheBudgetRespected fails no-evict if it evicted anyway",
-      checkCacheBudgetRespected(NO_EVICT, noEvictBroken).passed ? [] : ["should be 0"],
+      checkCacheBudgetRespected(NO_EVICT, noEvictBroken).passed
+        ? []
+        : ["should be 0"],
       "should be 0",
     );
-    const inlineOk = evidenceFor(INLINE, { evictionsMemory: 0, evictionsDisk: 0 });
+    const inlineOk = evidenceFor(INLINE, {
+      evictionsMemory: 0,
+      evictionsDisk: 0,
+    });
     assert(
       "checkCacheBudgetRespected passes soak-inline when it never evicted",
       checkCacheBudgetRespected(INLINE, inlineOk).passed,
@@ -476,7 +496,9 @@ export function selfTestG6s(hooks: SelfTestHooks): void {
     const inlineBroken = evidenceFor(INLINE, { evictionsMemory: 2 });
     fails(
       "checkCacheBudgetRespected fails soak-inline if it evicted (no fallback source)",
-      checkCacheBudgetRespected(INLINE, inlineBroken).passed ? [] : ["unrecoverable"],
+      checkCacheBudgetRespected(INLINE, inlineBroken).passed
+        ? []
+        : ["unrecoverable"],
       "unrecoverable",
     );
   }

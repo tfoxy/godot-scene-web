@@ -23,7 +23,10 @@ import type { Browser, CDPSession, Page } from "@playwright/test";
 // ../../../../packages/perf-harness/src/nvidia.ts (the repo's own relative-import convention for
 // scripts/lib reaching a package's TypeScript source, e.g. device-sampler.ts, browser-harness.ts).
 import { sampleChromeVram } from "../../../../packages/perf-harness/src/nvidia";
-import { type ChromiumProcessInfo, collectChromiumProcesses } from "./browser-harness";
+import {
+  type ChromiumProcessInfo,
+  collectChromiumProcesses,
+} from "./browser-harness";
 import { readProcStatus } from "./proc-sampler";
 
 /** Races `p` against a timeout, so a single stuck CDP/page round-trip (observed: a leg's
@@ -100,7 +103,11 @@ function summarizeByRole(
   };
   for (const role of Object.keys(roles)) {
     const pts = samples
-      .map((s) => ({ t: (s.t_us - t0) / 1e6, v: s.rss_bytes[role], gc: s.post_gc === true }))
+      .map((s) => ({
+        t: (s.t_us - t0) / 1e6,
+        v: s.rss_bytes[role],
+        gc: s.post_gc === true,
+      }))
       .filter((p) => p.v !== undefined);
     if (pts.length === 0) continue;
     const last = pts[pts.length - 1].t;
@@ -111,9 +118,15 @@ function summarizeByRole(
       start_bytes: pts[0].v,
       min_bytes: Math.min(...pts.map((p) => p.v)),
       max_bytes: Math.max(...pts.map((p) => p.v)),
-      median_60_90_s_bytes: med(pts.filter((p) => p.t >= 60 && p.t <= 90).map((p) => p.v)),
-      median_330_360_s_bytes: med(pts.filter((p) => p.t >= 330 && p.t <= 360).map((p) => p.v)),
-      end_median_last_30_s_bytes: med(pts.filter((p) => p.t >= last - 30).map((p) => p.v)),
+      median_60_90_s_bytes: med(
+        pts.filter((p) => p.t >= 60 && p.t <= 90).map((p) => p.v),
+      ),
+      median_330_360_s_bytes: med(
+        pts.filter((p) => p.t >= 330 && p.t <= 360).map((p) => p.v),
+      ),
+      end_median_last_30_s_bytes: med(
+        pts.filter((p) => p.t >= last - 30).map((p) => p.v),
+      ),
       settled_post_gc_bytes: settled.map((p) => [Math.round(p.t), p.v]),
     };
   }
@@ -135,7 +148,8 @@ function rolesFor(
   for (const p of processes) {
     let role: string;
     if (p.type === "renderer")
-      role = p.pid === pageRendererPid ? "page-renderer" : `other-renderer-${p.pid}`;
+      role =
+        p.pid === pageRendererPid ? "page-renderer" : `other-renderer-${p.pid}`;
     else if (p.type === "gpu-process") role = "GPU";
     else role = p.type;
     if (!(role in roles)) roles[role] = p.pid;
@@ -294,7 +308,11 @@ export async function startMemSampler(
       "gate7k-samplers: SystemInfo.getProcessInfo returned no Chromium process",
     );
   }
-  const pageRendererPid = await identifyPageRenderer(page, perfSession, processes);
+  const pageRendererPid = await identifyPageRenderer(
+    page,
+    perfSession,
+    processes,
+  );
   const pidsByRole = rolesFor(processes, pageRendererPid);
   writeFileSync(
     procsPath(outPath),

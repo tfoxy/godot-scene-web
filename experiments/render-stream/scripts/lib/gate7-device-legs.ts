@@ -41,6 +41,7 @@ import {
   loadDeviceTable,
   openHarnessDevice,
 } from "./browser-harness";
+import { DeviceSampler, type SamplerTimeline } from "./device-sampler";
 import {
   deviceLifecycleActions,
   LifecycleDriver,
@@ -48,15 +49,14 @@ import {
   type LifecycleState,
   lifecycleEnvOf,
 } from "./gate7-lifecycle";
-import { DeviceSampler, type SamplerTimeline } from "./device-sampler";
 import {
-  DEV_PROBE_REPORT_EXPRESSION,
-  devProbeScript,
   type BrowserLegRequest,
   type BrowserRunContext,
-  webPageEnv,
+  DEV_PROBE_REPORT_EXPRESSION,
+  devProbeScript,
   type LegHandle,
   mapBrowserLeg,
+  webPageEnv,
 } from "./gate7-live-legs";
 import { base64url, parseEnvTxt } from "./gate7-web-legs";
 
@@ -482,7 +482,9 @@ export function runDeviceBrowserLeg(
       void prepared.then((t) => t.lease.release()).catch(() => {});
     } else {
       if (mapped.devTab.warm)
-        throw new Error(`${dir}: RS_RECEIVER_DEV_WARM, but no earlier leg kept a tab`);
+        throw new Error(
+          `${dir}: RS_RECEIVER_DEV_WARM, but no earlier leg kept a tab`,
+        );
       tab = await prepared;
     }
     if (mapped.devTab.keep) keepTab = tab;
@@ -523,8 +525,7 @@ export function runDeviceBrowserLeg(
             ? {
                 mode: mapped.devProbe,
                 sample: mapped.devSample,
-                injected:
-                  "Page.addScriptToEvaluateOnNewDocument(dev-probe.js)",
+                injected: "Page.addScriptToEvaluateOnNewDocument(dev-probe.js)",
               }
             : null,
           device: {
@@ -611,7 +612,8 @@ export function runDeviceBrowserLeg(
       await client.send("Page.addScriptToEvaluateOnNewDocument", {
         source: devProbeScript(mapped.devProbe),
       });
-    if (mapped.devSample) devSampler = await startDevSampler(rig, mapped.devSample);
+    if (mapped.devSample)
+      devSampler = await startDevSampler(rig, mapped.devSample);
     await client.send("Page.navigate", { url: navigateTo });
     if (!lc) {
       // G7v: a plain leg (no lifecycle): the desktop leg's exit poll.
@@ -912,7 +914,9 @@ export async function startDevSampler(
     .then((r) => r.processInfo ?? [])
     .catch(() => [] as { type: string; id: number }[]);
   const ids = processInfo
-    .filter((p) => p.type === "renderer" || p.type === "GPU" || p.type === "browser")
+    .filter(
+      (p) => p.type === "renderer" || p.type === "GPU" || p.type === "browser",
+    )
     .map((p) => p.id)
     .filter((pid) => pid > 0);
   const sampler = new DeviceSampler(browser.adb, {
@@ -927,9 +931,7 @@ export async function startDevSampler(
   const jsHeap: { t_ms: number; used_bytes: number | null }[] = [];
   let timer: ReturnType<typeof setInterval> | null = null;
   if (mode === "soak") {
-    await browser.client
-      .send("Performance.enable", {})
-      .catch(() => {});
+    await browser.client.send("Performance.enable", {}).catch(() => {});
     timer = setInterval(() => {
       void browser.client
         .send<{ metrics: { name: string; value: number }[] }>(
@@ -938,7 +940,10 @@ export async function startDevSampler(
         )
         .then((r) => {
           const m = r.metrics.find((x) => x.name === "JSHeapUsedSize");
-          jsHeap.push({ t_ms: Date.now() - t0, used_bytes: m ? m.value : null });
+          jsHeap.push({
+            t_ms: Date.now() - t0,
+            used_bytes: m ? m.value : null,
+          });
         })
         .catch(() => jsHeap.push({ t_ms: Date.now() - t0, used_bytes: null }));
     }, 10_000);

@@ -54,9 +54,15 @@ export function rustMarkHealth(trace, startMarker, endMarker, events) {
     const key = tuple;
     phases.add(mark.phase.slice(5));
     const stack = open.get(key) ?? [];
-    if (mark.edge === "start") { stack.push({ phase: mark.phase, ts: event.ts }); open.set(key, stack); }
-    else if (stack.at(-1)?.phase !== mark.phase || event.ts < stack.at(-1).ts) unbalanced++;
-    else { stack.pop(); if (!stack.length) open.delete(key); }
+    if (mark.edge === "start") {
+      stack.push({ phase: mark.phase, ts: event.ts });
+      open.set(key, stack);
+    } else if (stack.at(-1)?.phase !== mark.phase || event.ts < stack.at(-1).ts)
+      unbalanced++;
+    else {
+      stack.pop();
+      if (!stack.length) open.delete(key);
+    }
   }
   unbalanced += [...open.values()].reduce((n, v) => n + v.length, 0);
   return { count, foreign, unjoined, unbalanced, phases: [...phases].sort() };

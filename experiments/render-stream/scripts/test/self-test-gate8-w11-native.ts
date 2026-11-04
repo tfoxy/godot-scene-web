@@ -40,33 +40,67 @@ function assert(ok: boolean, what: string): void {
 }
 
 const records = async (name: string) =>
-  decodeRecording(new Uint8Array(await readFile(join(GOLDEN, name))), 11).records;
+  decodeRecording(new Uint8Array(await readFile(join(GOLDEN, name))), 11)
+    .records;
 
 // 1
 {
   const inline = messagesPerTransaction(await records("inline.rs11"), 0);
-  assert(inline.transactions === 23, `inline.rs11: 23 transactions (got ${inline.transactions})`);
-  assert(inline.records > 0 && inline.perTx > 1, `inline.rs11: records counted (${inline.perTx})`);
+  assert(
+    inline.transactions === 23,
+    `inline.rs11: 23 transactions (got ${inline.transactions})`,
+  );
+  assert(
+    inline.records > 0 && inline.perTx > 1,
+    `inline.rs11: records counted (${inline.perTx})`,
+  );
   const patch = messagesPerTransaction(await records("patch.rs11"), 0);
-  assert(patch.records === 0 && patch.perTx === 1, `patch.rs11: one message a transaction (${patch.perTx})`);
+  assert(
+    patch.records === 0 && patch.perTx === 1,
+    `patch.rs11: one message a transaction (${patch.perTx})`,
+  );
   const warm = messagesPerTransaction(await records("inline.rs11"), 23);
-  assert(warm.transactions === 0 && warm.perTx === 0, "every transaction warm-up: nothing counted");
+  assert(
+    warm.transactions === 0 && warm.perTx === 0,
+    "every transaction warm-up: nothing counted",
+  );
   const late = messagesPerTransaction(await records("inline.rs11"), 10);
-  assert(late.transactions === 13 && late.records <= inline.records, "warm-up transactions excluded");
+  assert(
+    late.transactions === 13 && late.records <= inline.records,
+    "warm-up transactions excluded",
+  );
 }
 
 // 2
 {
   const planned = new Set(W11_GSW_LEGS.map(nativeLeg));
-  for (const leg of [...NATIVE_HONEST, ...NATIVE_TWINS.flat(), ...Object.values(NATIVE_SABOTAGE_LEGS)])
-    assert(planned.has(leg), `${leg} is planned by gate8-w11-tool.ts native-plan`);
-  assert(planned.size === W11_GSW_LEGS.length, "one native leg per GSW leg, no two alike");
+  for (const leg of [
+    ...NATIVE_HONEST,
+    ...NATIVE_TWINS.flat(),
+    ...Object.values(NATIVE_SABOTAGE_LEGS),
+  ])
+    assert(
+      planned.has(leg),
+      `${leg} is planned by gate8-w11-tool.ts native-plan`,
+    );
   assert(
-    nativeLeg({ leg: "x", capture: "scene/off/capture", sink: "s", version: 11, frames: "scene", sabotage: "no-prune" }) ===
-      "scene/off/sabotage-no-prune/receiver",
+    planned.size === W11_GSW_LEGS.length,
+    "one native leg per GSW leg, no two alike",
+  );
+  assert(
+    nativeLeg({
+      leg: "x",
+      capture: "scene/off/capture",
+      sink: "s",
+      version: 11,
+      frames: "scene",
+      sabotage: "no-prune",
+    }) === "scene/off/sabotage-no-prune/receiver",
     "a sabotage leg sits beside its capture's receiver",
   );
 }
 
-console.log(`\nself-test-gate8-w11-native: ${assertions - failures}/${assertions} assertions passed`);
+console.log(
+  `\nself-test-gate8-w11-native: ${assertions - failures}/${assertions} assertions passed`,
+);
 process.exit(failures === 0 ? 0 : 1);

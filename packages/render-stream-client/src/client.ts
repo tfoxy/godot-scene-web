@@ -36,8 +36,8 @@ import {
 } from "./pointer";
 import {
   createRecorder,
-  type Recording,
   type RecorderOptions,
+  type Recording,
   type RenderStreamRecorder,
 } from "./recorder";
 import {

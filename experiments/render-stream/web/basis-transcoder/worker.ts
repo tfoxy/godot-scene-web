@@ -34,9 +34,13 @@ let ex: Exports | null = null;
 function imports(module: WebAssembly.Module): WebAssembly.Imports {
   const out: Record<string, Record<string, WebAssembly.ImportValue>> = {};
   for (const imp of WebAssembly.Module.imports(module)) {
-    if (imp.kind !== "function") throw new Error(`basis transcoder imports ${imp.module}.${imp.name} (${imp.kind})`);
+    if (imp.kind !== "function")
+      throw new Error(
+        `basis transcoder imports ${imp.module}.${imp.name} (${imp.kind})`,
+      );
     out[imp.module] ??= {};
-    out[imp.module][imp.name] = imp.name === "emscripten_notify_memory_growth" ? () => {} : () => 52;
+    out[imp.module][imp.name] =
+      imp.name === "emscripten_notify_memory_growth" ? () => {} : () => 52;
   }
   return out;
 }
@@ -51,12 +55,21 @@ async function init(wasmUrl: string): Promise<void> {
   const t0 = performance.now();
   e.bt_init();
   ex = e;
-  (self as unknown as Worker).postMessage({ type: "ready", init_ms: performance.now() - t0 });
+  (self as unknown as Worker).postMessage({
+    type: "ready",
+    init_ms: performance.now() - t0,
+  });
 }
 
 function transcode(req: TranscodeRequest): TranscodeReply {
   const e = ex;
-  if (!e) return { type: "result", id: req.id, ok: false, error: "the transcoder is not initialized" };
+  if (!e)
+    return {
+      type: "result",
+      id: req.id,
+      ok: false,
+      error: "the transcoder is not initialized",
+    };
   const input = new Uint8Array(req.bytes);
   const p = e.bt_alloc(input.length);
   new Uint8Array(e.memory.buffer, p, input.length).set(input);
@@ -94,7 +107,10 @@ self.onmessage = (ev: MessageEvent): void => {
   const msg = ev.data as { type: string } & Record<string, unknown>;
   if (msg.type === "init") {
     init(String(msg.wasmUrl)).catch((err: unknown) => {
-      (self as unknown as Worker).postMessage({ type: "error", error: String(err) });
+      (self as unknown as Worker).postMessage({
+        type: "error",
+        error: String(err),
+      });
     });
     return;
   }
@@ -104,7 +120,12 @@ self.onmessage = (ev: MessageEvent): void => {
     try {
       reply = transcode(req);
     } catch (err) {
-      reply = { type: "result", id: req.id, ok: false, error: `transcoder trapped: ${String(err)}` };
+      reply = {
+        type: "result",
+        id: req.id,
+        ok: false,
+        error: `transcoder trapped: ${String(err)}`,
+      };
     }
     const transfer = reply.ok && reply.data ? [reply.data] : [];
     (self as unknown as Worker).postMessage(reply, transfer);

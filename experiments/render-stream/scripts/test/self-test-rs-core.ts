@@ -264,7 +264,10 @@ function checkInput(
   const data = new Uint8Array(readFileSync(recording));
   const version = versionOf(data);
   if (version === null) {
-    expect(`${name}: recording has a render-stream/2..6 or /8../10 magic`, false);
+    expect(
+      `${name}: recording has a render-stream/2..6 or /8../10 magic`,
+      false,
+    );
     return;
   }
   const split = splitRecords(data, version);
@@ -326,12 +329,14 @@ function checkInput(
     if (meta.type !== "transaction") continue;
     state = applyTransaction(state, meta, decoded.record.blocks as number[][]);
     transactions++;
-    const text = JSON.stringify(resolvedTransaction(
+    const text = JSON.stringify(
+      resolvedTransaction(
         meta,
         state,
         version,
         decoded.record.blocks as number[][],
-      ));
+      ),
+    );
     const stateSha = sha256Hex(text);
     const unsupportedEqual =
       JSON.stringify(meta.unsupported) ===

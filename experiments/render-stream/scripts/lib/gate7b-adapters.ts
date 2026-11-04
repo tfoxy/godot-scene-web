@@ -50,28 +50,28 @@ import {
 import { decodePngRgba } from "./gate-minus1-checks";
 import { diffRgba } from "./gate0-checks";
 import {
-  CHECKER_WRITES,
-  type Gate7Check,
-  type Gate7GroupResult,
-  type SourceProvenance,
   appliedCore,
+  CHECKER_WRITES,
   dropCrossCoreDetail,
   filesUnder,
+  type Gate7Check,
+  type Gate7GroupResult,
   jsonDiffPaths,
   mk,
   nativeOnly,
   normalizeApplied,
   readJson,
+  type SourceProvenance,
   sha256File,
   sourceProvenanceProblems,
   viewHoldsWrite,
 } from "./gate7-adapters";
-import { legRecording, type WebLegSpec } from "./gate7-web-legs";
 import {
   particleCells,
   particleFlakeEvidence,
   typeLavapipeParticleFlake,
 } from "./gate7-web-flakes";
+import { legRecording, type WebLegSpec } from "./gate7-web-legs";
 import {
   resolveRecording,
   statesEqual,

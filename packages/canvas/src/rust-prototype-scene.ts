@@ -131,7 +131,10 @@ export interface RustSceneSnapshot {
 }
 const encoder = new TextEncoder();
 interface RetainedMeta {
-  groups: OverlayMap<string, { parentId?: string; transform: readonly number[] }>;
+  groups: OverlayMap<
+    string,
+    { parentId?: string; transform: readonly number[] }
+  >;
   owners: OverlayMap<
     string,
     {
@@ -266,7 +269,10 @@ function commandResource(command: Record<string, unknown>): string | undefined {
  * (shared, or copied and adjusted on a key swap) to every descendant patch, so a text tick need not rescan the
  * command list to know whether a replaced key is still drawn.
  */
-const resourceUses = new WeakMap<RustSceneSnapshot, ReadonlyMap<string, number>>();
+const resourceUses = new WeakMap<
+  RustSceneSnapshot,
+  ReadonlyMap<string, number>
+>();
 function usesOf(scene: RustSceneSnapshot): ReadonlyMap<string, number> {
   let uses = resourceUses.get(scene);
   if (!uses) {
@@ -671,7 +677,13 @@ function encodeRustSceneImpl<T>({
       const m = world(parent);
       const p = mul(m, [1, 0, 0, 1, clip.x, clip.y]);
       const rect = [p[4], p[5], clip.w * m[0], clip.h * m[3]];
-      clips.push({ id, parentId: parent, rect, world: m, local: [clip.x, clip.y, clip.w, clip.h] });
+      clips.push({
+        id,
+        parentId: parent,
+        rect,
+        world: m,
+        local: [clip.x, clip.y, clip.w, clip.h],
+      });
       commands.push({
         id,
         kind: "clipPush",
@@ -1095,9 +1107,21 @@ export function encodeRustRetainedPatch(
 ): ReturnType<typeof encodeRustRetainedPatchImpl> {
   return profile
     ? profile.collector.span(profile.identity, "canvas.serialize", () =>
-        encodeRustRetainedPatchImpl(base, revision, updates, groupTransforms, options),
+        encodeRustRetainedPatchImpl(
+          base,
+          revision,
+          updates,
+          groupTransforms,
+          options,
+        ),
       )
-    : encodeRustRetainedPatchImpl(base, revision, updates, groupTransforms, options);
+    : encodeRustRetainedPatchImpl(
+        base,
+        revision,
+        updates,
+        groupTransforms,
+        options,
+      );
 }
 function encodeRustRetainedPatchImpl(
   base: RustSceneSnapshot,
@@ -1115,7 +1139,12 @@ function encodeRustRetainedPatchImpl(
   /** Commands replaced by this patch, in patch update order. */
   changedIndexes: readonly number[];
   /** Raster pixels the patched texts draw; the caller uploads the ones not yet resident before applying. */
-  textUploads: readonly { key: string; width: number; height: number; pixels: Uint8Array }[];
+  textUploads: readonly {
+    key: string;
+    width: number;
+    height: number;
+    pixels: Uint8Array;
+  }[];
   /** Whether the patch carries a new resource list (only a text change can). */
   resourcesChanged: boolean;
 } | null {
@@ -1146,7 +1175,10 @@ function encodeRustRetainedPatchImpl(
   const staged = new Map<string, Record<string, unknown>>();
   function groupWorld(
     id: string | undefined,
-    source: OverlayMap<string, { parentId?: string; transform: readonly number[] }>,
+    source: OverlayMap<
+      string,
+      { parentId?: string; transform: readonly number[] }
+    >,
   ): number[] {
     if (!id) return [...identity];
     const group = source.get(id);
@@ -1162,7 +1194,9 @@ function encodeRustRetainedPatchImpl(
   }
   const changed = new Set(groupTransforms.map((change) => change.id));
   // Clip references this patch replaces with an explicit update; such a clip ignores its group's move.
-  const clipReferences = meta ? new Map(meta.clips.map((clip) => [clip.id, clip])) : null;
+  const clipReferences = meta
+    ? new Map(meta.clips.map((clip) => [clip.id, clip]))
+    : null;
   const explicitClips = new Set<string>();
   for (const { id, command, localTransform } of updates) {
     if (seen.has(id)) return null;
@@ -1243,7 +1277,12 @@ function encodeRustRetainedPatchImpl(
   }
   const texts = options?.texts ?? [];
   if (texts.length && !meta) return null;
-  const textUploads: { key: string; width: number; height: number; pixels: Uint8Array }[] = [];
+  const textUploads: {
+    key: string;
+    width: number;
+    height: number;
+    pixels: Uint8Array;
+  }[] = [];
   const textResources = new Map<string, RustResource>();
   for (const { record, carrier } of texts) {
     const id = `t${record.key}`;
@@ -1251,13 +1290,27 @@ function encodeRustRetainedPatchImpl(
     seen.add(id);
     const index = indexes.get(id);
     const owner = owners.get(id);
-    if (index === undefined || !owner || owner.parentId !== record.parentId) return null;
+    if (index === undefined || !owner || owner.parentId !== record.parentId)
+      return null;
     const previous = base.commands[index];
-    if (previous.kind !== (carrier.kind === "glyphs" ? "glyphRun" : "rasterText")) return null;
+    if (
+      previous.kind !== (carrier.kind === "glyphs" ? "glyphRun" : "rasterText")
+    )
+      return null;
     if (carrier.kind === "glyphs" && !validGlyphRun(carrier)) return null;
-    const text = textCommand(id, record, carrier, groupWorld(record.parentId, groups));
+    const text = textCommand(
+      id,
+      record,
+      carrier,
+      groupWorld(record.parentId, groups),
+    );
     const known = textResources.get(text.resource.key);
-    if (known && (known.width !== text.resource.width || known.height !== text.resource.height)) return null;
+    if (
+      known &&
+      (known.width !== text.resource.width ||
+        known.height !== text.resource.height)
+    )
+      return null;
     textResources.set(text.resource.key, text.resource);
     if (text.upload) textUploads.push(text.upload);
     staged.set(id, text.command);
@@ -1301,7 +1354,11 @@ function encodeRustRetainedPatchImpl(
       if (index === undefined) return null;
       const command = base.commands[index];
       const rect = command.rect;
-      if (command.kind !== "clipPush" || !Array.isArray(rect) || rect.length !== 4)
+      if (
+        command.kind !== "clipPush" ||
+        !Array.isArray(rect) ||
+        rect.length !== 4
+      )
         return null;
       if (rect.every((value, i) => value === next[i])) continue;
       staged.set(clip.id, { ...command, rect: next });
@@ -1335,17 +1392,25 @@ function encodeRustRetainedPatchImpl(
   // draws for one no command draws yet, which a full build places where the old key was: replaced in place, with
   // the per-key use counts telling whether that holds. Anything else recomputes the order from the commands.
   let nextResources = base.resources;
-  let nextUses: ReadonlyMap<string, number> | undefined = resourceUses.get(base);
+  let nextUses: ReadonlyMap<string, number> | undefined =
+    resourceUses.get(base);
   if (textResources.size) {
-    const listed = new Map(base.resources.map((resource, index) => [resource.key, index]));
+    const listed = new Map(
+      base.resources.map((resource, index) => [resource.key, index]),
+    );
     for (const [key, resource] of textResources) {
       const at = listed.get(key);
       const known = at === undefined ? undefined : base.resources[at];
-      if (known && (known.width !== resource.width || known.height !== resource.height)) return null;
+      if (
+        known &&
+        (known.width !== resource.width || known.height !== resource.height)
+      )
+        return null;
     }
     const swaps: [string, string][] = [];
     for (const [id, command] of staged) {
-      const before = commandResource(base.commands[indexes.get(id)!]), after = commandResource(command);
+      const before = commandResource(base.commands[indexes.get(id)!]),
+        after = commandResource(command);
       if (before !== after) {
         if (before === undefined || after === undefined) return null;
         swaps.push([before, after]);
@@ -1357,7 +1422,12 @@ function encodeRustRetainedPatchImpl(
       const next = base.resources.slice();
       for (const [before, after] of swaps) {
         const at = listed.get(before);
-        if (uses.get(before) !== 1 || (uses.get(after) ?? 0) !== 0 || listed.has(after) || at === undefined)
+        if (
+          uses.get(before) !== 1 ||
+          (uses.get(after) ?? 0) !== 0 ||
+          listed.has(after) ||
+          at === undefined
+        )
           inPlace = false;
         else {
           next[at] = textResources.get(after)!;
@@ -1371,8 +1441,11 @@ function encodeRustRetainedPatchImpl(
       nextUses = uses;
       if (inPlace) nextResources = next;
       else {
-        const sizes = new Map(base.resources.map((resource) => [resource.key, resource]));
-        for (const [key, resource] of textResources) if (!sizes.has(key)) sizes.set(key, resource);
+        const sizes = new Map(
+          base.resources.map((resource) => [resource.key, resource]),
+        );
+        for (const [key, resource] of textResources)
+          if (!sizes.has(key)) sizes.set(key, resource);
         const ordered = new Map<string, RustResource>();
         for (const command of nextCommands) {
           const key = commandResource(command);
@@ -1382,9 +1455,14 @@ function encodeRustRetainedPatchImpl(
           ordered.set(key, resource);
         }
         const next = [...ordered.values()];
-        const same = next.length === base.resources.length && next.every((resource, i) =>
-          resource.key === base.resources[i].key && resource.width === base.resources[i].width &&
-          resource.height === base.resources[i].height);
+        const same =
+          next.length === base.resources.length &&
+          next.every(
+            (resource, i) =>
+              resource.key === base.resources[i].key &&
+              resource.width === base.resources[i].width &&
+              resource.height === base.resources[i].height,
+          );
         if (!same) nextResources = next;
       }
     }
@@ -1429,8 +1507,21 @@ function encodeRustRetainedPatchImpl(
 export const RUST_IDLE_ANIMS = true;
 
 /** A root's loop curve. `rest` composes the committed pose (a root with no loop running). */
-export type RustIdleCurve = "rest" | "rotate" | "rock" | "bob" | "pivotPulse" | "pulseScale";
-const IDLE_CURVES: Record<RustIdleCurve, number> = { rest: 0, rotate: 1, rock: 2, bob: 3, pivotPulse: 4, pulseScale: 5 };
+export type RustIdleCurve =
+  | "rest"
+  | "rotate"
+  | "rock"
+  | "bob"
+  | "pivotPulse"
+  | "pulseScale";
+const IDLE_CURVES: Record<RustIdleCurve, number> = {
+  rest: 0,
+  rotate: 1,
+  rock: 2,
+  bob: 3,
+  pivotPulse: 4,
+  pulseScale: 5,
+};
 
 export interface RustIdleRoot {
   curve: RustIdleCurve;
@@ -1477,15 +1568,23 @@ export interface RustIdleSet {
 
 /** Encode an idle set as `RIA1` bytes. Null when a value is not finite or an index is out of range. */
 export function encodeRustIdleAnims(set: RustIdleSet): Uint8Array | null {
-  if (!Number.isSafeInteger(set.baseRevision) || set.baseRevision < 0) return null;
+  if (!Number.isSafeInteger(set.baseRevision) || set.baseRevision < 0)
+    return null;
   let size = 24 + set.roots.length * 304;
   for (const target of set.targets) size += 12 + target.chain.length * 16 + 144;
   const bytes = new Uint8Array(size);
   const view = new DataView(bytes.buffer);
   let at = 0;
   let finite = true;
-  const u32 = (value: number) => { view.setUint32(at, value, true); at += 4; };
-  const f64 = (value: number) => { if (!Number.isFinite(value)) finite = false; view.setFloat64(at, value, true); at += 8; };
+  const u32 = (value: number) => {
+    view.setUint32(at, value, true);
+    at += 4;
+  };
+  const f64 = (value: number) => {
+    if (!Number.isFinite(value)) finite = false;
+    view.setFloat64(at, value, true);
+    at += 8;
+  };
   const affine = (m: readonly number[] | undefined) => {
     const value = m ?? identity;
     if (value.length !== 6) finite = false;
@@ -1501,8 +1600,21 @@ export function encodeRustIdleAnims(set: RustIdleSet): Uint8Array | null {
   for (const root of set.roots) {
     u32(IDLE_CURVES[root.curve]);
     u32(root.wire ? 1 : 0);
-    for (const value of [root.amplitudeRad, root.amplitudePx, root.baselineUpPx, root.scaleFrom, root.scaleTo, 1, 1,
-      root.pivotX, root.pivotY, root.originMs, root.phaseMs, root.periodMs]) f64(value);
+    for (const value of [
+      root.amplitudeRad,
+      root.amplitudePx,
+      root.baselineUpPx,
+      root.scaleFrom,
+      root.scaleTo,
+      1,
+      1,
+      root.pivotX,
+      root.pivotY,
+      root.originMs,
+      root.phaseMs,
+      root.periodMs,
+    ])
+      f64(value);
     affine(root.base);
     affine(root.wire ?? undefined);
     affine(root.outer);
@@ -1510,12 +1622,24 @@ export function encodeRustIdleAnims(set: RustIdleSet): Uint8Array | null {
     affine(root.inverse);
   }
   for (const target of set.targets) {
-    if (!Number.isInteger(target.commandIndex) || target.commandIndex < 0 || target.chain.length === 0 ||
-      target.chain.some(({ root }) => !Number.isInteger(root) || root < 0 || root >= set.roots.length)) return null;
+    if (
+      !Number.isInteger(target.commandIndex) ||
+      target.commandIndex < 0 ||
+      target.chain.length === 0 ||
+      target.chain.some(
+        ({ root }) =>
+          !Number.isInteger(root) || root < 0 || root >= set.roots.length,
+      )
+    )
+      return null;
     u32(target.commandIndex);
     u32(target.mode === "group" ? 0 : target.mode === "primitive" ? 1 : 2);
     u32(target.chain.length);
-    for (const { root, offset } of target.chain) { u32(root); u32(0); f64(offset); }
+    for (const { root, offset } of target.chain) {
+      u32(root);
+      u32(0);
+      f64(offset);
+    }
     affine(target.parentWorld);
     affine(target.reference);
     affine(target.inset);
@@ -1532,7 +1656,10 @@ export function encodeRustIdleAnims(set: RustIdleSet): Uint8Array | null {
 export function rustRetainedGroupMembers(
   scene: RustSceneSnapshot,
   groupId: string,
-): { parentWorld: number[]; members: { id: string; index: number; local: number[] }[] } | null {
+): {
+  parentWorld: number[];
+  members: { id: string; index: number; local: number[] }[];
+} | null {
   const meta = retainedMeta.get(scene);
   const group = meta?.groups.get(groupId);
   if (!meta || !group) return null;
@@ -1541,19 +1668,31 @@ export function rustRetainedGroupMembers(
   for (const [id, owner] of meta.owners) {
     let parent = owner.parentId;
     let nested = false;
-    while (parent && parent !== groupId) { nested = true; parent = meta.groups.get(parent)?.parentId; }
+    while (parent && parent !== groupId) {
+      nested = true;
+      parent = meta.groups.get(parent)?.parentId;
+    }
     if (parent !== groupId) continue;
     const index = indexes.get(id);
     if (nested || index === undefined) return null;
     members.push({ id, index, local: [...owner.local] });
   }
   for (const clip of meta.clips) {
-    for (let parent = clip.parentId; parent; parent = meta.groups.get(parent)?.parentId)
+    for (
+      let parent = clip.parentId;
+      parent;
+      parent = meta.groups.get(parent)?.parentId
+    )
       if (parent === groupId) return null;
   }
   let world: number[] = [...identity];
   const chain: string[] = [];
-  for (let parent = group.parentId; parent; parent = meta.groups.get(parent)?.parentId) chain.push(parent);
+  for (
+    let parent = group.parentId;
+    parent;
+    parent = meta.groups.get(parent)?.parentId
+  )
+    chain.push(parent);
   for (let i = chain.length - 1; i >= 0; i--) {
     const parent = meta.groups.get(chain[i]);
     if (!parent) return null;

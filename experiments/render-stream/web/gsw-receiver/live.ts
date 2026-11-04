@@ -68,6 +68,23 @@
 // the delivery hello keys).
 
 import {
+  type FetchResult,
+  LiveFetcher,
+  type ResourceRequest,
+} from "../../../../packages/render-stream-client/src/fetcher";
+import { foldedFullIndex } from "../../../../packages/render-stream-client/src/fold";
+import {
+  gpuFormatsOf,
+  helloV9,
+} from "../../../../packages/render-stream-client/src/hello";
+import { GswParticles } from "../../../../packages/render-stream-client/src/particles";
+import {
+  definePrograms,
+  needsLibrary,
+  ProgramError,
+  provideLibrary,
+} from "../../../../packages/render-stream-client/src/programs";
+import {
   ACCEPT_END,
   ACCEPT_HELD,
   ACCEPT_ITEM_META,
@@ -77,8 +94,8 @@ import {
   finish,
   type GswRs,
   type GswRsModule,
-  type LiveCoding,
   hex,
+  type LiveCoding,
   loadModule,
   log,
   ReplayFailure,
@@ -96,31 +113,17 @@ import {
 } from "./config";
 import {
   appliedJson,
-  prettyJsonParts,
   encodePng,
   type LiveEntry,
+  prettyJsonParts,
   put,
   type Report,
   type RustParts,
   type ShellTx,
 } from "./evidence";
-import {
-  type FetchResult,
-  LiveFetcher,
-  type ResourceRequest,
-} from "../../../../packages/render-stream-client/src/fetcher";
-import { foldedFullIndex } from "../../../../packages/render-stream-client/src/fold";
 import { leakedGlTextureCount, leakOneIfDue } from "./gl-leak";
-import { gpuFormatsOf, helloV9 } from "../../../../packages/render-stream-client/src/hello";
-import { GswParticles } from "../../../../packages/render-stream-client/src/particles";
-import { KtxStager } from "./transcode";
 import { type PayloadVerify, Perf } from "./perf";
-import {
-  definePrograms,
-  needsLibrary,
-  ProgramError,
-  provideLibrary,
-} from "../../../../packages/render-stream-client/src/programs";
+import { KtxStager } from "./transcode";
 
 /** The subprotocol and hello `protocol` of a live wire version (G8g: 8 is /8's live transport;
  * G8kp: 9, render-stream-9.md "Live transport", RS_RECEIVER_PROTOCOL=9 offers only this). */
@@ -608,12 +611,12 @@ class LiveReceiver {
             this.cfg.liveProtocol === 13
               ? "render-stream/13"
               : this.cfg.liveProtocol === 12
-              ? "render-stream/12"
-              : this.cfg.liveProtocol === 11
-                ? "render-stream/11"
-                : this.cfg.liveProtocol === 10
-                  ? "render-stream/10"
-                  : "render-stream/9",
+                ? "render-stream/12"
+                : this.cfg.liveProtocol === 11
+                  ? "render-stream/11"
+                  : this.cfg.liveProtocol === 10
+                    ? "render-stream/10"
+                    : "render-stream/9",
             // W11c: W11t's `live_coding` offer, last (golden-11's control hello); none when off.
             this.L.liveCoding,
           )
@@ -1420,7 +1423,10 @@ class LiveReceiver {
     // G8kb: a KTX2 (uastc) body is verified, transcoded in the worker and staged; the fetcher
     // hands the result back once that settled. A failed transcode is a fallback, not a refusal.
     if (this.ktx && g.is_ktx2(r.hash)) {
-      const seq = this.pending?.requester.get(r.hash) ?? this.pending?.item.entry.seq ?? null;
+      const seq =
+        this.pending?.requester.get(r.hash) ??
+        this.pending?.item.entry.seq ??
+        null;
       return this.ktx.stage(r.hash, r.data, seq).then((o) => {
         r.stage_error = o.error;
         r.transcode_fallback = o.fallback;
@@ -2298,7 +2304,9 @@ class LiveReceiver {
       if (this.coding !== null || this.codingReports.length > 0) {
         const all = [...this.codingReports];
         if (this.coding !== null)
-          all.push(JSON.parse(this.coding.stats_json()) as Record<string, unknown>);
+          all.push(
+            JSON.parse(this.coding.stats_json()) as Record<string, unknown>,
+          );
         this.liveBlock.coding = {
           offer: this.L.liveCoding,
           resyncs: this.codingResyncs,
@@ -2311,8 +2319,13 @@ class LiveReceiver {
       // W13c: the /13 accept path's evidence (the module's w13 block: predict-check failures,
       // the patches dropped awaiting their fulls) and the resyncs this page asked for them.
       if (this.cfg.liveProtocol === 13 && g) {
-        const ev = JSON.parse(g.evidence_json()) as { w13?: Record<string, unknown> };
-        this.liveBlock.predict = { resyncs: this.predictResyncs, ...(ev.w13 ?? {}) };
+        const ev = JSON.parse(g.evidence_json()) as {
+          w13?: Record<string, unknown>;
+        };
+        this.liveBlock.predict = {
+          resyncs: this.predictResyncs,
+          ...(ev.w13 ?? {}),
+        };
       }
       gsw.raf_skipped = this.rafSkipped;
       gsw.drawn_rafs = this.drawnRafs;

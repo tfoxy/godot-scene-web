@@ -281,7 +281,9 @@ export interface HbGpuGlyphPass extends GlyphPass {
     options?: HbGpuShapeOptions,
   ): boolean;
   /** Exact local ink union from encoded glyph extents, excluding spread and antialias padding. */
-  inkBounds(run: GlyphsView): { x: number; y: number; width: number; height: number } | null;
+  inkBounds(
+    run: GlyphsView,
+  ): { x: number; y: number; width: number; height: number } | null;
   /** Drop shaped-run memoisation without disturbing faces or atlas residency. */
   clearShapeCache(): void;
   /** Re-state both sizes after the stage resized. See `HbGpuRenderer.setViewport`. */

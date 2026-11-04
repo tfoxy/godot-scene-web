@@ -16,9 +16,29 @@
       "hc1"
     ],
     "cores": ["rust"],
-    "g7": ["g7-0", "g7-1", "g7-2", "g7-3", "g7-4", "g7-5", "g7-55", "g7-6", "g7-8"],
+    "g7": [
+      "g7-0",
+      "g7-1",
+      "g7-2",
+      "g7-3",
+      "g7-4",
+      "g7-5",
+      "g7-55",
+      "g7-6",
+      "g7-8"
+    ],
     "g7_receivers": ["gsw", "web/rust"],
-    "g7live": ["g7-1", "g7-2", "g7-5", "g7-55", "g7-6", "g7-8", "g7-lc", "g7-r", "g7-k"],
+    "g7live": [
+      "g7-1",
+      "g7-2",
+      "g7-5",
+      "g7-55",
+      "g7-6",
+      "g7-8",
+      "g7-lc",
+      "g7-r",
+      "g7-k"
+    ],
     "g7live_receivers": ["gsw", "web/rust", "native"],
     "g7x": ["g7-dev", "g7-bench"],
     "cargo": [
@@ -43,12 +63,46 @@
   "smoke": {
     "doc": "Smoke tier: the legs one representative run keeps, per group. g7live: RS_SMOKE_LEGS entries (leg directories relative to the native runner's --out; an entry also covers the directories under it), with the capture and reference legs the live leg is judged against; full_legs is the group's leg count in a full run (null: not counted). g7 (file mode): GATE7_SMOKE_LEGS, '@first' = the first non-sabotage receiver leg of each gate. A group not listed (g7-lc, g7-r, g7x, the native gates) runs whole in smoke; native gates still skip their sabotage legs unless the diff touches a checker. A change reaching collapse_at or more groups on a receiver is shared code: smoke runs the first reached group there and lists the rest in smoke_deferred (the full tier runs them). The verdict requires every named entry to have run, so a wrong name fails loudly.",
     "g7live": {
-      "g7-1": { "legs": ["import", "capture", "reference", "live"], "full_legs": 11 },
-      "g7-2": { "legs": ["import", "capture", "reference", "live"], "full_legs": null },
-      "g7-5": { "legs": ["mesh/import", "mesh/reference-live", "mesh/live-mesh"], "full_legs": null },
-      "g7-55": { "legs": ["shader-live/import", "shader-live/reference-live", "shader-live/live-shader"], "full_legs": null },
-      "g7-6": { "legs": ["live/import", "live/reference-live-frames", "live/live-scene"], "full_legs": null },
-      "g7-8": { "legs": ["import", "g8a/import", "g8h/import", "g8m/import", "g8ku/import", "g8l/tex", "g8w11c/native-sabotage-drop-base"], "full_legs": null }
+      "g7-1": {
+        "legs": ["import", "capture", "reference", "live"],
+        "full_legs": 11
+      },
+      "g7-2": {
+        "legs": ["import", "capture", "reference", "live"],
+        "full_legs": null
+      },
+      "g7-5": {
+        "legs": ["mesh/import", "mesh/reference-live", "mesh/live-mesh"],
+        "full_legs": null
+      },
+      "g7-55": {
+        "legs": [
+          "shader-live/import",
+          "shader-live/reference-live",
+          "shader-live/live-shader"
+        ],
+        "full_legs": null
+      },
+      "g7-6": {
+        "legs": [
+          "live/import",
+          "live/reference-live-frames",
+          "live/live-scene"
+        ],
+        "full_legs": null
+      },
+      "g7-8": {
+        "legs": [
+          "import",
+          "g8a/import",
+          "g8h/import",
+          "g8m/import",
+          "g8ku/import",
+          "g8l/tex",
+          "g8w11c/native-sabotage-drop-base"
+        ],
+        "full_legs": null
+      }
     },
     "defer": ["g7-k"],
     "defer_doc": "Groups smoke never runs (the full tier and --milestone run them whole, listed in smoke_deferred): g7-k's soak legs hold the exclusive quiet lock for 300 s each (about 11 min per browser with startup), and run-gate7.sh has no leg filter for them that tier-verdict.py would accept. Run a g7-k change with --tier full --only g7live-<r>-timing.",
@@ -56,18 +110,57 @@
     "g7": { "legs": ["@first"] }
   },
   "timing_doc": "GRT4a: targets whose runs go in validate-increment.sh's last phase, after every correctness run: their exclusive quiet-lock legs (gate 6's g6l/g6s/g6c/g6p, the timing live groups, the bench and device-control arms) starved the browser groups sharing a tier with them (G7q: 11.9-13.8 ks of summed lock wait). A receiver's live groups split into a correctness run and a -timing run.",
-  "timing": ["native:gate6@*", "g7live:g7-6@*", "g7live:g7-lc@*", "g7live:g7-r@*", "g7live:g7-k@*", "g7x:*"],
+  "timing": [
+    "native:gate6@*",
+    "g7live:g7-6@*",
+    "g7live:g7-lc@*",
+    "g7live:g7-r@*",
+    "g7live:g7-k@*",
+    "g7x:*"
+  ],
   "remote": {
     "doc": "scripts/remote-validate.sh (docs/remote-compute.md): which planned runs may go to hosted runners at the current rung. A run is remote-capable when its id matches a 'capable' glob and nothing in 'refuse' applies; 'refuse' always wins. 'refuse.groups' refuses single groups of a gate 7 run (the run keeps its other groups remotely, and is refused whole when none is left). Every other run is refused with default_reason (each rung widens 'capable'). Refused runs are listed in the summary's remote.refused[] and may be run locally with --and-local.",
-    "capable": ["pure", "capture-build", "pnpm-test", "cargo-*", "bench-instr", "native-rust-gate0", "native-rust-gate-minus1", "native-rust-gate1", "native-rust-gate2", "native-rust-gate3", "native-rust-gate4", "native-rust-gate5", "native-rust-gate55", "native-rust-gate8", "native-rust-hc1", "g7-gsw", "g7-web-rust", "g7live-gsw", "g7live-web-rust", "g7live-gsw-g7-1", "g7live-gsw-g7-2", "g7live-gsw-g7-5", "g7live-gsw-g7-55", "g7live-web-rust-g7-1", "g7live-web-rust-g7-2", "g7live-web-rust-g7-5", "g7live-web-rust-g7-55"],
+    "capable": [
+      "pure",
+      "capture-build",
+      "pnpm-test",
+      "cargo-*",
+      "bench-instr",
+      "native-rust-gate0",
+      "native-rust-gate-minus1",
+      "native-rust-gate1",
+      "native-rust-gate2",
+      "native-rust-gate3",
+      "native-rust-gate4",
+      "native-rust-gate5",
+      "native-rust-gate55",
+      "native-rust-gate8",
+      "native-rust-hc1",
+      "g7-gsw",
+      "g7-web-rust",
+      "g7live-gsw",
+      "g7live-web-rust",
+      "g7live-gsw-g7-1",
+      "g7live-gsw-g7-2",
+      "g7live-gsw-g7-5",
+      "g7live-gsw-g7-55",
+      "g7live-web-rust-g7-1",
+      "g7live-web-rust-g7-2",
+      "g7live-web-rust-g7-5",
+      "g7live-web-rust-g7-55"
+    ],
     "capable_doc": "G8g: gate 8's browser group g7-8 (its file legs in g7-gsw/g7-web-rust and its live g8l legs in g7live-gsw/g7live-web-rust) is remote-capable: --determinism 2,1 (run 40088061009) agreed over 12 runs, 205/205 shots and 70/70 dumps. R4: bench-instr (cachegrind Ir per golden case; load-insensitive, so not a timing run). R3: gate 7's browser correctness runs on the CI-only lavapipe renderer (lib/browser-renderer.ts): the file groups (every timing group of their native sources skipped by RS_SKIP_TIMING_GROUPS) and the live correctness groups g7-5 and g7-55 (refuse.groups keeps only live g7-1 local: GSW live-resync shots disagree across runners, see its reason. Live g7-2 became remote-capable in GRT5, df52bcff). Every -timing run (g7-6, g7-lc, g7-r, g7-k) is refused by phase, g7x by id, device legs by match; the native receiver has no live correctness run (run-gate7.sh runs g7-r only there).",
     "refuse": {
-      "phases": { "timing": "timing run: wall-clock numbers from a shared VM would be noise" },
+      "phases": {
+        "timing": "timing run: wall-clock numbers from a shared VM would be noise"
+      },
       "ids": {
         "lock-tests": "lock self-tests need this machine's quiet lock",
         "g7x": "g7x drives the attached phone and timing benches"
       },
-      "match": { "(?i)device|g31|phone|adb": "device-related: the attached phone is local" },
+      "match": {
+        "(?i)device|g31|phone|adb": "device-related: the attached phone is local"
+      },
       "groups": {
         "g7live-*": {
           "g7-1": "G7rf fixed the receivers' resync-at-fold bug (a fold holding the forced full ends the wait; gate1-g1d-checks.ts checkResyncFull passes 5/5 locally on gsw and web at window 2), but the remote determinism check (run 39982714414, --determinism 3,1) still disagrees on GSW: one runner's live-resync leg shot no step 2 (its a704118930 image, and the step-2 diff, are absent; every check passed), so it is a shot-window miss under runner load before the resync, not the resync wait. Web-rust agreed over 4 runs (519/519 shots). Local-only until the GSW step-2 window miss is understood"
@@ -114,7 +207,10 @@
     },
     {
       "why": "PHN's phone live check (results/p3/phn.md): a real-time device driver and its page, run by hand through bench-live-scale.sh's host-only mode against an adb-attached phone; no gate leg loads them, and the client package they mount is reached by its own rules",
-      "paths": ["experiments/render-stream/scripts/client-device-check.ts", "experiments/render-stream/web/client-phone/**"],
+      "paths": [
+        "experiments/render-stream/scripts/client-device-check.ts",
+        "experiments/render-stream/web/client-phone/**"
+      ],
       "reach": ["pure"],
       "exclusive": true
     },
@@ -137,7 +233,7 @@
       "reach": ["native:gate8@*"]
     },
     {
-"why": "PM5's gate 8 group g8pt (render-stream-12.md \"Fixture and checks (gate 8 group g8pt)\"; PM6a added the references, the native receivers and their pixel checks): fixtures/gate8-pt, its checks and their self-test reach native gate 8, which runs g8pt whole, and g7-8's web half, which replays g8pt's receiver legs (PM6a dropped PM5's exclusivity)",
+      "why": "PM5's gate 8 group g8pt (render-stream-12.md \"Fixture and checks (gate 8 group g8pt)\"; PM6a added the references, the native receivers and their pixel checks): fixtures/gate8-pt, its checks and their self-test reach native gate 8, which runs g8pt whole, and g7-8's web half, which replays g8pt's receiver legs (PM6a dropped PM5's exclusivity)",
       "paths": [
         "experiments/render-stream/fixtures/gate8-pt/**",
         "experiments/render-stream/scripts/lib/gate8-pt-checks.ts",
@@ -191,9 +287,7 @@
     },
     {
       "why": "the remote matrix's table: its leg-shard partitions decide which gate 8 groups each remote job of native gate 8 and g7-8 runs (lib/remote-matrix.py)",
-      "paths": [
-        "experiments/render-stream/scripts/remote-jobs.json"
-      ],
+      "paths": ["experiments/render-stream/scripts/remote-jobs.json"],
       "reach": ["pure", "native:gate8@*", "g7:g7-8@gsw", "g7:g7-8@web/rust"]
     },
     {
@@ -540,7 +634,8 @@
       "paths": [
         "experiments/render-stream/scripts/run-gate8.sh",
         "experiments/render-stream/scripts/check-gate8.ts",
-        "experiments/render-stream/scripts/gate8-delivery-tool.ts", "experiments/render-stream/scripts/gate8-w11-tool.ts",
+        "experiments/render-stream/scripts/gate8-delivery-tool.ts",
+        "experiments/render-stream/scripts/gate8-w11-tool.ts",
         "experiments/render-stream/scripts/lib/gate8-*",
         "experiments/render-stream/scripts/lib/reverse-proxy.ts",
         "experiments/render-stream/fixtures/gate8-*/**"
@@ -618,9 +713,32 @@
       ],
       "reach": ["g7:*@web/rust", "g7live:*@web/rust"]
     },
-    {"why": "SWO: the CI lavapipe particle-flake typing, read only by gate7b-adapters.ts for gate 8's web group (and its self-test)", "paths": ["experiments/render-stream/scripts/lib/gate7-web-flakes.ts"], "reach": ["g7:g7-8@web/rust", "pure"]},
-    {"why": "G8kb: GSW's KTX2 transcoder (its wasm build and Web Worker) is in every GSW bundle, so it reaches gate 7's GSW half and native gate 8 (g8kp's GSW legs build the bundle)", "paths": ["experiments/render-stream/web/basis-transcoder/**", "experiments/render-stream/scripts/build-basis-transcoder.sh"], "reach": ["g7:*@gsw", "g7live:*@gsw", "native:gate8@*"]},
-    {"why": "G7g/PRES-A: gate 6's browser presentation checks (presentation-check, wide-composition), read by check-gate7.ts and gate 7's GSW and live halves for g7-6 only", "paths": ["experiments/render-stream/scripts/lib/gate7-g6-checks.ts", "experiments/render-stream/scripts/lib/wide-tolerance.ts"], "reach": ["g7:g7-6@gsw", "g7:g7-6@web/rust", "g7live:g7-6@gsw", "g7live:g7-6@web/rust"]},
+    {
+      "why": "SWO: the CI lavapipe particle-flake typing, read only by gate7b-adapters.ts for gate 8's web group (and its self-test)",
+      "paths": ["experiments/render-stream/scripts/lib/gate7-web-flakes.ts"],
+      "reach": ["g7:g7-8@web/rust", "pure"]
+    },
+    {
+      "why": "G8kb: GSW's KTX2 transcoder (its wasm build and Web Worker) is in every GSW bundle, so it reaches gate 7's GSW half and native gate 8 (g8kp's GSW legs build the bundle)",
+      "paths": [
+        "experiments/render-stream/web/basis-transcoder/**",
+        "experiments/render-stream/scripts/build-basis-transcoder.sh"
+      ],
+      "reach": ["g7:*@gsw", "g7live:*@gsw", "native:gate8@*"]
+    },
+    {
+      "why": "G7g/PRES-A: gate 6's browser presentation checks (presentation-check, wide-composition), read by check-gate7.ts and gate 7's GSW and live halves for g7-6 only",
+      "paths": [
+        "experiments/render-stream/scripts/lib/gate7-g6-checks.ts",
+        "experiments/render-stream/scripts/lib/wide-tolerance.ts"
+      ],
+      "reach": [
+        "g7:g7-6@gsw",
+        "g7:g7-6@web/rust",
+        "g7live:g7-6@gsw",
+        "g7live:g7-6@web/rust"
+      ]
+    },
     {
       "why": "gate 7's GSW half",
       "paths": [

@@ -48,7 +48,12 @@ import { check, type G8aCheck } from "./gate8-adopt-checks";
 import { dynamicAppliedProblems, STORE_SLACK } from "./gate8-w11-gsw-checks";
 import { runG8w11cGsw13 } from "./gate8-w13-gsw-checks";
 import { runG8w11cNative13 } from "./gate8-w13-native-checks";
-import { decodeRecording, type ResolvedRecording, resolveRecording, splitRecords } from "./render-stream-2";
+import {
+  decodeRecording,
+  type ResolvedRecording,
+  resolveRecording,
+  splitRecords,
+} from "./render-stream-2";
 
 /** Native leg -> [capture, sink]; the /11 legs with their /10 twins. */
 const CAPTURE: Record<string, [string, string]> = {
@@ -144,30 +149,48 @@ export function messagesPerTransaction(
     }
   }
   const counted = Math.max(0, tx - warm);
-  return { perTx: counted === 0 ? 0 : (counted + rec) / counted, records: rec, transactions: counted };
+  return {
+    perTx: counted === 0 ? 0 : (counted + rec) / counted,
+    records: rec,
+    transactions: counted,
+  };
 }
 
 export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
   const dir = (leg: string) => join(g, leg);
   const ran = (leg: string) => existsSync(join(dir(leg), "applied.json"));
-  const tierSkipped = (leg: string) => existsSync(join(dir(leg), "skipped-by-tier.txt"));
-  const applied = (leg: string) => readJson<Applied>(join(dir(leg), "applied.json"));
+  const tierSkipped = (leg: string) =>
+    existsSync(join(dir(leg), "skipped-by-tier.txt"));
+  const applied = (leg: string) =>
+    readJson<Applied>(join(dir(leg), "applied.json"));
   /** The leg's /11 store evidence: native applied.json `w11`, else GSW's perf.json `gsw.w11`
    * (gate 7's GSW half replays these legs). */
   const w11 = async (leg: string): Promise<W11Evidence | null> =>
     (await applied(leg))?.w11 ??
-    (await readJson<{ gsw?: { w11?: W11Evidence } }>(join(dir(leg), "perf.json")))?.gsw?.w11 ??
+    (
+      await readJson<{ gsw?: { w11?: W11Evidence } }>(
+        join(dir(leg), "perf.json"),
+      )
+    )?.gsw?.w11 ??
     null;
   const frames =
-    (await readJson<Record<string, Record<string, number>>>(join(g, "native-frames.json"))) ?? {};
+    (await readJson<Record<string, Record<string, number>>>(
+      join(g, "native-frames.json"),
+    )) ?? {};
   const recs = new Map<string, ResolvedRecording>();
   const recOf = async (leg: string) => {
     if (!recs.has(leg)) {
       const [cap, sink] = CAPTURE[leg];
       const path = join(g, cap, sink);
       if (!existsSync(path)) return null;
-      recs.set(leg, resolveRecording(new Uint8Array(await readFile(path)), sink.endsWith(".rs11") ? 11 : 10));
+      recs.set(
+        leg,
+        resolveRecording(
+          new Uint8Array(await readFile(path)),
+          sink.endsWith(".rs11") ? 11 : 10,
+        ),
+      );
     }
     return recs.get(leg) ?? null;
   };
@@ -180,13 +203,20 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
     gating: false,
   });
   if (!existsSync(join(g, "native-plan.tsv"))) {
-    checks.push(check("native-w11-replays", "W11d: the native g8w11 legs ran", null));
+    checks.push(
+      check("native-w11-replays", "W11d: the native g8w11 legs ran", null),
+    );
     return checks;
   }
 
   // native-w11-replays
   {
-    const legs = [...NATIVE_HONEST, "scale/v10/receiver", "scene/v10/receiver", "mesh/v10/receiver"];
+    const legs = [
+      ...NATIVE_HONEST,
+      "scale/v10/receiver",
+      "scene/v10/receiver",
+      "mesh/v10/receiver",
+    ];
     const problems: string[] = [];
     for (const leg of legs) {
       const a = await applied(leg);
@@ -196,9 +226,13 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
         continue;
       }
       if (a.status !== "ok")
-        problems.push(`${leg}: ${a.failure?.reason}: ${a.failure?.detail?.slice(0, 160)}`);
+        problems.push(
+          `${leg}: ${a.failure?.reason}: ${a.failure?.detail?.slice(0, 160)}`,
+        );
       else if (a.transactions.length !== rec.transactions.length)
-        problems.push(`${leg}: ${a.transactions.length} applied of ${rec.transactions.length}`);
+        problems.push(
+          `${leg}: ${a.transactions.length} applied of ${rec.transactions.length}`,
+        );
     }
     checks.push(
       check(
@@ -227,11 +261,19 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
       dynamic += r.dynamicTxs;
       problems.push(...r.problems.slice(0, 4).map((p) => `${leg}: ${p}`));
       if (e.dynamic_mismatched > 0)
-        problems.push(`${leg}: ${e.dynamic_mismatched} surface(s) held a body other than the resolved one`);
-      if (e.dynamic_undrawn > 0) problems.push(`${leg}: ${e.dynamic_undrawn} dynamic mesh(es) left undrawn`);
-      notes.push(`${leg} ${r.compared} txs (${r.dynamicTxs} dynamic), ${e.dynamic_bodies_total} bodies`);
+        problems.push(
+          `${leg}: ${e.dynamic_mismatched} surface(s) held a body other than the resolved one`,
+        );
+      if (e.dynamic_undrawn > 0)
+        problems.push(
+          `${leg}: ${e.dynamic_undrawn} dynamic mesh(es) left undrawn`,
+        );
+      notes.push(
+        `${leg} ${r.compared} txs (${r.dynamicTxs} dynamic), ${e.dynamic_bodies_total} bodies`,
+      );
     }
-    if (dynamic === 0) problems.push("no transaction held a dynamic mesh (vacuous)");
+    if (dynamic === 0)
+      problems.push("no transaction held a dynamic mesh (vacuous)");
     checks.push(
       check(
         "native-dynamic-applied",
@@ -265,10 +307,12 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
     const notes: string[] = [];
     for (const [leg, twin] of NATIVE_TWINS) {
       const d = await twinDiff(leg, twin);
-      if (d.length === 0) problems.push(`${leg}: no shared shot frames with ${twin}`);
+      if (d.length === 0)
+        problems.push(`${leg}: no shared shot frames with ${twin}`);
       for (const { frame, px } of d)
         if (px === null) problems.push(`${leg}: frame ${frame}: shot missing`);
-        else if (px > 0) problems.push(`${leg}: frame ${frame}: ${px} px differ from ${twin}`);
+        else if (px > 0)
+          problems.push(`${leg}: frame ${frame}: ${px} px differ from ${twin}`);
       notes.push(`${leg} ${d.length} frames`);
     }
     checks.push(
@@ -294,10 +338,15 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
       }
       released += e.released_total;
       if (e.store_max_excess > STORE_SLACK)
-        problems.push(`${leg}: ${e.store_max_excess} entries beyond |names| + |C|`);
-      notes.push(`${leg} max ${e.store_max_entries} (excess ${e.store_max_excess}, released ${e.released_total})`);
+        problems.push(
+          `${leg}: ${e.store_max_excess} entries beyond |names| + |C|`,
+        );
+      notes.push(
+        `${leg} max ${e.store_max_entries} (excess ${e.store_max_excess}, released ${e.released_total})`,
+      );
     }
-    if (released === 0) problems.push("the retention rule released nothing on any leg (vacuous)");
+    if (released === 0)
+      problems.push("the retention rule released nothing on any leg (vacuous)");
     checks.push(
       check(
         "native-store-bounded",
@@ -313,7 +362,8 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
     const problems: string[] = [];
     for (const leg of NATIVE_HONEST) {
       const a = await applied(leg);
-      if (a?.failure?.reason === "inline-fetch-zero") problems.push(`${leg}: ${a.failure.detail.slice(0, 160)}`);
+      if (a?.failure?.reason === "inline-fetch-zero")
+        problems.push(`${leg}: ${a.failure.detail.slice(0, 160)}`);
       else if (!a) problems.push(`${leg}: no applied.json`);
     }
     checks.push(
@@ -330,15 +380,20 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
     const read = async (cap: string, sink: string, v: 10 | 11) => {
       const path = join(g, cap, sink);
       if (!existsSync(path)) return null;
-      return messagesPerTransaction(decodeRecording(new Uint8Array(await readFile(path)), v).records);
+      return messagesPerTransaction(
+        decodeRecording(new Uint8Array(await readFile(path)), v).records,
+      );
     };
     const v11 = await read("scale/capture", "recording-patch.rs11", 11);
     const v10 = await read("scale/v10/capture", "recording-patch.rs10", 10);
     const problems: string[] | null = v11 === null ? null : [];
     if (v11 && problems) {
-      if (v11.transactions === 0) problems.push("no warm transaction (vacuous)");
+      if (v11.transactions === 0)
+        problems.push("no warm transaction (vacuous)");
       else if (v11.perTx > RECORDS_PER_TX_MAX)
-        problems.push(`${v11.perTx.toFixed(3)} messages a warm transaction (${v11.records} records)`);
+        problems.push(
+          `${v11.perTx.toFixed(3)} messages a warm transaction (${v11.records} records)`,
+        );
     }
     checks.push(
       check(
@@ -353,7 +408,12 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
   }
 
   // the receiver sabotages
-  const sabotage = async (id: string, leg: string, criterion: string, judge: () => Promise<string[]>) => {
+  const sabotage = async (
+    id: string,
+    leg: string,
+    criterion: string,
+    judge: () => Promise<string[]>,
+  ) => {
     if (tierSkipped(leg)) {
       checks.push(notRun(id, criterion, leg));
       return;
@@ -374,16 +434,25 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
       const rec = await recOf("scene/receiver");
       const d = await twinDiff(S.staleDynamicRx, "scene/v10/receiver");
       const out: string[] = [];
-      if (!a || !rec || dynamicAppliedProblems(rec, a.transactions).problems.length === 0)
-        out.push("native-dynamic-applied passed: the ignored bodies went unseen");
-      if (!d.some((x) => (x.px ?? 0) > 0)) out.push("every shot equals the /10 twin's");
+      if (
+        !a ||
+        !rec ||
+        dynamicAppliedProblems(rec, a.transactions).problems.length === 0
+      )
+        out.push(
+          "native-dynamic-applied passed: the ignored bodies went unseen",
+        );
+      if (!d.some((x) => (x.px ?? 0) > 0))
+        out.push("every shot equals the /10 twin's");
       return out;
     },
   );
   const failsWith = (leg: string, reason: RegExp) => async () => {
     const a = await applied(leg);
     const why = `${a?.failure?.reason ?? ""} ${a?.failure?.detail ?? ""}`;
-    return a && a.status !== "ok" && reason.test(why) ? [] : [`status ${a?.status}: ${why.slice(0, 160)}`];
+    return a && a.status !== "ok" && reason.test(why)
+      ? []
+      : [`status ${a?.status}: ${why.slice(0, 160)}`];
   };
   await sabotage(
     "native-no-prune-caught",
@@ -403,7 +472,9 @@ export async function runG8w11Native(g: string): Promise<G8aCheck[]> {
     "W11d: a native receiver whose cache ignores the released hashes fails native-store-bounded",
     async () => {
       const e = await w11(S.ignoreReleased);
-      return e && e.store_max_excess > STORE_SLACK ? [] : [`store excess ${e?.store_max_excess}: store-bounded passed`];
+      return e && e.store_max_excess > STORE_SLACK
+        ? []
+        : [`store excess ${e?.store_max_excess}: store-bounded passed`];
     },
   );
   return checks;
@@ -426,22 +497,32 @@ interface LiveApplied extends Applied {
 async function codingLegsOf(root: string, leg: string) {
   const dir = join(root, leg);
   const host = join(dir, "host");
-  const summary = await readJson<{ connections?: { connection: number; stream_id: string | null }[] }>(
-    join(host, "evidence", "live-summary.json"),
-  );
+  const summary = await readJson<{
+    connections?: { connection: number; stream_id: string | null }[];
+  }>(join(host, "evidence", "live-summary.json"));
   if (!summary) return null;
-  const out: { name: string; applied: LiveApplied | null; received: Uint8Array | null; tap: Uint8Array | null }[] = [];
+  const out: {
+    name: string;
+    applied: LiveApplied | null;
+    received: Uint8Array | null;
+    tap: Uint8Array | null;
+  }[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (!e.isDirectory() || e.name === "host") continue;
-    const applied = await readJson<LiveApplied>(join(dir, e.name, "applied.json"));
+    const applied = await readJson<LiveApplied>(
+      join(dir, e.name, "applied.json"),
+    );
     const sid = applied?.streams?.[0]?.stream_id ?? null;
     const c = (summary.connections ?? []).find((x) => x.stream_id === sid);
-    const bytes = async (p: string) => (existsSync(p) ? new Uint8Array(await readFile(p)) : null);
+    const bytes = async (p: string) =>
+      existsSync(p) ? new Uint8Array(await readFile(p)) : null;
     out.push({
       name: e.name,
       applied,
       received: await bytes(join(dir, e.name, "received.rs11")),
-      tap: c ? await bytes(join(host, "tap", `stream-${c.connection}.rs2`)) : null,
+      tap: c
+        ? await bytes(join(host, "tap", `stream-${c.connection}.rs2`))
+        : null,
     });
   }
   return out;
@@ -453,32 +534,57 @@ async function codingLegsOf(root: string, leg: string) {
  * (rs-core Validator::transport_skip: no seq-gap) and ends ok. Judged on the native receiver
  * (g8w11/coding) and on GSW's browser receiver (the same legs under g8w11c, run-gate7.sh --live).
  */
-async function resyncCheck(root: string, leg: string, id: string, sabotage: string): Promise<G8aCheck> {
+async function resyncCheck(
+  root: string,
+  leg: string,
+  id: string,
+  sabotage: string,
+): Promise<G8aCheck> {
   const criterion = `W11d: under ${sabotage} a coded receiver resyncs (reason coding), skips to the full transaction, validates it (rs-core Validator::transport_skip) and ends ok`;
   const dir = join(root, leg);
   if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
-    return { id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false };
+    return {
+      id,
+      criterion,
+      passed: true,
+      status: "not-run",
+      detail: `skipped-by-tier: ${dir}`,
+      gating: false,
+    };
   }
   const legs = await codingLegsOf(root, leg);
   const v = legs?.[0];
   const problems: string[] | null = v ? [] : null;
   if (v && problems) {
-    if (v.applied?.status !== "ok") problems.push(`status ${v.applied?.status}: ${v.applied?.failure?.reason} ${v.applied?.failure?.detail?.slice(0, 120)}`);
-    if ((v.applied?.live?.coding?.resyncs ?? 0) < 1) problems.push("no coding resync");
+    if (v.applied?.status !== "ok")
+      problems.push(
+        `status ${v.applied?.status}: ${v.applied?.failure?.reason} ${v.applied?.failure?.detail?.slice(0, 120)}`,
+      );
+    if ((v.applied?.live?.coding?.resyncs ?? 0) < 1)
+      problems.push("no coding resync");
     if (v.received && v.tap) {
-      const tap = splitRecords(v.tap, 11).records.map((r) => Buffer.from(r.bytes).toString("latin1"));
+      const tap = splitRecords(v.tap, 11).records.map((r) =>
+        Buffer.from(r.bytes).toString("latin1"),
+      );
       let at = 0;
       for (const r of splitRecords(v.received, 11).records) {
         const b = Buffer.from(r.bytes).toString("latin1");
         while (at < tap.length && tap[at] !== b) at++;
         if (at === tap.length) {
-          problems.push("a received message is not in the host's tap (in order)");
+          problems.push(
+            "a received message is not in the host's tap (in order)",
+          );
           break;
         }
       }
     } else problems.push("no received.rs11 or tap");
   }
-  return check(id, criterion, problems, `resyncs ${v?.applied?.live?.coding?.resyncs ?? 0}`);
+  return check(
+    id,
+    criterion,
+    problems,
+    `resyncs ${v?.applied?.live?.coding?.resyncs ?? 0}`,
+  );
 }
 
 /**
@@ -506,35 +612,75 @@ interface RebuildApply {
   texture_upload_bytes_before: number;
 }
 
-async function resyncReuploadChecks(root: string, leg: string, suffix: string): Promise<G8aCheck[]> {
+async function resyncReuploadChecks(
+  root: string,
+  leg: string,
+  suffix: string,
+): Promise<G8aCheck[]> {
   const dir = join(root, leg);
-  const ids = [`coding-resync-uploads-${suffix}`, `coding-resync-heap-${suffix}`];
+  const ids = [
+    `coding-resync-uploads-${suffix}`,
+    `coding-resync-heap-${suffix}`,
+  ];
   const criteria = [
     `GRH: a GSW coding resync (${leg}) does not upload again what the GPU holds: the resync's full uploads at most half of the texture bytes uploaded before it`,
     `GRH: a GSW coding resync (${leg}) leaves the wasm heap within ${HEAP_SLACK / 1048576} MiB of its size when the rebuild began, measured right after the resync's full is applied`,
   ];
   if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
-    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: `skipped-by-tier: ${dir}`, gating: false }));
+    return ids.map((id, i) => ({
+      id,
+      criterion: criteria[i],
+      passed: true,
+      status: "not-run" as const,
+      detail: `skipped-by-tier: ${dir}`,
+      gating: false,
+    }));
   }
   const legs = await codingLegsOf(root, leg);
   const c = legs?.[0]?.applied?.live?.coding;
   if (c && c.heap_at_resync === undefined) {
-    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: "a native receiver has no wasm heap", gating: false }));
+    return ids.map((id, i) => ({
+      id,
+      criterion: criteria[i],
+      passed: true,
+      status: "not-run" as const,
+      detail: "a native receiver has no wasm heap",
+      gating: false,
+    }));
   }
   const r: RebuildApply | undefined = c?.rebuild_applies?.[0];
   const up: string[] | null = legs ? [] : null;
   const hp: string[] | null = legs ? [] : null;
   if (up && hp && !r) {
-    up.push("no rebuild_applies in applied.json (the resync's full was never drawn)");
-    hp.push("no rebuild_applies in applied.json (the resync's full was never drawn)");
+    up.push(
+      "no rebuild_applies in applied.json (the resync's full was never drawn)",
+    );
+    hp.push(
+      "no rebuild_applies in applied.json (the resync's full was never drawn)",
+    );
   } else if (up && hp && r) {
-    if (r.texture_upload_bytes_before <= 0) up.push("the viewer uploaded no texture before the resync: nothing to re-upload (the fixture has lost its textures?)");
-    else if (r.texture_upload_bytes * 2 > r.texture_upload_bytes_before) up.push(`the resync's full uploaded ${r.texture_upload_bytes} B, over half of the ${r.texture_upload_bytes_before} B uploaded before it`);
-    if (r.heap === null || r.heap_before_rebuild === null) hp.push("no heap sample");
-    else if (r.heap > r.heap_before_rebuild + HEAP_SLACK) hp.push(`wasm heap ${r.heap_before_rebuild} -> ${r.heap} B (+${((r.heap - r.heap_before_rebuild) / 1048576).toFixed(1)} MiB) across the resync's full`);
+    if (r.texture_upload_bytes_before <= 0)
+      up.push(
+        "the viewer uploaded no texture before the resync: nothing to re-upload (the fixture has lost its textures?)",
+      );
+    else if (r.texture_upload_bytes * 2 > r.texture_upload_bytes_before)
+      up.push(
+        `the resync's full uploaded ${r.texture_upload_bytes} B, over half of the ${r.texture_upload_bytes_before} B uploaded before it`,
+      );
+    if (r.heap === null || r.heap_before_rebuild === null)
+      hp.push("no heap sample");
+    else if (r.heap > r.heap_before_rebuild + HEAP_SLACK)
+      hp.push(
+        `wasm heap ${r.heap_before_rebuild} -> ${r.heap} B (+${((r.heap - r.heap_before_rebuild) / 1048576).toFixed(1)} MiB) across the resync's full`,
+      );
   }
-  const detail = r ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B, heap ${r.heap_before_rebuild} -> ${r.heap} B` : "no rebuild apply";
-  return [check(ids[0], criteria[0], up, detail), check(ids[1], criteria[1], hp, detail)];
+  const detail = r
+    ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B, heap ${r.heap_before_rebuild} -> ${r.heap} B`
+    : "no rebuild apply";
+  return [
+    check(ids[0], criteria[0], up, detail),
+    check(ids[1], criteria[1], hp, detail),
+  ];
 }
 
 /**
@@ -544,21 +690,48 @@ async function resyncReuploadChecks(root: string, leg: string, suffix: string): 
  */
 async function reuploadCaught(root: string): Promise<G8aCheck> {
   const id = "coding-resync-reupload-caught";
-  const criterion = "GRH: a GSW receiver whose resync applier inherits no residency (rebuild-reupload) uploads the textures again at the resync's full, which coding-resync-uploads refuses";
+  const criterion =
+    "GRH: a GSW receiver whose resync applier inherits no residency (rebuild-reupload) uploads the textures again at the resync's full, which coding-resync-uploads refuses";
   const dir = join(root, "native-sabotage-drop-base-reupload");
-  if (!existsSync(dir)) return { id, criterion, passed: true, status: "not-run", detail: "no browser receiver leg", gating: false };
+  if (!existsSync(dir))
+    return {
+      id,
+      criterion,
+      passed: true,
+      status: "not-run",
+      detail: "no browser receiver leg",
+      gating: false,
+    };
   if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
-    return { id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false };
+    return {
+      id,
+      criterion,
+      passed: true,
+      status: "not-run",
+      detail: `skipped-by-tier: ${dir}`,
+      gating: false,
+    };
   }
   const legs = await codingLegsOf(root, "native-sabotage-drop-base-reupload");
   const r = legs?.[0]?.applied?.live?.coding?.rebuild_applies?.[0];
   const problems: string[] | null = legs ? [] : null;
   if (problems && !r) problems.push("no rebuild_applies in applied.json");
   else if (problems && r) {
-    if (r.texture_upload_bytes_before <= 0) problems.push("no texture uploaded before the resync");
-    else if (r.texture_upload_bytes * 2 <= r.texture_upload_bytes_before) problems.push(`the sabotaged resync full uploaded only ${r.texture_upload_bytes} of ${r.texture_upload_bytes_before} B: coding-resync-uploads would pass`);
+    if (r.texture_upload_bytes_before <= 0)
+      problems.push("no texture uploaded before the resync");
+    else if (r.texture_upload_bytes * 2 <= r.texture_upload_bytes_before)
+      problems.push(
+        `the sabotaged resync full uploaded only ${r.texture_upload_bytes} of ${r.texture_upload_bytes_before} B: coding-resync-uploads would pass`,
+      );
   }
-  return check(id, criterion, problems, r ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B` : "no rebuild apply");
+  return check(
+    id,
+    criterion,
+    problems,
+    r
+      ? `uploads ${r.texture_upload_bytes}/${r.texture_upload_bytes_before} B`
+      : "no rebuild apply",
+  );
 }
 
 /**
@@ -590,18 +763,35 @@ interface FirstApply {
   draw_ms: number;
 }
 
-function firstApplyProblems(f: FirstApply | null | undefined): { arena: string[]; heap: string[] } {
+function firstApplyProblems(f: FirstApply | null | undefined): {
+  arena: string[];
+  heap: string[];
+} {
   const arena: string[] = [];
   const heap: string[] = [];
   if (!f) {
-    arena.push("no live.gsw.first_apply in applied.json (no transaction was drawn)");
-    heap.push("no live.gsw.first_apply in applied.json (no transaction was drawn)");
+    arena.push(
+      "no live.gsw.first_apply in applied.json (no transaction was drawn)",
+    );
+    heap.push(
+      "no live.gsw.first_apply in applied.json (no transaction was drawn)",
+    );
     return { arena, heap };
   }
-  if (f.texture_upload_bytes <= 0) arena.push("the first draw uploaded no texture: nothing to judge (the fixture has lost its textures?)");
-  else if (f.arena_bytes * 2 > f.texture_upload_bytes) arena.push(`the first apply copied ${f.arena_bytes} B into the draw list's arena, over half of the ${f.texture_upload_bytes} B its draw uploaded`);
-  if (f.heap_before_apply === null || f.heap_after_draw === null) heap.push("no heap sample");
-  else if (f.heap_after_draw > f.heap_before_apply + FIRST_APPLY_HEAP_SLACK) heap.push(`wasm heap ${f.heap_before_apply} -> ${f.heap_after_draw} B (+${((f.heap_after_draw - f.heap_before_apply) / 1048576).toFixed(1)} MiB) across the first apply and draw`);
+  if (f.texture_upload_bytes <= 0)
+    arena.push(
+      "the first draw uploaded no texture: nothing to judge (the fixture has lost its textures?)",
+    );
+  else if (f.arena_bytes * 2 > f.texture_upload_bytes)
+    arena.push(
+      `the first apply copied ${f.arena_bytes} B into the draw list's arena, over half of the ${f.texture_upload_bytes} B its draw uploaded`,
+    );
+  if (f.heap_before_apply === null || f.heap_after_draw === null)
+    heap.push("no heap sample");
+  else if (f.heap_after_draw > f.heap_before_apply + FIRST_APPLY_HEAP_SLACK)
+    heap.push(
+      `wasm heap ${f.heap_before_apply} -> ${f.heap_after_draw} B (+${((f.heap_after_draw - f.heap_before_apply) / 1048576).toFixed(1)} MiB) across the first apply and draw`,
+    );
   return { arena, heap };
 }
 
@@ -611,7 +801,11 @@ function firstApplyDetail(f: FirstApply | null | undefined): string {
     : "no first apply";
 }
 
-async function firstApplyChecks(root: string, leg: string, suffix: string): Promise<G8aCheck[]> {
+async function firstApplyChecks(
+  root: string,
+  leg: string,
+  suffix: string,
+): Promise<G8aCheck[]> {
   const dir = join(root, leg);
   const ids = [`first-apply-arena-${suffix}`, `first-apply-heap-${suffix}`];
   const criteria = [
@@ -619,16 +813,33 @@ async function firstApplyChecks(root: string, leg: string, suffix: string): Prom
     `GLJ: a GSW viewer's first apply and draw (${leg}) leave the wasm heap within ${FIRST_APPLY_HEAP_SLACK / 1048576} MiB of its size before the apply, every payload already resident`,
   ];
   if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
-    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: `skipped-by-tier: ${dir}`, gating: false }));
+    return ids.map((id, i) => ({
+      id,
+      criterion: criteria[i],
+      passed: true,
+      status: "not-run" as const,
+      detail: `skipped-by-tier: ${dir}`,
+      gating: false,
+    }));
   }
   const legs = await codingLegsOf(root, leg);
   const live = legs?.[0]?.applied?.live;
   if (live && live.gsw?.first_apply === undefined) {
-    return ids.map((id, i) => ({ id, criterion: criteria[i], passed: true, status: "not-run" as const, detail: "not a GSW receiver (no live.gsw.first_apply)", gating: false }));
+    return ids.map((id, i) => ({
+      id,
+      criterion: criteria[i],
+      passed: true,
+      status: "not-run" as const,
+      detail: "not a GSW receiver (no live.gsw.first_apply)",
+      gating: false,
+    }));
   }
   const f = live?.gsw?.first_apply;
   const p = legs ? firstApplyProblems(f) : null;
-  return [check(ids[0], criteria[0], p ? p.arena : null, firstApplyDetail(f)), check(ids[1], criteria[1], p ? p.heap : null, firstApplyDetail(f))];
+  return [
+    check(ids[0], criteria[0], p ? p.arena : null, firstApplyDetail(f)),
+    check(ids[1], criteria[1], p ? p.heap : null, firstApplyDetail(f)),
+  ];
 }
 
 /**
@@ -638,20 +849,40 @@ async function firstApplyChecks(root: string, leg: string, suffix: string): Prom
  */
 async function arenaCaught(root: string): Promise<G8aCheck> {
   const id = "first-apply-arena-caught";
-  const criterion = "GLJ: a GSW receiver that copies every upload into the draw list's arena (arena-upload) fails first-apply-arena at its first apply";
+  const criterion =
+    "GLJ: a GSW receiver that copies every upload into the draw list's arena (arena-upload) fails first-apply-arena at its first apply";
   const leg = "native-sabotage-drop-base-reupload";
   const dir = join(root, leg);
-  if (!existsSync(dir)) return { id, criterion, passed: true, status: "not-run", detail: "no browser receiver leg", gating: false };
+  if (!existsSync(dir))
+    return {
+      id,
+      criterion,
+      passed: true,
+      status: "not-run",
+      detail: "no browser receiver leg",
+      gating: false,
+    };
   if (existsSync(join(dir, "host", "skipped-by-tier.txt"))) {
-    return { id, criterion, passed: true, status: "not-run", detail: `skipped-by-tier: ${dir}`, gating: false };
+    return {
+      id,
+      criterion,
+      passed: true,
+      status: "not-run",
+      detail: `skipped-by-tier: ${dir}`,
+      gating: false,
+    };
   }
   const legs = await codingLegsOf(root, leg);
   const f = legs?.[0]?.applied?.live?.gsw?.first_apply;
   const problems: string[] | null = legs ? [] : null;
   if (problems) {
     if (!f) problems.push("no live.gsw.first_apply in applied.json");
-    else if (f.texture_upload_bytes <= 0) problems.push("the first draw uploaded no texture");
-    else if (firstApplyProblems(f).arena.length === 0) problems.push(`the sabotaged first apply copied only ${f.arena_bytes} of ${f.texture_upload_bytes} B: first-apply-arena would pass`);
+    else if (f.texture_upload_bytes <= 0)
+      problems.push("the first draw uploaded no texture");
+    else if (firstApplyProblems(f).arena.length === 0)
+      problems.push(
+        `the sabotaged first apply copied only ${f.arena_bytes} of ${f.texture_upload_bytes} B: first-apply-arena would pass`,
+      );
   }
   return check(id, criterion, problems, firstApplyDetail(f));
 }
@@ -660,13 +891,35 @@ async function arenaCaught(root: string): Promise<G8aCheck> {
 export async function runG8w11cResync(out: string): Promise<G8aCheck[]> {
   const root = join(out, "g8w11c");
   return [
-    await resyncCheck(root, "native-sabotage-drop-base", "native-coding-drop-base-caught", "drop-message"),
-    await resyncCheck(root, "native-sabotage-wrong-prefix", "native-coding-wrong-prefix-caught", "coding-wrong-prefix"),
-    ...(await resyncReuploadChecks(root, "native-sabotage-drop-base", "drop-base")),
-    ...(await resyncReuploadChecks(root, "native-sabotage-wrong-prefix", "wrong-prefix")),
+    await resyncCheck(
+      root,
+      "native-sabotage-drop-base",
+      "native-coding-drop-base-caught",
+      "drop-message",
+    ),
+    await resyncCheck(
+      root,
+      "native-sabotage-wrong-prefix",
+      "native-coding-wrong-prefix-caught",
+      "coding-wrong-prefix",
+    ),
+    ...(await resyncReuploadChecks(
+      root,
+      "native-sabotage-drop-base",
+      "drop-base",
+    )),
+    ...(await resyncReuploadChecks(
+      root,
+      "native-sabotage-wrong-prefix",
+      "wrong-prefix",
+    )),
     await reuploadCaught(root),
     ...(await firstApplyChecks(root, "native-sabotage-drop-base", "drop-base")),
-    ...(await firstApplyChecks(root, "native-sabotage-wrong-prefix", "wrong-prefix")),
+    ...(await firstApplyChecks(
+      root,
+      "native-sabotage-wrong-prefix",
+      "wrong-prefix",
+    )),
     await arenaCaught(root),
     // W13c: GSW's /13 resync legs (lib/gate8-w13-gsw-checks.ts).
     ...(await runG8w11cGsw13(root)),
@@ -680,7 +933,8 @@ export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
   const root = join(g, "coding");
   const legOf = (leg: string) => codingLegsOf(root, leg);
-  const eq = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const eq = (a: Uint8Array, b: Uint8Array) =>
+    a.length === b.length && a.every((x, i) => x === b[i]);
   const native = await legOf("native");
   {
     const problems: string[] | null = native ? [] : null;
@@ -690,18 +944,40 @@ export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
         problems?.push(`${v.name}: missing applied.json, received.rs11 or tap`);
         continue;
       }
-      if (v.applied.status !== "ok") problems?.push(`${v.name}: ${v.applied.failure?.reason}: ${v.applied.failure?.detail?.slice(0, 120)}`);
-      if (!eq(v.received, v.tap)) problems?.push(`${v.name}: received ${v.received.length} B differs from the tap's ${v.tap.length} B`);
+      if (v.applied.status !== "ok")
+        problems?.push(
+          `${v.name}: ${v.applied.failure?.reason}: ${v.applied.failure?.detail?.slice(0, 120)}`,
+        );
+      if (!eq(v.received, v.tap))
+        problems?.push(
+          `${v.name}: received ${v.received.length} B differs from the tap's ${v.tap.length} B`,
+        );
       const conn = (v.applied.live?.coding?.connections ?? [])[0] as
-        | { coded?: boolean | null; prefixed?: number; errors?: number; coded_bytes?: number; decoded_bytes?: number }
+        | {
+            coded?: boolean | null;
+            prefixed?: number;
+            errors?: number;
+            coded_bytes?: number;
+            decoded_bytes?: number;
+          }
         | undefined;
       if (v.name === "coded") {
-        if (!conn || conn.coded !== true || (conn.prefixed ?? 0) === 0 || (conn.errors ?? 0) > 0)
+        if (
+          !conn ||
+          conn.coded !== true ||
+          (conn.prefixed ?? 0) === 0 ||
+          (conn.errors ?? 0) > 0
+        )
           problems?.push(`coded: coding stats ${JSON.stringify(conn ?? null)}`);
-        else notes.push(`coded ${conn.coded_bytes} B on the wire for ${conn.decoded_bytes} B, ${conn.prefixed} prefixed`);
-      } else if (conn && conn.coded === true) problems?.push(`${v.name}: coded, but it offered no coding`);
+        else
+          notes.push(
+            `coded ${conn.coded_bytes} B on the wire for ${conn.decoded_bytes} B, ${conn.prefixed} prefixed`,
+          );
+      } else if (conn && conn.coded === true)
+        problems?.push(`${v.name}: coded, but it offered no coding`);
     }
-    if (native && native.length < 2) problems?.push(`${native.length} receiver(s), expected coded and off`);
+    if (native && native.length < 2)
+      problems?.push(`${native.length} receiver(s), expected coded and off`);
     checks.push(
       check(
         "native-coding-lossless",
@@ -717,9 +993,14 @@ export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
     for (const v of native ?? []) {
       if (!v.applied || !v.tap) continue;
       const rec = resolveRecording(v.tap, 11);
-      const drawn = v.applied.transactions.filter((t) => t.dynamic_sha256 !== undefined);
+      const drawn = v.applied.transactions.filter(
+        (t) => t.dynamic_sha256 !== undefined,
+      );
       const r = dynamicAppliedProblems(rec, drawn);
-      if (r.compared === 0) problems?.push(`${v.name}: no applied transaction carries dynamic_sha256`);
+      if (r.compared === 0)
+        problems?.push(
+          `${v.name}: no applied transaction carries dynamic_sha256`,
+        );
       problems?.push(...r.problems.slice(0, 4).map((p) => `${v.name}: ${p}`));
       notes.push(`${v.name} ${r.compared} applied txs`);
     }
@@ -732,6 +1013,13 @@ export async function runG8w11NativeCoding(g: string): Promise<G8aCheck[]> {
       ),
     );
   }
-  checks.push(await resyncCheck(root, "native-sabotage-drop-base", "native-coding-drop-base-caught", "drop-message"));
+  checks.push(
+    await resyncCheck(
+      root,
+      "native-sabotage-drop-base",
+      "native-coding-drop-base-caught",
+      "drop-message",
+    ),
+  );
   return checks;
 }

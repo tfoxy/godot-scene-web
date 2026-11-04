@@ -1,47 +1,92 @@
-import { createClipRectView, createDrawList, createNinePatchView, createQuadView } from '../../src/draw-list';
-import { encodeRustIdleAnims, encodeRustResources, encodeRustResourceUpdates, encodeRustRetainedPatch, encodeRustScene,
-  type RustIdleSet, type RustSceneSnapshot } from '../../src/rust-prototype-scene';
-import { createCanvasStage } from '../../src/present';
-import { createCanvasExecutor } from '../../src/executor-webgl';
-import { createRetainedRangeCache } from '../../src/retained-range-cache';
-import { createTextureCache } from '../../src/textures';
-import { createPixiDrawListRenderer } from '../../src/pixi-renderer';
+import {
+  createClipRectView,
+  createDrawList,
+  createNinePatchView,
+  createQuadView,
+} from "../../src/draw-list";
+import { createCanvasExecutor } from "../../src/executor-webgl";
+import { createPixiDrawListRenderer } from "../../src/pixi-renderer";
+import { createCanvasStage } from "../../src/present";
+import { createRetainedRangeCache } from "../../src/retained-range-cache";
+import {
+  encodeRustIdleAnims,
+  encodeRustResources,
+  encodeRustResourceUpdates,
+  encodeRustRetainedPatch,
+  encodeRustScene,
+  type RustIdleSet,
+  type RustSceneSnapshot,
+} from "../../src/rust-prototype-scene";
+import { createTextureCache } from "../../src/textures";
 
 const root = window as unknown as { proof?: Record<string, unknown> };
-const rustCanvas = document.querySelector<HTMLCanvasElement>('#rust')!;
-const retainedCanvas = document.querySelector<HTMLCanvasElement>('#retained')!;
-const pixiCanvas = document.querySelector<HTMLCanvasElement>('#pixi')!;
+const rustCanvas = document.querySelector<HTMLCanvasElement>("#rust")!;
+const retainedCanvas = document.querySelector<HTMLCanvasElement>("#retained")!;
+const pixiCanvas = document.querySelector<HTMLCanvasElement>("#pixi")!;
 const enc = new TextEncoder();
-const wasm = await import('/rust_prototype.js');
+const wasm = await import("/rust_prototype.js");
 await wasm.default();
 const params = new URLSearchParams(location.search);
 // GSW_RUST_PRESENT_MODE=<mode> runs the main Rust steps through `createWithPresent(canvas, mode)`.
 // GSW_RUST_BACKEND=gl: the main Rust steps, the damage renderer and every present-parity renderer use the
 // direct-GL backend (`createWithGl(canvas, mode)`, mode `direct` unless given); the full-redraw reference
 // stays on wgpu's surface, so every comparison is also a cross-backend byte comparison.
-const glBackend = params.get('backend') === 'gl';
-const presentMode = params.get('present');
-const rust = glBackend ? await wasm.RustRenderer.createWithGl(rustCanvas, presentMode ?? 'direct')
-  : presentMode ? await wasm.RustRenderer.createWithPresent(rustCanvas, presentMode)
-  : await wasm.RustRenderer.create(rustCanvas);
+const glBackend = params.get("backend") === "gl";
+const presentMode = params.get("present");
+const rust = glBackend
+  ? await wasm.RustRenderer.createWithGl(rustCanvas, presentMode ?? "direct")
+  : presentMode
+    ? await wasm.RustRenderer.createWithPresent(rustCanvas, presentMode)
+    : await wasm.RustRenderer.create(rustCanvas);
 // GSW_RUST_DAMAGE_PRESENT=1 runs the main Rust steps (and the fault leg) with the damage present on.
-if (params.get('damage') === '1') rust.set_damage_present(true);
+if (params.get("damage") === "1") rust.set_damage_present(true);
 let committed: RustSceneSnapshot | null = null;
 let failedPatchBytes: Uint8Array | null = null;
-let textSwapInputs: ((text: string, revision: number) => { list: ReturnType<typeof createDrawList<string>>; carriers: Map<string, any>; encoded: ReturnType<typeof encodeRustScene> }) | null = null;
+let textSwapInputs:
+  | ((
+      text: string,
+      revision: number,
+    ) => {
+      list: ReturnType<typeof createDrawList<string>>;
+      carriers: Map<string, any>;
+      encoded: ReturnType<typeof encodeRustScene>;
+    })
+  | null = null;
 const parse = (value: string) => JSON.parse(value);
-function quad(color: [number, number, number, number], width = 64, height = 64) {
+function quad(
+  color: [number, number, number, number],
+  width = 64,
+  height = 64,
+) {
   const list = createDrawList<string>();
   const view = createQuadView();
-  view.w = width; view.h = height;
+  view.w = width;
+  view.h = height;
   [view.r, view.g, view.b, view.a] = color;
   list.pushQuad(view);
   return list;
 }
-function scene(list: ReturnType<typeof createDrawList<string>>, revision: number, width = 64, height = 64, extras: Record<string, unknown> = {}) {
-  return encodeRustScene({ drawList: list, revision, width, height, designWidth: 64, designHeight: 64,
-    resolveTexture: (key) => ({ key, width: key === 'nine' ? 3 : 20, height: key === 'nine' ? 3 : 20 }),
-    ...extras });
+function scene(
+  list: ReturnType<typeof createDrawList<string>>,
+  revision: number,
+  width = 64,
+  height = 64,
+  extras: Record<string, unknown> = {},
+) {
+  return encodeRustScene({
+    drawList: list,
+    revision,
+    width,
+    height,
+    designWidth: 64,
+    designHeight: 64,
+    resolveTexture: (key) => ({
+      key,
+      width: key === "nine" ? 3 : 20,
+      height: key === "nine" ? 3 : 20,
+    }),
+    ...extras,
+  });
 }
 async function full(encoded: ReturnType<typeof encodeRustScene>) {
   const admission = parse(rust.admit_scene(encoded.bytes));
@@ -50,59 +95,100 @@ async function full(encoded: ReturnType<typeof encodeRustScene>) {
   return { admission, result };
 }
 const rustSteps: Record<string, () => Promise<unknown>> = {
-  async initial() { return full(scene(quad([1, 0, 0, 1]), 1)); },
+  async initial() {
+    return full(scene(quad([1, 0, 0, 1]), 1));
+  },
   async retainedPatch() {
     const old = committed!;
     const changed = { ...old.commands[0], color: [0, 1, 0, 1] };
-    const patch = encodeRustRetainedPatch(old, 2, [{ id: String(old.commands[0].id), command: changed }])!;
+    const patch = encodeRustRetainedPatch(old, 2, [
+      { id: String(old.commands[0].id), command: changed },
+    ])!;
     const admission = parse(rust.apply_patch(patch.bytes));
     const result = parse(await rust.present());
     if (admission.accepted && result.presented) committed = patch.scene;
     return { admission, result, changedIndexes: patch.changedIndexes };
   },
   async resize() {
-    rustCanvas.width = 128; rustCanvas.height = 64;
+    rustCanvas.width = 128;
+    rustCanvas.height = 64;
     rust.resize(128, 64);
     return full(scene(quad([0, 0, 1, 1]), 3, 128, 64));
   },
   async text() {
-    const raster = document.createElement('canvas'); raster.width = 20; raster.height = 20;
-    const ctx = raster.getContext('2d')!;
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.fillText('A', 2, 18);
+    const raster = document.createElement("canvas");
+    raster.width = 20;
+    raster.height = 20;
+    const ctx = raster.getContext("2d")!;
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 18px sans-serif";
+    ctx.fillText("A", 2, 18);
     const pixels = new Uint8Array(ctx.getImageData(0, 0, 20, 20).data);
-    rust.upload_rgba_batch(encodeRustResources([{ key: 'letter', width: 20, height: 20, pixels }]));
-    return full(scene(createDrawList<string>(), 4, 128, 64, {
-      texts: [{ key: 'letter', insertionIndex: 0, transform: [1, 0, 0, 1, 16, 16] }],
-      resolveText: () => ({ resource: { key: 'letter', width: 20, height: 20 }, pixels,
-        width: 20, height: 20, transform: [1, 0, 0, 1, 16, 16] }),
-    }));
+    rust.upload_rgba_batch(
+      encodeRustResources([{ key: "letter", width: 20, height: 20, pixels }]),
+    );
+    return full(
+      scene(createDrawList<string>(), 4, 128, 64, {
+        texts: [
+          { key: "letter", insertionIndex: 0, transform: [1, 0, 0, 1, 16, 16] },
+        ],
+        resolveText: () => ({
+          resource: { key: "letter", width: 20, height: 20 },
+          pixels,
+          width: 20,
+          height: 20,
+          transform: [1, 0, 0, 1, 16, 16],
+        }),
+      }),
+    );
   },
   async clipNinePatch() {
     const pixels = new Uint8Array(3 * 3 * 4);
-    for (let i = 0; i < pixels.length; i += 4) pixels.set([255, 255, 0, 255], i);
-    rust.upload_rgba_batch(encodeRustResources([{ key: 'nine', width: 3, height: 3, pixels }]));
+    for (let i = 0; i < pixels.length; i += 4)
+      pixels.set([255, 255, 0, 255], i);
+    rust.upload_rgba_batch(
+      encodeRustResources([{ key: "nine", width: 3, height: 3, pixels }]),
+    );
     const list = createDrawList<string>();
-    const clip = createClipRectView(); clip.w = 32; clip.h = 64; list.pushClipRect(clip);
-    const nine = createNinePatchView(); nine.w = 64; nine.h = 64;
-    nine.srcW = 3; nine.srcH = 3;
+    const clip = createClipRectView();
+    clip.w = 32;
+    clip.h = 64;
+    list.pushClipRect(clip);
+    const nine = createNinePatchView();
+    nine.w = 64;
+    nine.h = 64;
+    nine.srcW = 3;
+    nine.srcH = 3;
     nine.marginLeft = nine.marginRight = nine.marginTop = nine.marginBottom = 1;
-    list.pushNinePatch(nine, 'nine'); list.popClip();
+    list.pushNinePatch(nine, "nine");
+    list.popClip();
     return full(scene(list, 5, 128, 64));
   },
   async rollback() {
-    const invalid = { ...committed!, revision: 6,
-      commands: committed!.commands.map((c) => c.kind === 'ninePatch' ? { ...c, src: [0, 0, -1, 3] } : c) };
-    const admission = parse(rust.admit_scene(enc.encode(JSON.stringify(invalid))));
+    const invalid = {
+      ...committed!,
+      revision: 6,
+      commands: committed!.commands.map((c) =>
+        c.kind === "ninePatch" ? { ...c, src: [0, 0, -1, 3] } : c,
+      ),
+    };
+    const admission = parse(
+      rust.admit_scene(enc.encode(JSON.stringify(invalid))),
+    );
     const result = parse(await rust.present());
     return { admission, result };
   },
   async clipTranslate() {
     // Moves the clip half a design width right: the nine-patch under it now shows on the right instead.
     const old = committed!;
-    const clip = old.commands.find((command) => command.kind === 'clipPush')!;
+    const clip = old.commands.find((command) => command.kind === "clipPush")!;
     const rect = clip.rect as number[];
-    const patch = encodeRustRetainedPatch(old, old.revision + 1,
-      [{ id: String(clip.id), command: { ...clip, rect: [rect[0] + 32, rect[1], rect[2], rect[3]] } }])!;
+    const patch = encodeRustRetainedPatch(old, old.revision + 1, [
+      {
+        id: String(clip.id),
+        command: { ...clip, rect: [rect[0] + 32, rect[1], rect[2], rect[3]] },
+      },
+    ])!;
     const admission = parse(rust.apply_patch(patch.bytes));
     const result = parse(await rust.present());
     if (admission.accepted && result.presented) committed = patch.scene;
@@ -114,60 +200,126 @@ const rustSteps: Record<string, () => Promise<unknown>> = {
   async textSwap() {
     const digits = (text: string) => {
       const width = 10 * text.length + 4;
-      const raster = document.createElement('canvas'); raster.width = width; raster.height = 20;
-      const ctx = raster.getContext('2d')!;
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.fillText(text, 2, 18);
-      return { resource: { key: `digits:${text}`, width, height: 20 },
-        pixels: new Uint8Array(ctx.getImageData(0, 0, width, 20).data), width, height: 20,
-        transform: [1, 0, 0, 1, 64 - width / 2, 22] };
+      const raster = document.createElement("canvas");
+      raster.width = width;
+      raster.height = 20;
+      const ctx = raster.getContext("2d")!;
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 18px sans-serif";
+      ctx.fillText(text, 2, 18);
+      return {
+        resource: { key: `digits:${text}`, width, height: 20 },
+        pixels: new Uint8Array(ctx.getImageData(0, 0, width, 20).data),
+        width,
+        height: 20,
+        transform: [1, 0, 0, 1, 64 - width / 2, 22],
+      };
     };
     textSwapInputs = (text: string, revision: number) => {
       const list = createDrawList<string>();
-      const view = createQuadView(); view.w = 128; view.h = 64; view.srcW = 20; view.srcH = 20;
+      const view = createQuadView();
+      view.w = 128;
+      view.h = 64;
+      view.srcW = 20;
+      view.srcH = 20;
       [view.r, view.g, view.b, view.a] = [0, 0, 0.5, 1];
-      list.pushQuad(view, 'background');
-      const carriers = new Map([['clock:0:0', digits(text)], ['name:0:0', { ...digits('7'), transform: [1, 0, 0, 1, 4, 40] }]]);
-      return { list, carriers, encoded: encodeRustScene({ drawList: list, revision, width: 128, height: 64,
-        designWidth: 128, designHeight: 64, resolveTexture: (key) => ({ key, width: 20, height: 20 }),
-        texts: [{ key: 'clock:0:0', insertionIndex: 1, transform: [1, 0, 0, 1, 64, 22] },
-          { key: 'name:0:0', insertionIndex: 1, transform: [1, 0, 0, 1, 4, 40] }],
-        resolveText: (record) => carriers.get(record.key) ?? null }) };
+      list.pushQuad(view, "background");
+      const carriers = new Map([
+        ["clock:0:0", digits(text)],
+        ["name:0:0", { ...digits("7"), transform: [1, 0, 0, 1, 4, 40] }],
+      ]);
+      return {
+        list,
+        carriers,
+        encoded: encodeRustScene({
+          drawList: list,
+          revision,
+          width: 128,
+          height: 64,
+          designWidth: 128,
+          designHeight: 64,
+          resolveTexture: (key) => ({ key, width: 20, height: 20 }),
+          texts: [
+            {
+              key: "clock:0:0",
+              insertionIndex: 1,
+              transform: [1, 0, 0, 1, 64, 22],
+            },
+            {
+              key: "name:0:0",
+              insertionIndex: 1,
+              transform: [1, 0, 0, 1, 4, 40],
+            },
+          ],
+          resolveText: (record) => carriers.get(record.key) ?? null,
+        }),
+      };
     };
     const background = new Uint8Array(20 * 20 * 4).fill(255);
-    const before = textSwapInputs('04:00', 20);
-    rust.upload_rgba_batch(encodeRustResources([{ key: 'background', width: 20, height: 20, pixels: background },
-      ...before.encoded.textUploads]));
+    const before = textSwapInputs("04:00", 20);
+    rust.upload_rgba_batch(
+      encodeRustResources([
+        { key: "background", width: 20, height: 20, pixels: background },
+        ...before.encoded.textUploads,
+      ]),
+    );
     const admitted = await full(before.encoded);
-    const after = textSwapInputs('04:01', 21);
-    const change = { record: { key: 'clock:0:0', insertionIndex: 1, transform: [1, 0, 0, 1, 64, 22] },
-      carrier: after.carriers.get('clock:0:0')! };
-    const patch = encodeRustRetainedPatch(committed!, 21, [], [], undefined, { texts: [change] })!;
+    const after = textSwapInputs("04:01", 21);
+    const change = {
+      record: {
+        key: "clock:0:0",
+        insertionIndex: 1,
+        transform: [1, 0, 0, 1, 64, 22],
+      },
+      carrier: after.carriers.get("clock:0:0")!,
+    };
+    const patch = encodeRustRetainedPatch(committed!, 21, [], [], undefined, {
+      texts: [change],
+    })!;
     rust.upload_rgba_batch(encodeRustResources(patch.textUploads));
     const admission = parse(rust.apply_patch(patch.bytes));
     const result = parse(await rust.present());
     if (admission.accepted && result.presented) committed = patch.scene;
-    return { admitted, admission, result, resourcesChanged: patch.resourcesChanged,
-      sameScene: JSON.stringify(patch.scene) === JSON.stringify({ ...after.encoded.scene, revision: 21 }) };
+    return {
+      admitted,
+      admission,
+      result,
+      resourcesChanged: patch.resourcesChanged,
+      sameScene:
+        JSON.stringify(patch.scene) ===
+        JSON.stringify({ ...after.encoded.scene, revision: 21 }),
+    };
   },
   async textSwapFull() {
-    return full(textSwapInputs!('04:01', 22).encoded);
+    return full(textSwapInputs!("04:01", 22).encoded);
   },
   async textSwapRelease() {
-    rust.upload_rgba_batch(encodeRustResourceUpdates([{ operation: 'release', key: 'digits:04:00' }]));
+    rust.upload_rgba_batch(
+      encodeRustResourceUpdates([
+        { operation: "release", key: "digits:04:00" },
+      ]),
+    );
     const old = committed!;
-    const patch = encodeRustRetainedPatch(old, old.revision + 1,
-      [{ id: String(old.commands[0].id), command: { ...old.commands[0] } }])!;
+    const patch = encodeRustRetainedPatch(old, old.revision + 1, [
+      { id: String(old.commands[0].id), command: { ...old.commands[0] } },
+    ])!;
     const admission = parse(rust.apply_patch(patch.bytes));
     const result = parse(await rust.present());
     if (admission.accepted && result.presented) committed = patch.scene;
     return { admission, result };
   },
   async faultRollback() {
-    if (typeof rust.debugValidationFailureOnce !== 'function')
-      throw new Error('fault-injection Wasm feature is required');
-    const nine = committed!.commands.find((command) => command.kind === 'ninePatch')!;
-    const patch = { version: 1, baseRevision: committed!.revision, revision: committed!.revision + 1,
-      updates: [{ id: nine.id, command: { ...nine, color: [0, 1, 1, 1] } }] };
+    if (typeof rust.debugValidationFailureOnce !== "function")
+      throw new Error("fault-injection Wasm feature is required");
+    const nine = committed!.commands.find(
+      (command) => command.kind === "ninePatch",
+    )!;
+    const patch = {
+      version: 1,
+      baseRevision: committed!.revision,
+      revision: committed!.revision + 1,
+      updates: [{ id: nine.id, command: { ...nine, color: [0, 1, 1, 1] } }],
+    };
     failedPatchBytes = enc.encode(JSON.stringify(patch));
     const admission = parse(rust.apply_patch(failedPatchBytes));
     rust.debugValidationFailureOnce();
@@ -175,40 +327,91 @@ const rustSteps: Record<string, () => Promise<unknown>> = {
     return { admission, result };
   },
   async faultRecovery() {
-    if (!failedPatchBytes) throw new Error('fault rollback must run first');
+    if (!failedPatchBytes) throw new Error("fault rollback must run first");
     const admission = parse(rust.apply_patch(failedPatchBytes));
     const result = parse(await rust.present());
     return { admission, result };
   },
 };
 
-const stage = createCanvasStage({ canvas: retainedCanvas, designWidth: 64, designHeight: 64 })!;
+const stage = createCanvasStage({
+  canvas: retainedCanvas,
+  designWidth: 64,
+  designHeight: 64,
+})!;
 stage.setStageSize(64, 64);
 const textures = createTextureCache(stage.gl);
-const texture = textures.acquireBytes('stream', new Uint8Array([255, 0, 0, 255]), 1, 1, { premultiplied: true });
+const texture = textures.acquireBytes(
+  "stream",
+  new Uint8Array([255, 0, 0, 255]),
+  1,
+  1,
+  { premultiplied: true },
+);
 const retainedList = createDrawList<typeof texture>();
-const retainedQuad = createQuadView(); retainedQuad.w = 64; retainedQuad.h = 64;
-retainedQuad.srcW = 1; retainedQuad.srcH = 1;
+const retainedQuad = createQuadView();
+retainedQuad.w = 64;
+retainedQuad.h = 64;
+retainedQuad.srcW = 1;
+retainedQuad.srcH = 1;
 retainedList.pushQuad(retainedQuad, texture);
-const executor = createCanvasExecutor({ gl: stage.gl, white: textures.white() });
-const cache = createRetainedRangeCache(stage.gl, { maxEntryStageAreaRatio: 1, maxCompositeStageAreaRatio: 1, gutterPixels: 0 });
-const candidate = [{ key: 'stream', start: 0, end: 1,
-  bounds: { x: 0, y: 0, width: 64, height: 64 }, pixelRevision: 1 }];
+const executor = createCanvasExecutor({
+  gl: stage.gl,
+  white: textures.white(),
+});
+const cache = createRetainedRangeCache(stage.gl, {
+  maxEntryStageAreaRatio: 1,
+  maxCompositeStageAreaRatio: 1,
+  gutterPixels: 0,
+});
+const candidate = [
+  {
+    key: "stream",
+    start: 0,
+    end: 1,
+    bounds: { x: 0, y: 0, width: 64, height: 64 },
+    pixelRevision: 1,
+  },
+];
 function retainedStep(change: boolean) {
   if (change) {
-    const source = document.createElement('canvas'); source.width = source.height = 1;
-    source.getContext('2d')!.fillStyle = '#0000ff'; source.getContext('2d')!.fillRect(0, 0, 1, 1);
-    textures.update('stream', source);
+    const source = document.createElement("canvas");
+    source.width = source.height = 1;
+    source.getContext("2d")!.fillStyle = "#0000ff";
+    source.getContext("2d")!.fillRect(0, 0, 1, 1);
+    textures.update("stream", source);
   }
   const plan = cache.prepare(retainedList, stage.projection(), candidate);
-  const ok = executor.execute(retainedList, stage.projection(), { substitutions: plan });
+  const ok = executor.execute(retainedList, stage.projection(), {
+    substitutions: plan,
+  });
   const pixel = new Uint8Array(4);
-  stage.gl.readPixels(32, 32, 1, 1, stage.gl.RGBA, stage.gl.UNSIGNED_BYTE, pixel);
-  return { ok, pixel: [...pixel], stats: { ...executor.stats }, cache: { ...cache.stats }, textureRevision: texture.revision };
+  stage.gl.readPixels(
+    32,
+    32,
+    1,
+    1,
+    stage.gl.RGBA,
+    stage.gl.UNSIGNED_BYTE,
+    pixel,
+  );
+  return {
+    ok,
+    pixel: [...pixel],
+    stats: { ...executor.stats },
+    cache: { ...cache.stats },
+    textureRevision: texture.revision,
+  };
 }
 
-const pixi = await createPixiDrawListRenderer({ canvas: pixiCanvas, width: 64, height: 64,
-  designWidth: 64, designHeight: 64, textureUrl: () => null });
+const pixi = await createPixiDrawListRenderer({
+  canvas: pixiCanvas,
+  width: 64,
+  height: 64,
+  designWidth: 64,
+  designHeight: 64,
+  textureUrl: () => null,
+});
 const pixiRenderer = pixi.app.renderer as any;
 const originalPixiRender = pixiRenderer.render.bind(pixiRenderer);
 let lastPixiRoot: any;
@@ -217,27 +420,60 @@ pixiRenderer.render = (container: any, ...rest: unknown[]) => {
   return originalPixiRender(container, ...rest);
 };
 const pixiList = createDrawList<string>();
-const left = createQuadView(); left.w = 32; left.h = 64; left.r = 1; left.g = left.b = 0;
-const right = createQuadView(); right.w = 32; right.h = 64; right.m[4] = 32;
-right.r = right.b = 0; right.g = 1;
-pixiList.pushQuad(left); pixiList.pushQuad(right);
-const pixiPlan = { primitives: [{ id: 'left', index: 0, parentId: 'group' }, { id: 'right', index: 1, parentId: 'group' }],
-  groups: [{ id: 'group', firstIndex: 0, endIndex: 2, transform: [1, 0, 0, 1, 0, 0], cacheAsTexture: true }] };
+const left = createQuadView();
+left.w = 32;
+left.h = 64;
+left.r = 1;
+left.g = left.b = 0;
+const right = createQuadView();
+right.w = 32;
+right.h = 64;
+right.m[4] = 32;
+right.r = right.b = 0;
+right.g = 1;
+pixiList.pushQuad(left);
+pixiList.pushQuad(right);
+const pixiPlan = {
+  primitives: [
+    { id: "left", index: 0, parentId: "group" },
+    { id: "right", index: 1, parentId: "group" },
+  ],
+  groups: [
+    {
+      id: "group",
+      firstIndex: 0,
+      endIndex: 2,
+      transform: [1, 0, 0, 1, 0, 0],
+      cacheAsTexture: true,
+    },
+  ],
+};
 function pixiStep(kind: string) {
-  const result = kind === 'initial' ? pixi.admitScene(pixiList, [], pixiPlan)
-    : kind === 'warm' ? pixi.presentScene()
-    : pixi.patchScene({ primitives: [{ id: 'left', tint: 0x0000ff }] });
+  const result =
+    kind === "initial"
+      ? pixi.admitScene(pixiList, [], pixiPlan)
+      : kind === "warm"
+        ? pixi.presentScene()
+        : pixi.patchScene({ primitives: [{ id: "left", tint: 0x0000ff }] });
   const group = lastPixiRoot?.children?.[0];
-  return { result, stats: { ...pixi.stats }, cached: !!group?.renderGroup?.isCachedAsTexture };
+  return {
+    result,
+    stats: { ...pixi.stats },
+    cached: !!group?.renderGroup?.isCachedAsTexture,
+  };
 }
 // Damage present exactness: two renderers receive the same randomized scene,
 // patch and upload sequence; one redraws only the damage, one redraws whole.
 // 349x209 over a 100x60 design: the phone's 3.49 device scale, so bounds round on fractional pixels.
-let DAMAGE_W = 349, DAMAGE_H = 209;
-const DAMAGE_DESIGN_W = 100, DAMAGE_DESIGN_H = 60;
-const damageOnCanvas = document.querySelector<HTMLCanvasElement>('#damageOn')!;
-const damageOffCanvas = document.querySelector<HTMLCanvasElement>('#damageOff')!;
-const damageOn = glBackend ? await wasm.RustRenderer.createWithGl(damageOnCanvas, 'direct')
+let DAMAGE_W = 349,
+  DAMAGE_H = 209;
+const DAMAGE_DESIGN_W = 100,
+  DAMAGE_DESIGN_H = 60;
+const damageOnCanvas = document.querySelector<HTMLCanvasElement>("#damageOn")!;
+const damageOffCanvas =
+  document.querySelector<HTMLCanvasElement>("#damageOff")!;
+const damageOn = glBackend
+  ? await wasm.RustRenderer.createWithGl(damageOnCanvas, "direct")
   : await wasm.RustRenderer.create(damageOnCanvas);
 const damageOff = await wasm.RustRenderer.create(damageOffCanvas);
 damageOn.set_damage_present(true);
@@ -247,32 +483,51 @@ const damageCanvases = [damageOnCanvas, damageOffCanvas];
 // GSW_RUST_PRESENT_PARITY=1: the same sequence also drives one renderer per present mode, each
 // compared with the full-redraw surface renderer (`#damageOff`) after every step.
 const PRESENT_PARITY = [
-  { id: 'modeDirect', mode: 'direct', damage: true },
-  { id: 'modeDirectFull', mode: 'direct', damage: false },
-  { id: 'modePreserved', mode: 'preserved', damage: true },
-  { id: 'modePreservedFull', mode: 'preserved', damage: false },
-  { id: 'modePreservedDesync', mode: 'preserved-desync', damage: true },
+  { id: "modeDirect", mode: "direct", damage: true },
+  { id: "modeDirectFull", mode: "direct", damage: false },
+  { id: "modePreserved", mode: "preserved", damage: true },
+  { id: "modePreservedFull", mode: "preserved", damage: false },
+  { id: "modePreservedDesync", mode: "preserved-desync", damage: true },
 ];
-const presentParity = params.get('modes') === '1' ? PRESENT_PARITY : [];
+const presentParity = params.get("modes") === "1" ? PRESENT_PARITY : [];
 for (const { id, mode, damage } of presentParity) {
-  const canvas = document.createElement('canvas');
-  canvas.id = id; canvas.width = DAMAGE_W; canvas.height = DAMAGE_H;
-  document.querySelector('#modes')!.append(canvas);
-  const renderer = glBackend ? await wasm.RustRenderer.createWithGl(canvas, mode)
+  const canvas = document.createElement("canvas");
+  canvas.id = id;
+  canvas.width = DAMAGE_W;
+  canvas.height = DAMAGE_H;
+  document.querySelector("#modes")!.append(canvas);
+  const renderer = glBackend
+    ? await wasm.RustRenderer.createWithGl(canvas, mode)
     : await wasm.RustRenderer.createWithPresent(canvas, mode);
-  if (renderer.present_mode !== mode) throw new Error(`${id}: present_mode ${renderer.present_mode} != ${mode}`);
-  if (damage) { renderer.set_damage_present(true); renderer.set_damage_verify(true); }
+  if (renderer.present_mode !== mode)
+    throw new Error(`${id}: present_mode ${renderer.present_mode} != ${mode}`);
+  if (damage) {
+    renderer.set_damage_present(true);
+    renderer.set_damage_verify(true);
+  }
   damageRenderers.push(renderer);
   damageCanvases.push(canvas);
 }
-let unknownModeError = '';
-try { await wasm.RustRenderer.createWithPresent(document.createElement('canvas'), 'bogus'); }
-catch (error) { unknownModeError = String(error); }
+let unknownModeError = "";
+try {
+  await wasm.RustRenderer.createWithPresent(
+    document.createElement("canvas"),
+    "bogus",
+  );
+} catch (error) {
+  unknownModeError = String(error);
+}
 // The GL backend draws into its canvas: it refuses the surface mode (and unknown modes).
-let glSurfaceError = '';
+let glSurfaceError = "";
 if (glBackend) {
-  try { await wasm.RustRenderer.createWithGl(document.createElement('canvas'), 'surface'); }
-  catch (error) { glSurfaceError = String(error); }
+  try {
+    await wasm.RustRenderer.createWithGl(
+      document.createElement("canvas"),
+      "surface",
+    );
+  } catch (error) {
+    glSurfaceError = String(error);
+  }
 }
 let rngState = 0x5eed1234;
 function rng() {
@@ -281,13 +536,17 @@ function rng() {
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
-const pick = <T,>(items: readonly T[]) => items[Math.floor(rng() * items.length)];
+const pick = <T>(items: readonly T[]) =>
+  items[Math.floor(rng() * items.length)];
 const damageKeys = Array.from({ length: 10 }, (_, i) => `damage-${i}`);
 function damagePixels(): Uint8Array {
   const pixels = new Uint8Array(4 * 4 * 4);
   for (let i = 0; i < pixels.length; i += 4) {
     const a = 64 + Math.floor(rng() * 192);
-    pixels.set([Math.floor(rng() * a), Math.floor(rng() * a), Math.floor(rng() * a), a], i);
+    pixels.set(
+      [Math.floor(rng() * a), Math.floor(rng() * a), Math.floor(rng() * a), a],
+      i,
+    );
   }
   return pixels;
 }
@@ -299,64 +558,122 @@ function damageQuad(id: string): DamageCommand {
   const angle = rng() < 0.4 ? rng() * Math.PI * 2 : 0;
   const scale = 0.5 + rng();
   const a = rng() * 0.9 + 0.1;
-  return { id, kind: 'quad', resource,
-    m: [Math.cos(angle) * scale, Math.sin(angle) * scale, -Math.sin(angle) * scale, Math.cos(angle) * scale,
-      rng() * 110 - 10, rng() * 70 - 10],
-    w: 2 + rng() * 25, h: 2 + rng() * 18,
+  return {
+    id,
+    kind: "quad",
+    resource,
+    m: [
+      Math.cos(angle) * scale,
+      Math.sin(angle) * scale,
+      -Math.sin(angle) * scale,
+      Math.cos(angle) * scale,
+      rng() * 110 - 10,
+      rng() * 70 - 10,
+    ],
+    w: 2 + rng() * 25,
+    h: 2 + rng() * 18,
     src: resource ? [rng(), rng(), 1 + rng() * 3, 1 + rng() * 3] : [0, 0, 1, 1],
-    color: [rng() * a, rng() * a, rng() * a, a], blend: rng() < 0.2 ? 'add' : 'mix',
-    flipH: rng() < 0.2, flipV: false, colorMatrix: null };
+    color: [rng() * a, rng() * a, rng() * a, a],
+    blend: rng() < 0.2 ? "add" : "mix",
+    flipH: rng() < 0.2,
+    flipV: false,
+    colorMatrix: null,
+  };
 }
 // A linear 32x32 glyph atlas (MSDF method): smooth channels so fwidth-based coverage varies across a glyph.
-const GLYPH_ATLAS = 'damage-glyphs';
-const STAMP = 'damage-stamp';
+const GLYPH_ATLAS = "damage-glyphs";
+const STAMP = "damage-stamp";
 // A raster-text label whose key a retained patch swaps for an equal-size raster: same rect, same UV, so
 // every instance byte stays equal and only the draw's texture slot changes (WP5's slot rename).
-let labelKey = 'damage-label-0', labelCount = 0;
+let labelKey = "damage-label-0",
+  labelCount = 0;
 function labelPixels(): Uint8Array {
   const pixels = new Uint8Array(8 * 4 * 4);
-  for (let i = 0; i < pixels.length; i += 4) { const on = rng() < 0.5 ? 255 : 0; pixels.set([on, on, on, on], i); }
-  return pixels;
-}
-const damageResources = () => [...[...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4 })),
-  { key: labelKey, width: 8, height: 4 }, { key: GLYPH_ATLAS, width: 32, height: 32 }];
-function glyphAtlasPixels(): Uint8Array {
-  const pixels = new Uint8Array(32 * 32 * 4);
-  for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
-    const cx = (x % 16) - 7.5, cy = (y % 16) - 7.5, d = 128 + (5 - Math.hypot(cx, cy)) * 24;
-    const v = Math.max(0, Math.min(255, Math.round(d)));
-    pixels.set([v, Math.max(0, Math.min(255, v + ((x * 7) % 21) - 10)), v, 255], (y * 32 + x) * 4);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const on = rng() < 0.5 ? 255 : 0;
+    pixels.set([on, on, on, on], i);
   }
   return pixels;
 }
+const damageResources = () => [
+  ...[...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4 })),
+  { key: labelKey, width: 8, height: 4 },
+  { key: GLYPH_ATLAS, width: 32, height: 32 },
+];
+function glyphAtlasPixels(): Uint8Array {
+  const pixels = new Uint8Array(32 * 32 * 4);
+  for (let y = 0; y < 32; y++)
+    for (let x = 0; x < 32; x++) {
+      const cx = (x % 16) - 7.5,
+        cy = (y % 16) - 7.5,
+        d = 128 + (5 - Math.hypot(cx, cy)) * 24;
+      const v = Math.max(0, Math.min(255, Math.round(d)));
+      pixels.set(
+        [v, Math.max(0, Math.min(255, v + ((x * 7) % 21) - 10)), v, 255],
+        (y * 32 + x) * 4,
+      );
+    }
+  return pixels;
+}
 function damageGlyphRun(id: string, x: number, y: number): DamageCommand {
-  const glyphs = Array.from({ length: 5 }, (_, i) => ({ src: [(i % 2) * 16, 0, 16, 16], dst: [i * 9, 0, 10, 10] }));
-  return { id, kind: 'glyphRun', atlas: GLYPH_ATLAS, m: [1.4, 0.1, -0.1, 1.4, x, y], glyphs, method: 'msdf',
-    fill: [0.9, 0.85, 0.3, 1], outline: { color: [0, 0, 0, 1], width: 1.5 }, shadow: { color: [0, 0, 0, 0.5], offset: [0.6, 0.8] },
-    pxRange: 4, alpha: 0.9 };
+  const glyphs = Array.from({ length: 5 }, (_, i) => ({
+    src: [(i % 2) * 16, 0, 16, 16],
+    dst: [i * 9, 0, 10, 10],
+  }));
+  return {
+    id,
+    kind: "glyphRun",
+    atlas: GLYPH_ATLAS,
+    m: [1.4, 0.1, -0.1, 1.4, x, y],
+    glyphs,
+    method: "msdf",
+    fill: [0.9, 0.85, 0.3, 1],
+    outline: { color: [0, 0, 0, 1], width: 1.5 },
+    shadow: { color: [0, 0, 0, 0.5], offset: [0.6, 0.8] },
+    pxRange: 4,
+    alpha: 0.9,
+  };
 }
 function damageSceneBytes() {
-  return enc.encode(JSON.stringify({ version: 2, revision: damageRevision, width: DAMAGE_W, height: DAMAGE_H,
-    designWidth: DAMAGE_DESIGN_W, designHeight: DAMAGE_DESIGN_H,
-    resources: damageResources(),
-    commands: damageCommands }));
+  return enc.encode(
+    JSON.stringify({
+      version: 2,
+      revision: damageRevision,
+      width: DAMAGE_W,
+      height: DAMAGE_H,
+      designWidth: DAMAGE_DESIGN_W,
+      designHeight: DAMAGE_DESIGN_H,
+      resources: damageResources(),
+      commands: damageCommands,
+    }),
+  );
 }
-const quadIds = () => damageCommands.filter((c) => c.kind === 'quad').map((c) => c.id);
-const clipIds = () => damageCommands.filter((c) => c.kind === 'clipPush').map((c) => c.id);
+const quadIds = () =>
+  damageCommands.filter((c) => c.kind === "quad").map((c) => c.id);
+const clipIds = () =>
+  damageCommands.filter((c) => c.kind === "clipPush").map((c) => c.id);
 const commandById = (id: string) => damageCommands.find((c) => c.id === id)!;
 function moved(command: DamageCommand, reach: number): DamageCommand {
-  const m = [...command.m as number[]];
+  const m = [...(command.m as number[])];
   const turn = rng() < 0.3 ? (rng() - 0.5) * 0.6 : 0;
   const [c, s] = [Math.cos(turn), Math.sin(turn)];
-  [m[0], m[1], m[2], m[3]] = [m[0] * c - m[1] * s, m[0] * s + m[1] * c, m[2] * c - m[3] * s, m[2] * s + m[3] * c];
-  m[4] += (rng() - 0.5) * reach; m[5] += (rng() - 0.5) * reach;
+  [m[0], m[1], m[2], m[3]] = [
+    m[0] * c - m[1] * s,
+    m[0] * s + m[1] * c,
+    m[2] * c - m[3] * s,
+    m[2] * s + m[3] * c,
+  ];
+  m[4] += (rng() - 0.5) * reach;
+  m[5] += (rng() - 0.5) * reach;
   return { ...command, m };
 }
 async function damageResize() {
   // A new backing size and a full re-admission: every canvas is cleared, so a preserved canvas must blit whole.
-  DAMAGE_W = 300; DAMAGE_H = 180;
+  DAMAGE_W = 300;
+  DAMAGE_H = 180;
   for (const [index, renderer] of damageRenderers.entries()) {
-    damageCanvases[index].width = DAMAGE_W; damageCanvases[index].height = DAMAGE_H;
+    damageCanvases[index].width = DAMAGE_W;
+    damageCanvases[index].height = DAMAGE_H;
     renderer.resize(DAMAGE_W, DAMAGE_H);
   }
   damageRevision++;
@@ -367,115 +684,256 @@ async function damageAll(run: (renderer: typeof damageOn) => unknown) {
   const results = [];
   for (const renderer of damageRenderers) {
     const admission = run(renderer);
-    results.push({ admission: typeof admission === 'string' ? parse(admission) : admission,
-      result: parse(await renderer.present()) });
+    results.push({
+      admission: typeof admission === "string" ? parse(admission) : admission,
+      result: parse(await renderer.present()),
+    });
   }
   return results;
 }
 function patchBytes(updates: { id: string; command: DamageCommand }[]) {
   const base = damageRevision;
   damageRevision++;
-  for (const update of updates) damageCommands[damageCommands.findIndex((c) => c.id === update.id)] = update.command;
-  return enc.encode(JSON.stringify({ version: 1, baseRevision: base, revision: damageRevision, updates }));
+  for (const update of updates)
+    damageCommands[damageCommands.findIndex((c) => c.id === update.id)] =
+      update.command;
+  return enc.encode(
+    JSON.stringify({
+      version: 1,
+      baseRevision: base,
+      revision: damageRevision,
+      updates,
+    }),
+  );
 }
 const damageSteps: Record<string, () => Promise<unknown>> = {
   async initial() {
-    const textures = encodeRustResources([...[...damageKeys, STAMP].map((key) => ({ key, width: 4, height: 4, pixels: damagePixels() })),
-      { key: labelKey, width: 8, height: 4, pixels: labelPixels() }]);
-    damageCommands = [{ ...damageQuad('bg'), resource: null, m: [1, 0, 0, 1, 0, 0], w: 100, h: 60,
-      src: [0, 0, 1, 1], color: [0.05, 0.1, 0.15, 1], blend: 'mix' },
-      { id: 'label', kind: 'rasterText', resource: labelKey, m: [1, 0, 0, 1, 46, 26], w: 16, h: 8, src: [0, 0, 8, 4],
-        color: [1, 1, 1, 1], blend: 'mix', flipH: false, flipV: false, colorMatrix: null }];
+    const textures = encodeRustResources([
+      ...[...damageKeys, STAMP].map((key) => ({
+        key,
+        width: 4,
+        height: 4,
+        pixels: damagePixels(),
+      })),
+      { key: labelKey, width: 8, height: 4, pixels: labelPixels() },
+    ]);
+    damageCommands = [
+      {
+        ...damageQuad("bg"),
+        resource: null,
+        m: [1, 0, 0, 1, 0, 0],
+        w: 100,
+        h: 60,
+        src: [0, 0, 1, 1],
+        color: [0.05, 0.1, 0.15, 1],
+        blend: "mix",
+      },
+      {
+        id: "label",
+        kind: "rasterText",
+        resource: labelKey,
+        m: [1, 0, 0, 1, 46, 26],
+        w: 16,
+        h: 8,
+        src: [0, 0, 8, 4],
+        color: [1, 1, 1, 1],
+        blend: "mix",
+        flipH: false,
+        flipV: false,
+        colorMatrix: null,
+      },
+    ];
     for (let group = 0; group < 6; group++) {
       const clipped = group % 2 === 1;
-      if (clipped) damageCommands.push({ id: `clip${group}`, kind: 'clipPush',
-        rect: [rng() * 40, rng() * 20, 30 + rng() * 50, 20 + rng() * 30], radius: rng() < 0.5 ? rng() * 6 : 0,
-        outset: rng() < 0.3 ? 1 : 0 });
-      for (let i = 0; i < 8; i++) damageCommands.push(damageQuad(`q${group}-${i}`));
-      if (clipped) damageCommands.push({ id: `pop${group}`, kind: 'clipPop' });
+      if (clipped)
+        damageCommands.push({
+          id: `clip${group}`,
+          kind: "clipPush",
+          rect: [rng() * 40, rng() * 20, 30 + rng() * 50, 20 + rng() * 30],
+          radius: rng() < 0.5 ? rng() * 6 : 0,
+          outset: rng() < 0.3 ? 1 : 0,
+        });
+      for (let i = 0; i < 8; i++)
+        damageCommands.push(damageQuad(`q${group}-${i}`));
+      if (clipped) damageCommands.push({ id: `pop${group}`, kind: "clipPop" });
     }
     // Glyph runs wider than the small probe quad drawn over them: moving the probe puts a scissor edge
     // through the middle of their glyph instances.
-    damageCommands.push(damageGlyphRun('glyphs-a', 8, 40), damageGlyphRun('glyphs-b', 50, 12),
-      { ...damageQuad('probe'), resource: null, m: [1, 0, 0, 1, 20, 41], w: 3, h: 3, color: [0.2, 0.6, 0.9, 0.8], blend: 'mix' },
+    damageCommands.push(
+      damageGlyphRun("glyphs-a", 8, 40),
+      damageGlyphRun("glyphs-b", 50, 12),
+      {
+        ...damageQuad("probe"),
+        resource: null,
+        m: [1, 0, 0, 1, 20, 41],
+        w: 3,
+        h: 3,
+        color: [0.2, 0.6, 0.9, 0.8],
+        blend: "mix",
+      },
       // The only draw sampling STAMP (its own additive batch), so a rewrite of STAMP's pixels damages just it.
-      { ...damageQuad('stamp'), resource: STAMP, m: [0.9, 0.3, -0.3, 0.9, 80, 44], w: 8, h: 6, src: [0, 0, 4, 4],
-        color: [0.7, 0.7, 0.7, 0.7], blend: 'add' });
-    const atlas = encodeRustResourceUpdates([{ operation: 'replace', key: GLYPH_ATLAS, width: 32, height: 32,
-      format: 'linear', pixels: glyphAtlasPixels() }]);
+      {
+        ...damageQuad("stamp"),
+        resource: STAMP,
+        m: [0.9, 0.3, -0.3, 0.9, 80, 44],
+        w: 8,
+        h: 6,
+        src: [0, 0, 4, 4],
+        color: [0.7, 0.7, 0.7, 0.7],
+        blend: "add",
+      },
+    );
+    const atlas = encodeRustResourceUpdates([
+      {
+        operation: "replace",
+        key: GLYPH_ATLAS,
+        width: 32,
+        height: 32,
+        format: "linear",
+        pixels: glyphAtlasPixels(),
+      },
+    ]);
     damageRevision = 1;
-    return damageAll((renderer) => { renderer.upload_rgba_batch(textures); renderer.upload_rgba_batch(atlas);
-      return renderer.admit_scene(damageSceneBytes()); });
+    return damageAll((renderer) => {
+      renderer.upload_rgba_batch(textures);
+      renderer.upload_rgba_batch(atlas);
+      return renderer.admit_scene(damageSceneBytes());
+    });
   },
   async probe() {
-    const command = commandById('probe');
-    const m = [...command.m as number[]];
-    m[4] = 14 + rng() * 40; m[5] = 38 + rng() * 6;
-    const bytes = patchBytes([{ id: 'probe', command: { ...command, m } }]);
+    const command = commandById("probe");
+    const m = [...(command.m as number[])];
+    m[4] = 14 + rng() * 40;
+    m[5] = 38 + rng() * 6;
+    const bytes = patchBytes([{ id: "probe", command: { ...command, m } }]);
     return damageAll((renderer) => renderer.apply_patch(bytes));
   },
   async glyphMove() {
     // A glyph run is not a quad, so this takes the general patch path (a rebuilt, same-shape draw table).
-    const id = pick(['glyphs-a', 'glyphs-b']);
+    const id = pick(["glyphs-a", "glyphs-b"]);
     const command = commandById(id);
-    const m = [...command.m as number[]];
-    m[4] += (rng() - 0.5) * 3; m[5] += (rng() - 0.5) * 2;
-    const bytes = patchBytes([{ id, command: { ...command, m, alpha: 0.5 + rng() * 0.5 } }]);
+    const m = [...(command.m as number[])];
+    m[4] += (rng() - 0.5) * 3;
+    m[5] += (rng() - 0.5) * 2;
+    const bytes = patchBytes([
+      { id, command: { ...command, m, alpha: 0.5 + rng() * 0.5 } },
+    ]);
     return damageAll((renderer) => renderer.apply_patch(bytes));
   },
   async subrect() {
     // A subrect rewrites pixels under draws whose instances do not change; a patch elsewhere presents it.
     const pixels = damagePixels().slice(0, 2 * 2 * 4);
-    const upload = encodeRustResourceUpdates([{ operation: 'subrect', key: rng() < 0.75 ? STAMP : pick(damageKeys), width: 4, height: 4,
-      format: 'srgb', x: 1, y: 1, regionWidth: 2, regionHeight: 2, pixels }]);
-    const bytes = patchBytes([{ id: 'probe', command: moved(commandById('probe'), 2) }]);
-    return damageAll((renderer) => { renderer.upload_rgba_batch(upload); return renderer.apply_patch(bytes); });
+    const upload = encodeRustResourceUpdates([
+      {
+        operation: "subrect",
+        key: rng() < 0.75 ? STAMP : pick(damageKeys),
+        width: 4,
+        height: 4,
+        format: "srgb",
+        x: 1,
+        y: 1,
+        regionWidth: 2,
+        regionHeight: 2,
+        pixels,
+      },
+    ]);
+    const bytes = patchBytes([
+      { id: "probe", command: moved(commandById("probe"), 2) },
+    ]);
+    return damageAll((renderer) => {
+      renderer.upload_rgba_batch(upload);
+      return renderer.apply_patch(bytes);
+    });
   },
   async textSwap() {
     // Upload the new raster, patch the label to it with the scene's new resource list, then release the old one.
     const previous = labelKey;
     labelKey = `damage-label-${++labelCount}`;
-    const upload = encodeRustResources([{ key: labelKey, width: 8, height: 4, pixels: labelPixels() }]);
+    const upload = encodeRustResources([
+      { key: labelKey, width: 8, height: 4, pixels: labelPixels() },
+    ]);
     const base = damageRevision++;
-    const command = { ...commandById('label'), resource: labelKey };
-    damageCommands[damageCommands.findIndex((c) => c.id === 'label')] = command;
-    const bytes = enc.encode(JSON.stringify({ version: 1, baseRevision: base, revision: damageRevision,
-      updates: [{ id: 'label', command }], resources: damageResources() }));
-    const release = encodeRustResourceUpdates([{ operation: 'release', key: previous }]);
-    const results = await damageAll((renderer) => { renderer.upload_rgba_batch(upload); return renderer.apply_patch(bytes); });
+    const command = { ...commandById("label"), resource: labelKey };
+    damageCommands[damageCommands.findIndex((c) => c.id === "label")] = command;
+    const bytes = enc.encode(
+      JSON.stringify({
+        version: 1,
+        baseRevision: base,
+        revision: damageRevision,
+        updates: [{ id: "label", command }],
+        resources: damageResources(),
+      }),
+    );
+    const release = encodeRustResourceUpdates([
+      { operation: "release", key: previous },
+    ]);
+    const results = await damageAll((renderer) => {
+      renderer.upload_rgba_batch(upload);
+      return renderer.apply_patch(bytes);
+    });
     for (const renderer of damageRenderers) renderer.upload_rgba_batch(release);
     return results;
   },
   async uploadOnly() {
     // An upload with no patch, then an empty present: both renderers keep showing the pre-upload frame.
     // The next step's patch must then bring the uploaded pixels in.
-    const upload = encodeRustResourceUpdates([{ operation: 'subrect', key: rng() < 0.75 ? STAMP : pick(damageKeys), width: 4, height: 4,
-      format: 'srgb', x: 0, y: 0, regionWidth: 4, regionHeight: 4, pixels: damagePixels() }]);
-    return damageAll((renderer) => { renderer.upload_rgba_batch(upload); return { accepted: true }; });
+    const upload = encodeRustResourceUpdates([
+      {
+        operation: "subrect",
+        key: rng() < 0.75 ? STAMP : pick(damageKeys),
+        width: 4,
+        height: 4,
+        format: "srgb",
+        x: 0,
+        y: 0,
+        regionWidth: 4,
+        regionHeight: 4,
+        pixels: damagePixels(),
+      },
+    ]);
+    return damageAll((renderer) => {
+      renderer.upload_rgba_batch(upload);
+      return { accepted: true };
+    });
   },
   async move() {
-    const ids = Array.from({ length: 1 + Math.floor(rng() * 3) }, () => pick(quadIds()));
-    const bytes = patchBytes([...new Set(ids)].map((id) => ({ id, command: moved(commandById(id), 8) })));
+    const ids = Array.from({ length: 1 + Math.floor(rng() * 3) }, () =>
+      pick(quadIds()),
+    );
+    const bytes = patchBytes(
+      [...new Set(ids)].map((id) => ({
+        id,
+        command: moved(commandById(id), 8),
+      })),
+    );
     return damageAll((renderer) => renderer.apply_patch(bytes));
   },
   async color() {
     const id = pick(quadIds());
     const command = commandById(id);
     const a = rng();
-    const bytes = patchBytes([{ id, command: { ...command, color: [rng() * a, rng() * a, rng() * a, a] } }]);
+    const bytes = patchBytes([
+      {
+        id,
+        command: { ...command, color: [rng() * a, rng() * a, rng() * a, a] },
+      },
+    ]);
     return damageAll((renderer) => renderer.apply_patch(bytes));
   },
   async clip() {
     const id = pick(clipIds());
     const command = commandById(id);
-    const rect = [...command.rect as number[]];
-    rect[0] += (rng() - 0.5) * 12; rect[1] += (rng() - 0.5) * 8;
+    const rect = [...(command.rect as number[])];
+    rect[0] += (rng() - 0.5) * 12;
+    rect[1] += (rng() - 0.5) * 8;
     const bytes = patchBytes([{ id, command: { ...command, rect } }]);
     return damageAll((renderer) => renderer.apply_patch(bytes));
   },
   async many() {
     const ids = quadIds().filter(() => rng() < 0.7);
-    const bytes = patchBytes(ids.map((id) => ({ id, command: moved(commandById(id), 80) })));
+    const bytes = patchBytes(
+      ids.map((id) => ({ id, command: moved(commandById(id), 80) })),
+    );
     return damageAll((renderer) => renderer.apply_patch(bytes));
   },
   async readmit() {
@@ -490,16 +948,24 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
   async swap() {
     const id = pick(quadIds().filter((q) => commandById(q).resource !== null));
     const index = damageCommands.findIndex((c) => c.id === id);
-    damageCommands[index] = { ...damageCommands[index], resource: pick(damageKeys) };
+    damageCommands[index] = {
+      ...damageCommands[index],
+      resource: pick(damageKeys),
+    };
     damageRevision++;
     const bytes = damageSceneBytes();
     return damageAll((renderer) => renderer.admit_scene(bytes));
   },
   async retexture() {
-    const textures = encodeRustResources([{ key: pick(damageKeys), width: 4, height: 4, pixels: damagePixels() }]);
+    const textures = encodeRustResources([
+      { key: pick(damageKeys), width: 4, height: 4, pixels: damagePixels() },
+    ]);
     const id = pick(quadIds());
     const bytes = patchBytes([{ id, command: moved(commandById(id), 2) }]);
-    return damageAll((renderer) => { renderer.upload_rgba_batch(textures); return renderer.apply_patch(bytes); });
+    return damageAll((renderer) => {
+      renderer.upload_rgba_batch(textures);
+      return renderer.apply_patch(bytes);
+    });
   },
   async same() {
     const id = pick(quadIds());
@@ -514,40 +980,145 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
   // frame with `present_idle(t)`; the reference applies the same poses (`idleEvaluate`) as an ordinary patch.
   async idleInstall() {
     const index = (id: string) => damageCommands.findIndex((c) => c.id === id);
-    const m = (id: string) => [...commandById(id).m as number[]];
+    const m = (id: string) => [...(commandById(id).m as number[])];
     const placement = (x: number, y: number) => {
-      const base = [1, 0, 0, 1, 0, 0], wire = [1, 0, 0, 1, x, y], outer = [1, 0, 0, 1, 0.25, 0];
+      const base = [1, 0, 0, 1, 0, 0],
+        wire = [1, 0, 0, 1, x, y],
+        outer = [1, 0, 0, 1, 0.25, 0];
       // The inverse of the rest pose, so a delta is just the loop's own motion.
-      return { base, wire, outer, spreadDx: 0, inverse: [1, 0, 0, 1, -(x + 0.25), -y] };
+      return {
+        base,
+        wire,
+        outer,
+        spreadDx: 0,
+        inverse: [1, 0, 0, 1, -(x + 0.25), -y],
+      };
     };
-    const loop = { amplitudeRad: 0.15, amplitudePx: 3, baselineUpPx: 2, scaleFrom: 0.85, scaleTo: 1.2 };
+    const loop = {
+      amplitudeRad: 0.15,
+      amplitudePx: 3,
+      baselineUpPx: 2,
+      scaleFrom: 0.85,
+      scaleTo: 1.2,
+    };
     idleSet = {
       baseRevision: damageRevision,
       roots: [
-        { curve: 'bob', ...loop, pivotX: 0, pivotY: 0, originMs: 120.5, phaseMs: 333.25, periodMs: 2000, ...placement(30, 20) },
-        { curve: 'rotate', ...loop, pivotX: 20, pivotY: 12, originMs: 0, phaseMs: 0, periodMs: 7000, ...placement(40, 25) },
-        { curve: 'rock', ...loop, pivotX: 15, pivotY: 6, originMs: 17, phaseMs: 9, periodMs: 2600, ...placement(10, 35) },
-        { curve: 'pulseScale', ...loop, pivotX: 4, pivotY: 4, originMs: 3, phaseMs: 0, periodMs: 1800, ...placement(0, 0) },
-        { curve: 'pivotPulse', ...loop, pivotX: 30, pivotY: 30, originMs: 999, phaseMs: 50, periodMs: 1500, ...placement(5, 5) },
-        { curve: 'rest', ...loop, pivotX: 0, pivotY: 0, originMs: 0, phaseMs: 0, periodMs: 1, ...placement(1, 1) },
+        {
+          curve: "bob",
+          ...loop,
+          pivotX: 0,
+          pivotY: 0,
+          originMs: 120.5,
+          phaseMs: 333.25,
+          periodMs: 2000,
+          ...placement(30, 20),
+        },
+        {
+          curve: "rotate",
+          ...loop,
+          pivotX: 20,
+          pivotY: 12,
+          originMs: 0,
+          phaseMs: 0,
+          periodMs: 7000,
+          ...placement(40, 25),
+        },
+        {
+          curve: "rock",
+          ...loop,
+          pivotX: 15,
+          pivotY: 6,
+          originMs: 17,
+          phaseMs: 9,
+          periodMs: 2600,
+          ...placement(10, 35),
+        },
+        {
+          curve: "pulseScale",
+          ...loop,
+          pivotX: 4,
+          pivotY: 4,
+          originMs: 3,
+          phaseMs: 0,
+          periodMs: 1800,
+          ...placement(0, 0),
+        },
+        {
+          curve: "pivotPulse",
+          ...loop,
+          pivotX: 30,
+          pivotY: 30,
+          originMs: 999,
+          phaseMs: 50,
+          periodMs: 1500,
+          ...placement(5, 5),
+        },
+        {
+          curve: "rest",
+          ...loop,
+          pivotX: 0,
+          pivotY: 0,
+          originMs: 0,
+          phaseMs: 0,
+          periodMs: 1,
+          ...placement(1, 1),
+        },
       ],
       targets: [
         // Group members re-placed through a moving group, a primitive, a nested chain with a spread offset, a text
         // carrier with a parent world and an inset, and a command under a root at rest.
-        ...['q0-0', 'q0-1', 'q0-2'].map((id) => ({ commandIndex: index(id), mode: 'group' as const,
-          chain: [{ root: 0, offset: 0 }], parentWorld: [1, 0, 0, 1, 0, 0], reference: m(id) })),
-        { commandIndex: index('q2-0'), mode: 'primitive', chain: [{ root: 1, offset: 0 }], reference: m('q2-0') },
-        { commandIndex: index('q4-1'), mode: 'primitive', chain: [{ root: 0, offset: 2.5 }, { root: 2, offset: 0 }],
-          reference: m('q4-1') },
-        { commandIndex: index('glyphs-a'), mode: 'text', chain: [{ root: 2, offset: 0 }, { root: 3, offset: -1 }],
-          parentWorld: [1, 0, 0, 1, 1.5, -0.5], reference: m('glyphs-a'), inset: [1, 0, 0, 1, -0.75, 0.5] },
-        { commandIndex: index('stamp'), mode: 'primitive', chain: [{ root: 4, offset: 0 }], reference: m('stamp') },
-        { commandIndex: index('label'), mode: 'primitive', chain: [{ root: 5, offset: 0 }], reference: m('label') },
+        ...["q0-0", "q0-1", "q0-2"].map((id) => ({
+          commandIndex: index(id),
+          mode: "group" as const,
+          chain: [{ root: 0, offset: 0 }],
+          parentWorld: [1, 0, 0, 1, 0, 0],
+          reference: m(id),
+        })),
+        {
+          commandIndex: index("q2-0"),
+          mode: "primitive",
+          chain: [{ root: 1, offset: 0 }],
+          reference: m("q2-0"),
+        },
+        {
+          commandIndex: index("q4-1"),
+          mode: "primitive",
+          chain: [
+            { root: 0, offset: 2.5 },
+            { root: 2, offset: 0 },
+          ],
+          reference: m("q4-1"),
+        },
+        {
+          commandIndex: index("glyphs-a"),
+          mode: "text",
+          chain: [
+            { root: 2, offset: 0 },
+            { root: 3, offset: -1 },
+          ],
+          parentWorld: [1, 0, 0, 1, 1.5, -0.5],
+          reference: m("glyphs-a"),
+          inset: [1, 0, 0, 1, -0.75, 0.5],
+        },
+        {
+          commandIndex: index("stamp"),
+          mode: "primitive",
+          chain: [{ root: 4, offset: 0 }],
+          reference: m("stamp"),
+        },
+        {
+          commandIndex: index("label"),
+          mode: "primitive",
+          chain: [{ root: 5, offset: 0 }],
+          reference: m("label"),
+        },
       ],
     };
     idleBytes = encodeRustIdleAnims(idleSet)!;
     referenceRevision = damageRevision;
-    for (const renderer of damageRenderers) if (renderer !== damageOff) renderer.set_idle_anims(idleBytes);
+    for (const renderer of damageRenderers)
+      if (renderer !== damageOff) renderer.set_idle_anims(idleBytes);
     idleClock = 10_000;
     return idleAll(idleClock);
   },
@@ -562,8 +1133,13 @@ const damageSteps: Record<string, () => Promise<unknown>> = {
     damageRevision = Math.max(damageRevision, referenceRevision) + 1;
     const bytes = damageSceneBytes();
     const results = await damageAll((renderer) => renderer.admit_scene(bytes));
-    const stale = damageRenderers.map((renderer) => renderer === damageOff ? null : renderer.present_idle(idleClock + 50));
-    return results.map((side, i) => ({ ...side, admission: { ...side.admission, staleIdle: stale[i] } }));
+    const stale = damageRenderers.map((renderer) =>
+      renderer === damageOff ? null : renderer.present_idle(idleClock + 50),
+    );
+    return results.map((side, i) => ({
+      ...side,
+      admission: { ...side.admission, staleIdle: stale[i] },
+    }));
   },
 };
 let idleSet: RustIdleSet | null = null;
@@ -574,93 +1150,239 @@ async function idleAll(t: number) {
   const poses = wasm.idleEvaluate(idleBytes, t) as Float64Array;
   const updates = idleSet!.targets.map((target, i) => {
     const command = damageCommands[target.commandIndex];
-    const next = { ...command, m: Array.from(poses.subarray(i * 6, i * 6 + 6)) };
+    const next = {
+      ...command,
+      m: Array.from(poses.subarray(i * 6, i * 6 + 6)),
+    };
     damageCommands[target.commandIndex] = next;
     return { id: command.id, command: next };
   });
   const results = [];
   for (const renderer of damageRenderers) {
     if (renderer === damageOff) {
-      const bytes = enc.encode(JSON.stringify({ version: 1, baseRevision: referenceRevision, revision: ++referenceRevision, updates }));
+      const bytes = enc.encode(
+        JSON.stringify({
+          version: 1,
+          baseRevision: referenceRevision,
+          revision: ++referenceRevision,
+          updates,
+        }),
+      );
       const admission = parse(renderer.apply_patch(bytes));
       results.push({ admission, result: parse(await renderer.present()) });
     } else {
       const code = renderer.present_idle(t);
-      results.push({ admission: { accepted: code !== 0, code, stats: parse(renderer.idle_stats()) },
-        result: parse(renderer.idle_last_result()) });
+      results.push({
+        admission: {
+          accepted: code !== 0,
+          code,
+          stats: parse(renderer.idle_stats()),
+        },
+        result: parse(renderer.idle_last_result()),
+      });
     }
   }
   return results;
 }
-function damageStep(name: string) { return damageSteps[name](); }
+function damageStep(name: string) {
+  return damageSteps[name]();
+}
 function damagePlan(count: number, withResize = false) {
-  const weighted = ['move', 'move', 'move', 'move', 'color', 'color', 'clip', 'many', 'readmit', 'swap',
-    'retexture', 'same', 'noop', 'probe', 'probe', 'glyphMove', 'subrect', 'uploadOnly', 'textSwap', 'textSwap'];
+  const weighted = [
+    "move",
+    "move",
+    "move",
+    "move",
+    "color",
+    "color",
+    "clip",
+    "many",
+    "readmit",
+    "swap",
+    "retexture",
+    "same",
+    "noop",
+    "probe",
+    "probe",
+    "glyphMove",
+    "subrect",
+    "uploadOnly",
+    "textSwap",
+    "textSwap",
+  ];
   // A fixed tail, so these paths run regardless of the seed: upload with no patch, empty present, then patch.
-  return [...Array.from({ length: count }, () => pick(weighted)), 'uploadOnly', 'noop', 'probe', 'subrect', 'glyphMove', 'probe',
-    'textSwap', 'noop', 'textSwap', 'probe',
+  return [
+    ...Array.from({ length: count }, () => pick(weighted)),
+    "uploadOnly",
+    "noop",
+    "probe",
+    "subrect",
+    "glyphMove",
+    "probe",
+    "textSwap",
+    "noop",
+    "textSwap",
+    "probe",
     // Present parity only (it changes the sequence): a resize, then partial, skipped and full presents.
-    ...(withResize ? ['resize', 'probe', 'noop', 'move', 'color', 'many', 'probe'] : []),
+    ...(withResize
+      ? ["resize", "probe", "noop", "move", "color", "many", "probe"]
+      : []),
     // Idle animations, last: an idle frame keeps a renderer's revision while the reference's patches advance it,
     // until the re-admission brings every renderer to one revision again.
-    'idleInstall', ...Array.from({ length: 24 }, () => 'idle'), 'idleReadmit', 'probe', 'noop'];
+    "idleInstall",
+    ...Array.from({ length: 24 }, () => "idle"),
+    "idleReadmit",
+    "probe",
+    "noop",
+  ];
 }
 
 // Context loss (WEBGL_lose_context) on a renderer of its own: a present while lost fails with `contextLost`
 // (not a refused present); after `webglcontextrestored` the GL backend restores in place and the caller uploads
 // and admits again; a wgpu renderer stays lost and is replaced by a new one on the same canvas.
-const eventOrTimeout = (target: EventTarget, type: string) => new Promise<string>((resolve) => {
-  const timer = setTimeout(() => resolve(`${type}: no event within 5 s`), 5000);
-  target.addEventListener(type, () => { clearTimeout(timer); resolve(''); }, { once: true });
-});
+const eventOrTimeout = (target: EventTarget, type: string) =>
+  new Promise<string>((resolve) => {
+    const timer = setTimeout(
+      () => resolve(`${type}: no event within 5 s`),
+      5000,
+    );
+    target.addEventListener(
+      type,
+      () => {
+        clearTimeout(timer);
+        resolve("");
+      },
+      { once: true },
+    );
+  });
 async function contextLoss() {
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 16;
-  const create = () => glBackend ? wasm.RustRenderer.createWithGl(canvas, 'preserved')
-    : wasm.RustRenderer.createWithPresent(canvas, 'preserved');
-  const sceneBytes = (revision: number, color: number[], size: number) => enc.encode(JSON.stringify({ version: 2,
-    revision, width: size, height: size, designWidth: 16, designHeight: 16, resources: [], commands: [{ id: 'q',
-      kind: 'quad', resource: null, m: [1, 0, 0, 1, 0, 0], w: 16, h: 16, src: [0, 0, 1, 1], color, blend: 'mix',
-      flipH: false, flipV: false, colorMatrix: null }] }));
-  const step = async (renderer: any, revision: number, color: number[], size = 16) => {
-    const admission = parse(renderer.admit_scene(sceneBytes(revision, color, size)));
+  const create = () =>
+    glBackend
+      ? wasm.RustRenderer.createWithGl(canvas, "preserved")
+      : wasm.RustRenderer.createWithPresent(canvas, "preserved");
+  const sceneBytes = (revision: number, color: number[], size: number) =>
+    enc.encode(
+      JSON.stringify({
+        version: 2,
+        revision,
+        width: size,
+        height: size,
+        designWidth: 16,
+        designHeight: 16,
+        resources: [],
+        commands: [
+          {
+            id: "q",
+            kind: "quad",
+            resource: null,
+            m: [1, 0, 0, 1, 0, 0],
+            w: 16,
+            h: 16,
+            src: [0, 0, 1, 1],
+            color,
+            blend: "mix",
+            flipH: false,
+            flipV: false,
+            colorMatrix: null,
+          },
+        ],
+      }),
+    );
+  const step = async (
+    renderer: any,
+    revision: number,
+    color: number[],
+    size = 16,
+  ) => {
+    const admission = parse(
+      renderer.admit_scene(sceneBytes(revision, color, size)),
+    );
     const result = parse(await renderer.present());
     return { admission, result };
   };
   const pixel = () => {
-    const probe = document.createElement('canvas'); probe.width = probe.height = canvas.width;
-    const ctx = probe.getContext('2d')!; ctx.drawImage(canvas, 0, 0);
+    const probe = document.createElement("canvas");
+    probe.width = probe.height = canvas.width;
+    const ctx = probe.getContext("2d")!;
+    ctx.drawImage(canvas, 0, 0);
     return [...ctx.getImageData(8, 8, 1, 1).data];
   };
   let renderer = await create();
   const first = await step(renderer, 1, [1, 0, 0, 1]);
   const firstPixel = pixel();
-  const ext = (canvas.getContext('webgl2') as WebGL2RenderingContext).getExtension('WEBGL_lose_context');
-  if (!ext) return { skipped: 'WEBGL_lose_context unavailable' };
-  const lostEvent = eventOrTimeout(canvas, 'webglcontextlost');
+  const ext = (
+    canvas.getContext("webgl2") as WebGL2RenderingContext
+  ).getExtension("WEBGL_lose_context");
+  if (!ext) return { skipped: "WEBGL_lose_context unavailable" };
+  const lostEvent = eventOrTimeout(canvas, "webglcontextlost");
   ext.loseContext();
   const lostTimeout = await lostEvent;
   if (lostTimeout) return { skipped: lostTimeout };
   const lost = await step(renderer, 2, [0, 1, 0, 1]);
-  let uploadWhileLost = '';
-  try { renderer.upload_rgba_batch(encodeRustResources([{ key: 'k', width: 1, height: 1, pixels: new Uint8Array(4) }])); }
-  catch (error) { uploadWhileLost = String(error); }
+  let uploadWhileLost = "";
+  try {
+    renderer.upload_rgba_batch(
+      encodeRustResources([
+        { key: "k", width: 1, height: 1, pixels: new Uint8Array(4) },
+      ]),
+    );
+  } catch (error) {
+    uploadWhileLost = String(error);
+  }
   // A resize while lost is recorded, not refused; the GL backend applies it when it restores.
-  let resizeWhileLost = '';
-  if (glBackend) try { renderer.resize(20, 20); } catch (error) { resizeWhileLost = String(error); }
+  let resizeWhileLost = "";
+  if (glBackend)
+    try {
+      renderer.resize(20, 20);
+    } catch (error) {
+      resizeWhileLost = String(error);
+    }
   // Chrome allows the restore only once the lost event's dispatch has returned (default prevented).
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const restoredEvent = eventOrTimeout(canvas, 'webglcontextrestored');
+  const restoredEvent = eventOrTimeout(canvas, "webglcontextrestored");
   ext.restoreContext();
   const restoredTimeout = await restoredEvent;
   if (restoredTimeout) return { skipped: restoredTimeout, lost };
   const restoredInPlace = renderer.restore_context();
-  const sameRenderer = await step(renderer, 3, [0, 0, 1, 1], glBackend ? 20 : 16);
+  const sameRenderer = await step(
+    renderer,
+    3,
+    [0, 0, 1, 1],
+    glBackend ? 20 : 16,
+  );
   const replaced = !sameRenderer.result.presented;
-  if (replaced) { renderer.dispose(); renderer = await create(); }
+  if (replaced) {
+    renderer.dispose();
+    renderer = await create();
+  }
   const after = replaced ? await step(renderer, 3, [0, 0, 1, 1]) : sameRenderer;
-  return { first, firstPixel, lost, uploadWhileLost, resizeWhileLost, restoredInPlace, sameRenderer, replaced,
-    after, afterPixel: pixel(), afterSize: [canvas.width, canvas.height] };
+  return {
+    first,
+    firstPixel,
+    lost,
+    uploadWhileLost,
+    resizeWhileLost,
+    restoredInPlace,
+    sameRenderer,
+    replaced,
+    after,
+    afterPixel: pixel(),
+    afterSize: [canvas.width, canvas.height],
+  };
 }
-root.proof = { rustSteps, contextLoss, retainedStep, pixiStep, damageStep, damagePlan, presentModes: presentParity.map((p) => p.id),
-  presentMode: rust.present_mode, backend: rust.backend, damageBackend: damageOn.backend, unknownModeError, glSurfaceError };
+root.proof = {
+  rustSteps,
+  contextLoss,
+  retainedStep,
+  pixiStep,
+  damageStep,
+  damagePlan,
+  presentModes: presentParity.map((p) => p.id),
+  presentMode: rust.present_mode,
+  backend: rust.backend,
+  damageBackend: damageOn.backend,
+  unknownModeError,
+  glSurfaceError,
+};

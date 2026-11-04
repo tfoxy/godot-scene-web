@@ -25,10 +25,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { decodePngRgba } from "./gate-minus1-checks";
-import { check, type G8aCheck } from "./gate8-adopt-checks";
-import { dynamicAppliedProblems, shotDiff } from "./gate8-w11-gsw-checks";
 import { mmPairDiff } from "./gate7-gsw-g8-mm-checks";
 import { classifyShot } from "./gate7b-adapters";
+import { check, type G8aCheck } from "./gate8-adopt-checks";
+import { dynamicAppliedProblems, shotDiff } from "./gate8-w11-gsw-checks";
 import { type ResolvedRecording, resolveRecording } from "./render-stream-2";
 
 /** A /13 leg and its /12 twin. */
@@ -382,29 +382,46 @@ export async function runG8w11cGsw13(root: string): Promise<G8aCheck[]> {
   const checks: G8aCheck[] = [];
   const honestDir = join(root, "gsw13-honest");
   if (!existsSync(honestDir)) {
-    return ["gsw13-predict-resync", "gsw13-no-predict-reset-caught", "gsw13-zr-resync"].map(
-      (id) => ({
-        id,
-        criterion:
-          "W13c: GSW's /13 resync legs (g8w11c, a browser receiver only)",
-        passed: true,
-        status: "not-run" as const,
-        detail: "no browser receiver leg",
-        gating: false,
-      }),
-    );
+    return [
+      "gsw13-predict-resync",
+      "gsw13-no-predict-reset-caught",
+      "gsw13-zr-resync",
+    ].map((id) => ({
+      id,
+      criterion:
+        "W13c: GSW's /13 resync legs (g8w11c, a browser receiver only)",
+      passed: true,
+      status: "not-run" as const,
+      detail: "no browser receiver leg",
+      gating: false,
+    }));
   }
   const honest = await liveLegOf(root, "gsw13-honest");
   const lastFrame = (a: LiveLeg | null | undefined) =>
     a?.transactions.at(-1)?.frame ?? null;
   // W13r: the host's zr-overrun is judged as predict-stale is (GSW fails zr-length instead).
   for (const [id, leg, what] of [
-    ["gsw13-predict-resync", "gsw13-predict-stale", "W13c: under the host's predict-stale a coded GSW receiver at /13 fails predict-check"],
-    ["gsw13-zr-resync", "gsw13-zr-overrun", "W13r: under the host's zr-overrun a coded GSW receiver at /13 fails zr-length"],
+    [
+      "gsw13-predict-resync",
+      "gsw13-predict-stale",
+      "W13c: under the host's predict-stale a coded GSW receiver at /13 fails predict-check",
+    ],
+    [
+      "gsw13-zr-resync",
+      "gsw13-zr-overrun",
+      "W13r: under the host's zr-overrun a coded GSW receiver at /13 fails zr-length",
+    ],
   ] as const) {
     const criterion = `${what}, resyncs (reason coding), drops the patches before the full, ends ok, and its final shot equals the honest /13 leg's pixel for pixel`;
     if (!existsSync(join(root, leg))) {
-      checks.push({ id, criterion, passed: true, status: "not-run" as const, detail: `no ${leg} leg in this run`, gating: false });
+      checks.push({
+        id,
+        criterion,
+        passed: true,
+        status: "not-run" as const,
+        detail: `no ${leg} leg in this run`,
+        gating: false,
+      });
       continue;
     }
     const v = await liveLegOf(root, leg);

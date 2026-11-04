@@ -605,7 +605,9 @@ function isWebglShaderEnabled(
   // render paths handle it. So a shader designated HSV-adjust is NEVER run on WebGL — even under a
   // `webglShaderIds: ["*"]` wildcard or a per-node opt-in. This is what makes "run every shader" safe: a
   // consumer can pass `["*"]` without HSV nodes getting a double paint (WebGL canvas + feColorMatrix tint).
-  if (shaderIdListMatches(options.hsvAdjustShaderIds ?? [], shaderPath, shaderUid)) {
+  if (
+    shaderIdListMatches(options.hsvAdjustShaderIds ?? [], shaderPath, shaderUid)
+  ) {
     return false;
   }
   if (nodePath) {

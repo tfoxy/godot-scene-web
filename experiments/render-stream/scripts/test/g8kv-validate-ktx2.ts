@@ -23,7 +23,9 @@ for (const [name, w, h, levels] of manifest) {
     const full = Number(levels) > 1;
     const shape = checkKtx2Shape(d, "uastc", Number(w), Number(h), full);
     if (shape !== null) throw new Error(shape);
-    console.log(`ok   ${name}: ${d.width}x${d.height} ${d.levels} levels ${d.model} sc=${d.supercompression}`);
+    console.log(
+      `ok   ${name}: ${d.width}x${d.height} ${d.levels} levels ${d.model} sc=${d.supercompression}`,
+    );
   } catch (e) {
     bad++;
     console.log(`FAIL ${name}: ${(e as Error).message}`);

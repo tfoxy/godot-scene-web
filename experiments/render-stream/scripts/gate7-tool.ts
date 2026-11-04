@@ -63,9 +63,9 @@ import {
 } from "./lib/gate7-lifecycle";
 import {
   bundleBuildSha256,
+  requireRustBundle,
   runBrowserReceiver,
   serveBrowserDaemon,
-  requireRustBundle,
   webFetchOf,
 } from "./lib/gate7-live-legs";
 import { runWebLegs } from "./lib/gate7-web-legs";

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { anchorInsetExpression, appendAnchorName, positionTryFallback } from "../src/anchor-css";
+import {
+  anchorInsetExpression,
+  appendAnchorName,
+  positionTryFallback,
+} from "../src/anchor-css";
 
 describe("appendAnchorName", () => {
   it("starts a fresh anchor-name value when none exists", () => {
@@ -18,7 +22,9 @@ describe("appendAnchorName", () => {
 
 describe("anchorInsetExpression", () => {
   it("builds a bare anchor() for a single target with no offset", () => {
-    expect(anchorInsetExpression("right", ["--sht0"], "min", 0)).toBe("anchor(--sht0 right)");
+    expect(anchorInsetExpression("right", ["--sht0"], "min", 0)).toBe(
+      "anchor(--sht0 right)",
+    );
   });
 
   it("wraps a positive offset in calc(... + Npx)", () => {
@@ -46,6 +52,8 @@ describe("positionTryFallback", () => {
   });
 
   it("joins multiple fallbacks with a comma", () => {
-    expect(positionTryFallback("flip-block", "flip-inline")).toBe("flip-block, flip-inline");
+    expect(positionTryFallback("flip-block", "flip-inline")).toBe(
+      "flip-block, flip-inline",
+    );
   });
 });

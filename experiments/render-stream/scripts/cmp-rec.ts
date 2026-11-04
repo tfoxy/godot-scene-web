@@ -19,7 +19,7 @@
 // paths), and the end record at most in its timing stats. --tree compares only file sinks
 // (`recording*.rsN`): a live tap or a receiver's `received*.rsN` follows the host's pacing, so its
 // transaction count is a timing fact, not a wire fact. Exit 0 when identical under those rules, 1 otherwise, 2 on usage errors.
-import { lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { decodeRecording } from "./lib/render-stream-2";
 
@@ -38,10 +38,27 @@ function versionOf(path: string, data: Uint8Array): Version {
 
 function diffPaths(a: Json, b: Json, path: string, out: string[]): void {
   if (JSON.stringify(a) === JSON.stringify(b)) return;
-  if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+  if (
+    a &&
+    b &&
+    typeof a === "object" &&
+    typeof b === "object" &&
+    !Array.isArray(a) &&
+    !Array.isArray(b)
+  ) {
     const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    for (const k of keys) diffPaths((a as Record<string, Json>)[k] ?? null, (b as Record<string, Json>)[k] ?? null, path ? `${path}.${k}` : k, out);
-    if (JSON.stringify(Object.keys(a)) !== JSON.stringify(Object.keys(b)) && out.length === 0) out.push(`${path}(key order)`);
+    for (const k of keys)
+      diffPaths(
+        (a as Record<string, Json>)[k] ?? null,
+        (b as Record<string, Json>)[k] ?? null,
+        path ? `${path}.${k}` : k,
+        out,
+      );
+    if (
+      JSON.stringify(Object.keys(a)) !== JSON.stringify(Object.keys(b)) &&
+      out.length === 0
+    )
+      out.push(`${path}(key order)`);
     return;
   }
   out.push(path || "(root)");
@@ -71,10 +88,23 @@ function withoutItemKey(meta: Json, key: string): [Json, number] {
   return [{ ...(meta as Record<string, Json>), items } as Json, n];
 }
 
-export function cmpRecordings(a: string, b: string, allowSession: string[], allowItemKey?: string): CmpResult {
+export function cmpRecordings(
+  a: string,
+  b: string,
+  allowSession: string[],
+  allowItemKey?: string,
+): CmpResult {
   const da = new Uint8Array(readFileSync(a));
   const db = new Uint8Array(readFileSync(b));
-  const result: CmpResult = { a, b, identical: false, whole_file_identical: false, records: [0, 0], differing: [], allowed: [] };
+  const result: CmpResult = {
+    a,
+    b,
+    identical: false,
+    whole_file_identical: false,
+    records: [0, 0],
+    differing: [],
+    allowed: [],
+  };
   if (da.length === db.length && Buffer.from(da).equals(Buffer.from(db))) {
     result.identical = true;
     result.whole_file_identical = true;
@@ -91,7 +121,11 @@ export function cmpRecordings(a: string, b: string, allowSession: string[], allo
     const x = ra[i];
     const y = rb[i];
     if (!x || !y) {
-      result.differing.push({ index: i, type: "missing", paths: [x ? "only in a" : "only in b"] });
+      result.differing.push({
+        index: i,
+        type: "missing",
+        paths: [x ? "only in a" : "only in b"],
+      });
       continue;
     }
     if (x.sha256 === y.sha256) continue;
@@ -99,34 +133,56 @@ export function cmpRecordings(a: string, b: string, allowSession: string[], allo
     if (allowItemKey && type === "transaction") {
       const [ma, na] = withoutItemKey(x.meta as unknown as Json, allowItemKey);
       const [mb, nb] = withoutItemKey(y.meta as unknown as Json, allowItemKey);
-      if (JSON.stringify(ma) === JSON.stringify(mb) && JSON.stringify(x.blocks) === JSON.stringify(y.blocks)) {
+      if (
+        JSON.stringify(ma) === JSON.stringify(mb) &&
+        JSON.stringify(x.blocks) === JSON.stringify(y.blocks)
+      ) {
         itemKeyDelta += (y.byte_length ?? 0) - (x.byte_length ?? 0);
-        result.allowed.push({ index: i, type, paths: [`items[].${allowItemKey} (a ${na}, b ${nb})`] });
+        result.allowed.push({
+          index: i,
+          type,
+          paths: [`items[].${allowItemKey} (a ${na}, b ${nb})`],
+        });
         continue;
       }
     }
     const paths: string[] = [];
     diffPaths(x.meta as unknown as Json, y.meta as unknown as Json, "", paths);
-    if (JSON.stringify(x.blocks) !== JSON.stringify(y.blocks)) paths.push("blocks");
+    if (JSON.stringify(x.blocks) !== JSON.stringify(y.blocks))
+      paths.push("blocks");
     // An allowed session difference changes the session record's length, and the end record's
     // `bytes_total` (which counts every byte) by exactly that much.
     const sessionDelta = (rb[0]?.byte_length ?? 0) - (ra[0]?.byte_length ?? 0);
-    const endStats = (r: typeof x) => (r.meta as { stats?: { bytes_total?: number } }).stats ?? {};
+    const endStats = (r: typeof x) =>
+      (r.meta as { stats?: { bytes_total?: number } }).stats ?? {};
     const tolerated =
-      (type === "session" && paths.every((p) => allowed.has(p) || [...allowed].some((k) => p.startsWith(`${k}.`)))) ||
+      (type === "session" &&
+        paths.every(
+          (p) =>
+            allowed.has(p) || [...allowed].some((k) => p.startsWith(`${k}.`)),
+        )) ||
       (type === "end" &&
         paths.every(
           (p) =>
-            (p.startsWith("stats.") && /sha256|digest|_ns_|_us_|_ms_/.test(p)) ||
+            (p.startsWith("stats.") &&
+              /sha256|digest|_ns_|_us_|_ms_/.test(p)) ||
             (p === "stats.bytes_total" &&
-              (endStats(y).bytes_total ?? 0) - (endStats(x).bytes_total ?? 0) === sessionDelta + itemKeyDelta) ||
+              (endStats(y).bytes_total ?? 0) -
+                (endStats(x).bytes_total ?? 0) ===
+                sessionDelta + itemKeyDelta) ||
             // UIT: a tolerated item key can grow the largest record, never shrink it.
             (p === "stats.max_record_bytes" &&
               itemKeyDelta > 0 &&
-              ((endStats(y) as { max_record_bytes?: number }).max_record_bytes ?? 0) >=
-                ((endStats(x) as { max_record_bytes?: number }).max_record_bytes ?? 0)),
+              ((endStats(y) as { max_record_bytes?: number })
+                .max_record_bytes ?? 0) >=
+                ((endStats(x) as { max_record_bytes?: number })
+                  .max_record_bytes ?? 0)),
         ));
-    (tolerated ? result.allowed : result.differing).push({ index: i, type, paths: paths.length ? paths : ["(bytes only)"] });
+    (tolerated ? result.allowed : result.differing).push({
+      index: i,
+      type,
+      paths: paths.length ? paths : ["(bytes only)"],
+    });
   }
   result.identical = result.differing.length === 0;
   return result;
@@ -139,7 +195,8 @@ function walk(dir: string): string[] {
     const s = lstatSync(p);
     if (s.isSymbolicLink()) continue; // gate runners link shared sources back into the tree
     if (s.isDirectory()) out.push(...walk(p));
-    else if (/^recording[^/]*\.rs\d+$/.test(name) && !p.includes("/tap/")) out.push(p);
+    else if (/^recording[^/]*\.rs\d+$/.test(name) && !p.includes("/tap/"))
+      out.push(p);
   }
   return out.sort();
 }
@@ -151,14 +208,17 @@ function main(argv: string[]): number {
   let json = false;
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--allow-session") allow = (argv[++i] ?? "").split(",").filter(Boolean);
+    if (argv[i] === "--allow-session")
+      allow = (argv[++i] ?? "").split(",").filter(Boolean);
     else if (argv[i] === "--allow-item-key") allowItemKey = argv[++i];
     else if (argv[i] === "--tree") tree = true;
     else if (argv[i] === "--json") json = true;
     else rest.push(argv[i]);
   }
   if (rest.length !== 2) {
-    console.error("usage: cmp-rec.ts [--tree] [--allow-session k,...] [--allow-item-key k] [--json] <a> <b>");
+    console.error(
+      "usage: cmp-rec.ts [--tree] [--allow-session k,...] [--allow-item-key k] [--json] <a> <b>",
+    );
     return 2;
   }
   const pairs: [string, string][] = tree
@@ -172,15 +232,33 @@ function main(argv: string[]): number {
       statSync(b);
       r = cmpRecordings(a, b, allow, allowItemKey);
     } catch (e) {
-      r = { a, b, identical: false, whole_file_identical: false, records: [0, 0], differing: [{ index: -1, type: "error", paths: [String(e)] }], allowed: [] };
+      r = {
+        a,
+        b,
+        identical: false,
+        whole_file_identical: false,
+        records: [0, 0],
+        differing: [{ index: -1, type: "error", paths: [String(e)] }],
+        allowed: [],
+      };
     }
     results.push(r);
     if (!r.identical) bad++;
     if (!json) {
-      const tag = r.whole_file_identical ? "IDENTICAL(file)" : r.identical ? "IDENTICAL(records)" : "DIFFERENT";
-      console.log(`${tag} ${tree ? relative(rest[0], a) : a}${r.records[0] ? ` records=${r.records[0]}/${r.records[1]}` : ""}`);
-      for (const d of r.allowed) console.log(`  allowed #${d.index} ${d.type}: ${d.paths.join(", ")}`);
-      for (const d of r.differing.slice(0, 5)) console.log(`  differs #${d.index} ${d.type}: ${d.paths.slice(0, 8).join(", ")}`);
+      const tag = r.whole_file_identical
+        ? "IDENTICAL(file)"
+        : r.identical
+          ? "IDENTICAL(records)"
+          : "DIFFERENT";
+      console.log(
+        `${tag} ${tree ? relative(rest[0], a) : a}${r.records[0] ? ` records=${r.records[0]}/${r.records[1]}` : ""}`,
+      );
+      for (const d of r.allowed)
+        console.log(`  allowed #${d.index} ${d.type}: ${d.paths.join(", ")}`);
+      for (const d of r.differing.slice(0, 5))
+        console.log(
+          `  differs #${d.index} ${d.type}: ${d.paths.slice(0, 8).join(", ")}`,
+        );
     }
   }
   if (json) console.log(JSON.stringify(results, null, 1));

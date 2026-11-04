@@ -137,9 +137,7 @@ export function expectedDrawCalls(spec: ItemsCase): number {
   for (const mesh of spec.meshes) {
     if (mesh.indices.length === 0) continue;
     const key = stateKey(mesh);
-    const tex = mesh.untextured
-      ? null
-      : `${mesh.texture}|${samplerBits(mesh)}`;
+    const tex = mesh.untextured ? null : `${mesh.texture}|${samplerBits(mesh)}`;
     if (
       run !== null &&
       run.key === key &&
@@ -729,7 +727,12 @@ function untexturedRuns(): ItemsCase {
   const meshes = base.meshes.map((m) =>
     m.texture === 0 ? { ...m, untextured: true } : m,
   );
-  return { ...base, name: "untexturedRuns", meshes, frames: base.frames.slice(0, 2) };
+  return {
+    ...base,
+    name: "untexturedRuns",
+    meshes,
+    frames: base.frames.slice(0, 2),
+  };
 }
 
 /** G7c's rgb10a2Stack: an opaque base under five MIX layers of alpha 0.2 (left), one

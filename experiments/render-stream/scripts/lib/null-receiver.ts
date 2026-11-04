@@ -18,9 +18,10 @@
 //
 // Writes <dir>/null-receiver.json ({transactions, resource_records, bytes, first_ms, end}) and
 // exits 0 once the end record arrived (1 on a close before it, an error message, or the timeout).
+
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 
 function arg(name: string, fallback?: string): string {
@@ -38,7 +39,11 @@ const protocol = arg("--protocol", "8");
 const offer = arg("--offer", "zstd-base,zstd");
 const delayMs = Number(arg("--delay-ms", "0"));
 const fetchFirst = arg("--fetch-first", "");
-if (fetchFirst !== "" && process.argv.includes("--protocol") && protocol !== "8")
+if (
+  fetchFirst !== "" &&
+  process.argv.includes("--protocol") &&
+  protocol !== "8"
+)
   throw new Error("null-receiver: --fetch-first needs --protocol 8");
 if (protocol !== "8" && protocol !== "11")
   throw new Error("null-receiver: --protocol 8|11");
@@ -144,7 +149,8 @@ function namedHashes(node: unknown, out: Set<string>): void {
     for (const v of node) namedHashes(v, out);
   } else if (node !== null && typeof node === "object") {
     for (const [k, v] of Object.entries(node)) {
-      if (k === "hash" && typeof v === "string" && /^[0-9a-f]{64}$/.test(v)) out.add(v);
+      if (k === "hash" && typeof v === "string" && /^[0-9a-f]{64}$/.test(v))
+        out.add(v);
       else namedHashes(v, out);
     }
   }
@@ -154,14 +160,25 @@ async function fetchNamed(meta: Record<string, unknown>): Promise<void> {
   const named = new Set<string>();
   namedHashes(meta, named);
   const todo = [...named].filter((h) => !inlineHashes.has(h));
-  const first = { seq: Number(meta.seq), frame: Number(meta.frame), hashes: todo.length, statuses: {} as Record<string, number>, bad_sha: 0 };
+  const first = {
+    seq: Number(meta.seq),
+    frame: Number(meta.frame),
+    hashes: todo.length,
+    statuses: {} as Record<string, number>,
+    bad_sha: 0,
+  };
   stats.first_tx = first;
   for (const hash of todo) {
     try {
       const res = await fetch(`${fetchFirst}/resources/sha256/${hash}`);
-      first.statuses[String(res.status)] = (first.statuses[String(res.status)] ?? 0) + 1;
+      first.statuses[String(res.status)] =
+        (first.statuses[String(res.status)] ?? 0) + 1;
       const body = new Uint8Array(await res.arrayBuffer());
-      if (res.status === 200 && createHash("sha256").update(body).digest("hex") !== hash) first.bad_sha += 1;
+      if (
+        res.status === 200 &&
+        createHash("sha256").update(body).digest("hex") !== hash
+      )
+        first.bad_sha += 1;
     } catch {
       first.statuses.error = (first.statuses.error ?? 0) + 1;
     }

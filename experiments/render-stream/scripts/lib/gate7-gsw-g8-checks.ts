@@ -104,30 +104,52 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
   // groups is judged on its half, so runs over a partition of the groups judge the whole check.
   if (ran("g8f") || ran("g8t")) {
     const problems: string[] = [];
-    const source = await readJson<{ g8f?: { carried_formats?: string[] } }>(join(ctx.sourceDir, "result.json"));
-    const floats = new Set(["RF", "RGF", "RGBF", "RGBAF", "RH", "RGH", "RGBH", "RGBAH"]);
-    const carried = (source?.g8f?.carried_formats ?? []).filter((f) => floats.has(f)).sort();
+    const source = await readJson<{ g8f?: { carried_formats?: string[] } }>(
+      join(ctx.sourceDir, "result.json"),
+    );
+    const floats = new Set([
+      "RF",
+      "RGF",
+      "RGBF",
+      "RGBAF",
+      "RH",
+      "RGH",
+      "RGBH",
+      "RGBAH",
+    ]);
+    const carried = (source?.g8f?.carried_formats ?? [])
+      .filter((f) => floats.has(f))
+      .sort();
     if (ran("g8f")) {
-      if (carried.length === 0) problems.push("the source's g8f.carried_formats lists no float format");
+      if (carried.length === 0)
+        problems.push("the source's g8f.carried_formats lists no float format");
       for (const leg of ["g8f/receiver", "g8f/receiver-patch"]) {
-        const a = await readJson<{ receiver?: { caveats?: string[]; float_quantized?: string[] } }>(
-          join(gswDir(ctx, leg), "applied.json"),
-        );
+        const a = await readJson<{
+          receiver?: { caveats?: string[]; float_quantized?: string[] };
+        }>(join(gswDir(ctx, leg), "applied.json"));
         if (!a?.receiver?.caveats) {
           problems.push(`${leg}: applied.json receiver.caveats missing`);
           continue;
         }
         if (!a.receiver.caveats.includes("float-texture-quantized"))
-          problems.push(`${leg}: caveats ${JSON.stringify(a.receiver.caveats)} lack float-texture-quantized`);
+          problems.push(
+            `${leg}: caveats ${JSON.stringify(a.receiver.caveats)} lack float-texture-quantized`,
+          );
         const q = [...(a.receiver.float_quantized ?? [])].sort();
         if (JSON.stringify(q) !== JSON.stringify(carried))
-          problems.push(`${leg}: quantized ${JSON.stringify(q)}, carried ${JSON.stringify(carried)}`);
+          problems.push(
+            `${leg}: quantized ${JSON.stringify(q)}, carried ${JSON.stringify(carried)}`,
+          );
       }
     }
     if (ran("g8t")) {
-      const plain = await readJson<{ receiver?: { caveats?: string[] } }>(join(gswDir(ctx, "receiver"), "applied.json"));
+      const plain = await readJson<{ receiver?: { caveats?: string[] } }>(
+        join(gswDir(ctx, "receiver"), "applied.json"),
+      );
       if ((plain?.receiver?.caveats ?? ["missing"]).length !== 0)
-        problems.push(`receiver (g8t, no float payload): caveats ${JSON.stringify(plain?.receiver?.caveats)}`);
+        problems.push(
+          `receiver (g8t, no float payload): caveats ${JSON.stringify(plain?.receiver?.caveats)}`,
+        );
     }
     const ok = [
       ...(ran("g8f") ? [`g8f legs quantized ${carried.join(",")}`] : []),
@@ -143,8 +165,19 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
     );
   }
   {
-    const band = await readJson<Record<string, BandShot[]>>(join(ctx.out, "gate8", "gsw-band.json"));
-    const t = { shots: 0, banded: 0, identical: 0, raw: 0, delta1: 0, undecided: 0, excluded: 0, other: 0 };
+    const band = await readJson<Record<string, BandShot[]>>(
+      join(ctx.out, "gate8", "gsw-band.json"),
+    );
+    const t = {
+      shots: 0,
+      banded: 0,
+      identical: 0,
+      raw: 0,
+      delta1: 0,
+      undecided: 0,
+      excluded: 0,
+      other: 0,
+    };
     const raw: string[] = [];
     for (const [leg, shots] of Object.entries(band ?? {}))
       for (const s of shots) {
@@ -157,7 +190,9 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
         else if (s.banded) t.banded++;
         else {
           t.raw++;
-          raw.push(`${leg}/${s.shot}: ${s.other} px beyond channel 1 outside the declared regions (max ${s.max_other})`);
+          raw.push(
+            `${leg}/${s.shot}: ${s.other} px beyond channel 1 outside the declared regions (max ${s.max_other})`,
+          );
         }
       }
     out.push(
@@ -192,25 +227,50 @@ async function ptsPairs(
   ctx: Ctx,
   leg: string,
   problems: string[],
-): Promise<{ shot: string; diff: Record<string, number>; drawn: Record<string, unknown> }[]> {
+): Promise<
+  {
+    shot: string;
+    diff: Record<string, number>;
+    drawn: Record<string, unknown>;
+  }[]
+> {
   const { readdir } = await import("node:fs/promises");
   const dir = join(gswDir(ctx, leg), "shots");
   const names = (await readdir(dir).catch(() => [] as string[]))
     .filter((n) => /^seq-\d+\.png$/.test(n))
     .sort((a, b) => Number(a.slice(4, -4)) - Number(b.slice(4, -4)));
   if (names.length === 0) problems.push(`${leg}: no shots`);
-  const out: { shot: string; diff: Record<string, number>; drawn: Record<string, unknown> }[] = [];
+  const out: {
+    shot: string;
+    diff: Record<string, number>;
+    drawn: Record<string, unknown>;
+  }[] = [];
   for (const [k, name] of names.entries()) {
     const a = await decodePngRgba(join(dir, name));
-    const b = await decodePngRgba(join(ctx.sourceDir, "g8pt", "ptc", "reference-fwdplus", "shots", `step-${k}.png`));
+    const b = await decodePngRgba(
+      join(
+        ctx.sourceDir,
+        "g8pt",
+        "ptc",
+        "reference-fwdplus",
+        "shots",
+        `step-${k}.png`,
+      ),
+    );
     if (!a || !b) {
-      problems.push(`${leg}/${name}: ${a ? "" : "the gsw shot "}${b ? "" : `the reference step-${k}.png `}missing`);
+      problems.push(
+        `${leg}/${name}: ${a ? "" : "the gsw shot "}${b ? "" : `the reference step-${k}.png `}missing`,
+      );
       continue;
     }
     out.push({
       shot: name,
-      diff: Object.fromEntries(PTS_CELLS.map((c) => [c.cell, ptsDiff(a, b, c)])),
-      drawn: Object.fromEntries(PTS_CELLS.map((c) => [c.cell, ptsRegion(a, c)])),
+      diff: Object.fromEntries(
+        PTS_CELLS.map((c) => [c.cell, ptsDiff(a, b, c)]),
+      ),
+      drawn: Object.fromEntries(
+        PTS_CELLS.map((c) => [c.cell, ptsRegion(a, c)]),
+      ),
     });
   }
   return out;
@@ -218,19 +278,33 @@ async function ptsPairs(
 
 /** PSE (header). Not emitted when the source ran no ptc reference (a host without Vulkan). */
 async function ptsGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
-  if (!existsSync(join(ctx.sourceDir, "g8pt", "ptc", "reference-fwdplus", "shots"))) return [];
+  if (
+    !existsSync(
+      join(ctx.sourceDir, "g8pt", "ptc", "reference-fwdplus", "shots"),
+    )
+  )
+    return [];
   const problems: string[] = [];
   const honest = await ptsPairs(ctx, PTS_HONEST, problems);
   for (const p of honest)
     for (const [cell, n] of Object.entries(p.diff))
-      if (n > PTS_GSW_TOLERANCE_PX) problems.push(`${PTS_HONEST}/${p.shot} ${cell}: ${n} px differ from the Forward+ reference`);
+      if (n > PTS_GSW_TOLERANCE_PX)
+        problems.push(
+          `${PTS_HONEST}/${p.shot} ${cell}: ${n} px differ from the Forward+ reference`,
+        );
   const sab = await ptsPairs(ctx, PTS_SHARED_KEY, problems);
-  const caught = sab.filter((p) => (p.diff.S_SPHERE ?? 0) > PTS_GSW_TOLERANCE_PX);
+  const caught = sab.filter(
+    (p) => (p.diff.S_SPHERE ?? 0) > PTS_GSW_TOLERANCE_PX,
+  );
   if (sab.length > 0 && caught.length < sab.length)
-    problems.push(`${PTS_SHARED_KEY}: S_SPHERE within the tolerance at ${sab.length - caught.length} of ${sab.length} shots (the check has no teeth)`);
+    problems.push(
+      `${PTS_SHARED_KEY}: S_SPHERE within the tolerance at ${sab.length - caught.length} of ${sab.length} shots (the check has no teeth)`,
+    );
   for (const p of sab)
     if ((p.diff.S_BOX ?? 0) > PTS_GSW_TOLERANCE_PX)
-      problems.push(`${PTS_SHARED_KEY}/${p.shot}: S_BOX ${p.diff.S_BOX} px differ (the first material's key is its own)`);
+      problems.push(
+        `${PTS_SHARED_KEY}/${p.shot}: S_BOX ${p.diff.S_BOX} px differ (the first material's key is its own)`,
+      );
   return [
     mk(
       "ptc-gsw-switched-key@gsw",
@@ -257,7 +331,9 @@ const CG_HONEST = CG_LEGS.slice(0, 3);
 /** cg-gsw-untyped@gsw (header). Not emitted when the source ran no g8cg. */
 async function g8cgChecks(ctx: Ctx): Promise<Gate7Check[]> {
   if (!existsSync(join(ctx.sourceDir, "g8cg"))) return [];
-  const band = await readJson<Record<string, BandShot[]>>(join(ctx.out, "gate8", "gsw-band.json"));
+  const band = await readJson<Record<string, BandShot[]>>(
+    join(ctx.out, "gate8", "gsw-band.json"),
+  );
   const problems: string[] = [];
   let shots = 0;
   for (const leg of CG_LEGS) {
@@ -268,9 +344,13 @@ async function g8cgChecks(ctx: Ctx): Promise<Gate7Check[]> {
       problems.push(`${leg}: applied.json missing`);
       continue;
     }
-    const others = (applied.unsupported ?? []).filter((u) => u.reason !== "degenerate-host-size");
+    const others = (applied.unsupported ?? []).filter(
+      (u) => u.reason !== "degenerate-host-size",
+    );
     if (others.length > 0)
-      problems.push(`${leg}: ${others.length} unsupported entries (${[...new Set(others.map((u) => u.reason))].join(", ")})`);
+      problems.push(
+        `${leg}: ${others.length} unsupported entries (${[...new Set(others.map((u) => u.reason))].join(", ")})`,
+      );
     if (!CG_HONEST.includes(leg)) continue;
     const legShots = band?.[leg];
     if (!legShots || legShots.length === 0) {
@@ -280,7 +360,9 @@ async function g8cgChecks(ctx: Ctx): Promise<Gate7Check[]> {
     for (const s of legShots) {
       shots++;
       if (s.other > 0)
-        problems.push(`${leg}/${s.shot}: ${s.other} px beyond channel 1 of the native shot (max ${s.max_other})`);
+        problems.push(
+          `${leg}/${s.shot}: ${s.other} px beyond channel 1 of the native shot (max ${s.max_other})`,
+        );
     }
   }
   return [
@@ -313,8 +395,15 @@ interface TranscodeRow {
 interface BasisApplied {
   status?: string;
   failure?: unknown;
-  receiver?: { texture_delivery?: { gpu_formats?: string; variant_policy?: string } };
-  uploads?: Array<{ id: number; hash?: string | null; seq: number; encoding?: string | null }>;
+  receiver?: {
+    texture_delivery?: { gpu_formats?: string; variant_policy?: string };
+  };
+  uploads?: Array<{
+    id: number;
+    hash?: string | null;
+    seq: number;
+    encoding?: string | null;
+  }>;
   transcodes?: TranscodeRow[];
   delivery_fallbacks?: Array<{ hash: string; reason: string }>;
 }
@@ -350,7 +439,8 @@ export function predictGswTarget(
   height: number,
 ): string {
   const aligned = width % 4 === 0 && height % 4 === 0;
-  const has = (f: string) => families.includes(f) && (aligned || !["s3tc", "bptc", "rgtc"].includes(f));
+  const has = (f: string) =>
+    families.includes(f) && (aligned || !["s3tc", "bptc", "rgtc"].includes(f));
   if (components === 1) return has("rgtc") ? "RGTC_R" : "RGBA8";
   if (components === 2) return has("rgtc") ? "RGTC_RG" : "RGBA8";
   if (components === 3) {
@@ -371,7 +461,9 @@ type Png = { width: number; height: number; data: Uint8Array };
 async function png(path: string): Promise<Png | undefined> {
   if (!existsSync(path)) return undefined;
   const img = await decodePngRgba(path);
-  return img ? { width: img.width, height: img.height, data: new Uint8Array(img.data) } : undefined;
+  return img
+    ? { width: img.width, height: img.height, data: new Uint8Array(img.data) }
+    : undefined;
 }
 
 /** The last checkpoint shot of a leg (its shot-seqs.txt's last seq). */
@@ -391,7 +483,11 @@ const within = (r: [number, number, number, number], x: number, y: number) =>
   x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3];
 
 /** Pixels differing by more than channel 1, outside `skip`, and the largest delta. */
-function beyondOne(a: Png, b: Png, skip: Array<[number, number, number, number]>): { n: number; max: number } {
+function beyondOne(
+  a: Png,
+  b: Png,
+  skip: Array<[number, number, number, number]>,
+): { n: number; max: number } {
   let n = 0;
   let max = 0;
   for (let y = 0; y < a.height; y++)
@@ -399,7 +495,8 @@ function beyondOne(a: Png, b: Png, skip: Array<[number, number, number, number]>
       if (skip.some((r) => within(r, x, y))) continue;
       const i = (y * a.width + x) * 4;
       let d = 0;
-      for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
+      for (let c = 0; c < 4; c++)
+        d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
       if (d > 1) {
         n++;
         max = Math.max(max, d);
@@ -408,7 +505,11 @@ function beyondOne(a: Png, b: Png, skip: Array<[number, number, number, number]>
   return { n, max };
 }
 
-function regionPsnr(a: Png, b: Png, r: [number, number, number, number]): number {
+function regionPsnr(
+  a: Png,
+  b: Png,
+  r: [number, number, number, number],
+): number {
   let se = 0;
   let n = 0;
   for (let y = r[1]; y < r[1] + r[3]; y++)
@@ -436,39 +537,73 @@ function exactlyEqual(a: Png, b: Png): number {
   return n;
 }
 
-const uploadKey = (u: { id: number; seq: number; encoding?: string | null }) => `${u.seq}:${u.id}:${u.encoding ?? "-"}`;
+const uploadKey = (u: { id: number; seq: number; encoding?: string | null }) =>
+  `${u.seq}:${u.id}:${u.encoding ?? "-"}`;
 
 async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
   const out: Gate7Check[] = [];
   const src = (l: string) => join(ctx.sourceDir, "g8ku", l);
   const leg = (l: string) => gswDir(ctx, `g8ku/${l}`);
-  const oracle = (await readJson<{ ktx2?: OracleRow[] }>(join(src("reference-oracle"), "oracle", "oracle.json")))?.ktx2 ?? [];
+  const oracle =
+    (
+      await readJson<{ ktx2?: OracleRow[] }>(
+        join(src("reference-oracle"), "oracle", "oracle.json"),
+      )
+    )?.ktx2 ?? [];
   const byHash = new Map(oracle.map((o) => [o.hash, o]));
-  const nativeUp = await readJson<BasisApplied>(join(src("receiver-upgrade"), "applied.json"));
-  const nativeKeep = await readJson<BasisApplied>(join(src("receiver"), "applied.json"));
-  const up = await readJson<BasisApplied>(join(leg("gsw-upgrade"), "applied.json"));
-  const keep = await readJson<BasisApplied>(join(leg("gsw-keep"), "applied.json"));
-  const rgba = await readJson<BasisApplied>(join(leg("gsw-rgba"), "applied.json"));
-  const fail = await readJson<BasisApplied>(join(leg("gsw-transcode-fail"), "applied.json"));
-  const expectedHashes = new Set((nativeUp?.transcodes ?? []).map((t) => t.hash));
-  const statusProblems = (name: string, a: BasisApplied | undefined): string[] =>
+  const nativeUp = await readJson<BasisApplied>(
+    join(src("receiver-upgrade"), "applied.json"),
+  );
+  const nativeKeep = await readJson<BasisApplied>(
+    join(src("receiver"), "applied.json"),
+  );
+  const up = await readJson<BasisApplied>(
+    join(leg("gsw-upgrade"), "applied.json"),
+  );
+  const keep = await readJson<BasisApplied>(
+    join(leg("gsw-keep"), "applied.json"),
+  );
+  const rgba = await readJson<BasisApplied>(
+    join(leg("gsw-rgba"), "applied.json"),
+  );
+  const fail = await readJson<BasisApplied>(
+    join(leg("gsw-transcode-fail"), "applied.json"),
+  );
+  const expectedHashes = new Set(
+    (nativeUp?.transcodes ?? []).map((t) => t.hash),
+  );
+  const statusProblems = (
+    name: string,
+    a: BasisApplied | undefined,
+  ): string[] =>
     a === undefined
       ? [`${name}: applied.json missing`]
       : a.status !== "ok"
-        ? [`${name}: status ${a.status} ${JSON.stringify(a.failure ?? null).slice(0, 160)}`]
+        ? [
+            `${name}: status ${a.status} ${JSON.stringify(a.failure ?? null).slice(0, 160)}`,
+          ]
         : [];
   // The target each GSW transcode took, by hash (for the pixel check).
   const gswTarget = new Map<string, string>();
 
   {
     const problems = [...statusProblems("gsw-upgrade", up)];
-    if (oracle.length === 0) problems.push("the source's g8ku/reference-oracle/oracle/oracle.json lists no KTX2");
-    if (expectedHashes.size === 0) problems.push("the native upgrade leg transcoded nothing");
-    const families = (up?.receiver?.texture_delivery?.gpu_formats ?? "none").split(",").filter((f) => f !== "none");
+    if (oracle.length === 0)
+      problems.push(
+        "the source's g8ku/reference-oracle/oracle/oracle.json lists no KTX2",
+      );
+    if (expectedHashes.size === 0)
+      problems.push("the native upgrade leg transcoded nothing");
+    const families = (up?.receiver?.texture_delivery?.gpu_formats ?? "none")
+      .split(",")
+      .filter((f) => f !== "none");
     const rows = up?.transcodes ?? [];
     const got = new Set(rows.map((t) => t.hash));
-    for (const h of expectedHashes) if (!got.has(h)) problems.push(`${h.slice(0, 12)}: not transcoded`);
-    for (const h of got) if (!expectedHashes.has(h)) problems.push(`${h.slice(0, 12)}: transcoded, the native leg did not`);
+    for (const h of expectedHashes)
+      if (!got.has(h)) problems.push(`${h.slice(0, 12)}: not transcoded`);
+    for (const h of got)
+      if (!expectedHashes.has(h))
+        problems.push(`${h.slice(0, 12)}: transcoded, the native leg did not`);
     let exact = 0;
     const other: string[] = [];
     for (const t of rows) {
@@ -481,14 +616,34 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
         problems.push(`${t.hash.slice(0, 12)}: no oracle row`);
         continue;
       }
-      if (t.width !== o.width || t.height !== o.height || t.mipmaps !== o.mipmaps)
-        problems.push(`${o.name}: ${t.width}x${t.height} mips ${t.mipmaps}, oracle ${o.width}x${o.height} ${o.mipmaps}`);
-      const want = predictGswTarget(t.components ?? 0, families, o.width, o.height);
+      if (
+        t.width !== o.width ||
+        t.height !== o.height ||
+        t.mipmaps !== o.mipmaps
+      )
+        problems.push(
+          `${o.name}: ${t.width}x${t.height} mips ${t.mipmaps}, oracle ${o.width}x${o.height} ${o.mipmaps}`,
+        );
+      const want = predictGswTarget(
+        t.components ?? 0,
+        families,
+        o.width,
+        o.height,
+      );
       gswTarget.set(t.hash, t.format_name ?? "");
-      if (t.format_name !== want) problems.push(`${o.name}: target ${t.format_name}, D14 for gpu_formats ${families.join(",") || "none"} is ${want}`);
-      if (t.format !== IMAGE_FORMAT[t.format_name ?? ""]) problems.push(`${o.name}: format ${t.format} is not ${t.format_name}'s`);
+      if (t.format_name !== want)
+        problems.push(
+          `${o.name}: target ${t.format_name}, D14 for gpu_formats ${families.join(",") || "none"} is ${want}`,
+        );
+      if (t.format !== IMAGE_FORMAT[t.format_name ?? ""])
+        problems.push(
+          `${o.name}: format ${t.format} is not ${t.format_name}'s`,
+        );
       if (t.format === o.format) {
-        if (t.data_sha256 !== o.data_sha256) problems.push(`${o.name}: ${t.format_name} blocks differ from the oracle's`);
+        if (t.data_sha256 !== o.data_sha256)
+          problems.push(
+            `${o.name}: ${t.format_name} blocks differ from the oracle's`,
+          );
         else exact++;
       } else other.push(`${o.name} ${t.format_name} (oracle ${o.format})`);
     }
@@ -504,18 +659,28 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
 
   {
     const problems = [...statusProblems("gsw-keep", keep)];
-    const cmp = (name: string, a: BasisApplied | undefined, b: BasisApplied | undefined) => {
+    const cmp = (
+      name: string,
+      a: BasisApplied | undefined,
+      b: BasisApplied | undefined,
+    ) => {
       const ka = (a?.uploads ?? []).map(uploadKey).sort();
       const kb = (b?.uploads ?? []).map(uploadKey).sort();
       if (JSON.stringify(ka) !== JSON.stringify(kb))
-        problems.push(`${name}: uploads ${JSON.stringify(ka)} vs native ${JSON.stringify(kb)}`);
+        problems.push(
+          `${name}: uploads ${JSON.stringify(ka)} vs native ${JSON.stringify(kb)}`,
+        );
     };
     cmp("gsw-upgrade", up, nativeUp);
     cmp("gsw-keep", keep, nativeKeep);
-    if ((keep?.transcodes ?? []).length > 0) problems.push(`gsw-keep transcoded ${keep?.transcodes?.length}`);
-    if ((keep?.uploads ?? []).some((u) => u.encoding === "uastc")) problems.push("gsw-keep uploaded a uastc variant");
-    if (up?.receiver?.texture_delivery?.variant_policy !== "upgrade") problems.push("gsw-upgrade's policy is not upgrade");
-    if (keep?.receiver?.texture_delivery?.variant_policy !== "keep") problems.push("gsw-keep's policy is not keep");
+    if ((keep?.transcodes ?? []).length > 0)
+      problems.push(`gsw-keep transcoded ${keep?.transcodes?.length}`);
+    if ((keep?.uploads ?? []).some((u) => u.encoding === "uastc"))
+      problems.push("gsw-keep uploaded a uastc variant");
+    if (up?.receiver?.texture_delivery?.variant_policy !== "upgrade")
+      problems.push("gsw-upgrade's policy is not upgrade");
+    if (keep?.receiver?.texture_delivery?.variant_policy !== "keep")
+      problems.push("gsw-keep's policy is not keep");
     const n = (up?.uploads ?? []).filter((u) => u.encoding === "uastc").length;
     out.push(
       mk(
@@ -535,7 +700,8 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const gk = await lastShot(leg("gsw-keep"));
     const nk = await lastShot(src("receiver"));
     const notes: string[] = [];
-    if (!g || !n || !gk || !nk || !reference) problems.push("a final shot or the reference's step-1 shot is missing");
+    if (!g || !n || !gk || !nk || !reference)
+      problems.push("a final shot or the reference's step-1 shot is missing");
     else {
       const skip: Array<[number, number, number, number]> = [BASIS_HALF_MIP];
       for (const t of up?.transcodes ?? []) {
@@ -546,12 +712,21 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
         skip.push(r);
         const db = regionPsnr(g, reference, r);
         notes.push(`${o.name} (${t.format_name}) ${db.toFixed(1)} dB`);
-        if (db < QUALITY_FLOOR_DB) problems.push(`${o.name}: ${db.toFixed(1)} dB against the reference, floor ${QUALITY_FLOOR_DB}`);
+        if (db < QUALITY_FLOOR_DB)
+          problems.push(
+            `${o.name}: ${db.toFixed(1)} dB against the reference, floor ${QUALITY_FLOOR_DB}`,
+          );
       }
       const a = beyondOne(g, n, skip);
-      if (a.n > 0) problems.push(`gsw-upgrade: ${a.n} px beyond channel 1 of the native upgrade leg (max ${a.max}) outside the declared regions`);
+      if (a.n > 0)
+        problems.push(
+          `gsw-upgrade: ${a.n} px beyond channel 1 of the native upgrade leg (max ${a.max}) outside the declared regions`,
+        );
       const b = beyondOne(gk, nk, [BASIS_HALF_MIP]);
-      if (b.n > 0) problems.push(`gsw-keep: ${b.n} px beyond channel 1 of the native keep leg (max ${b.max})`);
+      if (b.n > 0)
+        problems.push(
+          `gsw-keep: ${b.n} px beyond channel 1 of the native keep leg (max ${b.max})`,
+        );
     }
     out.push(
       mk(
@@ -567,14 +742,27 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const problems = [...statusProblems("gsw-rgba", rgba)];
     const rows = rgba?.transcodes ?? [];
     if ((rgba?.receiver?.texture_delivery?.gpu_formats ?? "") !== "none")
-      problems.push(`gpu_formats ${rgba?.receiver?.texture_delivery?.gpu_formats}, expected none`);
-    if (rows.length < expectedHashes.size) problems.push(`${rows.length} transcodes, expected at least ${expectedHashes.size}`);
-    for (const t of rows) if (!t.ok || t.format_name !== "RGBA8") problems.push(`${t.hash.slice(0, 12)}: ok ${t.ok}, target ${t.format_name}`);
+      problems.push(
+        `gpu_formats ${rgba?.receiver?.texture_delivery?.gpu_formats}, expected none`,
+      );
+    if (rows.length < expectedHashes.size)
+      problems.push(
+        `${rows.length} transcodes, expected at least ${expectedHashes.size}`,
+      );
+    for (const t of rows)
+      if (!t.ok || t.format_name !== "RGBA8")
+        problems.push(
+          `${t.hash.slice(0, 12)}: ok ${t.ok}, target ${t.format_name}`,
+        );
     const uastc = (rgba?.uploads ?? []).filter((u) => u.encoding === "uastc");
-    if (uastc.length !== rows.length) problems.push(`${uastc.length} uastc uploads for ${rows.length} transcodes`);
+    if (uastc.length !== rows.length)
+      problems.push(
+        `${uastc.length} uastc uploads for ${rows.length} transcodes`,
+      );
     const g = await lastShot(leg("gsw-rgba"));
     const notes: string[] = [];
-    if (!g || !reference) problems.push("gsw-rgba's final shot or the reference is missing");
+    if (!g || !reference)
+      problems.push("gsw-rgba's final shot or the reference is missing");
     else
       for (const t of rows) {
         const o = byHash.get(t.hash);
@@ -582,7 +770,10 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
         if (!o || !r) continue;
         const db = regionPsnr(g, reference, r);
         notes.push(`${o.name} ${db.toFixed(1)}`);
-        if (db < QUALITY_FLOOR_DB) problems.push(`${o.name}: ${db.toFixed(1)} dB, floor ${QUALITY_FLOOR_DB}`);
+        if (db < QUALITY_FLOOR_DB)
+          problems.push(
+            `${o.name}: ${db.toFixed(1)} dB, floor ${QUALITY_FLOOR_DB}`,
+          );
       }
     out.push(
       mk(
@@ -598,15 +789,23 @@ async function g8kuChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const problems = [...statusProblems("gsw-transcode-fail", fail)];
     const rows = fail?.delivery_fallbacks ?? [];
     const got = new Set(rows.map((r) => r.hash));
-    for (const h of expectedHashes) if (!got.has(h)) problems.push(`${h.slice(0, 12)}: no fallback row`);
-    for (const r of rows) if (r.reason !== "delivery-transcode-failed") problems.push(`${r.hash.slice(0, 12)}: reason ${r.reason}`);
-    if ((fail?.uploads ?? []).some((u) => u.encoding === "uastc")) problems.push("a uastc upload despite the failed transcodes");
+    for (const h of expectedHashes)
+      if (!got.has(h)) problems.push(`${h.slice(0, 12)}: no fallback row`);
+    for (const r of rows)
+      if (r.reason !== "delivery-transcode-failed")
+        problems.push(`${r.hash.slice(0, 12)}: reason ${r.reason}`);
+    if ((fail?.uploads ?? []).some((u) => u.encoding === "uastc"))
+      problems.push("a uastc upload despite the failed transcodes");
     const a = await lastShot(leg("gsw-transcode-fail"));
     const b = await lastShot(leg("gsw-keep"));
-    if (!a || !b) problems.push("gsw-transcode-fail's or gsw-keep's final shot is missing");
+    if (!a || !b)
+      problems.push("gsw-transcode-fail's or gsw-keep's final shot is missing");
     else {
       const d = exactlyEqual(a, b);
-      if (d > 0) problems.push(`${d} px differ from gsw-keep's final image (decoded everywhere)`);
+      if (d > 0)
+        problems.push(
+          `${d} px differ from gsw-keep's final image (decoded everywhere)`,
+        );
     }
     out.push(
       mk(

@@ -46,7 +46,8 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
       criterion,
       passed: problems.length === 0,
       status: problems.length === 0 ? "pass" : "fail",
-      detail: problems.length === 0 ? detail : `${problems.join("; ")} (${detail})`,
+      detail:
+        problems.length === 0 ? detail : `${problems.join("; ")} (${detail})`,
       gating,
     });
 
@@ -72,7 +73,9 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
   const report: RecReport | null = existsSync(
     join(pageDir, "client-record.json"),
   )
-    ? (JSON.parse(readFileSync(join(pageDir, "client-record.json"), "utf8")) as RecReport)
+    ? (JSON.parse(
+        readFileSync(join(pageDir, "client-record.json"), "utf8"),
+      ) as RecReport)
     : null;
 
   // Health: streamed, ended, and produced a recording.
@@ -116,7 +119,8 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
     const problems: string[] = [];
     let detail = "";
     if (!existsSync(rec)) problems.push("recording.rs13 is missing");
-    if (!existsSync(tap)) problems.push("the host's tap (stream-1.rs2) is missing");
+    if (!existsSync(tap))
+      problems.push("the host's tap (stream-1.rs2) is missing");
     if (problems.length === 0) {
       const a = readFileSync(rec);
       const b = readFileSync(tap);
@@ -148,8 +152,10 @@ export async function runG8rec1(g: string): Promise<G8aCheck[]> {
     // whose bundle had no inputs at all, is no evidence.
     const n = Array.isArray(list) ? list.length : 0;
     if (report === null) problems.push("no client-record.json");
-    else if (!Array.isArray(list)) problems.push("report has no page_harness_inputs array");
-    else if (!((report.page_inputs ?? 0) > 0)) problems.push("report lists no bundle inputs");
+    else if (!Array.isArray(list))
+      problems.push("report has no page_harness_inputs array");
+    else if (!((report.page_inputs ?? 0) > 0))
+      problems.push("report lists no bundle inputs");
     else if (n !== 0) problems.push(`${n} inputs from web/gsw-receiver/`);
     mk(
       "page-is-package-only",

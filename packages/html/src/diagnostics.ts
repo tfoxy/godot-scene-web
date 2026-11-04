@@ -41,8 +41,11 @@ export function reportUnsupportedRender(
     return;
   }
   if (typeof console !== "undefined") {
-    const suffix = info.error === undefined ? "" : ` (${describeError(info.error)})`;
-    console.warn(`[gsw] unsupported ${info.kind} "${info.id}": ${info.reason}${suffix}`);
+    const suffix =
+      info.error === undefined ? "" : ` (${describeError(info.error)})`;
+    console.warn(
+      `[gsw] unsupported ${info.kind} "${info.id}": ${info.reason}${suffix}`,
+    );
   }
 }
 

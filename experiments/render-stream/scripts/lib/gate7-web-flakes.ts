@@ -160,7 +160,8 @@ const REPEAT_PROBLEM =
 // W13d: mm13-reference's `frame F (step-k[-prev].png): N px differ (CELL n, ...)` and
 // native-pt13-equals-v12's `headless-pump13/receiver: frame F: N px differ from
 // headless-pump/receiver (CELL n, ...)` (the pump legs only; the shim legs are not gate8-mm).
-const MM13_PROBLEM = /^frame \d+ \(step-\d+(?:-prev)?\.png\): \d+ px differ \(([^()]*)\)$/;
+const MM13_PROBLEM =
+  /^frame \d+ \(step-\d+(?:-prev)?\.png\): \d+ px differ \(([^()]*)\)$/;
 const PT13_PROBLEM =
   /^(headless-pump13\/receiver): frame \d+: \d+ px differ from (headless-pump\/receiver) \(([^()]*)\)$/;
 // gate8-mm-checks.ts's pixel problems: `<leg> <label>: N px differ (CELL n, ...)` for
@@ -225,7 +226,11 @@ export function typeLavapipeParticleFlake(
     if (c.id === "mm13-reference@web")
       return ps.every((p) => {
         const m = MM13_PROBLEM.exec(p);
-        return m !== null && cellsAllowed(m[1]) && flakyLegs.includes("g8pt/headless-pump13/receiver");
+        return (
+          m !== null &&
+          cellsAllowed(m[1]) &&
+          flakyLegs.includes("g8pt/headless-pump13/receiver")
+        );
       });
     if (c.id === "native-pt13-equals-v12@web")
       return ps.every((p) => {
@@ -233,7 +238,8 @@ export function typeLavapipeParticleFlake(
         return (
           m !== null &&
           cellsAllowed(m[3]) &&
-          (flakyLegs.includes(`g8pt/${m[1]}`) || flakyLegs.includes(`g8pt/${m[2]}`))
+          (flakyLegs.includes(`g8pt/${m[1]}`) ||
+            flakyLegs.includes(`g8pt/${m[2]}`))
         );
       });
     return ps.every((p) => {

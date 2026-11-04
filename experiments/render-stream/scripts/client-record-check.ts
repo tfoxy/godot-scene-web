@@ -11,12 +11,7 @@
 //     [--pres 640x360] [--timeout-s 120] [--max-bytes N]
 
 import { execFileSync } from "node:child_process";
-import {
-  copyFileSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -164,9 +159,9 @@ async function main(): Promise<number> {
     if (a["max-bytes"]) mount.maxBytes = Number(a["max-bytes"]);
     await page.evaluate(
       (o) =>
-        (window as unknown as { __rsc: { mount(o: unknown): void } }).__rsc.mount(
-          o,
-        ),
+        (
+          window as unknown as { __rsc: { mount(o: unknown): void } }
+        ).__rsc.mount(o),
       mount,
     );
     // Wait for the stream to end (the host sends the end record at its quit frame).
@@ -179,9 +174,10 @@ async function main(): Promise<number> {
         (window as unknown as { __rsc: { stats(): unknown } }).__rsc.stats(),
       )) as { applied: number; heapBytes: number } | null;
       if (s && s.applied > 0) lastApplied = s.applied;
-      const statuses = (await page.evaluate(() =>
-        (window as unknown as { __rsc: { statuses: unknown[] } }).__rsc
-          .statuses,
+      const statuses = (await page.evaluate(
+        () =>
+          (window as unknown as { __rsc: { statuses: unknown[] } }).__rsc
+            .statuses,
       )) as { kind: string }[];
       if (statuses.some((s) => s.kind === "ended")) {
         ended = true;
@@ -190,7 +186,9 @@ async function main(): Promise<number> {
       if (statuses.some((s) => s.kind === "failed")) break;
     }
     const rec = (await page.evaluate(() =>
-      (window as unknown as { __rsc: { recording(): unknown } }).__rsc.recording(),
+      (
+        window as unknown as { __rsc: { recording(): unknown } }
+      ).__rsc.recording(),
     )) as {
       bytes: string | null;
       records: number;
@@ -198,8 +196,10 @@ async function main(): Promise<number> {
       overflow: boolean;
       resources: [string, string][];
     } | null;
-    const statuses = (await page.evaluate(() =>
-      (window as unknown as { __rsc: { statuses: unknown[] } }).__rsc.statuses,
+    const statuses = (await page.evaluate(
+      () =>
+        (window as unknown as { __rsc: { statuses: unknown[] } }).__rsc
+          .statuses,
     )) as { kind: string; reason?: string; detail?: string }[];
     await page.evaluate(() =>
       (window as unknown as { __rsc: { dispose(): void } }).__rsc.dispose(),
@@ -211,16 +211,26 @@ async function main(): Promise<number> {
       ...(reason ? { reason, detail } : {}),
     }));
     report.recording = rec
-      ? { records: rec.records, fullSeq: rec.fullSeq, overflow: rec.overflow, resources: rec.resources.length }
+      ? {
+          records: rec.records,
+          fullSeq: rec.fullSeq,
+          overflow: rec.overflow,
+          resources: rec.resources.length,
+        }
       : null;
 
     const checks: { id: string; passed: boolean; detail: string }[] = [];
     checks.push({
       id: "stream-ended",
       passed: ended,
-      detail: ended ? `ended after ${lastApplied} applies` : "the stream did not end",
+      detail: ended
+        ? `ended after ${lastApplied} applies`
+        : "the stream did not end",
     });
-    let validate: { ok: boolean; detail: string } = { ok: false, detail: "no recording" };
+    let validate: { ok: boolean; detail: string } = {
+      ok: false,
+      detail: "no recording",
+    };
     if (rec?.bytes !== null && rec?.bytes !== undefined) {
       const bytes = Buffer.from(rec.bytes, "base64");
       const recPath = join(dir, "recording.rs13");
@@ -254,10 +264,15 @@ async function main(): Promise<number> {
     });
     report.checks = checks;
     for (const c of checks)
-      console.log(`client-record-check: ${c.passed ? "pass" : "FAIL"} ${c.id}: ${c.detail}`);
+      console.log(
+        `client-record-check: ${c.passed ? "pass" : "FAIL"} ${c.id}: ${c.detail}`,
+      );
     code = checks.every((c) => c.passed) ? 0 : 1;
   } finally {
-    writeFileSync(join(dir, "client-record.json"), `${JSON.stringify(report, null, 1)}\n`);
+    writeFileSync(
+      join(dir, "client-record.json"),
+      `${JSON.stringify(report, null, 1)}\n`,
+    );
     await launched.browser.close().catch(() => {});
     await server.stop().catch(() => {});
   }
@@ -267,7 +282,9 @@ async function main(): Promise<number> {
 main().then(
   (code) => process.exit(code),
   (e: unknown) => {
-    console.error(`client-record-check: ${e instanceof Error ? e.stack : String(e)}`);
+    console.error(
+      `client-record-check: ${e instanceof Error ? e.stack : String(e)}`,
+    );
     process.exit(2);
   },
 );

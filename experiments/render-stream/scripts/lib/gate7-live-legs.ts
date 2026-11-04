@@ -157,7 +157,6 @@ export function webPageEnv(
   };
 }
 
-
 export interface BrowserLegRequest {
   /** The receiver leg directory: holds native-env.txt / native-argv.txt, receives the evidence. */
   dir: string;
@@ -198,7 +197,11 @@ export interface MappedBrowserLeg {
 /** G7v: browser-probes/dev-probe.js with its FIT switch set. */
 export function devProbeScript(mode: "plain" | "fit"): string {
   const src = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "browser-probes", "dev-probe.js"),
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "browser-probes",
+      "dev-probe.js",
+    ),
     "utf8",
   );
   return src.replace("/*FIT*/ false", mode === "fit" ? "true" : "false");
@@ -282,7 +285,10 @@ export function mapBrowserLeg(
       devProbe = value === "fit" ? "fit" : "plain";
       continue;
     }
-    if (name === "RS_RECEIVER_DEV_KEEP_TAB" || name === "RS_RECEIVER_DEV_WARM") {
+    if (
+      name === "RS_RECEIVER_DEV_KEEP_TAB" ||
+      name === "RS_RECEIVER_DEV_WARM"
+    ) {
       dropped.push(name);
       if (value !== "1")
         throw new Error(`${name} must be 1 (got ${JSON.stringify(value)})`);
@@ -343,7 +349,9 @@ export function mapBrowserLeg(
     // every other live leg speaks /7, the browsers' default.
     if (
       env.RS_RECEIVER_PROTOCOL !== undefined &&
-      !["7", "8", "9", "10", "11", "12", "13"].includes(env.RS_RECEIVER_PROTOCOL)
+      !["7", "8", "9", "10", "11", "12", "13"].includes(
+        env.RS_RECEIVER_PROTOCOL,
+      )
     )
       throw new Error(
         `RS_RECEIVER_PROTOCOL=${env.RS_RECEIVER_PROTOCOL}: a browser receiver speaks only render-stream/7 to /13`,

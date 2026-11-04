@@ -35,7 +35,9 @@ export const GATE8_COMPOSITOR_LEGS = [
 const leg = (l: string): GswLegDef => ({
   leg: l,
   replaces: true,
-  ...((GATE8_COMPOSITOR_LEGS as readonly string[]).includes(l) ? { compositor: true } : {}),
+  ...((GATE8_COMPOSITOR_LEGS as readonly string[]).includes(l)
+    ? { compositor: true }
+    : {}),
 });
 
 export const GATE8_LEGS: GswLegDef[] = [
@@ -197,10 +199,7 @@ export const GATE8_NOT_APPLICABLE: NotApplicable[] = [
  * per gate 8 group (run-gate7.sh GATE7_G8_LEGS: a source that ran some groups is judged on theirs;
  * a group that ran keeps every check). Insertion order is the flat list's (GATE8_RECEIVER_CHECKS). */
 export const GATE8_JUDGED_BY_GROUP: Record<string, string[]> = {
-  g8t: [
-    "decode-reference",
-    "sabotage-perturb-decode",
-  ],
+  g8t: ["decode-reference", "sabotage-perturb-decode"],
   g8a: [
     "g8a-legs",
     "adopt-reference",
@@ -223,15 +222,8 @@ export const GATE8_JUDGED_BY_GROUP: Record<string, string[]> = {
     "ct-channel-refused",
     "ct-diffuse-uploaded",
   ],
-  g8f: [
-    "float-exact",
-    "float-sabotage-perturb-decode",
-  ],
-  g8m: [
-    "g8m-legs",
-    "mat-adopt-reference",
-    "adopt-include-refused",
-  ],
+  g8f: ["float-exact", "float-sabotage-perturb-decode"],
+  g8m: ["g8m-legs", "mat-adopt-reference", "adopt-include-refused"],
   g8cg: [
     // g8cg (CG3)
     "g8cg-legs",
@@ -294,7 +286,10 @@ export const GATE8_JUDGED_BY_GROUP: Record<string, string[]> = {
 };
 
 /** Receiver checks of a gate 8 group not applicable to GSW (reported, never gating). */
-export const GATE8_CHECKS_NA_BY_GROUP: Record<string, Record<string, string>> = {
+export const GATE8_CHECKS_NA_BY_GROUP: Record<
+  string,
+  Record<string, string>
+> = {
   g8pt: {
     // PSE: the native receiver sabotage leaves a RendererRD host's emit_subparticle calls in; GSW
     // simulates from the builtin key and never compiles the host's process code, so its leg is not
@@ -325,10 +320,14 @@ export function gate8GroupOf(leg: string): string {
  * (then every group is judged, as before GATE7_G8_LEGS). */
 export function gate8SourceGroups(sourceDir: string): Set<string> | null {
   try {
-    const legs = JSON.parse(readFileSync(join(sourceDir, "legs.json"), "utf8")) as {
+    const legs = JSON.parse(
+      readFileSync(join(sourceDir, "legs.json"), "utf8"),
+    ) as {
       groups_run?: unknown;
     };
-    return Array.isArray(legs.groups_run) ? new Set(legs.groups_run.map(String)) : null;
+    return Array.isArray(legs.groups_run)
+      ? new Set(legs.groups_run.map(String))
+      : null;
   } catch {
     return null;
   }
@@ -447,7 +446,8 @@ export function gate8BandRegions(leg: string): BandRegion[] {
   if (leg.startsWith("g8f/")) return FLOAT_REGIONS;
   // G8kb: g8kp's legs draw gate8-tex's main scene.
   if (leg.startsWith("g8kp/")) return texRegions();
-  if (!leg.includes("/") || leg === "sabotage-perturb-decode/receiver") return texRegions();
+  if (!leg.includes("/") || leg === "sabotage-perturb-decode/receiver")
+    return texRegions();
   return [];
 }
 
@@ -462,8 +462,18 @@ export interface BandShot {
   banded: boolean;
 }
 
-function inside(regions: BandRegion[], x: number, y: number): BandRegion | undefined {
-  return regions.find((r) => x >= r.rect[0] && x < r.rect[0] + r.rect[2] && y >= r.rect[1] && y < r.rect[1] + r.rect[3]);
+function inside(
+  regions: BandRegion[],
+  x: number,
+  y: number,
+): BandRegion | undefined {
+  return regions.find(
+    (r) =>
+      x >= r.rect[0] &&
+      x < r.rect[0] + r.rect[2] &&
+      y >= r.rect[1] &&
+      y < r.rect[1] + r.rect[3],
+  );
 }
 
 /** One shot's classes against the native shot (null: either is missing or the sizes differ). */
@@ -476,11 +486,19 @@ export async function bandShot(
   const a = await decodePngRgba(gswPng);
   const b = await decodePngRgba(nativePng);
   if (!a || !b || a.width !== b.width || a.height !== b.height) return null;
-  const out = { differing: 0, delta1: 0, undecided: 0, excluded: 0, other: 0, max_other: 0 };
+  const out = {
+    differing: 0,
+    delta1: 0,
+    undecided: 0,
+    excluded: 0,
+    other: 0,
+    max_other: 0,
+  };
   for (let p = 0; p < a.width * a.height; p++) {
     const i = p * 4;
     let d = 0;
-    for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
+    for (let c = 0; c < 4; c++)
+      d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
     if (d === 0) continue;
     out.differing++;
     const r = inside(regions, p % a.width, Math.floor(p / a.width));
@@ -524,7 +542,8 @@ export async function gate8BandViews(
         if (r.startsWith("shots/") && r.endsWith(".png")) {
           const c = await bandShot(join(from, r), join(native, r), regions);
           const banded = c !== null && c.other === 0 && c.differing > 0;
-          if (c) legShots.push({ shot: r.slice("shots/".length), ...c, banded });
+          if (c)
+            legShots.push({ shot: r.slice("shots/".length), ...c, banded });
           if (banded) target = join(native, r);
         }
         await mkdir(dirname(join(view, r)), { recursive: true });

@@ -28,7 +28,13 @@ export interface TranscodeReply {
 }
 
 /** transcoder.cpp's family bits, from Godot's feature names (texture-delivery-design.md Q3). */
-export const FAMILY_BITS: Record<string, number> = { s3tc: 1, bptc: 2, rgtc: 4, etc2: 8, astc: 16 };
+export const FAMILY_BITS: Record<string, number> = {
+  s3tc: 1,
+  bptc: 2,
+  rgtc: 4,
+  etc2: 8,
+  astc: 16,
+};
 
 /** basist::transcoder_texture_format -> the Image.Format name the GSW upload names it by
  * (CompressedFormat::from_godot, or RGBA8 for the uncompressed fallback). Godot's KTX2 loader

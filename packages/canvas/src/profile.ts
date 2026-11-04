@@ -226,7 +226,10 @@ export function validateCanvasProfile(
       errors.push(`${name} invalid coverage`);
   }
   const open = new Map<string, number>();
-  const phaseStacks = new Map<string, Array<{ phase: string; startUs: bigint }>>();
+  const phaseStacks = new Map<
+    string,
+    Array<{ phase: string; startUs: bigint }>
+  >();
   const presentationIds = new Set<string>();
   const identities = new Map<
     number,
@@ -266,7 +269,8 @@ export function validateCanvasProfile(
     // enforced by begin(), not inferred from arrival order in the event stream.
     const op = `${event.runId}:${event.rendererInstanceId}:${event.operationId}`;
     const eventTime = /^(0|[1-9][0-9]*)$/.test(event.timestampUs)
-      ? BigInt(event.timestampUs) : null;
+      ? BigInt(event.timestampUs)
+      : null;
     if (eventTime !== null) {
       const time = eventTime;
       const previous = identities.get(event.operationId);
@@ -294,16 +298,20 @@ export function validateCanvasProfile(
       const stack = phaseStacks.get(op) ?? [];
       if (event.edge === "start") {
         open.set(key, (open.get(key) ?? 0) + 1);
-        if (eventTime !== null) { stack.push({ phase: event.phase!, startUs: eventTime }); phaseStacks.set(op, stack); }
-      }
-      else if (event.edge === "end") {
+        if (eventTime !== null) {
+          stack.push({ phase: event.phase!, startUs: eventTime });
+          phaseStacks.set(op, stack);
+        }
+      } else if (event.edge === "end") {
         const count = open.get(key) ?? 0;
         if (!count) errors.push(`unbalanced ${key}`);
         else if (count === 1) open.delete(key);
         else open.set(key, count - 1);
-        if (stack.at(-1)?.phase !== event.phase) errors.push(`phase order mismatch ${key}`);
+        if (stack.at(-1)?.phase !== event.phase)
+          errors.push(`phase order mismatch ${key}`);
         else if (eventTime !== null) {
-          if (eventTime < stack.at(-1)!.startUs) errors.push(`phase time reversed ${key}`);
+          if (eventTime < stack.at(-1)!.startUs)
+            errors.push(`phase time reversed ${key}`);
           stack.pop();
           if (!stack.length) phaseStacks.delete(op);
         }

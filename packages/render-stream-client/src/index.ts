@@ -43,9 +43,9 @@ export {
 } from "./loop";
 export {
   createRecorder,
+  type RecorderOptions,
   type Recording,
   type RecordKind,
-  type RecorderOptions,
   type RenderStreamRecorder,
 } from "./recorder";
 export {

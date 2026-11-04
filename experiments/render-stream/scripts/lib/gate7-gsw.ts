@@ -40,20 +40,11 @@ import { loadRecording } from "./gate0-checks";
 import type { Gate3xExpected } from "./gate3x-expected";
 import {
   CHECKER_WRITES,
-  sourceProvenanceProblems,
   type Gate7Check,
   type SourceProvenance,
+  sourceProvenanceProblems,
   viewHoldsWrite,
 } from "./gate7-adapters";
-import {
-  GATE8_LEGS,
-  GATE8_NOT_APPLICABLE,
-  GATE8_RECEIVER_CHECKS,
-  gate8BandViews,
-  gate8Lists,
-  gate8Q7Plan,
-  gate8SourceGroups,
-} from "./gate7-gsw-g8";
 import {
   GATE55_LEGS,
   GATE55_NOT_APPLICABLE,
@@ -67,6 +58,15 @@ import {
   GATE6_RECEIVER_CHECKS,
   gate6Q7Plan,
 } from "./gate7-gsw-g6";
+import {
+  GATE8_LEGS,
+  GATE8_NOT_APPLICABLE,
+  GATE8_RECEIVER_CHECKS,
+  gate8BandViews,
+  gate8Lists,
+  gate8Q7Plan,
+  gate8SourceGroups,
+} from "./gate7-gsw-g8";
 import {
   earlySteps,
   G45_LEGS,

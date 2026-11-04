@@ -10,9 +10,14 @@ import { round } from "./css-values";
  */
 
 /** Merge `name` into an existing `anchor-name` value (comma-separated), or start a fresh one. */
-export function appendAnchorName(existing: string | undefined, name: string): string {
+export function appendAnchorName(
+  existing: string | undefined,
+  name: string,
+): string {
   if (existing === undefined) return name;
-  return existing.split(",").some((entry) => entry.trim() === name) ? existing : `${existing}, ${name}`;
+  return existing.split(",").some((entry) => entry.trim() === name)
+    ? existing
+    : `${existing}, ${name}`;
 }
 
 /**
@@ -38,7 +43,9 @@ export function anchorInsetExpression(
     return base;
   }
   const magnitude = `${round(Math.abs(offset))}px`;
-  return offset < 0 ? `calc(${base} - ${magnitude})` : `calc(${base} + ${magnitude})`;
+  return offset < 0
+    ? `calc(${base} - ${magnitude})`
+    : `calc(${base} + ${magnitude})`;
 }
 
 /**
@@ -50,6 +57,8 @@ export function anchorInsetExpression(
  * edge — the same target a hand-written overflow-flip computes). `flip-block` is the same for
  * the block axis (top/bottom).
  */
-export function positionTryFallback(...kinds: Array<"flip-inline" | "flip-block" | "flip-start">): string {
+export function positionTryFallback(
+  ...kinds: Array<"flip-inline" | "flip-block" | "flip-start">
+): string {
   return kinds.join(", ");
 }

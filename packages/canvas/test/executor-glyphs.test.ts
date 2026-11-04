@@ -101,7 +101,12 @@ function fakePass(glyphsPerRun = 3): GlyphPass & {
       gl.enable(gl.BLEND);
       gl.blendEquation(gl.FUNC_ADD);
       gl.blendFunc(gl.ONE, gl.ONE);
-      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, glyphsPerRun * batchRuns.length);
+      gl.drawArraysInstanced(
+        gl.TRIANGLE_STRIP,
+        0,
+        4,
+        glyphsPerRun * batchRuns.length,
+      );
       gl.bindVertexArray(null);
       return { glyphs: glyphsPerRun * batchRuns.length, drawCalls: 1 };
     },
@@ -113,7 +118,9 @@ function fakePass(glyphsPerRun = 3): GlyphPass & {
   };
 }
 
-function setup(options: { noPass?: boolean; glyphsPerRun?: number; batch?: boolean } = {}) {
+function setup(
+  options: { noPass?: boolean; glyphsPerRun?: number; batch?: boolean } = {},
+) {
   const fake: FakeGl = createFakeGl();
   const pass = options.noPass ? null : fakePass(options.glyphsPerRun);
   if (pass) (pass as unknown as { attach(gl: unknown): void }).attach(fake.gl);
@@ -160,7 +167,10 @@ function pushGlyphs(
 
 describe("the glyph pass inside a frame", () => {
   it("batches only physically adjacent glyph commands when explicitly enabled", () => {
-    const { fake, executor, list, projection, pass } = setup({ batch: true, glyphsPerRun: 2 });
+    const { fake, executor, list, projection, pass } = setup({
+      batch: true,
+      glyphsPerRun: 2,
+    });
     pushGlyphs(list, 2);
     pushGlyphs(list, 3);
     executor.execute(list, projection);
@@ -184,7 +194,9 @@ describe("the glyph pass inside a frame", () => {
     pushGlyphs(list);
     executor.execute(list, projection);
     // Four independent glyph submissions: neither clip push/pop nor quad is batchable.
-    expect(fake.draws.map((draw) => draw.instanceCount)).toEqual([3, 3, 3, 1, 3]);
+    expect(fake.draws.map((draw) => draw.instanceCount)).toEqual([
+      3, 3, 3, 1, 3,
+    ]);
     expect(executor.stats.glyphDrawCalls).toBe(4);
   });
 
@@ -212,18 +224,24 @@ describe("the glyph pass inside a frame", () => {
     pushGlyphs(list);
     pushGlyphs(list);
     const cache = createRetainedRangeCache(fake.gl);
-    const candidates = [{
-      key: "middle-glyph",
-      start: 1,
-      end: 2,
-      bounds: { x: 0, y: 90, width: 32, height: 20 },
-      pixelRevision: 1,
-    }];
+    const candidates = [
+      {
+        key: "middle-glyph",
+        start: 1,
+        end: 2,
+        bounds: { x: 0, y: 90, width: 32, height: 20 },
+        pixelRevision: 1,
+      },
+    ];
     const cold = cache.prepare(list, projection, candidates);
-    expect(executor.execute(list, projection, { substitutions: cold })).toBe(true);
+    expect(executor.execute(list, projection, { substitutions: cold })).toBe(
+      true,
+    );
     fake.reset();
     const warm = cache.prepare(list, projection, candidates);
-    expect(executor.execute(list, projection, { substitutions: warm })).toBe(true);
+    expect(executor.execute(list, projection, { substitutions: warm })).toBe(
+      true,
+    );
     expect(executor.stats).toMatchObject({
       liveCommands: 2,
       substitutedCommands: 1,

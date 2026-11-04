@@ -422,19 +422,30 @@ export async function runG8c(
     for (const l of ["headless/capture", ...headlessReceivers, ...receivers])
       if (!ran(l)) problems = null;
     if (problems) {
-      const shim = (await readJson<CaptureShimResult>(join(root, "headless/capture", "evidence", "result.json")))
-        ?.canvas_texture_shim;
+      const shim = (
+        await readJson<CaptureShimResult>(
+          join(root, "headless/capture", "evidence", "result.json"),
+        )
+      )?.canvas_texture_shim;
       problems.push(
-        ...headlessShimProblems(shim, true, expected.canvas_ok + expected.canvas_refused).map(
-          (p) => `headless/capture: ${p}`,
-        ),
+        ...headlessShimProblems(
+          shim,
+          true,
+          expected.canvas_ok + expected.canvas_refused,
+        ).map((p) => `headless/capture: ${p}`),
       );
       for (const l of headlessReceivers)
         for (const c of expected.checkpoints) {
-          const d = await shotDiff(join(root, l), join(root, "receiver"), c.step);
+          const d = await shotDiff(
+            join(root, l),
+            join(root, "receiver"),
+            c.step,
+          );
           if (!d.present) problems.push(`${l} step ${c.step}: shot missing`);
           else if (d.differing > 0)
-            problems.push(`${l} step ${c.step}: ${d.differing} px differ from receiver (max ${d.max_delta})`);
+            problems.push(
+              `${l} step ${c.step}: ${d.differing} px differ from receiver (max ${d.max_delta})`,
+            );
         }
     }
     checks.push(
@@ -450,23 +461,44 @@ export async function runG8c(
   // --- ct-headless-off (HSD's control) -----------------------------------------------------------
   {
     let problems: string[] | null = [];
-    for (const l of ["headless-off/capture", "headless-off/receiver"]) if (!ran(l)) problems = null;
+    for (const l of ["headless-off/capture", "headless-off/receiver"])
+      if (!ran(l)) problems = null;
     if (problems) {
-      const shim = (await readJson<CaptureShimResult>(join(root, "headless-off/capture", "evidence", "result.json")))
-        ?.canvas_texture_shim;
-      problems.push(...headlessShimProblems(shim, false, 0).map((p) => `headless-off/capture: ${p}`));
-      const seqs = (await readText(join(root, "headless-off/receiver", "shot-seqs.txt")))?.trim().split(",") ?? [];
+      const shim = (
+        await readJson<CaptureShimResult>(
+          join(root, "headless-off/capture", "evidence", "result.json"),
+        )
+      )?.canvas_texture_shim;
+      problems.push(
+        ...headlessShimProblems(shim, false, 0).map(
+          (p) => `headless-off/capture: ${p}`,
+        ),
+      );
+      const seqs =
+        (await readText(join(root, "headless-off/receiver", "shot-seqs.txt")))
+          ?.trim()
+          .split(",") ?? [];
       for (const c of expected.checkpoints) {
-        const img = await decodePngRgba(join(root, "headless-off/receiver", "shots", `seq-${seqs[c.step]}.png`));
+        const img = await decodePngRgba(
+          join(
+            root,
+            "headless-off/receiver",
+            "shots",
+            `seq-${seqs[c.step]}.png`,
+          ),
+        );
         if (!img) {
           problems.push(`headless-off/receiver step ${c.step}: no shot`);
           continue;
         }
         for (const r of [...expected.drawn, ...expected.refused])
           problems.push(
-            ...regionProblems(img, expected.regions[r], "clear", expected.clear_color).map(
-              (p) => `headless-off/receiver step ${c.step} ${r}: ${p}`,
-            ),
+            ...regionProblems(
+              img,
+              expected.regions[r],
+              "clear",
+              expected.clear_color,
+            ).map((p) => `headless-off/receiver step ${c.step} ${r}: ${p}`),
           );
       }
     }
@@ -483,7 +515,12 @@ export async function runG8c(
 }
 
 interface CaptureShimResult {
-  canvas_texture_shim?: { env?: string; default?: boolean; state?: string; synthesized?: number };
+  canvas_texture_shim?: {
+    env?: string;
+    default?: boolean;
+    state?: string;
+    synthesized?: number;
+  };
 }
 
 /** ct-headless-seat / ct-headless-off: a headless capture's result.json canvas_texture_shim block.
@@ -500,8 +537,13 @@ export function headlessShimProblems(
     ? { env: "synthesize", default: true, state: "armed" }
     : { env: "off", default: false, state: "off" };
   for (const [k, v] of Object.entries(want))
-    if (shim[k as keyof typeof want] !== v) problems.push(`canvas_texture_shim.${k} ${JSON.stringify(shim[k as keyof typeof want])}, expected ${JSON.stringify(v)}`);
+    if (shim[k as keyof typeof want] !== v)
+      problems.push(
+        `canvas_texture_shim.${k} ${JSON.stringify(shim[k as keyof typeof want])}, expected ${JSON.stringify(v)}`,
+      );
   if (shim.synthesized !== synthesized)
-    problems.push(`canvas_texture_shim.synthesized ${shim.synthesized}, expected ${synthesized}`);
+    problems.push(
+      `canvas_texture_shim.synthesized ${shim.synthesized}, expected ${synthesized}`,
+    );
   return problems;
 }

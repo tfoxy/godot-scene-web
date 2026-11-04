@@ -79,7 +79,12 @@ interface Line {
   envelope_seq?: number;
 }
 
-function check(id: string, criterion: string, passed: boolean, detail: string): G8aCheck {
+function check(
+  id: string,
+  criterion: string,
+  passed: boolean,
+  detail: string,
+): G8aCheck {
   return { id, criterion, passed, status: passed ? "pass" : "fail", detail };
 }
 
@@ -104,7 +109,11 @@ function ask(request: ItemMetaRequest | null): string {
 }
 
 /** rs-core-check validate (with the ask); "ok" or the error. Writes the dump when asked. */
-function rsValidate(path: string, request: ItemMetaRequest | null | undefined, dump?: string): string {
+function rsValidate(
+  path: string,
+  request: ItemMetaRequest | null | undefined,
+  dump?: string,
+): string {
   const args = ["validate", path, "--version", "13"];
   if (request !== undefined) args.push("--item-meta-asked", ask(request));
   if (dump !== undefined) args.push("--item-meta-dump", dump);
@@ -115,7 +124,10 @@ function rsValidate(path: string, request: ItemMetaRequest | null | undefined, d
     : `${cols[1] ?? "?"}: ${(cols[2] ?? r.stderr ?? "").slice(0, 200)}`;
 }
 
-function tsValidate(path: string, request: ItemMetaRequest | null | undefined): string {
+function tsValidate(
+  path: string,
+  request: ItemMetaRequest | null | undefined,
+): string {
   try {
     const errors = validateRecording(new Uint8Array(readFileSync(path)), 13, {
       itemMeta: request,
@@ -213,19 +225,29 @@ function resolveTable(t: ItemMetaTable): Map<number, Row> {
 function tablesByFrame(
   path: string,
   request: ItemMetaRequest,
-): { frames: Map<number, Map<number, Row>>; firstFrame: number | null; error: string | null } {
+): {
+  frames: Map<number, Map<number, Row>>;
+  firstFrame: number | null;
+  error: string | null;
+} {
   const frames = new Map<number, Map<number, Row>>();
   let firstFrame: number | null = null;
-  if (!existsSync(path)) return { frames, firstFrame, error: `${path} missing` };
+  if (!existsSync(path))
+    return { frames, firstFrame, error: `${path} missing` };
   const split = splitRecords(new Uint8Array(readFileSync(path)), 13);
-  if (split.errors.length > 0) return { frames, firstFrame, error: split.errors[0] };
+  if (split.errors.length > 0)
+    return { frames, firstFrame, error: split.errors[0] };
   const v = createRecordingValidator(split.records, 13, { itemMeta: request });
   if (v.errors) return { frames, firstFrame, error: v.errors[0] };
   for (let i = 1; i < split.records.length; i++) {
     const errors = v.accept(i);
     if (errors) return { frames, firstFrame, error: errors[0] };
     const rec = split.records[i];
-    const view = new DataView(rec.bytes.buffer, rec.bytes.byteOffset, rec.bytes.byteLength);
+    const view = new DataView(
+      rec.bytes.buffer,
+      rec.bytes.byteOffset,
+      rec.bytes.byteLength,
+    );
     const metaLen = view.getUint32(4, true);
     const meta = JSON.parse(
       new TextDecoder().decode(rec.bytes.subarray(8, 8 + metaLen)),
@@ -246,9 +268,12 @@ export function oracleProblems(
   grant: ItemMetaRequest,
 ): { problems: string[]; rows: number; noNode: number; matched: number } {
   const problems: string[] = [];
-  if (dump === null) return { problems: ["no item_meta dump"], rows: 0, noNode: 0, matched: 0 };
+  if (dump === null)
+    return { problems: ["no item_meta dump"], rows: 0, noNode: 0, matched: 0 };
   const oracle = new Map<string, OracleNode>(); // rid -> the latest dump of its node
-  for (const line of jsonlOf<{ frame: number; nodes: OracleNode[] }>(oraclePath)) {
+  for (const line of jsonlOf<{ frame: number; nodes: OracleNode[] }>(
+    oraclePath,
+  )) {
     for (const n of line.nodes) oracle.set(n.rid, n);
   }
   const ids = jsonlOf<IdLine>(idsPath);
@@ -269,11 +294,15 @@ export function oracleProblems(
     if (row === null) {
       noNode += 1;
       if (node !== undefined)
-        problems.push(`row ${id} (rid ${rid}): no node, but the fixture dumped ${node.class} ${node.path}`);
+        problems.push(
+          `row ${id} (rid ${rid}): no node, but the fixture dumped ${node.class} ${node.path}`,
+        );
       continue;
     }
     if (node === undefined) {
-      problems.push(`row ${id} (rid ${rid}): a node row for a RID the fixture never dumped`);
+      problems.push(
+        `row ${id} (rid ${rid}): a node row for a RID the fixture never dumped`,
+      );
       continue;
     }
     const want = oracleIdentity(node, grant);
@@ -283,7 +312,12 @@ export function oracleProblems(
       );
       problems.push(
         `row ${id} (rid ${rid}, ${node.class} ${node.path}): differs in ${keys.join(",")}: ` +
-          keys.map((k) => `${JSON.stringify(row[k])} != fixture ${JSON.stringify(want[k])}`).join(", "),
+          keys
+            .map(
+              (k) =>
+                `${JSON.stringify(row[k])} != fixture ${JSON.stringify(want[k])}`,
+            )
+            .join(", "),
       );
       continue;
     }
@@ -293,7 +327,9 @@ export function oracleProblems(
   const seenIds = new Set(rows.map(([k]) => Number(k)));
   for (const l of ids) {
     if (oracle.has(l.rid) && !seenIds.has(l.id))
-      problems.push(`id ${l.id} (rid ${l.rid}, ${oracle.get(l.rid)?.path}) has no row`);
+      problems.push(
+        `id ${l.id} (rid ${l.rid}, ${oracle.get(l.rid)?.path}) has no row`,
+      );
   }
   return { problems, rows: rows.length, noNode, matched };
 }
@@ -333,14 +369,24 @@ function txsOf(path: string): Map<number, Tx> {
   const split = splitRecords(new Uint8Array(readFileSync(path)), 13);
   const frameOfSeq = new Map<number, number>();
   for (const rec of split.records) {
-    const view = new DataView(rec.bytes.buffer, rec.bytes.byteOffset, rec.bytes.byteLength);
+    const view = new DataView(
+      rec.bytes.buffer,
+      rec.bytes.byteOffset,
+      rec.bytes.byteLength,
+    );
     if (rec.bytes.byteLength < 8) continue;
     const metaLen = view.getUint32(4, true);
     const text = new TextDecoder().decode(rec.bytes.subarray(8, 8 + metaLen));
     if (!text.startsWith('{"type":"transaction"')) continue;
-    const meta = JSON.parse(text) as { seq: number; frame: number; base_seq?: number | null };
+    const meta = JSON.parse(text) as {
+      seq: number;
+      frame: number;
+      base_seq?: number | null;
+    };
     frameOfSeq.set(meta.seq, meta.frame);
-    const norm = text.replace(/"seq":\d+/, '"seq":0').replace(/"base_seq":\d+/, '"base_seq":0');
+    const norm = text
+      .replace(/"seq":\d+/, '"seq":0')
+      .replace(/"base_seq":\d+/, '"base_seq":0');
     const h = createHash("sha256");
     h.update(norm);
     h.update(rec.bytes.subarray(8 + metaLen));
@@ -359,14 +405,18 @@ function txsOf(path: string): Map<number, Tx> {
 
 function txByFrame(ls: Line[]): Map<number, Line> {
   const out = new Map<number, Line>();
-  for (const l of ls) if (l.kind === "transaction" && l.frame !== undefined) out.set(l.frame, l);
+  for (const l of ls)
+    if (l.kind === "transaction" && l.frame !== undefined) out.set(l.frame, l);
   return out;
 }
 
 /** meta-shared: A/B records equal (raw, coded) over the same range; C's transactions equal each
  * opted-in viewer's (seq and base_seq aside) at every frame both formed from the same base frame,
  * and byte for byte, raw and coded, wherever their seqs agree too. */
-export function sharedProblems(leg: string): { problems: string[]; detail: string } {
+export function sharedProblems(leg: string): {
+  problems: string[];
+  detail: string;
+} {
   const problems: string[] = [];
   const a = lines(join(leg, "a"));
   const b = lines(join(leg, "b"));
@@ -378,12 +428,14 @@ export function sharedProblems(leg: string): { problems: string[]; detail: strin
     const lb = bm.get(range);
     if (lb === undefined) continue;
     compared += 1;
-    if (la.sha256 !== lb.sha256) problems.push(`${range}: A and B item_meta records differ (raw)`);
+    if (la.sha256 !== lb.sha256)
+      problems.push(`${range}: A and B item_meta records differ (raw)`);
     if (la.wire_sha256 !== lb.wire_sha256)
       problems.push(`${range}: A and B item_meta records differ (coded)`);
   }
   if (am.size === 0) problems.push("A got no item_meta record");
-  if (compared === 0) problems.push("A and B have no item_meta record over the same range");
+  if (compared === 0)
+    problems.push("A and B have no item_meta record over the same range");
   const ct = txByFrame(c);
   const cTx = txsOf(join(leg, "c", "decoded.rs13"));
   const counts: string[] = [];
@@ -398,55 +450,92 @@ export function sharedProblems(leg: string): { problems: string[]; detail: strin
       const y = cTx.get(frame);
       if (y === undefined || y.baseFrame !== x.baseFrame) continue;
       normalized += 1;
-      if (x.norm !== y.norm) problems.push(`frame ${frame}: ${name}'s transaction != C's (seq aside)`);
+      if (x.norm !== y.norm)
+        problems.push(
+          `frame ${frame}: ${name}'s transaction != C's (seq aside)`,
+        );
     }
     let strict = 0;
     for (const [frame, lx] of txByFrame(ls)) {
       const lc = ct.get(frame);
-      if (lc === undefined || lc.seq !== lx.seq || lc.envelope_seq !== lx.envelope_seq) continue;
+      if (
+        lc === undefined ||
+        lc.seq !== lx.seq ||
+        lc.envelope_seq !== lx.envelope_seq
+      )
+        continue;
       const xb = xTx.get(frame);
       const yb = cTx.get(frame);
-      if (xb === undefined || yb === undefined || xb.baseFrame !== yb.baseFrame) continue;
+      if (xb === undefined || yb === undefined || xb.baseFrame !== yb.baseFrame)
+        continue;
       strict += 1;
-      if (lx.sha256 !== lc.sha256) problems.push(`frame ${frame}: ${name}'s transaction != C's (raw)`);
+      if (lx.sha256 !== lc.sha256)
+        problems.push(`frame ${frame}: ${name}'s transaction != C's (raw)`);
       if (lx.wire_sha256 !== lc.wire_sha256)
         problems.push(`frame ${frame}: ${name}'s transaction != C's (coded)`);
     }
     strictTotal += strict;
-    if (normalized < 10) problems.push(`only ${normalized} transactions of ${name} and C share a frame and base`);
-    counts.push(`${name}/C: ${normalized} compared, ${strict} byte for byte (raw and coded)`);
+    if (normalized < 10)
+      problems.push(
+        `only ${normalized} transactions of ${name} and C share a frame and base`,
+      );
+    counts.push(
+      `${name}/C: ${normalized} compared, ${strict} byte for byte (raw and coded)`,
+    );
   }
-  const summary = readJson<{ connections?: Array<{ item_meta?: { shared: number; full: number; delta: number } }> }>(
-    join(leg, "host", "evidence", "live-summary.json"),
+  const summary = readJson<{
+    connections?: Array<{
+      item_meta?: { shared: number; full: number; delta: number };
+    }>;
+  }>(join(leg, "host", "evidence", "live-summary.json"));
+  const shared = (summary?.connections ?? []).reduce(
+    (n, s) => n + (s.item_meta?.shared ?? 0),
+    0,
   );
-  const shared = (summary?.connections ?? []).reduce((n, s) => n + (s.item_meta?.shared ?? 0), 0);
-  if (shared === 0) problems.push("the host shared no item_meta record (memo hits 0)");
+  if (shared === 0)
+    problems.push("the host shared no item_meta record (memo hits 0)");
   return {
     problems: problems.slice(0, 8),
     detail: `${compared} A/B records compared; ${counts.join("; ")}; ${strictTotal} byte-equal in all; ${shared} memo hits`,
   };
 }
 
-function lateJoinProblems(leg: string, joiner: string): { problems: string[]; detail: string } {
+function lateJoinProblems(
+  leg: string,
+  joiner: string,
+): { problems: string[]; detail: string } {
   const a = tablesByFrame(join(leg, "a", "decoded.rs13"), REQUEST);
   const d = tablesByFrame(join(leg, joiner, "decoded.rs13"), REQUEST);
   const problems: string[] = [];
   if (a.error !== null) problems.push(`A: ${a.error}`);
   if (d.error !== null) problems.push(`${joiner}: ${d.error}`);
   const f = d.firstFrame;
-  if (f === null) return { problems: [...problems, `${joiner} got no transaction`], detail: "" };
+  if (f === null)
+    return {
+      problems: [...problems, `${joiner} got no transaction`],
+      detail: "",
+    };
   const mine = d.frames.get(f) ?? new Map<number, Row>();
   const theirs = a.frames.get(f);
   if (theirs === undefined)
-    return { problems: [...problems, `A has no transaction at frame ${f}`], detail: "" };
+    return {
+      problems: [...problems, `A has no transaction at frame ${f}`],
+      detail: "",
+    };
   for (const [id, row] of theirs) {
-    if (!mine.has(id)) problems.push(`frame ${f}: A holds row ${id}, ${joiner}'s full lacks it`);
-    else if (!sameIdentity(mine.get(id) ?? null, row)) problems.push(`frame ${f}: row ${id} differs`);
+    if (!mine.has(id))
+      problems.push(`frame ${f}: A holds row ${id}, ${joiner}'s full lacks it`);
+    else if (!sameIdentity(mine.get(id) ?? null, row))
+      problems.push(`frame ${f}: row ${id} differs`);
   }
   for (const id of mine.keys())
-    if (!theirs.has(id)) problems.push(`frame ${f}: ${joiner}'s full has row ${id}, A does not`);
+    if (!theirs.has(id))
+      problems.push(`frame ${f}: ${joiner}'s full has row ${id}, A does not`);
   if (mine.size === 0) problems.push(`${joiner}'s first table is empty`);
-  return { problems: problems.slice(0, 8), detail: `frame ${f}: ${mine.size} rows` };
+  return {
+    problems: problems.slice(0, 8),
+    detail: `frame ${f}: ${mine.size} rows`,
+  };
 }
 
 /** The host's tap of a one-connection leg (GRC_LIVE_TAP_DIR: stream-1.rs2, whatever the version). */
@@ -459,11 +548,20 @@ function viewerReport(dir: string): Record<string, unknown> | null {
 }
 
 function legSkipped(g: string, leg: string): boolean {
-  return skipped(join(g, leg)) !== null || skipped(join(g, leg, "host")) !== null;
+  return (
+    skipped(join(g, leg)) !== null || skipped(join(g, leg, "host")) !== null
+  );
 }
 
 function notRun(id: string, criterion: string): G8aCheck {
-  return { id, criterion, passed: true, status: "not-run", detail: `${id}: leg skipped by tier`, gating: false };
+  return {
+    id,
+    criterion,
+    passed: true,
+    status: "not-run",
+    detail: `${id}: leg skipped by tier`,
+    gating: false,
+  };
 }
 
 export async function runG8tag(g: string): Promise<G8aCheck[]> {
@@ -472,7 +570,10 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
     live: { a: REQUEST, b: REQUEST, c: null, d: REQUEST },
     reconnect: { a: REQUEST, e: REQUEST, f: REQUEST },
     resync: { a: REQUEST },
-    refused: { a: { fields: [], groups: ["rs_hand"], meta_keys: [] }, b: REQUEST },
+    refused: {
+      a: { fields: [], groups: ["rs_hand"], meta_keys: [] },
+      b: REQUEST,
+    },
     "grant-off": { c: null },
   };
 
@@ -485,16 +586,26 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
       for (const [v, request] of Object.entries(viewers)) {
         // A viewer that resynced skipped transactions (a seq gap in what it decoded): its
         // connection's tap, everything the host formed for it, is the stream to validate.
-        const path = leg === "resync" ? tapOf(join(g, leg)) : join(g, leg, v, "decoded.rs13");
+        const path =
+          leg === "resync"
+            ? tapOf(join(g, leg))
+            : join(g, leg, v, "decoded.rs13");
         const report = viewerReport(join(g, leg, v));
         if (report === null || !existsSync(path)) {
           problems.push(`${leg}/${v}: no viewer output`);
           continue;
         }
-        if (report.fatal !== null) problems.push(`${leg}/${v}: ${String(report.fatal)}`);
+        if (report.fatal !== null)
+          problems.push(`${leg}/${v}: ${String(report.fatal)}`);
         // A viewer that closed early (live/e) has no end record: TS's finish() would say so.
         const rs = rsValidate(path, request);
-        if (rs !== "ok" && !(report.closed_early === true && rs.startsWith("recording-incomplete")))
+        if (
+          rs !== "ok" &&
+          !(
+            report.closed_early === true &&
+            rs.startsWith("recording-incomplete")
+          )
+        )
           problems.push(`${leg}/${v} rs-core-check: ${rs}`);
         if (report.closed_early !== true) {
           const ts = tsValidate(path, request);
@@ -514,11 +625,17 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
         const ts = tsValidate(path, undefined);
         if (rs !== "ok") problems.push(`file/${sink} rs-core-check: ${rs}`);
         if (ts !== "ok") problems.push(`file/${sink} TS: ${ts}`);
-        const recs = splitRecords(new Uint8Array(readFileSync(path)), 13).records;
+        const recs = splitRecords(
+          new Uint8Array(readFileSync(path)),
+          13,
+        ).records;
         const metas = recs.filter((r) =>
-          new TextDecoder().decode(r.bytes.subarray(8, 40)).startsWith('{"type":"item_meta"'),
+          new TextDecoder()
+            .decode(r.bytes.subarray(8, 40))
+            .startsWith('{"type":"item_meta"'),
         ).length;
-        if (metas === 0) problems.push(`file/${sink} carries no item_meta record`);
+        if (metas === 0)
+          problems.push(`file/${sink} carries no item_meta record`);
         n += 1;
       }
     }
@@ -527,15 +644,28 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
         "tag-validate",
         "TAG1: every g8tag viewer's stream and file recording passes rs-core-check and the TS validator with its hello's ask (item-meta-unexpected, -orphan, -form, -missing, -id, -string, -schema), and the file sinks carry item_meta records",
         problems.length === 0 && n > 0,
-        problems.length === 0 ? `${n} streams valid` : problems.slice(0, 8).join("; "),
+        problems.length === 0
+          ? `${n} streams valid`
+          : problems.slice(0, 8).join("; "),
       ),
     );
   }
 
   // tag-meta-oracle (live/a), tag-meta-file-oracle (file's patch sink)
-  const oracleOf = (leg: string, stream: string): ReturnType<typeof oracleProblems> => {
-    const dumpPath = join(g, leg, `${stream.replace(/\//g, "-")}.item-meta-dump.json`);
-    const v = rsValidate(join(g, leg, stream), leg === "file" ? undefined : REQUEST, dumpPath);
+  const oracleOf = (
+    leg: string,
+    stream: string,
+  ): ReturnType<typeof oracleProblems> => {
+    const dumpPath = join(
+      g,
+      leg,
+      `${stream.replace(/\//g, "-")}.item-meta-dump.json`,
+    );
+    const v = rsValidate(
+      join(g, leg, stream),
+      leg === "file" ? undefined : REQUEST,
+      dumpPath,
+    );
     const r = oracleProblems(
       readJson<Dump>(dumpPath),
       join(g, leg, "host", "oracle.jsonl"),
@@ -545,7 +675,12 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
     if (v !== "ok") r.problems.unshift(`validate: ${v}`);
     return r;
   };
-  const oracleCheck = (id: string, leg: string, stream: string, what: string): void => {
+  const oracleCheck = (
+    id: string,
+    leg: string,
+    stream: string,
+    what: string,
+  ): void => {
     if (legSkipped(g, leg)) {
       checks.push(notRun(id, what));
       return;
@@ -577,7 +712,8 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
   );
 
   // tag-meta-shared
-  if (legSkipped(g, "live")) checks.push(notRun("tag-meta-shared", "meta-shared"));
+  if (legSkipped(g, "live"))
+    checks.push(notRun("tag-meta-shared", "meta-shared"));
   else {
     const r = sharedProblems(join(g, "live"));
     checks.push(
@@ -585,13 +721,16 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
         "tag-meta-shared",
         "TAG1 meta-shared: two lockstep viewers with the same request get byte-identical item_meta records (raw and coded) from the host's memo, and an opted-out viewer of the same host gets the same transaction bytes as an opted-in one, raw and coded, at every transaction",
         r.problems.length === 0,
-        r.problems.length === 0 ? r.detail : `${r.problems.join("; ")} (${r.detail})`,
+        r.problems.length === 0
+          ? r.detail
+          : `${r.problems.join("; ")} (${r.detail})`,
       ),
     );
   }
 
   // tag-late-join, tag-reconnect
-  if (legSkipped(g, "live")) checks.push(notRun("tag-late-join", "late-join-meta"));
+  if (legSkipped(g, "live"))
+    checks.push(notRun("tag-late-join", "late-join-meta"));
   else {
     const d = lateJoinProblems(join(g, "live"), "d");
     checks.push(
@@ -603,11 +742,13 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
       ),
     );
   }
-  if (legSkipped(g, "reconnect")) checks.push(notRun("tag-reconnect", "reconnect"));
+  if (legSkipped(g, "reconnect"))
+    checks.push(notRun("tag-reconnect", "reconnect"));
   else {
     const f = lateJoinProblems(join(g, "reconnect"), "f");
     const e = viewerReport(join(g, "reconnect", "e"));
-    if (e?.closed_early !== true) f.problems.push("reconnect/e did not close early");
+    if (e?.closed_early !== true)
+      f.problems.push("reconnect/e did not close early");
     checks.push(
       check(
         "tag-reconnect",
@@ -621,18 +762,25 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
   // tag-rekey
   if (legSkipped(g, "live")) checks.push(notRun("tag-rekey", "rekey"));
   else {
-    const stats = readJson<{ rekey_copies?: number }>(join(g, "live", "host", "evidence", "item-meta.json"));
+    const stats = readJson<{ rekey_copies?: number }>(
+      join(g, "live", "host", "evidence", "item-meta.json"),
+    );
     const ids = jsonlOf<IdLine>(join(g, "live", "host", "ids.jsonl"));
-    const dump = readJson<Dump>(join(g, "live", "a-decoded.rs13.item-meta-dump.json"));
+    const dump = readJson<Dump>(
+      join(g, "live", "a-decoded.rs13.item-meta-dump.json"),
+    );
     const problems: string[] = [];
     const copies = ids.filter((l) => l.copy);
-    if ((stats?.rekey_copies ?? 0) < 1 || copies.length === 0) problems.push("no rekey copy");
+    if ((stats?.rekey_copies ?? 0) < 1 || copies.length === 0)
+      problems.push("no rekey copy");
     for (const c of copies) {
       const orig = ids.find((l) => l.rid === c.rid && l.id !== c.id && !l.copy);
       const a = dump?.seen[String(c.id)];
       const b = orig !== undefined ? dump?.seen[String(orig.id)] : undefined;
-      if (orig === undefined) problems.push(`copy ${c.id}: no original entry for rid ${c.rid}`);
-      else if (a === undefined) problems.push(`copy ${c.id}: live/a got no row`);
+      if (orig === undefined)
+        problems.push(`copy ${c.id}: no original entry for rid ${c.rid}`);
+      else if (a === undefined)
+        problems.push(`copy ${c.id}: live/a got no row`);
       else if (b !== undefined && JSON.stringify(a) !== JSON.stringify(b))
         problems.push(`copy ${c.id} row != original ${orig.id}'s`);
     }
@@ -641,7 +789,9 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
         "tag-rekey",
         "TAG1 rekey: under GRC_UNKNOWN_ITEM=skip a subtree re-keyed out of a withheld parent keeps its identity: the host copies the entry to the fresh id, and the viewer's row for it equals the original's",
         problems.length === 0,
-        problems.length === 0 ? `${copies.length} copied: ids ${copies.map((c) => c.id).join(",")}` : problems.join("; "),
+        problems.length === 0
+          ? `${copies.length} copied: ids ${copies.map((c) => c.id).join(",")}`
+          : problems.join("; "),
       ),
     );
   }
@@ -651,9 +801,14 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
   else {
     const r = viewerReport(join(g, "resync", "a"));
     const ls = lines(join(g, "resync", "a"));
-    const fulls = ls.filter((l) => l.kind === "item_meta" && l.form === "full").length;
+    const fulls = ls.filter(
+      (l) => l.kind === "item_meta" && l.form === "full",
+    ).length;
     const resyncs = ((r?.resyncs as unknown[]) ?? []).length;
-    const ok = resyncs >= 1 && fulls >= 2 && rsValidate(tapOf(join(g, "resync")), REQUEST) === "ok";
+    const ok =
+      resyncs >= 1 &&
+      fulls >= 2 &&
+      rsValidate(tapOf(join(g, "resync")), REQUEST) === "ok";
     checks.push(
       check(
         "tag-resync",
@@ -670,20 +825,33 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
     const a = viewerReport(join(g, "refused", "a"));
     const b = lines(join(g, "refused", "b"));
     const dumpPath = join(g, "refused", "b.item-meta-dump.json");
-    const v = rsValidate(join(g, "refused", "b", "decoded.rs13"), REQUEST, dumpPath);
+    const v = rsValidate(
+      join(g, "refused", "b", "decoded.rs13"),
+      REQUEST,
+      dumpPath,
+    );
     const dump = readJson<{ grant: ItemMetaRequest | null }>(dumpPath);
     const problems: string[] = [];
-    if ((a?.item_meta_records as number) !== 0) problems.push("the refused viewer got records");
-    if (!b.some((l) => l.kind === "item_meta")) problems.push("the partial viewer got no record");
+    if ((a?.item_meta_records as number) !== 0)
+      problems.push("the refused viewer got records");
+    if (!b.some((l) => l.kind === "item_meta"))
+      problems.push("the partial viewer got no record");
     if (v !== "ok") problems.push(`b: ${v}`);
-    if (JSON.stringify(dump?.grant) !== JSON.stringify({ fields: ["class"], groups: [], meta_keys: [] }))
-      problems.push(`b's grant ${JSON.stringify(dump?.grant)}, expected class only`);
+    if (
+      JSON.stringify(dump?.grant) !==
+      JSON.stringify({ fields: ["class"], groups: [], meta_keys: [] })
+    )
+      problems.push(
+        `b's grant ${JSON.stringify(dump?.grant)}, expected class only`,
+      );
     checks.push(
       check(
         "tag-refused",
         "TAG1 refused: under GRC_ITEM_META=class a viewer asking only for groups gets no record at all, and one asking for everything gets the grant {class} (one column per row)",
         problems.length === 0,
-        problems.length === 0 ? "refused: 0 records; partial: grant class" : problems.join("; "),
+        problems.length === 0
+          ? "refused: 0 records; partial: grant class"
+          : problems.join("; "),
       ),
     );
   }
@@ -691,7 +859,9 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
   // tag-off
   if (legSkipped(g, "grant-off")) checks.push(notRun("tag-off", "off"));
   else {
-    const on = existsSync(join(g, "grant-off", "host", "evidence", "item-meta.json"));
+    const on = existsSync(
+      join(g, "grant-off", "host", "evidence", "item-meta.json"),
+    );
     const c = viewerReport(join(g, "grant-off", "c"));
     checks.push(
       check(
@@ -705,9 +875,13 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
 
   // tag-cost (informative)
   {
-    const s = readJson<{ resolved: number; resolve_ns: number; max_pass_ns: number; max_pass_items: number; passes: number }>(
-      join(g, "live", "host", "evidence", "item-meta.json"),
-    );
+    const s = readJson<{
+      resolved: number;
+      resolve_ns: number;
+      max_pass_ns: number;
+      max_pass_items: number;
+      passes: number;
+    }>(join(g, "live", "host", "evidence", "item-meta.json"));
     checks.push({
       id: "tag-cost",
       criterion: "TAG1 (informative): the host's resolution cost on tag-scene",
@@ -722,7 +896,12 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
   }
 
   // tag-sabotage-*
-  const sabotage = (id: string, leg: string, what: string, caught: () => string | null): void => {
+  const sabotage = (
+    id: string,
+    leg: string,
+    what: string,
+    caught: () => string | null,
+  ): void => {
     if (legSkipped(g, leg)) {
       checks.push(notRun(id, what));
       return;
@@ -746,7 +925,9 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
     () => {
       const r = oracleOf("sabotage-before-ready", "a/decoded.rs13");
       const groups = r.problems.find((p) => /differs in [a-z,]*groups/.test(p));
-      return groups !== undefined ? `meta-oracle: ${groups.slice(0, 200)}` : null;
+      return groups !== undefined
+        ? `meta-oracle: ${groups.slice(0, 200)}`
+        : null;
     },
   );
   sabotage(
@@ -763,10 +944,15 @@ export async function runG8tag(g: string): Promise<G8aCheck[]> {
     "sabotage-id-off-by-one",
     "TAG1 sabotage meta-id-off-by-one (every row's id + 1) fails meta-oracle or the validator's item-meta-id",
     () => {
-      const v = rsValidate(join(g, "sabotage-id-off-by-one", "a", "decoded.rs13"), REQUEST);
+      const v = rsValidate(
+        join(g, "sabotage-id-off-by-one", "a", "decoded.rs13"),
+        REQUEST,
+      );
       if (v.startsWith("item-meta-id")) return v;
       const r = oracleOf("sabotage-id-off-by-one", "a/decoded.rs13");
-      return r.problems.length > 0 ? `meta-oracle: ${r.problems[0].slice(0, 200)}` : null;
+      return r.problems.length > 0
+        ? `meta-oracle: ${r.problems[0].slice(0, 200)}`
+        : null;
     },
   );
   return checks;

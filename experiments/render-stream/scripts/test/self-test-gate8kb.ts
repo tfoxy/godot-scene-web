@@ -39,38 +39,114 @@ function ktx2Header(w: number, h: number): Uint8Array {
 
 const ALL = ["s3tc", "bptc", "rgtc", "etc2", "astc"];
 // 1
-expect(JSON.stringify(webglFamilies(ktx2Header(160, 128), ALL)) === JSON.stringify(ALL), "aligned keeps every family");
-expect(JSON.stringify(webglFamilies(ktx2Header(150, 110), ALL)) === JSON.stringify(["etc2", "astc"]), "unaligned drops BC");
-expect(JSON.stringify(webglFamilies(ktx2Header(152, 110), ["bptc"])) === "[]", "one unaligned side is enough");
-expect(webglFamilies(new Uint8Array(10), ["bptc"]).length === 1, "a short buffer is left to the transcoder");
+expect(
+  JSON.stringify(webglFamilies(ktx2Header(160, 128), ALL)) ===
+    JSON.stringify(ALL),
+  "aligned keeps every family",
+);
+expect(
+  JSON.stringify(webglFamilies(ktx2Header(150, 110), ALL)) ===
+    JSON.stringify(["etc2", "astc"]),
+  "unaligned drops BC",
+);
+expect(
+  JSON.stringify(webglFamilies(ktx2Header(152, 110), ["bptc"])) === "[]",
+  "one unaligned side is enough",
+);
+expect(
+  webglFamilies(new Uint8Array(10), ["bptc"]).length === 1,
+  "a short buffer is left to the transcoder",
+);
 
 // 2
-expect(predictGswTarget(4, ALL, 160, 128) === "ASTC_4x4", "4 components: astc first");
-expect(predictGswTarget(4, ["s3tc", "bptc", "rgtc"], 160, 128) === "BPTC_RGBA", "desktop: BC7");
-expect(predictGswTarget(4, ["s3tc", "bptc", "rgtc"], 150, 110) === "RGBA8", "desktop unaligned: RGBA8");
-expect(predictGswTarget(4, ["etc2", "astc"], 150, 110) === "ASTC_4x4", "phone unaligned: ASTC");
+expect(
+  predictGswTarget(4, ALL, 160, 128) === "ASTC_4x4",
+  "4 components: astc first",
+);
+expect(
+  predictGswTarget(4, ["s3tc", "bptc", "rgtc"], 160, 128) === "BPTC_RGBA",
+  "desktop: BC7",
+);
+expect(
+  predictGswTarget(4, ["s3tc", "bptc", "rgtc"], 150, 110) === "RGBA8",
+  "desktop unaligned: RGBA8",
+);
+expect(
+  predictGswTarget(4, ["etc2", "astc"], 150, 110) === "ASTC_4x4",
+  "phone unaligned: ASTC",
+);
 expect(predictGswTarget(4, ["s3tc"], 16, 16) === "DXT5", "s3tc only: BC3");
-expect(predictGswTarget(4, ["etc2"], 16, 16) === "ETC2_RGBA8", "etc2 only: ETC2 RGBA");
-expect(predictGswTarget(3, ["etc2", "astc"], 16, 16) === "ASTC_4x4", "3 components take ASTC over ETC1 (G8kb2)");
-expect(predictGswTarget(3, ["etc2", "astc"], 150, 110) === "ASTC_4x4", "3 components, unaligned: still ASTC");
-expect(predictGswTarget(3, ["etc2"], 16, 16) === "ETC2_RGB8", "3 components, ETC2 only: ETC1");
-expect(predictGswTarget(3, ["s3tc", "bptc", "rgtc", "astc"], 16, 16) === "BPTC_RGBA", "3 components: BC7 stays ahead of ASTC");
-expect(predictGswTarget(3, [], 16, 16) === "RGBA8", "3 components, none: RGBA8");
-expect(predictGswTarget(3, ["bptc"], 150, 110) === "RGBA8", "3 components, BC7 only, unaligned: RGBA8");
-expect(predictGswTarget(3, ["s3tc", "bptc"], 16, 16) === "BPTC_RGBA", "3 components: BC7 first");
+expect(
+  predictGswTarget(4, ["etc2"], 16, 16) === "ETC2_RGBA8",
+  "etc2 only: ETC2 RGBA",
+);
+expect(
+  predictGswTarget(3, ["etc2", "astc"], 16, 16) === "ASTC_4x4",
+  "3 components take ASTC over ETC1 (G8kb2)",
+);
+expect(
+  predictGswTarget(3, ["etc2", "astc"], 150, 110) === "ASTC_4x4",
+  "3 components, unaligned: still ASTC",
+);
+expect(
+  predictGswTarget(3, ["etc2"], 16, 16) === "ETC2_RGB8",
+  "3 components, ETC2 only: ETC1",
+);
+expect(
+  predictGswTarget(3, ["s3tc", "bptc", "rgtc", "astc"], 16, 16) === "BPTC_RGBA",
+  "3 components: BC7 stays ahead of ASTC",
+);
+expect(
+  predictGswTarget(3, [], 16, 16) === "RGBA8",
+  "3 components, none: RGBA8",
+);
+expect(
+  predictGswTarget(3, ["bptc"], 150, 110) === "RGBA8",
+  "3 components, BC7 only, unaligned: RGBA8",
+);
+expect(
+  predictGswTarget(3, ["s3tc", "bptc"], 16, 16) === "BPTC_RGBA",
+  "3 components: BC7 first",
+);
 expect(predictGswTarget(3, ["s3tc"], 16, 16) === "DXT1", "3 components: BC1");
-expect(predictGswTarget(2, ["rgtc"], 16, 16) === "RGTC_RG", "2 components: BC5");
+expect(
+  predictGswTarget(2, ["rgtc"], 16, 16) === "RGTC_RG",
+  "2 components: BC5",
+);
 expect(predictGswTarget(1, [], 16, 16) === "RGBA8", "nothing: RGBA8");
-expect(predictGswTarget(4, ["bptc"], 16, 16) !== "ASTC_4x4", "a family not stated is never taken");
+expect(
+  predictGswTarget(4, ["bptc"], 16, 16) !== "ASTC_4x4",
+  "a family not stated is never taken",
+);
 
 // 3
-const IMAGE_NAMES = ["RGBA8", "DXT1", "DXT5", "RGTC_R", "RGTC_RG", "BPTC_RGBA", "ETC2_RGB8", "ETC2_RGBA8", "ASTC_4x4"];
+const IMAGE_NAMES = [
+  "RGBA8",
+  "DXT1",
+  "DXT5",
+  "RGTC_R",
+  "RGTC_RG",
+  "BPTC_RGBA",
+  "ETC2_RGB8",
+  "ETC2_RGBA8",
+  "ASTC_4x4",
+];
 for (const [code, name] of Object.entries(TARGET_FORMAT))
-  expect(IMAGE_NAMES.includes(name), `target ${code} (${name}) is a known upload name`);
-expect(TARGET_FORMAT[13] === "RGBA8" && TARGET_FORMAT[10] === "ASTC_4x4" && TARGET_FORMAT[6] === "BPTC_RGBA", "basist codes map to their formats");
+  expect(
+    IMAGE_NAMES.includes(name),
+    `target ${code} (${name}) is a known upload name`,
+  );
+expect(
+  TARGET_FORMAT[13] === "RGBA8" &&
+    TARGET_FORMAT[10] === "ASTC_4x4" &&
+    TARGET_FORMAT[6] === "BPTC_RGBA",
+  "basist codes map to their formats",
+);
 
 if (failures > 0) {
-  console.error(`self-test-gate8kb: ${failures} assertion(s) failed, ${passed} passed`);
+  console.error(
+    `self-test-gate8kb: ${failures} assertion(s) failed, ${passed} passed`,
+  );
   process.exit(1);
 }
 console.log(`self-test-gate8kb: ${passed}/${passed} assertions passed`);

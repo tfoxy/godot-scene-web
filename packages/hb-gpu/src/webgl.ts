@@ -1686,7 +1686,10 @@ export function createHbGpuRenderer(
     if (perInstanceRunState) {
       uViewProjection = gl.getUniformLocation(created, "u_viewProjection");
     } else {
-      uMatViewProjection = gl.getUniformLocation(created, "u_matViewProjection");
+      uMatViewProjection = gl.getUniformLocation(
+        created,
+        "u_matViewProjection",
+      );
     }
     uViewport = gl.getUniformLocation(created, "u_viewport");
     if (!perInstanceRunState) {
@@ -1725,7 +1728,13 @@ export function createHbGpuRenderer(
         ["a_emPerPos", aEmPerPos],
         ["a_glyphLoc", aGlyphLoc],
         ...(perInstanceRunState
-          ? [["a_model0", aModel0], ["a_model1", aModel1], ["a_model2", aModel2], ["a_color", aColor], ["a_spreadPx", aSpreadPx]] as const
+          ? ([
+              ["a_model0", aModel0],
+              ["a_model1", aModel1],
+              ["a_model2", aModel2],
+              ["a_color", aColor],
+              ["a_spreadPx", aSpreadPx],
+            ] as const)
           : []),
       ] as const
     )
@@ -2374,7 +2383,8 @@ export function createHbGpuRenderer(
       instanceFloats[base + 8] = 1 / scale;
       instanceUints[base + 9] = slot.loc >>> 0;
       if (perInstanceRunState) {
-        for (let i = 0; i < 6; i += 1) instanceFloats[base + 10 + i] = model[i]!;
+        for (let i = 0; i < 6; i += 1)
+          instanceFloats[base + 10 + i] = model[i]!;
         instanceFloats[base + 16] = color[0];
         instanceFloats[base + 17] = color[1];
         instanceFloats[base + 18] = color[2];
@@ -2393,7 +2403,8 @@ export function createHbGpuRenderer(
 
     setColor(r, g, b, a) {
       if (!perInstanceRunState) {
-        colorDirty ||= color[0] !== r || color[1] !== g || color[2] !== b || color[3] !== a;
+        colorDirty ||=
+          color[0] !== r || color[1] !== g || color[2] !== b || color[3] !== a;
       }
       color[0] = r;
       color[1] = g;

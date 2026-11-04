@@ -266,26 +266,26 @@ async function runSuite(
   const label = goldenDir.endsWith("golden-13")
     ? "golden-13"
     : goldenDir.endsWith("golden-12")
-    ? "golden-12"
-    : goldenDir.endsWith("golden-11")
-    ? "golden-11"
-    : goldenDir.endsWith("golden-10")
-      ? "golden-10"
-      : goldenDir.endsWith("golden-9")
-        ? "golden-9"
-        : goldenDir.endsWith("golden-8")
-          ? "golden-8"
-          : goldenDir.endsWith("golden-7")
-            ? "golden-7"
-            : goldenDir.endsWith("golden-6")
-              ? "golden-6"
-              : goldenDir.endsWith("golden-5")
-                ? "golden-5"
-                : goldenDir.endsWith("golden-4")
-                  ? "golden-4"
-                  : goldenDir.endsWith("golden-3")
-                    ? "golden-3"
-                    : "golden-2";
+      ? "golden-12"
+      : goldenDir.endsWith("golden-11")
+        ? "golden-11"
+        : goldenDir.endsWith("golden-10")
+          ? "golden-10"
+          : goldenDir.endsWith("golden-9")
+            ? "golden-9"
+            : goldenDir.endsWith("golden-8")
+              ? "golden-8"
+              : goldenDir.endsWith("golden-7")
+                ? "golden-7"
+                : goldenDir.endsWith("golden-6")
+                  ? "golden-6"
+                  : goldenDir.endsWith("golden-5")
+                    ? "golden-5"
+                    : goldenDir.endsWith("golden-4")
+                      ? "golden-4"
+                      : goldenDir.endsWith("golden-3")
+                        ? "golden-3"
+                        : "golden-2";
   const index = JSON.parse(
     await readFile(join(goldenDir, "index.json"), "utf8"),
   ) as GoldenIndex;
@@ -1233,7 +1233,9 @@ function checkHello11(value: unknown): string[] {
       liveCoding.length > 96 ||
       !/^[a-z0-9-]+(,[a-z0-9-]+)*$/.test(liveCoding))
   )
-    return [`"live_coding" ${JSON.stringify(liveCoding)} is not a comma list of [a-z0-9-] names`];
+    return [
+      `"live_coding" ${JSON.stringify(liveCoding)} is not a comma list of [a-z0-9-] names`,
+    ];
   return checkHello9({ ...rest, protocol: "render-stream/9" });
 }
 
@@ -1267,7 +1269,8 @@ async function helloCases11(): Promise<void> {
       );
     else
       ok(
-        checkHello11({ ...(parsed as object), live_coding: "zstd" }).length === 0,
+        checkHello11({ ...(parsed as object), live_coding: "zstd" }).length ===
+          0,
         `golden-11/${file} is refused only for its live_coding`,
       );
   }
@@ -1426,18 +1429,24 @@ async function multimeshCases11(): Promise<void> {
       checked++;
     }
   }
-  ok(checked === 13, `golden-11: full.rs11 carries 13 multimesh entries (got ${checked})`);
+  ok(
+    checked === 13,
+    `golden-11: full.rs11 carries 13 multimesh entries (got ${checked})`,
+  );
   // UIT (render-stream-11.md "As built (UIT)"): item 18 resolves with use_identity_transform true
   // at 22 (right after copy_to_backbuffer) and without the key at 23, at either encoding.
   for (const name of ["full.rs11", "patch.rs11", "inline.rs11"]) {
     const r = resolveRecording(await readBytes(GOLDEN11_DIR, name), 11);
     const item18 = (seq: number) =>
-      r.transactions.find((t) => t.seq === seq)?.state.items.find((i) => i.id === 18);
+      r.transactions
+        .find((t) => t.seq === seq)
+        ?.state.items.find((i) => i.id === 18);
     const at22 = item18(22);
     const keys = at22 ? Object.keys(at22) : [];
     ok(
       at22?.use_identity_transform === true &&
-        keys[keys.indexOf("copy_to_backbuffer") + 1] === "use_identity_transform",
+        keys[keys.indexOf("copy_to_backbuffer") + 1] ===
+          "use_identity_transform",
       `golden-11: ${name} seq 22's item 18 resolves with use_identity_transform true after copy_to_backbuffer`,
     );
     const at23 = item18(23);
@@ -1446,12 +1455,18 @@ async function multimeshCases11(): Promise<void> {
       `golden-11: ${name} seq 23's item 18 resolves without use_identity_transform`,
     );
   }
-  const patch11 = resolveRecording(await readBytes(GOLDEN11_DIR, "patch.rs11"), 11);
+  const patch11 = resolveRecording(
+    await readBytes(GOLDEN11_DIR, "patch.rs11"),
+    11,
+  );
   const mm2 = (seq: number) =>
     patch11.transactions
       .find((t) => t.seq === seq)
       ?.state.multimeshes?.find((m) => m.id === 2);
-  const decodedPatch = decodeRecording(await readBytes(GOLDEN11_DIR, "patch.rs11"), 11);
+  const decodedPatch = decodeRecording(
+    await readBytes(GOLDEN11_DIR, "patch.rs11"),
+    11,
+  );
   const seq18 = decodedPatch.records.find(
     (r) => r.meta.type === "transaction" && r.meta.seq === 18,
   );
@@ -1532,7 +1547,8 @@ async function helloCases12(): Promise<void> {
       );
     else
       ok(
-        checkHello12({ ...(parsed as object), live_coding: "zstd" }).length === 0,
+        checkHello12({ ...(parsed as object), live_coding: "zstd" }).length ===
+          0,
         `golden-12/${file} is refused only for its live_coding`,
       );
   }
@@ -1568,10 +1584,12 @@ async function version12Cases(): Promise<void> {
       if (record.meta.type !== "transaction") continue;
       const meta = record.meta;
       const state = states.transactions.find((t) => t.seq === meta.seq)?.state;
-      for (const { entry, floats } of transactionParticles(meta, record.blocks)) {
+      for (const { entry, floats } of transactionParticles(
+        meta,
+        record.blocks,
+      )) {
         const r = state?.particles?.find((p) => p.id === entry.id);
-        const want =
-          floats === null ? null : particlesFloatsByName(floats);
+        const want = floats === null ? null : particlesFloatsByName(floats);
         ok(
           r !== undefined &&
             (floats === null) === (entry.status === "freed") &&
@@ -1587,8 +1605,14 @@ async function version12Cases(): Promise<void> {
     }
   }
   // full.rs12: 2 + 2 + 3 + 2 + 2 entries; patch.rs12: 2 + 2 (patch) + 2 (patch) + 1 (patch) + 2.
-  ok(checked === 11 + 9, `golden-12: full.rs12 and patch.rs12 carry 20 particles entries (got ${checked})`);
-  const emitsBySeq = new Map<number, ReturnType<typeof transactionParticleEmits>>();
+  ok(
+    checked === 11 + 9,
+    `golden-12: full.rs12 and patch.rs12 carry 20 particles entries (got ${checked})`,
+  );
+  const emitsBySeq = new Map<
+    number,
+    ReturnType<typeof transactionParticleEmits>
+  >();
   for (const record of decodeRecording(full12, 12).records)
     if (record.meta.type === "transaction")
       emitsBySeq.set(
@@ -1603,11 +1627,17 @@ async function version12Cases(): Promise<void> {
         emits23.map((e) => e.emit.flags),
         [5, 31],
       ) &&
-      isDeepStrictEqual(emits23[0].transform, [1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0]) &&
+      isDeepStrictEqual(
+        emits23[0].transform,
+        [1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0],
+      ) &&
       isDeepStrictEqual(emits23[0].velocity, [0, -16, 0]) &&
       isDeepStrictEqual(emits23[0].color, [1, 1, 1, 1]) &&
       isDeepStrictEqual(emits23[0].custom, [0, 0, 0, 0]) &&
-      isDeepStrictEqual(emits23[1].transform, [2, 0, 0, 0, 2, 0, 0, 0, 1, -8, 4, 0]) &&
+      isDeepStrictEqual(
+        emits23[1].transform,
+        [2, 0, 0, 0, 2, 0, 0, 0, 1, -8, 4, 0],
+      ) &&
       isDeepStrictEqual(emits23[1].velocity, [0, -32, 0]) &&
       isDeepStrictEqual(emits23[1].color, [1, 0.5, 0.25, 1]) &&
       isDeepStrictEqual(emits23[1].custom, [0.5, 0, 0, 1]) &&
@@ -1615,7 +1645,7 @@ async function version12Cases(): Promise<void> {
     "golden-12: full.rs12 seq 23's two emits on emitter 1 carry the generator's floats",
   );
   ok(
-    [...emitsBySeq].every(([seq, e]) => (seq === 23) === (e.length > 0)),
+    [...emitsBySeq].every(([seq, e]) => (seq === 23) === e.length > 0),
     "golden-12: full.rs12 lists emits at seq 23 only",
   );
   const patchSeq25 = decodeRecording(patchBytes, 12).records.find(
@@ -1636,7 +1666,10 @@ async function version12Cases(): Promise<void> {
   ok(
     e1at24?.trail_poses === 2 &&
       e1at24.floats?.trail_poses.length === 2 &&
-      isDeepStrictEqual(e1at24.floats.trail_poses[1], [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -4, 0]),
+      isDeepStrictEqual(
+        e1at24.floats.trail_poses[1],
+        [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -4, 0],
+      ),
     "golden-12: seq 24's emitter 1 resolves its two trail bind poses",
   );
 
@@ -1653,7 +1686,10 @@ async function version12Cases(): Promise<void> {
       Buffer.from(r11[i].bytes).equals(Buffer.from(r12[i].bytes))
     )
       same++;
-  ok(same === 21, `golden-12: full.rs12's seq 1-21 records are golden-11's bytes (${same} of 21)`);
+  ok(
+    same === 21,
+    `golden-12: full.rs12's seq 1-21 records are golden-11's bytes (${same} of 21)`,
+  );
 
   for (const kind of ["perturb-seed", "drop-restart"]) {
     const v11 = reframeSession(full11, (meta) => {
@@ -1794,12 +1830,18 @@ function itemMetaDumpOf(
   const t = v.itemMeta?.();
   if (t === undefined) throw new Error("no itemMeta accessor");
   const byId = (m: Map<number, unknown>) =>
-    Object.fromEntries([...m.entries()].sort((a, b) => a[0] - b[0]).map(([k, r]) => [String(k), r]));
+    Object.fromEntries(
+      [...m.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([k, r]) => [String(k), r]),
+    );
   return {
     grant: t.grant,
     strings: t.strings,
     rows: byId(
-      new Map([...t.rows.entries()].map(([k, r]) => [k, itemMetaRowJson(t, r)])),
+      new Map(
+        [...t.rows.entries()].map(([k, r]) => [k, itemMetaRowJson(t, r)]),
+      ),
     ),
     seen: byId(seen),
     full_records: fulls,
@@ -1974,7 +2016,10 @@ async function version13Cases(): Promise<void> {
       try {
         down = decodeRs13(bytes);
       } catch (error) {
-        ok(false, `golden-13: ${lane.name}: decodeRs13(${lane.file}) threw ${String(error)}`);
+        ok(
+          false,
+          `golden-13: ${lane.name}: decodeRs13(${lane.file}) threw ${String(error)}`,
+        );
       }
       if (down !== null)
         ok(
@@ -1993,7 +2038,10 @@ async function version13Cases(): Promise<void> {
             resolveRecording(rs12, 12).transactions.map((t) => t.state),
           );
       } catch (error) {
-        ok(false, `golden-13: ${lane.name}: decode/resolve ${lane.file} threw ${String(error)}`);
+        ok(
+          false,
+          `golden-13: ${lane.name}: decode/resolve ${lane.file} threw ${String(error)}`,
+        );
       }
       ok(
         resolvedOk,
@@ -2072,7 +2120,12 @@ async function version13Cases(): Promise<void> {
     ) as {
       min_run: number;
       valid: Array<{ plain: string; coded: string }>;
-      invalid: Array<{ coded: string; length: number; code: string; description: string }>;
+      invalid: Array<{
+        coded: string;
+        length: number;
+        code: string;
+        description: string;
+      }>;
     };
     ok(
       zr.min_run === RS13_ZR_MIN && index.zero_runs.min_run === RS13_ZR_MIN,

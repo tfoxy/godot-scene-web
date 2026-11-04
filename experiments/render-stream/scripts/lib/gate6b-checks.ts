@@ -58,6 +58,7 @@ import {
   unsupportedPairs,
   wantedClass,
 } from "./gate6a-checks";
+import { runGate6bWide } from "./gate6b-wide-checks";
 import {
   asOracle6,
   diffFramesHd,
@@ -70,7 +71,6 @@ import {
   requestedSeqs,
   shotFiles,
 } from "./gate6h-checks";
-import { runGate6bWide } from "./gate6b-wide-checks";
 import { loadWire5, txAt, type Wire5 } from "./gate55-wire";
 
 export const G6B_DIRS = {

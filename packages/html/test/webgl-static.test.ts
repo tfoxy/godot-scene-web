@@ -4,17 +4,25 @@
 // representative TIME and the rAF loop SELF-STOPS (no per-frame re-render), and identical static frames are
 // reused across nodes via the module cache (one GL draw + N cheap blits). These tests stub a fake WebGL2/2D
 // context and a CONTROLLABLE rAF queue (flushed by hand) and count `drawArrays` to observe the loop + cache.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
+import { SELF_LAYER_CLASS } from "../src/render-structure";
 import {
   __resetStaticShaderFrameCacheForTest,
   createWebglShaderRuntime,
 } from "../src/webgl/runtime";
 import { __resetSharedForTest } from "../src/webgl/shared-gl";
-import { SELF_LAYER_CLASS } from "../src/render-structure";
 
 // A TIME-reading shader so `usesTime` is true (the case frozen mode actually changes).
-const SHADER = "shader_type canvas_item;\nvoid fragment() { COLOR = vec4(TIME); }";
+const SHADER =
+  "shader_type canvas_item;\nvoid fragment() { COLOR = vec4(TIME); }";
 
 let drawCount = 0;
 
@@ -36,7 +44,9 @@ function fakeGl(): unknown {
       return undefined;
     },
   };
-  return new Proxy(overrides, { get: (t, k: string) => (k in t ? t[k] : () => undefined) });
+  return new Proxy(overrides, {
+    get: (t, k: string) => (k in t ? t[k] : () => undefined),
+  });
 }
 
 // Controllable rAF: queue callbacks, flush them by hand so we can observe whether the loop reschedules itself.
@@ -70,7 +80,8 @@ beforeAll(() => {
   origCAF = globalThis.cancelAnimationFrame;
   globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) =>
     rafQueue.push(cb)) as typeof globalThis.requestAnimationFrame;
-  globalThis.cancelAnimationFrame = (() => {}) as typeof globalThis.cancelAnimationFrame;
+  globalThis.cancelAnimationFrame =
+    (() => {}) as typeof globalThis.cancelAnimationFrame;
   origRO = globalThis.ResizeObserver;
 });
 
@@ -99,7 +110,10 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function shaderNode(path = "res://s.gdshader"): { node: HTMLElement; self: HTMLElement } {
+function shaderNode(path = "res://s.gdshader"): {
+  node: HTMLElement;
+  self: HTMLElement;
+} {
   const node = document.createElement("div");
   node.setAttribute("data-godot-shader-webgl", "1");
   node.setAttribute("data-godot-shader-path", path);
@@ -108,8 +122,14 @@ function shaderNode(path = "res://s.gdshader"): { node: HTMLElement; self: HTMLE
   const self = document.createElement("div");
   self.className = SELF_LAYER_CLASS;
   // Give the self-layer a non-zero size so syncCanvasSize makes a >0 canvas.
-  Object.defineProperty(self, "clientWidth", { get: () => 100, configurable: true });
-  Object.defineProperty(self, "clientHeight", { get: () => 50, configurable: true });
+  Object.defineProperty(self, "clientWidth", {
+    get: () => 100,
+    configurable: true,
+  });
+  Object.defineProperty(self, "clientHeight", {
+    get: () => 50,
+    configurable: true,
+  });
   node.appendChild(self);
   return { node, self };
 }
@@ -239,7 +259,9 @@ describe("webgl runtime — self-layer resolution with show_behind_parent childr
 describe("createWebglShaderRuntime — setStaticShaders is always callable", () => {
   it("never throws when toggled with no bindings present", () => {
     const root = document.createElement("div");
-    const rt = createWebglShaderRuntime(root, { resolveShaderSource: () => undefined } as never);
+    const rt = createWebglShaderRuntime(root, {
+      resolveShaderSource: () => undefined,
+    } as never);
     expect(() => {
       rt.setStaticShaders(true);
       rt.setStaticShaders(false);
@@ -279,7 +301,10 @@ describe("webgl runtime — stats() counters", () => {
 
     // An update cycle: a param delta changes the quantized frame key → the next tick is a cache MISS
     // (a real GL draw), and only for the changed node.
-    a.node.setAttribute("data-godot-shader-params", JSON.stringify({ width: 0.5 }));
+    a.node.setAttribute(
+      "data-godot-shader-params",
+      JSON.stringify({ width: 0.5 }),
+    );
     rt.reconcile();
     flushRaf();
     expect(rt.stats().draws).toBe(2);
@@ -348,7 +373,10 @@ describe("webgl runtime — stats() counters", () => {
   });
 
   it("the no-op handle (no shader resolver) exposes all-zero stats", () => {
-    const rt = createWebglShaderRuntime(document.createElement("div"), {} as never);
+    const rt = createWebglShaderRuntime(
+      document.createElement("div"),
+      {} as never,
+    );
     expect(rt.stats()).toEqual({
       draws: 0,
       cacheHits: 0,

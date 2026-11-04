@@ -28,7 +28,9 @@ const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), "..");
 let failures = 0;
 function expect(name: string, ok: boolean, detail = ""): void {
   if (!ok) failures++;
-  console.log(`${ok ? "ok  " : "FAIL"}  ${name}${ok || !detail ? "" : `: ${detail}`}`);
+  console.log(
+    `${ok ? "ok  " : "FAIL"}  ${name}${ok || !detail ? "" : `: ${detail}`}`,
+  );
 }
 
 // --- synthetic evidence ------------------------------------------------------------------------
@@ -46,7 +48,12 @@ function synth(opts: {
   const timeline: TimelineLine[] = [];
   let sent = 0;
   const tx: Record<string, unknown>[] = [];
-  const samples: { seq: number; raf_ts_ms: number; total_us: number; t_ms: number }[] = [];
+  const samples: {
+    seq: number;
+    raf_ts_ms: number;
+    total_us: number;
+    t_ms: number;
+  }[] = [];
   const raf: number[] = [];
   const ws: number[] = [];
   const offset = 1e6;
@@ -71,7 +78,13 @@ function synth(opts: {
         process_frame: Math.round(drawMs / tp),
         ...(folded ? { coalesced_into: seq + 1 } : {}),
       });
-      if (!folded) samples.push({ seq, raf_ts_ms: drawMs, total_us: 2000, t_ms: drawMs + 2 });
+      if (!folded)
+        samples.push({
+          seq,
+          raf_ts_ms: drawMs,
+          total_us: 2000,
+          t_ms: drawMs + 2,
+        });
     }
     if (f % 60 === 0)
       timeline.push({
@@ -98,7 +111,8 @@ function synth(opts: {
   }
   // the page clock: rAF every 17 ms from 0 to 40 s; the first message at 2 s + 3 ms.
   const firstWs = 2003;
-  for (let ts = 0; ts < 40_000; ts += tp) raf.push(ts, ts + 0.2, opts.workMs ?? 2);
+  for (let ts = 0; ts < 40_000; ts += tp)
+    raf.push(ts, ts + 0.2, opts.workMs ?? 2);
   for (let t = firstWs; t < 40_000; t += 1000 / 60) ws.push(t, 0.3);
   return {
     dir: "/nonexistent",
@@ -128,7 +142,10 @@ function synth(opts: {
       first_ws_ms: firstWs,
       hidden_ms: opts.hiddenMs ?? 0,
     },
-    device: { conditions_before: { thermalStatus: "none" }, conditions_after: { thermalStatus: "none" } },
+    device: {
+      conditions_before: { thermalStatus: "none" },
+      conditions_after: { thermalStatus: "none" },
+    },
     provenance: { ok: true },
     refused: null,
     timings: { marks: [{ name: "rs-first-submitted", t: 1234 }] },
@@ -141,7 +158,9 @@ const good = synth({ kind: "gsw" });
 const w = devHostWindow(good.timeline, 1, 6, 20);
 expect(
   "devHostWindow: anchored at the connection's first line + 6 s, 20 s long",
-  typeof w !== "string" && Math.abs(w.start_t_us - 8e6) < 1 && Math.abs(w.end_t_us - 28e6) < 1,
+  typeof w !== "string" &&
+    Math.abs(w.start_t_us - 8e6) < 1 &&
+    Math.abs(w.end_t_us - 28e6) < 1,
   JSON.stringify(w),
 );
 expect(
@@ -152,63 +171,143 @@ expect(
 // A good repeat on each receiver.
 for (const kind of ["gsw", "web"] as const) {
   const m = measureDevRepeat(kind, synth({ kind }));
-  expect(`${kind}: good repeat measures ~60/s published and drawn`, (m.published ?? 0) > 59 && (m.drawn ?? 0) > 57, `${m.published} ${m.drawn}`);
-  expect(`${kind}: T_p is the probe's median rAF interval (17 ms)`, Math.abs((m.tp_ms ?? 0) - 17) < 0.01, `${m.tp_ms}`);
-  expect(`${kind}: good repeat passes dev-rate, dev-cadence, dev-main-thread, dev-unthrottled`,
-    devRateProblems(m).length === 0 && devCadenceProblems(m).length === 0 && devMainThreadProblems(m).length === 0 && devUnthrottledProblems(m, true).length === 0,
-    JSON.stringify([devRateProblems(m), devCadenceProblems(m), devMainThreadProblems(m)]));
-  expect(`${kind}: good phase class at window 1`, m.phase_class === "good", `${m.phase_class}`);
+  expect(
+    `${kind}: good repeat measures ~60/s published and drawn`,
+    (m.published ?? 0) > 59 && (m.drawn ?? 0) > 57,
+    `${m.published} ${m.drawn}`,
+  );
+  expect(
+    `${kind}: T_p is the probe's median rAF interval (17 ms)`,
+    Math.abs((m.tp_ms ?? 0) - 17) < 0.01,
+    `${m.tp_ms}`,
+  );
+  expect(
+    `${kind}: good repeat passes dev-rate, dev-cadence, dev-main-thread, dev-unthrottled`,
+    devRateProblems(m).length === 0 &&
+      devCadenceProblems(m).length === 0 &&
+      devMainThreadProblems(m).length === 0 &&
+      devUnthrottledProblems(m, true).length === 0,
+    JSON.stringify([
+      devRateProblems(m),
+      devCadenceProblems(m),
+      devMainThreadProblems(m),
+    ]),
+  );
+  expect(
+    `${kind}: good phase class at window 1`,
+    m.phase_class === "good",
+    `${m.phase_class}`,
+  );
 }
 
 // A bad-phase repeat: ~30/s, 33-ms intervals -> dev-rate and dev-cadence fail.
 {
   const m = measureDevRepeat("gsw", synth({ kind: "gsw", everyOther: true }));
-  expect("bad phase: published ~30/s fails dev-rate", devRateProblems(m).some((p) => p.includes("published")), devRateProblems(m).join("; "));
-  expect("bad phase: 34-ms intervals fail dev-cadence", devCadenceProblems(m).length > 0, devCadenceProblems(m).join("; "));
+  expect(
+    "bad phase: published ~30/s fails dev-rate",
+    devRateProblems(m).some((p) => p.includes("published")),
+    devRateProblems(m).join("; "),
+  );
+  expect(
+    "bad phase: 34-ms intervals fail dev-cadence",
+    devCadenceProblems(m).length > 0,
+    devCadenceProblems(m).join("; "),
+  );
   expect("bad phase class", m.phase_class === "bad", `${m.phase_class}`);
 }
 // Heavy main thread: 10 ms per callback > 0.5 * 17.
 {
   const m = measureDevRepeat("web", synth({ kind: "web", workMs: 10 }));
-  expect("10-ms callbacks fail dev-main-thread", devMainThreadProblems(m).some((p) => p.includes("p95")), devMainThreadProblems(m).join("; "));
+  expect(
+    "10-ms callbacks fail dev-main-thread",
+    devMainThreadProblems(m).some((p) => p.includes("p95")),
+    devMainThreadProblems(m).join("; "),
+  );
 }
 // Hidden time invalidates (watchdog).
 {
   const m = measureDevRepeat("gsw", synth({ kind: "gsw", hiddenMs: 120 }));
-  expect("hidden time fails dev-unthrottled", devUnthrottledProblems(m, true).some((p) => p.includes("hidden")));
+  expect(
+    "hidden time fails dev-unthrottled",
+    devUnthrottledProblems(m, true).some((p) => p.includes("hidden")),
+  );
 }
 // Folded transactions count as multi-apply ticks (phase-alias's evidence).
 {
   const ev = synth({ kind: "gsw", fold: true });
   const nf = newFrames("gsw", ev);
   const m = measureDevRepeat("gsw", ev);
-  expect("gsw: a callback that folded a seq is a multi-apply tick", nf.some((f) => f.seqs === 2) && m.multi_apply_ticks > 0, `${m.multi_apply_ticks}`);
+  expect(
+    "gsw: a callback that folded a seq is a multi-apply tick",
+    nf.some((f) => f.seqs === 2) && m.multi_apply_ticks > 0,
+    `${m.multi_apply_ticks}`,
+  );
 }
-expect("ticksPerHostFrame: 1 at 60 Hz, 2 at 90 and 120 Hz", ticksPerHostFrame(17) === 1 && ticksPerHostFrame(11.1) === 2 && ticksPerHostFrame(8.3) === 2);
+expect(
+  "ticksPerHostFrame: 1 at 60 Hz, 2 at 90 and 120 Hz",
+  ticksPerHostFrame(17) === 1 &&
+    ticksPerHostFrame(11.1) === 2 &&
+    ticksPerHostFrame(8.3) === 2,
+);
 
 // The acceptance statement.
 {
-  const pass = (id: string) => ({ id, criterion: "", passed: true, gating: true, detail: "" });
+  const pass = (id: string) => ({
+    id,
+    criterion: "",
+    passed: true,
+    gating: true,
+    detail: "",
+  });
   const fail = (id: string) => ({ ...pass(id), passed: false });
-  const leg = (base: string, workload: string, checks: ReturnType<typeof pass>[]) => ({
-    base, workload, required: true, report_only: false, repeats: [] as DevRepeat[], checks, presence_detail: [],
+  const leg = (
+    base: string,
+    workload: string,
+    checks: ReturnType<typeof pass>[],
+  ) => ({
+    base,
+    workload,
+    required: true,
+    report_only: false,
+    repeats: [] as DevRepeat[],
+    checks,
+    presence_detail: [],
   });
   const run = (window: number, ok: boolean): DevRunResult => ({
-    group: "g7-dev", kind: "gsw", live: true, arm: "dev-g31", device: "g31", window, run_dir: "", passed: ok,
+    group: "g7-dev",
+    kind: "gsw",
+    live: true,
+    arm: "dev-g31",
+    device: "g31",
+    window,
+    run_dir: "",
+    passed: ok,
     checks: [],
     legs: [
-      leg("pace", "pace", [ok ? pass("dev-rate@gsw:pace") : fail("dev-rate@gsw:pace")]),
+      leg("pace", "pace", [
+        ok ? pass("dev-rate@gsw:pace") : fail("dev-rate@gsw:pace"),
+      ]),
       leg("scene", "scene", [pass("dev-rate@gsw:scene")]),
       leg("gpu-headroom-pace", "pace", [pass("dev-gpu-headroom@gsw:x")]),
       leg("gpu-headroom-scene", "scene", [pass("dev-gpu-headroom@gsw:x")]),
-      ...(window === 1 ? [leg("startup-warm", "scene", [pass("dev-startup@gsw")])] : [leg("soak-scene", "scene", [pass("dev-soak@gsw")])]),
+      ...(window === 1
+        ? [leg("startup-warm", "scene", [pass("dev-startup@gsw")])]
+        : [leg("soak-scene", "scene", [pass("dev-soak@gsw")])]),
     ],
   });
   const a = acceptance([run(1, false), run(2, true)], ["pace", "scene"]);
-  expect("acceptance: failing at window 1, passing at window 2 -> met at window 2 only",
-    a[0]?.statement === "met at window 2 only (opt-in, F1)", JSON.stringify(a));
+  expect(
+    "acceptance: failing at window 1, passing at window 2 -> met at window 2 only",
+    a[0]?.statement === "met at window 2 only (opt-in, F1)",
+    JSON.stringify(a),
+  );
   const b = acceptance([run(1, false), run(2, false)], ["pace", "scene"]);
-  expect("acceptance: failing at both -> not met, with the failing checks", b[0]?.statement === "not met" && JSON.stringify(b).includes("dev-rate@gsw:pace"), JSON.stringify(b));
+  expect(
+    "acceptance: failing at both -> not met, with the failing checks",
+    b[0]?.statement === "not met" &&
+      JSON.stringify(b).includes("dev-rate@gsw:pace"),
+    JSON.stringify(b),
+  );
 }
 
 // Harness words.
@@ -225,29 +324,63 @@ expect("ticksPerHostFrame: 1 at 60 Hz, 2 at 90 and 120 Hz", ticksPerHostFrame(17
     ],
     ["godot", "--max-fps", "0"],
   );
-  expect("mapBrowserLeg: the dev harness words are dropped from the page env and mapped",
-    m.devProbe === "fit" && m.devSample === "soak" && m.devTab.keep && !m.devTab.warm &&
-      !("RS_RECEIVER_DEV_PROBE" in m.env) && m.env.RS_RECEIVER_DRAW_REPEAT === "2",
-    JSON.stringify(m));
+  expect(
+    "mapBrowserLeg: the dev harness words are dropped from the page env and mapped",
+    m.devProbe === "fit" &&
+      m.devSample === "soak" &&
+      m.devTab.keep &&
+      !m.devTab.warm &&
+      !("RS_RECEIVER_DEV_PROBE" in m.env) &&
+      m.env.RS_RECEIVER_DRAW_REPEAT === "2",
+    JSON.stringify(m),
+  );
   let threw = false;
   try {
-    mapBrowserLeg("/static", [["RS_RECEIVER_OUT", "/static/a.json"], ["RS_RECEIVER_DEV_PROBE", "yes"]], ["godot"]);
+    mapBrowserLeg(
+      "/static",
+      [
+        ["RS_RECEIVER_OUT", "/static/a.json"],
+        ["RS_RECEIVER_DEV_PROBE", "yes"],
+      ],
+      ["godot"],
+    );
   } catch {
     threw = true;
   }
   expect("mapBrowserLeg: refuses a bad RS_RECEIVER_DEV_PROBE", threw);
 }
-expect("devProbeScript: FIT switch set only for `fit`",
-  devProbeScript("fit").includes("const FIT = true") && devProbeScript("plain").includes("const FIT = false"));
+expect(
+  "devProbeScript: FIT switch set only for `fit`",
+  devProbeScript("fit").includes("const FIT = true") &&
+    devProbeScript("plain").includes("const FIT = false"),
+);
 
 // The leg family against the runner.
 {
   const legs = readFileSync(join(SCRIPTS, "lib", "gate6c-legs.sh"), "utf8");
   const runner = readFileSync(join(SCRIPTS, "run-gate7.sh"), "utf8");
-  for (const base of ["pace | scene | hd", "gpu-headroom-*", "maxfps60-scene", "sabotage-ack-on-receipt-scene", "sabotage-draw-repeat-8-*", "soak-* | sabotage-soak-leak-gl-textures-*", "startup-cold | startup-warm"])
-    expect(`gate6c-legs.sh g6c_dev_leg handles ${base}`, legs.includes(`\t${base})`));
-  expect("run-gate7.sh runs g7-dev's live legs through run-gate6.sh --legs g6c", runner.includes('G6C_LEGS="$g7v_legs"'));
+  for (const base of [
+    "pace | scene | hd",
+    "gpu-headroom-*",
+    "maxfps60-scene",
+    "sabotage-ack-on-receipt-scene",
+    "sabotage-draw-repeat-8-*",
+    "soak-* | sabotage-soak-leak-gl-textures-*",
+    "startup-cold | startup-warm",
+  ])
+    expect(
+      `gate6c-legs.sh g6c_dev_leg handles ${base}`,
+      legs.includes(`\t${base})`),
+    );
+  expect(
+    "run-gate7.sh runs g7-dev's live legs through run-gate6.sh --legs g6c",
+    runner.includes('G6C_LEGS="$g7v_legs"'),
+  );
 }
 
-console.log(failures === 0 ? "self-test-gate7v: all checks correct" : `self-test-gate7v: ${failures} FAILED`);
+console.log(
+  failures === 0
+    ? "self-test-gate7v: all checks correct"
+    : `self-test-gate7v: ${failures} FAILED`,
+);
 process.exitCode = failures === 0 ? 0 : 1;

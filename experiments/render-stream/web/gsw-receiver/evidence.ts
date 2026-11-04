@@ -402,7 +402,9 @@ export interface Report {
   residencyEvictions?: number | null;
   /** PM6b: the shell's particle simulation counters (`particles.ts`), merged with the wasm's into
    * applied.json `w11.particles`. */
-  particles?: import("../../../../packages/render-stream-client/src/particles").ParticlesEvidence | null;
+  particles?:
+    | import("../../../../packages/render-stream-client/src/particles").ParticlesEvidence
+    | null;
 }
 
 type RustTx = RustParts["transactions"][number];
@@ -530,7 +532,10 @@ export function appliedJson(r: Report): Record<string, unknown> {
     },
     mode: r.mode,
     ...(r.textureDelivery
-      ? { transcodes: r.transcodes ?? [], delivery_fallbacks: r.deliveryFallbacks ?? [] }
+      ? {
+          transcodes: r.transcodes ?? [],
+          delivery_fallbacks: r.deliveryFallbacks ?? [],
+        }
       : {}),
     recording: r.recording,
     session_id: r.sessionId,
@@ -558,7 +563,9 @@ export function appliedJson(r: Report): Record<string, unknown> {
       ? {
           w11: {
             ...(rust.w11_multimesh ? { multimesh: rust.w11_multimesh } : {}),
-            ...(rust.w11_particles ? { particles: { ...rust.w11_particles, ...(r.particles ?? {}) } } : {}),
+            ...(rust.w11_particles
+              ? { particles: { ...rust.w11_particles, ...(r.particles ?? {}) } }
+              : {}),
           },
         }
       : {}),

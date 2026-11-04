@@ -316,7 +316,8 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
   {
     const problems: string[] = [...health("identity", report("identity"))];
     const c = report("identity")?.counters;
-    if (report("identity") !== null && !c) problems.push("identity: no counters");
+    if (report("identity") !== null && !c)
+      problems.push("identity: no counters");
     if (c && c.overridesSet < 5)
       problems.push(`identity: only ${c.overridesSet} overrides set`);
     const [a, b] = [await shot("identity"), await shot("variant-base")];
@@ -341,13 +342,17 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
     const c = report(leg)?.counters;
     if (report(leg) !== null && !c) problems.push(`${leg}: no counters`);
     if (c && c.overridesSet < 1)
-      problems.push(`${leg}: no override set (the freeze never reached the core)`);
+      problems.push(
+        `${leg}: no override set (the freeze never reached the core)`,
+      );
     const [a, b] = [await shot(leg), await shot("variant-base")];
     if (!a || !b) problems.push(`${leg}/variant-base: a shot is missing`);
     else {
       const d = diff(a, b);
       if (d === null || d.differ === 0)
-        problems.push(`${leg} vs variant-base: ${fmt(d)} (Hand's step-80 move was not held)`);
+        problems.push(
+          `${leg} vs variant-base: ${fmt(d)} (Hand's step-80 move was not held)`,
+        );
     }
     return problems;
   };
@@ -357,7 +362,9 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
       "frz-holds",
       "FRZ-HOOK: an extension that freezes Hand holds its step-80 move, so the frozen shot differs from variant-base's (the move applied) and an override reached the core",
       problems,
-      problems.length === 0 ? "ext-frz differs from variant-base" : problems.join("; "),
+      problems.length === 0
+        ? "ext-frz differs from variant-base"
+        : problems.join("; "),
     );
   }
 
@@ -663,7 +670,9 @@ export async function runG8tag2(g: string): Promise<G8aCheck[]> {
         "FRZ-HOOK sabotage frozen-sweeps (the retention sweep drops the held subtree's payloads): caught by the rs-core unit test frozen_payloads_survive_and_frozen_sweeps_drops_them (the tag-scene freeze holds no payload to drop)",
       passed: true,
       status: why === null ? "not-run" : "not-run",
-      detail: why ?? "browser leg runs; the shot-observable verdict is the rs-core unit test",
+      detail:
+        why ??
+        "browser leg runs; the shot-observable verdict is the rs-core unit test",
       gating: false,
     });
   }

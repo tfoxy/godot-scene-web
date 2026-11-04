@@ -31,6 +31,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { decodePngRgba } from "./lib/gate-minus1-checks";
+import { GATE0_HOOKS } from "./lib/gate0-checks";
 import {
   bundleBuildSha256,
   requireRustBundle,
@@ -45,7 +46,6 @@ import {
   type TTexture,
   texturePayload,
 } from "./test/rs2-test-encoder";
-import { GATE0_HOOKS } from "./lib/gate0-checks";
 
 type Arm = "lazy" | "staged";
 
@@ -56,7 +56,7 @@ function arg(name: string): string | undefined {
 
 /** Texture k's colour (RGB, alpha 255): unique per k for k < 2^16. */
 function colourOf(k: number): [number, number, number] {
-  return [(k * 37) & 255, (k >> 8) & 255 | 64, 255 - ((k * 11) & 127)];
+  return [(k * 37) & 255, ((k >> 8) & 255) | 64, 255 - ((k * 11) & 127)];
 }
 
 interface Input {
@@ -122,7 +122,10 @@ async function makeInput(dir: string, n: number, size: number): Promise<Input> {
   const recording = join(dir, "recording.rs2");
   writeFileSync(
     recording,
-    encodeRs2Recording(states, { encoding: "patch", hooksPlanned: [...GATE0_HOOKS] }),
+    encodeRs2Recording(states, {
+      encoding: "patch",
+      hooksPlanned: [...GATE0_HOOKS],
+    }),
   );
   return {
     recording,
@@ -175,7 +178,10 @@ async function runArm(
   await writeFile(
     join(dir, "native-argv.txt"),
     [
-      join(homedir(), ".cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64"),
+      join(
+        homedir(),
+        ".cache/godot-render-stream/templates/4.5.1-stable/linux_release.x86_64",
+      ),
       "--path",
       resolve(import.meta.dirname, "../receiver"),
       "--resolution",
@@ -215,17 +221,23 @@ async function runArm(
   const timings = await read<{ wasm_heap_bytes?: number | null }>(
     join(dir, "timings.json"),
   );
-  const stdout = await readFile(join(dir, "stdout.log"), "utf8").catch(() => "");
+  const stdout = await readFile(join(dir, "stdout.log"), "utf8").catch(
+    () => "",
+  );
   const consoleLog = await readFile(join(dir, "console.jsonl"), "utf8").catch(
     () => "",
   );
   const fetches = applied?.fetches ?? [];
-  const uploads = (applied?.uploads ?? []).filter((u) => u.op !== "placeholder");
+  const uploads = (applied?.uploads ?? []).filter(
+    (u) => u.op !== "placeholder",
+  );
   const shots: ArmResult["shots"] = [];
   for (const seq of input.shotSeqs) {
     const [r, g, b] = colourOf(seq);
     const png = await decodePngRgba(join(dir, "shots", `seq-${seq}.png`));
-    const p = png ? (Math.floor(png.height / 2) * png.width + Math.floor(png.width / 2)) * 4 : 0;
+    const p = png
+      ? (Math.floor(png.height / 2) * png.width + Math.floor(png.width / 2)) * 4
+      : 0;
     shots.push({
       seq,
       centre: png ? [...png.data.slice(p, p + 4)] : null,
@@ -245,7 +257,8 @@ async function runArm(
     uploads: uploads.length,
     shots,
     web_store_line:
-      stdout.split("\n").find((l) => l.includes("[receiver] web store:")) ?? null,
+      stdout.split("\n").find((l) => l.includes("[receiver] web store:")) ??
+      null,
     oom: /Cannot enlarge memory|out of memory|OOM/i.test(consoleLog + stdout),
     problems: [],
     passed: false,
@@ -254,18 +267,34 @@ async function runArm(
   if (exit !== 0) pr.push(`exit ${exit}`);
   if (result.status !== "ok") pr.push(`status ${result.status}`);
   if (result.transactions !== input.transactions)
-    pr.push(`${result.transactions} transactions applied, ${input.transactions} recorded`);
-  if (result.fetch_rows !== input.transactions || fetches.some((f) => f.source !== "directory" || !f.verified))
-    pr.push(`${result.fetch_rows} fetch rows (want ${input.transactions} verified directory rows)`);
+    pr.push(
+      `${result.transactions} transactions applied, ${input.transactions} recorded`,
+    );
+  if (
+    result.fetch_rows !== input.transactions ||
+    fetches.some((f) => f.source !== "directory" || !f.verified)
+  )
+    pr.push(
+      `${result.fetch_rows} fetch rows (want ${input.transactions} verified directory rows)`,
+    );
   if (result.fetched_bytes !== input.storeBytes)
-    pr.push(`fetched ${result.fetched_bytes} bytes, the store holds ${input.storeBytes}`);
+    pr.push(
+      `fetched ${result.fetched_bytes} bytes, the store holds ${input.storeBytes}`,
+    );
   if (result.uploads !== input.transactions)
     pr.push(`${result.uploads} uploads, want ${input.transactions}`);
   for (const s of shots)
     if (!s.centre || s.centre.some((v, i) => Math.abs(v - s.expected[i]) > 1))
-      pr.push(`shot seq ${s.seq}: centre ${JSON.stringify(s.centre)}, want ${JSON.stringify(s.expected)}`);
-  if (result.wasm_heap_bytes === null || result.wasm_heap_bytes >= input.storeBytes / 2)
-    pr.push(`peak wasm heap ${result.wasm_heap_bytes} is not under half the store (${input.storeBytes} bytes)`);
+      pr.push(
+        `shot seq ${s.seq}: centre ${JSON.stringify(s.centre)}, want ${JSON.stringify(s.expected)}`,
+      );
+  if (
+    result.wasm_heap_bytes === null ||
+    result.wasm_heap_bytes >= input.storeBytes / 2
+  )
+    pr.push(
+      `peak wasm heap ${result.wasm_heap_bytes} is not under half the store (${input.storeBytes} bytes)`,
+    );
   result.passed = pr.length === 0;
   return result;
 }
@@ -307,7 +336,8 @@ async function main(): Promise<void> {
     lazy_passes: lazy ? lazy.passed : null,
     staged_fails: staged ? !staged.passed : null,
   };
-  const passed = verdict.lazy_passes !== false && verdict.staged_fails !== false;
+  const passed =
+    verdict.lazy_passes !== false && verdict.staged_fails !== false;
   await writeFile(
     join(out, "summary.json"),
     `${JSON.stringify(
@@ -326,7 +356,9 @@ async function main(): Promise<void> {
       2,
     )}\n`,
   );
-  console.log(`bench-web-store: ${passed ? "PASS" : "FAIL"} (${JSON.stringify(verdict)}); ${join(out, "summary.json")}`);
+  console.log(
+    `bench-web-store: ${passed ? "PASS" : "FAIL"} (${JSON.stringify(verdict)}); ${join(out, "summary.json")}`,
+  );
   process.exit(passed ? 0 : 1);
 }
 

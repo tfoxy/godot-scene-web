@@ -47,16 +47,24 @@ import {
   skipped,
   stateAt,
 } from "./gate8-adopt-checks";
-import type { ProxyLogLine } from "./reverse-proxy";
 import {
   type ResolvedRecording,
   resolveRecording,
   statesEqual,
   wireVersionOf,
 } from "./render-stream-2";
+import type { ProxyLogLine } from "./reverse-proxy";
 
 /** run-gate8.sh G8L_FIXTURES, in run order; `proxy` is tex through the reverse proxy. */
-export const G8L_FIXTURES = ["tex", "float", "adopt", "size", "mat", "proxy", "basis"] as const;
+export const G8L_FIXTURES = [
+  "tex",
+  "float",
+  "adopt",
+  "size",
+  "mat",
+  "proxy",
+  "basis",
+] as const;
 export type G8lFixture = (typeof G8L_FIXTURES)[number];
 
 /** G8kb: the wire version a fixture's live leg speaks (run-gate8.sh g8l_spec G8L_VERSION). */
@@ -93,7 +101,12 @@ export interface G8lLegReport {
 
 export interface G8lReport {
   legs: Partial<Record<G8lFixture, G8lLegReport>>;
-  proxy: { requests: number; upgrades: number; gets: number; options: number } | null;
+  proxy: {
+    requests: number;
+    upgrades: number;
+    gets: number;
+    options: number;
+  } | null;
   /** G8kb: fixtures the runner did not run for this receiver, with its reason. */
   not_applicable?: Partial<Record<G8lFixture, string>>;
 }
@@ -113,7 +126,12 @@ interface LiveSummary {
 interface BasisApplied {
   receiver?: { texture_delivery?: { texture_encodings?: string } };
   uploads?: Array<{ hash?: string | null; encoding?: string | null }>;
-  transcodes?: Array<{ hash: string; ok: boolean; format?: number; format_name?: string }>;
+  transcodes?: Array<{
+    hash: string;
+    ok: boolean;
+    format?: number;
+    format_name?: string;
+  }>;
 }
 
 interface Applied {
@@ -144,15 +162,21 @@ function lastSeqShot(dir: string): string | undefined {
     .filter((m): m is RegExpExecArray => m !== null)
     .map((m) => Number(m[1]))
     .sort((a, b) => a - b);
-  return seqs.length === 0 ? undefined : join(dir, "shots", `seq-${seqs[seqs.length - 1]}.png`);
+  return seqs.length === 0
+    ? undefined
+    : join(dir, "shots", `seq-${seqs[seqs.length - 1]}.png`);
 }
 
 /** Differing pixels between two PNGs (null: either is missing or the sizes differ). */
-async function pixelDiff(a: string | undefined, b: string | undefined): Promise<number | null> {
+async function pixelDiff(
+  a: string | undefined,
+  b: string | undefined,
+): Promise<number | null> {
   if (!a || !b || !existsSync(a) || !existsSync(b)) return null;
   const ia = await decodePngRgba(a);
   const ib = await decodePngRgba(b);
-  if (!ia || !ib || ia.width !== ib.width || ia.height !== ib.height) return null;
+  if (!ia || !ib || ia.width !== ib.width || ia.height !== ib.height)
+    return null;
   let n = 0;
   for (let i = 0; i < ia.data.length; i += 4)
     if (
@@ -165,11 +189,15 @@ async function pixelDiff(a: string | undefined, b: string | undefined): Promise<
   return n;
 }
 
-async function loadTap(dir: string, version: 8 | 9): Promise<{ rec?: ResolvedRecording; error?: string }> {
+async function loadTap(
+  dir: string,
+  version: 8 | 9,
+): Promise<{ rec?: ResolvedRecording; error?: string }> {
   const path = join(dir, `received.rs${version}`);
   if (!existsSync(path)) return { error: `${path} missing` };
   const bytes = new Uint8Array(await readFile(path));
-  if (wireVersionOf(bytes) !== version) return { error: `${path} is not GRS${version}` };
+  if (wireVersionOf(bytes) !== version)
+    return { error: `${path} is not GRS${version}` };
   try {
     return { rec: resolveRecording(bytes, version) };
   } catch (e) {
@@ -187,12 +215,16 @@ function absent(dir: string): string | null {
 
 function failuresOf(a: Applied): string[] {
   const out: string[] = [];
-  if (a.failure !== undefined && a.failure !== null) out.push(`failure ${JSON.stringify(a.failure).slice(0, 200)}`);
-  for (const f of a.failures ?? []) out.push(`failure ${JSON.stringify(f).slice(0, 200)}`);
+  if (a.failure !== undefined && a.failure !== null)
+    out.push(`failure ${JSON.stringify(a.failure).slice(0, 200)}`);
+  for (const f of a.failures ?? [])
+    out.push(`failure ${JSON.stringify(f).slice(0, 200)}`);
   return out;
 }
 
-export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report: G8lReport }> {
+export async function runG8l(
+  out: string,
+): Promise<{ checks: G8aCheck[]; report: G8lReport }> {
   const checks: G8aCheck[] = [];
   const report: G8lReport = { legs: {}, proxy: null };
   const finalShot = (dir: string) => join(dir, "shots", "final.png");
@@ -204,7 +236,10 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
     // export's basis leg) has no checks; the reason is in the report.
     const na = await readText(join(leg, "not-applicable.txt"));
     if (na !== undefined) {
-      report.not_applicable = { ...(report.not_applicable ?? {}), [f]: na.trim() };
+      report.not_applicable = {
+        ...(report.not_applicable ?? {}),
+        [f]: na.trim(),
+      };
       continue;
     }
     const host = join(leg, "host");
@@ -225,21 +260,31 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
     // host
     {
       const problems: string[] = [];
-      const result = await readJson<{ stream?: { status?: string; reason?: string | null; gate8?: unknown } }>(
-        join(host, "evidence", "result.json"),
+      const result = await readJson<{
+        stream?: { status?: string; reason?: string | null; gate8?: unknown };
+      }>(join(host, "evidence", "result.json"));
+      const live = await readJson<{ status?: string; port?: number }>(
+        join(host, "evidence", "live.json"),
       );
-      const live = await readJson<{ status?: string; port?: number }>(join(host, "evidence", "live.json"));
-      const summary = await readJson<LiveSummary>(join(host, "evidence", "live-summary.json"));
+      const summary = await readJson<LiveSummary>(
+        join(host, "evidence", "live-summary.json"),
+      );
       const code = await exitCode(host);
       if (code !== "0") problems.push(`host exit ${code ?? "missing"}`);
       if (!result?.stream) problems.push("no evidence/result.json stream");
-      else if (result.stream.status === "refused") problems.push(`stream refused: ${result.stream.reason}`);
-      if (live?.status !== "listening") problems.push(`live.json status ${JSON.stringify(live?.status)}`);
+      else if (result.stream.status === "refused")
+        problems.push(`stream refused: ${result.stream.reason}`);
+      if (live?.status !== "listening")
+        problems.push(`live.json status ${JSON.stringify(live?.status)}`);
       lr.host_port = live?.port ?? null;
       const conns = summary?.connections ?? [];
-      if (conns.length !== 1) problems.push(`${conns.length} connections, expected 1`);
+      if (conns.length !== 1)
+        problems.push(`${conns.length} connections, expected 1`);
       for (const c of conns)
-        if (c.version !== v) problems.push(`connection ${c.connection}: version ${c.version}, expected ${v}`);
+        if (c.version !== v)
+          problems.push(
+            `connection ${c.connection}: version ${c.version}, expected ${v}`,
+          );
       checks.push(
         check(
           `g8l-${f}-host`,
@@ -259,12 +304,17 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       if (!applied) problems.push("applied.json missing");
       else {
         if (applied.receiver?.protocol !== `render-stream/${v}`)
-          problems.push(`receiver protocol ${JSON.stringify(applied.receiver?.protocol)}, expected render-stream/${v}`);
+          problems.push(
+            `receiver protocol ${JSON.stringify(applied.receiver?.protocol)}, expected render-stream/${v}`,
+          );
         problems.push(...failuresOf(applied));
       }
       if (code !== "0") problems.push(`receiver exit ${code ?? "missing"}`);
       lr.final_shot = existsSync(finalShot(receiver));
-      if (!lr.final_shot) problems.push("shots/final.png missing (no final state after the end record)");
+      if (!lr.final_shot)
+        problems.push(
+          "shots/final.png missing (no final state after the end record)",
+        );
       checks.push(
         check(
           `g8l-${f}-live`,
@@ -285,20 +335,32 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       if (file.rec && tap.rec) {
         lr.transactions_file = file.rec.transactions.length;
         lr.transactions_received = tap.rec.transactions.length;
-        if (tap.rec.transactions.length === 0) problems.push("the tap holds no transaction");
+        if (tap.rec.transactions.length === 0)
+          problems.push("the tap holds no transaction");
         for (const t of tap.rec.transactions) {
           const at = stateAt(file.rec, t.frame);
           if (!at) {
-            problems.push(`live seq ${t.seq} (frame ${t.frame}): no file transaction at or before it`);
+            problems.push(
+              `live seq ${t.seq} (frame ${t.frame}): no file transaction at or before it`,
+            );
             continue;
           }
           if (!statesEqual(t.state, at.state))
-            problems.push(`live seq ${t.seq} (frame ${t.frame}) differs from the file sink's seq ${at.seq}`);
+            problems.push(
+              `live seq ${t.seq} (frame ${t.frame}) differs from the file sink's seq ${at.seq}`,
+            );
         }
         const lastLive = tap.rec.transactions[tap.rec.transactions.length - 1];
-        const lastFile = file.rec.transactions[file.rec.transactions.length - 1];
-        if (lastLive && lastFile && !statesEqual(lastLive.state, lastFile.state))
-          problems.push(`the last live state (seq ${lastLive.seq}) is not the file sink's final state (seq ${lastFile.seq})`);
+        const lastFile =
+          file.rec.transactions[file.rec.transactions.length - 1];
+        if (
+          lastLive &&
+          lastFile &&
+          !statesEqual(lastLive.state, lastFile.state)
+        )
+          problems.push(
+            `the last live state (seq ${lastLive.seq}) is not the file sink's final state (seq ${lastFile.seq})`,
+          );
       }
       checks.push(
         check(
@@ -318,9 +380,16 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
       if (!last) problems.push("the replay shot no checkpoint");
       const d = await pixelDiff(finalShot(receiver), last);
       lr.final_vs_replay_px = d;
-      if (d === null) problems.push("final.png or the replay's last shot missing, or their sizes differ");
-      else if (d > 0) problems.push(`${d} px differ between the live final shot and the replay's last checkpoint`);
-      if ((await exitCode(replay)) !== "0") problems.push(`replay exit ${(await exitCode(replay)) ?? "missing"}`);
+      if (d === null)
+        problems.push(
+          "final.png or the replay's last shot missing, or their sizes differ",
+        );
+      else if (d > 0)
+        problems.push(
+          `${d} px differ between the live final shot and the replay's last checkpoint`,
+        );
+      if ((await exitCode(replay)) !== "0")
+        problems.push(`replay exit ${(await exitCode(replay)) ?? "missing"}`);
       checks.push(
         check(
           `live-replay-equals-live-g8l-${f}`,
@@ -334,22 +403,39 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
     // G8kb: the basis leg delivers uastc over the live /9 transport
     if (f === "basis") {
       const problems: string[] = [];
-      const applied = await readJson<BasisApplied>(join(receiver, "applied.json"));
-      const conns = (await readJson<LiveSummary>(join(host, "evidence", "live-summary.json")))?.connections ?? [];
-      const stated = applied?.receiver?.texture_delivery?.texture_encodings ?? "";
+      const applied = await readJson<BasisApplied>(
+        join(receiver, "applied.json"),
+      );
+      const conns =
+        (
+          await readJson<LiveSummary>(
+            join(host, "evidence", "live-summary.json"),
+          )
+        )?.connections ?? [];
+      const stated =
+        applied?.receiver?.texture_delivery?.texture_encodings ?? "";
       if (!stated.split(",").includes("uastc"))
-        problems.push(`texture_encodings ${JSON.stringify(stated)} lacks uastc`);
+        problems.push(
+          `texture_encodings ${JSON.stringify(stated)} lacks uastc`,
+        );
       for (const c of conns)
         if (!(c.texture_encodings ?? "").split(",").includes("uastc"))
-          problems.push(`host saw connection ${c.connection}'s hello texture_encodings ${JSON.stringify(c.texture_encodings)}`);
-      const uastc = (applied?.uploads ?? []).filter((u) => u.encoding === "uastc");
+          problems.push(
+            `host saw connection ${c.connection}'s hello texture_encodings ${JSON.stringify(c.texture_encodings)}`,
+          );
+      const uastc = (applied?.uploads ?? []).filter(
+        (u) => u.encoding === "uastc",
+      );
       const transcodes = applied?.transcodes ?? [];
       if (uastc.length === 0) problems.push("no uastc upload");
       if (transcodes.length === 0) problems.push("no transcode logged");
-      for (const t of transcodes) if (!t.ok) problems.push(`transcode of ${t.hash.slice(0, 12)} failed`);
+      for (const t of transcodes)
+        if (!t.ok) problems.push(`transcode of ${t.hash.slice(0, 12)} failed`);
       for (const u of uastc)
         if (!transcodes.some((t) => t.hash === u.hash && t.ok))
-          problems.push(`uastc upload of ${String(u.hash).slice(0, 12)} has no ok transcode`);
+          problems.push(
+            `uastc upload of ${String(u.hash).slice(0, 12)} has no ok transcode`,
+          );
       checks.push(
         check(
           "g8l-basis-delivery",
@@ -368,11 +454,19 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
         const a = pngs(replay).filter((p) => p.startsWith("seq-"));
         const b = pngs(file).filter((p) => p.startsWith("seq-"));
         if (a.length === 0 || a.length !== b.length)
-          problems.push(`${a.length} replay checkpoints vs ${b.length} file-leg checkpoints`);
+          problems.push(
+            `${a.length} replay checkpoints vs ${b.length} file-leg checkpoints`,
+          );
         else
           for (let i = 0; i < a.length; i++) {
-            const d = await pixelDiff(join(replay, "shots", a[i]), join(file, "shots", b[i]));
-            if (d !== 0) problems.push(`checkpoint ${i}: ${d === null ? "unreadable" : `${d} px`}`);
+            const d = await pixelDiff(
+              join(replay, "shots", a[i]),
+              join(file, "shots", b[i]),
+            );
+            if (d !== 0)
+              problems.push(
+                `checkpoint ${i}: ${d === null ? "unreadable" : `${d} px`}`,
+              );
           }
         checks.push(
           check(
@@ -390,37 +484,72 @@ export async function runG8l(out: string): Promise<{ checks: G8aCheck[]; report:
   {
     const leg = join(out, "g8l", "proxy");
     const problems: string[] = [];
-    const ports = await readJson<{ target_port?: number; listen_port?: number | null }>(join(leg, "proxy", "ports.json"));
-    const stats = await readJson<{ requests: number; upgrades: number; gets: number; options: number }>(
-      join(leg, "proxy", "stats.json"),
+    const ports = await readJson<{
+      target_port?: number;
+      listen_port?: number | null;
+    }>(join(leg, "proxy", "ports.json"));
+    const stats = await readJson<{
+      requests: number;
+      upgrades: number;
+      gets: number;
+      options: number;
+    }>(join(leg, "proxy", "stats.json"));
+    const lines = jsonl<ProxyLogLine>(
+      await readText(join(leg, "proxy", "requests.jsonl")),
     );
-    const lines = jsonl<ProxyLogLine>(await readText(join(leg, "proxy", "requests.jsonl")));
     report.proxy = stats ?? null;
-    const page = await readJson<{ env?: Record<string, string> }>(join(leg, "receiver", "page-config.json"));
+    const page = await readJson<{ env?: Record<string, string> }>(
+      join(leg, "receiver", "page-config.json"),
+    );
     const envTxt = (await readText(join(leg, "receiver", "env.txt"))) ?? "";
-    const url = page?.env?.RS_RECEIVER_URL ?? /^RS_RECEIVER_URL=(.*)$/m.exec(envTxt)?.[1] ?? "";
+    const url =
+      page?.env?.RS_RECEIVER_URL ??
+      /^RS_RECEIVER_URL=(.*)$/m.exec(envTxt)?.[1] ??
+      "";
     const urlPort = Number(/:(\d+)\//.exec(url)?.[1] ?? "0");
     const hostPort = report.legs.proxy?.host_port ?? null;
-    if (!ports?.listen_port) problems.push("the proxy did not bind (proxy/ports.json)");
-    else if (urlPort !== ports.listen_port) problems.push(`the receiver connected to port ${urlPort}, not the proxy's ${ports.listen_port}`);
-    if (hostPort !== null && urlPort === hostPort) problems.push("the receiver connected to the host's own port");
-    if (ports?.target_port !== hostPort) problems.push(`the proxy forwarded to ${ports?.target_port}, the host listened on ${hostPort}`);
+    if (!ports?.listen_port)
+      problems.push("the proxy did not bind (proxy/ports.json)");
+    else if (urlPort !== ports.listen_port)
+      problems.push(
+        `the receiver connected to port ${urlPort}, not the proxy's ${ports.listen_port}`,
+      );
+    if (hostPort !== null && urlPort === hostPort)
+      problems.push("the receiver connected to the host's own port");
+    if (ports?.target_port !== hostPort)
+      problems.push(
+        `the proxy forwarded to ${ports?.target_port}, the host listened on ${hostPort}`,
+      );
     const upgrades = lines.filter((l) => l.upgrade);
     const gets = lines.filter((l) => !l.upgrade && l.method === "GET");
     if (upgrades.length !== 1 || upgrades[0]?.status !== 101)
-      problems.push(`${upgrades.length} upgrades (${upgrades.map((u) => u.status).join(",")}), expected one 101`);
-    for (const g of gets) if (g.status !== 200) problems.push(`GET ${g.url.replace(/\?.*$/, "")} answered ${g.status}`);
-    if (gets.length === 0) problems.push("no resource GET went through the proxy");
-    const bad = lines.filter((l) => !l.upgrade && l.method !== "GET" && l.method !== "OPTIONS");
+      problems.push(
+        `${upgrades.length} upgrades (${upgrades.map((u) => u.status).join(",")}), expected one 101`,
+      );
+    for (const g of gets)
+      if (g.status !== 200)
+        problems.push(`GET ${g.url.replace(/\?.*$/, "")} answered ${g.status}`);
+    if (gets.length === 0)
+      problems.push("no resource GET went through the proxy");
+    const bad = lines.filter(
+      (l) => !l.upgrade && l.method !== "GET" && l.method !== "OPTIONS",
+    );
     for (const b of bad) problems.push(`unexpected ${b.method} ${b.url}`);
-    const d = await pixelDiff(join(leg, "receiver", "shots", "final.png"), join(out, "g8l", "tex", "receiver", "shots", "final.png"));
-    if (d === null) problems.push("the proxy leg's or the tex leg's final shot is missing");
-    else if (d > 0) problems.push(`${d} px differ from the direct tex leg's final shot`);
+    const d = await pixelDiff(
+      join(leg, "receiver", "shots", "final.png"),
+      join(out, "g8l", "tex", "receiver", "shots", "final.png"),
+    );
+    if (d === null)
+      problems.push("the proxy leg's or the tex leg's final shot is missing");
+    else if (d > 0)
+      problems.push(`${d} px differ from the direct tex leg's final shot`);
     checks.push(
       check(
         "g8l-proxy-fronted",
         "G8g, D14: a receiver behind an HTTP reverse proxy (the WebSocket upgrade and every resource GET forwarded, Host rewritten) gets the direct leg's stream and pixels, with no wire change",
-        absent(join(leg, "receiver")) || absent(join(leg, "host")) ? null : problems,
+        absent(join(leg, "receiver")) || absent(join(leg, "host"))
+          ? null
+          : problems,
         `1 upgrade, ${gets.length} GETs, ${lines.filter((l) => l.method === "OPTIONS").length} preflights through port ${ports?.listen_port}; final shot equals tex's`,
       ),
     );

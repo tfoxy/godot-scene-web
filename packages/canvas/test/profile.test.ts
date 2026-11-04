@@ -151,16 +151,22 @@ describe("canvas-profile/1", () => {
     const c = new CanvasProfileCollector(20, () => 100);
     c.begin(id);
     c.emit(id, { eventType: "phase-edge", phase: "rust.admit", edge: "start" });
-    c.emit(id, { eventType: "phase-edge", phase: "rust.upload", edge: "start" });
+    c.emit(id, {
+      eventType: "phase-edge",
+      phase: "rust.upload",
+      edge: "start",
+    });
     c.emit(id, { eventType: "phase-edge", phase: "rust.admit", edge: "end" });
     c.emit(id, { eventType: "phase-edge", phase: "rust.upload", edge: "end" });
     expect(validateCanvasProfile(receipt(), c.events)).toContain(
-      "phase order mismatch r:mount:1:rust.admit");
-    const reversed = c.events.map(event => ({ ...event }));
+      "phase order mismatch r:mount:1:rust.admit",
+    );
+    const reversed = c.events.map((event) => ({ ...event }));
     reversed[1].timestampUs = "101";
     reversed[2].timestampUs = "100";
     expect(validateCanvasProfile(receipt(), reversed)).toContain(
-      "phase order mismatch r:mount:1:rust.admit");
+      "phase order mismatch r:mount:1:rust.admit",
+    );
   });
   it("rejects phantom, retyped, cross-mount and overflowing operation IDs", () => {
     const c = new CanvasProfileCollector();

@@ -609,7 +609,9 @@ export async function runG8m(
     const problems: string[] = [];
     const result = await readJson<{
       stream?: {
-        gate8?: { adopt_stats?: { material_adoption?: Record<string, unknown> } };
+        gate8?: {
+          adopt_stats?: { material_adoption?: Record<string, unknown> };
+        };
       };
     }>(join(root, "late/capture/evidence/result.json"));
     const st = result?.stream?.gate8?.adopt_stats?.material_adoption;
@@ -685,11 +687,14 @@ export async function runG8m(
       problems = includeRefused(expected, at(late), at(fault)).problems;
       const result = await readJson<{
         stream?: {
-          gate8?: { adopt_stats?: { material_adoption?: Record<string, unknown> } };
+          gate8?: {
+            adopt_stats?: { material_adoption?: Record<string, unknown> };
+          };
         };
       }>(join(root, "fault-no-include-path/capture/evidence/result.json"));
       const n =
-        result?.stream?.gate8?.adopt_stats?.material_adoption?.shaders_include_refused;
+        result?.stream?.gate8?.adopt_stats?.material_adoption
+          ?.shaders_include_refused;
       if (n !== 1) problems.push(`shaders_include_refused ${n}, expected 1`);
       if (fault.bytes) {
         const errors = validateRecording(fault.bytes, 8);

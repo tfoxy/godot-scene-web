@@ -46,12 +46,20 @@ export const MM_HONEST = ["g8mm/receiver", "g8mm/receiver-patch"] as const;
 export const MM_PERTURB = "g8mm/sabotage-perturb-instance/receiver-patch";
 export const MM_UNDRAWN = "g8mm/sabotage-undrawn-multimesh/receiver";
 export const MM_NO_FLIPBOOK = "g8mm/sabotage-gsw-no-flipbook";
-export const MM_IGNORE_IDENTITY = "g8mm/sabotage-ignore-identity-transform/receiver";
+export const MM_IGNORE_IDENTITY =
+  "g8mm/sabotage-ignore-identity-transform/receiver";
 /** PM1's capture sabotage frame (run-gate8.sh G8MM_SABOTAGE_FRAME). */
 const SABOTAGE_FRAME = 30;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const FIXTURE_EXPECTED = join(HERE, "..", "..", "fixtures", "gate8-mm", "expected.json");
+const FIXTURE_EXPECTED = join(
+  HERE,
+  "..",
+  "..",
+  "fixtures",
+  "gate8-mm",
+  "expected.json",
+);
 
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
@@ -98,7 +106,8 @@ export function mmPairDiff(
   for (let p = 0; p < a.width * a.height; p++) {
     const i = p * 4;
     let d = 0;
-    for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
+    for (let c = 0; c < 4; c++)
+      d = Math.max(d, Math.abs(a.data[i + c] - b.data[i + c]));
     if (d === 0) continue;
     const cell = cellOf(regions, p % a.width, Math.floor(p / a.width));
     if (skip.has(cell)) continue;
@@ -132,12 +141,17 @@ async function legPairs(
     return [];
   }
   const steps = (
-    await readFile(join(ctx.sourceDir, "g8mm", "capture", "steps.jsonl"), "utf8").catch(() => "")
+    await readFile(
+      join(ctx.sourceDir, "g8mm", "capture", "steps.jsonl"),
+      "utf8",
+    ).catch(() => "")
   )
     .split("\n")
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l) as { step: number; settle_frame: number });
-  const frameOf = new Map((applied.transactions ?? []).map((t) => [t.seq, t.frame]));
+  const frameOf = new Map(
+    (applied.transactions ?? []).map((t) => [t.seq, t.frame]),
+  );
   const out: MmPair[] = [];
   for (const s of applied.shots ?? []) {
     const frame = frameOf.get(s.seq);
@@ -149,23 +163,31 @@ async function legPairs(
     }
     if (frame === undefined || ref === undefined) continue;
     const a = await decodePngRgba(join(dir, "shots", name));
-    const b = await decodePngRgba(join(ctx.sourceDir, "g8mm", "reference", "shots", ref));
+    const b = await decodePngRgba(
+      join(ctx.sourceDir, "g8mm", "reference", "shots", ref),
+    );
     if (!a || !b) {
-      problems.push(`${leg}/${name}: ${a ? "" : "the gsw shot "}${b ? "" : `the reference ${ref} `}missing`);
+      problems.push(
+        `${leg}/${name}: ${a ? "" : "the gsw shot "}${b ? "" : `the reference ${ref} `}missing`,
+      );
       continue;
     }
     const d = mmPairDiff(a, b, px.regions, skip);
     if (!d) {
-      problems.push(`${leg}/${name}: ${a.width}x${a.height} against the reference's ${b.width}x${b.height}`);
+      problems.push(
+        `${leg}/${name}: ${a.width}x${a.height} against the reference's ${b.width}x${b.height}`,
+      );
       continue;
     }
     out.push({ shot: name, frame, reference: ref, ...d });
   }
-  if (out.length === 0) problems.push(`${leg}: no shot pairs with a reference shot`);
+  if (out.length === 0)
+    problems.push(`${leg}: no shot pairs with a reference shot`);
   return out;
 }
 
-const total = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0);
+const total = (o: Record<string, number>) =>
+  Object.values(o).reduce((a, b) => a + b, 0);
 const cells = (o: Record<string, number>) =>
   Object.entries(o)
     .map(([c, n]) => `${c} ${n}`)
@@ -176,8 +198,18 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
   if (!existsSync(join(ctx.sourceDir, "g8mm", "reference"))) return [];
   const expected = await readJson<{ pixels?: Pixels }>(FIXTURE_EXPECTED);
   const px = expected?.pixels;
-  if (!px) return [mk("mm-gsw-band@gsw", "PM3", ["fixtures/gate8-mm/expected.json has no pixels"], "")];
-  const skip = new Set(Object.values(px.known_gaps ?? {}).flatMap((g) => g.cells));
+  if (!px)
+    return [
+      mk(
+        "mm-gsw-band@gsw",
+        "PM3",
+        ["fixtures/gate8-mm/expected.json has no pixels"],
+        "",
+      ),
+    ];
+  const skip = new Set(
+    Object.values(px.known_gaps ?? {}).flatMap((g) => g.cells),
+  );
   const gaps = [...skip].join(", ") || "none";
   const out: Gate7Check[] = [];
 
@@ -190,7 +222,9 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
       for (const p of honest[leg]) {
         n++;
         if (total(p.other) > 0)
-          problems.push(`${leg}/${p.shot} (frame ${p.frame}, ${p.reference}): beyond channel 1 in ${cells(p.other)} (max ${p.max_other})`);
+          problems.push(
+            `${leg}/${p.shot} (frame ${p.frame}, ${p.reference}): beyond channel 1 in ${cells(p.other)} (max ${p.max_other})`,
+          );
       }
     }
     out.push(
@@ -207,19 +241,32 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const problems: string[] = [];
     for (const leg of MM_HONEST)
       for (const p of honest[leg] ?? [])
-        if ((p.other.C_FLIP ?? 0) > 0) problems.push(`${leg}/${p.shot}: C_FLIP ${p.other.C_FLIP} px beyond channel 1`);
+        if ((p.other.C_FLIP ?? 0) > 0)
+          problems.push(
+            `${leg}/${p.shot}: C_FLIP ${p.other.C_FLIP} px beyond channel 1`,
+          );
     const sab = await legPairs(ctx, MM_NO_FLIPBOOK, px, skip, problems);
     const caught = sab.filter((p) => (p.other.C_FLIP ?? 0) > 0);
     if (sab.length > 0 && caught.length === 0)
-      problems.push(`${MM_NO_FLIPBOOK}: C_FLIP within the band at every shot (the check has no teeth)`);
+      problems.push(
+        `${MM_NO_FLIPBOOK}: C_FLIP within the band at every shot (the check has no teeth)`,
+      );
     // Unflipped quads are h_frames x v_frames larger, so they spill over C_FLIP's row (into
     // B_CUSTOM's cell); every cell below that row must equal the honest GSW leg's exactly.
-    const lower = Object.entries(px.regions).filter(([, r]) => r[1] > (px.regions.C_FLIP?.[3] ?? 0));
+    const lower = Object.entries(px.regions).filter(
+      ([, r]) => r[1] > (px.regions.C_FLIP?.[3] ?? 0),
+    );
     for (const p of sab) {
-      const a = await decodePngRgba(join(ctx.out, "gate8", "gsw", MM_NO_FLIPBOOK, "shots", p.shot));
-      const b = await decodePngRgba(join(ctx.out, "gate8", "gsw", MM_HONEST[0], "shots", p.shot));
+      const a = await decodePngRgba(
+        join(ctx.out, "gate8", "gsw", MM_NO_FLIPBOOK, "shots", p.shot),
+      );
+      const b = await decodePngRgba(
+        join(ctx.out, "gate8", "gsw", MM_HONEST[0], "shots", p.shot),
+      );
       if (!a || !b) {
-        problems.push(`${MM_NO_FLIPBOOK}/${p.shot}: no honest ${MM_HONEST[0]} shot to compare`);
+        problems.push(
+          `${MM_NO_FLIPBOOK}/${p.shot}: no honest ${MM_HONEST[0]} shot to compare`,
+        );
         continue;
       }
       for (const [name, [x0, y0, x1, y1]] of lower) {
@@ -233,7 +280,10 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
                 break;
               }
           }
-        if (moved > 0) problems.push(`${MM_NO_FLIPBOOK}/${p.shot}: ${name} ${moved} px differ from the honest leg`);
+        if (moved > 0)
+          problems.push(
+            `${MM_NO_FLIPBOOK}/${p.shot}: ${name} ${moved} px differ from the honest leg`,
+          );
       }
     }
     out.push(
@@ -251,11 +301,19 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const pairs = await legPairs(ctx, MM_PERTURB, px, skip, problems);
     const after = pairs.filter((p) => p.frame >= SABOTAGE_FRAME);
     const before = pairs.filter((p) => p.frame < SABOTAGE_FRAME);
-    if (after.length === 0) problems.push(`${MM_PERTURB}: no shot at or after frame ${SABOTAGE_FRAME}`);
+    if (after.length === 0)
+      problems.push(
+        `${MM_PERTURB}: no shot at or after frame ${SABOTAGE_FRAME}`,
+      );
     else if (!after.some((p) => total(p.other) > 0))
-      problems.push(`${MM_PERTURB}: within the band after frame ${SABOTAGE_FRAME} (not caught)`);
+      problems.push(
+        `${MM_PERTURB}: within the band after frame ${SABOTAGE_FRAME} (not caught)`,
+      );
     for (const p of before)
-      if (total(p.other) > 0) problems.push(`${MM_PERTURB}/${p.shot}: beyond the band before the sabotage (${cells(p.other)})`);
+      if (total(p.other) > 0)
+        problems.push(
+          `${MM_PERTURB}/${p.shot}: beyond the band before the sabotage (${cells(p.other)})`,
+        );
     const caught = after.filter((p) => total(p.other) > 0);
     out.push(
       mk(
@@ -271,7 +329,8 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const problems: string[] = [];
     const pairs = await legPairs(ctx, MM_UNDRAWN, px, skip, problems);
     const caught = pairs.filter((p) => total(p.other) > 0);
-    if (pairs.length > 0 && caught.length === 0) problems.push(`${MM_UNDRAWN}: within the band (not caught)`);
+    if (pairs.length > 0 && caught.length === 0)
+      problems.push(`${MM_UNDRAWN}: within the band (not caught)`);
     out.push(
       mk(
         "mm-gsw-catches-undrawn-multimesh@gsw",
@@ -288,13 +347,24 @@ export async function mmGswChecks(ctx: Ctx): Promise<Gate7Check[]> {
     const pairs = await legPairs(ctx, MM_IGNORE_IDENTITY, px, skip, problems);
     const allowed = new Set([...(it?.cells ?? []), ...(it?.spill ?? [])]);
     let caught = 0;
-    if (!it) problems.push("fixtures/gate8-mm/expected.json has no pixels.identity_transform");
+    if (!it)
+      problems.push(
+        "fixtures/gate8-mm/expected.json has no pixels.identity_transform",
+      );
     for (const p of pairs) {
       const missed = (it?.cells ?? []).filter((c) => (p.other[c] ?? 0) === 0);
-      if (missed.length > 0) problems.push(`${MM_IGNORE_IDENTITY}/${p.shot}: ${missed.join(", ")} within the band (not caught)`);
+      if (missed.length > 0)
+        problems.push(
+          `${MM_IGNORE_IDENTITY}/${p.shot}: ${missed.join(", ")} within the band (not caught)`,
+        );
       else caught++;
-      const stray = Object.entries(p.other).filter(([c, n]) => n > 0 && !allowed.has(c));
-      if (stray.length > 0) problems.push(`${MM_IGNORE_IDENTITY}/${p.shot}: beyond the band outside the identity cells (${cells(Object.fromEntries(stray))})`);
+      const stray = Object.entries(p.other).filter(
+        ([c, n]) => n > 0 && !allowed.has(c),
+      );
+      if (stray.length > 0)
+        problems.push(
+          `${MM_IGNORE_IDENTITY}/${p.shot}: beyond the band outside the identity cells (${cells(Object.fromEntries(stray))})`,
+        );
     }
     out.push(
       mk(

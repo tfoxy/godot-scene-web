@@ -20,7 +20,6 @@
 
 import type { LiveLogLine } from "../lib/gate1-live-checks";
 import type { HookLine } from "../lib/gate2b-checks";
-import type { ResolvedTransaction } from "../lib/render-stream-2";
 import {
   type ConnTimeline,
   type G2cHost,
@@ -47,6 +46,7 @@ import {
   windowsWithoutCandidate,
   wireSends,
 } from "../lib/gate6l-checks";
+import type { ResolvedTransaction } from "../lib/render-stream-2";
 
 export interface SelfTestHooks {
   assert: (name: string, ok: boolean, detail?: string) => void;

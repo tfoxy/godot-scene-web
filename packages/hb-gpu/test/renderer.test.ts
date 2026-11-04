@@ -92,7 +92,14 @@ function makeRenderer(
     perInstanceRunState?: boolean;
   } = {},
 ) {
-  const { atlasTexels, design, framebuffer, contrast, perInstanceRunState, ...glOptions } = options;
+  const {
+    atlasTexels,
+    design,
+    framebuffer,
+    contrast,
+    perInstanceRunState,
+    ...glOptions
+  } = options;
   const fake = createFakeGl(glOptions);
   const failures: HbGpuFailure[] = [];
   const renderer = createHbGpuRenderer(fakeModule(), {
@@ -438,7 +445,9 @@ describe("the pass in a borrowed context", () => {
     expect((matrices[0]?.args[0] as { __gl?: string })?.__gl).toBe(
       "uniform:u_matViewProjection",
     );
-    const sources = fake.named("shaderSource").map((call) => String(call.args[1]));
+    const sources = fake
+      .named("shaderSource")
+      .map((call) => String(call.args[1]));
     const vertex = sources.find((source) => source.includes("a_normal"));
     const fragment = sources.find((source) => source.includes("fragColor"));
     expect(vertex).toContain("u_matViewProjection");
@@ -457,7 +466,9 @@ describe("the pass in a borrowed context", () => {
       fake.named("vertexAttribIPointer").filter((call) => call.args[3] === 84),
     ).toHaveLength(1);
     const names = fake.named("getAttribLocation").map((call) => call.args[0]);
-    expect(names).toEqual(expect.arrayContaining(["a_model0", "a_color", "a_spreadPx"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["a_model0", "a_color", "a_spreadPx"]),
+    );
   });
 
   it("updates legacy color and spread uniforms only when their retained values change", () => {
@@ -468,7 +479,9 @@ describe("the pass in a borrowed context", () => {
     renderer?.end();
     expect(fake.named("uniform4fv")).toEqual([]);
     expect(
-      fake.named("uniform1f").filter((call) => uniformName(call.args[0]) === "u_spreadPx"),
+      fake
+        .named("uniform1f")
+        .filter((call) => uniformName(call.args[0]) === "u_spreadPx"),
     ).toEqual([]);
 
     fake.reset();
@@ -479,7 +492,10 @@ describe("the pass in a borrowed context", () => {
     renderer?.end();
     expect(fake.named("uniform4fv")).toHaveLength(1);
     expect(
-      fake.named("uniform1f").filter((call) => uniformName(call.args[0]) === "u_spreadPx")[0]?.args[1],
+      fake
+        .named("uniform1f")
+        .filter((call) => uniformName(call.args[0]) === "u_spreadPx")[0]
+        ?.args[1],
     ).toEqual(2.5);
   });
 

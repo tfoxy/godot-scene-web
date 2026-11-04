@@ -25,7 +25,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-
+import { decodePngRgba } from "./gate-minus1-checks";
 import type { Gate6Expected } from "./gate6-expected";
 import {
   checkCacheBudgetRespected,
@@ -46,11 +46,10 @@ import {
   slopePerMinute,
   type TimePoint,
 } from "./gate6s-checks";
-import { decodePngRgba } from "./gate-minus1-checks";
-import { classifyShot } from "./gate7b-adapters";
 import { type Gate7Check, mk } from "./gate7-adapters";
-import { classMask, judgeQ7Classes } from "./gsw-tolerance";
+import { classifyShot } from "./gate7b-adapters";
 import type { MemSample } from "./gate7k-samplers";
+import { classMask, judgeQ7Classes } from "./gsw-tolerance";
 
 export type G7kKind = "web" | "gsw";
 
@@ -172,8 +171,10 @@ export function asKnownShortfall(
   points: readonly TimePoint[],
   shortfall: { owner: string; cause: string },
 ): KnownShortfallCheck {
-  const start = points.length >= 2 ? medianInWindowEnd(points, 30, "start") : null;
-  const end = points.length >= 2 ? medianInWindowEnd(points, 30, "finish") : null;
+  const start =
+    points.length >= 2 ? medianInWindowEnd(points, 30, "start") : null;
+  const end =
+    points.length >= 2 ? medianInWindowEnd(points, 30, "finish") : null;
   const slope = points.length >= 2 ? slopePerMinute(points) : null;
   const growth = start !== null && end !== null ? end - start : null;
   const measured = {
@@ -196,13 +197,17 @@ export function asKnownShortfall(
 
 /** The leg's payload GET count: GSW `payload_verify.staged`, the web export's `payloads.staged`
  * (perf.json). `null` when unreadable, which leaves the base budget alone. */
-async function payloadGetCount(dir: string, kind: G7kKind): Promise<number | null> {
+async function payloadGetCount(
+  dir: string,
+  kind: G7kKind,
+): Promise<number | null> {
   try {
     const perf = JSON.parse(await readFile(join(dir, "perf.json"), "utf8")) as {
       payload_verify?: { staged?: number };
       payloads?: { staged?: number };
     };
-    const n = kind === "gsw" ? perf.payload_verify?.staged : perf.payloads?.staged;
+    const n =
+      kind === "gsw" ? perf.payload_verify?.staged : perf.payloads?.staged;
     return typeof n === "number" ? n : null;
   } catch {
     return null;
@@ -398,14 +403,21 @@ export const G7K_SABOTAGE_SETS: Record<
  * budget by itself (G6s's native rule: never evict the needed set). The judged series is the
  * bytes beyond that unavoidable overshoot, so an honest leg sits at or under the budget and a
  * store that never evicts does not. */
-export function gswBudgetAdjusted(ev: G6sLegEvidence, budgetBytes: number): G6sLegEvidence {
+export function gswBudgetAdjusted(
+  ev: G6sLegEvidence,
+  budgetBytes: number,
+): G6sLegEvidence {
   const perf = ev.receiverPerf;
   if (!perf) return ev;
   const timeline = perf.timeline.map((l) => {
     const raw = l as unknown as { memory_floor_bytes?: number | null };
-    if (l.cache_bytes_memory === null || raw.memory_floor_bytes == null) return l;
+    if (l.cache_bytes_memory === null || raw.memory_floor_bytes == null)
+      return l;
     const overshoot = Math.max(0, raw.memory_floor_bytes - budgetBytes);
-    return { ...l, cache_bytes_memory: Math.max(0, l.cache_bytes_memory - overshoot) };
+    return {
+      ...l,
+      cache_bytes_memory: Math.max(0, l.cache_bytes_memory - overshoot),
+    };
   });
   return { ...ev, receiverPerf: { ...perf, timeline } };
 }
@@ -422,27 +434,50 @@ export async function gswSoakPixels(
   const shots = ev.applied?.shots ?? [];
   let last: (typeof shots)[number] | undefined;
   for (const s of shots)
-    if (s.frame !== undefined && (last === undefined || (last.frame ?? -1) < s.frame))
+    if (
+      s.frame !== undefined &&
+      (last === undefined || (last.frame ?? -1) < s.frame)
+    )
       last = s;
-  const refPng = await decodePngRgba(join(g6sDir, "reference-step11", "shots", "step-11.png"));
+  const refPng = await decodePngRgba(
+    join(g6sDir, "reference-step11", "shots", "step-11.png"),
+  );
   const gotPng =
     last?.seq === undefined
       ? null
       : await decodePngRgba(
-          join(g6sDir, leg, "receiver", "shots", `${last.stream && last.stream !== 1 ? `stream-${last.stream}-` : ""}seq-${last.seq}.png`),
+          join(
+            g6sDir,
+            leg,
+            "receiver",
+            "shots",
+            `${last.stream && last.stream !== 1 ? `stream-${last.stream}-` : ""}seq-${last.seq}.png`,
+          ),
         );
   if (!refPng || !gotPng)
-    return mk(id, criterion, [`cannot read the reference or the final shot (seq ${last?.seq})`], "");
+    return mk(
+      id,
+      criterion,
+      [`cannot read the reference or the final shot (seq ${last?.seq})`],
+      "",
+    );
   const cls = classMask("gate6-animate", 11, refPng.width, refPng.height);
   if (!cls || refPng.width !== gotPng.width || refPng.height !== gotPng.height)
-    return mk(id, criterion, ["no gate6-animate step-11 mask for this frame size"], "");
+    return mk(
+      id,
+      criterion,
+      ["no gate6-animate step-11 mask for this frame size"],
+      "",
+    );
   const v = judgeQ7Classes(refPng, gotPng, cls);
   return mk(
     id,
     criterion,
     v.ok
       ? []
-      : [`decided ${v.decided_px} px (max ${v.decided_max}), delta1 max ${v.delta1_max}`],
+      : [
+          `decided ${v.decided_px} px (max ${v.decided_max}), delta1 max ${v.delta1_max}`,
+        ],
     `decided ${v.decided_px} px, delta1 ${v.delta1_px} px (max ${v.delta1_max}), undecided ${v.undecided_px} px, excluded ${v.excluded_px ?? 0} px`,
   );
 }
@@ -462,24 +497,42 @@ export async function webSoakPixels(
   const shots = ev.applied?.shots ?? [];
   let last: (typeof shots)[number] | undefined;
   for (const s of shots)
-    if (s.frame !== undefined && (last === undefined || (last.frame ?? -1) < s.frame))
+    if (
+      s.frame !== undefined &&
+      (last === undefined || (last.frame ?? -1) < s.frame)
+    )
       last = s;
-  const refPng = await decodePngRgba(join(g6sDir, "reference-step11", "shots", "step-11.png"));
+  const refPng = await decodePngRgba(
+    join(g6sDir, "reference-step11", "shots", "step-11.png"),
+  );
   const gotPng =
     last?.seq === undefined
       ? null
       : await decodePngRgba(
-          join(g6sDir, leg, "receiver", "shots", `${last.stream && last.stream !== 1 ? `stream-${last.stream}-` : ""}seq-${last.seq}.png`),
+          join(
+            g6sDir,
+            leg,
+            "receiver",
+            "shots",
+            `${last.stream && last.stream !== 1 ? `stream-${last.stream}-` : ""}seq-${last.seq}.png`,
+          ),
         );
   if (!refPng || !gotPng)
-    return mk(id, criterion, [`cannot read the reference or the final shot (seq ${last?.seq})`], "");
+    return mk(
+      id,
+      criterion,
+      [`cannot read the reference or the final shot (seq ${last?.seq})`],
+      "",
+    );
   if (refPng.width !== gotPng.width || refPng.height !== gotPng.height)
     return mk(id, criterion, ["reference and final shot differ in size"], "");
   const c = classifyShot(refPng.data, gotPng.data);
   return mk(
     id,
     criterion,
-    c.other === 0 ? [] : [`${c.other} px outside the band (max delta ${c.other_max_delta})`],
+    c.other === 0
+      ? []
+      : [`${c.other} px outside the band (max delta ${c.other_max_delta})`],
     `identical ${c.identical}, readback ${c.readback}, delta1 ${c.delta1}, other ${c.other}; gate 6 budget-0 (not gating): ${rawBudget0Detail}`,
   );
 }
@@ -491,10 +544,14 @@ export function failureSetProblems(
   allowed: readonly string[],
 ): string[] {
   const missing = required.filter((r) => !failed.includes(r));
-  const extra = failed.filter((f) => !required.includes(f) && !allowed.includes(f));
+  const extra = failed.filter(
+    (f) => !required.includes(f) && !allowed.includes(f),
+  );
   const problems: string[] = [];
-  if (missing.length > 0) problems.push(`expected to fail but did not: ${missing.join(", ")}`);
-  if (extra.length > 0) problems.push(`unexpectedly also failed: ${extra.join(", ")}`);
+  if (missing.length > 0)
+    problems.push(`expected to fail but did not: ${missing.join(", ")}`);
+  if (extra.length > 0)
+    problems.push(`unexpectedly also failed: ${extra.join(", ")}`);
   return problems;
 }
 
@@ -505,7 +562,8 @@ async function checkSoakLeg(
   expected: Gate6Expected,
 ): Promise<Gate7Check[]> {
   const raw = await loadG6sLeg(g6sDir, leg.leg);
-  const ev = kind === "gsw" ? gswBudgetAdjusted(raw, G6S_MEMORY_BUDGET_BYTES) : raw;
+  const ev =
+    kind === "gsw" ? gswBudgetAdjusted(raw, G6S_MEMORY_BUDGET_BYTES) : raw;
   const mem = await loadMemTimeline(join(g6sDir, leg.leg, "receiver"));
   const sabotage = G7K_SABOTAGE_SETS[leg.leg];
   const prefix = `g7k-${leg.leg}`;
@@ -529,7 +587,16 @@ async function checkSoakLeg(
       ),
     );
     for (const name of unbounded)
-      push(`residency-bounded:${name}`, mk(`${prefix}-residency-bounded:${name}`, `${name} bounded`, [`${name} grew or exceeded its bound`], "", false));
+      push(
+        `residency-bounded:${name}`,
+        mk(
+          `${prefix}-residency-bounded:${name}`,
+          `${name} bounded`,
+          [`${name} grew or exceeded its bound`],
+          "",
+          false,
+        ),
+      );
   } else {
     push("residency-bounded", toG7(checkResidencyBounded(leg, ev)));
   }
@@ -550,7 +617,8 @@ async function checkSoakLeg(
     const gl = checkGlTexturesBounded(ev);
     // A sabotage's key is `residency-bounded:gl-textures` only when GL textures actually grew.
     if (sabotage) {
-      if (!gl.passed) push("residency-bounded:gl-textures", { ...gl, gating: false });
+      if (!gl.passed)
+        push("residency-bounded:gl-textures", { ...gl, gating: false });
       else push("residency-bounded:gl-textures-flat", { ...gl, gating: false });
     } else push("residency-bounded-gl-textures", gl);
   }
@@ -575,21 +643,40 @@ async function checkSoakLeg(
     // G7kr decision (b): GSW gates; the web export's figure is a known shortfall (G7kw2).
     push(
       "rss-bounded-renderer",
-      kind === "web" ? asKnownShortfall(bounded, points, WEB_RENDERER_RSS_SHORTFALL) : bounded,
+      kind === "web"
+        ? asKnownShortfall(bounded, points, WEB_RENDERER_RSS_SHORTFALL)
+        : bounded,
     );
   }
   push(
     "rss-bounded-gpu",
-    checkGrowthBounded(`${prefix}-rss-bounded-gpu`, "GPU-process RSS", memSeries(mem, (s) => s.rss_bytes.GPU ?? s.rss_bytes["gpu-process"]), 16 * MIB, 2 * MIB),
+    checkGrowthBounded(
+      `${prefix}-rss-bounded-gpu`,
+      "GPU-process RSS",
+      memSeries(mem, (s) => s.rss_bytes.GPU ?? s.rss_bytes["gpu-process"]),
+      16 * MIB,
+      2 * MIB,
+    ),
   );
   if (kind === "gsw")
     push(
       "js-heap-bounded",
-      checkGrowthBounded(`${prefix}-js-heap-bounded`, "JS heap", memSeries(mem, (s) => s.js_heap_bytes), 4 * MIB, 0.5 * MIB),
+      checkGrowthBounded(
+        `${prefix}-js-heap-bounded`,
+        "JS heap",
+        memSeries(mem, (s) => s.js_heap_bytes),
+        4 * MIB,
+        0.5 * MIB,
+      ),
     );
   push(
     "wasm-heap-bounded",
-    checkEndVsSixtySecondValue(`${prefix}-wasm-heap-bounded`, "wasm heap", memSeries(mem, (s) => s.wasm_heap_bytes), 16 * MIB),
+    checkEndVsSixtySecondValue(
+      `${prefix}-wasm-heap-bounded`,
+      "wasm heap",
+      memSeries(mem, (s) => s.wasm_heap_bytes),
+      16 * MIB,
+    ),
   );
   // Deviation (G7k finisher 2, orchestrator-delegated): the leak sabotage's textures, even drawn
   // into and read back, never move nvidia-smi's per-process figure (flat at 25165824 B across a
@@ -609,7 +696,12 @@ async function checkSoakLeg(
   else
     push(
       "gpu-mem-bounded",
-      checkEndVsSixtySecondValue(`${prefix}-gpu-mem-bounded`, "GPU memory (nvidia-smi)", memSeries(mem, (s) => s.gpu_mem_bytes), 8 * MIB),
+      checkEndVsSixtySecondValue(
+        `${prefix}-gpu-mem-bounded`,
+        "GPU memory (nvidia-smi)",
+        memSeries(mem, (s) => s.gpu_mem_bytes),
+        8 * MIB,
+      ),
     );
 
   if (!sabotage) return keyed.map((k) => k.check);
@@ -618,7 +710,9 @@ async function checkSoakLeg(
   // exact set of failed keys with the expected one. `unavailable` never counts as a failure.
   const failed = keyed
     .filter((k) => !k.check.passed && !k.check.detail.startsWith("unavailable"))
-    .filter((k) => (k.check as { status?: string }).status !== "known-shortfall")
+    .filter(
+      (k) => (k.check as { status?: string }).status !== "known-shortfall",
+    )
     .filter((k) => k.key !== "residency-bounded")
     .map((k) => k.key)
     .sort();
@@ -842,7 +936,11 @@ export async function checkG7kKind(
   const checks: Gate7Check[] = [];
   for (const leg of soakLegsOf(kind))
     checks.push(...(await checkSoakLeg(kind, g6sDir, leg, expected)));
-  const { checks: startupChecks, marks, intervals } = await checkStartup(kind, startupDir);
+  const {
+    checks: startupChecks,
+    marks,
+    intervals,
+  } = await checkStartup(kind, startupDir);
   checks.push(...startupChecks);
   return {
     group: "g7-k",

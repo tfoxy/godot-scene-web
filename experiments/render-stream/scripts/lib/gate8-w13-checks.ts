@@ -22,7 +22,15 @@
 // plus gate8-w11t-checks.ts's coding checks at /13 (runG8w11Coding(g, 13): `w13-coding-*`).
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -453,7 +461,9 @@ export async function runG8w13(g: string): Promise<G8aCheck[]> {
             if (o === undefined) continue;
             frames++;
             if (o !== st) {
-              problems.push(`${name}: frame ${frame} resolves differently from the /12 viewer`);
+              problems.push(
+                `${name}: frame ${frame} resolves differently from the /12 viewer`,
+              );
               break;
             }
           }
@@ -484,7 +494,11 @@ export async function runG8w13(g: string): Promise<G8aCheck[]> {
     const criterion =
       "W13b: host predict-stale: the /13 viewer fails predict-check at the stale seq, resyncs (reason coding), the host logs it, a full follows and the stream reaches its end";
     const dir = join(coding, "sabotage-predict-stale");
-    if (skipped(dir) || skipped(join(dir, "host")) || !existsSync(join(dir, "host")))
+    if (
+      skipped(dir) ||
+      skipped(join(dir, "host")) ||
+      !existsSync(join(dir, "host"))
+    )
       checks.push(
         notRun(
           id,

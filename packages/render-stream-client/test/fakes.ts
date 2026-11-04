@@ -230,7 +230,10 @@ export const ENDPOINT: RenderStreamEndpoint = {
 
 export function harness(
   creditWindow: 1 | 2 = 2,
-  pacing: Pick<LoopOptions, "creditStage" | "applyOn" | "ext" | "recorder"> = {},
+  pacing: Pick<
+    LoopOptions,
+    "creditStage" | "applyOn" | "ext" | "recorder"
+  > = {},
   core: FakeCore = new FakeCore(),
   endpoint: RenderStreamEndpoint = ENDPOINT,
 ) {

@@ -18,6 +18,11 @@
 // The harness reads `window.__rsShell` (the web export shell's contract, gate7-web-legs.ts): the
 // printed lines, the exit, a page error, and whether the WebGL context was lost.
 
+import { GswParticles } from "../../../../packages/render-stream-client/src/particles";
+import {
+  ProgramError,
+  resolvePrograms,
+} from "../../../../packages/render-stream-client/src/programs";
 import {
   ACCEPT_END,
   ACCEPT_ITEM_META,
@@ -47,17 +52,15 @@ import {
 } from "./config";
 import {
   appliedJson,
-  prettyJsonParts,
   encodePng,
+  prettyJsonParts,
   put,
   type Report,
   type RustParts,
   type ShellTx,
 } from "./evidence";
 import { runLive, takeToken } from "./live";
-import { GswParticles } from "../../../../packages/render-stream-client/src/particles";
 import { type FrameSample, type PayloadVerify, Perf } from "./perf";
-import { ProgramError, resolvePrograms } from "../../../../packages/render-stream-client/src/programs";
 import { readRecording, SourceError, StoreFetcher } from "./source";
 import { KtxStager } from "./transcode";
 
@@ -277,12 +280,12 @@ async function run(): Promise<void> {
         data[3] === 0x44
           ? "render-stream/13"
           : data[3] === 0x43
-          ? "render-stream/12"
-          : data[3] === 0x42
-            ? "render-stream/11"
-            : data[3] === 0x41
-              ? "render-stream/10"
-              : "render-stream/9";
+            ? "render-stream/12"
+            : data[3] === 0x42
+              ? "render-stream/11"
+              : data[3] === 0x41
+                ? "render-stream/10"
+                : "render-stream/9";
       report.textureDelivery = JSON.parse(g.delivery_json()) as Record<
         string,
         unknown
@@ -360,10 +363,19 @@ async function run(): Promise<void> {
         // Q5 "Fetch": one at a time; the transaction waits, unapplied, across frames.
         const readNeeded = (): { hashes: string[]; kinds: Uint8Array } => {
           const n = g.needed_count();
-          const raw = new Uint8Array(mem.buffer, g.needed_ptr(), 32 * n).slice();
-          const kinds = new Uint8Array(mem.buffer, g.needed_kinds_ptr(), n).slice();
+          const raw = new Uint8Array(
+            mem.buffer,
+            g.needed_ptr(),
+            32 * n,
+          ).slice();
+          const kinds = new Uint8Array(
+            mem.buffer,
+            g.needed_kinds_ptr(),
+            n,
+          ).slice();
           const hashes: string[] = [];
-          for (let k = 0; k < n; k++) hashes.push(hex(raw.subarray(32 * k, 32 * k + 32)));
+          for (let k = 0; k < n; k++)
+            hashes.push(hex(raw.subarray(32 * k, 32 * k + 32)));
           return { hashes, kinds };
         };
         let needed = readNeeded();

@@ -60,8 +60,8 @@ import {
   readdirSync,
   readFileSync,
   statSync,
-  writeFileSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -87,7 +87,6 @@ import {
 } from "./lib/browser-harness";
 import { probeDeviceAdb } from "./lib/device-probes";
 import { DeviceSampler } from "./lib/device-sampler";
-import { buildBasisTranscoder, buildGswBundle } from "./lib/gsw-bundle";
 import {
   type BenchInputSummary,
   decide,
@@ -108,6 +107,7 @@ import {
   summarizeTsPage,
   tableRows,
 } from "./lib/gate7x-bench";
+import { buildBasisTranscoder, buildGswBundle } from "./lib/gsw-bundle";
 import { type QuietHold, quietAcquire } from "./lib/quiet-lock";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -278,7 +278,9 @@ function parseArgs(argv: string[]): Args {
         const list = v().split(",").filter(Boolean);
         for (const d of list)
           if (!["none", "decoded", "uastc"].includes(d))
-            throw new HarnessUsageError(`--basis-deliveries takes none, decoded, uastc (got ${d})`);
+            throw new HarnessUsageError(
+              `--basis-deliveries takes none, decoded, uastc (got ${d})`,
+            );
         a.basisDeliveries = list;
         break;
       }
@@ -378,7 +380,9 @@ function parseArgs(argv: string[]): Args {
   }
   if (a.arm === "gsw-basis") {
     if (!a.basisStore || !a.out)
-      throw new HarnessUsageError("--arm gsw-basis needs --basis-store and --out");
+      throw new HarnessUsageError(
+        "--arm gsw-basis needs --basis-store and --out",
+      );
   } else if (!a.inputs || !a.out)
     throw new HarnessUsageError("--inputs and --out are required");
   if (a.arm === "native" && a.env === "device")
@@ -579,12 +583,24 @@ async function buildBasisSite(args: Args, site: string): Promise<void> {
     });
   const transcoder = buildBasisTranscoder();
   await mkdir(join(site, "basis"), { recursive: true });
-  copyFileSync(join(transcoder, "basis_transcoder.wasm"), join(site, "basis", "basis_transcoder.wasm"));
-  copyFileSync(join(transcoder, "build.json"), join(args.out, "basis-transcoder-build.json"));
+  copyFileSync(
+    join(transcoder, "basis_transcoder.wasm"),
+    join(site, "basis", "basis_transcoder.wasm"),
+  );
+  copyFileSync(
+    join(transcoder, "build.json"),
+    join(args.out, "basis-transcoder-build.json"),
+  );
   const dir = join(args.basisStore ?? "", "sha256");
-  const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".ktx2")).sort() : [];
+  const files = existsSync(dir)
+    ? readdirSync(dir)
+        .filter((f) => f.endsWith(".ktx2"))
+        .sort()
+    : [];
   if (files.length === 0)
-    throw new HarnessUsageError(`--basis-store ${args.basisStore}: no sha256/*.ktx2`);
+    throw new HarnessUsageError(
+      `--basis-store ${args.basisStore}: no sha256/*.ktx2`,
+    );
   await mkdir(join(site, "inputs", "basis"), { recursive: true });
   // G8kb2: where the store holds the source pixels (a decoded .grt payload of the same size), the
   // quality mode measures against them too: its last width*height*channels bytes, copied as .src.
@@ -593,7 +609,15 @@ async function buildBasisSite(args: Args, site: string): Promise<void> {
     ? readFileSync(indexPath, "utf8")
         .split("\n")
         .filter(Boolean)
-        .map((l) => JSON.parse(l) as { hash: string; format: string; width: number; height: number })
+        .map(
+          (l) =>
+            JSON.parse(l) as {
+              hash: string;
+              format: string;
+              width: number;
+              height: number;
+            },
+        )
     : [];
   const manifest = files.map((f) => {
     copyFileSync(join(dir, f), join(site, "inputs", "basis", f));
@@ -601,21 +625,39 @@ async function buildBasisSite(args: Args, site: string): Promise<void> {
     const w = head.readUInt32LE(0);
     const h = head.readUInt32LE(4);
     const src = stored.find(
-      (e) => e.width === w && e.height === h && (e.format === "RGBA8" || e.format === "RGB8") && existsSync(join(dir, `${e.hash}.grt`)),
+      (e) =>
+        e.width === w &&
+        e.height === h &&
+        (e.format === "RGBA8" || e.format === "RGB8") &&
+        existsSync(join(dir, `${e.hash}.grt`)),
     );
     let source: { file: string; channels: number } | null = null;
     if (src) {
       const channels = src.format === "RGB8" ? 3 : 4;
       const raw = readFileSync(join(dir, `${src.hash}.grt`));
-      if (raw.length >= w * h * channels && raw.length - w * h * channels < 256) {
+      if (
+        raw.length >= w * h * channels &&
+        raw.length - w * h * channels < 256
+      ) {
         const name = `${f.replace(/\.ktx2$/, "")}.src`;
-        writeFileSync(join(site, "inputs", "basis", name), raw.subarray(raw.length - w * h * channels));
+        writeFileSync(
+          join(site, "inputs", "basis", name),
+          raw.subarray(raw.length - w * h * channels),
+        );
         source = { file: name, channels };
       }
     }
-    return { name: f.replace(/\.ktx2$/, ""), file: f, bytes: statSync(join(dir, f)).size, source };
+    return {
+      name: f.replace(/\.ktx2$/, ""),
+      file: f,
+      bytes: statSync(join(dir, f)).size,
+      source,
+    };
   });
-  await writeFile(join(site, "inputs", "basis", "manifest.json"), `${JSON.stringify(manifest)}\n`);
+  await writeFile(
+    join(site, "inputs", "basis", "manifest.json"),
+    `${JSON.stringify(manifest)}\n`,
+  );
   if (args.basisReceiver) {
     // The real GSW receiver (its bundle) and the native leg's recording and store.
     await buildGswBundle(join(site, "gsw-bundle"), args.rsBuild);
@@ -627,7 +669,10 @@ async function buildBasisSite(args: Args, site: string): Promise<void> {
     );
     const rec = env.RS_RECEIVER_RECORDING;
     const store = env.RS_RECEIVER_STORE_DIR;
-    if (!rec || !store) throw new HarnessUsageError(`${args.basisReceiver}/env.txt names no recording or store`);
+    if (!rec || !store)
+      throw new HarnessUsageError(
+        `${args.basisReceiver}/env.txt names no recording or store`,
+      );
     await mkdir(join(site, "receiver-input"), { recursive: true });
     copyFileSync(rec, join(site, "receiver-input", "recording.rs9"));
     cpSync(store, join(site, "receiver-input", "store"), { recursive: true });
@@ -1092,10 +1137,21 @@ async function runGswArm(
       await page.close();
     }
     if (args.arm === "gsw-basis") {
-      await runBasisBench(args, openPage, origin, device, sel.entry?.chrome_package ?? null, sel.id ?? null, nonce);
+      await runBasisBench(
+        args,
+        openPage,
+        origin,
+        device,
+        sel.entry?.chrome_package ?? null,
+        sel.id ?? null,
+        nonce,
+      );
       if (sampler) {
         const timeline = await sampler.stop();
-        await writeFile(join(args.out, `device-timeline-${sel.id}.json`), `${JSON.stringify(timeline, null, 2)}\n`);
+        await writeFile(
+          join(args.out, `device-timeline-${sel.id}.json`),
+          `${JSON.stringify(timeline, null, 2)}\n`,
+        );
       }
       return summaries;
     }
@@ -1589,7 +1645,9 @@ async function runWebArm(
 // ------------------------------------------------------------------------------------ G8kb basis
 
 /** The phone's battery and thermal state (a good guest records what it found and left). */
-async function deviceCondition(device: DeviceHarness): Promise<Record<string, unknown>> {
+async function deviceCondition(
+  device: DeviceHarness,
+): Promise<Record<string, unknown>> {
   const adb = device.browser.adb;
   const battery = await adb.shell("dumpsys battery").catch(() => "");
   const pick = (re: RegExp) => re.exec(battery)?.[1] ?? null;
@@ -1607,19 +1665,37 @@ async function deviceCondition(device: DeviceHarness): Promise<Record<string, un
 /** Chrome's graphics memory on the phone: the GPU process's `dumpsys meminfo` graphics rows (the
  * driver's memtrack: WebGL textures live in the GPU process) and `dumpsys gfxinfo <package>`'s GPU
  * memory lines (the browser's own HWUI). */
-async function gpuMemory(device: DeviceHarness, chromePackage: string): Promise<Record<string, unknown>> {
+async function gpuMemory(
+  device: DeviceHarness,
+  chromePackage: string,
+): Promise<Record<string, unknown>> {
   const adb = device.browser.adb;
-  const pid = (await adb.shell(`pidof ${chromePackage}:privileged_process0`).catch(() => "")).trim().split(/\s+/)[0] ?? "";
-  const meminfo = pid ? await adb.shell(`dumpsys meminfo ${pid}`).catch(() => "") : "";
+  const pid =
+    (
+      await adb
+        .shell(`pidof ${chromePackage}:privileged_process0`)
+        .catch(() => "")
+    )
+      .trim()
+      .split(/\s+/)[0] ?? "";
+  const meminfo = pid
+    ? await adb.shell(`dumpsys meminfo ${pid}`).catch(() => "")
+    : "";
   const row = (name: string) => {
     const m = new RegExp(`^\\s*${name}\\s+(\\d+)`, "m").exec(meminfo);
     return m ? Number(m[1]) : null;
   };
   const graphics = /^\s*Graphics:\s+(\d+)/m.exec(meminfo);
-  const gfx = await adb.shell(`dumpsys gfxinfo ${chromePackage}`).catch(() => "");
+  const gfx = await adb
+    .shell(`dumpsys gfxinfo ${chromePackage}`)
+    .catch(() => "");
   const gfxLines = gfx
     .split("\n")
-    .filter((l) => /GPU memory|GPU Caches|Total CPU memory|^\s*(Other|Image|Layer|Texture)/i.test(l))
+    .filter((l) =>
+      /GPU memory|GPU Caches|Total CPU memory|^\s*(Other|Image|Layer|Texture)/i.test(
+        l,
+      ),
+    )
     .map((l) => l.trim());
   // The driver's own allocations are not in a process's memtrack on every phone (the g31's Mali
   // reports only EGL surfaces there), so the system's view too: /proc/meminfo and dumpsys meminfo's
@@ -1634,7 +1710,10 @@ async function gpuMemory(device: DeviceHarness, chromePackage: string): Promise<
     const m = new RegExp(`${name}:\\s+([\\d,]+)K`).exec(summary);
     return m ? Number(m[1].replace(/,/g, "")) : null;
   };
-  const kernel = /Used RAM:\s+[\d,]+K \([\d,]+K used pss \+\s+([\d,]+)K kernel\)/.exec(summary);
+  const kernel =
+    /Used RAM:\s+[\d,]+K \([\d,]+K used pss \+\s+([\d,]+)K kernel\)/.exec(
+      summary,
+    );
   return {
     gpu_pid: pid || null,
     mem_available_kb: kb("MemAvailable"),
@@ -1645,7 +1724,9 @@ async function gpuMemory(device: DeviceHarness, chromePackage: string): Promise<
     egl_mtrack_kb: row("EGL mtrack"),
     gl_mtrack_kb: row("GL mtrack"),
     graphics_kb: graphics ? Number(graphics[1]) : null,
-    total_pss_kb: /TOTAL PSS:\s+(\d+)/.exec(meminfo) ? Number(/TOTAL PSS:\s+(\d+)/.exec(meminfo)?.[1]) : null,
+    total_pss_kb: /TOTAL PSS:\s+(\d+)/.exec(meminfo)
+      ? Number(/TOTAL PSS:\s+(\d+)/.exec(meminfo)?.[1])
+      : null,
     gfxinfo: gfxLines,
   };
 }
@@ -1677,15 +1758,22 @@ async function runBasisBench(
     started_at: new Date().toISOString(),
   };
   const conditions: unknown[] = [];
-  if (device) conditions.push({ when: "before", ...(await deviceCondition(device)) });
-  const page = await openPage(`${origin}/basis.html?mode=transcode&warmup=${args.warmup}&repeats=${args.repeats}`);
+  if (device)
+    conditions.push({ when: "before", ...(await deviceCondition(device)) });
+  const page = await openPage(
+    `${origin}/basis.html?mode=transcode&warmup=${args.warmup}&repeats=${args.repeats}`,
+  );
   try {
     await waitBench(page, 30 * 60_000, `${label} transcode`);
     result.transcode = await page.evaluate("window.__bench.result");
   } finally {
     await page.close();
   }
-  if (device) conditions.push({ when: "after-transcode", ...(await deviceCondition(device)) });
+  if (device)
+    conditions.push({
+      when: "after-transcode",
+      ...(await deviceCondition(device)),
+    });
   {
     // G8kb2: the context's own GL decode of each transcode against the UASTC decode and the source.
     const q = await openPage(`${origin}/basis.html?mode=quality`);
@@ -1698,17 +1786,27 @@ async function runBasisBench(
   }
   const gpu: unknown[] = [];
   for (const delivery of args.basisDeliveries) {
-    const p = await openPage(`${origin}/basis.html?mode=gpu&delivery=${delivery}&copies=${args.basisCopies}`);
+    const p = await openPage(
+      `${origin}/basis.html?mode=gpu&delivery=${delivery}&copies=${args.basisCopies}`,
+    );
     try {
       const until = async (want: string) => {
         const deadline = Date.now() + 10 * 60_000;
         for (;;) {
           const st = await p
-            .evaluate<{ state: string; detail: string; result?: unknown } | null>("window.__bench ?? null")
+            .evaluate<{
+              state: string;
+              detail: string;
+              result?: unknown;
+            } | null>("window.__bench ?? null")
             .catch(() => null);
           if (st?.state === want) return st;
-          if (st?.state === "error") throw new Error(`${label} gpu ${delivery}: ${st.detail}`);
-          if (Date.now() > deadline) throw new Error(`${label} gpu ${delivery}: timed out (${st?.detail ?? "no state"})`);
+          if (st?.state === "error")
+            throw new Error(`${label} gpu ${delivery}: ${st.detail}`);
+          if (Date.now() > deadline)
+            throw new Error(
+              `${label} gpu ${delivery}: timed out (${st?.detail ?? "no state"})`,
+            );
           await new Promise((r) => setTimeout(r, 250));
         }
       };
@@ -1729,7 +1827,9 @@ async function runBasisBench(
       if (delivery !== "none") await p.evaluate("window.__go()");
       const st = await until("holding");
       const memory = await sample();
-      console.log(`gate7-bench: ${label} gpu ${delivery}: ${JSON.stringify(memory[0] ?? st.result).slice(0, 240)}`);
+      console.log(
+        `gate7-bench: ${label} gpu ${delivery}: ${JSON.stringify(memory[0] ?? st.result).slice(0, 240)}`,
+      );
       gpu.push({ delivery, page: st.result, before, memory });
     } finally {
       await p.close();
@@ -1740,7 +1840,12 @@ async function runBasisBench(
   if (args.basisReceiver) {
     // The real GSW receiver on this browser (file mode, gl.rs uploads): upgrade (the phone's
     // default policy) transcodes every uastc variant in its worker; decoded never lists uastc.
-    const leg = JSON.parse(readFileSync(join(args.out, "site", "receiver-input", "leg.json"), "utf8")) as { shot_seqs: string | null };
+    const leg = JSON.parse(
+      readFileSync(
+        join(args.out, "site", "receiver-input", "leg.json"),
+        "utf8",
+      ),
+    ) as { shot_seqs: string | null };
     const receivers: unknown[] = [];
     for (const [arm, extra] of [
       ["uastc", { RS_RECEIVER_VARIANT_POLICY: "upgrade" }],
@@ -1755,23 +1860,39 @@ async function runBasisBench(
         ...extra,
         RS_RECEIVER_EVIDENCE_URL: `/evidence/${evidenceNonce}`,
       };
-      const config = { env, engine_args: [], canvas: [640, 360], sabotage: null };
+      const config = {
+        env,
+        engine_args: [],
+        canvas: [640, 360],
+        sabotage: null,
+      };
       const url = `${origin}/gsw-bundle/receiver.html?env=${Buffer.from(JSON.stringify(config), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
       const p = await openPage(url);
       try {
         const deadline = Date.now() + 10 * 60_000;
         let exit: { code: number } | null = null;
         while (!exit) {
-          exit = await p.evaluate<{ code: number } | null>("window.__rsShell?.exit ?? null").catch(() => null);
-          if (!exit && Date.now() > deadline) throw new Error(`${label} receiver ${arm}: no exit in 10 min`);
+          exit = await p
+            .evaluate<{ code: number } | null>("window.__rsShell?.exit ?? null")
+            .catch(() => null);
+          if (!exit && Date.now() > deadline)
+            throw new Error(`${label} receiver ${arm}: no exit in 10 min`);
           if (!exit) await new Promise((r) => setTimeout(r, 500));
         }
         await new Promise((r) => setTimeout(r, 3000));
-        const memory = device && chromePackage ? await gpuMemory(device, chromePackage) : null;
+        const memory =
+          device && chromePackage
+            ? await gpuMemory(device, chromePackage)
+            : null;
         const dir = join(args.out, `receiver-${arm}`);
         await rm(dir, { recursive: true, force: true });
-        cpSync(join(args.out, "evidence", evidenceNonce), dir, { recursive: true });
-        await rm(join(args.out, "evidence", evidenceNonce), { recursive: true, force: true });
+        cpSync(join(args.out, "evidence", evidenceNonce), dir, {
+          recursive: true,
+        });
+        await rm(join(args.out, "evidence", evidenceNonce), {
+          recursive: true,
+          force: true,
+        });
         receivers.push({ arm, exit_code: exit.code, memory, evidence: dir });
         console.log(`gate7-bench: ${label} receiver ${arm}: exit ${exit.code}`);
       } finally {
@@ -1780,10 +1901,14 @@ async function runBasisBench(
     }
     result.receivers = receivers;
   }
-  if (device) conditions.push({ when: "after", ...(await deviceCondition(device)) });
+  if (device)
+    conditions.push({ when: "after", ...(await deviceCondition(device)) });
   result.conditions = conditions;
   result.finished_at = new Date().toISOString();
-  await writeFile(join(args.out, `${label}.bench.json`), `${JSON.stringify(result, null, 2)}\n`);
+  await writeFile(
+    join(args.out, `${label}.bench.json`),
+    `${JSON.stringify(result, null, 2)}\n`,
+  );
 }
 
 // ------------------------------------------------------------------------------------------ main
@@ -1791,7 +1916,8 @@ async function runBasisBench(
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   await mkdir(args.out, { recursive: true });
-  const inputs = args.arm === "gsw-basis" ? [] : loadInputs(args.inputs, args.only);
+  const inputs =
+    args.arm === "gsw-basis" ? [] : loadInputs(args.inputs, args.only);
   const armName =
     args.arm === "web" && args.core === "rust" ? "web-rs" : args.arm;
   const armLabel = `${armName}-${args.env}${args.device ? `-${args.device}` : ""}`;

@@ -651,7 +651,10 @@ function assignRegionBackgroundStyles(
   const { backgroundPosition, backgroundSize } = regionBackgroundStyle(region, {
     margin,
     atlasSize,
-    box: boxWidth && boxHeight ? { width: boxWidth, height: boxHeight } : undefined,
+    box:
+      boxWidth && boxHeight
+        ? { width: boxWidth, height: boxHeight }
+        : undefined,
     stretchMode,
   });
   style["background-position"] = backgroundPosition;

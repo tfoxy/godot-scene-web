@@ -39,11 +39,11 @@ import {
   readJson,
   readTextOrUndefined,
 } from "./gate-minus1-checks";
+import { parseJsonl } from "./gate2-checks";
 import type { Applied3 } from "./gate2b-checks";
 import type { G2cApplied } from "./gate2c-checks";
-import { parseJsonl } from "./gate2-checks";
 import { check } from "./gate5-checks";
-import { type Gate6Expected } from "./gate6-expected";
+import type { Gate6Expected } from "./gate6-expected";
 import {
   diffFrames6,
   excludedRegions,
@@ -169,7 +169,9 @@ export interface ProcSample {
   }[];
 }
 
-export type G6sApplied = G2cApplied & { resources_summary?: Applied3["resources_summary"] };
+export type G6sApplied = G2cApplied & {
+  resources_summary?: Applied3["resources_summary"];
+};
 
 export interface G6sLegEvidence {
   leg: string;
@@ -245,10 +247,12 @@ export function relativeSeries(
   return points.map((p) => ({ t: p.t - t0, v: p.v }));
 }
 
-function inRange(points: readonly TimePoint[], from: number, to: number): number[] {
-  return points
-    .filter((p) => p.t >= from && p.t <= to)
-    .map((p) => p.v);
+function inRange(
+  points: readonly TimePoint[],
+  from: number,
+  to: number,
+): number[] {
+  return points.filter((p) => p.t >= from && p.t <= to).map((p) => p.v);
 }
 
 export function maxInWindowThird(
@@ -257,7 +261,8 @@ export function maxInWindowThird(
 ): number | null {
   const from =
     third === "first" ? G6S_WINDOW_START_S : G6S_WINDOW_END_S - G6S_THIRD_S;
-  const to = third === "first" ? G6S_WINDOW_START_S + G6S_THIRD_S : G6S_WINDOW_END_S;
+  const to =
+    third === "first" ? G6S_WINDOW_START_S + G6S_THIRD_S : G6S_WINDOW_END_S;
   const vs = inRange(points, from, to);
   return vs.length > 0 ? Math.max(...vs) : null;
 }
@@ -328,12 +333,17 @@ export function receiverSeries(
 ): TimePoint[] {
   const raw = (ev.receiverPerf?.timeline ?? [])
     .map((l) => ({ t: l.t_us / 1e6, v: pick(l) }))
-    .filter((p): p is { t: number; v: number } => p.v !== null && p.v !== undefined);
+    .filter(
+      (p): p is { t: number; v: number } => p.v !== null && p.v !== undefined,
+    );
   return relativeSeries(raw);
 }
 
 export function procRssSeries(samples: readonly ProcSample[]): TimePoint[] {
-  const raw = samples.map((s) => ({ t: s.tsMs / 1000, v: s.status.vmRssBytes }));
+  const raw = samples.map((s) => ({
+    t: s.tsMs / 1000,
+    v: s.status.vmRssBytes,
+  }));
   return relativeSeries(raw);
 }
 
@@ -362,7 +372,10 @@ export interface ResidencyMetric {
 function hostCurrentResourcesSeries(ev: G6sLegEvidence): TimePoint[] {
   const raw = ev.hostTimeline.map((l) => ({
     t: l.t_us / 1e6,
-    v: (l.mirror_textures ?? 0) + (l.mirror_meshes ?? 0) + (l.mirror_materials ?? 0),
+    v:
+      (l.mirror_textures ?? 0) +
+      (l.mirror_meshes ?? 0) +
+      (l.mirror_materials ?? 0),
   }));
   return relativeSeries(raw);
 }
@@ -377,12 +390,18 @@ export function residencyMetrics(
   inlineReceiverCache = false,
 ): ResidencyMetric[] {
   const series: { name: string; points: TimePoint[] }[] = [
-    { name: "host mirror items", points: hostSeries(ev, (l) => l.mirror_items) },
+    {
+      name: "host mirror items",
+      points: hostSeries(ev, (l) => l.mirror_items),
+    },
     {
       name: "host mirror textures",
       points: hostSeries(ev, (l) => l.mirror_textures),
     },
-    { name: "host mirror meshes", points: hostSeries(ev, (l) => l.mirror_meshes) },
+    {
+      name: "host mirror meshes",
+      points: hostSeries(ev, (l) => l.mirror_meshes),
+    },
     {
       name: "host mirror materials",
       points: hostSeries(ev, (l) => l.mirror_materials),
@@ -427,7 +446,9 @@ export function residencyMetrics(
   // The receiver side's only Q5-configured budget is bytes, not entries; the entry count has no
   // fixed size-independent cap, so the bound is evaluated against the same leg's own
   // cache_bytes_memory series and reported against the entries metric Q7e names.
-  const memBytesMax = maxInWindow(receiverSeries(ev, (l) => l.cache_bytes_memory));
+  const memBytesMax = maxInWindow(
+    receiverSeries(ev, (l) => l.cache_bytes_memory),
+  );
   const memBudgetBound = inlineReceiverCache
     ? null
     : G6S_MEMORY_BUDGET_BYTES + G6S_ONE_PAYLOAD_SLACK_BYTES;
@@ -444,7 +465,10 @@ export function residencyMetrics(
     if (name === "host retained payloads" && hostRetainedBound !== null) {
       budgetBound = hostRetainedBound;
       overBudget = windowMax !== null && windowMax > hostRetainedBound;
-    } else if (name === "receiver memory-cache entries" && memBudgetBound !== null) {
+    } else if (
+      name === "receiver memory-cache entries" &&
+      memBudgetBound !== null
+    ) {
       // Bound and comparison both in bytes; `windowMax` above is entries, so use the bytes max.
       budgetBound = memBudgetBound;
       overBudget = memBytesMax !== null && memBytesMax > memBudgetBound;
@@ -457,7 +481,14 @@ export function residencyMetrics(
     // with no configured/derived bound (the mirror and live-RID counts) has no such budget-driven
     // noise source, so it keeps the growth check as its only signal.
     const bounded = budgetBound !== null ? !overBudget : !grew;
-    return { name, firstThirdMax, lastThirdMax, budgetBound, windowMax, bounded };
+    return {
+      name,
+      firstThirdMax,
+      lastThirdMax,
+      budgetBound,
+      windowMax,
+      bounded,
+    };
   });
 }
 
@@ -533,7 +564,10 @@ export function checkCacheBudgetRespected(
         `soak-inline should never evict (no fallback source for a recurring hash): evictions_memory ${evictionsMemory}, evictions_disk ${evictionsDisk}`,
       );
   } else if (!noEvict) {
-    if (maxMem !== null && maxMem > G6S_MEMORY_BUDGET_BYTES + G6S_ONE_PAYLOAD_SLACK_BYTES)
+    if (
+      maxMem !== null &&
+      maxMem > G6S_MEMORY_BUDGET_BYTES + G6S_ONE_PAYLOAD_SLACK_BYTES
+    )
       problems.push(
         `memory-cache bytes ${maxMem} exceeded the budget (${G6S_MEMORY_BUDGET_BYTES}) plus one payload`,
       );
@@ -564,7 +598,10 @@ export function checkCacheBudgetRespected(
     `${leg.leg}: ${leg.inline ? "no eviction at all (no fallback source for a recurring hash)" : noEvict ? "memory- and disk-cache bytes stay within budget plus one payload (no-evict: never evicted at all)" : "memory- and disk-cache bytes stay within budget plus one payload; the budget was actually exercised"}`,
     problems,
     detail,
-    [join(G6S_DIR, leg.leg, "receiver", "perf.json"), join(G6S_DIR, leg.leg, "receiver", "applied.json")],
+    [
+      join(G6S_DIR, leg.leg, "receiver", "perf.json"),
+      join(G6S_DIR, leg.leg, "receiver", "applied.json"),
+    ],
   );
 }
 
@@ -598,7 +635,11 @@ export function checkRssBounded(leg: G6sLeg, ev: G6sLegEvidence): Gate6Check {
   const recvFirst = medianInWindowEnd(recvRss, 30, "start");
   const recvLast = medianInWindowEnd(recvRss, 30, "finish");
   const recvSlope = slopePerMinute(recvRss);
-  if (recvFirst !== null && recvLast !== null && recvLast - recvFirst > 16 * MIB)
+  if (
+    recvFirst !== null &&
+    recvLast !== null &&
+    recvLast - recvFirst > 16 * MIB
+  )
     problems.push(
       `receiver RSS median rose ${((recvLast - recvFirst) / MIB).toFixed(2)} MiB, budget 16 MiB`,
     );
@@ -608,7 +649,8 @@ export function checkRssBounded(leg: G6sLeg, ev: G6sLegEvidence): Gate6Check {
     );
   const videoMem = receiverSeries(ev, (l) => l.video_mem_bytes);
   const videoAt60 = videoMem.find((p) => p.t >= G6S_WINDOW_START_S)?.v ?? null;
-  const videoAtEnd = videoMem.length > 0 ? videoMem[videoMem.length - 1].v : null;
+  const videoAtEnd =
+    videoMem.length > 0 ? videoMem[videoMem.length - 1].v : null;
   if (videoAt60 !== null && videoAtEnd !== null && videoAtEnd > videoAt60 + MIB)
     problems.push(
       `receiver VIDEO_MEM_USED rose from ${videoAt60} to ${videoAtEnd} (budget +1 MiB)`,
@@ -649,7 +691,12 @@ export async function checkSoakPixels(
   e: Gate6Expected,
 ): Promise<Gate6Check> {
   const problems: string[] = [];
-  const referencePath = join(g6sDir, "reference-step11", "shots", "step-11.png");
+  const referencePath = join(
+    g6sDir,
+    "reference-step11",
+    "shots",
+    "step-11.png",
+  );
   const reference = await loadPng(referencePath);
   const shots = ev.applied?.shots ?? [];
   // realtime pacing means no frame number is known in advance (unlike g6l's frame-indexed
@@ -663,12 +710,19 @@ export async function checkSoakPixels(
   let final: Frame6 | null = null;
   if (last && last.seq !== undefined) {
     final = await loadPng(
-      join(g6sDir, leg.leg, "receiver", "shots", shotNameFor(last.stream ?? 1, last.seq)),
+      join(
+        g6sDir,
+        leg.leg,
+        "receiver",
+        "shots",
+        shotNameFor(last.stream ?? 1, last.seq),
+      ),
     );
   }
   if (!reference) problems.push(`cannot read ${referencePath}`);
   if (!last) problems.push("applied.json has no shots with a recorded frame");
-  if (last && !final) problems.push(`cannot read the final shot (seq ${last?.seq})`);
+  if (last && !final)
+    problems.push(`cannot read the final shot (seq ${last?.seq})`);
   let mismatched = 0;
   let maxDelta = 0;
   if (reference && final) {
@@ -770,7 +824,9 @@ export async function runGate6s(
       group: "g6s",
       expected_class: leg.failsMetric ? "residency-bounded fails" : "success",
       result_class:
-        ev.hostExitCode === 0 && ev.receiverExitCode === 0 ? "success" : "failed",
+        ev.hostExitCode === 0 && ev.receiverExitCode === 0
+          ? "success"
+          : "failed",
       reasons: [],
       exit_code: ev.receiverExitCode,
       artifacts: [join(G6S_DIR, leg.leg)],

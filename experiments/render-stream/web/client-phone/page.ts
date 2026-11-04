@@ -4,7 +4,6 @@
 // mount/dispose/stats plus the page-side probes (probe.ts) to the driver. Like web/client-check/,
 // it loads the package and nothing of the harness receiver.
 
-import { probe } from "./probe";
 import {
   createRenderStreamClient,
   type RenderStreamClient,
@@ -12,6 +11,7 @@ import {
   type RenderStreamEndpoint,
   type RenderStreamStatus,
 } from "../../../../packages/render-stream-client/src/index";
+import { probe } from "./probe";
 
 interface Mounted {
   client: RenderStreamClient;

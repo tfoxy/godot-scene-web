@@ -18,7 +18,14 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { check, exitCode, loadRecording, readJson, skipped, type G8aCheck } from "./gate8-adopt-checks";
+import {
+  check,
+  exitCode,
+  type G8aCheck,
+  loadRecording,
+  readJson,
+  skipped,
+} from "./gate8-adopt-checks";
 import {
   adoptedDiffuses,
   adoptionResources,
@@ -89,7 +96,13 @@ export async function runG8ctsp(
         if (rc !== "0") problems.push(`${leg}: exit ${rc}`);
       }
     }
-    checks.push(check("ctsp-legs", "LATE-SPINE: every g8ctsp leg that ran exited 0", any ? problems : null));
+    checks.push(
+      check(
+        "ctsp-legs",
+        "LATE-SPINE: every g8ctsp leg that ran exited 0",
+        any ? problems : null,
+      ),
+    );
   }
 
   // ct-spine-adopt
@@ -107,7 +120,8 @@ export async function runG8ctsp(
         expected,
         await validateSinkProblems(dir(leg)),
       );
-      if (res) detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
+      if (res)
+        detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
     }
     checks.push(
       check(
@@ -152,8 +166,16 @@ export async function runG8ctsp(
     if (RECEIVERS.every((l) => ran(l))) {
       const uploads: Record<string, UploadRow[] | undefined> = {};
       for (const l of RECEIVERS)
-        uploads[l] = (await readJson<{ uploads?: UploadRow[] }>(join(dir(l), "applied.json")))?.uploads;
-      problems = diffuseUploadProblems(diffuses, expected.canvas_count, uploads);
+        uploads[l] = (
+          await readJson<{ uploads?: UploadRow[] }>(
+            join(dir(l), "applied.json"),
+          )
+        )?.uploads;
+      problems = diffuseUploadProblems(
+        diffuses,
+        expected.canvas_count,
+        uploads,
+      );
     }
     checks.push(
       check(

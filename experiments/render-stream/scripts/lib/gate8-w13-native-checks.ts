@@ -131,14 +131,23 @@ async function replayProblems(
       continue;
     }
     if (a.status !== "ok")
-      problems.push(`${leg}: ${a.failure?.reason}: ${a.failure?.detail?.slice(0, 160)}`);
+      problems.push(
+        `${leg}: ${a.failure?.reason}: ${a.failure?.detail?.slice(0, 160)}`,
+      );
     else if (a.transactions.length !== rec.transactions.length)
-      problems.push(`${leg}: ${a.transactions.length} applied of ${rec.transactions.length}`);
+      problems.push(
+        `${leg}: ${a.transactions.length} applied of ${rec.transactions.length}`,
+      );
     if (v === 13) {
       if (!a.w13) problems.push(`${leg}: applied.json has no w13 evidence`);
       else if (a.w13.predict_failures > 0)
-        problems.push(`${leg}: ${a.w13.predict_failures} predict-check failure(s)`);
-      else notes.push(`${leg} ${a.transactions.length} txs, ${a.w13.history_units} units held at the end`);
+        problems.push(
+          `${leg}: ${a.w13.predict_failures} predict-check failure(s)`,
+        );
+      else
+        notes.push(
+          `${leg} ${a.transactions.length} txs, ${a.w13.history_units} units held at the end`,
+        );
     }
   }
   return { problems, notes };
@@ -167,8 +176,12 @@ async function twinProblems(
     else if (px > 0) {
       let where = "";
       if (regions) {
-        const a = await decodePngRgba(join(root, leg, "shots", `seq-${seq}.png`));
-        const b = await decodePngRgba(join(root, twin, "shots", `seq-${tseq}.png`));
+        const a = await decodePngRgba(
+          join(root, leg, "shots", `seq-${seq}.png`),
+        );
+        const b = await decodePngRgba(
+          join(root, twin, "shots", `seq-${tseq}.png`),
+        );
         const d = a && b ? mmCellDiff(a, b, regions) : null;
         if (d) {
           const parts = Object.entries(d.cells)
@@ -178,14 +191,19 @@ async function twinProblems(
           where = ` (${parts.join(", ")})`;
         }
       }
-      problems.push(`${leg}: frame ${frame}: ${px} px differ from ${twin}${where}`);
+      problems.push(
+        `${leg}: frame ${frame}: ${px} px differ from ${twin}${where}`,
+      );
     }
   }
   if (n === 0) problems.push(`${leg}: no shot frame shared with ${twin}`);
   return { problems, n };
 }
 
-function recordingCache(root: string, table: Record<string, [string, string, 12 | 13]>) {
+function recordingCache(
+  root: string,
+  table: Record<string, [string, string, 12 | 13]>,
+) {
   const recs = new Map<string, ResolvedRecording>();
   return async (leg: string): Promise<ResolvedRecording | null> => {
     if (!recs.has(leg)) {
@@ -207,13 +225,26 @@ export async function runG8w13Native(g: string): Promise<G8aCheck[]> {
     "native-w13-mesh-exact",
     "native-w13-no-predict-reset-caught",
   ];
-  if (!existsSync(join(g, "scale13", "capture")) && !existsSync(join(g, "mesh13", "capture")))
-    return ids.map((id) => notRun(id, "W13d: the native receiver at render-stream/13 on g8w11's /13 captures", "no /13 capture in this run"));
+  if (
+    !existsSync(join(g, "scale13", "capture")) &&
+    !existsSync(join(g, "mesh13", "capture"))
+  )
+    return ids.map((id) =>
+      notRun(
+        id,
+        "W13d: the native receiver at render-stream/13 on g8w11's /13 captures",
+        "no /13 capture in this run",
+      ),
+    );
   if (!existsSync(join(g, "native-plan.tsv")))
-    return ids.map((id) => check(id, "W13d: the native g8w11 /13 legs ran", null));
+    return ids.map((id) =>
+      check(id, "W13d: the native g8w11 /13 legs ran", null),
+    );
   const checks: G8aCheck[] = [];
   const frames =
-    (await readJson<Record<string, Record<string, number>>>(join(g, "native-frames.json"))) ?? {};
+    (await readJson<Record<string, Record<string, number>>>(
+      join(g, "native-frames.json"),
+    )) ?? {};
   const recOf = recordingCache(g, W13_CAPTURE);
 
   {
@@ -243,7 +274,8 @@ export async function runG8w13Native(g: string): Promise<G8aCheck[]> {
       problems.push(...r.problems.slice(0, 4).map((p) => `${leg}: ${p}`));
       notes.push(`${leg} ${r.compared} txs (${r.dynamicTxs} dynamic)`);
     }
-    if (dynamic === 0) problems.push("no transaction held a dynamic mesh (vacuous)");
+    if (dynamic === 0)
+      problems.push("no transaction held a dynamic mesh (vacuous)");
     checks.push(
       check(
         ids[1],
@@ -293,9 +325,18 @@ export async function runG8w13Native(g: string): Promise<G8aCheck[]> {
       if (a && problems) {
         if (a.status === "ok") problems.push("the sabotaged replay ended ok");
         else if (a.failure?.reason !== "predict-check")
-          problems.push(`failed ${a.failure?.reason} (expected predict-check): ${a.failure?.detail?.slice(0, 120)}`);
+          problems.push(
+            `failed ${a.failure?.reason} (expected predict-check): ${a.failure?.detail?.slice(0, 120)}`,
+          );
       }
-      checks.push(check(id, criterion, problems, a ? `${a.failure?.reason} at seq ${a.failure?.seq}` : ""));
+      checks.push(
+        check(
+          id,
+          criterion,
+          problems,
+          a ? `${a.failure?.reason} at seq ${a.failure?.seq}` : "",
+        ),
+      );
     }
   }
   return checks;
@@ -310,14 +351,31 @@ export async function runG8pt13Native(
   } | null,
 ): Promise<G8aCheck[]> {
   const g = join(out, "g8pt");
-  const ids = ["native-pt13-replays", "native-pt13-equals-v12", "mm13-reference"];
-  if (!existsSync(join(g, "headless-pump13", "capture")) && !existsSync(join(g, "headless-shim13", "capture")))
-    return ids.map((id) => notRun(id, "W13d: the native receiver at render-stream/13 on g8pt's headless /13 twins", "no /13 capture in this run"));
+  const ids = [
+    "native-pt13-replays",
+    "native-pt13-equals-v12",
+    "mm13-reference",
+  ];
+  if (
+    !existsSync(join(g, "headless-pump13", "capture")) &&
+    !existsSync(join(g, "headless-shim13", "capture"))
+  )
+    return ids.map((id) =>
+      notRun(
+        id,
+        "W13d: the native receiver at render-stream/13 on g8pt's headless /13 twins",
+        "no /13 capture in this run",
+      ),
+    );
   if (!existsSync(join(g, "native-plan-pt13.tsv")))
-    return ids.map((id) => check(id, "W13d: the native g8pt /13 legs ran", null));
+    return ids.map((id) =>
+      check(id, "W13d: the native g8pt /13 legs ran", null),
+    );
   const checks: G8aCheck[] = [];
   const frames =
-    (await readJson<Record<string, Record<string, number>>>(join(g, "native-frames-pt13.json"))) ?? {};
+    (await readJson<Record<string, Record<string, number>>>(
+      join(g, "native-frames-pt13.json"),
+    )) ?? {};
   const recOf = recordingCache(g, PT13_CAPTURE);
   {
     const { problems, notes } = await replayProblems(g, PT13_CAPTURE, recOf);
@@ -357,38 +415,66 @@ export async function runG8pt13Native(
     const id = ids[2];
     const criterion =
       "W13d: gate8-mm at /13 (pump13: every multimesh buffer through mm_f32's prediction) on the native receiver equals g8mm's unarmed reference exactly at each settle frame and the frame before, outside the known-gap cells (mm-reference's verdict)";
-    const steps = (await readFile(join(out, "g8mm", "capture", "steps.jsonl"), "utf8").catch(() => ""))
+    const steps = (
+      await readFile(join(out, "g8mm", "capture", "steps.jsonl"), "utf8").catch(
+        () => "",
+      )
+    )
       .split("\n")
       .filter((l) => l.trim())
       .map((l) => JSON.parse(l) as { step: number; settle_frame: number });
     if (steps.length === 0 || !mmPixels) {
       checks.push(notRun(id, criterion, "no g8mm reference in this run"));
     } else {
-      const gaps = [...new Set(Object.values(mmPixels.known_gaps ?? {}).flatMap((x) => x.cells))];
+      const gaps = [
+        ...new Set(
+          Object.values(mmPixels.known_gaps ?? {}).flatMap((x) => x.cells),
+        ),
+      ];
       const problems: string[] = [];
       let pairs = 0;
       const leg = "headless-pump13/receiver";
       for (const [frame, seq] of Object.entries(frames[leg] ?? {})) {
         const f = Number(frame);
-        const st = steps.find((s) => s.settle_frame === f || s.settle_frame - 1 === f);
+        const st = steps.find(
+          (s) => s.settle_frame === f || s.settle_frame - 1 === f,
+        );
         if (!st) continue;
-        const ref = st.settle_frame === f ? `step-${st.step}.png` : `step-${st.step}-prev.png`;
+        const ref =
+          st.settle_frame === f
+            ? `step-${st.step}.png`
+            : `step-${st.step}-prev.png`;
         const a = await decodePngRgba(join(g, leg, "shots", `seq-${seq}.png`));
-        const b = await decodePngRgba(join(out, "g8mm", "reference", "shots", ref));
+        const b = await decodePngRgba(
+          join(out, "g8mm", "reference", "shots", ref),
+        );
         if (!a || !b) {
-          problems.push(`frame ${f}: ${a ? `reference ${ref}` : "pump13 shot"} missing`);
+          problems.push(
+            `frame ${f}: ${a ? `reference ${ref}` : "pump13 shot"} missing`,
+          );
           continue;
         }
         const d = mmCellDiff(a, b, mmPixels.regions);
         if (!d) {
-          problems.push(`frame ${f}: ${a.width}x${a.height} against the reference's ${b.width}x${b.height}`);
+          problems.push(
+            `frame ${f}: ${a.width}x${a.height} against the reference's ${b.width}x${b.height}`,
+          );
           continue;
         }
         pairs++;
-        for (const p of mmExactProblems(d, gaps)) problems.push(`frame ${f} (${ref}): ${p}`);
+        for (const p of mmExactProblems(d, gaps))
+          problems.push(`frame ${f} (${ref}): ${p}`);
       }
-      if (pairs === 0) problems.push("no pump13 shot pairs with a reference shot");
-      checks.push(check(id, criterion, problems, `${pairs} pairs${gaps.length > 0 ? `, known gaps ${gaps.join(", ")} not judged` : ""}`));
+      if (pairs === 0)
+        problems.push("no pump13 shot pairs with a reference shot");
+      checks.push(
+        check(
+          id,
+          criterion,
+          problems,
+          `${pairs} pairs${gaps.length > 0 ? `, known gaps ${gaps.join(", ")} not judged` : ""}`,
+        ),
+      );
     }
   }
   return checks;
@@ -398,11 +484,13 @@ export async function runG8pt13Native(
 async function liveLeg(root: string, leg: string) {
   const dir = join(root, leg);
   if (!existsSync(dir)) return null;
-  const name = readdirSync(dir, { withFileTypes: true }).find((e) => e.isDirectory() && e.name !== "host")?.name;
+  const name = readdirSync(dir, { withFileTypes: true }).find(
+    (e) => e.isDirectory() && e.name !== "host",
+  )?.name;
   if (!name) return null;
-  const summary = await readJson<{ connections?: { predict?: { stale_seq?: number | null } }[] }>(
-    join(dir, "host", "evidence", "live-summary.json"),
-  );
+  const summary = await readJson<{
+    connections?: { predict?: { stale_seq?: number | null } }[];
+  }>(join(dir, "host", "evidence", "live-summary.json"));
   const applied = await readJson<Applied>(join(dir, name, "applied.json"));
   /** frame -> the drawn dynamic bodies' digest, for every applied transaction that has one. */
   const byFrame = new Map<number, string>();
@@ -425,10 +513,18 @@ async function liveLeg(root: string, leg: string) {
 
 /** W13d: g8w11c's native13 resync legs (`root` is <run>/g8w11c). */
 export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
-  const ids = ["native13-predict-resync", "native13-no-predict-reset-caught", "native13-zr-resync"];
+  const ids = [
+    "native13-predict-resync",
+    "native13-no-predict-reset-caught",
+    "native13-zr-resync",
+  ];
   if (!existsSync(join(root, "native13-honest")))
     return ids.map((id) =>
-      notRun(id, "W13d: the native receiver's /13 resync legs (g8w11c; GSW runs W13c's gsw13 legs)", "no native13 leg in this run"),
+      notRun(
+        id,
+        "W13d: the native receiver's /13 resync legs (g8w11c; GSW runs W13c's gsw13 legs)",
+        "no native13 leg in this run",
+      ),
     );
   const checks: G8aCheck[] = [];
   const honest = await liveLeg(root, "native13-honest");
@@ -436,8 +532,16 @@ export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
   // W13r: the host's zr-overrun (a patch's first zero run one zero too long) is judged as
   // predict-stale is: the receiver fails zr-length and resyncs the same way.
   for (const [id, leg, what] of [
-    [ids[0], "native13-predict-stale", "W13d: under the host's predict-stale a coded receiver at /13 fails predict-check"],
-    [ids[2], "native13-zr-overrun", "W13r: under the host's zr-overrun a coded receiver at /13 fails zr-length"],
+    [
+      ids[0],
+      "native13-predict-stale",
+      "W13d: under the host's predict-stale a coded receiver at /13 fails predict-check",
+    ],
+    [
+      ids[2],
+      "native13-zr-overrun",
+      "W13r: under the host's zr-overrun a coded receiver at /13 fails zr-length",
+    ],
   ] as const) {
     const criterion = `${what}, resyncs (reason coding), holds the patches before the full, ends ok within two frames of the honest /13 leg's last frame, and at every frame both legs applied after the stale transaction draws the honest leg's dynamic bodies (the host's frames are deterministic; a browser receiver whose last frame is the honest leg's: and its final shot equals that leg's pixel for pixel)`;
     if (!existsSync(join(root, leg))) {
@@ -450,15 +554,29 @@ export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
     if (v && honest && problems) {
       const a = v.applied;
       if (honest.applied?.status !== "ok")
-        problems.push(`honest leg status ${honest.applied?.status}: ${honest.applied?.failure?.detail?.slice(0, 120)}`);
-      if ((honest.applied?.live?.predict?.resyncs ?? 0) !== 0) problems.push("the honest leg resynced on predict-check");
-      if (a?.status !== "ok") problems.push(`status ${a?.status}: ${a?.failure?.reason} ${a?.failure?.detail?.slice(0, 120)}`);
-      if (v.staleSeq === null) problems.push("the host coded no patch stale (predict.stale_seq null)");
+        problems.push(
+          `honest leg status ${honest.applied?.status}: ${honest.applied?.failure?.detail?.slice(0, 120)}`,
+        );
+      if ((honest.applied?.live?.predict?.resyncs ?? 0) !== 0)
+        problems.push("the honest leg resynced on predict-check");
+      if (a?.status !== "ok")
+        problems.push(
+          `status ${a?.status}: ${a?.failure?.reason} ${a?.failure?.detail?.slice(0, 120)}`,
+        );
+      if (v.staleSeq === null)
+        problems.push("the host coded no patch stale (predict.stale_seq null)");
       const p = a?.live?.predict;
       if ((p?.resyncs ?? 0) < 1) problems.push("no predict-check resync");
-      if ((a?.live?.coding?.resyncs ?? 0) < (p?.resyncs ?? 0)) problems.push("a predict-check resync was not a coding resync");
-      if (v.lastFrame === null || honest.lastFrame === null || v.lastFrame < honest.lastFrame - 2)
-        problems.push(`last applied frame ${v.lastFrame}, honest ${honest.lastFrame}: the receiver did not catch up`);
+      if ((a?.live?.coding?.resyncs ?? 0) < (p?.resyncs ?? 0))
+        problems.push("a predict-check resync was not a coding resync");
+      if (
+        v.lastFrame === null ||
+        honest.lastFrame === null ||
+        v.lastFrame < honest.lastFrame - 2
+      )
+        problems.push(
+          `last applied frame ${v.lastFrame}, honest ${honest.lastFrame}: the receiver did not catch up`,
+        );
       let shared = 0;
       const differ: number[] = [];
       for (const [frame, digest] of v.byFrame) {
@@ -468,16 +586,25 @@ export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
         shared++;
         if (h !== digest) differ.push(frame);
       }
-      if (shared === 0) problems.push("no frame after the stale transaction applied by both legs");
+      if (shared === 0)
+        problems.push(
+          "no frame after the stale transaction applied by both legs",
+        );
       if (differ.length > 0)
-        problems.push(`the drawn dynamic bodies differ from the honest leg's at ${differ.length} frame(s), first ${differ[0]}`);
+        problems.push(
+          `the drawn dynamic bodies differ from the honest leg's at ${differ.length} frame(s), first ${differ[0]}`,
+        );
       let px: number | null | string = "headless receiver: no shot";
       if (browser) {
         if (v.lastFrame === honest.lastFrame) {
           px = await shotDiff(v.finalShot, honest.finalShot);
           if (px === null) problems.push("a final shot is missing");
-          else if (px > 0) problems.push(`the final shot differs from the honest leg's by ${px} px`);
-        } else px = `not compared (last frames ${v.lastFrame} and ${honest.lastFrame})`;
+          else if (px > 0)
+            problems.push(
+              `the final shot differs from the honest leg's by ${px} px`,
+            );
+        } else
+          px = `not compared (last frames ${v.lastFrame} and ${honest.lastFrame})`;
       }
       detail = `stale seq ${v.staleSeq}, predict resyncs ${p?.resyncs}, held ${p?.predict_dropped}, last frame ${v.lastFrame} (honest ${honest.lastFrame}), ${shared} shared frames after the stale one with equal bodies ${shared - differ.length}, final shot ${typeof px === "number" ? `diff ${px} px` : px}`;
     }
@@ -503,7 +630,9 @@ export async function runG8w11cNative13(root: string): Promise<G8aCheck[]> {
         let px: number | null = null;
         if (browser) px = await shotDiff(v.finalShot, honest.finalShot);
         if (caughtUp)
-          problems.push("the sabotaged receiver caught up with the honest leg: the resync check would pass");
+          problems.push(
+            "the sabotaged receiver caught up with the honest leg: the resync check would pass",
+          );
         const p = v.applied?.live?.predict;
         detail = `predict failures ${p?.predict_failures}, resyncs ${p?.resyncs}, last frame ${v.lastFrame} (honest ${honest.lastFrame}), status ${v.applied?.status}${browser ? `, final shot diff ${px === null ? "missing" : `${px} px`}` : ""}`;
       }

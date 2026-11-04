@@ -63,7 +63,9 @@ export function buildBasisTranscoder(): string {
   );
   const dir = log.trim().split("\n").pop()?.trim() ?? "";
   if (!dir || !existsSync(join(dir, "basis_transcoder.wasm")))
-    throw new Error(`build-basis-transcoder.sh printed no build directory:\n${log}`);
+    throw new Error(
+      `build-basis-transcoder.sh printed no build directory:\n${log}`,
+    );
   return dir;
 }
 
@@ -98,7 +100,9 @@ export async function buildGswBundle(
   // G8kb: the KTX2 transcoder's Web Worker (web/basis-transcoder/worker.ts) beside receiver.js,
   // and its wasm under basis/ (transcode.ts resolves both against the page).
   const worker = await build({
-    entryPoints: [join(GSW_RECEIVER_DIR, "..", "basis-transcoder", "worker.ts")],
+    entryPoints: [
+      join(GSW_RECEIVER_DIR, "..", "basis-transcoder", "worker.ts"),
+    ],
     bundle: true,
     platform: "browser",
     format: "esm",

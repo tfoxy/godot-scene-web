@@ -248,7 +248,12 @@ export async function presentationCheck(
  */
 export interface WideCompositionInputs {
   /** The wide legs (default: gate 6's three). `baseWidth` is the 16:9 base's width in the wide frame. */
-  legs?: { leg: string; base: string; size: [number, number]; baseWidth?: number }[];
+  legs?: {
+    leg: string;
+    base: string;
+    size: [number, number];
+    baseWidth?: number;
+  }[];
   /** The expected shots (default: fixtures/gate6-hd/expected.json); each needs a seq in the source leg's applied.json. */
   shots?: { id: string; frame: number; regions: Record<string, number[]> }[];
 }
@@ -261,7 +266,12 @@ export async function wideCompositionCheck(
 ): Promise<Gate7Check> {
   const problems: string[] = [];
   const parts: string[] = [];
-  const legs: { leg: string; base: string; size: [number, number]; baseWidth?: number }[] = inputs.legs ?? [
+  const legs: {
+    leg: string;
+    base: string;
+    size: [number, number];
+    baseWidth?: number;
+  }[] = inputs.legs ?? [
     {
       leg: "receiver-2340x1080",
       base: "hd/receiver-native",
@@ -284,18 +294,24 @@ export async function wideCompositionCheck(
         m.set(t.frame, t.seq);
     return m;
   };
-  const shotsDoc = inputs.shots ? { shots: inputs.shots } : readJson<{
-    shots: { id: string; frame: number; regions: Record<string, number[]> }[];
-  }>(
-    join(
-      dirname(fileURLToPath(import.meta.url)),
-      "..",
-      "..",
-      "fixtures",
-      "gate6-hd",
-      "expected.json",
-    ),
-  );
+  const shotsDoc = inputs.shots
+    ? { shots: inputs.shots }
+    : readJson<{
+        shots: {
+          id: string;
+          frame: number;
+          regions: Record<string, number[]>;
+        }[];
+      }>(
+        join(
+          dirname(fileURLToPath(import.meta.url)),
+          "..",
+          "..",
+          "fixtures",
+          "gate6-hd",
+          "expected.json",
+        ),
+      );
   for (const l of legs) {
     const dir = legDir(`wide/${l.leg}`);
     const baseDir = legDir(l.base);
@@ -318,7 +334,9 @@ export async function wideCompositionCheck(
     for (const shot of shotsDoc?.shots ?? []) {
       const seq = seqs.get(shot.frame);
       if (seq === undefined) {
-        problems.push(`${l.leg} ${shot.id}: no seq for frame ${shot.frame} in the source applied.json`);
+        problems.push(
+          `${l.leg} ${shot.id}: no seq for frame ${shot.frame} in the source applied.json`,
+        );
         continue;
       }
       const scale = l.size[1] / 1080;

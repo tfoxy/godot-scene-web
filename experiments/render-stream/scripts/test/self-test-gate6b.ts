@@ -35,8 +35,8 @@ import {
 } from "../lib/gate6b-checks";
 import { evaluateWideSession } from "../lib/gate6b-wide-checks";
 import type { Gate6HdExpected } from "../lib/gate6h-checks";
-import { stretchVisibleSize } from "../lib/render-stream-2";
 import type { Wire5 } from "../lib/gate55-wire";
+import { stretchVisibleSize } from "../lib/render-stream-2";
 
 type Assert = (name: string, ok: boolean, detail?: string) => void;
 
@@ -423,7 +423,8 @@ export function selfTestGate6b(assert: Assert, hd: Gate6HdExpected): void {
     const hdSize: [number, number] = [1920, 1080];
     const floors: number[] = [];
     for (let w = 1920; w <= 2600; w += 2)
-      if (stretchVisibleSize(expand, hdSize, [w, 1080])[0] !== w) floors.push(w);
+      if (stretchVisibleSize(expand, hdSize, [w, 1080])[0] !== w)
+        floors.push(w);
     assert(
       "stretchVisibleSize: the float32 W-1 floors at H 1080",
       JSON.stringify(floors) === "[1940,2234,2260,2382,2504,2530]",

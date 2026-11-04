@@ -51,9 +51,27 @@ export const PTC_LEGS = {
 /** The fixture's cells (ptc.gd): centre, process-material colour, blend, and whether the colour
  * is a uniform (RendererRD linearizes it) or a ramp texture (it does not). */
 export const PTC_CELLS = [
-  { cell: "C_MIX", at: [160, 180], color: [0.5, 0.25, 0.75, 1], blend: "mix", uniform: true },
-  { cell: "C_ADD", at: [320, 180], color: [0.6, 0.4, 0.2, 0.5], blend: "add", uniform: true },
-  { cell: "C_RAMP", at: [480, 180], color: [0.5, 0.25, 0.75, 1], blend: "mix", uniform: false },
+  {
+    cell: "C_MIX",
+    at: [160, 180],
+    color: [0.5, 0.25, 0.75, 1],
+    blend: "mix",
+    uniform: true,
+  },
+  {
+    cell: "C_ADD",
+    at: [320, 180],
+    color: [0.6, 0.4, 0.2, 0.5],
+    blend: "add",
+    uniform: true,
+  },
+  {
+    cell: "C_RAMP",
+    at: [480, 180],
+    color: [0.5, 0.25, 0.75, 1],
+    blend: "mix",
+    uniform: false,
+  },
 ] as const;
 /** project.godot's clear colour (0.2 grey) and a background sample point. */
 export const PTC_CLEAR = 0.2;
@@ -92,20 +110,37 @@ export function ptsRegion(img: Img, c: (typeof PTS_CELLS)[number]): PtsRegion {
   for (let y = c.at[1] - c.half[1]; y <= c.at[1] + c.half[1]; y++)
     for (let x = c.at[0] - c.half[0]; x <= c.at[0] + c.half[0]; x++) {
       const i = (y * img.width + x) * 4;
-      if (![0, 1, 2].some((k) => Math.abs(img.data[i + k] - clear) > PTS_LEVEL)) continue;
+      if (![0, 1, 2].some((k) => Math.abs(img.data[i + k] - clear) > PTS_LEVEL))
+        continue;
       drawn++;
-      bbox = bbox ? [Math.min(bbox[0], x), Math.min(bbox[1], y), Math.max(bbox[2], x), Math.max(bbox[3], y)] : [x, y, x, y];
+      bbox = bbox
+        ? [
+            Math.min(bbox[0], x),
+            Math.min(bbox[1], y),
+            Math.max(bbox[2], x),
+            Math.max(bbox[3], y),
+          ]
+        : [x, y, x, y];
     }
   return { drawn, bbox };
 }
 
 /** PSE: the pixels of a switched cell where `img` and `ref` differ by more than PTS_LEVEL. */
-export function ptsDiff(img: Img, ref: Img, c: (typeof PTS_CELLS)[number]): number {
+export function ptsDiff(
+  img: Img,
+  ref: Img,
+  c: (typeof PTS_CELLS)[number],
+): number {
   let n = 0;
   for (let y = c.at[1] - c.half[1]; y <= c.at[1] + c.half[1]; y++)
     for (let x = c.at[0] - c.half[0]; x <= c.at[0] + c.half[0]; x++) {
       const i = (y * img.width + x) * 4;
-      if ([0, 1, 2].some((k) => Math.abs(img.data[i + k] - ref.data[i + k]) > PTS_LEVEL)) n++;
+      if (
+        [0, 1, 2].some(
+          (k) => Math.abs(img.data[i + k] - ref.data[i + k]) > PTS_LEVEL,
+        )
+      )
+        n++;
     }
   return n;
 }
@@ -128,12 +163,19 @@ export function ptsProblems(label: string, img: Img, ref: Img): string[] {
 
 /** PSE: problems of a reference shot's switched cells against the shapes the materials ask for
  * (`drawn`: the Forward+ host's; else gl_compatibility's, which draws neither). */
-export function ptsShapeProblems(label: string, img: Img, drawn: boolean): string[] {
+export function ptsShapeProblems(
+  label: string,
+  img: Img,
+  drawn: boolean,
+): string[] {
   const out: string[] = [];
   for (const c of PTS_CELLS) {
     const r = ptsRegion(img, c);
     if (!drawn) {
-      if (r.drawn > 0) out.push(`${label} ${c.cell}: ${r.drawn} px drawn (gl_compatibility compiles no emit_subparticle)`);
+      if (r.drawn > 0)
+        out.push(
+          `${label} ${c.cell}: ${r.drawn} px drawn (gl_compatibility compiles no emit_subparticle)`,
+        );
       continue;
     }
     if (!r.bbox || r.drawn < 100) {
@@ -143,8 +185,12 @@ export function ptsShapeProblems(label: string, img: Img, drawn: boolean): strin
     const w = r.bbox[2] - r.bbox[0] + 1;
     const h = r.bbox[3] - r.bbox[1] + 1;
     // A box of extents (70, 22) is about 144x48 px; a sphere of radius 45 about 94x94.
-    const ok = c.shape === "box" ? w >= 100 && h <= 50 : w >= 60 && h >= 60 && w <= 100 && h <= 100;
-    if (!ok) out.push(`${label} ${c.cell}: drawn ${w}x${h} px, not a ${c.shape}`);
+    const ok =
+      c.shape === "box"
+        ? w >= 100 && h <= 50
+        : w >= 60 && h >= 60 && w <= 100 && h <= 100;
+    if (!ok)
+      out.push(`${label} ${c.cell}: drawn ${w}x${h} px, not a ${c.shape}`);
   }
   return out;
 }
@@ -156,16 +202,27 @@ export function srgbToLinear(c: number): number {
 
 /** The 8-bit RGB a backend draws at a cell's centre: the colour (linearized by RendererRD when it
  * is a uniform), mixed opaque or added at its alpha over the clear colour. */
-export function ptcModel(cell: (typeof PTC_CELLS)[number], rd: boolean): [number, number, number] {
-  const rgb = [0, 1, 2].map((k) => (rd && cell.uniform ? srgbToLinear(cell.color[k]) : cell.color[k]));
-  const out = rgb.map((c) => (cell.blend === "add" ? Math.min(1, PTC_CLEAR + c * cell.color[3]) : c));
+export function ptcModel(
+  cell: (typeof PTC_CELLS)[number],
+  rd: boolean,
+): [number, number, number] {
+  const rgb = [0, 1, 2].map((k) =>
+    rd && cell.uniform ? srgbToLinear(cell.color[k]) : cell.color[k],
+  );
+  const out = rgb.map((c) =>
+    cell.blend === "add" ? Math.min(1, PTC_CLEAR + c * cell.color[3]) : c,
+  );
   return out.map((c) => c * 255) as [number, number, number];
 }
 
 type Img = { data: Uint8Array; width: number; height: number };
 
 /** The patch's per-pixel RGB, row-major. */
-function patch(img: Img, [cx, cy]: readonly [number, number] | readonly number[], half = PATCH): number[][] {
+function patch(
+  img: Img,
+  [cx, cy]: readonly [number, number] | readonly number[],
+  half = PATCH,
+): number[][] {
   const out: number[][] = [];
   for (let y = cy - half; y < cy + half; y++)
     for (let x = cx - half; x < cx + half; x++) {
@@ -185,7 +242,8 @@ export function patchProblems(
   tol: number,
 ): string[] {
   const got = patch(img, at);
-  const ref = "data" in want ? patch(want, at) : got.map(() => want as readonly number[]);
+  const ref =
+    "data" in want ? patch(want, at) : got.map(() => want as readonly number[]);
   let worst = 0;
   let worstAt = -1;
   for (let i = 0; i < got.length; i++)
@@ -197,7 +255,9 @@ export function patchProblems(
       }
     }
   if (worst <= tol) return [];
-  return [`${label}: ${JSON.stringify(got[worstAt])} vs ${JSON.stringify(ref[worstAt].map((v) => Math.round(v)))} (off by ${worst})`];
+  return [
+    `${label}: ${JSON.stringify(got[worstAt])} vs ${JSON.stringify(ref[worstAt].map((v) => Math.round(v)))} (off by ${worst})`,
+  ];
 }
 
 function methodOf(stdout: string | undefined): string | null {
@@ -228,14 +288,36 @@ async function shots(dir: string, reference: boolean): Promise<Img[] | null> {
 }
 
 /** Problems of a receiver leg against the Forward+ reference (ptc-receiver's criterion). */
-async function receiverProblems(g: string, leg: string, fwd: Img[]): Promise<string[] | null> {
+async function receiverProblems(
+  g: string,
+  leg: string,
+  fwd: Img[],
+): Promise<string[] | null> {
   const got = await shots(join(g, leg), false);
   if (!got) return null;
-  if (got.length !== fwd.length) return [`${leg}: ${got.length} shots, the reference ${fwd.length}`];
+  if (got.length !== fwd.length)
+    return [`${leg}: ${got.length} shots, the reference ${fwd.length}`];
   const problems: string[] = [];
   got.forEach((img, i) => {
-    for (const c of PTC_CELLS) problems.push(...patchProblems(`${leg} step ${i} ${c.cell}`, img, c.at, fwd[i], PTC_TOLERANCE));
-    problems.push(...patchProblems(`${leg} step ${i} background`, img, PTC_BACKGROUND, fwd[i], PTC_TOLERANCE));
+    for (const c of PTC_CELLS)
+      problems.push(
+        ...patchProblems(
+          `${leg} step ${i} ${c.cell}`,
+          img,
+          c.at,
+          fwd[i],
+          PTC_TOLERANCE,
+        ),
+      );
+    problems.push(
+      ...patchProblems(
+        `${leg} step ${i} background`,
+        img,
+        PTC_BACKGROUND,
+        fwd[i],
+        PTC_TOLERANCE,
+      ),
+    );
     problems.push(...ptsProblems(`${leg} step ${i}`, img, fwd[i]));
   });
   return problems;
@@ -254,19 +336,37 @@ export const PTC_CHECK_IDS = [
   "ptc-receiver-catches-no-subparticle-stub",
 ] as const;
 
-export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], report: Record<string, unknown>): Promise<void> {
+export async function runG8ptPtc(
+  g: string,
+  deps: PtcDeps,
+  checks: G8aCheck[],
+  report: Record<string, unknown>,
+): Promise<void> {
   const dir = (leg: string) => join(g, leg);
   const anySkipped = Object.values(PTC_LEGS).find((l) => skipped(dir(l)));
   const notRun = (detail: string) => {
     for (const id of PTC_CHECK_IDS)
-      checks.push({ id, criterion: "PFB: a RendererRD host's particle colours", passed: true, status: "not-run", detail, gating: false });
+      checks.push({
+        id,
+        criterion: "PFB: a RendererRD host's particle colours",
+        passed: true,
+        status: "not-run",
+        detail,
+        gating: false,
+      });
   };
   if (anySkipped) return notRun(`skipped: ${anySkipped}`);
-  const fwdMethod = methodOf(await readText(join(dir(PTC_LEGS.referenceFwd), "stdout.log")));
-  const capMethod = methodOf(await readText(join(dir(PTC_LEGS.capture), "stdout.log")));
+  const fwdMethod = methodOf(
+    await readText(join(dir(PTC_LEGS.referenceFwd), "stdout.log")),
+  );
+  const capMethod = methodOf(
+    await readText(join(dir(PTC_LEGS.capture), "stdout.log")),
+  );
   report.methods = { reference_fwdplus: fwdMethod, capture: capMethod };
   if (fwdMethod !== null && fwdMethod !== "forward_plus")
-    return notRun(`unavailable: the Forward+ reference ran ${fwdMethod} (no Vulkan on this host)`);
+    return notRun(
+      `unavailable: the Forward+ reference ran ${fwdMethod} (no Vulkan on this host)`,
+    );
 
   const gl = await shots(dir(PTC_LEGS.referenceGl), true);
   const fwd = await shots(dir(PTC_LEGS.referenceFwd), true);
@@ -274,13 +374,26 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
     [
       ["reference-gl", gl],
       ["reference-fwdplus", fwd],
-    ].map(([k, imgs]) => [k, (imgs as Img[] | null)?.[0] ? PTS_CELLS.map((c) => ({ cell: c.cell, ...ptsRegion((imgs as Img[])[0], c) })) : null]),
+    ].map(([k, imgs]) => [
+      k,
+      (imgs as Img[] | null)?.[0]
+        ? PTS_CELLS.map((c) => ({
+            cell: c.cell,
+            ...ptsRegion((imgs as Img[])[0], c),
+          }))
+        : null,
+    ]),
   );
   report.samples = Object.fromEntries(
     [
       ["reference-gl", gl],
       ["reference-fwdplus", fwd],
-    ].map(([k, imgs]) => [k, (imgs as Img[] | null)?.[0] ? PTC_CELLS.map((c) => patch((imgs as Img[])[0], c.at, 1)[0]) : null]),
+    ].map(([k, imgs]) => [
+      k,
+      (imgs as Img[] | null)?.[0]
+        ? PTC_CELLS.map((c) => patch((imgs as Img[])[0], c.at, 1)[0])
+        : null,
+    ]),
   );
 
   // ptc-host-colors
@@ -288,18 +401,36 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
     let problems: string[] | null = null;
     if (gl && fwd && gl.length > 0 && fwd.length > 0) {
       problems = [];
-      const glMethod = methodOf(await readText(join(dir(PTC_LEGS.referenceGl), "stdout.log")));
-      if (glMethod !== "gl_compatibility") problems.push(`reference-gl ran ${glMethod}`);
-      if (fwdMethod !== "forward_plus") problems.push(`reference-fwdplus ran ${fwdMethod}`);
+      const glMethod = methodOf(
+        await readText(join(dir(PTC_LEGS.referenceGl), "stdout.log")),
+      );
+      if (glMethod !== "gl_compatibility")
+        problems.push(`reference-gl ran ${glMethod}`);
+      if (fwdMethod !== "forward_plus")
+        problems.push(`reference-fwdplus ran ${fwdMethod}`);
       for (const [name, imgs, rd] of [
         ["reference-gl", gl, false],
         ["reference-fwdplus", fwd, true],
       ] as const)
         imgs.forEach((img, i) => {
-          for (const c of PTC_CELLS) problems!.push(...patchProblems(`${name} step ${i} ${c.cell}`, img, c.at, ptcModel(c, rd), PTC_TOLERANCE));
+          for (const c of PTC_CELLS)
+            problems!.push(
+              ...patchProblems(
+                `${name} step ${i} ${c.cell}`,
+                img,
+                c.at,
+                ptcModel(c, rd),
+                PTC_TOLERANCE,
+              ),
+            );
         });
-      const differ = PTC_CELLS.filter((c) => c.uniform).every((c) => patchProblems("", gl[0], c.at, fwd[0], 16).length > 0);
-      if (!differ) problems.push("C_MIX and C_ADD do not differ between the backends (the premise does not hold)");
+      const differ = PTC_CELLS.filter((c) => c.uniform).every(
+        (c) => patchProblems("", gl[0], c.at, fwd[0], 16).length > 0,
+      );
+      if (!differ)
+        problems.push(
+          "C_MIX and C_ADD do not differ between the backends (the premise does not hold)",
+        );
     }
     checks.push(
       check(
@@ -316,10 +447,22 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
     let problems: string[] | null = null;
     if (gl && fwd && gl.length > 0 && fwd.length > 0) {
       problems = [];
-      gl.forEach((img, i) => problems!.push(...ptsShapeProblems(`reference-gl step ${i}`, img, false)));
-      fwd.forEach((img, i) => problems!.push(...ptsShapeProblems(`reference-fwdplus step ${i}`, img, true)));
+      for (const [i, img] of gl.entries()) {
+        problems.push(
+          ...ptsShapeProblems(`reference-gl step ${i}`, img, false),
+        );
+      }
+      for (const [i, img] of fwd.entries()) {
+        problems.push(
+          ...ptsShapeProblems(`reference-fwdplus step ${i}`, img, true),
+        );
+      }
     }
-    const r = fwd?.[0] ? PTS_CELLS.map((c) => `${c.cell} ${JSON.stringify(ptsRegion(fwd[0], c).bbox)}`).join(", ") : "";
+    const r = fwd?.[0]
+      ? PTS_CELLS.map(
+          (c) => `${c.cell} ${JSON.stringify(ptsRegion(fwd[0], c).bbox)}`,
+        ).join(", ")
+      : "";
     checks.push(
       check(
         "pts-host-switched",
@@ -344,13 +487,22 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
       if (v[0] !== "ok") problems.push(`${sink}: TS ${v[0]}`);
       if (v[1] !== "ok") problems.push(`${sink}: rs-core ${v[1]}`);
     }
-    if (capMethod !== "forward_plus") problems.push(`the capture host ran ${capMethod}`);
-    checks.push(check("ptc-validate", "PFB: both sinks of the Forward+ capture pass both validators", any ? problems : null));
+    if (capMethod !== "forward_plus")
+      problems.push(`the capture host ran ${capMethod}`);
+    checks.push(
+      check(
+        "ptc-validate",
+        "PFB: both sinks of the Forward+ capture pass both validators",
+        any ? problems : null,
+      ),
+    );
   }
 
   // ptc-receiver and its catch
   {
-    const honest = fwd ? await receiverProblems(g, PTC_LEGS.receiver, fwd) : null;
+    const honest = fwd
+      ? await receiverProblems(g, PTC_LEGS.receiver, fwd)
+      : null;
     checks.push(
       check(
         "ptc-receiver",
@@ -363,16 +515,26 @@ export async function runG8ptPtc(g: string, deps: PtcDeps, checks: G8aCheck[], r
       check(
         "ptc-receiver-catches-gl-particle-colors",
         "PFB: the receiver that sets the colours as given (gl-particle-colors, the pre-PFB receiver) fails ptc-receiver",
-        sab === null ? null : sab.length > 0 ? [] : ["ptc-receiver passed on the sabotage receiver"],
+        sab === null
+          ? null
+          : sab.length > 0
+            ? []
+            : ["ptc-receiver passed on the sabotage receiver"],
         sab?.[0],
       ),
     );
-    const stub = fwd ? await receiverProblems(g, PTC_LEGS.sabotageStub, fwd) : null;
+    const stub = fwd
+      ? await receiverProblems(g, PTC_LEGS.sabotageStub, fwd)
+      : null;
     checks.push(
       check(
         "ptc-receiver-catches-no-subparticle-stub",
         "PSE: the receiver that sets a RendererRD host's particles code as given (no-subparticle-stub, the pre-PSE receiver) fails ptc-receiver",
-        stub === null ? null : stub.length > 0 ? [] : ["ptc-receiver passed on the sabotage receiver"],
+        stub === null
+          ? null
+          : stub.length > 0
+            ? []
+            : ["ptc-receiver passed on the sabotage receiver"],
         stub?.[0],
       ),
     );

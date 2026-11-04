@@ -22,16 +22,15 @@ import {
   expect,
   it,
 } from "vitest";
-
+import { createParticleRuntime } from "../src/particles/runtime";
+import { __resetStaticParticleFrameCacheForTest } from "../src/particles/static-frame-cache";
+import { SELF_LAYER_CLASS } from "../src/render-structure";
+import type { GodotEffectRenderInfo } from "../src/types";
 import {
   __resetStaticShaderFrameCacheForTest,
   createWebglShaderRuntime,
 } from "../src/webgl/runtime";
-import { createParticleRuntime } from "../src/particles/runtime";
-import type { GodotEffectRenderInfo } from "../src/types";
-import { __resetStaticParticleFrameCacheForTest } from "../src/particles/static-frame-cache";
 import { __resetSharedForTest } from "../src/webgl/shared-gl";
-import { SELF_LAYER_CLASS } from "../src/render-structure";
 import { makeResizeObserverStub } from "./support/resize-observer-stub";
 
 // A TIME-reading shader so `usesTime` is true; frozen mode renders it once and parks.

@@ -1,373 +1,228 @@
 {
- "schema": "render-stream-remote-jobs/1",
- "about": "Expected minutes per remote job label (setup included) and the leg-shard partitions of the long jobs, read by lib/remote-matrix.py (the remote workflow's plan job). Refresh `minutes` with `python3 experiments/render-stream/scripts/lib/remote-matrix.py --refresh <run id>...` after jobs grow; weights are relative per-group minutes (only their ratios matter).",
- "provenance": {
-  "runs": [
-   41791846237,
-   41770720217,
-   41775053508
-  ],
-  "statistic": "median job minutes (setup included) over the named runs' successful or failing jobs",
-  "weights": "per-group wall of a local native gate 8 run (source cache 5e488685, 2026-11-03, quiet-lock.jsonl spans): native gate 8 groups and g7-8's source share them; g7-8's replay is assumed proportional; g8w11 raised (native 11, g7-8 12) from the leg-shard run 41787988310, whose g8w11 shards ran longest (native 26.8 min, gsw 26.0, web 30.2)",
-  "setup_minutes": "median rs-setup step minutes per job kind over runs 41741517360, 41762472406, 41769388557, 41770720217, 41775053508",
-  "jobs_seen": {
-   "bench-instr": 1,
-   "capture-build": 1,
-   "cargo-decode-proto-rs": 1,
-   "cargo-gsw-rs": 1,
-   "cargo-rs-core": 1,
-   "cargo-rs-core-capi": 1,
-   "g7-gsw@g7-0": 2,
-   "g7-gsw@g7-1": 2,
-   "g7-gsw@g7-2": 2,
-   "g7-gsw@g7-3": 2,
-   "g7-gsw@g7-4": 2,
-   "g7-gsw@g7-5": 2,
-   "g7-gsw@g7-55": 2,
-   "g7-gsw@g7-6": 3,
-   "g7-gsw@g7-8": 3,
-   "g7-web-rust@g7-0": 2,
-   "g7-web-rust@g7-1": 2,
-   "g7-web-rust@g7-2": 2,
-   "g7-web-rust@g7-3": 2,
-   "g7-web-rust@g7-4": 2,
-   "g7-web-rust@g7-5": 2,
-   "g7-web-rust@g7-55": 2,
-   "g7-web-rust@g7-6": 3,
-   "g7-web-rust@g7-8": 3,
-   "g7live-gsw@g7-2": 2,
-   "g7live-gsw@g7-5": 2,
-   "g7live-gsw@g7-55": 2,
-   "g7live-gsw@g7-8": 3,
-   "g7live-web-rust@g7-2": 2,
-   "g7live-web-rust@g7-5": 2,
-   "g7live-web-rust@g7-55": 2,
-   "g7live-web-rust@g7-8": 3,
-   "native-rust-gate-minus1": 1,
-   "native-rust-gate0": 1,
-   "native-rust-gate1": 1,
-   "native-rust-gate2": 1,
-   "native-rust-gate3": 1,
-   "native-rust-gate4": 1,
-   "native-rust-gate5": 1,
-   "native-rust-gate55": 1,
-   "native-rust-gate8": 3,
-   "native-rust-hc1": 1,
-   "pnpm-test": 1,
-   "pure-1of6": 3,
-   "pure-2of6": 3,
-   "pure-3of6": 3,
-   "pure-4of6": 3,
-   "pure-5of6": 3,
-   "pure-6of6": 3
-  }
- },
- "fallback_minutes": [
-  [
-   "",
-   5
-  ],
-  [
-   "cargo-",
-   2
-  ],
-  [
-   "native-",
-   11
-  ],
-  [
-   "native-rust-gate8",
-   38
-  ],
-  [
-   "g7-",
-   18
-  ],
-  [
-   "g7live-",
-   15
-  ],
-  [
-   "pure",
-   11
-  ]
- ],
- "setup_minutes": [
-  [
-   "",
-   0.5
-  ],
-  [
-   "native-",
-   8
-  ],
-  [
-   "g7-",
-   11
-  ],
-  [
-   "g7live-",
-   10
-  ],
-  [
-   "pure",
-   8.3
-  ]
- ],
- "minutes": {
-  "bench-instr": 1.9,
-  "capture-build": 8.8,
-  "cargo-decode-proto-rs": 0.7,
-  "cargo-gsw-rs": 1.4,
-  "cargo-rs-core": 2.1,
-  "cargo-rs-core-capi": 2.5,
-  "g7-gsw@g7-0": 11.5,
-  "g7-gsw@g7-1": 18.4,
-  "g7-gsw@g7-2": 21.1,
-  "g7-gsw@g7-3": 14.6,
-  "g7-gsw@g7-4": 19.6,
-  "g7-gsw@g7-5": 16.5,
-  "g7-gsw@g7-55": 16.1,
-  "g7-gsw@g7-6": 32.9,
-  "g7-gsw@g7-8": 37.1,
-  "g7-web-rust@g7-0": 14.8,
-  "g7-web-rust@g7-1": 14.4,
-  "g7-web-rust@g7-2": 21.2,
-  "g7-web-rust@g7-3": 16.1,
-  "g7-web-rust@g7-4": 19.8,
-  "g7-web-rust@g7-5": 16.0,
-  "g7-web-rust@g7-55": 17.1,
-  "g7-web-rust@g7-6": 29.2,
-  "g7-web-rust@g7-8": 47.6,
-  "g7live-gsw@g7-2": 15.6,
-  "g7live-gsw@g7-5": 11.6,
-  "g7live-gsw@g7-55": 14.7,
-  "g7live-gsw@g7-8": 15.9,
-  "g7live-web-rust@g7-2": 17.9,
-  "g7live-web-rust@g7-5": 12.7,
-  "g7live-web-rust@g7-55": 13.3,
-  "g7live-web-rust@g7-8": 16.9,
-  "native-rust-gate-minus1": 11.3,
-  "native-rust-gate0": 9.1,
-  "native-rust-gate1": 7.6,
-  "native-rust-gate2": 11.1,
-  "native-rust-gate3": 8.6,
-  "native-rust-gate4": 9.9,
-  "native-rust-gate5": 13.0,
-  "native-rust-gate55": 12.3,
-  "native-rust-gate8": 30.4,
-  "native-rust-hc1": 11.6,
-  "pnpm-test": 2.5,
-  "pure-1of6": 10.0,
-  "pure-2of6": 12.2,
-  "pure-3of6": 9.7,
-  "pure-4of6": 11.8,
-  "pure-5of6": 9.8,
-  "pure-6of6": 9.1
- },
- "leg_shards": {
-  "native-rust-gate8": {
-   "groups": {
-    "from": "experiments/render-stream/scripts/run-gate8.sh",
-    "array": "DEFAULT_GROUPS"
-   },
-   "fixed_minutes": 2,
-   "weights": {
-    "g8t": 0.8,
-    "g8a": 0.6,
-    "g8h": 0.4,
-    "g8f": 0.2,
-    "g8m": 0.4,
-    "g8kp": 2.6,
-    "g8ku": 1.2,
-    "g8kc": 0.2,
-    "g8l": 1.2,
-    "g8c": 0.4,
-    "g8ctl": 0.3,
-    "g8ctsp": 0.2,
-    "g8cg": 0.5,
-    "g8w11": 11,
-    "g8mm": 1.0,
-    "g8pt": 2.6,
-    "g8res": 0.2,
-    "g8tag": 1.9,
-    "g8tag2": 3.7,
-    "g8rec1": 0.2
-   },
-   "together": [
-    [
-     "g8mm",
-     "g8pt"
-    ]
-   ],
-   "why_together": "g8pt's W13c/W13d checks read g8mm's capture and reference (lib/gate8-w13-*-checks.ts)",
-   "partitions": {
-    "2": [
-     [
-      "g8w11",
-      "g8tag2",
-      "g8ctl",
-      "g8ctsp",
-      "g8res",
-      "g8rec1"
-     ],
-     [
-      "*"
-     ]
-    ],
-    "3": [
-     [
-      "g8w11",
-      "g8ctl",
-      "g8ctsp",
-      "g8res",
-      "g8rec1"
-     ],
-     [
-      "g8tag2",
-      "g8tag",
-      "g8kp",
-      "g8kc",
-      "g8l"
-     ],
-     [
-      "*"
-     ]
-    ],
-    "4": [
-     [
-      "g8w11"
-     ],
-     [
-      "g8tag2",
-      "g8tag",
-      "g8ctl",
-      "g8ctsp",
-      "g8res"
-     ],
-     [
-      "g8kp",
-      "g8kc",
-      "g8l",
-      "g8ku",
-      "g8rec1"
-     ],
-     [
-      "*"
-     ]
-    ]
-   }
+  "schema": "render-stream-remote-jobs/1",
+  "about": "Expected minutes per remote job label (setup included) and the leg-shard partitions of the long jobs, read by lib/remote-matrix.py (the remote workflow's plan job). Refresh `minutes` with `python3 experiments/render-stream/scripts/lib/remote-matrix.py --refresh <run id>...` after jobs grow; weights are relative per-group minutes (only their ratios matter).",
+  "provenance": {
+    "runs": [41791846237, 41770720217, 41775053508],
+    "statistic": "median job minutes (setup included) over the named runs' successful or failing jobs",
+    "weights": "per-group wall of a local native gate 8 run (source cache 5e488685, 2026-11-03, quiet-lock.jsonl spans): native gate 8 groups and g7-8's source share them; g7-8's replay is assumed proportional; g8w11 raised (native 11, g7-8 12) from the leg-shard run 41787988310, whose g8w11 shards ran longest (native 26.8 min, gsw 26.0, web 30.2)",
+    "setup_minutes": "median rs-setup step minutes per job kind over runs 41741517360, 41762472406, 41769388557, 41770720217, 41775053508",
+    "jobs_seen": {
+      "bench-instr": 1,
+      "capture-build": 1,
+      "cargo-decode-proto-rs": 1,
+      "cargo-gsw-rs": 1,
+      "cargo-rs-core": 1,
+      "cargo-rs-core-capi": 1,
+      "g7-gsw@g7-0": 2,
+      "g7-gsw@g7-1": 2,
+      "g7-gsw@g7-2": 2,
+      "g7-gsw@g7-3": 2,
+      "g7-gsw@g7-4": 2,
+      "g7-gsw@g7-5": 2,
+      "g7-gsw@g7-55": 2,
+      "g7-gsw@g7-6": 3,
+      "g7-gsw@g7-8": 3,
+      "g7-web-rust@g7-0": 2,
+      "g7-web-rust@g7-1": 2,
+      "g7-web-rust@g7-2": 2,
+      "g7-web-rust@g7-3": 2,
+      "g7-web-rust@g7-4": 2,
+      "g7-web-rust@g7-5": 2,
+      "g7-web-rust@g7-55": 2,
+      "g7-web-rust@g7-6": 3,
+      "g7-web-rust@g7-8": 3,
+      "g7live-gsw@g7-2": 2,
+      "g7live-gsw@g7-5": 2,
+      "g7live-gsw@g7-55": 2,
+      "g7live-gsw@g7-8": 3,
+      "g7live-web-rust@g7-2": 2,
+      "g7live-web-rust@g7-5": 2,
+      "g7live-web-rust@g7-55": 2,
+      "g7live-web-rust@g7-8": 3,
+      "native-rust-gate-minus1": 1,
+      "native-rust-gate0": 1,
+      "native-rust-gate1": 1,
+      "native-rust-gate2": 1,
+      "native-rust-gate3": 1,
+      "native-rust-gate4": 1,
+      "native-rust-gate5": 1,
+      "native-rust-gate55": 1,
+      "native-rust-gate8": 3,
+      "native-rust-hc1": 1,
+      "pnpm-test": 1,
+      "pure-1of6": 3,
+      "pure-2of6": 3,
+      "pure-3of6": 3,
+      "pure-4of6": 3,
+      "pure-5of6": 3,
+      "pure-6of6": 3
+    }
   },
-  "g7-gsw@g7-8": {
-   "groups": {
-    "from": "experiments/render-stream/scripts/run-gate7.sh",
-    "var": "G8_FILE_LEGS"
-   },
-   "fixed_minutes": 3,
-   "weights": {
-    "g8t": 0.8,
-    "g8a": 0.6,
-    "g8h": 0.4,
-    "g8f": 0.2,
-    "g8m": 0.4,
-    "g8kp": 2.6,
-    "g8ku": 1.2,
-    "g8c": 0.4,
-    "g8cg": 0.5,
-    "g8w11": 12,
-    "g8mm": 1.0,
-    "g8pt": 2.6
-   },
-   "together": [
-    [
-     "g8mm",
-     "g8pt"
-    ]
-   ],
-   "partitions": {
-    "2": [
-     [
-      "g8w11",
-      "g8c",
-      "g8cg",
-      "g8m"
-     ],
-     [
-      "*"
-     ]
-    ],
-    "3": [
-     [
-      "g8w11"
-     ],
-     [
-      "g8kp",
-      "g8ku",
-      "g8t",
-      "g8f",
-      "g8h"
-     ],
-     [
-      "*"
-     ]
-    ]
-   }
+  "fallback_minutes": [
+    ["", 5],
+    ["cargo-", 2],
+    ["native-", 11],
+    ["native-rust-gate8", 38],
+    ["g7-", 18],
+    ["g7live-", 15],
+    ["pure", 11]
+  ],
+  "setup_minutes": [
+    ["", 0.5],
+    ["native-", 8],
+    ["g7-", 11],
+    ["g7live-", 10],
+    ["pure", 8.3]
+  ],
+  "minutes": {
+    "bench-instr": 1.9,
+    "capture-build": 8.8,
+    "cargo-decode-proto-rs": 0.7,
+    "cargo-gsw-rs": 1.4,
+    "cargo-rs-core": 2.1,
+    "cargo-rs-core-capi": 2.5,
+    "g7-gsw@g7-0": 11.5,
+    "g7-gsw@g7-1": 18.4,
+    "g7-gsw@g7-2": 21.1,
+    "g7-gsw@g7-3": 14.6,
+    "g7-gsw@g7-4": 19.6,
+    "g7-gsw@g7-5": 16.5,
+    "g7-gsw@g7-55": 16.1,
+    "g7-gsw@g7-6": 32.9,
+    "g7-gsw@g7-8": 37.1,
+    "g7-web-rust@g7-0": 14.8,
+    "g7-web-rust@g7-1": 14.4,
+    "g7-web-rust@g7-2": 21.2,
+    "g7-web-rust@g7-3": 16.1,
+    "g7-web-rust@g7-4": 19.8,
+    "g7-web-rust@g7-5": 16.0,
+    "g7-web-rust@g7-55": 17.1,
+    "g7-web-rust@g7-6": 29.2,
+    "g7-web-rust@g7-8": 47.6,
+    "g7live-gsw@g7-2": 15.6,
+    "g7live-gsw@g7-5": 11.6,
+    "g7live-gsw@g7-55": 14.7,
+    "g7live-gsw@g7-8": 15.9,
+    "g7live-web-rust@g7-2": 17.9,
+    "g7live-web-rust@g7-5": 12.7,
+    "g7live-web-rust@g7-55": 13.3,
+    "g7live-web-rust@g7-8": 16.9,
+    "native-rust-gate-minus1": 11.3,
+    "native-rust-gate0": 9.1,
+    "native-rust-gate1": 7.6,
+    "native-rust-gate2": 11.1,
+    "native-rust-gate3": 8.6,
+    "native-rust-gate4": 9.9,
+    "native-rust-gate5": 13.0,
+    "native-rust-gate55": 12.3,
+    "native-rust-gate8": 30.4,
+    "native-rust-hc1": 11.6,
+    "pnpm-test": 2.5,
+    "pure-1of6": 10.0,
+    "pure-2of6": 12.2,
+    "pure-3of6": 9.7,
+    "pure-4of6": 11.8,
+    "pure-5of6": 9.8,
+    "pure-6of6": 9.1
   },
-  "g7-web-rust@g7-8": {
-   "groups": {
-    "from": "experiments/render-stream/scripts/run-gate7.sh",
-    "var": "G8_FILE_LEGS"
-   },
-   "fixed_minutes": 4,
-   "weights": {
-    "g8t": 0.8,
-    "g8a": 0.6,
-    "g8h": 0.4,
-    "g8f": 0.2,
-    "g8m": 0.4,
-    "g8kp": 2.6,
-    "g8ku": 1.2,
-    "g8c": 0.4,
-    "g8cg": 0.5,
-    "g8w11": 12,
-    "g8mm": 1.0,
-    "g8pt": 2.6
-   },
-   "together": [
-    [
-     "g8mm",
-     "g8pt"
-    ]
-   ],
-   "why_parts": "g8kp and g8ku are not in the web view (gate7b-adapters.ts GATE8_FILE_GROUPS): a part never holds only them",
-   "partitions": {
-    "2": [
-     [
-      "g8w11",
-      "g8c",
-      "g8cg",
-      "g8m"
-     ],
-     [
-      "*"
-     ]
-    ],
-    "3": [
-     [
-      "g8w11"
-     ],
-     [
-      "g8kp",
-      "g8ku",
-      "g8t",
-      "g8f",
-      "g8h"
-     ],
-     [
-      "*"
-     ]
-    ]
-   }
+  "leg_shards": {
+    "native-rust-gate8": {
+      "groups": {
+        "from": "experiments/render-stream/scripts/run-gate8.sh",
+        "array": "DEFAULT_GROUPS"
+      },
+      "fixed_minutes": 2,
+      "weights": {
+        "g8t": 0.8,
+        "g8a": 0.6,
+        "g8h": 0.4,
+        "g8f": 0.2,
+        "g8m": 0.4,
+        "g8kp": 2.6,
+        "g8ku": 1.2,
+        "g8kc": 0.2,
+        "g8l": 1.2,
+        "g8c": 0.4,
+        "g8ctl": 0.3,
+        "g8ctsp": 0.2,
+        "g8cg": 0.5,
+        "g8w11": 11,
+        "g8mm": 1.0,
+        "g8pt": 2.6,
+        "g8res": 0.2,
+        "g8tag": 1.9,
+        "g8tag2": 3.7,
+        "g8rec1": 0.2
+      },
+      "together": [["g8mm", "g8pt"]],
+      "why_together": "g8pt's W13c/W13d checks read g8mm's capture and reference (lib/gate8-w13-*-checks.ts)",
+      "partitions": {
+        "2": [["g8w11", "g8tag2", "g8ctl", "g8ctsp", "g8res", "g8rec1"], ["*"]],
+        "3": [
+          ["g8w11", "g8ctl", "g8ctsp", "g8res", "g8rec1"],
+          ["g8tag2", "g8tag", "g8kp", "g8kc", "g8l"],
+          ["*"]
+        ],
+        "4": [
+          ["g8w11"],
+          ["g8tag2", "g8tag", "g8ctl", "g8ctsp", "g8res"],
+          ["g8kp", "g8kc", "g8l", "g8ku", "g8rec1"],
+          ["*"]
+        ]
+      }
+    },
+    "g7-gsw@g7-8": {
+      "groups": {
+        "from": "experiments/render-stream/scripts/run-gate7.sh",
+        "var": "G8_FILE_LEGS"
+      },
+      "fixed_minutes": 3,
+      "weights": {
+        "g8t": 0.8,
+        "g8a": 0.6,
+        "g8h": 0.4,
+        "g8f": 0.2,
+        "g8m": 0.4,
+        "g8kp": 2.6,
+        "g8ku": 1.2,
+        "g8c": 0.4,
+        "g8cg": 0.5,
+        "g8w11": 12,
+        "g8mm": 1.0,
+        "g8pt": 2.6
+      },
+      "together": [["g8mm", "g8pt"]],
+      "partitions": {
+        "2": [["g8w11", "g8c", "g8cg", "g8m"], ["*"]],
+        "3": [["g8w11"], ["g8kp", "g8ku", "g8t", "g8f", "g8h"], ["*"]]
+      }
+    },
+    "g7-web-rust@g7-8": {
+      "groups": {
+        "from": "experiments/render-stream/scripts/run-gate7.sh",
+        "var": "G8_FILE_LEGS"
+      },
+      "fixed_minutes": 4,
+      "weights": {
+        "g8t": 0.8,
+        "g8a": 0.6,
+        "g8h": 0.4,
+        "g8f": 0.2,
+        "g8m": 0.4,
+        "g8kp": 2.6,
+        "g8ku": 1.2,
+        "g8c": 0.4,
+        "g8cg": 0.5,
+        "g8w11": 12,
+        "g8mm": 1.0,
+        "g8pt": 2.6
+      },
+      "together": [["g8mm", "g8pt"]],
+      "why_parts": "g8kp and g8ku are not in the web view (gate7b-adapters.ts GATE8_FILE_GROUPS): a part never holds only them",
+      "partitions": {
+        "2": [["g8w11", "g8c", "g8cg", "g8m"], ["*"]],
+        "3": [["g8w11"], ["g8kp", "g8ku", "g8t", "g8f", "g8h"], ["*"]]
+      }
+    }
   }
- }
 }

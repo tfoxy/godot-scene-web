@@ -26,19 +26,18 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-
+import { decodePngRgba } from "./gate-minus1-checks";
 import {
   check,
   exitCode,
+  type G8aCheck,
   loadRecording,
+  type Rect,
   readJson,
   shotDiff,
   shotPath,
   skipped,
-  type G8aCheck,
-  type Rect,
 } from "./gate8-adopt-checks";
-import { decodePngRgba } from "./gate-minus1-checks";
 import { type ResolvedRecording, validateRecording } from "./render-stream-2";
 
 export interface G8ctlExpected {
@@ -80,7 +79,9 @@ export interface CaptureResult {
   };
 }
 
-export function adoptionResources(r: CaptureResult | undefined): Record<string, number> | undefined {
+export function adoptionResources(
+  r: CaptureResult | undefined,
+): Record<string, number> | undefined {
   return r?.stream?.gate8?.adopt_stats?.resources;
 }
 
@@ -137,10 +138,12 @@ export function adoptedDiffuses(rec: ResolvedRecording): number[] {
   const byId = new Map(peak.state.textures.map((x) => [x.id, x]));
   const out: number[] = [];
   for (const c of peak.state.textures) {
-    if (c.kind !== "canvas" || c.origin !== "adopted" || c.status !== "ok") continue;
+    if (c.kind !== "canvas" || c.origin !== "adopted" || c.status !== "ok")
+      continue;
     const d = c.canvas?.diffuse;
     const img = d == null ? undefined : byId.get(d);
-    if (d != null && img && img.kind === "image" && img.status === "ok") out.push(d);
+    if (d != null && img && img.kind === "image" && img.status === "ok")
+      out.push(d);
   }
   return out;
 }
@@ -160,12 +163,18 @@ export function adoptProblems(
   sinkProblems: string[],
 ): string[] {
   const problems: string[] = [];
-  if (!(expected.canvas_count > 0)) problems.push(`expected canvas_count ${expected.canvas_count} is not positive`);
+  if (!(expected.canvas_count > 0))
+    problems.push(
+      `expected canvas_count ${expected.canvas_count} is not positive`,
+    );
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
   else {
     if (res.textures_canvas !== expected.canvas_count)
-      problems.push(`adopted ${res.textures_canvas} canvas textures, ${expected.canvas_count} expected`);
-    if ((res.textures_refused ?? 0) !== 0) problems.push(`refused ${res.textures_refused}`);
+      problems.push(
+        `adopted ${res.textures_canvas} canvas textures, ${expected.canvas_count} expected`,
+      );
+    if ((res.textures_refused ?? 0) !== 0)
+      problems.push(`refused ${res.textures_refused}`);
   }
   if (!rec.rec) problems.push(rec.error ?? "no recording");
   else {
@@ -175,22 +184,32 @@ export function adoptProblems(
     else {
       const canvases = peak.state.textures.filter((x) => x.kind === "canvas");
       if (canvases.length !== expected.canvas_count)
-        problems.push(`${canvases.length} canvas textures at the adoption peak, ${expected.canvas_count} expected`);
+        problems.push(
+          `${canvases.length} canvas textures at the adoption peak, ${expected.canvas_count} expected`,
+        );
       const byId = new Map(peak.state.textures.map((x) => [x.id, x]));
       for (const c of canvases) {
-        if (c.origin !== "adopted") problems.push(`canvas ${c.id}: origin ${c.origin}`);
-        if (c.status !== "ok") problems.push(`canvas ${c.id}: status ${c.status}`);
+        if (c.origin !== "adopted")
+          problems.push(`canvas ${c.id}: origin ${c.origin}`);
+        if (c.status !== "ok")
+          problems.push(`canvas ${c.id}: status ${c.status}`);
         const d = c.canvas?.diffuse;
         const img = d == null ? undefined : byId.get(d);
         if (d == null || !img || img.kind !== "image" || img.status !== "ok")
           problems.push(`canvas ${c.id}: diffuse ${d} is not an ok image`);
       }
-      const live = last.state.textures.filter((x) => x.kind === "canvas" && x.status === "ok").length;
+      const live = last.state.textures.filter(
+        (x) => x.kind === "canvas" && x.status === "ok",
+      ).length;
       const want = expected.canvas_count - (expected.freed_canvas_count ?? 0);
-      if (live !== want) problems.push(`${live} live canvas textures in the last state, ${want} expected`);
+      if (live !== want)
+        problems.push(
+          `${live} live canvas textures in the last state, ${want} expected`,
+        );
     }
     const unknown = unknownTextureCount(rec.rec);
-    if (unknown > 0) problems.push(`${unknown} unknown-texture commands over the recording`);
+    if (unknown > 0)
+      problems.push(`${unknown} unknown-texture commands over the recording`);
   }
   problems.push(...sinkProblems);
   return problems;
@@ -205,15 +224,21 @@ export function faultProblems(
   const problems: string[] = [];
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
   else if ((res.textures_canvas ?? 0) !== 0)
-    problems.push(`adopted ${res.textures_canvas} canvas textures under the fault`);
+    problems.push(
+      `adopted ${res.textures_canvas} canvas textures under the fault`,
+    );
   if (!rec.rec) problems.push(rec.error ?? "no recording");
   else {
     const last = rec.rec.transactions.at(-1);
     if (!last) problems.push("no transaction");
-    const canvases = last ? last.state.textures.filter((x) => x.kind === "canvas") : [];
-    if (canvases.length !== 0) problems.push(`last state has ${canvases.length} canvas entries`);
+    const canvases = last
+      ? last.state.textures.filter((x) => x.kind === "canvas")
+      : [];
+    if (canvases.length !== 0)
+      problems.push(`last state has ${canvases.length} canvas entries`);
     const unknown = unknownTextureCount(rec.rec);
-    if (unknown === 0) problems.push("no unknown-texture command under the fault");
+    if (unknown === 0)
+      problems.push("no unknown-texture command under the fault");
   }
   problems.push(...sinkProblems);
   return problems;
@@ -221,24 +246,40 @@ export function faultProblems(
 
 /** ct-late-free (capture side): after `free_frame` the table no longer holds `freed_canvas_count`
  * of the peak's canvas textures, nor their diffuses (an entry gone, or a `freed` tombstone). */
-export function freeProblems(rec: ResolvedRecording | undefined, expected: G8ctlExpected): string[] {
+export function freeProblems(
+  rec: ResolvedRecording | undefined,
+  expected: G8ctlExpected,
+): string[] {
   const problems: string[] = [];
   const want = expected.freed_canvas_count ?? 0;
   if (!(want > 0)) problems.push("expected.freed_canvas_count is not positive");
-  if (expected.free_frame === undefined) problems.push("expected.free_frame is missing");
+  if (expected.free_frame === undefined)
+    problems.push("expected.free_frame is missing");
   if (!rec) return [...problems, "no recording"];
   const peak = peakTransaction(rec);
   const last = rec.transactions.at(-1);
   if (!peak || !last) return [...problems, "no transaction"];
   if (expected.free_frame !== undefined && last.frame <= expected.free_frame)
-    problems.push(`last transaction is frame ${last.frame}, not after the free at ${expected.free_frame}`);
-  const alive = new Set(last.state.textures.filter((x) => x.status === "ok").map((x) => x.id));
-  const gone = peak.state.textures.filter((x) => x.kind === "canvas" && !alive.has(x.id));
-  if (gone.length !== want) problems.push(`${gone.length} canvas textures dropped from the table, ${want} expected`);
+    problems.push(
+      `last transaction is frame ${last.frame}, not after the free at ${expected.free_frame}`,
+    );
+  const alive = new Set(
+    last.state.textures.filter((x) => x.status === "ok").map((x) => x.id),
+  );
+  const gone = peak.state.textures.filter(
+    (x) => x.kind === "canvas" && !alive.has(x.id),
+  );
+  if (gone.length !== want)
+    problems.push(
+      `${gone.length} canvas textures dropped from the table, ${want} expected`,
+    );
   for (const c of gone) {
     const d = c.canvas?.diffuse;
     if (d == null) problems.push(`canvas ${c.id}: no diffuse at the peak`);
-    else if (alive.has(d)) problems.push(`canvas ${c.id}: diffuse ${d} is still an ok entry after its canvas texture was freed`);
+    else if (alive.has(d))
+      problems.push(
+        `canvas ${c.id}: diffuse ${d} is still an ok entry after its canvas texture was freed`,
+      );
   }
   return problems;
 }
@@ -258,7 +299,9 @@ export function diffuseUploadProblems(
 ): string[] {
   const problems: string[] = [];
   if (diffuses.length === 0 || diffuses.length !== expectedCount)
-    problems.push(`${diffuses.length} adopted diffuses in the capture, ${expectedCount} expected`);
+    problems.push(
+      `${diffuses.length} adopted diffuses in the capture, ${expectedCount} expected`,
+    );
   const legs = Object.keys(uploads);
   if (legs.length === 0) problems.push("no receiver leg");
   for (const l of legs) {
@@ -268,7 +311,9 @@ export function diffuseUploadProblems(
       continue;
     }
     for (const d of diffuses)
-      if (!u.some((x) => x.id === d && (x.op === "create" || x.op === "replace")))
+      if (
+        !u.some((x) => x.id === d && (x.op === "create" || x.op === "replace"))
+      )
         problems.push(`${l}: diffuse ${d} never uploaded`);
   }
   return problems;
@@ -287,7 +332,8 @@ export function releaseProblems(
   min: number,
 ): string[] {
   if (!txs || txs.length === 0) return ["no transactions[] in applied.json"];
-  if (freeFrame === undefined || !(min > 0)) return ["expected free_frame / freed_canvas_count missing"];
+  if (freeFrame === undefined || !(min > 0))
+    return ["expected free_frame / freed_canvas_count missing"];
   let freed = 0;
   let after = 0;
   for (const t of txs)
@@ -295,8 +341,12 @@ export function releaseProblems(
       after++;
       freed += t.resources?.freed ?? 0;
     }
-  if (after === 0) return [`no transaction applied at or after frame ${freeFrame}`];
-  if (freed < min) return [`${freed} textures released at or after frame ${freeFrame}, at least ${min} expected`];
+  if (after === 0)
+    return [`no transaction applied at or after frame ${freeFrame}`];
+  if (freed < min)
+    return [
+      `${freed} textures released at or after frame ${freeFrame}, at least ${min} expected`,
+    ];
   return [];
 }
 
@@ -329,8 +379,14 @@ export async function regionInkProblems(
         ink++;
     }
   if (n === 0) return [`step ${step} ${name}: region outside the shot`];
-  if (wantInk && ink * 2 <= n) return [`step ${step} ${name}: only ${ink}/${n} px differ from the clear colour`];
-  if (!wantInk && ink * 100 > n) return [`step ${step} ${name}: ${ink}/${n} px differ from the clear colour, blank expected`];
+  if (wantInk && ink * 2 <= n)
+    return [
+      `step ${step} ${name}: only ${ink}/${n} px differ from the clear colour`,
+    ];
+  if (!wantInk && ink * 100 > n)
+    return [
+      `step ${step} ${name}: ${ink}/${n} px differ from the clear colour, blank expected`,
+    ];
   return [];
 }
 
@@ -339,11 +395,15 @@ export async function regionInkProblems(
 export async function referenceProblems(
   base: string,
   receivers: readonly string[],
-  expected: Pick<G8ctlExpected, "checkpoints" | "regions" | "cells" | "clear_color">,
+  expected: Pick<
+    G8ctlExpected,
+    "checkpoints" | "regions" | "cells" | "clear_color"
+  >,
   pixels?: Record<string, { step: number; differing: number }[]>,
 ): Promise<string[]> {
   const problems: string[] = [];
-  if (expected.checkpoints.length === 0) problems.push("expected.checkpoints is empty");
+  if (expected.checkpoints.length === 0)
+    problems.push("expected.checkpoints is empty");
   if (expected.cells.length === 0) problems.push("expected.cells is empty");
   for (const l of receivers) {
     if (pixels) pixels[l] = [];
@@ -353,7 +413,10 @@ export async function referenceProblems(
         problems.push(`${l} step ${c.step}: shot missing`);
         continue;
       }
-      if (d.differing > 0) problems.push(`${l} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`);
+      if (d.differing > 0)
+        problems.push(
+          `${l} step ${c.step}: ${d.differing} px differ (max ${d.max_delta})`,
+        );
       pixels?.[l].push({ step: c.step, differing: d.differing });
       for (const cell of expected.cells)
         problems.push(
@@ -396,7 +459,13 @@ export async function runG8ctl(
         if (rc !== "0") problems.push(`${leg}: exit ${rc}`);
       }
     }
-    checks.push(check("ctl-legs", "RT-CTX: every g8ctl leg that ran exited 0", any ? problems : null));
+    checks.push(
+      check(
+        "ctl-legs",
+        "RT-CTX: every g8ctl leg that ran exited 0",
+        any ? problems : null,
+      ),
+    );
   }
 
   // ct-late-adopt
@@ -414,7 +483,8 @@ export async function runG8ctl(
         expected,
         await validateSinkProblems(dir(leg)),
       );
-      if (res) detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
+      if (res)
+        detail = `adopted ${res.textures_canvas} canvas textures (refused ${res.textures_refused})`;
     }
     checks.push(
       check(
@@ -459,8 +529,16 @@ export async function runG8ctl(
     if (RECEIVERS.every((l) => ran(l))) {
       const uploads: Record<string, UploadRow[] | undefined> = {};
       for (const l of RECEIVERS)
-        uploads[l] = (await readJson<{ uploads?: UploadRow[] }>(join(dir(l), "applied.json")))?.uploads;
-      problems = diffuseUploadProblems(diffuses, expected.canvas_count, uploads);
+        uploads[l] = (
+          await readJson<{ uploads?: UploadRow[] }>(
+            join(dir(l), "applied.json"),
+          )
+        )?.uploads;
+      problems = diffuseUploadProblems(
+        diffuses,
+        expected.canvas_count,
+        uploads,
+      );
     }
     checks.push(
       check(
@@ -492,9 +570,21 @@ export async function runG8ctl(
     if (ran("late/capture") && RECEIVERS.every((l) => ran(l))) {
       problems = freeProblems(cap.rec, expected);
       for (const l of RECEIVERS) {
-        const applied = await readJson<{ transactions?: unknown }>(join(dir(l), "applied.json"));
-        const txs = Array.isArray(applied?.transactions) ? (applied.transactions as never[]) : undefined;
-        problems.push(...releaseProblems(txs, expected.free_frame === undefined ? undefined : expected.free_frame - 2, expected.freed_canvas_count ?? 0).map((x) => `${l}: ${x}`));
+        const applied = await readJson<{ transactions?: unknown }>(
+          join(dir(l), "applied.json"),
+        );
+        const txs = Array.isArray(applied?.transactions)
+          ? (applied.transactions as never[])
+          : undefined;
+        problems.push(
+          ...releaseProblems(
+            txs,
+            expected.free_frame === undefined
+              ? undefined
+              : expected.free_frame - 2,
+            expected.freed_canvas_count ?? 0,
+          ).map((x) => `${l}: ${x}`),
+        );
       }
     }
     checks.push(

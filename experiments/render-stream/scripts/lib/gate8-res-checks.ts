@@ -15,8 +15,18 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { check, exitCode, readJson, skipped, type G8aCheck } from "./gate8-adopt-checks";
-import { resolveRecording, validateRecording, type ResolvedRecording } from "./render-stream-2";
+import {
+  check,
+  exitCode,
+  type G8aCheck,
+  readJson,
+  skipped,
+} from "./gate8-adopt-checks";
+import {
+  type ResolvedRecording,
+  resolveRecording,
+  validateRecording,
+} from "./render-stream-2";
 
 export interface G8resExpected {
   schema: string;
@@ -50,23 +60,34 @@ export interface CaptureResult {
         material_adoption?: Record<string, number>;
         residue?: number | null;
       };
-      particles?: { adoption?: Record<string, number>; unknown_material_keyed?: number };
+      particles?: {
+        adoption?: Record<string, number>;
+        unknown_material_keyed?: number;
+      };
     };
   };
 }
 
-function adoptionResources(r: CaptureResult | undefined): Record<string, number> | undefined {
+function adoptionResources(
+  r: CaptureResult | undefined,
+): Record<string, number> | undefined {
   return r?.stream?.gate8?.adopt_stats?.resources;
 }
-function materialAdoption(r: CaptureResult | undefined): Record<string, number> | undefined {
+function materialAdoption(
+  r: CaptureResult | undefined,
+): Record<string, number> | undefined {
   return r?.stream?.gate8?.adopt_stats?.material_adoption;
 }
-function particlesAdoption(r: CaptureResult | undefined): Record<string, number> | undefined {
+function particlesAdoption(
+  r: CaptureResult | undefined,
+): Record<string, number> | undefined {
   return r?.stream?.gate8?.particles?.adoption;
 }
 
 /** The unsupported commands with reason `unknown-texture`, over every transaction. */
-function unknownTextureCount(rec: Pick<ResolvedRecording, "transactions">): number {
+function unknownTextureCount(
+  rec: Pick<ResolvedRecording, "transactions">,
+): number {
   let n = 0;
   for (const t of rec.transactions)
     for (const it of t.state.items)
@@ -76,7 +97,9 @@ function unknownTextureCount(rec: Pick<ResolvedRecording, "transactions">): numb
 }
 
 /** The particles entries `unsupported`/`unknown-material`, over every transaction. */
-function unknownMaterialParticles(rec: Pick<ResolvedRecording, "transactions">): number {
+function unknownMaterialParticles(
+  rec: Pick<ResolvedRecording, "transactions">,
+): number {
   let n = 0;
   for (const t of rec.transactions)
     for (const p of t.state.particles ?? [])
@@ -106,16 +129,22 @@ export interface ResFreedCounts {
 /** The ids of the last transaction before `freeFrame` (items, ok textures, ok particles) that the
  * last transaction no longer holds or holds as a `freed` tombstone: what the capture records of the
  * fixture's free. Null when there is no transaction before the free or none at or after it. */
-export function freedCounts(txs: readonly ResFreeTx[], freeFrame: number): ResFreedCounts | null {
+export function freedCounts(
+  txs: readonly ResFreeTx[],
+  freeFrame: number,
+): ResFreedCounts | null {
   let before: ResFreeTx | undefined;
   for (const t of txs) if (t.frame < freeFrame) before = t;
   const last = txs.at(-1);
-  if (!before || !last || last === before || last.frame < freeFrame) return null;
+  if (!before || !last || last === before || last.frame < freeFrame)
+    return null;
   const gone = (
     was: readonly { id: number; status?: string }[],
     now: readonly { id: number; status?: string }[],
   ) => {
-    const live = new Set(now.filter((e) => e.status !== "freed").map((e) => e.id));
+    const live = new Set(
+      now.filter((e) => e.status !== "freed").map((e) => e.id),
+    );
     return was.filter((e) => e.status !== "freed" && !live.has(e.id)).length;
   };
   return {
@@ -130,21 +159,32 @@ export function freedCounts(txs: readonly ResFreeTx[], freeFrame: number): ResFr
 /** res-free problems: the capture records the freed items, texture and emitter (empty -> fails). */
 export function resFreeProblems(
   txs: readonly ResFreeTx[],
-  expected: Pick<G8resExpected, "free_frame" | "freed_items" | "freed_textures" | "freed_particles">,
+  expected: Pick<
+    G8resExpected,
+    "free_frame" | "freed_items" | "freed_textures" | "freed_particles"
+  >,
 ): string[] {
   const f = freedCounts(txs, expected.free_frame);
   if (!f)
-    return [`no transaction before and after the free at frame ${expected.free_frame} (${txs.length} transactions)`];
+    return [
+      `no transaction before and after the free at frame ${expected.free_frame} (${txs.length} transactions)`,
+    ];
   const problems: string[] = [];
   for (const k of ["items", "textures", "particles"] as const) {
     const want = expected[`freed_${k}` as "freed_items"];
-    if (!(want > 0)) problems.push(`expected.freed_${k} must be positive (got ${want})`);
-    else if (f[k] < want) problems.push(`${f[k]} ${k} freed after frame ${expected.free_frame}, ${want} expected`);
+    if (!(want > 0))
+      problems.push(`expected.freed_${k} must be positive (got ${want})`);
+    else if (f[k] < want)
+      problems.push(
+        `${f[k]} ${k} freed after frame ${expected.free_frame}, ${want} expected`,
+      );
   }
   return problems;
 }
 
-async function loadResRecording(legDir: string): Promise<{ rec?: ResolvedRecording; error?: string }> {
+async function loadResRecording(
+  legDir: string,
+): Promise<{ rec?: ResolvedRecording; error?: string }> {
   let data: Uint8Array;
   try {
     data = new Uint8Array(await readFile(join(legDir, SINKS[0])));
@@ -183,7 +223,11 @@ export function judgeResLateAdopt(
   sinkProblems: readonly string[],
   expected: Pick<
     G8resExpected,
-    "textures" | "items_adopted" | "emitters" | "process_materials" | "unknown_material_keyed"
+    | "textures"
+    | "items_adopted"
+    | "emitters"
+    | "process_materials"
+    | "unknown_material_keyed"
   >,
 ): { problems: string[]; detail: string } {
   const problems: string[] = [];
@@ -193,43 +237,63 @@ export function judgeResLateAdopt(
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
   else {
     if ((res.textures ?? 0) < expected.textures)
-      problems.push(`adopted ${res.textures} textures, ${expected.textures} expected`);
-    if ((res.textures_refused ?? 0) !== 0) problems.push(`refused ${res.textures_refused} textures`);
+      problems.push(
+        `adopted ${res.textures} textures, ${expected.textures} expected`,
+      );
+    if ((res.textures_refused ?? 0) !== 0)
+      problems.push(`refused ${res.textures_refused} textures`);
     parts.push(`textures ${res.textures} (refused ${res.textures_refused})`);
   }
   if (!mat) problems.push("no stream.gate8.adopt_stats.material_adoption");
   else {
     if ((mat.items_adopted ?? 0) < expected.items_adopted)
-      problems.push(`adopted ${mat.items_adopted} post-arm items, ${expected.items_adopted} expected`);
+      problems.push(
+        `adopted ${mat.items_adopted} post-arm items, ${expected.items_adopted} expected`,
+      );
     parts.push(`items_adopted ${mat.items_adopted}`);
   }
   const pa = particlesAdoption(r);
   if (!pa) problems.push("no stream.gate8.particles.adoption");
   else {
     if ((pa.emitters ?? 0) < expected.emitters)
-      problems.push(`adopted ${pa.emitters} emitters, ${expected.emitters} expected`);
+      problems.push(
+        `adopted ${pa.emitters} emitters, ${expected.emitters} expected`,
+      );
     if ((pa.ppm_materials ?? 0) < expected.process_materials)
-      problems.push(`adopted ${pa.ppm_materials} process materials, ${expected.process_materials} expected`);
-    for (const k of ["refused", "ppm_refused"]) if ((pa[k] ?? 0) !== 0) problems.push(`${k} ${pa[k]}`);
+      problems.push(
+        `adopted ${pa.ppm_materials} process materials, ${expected.process_materials} expected`,
+      );
+    for (const k of ["refused", "ppm_refused"])
+      if ((pa[k] ?? 0) !== 0) problems.push(`${k} ${pa[k]}`);
     parts.push(`emitters ${pa.emitters}, ppm_materials ${pa.ppm_materials}`);
   }
   const ppm = r?.stream?.gate8?.particles;
   if (!ppm) problems.push("no stream.gate8.particles");
   else if ((ppm.unknown_material_keyed ?? 0) < expected.unknown_material_keyed)
-    problems.push(`${ppm.unknown_material_keyed} unknown-material process materials keyed, ${expected.unknown_material_keyed} expected`);
+    problems.push(
+      `${ppm.unknown_material_keyed} unknown-material process materials keyed, ${expected.unknown_material_keyed} expected`,
+    );
   if (!rec.rec) problems.push(rec.error ?? "no recording");
   else {
     const unknown = unknownTextureCount(rec.rec);
-    if (unknown > 0) problems.push(`${unknown} unknown-texture commands over the recording`);
+    if (unknown > 0)
+      problems.push(`${unknown} unknown-texture commands over the recording`);
     const unknownMat = unknownMaterialParticles(rec.rec);
-    if (unknownMat > 0) problems.push(`${unknownMat} unknown-material particles over the recording`);
+    if (unknownMat > 0)
+      problems.push(
+        `${unknownMat} unknown-material particles over the recording`,
+      );
     const last = rec.rec.transactions.at(-1);
     if (!last) problems.push("no transaction");
     else {
       if ((last.state.unknown_items?.unknown_rids ?? 0) !== 0)
-        problems.push(`last state: ${last.state.unknown_items?.unknown_rids} unknown item RIDs`);
+        problems.push(
+          `last state: ${last.state.unknown_items?.unknown_rids} unknown item RIDs`,
+        );
       if ((last.state.unknown_items?.withheld_items ?? 0) !== 0)
-        problems.push(`last state: ${last.state.unknown_items?.withheld_items} items withheld`);
+        problems.push(
+          `last state: ${last.state.unknown_items?.withheld_items} items withheld`,
+        );
     }
   }
   problems.push(...sinkProblems);
@@ -246,9 +310,11 @@ export function judgeResLateFault(
   const res = adoptionResources(r);
   const mat = materialAdoption(r);
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
-  else if ((res.textures ?? 0) !== 0) problems.push(`adopted ${res.textures} textures under the fault`);
+  else if ((res.textures ?? 0) !== 0)
+    problems.push(`adopted ${res.textures} textures under the fault`);
   if (!mat) problems.push("no stream.gate8.adopt_stats.material_adoption");
-  else if ((mat.items_adopted ?? 0) !== 0) problems.push(`adopted ${mat.items_adopted} items under the fault`);
+  else if ((mat.items_adopted ?? 0) !== 0)
+    problems.push(`adopted ${mat.items_adopted} items under the fault`);
   if (!rec.rec) problems.push(rec.error ?? "no recording");
   else {
     if (rec.rec.transactions.length === 0) problems.push("no transaction");
@@ -256,9 +322,14 @@ export function judgeResLateFault(
       problems.push("no unknown-texture command under the fault");
     const unknownRids = Math.max(
       0,
-      ...rec.rec.transactions.map((t) => t.state.unknown_items?.unknown_rids ?? 0),
+      ...rec.rec.transactions.map(
+        (t) => t.state.unknown_items?.unknown_rids ?? 0,
+      ),
     );
-    if (unknownRids < 2) problems.push(`at most ${unknownRids} unknown RIDs, expected >= 2 (the pre-arm items)`);
+    if (unknownRids < 2)
+      problems.push(
+        `at most ${unknownRids} unknown RIDs, expected >= 2 (the pre-arm items)`,
+      );
   }
   problems.push(...sinkProblems);
   return problems;
@@ -289,7 +360,13 @@ export async function runG8res(
         if (rc !== "0") problems.push(`${leg}: exit ${rc}`);
       }
     }
-    checks.push(check("res-legs", "LATE-RES: every g8res leg that ran exited 0", any ? problems : null));
+    checks.push(
+      check(
+        "res-legs",
+        "LATE-RES: every g8res leg that ran exited 0",
+        any ? problems : null,
+      ),
+    );
   }
 
   // res-late-adopt
@@ -332,7 +409,8 @@ export async function runG8res(
       else {
         problems = resFreeProblems(rec.rec.transactions, expected);
         const f = freedCounts(rec.rec.transactions, expected.free_frame);
-        if (f) detail = `freed ${f.items} items, ${f.textures} textures, ${f.particles} emitters (frames ${f.before_seq_frame} -> ${f.last_frame})`;
+        if (f)
+          detail = `freed ${f.items} items, ${f.textures} textures, ${f.particles} emitters (frames ${f.before_seq_frame} -> ${f.last_frame})`;
       }
     }
     checks.push(
