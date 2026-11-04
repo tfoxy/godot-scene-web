@@ -19,6 +19,9 @@
 #   --determinism R,R  repeat every run R times in each of len(R,R) jobs (e.g. 3,1: 3x on one runner,
 #                    1x on another); lib/remote-determinism.ts compares all repeats' shots and dumps,
 #                    and a disagreement fails the wrapper like a failed run
+#   --leg-shards auto|off|force
+#                    split the long runs (native gate 8, g7-8) into jobs by gate 8 group: auto (default)
+#                    when the simulated makespan drops, off never, force always (lib/remote-matrix.py)
 #   --browser-renderer lavapipe
 #                    the CI-only software renderer gate 7's browser legs declare (RS_BROWSER_PROVENANCE,
 #                    lib/browser-renderer.ts); lavapipe, the workflow's default, is the only one
@@ -39,7 +42,7 @@ POLL_S="${RV_POLL_S:-4}"
 FIND_TRIES="${RV_FIND_TRIES:-30}"
 WORKFLOW=remote-validate.yml
 
-BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0 DETERMINISM="" BROWSER_RENDERER=""
+BASE=main BASE_SET=0 TIER=smoke ONLY="" PATHS="" MILESTONE=0 TSMOKE=0 NO_WAIT=0 COLLECT="" AND_LOCAL=0 DRY=0 DETERMINISM="" BROWSER_RENDERER="" LEG_SHARDS=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--base) BASE="$2" && BASE_SET=1 && shift 2 ;;
@@ -54,6 +57,7 @@ while [ $# -gt 0 ]; do
 	--toolchain-smoke) TSMOKE=1 && shift ;;
 	--determinism) DETERMINISM="$2" && shift 2 ;;
 	--browser-renderer) BROWSER_RENDERER="$2" && shift 2 ;;
+	--leg-shards) LEG_SHARDS="$2" && shift 2 ;;
 	*) echo "remote-validate: unknown argument $1" >&2 && exit 2 ;;
 	esac
 done
@@ -62,6 +66,11 @@ if [ -n "$DETERMINISM" ] && ! [[ "$DETERMINISM" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ 
 	echo "remote-validate: --determinism wants comma-separated repeat counts (e.g. 3,1), got $DETERMINISM" >&2
 	exit 2
 fi
+
+case "$LEG_SHARDS" in
+"" | auto | off | force) ;;
+*) echo "remote-validate: --leg-shards wants auto, off or force, got $LEG_SHARDS" >&2 && exit 2 ;;
+esac
 
 case "$BROWSER_RENDERER" in
 "" | lavapipe) ;;
@@ -313,9 +322,24 @@ snapshot() {
 	)
 }
 
+# the workflow's matrix as its plan job will build it (lib/remote-matrix.py --explain: jobs, longest
+# first, leg shards, estimated makespan); the slot and pure-shard counts are the workflow's env
+matrix_explain() {
+	local wf="$REPO/.github/workflows/$WORKFLOW" ps mp rg="${GROUPS_JSON:-}"
+	[ -f "$REPO/experiments/render-stream/scripts/lib/remote-matrix.py" ] || return 0
+	local tier="$TIER"
+	[ "$MILESTONE" = 1 ] && tier=full
+	[ -n "$rg" ] || rg='{}'
+	ps="$(sed -n 's/^  PURE_SHARDS: "\([0-9]*\)".*/\1/p' "$wf")"
+	mp="$(sed -n 's/^  MAX_PARALLEL: "\([0-9]*\)".*/\1/p' "$wf")"
+	python3 "$REPO/experiments/render-stream/scripts/lib/remote-matrix.py" --runs "$RUNS_JSON" --run-groups "$rg" \
+		--determinism "$DETERMINISM" --pure-shards "${ps:-6}" --max-parallel "${mp:-16}" --leg-shards "${LEG_SHARDS:-auto}" --tier "$tier" --explain 2>&1
+}
+
 if [ "$DRY" = 1 ]; then
+	matrix_explain | sed 's/^/remote-validate: dry run: /'
 	echo "remote-validate: dry run: would snapshot $WT at ${HEAD_SHA:0:12}, push refs/heads/remote-run/$WT-<shortsha>, dispatch $WORKFLOW"
-	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}${BROWSER_RENDERER:+ browser_renderer=$BROWSER_RENDERER}${GROUPS_JSON:+ run_groups=$GROUPS_JSON}"
+	echo "remote-validate: dry run: inputs worktree=$WT base=$BASE_SHA tier=$TIER milestone=$MILESTONE runs=$RUNS_JSON${DETERMINISM:+ determinism=$DETERMINISM}${BROWSER_RENDERER:+ browser_renderer=$BROWSER_RENDERER}${GROUPS_JSON:+ run_groups=$GROUPS_JSON}${LEG_SHARDS:+ leg_shards=$LEG_SHARDS}"
 	exit 0
 fi
 
@@ -336,13 +360,14 @@ if ! gh workflow run "$WORKFLOW" --ref "$BRANCH" \
 	-f "run_key=$RUN_KEY" -f "worktree=$WT" -f "sha=$SHA" -f "base=$BASE_SHA" -f "tier=$TIER" \
 	-f "runs=$RUNS_JSON" -f "milestone=$milestone_in" -f "paths=$PATHS" -f "refused=$REFUSED_JSON" \
 	${DETERMINISM:+-f "determinism=$DETERMINISM"} ${BROWSER_RENDERER:+-f "browser_renderer=$BROWSER_RENDERER"} \
-	${GROUPS_JSON:+-f "run_groups=$GROUPS_JSON"} \
+	${GROUPS_JSON:+-f "run_groups=$GROUPS_JSON"} ${LEG_SHARDS:+-f "leg_shards=$LEG_SHARDS"} \
 	>"$TMP/dispatch.log" 2>&1; then
 	echo "remote-validate: dispatch failed:" >&2
 	cat "$TMP/dispatch.log" >&2
 	exit 1
 fi
 DISPATCHED=1
+matrix_explain | head -1 | sed 's/^/remote-validate: /'
 
 found=""
 for ((i = 0; i < FIND_TRIES; i++)); do

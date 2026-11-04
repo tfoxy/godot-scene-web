@@ -50,7 +50,9 @@ import {
   GATE8_NOT_APPLICABLE,
   GATE8_RECEIVER_CHECKS,
   gate8BandViews,
+  gate8Lists,
   gate8Q7Plan,
+  gate8SourceGroups,
 } from "./gate7-gsw-g8";
 import {
   GATE55_LEGS,
@@ -376,13 +378,42 @@ export const GSW_RECEIVER_CHECKS: Record<
   gate6: GATE6_RECEIVER_CHECKS,
 };
 
+/** A gate's gsw legs for a source run. Gate 8's are restricted to the groups the source ran (its
+ * legs.json groups_run; run-gate7.sh GATE7_G8_LEGS shards g7-8): lib/gate7-gsw-g8.ts gate8Lists.
+ * Every other gate's are its full table. */
+export function gswLegDefs(gate: GswGate, sourceDir: string): GswLegDef[] {
+  return gate === "gate8"
+    ? gate8Lists(gate8SourceGroups(sourceDir)).legs
+    : GSW_LEGS[gate];
+}
+
+/** A gate's not-applicable native legs for a source run (gate 8: per group, as gswLegDefs). */
+export function gswNotApplicable(
+  gate: GswGate,
+  sourceDir: string,
+): NotApplicable[] {
+  return gate === "gate8"
+    ? gate8Lists(gate8SourceGroups(sourceDir)).notApplicable
+    : GSW_NOT_APPLICABLE[gate];
+}
+
+/** A gate's receiver checks for a source run (gate 8: per group, as gswLegDefs). */
+export function gswReceiverChecks(
+  gate: GswGate,
+  sourceDir: string,
+): (typeof GSW_RECEIVER_CHECKS)[GswGate] {
+  return gate === "gate8"
+    ? gate8Lists(gate8SourceGroups(sourceDir)).checks
+    : GSW_RECEIVER_CHECKS[gate];
+}
+
 /** The leg specs of a gate for runWebLegs (`kind: "gsw"`). */
 export function gswLegSpecs(
   gate: GswGate,
   sourceDir: string,
   gswRoot: string,
 ): WebLegSpec[] {
-  return GSW_LEGS[gate].map((d) => ({
+  return gswLegDefs(gate, sourceDir).map((d) => ({
     leg: d.leg,
     nativeDir: join(sourceDir, d.from ?? d.leg),
     webDir: join(gswRoot, d.leg),
@@ -615,7 +646,7 @@ export async function checkGswGroup(
   input: GswGroupInput,
 ): Promise<GswGroupResult> {
   const { gate } = input;
-  const defs = GSW_LEGS[gate];
+  const defs = gswLegDefs(gate, input.sourceDir);
   const replaced = new Map<string, string>(
     defs
       .filter((d) => d.replaces)
@@ -696,7 +727,7 @@ export async function checkGswGroup(
     `${JSON.stringify(report, null, 2)}\n`,
   );
   const checks: Gate7Check[] = [];
-  const spec = GSW_RECEIVER_CHECKS[gate];
+  const spec = gswReceiverChecks(gate, input.sourceDir);
   for (const id of spec.judged) {
     const { check: c, shadowed } = judgedCheck(report.checks, id);
     checks.push(
@@ -766,7 +797,7 @@ export async function checkGswGroup(
       id: `${id}@gsw`,
       reason,
     })),
-    ...GSW_NOT_APPLICABLE[gate].map((n) => ({
+    ...gswNotApplicable(gate, input.sourceDir).map((n) => ({
       id: `leg:${n.leg}@gsw`,
       reason: n.reason,
     })),

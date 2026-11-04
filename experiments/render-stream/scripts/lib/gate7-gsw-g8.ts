@@ -16,7 +16,7 @@
 // control and both receiver sabotages included, replaces the native one and g8cg's own checks judge
 // it through the band.
 
-import { existsSync, readdirSync, symlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -193,16 +193,15 @@ export const GATE8_NOT_APPLICABLE: NotApplicable[] = [
 ];
 
 /** The checks of check-gate8.ts that read a receiver leg, found mechanically
- * (scripts/test/probe-receiver-checks.ts gate8 over a passing source, every receiver leg emptied). */
-export const GATE8_RECEIVER_CHECKS: {
-  judged: string[];
-  notApplicable: Record<string, string>;
-} = {
-  judged: [
-    // g8t
+ * (scripts/test/probe-receiver-checks.ts gate8 over a passing source, every receiver leg emptied),
+ * per gate 8 group (run-gate7.sh GATE7_G8_LEGS: a source that ran some groups is judged on theirs;
+ * a group that ran keeps every check). Insertion order is the flat list's (GATE8_RECEIVER_CHECKS). */
+export const GATE8_JUDGED_BY_GROUP: Record<string, string[]> = {
+  g8t: [
     "decode-reference",
     "sabotage-perturb-decode",
-    // g8a
+  ],
+  g8a: [
     "g8a-legs",
     "adopt-reference",
     "fault-no-resources",
@@ -210,23 +209,30 @@ export const GATE8_RECEIVER_CHECKS: {
     "sabotage-adopt-skip-state",
     "sabotage-adopt-no-redraw",
     "sabotage-adopt-skip-layers",
-    // g8h
+  ],
+  g8h: [
     "g8h-legs",
     "late-size-reference",
     "late-size-needed",
     "sabotage-size-before-adopt",
+  ],
+  g8c: [
     // g8c (P3-CT)
     "g8c-legs",
     "ct-reference",
     "ct-channel-refused",
     "ct-diffuse-uploaded",
-    // g8f
+  ],
+  g8f: [
     "float-exact",
     "float-sabotage-perturb-decode",
-    // g8m
+  ],
+  g8m: [
     "g8m-legs",
     "mat-adopt-reference",
     "adopt-include-refused",
+  ],
+  g8cg: [
     // g8cg (CG3)
     "g8cg-legs",
     "cg-native-exact",
@@ -234,6 +240,8 @@ export const GATE8_RECEIVER_CHECKS: {
     "cg-sabotage-drop-group",
     "cg-sabotage-full-copy",
     "cg-adopt",
+  ],
+  g8w11: [
     // g8w11 (W11d)
     "native-w11-replays",
     "native-dynamic-applied",
@@ -244,6 +252,8 @@ export const GATE8_RECEIVER_CHECKS: {
     "native-no-prune-caught",
     "native-evict-carried-caught",
     "native-ignore-released-caught",
+  ],
+  g8mm: [
     // g8mm (PM2's checks over the PM3 GSW legs)
     "g8mm-legs",
     "mm-premise",
@@ -253,6 +263,8 @@ export const GATE8_RECEIVER_CHECKS: {
     "mm-reference-catches-ignore-identity-transform",
     "mm-reference-catches-perturb-instance",
     "mm-reference-catches-stale-buffer",
+  ],
+  g8pt: [
     // g8pt (PM6a's checks over the PM6b GSW legs)
     "pt-receiver",
     "pt-lifecycle",
@@ -269,13 +281,21 @@ export const GATE8_RECEIVER_CHECKS: {
     // g8pt ptc (PFB's checks over the GSW legs)
     "ptc-receiver",
     "ptc-receiver-catches-gl-particle-colors",
+  ],
+  g8kp: [
     // g8kp (G8kb)
     "delivery-select",
     "delivery-pixels-native",
+  ],
+  g8ku: [
     // g8ku (G8kb)
     "sabotage-perturb-ktx2",
   ],
-  notApplicable: {
+};
+
+/** Receiver checks of a gate 8 group not applicable to GSW (reported, never gating). */
+export const GATE8_CHECKS_NA_BY_GROUP: Record<string, Record<string, string>> = {
+  g8pt: {
     // PSE: the native receiver sabotage leaves a RendererRD host's emit_subparticle calls in; GSW
     // simulates from the builtin key and never compiles the host's process code, so its leg is not
     // replayed (GSW's own PSE sabotage is shared-process-key, lib/gate7-gsw-g8-checks.ts).
@@ -283,6 +303,65 @@ export const GATE8_RECEIVER_CHECKS: {
       "GSW never compiles the host's process code (no emit_subparticle to stub)",
   },
 };
+
+export const GATE8_RECEIVER_CHECKS: {
+  judged: string[];
+  notApplicable: Record<string, string>;
+} = {
+  judged: Object.values(GATE8_JUDGED_BY_GROUP).flat(),
+  notApplicable: Object.assign({}, ...Object.values(GATE8_CHECKS_NA_BY_GROUP)),
+};
+
+// ------------------------------------------------------------------------ groups (GATE7_G8_LEGS)
+
+/** The gate 8 group a leg path belongs to: its first segment when that names a group (`g8a/...`),
+ * else g8t, whose legs sit at the top of the source run (`receiver`, `import/receiver`, ...). */
+export function gate8GroupOf(leg: string): string {
+  const first = leg.split("/")[0] ?? leg;
+  return /^g8[a-z0-9]+$/.test(first) ? first : "g8t";
+}
+
+/** The gate 8 groups a source run ran (its legs.json groups_run), or null when it has none to read
+ * (then every group is judged, as before GATE7_G8_LEGS). */
+export function gate8SourceGroups(sourceDir: string): Set<string> | null {
+  try {
+    const legs = JSON.parse(readFileSync(join(sourceDir, "legs.json"), "utf8")) as {
+      groups_run?: unknown;
+    };
+    return Array.isArray(legs.groups_run) ? new Set(legs.groups_run.map(String)) : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface Gate8Lists {
+  legs: GswLegDef[];
+  notApplicable: NotApplicable[];
+  checks: { judged: string[]; notApplicable: Record<string, string> };
+  compositor: string[];
+}
+
+/** Gate 8's gsw tables restricted to the groups a source ran (null: all of them, the full tables):
+ * a group that did not run contributes neither legs nor checks; one that ran keeps all of its own. */
+export function gate8Lists(groups: ReadonlySet<string> | null): Gate8Lists {
+  const ran = (g: string) => groups === null || groups.has(g);
+  return {
+    legs: GATE8_LEGS.filter((d) => ran(gate8GroupOf(d.leg))),
+    notApplicable: GATE8_NOT_APPLICABLE.filter((n) => ran(gate8GroupOf(n.leg))),
+    checks: {
+      judged: Object.entries(GATE8_JUDGED_BY_GROUP)
+        .filter(([g]) => ran(g))
+        .flatMap(([, ids]) => ids),
+      notApplicable: Object.assign(
+        {},
+        ...Object.entries(GATE8_CHECKS_NA_BY_GROUP)
+          .filter(([g]) => ran(g))
+          .map(([, na]) => na),
+      ),
+    },
+    compositor: GATE8_COMPOSITOR_LEGS.filter((l) => ran(gate8GroupOf(l))),
+  };
+}
 
 /** Q7 for gate 8: no gsw-tolerance.json plan (gate 8's fixtures have no per-pixel model); the
  * legs are judged through gate8BandViews instead (below). */

@@ -55,6 +55,12 @@ on:
           lavapipe, ANGLE-Vulkan on the llvmpipe the native sources render on (the only one, R3)
         required: false
         default: lavapipe
+      leg_shards:
+        description: >-
+          auto (default), off or force: split the long runs the table names (native gate 8, g7-8) into
+          jobs by gate 8 group when the simulated makespan drops (lib/remote-matrix.py)
+        required: false
+        default: auto
 
 permissions:
   contents: read
@@ -64,15 +70,21 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # `pure` is the long pole, so it runs as this many parallel jobs (RS_PURE_SHARD=i/n); the merge job
-  # folds them back into one `pure` run entry
+  # `pure` runs as this many parallel jobs (RS_PURE_SHARD=i/n); the merge job folds them back into
+  # one `pure` run entry
   PURE_SHARDS: "6"
+  # the validate matrix's concurrent jobs (the account runs 20 at once, shared by every agent). A
+  # full tier is about 700 job-minutes, 60% of it rs-setup (8-11 min a job), so at 10 slots it was
+  # throughput-bound (floor ~72 min) whatever the order; 16 leaves 4 slots to other agents' smoke
+  # runs, and agents do not dispatch a full tier over another one (agents/rs-increment.md)
+  MAX_PARALLEL: "16"
   # build-capture.sh defaults to /snap/bin/cmake
   CMAKE: cmake
-  # R3 watchdog: minutes per validate-increment invocation, now a per-shard value set in the plan
-  # job's matrix (matrix.watchdog): 35 min by default (about 2x the longest gate 7 group observed
-  # when the watchdog was set), 60 min for the g7-8 web-rust shard only (see the plan job). It must
-  # stay well under the job's 120-min timeout, so a hang leaves evidence and a failing row.
+  # R3 watchdog: minutes per validate-increment invocation, a per-job value in the plan job's matrix
+  # (matrix.watchdog, lib/remote-matrix.py): 2x the job's expected validate minutes, clamped to
+  # [35, 60] (35 was about 2x the longest gate 7 group when the watchdog was set; G78 raised the
+  # unsharded g7-8 web-rust job to 60, which the rule keeps). It must stay well under the job's
+  # 120-min timeout, so a hang leaves evidence and a failing row.
 
 jobs:
   plan:
@@ -80,47 +92,36 @@ jobs:
     outputs:
       matrix: ${{ steps.expand.outputs.matrix }}
       shards: ${{ steps.expand.outputs.shards }}
+      max_parallel: ${{ steps.expand.outputs.max_parallel }}
     steps:
+      # the matrix script, its table and the runner scripts whose group lists the leg shards read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            experiments/render-stream/scripts/lib/remote-matrix.py
+            experiments/render-stream/scripts/remote-jobs.json
+            experiments/render-stream/scripts/run-gate7.sh
+            experiments/render-stream/scripts/run-gate8.sh
+          sparse-checkout-cone-mode: false
+      # lib/remote-matrix.py (docs/remote-compute.md "Scheduling and leg shards"): one job per run,
+      # per gate 7 group (R3, <id>@<group>), per pure shard, per determinism repeat count; leg shards
+      # of native gate 8 and g7-8 (<label>-<k>of<n>, matrix.legs) when they shorten the simulated
+      # makespan; ordered longest first, so the long poles start in the first wave; the merge folds
+      # every job of a run id into its one row (shards = jobs per id).
       - id: expand
         env:
           RUNS: ${{ inputs.runs }}
           DETERMINISM: ${{ inputs.determinism }}
           RUN_GROUPS: ${{ inputs.run_groups }}
+          LEG_SHARDS: ${{ inputs.leg_shards }}
+          # a milestone sweep is the full tier (validate-increment.sh --milestone)
+          TIER: ${{ inputs.milestone != '' && 'full' || inputs.tier }}
         run: |
-          python3 - <<'PY'
-          import json, os
-          n = int(os.environ["PURE_SHARDS"])
-          det = [int(x) for x in os.environ["DETERMINISM"].split(",") if x.strip()]
-          rg = json.loads(os.environ.get("RUN_GROUPS") or "{}")
-          include, shards = [], {}
-          # G78: the per-shard watchdog (minutes). 35 is ~2x the longest gate 7 group observed when
-          # the watchdog was set (R3), but gate 8's web file group g7-8 has since outgrown it: it
-          # passes locally in ~37 min and hosted runners, being slower, blow 35 min and are killed
-          # with exit 124. Raise only that one shard so the guard still fires well under the job's
-          # 120-min timeout (a hang far exceeds either value); every other shard keeps 35.
-          def watchdog(i, g):
-              return "60" if i == "g7-web-rust" and g == "g7-8" else "35"
-          for i in json.loads(os.environ["RUNS"]):
-              # R3: a gate 7 run of several groups is one job per group (label <id>@<group>); with
-              # --determinism, one job per group and repeat count. The merge folds them into one row.
-              gs = rg.get(i) or [""]
-              if det:
-                  # one job per repeat count, each on its own runner; the merge folds them into one row
-                  shards[i] = len(det) * len(gs)
-                  include += [{"id": i, "shard": "", "group": g, "repeat": r, "watchdog": watchdog(i, g), "label": f"{i}{'@' + g if g else ''}-det{k}x{r}"}
-                              for g in gs for k, r in enumerate(det, 1)]
-              elif gs != [""]:
-                  shards[i] = len(gs)
-                  include += [{"id": i, "shard": "", "group": g, "watchdog": watchdog(i, g), "label": f"{i}@{g}"} for g in gs]
-              elif i == "pure" and n > 1:
-                  shards[i] = n
-                  include += [{"id": i, "shard": f"{k}/{n}", "watchdog": watchdog(i, ""), "label": f"{i}-{k}of{n}"} for k in range(1, n + 1)]
-              else:
-                  include.append({"id": i, "shard": "", "watchdog": watchdog(i, ""), "label": i})
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("matrix=" + json.dumps(include) + "\n")
-              f.write("shards=" + json.dumps(shards) + "\n")
-          PY
+          python3 experiments/render-stream/scripts/lib/remote-matrix.py --runs "$RUNS" --run-groups "$RUN_GROUPS" \
+            --determinism "$DETERMINISM" --pure-shards "$PURE_SHARDS" --max-parallel "$MAX_PARALLEL" \
+            --leg-shards "${LEG_SHARDS:-auto}" --tier "$TIER" --github-output "$GITHUB_OUTPUT" --explain | tee -a "$GITHUB_STEP_SUMMARY"
 
   validate:
     name: ${{ matrix.label }}
@@ -129,7 +130,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
@@ -200,6 +201,9 @@ jobs:
           REPEAT: ${{ matrix.repeat }}
           LABEL: ${{ matrix.label }}
           RS_VALIDATE_GROUPS: ${{ matrix.group }}
+          # a leg shard (lib/remote-matrix.py): the gate 8 groups this job runs (native --legs, g7-8
+          # GATE7_G8_LEGS); empty for every other job
+          RS_VALIDATE_LEGS: ${{ matrix.legs }}
           # G78: the per-shard watchdog, set in the plan job's matrix (matrix.watchdog).
           WATCHDOG_MIN: ${{ matrix.watchdog }}
           # native gates (R2): 4 vCPU run two legs at once. The timing groups inside the correctness
@@ -306,6 +310,8 @@ jobs:
         env:
           ID: ${{ matrix.id }}
           LABEL: ${{ matrix.label }}
+          LEGS: ${{ matrix.legs }}
+          GROUP: ${{ matrix.group }}
         run: |
           set +e # best effort: a job that died in setup has no run dir, and that must not fail here
           art="$RUNNER_TEMP/art"
@@ -314,6 +320,13 @@ jobs:
           # per-test seconds of a pure shard (a few KB): the input to pure-shard-weights.json
           [ -f "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" ] && cp "$RUNNER_TEMP/v/$ID/toolchain-hashes.json" "$art/"
           [ -f "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/quiet-lock.jsonl" "$art/timings-$LABEL.jsonl"
+          # a gate's per-leg lock log (a few hundred KB at most): the per-group minutes behind
+          # remote-jobs.json's leg-shard weights
+          [ -f "$RUNNER_TEMP/v/$ID/run/quiet-lock.jsonl" ] && cp "$RUNNER_TEMP/v/$ID/run/quiet-lock.jsonl" "$art/legs-$LABEL.jsonl"
+          # the check ids of the run's own verdict (lib/check-census.py): the merge's checks.json
+          # shows a leg-sharded run judged the same checks as the whole run
+          [ -d "$RUNNER_TEMP/v/$ID/run" ] && python3 -I experiments/render-stream/scripts/lib/check-census.py \
+            --job "$RUNNER_TEMP/v/$ID/run" --id "$ID" --label "$LABEL" --group "$GROUP" --legs "$LEGS" --out "$art/checks-$LABEL.json"
           # R4: bench-instr's per-case Ir, rustc, valgrind, CPU model and binary sha (a few KB)
           for o in "$RUNNER_TEMP"/v "$RUNNER_TEMP"/v[0-9]*; do
             [ -f "$o/$ID/run/bench-instr.json" ] && cp "$o/$ID/run/bench-instr.json" "$art/bench-instr-$LABEL${o##*/v}.json"
@@ -531,6 +544,8 @@ jobs:
           python3 experiments/render-stream/scripts/lib/validate-summary.py --merge --out merged \
             --expect "$(cat expect.txt)" --remote-json remote.json jobs/*/ || rc=$?
           cp jobs/*/toolchain-hashes.json merged/ 2>/dev/null || true
+          # the check-id census: per run id, the union of its jobs' checks (lib/check-census.py)
+          python3 -I experiments/render-stream/scripts/lib/check-census.py --merge --out merged/checks.json jobs/*/checks-*.json || true
           cp determinism/*.json merged/ 2>/dev/null || true
           for ev in jobs/*/evidence/*; do [ -d "$ev" ] && cp -r "$ev" failing/; done
           echo "merge rc=$rc (1 = some run failed; that is the summary's verdict, not a plumbing error)"

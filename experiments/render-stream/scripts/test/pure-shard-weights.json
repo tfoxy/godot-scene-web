@@ -38,6 +38,7 @@
   "self-test-gate6p": 1.1,
   "self-test-gate6s": 1.0,
   "self-test-gate6z": 1.0,
+  "self-test-gate7-g8-shard": 3.3,
   "self-test-gate7b": 1.1,
   "self-test-gate7e": 1.9,
   "self-test-gate7k": 1.2,

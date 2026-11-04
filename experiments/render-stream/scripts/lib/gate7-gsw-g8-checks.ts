@@ -57,7 +57,7 @@ import { decodePngRgba } from "./gate-minus1-checks";
 
 import type { Gate7Check } from "./gate7-adapters";
 import { compositorProblems, mk } from "./gate7-gsw";
-import { type BandShot, GATE8_COMPOSITOR_LEGS } from "./gate7-gsw-g8";
+import { type BandShot, gate8Lists, gate8SourceGroups } from "./gate7-gsw-g8";
 import { mmGswChecks } from "./gate7-gsw-g8-mm-checks";
 import { BASIS_HALF_MIP, BASIS_REGIONS } from "./gate8-basis-checks";
 import { PTS_CELLS, ptsDiff, ptsRegion } from "./gate8-ptc-checks";
@@ -84,7 +84,10 @@ function fixtureOf(leg: string): string {
 
 export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
   const out: Gate7Check[] = [];
-  for (const leg of GATE8_COMPOSITOR_LEGS) {
+  // run-gate7.sh GATE7_G8_LEGS: only the groups the source ran (its legs.json groups_run).
+  const groups = gate8SourceGroups(ctx.sourceDir);
+  const ran = (g: string) => groups === null || groups.has(g);
+  for (const leg of gate8Lists(groups).compositor) {
     const problems = await compositorProblems(gswDir(ctx, leg));
     const comparable = !problems.some((p) => /is not of the state/.test(p));
     out.push(
@@ -97,35 +100,45 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
       ),
     );
   }
-  {
+  // The g8f half judges g8f's legs, the g8t half g8t's receiver: a source that ran one of the two
+  // groups is judged on its half, so runs over a partition of the groups judge the whole check.
+  if (ran("g8f") || ran("g8t")) {
     const problems: string[] = [];
     const source = await readJson<{ g8f?: { carried_formats?: string[] } }>(join(ctx.sourceDir, "result.json"));
     const floats = new Set(["RF", "RGF", "RGBF", "RGBAF", "RH", "RGH", "RGBH", "RGBAH"]);
     const carried = (source?.g8f?.carried_formats ?? []).filter((f) => floats.has(f)).sort();
-    if (carried.length === 0) problems.push("the source's g8f.carried_formats lists no float format");
-    for (const leg of ["g8f/receiver", "g8f/receiver-patch"]) {
-      const a = await readJson<{ receiver?: { caveats?: string[]; float_quantized?: string[] } }>(
-        join(gswDir(ctx, leg), "applied.json"),
-      );
-      if (!a?.receiver?.caveats) {
-        problems.push(`${leg}: applied.json receiver.caveats missing`);
-        continue;
+    if (ran("g8f")) {
+      if (carried.length === 0) problems.push("the source's g8f.carried_formats lists no float format");
+      for (const leg of ["g8f/receiver", "g8f/receiver-patch"]) {
+        const a = await readJson<{ receiver?: { caveats?: string[]; float_quantized?: string[] } }>(
+          join(gswDir(ctx, leg), "applied.json"),
+        );
+        if (!a?.receiver?.caveats) {
+          problems.push(`${leg}: applied.json receiver.caveats missing`);
+          continue;
+        }
+        if (!a.receiver.caveats.includes("float-texture-quantized"))
+          problems.push(`${leg}: caveats ${JSON.stringify(a.receiver.caveats)} lack float-texture-quantized`);
+        const q = [...(a.receiver.float_quantized ?? [])].sort();
+        if (JSON.stringify(q) !== JSON.stringify(carried))
+          problems.push(`${leg}: quantized ${JSON.stringify(q)}, carried ${JSON.stringify(carried)}`);
       }
-      if (!a.receiver.caveats.includes("float-texture-quantized"))
-        problems.push(`${leg}: caveats ${JSON.stringify(a.receiver.caveats)} lack float-texture-quantized`);
-      const q = [...(a.receiver.float_quantized ?? [])].sort();
-      if (JSON.stringify(q) !== JSON.stringify(carried))
-        problems.push(`${leg}: quantized ${JSON.stringify(q)}, carried ${JSON.stringify(carried)}`);
     }
-    const plain = await readJson<{ receiver?: { caveats?: string[] } }>(join(gswDir(ctx, "receiver"), "applied.json"));
-    if ((plain?.receiver?.caveats ?? ["missing"]).length !== 0)
-      problems.push(`receiver (g8t, no float payload): caveats ${JSON.stringify(plain?.receiver?.caveats)}`);
+    if (ran("g8t")) {
+      const plain = await readJson<{ receiver?: { caveats?: string[] } }>(join(gswDir(ctx, "receiver"), "applied.json"));
+      if ((plain?.receiver?.caveats ?? ["missing"]).length !== 0)
+        problems.push(`receiver (g8t, no float payload): caveats ${JSON.stringify(plain?.receiver?.caveats)}`);
+    }
+    const ok = [
+      ...(ran("g8f") ? [`g8f legs quantized ${carried.join(",")}`] : []),
+      ...(ran("g8t") ? ["g8t's receiver has no caveat"] : []),
+    ].join("; ");
     out.push(
       mk(
         "float-texture-quantized@gsw",
         "G8g (render-stream-8.md As built (G8f)): GSW takes every float payload as RGBA8 by rs-core's quantization and reports the caveat float-texture-quantized naming exactly the float formats carried; a stream without floats has none",
         problems,
-        `g8f legs quantized ${carried.join(",")}; g8t's receiver has no caveat`,
+        ok,
       ),
     );
   }
@@ -157,11 +170,11 @@ export async function gate8Checks(ctx: Ctx): Promise<Gate7Check[]> {
       ),
     );
   }
-  out.push(...(await g8kuChecks(ctx)));
-  out.push(...(await g8cgChecks(ctx)));
+  if (ran("g8ku")) out.push(...(await g8kuChecks(ctx)));
+  if (ran("g8cg")) out.push(...(await g8cgChecks(ctx)));
   // PM3: g8mm through GSW against the unarmed reference (lib/gate7-gsw-g8-mm-checks.ts).
-  out.push(...(await mmGswChecks(ctx)));
-  out.push(...(await ptsGswChecks(ctx)));
+  if (ran("g8mm")) out.push(...(await mmGswChecks(ctx)));
+  if (ran("g8pt")) out.push(...(await ptsGswChecks(ctx)));
   return out;
 }
 

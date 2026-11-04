@@ -151,6 +151,14 @@
 #             G8kb: the source also runs g8kp and g8ku (texture delivery at /9); the gsw half
 #             replays their receiver legs (Basis: GSW's transcoder worker, judged by
 #             lib/gate7-gsw-g8-checks.ts), and g8l gains `basis`, a /9 basis-uastc live leg.
+#             GATE7_G8_LEGS (a CSV, a non-empty subset of G8_FILE_LEGS; unset or empty: all of
+#             them) shards g7-8: the gate 8 source is made with only those groups (in G8_FILE_LEGS
+#             order), and both halves judge only the groups the source's legs.json ran (the web
+#             half by discovery, the gsw half by lib/gate7-gsw-g8.ts gate8Lists), so the union of
+#             the check ids of runs over a partition of G8_FILE_LEGS is a full run's. g8mm and g8pt
+#             stay together (g8pt's W13c/W13d checks read g8mm's evidence); anything else is a
+#             usage error (exit 2). A subset source is cached under its own legs and never served
+#             from the gate's `all` entry (a superset).
 #
 # Group landed (G7r, protocol/gate7/g7r.md, gate7-design.md Q9; `--live` only): pacing, rates, the
 #   g7-r      60/60 phase study and dual receivers at credit window 1, on all three receivers. G6c's
@@ -324,6 +332,16 @@ RENDERED_TIMEOUT_S=180
 PACE_QUIT_FRAME=400
 SCENE_QUIT_FRAME=400
 
+# G8g: gate 8's file-leg groups, the one list both browser halves make the gate 8 source with (a
+# new gate 8 file group is one word here and one in lib/gate7b-adapters.ts GATE8_FILE_GROUPS).
+# G8kb: g8kp and g8ku (texture delivery at /9) are in the source for the GSW half (lib/gate7-gsw-g8.ts
+# GATE8_LEGS). G8kwh: the web half replays g8kp's receiver legs again; it does not replay g8ku's
+# (lib/gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS: the web export's npot choice differs from native by
+# design, and gate 8 judges its own g8ku-web legs). The web view stays on GATE8_FILE_GROUPS.
+G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11,g8mm,g8pt
+# GATE7_G8_LEGS (header, g7-8): the groups this run's gate 8 source is made with; validated below.
+G8_SOURCE_LEGS="$G8_FILE_LEGS"
+
 usage() {
 	sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -449,6 +467,42 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+# GATE7_G8_LEGS (header, g7-8): a non-empty subset of G8_FILE_LEGS, kept in G8_FILE_LEGS order, with
+# g8mm and g8pt together; unset or empty is every group. Checked before anything runs.
+if [ -n "${GATE7_G8_LEGS:-}" ]; then
+	IFS=',' read -r -a g8_want <<<"$GATE7_G8_LEGS"
+	g8_named=()
+	for g in "${g8_want[@]}"; do
+		g="${g//[[:space:]]/}"
+		[ -n "$g" ] || continue
+		case ",$G8_FILE_LEGS," in
+		*",$g,"*) g8_named+=("$g") ;;
+		*)
+			echo "run-gate7: GATE7_G8_LEGS: $g is not a gate 8 file group (G8_FILE_LEGS: $G8_FILE_LEGS)" >&2
+			exit 2
+			;;
+		esac
+	done
+	if [ "${#g8_named[@]}" = 0 ]; then
+		echo "run-gate7: GATE7_G8_LEGS='$GATE7_G8_LEGS' names no group (unset it for every group of $G8_FILE_LEGS)" >&2
+		exit 2
+	fi
+	g8_picked=()
+	for g in ${G8_FILE_LEGS//,/ }; do
+		case " ${g8_named[*]} " in *" $g "*) g8_picked+=("$g") ;; esac
+	done
+	case " ${g8_picked[*]} " in *" g8mm "*) g8_mm=1 ;; *) g8_mm=0 ;; esac
+	case " ${g8_picked[*]} " in *" g8pt "*) g8_pt=1 ;; *) g8_pt=0 ;; esac
+	if [ "$g8_mm" != "$g8_pt" ]; then
+		echo "run-gate7: GATE7_G8_LEGS: g8mm and g8pt must be in the same subset (g8pt's W13c/W13d checks read g8mm's evidence)" >&2
+		exit 2
+	fi
+	G8_SOURCE_LEGS="$(
+		IFS=,
+		echo "${g8_picked[*]}"
+	)"
+	echo "run-gate7: GATE7_G8_LEGS: the gate 8 source runs $G8_SOURCE_LEGS" >&2
+fi
 # G7wd (fork F1 resolved): a live run is at credit window 2 unless --credit-window 1 says otherwise.
 [ "$LIVE" = 1 ] && export GATE7_CREDIT_WINDOW="${GATE7_CREDIT_WINDOW:-2}"
 # G7z: --manifest-hello exports one sha per receiver kind; gate7-tool.ts's browser daemon picks
@@ -613,6 +667,14 @@ source_cache_lookup() {
 		SOURCE_CACHE_STATUS[$1]="miss"
 		return 1
 	}
+	# GATE7_G8_LEGS: a subset source is never served from the gate's `all` entry (a superset, whose
+	# legs.json would make both halves judge every group).
+	if [ "$1" = gate8 ] && [ "$G8_SOURCE_LEGS" != "$G8_FILE_LEGS" ] &&
+		[ "$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("groups_run") or []))' "$hit/legs.json" 2>/dev/null)" != "$G8_SOURCE_LEGS" ]; then
+		SOURCE_CACHE_STATUS[$1]="miss-superset"
+		echo "run-gate7: $1 source: cache entry $hit is not the GATE7_G8_LEGS subset $G8_SOURCE_LEGS; making it" >&2
+		return 1
+	fi
 	SOURCES[$1]="$hit"
 	SOURCE_CACHE_STATUS[$1]="hit"
 	echo "run-gate7: $1 source: cache hit $hit (key $SOURCE_KEY)" >&2
@@ -963,14 +1025,6 @@ if [ "$LIVE" = "1" ]; then
 	exit $?
 fi
 
-# G8g: gate 8's file-leg groups, the one list both browser halves make the gate 8 source with (a
-# new gate 8 file group is one word here and one in lib/gate7b-adapters.ts GATE8_FILE_GROUPS).
-# G8kb: g8kp and g8ku (texture delivery at /9) are in the source for the GSW half (lib/gate7-gsw-g8.ts
-# GATE8_LEGS). G8kwh: the web half replays g8kp's receiver legs again; it does not replay g8ku's
-# (lib/gate7b-adapters.ts GSW_ONLY_SOURCE_GROUPS: the web export's npot choice differs from native by
-# design, and gate 8 judges its own g8ku-web legs). The web view stays on GATE8_FILE_GROUPS.
-G8_FILE_LEGS=g8t,g8a,g8h,g8f,g8m,g8kp,g8ku,g8c,g8cg,g8w11,g8mm,g8pt
-
 # --- g7-0..g7-3 (G7e, G7a): the source runs, before anything else touches the machine. -----
 CHECK_ARGS=(--out "$OUT" --legs "$LEGS_ARG" --calibration "$(realpath -m "$CALIBRATION")")
 [ -n "$RECEIVER" ] && CHECK_ARGS+=(--receiver "$RECEIVER")
@@ -1010,7 +1064,7 @@ for g in "${SOURCE_GATES[@]}"; do
 		# Gate 6: g6a, g6h and g6b only (g6l is live, G7g's --live; g6s/g6c are timing groups).
 		[ "$g" = 6 ] && source_legs=(--legs g6a,g6h,g6b)
 		# Gate 8: its file groups (g8l is live, --live's; decode-cost is g8t's timing group).
-		[ "$g" = 8 ] && source_legs=(--legs "$G8_FILE_LEGS")
+		[ "$g" = 8 ] && source_legs=(--legs "$G8_SOURCE_LEGS")
 		cache_legs="${source_legs[1]:-all}"
 		source_cache_flight "gate$g"
 		source_cache_lookup "gate$g" "$cache_legs" && source_cache_land "gate$g" && continue
@@ -1039,7 +1093,7 @@ done
 G7B_GROUPS=(g7-1:gate1:run-gate1.sh:g1a,g1b g7-2:gate2:run-gate2.sh:g2a,g2b,g2d
 	g7-3:gate3:run-gate3.sh:g3a,g3b,g3c,g3d g7-4:gate4:run-gate4.sh:g4a,g4b,g4c,g4d,g4e,g4f
 	g7-5:gate5:run-gate5.sh:g5b,g5c,g5d,g5e,g5g g7-55:gate55:run-gate55.sh:g55b,g55c,g55d,g55e
-	g7-6:gate6:run-gate6.sh:g6a,g6h,g6b g7-8:gate8:run-gate8.sh:$G8_FILE_LEGS)
+	g7-6:gate6:run-gate6.sh:g6a,g6h,g6b g7-8:gate8:run-gate8.sh:$G8_SOURCE_LEGS)
 G7B_RUN=()
 for spec in "${G7B_GROUPS[@]}"; do
 	IFS=: read -r group gate runner source_legs <<<"$spec"

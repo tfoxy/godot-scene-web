@@ -183,9 +183,18 @@
         "experiments/render-stream/scripts/lib/tier-verdict.py",
         "experiments/render-stream/scripts/lib/validate-summary.py",
         "experiments/render-stream/scripts/lib/hc-shadow-scan.py",
+        "experiments/render-stream/scripts/lib/remote-matrix.py",
+        "experiments/render-stream/scripts/lib/check-census.py",
         "experiments/render-stream/scripts/test/**"
       ],
       "reach": ["pure"]
+    },
+    {
+      "why": "the remote matrix's table: its leg-shard partitions decide which gate 8 groups each remote job of native gate 8 and g7-8 runs (lib/remote-matrix.py)",
+      "paths": [
+        "experiments/render-stream/scripts/remote-jobs.json"
+      ],
+      "reach": ["pure", "native:gate8@*", "g7:g7-8@gsw", "g7:g7-8@web/rust"]
     },
     {
       "why": "the source cache and content key: a gate 7 run makes and reuses sources through them",

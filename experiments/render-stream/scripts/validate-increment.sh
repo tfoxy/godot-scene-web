@@ -53,6 +53,8 @@
 # the run's own quiet-lock-summary.json files, unavailable rows); prints one line per run and exits
 # non-zero when any run fails. RS_VALIDATE_STUB=<script> (self-tests only) runs that script instead
 # of every runner, with the same env plus RS_VALIDATE_ID/KIND/DIR/ARGV.
+# RS_VALIDATE_GROUPS (one gate 7 group) and RS_VALIDATE_LEGS (one leg shard: a native runner's
+# --legs, g7-8's GATE7_G8_LEGS) are the remote workflow's matrix (lib/remote-matrix.py).
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -223,8 +225,12 @@ run_one() {
 		local -a env=(RS_RECEIVER_CORE="$core" ${FAST_ENV[@]+"${FAST_ENV[@]}"})
 		[ "$sab" = true ] || env+=(RS_SABOTAGE_TIER=skip)
 		[ "$(field phase)" = timing ] || env+=(${SHADOW_ENV[@]+"${SHADOW_ENV[@]}"})
+		# a remote leg shard (remote-validate.yml matrix.legs, lib/remote-matrix.py; never set locally):
+		# the runner's --legs, one part of its groups; the merge folds the shards into the run's row
+		local -a legs=()
+		[ -z "${RS_VALIDATE_LEGS:-}" ] || legs=(--legs "$RS_VALIDATE_LEGS")
 		launch "$dir" "${env[@]}" -- bash "$runner" --extension "$EXT" --calibration "$CAL" --out "$dir/run" \
-			>"$dir/run.log" 2>&1 || rc=$?
+			${legs[@]+"${legs[@]}"} >"$dir/run.log" 2>&1 || rc=$?
 		# The tier verdict: with sabotage skipped, exactly the checks that name a skipped sabotage
 		# leg may fail (lib/tier-verdict.py); a run with every leg keeps the runner's own verdict
 		# (apart from typed unavailable rows, below).
@@ -233,9 +239,10 @@ run_one() {
 				>"$dir/tier-verdict.json" 2>&1 && rc=0 || rc=1
 			judged=1
 		fi
-		# A rust-core full run with every leg feeds gate 7's source cache.
+		# A rust-core full run with every leg feeds gate 7's source cache (a leg shard holds only part
+		# of the groups, so it never does).
 		if [ "$rc" = 0 ] && [ "$core" = rust ] && [ "$sab" = true ] && [ "$gate" != gate-minus1 ] && [ "$gate" != hc1 ] &&
-			[ -z "${RS_VALIDATE_STUB:-}" ]; then
+			[ -z "${RS_VALIDATE_STUB:-}" ] && [ -z "${RS_VALIDATE_LEGS:-}" ]; then
 			(cd "$REPO_ROOT" && mise exec -- pnpm exec tsx --conditions=development "$SCRIPT_DIR/gate7-tool.ts" \
 				source-provenance --extension "$EXT" --calibration "$CAL" --out "$dir/run/gate7-source.json") >>"$dir/run.log" 2>&1 &&
 				bash "$SCRIPT_DIR/source-cache.sh" publish "$(bash "$SCRIPT_DIR/source-cache.sh" key)" "$gate" all "$dir/run" \
@@ -282,6 +289,9 @@ run_one() {
 		web/*) args+=(--receiver web --web-core "${recv#web/}") ;;
 		esac
 		[ "$(field phase)" = timing ] || genv+=(${SHADOW_ENV[@]+"${SHADOW_ENV[@]}"})
+		# a remote leg shard of g7-8 (matrix.legs): the gate 8 groups its source makes and its
+		# receivers replay (run-gate7.sh GATE7_G8_LEGS)
+		[ -z "${RS_VALIDATE_LEGS:-}" ] || genv+=(GATE7_G8_LEGS="$RS_VALIDATE_LEGS")
 		launch "$dir" ${genv[@]+"${genv[@]}"} -- bash "$SCRIPT_DIR/run-gate7.sh" "${args[@]}" >"$dir/run.log" 2>&1 || rc=$?
 		if [ -n "$sl_live$sl_file" ]; then
 			python3 "$SCRIPT_DIR/lib/tier-verdict.py" --run "$dir/run" --smoke-legs "$sl_live" --runner-rc "$rc" \

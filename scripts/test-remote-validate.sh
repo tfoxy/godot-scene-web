@@ -25,7 +25,9 @@ git init -q -b main "$TMP/seed"
 	printf 'ign/\nartifacts/\n' >.gitignore
 	echo one >a.txt && echo two >b.txt
 	mkdir -p experiments/render-stream/scripts scripts
-	cp "$ROOT/experiments/render-stream/scripts/smoke-map.json" experiments/render-stream/scripts/
+	cp "$ROOT/experiments/render-stream/scripts/smoke-map.json" "$ROOT/experiments/render-stream/scripts/remote-jobs.json" \
+		"$ROOT/experiments/render-stream/scripts/run-gate7.sh" "$ROOT/experiments/render-stream/scripts/run-gate8.sh" experiments/render-stream/scripts/
+	mkdir -p experiments/render-stream/scripts/lib && cp "$ROOT/experiments/render-stream/scripts/lib/remote-matrix.py" experiments/render-stream/scripts/lib/
 	cp "$ROOT/scripts/remote-validate.sh" "$ROOT/scripts/remote-run-branch.sh" scripts/
 	git add -A && git commit -qm seed && git remote add origin "$BARE" && git push -q origin main
 )
@@ -130,6 +132,17 @@ check "--browser-renderer reaches the dispatch inputs" grep -q 'browser_renderer
 ( cd "$CLONE" && bash "$WRAP" --dry-run --browser-renderer nvidia ) >"$TMP/dry-br2.out" 2>&1
 check "--browser-renderer refuses an unknown renderer (exit 2)" test "$?" = 2
 check "--browser-renderer refuses swiftshader, dropped in R3 (exit 2)" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --browser-renderer swiftshader >/dev/null 2>&1; test \$? = 2"
+check "--leg-shards refuses an unknown mode (exit 2)" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --leg-shards some >/dev/null 2>&1; test \$? = 2"
+check "--leg-shards reaches the dispatch inputs; the dry run shows the matrix estimate" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --leg-shards off 2>&1 | grep -q 'leg_shards=off\$' && cd '$CLONE' && bash '$WRAP' --dry-run --leg-shards off 2>&1 | grep -q 'dry run: remote-matrix: [0-9]* jobs'"
+check "the plan job's sparse checkout lists every file lib/remote-matrix.py reads" python3 - "$ROOT" <<'PY'
+import json, re, sys
+root = sys.argv[1]
+wf = open(root + "/.github/workflows/remote-validate.yml").read()
+block = wf[wf.index("  plan:"):wf.index("  validate:")]
+need = {"experiments/render-stream/scripts/lib/remote-matrix.py", "experiments/render-stream/scripts/remote-jobs.json"}
+need |= {s["groups"]["from"] for s in json.load(open(root + "/experiments/render-stream/scripts/remote-jobs.json"))["leg_shards"].values()}
+sys.exit(0 if all(n in block for n in need) and "max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}" in wf else 1)
+PY
 check "--determinism rejects a non-count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 3,x >/dev/null 2>&1; test \$? = 2"
 check "--determinism rejects a zero count" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --determinism 0 >/dev/null 2>&1; test \$? = 2"
 check "--determinism is shown in the dry run's inputs" bash -c "cd '$CLONE' && bash '$WRAP' --dry-run --only native-rust-gate0 --determinism 3,1 2>&1 | grep -q 'runs=\[\"native-rust-gate0\"\] determinism=3,1\$'"
@@ -162,6 +175,7 @@ check "dispatch carried run_key, sha, base, tier and the run list" bash -c \
 	"grep -q 'workflow run remote-validate.yml --ref remote-run/clone-' '$FAKE_GH_LOG' && grep -q 'run_key=rv-' '$FAKE_GH_LOG' && grep -q 'sha=' '$FAKE_GH_LOG' && grep -q 'base=' '$FAKE_GH_LOG' && grep -q 'tier=full' '$FAKE_GH_LOG' && grep -q 'runs=\[\"pure\", \"cargo-rs-core\", \"pnpm-test\", \"native-rust-gate0\", \"native-rust-gate1\", \"g7-gsw\", \"g7live-gsw\"\]' '$FAKE_GH_LOG' && grep -q 'worktree=clone' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no determinism input" bash -c "! grep -q 'determinism=' '$FAKE_GH_LOG'"
 check "a plain dispatch carries no browser_renderer input (the workflow default)" bash -c "! grep -q 'browser_renderer=' '$FAKE_GH_LOG'"
+check "a plain dispatch carries no leg_shards input (the workflow default, auto)" bash -c "! grep -q 'leg_shards=' '$FAKE_GH_LOG'"
 check "a multi-group gate 7 run is dispatched with its groups (one job per group)" grep -qF 'run_groups={"g7-gsw": ["g7-1", "g7-2"], "g7live-gsw": ["g7-2", "g7-5"]}' "$FAKE_GH_LOG"
 check "the summary landed under artifacts/render-stream/remote/" bash -c "ls '$CLONE'/artifacts/render-stream/remote/*/validate-summary.json"
 check "the branch is deleted after a normal finish" test -z "$(remote_branches)"

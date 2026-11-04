@@ -42,6 +42,7 @@ import {
   compositorProblems,
   GSW_LEGS,
   type GswGate,
+  gswLegDefs,
   mk,
   q7Plan,
 } from "./gate7-gsw";
@@ -128,7 +129,7 @@ async function gswVsNative(gate: GswGate, ctx: Ctx): Promise<Gate7Check> {
   let shots = 0;
   let identical = 0;
   const differing: string[] = [];
-  for (const d of GSW_LEGS[gate].filter((x) => x.replaces)) {
+  for (const d of gswLegDefs(gate, ctx.sourceDir).filter((x) => x.replaces)) {
     const native = join(ctx.sourceDir, d.leg, "shots");
     const gsw = join(gswDir(ctx.out, gate, d.leg), "shots");
     if (!existsSync(native)) continue;
@@ -161,7 +162,7 @@ async function gswVsNative(gate: GswGate, ctx: Ctx): Promise<Gate7Check> {
 async function digestsComplete(gate: GswGate, ctx: Ctx): Promise<Gate7Check> {
   const problems: string[] = [];
   let n = 0;
-  for (const d of GSW_LEGS[gate]) {
+  for (const d of gswLegDefs(gate, ctx.sourceDir)) {
     const applied = await readJson<{
       status?: string;
       transactions?: { seq: number; record_sha256: string | null }[] | null;

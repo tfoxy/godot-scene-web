@@ -37,7 +37,11 @@ check() {
 
 check "smoke-plan.py --self-test" "python3 '$SCRIPT_DIR/lib/smoke-plan.py' --self-test --map '$SCRIPT_DIR/smoke-map.json' >'$TMP/plan-st.log' 2>&1"
 check "tier-verdict.py --self-test" "python3 '$SCRIPT_DIR/lib/tier-verdict.py' --self-test >'$TMP/verdict-st.log' 2>&1"
-grep '^FAIL' "$TMP/plan-st.log" "$TMP/verdict-st.log" || true
+check "remote-matrix.py --self-test (the remote matrix: longest first, leg shards)" \
+	"python3 '$SCRIPT_DIR/lib/remote-matrix.py' --self-test >'$TMP/matrix-st.log' 2>&1"
+check "check-census.py --self-test (a sharded run's check ids against the whole run's)" \
+	"python3 '$SCRIPT_DIR/lib/check-census.py' --self-test >'$TMP/census-st.log' 2>&1"
+grep '^FAIL' "$TMP/plan-st.log" "$TMP/verdict-st.log" "$TMP/matrix-st.log" "$TMP/census-st.log" || true
 
 # The stub: holds the private lock for 0.25 s (exclusive in the timing phase, shared otherwise),
 # records its start and end, writes the run's quiet-lock summary. g7live-gsw-timing exits 1 with
@@ -246,6 +250,24 @@ with tempfile.TemporaryDirectory() as d:
     json.dump({'checks': [{'id': 'pixels', 'passed': False, 'detail': 'differs'}]}, open(d + '/result.json', 'w'))
     sys.exit(0 if tv.verdict(d, False, '', 1)['verdict'] == 'fail' else 1)
 PY"
+# A remote leg shard (RS_VALIDATE_LEGS, lib/remote-matrix.py): a native runner gets --legs, g7-8
+# gets GATE7_G8_LEGS, and neither is set without the env (local behaviour unchanged).
+cat >"$TMP/stub-legs.sh" <<'STUB'
+d="$RS_VALIDATE_DIR"
+printf '%s\n' "$RS_VALIDATE_ARGV" >"$d/argv.txt"
+env | grep -E '^GATE7_G8_LEGS=' >"$d/legs-env.txt"
+exit 0
+STUB
+for mode in unset set; do
+	envs=(); [ "$mode" = set ] && envs=(RS_VALIDATE_LEGS=g8w11,g8tag2)
+	env ${envs[@]+"${envs[@]}"} RS_VALIDATE_STUB="$TMP/stub-legs.sh" \
+		bash "$SCRIPT_DIR/validate-increment.sh" --milestone --only native-rust-gate8,g7-gsw --out "$TMP/legs-$mode" \
+		--paths experiments/render-stream/scripts/lib/gate8-tex-checks.ts >"$TMP/legs-$mode.log" 2>&1
+done
+check "RS_VALIDATE_LEGS: the native runner gets --legs <them>" "grep -q -- '--legs g8w11,g8tag2' '$TMP/legs-set/native-rust-gate8/argv.txt'"
+check "RS_VALIDATE_LEGS: gate 7 gets GATE7_G8_LEGS=<them>" "grep -qx 'GATE7_G8_LEGS=g8w11,g8tag2' '$TMP/legs-set/g7-gsw/legs-env.txt'"
+check "without RS_VALIDATE_LEGS: no --legs, no GATE7_G8_LEGS" \
+	"! grep -q -- '--legs' '$TMP/legs-unset/native-rust-gate8/argv.txt' && [ ! -s '$TMP/legs-unset/g7-gsw/legs-env.txt' ]"
 # R2: an --only id the plan does not contain warns (it is not an error) instead of a silent 0/0.
 RS_VALIDATE_STUB="$TMP/stub.sh" STUB_Q="$Q" STUB_TIMES="$TMP/times2.txt" STUB_FOREIGN="$TMP/foreign" \
 	bash "$SCRIPT_DIR/validate-increment.sh" --only native-rust-gate99,pure --out "$TMP/unplanned" \
