@@ -39,7 +39,8 @@ import type {
   RenderStreamTransportFactory,
 } from "./transport";
 
-/** The failure reasons the client reports (the receiver's typed names, plus the client's own). */
+/** The failure reasons the client reports (the receiver's typed names, plus the client's own).
+ * `core-load-failed`'s detail says why: `stale core: ...`, `timeout after <ms> ms in <steps>`. */
 export type RenderStreamFailureReason =
   | "live-connect-failed"
   | "host-error"

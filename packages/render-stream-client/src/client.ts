@@ -20,7 +20,12 @@ import {
   coreStartOptions,
   gpuFormatsOf,
 } from "./hello";
-import { CoreLoadError, loadCore, type RenderStreamCore } from "./loader";
+import {
+  CORE_LOAD_TIMEOUT_MS,
+  CoreLoadError,
+  loadCore,
+  type RenderStreamCore,
+} from "./loader";
 import {
   type ApplyOn,
   type CreditStage,
@@ -78,6 +83,12 @@ export interface RenderStreamClientOptions {
    * payloads, exported by `RenderStreamClient.recording()`. Absent: the pure client (no ring, no
    * copies). */
   recorder?: RecorderOptions;
+  /** The deadline of the whole core load (build.json to the glue's init), in ms; default 30000.
+   * A load that has not finished is `failed` `core-load-failed`, detail `timeout after <ms> ms in
+   * <steps>` (the steps still pending: `build fetch`, `wasm fetch`, `wasm hash`, `wasm compile`,
+   * `glue import`, `core init`), and nothing of it runs on. A moto g31 on Wi-Fi took at most 1.1 s
+   * at 4x CPU throttle (loader.ts). The connect deadline starts only once the core is up. */
+  coreLoadTimeoutMs?: number;
   onStatus?: (s: RenderStreamStatus) => void;
 }
 
@@ -92,7 +103,8 @@ export interface GamePoint {
 }
 
 export interface RenderStreamClient {
-  /** Loads the core (once) and connects; again after `failed` or `ended`. */
+  /** Loads the core (once, under `coreLoadTimeoutMs`) and connects; again after `failed` or
+   * `ended` (a failed load is retried). */
   connect(): void;
   /** A changed descriptor reconnects with it (an idle, failed or ended client keeps it for the
    * next `connect`). Throws `RenderStreamEndpointError` for an invalid one. */
@@ -112,8 +124,8 @@ export interface RenderStreamClient {
   toGame(x: number, y: number): GamePoint | null;
   /** INP1: `cssToPresentation` then `toGame`: null on a letterbox bar. */
   clientToGame(clientX: number, clientY: number): GamePoint | null;
-  /** Stops the frame loop, closes the connection (1000), aborts in-flight GETs, frees every
-   * wasm-bindgen object, loses the WebGL context and drops the instance. Idempotent. */
+  /** Stops the frame loop, closes the connection (1000), aborts a core load and in-flight GETs,
+   * frees every wasm-bindgen object, loses the WebGL context and drops the instance. Idempotent. */
   dispose(): void;
   /** REC1: the recording so far (null when the client was built without `recorder`). */
   recording(): Recording | null;
@@ -142,6 +154,15 @@ export function createRenderStreamClient(
   const creditWindow = options.creditWindow ?? 2;
   if (creditWindow !== 1 && creditWindow !== 2)
     throw new TypeError("render-stream client: creditWindow must be 1 or 2");
+  const coreLoadTimeoutMs = options.coreLoadTimeoutMs ?? CORE_LOAD_TIMEOUT_MS;
+  // setTimeout fires at once past 2^31 - 1 ms.
+  if (
+    !(Number.isFinite(coreLoadTimeoutMs) && coreLoadTimeoutMs > 0) ||
+    coreLoadTimeoutMs > 0x7fffffff
+  )
+    throw new TypeError(
+      "render-stream client: coreLoadTimeoutMs must be a positive number of ms (at most 2^31 - 1)",
+    );
   const endpoint = validateEndpoint(options.endpoint);
   const exts = options.extensions ?? [];
   const ids = new Set<string>();
@@ -159,7 +180,14 @@ export function createRenderStreamClient(
     );
   // REC1: absent the option there is no recorder (and no per-message copy); present, one ring.
   const recorder = options.recorder ? createRecorder(options.recorder) : null;
-  return new Client(options, endpoint, creditWindow, ext, recorder);
+  return new Client(
+    options,
+    endpoint,
+    creditWindow,
+    coreLoadTimeoutMs,
+    ext,
+    recorder,
+  );
 }
 
 const EMPTY_STATS: RenderStreamStats = Object.freeze({
@@ -174,6 +202,8 @@ class Client implements RenderStreamClient {
   private loop: StreamLoop | null = null;
   private core: WasmStreamCore | null = null;
   private loading: Promise<void> | null = null;
+  /** Aborts the core load in flight (dispose). */
+  private loadAbort: AbortController | null = null;
   /** One factory per client: the sticky fallback and the WebTransport cache live in it. */
   private readonly carrierFactory: RenderStreamTransportFactory;
   private disposed = false;
@@ -190,6 +220,7 @@ class Client implements RenderStreamClient {
     private readonly o: RenderStreamClientOptions,
     private endpoint: RenderStreamEndpoint,
     private readonly creditWindow: 1 | 2,
+    private readonly coreLoadTimeoutMs: number,
     private readonly ext: ExtensionHost | null,
     private readonly recorder: RenderStreamRecorder | null,
   ) {
@@ -206,6 +237,7 @@ class Client implements RenderStreamClient {
     this.status({ kind: "connecting" });
     this.loading = this.load().catch((e: unknown) => {
       this.loading = null;
+      this.loadAbort = null;
       if (this.disposed) return;
       const reason = e instanceof NoWebgl2 ? "no-webgl2" : "core-load-failed";
       this.status({
@@ -268,6 +300,8 @@ class Client implements RenderStreamClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.loadAbort?.abort();
+    this.loadAbort = null;
     const canvas = this.o.canvas;
     this.loop?.dispose();
     this.loop = null;
@@ -292,7 +326,13 @@ class Client implements RenderStreamClient {
   }
 
   private async load(): Promise<void> {
-    const { mod, memory } = await loadCore(this.o.core);
+    const abort = new AbortController();
+    this.loadAbort = abort;
+    const { mod, memory } = await loadCore(this.o.core, {
+      timeoutMs: this.coreLoadTimeoutMs,
+      signal: abort.signal,
+    });
+    this.loadAbort = null;
     if (this.disposed) return;
     const canvas = this.o.canvas;
     const protocol = this.endpoint.protocol;

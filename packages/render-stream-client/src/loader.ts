@@ -16,9 +16,21 @@
 // `scripts/core-tree.sh` on the GSW checkout it aliases) passes it as `expectedTree`; a mismatch is
 // `core-load-failed` (`stale core`). Independently, the glue must export every GswRs method the
 // client calls (abi.ts `CLIENT_CORE_METHODS`).
+//
+// Deadline. The whole load, build.json to the glue's init, runs under one deadline
+// (`coreLoadTimeoutMs`, default `CORE_LOAD_TIMEOUT_MS`): a step that stalls is `core-load-failed`
+// `timeout after <ms> ms in <steps>`, not a client stuck in `connecting`. Measured on a moto g31
+// over Wi-Fi from a plain-http page (pure-JS hash), five cold runs: at most 570 ms, 1068 ms at 4x
+// CPU throttle, the hash its slowest step (726 ms), so 30 s is ~28x that and still covers a slow
+// link's 2.5 MB fetch. Every await is raced against the load's abort (the deadline or the client's
+// dispose), so a compile or import that resolves late never reaches `createGlue` or init. The
+// per-page caches count their waiters: when the last one gives up on an entry still in flight,
+// its fetch is aborted, its hash stops at the next chunk and the entry is dropped (the next load
+// starts afresh); a compile or import already started cannot be cancelled, and its late result is
+// dropped with the entry.
 
 import { CLIENT_CORE_METHODS, type GswRsModule } from "./abi";
-import { sha256 } from "./sha256";
+import { Sha256 } from "./sha256";
 
 /** Where the core is served: build-web.sh's three files, at two (or three) static URLs. */
 export interface RenderStreamCore {
@@ -50,30 +62,161 @@ export class CoreLoadError extends Error {
   override name = "CoreLoadError";
 }
 
+/** The default deadline of a whole core load (see the header). */
+export const CORE_LOAD_TIMEOUT_MS = 30000;
+
+/** A load's steps, as a timeout's detail names them. */
+export type CoreLoadStep =
+  | "build fetch"
+  | "wasm fetch"
+  | "wasm hash"
+  | "wasm compile"
+  | "glue import"
+  | "core init";
+
+/** What the loader calls on the page (tests substitute it). */
+export interface LoaderEnv {
+  fetch(url: string, init: RequestInit): Promise<Response>;
+  digest(
+    bytes: ArrayBuffer,
+    signal: AbortSignal,
+  ): Promise<ArrayBuffer | Uint8Array>;
+  compile(bytes: ArrayBuffer): Promise<WebAssembly.Module>;
+  importGlue(url: string): Promise<unknown>;
+}
+
+export interface LoadCoreOptions {
+  timeoutMs: number;
+  /** Aborts the load (the client's dispose): it rejects, and nothing of it runs on. */
+  signal?: AbortSignal;
+  env?: Partial<LoaderEnv>;
+}
+
+/** The pure-JS hash's chunk: ~30 ms each on a g31 (~70 ms at 4x throttle). */
+const HASH_CHUNK = 256 * 1024;
+
+/** The fallback hash, a chunk per task, stopping at the first chunk after `signal` aborts. */
+export async function sha256Chunked(
+  bytes: ArrayBuffer,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const src = new Uint8Array(bytes);
+  const h = new Sha256();
+  for (let off = 0; off < src.length; off += HASH_CHUNK) {
+    if (off > 0) await new Promise((r) => setTimeout(r, 0));
+    signal.throwIfAborted();
+    h.update(src.subarray(off, off + HASH_CHUNK));
+  }
+  return h.digest();
+}
+
+const pageEnv: LoaderEnv = {
+  fetch: (url, init) => fetch(url, init),
+  // `crypto.subtle` exists only in secure contexts; a plain-http LAN page uses the fallback.
+  digest: (bytes, signal) =>
+    globalThis.crypto?.subtle
+      ? crypto.subtle.digest("SHA-256", bytes)
+      : sha256Chunked(bytes, signal),
+  compile: (bytes) => WebAssembly.compile(bytes),
+  importGlue: (url) => import(/* @vite-ignore */ url),
+};
+
 /** The marker build-web.sh's factory module exports beside its default. */
 interface GlueFactoryModule {
   RENDER_STREAM_CLIENT_GLUE?: number;
   default?: () => GswRsModule;
 }
 
-const compiled = new Map<string, Promise<WebAssembly.Module>>();
-const factories = new Map<string, Promise<() => GswRsModule>>();
+/** A per-page cache entry and the loads waiting on it. */
+interface Shared<T> {
+  promise: Promise<T>;
+  /** Aborted when the last waiter gives up before it settles. */
+  readonly controller: AbortController;
+  waiters: number;
+  settled: boolean;
+  step: CoreLoadStep;
+}
+
+const compiled = new Map<string, Shared<WebAssembly.Module>>();
+const factories = new Map<string, Shared<() => GswRsModule>>();
 
 const hex = (bytes: ArrayBuffer | Uint8Array): string =>
   Array.from(new Uint8Array(bytes), (b) =>
     b.toString(16).padStart(2, "0"),
   ).join("");
 
+/** `p`, or `signal`'s reason as soon as it aborts. */
+function raced<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** Waits on `map`'s entry for `key` (started by `start` when there is none) until `signal`. */
+function acquire<T>(
+  map: Map<string, Shared<T>>,
+  key: string,
+  step: CoreLoadStep,
+  start: (entry: Shared<T>) => Promise<T>,
+  signal: AbortSignal,
+): { entry: Shared<T>; promise: Promise<T> } {
+  let entry = map.get(key);
+  if (entry === undefined) {
+    const e: Shared<T> = {
+      promise: undefined as unknown as Promise<T>,
+      controller: new AbortController(),
+      waiters: 0,
+      settled: false,
+      step,
+    };
+    e.promise = start(e);
+    e.promise.then(
+      () => {
+        e.settled = true;
+      },
+      () => {
+        e.settled = true;
+        // A failed load is retried by the next client.
+        if (map.get(key) === e) map.delete(key);
+      },
+    );
+    map.set(key, e);
+    entry = e;
+  }
+  const e = entry;
+  e.waiters++;
+  const promise = raced(e.promise, signal).finally(() => {
+    if (--e.waiters > 0 || e.settled) return;
+    e.controller.abort(new CoreLoadError("abandoned"));
+    if (map.get(key) === e) map.delete(key);
+  });
+  return { entry: e, promise };
+}
+
 async function readBuild(
   core: RenderStreamCore,
   wasmUrl: string,
+  env: LoaderEnv,
+  signal: AbortSignal,
 ): Promise<CoreBuild> {
   const url = core.buildUrl
     ? new URL(core.buildUrl, location.href).href
     : new URL("build.json", wasmUrl).href;
   let b: CoreBuild;
   try {
-    const res = await fetch(url, { cache: "no-cache" });
+    const res = await env.fetch(url, { cache: "no-cache", signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     b = (await res.json()) as CoreBuild;
   } catch (e) {
@@ -90,76 +233,109 @@ async function readBuild(
   return b;
 }
 
-function compileOnce(
+/** Fetches, checks and compiles the `.wasm`, once per page. */
+async function compileWasm(
+  e: Shared<WebAssembly.Module>,
   wasmUrl: string,
   build: CoreBuild,
+  env: LoaderEnv,
 ): Promise<WebAssembly.Module> {
-  let p = compiled.get(wasmUrl);
-  if (p === undefined) {
-    p = (async () => {
-      const res = await fetch(wasmUrl);
-      if (!res.ok)
-        throw new CoreLoadError(`GET ${wasmUrl}: HTTP ${res.status}`);
-      const bytes = await res.arrayBuffer();
-      const sha = hex(
-        // `crypto.subtle` exists only in secure contexts; a plain-http LAN page uses the fallback.
-        globalThis.crypto?.subtle
-          ? await crypto.subtle.digest("SHA-256", bytes)
-          : sha256(bytes),
-      );
-      if (sha !== build.wasm_sha256)
-        throw new CoreLoadError(
-          `stale core: ${wasmUrl} has sha256 ${sha}, its build.json names ${build.wasm_sha256}`,
-        );
-      return WebAssembly.compile(bytes);
-    })();
-    compiled.set(wasmUrl, p);
-    // A failed compile is retried by the next client.
-    p.catch(() => compiled.delete(wasmUrl));
-  }
-  return p;
+  const signal = e.controller.signal;
+  const res = await env.fetch(wasmUrl, { signal });
+  if (!res.ok) throw new CoreLoadError(`GET ${wasmUrl}: HTTP ${res.status}`);
+  const bytes = await res.arrayBuffer();
+  e.step = "wasm hash";
+  const sha = hex(await env.digest(bytes, signal));
+  if (sha !== build.wasm_sha256)
+    throw new CoreLoadError(
+      `stale core: ${wasmUrl} has sha256 ${sha}, its build.json names ${build.wasm_sha256}`,
+    );
+  signal.throwIfAborted();
+  e.step = "wasm compile";
+  return env.compile(bytes);
 }
 
-function factoryOnce(glueUrl: string): Promise<() => GswRsModule> {
-  let p = factories.get(glueUrl);
-  if (p === undefined) {
-    p = (async () => {
-      const m = (await import(/* @vite-ignore */ glueUrl)) as GlueFactoryModule;
-      if (m.RENDER_STREAM_CLIENT_GLUE !== 1 || typeof m.default !== "function")
-        throw new CoreLoadError(
-          `${glueUrl} is not build-web.sh's factory glue (rs_gsw_wasm_client.js)`,
-        );
-      return m.default;
-    })();
-    factories.set(glueUrl, p);
-    p.catch(() => factories.delete(glueUrl));
-  }
-  return p;
+/** Imports the factory glue, once per page. */
+async function importFactory(
+  glueUrl: string,
+  env: LoaderEnv,
+): Promise<() => GswRsModule> {
+  const m = (await env.importGlue(glueUrl)) as GlueFactoryModule;
+  if (m?.RENDER_STREAM_CLIENT_GLUE !== 1 || typeof m.default !== "function")
+    throw new CoreLoadError(
+      `${glueUrl} is not build-web.sh's factory glue (rs_gsw_wasm_client.js)`,
+    );
+  return m.default;
 }
 
 /** One fresh core instance: its glue (a new closure) and its memory. */
 export async function loadCore(
   core: RenderStreamCore,
+  options: LoadCoreOptions,
 ): Promise<{ mod: GswRsModule; memory: WebAssembly.Memory; build: CoreBuild }> {
+  const env = options.env ? { ...pageEnv, ...options.env } : pageEnv;
   const wasmUrl = new URL(core.wasmUrl, location.href).href;
   const glueUrl = new URL(core.glueUrl, location.href).href;
-  const build = await readBuild(core, wasmUrl);
-  const [module, createGlue] = await Promise.all([
-    compileOnce(wasmUrl, build),
-    factoryOnce(glueUrl),
-  ]);
-  const mod = createGlue();
-  const proto = (
-    mod.GswRs as unknown as { prototype?: Record<string, unknown> }
-  )?.prototype;
-  const missing: string[] = CLIENT_CORE_METHODS.filter(
-    (k) => typeof proto?.[k] !== "function",
+  const ctl = new AbortController();
+  const signal = ctl.signal;
+  let pending: () => CoreLoadStep[] = () => ["build fetch"];
+  const timer = setTimeout(
+    () =>
+      ctl.abort(
+        new CoreLoadError(
+          `timeout after ${options.timeoutMs} ms in ${pending().join(" + ")}`,
+        ),
+      ),
+    options.timeoutMs,
   );
-  if (typeof mod.LiveCoding !== "function") missing.push("LiveCoding");
-  if (missing.length > 0)
-    throw new CoreLoadError(
-      `stale core: the glue has no ${missing.join(", ")}`,
+  const outer = options.signal;
+  const onAbort = () => ctl.abort(new CoreLoadError("aborted"));
+  if (outer?.aborted) onAbort();
+  else outer?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const build = await raced(readBuild(core, wasmUrl, env, signal), signal);
+    const wasm = acquire(
+      compiled,
+      wasmUrl,
+      "wasm fetch",
+      (e) => compileWasm(e, wasmUrl, build, env),
+      signal,
     );
-  const { memory } = await mod.default({ module_or_path: module });
-  return { mod, memory, build };
+    const glue = acquire(
+      factories,
+      glueUrl,
+      "glue import",
+      () => importFactory(glueUrl, env),
+      signal,
+    );
+    pending = () =>
+      [wasm.entry, glue.entry].filter((e) => !e.settled).map((e) => e.step);
+    const [module, createGlue] = await Promise.all([
+      wasm.promise,
+      glue.promise,
+    ]);
+    pending = () => ["core init"];
+    const mod = createGlue();
+    const proto = (
+      mod.GswRs as unknown as { prototype?: Record<string, unknown> }
+    )?.prototype;
+    const missing: string[] = CLIENT_CORE_METHODS.filter(
+      (k) => typeof proto?.[k] !== "function",
+    );
+    if (typeof mod.LiveCoding !== "function") missing.push("LiveCoding");
+    if (missing.length > 0)
+      throw new CoreLoadError(
+        `stale core: the glue has no ${missing.join(", ")}`,
+      );
+    const { memory } = await raced(
+      mod.default({ module_or_path: module }),
+      signal,
+    );
+    return { mod, memory, build };
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener("abort", onAbort);
+    // A failure on one side leaves no waiter on the other (a stalled import, say).
+    if (!signal.aborted) ctl.abort(new CoreLoadError("settled"));
+  }
 }
