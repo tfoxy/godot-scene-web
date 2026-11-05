@@ -753,6 +753,20 @@ std::string result_json() {
                        : g_stream.gate8.speaks_v9()
                        ? 9
                        : (g_stream.gate8.file_version == rs2::ProtocolVersion::V8 ? 8 : 6)));
+    if (g_stream.gate8.speaks_v10()) {
+      // LAR7: where the carried shader clock began (rs_shader_clock.h). Evidence only: the wire
+      // carries the clock's total per transaction and nothing about its origin.
+      const rs::ShaderClock &clock = rs::shader_clock();
+      json.key("shader_clock").object_begin();
+      json.field("source", std::string(rs::shader_clock_source()));
+      json.field("origin", std::string(rs::shader_clock_origin()));
+      json.field("first_tick_process_frames", clock.start_process_frames);
+      json.field("first_tick_frames_drawn", clock.start_drawn);
+      json.field("draws_missed", rs::shader_clock_draws_missed());
+      json.field("ticks", static_cast<int64_t>(clock.ticks));
+      json.field("draws", static_cast<int64_t>(clock.draws));
+      json.object_end();
+    }
     if (g_stream.gate8.speaks_v11()) {
       // W11b (render-stream-11.md "Capture policy"): additive, /11 streams only.
       const rs::MirrorStats ms = rs::mirror_stats();
@@ -4259,7 +4273,11 @@ void do_disarm(const char *phase) {
     std::snprintf(total, sizeof(total), "%.17g", clock.total);
     log_line(std::string("shader-clock: source=") + rs::shader_clock_source() +
              " draws=" + std::to_string(clock.draws) + " ticks=" + std::to_string(clock.ticks) +
-             " advanced=" + std::to_string(clock.advanced) + " total=" + total);
+             " advanced=" + std::to_string(clock.advanced) + " total=" + total +
+             " origin=" + rs::shader_clock_origin() +
+             " first_tick_process_frames=" + std::to_string(clock.start_process_frames) +
+             " first_tick_frames_drawn=" + std::to_string(clock.start_drawn) +
+             " draws_missed=" + std::to_string(rs::shader_clock_draws_missed()));
   }
   emit("disarm.json", disarm_json());
   emit("counters.json", hooks_counters_json(g_state.frames_total, g_state.frames_armed));

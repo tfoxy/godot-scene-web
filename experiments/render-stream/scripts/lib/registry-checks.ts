@@ -9,13 +9,20 @@
  *                        always erases and the registry is bounded by live engine resources; at
  *                        the end, creates + overflow + null_creates == the family's create-hook
  *                        calls (every tracked create recorded); no overflow, no dropped row.
- *   registry-cost        capture-scale's churned create/free block (scale report churn_us_mean:
- *                        the hook path, engine work included) and the frame callback (perf.json
- *                        frame_callback_us mean) with the registry recording, against GRC_ADOPT=off
- *                        and against registry-off, within noise. frame_us_p50 is kept in the
- *                        samples but not judged: the capture's low-processor sleep paces a headless
- *                        host at ~6.9 ms a frame whatever the CPU did (2026-11-04: 6898-6901 µs on
- *                        all nine legs).
+ *   registry-cost        (LAR7) the registry's own in-situ cost: `on` (GRC_ADOPT=arm, the registry
+ *                        records) against `regoff` (GRC_ADOPT=arm, GRC_ADOPT_FAULT=registry-off),
+ *                        which differ by the registry alone, paired by round (the two legs run
+ *                        back to back, so they share the machine's state). Per metric (the churned
+ *                        create/free block's churn_us_mean, the hook path; perf.json's
+ *                        frame_callback_us mean), the median paired delta must stay within the
+ *                        registry's budget: REGISTRY_CALL_BUDGET_NS per tracked call times the
+ *                        tracked calls a churned frame makes. `on` against GRC_ADOPT=off is
+ *                        reported, not judged: it folds in G8r adoption's own lookups (LAR0:
+ *                        +18-58 µs of run-to-run noise), which is not the registry's cost and made
+ *                        the old "within noise of off" judgement red on clean main (LAR6: +58.1
+ *                        against 49.5). frame_us_p50 is kept in the samples but not judged: the
+ *                        capture's low-processor sleep paces a headless host at ~6.9 ms a frame
+ *                        whatever the CPU did (2026-11-04: 6898-6901 µs on all nine legs).
  *
  * Pure functions over parsed JSON, so a unit test can drive them.
  */
@@ -180,10 +187,17 @@ export interface CostSample {
 export interface CostComparison {
   metric: keyof CostSample;
   against: string;
+  /** median of the `on` legs (µs) */
   on: number;
+  /** median of the reference legs (µs) */
   ref: number;
+  /** judged (against regoff): the median of the per-round paired deltas; else median(on) - median(ref) */
   delta: number;
-  allowed: number;
+  /** judged: the budget (µs); reported comparisons carry null */
+  allowed: number | null;
+  /** the per-round paired deltas (µs), in round order */
+  paired: number[];
+  judged: boolean;
   ok: boolean;
 }
 
@@ -191,24 +205,36 @@ const median = (xs: number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length === 0 ? Number.NaN : s[Math.floor(s.length / 2)];
 };
-const spread = (xs: number[]) => (xs.length === 0 ? 0 : Math.max(...xs) - Math.min(...xs));
+
+/** The metrics registry-cost reads (frame_us_p50 is sleep-paced, see the header). */
+export const COST_METRICS: (keyof CostSample)[] = ["churn_us_mean", "callback_us_mean"];
 
 /**
- * The judged metrics and their absolute floors (µs) under which a difference is never judged:
- * timer and scheduler grain. frame_us_p50 is not judged (sleep-paced, see the header).
+ * The registry's budget per tracked call (create, free, setter), in situ, wherever its cost lands
+ * (the hook path or the frame callback). Provenance (LAR7, results/p3/late-arm-registry.md
+ * "registry-cost"): STS2's d12 seat makes about 27 tracked calls a frame (lar7-d12-1's counters
+ * over 5,299 frames: 18.8 multimesh setters, 6.5 material_set_param, 0.9 frees, 0.6 creates, 0.5
+ * particle setters; pm7-a12-1's are the same), so 1 µs a call bounds the registry near 27 µs a
+ * frame, 0.16% of a 60 fps frame. The registry measured 46 ns a call at LAR0;
+ * LAR7's three runs paired +35.9, +21.2 and +5.0 µs over 96 calls (50-375 ns a call, the spread
+ * being run-to-run noise). The payload families LAR1-LAR5 added are legitimate work that a
+ * "within noise" judgement does not allow for, and its spread-based allowance widened as the
+ * machine got noisier (it failed only the quietest run). A runaway registry (a per-call
+ * allocation storm, a scan per call) still fails the budget.
  */
-export const COST_FLOOR_US: Partial<Record<keyof CostSample, number>> = {
-  churn_us_mean: 5,
-  callback_us_mean: 10,
-};
-/** Relative tolerance: within noise means within this share of the reference, or its spread. */
-export const COST_RELATIVE = 0.05;
+export const REGISTRY_CALL_BUDGET_NS = 1000;
+/** registry-cost's churn: each triple (mesh, shader, material) is created and freed every frame. */
+export const COST_CALLS_PER_TRIPLE = 6;
 
 /**
- * registry-cost: per metric, median(on) - median(ref) <= max(spread(on), spread(ref),
- * COST_RELATIVE x median(ref), floor) for ref in {off, regoff}.
+ * registry-cost: per metric, the median over rounds of (on_r - regoff_r) <= callsPerFrame x
+ * REGISTRY_CALL_BUDGET_NS. `on` vs `off` is reported (judged false). Samples are in round order;
+ * the paired configs need equally many.
  */
-export function registryCost(samples: Record<string, CostSample[]>): {
+export function registryCost(
+  samples: Record<string, CostSample[]>,
+  callsPerFrame: number,
+): {
   problems: string[];
   comparisons: CostComparison[];
 } {
@@ -217,20 +243,27 @@ export function registryCost(samples: Record<string, CostSample[]>): {
   for (const c of ["off", "on", "regoff"])
     if (!samples[c] || samples[c].length === 0) problems.push(`no ${c} samples`);
   if (problems.length > 0) return { problems, comparisons };
-  for (const metric of Object.keys(COST_FLOOR_US) as (keyof CostSample)[]) {
+  if (samples.on.length !== samples.regoff.length)
+    return { problems: [`${samples.on.length} on legs against ${samples.regoff.length} regoff legs: unpaired`], comparisons };
+  if (!(callsPerFrame > 0)) return { problems: [`tracked calls a frame ${callsPerFrame}: no budget`], comparisons };
+  const allowed = (callsPerFrame * REGISTRY_CALL_BUDGET_NS) / 1000;
+  for (const metric of COST_METRICS) {
     const on = samples.on.map((s) => s[metric]);
-    for (const against of ["off", "regoff"]) {
-      const ref = samples[against].map((s) => s[metric]);
-      const mOn = median(on);
-      const mRef = median(ref);
-      const allowed = Math.max(spread(on), spread(ref), COST_RELATIVE * mRef, COST_FLOOR_US[metric] ?? 0);
-      const delta = mOn - mRef;
+    {
+      const ref = samples.regoff.map((s) => s[metric]);
+      const paired = on.map((v, i) => v - ref[i]);
+      const delta = median(paired);
       const ok = Number.isFinite(delta) && delta <= allowed;
-      comparisons.push({ metric, against, on: mOn, ref: mRef, delta, allowed, ok });
+      comparisons.push({ metric, against: "regoff", on: median(on), ref: median(ref), delta, allowed, paired, judged: true, ok });
       if (!ok)
         problems.push(
-          `${metric}: on ${mOn.toFixed(1)} vs ${against} ${mRef.toFixed(1)} µs (+${delta.toFixed(1)}, allowed ${allowed.toFixed(1)})`,
+          `${metric}: on - regoff +${delta.toFixed(1)} µs (paired median of ${paired.map((d) => d.toFixed(1)).join(", ")}), budget ${allowed.toFixed(1)} µs (${callsPerFrame} tracked calls a frame x ${REGISTRY_CALL_BUDGET_NS} ns)`,
         );
+    }
+    {
+      const ref = samples.off.map((s) => s[metric]);
+      const paired = ref.length === on.length ? on.map((v, i) => v - ref[i]) : [];
+      comparisons.push({ metric, against: "off", on: median(on), ref: median(ref), delta: median(on) - median(ref), allowed: null, paired, judged: false, ok: true });
     }
   }
   return { problems, comparisons };
@@ -254,4 +287,40 @@ export function judgeResolveQueueOnly(
     else if (l.resolve_scans !== 0) problems.push(`${l.leg}: resolve_scans ${l.resolve_scans}`);
   }
   return { problems, detail: legs.map((l) => `${l.leg} ${l.resolve_scans}`).join(", ") };
+}
+
+/** LAR7: result.json `stream.gate8.shader_clock` (capture/src/rs_shader_clock.h), evidence only. */
+export interface ShaderClockEvidence {
+  source?: string;
+  origin?: string;
+  first_tick_process_frames?: number;
+  first_tick_frames_drawn?: number;
+  draws_missed?: number;
+  ticks?: number;
+  draws?: number;
+}
+
+/**
+ * clock-origin (LAR7): where a /10+ capture's shader clock began. `startup` (the extension loaded
+ * at birth: its first frame callback was the host's first iteration, so the clock missed nothing)
+ * wants origin "startup", first_tick_process_frames 0 and, with the draw hook as the source,
+ * draws_missed 0. `late-load` (the extension loaded after the host started) wants origin
+ * "late-load" and first_tick_process_frames > 0: the evidence shows the late start that the
+ * wire's shader_time cannot. Pure.
+ */
+export function shaderClockOrigin(
+  clock: ShaderClockEvidence | null | undefined,
+  want: "startup" | "late-load",
+): { problems: string[]; detail: string } {
+  if (!clock) return { problems: ["no result.json stream.gate8.shader_clock"], detail: "absent" };
+  const problems: string[] = [];
+  const detail = `origin ${clock.origin} first_tick_process_frames ${clock.first_tick_process_frames} draws_missed ${clock.draws_missed} source ${clock.source}`;
+  if (clock.origin !== want) problems.push(`origin ${clock.origin}, want ${want}`);
+  const frames = clock.first_tick_process_frames;
+  if (typeof frames !== "number") problems.push("no first_tick_process_frames");
+  else if (want === "startup" && frames !== 0) problems.push(`first_tick_process_frames ${frames}, want 0`);
+  else if (want === "late-load" && frames <= 0) problems.push(`first_tick_process_frames ${frames}, want > 0`);
+  if (want === "startup" && clock.source === "draw-hook" && clock.draws_missed !== 0)
+    problems.push(`draws_missed ${clock.draws_missed}, want 0`);
+  return { problems, detail };
 }

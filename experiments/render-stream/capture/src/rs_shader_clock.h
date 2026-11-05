@@ -23,6 +23,13 @@
 //
 // Exact when the extension's first frame callback is the host's first iteration (the extension
 // is loaded at startup); an extension loaded later starts from 0 and logs the frames it missed.
+//
+// LAR7: the first tick also records where the clock began, so evidence shows a late start
+// (result.json `stream.gate8.shader_clock`, the disarm `shader-clock:` line; nothing on the wire).
+// `origin` is "startup" when the clock saw every step the engine summed: the first frame callback
+// was the host's first iteration (Engine.get_process_frames() 0 there, because the frame callback
+// runs before main.cpp:4852's increment), or every engine draw so far reached the draw hook. It is
+// "late-load" otherwise: TIME ran on the host before the hooks existed and the clock never saw it.
 
 #include <cstdint>
 #include <string>
@@ -35,6 +42,8 @@ struct ShaderClock {
   double rollover = 3600.0;   // the project setting's default
   std::int64_t last_drawn = -1;
   std::int64_t start_drawn = -1;  // Engine.get_frames_drawn() at the first tick
+  std::int64_t start_process_frames = -1;  // LAR7: Engine.get_process_frames() at the first tick
+  std::uint64_t start_draws = 0;  // LAR7: hooked draws seen before the first tick
   std::uint64_t ticks = 0;
   std::uint64_t advanced = 0;
   bool available = true;      // false once a bind was missing (then total stays 0)
@@ -58,6 +67,13 @@ void shader_clock_draw(double frame_step);
 
 // "draw-hook" when the hooked draws are the clock's source, else "frame-callback".
 const char *shader_clock_source();
+
+// LAR7: "startup", "late-load", or "unticked" before the first tick (header comment).
+const char *shader_clock_origin();
+
+// LAR7: engine draws the clock never summed (frames drawn before the first tick that the draw hook
+// did not see), or -1 when the hooked draws are not the source or no tick has run.
+std::int64_t shader_clock_draws_missed();
 
 }  // namespace rs
 }  // namespace grc

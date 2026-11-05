@@ -698,8 +698,17 @@ run_registry_cost_capture() {
 	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store" "${dir:?}/evidence/resources.jsonl"
 }
 
+# LAR7: G8A_ONLY_COST=1 runs g8a's registry-cost timing group alone (the import, then the 15 cost
+# legs), so the cost judgement can be repeated cheaply. Read only registry-cost from such a run:
+# every other g8a check fails for missing evidence, so the gate's verdict is meaningless.
+G8A_ONLY_COST="${G8A_ONLY_COST:-0}"
+
 run_g8a() {
 	run_import_g8a
+	if [ "$G8A_ONLY_COST" = 1 ]; then
+		run_g8a_cost
+		return
+	fi
 	echo "run-gate8: g8a born (armed at birth, every object created under the hooks)"
 	run_capture_g8a "$OUT/g8a/born/capture" born "${G8A_ENV[@]}"
 	echo "run-gate8: g8a born-adopt (GRC_ADOPT=arm at birth: nothing to adopt)"
@@ -753,7 +762,11 @@ run_g8a() {
 	gs_teardown "$OUT/gamescope-g8a"
 	GS_RUN_DIR=""
 
-	# registry-cost (LAR0, a timing group): real time, each leg under the exclusive quiet lock.
+	run_g8a_cost
+}
+
+# registry-cost (LAR0, a timing group): real time, each leg under the exclusive quiet lock.
+run_g8a_cost() {
 	local -a cost_dirs=()
 	local r c
 	for r in $(seq 1 "$G8A_COST_ROUNDS"); do

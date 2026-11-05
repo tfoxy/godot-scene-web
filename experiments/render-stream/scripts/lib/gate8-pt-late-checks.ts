@@ -52,6 +52,10 @@
 //                              pt-late-lifecycle (the emitters stay dark)
 //   pt-late-lifecycle-catches-registry-skip-particles  the receiver on the skip-particles capture
 //                              (fresh-emitter configurations, nothing drawn) fails it too
+//   pt-clock-origin            (LAR7) result.json stream.gate8.shader_clock: deferred/capture (loaded
+//                              at birth) reports origin "startup" with nothing missed, late/capture
+//                              (loaded at frame 12) reports "late-load" (registry-checks.ts
+//                              shaderClockOrigin)
 //
 // The late legs' shots are the reference's shots after the arm, in frame order: the fixture logs
 // only the steps that settle after it, and run-gate8.sh adds each settle frame's previous frame
@@ -63,6 +67,7 @@ import { join } from "node:path";
 import { decodePngRgba } from "./gate-minus1-checks";
 import { check, type G8aCheck, readText, skipped } from "./gate8-adopt-checks";
 import { mmCellDiff, type Rgba } from "./gate8-mm-checks";
+import { type ShaderClockEvidence, shaderClockOrigin } from "./registry-checks";
 import {
   type PtPixels,
   ptCoverageProblems,
@@ -834,6 +839,7 @@ export async function runG8ptLate(
       "pt-registry-params",
       "pt-registry-source",
       "pt-registry-source-catches-registry-off",
+      "pt-clock-origin",
       "pt-late-lifecycle",
       "pt-late-coverage",
       "pt-late-outside-exact",
@@ -1222,6 +1228,30 @@ export async function runG8ptLate(
                 `${SABOTAGE_REGISTRY_OFF_CAPTURE} passed: the missing registry source went unseen`,
               ],
           r.problems[0],
+        ),
+      );
+    }
+  }
+
+  // pt-clock-origin (LAR7): the shader clock's start, from evidence (the wire carries none of it).
+  {
+    const id = "pt-clock-origin";
+    const criterion =
+      "LAR7: result.json stream.gate8.shader_clock shows where the carried shader clock began: deferred/capture (extension loaded at birth) origin startup, first tick at process frame 0, no draw missed; late/capture (extension loaded at frame 12) origin late-load, first tick after process frame 0";
+    if (!ran(DEFERRED_CAPTURE) || !ran(LATE_CAPTURE)) checks.push(check(id, criterion, null));
+    else {
+      const clockOf = async (leg: string) =>
+        ((await json(join(dir(leg), "evidence", "result.json")))?.stream as
+          | { gate8?: { shader_clock?: ShaderClockEvidence } }
+          | undefined)?.gate8?.shader_clock;
+      const d = shaderClockOrigin(await clockOf(DEFERRED_CAPTURE), "startup");
+      const l = shaderClockOrigin(await clockOf(LATE_CAPTURE), "late-load");
+      checks.push(
+        check(
+          id,
+          criterion,
+          [...d.problems.map((p) => `${DEFERRED_CAPTURE}: ${p}`), ...l.problems.map((p) => `${LATE_CAPTURE}: ${p}`)],
+          `deferred: ${d.detail}; late: ${l.detail}`,
         ),
       );
     }

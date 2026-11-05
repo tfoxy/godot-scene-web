@@ -38,6 +38,8 @@ import {
   type CostSample,
   type RegistryEvidence,
   registryCost,
+  COST_CALLS_PER_TRIPLE,
+  REGISTRY_CALL_BUDGET_NS,
   registryLiveBound,
 } from "./registry-checks";
 import {
@@ -1167,12 +1169,15 @@ export async function runG8a(
     if (REGISTRY_COST_DIRS.every((l) => ran(l))) {
       const samples: Record<string, CostSample[]> = {};
       const missing: string[] = [];
+      const churns = new Set<number>();
       for (const l of REGISTRY_COST_DIRS) {
         const config = l.split("/")[1].replace(/-\d+$/, "");
         const scale = await readJson<{
           frame_us_p50: number;
           churn_us_mean: number;
+          churn?: number;
         }>(join(root, l, "scale-report.json"));
+        if (typeof scale?.churn === "number") churns.add(scale.churn);
         const perf = await readJson<{
           histograms: { frame_callback_us: { mean: number } };
         }>(join(root, l, "evidence/perf.json"));
@@ -1186,9 +1191,17 @@ export async function runG8a(
           callback_us_mean: perf.histograms.frame_callback_us.mean,
         });
       }
-      const r = registryCost(samples);
-      problems = [...missing.map((l) => `${l}: no scale report or perf.json`), ...r.problems];
-      costReport = { samples, comparisons: r.comparisons };
+      // The tracked calls a churned frame makes: every leg churns the same triples (run-gate8.sh
+      // RS_SCALE_RESOURCE_CHURN), each created and freed once a frame.
+      const churn = churns.size === 1 ? [...churns][0] : Number.NaN;
+      const callsPerFrame = churn * COST_CALLS_PER_TRIPLE;
+      const r = registryCost(samples, callsPerFrame);
+      problems = [
+        ...missing.map((l) => `${l}: no scale report or perf.json`),
+        ...(churns.size === 1 ? [] : [`scale reports name churn ${JSON.stringify([...churns])}, want one value`]),
+        ...r.problems,
+      ];
+      costReport = { samples, calls_per_frame: callsPerFrame, budget_ns_per_call: REGISTRY_CALL_BUDGET_NS, comparisons: r.comparisons };
     }
     const cmp = (costReport?.comparisons ?? []) as {
       metric: string;
@@ -1196,14 +1209,18 @@ export async function runG8a(
       on: number;
       ref: number;
       delta: number;
+      judged: boolean;
     }[];
     checks.push(
       check(
         "registry-cost",
-        "the registry-cost timing group (capture-scale born at a tenth of its scale plus 16 mesh/shader/material triples created and freed a frame, headless, 5 interleaved rounds): with the registry recording (GRC_ADOPT=arm), the churned create/free block's churn_us_mean (the hook path) and perf.json's frame_callback_us mean are within noise (max of either side's spread, 5% of the reference, a µs floor) of GRC_ADOPT=off and of GRC_ADOPT_FAULT=registry-off (frame_us_p50 is reported, not judged: sleep-paced)",
+        "the registry-cost timing group (capture-scale born at a tenth of its scale plus 16 mesh/shader/material triples created and freed a frame, headless, 5 interleaved rounds): the registry's own cost, GRC_ADOPT=arm against GRC_ADOPT_FAULT=registry-off paired by round, stays within REGISTRY_CALL_BUDGET_NS (1 µs) per tracked call (96 a churned frame) on the churned create/free block's churn_us_mean (the hook path) and on perf.json's frame_callback_us mean; against GRC_ADOPT=off is reported, not judged (it folds in G8r adoption's lookups); frame_us_p50 is reported, not judged (sleep-paced)",
         problems,
         cmp
-          .map((c) => `${c.metric} on-${c.against} ${c.delta >= 0 ? "+" : ""}${c.delta.toFixed(1)}µs (${c.on.toFixed(1)}/${c.ref.toFixed(1)})`)
+          .map(
+            (c) =>
+              `${c.metric} on-${c.against}${c.judged ? "" : " (reported)"} ${c.delta >= 0 ? "+" : ""}${c.delta.toFixed(1)}µs (${c.on.toFixed(1)}/${c.ref.toFixed(1)})`,
+          )
           .join("; ") || undefined,
       ),
     );

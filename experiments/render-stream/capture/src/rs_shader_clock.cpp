@@ -17,12 +17,14 @@ namespace {
 constexpr int64_t kEngineGetMainLoop = 1016888095LL;        // Engine.get_main_loop() -> MainLoop
 constexpr int64_t kSceneTreeGetRoot = 1757182445LL;         // SceneTree.get_root() -> Window
 constexpr int64_t kEngineGetFramesDrawn = 2455072627LL;     // Engine.get_frames_drawn() -> int
+constexpr int64_t kEngineGetProcessFrames = 3905245786LL;   // Engine.get_process_frames() -> int
 constexpr int64_t kNodeGetProcessDeltaTime = 1740695150LL;  // Node.get_process_delta_time() -> float
 constexpr int64_t kProjectSettingsGetSettingWithOverride = 2760726917LL;  // (StringName) -> Variant
 
 ShaderClock g_clock;
 bool g_resolved = false;
 GDExtensionMethodBindPtr g_frames_drawn = nullptr;
+GDExtensionMethodBindPtr g_process_frames = nullptr;  // LAR7: evidence only, never required
 GDExtensionMethodBindPtr g_main_loop = nullptr;
 GDExtensionMethodBindPtr g_root = nullptr;
 GDExtensionMethodBindPtr g_delta = nullptr;
@@ -64,6 +66,7 @@ bool resolve() {
   g_resolved = true;
   g_engine = singleton_object("Engine");
   g_frames_drawn = method_bind("Engine", "get_frames_drawn", kEngineGetFramesDrawn);
+  g_process_frames = method_bind("Engine", "get_process_frames", kEngineGetProcessFrames);
   g_main_loop = method_bind("Engine", "get_main_loop", kEngineGetMainLoop);
   g_root = method_bind("SceneTree", "get_root", kSceneTreeGetRoot);
   g_delta = method_bind("Node", "get_process_delta_time", kNodeGetProcessDeltaTime);
@@ -112,6 +115,11 @@ bool shader_clock_tick() {
   ++g_clock.ticks;
   if (g_clock.start_drawn < 0) {
     g_clock.start_drawn = drawn;
+    g_clock.start_draws = g_clock.draws;
+    int64_t iterations = -1;
+    if (g_process_frames != nullptr && call_int_getter(g_process_frames, g_engine, &iterations)) {
+      g_clock.start_process_frames = iterations;
+    }
   }
   if (draw_source()) {
     // P3-CK: the hooked draws keep the sum; only a host that has never drawn advances here.
@@ -147,6 +155,29 @@ void shader_clock_draw(double frame_step) {
 }
 
 const char *shader_clock_source() { return draw_source() ? "draw-hook" : "frame-callback"; }
+
+std::int64_t shader_clock_draws_missed() {
+  if (g_clock.start_drawn < 0 || !draw_source()) {
+    return -1;
+  }
+  const std::int64_t seen = static_cast<std::int64_t>(g_clock.start_draws);
+  return g_clock.start_drawn > seen ? g_clock.start_drawn - seen : 0;
+}
+
+const char *shader_clock_origin() {
+  if (g_clock.start_drawn < 0) {
+    return "unticked";
+  }
+  if (g_clock.start_process_frames == 0) {
+    return "startup";  // the host's first iteration
+  }
+  // A later first tick is still exact when the host drew and the hook saw every draw. A host that
+  // never drew (headless) advances per iteration, so the iterations before the tick are missed.
+  if (draw_source() && g_clock.start_drawn > 0 && shader_clock_draws_missed() == 0) {
+    return "startup";
+  }
+  return "late-load";
+}
 
 }  // namespace rs
 }  // namespace grc

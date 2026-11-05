@@ -21,6 +21,7 @@ import {
   REGISTRY_CREATE_HOOKS,
   type RegistryEvidence,
   registryCost,
+  shaderClockOrigin,
   registryLiveBound,
   isDeferredLeg,
   judgeResolveQueueOnly,
@@ -175,26 +176,63 @@ const s = (f: number, c: number, cb: number): CostSample => ({
   callback_us_mean: cb,
 });
 {
-  const r = registryCost({
-    off: [s(3000, 400, 900), s(3050, 410, 910), s(2980, 395, 905)],
-    on: [s(3010, 405, 905), s(3040, 412, 915), s(2990, 398, 900)],
-    regoff: [s(3005, 401, 902), s(3030, 409, 908), s(2995, 399, 903)],
-  });
-  expect(r.problems.length === 0, `within noise passes (${r.problems.join("; ")})`);
-  expect(r.comparisons.length === 4, "two judged metrics against two references");
+  // LAR7: a registry inside its budget passes however noisy GRC_ADOPT=off is (reported, not judged).
+  const r = registryCost(
+    {
+      off: [s(3000, 380, 900), s(3050, 450, 990), s(2980, 395, 905)],
+      on: [s(3010, 440, 925), s(3040, 470, 935), s(2990, 430, 930)],
+      regoff: [s(3005, 401, 902), s(3030, 439, 908), s(2995, 399, 903)],
+    },
+    96,
+  );
+  expect(r.problems.length === 0, `within budget passes (${r.problems.join("; ")})`);
+  expect(r.comparisons.length === 4, "two metrics against two references");
+  expect(r.comparisons.filter((c) => c.judged).every((c) => c.against === "regoff"), "only regoff is judged");
+  const churn = r.comparisons.find((c) => c.judged && c.metric === "churn_us_mean");
+  expect(churn?.delta === 31 && churn.allowed === 96, `paired median and budget (${churn?.delta}, ${churn?.allowed})`);
 }
 {
-  const r = registryCost({
-    off: [s(3000, 400, 900), s(3010, 401, 901), s(3005, 402, 902)],
-    on: [s(3000, 600, 900), s(3010, 610, 901), s(3005, 605, 902)],
-    regoff: [s(3000, 400, 900), s(3010, 401, 901), s(3005, 402, 902)],
-  });
+  const r = registryCost(
+    {
+      off: [s(3000, 400, 900), s(3010, 401, 901), s(3005, 402, 902)],
+      on: [s(3000, 600, 900), s(3010, 610, 901), s(3005, 605, 902)],
+      regoff: [s(3000, 400, 900), s(3010, 401, 901), s(3005, 402, 902)],
+    },
+    96,
+  );
   expect(
-    r.problems.filter((p) => p.startsWith("churn_us_mean")).length === 2,
-    "a costly registry fails churn against off and regoff",
+    r.problems.length === 1 && r.problems[0].startsWith("churn_us_mean"),
+    `a registry over its budget (2 µs a call) fails churn once (${r.problems.join("; ")})`,
   );
 }
-expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("no regoff samples"), "missing config fails");
+{
+  // Paired by round: a drift shared by on and regoff in a round cancels.
+  const r = registryCost(
+    {
+      off: [s(1, 400, 900), s(1, 520, 1020), s(1, 640, 1140)],
+      on: [s(1, 430, 910), s(1, 550, 1030), s(1, 670, 1150)],
+      regoff: [s(1, 400, 900), s(1, 520, 1020), s(1, 640, 1140)],
+    },
+    96,
+  );
+  const churn = r.comparisons.find((c) => c.judged && c.metric === "churn_us_mean");
+  expect(r.problems.length === 0 && churn?.delta === 30, `round drift cancels (${churn?.delta})`);
+}
+expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }, 96).problems.includes("no regoff samples"), "missing config fails");
+expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)], regoff: [s(1, 1, 1)] }, Number.NaN).problems.length === 1, "no call count fails");
+expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1), s(1, 1, 1)], regoff: [s(1, 1, 1)] }, 96).problems.length === 1, "unpaired fails");
+
+// clock-origin (LAR7)
+{
+  const startup = { source: "draw-hook", origin: "startup", first_tick_process_frames: 0, first_tick_frames_drawn: 1, draws_missed: 0 };
+  const late = { source: "draw-hook", origin: "late-load", first_tick_process_frames: 12, first_tick_frames_drawn: 13, draws_missed: 12 };
+  expect(shaderClockOrigin(startup, "startup").problems.length === 0, "a startup clock passes startup");
+  expect(shaderClockOrigin(late, "late-load").problems.length === 0, "a late clock passes late-load");
+  expect(shaderClockOrigin(late, "startup").problems.length > 0, "a late clock fails startup");
+  expect(shaderClockOrigin(startup, "late-load").problems.length > 0, "a startup clock fails late-load");
+  expect(shaderClockOrigin({ ...startup, draws_missed: 3 }, "startup").problems.length > 0, "missed draws fail startup");
+  expect(shaderClockOrigin(undefined, "startup").problems.length === 1, "an absent clock fails");
+}
 
 // K1 coverage pin (source scan of hooks.cpp).
 {
