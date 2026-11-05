@@ -390,6 +390,8 @@ struct MultimeshHookCall {
   float first = 0.0f;
 };
 std::vector<MultimeshHookCall> g_multimesh_hook_args;
+// LAR5: what the emitter hook was handed.
+std::vector<std::pair<uint64_t, grc::rs::Mirror::ParticlesAdopt>> g_particles_hook_args;
 }  // namespace
 
 // rs_adopt.cpp calls the hooks' copy path through these; the engine side never runs here.
@@ -414,7 +416,10 @@ void hooks_adopt_material_shader(uint64_t, uint64_t) {}
 void hooks_adopt_instance_param(uint64_t, const std::string &, const void *) {}
 // PM7: the emitter path's hooks (likewise never reached).
 void hooks_internal_material(std::vector<std::string> *, uint64_t *) {}
-bool hooks_adopt_particles(uint64_t, const rs::Mirror::ParticlesAdopt &) { return false; }
+bool hooks_adopt_particles(uint64_t rid, const rs::Mirror::ParticlesAdopt &a) {
+  g_particles_hook_args.push_back({rid, a});
+  return false;
+}
 void hooks_adopt_particles_subemitter(uint64_t, uint64_t) {}
 // PM9: the multimesh and canvas texture paths' hooks (likewise never reached).
 bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt a) {
@@ -831,6 +836,10 @@ void test_material_scans() {
   // LAR4: ppm-no-shader went with PM7's duplicate (its only site); registry-drop-binding is new.
   check(!grc::rs::parse_adopt_fault("ppm-no-shader", true, &f, &error),
         "fault: ppm-no-shader is gone");
+  check(grc::rs::parse_adopt_fault("registry-skip-particles", true, &f, &error) &&
+            f == grc::rs::AdoptFault::RegistrySkipParticles &&
+            std::string(grc::rs::adopt_fault_name(f)) == "registry-skip-particles",
+        "fault: registry-skip-particles (LAR5)");
   check(grc::rs::parse_adopt_fault("registry-drop-binding", true, &f, &error) &&
             f == grc::rs::AdoptFault::RegistryDropBinding &&
             std::string(grc::rs::adopt_fault_name(f)) == "registry-drop-binding",
@@ -983,6 +992,7 @@ void stream_end() {
   g_ctex_hook_calls.clear();
   g_multimesh_hook_calls.clear();
   g_multimesh_hook_args.clear();
+  g_particles_hook_args.clear();
 }
 
 // The RenderingServer singleton, and texture_2d_get answering no image (a CanvasTexture, or a
@@ -1318,6 +1328,60 @@ void test_refused_ppm_not_retried() {
   stream_end();
 }
 
+// LAR5 (late-arm-registry-design.md M19): a pre-arm emitter is adopted from the registry's record
+// alone -- no node, no getter, no draw note: the configuration, floats and trail poses as the
+// setters declared them, the recorded draw passes and process material. An unregistered emitter
+// is refused, typed preload-particles, once.
+void test_particles_from_registry() {
+  constexpr uint64_t kEmitter = 0x8001, kPre = 0x8002, kMat = 0x8010, kMesh = 0x8011;
+  fake::World &w = fake::world();
+  std::vector<uint64_t> unused;
+  fake_rendering_server(&unused);
+  using R = grc::rs::RegistryParticlesOp;
+  grc::rs::registry_configure(true, grc::rs::RegistryFault::None);
+  grc::rs::registry_note_create(kEmitter, grc::rs::RegistryKind::Particles);
+  grc::rs::registry_note_particles(kEmitter, R::Mode, 0, 0, nullptr, 0);  // PARTICLES_MODE_2D
+  grc::rs::registry_note_particles(kEmitter, R::Emitting, 1, 0, nullptr, 0);
+  grc::rs::registry_note_particles(kEmitter, R::Amount, 9, 0, nullptr, 0);
+  grc::rs::registry_note_particles(kEmitter, R::Seed, 1901, 0, nullptr, 0);
+  grc::rs::registry_note_particles(kEmitter, R::TransformAlign, 2, 0, nullptr, 0);
+  const float lifetime = 1.5f, collision = 3.0f, length = 0.25f;
+  grc::rs::registry_note_particles(kEmitter, R::Floats, 1, 0, &lifetime, 1);
+  grc::rs::registry_note_particles(kEmitter, R::Floats, 6, 0, &collision, 1);
+  grc::rs::registry_note_particles(kEmitter, R::Trails, 1, 0, &length, 1);
+  const std::vector<float> poses(24, 0.5f);
+  grc::rs::registry_note_particles(kEmitter, R::TrailBindPoses, 0, 0, poses.data(), poses.size());
+  grc::rs::registry_note_particles(kEmitter, R::DrawPasses, 1, 0, nullptr, 0);
+  grc::rs::registry_note_particles(kEmitter, R::DrawPassMesh, 0, kMesh, nullptr, 0);
+  grc::rs::registry_note_particles(kEmitter, R::ProcessMaterial, 0, kMat, nullptr, 0);
+  stream_begin();
+  Mirror::ParticlesOptions options;
+  options.enabled = true;
+  grc::rs::mirror_instance().set_particles(options);
+  grc::rs::adopt_particles_ref(kEmitter);
+  check(g_particles_hook_args.size() == 1 && g_particles_hook_args[0].first == kEmitter,
+        "pt registry: the registered emitter is handed over");
+  if (g_particles_hook_args.size() == 1) {
+    const Mirror::ParticlesAdopt &a = g_particles_hook_args[0].second;
+    check(a.mode_2d && a.emitting && a.amount == 9 && a.seed == 1901 && a.transform_align == 2 &&
+              a.trails && a.fixed_fps == 30 && a.interpolate && a.floats.size() == 31 + 24 &&
+              a.floats[1] == 1.5f && a.floats[6] == 3.0f && a.floats[7] == 0.25f &&
+              a.floats[0] == 1.0f && a.floats[31] == 0.5f &&
+              a.passes == std::vector<uint64_t>({kMesh}) && a.material == kMat &&
+              a.subemitter == 0,
+          "pt registry: the recorded configuration, floats, poses, pass and material");
+  }
+  check(w.count("GPUParticles2D.get_amount") == 0 && w.count("Node.can_process") == 0,
+        "pt registry: no emitter getter is read");
+  grc::rs::adopt_particles_ref(kPre);
+  grc::rs::adopt_particles_ref(kPre);
+  const grc::rs::EmitterAdoptStats st = grc::rs::adopt_emitter_stats();
+  check(g_particles_hook_args.size() == 1 && st.refused == 1 && st.refused_preload_particles == 1,
+        "pt registry: an unregistered emitter is refused once, typed preload-particles");
+  stream_end();
+  grc::rs::registry_configure(false, grc::rs::RegistryFault::None);
+}
+
 }  // namespace
 
 int main() {
@@ -1339,6 +1403,7 @@ int main() {
   test_canvas_texture_channels_not_reread();
   test_canvas_texture_registry_gating();
   test_refused_ppm_not_retried();
+  test_particles_from_registry();
   std::printf("rs_adopt_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

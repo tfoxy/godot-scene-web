@@ -1,6 +1,7 @@
 // The late-arm resource registry (rs_registry.h; protocol/late-arm-registry-design.md LAR0).
 #include "rs_registry.h"
 
+#include <algorithm>
 #include <mutex>
 #include <utility>
 
@@ -50,6 +51,11 @@ struct State {
   std::uint64_t material_capacity = 0;
   std::uint64_t material_sets = 0;
   std::uint64_t material_params = 0;  // live recorded parameters, all materials
+  // LAR5: the particles payload (a subset of `map`'s keys, created and erased with the kind entry).
+  RidMap<RegistryParticles> particles;
+  std::uint64_t particles_capacity = 0;
+  std::uint64_t particles_sets = 0;
+  std::uint64_t particles_elements = 0;  // live trail-pose floats and draw-pass RIDs, all emitters
   RegistryFamilyStats family[kRegistryFamilies];
   std::uint64_t entries = 0;
   std::uint64_t peak = 0;
@@ -95,6 +101,13 @@ constexpr std::uint64_t kMultimeshNodeBytes = sizeof(RidMap<RegistryMultimesh>::
 constexpr std::uint64_t kShaderNodeBytes = sizeof(RidMap<RegistryShader>::value_type);
 constexpr std::uint64_t kMaterialNodeBytes = sizeof(RidMap<RegistryMaterial>::value_type);
 constexpr std::uint64_t kParamBytes = sizeof(RegistryParam);
+// LAR5: one slot of the particles payload map; a trail-pose float or draw-pass RID counts 8 B.
+constexpr std::uint64_t kParticlesNodeBytes = sizeof(RidMap<RegistryParticles>::value_type);
+constexpr std::uint64_t kParticlesElementBytes = 8;
+
+std::uint64_t particles_elements(const RegistryParticles &p) {
+  return p.poses.size() + p.passes.size();
+}
 
 // Follows RidMap's growth rule (it doubles from 64 when an insertion would make it more than half
 // full, and never shrinks) for bytes_estimate. Call before inserting a new key into a map of `size`.
@@ -118,6 +131,18 @@ void multimesh_create_locked(State &s, std::uint64_t rid) {
     track_growth(s.multimesh.size(), &s.multimesh_capacity);
   }
   s.multimesh[rid] = RegistryMultimesh();
+}
+
+// LAR5: an emitter create: a fresh payload (GLES3's new emitter).
+void particles_create_locked(State &s, std::uint64_t rid) {
+  const auto it = s.particles.find(rid);
+  if (it == s.particles.end()) {
+    track_growth(s.particles.size(), &s.particles_capacity);
+    s.particles[rid] = RegistryParticles();
+    return;
+  }
+  s.particles_elements -= particles_elements(it->second);
+  it->second = RegistryParticles();
 }
 
 // LAR3: a shader or material create: a fresh payload (a recycled value's old one is dropped).
@@ -154,6 +179,8 @@ void payload_create_locked(State &s, std::uint64_t rid, RegistryKind kind, Dropp
     shader_create_locked(s, rid, dropped);
   } else if (kind == RegistryKind::Material) {
     material_create_locked(s, rid, dropped);
+  } else if (kind == RegistryKind::Particles) {
+    particles_create_locked(s, rid);
   }
 }
 
@@ -174,6 +201,12 @@ void payload_erase_locked(State &s, std::uint64_t rid, RegistryFamily family, Dr
       s.material_params -= it->second.params.size();
       dropped->material(std::move(it->second));
       s.material.erase(rid);
+    }
+  } else if (family == RegistryFamily::Particles) {
+    const auto it = s.particles.find(rid);
+    if (it != s.particles.end()) {
+      s.particles_elements -= particles_elements(it->second);
+      s.particles.erase(rid);
     }
   }
 }
@@ -253,6 +286,7 @@ const char *registry_fault_name(RegistryFault fault) {
   case RegistryFault::KeepFreed: return "registry-keep-freed";
   case RegistryFault::SkipParams: return "registry-skip-params";
   case RegistryFault::DropBinding: return "registry-drop-binding";
+  case RegistryFault::SkipParticles: return "registry-skip-particles";
   }
   return "?";
 }
@@ -280,6 +314,10 @@ void registry_configure(bool adopt, RegistryFault fault, std::size_t cap) {
   s.multimesh.clear();
   s.multimesh_capacity = 0;
   s.multimesh_sets = 0;
+  s.particles.clear();
+  s.particles_capacity = 0;
+  s.particles_sets = 0;
+  s.particles_elements = 0;
   for (RegistryFamilyStats &f : s.family) {
     f = RegistryFamilyStats();
   }
@@ -687,6 +725,81 @@ bool registry_material(std::uint64_t rid, RegistryMaterial *out) {
   return true;
 }
 
+// --- LAR5: the particles payload ----------------------------------------------------------------
+
+void registry_note_particles(std::uint64_t rid, RegistryParticlesOp op, std::int64_t i,
+                             std::uint64_t ref, const float *f, std::size_t n) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (s.fault == RegistryFault::SkipParticles) {
+    return;
+  }
+  const auto it = s.particles.find(rid);
+  if (it == s.particles.end()) {
+    return;  // not a registered emitter (pre-load, overflowed or freed)
+  }
+  RegistryParticles &p = it->second;
+  const std::uint64_t before = particles_elements(p);
+  switch (op) {
+  case RegistryParticlesOp::Mode: p.mode_2d = i == 0; break;  // RS::PARTICLES_MODE_2D
+  case RegistryParticlesOp::Emitting: p.emitting = i != 0; break;
+  case RegistryParticlesOp::Amount: p.amount = static_cast<std::int32_t>(i); break;
+  case RegistryParticlesOp::OneShot: p.one_shot = i != 0; break;
+  case RegistryParticlesOp::Local: p.local = i != 0; break;
+  case RegistryParticlesOp::FixedFps: p.fixed_fps = static_cast<std::int32_t>(i); break;
+  case RegistryParticlesOp::Interpolate: p.interpolate = i != 0; break;
+  case RegistryParticlesOp::FractionalDelta: p.fractional_delta = i != 0; break;
+  case RegistryParticlesOp::TransformAlign: p.transform_align = static_cast<std::int32_t>(i); break;
+  case RegistryParticlesOp::DrawOrder: p.draw_order = static_cast<std::int32_t>(i); break;
+  case RegistryParticlesOp::Seed: p.seed = static_cast<std::uint32_t>(i); break;
+  case RegistryParticlesOp::Floats:
+    if (f != nullptr && i >= 0 && static_cast<std::size_t>(i) + n <= kRegistryParticleFloats) {
+      std::copy(f, f + n, p.floats.begin() + i);
+    }
+    break;
+  case RegistryParticlesOp::Trails:
+    p.trails = i != 0;
+    if (f != nullptr && n >= 1) {
+      p.floats[7] = f[0];  // the trail length's slot (Mirror::particles_call SetTrails)
+    }
+    break;
+  case RegistryParticlesOp::TrailBindPoses:
+    if (f == nullptr) {
+      p.poses.clear();
+    } else {
+      p.poses.assign(f, f + (n / 12) * 12);
+    }
+    break;
+  case RegistryParticlesOp::ProcessMaterial: p.process_material = ref; break;
+  case RegistryParticlesOp::Subemitter: p.subemitter = ref; break;
+  case RegistryParticlesOp::DrawPasses:
+    if (i >= 0) {
+      p.passes.resize(static_cast<std::size_t>(i), 0);  // Vector::resize refuses a negative size
+    }
+    break;
+  case RegistryParticlesOp::DrawPassMesh:
+    if (i >= 0 && static_cast<std::size_t>(i) < p.passes.size()) {
+      p.passes[static_cast<std::size_t>(i)] = ref;  // else ERR_FAIL_INDEX
+    }
+    break;
+  }
+  s.particles_elements = s.particles_elements - before + particles_elements(p);
+  ++s.particles_sets;
+}
+
+bool registry_particles(std::uint64_t rid, RegistryParticles *out) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.particles.find(rid);
+  if (it == s.particles.end()) {
+    return false;
+  }
+  if (out != nullptr) {
+    *out = it->second;
+  }
+  return true;
+}
+
 void registry_frame(std::uint64_t frame) {
   State &s = state();
   const std::uint64_t generation = s.generation.load(std::memory_order_relaxed);
@@ -728,7 +841,9 @@ RegistryStats registry_stats() {
                     static_cast<std::uint64_t>(s.multimesh.size()) * kMultimeshNodeBytes +
                     static_cast<std::uint64_t>(s.shader.size()) * kShaderNodeBytes +
                     static_cast<std::uint64_t>(s.material.size()) * kMaterialNodeBytes +
-                    s.material_params * kParamBytes;
+                    s.material_params * kParamBytes +
+                    static_cast<std::uint64_t>(s.particles.size()) * kParticlesNodeBytes +
+                    s.particles_elements * kParticlesElementBytes;
   out.shader_payloads = s.shader.size();
   out.shader_payload_sets = s.shader_sets;
   out.shader_payload_bytes = s.shader_capacity * kShaderNodeBytes;
@@ -742,11 +857,15 @@ RegistryStats registry_stats() {
   out.multimesh_payloads = s.multimesh.size();
   out.multimesh_payload_sets = s.multimesh_sets;
   out.multimesh_payload_bytes = s.multimesh_capacity * kMultimeshNodeBytes;
+  out.particles_payloads = s.particles.size();
+  out.particles_payload_sets = s.particles_sets;
+  out.particles_payload_bytes =
+      s.particles_capacity * kParticlesNodeBytes + s.particles_elements * kParticlesElementBytes;
   // The slot arrays, empty slots included (at most half full, never shrinking: bounded by the
   // peak, not by the current entries).
   out.bytes_estimate = s.capacity * kNodeBytes + out.canvas_payload_bytes +
                        out.multimesh_payload_bytes + out.shader_payload_bytes +
-                       out.material_payload_bytes;
+                       out.material_payload_bytes + out.particles_payload_bytes;
   return out;
 }
 
@@ -798,6 +917,8 @@ std::string registry_json() {
                            : static_cast<RegistryFamily>(i) == RegistryFamily::Material
                                ? stats.material_payloads * kMaterialNodeBytes +
                                      stats.material_params * kParamBytes
+                           : static_cast<RegistryFamily>(i) == RegistryFamily::Particles
+                               ? stats.particles_payloads * kParticlesNodeBytes
                                : 0));
     json.object_end();
   }
@@ -832,6 +953,13 @@ std::string registry_json() {
   json.key("node_bytes").unsigned_integer(kMaterialNodeBytes);
   json.key("param_bytes").unsigned_integer(kParamBytes);
   json.key("bytes_estimate").unsigned_integer(stats.material_payload_bytes);
+  json.object_end();
+  // LAR5: the particles payload (configuration, floats, poses, process material, draw passes).
+  json.key("particles").object_begin();
+  json.key("entries").unsigned_integer(stats.particles_payloads);
+  json.key("sets").unsigned_integer(stats.particles_payload_sets);
+  json.key("node_bytes").unsigned_integer(kParticlesNodeBytes);
+  json.key("bytes_estimate").unsigned_integer(stats.particles_payload_bytes);
   json.object_end();
   json.object_end();
   // The change timeline: one row per frame callback after which the registry had changed. Columns

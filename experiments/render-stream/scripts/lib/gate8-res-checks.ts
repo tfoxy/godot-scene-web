@@ -1,15 +1,24 @@
-// Gate 8 g8res checks (LATE-RES, results/p3/late-res.md): a capture armed LATE (fixture frame 12)
-// must adopt pre-arm resources first drawn after the arm -- a pre-arm texture (G8r), a pre-arm
-// ParticleProcessMaterial (PM7) and a pre-arm item that enters the tree after the arm (the pooled
-// node, LATE-RES's node_added adoption) -- leaving no unknown item RIDs. The fixture is
-// fixtures/gate8-res; the check is capture-only (result.json and the recording's resolved tables).
+// Gate 8 g8res checks (LATE-RES, results/p3/late-res.md; LAR5): a capture armed late must adopt
+// pre-arm resources first drawn after the arm -- a pre-arm texture (G8r) and a pre-arm item that
+// enters the tree after the arm (the pooled node, LATE-RES's node_added adoption) -- leaving no
+// unknown item RIDs. LAR5 adopts a pre-arm GPUParticles2D emitter and its ParticleProcessMaterial
+// purely from the registry, so those two are judged on the `deferred` arm (extension loaded at
+// birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11); on the `late` arm the emitter is refused
+// `preload-particles`. The fixture is fixtures/gate8-res; the check is capture-only (result.json
+// and the recording's resolved tables).
 //
-//   res-legs        every leg that ran exited 0
-//   res-late-adopt  the late capture adopts the texture, process material and both pre-arm items,
-//                   nothing refused, no unknown-texture / unknown-material, residue 0
-//   res-free        after the adoption the fixture frees the adopted cells; the capture records them freed
-//   res-late-fault  under GRC_ADOPT_FAULT=no-resources nothing pre-arm is adopted and the pre-arm
-//                   items stay unknown (the pre-LATE-RES capture)
+//   res-legs          every leg that ran exited 0
+//   res-late-adopt    deferred/capture adopts the texture, the emitter, both process materials
+//                     (ppm_registry) and both pre-arm items, nothing refused, unknown_material_keyed
+//                     exactly 0 (the registered material is adopted at the post-arm emitter's
+//                     reference), no unknown-texture / unknown-material, residue 0
+//   res-late-residual late/capture adopts the texture and items, refuses the emitter
+//                     preload-particles (emitters 0), keys the unregistered material through the
+//                     LATE-RES re-link (unknown_material_keyed >= 1), residue 0
+//   res-free          after the adoption the fixture frees the adopted cells; the deferred capture
+//                     records them freed
+//   res-late-fault    under GRC_ADOPT_FAULT=no-resources nothing pre-arm is adopted and the pre-arm
+//                     items stay unknown (the pre-LATE-RES capture)
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -37,6 +46,19 @@ export interface G8resExpected {
   emitters: number;
   process_materials: number;
   unknown_material_keyed: number;
+  /** LAR5: the deferred arm (registry-adopted emitter and process materials) */
+  deferred: {
+    emitters: number;
+    process_materials: number;
+    ppm_registry: number;
+    unknown_material_keyed: number;
+  };
+  /** LAR5: the late arm (the pre-arm emitter refused preload-particles) */
+  late: {
+    emitters: number;
+    refused_preload_particles: number;
+    unknown_material_keyed: number;
+  };
   /** the fixture frame that frees the adopted TEX / PPM / ITEM cells (res.gd FREE_FRAME) */
   free_frame: number;
   /** the least items / textures / particle emitters the free removes (or tombstones) */
@@ -49,7 +71,12 @@ export interface G8resReport {
   legs: Record<string, unknown>;
 }
 
-const LEGS = ["import/fixture", "late/capture", "fault-no-resources/capture"];
+const LEGS = [
+  "import/fixture",
+  "late/capture",
+  "deferred/capture",
+  "fault-no-resources/capture",
+];
 const SINKS = ["recording.rs12", "recording-patch.rs12"] as const;
 
 export interface CaptureResult {
@@ -221,14 +248,7 @@ export function judgeResLateAdopt(
   r: CaptureResult | undefined,
   rec: { rec?: Pick<ResolvedRecording, "transactions">; error?: string },
   sinkProblems: readonly string[],
-  expected: Pick<
-    G8resExpected,
-    | "textures"
-    | "items_adopted"
-    | "emitters"
-    | "process_materials"
-    | "unknown_material_keyed"
-  >,
+  expected: Pick<G8resExpected, "textures" | "items_adopted" | "deferred">,
 ): { problems: string[]; detail: string } {
   const problems: string[] = [];
   const res = adoptionResources(r);
@@ -255,24 +275,37 @@ export function judgeResLateAdopt(
   const pa = particlesAdoption(r);
   if (!pa) problems.push("no stream.gate8.particles.adoption");
   else {
-    if ((pa.emitters ?? 0) < expected.emitters)
+    const want = expected.deferred;
+    if ((pa.emitters ?? 0) < want.emitters)
       problems.push(
-        `adopted ${pa.emitters} emitters, ${expected.emitters} expected`,
+        `adopted ${pa.emitters} emitters, ${want.emitters} expected`,
       );
-    if ((pa.ppm_materials ?? 0) < expected.process_materials)
+    if ((pa.ppm_materials ?? 0) < want.process_materials)
       problems.push(
-        `adopted ${pa.ppm_materials} process materials, ${expected.process_materials} expected`,
+        `adopted ${pa.ppm_materials} process materials, ${want.process_materials} expected`,
       );
-    for (const k of ["refused", "ppm_refused"])
+    if ((pa.ppm_registry ?? 0) < want.ppm_registry)
+      problems.push(
+        `${pa.ppm_registry} process materials adopted from the registry, ${want.ppm_registry} expected`,
+      );
+    for (const k of ["refused", "ppm_refused", "refused_preload_particles"])
       if ((pa[k] ?? 0) !== 0) problems.push(`${k} ${pa[k]}`);
-    parts.push(`emitters ${pa.emitters}, ppm_materials ${pa.ppm_materials}`);
+    parts.push(
+      `emitters ${pa.emitters}, ppm_materials ${pa.ppm_materials} (registry ${pa.ppm_registry})`,
+    );
   }
   const ppm = r?.stream?.gate8?.particles;
   if (!ppm) problems.push("no stream.gate8.particles");
-  else if ((ppm.unknown_material_keyed ?? 0) < expected.unknown_material_keyed)
-    problems.push(
-      `${ppm.unknown_material_keyed} unknown-material process materials keyed, ${expected.unknown_material_keyed} expected`,
-    );
+  else {
+    if (
+      (ppm.unknown_material_keyed ?? 0) !==
+      expected.deferred.unknown_material_keyed
+    )
+      problems.push(
+        `${ppm.unknown_material_keyed} unknown-material process materials keyed, exactly ${expected.deferred.unknown_material_keyed} expected`,
+      );
+    parts.push(`unknown_material_keyed ${ppm.unknown_material_keyed}`);
+  }
   if (!rec.rec) problems.push(rec.error ?? "no recording");
   else {
     const unknown = unknownTextureCount(rec.rec);
@@ -283,6 +316,88 @@ export function judgeResLateAdopt(
       problems.push(
         `${unknownMat} unknown-material particles over the recording`,
       );
+    const last = rec.rec.transactions.at(-1);
+    if (!last) problems.push("no transaction");
+    else {
+      if ((last.state.unknown_items?.unknown_rids ?? 0) !== 0)
+        problems.push(
+          `last state: ${last.state.unknown_items?.unknown_rids} unknown item RIDs`,
+        );
+      if ((last.state.unknown_items?.withheld_items ?? 0) !== 0)
+        problems.push(
+          `last state: ${last.state.unknown_items?.withheld_items} items withheld`,
+        );
+    }
+  }
+  problems.push(...sinkProblems);
+  return { problems, detail: parts.join(", ") };
+}
+
+/** res-late-residual's verdict (LAR5): the late capture still adopts the texture and the pre-arm
+ * items at their first post-arm draw, but the pre-arm emitter is unregistered and refused
+ * `preload-particles` (never adopted, so emitters 0), and its unregistered process material is
+ * keyed through the LATE-RES re-link when a post-arm emitter references it. Pure. */
+export function judgeResLateResidual(
+  r: CaptureResult | undefined,
+  rec: { rec?: Pick<ResolvedRecording, "transactions">; error?: string },
+  sinkProblems: readonly string[],
+  expected: Pick<G8resExpected, "textures" | "items_adopted" | "late">,
+): { problems: string[]; detail: string } {
+  const problems: string[] = [];
+  const parts: string[] = [];
+  const res = adoptionResources(r);
+  if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+  else {
+    if ((res.textures ?? 0) < expected.textures)
+      problems.push(
+        `adopted ${res.textures} textures, ${expected.textures} expected`,
+      );
+    if ((res.textures_refused ?? 0) !== 0)
+      problems.push(`refused ${res.textures_refused} textures`);
+    parts.push(`textures ${res.textures}`);
+  }
+  const mat = materialAdoption(r);
+  if (!mat) problems.push("no stream.gate8.adopt_stats.material_adoption");
+  else {
+    if ((mat.items_adopted ?? 0) < expected.items_adopted)
+      problems.push(
+        `adopted ${mat.items_adopted} post-arm items, ${expected.items_adopted} expected`,
+      );
+    parts.push(`items_adopted ${mat.items_adopted}`);
+  }
+  const pa = particlesAdoption(r);
+  if (!pa) problems.push("no stream.gate8.particles.adoption");
+  else {
+    const want = expected.late;
+    if ((pa.emitters ?? 0) !== want.emitters)
+      problems.push(
+        `adopted ${pa.emitters} emitters, ${want.emitters} expected`,
+      );
+    if ((pa.refused_preload_particles ?? 0) !== want.refused_preload_particles)
+      problems.push(
+        `refused_preload_particles ${pa.refused_preload_particles}, ${want.refused_preload_particles} expected`,
+      );
+    if ((pa.refused ?? 0) !== want.refused_preload_particles)
+      problems.push(
+        `refused ${pa.refused}, ${want.refused_preload_particles} expected`,
+      );
+    parts.push(
+      `emitters ${pa.emitters}, refused_preload_particles ${pa.refused_preload_particles}`,
+    );
+  }
+  const ppm = r?.stream?.gate8?.particles;
+  if (!ppm) problems.push("no stream.gate8.particles");
+  else {
+    if (
+      (ppm.unknown_material_keyed ?? 0) < expected.late.unknown_material_keyed
+    )
+      problems.push(
+        `${ppm.unknown_material_keyed} unknown-material process materials keyed, at least ${expected.late.unknown_material_keyed} expected`,
+      );
+    parts.push(`unknown_material_keyed ${ppm.unknown_material_keyed}`);
+  }
+  if (!rec.rec) problems.push(rec.error ?? "no recording");
+  else {
     const last = rec.rec.transactions.at(-1);
     if (!last) problems.push("no transaction");
     else {
@@ -371,11 +486,11 @@ export async function runG8res(
 
   // res-late-adopt
   {
-    const leg = "late/capture";
+    const leg = "deferred/capture";
     let problems: string[] | null = null;
     let detail: string | undefined;
     if (!ran(leg)) {
-      problems = ["late/capture did not run"];
+      problems = ["deferred/capture did not run"];
     } else {
       const j = judgeResLateAdopt(
         await result(leg),
@@ -389,7 +504,34 @@ export async function runG8res(
     checks.push(
       check(
         "res-late-adopt",
-        "LATE-RES: the late capture adopts the pre-arm texture, process material and both pre-arm items at their first post-arm draw, nothing refused, no unknown-texture / unknown-material, nothing withheld",
+        "LATE-RES, LAR5: the deferred capture (loaded at birth, armed at frame 12) adopts the pre-arm texture and both pre-arm items at their first post-arm draw and the emitter with both process materials from the registry (unknown_material_keyed exactly 0), nothing refused, no unknown-texture / unknown-material, nothing withheld",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // res-late-residual
+  {
+    const leg = "late/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (!ran(leg)) {
+      problems = ["late/capture did not run"];
+    } else {
+      const j = judgeResLateResidual(
+        await result(leg),
+        await loadResRecording(dir(leg)),
+        await validateSinkProblems(dir(leg)),
+        expected,
+      );
+      problems = j.problems;
+      detail = j.detail;
+    }
+    checks.push(
+      check(
+        "res-late-residual",
+        "LAR5: the late capture (extension loaded at the arm) still adopts the pre-arm texture and items, refuses the pre-arm emitter preload-particles (no emitter adopted), keys the unregistered process material through the LATE-RES re-link, and leaves no unknown item RIDs",
         problems,
         detail,
       ),
@@ -398,11 +540,11 @@ export async function runG8res(
 
   // res-free
   {
-    const leg = "late/capture";
+    const leg = "deferred/capture";
     let problems: string[] | null = null;
     let detail: string | undefined;
     if (!ran(leg)) {
-      problems = ["late/capture did not run"];
+      problems = ["deferred/capture did not run"];
     } else {
       const rec = await loadResRecording(dir(leg));
       if (!rec.rec) problems = [rec.error ?? "no recording"];
@@ -416,7 +558,7 @@ export async function runG8res(
     checks.push(
       check(
         "res-free",
-        "LATE-RES: after the adoption the fixture frees the adopted texture, emitter and items (res.gd FREE_FRAME), and the capture records them freed (removed or a freed tombstone)",
+        "LATE-RES, LAR5: after the adoption the fixture frees the adopted texture, emitter and items (res.gd FREE_FRAME), and the deferred capture (the arm that adopts the emitter) records them freed (removed or a freed tombstone)",
         problems,
         detail,
       ),

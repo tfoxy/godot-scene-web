@@ -83,7 +83,16 @@ const char *registry_kind_name(RegistryKind kind);
 //   registry-skip-params material_set_param records nothing (LAR3's sabotage: fails param-parity)
 //   registry-drop-binding a material's shader binding is not recorded (LAR4's sabotage: fails
 //                       pt-registry-real-shader)
-enum class RegistryFault : std::uint8_t { None, Off, KeepFreed, SkipParams, DropBinding };
+//   registry-skip-particles the particles setters record nothing (LAR5's sabotage: an emitter is
+//                       adopted with a fresh emitter's configuration; fails pt-late-lifecycle)
+enum class RegistryFault : std::uint8_t {
+  None,
+  Off,
+  KeepFreed,
+  SkipParams,
+  DropBinding,
+  SkipParticles,
+};
 const char *registry_fault_name(RegistryFault fault);
 
 constexpr std::size_t kRegistryDefaultCap = std::size_t{1} << 20;  // entries per family
@@ -130,6 +139,11 @@ struct RegistryStats {
   std::uint64_t material_payload_sets = 0;  // shader and parameter calls recorded
   std::uint64_t material_params = 0;        // live recorded parameters, all materials
   std::uint64_t material_payload_bytes = 0; // its slot array plus the parameter elements
+  // LAR5: the particles payload map (its own flat map; bytes_estimate counts its slot array and the
+  // trail-pose and draw-pass vectors' elements).
+  std::uint64_t particles_payloads = 0;      // live RegistryParticles entries
+  std::uint64_t particles_payload_sets = 0;  // particles_set_* calls recorded
+  std::uint64_t particles_payload_bytes = 0; // its slot array plus the vectors' elements
 };
 
 // One timeline row: the per-family counts after a frame in which the registry changed. `frame` is
@@ -277,6 +291,73 @@ void registry_note_material_param(std::uint64_t rid, const std::string &name, Re
 // The recorded shader or material of a live RID (false: not registered as one).
 bool registry_shader(std::uint64_t rid, RegistryShader *out);
 bool registry_material(std::uint64_t rid, RegistryMaterial *out);
+
+// LAR5 (design R2, R4, R5): an emitter's payload -- every particles_set_* the mirror taps, the
+// last writer winning, in the mirror's own form (Mirror::particles_call): the configuration, the
+// 31 base floats in wire order, the trail bind poses (12 floats each), the process material, the
+// subemitter and the draw passes. RenderingServer has no particles getter, so an adoption builds
+// the entry from this alone (rs_adopt.cpp adopt_particles_ref); the simulation state (restarts,
+// emits) is not recorded: an adopted emitter restarts, as PM7's did. A fresh emitter is GLES3's
+// (particles_storage.h Particles), the values Mirror::particles_create starts an entry with: mode
+// 3d, fixed fps 30, interpolate on, and kRegistryParticleDefaults. Recorded for a registered
+// emitter only, as RegistryCanvasTexture is.
+constexpr std::size_t kRegistryParticleFloats = 31;  // rs2::kParticlesBaseFloats
+constexpr std::array<float, kRegistryParticleFloats> kRegistryParticleDefaults = {
+    1.0f,  1.0f,  0.0f,  0.0f, 0.0f, 1.0f, 0.01f, 0.0f, 0.0f, 0.0f,        // 0-9
+    -4.0f, -4.0f, -4.0f, 8.0f, 8.0f, 8.0f,                                // 10-15: custom AABB
+    1.0f,  0.0f,  0.0f,  0.0f, 1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, 0.0f, 0.0f,  // 16-27
+    0.0f,  0.0f,  0.0f};                                                  // 28-30
+struct RegistryParticles {
+  bool mode_2d = false;  // RS::PARTICLES_MODE_2D was set
+  bool emitting = false;
+  bool one_shot = false;
+  bool interpolate = true;
+  bool fractional_delta = false;
+  bool local = false;
+  bool trails = false;
+  std::int32_t amount = 0;
+  std::int32_t fixed_fps = 30;
+  std::int32_t draw_order = 0;
+  std::int32_t transform_align = 0;
+  std::uint32_t seed = 0;
+  std::array<float, kRegistryParticleFloats> floats = kRegistryParticleDefaults;
+  std::vector<float> poses;              // 12 per trail bind pose, wire order
+  std::uint64_t process_material = 0;    // 0: none
+  std::uint64_t subemitter = 0;          // 0: none
+  std::vector<std::uint64_t> passes;     // draw-pass mesh RIDs (0: an empty pass)
+};
+
+// What one particles setter records (hooks.cpp translates Mirror::ParticlesOp). `i` is the bool,
+// int or enum argument (Mode: the RS enum; Floats: the first slot; DrawPassMesh: the pass), `ref`
+// the RID argument, `f`/`n` the floats in wire order (Floats: the slots from `i`; Trails: the
+// length; TrailBindPoses: 12 per pose). The engine's refusals are followed as the mirror follows
+// them: a negative pass count and a pass index out of range record nothing.
+enum class RegistryParticlesOp : std::uint8_t {
+  Mode,
+  Emitting,
+  Amount,
+  OneShot,
+  Local,
+  FixedFps,
+  Interpolate,
+  FractionalDelta,
+  TransformAlign,
+  DrawOrder,
+  Seed,
+  Floats,
+  Trails,
+  TrailBindPoses,
+  ProcessMaterial,
+  Subemitter,
+  DrawPasses,
+  DrawPassMesh,
+};
+// Only when registry_on(); nothing under registry-skip-particles.
+void registry_note_particles(std::uint64_t rid, RegistryParticlesOp op, std::int64_t i,
+                             std::uint64_t ref, const float *f, std::size_t n);
+
+// The recorded emitter of a live RID (false: `rid` is not a registered emitter).
+bool registry_particles(std::uint64_t rid, RegistryParticles *out);
 
 // The frame callback (entry.cpp on_frame): appends a timeline row when anything changed since the
 // last row. Cheap when nothing did (one relaxed load).

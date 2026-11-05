@@ -355,6 +355,26 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
   expect(!mirror.includes("ppm_epoch_"), "LAR4: rs_mirror.cpp no longer contains ppm_epoch_");
 }
 
+// LAR5 (particles): a pre-arm emitter is adopted purely from the registry; the node-getter reads and
+// the draw-note side channel are gone, the late arm refuses with a typed reason.
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir = join(here, "../../capture/src");
+  const adopt = readFileSync(join(dir, "rs_adopt.cpp"), "utf8");
+  for (const gone of ["get_amount", "adopt_particles_note_draw", "pta_instance_id", "refused_no_draw"])
+    expect(!adopt.includes(gone), `LAR5: rs_adopt.cpp no longer contains ${gone}`);
+  for (const present of ["registry_particles(", "refused_preload_particles"])
+    expect(adopt.includes(present), `LAR5: rs_adopt.cpp contains ${present}`);
+  const hooks = readFileSync(join(dir, "hooks.cpp"), "utf8");
+  for (const gone of ["t_pt_surface_mesh", "adopt_particles_note_draw"])
+    expect(!hooks.includes(gone), `LAR5: hooks.cpp no longer contains ${gone}`);
+  for (const present of ["registry_note_particles", "adopt_process_material_ref"])
+    expect(hooks.includes(present), `LAR5: hooks.cpp contains ${present}`);
+  const header = readFileSync(join(dir, "rs_registry.h"), "utf8");
+  for (const present of ["RegistryParticles", "registry-skip-particles"])
+    expect(header.includes(present), `LAR5: rs_registry.h contains ${present}`);
+}
+
 if (failures > 0) {
   console.error(`self-test-registry-checks: ${failures} of ${assertions} assertion(s) failed`);
   process.exit(1);

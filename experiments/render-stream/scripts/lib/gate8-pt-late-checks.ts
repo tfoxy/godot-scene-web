@@ -6,8 +6,17 @@
 //
 // LAR4 (late-arm-registry-design.md, the process-material row) moves the adoption judgments onto the
 // `deferred` arm (loaded at birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11): every process
-// material is adopted from the registry with its real shader. The `late` leg is the residual: its
-// materials predate the hooks, so every one goes through LATE-PPM's synthetic placeholder shader.
+// material is adopted from the registry with its real shader.
+//
+// LAR5 (the particles row) adopts a pre-arm emitter purely from the registry: every particles_set_*
+// since the extension loaded, not the node's getters. On the `late` arm (extension loaded at frame
+// 12) every pre-arm emitter is unregistered and REFUSED with the typed reason `preload-particles`,
+// so the late capture equals the fault capture on the wire (nothing adopted, every draw
+// unknown-particles); the old PM7 / LATE-PPM adoption judgments (pt-late-ppm-builtin) retire with
+// that premise. The deferred capture's adopted emitters are compared with the born capture's at the
+// arm frame (pt-registry-source), and two sabotages prove the checks can fail: registry-off (no
+// recording: every emitter refused) and registry-skip-particles (setters not recorded: emitters
+// adopted with a fresh emitter's configuration, drawing nothing).
 //
 //   pt-late-validate           both sinks of every capture below pass the TypeScript validator and
 //                              rs-core-check
@@ -20,8 +29,14 @@
 //                              subemitter cell's entry names another adopted emitter
 //   pt-late-fault              the fault capture adopted no emitter and every add_particles is
 //                              unknown-particles (the pre-PM7 capture, the sabotage's premise)
-//   pt-late-ppm-builtin        late/capture: every process material went through the placeholder
-//   pt-late-synthetic-skip     late/receiver skips every placeholder-shader emitter
+//   pt-late-preload            late/capture (both sinks): every pre-arm emitter refused
+//                              preload-particles, none adopted, every add_particles unknown-particles
+//   pt-late-synthetic-skip     sabotage-registry-drop-binding/receiver skips every placeholder-shader
+//                              emitter
+//   pt-registry-source         deferred/capture: every emitter adopted from the registry
+//                              (registry.json particles family and payload recorded) and its
+//                              configuration and floats equal the born capture's at the arm frame
+//   pt-registry-source-catches-registry-off  the registry-off capture fails the above
 //   pt-registry-real-shader    deferred/capture and deferred-cmbt/capture (both sinks): every process
 //                              material adopted from the registry on its real shader; the deferred
 //                              receivers skip nothing
@@ -35,6 +50,8 @@
 //                              reference exactly
 //   pt-late-lifecycle-catches-no-particles  the receiver on the fault capture fails
 //                              pt-late-lifecycle (the emitters stay dark)
+//   pt-late-lifecycle-catches-registry-skip-particles  the receiver on the skip-particles capture
+//                              (fresh-emitter configurations, nothing drawn) fails it too
 //
 // The late legs' shots are the reference's shots after the arm, in frame order: the fixture logs
 // only the steps that settle after it, and run-gate8.sh adds each settle frame's previous frame
@@ -72,6 +89,8 @@ export interface PtLateShader {
 
 /** The parts of a resolved state pt-late-adopt reads (gate8-pt-checks.ts PtTx). */
 export interface PtLateTx {
+  /** the host frame (the checker's trace carries it; pt-registry-source pairs transactions by it) */
+  frame?: number;
   table: Map<
     number,
     {
@@ -81,6 +100,23 @@ export interface PtLateTx {
       amount: number;
       process_material: number | null;
       subemitter: number | null;
+      /** LAR5 (pt-registry-source): the resolved entry's configuration and floats (ResolvedParticles;
+       *  `mode` is the wire's mode_2d). Optional so a bare fixture stays valid; a missing field on
+       *  either side of the comparison is a problem. */
+      mode?: string;
+      emitting?: boolean;
+      one_shot?: boolean;
+      fixed_fps?: number;
+      interpolate?: boolean;
+      fractional_delta?: boolean;
+      local?: boolean;
+      draw_order?: string;
+      transform_align?: string;
+      trails?: boolean;
+      trail_poses?: number;
+      seed?: number;
+      draw_passes?: ReadonlyArray<number | null>;
+      floats?: unknown;
     }
   >;
   materials: Map<
@@ -104,20 +140,6 @@ export interface PtLateTx {
   >;
   item_unsupported: Record<string, number>;
 }
-
-// FOG-U: the stock 4.5.1 process shader declares these uniforms with a default and no property
-// setter ever sets them. An adopted emitter (the synthetic builtin path) must carry them with the
-// declared default, as born-GSW's shader would supply.
-export const PPM_DECLARED_DEFAULTS: ReadonlyArray<{
-  name: string;
-  type: string;
-  value: number | number[];
-}> = [
-  { name: "inherit_emitter_velocity_ratio", type: "float", value: 0 },
-  { name: "emission_shape_offset", type: "vector3", value: [0, 0, 0] },
-  { name: "emission_shape_scale", type: "vector3", value: [1, 1, 1] },
-  { name: "velocity_pivot", type: "vector3", value: [0, 0, 0] },
-];
 
 /** stream.gate8.particles.adoption of a capture's result.json, or null. */
 export function adoptionStats(
@@ -266,33 +288,170 @@ export function ptLateFaultProblems(
   return problems;
 }
 
-/** pt-late-ppm-builtin (LAR4): on the `late` leg every process material is older than the hooks, so
- *  the registry never saw it and every one is recovered through LATE-PPM's synthetic placeholder
- *  shader and the particle_process_material builtin (no fault involved); the wire is otherwise the
- *  same as pt-late-adopt.
- *  FOG-U: each recovered material also carries the process shader's declared default-valued
- *  uniforms (a uniform the shader declares with a default that no material setter ever set). */
-export function ptLatePpmBuiltinProblems(
+/** pt-late-preload (LAR5): on the late arm every pre-arm emitter predates the hooks, so the registry
+ *  never saw it and the capture refuses it with the typed reason `preload-particles`: none adopted
+ *  (so no process material adopted through an emitter either), the last state holds no particles
+ *  entry and every emitter's add_particles is unknown-particles. */
+export function ptLatePreloadProblems(
   stats: Record<string, number> | null,
   txs: readonly PtLateTx[],
   late: PtLate,
-  subAmount: number | undefined,
 ): string[] {
   const problems: string[] = [];
-  if (!stats) return ["no stream.gate8.particles.adoption in result.json"];
-  if (stats.ppm_refused_no_shader !== late.process_materials)
+  if (!stats)
+    problems.push("no stream.gate8.particles.adoption in result.json");
+  else {
+    if ((stats.emitters ?? 0) !== 0)
+      problems.push(`${stats.emitters} emitters adopted, 0 expected`);
+    if (stats.refused_preload_particles !== late.emitters)
+      problems.push(
+        `refused_preload_particles ${stats.refused_preload_particles}, ${late.emitters} expected`,
+      );
+    if (stats.refused !== late.emitters)
+      problems.push(`refused ${stats.refused}, ${late.emitters} expected`);
+    if ((stats.ppm_materials ?? 0) !== 0)
+      problems.push(
+        `${stats.ppm_materials} process materials adopted, 0 expected`,
+      );
+  }
+  const last = txs.at(-1);
+  if (!last) return [...problems, "no transaction"];
+  if (last.table.size !== 0)
+    problems.push(`last state: ${last.table.size} particles entries`);
+  let unknown = 0;
+  for (const it of last.items.values())
+    unknown += it.unsupported["unknown-particles"] ?? 0;
+  if (unknown !== late.emitters)
     problems.push(
-      `${stats.ppm_refused_no_shader} process materials named no shader, ${late.process_materials} expected`,
+      `last state: ${unknown} unknown-particles add_particles, ${late.emitters} expected`,
     );
-  if (stats.ppm_builtin !== late.process_materials)
+  return problems;
+}
+
+const SOURCE_FIELDS = [
+  "mode",
+  "emitting",
+  "amount",
+  "one_shot",
+  "fixed_fps",
+  "interpolate",
+  "fractional_delta",
+  "local",
+  "draw_order",
+  "transform_align",
+  "trails",
+  "trail_poses",
+  "seed",
+] as const;
+
+/** pt-registry-source (LAR5): an emitter adopted from the registry is the emitter the born capture
+ *  saw. (a) the adoption stats: every emitter adopted, none refused; (b) evidence/registry.json:
+ *  the registry was on and recorded the particles family and payload; (c) at the arm frame F (the
+ *  first deferred transaction whose table holds `late.emitters` adopted entries) every adopted
+ *  entry equals the born entry with the same (seed, amount), at the born transaction of the same
+ *  frame, on mode, emitting, amount, one_shot, fixed_fps, interpolate, fractional_delta, local,
+ *  draw_order, transform_align, trails, trail_poses, seed, the draw pass count and every float.
+ *  Ids, origin, version, restarts, emits, process_requests, status and the resource ids are not
+ *  compared. */
+export function ptRegistrySourceProblems(
+  stats: Record<string, number> | null,
+  registry: Record<string, unknown> | null,
+  deferredTxs: readonly PtLateTx[],
+  bornTxs: readonly PtLateTx[],
+  late: PtLate,
+): { problems: string[]; detail: string } {
+  const problems: string[] = [];
+  if (!stats)
+    problems.push("no stream.gate8.particles.adoption in result.json");
+  else {
+    if (stats.emitters !== late.emitters)
+      problems.push(
+        `${stats.emitters} emitters adopted, ${late.emitters} expected`,
+      );
+    for (const k of ["refused", "refused_preload_particles"])
+      if ((stats[k] ?? 0) !== 0) problems.push(`${k} ${stats[k]}, expected 0`);
+  }
+  const obj = (v: unknown) =>
+    typeof v === "object" && v !== null
+      ? (v as Record<string, unknown>)
+      : undefined;
+  if (!registry) problems.push("no evidence/registry.json");
+  else {
+    if (registry.enabled !== true)
+      problems.push(`registry.json enabled ${String(registry.enabled)}`);
+    const creates = obj(obj(registry.families)?.particles)?.creates;
+    if (typeof creates !== "number" || creates < late.emitters)
+      problems.push(
+        `registry.json families.particles.creates ${String(creates)}, at least ${late.emitters} expected`,
+      );
+    // The evidence is written at exit, after the fixture freed its emitters: count the setters
+    // recorded, not the live payloads.
+    const sets = obj(obj(registry.payloads)?.particles)?.sets;
+    if (typeof sets !== "number" || sets < late.emitters)
+      problems.push(
+        `registry.json payloads.particles.sets ${String(sets)}, at least ${late.emitters} expected`,
+      );
+  }
+  const adopted = (tx: PtLateTx) =>
+    [...tx.table.values()].filter((e) => e.origin === "adopted");
+  const first = deferredTxs.find((t) => adopted(t).length >= late.emitters);
+  if (!first) {
     problems.push(
-      `${stats.ppm_builtin} process materials recovered through the builtin, ${late.process_materials} expected`,
+      `no deferred transaction holds ${late.emitters} adopted particles entries`,
     );
-  return [
-    ...problems,
-    ...ptLateAdoptProblems(stats, txs, late, subAmount),
-    ...ppmDeclaredDefaultProblems(txs),
-  ];
+    return { problems, detail: `${stats?.emitters ?? 0} emitters` };
+  }
+  const frame = first.frame;
+  const born = bornTxs.find((t) => t.frame === frame);
+  if (!born) {
+    problems.push(`no born transaction at frame ${frame}`);
+    return { problems, detail: `${stats?.emitters ?? 0} emitters` };
+  }
+  let equal = 0;
+  for (const a of adopted(first)) {
+    const name = `amount ${a.amount} seed ${String(a.seed)}`;
+    const candidates = [...born.table.values()].filter(
+      (b) => b.seed === a.seed && b.amount === a.amount,
+    );
+    if (candidates.length === 0) {
+      problems.push(`${name}: no born entry at frame ${frame}`);
+      continue;
+    }
+    // the first candidate that is fully equal; otherwise the first one's differences
+    let best: string[] | null = null;
+    for (const b of candidates) {
+      const diffs: string[] = [];
+      for (const f of SOURCE_FIELDS)
+        if (a[f] === undefined || a[f] !== b[f])
+          diffs.push(
+            `${f} ${JSON.stringify(a[f])}, born ${JSON.stringify(b[f])}`,
+          );
+      if (
+        a.draw_passes === undefined ||
+        a.draw_passes.length !== b.draw_passes?.length
+      )
+        diffs.push(
+          `draw_passes ${a.draw_passes?.length}, born ${b.draw_passes?.length}`,
+        );
+      if (a.floats === undefined || a.floats === null)
+        diffs.push("floats absent");
+      else if (JSON.stringify(a.floats) !== JSON.stringify(b.floats))
+        diffs.push(
+          `floats ${JSON.stringify(a.floats)}, born ${JSON.stringify(b.floats)}`,
+        );
+      if (diffs.length === 0) {
+        best = null;
+        equal++;
+        break;
+      }
+      best ??= diffs;
+    }
+    if (best) problems.push(`${name} (frame ${frame}): ${best.join("; ")}`);
+  }
+  return {
+    problems,
+    detail: `${stats?.emitters ?? 0} emitters from the registry, ${equal} configs equal born at frame ${frame}`,
+  };
 }
 
 /** LATE-CMBT: the post-arm cell's process material was `unknown-shader` (its material_set_shader
@@ -343,28 +502,6 @@ export function ptLateCmbtProblems(
       problems.push(
         `entry ${entry.id}: process shader ${m.shader} is not an ok particle_process_material builtin`,
       );
-  }
-  return problems;
-}
-
-/** FOG-U: every adopted process material carries the declared default of each process-shader
- *  uniform no setter ever set (PPM_DECLARED_DEFAULTS). */
-export function ppmDeclaredDefaultProblems(txs: readonly PtLateTx[]): string[] {
-  const problems: string[] = [];
-  const last = txs.at(-1);
-  if (!last) return ["no transaction"];
-  for (const e of last.table.values()) {
-    if (e.process_material === null) continue;
-    const m = last.materials.get(e.process_material);
-    if (!m) continue;
-    for (const d of PPM_DECLARED_DEFAULTS) {
-      const p = m.params?.find((q) => q.name === d.name);
-      if (!p) problems.push(`material ${e.process_material}: ${d.name} absent`);
-      else if (JSON.stringify(p.value) !== JSON.stringify(d.value))
-        problems.push(
-          `material ${e.process_material}: ${d.name} ${JSON.stringify(p.value)}, expected ${JSON.stringify(d.value)}`,
-        );
-    }
   }
   return problems;
 }
@@ -589,6 +726,9 @@ const DEFERRED_CAPTURE = "deferred/capture";
 const DEFERRED_CMBT_CAPTURE = "deferred-cmbt/capture";
 const DROP_BINDING_CAPTURE = "sabotage-registry-drop-binding/capture";
 const HEADLESS_DEFERRED_CAPTURE = "headless-deferred/capture";
+// LAR5: the particles row's sabotages (registry-off, registry-skip-particles).
+const SABOTAGE_REGISTRY_OFF_CAPTURE = "sabotage-registry-off/capture";
+const SKIP_PARTICLES_CAPTURE = "sabotage-registry-skip-particles/capture";
 const BORN_CAPTURE = "capture";
 const CAPTURES = [
   LATE_CAPTURE,
@@ -598,16 +738,23 @@ const CAPTURES = [
   DEFERRED_CMBT_CAPTURE,
   DROP_BINDING_CAPTURE,
   HEADLESS_DEFERRED_CAPTURE,
+  SABOTAGE_REGISTRY_OFF_CAPTURE,
+  SKIP_PARTICLES_CAPTURE,
 ];
 /** the deferred pixel receivers (pt-late-lifecycle, -coverage, -outside-exact) */
 const RECEIVERS = ["deferred/receiver", "deferred/receiver-patch"];
-const LATE_RECEIVER = "late/receiver";
+// LAR5: `late` adopts nothing, so the placeholder residual is judged on the drop-binding sabotage
+// (every process material of that capture fell to the placeholder) and the skip-particles
+// sabotage's pixels are judged too.
+const DROP_BINDING_RECEIVER = "sabotage-registry-drop-binding/receiver";
+const SKIP_PARTICLES_RECEIVER = "sabotage-registry-skip-particles/receiver";
 const DEFERRED_CMBT_RECEIVER = "deferred-cmbt/receiver";
 const FAULT_RECEIVER = "fault-no-particles/receiver";
 export const LATE_LEGS = [
   ...CAPTURES,
   ...RECEIVERS,
-  LATE_RECEIVER,
+  DROP_BINDING_RECEIVER,
+  SKIP_PARTICLES_RECEIVER,
   DEFERRED_CMBT_RECEIVER,
   FAULT_RECEIVER,
 ];
@@ -615,8 +762,9 @@ export const LATE_LEGS = [
 /**
  * pt-late-synthetic-skip's verdict on a receiver's applied.json. The receiver counts one skip per
  * synthetic-process-shader emitter per applied transaction (plan.rs apply_particles walks every
- * resident emitter on every apply), and on the `late` leg (LAR4) every one of the fixture's
- * `late.emitters` is recovered through the synthetic shader, so the exact count is
+ * resident emitter on every apply), and on the registry-drop-binding sabotage's receiver (LAR5:
+ * `late` adopts no emitter any more) every one of the fixture's `late.emitters` is recovered
+ * through the synthetic shader, so the exact count is
  * `late.emitters * applied`: 10 emitters x 109 applies = 1090 on the committed run. A bare `> 0`
  * would pass when only some emitters were skipped.
  */
@@ -668,7 +816,8 @@ export async function runG8ptLate(
   const anySkipped = [
     ...CAPTURES,
     ...RECEIVERS,
-    LATE_RECEIVER,
+    DROP_BINDING_RECEIVER,
+    SKIP_PARTICLES_RECEIVER,
     DEFERRED_CMBT_RECEIVER,
     FAULT_RECEIVER,
   ].find((l) => skipped(dir(l)));
@@ -677,16 +826,19 @@ export async function runG8ptLate(
       "pt-late-validate",
       "pt-late-adopt",
       "pt-late-fault",
-      "pt-late-ppm-builtin",
+      "pt-late-preload",
       "pt-late-cmbt",
       "pt-late-synthetic-skip",
       "pt-registry-real-shader",
       "pt-registry-real-shader-catches-registry-drop-binding",
       "pt-registry-params",
+      "pt-registry-source",
+      "pt-registry-source-catches-registry-off",
       "pt-late-lifecycle",
       "pt-late-coverage",
       "pt-late-outside-exact",
       "pt-late-lifecycle-catches-no-particles",
+      "pt-late-lifecycle-catches-registry-skip-particles",
     ])
       checks.push({
         id,
@@ -721,7 +873,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-validate",
-        "PM7, LAR4: both sinks of every late-group capture (late, fault, late-cmbt, deferred, deferred-cmbt, the registry-drop-binding sabotage, headless-deferred) pass the TypeScript validator and rs-core-check",
+        "PM7, LAR4, LAR5: both sinks of every late-group capture (late, fault, late-cmbt, deferred, deferred-cmbt, the registry-drop-binding, registry-off and registry-skip-particles sabotages, headless-deferred) pass the TypeScript validator and rs-core-check",
         any ? problems : null,
       ),
     );
@@ -782,9 +934,8 @@ export async function runG8ptLate(
     );
   }
 
-  // pt-late-ppm-builtin (LATE-PPM, LAR4): the late leg's process materials predate the hooks, so
-  // adoption goes through the placeholder shader and the particle_process_material builtin; the
-  // wire is otherwise the same as pt-late-adopt.
+  // pt-late-preload (LAR5): the late leg's emitters predate the hooks, so the registry never saw
+  // them and every one is refused preload-particles; nothing is adopted.
   {
     const leg = LATE_CAPTURE;
     const stats = adoptionStats(
@@ -797,23 +948,18 @@ export async function runG8ptLate(
         const t = await deps.trace(leg, sink);
         if (!t) problems.push(`${sink}: missing`);
         else
-          for (const p of ptLatePpmBuiltinProblems(
-            stats,
-            t,
-            late,
-            deps.amountOf(late.subemitter),
-          ))
+          for (const p of ptLatePreloadProblems(stats, t, late))
             problems.push(`${sink}: ${p}`);
       }
       problems = [...new Set(problems)];
     }
     checks.push(
       check(
-        "pt-late-ppm-builtin",
-        "LATE-PPM (LAR4 residual): on the late leg every process material predates the hooks, so every one is adopted through the placeholder shader and its particle_process_material builtin, nothing refused, no unknown-particles",
+        "pt-late-preload",
+        "LAR5: on the late leg (extension loaded at the arm) every pre-arm emitter is unregistered and refused preload-particles: none adopted, no process material adopted through an emitter, the last state holds no particles entry and every add_particles is unknown-particles",
         problems,
         stats
-          ? `${stats.ppm_builtin} builtin-recovered, ${stats.ppm_refused_no_shader} no-shader, ${stats.ppm_materials} materials`
+          ? `${stats.emitters} adopted, ${stats.refused_preload_particles} refused preload-particles, ${stats.ppm_materials} process materials`
           : undefined,
       ),
     );
@@ -822,7 +968,7 @@ export async function runG8ptLate(
   // pt-late-synthetic-skip (native-fog-tint): the native receiver cannot reconstruct the RD-only
   // process shader from the synthetic placeholder, so it skips every emitter recovered through it.
   {
-    const leg = LATE_RECEIVER;
+    const leg = DROP_BINDING_RECEIVER;
     let problems: string[] | null = null;
     let detail: string | undefined;
     if (ran(leg)) {
@@ -835,7 +981,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-synthetic-skip",
-        "native-fog-tint (LAR4): on the late leg the native receiver skips every emitter whose process material is recovered through the synthetic process shader (counted in particles_resources.synthetic_skipped), instead of drawing white defaults",
+        "native-fog-tint (LAR4, LAR5): on the registry-drop-binding sabotage (every process material falls to the synthetic placeholder shader) the native receiver skips every emitter recovered through it (counted in particles_resources.synthetic_skipped), instead of drawing white defaults",
         problems,
         detail,
       ),
@@ -1029,6 +1175,58 @@ export async function runG8ptLate(
     }
   }
 
+  // pt-registry-source (LAR5): the deferred capture's emitters come from the registry and equal
+  // the born capture's at the arm frame; registry-off must fail the same judgement.
+  {
+    const id = "pt-registry-source";
+    const criterion =
+      "LAR5: on the deferred arm every pre-arm emitter is adopted purely from the registry (registry.json records the particles family and payload; nothing refused preload-particles) and its configuration and floats equal the born capture's emitter at the arm frame";
+    const source = async (leg: string) => {
+      const result = await json(join(dir(leg), "evidence", "result.json"));
+      const registry = await json(join(dir(leg), "evidence", "registry.json"));
+      const adopted = await deps.trace(leg, SINKS[0]);
+      const born = await deps.trace(BORN_CAPTURE, SINKS[0]);
+      if (!adopted || !born)
+        return {
+          problems: [`${!adopted ? leg : BORN_CAPTURE}/${SINKS[0]}: missing`],
+          detail: "recording missing",
+        };
+      return ptRegistrySourceProblems(
+        adoptionStats(result),
+        registry,
+        adopted,
+        born,
+        late,
+      );
+    };
+    if (!ran(DEFERRED_CAPTURE) || !ran(BORN_CAPTURE))
+      checks.push(check(id, criterion, null));
+    else {
+      const r = await source(DEFERRED_CAPTURE);
+      checks.push(check(id, criterion, r.problems, r.detail));
+    }
+    const idOff = "pt-registry-source-catches-registry-off";
+    const criterionOff =
+      "LAR5: registry-off (the registry records nothing, so every pre-arm emitter is refused preload-particles) fails pt-registry-source";
+    if (!ran(SABOTAGE_REGISTRY_OFF_CAPTURE) || !ran(BORN_CAPTURE))
+      checks.push(check(idOff, criterionOff, null));
+    else {
+      const r = await source(SABOTAGE_REGISTRY_OFF_CAPTURE);
+      checks.push(
+        check(
+          idOff,
+          criterionOff,
+          r.problems.length > 0
+            ? []
+            : [
+                `${SABOTAGE_REGISTRY_OFF_CAPTURE} passed: the missing registry source went unseen`,
+              ],
+          r.problems[0],
+        ),
+      );
+    }
+  }
+
   // The pixels: the reference's shots after the arm.
   const shots = ptShots(
     checkpoints.filter((c) => c.settle - 1 > late.arm_frame),
@@ -1165,6 +1363,28 @@ export async function runG8ptLate(
           problems.length > 0
             ? []
             : [`${FAULT_RECEIVER} passed: the missing adoption went unseen`],
+          problems[0],
+        ),
+      );
+    }
+  }
+  {
+    const id = "pt-late-lifecycle-catches-registry-skip-particles";
+    const criterion =
+      "LAR5: the receiver on the registry-skip-particles capture (emitters adopted with a fresh emitter's configuration: amount 0, no material, no draw pass; nothing drawn) fails pt-late-lifecycle";
+    if (!ran(SKIP_PARTICLES_RECEIVER) || !ran("reference"))
+      checks.push(check(id, criterion, null));
+    else {
+      const { problems } = await lifecycle(SKIP_PARTICLES_RECEIVER);
+      checks.push(
+        check(
+          id,
+          criterion,
+          problems.length > 0
+            ? []
+            : [
+                `${SKIP_PARTICLES_RECEIVER} passed: the unrecorded particles setters went unseen`,
+              ],
           problems[0],
         ),
       );

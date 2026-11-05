@@ -3293,7 +3293,7 @@ Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const Particles
   p.id = next_particles_id_++;
   p.rid = rid;
   p.adopted = true;
-  p.mode_2d = true;
+  p.mode_2d = a.mode_2d;
   p.emitting = a.emitting;
   p.amount = a.amount;
   p.one_shot = a.one_shot;
@@ -3312,11 +3312,11 @@ Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const Particles
     p.material_id = it != material_by_rid_.end() ? it->second : 0;
     p.unknown_material = it == material_by_rid_.end();
   }
-  {
-    const auto it = mesh_by_rid_.find(a.mesh);
-    p.pass_rids.push_back(a.mesh);
-    p.pass_ids.push_back(a.mesh != 0 && it != mesh_by_rid_.end() ? it->second.id : 0);
-    p.pass_unknown.push_back(a.mesh != 0 && it == mesh_by_rid_.end());
+  for (std::uint64_t mesh : a.passes) {
+    const auto it = mesh_by_rid_.find(mesh);
+    p.pass_rids.push_back(mesh);
+    p.pass_ids.push_back(mesh != 0 && it != mesh_by_rid_.end() ? it->second.id : 0);
+    p.pass_unknown.push_back(mesh != 0 && it == mesh_by_rid_.end());
   }
   if (a.subemitter != 0) {
     const auto it = particles_by_rid_.find(a.subemitter);
@@ -3338,6 +3338,30 @@ Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const Particles
   out.restarts = p.restarts;
   particles_.emplace(p.id, std::move(p));
   return out;
+}
+
+bool Mirror::particles_float_slots(ParticlesOp op, std::size_t *at, std::size_t *count) {
+  std::size_t a = 0;
+  std::size_t n = 0;
+  switch (op) {
+    case ParticlesOp::SetAmountRatio: a = 0; n = 1; break;
+    case ParticlesOp::SetLifetime: a = 1; n = 1; break;
+    case ParticlesOp::SetPreProcessTime: a = 2; n = 1; break;
+    case ParticlesOp::SetExplosivenessRatio: a = 3; n = 1; break;
+    case ParticlesOp::SetRandomnessRatio: a = 4; n = 1; break;
+    case ParticlesOp::SetSpeedScale: a = 5; n = 1; break;
+    case ParticlesOp::SetCollisionBaseSize: a = 6; n = 1; break;
+    case ParticlesOp::SetTrails: a = 7; n = 1; break;
+    case ParticlesOp::SetInterpToEnd: a = 8; n = 1; break;
+    case ParticlesOp::RequestProcessTime: a = 9; n = 1; break;
+    case ParticlesOp::SetCustomAabb: a = 10; n = 6; break;
+    case ParticlesOp::SetEmissionTransform: a = 16; n = 12; break;
+    case ParticlesOp::SetEmitterVelocity: a = 28; n = 3; break;
+    default: return false;
+  }
+  *at = a;
+  *count = n;
+  return true;
 }
 
 Mirror::ParticlesCall Mirror::particles_free(std::uint64_t rid, std::uint64_t frame) {

@@ -27,6 +27,7 @@
 #include "rs2_codec.h"
 #include "rs2_diff.h"
 #include "rs_mesh_payload.h"
+#include "rs_registry.h"
 #include "rs_mirror.h"
 #include "rs_records.h"
 #include "rs_sha256.h"
@@ -4148,7 +4149,8 @@ void test_particles_adopt() {
   a.amount = 12;
   a.fixed_fps = 0;
   a.seed = 7;
-  a.mesh = 0x500;
+  a.mode_2d = true;
+  a.passes = {0x500};
   a.material = 0x777;  // unknown to the mirror: the entry's usual reason
   a.subemitter = 0x902;  // not adopted yet: left null
   a.floats.assign(31, 0.0f);
@@ -4170,7 +4172,8 @@ void test_particles_adopt() {
             e->reason == grc::rs2::ParticlesReason::UnknownMaterial && (*e->floats)[1] == 2.0f,
         "adopted entry: origin adopted, the getters, mesh 1, unknown-material");
   grc::rs::Mirror::ParticlesAdopt sub;
-  sub.mesh = 0x500;
+  sub.mode_2d = true;
+  sub.passes = {0x500};
   sub.floats.assign(31, 0.0f);
   r = m.particles_adopt(0x902, sub, 2);
   check(r.known && r.id == 2, "the subemitter adopted later: id 2");
@@ -4181,6 +4184,60 @@ void test_particles_adopt() {
   check(e != nullptr && e->subemitter == 2 && pt_entry(s2, 2) != nullptr &&
             pt_entry(s2, 2)->origin == grc::rs2::Origin::Adopted,
         "the subemitter published through its parent");
+  // LAR5: the registry's fresh emitter is the mirror's fresh entry (GLES3's defaults), so an
+  // emitter adopted from an untouched record equals one created under the hooks.
+  m.particles_create(0x910, 3);
+  grc::rs::Mirror::ParticlesAdopt fresh;
+  const grc::rs::RegistryParticles rec;
+  fresh.mode_2d = rec.mode_2d;
+  fresh.interpolate = rec.interpolate;
+  fresh.fixed_fps = rec.fixed_fps;
+  fresh.floats.assign(rec.floats.begin(), rec.floats.end());
+  m.particles_adopt(0x911, fresh, 3);
+  m.add_particles(101, 0x910, 0, 3);
+  m.add_particles(101, 0x911, 0, 3);
+  Snapshot s3 = m.snapshot(3, 3).state;
+  const auto *born = pt_entry(s3, 3);
+  const auto *adopted = pt_entry(s3, 4);
+  check(born != nullptr && adopted != nullptr && born->mode_2d == adopted->mode_2d &&
+            born->fixed_fps == adopted->fixed_fps && born->interpolate == adopted->interpolate &&
+            born->amount == adopted->amount && *born->floats == *adopted->floats,
+        "LAR5: the registry's fresh emitter equals the mirror's");
+  // LAR5: particles_float_slots names the slots particles_call writes.
+  const std::pair<PtOp, std::pair<std::size_t, std::size_t>> slots[] = {
+      {PtOp::SetAmountRatio, {0, 1}},         {PtOp::SetLifetime, {1, 1}},
+      {PtOp::SetPreProcessTime, {2, 1}},      {PtOp::SetExplosivenessRatio, {3, 1}},
+      {PtOp::SetRandomnessRatio, {4, 1}},     {PtOp::SetSpeedScale, {5, 1}},
+      {PtOp::SetCollisionBaseSize, {6, 1}},   {PtOp::SetTrails, {7, 1}},
+      {PtOp::SetInterpToEnd, {8, 1}},         {PtOp::RequestProcessTime, {9, 1}},
+      {PtOp::SetCustomAabb, {10, 6}},         {PtOp::SetEmissionTransform, {16, 12}},
+      {PtOp::SetEmitterVelocity, {28, 3}}};
+  bool slots_ok = true;
+  for (const auto &op : slots) {
+    std::size_t at = 99, count = 99;
+    if (!grc::rs::Mirror::particles_float_slots(op.first, &at, &count) || at != op.second.first ||
+        count != op.second.second) {
+      slots_ok = false;
+      continue;
+    }
+    const std::uint32_t id = m.particles_create(0x920, 4).id;
+    grc::rs::Mirror::ParticlesArgs args;
+    args.i = 1;
+    args.f.assign(count, 42.0f);
+    m.particles_call(0x920, op.first, args, 4);
+    m.add_particles(101, 0x920, 0, 4);
+    Snapshot s4 = m.snapshot(4, 4).state;
+    const auto *e4 = pt_entry(s4, id);
+    for (std::size_t k = 0; e4 != nullptr && k < count; ++k) {
+      slots_ok = slots_ok && (*e4->floats)[at + k] == 42.0f;
+    }
+    slots_ok = slots_ok && e4 != nullptr;
+    m.particles_free(0x920, 4);
+  }
+  std::size_t at = 0, count = 0;
+  check(slots_ok && !grc::rs::Mirror::particles_float_slots(PtOp::SetAmount, &at, &count) &&
+            !grc::rs::Mirror::particles_float_slots(PtOp::Restart, &at, &count),
+        "LAR5: particles_float_slots matches particles_call's slots");
 }
 
 // GLES3's defaults, version moves by value / bit pattern, the counters always move.

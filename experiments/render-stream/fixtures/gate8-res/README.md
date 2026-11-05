@@ -29,11 +29,28 @@ The capture must run on a rendered host (a private 640x360 gamescope): a headles
 storage keeps no particles or canvas state. The check is capture-only (result.json `adopt_stats`
 and `particles.adoption`, plus the recording's resolved tables); there is no `reference` leg.
 
+## Arms (LAR5)
+
+`loader.gd` takes `RS_FIXTURE_ARM`:
+
+- `late` (default): the extension loads at fixture frame 12, after `_ready` built every cell. The
+  texture and both items are adopted at their first post-arm draw; the pre-arm `GPUParticles2D` is
+  unregistered and **refused** `preload-particles` (never adopted: `emitters` 0), and the pre-arm
+  process material is keyed through the LATE-RES re-link when `PPM9` references it
+  (`unknown_material_keyed` >= 1). `expected.json` `late`.
+- `deferred`: the extension loads in `_enter_tree` and the runner arms at frame 12
+  (`GRC_ARM_DEFER_FRAMES=11`), so the emitter and both process materials are adopted from the
+  registry; `PPM9`'s reference adopts the registered material directly
+  (`unknown_material_keyed` exactly 0). `expected.json` `deferred`.
+
 ## Checks (`res-*`)
 
-- `res-late-adopt`: the late capture adopts the pre-arm texture (1), process material (1) and both
-  pre-arm items (2), with no refused texture/material and **no unknown item RIDs** (`residue` 0).
+- `res-late-adopt` (`deferred/capture`): the capture adopts the pre-arm texture (1), the emitter (1),
+  both process materials from the registry (2) and both pre-arm items (2), with no refused
+  texture/material, `unknown_material_keyed` 0 and **no unknown item RIDs** (`residue` 0).
+- `res-late-residual` (`late/capture`): texture and items adopted, `emitters` 0, `refused` and
+  `refused_preload_particles` 1, `unknown_material_keyed` >= 1, no unknown RIDs.
 - `res-late-fault`: under `GRC_ADOPT_FAULT=no-resources` nothing pre-arm is adopted and the
   pre-arm items stay unknown (the pre-LATE-RES capture).
-- `res-free`: after the frame-22 free, the late capture records the freed cells (at least
+- `res-free` (`deferred/capture`): after the frame-22 free, the capture records the freed cells (at least
   `expected.json`'s `freed_items`, `freed_textures`, `freed_particles` gone or tombstoned).

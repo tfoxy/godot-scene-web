@@ -808,10 +808,9 @@ std::string result_json() {
           json.key("adoption").object_begin();
           json.field("emitters", static_cast<int64_t>(e.emitters));
           json.field("refused", static_cast<int64_t>(e.refused));
-          json.field("refused_no_node", static_cast<int64_t>(e.refused_no_node));
-          json.field("refused_not_gpu", static_cast<int64_t>(e.refused_not_gpu));
-          json.field("refused_no_draw", static_cast<int64_t>(e.refused_no_draw));
-          json.field("refused_binds", static_cast<int64_t>(e.refused_binds));
+          // LAR5 (F1): an emitter the registry does not hold (older than the hooks).
+          json.field("refused_preload_particles",
+                     static_cast<int64_t>(e.refused_preload_particles));
           json.field("meshes", static_cast<int64_t>(e.meshes));
           json.field("ppm_materials", static_cast<int64_t>(e.ppm_materials));
           json.field("ppm_registry", static_cast<int64_t>(e.ppm_registry));
@@ -4178,6 +4177,8 @@ bool attempt(const char *phase) {
           registry_fault = rs::RegistryFault::SkipParams;  // LAR3
         } else if (fault == rs::AdoptFault::RegistryDropBinding) {
           registry_fault = rs::RegistryFault::DropBinding;  // LAR4
+        } else if (fault == rs::AdoptFault::RegistrySkipParticles) {
+          registry_fault = rs::RegistryFault::SkipParticles;  // LAR5
         }
       }
       rs::registry_configure(adopt, registry_fault);

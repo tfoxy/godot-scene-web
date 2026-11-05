@@ -9,10 +9,12 @@
 // checker's judging is split into pure exported functions (judgeResLateAdopt, judgeResLateFault,
 // freedCounts / resFreeProblems) which this test drives on synthetic result.json objects and
 // synthetic resolved transactions; runG8res itself is driven on a synthetic evidence tree for
-// every check id it emits (res-legs, res-late-adopt, res-free, res-late-fault) for the
+// every check id it emits (res-legs, res-late-adopt, res-late-residual, res-free, res-late-fault) for the
 // empty/missing-evidence behaviour (legs that did not run, a missing recording, a skipped leg).
 //
-// 1. judgeResLateAdopt: the honest result + recording passes; each missing table, short count,
+// 1. judgeResLateAdopt (LAR5: the deferred capture, unknown_material_keyed exactly 0) and
+//    1b. judgeResLateResidual (the late capture: emitter refused preload-particles): the honest
+//    result + recording passes; each missing table, short count,
 //    refusal, unknown-texture command, unknown-material particle, unknown/withheld item, empty
 //    recording, missing recording and sink problem fails.
 // 2. judgeResLateFault: the honest fault passes; adopting anything, no unknown-texture command,
@@ -42,6 +44,7 @@ import {
   type G8resExpected,
   judgeResLateAdopt,
   judgeResLateFault,
+  judgeResLateResidual,
   type ResFreeTx,
   resFreeProblems,
   runG8res,
@@ -79,12 +82,35 @@ const honestResult = (): CaptureResult => ({
       },
       particles: {
         adoption: {
-          emitters: expected.emitters,
-          ppm_materials: expected.process_materials,
+          emitters: expected.deferred.emitters,
+          ppm_materials: expected.deferred.process_materials,
+          ppm_registry: expected.deferred.ppm_registry,
           refused: 0,
           ppm_refused: 0,
+          refused_preload_particles: 0,
         },
-        unknown_material_keyed: expected.unknown_material_keyed,
+        unknown_material_keyed: expected.deferred.unknown_material_keyed,
+      },
+    },
+  },
+});
+// LAR5: the late capture: texture and items adopted, the emitter refused preload-particles
+const lateResult = (): CaptureResult => ({
+  stream: {
+    gate8: {
+      adopt_stats: {
+        resources: { textures: expected.textures, textures_refused: 0 },
+        material_adoption: { items_adopted: expected.items_adopted },
+        residue: 0,
+      },
+      particles: {
+        adoption: {
+          emitters: expected.late.emitters,
+          refused: expected.late.refused_preload_particles,
+          refused_preload_particles: expected.late.refused_preload_particles,
+          ppm_materials: 0,
+        },
+        unknown_material_keyed: expected.late.unknown_material_keyed,
       },
     },
   },
@@ -228,9 +254,21 @@ for (const [what, mutate] of [
     },
   ],
   [
-    "no unknown-material keyed",
+    "an unknown-material keyed process material (the registered material must be adopted, not keyed)",
     (r: CaptureResult) => {
-      r.stream!.gate8!.particles!.unknown_material_keyed = 0;
+      r.stream!.gate8!.particles!.unknown_material_keyed = 1;
+    },
+  ],
+  [
+    "too few registry-adopted process materials",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.adoption!.ppm_registry = 1;
+    },
+  ],
+  [
+    "a preload-particles refusal",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.adoption!.refused_preload_particles = 1;
     },
   ],
 ] as [string, (r: CaptureResult) => void][]) {
@@ -288,6 +326,108 @@ expect(
 expect(
   adopt(honestResult(), honestRec(), ["recording.rs12: missing"]).length > 0,
   "1: a sink validation problem fails",
+);
+
+// ------------------------------------------------------------------------------ 1b. residual
+
+const residual = (
+  r: CaptureResult | undefined,
+  rc: { rec?: { transactions: never }; error?: string },
+  sink: string[] = [],
+) => judgeResLateResidual(r, rc, sink, expected);
+expect(
+  residual(lateResult(), honestRec()).problems.length === 0,
+  "1b: the honest late capture passes",
+  residual(lateResult(), honestRec()).problems,
+);
+expect(
+  residual(lateResult(), honestRec()).detail.includes(
+    "refused_preload_particles",
+  ),
+  "1b: the detail names the refusal count",
+);
+expect(
+  residual(undefined, honestRec()).problems.length >= 4,
+  "1b: a missing result.json fails every table",
+);
+for (const [what, mutate] of [
+  [
+    "an adopted emitter",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.adoption!.emitters = 1;
+    },
+  ],
+  [
+    "no preload refusal",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.adoption!.refused_preload_particles = 0;
+    },
+  ],
+  [
+    "an extra refusal beyond preload",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.adoption!.refused = 2;
+    },
+  ],
+  [
+    "no unknown-material keyed",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.particles!.unknown_material_keyed = 0;
+    },
+  ],
+  [
+    "no texture adopted",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.adopt_stats!.resources!.textures = 0;
+    },
+  ],
+  [
+    "a refused texture",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.adopt_stats!.resources!.textures_refused = 1;
+    },
+  ],
+  [
+    "too few items adopted",
+    (r: CaptureResult) => {
+      r.stream!.gate8!.adopt_stats!.material_adoption!.items_adopted = 1;
+    },
+  ],
+] as [string, (r: CaptureResult) => void][]) {
+  const r = lateResult();
+  mutate(r);
+  expect(residual(r, honestRec()).problems.length > 0, `1b: ${what} fails`);
+}
+expect(
+  residual(lateResult(), rec([tx(16, { unknown_items: { unknown_rids: 1 } })]))
+    .problems.length > 0,
+  "1b: an unknown item RID fails",
+);
+expect(
+  residual(
+    lateResult(),
+    rec([tx(16, { unknown_items: { withheld_items: 1 } })]),
+  ).problems.length > 0,
+  "1b: a withheld item fails",
+);
+expect(
+  residual(lateResult(), { error: "recording.rs12 missing" }).problems.length >
+    0,
+  "1b: a missing recording fails",
+);
+expect(
+  residual(lateResult(), honestRec(), ["recording.rs12: missing"]).problems
+    .length > 0,
+  "1b: a sink validation problem fails",
+);
+// the late result is not a deferred result and vice versa
+expect(
+  adopt(lateResult(), honestRec()).length > 0,
+  "1b: the late result fails the deferred judgement",
+);
+expect(
+  residual(honestResult(), honestRec()).problems.length > 0,
+  "1b: the deferred result fails the late judgement",
 );
 
 // ------------------------------------------------------------------------------ 2. fault
@@ -465,7 +605,11 @@ expect(
 // ------------------------------------------------------------------------------ 4. runG8res trees
 
 async function main(): Promise<void> {
-  const legs = ["late/capture", "fault-no-resources/capture"];
+  const legs = [
+    "late/capture",
+    "deferred/capture",
+    "fault-no-resources/capture",
+  ];
   const mk = (setup: (root: string) => void): string => {
     const root = mkdtempSync(join(tmpdir(), "self-test-gate8-res-"));
     setup(root);
@@ -496,8 +640,9 @@ async function main(): Promise<void> {
   const ok = await run(
     mk((r) => {
       leg(r, "import/fixture", "0");
-      leg(r, legs[0], "0", honestResult());
-      leg(r, legs[1], "0", faultResult());
+      leg(r, legs[0], "0", lateResult());
+      leg(r, legs[1], "0", honestResult());
+      leg(r, legs[2], "0", faultResult());
     }),
   );
   expect(
@@ -505,7 +650,12 @@ async function main(): Promise<void> {
     "4: res-legs passes when every leg exited 0",
     ok("res-legs"),
   );
-  for (const id of ["res-late-adopt", "res-free", "res-late-fault"]) {
+  for (const id of [
+    "res-late-adopt",
+    "res-late-residual",
+    "res-free",
+    "res-late-fault",
+  ]) {
     expect(
       ok(id)?.passed === false,
       `4: ${id} fails without a recording`,
@@ -521,8 +671,9 @@ async function main(): Promise<void> {
   const bad = await run(
     mk((r) => {
       leg(r, "import/fixture", "0");
-      leg(r, legs[0], "1", honestResult());
-      leg(r, legs[1], "0", faultResult());
+      leg(r, legs[0], "1", lateResult());
+      leg(r, legs[1], "0", honestResult());
+      leg(r, legs[2], "0", faultResult());
     }),
   );
   expect(
@@ -534,8 +685,9 @@ async function main(): Promise<void> {
   const missing = await run(
     mk((r) => {
       leg(r, "import/fixture", "0");
-      leg(r, legs[0], "0", honestResult());
-      leg(r, legs[1], null);
+      leg(r, legs[0], "0", lateResult());
+      leg(r, legs[1], "0", honestResult());
+      leg(r, legs[2], null);
     }),
   );
   expect(
@@ -550,7 +702,13 @@ async function main(): Promise<void> {
   );
 
   const none = await run(mk((r) => leg(r, "import/fixture", "0")));
-  for (const id of ["res-legs", "res-late-adopt", "res-free", "res-late-fault"])
+  for (const id of [
+    "res-legs",
+    "res-late-adopt",
+    "res-late-residual",
+    "res-free",
+    "res-late-fault",
+  ])
     expect(
       none(id)?.passed === false,
       `4: ${id} fails on an empty tree`,

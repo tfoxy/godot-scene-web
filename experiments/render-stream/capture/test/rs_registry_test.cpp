@@ -502,11 +502,69 @@ int main() {
            "skip-params: no parameter recorded");
   }
 
+  // LAR5: the particles payload -- every setter the mirror taps, the last writer winning, the
+  // engine's refusals followed; a fresh emitter is GLES3's; erased with the kind entry.
+  {
+    registry_configure(true, RegistryFault::None);
+    constexpr std::uint64_t kPt = 0x500000001, kPre = 0x500000002, kMesh = 0x500000010;
+    registry_note_create(kPt, RegistryKind::Particles);
+    RegistryParticles p;
+    expect(registry_particles(kPt, &p) && !p.mode_2d && p.fixed_fps == 30 && p.interpolate &&
+               p.floats == kRegistryParticleDefaults && p.passes.empty() && p.poses.empty(),
+           "pt: a fresh emitter is GLES3's");
+    using R = RegistryParticlesOp;
+    registry_note_particles(kPt, R::Mode, 0, 0, nullptr, 0);
+    registry_note_particles(kPt, R::Amount, 9, 0, nullptr, 0);
+    registry_note_particles(kPt, R::Amount, 12, 0, nullptr, 0);  // the last writer wins
+    registry_note_particles(kPt, R::Seed, 0xfffffffe, 0, nullptr, 0);
+    const float xform[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 6, 0};
+    registry_note_particles(kPt, R::Floats, 16, 0, xform, 12);
+    registry_note_particles(kPt, R::Floats, 30, 0, xform, 2);  // past slot 30: refused
+    const float len = 0.5f;
+    registry_note_particles(kPt, R::Trails, 1, 0, &len, 1);
+    const std::vector<float> poses(25, 2.0f);  // 2 poses and a stray float
+    registry_note_particles(kPt, R::TrailBindPoses, 0, 0, poses.data(), poses.size());
+    registry_note_particles(kPt, R::DrawPasses, 2, 0, nullptr, 0);
+    registry_note_particles(kPt, R::DrawPassMesh, 1, kMesh, nullptr, 0);
+    registry_note_particles(kPt, R::DrawPassMesh, 2, kMesh, nullptr, 0);  // out of range
+    registry_note_particles(kPt, R::DrawPasses, -1, 0, nullptr, 0);        // refused
+    registry_note_particles(kPt, R::ProcessMaterial, 0, 0x77, nullptr, 0);
+    registry_note_particles(kPt, R::Subemitter, 0, 0x78, nullptr, 0);
+    registry_note_particles(kPre, R::Amount, 9, 0, nullptr, 0);  // pre-load: nothing
+    expect(registry_particles(kPt, &p) && p.mode_2d && p.amount == 12 && p.seed == 0xfffffffeu &&
+               p.floats[25] == 5.0f && p.floats[26] == 6.0f && p.floats[30] == 0.0f &&
+               p.trails && p.floats[7] == 0.5f && p.poses.size() == 24 &&
+               p.passes == std::vector<std::uint64_t>({0, kMesh}) && p.process_material == 0x77 &&
+               p.subemitter == 0x78,
+           "pt: the setters recorded, last writer wins, refusals followed");
+    expect(!registry_particles(kPre, nullptr), "pt: a pre-load emitter has no record");
+    {
+      const RegistryStats st = registry_stats();
+      expect(st.particles_payloads == 1 && st.particles_payload_sets == 14 &&
+                 st.particles_payload_bytes >= 26 * 8,
+             "pt: stats count the payload, its sets and its vectors");
+      expect(contains(registry_json(), "\"particles\": {"), "pt: evidence has the block");
+    }
+    registry_note_free(kPt);
+    expect(!registry_particles(kPt, nullptr) && registry_stats().particles_payloads == 0,
+           "pt: the free erases the payload");
+    expect(identity_holds(), "pt: identity holds");
+
+    // registry-skip-particles (LAR5's sabotage): the kind is recorded, no setter is.
+    registry_configure(true, RegistryFault::SkipParticles);
+    expect(registry_on() && std::string(registry_fault_name(RegistryFault::SkipParticles)) ==
+                                "registry-skip-particles",
+           "skip-particles: the registry still records");
+    registry_note_create(kPt, RegistryKind::Particles);
+    registry_note_particles(kPt, R::Amount, 9, 0, nullptr, 0);
+    expect(registry_particles(kPt, &p) && p.amount == 0, "skip-particles: no setter recorded");
+  }
+
   // Reconfigure resets everything (a test-only path: the capture configures once).
   registry_configure(false, RegistryFault::None);
   expect(registry_stats().entries == 0 && registry_timeline(nullptr).empty() &&
              registry_stats().canvas_payloads == 0 && !registry_canvas_texture(0x300000031, nullptr) &&
-             registry_stats().multimesh_payloads == 0,
+             registry_stats().multimesh_payloads == 0 && registry_stats().particles_payloads == 0,
          "reset");
 
   if (g_failures != 0) {

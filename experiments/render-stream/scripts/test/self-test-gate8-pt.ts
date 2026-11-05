@@ -69,15 +69,14 @@ import {
 } from "../lib/gate8-pt-checks";
 import {
   adoptionStats,
-  PPM_DECLARED_DEFAULTS,
   type PtLateTx,
-  ppmDeclaredDefaultProblems,
   ptLateAdoptProblems,
   ptLateCmbtProblems,
   ptLateFaultProblems,
-  ptLatePpmBuiltinProblems,
+  ptLatePreloadProblems,
   ptRegistryParamsProblems,
   ptRegistryRealShaderProblems,
+  ptRegistrySourceProblems,
   ptSyntheticSkipProblems,
   ppmStats as readPpmStats,
   runG8ptLate,
@@ -1557,11 +1556,7 @@ async function main(): Promise<void> {
           {
             status: "ok",
             shader: 5,
-            params: PPM_DECLARED_DEFAULTS.map((d) => ({
-              name: d.name,
-              type: d.type,
-              value: d.value,
-            })),
+            params: [],
           },
         ],
         [
@@ -1569,11 +1564,7 @@ async function main(): Promise<void> {
           {
             status: "ok",
             shader: 5,
-            params: PPM_DECLARED_DEFAULTS.map((d) => ({
-              name: d.name,
-              type: d.type,
-              value: d.value,
-            })),
+            params: [],
           },
         ],
       ]),
@@ -1685,72 +1676,6 @@ async function main(): Promise<void> {
       ptLateFaultProblems({ emitters: 0 }, [good()], late).length === 2,
       "ptLateFaultProblems: an adopted state fails it",
     );
-    const ppmStats = {
-      emitters: 2,
-      ppm_materials: 2,
-      refused: 0,
-      ppm_refused: 0,
-      ppm_refused_no_shader: 2,
-      ppm_builtin: 2,
-    };
-    expect(
-      ptLatePpmBuiltinProblems(ppmStats, [good()], late, 12).length === 0,
-      "ptLatePpmBuiltinProblems: all builtin-recovered passes",
-    );
-    expect(
-      ptLatePpmBuiltinProblems(
-        { ...ppmStats, ppm_builtin: 1 },
-        [good()],
-        late,
-        12,
-      ).some((p) => p.includes("recovered through the builtin")),
-      "ptLatePpmBuiltinProblems: a short builtin count fails",
-    );
-    expect(
-      ptLatePpmBuiltinProblems(
-        { ...ppmStats, ppm_refused_no_shader: 0 },
-        [good()],
-        late,
-        12,
-      ).some((p) => p.includes("named no shader")),
-      "ptLatePpmBuiltinProblems: no no-shader diagnosis fails",
-    );
-    const missingDefault = good();
-    (
-      missingDefault.materials.get(1) as {
-        status: string;
-        shader: number | null;
-        params: { name: string }[];
-      }
-    ).params = PPM_DECLARED_DEFAULTS.slice(1).map((d) => ({
-      name: d.name,
-      type: d.type,
-      value: d.value,
-    }));
-    expect(
-      ppmDeclaredDefaultProblems([missingDefault]).some((p) =>
-        p.includes("inherit_emitter_velocity_ratio absent"),
-      ),
-      "ppmDeclaredDefaultProblems: a missing declared default fails",
-    );
-    const wrongDefault = good();
-    (
-      wrongDefault.materials.get(2) as {
-        status: string;
-        shader: number | null;
-        params: { name: string; type: string; value: unknown }[];
-      }
-    ).params = PPM_DECLARED_DEFAULTS.map((d) => ({
-      name: d.name,
-      type: d.type,
-      value: d.name === "emission_shape_scale" ? [2, 2, 2] : d.value,
-    }));
-    expect(
-      ppmDeclaredDefaultProblems([wrongDefault]).some(
-        (p) => p.includes("emission_shape_scale") && p.includes("expected"),
-      ),
-      "ppmDeclaredDefaultProblems: a wrong declared default fails",
-    );
     // LATE-CMBT (results/p3/late-cmbt.md): ptLateCmbtProblems / ppmStats.
     const lateShader = {
       amount: 14,
@@ -1767,11 +1692,7 @@ async function main(): Promise<void> {
           {
             status: "ok",
             shader: 5,
-            params: PPM_DECLARED_DEFAULTS.map((d) => ({
-              name: d.name,
-              type: d.type,
-              value: d.value,
-            })),
+            params: [],
           },
         ],
       ]),
@@ -2028,16 +1949,26 @@ async function main(): Promise<void> {
     const noRamp = withParams(3, (p) => {
       p.splice(2, 1);
     });
-    const excused = ptRegistryParamsProblems(headStats, [bornTx], [noRamp], late, 1);
+    const excused = ptRegistryParamsProblems(
+      headStats,
+      [bornTx],
+      [noRamp],
+      late,
+      1,
+    );
     expect(
       excused.problems.length === 0 && excused.excused.length === 1,
       "ptRegistryParamsProblems: a texture parameter the dummy refused is excused",
       `${excused.problems[0]} excused ${excused.excused.length}`,
     );
     expect(
-      ptRegistryParamsProblems(headStats, [bornTx], [noRamp], late, 0).problems.some((p) =>
-        p.includes("color_ramp absent"),
-      ),
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [noRamp],
+        late,
+        0,
+      ).problems.some((p) => p.includes("color_ramp absent")),
       "ptRegistryParamsProblems: without a counted refusal a missing texture parameter fails",
     );
     expect(
@@ -2056,6 +1987,199 @@ async function main(): Promise<void> {
     );
   }
 
+  // 8b. LAR5: ptLatePreloadProblems and ptRegistrySourceProblems.
+  {
+    const late = {
+      arm_frame: 12,
+      emitters: 2,
+      process_materials: 2,
+      subemitter: "H_SUB",
+      coverage_from_frame: 46,
+    };
+    const unknownTx = (): PtLateTx => ({
+      table: new Map(),
+      materials: new Map(),
+      shaders: new Map(),
+      items: new Map([
+        [10, { add_particles: 0, unsupported: { "unknown-particles": 1 } }],
+        [11, { add_particles: 0, unsupported: { "unknown-particles": 1 } }],
+      ]),
+      item_unsupported: {},
+    });
+    const preload = {
+      emitters: 0,
+      refused: 2,
+      refused_preload_particles: 2,
+      ppm_materials: 0,
+    };
+    expect(
+      ptLatePreloadProblems(preload, [unknownTx()], late).length === 0,
+      "ptLatePreloadProblems: refused preload-particles, nothing adopted passes",
+    );
+    expect(
+      ptLatePreloadProblems({ ...preload, emitters: 1 }, [unknownTx()], late)
+        .length === 1,
+      "ptLatePreloadProblems: an adopted emitter fails",
+    );
+    expect(
+      ptLatePreloadProblems(
+        { ...preload, refused_preload_particles: 1 },
+        [unknownTx()],
+        late,
+      ).some((p) => p.includes("refused_preload_particles")),
+      "ptLatePreloadProblems: a short preload refusal count fails",
+    );
+    expect(
+      ptLatePreloadProblems(
+        { ...preload, ppm_materials: 1 },
+        [unknownTx()],
+        late,
+      ).length === 1,
+      "ptLatePreloadProblems: an adopted process material fails",
+    );
+    const drawn = unknownTx();
+    drawn.items.set(10, { add_particles: 1, unsupported: {} });
+    expect(
+      ptLatePreloadProblems(preload, [drawn], late).some((p) =>
+        p.includes("unknown-particles add_particles"),
+      ),
+      "ptLatePreloadProblems: a drawn emitter fails",
+    );
+    expect(
+      ptLatePreloadProblems(null, [unknownTx()], late).length === 1,
+      "ptLatePreloadProblems: no adoption stats fails",
+    );
+
+    const floats = (n: number) => ({ lifetime: n, trail_poses: [] });
+    const entry = (
+      id: number,
+      seed: number,
+      amount: number,
+      origin: string,
+      f = 1,
+    ) => ({
+      id,
+      origin,
+      status: "ok",
+      amount,
+      process_material: null,
+      subemitter: null,
+      mode: "2d",
+      emitting: true,
+      one_shot: false,
+      fixed_fps: 30,
+      interpolate: true,
+      fractional_delta: true,
+      local: false,
+      draw_order: "index",
+      transform_align: "disabled",
+      trails: false,
+      trail_poses: 0,
+      seed,
+      draw_passes: [4],
+      floats: floats(f),
+    });
+    const tx = (frame: number, origin: string, ids: number[]) => ({
+      ...unknownTx(),
+      frame,
+      table: new Map(
+        ids.map(
+          (id) =>
+            [
+              id,
+              entry(id + (origin === "adopted" ? 100 : 0), id, 10 + id, origin),
+            ] as const,
+        ),
+      ),
+    });
+    const bornTx = (): PtLateTx[] => [
+      tx(11, "created", [1]),
+      tx(12, "created", [1, 2]),
+    ];
+    const defTx = (): PtLateTx[] => [
+      tx(11, "adopted", [1]),
+      tx(12, "adopted", [1, 2]),
+    ];
+    const srcStats = { emitters: 2, refused: 0, refused_preload_particles: 0 };
+    const registry = {
+      enabled: true,
+      families: { particles: { creates: 2 } },
+      payloads: { particles: { entries: 0, sets: 30 } },
+    };
+    const good = ptRegistrySourceProblems(
+      srcStats,
+      registry,
+      defTx(),
+      bornTx(),
+      late,
+    );
+    expect(
+      good.problems.length === 0 &&
+        good.detail.includes("2 emitters from the registry") &&
+        good.detail.includes("2 configs equal born at frame 12"),
+      "ptRegistrySourceProblems: matching born entries pass",
+      good.problems[0] ?? good.detail,
+    );
+    const born2 = bornTx();
+    (born2[1].table.get(2) as { floats?: unknown }).floats = floats(2);
+    expect(
+      ptRegistrySourceProblems(
+        srcStats,
+        registry,
+        defTx(),
+        born2,
+        late,
+      ).problems.some((p) => p.includes("floats")),
+      "ptRegistrySourceProblems: a differing float fails",
+    );
+    const born3 = bornTx();
+    (born3[1].table.get(1) as { one_shot?: boolean }).one_shot = true;
+    expect(
+      ptRegistrySourceProblems(
+        srcStats,
+        registry,
+        defTx(),
+        born3,
+        late,
+      ).problems.some((p) => p.includes("one_shot")),
+      "ptRegistrySourceProblems: a differing configuration field fails",
+    );
+    const off = ptRegistrySourceProblems(
+      { emitters: 0, refused: 2, refused_preload_particles: 2 },
+      { enabled: false, families: { particles: { creates: 0 } } },
+      [unknownTx()],
+      bornTx(),
+      late,
+    );
+    expect(
+      off.problems.length >= 3 &&
+        off.problems[0].includes("emitters adopted") &&
+        off.problems.some((p) => p.includes("refused_preload_particles 2")),
+      "ptRegistrySourceProblems: the registry-off shape fails",
+      off.problems.join(" | "),
+    );
+    expect(
+      ptRegistrySourceProblems(
+        srcStats,
+        registry,
+        defTx(),
+        [tx(13, "created", [1, 2])],
+        late,
+      ).problems.some((p) => p.includes("no born transaction at frame 12")),
+      "ptRegistrySourceProblems: a missing born frame fails",
+    );
+    expect(
+      ptRegistrySourceProblems(
+        srcStats,
+        null,
+        defTx(),
+        bornTx(),
+        late,
+      ).problems.some((p) => p.includes("registry.json")),
+      "ptRegistrySourceProblems: no registry.json fails",
+    );
+  }
+
   // 9. runG8ptLate: a late leg that did not run is a problem, not a silent skip.
   {
     const legs = [
@@ -2066,7 +2190,10 @@ async function main(): Promise<void> {
       "deferred-cmbt/capture",
       "sabotage-registry-drop-binding/capture",
       "headless-deferred/capture",
-      "late/receiver",
+      "sabotage-registry-off/capture",
+      "sabotage-registry-skip-particles/capture",
+      "sabotage-registry-drop-binding/receiver",
+      "sabotage-registry-skip-particles/receiver",
       "deferred/receiver",
       "deferred/receiver-patch",
       "deferred-cmbt/receiver",

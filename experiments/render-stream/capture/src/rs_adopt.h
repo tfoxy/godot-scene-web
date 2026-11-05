@@ -265,6 +265,10 @@ enum class AdoptFault : std::uint8_t {
   // not recorded, so a registered process material has no binding and falls to the placeholder
   // (fails pt-registry-real-shader on a deferred leg).
   RegistryDropBinding,
+  // LAR5: registry-skip-particles: the particles setters are not recorded, so an emitter is adopted
+  // with a fresh emitter's configuration (no amount, no process material, no draw pass) and draws
+  // nothing (fails pt-late-lifecycle on a deferred leg).
+  RegistrySkipParticles,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -496,30 +500,31 @@ struct PpmStats {
 };
 PpmStats adopt_particles_stats();
 
-// PM7 (render-stream-12.md "As built (PM7)"): a GPUParticles2D emitter created before arm is
-// adopted lazily, at its first canvas_item_add_particles (the walk's queue_redraw makes one for
-// every visible adopted item; a pre-arm emitter whose node enters the tree later draws on entry,
-// mapped by node_added). Its particles RID and draw-pass mesh have no getter, so they come from
-// the draw itself (gpu_particles_2d.cpp:615-725: mesh_clear and mesh_add_surface on the private
-// quad mesh, particles_set_trail_bind_poses, then canvas_item_add_particles): the trail-poses hook
-// notes the draw of an emitter the mirror does not know (adopt_particles_note_draw), and the
-// add_particles hook adopts it (adopt_particles_ref) from the item's node (the node map), before
-// the command is recorded. The configuration is the node's getters; the mesh is adopted through
-// G8r (adopt_mesh_ref); a pre-arm process material through its class (a ParticleProcessMaterial:
-// LAR4, from the registry when registered, else LATE-PPM's placeholder keyed from its getters;
-// a ShaderMaterial or CanvasItemMaterial: G8m's recipe). Main thread only; a draw that does not match (no node, not
-// a GPUParticles2D, no noted draw) stays unknown-particles, counted.
-void adopt_particles_note_draw(std::uint64_t particles, std::uint64_t mesh,
-                               const std::vector<float> &poses);
-void adopt_particles_ref(std::uint64_t item, std::uint64_t particles);
+// PM7 (render-stream-12.md "As built (PM7)"), LAR5 (late-arm-registry-design.md Q4 M19): a
+// GPUParticles2D emitter created before arm is adopted lazily, at its first
+// canvas_item_add_particles (the walk's queue_redraw makes one for every visible adopted item; a
+// pre-arm emitter whose node enters the tree later draws on entry). RenderingServer has no
+// particles getter, so the entry is the registry's record of every particles_set_* the hooks saw
+// (rs_registry.h RegistryParticles): the configuration, floats and trail poses as the engine
+// declared them, the draw passes (each mesh adopted through G8r, adopt_mesh_ref) and the process
+// material (from the registry when registered, adopt_process_material_ref; otherwise the entry is
+// unknown-material and adopt_particles_resolve's LATE-RES re-link supplies LATE-PPM's placeholder
+// from the drawing node). An emitter the registry does not hold (older than the hooks: F1) is
+// refused, typed `preload-particles` (EmitterAdoptStats::refused_preload_particles), and its draws
+// stay unknown-particles. Main thread only.
+void adopt_particles_ref(std::uint64_t particles);
+// LAR5: the process-material reference site (particles_set_process_material, and an adopted
+// emitter's recorded material): a registered process material the mirror does not know is adopted
+// from the registry before the call is recorded, so a post-arm emitter given a pre-arm material is
+// never unknown-material. True when it adopted one. Only when registry_on().
+bool adopt_process_material_ref(std::uint64_t rid);
+
 struct EmitterAdoptStats {
-  std::uint32_t emitters = 0;          // emitters adopted
+  std::uint32_t emitters = 0;          // emitters adopted (LAR5: every one from the registry)
   std::uint32_t refused = 0;           // pre-arm emitters a draw named and nothing could adopt
-  std::uint32_t refused_no_node = 0;   // ... no node in the map for the drawing item
-  std::uint32_t refused_not_gpu = 0;   // ... the node is not a GPUParticles2D
-  std::uint32_t refused_no_draw = 0;   // ... no noted draw (mesh) for the emitter
-  std::uint32_t refused_binds = 0;     // ... a getter's bind is missing
-  std::uint32_t meshes = 0;            // draw-pass meshes adopted with an emitter
+  std::uint32_t refused_preload_particles = 0;  // LAR5 (F1): ... not registered (older than the
+                                                // hooks): `preload-particles`
+  std::uint32_t meshes = 0;            // draw-pass meshes adopted with an emitter (G8r)
   std::uint32_t ppm_materials = 0;     // ParticleProcessMaterials adopted (every source)
   std::uint32_t ppm_registry = 0;      // LAR4: ... from the registry, with the recorded shader
   std::uint32_t ppm_shaders = 0;       // ... placeholder shaders adopted (one per builtin key)

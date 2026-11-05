@@ -1978,10 +1978,6 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 thread_local bool t_internal = false;
 thread_local std::string *t_internal_code = nullptr;
 thread_local uint64_t *t_internal_rid = nullptr;
-// PM7: the mesh the last mesh_add_surface on this thread filled (a GPUParticles2D's draw rebuilds
-// its draw-pass quad right before particles_set_trail_bind_poses and canvas_item_add_particles,
-// gpu_particles_2d.cpp:615-725), for adopt_particles_note_draw.
-thread_local uint64_t t_pt_surface_mesh = 0;
 
 // PM7: the plain-Array material parameters the hooks saw (counters.json captured.array_params):
 // per parameter name, per "<element types> x<size> -> <packed form or param-type>", the calls.
@@ -2668,7 +2664,6 @@ RID hook_mesh_create(void *self) {
 
 void hook_mesh_add_surface(void *self, RID mesh, const SurfaceDataPrefix *surface) {
   bump(kMeshAddSurface);
-  t_pt_surface_mesh = mesh.id;  // PM7: a GPUParticles2D draw's quad (adopt_particles_note_draw)
   if (surface != nullptr) {
     MeshSurfaceKey key;
     zero(&key);
@@ -3018,7 +3013,7 @@ void hook_add_particles(void *self, RID item, RID particles, RID texture) {
     // PM5 ("The command"): /12's add_particles, naming the mirror's emitter (an unknown RID
     // becomes `unsupported`/`unknown-particles`).
     rs::adopt_texture_ref(texture.id);
-    rs::adopt_particles_ref(item.id, particles.id);  // PM7: a pre-arm emitter, adopted here
+    rs::adopt_particles_ref(particles.id);  // PM7, LAR5: a pre-arm emitter, from the registry
     if (streaming()) {
       mirror().add_particles(item.id, particles.id, texture.id, current_frame());
     }
@@ -3882,9 +3877,53 @@ void pt_record(HookId id, uint64_t rid, const rs::Mirror::ParticlesCall &r,
   }
 }
 
-// One setter: forward, then the mirror and the log line.
+// LAR5 (late-arm-registry-design.md R2): a particles setter the mirror taps, recorded in the
+// registry's form (RegistryParticlesOp), armed or not. Only when registry_on(). The float slots are
+// the mirror's own (Mirror::particles_float_slots); the events (restart, emit, request_process)
+// are simulation state and record nothing.
+void registry_particles(uint64_t rid, PtOp op, const rs::Mirror::ParticlesArgs &a) {
+  using R = rs::RegistryParticlesOp;
+  R r = R::Mode;
+  switch (op) {
+  case PtOp::SetMode: r = R::Mode; break;
+  case PtOp::SetEmitting: r = R::Emitting; break;
+  case PtOp::SetAmount: r = R::Amount; break;
+  case PtOp::SetOneShot: r = R::OneShot; break;
+  case PtOp::SetUseLocalCoordinates: r = R::Local; break;
+  case PtOp::SetFixedFps: r = R::FixedFps; break;
+  case PtOp::SetInterpolate: r = R::Interpolate; break;
+  case PtOp::SetFractionalDelta: r = R::FractionalDelta; break;
+  case PtOp::SetTransformAlign: r = R::TransformAlign; break;
+  case PtOp::SetDrawOrder: r = R::DrawOrder; break;
+  case PtOp::SetSeed: r = R::Seed; break;
+  case PtOp::SetProcessMaterial: r = R::ProcessMaterial; break;
+  case PtOp::SetSubemitter: r = R::Subemitter; break;
+  case PtOp::SetDrawPasses: r = R::DrawPasses; break;
+  case PtOp::SetDrawPassMesh: r = R::DrawPassMesh; break;
+  case PtOp::SetTrails:
+    rs::registry_note_particles(rid, R::Trails, a.i, 0, a.f.data(), a.f.size());
+    return;
+  case PtOp::SetTrailBindPoses:
+    rs::registry_note_particles(rid, R::TrailBindPoses, 0, 0, a.f.data(), a.f.size());
+    return;
+  default: {
+    std::size_t at = 0;
+    std::size_t count = 0;
+    if (rs::Mirror::particles_float_slots(op, &at, &count) && a.f.size() >= count) {
+      rs::registry_note_particles(rid, R::Floats, static_cast<int64_t>(at), 0, a.f.data(), count);
+    }
+    return;
+  }
+  }
+  rs::registry_note_particles(rid, r, a.i, a.rid, nullptr, 0);
+}
+
+// One setter: forward, then the registry (LAR5), the mirror and the log line.
 void pt_tap(HookId id, RID particles, PtOp op, const rs::Mirror::ParticlesArgs &args,
             const rs::MultimeshArgs &log_args) {
+  if (rs::registry_on()) {
+    registry_particles(particles.id, op, args);
+  }
   if (!streaming()) {
     return;
   }
@@ -4022,9 +4061,18 @@ void hook_particles_set_use_local_coordinates(void *self, RID p, bool enable) {
 void hook_particles_set_process_material(void *self, RID p, RID material) {
   bump(kParticlesSetProcessMaterial);
   original<FnSetMaterial>(kParticlesSetProcessMaterial)(self, p, material);
+  if (rs::registry_on()) {
+    rs::registry_note_particles(p.id, rs::RegistryParticlesOp::ProcessMaterial, 0, material.id,
+                                nullptr, 0);  // LAR5
+  }
   if (streaming()) {
     rs::Mirror::ParticlesArgs a;
     a.rid = material.id;
+    // LAR5: a registered pre-arm process material is adopted before the call is recorded (the
+    // reference site; never unknown-material).
+    if (rs::registry_on() && material.id != 0) {
+      rs::adopt_process_material_ref(material.id);
+    }
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetProcessMaterial, a, current_frame());
@@ -4087,16 +4135,20 @@ void hook_particles_set_trails(void *self, RID p, bool enable, float length) {
 void hook_particles_set_trail_bind_poses(void *self, RID p, const Vector<Transform3D> *poses) {
   bump(kParticlesSetTrailBindPoses);
   original<FnParticlesSetTrailBindPoses>(kParticlesSetTrailBindPoses)(self, p, poses);
-  if (streaming()) {
+  const bool record = rs::registry_on();
+  if (streaming() || record) {
     rs::Mirror::ParticlesArgs a;
     const int64_t n = poses != nullptr ? poses->size() : 0;
     for (int64_t i = 0; i < n; ++i) {
       const std::array<float, 12> t = xform3_floats(poses->ptr()[i]);
       a.f.insert(a.f.end(), t.begin(), t.end());
     }
-    // PM7: an emitter the mirror does not know, mid-draw: its draw-pass mesh and poses, for the
-    // adoption its canvas_item_add_particles makes next.
-    rs::adopt_particles_note_draw(p.id, t_pt_surface_mesh, a.f);
+    if (record) {
+      registry_particles(p.id, PtOp::SetTrailBindPoses, a);  // LAR5
+    }
+    if (!streaming()) {
+      return;
+    }
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::ParticlesCall r =
         mirror().particles_call(p.id, PtOp::SetTrailBindPoses, a, current_frame());
@@ -4121,6 +4173,10 @@ void hook_particles_restart(void *self, RID p) {
 void hook_particles_set_subemitter(void *self, RID p, RID sub) {
   bump(kParticlesSetSubemitter);
   original<FnSetMaterial>(kParticlesSetSubemitter)(self, p, sub);
+  if (rs::registry_on()) {
+    rs::registry_note_particles(p.id, rs::RegistryParticlesOp::Subemitter, 0, sub.id, nullptr,
+                                0);  // LAR5
+  }
   if (streaming()) {
     rs::Mirror::ParticlesArgs a;
     a.rid = sub.id;
@@ -4180,6 +4236,10 @@ void hook_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
   bump(kParticlesSetDrawPassMesh);
   rs::adopt_mesh_ref(mesh.id);  // G8r: a pre-arm mesh is adopted at first reference
   original<FnParticlesSetDrawPassMesh>(kParticlesSetDrawPassMesh)(self, p, pass, mesh);
+  if (rs::registry_on()) {
+    rs::registry_note_particles(p.id, rs::RegistryParticlesOp::DrawPassMesh, pass, mesh.id,
+                                nullptr, 0);  // LAR5
+  }
   if (streaming()) {
     rs::Mirror::ParticlesArgs a;
     a.i = pass;

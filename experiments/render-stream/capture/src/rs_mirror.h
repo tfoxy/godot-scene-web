@@ -603,13 +603,15 @@ class Mirror {
   // free() of an emitter: version + 1, a `freed` tombstone while still named, gone otherwise.
   ParticlesCall particles_free(std::uint64_t rid, std::uint64_t frame);
   bool knows_particles(std::uint64_t rid) const;
-  // PM7 (render-stream-12.md "As built (PM7)"): an emitter that existed before arm, adopted at
-  // its first add_particles from its GPUParticles2D's getters (rs_adopt.cpp
-  // adopt_particles_ref), as the node's own setters would have declared it: mode 2D, the
-  // constructor's one restart, one draw pass, origin `adopted`. `material`, `mesh` and
-  // `subemitter` are RIDs the mirror must already know (an unknown one is the entry's usual
-  // reason; an unknown subemitter is left null, linked later by particles_call SetSubemitter).
+  // PM7 (render-stream-12.md "As built (PM7)"), LAR5: an emitter that existed before arm, adopted
+  // at its first add_particles from the registry's record of every setter the hooks saw
+  // (rs_adopt.cpp adopt_particles_ref): its configuration as the engine declared it, origin
+  // `adopted`, the constructor's one restart (a joiner's emitter starts fresh). `material`,
+  // `passes` and `subemitter` are RIDs the mirror should already know (an unknown material or pass
+  // mesh is the entry's usual reason; an unknown subemitter is left null, linked later by
+  // particles_call SetSubemitter).
   struct ParticlesAdopt {
+    bool mode_2d = false;
     bool emitting = false;
     bool one_shot = false;
     bool interpolate = true;
@@ -622,10 +624,13 @@ class Mirror {
     std::int32_t transform_align = 0;
     std::uint32_t seed = 0;
     std::uint64_t material = 0;
-    std::uint64_t mesh = 0;
+    std::vector<std::uint64_t> passes;  // draw-pass mesh RIDs
     std::uint64_t subemitter = 0;
     std::vector<float> floats;  // 31 + 12 x trail poses, wire order
   };
+  // LAR5: the base float slots a setter writes (offset, count), as particles_call writes them;
+  // false for a setter that writes none. The registry records the same slots (hooks.cpp).
+  static bool particles_float_slots(ParticlesOp op, std::size_t *at, std::size_t *count);
   ParticlesCall particles_adopt(std::uint64_t rid, const ParticlesAdopt &a, std::uint64_t frame);
   // The wire id of a RID argument as the hook log names it (a material, mesh or emitter).
   std::uint32_t material_id_of(std::uint64_t rid) const;

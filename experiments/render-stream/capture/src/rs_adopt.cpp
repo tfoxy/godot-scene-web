@@ -1612,11 +1612,13 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::RegistrySkipParams;
   } else if (text == "registry-drop-binding") {
     *out = AdoptFault::RegistryDropBinding;
+  } else if (text == "registry-skip-particles") {
+    *out = AdoptFault::RegistrySkipParticles;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
              "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
-             "registry-skip-params or registry-drop-binding)";
+             "registry-skip-params, registry-drop-binding or registry-skip-particles)";
     return false;
   }
   if (!adopt) {
@@ -1639,6 +1641,7 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::RegistryMmStride: return "registry-mm-stride";
   case AdoptFault::RegistrySkipParams: return "registry-skip-params";
   case AdoptFault::RegistryDropBinding: return "registry-drop-binding";
+  case AdoptFault::RegistrySkipParticles: return "registry-skip-particles";
   }
   return "none";
 }
@@ -3251,36 +3254,25 @@ bool predraw_pump_frame() {
 
 namespace {
 
+// LAR5: the emitter itself is adopted from the registry (no getter); these binds serve only the
+// residual process-material reads (pta_process_material, adopt_ppm's FOG-U read-back), whose
+// material comes from the drawing node.
 struct PtaBinds {
   bool tried = false;
   bool ok = false;
-  GDExtensionMethodBindPtr amount = nullptr, amount_ratio = nullptr, lifetime = nullptr,
-                           one_shot = nullptr, pre_process_time = nullptr,
-                           explosiveness = nullptr, randomness = nullptr, speed_scale = nullptr,
-                           fixed_fps = nullptr, interpolate = nullptr, fractional_delta = nullptr,
-                           local_coords = nullptr, draw_order = nullptr, trail_enabled = nullptr,
-                           trail_lifetime = nullptr, interp_to_end = nullptr,
-                           collision_base_size = nullptr, seed = nullptr, emitting = nullptr,
-                           visibility_rect = nullptr, sub_emitter = nullptr, texture = nullptr,
-                           process_material = nullptr, can_process = nullptr,
-                           get_node_or_null = nullptr, global_transform = nullptr,
-                           texture_width = nullptr, texture_height = nullptr,
-                           resource_get_rid = nullptr, material_get_param = nullptr;
+  GDExtensionMethodBindPtr process_material = nullptr, resource_get_rid = nullptr,
+                           material_get_param = nullptr;
   void *tag_gpu_particles = nullptr, *tag_ppm = nullptr, *tag_resource = nullptr;
 };
 PtaBinds g_pta;
-std::mutex g_pta_mutex;  // the stats and the node maps
+std::mutex g_pta_mutex;  // the stats, the refused sets and the subemitter waits
 EmitterAdoptStats g_pta_stats;
 std::set<std::uint64_t> g_pta_refused;                      // emitter RIDs refused (counted once)
 // Process-material RIDs whose adoption failed this stream: never retried.
 std::set<std::uint64_t> g_pta_refused_materials;
-std::map<std::uint64_t, std::uint64_t> g_pta_node_rid;      // adopted emitter node id -> RID
-std::multimap<std::uint64_t, std::uint64_t> g_pta_sub_wait;  // subemitter node id -> parent RID
-// The draw being made on this thread (adopt_particles_note_draw): the emitter, its quad mesh and
-// its trail bind poses.
-thread_local std::uint64_t t_pta_particles = 0;
-thread_local std::uint64_t t_pta_mesh = 0;
-thread_local std::vector<float> t_pta_poses;
+// An adopted emitter whose recorded subemitter the mirror did not know yet: subemitter RID ->
+// parent RID, linked when that emitter is adopted.
+std::multimap<std::uint64_t, std::uint64_t> g_pta_sub_wait;
 
 bool pta_binds() {
   if (g_pta.tried) {
@@ -3291,54 +3283,16 @@ bool pta_binds() {
       g_iface.object_cast_to == nullptr || g_iface.ref_get_object == nullptr) {
     return false;
   }
-  const char *gp = "GPUParticles2D";
   // 4.5.1's hashes (extension_api.json).
-  g_pta.amount = method_bind(gp, "get_amount", 3905245786LL);
-  g_pta.amount_ratio = method_bind(gp, "get_amount_ratio", 1740695150LL);
-  g_pta.lifetime = method_bind(gp, "get_lifetime", 1740695150LL);
-  g_pta.one_shot = method_bind(gp, "get_one_shot", 36873697LL);
-  g_pta.pre_process_time = method_bind(gp, "get_pre_process_time", 1740695150LL);
-  g_pta.explosiveness = method_bind(gp, "get_explosiveness_ratio", 1740695150LL);
-  g_pta.randomness = method_bind(gp, "get_randomness_ratio", 1740695150LL);
-  g_pta.speed_scale = method_bind(gp, "get_speed_scale", 1740695150LL);
-  g_pta.fixed_fps = method_bind(gp, "get_fixed_fps", 3905245786LL);
-  g_pta.interpolate = method_bind(gp, "get_interpolate", 36873697LL);
-  g_pta.fractional_delta = method_bind(gp, "get_fractional_delta", 36873697LL);
-  g_pta.local_coords = method_bind(gp, "get_use_local_coordinates", 36873697LL);
-  g_pta.draw_order = method_bind(gp, "get_draw_order", 941479095LL);
-  g_pta.trail_enabled = method_bind(gp, "is_trail_enabled", 36873697LL);
-  g_pta.trail_lifetime = method_bind(gp, "get_trail_lifetime", 1740695150LL);
-  g_pta.interp_to_end = method_bind(gp, "get_interp_to_end", 1740695150LL);
-  g_pta.collision_base_size = method_bind(gp, "get_collision_base_size", 1740695150LL);
-  g_pta.seed = method_bind(gp, "get_seed", 3905245786LL);
-  g_pta.emitting = method_bind(gp, "is_emitting", 36873697LL);
-  g_pta.visibility_rect = method_bind(gp, "get_visibility_rect", 1639390495LL);
-  g_pta.sub_emitter = method_bind(gp, "get_sub_emitter", 4075236667LL);
-  g_pta.texture = method_bind(gp, "get_texture", 3635182373LL);
-  g_pta.process_material = method_bind(gp, "get_process_material", 5934680LL);
-  g_pta.can_process = method_bind("Node", "can_process", 36873697LL);
-  g_pta.get_node_or_null = method_bind("Node", "get_node_or_null", 2734337346LL);
-  g_pta.global_transform = method_bind("CanvasItem", "get_global_transform", 3814499831LL);
-  g_pta.texture_width = method_bind("Texture2D", "get_width", 3905245786LL);
-  g_pta.texture_height = method_bind("Texture2D", "get_height", 3905245786LL);
+  g_pta.process_material = method_bind("GPUParticles2D", "get_process_material", 5934680LL);
   g_pta.resource_get_rid = method_bind("Resource", "get_rid", 2944877500LL);
   g_pta.material_get_param = method_bind("RenderingServer", "material_get_param", 2621281810LL);
-  g_pta.tag_gpu_particles = Tags::tag(gp);
+  g_pta.tag_gpu_particles = Tags::tag("GPUParticles2D");
   g_pta.tag_ppm = Tags::tag("ParticleProcessMaterial");
   g_pta.tag_resource = Tags::tag("Resource");
-  const GDExtensionMethodBindPtr all[] = {
-      g_pta.amount, g_pta.amount_ratio, g_pta.lifetime, g_pta.one_shot, g_pta.pre_process_time,
-      g_pta.explosiveness, g_pta.randomness, g_pta.speed_scale, g_pta.fixed_fps,
-      g_pta.interpolate, g_pta.fractional_delta, g_pta.local_coords, g_pta.draw_order,
-      g_pta.trail_enabled, g_pta.trail_lifetime, g_pta.interp_to_end, g_pta.collision_base_size,
-      g_pta.seed, g_pta.emitting, g_pta.visibility_rect, g_pta.sub_emitter, g_pta.texture,
-      g_pta.process_material, g_pta.can_process, g_pta.get_node_or_null, g_pta.global_transform,
-      g_pta.texture_width, g_pta.texture_height, g_pta.resource_get_rid,
-      g_pta.material_get_param};
-  g_pta.ok = g_pta.tag_gpu_particles != nullptr && g_pta.tag_resource != nullptr;
-  for (GDExtensionMethodBindPtr b : all) {
-    g_pta.ok = g_pta.ok && b != nullptr;
-  }
+  g_pta.ok = g_pta.tag_gpu_particles != nullptr && g_pta.tag_resource != nullptr &&
+             g_pta.process_material != nullptr && g_pta.resource_get_rid != nullptr &&
+             g_pta.material_get_param != nullptr;
   return g_pta.ok;
 }
 
@@ -3348,37 +3302,10 @@ void pta_stat(F f) {
   f(g_pta_stats);
 }
 
-// ptrcall returns: float as double, int and enum as int64, bool as one byte.
-double pta_double(GDExtensionMethodBindPtr bind, void *object) {
-  double out = 0.0;
-  g_iface.object_method_bind_ptrcall(bind, object, nullptr, &out);
-  return out;
-}
-std::int64_t pta_int(GDExtensionMethodBindPtr bind, void *object) {
-  std::int64_t out = 0;
-  g_iface.object_method_bind_ptrcall(bind, object, nullptr, &out);
-  return out;
-}
-bool pta_bool(GDExtensionMethodBindPtr bind, void *object) {
-  std::uint8_t out = 0;
-  g_iface.object_method_bind_ptrcall(bind, object, nullptr, &out);
-  return out != 0;
-}
 std::uint64_t pta_rid(void *resource) {
   std::uint64_t out = 0;
   g_iface.object_method_bind_ptrcall(g_pta.resource_get_rid, resource, nullptr, &out);
   return out;
-}
-std::uint64_t pta_instance_id(void *object) {
-  return static_cast<std::uint64_t>(get_int(kObjectGetInstanceId, object));
-}
-
-void pta_refuse(std::uint64_t rid, std::uint32_t EmitterAdoptStats::*reason) {
-  std::lock_guard<std::mutex> lock(g_pta_mutex);
-  if (g_pta_refused.insert(rid).second) {
-    ++g_pta_stats.refused;
-    ++(g_pta_stats.*reason);
-  }
 }
 
 // Adopts (or returns) the synthetic process shader for `material`'s builtin key: a `particles`
@@ -3414,22 +3341,39 @@ std::uint64_t adopt_ppm_builtin(void *material) {
 //     uniforms (FOG-U: read back, or their declared default). Nothing else names the residual's
 //     parameters without the duplicate; F1 retired load-late as a fidelity target.
 // False: unknown-material stays.
+// The registered branch of adopt_ppm, by RID alone (LAR5: an emitter adopted from the registry, and
+// particles_set_process_material's reference site, have no material object): a registered process
+// material with a recorded shader the registry can materialize, adopted as any material (LAR3).
+// `*tried`: it was registered with such a shader (false: the caller falls to the residual).
+bool adopt_ppm_registered(std::uint64_t rid, const rs::RegistryMaterial &reg, bool *tried) {
+  *tried = false;
+  if (reg.shader == 0 || !materialize_shader(reg.shader)) {
+    return false;
+  }
+  *tried = true;
+  if (!adopt_material_registered(rid, reg, false)) {
+    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_material; });
+    return false;
+  }
+  const std::uint32_t count = static_cast<std::uint32_t>(reg.params.size());
+  pta_stat([count](EmitterAdoptStats &s) {
+    ++s.ppm_materials;
+    ++s.ppm_registry;
+    s.ppm_params += count;
+  });
+  return true;
+}
+
 bool adopt_ppm(void *material, std::uint64_t rid) {
   Mirror &m = mirror_instance();
   rs::RegistryMaterial reg;
   const bool registered = rs::registry_on() && rs::registry_material(rid, &reg);
-  if (registered && reg.shader != 0 && materialize_shader(reg.shader)) {
-    if (!adopt_material_registered(rid, reg, false)) {
-      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_material; });
-      return false;
+  if (registered) {
+    bool tried = false;
+    const bool adopted = adopt_ppm_registered(rid, reg, &tried);
+    if (tried) {
+      return adopted;
     }
-    const std::uint32_t count = static_cast<std::uint32_t>(reg.params.size());
-    pta_stat([count](EmitterAdoptStats &s) {
-      ++s.ppm_materials;
-      ++s.ppm_registry;
-      s.ppm_params += count;
-    });
-    return true;
   }
   // The residual: no shader the mirror can name.
   pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_no_shader; });
@@ -3514,82 +3458,64 @@ std::uint64_t pta_process_material(void *node) {
   return rid;  // an unknown one makes the entry unknown-material, as a hooked call would
 }
 
-// The GPUParticles2D `node`'s configuration, as its setters declared it to the server
-// (gpu_particles_2d.cpp: the constructor, the setters, ENTER_TREE's speed scale,
-// _update_particle_emission_transform, _update_collision_size and the draw's trail poses).
-Mirror::ParticlesAdopt pta_config(void *node, const std::vector<float> &poses) {
+// LAR5 (late-arm-registry-design.md Q4 M19): the adoption entry of a registered emitter, built from
+// the registry's record alone: the configuration and floats as the engine's setters declared them,
+// the trail poses the last particles_set_trail_bind_poses gave, the recorded draw passes, process
+// material and subemitter. PM7's node getters, its collision-size and transform-align inferences
+// and its thread-local draw note are gone.
+Mirror::ParticlesAdopt pta_config(const rs::RegistryParticles &r) {
   Mirror::ParticlesAdopt a;
-  a.emitting = pta_bool(g_pta.emitting, node);
-  a.one_shot = pta_bool(g_pta.one_shot, node);
-  a.interpolate = pta_bool(g_pta.interpolate, node);
-  a.fractional_delta = pta_bool(g_pta.fractional_delta, node);
-  a.local = pta_bool(g_pta.local_coords, node);
-  a.trails = pta_bool(g_pta.trail_enabled, node);
-  a.amount = static_cast<std::int32_t>(pta_int(g_pta.amount, node));
-  a.fixed_fps = static_cast<std::int32_t>(pta_int(g_pta.fixed_fps, node));
-  a.draw_order = static_cast<std::int32_t>(pta_int(g_pta.draw_order, node));
-  a.transform_align = a.trails ? 2 /* PARTICLES_TRANSFORM_ALIGN_Y_TO_VELOCITY */ : 0;
-  a.seed = static_cast<std::uint32_t>(pta_int(g_pta.seed, node));
-  a.floats.assign(rs2::kParticlesBaseFloats, 0.0f);
-  float *f = a.floats.data();
-  f[0] = static_cast<float>(pta_double(g_pta.amount_ratio, node));
-  f[1] = static_cast<float>(pta_double(g_pta.lifetime, node));
-  f[2] = static_cast<float>(pta_double(g_pta.pre_process_time, node));
-  f[3] = static_cast<float>(pta_double(g_pta.explosiveness, node));
-  f[4] = static_cast<float>(pta_double(g_pta.randomness, node));
-  f[5] = pta_bool(g_pta.can_process, node)
-             ? static_cast<float>(pta_double(g_pta.speed_scale, node))
-             : 0.0f;
-  {
-    // _update_collision_size: real_t csize *= (w + h) / 4.0 with a texture.
-    float csize = static_cast<float>(pta_double(g_pta.collision_base_size, node));
-    RefSlot texture;
-    g_iface.object_method_bind_ptrcall(g_pta.texture, node, nullptr, &texture.slot);
-    if (texture.object() != nullptr) {
-      const std::int64_t w = pta_int(g_pta.texture_width, texture.object());
-      const std::int64_t h = pta_int(g_pta.texture_height, texture.object());
-      csize = static_cast<float>(static_cast<double>(csize) * (static_cast<double>(w + h) / 4.0));
-    }
-    f[6] = csize;
-  }
-  f[7] = a.trails ? static_cast<float>(pta_double(g_pta.trail_lifetime, node)) : 0.0f;
-  f[8] = static_cast<float>(pta_double(g_pta.interp_to_end, node));
-  {
-    alignas(16) float rect[4] = {};
-    g_iface.object_method_bind_ptrcall(g_pta.visibility_rect, node, nullptr, rect);
-    f[10] = rect[0];
-    f[11] = rect[1];
-    f[13] = rect[2];
-    f[14] = rect[3];
-  }
-  {
-    // Transform2D columns (x, y, origin) as a Transform3D: basis.rows[0..2], then origin.
-    alignas(16) float t[8] = {};
-    g_iface.object_method_bind_ptrcall(g_pta.global_transform, node, nullptr, t);
-    const float row[12] = {t[0], t[2], 0.0f, t[1], t[3], 0.0f, 0.0f, 0.0f, 1.0f,
-                           t[4], t[5], 0.0f};
-    std::copy(row, row + 12, f + 16);
-  }
-  if (a.trails) {
-    a.floats.insert(a.floats.end(), poses.begin(), poses.end());
-  }
+  a.mode_2d = r.mode_2d;
+  a.emitting = r.emitting;
+  a.one_shot = r.one_shot;
+  a.interpolate = r.interpolate;
+  a.fractional_delta = r.fractional_delta;
+  a.local = r.local;
+  a.trails = r.trails;
+  a.amount = r.amount;
+  a.fixed_fps = r.fixed_fps;
+  a.draw_order = r.draw_order;
+  a.transform_align = r.transform_align;
+  a.seed = r.seed;
+  a.material = r.process_material;
+  a.passes = r.passes;
+  a.floats.assign(r.floats.begin(), r.floats.end());
+  a.floats.insert(a.floats.end(), r.poses.begin(), r.poses.end());
   return a;
 }
 
 }  // namespace
 
-void adopt_particles_note_draw(std::uint64_t particles, std::uint64_t mesh,
-                               const std::vector<float> &poses) {
-  if (particles == 0 || !g_res_active.load(std::memory_order_acquire) ||
-      !mirror_enabled() || mirror_instance().knows_particles(particles)) {
-    return;
+bool adopt_process_material_ref(std::uint64_t rid) {
+  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
+      fault() == AdoptFault::NoResources || fault() == AdoptFault::NoParticles ||
+      !mirror_enabled() || !rs::registry_on()) {
+    return false;
   }
-  t_pta_particles = particles;
-  t_pta_mesh = mesh;
-  t_pta_poses = poses;
+  Mirror &m = mirror_instance();
+  if (!m.particles_options().enabled || m.knows_material(rid)) {
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_pta_mutex);
+    if (g_pta_refused_materials.count(rid) != 0) {
+      return false;
+    }
+  }
+  rs::RegistryMaterial reg;
+  if (!rs::registry_material(rid, &reg)) {
+    return false;  // older than the hooks: the LATE-RES re-link reads it from the node
+  }
+  bool tried = false;
+  const bool adopted = adopt_ppm_registered(rid, reg, &tried);
+  if (tried && !adopted) {
+    std::lock_guard<std::mutex> lock(g_pta_mutex);
+    if (g_pta_refused_materials.insert(rid).second) ++g_pta_stats.ppm_refused;
+  }
+  return adopted;
 }
 
-void adopt_particles_ref(std::uint64_t item, std::uint64_t particles) {
+void adopt_particles_ref(std::uint64_t particles) {
   if (particles == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
       fault() == AdoptFault::NoResources || fault() == AdoptFault::NoParticles ||
       !mirror_enabled()) {
@@ -3607,55 +3533,38 @@ void adopt_particles_ref(std::uint64_t item, std::uint64_t particles) {
     }
   }
   const std::uint64_t t0 = now_ns();
-  const bool noted = t_pta_particles == particles;
-  const std::uint64_t mesh = noted ? t_pta_mesh : 0;
-  std::vector<float> poses;
-  if (noted) poses.swap(t_pta_poses);
-  t_pta_particles = 0;
-  t_pta_mesh = 0;
-  if (!pta_binds()) {
-    pta_refuse(particles, &EmitterAdoptStats::refused_binds);
-    return;
-  }
-  void *node = node_of(item);
-  if (node == nullptr) {
-    pta_refuse(particles, &EmitterAdoptStats::refused_no_node);
-    return;
-  }
-  if (as(node, g_pta.tag_gpu_particles) == nullptr) {
-    pta_refuse(particles, &EmitterAdoptStats::refused_not_gpu);
-    return;
-  }
-  if (!noted || mesh == 0 || poses.size() % 12 != 0) {
-    pta_refuse(particles, &EmitterAdoptStats::refused_no_draw);
-    return;
-  }
-  const bool mesh_known = m.knows_mesh(mesh);
-  adopt_mesh_ref(mesh);  // G8r: the quad the draw just rebuilt, read back from the server
-  const bool mesh_adopted = !mesh_known && m.knows_mesh(mesh);
-  Mirror::ParticlesAdopt a = pta_config(node, poses);
-  a.mesh = mesh;
-  a.material = pta_process_material(node);
-  // The subemitter (_attach_sub_emitter: a GPUParticles2D other than this one, by NodePath).
-  const std::uint64_t node_id = pta_instance_id(node);
-  std::uint64_t sub_node_id = 0;
-  {
-    Builtin path(GDEXTENSION_VARIANT_TYPE_NODE_PATH);
-    g_iface.object_method_bind_ptrcall(g_pta.sub_emitter, node, nullptr, path.ptr());
-    void *sub = nullptr;
-    const GDExtensionConstTypePtr args[1] = {path.ptr()};
-    g_iface.object_method_bind_ptrcall(g_pta.get_node_or_null, node, args, &sub);
-    if (sub != nullptr && sub != node && as(sub, g_pta.tag_gpu_particles) != nullptr) {
-      sub_node_id = pta_instance_id(sub);
-    }
-  }
-  if (sub_node_id != 0) {
+  rs::RegistryParticles rec;
+  if (!rs::registry_on() || !rs::registry_particles(particles, &rec)) {
+    // F1: an emitter older than the hooks (or past the family's cap) has no record, and RS has no
+    // particles getter: a typed refusal, `preload-particles`; its draws stay unknown-particles.
     std::lock_guard<std::mutex> lock(g_pta_mutex);
-    const auto it = g_pta_node_rid.find(sub_node_id);
-    if (it != g_pta_node_rid.end() && m.knows_particles(it->second)) {
-      a.subemitter = it->second;
+    if (g_pta_refused.insert(particles).second) {
+      ++g_pta_stats.refused;
+      ++g_pta_stats.refused_preload_particles;
+    }
+    return;
+  }
+  // Dependencies first (design R4): the draw-pass meshes (G8r's read-back; the mesh family keeps
+  // its getter) and a registered process material. A process material the registry cannot supply
+  // (older than the hooks, or with no recorded binding) leaves the entry unknown-material, and the
+  // mirror queues it for adopt_particles_resolve's LATE-RES re-link (M17's placeholder, the
+  // residual).
+  std::uint32_t meshes = 0;
+  for (std::uint64_t mesh : rec.passes) {
+    if (mesh == 0 || m.knows_mesh(mesh)) continue;
+    adopt_mesh_ref(mesh);
+    if (m.knows_mesh(mesh)) ++meshes;
+  }
+  if (rec.process_material != 0) {
+    adopt_process_material_ref(rec.process_material);
+  }
+  Mirror::ParticlesAdopt a = pta_config(rec);
+  bool waits = false;
+  if (rec.subemitter != 0 && rec.subemitter != particles) {
+    if (m.knows_particles(rec.subemitter)) {
+      a.subemitter = rec.subemitter;
     } else {
-      g_pta_sub_wait.emplace(sub_node_id, particles);  // linked when that emitter is adopted
+      waits = true;  // linked when that emitter is adopted
     }
   }
   if (!hooks_adopt_particles(particles, a)) {
@@ -3664,12 +3573,12 @@ void adopt_particles_ref(std::uint64_t item, std::uint64_t particles) {
   std::vector<std::uint64_t> parents;
   {
     std::lock_guard<std::mutex> lock(g_pta_mutex);
-    g_pta_node_rid[node_id] = particles;
-    const auto range = g_pta_sub_wait.equal_range(node_id);
+    if (waits) g_pta_sub_wait.emplace(rec.subemitter, particles);
+    const auto range = g_pta_sub_wait.equal_range(particles);
     for (auto it = range.first; it != range.second; ++it) parents.push_back(it->second);
     g_pta_sub_wait.erase(range.first, range.second);
     ++g_pta_stats.emitters;
-    if (mesh_adopted) ++g_pta_stats.meshes;
+    g_pta_stats.meshes += meshes;
     if (a.subemitter != 0) ++g_pta_stats.subemitters;
   }
   for (std::uint64_t parent : parents) {
@@ -3686,7 +3595,6 @@ void adopt_emitters_reset() {
   g_pta_stats = EmitterAdoptStats();
   g_pta_refused.clear();
   g_pta_refused_materials.clear();
-  g_pta_node_rid.clear();
   g_pta_sub_wait.clear();
 }
 
@@ -3694,6 +3602,7 @@ void adopt_emitters_forget(std::uint64_t rid) {
   std::lock_guard<std::mutex> lock(g_pta_mutex);
   g_pta_refused.erase(rid);
   g_pta_refused_materials.erase(rid);
+  g_pta_sub_wait.erase(rid);
 }
 
 EmitterAdoptStats adopt_emitter_stats() {
