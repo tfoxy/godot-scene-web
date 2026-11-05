@@ -2940,7 +2940,12 @@ run_g8kc() {
 # on 127.0.0.1:0 (lib/legs.sh moves it to GATE7_HOST_PORT for a browser), and
 # GRC_LIVE_AWAIT_HELLO_MS (its timeline waits at the first armed frame for the receiver's hello, so
 # a slow browser misses nothing). It lingers to G8L_QUIT_FRAME so every payload GET is served
-# before it ends. The live receiver is rendered at 640x360, speaks render-stream/8
+# before it ends, and (LF2) holds that quit frame until its receiver applied it
+# (GRC_LIVE_HOLD_WINDOWS=q-q, scripts/README.md "The window hold (LF1)"): the hub sends no final
+# state at finish, so without the hold a leg ended on 299 or 300 by whether credit came back in the
+# last tick, and g8l-lan-served / g8l-wss-served compared two such coin flips with tex's (about 3
+# runs in 5 failed on hosted runners). No g8l receiver is a sabotage that never acks, so every host
+# takes the hold. The live receiver is rendered at 640x360, speaks render-stream/8
 # (RS_RECEIVER_PROTOCOL=8: a gate 8 policy host offers only .8) and shoots its final state after the
 # end record (RS_RECEIVER_SHOT_FINAL=1); the replay is run_rendered_receiver on the host's own
 # recording (its checkpoints). Under GATE7_LIVE_KIND (run-gate7.sh --live --legs g7-8) every
@@ -3005,7 +3010,7 @@ start_g8l_host() {
 		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
 		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/recording.rs$G8L_VERSION"
 		GRC_RESOURCE_STORE_DIR="$dir/store" GRC_LIVE_LISTEN="${G8L_LISTEN:-127.0.0.1:0}" GRC_LIVE_TAP_DIR="$dir/tap"
-		GRC_LIVE_AWAIT_HELLO_MS="$G8L_AWAIT_HELLO_MS"
+		GRC_LIVE_AWAIT_HELLO_MS="$G8L_AWAIT_HELLO_MS" GRC_LIVE_HOLD_WINDOWS="$G8L_QUIT_FRAME-$G8L_QUIT_FRAME"
 		RS_FIXTURE_QUIT_FRAME="$G8L_QUIT_FRAME" RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" "${G8L_ENV[@]}"
 		${G8L_HOST_EXTRA_ENV[@]+"${G8L_HOST_EXTRA_ENV[@]}"}
 	)

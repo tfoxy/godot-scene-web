@@ -98,6 +98,18 @@ G6C_G7R_LEGS+=(dual-native sabotage-ack-on-receipt)
 # G7q (gate7/g7q.md "Sabotage"): G6c's constrained sabotage with GRC_SABOTAGE=window-overrun at
 # credit window 2 (GATE7_CREDIT_WINDOW=2; run-gate7.sh --credit-window 2 --receiver native).
 G6C_G7R_LEGS+=(sabotage-constrained-window-overrun)
+# LF2: that leg's link rate (throttle-proxy.ts --rate-bytes-per-s; the profile's burst and delay
+# stay) and quit time. Measured on the dev box: the overrunning host sends about 15.5 MB between
+# frame 900 and step 11's freeze (about 1 MB/s for 15 s), then about 42 KB/s. Through `constrained`'s
+# 500 KB/s the 8 MB backlog sat mostly in loopback socket buffers (tcp_wmem/tcp_rmem autotuning
+# hid 6-8 MB), so the host's own queue, which queue-bounded judges (bound 328 268 here), peaked
+# anywhere from 139 KB (the sabotage passed it once) to 2.97 MB. At 250 KB/s the backlog is about
+# 11.7 MB, more than the kernel held (max_queued_bytes 3.5 MB on the first run), and the link
+# delivers the host's last byte about 90 s in, so the leg quits at 110 s rather than 75 (at
+# 150 KB/s the 13 MB backlog outlived the 75 s quit: live-disconnected, a replay-failure class
+# instead of delivery-violation).
+G6C_OVERRUN_RATE_BYTES_PER_S=250000
+G6C_OVERRUN_QUIT_S=110
 G7V_PACE_DIR="$(cd "$SCENE_FIXTURE_DIR/../gate7-pace" && pwd)"
 G7V_TIME_OFFSET_S="${G7V_TIME_OFFSET_S:-12}"
 G7V_SOAK_S="${G7V_SOAK_S:-600}"
@@ -410,7 +422,8 @@ g6c_wait_receiver() {
 }
 
 # g6c_start_proxy <dir> <target port>: scripts/throttle-proxy.ts `constrained` in front of the host
-# (D12). Sets G6C_PROXY_PORT and G6C_PROXY_PID (the node process itself, from its first line).
+# (D12), at G6C_PROXY_RATE bytes/s when set (the profile's rate otherwise). Sets G6C_PROXY_PORT
+# and G6C_PROXY_PID (the node process itself, from its first line).
 g6c_start_proxy() {
 	local dir="$1" target="$2" waited=0
 	mkdir -p "$dir"
@@ -420,7 +433,7 @@ g6c_start_proxy() {
 	(
 		cd "$REPO_ROOT" && exec mise exec -- pnpm exec tsx --conditions=development \
 			"$SCRIPT_DIR/throttle-proxy.ts" --target-host 127.0.0.1 --target-port "$target" \
-			--profile constrained --stats-out "$dir/stats.json"
+			--profile constrained ${G6C_PROXY_RATE:+--rate-bytes-per-s "$G6C_PROXY_RATE"} --stats-out "$dir/stats.json"
 	) >"$dir/stdout.log" 2>"$dir/stderr.log" &
 	EXTRA_CHILD_PIDS+=("$!")
 	while [ "$waited" -lt 600 ] && ! grep -q '"listening_port"' "$dir/stdout.log" 2>/dev/null; do
@@ -454,12 +467,15 @@ g6c_finish_host() {
 }
 
 # g6c_leg <leg> <host max fps> <receiver max fps> [receiver godot args...]: one scene host (the
-# G6C_HOST_ENV words added) and one receiver on it; G6C_PROXY=1 puts the constrained proxy between.
+# G6C_HOST_ENV words added) and one receiver on it; G6C_PROXY=1 puts the constrained proxy between
+# (G6C_PROXY_RATE, when set, its rate). All three reset after each leg.
 G6C_HOST_ENV=()
 G6C_PROXY=0
+G6C_PROXY_RATE=""
 G6C_HOST_TIMEOUT_OVERRIDE=""
 g6c_leg() {
 	local leg="$1" host_fps="$2" recv_fps="$3" D port proxy="$G6C_PROXY" timeout_save="$G6C_HOST_TIMEOUT_S"
+	local proxy_rate="$G6C_PROXY_RATE"
 	shift 3
 	local -a host_env=()
 	if [ "${#G6C_HOST_ENV[@]}" -gt 0 ]; then
@@ -467,6 +483,7 @@ g6c_leg() {
 	fi
 	G6C_HOST_ENV=()
 	G6C_PROXY=0
+	G6C_PROXY_RATE=""
 	[ -n "$G6C_HOST_TIMEOUT_OVERRIDE" ] && G6C_HOST_TIMEOUT_S="$G6C_HOST_TIMEOUT_OVERRIDE"
 	G6C_HOST_TIMEOUT_OVERRIDE=""
 	D="$G6C/$leg"
@@ -474,7 +491,7 @@ g6c_leg() {
 		${host_env[@]+"${host_env[@]}"}
 	port="$G6C_PORT"
 	if [ "$proxy" = "1" ]; then
-		g6c_start_proxy "$D/proxy" "$G6C_PORT"
+		G6C_PROXY_RATE="$proxy_rate" g6c_start_proxy "$D/proxy" "$G6C_PORT"
 		port="$G6C_PROXY_PORT"
 	fi
 	g6c_start_receiver "$D/receiver" "$port" "$recv_fps" "$@"
@@ -768,14 +785,16 @@ run_g6c() {
 			echo "run-gate6: sabotage-constrained-window-overrun needs GATE7_CREDIT_WINDOW=2 (run-gate7.sh --credit-window 2)" >&2
 			exit 2
 		fi
-		# G7q: as the ignore-credit sabotage above (same frame, quit time, inline payloads and link),
-		# but the host overruns its credit window 2 (a listener sabotage: the wire declares none).
-		echo "run-gate6: g6c: sabotage-constrained-window-overrun (window-overrun @$G6C_SABOTAGE_FRAME, window 2, quit at ${G6C_SABOTAGE_QUIT_S} s, inline payloads, through the proxy)"
+		# G7q: as the ignore-credit sabotage above (same frame and inline payloads), but the host
+		# overruns its credit window 2 (a listener sabotage: the wire declares none); LF2: through a
+		# 250 KB/s link with a 110 s quit (G6C_OVERRUN_RATE_BYTES_PER_S, G6C_OVERRUN_QUIT_S).
+		echo "run-gate6: g6c: sabotage-constrained-window-overrun (window-overrun @$G6C_SABOTAGE_FRAME, window 2, quit at ${G6C_OVERRUN_QUIT_S} s, inline payloads, through the proxy at ${G6C_OVERRUN_RATE_BYTES_PER_S} B/s)"
 		G6C_HOST_ENV=(GRC_PUBLISH_FPS=60 GRC_SABOTAGE=window-overrun GRC_SABOTAGE_FRAME="$G6C_SABOTAGE_FRAME"
-			GRC_HOOK_LOG=on RS_FIXTURE_QUIT_TIME="$G6C_SABOTAGE_QUIT_S"
+			GRC_HOOK_LOG=on RS_FIXTURE_QUIT_TIME="$G6C_OVERRUN_QUIT_S"
 			GRC_RESOURCE_INLINE_MAX_BYTES="$G6C_INLINE_MAX_BYTES" GRC_RESOURCE_MAX_PAYLOAD_BYTES="$G6C_INLINE_MAX_BYTES")
 		G6C_PROXY=1
-		G6C_HOST_TIMEOUT_OVERRIDE=$((G6C_SABOTAGE_QUIT_S + 60))
+		G6C_PROXY_RATE="$G6C_OVERRUN_RATE_BYTES_PER_S"
+		G6C_HOST_TIMEOUT_OVERRIDE=$((G6C_OVERRUN_QUIT_S + 60))
 		g6c_leg sabotage-constrained-window-overrun 60 60
 	fi
 
