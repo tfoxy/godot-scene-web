@@ -4441,6 +4441,64 @@ void test_ppm_unknown_candidates() {
   check(m.ppm_unknown_candidates().empty(), "a material whose shader is known is no candidate");
 }
 
+// LAR4: the process-material queue replaces the ppm epoch. Off by default (nothing recorded). On,
+// a draw of an emitter that needs keying queues it with its drawing item (no item walk), a process
+// material set or a material's shader binding queues the emitter alone (one counted walk finds its
+// drawers), a drained queue is empty, and a draw of an emitter that needs nothing queues nothing.
+void test_ppm_queue() {
+  Mirror m;
+  pt_scene(&m);  // item 100 draws emitter 0x900
+  grc::rs::ShaderCodeInput input = shader_input("shader_type particles;\n", "unsupported",
+                                                "shader-mode");
+  input.copy.mode = "particles";
+  m.shader_create_from_code(0x600, input, 1);
+  m.material_create(0x610, 1);
+  m.material_set_shader(0x610, 0x600, 1);
+  m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x610), 1);
+  m.add_particles(100, 0x900, 0, 1);
+  check(!m.has_pending_ppm() && m.take_ppm_candidates().builtin.empty(),
+        "ppm queue: off by default, nothing recorded");
+  m.set_ppm_queue(true);
+  m.clear(100, 2);
+  m.add_particles(100, 0x900, 0, 2);
+  check(m.has_pending_ppm(), "ppm queue: a draw of an unkeyed emitter queues it");
+  auto c = m.take_ppm_candidates();
+  check(c.builtin.size() == 1 && c.builtin[0].shader_rid == 0x600 &&
+            c.builtin[0].pairs.size() == 1 && c.builtin[0].pairs[0].first == 0x610 &&
+            c.builtin[0].pairs[0].second == 100 && m.ppm_scans() == 0,
+        "ppm queue: the candidate from the draw's item, no item walk");
+  check(!m.has_pending_ppm() && m.take_ppm_candidates().builtin.empty(),
+        "ppm queue: drained, nothing left");
+  m.material_set_shader(0x610, 0x600, 3);  // a binding: the emitters on the material, no item
+  c = m.take_ppm_candidates();
+  check(c.builtin.size() == 1 && c.builtin[0].pairs.size() == 1 &&
+            c.builtin[0].pairs[0].second == 100 && m.ppm_scans() == 1,
+        "ppm queue: a material's binding queues its emitter; one walk finds the drawer");
+  m.material_create(0x611, 3);
+  m.material_set_shader(0x611, 0x600, 3);
+  m.particles_call(0x900, PtOp::SetProcessMaterial, pt_i(0, 0x611), 3);
+  c = m.take_ppm_candidates();
+  check(c.builtin.size() == 1 && c.builtin[0].pairs.size() == 1 &&
+            c.builtin[0].pairs[0].first == 0x611 && m.ppm_scans() == 2,
+        "ppm queue: a process material set queues the emitter");
+  check(c.builtin.size() == 1 && m.ppm_resolve_candidates().builtin.size() == 1,
+        "ppm queue: the drain agrees with the every-emitter oracle");
+  grc::rs2::BuiltinParticleProcessMaterial key;
+  key.emission_shape = 1;
+  m.set_shader_ppm(0x600, key);
+  m.clear(100, 4);
+  m.add_particles(100, 0x900, 0, 4);
+  check(!m.has_pending_ppm(), "ppm queue: a draw of a keyed emitter queues nothing");
+  m.material_set_shader(0x611, 0x601, 5);  // an unknown shader: LATE-CMBT's case
+  c = m.take_ppm_candidates();
+  check(c.builtin.empty() && c.unknown_shader.size() == 1 && c.unknown_shader[0].first == 0x611 &&
+            c.unknown_shader[0].second == 100,
+        "ppm queue: an unknown-shader binding queues the emitter for the re-key");
+  m.set_ppm_queue(false);
+  m.material_set_shader(0x611, 0x600, 6);
+  check(!m.has_pending_ppm(), "ppm queue: off again, nothing recorded");
+}
+
 // B3: ppm_resolve_candidates gives rs_adopt.cpp's frame-boundary resolve all three lists in one
 // pass. Each list equals its single-list function (ppm_candidates, ppm_unknown_candidates,
 // ppm_unknown_material_candidates) and the lists the old per-list walks built: a builtin candidate
@@ -4580,6 +4638,7 @@ int main() {
   test_particles_builtin_and_lowering();
   test_ppm_unknown_candidates();
   test_ppm_resolve_candidates();
+  test_ppm_queue();
   test_multimesh_shadow_and_versions();
   test_multimesh_reasons();
   test_multimesh_publication_and_free();

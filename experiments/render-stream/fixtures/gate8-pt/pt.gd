@@ -55,6 +55,9 @@ var _d_nudge_frames: Array[int] = []
 ## LATE-CMBT (results/p3/late-cmbt.md): RS_FIXTURE_LATE_SHADER=1 adds a post-arm cell whose process
 ## material reuses a pre-arm shader (the orphan below): its material_set_shader names a pre-arm
 ## shader RID, so the material is unknown-shader until the capture keys it through the builtin.
+## Under RS_FIXTURE_ARM=deferred (LAR4) the orphan's shader is created under the hooks, so it is
+## registered: J_LATE_SHADER's material_set_shader names a registered shader, adopted from the
+## registry with its real code (no re-key).
 var _late_shader: bool = false
 var _orphan_pm: ParticleProcessMaterial
 
@@ -174,7 +177,7 @@ func _ready() -> void:
 	i.position = Vector2(533, 300)
 	_root.add_child(i)
 
-	# LATE-CMBT: a pre-arm process material on no tree node. Setting it on a temporary emitter forces
+	# LATE-CMBT: a pre-arm process material on no tree node (deferred arm: registered, LAR4). Setting it on a temporary emitter forces
 	# get_rid() (its shader is created and stays in the engine's shader_map while _orphan_pm is
 	# alive); the temporary is never added to the tree, so the late arm never adopts the shader.
 	if _late_shader:
@@ -357,9 +360,11 @@ func _error(text: String) -> void:
 func _log_step(step: int, applied_frame: int, settle_frame: int) -> void:
 	if _step_log_file == null:
 		return
-	# PM7: under a late arm (loader.gd RS_FIXTURE_ARM=late) a checkpoint that settles before the arm
-	# has no transaction to pair with, so the log holds only the steps after it.
-	if OS.get_environment("RS_FIXTURE_ARM") == "late":
+	# PM7: under a late arm (loader.gd RS_FIXTURE_ARM=late, or the deferred arm of LAR4: same arm
+	# frame) a checkpoint that settles before the arm has no transaction to pair with, so the log
+	# holds only the steps after it.
+	var arm_mode: String = OS.get_environment("RS_FIXTURE_ARM")
+	if arm_mode == "late" or arm_mode == "deferred":
 		var arm: int = 12
 		var text: String = OS.get_environment("RS_FIXTURE_ARM_FRAME").strip_edges()
 		if text.is_valid_int():

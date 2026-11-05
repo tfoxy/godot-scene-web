@@ -76,6 +76,8 @@ import {
   ptLateCmbtProblems,
   ptLateFaultProblems,
   ptLatePpmBuiltinProblems,
+  ptRegistryParamsProblems,
+  ptRegistryRealShaderProblems,
   ptSyntheticSkipProblems,
   ppmStats as readPpmStats,
   runG8ptLate,
@@ -1823,6 +1825,235 @@ async function main(): Promise<void> {
       })?.emitters === 3 && adoptionStats({}) === null,
       "adoptionStats: reads stream.gate8.particles.adoption",
     );
+
+    // LAR4: ptRegistryRealShaderProblems on the deferred arm.
+    const real = (): PtLateTx => {
+      const t = good();
+      t.shaders.set(5, {
+        status: "ok",
+        builtin: { kind: "particle_process_material" },
+        synthetic: false,
+      });
+      return t;
+    };
+    const regStats = {
+      emitters: 2,
+      ppm_materials: 2,
+      ppm_registry: 2,
+      ppm_builtin: 0,
+      ppm_shaders: 0,
+      ppm_refused_no_shader: 0,
+      ppm_refused: 0,
+      refused: 0,
+    };
+    const regPpm = { unknown_shader_keyed: 0 };
+    expect(
+      ptRegistryRealShaderProblems(regStats, regPpm, [real()], late).length ===
+        0,
+      "ptRegistryRealShaderProblems: an honest deferred state passes",
+    );
+    const placeholder = real();
+    placeholder.shaders.set(5, {
+      status: "ok",
+      builtin: { kind: "particle_process_material" },
+      synthetic: true,
+    });
+    expect(
+      ptRegistryRealShaderProblems(regStats, regPpm, [placeholder], late).some(
+        (p) => p.includes("placeholder"),
+      ),
+      "ptRegistryRealShaderProblems: a placeholder shader fails",
+    );
+    expect(
+      ptRegistryRealShaderProblems(regStats, regPpm, [good()], late).length > 0,
+      "ptRegistryRealShaderProblems: unreadable shader code (no synthetic flag) fails",
+    );
+    expect(
+      ptRegistryRealShaderProblems(
+        { ...regStats, ppm_builtin: 2, ppm_registry: 0 },
+        regPpm,
+        [real()],
+        late,
+      ).some((p) => p.includes("ppm_builtin")),
+      "ptRegistryRealShaderProblems: ppm_builtin > 0 fails",
+    );
+    expect(
+      ptRegistryRealShaderProblems(
+        { ...regStats, ppm_shaders: 1 },
+        regPpm,
+        [real()],
+        late,
+      ).some((p) => p.includes("ppm_shaders")),
+      "ptRegistryRealShaderProblems: ppm_shaders > 0 fails",
+    );
+    expect(
+      ptRegistryRealShaderProblems(null, regPpm, [real()], late).length === 1,
+      "ptRegistryRealShaderProblems: no adoption stats fails",
+    );
+    const cmbtReal = (): PtLateTx => {
+      const t = real();
+      t.table.set(9, ent(9, 14, null, "created"));
+      t.materials.set(9, { status: "ok", shader: 5, params: [] });
+      return t;
+    };
+    expect(
+      ptRegistryRealShaderProblems(regStats, regPpm, [cmbtReal()], late, {
+        cmbt: lateShader,
+      }).length === 0,
+      "ptRegistryRealShaderProblems: an honest deferred-cmbt state passes",
+    );
+    expect(
+      ptRegistryRealShaderProblems(
+        regStats,
+        { unknown_shader_keyed: 1 },
+        [cmbtReal()],
+        late,
+        { cmbt: lateShader },
+      ).some((p) => p.includes("unknown_shader_keyed")),
+      "ptRegistryRealShaderProblems: a re-keyed post-arm shader fails",
+    );
+    expect(
+      ptRegistryRealShaderProblems(regStats, regPpm, [real()], late, {
+        cmbt: lateShader,
+      }).some((p) => p.includes("no entry with amount 14")),
+      "ptRegistryRealShaderProblems: a missing cmbt cell fails",
+    );
+    const cmbtPlaceholder = cmbtReal();
+    cmbtPlaceholder.materials.set(9, { status: "ok", shader: 6, params: [] });
+    cmbtPlaceholder.shaders.set(6, {
+      status: "ok",
+      builtin: { kind: "particle_process_material" },
+      synthetic: true,
+    });
+    expect(
+      ptRegistryRealShaderProblems(regStats, regPpm, [cmbtPlaceholder], late, {
+        cmbt: lateShader,
+      }).some((p) => p.includes("process shader 6")),
+      "ptRegistryRealShaderProblems: a placeholder on the cmbt cell fails",
+    );
+
+    // LAR4: ptRegistryParamsProblems, headless against born.
+    const withParams = (
+      tex: number,
+      mut?: (p: { name: string; type: string; value: unknown }[]) => void,
+    ): PtLateTx => {
+      const t = good();
+      for (const id of [1, 2]) {
+        const params: { name: string; type: string; value: unknown }[] = [
+          { name: "gravity", type: "vector3", value: [0, 98, 0] },
+          { name: "scale_min", type: "float", value: 0.5 },
+          { name: "color_ramp", type: "texture", value: { tex } },
+        ];
+        if (id === 1) mut?.(params);
+        (t.materials.get(id) as { params: unknown }).params = params;
+      }
+      return t;
+    };
+    const headStats = { ppm_registry: 2 };
+    const bornTx = withParams(3);
+    const okParams = ptRegistryParamsProblems(
+      headStats,
+      [bornTx],
+      [withParams(77)],
+      late,
+    );
+    expect(
+      okParams.problems.length === 0 && okParams.compared === 6,
+      "ptRegistryParamsProblems: equal params pass (texture ids may differ)",
+      `${okParams.problems[0]} compared ${okParams.compared}`,
+    );
+    expect(
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [
+          withParams(3, (p) => {
+            p[1].value = 0.6;
+          }),
+        ],
+        late,
+      ).problems.some((p) => p.includes("scale_min")),
+      "ptRegistryParamsProblems: a differing value fails",
+    );
+    expect(
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [
+          withParams(3, (p) => {
+            p.splice(0, 1);
+          }),
+        ],
+        late,
+      ).problems.some((p) => p.includes("gravity absent")),
+      "ptRegistryParamsProblems: a missing name fails",
+    );
+    expect(
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [
+          withParams(3, (p) => {
+            p[1].type = "int";
+          }),
+        ],
+        late,
+      ).problems.some((p) => p.includes("type int")),
+      "ptRegistryParamsProblems: a type change fails",
+    );
+    expect(
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [
+          withParams(3, (p) => {
+            p[2].value = 0.5;
+          }),
+        ],
+        late,
+      ).problems.some((p) => p.includes("color_ramp")),
+      "ptRegistryParamsProblems: a texture turned scalar fails",
+    );
+    expect(
+      ptRegistryParamsProblems(
+        { ppm_registry: 1 },
+        [bornTx],
+        [withParams(3)],
+        late,
+      ).problems.length === 1,
+      "ptRegistryParamsProblems: a short registry adoption count fails",
+    );
+    // The dummy's texture_replace exception: a texture parameter absent from the headless material
+    // is excused only while the headless capture refused as many textures for no image.
+    const noRamp = withParams(3, (p) => {
+      p.splice(2, 1);
+    });
+    const excused = ptRegistryParamsProblems(headStats, [bornTx], [noRamp], late, 1);
+    expect(
+      excused.problems.length === 0 && excused.excused.length === 1,
+      "ptRegistryParamsProblems: a texture parameter the dummy refused is excused",
+      `${excused.problems[0]} excused ${excused.excused.length}`,
+    );
+    expect(
+      ptRegistryParamsProblems(headStats, [bornTx], [noRamp], late, 0).problems.some((p) =>
+        p.includes("color_ramp absent"),
+      ),
+      "ptRegistryParamsProblems: without a counted refusal a missing texture parameter fails",
+    );
+    expect(
+      ptRegistryParamsProblems(
+        headStats,
+        [bornTx],
+        [
+          withParams(3, (p) => {
+            p.splice(1, 1);
+          }),
+        ],
+        late,
+        5,
+      ).problems.some((p) => p.includes("scale_min absent")),
+      "ptRegistryParamsProblems: the exception never excuses a scalar parameter",
+    );
   }
 
   // 9. runG8ptLate: a late leg that did not run is a problem, not a silent skip.
@@ -1830,10 +2061,15 @@ async function main(): Promise<void> {
     const legs = [
       "late/capture",
       "fault-no-particles/capture",
-      "fault-ppm-no-shader/capture",
       "late-cmbt/capture",
+      "deferred/capture",
+      "deferred-cmbt/capture",
+      "sabotage-registry-drop-binding/capture",
+      "headless-deferred/capture",
       "late/receiver",
-      "late/receiver-patch",
+      "deferred/receiver",
+      "deferred/receiver-patch",
+      "deferred-cmbt/receiver",
       "fault-no-particles/receiver",
       "reference",
     ];
@@ -1895,7 +2131,7 @@ async function main(): Promise<void> {
       "runG8ptLate: pt-late-validate fails when a capture leg did not run",
       v?.detail,
     );
-    const noRecv = await drive("late/receiver-patch");
+    const noRecv = await drive("deferred/receiver-patch");
     const lc = noRecv.find((c) => c.id === "pt-late-lifecycle");
     expect(
       lc !== undefined && !lc.passed && /did not run/.test(lc.detail ?? ""),

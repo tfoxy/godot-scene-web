@@ -122,7 +122,7 @@
     "coverage_band": 2
   },
   "late": {
-    "doc": "PM7 (gate8-pt-late-checks.ts, render-stream-12.md \"As built (PM7)\"): the late arm (loader.gd RS_FIXTURE_ARM=late) at fixture frame arm_frame, after every emitter, process material, mesh and texture exists. emitters: the GPUParticles2D nodes adopted (the nine cells and H_CHILD); process_materials: their ParticleProcessMaterials, one each; subemitter: the cell whose entry names another emitter (H_SUB names H_CHILD). The late legs shoot the reference's shots after the arm; pt-late-coverage judges the band from coverage_from_frame on (an adopted emitter starts fresh at the arm, so before that it trails the reference's fill by about arm_frame frames).",
+    "doc": "PM7 (gate8-pt-late-checks.ts, render-stream-12.md \"As built (PM7)\"): the late arm (loader.gd RS_FIXTURE_ARM=late) at fixture frame arm_frame, after every emitter, process material, mesh and texture exists. emitters: the GPUParticles2D nodes adopted (the nine cells and H_CHILD); process_materials: their ParticleProcessMaterials, one each; subemitter: the cell whose entry names another emitter (H_SUB names H_CHILD). The late legs shoot the reference's shots after the arm; LAR4 adds the `deferred` arm (RS_FIXTURE_ARM=deferred: loaded at birth, armed at the same frame by GRC_ARM_DEFER_FRAMES=11, every process material adopted from the registry with its real shader); pt-late-coverage judges the band from coverage_from_frame on (an adopted emitter starts fresh at the arm, so before that it trails the reference's fill by about arm_frame frames).",
     "arm_frame": 12,
     "emitters": 10,
     "process_materials": 10,
@@ -130,7 +130,7 @@
     "coverage_from_frame": 46
   },
   "late_shader": {
-    "doc": "LATE-CMBT (results/p3/late-cmbt.md): the post-arm cell J_LATE_SHADER, created at fixture frame `frame` (after the arm) when RS_FIXTURE_LATE_SHADER=1: a fresh ParticleProcessMaterial with the orphan's key, whose material_set_shader names the pre-arm shader RID. Before the fix its process material is unknown-shader; after, it is keyed through the particle_process_material builtin. `amount` finds the cell's emitter in the hook log; `key` is the builtin key its shader must carry.",
+    "doc": "LATE-CMBT (results/p3/late-cmbt.md): the post-arm cell J_LATE_SHADER, created at fixture frame `frame` (after the arm) when RS_FIXTURE_LATE_SHADER=1: a fresh ParticleProcessMaterial with the orphan's key, whose material_set_shader names the pre-arm shader RID. Before the fix its process material is unknown-shader; after, it is keyed (on the `deferred` arm, LAR4, its shader is registered and adopted with its real code instead) through the particle_process_material builtin. `amount` finds the cell's emitter in the hook log; `key` is the builtin key its shader must carry.",
     "amount": 14,
     "seed": 1011,
     "frame": 15,

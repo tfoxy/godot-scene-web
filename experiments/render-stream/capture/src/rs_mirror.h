@@ -669,15 +669,29 @@ class Mirror {
   };
   std::vector<PpmUnknownMaterialCandidate> ppm_unknown_material_candidates() const;
   // The three candidate lists at once, for rs_adopt.cpp's frame-boundary resolve: the items'
-  // AddParticles commands are walked once, and not at all when no live emitter needs resolving
-  // (the usual case: ppm_epoch() moves on every add_particles, i.e. every redraw of an emitter).
+  // AddParticles commands are walked at most once, and not at all when no emitter needs resolving.
   struct PpmResolveCandidates {
     std::vector<PpmCandidate> builtin;                                  // ppm_candidates()
     std::vector<std::pair<std::uint64_t, std::uint64_t>> unknown_shader;  // ppm_unknown_candidates()
     std::vector<PpmUnknownMaterialCandidate> unknown_material;  // ppm_unknown_material_candidates()
   };
+  // Every live emitter's needs (a diagnostic, and the unit tests' oracle for the queue below).
   PpmResolveCandidates ppm_resolve_candidates() const;
-  std::uint64_t ppm_epoch() const;
+  // LAR4 (late-arm-registry-design.md R4 "Builtin keying", Q4 M18): a queue replaces the ppm epoch
+  // and its walk of every emitter on most frames. While it is on (adoption's arm turns it on with
+  // the material queue), the calls that can change what an emitter needs append it: its process
+  // material set (particles_set_process_material, an adopted emitter), a shader binding of a
+  // material (material_set_shader: every emitter on that material), and a draw of an emitter that
+  // still needs work (canvas_item_add_particles, with the drawing item). take_ppm_candidates()
+  // drains it into the three lists for the queued emitters only; it walks the items' commands once
+  // (counted, ppm_scans()) only when a queued emitter that needs work came with no drawing item.
+  // An emitter it cannot resolve is not retried by the drain: its next draw or binding re-queues
+  // it. Off (the default, and after reset()) it records nothing.
+  void set_ppm_queue(bool on);
+  // Lock-free: whether anything was queued since the last take.
+  bool has_pending_ppm() const { return ppm_queued_.load(std::memory_order_acquire); }
+  PpmResolveCandidates take_ppm_candidates();
+  std::uint64_t ppm_scans() const;
   void set_shader_ppm(std::uint64_t shader_rid, const rs2::BuiltinParticleProcessMaterial &key);
 
   // --- meshes (G5e; gate5-design.md D5-D8, Q3b, render-stream-4.md "Mesh table") ------------
@@ -1861,8 +1875,20 @@ class Mirror {
   std::vector<ParticlesStateNote> particles_notes_;
   std::vector<rs2::ParticleEmit> pending_emits_;
   std::shared_ptr<const rs2::EmitTail> emit_tail_;
-  std::uint64_t ppm_epoch_ = 0;  // moves when a shader or emitter changes what ppm_candidates sees
-  PpmResolveCandidates ppm_resolve_candidates_locked() const;
+  // `only` null: every live emitter, drawers from one walk of the items. Otherwise the emitters it
+  // names (particles id -> drawing item RIDs the queue saw), the items walked only for those that
+  // need work and came with none (counted in *scans).
+  PpmResolveCandidates ppm_resolve_candidates_locked(
+      const std::map<std::uint32_t, std::vector<std::uint64_t>> *only,
+      std::uint64_t *scans) const;
+  // LAR4: the process-material queue (see take_ppm_candidates()).
+  bool ppm_queue_on_ = false;
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> ppm_queue_;  // (particles id, item RID or 0)
+  std::vector<std::uint32_t> ppm_queue_materials_;  // material ids whose shader binding changed
+  std::atomic<bool> ppm_queued_{false};
+  std::uint64_t ppm_scans_ = 0;
+  void queue_ppm(std::uint32_t particles, std::uint64_t item);
+  bool ppm_needs_locked(const Particles &p) const;
   // G55d: shaders and materials (no tombstones, D5).
   ResMap<Shader> shaders_;  // HC4b: marked writes
   RidMap<std::uint32_t> shader_by_rid_;

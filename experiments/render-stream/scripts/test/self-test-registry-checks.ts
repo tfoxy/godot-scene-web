@@ -327,6 +327,34 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
     expect(new RegExp(`\\b${f}\\b`).test(materialStruct), `LAR3: RegistryMaterial records ${f}`);
 }
 
+// LAR4 (process materials): M16's duplicate trick is removed; a registered process material is adopted
+// from the registry, the residual through LATE-PPM's placeholder, builtin keying is queue-driven.
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir = join(here, "../../capture/src");
+  const adopt = readFileSync(join(dir, "rs_adopt.cpp"), "utf8");
+  for (const gone of ["g_pta.duplicate", "hooks_internal_material", "ppm_epoch", "PpmNoShader"])
+    expect(!adopt.includes(gone), `LAR4: rs_adopt.cpp no longer contains ${gone}`);
+  const start = adopt.indexOf("bool adopt_ppm(void *material, std::uint64_t rid) {");
+  const adoptPpm = start < 0 ? "" : adopt.slice(start, adopt.indexOf("\n}\n", start));
+  expect(adoptPpm.includes("rs::registry_material("), "LAR4: adopt_ppm reads rs::registry_material(");
+  const resolveAt = adopt.indexOf("void adopt_particles_resolve() {");
+  const resolve = resolveAt < 0 ? "" : adopt.slice(resolveAt, adopt.indexOf("\n}\n", resolveAt));
+  expect(resolve.includes("take_ppm_candidates()"), "LAR4: adopt_particles_resolve calls take_ppm_candidates()");
+  const registry = readFileSync(join(dir, "rs_registry.cpp"), "utf8");
+  const noteAt = registry.indexOf("void registry_note_material_shader(");
+  const note = noteAt < 0 ? "" : registry.slice(noteAt, registry.indexOf("\n}\n", noteAt));
+  expect(
+    note.includes("RegistryFault::DropBinding"),
+    "LAR4: registry_note_material_shader checks RegistryFault::DropBinding",
+  );
+  const hooks = readFileSync(join(dir, "hooks.cpp"), "utf8");
+  for (const gone of ["t_internal_shader", "t_internal_param_names"])
+    expect(!hooks.includes(gone), `LAR4: hooks.cpp no longer contains ${gone}`);
+  const mirror = readFileSync(join(dir, "rs_mirror.cpp"), "utf8");
+  expect(!mirror.includes("ppm_epoch_"), "LAR4: rs_mirror.cpp no longer contains ppm_epoch_");
+}
+
 if (failures > 0) {
   console.error(`self-test-registry-checks: ${failures} of ${assertions} assertion(s) failed`);
   process.exit(1);

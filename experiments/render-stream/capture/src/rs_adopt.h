@@ -248,10 +248,6 @@ enum class AdoptFault : std::uint8_t {
   // PM7: no-particles: no pre-arm emitter is adopted (the pre-PM7 capture: every draw of one is
   // unknown-particles).
   NoParticles,
-  // LATE-PPM: ppm-no-shader: the duplicate names no shader (an engine whose
-  // ParticleProcessMaterial assigns its shader outside get_rid(), as MegaDot 4.5.1.m.12 does), so
-  // the process material is adopted through its particle_process_material builtin key instead.
-  PpmNoShader,
   // LAR0 (late-arm-registry-design.md): the registry's knobs, read before the vptr store
   // (rs_registry.h RegistryFault); lazy adoption ignores them until LAR1-LAR5 read the registry.
   // registry-off: the registry records nothing (a deferred leg turns into a load-late one).
@@ -265,6 +261,10 @@ enum class AdoptFault : std::uint8_t {
   // LAR3: registry-skip-params: material_set_param is not recorded, so a material adopted from the
   // registry publishes no parameters (fails param-parity on a deferred leg).
   RegistrySkipParams,
+  // LAR4: registry-drop-binding: material_create_from_shader's and material_set_shader's shader is
+  // not recorded, so a registered process material has no binding and falls to the placeholder
+  // (fails pt-registry-real-shader on a deferred leg).
+  RegistryDropBinding,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -469,22 +469,27 @@ bool adopt_material_ref(std::uint64_t rid);
 bool adopt_shader_ref(std::uint64_t rid);
 
 // PM5 (render-stream-12.md "The `particle_process_material` builtin"): at the frame boundary
-// (after adopt_materials_resolve), keys every `particles`-mode shader the mirror lists
-// (Mirror::ppm_candidates) through the node map: the drawing item's node is a GPUParticles2D whose
-// process_material is a ParticleProcessMaterial with the emitter's material RID; its class getters
-// give ParticleProcessMaterial::MaterialKey (_compute_key). Cheap when the mirror's ppm epoch did
-// not move. A shader it cannot key stays shader-mode (counted unresolved, once per shader).
+// (after adopt_materials_resolve), keys every `particles`-mode shader of a queued emitter
+// (Mirror::take_ppm_candidates, LAR4's queue) through the node map: the drawing item's node is a
+// GPUParticles2D whose process_material is a ParticleProcessMaterial with the emitter's material
+// RID; its class getters give ParticleProcessMaterial::MaterialKey (_compute_key). One atomic load
+// when nothing was queued. A shader it cannot key stays shader-mode (counted unresolved, once per
+// shader) until its emitter is queued again (its next draw or binding).
 void adopt_particles_resolve();
 // LATE-RES (gap #5): adopt_particles_resolve also adopts every pre-arm process material the mirror
 // lists as `unknown-material` (Mirror::ppm_unknown_material_candidates) through the node map
 // (adopt_ppm), and re-links the emitter's process material, so a builtin-driven receiver simulates
 // it.
 struct PpmStats {
+  std::uint64_t drains = 0;             // LAR4: frame boundaries that found the queue non-empty
   std::uint64_t builtin_resolved = 0;    // shaders keyed
   std::uint64_t builtin_unresolved = 0;  // shaders tried with no ParticleProcessMaterial found
   // LATE-CMBT: a post-arm process material that was `unknown-shader` (its material_create_from_shader
   // / material_set_shader named a pre-arm shader RID) re-keyed through the builtin's synthetic shader.
   std::uint64_t unknown_shader_keyed = 0;
+  // LAR4: an unknown-shader process material whose recorded shader is registered: left to the
+  // registry (adopt_materials_resolve), never re-keyed to the placeholder.
+  std::uint64_t unknown_shader_registered = 0;
   // LATE-RES: a pre-arm process material an emitter was given that was `unknown-material` (its
   // material RID was never adopted) adopted at the frame boundary and re-linked.
   std::uint64_t unknown_material_keyed = 0;
@@ -501,10 +506,8 @@ PpmStats adopt_particles_stats();
 // add_particles hook adopts it (adopt_particles_ref) from the item's node (the node map), before
 // the command is recorded. The configuration is the node's getters; the mesh is adopted through
 // G8r (adopt_mesh_ref); a pre-arm process material through its class (a ParticleProcessMaterial:
-// a capture-owned duplicate's get_rid() names the shared shader and the parameter names through
-// the hooks under hooks_internal_begin, and RenderingServer.shader_get_code /
-// material_get_param read the original's code and values; a ShaderMaterial or
-// CanvasItemMaterial: G8m's recipe). Main thread only; a draw that does not match (no node, not
+// LAR4, from the registry when registered, else LATE-PPM's placeholder keyed from its getters;
+// a ShaderMaterial or CanvasItemMaterial: G8m's recipe). Main thread only; a draw that does not match (no node, not
 // a GPUParticles2D, no noted draw) stays unknown-particles, counted.
 void adopt_particles_note_draw(std::uint64_t particles, std::uint64_t mesh,
                                const std::vector<float> &poses);
@@ -517,19 +520,19 @@ struct EmitterAdoptStats {
   std::uint32_t refused_no_draw = 0;   // ... no noted draw (mesh) for the emitter
   std::uint32_t refused_binds = 0;     // ... a getter's bind is missing
   std::uint32_t meshes = 0;            // draw-pass meshes adopted with an emitter
-  std::uint32_t ppm_materials = 0;     // ParticleProcessMaterials adopted
-  std::uint32_t ppm_shaders = 0;       // ... their shared shaders adopted
-  std::uint32_t ppm_params = 0;        // ... parameters read back
+  std::uint32_t ppm_materials = 0;     // ParticleProcessMaterials adopted (every source)
+  std::uint32_t ppm_registry = 0;      // LAR4: ... from the registry, with the recorded shader
+  std::uint32_t ppm_shaders = 0;       // ... placeholder shaders adopted (one per builtin key)
+  std::uint32_t ppm_params = 0;        // ... parameters published
   std::uint32_t ppm_refused = 0;       // process materials nothing could adopt (unknown-material)
-  std::uint32_t ppm_refused_no_shader = 0;  // ... the temporary was given no shader
+  std::uint32_t ppm_refused_no_shader = 0;  // ... no shader the mirror can name (the residual:
+                                            // older than the hooks, or no recorded binding)
   std::uint32_t ppm_builtin = 0;            // LATE-PPM: ... recovered through the
-                                            // particle_process_material builtin (no shader named)
-  std::uint32_t ppm_refused_created = 0;    // ... the temporary made its own shader
-  std::uint32_t ppm_refused_code = 0;       // ... the server returned no code (headless)
+                                            // particle_process_material builtin's placeholder
   std::uint32_t ppm_refused_material = 0;   // ... the material could not be registered
   std::uint32_t other_materials = 0;   // process materials adopted through G8m's recipe
   std::uint32_t subemitters = 0;       // subemitter links made
-  std::uint64_t adopt_ns = 0;          // every adoption, the reads and the temporary included
+  std::uint64_t adopt_ns = 0;          // every adoption, the reads included
 };
 EmitterAdoptStats adopt_emitter_stats();
 

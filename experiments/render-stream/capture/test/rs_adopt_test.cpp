@@ -828,10 +828,13 @@ void test_material_scans() {
             f == grc::rs::AdoptFault::NoParticles &&
             std::string(grc::rs::adopt_fault_name(f)) == "no-particles",
         "fault: no-particles");
-  check(grc::rs::parse_adopt_fault("ppm-no-shader", true, &f, &error) &&
-            f == grc::rs::AdoptFault::PpmNoShader &&
-            std::string(grc::rs::adopt_fault_name(f)) == "ppm-no-shader",
-        "fault: ppm-no-shader");
+  // LAR4: ppm-no-shader went with PM7's duplicate (its only site); registry-drop-binding is new.
+  check(!grc::rs::parse_adopt_fault("ppm-no-shader", true, &f, &error),
+        "fault: ppm-no-shader is gone");
+  check(grc::rs::parse_adopt_fault("registry-drop-binding", true, &f, &error) &&
+            f == grc::rs::AdoptFault::RegistryDropBinding &&
+            std::string(grc::rs::adopt_fault_name(f)) == "registry-drop-binding",
+        "fault: registry-drop-binding");
   // LAR0: the registry's knobs parse like the others and also need GRC_ADOPT=arm.
   check(grc::rs::parse_adopt_fault("registry-off", true, &f, &error) &&
             f == grc::rs::AdoptFault::RegistryOff &&
@@ -1232,10 +1235,11 @@ void test_canvas_texture_registry_gating() {
 }
 
 // LATE-RES: a post-arm emitter drawing with a pre-arm ParticleProcessMaterial is
-// `unknown-material`; adopt_particles_resolve adopts it through the node map (adopt_ppm, whose
-// Resource.duplicate makes and frees an RS material and reads every parameter back). A failed
-// adoption is refused for the stream: the next resolve (another ppm epoch) still lists the
-// emitter but does not duplicate again. A freed material RID is forgotten.
+// `unknown-material`; adopt_particles_resolve adopts it through the node map (adopt_ppm: LAR4, the
+// registry, else the placeholder keyed from the material's getters). A failed adoption is refused
+// for the stream: the emitter's next draw queues it again, and the resolve reaches its node but
+// does not read the material again. A freed material RID is forgotten. LAR4: the resolve is
+// driven by the mirror's queue, so a frame that queued nothing reaches no node.
 void test_refused_ppm_not_retried() {
   constexpr uint64_t kItem = 0x40, kEmitter = 0x900, kMaterial = 0x777;
   fake::World &w = fake::world();
@@ -1271,6 +1275,7 @@ void test_refused_ppm_not_retried() {
   Mirror::ParticlesOptions options;
   options.enabled = true;
   m.set_particles(options);
+  grc::rs::adopt_materials_configure(grc::rs::AdoptMaterialSabotage::None);  // LAR4: the queues
   grc::rs::adopt_materials_at_arm();  // the arm's material pass (resolves the node map's tags)
   // Post-arm: the emitter is created under the hooks and given the pre-arm material.
   Mirror::ParticlesArgs mode;
@@ -1284,23 +1289,31 @@ void test_refused_ppm_not_retried() {
         "ppm: the emitter is an unknown-material candidate");
   // No adopt_particles_ref primes the PM7 binds: the LATE-RES resolve resolves them itself (it
   // once read through null binds when no pre-arm emitter had been adopted yet).
-  const uint64_t e0 = m.ppm_epoch();
+  check(m.has_pending_ppm(), "ppm: the set and the draw queued the emitter");
+  const char *kRead = "ParticleProcessMaterial.get_emission_shape";  // ppm_key's first getter
   grc::rs::adopt_particles_resolve();
-  check(w.count("Resource.duplicate") == 1 && grc::rs::adopt_emitter_stats().ppm_refused == 1,
-        "ppm: the first resolve tries the material once (duplicate) and refuses it");
-  m.clear(kItem, 3);  // the emitter's next redraw (clear, add_particles) moves the epoch
+  check(!m.has_pending_ppm() && m.ppm_scans() == 0,
+        "ppm: the drain empties the queue, with the drawing item from the draw (no item walk)");
+  check(w.count(kRead) == 1 && w.count("Resource.duplicate") == 0 &&
+            grc::rs::adopt_emitter_stats().ppm_refused == 1 &&
+            grc::rs::adopt_emitter_stats().ppm_refused_no_shader == 1,
+        "ppm: the first resolve tries the unregistered material once (the placeholder, no "
+        "duplicate) and refuses it");
+  grc::rs::adopt_particles_resolve();
+  check(w.count("GPUParticles2D.get_process_material") == 1,
+        "ppm: a frame that queued nothing reaches no node");
+  m.clear(kItem, 3);  // the emitter's next redraw (clear, add_particles) queues it again
   m.add_particles(kItem, kEmitter, 0, 3);
-  check(m.ppm_epoch() != e0, "ppm: another epoch");
   grc::rs::adopt_particles_resolve();
   check(w.count("GPUParticles2D.get_process_material") == 2,
         "ppm: the second resolve still reaches the emitter's node");
-  check(w.count("Resource.duplicate") == 1 && grc::rs::adopt_emitter_stats().ppm_refused == 1,
-        "ppm: the refused material is not duplicated again");
+  check(w.count(kRead) == 1 && grc::rs::adopt_emitter_stats().ppm_refused == 1,
+        "ppm: the refused material is not read again");
   grc::rs::adopt_resource_freed(kMaterial);
   m.clear(kItem, 4);
   m.add_particles(kItem, kEmitter, 0, 4);
   grc::rs::adopt_particles_resolve();
-  check(w.count("Resource.duplicate") == 2, "ppm: a freed material RID is forgotten");
+  check(w.count(kRead) == 2, "ppm: a freed material RID is forgotten");
   check(w.null_bind_calls == 0, "ppm: no call through a null bind");
   stream_end();
 }

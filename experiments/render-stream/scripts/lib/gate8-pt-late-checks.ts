@@ -4,9 +4,14 @@
 // its first draw after the arm. Before PM7 every such draw was unknown-particles and a receiver
 // drew nothing; GRC_ADOPT_FAULT=no-particles is that capture.
 //
-//   pt-late-validate           both sinks of late/capture and fault-no-particles/capture pass the
-//                              TypeScript validator and rs-core-check
-//   pt-late-adopt              late/capture adopted every emitter (result.json
+// LAR4 (late-arm-registry-design.md, the process-material row) moves the adoption judgments onto the
+// `deferred` arm (loaded at birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11): every process
+// material is adopted from the registry with its real shader. The `late` leg is the residual: its
+// materials predate the hooks, so every one goes through LATE-PPM's synthetic placeholder shader.
+//
+//   pt-late-validate           both sinks of every capture below pass the TypeScript validator and
+//                              rs-core-check
+//   pt-late-adopt              deferred/capture adopted every emitter (result.json
 //                              stream.gate8.particles.adoption: expected.json late.emitters and
 //                              process_materials, nothing refused); no transaction carries an
 //                              unknown-particles add_particles; the last state's table holds that
@@ -15,7 +20,14 @@
 //                              subemitter cell's entry names another adopted emitter
 //   pt-late-fault              the fault capture adopted no emitter and every add_particles is
 //                              unknown-particles (the pre-PM7 capture, the sabotage's premise)
-//   pt-late-lifecycle          late/receiver and late/receiver-patch light exactly the cells the
+//   pt-late-ppm-builtin        late/capture: every process material went through the placeholder
+//   pt-late-synthetic-skip     late/receiver skips every placeholder-shader emitter
+//   pt-registry-real-shader    deferred/capture and deferred-cmbt/capture (both sinks): every process
+//                              material adopted from the registry on its real shader; the deferred
+//                              receivers skip nothing
+//   pt-registry-real-shader-catches-registry-drop-binding  the sabotage capture fails the above
+//   pt-registry-params         headless-deferred/capture's process parameters equal born's
+//   pt-late-lifecycle          deferred/receiver and deferred/receiver-patch light exactly the cells the
 //                              unarmed reference lights, at every shot after the arm
 //   pt-late-coverage           (banded) from late.coverage_from_frame on, each lit cell's ink is
 //                              within the coverage band of the reference's
@@ -83,6 +95,8 @@ export interface PtLateTx {
       }[];
     }
   >;
+  /** resolved shaders; the checker's trace wrapper adds `synthetic` (the stored code contains the
+   *  `// Synthetic` marker of LATE-PPM's placeholder; undefined when the code is unreadable) */
   shaders: Map<number, unknown>;
   items: Map<
     number,
@@ -252,9 +266,10 @@ export function ptLateFaultProblems(
   return problems;
 }
 
-/** pt-late-ppm-builtin: under GRC_ADOPT_FAULT=ppm-no-shader (an engine that assigns the process
- *  material's shader outside get_rid()) every process material is recovered through the
- *  particle_process_material builtin, and the wire is otherwise the same as pt-late-adopt.
+/** pt-late-ppm-builtin (LAR4): on the `late` leg every process material is older than the hooks, so
+ *  the registry never saw it and every one is recovered through LATE-PPM's synthetic placeholder
+ *  shader and the particle_process_material builtin (no fault involved); the wire is otherwise the
+ *  same as pt-late-adopt.
  *  FOG-U: each recovered material also carries the process shader's declared default-valued
  *  uniforms (a uniform the shader declares with a default that no material setter ever set). */
 export function ptLatePpmBuiltinProblems(
@@ -354,6 +369,210 @@ export function ppmDeclaredDefaultProblems(txs: readonly PtLateTx[]): string[] {
   return problems;
 }
 
+interface PtShaderFacts {
+  status?: string;
+  builtin?: { kind?: string } | null;
+  synthetic?: boolean;
+}
+
+/** The process shader of a particles entry at `last`, or why it is not an ok real builtin. */
+function realShaderProblem(
+  last: PtLateTx,
+  entry: { id: number; process_material: number | null },
+): string | null {
+  const m =
+    entry.process_material === null
+      ? undefined
+      : last.materials.get(entry.process_material);
+  if (!m) return `entry ${entry.id}: no process material`;
+  if (m.status !== "ok")
+    return `entry ${entry.id}: process material ${entry.process_material} is ${m.status}`;
+  const s =
+    m.shader === null
+      ? undefined
+      : (last.shaders.get(m.shader) as PtShaderFacts | undefined);
+  if (
+    !s ||
+    s.status !== "ok" ||
+    s.builtin?.kind !== "particle_process_material"
+  )
+    return `entry ${entry.id}: process shader ${m.shader} is not an ok particle_process_material builtin`;
+  if (s.synthetic === true)
+    return `entry ${entry.id}: process shader ${m.shader} is the synthetic placeholder`;
+  if (s.synthetic !== false)
+    return `entry ${entry.id}: process shader ${m.shader}: stored code unreadable`;
+  return null;
+}
+
+/**
+ * pt-registry-real-shader (LAR4): on the deferred arm every process material is adopted from the
+ * registry with the shader material_set_shader named: no placeholder shader, nothing recovered
+ * through the builtin, nothing refused. With `opts.cmbt` (deferred-cmbt) the post-arm cell's
+ * shader is registered too, so nothing is re-keyed (`unknown_shader_keyed` 0) and its entry is a
+ * created one on an ok real builtin process material. `ppm` is stream.gate8.particles, `stats` its
+ * `adoption`.
+ */
+export function ptRegistryRealShaderProblems(
+  stats: Record<string, number> | null,
+  ppm: Record<string, number> | null,
+  txs: readonly PtLateTx[],
+  late: PtLate,
+  opts: { cmbt?: PtLateShader } = {},
+): string[] {
+  const problems: string[] = [];
+  if (!stats)
+    problems.push("no stream.gate8.particles.adoption in result.json");
+  else {
+    if (stats.ppm_registry !== late.process_materials)
+      problems.push(
+        `${stats.ppm_registry} process materials adopted from the registry, ${late.process_materials} expected`,
+      );
+    for (const k of [
+      "ppm_builtin",
+      "ppm_shaders",
+      "ppm_refused_no_shader",
+      "ppm_refused",
+    ])
+      if (stats[k] !== 0) problems.push(`${k} ${stats[k]}, expected 0`);
+  }
+  const last = txs.at(-1);
+  if (!last) return [...problems, "no transaction"];
+  const entries = [...last.table.values()];
+  for (const e of entries) {
+    const p = realShaderProblem(last, e);
+    if (p === null) continue;
+    // the cmbt cell is judged below with its own wording
+    if (opts.cmbt && e.amount === opts.cmbt.amount) continue;
+    problems.push(p);
+  }
+  let placeholders = 0;
+  for (const sh of last.shaders.values())
+    if ((sh as PtShaderFacts).synthetic === true) placeholders++;
+  if (placeholders > 0)
+    problems.push(`last state: ${placeholders} placeholder shader(s)`);
+  if (opts.cmbt) {
+    if (!ppm) problems.push("no stream.gate8.particles in result.json");
+    else if ((ppm.unknown_shader_keyed ?? 0) !== 0)
+      problems.push(
+        `unknown_shader_keyed ${ppm.unknown_shader_keyed}, expected 0`,
+      );
+    const entry = entries.find((e) => e.amount === opts.cmbt?.amount);
+    if (!entry) problems.push(`no entry with amount ${opts.cmbt.amount}`);
+    else {
+      if (entry.origin !== "created")
+        problems.push(
+          `entry ${entry.id}: origin ${entry.origin}, expected created`,
+        );
+      if (entry.status !== "ok")
+        problems.push(`entry ${entry.id}: status ${entry.status}`);
+      const p = realShaderProblem(last, entry);
+      if (p !== null) problems.push(p);
+    }
+  }
+  return problems;
+}
+
+type PtParam = { name: string; type: string; value: unknown };
+
+function paramValuesDiffer(a: unknown, b: unknown): boolean {
+  const isTex = (v: unknown) =>
+    typeof v === "object" && v !== null && !Array.isArray(v) && "tex" in v;
+  if (isTex(a) || isTex(b)) return !(isTex(a) && isTex(b));
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
+/**
+ * pt-registry-params (LAR4): the headless (dummy renderer) deferred capture's process materials
+ * carry the born capture's parameters. Each born particles entry is paired with the headless entry
+ * of the same `amount`; their process materials' params are compared as name -> {type, value}
+ * (texture values: both textures, ids differ between sessions). `compared` counts params judged.
+ *
+ * One exception, the texture family's and not the registry's: the dummy's texture_replace frees
+ * the new texture and keeps the old one's (dummy/storage/texture_storage.h:112), so a texture made
+ * as a placeholder and filled by texture_replace (GradientTexture1D's first _update) has no image
+ * on a headless host, adoption refuses it (`refused_no_image`), and the parameter naming it is not
+ * published. A texture parameter absent from the headless material is excused (`excused`) while
+ * the headless capture counts that many textures refused for no image (`refusedNoImage`).
+ */
+export function ptRegistryParamsProblems(
+  stats: Record<string, number> | null,
+  born: readonly PtLateTx[],
+  headless: readonly PtLateTx[],
+  late: PtLate,
+  refusedNoImage = 0,
+): { problems: string[]; compared: number; excused: string[] } {
+  const problems: string[] = [];
+  const excused: string[] = [];
+  let compared = 0;
+  if (!stats)
+    problems.push("no stream.gate8.particles.adoption in result.json");
+  else if (stats.ppm_registry !== late.process_materials)
+    problems.push(
+      `${stats.ppm_registry} process materials adopted from the registry, ${late.process_materials} expected`,
+    );
+  const b = born.at(-1);
+  const h = headless.at(-1);
+  if (!b || !h)
+    return { problems: [...problems, "no transaction"], compared, excused };
+  const paramsOf = (tx: PtLateTx, pm: number | null) => {
+    const m = pm === null ? undefined : tx.materials.get(pm);
+    return m
+      ? new Map(((m.params ?? []) as PtParam[]).map((p) => [p.name, p]))
+      : null;
+  };
+  for (const be of b.table.values()) {
+    const he = [...h.table.values()].find((e) => e.amount === be.amount);
+    if (!he) {
+      problems.push(`amount ${be.amount}: no headless entry`);
+      continue;
+    }
+    const bp = paramsOf(b, be.process_material);
+    const hp = paramsOf(h, he.process_material);
+    if (!bp || !hp) {
+      if (bp !== hp)
+        problems.push(
+          `amount ${be.amount}: process material present in only one capture`,
+        );
+      continue;
+    }
+    for (const [name, p] of bp) {
+      const q = hp.get(name);
+      if (
+        !q &&
+        typeof p.value === "object" &&
+        p.value !== null &&
+        !Array.isArray(p.value) &&
+        "tex" in p.value &&
+        excused.length < refusedNoImage
+      ) {
+        excused.push(`amount ${be.amount}: ${name}`);
+        continue;
+      }
+      if (!q) {
+        problems.push(
+          `amount ${be.amount}: ${name} absent from the headless material`,
+        );
+        continue;
+      }
+      compared++;
+      if (q.type !== p.type)
+        problems.push(
+          `amount ${be.amount}: ${name} type ${q.type}, born ${p.type}`,
+        );
+      else if (paramValuesDiffer(p.value, q.value))
+        problems.push(
+          `amount ${be.amount}: ${name} ${JSON.stringify(q.value)}, born ${JSON.stringify(p.value)}`,
+        );
+    }
+    for (const name of hp.keys())
+      if (!bp.has(name))
+        problems.push(
+          `amount ${be.amount}: ${name} only in the headless material`,
+        );
+  }
+  return { problems, compared, excused };
+}
+
 export interface PtLateDeps {
   validate: (path: string) => Promise<[string, string] | null>;
   trace: (leg: string, sink: string) => Promise<PtLateTx[] | null>;
@@ -362,23 +581,41 @@ export interface PtLateDeps {
 }
 
 const SINKS = ["recording.rs12", "recording-patch.rs12"];
-const CAPTURES = ["late/capture", "fault-no-particles/capture"];
-const PPM_CAPTURE = "fault-ppm-no-shader/capture";
+const LATE_CAPTURE = "late/capture";
+const FAULT_CAPTURE = "fault-no-particles/capture";
 const LATE_CMBT_CAPTURE = "late-cmbt/capture";
-const RECEIVERS = ["late/receiver", "late/receiver-patch"];
+// LAR4: the deferred arm's captures, the registry-drop-binding sabotage and the headless leg.
+const DEFERRED_CAPTURE = "deferred/capture";
+const DEFERRED_CMBT_CAPTURE = "deferred-cmbt/capture";
+const DROP_BINDING_CAPTURE = "sabotage-registry-drop-binding/capture";
+const HEADLESS_DEFERRED_CAPTURE = "headless-deferred/capture";
+const BORN_CAPTURE = "capture";
+const CAPTURES = [
+  LATE_CAPTURE,
+  FAULT_CAPTURE,
+  LATE_CMBT_CAPTURE,
+  DEFERRED_CAPTURE,
+  DEFERRED_CMBT_CAPTURE,
+  DROP_BINDING_CAPTURE,
+  HEADLESS_DEFERRED_CAPTURE,
+];
+/** the deferred pixel receivers (pt-late-lifecycle, -coverage, -outside-exact) */
+const RECEIVERS = ["deferred/receiver", "deferred/receiver-patch"];
+const LATE_RECEIVER = "late/receiver";
+const DEFERRED_CMBT_RECEIVER = "deferred-cmbt/receiver";
 const FAULT_RECEIVER = "fault-no-particles/receiver";
 export const LATE_LEGS = [
   ...CAPTURES,
-  PPM_CAPTURE,
-  LATE_CMBT_CAPTURE,
   ...RECEIVERS,
+  LATE_RECEIVER,
+  DEFERRED_CMBT_RECEIVER,
   FAULT_RECEIVER,
 ];
 
 /**
  * pt-late-synthetic-skip's verdict on a receiver's applied.json. The receiver counts one skip per
  * synthetic-process-shader emitter per applied transaction (plan.rs apply_particles walks every
- * resident emitter on every apply), and under ppm-no-shader every one of the fixture's
+ * resident emitter on every apply), and on the `late` leg (LAR4) every one of the fixture's
  * `late.emitters` is recovered through the synthetic shader, so the exact count is
  * `late.emitters * applied`: 10 emitters x 109 applies = 1090 on the committed run. A bare `> 0`
  * would pass when only some emitters were skipped.
@@ -430,9 +667,9 @@ export async function runG8ptLate(
   };
   const anySkipped = [
     ...CAPTURES,
-    PPM_CAPTURE,
-    LATE_CMBT_CAPTURE,
     ...RECEIVERS,
+    LATE_RECEIVER,
+    DEFERRED_CMBT_RECEIVER,
     FAULT_RECEIVER,
   ].find((l) => skipped(dir(l)));
   if (anySkipped) {
@@ -443,6 +680,9 @@ export async function runG8ptLate(
       "pt-late-ppm-builtin",
       "pt-late-cmbt",
       "pt-late-synthetic-skip",
+      "pt-registry-real-shader",
+      "pt-registry-real-shader-catches-registry-drop-binding",
+      "pt-registry-params",
       "pt-late-lifecycle",
       "pt-late-coverage",
       "pt-late-outside-exact",
@@ -463,7 +703,7 @@ export async function runG8ptLate(
   {
     const problems: string[] = [];
     let any = false;
-    for (const leg of [...CAPTURES, PPM_CAPTURE, LATE_CMBT_CAPTURE])
+    for (const leg of CAPTURES)
       for (const sink of SINKS) {
         if (!ran(leg)) {
           problems.push(`${leg}/${sink}: the leg did not run`);
@@ -481,7 +721,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-validate",
-        "PM7: both sinks of the late and fault captures pass the TypeScript validator and rs-core-check",
+        "PM7, LAR4: both sinks of every late-group capture (late, fault, late-cmbt, deferred, deferred-cmbt, the registry-drop-binding sabotage, headless-deferred) pass the TypeScript validator and rs-core-check",
         any ? problems : null,
       ),
     );
@@ -489,7 +729,7 @@ export async function runG8ptLate(
 
   // pt-late-adopt, pt-late-fault
   {
-    const leg = "late/capture";
+    const leg = DEFERRED_CAPTURE;
     const stats = adoptionStats(
       await json(join(dir(leg), "evidence", "result.json")),
     );
@@ -514,7 +754,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-adopt",
-        "PM7: the late capture adopts every pre-arm emitter (and its process material) at its first draw: no unknown-particles anywhere, every entry origin adopted and ok on an ok process material whose shader carries the particle_process_material builtin, the subemitter linked",
+        "LAR4 deferred arm (PM7's adoption): the capture adopts every pre-arm emitter (and its process material) at its first draw: no unknown-particles anywhere, every entry origin adopted and ok on an ok process material whose shader carries the particle_process_material builtin, the subemitter linked",
         problems,
         stats
           ? `adopted ${stats.emitters} emitters, ${stats.ppm_materials} process materials (${stats.ppm_params} params), ${stats.ppm_shaders} shaders, ${stats.meshes} meshes; ${stats.adopt_ns} ns`
@@ -542,10 +782,11 @@ export async function runG8ptLate(
     );
   }
 
-  // pt-late-ppm-builtin (LATE-PPM): the engine names no shader, so adoption falls back to the
-  // particle_process_material builtin; the wire is otherwise the same as pt-late-adopt.
+  // pt-late-ppm-builtin (LATE-PPM, LAR4): the late leg's process materials predate the hooks, so
+  // adoption goes through the placeholder shader and the particle_process_material builtin; the
+  // wire is otherwise the same as pt-late-adopt.
   {
-    const leg = PPM_CAPTURE;
+    const leg = LATE_CAPTURE;
     const stats = adoptionStats(
       await json(join(dir(leg), "evidence", "result.json")),
     );
@@ -569,7 +810,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-ppm-builtin",
-        "LATE-PPM: under GRC_ADOPT_FAULT=ppm-no-shader (the engine names no shader) every process material is adopted through its particle_process_material builtin, nothing refused, no unknown-particles",
+        "LATE-PPM (LAR4 residual): on the late leg every process material predates the hooks, so every one is adopted through the placeholder shader and its particle_process_material builtin, nothing refused, no unknown-particles",
         problems,
         stats
           ? `${stats.ppm_builtin} builtin-recovered, ${stats.ppm_refused_no_shader} no-shader, ${stats.ppm_materials} materials`
@@ -581,7 +822,7 @@ export async function runG8ptLate(
   // pt-late-synthetic-skip (native-fog-tint): the native receiver cannot reconstruct the RD-only
   // process shader from the synthetic placeholder, so it skips every emitter recovered through it.
   {
-    const leg = "fault-ppm-no-shader/receiver";
+    const leg = LATE_RECEIVER;
     let problems: string[] | null = null;
     let detail: string | undefined;
     if (ran(leg)) {
@@ -594,7 +835,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-synthetic-skip",
-        "native-fog-tint: under GRC_ADOPT_FAULT=ppm-no-shader the native receiver skips every emitter whose process material is recovered through the synthetic process shader (counted in particles_resources.synthetic_skipped), instead of drawing white defaults",
+        "native-fog-tint (LAR4): on the late leg the native receiver skips every emitter whose process material is recovered through the synthetic process shader (counted in particles_resources.synthetic_skipped), instead of drawing white defaults",
         problems,
         detail,
       ),
@@ -630,6 +871,162 @@ export async function runG8ptLate(
           : undefined,
       ),
     );
+  }
+
+  // pt-registry-real-shader (LAR4): on the deferred arm every process material is adopted from the
+  // registry with its real shader: no placeholder, and the deferred receivers skip nothing.
+  const realShader = async (leg: string, cmbt: PtLateShader | undefined) => {
+    const result = await json(join(dir(leg), "evidence", "result.json"));
+    const stats = adoptionStats(result);
+    const ppm = ppmStats(result);
+    const problems: string[] = [];
+    for (const sink of SINKS) {
+      const t = await deps.trace(leg, sink);
+      if (!t) problems.push(`${leg}/${sink}: missing`);
+      else
+        for (const p of ptRegistryRealShaderProblems(stats, ppm, t, late, {
+          cmbt,
+        }))
+          problems.push(`${leg}/${sink}: ${p}`);
+    }
+    return problems;
+  };
+  {
+    const problems: string[] = [];
+    let any = false;
+    const details: string[] = [];
+    for (const [leg, cmbt, recv] of [
+      [DEFERRED_CAPTURE, undefined, "deferred/receiver"],
+      [DEFERRED_CMBT_CAPTURE, lateShader, DEFERRED_CMBT_RECEIVER],
+    ] as const) {
+      if (!ran(leg)) {
+        problems.push(`${leg}: the leg did not run`);
+        continue;
+      }
+      any = true;
+      problems.push(...(await realShader(leg, cmbt)));
+      if (!ran(recv)) {
+        problems.push(`${recv}: the leg did not run`);
+        continue;
+      }
+      const w11 = (await json(join(dir(recv), "applied.json")))?.w11 as
+        | {
+            applied?: number;
+            particles?: {
+              synthetic_skipped?: number;
+              particles_created?: number;
+              skipped_particles_commands?: number;
+            };
+          }
+        | undefined;
+      const pr = w11?.particles;
+      // The receiver writes synthetic_skipped only when it skipped one: absent is 0.
+      const sk = pr?.synthetic_skipped ?? 0;
+      const created = pr?.particles_created;
+      if (!pr || typeof created !== "number" || !((w11?.applied ?? 0) > 0))
+        problems.push(
+          `${recv}: applied.json has no w11.applied / particles counters (${w11?.applied}, ${created})`,
+        );
+      else {
+        if (sk !== 0)
+          problems.push(`${recv}: synthetic_skipped ${sk}, expected 0`);
+        if ((pr.skipped_particles_commands ?? 0) !== 0)
+          problems.push(
+            `${recv}: skipped_particles_commands ${pr.skipped_particles_commands}, expected 0`,
+          );
+        if (created < late.emitters)
+          problems.push(
+            `${recv}: ${created} emitters created, at least ${late.emitters} expected`,
+          );
+        details.push(
+          `${recv}: ${w11?.applied} applies, ${created} emitters created, 0 skipped`,
+        );
+      }
+    }
+    checks.push(
+      check(
+        "pt-registry-real-shader",
+        "LAR4: on the deferred arm every process material is adopted from the registry with the shader material_set_shader named: no placeholder shader, nothing re-keyed, and the native receiver skips no emitter",
+        any ? [...new Set(problems)] : null,
+        details.join("; ") || undefined,
+      ),
+    );
+    const id = "pt-registry-real-shader-catches-registry-drop-binding";
+    const criterion =
+      "LAR4: registry-drop-binding (the registry records no material shader bindings, so every process material falls to the placeholder) fails pt-registry-real-shader";
+    if (!ran(DROP_BINDING_CAPTURE)) checks.push(check(id, criterion, null));
+    else {
+      const stats = adoptionStats(
+        await json(join(dir(DROP_BINDING_CAPTURE), "evidence", "result.json")),
+      );
+      const t = await deps.trace(DROP_BINDING_CAPTURE, SINKS[0]);
+      const found = ptRegistryRealShaderProblems(stats, null, t ?? [], late);
+      checks.push(
+        check(
+          id,
+          criterion,
+          found.length > 0
+            ? []
+            : [
+                `${DROP_BINDING_CAPTURE} passed: the placeholder fallback went unseen`,
+              ],
+          found[0],
+        ),
+      );
+    }
+  }
+
+  // pt-registry-params (LAR4): the dummy host's registry-adopted process materials carry born's
+  // parameters.
+  {
+    const id = "pt-registry-params";
+    const criterion =
+      "LAR4: on the headless (dummy renderer) deferred capture every process material's parameters equal the born capture's";
+    if (!ran(HEADLESS_DEFERRED_CAPTURE) || !ran(BORN_CAPTURE))
+      checks.push(check(id, criterion, null));
+    else {
+      const problems: string[] = [];
+      let compared = 0;
+      let excused: string[] = [];
+      const result = await json(
+        join(dir(HEADLESS_DEFERRED_CAPTURE), "evidence", "result.json"),
+      );
+      const stats = adoptionStats(result);
+      // The dummy's texture refusals (G8r's counters), for the texture_replace exception.
+      const resources = (
+        (
+          (result?.stream as Record<string, unknown> | undefined)?.gate8 as
+            | Record<string, unknown>
+            | undefined
+        )?.adopt_stats as Record<string, unknown> | undefined
+      )?.resources as Record<string, number> | undefined;
+      const born = await deps.trace(BORN_CAPTURE, SINKS[0]);
+      const head = await deps.trace(HEADLESS_DEFERRED_CAPTURE, SINKS[0]);
+      if (!born || !head) problems.push("recording missing");
+      else {
+        const r = ptRegistryParamsProblems(
+          stats,
+          born,
+          head,
+          late,
+          resources?.refused_no_image ?? 0,
+        );
+        problems.push(...r.problems);
+        compared = r.compared;
+        excused = r.excused;
+      }
+      checks.push(
+        check(
+          id,
+          criterion,
+          problems,
+          `${compared} params compared` +
+            (excused.length > 0
+              ? `; excused (the dummy's texture_replace: texture refused no-image): ${excused.join(", ")}`
+              : ""),
+        ),
+      );
+    }
   }
 
   // The pixels: the reference's shots after the arm.
@@ -732,7 +1129,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-lifecycle",
-        "PM7: each late receiver lights exactly the cells the unarmed reference lights, at every shot after the arm",
+        "LAR4 (PM7's pixels): each deferred receiver lights exactly the cells the unarmed reference lights, at every shot after the arm",
         any ? lc : null,
         `${shots.length} shots: ${shots.map((s) => s.label).join(", ")}`,
       ),
@@ -748,7 +1145,7 @@ export async function runG8ptLate(
     checks.push(
       check(
         "pt-late-outside-exact",
-        "PM7: outside every emitter region each late receiver equals the reference exactly",
+        "LAR4 (PM7's pixels): outside every emitter region each deferred receiver equals the reference exactly",
         any ? out : null,
       ),
     );

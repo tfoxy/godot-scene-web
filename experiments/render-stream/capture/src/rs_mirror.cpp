@@ -60,6 +60,10 @@ void Mirror::reset() {
   material_refs_queue_on_ = false;  // LAR3: adoption's arm turns the pending queue on again
   material_refs_queue_.clear();
   material_refs_queued_.store(false, std::memory_order_release);
+  ppm_queue_on_ = false;  // LAR4: likewise the process-material queue
+  ppm_queue_.clear();
+  ppm_queue_materials_.clear();
+  ppm_queued_.store(false, std::memory_order_release);
   drop_frame_ = 0;
   omit_op_.clear();
   omit_armed_.store(false, std::memory_order_release);
@@ -3217,7 +3221,6 @@ bool Mirror::particles_referenced(std::uint32_t id) const {
 
 void Mirror::particles_moved(Particles *p, ParticlesCall *out) {
   ++epoch_;
-  ++ppm_epoch_;
   ++p->version;
   out->changed = true;
   out->version = p->version;
@@ -3261,7 +3264,6 @@ Mirror::ParticlesCall Mirror::particles_create(std::uint64_t rid, std::uint64_t 
     retire_particles(stale, frame);  // a recycled RID value: the old id leaves
   }
   ++epoch_;
-  ++ppm_epoch_;
   Particles p;
   p.id = next_particles_id_++;
   p.rid = rid;
@@ -3287,7 +3289,6 @@ Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const Particles
   }
   (void)frame;
   ++epoch_;
-  ++ppm_epoch_;
   Particles p;
   p.id = next_particles_id_++;
   p.rid = rid;
@@ -3326,6 +3327,9 @@ Mirror::ParticlesCall Mirror::particles_adopt(std::uint64_t rid, const Particles
   }
   p.floats = std::make_shared<std::vector<float>>(a.floats);
   particles_by_rid_[rid] = p.id;
+  if (a.material != 0) {
+    queue_ppm(p.id, 0);  // LAR4: its process material may need keying
+  }
   out.known = true;
   out.accepted = true;
   out.changed = true;
@@ -3532,7 +3536,9 @@ Mirror::ParticlesCall Mirror::particles_call(std::uint64_t rid, ParticlesOp op,
       p->material_rid = args.rid;
       p->material_id = id;
       p->unknown_material = unknown;
-      ++ppm_epoch_;
+      if (changed) {
+        queue_ppm(p->id, 0);  // LAR4
+      }
       break;
     }
     case ParticlesOp::SetSubemitter: {
@@ -3611,8 +3617,11 @@ void Mirror::add_particles(std::uint64_t rid, std::uint64_t particles_rid, std::
   } else if (geometry_texture(texture, kOp, &command)) {
     command.kind = CommandKind::AddParticles;
     command.particles = p->id;
+    // LAR4: a draw of an emitter that still needs work queues it with its drawing item.
+    if (ppm_queue_on_ && ppm_needs_locked(*p)) {
+      queue_ppm(p->id, rid);
+    }
   }
-  ++ppm_epoch_;
   push_command(item, std::move(command), frame);
 }
 
@@ -3696,23 +3705,106 @@ std::vector<Mirror::ParticlesStateNote> Mirror::take_particles_states() {
   return out;
 }
 
-std::uint64_t Mirror::ppm_epoch() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return ppm_epoch_;
+void Mirror::queue_ppm(std::uint32_t particles, std::uint64_t item) {
+  if (!ppm_queue_on_) {
+    return;
+  }
+  ppm_queue_.emplace_back(particles, item);
+  ppm_queued_.store(true, std::memory_order_release);
 }
 
-Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates_locked() const {
+bool Mirror::ppm_needs_locked(const Particles &p) const {
+  if (p.freed) {
+    return false;
+  }
+  if (p.unknown_material) {
+    return p.material_rid != 0;
+  }
+  if (p.material_id == 0) {
+    return false;
+  }
+  const Material *material = materials_.find(p.material_id);
+  if (material == nullptr) {
+    return false;
+  }
+  if (material->shader_unknown) {
+    return true;
+  }
+  if (!material->has_shader) {
+    return false;
+  }
+  const Shader *shader = shaders_.find(material->shader);
+  return shader != nullptr && !shader->has_ppm && shader->has_code &&
+         shader->copy.mode == "particles";
+}
+
+void Mirror::set_ppm_queue(bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ppm_queue_on_ = on;
+  if (!on) {
+    ppm_queue_.clear();
+    ppm_queue_materials_.clear();
+    ppm_queued_.store(false, std::memory_order_release);
+  }
+}
+
+std::uint64_t Mirror::ppm_scans() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return ppm_scans_;
+}
+
+Mirror::PpmResolveCandidates Mirror::take_ppm_candidates() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> queue;
+  std::vector<std::uint32_t> materials;
+  queue.swap(ppm_queue_);
+  materials.swap(ppm_queue_materials_);
+  ppm_queued_.store(false, std::memory_order_release);
+  std::map<std::uint32_t, std::vector<std::uint64_t>> only;  // particles id -> drawing items
+  for (const auto &q : queue) {
+    std::vector<std::uint64_t> &items = only[q.first];
+    if (q.second != 0 && std::find(items.begin(), items.end(), q.second) == items.end()) {
+      items.push_back(q.second);
+    }
+  }
+  if (!materials.empty()) {
+    // A material's shader binding changed: every live emitter on it (the emitters, not the items).
+    std::sort(materials.begin(), materials.end());
+    for (const auto &entry : particles_) {
+      if (!entry.second.freed && entry.second.material_id != 0 &&
+          std::binary_search(materials.begin(), materials.end(), entry.second.material_id)) {
+        only[entry.first];
+      }
+    }
+  }
+  if (only.empty()) {
+    return PpmResolveCandidates();
+  }
+  return ppm_resolve_candidates_locked(&only, &ppm_scans_);
+}
+
+Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates_locked(
+    const std::map<std::uint32_t, std::vector<std::uint64_t>> *only, std::uint64_t *scans) const {
   PpmResolveCandidates out;
   if (!pt_options_.enabled) {
     return out;
   }
-  // What each live emitter needs, from its own material and shader (no item walk): the
+  // What each emitter needs, from its own material and shader (no item walk): the
   // particle_process_material builtin of a keyable particles shader, a re-key of an unknown-shader
   // material (LATE-CMBT), or the adoption of an unknown material (LATE-RES).
   enum class Need { None, Builtin, UnknownShader, UnknownMaterial };
   std::vector<std::pair<const Particles *, Need>> needs;
-  for (const auto &entry : particles_) {
-    const Particles &p = entry.second;
+  std::vector<const Particles *> live;
+  if (only == nullptr) {
+    for (const auto &entry : particles_) live.push_back(&entry.second);
+  } else {
+    for (const auto &entry : *only) {
+      const auto it = particles_.find(entry.first);
+      if (it != particles_.end()) live.push_back(&it->second);
+    }
+  }
+  for (const Particles *pp : live) {
+    const Particles &p = *pp;
     if (p.freed) {
       continue;
     }
@@ -3742,12 +3834,38 @@ Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates_locked() const {
   if (needs.empty()) {
     return out;  // nothing to resolve: the items' commands are never walked
   }
-  // The items drawing each emitter id, walked once for all three lists.
+  // The items drawing each emitter id: the queue's drawing items (each still drawing it), and one
+  // walk of every item's commands for an emitter that came with none (every emitter when `only` is
+  // null).
   std::map<std::uint32_t, std::vector<std::uint64_t>> drawn_by;
-  for (const auto &entry : items_.all()) {
-    for (const Command &command : entry.second.state.commands) {
-      if (command.kind == CommandKind::AddParticles) {
-        drawn_by[command.particles].push_back(entry.second.rid);
+  bool walk = only == nullptr;
+  if (only != nullptr) {
+    for (const auto &need : needs) {
+      const auto q = only->find(need.first->id);
+      for (std::uint64_t rid : q->second) {
+        const Item *item = peek_item(rid);
+        if (item == nullptr) continue;
+        for (const Command &command : item->state.commands) {
+          if (command.kind == CommandKind::AddParticles && command.particles == need.first->id) {
+            drawn_by[need.first->id].push_back(rid);
+            break;
+          }
+        }
+      }
+      if (drawn_by.count(need.first->id) == 0) walk = true;
+    }
+  }
+  if (walk) {
+    if (scans != nullptr) ++*scans;
+    std::set<std::uint32_t> missing;
+    for (const auto &need : needs) {
+      if (drawn_by.count(need.first->id) == 0) missing.insert(need.first->id);
+    }
+    for (const auto &entry : items_.all()) {
+      for (const Command &command : entry.second.state.commands) {
+        if (command.kind == CommandKind::AddParticles && missing.count(command.particles) != 0) {
+          drawn_by[command.particles].push_back(entry.second.rid);
+        }
       }
     }
   }
@@ -3799,7 +3917,7 @@ Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates_locked() const {
 
 Mirror::PpmResolveCandidates Mirror::ppm_resolve_candidates() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return ppm_resolve_candidates_locked();
+  return ppm_resolve_candidates_locked(nullptr, nullptr);
 }
 
 std::vector<Mirror::PpmCandidate> Mirror::ppm_candidates() const {
@@ -5125,6 +5243,10 @@ void Mirror::material_set_shader(std::uint64_t rid, std::uint64_t shader, std::u
     }
   }
   ++material->version;
+  if (ppm_queue_on_) {
+    ppm_queue_materials_.push_back(material->id);  // LAR4: its emitters' needs may have changed
+    ppm_queued_.store(true, std::memory_order_release);
+  }
 }
 
 void Mirror::material_set_param(std::uint64_t rid, const std::string &name,

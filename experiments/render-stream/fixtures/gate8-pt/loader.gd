@@ -7,6 +7,10 @@ extends Node
 ##   RS_FIXTURE_ARM=late   in `_process` at fixture frame K = RS_FIXTURE_ARM_FRAME (default 12),
 ##                         after every emitter has drawn: the capture adopts them (GRC_ADOPT=arm,
 ##                         PM7's `late` legs, render-stream-12.md "As built (PM7)")
+##   RS_FIXTURE_ARM=deferred  in `_enter_tree` exactly as `born` (every create is registered under
+##                         the hooks); the runner defers the arm to fixture frame K with
+##                         GRC_ARM_DEFER_FRAMES=K-1, so every resource is adopted from the
+##                         registry at the arm (LAR4, late-arm-registry-design.md)
 ##
 ## An autoload processes ahead of the main scene, so at frame K the capture arms before the scene's
 ## own `_process` of that frame. `GRC_EXTENSION` unset: nothing is loaded.
@@ -28,11 +32,11 @@ func _enter_tree() -> void:
 			_arm_frame = text.to_int()
 		else:
 			printerr("[fixture] error: RS_FIXTURE_ARM_FRAME must be an integer in 8..19 (got %s)" % JSON.stringify(text))
-	if _arm_mode != "born" and _arm_mode != "late":
-		printerr("[fixture] error: RS_FIXTURE_ARM must be born or late (got %s)" % JSON.stringify(_arm_mode))
+	if _arm_mode != "born" and _arm_mode != "late" and _arm_mode != "deferred":
+		printerr("[fixture] error: RS_FIXTURE_ARM must be born, late or deferred (got %s)" % JSON.stringify(_arm_mode))
 		_arm_mode = "born"
-	if _arm_mode == "born":
-		_load("born")
+	if _arm_mode == "born" or _arm_mode == "deferred":
+		_load(_arm_mode)
 
 
 func _process(_delta: float) -> void:

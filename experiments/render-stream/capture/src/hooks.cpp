@@ -1978,9 +1978,6 @@ rs::ShaderCopy copy_shader_code(const void *code_ptr, rs::PayloadPtr *payload_ou
 thread_local bool t_internal = false;
 thread_local std::string *t_internal_code = nullptr;
 thread_local uint64_t *t_internal_rid = nullptr;
-// PM7: the temporary ParticleProcessMaterial's parameter names and shader (hooks_internal_material).
-thread_local std::vector<std::string> *t_internal_param_names = nullptr;
-thread_local uint64_t *t_internal_shader = nullptr;
 // PM7: the mesh the last mesh_add_surface on this thread filled (a GPUParticles2D's draw rebuilds
 // its draw-pass quad right before particles_set_trail_bind_poses and canvas_item_add_particles,
 // gpu_particles_2d.cpp:615-725), for adopt_particles_note_draw.
@@ -3118,10 +3115,7 @@ void hook_shader_set_code(void *self, RID shader, const void *code) {
 }
 
 void hook_material_set_param(void *self, RID material, const void *name, const void *value) {
-  if (t_internal) {  // PM7: the capture's temporary ParticleProcessMaterial
-    if (t_internal_param_names != nullptr) {
-      t_internal_param_names->push_back(rs::decode_string_name(name));
-    }
+  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
     original<FnMaterialSetParam>(kMaterialSetParam)(self, material, name, value);
     return;
   }
@@ -3200,7 +3194,7 @@ void hook_shader_set_default_texture_parameter(void *self, RID shader, const voi
 }
 
 RID hook_material_create(void *self) {
-  if (t_internal) {  // PM7: the capture's temporary ParticleProcessMaterial
+  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
     return original<FnCreate>(kMaterialCreate)(self);
   }
   bump(kMaterialCreate);
@@ -3219,10 +3213,7 @@ RID hook_material_create(void *self) {
 }
 
 RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority, RID shader) {
-  if (t_internal) {  // PM7: a temporary ParticleProcessMaterial that makes its RID lazily
-    if (t_internal_shader != nullptr && shader.id != 0) {
-      *t_internal_shader = shader.id;
-    }
+  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
     return original<FnMaterialCreateFromShader>(kMaterialCreateFromShader)(self, next_pass,
                                                                             priority, shader);
   }
@@ -3253,12 +3244,7 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
 }
 
 void hook_material_set_shader(void *self, RID material, RID shader) {
-  if (t_internal) {  // PM7: the capture's temporary ParticleProcessMaterial
-    // The temporary's destructor clears its shader (material_set_shader(material, RID()),
-    // particle_process_material.cpp:2454): keep the shader it was given.
-    if (t_internal_shader != nullptr && shader.id != 0) {
-      *t_internal_shader = shader.id;
-    }
+  if (t_internal) {  // G8m: the capture's own temporary objects pass straight through
     original<FnSetMaterial>(kMaterialSetShader)(self, material, shader);
     return;
   }
@@ -5150,13 +5136,6 @@ void hooks_internal_end() {
   t_internal = false;
   t_internal_code = nullptr;
   t_internal_rid = nullptr;
-  t_internal_param_names = nullptr;
-  t_internal_shader = nullptr;
-}
-
-void hooks_internal_material(std::vector<std::string> *param_names_out, uint64_t *shader_out) {
-  t_internal_param_names = param_names_out;
-  t_internal_shader = shader_out;
 }
 
 bool hooks_adopt_multimesh(uint64_t rid, rs::Mirror::MultimeshAdopt adopt) {

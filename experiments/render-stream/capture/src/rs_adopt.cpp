@@ -1602,8 +1602,6 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::NoIncludePath;
   } else if (text == "no-particles") {
     *out = AdoptFault::NoParticles;
-  } else if (text == "ppm-no-shader") {
-    *out = AdoptFault::PpmNoShader;
   } else if (text == "registry-off") {
     *out = AdoptFault::RegistryOff;
   } else if (text == "registry-mm-stride") {
@@ -1612,11 +1610,13 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::RegistryKeepFreed;
   } else if (text == "registry-skip-params") {
     *out = AdoptFault::RegistrySkipParams;
+  } else if (text == "registry-drop-binding") {
+    *out = AdoptFault::RegistryDropBinding;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
-             "no-particles, ppm-no-shader, registry-off, registry-keep-freed, registry-mm-stride or "
-             "registry-skip-params)";
+             "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
+             "registry-skip-params or registry-drop-binding)";
     return false;
   }
   if (!adopt) {
@@ -1634,11 +1634,11 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::ClaimCurrent: return "claim-current";
   case AdoptFault::NoIncludePath: return "no-include-path";
   case AdoptFault::NoParticles: return "no-particles";
-  case AdoptFault::PpmNoShader: return "ppm-no-shader";
   case AdoptFault::RegistryOff: return "registry-off";
   case AdoptFault::RegistryKeepFreed: return "registry-keep-freed";
   case AdoptFault::RegistryMmStride: return "registry-mm-stride";
   case AdoptFault::RegistrySkipParams: return "registry-skip-params";
+  case AdoptFault::RegistryDropBinding: return "registry-drop-binding";
   }
   return "none";
 }
@@ -2777,6 +2777,8 @@ void adopt_materials_configure(AdoptMaterialSabotage sabotage) {
   // mirror was enabled, and reset, just before; entry.cpp calls this before adopt_at_arm).
   mirror_instance().set_material_refs_queue(g_res_active.load(std::memory_order_acquire) &&
                                             fault() != AdoptFault::NoResources);
+  // LAR4: and the emitters whose process material needs work (adopt_particles_resolve's queue).
+  mirror_instance().set_ppm_queue(true);
 }
 
 bool adopt_material_ref(std::uint64_t rid) {
@@ -2869,7 +2871,6 @@ struct PpmBinds {
 PpmBinds g_ppm;
 std::mutex g_ppm_mutex;
 PpmStats g_ppm_stats;
-std::uint64_t g_ppm_epoch_seen = ~0ull;
 std::set<std::uint64_t> g_ppm_unresolved;  // shader RIDs counted unresolved (once each)
 
 bool ppm_binds() {
@@ -3030,6 +3031,18 @@ const char kPpmSyntheticCode[] =
 
 std::uint64_t adopt_ppm_builtin(void *material);  // PM7, below
 
+// LAR4: whether the shader the registry recorded for material `rid` is itself registered (a
+// shader made under the hooks, which the registry adopts with its real code).
+bool material_shader_registered(std::uint64_t rid) {
+  if (!rs::registry_on()) {
+    return false;
+  }
+  rs::RegistryMaterial reg;
+  rs::RegistryKind kind = rs::RegistryKind::Texture2d;
+  return rs::registry_material(rid, &reg) && reg.shader != 0 &&
+         rs::registry_lookup(reg.shader, &kind) && kind == rs::RegistryKind::Shader;
+}
+
 }  // namespace
 
 // LATE-RES (gap #5): at the frame boundary, after the LATE-CMBT loop. Defined after the PM7
@@ -3069,21 +3082,21 @@ static_assert(rs2::kPpmEmissionShapes <= 8 && rs2::kPpmSubEmitterModes <= 8 &&
               "ppm_key_bits: a builtin key field outgrew its width");
 
 void adopt_particles_resolve() {
-  if (!mirror_enabled() || !ppm_binds()) {
+  if (!mirror_enabled()) {
     return;
   }
   Mirror &m = mirror_instance();
-  if (!m.particles_options().enabled) {
+  // LAR4 (late-arm-registry-design.md R4, Q4 M18): the mirror's queue replaces the ppm epoch. A
+  // frame that queued nothing costs this one atomic load; otherwise only the queued emitters are
+  // looked at (rs_mirror.h take_ppm_candidates).
+  if (!m.has_pending_ppm() || !m.particles_options().enabled || !ppm_binds()) {
     return;
   }
-  const std::uint64_t epoch = m.ppm_epoch();
-  if (epoch == g_ppm_epoch_seen) {
-    return;
+  const Mirror::PpmResolveCandidates candidates = m.take_ppm_candidates();
+  {
+    std::lock_guard<std::mutex> lock(g_ppm_mutex);
+    ++g_ppm_stats.drains;
   }
-  g_ppm_epoch_seen = epoch;
-  // One pass over the mirror for all three lists, and none over its items when no live emitter
-  // needs resolving (the epoch moves on every add_particles, so this runs most frames).
-  const Mirror::PpmResolveCandidates candidates = m.ppm_resolve_candidates();
   for (const Mirror::PpmCandidate &c : candidates.builtin) {
     bool done = false;
     for (const auto &pair : c.pairs) {
@@ -3117,11 +3130,18 @@ void adopt_particles_resolve() {
     }
   }
   // LATE-CMBT: a post-arm process material whose material_create_from_shader / material_set_shader
-  // named a pre-arm shader RID is `unknown-shader` (the shader is never keyed: resolve_pending keys
-  // only item materials, and ppm_candidates only materials with a known shader). Key it through its
+  // named a shader RID the mirror does not know is `unknown-shader`. Key it through its
   // particle_process_material builtin: adopt a synthetic `particles` shader carrying the key, then
-  // re-key the material to it, so a builtin-driven receiver simulates the emitter.
+  // re-key the material to it, so a builtin-driven receiver simulates the emitter. LAR4: only for a
+  // shader older than the hooks (the residual). A registered shader is the registry's: the hook
+  // sites and the material queue (adopt_materials_resolve, which runs first) adopt its real code,
+  // so the material is left for them and never re-keyed to the placeholder.
   for (const auto &pair : candidates.unknown_shader) {
+    if (material_shader_registered(pair.first)) {
+      std::lock_guard<std::mutex> lock(g_ppm_mutex);
+      ++g_ppm_stats.unknown_shader_registered;
+      continue;
+    }
     void *node = node_of(pair.second);
     if (node == nullptr || as(node, g_ppm.tag_gpu_particles) == nullptr) {
       continue;
@@ -3245,16 +3265,14 @@ struct PtaBinds {
                            process_material = nullptr, can_process = nullptr,
                            get_node_or_null = nullptr, global_transform = nullptr,
                            texture_width = nullptr, texture_height = nullptr,
-                           duplicate = nullptr, resource_get_rid = nullptr,
-                           shader_get_code = nullptr, material_get_param = nullptr;
+                           resource_get_rid = nullptr, material_get_param = nullptr;
   void *tag_gpu_particles = nullptr, *tag_ppm = nullptr, *tag_resource = nullptr;
 };
 PtaBinds g_pta;
 std::mutex g_pta_mutex;  // the stats and the node maps
 EmitterAdoptStats g_pta_stats;
 std::set<std::uint64_t> g_pta_refused;                      // emitter RIDs refused (counted once)
-// Process-material RIDs whose adoption failed this stream: never retried (each try duplicates the
-// Resource, creates and frees an RS material and reads every parameter back synchronously).
+// Process-material RIDs whose adoption failed this stream: never retried.
 std::set<std::uint64_t> g_pta_refused_materials;
 std::map<std::uint64_t, std::uint64_t> g_pta_node_rid;      // adopted emitter node id -> RID
 std::multimap<std::uint64_t, std::uint64_t> g_pta_sub_wait;  // subemitter node id -> parent RID
@@ -3303,9 +3321,7 @@ bool pta_binds() {
   g_pta.global_transform = method_bind("CanvasItem", "get_global_transform", 3814499831LL);
   g_pta.texture_width = method_bind("Texture2D", "get_width", 3905245786LL);
   g_pta.texture_height = method_bind("Texture2D", "get_height", 3905245786LL);
-  g_pta.duplicate = method_bind("Resource", "duplicate", 482882304LL);
   g_pta.resource_get_rid = method_bind("Resource", "get_rid", 2944877500LL);
-  g_pta.shader_get_code = method_bind("RenderingServer", "shader_get_code", 642473191LL);
   g_pta.material_get_param = method_bind("RenderingServer", "material_get_param", 2621281810LL);
   g_pta.tag_gpu_particles = Tags::tag(gp);
   g_pta.tag_ppm = Tags::tag("ParticleProcessMaterial");
@@ -3317,8 +3333,8 @@ bool pta_binds() {
       g_pta.trail_enabled, g_pta.trail_lifetime, g_pta.interp_to_end, g_pta.collision_base_size,
       g_pta.seed, g_pta.emitting, g_pta.visibility_rect, g_pta.sub_emitter, g_pta.texture,
       g_pta.process_material, g_pta.can_process, g_pta.get_node_or_null, g_pta.global_transform,
-      g_pta.texture_width, g_pta.texture_height, g_pta.duplicate, g_pta.resource_get_rid,
-      g_pta.shader_get_code, g_pta.material_get_param};
+      g_pta.texture_width, g_pta.texture_height, g_pta.resource_get_rid,
+      g_pta.material_get_param};
   g_pta.ok = g_pta.tag_gpu_particles != nullptr && g_pta.tag_resource != nullptr;
   for (GDExtensionMethodBindPtr b : all) {
     g_pta.ok = g_pta.ok && b != nullptr;
@@ -3385,124 +3401,71 @@ std::uint64_t adopt_ppm_builtin(void *material) {
   return synth;
 }
 
-// A pre-arm ParticleProcessMaterial (`material`, RID `rid`): a capture-owned duplicate shares the
-// original's key, so its get_rid() (ParticleProcessMaterial::get_rid runs _update_shader,
-// particle_process_material.cpp:1866) sets the shared shader on the duplicate's own material
-// through the hooks, which hand the shader RID and every parameter name here (D4's reentrancy
-// flag: nothing of the temporary reaches the mirror or the hook log). The original's code and
-// values then come from the server (shader_get_code, material_get_param: GLES3 keeps both; the
-// headless dummy keeps neither, so a headless capture refuses). False: unknown-material stays.
+// LAR4 (late-arm-registry-design.md Q4 M16, M17): a pre-arm ParticleProcessMaterial (`material`,
+// RID `rid`). PM7's duplicate trick is gone.
+//   - Registered (made under the hooks): adopted from the registry, as any material (LAR3): the
+//     shader material_set_shader named, with the code the server was given, and every recorded
+//     parameter. No getter is read, so the dummy renderer's empty shader_get_code and NIL
+//     material_get_param do not matter: a headless capture carries the real values.
+//   - Older than the hooks (the residual, Q3), or registered with no recorded binding (a shader
+//     older than the hooks, or registry-drop-binding): LATE-PPM's placeholder, a synthetic
+//     `particles` shader carrying the material's particle_process_material builtin key (M17),
+//     with the recorded parameters when registered and, when not, the placeholder's declared
+//     uniforms (FOG-U: read back, or their declared default). Nothing else names the residual's
+//     parameters without the duplicate; F1 retired load-late as a fidelity target.
+// False: unknown-material stays.
 bool adopt_ppm(void *material, std::uint64_t rid) {
   Mirror &m = mirror_instance();
-  void *rs_singleton = singleton_object("RenderingServer");
-  if (rs_singleton == nullptr) {
-    return false;
-  }
-  std::vector<std::string> names;
-  std::uint64_t shader = 0;
-  std::string created_code;
-  std::uint64_t created = 0;
-  hooks_internal_begin(&created_code, &created);
-  hooks_internal_material(&names, &shader);
-  {
-    RefSlot dup;
-    const std::uint8_t deep = 0;
-    const GDExtensionConstTypePtr args[1] = {&deep};
-    g_iface.object_method_bind_ptrcall(g_pta.duplicate, material, args, &dup.slot);
-    if (dup.object() != nullptr) {
-      pta_rid(dup.object());
-    }
-  }  // the duplicate dies here: its material's free passes straight through
-  hooks_internal_end();
-  if (fault() == AdoptFault::PpmNoShader) {
-    shader = 0;  // LATE-PPM fault: an engine that assigns the shader outside get_rid()
-  }
-  bool synthetic = false;
-  if (shader == 0) {
-    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_no_shader; });
-    // LATE-PPM: no shader was named (the engine assigns it outside get_rid()), so adopt a
-    // synthetic particles shader carrying the material's particle_process_material builtin key.
-    shader = adopt_ppm_builtin(material);
-    if (shader == 0) {
-      return false;  // the temporary named no shader and the builtin key could not be read
-    }
-    synthetic = true;
-    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
-  } else if (created != 0) {
-    // LATE-RES (gap #5): the duplicate made its own shader (an engine whose process material
-    // assigns a fresh shader to a copy, not the shared one), so the original's shader RID is
-    // unrecoverable: recover through the builtin key, as the no-shader case.
-    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_created; });
-    shader = adopt_ppm_builtin(material);
-    if (shader == 0) {
+  rs::RegistryMaterial reg;
+  const bool registered = rs::registry_on() && rs::registry_material(rid, &reg);
+  if (registered && reg.shader != 0 && materialize_shader(reg.shader)) {
+    if (!adopt_material_registered(rid, reg, false)) {
+      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_material; });
       return false;
     }
-    synthetic = true;
-    pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
+    const std::uint32_t count = static_cast<std::uint32_t>(reg.params.size());
+    pta_stat([count](EmitterAdoptStats &s) {
+      ++s.ppm_materials;
+      ++s.ppm_registry;
+      s.ppm_params += count;
+    });
+    return true;
   }
-  if (!synthetic && !m.knows_shader(shader)) {
-    Builtin code(GDEXTENSION_VARIANT_TYPE_STRING);
-    const GDExtensionConstTypePtr a1[1] = {&shader};
-    g_iface.object_method_bind_ptrcall(g_pta.shader_get_code, rs_singleton, a1, code.ptr());
-    const std::string text = utf8_of(code.ptr());
-    if (text.empty() || !hooks_adopt_shader(shader, text)) {
-      // LATE-RES: the named shader's code is unrecoverable (headless, or an engine that never
-      // kept it): recover through the builtin key, as the no-shader case.
-      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_code; });
-      shader = adopt_ppm_builtin(material);
-      if (shader == 0) {
-        return false;
-      }
-      synthetic = true;
-      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
-    } else {
-      pta_stat([](EmitterAdoptStats &s) { ++s.ppm_shaders; });
-    }
+  // The residual: no shader the mirror can name.
+  pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_no_shader; });
+  const std::uint64_t shader = adopt_ppm_builtin(material);
+  if (shader == 0) {
+    return false;  // the builtin key could not be read
   }
-  // The names: every parameter the temporary was given, then every uniform the shader's code
-  // declares (an engine build whose material makes its RID lazily sets some before the RID
-  // exists). FOG-U: the declared uniforms are kept with their type and default, so a uniform the
-  // shader declares but no setter ever set is supplied with the shader's declared default instead
-  // of dropped -- a named shader's own code, or the synthetic builtin shader's fixed declarations.
-  std::vector<UniformDecl> declared;
-  {
-    std::string code;
-    if (m.shader_code_of(shader, &code)) {
-      for (const UniformDecl &u : scan_uniforms(code)) {
-        declared.push_back(u);
-        names.push_back(u.name);
-      }
-    }
-  }
+  pta_stat([](EmitterAdoptStats &s) { ++s.ppm_builtin; });
   std::vector<std::unique_ptr<VariantSlot>> values;
   std::vector<AdoptParam> params;
   std::set<std::string> seen;
-  for (const std::string &name : names) {
-    if (!seen.insert(name).second) continue;
-    auto v = std::make_unique<VariantSlot>();
-    StringName sn(name.c_str());
-    const GDExtensionConstTypePtr a2[2] = {&rid, sn.ptr()};
-    g_iface.object_method_bind_ptrcall(g_pta.material_get_param, rs_singleton, a2, v->data);
-    if (v->type() == GDEXTENSION_VARIANT_TYPE_NIL) {
-      // FOG-U: never set on the original; supply the shader's declared default when it has one.
-      const UniformDecl *d = nullptr;
-      for (const UniformDecl &u : declared) {
-        if (u.name == name) {
-          d = &u;
-          break;
-        }
-      }
-      if (d != nullptr) {
-        auto def = uniform_default_variant(*d);
-        if (def != nullptr) {
-          params.push_back({name, def->data});
-          values.push_back(std::move(def));
-        }
-      }
-      continue;
+  if (registered) {
+    for (const rs::RegistryParam &p : reg.params) {
+      if (seen.insert(p.name).second) params.push_back({p.name, p.value.get()});
     }
-    params.push_back({name, v->data});
-    values.push_back(std::move(v));
+  }
+  // FOG-U: the placeholder's declared uniforms no setter ever set, read back from the server when
+  // it keeps a value (GLES3), else their declared default (the dummy).
+  std::string code;
+  void *rs_singleton = singleton_object("RenderingServer");
+  if (m.shader_code_of(shader, &code)) {
+    for (const UniformDecl &u : scan_uniforms(code)) {
+      if (!seen.insert(u.name).second) continue;
+      auto v = std::make_unique<VariantSlot>();
+      if (!registered && rs_singleton != nullptr) {
+        StringName sn(u.name.c_str());
+        const GDExtensionConstTypePtr a2[2] = {&rid, sn.ptr()};
+        g_iface.object_method_bind_ptrcall(g_pta.material_get_param, rs_singleton, a2, v->data);
+      }
+      if (v->type() == GDEXTENSION_VARIANT_TYPE_NIL) {
+        v = uniform_default_variant(u);
+        if (v == nullptr) continue;
+      }
+      params.push_back({u.name, v->data});
+      values.push_back(std::move(v));
+    }
   }
   if (!hooks_adopt_material(rid, shader, params)) {
     if (!m.knows_material(rid)) pta_stat([](EmitterAdoptStats &s) { ++s.ppm_refused_material; });

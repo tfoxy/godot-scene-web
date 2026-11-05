@@ -2232,7 +2232,29 @@ export async function runG8pt(
         validate: (path) => validateBoth(path, 12),
         trace: async (leg, sink) => {
           const t = await trace(leg, sink, 12);
-          return t ? (t.txs as unknown as PtLateTx[]) : null;
+          if (!t) return null;
+          // LAR4: the trace carries a shader's hash, not its code; mark each shader whose stored
+          // code holds LATE-PPM's `// Synthetic` marker (the placeholder) for pt-registry-real-shader.
+          const codeOf = store(leg);
+          const memo = new Map<string, boolean | undefined>();
+          const synthetic = (hash: string | null) => {
+            if (hash === null) return undefined;
+            if (!memo.has(hash)) {
+              const code = codeOf(hash);
+              memo.set(
+                hash,
+                code === null ? undefined : code.includes("// Synthetic"),
+              );
+            }
+            return memo.get(hash);
+          };
+          for (const tx of t.txs)
+            for (const [id, sh] of tx.shaders)
+              tx.shaders.set(id, {
+                ...sh,
+                synthetic: synthetic(sh.hash),
+              } as typeof sh);
+          return t.txs as unknown as PtLateTx[];
         },
         amountOf: (cell) => expected.cells[cell]?.amount,
       },

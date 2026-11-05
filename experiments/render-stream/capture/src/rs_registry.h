@@ -81,7 +81,9 @@ const char *registry_kind_name(RegistryKind kind);
 //   registry-off        record nothing (a deferred leg becomes a load-late one; LAR1+ sabotages)
 //   registry-keep-freed the free hook keeps the entry (LAR0's sabotage: fails registry-live-bound)
 //   registry-skip-params material_set_param records nothing (LAR3's sabotage: fails param-parity)
-enum class RegistryFault : std::uint8_t { None, Off, KeepFreed, SkipParams };
+//   registry-drop-binding a material's shader binding is not recorded (LAR4's sabotage: fails
+//                       pt-registry-real-shader)
+enum class RegistryFault : std::uint8_t { None, Off, KeepFreed, SkipParams, DropBinding };
 const char *registry_fault_name(RegistryFault fault);
 
 constexpr std::size_t kRegistryDefaultCap = std::size_t{1} << 20;  // entries per family

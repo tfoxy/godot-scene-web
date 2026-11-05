@@ -787,6 +787,10 @@ std::string result_json() {
         json.field("builtin_resolved", static_cast<int64_t>(ppm.builtin_resolved));
         json.field("builtin_unresolved", static_cast<int64_t>(ppm.builtin_unresolved));
         json.field("unknown_shader_keyed", static_cast<int64_t>(ppm.unknown_shader_keyed));
+        // LAR4: the process-material queue (rs_mirror.h take_ppm_candidates).
+        json.field("unknown_shader_registered", static_cast<int64_t>(ppm.unknown_shader_registered));
+        json.field("ppm_drains", static_cast<int64_t>(ppm.drains));
+        json.field("ppm_scans", static_cast<int64_t>(rs::mirror_instance().ppm_scans()));
         json.field("unknown_material_keyed", static_cast<int64_t>(ppm.unknown_material_keyed));
         json.field("pump_fired", static_cast<int64_t>(g_state.pump_fired));
         json.field("pump_skipped", static_cast<int64_t>(g_state.pump_skipped));
@@ -810,13 +814,12 @@ std::string result_json() {
           json.field("refused_binds", static_cast<int64_t>(e.refused_binds));
           json.field("meshes", static_cast<int64_t>(e.meshes));
           json.field("ppm_materials", static_cast<int64_t>(e.ppm_materials));
+          json.field("ppm_registry", static_cast<int64_t>(e.ppm_registry));
           json.field("ppm_shaders", static_cast<int64_t>(e.ppm_shaders));
           json.field("ppm_params", static_cast<int64_t>(e.ppm_params));
           json.field("ppm_refused", static_cast<int64_t>(e.ppm_refused));
           json.field("ppm_refused_no_shader", static_cast<int64_t>(e.ppm_refused_no_shader));
           json.field("ppm_builtin", static_cast<int64_t>(e.ppm_builtin));
-          json.field("ppm_refused_created", static_cast<int64_t>(e.ppm_refused_created));
-          json.field("ppm_refused_code", static_cast<int64_t>(e.ppm_refused_code));
           json.field("ppm_refused_material", static_cast<int64_t>(e.ppm_refused_material));
           json.field("other_materials", static_cast<int64_t>(e.other_materials));
           json.field("subemitters", static_cast<int64_t>(e.subemitters));
@@ -4173,6 +4176,8 @@ bool attempt(const char *phase) {
           registry_fault = rs::RegistryFault::KeepFreed;
         } else if (fault == rs::AdoptFault::RegistrySkipParams) {
           registry_fault = rs::RegistryFault::SkipParams;  // LAR3
+        } else if (fault == rs::AdoptFault::RegistryDropBinding) {
+          registry_fault = rs::RegistryFault::DropBinding;  // LAR4
         }
       }
       rs::registry_configure(adopt, registry_fault);

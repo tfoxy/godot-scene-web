@@ -241,8 +241,16 @@
 #       "As built (PM7)"), in the same gamescope after the PM6a legs: `late/capture` (armed at
 #       fixture frame 12, RS_FIXTURE_ARM=late, every emitter adopted), `fault-no-particles/capture`
 #       (late, GRC_ADOPT_FAULT=no-particles: the pre-PM7 capture), and the native
-#       `late/receiver`, `late/receiver-patch` and `fault-no-particles/receiver` (G8PT_ONLY_LATE=1
-#       runs only those and the references, a development knob). PFB (render-stream-12.md "As
+#       `late/receiver` and `fault-no-particles/receiver` (G8PT_ONLY_LATE=1
+#       runs only those, LAR4's and the references, a development knob). LAR4
+#       (late-arm-registry-design.md, the process-material row), in the same gamescope:
+#       `deferred/capture` (loaded at birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11: every
+#       process material adopted from the registry with its real shader), `deferred-cmbt/capture`
+#       (RS_FIXTURE_LATE_SHADER=1), `sabotage-registry-drop-binding/capture` (deferred,
+#       GRC_ADOPT_FAULT=registry-drop-binding), the native `deferred/receiver`,
+#       `deferred/receiver-patch` and `deferred-cmbt/receiver`; `late/capture` now exercises the
+#       placeholder residual (the old fault-ppm-no-shader legs are gone); after the other headless
+#       legs, `headless-deferred/capture` (the dummy host, process parameters = born's). PFB (render-stream-12.md "As
 #       built (PFB)"), after the late legs, on fixtures/gate8-ptc: `ptc/reference-gl`,
 #       `ptc/reference-fwdplus` (Forward+ on Vulkan), `ptc/capture` (armed /12 on the Forward+
 #       host) and its gl_compatibility receivers `ptc/receiver`,
@@ -1427,6 +1435,9 @@ G8PT_RECEIVER_SABOTAGES=(undrawn-particles ignore-particle-emits)
 # PM7: the late arm (fixtures/gate8-pt/loader.gd RS_FIXTURE_ARM=late at frame 12, after every
 # emitter has drawn), adopted under GRC_ADOPT=arm; GRC_UNKNOWN_ITEM=skip as every late gate 8 leg.
 G8PT_LATE_ENV=(GRC_STREAM_VERSION=12 RS_FIXTURE_ARM=late RS_FIXTURE_ARM_FRAME=12 GRC_UNKNOWN_ITEM=skip)
+# LAR4: the deferred arm (loader.gd RS_FIXTURE_ARM=deferred): loaded at birth, armed at frame 12 by
+# GRC_ARM_DEFER_FRAMES=11, so every resource is adopted from the late-arm registry.
+G8PT_DEFERRED_ENV=(GRC_STREAM_VERSION=12 RS_FIXTURE_ARM=deferred RS_FIXTURE_ARM_FRAME=12 GRC_ARM_DEFER_FRAMES=11 GRC_UNKNOWN_ITEM=skip)
 G8PT_ONLY_LATE="${G8PT_ONLY_LATE:-0}"
 
 # g8pt_extra_seqs <capture dir>: the CSV of the seqs published at each settle frame's previous frame
@@ -1563,15 +1574,20 @@ run_g8pt_late() {
 	echo "run-gate8: g8pt fault-no-particles/capture (late, GRC_ADOPT_FAULT=no-particles)"
 	run_capture_rendered_g8pt "$OUT/g8pt/fault-no-particles/capture" "${G8PT_LATE_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-particles
-	echo "run-gate8: g8pt fault-ppm-no-shader/capture (late, GRC_ADOPT_FAULT=ppm-no-shader)"
-	run_capture_rendered_g8pt "$OUT/g8pt/fault-ppm-no-shader/capture" "${G8PT_LATE_ENV[@]}" \
-		GRC_ADOPT_FAULT=ppm-no-shader
 	echo "run-gate8: g8pt late-cmbt/capture (late, RS_FIXTURE_LATE_SHADER=1: the post-arm unknown-shader process material)"
 	run_capture_rendered_g8pt "$OUT/g8pt/late-cmbt/capture" "${G8PT_LATE_ENV[@]}" \
 		RS_FIXTURE_LATE_SHADER=1
+	echo "run-gate8: g8pt deferred/capture (/12, loaded at birth, armed at frame 12: adopted from the registry; LAR4)"
+	run_capture_rendered_g8pt "$OUT/g8pt/deferred/capture" "${G8PT_DEFERRED_ENV[@]}"
+	echo "run-gate8: g8pt deferred-cmbt/capture (deferred, RS_FIXTURE_LATE_SHADER=1)"
+	run_capture_rendered_g8pt "$OUT/g8pt/deferred-cmbt/capture" "${G8PT_DEFERRED_ENV[@]}" \
+		RS_FIXTURE_LATE_SHADER=1
+	echo "run-gate8: g8pt sabotage-registry-drop-binding/capture (deferred, GRC_ADOPT_FAULT=registry-drop-binding)"
+	run_capture_rendered_g8pt "$OUT/g8pt/sabotage-registry-drop-binding/capture" "${G8PT_DEFERRED_ENV[@]}" \
+		GRC_ADOPT_FAULT=registry-drop-binding
 	legs_par_begin
 	local cap leg extra
-	for leg in late/receiver late/receiver-patch fault-no-particles/receiver fault-ppm-no-shader/receiver; do
+	for leg in late/receiver deferred/receiver deferred/receiver-patch deferred-cmbt/receiver fault-no-particles/receiver; do
 		cap="$OUT/g8pt/${leg%%/*}/capture"
 		extra=""
 		[ -f "$cap/steps.jsonl" ] && extra="$(g8pt_extra_seqs "$cap")"
@@ -1584,6 +1600,13 @@ run_g8pt_late() {
 	done
 	legs_par_end
 	RENDERED_EXTRA_ARGS=()
+}
+
+# run_g8pt_headless_deferred (LAR4): the deferred arm on the dummy host with the particles shim (the
+# /12 headless default): process parameters must equal the born capture's (pt-registry-params).
+run_g8pt_headless_deferred() {
+	echo "run-gate8: g8pt headless-deferred/capture (/12, headless, loaded at birth, armed at frame 12; the particles shim by default)"
+	run_capture_headless_g8pt "$OUT/g8pt/headless-deferred/capture" "$G8PT_FIXTURE_DIR" "${G8PT_DEFERRED_ENV[@]}"
 }
 
 run_g8pt() {
@@ -1612,6 +1635,9 @@ run_g8pt() {
 		run_g8pt_late
 		gs_teardown "$OUT/gamescope-g8pt"
 		GS_RUN_DIR=""
+		RECORDING_NAME=recording.rs12
+		PATCH_RECORDING_NAME=recording-patch.rs12
+		run_g8pt_headless_deferred
 		RECORDING_NAME=recording.rs8
 		PATCH_RECORDING_NAME=recording-patch.rs8
 		return 0
@@ -1732,6 +1758,7 @@ run_g8pt() {
 		GRC_PREDRAW_PUMP=0 GRC_HEADLESS_PARTICLES=off GRC_HEADLESS_CANVAS_TEXTURE=off \
 		RS_FIXTURE_MM_LOG="$OUT/g8pt/headless-nopump/capture/mm-frames.jsonl"
 	G8PT_ENV=(GRC_ADOPT=arm)
+	run_g8pt_headless_deferred
 	run_g8pt_native13
 	RECORDING_NAME=recording.rs8
 	PATCH_RECORDING_NAME=recording-patch.rs8

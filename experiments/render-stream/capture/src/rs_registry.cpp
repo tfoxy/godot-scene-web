@@ -252,6 +252,7 @@ const char *registry_fault_name(RegistryFault fault) {
   case RegistryFault::Off: return "registry-off";
   case RegistryFault::KeepFreed: return "registry-keep-freed";
   case RegistryFault::SkipParams: return "registry-skip-params";
+  case RegistryFault::DropBinding: return "registry-drop-binding";
   }
   return "?";
 }
@@ -618,7 +619,7 @@ void registry_note_material_shader(std::uint64_t rid, std::uint64_t shader) {
   State &s = state();
   std::lock_guard<std::mutex> lock(s.mutex);
   const auto it = s.material.find(rid);
-  if (it == s.material.end()) {
+  if (it == s.material.end() || s.fault == RegistryFault::DropBinding) {
     return;
   }
   it->second.shader = shader;

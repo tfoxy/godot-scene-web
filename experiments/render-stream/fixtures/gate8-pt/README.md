@@ -16,7 +16,9 @@ the cells for the references and the receivers that draw.
   birth); unarmed otherwise. PM7: `RS_FIXTURE_ARM=late` loads it in `_process` at fixture frame
   `RS_FIXTURE_ARM_FRAME` (default 12, 8..19) instead, after every emitter has drawn, so the
   capture adopts them (`GRC_ADOPT=arm`); `pt.gd` then logs only the steps that settle after the
-  arm.
+  arm. LAR4: `RS_FIXTURE_ARM=deferred` loads it at birth like `born`, and the runner defers the arm
+  to the same frame with `GRC_ARM_DEFER_FRAMES=11`, so every process material is adopted from the
+  registry with its real shader.
 - `pt.tscn` / `pt.gd`: a plain `Node` that builds every cell in `_ready` and drives the steps.
 - `expected.json`: the hand-derived hook-log census per cell, each cell's MaterialKey and the
   float-texture shape the checker reads; PM6a's `pixels`; PM7's `late` (the arm frame, the emitter
