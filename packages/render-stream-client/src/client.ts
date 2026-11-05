@@ -54,7 +54,12 @@ export interface RenderStreamClientOptions {
   transport?: RenderStreamTransportFactory;
   /** CAR5: which live carrier to use. `auto` (default): WebTransport when the descriptor has
    * `webTransport`, `globalThis.WebTransport` exists and the page is a secure context, else
-   * WebSocket + fetch; a WebTransport attempt that fails before `open` is retried over WebSocket
+   * WebSocket + fetch. CAR11: `auto` also uses WebSocket on Android (`userAgentData.platform`
+   * or the UA string), without loading the WebTransport chunk: on a CPU-throttled moto g31
+   * WebTransport delivered 47.8 frames/s against 57.4 for WebSocket (back to back, CAR10
+   * per-batch uplink), and gives the mirror no benefit yet. Revisit when WebTransport matches
+   * WebSocket on a throttled g31, or a feature (audio) needs it; an explicit `webtransport`
+   * still uses it on Android; a WebTransport attempt that fails before `open` is retried over WebSocket
    * and the client then stays on WebSocket. `websocket`: always WebSocket. `webtransport`: never
    * falls back (a failure is `live-connect-failed`). */
   carrier?: RenderStreamCarrier;

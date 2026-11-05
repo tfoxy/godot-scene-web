@@ -8,7 +8,7 @@ import indexSource from "../src/index.ts?raw";
 const VALUE_EXPORTS = `
 createRenderStreamClient RenderStreamEndpointError validateEndpoint clientHello CoreLoadError
 RECONNECT_BACKOFF_MS webSocketTransport
-webTransportAvailable invertAffine mulAffine createRecorder
+webTransportAvailable isAndroidPage invertAffine mulAffine createRecorder
 computeSpreadItem containerHAlignFactor createSpreadExtension fieldDx rootSpreadContext spreadDelta
 `
   .trim()

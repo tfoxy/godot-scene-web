@@ -63,6 +63,7 @@ export {
   spreadDelta,
 } from "./spread";
 export {
+  isAndroidPage,
   type RenderStreamCarrier,
   type RenderStreamTransport,
   type RenderStreamTransportEvents,

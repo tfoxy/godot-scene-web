@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RenderStreamEndpoint, validateEndpoint } from "../src/endpoint";
 import {
   carrierTransport,
+  isAndroidPage,
   type RenderStreamTransport,
   type RenderStreamTransportEvents,
 } from "../src/transport";
@@ -605,6 +606,7 @@ describe("carrierTransport", () => {
   function setup(
     carrier: "auto" | "websocket" | "webtransport",
     openTimeoutMs?: number,
+    isAndroid: () => boolean = () => false,
   ) {
     const wsMade: FakeTransport[] = [];
     const wsOn: RenderStreamTransportEvents[] = [];
@@ -617,6 +619,7 @@ describe("carrierTransport", () => {
       },
       webtransport: async () => createWebTransportTransport(),
       openTimeoutMs,
+      isAndroid,
     });
     return { factory, wsMade };
   }
@@ -627,6 +630,57 @@ describe("carrierTransport", () => {
     factory(plain, SUB, rec().on);
     expect(wsMade).toHaveLength(1);
     expect(FakeWebTransport.instances).toHaveLength(0);
+  });
+
+  it("CAR11: auto uses WebSocket on Android and never loads the chunk", () => {
+    let loads = 0;
+    const wsMade: FakeTransport[] = [];
+    const factory = carrierTransport("auto", {
+      websocket: (_e, sub, on) => {
+        const t = new FakeTransport(sub, on);
+        wsMade.push(t);
+        return t;
+      },
+      webtransport: async () => {
+        loads++;
+        return createWebTransportTransport();
+      },
+      isAndroid: () => true,
+    });
+    factory(EP, SUB, rec().on);
+    expect(wsMade).toHaveLength(1);
+    expect(loads).toBe(0);
+    expect(FakeWebTransport.instances).toHaveLength(0);
+  });
+
+  it("CAR11: explicit webtransport still uses WebTransport on Android", async () => {
+    const { factory, wsMade } = setup("webtransport", undefined, () => true);
+    factory(EP, SUB, rec().on);
+    await flush();
+    expect(wsMade).toHaveLength(0);
+    expect(FakeWebTransport.instances).toHaveLength(1);
+  });
+
+  it("CAR11: auto on desktop still uses WebTransport", async () => {
+    const { factory, wsMade } = setup("auto", undefined, () => false);
+    factory(EP, SUB, rec().on);
+    await flush();
+    expect(wsMade).toHaveLength(0);
+    expect(FakeWebTransport.instances).toHaveLength(1);
+  });
+
+  it("CAR11: isAndroidPage reads userAgentData, else the UA string", () => {
+    const nav = (n: unknown) => vi.stubGlobal("navigator", n);
+    nav({ userAgentData: { platform: "Android" }, userAgent: "x" });
+    expect(isAndroidPage()).toBe(true);
+    nav({ userAgentData: { platform: "Linux" }, userAgent: "Android" });
+    expect(isAndroidPage()).toBe(false);
+    nav({ userAgent: "Mozilla/5.0 (Linux; Android 11; moto g31) Chrome" });
+    expect(isAndroidPage()).toBe(true);
+    nav({ userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome" });
+    expect(isAndroidPage()).toBe(false);
+    nav(undefined);
+    expect(isAndroidPage()).toBe(false);
   });
 
   it("auto uses WebSocket when the page has no WebTransport global", () => {

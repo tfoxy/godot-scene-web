@@ -100,6 +100,23 @@ export function webTransportAvailable(): boolean {
   );
 }
 
+/** CAR11: whether this page runs on Android (`navigator.userAgentData.platform`, else the UA
+ * string). `auto` prefers WebSocket there (carrier-design.md "As built (CAR11)"). */
+export function isAndroidPage(): boolean {
+  const nav = (
+    globalThis as {
+      navigator?: {
+        userAgent?: string;
+        userAgentData?: { platform?: string };
+      };
+    }
+  ).navigator;
+  const platform = nav?.userAgentData?.platform;
+  if (typeof platform === "string" && platform !== "")
+    return platform === "Android";
+  return /Android/i.test(nav?.userAgent ?? "");
+}
+
 export type RenderStreamCarrier = "auto" | "websocket" | "webtransport";
 
 /** CAR10: the close reason (prefix) of a WebTransport session whose client-to-host uplink could
@@ -114,11 +131,14 @@ export interface CarrierDeps {
   webtransport?: () => Promise<RenderStreamTransportFactory>;
   /** `auto`: ms a WebTransport attempt may take to open (default 3000). */
   openTimeoutMs?: number;
+  /** CAR11: `auto` uses WebSocket when this returns true (default: `isAndroidPage`). An explicit
+   * `webtransport` ignores it. */
+  isAndroid?: () => boolean;
 }
 
 /** CAR5 (D14): the transport factory for a `carrier` option, one per client (the sticky fallback
  * and the WebTransport cache live in it). `auto` uses WebTransport when the descriptor offers it
- * and the page can open one, and WebSocket otherwise; if the WebTransport attempt closes before
+ * and the page can open one, and WebSocket otherwise (always WebSocket on Android, CAR11); if the WebTransport attempt closes before
  * `open` (or takes `openTimeoutMs`, or its chunk fails to load), the same connect attempt is
  * retried over WebSocket and every later connect of this factory stays on WebSocket. A failure
  * after `open` is an ordinary close, except that `auto` also sticks to WebSocket after a session
@@ -136,9 +156,16 @@ export function carrierTransport(
       ? deps.webtransport()
       : import("./webtransport").then((m) => m.createWebTransportTransport()));
   const auto = carrier === "auto";
+  const android = deps.isAndroid ?? isAndroidPage;
   let sticky = false;
   return (endpoint, subprotocol, on) => {
-    if (auto && (sticky || !endpoint.webTransport || !webTransportAvailable()))
+    if (
+      auto &&
+      (sticky ||
+        !endpoint.webTransport ||
+        !webTransportAvailable() ||
+        android())
+    )
       return ws(endpoint, subprotocol, on);
     let current: RenderStreamTransport | null = null;
     let attempt: RenderStreamTransport | null = null;
