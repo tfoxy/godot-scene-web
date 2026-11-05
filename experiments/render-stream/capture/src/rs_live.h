@@ -650,6 +650,17 @@ class Hub {
   void finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns);
   // Connections not closed yet.
   std::size_t open_connections() const;
+  // LF1 (the window hold, entry.cpp GRC_LIVE_HOLD_WINDOWS): of the streaming connections, those
+  // whose newest applied or submitted ack names a host frame before `from` (`lagging`), and how
+  // many of those have no free credit slot (`blocked`).
+  struct HoldView {
+    std::size_t lagging = 0;
+    std::size_t blocked = 0;
+  };
+  HoldView hold_view(std::uint64_t from) const;
+  // LF1 (the recovery hold, entry.cpp GRC_LIVE_HOLD_RECOVERY_FRAMES): the longest pending episode,
+  // in host frames, that a send of the last frame callback ended (0: no send ended one).
+  std::uint64_t backlog_sent_frames() const { return backlog_sent_frames_; }
   // Closes every connection still open with 1000 and the finish reason (the end of the linger).
   void close_open(std::uint64_t frame);
 
@@ -779,6 +790,7 @@ class Hub {
   std::uint32_t next_connection_ = 1;
   bool drop_done_ = false;
   bool finished_ = false;
+  std::uint64_t backlog_sent_frames_ = 0;  // LF1: backlog_sent_frames()
   std::string finish_reason_;
   std::uint64_t frame_ = 0;  // the frame callback being processed (for log lines)
   CarriedIndex carried_;     // P3-SP: every connection's carried hashes

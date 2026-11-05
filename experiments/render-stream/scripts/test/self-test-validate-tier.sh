@@ -13,6 +13,9 @@
 #   - --milestone gives RS_FAST_FRAMES only to the native runs and the correctness live runs, and
 #     lib/legs.sh under that env makes an allowlisted leg fast and a gate 6 leg real time (item 7);
 #   - --plan --milestone --base REF plans a delta sweep (item 8);
+#   - test/gate8-build-deps.py --self-test: every gate 8 group builds the rs-core-check / rs-gsw-wasm
+#     its checkers and legs load, and shares a together set with a group whose outputs its checks
+#     read, so any leg shard of native gate 8 stands alone (g8tag and g8l did not);
 #   - HC4a: HC_SHADOW=1 (the capture's shadow oracle) reaches the correctness runs only, each such
 #     run gets its hc-shadow.json, and lib/gamescope.sh turns it into GRC_HC_SHADOW=1.
 #
@@ -41,7 +44,10 @@ check "remote-matrix.py --self-test (the remote matrix: longest first, leg shard
 	"python3 '$SCRIPT_DIR/lib/remote-matrix.py' --self-test >'$TMP/matrix-st.log' 2>&1"
 check "check-census.py --self-test (a sharded run's check ids against the whole run's)" \
 	"python3 '$SCRIPT_DIR/lib/check-census.py' --self-test >'$TMP/census-st.log' 2>&1"
-grep '^FAIL' "$TMP/plan-st.log" "$TMP/verdict-st.log" "$TMP/matrix-st.log" "$TMP/census-st.log" || true
+check "gate8-build-deps.py --self-test (a gate 8 group a leg shard runs alone has its builds and inputs)" \
+	"python3 '$SCRIPT_DIR/test/gate8-build-deps.py' --self-test >'$TMP/build-deps-st.log' 2>&1"
+grep '^FAIL' "$TMP/plan-st.log" "$TMP/verdict-st.log" "$TMP/matrix-st.log" "$TMP/census-st.log" \
+	"$TMP/build-deps-st.log" || true
 
 # The stub: holds the private lock for 0.25 s (exclusive in the timing phase, shared otherwise),
 # records its start and end, writes the run's quiet-lock summary. g7live-gsw-timing exits 1 with

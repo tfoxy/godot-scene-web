@@ -380,6 +380,18 @@ write_invocation() {
 #   GRC_LIVE_AWAIT_HELLO_MS=<ms>    a live host holds its timeline at the first armed frame until
 #                                   the first receiver's hello (RS_FAST_AWAIT_HELLO_MS, default
 #                                   60000), so the 300-frame join window costs no real time.
+#   GRC_LIVE_HOLD_WINDOWS=<windows> when the runner gave the host RS_LIVE_HOLD_WINDOWS (its
+#                                   receiver's shot windows, legs_hold_windows): the host holds its
+#                                   timeline at each window's last frame until every receiver
+#                                   applied a transaction inside it, and at the quit window q-q
+#                                   until it applied q (LF1, capture/src/entry.cpp;
+#                                   capped by RS_FAST_HOLD_MS, default 10000). A receiver slower
+#                                   than the fast host then still shoots every window: before LF1 a
+#                                   slow hosted runner missed about one window in three runs.
+#   GRC_LIVE_HOLD_RECOVERY_FRAMES=<n> when the runner gave a stall leg's host
+#                                   RS_LIVE_HOLD_RECOVERY_FRAMES: after the send that ends the
+#                                   stall's backlog (>= n pending frames), the host holds until
+#                                   the receiver applied it, so the next send cannot fold it away.
 # The gate fixtures count frames, never delta, and every check of an allowlisted leg counts host
 # frames: stalls and the fetch delay are specified in frames at 60 fps and converted with
 # legs_frames_ms against the host's own rate (exactly the old milliseconds at 60 fps, so a
@@ -401,6 +413,7 @@ write_invocation() {
 RS_FAST_FRAMES_MODE="${RS_FAST_FRAMES:-off}"
 RS_FAST_FRAMES_MAX_FPS="${RS_FAST_FRAMES_MAX_FPS:-240}"
 RS_FAST_AWAIT_HELLO_MS="${RS_FAST_AWAIT_HELLO_MS:-60000}"
+RS_FAST_HOLD_MS="${RS_FAST_HOLD_MS:-10000}"
 case "$RS_FAST_FRAMES_MODE" in
 off | all | host | receiver) ;;
 *)
@@ -539,7 +552,40 @@ legs__fast_argv() {
 	LEG_ENV+=(GRC_LOW_PROCESSOR_SLEEP_USEC=0)
 	if leg_env_value GRC_LIVE_LISTEN >/dev/null; then
 		LEG_ENV+=(GRC_LIVE_AWAIT_HELLO_MS="$RS_FAST_AWAIT_HELLO_MS")
+		local hold recovery
+		if hold="$(leg_env_value RS_LIVE_HOLD_WINDOWS)" && [ -n "$hold" ]; then
+			LEG_ENV+=(GRC_LIVE_HOLD_WINDOWS="$hold" GRC_LIVE_HOLD_MS="$RS_FAST_HOLD_MS")
+		fi
+		if recovery="$(leg_env_value RS_LIVE_HOLD_RECOVERY_FRAMES)" && [ -n "$recovery" ]; then
+			LEG_ENV+=(GRC_LIVE_HOLD_RECOVERY_FRAMES="$recovery")
+		fi
 	fi
+}
+
+# legs_hold_windows <windows> [<stall step> <stall frames>]: the host's RS_LIVE_HOLD_WINDOWS for a
+# fast live leg whose receiver shoots <windows> (<step>:<from>-<to>,...). A receiver stall (after
+# <stall step>'s shot, <stall frames> host frames at the nominal rate) must not be cut short by a
+# hold -- check-gate1's sim-kept-running wants the host to run on through it -- so a later window
+# is held only when its last frame is at least <stall frames> past the stall step's: a stall
+# starts by then and covers at most that many frames (never more than at the nominal rate).
+legs_hold_windows() {
+	local windows="$1" stall_step="${2:-}" stall_frames="${3:-}" w step range to stall_to="" out="" sep=""
+	if [ -n "$stall_step" ]; then
+		for w in ${windows//,/ }; do
+			[ "${w%%:*}" = "$stall_step" ] && stall_to="${w##*-}"
+		done
+	fi
+	for w in ${windows//,/ }; do
+		step="${w%%:*}"
+		range="${w#*:}"
+		to="${range##*-}"
+		if [ -n "$stall_to" ] && [ "$step" -gt "$stall_step" ] && [ "$to" -lt $((stall_to + stall_frames)) ]; then
+			continue
+		fi
+		out+="$sep$w"
+		sep=","
+	done
+	printf '%s\n' "$out"
 }
 
 # Waits for an owned child, killing it after $2 seconds. Sets WAIT_EXIT (124 on timeout).

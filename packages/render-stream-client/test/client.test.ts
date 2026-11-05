@@ -106,14 +106,23 @@ describe("createRenderStreamClient", () => {
   it("reports a core that cannot load as core-load-failed", async () => {
     const canvas = document.createElement("canvas");
     const statuses: RenderStreamStatus[] = [];
+    // The failed load is the event to wait for: how long jsdom takes to refuse the core varies
+    // with machine load (a fixed 20 ms sleep failed about 1 run in 3).
+    let failed: () => void = () => {};
+    const ended = new Promise<void>((r) => {
+      failed = r;
+    });
     const c = createRenderStreamClient({
       canvas,
       core,
       endpoint,
-      onStatus: (s) => statuses.push(s),
+      onStatus: (s) => {
+        statuses.push(s);
+        if (s.kind === "failed") failed();
+      },
     });
     c.connect();
-    await new Promise((r) => setTimeout(r, 20));
+    await ended;
     expect(statuses.at(-1)).toMatchObject({
       kind: "failed",
       reason: "core-load-failed",

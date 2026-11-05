@@ -154,19 +154,19 @@
         "g8tag2": 3.7,
         "g8rec1": 0.2
       },
-      "together": [["g8mm", "g8pt"]],
-      "why_together": "g8pt's W13c/W13d checks read g8mm's capture and reference (lib/gate8-w13-*-checks.ts)",
+      "together": [["g8mm", "g8pt"], ["g8t", "g8a", "g8h", "g8f", "g8m", "g8l"]],
+      "why_together": "g8pt's W13c/W13d checks read g8mm's capture and reference (lib/gate8-w13-*-checks.ts); g8l's g8l-<f>-replay-equals-file checks compare its replays with the file groups' receivers (lib/gate8-live-checks.ts FILE_RECEIVER: g8t's receiver/, g8f, g8a, g8h, g8m) and are only emitted when those ran in the same run (test/gate8-build-deps.py)",
       "partitions": {
         "2": [["g8w11", "g8tag2", "g8ctl", "g8ctsp", "g8res", "g8rec1"], ["*"]],
         "3": [
           ["g8w11", "g8ctl", "g8ctsp", "g8res", "g8rec1"],
-          ["g8tag2", "g8tag", "g8kp", "g8kc", "g8l"],
+          ["g8tag2", "g8tag", "g8kp", "g8kc"],
           ["*"]
         ],
         "4": [
           ["g8w11"],
           ["g8tag2", "g8tag", "g8ctl", "g8ctsp", "g8res"],
-          ["g8kp", "g8kc", "g8l", "g8ku", "g8rec1"],
+          ["g8t", "g8a", "g8h", "g8f", "g8m", "g8kp", "g8kc", "g8l"],
           ["*"]
         ]
       }

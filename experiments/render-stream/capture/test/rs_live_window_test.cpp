@@ -1010,6 +1010,55 @@ void test_window2_model() {
 
 }  // namespace
 
+// LF1 (entry.cpp GRC_LIVE_HOLD_WINDOWS): hold_view counts a streaming connection as lagging until
+// an applied or submitted ack names a frame >= `from` (a received ack does not), and as blocked
+// while it has no free credit slot; a closed connection is neither.
+void test_hold_view() {
+  W2Rig rig(2);
+  rig.step(1);  // seq 1, frame 1
+  rig.step(2);  // seq 2, frame 2: the window is full
+  Hub::HoldView v = rig.hub.hold_view(2);
+  check(v.lagging == 1 && v.blocked == 1, "hold: nothing acked, no credit: lagging and blocked");
+  rig.send_ack(1, "applied");  // frame 1, not the credit stage
+  v = rig.hub.hold_view(2);
+  check(v.lagging == 1 && v.blocked == 1, "hold: an apply of frame 1 is before the window at 2");
+  rig.send_ack(1);  // submitted: seq 1's credit
+  v = rig.hub.hold_view(2);
+  check(v.lagging == 1 && v.blocked == 0, "hold: credit returned, still lagging");
+  rig.send_ack(2, "applied");
+  check(rig.hub.hold_view(2).lagging == 0, "hold: frame 2 applied: no longer lagging at 2");
+  check(rig.hub.hold_view(3).lagging == 1, "hold: but lagging for a window from 3");
+  rig.step(3);  // seq 3, frame 3
+  rig.send_ack(3, "received");
+  check(rig.hub.hold_view(3).lagging == 1, "hold: a received ack is not an apply");
+  rig.send_ack(3);  // submitted
+  check(rig.hub.hold_view(3).lagging == 0, "hold: a submitted ack counts as applied");
+  check(rig.hub.hold_view(1).lagging == 0, "hold: an older window stays satisfied");
+  rig.hub.on_event(closed(1, 1000, 0), rig.frame);
+  v = rig.hub.hold_view(100);
+  check(v.lagging == 0 && v.blocked == 0, "hold: a closed connection never holds");
+}
+
+// LF1 (entry.cpp GRC_LIVE_HOLD_RECOVERY_FRAMES): backlog_sent_frames is the pending episode the
+// last callback's send ended, in host frames, and 0 for a callback that ended none.
+void test_backlog_sent_frames() {
+  W2Rig rig(2);
+  rig.step(1);
+  rig.step(2);  // the window is full
+  check(rig.hub.backlog_sent_frames() == 0, "backlog: an ordinary send ends no episode");
+  for (int n = 3; n <= 6; ++n) {
+    rig.step(n);  // no credit: pending since frame 3
+  }
+  check(rig.hub.backlog_sent_frames() == 0, "backlog: nothing sent while pending");
+  rig.send_ack(1);
+  rig.step(7);  // the recovery
+  check(rig.hub.backlog_sent_frames() == 4,
+        "backlog: the recovery at frame 7 ended the episode pending since 3 (" +
+            std::to_string(rig.hub.backlog_sent_frames()) + ")");
+  rig.step(8);  // the window is full again
+  check(rig.hub.backlog_sent_frames() == 0, "backlog: the next callback starts from 0");
+}
+
 int main(int argc, char **argv) {
   // HC5: `--formation=thread` runs every hub here through the encode thread (each frame callback
   // waiting for its own jobs, so the fake transport is read as before): the same checks hold.
@@ -1027,6 +1076,8 @@ int main(int argc, char **argv) {
   test_window_overrun_sabotage();
   test_window2_model();
   test_window2_stale_coalesce_held();
+  test_hold_view();
+  test_backlog_sent_frames();
   std::printf("rs_live_window_test: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

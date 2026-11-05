@@ -268,7 +268,7 @@ def self_test():
     real = json.load(open(DEFAULT_TABLE))
     warns = []
     w = warns.append
-    # the real table against the real runners: every partition resolves, g8mm/g8pt stay together
+    # the real table against the real runners: every partition resolves, each together set stays
     for label, spec in real["leg_shards"].items():
         groups = runner_groups(DEFAULT_REPO, spec["groups"])
         check(f"{label}: the runner's group list is readable", bool(groups))
@@ -280,8 +280,9 @@ def self_test():
             legs = [p.split(",") for p, _ in parts]
             check(f"{label} k={k}: the parts are a disjoint cover of the runner's groups",
                   sorted(g for p in legs for g in p) == sorted(groups))
-            check(f"{label} k={k}: g8mm and g8pt share a part",
-                  all(("g8mm" in p) == ("g8pt" in p) for p in legs))
+            for t in spec.get("together", []):
+                check(f"{label} k={k}: {'/'.join(t)} share a part",
+                      all(len({g in p for g in t}) == 1 for p in legs))
             check(f"{label} k={k}: every shard is estimated shorter than the whole job",
                   all(m < o[1][0][1] for _, m in parts))
         check(f"{label}: the weights name only the runner's groups", set(spec.get("weights", {})) <= set(groups))

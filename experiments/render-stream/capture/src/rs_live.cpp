@@ -912,6 +912,7 @@ struct Hub::Conn {
     std::uint64_t capture_ns = 0;
   };
   std::map<std::uint64_t, Sent> sent_at;
+  std::uint64_t acked_frame = 0;  // LF1: the newest frame an applied or submitted ack named
   std::vector<std::uint64_t> latency[3];
   std::vector<std::uint64_t> credit_rtt;
   std::vector<std::uint64_t> credit_frames;
@@ -1810,6 +1811,10 @@ void Hub::handle_text(Conn &c, const LiveEvent &event, std::uint64_t frame) {
             !is_ack || message.stage == c.credit_stage;  // a resync always answers the credit
         if (is_ack) {
           ++c.s.acks[stage_index(message.stage)];
+          if (sent != c.sent_at.end() &&
+              (message.stage == AckStage::Applied || message.stage == AckStage::Submitted)) {
+            c.acked_frame = std::max(c.acked_frame, sent->second.frame);
+          }
           if (sent != c.sent_at.end()) {
             const unsigned bit = 1u << stage_index(message.stage);
             if ((sent->second.acked & bit) == 0) {
@@ -2154,6 +2159,8 @@ void Hub::send_transaction(Conn &c, const std::shared_ptr<const rs::Captured> &t
   c.epoch_sent = epoch;
   if (c.pending) {
     note_pending_age(c, frame, now_ns);  // the pending target is replaced by this send
+    backlog_sent_frames_ =
+        std::max(backlog_sent_frames_, frame - std::min(frame, c.pending_since_frame));
   }
   c.pending = false;
   if (stale_from != 0) {
@@ -2836,6 +2843,7 @@ void Hub::on_frame_shared(std::uint64_t frame, std::uint64_t now_ns,
   }
   sync();  // HC5: the previous callback's jobs, completed before anything here reads a connection
   frame_ = frame;
+  backlog_sent_frames_ = 0;
   carried_.maintain();
   frame_targets_.clear();
   for (auto &entry : conns_) {
@@ -3101,6 +3109,21 @@ void Hub::finish(EndReason reason, std::uint64_t frame, std::uint64_t now_ns) {
   finished_ = true;
   finish_reason_ = to_wire(reason);
   flush_taps();
+}
+
+Hub::HoldView Hub::hold_view(std::uint64_t from) const {
+  HoldView v;
+  for (const auto &entry : conns_) {
+    const Conn &c = *entry.second;
+    if (c.state != State::Streaming || c.s.end_sent || c.acked_frame >= from) {
+      continue;
+    }
+    ++v.lagging;
+    if (!c.credit) {
+      ++v.blocked;
+    }
+  }
+  return v;
 }
 
 std::size_t Hub::open_connections() const {

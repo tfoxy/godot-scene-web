@@ -586,6 +586,17 @@ g5f_leg() {
 	done
 	[ $# -gt 0 ] && shift
 	receiver_words=("$@")
+	# LF1: a fast host holds at each shot window's end until the receiver shot it, and at the quit
+	# frame (the `q-q` window) until it applied that frame; a stall leg also holds its recovery.
+	if [ "$kind" = rendered ]; then
+		case " ${receiver_words[*]-} " in
+		*" RS_RECEIVER_STALL="*)
+			host_words+=(RS_LIVE_HOLD_WINDOWS="$(legs_hold_windows "$(g5f_windows)" "$G5F_STALL_STEP" "$G5F_STALL_FRAMES"),$G5F_QUIT_FRAME-$G5F_QUIT_FRAME")
+			host_words+=(RS_LIVE_HOLD_RECOVERY_FRAMES=$((G5F_STALL_FRAMES / 2)))
+			;;
+		*) host_words+=(RS_LIVE_HOLD_WINDOWS="$(legs_hold_windows "$(g5f_windows)"),$G5F_QUIT_FRAME-$G5F_QUIT_FRAME") ;;
+		esac
+	fi
 	start_live_mesh_host "$M/$leg/host" ${host_words[@]+"${host_words[@]}"}
 	g5f_receiver "$M/$leg" "$kind" ${receiver_words[@]+"${receiver_words[@]}"}
 	finish_bg "$M/$leg/host" "$LIVE_HOST_PID" "$HEADLESS_TIMEOUT_S"

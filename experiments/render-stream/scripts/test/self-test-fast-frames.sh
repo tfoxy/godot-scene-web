@@ -2,7 +2,7 @@
 # GRT2b part B / GRT3: lib/legs.sh's fast frames with no launches -- the RS_FAST_FRAMES argv
 # rewrite (legs__fast_argv), the fast host words it adds to LEG_ENV, the allowlist and denylist
 # (legs_fast_applies), and the frames -> milliseconds conversion of stalls and the fetch delay
-# (legs_frames_ms, legs_stall_spec).
+# (legs_frames_ms, legs_stall_spec), and LF1's window hold (RS_LIVE_HOLD_WINDOWS, legs_hold_windows).
 #
 #   bash test/self-test-fast-frames.sh
 set -euo pipefail
@@ -53,6 +53,24 @@ expect "all rewrites an allowlisted host (default 240) and adds the host words" 
 expect "a live host also holds for the first hello" \
 	"$(LEG_ENV_IN=GRC_LIVE_LISTEN=127.0.0.1:0 case_of all run-gate1 live/host "" b --max-fps 60 --path /f)" \
 	"b --max-fps 240 --disable-vsync --path /f | GRC_LIVE_LISTEN=127.0.0.1:0 $HOST_ENV GRC_LIVE_AWAIT_HELLO_MS=60000"
+# LF1: the runner's RS_LIVE_HOLD_WINDOWS becomes the window hold on a fast live host only.
+W5="0:307-359,1:367-419"
+expect "a fast live host with RS_LIVE_HOLD_WINDOWS holds its windows" \
+	"$(LEG_ENV_IN="GRC_LIVE_LISTEN=127.0.0.1:0 RS_LIVE_HOLD_WINDOWS=$W5" case_of all run-gate5 mesh/live-mesh/host g5f b --max-fps 60 --path /f)" \
+	"b --max-fps 240 --disable-vsync --path /f | GRC_LIVE_LISTEN=127.0.0.1:0 RS_LIVE_HOLD_WINDOWS=$W5 $HOST_ENV GRC_LIVE_AWAIT_HELLO_MS=60000 GRC_LIVE_HOLD_WINDOWS=$W5 GRC_LIVE_HOLD_MS=10000"
+expect "a fast stall leg's host holds its recovery" \
+	"$(LEG_ENV_IN="GRC_LIVE_LISTEN=127.0.0.1:0 RS_LIVE_HOLD_RECOVERY_FRAMES=60" case_of all run-gate5 mesh/live-mesh-stall/host g5f b --max-fps 60 --path /f)" \
+	"b --max-fps 240 --disable-vsync --path /f | GRC_LIVE_LISTEN=127.0.0.1:0 RS_LIVE_HOLD_RECOVERY_FRAMES=60 $HOST_ENV GRC_LIVE_AWAIT_HELLO_MS=60000 GRC_LIVE_HOLD_RECOVERY_FRAMES=60"
+expect "a real-time host never holds" \
+	"$(LEG_ENV_IN="GRC_LIVE_LISTEN=127.0.0.1:0 RS_LIVE_HOLD_WINDOWS=$W5" case_of off run-gate5 mesh/live-mesh/host g5f b --max-fps 60 --path /f)" \
+	"b --max-fps 60 --path /f | GRC_LIVE_LISTEN=127.0.0.1:0 RS_LIVE_HOLD_WINDOWS=$W5"
+hold() { in_legs all run-gate5 g5f "" "legs_hold_windows $*"; }
+G5F="0:307-359,1:367-419,2:427-479,3:487-539,4:547-599,9:847-851"
+expect "legs_hold_windows without a stall keeps every window" "$(hold "$G5F")" "$G5F"
+expect "a step-1 stall of 120 frames leaves out window 2 (to 479 < 419 + 120), keeps 3 (539)" \
+	"$(hold "$G5F" 1 120)" "0:307-359,1:367-419,3:487-539,4:547-599,9:847-851"
+expect "a longer stall leaves out every window it can still cover" \
+	"$(hold "$G5F" 1 150)" "0:307-359,1:367-419,4:547-599,9:847-851"
 expect "all rewrites an allowlisted receiver, no host words" \
 	"$(case_of all run-gate1 live/receiver "" --path /r --max-fps 60)" "--path /r --max-fps 240 --disable-vsync | "
 expect "a browser receiver gets --max-fps alone" \

@@ -1943,6 +1943,16 @@ run_g8tag() {
 	echo "run-gate8: g8tag import (fixtures/tag-scene)"
 	LEG_ENV=()
 	run_headless "$OUT/g8tag/import" none -- mise exec -- godot --headless --path "$TAG_DIR" --import
+	# The tag checks validate recordings through rs-core-check (lib/gate8-tag-checks.ts) and the
+	# viewers decode in rs-gsw-wasm (lib/coding-receiver.ts loads rs-core/latest/gsw-rs). A remote
+	# leg shard can hold g8tag without g8mm/g8pt/g8w11, so build both here (incremental: a no-op
+	# when built; test/gate8-build-deps.py).
+	mkdir -p "$OUT/g8tag"
+	echo "run-gate8: g8tag build-rs-core.sh (rs-core-check, rs-gsw-wasm)"
+	bash "$SCRIPT_DIR/build-rs-core.sh" >"$OUT/g8tag/build-rs-core.log" 2>&1 || {
+		echo "run-gate8: build-rs-core.sh failed, see $OUT/g8tag/build-rs-core.log" >&2
+		exit 1
+	}
 	local z="zstd-base,zstd" r="$TAG_REQUEST"
 	echo "run-gate8: g8tag live (A, B ask; C does not; D joins late)"
 	run_g8tag_leg live -- "a|$z|2|$r|" "b|$z|2|$r|" "c|$z|2||" "d|$z|2|$r|--connect-delay-ms 3000"
@@ -2217,18 +2227,21 @@ run_g8w11c() {
 # state (RS_RECEIVER_SHOT_FINAL), and the check compares those pixels too.
 run_g8w11c_native13() {
 	local -a h13=(GRC_STREAM_VERSION=13 RS_SCALE_MESH_UPDATES=187) shot=()
+	# LF1: hold the quit frame until the receiver applied it, so each leg's last frame is the
+	# quit frame (not whichever frame last had credit: 417/419 against 420 on hosted runners).
+	local -a hold=(GRC_LIVE_HOLD_WINDOWS="$G8W11_CODING_QUIT-$G8W11_CODING_QUIT")
 	[ -n "${GATE7_LIVE_KIND:-}" ] && shot=(RS_RECEIVER_SHOT_FINAL=1)
 	G8W11C_PROTOCOL=13
 	echo "run-gate8: g8w11c native13-honest (/13, a coded receiver)"
 	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
-	run_g8w11_coding_native_leg native13-honest "${h13[@]}" -- "coded:"
+	run_g8w11_coding_native_leg native13-honest "${h13[@]}" "${hold[@]}" -- "coded:"
 	echo "run-gate8: g8w11c native13-predict-stale (/13, predict-stale @120)"
 	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
-	run_g8w11_coding_native_leg native13-predict-stale "${h13[@]}" GRC_SABOTAGE=predict-stale \
+	run_g8w11_coding_native_leg native13-predict-stale "${h13[@]}" "${hold[@]}" GRC_SABOTAGE=predict-stale \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	echo "run-gate8: g8w11c native13-zr-overrun (/13, zr-overrun @120)"
 	RECEIVER_EXTRA_ENV=(${shot[@]+"${shot[@]}"})
-	run_g8w11_coding_native_leg native13-zr-overrun "${h13[@]}" GRC_SABOTAGE=zr-overrun \
+	run_g8w11_coding_native_leg native13-zr-overrun "${h13[@]}" "${hold[@]}" GRC_SABOTAGE=zr-overrun \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	# A sabotage leg by its path (lib/legs.sh skips it under RS_SABOTAGE_TIER=skip).
 	echo "run-gate8: g8w11c native13-sabotage-no-predict-reset (/13, predict-stale @120, no-predict-reset)"
@@ -2252,15 +2265,16 @@ run_g8w11c_native13() {
 #                                    under predict-stale
 run_g8w11c_gsw13() {
 	local -a h13=(GRC_STREAM_VERSION=13 RS_SCALE_MESH_UPDATES=187)
+	local -a hold=(GRC_LIVE_HOLD_WINDOWS="$G8W11_CODING_QUIT-$G8W11_CODING_QUIT") # LF1, as above
 	G8W11C_PROTOCOL=13
 	echo "run-gate8: g8w11c gsw13-honest (/13, a coded GSW receiver)"
 	RECEIVER_EXTRA_ENV=(RS_RECEIVER_SHOT_FINAL=1)
-	run_g8w11_coding_native_leg gsw13-honest "${h13[@]}" -- "coded:"
+	run_g8w11_coding_native_leg gsw13-honest "${h13[@]}" "${hold[@]}" -- "coded:"
 	echo "run-gate8: g8w11c gsw13-predict-stale (/13, predict-stale @120)"
-	run_g8w11_coding_native_leg gsw13-predict-stale "${h13[@]}" GRC_SABOTAGE=predict-stale \
+	run_g8w11_coding_native_leg gsw13-predict-stale "${h13[@]}" "${hold[@]}" GRC_SABOTAGE=predict-stale \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	echo "run-gate8: g8w11c gsw13-zr-overrun (/13, zr-overrun @120)"
-	run_g8w11_coding_native_leg gsw13-zr-overrun "${h13[@]}" GRC_SABOTAGE=zr-overrun \
+	run_g8w11_coding_native_leg gsw13-zr-overrun "${h13[@]}" "${hold[@]}" GRC_SABOTAGE=zr-overrun \
 		GRC_SABOTAGE_FRAME=120 -- "coded:"
 	# A sabotage leg by its path (lib/legs.sh skips it under RS_SABOTAGE_TIER=skip).
 	echo "run-gate8: g8w11c gsw13-sabotage-no-predict-reset (/13, predict-stale @120, no-predict-reset)"

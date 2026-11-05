@@ -182,6 +182,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "calib.h"
@@ -3439,6 +3440,147 @@ void live_await_first_hello(uint64_t frame) {
            (hello ? std::string("a hello arrived") : std::string("timed out")));
 }
 
+// LF1 (scripts/README.md "Fast frames (GRT3)", "The window hold"): GRC_LIVE_HOLD_WINDOWS=
+// [<step>:]<from>-<to>,... (the receiver's RS_RECEIVER_SHOT_WINDOWS format, a test knob beside
+// GRC_LIVE_AWAIT_HELLO_MS) holds the host's whole timeline at each window's last frame `to` until
+// every streaming connection has applied (or submitted) a transaction from inside the window.
+// Sends happen only in the frame callback, so the hold has two phases: before this frame's publish,
+// until each lagging connection has a free credit slot; after it, until each one's newest
+// applied or submitted ack names a frame >= `from`. A receiver that kept up acked one before `to`,
+// so for it the hold is a no-op; a slow one can no longer fold past a window, nor see the host run
+// through one with no transaction in it. A `<q>-<q>` window marks the timeline's last frame q
+// (the fixture's quit) and holds it until every receiver applied q itself. GRC_LIVE_HOLD_MS caps each phase (default 10000); a cap that runs out
+// logs "timed out" and the host goes on as it would have. Off (unset) by default, so a real-time
+// host is byte for byte what it was.
+// GRC_LIVE_HOLD_RECOVERY_FRAMES=<n> (a stall leg's knob beside it) holds, after the publish, a
+// callback whose send ended a pending episode of at least n frames (a receiver stall's recovery)
+// until every receiver applied it: a stall leaves both credit slots of window 2 free at once, so
+// without it the next frame's send can arrive before the recovery is applied and fold it away,
+// and the post-stall shot shows that later send instead (a stale-coalesce sabotage then looks
+// one frame stale, or not stale at all).
+struct LiveHold {
+  bool checked = false;
+  std::vector<std::pair<uint64_t, uint64_t>> windows;  // (from, to)
+  uint64_t recovery_frames = 0;
+  uint64_t cap_ms = 10000;
+};
+LiveHold g_live_hold;
+
+void live_hold_config() {
+  if (g_live_hold.checked) {
+    return;
+  }
+  g_live_hold.checked = true;
+  if (!env_positive("GRC_LIVE_HOLD_RECOVERY_FRAMES", 0, &g_live_hold.recovery_frames)) {
+    log_line("live: hold: ignoring an invalid GRC_LIVE_HOLD_RECOVERY_FRAMES (a positive count)");
+    g_live_hold.recovery_frames = 0;
+  }
+  if (!env_positive("GRC_LIVE_HOLD_MS", 10000, &g_live_hold.cap_ms)) {
+    log_line("live: hold: ignoring an invalid GRC_LIVE_HOLD_MS (a positive ms)");
+    g_live_hold.cap_ms = 10000;
+  }
+  if (g_live_hold.recovery_frames != 0) {
+    log_line("live: hold: recoveries after " + std::to_string(g_live_hold.recovery_frames) +
+             " pending frames, cap " + std::to_string(g_live_hold.cap_ms) + " ms");
+  }
+  const char *raw = std::getenv("GRC_LIVE_HOLD_WINDOWS");
+  if (raw == nullptr || *raw == '\0') {
+    return;
+  }
+  std::string spec(raw);
+  std::size_t at = 0;
+  while (at <= spec.size()) {
+    std::size_t comma = spec.find(',', at);
+    if (comma == std::string::npos) {
+      comma = spec.size();
+    }
+    std::string item = spec.substr(at, comma - at);
+    const std::size_t colon = item.find(':');
+    if (colon != std::string::npos) {
+      item = item.substr(colon + 1);
+    }
+    const std::size_t dash = item.find('-');
+    char *end_from = nullptr;
+    char *end_to = nullptr;
+    const std::string from_text = dash == std::string::npos ? "" : item.substr(0, dash);
+    const std::string to_text = dash == std::string::npos ? "" : item.substr(dash + 1);
+    const unsigned long long from = std::strtoull(from_text.c_str(), &end_from, 10);
+    const unsigned long long to = std::strtoull(to_text.c_str(), &end_to, 10);
+    if (from_text.empty() || to_text.empty() || *end_from != '\0' || *end_to != '\0' || from > to) {
+      log_line("live: hold: ignoring GRC_LIVE_HOLD_WINDOWS (want [<step>:]<from>-<to>,...): " +
+               spec);
+      g_live_hold.windows.clear();
+      return;
+    }
+    g_live_hold.windows.emplace_back(from, to);
+    at = comma + 1;
+  }
+  log_line("live: hold: " + std::to_string(g_live_hold.windows.size()) + " windows, cap " +
+           std::to_string(g_live_hold.cap_ms) + " ms");
+}
+
+bool live_hold_on() {
+  live_hold_config();
+  return g_live.hub != nullptr && g_live.carriers != nullptr && !g_live.stopped && !g_live.ending;
+}
+
+// The latest `from` of the windows whose last frame is `frame` (a quit window `q-q` beside a shot
+// window ending at q wins: q itself must be applied), or 0 when none ends there.
+uint64_t live_hold_from(uint64_t frame) {
+  if (!live_hold_on()) {
+    return 0;
+  }
+  uint64_t from = 0;
+  for (const auto &w : g_live_hold.windows) {
+    if (w.second == frame) {
+      from = std::max<uint64_t>(from, std::max<uint64_t>(w.first, 1));
+    }
+  }
+  return from;
+}
+
+// After the publish of `frame`: the frame every receiver must have applied before the timeline
+// goes on -- the window's `from` when `frame` ends one, `frame` itself when this callback sent a
+// stall's recovery (GRC_LIVE_HOLD_RECOVERY_FRAMES) -- or 0 for no hold.
+uint64_t live_hold_after_publish(uint64_t frame) {
+  if (!live_hold_on()) {
+    return 0;
+  }
+  if (g_live_hold.recovery_frames != 0 &&
+      g_live.hub->backlog_sent_frames() >= g_live_hold.recovery_frames) {
+    return frame;
+  }
+  return live_hold_from(frame);
+}
+
+// One phase of the hold at `frame`: drains until no lagging connection is blocked on credit
+// (`credit`), or none lags at all, or the cap runs out. Logs only a phase that actually waited.
+// `drain_frame` stamps what arrives meanwhile: `frame` before the publish (as the callback's own
+// drain does), `frame + 1` after it -- without the hold those events would have been drained at
+// the next callback, so a GET for a payload this callback's send named stays after that send
+// (gets-advertised) -- except at a single-frame (quit) window, after which only live_finish's
+// drain at `frame` follows.
+void live_hold_phase(uint64_t frame, uint64_t from, bool credit, uint64_t drain_frame) {
+  const auto done = [&]() {
+    const rs2::Hub::HoldView v = g_live.hub->hold_view(from);
+    return credit ? v.blocked == 0 : v.lagging == 0;
+  };
+  if (done()) {
+    return;
+  }
+  const uint64_t start_ns = monotonic_ns();
+  const uint64_t deadline_ns = start_ns + g_live_hold.cap_ms * 1000000ull;
+  bool ok = false;
+  while (!(ok = done()) && !g_live.stopped && monotonic_ns() < deadline_ns) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    live_drain(drain_frame);
+  }
+  log_line("live: hold: held frame " + std::to_string(frame) + " (window from " +
+           std::to_string(from) + ") " + std::to_string((monotonic_ns() - start_ns) / 1000000ull) +
+           " ms " + (credit ? "for credit" : "for an apply") + ", " +
+           (ok ? std::string("released") : std::string("timed out")));
+}
+
 // One snapshot for the frame callback at the end of iteration `frame`, shared
 // by both sinks. It is copied under the mirror lock (timed) and diffed and
 // encoded outside it.
@@ -3627,6 +3769,9 @@ void stream_publish(uint64_t frame) {
   resources_drain();
   live_drain(frame);
   live_await_first_hello(frame);  // GRT3: off unless GRC_LIVE_AWAIT_HELLO_MS
+  if (const uint64_t hold_from = live_hold_from(frame)) {  // LF1: off unless GRC_LIVE_HOLD_WINDOWS
+    live_hold_phase(frame, hold_from, true, frame);
+  }
   // G6r: one steady-clock read shared by the due-tick check below and, when a snapshot is taken,
   // by the hub's own on_frame() timing -- the quarter-period slack in tick_due() absorbs the few
   // nanoseconds this function otherwise takes before the snapshot would have been copied.
@@ -4162,6 +4307,11 @@ void on_frame() {
   }
   if (armed_at_start) {
     stream_publish(g_state.frames_total);
+    const uint64_t frame = g_state.frames_total;
+    if (const uint64_t hold_from = live_hold_after_publish(frame)) {  // LF1: the window's apply
+      const bool quit_window = live_hold_from(frame) == frame;  // a `q-q` window: the last frame
+      live_hold_phase(frame, hold_from, false, quit_window ? frame : frame + 1);
+    }
   }
   if (g_state.armed) {
     ++g_state.frames_armed;
