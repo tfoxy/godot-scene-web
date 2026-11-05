@@ -817,7 +817,8 @@ export async function checkCorruptCodedBody(outDir: string): Promise<G2bCheck> {
     "corrupt-coded-body",
     "sabotage corrupt-coded-body (G8kz): the host flips one byte of every coded body it sends (identity bytes, hash and ETag stay right), and the receiver refuses it with resource-invalid (the body does not decode), resource-hash-mismatch (it decodes to other bytes) or resource-unavailable (a browser's fetch failed to decode it) instead of applying it",
     problems,
-    `${coded.length} coded GET(s) sent corrupted; receiver ${reason} at seq ${e.failure?.seq}`,
+    // Names its leg so tier-verdict.py excuses it when the tier skipped the sabotage legs.
+    `${leg}: ${coded.length} coded GET(s) sent corrupted; receiver ${reason} at seq ${e.failure?.seq}`,
     [
       join(e.hostDir, "evidence", "resources.jsonl"),
       join(e.receiverDir, "applied.json"),
