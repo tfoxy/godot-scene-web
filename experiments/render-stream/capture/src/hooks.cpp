@@ -27,6 +27,7 @@
 #include "rs_texture_cache.h"
 #include "rs_texture_delivery.h"
 #include "rs_texture_payload.h"
+#include "rs_texture_release.h"
 #include "rs_texture_worker.h"
 #include "rs_variant.h"
 
@@ -1213,6 +1214,12 @@ struct ImageBinds {
 
 ImageBinds g_image_binds;
 
+// HTR (rs_texture_release.h): the capture-owned 1x1 FORMAT_L8 Image a released create forwards in
+// place of the game's. Made once on the main thread before the vptr store and kept (heap, so no
+// static destructor runs it after the engine is gone) until deinitialize; a hook only copies its
+// pointer into a Ref the engine then references (SafeRefCount), and the dummy duplicates it.
+RefHolder *g_release_placeholder = nullptr;  // its object is rs::texture_release_placeholder()
+
 bool same_rect_capture(const RectCapture &a, const RectCapture &b) {
   return a.item == b.item && a.antialiased == b.antialiased &&
          std::memcmp(&a.rect, &b.rect, sizeof(Rect2)) == 0 &&
@@ -2241,9 +2248,47 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
   rs::PayloadCopy copy = logging ? copy_payload(facts, image, &bytes, &job) : rs::PayloadCopy();
+  // HTR (rs_texture_release.h): one load; zero unless GRC_HEADLESS_TEXTURE_RELEASE is set. The
+  // copy (or the worker's duplicate) above was taken from the game's image; only then may the
+  // engine get the placeholder instead, so the dummy rasterizer never holds the full copy.
+  const uint32_t htr = rs::texture_release_flags();
+  const Ref *forwarded = image;
+  Ref placeholder{nullptr};
+  rs::ReleaseSkip release_skip = rs::ReleaseSkip::Inactive;
+  int64_t release_ns = -1;
+  uint64_t t_release = 0;
+  if ((htr & rs::kReleaseActive) != 0) {
+    t_release = now_ns();
+    rs::ReleaseInputs in;
+    in.logging = logging;
+    in.streaming = streaming();
+    in.omitted = in.streaming && omitted("texture_2d_create");
+    in.format = facts.format;  // the source's (a host decode's payload format is copy.format)
+    in.copy_ok = copy.status == "ok";
+    in.has_content = bytes != nullptr || job != nullptr;
+    release_skip = rs::release_decision(in, (htr & rs::kReleaseFaultIgnorePredicate) != 0
+                                                ? rs::TextureReleaseFault::IgnorePredicate
+                                                : rs::TextureReleaseFault::None);
+    if (release_skip == rs::ReleaseSkip::None) {
+      placeholder.object = rs::texture_release_placeholder();
+      if (placeholder.object != nullptr) {
+        forwarded = &placeholder;
+      } else {
+        release_skip = rs::ReleaseSkip::Refused;  // no placeholder: nothing to forward instead
+      }
+    }
+  }
   const uint64_t t_forward = now_ns();
-  const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, image);
+  if ((htr & rs::kReleaseActive) != 0) {
+    release_ns = static_cast<int64_t>(t_forward - t_release);  // the forward's clock read ends it
+    if (forwarded != image) {
+      copy.released = true;
+      copy.release_ns = release_ns;
+    }
+  }
+  const RID result = original<FnTexture2dCreate>(kTexture2dCreate)(self, forwarded);
   const uint64_t forward_ns = now_ns() - t_forward;
+  bool unheld = forwarded != image;  // until the mirror takes it
   registry_create(result.id, rs::RegistryKind::Texture2d);
   capture.rid = result.id;
   {
@@ -2257,12 +2302,23 @@ RID hook_texture_2d_create(void *self, const Ref *image) {
     const bool omit = omitted("texture_2d_create");
     if (streaming() && !omit) {
       mirror().texture_2d_create(result.id, copy, std::move(bytes), current_frame(), job);
+      unheld = false;
     }
     if (job != nullptr) {
       copy.hook_ns = static_cast<int64_t>(now_ns() - t_hook - forward_ns);
     }
     resources().texture_2d_create(tap_context(), result.id, copy, omit, job);
     note_cache_texture(result.id, copy, job);
+  }
+  if (htr != 0) {
+    if ((htr & rs::kReleaseActive) != 0) {
+      rs::note_release_decision(release_skip, facts.data_size, release_ns,
+                                forwarded != image && unheld);
+    }
+    if ((htr & rs::kReleaseTimed) != 0) {
+      rs::note_release_timing(static_cast<int64_t>(now_ns() - t_hook - forward_ns),
+                              static_cast<int64_t>(forward_ns));
+    }
   }
   return result;
 }
@@ -5085,6 +5141,48 @@ void hooks_init_image_binds() {
 
 bool hooks_image_details_available() { return g_image_binds.available; }
 
+bool hooks_release_placeholder_create(std::string *why) {
+  hooks_init_image_binds();
+  if (rs::texture_release_placeholder() != nullptr) {
+    return true;
+  }
+  // Image.create_empty(int, int, bool, Image.Format), static; the hash from 4.5.1's
+  // `godot --dump-extension-api`. ptrcall passes int and enum arguments as int64, bool as one byte.
+  GDExtensionMethodBindPtr bind = method_bind("Image", "create_empty", 986942177LL);
+  if (bind == nullptr) {
+    *why = "Image.create_empty bind unavailable";
+    return false;
+  }
+  const int64_t width = 1;
+  const int64_t height = 1;
+  const uint8_t mipmaps = 0;
+  const int64_t format = 0;  // Image::FORMAT_L8; create_empty zero-fills (the evictor's [0])
+  const void *args[] = {&width, &height, &mipmaps, &format};
+  auto *holder = new RefHolder();
+  if (!holder->call_args(bind, nullptr, args) || holder->object() == nullptr) {
+    delete holder;
+    *why = "Image.create_empty returned no Image";
+    return false;
+  }
+  Ref ref{holder->object()};
+  const ImageFacts facts = read_image(&ref);
+  if (!facts.ok || facts.width != 1 || facts.height != 1 || facts.format != format ||
+      facts.data_size != 1) {
+    delete holder;
+    *why = "Image.create_empty made no 1x1 L8 image";
+    return false;
+  }
+  g_release_placeholder = holder;
+  rs::texture_release_set_placeholder(holder->object());
+  return true;
+}
+
+void hooks_release_placeholder_drop() {
+  rs::texture_release_set_placeholder(nullptr);
+  delete g_release_placeholder;  // ~RefHolder drops the reference
+  g_release_placeholder = nullptr;
+}
+
 bool hooks_image_payload_available() { return g_image_binds.payload_available; }
 
 void hooks_set_main_thread() { g_main_thread = std::this_thread::get_id(); }
@@ -5136,6 +5234,11 @@ bool hooks_adopt_texture(uint64_t rid, void *image_object, rs2::AdoptedContent c
   resources().texture_adopt(tap_context(), rid, copy,
                             content == rs2::AdoptedContent::Current ? "current" : "creation",
                             source, job);
+  // HTR (design answer 4): a tier texture adoption read back keeps its dummy copy in v1 (release
+  // after adoption is deferred to arm-on-first-subscriber); counted so the product sees the cost.
+  if ((rs::texture_release_flags() & rs::kReleaseActive) != 0 && rs::release_tier(facts.format)) {
+    rs::note_kept_adopted(facts.data_size);
+  }
   if (decoded != nullptr) {
     *decoded = copy.status == "ok" && copy.source_format >= 0;
   }

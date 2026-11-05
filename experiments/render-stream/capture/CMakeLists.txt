@@ -114,6 +114,7 @@ add_library(render_stream_capture SHARED
   src/rs_shader_payload.cpp
   src/rs_texture_decode.cpp
   src/rs_texture_payload.cpp
+  src/rs_texture_release.cpp
   src/rs_texture_worker.cpp
   src/rs_variant.cpp
   src/rs_ws.cpp
@@ -590,6 +591,14 @@ add_executable(rs_canvas_texture_shim_test
 target_include_directories(rs_canvas_texture_shim_test PRIVATE src)
 target_link_libraries(rs_canvas_texture_shim_test PRIVATE grc_warnings Threads::Threads)
 add_test(NAME rs_canvas_texture_shim COMMAND rs_canvas_texture_shim_test)
+
+# HTR (rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE parsing, the headless-only decision,
+# the VRAM tier, the predicate, the counters, and the off path's flag-check cost.
+add_executable(rs_texture_release_test
+  test/rs_texture_release_test.cpp src/rs_texture_release.cpp)
+target_include_directories(rs_texture_release_test PRIVATE src)
+target_link_libraries(rs_texture_release_test PRIVATE grc_warnings Threads::Threads)
+add_test(NAME rs_texture_release COMMAND rs_texture_release_test)
 
 # LAR0 (late-arm-registry-design.md): the resource registry -- kinds per tracked create, erase on
 # free and texture_replace, the per-family cap and overflow, the accounting identity

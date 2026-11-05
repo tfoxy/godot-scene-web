@@ -415,6 +415,11 @@ void ResourceLog::format(std::string *out, const Line &l) const {
     o += ",\"dup_ns\":";
     o += std::to_string(p->dup_ns);
   }
+  // HTR (rs_texture_release.h): present only on a create whose image the hook released.
+  if (p != nullptr && p->released) {
+    o += ",\"released\":true,\"release_ns\":";
+    o += std::to_string(p->release_ns);
+  }
   // G8r: present only on an adopt line.
   if (!l.adopted_content.empty()) {
     o += ",\"adopted_content\":";

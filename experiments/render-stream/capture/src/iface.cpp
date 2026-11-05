@@ -235,6 +235,19 @@ bool RefHolder::call(GDExtensionMethodBindPtr bind, void *instance) {
   return true;
 }
 
+bool RefHolder::call_args(GDExtensionMethodBindPtr bind, void *instance,
+                          const void *const *args) {
+  release();
+  if (bind == nullptr || g_iface.object_method_bind_ptrcall == nullptr ||
+      g_iface.ref_get_object == nullptr || g_iface.ref_set_object == nullptr) {
+    return false;
+  }
+  slot_ = nullptr;
+  g_iface.object_method_bind_ptrcall(bind, instance, args, &slot_);
+  filled_ = true;
+  return true;
+}
+
 void *RefHolder::object() const {
   if (!filled_ || g_iface.ref_get_object == nullptr) {
     return nullptr;

@@ -916,6 +916,8 @@ export const GROUP_COVERAGE_8: Record<string, readonly string[] | string> = {
     "none: TAG2's client extension API and override table are an opt-in layer of the render-stream client package over /13, which the /8 manifest does not describe",
   g8rec1:
     "none: REC1's client recorder is an opt-in layer of the render-stream client package over /13 (the recording is the wire format itself), which the /8 manifest does not describe",
+  g8htr:
+    "none: HTR's opt-in headless texture release changes only what the host's dummy rasterizer keeps; the wire is byte-identical (htr-stream-identical), so the /8 manifest has no row for it",
   g8tag:
     "none: TAG1's item identity (the /13 hello key and item_meta record) is an opt-in client-extension layer of render-stream/13, no receiver applies it yet, and the /8 manifest does not describe it",
   g55b: "none: gate 7's carried CanvasItemMaterial entries (material.*)",

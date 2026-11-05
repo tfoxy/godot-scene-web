@@ -33,6 +33,7 @@ import { type G8ctlExpected, runG8ctl } from "./lib/gate8-ct-late-checks";
 import { type G8ctspExpected, runG8ctsp } from "./lib/gate8-ct-spine-checks";
 import { runG8kp } from "./lib/gate8-delivery-checks";
 import { type FloatExpected, runG8f } from "./lib/gate8-float-checks";
+import { runG8htr } from "./lib/gate8-htr-checks";
 import { runG8l } from "./lib/gate8-live-checks";
 import { type G8mExpected, runG8m } from "./lib/gate8-mat-checks";
 import { type G8mmExpected, runG8mm } from "./lib/gate8-mm-checks";
@@ -78,6 +79,7 @@ const KNOWN_GROUPS = [
   "g8tag",
   "g8tag2",
   "g8rec1",
+  "g8htr",
 ];
 
 function parseArgs(argv: string[]): { out: string } {
@@ -247,6 +249,19 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
   if (run.includes("g8rec1")) {
     // REC1: the client recorder (lib/gate8-rec1-checks.ts).
     checks.push(...(await runG8rec1(join(out, "g8rec1"))));
+  }
+  if (run.includes("g8htr")) {
+    // HTR: the opt-in headless texture release (lib/gate8-htr-checks.ts), judged with gate8-adopt's
+    // expected.json for its adoption equivalence.
+    const adoptExpected = JSON.parse(
+      await readFile(
+        join(EXPERIMENT_DIR, "fixtures", "gate8-adopt", "expected.json"),
+        "utf8",
+      ),
+    ) as G8aExpected;
+    const g8htr = await runG8htr(out, adoptExpected);
+    checks.push(...g8htr.checks);
+    report.g8htr = g8htr.report;
   }
   if (run.includes("g8pt")) {
     const expected = JSON.parse(

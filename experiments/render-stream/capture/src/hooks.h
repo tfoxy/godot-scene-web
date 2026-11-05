@@ -35,6 +35,12 @@ void hooks_init_image_binds();
 // True when Image.get_width/get_height/get_format/get_data_size all resolved.
 bool hooks_image_details_available();
 
+// HTR (rs_texture_release.h): makes the 1x1 FORMAT_L8 placeholder a released texture_2d_create
+// forwards (main thread, before the vptr store), or says why not. Idempotent. Dropped at
+// deinitialize.
+bool hooks_release_placeholder_create(std::string *why);
+void hooks_release_placeholder_drop();
+
 // Gate 2 (G2a): true when, beyond those, Image.has_mipmaps and the image_ptr
 // interface function resolved, so texture_2d_create/_update can copy payload
 // bytes at the hook (gate2-design.md D3). A stream refuses at arm without it.

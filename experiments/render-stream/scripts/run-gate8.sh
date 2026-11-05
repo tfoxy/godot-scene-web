@@ -274,6 +274,17 @@
 #       lib/gate8-pt-checks.ts, lib/gate8-pt-receiver-checks.ts, lib/gate8-pt-late-checks.ts and
 #       lib/gate8-ptc-checks.ts; g7-8's web half replays the receiver legs (run-gate7.sh
 #       G8_FILE_LEGS).
+#   g8htr (HTR, results/gate8/htr.md: GRC_HEADLESS_TEXTURE_RELEASE=on, the dummy rasterizer gets a
+#       1x1 L8 placeholder for every captured VRAM-tier create; every leg under g8htr/): the
+#       gate8-tex and gate8-adopt imports; headless gate8-tex captures `tex-default` (unset),
+#       `tex-off`, `tex-on`, `tex-workers-on`, `tex-refused-on` (no host decode), `tex-budget-on`
+#       (the budget ends the stream before step 1), `invalid` (=maybe), the /9 passthrough pair
+#       `tex-passthrough-{off,on}`; gate8-adopt `adopt-{born,late,deferred}-{off,on}`; the gate8-tex
+#       deferred arm (GRC_ARM_DEFER_FRAMES=5, GRC_ADOPT=arm) `tex-deferred-{off,on}` and its fault
+#       leg `sabotage-ignore-predicate` (GRC_HEADLESS_TEXTURE_RELEASE_FAULT); rendered,
+#       `rendered-on` (the switch ignored, not-headless) and the native receivers of tex-off and
+#       tex-on; last the htr-cost timing group (`cost/{off,on}-<r>`, the g8t cost variant, each
+#       under the exclusive quiet lock). Judged by lib/gate8-htr-checks.ts.
 #
 # NEVER Xvfb and never a desktop window: rendered legs share ONE private
 # `gamescope --backend headless` per group (scripts/lib/gamescope.sh). Headless legs strip DISPLAY
@@ -295,11 +306,11 @@ set -euo pipefail
 EXPECTED_BINARY_SHA256="54cc228405e5be61934192e3bc5461c91dcb4a3275578b29a869557a4322e79c"
 
 # Groups whose increment has landed, in run order (G8r, G8m add theirs).
-LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1)
+LANDED_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr)
 # GTS: g8w11c (the coding resync legs alone, for a browser receiver: run-gate7.sh --live --legs g7-8)
 # is not in the default run: g8w11 already runs the native half of those legs.
-DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8rec1)
-KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1)
+DEFAULT_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr)
+KNOWN_GROUPS=(g8t g8a g8h g8f g8m g8kp g8ku g8kc g8l g8c g8ctl g8ctsp g8cg g8w11 g8w11c g8mm g8pt g8res g8tag g8tag2 g8rec1 g8htr)
 
 EXTENSION=""
 CALIBRATION=""
@@ -3446,8 +3457,177 @@ run_g8ku() {
 		>"$OUT/g8ku/web-legs.log" 2>&1 || echo "run-gate8: g8ku web legs failed, see $OUT/g8ku/web-legs.log" >&2
 }
 
+# ------------------------------------------------------------------------------------- g8htr
+# HTR (results/gate8/htr.md, rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE=on forwards a 1x1
+# L8 placeholder to the dummy rasterizer for every captured VRAM-tier create. Every leg under
+# g8htr/. The off twin of each pair sets the variable to `off` (so both are timed alike);
+# tex-default leaves it unset (the default path: no result.json key, no evidence file).
+G8HTR_ARM=(GRC_HEADLESS_TEXTURE_RELEASE=on)
+G8HTR_OFF=(GRC_HEADLESS_TEXTURE_RELEASE=off)
+# tex-budget-on: a budget the fixture's step-0 payloads exceed, so the stream ends before step 1.
+G8HTR_BUDGET_BYTES="${G8HTR_BUDGET_BYTES:-40000}"
+
+run_import_g8htr() {
+	echo "run-gate8: g8htr import (gate8-tex and gate8-adopt sources and fixtures, receiver)"
+	LEG_ENV=()
+	run_headless "$OUT/g8htr/import/tex-sources" none -- mise exec -- godot --headless --path "$FIXTURE_DIR" --script res://make_sources.gd
+	LEG_ENV=()
+	run_headless "$OUT/g8htr/import/tex-fixture" none -- mise exec -- godot --headless --path "$FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8htr/import/adopt-sources" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --script res://make_sources.gd
+	LEG_ENV=()
+	run_headless "$OUT/g8htr/import/adopt-fixture" none -- mise exec -- godot --headless --path "$G8A_FIXTURE_DIR" --import
+	LEG_ENV=()
+	run_headless "$OUT/g8htr/import/receiver" none -- mise exec -- godot --headless --path "$RECEIVER_DIR" --import
+	local leg
+	for leg in tex-sources tex-fixture adopt-sources adopt-fixture receiver; do
+		if [ "$(cat "$OUT/g8htr/import/$leg/exit-code.txt")" != "0" ]; then
+			echo "run-gate8: g8htr import ($leg) failed, see $OUT/g8htr/import/$leg/stdout.log" >&2
+			exit 1
+		fi
+	done
+}
+
+# run_capture_g8htr_tex <dir> <env word...>: a headless gate8-tex capture with its texture log.
+run_capture_g8htr_tex() {
+	local dir="$1"
+	shift
+	mkdir -p "$dir"
+	CAPTURE_EXTRA_ENV=("$@" RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl")
+	run_capture "$dir" "" none
+}
+
+# run_capture_rendered_g8htr <dir>: the armed gate8-tex capture on the private gamescope (g8c's
+# rendered path): the switch must be ignored there.
+run_capture_rendered_g8htr() {
+	local dir="$1"
+	mkdir -p "$dir/evidence" "$dir/store"
+	LEG_ENV=(
+		GRC_EXTENSION="$EXTENSION" GRC_CALIBRATION="$CALIBRATION" GRC_MODE=arm
+		"${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}" GRC_RESOURCE_STORE_DIR="$dir/store"
+		GRC_EVIDENCE_DIR="$dir/evidence" GRC_STREAM_OUT="$dir/$RECORDING_NAME"
+		RS_FIXTURE_STEP_LOG="$dir/steps.jsonl" RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl"
+	)
+	run_rendered "$dir" "$FIXTURE_DIR"
+}
+
+# run_cost_capture_g8htr <dir> <off|on>: the g8t cost variant (2048x2048 VRAM textures, one per
+# frame, held) with the switch off or on, kept running to frame G8HTR_COST_QUIT so
+# perf-timeline.jsonl (one sample a second) has RSS samples after the last create; the recording
+# and the store go (the result.json counters and perf-timeline.jsonl are judged).
+run_cost_capture_g8htr() {
+	local dir="$1" config="$2"
+	mkdir -p "$dir"
+	cat /proc/loadavg >"$dir/loadavg.txt" 2>/dev/null || true
+	CAPTURE_EXTRA_ENV=("${G8T_DECODE_ENV[@]}" RS_FIXTURE_VARIANT=cost
+		RS_FIXTURE_TEXTURE_LOG="$dir/textures.jsonl")
+	if [ "$config" = on ]; then
+		CAPTURE_EXTRA_ENV+=("${G8HTR_ARM[@]}")
+	else
+		CAPTURE_EXTRA_ENV+=("${G8HTR_OFF[@]}")
+	fi
+	CAPTURE_WITH_PATCH=0
+	run_capture "$dir" "$G8HTR_COST_QUIT" none
+	CAPTURE_WITH_PATCH=1
+	rm -rf "${dir:?}/$RECORDING_NAME" "${dir:?}/store"
+}
+
+G8HTR_COST_ROUNDS="${G8HTR_COST_ROUNDS:-3}"
+G8HTR_COST_QUIT=600
+# The gate8-tex deferred arm (LAR0's GRC_ARM_DEFER_FRAMES on the texture fixture): step 0's
+# textures are created under the hooks before the arm, so they are inactive (kept) and adoption
+# reads them back at the arm, GRC_ADOPT=arm with the product's unknown-item policy.
+G8HTR_DEFER_ENV=("${G8T_DECODE_ENV[@]}" GRC_ADOPT=arm GRC_UNKNOWN_ITEM=skip GRC_ARM_DEFER_FRAMES=5)
+
+# G8HTR_ONLY_COST=1 runs g8htr's htr-cost timing group alone (the import, then the cost legs), so
+# the cost judgement can be repeated cheaply. Read only htr-cost from such a run: every other g8htr
+# check fails for missing evidence.
+G8HTR_ONLY_COST="${G8HTR_ONLY_COST:-0}"
+
+run_g8htr() {
+	run_import_g8htr
+	local g="$OUT/g8htr" arm pair
+	if [ "$G8HTR_ONLY_COST" = 1 ]; then
+		run_g8htr_cost
+		return
+	fi
+
+	echo "run-gate8: g8htr tex-default/off/on (gate8-tex, /8, GRC_TEXTURE_DECODE=engine)"
+	run_capture_g8htr_tex "$g/tex-default/capture" "${G8T_DECODE_ENV[@]}"
+	run_capture_g8htr_tex "$g/tex-off/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_OFF[@]}"
+	run_capture_g8htr_tex "$g/tex-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}"
+	echo "run-gate8: g8htr tex-workers-on (GRC_TEXTURE_WORKERS=2, every copy on a held-back worker)"
+	run_capture_g8htr_tex "$g/tex-workers-on/capture" "${G8T_DECODE_ENV[@]}" "${G8T_WORKERS_ENV[@]}" "${G8HTR_ARM[@]}"
+	echo "run-gate8: g8htr tex-refused-on (/8, no GRC_TEXTURE_DECODE: the block formats are refused)"
+	run_capture_g8htr_tex "$g/tex-refused-on/capture" GRC_STREAM_VERSION=8 "${G8HTR_ARM[@]}"
+	echo "run-gate8: g8htr tex-budget-on (GRC_RESOURCE_BUDGET_BYTES=$G8HTR_BUDGET_BYTES: the stream ends before step 1)"
+	run_capture_g8htr_tex "$g/tex-budget-on/capture" "${G8T_DECODE_ENV[@]}" "${G8HTR_ARM[@]}" \
+		GRC_RESOURCE_BUDGET_BYTES="$G8HTR_BUDGET_BYTES"
+	echo "run-gate8: g8htr invalid (GRC_HEADLESS_TEXTURE_RELEASE=maybe: refused)"
+	run_capture_g8htr_tex "$g/invalid/capture" "${G8T_DECODE_ENV[@]}" GRC_HEADLESS_TEXTURE_RELEASE=maybe
+
+	echo "run-gate8: g8htr tex-passthrough-off/on (/9, GRC_TEXTURE_DELIVERY=passthrough)"
+	RECORDING_NAME=recording.rs9
+	PATCH_RECORDING_NAME=recording-patch.rs9
+	run_capture_g8htr_tex "$g/tex-passthrough-off/capture" "${G8KP_ENV[@]}" "${G8HTR_OFF[@]}"
+	run_capture_g8htr_tex "$g/tex-passthrough-on/capture" "${G8KP_ENV[@]}" "${G8HTR_ARM[@]}"
+	RECORDING_NAME=recording.rs8
+	PATCH_RECORDING_NAME=recording-patch.rs8
+
+	echo "run-gate8: g8htr adopt-{born,late,deferred}-{off,on} (gate8-adopt)"
+	for arm in born late deferred; do
+		local -a adopt=()
+		[ "$arm" = born ] || adopt=(GRC_ADOPT=arm)
+		run_capture_g8a "$g/adopt-$arm-off/capture" "$arm" "${G8A_ENV[@]}" ${adopt[@]+"${adopt[@]}"} "${G8HTR_OFF[@]}"
+		run_capture_g8a "$g/adopt-$arm-on/capture" "$arm" "${G8A_ENV[@]}" ${adopt[@]+"${adopt[@]}"} "${G8HTR_ARM[@]}"
+	done
+	# gate8-adopt's ChipBc is created before the hooks are patched even under `deferred` (adopted
+	# from the resource cache), so the fault knob cannot reach it there; the texture fixture's
+	# deferred arm has VRAM textures created under the hooks before the arm, which adoption reads.
+	echo "run-gate8: g8htr tex-deferred-off/on (gate8-tex, armed at frame 6, GRC_ADOPT=arm: step 0 pre-arm)"
+	run_capture_g8htr_tex "$g/tex-deferred-off/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_OFF[@]}"
+	run_capture_g8htr_tex "$g/tex-deferred-on/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_ARM[@]}"
+	echo "run-gate8: g8htr sabotage-ignore-predicate (tex-deferred-on, GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate)"
+	run_capture_g8htr_tex "$g/sabotage-ignore-predicate/capture" "${G8HTR_DEFER_ENV[@]}" "${G8HTR_ARM[@]}" \
+		GRC_HEADLESS_TEXTURE_RELEASE_FAULT=ignore-predicate
+
+	echo "run-gate8: bringing up private gamescope for g8htr's rendered legs"
+	gs_start 640 360 "$OUT/gamescope-g8htr"
+	echo "run-gate8: g8htr rendered-on (a rendered capture: the switch is ignored, not-headless)"
+	run_capture_rendered_g8htr "$g/rendered-on/capture"
+	legs_par_begin
+	for pair in tex-off tex-on; do
+		echo "run-gate8: g8htr $pair/receiver"
+		run_rendered_receiver "$g/$pair/capture" "$g/$pair/receiver"
+	done
+	legs_par_end
+	gs_teardown "$OUT/gamescope-g8htr"
+	GS_RUN_DIR=""
+
+	run_g8htr_cost
+}
+
+# htr-cost (a timing group): real time, each leg under the exclusive quiet lock, interleaved.
+run_g8htr_cost() {
+	local g="$OUT/g8htr"
+	local -a cost_dirs=()
+	local r c
+	for r in $(seq 1 "$G8HTR_COST_ROUNDS"); do
+		for c in off on; do cost_dirs+=("$g/cost/$c-$r"); done
+	done
+	if ! legs_skip_group htr-cost "${cost_dirs[@]}"; then
+		for r in $(seq 1 "$G8HTR_COST_ROUNDS"); do
+			for c in off on; do
+				echo "run-gate8: g8htr cost/$c-$r (the g8t cost variant, switch $c)"
+				timing_leg "g8htr-cost-$c-$r" run_cost_capture_g8htr "$g/cost/$c-$r" "$c"
+			done
+		done
+	fi
+}
+
 for group in "${GROUPS_RUN[@]}"; do
 	case "$group" in
+	g8htr) run_g8htr ;;
 	g8kp) run_g8kp ;;
 	g8kc) run_g8kc ;;
 	g8ku) run_g8ku ;;

@@ -160,6 +160,8 @@ class RefHolder {
   // Calls `bind` on `instance` into the slot. Returns false when anything
   // needed is missing; object() is then nullptr.
   bool call(GDExtensionMethodBindPtr bind, void *instance);
+  // HTR: a bound method with arguments, or a static one (`instance` nullptr), into the slot.
+  bool call_args(GDExtensionMethodBindPtr bind, void *instance, const void *const *args);
   void *object() const;
   // Drops the reference now (also done by the destructor). Idempotent.
   void release();

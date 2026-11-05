@@ -217,6 +217,7 @@
 #include "rs_texture_cache.h"
 #include "rs_texture_decode.h"
 #include "rs_texture_payload.h"
+#include "rs_texture_release.h"
 #include "rs_item_meta_host.h"
 #include "rs_ws.h"
 #include "vtable.h"
@@ -282,6 +283,17 @@ struct State {
   rs::CanvasTextureShimMode ct_shim_mode = rs::CanvasTextureShimMode::Off;
   std::string ct_shim_state = "off";
   std::string ct_shim_reason;
+
+  // HTR (rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE as given (`htr_env_set`: the variable
+  // is set, so result.json and evidence/headless-texture-release.json report it), the decision
+  // ("off", "active", "ignored" with `htr_reason`, or "refused" for an invalid value) and the
+  // GRC_HEADLESS_TEXTURE_RELEASE_FAULT knob.
+  std::string htr_env;
+  bool htr_env_set = false;
+  rs::TextureReleaseMode htr_mode = rs::TextureReleaseMode::Off;
+  rs::TextureReleaseFault htr_fault = rs::TextureReleaseFault::None;
+  std::string htr_state = "off";
+  std::string htr_reason;
 
   // PM5 (render-stream-12.md "Headless shims (opt-in)"): GRC_HEADLESS_PARTICLES and
   // GRC_PREDRAW_PUMP as given, parsed, and the pump's counters.
@@ -712,6 +724,40 @@ void emit_registry() {
   }
 }
 
+// HTR: the `headless_texture_release` object (result.json and its evidence file).
+void htr_fields(JsonWriter *json) {
+  const rs::ReleaseStats st = rs::texture_release_stats();
+  json->object_begin();
+  json->field("env", g_state.htr_env);
+  json->field("state", g_state.htr_state);
+  json->field_or_null("reason", g_state.htr_reason);
+  json->field("display_server", g_state.display_server);
+  json->field("fault", std::string(rs::texture_release_fault_name(g_state.htr_fault)));
+  json->field("released", st.released);
+  json->field("released_bytes", st.released_bytes);
+  json->field("released_then_unheld", st.released_then_unheld);
+  json->field("kept_adopted", st.kept_adopted);
+  json->field("kept_adopted_bytes", st.kept_adopted_bytes);
+  json->key("skipped").object_begin();
+  json->field("inactive", st.skipped_inactive);
+  json->field("refused", st.skipped_refused);
+  json->field("format", st.skipped_format);
+  json->field("omitted", st.skipped_omitted);
+  json->object_end();
+  json->field("release_ns_total", st.release_ns_total);
+  json->field("release_ns_max", st.release_ns_max);
+  // Every create while the variable is set (off included): the hook's own time, the forward out.
+  json->key("timed").object_begin();
+  json->field("creates", st.timed_creates);
+  json->field("hook_ns_total", st.hook_ns_total);
+  json->field("hook_ns_max", st.hook_ns_max);
+  json->field("forward_ns_total", st.forward_ns_total);
+  json->object_end();
+  json->object_end();
+}
+
+void emit_headless_texture_release();
+
 std::string result_json() {
   JsonWriter json;
   json.object_begin();
@@ -1076,8 +1122,24 @@ std::string result_json() {
     json.field("synthesized", static_cast<int64_t>(rs::canvas_texture_shim().synthesized()));
     json.object_end();
   }
+  // Additive (HTR): present only when GRC_HEADLESS_TEXTURE_RELEASE is set.
+  if (g_state.htr_env_set) {
+    json.key("headless_texture_release");
+    htr_fields(&json);
+  }
   json.object_end();
   return json.take();
+}
+
+// evidence/headless-texture-release.json (HTR): written with the arm decision, so the product can
+// assert the state before any texture streams, and again with counters.json; only when
+// GRC_HEADLESS_TEXTURE_RELEASE is set.
+void emit_headless_texture_release() {
+  if (g_state.htr_env_set) {
+    JsonWriter json;
+    htr_fields(&json);
+    emit("headless-texture-release.json", json.take());
+  }
 }
 
 // evidence/canvas-texture-shim.json, written with the arm decision and with counters.json, only
@@ -4159,6 +4221,50 @@ bool attempt(const char *phase) {
     }
   }
 
+  // HTR (rs_texture_release.h): GRC_HEADLESS_TEXTURE_RELEASE. Unlike the shims above, `on` on a
+  // rendered host is ignored, typed and logged, not refused: off is always safe there. Only an
+  // invalid value (or fault knob) refuses the capture. Decided in both modes, so validate predicts
+  // arm.
+  {
+    const char *htr = std::getenv("GRC_HEADLESS_TEXTURE_RELEASE");
+    const char *fault = std::getenv("GRC_HEADLESS_TEXTURE_RELEASE_FAULT");
+    g_state.htr_env_set = htr != nullptr;
+    g_state.htr_env = htr != nullptr ? htr : "";
+    std::string why;
+    const bool ok = rs::parse_texture_release(htr, &g_state.htr_mode, &why) &&
+                    rs::parse_texture_release_fault(fault, &g_state.htr_fault, &why);
+    if (!ok) {
+      log_line("headless texture release: " + why);
+      g_state.htr_env_set = true;  // reported, so the refusal is visible in result.json
+      g_state.htr_state = "refused";
+      g_state.htr_reason = "headless-texture-release-invalid";
+      g_state.checks.push_back({"headless_texture_release", false,
+                                "GRC_HEADLESS_TEXTURE_RELEASE=" + g_state.htr_env + " -> " +
+                                    g_state.htr_reason});
+      emit_headless_texture_release();
+      refuse(g_state.htr_reason);
+      return true;
+    }
+    const rs::TextureReleaseDecision d =
+        rs::resolve_texture_release(g_state.htr_mode, g_state.display_server);
+    g_state.htr_state = d.state;
+    g_state.htr_reason = d.reason;
+    if (g_state.htr_env_set) {
+      g_state.checks.push_back({"headless_texture_release", true,
+                                "GRC_HEADLESS_TEXTURE_RELEASE=" + g_state.htr_env +
+                                    " display_server=" + g_state.display_server + " -> " +
+                                    g_state.htr_state});
+      log_line("headless texture release: " + g_state.htr_state +
+               (g_state.htr_reason.empty()
+                    ? std::string()
+                    : " (" + g_state.htr_reason + ", display_server=" + g_state.display_server +
+                          ")") +
+               (g_state.htr_fault != rs::TextureReleaseFault::None
+                    ? std::string(" fault=") + rs::texture_release_fault_name(g_state.htr_fault)
+                    : std::string()));
+    }
+  }
+
   if (g_state.mode != "arm") {
     decide("validated", std::string());
     return true;
@@ -4172,6 +4278,25 @@ bool attempt(const char *phase) {
   // error every frame).
   if (!g_state.hooks_patched) {
     hooks_init_image_binds();
+    // HTR: the placeholder is made here, on the main thread before the vptr store (not at the
+    // stream start: a create the hooks see before the arm must already find it under the fault
+    // knob), and the hook's flags are set once.
+    if (g_state.htr_state == "active") {
+      std::string why;
+      if (!hooks_release_placeholder_create(&why)) {
+        log_line("headless texture release: " + why + " -> ignored");
+        g_state.htr_state = "ignored";
+        g_state.htr_reason = "placeholder-unavailable";
+      }
+    }
+    rs::texture_release_configure(
+        (g_state.htr_state == "active" ? rs::kReleaseActive : 0u) |
+        (g_state.htr_env_set ? rs::kReleaseTimed : 0u) |
+        (g_state.htr_state == "active" &&
+                 g_state.htr_fault == rs::TextureReleaseFault::IgnorePredicate
+             ? rs::kReleaseFaultIgnorePredicate
+             : 0u));
+    emit_headless_texture_release();
     // PM5: configured before the vptr store, so the first hooked particles_create already sees it.
     rs::particles_shim().configure(g_state.pt_shim_mode);
     if (g_state.pt_shim_mode == rs::ParticlesShimMode::Synthesize) {
@@ -4298,6 +4423,7 @@ void do_disarm(const char *phase) {
     emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
   }
   emit_canvas_texture_shim();
+  emit_headless_texture_release();
   perf_finish();
   emit("result.json", result_json());
 }
@@ -4386,6 +4512,7 @@ void on_shutdown() {
     emit("texture-cache.json", hooks_texture_cache_json());  // G8kc
   }
   emit_canvas_texture_shim();
+  emit_headless_texture_release();
   emit("result.json", result_json());
   log_line("shutdown: frames_total=" + std::to_string(g_state.frames_total) +
            " frames_armed=" + std::to_string(g_state.frames_armed) + " intercepted=" +
@@ -4475,6 +4602,7 @@ void deinitialize(void * /*userdata*/, GDExtensionInitializationLevel level) {
   rs::texture_worker_pool().stop();  // G8kw: no worker (or engine Image) outlives the extension
   live_linger(true);
   do_disarm("deinitialize");
+  hooks_release_placeholder_drop();  // HTR
   // CAR6: a capture that never armed still owns its registrations; each gets its one destroy().
   for (live::RegisteredCarrier &r : live::carrier_registry().close()) {
     r.vtable.destroy(r.vtable.self);

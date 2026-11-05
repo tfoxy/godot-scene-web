@@ -499,6 +499,16 @@
       "reach": ["native:gate8@*"]
     },
     {
+      "why": "HTR (results/gate8/htr.md): the opt-in headless texture release's pure half (rs_texture_release.*, its ctest rs_texture_release) and gate 8's g8htr checker. Its call sites in hooks.cpp and entry.cpp are shared capture files and still reach '*'; a change confined to these files is off by default (GRC_HEADLESS_TEXTURE_RELEASE unset), so the build, the pure self-tests and gate 8 (whose g8htr group runs the switch) are enough",
+      "paths": [
+        "experiments/render-stream/capture/src/rs_texture_release.*",
+        "experiments/render-stream/capture/test/rs_texture_release_test.cpp",
+        "experiments/render-stream/scripts/lib/gate8-htr-checks.ts"
+      ],
+      "reach": ["capture-build", "pure", "native:gate8@*"],
+      "exclusive": true
+    },
+    {
       "why": "REC1's client recorder legs (results/p3/rec1.md): gate 8's g8rec1 group drives web/client-record-check/ (the client package with the recorder on) through scripts/client-record-check.ts against a live tag-scene host with a tap, judged by lib/gate8-rec1-checks.ts",
       "paths": [
         "experiments/render-stream/web/client-record-check/**",

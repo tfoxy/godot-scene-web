@@ -175,6 +175,11 @@ struct PayloadCopy {
   // prediction, duplicate, hand-off, mirror) and `dup_ns` the copy-on-write duplicate within it.
   // Logged as trailing keys only on such a line, so a synchronous log is unchanged.
   bool worker = false;
+  // HTR (rs_texture_release.h): the hook forwarded the 1x1 placeholder instead of this image, so
+  // the dummy rasterizer holds no copy; `release_ns` is the predicate plus the swap. Logged as
+  // trailing keys only on such a line.
+  bool released = false;
+  std::int64_t release_ns = -1;
   std::int64_t hook_ns = -1;
   std::int64_t dup_ns = -1;
   // G8kp (rs_texture_delivery.h, texture-delivery-design.md D1 `passthrough`): beside an ok host
