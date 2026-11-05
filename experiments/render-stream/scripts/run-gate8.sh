@@ -225,7 +225,9 @@
 #       pre-arm texture and items adopted, the pre-arm emitter refused preload-particles, its
 #       process material keyed through the LATE-RES re-link), `deferred/capture` (LAR5: loaded at
 #       birth, armed at frame 12 by GRC_ARM_DEFER_FRAMES=11: emitter and both process materials
-#       adopted from the registry, unknown_material_keyed 0) and `fault-no-resources/capture`.
+#       adopted from the registry, unknown_material_keyed 0), `fault-no-resources/capture` and
+#       `sabotage-registry-queue-drop/capture` (LAR6: deferred, GRC_ADOPT_FAULT=registry-queue-drop:
+#       the off-main queue discarded, so the loader-thread texture is never adopted).
 #   g8pt (PM5, render-stream-12.md "Fixture and checks (gate 8 group g8pt)": GPU particles on /12,
 #       the capture side, fixtures/gate8-pt; every leg under g8pt/): the imports (gate8-pt,
 #       gate8-mm, gate8-ptc, receiver) and rs-core-check's build; then, in one private 640x360 gamescope,
@@ -1120,6 +1122,9 @@ run_g8res() {
 	echo "run-gate8: g8res fault-no-resources/capture (late, GRC_ADOPT_FAULT=no-resources)"
 	run_capture_rendered_g8res "$OUT/g8res/fault-no-resources/capture" "${G8RES_LATE_ENV[@]}" \
 		GRC_ADOPT_FAULT=no-resources
+	echo "run-gate8: g8res sabotage-registry-queue-drop/capture (deferred, GRC_ADOPT_FAULT=registry-queue-drop: the loader-thread texture is never adopted; LAR6)"
+	run_capture_rendered_g8res "$OUT/g8res/sabotage-registry-queue-drop/capture" "${G8RES_DEFERRED_ENV[@]}" \
+		GRC_ADOPT_FAULT=registry-queue-drop
 	gs_teardown "$OUT/gamescope-g8res"
 	GS_RUN_DIR=""
 	# LAR5: back to the /8 names, as g8pt does (a later group, g8a with --legs g8res,g8a, reads them).

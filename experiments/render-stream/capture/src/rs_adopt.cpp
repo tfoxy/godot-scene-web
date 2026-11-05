@@ -16,6 +16,7 @@
 #include "iface.h"
 #include "rs_mirror.h"
 #include "rs_registry.h"
+#include "rs_rid_map.h"
 #include "rs_shader_payload.h"
 #include "rs_texture_payload.h"
 #include "rs_variant.h"
@@ -867,12 +868,72 @@ std::atomic<bool> g_res_active{false};
 std::atomic<bool> g_res_dummy_host{false};
 std::atomic<int> g_res_fault{0};
 std::thread::id g_res_main;
-std::mutex g_res_mutex;  // guards the census, the refused sets and the stats
+std::mutex g_res_mutex;  // guards the census, the refused map and the stats
 AdoptResourceStats g_res_stats;
-std::unordered_set<std::uint64_t> g_res_refused_textures;
-std::unordered_set<std::uint64_t> g_res_refused_meshes;
-std::unordered_set<std::uint64_t> g_res_refused_multimeshes;  // PM9
 thread_local bool t_res_inside = false;
+
+// LAR6 (late-arm-registry-design.md Q4 "Refused sets"): the one refused map, RID -> reason, for
+// every family adoption refuses (textures, meshes, multimeshes, emitters, process materials; RID
+// values are unique across the engine's owners, so one map holds them all). It replaces G8r's
+// three sets and PM7's two, with their one rule: cleared at stream begin, erased on free. Under
+// g_res_mutex. The typed counters stay per family (AdoptResourceStats, EmitterAdoptStats). The
+// residual reader's (item, material) and (material, shader) pairs (g_mat_refused_*) are not RIDs
+// and stay with it (M12-M14).
+enum class Refusal : std::uint8_t { Texture = 1, Mesh, Multimesh, Particles, ProcessMaterial };
+RidMap<Refusal> g_refused;
+
+bool refused_locked(std::uint64_t rid) { return g_refused.find(rid) != g_refused.end(); }
+
+// True when `rid` was not refused before (the caller counts it once).
+bool refuse_locked(std::uint64_t rid, Refusal why) {
+  if (refused_locked(rid)) {
+    return false;
+  }
+  g_refused[rid] = why;
+  return true;
+}
+
+bool is_refused(std::uint64_t rid) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  return refused_locked(rid);
+}
+
+bool refuse(std::uint64_t rid, Refusal why) {
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  return refuse_locked(rid, why);
+}
+
+// LAR6 (design R4 "Off-main references"): a reference from another thread to a kind whose adoption
+// reads a getter (the getters, the TextServer and the resource cache are main-thread only, R6) is
+// queued here, once per RID, and materialized at the frame boundary (adopt_frame_drain). It
+// replaces "stays unknown until a main-thread reference". g_queue_mutex is a leaf: never held
+// across an engine, mirror, registry or g_res_mutex call.
+std::mutex g_queue_mutex;
+std::vector<std::pair<std::uint64_t, RefKind>> g_queue;
+RidMap<std::uint8_t> g_queued;  // 1: queued; 0: freed while queued (skipped at the drain)
+std::atomic<bool> g_queue_nonempty{false};
+
+void queue_offmain(std::uint64_t rid, RefKind ref) {
+  {
+    std::lock_guard<std::mutex> lock(g_queue_mutex);
+    const auto it = g_queued.find(rid);
+    if (it != g_queued.end() && it->second != 0) {
+      return;  // already queued
+    }
+    g_queued[rid] = 1;
+    g_queue.emplace_back(rid, ref);
+    g_queue_nonempty.store(true, std::memory_order_release);
+  }
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  ++g_res_stats.offmain_queued;
+}
+
+void queue_reset() {
+  std::lock_guard<std::mutex> lock(g_queue_mutex);
+  g_queue.clear();
+  g_queued.clear();
+  g_queue_nonempty.store(false, std::memory_order_release);
+}
 
 // One glyph atlas page the census found (D7): its font cache and index.
 struct FontPage {
@@ -1341,7 +1402,7 @@ void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvas
     ++g_res_stats.textures;
     ++g_res_stats.textures_canvas;
     ++g_res_stats.canvas_registry;
-  } else if (g_res_refused_textures.insert(rid).second) {
+  } else if (refuse_locked(rid, Refusal::Texture)) {
     ++g_res_stats.textures_refused;
     if (!c.diffuse_set || c.diffuse == 0) {
       ++g_res_stats.refused_canvas_empty;
@@ -1351,14 +1412,22 @@ void adopt_canvas_texture_registered(std::uint64_t rid, const rs::RegistryCanvas
 }
 
 // The texture family's read-back for a RID the registry does not hold as a CanvasTexture: a
-// registered 2D texture (its getter is the payload; LAR6 gives it the registry's `updated` bit) or
-// any unregistered RID (the residual path, design Q3).
+// registered 2D texture (its getter is the payload) or any unregistered RID (the residual path,
+// design Q3). LAR6 (design R4, Q4 M3): a registered texture whose `updated` bit is clear was never
+// changed since its create, so the getter's creation copy IS its content: `current`, provably,
+// with no census and no TextServer read. Anything updated (an ImageTexture.update, a glyph page
+// growing, a texture_replace) keeps G8r's rule: an atlas page or a cached compressed texture is
+// current, anything else creation. The census is built only when such a texture needs it.
 void adopt_texture_locked_out(std::uint64_t rid) {
   const std::uint64_t t0 = now_ns();
   const bool main = std::this_thread::get_id() == g_res_main;
+  rs::RegistryKind kind = rs::RegistryKind::Texture2d;
+  bool updated = true;
+  const bool pristine = rs::registry_on() && rs::registry_lookup(rid, &kind, &updated) &&
+                        rs::registry_family(kind) == rs::RegistryFamily::Texture && !updated;
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (main && !g_census.built) {
+    if (main && !pristine && !g_census.built) {
       build_census();
     }
   }
@@ -1383,7 +1452,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
       ++g_res_stats.textures;
       ++g_res_stats.textures_canvas;
       ++g_res_stats.canvas_residual;
-    } else if (g_res_refused_textures.insert(rid).second) {
+    } else if (refuse_locked(rid, Refusal::Texture)) {
       ++g_res_stats.textures_refused;
       ++g_res_stats.refused_no_image;
     }
@@ -1391,7 +1460,7 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     return;
   }
   bool compressed = false;
-  {
+  if (!pristine) {
     std::lock_guard<std::mutex> lock(g_res_mutex);
     compressed = g_census.compressed.count(rid) != 0;
   }
@@ -1400,7 +1469,10 @@ void adopt_texture_locked_out(std::uint64_t rid) {
   const char *source = "dummy";
   bool atlas = false;
   RefSlot current;
-  if (compressed) {
+  if (pristine) {
+    content = rs2::AdoptedContent::Current;  // LAR6: never updated, so the creation copy is current
+    source = "registry";
+  } else if (compressed) {
     content = rs2::AdoptedContent::Current;  // never updated in place (D6, render-stream-8.md)
     source = "cache";
   } else if (main) {
@@ -1433,25 +1505,20 @@ void adopt_texture_locked_out(std::uint64_t rid) {
     }
     if (atlas) ++g_res_stats.atlas_pages;
     if (compressed) ++g_res_stats.compressed;
+    if (pristine) ++g_res_stats.textures_registry;
     if (decoded) ++g_res_stats.decoded;
   }
   g_res_stats.lookup_ns += now_ns() - t0;
 }
 
-// LAR1 (design R4; M9 folded in): the texture family's one entry (adopt_texture_ref, every
-// CanvasTexture's channels). A RID the mirror already knows, or one this stream refused, is never
-// read back again; otherwise it dispatches on the kind the registry recorded -- a CanvasTexture
-// from its recorded channels, anything else through the texture read-back (LAR6 extends this
-// entry to every family).
+// LAR1 (design R4; M9 folded in): the texture family's dispatch (materialize's RefKind::Texture,
+// every CanvasTexture's channels). A RID the mirror already knows, or one this stream refused, is
+// never read back again; otherwise it dispatches on the kind the registry recorded -- a
+// CanvasTexture from its recorded channels, anything else through the texture read-back. Main
+// thread (materialize queues an off-main reference).
 void materialize_texture(std::uint64_t rid) {
-  if (rid == 0 || mirror_instance().knows_texture(rid)) {
+  if (rid == 0 || mirror_instance().knows_texture(rid) || is_refused(rid)) {
     return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (g_res_refused_textures.count(rid) != 0) {
-      return;
-    }
   }
   rs::RegistryCanvasTexture canvas;
   if (rs::registry_on() && rs::registry_canvas_texture(rid, &canvas)) {
@@ -1578,7 +1645,7 @@ void adopt_mesh_locked_out(std::uint64_t rid) {
   if (adopted) {
     ++g_res_stats.meshes;
     g_res_stats.mesh_surfaces += static_cast<std::uint32_t>(surfaces.size());
-  } else if (g_res_refused_meshes.insert(rid).second) {
+  } else if (refuse_locked(rid, Refusal::Mesh)) {
     ++g_res_stats.meshes_refused;  // never read back again this stream
   }
   g_res_stats.lookup_ns += now_ns() - t0;
@@ -1614,11 +1681,14 @@ bool parse_adopt_fault(const char *value, bool adopt, AdoptFault *out, std::stri
     *out = AdoptFault::RegistryDropBinding;
   } else if (text == "registry-skip-particles") {
     *out = AdoptFault::RegistrySkipParticles;
+  } else if (text == "registry-queue-drop") {
+    *out = AdoptFault::RegistryQueueDrop;
   } else {
     *error = "invalid GRC_ADOPT_FAULT=" + text +
              " (expected no-resources, atlas-from-dummy, claim-current, no-include-path, "
              "no-particles, registry-off, registry-keep-freed, registry-mm-stride, "
-             "registry-skip-params, registry-drop-binding or registry-skip-particles)";
+             "registry-skip-params, registry-drop-binding, registry-skip-particles or "
+             "registry-queue-drop)";
     return false;
   }
   if (!adopt) {
@@ -1642,6 +1712,7 @@ const char *adopt_fault_name(AdoptFault f) {
   case AdoptFault::RegistrySkipParams: return "registry-skip-params";
   case AdoptFault::RegistryDropBinding: return "registry-drop-binding";
   case AdoptFault::RegistrySkipParticles: return "registry-skip-particles";
+  case AdoptFault::RegistryQueueDrop: return "registry-queue-drop";
   }
   return "none";
 }
@@ -1651,11 +1722,10 @@ void adopt_emitters_forget(std::uint64_t rid);  // PM7, below
 
 void adopt_resources_begin(AdoptFault f, bool dummy_host) {
   adopt_emitters_reset();
+  queue_reset();
   std::lock_guard<std::mutex> lock(g_res_mutex);
   g_res_stats = AdoptResourceStats();
-  g_res_refused_textures.clear();
-  g_res_refused_meshes.clear();
-  g_res_refused_multimeshes.clear();
+  g_refused.clear();  // LAR6: every family's refusals, PM7's emitters and process materials too
   g_census = Census();
   g_res_main = std::this_thread::get_id();
   g_res_fault.store(static_cast<int>(f), std::memory_order_release);
@@ -1674,41 +1744,29 @@ bool adopt_resources_active() { return g_res_active.load(std::memory_order_acqui
 
 AdoptResourceStats adopt_resource_stats() {
   std::lock_guard<std::mutex> lock(g_res_mutex);
-  return g_res_stats;
+  AdoptResourceStats out = g_res_stats;
+  out.refused_live = static_cast<std::uint32_t>(g_refused.size());
+  return out;
 }
 
-void adopt_texture_ref(std::uint64_t rid) {
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
-      fault() == AdoptFault::NoResources || !mirror_enabled() ||
-      mirror_instance().knows_texture(rid)) {
-    return;
-  }
-  // Off the main thread only the main thread's next reference adopts (the dummy's storage and
-  // the TextServer are read from the main thread only); the command stays unknown-texture.
-  if (std::this_thread::get_id() != g_res_main) {
-    return;
-  }
+namespace {
+
+// materialize()'s main-thread handlers (LAR6): the gates every family shares (a null RID, adoption
+// inactive or faulted off, the mirror off), a known RID, a refused RID and the off-main queue are
+// materialize's; these hold what each family adds.
+void ref_texture(std::uint64_t rid) {
   t_res_inside = true;
   materialize_texture(rid);
   t_res_inside = false;
 }
 
-void adopt_mesh_ref(std::uint64_t rid) {
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
-      fault() == AdoptFault::NoResources || !mirror_enabled() ||
-      mirror_instance().knows_mesh(rid) || std::this_thread::get_id() != g_res_main) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (g_res_refused_meshes.count(rid) != 0) {
-      return;
-    }
-  }
+void ref_mesh(std::uint64_t rid) {
   t_res_inside = true;
   adopt_mesh_locked_out(rid);
   t_res_inside = false;
 }
+
+}  // namespace
 
 // LAR2's sabotage only (registry-mm-stride): PM9's format guess from the buffer's per-instance
 // stride ((3d ? 12 : 8) + 4 x colors + 4 x custom). The ambiguous strides prefer the 2D reading,
@@ -1812,14 +1870,14 @@ void adopt_multimesh_locked_out(std::uint64_t rid) {
     if (!ok) {
       refusal = MultimeshRefusal::Buffer;
     } else {
-      adopt_mesh_ref(reg.mesh);  // G8r: the multimesh's mesh, before the entry links it
+      materialize(reg.mesh, RefKind::Mesh);  // G8r: the multimesh's mesh, before the entry links it
       adopted = hooks_adopt_multimesh(rid, std::move(adopt));
     }
   }
   std::lock_guard<std::mutex> lock(g_res_mutex);
   if (adopted) {
     ++g_res_stats.multimeshes;
-  } else if (g_res_refused_multimeshes.insert(rid).second) {
+  } else if (refuse_locked(rid, Refusal::Multimesh)) {
     // Refused once: a refused multimesh is never read back again this stream (the buffer read is
     // a GPU stall on GLES3 and blocks the main thread on a threaded RenderingServer).
     ++g_res_stats.multimeshes_refused;
@@ -1834,25 +1892,9 @@ void adopt_multimesh_locked_out(std::uint64_t rid) {
   g_res_stats.lookup_ns += now_ns() - t0;
 }
 
-void adopt_multimesh_ref(std::uint64_t rid) {
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
-      fault() == AdoptFault::NoResources || !mirror_enabled() ||
-      mirror_instance().knows_multimesh(rid) || std::this_thread::get_id() != g_res_main) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_res_mutex);
-    if (g_res_refused_multimeshes.count(rid) != 0) {
-      return;
-    }
-  }
-  // No t_res_inside guard here: the mesh read-back (adopt_mesh_ref) needs it clear, and the
-  // multimesh read-back cannot re-enter another adoption (it calls no hooked method).
-  adopt_multimesh_locked_out(rid);
-}
-
 // Forgets a freed RID's per-stream refusal (a RID value the engine hands out again starts fresh,
-// and the set does not grow with freed resources). The registry's own free tap erases its entry.
+// and the map does not grow with freed resources) and cancels its off-main queue entry (LAR6: the
+// drain must not read a freed RID's getter). The registry's own free tap erases its entry.
 void adopt_resource_freed(std::uint64_t rid) {
   if (rid == 0) {
     return;
@@ -1862,9 +1904,20 @@ void adopt_resource_freed(std::uint64_t rid) {
   }
   {
     std::lock_guard<std::mutex> lock(g_res_mutex);
-    g_res_refused_textures.erase(rid);
-    g_res_refused_meshes.erase(rid);
-    g_res_refused_multimeshes.erase(rid);
+    g_refused.erase(rid);
+  }
+  bool cancelled = false;
+  if (g_queue_nonempty.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lock(g_queue_mutex);
+    const auto it = g_queued.find(rid);
+    if (it != g_queued.end() && it->second != 0) {
+      it->second = 0;
+      cancelled = true;
+    }
+  }
+  if (cancelled) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);
+    ++g_res_stats.offmain_dropped;
   }
   adopt_emitters_forget(rid);
 }
@@ -2784,22 +2837,6 @@ void adopt_materials_configure(AdoptMaterialSabotage sabotage) {
   mirror_instance().set_ppm_queue(true);
 }
 
-bool adopt_material_ref(std::uint64_t rid) {
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) ||
-      fault() == AdoptFault::NoResources || !mirror_enabled()) {
-    return false;
-  }
-  return materialize_material(rid, false);
-}
-
-bool adopt_shader_ref(std::uint64_t rid) {
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) ||
-      fault() == AdoptFault::NoResources || !mirror_enabled()) {
-    return false;
-  }
-  return materialize_shader(rid);
-}
-
 AdoptMaterialStats adopt_material_stats() {
   std::lock_guard<std::mutex> lock(g_mat_mutex);
   return g_mat_stats;
@@ -3265,11 +3302,10 @@ struct PtaBinds {
   void *tag_gpu_particles = nullptr, *tag_ppm = nullptr, *tag_resource = nullptr;
 };
 PtaBinds g_pta;
-std::mutex g_pta_mutex;  // the stats, the refused sets and the subemitter waits
+std::mutex g_pta_mutex;  // the stats and the subemitter waits
 EmitterAdoptStats g_pta_stats;
-std::set<std::uint64_t> g_pta_refused;                      // emitter RIDs refused (counted once)
-// Process-material RIDs whose adoption failed this stream: never retried.
-std::set<std::uint64_t> g_pta_refused_materials;
+// LAR6: refused emitters and process materials (PM7's g_pta_refused and g_pta_refused_materials)
+// are the one refused map's (Refusal::Particles, Refusal::ProcessMaterial), never retried.
 // An adopted emitter whose recorded subemitter the mirror did not know yet: subemitter RID ->
 // parent RID, linked when that emitter is adopted.
 std::multimap<std::uint64_t, std::uint64_t> g_pta_sub_wait;
@@ -3436,11 +3472,8 @@ std::uint64_t pta_process_material(void *node) {
   if (rid == 0 || m.knows_material(rid)) {
     return rid;
   }
-  {
-    std::lock_guard<std::mutex> lock(g_pta_mutex);
-    if (g_pta_refused_materials.count(rid) != 0) {
-      return rid;  // refused before: still unknown-material, not read again
-    }
+  if (is_refused(rid)) {
+    return rid;  // refused before: still unknown-material, not read again
   }
   bool adopted = false;
   if (g_pta.tag_ppm != nullptr && as(material, g_pta.tag_ppm) != nullptr) {
@@ -3450,9 +3483,8 @@ std::uint64_t pta_process_material(void *node) {
     adopted = adopt_material_object(material, rid, false);
     if (adopted) pta_stat([](EmitterAdoptStats &s) { ++s.other_materials; });
   }
-  if (!adopted) {
+  if (!adopted && refuse(rid, Refusal::ProcessMaterial)) {
     std::lock_guard<std::mutex> lock(g_pta_mutex);
-    g_pta_refused_materials.insert(rid);
     ++g_pta_stats.ppm_refused;
   }
   return rid;  // an unknown one makes the entry unknown-material, as a hooked call would
@@ -3486,21 +3518,16 @@ Mirror::ParticlesAdopt pta_config(const rs::RegistryParticles &r) {
 
 }  // namespace
 
-bool adopt_process_material_ref(std::uint64_t rid) {
-  if (rid == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
-      fault() == AdoptFault::NoResources || fault() == AdoptFault::NoParticles ||
-      !mirror_enabled() || !rs::registry_on()) {
+namespace {
+
+// materialize()'s RefKind::ProcessMaterial (LAR5's reference site), any thread: registry-only.
+bool ref_process_material(std::uint64_t rid) {
+  if (t_res_inside || fault() == AdoptFault::NoParticles || !rs::registry_on()) {
     return false;
   }
   Mirror &m = mirror_instance();
-  if (!m.particles_options().enabled || m.knows_material(rid)) {
+  if (!m.particles_options().enabled || m.knows_material(rid) || is_refused(rid)) {
     return false;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_pta_mutex);
-    if (g_pta_refused_materials.count(rid) != 0) {
-      return false;
-    }
   }
   rs::RegistryMaterial reg;
   if (!rs::registry_material(rid, &reg)) {
@@ -3508,37 +3535,24 @@ bool adopt_process_material_ref(std::uint64_t rid) {
   }
   bool tried = false;
   const bool adopted = adopt_ppm_registered(rid, reg, &tried);
-  if (tried && !adopted) {
+  if (tried && !adopted && refuse(rid, Refusal::ProcessMaterial)) {
     std::lock_guard<std::mutex> lock(g_pta_mutex);
-    if (g_pta_refused_materials.insert(rid).second) ++g_pta_stats.ppm_refused;
+    ++g_pta_stats.ppm_refused;
   }
   return adopted;
 }
 
-void adopt_particles_ref(std::uint64_t particles) {
-  if (particles == 0 || !g_res_active.load(std::memory_order_acquire) || t_res_inside ||
-      fault() == AdoptFault::NoResources || fault() == AdoptFault::NoParticles ||
-      !mirror_enabled()) {
-    return;
-  }
+// materialize()'s RefKind::Particles on the main thread (its gates, the known check, the refused
+// map and the off-main queue are materialize's).
+void ref_particles(std::uint64_t particles) {
   Mirror &m = mirror_instance();
-  if (!m.particles_options().enabled || m.knows_particles(particles) ||
-      std::this_thread::get_id() != g_res_main) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_pta_mutex);
-    if (g_pta_refused.count(particles) != 0) {
-      return;
-    }
-  }
   const std::uint64_t t0 = now_ns();
   rs::RegistryParticles rec;
   if (!rs::registry_on() || !rs::registry_particles(particles, &rec)) {
     // F1: an emitter older than the hooks (or past the family's cap) has no record, and RS has no
     // particles getter: a typed refusal, `preload-particles`; its draws stay unknown-particles.
-    std::lock_guard<std::mutex> lock(g_pta_mutex);
-    if (g_pta_refused.insert(particles).second) {
+    if (refuse(particles, Refusal::Particles)) {
+      std::lock_guard<std::mutex> lock(g_pta_mutex);
       ++g_pta_stats.refused;
       ++g_pta_stats.refused_preload_particles;
     }
@@ -3552,11 +3566,11 @@ void adopt_particles_ref(std::uint64_t particles) {
   std::uint32_t meshes = 0;
   for (std::uint64_t mesh : rec.passes) {
     if (mesh == 0 || m.knows_mesh(mesh)) continue;
-    adopt_mesh_ref(mesh);
+    materialize(mesh, RefKind::Mesh);
     if (m.knows_mesh(mesh)) ++meshes;
   }
   if (rec.process_material != 0) {
-    adopt_process_material_ref(rec.process_material);
+    materialize(rec.process_material, RefKind::ProcessMaterial);
   }
   Mirror::ParticlesAdopt a = pta_config(rec);
   bool waits = false;
@@ -3590,19 +3604,146 @@ void adopt_particles_ref(std::uint64_t particles) {
   pta_stat([t0](EmitterAdoptStats &s) { s.adopt_ns += now_ns() - t0; });
 }
 
+}  // namespace
+
 void adopt_emitters_reset() {
   std::lock_guard<std::mutex> lock(g_pta_mutex);
   g_pta_stats = EmitterAdoptStats();
-  g_pta_refused.clear();
-  g_pta_refused_materials.clear();
-  g_pta_sub_wait.clear();
+  g_pta_sub_wait.clear();  // LAR6: the refusals are the refused map's (adopt_resources_begin)
 }
 
 void adopt_emitters_forget(std::uint64_t rid) {
   std::lock_guard<std::mutex> lock(g_pta_mutex);
-  g_pta_refused.erase(rid);
-  g_pta_refused_materials.erase(rid);
-  g_pta_sub_wait.erase(rid);
+  g_pta_sub_wait.erase(rid);  // LAR6: the refusal goes with adopt_resource_freed's erase
+}
+
+// --- LAR6: the one entry, the off-main queue and the frame drain ------------------------------
+//
+// late-arm-registry-design.md R4, Q4 (M9 removed, "Refused sets" simplified, M14/M18 queue-driven).
+
+namespace {
+
+bool knows(Mirror &m, RefKind ref, std::uint64_t rid) {
+  switch (ref) {
+  case RefKind::Texture: return m.knows_texture(rid);
+  case RefKind::Mesh: return m.knows_mesh(rid);
+  case RefKind::Multimesh: return m.knows_multimesh(rid);
+  case RefKind::Particles: return m.knows_particles(rid);
+  case RefKind::Shader: return m.knows_shader(rid);
+  case RefKind::Material:
+  case RefKind::ProcessMaterial: return m.knows_material(rid);
+  }
+  return false;
+}
+
+}  // namespace
+
+bool materialize(std::uint64_t rid, RefKind ref) {
+  // The pure path (GRC_ADOPT=off, or not armed): one atomic load, as every adopt_*_ref before it.
+  if (rid == 0 || !g_res_active.load(std::memory_order_acquire)) {
+    return false;
+  }
+  if (fault() == AdoptFault::NoResources || !mirror_enabled()) {
+    return false;
+  }
+  Mirror &m = mirror_instance();
+  switch (ref) {
+  case RefKind::Shader:
+    return materialize_shader(rid);  // LAR3: registry-only, any thread
+  case RefKind::Material:
+    return materialize_material(rid, false);  // LAR3: registry-only, any thread
+  case RefKind::ProcessMaterial:
+    return ref_process_material(rid);  // LAR5: registry-only, any thread
+  case RefKind::Texture:
+  case RefKind::Mesh:
+  case RefKind::Multimesh:
+  case RefKind::Particles:
+    break;
+  }
+  // The getter kinds. A multimesh's adoption calls no hooked method, so it needs no re-entry guard
+  // (and must leave it clear for its mesh's read-back); the others are skipped inside an adoption.
+  if (ref != RefKind::Multimesh && t_res_inside) {
+    return false;
+  }
+  if (ref == RefKind::Particles &&
+      (fault() == AdoptFault::NoParticles || !m.particles_options().enabled)) {
+    return false;
+  }
+  if (knows(m, ref, rid)) {
+    return true;
+  }
+  if (is_refused(rid)) {
+    return false;  // refused once this stream: never read back again
+  }
+  if (std::this_thread::get_id() != g_res_main) {
+    queue_offmain(rid, ref);  // design R4: drained at the frame boundary, on the main thread
+    return false;
+  }
+  switch (ref) {
+  case RefKind::Texture: ref_texture(rid); break;
+  case RefKind::Mesh: ref_mesh(rid); break;
+  case RefKind::Multimesh: adopt_multimesh_locked_out(rid); break;
+  case RefKind::Particles: ref_particles(rid); break;
+  default: break;
+  }
+  return knows(m, ref, rid);
+}
+
+namespace {
+
+// The off-main queue's drain (main thread, frame boundary). Each live entry is materialized as its
+// reference would have been on the main thread; one freed while queued is skipped.
+void drain_offmain() {
+  if (!g_queue_nonempty.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::vector<std::pair<std::uint64_t, RefKind>> queue;
+  RidMap<std::uint8_t> queued;
+  {
+    std::lock_guard<std::mutex> lock(g_queue_mutex);
+    queue.swap(g_queue);
+    std::swap(queued, g_queued);
+    g_queue_nonempty.store(false, std::memory_order_release);
+  }
+  if (fault() == AdoptFault::RegistryQueueDrop) {
+    std::lock_guard<std::mutex> lock(g_res_mutex);  // the sabotage: every queued reference lost
+    g_res_stats.offmain_dropped += static_cast<std::uint32_t>(queue.size());
+    return;
+  }
+  Mirror &m = mirror_instance();
+  std::uint32_t drained = 0;
+  std::uint32_t adopted = 0;
+  for (const auto &entry : queue) {
+    const auto it = queued.find(entry.first);
+    if (it == queued.end() || it->second == 0) {
+      continue;  // freed while queued (counted dropped by adopt_resource_freed)
+    }
+    ++drained;
+    if (materialize(entry.first, entry.second) || knows(m, entry.second, entry.first)) {
+      ++adopted;
+    }
+  }
+  std::lock_guard<std::mutex> lock(g_res_mutex);
+  g_res_stats.offmain_drained += drained;
+  g_res_stats.offmain_adopted += adopted;
+}
+
+}  // namespace
+
+void adopt_frame_drain() {
+  // Gated as the drains always were: lazy adoption active (entry.cpp calls this only for a
+  // GRC_ADOPT=arm stream while armed).
+  if (g_res_active.load(std::memory_order_acquire) && fault() != AdoptFault::NoResources &&
+      mirror_enabled() && std::this_thread::get_id() == g_res_main) {
+    drain_offmain();
+  }
+  adopt_materials_resolve();  // LAR3's material queue
+  adopt_particles_resolve();  // LAR4's process-material queue
+}
+
+std::uint64_t adopt_resolve_scans() {
+  const Mirror &m = mirror_instance();
+  return m.material_refs_scans() + m.ppm_scans();
 }
 
 EmitterAdoptStats adopt_emitter_stats() {

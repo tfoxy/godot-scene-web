@@ -76,7 +76,14 @@ const honestResult = (): CaptureResult => ({
   stream: {
     gate8: {
       adopt_stats: {
-        resources: { textures: expected.textures, textures_refused: 0 },
+        // LAR6: the pre-arm texture and the loader-thread one, adopted from the off-main queue
+        resources: {
+          textures: expected.deferred.textures ?? expected.textures,
+          textures_refused: 0,
+          offmain_queued: 1,
+          offmain_drained: 1,
+          offmain_adopted: expected.deferred.offmain_adopted ?? 0,
+        },
         material_adoption: { items_adopted: expected.items_adopted },
         residue: 0,
       },
@@ -609,7 +616,19 @@ async function main(): Promise<void> {
     "late/capture",
     "deferred/capture",
     "fault-no-resources/capture",
+    "sabotage-registry-queue-drop/capture",
   ];
+  // LAR6: the sabotaged deferred capture: the loader-thread reference queued, then dropped.
+  const queueDropResult = () => {
+    const r = honestResult() as {
+      stream: { gate8: { adopt_stats: { resources: Record<string, number> } } };
+    };
+    r.stream.gate8.adopt_stats.resources.textures = expected.textures;
+    r.stream.gate8.adopt_stats.resources.offmain_adopted = 0;
+    r.stream.gate8.adopt_stats.resources.offmain_drained = 0;
+    r.stream.gate8.adopt_stats.resources.offmain_dropped = 1;
+    return r;
+  };
   const mk = (setup: (root: string) => void): string => {
     const root = mkdtempSync(join(tmpdir(), "self-test-gate8-res-"));
     setup(root);
@@ -643,12 +662,18 @@ async function main(): Promise<void> {
       leg(r, legs[0], "0", lateResult());
       leg(r, legs[1], "0", honestResult());
       leg(r, legs[2], "0", faultResult());
+      leg(r, legs[3], "0", queueDropResult());
     }),
   );
   expect(
     ok("res-legs")?.passed === true,
     "4: res-legs passes when every leg exited 0",
     ok("res-legs"),
+  );
+  expect(
+    ok("res-late-adopt-catches-registry-queue-drop")?.passed === true,
+    "4: LAR6: the queue-drop sabotage fails res-late-adopt and counts the dropped reference",
+    ok("res-late-adopt-catches-registry-queue-drop"),
   );
   for (const id of [
     "res-late-adopt",

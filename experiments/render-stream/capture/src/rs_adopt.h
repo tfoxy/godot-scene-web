@@ -29,7 +29,7 @@
 // non-root viewport. Materials and shaders are G8m's (below).
 //
 // G8r (gate8-design.md D6, D7): pre-arm textures, meshes and glyph atlases are adopted lazily, at
-// their first reference by a hooked call (adopt_texture_ref / adopt_mesh_ref, called by every hook
+// their first reference by a hooked call (materialize, LAR6: called by every hook
 // that names a texture or mesh RID, before its mirror tap), with origin `adopted`:
 //
 //   - a glyph atlas page: found through the TextServer (fonts from ThemeDB and the resource
@@ -269,6 +269,10 @@ enum class AdoptFault : std::uint8_t {
   // with a fresh emitter's configuration (no amount, no process material, no draw pass) and draws
   // nothing (fails pt-late-lifecycle on a deferred leg).
   RegistrySkipParticles,
+  // LAR6: registry-queue-drop: the frame boundary discards the off-main pending queue, so a texture
+  // (or mesh, multimesh, emitter) first referenced from a loader thread is never adopted, as before
+  // LAR6 (fails res-late-adopt on deferred g8res, whose loader-thread reference nothing else makes).
+  RegistryQueueDrop,
 };
 
 // Parses GRC_ADOPT_FAULT (null or "" -> None). False with `error` set for any other value, or
@@ -288,6 +292,8 @@ struct AdoptResourceStats {
   std::uint32_t compressed = 0;        // ... of which CompressedTexture2D (resource cache)
   std::uint32_t from_update = 0;       // ... of which first met as a texture_2d_update
   std::uint32_t decoded = 0;           // ... whose payload is a host decode (G8t)
+  std::uint32_t textures_registry = 0; // LAR6: ... registered and never updated (the registry's
+                                       //   `updated` bit clear): current, no census, no TextServer
   std::uint32_t textures_refused = 0;  // RIDs nothing could read: unknown-texture stays; typed:
   std::uint32_t refused_no_image = 0;  //   unregistered, no image, no cached `.tres` (F1)
   std::uint32_t refused_canvas_empty = 0;  // a registered CanvasTexture with no diffuse set
@@ -299,6 +305,14 @@ struct AdoptResourceStats {
   std::uint32_t refused_preload_multimesh = 0;  // not registered: older than the hooks (F1)
   std::uint32_t refused_mm_edited_dummy = 0;    // instance setters on the dummy host (design O3)
   std::uint32_t refused_mm_buffer = 0;  // the buffer getter's size is not the recorded allocation's
+  // LAR6 (design R4, "Off-main references"): references from another thread to a kind that needs a
+  // getter (texture, mesh, multimesh, and an emitter, whose draw-pass meshes do), queued once each
+  // and drained at the frame boundary on the main thread.
+  std::uint32_t offmain_queued = 0;    // distinct RIDs queued
+  std::uint32_t offmain_drained = 0;   // ... materialized at a frame boundary
+  std::uint32_t offmain_adopted = 0;   // ... of which the mirror knows afterwards
+  std::uint32_t offmain_dropped = 0;   // ... discarded (registry-queue-drop) or freed while queued
+  std::uint32_t refused_live = 0;      // LAR6: the one refused map's entries (RID -> reason) now
   std::uint32_t fonts = 0;             // TextServer font RIDs the census found
   std::uint32_t cached_compressed = 0; // CompressedTexture2D RIDs the census found
   std::uint32_t cache_paths = 0;       // resource paths the census listed
@@ -316,17 +330,37 @@ void adopt_resources_end();
 bool adopt_resources_active();
 AdoptResourceStats adopt_resource_stats();
 
-// Called by a hook before its mirror tap: adopts `rid` if it is non-null, lazy adoption is
-// active and the mirror does not know it. Cheap otherwise (an atomic load). A CanvasTexture is
-// adopted from the registry (LAR1), so no drawing item is needed to find its channels.
-void adopt_texture_ref(std::uint64_t rid);
-void adopt_mesh_ref(std::uint64_t rid);
-// PM9 (late-arm multimesh adoption), LAR2: called by the add_multimesh hook before its mirror tap;
-// adopts `rid` (a multimesh RID) when lazy adoption is active and the mirror does not know it: the
-// allocation, mesh, visible count and custom AABB from the registry, the buffer from
-// RenderingServer.multimesh_get_buffer. A multimesh the registry does not hold (created before the
-// hooks) is refused, typed `preload-multimesh` (F1). Cheap otherwise (an atomic load).
-void adopt_multimesh_ref(std::uint64_t rid);
+// LAR6 (late-arm-registry-design.md R4): what a hooked call's argument names, for materialize().
+enum class RefKind : std::uint8_t {
+  Texture,          // a texture or CanvasTexture (a draw, a channel, a parameter, a replace)
+  Mesh,             // a mesh (add_mesh, a multimesh's mesh, a draw pass)
+  Multimesh,        // add_multimesh
+  Shader,           // material_create_from_shader, material_set_shader
+  Material,         // canvas_item_set_material
+  ProcessMaterial,  // particles_set_process_material, an adopted emitter's recorded material
+  Particles,        // add_particles
+};
+
+// LAR6 (design R4; M9 folded in, every adopt_*_ref before it merged): the one adoption entry. Called
+// by a hook before its mirror tap (and by the walk, the queues and an adoption's dependencies):
+// adopts `rid` when it is non-null, lazy adoption is active, the mirror does not know it and the
+// stream has not refused it (the one refused map). Cheap otherwise (one atomic load). It dispatches
+// on the kind the registry recorded within the reference's family: a CanvasTexture from its recorded
+// channels, a registered texture with its `updated` bit, a multimesh from its recorded allocation,
+// a shader, material or emitter from its record; an unregistered RID goes to the residual path
+// (design Q3). Off the main thread a kind that needs a getter (texture, mesh, multimesh, emitter) is
+// queued, deduplicated, and materialized by adopt_frame_drain(); registry-only kinds (shader,
+// material, process material) materialize on the calling thread. True when the mirror knows `rid`
+// afterwards (false when queued).
+bool materialize(std::uint64_t rid, RefKind ref);
+
+// LAR6: the frame boundary (entry.cpp's frame callback, main thread, before the transaction is
+// formed): the off-main queue, then the material queue (adopt_materials_resolve), then the
+// process-material queue (adopt_particles_resolve). A frame that queued nothing costs three atomic
+// loads and scans nothing.
+void adopt_frame_drain();
+// The mirror scans the drains made (Mirror::material_refs_scans + ppm_scans): resolve-queue-only.
+std::uint64_t adopt_resolve_scans();
 // Called by the free hook: forgets the RID's per-stream adoption refusals (textures, meshes,
 // multimeshes, process materials, emitters). The registry's entry goes through its own free tap.
 void adopt_resource_freed(std::uint64_t rid);
@@ -469,8 +503,6 @@ void adopt_materials_resolve();
 // no getter): a shader from its recorded code and default textures, a material from its recorded
 // shader (adopted first) and parameters. True when the mirror knows the RID afterwards. Anything
 // else stays the mirror's pending reference, for the residual (G8m's node-map reader, M12-M14).
-bool adopt_material_ref(std::uint64_t rid);
-bool adopt_shader_ref(std::uint64_t rid);
 
 // PM5 (render-stream-12.md "The `particle_process_material` builtin"): at the frame boundary
 // (after adopt_materials_resolve), keys every `particles`-mode shader of a queued emitter
@@ -506,18 +538,16 @@ PpmStats adopt_particles_stats();
 // pre-arm emitter whose node enters the tree later draws on entry). RenderingServer has no
 // particles getter, so the entry is the registry's record of every particles_set_* the hooks saw
 // (rs_registry.h RegistryParticles): the configuration, floats and trail poses as the engine
-// declared them, the draw passes (each mesh adopted through G8r, adopt_mesh_ref) and the process
-// material (from the registry when registered, adopt_process_material_ref; otherwise the entry is
+// declared them, the draw passes (each mesh adopted through G8r) and the process
+// material (from the registry when registered, RefKind::ProcessMaterial; otherwise the entry is
 // unknown-material and adopt_particles_resolve's LATE-RES re-link supplies LATE-PPM's placeholder
 // from the drawing node). An emitter the registry does not hold (older than the hooks: F1) is
 // refused, typed `preload-particles` (EmitterAdoptStats::refused_preload_particles), and its draws
-// stay unknown-particles. Main thread only.
-void adopt_particles_ref(std::uint64_t particles);
+// stay unknown-particles. LAR6: materialize(rid, RefKind::Particles); off the main thread queued.
 // LAR5: the process-material reference site (particles_set_process_material, and an adopted
 // emitter's recorded material): a registered process material the mirror does not know is adopted
 // from the registry before the call is recorded, so a post-arm emitter given a pre-arm material is
-// never unknown-material. True when it adopted one. Only when registry_on().
-bool adopt_process_material_ref(std::uint64_t rid);
+// never unknown-material. Only when registry_on(). LAR6: materialize(rid, RefKind::ProcessMaterial).
 
 struct EmitterAdoptStats {
   std::uint32_t emitters = 0;          // emitters adopted (LAR5: every one from the registry)

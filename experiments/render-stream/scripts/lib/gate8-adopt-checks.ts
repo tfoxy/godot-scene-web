@@ -804,13 +804,65 @@ const REGISTRY_COST_DIRS = Array.from({ length: REGISTRY_COST_ROUNDS }, (_, r) =
 // The adopt_stats fields that are timings (differ run to run), left out of a deferred = late
 // comparison.
 const isTiming = (k: string) => k.endsWith("_ns");
-function stripTimings(v: unknown): unknown {
+// LAR6: the texture-content split a deferred capture changes on purpose (a registered texture whose
+// `updated` bit is clear is `current` from the registry, with no census and no TextServer read),
+// left out of the deferred = late comparison and judged by tex-current-unupdated instead; the
+// `textures` total stays compared. resolve_scans is resolve-queue-only's.
+const LAR6_CONTENT = new Set([
+  "textures_current",
+  "textures_creation",
+  "textures_registry",
+  "atlas_pages",
+  "compressed",
+  "fonts",
+  "cached_compressed",
+  "cache_paths",
+  "resolve_scans",
+]);
+function stripTimings(v: unknown, lar6 = false): unknown {
   if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
   return Object.fromEntries(
     Object.entries(v as Record<string, unknown>)
-      .filter(([k]) => !isTiming(k))
-      .map(([k, x]) => [k, stripTimings(x)]),
+      .filter(([k]) => !isTiming(k) && !(lar6 && LAR6_CONTENT.has(k)))
+      .map(([k, x]) => [k, stripTimings(x, lar6)]),
   );
+}
+
+/** LAR6 tex-current-unupdated's verdict from the deferred capture's hook log (resources.jsonl) and
+ * adopt_stats.resources. Pure. A never-updated adopted texture (adopt_source "registry", its RID
+ * never named by a texture_2d_update) is declared current; the texture updated in place before the
+ * arm (G8r's Stale: adopted creation, updated again after the arm) stays creation. */
+export function judgeTexCurrentUnupdated(
+  lines: readonly Record<string, unknown>[],
+  res: Record<string, unknown> | undefined,
+): { problems: string[]; detail: string } {
+  const problems: string[] = [];
+  const updated = new Set(
+    lines.filter((l) => l.op === "texture_2d_update").map((l) => String(l.rid)),
+  );
+  const adopt = lines.filter((l) => l.op === "adopt" && l.kind === "image");
+  const registry = adopt.filter((l) => l.adopt_source === "registry");
+  const creation = adopt.filter((l) => l.adopted_content === "creation");
+  const pristine = registry.filter((l) => !updated.has(String(l.rid)));
+  if (pristine.length === 0)
+    problems.push("no adopted texture declared current from the registry's `updated` bit");
+  for (const l of registry)
+    if (l.adopted_content !== "current")
+      problems.push(`registry-sourced texture ${l.rid} declared ${l.adopted_content}`);
+  if (creation.length !== 1)
+    problems.push(`${creation.length} textures declared creation, expected 1 (Stale)`);
+  for (const l of creation)
+    if (!updated.has(String(l.rid)))
+      problems.push(`creation texture ${l.rid} is never updated in place (only Stale should be)`);
+  if (!res) problems.push("no stream.gate8.adopt_stats.resources");
+  else if (res.textures_registry !== registry.length)
+    problems.push(
+      `textures_registry ${res.textures_registry}, ${registry.length} registry adopt lines`,
+    );
+  return {
+    problems,
+    detail: `${registry.length} current from the registry (${pristine.length} never updated), ${creation.length} creation`,
+  };
 }
 
 export async function runG8a(
@@ -1025,18 +1077,43 @@ export async function runG8a(
       const e = equivalence(born.rec, deferred.rec, K, expected.residue, allow);
       problems.push(...e.problems.slice(0, 20));
       if (e.problems.length > 20) problems.push(`... ${e.problems.length - 20} more`);
-      const a = stripTimings(deferredResult?.stream?.gate8?.adopt_stats);
-      const b = stripTimings(lateResult?.stream?.gate8?.adopt_stats);
+      const a = stripTimings(deferredResult?.stream?.gate8?.adopt_stats, true);
+      const b = stripTimings(lateResult?.stream?.gate8?.adopt_stats, true);
       if (a === undefined || JSON.stringify(a) !== JSON.stringify(b))
         problems.push(
-          `adopt_stats differ from late's (timings aside): deferred ${JSON.stringify(a)} late ${JSON.stringify(b)}`,
+          `adopt_stats differ from late's (timings and LAR6's content split aside): deferred ${JSON.stringify(a)} late ${JSON.stringify(b)}`,
         );
     }
     checks.push(
       check(
         "adopt-equivalence-deferred",
-        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and exceptions, and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged)`,
+        `the deferred capture (loaded at birth, armed at K=${K} by GRC_ARM_DEFER_FRAMES) validates, declares {"mode":"arm","frame":${K}} with its first transaction at K, equals born from K on under adopt-equivalence's rule and exceptions, and its adopt_stats equal late's but for timings (LAR0 leaves adoption unchanged) and LAR6's texture-content split (judged by tex-current-unupdated)`,
         problems,
+      ),
+    );
+  }
+  // --- LAR6: tex-current-unupdated (the deferred capture's `updated` bit) --------------------
+  {
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran("deferred/capture")) {
+      const lines = jsonl<Record<string, unknown>>(
+        await readText(join(root, "deferred/capture/evidence/resources.jsonl")),
+      );
+      const st = deferredResult?.stream?.gate8?.adopt_stats as Record<string, unknown> | undefined;
+      const j = judgeTexCurrentUnupdated(
+        lines,
+        st?.resources as Record<string, unknown> | undefined,
+      );
+      problems = j.problems;
+      detail = j.detail;
+    }
+    checks.push(
+      check(
+        "tex-current-unupdated",
+        "LAR6: on the deferred capture a registered texture never updated since its create (the registry's `updated` bit clear: Plain; the chips predate the load and stay G8r's census path) is adopted `current` from the registry with no census, and the ImageTexture updated in place before the arm (Stale) stays `creation`, as G8r declares",
+        problems,
+        detail,
       ),
     );
   }

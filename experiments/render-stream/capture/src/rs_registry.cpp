@@ -17,6 +17,9 @@ namespace {
 
 struct Entry {
   RegistryKind kind = RegistryKind::Texture2d;
+  // LAR6 (design R2, R4): a texture's content changed since its create (texture_2d_update, or
+  // texture_replace moved another texture's data in). Clear: the getter's copy is the content.
+  bool updated = false;
 };
 
 struct State {
@@ -347,6 +350,7 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind) {
     ++s.family[index(old)].recreated;
     remove_entry_locked(s, old);
     it->second.kind = kind;
+    it->second.updated = false;
     ++f.creates;
     add_entry_locked(s, family);
     if (old != family) {
@@ -405,6 +409,7 @@ void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture) {
   if (into != s.map.end() && registry_family(into->second.kind) == RegistryFamily::Texture &&
       registry_family(it->second.kind) == RegistryFamily::Texture) {
     into->second.kind = it->second.kind;
+    into->second.updated = true;  // LAR6 (R5): b's data is not a's creation copy
   }
   const RegistryFamily family = registry_family(it->second.kind);
   ++s.family[index(family)].replaced;
@@ -413,7 +418,7 @@ void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture) {
   changed_locked(s);
 }
 
-bool registry_lookup(std::uint64_t rid, RegistryKind *kind) {
+bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated) {
   State &s = state();
   std::lock_guard<std::mutex> lock(s.mutex);
   const auto it = s.map.find(rid);
@@ -423,7 +428,19 @@ bool registry_lookup(std::uint64_t rid, RegistryKind *kind) {
   if (kind != nullptr) {
     *kind = it->second.kind;
   }
+  if (updated != nullptr) {
+    *updated = it->second.updated;
+  }
   return true;
+}
+
+void registry_note_texture_update(std::uint64_t rid) {
+  State &s = state();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  const auto it = s.map.find(rid);
+  if (it != s.map.end() && registry_family(it->second.kind) == RegistryFamily::Texture) {
+    it->second.updated = true;  // a bit only (R5): no payload, no timeline row
+  }
 }
 
 namespace {

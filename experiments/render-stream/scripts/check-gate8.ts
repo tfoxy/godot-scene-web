@@ -15,11 +15,16 @@
 
 // GRT4b: node:crypto behind the decoders' hash seam (lib/node-hash.ts), before anything decodes.
 import "./lib/node-hash";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type G8aExpected, runG8a } from "./lib/gate8-adopt-checks";
+import {
+  check,
+  type G8aExpected,
+  readJson,
+  runG8a,
+} from "./lib/gate8-adopt-checks";
 import { type G8kuExpected, runG8ku } from "./lib/gate8-basis-checks";
 import { runG8kc } from "./lib/gate8-cache-checks";
 import { type G8cgExpected, runG8cg } from "./lib/gate8-cg-checks";
@@ -43,6 +48,11 @@ import { runG8w11cResync } from "./lib/gate8-w11-native-checks";
 import { fileEquiv } from "./lib/gate8-w13-checks";
 import { runG8pt13Gsw } from "./lib/gate8-w13-gsw-checks";
 import { runG8pt13Native } from "./lib/gate8-w13-native-checks";
+import {
+  isDeferredLeg,
+  judgeResolveQueueOnly,
+  RESOLVE_QUEUE_GROUPS,
+} from "./lib/registry-checks";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPERIMENT_DIR = resolve(SCRIPT_DIR, "..");
@@ -337,6 +347,39 @@ export async function buildGate8Report(out: string): Promise<Gate8Report> {
       transcodes: g8ku.transcodes,
       pixels: g8ku.pixels,
     };
+  }
+  // LAR6 resolve-queue-only (late-arm-registry-design.md, the LAR6 row): across the late groups
+  // that ran, every deferred capture's frame drains made no mirror scan.
+  const lateRan = RESOLVE_QUEUE_GROUPS.filter((g) => run.includes(g));
+  if (lateRan.length > 0) {
+    const legs: { leg: string; resolve_scans: number | undefined }[] = [];
+    for (const g of lateRan) {
+      let names: string[] = [];
+      try {
+        names = await readdir(join(out, g));
+      } catch {
+        continue;
+      }
+      for (const name of names.filter(isDeferredLeg).sort()) {
+        const r = await readJson<{
+          stream?: { gate8?: { adopt_stats?: { resolve_scans?: number } } };
+        }>(join(out, g, name, "capture", "evidence", "result.json"));
+        if (r === undefined) continue;
+        legs.push({
+          leg: `${g}/${name}`,
+          resolve_scans: r.stream?.gate8?.adopt_stats?.resolve_scans,
+        });
+      }
+    }
+    const j = judgeResolveQueueOnly(legs);
+    checks.push(
+      check(
+        "resolve-queue-only",
+        "LAR6: on every late group's deferred captures (extension loaded at birth, arm deferred) the frame drains made no mirror scan: stream.gate8.adopt_stats.resolve_scans (Mirror::material_refs_scans + ppm_scans) is 0, so a frame with an empty queue scans nothing",
+        j.problems,
+        j.detail,
+      ),
+    );
   }
   const gating = checks.filter((c) => c.gating !== false);
   report.gate_passed = gating.length > 0 && gating.every((c) => c.passed);

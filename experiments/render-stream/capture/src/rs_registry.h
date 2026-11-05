@@ -168,8 +168,12 @@ void registry_note_create(std::uint64_t rid, RegistryKind kind);
 void registry_note_free(std::uint64_t rid);
 void registry_note_replace(std::uint64_t texture, std::uint64_t by_texture);
 
-// LAR1+: the recorded kind of a live RID (false: not registered).
-bool registry_lookup(std::uint64_t rid, RegistryKind *kind);
+// LAR1+: the recorded kind of a live RID (false: not registered). LAR6: `updated` (optional) is
+// the texture family's "content changed since creation" bit (always false for other families).
+bool registry_lookup(std::uint64_t rid, RegistryKind *kind, bool *updated = nullptr);
+// LAR6 (design R2): the texture_2d_update hook; sets a registered texture's `updated` bit.
+// texture_replace(a, b) sets a's (registry_note_replace); a re-create clears it.
+void registry_note_texture_update(std::uint64_t rid);
 
 // LAR1 (design R2): a CanvasTexture's payload -- the state RenderingServer has no getter for
 // (memory rs-canvastexture-no-rid-getter): its three channels, filter and repeat, and which of

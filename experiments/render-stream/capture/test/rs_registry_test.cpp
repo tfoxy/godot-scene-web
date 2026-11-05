@@ -144,6 +144,25 @@ int main() {
   }
   registry_note_replace(0x100000001, 0x100000001);
   expect(registry_lookup(0x100000001, nullptr), "replace with itself keeps the texture");
+  // LAR6: the `updated` bit. A replaced texture is updated (b's data is not a's creation copy); a
+  // texture_2d_update sets it on a texture only; a re-create clears it.
+  {
+    bool updated = false;
+    expect(registry_lookup(0x100000002, nullptr, &updated) && updated,
+           "updated: texture_replace sets the bit");
+    registry_note_create(0x10000000b, RegistryKind::Texture2d);
+    expect(registry_lookup(0x10000000b, nullptr, &updated) && !updated,
+           "updated: a fresh create is clear");
+    registry_note_texture_update(0x10000000b);
+    expect(registry_lookup(0x10000000b, nullptr, &updated) && updated,
+           "updated: texture_2d_update sets it");
+    registry_note_create(0x10000000b, RegistryKind::Texture2d);
+    expect(registry_lookup(0x10000000b, nullptr, &updated) && !updated,
+           "updated: a re-create clears it");
+    registry_note_texture_update(0x200000077);  // untracked: nothing recorded
+    expect(!registry_lookup(0x200000077, nullptr), "updated: an untracked RID stays untracked");
+    registry_note_free(0x10000000b);
+  }
   // A create of a value already present overwrites (last create wins), across families too.
   registry_note_create(0x100000006, RegistryKind::Material);
   {

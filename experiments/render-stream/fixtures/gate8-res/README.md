@@ -22,6 +22,7 @@ Three cells, each drawn only after the arm:
 | 1..11 | nothing draws (the resources are not in the tree) |
 | 12 | the loader arms the capture (`GRC_ADOPT=arm`): the walk adopts only what is in the tree (the root) |
 | 15 | the three cells enter the tree and draw |
+| 16 | LAR6: a worker `Thread` draws a fifth pre-arm `ImageTexture` into an RS-only item and clears it again, inside one `_process` (the loader-thread reference; nothing else ever draws that texture) |
 | 22 | the fixture frees the TEX sprite and texture, the PPM emitter and the ITEM node (`FREE_FRAME`) |
 | 30 | quit |
 
@@ -48,6 +49,11 @@ and `particles.adoption`, plus the recording's resolved tables); there is no `re
 - `res-late-adopt` (`deferred/capture`): the capture adopts the pre-arm texture (1), the emitter (1),
   both process materials from the registry (2) and both pre-arm items (2), with no refused
   texture/material, `unknown_material_keyed` 0 and **no unknown item RIDs** (`residue` 0).
+- `res-late-adopt` also counts, since LAR6, the loader-thread texture: `expected.json` `deferred.textures`
+  (2) and `deferred.offmain_adopted` (1), adopted from the off-main queue at frame 16's boundary.
+- `res-late-adopt-catches-registry-queue-drop` (`sabotage-registry-queue-drop/capture`, LAR6): the
+  deferred capture under `GRC_ADOPT_FAULT=registry-queue-drop` (the frame boundary discards the
+  off-main queue) never adopts the loader-thread texture, so `res-late-adopt` fails on it.
 - `res-late-residual` (`late/capture`): texture and items adopted, `emitters` 0, `refused` and
   `refused_preload_particles` 1, `unknown_material_keyed` >= 1, no unknown RIDs.
 - `res-late-fault`: under `GRC_ADOPT_FAULT=no-resources` nothing pre-arm is adopted and the

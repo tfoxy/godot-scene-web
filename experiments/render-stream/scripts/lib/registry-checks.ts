@@ -235,3 +235,23 @@ export function registryCost(samples: Record<string, CostSample[]>): {
   }
   return { problems, comparisons };
 }
+
+/** LAR6 resolve-queue-only: the late groups whose deferred legs it reads, and the leg names that
+ * count as deferred (the extension loaded at birth, the arm deferred: every resource registered). */
+export const RESOLVE_QUEUE_GROUPS = ["g8a", "g8m", "g8mm", "g8ctl", "g8ctsp", "g8res", "g8pt"] as const;
+export const isDeferredLeg = (leg: string): boolean => /^(headless-)?deferred(-[a-z0-9]+)?$/.test(leg);
+
+/** resolve-queue-only's verdict: every deferred leg's adopt_stats.resolve_scans (the mirror scans
+ * the frame drains made) is 0. Pure. A leg without the counter fails; no deferred leg at all is
+ * not-run (null). */
+export function judgeResolveQueueOnly(
+  legs: readonly { leg: string; resolve_scans: number | undefined }[],
+): { problems: string[] | null; detail: string } {
+  if (legs.length === 0) return { problems: null, detail: "no deferred leg ran" };
+  const problems: string[] = [];
+  for (const l of legs) {
+    if (typeof l.resolve_scans !== "number") problems.push(`${l.leg}: no adopt_stats.resolve_scans`);
+    else if (l.resolve_scans !== 0) problems.push(`${l.leg}: resolve_scans ${l.resolve_scans}`);
+  }
+  return { problems, detail: legs.map((l) => `${l.leg} ${l.resolve_scans}`).join(", ") };
+}

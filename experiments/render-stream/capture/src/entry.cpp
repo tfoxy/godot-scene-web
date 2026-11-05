@@ -907,6 +907,8 @@ std::string result_json() {
       // G8r (D6, D7): lazy resource adoption's account.
       const rs::AdoptResourceStats r = rs::adopt_resource_stats();
       json.field("fault", std::string(rs::adopt_fault_name(g_stream.adopt_fault)));
+      // LAR6 (resolve-queue-only): the mirror scans the frame drains made (material refs + ppm).
+      json.field("resolve_scans", static_cast<int64_t>(rs::adopt_resolve_scans()));
       json.key("resources").object_begin();
       json.field("textures", static_cast<int64_t>(r.textures));
       json.field("textures_current", static_cast<int64_t>(r.textures_current));
@@ -918,6 +920,7 @@ std::string result_json() {
       json.field("compressed", static_cast<int64_t>(r.compressed));
       json.field("from_update", static_cast<int64_t>(r.from_update));
       json.field("decoded", static_cast<int64_t>(r.decoded));
+      json.field("textures_registry", static_cast<int64_t>(r.textures_registry));  // LAR6
       json.field("textures_refused", static_cast<int64_t>(r.textures_refused));
       json.field("refused_no_image", static_cast<int64_t>(r.refused_no_image));
       json.field("refused_canvas_empty", static_cast<int64_t>(r.refused_canvas_empty));
@@ -929,6 +932,12 @@ std::string result_json() {
       json.field("refused_preload_multimesh", static_cast<int64_t>(r.refused_preload_multimesh));
       json.field("refused_mm_edited_dummy", static_cast<int64_t>(r.refused_mm_edited_dummy));
       json.field("refused_mm_buffer", static_cast<int64_t>(r.refused_mm_buffer));
+      // LAR6: the off-main queue and the one refused map.
+      json.field("offmain_queued", static_cast<int64_t>(r.offmain_queued));
+      json.field("offmain_drained", static_cast<int64_t>(r.offmain_drained));
+      json.field("offmain_adopted", static_cast<int64_t>(r.offmain_adopted));
+      json.field("offmain_dropped", static_cast<int64_t>(r.offmain_dropped));
+      json.field("refused_live", static_cast<int64_t>(r.refused_live));
       json.field("fonts", static_cast<int64_t>(r.fonts));
       json.field("cached_compressed", static_cast<int64_t>(r.cached_compressed));
       json.field("cache_paths", static_cast<int64_t>(r.cache_paths));
@@ -4289,11 +4298,10 @@ void on_frame() {
   }
   live_linger(false);  // after a disarm: the receivers' closes, then the server stop
   if (g_state.armed && g_stream.gate8.adopt) {
-    // G8m (gate8-design.md Q5): references to pre-arm materials and shaders a hooked call named
-    // this iteration resolve now, dated this frame, before the transaction is formed.
-    rs::adopt_materials_resolve();
-    // PM5: the particle_process_material builtin, through the same node map.
-    rs::adopt_particles_resolve();
+    // LAR6 (late-arm-registry-design.md R4): the queues this iteration's hooked calls filled drain
+    // now, dated this frame, before the transaction is formed: off-main references, then G8m's
+    // material and shader references, then PM5's process-material keying.
+    rs::adopt_frame_drain();
   }
   if (g_state.armed && g_state.pump_connected) {
     // PM5 (GRC_PREDRAW_PUMP=1): before the snapshot, frame_pre_draw when the engine did not emit

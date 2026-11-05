@@ -12,6 +12,8 @@
 //                     (ppm_registry) and both pre-arm items, nothing refused, unknown_material_keyed
 //                     exactly 0 (the registered material is adopted at the post-arm emitter's
 //                     reference), no unknown-texture / unknown-material, residue 0
+//   res-late-adopt-catches-registry-queue-drop  LAR6: deferred under GRC_ADOPT_FAULT=registry-queue-drop
+//                     (the off-main queue discarded) fails res-late-adopt (the loader-thread texture)
 //   res-late-residual late/capture adopts the texture and items, refuses the emitter
 //                     preload-particles (emitters 0), keys the unregistered material through the
 //                     LATE-RES re-link (unknown_material_keyed >= 1), residue 0
@@ -52,6 +54,10 @@ export interface G8resExpected {
     process_materials: number;
     ppm_registry: number;
     unknown_material_keyed: number;
+    /** LAR6: the pre-arm texture and the loader-thread one (res.gd frame 16) */
+    textures?: number;
+    /** LAR6: references adopted from the off-main queue (the loader-thread one) */
+    offmain_adopted?: number;
   };
   /** LAR5: the late arm (the pre-arm emitter refused preload-particles) */
   late: {
@@ -76,6 +82,7 @@ const LEGS = [
   "late/capture",
   "deferred/capture",
   "fault-no-resources/capture",
+  "sabotage-registry-queue-drop/capture",
 ];
 const SINKS = ["recording.rs12", "recording-patch.rs12"] as const;
 
@@ -256,9 +263,16 @@ export function judgeResLateAdopt(
   const parts: string[] = [];
   if (!res) problems.push("no stream.gate8.adopt_stats.resources");
   else {
-    if ((res.textures ?? 0) < expected.textures)
+    const wantTextures = expected.deferred.textures ?? expected.textures;
+    if ((res.textures ?? 0) < wantTextures)
       problems.push(
-        `adopted ${res.textures} textures, ${expected.textures} expected`,
+        `adopted ${res.textures} textures, ${wantTextures} expected`,
+      );
+    // LAR6: the loader-thread reference is adopted from the off-main queue at a frame boundary.
+    const wantOffmain = expected.deferred.offmain_adopted ?? 0;
+    if ((res.offmain_adopted ?? 0) < wantOffmain)
+      problems.push(
+        `${res.offmain_adopted ?? 0} off-main references adopted, ${wantOffmain} expected (queued ${res.offmain_queued ?? 0}, dropped ${res.offmain_dropped ?? 0})`,
       );
     if ((res.textures_refused ?? 0) !== 0)
       problems.push(`refused ${res.textures_refused} textures`);
@@ -505,6 +519,39 @@ export async function runG8res(
       check(
         "res-late-adopt",
         "LATE-RES, LAR5: the deferred capture (loaded at birth, armed at frame 12) adopts the pre-arm texture and both pre-arm items at their first post-arm draw and the emitter with both process materials from the registry (unknown_material_keyed exactly 0), nothing refused, no unknown-texture / unknown-material, nothing withheld",
+        problems,
+        detail,
+      ),
+    );
+  }
+
+  // res-late-adopt-catches-registry-queue-drop (LAR6's sabotage)
+  {
+    const leg = "sabotage-registry-queue-drop/capture";
+    let problems: string[] | null = null;
+    let detail: string | undefined;
+    if (ran(leg)) {
+      const r = await result(leg);
+      const j = judgeResLateAdopt(
+        r,
+        await loadResRecording(dir(leg)),
+        await validateSinkProblems(dir(leg)),
+        expected,
+      );
+      const res = adoptionResources(r);
+      problems = [];
+      if (j.problems.length === 0)
+        problems.push("res-late-adopt passed on the sabotaged capture");
+      if (!((res?.offmain_dropped ?? 0) >= 1))
+        problems.push(
+          `offmain_dropped ${res?.offmain_dropped ?? 0}, expected >= 1`,
+        );
+      detail = `res-late-adopt: ${j.problems.slice(0, 2).join("; ") || "passed"}`;
+    }
+    checks.push(
+      check(
+        "res-late-adopt-catches-registry-queue-drop",
+        "LAR6: under GRC_ADOPT_FAULT=registry-queue-drop (the frame boundary discards the off-main queue) the deferred capture never adopts the loader-thread texture and res-late-adopt fails",
         problems,
         detail,
       ),

@@ -22,6 +22,8 @@ import {
   type RegistryEvidence,
   registryCost,
   registryLiveBound,
+  isDeferredLeg,
+  judgeResolveQueueOnly,
 } from "../lib/registry-checks";
 
 let failures = 0;
@@ -304,11 +306,11 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
   has("shader_set_code", "registry_note_shader_code(shader.id");
   has("shader_set_default_texture_parameter", "registry_note_shader_default_texture(shader.id");
   has("material_create_from_shader", "registry_note_material_shader(result.id");
-  has("material_create_from_shader", "adopt_shader_ref(shader.id)");
+  has("material_create_from_shader", "materialize(shader.id, rs::RefKind::Shader)");
   has("material_set_shader", "registry_note_material_shader(material.id");
-  has("material_set_shader", "adopt_shader_ref(shader.id)");
+  has("material_set_shader", "materialize(shader.id, rs::RefKind::Shader)");
   has("material_set_param", "registry_param(material.id");
-  has("set_material", "adopt_material_ref(material.id)");
+  has("set_material", "materialize(material.id, rs::RefKind::Material)");
   const adopt = readFileSync(join(here, "../../capture/src/rs_adopt.cpp"), "utf8");
   expect(adopt.includes("take_pending_material_refs()"), "LAR3: the adoption drains take_pending_material_refs()");
   expect(adopt.includes("hooks_adopt_shader(rid, code)"), "LAR3: a registered shader is adopted with its recorded code");
@@ -368,11 +370,48 @@ expect(registryCost({ off: [s(1, 1, 1)], on: [s(1, 1, 1)] }).problems.includes("
   const hooks = readFileSync(join(dir, "hooks.cpp"), "utf8");
   for (const gone of ["t_pt_surface_mesh", "adopt_particles_note_draw"])
     expect(!hooks.includes(gone), `LAR5: hooks.cpp no longer contains ${gone}`);
-  for (const present of ["registry_note_particles", "adopt_process_material_ref"])
+  // LAR6 merged adopt_process_material_ref into materialize (RefKind::ProcessMaterial).
+  for (const present of ["registry_note_particles", "RefKind::ProcessMaterial"])
     expect(hooks.includes(present), `LAR5: hooks.cpp contains ${present}`);
   const header = readFileSync(join(dir, "rs_registry.h"), "utf8");
   for (const present of ["RegistryParticles", "registry-skip-particles"])
     expect(header.includes(present), `LAR5: rs_registry.h contains ${present}`);
+}
+
+// LAR6 (one entry, one refused map, the off-main queue, the `updated` bit).
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir = join(here, "../../capture/src");
+  const adopt = readFileSync(join(dir, "rs_adopt.cpp"), "utf8");
+  for (const gone of [
+    "g_res_refused_textures", "g_res_refused_meshes", "g_res_refused_multimeshes",
+    "g_pta_refused;", "std::set<std::uint64_t> g_pta_refused_materials",
+    "void adopt_texture_ref(", "void adopt_mesh_ref(", "void adopt_multimesh_ref(",
+    "bool adopt_material_ref(", "bool adopt_shader_ref(", "void adopt_particles_ref(",
+    "bool adopt_process_material_ref(",
+  ])
+    expect(!adopt.includes(gone), `LAR6: rs_adopt.cpp no longer contains ${gone}`);
+  for (const present of ["RidMap<Refusal> g_refused", "bool materialize(", "drain_offmain", "textures_registry"])
+    expect(adopt.includes(present), `LAR6: rs_adopt.cpp contains ${present}`);
+  const hooks = readFileSync(join(dir, "hooks.cpp"), "utf8");
+  expect(!/rs::adopt_[a-z_]+_ref\(/.test(hooks), "LAR6: hooks.cpp calls no adopt_*_ref (materialize only)");
+  expect(hooks.includes("registry_note_texture_update"), "LAR6: hooks.cpp records the updated bit");
+  const entry = readFileSync(join(dir, "entry.cpp"), "utf8");
+  expect(entry.includes("rs::adopt_frame_drain()") && !entry.includes("rs::adopt_materials_resolve()"),
+    "LAR6: entry.cpp's frame callback drains through adopt_frame_drain");
+  const q = judgeResolveQueueOnly([
+    { leg: "g8a/deferred", resolve_scans: 0 },
+    { leg: "g8pt/headless-deferred", resolve_scans: 0 },
+  ]);
+  expect(q.problems !== null && q.problems.length === 0, "resolve-queue-only: all zero passes");
+  expect((judgeResolveQueueOnly([{ leg: "g8m/deferred", resolve_scans: 2 }]).problems ?? []).length === 1,
+    "resolve-queue-only: a scan fails");
+  expect((judgeResolveQueueOnly([{ leg: "g8m/deferred", resolve_scans: undefined }]).problems ?? []).length === 1,
+    "resolve-queue-only: a missing counter fails");
+  expect(judgeResolveQueueOnly([]).problems === null, "resolve-queue-only: nothing ran is not-run");
+  for (const [leg, want] of [["deferred", true], ["headless-deferred", true], ["deferred-cmbt", true],
+    ["late", false], ["sabotage-registry-off", false], ["fault-no-resources", false]] as const)
+    expect(isDeferredLeg(leg) === want, `isDeferredLeg(${leg}) is ${want}`);
 }
 
 if (failures > 0) {

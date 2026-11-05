@@ -2044,7 +2044,7 @@ void hook_add_rect(void *self, RID item, const Rect2 *rect, const Color *color, 
 void hook_add_texture_rect(void *self, RID item, const Rect2 *rect, RID texture, bool tile,
                            const Color *modulate, bool transpose) {
   bump(kAddTextureRect);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && modulate != nullptr) {
     // A mirror tap since G2b2 (gate2-design.md Q3): the raw arguments, flips included.
     mirror().add_texture_rect(item.id, to_rect(*rect), texture.id, tile, to_color(*modulate),
@@ -2071,7 +2071,7 @@ void hook_add_texture_rect_region(void *self, RID item, const Rect2 *rect, RID t
                                   const Rect2 *source, const Color *modulate, bool transpose,
                                   bool clip_uv) {
   bump(kAddTextureRectRegion);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
                                      to_color(*modulate), transpose, clip_uv, current_frame());
@@ -2096,7 +2096,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
                                        const Rect2 *source, const Color *modulate,
                                        int outline_size, float px_range, float scale) {
   bump(kAddMsdfTextureRectRegion);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   // G4e2 (gate4-design.md Q3 "MSDF tap"): the /3 command, no longer a typed refusal.
   if (streaming() && rect != nullptr && source != nullptr && modulate != nullptr) {
     mirror().add_msdf_texture_rect_region(item.id, to_rect(*rect), texture.id, to_rect(*source),
@@ -2123,7 +2123,7 @@ void hook_add_msdf_texture_rect_region(void *self, RID item, const Rect2 *rect, 
 void hook_add_polygon(void *self, RID item, const Vector<Point2> *points,
                       const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPolygon);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/true, current_frame());
@@ -2278,6 +2278,9 @@ void hook_texture_2d_update(void *self, RID texture, const Ref *image, int layer
       g_updates.push_back(capture);
     }
   }
+  if (rs::registry_on()) {
+    rs::registry_note_texture_update(texture.id);  // LAR6: its getter is no longer the content
+  }
   const bool logging = resources().active();
   rs::PayloadPtr bytes;
   rs::TextureJobPtr job;
@@ -2380,7 +2383,7 @@ void hook_add_triangle_array(void *self, RID item, const Vector<int32_t> *indice
                              const Vector<Point2> *uvs, const Vector<int32_t> *bones,
                              const Vector<float> *weights, RID texture, int count) {
   bump(kAddTriangleArray);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     const bool skinned =
         (bones != nullptr && bones->size() > 0) || (weights != nullptr && weights->size() > 0);
@@ -2409,9 +2412,9 @@ void hook_add_mesh(void *self, RID item, const RID *mesh, const Transform2D *tra
                    const Color *modulate, RID texture) {
   bump(kAddMesh);
   if (mesh != nullptr) {
-    rs::adopt_mesh_ref(mesh->id);  // G8r: a pre-arm mesh is adopted at first reference
+    rs::materialize(mesh->id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
   }
-  rs::adopt_texture_ref(texture.id);
+  rs::materialize(texture.id, rs::RefKind::Texture);
   // G5e (gate5-design.md Q3b, render-stream-4.md "Command"): the /4 add_mesh command, naming the
   // mirror's mesh table entry (an unknown mesh RID becomes `unsupported`/`unknown-mesh`).
   if (streaming()) {
@@ -2440,8 +2443,8 @@ void hook_add_multimesh(void *self, RID item, RID mesh, RID texture) {
   if (g_multimesh_hooked) {
     // PM1 rule 7: /11's add_multimesh, naming the mirror's multimesh entry (an unknown RID
     // becomes `unsupported`/`unknown-multimesh`).
-    rs::adopt_multimesh_ref(mesh.id);  // PM9/LAR2: a pre-arm multimesh, adopted at first reference
-    rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+    rs::materialize(mesh.id, rs::RefKind::Multimesh);  // PM9/LAR2: a pre-arm multimesh, adopted at first reference
+    rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
     if (streaming()) {
       mirror().add_multimesh(item.id, mesh.id, texture.id, current_frame());
     }
@@ -2457,7 +2460,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
                          int32_t x_axis_mode, int32_t y_axis_mode, bool draw_center,
                          const Color *modulate) {
   bump(kAddNinePatch);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming() && rect != nullptr && source != nullptr && topleft != nullptr &&
       bottomright != nullptr && modulate != nullptr) {
     mirror().add_nine_patch(item.id, to_rect(*rect), to_rect(*source), texture.id,
@@ -2487,7 +2490,7 @@ void hook_add_nine_patch(void *self, RID item, const Rect2 *rect, const Rect2 *s
 void hook_add_primitive(void *self, RID item, const Vector<Point2> *points,
                         const Vector<Color> *colors, const Vector<Point2> *uvs, RID texture) {
   bump(kAddPrimitive);
-  rs::adopt_texture_ref(texture.id);  // G8r: a pre-arm texture is adopted at first reference
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r: a pre-arm texture is adopted at first reference
   if (streaming()) {
     mirror().add_primitive(item.id, whole_points(points), whole_colors(colors), whole_points(uvs),
                            texture.id, /*polygon=*/false, current_frame());
@@ -2628,7 +2631,7 @@ void hook_set_material(void *self, RID item, RID material) {
   bump(kSetMaterial);
   log_entry(&g_set_materials, rids(item.id, material.id));
   if (streaming() && mirror().set_material(item.id, material.id, current_frame()) &&
-      rs::registry_on() && rs::adopt_material_ref(material.id)) {
+      rs::registry_on() && rs::materialize(material.id, rs::RefKind::Material)) {
     // LAR3 (R4): a registered material, adopted here; the item now names a known one.
     mirror().set_material(item.id, material.id, current_frame());
   }
@@ -3012,8 +3015,8 @@ void hook_add_particles(void *self, RID item, RID particles, RID texture) {
   if (g_particles_hooked) {
     // PM5 ("The command"): /12's add_particles, naming the mirror's emitter (an unknown RID
     // becomes `unsupported`/`unknown-particles`).
-    rs::adopt_texture_ref(texture.id);
-    rs::adopt_particles_ref(particles.id);  // PM7, LAR5: a pre-arm emitter, from the registry
+    rs::materialize(texture.id, rs::RefKind::Texture);
+    rs::materialize(particles.id, rs::RefKind::Particles);  // PM7, LAR5: a pre-arm emitter, from the registry
     if (streaming()) {
       mirror().add_particles(item.id, particles.id, texture.id, current_frame());
     }
@@ -3122,7 +3125,7 @@ void hook_material_set_param(void *self, RID material, const void *name, const v
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
     if (decoded.type == "rid" && decoded.status == "ok") {
-      rs::adopt_texture_ref(decoded.tex_rid);  // G8r: a texture parameter naming a pre-arm texture
+      rs::materialize(decoded.tex_rid, rs::RefKind::Texture);  // G8r: a texture parameter naming a pre-arm texture
     }
     if (decoded.type == "array") {
       note_array_param(param_name, decoded);  // PM7: counters.json captured.array_params
@@ -3162,7 +3165,7 @@ RID hook_shader_create(void *self) {
 void hook_shader_set_default_texture_parameter(void *self, RID shader, const void *name,
                                                RID texture, int32_t index) {
   bump(kShaderSetDefaultTextureParameter);
-  rs::adopt_texture_ref(texture.id);  // G8r
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r
   ShaderDefaultTextureKey key;
   zero(&key);
   key.shader = shader.id;
@@ -3220,7 +3223,7 @@ RID hook_material_create_from_shader(void *self, RID next_pass, int32_t priority
     if (shader.id != 0) {
       rs::registry_note_material_shader(result.id, shader.id);  // LAR3
     }
-    rs::adopt_shader_ref(shader.id);  // LAR3 (R4): a registered shader the mirror does not know
+    rs::materialize(shader.id, rs::RefKind::Shader);  // LAR3 (R4): a registered shader the mirror does not know
   }
   MaterialShaderKey key;
   zero(&key);
@@ -3247,7 +3250,7 @@ void hook_material_set_shader(void *self, RID material, RID shader) {
   log_entry(&g_material_set_shaders, rids(material.id, shader.id));
   if (rs::registry_on()) {
     rs::registry_note_material_shader(material.id, shader.id);  // LAR3
-    rs::adopt_shader_ref(shader.id);  // LAR3 (R4): a registered shader the mirror does not know
+    rs::materialize(shader.id, rs::RefKind::Shader);  // LAR3 (R4): a registered shader the mirror does not know
   }
   if (resources().active()) {
     std::lock_guard<std::mutex> order(g_texture_order);
@@ -3305,7 +3308,7 @@ void hook_set_instance_shader_parameter(void *self, RID item, const void *name,
     rs::DecodedParam decoded;
     const rs::MaterialParamCopy copy = decode_material_param(value, &decoded);
     if (decoded.type == "rid" && decoded.status == "ok") {
-      rs::adopt_texture_ref(decoded.tex_rid);  // G8r
+      rs::materialize(decoded.tex_rid, rs::RefKind::Texture);  // G8r
     }
     if (streaming()) {
       mirror().set_instance_shader_parameter(item.id, param_name, decoded, current_frame());
@@ -3647,7 +3650,7 @@ void hook_multimesh_allocate_data(void *self, RID multimesh, int instances, int3
 
 void hook_multimesh_set_mesh(void *self, RID multimesh, RID mesh) {
   bump(kMultimeshSetMesh);
-  rs::adopt_mesh_ref(mesh.id);  // G8r: a pre-arm mesh is adopted at first reference
+  rs::materialize(mesh.id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
   original<FnSetMaterial>(kMultimeshSetMesh)(self, multimesh, mesh);
   if (rs::registry_on()) {
     rs::registry_note_multimesh_mesh(multimesh.id, mesh.id);
@@ -4071,7 +4074,7 @@ void hook_particles_set_process_material(void *self, RID p, RID material) {
     // LAR5: a registered pre-arm process material is adopted before the call is recorded (the
     // reference site; never unknown-material).
     if (rs::registry_on() && material.id != 0) {
-      rs::adopt_process_material_ref(material.id);
+      rs::materialize(material.id, rs::RefKind::ProcessMaterial);
     }
     std::lock_guard<std::mutex> order(g_texture_order);
     const rs::Mirror::ParticlesCall r =
@@ -4234,7 +4237,7 @@ void hook_particles_set_draw_passes(void *self, RID p, int count) {
 
 void hook_particles_set_draw_pass_mesh(void *self, RID p, int pass, RID mesh) {
   bump(kParticlesSetDrawPassMesh);
-  rs::adopt_mesh_ref(mesh.id);  // G8r: a pre-arm mesh is adopted at first reference
+  rs::materialize(mesh.id, rs::RefKind::Mesh);  // G8r: a pre-arm mesh is adopted at first reference
   original<FnParticlesSetDrawPassMesh>(kParticlesSetDrawPassMesh)(self, p, pass, mesh);
   if (rs::registry_on()) {
     rs::registry_note_particles(p.id, rs::RegistryParticlesOp::DrawPassMesh, pass, mesh.id,
@@ -4380,8 +4383,8 @@ RID hook_texture_2d_placeholder_create(void *self) {
 void hook_texture_replace(void *self, RID texture, RID by_texture) {
   bump(kTextureReplace);
   // G8r: either side may be a pre-arm texture; adopt it before the dummy frees the by-texture.
-  rs::adopt_texture_ref(texture.id);
-  rs::adopt_texture_ref(by_texture.id);
+  rs::materialize(texture.id, rs::RefKind::Texture);
+  rs::materialize(by_texture.id, rs::RefKind::Texture);
   log_entry(&g_texture_replaces, rids(texture.id, by_texture.id));
   if (rs::registry_on()) {
     // LAR0 (design R5): the engine frees by_texture inside the call, with no free of its own.
@@ -4438,7 +4441,7 @@ RID hook_canvas_texture_create(void *self) {
 void hook_canvas_texture_set_channel(void *self, RID canvas_texture, int32_t channel,
                                      RID texture) {
   bump(kCanvasTextureSetChannel);
-  rs::adopt_texture_ref(texture.id);  // G8r
+  rs::materialize(texture.id, rs::RefKind::Texture);  // G8r
   ChannelKey key;
   zero(&key);
   key.canvas_texture = canvas_texture.id;
@@ -5320,7 +5323,7 @@ void hooks_adopt_default_texture(uint64_t shader, const std::string &name, uint6
   if (shader == 0 || !streaming() || !resources().active()) {
     return;
   }
-  rs::adopt_texture_ref(texture);
+  rs::materialize(texture, rs::RefKind::Texture);
   std::lock_guard<std::mutex> order(g_texture_order);
   mirror().shader_set_default_texture_parameter(shader, name, texture, index, current_frame());
   resources().shader_set_default_texture_parameter(tap_context(), shader, name, texture, index,
@@ -5336,7 +5339,7 @@ bool hooks_adopt_material(uint64_t material, uint64_t shader,
   for (std::size_t i = 0; i < params.size(); ++i) {
     decoded[i].second = decode_material_param(params[i].variant, &decoded[i].first);
     if (decoded[i].first.type == "rid" && decoded[i].first.status == "ok") {
-      rs::adopt_texture_ref(decoded[i].first.tex_rid);
+      rs::materialize(decoded[i].first.tex_rid, rs::RefKind::Texture);
     }
   }
   std::lock_guard<std::mutex> order(g_texture_order);
@@ -5384,7 +5387,7 @@ void hooks_adopt_instance_param(uint64_t item, const std::string &name, const vo
   rs::DecodedParam decoded;
   const rs::MaterialParamCopy copy = decode_material_param(variant, &decoded);
   if (decoded.type == "rid" && decoded.status == "ok") {
-    rs::adopt_texture_ref(decoded.tex_rid);
+    rs::materialize(decoded.tex_rid, rs::RefKind::Texture);
   }
   mirror().set_instance_shader_parameter(item, name, decoded, current_frame());
   if (resources().active()) {

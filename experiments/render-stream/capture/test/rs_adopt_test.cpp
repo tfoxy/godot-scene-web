@@ -12,6 +12,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "fake_godot_iface.h"
@@ -644,10 +645,14 @@ void test_adopt_fault_parse() {
         "fault: no-resources");
   check(!grc::rs::parse_adopt_fault("no-resources", false, &f, &error), "fault: needs GRC_ADOPT");
   check(!grc::rs::parse_adopt_fault("bogus", true, &f, &error), "fault: unknown value refused");
+  check(grc::rs::parse_adopt_fault("registry-queue-drop", true, &f, &error) &&
+            f == grc::rs::AdoptFault::RegistryQueueDrop &&
+            std::string(grc::rs::adopt_fault_name(f)) == "registry-queue-drop",
+        "fault: registry-queue-drop (LAR6)");
   // Lazy adoption is off until a stream begins it; every entry point is then a no-op.
   check(!grc::rs::adopt_resources_active(), "lazy: inactive by default");
-  grc::rs::adopt_texture_ref(0x50);
-  grc::rs::adopt_mesh_ref(0x60);
+  grc::rs::materialize(0x50, grc::rs::RefKind::Texture);
+  grc::rs::materialize(0x60, grc::rs::RefKind::Mesh);
   check(!grc::rs::adopt_from_update_begin(), "lazy: no update adoption while inactive");
   check(grc::rs::adopt_resource_stats().textures == 0, "lazy: nothing counted");
 }
@@ -1069,8 +1074,8 @@ void test_multimesh_from_registry() {
   record();
   grc::rs::mirror_enable(false);
   begin(grc::rs::AdoptFault::None, false);
-  grc::rs::adopt_multimesh_ref(kCustom);
-  grc::rs::adopt_multimesh_ref(k3d);
+  grc::rs::materialize(kCustom, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(k3d, grc::rs::RefKind::Multimesh);
   check(g_multimesh_hook_args.size() == 2 && g_multimesh_hook_args[0].rid == kCustom &&
             g_multimesh_hook_args[0].format == 0 && !g_multimesh_hook_args[0].colors &&
             g_multimesh_hook_args[0].custom && g_multimesh_hook_args[0].instances == 13 &&
@@ -1079,17 +1084,17 @@ void test_multimesh_from_registry() {
             g_multimesh_hook_args[1].format == 1 && !g_multimesh_hook_args[1].colors &&
             !g_multimesh_hook_args[1].custom && g_multimesh_hook_args[1].instances == 14,
         "mm registry: 2d + custom and 3d handed over with the recorded allocation");
-  grc::rs::adopt_multimesh_ref(kPre);
-  grc::rs::adopt_multimesh_ref(kPre);
+  grc::rs::materialize(kPre, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(kPre, grc::rs::RefKind::Multimesh);
   check(reads == std::vector<uint64_t>({kCustom, k3d}) && g_multimesh_hook_args.size() == 2,
         "mm registry: an unregistered multimesh is refused without a read, once");
-  grc::rs::adopt_multimesh_ref(kEdited);
+  grc::rs::materialize(kEdited, grc::rs::RefKind::Multimesh);
   check(g_multimesh_hook_args.size() == 3 && g_multimesh_hook_args[2].rid == kEdited &&
             g_multimesh_hook_args[2].first == 3.0f,
         "mm registry: edited on a GPU host: the getter's buffer is exact");
-  grc::rs::adopt_multimesh_ref(kBad);
-  grc::rs::adopt_multimesh_ref(kBad);
-  grc::rs::adopt_multimesh_ref(kEmpty);
+  grc::rs::materialize(kBad, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(kBad, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(kEmpty, grc::rs::RefKind::Multimesh);
   check(reads == std::vector<uint64_t>({kCustom, k3d, kEdited, kBad, kEmpty}) &&
             g_multimesh_hook_args.size() == 3,
         "mm registry: a buffer of the wrong size (or none, off the dummy) is refused, read once");
@@ -1099,15 +1104,15 @@ void test_multimesh_from_registry() {
             st.refused_mm_buffer == 2 && st.refused_mm_edited_dummy == 0,
         "mm registry: typed refusals (preload 1, buffer 2)");
   grc::rs::adopt_resource_freed(kBad);
-  grc::rs::adopt_multimesh_ref(kBad);
+  grc::rs::materialize(kBad, grc::rs::RefKind::Multimesh);
   check(reads.back() == kBad && reads.size() == 6, "mm registry: a freed RID is read again");
   check(w.null_bind_calls == 0, "mm registry: no call through a null bind");
   stream_end();
 
   // The dummy host: edited is refused without a read (O3); never set is zeros.
   begin(grc::rs::AdoptFault::None, true);
-  grc::rs::adopt_multimesh_ref(kEdited);
-  grc::rs::adopt_multimesh_ref(kEmpty);
+  grc::rs::materialize(kEdited, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(kEmpty, grc::rs::RefKind::Multimesh);
   check(reads == std::vector<uint64_t>({kEmpty}) && g_multimesh_hook_args.size() == 1 &&
             g_multimesh_hook_args[0].rid == kEmpty && g_multimesh_hook_args[0].floats == 3 * 12 &&
             g_multimesh_hook_args[0].first == 0.0f && g_multimesh_hook_args[0].colors,
@@ -1119,8 +1124,8 @@ void test_multimesh_from_registry() {
 
   // registry-mm-stride: the recorded format ignored, the 12-float stride read as 2d + colors.
   begin(grc::rs::AdoptFault::RegistryMmStride, false);
-  grc::rs::adopt_multimesh_ref(kCustom);
-  grc::rs::adopt_multimesh_ref(k3d);
+  grc::rs::materialize(kCustom, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(k3d, grc::rs::RefKind::Multimesh);
   check(g_multimesh_hook_args.size() == 2 && g_multimesh_hook_args[0].format == 0 &&
             g_multimesh_hook_args[0].colors && !g_multimesh_hook_args[0].custom &&
             g_multimesh_hook_args[1].format == 0 && g_multimesh_hook_args[1].colors &&
@@ -1128,11 +1133,50 @@ void test_multimesh_from_registry() {
         "mm registry-mm-stride: both misread as 2d + colors (the count kept)");
   stream_end();
 
+  // LAR6: an off-main reference is queued once (deduplicated), not read on its thread, and
+  // materialized by the frame drain on the main thread; a freed one is skipped.
+  begin(grc::rs::AdoptFault::None, false);
+  {
+    bool r1 = true, r2 = true, r3 = true;
+    std::thread t([&]() {
+      r1 = grc::rs::materialize(kCustom, grc::rs::RefKind::Multimesh);
+      r2 = grc::rs::materialize(kCustom, grc::rs::RefKind::Multimesh);
+      r3 = grc::rs::materialize(k3d, grc::rs::RefKind::Multimesh);
+    });
+    t.join();
+    st = grc::rs::adopt_resource_stats();
+    check(!r1 && !r2 && !r3 && reads.empty() && g_multimesh_hook_args.empty() &&
+              st.offmain_queued == 2,
+          "queue: off-main references queued once each, unread");
+    grc::rs::adopt_resource_freed(k3d);
+    grc::rs::adopt_frame_drain();
+    st = grc::rs::adopt_resource_stats();
+    check(reads == std::vector<uint64_t>({kCustom}) && g_multimesh_hook_args.size() == 1 &&
+              st.offmain_drained == 1 && st.offmain_dropped == 1,
+          "queue: the drain adopts on the main thread, a freed entry skipped");
+    // (this file's hooks_adopt_multimesh stub registers nothing, so the entry is then refused)
+    grc::rs::adopt_frame_drain();
+    check(grc::rs::adopt_resource_stats().offmain_drained == 1, "queue: drained once");
+  }
+  stream_end();
+  // registry-queue-drop: the drain discards the queue.
+  begin(grc::rs::AdoptFault::RegistryQueueDrop, false);
+  {
+    std::thread t([&]() { grc::rs::materialize(kCustom, grc::rs::RefKind::Multimesh); });
+    t.join();
+    grc::rs::adopt_frame_drain();
+    st = grc::rs::adopt_resource_stats();
+    check(reads.empty() && g_multimesh_hook_args.empty() && st.offmain_queued == 1 &&
+              st.offmain_dropped == 1 && st.offmain_drained == 0,
+          "queue registry-queue-drop: the queued reference is lost");
+  }
+  stream_end();
+
   // registry-off: nothing recorded, so every multimesh is preload.
   grc::rs::registry_configure(true, grc::rs::RegistryFault::Off);
   begin(grc::rs::AdoptFault::RegistryOff, false);
-  grc::rs::adopt_multimesh_ref(kCustom);
-  grc::rs::adopt_multimesh_ref(k3d);
+  grc::rs::materialize(kCustom, grc::rs::RefKind::Multimesh);
+  grc::rs::materialize(k3d, grc::rs::RefKind::Multimesh);
   st = grc::rs::adopt_resource_stats();
   check(reads.empty() && g_multimesh_hook_args.empty() && st.refused_preload_multimesh == 2,
         "mm registry-off: every multimesh refused preload, unread");
@@ -1165,24 +1209,24 @@ void test_canvas_texture_channels_not_reread() {
   Mirror &m = grc::rs::mirror_instance();
   m.texture_2d_create(kKnown, rgba_copy(kHashA), some_bytes(), 1);  // the shared, known diffuse
   check(m.knows_texture(kKnown), "ctex: the shared diffuse is known");
-  grc::rs::adopt_texture_ref(kCtexA);
-  grc::rs::adopt_texture_ref(kCtexB);
+  grc::rs::materialize(kCtexA, grc::rs::RefKind::Texture);
+  grc::rs::materialize(kCtexB, grc::rs::RefKind::Texture);
   check(reads.empty(),
         "ctex: no texture_2d_get on a registered CanvasTexture, nor on the known diffuse");
   check(g_ctex_hook_calls.size() == 2 && g_ctex_hook_calls[0].rid == kCtexA &&
             g_ctex_hook_calls[0].diffuse == kKnown && g_ctex_hook_calls[1].rid == kCtexB &&
             g_ctex_hook_calls[1].diffuse == kKnown,
         "ctex: both handed to the hook from the registry, with the shared diffuse");
-  grc::rs::adopt_texture_ref(kCtexC);
-  grc::rs::adopt_texture_ref(kCtexD);
+  grc::rs::materialize(kCtexC, grc::rs::RefKind::Texture);
+  grc::rs::materialize(kCtexD, grc::rs::RefKind::Texture);
   check(reads == std::vector<uint64_t>({kUnreadable}),
         "ctex: an unreadable diffuse is read once across both CanvasTextures");
   const grc::rs::AdoptResourceStats st = grc::rs::adopt_resource_stats();
   check(st.textures_refused == 5 && st.refused_no_image == 1 && st.refused_canvas_empty == 0,
         "ctex: four CanvasTextures (the stub hook refuses) and the diffuse refused (no-image)");
   reads.clear();
-  grc::rs::adopt_texture_ref(kCtexA);
-  grc::rs::adopt_texture_ref(kUnreadable);
+  grc::rs::materialize(kCtexA, grc::rs::RefKind::Texture);
+  grc::rs::materialize(kUnreadable, grc::rs::RefKind::Texture);
   check(reads.empty(), "ctex: a refused RID is not read again by a later reference");
   check(w.null_bind_calls == 0, "ctex: no call through a null bind");
   stream_end();
@@ -1213,20 +1257,20 @@ void test_canvas_texture_registry_gating() {
   grc::rs::registry_note_canvas_repeat(kPre, 2);
   grc::rs::registry_note_free(kFreed);
   grc::rs::adopt_resource_freed(kFreed);
-  grc::rs::adopt_texture_ref(kNew);
+  grc::rs::materialize(kNew, grc::rs::RefKind::Texture);
   check(reads == std::vector<uint64_t>({kNewDiffuse}) && g_ctex_hook_calls.size() == 1 &&
             g_ctex_hook_calls[0].rid == kNew && g_ctex_hook_calls[0].diffuse == kNewDiffuse,
         "registry: a post-arm create is recorded (its diffuse read, then the hook)");
-  grc::rs::adopt_texture_ref(kPre);
+  grc::rs::materialize(kPre, grc::rs::RefKind::Texture);
   check(reads == std::vector<uint64_t>({kNewDiffuse, kPreDiffuse}) &&
             g_ctex_hook_calls.size() == 2 && g_ctex_hook_calls[1].rid == kPre &&
             g_ctex_hook_calls[1].diffuse == kPreDiffuse && g_ctex_hook_calls[1].filter == 1 &&
             g_ctex_hook_calls[1].repeat == 2,
         "registry: post-arm setters update the pre-arm entry, filter and repeat included");
-  grc::rs::adopt_texture_ref(kFreed);
+  grc::rs::materialize(kFreed, grc::rs::RefKind::Texture);
   check(reads.size() == 3 && reads.back() == kFreed && g_ctex_hook_calls.size() == 2,
         "registry: a freed CanvasTexture's entry is gone (the residual path reads its RID)");
-  grc::rs::adopt_texture_ref(kEmpty);
+  grc::rs::materialize(kEmpty, grc::rs::RefKind::Texture);
   check(reads.size() == 3 && g_ctex_hook_calls.size() == 2,
         "registry: a CanvasTexture with no diffuse is neither read nor handed over");
   const grc::rs::AdoptResourceStats st = grc::rs::adopt_resource_stats();
@@ -1358,7 +1402,7 @@ void test_particles_from_registry() {
   Mirror::ParticlesOptions options;
   options.enabled = true;
   grc::rs::mirror_instance().set_particles(options);
-  grc::rs::adopt_particles_ref(kEmitter);
+  grc::rs::materialize(kEmitter, grc::rs::RefKind::Particles);
   check(g_particles_hook_args.size() == 1 && g_particles_hook_args[0].first == kEmitter,
         "pt registry: the registered emitter is handed over");
   if (g_particles_hook_args.size() == 1) {
@@ -1373,8 +1417,8 @@ void test_particles_from_registry() {
   }
   check(w.count("GPUParticles2D.get_amount") == 0 && w.count("Node.can_process") == 0,
         "pt registry: no emitter getter is read");
-  grc::rs::adopt_particles_ref(kPre);
-  grc::rs::adopt_particles_ref(kPre);
+  grc::rs::materialize(kPre, grc::rs::RefKind::Particles);
+  grc::rs::materialize(kPre, grc::rs::RefKind::Particles);
   const grc::rs::EmitterAdoptStats st = grc::rs::adopt_emitter_stats();
   check(g_particles_hook_args.size() == 1 && st.refused == 1 && st.refused_preload_particles == 1,
         "pt registry: an unregistered emitter is refused once, typed preload-particles");

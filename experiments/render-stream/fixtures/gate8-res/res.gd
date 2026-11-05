@@ -14,6 +14,12 @@ extends Node
 ## must adopt each at its first post-arm reference. At frame 22 (FREE_FRAME) the fixture frees the
 ## adopted TEX sprite and texture, the PPM emitter and the ITEM node (the capture must record them
 ## freed, res-free). Timeline: quit at 30.
+##
+## LAR6 (late-arm-registry-design.md R4 "Off-main references"): at frame 16 a worker `Thread` draws
+## a fifth pre-arm ImageTexture (`_pre_tex_thread`) into an RS-only canvas item and clears it again,
+## inside one `_process` (the main thread waits for it), so no transaction ever holds the draw. The
+## thread's reference is the texture's only one: the capture must queue it and adopt it at the frame
+## boundary (res-late-adopt's second texture); GRC_ADOPT_FAULT=registry-queue-drop loses it.
 
 const QUIT_DEFAULT: int = 30
 const FREE_FRAME: int = 22
@@ -27,6 +33,8 @@ var _pre_emitter: GPUParticles2D
 var _pre_item: Node2D
 var _pre_pm9: ParticleProcessMaterial
 var _sprite: Sprite2D
+var _pre_tex_thread: ImageTexture
+var _thread_item: RID
 
 
 func _ready() -> void:
@@ -40,6 +48,7 @@ func _ready() -> void:
 	# PRE-ARM resources (none in the tree at arm): the TEX texture, the PPM cell's emitter and
 	# process material, the ITEM cell's draw node, and the PPM9 cell's orphan process material.
 	_pre_tex = ImageTexture.create_from_image(_pattern(1))
+	_pre_tex_thread = ImageTexture.create_from_image(_pattern(3))  # LAR6: drawn from a thread only
 
 	var pm := ParticleProcessMaterial.new()
 	pm.particle_flag_disable_z = true
@@ -106,6 +115,13 @@ func _process(_delta: float) -> void:
 		p9.position = Vector2(328, 40)
 		_root.add_child(p9)
 		print("[fixture] gate8-res cells added at frame %d" % _frame)
+	if _frame == 16:
+		# LAR6: the loader-thread reference (drawn and cleared by the worker before the frame ends).
+		_thread_item = RenderingServer.canvas_item_create()
+		var worker := Thread.new()
+		worker.start(_thread_draw.bind(_thread_item, _pre_tex_thread.get_rid()))
+		worker.wait_to_finish()
+		print("[fixture] gate8-res thread reference at frame %d" % _frame)
 	if _frame == FREE_FRAME:
 		# Free the adopted cells (not PPM9): the node frees the items and the particles; dropping the
 		# script's own references lets the texture and process material resources go too.
@@ -116,10 +132,17 @@ func _process(_delta: float) -> void:
 		_pre_emitter = null
 		_pre_item = null
 		_pre_tex = null
+		RenderingServer.free_rid(_thread_item)
 		print("[fixture] gate8-res cells freed at frame %d" % _frame)
 	if _frame >= _quit_frame:
 		print("[fixture] quitting frame=%d" % _frame)
 		get_tree().quit(0)
+
+
+## The worker's draw: a reference from a non-main thread (the item is never shown with it).
+static func _thread_draw(item: RID, texture: RID) -> void:
+	RenderingServer.canvas_item_add_texture_rect(item, Rect2(0, 0, 16, 16), texture)
+	RenderingServer.canvas_item_clear(item)
 
 
 ## A 16x16 opaque RGBA8 image of 4x4-texel blocks, every channel in 10..239 (never white, so a
