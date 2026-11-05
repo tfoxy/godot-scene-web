@@ -726,6 +726,7 @@ dependencies = [
  "rustls",
  "time",
  "tokio",
+ "tracing",
  "wtransport",
 ]
 

@@ -35,6 +35,8 @@ use crate::host::{Host, HostBuf};
 
 pub const STREAM_LIVE: u8 = 0x00;
 pub const STREAM_RESOURCE: u8 = 0x01;
+/// CAR10: a client-opened unidirectional stream carrying one batch of client-to-host messages.
+pub const STREAM_UPLINK: u8 = 0x10;
 pub const KIND_BINARY: u8 = 0;
 pub const KIND_TEXT: u8 = 1;
 /// Q4.2: the application error code of a refused stream.
@@ -51,6 +53,12 @@ pub const DRAIN_WAIT: Duration = Duration::from_secs(1);
 /// 16 resource streams.
 pub const MAX_BIDI_STREAMS: u32 = 1 + 1 + 16;
 const STOP_WAIT: Duration = Duration::from_millis(1500);
+/// CAR10 uplink streams (Q4.3a): concurrent client unidirectional streams, the largest batch,
+/// how many batches may wait for a missing earlier one, and how long one stream may stay open.
+pub const MAX_UPLINK_STREAMS: u32 = 64;
+pub const MAX_UPLINK_BATCH: usize = 64 * 1024;
+pub const MAX_UPLINK_PENDING: usize = 256;
+pub const UPLINK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// WebTransport over HTTP/3 maps an application error code `n` into the HTTP/3 error space
 /// (draft-ietf-webtrans-http3, "Resetting Data Streams"); a browser reports `n` back.
@@ -101,6 +109,9 @@ pub struct Config {
     pub cert: CertMode,
     pub evidence_dir: Option<PathBuf>,
     pub fault: Fault,
+    /// GRC_NET_DEBUG_STATS_MS (diagnostic, CAR10): every so many ms each session logs its
+    /// inbound live counters and QUIC statistics through the host log. 0 (default) is off.
+    pub debug_stats_ms: u64,
 }
 
 fn split_list(s: &str) -> Vec<String> {
@@ -165,7 +176,12 @@ impl Config {
         let fault = Fault::parse(
             &host.config("net_fault").unwrap_or_else(|| std::env::var("GRC_NET_FAULT").unwrap_or_default()),
         )?;
-        Ok(Self { listen, path, subprotocols, max_inbound_text, max_queued_bytes, cert, evidence_dir, fault })
+        let debug_stats_ms = match host.config("debug_stats_ms").or_else(|| std::env::var("GRC_NET_DEBUG_STATS_MS").ok()) {
+            None => 0,
+            Some(v) if v.is_empty() => 0,
+            Some(v) => v.parse::<u64>().map_err(|_| format!("carrier-config-invalid: GRC_NET_DEBUG_STATS_MS={v}"))?,
+        };
+        Ok(Self { listen, path, subprotocols, max_inbound_text, max_queued_bytes, cert, evidence_dir, fault, debug_stats_ms })
     }
 }
 
@@ -188,6 +204,24 @@ pub struct Conn {
     closed_reported: AtomicBool,
     live_taken: AtomicBool,
     live_tx: Mutex<Option<oneshot::Sender<SendStream>>>,
+    /// Client-to-host live stream: bytes read and text messages handed to the host (CAR10).
+    in_bytes: AtomicU64,
+    in_texts: AtomicU64,
+    /// Host-to-client live messages written into quinn's send buffer.
+    out_msgs: AtomicU64,
+    /// CAR10: the order in which client-to-host texts reach the host (Q4.3a).
+    uplink: Mutex<Uplink>,
+}
+
+/// Client-to-host delivery order (Q4.3a). The live stream's first text (the hello) goes first;
+/// uplink batches follow in batch order, each exactly once. A batch that arrives early waits.
+#[derive(Default)]
+struct Uplink {
+    hello_seen: bool,
+    next: u32,
+    pending: std::collections::BTreeMap<u32, Vec<Vec<u8>>>,
+    streams: u64,
+    duplicates: u64,
 }
 
 #[derive(Default)]
@@ -378,6 +412,7 @@ impl Running {
         let mut transport = TransportConfig::default();
         transport
             .max_concurrent_bidi_streams(QVarInt::from_u32(MAX_BIDI_STREAMS))
+            .max_concurrent_uni_streams(QVarInt::from_u32(MAX_UPLINK_STREAMS))
             .max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("30 s is a valid idle timeout")))
             .keep_alive_interval(Some(KEEP_ALIVE));
         let server_config = ServerConfig::builder()
@@ -596,6 +631,10 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
         closed_reported: AtomicBool::new(false),
         live_taken: AtomicBool::new(false),
         live_tx: Mutex::new(Some(live_tx)),
+        in_bytes: AtomicU64::new(0),
+        in_texts: AtomicU64::new(0),
+        out_msgs: AtomicU64::new(0),
+        uplink: Mutex::new(Uplink::default()),
     });
     shared.conns.lock().unwrap().insert(local, conn.clone());
     shared.host.opened(local, &protocol, origin.as_deref().filter(|o| !o.is_empty()));
@@ -605,12 +644,15 @@ async fn run_session(shared: Arc<Shared>, incoming: IncomingSession) {
     let me = shared.clone();
     let c2 = conn.clone();
     shared.spawn_guarded(writer(me, c2, rx, live_rx));
+    if shared.cfg.debug_stats_ms > 0 {
+        let (s, c) = (shared.clone(), conn.clone());
+        shared.rt.spawn(debug_stats(s, c));
+    }
     control(shared, conn, connection).await;
 }
 
 /// The session's streams, datagrams and end.
 async fn control(shared: Arc<Shared>, conn: Arc<Conn>, connection: Connection) {
-    let refused = wt_error_to_h3(ERR_UNKNOWN_STREAM_TYPE);
     let end: ConnectionError = loop {
         tokio::select! {
             bi = connection.accept_bi() => match bi {
@@ -622,8 +664,8 @@ async fn control(shared: Arc<Shared>, conn: Arc<Conn>, connection: Connection) {
             },
             uni = connection.accept_uni() => match uni {
                 Ok(recv) => {
-                    shared.streams_refused.fetch_add(1, Ordering::AcqRel);
-                    recv.stop(VarInt::try_from_u64(refused).unwrap_or(VarInt::from_u32(0)));
+                    let (s, c) = (shared.clone(), conn.clone());
+                    shared.spawn_guarded(uplink_stream(s, c, recv));
                 }
                 Err(e) => break e,
             },
@@ -690,7 +732,79 @@ async fn dispatch(shared: Arc<Shared>, conn: Arc<Conn>, mut send: SendStream, mu
     }
 }
 
-/// Client-to-host live messages (Q4.3): text only, within max_inbound_text, valid UTF-8.
+/// Splits `buf` into complete client-to-host messages (Q4.3: text only, within
+/// max_inbound_text, valid UTF-8). Returns the bodies' ranges and the bytes consumed, or the close
+/// a violation calls for.
+fn parse_client_frames(shared: &Shared, buf: &[u8]) -> Result<(Vec<std::ops::Range<usize>>, usize), (u16, &'static str)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while buf.len() - at >= 5 {
+        let kind = buf[at];
+        let len = u32::from_le_bytes([buf[at + 1], buf[at + 2], buf[at + 3], buf[at + 4]]) as usize;
+        match kind {
+            KIND_TEXT if len > shared.cfg.max_inbound_text => return Err((1009, "text message too large")),
+            KIND_TEXT => {}
+            KIND_BINARY => return Err((1003, "binary message from the client")),
+            _ => return Err((1002, "unknown message kind")),
+        }
+        if buf.len() - at < 5 + len {
+            break;
+        }
+        if std::str::from_utf8(&buf[at + 5..at + 5 + len]).is_err() {
+            return Err((1007, "text message is not UTF-8"));
+        }
+        out.push(at + 5..at + 5 + len);
+        at += 5 + len;
+    }
+    Ok((out, at))
+}
+
+/// Hands texts to the host in Q4.3a's order: called with the live stream's texts (`batch` None)
+/// and with each complete uplink batch. Returns false once the connection is closing.
+fn deliver(shared: &Shared, conn: &Conn, batch: Option<u32>, texts: Vec<Vec<u8>>) -> bool {
+    let mut up = conn.uplink.lock().unwrap();
+    if conn.closed_reported.load(Ordering::Acquire) || conn.closing.load(Ordering::Acquire) {
+        return false;
+    }
+    match batch {
+        None => {
+            for t in &texts {
+                shared.host.text(conn.local, t);
+                conn.in_texts.fetch_add(1, Ordering::AcqRel);
+            }
+            if !texts.is_empty() {
+                up.hello_seen = true;
+            }
+        }
+        Some(n) => {
+            up.streams += 1;
+            if n < up.next || up.pending.contains_key(&n) {
+                up.duplicates += 1; // a re-sent batch whose first copy arrived after all
+                return true;
+            }
+            if up.pending.len() >= MAX_UPLINK_PENDING {
+                drop(up);
+                shared.close_conn(conn, 1008, "uplink-reorder-overflow");
+                return false;
+            }
+            up.pending.insert(n, texts);
+        }
+    }
+    if up.hello_seen {
+        loop {
+            let next = up.next;
+            let Some(texts) = up.pending.remove(&next) else { break };
+            for t in &texts {
+                shared.host.text(conn.local, t);
+                conn.in_texts.fetch_add(1, Ordering::AcqRel);
+            }
+            up.next = next.wrapping_add(1);
+        }
+    }
+    true
+}
+
+/// Client-to-host live messages on the live stream (Q4.3).
 async fn live_reader(shared: Arc<Shared>, conn: Arc<Conn>, mut recv: RecvStream) {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk = vec![0u8; 16 * 1024];
@@ -699,37 +813,89 @@ async fn live_reader(shared: Arc<Shared>, conn: Arc<Conn>, mut recv: RecvStream)
             Ok(Some(n)) => n,
             Ok(None) | Err(_) => return, // FIN (the client is closing) or the session ended
         };
+        conn.in_bytes.fetch_add(n as u64, Ordering::AcqRel);
         buf.extend_from_slice(&chunk[..n]);
-        let mut at = 0;
-        while buf.len() - at >= 5 {
-            let kind = buf[at];
-            let len = u32::from_le_bytes([buf[at + 1], buf[at + 2], buf[at + 3], buf[at + 4]]) as usize;
-            let violation = match kind {
-                KIND_TEXT if len > shared.cfg.max_inbound_text => Some((1009, "text message too large")),
-                KIND_TEXT => None,
-                KIND_BINARY => Some((1003, "binary message from the client")),
-                _ => Some((1002, "unknown message kind")),
-            };
-            if let Some((code, reason)) = violation {
+        let (bodies, used) = match parse_client_frames(&shared, &buf) {
+            Ok(v) => v,
+            Err((code, reason)) => {
                 shared.close_conn(&conn, code, reason);
                 return;
             }
-            if buf.len() - at < 5 + len {
-                break;
-            }
-            let body = &buf[at + 5..at + 5 + len];
-            if std::str::from_utf8(body).is_err() {
-                shared.close_conn(&conn, 1007, "text message is not UTF-8");
-                return;
-            }
-            if conn.closed_reported.load(Ordering::Acquire) || conn.closing.load(Ordering::Acquire) {
-                return;
-            }
-            shared.host.text(conn.local, body);
-            at += 5 + len;
+        };
+        let texts = bodies.into_iter().map(|r| buf[r].to_vec()).collect();
+        if !deliver(&shared, &conn, None, texts) {
+            return;
         }
-        buf.drain(..at);
+        buf.drain(..used);
     }
+}
+
+/// CAR10 (Q4.3a): one client unidirectional stream. Type 0x10 is an uplink batch: `u32le batch`,
+/// then messages framed as on the live stream, to FIN. Read whole (at most MAX_UPLINK_BATCH,
+/// within UPLINK_READ_TIMEOUT), then delivered in batch order. A stream reset before its FIN is
+/// dropped: the client sends the batch again. Any other type is refused as before (Q4.2).
+async fn uplink_stream(shared: Arc<Shared>, conn: Arc<Conn>, mut recv: RecvStream) {
+    let refuse = |recv: RecvStream| {
+        shared.streams_refused.fetch_add(1, Ordering::AcqRel);
+        let code = VarInt::try_from_u64(wt_error_to_h3(ERR_UNKNOWN_STREAM_TYPE)).unwrap_or(VarInt::from_u32(0));
+        recv.stop(code);
+    };
+    let read = async {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = vec![0u8; 16 * 1024];
+        loop {
+            match recv.read(&mut chunk).await {
+                Ok(Some(n)) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.first().is_some_and(|t| *t != STREAM_UPLINK) {
+                        return Err(Bad::Type);
+                    }
+                    if buf.len() > 5 + MAX_UPLINK_BATCH {
+                        return Err(Bad::TooLarge);
+                    }
+                }
+                Ok(None) => return Ok(buf),
+                Err(_) => return Err(Bad::Gone), // reset, or the session ended
+            }
+        }
+    };
+    enum Bad {
+        Type,
+        TooLarge,
+        Gone,
+    }
+    let buf = match tokio::time::timeout(UPLINK_READ_TIMEOUT, read).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(Bad::Type)) => return refuse(recv),
+        Ok(Err(Bad::TooLarge)) => {
+            shared.close_conn(&conn, 1009, "uplink batch too large");
+            return;
+        }
+        _ => return,
+    };
+    if buf.is_empty() {
+        return refuse(recv);
+    }
+    if buf.len() < 5 {
+        shared.close_conn(&conn, 1002, "uplink batch header truncated");
+        return;
+    }
+    conn.in_bytes.fetch_add(buf.len() as u64, Ordering::AcqRel);
+    let batch = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+    let body = &buf[5..];
+    let (bodies, used) = match parse_client_frames(&shared, body) {
+        Ok(v) => v,
+        Err((code, reason)) => {
+            shared.close_conn(&conn, code, reason);
+            return;
+        }
+    };
+    if used != body.len() {
+        shared.close_conn(&conn, 1002, "uplink batch ends inside a message");
+        return;
+    }
+    let texts = bodies.into_iter().map(|r| body[r].to_vec()).collect();
+    deliver(&shared, &conn, Some(batch), texts);
 }
 
 /// Host-to-client: the live stream, in the hub's order, then the close.
@@ -785,6 +951,8 @@ async fn writer(
                     head[1..5].copy_from_slice(&len.to_le_bytes());
                     if stream.write_all(&head).await.is_err() || stream.write_all(buf.bytes()).await.is_err() {
                         broken = true; // the session is ending; control() reports it
+                    } else {
+                        conn.out_msgs.fetch_add(1, Ordering::AcqRel);
                     }
                 }
                 conn.queued.fetch_sub(counted, Ordering::AcqRel);
@@ -795,6 +963,59 @@ async fn writer(
                 return;
             }
         }
+    }
+}
+
+/// GRC_NET_DEBUG_STATS_MS: one line per period while the session lives.
+async fn debug_stats(shared: Arc<Shared>, conn: Arc<Conn>) {
+    let period = Duration::from_millis(shared.cfg.debug_stats_ms);
+    while !conn.closed_reported.load(Ordering::Acquire) {
+        tokio::time::sleep(period).await;
+        let q = conn.connection.quic_connection().stats();
+        let (up_streams, up_dups, up_next) = {
+            let u = conn.uplink.lock().unwrap();
+            (u.streams, u.duplicates, u.next)
+        };
+        shared.host.log(
+            GRC_LOG_INFO,
+            &format!(
+                "wt: stats conn={} in_bytes={} in_texts={} out_msgs={} queued={} rtt_us={} cwnd={} lost_pkts={} \
+                 udp_rx={} udp_tx={} rx_stream={} rx_max_stream_data={} rx_max_data={} rx_stream_data_blocked={} \
+                 rx_data_blocked={} tx_max_stream_data={} tx_max_data={} tx_acks={} rx_acks={} tx_stream={} \
+                 remote={} rx_path_challenge={} tx_path_challenge={} rx_new_cid={} rx_retire_cid={} rx_ping={} tx_ping={} \
+                 uplink_streams={} uplink_duplicates={} uplink_next={}",
+                conn.local,
+                conn.in_bytes.load(Ordering::Acquire),
+                conn.in_texts.load(Ordering::Acquire),
+                conn.out_msgs.load(Ordering::Acquire),
+                conn.queued.load(Ordering::Acquire),
+                q.path.rtt.as_micros(),
+                q.path.cwnd,
+                q.path.lost_packets,
+                q.udp_rx.datagrams,
+                q.udp_tx.datagrams,
+                q.frame_rx.stream,
+                q.frame_rx.max_stream_data,
+                q.frame_rx.max_data,
+                q.frame_rx.stream_data_blocked,
+                q.frame_rx.data_blocked,
+                q.frame_tx.max_stream_data,
+                q.frame_tx.max_data,
+                q.frame_tx.acks,
+                q.frame_rx.acks,
+                q.frame_tx.stream,
+                conn.connection.remote_address(),
+                q.frame_rx.path_challenge,
+                q.frame_tx.path_challenge,
+                q.frame_rx.new_connection_id,
+                q.frame_rx.retire_connection_id,
+                q.frame_rx.ping,
+                q.frame_tx.ping,
+                up_streams,
+                up_dups,
+                up_next,
+            ),
+        );
     }
 }
 

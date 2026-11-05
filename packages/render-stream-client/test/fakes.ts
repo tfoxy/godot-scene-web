@@ -281,6 +281,21 @@ export interface FakeBidi {
   cancelled(): boolean;
 }
 
+export interface FakeUni {
+  written(): Uint8Array;
+  finished(): boolean;
+}
+
+function joined(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((a, c) => a + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
 /** A WebTransport double: `ready`/`closed` settled by the test, bidirectional streams the test
  * drives. Install with `vi.stubGlobal("WebTransport", FakeWebTransport)`; instances register in
  * `FakeWebTransport.instances`. */
@@ -294,6 +309,14 @@ export class FakeWebTransport {
   protocol = "";
   /** Set to make `createBidirectionalStream` reject. */
   streamError: unknown = null;
+  /** CAR10: client unidirectional (uplink) streams, in creation order. */
+  readonly uniStreams: FakeUni[] = [];
+  /** How the n-th unidirectional stream behaves: `ok` closes at once; `wedge` takes writes and
+   * never closes (Chrome on Android, CAR10); `refuse` rejects its close with stream error 1 (a
+   * host that predates uplink streams). */
+  uniBehaviour: (n: number) => "ok" | "wedge" | "refuse" = () => "ok";
+  /** CAR10: a bidirectional stream's close never settles (a wedged live stream). */
+  bidiCloseHangs = false;
   readonly ready: Promise<void>;
   readonly closed: Promise<{ closeCode?: number; reason?: string }>;
   private resolveReady!: () => void;
@@ -361,6 +384,7 @@ export class FakeWebTransport {
         chunks.push(c);
       },
       close: () => {
+        if (this.bidiCloseHangs) return new Promise<void>(() => {});
         fin = true;
       },
     });
@@ -389,6 +413,29 @@ export class FakeWebTransport {
       cancelled: () => cancelled,
     });
     return { readable, writable };
+  }
+  async createUnidirectionalStream() {
+    if (this.streamError) throw this.streamError;
+    const mode = this.uniBehaviour(this.uniStreams.length);
+    const chunks: Uint8Array[] = [];
+    let fin = false;
+    this.uniStreams.push({
+      written: () => joined(chunks),
+      finished: () => fin,
+    });
+    return new WritableStream<Uint8Array>({
+      write: (c) => {
+        chunks.push(c);
+      },
+      close: () => {
+        if (mode === "wedge") return new Promise<void>(() => {});
+        if (mode === "refuse")
+          return Promise.reject(
+            Object.assign(new Error("STOP_SENDING"), { streamErrorCode: 1 }),
+          );
+        fin = true;
+      },
+    });
   }
 }
 

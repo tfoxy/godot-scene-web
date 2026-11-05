@@ -102,6 +102,11 @@ export function webTransportAvailable(): boolean {
 
 export type RenderStreamCarrier = "auto" | "websocket" | "webtransport";
 
+/** CAR10: the close reason (prefix) of a WebTransport session whose client-to-host uplink could
+ * not deliver a batch (carrier-design.md "As built (CAR10)"). The loop reconnects as for any
+ * loss; `auto` reconnects over WebSocket for the client's lifetime. */
+export const UPLINK_STALLED = "uplink-stalled";
+
 export interface CarrierDeps {
   websocket?: RenderStreamTransportFactory;
   /** The WebTransport factory (default: `createWebTransportTransport()` from the lazily imported
@@ -116,7 +121,8 @@ export interface CarrierDeps {
  * and the page can open one, and WebSocket otherwise; if the WebTransport attempt closes before
  * `open` (or takes `openTimeoutMs`, or its chunk fails to load), the same connect attempt is
  * retried over WebSocket and every later connect of this factory stays on WebSocket. A failure
- * after `open` is an ordinary close. `webtransport` never falls back: a failure is a close
+ * after `open` is an ordinary close, except that `auto` also sticks to WebSocket after a session
+ * that closed `uplink-stalled` (CAR10). `webtransport` never falls back: a failure is a close
  * without `open`. */
 export function carrierTransport(
   carrier: RenderStreamCarrier,
@@ -186,6 +192,8 @@ export function carrierTransport(
             },
             close(code, reason) {
               if (current !== attempt || abandoned) return;
+              if (auto && opened && reason.startsWith(UPLINK_STALLED))
+                sticky = true;
               if (opened || userClosed || !auto) end(code, reason);
               else failed(code, reason);
             },

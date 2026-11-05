@@ -401,7 +401,7 @@
       "exclusive": true
     },
     {
-      "why": "CAR3 net module (carrier-design.md D8, Q4): the rs-net crate (the wt carrier, its vendored wtransport), the capture's loader and its ctest, build-rs-net.sh and the two wt tests. Nothing here runs unless GRC_LIVE_CARRIERS lists wt, which no gate leg does, so it reaches the crate's tests, the build (rs_net_module ctest) and the pure self-tests (self-test-wt-interop.ts). CAR4's wss tests (self-test-wss.ts, wss-chromium-smoke.ts, lib/test-pki.ts) are the same: no gate leg sets GRC_LIVE_TLS_CERT. Its call sites in entry.cpp and rs_live_host.cpp are shared capture files and still reach '*'",
+      "why": "CAR3 net module (carrier-design.md D8, Q4): the rs-net crate (the wt carrier, its vendored wtransport), the capture's loader and its ctest, build-rs-net.sh and the two wt tests. Nothing here runs unless GRC_LIVE_CARRIERS lists wt, which no gate leg does, so it reaches the crate's tests, the build (rs_net_module ctest) and the pure self-tests (self-test-wt-interop.ts). CAR4's wss tests (self-test-wss.ts, wss-chromium-smoke.ts, lib/test-pki.ts) are the same: no gate leg sets GRC_LIVE_TLS_CERT. CAR10's uplink tooling (wt-impaired-chromium.ts, wt-phone-lockstep.ts, lib/wt-lockstep.ts, lib/udp-impair-proxy.ts) is by-hand, as wt-chromium-smoke.ts: its regression halves are the crate's credit_loop tests. Its call sites in entry.cpp and rs_live_host.cpp are shared capture files and still reach '*'",
       "paths": [
         "experiments/render-stream/rs-net/**",
         "experiments/render-stream/capture/src/grc_net_module.h",
@@ -410,6 +410,10 @@
         "experiments/render-stream/scripts/build-rs-net.sh",
         "experiments/render-stream/scripts/test/self-test-wt-interop.ts",
         "experiments/render-stream/scripts/test/wt-chromium-smoke.ts",
+        "experiments/render-stream/scripts/test/wt-impaired-chromium.ts",
+        "experiments/render-stream/scripts/test/wt-phone-lockstep.ts",
+        "experiments/render-stream/scripts/lib/wt-lockstep.ts",
+        "experiments/render-stream/scripts/lib/udp-impair-proxy.ts",
         "experiments/render-stream/scripts/test/self-test-wss.ts",
         "experiments/render-stream/scripts/test/wss-chromium-smoke.ts",
         "experiments/render-stream/scripts/lib/test-pki.ts"

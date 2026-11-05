@@ -70,8 +70,9 @@ export interface RenderStreamStats {
   /** The wasm instance's memory (0 after dispose). */
   heapBytes: number;
   /** The open connection's carrier, or null while not connected (or on a custom transport
-   * that does not name one). */
-  carrier: "websocket" | "webtransport" | null;
+   * that does not name one). `stats()` always sets it; it is optional so that code building a
+   * `RenderStreamStats` of its own (a consumer's test double) need not (CAR10). */
+  carrier?: "websocket" | "webtransport" | null;
 }
 
 /** The frame and timer functions the loop runs on (the page's, or a test's). */

@@ -45,4 +45,14 @@ describe("RenderStreamStats", () => {
     ];
     expect(named).toHaveLength(3);
   });
+
+  it("lets a consumer build a stats literal without carrier (CAR10: the field is optional)", () => {
+    const literal: client.RenderStreamStats = {
+      applied: 0,
+      appliesPerSec: 0,
+      creditRttMsP50: null,
+      heapBytes: 0,
+    };
+    expect(literal.carrier).toBeUndefined();
+  });
 });

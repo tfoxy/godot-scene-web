@@ -940,3 +940,325 @@ fn start_refusals_are_typed() {
         unsafe { (vt.destroy)(vt.self_) };
     }
 }
+
+// ------------------------------------------------------------------------------ impaired path (CAR10)
+
+/// A UDP forwarder between a QUIC client and the carrier that drops, delays and (through the
+/// delay jitter) reorders datagrams in both directions, seeded so a run is repeatable. QUIC does
+/// not mind a forwarder: the client connects to the proxy's port and pins the certificate hash.
+mod impair {
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::net::UdpSocket;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct Profile {
+        /// Per-datagram drop probability, per mille.
+        pub loss_pm: u32,
+        /// Base one-way delay and uniform jitter on top of it, microseconds.
+        pub delay_us: u64,
+        pub jitter_us: u64,
+        pub seed: u64,
+    }
+
+    #[derive(Default)]
+    pub struct Counts {
+        pub forwarded: AtomicU64,
+        pub dropped: AtomicU64,
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            // xorshift64*
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+    }
+
+    /// Starts the forwarder to `server`; returns its client-facing address.
+    pub async fn start(server: SocketAddr, p: Profile, counts: Arc<Counts>) -> SocketAddr {
+        let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let back = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = front.local_addr().unwrap();
+        let client: Arc<std::sync::Mutex<Option<SocketAddr>>> = Arc::new(std::sync::Mutex::new(None));
+        let pump = |from: Arc<UdpSocket>, to: Arc<UdpSocket>, upstream: bool, seed: u64| {
+            let client = client.clone();
+            let counts = counts.clone();
+            async move {
+                let mut rng = Rng(seed | 1);
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    let Ok((n, peer)) = from.recv_from(&mut buf).await else { return };
+                    let dest = if upstream {
+                        *client.lock().unwrap() = Some(peer);
+                        server
+                    } else {
+                        match *client.lock().unwrap() {
+                            Some(c) => c,
+                            None => continue,
+                        }
+                    };
+                    if (rng.next() % 1000) < u64::from(p.loss_pm) {
+                        counts.dropped.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    counts.forwarded.fetch_add(1, Ordering::Relaxed);
+                    let d = p.delay_us + if p.jitter_us > 0 { rng.next() % p.jitter_us } else { 0 };
+                    let data = buf[..n].to_vec();
+                    let to = to.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_micros(d)).await;
+                        let _ = to.send_to(&data, dest).await;
+                    });
+                }
+            }
+        };
+        tokio::spawn(pump(front.clone(), back.clone(), true, p.seed));
+        tokio::spawn(pump(back, front, false, p.seed.rotate_left(17) ^ 0x9e37_79b9));
+        addr
+    }
+}
+
+fn env_u64(k: &str, d: u64) -> u64 {
+    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+
+/// One uplink batch (Q4.3a): a client unidirectional stream `0x10, u32le batch, messages`, FIN.
+async fn uplink(c: &Connection, batch: u32, texts: &[&str]) {
+    let mut s = c.open_uni().await.unwrap().await.unwrap();
+    let mut b = vec![0x10];
+    b.extend_from_slice(&batch.to_le_bytes());
+    for t in texts {
+        b.extend_from_slice(&frame(1, t.as_bytes()));
+    }
+    s.write_all(&b).await.unwrap();
+    s.finish().await.unwrap();
+}
+
+struct LoopOpts {
+    /// Client-to-host acks on uplink batches (Q4.3a) instead of the live stream.
+    uplink: bool,
+    /// After this many messages the client's live stream stops sending, its writes still
+    /// "succeeding": what Chrome on Android does to a WebTransport stream (CAR10).
+    wedge_after: Option<u32>,
+    impair: Option<impair::Profile>,
+    total: u32,
+}
+
+/// The hub's credit loop: the host sends a ~2.4 KB binary message whenever fewer than 2 are
+/// unacknowledged (credit window 2); the client answers each with three ~110-byte text acks
+/// (received, applied, submitted), as the browser client does. Returns Ok(seconds) when every
+/// message was acknowledged, Err(diagnosis) when no ack arrived for 5 s while one was owed.
+fn credit_loop(o: LoopOpts) -> Result<f64, String> {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let counts = Arc::new(impair::Counts::default());
+    let port = h.info().port as u16;
+    let client_sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let client_got = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (cs, cg, hash, c2, prof) = (client_sent.clone(), client_got.clone(), h.hash.clone(), counts.clone(), o.impair);
+    let (use_uplink, wedge_after) = (o.uplink, o.wedge_after);
+    let client = rt.spawn(async move {
+        let target = match prof {
+            Some(p) => impair::start(format!("127.0.0.1:{port}").parse().unwrap(), p, c2).await.port(),
+            None => port,
+        };
+        let url = format!("https://127.0.0.1:{target}/render-stream?protocol={SP}");
+        let c = connect_with(&url, &hash, &[("origin", "http://127.0.0.1:5173")]).await.expect("connect");
+        let (mut s, mut r) = open_live(&c).await;
+        s.write_all(&frame(1, b"{\"type\":\"hello\"}")).await.unwrap();
+        cs.fetch_add(1, Ordering::AcqRel);
+        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; 65536];
+        let mut batch = 0u32;
+        let mut got = 0u32;
+        loop {
+            match r.read(&mut chunk).await {
+                Ok(Some(n)) => buf.extend_from_slice(&chunk[..n]),
+                _ => return c,
+            }
+            let mut at = 0;
+            while buf.len() - at >= 5 {
+                let len = u32::from_le_bytes(buf[at + 1..at + 5].try_into().unwrap()) as usize;
+                if buf.len() - at < 5 + len {
+                    break;
+                }
+                let seq = u32::from_le_bytes(buf[at + 5..at + 9].try_into().unwrap());
+                at += 5 + len;
+                got += 1;
+                cg.fetch_add(1, Ordering::AcqRel);
+                let acks: Vec<String> = ["received", "applied", "submitted"]
+                    .iter()
+                    .map(|stage| {
+                        format!(
+                            "{{\"type\":\"ack\",\"stream_id\":\"0123456789abcdef0123456789abcdef\",\"seq\":{seq},\"stage\":\"{stage}\",\"t_us\":{}}}",
+                            u64::from(seq) * 16_666 + 1_000_000_000
+                        )
+                    })
+                    .collect();
+                if use_uplink {
+                    let refs: Vec<&str> = acks.iter().map(String::as_str).collect();
+                    uplink(&c, batch, &refs).await;
+                    batch += 1;
+                } else if wedge_after.is_none_or(|w| got <= w) {
+                    for a in &acks {
+                        s.write_all(&frame(1, a.as_bytes())).await.unwrap();
+                    }
+                }
+                cs.fetch_add(3, Ordering::AcqRel);
+            }
+            buf.drain(..at);
+        }
+    });
+    let local = h.wait_opened(0);
+    let texts = |h: &Harness| {
+        h.fake.events.lock().unwrap().iter().filter(|e| matches!(e, Ev::Text { local: l, .. } if *l == local)).count() as u64
+    };
+    let total = o.total;
+    let mut sent = 0u32;
+    let mut last_progress = (Instant::now(), 0u64);
+    let started = Instant::now();
+    let result = loop {
+        let got = texts(&h);
+        // hello + 3 per message; credit returns with each message's first ack.
+        let credited = if got == 0 { 0 } else { ((got - 1) + 2) / 3 } as u32;
+        if sent >= total && got == 1 + 3 * u64::from(total) {
+            break Ok(started.elapsed().as_secs_f64());
+        }
+        while sent < total && sent - credited.min(sent) < 2 {
+            let mut m = body(2400, (sent % 251) as u8);
+            m[..4].copy_from_slice(&sent.to_le_bytes());
+            assert!(h.send(local, m));
+            sent += 1;
+        }
+        if got != last_progress.1 {
+            last_progress = (Instant::now(), got);
+        }
+        if last_progress.0.elapsed() >= Duration::from_secs(5) {
+            break Err(format!(
+                "credit loop stalled: host sent {sent} of {total}, host got {got} texts, client wrote {} texts and \
+                 read {} messages; proxy forwarded {} dropped {} ({:?}, {:.1} s in)",
+                client_sent.load(Ordering::Acquire),
+                client_got.load(Ordering::Acquire),
+                counts.forwarded.load(Ordering::Relaxed),
+                counts.dropped.load(Ordering::Relaxed),
+                o.impair,
+                started.elapsed().as_secs_f64()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    h.close(local, 1000, "done");
+    h.wait_closed(local);
+    client.abort();
+    result
+}
+
+fn wifi_profile() -> impair::Profile {
+    impair::Profile {
+        loss_pm: env_u64("RS_NET_IMPAIR_LOSS_PM", 30) as u32,
+        delay_us: env_u64("RS_NET_IMPAIR_DELAY_US", 2000),
+        jitter_us: env_u64("RS_NET_IMPAIR_JITTER_US", 6000),
+        seed: env_u64("RS_NET_IMPAIR_SEED", 0x00c0_ffee),
+    }
+}
+
+/// The live stream alone (old clients) and uplink batches both survive loss and reordering.
+#[test]
+fn credit_loop_survives_loss_and_reordering() {
+    let total = env_u64("RS_NET_IMPAIR_MESSAGES", 600) as u32;
+    for uplink in [false, true] {
+        let s = credit_loop(LoopOpts { uplink, wedge_after: None, impair: Some(wifi_profile()), total })
+            .unwrap_or_else(|e| panic!("uplink={uplink}: {e}"));
+        eprintln!("credit loop uplink={uplink}: {total} messages in {s:.1} s over the impaired path");
+    }
+}
+
+/// CAR10's defect, modelled: once the client's live stream stops sending (Chrome on Android
+/// wedges a WebTransport stream; its writes keep resolving), acks on that stream never arrive
+/// and the credit loop stalls with the host owed its last acks. This is the sabotage half: it
+/// proves the loop detects the g31 stall.
+#[test]
+fn credit_loop_on_a_wedged_live_stream_stalls() {
+    let e = credit_loop(LoopOpts { uplink: false, wedge_after: Some(40), impair: None, total: 200 })
+        .expect_err("acks on a wedged live stream must stall the credit loop");
+    assert!(e.contains("host sent 42 of 200"), "{e}");
+}
+
+/// The fix: acks on uplink batches reach the host whatever the live stream's send side does.
+#[test]
+fn credit_loop_with_uplink_batches_ignores_a_wedged_live_stream() {
+    credit_loop(LoopOpts { uplink: true, wedge_after: Some(40), impair: Some(wifi_profile()), total: 300 }).unwrap();
+}
+
+/// Q4.3a: uplink batches wait for the live stream's first text (the hello), are delivered in
+/// batch order whatever order they arrive in, and a batch sent twice is delivered once. A batch
+/// reset before its FIN is dropped; its re-send is delivered.
+#[test]
+fn uplink_batches_follow_the_hello_in_order_exactly_once() {
+    let h = Harness::start(Opts::default());
+    let rt = rt();
+    let c = rt.block_on(connect(&h));
+    let local = h.wait_opened(0);
+    let (mut live, _r) = rt.block_on(open_live(&c));
+    rt.block_on(async {
+        uplink(&c, 1, &["b1"]).await;
+        uplink(&c, 0, &["b0a", "b0b"]).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    });
+    assert!(h.texts(local).is_empty(), "no batch before the hello: {:?}", h.texts(local));
+    rt.block_on(async {
+        live.write_all(&frame(1, b"hello")).await.unwrap();
+        uplink(&c, 0, &["b0a", "b0b"]).await; // a re-send after all
+        // A batch reset before its FIN is dropped...
+        let mut s = c.open_uni().await.unwrap().await.unwrap();
+        let mut b = vec![0x10];
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&frame(1, b"b2"));
+        s.write_all(&b[..b.len() - 1]).await.unwrap();
+        s.reset(wtransport::VarInt::from_u32(0)).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // ...and its re-send delivered.
+        uplink(&c, 2, &["b2"]).await;
+    });
+    h.wait("all texts", |_| (h.texts(local).len() >= 5).then_some(()));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.texts(local), vec!["hello", "b0a", "b0b", "b1", "b2"]);
+    assert_eq!(h.info().streams_refused, 0, "uplink streams are not refused");
+}
+
+/// Q4.3a's limits are the live stream's: a binary message closes 1003, a FIN inside a message
+/// 1002, a batch over 64 KiB 1009.
+#[test]
+fn uplink_violations_close_like_the_live_stream() {
+    for (what, bytes, want) in [
+        ("binary", { let mut b = vec![0x10, 0, 0, 0, 0]; b.extend_from_slice(&frame(0, b"x")); b }, 1003u16),
+        ("truncated", { let mut b = vec![0x10, 0, 0, 0, 0]; b.extend_from_slice(&frame(1, b"abc")[..6]); b }, 1002),
+        ("too large", {
+            let mut b = vec![0x10, 0, 0, 0, 0];
+            while b.len() < 70 * 1024 {
+                b.extend_from_slice(&frame(1, &[b'a'; 4000]));
+            }
+            b
+        }, 1009),
+    ] {
+        let h = Harness::start(Opts::default());
+        let rt = rt();
+        let c = rt.block_on(connect(&h));
+        let local = h.wait_opened(0);
+        let (mut live, _r) = rt.block_on(open_live(&c));
+        rt.block_on(async {
+            live.write_all(&frame(1, b"hello")).await.unwrap();
+            let mut s = c.open_uni().await.unwrap().await.unwrap();
+            let _ = s.write_all(&bytes).await;
+            let _ = s.finish().await;
+        });
+        let (code, _) = h.wait_closed(local);
+        assert_eq!(code, want, "{what}");
+    }
+}

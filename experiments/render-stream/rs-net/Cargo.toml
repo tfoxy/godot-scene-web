@@ -3,6 +3,7 @@ name = "render-stream-net"
 version = "0.1.0"
 edition = "2021"
 publish = false
+autobins = false
 description = "render-stream's net module (carrier-design.md D8, CAR3): the `wt` WebTransport live carrier behind grc_carrier_v1"
 
 [lib]
@@ -18,6 +19,9 @@ time = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 ring = "0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
+# rs-net-lockstep --trace (CAR10): quinn's frame-level trace events. Already in the tree through
+# quinn (same version, Cargo.lock); naming it adds no crate.
+tracing = "0.1"
 
 [dev-dependencies]
 flate2 = "1"
@@ -25,6 +29,11 @@ flate2 = "1"
 [[bin]]
 name = "rs-net-probe"
 path = "src/bin/rs-net-probe.rs"
+
+# CAR10: the credit loop on `wt` without a hub (scripts/test/wt-impaired-chromium.ts).
+[[bin]]
+name = "rs-net-lockstep"
+path = "src/bin/rs-net-lockstep.rs"
 
 # wtransport 0.7.2 with the render-stream patch (vendor/wtransport/RENDER-STREAM-PATCH.md):
 # CLOSE_WEBTRANSPORT_SESSION from the server, any rejection status, the status on the client.

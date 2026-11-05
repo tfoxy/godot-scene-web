@@ -8,6 +8,8 @@ import type { RenderStreamTransportFactory } from "./transport";
 
 const STREAM_LIVE = 0;
 const STREAM_RESOURCE = 1;
+/** CAR10 (Q4.3a): a client unidirectional stream holding one batch of client-to-host messages. */
+const STREAM_UPLINK = 0x10;
 const KIND_BINARY = 0;
 const KIND_TEXT = 1;
 /** Host to client: at most `max_queued_bytes` per message (Q4.3). */
@@ -19,6 +21,23 @@ const MAX_PATH_BYTES = 1024;
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
 /** How long a reset live stream waits for the session's own close before it counts as 1006. */
 const STREAM_RESET_GRACE_MS = 100;
+/** CAR10: an uplink batch whose stream has not closed after this is sent again on a new stream;
+ * the wait doubles per attempt (100, 200, 400, 800, 1600, 3200 ms), and a batch still
+ * unconfirmed after the last one closes the session `uplink-stalled` (about 6.3 s). On the g31 a
+ * healthy batch's close settles within ~60 ms (14 548 streams), and a wedged one never does. A
+ * close that is merely slow costs a duplicate, which the host drops. */
+const UPLINK_RESEND_MS = 100;
+const UPLINK_ATTEMPTS = 6;
+/** The largest batch the client builds (the host accepts 64 KiB). */
+const UPLINK_MAX_BATCH = 32 * 1024;
+/** transport.ts's `UPLINK_STALLED`, spelled out: importing a value from `./transport` would
+ * split it into a chunk shared with the main entry (a cost to every WebSocket-only page). */
+const UPLINK_STALLED = "uplink-stalled";
+/** The stream error a host that predates uplink streams stops them with (Q4.2). */
+const UNKNOWN_STREAM_TYPE = 1;
+/** How long a client close waits for the live stream's FIN before closing the session anyway (a
+ * wedged stream never finishes). */
+const CLOSE_FIN_WAIT_MS = 500;
 
 export interface WebTransportTransportOptions {
   /** F3: the bound of the in-memory, content-addressed LRU of fetched resource bodies, owned by
@@ -27,6 +46,13 @@ export interface WebTransportTransportOptions {
   /** F1: also offer the subprotocol through WebTransport protocol negotiation (the constructor's
    * `protocols`) and require the host to agree. Default false: the `?protocol=` query only. */
   negotiate?: boolean;
+  /** CAR10: how client-to-host messages after the hello travel. `streams` (default): one
+   * unidirectional uplink stream per batch (Q4.3a), confirmed by its close and sent again when
+   * the close does not come, because Chrome on Android can wedge a long-lived stream's send side
+   * for good while its writes keep resolving. `live`: on the live stream, as before CAR10. A host
+   * that refuses uplink streams (one that predates them) turns `streams` into `live` for the
+   * session. */
+  uplink?: "streams" | "live";
 }
 
 /** A violation of the live framing by the host (the session is closed with `code`). */
@@ -94,6 +120,26 @@ class FrameParser {
         : (body.buffer as ArrayBuffer),
     );
   }
+}
+
+/** One client-to-host live message (Q4.3): kind 1, length, UTF-8. */
+function frameText(text: string): Uint8Array {
+  const body = new TextEncoder().encode(text);
+  const buf = new Uint8Array(5 + body.length);
+  buf[0] = KIND_TEXT;
+  new DataView(buf.buffer).setUint32(1, body.length, true);
+  buf.set(body, 5);
+  return buf;
+}
+
+function concat(parts: Uint8Array[], lead = 0): Uint8Array {
+  const out = new Uint8Array(lead + parts.reduce((n, p) => n + p.length, 0));
+  let at = lead;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }
 
 /** `reason` cut to `MAX_REASON_BYTES` of UTF-8 at a character boundary. */
@@ -209,6 +255,96 @@ export function createWebTransportTransport(
       wt.close({ closeCode: code, reason: truncateReason(reason) });
     };
 
+    // CAR10 uplink (Q4.3a). The first message (the hello) goes on the live stream; later ones are
+    // gathered per task and sent as numbered batches on uplink streams until confirmed.
+    let helloSent = false;
+    let inband = options.uplink === "live";
+    let gathering: Uint8Array[] | null = null;
+    let gatheredBytes = 0;
+    let nextBatch = 0;
+    /** Batches sent and not yet confirmed, in batch order. */
+    const unconfirmed = new Map<number, Uint8Array>();
+    const toLive = (bytes: Uint8Array): void => {
+      writer?.write(bytes).catch(() => {});
+    };
+    const toInband = (): void => {
+      if (inband) return;
+      inband = true;
+      if (gathering) flushGathered();
+      for (const frames of unconfirmed.values()) toLive(frames);
+      unconfirmed.clear();
+    };
+    const sendBatch = async (
+      n: number,
+      frames: Uint8Array,
+      attempt: number,
+    ): Promise<void> => {
+      if (inband || clientClosing || sessionEnded || !unconfirmed.has(n))
+        return;
+      let w: WritableStreamDefaultWriter<Uint8Array>;
+      try {
+        w = (await wt.createUnidirectionalStream()).getWriter();
+      } catch {
+        return; // the session is ending
+      }
+      const head = concat([frames], 5);
+      head[0] = STREAM_UPLINK;
+      new DataView(head.buffer).setUint32(1, n, true);
+      w.write(head).catch(() => {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const outcome = await Promise.race([
+        w.close().then(
+          () => "ok",
+          (e: unknown) =>
+            (e as { streamErrorCode?: number } | null)?.streamErrorCode ===
+            UNKNOWN_STREAM_TYPE
+              ? "refused"
+              : "lost",
+        ),
+        new Promise<string>((r) => {
+          timer = setTimeout(() => r("lost"), UPLINK_RESEND_MS * 2 ** attempt);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (outcome === "ok") {
+        unconfirmed.delete(n);
+        return;
+      }
+      if (outcome === "refused") return toInband();
+      if (inband || clientClosing || sessionEnded) return;
+      w.abort().catch(() => {});
+      if (attempt + 1 >= UPLINK_ATTEMPTS)
+        return fail(
+          1006,
+          `${UPLINK_STALLED}: batch ${n} unconfirmed after ${attempt + 1} streams`,
+        );
+      return sendBatch(n, frames, attempt + 1);
+    };
+    const flushGathered = (): void => {
+      const parts = gathering;
+      gathering = null;
+      gatheredBytes = 0;
+      if (!parts || parts.length === 0) return;
+      const frames = concat(parts);
+      if (inband) {
+        toLive(frames);
+        return;
+      }
+      const n = nextBatch++;
+      unconfirmed.set(n, frames);
+      void sendBatch(n, frames, 0);
+    };
+    const gather = (f: Uint8Array): void => {
+      if (gathering && gatheredBytes + f.length > UPLINK_MAX_BATCH)
+        flushGathered();
+      if (!gathering) {
+        gathering = [];
+        queueMicrotask(flushGathered);
+      }
+      gathering.push(f);
+      gatheredBytes += f.length;
+    };
+
     let sessionEnded = false;
     let reading = false;
     const sessionEnd = wt.closed.then(
@@ -289,25 +425,31 @@ export function createWebTransportTransport(
       carrier: "webtransport",
       send(text) {
         if (writer === null || clientClosing) return;
-        const body = new TextEncoder().encode(text);
-        const buf = new Uint8Array(5 + body.length);
-        buf[0] = KIND_TEXT;
-        new DataView(buf.buffer).setUint32(1, body.length, true);
-        buf.set(body, 5);
-        writer.write(buf).catch(() => {});
+        const f = frameText(text);
+        if (!helloSent || inband) {
+          helloSent = true;
+          return toLive(f);
+        }
+        gather(f);
       },
       close(code, reason) {
         if (clientClosing) return;
         clientClosing = true;
         const closeInfo = { closeCode: code, reason: truncateReason(reason) };
         const w = writer as WritableStreamDefaultWriter<Uint8Array> | null;
-        // Finish the live stream first, so what was written is not reset by the session close.
+        // Finish the live stream first, so what was written is not reset by the session close;
+        // a wedged stream never finishes, so the session closes after CLOSE_FIN_WAIT_MS anyway.
         if (w === null) wt.close(closeInfo);
-        else
-          w.close().then(
-            () => wt.close(closeInfo),
-            () => wt.close(closeInfo),
-          );
+        else {
+          let done = false;
+          const closeSession = () => {
+            if (done) return;
+            done = true;
+            wt.close(closeInfo);
+          };
+          w.close().then(closeSession, closeSession);
+          setTimeout(closeSession, CLOSE_FIN_WAIT_MS);
+        }
       },
       async fetchResource(path, req) {
         const hit = cache.get(path);

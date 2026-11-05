@@ -186,8 +186,10 @@ describe("webTransportTransport: live framing", () => {
     expect(r.messages).toEqual(["one", "two"]);
   });
 
-  it("sends text framed kind 1, in order", async () => {
-    const { t, wt } = await opened();
+  it("sends text framed kind 1, in order (uplink: live)", async () => {
+    const { t, wt } = await opened(
+      createWebTransportTransport({ uplink: "live" }),
+    );
     t.send('{"type":"hello"}');
     t.send("ü");
     await flush();
@@ -216,6 +218,102 @@ describe("webTransportTransport: live framing", () => {
     wt.streams[0].serverSend(new Uint8Array([0, 1, 0, 0, 5]));
     await flush();
     expect(r.closes[0].code).toBe(1009);
+  });
+});
+
+describe("webTransportTransport: uplink streams (CAR10)", () => {
+  const batch = (n: number, ...texts: string[]) => {
+    const body = texts.flatMap((t) => [...frame(1, t)]);
+    const head = new Uint8Array(5);
+    head[0] = 0x10;
+    new DataView(head.buffer).setUint32(1, n, true);
+    return [...head, ...body];
+  };
+  async function openedFake(options = {}) {
+    vi.useFakeTimers();
+    const r = rec();
+    const t = createWebTransportTransport(options)(EP, SUB, r.on);
+    const wt = wtOf();
+    wt.establish();
+    await vi.advanceTimersByTimeAsync(0);
+    return { r, t, wt };
+  }
+
+  it("sends the hello on the live stream and each task's later messages as one numbered batch", async () => {
+    const { t, wt } = await openedFake();
+    t.send("hello");
+    t.send("a");
+    t.send("b");
+    await vi.advanceTimersByTimeAsync(0);
+    t.send("c");
+    await vi.advanceTimersByTimeAsync(0);
+    expect([...wt.streams[0].written()]).toEqual([0, ...frame(1, "hello")]);
+    expect(wt.uniStreams).toHaveLength(2);
+    expect([...wt.uniStreams[0].written()]).toEqual(batch(0, "a", "b"));
+    expect([...wt.uniStreams[1].written()]).toEqual(batch(1, "c"));
+    expect(wt.uniStreams.every((u) => u.finished())).toBe(true);
+  });
+
+  it("sends a batch whose stream never closes again on a new stream, same number", async () => {
+    const { t, wt } = await openedFake();
+    wt.uniBehaviour = (n) => (n === 0 ? "wedge" : "ok");
+    t.send("hello");
+    t.send("ack 1");
+    await vi.advanceTimersByTimeAsync(99);
+    expect(wt.uniStreams).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wt.uniStreams).toHaveLength(2);
+    expect([...wt.uniStreams[1].written()]).toEqual(batch(0, "ack 1"));
+    expect(wt.uniStreams[1].finished()).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(wt.uniStreams).toHaveLength(2);
+    expect(wt.closeCalls).toEqual([]);
+  });
+
+  it("closes the session uplink-stalled when six streams in a row never close", async () => {
+    const { r, t, wt } = await openedFake();
+    wt.uniBehaviour = () => "wedge";
+    t.send("hello");
+    t.send("ack 1");
+    await vi.advanceTimersByTimeAsync(100 + 200 + 400 + 800 + 1600 + 3200 - 1);
+    expect(wt.closeCalls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wt.uniStreams).toHaveLength(6);
+    expect(wt.closeCalls).toHaveLength(1);
+    expect(wt.closeCalls[0].closeCode).toBe(1006);
+    expect(wt.closeCalls[0].reason).toMatch(
+      /^uplink-stalled: batch 0 unconfirmed after 6 streams/,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.closes).toEqual([{ code: 1006, reason: wt.closeCalls[0].reason }]);
+  });
+
+  it("falls back to the live stream when the host refuses uplink streams, unconfirmed batches first", async () => {
+    const { t, wt } = await openedFake();
+    wt.uniBehaviour = () => "refuse";
+    t.send("hello");
+    t.send("a");
+    await vi.advanceTimersByTimeAsync(0);
+    t.send("b");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(wt.uniStreams).toHaveLength(1);
+    expect([...wt.streams[0].written()]).toEqual([
+      0,
+      ...frame(1, "hello"),
+      ...frame(1, "a"),
+      ...frame(1, "b"),
+    ]);
+  });
+
+  it("a client close does not wait for a wedged live stream's FIN", async () => {
+    const { t, wt } = await openedFake();
+    wt.bidiCloseHangs = true;
+    t.send("hello");
+    t.close(1000, "end seen");
+    await vi.advanceTimersByTimeAsync(499);
+    expect(wt.closeCalls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wt.closeCalls).toEqual([{ closeCode: 1000, reason: "end seen" }]);
   });
 });
 
@@ -584,6 +682,42 @@ describe("carrierTransport", () => {
     factory(EP, SUB, rec().on);
     expect(FakeWebTransport.instances).toHaveLength(n);
     expect(wsMade).toHaveLength(2);
+  });
+
+  it("auto sticks to WebSocket after a session that closed uplink-stalled (CAR10)", async () => {
+    const { factory, wsMade } = setup("auto");
+    const r = rec();
+    factory(EP, SUB, r.on);
+    await flush();
+    const wt = wtOf();
+    wt.establish();
+    await flush();
+    expect(r.events).toEqual(["open"]);
+    wt.serverClose({
+      closeCode: 1006,
+      reason: "uplink-stalled: batch 3 unconfirmed after 5 streams",
+    });
+    await flush();
+    expect(r.closes[0].reason).toMatch(/^uplink-stalled/);
+    const n = FakeWebTransport.instances.length;
+    factory(EP, SUB, rec().on);
+    expect(FakeWebTransport.instances).toHaveLength(n);
+    expect(wsMade).toHaveLength(1);
+  });
+
+  it("auto keeps WebTransport after an ordinary close after open", async () => {
+    const { factory, wsMade } = setup("auto");
+    factory(EP, SUB, rec().on);
+    await flush();
+    wtOf().establish();
+    await flush();
+    wtOf().serverClose({ closeCode: 1001, reason: "going away" });
+    await flush();
+    const n = FakeWebTransport.instances.length;
+    factory(EP, SUB, rec().on);
+    await flush();
+    expect(FakeWebTransport.instances).toHaveLength(n + 1);
+    expect(wsMade).toHaveLength(0);
   });
 
   it("auto falls back when the session closes before open without a failure", async () => {
